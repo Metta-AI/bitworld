@@ -38,6 +38,23 @@ type
   Actor* = object
     x*, y*: int
     sprite*: Sprite
+    attackTicks*: int
+    attackResolved*: bool
+    velX*: int
+    velY*: int
+    carryX*: int
+    carryY*: int
+    lives*: int
+    invulnTicks*: int
+    coins*: int
+
+  PickupKind* = enum
+    PickupCoin
+    PickupHeart
+
+  Pickup* = object
+    x*, y*: int
+    kind*: PickupKind
 
   Mob* = object
     x*, y*: int
@@ -51,26 +68,21 @@ type
   SimServer* = object
     players*: seq[Actor]
     mobs*: seq[Mob]
+    pickups*: seq[Pickup]
     tiles*: seq[bool]
     terrainSprite*: Sprite
     mobSprite*: Sprite
     swooshSprite*: Sprite
     heartSprite*: Sprite
     emptyHeartSprite*: Sprite
+    coinSprite*: Sprite
+    digitSprites*: array[10, Sprite]
     packedFrame*: seq[uint8]
     frameIndices*: seq[uint8]
     rng*: Rand
     tickCount*: int
     facing*: Facing
-    attackTicks*: int
-    attackResolved*: bool
-    playerVelX*: int
-    playerVelY*: int
-    playerCarryX*: int
-    playerCarryY*: int
     mobSpawnCooldown*: int
-    playerLives*: int
-    playerInvulnTicks*: int
 
 var Palette*: array[16, ColorRGBA]
 
@@ -146,38 +158,29 @@ proc fallbackSwooshSprite(): Sprite =
     [('.', 0'u8), ('6', 6'u8)]
   )
 
-proc defaultPalette(): array[16, ColorRGBA] =
-  [
-    rgba(228, 166, 114, 255),
-    rgba(184, 111, 80, 255),
-    rgba(116, 63, 57, 255),
-    rgba(63, 40, 50, 255),
-    rgba(158, 40, 53, 255),
-    rgba(229, 59, 68, 255),
-    rgba(251, 146, 43, 255),
-    rgba(255, 231, 98, 255),
-    rgba(99, 198, 77, 255),
-    rgba(50, 115, 69, 255),
-    rgba(25, 61, 63, 255),
-    rgba(79, 103, 129, 255),
-    rgba(175, 191, 210, 255),
-    rgba(255, 255, 255, 255),
-    rgba(44, 232, 244, 255),
-    rgba(4, 132, 209, 255)
-  ]
+proc fallbackCoinSprite(): Sprite =
+  makeSprite(
+    [
+      "..77..",
+      ".7887.",
+      "788887",
+      "788887",
+      ".7887.",
+      "..77.."
+    ],
+    [('.', 0'u8), ('7', 7'u8), ('8', 8'u8)]
+  )
 
 proc loadPalette(path: string) =
-  Palette = defaultPalette()
   if not fileExists(path):
-    return
+    raise newException(IOError, "Missing palette asset: " & path)
 
-  try:
-    let image = readImage(path)
-    let count = min(image.width, Palette.len)
-    for x in 0 ..< count:
-      Palette[x] = image[x, 0]
-  except PixieError:
-    discard
+  let image = readImage(path)
+  if image.width < Palette.len or image.height < 1:
+    raise newException(IOError, "Palette asset must be at least 16x1: " & path)
+
+  for x in 0 ..< Palette.len:
+    Palette[x] = image[x, 0]
 
 proc nearestPaletteIndex(pixel: ColorRGBA): uint8 =
   if pixel.a < 20'u8:
@@ -204,6 +207,34 @@ proc spriteFromImage(image: Image): Sprite =
   for y in 0 ..< image.height:
     for x in 0 ..< image.width:
       result.pixels[result.spriteIndex(x, y)] = nearestPaletteIndex(image[x, y])
+
+proc sliceSpriteStrip(image: Image, spriteWidth, spriteHeight, count: int): seq[Sprite] =
+  result = @[]
+  for i in 0 ..< count:
+    var sprite = Sprite(width: spriteWidth, height: spriteHeight)
+    sprite.pixels = newSeq[uint8](spriteWidth * spriteHeight)
+    let baseX = i * spriteWidth
+    for y in 0 ..< spriteHeight:
+      for x in 0 ..< spriteWidth:
+        sprite.pixels[sprite.spriteIndex(x, y)] = nearestPaletteIndex(image[baseX + x, y])
+    result.add(sprite)
+
+proc loadDigitSprites(path: string): array[10, Sprite] =
+  if not fileExists(path):
+    raise newException(IOError, "Missing digit sprite strip: " & path)
+
+  let image = readImage(path)
+  let digits = sliceSpriteStrip(image, 6, 6, 10)
+  if digits.len != 10:
+    raise newException(IOError, "Digit sprite strip must contain 10 digits: " & path)
+
+  for i in 0 ..< 10:
+    result[i] = digits[i]
+
+proc readRequiredSprite(path: string): Sprite =
+  if not fileExists(path):
+    raise newException(IOError, "Missing sprite asset: " & path)
+  spriteFromImage(readImage(path))
 
 proc maybeLoadSprite(candidates: openArray[string], fallback: Sprite): Sprite =
   for candidate in candidates:
@@ -314,35 +345,21 @@ proc initSimServer*(): SimServer =
   result.packedFrame = newSeq[uint8](ProtocolBytes)
   result.facing = FaceDown
   loadPalette("data/pallete.png")
-  let terrainSprite = maybeLoadSprite(
-    ["data/wall.png", "data/wall.bmp", "data/terrain.png", "data/brush.png", "data/terrain.bmp"],
-    fallbackTerrainSprite()
-  )
-  let playerSprite = maybeLoadSprite(
-    ["data/player.png", "data/player.bmp"],
-    fallbackPlayerSprite()
-  )
-  let mobSprite = maybeLoadSprite(
-    ["data/snake.png", "data/snake.bmp", "data/mob.png", "data/mob.bmp"],
-    fallbackMobSprite()
-  )
-  let swooshSprite = maybeLoadSprite(
-    ["data/swoosh.png", "data/swoosh.bmp"],
-    fallbackSwooshSprite()
-  )
-  let heartSprite = maybeLoadSprite(
-    ["data/heart.png", "data/heart.bmp"],
-    fallbackPlayerSprite()
-  )
-  let emptyHeartSprite = maybeLoadSprite(
-    ["data/empty_heart.png", "data/empty_heart.bmp"],
-    fallbackMobSprite()
-  )
+  let terrainSprite = readRequiredSprite("data/wall.png")
+  let playerSprite = readRequiredSprite("data/player.png")
+  let mobSprite = readRequiredSprite("data/snake.png")
+  let swooshSprite = readRequiredSprite("data/swoosh.png")
+  let heartSprite = readRequiredSprite("data/heart.png")
+  let emptyHeartSprite = readRequiredSprite("data/empty_heart.png")
+  let coinSprite = readRequiredSprite("data/coin.png")
+  let digitSprites = loadDigitSprites("data/numbers.png")
   result.terrainSprite = terrainSprite
   result.mobSprite = mobSprite
   result.swooshSprite = swooshSprite
   result.heartSprite = heartSprite
   result.emptyHeartSprite = emptyHeartSprite
+  result.coinSprite = coinSprite
+  result.digitSprites = digitSprites
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2
@@ -353,12 +370,15 @@ proc initSimServer*(): SimServer =
     Actor(
       x: startTx * TileSize,
       y: startTy * TileSize,
-      sprite: playerSprite
+      sprite: playerSprite,
+      lives: MaxPlayerLives
     )
   ]
   result.spawnMobs(36, mobSprite)
   result.mobSpawnCooldown = 30
-  result.playerLives = MaxPlayerLives
+
+proc currentPlayerCoins*(sim: SimServer): int =
+  if sim.players.len == 0: 0 else: sim.players[0].coins
 
 proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
   if dx != 0:
@@ -420,28 +440,28 @@ proc applyInput*(sim: var SimServer, input: InputState) =
     inputY += 1
 
   if inputX != 0:
-    sim.playerVelX = clamp(sim.playerVelX + inputX * Accel, -MaxSpeed, MaxSpeed)
+    sim.players[0].velX = clamp(sim.players[0].velX + inputX * Accel, -MaxSpeed, MaxSpeed)
   else:
-    sim.playerVelX = (sim.playerVelX * FrictionNum) div FrictionDen
-    if abs(sim.playerVelX) < StopThreshold:
-      sim.playerVelX = 0
+    sim.players[0].velX = (sim.players[0].velX * FrictionNum) div FrictionDen
+    if abs(sim.players[0].velX) < StopThreshold:
+      sim.players[0].velX = 0
 
   if inputY != 0:
-    sim.playerVelY = clamp(sim.playerVelY + inputY * Accel, -MaxSpeed, MaxSpeed)
+    sim.players[0].velY = clamp(sim.players[0].velY + inputY * Accel, -MaxSpeed, MaxSpeed)
   else:
-    sim.playerVelY = (sim.playerVelY * FrictionNum) div FrictionDen
-    if abs(sim.playerVelY) < StopThreshold:
-      sim.playerVelY = 0
+    sim.players[0].velY = (sim.players[0].velY * FrictionNum) div FrictionDen
+    if abs(sim.players[0].velY) < StopThreshold:
+      sim.players[0].velY = 0
 
-  if abs(sim.playerVelX) > abs(sim.playerVelY):
-    if sim.playerVelX < 0:
+  if abs(sim.players[0].velX) > abs(sim.players[0].velY):
+    if sim.players[0].velX < 0:
       sim.facing = FaceLeft
-    elif sim.playerVelX > 0:
+    elif sim.players[0].velX > 0:
       sim.facing = FaceRight
   else:
-    if sim.playerVelY < 0:
+    if sim.players[0].velY < 0:
       sim.facing = FaceUp
-    elif sim.playerVelY > 0:
+    elif sim.players[0].velY > 0:
       sim.facing = FaceDown
 
   if inputX < 0:
@@ -453,11 +473,11 @@ proc applyInput*(sim: var SimServer, input: InputState) =
   elif inputY > 0:
     sim.facing = FaceDown
 
-  sim.applyMomentumAxis(sim.players[0], sim.playerCarryX, sim.playerVelX, true)
-  sim.applyMomentumAxis(sim.players[0], sim.playerCarryY, sim.playerVelY, false)
-  if input.attack and sim.attackTicks == 0:
-    sim.attackTicks = 5
-    sim.attackResolved = false
+  sim.applyMomentumAxis(sim.players[0], sim.players[0].carryX, sim.players[0].velX, true)
+  sim.applyMomentumAxis(sim.players[0], sim.players[0].carryY, sim.players[0].velY, false)
+  if input.attack and sim.players[0].attackTicks == 0:
+    sim.players[0].attackTicks = 5
+    sim.players[0].attackResolved = false
 
 proc attackRect(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
   let sprite = sim.swooshSprite
@@ -488,13 +508,17 @@ proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
     if dy < 0: FaceUp else: FaceDown
 
 proc applyAttack(sim: var SimServer) =
-  if sim.attackTicks <= 0 or sim.players.len == 0 or sim.attackResolved:
+  if sim.players.len == 0 or sim.players[0].attackTicks <= 0 or sim.players[0].attackResolved:
     return
 
   let player = sim.players[0]
   let hit = sim.attackRect(player)
   var survivors: seq[Mob] = @[]
   for mob in sim.mobs.mitems:
+    let wasHit = rectsOverlap(
+      hit.x, hit.y, hit.w, hit.h,
+      mob.x, mob.y, mob.sprite.width, mob.sprite.height
+    )
     if rectsOverlap(
       hit.x, hit.y, hit.w, hit.h,
       mob.x, mob.y, mob.sprite.width, mob.sprite.height
@@ -514,8 +538,35 @@ proc applyAttack(sim: var SimServer) =
 
     if mob.hp > 0:
       survivors.add(mob)
+    elif wasHit:
+      let roll = sim.rng.rand(99)
+      if roll < 10:
+        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart))
+      elif roll < 60:
+        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin))
   sim.mobs = survivors
-  sim.attackResolved = true
+  sim.players[0].attackResolved = true
+
+proc collectPickups(sim: var SimServer) =
+  if sim.players.len == 0:
+    return
+
+  let player = sim.players[0]
+  var remaining: seq[Pickup] = @[]
+  for pickup in sim.pickups:
+    if rectsOverlap(
+      pickup.x, pickup.y, TileSize, TileSize,
+      player.x, player.y, player.sprite.width, player.sprite.height
+    ):
+      case pickup.kind
+      of PickupCoin:
+        inc sim.players[0].coins
+      of PickupHeart:
+        if sim.players[0].lives < MaxPlayerLives:
+          inc sim.players[0].lives
+      continue
+    remaining.add(pickup)
+  sim.pickups = remaining
 
 proc updateMobs*(sim: var SimServer) =
   if sim.players.len == 0:
@@ -549,13 +600,13 @@ proc updateMobs*(sim: var SimServer) =
       sim.moveActor(actor, lunge.dx, lunge.dy)
       mob.x = actor.x
       mob.y = actor.y
-      if sim.playerInvulnTicks == 0 and rectsOverlap(
+      if player.invulnTicks == 0 and rectsOverlap(
         mob.x, mob.y, mob.sprite.width, mob.sprite.height,
         player.x, player.y, player.sprite.width, player.sprite.height
       ):
-        if sim.playerLives > 0:
-          dec sim.playerLives
-        sim.playerInvulnTicks = 30
+        if sim.players[0].lives > 0:
+          dec sim.players[0].lives
+        sim.players[0].invulnTicks = 30
       mob.attackPhase = 0
       mob.attackCooldown = 45 + sim.rng.rand(30)
       continue
@@ -647,10 +698,18 @@ proc renderHud(sim: var SimServer) =
   for i in 0 ..< MaxPlayerLives:
     let x = i * sim.heartSprite.width
     let y = 0
-    if i < sim.playerLives:
+    if i < sim.players[0].lives:
       sim.blitSprite(sim.heartSprite, x, y, 0, 0)
     else:
       sim.blitSprite(sim.emptyHeartSprite, x, y, 0, 0)
+
+  let
+    coins = min(sim.players[0].coins, 99)
+    hudWidth = sim.coinSprite.width * 3
+    hudX = ScreenWidth - hudWidth
+  sim.blitSprite(sim.coinSprite, hudX, 0, 0, 0)
+  sim.blitSprite(sim.digitSprites[coins div 10], hudX + sim.coinSprite.width, 0, 0, 0)
+  sim.blitSprite(sim.digitSprites[coins mod 10], hudX + sim.coinSprite.width * 2, 0, 0, 0)
 
 proc packFramebuffer(sim: var SimServer) =
   for i in 0 ..< sim.packedFrame.len:
@@ -669,10 +728,16 @@ proc buildFramePacket*(sim: var SimServer): seq[uint8] =
     cameraY = worldClampPixel(player.y + player.sprite.height div 2 - ScreenHeight div 2, WorldHeightPixels - ScreenHeight)
 
   sim.renderTerrain(cameraX, cameraY)
+  for pickup in sim.pickups:
+    case pickup.kind
+    of PickupCoin:
+      sim.blitSprite(sim.coinSprite, pickup.x, pickup.y, cameraX, cameraY)
+    of PickupHeart:
+      sim.blitSprite(sim.heartSprite, pickup.x, pickup.y, cameraX, cameraY)
   for mob in sim.mobs:
     sim.blitSprite(mob.sprite, mob.x, mob.y, cameraX, cameraY)
   sim.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY)
-  if sim.attackTicks > 0:
+  if sim.players[0].attackTicks > 0:
     let hit = sim.attackRect(player)
     sim.blitSprite(sim.swooshSprite, hit.x, hit.y, cameraX, cameraY, sim.facing)
   sim.renderHud()
@@ -681,13 +746,14 @@ proc buildFramePacket*(sim: var SimServer): seq[uint8] =
 
 proc step*(sim: var SimServer, input: InputState) =
   inc sim.tickCount
-  if sim.playerInvulnTicks > 0:
-    dec sim.playerInvulnTicks
+  if sim.players.len > 0 and sim.players[0].invulnTicks > 0:
+    dec sim.players[0].invulnTicks
   sim.applyInput(input)
+  sim.collectPickups()
   sim.applyAttack()
   sim.updateMobs()
   sim.respawnMobs()
-  if sim.attackTicks > 0:
-    dec sim.attackTicks
-    if sim.attackTicks == 0:
-      sim.attackResolved = false
+  if sim.players.len > 0 and sim.players[0].attackTicks > 0:
+    dec sim.players[0].attackTicks
+    if sim.players[0].attackTicks == 0:
+      sim.players[0].attackResolved = false

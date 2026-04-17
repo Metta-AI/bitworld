@@ -7,23 +7,26 @@ const
   ShellPath = "data/atlas/shell.png"
 
   ShellWidth* = 293
-  ShellHeight* = 453
+  ShellHeight* = 478
 
   ScreenX = 45
-  ScreenY = 42
+  ScreenY = 67
   ScreenW = 200
   ScreenH = 200
 
+  TopButtonY = 17
+  TopButtonXs = [52, 102, 152, 202]
+
   DpadBaseX = 28
-  DpadBaseY = 290
+  DpadBaseY = 315
   AButtonBaseX = 210
-  AButtonBaseY = 298
+  AButtonBaseY = 323
   BButtonBaseX = 171
-  BButtonBaseY = 321
+  BButtonBaseY = 346
   PauseBaseX = 103
-  PauseBaseY = 386
+  PauseBaseY = 411
   SelectBaseX = 148
-  SelectBaseY = 386
+  SelectBaseY = 411
 
 type
   ShellVisualState = object
@@ -32,6 +35,7 @@ type
     aPressed: bool
     bPressed: bool
     selectPressed: bool
+    topPressed: array[4, bool]
 
   ClientApp* = ref object
     window*: Window
@@ -104,6 +108,10 @@ proc captureInput*(client: ClientApp): InputState =
   client.shell = ShellVisualState()
 
   if mouseDown:
+    for i, buttonX in TopButtonXs:
+      if pointInRect(mouse.x.int, mouse.y.int, buttonX, TopButtonY, 39, 20):
+        client.shell.topPressed[i] = true
+
     if pointInRect(mouse.x.int, mouse.y.int, DpadBaseX, DpadBaseY, 78, 78):
       let
         localX = mouse.x.int - DpadBaseX
@@ -122,8 +130,6 @@ proc captureInput*(client: ClientApp): InputState =
           result.down = true
 
     if pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20):
-      result.select = true
-    if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40):
       result.select = true
 
   if mousePressed and pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40):
@@ -149,17 +155,22 @@ proc captureInput*(client: ClientApp): InputState =
     result.up = result.up or pad.button(GamepadUp) or ly >= deadZone
     result.down = result.down or pad.button(GamepadDown) or ly <= -deadZone
     result.attack = result.attack or pad.buttonPressed(GamepadA)
-    result.select = result.select or pad.button(GamepadB) or pad.button(GamepadStart) or pad.button(GamepadSelect)
+    result.select = result.select or pad.buttonPressed(GamepadStart)
     if pad.button(GamepadLeft) or lx <= -deadZone: client.shell.dpadOffsetX = -1
     if pad.button(GamepadRight) or lx >= deadZone: client.shell.dpadOffsetX = 1
     if pad.button(GamepadUp) or ly >= deadZone: client.shell.dpadOffsetY = -1
     if pad.button(GamepadDown) or ly <= -deadZone: client.shell.dpadOffsetY = 1
     client.shell.aPressed = client.shell.aPressed or pad.button(GamepadA)
     client.shell.bPressed = client.shell.bPressed or pad.button(GamepadB)
-    client.shell.selectPressed = client.shell.selectPressed or pad.button(GamepadSelect)
+    client.shell.selectPressed = client.shell.selectPressed or pad.button(GamepadStart)
 
 proc drawShellUi(client: ClientApp) =
   client.silky.drawImage("shell", vec2(0, 0))
+  for i, buttonX in TopButtonXs:
+    client.silky.drawImage(
+      "button",
+      vec2(buttonX.float32, TopButtonY.float32 + (if client.shell.topPressed[i]: 1'f else: 0'f))
+    )
   client.silky.drawImage(
     "dpad",
     vec2(DpadBaseX.float32 + client.shell.dpadOffsetX, DpadBaseY.float32 + client.shell.dpadOffsetY)
