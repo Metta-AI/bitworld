@@ -1,6 +1,6 @@
 import netty, pixie
 import protocol, server
-import std/[monotimes, os, random, tables, times]
+import std/[monotimes, os, parseopt, random, strutils, tables, times]
 
 const
   WorldWidthTiles = 96
@@ -711,4 +711,15 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
     runFrameLimiter(lastTick)
 
 when isMainModule:
-  runServerLoop()
+  var
+    address = DefaultHost
+    port = DefaultPort
+  for kind, key, val in getopt():
+    case kind
+    of cmdLongOption:
+      case key
+      of "address": address = val
+      of "port": port = parseInt(val)
+      else: discard
+    else: discard
+  runServerLoop(address, port)

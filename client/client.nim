@@ -1,5 +1,5 @@
 import netty, paddy, pixie, protocol, silky, windy
-import std/[math, monotimes, os, times]
+import std/[math, monotimes, os, parseopt, strutils, times]
 
 const
   AtlasPath = "dist/atlas.png"
@@ -289,4 +289,15 @@ proc runClientLoop*(host = DefaultHost, port = DefaultPort) =
     runFrameLimiter(lastTick)
 
 when isMainModule:
-  runClientLoop()
+  var
+    address = DefaultHost
+    port = DefaultPort
+  for kind, key, val in getopt():
+    case kind
+    of cmdLongOption:
+      case key
+      of "address": address = val
+      of "port": port = parseInt(val)
+      else: discard
+    else: discard
+  runClientLoop(address, port)
