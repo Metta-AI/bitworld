@@ -74,6 +74,7 @@ type
     emptyHeartSprite*: Sprite
     coinSprite*: Sprite
     digitSprites*: array[10, Sprite]
+    letterSprites*: seq[Sprite]
     packedFrame*: seq[uint8]
     frameIndices*: seq[uint8]
     rng*: Rand
@@ -144,6 +145,23 @@ proc loadDigitSprites(path: string): array[10, Sprite] =
 
   for i in 0 ..< 10:
     result[i] = digits[i]
+
+proc loadLetterSprites(path: string): seq[Sprite] =
+  if not fileExists(path):
+    raise newException(IOError, "Missing letter sprite strip: " & path)
+  let image = readImage(path)
+  sliceSpriteStrip(image, 6, 6, image.width div 6)
+
+proc letterIndex(ch: char): int =
+  if ch >= 'A' and ch <= 'Z': return ord(ch) - ord('A')
+  if ch >= 'a' and ch <= 'z': return ord(ch) - ord('a')
+  case ch
+  of ',': return 26
+  of '.': return 27
+  of '?': return 28
+  of '!': return 29
+  of '\'': return 30
+  else: return -1
 
 proc readRequiredSprite(path: string): Sprite =
   if not fileExists(path):
@@ -297,6 +315,7 @@ proc initSimServer*(): SimServer =
   result.emptyHeartSprite = readRequiredSprite("data/empty_heart.png")
   result.coinSprite = readRequiredSprite("data/coin.png")
   result.digitSprites = loadDigitSprites("data/numbers.png")
+  result.letterSprites = loadLetterSprites("data/letters.png")
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2
@@ -356,6 +375,11 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     return
 
   template player: untyped = sim.players[playerIndex]
+
+  if player.lives <= 0:
+    player.velX = 0
+    player.velY = 0
+    return
 
   var inputX = 0
   var inputY = 0
@@ -492,6 +516,8 @@ proc collectPickups(sim: var SimServer) =
     var collected = false
     for playerIndex in 0 ..< sim.players.len:
       let player = sim.players[playerIndex]
+      if player.lives <= 0:
+        continue
       if rectsOverlap(
         pickup.x, pickup.y, TileSize, TileSize,
         player.x, player.y, player.sprite.width, player.sprite.height
@@ -524,14 +550,20 @@ proc updateMobs*(sim: var SimServer) =
     let
       centerX = mob.x + mob.sprite.width div 2
       centerY = mob.y + mob.sprite.height div 2
+    var hasTarget = false
     for playerIndex in 0 ..< sim.players.len:
       let player = sim.players[playerIndex]
+      if player.lives <= 0:
+        continue
       let playerCenterX = player.x + player.sprite.width div 2
       let playerCenterY = player.y + player.sprite.height div 2
       let distance = distanceSquared(centerX, centerY, playerCenterX, playerCenterY)
       if distance < bestDistance:
         bestDistance = distance
         targetPlayerIndex = playerIndex
+        hasTarget = true
+    if not hasTarget:
+      continue
     let player = sim.players[targetPlayerIndex]
 
     if mob.attackPhase == 0:
@@ -556,12 +588,13 @@ proc updateMobs*(sim: var SimServer) =
       mob.y = actor.y
       for playerIndex in 0 ..< sim.players.len:
         let player = sim.players[playerIndex]
+        if player.lives <= 0:
+          continue
         if player.invulnTicks == 0 and rectsOverlap(
           mob.x, mob.y, mob.sprite.width, mob.sprite.height,
           player.x, player.y, player.sprite.width, player.sprite.height
         ):
-          if sim.players[playerIndex].lives > 0:
-            dec sim.players[playerIndex].lives
+          dec sim.players[playerIndex].lives
           sim.players[playerIndex].invulnTicks = 30
       mob.attackPhase = 0
       mob.attackCooldown = 45 + sim.rng.rand(30)
@@ -632,6 +665,17 @@ proc blitSprite(sim: var SimServer, sprite: Sprite, worldX, worldY, cameraX, cam
           dy = x
         sim.putPixel(screenX + dx, screenY + dy, colorIndex)
 
+proc blitText(sim: var SimServer, text: string, screenX, screenY: int) =
+  var offsetX = 0
+  for ch in text:
+    if ch == ' ':
+      offsetX += 6
+      continue
+    let idx = letterIndex(ch)
+    if idx >= 0 and idx < sim.letterSprites.len:
+      sim.blitSprite(sim.letterSprites[idx], screenX + offsetX, screenY, 0, 0)
+    offsetX += 6
+
 proc renderTerrain(sim: var SimServer, cameraX, cameraY: int) =
   let
     startTx = max(0, cameraX div TileSize)
@@ -676,6 +720,13 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
     return sim.packedFrame
 
   let player = sim.players[playerIndex]
+
+  if player.lives <= 0:
+    sim.blitText("GAME", 20, 26)
+    sim.blitText("OVER", 20, 34)
+    sim.packFramebuffer()
+    return sim.packedFrame
+
   let
     cameraX = worldClampPixel(player.x + player.sprite.width div 2 - ScreenWidth div 2, WorldWidthPixels - ScreenWidth)
     cameraY = worldClampPixel(player.y + player.sprite.height div 2 - ScreenHeight div 2, WorldHeightPixels - ScreenHeight)
@@ -690,9 +741,10 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
   for mob in sim.mobs:
     sim.blitSprite(mob.sprite, mob.x, mob.y, cameraX, cameraY)
   for otherPlayer in sim.players:
-    sim.blitSprite(otherPlayer.sprite, otherPlayer.x, otherPlayer.y, cameraX, cameraY)
+    if otherPlayer.lives > 0:
+      sim.blitSprite(otherPlayer.sprite, otherPlayer.x, otherPlayer.y, cameraX, cameraY)
   for otherPlayer in sim.players:
-    if otherPlayer.attackTicks > 0:
+    if otherPlayer.lives > 0 and otherPlayer.attackTicks > 0:
       let hit = sim.attackRect(otherPlayer)
       sim.blitSprite(sim.swooshSprite, hit.x, hit.y, cameraX, cameraY, otherPlayer.facing)
   sim.renderHud(playerIndex)

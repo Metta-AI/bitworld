@@ -94,6 +94,9 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
     loadExtensions()
   initGamepads()
   result.silky = newSilky(result.window, AtlasPath)
+  if result.window.contentScale > 1.0:
+    result.silky.uiScale = 2.0
+    result.window.size = shellSize * 2
   result.unpacked = @[]
   result.latestFrame = newSeq[uint8](ProtocolBytes)
   result.reactor = newReactor()
@@ -108,7 +111,7 @@ proc sampleColor(index: uint8): ColorRGBX =
 proc captureInputMask*(client: ClientApp): uint8 =
   let down = client.window.buttonDown
   let pressed = client.window.buttonPressed
-  let mouse = client.window.mousePos
+  let mouse = client.silky.mousePos
   let mouseDown = down[MouseLeft]
   let mousePressed = pressed[MouseLeft]
   var input: InputState
