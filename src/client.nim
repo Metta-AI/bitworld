@@ -1,5 +1,4 @@
-import paddy, pixie, silky, windy
-import server
+import netty, paddy, pixie, protocol, silky, windy
 import std/[math, monotimes, os, times]
 
 const
@@ -27,6 +26,7 @@ const
   PauseBaseY = 411
   SelectBaseX = 148
   SelectBaseY = 411
+  TargetFps = 24.0
 
 type
   ShellVisualState = object
@@ -41,7 +41,12 @@ type
     window*: Window
     silky*: Silky
     unpacked*: seq[uint8]
+    latestFrame: seq[uint8]
     shell*: ShellVisualState
+    reactor: Reactor
+    serverConn: Connection
+    lastSentMask: uint8
+    selectedGamepadIndex: int
 
 proc pointInRect(x, y, rx, ry, rw, rh: int): bool =
   x >= rx and y >= ry and x < rx + rw and y < ry + rh
@@ -64,7 +69,7 @@ proc unpack4bpp*(packed: openArray[uint8], unpacked: var seq[uint8]) =
     unpacked[i * 2] = byte and 0x0F
     unpacked[i * 2 + 1] = (byte shr 4) and 0x0F
 
-proc initClient*(): ClientApp =
+proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
   if not dirExists("dist"):
     createDir("dist")
   let builder = newAtlasBuilder(1024, 2)
@@ -73,6 +78,8 @@ proc initClient*(): ClientApp =
   if fileExists("data/atlas/nes-pixel.ttf"):
     builder.addFont("data/atlas/nes-pixel.ttf", "Default", 16.0)
   builder.write(AtlasPath)
+
+  loadPalette()
 
   let shellSize = detectShellSize()
 
@@ -88,29 +95,38 @@ proc initClient*(): ClientApp =
   initGamepads()
   result.silky = newSilky(result.window, AtlasPath)
   result.unpacked = @[]
+  result.latestFrame = newSeq[uint8](ProtocolBytes)
+  result.reactor = newReactor()
+  result.serverConn = result.reactor.connect(host, port)
+  result.lastSentMask = 0xFF'u8
+  result.selectedGamepadIndex = 0
 
 proc sampleColor(index: uint8): ColorRGBX =
   let swatch = Palette[index.int]
   rgbx(swatch.r, swatch.g, swatch.b, swatch.a)
 
-proc captureInput*(client: ClientApp): InputState =
+proc captureInputMask*(client: ClientApp): uint8 =
   let down = client.window.buttonDown
   let pressed = client.window.buttonPressed
   let mouse = client.window.mousePos
   let mouseDown = down[MouseLeft]
   let mousePressed = pressed[MouseLeft]
-  result.up = down[KeyUp] or down[KeyW]
-  result.down = down[KeyDown] or down[KeyS]
-  result.left = down[KeyLeft] or down[KeyA]
-  result.right = down[KeyRight] or down[KeyD]
-  result.select = down[KeySpace] or down[KeyEnter] or down[KeyX] or down[KeyK]
-  result.attack = pressed[KeyZ] or pressed[KeyJ]
+  var input: InputState
   client.shell = ShellVisualState()
+
+  input.up = down[KeyUp] or down[KeyW]
+  input.down = down[KeyDown] or down[KeyS]
+  input.left = down[KeyLeft] or down[KeyA]
+  input.right = down[KeyRight] or down[KeyD]
+  input.select = down[KeySpace] or down[KeyEnter] or down[KeyX] or down[KeyK]
+  input.attack = down[KeyZ] or down[KeyJ]
 
   if mouseDown:
     for i, buttonX in TopButtonXs:
       if pointInRect(mouse.x.int, mouse.y.int, buttonX, TopButtonY, 39, 20):
         client.shell.topPressed[i] = true
+        if mousePressed:
+          client.selectedGamepadIndex = i
 
     if pointInRect(mouse.x.int, mouse.y.int, DpadBaseX, DpadBaseY, 78, 78):
       let
@@ -120,49 +136,55 @@ proc captureInput*(client: ClientApp): InputState =
         dy = localY - 39
       if abs(dx) > abs(dy):
         if dx < -6:
-          result.left = true
+          input.left = true
         elif dx > 6:
-          result.right = true
+          input.right = true
       else:
         if dy < -6:
-          result.up = true
+          input.up = true
         elif dy > 6:
-          result.down = true
+          input.down = true
 
+    if pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40):
+      input.attack = true
+    if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40):
+      input.select = true
     if pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20):
-      result.select = true
+      input.select = true
 
-  if mousePressed and pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40):
-    result.attack = true
-
-  if result.left: client.shell.dpadOffsetX = -1
-  if result.right: client.shell.dpadOffsetX = 1
-  if result.up: client.shell.dpadOffsetY = -1
-  if result.down: client.shell.dpadOffsetY = 1
-  client.shell.aPressed = down[KeyZ] or down[KeyJ] or (mouseDown and pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40))
-  client.shell.bPressed = down[KeyX] or down[KeyK] or (mouseDown and pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40))
-  client.shell.selectPressed = result.select
+  let
+    bMouseHeld = mouseDown and pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40)
+    selectMouseHeld = mouseDown and pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20)
 
   let gamepads = pollGamepads()
-  if gamepads.len > 0:
-    let pad = gamepads[0]
+  if client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len:
+    let pad = gamepads[client.selectedGamepadIndex]
     let
       lx = pad.axis(GamepadLStickX)
       ly = pad.axis(GamepadLStickY)
       deadZone = 0.35'f
-    result.left = result.left or pad.button(GamepadLeft) or lx <= -deadZone
-    result.right = result.right or pad.button(GamepadRight) or lx >= deadZone
-    result.up = result.up or pad.button(GamepadUp) or ly >= deadZone
-    result.down = result.down or pad.button(GamepadDown) or ly <= -deadZone
-    result.attack = result.attack or pad.buttonPressed(GamepadA)
-    result.select = result.select or pad.buttonPressed(GamepadStart)
-    if pad.button(GamepadLeft) or lx <= -deadZone: client.shell.dpadOffsetX = -1
-    if pad.button(GamepadRight) or lx >= deadZone: client.shell.dpadOffsetX = 1
-    if pad.button(GamepadUp) or ly >= deadZone: client.shell.dpadOffsetY = -1
-    if pad.button(GamepadDown) or ly <= -deadZone: client.shell.dpadOffsetY = 1
-    client.shell.aPressed = client.shell.aPressed or pad.button(GamepadA)
-    client.shell.bPressed = client.shell.bPressed or pad.button(GamepadB)
-    client.shell.selectPressed = client.shell.selectPressed or pad.button(GamepadStart)
+    input.left = input.left or pad.button(GamepadLeft) or lx <= -deadZone
+    input.right = input.right or pad.button(GamepadRight) or lx >= deadZone
+    input.up = input.up or pad.button(GamepadUp) or ly >= deadZone
+    input.down = input.down or pad.button(GamepadDown) or ly <= -deadZone
+    input.attack = input.attack or pad.button(GamepadA)
+    input.select = input.select or pad.button(GamepadB) or pad.button(GamepadStart)
+
+  if input.left:
+    client.shell.dpadOffsetX = -1
+  if input.right:
+    client.shell.dpadOffsetX = 1
+  if input.up:
+    client.shell.dpadOffsetY = -1
+  if input.down:
+    client.shell.dpadOffsetY = 1
+
+  client.shell.aPressed = input.attack
+  client.shell.bPressed = bMouseHeld or down[KeyX] or down[KeyK] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadB))
+  client.shell.selectPressed = selectMouseHeld or down[KeySpace] or down[KeyEnter] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadStart))
+  for i in 0 ..< client.shell.topPressed.len:
+    client.shell.topPressed[i] = client.shell.topPressed[i] or i == client.selectedGamepadIndex
+  result = encodeInputMask(input)
 
 proc drawShellUi(client: ClientApp) =
   client.silky.drawImage("shell", vec2(0, 0))
@@ -189,8 +211,21 @@ proc drawShellUi(client: ClientApp) =
     vec2(SelectBaseX.float32, SelectBaseY.float32 + (if client.shell.selectPressed: 1'f else: 0'f))
   )
 
-proc drawFramebuffer*(client: ClientApp, packed: openArray[uint8]) =
-  unpack4bpp(packed, client.unpacked)
+proc applyFrameBlob(client: ClientApp, blob: string) =
+  if blob.len == ProtocolBytes:
+    blobToBytes(blob, client.latestFrame)
+
+proc tickNetwork(client: ClientApp, inputMask: uint8) =
+  if client.serverConn != nil and inputMask != client.lastSentMask:
+    client.reactor.send(client.serverConn, blobFromMask(inputMask))
+    client.lastSentMask = inputMask
+
+  client.reactor.tick()
+  for msg in client.reactor.messages:
+    client.applyFrameBlob(msg.data)
+
+proc drawFramebuffer*(client: ClientApp) =
+  unpack4bpp(client.latestFrame, client.unpacked)
 
   let
     frameSize = client.window.size
@@ -228,9 +263,27 @@ proc drawFramebuffer*(client: ClientApp, packed: openArray[uint8]) =
 proc windowOpen*(client: ClientApp): bool =
   not client.window.closeRequested
 
-proc runFrameLimiter*(targetFps: float, previousTick: var MonoTime) =
-  let frameDuration = initDuration(milliseconds = int(round(1000.0 / targetFps)))
+proc runFrameLimiter(previousTick: var MonoTime) =
+  let frameDuration = initDuration(milliseconds = int(round(1000.0 / TargetFps)))
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
+
+proc runClientLoop*(host = DefaultHost, port = DefaultPort) =
+  var
+    client = initClient(host, port)
+    lastTick = getMonoTime()
+
+  while client.windowOpen:
+    pollEvents()
+    if client.window.buttonPressed[KeyEscape]:
+      client.window.closeRequested = true
+
+    let inputMask = client.captureInputMask()
+    client.tickNetwork(inputMask)
+    client.drawFramebuffer()
+    runFrameLimiter(lastTick)
+
+when isMainModule:
+  runClientLoop()
