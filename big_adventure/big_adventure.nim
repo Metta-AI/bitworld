@@ -1,8 +1,9 @@
-import netty, pixie
+import mummy, pixie
 import protocol, server
-import std/[monotimes, os, parseopt, random, strutils, tables, times]
+import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
+  DataDir = "data"
   WorldWidthTiles = 96
   WorldHeightTiles = 96
   WorldWidthPixels = WorldWidthTiles * TileSize
@@ -18,6 +19,7 @@ const
   StopThreshold = 12
   MaxPlayerLives* = 5
   TargetFps = 24.0
+  WebSocketPath = "/ws"
 
 type
   Actor* = object
@@ -70,12 +72,17 @@ type
     tickCount*: int
     mobSpawnCooldown*: int
 
-  HostedServer* = object
-    reactor*: Reactor
-    sim*: SimServer
-    inputMasks: Table[uint32, uint8]
-    lastAppliedMasks: Table[uint32, uint8]
-    playerIndices: Table[uint32, int]
+  WebSocketAppState = object
+    lock: Lock
+    inputMasks: Table[WebSocket, uint8]
+    lastAppliedMasks: Table[WebSocket, uint8]
+    playerIndices: Table[WebSocket, int]
+    closedSockets: seq[WebSocket]
+
+  ServerThreadArgs = object
+    server: ptr Server
+    address: string
+    port: int
 
 proc tileIndex(tx, ty: int): int =
   ty * WorldWidthTiles + tx
@@ -220,16 +227,16 @@ proc initSimServer*(): SimServer =
   result.rng = initRand(0xB1770)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
-  loadPalette()
-  result.terrainSprite = readRequiredSprite("data/wall.png")
-  result.playerSprite = readRequiredSprite("data/player.png")
-  result.mobSprite = readRequiredSprite("data/snake.png")
-  result.swooshSprite = readRequiredSprite("data/swoosh.png")
-  result.heartSprite = readRequiredSprite("data/heart.png")
-  result.emptyHeartSprite = readRequiredSprite("data/empty_heart.png")
-  result.coinSprite = readRequiredSprite("data/coin.png")
-  result.digitSprites = loadDigitSprites("data/numbers.png")
-  result.letterSprites = loadLetterSprites("data/letters.png")
+  loadPalette(DataDir / "pallete.png")
+  result.terrainSprite = readRequiredSprite(DataDir / "wall.png")
+  result.playerSprite = readRequiredSprite(DataDir / "player.png")
+  result.mobSprite = readRequiredSprite(DataDir / "snake.png")
+  result.swooshSprite = readRequiredSprite(DataDir / "swoosh.png")
+  result.heartSprite = readRequiredSprite(DataDir / "heart.png")
+  result.emptyHeartSprite = readRequiredSprite(DataDir / "empty_heart.png")
+  result.coinSprite = readRequiredSprite(DataDir / "coin.png")
+  result.digitSprites = loadDigitSprites(DataDir / "numbers.png")
+  result.letterSprites = loadLetterSprites(DataDir / "letters.png")
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2
@@ -461,10 +468,10 @@ proc updateMobs*(sim: var SimServer) =
     var
       targetPlayerIndex = 0
       bestDistance = high(int)
+      hasTarget = false
     let
       centerX = mob.x + mob.sprite.width div 2
       centerY = mob.y + mob.sprite.height div 2
-    var hasTarget = false
     for playerIndex in 0 ..< sim.players.len:
       let player = sim.players[playerIndex]
       if player.lives <= 0:
@@ -633,66 +640,68 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
       if sim.players[playerIndex].attackTicks == 0:
         sim.players[playerIndex].attackResolved = false
 
-proc initHostedServer*(host = DefaultHost, port = DefaultPort): HostedServer =
-  result.reactor = newReactor(host, port)
-  result.sim = initSimServer()
-  result.inputMasks = initTable[uint32, uint8]()
-  result.lastAppliedMasks = initTable[uint32, uint8]()
-  result.playerIndices = initTable[uint32, int]()
+var appState: WebSocketAppState
+
+proc initAppState() =
+  initLock(appState.lock)
+  appState.inputMasks = initTable[WebSocket, uint8]()
+  appState.lastAppliedMasks = initTable[WebSocket, uint8]()
+  appState.playerIndices = initTable[WebSocket, int]()
+  appState.closedSockets = @[]
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
   result.attack = (currentMask and ButtonAttack) != 0 and (previousMask and ButtonAttack) == 0
 
-proc removePlayer(hosted: var HostedServer, connId: uint32) =
-  if not hosted.playerIndices.hasKey(connId):
+proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  if websocket notin appState.playerIndices:
     return
 
-  let removedIndex = hosted.playerIndices[connId]
-  hosted.playerIndices.del(connId)
-  hosted.inputMasks.del(connId)
-  hosted.lastAppliedMasks.del(connId)
+  let removedIndex = appState.playerIndices[websocket]
+  appState.playerIndices.del(websocket)
+  appState.inputMasks.del(websocket)
+  appState.lastAppliedMasks.del(websocket)
 
-  if removedIndex >= 0 and removedIndex < hosted.sim.players.len:
-    hosted.sim.players.delete(removedIndex)
-    for key, value in hosted.playerIndices.mpairs:
+  if removedIndex >= 0 and removedIndex < sim.players.len:
+    sim.players.delete(removedIndex)
+    for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
 
-proc tick*(hosted: var HostedServer) =
-  hosted.reactor.tick()
+proc httpHandler(request: Request) =
+  if request.uri == WebSocketPath and request.httpMethod == "GET":
+    discard request.upgradeToWebSocket()
+  else:
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain"
+    request.respond(200, headers, "Bit World WebSocket server")
 
-  for conn in hosted.reactor.deadConnections:
-    hosted.removePlayer(conn.id)
+proc websocketHandler(
+  websocket: WebSocket,
+  event: WebSocketEvent,
+  message: Message
+) =
+  case event
+  of OpenEvent:
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerIndices[websocket] = 0x7fffffff
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
+  of MessageEvent:
+    if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.inputMasks[websocket] = blobToMask(message.data)
+  of ErrorEvent:
+    discard
+  of CloseEvent:
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.closedSockets.add(websocket)
 
-  for conn in hosted.reactor.newConnections:
-    hosted.inputMasks[conn.id] = 0
-    hosted.lastAppliedMasks[conn.id] = 0
-    hosted.playerIndices[conn.id] = hosted.sim.addPlayer()
-
-  for msg in hosted.reactor.messages:
-    if msg.data.len == InputPacketBytes:
-      hosted.inputMasks[msg.conn.id] = blobToMask(msg.data)
-
-  var inputs = newSeq[InputState](hosted.sim.players.len)
-  for conn in hosted.reactor.connections:
-    if not hosted.playerIndices.hasKey(conn.id):
-      continue
-    let playerIndex = hosted.playerIndices[conn.id]
-    if playerIndex < 0 or playerIndex >= inputs.len:
-      continue
-    let currentMask = hosted.inputMasks.getOrDefault(conn.id, 0)
-    let previousMask = hosted.lastAppliedMasks.getOrDefault(conn.id, 0)
-    inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
-    hosted.lastAppliedMasks[conn.id] = currentMask
-
-  hosted.sim.step(inputs)
-  for conn in hosted.reactor.connections:
-    if not hosted.playerIndices.hasKey(conn.id):
-      continue
-    let playerIndex = hosted.playerIndices[conn.id]
-    let frameBlob = blobFromBytes(hosted.sim.buildFramePacket(playerIndex))
-    hosted.reactor.send(conn, frameBlob)
+proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
+  args.server[].serve(Port(args.port), args.address)
 
 proc runFrameLimiter(previousTick: var MonoTime) =
   let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
@@ -702,12 +711,57 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   previousTick = getMonoTime()
 
 proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
+  initAppState()
+
+  let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
+
+  var serverThread: Thread[ServerThreadArgs]
+  var serverPtr = cast[ptr Server](unsafeAddr httpServer)
+  createThread(serverThread, serverThreadProc, ServerThreadArgs(server: serverPtr, address: host, port: port))
+  httpServer.waitUntilReady()
+
   var
-    hosted = initHostedServer(host, port)
+    sim = initSimServer()
     lastTick = getMonoTime()
 
   while true:
-    hosted.tick()
+    var
+      sockets: seq[WebSocket] = @[]
+      playerIndices: seq[int] = @[]
+      inputs: seq[InputState]
+
+    {.gcsafe.}:
+      withLock appState.lock:
+        for websocket in appState.closedSockets:
+          sim.removePlayer(websocket)
+        appState.closedSockets.setLen(0)
+
+        for websocket in appState.playerIndices.keys:
+          if appState.playerIndices[websocket] == 0x7fffffff:
+            appState.playerIndices[websocket] = sim.addPlayer()
+
+        inputs = newSeq[InputState](sim.players.len)
+        for websocket, playerIndex in appState.playerIndices.pairs:
+          if playerIndex < 0 or playerIndex >= inputs.len:
+            continue
+          let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
+          let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
+          inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
+          appState.lastAppliedMasks[websocket] = currentMask
+          sockets.add(websocket)
+          playerIndices.add(playerIndex)
+
+    sim.step(inputs)
+
+    for i in 0 ..< sockets.len:
+      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+      try:
+        sockets[i].send(frameBlob, BinaryMessage)
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            sim.removePlayer(sockets[i])
+
     runFrameLimiter(lastTick)
 
 when isMainModule:

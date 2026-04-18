@@ -1,9 +1,10 @@
-import netty, paddy, pixie, protocol, silky, windy
-import std/[math, monotimes, os, parseopt, strutils, times]
+import paddy, pixie, protocol, silky, whisky, windy
+import std/[math, monotimes, options, os, parseopt, strutils, times, locks]
 
 const
   AtlasPath = "dist/atlas.png"
   ShellPath = "data/atlas/shell.png"
+  WebSocketPath = "/ws"
 
   ShellWidth* = 293
   ShellHeight* = 478
@@ -37,16 +38,26 @@ type
     selectPressed: bool
     topPressed: array[4, bool]
 
+  NetworkShared = object
+    lock: Lock
+    desiredMask: uint8
+    latestFrame: seq[uint8]
+    connected: bool
+    stop: bool
+    errorMessage: string
+
+  NetworkThreadArgs = object
+    shared: ptr NetworkShared
+    url: string
+
   ClientApp* = ref object
     window*: Window
     silky*: Silky
     unpacked*: seq[uint8]
-    latestFrame: seq[uint8]
     shell*: ShellVisualState
-    reactor: Reactor
-    serverConn: Connection
-    lastSentMask: uint8
     selectedGamepadIndex: int
+    network: NetworkShared
+    networkThread: Thread[NetworkThreadArgs]
 
 proc pointInRect(x, y, rx, ry, rw, rh: int): bool =
   x >= rx and y >= ry and x < rx + rw and y < ry + rh
@@ -69,6 +80,62 @@ proc unpack4bpp*(packed: openArray[uint8], unpacked: var seq[uint8]) =
     unpacked[i * 2] = byte and 0x0F
     unpacked[i * 2 + 1] = (byte shr 4) and 0x0F
 
+proc sampleColor(index: uint8): ColorRGBX =
+  let swatch = Palette[index.int]
+  rgbx(swatch.r, swatch.g, swatch.b, swatch.a)
+
+proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
+  while true:
+    {.gcsafe.}:
+      withLock args.shared[].lock:
+        if args.shared[].stop:
+          return
+
+    try:
+      let ws = newWebSocket(args.url)
+      var lastSentMask = 0xFF'u8
+      {.gcsafe.}:
+        withLock args.shared[].lock:
+          args.shared[].connected = true
+          args.shared[].errorMessage = ""
+
+      while true:
+        var
+          desiredMask: uint8
+          shouldStop: bool
+        {.gcsafe.}:
+          withLock args.shared[].lock:
+            desiredMask = args.shared[].desiredMask
+            shouldStop = args.shared[].stop
+        if shouldStop:
+          ws.close()
+          return
+
+        if desiredMask != lastSentMask:
+          ws.send(blobFromMask(desiredMask), BinaryMessage)
+          lastSentMask = desiredMask
+
+        let message = ws.receiveMessage(10)
+        if message.isSome:
+          case message.get.kind
+          of BinaryMessage:
+            if message.get.data.len == ProtocolBytes:
+              {.gcsafe.}:
+                withLock args.shared[].lock:
+                  blobToBytes(message.get.data, args.shared[].latestFrame)
+          of Ping:
+            ws.send(message.get.data, Pong)
+          of TextMessage, Pong:
+            discard
+    except Exception as e:
+      {.gcsafe.}:
+        withLock args.shared[].lock:
+          args.shared[].connected = false
+          args.shared[].errorMessage = e.msg
+          if args.shared[].stop:
+            return
+      sleep(250)
+
 proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
   if not dirExists("dist"):
     createDir("dist")
@@ -79,7 +146,7 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
     builder.addFont("data/atlas/nes-pixel.ttf", "Default", 16.0)
   builder.write(AtlasPath)
 
-  loadPalette()
+  loadPalette("data/pallete.png")
 
   let shellSize = detectShellSize()
 
@@ -98,15 +165,19 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
     result.silky.uiScale = 2.0
     result.window.size = shellSize * 2
   result.unpacked = @[]
-  result.latestFrame = newSeq[uint8](ProtocolBytes)
-  result.reactor = newReactor()
-  result.serverConn = result.reactor.connect(host, port)
-  result.lastSentMask = 0xFF'u8
   result.selectedGamepadIndex = 0
 
-proc sampleColor(index: uint8): ColorRGBX =
-  let swatch = Palette[index.int]
-  rgbx(swatch.r, swatch.g, swatch.b, swatch.a)
+  initLock(result.network.lock)
+  result.network.latestFrame = newSeq[uint8](ProtocolBytes)
+  let url = "ws://" & host & ":" & $port & WebSocketPath
+  createThread(result.networkThread, networkThreadProc, NetworkThreadArgs(shared: result.network.addr, url: url))
+
+proc shutdownClient(client: ClientApp) =
+  {.gcsafe.}:
+    withLock client.network.lock:
+      client.network.stop = true
+  joinThread(client.networkThread)
+  deinitLock(client.network.lock)
 
 proc captureInputMask*(client: ClientApp): uint8 =
   let down = client.window.buttonDown
@@ -214,21 +285,18 @@ proc drawShellUi(client: ClientApp) =
     vec2(SelectBaseX.float32, SelectBaseY.float32 + (if client.shell.selectPressed: 1'f else: 0'f))
   )
 
-proc applyFrameBlob(client: ClientApp, blob: string) =
-  if blob.len == ProtocolBytes:
-    blobToBytes(blob, client.latestFrame)
-
 proc tickNetwork(client: ClientApp, inputMask: uint8) =
-  if client.serverConn != nil and inputMask != client.lastSentMask:
-    client.reactor.send(client.serverConn, blobFromMask(inputMask))
-    client.lastSentMask = inputMask
-
-  client.reactor.tick()
-  for msg in client.reactor.messages:
-    client.applyFrameBlob(msg.data)
+  {.gcsafe.}:
+    withLock client.network.lock:
+      client.network.desiredMask = inputMask
 
 proc drawFramebuffer*(client: ClientApp) =
-  unpack4bpp(client.latestFrame, client.unpacked)
+  var packed = newSeq[uint8](ProtocolBytes)
+  {.gcsafe.}:
+    withLock client.network.lock:
+      if client.network.latestFrame.len == ProtocolBytes:
+        packed = client.network.latestFrame
+  unpack4bpp(packed, client.unpacked)
 
   let
     frameSize = client.window.size
@@ -287,6 +355,8 @@ proc runClientLoop*(host = DefaultHost, port = DefaultPort) =
     client.tickNetwork(inputMask)
     client.drawFramebuffer()
     runFrameLimiter(lastTick)
+
+  client.shutdownClient()
 
 when isMainModule:
   var
