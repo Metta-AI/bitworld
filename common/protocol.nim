@@ -7,7 +7,7 @@ const
   TileSize* = 6
   ProtocolBytes* = (ScreenWidth * ScreenHeight) div 2
   InputPacketBytes* = 1
-  DefaultHost* = "127.0.0.1"
+  DefaultHost* = "localhost"
   DefaultPort* = 8080
 
   ButtonUp* = 1'u8 shl 0
