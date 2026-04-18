@@ -1,30 +1,32 @@
 import mummy, pixie
-import protocol, server
+import protocol except TileSize
+import server
 import std/[locks, monotimes, os, parseopt, strutils, tables, times]
 
 const
+  FancyTileSize = 12
   WorldWidthTiles = 18
   WorldHeightTiles = 18
-  WorldWidthPixels = WorldWidthTiles * TileSize
-  WorldHeightPixels = WorldHeightTiles * TileSize
+  WorldWidthPixels = WorldWidthTiles * FancyTileSize
+  WorldHeightPixels = WorldHeightTiles * FancyTileSize
   MotionScale = 256
-  Accel = 68
+  Accel = 136
   FrictionNum = 200
   FrictionDen = 256
-  MaxSpeed = 640
-  StopThreshold = 12
-  MinPlayerSpawnSpacing = 12
+  MaxSpeed = 1280
+  StopThreshold = 20
+  MinPlayerSpawnSpacing = 24
   WashWorkNeeded = 28
   DirtyReturnInterval = 96
   MaxReturnCount = 9
   TargetFps = 24.0
   WebSocketPath = "/ws"
-  SheetDigitsRow = 1
-  SheetLettersStartRow = 2
-  SheetLettersCount = 31
   FloorBackdropColor = 3'u8
-  DishOffsetY = 1
-  CarryOffsetY = -3
+  DishOffsetY = 2
+  CarryOffsetY = -6
+  WashBarOffsetX = 2
+  WashBarOffsetY = 1
+  WashBarWidth = 8
 
 type
   ItemKind = enum
@@ -40,11 +42,6 @@ type
     SheetWashStation
     SheetDirtyDish
     SheetCleanDish
-    SheetProgress1
-    SheetProgress2
-    SheetProgress3
-    SheetProgress4
-    SheetPlayer
 
   StationKind = enum
     CounterStation
@@ -94,6 +91,7 @@ type
     stations: seq[Station]
     floorItems: seq[FloorItem]
     sheetSprites: array[SheetSpriteKind, Sprite]
+    playerSprites: seq[Sprite]
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
     fb: Framebuffer
@@ -117,11 +115,23 @@ proc tileIndex(tx, ty: int): int =
 proc dataDir(): string =
   getAppDir() / "data"
 
+proc repoDir(): string =
+  getAppDir() / ".."
+
+proc clientDataDir(): string =
+  repoDir() / "client" / "data"
+
 proc palettePath(): string =
-  getAppDir() / ".." / "client" / "data" / "pallete.png"
+  clientDataDir() / "pallete.png"
 
 proc sheetPath(): string =
   dataDir() / "spritesheet.png"
+
+proc numbersPath(): string =
+  clientDataDir() / "numbers.png"
+
+proc lettersPath(): string =
+  clientDataDir() / "letters.png"
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
@@ -136,23 +146,20 @@ proc distanceSquared(ax, ay, bx, by: int): int =
   dx * dx + dy * dy
 
 proc sheetCellSprite(sheet: Image, cellX, cellY: int): Sprite =
-  spriteFromImage(sheet.subImage(cellX * TileSize, cellY * TileSize, TileSize, TileSize))
+  spriteFromImage(
+    sheet.subImage(cellX * FancyTileSize, cellY * FancyTileSize, FancyTileSize, FancyTileSize)
+  )
 
-proc playerSprite(sim: SimServer): Sprite =
-  sim.sheetSprites[SheetPlayer]
+proc defaultPlayerSprite(sim: SimServer): Sprite =
+  sim.playerSprites[0]
+
+proc playerSprite(sim: SimServer, playerIndex: int): Sprite =
+  sim.playerSprites[playerIndex mod sim.playerSprites.len]
 
 proc dishSprite(sim: SimServer, kind: ItemKind): Sprite =
   case kind
   of DirtyDishItem: sim.sheetSprites[SheetDirtyDish]
   of CleanDishItem: sim.sheetSprites[SheetCleanDish]
-
-proc progressSprite(sim: SimServer, progress: int): Sprite =
-  let filledBars = max(1, min(4, (progress * 4 + WashWorkNeeded - 1) div WashWorkNeeded))
-  case filledBars
-  of 1: sim.sheetSprites[SheetProgress1]
-  of 2: sim.sheetSprites[SheetProgress2]
-  of 3: sim.sheetSprites[SheetProgress3]
-  else: sim.sheetSprites[SheetProgress4]
 
 proc stationBaseSprite(sim: SimServer, kind: StationKind): Sprite =
   case kind
@@ -227,10 +234,10 @@ proc canOccupy(sim: SimServer, x, y, width, height: int): bool =
     return false
 
   let
-    startTx = x div TileSize
-    startTy = y div TileSize
-    endTx = (x + width - 1) div TileSize
-    endTy = (y + height - 1) div TileSize
+    startTx = x div FancyTileSize
+    startTy = y div FancyTileSize
+    endTx = (x + width - 1) div FancyTileSize
+    endTy = (y + height - 1) div FancyTileSize
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
@@ -243,7 +250,7 @@ proc findPlayerSpawn(sim: SimServer): tuple[x, y: int] =
     centerTx = WorldWidthTiles div 2
     centerTy = WorldHeightTiles - 4
     minSpacingSq = MinPlayerSpawnSpacing * MinPlayerSpawnSpacing
-    playerSprite = sim.playerSprite()
+    playerSprite = sim.defaultPlayerSprite()
 
   for radius in 0 .. 6:
     for dy in -radius .. radius:
@@ -254,8 +261,8 @@ proc findPlayerSpawn(sim: SimServer): tuple[x, y: int] =
         if not inTileBounds(tx, ty):
           continue
         let
-          px = tx * TileSize
-          py = ty * TileSize
+          px = tx * FancyTileSize
+          py = ty * FancyTileSize
         if not sim.canOccupy(px, py, playerSprite.width, playerSprite.height):
           continue
         var tooClose = false
@@ -266,17 +273,17 @@ proc findPlayerSpawn(sim: SimServer): tuple[x, y: int] =
         if not tooClose:
           return (px, py)
 
-  (centerTx * TileSize, centerTy * TileSize)
+  (centerTx * FancyTileSize, centerTy * FancyTileSize)
 
 proc addPlayer(sim: var SimServer): int =
   let
     spawn = sim.findPlayerSpawn()
-    playerSprite = sim.playerSprite()
+    playerSprite = sim.playerSprite(sim.players.len)
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
     sprite: playerSprite,
-    facing: FaceUp
+    facing: FaceDown
   )
   sim.players.high
 
@@ -291,21 +298,16 @@ proc initSimServer(): SimServer =
   result.sheetSprites[SheetDirtyReturn] = sheetImage.sheetCellSprite(3, 0)
   result.sheetSprites[SheetCleanRack] = sheetImage.sheetCellSprite(4, 0)
   result.sheetSprites[SheetWashStation] = sheetImage.sheetCellSprite(5, 0)
-  result.sheetSprites[SheetDirtyDish] = sheetImage.sheetCellSprite(6, 0)
-  result.sheetSprites[SheetCleanDish] = sheetImage.sheetCellSprite(7, 0)
-  result.sheetSprites[SheetProgress1] = sheetImage.sheetCellSprite(8, 0)
-  result.sheetSprites[SheetProgress2] = sheetImage.sheetCellSprite(9, 0)
-  result.sheetSprites[SheetProgress3] = sheetImage.sheetCellSprite(10, 0)
-  result.sheetSprites[SheetProgress4] = sheetImage.sheetCellSprite(11, 0)
-  result.sheetSprites[SheetPlayer] = sheetImage.sheetCellSprite(12, 0)
-  for digit in 0 ..< 10:
-    result.digitSprites[digit] = sheetImage.sheetCellSprite(digit, SheetDigitsRow)
-  result.letterSprites = @[]
-  for letter in 0 ..< SheetLettersCount:
-    let
-      cellX = letter mod 16
-      cellY = SheetLettersStartRow + letter div 16
-    result.letterSprites.add(sheetImage.sheetCellSprite(cellX, cellY))
+  result.sheetSprites[SheetDirtyDish] = sheetImage.sheetCellSprite(0, 2)
+  result.sheetSprites[SheetCleanDish] = sheetImage.sheetCellSprite(1, 2)
+  result.playerSprites = @[
+    sheetImage.sheetCellSprite(0, 1),
+    sheetImage.sheetCellSprite(1, 1),
+    sheetImage.sheetCellSprite(2, 1),
+    sheetImage.sheetCellSprite(3, 1)
+  ]
+  result.digitSprites = loadDigitSprites(numbersPath())
+  result.letterSprites = loadLetterSprites(lettersPath())
   result.initKitchen()
 
 proc applyMomentumAxis(
@@ -403,7 +405,7 @@ proc interactionTile(player: Player): tuple[tx, ty: int] =
   of FaceRight:
     px = player.x + player.sprite.width
 
-  (px div TileSize, py div TileSize)
+  (px div FancyTileSize, py div FancyTileSize)
 
 proc clearCarry(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].carrying = false
@@ -539,18 +541,36 @@ proc cycleDishReturn(sim: var SimServer) =
   dec sim.stations[rackIndex].storedCount
   inc sim.stations[returnIndex].storedCount
 
+proc drawWashProgress(
+  sim: var SimServer,
+  progress, worldX, worldY, cameraX, cameraY: int
+) =
+  let
+    filledWidth = max(
+      1,
+      min(WashBarWidth, (progress * WashBarWidth + WashWorkNeeded - 1) div WashWorkNeeded)
+    )
+    screenX = worldX - cameraX + WashBarOffsetX
+    screenY = worldY - cameraY + WashBarOffsetY
+  for barX in 0 ..< WashBarWidth:
+    sim.fb.putPixel(screenX + barX, screenY, 1)
+    sim.fb.putPixel(screenX + barX, screenY + 1, 1)
+  for barX in 0 ..< filledWidth:
+    sim.fb.putPixel(screenX + barX, screenY, 10)
+    sim.fb.putPixel(screenX + barX, screenY + 1, 14)
+
 proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
   let
-    startTx = max(0, cameraX div TileSize)
-    startTy = max(0, cameraY div TileSize)
-    endTx = min(WorldWidthTiles - 1, (cameraX + ScreenWidth - 1) div TileSize)
-    endTy = min(WorldHeightTiles - 1, (cameraY + ScreenHeight - 1) div TileSize)
+    startTx = max(0, cameraX div FancyTileSize)
+    startTy = max(0, cameraY div FancyTileSize)
+    endTx = min(WorldWidthTiles - 1, (cameraX + ScreenWidth - 1) div FancyTileSize)
+    endTy = min(WorldHeightTiles - 1, (cameraY + ScreenHeight - 1) div FancyTileSize)
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
       let
-        worldX = tx * TileSize
-        worldY = ty * TileSize
+        worldX = tx * FancyTileSize
+        worldY = ty * FancyTileSize
         floorSprite =
           if ((tx + ty) and 1) == 0: sim.sheetSprites[SheetFloorAccent]
           else: sim.sheetSprites[SheetFloor]
@@ -575,21 +595,21 @@ proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
         if station.slotOccupied:
           sim.fb.blitSprite(sim.dishSprite(station.slotItem), worldX, worldY, cameraX, cameraY)
         if station.slotOccupied and station.slotItem == DirtyDishItem and station.washProgress > 0:
-          sim.fb.blitSprite(sim.progressSprite(station.washProgress), worldX, worldY, cameraX, cameraY)
+          sim.drawWashProgress(station.washProgress, worldX, worldY, cameraX, cameraY)
 
 proc renderFloorItems(sim: var SimServer, cameraX, cameraY: int) =
   for item in sim.floorItems:
     sim.fb.blitSprite(
       sim.dishSprite(item.kind),
-      item.tx * TileSize,
-      item.ty * TileSize,
+      item.tx * FancyTileSize,
+      item.ty * FancyTileSize,
       cameraX,
       cameraY
     )
 
 proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
   for player in sim.players:
-    sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY)
+    sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY, player.facing)
     if player.carrying:
       sim.fb.blitSprite(
         sim.dishSprite(player.carriedItem),

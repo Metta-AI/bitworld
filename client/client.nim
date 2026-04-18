@@ -387,7 +387,7 @@ proc drawFramebuffer*(client: ClientApp) =
   for y in 0 ..< ScreenHeight:
     for x in 0 ..< ScreenWidth:
       let index = sourcePixels[y * ScreenWidth + x]
-      if index == 0:
+      if index == TransparentColorIndex:
         continue
       let px = originX + x * pixelScale
       let py = originY + y * pixelScale

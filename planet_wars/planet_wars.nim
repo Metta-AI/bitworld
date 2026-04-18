@@ -3,7 +3,6 @@ import protocol, server
 import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
-  DataDir = ".." / "big_adventure" / "data"
   WorldWidthPixels = 192
   WorldHeightPixels = 192
   PlanetCount = 18
@@ -21,15 +20,15 @@ const
   CursorMaxSpeed = 704
   CursorStopThreshold = 12
 
-  BackgroundColor = 3'u8
-  NeutralPlanetColor = 12'u8
-  FriendlyBorderColor = 8'u8
-  EnemyBorderColor = 5'u8
-  SelectionColor = 7'u8
+  BackgroundColor = 12'u8
+  NeutralPlanetColor = 1'u8
+  FriendlyBorderColor = 11'u8
+  EnemyBorderColor = 3'u8
+  SelectionColor = 8'u8
   OriginColor = 14'u8
-  ScoreColor = 13'u8
-  StarColors = [11'u8, 12'u8, 13'u8]
-  PlayerColors = [0'u8, 1'u8, 2'u8, 4'u8, 6'u8, 9'u8, 10'u8, 11'u8, 13'u8, 14'u8, 15'u8]
+  ScoreColor = 2'u8
+  StarColors = [13'u8, 15'u8, 2'u8]
+  PlayerColors = [3'u8, 4'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 13'u8, 14'u8, 15'u8]
 
 type
   PlanetSize = enum
@@ -109,6 +108,12 @@ type
     address: string
     port: int
 
+proc repoDir(): string =
+  getAppDir() / ".."
+
+proc clientDataDir(): string =
+  repoDir() / "client" / "data"
+
 proc worldClampPixel(x, maxValue: int): int =
   max(0, min(maxValue, x))
 
@@ -180,7 +185,7 @@ proc blitSolidSprite(
 ) =
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] != 0:
+      if sprite.pixels[sprite.spriteIndex(x, y)] != TransparentColorIndex:
         fb.putPixel(screenX + x, screenY + y, color)
 
 proc renderNumber(
@@ -332,8 +337,8 @@ proc generateStars(sim: var SimServer) =
 proc initSimServer(): SimServer =
   result.rng = initRand(0x1A7E7)
   result.fb = initFramebuffer()
-  loadPalette(DataDir / "pallete.png")
-  result.digitSprites = loadDigitSprites(DataDir / "numbers.png")
+  loadPalette(clientDataDir() / "pallete.png")
+  result.digitSprites = loadDigitSprites(clientDataDir() / "numbers.png")
   result.generatePlanets()
   result.generateStars()
 

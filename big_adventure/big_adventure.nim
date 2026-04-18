@@ -3,7 +3,6 @@ import protocol, server
 import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
-  DataDir = "data"
   WorldWidthTiles = 96
   WorldHeightTiles = 96
   WorldWidthPixels = WorldWidthTiles * TileSize
@@ -84,6 +83,15 @@ type
     server: ptr Server
     address: string
     port: int
+
+proc dataDir(): string =
+  getAppDir() / "data"
+
+proc repoDir(): string =
+  getAppDir() / ".."
+
+proc clientDataDir(): string =
+  repoDir() / "client" / "data"
 
 proc tileIndex(tx, ty: int): int =
   ty * WorldWidthTiles + tx
@@ -228,16 +236,16 @@ proc initSimServer*(): SimServer =
   result.rng = initRand(0xB1770)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
-  loadPalette(DataDir / "pallete.png")
-  result.terrainSprite = readRequiredSprite(DataDir / "wall.png")
-  result.playerSprite = readRequiredSprite(DataDir / "player.png")
-  result.mobSprite = readRequiredSprite(DataDir / "snake.png")
-  result.swooshSprite = readRequiredSprite(DataDir / "swoosh.png")
-  result.heartSprite = readRequiredSprite(DataDir / "heart.png")
-  result.emptyHeartSprite = readRequiredSprite(DataDir / "empty_heart.png")
-  result.coinSprite = readRequiredSprite(DataDir / "coin.png")
-  result.digitSprites = loadDigitSprites(DataDir / "numbers.png")
-  result.letterSprites = loadLetterSprites(DataDir / "letters.png")
+  loadPalette(clientDataDir() / "pallete.png")
+  result.terrainSprite = readRequiredSprite(dataDir() / "wall.png")
+  result.playerSprite = readRequiredSprite(dataDir() / "player.png")
+  result.mobSprite = readRequiredSprite(dataDir() / "snake.png")
+  result.swooshSprite = readRequiredSprite(dataDir() / "swoosh.png")
+  result.heartSprite = readRequiredSprite(dataDir() / "heart.png")
+  result.emptyHeartSprite = readRequiredSprite(dataDir() / "empty_heart.png")
+  result.coinSprite = readRequiredSprite(dataDir() / "coin.png")
+  result.digitSprites = loadDigitSprites(clientDataDir() / "numbers.png")
+  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2

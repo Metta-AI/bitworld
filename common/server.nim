@@ -17,12 +17,15 @@ type
     indices*: seq[uint8]
     packed*: seq[uint8]
 
+const
+  TransparentColorIndex* = 255'u8
+
 proc spriteIndex*(sprite: Sprite, x, y: int): int =
   y * sprite.width + x
 
 proc nearestPaletteIndex*(pixel: ColorRGBA): uint8 =
   if pixel.a < 20'u8:
-    return 0
+    return TransparentColorIndex
 
   var best = 0
   var bestDistance = high(int)
@@ -100,7 +103,7 @@ proc clearFrame*(fb: var Framebuffer, bg: uint8 = 3) =
     fb.indices[i] = bg
 
 proc putPixel*(fb: var Framebuffer, x, y: int, index: uint8) =
-  if x < 0 or y < 0 or x >= ScreenWidth or y >= ScreenHeight or index == 0:
+  if x < 0 or y < 0 or x >= ScreenWidth or y >= ScreenHeight or index == TransparentColorIndex:
     return
   fb.indices[y * ScreenWidth + x] = index
 
@@ -111,7 +114,7 @@ proc blitSprite*(fb: var Framebuffer, sprite: Sprite, worldX, worldY, cameraX, c
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
       let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
-      if colorIndex != 0:
+      if colorIndex != TransparentColorIndex:
         var dx = 0
         var dy = 0
         case facing

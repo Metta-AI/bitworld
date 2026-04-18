@@ -2,7 +2,6 @@ import pixie, protocol, server, whisky
 import std/[options, os, parseopt, strutils]
 
 const
-  DataDir = "data"
   WebSocketPath = "/ws"
   PlayerCenterX = ScreenWidth div 2
   PlayerCenterY = ScreenHeight div 2
@@ -62,6 +61,15 @@ type
     wanderTicks: int
     previousAttack: bool
     lastThought: string
+
+proc dataDir(): string =
+  getAppDir() / "data"
+
+proc repoDir(): string =
+  getAppDir() / ".."
+
+proc clientDataDir(): string =
+  repoDir() / "client" / "data"
 
 proc unpack4bpp(packed: openArray[uint8], unpacked: var seq[uint8]) =
   let targetLen = packed.len * 2
@@ -130,13 +138,13 @@ proc resetSession(bot: var Bot) =
   bot.resetWorldModel()
 
 proc initBot(): Bot =
-  loadPalette(DataDir / "pallete.png")
-  result.wallSprite = readRequiredSprite(DataDir / "wall.png")
-  result.playerSprite = readRequiredSprite(DataDir / "player.png")
-  result.snakeSprite = readRequiredSprite(DataDir / "snake.png")
-  result.coinSprite = readRequiredSprite(DataDir / "coin.png")
-  result.heartSprite = readRequiredSprite(DataDir / "heart.png")
-  result.letterSprites = loadLetterSprites(DataDir / "letters.png")
+  loadPalette(clientDataDir() / "pallete.png")
+  result.wallSprite = readRequiredSprite(dataDir() / "wall.png")
+  result.playerSprite = readRequiredSprite(dataDir() / "player.png")
+  result.snakeSprite = readRequiredSprite(dataDir() / "snake.png")
+  result.coinSprite = readRequiredSprite(dataDir() / "coin.png")
+  result.heartSprite = readRequiredSprite(dataDir() / "heart.png")
+  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.worldTiles = newSeq[TileKnowledge](MapWidthTiles * MapHeightTiles)
@@ -154,7 +162,7 @@ proc matchesSprite(
   for sy in 0 ..< sprite.height:
     for sx in 0 ..< sprite.width:
       let colorIndex = sprite.pixels[sprite.spriteIndex(sx, sy)]
-      if colorIndex == 0:
+      if colorIndex == TransparentColorIndex:
         continue
       inc matchedOpaque
       if frame[(y + sy) * ScreenWidth + (x + sx)] != colorIndex:

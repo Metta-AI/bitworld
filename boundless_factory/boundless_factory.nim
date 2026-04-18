@@ -4,10 +4,9 @@ import std/[algorithm, locks, monotimes, os, parseopt, random, strutils, tables,
 
 const
   ClientDataDir = ".." / "client" / "data"
-  LegacyDataDir = ".." / "big_adventure" / "data"
   FactoryDataDir = "data"
   PalettePath = ClientDataDir / "pallete.png"
-  NumbersPath = LegacyDataDir / "numbers.png"
+  NumbersPath = ClientDataDir / "numbers.png"
   FactorySheetPath = FactoryDataDir / "factory_sheet.png"
   WebSocketPath = "/ws"
   TargetFps = 24.0
@@ -61,10 +60,7 @@ type
   BuildTool = enum
     ToolLaunchPad
     ToolExtractor
-    ToolBeltUp
-    ToolBeltRight
-    ToolBeltDown
-    ToolBeltLeft
+    ToolBelt
     ToolEraser
 
   Cell = object
@@ -91,7 +87,8 @@ type
     moveTicksY: int
     score: int
     selectedTool: BuildTool
-    facing: Direction
+    extractorRotation: Direction
+    beltRotation: Direction
     hasLaunchPad: bool
     launchPadX: int
     launchPadY: int
@@ -158,13 +155,12 @@ proc delta(dir: Direction): tuple[dx, dy: int] =
 proc playerColorFor(id: int): uint8 =
   PlayerColors[(id - 1) mod PlayerColors.len]
 
-proc beltDirection(tool: BuildTool): Direction =
-  case tool
-  of ToolBeltUp: DirUp
-  of ToolBeltRight: DirRight
-  of ToolBeltDown: DirDown
-  of ToolBeltLeft: DirLeft
-  else: DirRight
+proc nextDirection(dir: Direction): Direction =
+  case dir
+  of DirUp: DirRight
+  of DirRight: DirDown
+  of DirDown: DirLeft
+  of DirLeft: DirUp
 
 proc toFacing(dir: Direction): Facing =
   case dir
@@ -214,7 +210,7 @@ proc blitStencilSprite(
 ) =
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] == 0:
+      if sprite.pixels[sprite.spriteIndex(x, y)] == TransparentColorIndex:
         continue
       var
         dx = 0
@@ -371,7 +367,8 @@ proc addPlayer(sim: var SimServer): int =
     cursorX: spawn.x,
     cursorY: spawn.y,
     selectedTool: ToolLaunchPad,
-    facing: DirRight,
+    extractorRotation: DirRight,
+    beltRotation: DirRight,
     launchPadX: -1,
     launchPadY: -1
   )
@@ -399,14 +396,43 @@ proc awardDelivery(sim: var SimServer, ownerId: int, ore: OreKind) =
 proc cycleTool(player: var Player) =
   player.selectedTool = BuildTool((player.selectedTool.ord + 1) mod (BuildTool.high.ord + 1))
 
-proc currentToolDirection(player: Player): Direction =
-  case player.selectedTool
-  of ToolBeltUp, ToolBeltRight, ToolBeltDown, ToolBeltLeft:
-    beltDirection(player.selectedTool)
+proc currentToolDirection(player: Player, tool: BuildTool): Direction =
+  case tool
   of ToolExtractor:
-    player.facing
+    player.extractorRotation
+  of ToolBelt:
+    player.beltRotation
   else:
     DirRight
+
+proc toolBuildingKind(tool: BuildTool): BuildingKind =
+  case tool
+  of ToolExtractor:
+    BuildingExtractor
+  of ToolBelt:
+    BuildingBelt
+  else:
+    BuildingNone
+
+proc setToolRotation(player: var Player, tool: BuildTool, dir: Direction) =
+  case tool
+  of ToolExtractor:
+    player.extractorRotation = dir
+  of ToolBelt:
+    player.beltRotation = dir
+  else:
+    discard
+
+proc canPlaceDirectionalTool(cell: Cell, tool: BuildTool): bool =
+  if cell.building == BuildingLaunchPad:
+    return false
+  case tool
+  of ToolExtractor:
+    cell.ore != OreNone
+  of ToolBelt:
+    true
+  else:
+    false
 
 proc placeTool(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -438,19 +464,16 @@ proc placeTool(sim: var SimServer, playerIndex: int) =
     sim.players[playerIndex].hasLaunchPad = true
     sim.players[playerIndex].launchPadX = tx
     sim.players[playerIndex].launchPadY = ty
-  of ToolExtractor:
-    if sim.cells[index].building == BuildingLaunchPad or sim.cells[index].ore == OreNone:
+  of ToolExtractor, ToolBelt:
+    if not sim.cells[index].canPlaceDirectionalTool(tool):
       return
+    var direction = sim.players[playerIndex].currentToolDirection(tool)
+    if sim.cells[index].building == tool.toolBuildingKind():
+      direction = nextDirection(sim.cells[index].direction)
+      sim.players[playerIndex].setToolRotation(tool, direction)
     sim.removeItemsAt(tx, ty)
-    sim.cells[index].building = BuildingExtractor
-    sim.cells[index].direction = sim.players[playerIndex].currentToolDirection()
-    sim.cells[index].launchOwnerId = 0
-  of ToolBeltUp, ToolBeltRight, ToolBeltDown, ToolBeltLeft:
-    if sim.cells[index].building == BuildingLaunchPad:
-      return
-    sim.removeItemsAt(tx, ty)
-    sim.cells[index].building = BuildingBelt
-    sim.cells[index].direction = sim.players[playerIndex].currentToolDirection()
+    sim.cells[index].building = tool.toolBuildingKind()
+    sim.cells[index].direction = direction
     sim.cells[index].launchOwnerId = 0
 
 proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
@@ -474,12 +497,10 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   if horizontal != 0 and sim.players[playerIndex].moveTicksX == 0:
     sim.players[playerIndex].cursorX = clamp(sim.players[playerIndex].cursorX + horizontal, 0, MapWidthTiles - 1)
     sim.players[playerIndex].moveTicksX = MoveRepeatInterval
-    sim.players[playerIndex].facing = if horizontal < 0: DirLeft else: DirRight
 
   if vertical != 0 and sim.players[playerIndex].moveTicksY == 0:
     sim.players[playerIndex].cursorY = clamp(sim.players[playerIndex].cursorY + vertical, 0, MapHeightTiles - 1)
     sim.players[playerIndex].moveTicksY = MoveRepeatInterval
-    sim.players[playerIndex].facing = if vertical < 0: DirUp else: DirDown
 
   if input.select:
     sim.players[playerIndex].cycleTool()
@@ -685,9 +706,9 @@ proc drawToolIcon(sim: var SimServer, tool: BuildTool, x, y: int, player: Player
   of ToolLaunchPad:
     sim.fb.blitScreenSprite(sim.art.toolLaunchPadIcon, x, y)
   of ToolExtractor:
-    sim.fb.blitScreenSprite(sim.art.toolExtractorIcon, x, y, player.facing.toFacing())
-  of ToolBeltUp, ToolBeltRight, ToolBeltDown, ToolBeltLeft:
-    sim.fb.blitScreenSprite(sim.art.toolBeltIcon, x, y, beltDirection(tool).toFacing())
+    sim.fb.blitScreenSprite(sim.art.toolExtractorIcon, x, y, player.extractorRotation.toFacing())
+  of ToolBelt:
+    sim.fb.blitScreenSprite(sim.art.toolBeltIcon, x, y, player.beltRotation.toFacing())
   of ToolEraser:
     sim.fb.blitScreenSprite(sim.art.toolEraserIcon, x, y)
 
