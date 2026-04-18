@@ -1,0 +1,13 @@
+version     = "0.1.0"
+author      = "Andre von Houck"
+description = "Retro 64x64 multiplayer social curriculum AI environment."
+license     = "MIT"
+
+srcDir = "."
+requires "nim >= 2.2.4"
+requires "pixie"
+requires "mummy >= 0.4.7"
+requires "whisky >= 0.1.3"
+requires "silky >= 0.0.2"
+requires "windy >= 0.4.4"
+requires "paddy >= 0.1.0"

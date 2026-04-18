@@ -166,6 +166,7 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
   result.window = newWindow(
     title = "Bit World",
     size = shellSize,
+    style = Decorated,
     visible = true
   )
   makeContextCurrent(result.window)
