@@ -1,0 +1,909 @@
+import mummy, pixie
+import protocol, server
+import std/[algorithm, locks, monotimes, os, parseopt, random, strutils, tables, times]
+
+const
+  ClientDataDir = ".." / "client" / "data"
+  LegacyDataDir = ".." / "big_adventure" / "data"
+  FactoryDataDir = "data"
+  PalettePath = ClientDataDir / "pallete.png"
+  NumbersPath = LegacyDataDir / "numbers.png"
+  FactorySheetPath = FactoryDataDir / "factory_sheet.png"
+  WebSocketPath = "/ws"
+  TargetFps = 24.0
+
+  MapWidthTiles = 48
+  MapHeightTiles = 48
+  WorldTilePixels = 16
+  WorldWidthPixels = MapWidthTiles * WorldTilePixels
+  WorldHeightPixels = MapHeightTiles * WorldTilePixels
+
+  SpawnSearchRadius = 7
+  MoveRepeatInterval = 3
+  ExtractSpawnInterval = 18
+  ItemTravelTicks = 6
+  ComboWindowTicks = 24
+
+  ToolbarHeight = 8
+  ToolbarIconSize = 8
+  ToolbarGap = 1
+  ToolbarY = ScreenHeight - ToolbarHeight
+
+  SheetTileSize = 16
+  SheetIconSize = 8
+  SheetIconRowY = SheetTileSize
+
+  BackgroundColor = 3'u8
+  ToolbarColor = 1'u8
+  ToolbarDimColor = 5'u8
+  CursorSelfColor = 15'u8
+
+  PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
+
+type
+  Direction = enum
+    DirUp
+    DirRight
+    DirDown
+    DirLeft
+
+  OreKind = enum
+    OreNone
+    OreSquare
+    OreCircle
+
+  BuildingKind = enum
+    BuildingNone
+    BuildingBelt
+    BuildingExtractor
+    BuildingLaunchPad
+
+  BuildTool = enum
+    ToolLaunchPad
+    ToolExtractor
+    ToolBeltUp
+    ToolBeltRight
+    ToolBeltDown
+    ToolBeltLeft
+    ToolEraser
+
+  Cell = object
+    ore: OreKind
+    building: BuildingKind
+    direction: Direction
+    launchOwnerId: int
+
+  MovingItem = object
+    tileX: int
+    tileY: int
+    progress: int
+    kind: OreKind
+    dir: Direction
+
+  Player = object
+    id: int
+    color: uint8
+    cursorX: int
+    cursorY: int
+    cameraX: int
+    cameraY: int
+    moveTicksX: int
+    moveTicksY: int
+    score: int
+    selectedTool: BuildTool
+    facing: Direction
+    hasLaunchPad: bool
+    launchPadX: int
+    launchPadY: int
+    comboTicks: int
+    lastDelivered: OreKind
+
+  FactorySprites = object
+    ground: Sprite
+    squarePatch: Sprite
+    circlePatch: Sprite
+    belt: Sprite
+    extractor: Sprite
+    launchPadOwn: Sprite
+    launchPadEnemy: Sprite
+    cursorOuterMask: Sprite
+    cursorInnerMask: Sprite
+    itemSquare: Sprite
+    itemCircle: Sprite
+    toolbarSlotMask: Sprite
+    toolLaunchPadIcon: Sprite
+    toolExtractorIcon: Sprite
+    toolBeltIcon: Sprite
+    toolEraserIcon: Sprite
+
+  SimServer = object
+    players: seq[Player]
+    cells: seq[Cell]
+    items: seq[MovingItem]
+    art: FactorySprites
+    digitSprites: array[10, Sprite]
+    fb: Framebuffer
+    rng: Rand
+    nextPlayerId: int
+    tickCount: int
+
+  WebSocketAppState = object
+    lock: Lock
+    inputMasks: Table[WebSocket, uint8]
+    lastAppliedMasks: Table[WebSocket, uint8]
+    playerIndices: Table[WebSocket, int]
+    closedSockets: seq[WebSocket]
+
+  ServerThreadArgs = object
+    server: ptr Server
+    address: string
+    port: int
+
+proc mapIndex(tx, ty: int): int =
+  ty * MapWidthTiles + tx
+
+proc inBounds(tx, ty: int): bool =
+  tx >= 0 and ty >= 0 and tx < MapWidthTiles and ty < MapHeightTiles
+
+proc worldClampPixel(x, maxValue: int): int =
+  max(0, min(maxValue, x))
+
+proc delta(dir: Direction): tuple[dx, dy: int] =
+  case dir
+  of DirUp: (0, -1)
+  of DirRight: (1, 0)
+  of DirDown: (0, 1)
+  of DirLeft: (-1, 0)
+
+proc playerColorFor(id: int): uint8 =
+  PlayerColors[(id - 1) mod PlayerColors.len]
+
+proc beltDirection(tool: BuildTool): Direction =
+  case tool
+  of ToolBeltUp: DirUp
+  of ToolBeltRight: DirRight
+  of ToolBeltDown: DirDown
+  of ToolBeltLeft: DirLeft
+  else: DirRight
+
+proc toFacing(dir: Direction): Facing =
+  case dir
+  of DirUp: FaceUp
+  of DirRight: FaceRight
+  of DirDown: FaceDown
+  of DirLeft: FaceLeft
+
+proc drawRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
+  for py in 0 ..< h:
+    for px in 0 ..< w:
+      fb.putPixel(x + px, y + py, color)
+
+proc renderNumber(
+  fb: var Framebuffer,
+  digitSprites: array[10, Sprite],
+  value, screenX, screenY: int
+): int =
+  let text = $max(0, value)
+  var x = screenX
+  for ch in text:
+    let digit = ord(ch) - ord('0')
+    fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
+    x += digitSprites[digit].width
+  x - screenX
+
+proc spriteFromSheet(sheet: Image, x, y, w, h: int): Sprite =
+  result = Sprite(width: w, height: h, pixels: newSeq[uint8](w * h))
+  for py in 0 ..< h:
+    for px in 0 ..< w:
+      result.pixels[result.spriteIndex(px, py)] = nearestPaletteIndex(sheet[x + px, y + py])
+
+proc blitScreenSprite(
+  fb: var Framebuffer,
+  sprite: Sprite,
+  screenX, screenY: int,
+  facing = FaceDown
+) =
+  fb.blitSprite(sprite, screenX, screenY, 0, 0, facing)
+
+proc blitStencilSprite(
+  fb: var Framebuffer,
+  sprite: Sprite,
+  screenX, screenY: int,
+  color: uint8,
+  facing = FaceDown
+) =
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      if sprite.pixels[sprite.spriteIndex(x, y)] == 0:
+        continue
+      var
+        dx = 0
+        dy = 0
+      case facing
+      of FaceDown:
+        dx = x
+        dy = y
+      of FaceUp:
+        dx = sprite.width - 1 - x
+        dy = sprite.height - 1 - y
+      of FaceLeft:
+        dx = y
+        dy = sprite.width - 1 - x
+      of FaceRight:
+        dx = sprite.height - 1 - y
+        dy = x
+      fb.putPixel(screenX + dx, screenY + dy, color)
+
+proc loadFactorySprites(): FactorySprites =
+  let sheet = readImage(FactorySheetPath)
+  result.ground = spriteFromSheet(sheet, 0 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.squarePatch = spriteFromSheet(sheet, 1 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.circlePatch = spriteFromSheet(sheet, 2 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.belt = spriteFromSheet(sheet, 3 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.extractor = spriteFromSheet(sheet, 4 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.launchPadOwn = spriteFromSheet(sheet, 5 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.launchPadEnemy = spriteFromSheet(sheet, 6 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.cursorOuterMask = spriteFromSheet(sheet, 7 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+  result.cursorInnerMask = spriteFromSheet(sheet, 8 * SheetTileSize, 0, SheetTileSize, SheetTileSize)
+
+  result.itemSquare = spriteFromSheet(sheet, 0 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.itemCircle = spriteFromSheet(sheet, 1 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.toolbarSlotMask = spriteFromSheet(sheet, 2 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.toolLaunchPadIcon = spriteFromSheet(sheet, 3 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.toolExtractorIcon = spriteFromSheet(sheet, 4 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.toolBeltIcon = spriteFromSheet(sheet, 5 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.toolEraserIcon = spriteFromSheet(sheet, 6 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+
+proc clearCell(cell: var Cell) =
+  cell.building = BuildingNone
+  cell.direction = DirRight
+  cell.launchOwnerId = 0
+
+proc paintPatch(sim: var SimServer, centerX, centerY, radius: int, ore: OreKind) =
+  for dy in -radius .. radius:
+    for dx in -radius .. radius:
+      let tx = centerX + dx
+      let ty = centerY + dy
+      if not inBounds(tx, ty):
+        continue
+      if abs(dx) + abs(dy) <= radius + 1 and sim.rng.rand(99) < 82:
+        sim.cells[mapIndex(tx, ty)].ore = ore
+
+proc clearOreZone(sim: var SimServer, centerX, centerY, radius: int) =
+  for dy in -radius .. radius:
+    for dx in -radius .. radius:
+      let tx = centerX + dx
+      let ty = centerY + dy
+      if inBounds(tx, ty):
+        sim.cells[mapIndex(tx, ty)].ore = OreNone
+
+proc seedOre(sim: var SimServer) =
+  for _ in 0 ..< 72:
+    let
+      ore = if sim.rng.rand(1) == 0: OreSquare else: OreCircle
+      tx = sim.rng.rand(MapWidthTiles - 1)
+      ty = sim.rng.rand(MapHeightTiles - 1)
+      radius = 1 + sim.rng.rand(2)
+    sim.paintPatch(tx, ty, radius, ore)
+
+  let
+    centerX = MapWidthTiles div 2
+    centerY = MapHeightTiles div 2
+
+  sim.clearOreZone(centerX, centerY, 3)
+  sim.paintPatch(centerX - 5, centerY - 2, 2, OreSquare)
+  sim.paintPatch(centerX + 5, centerY - 2, 2, OreCircle)
+  sim.paintPatch(centerX - 4, centerY + 4, 2, OreSquare)
+  sim.paintPatch(centerX + 4, centerY + 4, 2, OreCircle)
+
+proc recenterCamera(player: var Player) =
+  let
+    worldX = player.cursorX * WorldTilePixels + WorldTilePixels div 2
+    worldY = player.cursorY * WorldTilePixels + WorldTilePixels div 2
+  player.cameraX = worldClampPixel(worldX - ScreenWidth div 2, WorldWidthPixels - ScreenWidth)
+  player.cameraY = worldClampPixel(worldY - ScreenHeight div 2, WorldHeightPixels - ScreenHeight)
+
+proc distanceSquared(ax, ay, bx, by: int): int =
+  let
+    dx = ax - bx
+    dy = ay - by
+  dx * dx + dy * dy
+
+proc findPlayerSpawn(sim: var SimServer): tuple[x, y: int] =
+  let
+    centerX = MapWidthTiles div 2
+    centerY = MapHeightTiles div 2
+  var candidates: seq[tuple[x, y: int]] = @[]
+
+  for radius in 0 .. SpawnSearchRadius:
+    for dy in -radius .. radius:
+      for dx in -radius .. radius:
+        let tx = centerX + dx
+        let ty = centerY + dy
+        if not inBounds(tx, ty):
+          continue
+
+        var occupied = false
+        for player in sim.players:
+          if distanceSquared(tx, ty, player.cursorX, player.cursorY) <= 2:
+            occupied = true
+            break
+        if not occupied:
+          candidates.add((tx, ty))
+
+    if candidates.len > 0:
+      let pick = candidates[sim.rng.rand(candidates.high)]
+      return pick
+
+  (centerX, centerY)
+
+proc removeItemsAt(sim: var SimServer, tx, ty: int) =
+  var survivors: seq[MovingItem] = @[]
+  for item in sim.items:
+    if item.tileX == tx and item.tileY == ty:
+      continue
+    survivors.add(item)
+  sim.items = survivors
+
+proc removePlayerLaunchPad(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if not player.hasLaunchPad or not inBounds(player.launchPadX, player.launchPadY):
+    sim.players[playerIndex].hasLaunchPad = false
+    sim.players[playerIndex].launchPadX = -1
+    sim.players[playerIndex].launchPadY = -1
+    return
+
+  let index = mapIndex(player.launchPadX, player.launchPadY)
+  if sim.cells[index].building == BuildingLaunchPad and sim.cells[index].launchOwnerId == player.id:
+    sim.cells[index].clearCell()
+  sim.players[playerIndex].hasLaunchPad = false
+  sim.players[playerIndex].launchPadX = -1
+  sim.players[playerIndex].launchPadY = -1
+
+proc addPlayer(sim: var SimServer): int =
+  inc sim.nextPlayerId
+  let spawn = sim.findPlayerSpawn()
+  sim.players.add Player(
+    id: sim.nextPlayerId,
+    color: playerColorFor(sim.nextPlayerId),
+    cursorX: spawn.x,
+    cursorY: spawn.y,
+    selectedTool: ToolLaunchPad,
+    facing: DirRight,
+    launchPadX: -1,
+    launchPadY: -1
+  )
+  sim.players[^1].recenterCamera()
+  sim.players.high
+
+proc playerIndexById(sim: SimServer, id: int): int =
+  for i, player in sim.players:
+    if player.id == id:
+      return i
+  -1
+
+proc awardDelivery(sim: var SimServer, ownerId: int, ore: OreKind) =
+  let playerIndex = sim.playerIndexById(ownerId)
+  if playerIndex < 0:
+    return
+  inc sim.players[playerIndex].score
+  if sim.players[playerIndex].comboTicks > 0 and
+      sim.players[playerIndex].lastDelivered != OreNone and
+      sim.players[playerIndex].lastDelivered != ore:
+    inc sim.players[playerIndex].score
+  sim.players[playerIndex].lastDelivered = ore
+  sim.players[playerIndex].comboTicks = ComboWindowTicks
+
+proc cycleTool(player: var Player) =
+  player.selectedTool = BuildTool((player.selectedTool.ord + 1) mod (BuildTool.high.ord + 1))
+
+proc currentToolDirection(player: Player): Direction =
+  case player.selectedTool
+  of ToolBeltUp, ToolBeltRight, ToolBeltDown, ToolBeltLeft:
+    beltDirection(player.selectedTool)
+  of ToolExtractor:
+    player.facing
+  else:
+    DirRight
+
+proc placeTool(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+
+  let
+    tx = sim.players[playerIndex].cursorX
+    ty = sim.players[playerIndex].cursorY
+    index = mapIndex(tx, ty)
+    tool = sim.players[playerIndex].selectedTool
+
+  case tool
+  of ToolEraser:
+    if sim.cells[index].building == BuildingLaunchPad:
+      if sim.cells[index].launchOwnerId == sim.players[playerIndex].id:
+        sim.removePlayerLaunchPad(playerIndex)
+    else:
+      sim.removeItemsAt(tx, ty)
+      sim.cells[index].clearCell()
+  of ToolLaunchPad:
+    if sim.cells[index].building == BuildingLaunchPad:
+      return
+    if sim.players[playerIndex].hasLaunchPad:
+      return
+    sim.removeItemsAt(tx, ty)
+    sim.cells[index].building = BuildingLaunchPad
+    sim.cells[index].launchOwnerId = sim.players[playerIndex].id
+    sim.cells[index].direction = DirUp
+    sim.players[playerIndex].hasLaunchPad = true
+    sim.players[playerIndex].launchPadX = tx
+    sim.players[playerIndex].launchPadY = ty
+  of ToolExtractor:
+    if sim.cells[index].building == BuildingLaunchPad or sim.cells[index].ore == OreNone:
+      return
+    sim.removeItemsAt(tx, ty)
+    sim.cells[index].building = BuildingExtractor
+    sim.cells[index].direction = sim.players[playerIndex].currentToolDirection()
+    sim.cells[index].launchOwnerId = 0
+  of ToolBeltUp, ToolBeltRight, ToolBeltDown, ToolBeltLeft:
+    if sim.cells[index].building == BuildingLaunchPad:
+      return
+    sim.removeItemsAt(tx, ty)
+    sim.cells[index].building = BuildingBelt
+    sim.cells[index].direction = sim.players[playerIndex].currentToolDirection()
+    sim.cells[index].launchOwnerId = 0
+
+proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+
+  if sim.players[playerIndex].moveTicksX > 0:
+    dec sim.players[playerIndex].moveTicksX
+  if sim.players[playerIndex].moveTicksY > 0:
+    dec sim.players[playerIndex].moveTicksY
+
+  let horizontal =
+    (if input.left and not input.right: -1
+     elif input.right and not input.left: 1
+     else: 0)
+  let vertical =
+    (if input.up and not input.down: -1
+     elif input.down and not input.up: 1
+     else: 0)
+
+  if horizontal != 0 and sim.players[playerIndex].moveTicksX == 0:
+    sim.players[playerIndex].cursorX = clamp(sim.players[playerIndex].cursorX + horizontal, 0, MapWidthTiles - 1)
+    sim.players[playerIndex].moveTicksX = MoveRepeatInterval
+    sim.players[playerIndex].facing = if horizontal < 0: DirLeft else: DirRight
+
+  if vertical != 0 and sim.players[playerIndex].moveTicksY == 0:
+    sim.players[playerIndex].cursorY = clamp(sim.players[playerIndex].cursorY + vertical, 0, MapHeightTiles - 1)
+    sim.players[playerIndex].moveTicksY = MoveRepeatInterval
+    sim.players[playerIndex].facing = if vertical < 0: DirUp else: DirDown
+
+  if input.select:
+    sim.players[playerIndex].cycleTool()
+  if input.attack:
+    sim.placeTool(playerIndex)
+
+  sim.players[playerIndex].recenterCamera()
+
+proc cellCanReceive(cell: Cell): bool =
+  cell.building == BuildingBelt
+
+proc compareMoveOrder(items: seq[MovingItem], a, b: int): int =
+  let
+    ia = items[a]
+    ib = items[b]
+  if ia.progress != ib.progress:
+    return cmp(ib.progress, ia.progress)
+  if ia.dir != ib.dir:
+    return cmp(ia.dir.ord, ib.dir.ord)
+
+  case ia.dir
+  of DirRight:
+    if ia.tileX != ib.tileX: return cmp(ib.tileX, ia.tileX)
+    cmp(ia.tileY, ib.tileY)
+  of DirLeft:
+    if ia.tileX != ib.tileX: return cmp(ia.tileX, ib.tileX)
+    cmp(ia.tileY, ib.tileY)
+  of DirDown:
+    if ia.tileY != ib.tileY: return cmp(ib.tileY, ia.tileY)
+    cmp(ia.tileX, ib.tileX)
+  of DirUp:
+    if ia.tileY != ib.tileY: return cmp(ia.tileY, ib.tileY)
+    cmp(ia.tileX, ib.tileX)
+
+proc advanceItems(sim: var SimServer) =
+  if sim.items.len == 0:
+    return
+
+  var occupied = newSeq[bool](sim.cells.len)
+  for item in sim.items:
+    if inBounds(item.tileX, item.tileY):
+      occupied[mapIndex(item.tileX, item.tileY)] = true
+
+  var order = newSeq[int](sim.items.len)
+  for i in 0 ..< order.len:
+    order[i] = i
+  let itemsSnapshot = sim.items
+  order.sort(proc(a, b: int): int = compareMoveOrder(itemsSnapshot, a, b))
+
+  var removed = newSeq[bool](sim.items.len)
+
+  for itemIndex in order:
+    if removed[itemIndex]:
+      continue
+
+    if sim.items[itemIndex].progress < ItemTravelTicks:
+      inc sim.items[itemIndex].progress
+      continue
+
+    let
+      tx = sim.items[itemIndex].tileX
+      ty = sim.items[itemIndex].tileY
+    if not inBounds(tx, ty):
+      removed[itemIndex] = true
+      continue
+
+    let cell = sim.cells[mapIndex(tx, ty)]
+    case cell.building
+    of BuildingNone:
+      occupied[mapIndex(tx, ty)] = false
+      removed[itemIndex] = true
+    of BuildingLaunchPad:
+      occupied[mapIndex(tx, ty)] = false
+      sim.awardDelivery(cell.launchOwnerId, sim.items[itemIndex].kind)
+      removed[itemIndex] = true
+    of BuildingBelt, BuildingExtractor:
+      let
+        dir = cell.direction
+        d = delta(dir)
+        nx = tx + d.dx
+        ny = ty + d.dy
+      sim.items[itemIndex].dir = dir
+
+      if not inBounds(nx, ny):
+        occupied[mapIndex(tx, ty)] = false
+        removed[itemIndex] = true
+        continue
+
+      let
+        nextIndex = mapIndex(nx, ny)
+        nextCell = sim.cells[nextIndex]
+      if nextCell.building == BuildingLaunchPad:
+        occupied[mapIndex(tx, ty)] = false
+        sim.awardDelivery(nextCell.launchOwnerId, sim.items[itemIndex].kind)
+        removed[itemIndex] = true
+      elif nextCell.cellCanReceive() and not occupied[nextIndex]:
+        occupied[mapIndex(tx, ty)] = false
+        occupied[nextIndex] = true
+        sim.items[itemIndex].tileX = nx
+        sim.items[itemIndex].tileY = ny
+        sim.items[itemIndex].progress = 0
+        sim.items[itemIndex].dir = nextCell.direction
+      else:
+        discard
+
+  var survivors: seq[MovingItem] = @[]
+  for i, item in sim.items:
+    if not removed[i]:
+      survivors.add(item)
+  sim.items = survivors
+
+proc spawnExtractorItems(sim: var SimServer) =
+  var occupied = newSeq[bool](sim.cells.len)
+  for item in sim.items:
+    if inBounds(item.tileX, item.tileY):
+      occupied[mapIndex(item.tileX, item.tileY)] = true
+
+  for ty in 0 ..< MapHeightTiles:
+    for tx in 0 ..< MapWidthTiles:
+      let index = mapIndex(tx, ty)
+      let cell = sim.cells[index]
+      if cell.building != BuildingExtractor or cell.ore == OreNone:
+        continue
+      if occupied[index]:
+        continue
+      let phase = (tx * 7 + ty * 11) mod ExtractSpawnInterval
+      if (sim.tickCount + phase) mod ExtractSpawnInterval != 0:
+        continue
+      sim.items.add MovingItem(
+        tileX: tx,
+        tileY: ty,
+        progress: 0,
+        kind: cell.ore,
+        dir: cell.direction
+      )
+      occupied[index] = true
+
+proc renderOreTile(sim: var SimServer, cell: Cell, screenX, screenY: int) =
+  case cell.ore
+  of OreNone:
+    discard
+  of OreSquare:
+    sim.fb.blitScreenSprite(sim.art.squarePatch, screenX, screenY)
+  of OreCircle:
+    sim.fb.blitScreenSprite(sim.art.circlePatch, screenX, screenY)
+
+proc renderBuilding(sim: var SimServer, player: Player, cell: Cell, screenX, screenY: int) =
+  case cell.building
+  of BuildingNone:
+    discard
+  of BuildingBelt:
+    sim.fb.blitScreenSprite(sim.art.belt, screenX, screenY, cell.direction.toFacing())
+  of BuildingExtractor:
+    sim.fb.blitScreenSprite(sim.art.extractor, screenX, screenY, cell.direction.toFacing())
+  of BuildingLaunchPad:
+    let sprite =
+      if cell.launchOwnerId == player.id: sim.art.launchPadOwn
+      else: sim.art.launchPadEnemy
+    sim.fb.blitScreenSprite(sprite, screenX, screenY)
+
+proc renderItems(sim: var SimServer, cameraX, cameraY: int) =
+  for item in sim.items:
+    let sprite =
+      case item.kind
+      of OreSquare: sim.art.itemSquare
+      of OreCircle: sim.art.itemCircle
+      of OreNone: continue
+
+    let
+      tileScreenX = item.tileX * WorldTilePixels - cameraX
+      tileScreenY = item.tileY * WorldTilePixels - cameraY
+      offset = min(item.progress, ItemTravelTicks) * 6 div max(1, ItemTravelTicks)
+    var
+      screenX = tileScreenX + (WorldTilePixels - sprite.width) div 2
+      screenY = tileScreenY + (WorldTilePixels - sprite.height) div 2
+    case item.dir
+    of DirUp: screenY -= offset
+    of DirRight: screenX += offset
+    of DirDown: screenY += offset
+    of DirLeft: screenX -= offset
+    sim.fb.blitScreenSprite(sprite, screenX, screenY)
+
+proc renderCursors(sim: var SimServer, playerIndex: int, cameraX, cameraY: int) =
+  for index, player in sim.players:
+    let
+      screenX = player.cursorX * WorldTilePixels - cameraX
+      screenY = player.cursorY * WorldTilePixels - cameraY
+      color = if index == playerIndex: CursorSelfColor else: player.color
+    sim.fb.blitStencilSprite(sim.art.cursorOuterMask, screenX, screenY, color)
+    if index == playerIndex and (sim.tickCount div 8) mod 2 == 0:
+      sim.fb.blitStencilSprite(sim.art.cursorInnerMask, screenX, screenY, color)
+
+proc renderScore(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let scoreText = $sim.players[playerIndex].score
+  let width = max(1, scoreText.len) * 6 + 2
+  sim.fb.drawRect(0, 0, width, 7, ToolbarColor)
+  discard sim.fb.renderNumber(sim.digitSprites, sim.players[playerIndex].score, 1, 0)
+
+proc drawToolIcon(sim: var SimServer, tool: BuildTool, x, y: int, player: Player) =
+  case tool
+  of ToolLaunchPad:
+    sim.fb.blitScreenSprite(sim.art.toolLaunchPadIcon, x, y)
+  of ToolExtractor:
+    sim.fb.blitScreenSprite(sim.art.toolExtractorIcon, x, y, player.facing.toFacing())
+  of ToolBeltUp, ToolBeltRight, ToolBeltDown, ToolBeltLeft:
+    sim.fb.blitScreenSprite(sim.art.toolBeltIcon, x, y, beltDirection(tool).toFacing())
+  of ToolEraser:
+    sim.fb.blitScreenSprite(sim.art.toolEraserIcon, x, y)
+
+proc renderToolbar(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  sim.fb.drawRect(0, ToolbarY, ScreenWidth, ToolbarHeight, ToolbarColor)
+
+  for tool in BuildTool:
+    let x = tool.ord * (ToolbarIconSize + ToolbarGap)
+    let selected = tool == player.selectedTool
+    sim.fb.blitStencilSprite(
+      sim.art.toolbarSlotMask,
+      x,
+      ToolbarY,
+      if selected: CursorSelfColor else: ToolbarDimColor
+    )
+    sim.drawToolIcon(tool, x, ToolbarY, player)
+
+proc renderWorld(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+
+  let
+    player = sim.players[playerIndex]
+    cameraX = player.cameraX
+    cameraY = player.cameraY
+    startTx = max(0, cameraX div WorldTilePixels)
+    startTy = max(0, cameraY div WorldTilePixels)
+    endTx = min(MapWidthTiles - 1, (cameraX + ScreenWidth - 1) div WorldTilePixels)
+    endTy = min(MapHeightTiles - 1, (cameraY + ScreenHeight - 1) div WorldTilePixels)
+
+  for ty in startTy .. endTy:
+    for tx in startTx .. endTx:
+      let
+        screenX = tx * WorldTilePixels - cameraX
+        screenY = ty * WorldTilePixels - cameraY
+        cell = sim.cells[mapIndex(tx, ty)]
+      sim.fb.blitScreenSprite(sim.art.ground, screenX, screenY)
+      sim.renderOreTile(cell, screenX, screenY)
+      sim.renderBuilding(player, cell, screenX, screenY)
+
+  sim.renderItems(cameraX, cameraY)
+  sim.renderCursors(playerIndex, cameraX, cameraY)
+
+proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.fb.clearFrame(BackgroundColor)
+  if playerIndex >= 0 and playerIndex < sim.players.len:
+    sim.renderWorld(playerIndex)
+    sim.renderScore(playerIndex)
+    sim.renderToolbar(playerIndex)
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
+proc step(sim: var SimServer, inputs: openArray[InputState]) =
+  inc sim.tickCount
+
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].comboTicks > 0:
+      dec sim.players[playerIndex].comboTicks
+
+  for playerIndex in 0 ..< sim.players.len:
+    let input =
+      if playerIndex < inputs.len: inputs[playerIndex]
+      else: InputState()
+    sim.applyInput(playerIndex, input)
+
+  sim.advanceItems()
+  sim.spawnExtractorItems()
+
+proc initSimServer(): SimServer =
+  result.rng = initRand(0xB0F512)
+  result.cells = newSeq[Cell](MapWidthTiles * MapHeightTiles)
+  result.fb = initFramebuffer()
+  loadPalette(PalettePath)
+  result.art = loadFactorySprites()
+  result.digitSprites = loadDigitSprites(NumbersPath)
+  result.seedOre()
+
+var appState: WebSocketAppState
+
+proc initAppState() =
+  initLock(appState.lock)
+  appState.inputMasks = initTable[WebSocket, uint8]()
+  appState.lastAppliedMasks = initTable[WebSocket, uint8]()
+  appState.playerIndices = initTable[WebSocket, int]()
+  appState.closedSockets = @[]
+
+proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
+  result = decodeInputMask(currentMask)
+  result.attack = (currentMask and ButtonAttack) != 0 and (previousMask and ButtonAttack) == 0
+  result.select = (currentMask and ButtonSelect) != 0 and (previousMask and ButtonSelect) == 0
+
+proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  if websocket notin appState.playerIndices:
+    return
+
+  let removedIndex = appState.playerIndices[websocket]
+  appState.playerIndices.del(websocket)
+  appState.inputMasks.del(websocket)
+  appState.lastAppliedMasks.del(websocket)
+
+  if removedIndex >= 0 and removedIndex < sim.players.len:
+    sim.removePlayerLaunchPad(removedIndex)
+    sim.players.delete(removedIndex)
+    for ws, value in appState.playerIndices.mpairs:
+      if value > removedIndex:
+        dec value
+
+proc httpHandler(request: Request) =
+  if request.uri == WebSocketPath and request.httpMethod == "GET":
+    discard request.upgradeToWebSocket()
+  else:
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain"
+    request.respond(200, headers, "Boundless Factory WebSocket server")
+
+proc websocketHandler(
+  websocket: WebSocket,
+  event: WebSocketEvent,
+  message: Message
+) =
+  case event
+  of OpenEvent:
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerIndices[websocket] = 0x7fffffff
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
+  of MessageEvent:
+    if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.inputMasks[websocket] = blobToMask(message.data)
+  of ErrorEvent:
+    discard
+  of CloseEvent:
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.closedSockets.add(websocket)
+
+proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
+  args.server[].serve(Port(args.port), args.address)
+
+proc runFrameLimiter(previousTick: var MonoTime) =
+  let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
+  let elapsed = getMonoTime() - previousTick
+  if elapsed < frameDuration:
+    sleep(int((frameDuration - elapsed).inMilliseconds))
+  previousTick = getMonoTime()
+
+proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
+  initAppState()
+
+  let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
+
+  var serverThread: Thread[ServerThreadArgs]
+  var serverPtr = cast[ptr Server](unsafeAddr httpServer)
+  createThread(serverThread, serverThreadProc, ServerThreadArgs(server: serverPtr, address: host, port: port))
+  httpServer.waitUntilReady()
+
+  var
+    sim = initSimServer()
+    lastTick = getMonoTime()
+
+  while true:
+    var
+      sockets: seq[WebSocket] = @[]
+      playerIndices: seq[int] = @[]
+      inputs: seq[InputState]
+
+    {.gcsafe.}:
+      withLock appState.lock:
+        for websocket in appState.closedSockets:
+          sim.removePlayer(websocket)
+        appState.closedSockets.setLen(0)
+
+        for websocket in appState.playerIndices.keys:
+          if appState.playerIndices[websocket] == 0x7fffffff:
+            appState.playerIndices[websocket] = sim.addPlayer()
+
+        inputs = newSeq[InputState](sim.players.len)
+        for websocket, playerIndex in appState.playerIndices.pairs:
+          if playerIndex < 0 or playerIndex >= inputs.len:
+            continue
+          let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
+          let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
+          inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
+          appState.lastAppliedMasks[websocket] = currentMask
+          sockets.add(websocket)
+          playerIndices.add(playerIndex)
+
+    sim.step(inputs)
+
+    for i in 0 ..< sockets.len:
+      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+      try:
+        sockets[i].send(frameBlob, BinaryMessage)
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            sim.removePlayer(sockets[i])
+
+    runFrameLimiter(lastTick)
+
+when isMainModule:
+  var
+    address = DefaultHost
+    port = DefaultPort
+  for kind, key, val in getopt():
+    case kind
+    of cmdLongOption:
+      case key
+      of "address": address = val
+      of "port": port = parseInt(val)
+      else: discard
+    else: discard
+  runServerLoop(address, port)

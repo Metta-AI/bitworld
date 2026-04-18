@@ -8,6 +8,13 @@ The project is meant to be a playground for studying coordination, competition, 
 
 In Bit World, players begin with very little and gradually build strength by exploring the world, collecting items, and surviving combat. The world starts gently, with beginner-friendly areas and weaker monsters, then expands into more difficult regions that reward stronger coordination and create more opportunities for conflict.
 
+The repo currently includes playable multiplayer prototypes for:
+
+- `Big Adventure`
+- `Infinite Blocks`
+- `Planet Wars`
+- `Fancy Cookout`
+
 The core idea is not just combat or progression. Bit World is built around multiplayer interaction:
 
 - Players can cooperate to defeat stronger enemies.
@@ -86,3 +93,9 @@ At a high level:
 ## Project Status
 
 Bit World is currently at the concept stage. This repository is the starting point for documenting the idea and shaping the project into a more concrete game and research platform.
+
+`Fancy Cookout` now has a first playable kitchen slice focused on dishes: players can pick up dirty plates with `A`, place or drop them with `B`, wash them cooperatively at a sink by holding `B`, and return clean plates to the rack for personal score.
+
+## Tools
+
+Use `tools/quick_run fancy_cookout` to let it pick a random port between `5000` and `10000`, or pass an explicit port like `tools/quick_run fancy_cookout 8080`. It compiles the selected Bit World server and the client, waits for the server to come up, and then launches both together on the requested port. It also cleans up both child processes on exit and Ctrl+C.

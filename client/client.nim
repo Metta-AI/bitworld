@@ -1,10 +1,12 @@
-import paddy, pixie, protocol, silky, whisky, windy
+import paddy, pixie, protocol, server, silky, whisky, windy
 import std/[math, monotimes, options, os, parseopt, strutils, times, locks]
 
 const
   AtlasPath = "dist/atlas.png"
+  LogoPath = "data/logo.png"
   ShellPath = "data/atlas/shell.png"
   WebSocketPath = "/ws"
+  MinimumSplashMilliseconds = 1500'i64
 
   ShellWidth* = 293
   ShellHeight* = 478
@@ -44,6 +46,7 @@ type
     desiredMask: uint8
     latestFrame: seq[uint8]
     connected: bool
+    hasFrame: bool
     stop: bool
     reconnectRequested: bool
     errorMessage: string
@@ -56,7 +59,9 @@ type
     window*: Window
     silky*: Silky
     unpacked*: seq[uint8]
+    splashPixels: seq[uint8]
     shell*: ShellVisualState
+    splashStartedAt: MonoTime
     selectedGamepadIndex: int
     network: NetworkShared
     networkThread: Thread[NetworkThreadArgs]
@@ -72,6 +77,20 @@ proc detectShellSize(): IVec2 =
     except PixieError:
       discard
   ivec2(ShellWidth, ShellHeight)
+
+proc loadSplashPixels(): seq[uint8] =
+  result = newSeq[uint8](ScreenWidth * ScreenHeight)
+  if not fileExists(LogoPath):
+    return
+
+  try:
+    let sprite = spriteFromImage(readImage(LogoPath))
+    if sprite.width == ScreenWidth and sprite.height == ScreenHeight:
+      result = sprite.pixels
+    else:
+      echo "[Warning] Splash asset must be 64x64: " & LogoPath
+  except CatchableError as e:
+    echo "[Warning] Failed to load splash asset: " & e.msg
 
 proc unpack4bpp*(packed: openArray[uint8], unpacked: var seq[uint8]) =
   let targetLen = packed.len * 2
@@ -99,6 +118,7 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
       {.gcsafe.}:
         withLock args.shared[].lock:
           args.shared[].connected = true
+          args.shared[].hasFrame = false
           args.shared[].errorMessage = ""
 
       while true:
@@ -120,6 +140,7 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
           {.gcsafe.}:
             withLock args.shared[].lock:
               args.shared[].connected = false
+              args.shared[].hasFrame = false
           ws.close()
           break
 
@@ -135,6 +156,7 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
               {.gcsafe.}:
                 withLock args.shared[].lock:
                   blobToBytes(message.get.data, args.shared[].latestFrame)
+                  args.shared[].hasFrame = true
           of Ping:
             ws.send(message.get.data, Pong)
           of TextMessage, Pong:
@@ -143,6 +165,7 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
       {.gcsafe.}:
         withLock args.shared[].lock:
           args.shared[].connected = false
+          args.shared[].hasFrame = false
           args.shared[].errorMessage = e.msg
           if args.shared[].stop:
             return
@@ -178,6 +201,8 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
     result.silky.uiScale = 2.0
     result.window.size = shellSize * 2
   result.unpacked = @[]
+  result.splashPixels = loadSplashPixels()
+  result.splashStartedAt = getMonoTime()
   result.selectedGamepadIndex = 0
 
   initLock(result.network.lock)
@@ -279,8 +304,10 @@ proc captureInputMask*(client: ClientApp): uint8 =
   for i in 0 ..< client.shell.topPressed.len:
     client.shell.topPressed[i] = client.shell.topPressed[i] or i == client.selectedGamepadIndex
   if reconnectPressed:
+    client.splashStartedAt = getMonoTime()
     {.gcsafe.}:
       withLock client.network.lock:
+        client.network.hasFrame = false
         client.network.reconnectRequested = true
   result = encodeInputMask(input)
 
@@ -317,13 +344,25 @@ proc tickNetwork(client: ClientApp, inputMask: uint8) =
     withLock client.network.lock:
       client.network.desiredMask = inputMask
 
+proc shouldShowSplash(client: ClientApp, connected, hasFrame: bool): bool =
+  (getMonoTime() - client.splashStartedAt).inMilliseconds < MinimumSplashMilliseconds or
+    not connected or
+    not hasFrame
+
 proc drawFramebuffer*(client: ClientApp) =
-  var packed = newSeq[uint8](ProtocolBytes)
+  var
+    packed = newSeq[uint8](ProtocolBytes)
+    connected: bool
+    hasFrame: bool
   {.gcsafe.}:
     withLock client.network.lock:
+      connected = client.network.connected
+      hasFrame = client.network.hasFrame
       if client.network.latestFrame.len == ProtocolBytes:
         packed = client.network.latestFrame
-  unpack4bpp(packed, client.unpacked)
+  let showSplash = client.shouldShowSplash(connected, hasFrame)
+  if not showSplash:
+    unpack4bpp(packed, client.unpacked)
 
   let
     frameSize = client.window.size
@@ -342,9 +381,12 @@ proc drawFramebuffer*(client: ClientApp) =
     rgbx(41, 42, 44, 255)
   )
 
+  let sourcePixels =
+    if showSplash: client.splashPixels
+    else: client.unpacked
   for y in 0 ..< ScreenHeight:
     for x in 0 ..< ScreenWidth:
-      let index = client.unpacked[y * ScreenWidth + x]
+      let index = sourcePixels[y * ScreenWidth + x]
       if index == 0:
         continue
       let px = originX + x * pixelScale

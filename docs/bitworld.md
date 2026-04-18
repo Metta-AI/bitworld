@@ -29,26 +29,11 @@ Types of games: cooperative/competitive social dilemma games, non-zero-sum. Make
 
 # Infinite Blocks
 - Multiple players dropping bricks
-- You can coop and clear lines 8 lines at a time. (non zero sum)
+- You can collaborate and clear lines 8 lines at a time. (non zero sum)
 - Each player drops a different color, liens with many colors earn more (non zero sum)
 - You can grief and put blocks into other people's thing. (betrayal)
 - You can steal other peoples nearly complete lines. (betrayal)
 - Huge mountain of badly placed bricks grows and grows.
-
-# Fancy Cookout
-- Multiple players cooking food
-- You can coop and cook food faster.
-- You can grief and put food into other people's thing.
-- Only person delivering the food gets the reward.
-- You can only cook complex recipes with multiple players. (non zero sum)
-- People need to take turns selling food, or you can take it all for yourself. (betrayal)
-
-# Mine World
-- Multiple players building blocks
-- You can coop and build faster.
-- At night monsters spawn and attack players.
-- Higher tier resources are possible with multiple players. (non zero sum)
-- You can grief and steal other people's resources. (betrayal)
 
 # Planet Wars
 - Multiple players controlling planets
@@ -65,3 +50,20 @@ Types of games: cooperative/competitive social dilemma games, non-zero-sum. Make
 - You can coop and build faster and get more resources.
 - You can combine special power of other players to gain higher tier things (non zero sum)
 - You can steel other people's resources. (betrayal)
+
+# Fancy Cookout
+- Multiple players cooking food
+- You can collaborate and cook food faster.
+- You can grief and put food into other people's thing.
+- Only person delivering the food gets the reward.
+- You can only cook complex recipes with multiple players. (non zero sum)
+- People need to take turns selling food, or you can take it all for yourself. (betrayal)
+- First playable slice: dirty dishes spawn at the return counter, players carry them with `A`, place them with `B`, wash them faster together by holding `B` at the sink, and score when clean dishes are returned to the rack.
+
+# Mine World
+- Multiple players building blocks
+- You can collaborate and build faster.
+- At night monsters spawn and attack players.
+- Higher tier resources are possible with multiple players. (non zero sum)
+- You can grief and steal other people's resources. (betrayal)
+
