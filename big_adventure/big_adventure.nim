@@ -43,6 +43,7 @@ type
   Pickup* = object
     x*, y*: int
     kind*: PickupKind
+    value*: int
 
   Mob* = object
     x*, y*: int
@@ -381,6 +382,46 @@ proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
   else:
     if dy < 0: FaceUp else: FaceDown
 
+proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives > 0:
+    return
+
+  if sim.players[playerIndex].coins > 0:
+    sim.pickups.add(Pickup(
+      x: sim.players[playerIndex].x,
+      y: sim.players[playerIndex].y,
+      kind: PickupCoin,
+      value: sim.players[playerIndex].coins
+    ))
+    sim.players[playerIndex].coins = 0
+
+proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0 or sim.players[playerIndex].invulnTicks > 0:
+    return
+
+  dec sim.players[playerIndex].lives
+  sim.players[playerIndex].invulnTicks = 30
+
+  var actor = Actor(
+    x: sim.players[playerIndex].x,
+    y: sim.players[playerIndex].y,
+    sprite: sim.players[playerIndex].sprite
+  )
+  sim.moveActor(actor, knockbackDx, knockbackDy)
+  sim.players[playerIndex].x = actor.x
+  sim.players[playerIndex].y = actor.y
+  sim.players[playerIndex].velX = 0
+  sim.players[playerIndex].velY = 0
+  sim.players[playerIndex].carryX = 0
+  sim.players[playerIndex].carryY = 0
+
+  if sim.players[playerIndex].lives <= 0:
+    sim.handlePlayerDeath(playerIndex)
+
 proc applyAttack(sim: var SimServer) =
   if sim.players.len == 0:
     return
@@ -414,6 +455,25 @@ proc applyAttack(sim: var SimServer) =
         sim.mobs[mobIndex].y = actor.y
         break
 
+    for targetPlayerIndex in 0 ..< sim.players.len:
+      if targetPlayerIndex == playerIndex:
+        continue
+      let targetPlayer = sim.players[targetPlayerIndex]
+      if targetPlayer.lives <= 0:
+        continue
+      if rectsOverlap(
+        hit.x, hit.y, hit.w, hit.h,
+        targetPlayer.x, targetPlayer.y, targetPlayer.sprite.width, targetPlayer.sprite.height
+      ):
+        var dx = 0
+        var dy = 0
+        case player.facing
+        of FaceUp: dy = -4
+        of FaceDown: dy = 4
+        of FaceLeft: dx = -4
+        of FaceRight: dx = 4
+        sim.damagePlayer(targetPlayerIndex, dx, dy)
+
     sim.players[playerIndex].attackResolved = true
 
   var survivors: seq[Mob] = @[]
@@ -423,9 +483,9 @@ proc applyAttack(sim: var SimServer) =
     else:
       let roll = sim.rng.rand(99)
       if roll < 10:
-        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart))
+        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
       elif roll < 60:
-        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin))
+        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
   sim.mobs = survivors
 
 proc collectPickups(sim: var SimServer) =
@@ -445,7 +505,7 @@ proc collectPickups(sim: var SimServer) =
       ):
         case pickup.kind
         of PickupCoin:
-          inc sim.players[playerIndex].coins
+          sim.players[playerIndex].coins += max(1, pickup.value)
         of PickupHeart:
           if sim.players[playerIndex].lives < MaxPlayerLives:
             inc sim.players[playerIndex].lives
@@ -515,8 +575,7 @@ proc updateMobs*(sim: var SimServer) =
           mob.x, mob.y, mob.sprite.width, mob.sprite.height,
           player.x, player.y, player.sprite.width, player.sprite.height
         ):
-          dec sim.players[playerIndex].lives
-          sim.players[playerIndex].invulnTicks = 30
+          sim.damagePlayer(playerIndex, lunge.dx, lunge.dy)
       mob.attackPhase = 0
       mob.attackCooldown = 45 + sim.rng.rand(30)
       continue

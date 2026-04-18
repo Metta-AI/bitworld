@@ -35,6 +35,7 @@ type
     dpadOffsetY: float32
     aPressed: bool
     bPressed: bool
+    startPressed: bool
     selectPressed: bool
     topPressed: array[4, bool]
 
@@ -44,6 +45,7 @@ type
     latestFrame: seq[uint8]
     connected: bool
     stop: bool
+    reconnectRequested: bool
     errorMessage: string
 
   NetworkThreadArgs = object
@@ -103,13 +105,23 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
         var
           desiredMask: uint8
           shouldStop: bool
+          shouldReconnect: bool
         {.gcsafe.}:
           withLock args.shared[].lock:
             desiredMask = args.shared[].desiredMask
             shouldStop = args.shared[].stop
+            shouldReconnect = args.shared[].reconnectRequested
+            if shouldReconnect:
+              args.shared[].reconnectRequested = false
         if shouldStop:
           ws.close()
           return
+        if shouldReconnect:
+          {.gcsafe.}:
+            withLock args.shared[].lock:
+              args.shared[].connected = false
+          ws.close()
+          break
 
         if desiredMask != lastSentMask:
           ws.send(blobFromMask(desiredMask), BinaryMessage)
@@ -187,6 +199,8 @@ proc captureInputMask*(client: ClientApp): uint8 =
   let mousePressed = pressed[MouseLeft]
   var input: InputState
   client.shell = ShellVisualState()
+  let keyboardStartPressed = pressed[KeyTab] or pressed[KeyP]
+  var reconnectPressed = keyboardStartPressed
 
   input.up = down[KeyUp] or down[KeyW]
   input.down = down[KeyDown] or down[KeyS]
@@ -223,11 +237,14 @@ proc captureInputMask*(client: ClientApp): uint8 =
       input.attack = true
     if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40):
       input.select = true
+    if pointInRect(mouse.x.int, mouse.y.int, PauseBaseX, PauseBaseY, 39, 20) and mousePressed:
+      reconnectPressed = true
     if pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20):
       input.select = true
 
   let
     bMouseHeld = mouseDown and pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40)
+    startMouseHeld = mouseDown and pointInRect(mouse.x.int, mouse.y.int, PauseBaseX, PauseBaseY, 39, 20)
     selectMouseHeld = mouseDown and pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20)
 
   let gamepads = pollGamepads()
@@ -242,7 +259,8 @@ proc captureInputMask*(client: ClientApp): uint8 =
     input.up = input.up or pad.button(GamepadUp) or ly >= deadZone
     input.down = input.down or pad.button(GamepadDown) or ly <= -deadZone
     input.attack = input.attack or pad.button(GamepadA)
-    input.select = input.select or pad.button(GamepadB) or pad.button(GamepadStart)
+    input.select = input.select or pad.button(GamepadB)
+    reconnectPressed = reconnectPressed or pad.buttonPressed(GamepadStart)
 
   if input.left:
     client.shell.dpadOffsetX = -1
@@ -255,9 +273,14 @@ proc captureInputMask*(client: ClientApp): uint8 =
 
   client.shell.aPressed = input.attack
   client.shell.bPressed = bMouseHeld or down[KeyX] or down[KeyK] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadB))
-  client.shell.selectPressed = selectMouseHeld or down[KeySpace] or down[KeyEnter] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadStart))
+  client.shell.startPressed = startMouseHeld or down[KeyTab] or down[KeyP] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadStart))
+  client.shell.selectPressed = selectMouseHeld or down[KeySpace] or down[KeyEnter]
   for i in 0 ..< client.shell.topPressed.len:
     client.shell.topPressed[i] = client.shell.topPressed[i] or i == client.selectedGamepadIndex
+  if reconnectPressed:
+    {.gcsafe.}:
+      withLock client.network.lock:
+        client.network.reconnectRequested = true
   result = encodeInputMask(input)
 
 proc drawShellUi(client: ClientApp) =
@@ -279,7 +302,10 @@ proc drawShellUi(client: ClientApp) =
     "bbutton",
     vec2(BButtonBaseX.float32, BButtonBaseY.float32 + (if client.shell.bPressed: 1'f else: 0'f))
   )
-  client.silky.drawImage("button", vec2(PauseBaseX.float32, PauseBaseY.float32))
+  client.silky.drawImage(
+    "button",
+    vec2(PauseBaseX.float32, PauseBaseY.float32 + (if client.shell.startPressed: 1'f else: 0'f))
+  )
   client.silky.drawImage(
     "button",
     vec2(SelectBaseX.float32, SelectBaseY.float32 + (if client.shell.selectPressed: 1'f else: 0'f))
