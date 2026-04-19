@@ -544,7 +544,7 @@ proc decideNextMask(bot: var Bot): uint8 =
 
     if target.kind == SnakeKind and inAttackRange(target):
       if not bot.previousAttack:
-        result = aimMask or ButtonAttack
+        result = aimMask or ButtonA
         bot.think("seeing snake at (" & $targetTx & ", " & $targetTy & "), attacking")
         bot.previousAttack = true
       else:

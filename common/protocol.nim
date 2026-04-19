@@ -15,11 +15,12 @@ const
   ButtonLeft* = 1'u8 shl 2
   ButtonRight* = 1'u8 shl 3
   ButtonSelect* = 1'u8 shl 4
-  ButtonAttack* = 1'u8 shl 5
+  ButtonA* = 1'u8 shl 5
+  ButtonB* = 1'u8 shl 6
 
 type
   InputState* = object
-    up*, down*, left*, right*, select*, attack*: bool
+    up*, down*, left*, right*, select*, attack*, b*: bool
 
 var Palette*: array[16, ColorRGBA]
 
@@ -46,7 +47,9 @@ proc encodeInputMask*(input: InputState): uint8 =
   if input.select:
     result = result or ButtonSelect
   if input.attack:
-    result = result or ButtonAttack
+    result = result or ButtonA
+  if input.b:
+    result = result or ButtonB
 
 proc decodeInputMask*(mask: uint8): InputState =
   result.up = (mask and ButtonUp) != 0
@@ -54,7 +57,8 @@ proc decodeInputMask*(mask: uint8): InputState =
   result.left = (mask and ButtonLeft) != 0
   result.right = (mask and ButtonRight) != 0
   result.select = (mask and ButtonSelect) != 0
-  result.attack = (mask and ButtonAttack) != 0
+  result.attack = (mask and ButtonA) != 0
+  result.b = (mask and ButtonB) != 0
 
 proc blobFromBytes*(bytes: openArray[uint8]): string =
   result = newString(bytes.len)

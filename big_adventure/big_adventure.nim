@@ -719,7 +719,7 @@ proc initAppState() =
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
-  result.attack = (currentMask and ButtonAttack) != 0 and (previousMask and ButtonAttack) == 0
+  result.attack = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket notin appState.playerIndices:

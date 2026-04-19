@@ -40,8 +40,6 @@ const
   GridBoxH = 44
   EditorCellW = 8
   EditorCellH = 8
-  DeleteHoldDelay = 10
-  DeleteRepeatInterval = 4
 
 type
   SheetSpriteKind = enum
@@ -73,8 +71,6 @@ type
     draft: string
     editing: bool
     selectedCharIndex: int
-    selectHoldTicks: int
-    deletedDuringSelectHold: bool
 
   PlayerInput = object
     upHeld: bool
@@ -85,8 +81,8 @@ type
     downPressed: bool
     leftPressed: bool
     rightPressed: bool
+    bPressed: bool
     attackPressed: bool
-    selectHeld: bool
     selectPressed: bool
 
   SimServer = object
@@ -402,16 +398,11 @@ proc openEditor(player: var Player) =
     player.selectedCharIndex = editorIndexForChar(player.draft[^1])
   else:
     player.selectedCharIndex = editorIndexForChar('A')
-  # Ignore the release from the same select press that opened the editor.
-  player.selectHoldTicks = -1
-  player.deletedDuringSelectHold = false
   player.stopPlayer()
 
 proc commitEditor(player: var Player) =
   player.message = player.draft.strip(chars = {' '})
   player.editing = false
-  player.selectHoldTicks = 0
-  player.deletedDuringSelectHold = false
   player.stopPlayer()
 
 proc moveEditorSelection(player: var Player, dx, dy: int) =
@@ -441,25 +432,8 @@ proc applyChatInput(sim: var SimServer, playerIndex: int, input: PlayerInput) =
     if input.selectPressed:
       player.openEditor()
   else:
-    if input.selectHeld:
-      if player.selectHoldTicks >= 0:
-        inc player.selectHoldTicks
-        if player.selectHoldTicks >= DeleteHoldDelay and (
-          player.selectHoldTicks == DeleteHoldDelay or
-          ((player.selectHoldTicks - DeleteHoldDelay) mod DeleteRepeatInterval) == 0
-        ):
-          if player.draft.len > 0:
-            player.rewindDraft()
-            player.deletedDuringSelectHold = true
-    else:
-      if player.selectHoldTicks < 0:
-        player.selectHoldTicks = 0
-      elif player.selectHoldTicks > 0:
-        if not player.deletedDuringSelectHold:
-          player.commitEditor()
-        else:
-          player.selectHoldTicks = 0
-          player.deletedDuringSelectHold = false
+    if input.selectPressed:
+      player.commitEditor()
 
   if player.editing:
     if input.upPressed:
@@ -470,6 +444,8 @@ proc applyChatInput(sim: var SimServer, playerIndex: int, input: PlayerInput) =
       player.moveEditorSelection(-1, 0)
     if input.rightPressed:
       player.moveEditorSelection(1, 0)
+    if input.bPressed:
+      player.rewindDraft()
     if input.attackPressed:
       player.advanceDraft()
 
@@ -624,8 +600,8 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   result.downPressed = (currentMask and ButtonDown) != 0 and (previousMask and ButtonDown) == 0
   result.leftPressed = (currentMask and ButtonLeft) != 0 and (previousMask and ButtonLeft) == 0
   result.rightPressed = (currentMask and ButtonRight) != 0 and (previousMask and ButtonRight) == 0
-  result.attackPressed = (currentMask and ButtonAttack) != 0 and (previousMask and ButtonAttack) == 0
-  result.selectHeld = decoded.select
+  result.bPressed = (currentMask and ButtonB) != 0 and (previousMask and ButtonB) == 0
+  result.attackPressed = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
   result.selectPressed = (currentMask and ButtonSelect) != 0 and (previousMask and ButtonSelect) == 0
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =

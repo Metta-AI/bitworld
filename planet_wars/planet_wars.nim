@@ -716,7 +716,7 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   result.down = decoded.down
   result.left = decoded.left
   result.right = decoded.right
-  result.attackPressed = (currentMask and ButtonAttack) != 0 and (previousMask and ButtonAttack) == 0
+  result.attackPressed = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
   result.selectHeld = decoded.select
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =

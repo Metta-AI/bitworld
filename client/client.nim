@@ -233,6 +233,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
   input.left = down[KeyLeft] or down[KeyA]
   input.right = down[KeyRight] or down[KeyD]
   input.select = down[KeySpace] or down[KeyEnter]
+  input.b = down[KeyX] or down[KeyK]
   input.attack = down[KeyZ] or down[KeyJ]
 
   if mouseDown:
@@ -261,6 +262,8 @@ proc captureInputMask*(client: ClientApp): uint8 =
 
     if pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40):
       input.attack = true
+    if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40):
+      input.b = true
     if pointInRect(mouse.x.int, mouse.y.int, PauseBaseX, PauseBaseY, 39, 20) and mousePressed:
       reconnectPressed = true
     if pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20):
@@ -282,6 +285,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
     input.right = input.right or pad.button(GamepadRight) or lx >= deadZone
     input.up = input.up or pad.button(GamepadUp) or ly >= deadZone
     input.down = input.down or pad.button(GamepadDown) or ly <= -deadZone
+    input.b = input.b or pad.button(GamepadB)
     input.attack = input.attack or pad.button(GamepadA)
     input.select = input.select or pad.button(GamepadStart)
     reconnectPressed = reconnectPressed or pad.buttonPressed(GamepadSelect)

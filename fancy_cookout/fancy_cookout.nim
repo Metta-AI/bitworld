@@ -793,7 +793,7 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   result.down = decoded.down
   result.left = decoded.left
   result.right = decoded.right
-  result.pickPressed = (currentMask and ButtonAttack) != 0 and (previousMask and ButtonAttack) == 0
+  result.pickPressed = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
   result.interactPressed = (currentMask and ButtonSelect) != 0 and (previousMask and ButtonSelect) == 0
   result.interactHeld = (currentMask and ButtonSelect) != 0
 
