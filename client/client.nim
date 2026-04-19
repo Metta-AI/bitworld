@@ -7,28 +7,45 @@ const
   ShellPath = "data/atlas/shell.png"
   WebSocketPath = "/ws"
   MinimumSplashMilliseconds = 1500'i64
+  LayoutScale = 2
+  PressOffset = LayoutScale.float32
 
-  ShellWidth* = 293
-  ShellHeight* = 478
+  TopButtonW = 39 * LayoutScale
+  TopButtonH = 20 * LayoutScale
+  DpadSize = 78 * LayoutScale
+  DpadCenter = DpadSize div 2
+  DpadDeadZone = 6 * LayoutScale
+  FaceButtonW = 41 * LayoutScale
+  FaceButtonH = 40 * LayoutScale
+  StartSelectButtonW = 39 * LayoutScale
+  StartSelectButtonH = 20 * LayoutScale
 
-  ScreenX = 45
-  ScreenY = 67
-  ScreenW = 200
-  ScreenH = 200
+  ShellWidth* = 293 * LayoutScale
+  ShellHeight* = 478 * LayoutScale
 
-  TopButtonY = 17
-  TopButtonXs = [52, 102, 152, 202]
+  ScreenX = 45 * LayoutScale
+  ScreenY = 67 * LayoutScale
+  ScreenW = 200 * LayoutScale
+  ScreenH = 200 * LayoutScale
 
-  DpadBaseX = 28
-  DpadBaseY = 315
-  AButtonBaseX = 210
-  AButtonBaseY = 323
-  BButtonBaseX = 171
-  BButtonBaseY = 346
-  PauseBaseX = 148
-  PauseBaseY = 411
-  SelectBaseX = 103
-  SelectBaseY = 411
+  TopButtonY = 17 * LayoutScale
+  TopButtonXs = [
+    52 * LayoutScale,
+    102 * LayoutScale,
+    152 * LayoutScale,
+    202 * LayoutScale
+  ]
+
+  DpadBaseX = 28 * LayoutScale
+  DpadBaseY = 315 * LayoutScale
+  AButtonBaseX = 210 * LayoutScale
+  AButtonBaseY = 323 * LayoutScale
+  BButtonBaseX = 171 * LayoutScale
+  BButtonBaseY = 346 * LayoutScale
+  PauseBaseX = 103 * LayoutScale
+  PauseBaseY = 411 * LayoutScale
+  SelectBaseX = 148 * LayoutScale
+  SelectBaseY = 411 * LayoutScale
   TargetFps = 24.0
   ChatKeyboardChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ .?!"
   ChatKeyboardCols = 6
@@ -477,39 +494,60 @@ proc captureInputMask*(client: ClientApp): uint8 =
 
   if mouseDown:
     for i, buttonX in TopButtonXs:
-      if pointInRect(mouse.x.int, mouse.y.int, buttonX, TopButtonY, 39, 20):
+      if pointInRect(mouse.x.int, mouse.y.int, buttonX, TopButtonY, TopButtonW, TopButtonH):
         client.shell.topPressed[i] = true
         if mousePressed:
           client.selectedGamepadIndex = i
 
-    if pointInRect(mouse.x.int, mouse.y.int, DpadBaseX, DpadBaseY, 78, 78):
+    if pointInRect(mouse.x.int, mouse.y.int, DpadBaseX, DpadBaseY, DpadSize, DpadSize):
       let
         localX = mouse.x.int - DpadBaseX
         localY = mouse.y.int - DpadBaseY
-        dx = localX - 39
-        dy = localY - 39
+        dx = localX - DpadCenter
+        dy = localY - DpadCenter
       if abs(dx) > abs(dy):
-        if dx < -6:
+        if dx < -DpadDeadZone:
           input.left = true
-        elif dx > 6:
+        elif dx > DpadDeadZone:
           input.right = true
       else:
-        if dy < -6:
+        if dy < -DpadDeadZone:
           input.up = true
-        elif dy > 6:
+        elif dy > DpadDeadZone:
           input.down = true
 
-    if pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40):
+    if pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, FaceButtonW, FaceButtonH):
       input.attack = true
-    if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40):
+    if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, FaceButtonW, FaceButtonH):
       input.b = true
-    if pointInRect(mouse.x.int, mouse.y.int, PauseBaseX, PauseBaseY, 39, 20) and mousePressed:
+    if pointInRect(
+      mouse.x.int,
+      mouse.y.int,
+      PauseBaseX,
+      PauseBaseY,
+      StartSelectButtonW,
+      StartSelectButtonH
+    ) and mousePressed:
       reconnectPressed = true
-    if pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20):
+    if pointInRect(
+      mouse.x.int,
+      mouse.y.int,
+      SelectBaseX,
+      SelectBaseY,
+      StartSelectButtonW,
+      StartSelectButtonH
+    ):
       input.select = true
 
   let startMouseHeld =
-    mouseDown and pointInRect(mouse.x.int, mouse.y.int, PauseBaseX, PauseBaseY, 39, 20)
+    mouseDown and pointInRect(
+      mouse.x.int,
+      mouse.y.int,
+      PauseBaseX,
+      PauseBaseY,
+      StartSelectButtonW,
+      StartSelectButtonH
+    )
 
   let gamepads = pollGamepads()
   if client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len:
@@ -528,13 +566,13 @@ proc captureInputMask*(client: ClientApp): uint8 =
     reconnectPressed = reconnectPressed or pad.buttonPressed(GamepadSelect)
 
   if input.left:
-    client.shell.dpadOffsetX = -1
+    client.shell.dpadOffsetX = -PressOffset
   if input.right:
-    client.shell.dpadOffsetX = 1
+    client.shell.dpadOffsetX = PressOffset
   if input.up:
-    client.shell.dpadOffsetY = -1
+    client.shell.dpadOffsetY = -PressOffset
   if input.down:
-    client.shell.dpadOffsetY = 1
+    client.shell.dpadOffsetY = PressOffset
 
   if client.textAssistActive():
     input = decodeInputMask(client.advanceTextAssist(currentFrameSerial))
@@ -542,13 +580,13 @@ proc captureInputMask*(client: ClientApp): uint8 =
     for i in 0 ..< client.shell.topPressed.len:
       client.shell.topPressed[i] = i == client.selectedGamepadIndex
     if input.left:
-      client.shell.dpadOffsetX = -1
+      client.shell.dpadOffsetX = -PressOffset
     if input.right:
-      client.shell.dpadOffsetX = 1
+      client.shell.dpadOffsetX = PressOffset
     if input.up:
-      client.shell.dpadOffsetY = -1
+      client.shell.dpadOffsetY = -PressOffset
     if input.down:
-      client.shell.dpadOffsetY = 1
+      client.shell.dpadOffsetY = PressOffset
 
   client.shell.aPressed = input.attack
   client.shell.bPressed = input.b
@@ -577,7 +615,7 @@ proc drawShellUi(client: ClientApp) =
   for i, buttonX in TopButtonXs:
     client.silky.drawImage(
       "button",
-      vec2(buttonX.float32, TopButtonY.float32 + (if client.shell.topPressed[i]: 1'f else: 0'f))
+      vec2(buttonX.float32, TopButtonY.float32 + (if client.shell.topPressed[i]: PressOffset else: 0'f))
     )
   client.silky.drawImage(
     "dpad",
@@ -585,19 +623,19 @@ proc drawShellUi(client: ClientApp) =
   )
   client.silky.drawImage(
     "abutton",
-    vec2(AButtonBaseX.float32, AButtonBaseY.float32 + (if client.shell.aPressed: 1'f else: 0'f))
+    vec2(AButtonBaseX.float32, AButtonBaseY.float32 + (if client.shell.aPressed: PressOffset else: 0'f))
   )
   client.silky.drawImage(
     "bbutton",
-    vec2(BButtonBaseX.float32, BButtonBaseY.float32 + (if client.shell.bPressed: 1'f else: 0'f))
+    vec2(BButtonBaseX.float32, BButtonBaseY.float32 + (if client.shell.bPressed: PressOffset else: 0'f))
   )
   client.silky.drawImage(
     "button",
-    vec2(PauseBaseX.float32, PauseBaseY.float32 + (if client.shell.startPressed: 1'f else: 0'f))
+    vec2(PauseBaseX.float32, PauseBaseY.float32 + (if client.shell.startPressed: PressOffset else: 0'f))
   )
   client.silky.drawImage(
     "button",
-    vec2(SelectBaseX.float32, SelectBaseY.float32 + (if client.shell.selectPressed: 1'f else: 0'f))
+    vec2(SelectBaseX.float32, SelectBaseY.float32 + (if client.shell.selectPressed: PressOffset else: 0'f))
   )
 
 proc tickNetwork(client: ClientApp, inputMask: uint8) =
