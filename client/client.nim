@@ -5,6 +5,9 @@ const
   AtlasPath = "dist/atlas.png"
   LogoPath = "data/logo.png"
   ShellPath = "data/atlas/shell.png"
+  ScreenshotDirName = "screenshots"
+  ScreenshotPrefix = "screenshot"
+  ScreenshotScalePower = 2
   WebSocketPath = "/ws"
   MinimumSplashMilliseconds = 1500'i64
   LayoutScale = 2
@@ -100,6 +103,7 @@ type
     silky*: Silky
     unpacked*: seq[uint8]
     splashPixels: seq[uint8]
+    screenshotRequested: bool
     shell*: ShellVisualState
     splashStartedAt: MonoTime
     selectedGamepadIndex: int
@@ -318,6 +322,52 @@ proc detectShellSize(): IVec2 =
       discard
   ivec2(ShellWidth, ShellHeight)
 
+proc screenshotDir(): string =
+  getAppDir() / ScreenshotDirName
+
+proc nextScreenshotPath(): string =
+  let dir = screenshotDir()
+  if not dirExists(dir):
+    createDir(dir)
+
+  var highestIndex = 0
+  for kind, path in walkDir(dir):
+    if kind != pcFile:
+      continue
+    let parts = splitFile(path)
+    if parts.ext.toLowerAscii() != ".png":
+      continue
+    if not parts.name.startsWith(ScreenshotPrefix):
+      continue
+    if parts.name.len <= ScreenshotPrefix.len:
+      continue
+
+    let suffix = parts.name[ScreenshotPrefix.len .. ^1]
+    if not suffix.allCharsInSet({'0'..'9'}):
+      continue
+    try:
+      highestIndex = max(highestIndex, parseInt(suffix))
+    except ValueError:
+      discard
+
+  dir / (ScreenshotPrefix & align($(highestIndex + 1), 3, '0') & ".png")
+
+proc saveScreenshot(pixels: openArray[uint8]) =
+  var image = newImage(ScreenWidth, ScreenHeight)
+  image.fill(rgba(0, 0, 0, 0))
+
+  for y in 0 ..< ScreenHeight:
+    for x in 0 ..< ScreenWidth:
+      let index = pixels[y * ScreenWidth + x]
+      if index == TransparentColorIndex:
+        continue
+      let swatch = Palette[index.int]
+      image[x, y] = rgbx(swatch.r, swatch.g, swatch.b, swatch.a)
+
+  let path = nextScreenshotPath()
+  image.magnifyBy2(ScreenshotScalePower).writeFile(path)
+  echo "Saved screenshot: " & path
+
 proc loadSplashPixels(): seq[uint8] =
   result = newSeq[uint8](ScreenWidth * ScreenHeight)
   if not fileExists(LogoPath):
@@ -479,6 +529,8 @@ proc captureInputMask*(client: ClientApp): uint8 =
     client.toggleTextAssist(currentFrameSerial)
   if pressed[KeyBackspace]:
     client.requestTextAssistDelete()
+  if pressed[KeyF1]:
+    client.screenshotRequested = true
 
   let textAssistMode = client.textAssistActive()
   let keyboardStartPressed = pressed[KeyTab] or (pressed[KeyP] and not textAssistMode)
@@ -556,6 +608,11 @@ proc captureInputMask*(client: ClientApp): uint8 =
       lx = pad.axis(GamepadLStickX)
       ly = pad.axis(GamepadLStickY)
       deadZone = 0.35'f
+    client.screenshotRequested = client.screenshotRequested or
+      pad.buttonPressed(GamepadL1) or
+      pad.buttonPressed(GamepadGripL) or
+      pad.buttonPressed(GamepadGripL2) or
+      pad.buttonPressed(GamepadMisc4)
     input.left = input.left or pad.button(GamepadLeft) or lx <= -deadZone
     input.right = input.right or pad.button(GamepadRight) or lx >= deadZone
     input.up = input.up or pad.button(GamepadUp) or ly >= deadZone
@@ -683,6 +740,12 @@ proc drawFramebuffer*(client: ClientApp) =
   let sourcePixels =
     if showSplash: client.splashPixels
     else: client.unpacked
+  if client.screenshotRequested:
+    client.screenshotRequested = false
+    try:
+      saveScreenshot(sourcePixels)
+    except CatchableError as e:
+      echo "[Warning] Failed to save screenshot: " & e.msg
   for y in 0 ..< ScreenHeight:
     for x in 0 ..< ScreenWidth:
       let index = sourcePixels[y * ScreenWidth + x]

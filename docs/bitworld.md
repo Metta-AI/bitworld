@@ -17,7 +17,7 @@ You connect over a URL. We are basically an API and tournament host. Easily run 
 
 Good for both reinforcement learning and coding agents.
 
-Types of games: cooperative/competitive social dilemma games, non-zero-sum. Make short term betrayal possible and beneficial, but hinders long term success.
+Types of games: Cooperative/competitive social dilemma games, non-zero-sum. Make short term betrayal possible and beneficial, but hinders long term success.
 
 # Big Adventure
 - Zelda/WoW/Diablo style games

@@ -20,7 +20,6 @@ const
   SpawnSearchRadius = 7
   MoveRepeatInterval = 3
   ExtractSpawnInterval = 18
-  ItemTravelTicks = 6
   ComboWindowTicks = 24
 
   ToolbarHeight = 8
@@ -70,11 +69,21 @@ type
     launchOwnerId: int
 
   MovingItem = object
-    tileX: int
-    tileY: int
-    progress: int
+    worldX: int
+    worldY: int
     kind: OreKind
-    dir: Direction
+
+  ItemMoveAction = enum
+    ItemMove
+    ItemDeliver
+    ItemRemove
+
+  MoveIntent = object
+    action: ItemMoveAction
+    nextX: int
+    nextY: int
+    ownerId: int
+    stepDir: Direction
 
   Player = object
     id: int
@@ -107,6 +116,8 @@ type
     cursorInnerMask: Sprite
     itemSquare: Sprite
     itemCircle: Sprite
+    itemSquareColor: uint8
+    itemCircleColor: uint8
     toolbarSlotMask: Sprite
     toolLaunchPadIcon: Sprite
     toolExtractorIcon: Sprite
@@ -152,6 +163,30 @@ proc delta(dir: Direction): tuple[dx, dy: int] =
   of DirDown: (0, 1)
   of DirLeft: (-1, 0)
 
+proc worldIndex(wx, wy: int): int =
+  wy * WorldWidthPixels + wx
+
+proc tileMinX(tx: int): int =
+  tx * WorldTilePixels
+
+proc tileMinY(ty: int): int =
+  ty * WorldTilePixels
+
+proc tileCenterX(tx: int): int =
+  tileMinX(tx) + WorldTilePixels div 2
+
+proc tileCenterY(ty: int): int =
+  tileMinY(ty) + WorldTilePixels div 2
+
+proc worldTileX(wx: int): int =
+  wx div WorldTilePixels
+
+proc worldTileY(wy: int): int =
+  wy div WorldTilePixels
+
+proc inWorldBounds(wx, wy: int): bool =
+  wx >= 0 and wy >= 0 and wx < WorldWidthPixels and wy < WorldHeightPixels
+
 proc playerColorFor(id: int): uint8 =
   PlayerColors[(id - 1) mod PlayerColors.len]
 
@@ -163,11 +198,13 @@ proc nextDirection(dir: Direction): Direction =
   of DirLeft: DirUp
 
 proc toFacing(dir: Direction): Facing =
+  # The authored factory sheet uses right-facing source art.
+  # Map directions onto the framebuffer rotations from that basis.
   case dir
-  of DirUp: FaceUp
-  of DirRight: FaceRight
-  of DirDown: FaceDown
-  of DirLeft: FaceLeft
+  of DirUp: FaceLeft
+  of DirRight: FaceDown
+  of DirDown: FaceRight
+  of DirLeft: FaceUp
 
 proc drawRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in 0 ..< h:
@@ -186,6 +223,12 @@ proc renderNumber(
     fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
     x += digitSprites[digit].width
   x - screenX
+
+proc firstOpaqueColor(sprite: Sprite, fallback: uint8): uint8 =
+  for color in sprite.pixels:
+    if color != TransparentColorIndex:
+      return color
+  fallback
 
 proc spriteFromSheet(sheet: Image, x, y, w, h: int): Sprite =
   result = Sprite(width: w, height: h, pixels: newSeq[uint8](w * h))
@@ -244,6 +287,8 @@ proc loadFactorySprites(): FactorySprites =
 
   result.itemSquare = spriteFromSheet(sheet, 0 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
   result.itemCircle = spriteFromSheet(sheet, 1 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
+  result.itemSquareColor = result.itemSquare.firstOpaqueColor(15'u8)
+  result.itemCircleColor = result.itemCircle.firstOpaqueColor(14'u8)
   result.toolbarSlotMask = spriteFromSheet(sheet, 2 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
   result.toolLaunchPadIcon = spriteFromSheet(sheet, 3 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
   result.toolExtractorIcon = spriteFromSheet(sheet, 4 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
@@ -336,7 +381,7 @@ proc findPlayerSpawn(sim: var SimServer): tuple[x, y: int] =
 proc removeItemsAt(sim: var SimServer, tx, ty: int) =
   var survivors: seq[MovingItem] = @[]
   for item in sim.items:
-    if item.tileX == tx and item.tileY == ty:
+    if worldTileX(item.worldX) == tx and worldTileY(item.worldY) == ty:
       continue
     survivors.add(item)
   sim.items = survivors
@@ -502,53 +547,163 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
     sim.players[playerIndex].cursorY = clamp(sim.players[playerIndex].cursorY + vertical, 0, MapHeightTiles - 1)
     sim.players[playerIndex].moveTicksY = MoveRepeatInterval
 
-  if input.select:
+  if input.b:
     sim.players[playerIndex].cycleTool()
   if input.attack:
     sim.placeTool(playerIndex)
 
   sim.players[playerIndex].recenterCamera()
 
-proc cellCanReceive(cell: Cell): bool =
-  cell.building == BuildingBelt
+proc itemColor(sim: SimServer, kind: OreKind): uint8 =
+  case kind
+  of OreSquare: sim.art.itemSquareColor
+  of OreCircle: sim.art.itemCircleColor
+  of OreNone: TransparentColorIndex
 
-proc compareMoveOrder(items: seq[MovingItem], a, b: int): int =
+proc extractorSpawnPixel(tx, ty: int, dir: Direction): tuple[x, y: int] =
+  case dir
+  of DirUp:
+    (tileCenterX(tx), tileMinY(ty) + WorldTilePixels - 1)
+  of DirRight:
+    (tileMinX(tx), tileCenterY(ty))
+  of DirDown:
+    (tileCenterX(tx), tileMinY(ty))
+  of DirLeft:
+    (tileMinX(tx) + WorldTilePixels - 1, tileCenterY(ty))
+
+proc computeMoveIntent(sim: SimServer, item: MovingItem): MoveIntent =
+  result.stepDir = DirRight
+  if not inWorldBounds(item.worldX, item.worldY):
+    result.action = ItemRemove
+    return
+
+  let
+    tx = worldTileX(item.worldX)
+    ty = worldTileY(item.worldY)
+  if not inBounds(tx, ty):
+    result.action = ItemRemove
+    return
+
+  let cell = sim.cells[mapIndex(tx, ty)]
+  case cell.building
+  of BuildingNone:
+    result.action = ItemRemove
+  of BuildingLaunchPad:
+    result.action = ItemDeliver
+    result.ownerId = cell.launchOwnerId
+  of BuildingBelt, BuildingExtractor:
+    let
+      centerX = tileCenterX(tx)
+      centerY = tileCenterY(ty)
+    var
+      nextX = item.worldX
+      nextY = item.worldY
+
+    # Each tile behaves like a one-pixel-wide lane. Items first steer onto the
+    # lane center, then advance one pixel at a time in the tile's facing.
+    case cell.direction
+    of DirUp, DirDown:
+      if item.worldX != centerX:
+        if item.worldX < centerX:
+          inc nextX
+          result.stepDir = DirRight
+        else:
+          dec nextX
+          result.stepDir = DirLeft
+      else:
+        let d = delta(cell.direction)
+        nextY += d.dy
+        result.stepDir = cell.direction
+    of DirLeft, DirRight:
+      if item.worldY != centerY:
+        if item.worldY < centerY:
+          inc nextY
+          result.stepDir = DirDown
+        else:
+          dec nextY
+          result.stepDir = DirUp
+      else:
+        let d = delta(cell.direction)
+        nextX += d.dx
+        result.stepDir = cell.direction
+
+    if not inWorldBounds(nextX, nextY):
+      result.action = ItemRemove
+      return
+
+    let
+      nextTx = worldTileX(nextX)
+      nextTy = worldTileY(nextY)
+    if not inBounds(nextTx, nextTy):
+      result.action = ItemRemove
+      return
+
+    if nextTx != tx or nextTy != ty:
+      let nextCell = sim.cells[mapIndex(nextTx, nextTy)]
+      case nextCell.building
+      of BuildingLaunchPad:
+        result.action = ItemDeliver
+        result.ownerId = nextCell.launchOwnerId
+      of BuildingBelt, BuildingExtractor:
+        result.action = ItemMove
+      of BuildingNone:
+        result.action = ItemRemove
+    else:
+      result.action = ItemMove
+
+    result.nextX = nextX
+    result.nextY = nextY
+
+proc moveActionPriority(intent: MoveIntent): int =
+  case intent.action
+  of ItemDeliver, ItemRemove: 0
+  of ItemMove: 1
+
+proc compareMoveOrder(items: seq[MovingItem], intents: seq[MoveIntent], a, b: int): int =
   let
     ia = items[a]
     ib = items[b]
-  if ia.progress != ib.progress:
-    return cmp(ib.progress, ia.progress)
-  if ia.dir != ib.dir:
-    return cmp(ia.dir.ord, ib.dir.ord)
+    planA = intents[a]
+    planB = intents[b]
+  if planA.moveActionPriority() != planB.moveActionPriority():
+    return cmp(planA.moveActionPriority(), planB.moveActionPriority())
+  if planA.stepDir != planB.stepDir:
+    return cmp(planA.stepDir.ord, planB.stepDir.ord)
 
-  case ia.dir
+  case planA.stepDir
   of DirRight:
-    if ia.tileX != ib.tileX: return cmp(ib.tileX, ia.tileX)
-    cmp(ia.tileY, ib.tileY)
+    if ia.worldX != ib.worldX: return cmp(ib.worldX, ia.worldX)
+    cmp(ia.worldY, ib.worldY)
   of DirLeft:
-    if ia.tileX != ib.tileX: return cmp(ia.tileX, ib.tileX)
-    cmp(ia.tileY, ib.tileY)
+    if ia.worldX != ib.worldX: return cmp(ia.worldX, ib.worldX)
+    cmp(ia.worldY, ib.worldY)
   of DirDown:
-    if ia.tileY != ib.tileY: return cmp(ib.tileY, ia.tileY)
-    cmp(ia.tileX, ib.tileX)
+    if ia.worldY != ib.worldY: return cmp(ib.worldY, ia.worldY)
+    cmp(ia.worldX, ib.worldX)
   of DirUp:
-    if ia.tileY != ib.tileY: return cmp(ia.tileY, ib.tileY)
-    cmp(ia.tileX, ib.tileX)
+    if ia.worldY != ib.worldY: return cmp(ia.worldY, ib.worldY)
+    cmp(ia.worldX, ib.worldX)
 
 proc advanceItems(sim: var SimServer) =
   if sim.items.len == 0:
     return
 
-  var occupied = newSeq[bool](sim.cells.len)
+  var occupied = newSeq[bool](WorldWidthPixels * WorldHeightPixels)
   for item in sim.items:
-    if inBounds(item.tileX, item.tileY):
-      occupied[mapIndex(item.tileX, item.tileY)] = true
+    if inWorldBounds(item.worldX, item.worldY):
+      occupied[worldIndex(item.worldX, item.worldY)] = true
+
+  var intents = newSeq[MoveIntent](sim.items.len)
+  for i, item in sim.items:
+    intents[i] = sim.computeMoveIntent(item)
 
   var order = newSeq[int](sim.items.len)
   for i in 0 ..< order.len:
     order[i] = i
-  let itemsSnapshot = sim.items
-  order.sort(proc(a, b: int): int = compareMoveOrder(itemsSnapshot, a, b))
+  let
+    itemsSnapshot = sim.items
+    intentsSnapshot = intents
+  order.sort(proc(a, b: int): int = compareMoveOrder(itemsSnapshot, intentsSnapshot, a, b))
 
   var removed = newSeq[bool](sim.items.len)
 
@@ -556,55 +711,26 @@ proc advanceItems(sim: var SimServer) =
     if removed[itemIndex]:
       continue
 
-    if sim.items[itemIndex].progress < ItemTravelTicks:
-      inc sim.items[itemIndex].progress
-      continue
-
     let
-      tx = sim.items[itemIndex].tileX
-      ty = sim.items[itemIndex].tileY
-    if not inBounds(tx, ty):
+      item = sim.items[itemIndex]
+      currentIndex = worldIndex(item.worldX, item.worldY)
+      intent = intents[itemIndex]
+    case intent.action
+    of ItemDeliver:
+      occupied[currentIndex] = false
+      sim.awardDelivery(intent.ownerId, item.kind)
       removed[itemIndex] = true
-      continue
-
-    let cell = sim.cells[mapIndex(tx, ty)]
-    case cell.building
-    of BuildingNone:
-      occupied[mapIndex(tx, ty)] = false
+    of ItemRemove:
+      occupied[currentIndex] = false
       removed[itemIndex] = true
-    of BuildingLaunchPad:
-      occupied[mapIndex(tx, ty)] = false
-      sim.awardDelivery(cell.launchOwnerId, sim.items[itemIndex].kind)
-      removed[itemIndex] = true
-    of BuildingBelt, BuildingExtractor:
-      let
-        dir = cell.direction
-        d = delta(dir)
-        nx = tx + d.dx
-        ny = ty + d.dy
-      sim.items[itemIndex].dir = dir
-
-      if not inBounds(nx, ny):
-        occupied[mapIndex(tx, ty)] = false
-        removed[itemIndex] = true
+    of ItemMove:
+      let nextIndex = worldIndex(intent.nextX, intent.nextY)
+      if occupied[nextIndex]:
         continue
-
-      let
-        nextIndex = mapIndex(nx, ny)
-        nextCell = sim.cells[nextIndex]
-      if nextCell.building == BuildingLaunchPad:
-        occupied[mapIndex(tx, ty)] = false
-        sim.awardDelivery(nextCell.launchOwnerId, sim.items[itemIndex].kind)
-        removed[itemIndex] = true
-      elif nextCell.cellCanReceive() and not occupied[nextIndex]:
-        occupied[mapIndex(tx, ty)] = false
-        occupied[nextIndex] = true
-        sim.items[itemIndex].tileX = nx
-        sim.items[itemIndex].tileY = ny
-        sim.items[itemIndex].progress = 0
-        sim.items[itemIndex].dir = nextCell.direction
-      else:
-        discard
+      occupied[currentIndex] = false
+      occupied[nextIndex] = true
+      sim.items[itemIndex].worldX = intent.nextX
+      sim.items[itemIndex].worldY = intent.nextY
 
   var survivors: seq[MovingItem] = @[]
   for i, item in sim.items:
@@ -613,10 +739,10 @@ proc advanceItems(sim: var SimServer) =
   sim.items = survivors
 
 proc spawnExtractorItems(sim: var SimServer) =
-  var occupied = newSeq[bool](sim.cells.len)
+  var occupied = newSeq[bool](WorldWidthPixels * WorldHeightPixels)
   for item in sim.items:
-    if inBounds(item.tileX, item.tileY):
-      occupied[mapIndex(item.tileX, item.tileY)] = true
+    if inWorldBounds(item.worldX, item.worldY):
+      occupied[worldIndex(item.worldX, item.worldY)] = true
 
   for ty in 0 ..< MapHeightTiles:
     for tx in 0 ..< MapWidthTiles:
@@ -624,19 +750,18 @@ proc spawnExtractorItems(sim: var SimServer) =
       let cell = sim.cells[index]
       if cell.building != BuildingExtractor or cell.ore == OreNone:
         continue
-      if occupied[index]:
-        continue
       let phase = (tx * 7 + ty * 11) mod ExtractSpawnInterval
       if (sim.tickCount + phase) mod ExtractSpawnInterval != 0:
         continue
+      let spawn = extractorSpawnPixel(tx, ty, cell.direction)
+      if occupied[worldIndex(spawn.x, spawn.y)]:
+        continue
       sim.items.add MovingItem(
-        tileX: tx,
-        tileY: ty,
-        progress: 0,
-        kind: cell.ore,
-        dir: cell.direction
+        worldX: spawn.x,
+        worldY: spawn.y,
+        kind: cell.ore
       )
-      occupied[index] = true
+      occupied[worldIndex(spawn.x, spawn.y)] = true
 
 proc renderOreTile(sim: var SimServer, cell: Cell, screenX, screenY: int) =
   case cell.ore
@@ -663,25 +788,10 @@ proc renderBuilding(sim: var SimServer, player: Player, cell: Cell, screenX, scr
 
 proc renderItems(sim: var SimServer, cameraX, cameraY: int) =
   for item in sim.items:
-    let sprite =
-      case item.kind
-      of OreSquare: sim.art.itemSquare
-      of OreCircle: sim.art.itemCircle
-      of OreNone: continue
-
-    let
-      tileScreenX = item.tileX * WorldTilePixels - cameraX
-      tileScreenY = item.tileY * WorldTilePixels - cameraY
-      offset = min(item.progress, ItemTravelTicks) * 6 div max(1, ItemTravelTicks)
-    var
-      screenX = tileScreenX + (WorldTilePixels - sprite.width) div 2
-      screenY = tileScreenY + (WorldTilePixels - sprite.height) div 2
-    case item.dir
-    of DirUp: screenY -= offset
-    of DirRight: screenX += offset
-    of DirDown: screenY += offset
-    of DirLeft: screenX -= offset
-    sim.fb.blitScreenSprite(sprite, screenX, screenY)
+    let color = sim.itemColor(item.kind)
+    if color == TransparentColorIndex:
+      continue
+    sim.fb.putPixel(item.worldX - cameraX, item.worldY - cameraY, color)
 
 proc renderCursors(sim: var SimServer, playerIndex: int, cameraX, cameraY: int) =
   for index, player in sim.players:
@@ -801,7 +911,8 @@ proc initAppState() =
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
   result.attack = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
-  result.select = (currentMask and ButtonSelect) != 0 and (previousMask and ButtonSelect) == 0
+  result.b = (currentMask and ButtonB) != 0 and (previousMask and ButtonB) == 0
+  result.select = false
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket notin appState.playerIndices:
