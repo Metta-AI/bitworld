@@ -46,7 +46,6 @@ const
 type
   SheetSpriteKind = enum
     SheetFloor
-    SheetFloorAccent
     SheetCounter
     SheetDirtyReturn
     SheetCleanRack
@@ -121,7 +120,7 @@ proc palettePath(): string =
   clientDataDir() / "pallete.png"
 
 proc sheetPath(): string =
-  repoDir() / "fancy_cookout" / "data" / "spritesheet.png"
+  repoDir() / "free_chat" / "data" / "spritesheet.png"
 
 proc lettersPath(): string =
   clientDataDir() / "letters.png"
@@ -297,7 +296,6 @@ proc initSimServer(): SimServer =
   result.props = newSeq[PropKind](WorldWidthTiles * WorldHeightTiles)
   loadPalette(palettePath())
   result.sheetSprites[SheetFloor] = sheetImage.sheetCellSprite(0, 0)
-  result.sheetSprites[SheetFloorAccent] = sheetImage.sheetCellSprite(1, 0)
   result.sheetSprites[SheetCounter] = sheetImage.sheetCellSprite(2, 0)
   result.sheetSprites[SheetDirtyReturn] = sheetImage.sheetCellSprite(3, 0)
   result.sheetSprites[SheetCleanRack] = sheetImage.sheetCellSprite(4, 0)
@@ -517,9 +515,7 @@ proc renderWorld(sim: var SimServer, cameraX, cameraY: int) =
       let
         worldX = tx * FancyTileSize
         worldY = ty * FancyTileSize
-        floorSprite =
-          if ((tx + ty) and 1) == 0: sim.sheetSprites[SheetFloorAccent]
-          else: sim.sheetSprites[SheetFloor]
+        floorSprite = sim.sheetSprites[SheetFloor]
       sim.fb.blitSprite(floorSprite, worldX, worldY, cameraX, cameraY)
 
       let prop = sim.props[tileIndex(tx, ty)]
