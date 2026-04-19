@@ -405,11 +405,8 @@ proc selectedEditorChar(player: Player): char =
 
 proc openEditor(player: var Player) =
   player.editing = true
-  player.draft = player.message
-  if player.draft.len > 0:
-    player.selectedCharIndex = editorIndexForChar(player.draft[^1])
-  else:
-    player.selectedCharIndex = editorIndexForChar('A')
+  player.draft = ""
+  player.selectedCharIndex = editorIndexForChar('A')
   player.stopPlayer()
 
 proc commitEditor(player: var Player) =

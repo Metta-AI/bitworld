@@ -9,7 +9,10 @@ const
   PlanetSpawnMargin = 12
   PlanetSpacing = 10
   ShipSpeedPixels = 2
-  SendRepeatInterval = 2
+  BaseSendRepeatInterval = 5
+  MinSendRepeatInterval = 1
+  SendAccelerationTicks = 12
+  ShipLaneOffsetMax = 3
   ScoreIntervalTicks = 24
   TargetFps = 24.0
   WebSocketPath = "/ws"
@@ -70,6 +73,7 @@ type
     selectedPlanet: int
     originPlanet: int
     sendCooldown: int
+    sendHoldTicks: int
     cursorX: int
     cursorY: int
     cursorVelX: int
@@ -83,7 +87,7 @@ type
     left: bool
     right: bool
     attackPressed: bool
-    selectHeld: bool
+    sendHeld: bool
 
   SimServer = object
     players: seq[Player]
@@ -438,6 +442,26 @@ proc shipDuration(startX, startY, endX, endY: int): int =
     travel = max(dx, dy)
   max(1, (travel + ShipSpeedPixels - 1) div ShipSpeedPixels)
 
+proc sendRepeatInterval(holdTicks: int): int =
+  max(MinSendRepeatInterval, BaseSendRepeatInterval - holdTicks div SendAccelerationTicks)
+
+proc randomShipLaneOffset(
+  sim: var SimServer,
+  originPlanet, targetPlanet: Planet
+): tuple[x, y: int] =
+  let laneRadius = min(ShipLaneOffsetMax, max(0, min(originPlanet.radius, targetPlanet.radius) - 2))
+  if laneRadius <= 0:
+    return (0, 0)
+
+  for _ in 0 ..< 16:
+    let
+      dx = sim.rng.rand(laneRadius * 2) - laneRadius
+      dy = sim.rng.rand(laneRadius * 2) - laneRadius
+    if (dx != 0 or dy != 0) and dx * dx + dy * dy <= laneRadius * laneRadius:
+      return (dx, dy)
+
+  (laneRadius, 0)
+
 proc currentShipPosition(ship: Ship): tuple[x: int, y: int] =
   if ship.duration <= 0:
     return (ship.endX, ship.endY)
@@ -461,16 +485,20 @@ proc sendShip(sim: var SimServer, playerIndex: int): bool =
   if sim.planets[originIndex].ships <= 1:
     return false
 
+  let
+    originPlanet = sim.planets[originIndex]
+    targetPlanet = sim.planets[targetIndex]
+    laneOffset = sim.randomShipLaneOffset(originPlanet, targetPlanet)
   dec sim.planets[originIndex].ships
   let
-    startX = sim.planets[originIndex].x
-    startY = sim.planets[originIndex].y
-    endX = sim.planets[targetIndex].x
-    endY = sim.planets[targetIndex].y
+    startX = originPlanet.x + laneOffset.x
+    startY = originPlanet.y + laneOffset.y
+    endX = targetPlanet.x + laneOffset.x
+    endY = targetPlanet.y + laneOffset.y
   sim.ships.add Ship(
     ownerId: sim.players[playerIndex].id,
     color: sim.players[playerIndex].color,
-    targetPlanet: sim.planets[targetIndex].id,
+    targetPlanet: targetPlanet.id,
     startX: startX,
     startY: startY,
     endX: endX,
@@ -613,9 +641,13 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: PlayerInput) =
     if sim.planets[selectedIndex].ownerId == sim.players[playerIndex].id:
       sim.players[playerIndex].originPlanet = selectedIndex
 
-  if input.selectHeld and sim.players[playerIndex].sendCooldown == 0:
-    if sim.sendShip(playerIndex):
-      sim.players[playerIndex].sendCooldown = SendRepeatInterval
+  if input.sendHeld:
+    inc sim.players[playerIndex].sendHoldTicks
+    if sim.players[playerIndex].sendCooldown == 0:
+      if sim.sendShip(playerIndex):
+        sim.players[playerIndex].sendCooldown = sendRepeatInterval(sim.players[playerIndex].sendHoldTicks)
+  else:
+    sim.players[playerIndex].sendHoldTicks = 0
 
 proc drawPlanet(
   sim: var SimServer,
@@ -717,7 +749,7 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   result.left = decoded.left
   result.right = decoded.right
   result.attackPressed = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
-  result.selectHeld = decoded.select
+  result.sendHeld = decoded.b
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket notin appState.playerIndices:
