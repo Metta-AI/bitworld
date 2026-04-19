@@ -18,6 +18,9 @@ const
   MaxSpeed = 704
   StopThreshold = 12
   MaxPlayerLives* = 5
+  SnakeHp = 3
+  BossHp = 10
+  BossCoinValue = 10
   TargetFps = 24.0
   WebSocketPath = "/ws"
   BackgroundColor = 12'u8
@@ -41,12 +44,17 @@ type
     PickupCoin
     PickupHeart
 
+  MobKind* = enum
+    SnakeMob
+    BossMob
+
   Pickup* = object
     x*, y*: int
     kind*: PickupKind
     value*: int
 
   Mob* = object
+    kind*: MobKind
     x*, y*: int
     sprite*: Sprite
     wanderCooldown*: int
@@ -63,6 +71,7 @@ type
     playerSprite*: Sprite
     terrainSprite*: Sprite
     mobSprite*: Sprite
+    bossSprite*: Sprite
     swooshSprite*: Sprite
     heartSprite*: Sprite
     emptyHeartSprite*: Sprite
@@ -111,6 +120,9 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
   spriteFromImage(
     sheet.subImage(cellX * SheetTileSize, cellY * SheetTileSize, SheetTileSize, SheetTileSize)
   )
+
+proc sheetRegionSprite(sheet: Image, x, y, width, height: int): Sprite =
+  spriteFromImage(sheet.subImage(x, y, width, height))
 
 proc tileIndex(tx, ty: int): int =
   ty * WorldWidthTiles + tx
@@ -185,7 +197,7 @@ proc canSpawnMobAt(sim: SimServer, px, py: int, sprite: Sprite): bool =
 
   true
 
-proc spawnOneMob(sim: var SimServer, sprite: Sprite): bool =
+proc spawnOneMob(sim: var SimServer, kind: MobKind, sprite: Sprite, hp: int): bool =
   for _ in 0 ..< 128:
     let
       tx = sim.rng.rand(WorldWidthTiles - 1)
@@ -194,22 +206,36 @@ proc spawnOneMob(sim: var SimServer, sprite: Sprite): bool =
       py = ty * TileSize
     if sim.canSpawnMobAt(px, py, sprite):
       sim.mobs.add Mob(
+        kind: kind,
         x: px,
         y: py,
         sprite: sprite,
         wanderCooldown: 8 + sim.rng.rand(18),
-        hp: 3,
+        hp: hp,
         attackCooldown: 30 + sim.rng.rand(30)
       )
       return true
   false
 
-proc spawnMobs(sim: var SimServer, count: int, sprite: Sprite) =
+proc spawnMobs(sim: var SimServer, count: int, kind: MobKind, sprite: Sprite, hp: int) =
   var spawned = 0
   while spawned < count:
-    if not sim.spawnOneMob(sprite):
+    if not sim.spawnOneMob(kind, sprite, hp):
       break
     inc spawned
+
+proc snakeCount(sim: SimServer): int =
+  for mob in sim.mobs:
+    if mob.kind == SnakeMob:
+      inc result
+
+proc hasBoss(sim: SimServer): bool =
+  for mob in sim.mobs:
+    if mob.kind == BossMob:
+      return true
+
+proc mobAttackRange(mob: Mob): int =
+  12 + max(mob.sprite.width, mob.sprite.height)
 
 proc findPlayerSpawn(sim: SimServer): tuple[x, y: int] =
   let
@@ -260,6 +286,7 @@ proc initSimServer*(): SimServer =
   result.terrainSprite = sheet.sheetSprite(0, 0)
   result.playerSprite = sheet.sheetSprite(1, 0)
   result.mobSprite = sheet.sheetSprite(2, 0)
+  result.bossSprite = sheet.sheetRegionSprite(0, 2 * SheetTileSize, 2 * SheetTileSize, 2 * SheetTileSize)
   result.swooshSprite = sheet.sheetSprite(3, 0)
   result.heartSprite = sheet.sheetSprite(0, 1)
   result.emptyHeartSprite = sheet.sheetSprite(1, 1)
@@ -273,7 +300,8 @@ proc initSimServer*(): SimServer =
   result.clearSpawnArea(startTx, startTy, 5)
 
   result.players = @[]
-  result.spawnMobs(36, result.mobSprite)
+  result.spawnMobs(36, SnakeMob, result.mobSprite, SnakeHp)
+  discard result.spawnOneMob(BossMob, result.bossSprite, BossHp)
   result.mobSpawnCooldown = 30
 
 proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
@@ -455,6 +483,9 @@ proc applyAttack(sim: var SimServer) =
     return
 
   var mobDamaged = newSeq[bool](sim.mobs.len)
+  var bossHitCounts = newSeq[int](sim.mobs.len)
+  var bossKnockbackXs = newSeq[int](sim.mobs.len)
+  var bossKnockbackYs = newSeq[int](sim.mobs.len)
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].attackTicks <= 0 or sim.players[playerIndex].attackResolved:
       continue
@@ -462,14 +493,12 @@ proc applyAttack(sim: var SimServer) =
     let player = sim.players[playerIndex]
     let hit = sim.attackRect(player)
     for mobIndex in 0 ..< sim.mobs.len:
-      if mobDamaged[mobIndex]:
+      if sim.mobs[mobIndex].kind == SnakeMob and mobDamaged[mobIndex]:
         continue
       if rectsOverlap(
         hit.x, hit.y, hit.w, hit.h,
         sim.mobs[mobIndex].x, sim.mobs[mobIndex].y, sim.mobs[mobIndex].sprite.width, sim.mobs[mobIndex].sprite.height
       ):
-        mobDamaged[mobIndex] = true
-        dec sim.mobs[mobIndex].hp
         var dx = 0
         var dy = 0
         case player.facing
@@ -477,10 +506,17 @@ proc applyAttack(sim: var SimServer) =
         of FaceDown: dy = 4
         of FaceLeft: dx = -4
         of FaceRight: dx = 4
-        var actor = Actor(x: sim.mobs[mobIndex].x, y: sim.mobs[mobIndex].y, sprite: sim.mobs[mobIndex].sprite)
-        sim.moveActor(actor, dx, dy)
-        sim.mobs[mobIndex].x = actor.x
-        sim.mobs[mobIndex].y = actor.y
+        if sim.mobs[mobIndex].kind == BossMob:
+          inc bossHitCounts[mobIndex]
+          bossKnockbackXs[mobIndex] += dx
+          bossKnockbackYs[mobIndex] += dy
+        else:
+          mobDamaged[mobIndex] = true
+          dec sim.mobs[mobIndex].hp
+          var actor = Actor(x: sim.mobs[mobIndex].x, y: sim.mobs[mobIndex].y, sprite: sim.mobs[mobIndex].sprite)
+          sim.moveActor(actor, dx, dy)
+          sim.mobs[mobIndex].x = actor.x
+          sim.mobs[mobIndex].y = actor.y
         break
 
     for targetPlayerIndex in 0 ..< sim.players.len:
@@ -504,16 +540,41 @@ proc applyAttack(sim: var SimServer) =
 
     sim.players[playerIndex].attackResolved = true
 
+  for mobIndex in 0 ..< sim.mobs.len:
+    if sim.mobs[mobIndex].kind != BossMob or bossHitCounts[mobIndex] == 0:
+      continue
+
+    let netDamage = bossHitCounts[mobIndex] - 1
+    if netDamage > 0:
+      sim.mobs[mobIndex].hp -= netDamage
+
+    let
+      knockbackX = bossKnockbackXs[mobIndex].clamp(-4, 4)
+      knockbackY = bossKnockbackYs[mobIndex].clamp(-4, 4)
+    if knockbackX != 0 or knockbackY != 0:
+      var actor = Actor(x: sim.mobs[mobIndex].x, y: sim.mobs[mobIndex].y, sprite: sim.mobs[mobIndex].sprite)
+      sim.moveActor(actor, knockbackX, knockbackY)
+      sim.mobs[mobIndex].x = actor.x
+      sim.mobs[mobIndex].y = actor.y
+
   var survivors: seq[Mob] = @[]
   for mob in sim.mobs:
     if mob.hp > 0:
       survivors.add(mob)
     else:
-      let roll = sim.rng.rand(99)
-      if roll < 10:
-        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
-      elif roll < 60:
-        sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
+      if mob.kind == BossMob:
+        sim.pickups.add(Pickup(
+          x: mob.x + mob.sprite.width div 2 - TileSize div 2,
+          y: mob.y + mob.sprite.height div 2 - TileSize div 2,
+          kind: PickupCoin,
+          value: BossCoinValue
+        ))
+      else:
+        let roll = sim.rng.rand(99)
+        if roll < 10:
+          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
+        elif roll < 60:
+          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
   sim.mobs = survivors
 
 proc collectPickups(sim: var SimServer) =
@@ -579,7 +640,8 @@ proc updateMobs*(sim: var SimServer) =
       let
         playerCenterX = player.x + player.sprite.width div 2
         playerCenterY = player.y + player.sprite.height div 2
-      if mob.attackCooldown == 0 and distanceSquared(centerX, centerY, playerCenterX, playerCenterY) <= 18 * 18:
+      let attackRange = mob.mobAttackRange()
+      if mob.attackCooldown == 0 and distanceSquared(centerX, centerY, playerCenterX, playerCenterY) <= attackRange * attackRange:
         mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
         let back = lungeVector(mob.attackFacing, -1)
         var actor = Actor(x: mob.x, y: mob.y, sprite: mob.sprite)
@@ -628,7 +690,10 @@ proc updateMobs*(sim: var SimServer) =
     mob.y = actor.y
 
 proc respawnMobs(sim: var SimServer) =
-  if sim.mobs.len >= TargetMobCount:
+  if not sim.hasBoss():
+    discard sim.spawnOneMob(BossMob, sim.bossSprite, BossHp)
+
+  if sim.snakeCount() >= TargetMobCount:
     sim.mobSpawnCooldown = 24
     return
 
@@ -636,7 +701,7 @@ proc respawnMobs(sim: var SimServer) =
   if sim.mobSpawnCooldown > 0:
     return
 
-  discard sim.spawnOneMob(sim.mobSprite)
+  discard sim.spawnOneMob(SnakeMob, sim.mobSprite, SnakeHp)
   sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
 
 proc renderTerrain(sim: var SimServer, cameraX, cameraY: int) =
@@ -651,25 +716,35 @@ proc renderTerrain(sim: var SimServer, cameraX, cameraY: int) =
       if sim.tiles[tileIndex(tx, ty)]:
         sim.fb.blitSprite(sim.terrainSprite, tx * TileSize, ty * TileSize, cameraX, cameraY)
 
+proc renderNumber(
+  fb: var Framebuffer,
+  digitSprites: array[10, Sprite],
+  value, screenX, screenY: int
+) =
+  let text = $max(0, value)
+  var x = screenX
+  for ch in text:
+    let digit = ord(ch) - ord('0')
+    fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
+    x += digitSprites[digit].width
+
 proc renderHud(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
 
-  let player = sim.players[playerIndex]
+  let
+    player = sim.players[playerIndex]
+    coins = min(player.coins, 99)
+    heartsStartX = ScreenWidth - MaxPlayerLives * sim.heartSprite.width
+
+  sim.fb.renderNumber(sim.digitSprites, coins, 0, 0)
+
   for i in 0 ..< MaxPlayerLives:
-    let x = i * sim.heartSprite.width
+    let x = heartsStartX + i * sim.heartSprite.width
     if i < player.lives:
       sim.fb.blitSprite(sim.heartSprite, x, 0, 0, 0)
     else:
       sim.fb.blitSprite(sim.emptyHeartSprite, x, 0, 0, 0)
-
-  let
-    coins = min(player.coins, 99)
-    hudWidth = sim.coinSprite.width * 3
-    hudX = ScreenWidth - hudWidth
-  sim.fb.blitSprite(sim.coinSprite, hudX, 0, 0, 0)
-  sim.fb.blitSprite(sim.digitSprites[coins div 10], hudX + sim.coinSprite.width, 0, 0, 0)
-  sim.fb.blitSprite(sim.digitSprites[coins mod 10], hudX + sim.coinSprite.width * 2, 0, 0, 0)
 
 proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
