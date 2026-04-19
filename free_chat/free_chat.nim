@@ -26,18 +26,20 @@ const
   BubbleFillColor = 1'u8
   BubbleBorderColor = 14'u8
   CaretColor = 14'u8
-  MessageMaxChars = 8
+  MessageCharsPerLine = 8
+  MessageLineCount = 2
+  MessageMaxChars = MessageCharsPerLine * MessageLineCount
   EditorChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ .?!"
   EditorCols = 6
   EditorRows = EditorChars.len div EditorCols
   DraftBoxX = 4
-  DraftBoxY = 3
+  DraftBoxY = 2
   DraftBoxW = 56
-  DraftBoxH = 12
+  DraftBoxH = 16
   GridBoxX = 6
-  GridBoxY = 18
+  GridBoxY = 19
   GridBoxW = 52
-  GridBoxH = 44
+  GridBoxH = 43
   EditorCellW = 8
   EditorCellH = 8
 
@@ -156,6 +158,16 @@ proc strokeRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
 proc panelRect(fb: var Framebuffer, x, y, w, h: int) =
   fb.fillRect(x, y, w, h, PanelFillColor)
   fb.strokeRect(x, y, w, h, PanelBorderColor)
+
+proc lineCountForText(text: string): int =
+  max(1, (text.len + MessageCharsPerLine - 1) div MessageCharsPerLine)
+
+proc sliceMessageLine(text: string, lineIndex: int): string =
+  let startIndex = lineIndex * MessageCharsPerLine
+  if startIndex >= text.len:
+    return ""
+  let endIndex = min(text.len, startIndex + MessageCharsPerLine)
+  text[startIndex ..< endIndex]
 
 proc sheetCellSprite(sheet: Image, cellX, cellY: int): Sprite =
   spriteFromImage(
@@ -468,8 +480,15 @@ proc drawMessageBubble(
     return
 
   let
-    bubbleWidth = min(ScreenWidth - 2, text.len * 6 + 4)
-    bubbleHeight = 10
+    lineCount = text.lineCountForText()
+    longestLineLen =
+      block:
+        var width = 0
+        for lineIndex in 0 ..< lineCount:
+          width = max(width, text.sliceMessageLine(lineIndex).len)
+        width
+    bubbleWidth = min(ScreenWidth - 2, longestLineLen * 6 + 4)
+    bubbleHeight = lineCount * 6 + 4
     anchorX = worldX - cameraX
     anchorY = worldY - cameraY
     bubbleX = clamp(anchorX - bubbleWidth div 2, 1, ScreenWidth - bubbleWidth - 1)
@@ -481,7 +500,13 @@ proc drawMessageBubble(
   sim.fb.putPixel(pointerX, bubbleY + bubbleHeight, BubbleBorderColor)
   sim.fb.putPixel(pointerX - 1, bubbleY + bubbleHeight - 1, BubbleBorderColor)
   sim.fb.putPixel(pointerX + 1, bubbleY + bubbleHeight - 1, BubbleBorderColor)
-  sim.fb.blitText(sim.letterSprites, text, bubbleX + 2, bubbleY + 2)
+  for lineIndex in 0 ..< lineCount:
+    sim.fb.blitText(
+      sim.letterSprites,
+      text.sliceMessageLine(lineIndex),
+      bubbleX + 2,
+      bubbleY + 2 + lineIndex * 6
+    )
 
 proc renderWorld(sim: var SimServer, cameraX, cameraY: int) =
   let
@@ -529,12 +554,19 @@ proc renderEditor(sim: var SimServer, playerIndex: int) =
   sim.fb.panelRect(DraftBoxX, DraftBoxY, DraftBoxW, DraftBoxH)
   let draftX = DraftBoxX + 4
   let draftY = DraftBoxY + 3
-  if player.draft.len > 0:
-    sim.fb.blitText(sim.letterSprites, player.draft, draftX, draftY)
+  let draftLineCount = player.draft.lineCountForText()
+  for lineIndex in 0 ..< draftLineCount:
+    let lineText = player.draft.sliceMessageLine(lineIndex)
+    if lineText.len > 0:
+      sim.fb.blitText(sim.letterSprites, lineText, draftX, draftY + lineIndex * 6)
 
   if player.draft.len < MessageMaxChars:
-    let caretX = draftX + player.draft.len * 6
-    sim.fb.fillRect(caretX, DraftBoxY + DraftBoxH - 3, 5, 1, CaretColor)
+    let
+      caretRow = player.draft.len div MessageCharsPerLine
+      caretCol = player.draft.len mod MessageCharsPerLine
+      caretX = draftX + caretCol * 6
+      caretY = draftY + caretRow * 6 + 5
+    sim.fb.fillRect(caretX, caretY, 5, 1, CaretColor)
 
   sim.fb.panelRect(GridBoxX, GridBoxY, GridBoxW, GridBoxH)
   for index in 0 ..< EditorChars.len:
