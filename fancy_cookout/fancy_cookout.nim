@@ -24,7 +24,7 @@ const
   WebSocketPath = "/ws"
   FloorBackdropColor = 3'u8
   DishOffsetY = 2
-  CarryOffsetY = -6
+  CarryOffsetY = 0
   WashBarOffsetX = 2
   WashBarOffsetY = 1
   WashBarWidth = 8
@@ -38,11 +38,12 @@ type
     ChoppedTomatoItem
     ChoppedLettuceItem
     TomatoPlateItem
+    LettucePlateItem
     SaladItem
 
   SheetSpriteKind = enum
     SheetFloor
-    SheetFloorAccent
+    SheetSelection
     SheetCounter
     SheetDirtyReturn
     SheetCleanRack
@@ -196,6 +197,9 @@ proc drawItem(
   of TomatoPlateItem:
     sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
     sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
+  of LettucePlateItem:
+    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
+    sim.fb.blitSprite(sim.singleItemSprite(ChoppedLettuceItem), worldX, worldY, cameraX, cameraY)
   of SaladItem:
     sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
     sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
@@ -350,7 +354,7 @@ proc initSimServer(): SimServer =
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   loadPalette(palettePath())
   result.sheetSprites[SheetFloor] = sheetImage.sheetCellSprite(0, 0)
-  result.sheetSprites[SheetFloorAccent] = sheetImage.sheetCellSprite(1, 0)
+  result.sheetSprites[SheetSelection] = sheetImage.sheetCellSprite(1, 0)
   result.sheetSprites[SheetCounter] = sheetImage.sheetCellSprite(2, 0)
   result.sheetSprites[SheetDirtyReturn] = sheetImage.sheetCellSprite(3, 0)
   result.sheetSprites[SheetCleanRack] = sheetImage.sheetCellSprite(4, 0)
@@ -529,7 +533,13 @@ proc combinePlateItem(targetItem: var ItemKind, carriedItem: ItemKind): bool =
   if targetItem == CleanDishItem and carriedItem == ChoppedTomatoItem:
     targetItem = TomatoPlateItem
     return true
+  if targetItem == CleanDishItem and carriedItem == ChoppedLettuceItem:
+    targetItem = LettucePlateItem
+    return true
   if targetItem == TomatoPlateItem and carriedItem == ChoppedLettuceItem:
+    targetItem = SaladItem
+    return true
+  if targetItem == LettucePlateItem and carriedItem == ChoppedTomatoItem:
     targetItem = SaladItem
     return true
   false
@@ -663,6 +673,22 @@ proc drawActionProgress(
     sim.fb.putPixel(screenX + barX, screenY, 10)
     sim.fb.putPixel(screenX + barX, screenY + 1, 14)
 
+proc renderSelection(sim: var SimServer, playerIndex, cameraX, cameraY: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+
+  let target = sim.players[playerIndex].interactionTile()
+  if not inTileBounds(target.tx, target.ty):
+    return
+
+  sim.fb.blitSprite(
+    sim.sheetSprites[SheetSelection],
+    target.tx * FancyTileSize,
+    target.ty * FancyTileSize,
+    cameraX,
+    cameraY
+  )
+
 proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
   let
     startTx = max(0, cameraX div FancyTileSize)
@@ -675,10 +701,7 @@ proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
       let
         worldX = tx * FancyTileSize
         worldY = ty * FancyTileSize
-        floorSprite =
-          if ((tx + ty) and 1) == 0: sim.sheetSprites[SheetFloorAccent]
-          else: sim.sheetSprites[SheetFloor]
-      sim.fb.blitSprite(floorSprite, worldX, worldY, cameraX, cameraY)
+      sim.fb.blitSprite(sim.sheetSprites[SheetFloor], worldX, worldY, cameraX, cameraY)
 
       let stationIndex = sim.stationIndexAt(tx, ty)
       if stationIndex < 0:
@@ -756,6 +779,7 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   sim.renderKitchen(cameraX, cameraY)
   sim.renderFloorItems(cameraX, cameraY)
+  sim.renderSelection(playerIndex, cameraX, cameraY)
   sim.renderPlayers(cameraX, cameraY)
   sim.renderHud(playerIndex)
   sim.fb.packFramebuffer()
@@ -794,8 +818,8 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   result.left = decoded.left
   result.right = decoded.right
   result.pickPressed = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
-  result.interactPressed = (currentMask and ButtonSelect) != 0 and (previousMask and ButtonSelect) == 0
-  result.interactHeld = (currentMask and ButtonSelect) != 0
+  result.interactPressed = (currentMask and ButtonB) != 0 and (previousMask and ButtonB) == 0
+  result.interactHeld = (currentMask and ButtonB) != 0
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket notin appState.playerIndices:

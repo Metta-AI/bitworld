@@ -2,6 +2,7 @@ import pixie, protocol, server, whisky
 import std/[options, os, parseopt, strutils]
 
 const
+  SheetTileSize = TileSize
   WebSocketPath = "/ws"
   PlayerCenterX = ScreenWidth div 2
   PlayerCenterY = ScreenHeight div 2
@@ -71,6 +72,20 @@ proc repoDir(): string =
 proc clientDataDir(): string =
   repoDir() / "client" / "data"
 
+proc sheetPath(): string =
+  dataDir() / "spritesheet.png"
+
+proc loadClientPalette() =
+  loadPalette(clientDataDir() / "pallete.png")
+
+proc loadClientLetterSprites(): seq[Sprite] =
+  loadLetterSprites(clientDataDir() / "letters.png")
+
+proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
+  spriteFromImage(
+    sheet.subImage(cellX * SheetTileSize, cellY * SheetTileSize, SheetTileSize, SheetTileSize)
+  )
+
 proc unpack4bpp(packed: openArray[uint8], unpacked: var seq[uint8]) =
   let targetLen = packed.len * 2
   if unpacked.len != targetLen:
@@ -138,13 +153,14 @@ proc resetSession(bot: var Bot) =
   bot.resetWorldModel()
 
 proc initBot(): Bot =
-  loadPalette(clientDataDir() / "pallete.png")
-  result.wallSprite = readRequiredSprite(dataDir() / "wall.png")
-  result.playerSprite = readRequiredSprite(dataDir() / "player.png")
-  result.snakeSprite = readRequiredSprite(dataDir() / "snake.png")
-  result.coinSprite = readRequiredSprite(dataDir() / "coin.png")
-  result.heartSprite = readRequiredSprite(dataDir() / "heart.png")
-  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
+  loadClientPalette()
+  let sheet = readImage(sheetPath())
+  result.wallSprite = sheet.sheetSprite(0, 0)
+  result.playerSprite = sheet.sheetSprite(1, 0)
+  result.snakeSprite = sheet.sheetSprite(2, 0)
+  result.coinSprite = sheet.sheetSprite(2, 1)
+  result.heartSprite = sheet.sheetSprite(0, 1)
+  result.letterSprites = loadClientLetterSprites()
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.worldTiles = newSeq[TileKnowledge](MapWidthTiles * MapHeightTiles)

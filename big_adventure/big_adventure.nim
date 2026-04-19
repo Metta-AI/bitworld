@@ -3,6 +3,7 @@ import protocol, server
 import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
+  SheetTileSize = TileSize
   WorldWidthTiles = 96
   WorldHeightTiles = 96
   WorldWidthPixels = WorldWidthTiles * TileSize
@@ -93,6 +94,23 @@ proc repoDir(): string =
 
 proc clientDataDir(): string =
   repoDir() / "client" / "data"
+
+proc sheetPath(): string =
+  dataDir() / "spritesheet.png"
+
+proc loadClientPalette() =
+  loadPalette(clientDataDir() / "pallete.png")
+
+proc loadClientDigitSprites(): array[10, Sprite] =
+  loadDigitSprites(clientDataDir() / "numbers.png")
+
+proc loadClientLetterSprites(): seq[Sprite] =
+  loadLetterSprites(clientDataDir() / "letters.png")
+
+proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
+  spriteFromImage(
+    sheet.subImage(cellX * SheetTileSize, cellY * SheetTileSize, SheetTileSize, SheetTileSize)
+  )
 
 proc tileIndex(tx, ty: int): int =
   ty * WorldWidthTiles + tx
@@ -237,16 +255,17 @@ proc initSimServer*(): SimServer =
   result.rng = initRand(0xB1770)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
-  loadPalette(clientDataDir() / "pallete.png")
-  result.terrainSprite = readRequiredSprite(dataDir() / "wall.png")
-  result.playerSprite = readRequiredSprite(dataDir() / "player.png")
-  result.mobSprite = readRequiredSprite(dataDir() / "snake.png")
-  result.swooshSprite = readRequiredSprite(dataDir() / "swoosh.png")
-  result.heartSprite = readRequiredSprite(dataDir() / "heart.png")
-  result.emptyHeartSprite = readRequiredSprite(dataDir() / "empty_heart.png")
-  result.coinSprite = readRequiredSprite(dataDir() / "coin.png")
-  result.digitSprites = loadDigitSprites(clientDataDir() / "numbers.png")
-  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
+  loadClientPalette()
+  let sheet = readImage(sheetPath())
+  result.terrainSprite = sheet.sheetSprite(0, 0)
+  result.playerSprite = sheet.sheetSprite(1, 0)
+  result.mobSprite = sheet.sheetSprite(2, 0)
+  result.swooshSprite = sheet.sheetSprite(3, 0)
+  result.heartSprite = sheet.sheetSprite(0, 1)
+  result.emptyHeartSprite = sheet.sheetSprite(1, 1)
+  result.coinSprite = sheet.sheetSprite(2, 1)
+  result.digitSprites = loadClientDigitSprites()
+  result.letterSprites = loadClientLetterSprites()
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2
