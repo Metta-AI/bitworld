@@ -75,6 +75,7 @@ type
 
   ItemMoveAction = enum
     ItemMove
+    ItemBlocked
     ItemDeliver
     ItemRemove
 
@@ -116,8 +117,6 @@ type
     cursorInnerMask: Sprite
     itemSquare: Sprite
     itemCircle: Sprite
-    itemSquareColor: uint8
-    itemCircleColor: uint8
     toolbarSlotMask: Sprite
     toolLaunchPadIcon: Sprite
     toolExtractorIcon: Sprite
@@ -224,12 +223,6 @@ proc renderNumber(
     x += digitSprites[digit].width
   x - screenX
 
-proc firstOpaqueColor(sprite: Sprite, fallback: uint8): uint8 =
-  for color in sprite.pixels:
-    if color != TransparentColorIndex:
-      return color
-  fallback
-
 proc spriteFromSheet(sheet: Image, x, y, w, h: int): Sprite =
   result = Sprite(width: w, height: h, pixels: newSeq[uint8](w * h))
   for py in 0 ..< h:
@@ -287,8 +280,6 @@ proc loadFactorySprites(): FactorySprites =
 
   result.itemSquare = spriteFromSheet(sheet, 0 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
   result.itemCircle = spriteFromSheet(sheet, 1 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
-  result.itemSquareColor = result.itemSquare.firstOpaqueColor(15'u8)
-  result.itemCircleColor = result.itemCircle.firstOpaqueColor(14'u8)
   result.toolbarSlotMask = spriteFromSheet(sheet, 2 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
   result.toolLaunchPadIcon = spriteFromSheet(sheet, 3 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
   result.toolExtractorIcon = spriteFromSheet(sheet, 4 * SheetIconSize, SheetIconRowY, SheetIconSize, SheetIconSize)
@@ -554,12 +545,6 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
 
   sim.players[playerIndex].recenterCamera()
 
-proc itemColor(sim: SimServer, kind: OreKind): uint8 =
-  case kind
-  of OreSquare: sim.art.itemSquareColor
-  of OreCircle: sim.art.itemCircleColor
-  of OreNone: TransparentColorIndex
-
 proc extractorSpawnPixel(tx, ty: int, dir: Direction): tuple[x, y: int] =
   case dir
   of DirUp:
@@ -628,14 +613,14 @@ proc computeMoveIntent(sim: SimServer, item: MovingItem): MoveIntent =
         result.stepDir = cell.direction
 
     if not inWorldBounds(nextX, nextY):
-      result.action = ItemRemove
+      result.action = ItemBlocked
       return
 
     let
       nextTx = worldTileX(nextX)
       nextTy = worldTileY(nextY)
     if not inBounds(nextTx, nextTy):
-      result.action = ItemRemove
+      result.action = ItemBlocked
       return
 
     if nextTx != tx or nextTy != ty:
@@ -647,7 +632,7 @@ proc computeMoveIntent(sim: SimServer, item: MovingItem): MoveIntent =
       of BuildingBelt, BuildingExtractor:
         result.action = ItemMove
       of BuildingNone:
-        result.action = ItemRemove
+        result.action = ItemBlocked
     else:
       result.action = ItemMove
 
@@ -658,6 +643,7 @@ proc moveActionPriority(intent: MoveIntent): int =
   case intent.action
   of ItemDeliver, ItemRemove: 0
   of ItemMove: 1
+  of ItemBlocked: 2
 
 proc compareMoveOrder(items: seq[MovingItem], intents: seq[MoveIntent], a, b: int): int =
   let
@@ -723,6 +709,8 @@ proc advanceItems(sim: var SimServer) =
     of ItemRemove:
       occupied[currentIndex] = false
       removed[itemIndex] = true
+    of ItemBlocked:
+      discard
     of ItemMove:
       let nextIndex = worldIndex(intent.nextX, intent.nextY)
       if occupied[nextIndex]:
@@ -788,10 +776,15 @@ proc renderBuilding(sim: var SimServer, player: Player, cell: Cell, screenX, scr
 
 proc renderItems(sim: var SimServer, cameraX, cameraY: int) =
   for item in sim.items:
-    let color = sim.itemColor(item.kind)
-    if color == TransparentColorIndex:
-      continue
-    sim.fb.putPixel(item.worldX - cameraX, item.worldY - cameraY, color)
+    let sprite =
+      case item.kind
+      of OreSquare: sim.art.itemSquare
+      of OreCircle: sim.art.itemCircle
+      of OreNone: continue
+    let
+      screenX = item.worldX - cameraX - sprite.width div 2
+      screenY = item.worldY - cameraY - sprite.height div 2
+    sim.fb.blitScreenSprite(sprite, screenX, screenY)
 
 proc renderCursors(sim: var SimServer, playerIndex: int, cameraX, cameraY: int) =
   for index, player in sim.players:
