@@ -68,6 +68,15 @@ Types of games: Cooperative/competitive social dilemma games, non-zero-sum. Make
   dpad to select letters and A to advance and B to go backward.
   Presse select agian to set message.
 
+# Bubble Eats
+- Multiple players in form of blobs with expressive faces eating pills
+- You can collaborate group up with others to sweep the area for pills.
+- You can defect and eat pills in isolation.
+- You can blink and frown to communicate with others.
+- Blobs have momentum.
+- Blobs when they touch stick together and have hard time getting unstuck,
+  but their max movement speed is faster if they all move in same direction.
+
 # Mine World
 - Multiple players building blocks
 - You can collaborate and build faster.

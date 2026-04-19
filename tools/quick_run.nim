@@ -1,4 +1,5 @@
-import std/[exitprocs, monotimes, net, os, osproc, random, strutils, times]
+import std/[exitprocs, monotimes, net, os, osproc, parseopt, random, strutils, times]
+import windy
 
 const
   ClientSourceRelative = "client" / "client.nim"
@@ -6,17 +7,32 @@ const
   PollIntervalMs = 100
   RandomPortMin = 5000
   RandomPortMax = 10000
+  ClientScreenOnlyWidth = 400
+  ClientScreenOnlyHeight = 400
+  ClientWindowMargin = 50
+  MaxPlayers = 4
 
 var
   serverProcess: Process
-  clientProcess: Process
+  clientProcesses: seq[Process]
   cleanupStarted = false
+
+type
+  QuickRunConfig = object
+    gameFolder: string
+    port: int
+    players: int
+
+  ClientLaunch = object
+    title: string
+    x: int
+    y: int
 
 proc repoRoot(): string =
   absolutePath(getAppDir() / "..")
 
 proc usage(): string =
-  "Usage: quick_run <game_folder> [port]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nExample: quick_run fancy_cookout 8080"
+  "Usage: quick_run <game_folder> [port] [--players:N]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4"
 
 proc parsePort(value: string): int =
   result = parseInt(value)
@@ -25,6 +41,14 @@ proc parsePort(value: string): int =
 
 proc chooseRandomPort(): int =
   rand(RandomPortMin .. RandomPortMax)
+
+proc parsePlayers(value: string): int =
+  result = parseInt(value)
+  if result < 1 or result > MaxPlayers:
+    raise newException(
+      ValueError,
+      "--players must be between 1 and " & $MaxPlayers & "."
+    )
 
 proc trimTrailingSeparators(value: string): string =
   result = value.strip()
@@ -63,6 +87,61 @@ proc ensureGameFolder(rootDir, folderName: string): tuple[sourceRelative, workDi
 proc exePathFor(rootDir, sourceRelative: string): string =
   absolutePath(rootDir / sourceRelative.changeFileExt(ExeExts[0]))
 
+proc humanizeLabel(label: string): string =
+  for part in label.split({'_', '-', ' '}):
+    if part.len == 0:
+      continue
+    if result.len > 0:
+      result.add(' ')
+    result.add(part[0].toUpperAscii())
+    if part.len > 1:
+      result.add(part[1 .. ^1].toLowerAscii())
+
+proc primaryScreen(): Screen =
+  let screens = getScreens()
+  if screens.len == 0:
+    return Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
+  for screen in screens:
+    if screen.primary:
+      return screen
+  screens[0]
+
+proc clientLaunches(gameTitle: string, players: int): seq[ClientLaunch] =
+  let screen = primaryScreen()
+  let rowCounts =
+    case players
+    of 1: @[1]
+    of 2: @[2]
+    of 3: @[3]
+    of 4: @[2, 2]
+    else:
+      raise newException(
+        ValueError,
+        "Unsupported player count: " & $players
+      )
+
+  let
+    totalHeight =
+      rowCounts.len * ClientScreenOnlyHeight +
+      max(0, rowCounts.len - 1) * ClientWindowMargin
+    startY = screen.top + (screen.bottom - screen.top - totalHeight) div 2
+
+  for rowIndex, rowCount in rowCounts:
+    let
+      rowWidth =
+        rowCount * ClientScreenOnlyWidth +
+        max(0, rowCount - 1) * ClientWindowMargin
+      startX = screen.left + (screen.right - screen.left - rowWidth) div 2
+      y = startY + rowIndex * (ClientScreenOnlyHeight + ClientWindowMargin)
+
+    for col in 0 ..< rowCount:
+      let playerNumber = result.len + 1
+      result.add(ClientLaunch(
+        title: gameTitle & " Player " & $playerNumber,
+        x: startX + col * (ClientScreenOnlyWidth + ClientWindowMargin),
+        y: y
+      ))
+
 proc stopManagedProcess(processRef: var Process, label: string) =
   if processRef.isNil:
     return
@@ -90,7 +169,9 @@ proc cleanupChildren() =
   if cleanupStarted:
     return
   cleanupStarted = true
-  stopManagedProcess(clientProcess, "client")
+  for i in countdown(clientProcesses.high, 0):
+    stopManagedProcess(clientProcesses[i], "client " & $(i + 1))
+  clientProcesses.setLen(0)
   stopManagedProcess(serverProcess, "server")
 
 proc cleanupAtExit() {.noconv.} =
@@ -190,23 +271,61 @@ proc waitForChildren(): int =
   while true:
     let
       serverExitCode = childExitCode(serverProcess)
-      clientExitCode = childExitCode(clientProcess)
       serverRunning = serverExitCode == -1
-      clientRunning = clientExitCode == -1
 
-    if not serverRunning or not clientRunning:
+    var exitedClientIndex = -1
+    var clientExitCode = -1
+    for i, processRef in clientProcesses:
+      let exitCode = childExitCode(processRef)
+      if exitCode != -1:
+        exitedClientIndex = i
+        clientExitCode = exitCode
+        break
+
+    if not serverRunning or exitedClientIndex != -1:
       if not serverRunning:
         echo "Server exited with code ", serverExitCode, "."
-      if not clientRunning:
-        echo "Client exited with code ", clientExitCode, "."
+      if exitedClientIndex != -1:
+        echo "Client ", exitedClientIndex + 1, " exited with code ", clientExitCode, "."
       cleanupChildren()
-      if not clientRunning:
+      if exitedClientIndex != -1:
         return clientExitCode
       return serverExitCode
 
     sleep(PollIntervalMs)
 
-proc runQuickRun(gameFolder: string, port: int): int =
+proc parseArgs(): QuickRunConfig =
+  var positional: seq[string]
+  result.players = 1
+
+  for kind, key, val in getopt():
+    case kind
+    of cmdArgument:
+      positional.add(key)
+    of cmdLongOption:
+      case key
+      of "players":
+        if val.len == 0:
+          raise newException(ValueError, "--players requires a value.")
+        result.players = parsePlayers(val)
+      else:
+        raise newException(ValueError, "Unknown option: --" & key)
+    of cmdShortOption:
+      raise newException(ValueError, "Unknown option: -" & key)
+    of cmdEnd:
+      discard
+
+  if positional.len < 1 or positional.len > 2:
+    raise newException(ValueError, "Expected <game_folder> and optional [port].")
+
+  result.gameFolder = positional[0]
+  result.port =
+    if positional.len >= 2:
+      parsePort(positional[1])
+    else:
+      chooseRandomPort()
+
+proc runQuickRun(config: QuickRunConfig): int =
   let
     rootDir = repoRoot()
     nimExe = findExe("nim")
@@ -215,13 +334,14 @@ proc runQuickRun(gameFolder: string, port: int): int =
     return 1
 
   let
-    game = ensureGameFolder(rootDir, gameFolder)
+    game = ensureGameFolder(rootDir, config.gameFolder)
+    gameTitle = humanizeLabel(game.label)
     gameExe = exePathFor(rootDir, game.sourceRelative)
     clientExe = exePathFor(rootDir, ClientSourceRelative)
     clientWorkDir = absolutePath(rootDir / "client")
-    portArg = "--port=" & $port
+    portArg = "--port:" & $config.port
 
-  echo "Using port ", port, "."
+  echo "Using port ", config.port, "."
 
   result = compileTarget(nimExe, rootDir, game.label & " server", game.sourceRelative)
   if result != 0:
@@ -238,16 +358,47 @@ proc runQuickRun(gameFolder: string, port: int): int =
     cleanupChildren()
     return 1
 
-  if not waitForServerReady(port):
+  if not waitForServerReady(config.port):
     cleanupChildren()
     return 1
 
-  try:
-    clientProcess = launchManagedProcess("client", clientExe, clientWorkDir, [portArg])
-  except CatchableError as e:
-    echo "Failed to start client: ", e.msg
-    cleanupChildren()
-    return 1
+  if config.players <= 1:
+    try:
+      clientProcesses.add(
+        launchManagedProcess(
+          "client",
+          clientExe,
+          clientWorkDir,
+          [portArg, "--title:" & gameTitle]
+        )
+      )
+    except CatchableError as e:
+      echo "Failed to start client: ", e.msg
+      cleanupChildren()
+      return 1
+  else:
+    let launches = clientLaunches(gameTitle, config.players)
+    for i, launch in launches:
+      try:
+        clientProcesses.add(
+          launchManagedProcess(
+            "client " & $(i + 1),
+            clientExe,
+            clientWorkDir,
+            [
+              portArg,
+              "--screen-only",
+              "--title:" & launch.title,
+              "--joystick:" & $(i + 1),
+              "--x:" & $launch.x,
+              "--y:" & $launch.y
+            ]
+          )
+        )
+      except CatchableError as e:
+        echo "Failed to start client ", i + 1, ": ", e.msg
+        cleanupChildren()
+        return 1
 
   result = waitForChildren()
   cleanupChildren()
@@ -257,18 +408,8 @@ when isMainModule:
   setControlCHook(controlCHook)
   randomize()
 
-  if paramCount() < 1 or paramCount() > 2:
-    echo usage()
-    quit(1)
-
   try:
-    let gameFolder = paramStr(1)
-    let port =
-      if paramCount() >= 2:
-        parsePort(paramStr(2))
-      else:
-        chooseRandomPort()
-    quit(runQuickRun(gameFolder, port))
+    quit(runQuickRun(parseArgs()))
   except ValueError as e:
     echo e.msg
     echo usage()

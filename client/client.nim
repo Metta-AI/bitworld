@@ -54,6 +54,12 @@ const
   ChatKeyboardCols = 6
 
 type
+  ClientOptions = object
+    title: string
+    windowPos: Option[IVec2]
+    screenOnly: bool
+    selectedGamepadIndex: int
+
   ShellVisualState = object
     dpadOffsetX: float32
     dpadOffsetY: float32
@@ -104,6 +110,7 @@ type
     unpacked*: seq[uint8]
     splashPixels: seq[uint8]
     screenshotRequested: bool
+    screenOnly: bool
     shell*: ShellVisualState
     splashStartedAt: MonoTime
     selectedGamepadIndex: int
@@ -322,6 +329,17 @@ proc detectShellSize(): IVec2 =
       discard
   ivec2(ShellWidth, ShellHeight)
 
+proc detectWindowSize(screenOnly: bool): IVec2 =
+  if screenOnly:
+    return ivec2(ScreenW.int32, ScreenH.int32)
+  detectShellSize()
+
+proc parseSelectedGamepad(value: string): int =
+  let parsed = parseInt(value)
+  if parsed <= 0:
+    return 0
+  parsed - 1
+
 proc screenshotDir(): string =
   getAppDir() / ScreenshotDirName
 
@@ -462,7 +480,11 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
             return
       sleep(250)
 
-proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
+proc initClient*(
+  host = DefaultHost,
+  port = DefaultPort,
+  clientOptions = ClientOptions()
+): ClientApp =
   if not dirExists("dist"):
     createDir("dist")
   let builder = newAtlasBuilder(1024, 2)
@@ -474,12 +496,12 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
 
   loadPalette("data/pallete.png")
 
-  let shellSize = detectShellSize()
+  let windowSize = detectWindowSize(clientOptions.screenOnly)
 
   result = ClientApp()
   result.window = newWindow(
-    title = "Bit World",
-    size = shellSize,
+    title = if clientOptions.title.len > 0: clientOptions.title else: "Bit World",
+    size = windowSize,
     style = Decorated,
     visible = true
   )
@@ -490,15 +512,18 @@ proc initClient*(host = DefaultHost, port = DefaultPort): ClientApp =
   result.silky = newSilky(result.window, AtlasPath)
   if result.window.contentScale > 1.0:
     result.silky.uiScale = 2.0
-    result.window.size = shellSize * 2
+    result.window.size = windowSize * 2
   result.unpacked = @[]
   result.splashPixels = loadSplashPixels()
   result.splashStartedAt = getMonoTime()
-  result.selectedGamepadIndex = 0
+  result.screenOnly = clientOptions.screenOnly
+  result.selectedGamepadIndex = max(0, clientOptions.selectedGamepadIndex)
   result.window.runeInputEnabled = true
   let clientRef = result
   result.window.onRune = proc(rune: Rune) =
     clientRef.queueTextAssistRune(rune)
+  if clientOptions.windowPos.isSome:
+    result.window.pos = clientOptions.windowPos.get
 
   initLock(result.network.lock)
   result.network.latestFrame = newSeq[uint8](ProtocolBytes)
@@ -544,7 +569,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
   input.b = down[KeyX] or down[KeyK]
   input.attack = down[KeyZ] or down[KeyJ]
 
-  if mouseDown:
+  if mouseDown and not client.screenOnly:
     for i, buttonX in TopButtonXs:
       if pointInRect(mouse.x.int, mouse.y.int, buttonX, TopButtonY, TopButtonW, TopButtonH):
         client.shell.topPressed[i] = true
@@ -592,7 +617,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
       input.select = true
 
   let startMouseHeld =
-    mouseDown and pointInRect(
+    mouseDown and not client.screenOnly and pointInRect(
       mouse.x.int,
       mouse.y.int,
       PauseBaseX,
@@ -722,18 +747,25 @@ proc drawFramebuffer*(client: ClientApp) =
 
   let
     frameSize = client.window.size
-    pixelScale = min(ScreenW div ScreenWidth, ScreenH div ScreenHeight)
+    logicalWidth = int(round(frameSize.x.float32 / client.silky.uiScale))
+    logicalHeight = int(round(frameSize.y.float32 / client.silky.uiScale))
+    screenRectX = if client.screenOnly: 0 else: ScreenX
+    screenRectY = if client.screenOnly: 0 else: ScreenY
+    screenRectW = if client.screenOnly: logicalWidth else: ScreenW
+    screenRectH = if client.screenOnly: logicalHeight else: ScreenH
+    pixelScale = min(screenRectW div ScreenWidth, screenRectH div ScreenHeight)
     viewportWidth = ScreenWidth * pixelScale
     viewportHeight = ScreenHeight * pixelScale
-    originX = ScreenX + (ScreenW - viewportWidth) div 2
-    originY = ScreenY + (ScreenH - viewportHeight) div 2
+    originX = screenRectX + (screenRectW - viewportWidth) div 2
+    originY = screenRectY + (screenRectH - viewportHeight) div 2
 
   client.silky.beginUi(client.window, frameSize)
   client.silky.clearScreen(rgbx(0, 0, 0, 0))
-  client.drawShellUi()
+  if not client.screenOnly:
+    client.drawShellUi()
   client.silky.drawRect(
-    vec2(ScreenX.float32, ScreenY.float32),
-    vec2(ScreenW.float32, ScreenH.float32),
+    vec2(screenRectX.float32, screenRectY.float32),
+    vec2(screenRectW.float32, screenRectH.float32),
     rgbx(41, 42, 44, 255)
   )
 
@@ -772,9 +804,13 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runClientLoop*(host = DefaultHost, port = DefaultPort) =
+proc runClientLoop*(
+  host = DefaultHost,
+  port = DefaultPort,
+  clientOptions = ClientOptions()
+) =
   var
-    client = initClient(host, port)
+    client = initClient(host, port, clientOptions)
     lastTick = getMonoTime()
 
   while client.windowOpen:
@@ -793,12 +829,30 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
+    clientOptions = ClientOptions()
+    windowX = none(int)
+    windowY = none(int)
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       case key
       of "address": address = val
       of "port": port = parseInt(val)
+      of "x", "window-x":
+        windowX = some(parseInt(val))
+      of "y", "window-y":
+        windowY = some(parseInt(val))
+      of "screen-only":
+        clientOptions.screenOnly = true
+      of "title":
+        clientOptions.title = val
+      of "joystick", "gamepad", "controller":
+        clientOptions.selectedGamepadIndex = parseSelectedGamepad(val)
       else: discard
     else: discard
-  runClientLoop(address, port)
+  if windowX.isSome or windowY.isSome:
+    clientOptions.windowPos = some(ivec2(
+      if windowX.isSome: windowX.get.int32 else: 0'i32,
+      if windowY.isSome: windowY.get.int32 else: 0'i32
+    ))
+  runClientLoop(address, port, clientOptions)

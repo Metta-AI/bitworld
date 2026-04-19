@@ -546,15 +546,8 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   sim.players[playerIndex].recenterCamera()
 
 proc extractorSpawnPixel(tx, ty: int, dir: Direction): tuple[x, y: int] =
-  case dir
-  of DirUp:
-    (tileCenterX(tx), tileMinY(ty) + WorldTilePixels - 1)
-  of DirRight:
-    (tileMinX(tx), tileCenterY(ty))
-  of DirDown:
-    (tileCenterX(tx), tileMinY(ty))
-  of DirLeft:
-    (tileMinX(tx) + WorldTilePixels - 1, tileCenterY(ty))
+  discard dir
+  (tileCenterX(tx), tileCenterY(ty))
 
 proc computeMoveIntent(sim: SimServer, item: MovingItem): MoveIntent =
   result.stepDir = DirRight
@@ -853,9 +846,20 @@ proc renderWorld(sim: var SimServer, playerIndex: int) =
         cell = sim.cells[mapIndex(tx, ty)]
       sim.fb.blitScreenSprite(sim.art.ground, screenX, screenY)
       sim.renderOreTile(cell, screenX, screenY)
-      sim.renderBuilding(player, cell, screenX, screenY)
+      if cell.building != BuildingExtractor:
+        sim.renderBuilding(player, cell, screenX, screenY)
 
   sim.renderItems(cameraX, cameraY)
+
+  for ty in startTy .. endTy:
+    for tx in startTx .. endTx:
+      let
+        screenX = tx * WorldTilePixels - cameraX
+        screenY = ty * WorldTilePixels - cameraY
+        cell = sim.cells[mapIndex(tx, ty)]
+      if cell.building == BuildingExtractor:
+        sim.renderBuilding(player, cell, screenX, screenY)
+
   sim.renderCursors(playerIndex, cameraX, cameraY)
 
 proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
