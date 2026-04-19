@@ -25,9 +25,9 @@ const
   AButtonBaseY = 323
   BButtonBaseX = 171
   BButtonBaseY = 346
-  PauseBaseX = 103
+  PauseBaseX = 148
   PauseBaseY = 411
-  SelectBaseX = 148
+  SelectBaseX = 103
   SelectBaseY = 411
   TargetFps = 24.0
 
@@ -232,7 +232,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
   input.down = down[KeyDown] or down[KeyS]
   input.left = down[KeyLeft] or down[KeyA]
   input.right = down[KeyRight] or down[KeyD]
-  input.select = down[KeySpace] or down[KeyEnter] or down[KeyX] or down[KeyK]
+  input.select = down[KeySpace] or down[KeyEnter]
   input.attack = down[KeyZ] or down[KeyJ]
 
   if mouseDown:
@@ -261,8 +261,6 @@ proc captureInputMask*(client: ClientApp): uint8 =
 
     if pointInRect(mouse.x.int, mouse.y.int, AButtonBaseX, AButtonBaseY, 41, 40):
       input.attack = true
-    if pointInRect(mouse.x.int, mouse.y.int, BButtonBaseX, BButtonBaseY, 41, 40):
-      input.select = true
     if pointInRect(mouse.x.int, mouse.y.int, PauseBaseX, PauseBaseY, 39, 20) and mousePressed:
       reconnectPressed = true
     if pointInRect(mouse.x.int, mouse.y.int, SelectBaseX, SelectBaseY, 39, 20):
@@ -285,8 +283,8 @@ proc captureInputMask*(client: ClientApp): uint8 =
     input.up = input.up or pad.button(GamepadUp) or ly >= deadZone
     input.down = input.down or pad.button(GamepadDown) or ly <= -deadZone
     input.attack = input.attack or pad.button(GamepadA)
-    input.select = input.select or pad.button(GamepadB)
-    reconnectPressed = reconnectPressed or pad.buttonPressed(GamepadStart)
+    input.select = input.select or pad.button(GamepadStart)
+    reconnectPressed = reconnectPressed or pad.buttonPressed(GamepadSelect)
 
   if input.left:
     client.shell.dpadOffsetX = -1
@@ -300,7 +298,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
   client.shell.aPressed = input.attack
   client.shell.bPressed = bMouseHeld or down[KeyX] or down[KeyK] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadB))
   client.shell.startPressed = startMouseHeld or down[KeyTab] or down[KeyP] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadStart))
-  client.shell.selectPressed = selectMouseHeld or down[KeySpace] or down[KeyEnter]
+  client.shell.selectPressed = selectMouseHeld or down[KeySpace] or down[KeyEnter] or (client.selectedGamepadIndex >= 0 and client.selectedGamepadIndex < gamepads.len and gamepads[client.selectedGamepadIndex].button(GamepadSelect))
   for i in 0 ..< client.shell.topPressed.len:
     client.shell.topPressed[i] = client.shell.topPressed[i] or i == client.selectedGamepadIndex
   if reconnectPressed:

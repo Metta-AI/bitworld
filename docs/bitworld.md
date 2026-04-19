@@ -60,6 +60,14 @@ Types of games: cooperative/competitive social dilemma games, non-zero-sum. Make
 - People need to take turns selling food, or you can take it all for yourself. (betrayal)
 - First playable slice: dirty dishes spawn at the return counter, players carry them with `A`, place them with `B`, wash them faster together by holding `B` at the sink, and score when clean dishes are returned to the rack.
 
+# Free Chat
+- Multiple players playing a video game
+- Each player can put a message above thier head.
+- They can walk around.
+- They type by pressing select and using a gameboy style letter input,
+  dpad to select letters and A to advance and B to go backward.
+  Presse select agian to set message.
+
 # Mine World
 - Multiple players building blocks
 - You can collaborate and build faster.

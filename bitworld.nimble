@@ -8,6 +8,7 @@ bin = @[
   "client/client",
   "big_adventure/big_adventure",
   "big_adventure/player",
+  "free_chat/free_chat",
   "fancy_cookout/fancy_cookout",
   "infinite_blocks/infinite_blocks",
   "planet_wars/planet_wars",

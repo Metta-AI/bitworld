@@ -11,6 +11,7 @@ In Bit World, players begin with very little and gradually build strength by exp
 The repo currently includes playable multiplayer prototypes for:
 
 - `Big Adventure`
+- `Free Chat`
 - `Infinite Blocks`
 - `Planet Wars`
 - `Fancy Cookout`
@@ -95,6 +96,8 @@ At a high level:
 Bit World is currently at the concept stage. This repository is the starting point for documenting the idea and shaping the project into a more concrete game and research platform.
 
 `Fancy Cookout` now has a first playable kitchen slice focused on dishes: players can pick up dirty plates with `A`, place or drop them with `B`, wash them cooperatively at a sink by holding `B`, and return clean plates to the rack for personal score.
+
+`Free Chat` is a lightweight social demo slice: players wander a shared plaza, press `Select` to open a retro letter grid, use the d-pad to choose characters, press `A` to add, `B` to erase, and press `Select` again to publish the message above their head.
 
 ## Tools
 

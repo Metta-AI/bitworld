@@ -17,8 +17,9 @@ const
   StopThreshold = 20
   MinPlayerSpawnSpacing = 24
   WashWorkNeeded = 28
-  DirtyReturnInterval = 96
+  ChopWorkNeeded = 20
   MaxReturnCount = 9
+  SaladScoreValue = 3
   TargetFps = 24.0
   WebSocketPath = "/ws"
   FloorBackdropColor = 3'u8
@@ -32,6 +33,12 @@ type
   ItemKind = enum
     DirtyDishItem
     CleanDishItem
+    TomatoItem
+    LettuceItem
+    ChoppedTomatoItem
+    ChoppedLettuceItem
+    TomatoPlateItem
+    SaladItem
 
   SheetSpriteKind = enum
     SheetFloor
@@ -40,14 +47,23 @@ type
     SheetDirtyReturn
     SheetCleanRack
     SheetWashStation
+    SheetFridge
+    SheetCuttingStation
     SheetDirtyDish
     SheetCleanDish
+    SheetTomato
+    SheetLettuce
+    SheetChoppedTomato
+    SheetChoppedLettuce
 
   StationKind = enum
     CounterStation
     DirtyReturnStation
     WashStation
-    CleanRackStation
+    DeliveryStation
+    TomatoFridgeStation
+    LettuceFridgeStation
+    CuttingStation
 
   FloorItem = object
     tx: int
@@ -61,7 +77,7 @@ type
     storedCount: int
     slotOccupied: bool
     slotItem: ItemKind
-    washProgress: int
+    workProgress: int
 
   Player = object
     x: int
@@ -94,7 +110,6 @@ type
     playerSprites: seq[Sprite]
     digitSprites: array[10, Sprite]
     fb: Framebuffer
-    dirtyReturnTimer: int
 
   WebSocketAppState = object
     lock: Lock
@@ -152,17 +167,50 @@ proc defaultPlayerSprite(sim: SimServer): Sprite =
 proc playerSprite(sim: SimServer, playerIndex: int): Sprite =
   sim.playerSprites[playerIndex mod sim.playerSprites.len]
 
-proc dishSprite(sim: SimServer, kind: ItemKind): Sprite =
+proc singleItemSprite(sim: SimServer, kind: ItemKind): Sprite =
   case kind
   of DirtyDishItem: sim.sheetSprites[SheetDirtyDish]
   of CleanDishItem: sim.sheetSprites[SheetCleanDish]
+  of TomatoItem: sim.sheetSprites[SheetTomato]
+  of LettuceItem: sim.sheetSprites[SheetLettuce]
+  of ChoppedTomatoItem: sim.sheetSprites[SheetChoppedTomato]
+  of ChoppedLettuceItem: sim.sheetSprites[SheetChoppedLettuce]
+  else:
+    raise newException(ValueError, "Composite item needs layered rendering: " & $kind)
+
+proc isChoppable(item: ItemKind): bool =
+  item in {TomatoItem, LettuceItem}
+
+proc choppedVersion(item: ItemKind): ItemKind =
+  case item
+  of TomatoItem: ChoppedTomatoItem
+  of LettuceItem: ChoppedLettuceItem
+  else: item
+
+proc drawItem(
+  sim: var SimServer,
+  kind: ItemKind,
+  worldX, worldY, cameraX, cameraY: int
+) =
+  case kind
+  of TomatoPlateItem:
+    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
+    sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
+  of SaladItem:
+    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
+    sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
+    sim.fb.blitSprite(sim.singleItemSprite(ChoppedLettuceItem), worldX, worldY, cameraX, cameraY)
+  else:
+    sim.fb.blitSprite(sim.singleItemSprite(kind), worldX, worldY, cameraX, cameraY)
 
 proc stationBaseSprite(sim: SimServer, kind: StationKind): Sprite =
   case kind
   of CounterStation: sim.sheetSprites[SheetCounter]
   of DirtyReturnStation: sim.sheetSprites[SheetDirtyReturn]
   of WashStation: sim.sheetSprites[SheetWashStation]
-  of CleanRackStation: sim.sheetSprites[SheetCleanRack]
+  of DeliveryStation: sim.sheetSprites[SheetCleanRack]
+  of TomatoFridgeStation, LettuceFridgeStation: sim.sheetSprites[SheetFridge]
+  of CuttingStation: sim.sheetSprites[SheetCuttingStation]
 
 proc renderNumber(
   fb: var Framebuffer,
@@ -205,6 +253,14 @@ proc addStation(
     sim.stations.add(station)
   sim.tiles[tileIndex(tx, ty)] = true
 
+proc setStationItem(sim: var SimServer, tx, ty: int, item: ItemKind) =
+  let index = sim.stationIndexAt(tx, ty)
+  if index < 0:
+    return
+  sim.stations[index].slotOccupied = true
+  sim.stations[index].slotItem = item
+  sim.stations[index].workProgress = 0
+
 proc initKitchen(sim: var SimServer) =
   for tx in 0 ..< WorldWidthTiles:
     sim.addStation(CounterStation, tx, 0)
@@ -222,8 +278,13 @@ proc initKitchen(sim: var SimServer) =
     sim.addStation(CounterStation, 14, ty)
 
   sim.addStation(DirtyReturnStation, 5, 3, storedCount = 3)
-  sim.addStation(CleanRackStation, 12, 3, storedCount = 2)
+  sim.addStation(TomatoFridgeStation, 7, 3)
+  sim.addStation(LettuceFridgeStation, 9, 3)
+  sim.addStation(CuttingStation, 11, 3)
+  sim.addStation(DeliveryStation, 13, 3)
   sim.addStation(WashStation, 9, 9)
+  sim.setStationItem(4, 3, CleanDishItem)
+  sim.setStationItem(6, 3, CleanDishItem)
 
 proc canOccupy(sim: SimServer, x, y, width, height: int): bool =
   if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
@@ -294,8 +355,14 @@ proc initSimServer(): SimServer =
   result.sheetSprites[SheetDirtyReturn] = sheetImage.sheetCellSprite(3, 0)
   result.sheetSprites[SheetCleanRack] = sheetImage.sheetCellSprite(4, 0)
   result.sheetSprites[SheetWashStation] = sheetImage.sheetCellSprite(5, 0)
+  result.sheetSprites[SheetFridge] = sheetImage.sheetCellSprite(6, 0)
+  result.sheetSprites[SheetCuttingStation] = sheetImage.sheetCellSprite(7, 0)
   result.sheetSprites[SheetDirtyDish] = sheetImage.sheetCellSprite(0, 2)
   result.sheetSprites[SheetCleanDish] = sheetImage.sheetCellSprite(1, 2)
+  result.sheetSprites[SheetTomato] = sheetImage.sheetCellSprite(2, 2)
+  result.sheetSprites[SheetLettuce] = sheetImage.sheetCellSprite(3, 2)
+  result.sheetSprites[SheetChoppedTomato] = sheetImage.sheetCellSprite(4, 2)
+  result.sheetSprites[SheetChoppedLettuce] = sheetImage.sheetCellSprite(5, 2)
   result.playerSprites = @[
     sheetImage.sheetCellSprite(0, 1),
     sheetImage.sheetCellSprite(1, 1),
@@ -435,23 +502,43 @@ proc handlePickup(sim: var SimServer, playerIndex: int) =
     if sim.stations[stationIndex].storedCount > 0:
       dec sim.stations[stationIndex].storedCount
       sim.giveCarry(playerIndex, DirtyDishItem)
-  of CleanRackStation:
-    if sim.stations[stationIndex].storedCount > 0:
-      dec sim.stations[stationIndex].storedCount
-      sim.giveCarry(playerIndex, CleanDishItem)
-  of WashStation:
+  of WashStation, CuttingStation:
     if sim.stations[stationIndex].slotOccupied:
       let item = sim.stations[stationIndex].slotItem
       sim.stations[stationIndex].slotOccupied = false
-      sim.stations[stationIndex].washProgress = 0
+      sim.stations[stationIndex].workProgress = 0
       sim.giveCarry(playerIndex, item)
   of CounterStation:
+    if sim.stations[stationIndex].slotOccupied:
+      let item = sim.stations[stationIndex].slotItem
+      sim.stations[stationIndex].slotOccupied = false
+      sim.giveCarry(playerIndex, item)
+  of TomatoFridgeStation:
+    sim.giveCarry(playerIndex, TomatoItem)
+  of LettuceFridgeStation:
+    sim.giveCarry(playerIndex, LettuceItem)
+  of DeliveryStation:
     discard
 
 proc tileCanHoldFloorItem(sim: SimServer, tx, ty: int): bool =
   inTileBounds(tx, ty) and
     not sim.tiles[tileIndex(tx, ty)] and
     sim.floorItemIndexAt(tx, ty) < 0
+
+proc combinePlateItem(targetItem: var ItemKind, carriedItem: ItemKind): bool =
+  if targetItem == CleanDishItem and carriedItem == ChoppedTomatoItem:
+    targetItem = TomatoPlateItem
+    return true
+  if targetItem == TomatoPlateItem and carriedItem == ChoppedLettuceItem:
+    targetItem = SaladItem
+    return true
+  false
+
+proc firstStationIndex(sim: SimServer, kind: StationKind): int =
+  for i, station in sim.stations:
+    if station.kind == kind:
+      return i
+  -1
 
 proc handleInteract(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -465,6 +552,12 @@ proc handleInteract(sim: var SimServer, playerIndex: int) =
   if not inTileBounds(target.tx, target.ty):
     return
 
+  let floorIndex = sim.floorItemIndexAt(target.tx, target.ty)
+  if floorIndex >= 0:
+    if combinePlateItem(sim.floorItems[floorIndex].kind, item):
+      sim.clearCarry(playerIndex)
+      return
+
   let stationIndex = sim.stationIndexAt(target.tx, target.ty)
   if stationIndex >= 0:
     case sim.stations[stationIndex].kind
@@ -473,27 +566,52 @@ proc handleInteract(sim: var SimServer, playerIndex: int) =
         inc sim.stations[stationIndex].storedCount
         sim.clearCarry(playerIndex)
         return
+      if item == SaladItem and sim.stations[stationIndex].storedCount < MaxReturnCount:
+        inc sim.stations[stationIndex].storedCount
+        sim.players[playerIndex].score += SaladScoreValue
+        sim.clearCarry(playerIndex)
+        return
     of WashStation:
       if item == DirtyDishItem and not sim.stations[stationIndex].slotOccupied:
         sim.stations[stationIndex].slotOccupied = true
         sim.stations[stationIndex].slotItem = DirtyDishItem
-        sim.stations[stationIndex].washProgress = 0
+        sim.stations[stationIndex].workProgress = 0
         sim.clearCarry(playerIndex)
         return
-    of CleanRackStation:
-      if item == CleanDishItem:
-        inc sim.stations[stationIndex].storedCount
-        inc sim.players[playerIndex].score
+    of CuttingStation:
+      if item.isChoppable() and not sim.stations[stationIndex].slotOccupied:
+        sim.stations[stationIndex].slotOccupied = true
+        sim.stations[stationIndex].slotItem = item
+        sim.stations[stationIndex].workProgress = 0
+        sim.clearCarry(playerIndex)
+        return
+    of DeliveryStation:
+      if item == SaladItem:
+        let dirtyReturnIndex = sim.firstStationIndex(DirtyReturnStation)
+        if dirtyReturnIndex >= 0 and sim.stations[dirtyReturnIndex].storedCount < MaxReturnCount:
+          inc sim.stations[dirtyReturnIndex].storedCount
+        sim.players[playerIndex].score += SaladScoreValue
         sim.clearCarry(playerIndex)
         return
     of CounterStation:
+      if sim.stations[stationIndex].slotOccupied:
+        if combinePlateItem(sim.stations[stationIndex].slotItem, item):
+          sim.clearCarry(playerIndex)
+          return
+      else:
+        sim.stations[stationIndex].slotOccupied = true
+        sim.stations[stationIndex].slotItem = item
+        sim.stations[stationIndex].workProgress = 0
+        sim.clearCarry(playerIndex)
+        return
+    of TomatoFridgeStation, LettuceFridgeStation:
       discard
 
   if sim.tileCanHoldFloorItem(target.tx, target.ty):
     sim.floorItems.add FloorItem(tx: target.tx, ty: target.ty, kind: item)
     sim.clearCarry(playerIndex)
 
-proc countWashHelpers(sim: SimServer, station: Station, inputs: openArray[PlayerInput]): int =
+proc countStationHelpers(sim: SimServer, station: Station, inputs: openArray[PlayerInput]): int =
   for playerIndex in 0 ..< min(sim.players.len, inputs.len):
     if not inputs[playerIndex].interactHeld or sim.players[playerIndex].carrying:
       continue
@@ -501,49 +619,40 @@ proc countWashHelpers(sim: SimServer, station: Station, inputs: openArray[Player
     if target.tx == station.tx and target.ty == station.ty:
       inc result
 
-proc updateWashStations(sim: var SimServer, inputs: openArray[PlayerInput]) =
+proc updateStations(sim: var SimServer, inputs: openArray[PlayerInput]) =
   for station in sim.stations.mitems:
-    if station.kind != WashStation or not station.slotOccupied or station.slotItem != DirtyDishItem:
-      continue
-    let helpers = sim.countWashHelpers(station, inputs)
-    if helpers <= 0:
-      continue
-    station.washProgress += helpers
-    if station.washProgress >= WashWorkNeeded:
-      station.slotItem = CleanDishItem
-      station.washProgress = 0
+    case station.kind
+    of WashStation:
+      if not station.slotOccupied or station.slotItem != DirtyDishItem:
+        continue
+      let helpers = sim.countStationHelpers(station, inputs)
+      if helpers <= 0:
+        continue
+      station.workProgress += helpers
+      if station.workProgress >= WashWorkNeeded:
+        station.slotItem = CleanDishItem
+        station.workProgress = 0
+    of CuttingStation:
+      if not station.slotOccupied or not station.slotItem.isChoppable():
+        continue
+      let helpers = sim.countStationHelpers(station, inputs)
+      if helpers <= 0:
+        continue
+      station.workProgress += helpers
+      if station.workProgress >= ChopWorkNeeded:
+        station.slotItem = station.slotItem.choppedVersion()
+        station.workProgress = 0
+    else:
+      discard
 
-proc firstStationIndex(sim: SimServer, kind: StationKind): int =
-  for i, station in sim.stations:
-    if station.kind == kind:
-      return i
-  -1
-
-proc cycleDishReturn(sim: var SimServer) =
-  inc sim.dirtyReturnTimer
-  if sim.dirtyReturnTimer < DirtyReturnInterval:
-    return
-  sim.dirtyReturnTimer = 0
-
-  let
-    returnIndex = sim.firstStationIndex(DirtyReturnStation)
-    rackIndex = sim.firstStationIndex(CleanRackStation)
-  if returnIndex < 0 or rackIndex < 0:
-    return
-  if sim.stations[rackIndex].storedCount <= 0 or sim.stations[returnIndex].storedCount >= MaxReturnCount:
-    return
-
-  dec sim.stations[rackIndex].storedCount
-  inc sim.stations[returnIndex].storedCount
-
-proc drawWashProgress(
+proc drawActionProgress(
   sim: var SimServer,
-  progress, worldX, worldY, cameraX, cameraY: int
+  progress, totalWork, worldX, worldY, cameraX, cameraY: int
 ) =
   let
     filledWidth = max(
       1,
-      min(WashBarWidth, (progress * WashBarWidth + WashWorkNeeded - 1) div WashWorkNeeded)
+      min(WashBarWidth, (progress * WashBarWidth + totalWork - 1) div totalWork)
     )
     screenX = worldX - cameraX + WashBarOffsetX
     screenY = worldY - cameraY + WashBarOffsetY
@@ -579,23 +688,32 @@ proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
       sim.fb.blitSprite(sim.stationBaseSprite(station.kind), worldX, worldY, cameraX, cameraY)
       case station.kind
       of CounterStation:
-        discard
+        if station.slotOccupied:
+          sim.drawItem(station.slotItem, worldX, worldY + DishOffsetY, cameraX, cameraY)
       of DirtyReturnStation:
         if station.storedCount > 0:
-          sim.fb.blitSprite(sim.dishSprite(DirtyDishItem), worldX, worldY + DishOffsetY, cameraX, cameraY)
-      of CleanRackStation:
-        if station.storedCount > 0:
-          sim.fb.blitSprite(sim.dishSprite(CleanDishItem), worldX, worldY + DishOffsetY, cameraX, cameraY)
+          sim.drawItem(DirtyDishItem, worldX, worldY + DishOffsetY, cameraX, cameraY)
+      of DeliveryStation:
+        discard
+      of TomatoFridgeStation:
+        sim.drawItem(TomatoItem, worldX, worldY, cameraX, cameraY)
+      of LettuceFridgeStation:
+        sim.drawItem(LettuceItem, worldX, worldY, cameraX, cameraY)
       of WashStation:
         if station.slotOccupied:
-          sim.fb.blitSprite(sim.dishSprite(station.slotItem), worldX, worldY, cameraX, cameraY)
-        if station.slotOccupied and station.slotItem == DirtyDishItem and station.washProgress > 0:
-          sim.drawWashProgress(station.washProgress, worldX, worldY, cameraX, cameraY)
+          sim.drawItem(station.slotItem, worldX, worldY, cameraX, cameraY)
+        if station.slotOccupied and station.slotItem == DirtyDishItem and station.workProgress > 0:
+          sim.drawActionProgress(station.workProgress, WashWorkNeeded, worldX, worldY, cameraX, cameraY)
+      of CuttingStation:
+        if station.slotOccupied:
+          sim.drawItem(station.slotItem, worldX, worldY, cameraX, cameraY)
+        if station.slotOccupied and station.slotItem.isChoppable() and station.workProgress > 0:
+          sim.drawActionProgress(station.workProgress, ChopWorkNeeded, worldX, worldY, cameraX, cameraY)
 
 proc renderFloorItems(sim: var SimServer, cameraX, cameraY: int) =
   for item in sim.floorItems:
-    sim.fb.blitSprite(
-      sim.dishSprite(item.kind),
+    sim.drawItem(
+      item.kind,
       item.tx * FancyTileSize,
       item.ty * FancyTileSize,
       cameraX,
@@ -606,8 +724,8 @@ proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
   for player in sim.players:
     sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY)
     if player.carrying:
-      sim.fb.blitSprite(
-        sim.dishSprite(player.carriedItem),
+      sim.drawItem(
+        player.carriedItem,
         player.x,
         player.y + CarryOffsetY,
         cameraX,
@@ -658,8 +776,7 @@ proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
     if playerIndex < inputs.len and inputs[playerIndex].interactPressed:
       sim.handleInteract(playerIndex)
 
-  sim.updateWashStations(inputs)
-  sim.cycleDishReturn()
+  sim.updateStations(inputs)
 
 var appState: WebSocketAppState
 
