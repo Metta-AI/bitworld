@@ -29,7 +29,7 @@ type
     y: int
 
 proc repoRoot(): string =
-  absolutePath(getAppDir() / "..")
+  absolutePath(getCurrentDir())
 
 proc usage(): string =
   "Usage: quick_run <game_folder> [port] [--players:N]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4"
