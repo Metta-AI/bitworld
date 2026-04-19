@@ -93,7 +93,6 @@ type
     sheetSprites: array[SheetSpriteKind, Sprite]
     playerSprites: seq[Sprite]
     digitSprites: array[10, Sprite]
-    letterSprites: seq[Sprite]
     fb: Framebuffer
     dirtyReturnTimer: int
 
@@ -129,9 +128,6 @@ proc sheetPath(): string =
 
 proc numbersPath(): string =
   clientDataDir() / "numbers.png"
-
-proc lettersPath(): string =
-  clientDataDir() / "letters.png"
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
@@ -307,7 +303,6 @@ proc initSimServer(): SimServer =
     sheetImage.sheetCellSprite(3, 1)
   ]
   result.digitSprites = loadDigitSprites(numbersPath())
-  result.letterSprites = loadLetterSprites(lettersPath())
   result.initKitchen()
 
 proc applyMomentumAxis(
@@ -609,7 +604,7 @@ proc renderFloorItems(sim: var SimServer, cameraX, cameraY: int) =
 
 proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
   for player in sim.players:
-    sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY, player.facing)
+    sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY)
     if player.carrying:
       sim.fb.blitSprite(
         sim.dishSprite(player.carriedItem),
@@ -623,18 +618,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
 
-  let
-    dirtyIndex = sim.firstStationIndex(DirtyReturnStation)
-    cleanIndex = sim.firstStationIndex(CleanRackStation)
-    dirtyCount = if dirtyIndex >= 0: sim.stations[dirtyIndex].storedCount else: 0
-    cleanCount = if cleanIndex >= 0: sim.stations[cleanIndex].storedCount else: 0
-
-  sim.fb.blitText(sim.letterSprites, "SC", 0, 0)
-  sim.fb.renderNumber(sim.digitSprites, sim.players[playerIndex].score, 12, 0)
-  sim.fb.blitText(sim.letterSprites, "DIR", 28, 0)
-  sim.fb.renderNumber(sim.digitSprites, dirtyCount, 46, 0)
-  sim.fb.blitText(sim.letterSprites, "CLN", 28, 7)
-  sim.fb.renderNumber(sim.digitSprites, cleanCount, 46, 7)
+  sim.fb.renderNumber(sim.digitSprites, sim.players[playerIndex].score, 0, 0)
 
 proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(FloorBackdropColor)

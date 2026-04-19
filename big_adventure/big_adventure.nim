@@ -19,6 +19,7 @@ const
   MaxPlayerLives* = 5
   TargetFps = 24.0
   WebSocketPath = "/ws"
+  BackgroundColor = 12'u8
 
 type
   Actor* = object
@@ -652,7 +653,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   sim.fb.blitSprite(sim.digitSprites[coins mod 10], hudX + sim.coinSprite.width * 2, 0, 0, 0)
 
 proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame()
+  sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed
 

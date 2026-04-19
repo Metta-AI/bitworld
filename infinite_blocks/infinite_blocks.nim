@@ -3,7 +3,6 @@ import protocol, server
 import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
-  DataDir = ".." / "big_adventure" / "data"
   BoardWidthCells = 1000
   BoardHeightCells = 1000
   CellPixels = 2
@@ -18,7 +17,7 @@ const
   LockDelayTicks = 8
   LineClearLength = 8
   TerrainColor = 1'u8
-  BackgroundColor = 3'u8
+  BackgroundColor = 0'u8
   ClearFlashTicks = 8
   ClearPauseTicks = 5
   TargetFps = 24.0
@@ -100,6 +99,12 @@ type
     server: ptr Server
     address: string
     port: int
+
+proc repoDir(): string =
+  getAppDir() / ".."
+
+proc clientDataDir(): string =
+  repoDir() / "client" / "data"
 
 proc boardIndex(x, y: int): int =
   y * BoardWidthCells + x
@@ -288,7 +293,7 @@ proc blitSolidSprite(
 ) =
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] != 0:
+      if sprite.pixels[sprite.spriteIndex(x, y)] != TransparentColorIndex:
         fb.putPixel(screenX + x, screenY + y, color)
 
 proc renderNumber(
@@ -345,10 +350,10 @@ proc initSimServer(): SimServer =
   result.settledOwners = newSeq[int](BoardWidthCells * BoardHeightCells)
   result.terrain = newSeq[bool](BoardWidthCells * BoardHeightCells)
   result.fb = initFramebuffer()
-  loadPalette(DataDir / "pallete.png")
+  loadPalette(clientDataDir() / "pallete.png")
   result.flashColor = brightestPaletteColor()
-  result.digitSprites = loadDigitSprites(DataDir / "numbers.png")
-  result.letterSprites = loadLetterSprites(DataDir / "letters.png")
+  result.digitSprites = loadDigitSprites(clientDataDir() / "numbers.png")
+  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
 
   for x in 0 ..< BoardWidthCells:
     result.terrain[boardIndex(x, BaseTerrainY)] = true
