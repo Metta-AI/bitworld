@@ -11,6 +11,7 @@ In Bit World, players begin with very little and gradually build strength by exp
 The repo currently includes playable multiplayer prototypes for:
 
 - `Big Adventure`
+- `Bubble Eats`
 - `Free Chat`
 - `Infinite Blocks`
 - `Planet Wars`
@@ -98,6 +99,8 @@ Bit World is currently at the concept stage. This repository is the starting poi
 `Fancy Cookout` now has a first playable kitchen slice focused on dishes: players can pick up dirty plates with `A`, place or drop them with `B`, wash them cooperatively at a sink by holding `B`, and return clean plates to the rack for personal score.
 
 `Free Chat` is a lightweight social demo slice: players wander a shared plaza, press `Select` to open a retro letter grid, use the d-pad to choose characters, press `A` to add, `B` to erase, and press `Select` again to publish the message above their head.
+
+`Bubble Eats` is a large-map blob swarm slice: each player becomes a colored 24-pixel blob with momentum, `A` triggers a blink, `B` triggers a frown, nearby blobs magnetize and stick together, groups gain higher top speed when they align, and moving against the group for long enough breaks you free while you sweep or hoard falling pills for personal score.
 
 ## Tools
 
