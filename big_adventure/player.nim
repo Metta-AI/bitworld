@@ -1,5 +1,5 @@
 import pixie, protocol, server, silky, whisky, windy
-import std/[math, monotimes, options, os, parseopt, strutils, times]
+import std/[heapqueue, math, monotimes, options, os, parseopt, strutils, times]
 
 const
   SheetTileSize = TileSize
@@ -7,7 +7,7 @@ const
   PlayerCenterX = ScreenWidth div 2
   PlayerCenterY = ScreenHeight div 2
   HudHeight = 6
-  WanderDuration = 24
+  WanderDuration = 72
   GameOverX = 20
   GameOverTopY = 26
   GameOverBottomY = 34
@@ -17,8 +17,11 @@ const
   MapCenterTileY = MapHeightTiles div 2
   CameraDeltaLimit = 4
   MinWallMatchScore = 2
-  PathSearchRadiusTiles = 40
-  TargetSearchPaddingTiles = 12
+  PlayerDefaultPort = 2000
+  BlockedMoveConfirmFrames = 8
+  BossFleeSearchRadiusTiles = 18
+  UnknownTileCost = 8
+  WallFollowDuration = 18
   ViewerWindowWidth = 1560
   ViewerWindowHeight = 960
   ViewerMargin = 16.0'f
@@ -28,6 +31,7 @@ const
   ViewerPanel = rgbx(33, 38, 50, 255)
   ViewerPanelAlt = rgbx(25, 30, 41, 255)
   ViewerText = rgbx(226, 231, 240, 255)
+  ViewerWallBox = rgbx(248, 248, 252, 255)
   ViewerMutedText = rgbx(146, 155, 172, 255)
   ViewerUnknown = rgbx(25, 29, 39, 255)
   ViewerOpen = rgbx(66, 83, 92, 255)
@@ -67,6 +71,10 @@ type
     nextTx: int
     nextTy: int
 
+  SearchNode = object
+    priority: int
+    index: int
+
   RememberedObject = object
     kind: DetectedKind
     worldX: int
@@ -92,12 +100,20 @@ type
     worldTiles: seq[TileKnowledge]
     playerWorldX: int
     playerWorldY: int
+    lastResolvedWorldX: int
+    lastResolvedWorldY: int
+    lastWorldDeltaTrusted: bool
+    blockedTileX: int
+    blockedTileY: int
+    blockedMoveFrames: int
     lastVisibleWalls: seq[DetectedObject]
     lastVisibleObjects: seq[DetectedObject]
     rememberedObjects: seq[RememberedObject]
     haveWallFrame: bool
     wanderDir: int
     wanderTicks: int
+    wallFollowMask: uint8
+    wallFollowTicks: int
     previousAttack: bool
     lastThought: string
     frameTick: int
@@ -113,10 +129,10 @@ type
     lastMask: uint8
 
 proc dataDir(): string =
-  getAppDir() / "data"
+  getCurrentDir() / "data"
 
 proc repoDir(): string =
-  getAppDir() / ".."
+  getCurrentDir() / ".."
 
 proc clientDataDir(): string =
   repoDir() / "client" / "data"
@@ -159,6 +175,11 @@ proc distanceSquared(ax, ay, bx, by: int): int =
     dy = ay - by
   dx * dx + dy * dy
 
+proc `<`(a, b: SearchNode): bool =
+  if a.priority == b.priority:
+    return a.index < b.index
+  a.priority < b.priority
+
 proc inMapBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < MapWidthTiles and ty < MapHeightTiles
 
@@ -196,6 +217,8 @@ proc rememberTile(bot: var Bot, tx, ty: int, knowledge: TileKnowledge) =
 proc resetBehavior(bot: var Bot) =
   bot.wanderDir = 0
   bot.wanderTicks = 0
+  bot.wallFollowMask = 0
+  bot.wallFollowTicks = 0
   bot.previousAttack = false
   bot.lastThought = ""
   bot.hasGoal = false
@@ -204,6 +227,8 @@ proc resetBehavior(bot: var Bot) =
   bot.intentLabel = ""
   bot.attackIntent = ""
   bot.lastMask = 0
+  bot.blockedMoveFrames = 0
+  bot.lastWorldDeltaTrusted = false
 
 proc resetWorldModel(bot: var Bot) =
   if bot.worldTiles.len != MapWidthTiles * MapHeightTiles:
@@ -212,6 +237,10 @@ proc resetWorldModel(bot: var Bot) =
     bot.worldTiles[i] = TileUnknown
   bot.playerWorldX = MapCenterTileX * TileSize
   bot.playerWorldY = MapCenterTileY * TileSize
+  bot.lastResolvedWorldX = bot.playerWorldX
+  bot.lastResolvedWorldY = bot.playerWorldY
+  bot.blockedTileX = -1
+  bot.blockedTileY = -1
   bot.lastVisibleWalls.setLen(0)
   bot.lastVisibleObjects.setLen(0)
   bot.rememberedObjects.setLen(0)
@@ -322,17 +351,109 @@ proc moveMaskForDirection(dx, dy: int): uint8 =
       return ButtonRight
   0
 
+proc maskTargetTile(bot: Bot, mask: uint8): tuple[valid: bool, tx: int, ty: int] =
+  result.tx = bot.playerTileX()
+  result.ty = bot.playerTileY()
+  if (mask and ButtonLeft) != 0:
+    dec result.tx
+    result.valid = true
+  elif (mask and ButtonRight) != 0:
+    inc result.tx
+    result.valid = true
+  elif (mask and ButtonUp) != 0:
+    dec result.ty
+    result.valid = true
+  elif (mask and ButtonDown) != 0:
+    inc result.ty
+    result.valid = true
+
+proc maskBlocked(bot: Bot, mask: uint8): bool =
+  let target = bot.maskTargetTile(mask)
+  target.valid and bot.tileKnowledge(target.tx, target.ty) == TileWall
+
+proc oppositeMask(mask: uint8): uint8 =
+  if (mask and ButtonLeft) != 0: return ButtonRight
+  if (mask and ButtonRight) != 0: return ButtonLeft
+  if (mask and ButtonUp) != 0: return ButtonDown
+  if (mask and ButtonDown) != 0: return ButtonUp
+  0
+
+proc sideMasks(primaryMask: uint8, dx, dy: int): array[2, uint8] =
+  if (primaryMask and (ButtonLeft or ButtonRight)) != 0:
+    if dy < 0:
+      return [ButtonUp, ButtonDown]
+    if dy > 0:
+      return [ButtonDown, ButtonUp]
+    return [ButtonUp, ButtonDown]
+
+  if dx < 0:
+    return [ButtonLeft, ButtonRight]
+  if dx > 0:
+    return [ButtonRight, ButtonLeft]
+  [ButtonLeft, ButtonRight]
+
+proc setGoalPreview(bot: var Bot, worldX, worldY: int, label: string, moveMask: uint8) =
+  bot.hasGoal = true
+  bot.goalWorldX = worldX
+  bot.goalWorldY = worldY
+  bot.goalLabel = label
+  let next = bot.maskTargetTile(moveMask)
+  bot.hasNextStep = next.valid
+  if next.valid:
+    bot.goalNextTx = next.tx
+    bot.goalNextTy = next.ty
+
+proc steerMask(bot: var Bot, desiredMask: uint8, dx, dy: int): uint8 =
+  if desiredMask == 0:
+    bot.wallFollowMask = 0
+    bot.wallFollowTicks = 0
+    return 0
+
+  if not bot.maskBlocked(desiredMask):
+    bot.wallFollowMask = 0
+    bot.wallFollowTicks = 0
+    return desiredMask
+
+  if bot.wallFollowTicks > 0 and bot.wallFollowMask != 0 and not bot.maskBlocked(bot.wallFollowMask):
+    dec bot.wallFollowTicks
+    return bot.wallFollowMask
+
+  for sideMask in sideMasks(desiredMask, dx, dy):
+    if not bot.maskBlocked(sideMask):
+      bot.wallFollowMask = sideMask
+      bot.wallFollowTicks = WallFollowDuration
+      return sideMask
+
+  let reverseMask = oppositeMask(desiredMask)
+  if reverseMask != 0 and not bot.maskBlocked(reverseMask):
+    bot.wallFollowMask = reverseMask
+    bot.wallFollowTicks = WallFollowDuration div 2
+    return reverseMask
+
+  bot.wallFollowMask = 0
+  bot.wallFollowTicks = 0
+  0
+
 proc wanderMask(bot: var Bot): uint8 =
-  if bot.wanderTicks <= 0:
-    bot.wanderDir = (bot.wanderDir + 1) mod 4
-    bot.wanderTicks = WanderDuration
-  dec bot.wanderTicks
-  case bot.wanderDir
-  of 0: ButtonRight
-  of 1: ButtonDown
-  of 2: ButtonLeft
-  of 3: ButtonUp
-  else: 0
+  for _ in 0 ..< 4:
+    if bot.wanderTicks <= 0:
+      bot.wanderDir = (bot.wanderDir + 1) mod 4
+      bot.wanderTicks = WanderDuration
+    dec bot.wanderTicks
+
+    let mask =
+      case bot.wanderDir
+      of 0: ButtonRight
+      of 1: ButtonDown
+      of 2: ButtonLeft
+      of 3: ButtonUp
+      else: 0
+
+    let target = bot.maskTargetTile(mask)
+    if not target.valid or bot.tileKnowledge(target.tx, target.ty) != TileWall:
+      return mask
+    bot.wanderTicks = 0
+  0
 
 proc movementName(mask: uint8): string =
   if (mask and ButtonLeft) != 0: return "west"
@@ -367,10 +488,9 @@ proc inAttackRange(obj: DetectedObject): bool =
 
 proc objectPriority(kind: DetectedKind): int =
   case kind
-  of BossKind: 0
+  of CoinKind, HeartKind: 0
   of SnakeKind: 1
-  of CoinKind: 2
-  of HeartKind: 3
+  of BossKind: 2
   of WallKind: 4
 
 proc objectWorldCenter(bot: Bot, obj: DetectedObject): tuple[x: int, y: int] =
@@ -442,6 +562,8 @@ proc nearestVisibleTarget(
   var bestPriority = high(int)
   result.distance = high(int)
   for obj in objects:
+    if obj.kind == BossKind:
+      continue
     let
       priority = objectPriority(obj.kind)
       cx = obj.x + obj.width div 2
@@ -459,7 +581,7 @@ proc nearestRememberedTarget(
   var bestPriority = high(int)
   result.distance = high(int)
   for remembered in bot.rememberedObjects:
-    if remembered.kind == WallKind:
+    if remembered.kind in {WallKind, BossKind}:
       continue
     let
       priority = objectPriority(remembered.kind)
@@ -514,11 +636,6 @@ proc estimateCameraDelta(
         result = (score >= MinWallMatchScore, dx, dy)
 
 proc rememberVisibleTerrain(bot: var Bot, walls: openArray[DetectedObject]) =
-  var wallGrid = newSeq[bool](ScreenWidth * ScreenHeight)
-  for wall in walls:
-    if wall.x >= 0 and wall.y >= 0 and wall.x < ScreenWidth and wall.y < ScreenHeight:
-      wallGrid[wall.y * ScreenWidth + wall.x] = true
-
   let
     camX = bot.cameraX()
     camY = bot.cameraY()
@@ -536,13 +653,26 @@ proc rememberVisibleTerrain(bot: var Bot, walls: openArray[DetectedObject]) =
         continue
       if screenX + TileSize > ScreenWidth or screenY + TileSize > ScreenHeight:
         continue
-      if wallGrid[screenY * ScreenWidth + screenX]:
+
+      let
+        centerX = screenX + TileSize div 2
+        centerY = screenY + TileSize div 2
+
+      var sawWall = false
+      for wall in walls:
+        if centerX >= wall.x and centerX < wall.x + wall.width and
+            centerY >= wall.y and centerY < wall.y + wall.height:
+          sawWall = true
+          break
+
+      if sawWall:
         bot.rememberTile(tx, ty, TileWall)
       else:
         bot.rememberTile(tx, ty, TileOpen)
 
 proc updateWorldModel(bot: var Bot, walls: openArray[DetectedObject]) =
   let delta = bot.estimateCameraDelta(walls)
+  bot.lastWorldDeltaTrusted = delta.trusted
   if delta.trusted:
     bot.playerWorldX += delta.dx
     bot.playerWorldY += delta.dy
@@ -550,80 +680,93 @@ proc updateWorldModel(bot: var Bot, walls: openArray[DetectedObject]) =
   bot.lastVisibleWalls = @walls
   bot.haveWallFrame = true
 
-proc canTraverse(bot: Bot, tx, ty: int): bool =
-  bot.tileKnowledge(tx, ty) != TileWall
+proc traversalCost(bot: Bot, tx, ty: int, allowUnknown: bool): int =
+  case bot.tileKnowledge(tx, ty)
+  of TileWall:
+    -1
+  of TileOpen:
+    1
+  of TileUnknown:
+    if allowUnknown: UnknownTileCost else: -1
+
+proc heuristicDistance(ax, ay, bx, by: int): int =
+  abs(ax - bx) + abs(ay - by)
 
 proc reconstructStep(
   parents: openArray[int],
-  width, minTx, minTy, startIndex, goalIndex: int
+  startIndex, goalIndex: int
 ): PathStep =
   var stepIndex = goalIndex
   while parents[stepIndex] != -1 and parents[stepIndex] != startIndex:
     stepIndex = parents[stepIndex]
   result.found = true
-  result.nextTx = minTx + (stepIndex mod width)
-  result.nextTy = minTy + (stepIndex div width)
+  result.nextTx = stepIndex mod MapWidthTiles
+  result.nextTy = stepIndex div MapWidthTiles
 
-proc findPathStep(bot: Bot, targetTx, targetTy: int): PathStep =
+proc findPathStep(bot: Bot, targetTx, targetTy: int, allowUnknown = true): PathStep =
   let
     startTx = bot.playerTileX()
     startTy = bot.playerTileY()
-  if not inMapBounds(targetTx, targetTy) or not bot.canTraverse(targetTx, targetTy):
+    startIndex = mapIndex(startTx, startTy)
+    goalIndex = mapIndex(targetTx, targetTy)
+    area = MapWidthTiles * MapHeightTiles
+  if not inMapBounds(targetTx, targetTy):
+    return
+  if bot.traversalCost(targetTx, targetTy, allowUnknown) < 0:
     return
   if startTx == targetTx and startTy == targetTy:
     return PathStep(found: true, nextTx: startTx, nextTy: startTy)
 
-  let
-    minTx = max(0, min(startTx, targetTx) - TargetSearchPaddingTiles)
-    minTy = max(0, min(startTy, targetTy) - TargetSearchPaddingTiles)
-    maxTx = min(MapWidthTiles - 1, max(startTx, targetTx) + TargetSearchPaddingTiles)
-    maxTy = min(MapHeightTiles - 1, max(startTy, targetTy) + TargetSearchPaddingTiles)
-    width = maxTx - minTx + 1
-    height = maxTy - minTy + 1
-    area = width * height
-
   var
     parents = newSeq[int](area)
-    queue = newSeq[int](area)
-    head = 0
-    tail = 0
-    goalIndex = -1
+    bestCosts = newSeq[int](area)
+    closed = newSeq[bool](area)
+    openSet: HeapQueue[SearchNode]
 
   for i in 0 ..< parents.len:
     parents[i] = -2
+    bestCosts[i] = high(int)
 
-  let startIndex = (startTy - minTy) * width + (startTx - minTx)
   parents[startIndex] = -1
-  queue[tail] = startIndex
-  inc tail
+  bestCosts[startIndex] = 0
+  openSet.push(SearchNode(
+    priority: heuristicDistance(startTx, startTy, targetTx, targetTy),
+    index: startIndex
+  ))
 
-  while head < tail:
-    let currentIndex = queue[head]
-    inc head
+  while openSet.len > 0:
+    let current = openSet.pop()
+    if closed[current.index]:
+      continue
+    if current.index == goalIndex:
+      return reconstructStep(parents, startIndex, goalIndex)
+
+    closed[current.index] = true
     let
-      tx = minTx + (currentIndex mod width)
-      ty = minTy + (currentIndex div width)
-    if tx == targetTx and ty == targetTy:
-      goalIndex = currentIndex
-      break
+      tx = current.index mod MapWidthTiles
+      ty = current.index div MapWidthTiles
 
     for delta in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
       let
         nextTx = tx + delta[0]
         nextTy = ty + delta[1]
-      if nextTx < minTx or nextTy < minTy or nextTx > maxTx or nextTy > maxTy:
+      if not inMapBounds(nextTx, nextTy):
         continue
-      if not bot.canTraverse(nextTx, nextTy):
+      let stepCost = bot.traversalCost(nextTx, nextTy, allowUnknown)
+      if stepCost < 0:
         continue
-      let nextIndex = (nextTy - minTy) * width + (nextTx - minTx)
-      if parents[nextIndex] != -2:
+      let nextIndex = mapIndex(nextTx, nextTy)
+      if closed[nextIndex]:
         continue
-      parents[nextIndex] = currentIndex
-      queue[tail] = nextIndex
-      inc tail
-
-  if goalIndex >= 0:
-    return reconstructStep(parents, width, minTx, minTy, startIndex, goalIndex)
+      let tentativeCost = bestCosts[current.index] + stepCost
+      if tentativeCost >= bestCosts[nextIndex]:
+        continue
+      bestCosts[nextIndex] = tentativeCost
+      parents[nextIndex] = current.index
+      openSet.push(SearchNode(
+        priority: tentativeCost + heuristicDistance(nextTx, nextTy, targetTx, targetTy),
+        index: nextIndex
+      ))
 
 proc hasUnknownNeighbor(bot: Bot, tx, ty: int): bool =
   for delta in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
@@ -631,29 +774,22 @@ proc hasUnknownNeighbor(bot: Bot, tx, ty: int): bool =
       return true
   false
 
-proc findExplorationStep(bot: Bot): PathStep =
+proc findExplorationGoal(bot: Bot): tuple[found: bool, tx: int, ty: int] =
   let
     startTx = bot.playerTileX()
     startTy = bot.playerTileY()
-    minTx = max(0, startTx - PathSearchRadiusTiles)
-    minTy = max(0, startTy - PathSearchRadiusTiles)
-    maxTx = min(MapWidthTiles - 1, startTx + PathSearchRadiusTiles)
-    maxTy = min(MapHeightTiles - 1, startTy + PathSearchRadiusTiles)
-    width = maxTx - minTx + 1
-    height = maxTy - minTy + 1
-    area = width * height
+    area = MapWidthTiles * MapHeightTiles
 
   var
-    parents = newSeq[int](area)
     queue = newSeq[int](area)
+    visited = newSeq[bool](area)
     head = 0
     tail = 0
 
-  for i in 0 ..< parents.len:
-    parents[i] = -2
-
-  let startIndex = (startTy - minTy) * width + (startTx - minTx)
-  parents[startIndex] = -1
+  let startIndex = mapIndex(startTx, startTy)
+  if bot.tileKnowledge(startTx, startTy) == TileWall:
+    return
+  visited[startIndex] = true
   queue[tail] = startIndex
   inc tail
 
@@ -661,27 +797,30 @@ proc findExplorationStep(bot: Bot): PathStep =
     let currentIndex = queue[head]
     inc head
     let
-      tx = minTx + (currentIndex mod width)
-      ty = minTy + (currentIndex div width)
-    if currentIndex != startIndex and (
-      bot.tileKnowledge(tx, ty) == TileUnknown or bot.hasUnknownNeighbor(tx, ty)
-    ):
-      return reconstructStep(parents, width, minTx, minTy, startIndex, currentIndex)
+      tx = currentIndex mod MapWidthTiles
+      ty = currentIndex div MapWidthTiles
+    if bot.tileKnowledge(tx, ty) == TileOpen and bot.hasUnknownNeighbor(tx, ty):
+      return (true, tx, ty)
 
     for delta in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
       let
         nextTx = tx + delta[0]
         nextTy = ty + delta[1]
-      if nextTx < minTx or nextTy < minTy or nextTx > maxTx or nextTy > maxTy:
+      if not inMapBounds(nextTx, nextTy):
         continue
-      if not bot.canTraverse(nextTx, nextTy):
+      if bot.tileKnowledge(nextTx, nextTy) != TileOpen:
         continue
-      let nextIndex = (nextTy - minTy) * width + (nextTx - minTx)
-      if parents[nextIndex] != -2:
+      let nextIndex = mapIndex(nextTx, nextTy)
+      if visited[nextIndex]:
         continue
-      parents[nextIndex] = currentIndex
+      visited[nextIndex] = true
       queue[tail] = nextIndex
       inc tail
+
+proc findExplorationStep(bot: Bot): PathStep =
+  let frontier = bot.findExplorationGoal()
+  if frontier.found:
+    return bot.findPathStep(frontier.tx, frontier.ty, false)
 
 proc stepMaskForPath(bot: Bot, step: PathStep): uint8 =
   if not step.found:
@@ -699,9 +838,136 @@ proc stepMaskForPath(bot: Bot, step: PathStep): uint8 =
     return ButtonDown
   0
 
+proc movementTargetTile(bot: Bot, mask: uint8): tuple[valid: bool, tx: int, ty: int] =
+  bot.maskTargetTile(mask)
+
+proc learnBlockedMovement(bot: var Bot) =
+  bot.blockedMoveFrames = 0
+  bot.blockedTileX = -1
+  bot.blockedTileY = -1
+  bot.lastResolvedWorldX = bot.playerWorldX
+  bot.lastResolvedWorldY = bot.playerWorldY
+
+proc nearestVisibleObject(
+  objects: openArray[DetectedObject]
+): tuple[found: bool, obj: DetectedObject, distance: int] =
+  result.distance = high(int)
+  for obj in objects:
+    let
+      cx = obj.x + obj.width div 2
+      cy = obj.y + obj.height div 2
+      distance = abs(cx - PlayerCenterX) + abs(cy - PlayerCenterY)
+    if distance < result.distance:
+      result.found = true
+      result.obj = obj
+      result.distance = distance
+
+proc fleeTargetTile(
+  bot: Bot,
+  threats: openArray[DetectedObject]
+): tuple[found: bool, tx: int, ty: int, directMask: uint8] =
+  let
+    playerTx = bot.playerTileX()
+    playerTy = bot.playerTileY()
+  var
+    awayX = 0
+    awayY = 0
+    bestScore = low(int)
+
+  for threat in threats:
+    let
+      world = bot.objectWorldCenter(threat)
+      threatTx = world.x div TileSize
+      threatTy = world.y div TileSize
+    awayX += playerTx - threatTx
+    awayY += playerTy - threatTy
+
+  if awayX == 0 and awayY == 0:
+    awayY = -1
+
+  result.directMask = moveMaskForDirection(awayX, awayY)
+
+  let
+    minTx = max(0, playerTx - BossFleeSearchRadiusTiles)
+    minTy = max(0, playerTy - BossFleeSearchRadiusTiles)
+    maxTx = min(MapWidthTiles - 1, playerTx + BossFleeSearchRadiusTiles)
+    maxTy = min(MapHeightTiles - 1, playerTy + BossFleeSearchRadiusTiles)
+
+  for ty in minTy .. maxTy:
+    for tx in minTx .. maxTx:
+      if tx == playerTx and ty == playerTy:
+        continue
+      let tileCost = bot.traversalCost(tx, ty, true)
+      if tileCost < 0:
+        continue
+
+      var nearestThreatDistance = high(int)
+      for threat in threats:
+        let
+          world = bot.objectWorldCenter(threat)
+          threatTx = world.x div TileSize
+          threatTy = world.y div TileSize
+        nearestThreatDistance = min(
+          nearestThreatDistance,
+          heuristicDistance(tx, ty, threatTx, threatTy)
+        )
+
+      let
+        projection = (tx - playerTx) * awayX + (ty - playerTy) * awayY
+        knowledgeBonus =
+          case bot.tileKnowledge(tx, ty)
+          of TileOpen: 6
+          of TileUnknown: 0
+          of TileWall: -1000
+        score = nearestThreatDistance * 100 + projection * 6 + knowledgeBonus
+
+      if score > bestScore:
+        bestScore = score
+        result = (true, tx, ty, result.directMask)
+
+proc fleeFromBoss(bot: var Bot, bosses: openArray[DetectedObject]): uint8 =
+  var
+    awayX = 0
+    awayY = 0
+  for boss in bosses:
+    let world = bot.objectWorldCenter(boss)
+    awayX += bot.playerWorldX - world.x
+    awayY += bot.playerWorldY - world.y
+
+  let
+    desiredMask = moveMaskForDirection(awayX, awayY)
+    fleeMask = bot.steerMask(desiredMask, awayX, awayY)
+    goalWorldX = bot.playerWorldX + (if awayX < 0: -TileSize * 4 elif awayX > 0: TileSize * 4 else: 0)
+    goalWorldY = bot.playerWorldY + (if awayY < 0: -TileSize * 4 elif awayY > 0: TileSize * 4 else: 0)
+
+  if fleeMask != 0:
+    bot.setGoalPreview(goalWorldX, goalWorldY, "avoid visible boss", fleeMask)
+    bot.intentLabel = "run away from visible boss"
+    bot.attackIntent = "avoid boss"
+    bot.previousAttack = false
+    bot.think("boss spotted, retreating " & movementName(fleeMask))
+    return fleeMask
+
+  result = bot.wanderMask()
+  if result != 0:
+    bot.setGoalPreview(goalWorldX, goalWorldY, "avoid visible boss", result)
+  else:
+    bot.clearGoal()
+  bot.intentLabel = "run away from visible boss"
+  bot.attackIntent = "avoid boss"
+  bot.previousAttack = false
+  bot.think("boss spotted, sliding around the wall")
+
+proc inMeleeTileRange(bot: Bot, targetTx, targetTy: int): bool =
+  let
+    dx = abs(targetTx - bot.playerTileX())
+    dy = abs(targetTy - bot.playerTileY())
+  dx <= 1 and dy <= 1
+
 proc decideNextMask(bot: var Bot): uint8 =
   let walls = scanForObjects(bot.unpacked, bot.wallSprite, WallKind)
   bot.updateWorldModel(walls)
+  bot.learnBlockedMovement()
 
   let
     bosses = scanForObjects(bot.unpacked, bot.bossSprite, BossKind)
@@ -718,6 +984,11 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.intentLabel = ""
   bot.attackIntent = "not attacking"
 
+  let visibleBoss = nearestVisibleObject(bosses)
+  if visibleBoss.found:
+    bot.wanderTicks = 0
+    return bot.fleeFromBoss(bosses)
+
   let selected = nearestVisibleTarget(bot.lastVisibleObjects)
 
   if selected.found:
@@ -726,18 +997,19 @@ proc decideNextMask(bot: var Bot): uint8 =
       targetWorld = bot.objectWorldCenter(target)
       targetTx = targetWorld.x div TileSize
       targetTy = targetWorld.y div TileSize
-      pathStep = bot.findPathStep(targetTx, targetTy)
-      pathMask = bot.stepMaskForPath(pathStep)
       targetCenterX = target.x + target.width div 2
       targetCenterY = target.y + target.height div 2
       dx = targetCenterX - PlayerCenterX
       dy = targetCenterY - PlayerCenterY
       aimMask = moveMaskForDirection(dx, dy)
+      moveMask = bot.steerMask(aimMask, dx, dy)
 
-    bot.wanderTicks = 0
-    bot.setGoalTarget(targetWorld.x, targetWorld.y, "visible " & kindName(target.kind), pathStep)
+    bot.setGoalPreview(targetWorld.x, targetWorld.y, "visible " & kindName(target.kind), moveMask)
 
-    if target.kind in {BossKind, SnakeKind} and inAttackRange(target):
+    if target.kind in {BossKind, SnakeKind} and
+        inAttackRange(target) and
+        bot.inMeleeTileRange(targetTx, targetTy):
+      bot.wanderTicks = 0
       if not bot.previousAttack:
         result = aimMask or ButtonA
         bot.intentLabel = "attack visible " & kindName(target.kind)
@@ -751,66 +1023,75 @@ proc decideNextMask(bot: var Bot): uint8 =
         bot.previousAttack = false
       return
 
-    result = if pathMask != 0: pathMask else: aimMask
-    if pathMask != 0:
-      bot.intentLabel = "path to visible " & kindName(target.kind)
+    if moveMask != 0:
+      bot.wanderTicks = 0
+      result = moveMask
+      bot.intentLabel = "move to visible " & kindName(target.kind)
       bot.attackIntent = "close distance"
-      bot.think(
-        "seeing " & kindName(target.kind) & " at (" & $targetTx & ", " & $targetTy &
-        "), pathing " & movementName(result)
-      )
-    else:
-      bot.intentLabel = "move toward visible " & kindName(target.kind)
-      bot.attackIntent = "line up attack"
       bot.think(
         "seeing " & kindName(target.kind) & " at (" & $targetTx & ", " & $targetTy &
         "), moving " & movementName(result)
       )
+      bot.previousAttack = false
+      return
+
+    if aimMask != 0:
+      result = bot.wanderMask()
+      bot.setGoalPreview(targetWorld.x, targetWorld.y, "visible " & kindName(target.kind), result)
+      bot.intentLabel = "slide around wall toward visible " & kindName(target.kind)
+      bot.attackIntent = "wall in the way"
+      bot.think(
+        "seeing " & kindName(target.kind) & " at (" & $targetTx & ", " & $targetTy &
+        "), wall ahead, sliding " & movementName(result)
+      )
+      if result != 0:
+        bot.previousAttack = false
+        return
     bot.previousAttack = false
-    return
 
   let rememberedTarget = bot.nearestRememberedTarget()
   if rememberedTarget.found:
     let
       targetTx = rememberedTarget.remembered.worldX div TileSize
       targetTy = rememberedTarget.remembered.worldY div TileSize
-      pathStep = bot.findPathStep(targetTx, targetTy)
-      pathMask = bot.stepMaskForPath(pathStep)
-    bot.wanderTicks = 0
-    bot.setGoalTarget(
+      dx = rememberedTarget.remembered.worldX - bot.playerWorldX
+      dy = rememberedTarget.remembered.worldY - bot.playerWorldY
+      desiredMask = moveMaskForDirection(dx, dy)
+      moveMask = bot.steerMask(desiredMask, dx, dy)
+    bot.setGoalPreview(
       rememberedTarget.remembered.worldX,
       rememberedTarget.remembered.worldY,
       "remembered " & kindName(rememberedTarget.remembered.kind),
-      pathStep
+      moveMask
     )
-    if pathMask != 0:
-      result = pathMask
+    if moveMask != 0:
+      bot.wanderTicks = 0
+      result = moveMask
       bot.intentLabel = "track remembered " & kindName(rememberedTarget.remembered.kind)
       bot.attackIntent = "reacquire target"
       bot.think(
         "tracking remembered " & kindName(rememberedTarget.remembered.kind) &
-        " at (" & $targetTx & ", " & $targetTy & "), pathing " & movementName(result)
+        " at (" & $targetTx & ", " & $targetTy & "), moving " & movementName(result)
       )
       bot.previousAttack = false
       return
 
-  let exploreStep = bot.findExplorationStep()
-  result = bot.stepMaskForPath(exploreStep)
+  result = bot.wanderMask()
   if result != 0:
-    bot.setGoalTarget(
-      exploreStep.nextTx * TileSize + TileSize div 2,
-      exploreStep.nextTy * TileSize + TileSize div 2,
-      "explore frontier",
-      exploreStep
+    bot.setGoalPreview(
+      bot.playerWorldX,
+      bot.playerWorldY,
+      "explore nearby space",
+      result
     )
-    bot.intentLabel = "map the frontier"
+    bot.intentLabel = "explore nearby space"
     bot.attackIntent = "no target in range"
     bot.think("mapping the world, exploring " & movementName(result))
   else:
-    result = bot.wanderMask()
-    bot.intentLabel = "wander for new information"
-    bot.attackIntent = "no target in memory"
-    bot.think("no path in memory yet, wandering " & movementName(result))
+    bot.clearGoal()
+    bot.intentLabel = "hold position"
+    bot.attackIntent = "boxed in by walls"
+    bot.think("no open tile next to player right now")
   bot.previousAttack = false
 
 proc sampleColor(index: uint8): ColorRGBX =
@@ -863,6 +1144,12 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
         vec2(pixelScale, pixelScale),
         sampleColor(index)
       )
+
+  for wall in bot.lastVisibleWalls:
+    let
+      pos = vec2(x + wall.x.float32 * pixelScale, y + wall.y.float32 * pixelScale)
+      size = vec2(wall.width.float32 * pixelScale, wall.height.float32 * pixelScale)
+    sk.drawOutline(pos, size, ViewerWallBox, 2)
 
   for obj in bot.lastVisibleObjects:
     let
@@ -1157,7 +1444,7 @@ proc pumpViewer(
 proc viewerOpen(viewer: ViewerApp): bool =
   viewer.isNil or not viewer.window.closeRequested
 
-proc runBot(host = DefaultHost, port = DefaultPort, gui = false) =
+proc runBot(host = DefaultHost, port = PlayerDefaultPort, gui = false) =
   var bot = initBot()
   let url = "ws://" & host & ":" & $port & WebSocketPath
   var viewer =
@@ -1219,7 +1506,7 @@ proc runBot(host = DefaultHost, port = DefaultPort, gui = false) =
 when isMainModule:
   var
     address = DefaultHost
-    port = DefaultPort
+    port = PlayerDefaultPort
     gui = false
   for kind, key, val in getopt():
     case kind
