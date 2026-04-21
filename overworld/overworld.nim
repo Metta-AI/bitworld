@@ -662,6 +662,7 @@ proc connectProxy(sim: var SimServer, playerIndex: int, villageIndex: int): bool
   let url = "ws://127.0.0.1:" & $v.port & WebSocketPath
   try:
     let ws = whisky.newWebSocket(url)
+    ws.socket.setSockOpt(OptNoDelay, true)
     sim.proxies[playerIndex] = ProxyConn(
       state: ProxyActive,
       villageIndex: villageIndex,
@@ -708,8 +709,10 @@ proc proxyTick(sim: var SimServer, playerIndex: int, inputMask: uint8, selectPre
     return false
 
   try:
-    let msg = proxy.ws.receiveMessage(10)
-    if msg.isSome:
+    while true:
+      let msg = proxy.ws.receiveMessage(1)
+      if msg.isNone:
+        break
       if msg.get.kind == BinaryMessage and msg.get.data.len == ProtocolBytes:
         blobToBytes(msg.get.data, proxy.latestFrame)
         proxy.hasFrame = true
