@@ -41,6 +41,12 @@ Types of games: Cooperative/competitive social dilemma games, non-zero-sum. Make
 - Planets can send ships to other planets
 - Planets can attack other planets
 - Reward based on planets controlled over time per time^2 (non zero sum)
+
+- There are two vibes, target and source.
+- Bump planets to send it ships.
+- Set vibe to source to "ship" and bump planet to make it the source.
+
+
 - Cold wars and alliances form (betrayal)
 * Variant: you only control one planet and can join or betray the collective. (betrayal)
 
@@ -83,4 +89,3 @@ Types of games: Cooperative/competitive social dilemma games, non-zero-sum. Make
 - At night monsters spawn and attack players.
 - Higher tier resources are possible with multiple players. (non zero sum)
 - You can grief and steal other people's resources. (betrayal)
-

@@ -14,6 +14,7 @@ bin = @[
   "fancy_cookout/fancy_cookout",
   "infinite_blocks/infinite_blocks",
   "planet_wars/planet_wars",
+  "overworld/overworld",
   "tools/quick_run"
 ]
 
