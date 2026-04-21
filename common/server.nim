@@ -132,6 +132,31 @@ proc blitSprite*(fb: var Framebuffer, sprite: Sprite, worldX, worldY, cameraX, c
           dy = x
         fb.putPixel(screenX + dx, screenY + dy, colorIndex)
 
+proc blitSpriteTinted*(fb: var Framebuffer, sprite: Sprite, worldX, worldY, cameraX, cameraY: int, tint: uint8, facing = FaceDown) =
+  let
+    screenX = worldX - cameraX
+    screenY = worldY - cameraY
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
+      if colorIndex != TransparentColorIndex:
+        var dx = 0
+        var dy = 0
+        case facing
+        of FaceDown:
+          dx = x
+          dy = y
+        of FaceUp:
+          dx = sprite.width - 1 - x
+          dy = sprite.height - 1 - y
+        of FaceLeft:
+          dx = y
+          dy = sprite.width - 1 - x
+        of FaceRight:
+          dx = sprite.height - 1 - y
+          dy = x
+        fb.putPixel(screenX + dx, screenY + dy, tint)
+
 proc blitText*(fb: var Framebuffer, letterSprites: seq[Sprite], text: string, screenX, screenY: int) =
   var offsetX = 0
   for ch in text:

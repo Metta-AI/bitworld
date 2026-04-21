@@ -15,7 +15,8 @@ bin = @[
   "infinite_blocks/infinite_blocks",
   "planet_wars/planet_wars",
   "overworld/overworld",
-  "tools/quick_run"
+  "tools/quick_run",
+  "tag/tag"
 ]
 
 switch("path", "common")
