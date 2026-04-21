@@ -20,6 +20,7 @@ var
 type
   QuickRunConfig = object
     gameFolder: string
+    address: string
     port: int
     players: int
 
@@ -32,7 +33,7 @@ proc repoRoot(): string =
   absolutePath(getCurrentDir())
 
 proc usage(): string =
-  "Usage: quick_run <game_folder> [port] [--players:N]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4"
+  "Usage: quick_run <game_folder> [port] [--players:N] [--address:ADDR]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4 --address:0.0.0.0"
 
 proc parsePort(value: string): int =
   result = parseInt(value)
@@ -297,6 +298,7 @@ proc waitForChildren(): int =
 proc parseArgs(): QuickRunConfig =
   var positional: seq[string]
   result.players = 1
+  result.address = "localhost"
 
   for kind, key, val in getopt():
     case kind
@@ -308,6 +310,10 @@ proc parseArgs(): QuickRunConfig =
         if val.len == 0:
           raise newException(ValueError, "--players requires a value.")
         result.players = parsePlayers(val)
+      of "address":
+        if val.len == 0:
+          raise newException(ValueError, "--address requires a value.")
+        result.address = val
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdShortOption:
@@ -340,8 +346,9 @@ proc runQuickRun(config: QuickRunConfig): int =
     clientExe = exePathFor(rootDir, ClientSourceRelative)
     clientWorkDir = absolutePath(rootDir / "client")
     portArg = "--port:" & $config.port
+    addressArg = "--address:" & config.address
 
-  echo "Using port ", config.port, "."
+  echo "Using ", config.address, ":", config.port, "."
 
   result = compileTarget(nimExe, rootDir, game.label & " server", game.sourceRelative)
   if result != 0:
@@ -352,7 +359,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     return result
 
   try:
-    serverProcess = launchManagedProcess(game.label & " server", gameExe, game.workDir, [portArg])
+    serverProcess = launchManagedProcess(game.label & " server", gameExe, game.workDir, [portArg, addressArg])
   except CatchableError as e:
     echo "Failed to start server: ", e.msg
     cleanupChildren()

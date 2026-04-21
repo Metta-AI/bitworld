@@ -164,7 +164,7 @@ type
 var appState: WebSocketAppState
 
 proc repoDir(): string =
-  getAppDir() / ".."
+  getCurrentDir() / ".."
 
 proc clientDataDir(): string =
   repoDir() / "client" / "data"

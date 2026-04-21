@@ -111,7 +111,7 @@ proc tileIndex(tx, ty: int): int =
   ty * WorldWidthTiles + tx
 
 proc repoDir(): string =
-  getAppDir() / ".."
+  getCurrentDir() / ".."
 
 proc clientDataDir(): string =
   repoDir() / "client" / "data"

@@ -105,10 +105,10 @@ type
     port: int
 
 proc dataDir(): string =
-  getAppDir() / "data"
+  getCurrentDir() / "data"
 
 proc repoDir(): string =
-  getAppDir() / ".."
+  getCurrentDir() / ".."
 
 proc clientDataDir(): string =
   repoDir() / "client" / "data"

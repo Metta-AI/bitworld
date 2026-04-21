@@ -60,10 +60,10 @@ type
     port: int
 
 proc dataDir(): string =
-  getAppDir() / "data"
+  getCurrentDir() / "data"
 
 proc repoDir(): string =
-  getAppDir() / ".."
+  getCurrentDir() / ".."
 
 proc clientDataDir(): string =
   repoDir() / "client" / "data"
@@ -608,8 +608,15 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
+    positional = 0
   for kind, key, val in getopt():
     case kind
+    of cmdArgument:
+      if positional == 0:
+        address = key
+      elif positional == 1:
+        port = parseInt(key)
+      inc positional
     of cmdLongOption:
       case key
       of "address": address = val

@@ -9,6 +9,7 @@ bin = @[
   "asteroid_arena/asteroid_arena",
   "big_adventure/big_adventure",
   "big_adventure/player",
+  "brushwalk/brushwalk",
   "bubble_eats/bubble_eats",
   "free_chat/free_chat",
   "fancy_cookout/fancy_cookout",
@@ -17,7 +18,9 @@ bin = @[
   "planet_wars/planet_wars",
   "overworld/overworld",
   "tools/quick_run",
-  "tag/tag"
+  "tag/tag",
+  "jumper/jumper",
+  "warzone/warzone"
 ]
 
 switch("path", "common")
