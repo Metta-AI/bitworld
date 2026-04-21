@@ -18,7 +18,7 @@ const
   WebSocketPath = "/ws"
   BackgroundColor = 12'u8
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
-  TagCooldown = 24 * 10
+  FreezeTicks = 48
   ScoreInterval = 24
   BlinkRate = 6
   WhiteColor = 2'u8
@@ -34,7 +34,7 @@ type
     carryX, carryY: int
     score: int
     isIt: bool
-    tagCooldown: int
+    freezeTicks: int
 
   SimServer = object
     players: seq[Actor]
@@ -99,6 +99,18 @@ proc distanceSquared(ax, ay, bx, by: int): int =
     dx = ax - bx
     dy = ay - by
   dx * dx + dy * dy
+
+proc rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh: int): bool =
+  ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+proc collidesWithPlayer(sim: SimServer, pi: int, x, y, w, h: int): bool =
+  for j in 0 ..< sim.players.len:
+    if j == pi:
+      continue
+    let o = sim.players[j]
+    if rectsOverlap(x, y, w, h, o.x, o.y, o.sprite.width, o.sprite.height):
+      return true
+  false
 
 proc canOccupy(sim: SimServer, x, y, width, height: int): bool =
   if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
