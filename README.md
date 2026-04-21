@@ -10,6 +10,7 @@ In Bit World, players begin with very little and gradually build strength by exp
 
 The repo currently includes playable multiplayer prototypes for:
 
+- `Asteroid Arena`
 - `Big Adventure`
 - `Bubble Eats`
 - `Free Chat`
@@ -101,6 +102,8 @@ Bit World is currently at the concept stage. This repository is the starting poi
 `Free Chat` is a lightweight social demo slice: players wander a shared plaza, press `Select` to open a retro letter grid, use the d-pad to choose characters, press `A` to add, `B` to erase, and press `Select` again to publish the message above their head.
 
 `Bubble Eats` is a large-map blob swarm slice: each player becomes a colored 24-pixel blob with momentum, `A` triggers a blink, `B` triggers a frown, nearby blobs magnetize and stick together, groups gain higher top speed when they align, and moving against the group for long enough breaks you free while you sweep or hoard falling pills for personal score.
+
+`Asteroid Arena` is a toroidal space duel slice: players rotate with `Left` and `Right`, thrust with `Up`, reverse with `Down`, fire with `A`, brake with `B`, drift with momentum, shatter large rocks into faster fragments, score for blasting asteroids and rival ships, and respawn automatically after collisions or PvP kills.
 
 ## Tools
 
