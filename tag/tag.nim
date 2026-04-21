@@ -205,6 +205,7 @@ proc initSimServer(): SimServer =
 proc applyMomentumAxis(
   sim: SimServer,
   actor: var Actor,
+  pi: int,
   carry: var int,
   velocity: int,
   horizontal: bool
@@ -213,15 +214,19 @@ proc applyMomentumAxis(
   while abs(carry) >= MotionScale:
     let step = (if carry < 0: -1 else: 1)
     if horizontal:
-      if sim.canOccupy(actor.x + step, actor.y, actor.sprite.width, actor.sprite.height):
-        actor.x += step
+      let nx = actor.x + step
+      if sim.canOccupy(nx, actor.y, actor.sprite.width, actor.sprite.height) and
+         not sim.collidesWithPlayer(pi, nx, actor.y, actor.sprite.width, actor.sprite.height):
+        actor.x = nx
         carry -= step * MotionScale
       else:
         carry = 0
         break
     else:
-      if sim.canOccupy(actor.x, actor.y + step, actor.sprite.width, actor.sprite.height):
-        actor.y += step
+      let ny = actor.y + step
+      if sim.canOccupy(actor.x, ny, actor.sprite.width, actor.sprite.height) and
+         not sim.collidesWithPlayer(pi, actor.x, ny, actor.sprite.width, actor.sprite.height):
+        actor.y = ny
         carry -= step * MotionScale
       else:
         carry = 0
@@ -232,6 +237,11 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
     return
 
   template player: untyped = sim.players[playerIndex]
+
+  if player.freezeTicks > 0:
+    player.velX = 0
+    player.velY = 0
+    return
 
   var inputX = 0
   var inputY = 0
@@ -280,8 +290,8 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   elif inputY > 0:
     player.facing = FaceDown
 
-  sim.applyMomentumAxis(player, player.carryX, player.velX, true)
-  sim.applyMomentumAxis(player, player.carryY, player.velY, false)
+  sim.applyMomentumAxis(player, playerIndex, player.carryX, player.velX, true)
+  sim.applyMomentumAxis(player, playerIndex, player.carryY, player.velY, false)
 
 proc applyTag(sim: var SimServer, inputs: openArray[InputState]) =
   if sim.players.len < 2:
