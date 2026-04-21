@@ -12,6 +12,7 @@ bin = @[
   "bubble_eats/bubble_eats",
   "free_chat/free_chat",
   "fancy_cookout/fancy_cookout",
+  "ice_brawl/ice_brawl",
   "infinite_blocks/infinite_blocks",
   "planet_wars/planet_wars",
   "overworld/overworld",
