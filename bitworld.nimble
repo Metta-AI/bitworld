@@ -16,6 +16,7 @@ bin = @[
   "ice_brawl/ice_brawl",
   "infinite_blocks/infinite_blocks",
   "planet_wars/planet_wars",
+  "stag_hunt/stag_hunt",
   "overworld/overworld",
   "tools/quick_run",
   "tag/tag",
