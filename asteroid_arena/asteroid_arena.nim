@@ -20,21 +20,21 @@ const
     256, 236, 181, 98, 0, -98, -181, -236
   ]
 
-  ShipCollisionRadius = 4
-  ShipNoseOffsetPixels = 5
-  ShipTailOffsetPixels = 3
-  ShipWingOffsetPixels = 3
-  ShipThrust = 72
-  ReverseThrust = 40
+  ShipCollisionRadius = 2
+  ShipNoseOffsetPixels = 3
+  ShipTailOffsetPixels = 2
+  ShipWingOffsetPixels = 2
+  ShipThrust = 36
+  ReverseThrust = 20
   PassiveDragNum = 252
   PassiveDragDen = 256
   BrakeDragNum = 208
   BrakeDragDen = 256
   StopThreshold = 6
-  ShipMaxSpeed = 900
+  ShipMaxSpeed = 450
   FireCooldownTicks = 7
   BulletLifeTicks = 36
-  BulletSpeed = 1408
+  BulletSpeed = 704
   BulletRadiusPixels = 1
   MaxBulletsPerPlayer = 6
   RespawnDelayTicks = 42
@@ -196,9 +196,9 @@ proc sideY(direction: int): int =
 
 proc asteroidRadius(size: AsteroidSize): int =
   case size
-  of AsteroidSmall: 4
-  of AsteroidMedium: 7
-  of AsteroidLarge: 11
+  of AsteroidSmall: 2
+  of AsteroidMedium: 4
+  of AsteroidLarge: 6
 
 proc asteroidValue(size: AsteroidSize): int =
   case size
@@ -226,18 +226,18 @@ proc fragmentSize(size: AsteroidSize): AsteroidSize =
 
 proc fragmentKick(size: AsteroidSize): int =
   case size
-  of AsteroidSmall: 176
-  of AsteroidMedium: 120
-  of AsteroidLarge: 88
+  of AsteroidSmall: 88
+  of AsteroidMedium: 60
+  of AsteroidLarge: 44
 
 proc asteroidSpeedRange(size: AsteroidSize): tuple[minSpeed, maxSpeed: int] =
   case size
   of AsteroidSmall:
-    (136, 212)
+    (68, 106)
   of AsteroidMedium:
-    (92, 156)
+    (46, 78)
   of AsteroidLarge:
-    (60, 108)
+    (30, 54)
 
 proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   if w <= 0 or h <= 0:
@@ -574,7 +574,7 @@ proc destroyShip(sim: var SimServer, playerIndex: int, killerId = 0) =
     return
 
   let player = sim.players[playerIndex]
-  sim.addExplosion(player.x, player.y, 14, player.color, ttl = 14)
+  sim.addExplosion(player.x, player.y, 7, player.color, ttl = 14)
   sim.players[playerIndex].alive = false
   sim.players[playerIndex].velX = 0
   sim.players[playerIndex].velY = 0
@@ -906,7 +906,7 @@ proc stepAsteroids(sim: var SimServer) =
     asteroid.x += asteroid.velX
     asteroid.y += asteroid.velY
     wrapPosition(asteroid.x, asteroid.y)
-    asteroid.rotation = (asteroid.rotation + asteroid.spin + 8) mod 8
+    discard asteroid.spin
 
 proc stepBullets(sim: var SimServer) =
   var activeBullets: seq[Bullet] = @[]
