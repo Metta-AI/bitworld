@@ -12,11 +12,11 @@ const
   MinMobSpacing = 16
   MinPlayerSpawnSpacing = 40
   MotionScale = 256
-  Accel = 76
+  Accel = 38
   FrictionNum = 200
   FrictionDen = 256
-  MaxSpeed = 704
-  StopThreshold = 12
+  MaxSpeed = 352
+  StopThreshold = 8
   MaxPlayerLives* = 5
   SnakeHp = 3
   BossHp = 10
@@ -24,6 +24,15 @@ const
   TargetFps = 24.0
   WebSocketPath = "/ws"
   BackgroundColor = 12'u8
+  HealthBarGray = 1'u8
+  HealthBarGreen = 10'u8
+  HealthBarYellow = 8'u8
+  HealthBarRed = 3'u8
+  BossHealInterval = 50
+  RadarRange = 128
+  RadarColorSnake = 10'u8
+  RadarColorBoss = 3'u8
+  PlayerColors = [2'u8, 7, 8, 14, 4, 11, 13, 15]
 
 type
   Actor* = object
@@ -544,9 +553,7 @@ proc applyAttack(sim: var SimServer) =
     if sim.mobs[mobIndex].kind != BossMob or bossHitCounts[mobIndex] == 0:
       continue
 
-    let netDamage = bossHitCounts[mobIndex] - 1
-    if netDamage > 0:
-      sim.mobs[mobIndex].hp -= netDamage
+    sim.mobs[mobIndex].hp -= bossHitCounts[mobIndex]
 
     let
       knockbackX = bossKnockbackXs[mobIndex].clamp(-4, 4)
@@ -608,6 +615,11 @@ proc collectPickups(sim: var SimServer) =
 proc updateMobs*(sim: var SimServer) =
   if sim.players.len == 0:
     return
+
+  if sim.tickCount mod BossHealInterval == 0:
+    for mob in sim.mobs.mitems:
+      if mob.kind == BossMob:
+        mob.hp = BossHp
 
   for mob in sim.mobs.mitems:
     dec mob.attackCooldown
@@ -746,6 +758,80 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
     else:
       sim.fb.blitSprite(sim.emptyHeartSprite, x, 0, 0, 0)
 
+proc renderHealthBar(fb: var Framebuffer, screenX, screenY, width, current, maximum: int) =
+  if maximum <= 0 or width <= 0:
+    return
+  let
+    filled = max(0, min(width, (current * width + maximum - 1) div maximum))
+    ratio = current * 100 div maximum
+    barColor =
+      if ratio > 50: HealthBarGreen
+      elif ratio > 20: HealthBarYellow
+      else: HealthBarRed
+  for px in screenX ..< screenX + width:
+    fb.putPixel(px, screenY, HealthBarGray)
+  for px in screenX ..< screenX + filled:
+    fb.putPixel(px, screenY, barColor)
+
+proc playerColor(playerIndex: int): uint8 =
+  PlayerColors[playerIndex mod PlayerColors.len]
+
+proc renderRadar(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX, cameraY: int) =
+  let
+    player = sim.players[playerIndex]
+    pcx = player.x + player.sprite.width div 2
+    pcy = player.y + player.sprite.height div 2
+    halfW = ScreenWidth div 2
+    halfH = ScreenHeight div 2
+
+  proc projectToEdge(dx, dy: int): tuple[x, y: int] =
+    if dx == 0 and dy == 0:
+      return (0, 0)
+    let
+      adx = abs(dx)
+      ady = abs(dy)
+    if adx * halfH > ady * halfW:
+      let ex = if dx > 0: ScreenWidth - 1 else: 0
+      let ey = halfH + dy * halfW div adx
+      (ex, clamp(ey, 0, ScreenHeight - 1))
+    else:
+      let ey = if dy > 0: ScreenHeight - 1 else: 0
+      let ex = halfW + dx * halfH div ady
+      (clamp(ex, 0, ScreenWidth - 1), ey)
+
+  for i, mob in sim.mobs:
+    let
+      mcx = mob.x + mob.sprite.width div 2
+      mcy = mob.y + mob.sprite.height div 2
+      dx = mcx - pcx
+      dy = mcy - pcy
+    if abs(dx) > RadarRange or abs(dy) > RadarRange:
+      continue
+    let sx = mcx - cameraX
+    let sy = mcy - cameraY
+    if sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight:
+      continue
+    let color = if mob.kind == BossMob: RadarColorBoss else: RadarColorSnake
+    let pos = projectToEdge(dx, dy)
+    fb.putPixel(pos.x, pos.y, color)
+
+  for i in 0 ..< sim.players.len:
+    if i == playerIndex or sim.players[i].lives <= 0:
+      continue
+    let
+      other = sim.players[i]
+      ocx = other.x + other.sprite.width div 2
+      ocy = other.y + other.sprite.height div 2
+      sx = ocx - cameraX
+      sy = ocy - cameraY
+    if sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight:
+      continue
+    let
+      dx = ocx - pcx
+      dy = ocy - pcy
+      pos = projectToEdge(dx, dy)
+    fb.putPixel(pos.x, pos.y, playerColor(i))
+
 proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -772,13 +858,30 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
       sim.fb.blitSprite(sim.heartSprite, pickup.x, pickup.y, cameraX, cameraY)
   for mob in sim.mobs:
     sim.fb.blitSprite(mob.sprite, mob.x, mob.y, cameraX, cameraY)
-  for otherPlayer in sim.players:
+  for i in 0 ..< sim.players.len:
+    let otherPlayer = sim.players[i]
     if otherPlayer.lives > 0:
-      sim.fb.blitSprite(otherPlayer.sprite, otherPlayer.x, otherPlayer.y, cameraX, cameraY)
+      sim.fb.blitSpriteTinted(otherPlayer.sprite, otherPlayer.x, otherPlayer.y, cameraX, cameraY, playerColor(i))
   for otherPlayer in sim.players:
     if otherPlayer.lives > 0 and otherPlayer.attackTicks > 0:
       let hit = sim.attackRect(otherPlayer)
       sim.fb.blitSprite(sim.swooshSprite, hit.x, hit.y, cameraX, cameraY, otherPlayer.facing)
+  for mob in sim.mobs:
+    let
+      maxHp = (if mob.kind == BossMob: BossHp else: SnakeHp)
+      barW = mob.sprite.width
+      barX = mob.x - cameraX
+      barY = mob.y - cameraY - 2
+    sim.fb.renderHealthBar(barX, barY, barW, mob.hp, maxHp)
+  for i in 0 ..< sim.players.len:
+    let p = sim.players[i]
+    if p.lives > 0:
+      let
+        barW = p.sprite.width
+        barX = p.x - cameraX
+        barY = p.y - cameraY - 2
+      sim.fb.renderHealthBar(barX, barY, barW, p.lives, MaxPlayerLives)
+  sim.fb.renderRadar(sim, playerIndex, cameraX, cameraY)
   sim.renderHud(playerIndex)
   sim.fb.packFramebuffer()
   sim.fb.packed
