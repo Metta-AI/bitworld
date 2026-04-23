@@ -21,7 +21,8 @@ bin = @[
   "tools/quick_run",
   "tag/tag",
   "jumper/jumper",
-  "warzone/warzone"
+  "warzone/warzone",
+  "among_them/among_them"
 ]
 
 switch("path", "common")

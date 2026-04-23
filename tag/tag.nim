@@ -182,7 +182,7 @@ proc addPlayer(sim: var SimServer): int =
     sprite: sim.playerSprite,
     facing: FaceDown,
     isIt: isFirstPlayer,
-    tagCooldown: if isFirstPlayer: TagCooldown else: 0,
+    freezeTicks: 0,
   )
   sim.players.high
 
@@ -293,7 +293,7 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   sim.applyMomentumAxis(player, playerIndex, player.carryX, player.velX, true)
   sim.applyMomentumAxis(player, playerIndex, player.carryY, player.velY, false)
 
-proc applyTag(sim: var SimServer, inputs: openArray[InputState]) =
+proc applyTag(sim: var SimServer) =
   if sim.players.len < 2:
     return
 
@@ -305,40 +305,22 @@ proc applyTag(sim: var SimServer, inputs: openArray[InputState]) =
   if taggerIndex < 0:
     return
 
-  if sim.players[taggerIndex].tagCooldown > 0:
+  if sim.players[taggerIndex].freezeTicks > 0:
     return
 
-  let input = if taggerIndex < inputs.len: inputs[taggerIndex] else: InputState()
-  if not input.attack:
-    return
-
-  let tagger = sim.players[taggerIndex]
-  var bestTarget = -1
-  var bestDist = high(int)
-  let tagRange = tagger.sprite.width + 2
-  let tagRangeSq = tagRange * tagRange
-
+  let t = sim.players[taggerIndex]
   for i in 0 ..< sim.players.len:
     if i == taggerIndex:
       continue
-    let other = sim.players[i]
-    if other.tagCooldown > 0:
+    if sim.players[i].freezeTicks > 0:
       continue
-    let dist = distanceSquared(
-      tagger.x + tagger.sprite.width div 2,
-      tagger.y + tagger.sprite.height div 2,
-      other.x + other.sprite.width div 2,
-      other.y + other.sprite.height div 2
-    )
-    if dist < tagRangeSq and dist < bestDist:
-      bestDist = dist
-      bestTarget = i
-
-  if bestTarget >= 0:
-    sim.players[taggerIndex].isIt = false
-    sim.players[taggerIndex].tagCooldown = 0
-    sim.players[bestTarget].isIt = true
-    sim.players[bestTarget].tagCooldown = TagCooldown
+    let o = sim.players[i]
+    if rectsOverlap(t.x - 1, t.y - 1, t.sprite.width + 2, t.sprite.height + 2,
+                    o.x, o.y, o.sprite.width, o.sprite.height):
+      sim.players[taggerIndex].isIt = false
+      sim.players[i].isIt = true
+      sim.players[i].freezeTicks = FreezeTicks
+      break
 
 proc isOnScreen(viewer, target: Actor): bool =
   let
@@ -380,7 +362,7 @@ proc ensureTagger(sim: var SimServer) =
       break
   if not hasIt:
     sim.players[sim.rng.rand(sim.players.len - 1)].isIt = true
-    sim.players[sim.players.len - 1].tagCooldown = TagCooldown
+    sim.players[sim.players.len - 1].freezeTicks = 0
 
 proc playerColor(playerIndex: int): uint8 =
   PlayerColors[playerIndex mod PlayerColors.len]
@@ -486,6 +468,14 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
     if p.isIt and (sim.tickCount div BlinkRate) mod 2 == 0:
       color = WhiteColor
     sim.fb.blitSpriteColored(p.sprite, p.x, p.y, cameraX, cameraY, color)
+    if p.freezeTicks > 0:
+      let barY = p.y - 2 - cameraY
+      let barX = p.x - cameraX
+      let barW = p.sprite.width
+      let filled = (p.freezeTicks * barW + FreezeTicks - 1) div FreezeTicks
+      for bx in 0 ..< barW:
+        let c = if bx < filled: WhiteColor else: 0'u8
+        sim.fb.putPixel(barX + bx, barY, c)
 
   sim.fb.renderRadar(sim, playerIndex, cameraX, cameraY)
   sim.renderHud(playerIndex)
@@ -495,14 +485,14 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
 proc step(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
   for i in 0 ..< sim.players.len:
-    if sim.players[i].tagCooldown > 0:
-      dec sim.players[i].tagCooldown
+    if sim.players[i].freezeTicks > 0:
+      dec sim.players[i].freezeTicks
   for playerIndex in 0 ..< sim.players.len:
     let input =
       if playerIndex < inputs.len: inputs[playerIndex]
       else: InputState()
     sim.applyInput(playerIndex, input)
-  sim.applyTag(inputs)
+  sim.applyTag()
   sim.awardProximityScore()
   sim.ensureTagger()
 

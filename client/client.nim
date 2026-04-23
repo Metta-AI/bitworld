@@ -449,7 +449,11 @@ proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
             withLock args.shared[].lock:
               args.shared[].connected = false
               args.shared[].hasFrame = false
-          ws.close()
+          try:
+            ws.close()
+          except CatchableError:
+            discard
+          sleep(500)
           break
 
         if desiredMask != lastSentMask:
@@ -518,7 +522,7 @@ proc initClient*(
   result.splashStartedAt = getMonoTime()
   result.screenOnly = clientOptions.screenOnly
   result.selectedGamepadIndex = max(0, clientOptions.selectedGamepadIndex)
-  result.window.runeInputEnabled = true
+  result.window.runeInputEnabled = false
   let clientRef = result
   result.window.onRune = proc(rune: Rune) =
     clientRef.queueTextAssistRune(rune)
