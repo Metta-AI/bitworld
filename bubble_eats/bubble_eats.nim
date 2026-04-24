@@ -1010,10 +1010,10 @@ proc collectPills(sim: var SimServer) =
 
   sim.pills = remaining
 
-proc renderPlayerFrame(sim: var SimServer, playerIndex: int): tuple[score, componentSize: int] =
+proc renderPlayerFrame(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(FieldColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return (score: 0, componentSize: 0)
+    return
 
   let
     player = sim.players[playerIndex]
@@ -1059,17 +1059,21 @@ proc renderPlayerFrame(sim: var SimServer, playerIndex: int): tuple[score, compo
       sim.fb.putPixel(26 + x, 1, 7)
       sim.fb.putPixel(26 + x, 2, 8)
 
-  result = (score: player.score, componentSize: player.componentSize)
-
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
-  discard sim.renderPlayerFrame(playerIndex)
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.renderPlayerFrame(playerIndex)
 
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc rlMetric(sim: SimServer, playerIndex: int): RlMetric =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return RlMetric(score: 0, auxValue: 0)
+  let player = sim.players[playerIndex]
+  RlMetric(score: player.score, auxValue: player.componentSize)
+
 proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
-  let render = sim.renderPlayerFrame(playerIndex)
-  rl_protocol.buildRlFramePacket(sim.fb, render.score, render.componentSize, resetCounter)
+  discard sim.render(playerIndex)
+  rl_protocol.buildRlFramePacket(sim.fb.indices, sim.rlMetric(playerIndex), resetCounter)
 
 proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.updateExpressionTimers(inputs)
@@ -1296,7 +1300,7 @@ proc runServerLoop(
         if rlModeEnabled:
           blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         else:
-          blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+          blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

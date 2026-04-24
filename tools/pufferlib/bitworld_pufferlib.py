@@ -21,8 +21,8 @@ from websockets.sync.client import ClientConnection, connect
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
 
-SCREEN_WIDTH = 64
-SCREEN_HEIGHT = 64
+SCREEN_WIDTH = 128
+SCREEN_HEIGHT = 128
 FRAME_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT
 RL_HEADER_BYTES = 9
 RL_FRAME_BYTES = RL_HEADER_BYTES + FRAME_PIXELS

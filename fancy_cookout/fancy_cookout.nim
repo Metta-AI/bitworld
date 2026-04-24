@@ -763,7 +763,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
 
   sim.fb.renderNumber(sim.digitSprites, sim.players[playerIndex].score, 0, 0)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(FloorBackdropColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed
@@ -787,9 +787,9 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc rlMetric(sim: SimServer, playerIndex: int): tuple[score, auxValue: int] =
+proc rlMetric(sim: SimServer, playerIndex: int): RlMetric =
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return (score: 0, auxValue: 0)
+    return RlMetric(score: 0, auxValue: 0)
   proc itemProgress(item: ItemKind): int =
     case item
     of DirtyDishItem, TomatoItem, LettuceItem:
@@ -817,12 +817,11 @@ proc rlMetric(sim: SimServer, playerIndex: int): tuple[score, auxValue: int] =
       progress += station.workProgress div 4
     else:
       discard
-  (score: progress, auxValue: min(255, player.score))
+  RlMetric(score: progress, auxValue: min(255, player.score))
 
 proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
-  discard sim.buildFramePacket(playerIndex)
-  let metric = sim.rlMetric(playerIndex)
-  rl_protocol.buildRlFramePacket(sim.fb, metric.score, metric.auxValue, resetCounter)
+  discard sim.render(playerIndex)
+  rl_protocol.buildRlFramePacket(sim.fb.indices, sim.rlMetric(playerIndex), resetCounter)
 
 proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
   for playerIndex in 0 ..< sim.players.len:
@@ -1034,7 +1033,7 @@ proc runServerLoop(
         if rlModeEnabled:
           blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         else:
-          blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+          blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

@@ -567,7 +567,7 @@ proc renderSelectionUI(sim: var SimServer, playerIndex: int) =
     sim.fb.blitText(sim.letterSprites, line, textX, boxY + 3 + i * 7)
   sim.fb.blitText(sim.letterSprites, "ENTER?", 14, boxY + boxH - 10)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(ColorGrass)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     sim.fb.packFramebuffer()
@@ -592,21 +592,20 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc rlMetric(sim: SimServer, playerIndex: int): tuple[score, auxValue: int] =
+proc rlMetric(sim: SimServer, playerIndex: int): RlMetric =
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return (score: 0, auxValue: 0)
+    return RlMetric(score: 0, auxValue: 0)
   let
     player = sim.players[playerIndex]
     nearbyVillage = sim.villageAt(player.x, player.y)
-  (
+  RlMetric(
     score: player.rlScore,
     auxValue: if nearbyVillage >= 0: nearbyVillage + 1 else: 0,
   )
 
 proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
-  discard sim.buildFramePacket(playerIndex)
-  let metric = sim.rlMetric(playerIndex)
-  buildRlFramePacket(sim.fb, metric.score, metric.auxValue, resetCounter)
+  discard sim.render(playerIndex)
+  buildRlFramePacket(sim.fb.indices, sim.rlMetric(playerIndex), resetCounter)
 
 # --- Game process management ---
 
@@ -1009,7 +1008,7 @@ proc runServerLoop(
       elif pi in proxiedPlayers:
         frameBlob = blobFromBytes(sim.proxyFrame(pi))
       else:
-        frameBlob = blobFromBytes(sim.buildFramePacket(pi))
+        frameBlob = blobFromBytes(sim.render(pi))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

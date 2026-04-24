@@ -581,7 +581,7 @@ proc renderEditor(sim: var SimServer, playerIndex: int) =
 
     sim.drawEditorGlyph(EditorChars[index], cellX, cellY)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(FloorBackdropColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     sim.fb.packFramebuffer()
@@ -604,16 +604,15 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc rlMetric(sim: SimServer, playerIndex: int): tuple[score, auxValue: int] =
+proc rlMetric(sim: SimServer, playerIndex: int): RlMetric =
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return (score: 0, auxValue: 0)
+    return RlMetric(score: 0, auxValue: 0)
   let player = sim.players[playerIndex]
-  (score: player.publishedCount, auxValue: min(255, player.message.len))
+  RlMetric(score: player.publishedCount, auxValue: min(255, player.message.len))
 
 proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
-  discard sim.buildFramePacket(playerIndex)
-  let metric = sim.rlMetric(playerIndex)
-  rl_protocol.buildRlFramePacket(sim.fb, metric.score, metric.auxValue, resetCounter)
+  discard sim.render(playerIndex)
+  rl_protocol.buildRlFramePacket(sim.fb.indices, sim.rlMetric(playerIndex), resetCounter)
 
 proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
   for playerIndex in 0 ..< sim.players.len:
@@ -820,7 +819,7 @@ proc runServerLoop(
         if rlModeEnabled:
           blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         else:
-          blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+          blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

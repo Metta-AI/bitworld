@@ -16,7 +16,7 @@ Why this shape:
 - true server-side reward metrics from the game, not HUD OCR
 - fast reset via a single-byte reset command
 - async server-side ticking with policy-side action chunking
-- stacked 64x64 palette-index observations
+- stacked 128x128 palette-index observations
 - direct training with `pufferlib.torch_pufferl.PuffeRL`
 
 Current environments and reward metrics:
@@ -81,6 +81,6 @@ Representative validated result on April 23, 2026 for `bubble_eats` with a 50k-s
 ## Notes
 
 - The Nim server now supports `--rl`, `--fps:<float>`, and `--seed:<int>`.
-- RL mode keeps the same asynchronous server loop as normal play and streams unpacked `64 x 64` palette-index frames plus score metadata.
+- RL mode keeps the same asynchronous server loop as normal play and streams unpacked `128 x 128` palette-index frames plus score metadata.
 - The Python vecenv samples `--action-repeat` streamed frames per policy action and uses a reset counter in the frame header to align episode resets.
 - Some environments use shaped progress metrics instead of raw HUD score because their native score is too sparse for single-agent PPO to learn reliably within practical episode lengths.
