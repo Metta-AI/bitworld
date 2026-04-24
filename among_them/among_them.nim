@@ -1306,7 +1306,12 @@ proc runFrameLimiter(previousTick: var MonoTime) =
 
 proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
   initAppState()
-  let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
+  let httpServer = newServer(
+    httpHandler,
+    websocketHandler,
+    workerThreads = 4,
+    wsNoDelay = true
+  )
   var
     serverThread: Thread[ServerThreadArgs]
     serverPtr = cast[ptr Server](unsafeAddr httpServer)
