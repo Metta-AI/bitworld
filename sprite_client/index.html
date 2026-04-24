@@ -37,7 +37,7 @@ const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
 const url=new URL(location.href);
 const address=url.searchParams.get("address")||"ws://localhost:8080/sprite";
-const ZoomableFlag=1,UiFlag=2,MapLayerType=0;
+const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const palette=[
   [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],
   [255,119,168,255],[95,87,79,255],[171,82,54,255],[255,163,0,255],
@@ -177,9 +177,10 @@ function putPixel(layer,x,y,color){
 }
 
 function layerScreenPos(layer){
-  const width=layer.width,height=layer.height;
+  const uiZoom=(layer.flags&UiFlag)!==0?UiZoom:1;
+  const width=layer.width*uiZoom,height=layer.height*uiZoom;
   if((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType){
-    return {x:panX,y:panY,w:width*zoom,h:height*zoom};
+    return {x:panX,y:panY,w:layer.width*zoom,h:layer.height*zoom};
   }
   switch(layer.type){
     case 1:return {x:0,y:0,w:width,h:height};

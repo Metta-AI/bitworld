@@ -44,16 +44,25 @@ const
   MapObjectId = 1
   MapLayerId = 0
   MapLayerType = 0
+  TopLeftLayerId = 1
+  TopLeftLayerType = 1
+  BottomRightLayerId = 3
+  BottomRightLayerType = 3
   ZoomableLayerFlag = 1
+  UiLayerFlag = 2
   PlayerSpriteBase = 100
   GhostSpriteBase = 300
   BodySpriteBase = 500
   TaskSpriteId = 700
   SelectedPlayerSpriteBase = 800
   SelectedGhostSpriteBase = 900
+  SelectedTextSpriteId = 4000
+  SelectedViewportSpriteId = 4001
   PlayerObjectBase = 1000
   BodyObjectBase = 2000
   TaskObjectBase = 3000
+  SelectedTextObjectId = 4000
+  SelectedViewportObjectId = 4001
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
   ShadowMap = [
     0'u8,  #  0 black       -> black
@@ -141,6 +150,7 @@ type
     alive: bool
     killCooldown: int
     joinOrder: int
+    address: string
     color: uint8
     taskProgress: int
     activeTask: int
@@ -179,6 +189,7 @@ type
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    playerAddresses: Table[WebSocket, string]
     spriteViewers: Table[WebSocket, SpriteViewerState]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
@@ -452,7 +463,7 @@ proc findSpawn(sim: SimServer): tuple[x, y: int] =
     return (px, py)
   (buttonX, buttonY)
 
-proc addPlayer(sim: var SimServer): int =
+proc addPlayer(sim: var SimServer, address: string): int =
   let
     spawn = sim.findSpawn()
     order = sim.nextJoinOrder
@@ -464,6 +475,7 @@ proc addPlayer(sim: var SimServer): int =
     alive: true,
     killCooldown: sim.config.killCooldownTicks,
     joinOrder: order,
+    address: address,
     color: PlayerColors[order mod PlayerColors.len],
     activeTask: -1
   )
@@ -968,6 +980,73 @@ proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
       if colorIndex != TransparentColorIndex:
         result[sprite.spriteIndex(x, y)] = spriteColor(colorIndex)
 
+proc putTextSpritePixel(
+  pixels: var seq[uint8],
+  width, height, x, y: int,
+  color: uint8
+) =
+  ## Puts one protocol pixel into a text sprite.
+  if x < 0 or y < 0 or x >= width or y >= height:
+    return
+  pixels[y * width + x] = spriteColor(color)
+
+proc buildSpriteProtocolTextSprite(
+  sim: SimServer,
+  lines: openArray[string],
+  color: uint8
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a transparent multi-line text sprite.
+  result.width = 1
+  for line in lines:
+    result.width = max(result.width, line.len * 6)
+  result.height = max(1, lines.len * 8 - 1)
+  result.pixels = newSeq[uint8](result.width * result.height)
+  for lineIndex, line in lines:
+    let baseY = lineIndex * 8
+    var baseX = 0
+    for ch in line:
+      if ch == ' ':
+        baseX += 6
+        continue
+      let letter = letterIndex(ch)
+      if letter >= 0 and letter < sim.letterSprites.len:
+        let sprite = sim.letterSprites[letter]
+        for y in 0 ..< sprite.height:
+          for x in 0 ..< sprite.width:
+            if sprite.pixels[sprite.spriteIndex(x, y)] !=
+                TransparentColorIndex:
+              result.pixels.putTextSpritePixel(
+                result.width,
+                result.height,
+                baseX + x,
+                baseY + y,
+                color
+              )
+      elif ch >= '0' and ch <= '9':
+        let sprite = sim.digitSprites[ord(ch) - ord('0')]
+        for y in 0 ..< sprite.height:
+          for x in 0 ..< sprite.width:
+            if sprite.pixels[sprite.spriteIndex(x, y)] !=
+                TransparentColorIndex:
+              result.pixels.putTextSpritePixel(
+                result.width,
+                result.height,
+                baseX + x,
+                baseY + y,
+                color
+              )
+      baseX += 6
+
+proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
+  ## Converts a packed Bitworld frame into protocol sprite pixels.
+  result = newSeq[uint8](ScreenWidth * ScreenHeight)
+  var j = 0
+  for byte in packed:
+    result[j] = spriteColor(byte and 0x0f)
+    inc j
+    result[j] = spriteColor((byte shr 4) and 0x0f)
+    inc j
+
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
@@ -976,6 +1055,10 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     mapPixels[i] = spriteColor(sim.mapPixels[i])
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, MapWidth, MapHeight)
+  result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+  result.addViewport(TopLeftLayerId, 128, 16)
+  result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
+  result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
   result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
   let taskPixels = buildSpriteProtocolRawSprite(sim.taskIconSprite)
@@ -1111,6 +1194,8 @@ proc spriteTaskObjectId(index: int): int =
   ## Returns the sprite protocol object id for a task bubble.
   TaskObjectBase + index
 
+proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8]
+
 proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   ## Returns the sprite id for a player in the global viewer.
   let
@@ -1142,8 +1227,23 @@ proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
       bestY = player.y
       result = player.joinOrder
 
+proc selectedPlayerIndex(sim: SimServer, joinOrder: int): int =
+  ## Returns the player index for a join order.
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].joinOrder == joinOrder:
+      return i
+  -1
+
+proc roleName(role: PlayerRole): string =
+  ## Returns a display name for a player role.
+  case role
+  of Crewmate:
+    return "CREWMATE"
+  of Imposter:
+    return "IMPOSTER"
+
 proc buildSpriteProtocolUpdates(
-  sim: SimServer,
+  sim: var SimServer,
   state: SpriteViewerState,
   nextState: var SpriteViewerState
 ): seq[uint8] =
@@ -1201,6 +1301,51 @@ proc buildSpriteProtocolUpdates(
         MapLayerId,
         TaskSpriteId
       )
+
+  let playerIndex = sim.selectedPlayerIndex(nextState.selectedJoinOrder)
+  if playerIndex >= 0:
+    let
+      player = sim.players[playerIndex]
+      text = sim.buildSpriteProtocolTextSprite(
+        [
+          "ADDRESS " & player.address,
+          "ROLE " & roleName(player.role)
+        ],
+        2'u8
+      )
+      viewport = spritePixelsFromPackedFrame(
+        sim.buildFramePacket(playerIndex)
+      )
+    currentIds.add(SelectedTextObjectId)
+    currentIds.add(SelectedViewportObjectId)
+    result.addSprite(
+      SelectedTextSpriteId,
+      text.width,
+      text.height,
+      text.pixels
+    )
+    result.addObject(
+      SelectedTextObjectId,
+      2,
+      2,
+      0,
+      TopLeftLayerId,
+      SelectedTextSpriteId
+    )
+    result.addSprite(
+      SelectedViewportSpriteId,
+      ScreenWidth,
+      ScreenHeight,
+      viewport
+    )
+    result.addObject(
+      SelectedViewportObjectId,
+      0,
+      0,
+      0,
+      BottomRightLayerId,
+      SelectedViewportSpriteId
+    )
 
   for objectId in state.objectIds:
     if objectId notin currentIds:
@@ -1866,6 +2011,7 @@ proc initAppState() =
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.playerAddresses = initTable[WebSocket, string]()
   appState.spriteViewers = initTable[WebSocket, SpriteViewerState]()
   appState.closedSockets = @[]
   appState.spectators = @[]
@@ -1882,6 +2028,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
+  appState.playerAddresses.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
@@ -1890,7 +2037,10 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
 
 proc httpHandler(request: Request) =
   if request.uri == WebSocketPath and request.httpMethod == "GET":
-    discard request.upgradeToWebSocket()
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerAddresses[websocket] = request.remoteAddress
   elif request.uri == SpriteWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -1992,7 +2142,11 @@ proc runServerLoop*(
             newSockets.add(websocket)
         for websocket in newSockets:
           if sim.phase == Lobby:
-            appState.playerIndices[websocket] = sim.addPlayer()
+            let address = appState.playerAddresses.getOrDefault(
+              websocket,
+              "unknown"
+            )
+            appState.playerIndices[websocket] = sim.addPlayer(address)
           else:
             appState.spectators.add(websocket)
             appState.playerIndices.del(websocket)
