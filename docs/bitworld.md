@@ -11,7 +11,7 @@ Big:
 
 Plan: Make a PICO-8 like console with multiplayer but make it AI first to vibe games on.
 
-Dead simple API, server sends a visual buffer of 16 colors 64x64 pixels, client sends bitmask of actions, dpad, select and a and b. No SDK necessary. No repo necessary, a single .md file that describes the API. It's possible to one shot whole games, client and policies.
+Dead simple API, server sends a visual buffer of 16 colors 128x128 pixels, client sends bitmask of actions, dpad, select and a and b. No SDK necessary. No repo necessary, a single .md file that describes the API. It's possible to one shot whole games, client and policies.
 
 You connect over a URL. We are basically an API and tournament host. Easily run your own servers.
 

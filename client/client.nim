@@ -30,6 +30,8 @@ const
   ScreenY = 67 * LayoutScale
   ScreenW = 200 * LayoutScale
   ScreenH = 200 * LayoutScale
+  ScreenOnlyW = ScreenWidth * 4
+  ScreenOnlyH = ScreenHeight * 4
 
   TopButtonY = 17 * LayoutScale
   TopButtonXs = [
@@ -331,7 +333,7 @@ proc detectShellSize(): IVec2 =
 
 proc detectWindowSize(screenOnly: bool): IVec2 =
   if screenOnly:
-    return ivec2(ScreenW.int32, ScreenH.int32)
+    return ivec2(ScreenOnlyW.int32, ScreenOnlyH.int32)
   detectShellSize()
 
 proc parseSelectedGamepad(value: string): int =
@@ -396,7 +398,8 @@ proc loadSplashPixels(): seq[uint8] =
     if sprite.width == ScreenWidth and sprite.height == ScreenHeight:
       result = sprite.pixels
     else:
-      echo "[Warning] Splash asset must be 64x64: " & LogoPath
+      echo "[Warning] Splash asset must be " & $ScreenWidth & "x" &
+        $ScreenHeight & ": " & LogoPath
   except CatchableError as e:
     echo "[Warning] Failed to load splash asset: " & e.msg
 

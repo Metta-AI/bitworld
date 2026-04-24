@@ -8,7 +8,7 @@ const
   BackgroundColor = 0'u8
   GroundColor = 9'u8
   SkyColor = 12'u8
-  HorizonY = 38
+  HorizonY = ScreenHeight div 2
   CrosshairColor = 2'u8
 
   ArenaSize = 800.0

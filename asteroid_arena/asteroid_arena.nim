@@ -782,14 +782,26 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   sim.fb.renderNumber(sim.digitSprites, player.score, 2, 1)
 
   if not player.alive:
-    sim.fb.fillRect(6, 23, 52, 18, HudBackdropColor)
-    sim.fb.strokeRect(6, 23, 52, 18, HudBorderColor)
-    sim.renderCenteredText("RESPAWN", ScreenWidth div 2, 26)
+    let
+      boxW = 52
+      boxH = 18
+      boxX = (ScreenWidth - boxW) div 2
+      boxY = (ScreenHeight - boxH) div 2
+      titleY = boxY + 3
+      counterY = boxY + 10
+    sim.fb.fillRect(boxX, boxY, boxW, boxH, HudBackdropColor)
+    sim.fb.strokeRect(boxX, boxY, boxW, boxH, HudBorderColor)
+    sim.renderCenteredText("RESPAWN", ScreenWidth div 2, titleY)
     if player.respawnTicks > 0:
       let seconds = 1 + (player.respawnTicks - 1) div 24
-      sim.fb.renderCenteredNumber(sim.digitSprites, seconds, ScreenWidth div 2, 33)
+      sim.fb.renderCenteredNumber(
+        sim.digitSprites,
+        seconds,
+        ScreenWidth div 2,
+        counterY
+      )
     else:
-      sim.renderCenteredText("CLEAR", ScreenWidth div 2, 33)
+      sim.renderCenteredText("CLEAR", ScreenWidth div 2, counterY)
   elif player.invulnTicks > 0:
     sim.renderCenteredText("SAFE", ScreenWidth div 2, 1)
 

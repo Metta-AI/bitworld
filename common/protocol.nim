@@ -2,8 +2,8 @@ import pixie
 import std/os
 
 const
-  ScreenWidth* = 64
-  ScreenHeight* = 64
+  ScreenWidth* = 128
+  ScreenHeight* = 128
   TileSize* = 6
   ProtocolBytes* = (ScreenWidth * ScreenHeight) div 2
   InputPacketBytes* = 1

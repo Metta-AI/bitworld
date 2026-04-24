@@ -49,7 +49,7 @@ Players can:
 
 Bit World is designed around strict retro display constraints:
 
-- screen resolution: `64 x 64` pixels
+- screen resolution: `128 x 128` pixels
 - sprite palette: `16` colors per sprite
 - visible colors per sprite: `15`, because one palette entry is reserved for alpha/transparency
 

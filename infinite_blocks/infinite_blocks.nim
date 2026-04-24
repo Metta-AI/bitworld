@@ -9,8 +9,8 @@ const
   WorldWidthPixels = BoardWidthCells * CellPixels
   WorldHeightPixels = BoardHeightCells * CellPixels
   BaseTerrainY = BoardHeightCells div 2 + 120
-  PieceSpawnLiftCells = 16
-  ScreenScrollMargin = 16
+  PieceSpawnLiftCells = 32
+  ScreenScrollMargin = 32
   BaseFallInterval = 8
   SoftFallInterval = 2
   MoveRepeatInterval = 2
