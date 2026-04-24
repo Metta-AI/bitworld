@@ -1,7 +1,7 @@
-import mummy, pixie
+import jsony, mummy, pixie
 import protocol, server
-import std/[locks, math, monotimes, os, parseopt, random, strutils, tables,
-  times]
+import std/[json, locks, math, monotimes, os, parseopt, random, strutils,
+  tables, times]
 
 const
   MapWidth = 476
@@ -42,11 +42,18 @@ const
   ButtonH = 17
   MapSpriteId = 1
   MapObjectId = 1
+  MapLayerId = 0
+  MapLayerType = 0
+  ZoomableLayerFlag = 1
   PlayerSpriteBase = 100
   GhostSpriteBase = 300
   BodySpriteBase = 500
+  TaskSpriteId = 700
+  SelectedPlayerSpriteBase = 800
+  SelectedGhostSpriteBase = 900
   PlayerObjectBase = 1000
   BodyObjectBase = 2000
+  TaskObjectBase = 3000
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
   ShadowMap = [
     0'u8,  #  0 black       -> black
@@ -73,6 +80,8 @@ type
   PlayerRole = enum
     Crewmate
     Imposter
+
+  AmongThemError = object of ValueError
 
   GamePhase = enum
     Lobby
@@ -102,6 +111,27 @@ type
     x, y: int
     color: uint8
 
+  GameConfig = object
+    motionScale: int
+    accel: int
+    frictionNum: int
+    frictionDen: int
+    maxSpeed: int
+    stopThreshold: int
+    targetFps: float
+    killRange: int
+    killCooldownTicks: int
+    taskCompleteTicks: int
+    ventRange: int
+    reportRange: int
+    voteResultTicks: int
+    minPlayers: int
+    voteTimerTicks: int
+    gameOverTicks: int
+    tasksPerPlayer: int
+    showTaskArrows: bool
+    showTaskBubbles: bool
+
   Player = object
     x, y: int
     velX, velY: int
@@ -118,6 +148,7 @@ type
     assignedTasks: seq[int]
 
   SimServer = object
+    config: GameConfig
     players: seq[Player]
     bodies: seq[Body]
     playerSprite: Sprite
@@ -160,9 +191,126 @@ type
   SpriteViewerState = object
     initialized: bool
     objectIds: seq[int]
+    mouseX: int
+    mouseY: int
+    selectedJoinOrder: int
+    clickPending: bool
 
 proc clientDataDir(): string =
   getCurrentDir() / ".." / "client" / "data"
+
+proc initSpriteViewerState(): SpriteViewerState =
+  ## Returns the default state for one sprite protocol viewer.
+  result.selectedJoinOrder = -1
+
+proc defaultGameConfig(): GameConfig =
+  ## Returns the default Among Them gameplay config.
+  GameConfig(
+    motionScale: MotionScale,
+    accel: Accel,
+    frictionNum: FrictionNum,
+    frictionDen: FrictionDen,
+    maxSpeed: MaxSpeed,
+    stopThreshold: StopThreshold,
+    targetFps: TargetFps,
+    killRange: KillRange,
+    killCooldownTicks: KillCooldownTicks,
+    taskCompleteTicks: TaskCompleteTicks,
+    ventRange: VentRange,
+    reportRange: ReportRange,
+    voteResultTicks: VoteResultTicks,
+    minPlayers: MinPlayers,
+    voteTimerTicks: VoteTimerTicks,
+    gameOverTicks: GameOverTicks,
+    tasksPerPlayer: TasksPerPlayer,
+    showTaskArrows: ShowTaskArrows,
+    showTaskBubbles: true
+  )
+
+proc requireConfigObject(node: JsonNode) =
+  ## Raises if the config JSON is not an object.
+  if node.kind != JObject:
+    raise newException(AmongThemError, "Config must be a JSON object.")
+
+proc readConfigInt(node: JsonNode, name: string, value: var int) =
+  ## Reads one optional integer config field.
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  if item.kind != JInt:
+    raise newException(AmongThemError, "Config field " & name & " must be an integer.")
+  value = item.getInt()
+
+proc readConfigFloat(node: JsonNode, name: string, value: var float) =
+  ## Reads one optional float config field.
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  case item.kind
+  of JInt:
+    value = float(item.getInt())
+  of JFloat:
+    value = item.getFloat()
+  else:
+    raise newException(AmongThemError, "Config field " & name & " must be a number.")
+
+proc readConfigBool(node: JsonNode, name: string, value: var bool) =
+  ## Reads one optional boolean config field.
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  if item.kind != JBool:
+    raise newException(AmongThemError, "Config field " & name & " must be a boolean.")
+  value = item.getBool()
+
+proc validate(config: GameConfig) =
+  ## Raises if a gameplay config has invalid values.
+  if config.motionScale <= 0:
+    raise newException(AmongThemError, "Config field motionScale must be positive.")
+  if config.frictionDen <= 0:
+    raise newException(AmongThemError, "Config field frictionDen must be positive.")
+  if config.targetFps <= 0:
+    raise newException(AmongThemError, "Config field targetFps must be positive.")
+  if config.minPlayers < 1:
+    raise newException(AmongThemError, "Config field minPlayers must be at least 1.")
+  if config.tasksPerPlayer < 0:
+    raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
+  if config.voteTimerTicks <= 0:
+    raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
+  if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
+      config.voteResultTicks < 0:
+    raise newException(AmongThemError, "Timer config fields must not be negative.")
+
+proc update(config: var GameConfig, jsonText: string) =
+  ## Updates a gameplay config from a JSON object.
+  if jsonText.len == 0:
+    return
+  var node: JsonNode
+  try:
+    node = fromJson(jsonText)
+  except jsony.JsonError as e:
+    raise newException(AmongThemError, "Could not parse config JSON: " & e.msg)
+  node.requireConfigObject()
+  node.readConfigInt("motionScale", config.motionScale)
+  node.readConfigInt("accel", config.accel)
+  node.readConfigInt("frictionNum", config.frictionNum)
+  node.readConfigInt("frictionDen", config.frictionDen)
+  node.readConfigInt("maxSpeed", config.maxSpeed)
+  node.readConfigInt("stopThreshold", config.stopThreshold)
+  node.readConfigFloat("targetFps", config.targetFps)
+  node.readConfigInt("killRange", config.killRange)
+  node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
+  node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
+  node.readConfigInt("ventRange", config.ventRange)
+  node.readConfigInt("reportRange", config.reportRange)
+  node.readConfigInt("voteResultTicks", config.voteResultTicks)
+  node.readConfigInt("minPlayers", config.minPlayers)
+  node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
+  node.readConfigInt("gameOverTicks", config.gameOverTicks)
+  node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
+  node.readConfigBool("showTaskArrows", config.showTaskArrows)
+  node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
+  config.validate()
 
 proc mapIndex(x, y: int): int =
   y * MapWidth + x
@@ -194,11 +342,19 @@ proc addI16(packet: var seq[uint8], value: int) =
   packet.add(uint8(v and 0xff'u16))
   packet.add(uint8(v shr 8))
 
-proc addViewport(packet: var seq[uint8], width, height: int) =
+proc addViewport(packet: var seq[uint8], layer, width, height: int) =
   ## Appends a sprite protocol viewport message.
   packet.addU8(0x05)
+  packet.addU8(uint8(layer))
   packet.addU16(width)
   packet.addU16(height)
+
+proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
+  ## Appends a sprite protocol layer definition message.
+  packet.addU8(0x06)
+  packet.addU8(uint8(layer))
+  packet.addU8(uint8(layerType))
+  packet.addU8(uint8(flags))
 
 proc addSprite(
   packet: var seq[uint8],
@@ -215,7 +371,7 @@ proc addSprite(
 
 proc addObject(
   packet: var seq[uint8],
-  objectId, x, y, z, spriteId: int
+  objectId, x, y, z, layer, spriteId: int
 ) =
   ## Appends a sprite protocol object definition message.
   packet.addU8(0x02)
@@ -223,12 +379,53 @@ proc addObject(
   packet.addI16(x)
   packet.addI16(y)
   packet.addI16(z)
+  packet.addU8(uint8(layer))
   packet.addU16(spriteId)
 
 proc addDeleteObject(packet: var seq[uint8], objectId: int) =
   ## Appends a sprite protocol object delete message.
   packet.addU8(0x03)
   packet.addU16(objectId)
+
+proc readProtocolI16(blob: string, offset: int): int =
+  ## Reads one little endian signed 16 bit value from a string.
+  let value = uint16(blob[offset].uint8) or
+    (uint16(blob[offset + 1].uint8) shl 8)
+  int(cast[int16](value))
+
+proc applySpriteViewerMessage(
+  state: var SpriteViewerState,
+  message: string
+) =
+  ## Applies one or more sprite protocol client messages.
+  var offset = 0
+  while offset < message.len:
+    let messageType = message[offset].uint8
+    inc offset
+    case messageType
+    of 0x82:
+      if offset + 4 > message.len:
+        return
+      state.mouseX = readProtocolI16(message, offset)
+      state.mouseY = readProtocolI16(message, offset + 2)
+      offset += 4
+    of 0x83:
+      if offset + 2 > message.len:
+        return
+      let
+        code = message[offset].uint8
+        down = message[offset + 1].uint8
+      offset += 2
+      if code == 0x01'u8 and down == 1'u8:
+        state.clickPending = true
+    of 0x81:
+      if offset + 2 > message.len:
+        return
+      let length = int(uint16(message[offset].uint8) or
+        (uint16(message[offset + 1].uint8) shl 8))
+      offset += 2 + length
+    else:
+      return
 
 proc isWalkable(sim: SimServer, x, y: int): bool =
   if x < 0 or y < 0 or x >= MapWidth or y >= MapHeight:
@@ -265,7 +462,7 @@ proc addPlayer(sim: var SimServer): int =
     y: spawn.y,
     role: Crewmate,
     alive: true,
-    killCooldown: KillCooldownTicks,
+    killCooldown: sim.config.killCooldownTicks,
     joinOrder: order,
     color: PlayerColors[order mod PlayerColors.len],
     activeTask: -1
@@ -291,7 +488,8 @@ proc startGame(sim: var SimServer) =
     for t in 0 ..< sim.tasks.len:
       indices.add(t)
     shuffle(indices)
-    sim.players[i].assignedTasks = indices[0 ..< min(TasksPerPlayer, indices.len)]
+    sim.players[i].assignedTasks =
+      indices[0 ..< min(sim.config.tasksPerPlayer, indices.len)]
   sim.phase = Playing
 
 proc applyMomentumAxis(
@@ -302,7 +500,7 @@ proc applyMomentumAxis(
   horizontal: bool
 ) =
   carry += velocity
-  while abs(carry) >= MotionScale:
+  while abs(carry) >= sim.config.motionScale:
     let step = if carry < 0: -1 else: 1
     let
       nx = if horizontal: player.x + step else: player.x
@@ -312,13 +510,10 @@ proc applyMomentumAxis(
         player.x = nx
       else:
         player.y = ny
-      carry -= step * MotionScale
+      carry -= step * sim.config.motionScale
     else:
       carry = 0
       break
-
-proc playerColor(index: int): uint8 =
-  PlayerColors[index mod PlayerColors.len]
 
 proc distSq(ax, ay, bx, by: int): int =
   let
@@ -335,7 +530,7 @@ proc tryKill(sim: var SimServer, killerIndex: int) =
   let
     kx = killer.x + CollisionW div 2
     ky = killer.y + CollisionH div 2
-    rangeSq = KillRange * KillRange
+    rangeSq = sim.config.killRange * sim.config.killRange
   var
     bestDist = high(int)
     bestTarget = -1
@@ -358,7 +553,7 @@ proc tryKill(sim: var SimServer, killerIndex: int) =
       y: sim.players[bestTarget].y,
       color: sim.players[bestTarget].color
     )
-    sim.players[killerIndex].killCooldown = KillCooldownTicks
+    sim.players[killerIndex].killCooldown = sim.config.killCooldownTicks
 
 proc tryVent(sim: var SimServer, playerIndex: int) =
   ## Teleport an imposter to the next vent in the same group.
@@ -370,7 +565,7 @@ proc tryVent(sim: var SimServer, playerIndex: int) =
   let
     px = p.x + CollisionW div 2
     py = p.y + CollisionH div 2
-    rangeSq = VentRange * VentRange
+    rangeSq = sim.config.ventRange * sim.config.ventRange
   for i in 0 ..< sim.vents.len:
     let v = sim.vents[i]
     let
@@ -409,7 +604,7 @@ proc startVote(sim: var SimServer) =
   let n = sim.players.len
   sim.voteState.votes = newSeq[int](n)
   sim.voteState.cursor = newSeq[int](n)
-  sim.voteState.voteTimer = VoteTimerTicks
+  sim.voteState.voteTimer = sim.config.voteTimerTicks
   for i in 0 ..< n:
     sim.voteState.votes[i] = -1
     var firstAlive = 0
@@ -428,7 +623,7 @@ proc tryReport(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
   let
     px = p.x + CollisionW div 2
     py = p.y + CollisionH div 2
-    rangeSq = ReportRange * ReportRange
+    rangeSq = sim.config.reportRange * sim.config.reportRange
   for bi in 0 ..< bodyLimit:
     let body = sim.bodies[bi]
     let
@@ -461,30 +656,42 @@ proc applyGhostMovement(sim: var SimServer, playerIndex: int, input: InputState)
   if input.down: inputY += 1
 
   if inputX != 0:
-    player.velX = clamp(player.velX + inputX * Accel, -MaxSpeed, MaxSpeed)
+    player.velX = clamp(
+      player.velX + inputX * sim.config.accel,
+      -sim.config.maxSpeed,
+      sim.config.maxSpeed
+    )
   else:
-    player.velX = (player.velX * FrictionNum) div FrictionDen
-    if abs(player.velX) < StopThreshold: player.velX = 0
+    player.velX =
+      (player.velX * sim.config.frictionNum) div sim.config.frictionDen
+    if abs(player.velX) < sim.config.stopThreshold:
+      player.velX = 0
 
   if inputY != 0:
-    player.velY = clamp(player.velY + inputY * Accel, -MaxSpeed, MaxSpeed)
+    player.velY = clamp(
+      player.velY + inputY * sim.config.accel,
+      -sim.config.maxSpeed,
+      sim.config.maxSpeed
+    )
   else:
-    player.velY = (player.velY * FrictionNum) div FrictionDen
-    if abs(player.velY) < StopThreshold: player.velY = 0
+    player.velY =
+      (player.velY * sim.config.frictionNum) div sim.config.frictionDen
+    if abs(player.velY) < sim.config.stopThreshold:
+      player.velY = 0
 
   if inputX < 0: player.flipH = true
   elif inputX > 0: player.flipH = false
 
   player.carryX += player.velX
-  while abs(player.carryX) >= MotionScale:
+  while abs(player.carryX) >= sim.config.motionScale:
     let step = if player.carryX < 0: -1 else: 1
     player.x += step
-    player.carryX -= step * MotionScale
+    player.carryX -= step * sim.config.motionScale
   player.carryY += player.velY
-  while abs(player.carryY) >= MotionScale:
+  while abs(player.carryY) >= sim.config.motionScale:
     let step = if player.carryY < 0: -1 else: 1
     player.y += step
-    player.carryY -= step * MotionScale
+    player.carryY -= step * sim.config.motionScale
 
   if player.role == Crewmate and input.attack:
     let
@@ -504,7 +711,7 @@ proc applyGhostMovement(sim: var SimServer, playerIndex: int, input: InputState)
         player.activeTask = inTask
         player.taskProgress = 0
       inc player.taskProgress
-      if player.taskProgress >= TaskCompleteTicks:
+      if player.taskProgress >= sim.config.taskCompleteTicks:
         sim.tasks[inTask].completed[playerIndex] = true
         player.activeTask = -1
         player.taskProgress = 0
@@ -536,17 +743,27 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState, prevInp
     inputY += 1
 
   if inputX != 0:
-    player.velX = clamp(player.velX + inputX * Accel, -MaxSpeed, MaxSpeed)
+    player.velX = clamp(
+      player.velX + inputX * sim.config.accel,
+      -sim.config.maxSpeed,
+      sim.config.maxSpeed
+    )
   else:
-    player.velX = (player.velX * FrictionNum) div FrictionDen
-    if abs(player.velX) < StopThreshold:
+    player.velX =
+      (player.velX * sim.config.frictionNum) div sim.config.frictionDen
+    if abs(player.velX) < sim.config.stopThreshold:
       player.velX = 0
 
   if inputY != 0:
-    player.velY = clamp(player.velY + inputY * Accel, -MaxSpeed, MaxSpeed)
+    player.velY = clamp(
+      player.velY + inputY * sim.config.accel,
+      -sim.config.maxSpeed,
+      sim.config.maxSpeed
+    )
   else:
-    player.velY = (player.velY * FrictionNum) div FrictionDen
-    if abs(player.velY) < StopThreshold:
+    player.velY =
+      (player.velY * sim.config.frictionNum) div sim.config.frictionDen
+    if abs(player.velY) < sim.config.stopThreshold:
       player.velY = 0
 
   if inputX < 0:
@@ -593,7 +810,7 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState, prevInp
           player.activeTask = inTask
           player.taskProgress = 0
         inc player.taskProgress
-        if player.taskProgress >= TaskCompleteTicks:
+        if player.taskProgress >= sim.config.taskCompleteTicks:
           sim.tasks[inTask].completed[playerIndex] = true
           player.activeTask = -1
           player.taskProgress = 0
@@ -664,12 +881,14 @@ proc blitSpriteRaw(
 proc buildSpriteProtocolActorSprite(
   sprite: Sprite,
   tint: uint8,
-  flipH: bool
+  flipH: bool,
+  selected: bool = false
 ): seq[uint8] =
   ## Builds an outlined, tinted actor sprite for the global viewer.
   let
     outWidth = sprite.width + 2
     outHeight = sprite.height + 2
+    outline = if selected: 8'u8 else: OutlineColor
   result = newSeq[uint8](outWidth * outHeight)
 
   proc outIndex(x, y: int): int =
@@ -685,7 +904,7 @@ proc buildSpriteProtocolActorSprite(
         sprite.isSolid(x, y - 1, flipH) or
         sprite.isSolid(x, y + 1, flipH)
       if adjacent:
-        result[outIndex(x + 1, y + 1)] = spriteColor(OutlineColor)
+        result[outIndex(x + 1, y + 1)] = spriteColor(outline)
 
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
@@ -740,15 +959,32 @@ proc buildSpriteProtocolBodySprite(
       if boneColor != TransparentColorIndex:
         result[outIndex(x + 1, y + 1)] = spriteColor(boneColor)
 
+proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
+  ## Builds a raw sprite protocol sprite from a game sprite.
+  result = newSeq[uint8](sprite.width * sprite.height)
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
+      if colorIndex != TransparentColorIndex:
+        result[sprite.spriteIndex(x, y)] = spriteColor(colorIndex)
+
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
   var mapPixels = newSeq[uint8](sim.mapPixels.len)
   for i in 0 ..< sim.mapPixels.len:
     mapPixels[i] = spriteColor(sim.mapPixels[i])
-  result.addViewport(MapWidth, MapHeight)
+  result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
+  result.addViewport(MapLayerId, MapWidth, MapHeight)
   result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)
-  result.addObject(MapObjectId, 0, 0, low(int16), MapSpriteId)
+  result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
+  let taskPixels = buildSpriteProtocolRawSprite(sim.taskIconSprite)
+  result.addSprite(
+    TaskSpriteId,
+    sim.taskIconSprite.width,
+    sim.taskIconSprite.height,
+    taskPixels
+  )
   for i in 0 ..< PlayerColors.len:
     let
       playerRight = buildSpriteProtocolActorSprite(
@@ -769,6 +1005,30 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
       ghostLeft = buildSpriteProtocolActorSprite(
         sim.ghostSprite,
         PlayerColors[i],
+        true
+      )
+      selectedPlayerRight = buildSpriteProtocolActorSprite(
+        sim.playerSprite,
+        PlayerColors[i],
+        false,
+        true
+      )
+      selectedPlayerLeft = buildSpriteProtocolActorSprite(
+        sim.playerSprite,
+        PlayerColors[i],
+        true,
+        true
+      )
+      selectedGhostRight = buildSpriteProtocolActorSprite(
+        sim.ghostSprite,
+        PlayerColors[i],
+        false,
+        true
+      )
+      selectedGhostLeft = buildSpriteProtocolActorSprite(
+        sim.ghostSprite,
+        PlayerColors[i],
+        true,
         true
       )
       bodyPixels = buildSpriteProtocolBodySprite(
@@ -801,6 +1061,30 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
       ghostLeft
     )
     result.addSprite(
+      SelectedPlayerSpriteBase + i * 2,
+      sim.playerSprite.width + 2,
+      sim.playerSprite.height + 2,
+      selectedPlayerRight
+    )
+    result.addSprite(
+      SelectedPlayerSpriteBase + i * 2 + 1,
+      sim.playerSprite.width + 2,
+      sim.playerSprite.height + 2,
+      selectedPlayerLeft
+    )
+    result.addSprite(
+      SelectedGhostSpriteBase + i * 2,
+      sim.ghostSprite.width + 2,
+      sim.ghostSprite.height + 2,
+      selectedGhostRight
+    )
+    result.addSprite(
+      SelectedGhostSpriteBase + i * 2 + 1,
+      sim.ghostSprite.width + 2,
+      sim.ghostSprite.height + 2,
+      selectedGhostLeft
+    )
+    result.addSprite(
       BodySpriteBase + i,
       sim.bodySprite.width + 2,
       sim.bodySprite.height + 2,
@@ -823,15 +1107,40 @@ proc spriteBodyObjectId(index: int): int =
   ## Returns the sprite protocol object id for a dead body.
   BodyObjectBase + index
 
-proc spriteActorSpriteId(player: Player): int =
+proc spriteTaskObjectId(index: int): int =
+  ## Returns the sprite protocol object id for a task bubble.
+  TaskObjectBase + index
+
+proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   ## Returns the sprite id for a player in the global viewer.
   let
     colorIndex = player.joinOrder mod PlayerColors.len
     side = if player.flipH: 1 else: 0
-  if player.alive:
+    selected = player.joinOrder == selectedJoinOrder
+  if player.alive and selected:
+    SelectedPlayerSpriteBase + colorIndex * 2 + side
+  elif player.alive:
     PlayerSpriteBase + colorIndex * 2 + side
+  elif selected:
+    SelectedGhostSpriteBase + colorIndex * 2 + side
   else:
     GhostSpriteBase + colorIndex * 2 + side
+
+proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
+  ## Returns the join order of the topmost player under the mouse.
+  result = -1
+  var bestY = low(int)
+  for player in sim.players:
+    let
+      x = player.spritePlayerX()
+      y = player.spritePlayerY()
+      w = sim.playerSprite.width + 2
+      h = sim.playerSprite.height + 2
+    if mouseX >= x and mouseX < x + w and
+        mouseY >= y and mouseY < y + h and
+        player.y >= bestY:
+      bestY = player.y
+      result = player.joinOrder
 
 proc buildSpriteProtocolUpdates(
   sim: SimServer,
@@ -841,6 +1150,10 @@ proc buildSpriteProtocolUpdates(
   ## Builds global viewer object updates for the current tick.
   result = @[]
   nextState = state
+  if nextState.clickPending:
+    nextState.selectedJoinOrder =
+      sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
+    nextState.clickPending = false
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit()
     nextState.initialized = true
@@ -854,7 +1167,8 @@ proc buildSpriteProtocolUpdates(
       player.spritePlayerX(),
       player.spritePlayerY(),
       player.y,
-      player.spriteActorSpriteId()
+      MapLayerId,
+      player.spriteActorSpriteId(nextState.selectedJoinOrder)
     )
 
   for i in 0 ..< sim.bodies.len:
@@ -867,8 +1181,26 @@ proc buildSpriteProtocolUpdates(
       body.x - SpriteDrawOffX - 1,
       body.y - SpriteDrawOffY - 1,
       body.y,
+      MapLayerId,
       BodySpriteBase + playerColorIndex(body.color)
     )
+
+  if sim.config.showTaskBubbles:
+    let bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+    for i in 0 ..< sim.tasks.len:
+      let
+        task = sim.tasks[i]
+        objectId = spriteTaskObjectId(i)
+        bobY = bob[(sim.tickCount div 3) mod bob.len]
+      currentIds.add(objectId)
+      result.addObject(
+        objectId,
+        task.x + task.w div 2 - SpriteSize div 2,
+        task.y - SpriteSize - 2 + bobY,
+        30000,
+        MapLayerId,
+        TaskSpriteId
+      )
 
   for objectId in state.objectIds:
     if objectId notin currentIds:
@@ -946,7 +1278,7 @@ proc tallyVotes(sim: var SimServer) =
   else:
     sim.voteState.ejectedPlayer = maxPlayer
   sim.phase = VoteResult
-  sim.voteState.resultTimer = VoteResultTicks
+  sim.voteState.resultTimer = sim.config.voteResultTicks
 
 proc applyVoteResult(sim: var SimServer) =
   let ej = sim.voteState.ejectedPlayer
@@ -970,7 +1302,7 @@ proc moveCursor(sim: var SimServer, playerIndex: int, delta: int) =
 proc buildLobbyFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let n = sim.players.len
-  let needed = max(0, MinPlayers - n)
+  let needed = max(0, sim.config.minPlayers - n)
   sim.fb.blitText(sim.letterSprites, "WAITING", 11, 4)
   if needed > 0:
     sim.fb.blitText(sim.letterSprites, "NEED MORE!", 2, 14)
@@ -1073,7 +1405,7 @@ proc buildVoteFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
   let
     barY = ScreenHeight - 2
     barW = ScreenWidth - 4
-    filled = sim.voteState.voteTimer * barW div VoteTimerTicks
+    filled = sim.voteState.voteTimer * barW div sim.config.voteTimerTicks
   for bx in 0 ..< barW:
     let c = if bx < filled: 10'u8 else: 1'u8
     sim.fb.putPixel(2 + bx, barY, c)
@@ -1120,15 +1452,15 @@ proc checkWinCondition(sim: var SimServer) =
   if aliveImposters == 0 and sim.players.len > 0:
     sim.phase = GameOver
     sim.winner = Crewmate
-    sim.gameOverTimer = GameOverTicks
+    sim.gameOverTimer = sim.config.gameOverTicks
   elif aliveImposters >= aliveCrewmates and sim.players.len > 0:
     sim.phase = GameOver
     sim.winner = Imposter
-    sim.gameOverTimer = GameOverTicks
+    sim.gameOverTimer = sim.config.gameOverTicks
   elif sim.allTasksDone() and sim.players.len > 0:
     sim.phase = GameOver
     sim.winner = Crewmate
-    sim.gameOverTimer = GameOverTicks
+    sim.gameOverTimer = sim.config.gameOverTicks
 
 proc buildGameOverFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
@@ -1289,7 +1621,7 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
         continue
       sim.fb.blitSpriteRaw(sim.taskIconSprite, iconSx, iconSy)
 
-  if player.role == Crewmate and ShowTaskArrows:
+  if player.role == Crewmate and sim.config.showTaskArrows:
     let radarColor = 8'u8
     let margin = 0
     for t in 0 ..< sim.tasks.len:
@@ -1336,7 +1668,8 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
     let
       barX = player.x - SpriteDrawOffX - cameraX
       barY = player.y - SpriteDrawOffY - cameraY + TaskBarY
-      filled = player.taskProgress * TaskBarWidth div TaskCompleteTicks
+      filled =
+        player.taskProgress * TaskBarWidth div sim.config.taskCompleteTicks
     for bx in 0 ..< TaskBarWidth:
       let c = if bx < filled: ProgressFilled else: ProgressEmpty
       sim.fb.putPixel(barX + bx, barY, c)
@@ -1361,7 +1694,8 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc initSimServer(): SimServer =
+proc initSimServer(config: GameConfig): SimServer =
+  result.config = config
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
   result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
@@ -1462,7 +1796,7 @@ proc step(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArr
   inc sim.tickCount
 
   if sim.phase == Lobby:
-    if sim.players.len >= MinPlayers:
+    if sim.players.len >= sim.config.minPlayers:
       sim.startGame()
     return
 
@@ -1561,7 +1895,7 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.spriteViewers[websocket] = SpriteViewerState()
+        appState.spriteViewers[websocket] = initSpriteViewerState()
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -1581,10 +1915,14 @@ proc websocketHandler(
           appState.inputMasks[websocket] = 0
           appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
-    if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
+    if message.kind == BinaryMessage:
       {.gcsafe.}:
         withLock appState.lock:
-          if websocket notin appState.spriteViewers:
+          if websocket in appState.spriteViewers:
+            appState.spriteViewers[websocket].applySpriteViewerMessage(
+              message.data
+            )
+          elif message.data.len == InputPacketBytes:
             appState.inputMasks[websocket] = blobToMask(message.data)
   of ErrorEvent:
     {.gcsafe.}:
@@ -1598,14 +1936,18 @@ proc websocketHandler(
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
-proc runFrameLimiter(previousTick: var MonoTime) =
-  let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
+proc runFrameLimiter(previousTick: var MonoTime, targetFps: float) =
+  let frameDuration = initDuration(milliseconds = int(1000.0 / targetFps))
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
+proc runServerLoop*(
+  host = DefaultHost,
+  port = DefaultPort,
+  config = defaultGameConfig()
+) =
   initAppState()
   let httpServer = newServer(
     httpHandler,
@@ -1624,7 +1966,7 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
   httpServer.waitUntilReady()
 
   var
-    sim = initSimServer()
+    sim = initSimServer(config)
     lastTick = getMonoTime()
     prevInputs: seq[InputState]
 
@@ -1716,18 +2058,31 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           withLock appState.lock:
             sim.removePlayer(spriteViewers[i])
 
-    runFrameLimiter(lastTick)
+    runFrameLimiter(lastTick, sim.config.targetFps)
 
 when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
+    configJson = ""
+    configPath = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       case key
-      of "address": address = val
-      of "port": port = parseInt(val)
+      of "address":
+        address = val
+      of "port":
+        port = parseInt(val)
+      of "config":
+        configJson = val
+      of "config-file":
+        configPath = val
       else: discard
     else: discard
-  runServerLoop(address, port)
+  var config = defaultGameConfig()
+  if configPath.len > 0:
+    config.update(readFile(configPath))
+  if configJson.len > 0:
+    config.update(configJson)
+  runServerLoop(address, port, config)

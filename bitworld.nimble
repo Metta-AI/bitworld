@@ -23,7 +23,8 @@ bin = @[
   "tag/tag",
   "jumper/jumper",
   "warzone/warzone",
-  "among_them/among_them"
+  "among_them/among_them",
+  "global_ui/global_ui"
 ]
 
 switch("path", "common")

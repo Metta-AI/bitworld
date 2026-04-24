@@ -37,14 +37,15 @@ const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
 const url=new URL(location.href);
 const address=url.searchParams.get("address")||"ws://localhost:8080/sprite";
+const ZoomableFlag=1,UiFlag=2,MapLayerType=0;
 const palette=[
   [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],
   [255,119,168,255],[95,87,79,255],[171,82,54,255],[255,163,0,255],
   [255,236,39,255],[126,37,83,255],[0,135,81,255],[0,228,54,255],
   [29,43,83,255],[131,118,156,255],[41,173,255,255],[255,204,170,255]
 ];
-let viewport={width:1,height:1},sprites=new Map(),objects=new Map();
-let image=ctx.createImageData(1,1),socket=new WebSocket(address);
+let layers=new Map(),sprites=new Map(),objects=new Map();
+let socket=new WebSocket(address);
 let zoom=1,panX=0,panY=0,autoFit=true,dragging=false,dragX=0,dragY=0;
 socket.binaryType="arraybuffer";
 ctx.imageSmoothingEnabled=false;
@@ -55,16 +56,27 @@ function setStatus(text){
 }
 
 function applyView(){
-  canvas.style.width=viewport.width+"px";
-  canvas.style.height=viewport.height+"px";
-  canvas.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;
+  if(canvas.width!==innerWidth)canvas.width=innerWidth;
+  if(canvas.height!==innerHeight)canvas.height=innerHeight;
+  canvas.style.width=innerWidth+"px";
+  canvas.style.height=innerHeight+"px";
+}
+
+function mapLayer(){
+  for(const layer of layers.values()){
+    if((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType)return layer;
+  }
+  return null;
 }
 
 function fit(){
-  zoom=Math.max(.1,Math.min(innerWidth/viewport.width,innerHeight/viewport.height));
-  panX=Math.floor((innerWidth-viewport.width*zoom)/2);
-  panY=Math.floor((innerHeight-viewport.height*zoom)/2);
+  const layer=mapLayer();
+  const width=layer?layer.width:1,height=layer?layer.height:1;
+  zoom=Math.max(.1,Math.min(innerWidth/width,innerHeight/height));
+  panX=Math.floor((innerWidth-width*zoom)/2);
+  panY=Math.floor((innerHeight-height*zoom)/2);
   applyView();
+  draw();
 }
 
 function maybeFit(){
@@ -77,6 +89,40 @@ function clearBlack(){
   ctx.fillRect(0,0,canvas.width,canvas.height);
 }
 
+function mapPoint(event){
+  return {
+    x:Math.floor((event.clientX-panX)/zoom),
+    y:Math.floor((event.clientY-panY)/zoom)
+  };
+}
+
+function writeI16(bytes,offset,value){
+  value=Math.max(-32768,Math.min(32767,value))&0xffff;
+  bytes[offset]=value&255;
+  bytes[offset+1]=value>>8;
+}
+
+function sendMousePosition(event){
+  if(socket.readyState!==WebSocket.OPEN)return;
+  const point=mapPoint(event),bytes=new Uint8Array(5);
+  bytes[0]=0x82;
+  writeI16(bytes,1,point.x);
+  writeI16(bytes,3,point.y);
+  socket.send(bytes);
+}
+
+function sendMouseButton(event,down){
+  if(socket.readyState!==WebSocket.OPEN)return;
+  const point=mapPoint(event),bytes=new Uint8Array(8);
+  bytes[0]=0x82;
+  writeI16(bytes,1,point.x);
+  writeI16(bytes,3,point.y);
+  bytes[5]=0x83;
+  bytes[6]=0x01;
+  bytes[7]=down?1:0;
+  socket.send(bytes);
+}
+
 function readU16(bytes,offset){
   return bytes[offset]|(bytes[offset+1]<<8);
 }
@@ -86,43 +132,103 @@ function readI16(bytes,offset){
   return value&0x8000?value-0x10000:value;
 }
 
-function setViewport(width,height){
-  viewport={width,height};
-  canvas.width=width;
-  canvas.height=height;
-  image=ctx.createImageData(width,height);
+function ensureLayer(id){
+  if(!layers.has(id)){
+    layers.set(id,{
+      id,
+      type:MapLayerType,
+      flags:ZoomableFlag,
+      width:1,
+      height:1,
+      canvas:document.createElement("canvas"),
+      ctx:null,
+      image:null
+    });
+  }
+  const layer=layers.get(id);
+  if(!layer.ctx)layer.ctx=layer.canvas.getContext("2d");
+  layer.ctx.imageSmoothingEnabled=false;
+  return layer;
+}
+
+function defineLayer(id,type,flags){
+  const layer=ensureLayer(id);
+  layer.type=type;
+  layer.flags=flags;
+}
+
+function setViewport(layerId,width,height){
+  const layer=ensureLayer(layerId);
+  layer.width=width;
+  layer.height=height;
+  layer.canvas.width=width;
+  layer.canvas.height=height;
+  layer.image=layer.ctx.createImageData(width,height);
   maybeFit();
 }
 
-function putPixel(x,y,color){
-  if(x<0||y<0||x>=viewport.width||y>=viewport.height||color===0)return;
-  const rgba=palette[(color-1)&15],offset=(y*viewport.width+x)*4;
-  image.data[offset]=rgba[0];
-  image.data[offset+1]=rgba[1];
-  image.data[offset+2]=rgba[2];
-  image.data[offset+3]=255;
+function putPixel(layer,x,y,color){
+  if(x<0||y<0||x>=layer.width||y>=layer.height||color===0)return;
+  const rgba=palette[(color-1)&15],offset=(y*layer.width+x)*4;
+  layer.image.data[offset]=rgba[0];
+  layer.image.data[offset+1]=rgba[1];
+  layer.image.data[offset+2]=rgba[2];
+  layer.image.data[offset+3]=255;
+}
+
+function layerScreenPos(layer){
+  const width=layer.width,height=layer.height;
+  if((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType){
+    return {x:panX,y:panY,w:width*zoom,h:height*zoom};
+  }
+  switch(layer.type){
+    case 1:return {x:0,y:0,w:width,h:height};
+    case 2:return {x:innerWidth-width,y:0,w:width,h:height};
+    case 3:return {x:innerWidth-width,y:innerHeight-height,w:width,h:height};
+    case 4:return {x:0,y:innerHeight-height,w:width,h:height};
+    case 5:return {x:(innerWidth-width)/2,y:0,w:width,h:height};
+    case 6:return {x:innerWidth-width,y:(innerHeight-height)/2,w:width,h:height};
+    case 7:return {x:0,y:(innerHeight-height)/2,w:width,h:height};
+    case 8:return {x:(innerWidth-width)/2,y:innerHeight-height,w:width,h:height};
+    default:return {x:0,y:0,w:width,h:height};
+  }
 }
 
 function draw(){
   if(socket.readyState===WebSocket.CLOSED)return;
-  image.data.fill(0);
-  const ordered=[...objects.values()].sort((a,b)=>
-    a.z-b.z||a.y-b.y||a.id-b.id
-  );
-  for(const object of ordered){
-    const sprite=sprites.get(object.spriteId);
-    if(!sprite)continue;
-    for(let y=0;y<sprite.height;y++){
-      for(let x=0;x<sprite.width;x++){
-        putPixel(
-          object.x+x,
-          object.y+y,
-          sprite.pixels[y*sprite.width+x]
-        );
+  ctx.imageSmoothingEnabled=false;
+  clearBlack();
+  const orderedLayers=[...layers.values()].sort((a,b)=>a.type-b.type||a.id-b.id);
+  for(const layer of orderedLayers){
+    if(!layer.image)continue;
+    layer.image.data.fill(0);
+    const ordered=[...objects.values()].filter(object=>object.layer===layer.id).sort((a,b)=>
+      a.z-b.z||a.y-b.y||a.id-b.id
+    );
+    for(const object of ordered){
+      const sprite=sprites.get(object.spriteId);
+      if(!sprite)continue;
+      for(let y=0;y<sprite.height;y++){
+        for(let x=0;x<sprite.width;x++){
+          putPixel(
+            layer,
+            object.x+x,
+            object.y+y,
+            sprite.pixels[y*sprite.width+x]
+          );
+        }
       }
     }
+    layer.ctx.putImageData(layer.image,0,0);
+    const pos=layerScreenPos(layer);
+    ctx.drawImage(layer.canvas,pos.x,pos.y,pos.w,pos.h);
+    if((layer.flags&UiFlag)!==0){
+      const x=Math.round(pos.x)+.5,y=Math.round(pos.y)+.5;
+      ctx.strokeStyle="rgba(255,255,255,.8)";
+      ctx.lineWidth=1;
+      ctx.strokeRect(x,y,Math.round(pos.w)-1,Math.round(pos.h)-1);
+    }
   }
-  ctx.putImageData(image,0,0);
   setStatus("");
 }
 
@@ -147,17 +253,21 @@ function parse(bytes){
       const x=readI16(bytes,offset+2);
       const y=readI16(bytes,offset+4);
       const z=readI16(bytes,offset+6);
-      const spriteId=readU16(bytes,offset+8);
-      objects.set(id,{id,x,y,z,spriteId});
-      offset+=10;
+      const layer=bytes[offset+8];
+      const spriteId=readU16(bytes,offset+9);
+      objects.set(id,{id,x,y,z,layer,spriteId});
+      offset+=11;
     }else if(type===0x03){
       objects.delete(readU16(bytes,offset));
       offset+=2;
     }else if(type===0x04){
       objects.clear();
     }else if(type===0x05){
-      setViewport(readU16(bytes,offset),readU16(bytes,offset+2));
-      offset+=4;
+      setViewport(bytes[offset],readU16(bytes,offset+1),readU16(bytes,offset+3));
+      offset+=5;
+    }else if(type===0x06){
+      defineLayer(bytes[offset],bytes[offset+1],bytes[offset+2]);
+      offset+=3;
     }else{
       socket.close();
       break;
@@ -177,33 +287,42 @@ socket.onerror=()=>{
   setStatus("disconnected...");
 };
 
-addEventListener("resize",()=>maybeFit());
+addEventListener("resize",()=>{
+  maybeFit();
+  draw();
+});
 addEventListener("wheel",event=>{
   event.preventDefault();
   autoFit=false;
   const beforeX=(event.clientX-panX)/zoom;
   const beforeY=(event.clientY-panY)/zoom;
-  const factor=event.deltaY<0?1.15:1/1.15;
+  const factor=event.deltaY<0?1.015:1/1.015;
   zoom=Math.min(64,Math.max(.1,zoom*factor));
   panX=event.clientX-beforeX*zoom;
   panY=event.clientY-beforeY*zoom;
   applyView();
+  draw();
 },{passive:false});
 addEventListener("pointerdown",event=>{
   autoFit=false;
+  sendMouseButton(event,true);
   dragging=true;
   dragX=event.clientX-panX;
   dragY=event.clientY-panY;
   try{canvas.setPointerCapture(event.pointerId)}catch(e){}
 });
 addEventListener("pointermove",event=>{
-  if(!dragging)return;
-  panX=event.clientX-dragX;
-  panY=event.clientY-dragY;
-  applyView();
+  if(dragging){
+    panX=event.clientX-dragX;
+    panY=event.clientY-dragY;
+    applyView();
+    draw();
+  }
+  sendMousePosition(event);
 });
 addEventListener("pointerup",event=>{
   dragging=false;
+  sendMouseButton(event,false);
   try{canvas.releasePointerCapture(event.pointerId)}catch(e){}
 });
 addEventListener("dblclick",()=>{

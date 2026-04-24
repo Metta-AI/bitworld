@@ -11,6 +11,9 @@ The protocol is designed to be simple to parse. Every message starts with a
 single message type byte, followed by a fixed set of little endian fields. Any
 payload with variable length has its length encoded before the payload bytes.
 
+Sprites and objects are shared across layers. An object is either absent or it
+belongs to exactly one layer. Each layer has its own viewport.
+
 ## Integer Encoding
 
 All integer fields are unsigned unless stated otherwise.
@@ -56,11 +59,13 @@ Defines or replaces an object instance.
 | X | `i16` | Object x position |
 | Y | `i16` | Object y position |
 | Z | `i16` | Object draw order |
+| Layer | `u8` | Layer containing the object |
 | Sprite id | `u16` | Sprite used by the object |
 
 If an object id already exists, the client must replace the old object state
-with the new state. If the sprite id has not been defined yet, the client should
-keep the object but draw nothing until the sprite is defined.
+with the new state and move it to the given layer. If the sprite id has not been
+defined yet, the client should keep the object but draw nothing until the sprite
+is defined.
 
 ### Delete Object
 
@@ -85,16 +90,53 @@ Sprite definitions remain loaded.
 
 ### Set Viewport
 
-Sets the viewport size.
+Sets the viewport size for one layer.
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | Message type | `u8` | `0x05` |
+| Layer | `u8` | Layer to resize |
 | Width | `u16` | Viewport width in pixels |
 | Height | `u16` | Viewport height in pixels |
 
-The viewport starts at `(0, 0)` and ends before `(Width, Height)`. A viewport
-with width `0` or height `0` is invalid.
+Each layer viewport starts at `(0, 0)` and ends before `(Width, Height)`. A
+viewport with width `0` or height `0` is invalid.
+
+### Define Layer
+
+Defines a layer kind and flags.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x06` |
+| Layer | `u8` | Layer id |
+| Type | `u8` | Layer type |
+| Flags | `u8` | Layer flags |
+
+Layer type values:
+
+| Value | Meaning |
+| ---: | --- |
+| `0x00` | Map zoomable layer |
+| `0x01` | Top left UI layer |
+| `0x02` | Top right UI layer |
+| `0x03` | Bottom right UI layer |
+| `0x04` | Bottom left UI layer |
+| `0x05` | Center top UI layer |
+| `0x06` | Center right UI layer |
+| `0x07` | Center left UI layer |
+| `0x08` | Center bottom UI layer |
+
+Layer flag values:
+
+| Value | Meaning |
+| ---: | --- |
+| `0x01` | Zoomable layer |
+| `0x02` | UI layer |
+
+The map layer should use type `0x00` and flag `0x01`. UI layers should use one
+of the UI layer types and flag `0x02`. Unknown layers are invalid. Redefining a
+layer replaces its type and flags but does not delete objects in that layer.
 
 ## Client to Server Messages
 
@@ -164,30 +206,37 @@ Suggested mouse button control codes:
 | `0x03` | Server to client | Delete object |
 | `0x04` | Server to client | Clear objects |
 | `0x05` | Server to client | Set viewport |
+| `0x06` | Server to client | Define layer |
 | `0x81` | Client to server | Input text |
 | `0x82` | Client to server | Mouse position |
 | `0x83` | Client to server | Mouse button |
 
-Message values `0x00`, `0x06 .. 0x7f`, and `0x84 .. 0xff` are reserved.
+Message values `0x00`, `0x07 .. 0x7f`, and `0x84 .. 0xff` are reserved.
 
 ## Rendering Model
 
-The client keeps one viewport and two tables:
+The client keeps three tables:
 
 | State | Key | Value |
 | --- | --- | --- |
-| Viewport | None | Width and height |
+| Layers | `u8 layer id` | Type, flags, viewport width, and viewport height |
 | Sprites | `u16 sprite id` | Width, height, and 8 bit pixel buffer |
-| Objects | `u16 object id` | X, y, z, and sprite id |
+| Objects | `u16 object id` | X, y, z, layer, and sprite id |
 
-The client draws all objects using their current sprite. Objects with lower `z`
-values are drawn first. If two objects have the same `z`, the object with the
-lower `y` value is drawn first. If two objects have the same `z` and `y`, the
-object with the lower object id is drawn first.
+The client draws all visible layers. Within a layer, objects use their current
+sprite. Objects with lower `z` values are drawn first. If two objects have the
+same `z`, the object with the lower `y` value is drawn first. If two objects
+have the same `z` and `y`, the object with the lower object id is drawn first.
 
-Objects outside the viewport are clipped. Pixels with screen coordinates less
-than `0`, greater than or equal to the viewport width, or greater than or equal
-to the viewport height are not drawn.
+Objects outside their layer viewport are clipped. Pixels with layer coordinates
+less than `0`, greater than or equal to the layer viewport width, or greater
+than or equal to the layer viewport height are not drawn.
+
+The map zoomable layer is drawn in world coordinates and may be zoomed and
+panned by the client. UI layers are drawn in screen coordinates after the map
+layer. UI layer placement is selected by its layer type. For example, the top
+left layer is anchored to the top left of the screen and the center bottom layer
+is horizontally centered and anchored to the bottom of the screen.
 
 Pixel value `0` should be treated as transparent. Pixel values `1 .. 255` are
 opaque palette indices.
@@ -200,7 +249,9 @@ A receiver should close the connection on malformed messages, including:
 - Truncated messages.
 - Sprite pixel payloads that do not match `Width * Height`.
 - Sprite dimensions whose product cannot fit in local memory.
+- Objects that reference unknown layers.
 - Viewports with width `0` or height `0`.
+- Layer types outside `0x00 .. 0x08`.
 - Boolean fields with values other than `0` or `1`.
 
 Unknown object ids in delete messages are not errors.
@@ -224,9 +275,9 @@ Decoded fields:
 | `02 00` | Height `2` |
 | `01 02 03 04` | Pixel data |
 
-This byte sequence places object `3` at `x = 10`, `y = 20`, `z = 0`, using
-sprite `7`:
+This byte sequence places object `3` at `x = 10`, `y = 20`, `z = 0`, layer
+`0`, using sprite `7`:
 
 ```text
-02 03 00 0a 00 14 00 00 00 07 00
+02 03 00 0a 00 14 00 00 00 00 07 00
 ```
