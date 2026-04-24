@@ -19,6 +19,7 @@ bin = @[
   "stag_hunt/stag_hunt",
   "overworld/overworld",
   "tools/quick_run",
+  "tools/ptswap",
   "tag/tag",
   "jumper/jumper",
   "warzone/warzone",
