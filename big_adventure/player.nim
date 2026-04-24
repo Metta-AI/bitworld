@@ -155,7 +155,7 @@ proc sheetRegionSprite(sheet: Image, x, y, width, height: int): Sprite =
   spriteFromImage(sheet.subImage(x, y, width, height))
 
 proc atlasPath(): string =
-  repoDir() / "dist" / "atlas.png"
+  repoDir() / "client" / "dist" / "atlas.png"
 
 proc unpack4bpp(packed: openArray[uint8], unpacked: var seq[uint8]) =
   let targetLen = packed.len * 2
