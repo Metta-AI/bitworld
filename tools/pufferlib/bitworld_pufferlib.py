@@ -6,6 +6,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import types
 from collections import deque
@@ -23,11 +24,12 @@ RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
 SCREEN_WIDTH = 64
 SCREEN_HEIGHT = 64
 FRAME_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT
-RL_HEADER_BYTES = 8
+RL_HEADER_BYTES = 9
 RL_FRAME_BYTES = RL_HEADER_BYTES + FRAME_PIXELS
 RL_MAGIC = b"BW"
 RL_VERSION = 1
 RL_RESET_MASK = 255
+DEFAULT_ACTION_REPEAT = 4
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -192,7 +194,15 @@ def reserve_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def parse_rl_frame(packet: bytes) -> tuple[np.ndarray, int, int]:
+@dataclass(frozen=True)
+class RlFrame:
+    frame: np.ndarray
+    score: int
+    aux_value: int
+    reset_id: int
+
+
+def parse_rl_frame(packet: bytes) -> RlFrame:
     if len(packet) != RL_FRAME_BYTES:
         raise ValueError(f"expected {RL_FRAME_BYTES} bytes, received {len(packet)}")
     if packet[:2] != RL_MAGIC:
@@ -200,10 +210,11 @@ def parse_rl_frame(packet: bytes) -> tuple[np.ndarray, int, int]:
     if packet[2] != RL_VERSION:
         raise ValueError(f"unsupported RL version: {packet[2]}")
 
-    aux_value = int(packet[3])
-    score = struct.unpack_from("<i", packet, 4)[0]
+    reset_id = int(packet[3])
+    aux_value = int(packet[4])
+    score = struct.unpack_from("<i", packet, 5)[0]
     frame = np.frombuffer(packet, dtype=np.uint8, count=FRAME_PIXELS, offset=RL_HEADER_BYTES).copy()
-    return frame, score, aux_value
+    return RlFrame(frame=frame, score=score, aux_value=aux_value, reset_id=reset_id)
 
 
 def flatten_logs(logs: dict, prefix: str = "") -> dict[str, float]:
@@ -225,21 +236,45 @@ class EpisodeStats:
 
 
 class BitWorldWorker:
-    def __init__(self, spec: str | EnvironmentSpec, env_id: int, port: int, seed: int, fps: float) -> None:
+    def __init__(
+        self,
+        spec: str | EnvironmentSpec,
+        env_id: int,
+        port: int,
+        seed: int,
+        fps: float,
+        action_repeat: int,
+    ) -> None:
         self.spec = get_env_spec(spec)
         self.env_id = env_id
         self.port = port
         self.seed = seed
         self.fps = fps
+        self.action_repeat = action_repeat
         self.process: subprocess.Popen[str] | None = None
         self.connection: ClientConnection | None = None
         self.log_file = None
         self.base_score = 0
         self.score = 0
         self.aux_value = 0
+        self.reset_id: int | None = None
         self.episode_return = 0.0
         self.episode_steps = 0
+        self._condition = threading.Condition()
+        self._frame_seq = 0
+        self._latest_frame: RlFrame | None = None
+        self._reader_error: Exception | None = None
+        self._closed = False
+        self._reader_thread: threading.Thread | None = None
         self._start_server()
+        try:
+            first_frame, _ = self._wait_for_frame(lambda _frame, _seq: True)
+        except Exception:
+            self.close()
+            raise
+        self.score = first_frame.score
+        self.aux_value = first_frame.aux_value
+        self.reset_id = first_frame.reset_id
 
     def _start_server(self) -> None:
         ensure_bitworld_binary(self.spec)
@@ -261,6 +296,12 @@ class BitWorldWorker:
             text=True,
         )
         self.connection = self._connect()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name=f"bitworld-{self.spec.name}-{self.env_id}-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
 
     def _connect(self) -> ClientConnection:
         deadline = time.time() + 10.0
@@ -274,36 +315,94 @@ class BitWorldWorker:
                 time.sleep(0.05)
         raise RuntimeError(f"failed to connect to {url}") from last_error
 
-    def _receive_packet(self) -> tuple[np.ndarray, int, int]:
+    def _receive_packet(self) -> RlFrame:
         assert self.connection is not None
         payload = self.connection.recv(timeout=10.0)
         if not isinstance(payload, (bytes, bytearray)):
             raise TypeError(f"expected binary websocket payload, got {type(payload)!r}")
         return parse_rl_frame(bytes(payload))
 
+    def _reader_loop(self) -> None:
+        assert self.connection is not None
+        while True:
+            with self._condition:
+                if self._closed:
+                    return
+            try:
+                frame = self._receive_packet()
+            except TimeoutError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                with self._condition:
+                    if not self._closed:
+                        self._reader_error = exc
+                        self._condition.notify_all()
+                return
+
+            with self._condition:
+                self._latest_frame = frame
+                self._frame_seq += 1
+                self._condition.notify_all()
+
+    def _wait_for_frame(
+        self,
+        predicate,
+        timeout: float = 10.0,
+    ) -> tuple[RlFrame, int]:
+        deadline = time.time() + timeout
+        with self._condition:
+            while True:
+                if self._reader_error is not None:
+                    raise RuntimeError(f"{self.spec.name} worker reader failed") from self._reader_error
+                if self._latest_frame is not None and predicate(self._latest_frame, self._frame_seq):
+                    return self._latest_frame, self._frame_seq
+                remaining = deadline - time.time()
+                if remaining <= 0.0:
+                    raise TimeoutError(f"timed out waiting for {self.spec.name} RL frame")
+                self._condition.wait(remaining)
+
     def reset(self) -> np.ndarray:
         assert self.connection is not None
+        previous_reset_id = self.reset_id
         self.connection.send(bytes([RL_RESET_MASK]), text=False)
-        frame, score, aux_value = self._receive_packet()
-        self.base_score = score
-        self.score = score
-        self.aux_value = aux_value
+        frame, _ = self._wait_for_frame(
+            lambda item, _seq: previous_reset_id is None or item.reset_id != previous_reset_id
+        )
+        self.base_score = frame.score
+        self.score = frame.score
+        self.aux_value = frame.aux_value
+        self.reset_id = frame.reset_id
         self.episode_return = 0.0
         self.episode_steps = 0
-        return frame
+        return frame.frame
 
     def step(self, action_mask: int) -> tuple[np.ndarray, float]:
         assert self.connection is not None
+        with self._condition:
+            start_seq = self._frame_seq
         self.connection.send(bytes([action_mask]), text=False)
-        frame, score, aux_value = self._receive_packet()
-        reward = float(score - self.score)
-        self.score = score
-        self.aux_value = aux_value
+        frame, _ = self._wait_for_frame(
+            lambda item, seq: item.reset_id == self.reset_id and seq >= start_seq + self.action_repeat
+        )
+        reward = float(frame.score - self.score)
+        self.score = frame.score
+        self.aux_value = frame.aux_value
         self.episode_return += reward
         self.episode_steps += 1
-        return frame, reward
+        return frame.frame, reward
 
     def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.connection = None
+
         if self.process is not None:
             self.process.terminate()
             try:
@@ -313,12 +412,9 @@ class BitWorldWorker:
                 self.process.wait(timeout=2.0)
             self.process = None
 
-        if self.connection is not None:
-            try:
-                self.connection.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self.connection = None
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=2.0)
+            self._reader_thread = None
 
         if self.log_file is not None:
             self.log_file.close()
@@ -337,6 +433,7 @@ class BitWorldVecEnv:
         max_episode_steps: int,
         frame_stack: int = 4,
         fps: float = 0.0,
+        action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
         base_port: int | None = None,
     ) -> None:
@@ -344,12 +441,15 @@ class BitWorldVecEnv:
             raise ValueError("num_envs must be positive")
         if frame_stack <= 0:
             raise ValueError("frame_stack must be positive")
+        if action_repeat <= 0:
+            raise ValueError("action_repeat must be positive")
 
         self.spec = get_env_spec(spec)
         self.num_envs = num_envs
         self.total_agents = num_envs
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
+        self.action_repeat = action_repeat
         self.base_seed = base_seed
         self.base_port = base_port
         self.obs_size = FRAME_PIXELS * frame_stack
@@ -370,16 +470,21 @@ class BitWorldVecEnv:
         self._completed_episodes = 0
 
         self.workers: list[BitWorldWorker] = []
-        for env_id in range(num_envs):
-            port = base_port + env_id if base_port is not None else reserve_port()
-            worker = BitWorldWorker(
-                spec=self.spec,
-                env_id=env_id,
-                port=port,
-                seed=base_seed + env_id,
-                fps=fps,
-            )
-            self.workers.append(worker)
+        try:
+            for env_id in range(num_envs):
+                port = base_port + env_id if base_port is not None else reserve_port()
+                worker = BitWorldWorker(
+                    spec=self.spec,
+                    env_id=env_id,
+                    port=port,
+                    seed=base_seed + env_id,
+                    fps=fps,
+                    action_repeat=action_repeat,
+                )
+                self.workers.append(worker)
+        except Exception:
+            self.close()
+            raise
 
     def _push_frame(self, env_id: int, frame: np.ndarray) -> None:
         self._frame_history[env_id, :-1] = self._frame_history[env_id, 1:]
@@ -512,8 +617,8 @@ BubbleEatsPolicy = BitWorldPolicy
 
 
 class BubbleEatsWorker(BitWorldWorker):
-    def __init__(self, env_id: int, port: int, seed: int, fps: float) -> None:
-        super().__init__("bubble_eats", env_id=env_id, port=port, seed=seed, fps=fps)
+    def __init__(self, env_id: int, port: int, seed: int, fps: float, action_repeat: int = DEFAULT_ACTION_REPEAT) -> None:
+        super().__init__("bubble_eats", env_id=env_id, port=port, seed=seed, fps=fps, action_repeat=action_repeat)
 
 
 class BubbleEatsVecEnv(BitWorldVecEnv):
@@ -523,6 +628,7 @@ class BubbleEatsVecEnv(BitWorldVecEnv):
         max_episode_steps: int,
         frame_stack: int = 4,
         fps: float = 0.0,
+        action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
         base_port: int | None = None,
     ) -> None:
@@ -532,6 +638,7 @@ class BubbleEatsVecEnv(BitWorldVecEnv):
             max_episode_steps=max_episode_steps,
             frame_stack=frame_stack,
             fps=fps,
+            action_repeat=action_repeat,
             base_seed=base_seed,
             base_port=base_port,
         )
@@ -606,6 +713,7 @@ def train_policy(
     model_path: Path,
     metrics_path: Path,
     fps: float = 0.0,
+    action_repeat: int = DEFAULT_ACTION_REPEAT,
     hidden_size: int = 256,
 ) -> dict:
     resolved = get_env_spec(spec)
@@ -621,6 +729,7 @@ def train_policy(
         max_episode_steps=max_episode_steps,
         frame_stack=frame_stack,
         fps=fps,
+        action_repeat=action_repeat,
         base_seed=seed,
     )
     policy = BitWorldPolicy(frame_stack=frame_stack, action_count=vecenv.action_count, hidden_size=hidden_size)
@@ -678,6 +787,7 @@ def evaluate_policy(
     frame_stack: int,
     seed: int,
     fps: float = 0.0,
+    action_repeat: int = DEFAULT_ACTION_REPEAT,
     random_actions: bool = False,
     sample_actions: bool = True,
 ) -> dict[str, float]:
@@ -688,6 +798,7 @@ def evaluate_policy(
         max_episode_steps=max_episode_steps,
         frame_stack=frame_stack,
         fps=fps,
+        action_repeat=action_repeat,
         base_seed=seed,
     )
     rng = np.random.default_rng(seed)

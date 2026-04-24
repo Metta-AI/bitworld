@@ -15,7 +15,7 @@ Why this shape:
 - one-player-per-server training workers
 - true server-side reward metrics from the game, not HUD OCR
 - fast reset via a single-byte reset command
-- uncapped training mode with `--fps:0`
+- async server-side ticking with policy-side action chunking
 - stacked 64x64 palette-index observations
 - direct training with `pufferlib.torch_pufferl.PuffeRL`
 
@@ -59,6 +59,7 @@ python tools/pufferlib/train_bitworld_env.py \
   --env bubble_eats \
   --total-timesteps 50000 \
   --num-envs 8 \
+  --action-repeat 4 \
   --fps 0
 ```
 
@@ -82,6 +83,6 @@ Representative validated result on April 23, 2026 for `bubble_eats` with a 50k-s
 ## Notes
 
 - The Nim server now supports `--rl`, `--fps:<float>`, and `--seed:<int>`.
-- RL mode sends unpacked `64 x 64` palette-index frames plus score metadata.
-- RL mode steps synchronously per action/reset message so reward accounting stays aligned across episode resets.
+- RL mode keeps the same asynchronous server loop as normal play and streams unpacked `64 x 64` palette-index frames plus score metadata.
+- The Python vecenv samples `--action-repeat` streamed frames per policy action and uses a reset counter in the frame header to align episode resets.
 - Some environments use shaped progress metrics instead of raw HUD score because their native score is too sparse for single-agent PPO to learn reliably within practical episode lengths.

@@ -100,7 +100,6 @@ type
     lock: Lock
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
-    pendingSteps: Table[WebSocket, bool]
     playerIndices: Table[WebSocket, int]
     closedSockets: seq[WebSocket]
     resetRequested: bool
@@ -611,10 +610,10 @@ proc rlMetric(sim: SimServer, playerIndex: int): tuple[score, auxValue: int] =
   let player = sim.players[playerIndex]
   (score: player.publishedCount, auxValue: min(255, player.message.len))
 
-proc buildRlPacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
   discard sim.buildFramePacket(playerIndex)
   let metric = sim.rlMetric(playerIndex)
-  rl_protocol.buildRlFramePacket(sim.fb, metric.score, metric.auxValue)
+  rl_protocol.buildRlFramePacket(sim.fb, metric.score, metric.auxValue, resetCounter)
 
 proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
   for playerIndex in 0 ..< sim.players.len:
@@ -631,7 +630,6 @@ proc initAppState() =
   initLock(appState.lock)
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
-  appState.pendingSteps = initTable[WebSocket, bool]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.closedSockets = @[]
   appState.resetRequested = false
@@ -658,7 +656,6 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
-  appState.pendingSteps.del(websocket)
 
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
@@ -696,7 +693,6 @@ proc websocketHandler(
         appState.playerIndices[websocket] = 0x7fffffff
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
-        appState.pendingSteps[websocket] = false
   of MessageEvent:
     if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
       {.gcsafe.}:
@@ -706,11 +702,8 @@ proc websocketHandler(
             appState.resetRequested = true
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
-            appState.pendingSteps[websocket] = false
           else:
             appState.inputMasks[websocket] = mask
-            if rlModeEnabled:
-              appState.pendingSteps[websocket] = true
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -757,6 +750,7 @@ proc runServerLoop(
     currentSeed = seed
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
+    resetCounter = 0'u8
 
   while true:
     var
@@ -764,7 +758,6 @@ proc runServerLoop(
       playerIndices: seq[int] = @[]
       inputs: seq[PlayerInput]
       shouldReset = false
-      shouldStep = not rlModeEnabled
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -781,39 +774,25 @@ proc runServerLoop(
             value = 0
           for _, value in appState.lastAppliedMasks.mpairs:
             value = 0
-          for _, value in appState.pendingSteps.mpairs:
-            value = false
         else:
           for websocket in appState.playerIndices.keys:
             if appState.playerIndices[websocket] == 0x7fffffff:
               appState.playerIndices[websocket] = sim.addPlayer()
 
-          if rlModeEnabled:
-            shouldStep = false
-            for _, pending in appState.pendingSteps.pairs:
-              if pending:
-                shouldStep = true
-                break
           inputs = newSeq[PlayerInput](sim.players.len)
           for websocket, playerIndex in appState.playerIndices.pairs:
             if playerIndex < 0 or playerIndex >= inputs.len:
               continue
             let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
             let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
-            if not rlModeEnabled or shouldStep:
-              inputs[playerIndex] = playerInputFromMasks(currentMask, previousMask)
-            if not rlModeEnabled:
-              appState.lastAppliedMasks[websocket] = currentMask
-              sockets.add(websocket)
-              playerIndices.add(playerIndex)
-            elif shouldStep and appState.pendingSteps.getOrDefault(websocket, false):
-              appState.lastAppliedMasks[websocket] = currentMask
-              appState.pendingSteps[websocket] = false
-              sockets.add(websocket)
-              playerIndices.add(playerIndex)
+            inputs[playerIndex] = playerInputFromMasks(currentMask, previousMask)
+            appState.lastAppliedMasks[websocket] = currentMask
+            sockets.add(websocket)
+            playerIndices.add(playerIndex)
 
     if shouldReset:
       inc currentSeed
+      resetCounter = uint8((int(resetCounter) + 1) and 0xFF)
       sim = initSimServer(currentSeed)
       {.gcsafe.}:
         withLock appState.lock:
@@ -823,7 +802,7 @@ proc runServerLoop(
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
       for i in 0 ..< sockets.len:
-        let frameBlob = blobFromBytes(sim.buildRlPacket(playerIndices[i]))
+        let frameBlob = blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         try:
           sockets[i].send(frameBlob, BinaryMessage)
         except:
@@ -833,20 +812,13 @@ proc runServerLoop(
       runFrameLimiter(lastTick, targetFps)
       continue
 
-    if rlModeEnabled and not shouldStep:
-      if targetFps > 0.0:
-        runFrameLimiter(lastTick, targetFps)
-      else:
-        sleep(1)
-        lastTick = getMonoTime()
-      continue
 
     sim.step(inputs)
 
     for i in 0 ..< sockets.len:
       let frameBlob =
         if rlModeEnabled:
-          blobFromBytes(sim.buildRlPacket(playerIndices[i]))
+          blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         else:
           blobFromBytes(sim.buildFramePacket(playerIndices[i]))
       try:

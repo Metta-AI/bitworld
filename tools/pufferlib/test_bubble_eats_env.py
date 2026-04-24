@@ -19,20 +19,30 @@ class ParsePacketTest(unittest.TestCase):
         packet[:2] = RL_MAGIC
         packet[2] = RL_VERSION
         packet[3] = 7
-        struct.pack_into("<i", packet, 4, 123)
+        packet[4] = 7
+        struct.pack_into("<i", packet, 5, 123)
         packet[RL_HEADER_BYTES:] = frame.tobytes()
 
-        parsed_frame, score, aux_value = parse_rl_frame(bytes(packet))
-        self.assertEqual(score, 123)
-        self.assertEqual(aux_value, 7)
-        np.testing.assert_array_equal(parsed_frame, frame)
+        parsed = parse_rl_frame(bytes(packet))
+        self.assertEqual(parsed.reset_id, 7)
+        self.assertEqual(parsed.score, 123)
+        self.assertEqual(parsed.aux_value, 7)
+        np.testing.assert_array_equal(parsed.frame, frame)
 
 
 class BitWorldSmokeTest(unittest.TestCase):
     def test_env_reset_and_autoreset_across_envs(self) -> None:
         for env_name in sorted(ENV_SPECS):
             with self.subTest(env=env_name):
-                env = BitWorldVecEnv(env_name, num_envs=1, max_episode_steps=4, frame_stack=4, fps=0.0, base_seed=1234)
+                env = BitWorldVecEnv(
+                    env_name,
+                    num_envs=1,
+                    max_episode_steps=4,
+                    frame_stack=4,
+                    fps=0.0,
+                    action_repeat=1,
+                    base_seed=1234,
+                )
                 try:
                     obs = env.reset()
                     self.assertEqual(obs.shape, (1, FRAME_PIXELS * 4))
@@ -49,7 +59,15 @@ class BitWorldSmokeTest(unittest.TestCase):
     def test_episode_return_matches_score_across_resets(self) -> None:
         for env_name in sorted(ENV_SPECS):
             with self.subTest(env=env_name):
-                env = BitWorldVecEnv(env_name, num_envs=1, max_episode_steps=16, frame_stack=4, fps=0.0, base_seed=123)
+                env = BitWorldVecEnv(
+                    env_name,
+                    num_envs=1,
+                    max_episode_steps=16,
+                    frame_stack=4,
+                    fps=0.0,
+                    action_repeat=1,
+                    base_seed=123,
+                )
                 rng = np.random.default_rng(123)
                 completed = []
                 try:
