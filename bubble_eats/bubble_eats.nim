@@ -1,5 +1,6 @@
 import mummy
 import protocol
+import rl_protocol
 import server
 import std/[algorithm, locks, math, monotimes, os, parseopt, random, strutils, tables, times]
 
@@ -64,13 +65,6 @@ const
 
   TargetFps = 24.0
   WebSocketPath = "/ws"
-  RlWebSocketPath = "/rl"
-  RlResetMask = 255'u8
-  RlFrameMagicA = 'B'.uint8
-  RlFrameMagicB = 'W'.uint8
-  RlFrameVersion = 1'u8
-  RlFrameHeaderBytes = 9
-  RlFrameBytes = RlFrameHeaderBytes + ScreenWidth * ScreenHeight
   FieldColor = 15'u8
   FieldAccentColor = 11'u8
   FieldPebbleColor = 1'u8
@@ -1073,24 +1067,9 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc writeInt32Le(bytes: var seq[uint8], offset: int, value: int) =
-  let encoded = int32(value)
-  bytes[offset + 0] = uint8((encoded shr 0) and 0xFF'i32)
-  bytes[offset + 1] = uint8((encoded shr 8) and 0xFF'i32)
-  bytes[offset + 2] = uint8((encoded shr 16) and 0xFF'i32)
-  bytes[offset + 3] = uint8((encoded shr 24) and 0xFF'i32)
-
-proc buildRlFramePacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
+proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
   let render = sim.renderPlayerFrame(playerIndex)
-  result = newSeq[uint8](RlFrameBytes)
-  result[0] = RlFrameMagicA
-  result[1] = RlFrameMagicB
-  result[2] = RlFrameVersion
-  result[3] = resetCounter
-  result[4] = uint8(min(255, max(0, render.componentSize)))
-  result.writeInt32Le(5, render.score)
-  for i in 0 ..< sim.fb.indices.len:
-    result[RlFrameHeaderBytes + i] = sim.fb.indices[i]
+  rl_protocol.buildRlFramePacket(sim.fb, render.score, render.componentSize, resetCounter)
 
 proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.updateExpressionTimers(inputs)
@@ -1299,7 +1278,7 @@ proc runServerLoop(
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
       for i in 0 ..< sockets.len:
-        let frameBlob = blobFromBytes(sim.buildRlFramePacket(playerIndices[i], resetCounter))
+        let frameBlob = blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         try:
           sockets[i].send(frameBlob, BinaryMessage)
         except:
@@ -1315,7 +1294,7 @@ proc runServerLoop(
     for i in 0 ..< sockets.len:
       let frameBlob =
         if rlModeEnabled:
-          blobFromBytes(sim.buildRlFramePacket(playerIndices[i], resetCounter))
+          blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
         else:
           blobFromBytes(sim.buildFramePacket(playerIndices[i]))
       try:

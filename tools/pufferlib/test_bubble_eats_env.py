@@ -85,6 +85,23 @@ class BitWorldSmokeTest(unittest.TestCase):
                     self.assertGreaterEqual(item.episode_return, 0.0)
                     self.assertAlmostEqual(item.score, item.episode_return)
 
+    def test_default_action_repeat_multi_env_autoreset(self) -> None:
+        env = BitWorldVecEnv("bubble_eats", num_envs=2, max_episode_steps=2, frame_stack=2, fps=0.0, base_seed=777)
+        try:
+            obs = env.reset()
+            self.assertEqual(obs.shape, (2, FRAME_PIXELS * 2))
+            reset_ids = [worker.reset_id for worker in env.workers]
+
+            env.step_discrete(np.zeros(2, dtype=np.int64))
+            _, rewards, terminals, completed = env.step_discrete(np.zeros(2, dtype=np.int64))
+
+            self.assertEqual(rewards.shape, (2,))
+            np.testing.assert_array_equal(terminals, np.ones(2, dtype=np.float32))
+            self.assertEqual(len(completed), 2)
+            self.assertNotEqual(reset_ids, [worker.reset_id for worker in env.workers])
+        finally:
+            env.close()
+
 
 if __name__ == "__main__":
     unittest.main()

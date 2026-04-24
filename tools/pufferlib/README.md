@@ -63,8 +63,6 @@ python tools/pufferlib/train_bitworld_env.py \
   --fps 0
 ```
 
-`train_bubble_eats.py` is still kept as a thin compatibility wrapper around the generic entrypoint.
-
 Outputs land under `tools/runlogs/<env>_pufferlib_training/` unless you override `--output-dir`.
 
 The training script saves:

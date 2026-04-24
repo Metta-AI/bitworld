@@ -138,10 +138,6 @@ def ensure_bitworld_binary(spec: str | EnvironmentSpec) -> None:
     )
 
 
-def ensure_bubble_eats_binary() -> None:
-    ensure_bitworld_binary("bubble_eats")
-
-
 def install_pufferlib_c_stub() -> None:
     if "pufferlib._C" in sys.modules:
         return
@@ -611,37 +607,6 @@ class BitWorldPolicy(nn.Module):
     def forward(self, observations: torch.Tensor, state=()):
         logits, values, _ = self.forward_eval(observations, state)
         return logits, values
-
-
-BubbleEatsPolicy = BitWorldPolicy
-
-
-class BubbleEatsWorker(BitWorldWorker):
-    def __init__(self, env_id: int, port: int, seed: int, fps: float, action_repeat: int = DEFAULT_ACTION_REPEAT) -> None:
-        super().__init__("bubble_eats", env_id=env_id, port=port, seed=seed, fps=fps, action_repeat=action_repeat)
-
-
-class BubbleEatsVecEnv(BitWorldVecEnv):
-    def __init__(
-        self,
-        num_envs: int,
-        max_episode_steps: int,
-        frame_stack: int = 4,
-        fps: float = 0.0,
-        action_repeat: int = DEFAULT_ACTION_REPEAT,
-        base_seed: int = 73,
-        base_port: int | None = None,
-    ) -> None:
-        super().__init__(
-            "bubble_eats",
-            num_envs=num_envs,
-            max_episode_steps=max_episode_steps,
-            frame_stack=frame_stack,
-            fps=fps,
-            action_repeat=action_repeat,
-            base_seed=base_seed,
-            base_port=base_port,
-        )
 
 
 def make_train_args(
