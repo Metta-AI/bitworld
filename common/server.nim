@@ -1,3 +1,4 @@
+import mummy
 import pixie
 import std/os
 import protocol
@@ -19,6 +20,27 @@ type
 
 const
   TransparentColorIndex* = 255'u8
+
+proc newServer*(
+  handler: RequestHandler,
+  websocketHandler: WebSocketHandler = nil,
+  logHandler: LogHandler = nil,
+  workerThreads: int,
+  maxHeadersLen = 8 * 1024,
+  maxBodyLen = 1024 * 1024,
+  maxMessageLen = 64 * 1024,
+  wsNoDelay: bool,
+): mummy.Server =
+  discard wsNoDelay
+  mummy.newServer(
+    handler,
+    websocketHandler,
+    logHandler,
+    workerThreads,
+    maxHeadersLen,
+    maxBodyLen,
+    maxMessageLen,
+  )
 
 proc spriteIndex*(sprite: Sprite, x, y: int): int =
   y * sprite.width + x

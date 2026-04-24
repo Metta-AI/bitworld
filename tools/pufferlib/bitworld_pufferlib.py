@@ -11,7 +11,6 @@ import types
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import torch
@@ -19,8 +18,6 @@ from torch import nn
 from websockets.sync.client import ClientConnection, connect
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BUBBLE_EATS_SOURCE = REPO_ROOT / "bubble_eats" / "bubble_eats.nim"
-BUBBLE_EATS_BINARY = REPO_ROOT / "bubble_eats" / "bubble_eats"
 RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
 
 SCREEN_WIDTH = 64
@@ -31,31 +28,116 @@ RL_FRAME_BYTES = RL_HEADER_BYTES + FRAME_PIXELS
 RL_MAGIC = b"BW"
 RL_VERSION = 1
 RL_RESET_MASK = 255
-ACTION_MASKS = np.array(
+
+BUTTON_UP = 1
+BUTTON_DOWN = 2
+BUTTON_LEFT = 4
+BUTTON_RIGHT = 8
+BUTTON_SELECT = 16
+BUTTON_A = 32
+BUTTON_B = 64
+
+DIRECTION_MASKS = np.array(
     [
         0,
-        1,
-        2,
-        4,
-        8,
-        1 | 4,
-        1 | 8,
-        2 | 4,
-        2 | 8,
+        BUTTON_UP,
+        BUTTON_DOWN,
+        BUTTON_LEFT,
+        BUTTON_RIGHT,
+        BUTTON_UP | BUTTON_LEFT,
+        BUTTON_UP | BUTTON_RIGHT,
+        BUTTON_DOWN | BUTTON_LEFT,
+        BUTTON_DOWN | BUTTON_RIGHT,
     ],
     dtype=np.uint8,
 )
+ACTION_BUTTON_MASKS = np.array([0, BUTTON_A, BUTTON_B, BUTTON_SELECT], dtype=np.uint8)
+ACTION_MASKS = np.array([direction | button for direction in DIRECTION_MASKS for button in ACTION_BUTTON_MASKS], dtype=np.uint8)
+
+SHARED_NIM_SOURCES = (
+    REPO_ROOT / "common" / "protocol.nim",
+    REPO_ROOT / "common" / "server.nim",
+    REPO_ROOT / "common" / "rl_protocol.nim",
+)
 
 
-def ensure_bubble_eats_binary() -> None:
-    if BUBBLE_EATS_BINARY.exists() and BUBBLE_EATS_BINARY.stat().st_mtime >= BUBBLE_EATS_SOURCE.stat().st_mtime:
+@dataclass(frozen=True)
+class EnvironmentSpec:
+    name: str
+    metric_name: str = "score"
+    default_episode_steps: int = 64
+    default_total_timesteps: int = 50_000
+    learning_rate: float = 0.001
+    horizon: int = 64
+    minibatch_size: int = 512
+    hidden_size: int = 256
+
+    @property
+    def source(self) -> Path:
+        return REPO_ROOT / self.name / f"{self.name}.nim"
+
+    @property
+    def binary(self) -> Path:
+        return REPO_ROOT / self.name / self.name
+
+    @property
+    def compile_target(self) -> str:
+        return self.source.relative_to(REPO_ROOT).as_posix()
+
+
+ENV_SPECS: dict[str, EnvironmentSpec] = {
+    "asteroid_arena": EnvironmentSpec(name="asteroid_arena", default_episode_steps=96),
+    "big_adventure": EnvironmentSpec(name="big_adventure", metric_name="coins_collected", default_episode_steps=512),
+    "boundless_factory": EnvironmentSpec(name="boundless_factory", metric_name="factory_progress", default_episode_steps=1024),
+    "bubble_eats": EnvironmentSpec(name="bubble_eats"),
+    "fancy_cookout": EnvironmentSpec(name="fancy_cookout", metric_name="kitchen_progress", default_episode_steps=384),
+    "free_chat": EnvironmentSpec(name="free_chat", metric_name="messages_published", default_episode_steps=192),
+    "infinite_blocks": EnvironmentSpec(name="infinite_blocks", default_episode_steps=384),
+    "overworld": EnvironmentSpec(name="overworld", metric_name="villages_entered", default_episode_steps=384),
+    "planet_wars": EnvironmentSpec(name="planet_wars", default_episode_steps=96),
+    "tag": EnvironmentSpec(name="tag", default_episode_steps=384),
+}
+
+
+def list_env_names() -> list[str]:
+    return sorted(ENV_SPECS)
+
+
+def get_env_spec(spec: str | EnvironmentSpec) -> EnvironmentSpec:
+    if isinstance(spec, EnvironmentSpec):
+        return spec
+    try:
+        return ENV_SPECS[spec]
+    except KeyError as exc:
+        available = ", ".join(list_env_names())
+        raise KeyError(f"unknown BitWorld environment {spec!r}; expected one of: {available}") from exc
+
+
+def binary_is_fresh(spec: EnvironmentSpec) -> bool:
+    if not spec.binary.exists():
+        return False
+
+    newest_source = spec.source.stat().st_mtime
+    for shared_path in SHARED_NIM_SOURCES:
+        if shared_path.exists():
+            newest_source = max(newest_source, shared_path.stat().st_mtime)
+    return spec.binary.stat().st_mtime >= newest_source
+
+
+def ensure_bitworld_binary(spec: str | EnvironmentSpec) -> None:
+    resolved = get_env_spec(spec)
+    if binary_is_fresh(resolved):
         return
 
     subprocess.run(
-        ["nim", "c", "bubble_eats/bubble_eats.nim"],
+        ["nim", "c", resolved.compile_target],
         cwd=REPO_ROOT,
         check=True,
     )
+
+
+def ensure_bubble_eats_binary() -> None:
+    ensure_bitworld_binary("bubble_eats")
 
 
 def install_pufferlib_c_stub() -> None:
@@ -118,10 +200,10 @@ def parse_rl_frame(packet: bytes) -> tuple[np.ndarray, int, int]:
     if packet[2] != RL_VERSION:
         raise ValueError(f"unsupported RL version: {packet[2]}")
 
-    component_size = int(packet[3])
+    aux_value = int(packet[3])
     score = struct.unpack_from("<i", packet, 4)[0]
     frame = np.frombuffer(packet, dtype=np.uint8, count=FRAME_PIXELS, offset=RL_HEADER_BYTES).copy()
-    return frame, score, component_size
+    return frame, score, aux_value
 
 
 def flatten_logs(logs: dict, prefix: str = "") -> dict[str, float]:
@@ -142,8 +224,9 @@ class EpisodeStats:
     episode_return: float
 
 
-class BubbleEatsWorker:
-    def __init__(self, env_id: int, port: int, seed: int, fps: float) -> None:
+class BitWorldWorker:
+    def __init__(self, spec: str | EnvironmentSpec, env_id: int, port: int, seed: int, fps: float) -> None:
+        self.spec = get_env_spec(spec)
         self.env_id = env_id
         self.port = port
         self.seed = seed
@@ -151,27 +234,28 @@ class BubbleEatsWorker:
         self.process: subprocess.Popen[str] | None = None
         self.connection: ClientConnection | None = None
         self.log_file = None
+        self.base_score = 0
         self.score = 0
-        self.component_size = 1
+        self.aux_value = 0
         self.episode_return = 0.0
         self.episode_steps = 0
         self._start_server()
 
     def _start_server(self) -> None:
-        ensure_bubble_eats_binary()
+        ensure_bitworld_binary(self.spec)
         RUNLOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = RUNLOG_DIR / f"bubble_eats_env_{self.env_id}.log"
+        log_path = RUNLOG_DIR / f"{self.spec.name}_{self.env_id}.log"
         self.log_file = log_path.open("w")
         self.process = subprocess.Popen(
             [
-                str(BUBBLE_EATS_BINARY),
-                f"--address:127.0.0.1",
+                str(self.spec.binary),
+                "--address:127.0.0.1",
                 f"--port:{self.port}",
                 "--rl",
                 f"--fps:{self.fps}",
                 f"--seed:{self.seed}",
             ],
-            cwd=REPO_ROOT,
+            cwd=self.spec.binary.parent,
             stdout=self.log_file,
             stderr=subprocess.STDOUT,
             text=True,
@@ -200,9 +284,10 @@ class BubbleEatsWorker:
     def reset(self) -> np.ndarray:
         assert self.connection is not None
         self.connection.send(bytes([RL_RESET_MASK]), text=False)
-        frame, score, component_size = self._receive_packet()
+        frame, score, aux_value = self._receive_packet()
+        self.base_score = score
         self.score = score
-        self.component_size = component_size
+        self.aux_value = aux_value
         self.episode_return = 0.0
         self.episode_steps = 0
         return frame
@@ -210,10 +295,10 @@ class BubbleEatsWorker:
     def step(self, action_mask: int) -> tuple[np.ndarray, float]:
         assert self.connection is not None
         self.connection.send(bytes([action_mask]), text=False)
-        frame, score, component_size = self._receive_packet()
+        frame, score, aux_value = self._receive_packet()
         reward = float(score - self.score)
         self.score = score
-        self.component_size = component_size
+        self.aux_value = aux_value
         self.episode_return += reward
         self.episode_steps += 1
         return frame, reward
@@ -240,13 +325,14 @@ class BubbleEatsWorker:
             self.log_file = None
 
 
-class BubbleEatsVecEnv:
+class BitWorldVecEnv:
     gpu = False
     obs_dtype = "ByteTensor"
     num_atns = 1
 
     def __init__(
         self,
+        spec: str | EnvironmentSpec,
         num_envs: int,
         max_episode_steps: int,
         frame_stack: int = 4,
@@ -259,6 +345,7 @@ class BubbleEatsVecEnv:
         if frame_stack <= 0:
             raise ValueError("frame_stack must be positive")
 
+        self.spec = get_env_spec(spec)
         self.num_envs = num_envs
         self.total_agents = num_envs
         self.max_episode_steps = max_episode_steps
@@ -282,10 +369,16 @@ class BubbleEatsVecEnv:
         self._completed_returns: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
 
-        self.workers: list[BubbleEatsWorker] = []
+        self.workers: list[BitWorldWorker] = []
         for env_id in range(num_envs):
             port = base_port + env_id if base_port is not None else reserve_port()
-            worker = BubbleEatsWorker(env_id=env_id, port=port, seed=base_seed + env_id, fps=fps)
+            worker = BitWorldWorker(
+                spec=self.spec,
+                env_id=env_id,
+                port=port,
+                seed=base_seed + env_id,
+                fps=fps,
+            )
             self.workers.append(worker)
 
     def _push_frame(self, env_id: int, frame: np.ndarray) -> None:
@@ -314,12 +407,12 @@ class BubbleEatsVecEnv:
             if done:
                 completed.append(
                     EpisodeStats(
-                        score=float(worker.score),
+                        score=float(worker.score - worker.base_score),
                         length=worker.episode_steps,
                         episode_return=worker.episode_return,
                     )
                 )
-                self._completed_scores.append(float(worker.score))
+                self._completed_scores.append(float(worker.score - worker.base_score))
                 self._completed_lengths.append(float(worker.episode_steps))
                 self._completed_returns.append(worker.episode_return)
                 self._completed_episodes += 1
@@ -343,12 +436,15 @@ class BubbleEatsVecEnv:
         score = float(np.mean(self._completed_scores)) if self._completed_scores else 0.0
         episode_length = float(np.mean(self._completed_lengths)) if self._completed_lengths else 0.0
         episode_return = float(np.mean(self._completed_returns)) if self._completed_returns else 0.0
-        return {
+        logs = {
             "score": score,
             "episode_length": episode_length,
             "episode_return": episode_return,
             "n": float(self._completed_episodes),
         }
+        if self.spec.metric_name != "score":
+            logs[self.spec.metric_name] = score
+        return logs
 
     def render(self, env_id: int = 0) -> None:
         del env_id
@@ -358,7 +454,7 @@ class BubbleEatsVecEnv:
             worker.close()
 
 
-class BubbleEatsPolicy(nn.Module):
+class BitWorldPolicy(nn.Module):
     def __init__(self, frame_stack: int, action_count: int, hidden_size: int = 256) -> None:
         super().__init__()
         self.frame_stack = frame_stack
@@ -412,7 +508,37 @@ class BubbleEatsPolicy(nn.Module):
         return logits, values
 
 
+BubbleEatsPolicy = BitWorldPolicy
+
+
+class BubbleEatsWorker(BitWorldWorker):
+    def __init__(self, env_id: int, port: int, seed: int, fps: float) -> None:
+        super().__init__("bubble_eats", env_id=env_id, port=port, seed=seed, fps=fps)
+
+
+class BubbleEatsVecEnv(BitWorldVecEnv):
+    def __init__(
+        self,
+        num_envs: int,
+        max_episode_steps: int,
+        frame_stack: int = 4,
+        fps: float = 0.0,
+        base_seed: int = 73,
+        base_port: int | None = None,
+    ) -> None:
+        super().__init__(
+            "bubble_eats",
+            num_envs=num_envs,
+            max_episode_steps=max_episode_steps,
+            frame_stack=frame_stack,
+            fps=fps,
+            base_seed=base_seed,
+            base_port=base_port,
+        )
+
+
 def make_train_args(
+    spec: str | EnvironmentSpec,
     total_timesteps: int,
     learning_rate: float,
     num_envs: int,
@@ -422,8 +548,9 @@ def make_train_args(
     checkpoint_dir: Path,
     log_dir: Path,
 ) -> dict:
+    resolved = get_env_spec(spec)
     return {
-        "env_name": "bitworld_bubble_eats",
+        "env_name": f"bitworld_{resolved.name}",
         "rank": 0,
         "world_size": 1,
         "gpu_id": 0,
@@ -467,6 +594,7 @@ def make_train_args(
 
 
 def train_policy(
+    spec: str | EnvironmentSpec,
     num_envs: int,
     total_timesteps: int,
     max_episode_steps: int,
@@ -480,21 +608,24 @@ def train_policy(
     fps: float = 0.0,
     hidden_size: int = 256,
 ) -> dict:
+    resolved = get_env_spec(spec)
     PuffeRL = load_puffer_trainer()
     checkpoint_dir = model_path.parent / "checkpoints"
     log_dir = model_path.parent / "logs"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    vecenv = BubbleEatsVecEnv(
+    vecenv = BitWorldVecEnv(
+        spec=resolved,
         num_envs=num_envs,
         max_episode_steps=max_episode_steps,
         frame_stack=frame_stack,
         fps=fps,
         base_seed=seed,
     )
-    policy = BubbleEatsPolicy(frame_stack=frame_stack, action_count=vecenv.action_count, hidden_size=hidden_size)
+    policy = BitWorldPolicy(frame_stack=frame_stack, action_count=vecenv.action_count, hidden_size=hidden_size)
     args = make_train_args(
+        spec=resolved,
         total_timesteps=total_timesteps,
         learning_rate=learning_rate,
         num_envs=num_envs,
@@ -517,6 +648,7 @@ def train_policy(
             print(
                 json.dumps(
                     {
+                        "env": resolved.name,
                         "steps": int(flat_logs["agent_steps"]),
                         "sps": round(float(flat_logs["SPS"]), 2),
                         "score": round(float(flat_logs.get("env/score", 0.0)), 3),
@@ -531,6 +663,7 @@ def train_policy(
 
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
+        "env": resolved.name,
         "history": history,
     }
     metrics_path.write_text(json.dumps(summary, indent=2))
@@ -538,15 +671,19 @@ def train_policy(
 
 
 def evaluate_policy(
-    policy: BubbleEatsPolicy,
+    spec: str | EnvironmentSpec,
+    policy: BitWorldPolicy | None,
     episodes: int,
     max_episode_steps: int,
     frame_stack: int,
     seed: int,
     fps: float = 0.0,
     random_actions: bool = False,
+    sample_actions: bool = True,
 ) -> dict[str, float]:
-    vecenv = BubbleEatsVecEnv(
+    resolved = get_env_spec(spec)
+    vecenv = BitWorldVecEnv(
+        spec=resolved,
         num_envs=1,
         max_episode_steps=max_episode_steps,
         frame_stack=frame_stack,
@@ -563,9 +700,15 @@ def evaluate_policy(
             if random_actions:
                 action_indices = rng.integers(0, vecenv.action_count, size=(1,), dtype=np.int64)
             else:
+                if policy is None:
+                    raise ValueError("policy must be provided when random_actions is False")
                 with torch.no_grad():
                     logits, _, _ = policy.forward_eval(torch.from_numpy(vecenv._obs))
-                    action_indices = torch.argmax(logits, dim=-1).cpu().numpy()
+                    if sample_actions:
+                        probs = torch.softmax(logits, dim=-1)
+                        action_indices = torch.multinomial(probs, 1).squeeze(-1).cpu().numpy()
+                    else:
+                        action_indices = torch.argmax(logits, dim=-1).cpu().numpy()
             _, _, _, completed = vecenv.step_discrete(action_indices)
             for item in completed:
                 completed_scores.append(item.score)
@@ -573,9 +716,13 @@ def evaluate_policy(
     finally:
         vecenv.close()
 
-    return {
+    summary = {
         "episodes": float(episodes),
         "mean_score": float(np.mean(completed_scores)),
         "mean_return": float(np.mean(completed_returns)),
         "max_score": float(np.max(completed_scores)),
     }
+    if resolved.metric_name != "score":
+        summary[f"mean_{resolved.metric_name}"] = summary["mean_score"]
+        summary[f"max_{resolved.metric_name}"] = summary["max_score"]
+    return summary

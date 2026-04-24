@@ -1,6 +1,6 @@
 # Bit World PufferLib 4.0
 
-This directory wires `Bubble Eats` into the PufferLib 4.0 torch backend without depending on PufferLib's compiled C env stack.
+This directory wires BitWorld's Nim websocket games into the PufferLib 4.0 torch backend without depending on PufferLib's compiled C env stack.
 
 Why this shape:
 
@@ -11,13 +11,26 @@ Why this shape:
 
 ## What This Supports
 
-- `Bubble Eats` RL websocket mode at `ws://127.0.0.1:<port>/rl`
+- all current BitWorld environments through one shared Python vecenv / policy / trainer path
 - one-player-per-server training workers
-- true score-based reward from the server, not HUD OCR
+- true server-side reward metrics from the game, not HUD OCR
 - fast reset via a single-byte reset command
 - uncapped training mode with `--fps:0`
 - stacked 64x64 palette-index observations
 - direct training with `pufferlib.torch_pufferl.PuffeRL`
+
+Current environments and reward metrics:
+
+- `asteroid_arena`: `score`
+- `big_adventure`: `coins_collected`
+- `boundless_factory`: `factory_progress`
+- `bubble_eats`: `score`
+- `fancy_cookout`: `kitchen_progress`
+- `free_chat`: `messages_published`
+- `infinite_blocks`: `score`
+- `overworld`: `villages_entered`
+- `planet_wars`: `score`
+- `tag`: `score`
 
 ## Setup
 
@@ -36,28 +49,32 @@ source .venv-puffer/bin/activate
 python -m unittest tools/pufferlib/test_bubble_eats_env.py
 ```
 
+This smoke test now exercises the full environment registry, not just `bubble_eats`.
+
 ## Train
 
 ```bash
 source .venv-puffer/bin/activate
-python tools/pufferlib/train_bubble_eats.py \
+python tools/pufferlib/train_bitworld_env.py \
+  --env bubble_eats \
   --total-timesteps 50000 \
   --num-envs 8 \
-  --episode-steps 64 \
-  --horizon 64 \
-  --minibatch-size 512 \
   --fps 0
 ```
 
-Outputs land under `tools/runlogs/pufferlib_training/`.
+`train_bubble_eats.py` is still kept as a thin compatibility wrapper around the generic entrypoint.
+
+Outputs land under `tools/runlogs/<env>_pufferlib_training/` unless you override `--output-dir`.
 
 The training script saves:
 
-- `bubble_eats_policy.pt`
+- `<env>_policy.pt`
 - `train_metrics.json`
 - `eval_summary.json`
 
-Validated result on April 23, 2026 with the command above:
+The evaluation summary compares the trained policy against a random baseline using sampled policy actions. This matches the way PPO policies are actually rolled out during training and avoids the false regressions caused by forcing greedy `argmax` on stochastic policies.
+
+Representative validated result on April 23, 2026 for `bubble_eats` with a 50k-step run:
 
 - trained policy: `mean_score = 1.18` over 100 held-out episodes
 - random baseline: `mean_score = 0.38` over 100 held-out episodes
@@ -67,4 +84,4 @@ Validated result on April 23, 2026 with the command above:
 - The Nim server now supports `--rl`, `--fps:<float>`, and `--seed:<int>`.
 - RL mode sends unpacked `64 x 64` palette-index frames plus score metadata.
 - RL mode steps synchronously per action/reset message so reward accounting stays aligned across episode resets.
-- The current integration is intentionally scoped to `Bubble Eats` because it has dense reward and is the easiest Bit World slice to validate with end-to-end learning.
+- Some environments use shaped progress metrics instead of raw HUD score because their native score is too sparse for single-agent PPO to learn reliably within practical episode lengths.
