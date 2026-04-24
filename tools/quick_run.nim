@@ -7,8 +7,8 @@ const
   PollIntervalMs = 100
   RandomPortMin = 5000
   RandomPortMax = 10000
-  ClientScreenOnlyWidth = 512
-  ClientScreenOnlyHeight = 512
+  ClientScreenOnlyWidth = 384
+  ClientScreenOnlyHeight = 384
   ClientWindowMargin = 50
   MaxPlayers = 6
 

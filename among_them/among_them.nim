@@ -11,10 +11,10 @@ const
   SpriteDrawOffX = 1
   SpriteDrawOffY = 4
   MotionScale = 256
-  Accel = 38
+  Accel = 76
   FrictionNum = 200
   FrictionDen = 256
-  MaxSpeed = 352
+  MaxSpeed = 704
   StopThreshold = 8
   TargetFps = 24.0
   SpaceColor = 0'u8

@@ -1,5 +1,5 @@
-import paddy, pixie, protocol, server, silky, whisky, windy
-import std/[math, monotimes, options, os, parseopt, strutils, times, locks]
+import paddy, pixie, protocol, server, silky, windy
+import std/[math, monotimes, options, os, parseopt, strutils, times]
 
 const
   AtlasPath = "dist/atlas.png"
@@ -10,6 +10,8 @@ const
   ScreenshotScalePower = 2
   WebSocketPath = "/ws"
   MinimumSplashMilliseconds = 1500'i64
+  ReconnectDelayMilliseconds = 250'i64
+  NetworkPollPasses = 8
   LayoutScale = 2
   PressOffset = LayoutScale.float32
 
@@ -30,8 +32,8 @@ const
   ScreenY = 67 * LayoutScale
   ScreenW = 200 * LayoutScale
   ScreenH = 200 * LayoutScale
-  ScreenOnlyW = ScreenWidth * 4
-  ScreenOnlyH = ScreenHeight * 4
+  ScreenOnlyW = ScreenWidth * 3
+  ScreenOnlyH = ScreenHeight * 3
 
   TopButtonY = 17 * LayoutScale
   TopButtonXs = [
@@ -91,20 +93,18 @@ type
     editingMessage: string
     knownMessageValid: bool
 
-  NetworkShared = object
-    lock: Lock
+  NetworkState = object
+    ws: WebSocketHandle
+    url: string
     desiredMask: uint8
+    lastSentMask: uint8
     latestFrame: seq[uint8]
     frameSerial: uint64
     connected: bool
+    connecting: bool
     hasFrame: bool
-    stop: bool
-    reconnectRequested: bool
+    lastConnectAttemptAt: MonoTime
     errorMessage: string
-
-  NetworkThreadArgs = object
-    shared: ptr NetworkShared
-    url: string
 
   ClientApp* = ref object
     window*: Window
@@ -116,8 +116,7 @@ type
     shell*: ShellVisualState
     splashStartedAt: MonoTime
     selectedGamepadIndex: int
-    network: NetworkShared
-    networkThread: Thread[NetworkThreadArgs]
+    network: NetworkState
     textAssist: TextAssistState
 
 proc pointInRect(x, y, rx, ry, rw, rh: int): bool =
@@ -416,76 +415,57 @@ proc sampleColor(index: uint8): ColorRGBX =
   let swatch = Palette[index.int]
   rgbx(swatch.r, swatch.g, swatch.b, swatch.a)
 
-proc networkThreadProc(args: NetworkThreadArgs) {.thread.} =
-  while true:
-    {.gcsafe.}:
-      withLock args.shared[].lock:
-        if args.shared[].stop:
-          return
+proc connectNetwork(client: ClientApp) =
+  client.network.connected = false
+  client.network.connecting = true
+  client.network.hasFrame = false
+  client.network.errorMessage = ""
+  client.network.lastSentMask = 0xFF'u8
+  client.network.lastConnectAttemptAt = getMonoTime()
 
-    try:
-      let ws = newWebSocket(args.url)
-      var lastSentMask = 0xFF'u8
-      {.gcsafe.}:
-        withLock args.shared[].lock:
-          args.shared[].connected = true
-          args.shared[].hasFrame = false
-          args.shared[].errorMessage = ""
+  let ws = openWebSocket(client.network.url, noDelay = true)
+  client.network.ws = ws
 
-      while true:
-        var
-          desiredMask: uint8
-          shouldStop: bool
-          shouldReconnect: bool
-        {.gcsafe.}:
-          withLock args.shared[].lock:
-            desiredMask = args.shared[].desiredMask
-            shouldStop = args.shared[].stop
-            shouldReconnect = args.shared[].reconnectRequested
-            if shouldReconnect:
-              args.shared[].reconnectRequested = false
-        if shouldStop:
-          ws.close()
-          return
-        if shouldReconnect:
-          {.gcsafe.}:
-            withLock args.shared[].lock:
-              args.shared[].connected = false
-              args.shared[].hasFrame = false
-          try:
-            ws.close()
-          except CatchableError:
-            discard
-          sleep(500)
-          break
+  ws.onOpen = proc() =
+    if client.network.ws != ws:
+      return
+    client.network.connected = true
+    client.network.connecting = false
+    client.network.hasFrame = false
+    client.network.errorMessage = ""
+    client.network.lastSentMask = 0xFF'u8
 
-        if desiredMask != lastSentMask:
-          ws.send(blobFromMask(desiredMask), BinaryMessage)
-          lastSentMask = desiredMask
+  ws.onMessage = proc(msg: string, kind: WebSocketMessageKind) =
+    if client.network.ws != ws:
+      return
+    if kind == BinaryMessage and msg.len == ProtocolBytes:
+      blobToBytes(msg, client.network.latestFrame)
+      client.network.hasFrame = true
+      inc client.network.frameSerial
 
-        let message = ws.receiveMessage(10)
-        if message.isSome:
-          case message.get.kind
-          of BinaryMessage:
-            if message.get.data.len == ProtocolBytes:
-              {.gcsafe.}:
-                withLock args.shared[].lock:
-                  blobToBytes(message.get.data, args.shared[].latestFrame)
-                  args.shared[].hasFrame = true
-                  inc args.shared[].frameSerial
-          of Ping:
-            ws.send(message.get.data, Pong)
-          of TextMessage, Pong:
-            discard
-    except Exception as e:
-      {.gcsafe.}:
-        withLock args.shared[].lock:
-          args.shared[].connected = false
-          args.shared[].hasFrame = false
-          args.shared[].errorMessage = e.msg
-          if args.shared[].stop:
-            return
-      sleep(250)
+  ws.onError = proc(msg: string) =
+    if client.network.ws != ws:
+      return
+    client.network.connected = false
+    client.network.connecting = false
+    client.network.hasFrame = false
+    client.network.errorMessage = msg
+
+  ws.onClose = proc() =
+    if client.network.ws != ws:
+      return
+    client.network.connected = false
+    client.network.connecting = false
+    client.network.hasFrame = false
+
+proc reconnectNetwork(client: ClientApp) =
+  client.network.ws.close()
+  client.connectNetwork()
+
+proc pollNetwork() =
+  ## Pumps Windy network callbacks enough to avoid stale frame buildup.
+  for i in 0 ..< NetworkPollPasses:
+    pollHttp()
 
 proc initClient*(
   host = DefaultHost,
@@ -532,17 +512,12 @@ proc initClient*(
   if clientOptions.windowPos.isSome:
     result.window.pos = clientOptions.windowPos.get
 
-  initLock(result.network.lock)
   result.network.latestFrame = newSeq[uint8](ProtocolBytes)
-  let url = "ws://" & host & ":" & $port & WebSocketPath
-  createThread(result.networkThread, networkThreadProc, NetworkThreadArgs(shared: result.network.addr, url: url))
+  result.network.url = "ws://" & host & ":" & $port & WebSocketPath
+  result.connectNetwork()
 
 proc shutdownClient(client: ClientApp) =
-  {.gcsafe.}:
-    withLock client.network.lock:
-      client.network.stop = true
-  joinThread(client.networkThread)
-  deinitLock(client.network.lock)
+  client.network.ws.close()
 
 proc captureInputMask*(client: ClientApp): uint8 =
   let down = client.window.buttonDown
@@ -550,10 +525,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
   let mouse = client.silky.mousePos
   let mouseDown = down[MouseLeft]
   let mousePressed = pressed[MouseLeft]
-  var currentFrameSerial: uint64
-  {.gcsafe.}:
-    withLock client.network.lock:
-      currentFrameSerial = client.network.frameSerial
+  let currentFrameSerial = client.network.frameSerial
   var input: InputState
   client.shell = ShellVisualState()
 
@@ -693,10 +665,7 @@ proc captureInputMask*(client: ClientApp): uint8 =
     client.shell.topPressed[i] = client.shell.topPressed[i] or i == client.selectedGamepadIndex
   if reconnectPressed:
     client.splashStartedAt = getMonoTime()
-    {.gcsafe.}:
-      withLock client.network.lock:
-        client.network.hasFrame = false
-        client.network.reconnectRequested = true
+    client.reconnectNetwork()
   result = encodeInputMask(input)
 
 proc drawShellUi(client: ClientApp) =
@@ -728,9 +697,17 @@ proc drawShellUi(client: ClientApp) =
   )
 
 proc tickNetwork(client: ClientApp, inputMask: uint8) =
-  {.gcsafe.}:
-    withLock client.network.lock:
-      client.network.desiredMask = inputMask
+  client.network.desiredMask = inputMask
+  if not client.network.connected:
+    let elapsed =
+      (getMonoTime() - client.network.lastConnectAttemptAt).inMilliseconds
+    if not client.network.connecting and elapsed >= ReconnectDelayMilliseconds:
+      client.connectNetwork()
+    return
+  if inputMask == client.network.lastSentMask:
+    return
+  client.network.ws.send(blobFromMask(inputMask), BinaryMessage)
+  client.network.lastSentMask = inputMask
 
 proc shouldShowSplash(client: ClientApp, connected, hasFrame: bool): bool =
   (getMonoTime() - client.splashStartedAt).inMilliseconds < MinimumSplashMilliseconds or
@@ -740,14 +717,10 @@ proc shouldShowSplash(client: ClientApp, connected, hasFrame: bool): bool =
 proc drawFramebuffer*(client: ClientApp) =
   var
     packed = newSeq[uint8](ProtocolBytes)
-    connected: bool
-    hasFrame: bool
-  {.gcsafe.}:
-    withLock client.network.lock:
-      connected = client.network.connected
-      hasFrame = client.network.hasFrame
-      if client.network.latestFrame.len == ProtocolBytes:
-        packed = client.network.latestFrame
+    connected = client.network.connected
+    hasFrame = client.network.hasFrame
+  if client.network.latestFrame.len == ProtocolBytes:
+    packed = client.network.latestFrame
   let showSplash = client.shouldShowSplash(connected, hasFrame)
   if not showSplash:
     unpack4bpp(packed, client.unpacked)
@@ -822,11 +795,13 @@ proc runClientLoop*(
 
   while client.windowOpen:
     pollEvents()
+    pollNetwork()
     if client.window.buttonPressed[KeyEscape]:
       client.window.closeRequested = true
 
     let inputMask = client.captureInputMask()
     client.tickNetwork(inputMask)
+    pollNetwork()
     client.drawFramebuffer()
     runFrameLimiter(lastTick)
 

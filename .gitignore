@@ -12,3 +12,4 @@ tmp/
 client/screenshots/
 *.log
 tools/quick_run.nim
+.DS_Store

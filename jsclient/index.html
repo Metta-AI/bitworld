@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bit World</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+body{display:flex;align-items:center;justify-content:center}
+canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+</style>
+</head>
+<body>
+<canvas id="c" width="128" height="128"></canvas>
+<script>
+let c=document.getElementById("c"),x=c.getContext("2d"),d=x.createImageData(128,128),
+p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255],
+k={},l=255,w,u=new URL(location.href),a=u.searchParams.get("address")||"ws://localhost:8080/ws",
+g=(u.searchParams.get("joystick")|0)-1;
+x.imageSmoothingEnabled=false;
+onresize=e=>{let s=Math.min(innerWidth,innerHeight);c.style.width=s+"px";c.style.height=s+"px"};
+onresize();
+onkeydown=e=>{k[e.code]=1};
+onkeyup=e=>{k[e.code]=0};
+w=new WebSocket(a);
+w.binaryType="arraybuffer";
+w.onmessage=e=>{
+  let b=new Uint8Array(e.data),q=d.data,j=0,n,o;
+  if(b.length!=8192)return;
+  for(let i=0;i<8192;i++){
+    n=b[i];o=(n&15)*4;
+    q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+    o=(n>>4)*4;
+    q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+  }
+  x.putImageData(d,0,0);
+};
+requestAnimationFrame(function f(){
+  let r=navigator.getGamepads?navigator.getGamepads():[],o=g<0?0:g,b=r[o],h=0,
+  lx=b?b.axes[0]||0:0,ly=b?b.axes[1]||0:0,t=.35;
+  h|=k.ArrowUp||k.KeyW||b&&(b.buttons[12]?.pressed||ly<=-t)?1:0;
+  h|=k.ArrowDown||k.KeyS||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
+  h|=k.ArrowLeft||k.KeyA||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
+  h|=k.ArrowRight||k.KeyD||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
+  h|=k.Space||b&&b.buttons[9]?.pressed?16:0;
+  h|=k.KeyZ||k.KeyJ||b&&b.buttons[0]?.pressed?32:0;
+  h|=k.KeyX||k.KeyK||b&&b.buttons[1]?.pressed?64:0;
+  if(w.readyState==1&&h!=l){w.send(new Uint8Array([h]));l=h}
+  requestAnimationFrame(f);
+});
+</script>
+</body>
+</html>
