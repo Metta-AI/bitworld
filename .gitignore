@@ -10,3 +10,4 @@ tests/test.js
 tools/runlogs
 client/screenshots/
 *.log
+tools/quick_run.nim

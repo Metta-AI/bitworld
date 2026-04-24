@@ -1,6 +1,6 @@
 import mummy, pixie
 import protocol, server
-import std/[locks, math, monotimes, os, parseopt, strutils, tables, times]
+import std/[locks, math, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
   MapWidth = 476
@@ -28,6 +28,17 @@ const
   TaskBarY = -3
   ProgressEmpty = 1'u8
   ProgressFilled = 10'u8
+  ReportRange = 10
+  VoteResultTicks = 72
+  MinPlayers = 5
+  VoteTimerTicks = 240
+  GameOverTicks = 360
+  TasksPerPlayer = 4
+  ShowTaskArrows = true
+  ButtonX = 262
+  ButtonY = 57
+  ButtonW = 14
+  ButtonH = 17
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
   ShadowMap = [
     0'u8,  #  0 black       -> black
@@ -53,6 +64,20 @@ type
   PlayerRole = enum
     Crewmate
     Imposter
+
+  GamePhase = enum
+    Lobby
+    Playing
+    Voting
+    VoteResult
+    GameOver
+
+  VoteState = object
+    votes: seq[int]
+    cursor: seq[int]
+    resultTimer: int
+    voteTimer: int
+    ejectedPlayer: int
 
   TaskStation = object
     name: string
@@ -81,6 +106,7 @@ type
     taskProgress: int
     activeTask: int
     ventCooldown: int
+    assignedTasks: seq[int]
 
   SimServer = object
     players: seq[Player]
@@ -90,6 +116,7 @@ type
     boneSprite: Sprite
     killButtonSprite: Sprite
     taskIconSprite: Sprite
+    ghostSprite: Sprite
     tasks: seq[TaskStation]
     vents: seq[Vent]
     mapPixels: seq[uint8]
@@ -99,6 +126,13 @@ type
     shadowBuf: seq[bool]
     nextJoinOrder: int
     tickCount: int
+    phase: GamePhase
+    voteState: VoteState
+    letterSprites: seq[Sprite]
+    digitSprites: array[10, Sprite]
+    winner: PlayerRole
+    gameOverTimer: int
+    needsReregister: bool
 
   WebSocketAppState = object
     lock: Lock
@@ -106,18 +140,12 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     closedSockets: seq[WebSocket]
+    spectators: seq[WebSocket]
 
   ServerThreadArgs = object
     server: ptr Server
     address: string
     port: int
-
-proc isImposterByJoinOrder(joinOrder: int): bool =
-  if joinOrder == 1:
-    return true
-  if joinOrder >= 5 and (joinOrder - 1) mod 5 == 0:
-    return true
-  false
 
 proc clientDataDir(): string =
   getCurrentDir() / ".." / "client" / "data"
@@ -154,12 +182,11 @@ proc addPlayer(sim: var SimServer): int =
   let
     spawn = sim.findSpawn()
     order = sim.nextJoinOrder
-    role = if isImposterByJoinOrder(order): Imposter else: Crewmate
   inc sim.nextJoinOrder
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
-    role: role,
+    role: Crewmate,
     alive: true,
     killCooldown: KillCooldownTicks,
     joinOrder: order,
@@ -169,6 +196,26 @@ proc addPlayer(sim: var SimServer): int =
   for task in sim.tasks.mitems:
     task.completed.add(false)
   sim.players.high
+
+proc hasTask(player: Player, taskIdx: int): bool =
+  for t in player.assignedTasks:
+    if t == taskIdx:
+      return true
+  false
+
+proc startGame(sim: var SimServer) =
+  randomize()
+  let impIdx = rand(sim.players.len - 1)
+  sim.players[impIdx].role = Imposter
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].role == Imposter:
+      continue
+    var indices: seq[int] = @[]
+    for t in 0 ..< sim.tasks.len:
+      indices.add(t)
+    shuffle(indices)
+    sim.players[i].assignedTasks = indices[0 ..< min(TasksPerPlayer, indices.len)]
+  sim.phase = Playing
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -280,10 +327,122 @@ proc tryVent(sim: var SimServer, playerIndex: int) =
         sim.players[playerIndex].ventCooldown = 30
       return
 
-proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
+proc startVote(sim: var SimServer) =
+  sim.phase = Voting
+  let n = sim.players.len
+  sim.voteState.votes = newSeq[int](n)
+  sim.voteState.cursor = newSeq[int](n)
+  sim.voteState.voteTimer = VoteTimerTicks
+  for i in 0 ..< n:
+    sim.voteState.votes[i] = -1
+    var firstAlive = 0
+    for j in 0 ..< n:
+      if sim.players[j].alive:
+        firstAlive = j
+        break
+    sim.voteState.cursor[i] = firstAlive
+
+proc tryReport(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
+  if sim.phase != Playing:
+    return
+  let p = sim.players[reporterIndex]
+  if not p.alive:
+    return
+  let
+    px = p.x + CollisionW div 2
+    py = p.y + CollisionH div 2
+    rangeSq = ReportRange * ReportRange
+  for bi in 0 ..< bodyLimit:
+    let body = sim.bodies[bi]
+    let
+      bx = body.x + CollisionW div 2
+      by = body.y + CollisionH div 2
+    if distSq(px, py, bx, by) <= rangeSq:
+      sim.startVote()
+      return
+
+proc tryCallButton(sim: var SimServer, callerIndex: int) =
+  if sim.phase != Playing:
+    return
+  let p = sim.players[callerIndex]
+  if not p.alive:
+    return
+  let
+    px = p.x + CollisionW div 2
+    py = p.y + CollisionH div 2
+  if px >= ButtonX and px < ButtonX + ButtonW and
+      py >= ButtonY and py < ButtonY + ButtonH:
+    sim.startVote()
+
+proc applyGhostMovement(sim: var SimServer, playerIndex: int, input: InputState) =
+  template player: untyped = sim.players[playerIndex]
+  var inputX = 0
+  var inputY = 0
+  if input.left: inputX -= 1
+  if input.right: inputX += 1
+  if input.up: inputY -= 1
+  if input.down: inputY += 1
+
+  if inputX != 0:
+    player.velX = clamp(player.velX + inputX * Accel, -MaxSpeed, MaxSpeed)
+  else:
+    player.velX = (player.velX * FrictionNum) div FrictionDen
+    if abs(player.velX) < StopThreshold: player.velX = 0
+
+  if inputY != 0:
+    player.velY = clamp(player.velY + inputY * Accel, -MaxSpeed, MaxSpeed)
+  else:
+    player.velY = (player.velY * FrictionNum) div FrictionDen
+    if abs(player.velY) < StopThreshold: player.velY = 0
+
+  if inputX < 0: player.flipH = true
+  elif inputX > 0: player.flipH = false
+
+  player.carryX += player.velX
+  while abs(player.carryX) >= MotionScale:
+    let step = if player.carryX < 0: -1 else: 1
+    player.x += step
+    player.carryX -= step * MotionScale
+  player.carryY += player.velY
+  while abs(player.carryY) >= MotionScale:
+    let step = if player.carryY < 0: -1 else: 1
+    player.y += step
+    player.carryY -= step * MotionScale
+
+  if player.role == Crewmate and input.attack:
+    let
+      px = player.x + CollisionW div 2
+      py = player.y + CollisionH div 2
+    var inTask = -1
+    for t in 0 ..< sim.tasks.len:
+      if not player.hasTask(t): continue
+      let task = sim.tasks[t]
+      if playerIndex < task.completed.len and task.completed[playerIndex]: continue
+      if px >= task.x and px < task.x + task.w and
+          py >= task.y and py < task.y + task.h:
+        inTask = t
+        break
+    if inTask >= 0 and inputX == 0 and inputY == 0:
+      if player.activeTask != inTask:
+        player.activeTask = inTask
+        player.taskProgress = 0
+      inc player.taskProgress
+      if player.taskProgress >= TaskCompleteTicks:
+        sim.tasks[inTask].completed[playerIndex] = true
+        player.activeTask = -1
+        player.taskProgress = 0
+    else:
+      player.activeTask = -1
+      player.taskProgress = 0
+  else:
+    player.activeTask = -1
+    player.taskProgress = 0
+
+proc applyInput(sim: var SimServer, playerIndex: int, input: InputState, prevInput: InputState, bodiesBeforeTick: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if not sim.players[playerIndex].alive:
+    sim.applyGhostMovement(playerIndex, input)
     return
   template player: untyped = sim.players[playerIndex]
 
@@ -326,14 +485,25 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
       sim.tryVent(playerIndex)
 
   if input.attack:
+    let freshA = input.attack and not prevInput.attack
+    if freshA:
+      sim.tryReport(playerIndex, bodiesBeforeTick)
+      if sim.phase == Voting:
+        return
+      sim.tryCallButton(playerIndex)
+      if sim.phase == Voting:
+        return
     if player.role == Imposter:
-      sim.tryKill(playerIndex)
+      if freshA:
+        sim.tryKill(playerIndex)
     elif player.role == Crewmate:
       let
         px = player.x + CollisionW div 2
         py = player.y + CollisionH div 2
       var inTask = -1
       for t in 0 ..< sim.tasks.len:
+        if not player.hasTask(t):
+          continue
         let task = sim.tasks[t]
         if playerIndex < task.completed.len and task.completed[playerIndex]:
           continue
@@ -454,7 +624,254 @@ proc castShadows(sim: var SimServer, originMx, originMy, cameraX, cameraY: int) 
       if shadowed:
         sim.shadowBuf[sy * ScreenWidth + sx] = true
 
+proc allVotesCast(sim: SimServer): bool =
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].alive and sim.voteState.votes[i] == -1:
+      return false
+  true
+
+proc tallyVotes(sim: var SimServer) =
+  var counts = newSeq[int](sim.players.len)
+  var skipCount = 0
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].alive:
+      let v = sim.voteState.votes[i]
+      if v >= 0 and v < counts.len:
+        inc counts[v]
+      elif v == -2 or v == -1:
+        inc skipCount
+  var maxVotes = skipCount
+  var maxPlayer = -1
+  var tied = false
+  for i in 0 ..< counts.len:
+    if counts[i] > maxVotes:
+      maxVotes = counts[i]
+      maxPlayer = i
+      tied = false
+    elif counts[i] == maxVotes and counts[i] > 0:
+      tied = true
+  if tied or maxVotes == 0:
+    sim.voteState.ejectedPlayer = -1
+  else:
+    sim.voteState.ejectedPlayer = maxPlayer
+  sim.phase = VoteResult
+  sim.voteState.resultTimer = VoteResultTicks
+
+proc applyVoteResult(sim: var SimServer) =
+  let ej = sim.voteState.ejectedPlayer
+  if ej >= 0 and ej < sim.players.len:
+    sim.players[ej].alive = false
+  sim.bodies.setLen(0)
+  sim.phase = Playing
+
+proc moveCursor(sim: var SimServer, playerIndex: int, delta: int) =
+  let n = sim.players.len
+  if n == 0:
+    return
+  let total = n + 1
+  var cur = sim.voteState.cursor[playerIndex]
+  for step in 1 .. total:
+    cur = (cur + delta + total) mod total
+    if cur == n or sim.players[cur].alive:
+      break
+  sim.voteState.cursor[playerIndex] = cur
+
+proc buildLobbyFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.fb.clearFrame(0)
+  let n = sim.players.len
+  let needed = max(0, MinPlayers - n)
+  sim.fb.blitText(sim.letterSprites, "WAITING", 11, 4)
+  if needed > 0:
+    sim.fb.blitText(sim.letterSprites, "NEED MORE!", 2, 14)
+  else:
+    sim.fb.blitText(sim.letterSprites, "READY!", 14, 14)
+  let startY = 26
+  for i in 0 ..< n:
+    let
+      col = i mod 6
+      row = i div 6
+      sx = 5 + col * 9
+      sy = startY + row * 9
+    sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[i].color, false)
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
+proc buildSpectatorFrame(sim: var SimServer): seq[uint8] =
+  sim.fb.clearFrame(0)
+  sim.fb.blitText(sim.letterSprites, "GAME IN", 11, 22)
+  sim.fb.blitText(sim.letterSprites, "PROGRESS", 8, 32)
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
+proc buildVoteFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.fb.clearFrame(0)
+  let n = sim.players.len
+  if n == 0:
+    sim.fb.packFramebuffer()
+    return sim.fb.packed
+  let
+    cellW = 10
+    cellH = 10
+    cols = min(n, ScreenWidth div cellW)
+    rows = (n + cols - 1) div cols
+    totalW = cols * cellW
+    totalH = rows * cellH + 8
+    startX = (ScreenWidth - totalW) div 2
+    startY = (ScreenHeight - totalH) div 2
+
+  for idx in 0 ..< n:
+    let
+      pi = idx
+      col = idx mod cols
+      row = idx div cols
+      cx = startX + col * cellW
+      cy = startY + row * cellH
+    if sim.players[pi].alive:
+      sim.fb.blitSpriteOutlined(sim.playerSprite, cx + 2, cy, sim.players[pi].color, false)
+    else:
+      sim.fb.blitSpriteTintAll(sim.playerSprite, cx + 2, cy, 1'u8)
+      sim.fb.blitText(sim.letterSprites, "X", cx + 2, cy)
+    if pi == playerIndex:
+      sim.fb.putPixel(cx + 4, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + 5, cy - 2, sim.players[pi].color)
+    if sim.players[pi].alive and
+        playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
+        sim.voteState.cursor[playerIndex] == pi:
+      for bx in 0 ..< cellW:
+        sim.fb.putPixel(cx + bx, cy - 1, 2'u8)
+        sim.fb.putPixel(cx + bx, cy + cellH - 2, 2'u8)
+      for by in 0 ..< cellH:
+        sim.fb.putPixel(cx, cy + by - 1, 2'u8)
+        sim.fb.putPixel(cx + cellW - 1, cy + by - 1, 2'u8)
+    var voterRow = 0
+    for vi in 0 ..< n:
+      if sim.voteState.votes[vi] == pi:
+        let
+          dotX = cx + 1 + (voterRow mod 4) * 2
+          dotY = cy + 7 + (voterRow div 4) * 2
+        sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
+        sim.fb.putPixel(dotX + 1, dotY, sim.players[vi].color)
+        sim.fb.putPixel(dotX, dotY + 1, sim.players[vi].color)
+        sim.fb.putPixel(dotX + 1, dotY + 1, sim.players[vi].color)
+        inc voterRow
+
+  let skipY = startY + rows * cellH + 1
+  let skipW = 24
+  let skipX = (ScreenWidth - skipW) div 2
+  sim.fb.blitText(sim.letterSprites, "SKIP", skipX, skipY)
+  if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
+      sim.voteState.cursor[playerIndex] == n:
+    for bx in 0 ..< skipW:
+      sim.fb.putPixel(skipX + bx, skipY - 1, 2'u8)
+      sim.fb.putPixel(skipX + bx, skipY + 6, 2'u8)
+    for by in 0 ..< 8:
+      sim.fb.putPixel(skipX - 1, skipY + by - 1, 2'u8)
+      sim.fb.putPixel(skipX + skipW, skipY + by - 1, 2'u8)
+  var skipVoterRow = 0
+  for vi in 0 ..< n:
+    if sim.voteState.votes[vi] == -2:
+      let
+        dotX = skipX + skipW + 2 + (skipVoterRow mod 4) * 2
+        dotY = skipY + (skipVoterRow div 4) * 2
+      sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
+      sim.fb.putPixel(dotX + 1, dotY, sim.players[vi].color)
+      sim.fb.putPixel(dotX, dotY + 1, sim.players[vi].color)
+      sim.fb.putPixel(dotX + 1, dotY + 1, sim.players[vi].color)
+      inc skipVoterRow
+
+  let
+    barY = ScreenHeight - 2
+    barW = ScreenWidth - 4
+    filled = sim.voteState.voteTimer * barW div VoteTimerTicks
+  for bx in 0 ..< barW:
+    let c = if bx < filled: 10'u8 else: 1'u8
+    sim.fb.putPixel(2 + bx, barY, c)
+    sim.fb.putPixel(2 + bx, barY + 1, c)
+
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
+proc buildResultFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.fb.clearFrame(0)
+  let ej = sim.voteState.ejectedPlayer
+  if ej >= 0 and ej < sim.players.len:
+    let
+      sx = ScreenWidth div 2 - SpriteSize div 2
+      sy = ScreenHeight div 2 - SpriteSize div 2
+    sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[ej].color, false)
+  else:
+    sim.fb.blitText(sim.letterSprites, "NO ONE", 14, 24)
+    sim.fb.blitText(sim.letterSprites, "DIED", 20, 34)
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
+proc totalTasksRemaining(sim: SimServer): int =
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].role != Crewmate:
+      continue
+    for t in sim.players[i].assignedTasks:
+      if t < sim.tasks.len and i < sim.tasks[t].completed.len and
+          not sim.tasks[t].completed[i]:
+        inc result
+
+proc allTasksDone(sim: SimServer): bool =
+  sim.totalTasksRemaining() == 0
+
+proc checkWinCondition(sim: var SimServer) =
+  var aliveCrewmates = 0
+  var aliveImposters = 0
+  for p in sim.players:
+    if p.alive:
+      if p.role == Crewmate:
+        inc aliveCrewmates
+      else:
+        inc aliveImposters
+  if aliveImposters == 0 and sim.players.len > 0:
+    sim.phase = GameOver
+    sim.winner = Crewmate
+    sim.gameOverTimer = GameOverTicks
+  elif aliveImposters >= aliveCrewmates and sim.players.len > 0:
+    sim.phase = GameOver
+    sim.winner = Imposter
+    sim.gameOverTimer = GameOverTicks
+  elif sim.allTasksDone() and sim.players.len > 0:
+    sim.phase = GameOver
+    sim.winner = Crewmate
+    sim.gameOverTimer = GameOverTicks
+
+proc buildGameOverFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.fb.clearFrame(0)
+  let title =
+    if sim.winner == Crewmate: "CREW WINS"
+    else: "IMPS WIN"
+  let titleW = title.len * 6
+  let titleX = (ScreenWidth - titleW) div 2
+  sim.fb.blitText(sim.letterSprites, title, titleX, 2)
+  let n = sim.players.len
+  let rowH = 8
+  let startY = 12
+  for i in 0 ..< n:
+    let
+      p = sim.players[i]
+      y = startY + i * rowH
+      roleStr = if p.role == Imposter: "IMP" else: "CREW"
+    sim.fb.blitSpriteOutlined(sim.playerSprite, 2, y, p.color, false)
+    sim.fb.blitText(sim.letterSprites, roleStr, 10, y)
+    if not p.alive:
+      for lx in 10 ..< 10 + roleStr.len * 6:
+        sim.fb.putPixel(lx, y + 3, 3'u8)
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
 proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+  if sim.phase == Lobby:
+    return sim.buildLobbyFrame(playerIndex)
+  if sim.phase == GameOver:
+    return sim.buildGameOverFrame(playerIndex)
+  if sim.phase == Voting:
+    return sim.buildVoteFrame(playerIndex)
+  if sim.phase == VoteResult:
+    return sim.buildResultFrame(playerIndex)
   sim.fb.clearFrame(SpaceColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     sim.fb.packFramebuffer()
@@ -486,15 +903,17 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
         sim.fb.putPixel(x, y, sim.mapPixels[mapIndex(mx, my)])
 
   let
+    viewerIsGhost = not player.alive
     originMx = player.x + CollisionW div 2
     originMy = player.y + CollisionH div 2
   sim.castShadows(originMx, originMy, cameraX, cameraY)
 
-  for sy in 0 ..< ScreenHeight:
-    for sx in 0 ..< ScreenWidth:
-      if sim.shadowBuf[sy * ScreenWidth + sx]:
-        let idx = sy * ScreenWidth + sx
-        sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
+  if not viewerIsGhost:
+    for sy in 0 ..< ScreenHeight:
+      for sx in 0 ..< ScreenWidth:
+        if sim.shadowBuf[sy * ScreenWidth + sx]:
+          let idx = sy * ScreenWidth + sx
+          sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
 
   for body in sim.bodies:
     let
@@ -504,7 +923,7 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
       bcy = body.y + CollisionH div 2 - cameraY
     if bcx < 0 or bcx >= ScreenWidth or bcy < 0 or bcy >= ScreenHeight:
       continue
-    if sim.shadowBuf[bcy * ScreenWidth + bcx]:
+    if not viewerIsGhost and sim.shadowBuf[bcy * ScreenWidth + bcx]:
       continue
     for y in -1 .. sim.bodySprite.height:
       for x in -1 .. sim.bodySprite.width:
@@ -529,25 +948,39 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
     sim.fb.blitSpriteTintAll(sim.bodySprite, bsx, bsy, body.color)
     sim.fb.blitSpriteRaw(sim.boneSprite, bsx, bsy)
 
+  var drawOrder = newSeq[int](sim.players.len)
   for i in 0 ..< sim.players.len:
-    if not sim.players[i].alive:
-      continue
+    drawOrder[i] = i
+  for i in 1 ..< drawOrder.len:
+    let key = drawOrder[i]
+    var j = i - 1
+    while j >= 0 and sim.players[drawOrder[j]].y > sim.players[key].y:
+      drawOrder[j + 1] = drawOrder[j]
+      dec j
+    drawOrder[j + 1] = key
+
+  for i in drawOrder:
     let
       p = sim.players[i]
       sx = p.x - SpriteDrawOffX - cameraX
       sy = p.y - SpriteDrawOffY - cameraY
-    if i != playerIndex:
-      let
-        pcx = p.x + CollisionW div 2 - cameraX
-        pcy = p.y + CollisionH div 2 - cameraY
-      if pcx < 0 or pcx >= ScreenWidth or pcy < 0 or pcy >= ScreenHeight:
-        continue
-      if sim.shadowBuf[pcy * ScreenWidth + pcx]:
-        continue
-    sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, p.color, p.flipH)
+    if p.alive:
+      if i != playerIndex:
+        let
+          pcx = p.x + CollisionW div 2 - cameraX
+          pcy = p.y + CollisionH div 2 - cameraY
+        if pcx < 0 or pcx >= ScreenWidth or pcy < 0 or pcy >= ScreenHeight:
+          continue
+        if not viewerIsGhost and sim.shadowBuf[pcy * ScreenWidth + pcx]:
+          continue
+      sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, p.color, p.flipH)
+    elif viewerIsGhost:
+      sim.fb.blitSpriteOutlined(sim.ghostSprite, sx, sy, p.color, p.flipH)
 
   if player.role == Crewmate:
     for t in 0 ..< sim.tasks.len:
+      if not player.hasTask(t):
+        continue
       let
         task = sim.tasks[t]
         bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
@@ -561,9 +994,52 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
         tcy = task.y + task.h div 2 - cameraY
       if tcx < 0 or tcx >= ScreenWidth or tcy < 0 or tcy >= ScreenHeight:
         continue
-      if sim.shadowBuf[tcy * ScreenWidth + tcx]:
+      if not viewerIsGhost and sim.shadowBuf[tcy * ScreenWidth + tcx]:
         continue
       sim.fb.blitSpriteRaw(sim.taskIconSprite, iconSx, iconSy)
+
+  if player.role == Crewmate and ShowTaskArrows:
+    let radarColor = 8'u8
+    let margin = 0
+    for t in 0 ..< sim.tasks.len:
+      if not player.hasTask(t):
+        continue
+      let task = sim.tasks[t]
+      if playerIndex < task.completed.len and task.completed[playerIndex]:
+        continue
+      let
+        tcx = task.x + task.w div 2 - cameraX
+        tcy = task.y + task.h div 2 - cameraY
+      if tcx >= 0 and tcx < ScreenWidth and tcy >= 0 and tcy < ScreenHeight:
+        continue
+      let
+        px = float(player.x + CollisionW div 2 - cameraX)
+        py = float(player.y + CollisionH div 2 - cameraY)
+        dx = float(tcx) - px
+        dy = float(tcy) - py
+      if abs(dx) < 0.5 and abs(dy) < 0.5:
+        continue
+      var ex, ey: float
+      let
+        minX = float(margin)
+        maxX = float(ScreenWidth - 1 - margin)
+        minY = float(margin)
+        maxY = float(ScreenHeight - 1 - margin)
+      if abs(dx) > abs(dy):
+        if dx > 0:
+          ex = maxX
+        else:
+          ex = minX
+        ey = py + dy * (ex - px) / dx
+        ey = clamp(ey, minY, maxY)
+      else:
+        if dy > 0:
+          ey = maxY
+        else:
+          ey = minY
+        ex = px + dx * (ey - py) / dy
+        ex = clamp(ex, minX, maxX)
+      sim.fb.putPixel(int(ex), int(ey), radarColor)
 
   if player.role == Crewmate and player.activeTask >= 0 and player.taskProgress > 0:
     let
@@ -583,12 +1059,22 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
     else:
       sim.fb.blitSpriteRaw(sim.killButtonSprite, iconX, iconY)
 
+  let remaining = sim.totalTasksRemaining()
+  let numStr = $remaining
+  var dx = ScreenWidth - 1
+  for i in countdown(numStr.high, 0):
+    let d = ord(numStr[i]) - ord('0')
+    dx -= sim.digitSprites[d].width
+    sim.fb.blitSprite(sim.digitSprites[d], dx, 0, 0, 0)
+
   sim.fb.packFramebuffer()
   sim.fb.packed
 
 proc initSimServer(): SimServer =
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
+  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
+  result.digitSprites = loadDigitSprites(clientDataDir() / "numbers.png")
 
   let sheet = readImage("spritesheet.png")
   result.playerSprite = spriteFromImage(
@@ -606,23 +1092,26 @@ proc initSimServer(): SimServer =
   result.taskIconSprite = spriteFromImage(
     sheet.subImage(SpriteSize * 4, 0, SpriteSize, SpriteSize)
   )
+  result.ghostSprite = spriteFromImage(
+    sheet.subImage(SpriteSize * 6, 0, SpriteSize, SpriteSize)
+  )
 
   result.tasks = @[
     TaskStation(name: "Empty Garbage", x: 278, y: 233, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Comms)", x: 334, y: 209, w: 8, h: 8),
+    TaskStation(name: "Upload Data (Comms)", x: 334, y: 212, w: 8, h: 8),
     TaskStation(name: "Fix Wires (Storage)", x: 287, y: 132, w: 8, h: 8),
-    TaskStation(name: "Fix Wires (Electrical)", x: 221, y: 12, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Electrical)", x: 175, y: 140, w: 8, h: 8),
-    TaskStation(name: "Calibrate Distributor", x: 215, y: 141, w: 8, h: 8),
+    TaskStation(name: "Fix Wires (Electrical)", x: 222, y: 15, w: 8, h: 8),
+    TaskStation(name: "Upload Data (Electrical)", x: 175, y: 145, w: 8, h: 8),
+    TaskStation(name: "Calibrate Distributor", x: 215, y: 146, w: 8, h: 8),
     TaskStation(name: "Submit Scan", x: 200, y: 116, w: 8, h: 8),
-    TaskStation(name: "Divert Power", x: 193, y: 141, w: 8, h: 8),
+    TaskStation(name: "Divert Power", x: 193, y: 146, w: 8, h: 8),
     TaskStation(name: "Inspect Sample", x: 211, y: 107, w: 8, h: 8),
     TaskStation(name: "Upload Data (Admin)", x: 298, y: 132, w: 8, h: 8),
-    TaskStation(name: "Align Engine (Lower)", x: 93, y: 159, w: 8, h: 8),
-    TaskStation(name: "Align Engine (Upper)", x: 101, y: 35, w: 8, h: 8),
+    TaskStation(name: "Align Engine (Lower)", x: 93, y: 163, w: 8, h: 8),
+    TaskStation(name: "Align Engine (Upper)", x: 101, y: 40, w: 8, h: 8),
     TaskStation(name: "Swipe Card", x: 332, y: 153, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Cafeteria)", x: 302, y: 13, w: 8, h: 8),
-    TaskStation(name: "Empty Garbage (Upper)", x: 315, y: 25, w: 8, h: 8),
+    TaskStation(name: "Upload Data (Cafeteria)", x: 300, y: 14, w: 8, h: 8),
+    TaskStation(name: "Empty Garbage (Upper)", x: 313, y: 27, w: 8, h: 8),
   ]
 
   result.vents = @[
@@ -668,8 +1157,66 @@ proc initSimServer(): SimServer =
   result.players = @[]
   result.nextJoinOrder = 0
 
-proc step(sim: var SimServer, inputs: openArray[InputState]) =
+proc resetToLobby(sim: var SimServer) =
+  sim.phase = Lobby
+  sim.bodies = @[]
+  sim.players = @[]
+  sim.nextJoinOrder = 0
+  sim.tickCount = 0
+  sim.needsReregister = true
+  for task in sim.tasks.mitems:
+    task.completed = @[]
+
+proc step(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArray[InputState]) =
   inc sim.tickCount
+
+  if sim.phase == Lobby:
+    if sim.players.len >= MinPlayers:
+      sim.startGame()
+    return
+
+  if sim.phase == GameOver:
+    dec sim.gameOverTimer
+    if sim.gameOverTimer <= 0:
+      sim.resetToLobby()
+    return
+
+  if sim.phase == VoteResult:
+    dec sim.voteState.resultTimer
+    if sim.voteState.resultTimer <= 0:
+      sim.applyVoteResult()
+      sim.checkWinCondition()
+    return
+
+  if sim.phase == Voting:
+    dec sim.voteState.voteTimer
+    if sim.voteState.voteTimer <= 0:
+      sim.tallyVotes()
+      return
+    for i in 0 ..< sim.players.len:
+      if not sim.players[i].alive:
+        continue
+      let input =
+        if i < inputs.len: inputs[i]
+        else: InputState()
+      let prev =
+        if i < prevInputs.len: prevInputs[i]
+        else: InputState()
+      if (input.up and not prev.up) or (input.left and not prev.left):
+        sim.moveCursor(i, -1)
+      if (input.down and not prev.down) or (input.right and not prev.right):
+        sim.moveCursor(i, 1)
+      if input.attack and not prev.attack:
+        let cur = sim.voteState.cursor[i]
+        if cur == sim.players.len:
+          sim.voteState.votes[i] = -2
+        else:
+          sim.voteState.votes[i] = cur
+        if sim.allVotesCast():
+          sim.tallyVotes()
+    return
+
+  let bodiesBeforeTick = sim.bodies.len
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].alive and
         sim.players[playerIndex].role == Imposter:
@@ -680,7 +1227,12 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
     let input =
       if playerIndex < inputs.len: inputs[playerIndex]
       else: InputState()
-    sim.applyInput(playerIndex, input)
+    let prev =
+      if playerIndex < prevInputs.len: prevInputs[playerIndex]
+      else: InputState()
+    sim.applyInput(playerIndex, input, prev, bodiesBeforeTick)
+
+  sim.checkWinCondition()
 
 var appState: WebSocketAppState
 
@@ -690,8 +1242,12 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.closedSockets = @[]
+  appState.spectators = @[]
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  for i in countdown(appState.spectators.high, 0):
+    if appState.spectators[i] == websocket:
+      appState.spectators.delete(i)
   if websocket notin appState.playerIndices:
     return
   let removedIndex = appState.playerIndices[websocket]
@@ -764,6 +1320,7 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
   var
     sim = initSimServer()
     lastTick = getMonoTime()
+    prevInputs: seq[InputState]
 
   while true:
     var
@@ -771,14 +1328,23 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
 
+    var spectatorList: seq[WebSocket] = @[]
+
     {.gcsafe.}:
       withLock appState.lock:
         for websocket in appState.closedSockets:
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
+        var newSockets: seq[WebSocket] = @[]
         for websocket in appState.playerIndices.keys:
           if appState.playerIndices[websocket] == 0x7fffffff:
+            newSockets.add(websocket)
+        for websocket in newSockets:
+          if sim.phase == Lobby:
             appState.playerIndices[websocket] = sim.addPlayer()
+          else:
+            appState.spectators.add(websocket)
+            appState.playerIndices.del(websocket)
         inputs = newSeq[InputState](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
           if playerIndex < 0 or playerIndex >= inputs.len:
@@ -788,8 +1354,20 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           appState.lastAppliedMasks[websocket] = currentMask
           sockets.add(websocket)
           playerIndices.add(playerIndex)
+        spectatorList = appState.spectators
 
-    sim.step(inputs)
+    sim.step(inputs, prevInputs)
+    prevInputs = inputs
+
+    if sim.needsReregister:
+      sim.needsReregister = false
+      {.gcsafe.}:
+        withLock appState.lock:
+          for websocket in appState.playerIndices.keys:
+            appState.playerIndices[websocket] = 0x7fffffff
+          for websocket in appState.spectators:
+            appState.playerIndices[websocket] = 0x7fffffff
+          appState.spectators = @[]
 
     for i in 0 ..< sockets.len:
       let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
@@ -799,6 +1377,16 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(sockets[i])
+
+    if spectatorList.len > 0:
+      let specBlob = blobFromBytes(sim.buildSpectatorFrame())
+      for ws in spectatorList:
+        try:
+          ws.send(specBlob, BinaryMessage)
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              sim.removePlayer(ws)
 
     runFrameLimiter(lastTick)
 

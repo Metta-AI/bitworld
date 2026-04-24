@@ -10,7 +10,7 @@ const
   ClientScreenOnlyWidth = 400
   ClientScreenOnlyHeight = 400
   ClientWindowMargin = 50
-  MaxPlayers = 4
+  MaxPlayers = 6
 
 var
   serverProcess: Process
@@ -115,6 +115,8 @@ proc clientLaunches(gameTitle: string, players: int): seq[ClientLaunch] =
     of 2: @[2]
     of 3: @[3]
     of 4: @[2, 2]
+    of 5: @[3, 2]
+    of 6: @[3, 3]
     else:
       raise newException(
         ValueError,
