@@ -1,6 +1,7 @@
 import mummy, pixie
 import protocol, server
-import std/[locks, math, monotimes, os, parseopt, random, strutils, tables, times]
+import std/[locks, math, monotimes, os, parseopt, random, strutils, tables,
+  times]
 
 const
   MapWidth = 476
@@ -39,6 +40,13 @@ const
   ButtonY = 57
   ButtonW = 14
   ButtonH = 17
+  MapSpriteId = 1
+  MapObjectId = 1
+  PlayerSpriteBase = 100
+  GhostSpriteBase = 300
+  BodySpriteBase = 500
+  PlayerObjectBase = 1000
+  BodyObjectBase = 2000
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
   ShadowMap = [
     0'u8,  #  0 black       -> black
@@ -59,6 +67,7 @@ const
     9,     # 15 pale blue    -> dark teal
   ]
   WebSocketPath = "/ws"
+  SpriteWebSocketPath = "/sprite"
 
 type
   PlayerRole = enum
@@ -139,6 +148,7 @@ type
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    spriteViewers: Table[WebSocket, SpriteViewerState]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
 
@@ -147,11 +157,78 @@ type
     address: string
     port: int
 
+  SpriteViewerState = object
+    initialized: bool
+    objectIds: seq[int]
+
 proc clientDataDir(): string =
   getCurrentDir() / ".." / "client" / "data"
 
 proc mapIndex(x, y: int): int =
   y * MapWidth + x
+
+proc spriteColor(color: uint8): uint8 =
+  ## Converts a game palette index to a sprite protocol pixel.
+  color + 1'u8
+
+proc playerColorIndex(color: uint8): int =
+  ## Returns the player color slot for a palette color.
+  for i in 0 ..< PlayerColors.len:
+    if PlayerColors[i] == color:
+      return i
+  0
+
+proc addU8(packet: var seq[uint8], value: uint8) =
+  ## Appends one unsigned byte to a sprite protocol packet.
+  packet.add(value)
+
+proc addU16(packet: var seq[uint8], value: int) =
+  ## Appends one little endian unsigned 16 bit value.
+  let v = uint16(value)
+  packet.add(uint8(v and 0xff'u16))
+  packet.add(uint8(v shr 8))
+
+proc addI16(packet: var seq[uint8], value: int) =
+  ## Appends one little endian signed 16 bit value.
+  let v = cast[uint16](int16(value))
+  packet.add(uint8(v and 0xff'u16))
+  packet.add(uint8(v shr 8))
+
+proc addViewport(packet: var seq[uint8], width, height: int) =
+  ## Appends a sprite protocol viewport message.
+  packet.addU8(0x05)
+  packet.addU16(width)
+  packet.addU16(height)
+
+proc addSprite(
+  packet: var seq[uint8],
+  spriteId, width, height: int,
+  pixels: openArray[uint8]
+) =
+  ## Appends a sprite protocol sprite definition message.
+  packet.addU8(0x01)
+  packet.addU16(spriteId)
+  packet.addU16(width)
+  packet.addU16(height)
+  for pixel in pixels:
+    packet.addU8(pixel)
+
+proc addObject(
+  packet: var seq[uint8],
+  objectId, x, y, z, spriteId: int
+) =
+  ## Appends a sprite protocol object definition message.
+  packet.addU8(0x02)
+  packet.addU16(objectId)
+  packet.addI16(x)
+  packet.addI16(y)
+  packet.addI16(z)
+  packet.addU16(spriteId)
+
+proc addDeleteObject(packet: var seq[uint8], objectId: int) =
+  ## Appends a sprite protocol object delete message.
+  packet.addU8(0x03)
+  packet.addU16(objectId)
 
 proc isWalkable(sim: SimServer, x, y: int): bool =
   if x < 0 or y < 0 or x >= MapWidth or y >= MapHeight:
@@ -583,6 +660,220 @@ proc blitSpriteRaw(
       let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
       if colorIndex != TransparentColorIndex:
         fb.putPixel(screenX + x, screenY + y, colorIndex)
+
+proc buildSpriteProtocolActorSprite(
+  sprite: Sprite,
+  tint: uint8,
+  flipH: bool
+): seq[uint8] =
+  ## Builds an outlined, tinted actor sprite for the global viewer.
+  let
+    outWidth = sprite.width + 2
+    outHeight = sprite.height + 2
+  result = newSeq[uint8](outWidth * outHeight)
+
+  proc outIndex(x, y: int): int =
+    y * outWidth + x
+
+  for y in -1 .. sprite.height:
+    for x in -1 .. sprite.width:
+      if sprite.isSolid(x, y, flipH):
+        continue
+      let adjacent =
+        sprite.isSolid(x - 1, y, flipH) or
+        sprite.isSolid(x + 1, y, flipH) or
+        sprite.isSolid(x, y - 1, flipH) or
+        sprite.isSolid(x, y + 1, flipH)
+      if adjacent:
+        result[outIndex(x + 1, y + 1)] = spriteColor(OutlineColor)
+
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let srcX = if flipH: sprite.width - 1 - x else: x
+      let colorIndex = sprite.pixels[sprite.spriteIndex(srcX, y)]
+      if colorIndex == TransparentColorIndex:
+        continue
+      let drawColor = if colorIndex == BodyColor: tint else: colorIndex
+      result[outIndex(x + 1, y + 1)] = spriteColor(drawColor)
+
+proc buildSpriteProtocolBodySprite(
+  bodySprite: Sprite,
+  boneSprite: Sprite,
+  tint: uint8
+): seq[uint8] =
+  ## Builds an outlined dead body sprite for the global viewer.
+  let
+    outWidth = bodySprite.width + 2
+    outHeight = bodySprite.height + 2
+  result = newSeq[uint8](outWidth * outHeight)
+
+  proc outIndex(x, y: int): int =
+    y * outWidth + x
+
+  proc bodySolid(x, y: int): bool =
+    if x < 0 or x >= bodySprite.width or
+        y < 0 or y >= bodySprite.height:
+      return false
+    bodySprite.pixels[bodySprite.spriteIndex(x, y)] !=
+      TransparentColorIndex or
+      boneSprite.pixels[boneSprite.spriteIndex(x, y)] !=
+      TransparentColorIndex
+
+  for y in -1 .. bodySprite.height:
+    for x in -1 .. bodySprite.width:
+      if bodySolid(x, y):
+        continue
+      let adjacent =
+        bodySolid(x - 1, y) or
+        bodySolid(x + 1, y) or
+        bodySolid(x, y - 1) or
+        bodySolid(x, y + 1)
+      if adjacent:
+        result[outIndex(x + 1, y + 1)] = spriteColor(OutlineColor)
+
+  for y in 0 ..< bodySprite.height:
+    for x in 0 ..< bodySprite.width:
+      if bodySprite.pixels[bodySprite.spriteIndex(x, y)] !=
+          TransparentColorIndex:
+        result[outIndex(x + 1, y + 1)] = spriteColor(tint)
+      let boneColor = boneSprite.pixels[boneSprite.spriteIndex(x, y)]
+      if boneColor != TransparentColorIndex:
+        result[outIndex(x + 1, y + 1)] = spriteColor(boneColor)
+
+proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
+  ## Builds the initial global viewer snapshot.
+  result = @[]
+  var mapPixels = newSeq[uint8](sim.mapPixels.len)
+  for i in 0 ..< sim.mapPixels.len:
+    mapPixels[i] = spriteColor(sim.mapPixels[i])
+  result.addViewport(MapWidth, MapHeight)
+  result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)
+  result.addObject(MapObjectId, 0, 0, low(int16), MapSpriteId)
+  for i in 0 ..< PlayerColors.len:
+    let
+      playerRight = buildSpriteProtocolActorSprite(
+        sim.playerSprite,
+        PlayerColors[i],
+        false
+      )
+      playerLeft = buildSpriteProtocolActorSprite(
+        sim.playerSprite,
+        PlayerColors[i],
+        true
+      )
+      ghostRight = buildSpriteProtocolActorSprite(
+        sim.ghostSprite,
+        PlayerColors[i],
+        false
+      )
+      ghostLeft = buildSpriteProtocolActorSprite(
+        sim.ghostSprite,
+        PlayerColors[i],
+        true
+      )
+      bodyPixels = buildSpriteProtocolBodySprite(
+        sim.bodySprite,
+        sim.boneSprite,
+        PlayerColors[i]
+      )
+    result.addSprite(
+      PlayerSpriteBase + i * 2,
+      sim.playerSprite.width + 2,
+      sim.playerSprite.height + 2,
+      playerRight
+    )
+    result.addSprite(
+      PlayerSpriteBase + i * 2 + 1,
+      sim.playerSprite.width + 2,
+      sim.playerSprite.height + 2,
+      playerLeft
+    )
+    result.addSprite(
+      GhostSpriteBase + i * 2,
+      sim.ghostSprite.width + 2,
+      sim.ghostSprite.height + 2,
+      ghostRight
+    )
+    result.addSprite(
+      GhostSpriteBase + i * 2 + 1,
+      sim.ghostSprite.width + 2,
+      sim.ghostSprite.height + 2,
+      ghostLeft
+    )
+    result.addSprite(
+      BodySpriteBase + i,
+      sim.bodySprite.width + 2,
+      sim.bodySprite.height + 2,
+      bodyPixels
+    )
+
+proc spriteObjectId(player: Player): int =
+  ## Returns the stable sprite protocol object id for a player.
+  PlayerObjectBase + player.joinOrder
+
+proc spritePlayerX(player: Player): int =
+  ## Returns the global viewer x position for a player sprite.
+  player.x - SpriteDrawOffX - 1
+
+proc spritePlayerY(player: Player): int =
+  ## Returns the global viewer y position for a player sprite.
+  player.y - SpriteDrawOffY - 1
+
+proc spriteBodyObjectId(index: int): int =
+  ## Returns the sprite protocol object id for a dead body.
+  BodyObjectBase + index
+
+proc spriteActorSpriteId(player: Player): int =
+  ## Returns the sprite id for a player in the global viewer.
+  let
+    colorIndex = player.joinOrder mod PlayerColors.len
+    side = if player.flipH: 1 else: 0
+  if player.alive:
+    PlayerSpriteBase + colorIndex * 2 + side
+  else:
+    GhostSpriteBase + colorIndex * 2 + side
+
+proc buildSpriteProtocolUpdates(
+  sim: SimServer,
+  state: SpriteViewerState,
+  nextState: var SpriteViewerState
+): seq[uint8] =
+  ## Builds global viewer object updates for the current tick.
+  result = @[]
+  nextState = state
+  if not nextState.initialized:
+    result = sim.buildSpriteProtocolInit()
+    nextState.initialized = true
+
+  var currentIds: seq[int] = @[]
+  for player in sim.players:
+    let objectId = player.spriteObjectId()
+    currentIds.add(objectId)
+    result.addObject(
+      objectId,
+      player.spritePlayerX(),
+      player.spritePlayerY(),
+      player.y,
+      player.spriteActorSpriteId()
+    )
+
+  for i in 0 ..< sim.bodies.len:
+    let
+      body = sim.bodies[i]
+      objectId = spriteBodyObjectId(i)
+    currentIds.add(objectId)
+    result.addObject(
+      objectId,
+      body.x - SpriteDrawOffX - 1,
+      body.y - SpriteDrawOffY - 1,
+      body.y,
+      BodySpriteBase + playerColorIndex(body.color)
+    )
+
+  for objectId in state.objectIds:
+    if objectId notin currentIds:
+      result.addDeleteObject(objectId)
+  nextState.objectIds = currentIds
 
 proc blitSpriteShadowed(
   fb: var Framebuffer,
@@ -1241,6 +1532,7 @@ proc initAppState() =
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.spriteViewers = initTable[WebSocket, SpriteViewerState]()
   appState.closedSockets = @[]
   appState.spectators = @[]
 
@@ -1248,6 +1540,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   for i in countdown(appState.spectators.high, 0):
     if appState.spectators[i] == websocket:
       appState.spectators.delete(i)
+  if websocket in appState.spriteViewers:
+    appState.spriteViewers.del(websocket)
   if websocket notin appState.playerIndices:
     return
   let removedIndex = appState.playerIndices[websocket]
@@ -1263,6 +1557,11 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
 proc httpHandler(request: Request) =
   if request.uri == WebSocketPath and request.httpMethod == "GET":
     discard request.upgradeToWebSocket()
+  elif request.uri == SpriteWebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.spriteViewers[websocket] = SpriteViewerState()
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -1277,14 +1576,16 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerIndices[websocket] = 0x7fffffff
-        appState.inputMasks[websocket] = 0
-        appState.lastAppliedMasks[websocket] = 0
+        if websocket notin appState.spriteViewers:
+          appState.playerIndices[websocket] = 0x7fffffff
+          appState.inputMasks[websocket] = 0
+          appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
     if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
       {.gcsafe.}:
         withLock appState.lock:
-          appState.inputMasks[websocket] = blobToMask(message.data)
+          if websocket notin appState.spriteViewers:
+            appState.inputMasks[websocket] = blobToMask(message.data)
   of ErrorEvent:
     {.gcsafe.}:
       withLock appState.lock:
@@ -1310,7 +1611,7 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
     httpHandler,
     websocketHandler,
     workerThreads = 4,
-    wsNoDelay = true
+    tcpNoDelay = true
   )
   var
     serverThread: Thread[ServerThreadArgs]
@@ -1334,6 +1635,9 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
       inputs: seq[InputState]
 
     var spectatorList: seq[WebSocket] = @[]
+    var
+      spriteViewers: seq[WebSocket] = @[]
+      spriteStates: seq[SpriteViewerState] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -1360,6 +1664,9 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           sockets.add(websocket)
           playerIndices.add(playerIndex)
         spectatorList = appState.spectators
+        for websocket, state in appState.spriteViewers.pairs:
+          spriteViewers.add(websocket)
+          spriteStates.add(state)
 
     sim.step(inputs, prevInputs)
     prevInputs = inputs
@@ -1392,6 +1699,22 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           {.gcsafe.}:
             withLock appState.lock:
               sim.removePlayer(ws)
+
+    for i in 0 ..< spriteViewers.len:
+      var nextState: SpriteViewerState
+      let packet = sim.buildSpriteProtocolUpdates(spriteStates[i], nextState)
+      if packet.len == 0:
+        continue
+      try:
+        spriteViewers[i].send(blobFromBytes(packet), BinaryMessage)
+        {.gcsafe.}:
+          withLock appState.lock:
+            if spriteViewers[i] in appState.spriteViewers:
+              appState.spriteViewers[spriteViewers[i]] = nextState
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            sim.removePlayer(spriteViewers[i])
 
     runFrameLimiter(lastTick)
 
