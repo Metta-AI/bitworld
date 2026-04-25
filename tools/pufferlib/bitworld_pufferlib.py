@@ -150,13 +150,24 @@ def ensure_bitworld_binary(spec: str | EnvironmentSpec) -> None:
     )
 
 
-def install_pufferlib_c_stub() -> None:
+def resolve_train_device(device: str = "auto") -> str:
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("--device cuda requested, but torch.cuda.is_available() is false")
+    if device not in {"cpu", "cuda"}:
+        raise ValueError(f"unknown training device {device!r}")
+    return device
+
+
+def install_pufferlib_c_stub(use_gpu: bool) -> None:
     if "pufferlib._C" in sys.modules:
+        sys.modules["pufferlib._C"].gpu = use_gpu
         return
 
     stub = types.ModuleType("pufferlib._C")
     stub.precision_bytes = 4
-    stub.gpu = False
+    stub.gpu = use_gpu
     stub.get_utilization = lambda gpu_id=0: {}
     sys.modules["pufferlib._C"] = stub
 
@@ -187,13 +198,67 @@ def compute_puff_advantage_fallback(
     return advantages
 
 
-def load_puffer_trainer():
-    install_pufferlib_c_stub()
+def load_puffer_trainer(use_gpu: bool):
+    install_pufferlib_c_stub(use_gpu)
     from pufferlib import torch_pufferl
 
     torch_pufferl.compute_puff_advantage = compute_puff_advantage_fallback
 
-    return torch_pufferl.PuffeRL
+    class BitWorldPuffeRL(torch_pufferl.PuffeRL):
+        def rollouts(self):
+            prof = self.profile
+            config = self.config
+            device = self.device
+            horizon = config["horizon"]
+
+            self.state = tuple(torch.zeros_like(s) for s in self.state) if self.state else ()
+            observations = self.vec_obs
+            rewards = torch.zeros(self.total_agents, device=device)
+            terminals = torch.zeros(self.total_agents, device=device)
+
+            profile = torch_pufferl.Profile
+            prof.mark(0)
+            for t in range(horizon):
+                observation_device = torch.as_tensor(observations, device=device)
+
+                prof.mark(1)
+                with torch.no_grad():
+                    logits, value, state = self.policy.forward_eval(observation_device, self.state)
+                    action, logprob, _ = torch_pufferl.sample_logits(logits)
+                prof.mark(2)
+
+                with torch.no_grad():
+                    self.state = state
+                    self.observations[t] = observation_device
+                    self.actions[t] = action
+                    self.logprobs[t] = logprob
+                    self.rewards[t] = torch.as_tensor(rewards, device=device)
+                    self.terminals[t] = torch.as_tensor(terminals, device=device).float()
+                    self.values[t] = value.flatten()
+
+                prof.mark(2)
+                actions_flat = (
+                    action.T if action.dim() > 1 else action.unsqueeze(-1)
+                ).to(dtype=torch.float32).contiguous()
+                if self.gpu:
+                    actions_flat = actions_flat.cuda()
+                    self._vec.gpu_step(actions_flat.data_ptr())
+                    torch.cuda.synchronize()
+                else:
+                    actions_flat = actions_flat.cpu().contiguous()
+                    self._vec.cpu_step(actions_flat.data_ptr())
+
+                observations, rewards, terminals = self.vec_obs, self.vec_rewards, self.vec_terminals
+                prof.mark(3)
+                prof.elapsed(profile.EVAL_GPU, 1, 2)
+                prof.elapsed(profile.EVAL_ENV, 2, 3)
+
+            prof.mark(1)
+            prof.elapsed(profile.ROLLOUT, 0, 1)
+            self.global_step += self.total_agents * horizon
+            self.env_logs = self._vec.log()
+
+    return BitWorldPuffeRL
 
 
 def reserve_port() -> int:
@@ -783,9 +848,11 @@ def train_policy(
     fps: int = 0,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     hidden_size: int = 256,
+    device: str = "auto",
 ) -> dict:
     resolved = get_env_spec(spec)
-    PuffeRL = load_puffer_trainer()
+    train_device = resolve_train_device(device)
+    PuffeRL = load_puffer_trainer(use_gpu=train_device == "cuda")
     checkpoint_dir = model_path.parent / "checkpoints"
     log_dir = model_path.parent / "logs"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -800,7 +867,11 @@ def train_policy(
         action_repeat=action_repeat,
         base_seed=seed,
     )
-    policy = BitWorldPolicy(frame_stack=frame_stack, action_count=vecenv.action_count, hidden_size=hidden_size)
+    policy = BitWorldPolicy(
+        frame_stack=frame_stack,
+        action_count=vecenv.action_count,
+        hidden_size=hidden_size,
+    ).to(train_device)
     args = make_train_args(
         spec=resolved,
         total_timesteps=total_timesteps,
@@ -813,6 +884,17 @@ def train_policy(
         log_dir=log_dir,
     )
     trainer = PuffeRL(args, vecenv, policy, verbose=False)
+    print(
+        json.dumps(
+            {
+                "env": resolved.name,
+                "device": train_device,
+                "cuda_available": bool(torch.cuda.is_available()),
+                "policy_device": str(next(policy.parameters()).device),
+            }
+        ),
+        flush=True,
+    )
 
     history: list[dict[str, float]] = []
     try:
@@ -841,6 +923,7 @@ def train_policy(
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
         "env": resolved.name,
+        "device": train_device,
         "history": history,
     }
     metrics_path.write_text(json.dumps(summary, indent=2))
@@ -873,6 +956,7 @@ def evaluate_policy(
     vecenv.reset()
     completed_scores: list[float] = []
     completed_returns: list[float] = []
+    policy_device = next(policy.parameters()).device if policy is not None else torch.device("cpu")
 
     try:
         while len(completed_scores) < episodes:
@@ -882,7 +966,8 @@ def evaluate_policy(
                 if policy is None:
                     raise ValueError("policy must be provided when random_actions is False")
                 with torch.no_grad():
-                    logits, _, _ = policy.forward_eval(torch.from_numpy(vecenv._obs))
+                    observations = torch.as_tensor(vecenv._obs, device=policy_device)
+                    logits, _, _ = policy.forward_eval(observations)
                     if sample_actions:
                         probs = torch.softmax(logits, dim=-1)
                         action_indices = torch.multinomial(probs, 1).squeeze(-1).cpu().numpy()

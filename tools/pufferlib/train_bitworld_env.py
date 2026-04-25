@@ -6,7 +6,15 @@ from pathlib import Path
 
 import torch
 
-from bitworld_pufferlib import ACTION_MASKS, BitWorldPolicy, evaluate_policy, get_env_spec, list_env_names, train_policy
+from bitworld_pufferlib import (
+    ACTION_MASKS,
+    BitWorldPolicy,
+    evaluate_policy,
+    get_env_spec,
+    list_env_names,
+    resolve_train_device,
+    train_policy,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=73)
     parser.add_argument("--fps", type=int, default=0, help="Use 0 for uncapped training speed.")
     parser.add_argument("--action-repeat", type=int, default=4)
+    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
     return parser.parse_args()
@@ -60,14 +69,30 @@ def main() -> None:
         fps=args.fps,
         action_repeat=args.action_repeat,
         hidden_size=hidden_size,
+        device=args.device,
     )
 
+    if args.eval_episodes <= 0:
+        summary = {
+            "env": spec.name,
+            "device": resolve_train_device(args.device),
+            "model_path": str(model_path),
+            "metrics_path": str(metrics_path),
+            "trained": None,
+            "random": None,
+        }
+        summary_path = output_dir / "eval_summary.json"
+        summary_path.write_text(json.dumps(summary, indent=2))
+        print(json.dumps(summary, indent=2))
+        return
+
+    train_device = resolve_train_device(args.device)
     policy = BitWorldPolicy(
         frame_stack=args.frame_stack,
         action_count=len(ACTION_MASKS),
         hidden_size=hidden_size,
-    )
-    state_dict = torch.load(model_path, map_location="cpu")
+    ).to(train_device)
+    state_dict = torch.load(model_path, map_location=train_device)
     policy.load_state_dict(state_dict)
     policy.eval()
 
@@ -95,6 +120,7 @@ def main() -> None:
     )
     summary = {
         "env": spec.name,
+        "device": train_device,
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "trained": trained,
