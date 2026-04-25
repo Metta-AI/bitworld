@@ -164,12 +164,15 @@ proc generateLakes(sim: var SimServer) =
       for tx in cx - rx .. cx + rx:
         if not inBounds(tx, ty): continue
         let
-          dx = float(tx - cx) / float(rx)
-          dy = float(ty - cy) / float(ry)
-          dist = dx * dx + dy * dy
-        if dist < 0.6:
+          dx = tx - cx
+          dy = ty - cy
+          rxSq = rx * rx
+          rySq = ry * ry
+          distNumerator = dx * dx * rySq + dy * dy * rxSq
+          distDenominator = rxSq * rySq
+        if distNumerator * 10 < distDenominator * 6:
           sim.tiles[tileIndex(tx, ty)] = TileWaterDeep
-        elif dist < 1.0 + sim.rng.rand(0.0 .. 0.3):
+        elif distNumerator * 100 < distDenominator * (100 + sim.rng.rand(0 .. 30)):
           sim.tiles[tileIndex(tx, ty)] = TileWater
 
 proc generateRiver(sim: var SimServer) =
