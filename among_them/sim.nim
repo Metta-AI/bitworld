@@ -609,8 +609,26 @@ proc applyMomentumAxis(
         player.y = ny
       carry -= step * sim.config.motionScale
     else:
-      carry = 0
-      break
+      var slid = false
+      if horizontal:
+        for slideY in [player.y - 1, player.y + 1]:
+          if sim.canOccupy(nx, slideY):
+            player.x = nx
+            player.y = slideY
+            carry -= step * sim.config.motionScale
+            slid = true
+            break
+      else:
+        for slideX in [player.x - 1, player.x + 1]:
+          if sim.canOccupy(slideX, ny):
+            player.x = slideX
+            player.y = ny
+            carry -= step * sim.config.motionScale
+            slid = true
+            break
+      if not slid:
+        carry = 0
+        break
 
 proc distSq*(ax, ay, bx, by: int): int =
   let
