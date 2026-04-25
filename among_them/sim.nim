@@ -1,5 +1,6 @@
 import jsony, pixie
 import protocol
+import ../client/aseprite
 import ../common/server
 import std/[json, math, os, random]
 
@@ -195,14 +196,97 @@ type
     needsReregister*: bool
 
 proc clientDataDir*(): string =
+  ## Returns the shared client data directory.
   getCurrentDir() / ".." / "client" / "data"
+
+proc skeld2AsepritePath(): string =
+  ## Returns the best available skeld2 aseprite path.
+  if fileExists("skeld2.aseprite"):
+    "skeld2.aseprite"
+  else:
+    "/Users/me/p/among_them/skeld2.aseprite"
+
+proc asepritePixelAt(
+  aseprite: AsepriteSprite,
+  cel: AsepriteCel,
+  i: int
+): ColorRGBA =
+  ## Converts one decoded aseprite cel pixel to RGBA.
+  case aseprite.header.colorDepth
+  of DepthRgba:
+    let base = i * 4
+    rgba(
+      cel.data[base],
+      cel.data[base + 1],
+      cel.data[base + 2],
+      cel.data[base + 3]
+    )
+  of DepthGrayscale:
+    let base = i * 2
+    rgba(cel.data[base], cel.data[base], cel.data[base], cel.data[base + 1])
+  of DepthIndexed:
+    let index = cel.data[i].int
+    if index == aseprite.header.transparentIndex:
+      rgba(0, 0, 0, 0)
+    elif index < aseprite.palette.len:
+      aseprite.palette[index]
+    else:
+      rgba(0, 0, 0, 0)
+
+proc asepriteLayerImage(
+  aseprite: AsepriteSprite,
+  layerIndex: int
+): Image =
+  ## Renders one normal aseprite layer from the first frame.
+  if aseprite.frames.len == 0:
+    raise newException(AmongThemError, "skeld2.aseprite has no frames.")
+  if layerIndex < 0 or layerIndex >= aseprite.layers.len:
+    raise newException(
+      AmongThemError,
+      "skeld2.aseprite is missing layer " & $(layerIndex + 1) & "."
+    )
+  result = newImage(aseprite.header.width, aseprite.header.height)
+  result.fill(rgba(0, 0, 0, 0))
+  for cel in aseprite.frames[0].cels:
+    if cel.layerIndex != layerIndex:
+      continue
+    if cel.kind notin {CelRaw, CelCompressed}:
+      continue
+    for y in 0 ..< cel.height:
+      let dstY = cel.y + y
+      if dstY < 0 or dstY >= result.height:
+        continue
+      for x in 0 ..< cel.width:
+        let dstX = cel.x + x
+        if dstX < 0 or dstX >= result.width:
+          continue
+        let pixel = aseprite.asepritePixelAt(cel, y * cel.width + x)
+        if pixel.a > 0:
+          result[dstX, dstY] = pixel
+
+proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
+  ## Loads the skeld2 map, floor mask, and wall mask from aseprite layers.
+  let
+    path = skeld2AsepritePath()
+    sprite = readAseprite(path)
+  if sprite.header.width != MapWidth or sprite.header.height != MapHeight:
+    raise newException(
+      AmongThemError,
+      "skeld2.aseprite dimensions must be " &
+        $MapWidth & "x" & $MapHeight & "."
+    )
+  (
+    mapImage: sprite.asepriteLayerImage(0),
+    walkImage: sprite.asepriteLayerImage(1),
+    wallImage: sprite.asepriteLayerImage(2)
+  )
 
 proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
   ord(ch) - ord(' ')
 
 proc loadAsciiSprites*(path: string): seq[Sprite] =
-  ## Loads the fixed six by eight ASCII glyph sheet.
+  ## Loads the fixed seven by nine ASCII glyph sheet.
   if not fileExists(path):
     raise newException(IOError, "Missing ASCII sprite sheet: " & path)
   let
@@ -1396,20 +1480,18 @@ proc initSimServer*(config: GameConfig): SimServer =
     Vent(x: 242, y: 84, w: 12, h: 10, group: 'F', groupIndex: 2),
   ]
 
-  let mapImage = readImage("skeld2.png")
+  let (mapImage, walkImage, wallImage) = loadSkeld2Layers()
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       result.mapPixels[mapIndex(x, y)] = nearestPaletteIndex(mapImage[x, y])
 
-  let walkImage = readImage("skeld2.floor.png")
   result.walkMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       let pixel = walkImage[x, y]
       result.walkMask[mapIndex(x, y)] = pixel.a > 0
 
-  let wallImage = readImage("skeld2.walls.png")
   result.wallMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
