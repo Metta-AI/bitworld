@@ -31,10 +31,10 @@ const
   SnakeHp* = 3
   BossHp* = 10
   BossCoinValue* = 10
-  TargetFps* = 24.0
+  FpsScale* = 1000
+  TargetFps* = 24 * FpsScale
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
-  RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8
   HealthBarGray* = 1'u8
   HealthBarGreen* = 10'u8
@@ -323,8 +323,8 @@ proc addPlayer*(sim: var SimServer, address: string): int =
   )
   sim.players.high
 
-proc initSimServer*(): SimServer =
-  result.rng = initRand(0xB1770)
+proc initSimServer*(seed = 0xB1770): SimServer =
+  result.rng = initRand(seed)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
   loadClientPalette()

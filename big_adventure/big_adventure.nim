@@ -1,4 +1,4 @@
-import jsony, protocol, server
+import jsony, protocol, server, sim
 import std/[json, parseopt, strutils]
 
 type
@@ -7,17 +7,10 @@ type
   RunConfig = object
     address: string
     port: int
+    targetFps: int
+    seed: int
     saveReplayPath: string
     loadReplayPath: string
-
-proc defaultRunConfig(): RunConfig =
-  ## Returns the default CLI config.
-  RunConfig(address: DefaultHost, port: DefaultPort)
-
-proc requireConfigObject(node: JsonNode) =
-  ## Raises if the config JSON is not an object.
-  if node.kind != JObject:
-    raise newException(BigAdventureError, "Config must be a JSON object.")
 
 proc readConfigString(node: JsonNode, name: string, value: var string) =
   ## Reads one optional string config field.
@@ -55,17 +48,25 @@ proc update(config: var RunConfig, jsonText: string) =
       BigAdventureError,
       "Could not parse config JSON: " & e.msg
     )
-  node.requireConfigObject()
+  if node.kind != JObject:
+    raise newException(BigAdventureError, "Config must be a JSON object.")
   node.readConfigString("address", config.address)
   node.readConfigInt("port", config.port)
   node.readConfigString("saveReplay", config.saveReplayPath)
   node.readConfigString("loadReplay", config.loadReplayPath)
   node.readConfigString("saveReplayPath", config.saveReplayPath)
   node.readConfigString("loadReplayPath", config.loadReplayPath)
+  if node.hasKey("fps"):
+    var fps = 0
+    node.readConfigInt("fps", fps)
+    if fps < 0:
+      raise newException(BigAdventureError, "Config field fps must not be negative.")
+    config.targetFps = fps * FpsScale
+  node.readConfigInt("seed", config.seed)
 
 when isMainModule:
   var
-    config = defaultRunConfig()
+    config = RunConfig(address: DefaultHost, port: DefaultPort, targetFps: TargetFps, seed: 0xB1770)
     configPath = ""
     configJson = ""
   for kind, key, val in getopt():
@@ -87,6 +88,8 @@ when isMainModule:
   runServerLoop(
     config.address,
     config.port,
+    config.targetFps,
+    config.seed,
     config.saveReplayPath,
     config.loadReplayPath
   )
