@@ -37,9 +37,11 @@ const
   RadarMatchTolerance = 2
   TaskIconSearchRadius = 2
   TaskIconExpectedSearchRadius = 3
-  TaskIconMaxMisses = 8
+  TaskIconMaxMisses = 4
+  TaskIconMaybeMisses = 12
+  TaskIconInspectSize = 16
   TaskClearScreenMargin = 8
-  TaskIconMissThreshold = 8
+  TaskIconMissThreshold = 24
   PathLookahead = 18
   TaskInnerMargin = 6
   TaskPreciseApproachRadius = 12
@@ -405,35 +407,52 @@ proc scanRadarDots(bot: var Bot) =
       if bot.unpacked[y * ScreenWidth + x] == RadarTaskColor:
         bot.radarDots.addRadarDot(x, y)
 
+proc spriteMisses(
+  frame: openArray[uint8],
+  sprite: Sprite,
+  x,
+  y: int
+): tuple[misses: int, opaque: int] =
+  ## Counts opaque sprite pixels that do not match the frame.
+  var
+    misses = 0
+    opaque = 0
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let color = sprite.pixels[sprite.spriteIndex(sx, sy)]
+      if color == TransparentColorIndex:
+        continue
+      inc opaque
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        inc misses
+      elif frame[fy * ScreenWidth + fx] == color:
+        discard
+      else:
+        inc misses
+  (misses, opaque)
+
 proc matchesSprite(
   frame: openArray[uint8],
   sprite: Sprite,
   x,
   y: int
 ): bool =
-  ## Returns true if a sprite mostly matches the frame.
-  var
-    matchedOpaque = 0
-    missedOpaque = 0
-    totalOpaque = 0
-  for sy in 0 ..< sprite.height:
-    for sx in 0 ..< sprite.width:
-      let color = sprite.pixels[sprite.spriteIndex(sx, sy)]
-      if color == TransparentColorIndex:
-        continue
-      inc totalOpaque
-      let
-        fx = x + sx
-        fy = y + sy
-      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
-        inc missedOpaque
-      elif frame[fy * ScreenWidth + fx] == color:
-        inc matchedOpaque
-      else:
-        inc missedOpaque
-      if missedOpaque > TaskIconMaxMisses:
-        return false
-  totalOpaque > 0 and matchedOpaque >= totalOpaque - TaskIconMaxMisses
+  ## Returns true if a sprite stringently matches the frame.
+  let score = spriteMisses(frame, sprite, x, y)
+  score.opaque > 0 and score.misses <= TaskIconMaxMisses
+
+proc maybeMatchesSprite(
+  frame: openArray[uint8],
+  sprite: Sprite,
+  x,
+  y: int
+): bool =
+  ## Returns true when a sprite may be present but imperfect.
+  let score = spriteMisses(frame, sprite, x, y)
+  score.opaque > 0 and score.misses <= TaskIconMaybeMisses
 
 proc addIconMatch(matches: var seq[IconMatch], x, y: int) =
   ## Adds one icon match unless a nearby icon already exists.
@@ -544,6 +563,18 @@ proc projectedTaskIcon(
     return
   (true, iconX, iconY)
 
+proc taskIconInspectRect(
+  bot: Bot,
+  task: TaskStation
+): tuple[x: int, y: int, w: int, h: int] =
+  ## Returns the expected screen rectangle for inspecting a task icon.
+  (
+    task.x + task.w div 2 - TaskIconInspectSize div 2 - bot.cameraX,
+    task.y - TaskIconInspectSize - bot.cameraY,
+    TaskIconInspectSize,
+    TaskIconInspectSize
+  )
+
 proc taskIconRenderable(bot: Bot, task: TaskStation): bool =
   ## Returns true when the server could render the task icon.
   let
@@ -553,23 +584,32 @@ proc taskIconRenderable(bot: Bot, task: TaskStation): bool =
   sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight
 
 proc taskIconClearAreaVisible(bot: Bot, task: TaskStation): bool =
-  ## Returns true when the full expected icon area is visible.
-  if not bot.taskIconRenderable(task):
-    return false
+  ## Returns true when the whole icon inspection area is visible.
+  let rect = bot.taskIconInspectRect(task)
+  rect.x >= TaskClearScreenMargin and
+    rect.y >= TaskClearScreenMargin and
+    rect.x + rect.w + TaskClearScreenMargin <= ScreenWidth and
+    rect.y + rect.h + TaskClearScreenMargin <= ScreenHeight
+
+proc taskIconMaybeVisibleFor(bot: Bot, task: TaskStation): bool =
+  ## Returns true when expected icon pixels look plausibly present.
+  let
+    baseX = task.x + task.w div 2 - SpriteSize div 2 - bot.cameraX
+    baseY = task.y - SpriteSize - 2 - bot.cameraY
   for bobY in -1 .. 1:
-    let projected = bot.projectedTaskIcon(task, bobY)
-    if not projected.visible:
-      return false
-    if projected.x < 0 or projected.y < 0 or
-        projected.x + SpriteSize > ScreenWidth or
-        projected.y + SpriteSize > ScreenHeight:
-      return false
-  true
+    let expectedY = baseY + bobY
+    for dy in -TaskIconExpectedSearchRadius .. TaskIconExpectedSearchRadius:
+      for dx in -TaskIconExpectedSearchRadius .. TaskIconExpectedSearchRadius:
+        if maybeMatchesSprite(
+          bot.unpacked,
+          bot.taskSprite,
+          baseX + dx,
+          expectedY + dy
+        ):
+          return true
 
 proc taskIconVisibleFor(bot: Bot, task: TaskStation): bool =
   ## Returns true if a visible task station has its icon on screen.
-  if not bot.taskIconRenderable(task):
-    return false
   for bobY in -1 .. 1:
     let projected = bot.projectedTaskIcon(task, bobY)
     if not projected.visible:
@@ -596,6 +636,8 @@ proc updateTaskIcons(bot: var Bot) =
     elif bot.taskHoldTicks == 0 and
         bot.taskStates[i] == TaskMandatory and
         bot.taskIconClearAreaVisible(task) and
+        not bot.taskIconMaybeVisibleFor(task) and
+        (bot.radarTasks.len != bot.sim.tasks.len or not bot.radarTasks[i]) and
         bot.taskHoldIndex != i:
       inc bot.taskIconMisses[i]
       if bot.taskIconMisses[i] >= TaskIconMissThreshold:
@@ -1279,7 +1321,7 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
     if not taskVisible:
       continue
     let
-      icon = bot.projectedTaskIcon(task, 0)
+      icon = bot.taskIconInspectRect(task)
       hasIcon = bot.taskIconVisibleFor(task)
       color =
         if hasIcon:
@@ -1295,15 +1337,16 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
         task.h.float32 * pixelScale
       )
     sk.drawOutline(taskPos, taskSize, color, 2)
-    if icon.visible:
+    if icon.x + icon.w >= 0 and icon.y + icon.h >= 0 and
+        icon.x < ScreenWidth and icon.y < ScreenHeight:
       let
         iconPos = vec2(
           x + icon.x.float32 * pixelScale,
           y + icon.y.float32 * pixelScale
         )
         iconSize = vec2(
-          SpriteSize.float32 * pixelScale,
-          SpriteSize.float32 * pixelScale
+          icon.w.float32 * pixelScale,
+          icon.h.float32 * pixelScale
         )
       sk.drawOutline(iconPos, iconSize, color, 2)
       sk.drawLine(
