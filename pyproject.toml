@@ -14,6 +14,14 @@ requires-python = ">=3.12,<3.13"
 Homepage = "https://github.com/Metta-AI/bitworld"
 Repository = "https://github.com/Metta-AI/bitworld.git"
 
+[project.optional-dependencies]
+train = [
+  "numpy>=2.0",
+  "pufferlib @ git+https://github.com/PufferAI/PufferLib.git@4.0",
+  "torch>=2.0",
+  "websockets>=15.0",
+]
+
 [tool.setuptools]
 packages = ["bitworld"]
 package-dir = { bitworld = "." }
