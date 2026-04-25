@@ -28,7 +28,8 @@ const
   StopThreshold* = 8
   TargetFps* = 24.0
   SpaceColor* = 0'u8
-  BodyColor* = 2'u8
+  TintColor* = 3'u8
+  ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
   KillRange* = 20
   KillCooldownTicks* = 120
@@ -188,14 +189,61 @@ type
     tickCount*: int
     phase*: GamePhase
     voteState*: VoteState
-    letterSprites*: seq[Sprite]
-    digitSprites*: array[10, Sprite]
+    asciiSprites*: seq[Sprite]
     winner*: PlayerRole
     gameOverTimer*: int
     needsReregister*: bool
 
 proc clientDataDir*(): string =
   getCurrentDir() / ".." / "client" / "data"
+
+proc asciiIndex*(ch: char): int =
+  ## Returns the ASCII sheet index for a character.
+  ord(ch) - ord(' ')
+
+proc loadAsciiSprites*(path: string): seq[Sprite] =
+  ## Loads the fixed six by eight ASCII glyph sheet.
+  if not fileExists(path):
+    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
+  let
+    image = readImage(path)
+    glyphWidth = 7
+    glyphHeight = 9
+    rowStride = 9
+    cols = image.width div glyphWidth
+    rows = image.height div rowStride
+    background = nearestPaletteIndex(image[0, 0])
+  result = @[]
+  for row in 0 ..< rows:
+    for col in 0 ..< cols:
+      var sprite = Sprite(width: glyphWidth, height: glyphHeight)
+      sprite.pixels = newSeq[uint8](glyphWidth * glyphHeight)
+      let
+        baseX = col * glyphWidth
+        baseY = row * rowStride
+      for y in 0 ..< glyphHeight:
+        for x in 0 ..< glyphWidth:
+          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
+          sprite.pixels[sprite.spriteIndex(x, y)] =
+            if colorIndex == background:
+              TransparentColorIndex
+            else:
+              colorIndex
+      result.add(sprite)
+
+proc blitAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: seq[Sprite],
+  text: string,
+  screenX, screenY: int
+) =
+  ## Draws text using the Among Them ASCII glyph sheet.
+  var offsetX = 0
+  for ch in text:
+    let idx = asciiIndex(ch)
+    if idx >= 0 and idx < asciiSprites.len:
+      fb.blitSprite(asciiSprites[idx], screenX + offsetX, screenY, 0, 0)
+    offsetX += 7
 
 proc defaultGameConfig*(): GameConfig =
   ## Returns the default Among Them gameplay config.
@@ -466,6 +514,14 @@ proc distSq*(ax, ay, bx, by: int): int =
     dx = ax - bx
     dy = ay - by
   dx * dx + dy * dy
+
+proc actorColor*(colorIndex, tint: uint8): uint8 =
+  ## Returns the final color for actor wildcard pixels.
+  if colorIndex == TintColor:
+    return tint
+  if colorIndex == ShadeTintColor:
+    return ShadowMap[tint and 0x0f]
+  colorIndex
 
 proc tryKill*(sim: var SimServer, killerIndex: int) =
   let killer = sim.players[killerIndex]
@@ -767,13 +823,6 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState, prevIn
     player.activeTask = -1
     player.taskProgress = 0
 
-proc isSolid(sprite: Sprite, x, y: int, flipH: bool): bool =
-  ## Returns true when a sprite source coordinate is opaque.
-  let srcX = if flipH: sprite.width - 1 - x else: x
-  if srcX < 0 or srcX >= sprite.width or y < 0 or y >= sprite.height:
-    return false
-  sprite.pixels[sprite.spriteIndex(srcX, y)] != TransparentColorIndex
-
 proc blitSpriteOutlined(
   fb: var Framebuffer,
   sprite: Sprite,
@@ -781,38 +830,14 @@ proc blitSpriteOutlined(
   tint: uint8,
   flipH: bool
 ) =
-  ## Draws a sprite with a one pixel outline into screen coordinates.
-  for y in -1 .. sprite.height:
-    for x in -1 .. sprite.width:
-      if sprite.isSolid(x, y, flipH):
-        continue
-      let adjacent =
-        sprite.isSolid(x - 1, y, flipH) or
-        sprite.isSolid(x + 1, y, flipH) or
-        sprite.isSolid(x, y - 1, flipH) or
-        sprite.isSolid(x, y + 1, flipH)
-      if adjacent:
-        fb.putPixel(screenX + x, screenY + y, OutlineColor)
+  ## Draws a tinted actor sprite into screen coordinates.
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
       let srcX = if flipH: sprite.width - 1 - x else: x
       let colorIndex = sprite.pixels[sprite.spriteIndex(srcX, y)]
       if colorIndex == TransparentColorIndex:
         continue
-      let drawColor = if colorIndex == BodyColor: tint else: colorIndex
-      fb.putPixel(screenX + x, screenY + y, drawColor)
-
-proc blitSpriteTintAll(
-  fb: var Framebuffer,
-  sprite: Sprite,
-  screenX, screenY: int,
-  tint: uint8
-) =
-  ## Draws all non-transparent sprite pixels using one color.
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] != TransparentColorIndex:
-        fb.putPixel(screenX + x, screenY + y, tint)
+      fb.putPixel(screenX + x, screenY + y, actorColor(colorIndex, tint))
 
 proc blitSpriteRaw(fb: var Framebuffer, sprite: Sprite, screenX, screenY: int) =
   ## Draws a sprite into screen coordinates without a camera.
@@ -914,11 +939,11 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
-  sim.fb.blitText(sim.letterSprites, "WAITING", 11, 4)
+  sim.fb.blitAsciiText(sim.asciiSprites, "WAITING", 11, 4)
   if needed > 0:
-    sim.fb.blitText(sim.letterSprites, "NEED MORE!", 2, 14)
+    sim.fb.blitAsciiText(sim.asciiSprites, "NEED MORE!", 2, 14)
   else:
-    sim.fb.blitText(sim.letterSprites, "READY!", 14, 14)
+    sim.fb.blitAsciiText(sim.asciiSprites, "READY!", 14, 14)
   let startY = 26
   for i in 0 ..< n:
     let
@@ -932,17 +957,17 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
 proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
   sim.fb.clearFrame(0)
-  sim.fb.blitText(sim.letterSprites, "GAME IN", 11, 22)
-  sim.fb.blitText(sim.letterSprites, "PROGRESS", 8, 32)
+  sim.fb.blitAsciiText(sim.asciiSprites, "GAME IN", 11, 22)
+  sim.fb.blitAsciiText(sim.asciiSprites, "PROGRESS", 8, 32)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
 proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   ## Builds a simple player screen for replay mode.
   sim.fb.clearFrame(SpaceColor)
-  sim.fb.blitText(sim.letterSprites, "REPLAY", 20, 30)
-  sim.fb.blitText(sim.letterSprites, "GLOBAL", 20, 38)
-  sim.fb.blitText(sim.letterSprites, "VIEW", 20, 46)
+  sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
+  sim.fb.blitAsciiText(sim.asciiSprites, "GLOBAL", 20, 38)
+  sim.fb.blitAsciiText(sim.asciiSprites, "VIEW", 20, 46)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -953,8 +978,8 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
     sim.fb.packFramebuffer()
     return sim.fb.packed
   let
-    cellW = 10
-    cellH = 10
+    cellW = 18
+    cellH = 20
     cols = min(n, ScreenWidth div cellW)
     rows = (n + cols - 1) div cols
     totalW = cols * cellW
@@ -969,14 +994,27 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
       row = idx div cols
       cx = startX + col * cellW
       cy = startY + row * cellH
+      spriteX = cx + (cellW - SpriteSize) div 2
+      spriteY = cy + 1
     if sim.players[pi].alive:
-      sim.fb.blitSpriteOutlined(sim.playerSprite, cx + 2, cy, sim.players[pi].color, false)
+      sim.fb.blitSpriteOutlined(
+        sim.playerSprite,
+        spriteX,
+        spriteY,
+        sim.players[pi].color,
+        false
+      )
     else:
-      sim.fb.blitSpriteTintAll(sim.playerSprite, cx + 2, cy, 1'u8)
-      sim.fb.blitText(sim.letterSprites, "X", cx + 2, cy)
+      sim.fb.blitSpriteOutlined(
+        sim.bodySprite,
+        spriteX,
+        spriteY,
+        sim.players[pi].color,
+        false
+      )
     if pi == playerIndex:
-      sim.fb.putPixel(cx + 4, cy - 2, sim.players[pi].color)
-      sim.fb.putPixel(cx + 5, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + cellW div 2 - 1, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + cellW div 2, cy - 2, sim.players[pi].color)
     if sim.players[pi].alive and
         playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
         sim.voteState.cursor[playerIndex] == pi:
@@ -990,8 +1028,8 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
     for vi in 0 ..< n:
       if sim.voteState.votes[vi] == pi:
         let
-          dotX = cx + 1 + (voterRow mod 4) * 2
-          dotY = cy + 7 + (voterRow div 4) * 2
+          dotX = cx + 2 + (voterRow mod 6) * 2
+          dotY = cy + SpriteSize + 3 + (voterRow div 6) * 2
         sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
         sim.fb.putPixel(dotX + 1, dotY, sim.players[vi].color)
         sim.fb.putPixel(dotX, dotY + 1, sim.players[vi].color)
@@ -999,9 +1037,9 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
         inc voterRow
 
   let skipY = startY + rows * cellH + 1
-  let skipW = 24
+  let skipW = 28
   let skipX = (ScreenWidth - skipW) div 2
-  sim.fb.blitText(sim.letterSprites, "SKIP", skipX, skipY)
+  sim.fb.blitAsciiText(sim.asciiSprites, "SKIP", skipX, skipY)
   if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
       sim.voteState.cursor[playerIndex] == n:
     for bx in 0 ..< skipW:
@@ -1043,8 +1081,8 @@ proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
       sy = ScreenHeight div 2 - SpriteSize div 2
     sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[ej].color, false)
   else:
-    sim.fb.blitText(sim.letterSprites, "NO ONE", 46, 54)
-    sim.fb.blitText(sim.letterSprites, "DIED", 52, 64)
+    sim.fb.blitAsciiText(sim.asciiSprites, "NO ONE", 46, 54)
+    sim.fb.blitAsciiText(sim.asciiSprites, "DIED", 52, 64)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -1087,22 +1125,27 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   let title =
     if sim.winner == Crewmate: "CREW WINS"
     else: "IMPS WIN"
-  let titleW = title.len * 6
+  let titleW = title.len * 7
   let titleX = (ScreenWidth - titleW) div 2
-  sim.fb.blitText(sim.letterSprites, title, titleX, 2)
+  sim.fb.blitAsciiText(sim.asciiSprites, title, titleX, 2)
   let n = sim.players.len
-  let rowH = 8
-  let startY = 12
+  let
+    rowH = 16
+    iconX = 8
+    textX = 26
+    startY = 16
   for i in 0 ..< n:
     let
       p = sim.players[i]
       y = startY + i * rowH
+      iconY = y + (rowH - SpriteSize) div 2
+      textY = y + (rowH - 6) div 2
       roleStr = if p.role == Imposter: "IMP" else: "CREW"
-    sim.fb.blitSpriteOutlined(sim.playerSprite, 2, y, p.color, false)
-    sim.fb.blitText(sim.letterSprites, roleStr, 10, y)
+    sim.fb.blitSpriteOutlined(sim.playerSprite, iconX, iconY, p.color, false)
+    sim.fb.blitAsciiText(sim.asciiSprites, roleStr, textX, textY)
     if not p.alive:
-      for lx in 10 ..< 10 + roleStr.len * 6:
-        sim.fb.putPixel(lx, y + 3, 3'u8)
+      for lx in textX ..< textX + roleStr.len * 7:
+        sim.fb.putPixel(lx, textY + 3, 3'u8)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -1168,28 +1211,7 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
       continue
     if not viewerIsGhost and sim.shadowBuf[bcy * ScreenWidth + bcx]:
       continue
-    for y in -1 .. sim.bodySprite.height:
-      for x in -1 .. sim.bodySprite.width:
-        let solidHere =
-          (x >= 0 and x < sim.bodySprite.width and y >= 0 and y < sim.bodySprite.height) and
-          (sim.bodySprite.pixels[sim.bodySprite.spriteIndex(x, y)] != TransparentColorIndex or
-           sim.boneSprite.pixels[sim.boneSprite.spriteIndex(x, y)] != TransparentColorIndex)
-        if solidHere:
-          continue
-        var adj = false
-        for d in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-          let
-            nx = x + d[0]
-            ny = y + d[1]
-          if nx >= 0 and nx < sim.bodySprite.width and ny >= 0 and ny < sim.bodySprite.height:
-            if sim.bodySprite.pixels[sim.bodySprite.spriteIndex(nx, ny)] != TransparentColorIndex or
-               sim.boneSprite.pixels[sim.boneSprite.spriteIndex(nx, ny)] != TransparentColorIndex:
-              adj = true
-              break
-        if adj:
-          sim.fb.putPixel(bsx + x, bsy + y, OutlineColor)
-    sim.fb.blitSpriteTintAll(sim.bodySprite, bsx, bsy, body.color)
-    sim.fb.blitSpriteRaw(sim.boneSprite, bsx, bsy)
+    sim.fb.blitSpriteOutlined(sim.bodySprite, bsx, bsy, body.color, false)
 
   var drawOrder = newSeq[int](sim.players.len)
   for i in 0 ..< sim.players.len:
@@ -1305,11 +1327,8 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   let remaining = sim.totalTasksRemaining()
   let numStr = $remaining
-  var dx = ScreenWidth - 1
-  for i in countdown(numStr.high, 0):
-    let d = ord(numStr[i]) - ord('0')
-    dx -= sim.digitSprites[d].width
-    sim.fb.blitSprite(sim.digitSprites[d], dx, 0, 0, 0)
+  let dx = ScreenWidth - numStr.len * 7
+  sim.fb.blitAsciiText(sim.asciiSprites, numStr, dx, 0)
 
   sim.fb.packFramebuffer()
   sim.fb.packed
@@ -1319,8 +1338,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.rng = initRand(0xA6019)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
-  result.letterSprites = loadLetterSprites(clientDataDir() / "letters.png")
-  result.digitSprites = loadDigitSprites(clientDataDir() / "numbers.png")
+  result.asciiSprites = loadAsciiSprites("ascii.png")
 
   let sheet = readImage("spritesheet.png")
   result.playerSprite = spriteFromImage(

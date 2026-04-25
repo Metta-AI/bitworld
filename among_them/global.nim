@@ -197,7 +197,7 @@ proc buildSpriteProtocolActorSprite(
   flipH: bool,
   selected: bool = false
 ): seq[uint8] =
-  ## Builds an outlined, tinted actor sprite for the global viewer.
+  ## Builds a tinted actor sprite for the global viewer.
   let
     outWidth = sprite.width + 2
     outHeight = sprite.height + 2
@@ -207,17 +207,18 @@ proc buildSpriteProtocolActorSprite(
   proc outIndex(x, y: int): int =
     y * outWidth + x
 
-  for y in -1 .. sprite.height:
-    for x in -1 .. sprite.width:
-      if sprite.isSolid(x, y, flipH):
-        continue
-      let adjacent =
-        sprite.isSolid(x - 1, y, flipH) or
-        sprite.isSolid(x + 1, y, flipH) or
-        sprite.isSolid(x, y - 1, flipH) or
-        sprite.isSolid(x, y + 1, flipH)
-      if adjacent:
-        result[outIndex(x + 1, y + 1)] = spriteColor(outline)
+  if selected:
+    for y in -1 .. sprite.height:
+      for x in -1 .. sprite.width:
+        if sprite.isSolid(x, y, flipH):
+          continue
+        let adjacent =
+          sprite.isSolid(x - 1, y, flipH) or
+          sprite.isSolid(x + 1, y, flipH) or
+          sprite.isSolid(x, y - 1, flipH) or
+          sprite.isSolid(x, y + 1, flipH)
+        if adjacent:
+          result[outIndex(x + 1, y + 1)] = spriteColor(outline)
 
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
@@ -225,15 +226,14 @@ proc buildSpriteProtocolActorSprite(
       let colorIndex = sprite.pixels[sprite.spriteIndex(srcX, y)]
       if colorIndex == TransparentColorIndex:
         continue
-      let drawColor = if colorIndex == BodyColor: tint else: colorIndex
-      result[outIndex(x + 1, y + 1)] = spriteColor(drawColor)
+      result[outIndex(x + 1, y + 1)] =
+        spriteColor(actorColor(colorIndex, tint))
 
 proc buildSpriteProtocolBodySprite(
   bodySprite: Sprite,
-  boneSprite: Sprite,
   tint: uint8
 ): seq[uint8] =
-  ## Builds an outlined dead body sprite for the global viewer.
+  ## Builds a tinted dead body sprite for the global viewer.
   let
     outWidth = bodySprite.width + 2
     outHeight = bodySprite.height + 2
@@ -242,35 +242,12 @@ proc buildSpriteProtocolBodySprite(
   proc outIndex(x, y: int): int =
     y * outWidth + x
 
-  proc bodySolid(x, y: int): bool =
-    if x < 0 or x >= bodySprite.width or
-        y < 0 or y >= bodySprite.height:
-      return false
-    bodySprite.pixels[bodySprite.spriteIndex(x, y)] !=
-      TransparentColorIndex or
-      boneSprite.pixels[boneSprite.spriteIndex(x, y)] !=
-      TransparentColorIndex
-
-  for y in -1 .. bodySprite.height:
-    for x in -1 .. bodySprite.width:
-      if bodySolid(x, y):
-        continue
-      let adjacent =
-        bodySolid(x - 1, y) or
-        bodySolid(x + 1, y) or
-        bodySolid(x, y - 1) or
-        bodySolid(x, y + 1)
-      if adjacent:
-        result[outIndex(x + 1, y + 1)] = spriteColor(OutlineColor)
-
   for y in 0 ..< bodySprite.height:
     for x in 0 ..< bodySprite.width:
-      if bodySprite.pixels[bodySprite.spriteIndex(x, y)] !=
-          TransparentColorIndex:
-        result[outIndex(x + 1, y + 1)] = spriteColor(tint)
-      let boneColor = boneSprite.pixels[boneSprite.spriteIndex(x, y)]
-      if boneColor != TransparentColorIndex:
-        result[outIndex(x + 1, y + 1)] = spriteColor(boneColor)
+      let colorIndex = bodySprite.pixels[bodySprite.spriteIndex(x, y)]
+      if colorIndex != TransparentColorIndex:
+        result[outIndex(x + 1, y + 1)] =
+          spriteColor(actorColor(colorIndex, tint))
 
 proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
   ## Builds a raw global protocol sprite from a game sprite.
@@ -323,30 +300,17 @@ proc blitSmallText(
   ## Blits small text into protocol pixels.
   var x = baseX
   for ch in text:
-    if ch == ' ':
-      x += 6
-      continue
-    if ch >= '0' and ch <= '9':
+    let idx = asciiIndex(ch)
+    if idx >= 0 and idx < sim.asciiSprites.len:
       target.blitGlyph(
         targetWidth,
         targetHeight,
-        sim.digitSprites[ord(ch) - ord('0')],
+        sim.asciiSprites[idx],
         x,
         baseY,
         color
       )
-    else:
-      let letter = letterIndex(ch)
-      if letter >= 0 and letter < sim.letterSprites.len:
-        target.blitGlyph(
-          targetWidth,
-          targetHeight,
-          sim.letterSprites[letter],
-          x,
-          baseY,
-          color
-        )
-    x += 6
+    x += 7
 
 proc buildSpriteProtocolTextSprite(
   sim: SimServer,
@@ -356,19 +320,16 @@ proc buildSpriteProtocolTextSprite(
   ## Builds a transparent multi-line text sprite.
   result.width = 1
   for line in lines:
-    result.width = max(result.width, line.len * 6)
-  result.height = max(1, lines.len * 8 - 1)
+    result.width = max(result.width, line.len * 7)
+  result.height = max(1, lines.len * 9)
   result.pixels = newSeq[uint8](result.width * result.height)
   for lineIndex, line in lines:
-    let baseY = lineIndex * 8
+    let baseY = lineIndex * 9
     var baseX = 0
     for ch in line:
-      if ch == ' ':
-        baseX += 6
-        continue
-      let letter = letterIndex(ch)
-      if letter >= 0 and letter < sim.letterSprites.len:
-        let sprite = sim.letterSprites[letter]
+      let idx = asciiIndex(ch)
+      if idx >= 0 and idx < sim.asciiSprites.len:
+        let sprite = sim.asciiSprites[idx]
         for y in 0 ..< sprite.height:
           for x in 0 ..< sprite.width:
             if sprite.pixels[sprite.spriteIndex(x, y)] !=
@@ -380,20 +341,7 @@ proc buildSpriteProtocolTextSprite(
                 baseY + y,
                 color
               )
-      elif ch >= '0' and ch <= '9':
-        let sprite = sim.digitSprites[ord(ch) - ord('0')]
-        for y in 0 ..< sprite.height:
-          for x in 0 ..< sprite.width:
-            if sprite.pixels[sprite.spriteIndex(x, y)] !=
-                TransparentColorIndex:
-              result.pixels.putTextSpritePixel(
-                result.width,
-                result.height,
-                baseX + x,
-                baseY + y,
-                color
-              )
-      baseX += 6
+      baseX += 7
 
 proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
   ## Converts a packed Bitworld frame into protocol sprite pixels.
@@ -474,7 +422,6 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
       )
       bodyPixels = buildSpriteProtocolBodySprite(
         sim.bodySprite,
-        sim.boneSprite,
         PlayerColors[i]
       )
     result.addSprite(
