@@ -25,9 +25,14 @@ const
   ViewerButton = rgbx(255, 196, 88, 255)
   ViewerPlayer = rgbx(120, 255, 170, 255)
   ViewerTask = rgbx(255, 132, 146, 255)
+  ViewerTaskGuess = rgbx(255, 220, 92, 255)
+  ViewerRadarLine = rgbx(255, 220, 92, 210)
   ViewerWalk = rgbx(46, 61, 75, 255)
   ViewerWall = rgbx(86, 50, 56, 255)
   ViewerUnknown = rgbx(22, 26, 36, 255)
+  RadarTaskColor = 8'u8
+  RadarPeripheryMargin = 1
+  RadarMatchTolerance = 2
 
 type
   TileKnowledge = enum
@@ -47,6 +52,10 @@ type
 
   PathStep = object
     found: bool
+    x: int
+    y: int
+
+  RadarDot = object
     x: int
     y: int
 
@@ -77,6 +86,8 @@ type
     hasGoal: bool
     hasPathStep: bool
     pathStep: PathStep
+    radarDots: seq[RadarDot]
+    taskGuesses: seq[bool]
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
@@ -265,6 +276,91 @@ proc rememberVisibleMap(bot: var Bot) =
       elif bot.sim.walkMask[idx]:
         bot.mapTiles[idx] = TileOpen
 
+proc isRadarPeriphery(x, y: int): bool =
+  ## Returns true for pixels in the task radar strip.
+  x <= RadarPeripheryMargin or y <= RadarPeripheryMargin or
+    x >= ScreenWidth - 1 - RadarPeripheryMargin or
+    y >= ScreenHeight - 1 - RadarPeripheryMargin
+
+proc addRadarDot(dots: var seq[RadarDot], x, y: int) =
+  ## Adds one radar dot unless a nearby dot is already present.
+  for dot in dots:
+    if abs(dot.x - x) <= 1 and abs(dot.y - y) <= 1:
+      return
+  dots.add(RadarDot(x: x, y: y))
+
+proc scanRadarDots(bot: var Bot) =
+  ## Scans screen periphery for yellow task radar pixels.
+  bot.radarDots.setLen(0)
+  for y in 0 ..< ScreenHeight:
+    for x in 0 ..< ScreenWidth:
+      if not isRadarPeriphery(x, y):
+        continue
+      if bot.unpacked[y * ScreenWidth + x] == RadarTaskColor:
+        bot.radarDots.addRadarDot(x, y)
+
+proc projectedRadarDot(
+  bot: Bot,
+  task: TaskStation
+): tuple[visible: bool, x: int, y: int] =
+  ## Projects an offscreen task center to its expected radar edge pixel.
+  if not bot.localized:
+    return
+  let
+    center = task.taskCenter()
+    tcx = center.x - bot.cameraX
+    tcy = center.y - bot.cameraY
+  if tcx >= 0 and tcx < ScreenWidth and tcy >= 0 and tcy < ScreenHeight:
+    return (true, tcx, tcy)
+  let
+    px = float(bot.playerWorldX() + CollisionW div 2 - bot.cameraX)
+    py = float(bot.playerWorldY() + CollisionH div 2 - bot.cameraY)
+    dx = float(tcx) - px
+    dy = float(tcy) - py
+  if abs(dx) < 0.5 and abs(dy) < 0.5:
+    return
+  let
+    minX = 0.0
+    maxX = float(ScreenWidth - 1)
+    minY = 0.0
+    maxY = float(ScreenHeight - 1)
+  var
+    ex: float
+    ey: float
+  if abs(dx) > abs(dy):
+    if dx > 0:
+      ex = maxX
+    else:
+      ex = minX
+    ey = py + dy * (ex - px) / dx
+    ey = clamp(ey, minY, maxY)
+  else:
+    if dy > 0:
+      ey = maxY
+    else:
+      ey = minY
+    ex = px + dx * (ey - py) / dy
+    ex = clamp(ex, minX, maxX)
+  (false, int(ex), int(ey))
+
+proc updateTaskGuesses(bot: var Bot) =
+  ## Marks task candidates whose expected radar dots match yellow pixels.
+  if bot.taskGuesses.len != bot.sim.tasks.len:
+    bot.taskGuesses = newSeq[bool](bot.sim.tasks.len)
+  if not bot.localized:
+    return
+  bot.scanRadarDots()
+  if bot.radarDots.len == 0:
+    return
+  for i in 0 ..< bot.sim.tasks.len:
+    let projected = bot.projectedRadarDot(bot.sim.tasks[i])
+    if projected.visible:
+      continue
+    for dot in bot.radarDots:
+      if abs(dot.x - projected.x) <= RadarMatchTolerance and
+          abs(dot.y - projected.y) <= RadarMatchTolerance:
+        bot.taskGuesses[i] = true
+
 proc thought(bot: var Bot, text: string) =
   ## Emits changed bot thoughts to stdout.
   if text != bot.lastThought:
@@ -296,6 +392,12 @@ proc inputMaskSummary(mask: uint8): string =
   if parts.len == 0:
     return "idle"
   parts.join(", ")
+
+proc taskGuessCount(bot: Bot): int =
+  ## Returns the number of task stations guessed from radar dots.
+  for guessed in bot.taskGuesses:
+    if guessed:
+      inc result
 
 proc cameraLockName(lock: CameraLock): string =
   ## Returns a human-readable camera lock name.
@@ -387,6 +489,19 @@ proc findPathStep(bot: Bot, goalX, goalY: int): PathStep =
 proc nearestTaskGoal(bot: Bot): tuple[found: bool, x: int, y: int, name: string] =
   ## Returns the closest known task station center.
   var bestDistance = high(int)
+  for i in 0 ..< bot.sim.tasks.len:
+    let task = bot.sim.tasks[i]
+    if bot.taskGuesses.len == bot.sim.tasks.len and not bot.taskGuesses[i]:
+      continue
+    let center = task.taskCenter()
+    if not bot.passable(center.x, center.y):
+      continue
+    let distance = heuristic(bot.playerWorldX(), bot.playerWorldY(), center.x, center.y)
+    if distance < bestDistance:
+      bestDistance = distance
+      result = (true, center.x, center.y, task.name)
+  if result.found:
+    return
   for task in bot.sim.tasks:
     let center = task.taskCenter()
     if not bot.passable(center.x, center.y):
@@ -415,6 +530,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   bot.updateLocation()
   bot.rememberVisibleMap()
+  bot.updateTaskGuesses()
   bot.hasGoal = false
   bot.hasPathStep = false
   bot.intent = "localizing"
@@ -456,6 +572,7 @@ proc initBot(): Bot =
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
+  result.taskGuesses = newSeq[bool](result.sim.tasks.len)
   result.cameraX = clamp(ButtonX - 48, 0, MapWidth - ScreenWidth)
   result.cameraY = clamp(ButtonY - 66, 0, MapHeight - ScreenHeight)
   result.lastCameraX = result.cameraX
@@ -469,6 +586,20 @@ proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) 
   sk.drawRect(vec2(pos.x, pos.y + size.y - thickness), vec2(size.x, thickness), color)
   sk.drawRect(pos, vec2(thickness, size.y), color)
   sk.drawRect(vec2(pos.x + size.x - thickness, pos.y), vec2(thickness, size.y), color)
+
+proc drawLine(sk: Silky, a, b: Vec2, color: ColorRGBX) =
+  ## Draws a simple pixel-like line.
+  let
+    dx = b.x - a.x
+    dy = b.y - a.y
+    steps = max(1, int(max(abs(dx), abs(dy)) / 4.0'f))
+  for i in 0 .. steps:
+    let t = i.float32 / steps.float32
+    sk.drawRect(
+      vec2(a.x + dx * t - 1.0'f, a.y + dy * t - 1.0'f),
+      vec2(3, 3),
+      color
+    )
 
 proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
   ## Draws the latest 128x128 game frame.
@@ -505,6 +636,17 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
     vec2(7, 7),
     ViewerPlayer
   )
+  let playerPos = vec2(
+    x + PlayerScreenX.float32 * pixelScale,
+    y + PlayerScreenY.float32 * pixelScale
+  )
+  for dot in bot.radarDots:
+    let dotPos = vec2(
+      x + dot.x.float32 * pixelScale + pixelScale * 0.5,
+      y + dot.y.float32 * pixelScale + pixelScale * 0.5
+    )
+    sk.drawLine(playerPos, dotPos, ViewerRadarLine)
+    sk.drawRect(dotPos - vec2(4, 4), vec2(9, 9), ViewerTaskGuess)
 
 proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
   ## Draws the map, inferred viewport, and known task stations.
@@ -536,6 +678,25 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
       vec2(7, 7),
       ViewerTask
     )
+  if bot.taskGuesses.len == bot.sim.tasks.len:
+    for i in 0 ..< bot.sim.tasks.len:
+      if not bot.taskGuesses[i]:
+        continue
+      let center = bot.sim.tasks[i].taskCenter()
+      let pos = vec2(
+        x + center.x.float32 * scale - 5,
+        y + center.y.float32 * scale - 5
+      )
+      sk.drawOutline(pos, vec2(11, 11), ViewerTaskGuess, 2)
+      if bot.localized:
+        sk.drawLine(
+          vec2(
+            x + bot.playerWorldX().float32 * scale,
+            y + bot.playerWorldY().float32 * scale
+          ),
+          pos + vec2(5, 5),
+          ViewerRadarLine
+        )
   sk.drawOutline(
     vec2(
       x + ButtonX.float32 * scale,
@@ -635,6 +796,8 @@ proc pumpViewer(
     "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
+    "radar dots: " & $bot.radarDots.len & " task guesses=" &
+      $bot.taskGuessCount() & "\n" &
     "intent: " & bot.intent & "\n" &
     "next input: " & inputMaskSummary(bot.lastMask) & "\n" &
     "last thought: " & (if bot.lastThought.len > 0: bot.lastThought else: "waiting")
