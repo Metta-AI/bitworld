@@ -532,7 +532,7 @@ proc updateTaskIcons(bot: var Bot) =
   bot.scanTaskIcons()
   for i in 0 ..< bot.sim.tasks.len:
     let task = bot.sim.tasks[i]
-    if bot.taskIconVisibleFor(task):
+    if bot.taskStates[i] != TaskCompleted and bot.taskIconVisibleFor(task):
       bot.taskStates[i] = TaskMandatory
       bot.taskIconMisses[i] = 0
     elif bot.taskStates[i] in {TaskMaybe, TaskMandatory} and
@@ -540,7 +540,7 @@ proc updateTaskIcons(bot: var Bot) =
         not (bot.taskHoldTicks > 0 and bot.taskHoldIndex == i):
       inc bot.taskIconMisses[i]
       if bot.taskIconMisses[i] >= TaskIconMissThreshold:
-        bot.taskStates[i] = TaskNotDoing
+        bot.taskStates[i] = TaskCompleted
         bot.taskIconMisses[i] = 0
     else:
       bot.taskIconMisses[i] = 0
