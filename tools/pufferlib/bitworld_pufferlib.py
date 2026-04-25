@@ -86,6 +86,7 @@ class EnvironmentSpec:
 
 
 ENV_SPECS: dict[str, EnvironmentSpec] = {
+    "among_them": EnvironmentSpec(name="among_them", metric_name="task_progress", default_episode_steps=512),
     "asteroid_arena": EnvironmentSpec(name="asteroid_arena", default_episode_steps=96),
     "big_adventure": EnvironmentSpec(name="big_adventure", metric_name="coins_collected", default_episode_steps=512),
     "boundless_factory": EnvironmentSpec(name="boundless_factory", metric_name="factory_progress", default_episode_steps=1024),

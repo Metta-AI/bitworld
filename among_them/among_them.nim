@@ -9,6 +9,8 @@ when isMainModule:
     configPath = ""
     saveReplayPath = ""
     loadReplayPath = ""
+    targetFps = -1
+    seed = 0xA6019
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -21,6 +23,10 @@ when isMainModule:
         configJson = val
       of "config-file":
         configPath = val
+      of "fps":
+        targetFps = parseInt(val) * FpsScale
+      of "seed":
+        seed = parseInt(val)
       of "save-replay":
         saveReplayPath = val
       of "load-replay":
@@ -32,4 +38,6 @@ when isMainModule:
     config.update(readFile(configPath))
   if configJson.len > 0:
     config.update(configJson)
-  runServerLoop(address, port, config, saveReplayPath, loadReplayPath)
+  if targetFps >= 0:
+    config.targetFps = targetFps
+  runServerLoop(address, port, config, seed, saveReplayPath, loadReplayPath)

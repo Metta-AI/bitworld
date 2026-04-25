@@ -2,7 +2,7 @@ import jsony, pixie
 import protocol
 import ../client/aseprite
 import ../common/server
-import std/[json, math, os, random]
+import std/[json, os, random]
 
 const
   GameName* = "among_them"
@@ -27,7 +27,8 @@ const
   FrictionDen* = 256
   MaxSpeed* = 704
   StopThreshold* = 8
-  TargetFps* = 24.0
+  FpsScale* = 1000
+  TargetFps* = 24 * FpsScale
   SpaceColor* = 0'u8
   TintColor* = 3'u8
   ShadeTintColor* = 9'u8
@@ -96,6 +97,25 @@ const
   ]
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
+  RewardWebSocketPath* = "/reward"
+  SpawnOffsets = [
+    (x: 28, y: 0),
+    (x: 20, y: 20),
+    (x: 0, y: 28),
+    (x: -20, y: 20),
+    (x: -28, y: 0),
+    (x: -20, y: -20),
+    (x: 0, y: -28),
+    (x: 20, y: -20),
+    (x: 12, y: 26),
+    (x: -12, y: 26),
+    (x: -26, y: 12),
+    (x: -26, y: -12),
+    (x: -12, y: -26),
+    (x: 12, y: -26),
+    (x: 26, y: -12),
+    (x: 26, y: 12),
+  ]
 
 type
   PlayerRole* = enum
@@ -139,7 +159,7 @@ type
     frictionDen*: int
     maxSpeed*: int
     stopThreshold*: int
-    targetFps*: float
+    targetFps*: int
     killRange*: int
     killCooldownTicks*: int
     taskCompleteTicks*: int
@@ -370,19 +390,6 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
     raise newException(AmongThemError, "Config field " & name & " must be an integer.")
   value = item.getInt()
 
-proc readConfigFloat(node: JsonNode, name: string, value: var float) =
-  ## Reads one optional float config field.
-  if not node.hasKey(name):
-    return
-  let item = node[name]
-  case item.kind
-  of JInt:
-    value = float(item.getInt())
-  of JFloat:
-    value = item.getFloat()
-  else:
-    raise newException(AmongThemError, "Config field " & name & " must be a number.")
-
 proc readConfigBool(node: JsonNode, name: string, value: var bool) =
   ## Reads one optional boolean config field.
   if not node.hasKey(name):
@@ -428,7 +435,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("frictionDen", config.frictionDen)
   node.readConfigInt("maxSpeed", config.maxSpeed)
   node.readConfigInt("stopThreshold", config.stopThreshold)
-  node.readConfigFloat("targetFps", config.targetFps)
+  node.readConfigInt("targetFps", config.targetFps)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
@@ -525,11 +532,9 @@ proc findSpawn*(sim: SimServer): tuple[x, y: int] =
   let
     buttonX = 536
     buttonY = 120
-    spawnRadius = 28
-    n = max(1, sim.players.len + 1)
-    angle = float(sim.players.len) * 2.0 * 3.14159265 / float(n)
-    px = buttonX + int(float(spawnRadius) * cos(angle))
-    py = buttonY + int(float(spawnRadius) * sin(angle))
+    offset = SpawnOffsets[sim.players.len mod SpawnOffsets.len]
+    px = buttonX + offset.x
+    py = buttonY + offset.y
   if sim.canOccupy(px, py):
     return (px, py)
   (buttonX, buttonY)
@@ -1414,33 +1419,35 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
       if tcx >= 0 and tcx < ScreenWidth and tcy >= 0 and tcy < ScreenHeight:
         continue
       let
-        px = float(player.x + CollisionW div 2 - cameraX)
-        py = float(player.y + CollisionH div 2 - cameraY)
-        dx = float(tcx) - px
-        dy = float(tcy) - py
-      if abs(dx) < 0.5 and abs(dy) < 0.5:
+        px = player.x + CollisionW div 2 - cameraX
+        py = player.y + CollisionH div 2 - cameraY
+        dx = tcx - px
+        dy = tcy - py
+      if dx == 0 and dy == 0:
         continue
-      var ex, ey: float
+      var
+        ex: int
+        ey: int
       let
-        minX = float(margin)
-        maxX = float(ScreenWidth - 1 - margin)
-        minY = float(margin)
-        maxY = float(ScreenHeight - 1 - margin)
+        minX = margin
+        maxX = ScreenWidth - 1 - margin
+        minY = margin
+        maxY = ScreenHeight - 1 - margin
       if abs(dx) > abs(dy):
         if dx > 0:
           ex = maxX
         else:
           ex = minX
-        ey = py + dy * (ex - px) / dx
+        ey = py + (dy * (ex - px)) div dx
         ey = clamp(ey, minY, maxY)
       else:
         if dy > 0:
           ey = maxY
         else:
           ey = minY
-        ex = px + dx * (ey - py) / dy
+        ex = px + (dx * (ey - py)) div dy
         ex = clamp(ex, minX, maxX)
-      sim.fb.putPixel(int(ex), int(ey), radarColor)
+      sim.fb.putPixel(ex, ey, radarColor)
 
   if player.role == Imposter and player.alive:
     let
@@ -1459,9 +1466,9 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc initSimServer*(config: GameConfig): SimServer =
+proc initSimServer*(config: GameConfig, seed = 0xA6019): SimServer =
   result.config = config
-  result.rng = initRand(0xA6019)
+  result.rng = initRand(seed)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
   result.asciiSprites = loadAsciiSprites("ascii.png")
