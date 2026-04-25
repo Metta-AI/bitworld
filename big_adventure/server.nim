@@ -60,6 +60,7 @@ type
     masks: seq[uint8]
     lastAppliedMasks: seq[uint8]
     playing: bool
+    looping: bool
     speedIndex: int
 
 proc tickTime(tick: int): uint32 =
@@ -300,6 +301,7 @@ proc initReplayPlayer(data: ReplayData): ReplayPlayer =
   result.masks = @[]
   result.lastAppliedMasks = @[]
   result.playing = true
+  result.looping = false
   result.speedIndex = 0
 
 proc replaySpeed(replay: ReplayPlayer): int =
@@ -309,6 +311,12 @@ proc replaySpeed(replay: ReplayPlayer): int =
   of 1: 2
   of 2: 4
   else: 8
+
+proc replayMaxTick(replay: ReplayPlayer): int =
+  ## Returns the final tick available in the replay.
+  if replay.data.hashes.len == 0:
+    return 0
+  int(replay.data.hashes[^1].tick)
 
 proc resetReplay(replay: var ReplayPlayer) =
   ## Resets replay playback cursors.
@@ -399,6 +407,15 @@ proc seekReplay(replay: var ReplayPlayer, sim: var SimServer, tick: int) =
   while sim.tickCount < tick and replay.hashIndex < replay.data.hashes.len:
     replay.stepReplay(sim)
 
+proc applyReplaySeek(
+  replay: var ReplayPlayer,
+  sim: var SimServer,
+  tick: int
+) =
+  ## Seeks replay playback and pauses on the target tick.
+  replay.playing = false
+  replay.seekReplay(sim, clamp(tick, 0, replay.replayMaxTick()))
+
 proc applyReplayCommand(
   replay: var ReplayPlayer,
   sim: var SimServer,
@@ -406,8 +423,12 @@ proc applyReplayCommand(
 ) =
   ## Applies one global viewer replay command.
   case command
-  of ' ', 'p', 'P':
+  of ' ':
     replay.playing = not replay.playing
+  of 'p':
+    replay.playing = true
+  of 'P':
+    replay.playing = false
   of '+', '=':
     replay.speedIndex = min(replay.speedIndex + 1, 3)
   of '-', '_':
@@ -422,7 +443,15 @@ proc applyReplayCommand(
     replay.speedIndex = 3
   of ',', '<':
     replay.playing = false
-    replay.seekReplay(sim, max(0, sim.tickCount - ReplayFps * 5))
+    replay.seekReplay(sim, 0)
+  of 'b':
+    replay.playing = false
+    replay.seekReplay(sim, max(0, sim.tickCount - 1))
+  of 'e':
+    replay.playing = false
+    replay.seekReplay(sim, replay.replayMaxTick())
+  of 'r':
+    replay.looping = not replay.looping
   of '.', '>':
     replay.playing = false
     replay.seekReplay(sim, sim.tickCount + ReplayFps * 5)
@@ -552,6 +581,7 @@ proc runServerLoop*(
       spriteViewers: seq[WebSocket] = @[]
       spriteStates: seq[SpriteViewerState] = @[]
       replayCommands: seq[char] = @[]
+      replaySeekTicks: seq[int] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -607,17 +637,25 @@ proc runServerLoop*(
         for websocket, state in appState.spriteViewers.pairs:
           spriteViewers.add(websocket)
           spriteStates.add(state)
+          if state.replaySeekTick >= 0:
+            replaySeekTicks.add(state.replaySeekTick)
           for command in state.replayCommands:
             replayCommands.add(command)
           appState.spriteViewers[websocket].replayCommands.setLen(0)
+          appState.spriteViewers[websocket].replaySeekTick = -1
 
     if replayLoaded:
+      for seekTick in replaySeekTicks:
+        replayPlayer.applyReplaySeek(sim, seekTick)
       for command in replayCommands:
         replayPlayer.applyReplayCommand(sim, command)
       if replayPlayer.playing:
         for _ in 0 ..< replayPlayer.replaySpeed():
           if replayPlayer.playing:
             replayPlayer.stepReplay(sim)
+          if replayPlayer.looping and not replayPlayer.playing:
+            replayPlayer.seekReplay(sim, 0)
+            replayPlayer.playing = true
     else:
       sim.step(inputs)
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
@@ -643,7 +681,9 @@ proc runServerLoop*(
         nextState,
         if replayLoaded: sim.tickCount else: -1,
         replayPlayer.playing,
-        replayPlayer.replaySpeed()
+        replayPlayer.replaySpeed(),
+        replayPlayer.replayMaxTick(),
+        replayPlayer.looping
       )
       if packet.len == 0:
         continue

@@ -46,7 +46,8 @@ const palette=[
 ];
 let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=new WebSocket(address);
-let zoom=1,panX=0,panY=0,autoFit=true,dragging=false,dragX=0,dragY=0;
+let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
+let draggingMap=false,dragX=0,dragY=0;
 socket.binaryType="arraybuffer";
 ctx.imageSmoothingEnabled=false;
 
@@ -97,7 +98,25 @@ function mapPoint(event){
   };
 }
 
-function mousePoint(event){
+function uiLayerPoint(event,layer){
+  if(!layer||!layer.image||((layer.flags&UiFlag)===0))return null;
+  const pos=layerScreenPos(layer);
+  return {
+    x:Math.floor((event.clientX-pos.x)*layer.width/pos.w),
+    y:Math.floor((event.clientY-pos.y)*layer.height/pos.h),
+    layer:layer.id
+  };
+}
+
+function mousePoint(event,preferredLayer=null){
+  if(preferredLayer!==null){
+    const layer=layers.get(preferredLayer);
+    if(layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType)){
+      return mapPoint(event);
+    }
+    const point=uiLayerPoint(event,layer);
+    if(point)return point;
+  }
   const orderedLayers=[...layers.values()].sort((a,b)=>
     b.type-a.type||b.id-a.id
   );
@@ -106,11 +125,7 @@ function mousePoint(event){
     const pos=layerScreenPos(layer);
     if(event.clientX<pos.x||event.clientY<pos.y||
         event.clientX>=pos.x+pos.w||event.clientY>=pos.y+pos.h)continue;
-    return {
-      x:Math.floor((event.clientX-pos.x)*layer.width/pos.w),
-      y:Math.floor((event.clientY-pos.y)*layer.height/pos.h),
-      layer:layer.id
-    };
+    return uiLayerPoint(event,layer);
   }
   return mapPoint(event);
 }
@@ -121,9 +136,11 @@ function writeI16(bytes,offset,value){
   bytes[offset+1]=value>>8;
 }
 
-function sendMousePosition(event){
+function sendMousePosition(event,preferredLayer=null){
   if(socket.readyState!==WebSocket.OPEN)return;
-  const point=mousePoint(event),bytes=new Uint8Array(6);
+  const point=mousePoint(event,preferredLayer);
+  if(!point)return;
+  const bytes=new Uint8Array(6);
   bytes[0]=0x82;
   writeI16(bytes,1,point.x);
   writeI16(bytes,3,point.y);
@@ -131,9 +148,11 @@ function sendMousePosition(event){
   socket.send(bytes);
 }
 
-function sendMouseButton(event,down){
+function sendMouseButton(event,down,preferredLayer=null){
   if(socket.readyState!==WebSocket.OPEN)return;
-  const point=mousePoint(event),bytes=new Uint8Array(9);
+  const point=mousePoint(event,preferredLayer);
+  if(!point)return;
+  const bytes=new Uint8Array(9);
   bytes[0]=0x82;
   writeI16(bytes,1,point.x);
   writeI16(bytes,3,point.y);
@@ -223,10 +242,11 @@ function draw(){
   const orderedLayers=[...layers.values()].sort((a,b)=>a.type-b.type||a.id-b.id);
   for(const layer of orderedLayers){
     if(!layer.image)continue;
-    layer.image.data.fill(0);
     const ordered=[...objects.values()].filter(object=>object.layer===layer.id).sort((a,b)=>
       a.z-b.z||a.y-b.y||a.id-b.id
     );
+    if((layer.flags&UiFlag)!==0&&ordered.length===0)continue;
+    layer.image.data.fill(0);
     for(const object of ordered){
       const sprite=sprites.get(object.spriteId);
       if(!sprite)continue;
@@ -326,25 +346,31 @@ addEventListener("wheel",event=>{
   draw();
 },{passive:false});
 addEventListener("pointerdown",event=>{
-  autoFit=false;
-  sendMouseButton(event,true);
-  dragging=true;
-  dragX=event.clientX-panX;
-  dragY=event.clientY-panY;
+  const point=mousePoint(event);
+  activeMouseLayer=point?point.layer:null;
+  const layer=layers.get(activeMouseLayer);
+  draggingMap=!!layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType);
+  if(draggingMap){
+    autoFit=false;
+    dragX=event.clientX-panX;
+    dragY=event.clientY-panY;
+  }
+  sendMouseButton(event,true,activeMouseLayer);
   try{canvas.setPointerCapture(event.pointerId)}catch(e){}
 });
 addEventListener("pointermove",event=>{
-  if(dragging){
+  if(draggingMap){
     panX=event.clientX-dragX;
     panY=event.clientY-dragY;
     applyView();
     draw();
   }
-  sendMousePosition(event);
+  sendMousePosition(event,activeMouseLayer);
 });
 addEventListener("pointerup",event=>{
-  dragging=false;
-  sendMouseButton(event,false);
+  sendMouseButton(event,false,activeMouseLayer);
+  draggingMap=false;
+  activeMouseLayer=null;
   try{canvas.releasePointerCapture(event.pointerId)}catch(e){}
 });
 addEventListener("dblclick",()=>{

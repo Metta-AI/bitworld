@@ -1,6 +1,28 @@
 import protocol, sim
 import ../common/server
-import std/strutils
+import std/[os, strutils]
+
+const
+  ReplayScrubberSpriteId = 404
+  ReplayScrubberObjectId = 4004
+  ReplayScrubberWidth = 84
+  ReplayScrubberHeight = 5
+  ReplayScrubberTrackY = 2
+  ReplayScrubberY = 8
+  PlayerSelectPadding = 4
+  TransportIconSize = 6
+  TransportIconHeight = 6
+  TransportIconCount = 5
+  TransportButtonGap = 2
+  TransportButtonStride = TransportIconSize + TransportButtonGap
+  TransportSpeedX = 0
+  TransportSpeedY = 8
+  TransportWidth = 108
+  TransportHeight = 14
+  TransportX = 2
+  TransportY = 1
+
+var TransportSheet: Sprite
 
 type
   SpriteViewerState* = object
@@ -9,19 +31,29 @@ type
     mouseX*: int
     mouseY*: int
     mouseLayer*: int
+    mouseDown*: bool
     selectedPlayerId*: int
     clickPending*: bool
+    scrubbingReplay*: bool
+    replaySeekTick*: int
     replayCommands*: seq[char]
 
 proc initSpriteViewerState*(): SpriteViewerState =
   ## Returns the default state for one sprite protocol viewer.
   result.mouseLayer = MapLayerId
   result.selectedPlayerId = -1
+  result.replaySeekTick = -1
   result.replayCommands = @[]
 
 proc spriteColor(color: uint8): uint8 =
   ## Converts a game palette index to a sprite protocol pixel.
   color + 1'u8
+
+proc transportSheet(): Sprite =
+  ## Returns the cached transport icon sheet.
+  if TransportSheet.width == 0:
+    TransportSheet = readRequiredSprite(clientDataDir() / "transport.png")
+  TransportSheet
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   ## Appends one unsigned byte to a sprite protocol packet.
@@ -119,8 +151,12 @@ proc applySpriteViewerMessage*(
         code = message[offset].uint8
         down = message[offset + 1].uint8
       offset += 2
-      if code == 0x01'u8 and down == 1'u8:
-        state.clickPending = true
+      if code == 0x01'u8:
+        state.mouseDown = down == 1'u8
+        if state.mouseDown:
+          state.clickPending = true
+        else:
+          state.scrubbingReplay = false
     of 0x81:
       if offset + 2 > message.len:
         return
@@ -250,6 +286,63 @@ proc putTextSpritePixel(
     return
   pixels[y * width + x] = spriteColor(color)
 
+proc blitGlyph(
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  sprite: Sprite,
+  baseX, baseY: int,
+  color: uint8
+) =
+  ## Blits a single-color glyph into protocol pixels.
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      if sprite.pixels[sprite.spriteIndex(x, y)] ==
+          TransparentColorIndex:
+        continue
+      target.putTextSpritePixel(
+        targetWidth,
+        targetHeight,
+        baseX + x,
+        baseY + y,
+        color
+      )
+
+proc blitSmallText(
+  sim: SimServer,
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  text: string,
+  baseX, baseY: int,
+  color: uint8
+) =
+  ## Blits small text into protocol pixels.
+  var x = baseX
+  for ch in text:
+    if ch == ' ':
+      x += 6
+      continue
+    if ch >= '0' and ch <= '9':
+      target.blitGlyph(
+        targetWidth,
+        targetHeight,
+        sim.digitSprites[ord(ch) - ord('0')],
+        x,
+        baseY,
+        color
+      )
+    else:
+      let letter = letterIndex(ch)
+      if letter >= 0 and letter < sim.letterSprites.len:
+        target.blitGlyph(
+          targetWidth,
+          targetHeight,
+          sim.letterSprites[letter],
+          x,
+          baseY,
+          color
+        )
+    x += 6
+
 proc buildSpriteProtocolTextSprite(
   sim: SimServer,
   lines: openArray[string],
@@ -302,6 +395,107 @@ proc playerIdentity(player: Actor): string =
   ## Returns a sprite text friendly player identity.
   player.address.replace(":", " ")
 
+proc buildReplayScrubberSprite(
+  tick, maxTick: int
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a compact replay scrubber sprite.
+  result.width = ReplayScrubberWidth
+  result.height = ReplayScrubberHeight
+  result.pixels = newSeq[uint8](ReplayScrubberWidth * ReplayScrubberHeight)
+  let knobX =
+    if maxTick > 0:
+      clamp(
+        (tick * (ReplayScrubberWidth - 1)) div maxTick,
+        0,
+        ReplayScrubberWidth - 1
+      )
+    else:
+      0
+
+  for x in 0 ..< ReplayScrubberWidth:
+    result.pixels[
+      ReplayScrubberTrackY * ReplayScrubberWidth + x
+    ] = spriteColor(1'u8)
+  for x in 0 .. knobX:
+    result.pixels[
+      ReplayScrubberTrackY * ReplayScrubberWidth + x
+    ] = spriteColor(10'u8)
+  for y in 0 ..< ReplayScrubberHeight:
+    result.pixels[y * ReplayScrubberWidth + knobX] = spriteColor(2'u8)
+  if knobX > 0:
+    result.pixels[
+      ReplayScrubberTrackY * ReplayScrubberWidth + knobX - 1
+    ] = spriteColor(2'u8)
+  if knobX < ReplayScrubberWidth - 1:
+    result.pixels[
+      ReplayScrubberTrackY * ReplayScrubberWidth + knobX + 1
+    ] = spriteColor(2'u8)
+
+proc blitTransportIcon(
+  target: var seq[uint8],
+  sheet: Sprite,
+  cell, baseX, baseY: int,
+  tint: uint8
+) =
+  ## Blits one transport icon cell into protocol pixels.
+  let sourceX = cell * TransportIconSize
+  for y in 0 ..< TransportIconHeight:
+    for x in 0 ..< TransportIconSize:
+      let colorIndex = sheet.pixels[sheet.spriteIndex(sourceX + x, y)]
+      if colorIndex == TransparentColorIndex:
+        continue
+      target[
+        (baseY + y) * TransportWidth + baseX + x
+      ] = spriteColor(tint)
+
+proc buildReplayControlsSprite(
+  sim: SimServer,
+  replayPlaying: bool,
+  replaySpeed: int,
+  replayLooping: bool
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds the replay transport controls sprite.
+  result.width = TransportWidth
+  result.height = TransportHeight
+  result.pixels = newSeq[uint8](TransportWidth * TransportHeight)
+  let
+    sheet = transportSheet()
+    iconCells = [
+      0,
+      if replayPlaying: 2 else: 1,
+      3,
+      4,
+      5
+    ]
+  for i in 0 ..< iconCells.len:
+    let tint =
+      if i == 3:
+        if replayLooping: 10'u8 else: 1'u8
+      else:
+        2'u8
+    result.pixels.blitTransportIcon(
+      sheet,
+      iconCells[i],
+      i * TransportButtonStride,
+      0,
+      tint
+    )
+
+  let speedTexts = ["1X", "2X", "4X", "8X"]
+  var x = TransportSpeedX
+  for i in 0 ..< speedTexts.len:
+    let color = if (1 shl i) == replaySpeed: 10'u8 else: 1'u8
+    sim.blitSmallText(
+      result.pixels,
+      TransportWidth,
+      TransportHeight,
+      speedTexts[i],
+      x,
+      TransportSpeedY,
+      color
+    )
+    x += 16
+
 proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
   ## Converts a packed Bitworld frame into protocol sprite pixels.
   result = newSeq[uint8](ScreenWidth * ScreenHeight)
@@ -337,10 +531,10 @@ proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
   for player in sim.players:
     let
       size = player.sprite.facedSize(FaceDown)
-      x = player.x - 1
-      y = player.y - 1
-      w = size.width + 2
-      h = size.height + 2
+      x = player.x - 1 - PlayerSelectPadding
+      y = player.y - 1 - PlayerSelectPadding
+      w = size.width + 2 + PlayerSelectPadding * 2
+      h = size.height + 2 + PlayerSelectPadding * 2
     if mouseX >= x and mouseX < x + w and
         mouseY >= y and mouseY < y + h and
         player.y >= bestY:
@@ -353,25 +547,53 @@ proc replayCommandAt(layer, x, y: int): char =
     return '\0'
 
   let
-    localX = x - 2
-    localY = y - 1
-  if localY >= 0 and localY < 8:
-    if localX >= 0 and localX < 36:
-      return ','
-    if localX >= 42:
-      return ' '
-    return '\0'
-  if localY < 8 or localY >= 16:
-    return '\0'
-  if localX >= 0 and localX < 12:
-    return '1'
-  if localX >= 18 and localX < 30:
-    return '2'
-  if localX >= 36 and localX < 48:
-    return '4'
-  if localX >= 54 and localX < 66:
-    return '8'
+    localX = x - TransportX
+    localY = y - TransportY
+  if localY >= 0 and localY < TransportIconHeight:
+    let index = localX div TransportButtonStride
+    if index < 0 or index >= TransportIconCount:
+      return '\0'
+    if localX - index * TransportButtonStride >= TransportIconSize:
+      return '\0'
+    case index
+    of 0: return '<'
+    of 1: return ' '
+    of 2: return 'e'
+    of 3: return 'r'
+    of 4: return 'b'
+    else: return '\0'
+  if localY >= TransportSpeedY and localY < TransportSpeedY + 6:
+    let speedX = localX - TransportSpeedX
+    if speedX >= 0 and speedX < 12:
+      return '1'
+    if speedX >= 16 and speedX < 28:
+      return '2'
+    if speedX >= 32 and speedX < 44:
+      return '4'
+    if speedX >= 48 and speedX < 60:
+      return '8'
   '\0'
+
+proc replayScrubTickAt(
+  layer, x, y, maxTick: int,
+  requireInside = true
+): int =
+  ## Returns the replay tick under the scrubber pointer.
+  if layer != ReplayCenterBottomLayerId or maxTick < 0:
+    return -1
+  let
+    scrubberX = max(0, (ScreenWidth - ReplayScrubberWidth) div 2)
+    localX = x - scrubberX
+    localY = y - ReplayScrubberY
+  if requireInside and (
+      localX < 0 or localX >= ReplayScrubberWidth or
+      localY < 0 or localY >= ReplayScrubberHeight
+    ):
+    return -1
+  if ReplayScrubberWidth <= 1:
+    return 0
+  let clampedX = clamp(localX, 0, ReplayScrubberWidth - 1)
+  clamp((clampedX * maxTick) div (ReplayScrubberWidth - 1), 0, maxTick)
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -387,7 +609,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     ReplayCenterBottomLayerType,
     UiLayerFlag
   )
-  result.addViewport(ReplayCenterBottomLayerId, ScreenWidth, 8)
+  result.addViewport(ReplayCenterBottomLayerId, ScreenWidth, 16)
   result.addLayer(
     ReplayBottomLeftLayerId,
     ReplayBottomLeftLayerType,
@@ -444,24 +666,49 @@ proc buildSpriteProtocolUpdates*(
   nextState: var SpriteViewerState,
   replayTick = -1,
   replayPlaying = false,
-  replaySpeed = 1
+  replaySpeed = 1,
+  replayMaxTick = -1,
+  replayLooping = false
 ): seq[uint8] =
   ## Builds global viewer object updates for the current tick.
   result = @[]
   nextState = state
   nextState.replayCommands.setLen(0)
+  nextState.replaySeekTick = -1
   if nextState.clickPending:
-    let command = replayCommandAt(
+    let seekTick = replayScrubTickAt(
       nextState.mouseLayer,
       nextState.mouseX,
-      nextState.mouseY
+      nextState.mouseY,
+      replayMaxTick
     )
-    if replayTick >= 0 and command != '\0':
-      nextState.replayCommands.add(command)
+    if replayTick >= 0 and seekTick >= 0:
+      nextState.scrubbingReplay = true
+      nextState.replaySeekTick = seekTick
+    elif replayTick >= 0:
+      let command = replayCommandAt(
+        nextState.mouseLayer,
+        nextState.mouseX,
+        nextState.mouseY
+      )
+      if command != '\0':
+        nextState.replayCommands.add(command)
+      elif nextState.mouseLayer == MapLayerId:
+        nextState.selectedPlayerId =
+          sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
     elif nextState.mouseLayer == MapLayerId:
       nextState.selectedPlayerId =
         sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
     nextState.clickPending = false
+  if replayTick >= 0 and nextState.mouseDown and nextState.scrubbingReplay:
+    let seekTick = replayScrubTickAt(
+      nextState.mouseLayer,
+      nextState.mouseX,
+      nextState.mouseY,
+      replayMaxTick
+    )
+    if seekTick >= 0:
+      nextState.replaySeekTick = seekTick
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit()
     nextState.initialized = true
@@ -563,16 +810,15 @@ proc buildSpriteProtocolUpdates*(
         ["TICK " & $replayTick],
         2'u8
       )
-      controlText = sim.buildSpriteProtocolTextSprite(
-        [
-          "REWIND " &
-            (if replayPlaying: "PAUSE " & $replaySpeed & "X" else: "PLAY"),
-          "1X 2X 4X 8X"
-        ],
-        2'u8
+      scrubber = buildReplayScrubberSprite(replayTick, replayMaxTick)
+      controls = sim.buildReplayControlsSprite(
+        replayPlaying,
+        replaySpeed,
+        replayLooping
       )
     currentIds.add(ReplayTickObjectId)
     currentIds.add(ReplayControlsObjectId)
+    currentIds.add(ReplayScrubberObjectId)
     result.addSprite(
       ReplayTickSpriteId,
       tickText.width,
@@ -588,15 +834,29 @@ proc buildSpriteProtocolUpdates*(
       ReplayTickSpriteId
     )
     result.addSprite(
+      ReplayScrubberSpriteId,
+      scrubber.width,
+      scrubber.height,
+      scrubber.pixels
+    )
+    result.addObject(
+      ReplayScrubberObjectId,
+      max(0, (ScreenWidth - ReplayScrubberWidth) div 2),
+      ReplayScrubberY,
+      0,
+      ReplayCenterBottomLayerId,
+      ReplayScrubberSpriteId
+    )
+    result.addSprite(
       ReplayControlsSpriteId,
-      controlText.width,
-      controlText.height,
-      controlText.pixels
+      controls.width,
+      controls.height,
+      controls.pixels
     )
     result.addObject(
       ReplayControlsObjectId,
-      2,
-      1,
+      TransportX,
+      TransportY,
       0,
       ReplayBottomLeftLayerId,
       ReplayControlsSpriteId
