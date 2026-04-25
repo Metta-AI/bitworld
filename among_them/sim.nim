@@ -1315,9 +1315,16 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if not viewerIsGhost:
     for sy in 0 ..< ScreenHeight:
       for sx in 0 ..< ScreenWidth:
-        if sim.shadowBuf[sy * ScreenWidth + sx]:
-          let idx = sy * ScreenWidth + sx
-          sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
+        let
+          mx = cameraX + sx
+          my = cameraY + sy
+          idx = sy * ScreenWidth + sx
+        if not sim.shadowBuf[idx]:
+          continue
+        if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight and
+            sim.wallMask[mapIndex(mx, my)]:
+          continue
+        sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
 
   for body in sim.bodies:
     let
