@@ -13,13 +13,13 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
-  MapWidth* = 476
-  MapHeight* = 267
-  SpriteSize* = 6
-  CollisionW* = 3
-  CollisionH* = 2
-  SpriteDrawOffX* = 1
-  SpriteDrawOffY* = 4
+  MapWidth* = 952
+  MapHeight* = 534
+  SpriteSize* = 12
+  CollisionW* = 6
+  CollisionH* = 4
+  SpriteDrawOffX* = 2
+  SpriteDrawOffY* = 8
   MotionScale* = 256
   Accel* = 76
   FrictionNum* = 200
@@ -30,25 +30,25 @@ const
   SpaceColor* = 0'u8
   BodyColor* = 2'u8
   OutlineColor* = 0'u8
-  KillRange* = 10
+  KillRange* = 20
   KillCooldownTicks* = 120
   TaskCompleteTicks* = 72
-  TaskBarWidth* = 7
-  VentRange* = 8
-  TaskBarY* = -3
+  TaskBarWidth* = 14
+  VentRange* = 16
+  TaskBarY* = -6
   ProgressEmpty* = 1'u8
   ProgressFilled* = 10'u8
-  ReportRange* = 10
+  ReportRange* = 20
   VoteResultTicks* = 72
   MinPlayers* = 5
   VoteTimerTicks* = 240
   GameOverTicks* = 360
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
-  ButtonX* = 262
-  ButtonY* = 57
-  ButtonW* = 14
-  ButtonH* = 17
+  ButtonX* = 524
+  ButtonY* = 114
+  ButtonW* = 28
+  ButtonH* = 34
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -385,9 +385,9 @@ proc canOccupy*(sim: SimServer, x, y: int): bool =
 
 proc findSpawn*(sim: SimServer): tuple[x, y: int] =
   let
-    buttonX = 268
-    buttonY = 60
-    spawnRadius = 14
+    buttonX = 536
+    buttonY = 120
+    spawnRadius = 28
     n = max(1, sim.players.len + 1)
     angle = float(sim.players.len) * 2.0 * 3.14159265 / float(n)
     px = buttonX + int(float(spawnRadius) * cos(angle))
@@ -1343,60 +1343,60 @@ proc initSimServer*(config: GameConfig): SimServer =
   )
 
   result.tasks = @[
-    TaskStation(name: "Empty Garbage", x: 278, y: 233, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Comms)", x: 334, y: 212, w: 8, h: 8),
-    TaskStation(name: "Fix Wires (Storage)", x: 287, y: 132, w: 8, h: 8),
-    TaskStation(name: "Fix Wires (Electrical)", x: 222, y: 15, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Electrical)", x: 175, y: 145, w: 8, h: 8),
-    TaskStation(name: "Calibrate Distributor", x: 215, y: 146, w: 8, h: 8),
-    TaskStation(name: "Submit Scan", x: 200, y: 116, w: 8, h: 8),
-    TaskStation(name: "Divert Power", x: 193, y: 146, w: 8, h: 8),
-    TaskStation(name: "Inspect Sample", x: 211, y: 107, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Admin)", x: 298, y: 132, w: 8, h: 8),
-    TaskStation(name: "Align Engine (Lower)", x: 93, y: 163, w: 8, h: 8),
-    TaskStation(name: "Align Engine (Upper)", x: 101, y: 40, w: 8, h: 8),
-    TaskStation(name: "Swipe Card", x: 332, y: 153, w: 8, h: 8),
-    TaskStation(name: "Upload Data (Cafeteria)", x: 300, y: 14, w: 8, h: 8),
-    TaskStation(name: "Empty Garbage (Upper)", x: 313, y: 27, w: 8, h: 8),
+    TaskStation(name: "Empty Garbage", x: 556, y: 466, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Comms)", x: 668, y: 424, w: 16, h: 16),
+    TaskStation(name: "Fix Wires (Storage)", x: 574, y: 264, w: 16, h: 16),
+    TaskStation(name: "Fix Wires (Electrical)", x: 444, y: 30, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Electrical)", x: 350, y: 290, w: 16, h: 16),
+    TaskStation(name: "Calibrate Distributor", x: 430, y: 292, w: 16, h: 16),
+    TaskStation(name: "Submit Scan", x: 400, y: 232, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 386, y: 292, w: 16, h: 16),
+    TaskStation(name: "Inspect Sample", x: 422, y: 214, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Admin)", x: 596, y: 264, w: 16, h: 16),
+    TaskStation(name: "Align Engine (Lower)", x: 186, y: 326, w: 16, h: 16),
+    TaskStation(name: "Align Engine (Upper)", x: 202, y: 80, w: 16, h: 16),
+    TaskStation(name: "Swipe Card", x: 664, y: 306, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Cafeteria)", x: 600, y: 28, w: 16, h: 16),
+    TaskStation(name: "Empty Garbage (Upper)", x: 626, y: 54, w: 16, h: 16),
   ]
 
   result.vents = @[
-    Vent(x: 300, y: 167, w: 6, h: 5, group: 'A', groupIndex: 1),
-    Vent(x: 368, y: 132, w: 6, h: 5, group: 'A', groupIndex: 2),
-    Vent(x: 317, y: 71, w: 6, h: 5, group: 'A', groupIndex: 3),
-    Vent(x: 362, y: 35, w: 6, h: 5, group: 'B', groupIndex: 1),
-    Vent(x: 437, y: 107, w: 6, h: 5, group: 'B', groupIndex: 2),
-    Vent(x: 370, y: 211, w: 6, h: 5, group: 'C', groupIndex: 1),
-    Vent(x: 437, y: 131, w: 6, h: 5, group: 'C', groupIndex: 2),
-    Vent(x: 168, y: 110, w: 6, h: 5, group: 'D', groupIndex: 1),
-    Vent(x: 176, y: 149, w: 6, h: 5, group: 'D', groupIndex: 2),
-    Vent(x: 148, y: 137, w: 6, h: 5, group: 'D', groupIndex: 3),
-    Vent(x: 44, y: 60, w: 6, h: 5, group: 'E', groupIndex: 1),
-    Vent(x: 66, y: 136, w: 6, h: 5, group: 'E', groupIndex: 2),
-    Vent(x: 121, y: 204, w: 6, h: 5, group: 'E', groupIndex: 3),
-    Vent(x: 55, y: 98, w: 6, h: 5, group: 'F', groupIndex: 1),
-    Vent(x: 121, y: 42, w: 6, h: 5, group: 'F', groupIndex: 2),
+    Vent(x: 600, y: 334, w: 12, h: 10, group: 'A', groupIndex: 1),
+    Vent(x: 736, y: 264, w: 12, h: 10, group: 'A', groupIndex: 2),
+    Vent(x: 634, y: 142, w: 12, h: 10, group: 'A', groupIndex: 3),
+    Vent(x: 724, y: 70, w: 12, h: 10, group: 'B', groupIndex: 1),
+    Vent(x: 874, y: 214, w: 12, h: 10, group: 'B', groupIndex: 2),
+    Vent(x: 740, y: 422, w: 12, h: 10, group: 'C', groupIndex: 1),
+    Vent(x: 874, y: 262, w: 12, h: 10, group: 'C', groupIndex: 2),
+    Vent(x: 336, y: 220, w: 12, h: 10, group: 'D', groupIndex: 1),
+    Vent(x: 352, y: 298, w: 12, h: 10, group: 'D', groupIndex: 2),
+    Vent(x: 296, y: 274, w: 12, h: 10, group: 'D', groupIndex: 3),
+    Vent(x: 88, y: 120, w: 12, h: 10, group: 'E', groupIndex: 1),
+    Vent(x: 132, y: 272, w: 12, h: 10, group: 'E', groupIndex: 2),
+    Vent(x: 242, y: 408, w: 12, h: 10, group: 'E', groupIndex: 3),
+    Vent(x: 110, y: 196, w: 12, h: 10, group: 'F', groupIndex: 1),
+    Vent(x: 242, y: 84, w: 12, h: 10, group: 'F', groupIndex: 2),
   ]
 
-  let mapImage = readImage("skeld.png")
+  let mapImage = readImage("skeld2.png")
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       result.mapPixels[mapIndex(x, y)] = nearestPaletteIndex(mapImage[x, y])
 
-  let walkImage = readImage("skeld.floor.png")
+  let walkImage = readImage("skeld2.floor.png")
   result.walkMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       let pixel = walkImage[x, y]
-      result.walkMask[mapIndex(x, y)] = pixel.r > 128 and pixel.a > 128
+      result.walkMask[mapIndex(x, y)] = pixel.a > 0
 
-  let wallImage = readImage("skeld.walls.png")
+  let wallImage = readImage("skeld2.walls.png")
   result.wallMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       let pixel = wallImage[x, y]
-      result.wallMask[mapIndex(x, y)] = pixel.r > 100 and pixel.a > 128
+      result.wallMask[mapIndex(x, y)] = pixel.a > 0
 
   result.shadowBuf = newSeq[bool](ScreenWidth * ScreenHeight)
   result.bodies = @[]
