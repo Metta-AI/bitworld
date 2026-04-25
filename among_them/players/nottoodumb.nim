@@ -560,10 +560,11 @@ proc updateTaskIcons(bot: var Bot) =
     if bot.taskIconVisibleFor(task):
       bot.taskStates[i] = TaskMandatory
       bot.taskIconMisses[i] = 0
-    elif (bot.taskStates[i] == TaskMandatory or
+    elif bot.taskHoldTicks == 0 and
+        (bot.taskStates[i] == TaskMandatory or
         (i < bot.radarTasks.len and bot.radarTasks[i])) and
         bot.taskIconSafelyVisible(task) and
-        not (bot.taskHoldTicks > 0 and bot.taskHoldIndex == i):
+        bot.taskHoldIndex != i:
       inc bot.taskIconMisses[i]
       if bot.taskIconMisses[i] >= TaskIconMissThreshold:
         bot.taskStates[i] = TaskCompleted
@@ -593,12 +594,8 @@ proc hasMovement(mask: uint8): bool =
   ## Returns true when an input mask contains directional movement.
   (mask and (ButtonUp or ButtonDown or ButtonLeft or ButtonRight)) != 0
 
-proc withoutButtons(mask, buttons: uint8): uint8 =
-  ## Returns an input mask with selected buttons released.
-  mask and not buttons
-
-proc updateStuckState(bot: var Bot) =
-  ## Tracks when movement input is not changing position.
+proc updateMotionState(bot: var Bot) =
+  ## Tracks current frame-to-frame player velocity.
   if not bot.localized:
     bot.haveMotionSample = false
     bot.velocityX = 0
@@ -632,7 +629,7 @@ proc updateStuckState(bot: var Bot) =
   bot.previousPlayerWorldY = y
 
 proc applyJiggle(bot: var Bot, mask: uint8): uint8 =
-  ## Adds a short perpendicular correction when the bot is stuck.
+  ## Adds a short perpendicular correction while keeping intent held.
   result = mask
   if bot.jiggleTicks <= 0 or not mask.hasMovement():
     return
@@ -641,25 +638,19 @@ proc applyJiggle(bot: var Bot, mask: uint8): uint8 =
     vertical = (mask and (ButtonUp or ButtonDown)) != 0
     horizontal = (mask and (ButtonLeft or ButtonRight)) != 0
   if vertical and not horizontal:
-    result = mask.withoutButtons(ButtonUp or ButtonDown)
     if bot.jiggleSide == 0:
       result = result or ButtonLeft
     else:
       result = result or ButtonRight
   elif horizontal and not vertical:
-    result = mask.withoutButtons(ButtonLeft or ButtonRight)
     if bot.jiggleSide == 0:
       result = result or ButtonUp
     else:
       result = result or ButtonDown
+  elif bot.jiggleSide == 0:
+    result = result or ButtonLeft
   else:
-    result = mask.withoutButtons(
-      ButtonUp or ButtonDown or ButtonLeft or ButtonRight
-    )
-    if bot.jiggleSide == 0:
-      result = result or ButtonLeft
-    else:
-      result = result or ButtonRight
+    result = result or ButtonRight
 
 proc inputMaskSummary(mask: uint8): string =
   ## Returns a human-readable input mask.
@@ -929,7 +920,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.updateLocation()
   bot.centerMicros = int((getMonoTime() - centerStart).inMicroseconds)
   bot.astarMicros = 0
-  bot.updateStuckState()
+  bot.updateMotionState()
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
   bot.updateTaskIcons()
@@ -979,7 +970,8 @@ proc decideNextMask(bot: var Bot): uint8 =
   let mask = bot.applyJiggle(bot.controllerMask)
   bot.thought(
     "map lock " & cameraLockName(bot.cameraLock) & " at camera (" &
-    $bot.cameraX & ", " & $bot.cameraY & "), next " & movementName(mask)
+    $bot.cameraX & ", " & $bot.cameraY & "), next " &
+    movementName(mask)
   )
   mask
 
