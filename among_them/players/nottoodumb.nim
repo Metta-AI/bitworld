@@ -6,10 +6,9 @@ const
   PlayerScreenY = ScreenHeight div 2
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
-  LocalSearchRadius = 12
-  WideSearchStep = 2
-  ButtonSearchMinScore = 520
-  MapSearchMinScore = 360
+  FrameFitMaxErrors = 260
+  FrameFitMinCompared = 12000
+  PlayerIgnoreRadius = 9
   PlayerDefaultPort = DefaultPort
   ViewerWindowWidth = 1820
   ViewerWindowHeight = 1060
@@ -34,8 +33,12 @@ const
   RadarTaskColor = 8'u8
   RadarPeripheryMargin = 1
   RadarMatchTolerance = 2
-  PathLookahead = 10
+  PathLookahead = 18
   TaskReachDistance = 5
+  SteerDeadband = 2
+  BrakeDeadband = 1
+  StuckFrameThreshold = 8
+  JiggleDuration = 8
 
 type
   TileKnowledge = enum
@@ -45,9 +48,7 @@ type
 
   CameraLock = enum
     NoLock
-    ButtonLock
-    LocalMapLock
-    WideMapLock
+    FrameMapLock
 
   PathNode = object
     priority: int
@@ -57,6 +58,11 @@ type
     found: bool
     x: int
     y: int
+
+  CameraScore = object
+    score: int
+    errors: int
+    compared: int
 
   RadarDot = object
     x: int
@@ -80,7 +86,19 @@ type
     cameraLock: CameraLock
     cameraScore: int
     localized: bool
+    haveMotionSample: bool
+    previousPlayerWorldX: int
+    previousPlayerWorldY: int
+    velocityX: int
+    velocityY: int
+    stuckFrames: int
+    jiggleTicks: int
+    jiggleSide: int
+    desiredMask: uint8
+    controllerMask: uint8
     frameTick: int
+    centerMicros: int
+    astarMicros: int
     lastMask: uint8
     lastThought: string
     intent: string
@@ -145,112 +163,70 @@ proc tileWidth(): int =
   ## Returns the path grid width in pixels.
   MapWidth
 
-proc scoreCamera(bot: Bot, cameraX, cameraY: int): int =
-  ## Scores how well a camera position matches the current frame.
+proc ignoreFramePixel(frameColor: uint8, sx, sy: int): bool =
+  ## Returns true for dynamic screen pixels that are not map evidence.
+  if frameColor == RadarTaskColor:
+    return true
+  abs(sx - PlayerScreenX) <= PlayerIgnoreRadius and
+    abs(sy - PlayerScreenY) <= PlayerIgnoreRadius
+
+proc scoreCamera(bot: Bot, cameraX, cameraY: int): CameraScore =
+  ## Counts map-fit errors for a full 128x128 frame rectangle.
   if cameraX < 0 or cameraY < 0 or
       cameraX + ScreenWidth > MapWidth or
       cameraY + ScreenHeight > MapHeight:
-    return low(int)
-  for sy in countup(2, ScreenHeight - 3, 4):
-    for sx in countup(2, ScreenWidth - 3, 4):
+    return CameraScore(score: low(int), errors: high(int), compared: 0)
+  for sy in 0 ..< ScreenHeight:
+    for sx in 0 ..< ScreenWidth:
       let frameColor = bot.unpacked[sy * ScreenWidth + sx]
-      if frameColor == 0'u8:
+      if ignoreFramePixel(frameColor, sx, sy):
         continue
       let mapColor = bot.sim.mapPixels[mapIndexSafe(cameraX + sx, cameraY + sy)]
       if frameColor == mapColor:
-        result += 3
+        inc result.compared
       elif ShadowMap[mapColor and 0x0f] == frameColor:
-        inc result
+        inc result.compared
       else:
-        dec result
+        inc result.compared
+        inc result.errors
+        if result.errors > FrameFitMaxErrors:
+          result.score = -result.errors
+          return
+  result.score = result.compared - result.errors * ScreenWidth
 
-proc scoreButtonAt(bot: Bot, screenX, screenY: int): int =
-  ## Scores the emergency button template at one screen position.
-  if screenX < 0 or screenY < 0 or
-      screenX + ButtonW > ScreenWidth or
-      screenY + ButtonH > ScreenHeight:
-    return low(int)
-  for by in 0 ..< ButtonH:
-    for bx in 0 ..< ButtonW:
-      let
-        mapColor = bot.sim.mapPixels[mapIndexSafe(ButtonX + bx, ButtonY + by)]
-        frameColor = bot.unpacked[(screenY + by) * ScreenWidth + screenX + bx]
-      if frameColor == mapColor:
-        result += 3
-      elif ShadowMap[mapColor and 0x0f] == frameColor:
-        inc result
-      else:
-        dec result
-
-proc locateByButton(bot: var Bot): bool =
-  ## Locates the camera by scanning for the emergency button.
+proc locateByFrame(bot: var Bot): bool =
+  ## Locates the camera by fitting the full screen rectangle to the map.
   var
-    bestScore = low(int)
+    bestScore = CameraScore(
+      score: low(int),
+      errors: high(int),
+      compared: 0
+    )
     bestX = 0
     bestY = 0
-  for y in 0 .. ScreenHeight - ButtonH:
-    for x in 0 .. ScreenWidth - ButtonW:
-      let score = bot.scoreButtonAt(x, y)
-      if score > bestScore:
-        bestScore = score
-        bestX = x
-        bestY = y
-  if bestScore < ButtonSearchMinScore:
-    return false
-  bot.cameraX = clamp(ButtonX - bestX, 0, MapWidth - ScreenWidth)
-  bot.cameraY = clamp(ButtonY - bestY, 0, MapHeight - ScreenHeight)
-  bot.cameraScore = bestScore
-  bot.cameraLock = ButtonLock
-  bot.localized = true
-  true
-
-proc locateNearLast(bot: var Bot): bool =
-  ## Tracks the camera using a local map search around the last lock.
-  if not bot.localized:
-    return false
-  var
-    bestScore = low(int)
-    bestX = bot.cameraX
-    bestY = bot.cameraY
-  for y in max(0, bot.lastCameraY - LocalSearchRadius) ..
-      min(MapHeight - ScreenHeight, bot.lastCameraY + LocalSearchRadius):
-    for x in max(0, bot.lastCameraX - LocalSearchRadius) ..
-        min(MapWidth - ScreenWidth, bot.lastCameraX + LocalSearchRadius):
+  for y in 0 .. MapHeight - ScreenHeight:
+    for x in 0 .. MapWidth - ScreenWidth:
       let score = bot.scoreCamera(x, y)
-      if score > bestScore:
+      if score.errors < bestScore.errors or
+          (score.errors == bestScore.errors and
+          score.compared > bestScore.compared):
         bestScore = score
         bestX = x
         bestY = y
-  if bestScore < MapSearchMinScore:
-    return false
-  bot.cameraX = bestX
-  bot.cameraY = bestY
-  bot.cameraScore = bestScore
-  bot.cameraLock = LocalMapLock
-  bot.localized = true
-  true
-
-proc locateWide(bot: var Bot): bool =
-  ## Locates the camera with a coarse whole-map search.
-  var
-    bestScore = low(int)
-    bestX = 0
-    bestY = 0
-  for y in countup(0, MapHeight - ScreenHeight, WideSearchStep):
-    for x in countup(0, MapWidth - ScreenWidth, WideSearchStep):
-      let score = bot.scoreCamera(x, y)
-      if score > bestScore:
-        bestScore = score
-        bestX = x
-        bestY = y
-  if bestScore < MapSearchMinScore:
+        if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
+          break
+    if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
+      break
+  if bestScore.errors > FrameFitMaxErrors or
+      bestScore.compared < FrameFitMinCompared:
     bot.cameraLock = NoLock
-    bot.cameraScore = bestScore
+    bot.cameraScore = bestScore.score
+    bot.localized = false
     return false
   bot.cameraX = bestX
   bot.cameraY = bestY
-  bot.cameraScore = bestScore
-  bot.cameraLock = WideMapLock
+  bot.cameraScore = bestScore.score
+  bot.cameraLock = FrameMapLock
   bot.localized = true
   true
 
@@ -258,11 +234,7 @@ proc updateLocation(bot: var Bot) =
   ## Updates the camera and player world estimate from the frame.
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
-  if bot.locateByButton():
-    return
-  if bot.locateNearLast():
-    return
-  discard bot.locateWide()
+  discard bot.locateByFrame()
 
 proc rememberVisibleMap(bot: var Bot) =
   ## Copies visible walk and wall knowledge into the coarse map model.
@@ -384,6 +356,68 @@ proc movementName(mask: uint8): string =
     return "down"
   "idle"
 
+proc hasMovement(mask: uint8): bool =
+  ## Returns true when an input mask contains directional movement.
+  (mask and (ButtonUp or ButtonDown or ButtonLeft or ButtonRight)) != 0
+
+proc updateStuckState(bot: var Bot) =
+  ## Tracks when movement input is not changing position.
+  if not bot.localized:
+    bot.haveMotionSample = false
+    bot.velocityX = 0
+    bot.velocityY = 0
+    bot.stuckFrames = 0
+    bot.jiggleTicks = 0
+    return
+
+  let
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
+  if bot.haveMotionSample and bot.lastMask.hasMovement():
+    bot.velocityX = x - bot.previousPlayerWorldX
+    bot.velocityY = y - bot.previousPlayerWorldY
+    let moved = abs(bot.velocityX) + abs(bot.velocityY)
+    if moved == 0:
+      inc bot.stuckFrames
+    else:
+      bot.stuckFrames = 0
+    if bot.stuckFrames >= StuckFrameThreshold:
+      bot.stuckFrames = 0
+      bot.jiggleTicks = JiggleDuration
+      bot.jiggleSide = 1 - bot.jiggleSide
+  else:
+    bot.velocityX = 0
+    bot.velocityY = 0
+    bot.stuckFrames = 0
+
+  bot.haveMotionSample = true
+  bot.previousPlayerWorldX = x
+  bot.previousPlayerWorldY = y
+
+proc applyJiggle(bot: var Bot, mask: uint8): uint8 =
+  ## Adds a short perpendicular correction when the bot is stuck.
+  result = mask
+  if bot.jiggleTicks <= 0 or not mask.hasMovement():
+    return
+  dec bot.jiggleTicks
+  let
+    vertical = (mask and (ButtonUp or ButtonDown)) != 0
+    horizontal = (mask and (ButtonLeft or ButtonRight)) != 0
+  if vertical and not horizontal:
+    if bot.jiggleSide == 0:
+      result = result or ButtonLeft
+    else:
+      result = result or ButtonRight
+  elif horizontal and not vertical:
+    if bot.jiggleSide == 0:
+      result = result or ButtonUp
+    else:
+      result = result or ButtonDown
+  elif bot.jiggleSide == 0:
+    result = result or ButtonLeft
+  else:
+    result = result or ButtonRight
+
 proc inputMaskSummary(mask: uint8): string =
   ## Returns a human-readable input mask.
   var parts: seq[string] = @[]
@@ -408,9 +442,7 @@ proc cameraLockName(lock: CameraLock): string =
   ## Returns a human-readable camera lock name.
   case lock
   of NoLock: "none"
-  of ButtonLock: "button"
-  of LocalMapLock: "local map"
-  of WideMapLock: "wide map"
+  of FrameMapLock: "frame map"
 
 proc passable(bot: Bot, x, y: int): bool =
   ## Returns true when a collision-sized body can occupy a pixel.
@@ -522,20 +554,31 @@ proc nearestTaskGoal(bot: Bot): tuple[found: bool, x: int, y: int, name: string]
       bestDistance = distance
       result = (true, center.x, center.y, task.name)
 
-proc maskForStep(bot: Bot, step: PathStep): uint8 =
-  ## Converts a path step into a controller mask.
-  if not step.found:
+proc axisMask(delta, velocity: int, negativeMask, positiveMask: uint8): uint8 =
+  ## Returns steering for one axis with simple momentum braking.
+  if delta > SteerDeadband:
+    if velocity > 1 and delta <= abs(velocity) + BrakeDeadband:
+      return negativeMask
+    return positiveMask
+  if delta < -SteerDeadband:
+    if velocity < -1 and -delta <= abs(velocity) + BrakeDeadband:
+      return positiveMask
+    return negativeMask
+  if velocity > 0:
+    return negativeMask
+  if velocity < 0:
+    return positiveMask
+  0
+
+proc maskForWaypoint(bot: Bot, waypoint: PathStep): uint8 =
+  ## Converts a lookahead waypoint into a momentum-aware controller mask.
+  if not waypoint.found:
     return 0
   let
-    dx = step.x - bot.playerWorldX()
-    dy = step.y - bot.playerWorldY()
-  if abs(dx) >= abs(dy):
-    if dx < 0: return ButtonLeft
-    if dx > 0: return ButtonRight
-  else:
-    if dy < 0: return ButtonUp
-    if dy > 0: return ButtonDown
-  0
+    dx = waypoint.x - bot.playerWorldX()
+    dy = waypoint.y - bot.playerWorldY()
+  result = result or axisMask(dx, bot.velocityX, ButtonLeft, ButtonRight)
+  result = result or axisMask(dy, bot.velocityY, ButtonUp, ButtonDown)
 
 proc choosePathStep(bot: Bot): PathStep =
   ## Returns a short lookahead waypoint from the current path.
@@ -557,12 +600,18 @@ proc nearGoal(bot: Bot): bool =
 
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
+  let centerStart = getMonoTime()
   bot.updateLocation()
+  bot.centerMicros = int((getMonoTime() - centerStart).inMicroseconds)
+  bot.astarMicros = 0
+  bot.updateStuckState()
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
   bot.hasGoal = false
   bot.hasPathStep = false
   bot.path.setLen(0)
+  bot.desiredMask = 0
+  bot.controllerMask = 0
   bot.intent = "localizing"
   if not bot.localized:
     bot.thought("waiting for a reliable map lock")
@@ -581,11 +630,15 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.intent = "doing task at " & goal.name
     bot.thought("at task " & goal.name & ", holding action")
     return ButtonA
+  let astarStart = getMonoTime()
   bot.path = bot.findPath(goal.x, goal.y)
+  bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
   bot.pathStep = bot.choosePathStep()
   bot.hasPathStep = bot.pathStep.found
   bot.intent = "A* to " & goal.name & " path=" & $bot.path.len
-  let mask = bot.maskForStep(bot.pathStep)
+  bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
+  bot.controllerMask = bot.desiredMask
+  let mask = bot.applyJiggle(bot.controllerMask)
   bot.thought(
     "map lock " & cameraLockName(bot.cameraLock) & " at camera (" &
     $bot.cameraX & ", " & $bot.cameraY & "), next " & movementName(mask)
@@ -828,7 +881,7 @@ proc pumpViewer(
     )
     mapSize = vec2(MapWidth.float32 * ViewerMapScale, MapHeight.float32 * ViewerMapScale)
     infoPos = vec2(ViewerMargin, framePos.y + ScreenHeight.float32 * ViewerFrameScale + 28)
-    infoSize = vec2(frameSize.x.float32 - ViewerMargin * 2, 160)
+    infoSize = vec2(frameSize.x.float32 - ViewerMargin * 2, 220)
     sk = viewer.silky
   sk.beginUI(viewer.window, frameSize)
   sk.clearScreen(ViewerBackground)
@@ -847,14 +900,23 @@ proc pumpViewer(
   let infoText =
     "status: " & (if connected: "connected" else: "reconnecting") & "\n" &
     "url: " & url & "\n" &
+    "client tick: " & $bot.frameTick & "\n" &
+    "timing center: " & $bot.centerMicros & "us (" &
+      $(bot.centerMicros div 1000) & "ms)\n" &
+    "timing A*: " & $bot.astarMicros & "us (" &
+      $(bot.astarMicros div 1000) & "ms)\n" &
     "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
+    "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &
     "radar dots: " & $bot.radarDots.len & " task guesses=" &
       $bot.taskGuessCount() & "\n" &
     "intent: " & bot.intent & "\n" &
     "path pixels: " & $bot.path.len & "\n" &
-    "next input: " & inputMaskSummary(bot.lastMask) & "\n" &
+    "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
+    "desired: " & inputMaskSummary(bot.desiredMask) & "\n" &
+    "controller: " & inputMaskSummary(bot.controllerMask) & "\n" &
+    "stuck: " & $bot.stuckFrames & " jiggle=" & $bot.jiggleTicks & "\n" &
     "last thought: " & (if bot.lastThought.len > 0: bot.lastThought else: "waiting")
   discard sk.drawText("Default", infoText, infoPos, ViewerText, infoSize.x, infoSize.y)
   sk.endUi()
