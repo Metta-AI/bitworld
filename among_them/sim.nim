@@ -23,7 +23,7 @@ const
   SpriteDrawOffY* = 8
   MotionScale* = 256
   Accel* = 76
-  FrictionNum* = 200
+  FrictionNum* = 144
   FrictionDen* = 256
   MaxSpeed* = 704
   StopThreshold* = 8
