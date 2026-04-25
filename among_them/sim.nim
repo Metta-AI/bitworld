@@ -1377,8 +1377,6 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
         tcy = task.y + task.h div 2 - cameraY
       if tcx < 0 or tcx >= ScreenWidth or tcy < 0 or tcy >= ScreenHeight:
         continue
-      if not viewerIsGhost and sim.shadowBuf[tcy * ScreenWidth + tcx]:
-        continue
       sim.fb.blitSpriteRaw(sim.taskIconSprite, iconSx, iconSy)
 
   if player.role == Crewmate and sim.config.showTaskArrows:
