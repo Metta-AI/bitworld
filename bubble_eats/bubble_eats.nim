@@ -1,4 +1,5 @@
 import mummy
+import int_math
 import protocol
 import reward_protocol
 import server
@@ -188,48 +189,8 @@ proc signOf(value: int): int =
   else:
     0
 
-proc isqrt(value: int): int =
-  if value <= 0:
-    return 0
-  var
-    x = value
-    y = (x + 1) div 2
-  while y < x:
-    x = y
-    y = (x + value div x) div 2
-  x
-
-proc ceilSqrt(value: int): int =
-  result = isqrt(value)
-  if result * result < value:
-    inc result
-
-proc roundDiv(numerator, denominator: int64): int =
-  if denominator <= 0:
-    return 0
-  if numerator >= 0:
-    int((numerator + denominator div 2) div denominator)
-  else:
-    -int((-numerator + denominator div 2) div denominator)
-
-proc scaledVector(dx, dy, scale: int): tuple[x, y: int] =
-  let distance = ceilSqrt(dx * dx + dy * dy)
-  if distance <= 0:
-    return (x: 0, y: 0)
-  (
-    x: roundDiv(int64(dx) * int64(scale), int64(distance)),
-    y: roundDiv(int64(dy) * int64(scale), int64(distance))
-  )
-
 proc clampVelocity(velX, velY: var int, maxSpeed: int) =
-  let magnitudeSq = velX * velX + velY * velY
-  if magnitudeSq <= maxSpeed * maxSpeed:
-    return
-  let magnitude = ceilSqrt(magnitudeSq)
-  if magnitude <= 0:
-    return
-  velX = roundDiv(int64(velX) * int64(maxSpeed), int64(magnitude))
-  velY = roundDiv(int64(velY) * int64(maxSpeed), int64(magnitude))
+  clampVectorLength(velX, velY, maxSpeed)
 
 proc applyDrag(value: var int) =
   value = (value * DragNumerator) div DragDenominator
@@ -272,9 +233,9 @@ proc distanceSquared(ax, ay, bx, by: int): int =
 
 proc vectorsOpposed(ax, ay, bx, by: int): bool =
   let
-    dot = int64(ax) * int64(bx) + int64(ay) * int64(by)
-    lenASq = int64(ax) * int64(ax) + int64(ay) * int64(ay)
-    lenBSq = int64(bx) * int64(bx) + int64(by) * int64(by)
+    dot = ax * bx + ay * by
+    lenASq = ax * ax + ay * ay
+    lenBSq = bx * bx + by * by
   if dot >= 0 or lenASq <= 0 or lenBSq <= 0:
     return false
   dot * dot * 10_000 >= 2_025 * lenASq * lenBSq
@@ -858,10 +819,7 @@ proc applyMovement(sim: var SimServer, components: openArray[seq[int]], inputs: 
           0
       alignmentDenominator = max(1, componentSize * 16)
       alignmentNumerator = min(alignmentDenominator, isqrt(sumDesiredX * sumDesiredX + sumDesiredY * sumDesiredY))
-      groupBoost = roundDiv(
-        int64(max(0, componentSize - 1) * GroupAssistBase) * int64(alignmentNumerator),
-        int64(alignmentDenominator)
-      )
+      groupBoost = mulDivRound(max(0, componentSize - 1) * GroupAssistBase, alignmentNumerator, alignmentDenominator)
 
     for playerIndex in component:
       let desired =
@@ -925,12 +883,12 @@ proc applyPairForces(sim: var SimServer, linkedPairs: Table[int64, bool]) =
           -3 * ForceScale,
           min(
             3 * ForceScale,
-            roundDiv(int64(dist - LinkRestDistance) * int64(ForceScale), int64(SubpixelScale * 12))
+            mulDivRound(dist - LinkRestDistance, ForceScale, SubpixelScale * 12)
           )
         )
         let
-          shiftX = roundDiv(int64(dx) * int64(impulse), int64(dist) * int64(ForceScale))
-          shiftY = roundDiv(int64(dy) * int64(impulse), int64(dist) * int64(ForceScale))
+          shiftX = mulDivRound(dx, impulse, dist * ForceScale)
+          shiftY = mulDivRound(dy, impulse, dist * ForceScale)
         sim.players[i].velX += shiftX
         sim.players[i].velY += shiftY
         sim.players[j].velX -= shiftX
@@ -938,11 +896,11 @@ proc applyPairForces(sim: var SimServer, linkedPairs: Table[int64, bool]) =
       else:
         let impulse = min(
           2 * ForceScale,
-          roundDiv(int64(max(0, MagnetDistance - dist)) * int64(ForceScale), int64(SubpixelScale * 40))
+          mulDivRound(max(0, MagnetDistance - dist), ForceScale, SubpixelScale * 40)
         )
         let
-          shiftX = roundDiv(int64(dx) * int64(impulse), int64(dist) * int64(ForceScale))
-          shiftY = roundDiv(int64(dy) * int64(impulse), int64(dist) * int64(ForceScale))
+          shiftX = mulDivRound(dx, impulse, dist * ForceScale)
+          shiftY = mulDivRound(dy, impulse, dist * ForceScale)
         sim.players[i].velX += shiftX
         sim.players[i].velY += shiftY
         sim.players[j].velX -= shiftX
@@ -996,9 +954,9 @@ proc resolveSpacing(sim: var SimServer, linkedPairs: Table[int64, bool]) =
         continue
 
       let
-        adjustScaled = roundDiv(int64(adjust) * int64(ForceScale), 2)
-        shiftX = roundDiv(int64(safeDx) * int64(adjustScaled), int64(distance) * int64(ForceScale))
-        shiftY = roundDiv(int64(safeDy) * int64(adjustScaled), int64(distance) * int64(ForceScale))
+        adjustScaled = roundDiv(adjust * ForceScale, 2)
+        shiftX = mulDivRound(safeDx, adjustScaled, distance * ForceScale)
+        shiftY = mulDivRound(safeDy, adjustScaled, distance * ForceScale)
 
       sim.players[i].x -= shiftX
       sim.players[i].y -= shiftY

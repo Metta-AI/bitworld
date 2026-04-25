@@ -1,5 +1,5 @@
 import mummy
-import protocol, reward_protocol, server
+import int_math, protocol, reward_protocol, server
 import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
@@ -364,39 +364,8 @@ proc applyDrag(value: var int, numerator, denominator: int) =
   if abs(value) <= StopThreshold:
     value = 0
 
-proc isqrt(value: int): int =
-  if value <= 0:
-    return 0
-  var
-    x = value
-    y = (x + 1) div 2
-  while y < x:
-    x = y
-    y = (x + value div x) div 2
-  x
-
-proc ceilSqrt(value: int): int =
-  result = isqrt(value)
-  if result * result < value:
-    inc result
-
-proc roundDiv(numerator, denominator: int64): int =
-  if denominator <= 0:
-    return 0
-  if numerator >= 0:
-    int((numerator + denominator div 2) div denominator)
-  else:
-    -int((-numerator + denominator div 2) div denominator)
-
 proc clampVelocity(velX, velY: var int, maxSpeed: int) =
-  let magnitudeSq = velX * velX + velY * velY
-  if magnitudeSq <= maxSpeed * maxSpeed:
-    return
-  let magnitude = ceilSqrt(magnitudeSq)
-  if magnitude <= 0:
-    return
-  velX = roundDiv(int64(velX) * int64(maxSpeed), int64(magnitude))
-  velY = roundDiv(int64(velY) * int64(maxSpeed), int64(magnitude))
+  clampVectorLength(velX, velY, maxSpeed)
 
 proc wrapAxis(value: var int, worldSize: int) =
   while value < 0:

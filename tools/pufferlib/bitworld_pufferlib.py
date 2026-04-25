@@ -54,6 +54,7 @@ ACTION_BUTTON_MASKS = np.array([0, BUTTON_A, BUTTON_B, BUTTON_SELECT], dtype=np.
 ACTION_MASKS = np.array([direction | button for direction in DIRECTION_MASKS for button in ACTION_BUTTON_MASKS], dtype=np.uint8)
 
 SHARED_NIM_SOURCES = (
+    REPO_ROOT / "common" / "int_math.nim",
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
     REPO_ROOT / "common" / "reward_protocol.nim",

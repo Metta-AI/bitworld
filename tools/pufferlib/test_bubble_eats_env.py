@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -13,9 +14,68 @@ from bitworld_pufferlib import (
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    REPO_ROOT,
+    SHARED_NIM_SOURCES,
     parse_reward_payload,
     unpack_frame,
 )
+
+INTEGER_ONLY_NIM_PATTERNS = (
+    ("floating type/coercion", re.compile(r"\bfloat(?:32|64)?\b|\.float(?:32|64)?\b|parseFloat")),
+    ("decimal numeric literal", re.compile(r"(?<![\w.])\d+\.\d+(?![\w.])|\d+'f\b")),
+    ("floating math helper", re.compile(r"\b(?:sqrt|round|sin|cos|tan)\s*\(")),
+)
+
+
+def strip_nim_literals(line: str) -> str:
+    code: list[str] = []
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if char == "#":
+            break
+        if char == '"':
+            code.append(" ")
+            index += 1
+            while index < len(line):
+                if line[index] == "\\":
+                    index += 2
+                    continue
+                if line[index] == '"':
+                    index += 1
+                    break
+                index += 1
+            continue
+        if char == "'" and index > 0 and line[index - 1].isdigit():
+            code.append(char)
+            index += 1
+            continue
+        if char == "'":
+            code.append(" ")
+            index += 1
+            while index < len(line) and line[index] != "'":
+                index += 1
+            index += 1
+            continue
+        code.append(char)
+        index += 1
+    return "".join(code)
+
+
+class SourcePolicyTest(unittest.TestCase):
+    def test_training_nim_sources_stay_integer_only(self) -> None:
+        paths = sorted({spec.source for spec in ENV_SPECS.values()} | set(SHARED_NIM_SOURCES))
+        violations = []
+
+        for path in paths:
+            for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                code = strip_nim_literals(line)
+                for label, pattern in INTEGER_ONLY_NIM_PATTERNS:
+                    if pattern.search(code):
+                        relpath = path.relative_to(REPO_ROOT)
+                        violations.append(f"{relpath}:{line_number}: {label}: {line.strip()}")
+
+        self.assertEqual([], violations)
 
 
 class ProtocolTest(unittest.TestCase):
