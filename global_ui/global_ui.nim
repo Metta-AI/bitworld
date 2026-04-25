@@ -5,7 +5,7 @@ import
 
 const
   TargetFps = 24.0
-  WebSocketPath = "/sprite"
+  WebSocketPath = "/global"
   MapWidth = 512
   MapHeight = 512
   UiWidth = 128
@@ -23,12 +23,12 @@ const
   LabelObjectBase = 100
 
 type
-  SpriteViewerState = object
+  GlobalViewerState = object
     initialized: bool
 
   WebSocketAppState = object
     lock: Lock
-    viewers: Table[WebSocket, SpriteViewerState]
+    viewers: Table[WebSocket, GlobalViewerState]
     closedSockets: seq[WebSocket]
 
   ServerThreadArgs = object
@@ -39,7 +39,7 @@ type
 var appState: WebSocketAppState
 
 proc addU8(packet: var seq[uint8], value: uint8) =
-  ## Appends one unsigned byte to a sprite protocol packet.
+  ## Appends one unsigned byte to a global protocol packet.
   packet.add(value)
 
 proc addU16(packet: var seq[uint8], value: int) =
@@ -55,14 +55,14 @@ proc addI16(packet: var seq[uint8], value: int) =
   packet.add(uint8(v shr 8))
 
 proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
-  ## Appends one sprite protocol layer definition.
+  ## Appends one global protocol layer definition.
   packet.addU8(0x06)
   packet.addU8(uint8(layer))
   packet.addU8(uint8(layerType))
   packet.addU8(uint8(flags))
 
 proc addViewport(packet: var seq[uint8], layer, width, height: int) =
-  ## Appends one sprite protocol layer viewport.
+  ## Appends one global protocol layer viewport.
   packet.addU8(0x05)
   packet.addU8(uint8(layer))
   packet.addU16(width)
@@ -73,7 +73,7 @@ proc addSprite(
   spriteId, width, height: int,
   pixels: openArray[uint8]
 ) =
-  ## Appends one sprite protocol sprite definition.
+  ## Appends one global protocol sprite definition.
   packet.addU8(0x01)
   packet.addU16(spriteId)
   packet.addU16(width)
@@ -85,7 +85,7 @@ proc addObject(
   packet: var seq[uint8],
   objectId, x, y, z, layer, spriteId: int
 ) =
-  ## Appends one sprite protocol object definition.
+  ## Appends one global protocol object definition.
   packet.addU8(0x02)
   packet.addU16(objectId)
   packet.addI16(x)
@@ -95,7 +95,7 @@ proc addObject(
   packet.addU16(spriteId)
 
 proc spriteColor(color: uint8): uint8 =
-  ## Converts a game palette index to a sprite protocol pixel.
+  ## Converts a game palette index to a global protocol pixel.
   color + 1'u8
 
 proc glyphRows(ch: char): array[7, string] =
@@ -174,7 +174,7 @@ proc labelNames(): array[8, string] =
   ]
 
 proc buildInitPacket(): seq[uint8] =
-  ## Builds the initial layered sprite protocol snapshot.
+  ## Builds the initial layered global protocol snapshot.
   result = @[]
   result.addLayer(MapLayerId, LayerMapZoomable, ZoomableLayerFlag)
   result.addViewport(MapLayerId, MapWidth, MapHeight)
@@ -217,20 +217,20 @@ proc buildUpdatePacket(tick: int): seq[uint8] =
 proc initAppState() =
   ## Initializes shared WebSocket state.
   initLock(appState.lock)
-  appState.viewers = initTable[WebSocket, SpriteViewerState]()
+  appState.viewers = initTable[WebSocket, GlobalViewerState]()
   appState.closedSockets = @[]
 
 proc httpHandler(request: Request) =
-  ## Handles HTTP requests and upgrades sprite viewers.
+  ## Handles HTTP requests and upgrades global viewers.
   if request.uri == WebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.viewers[websocket] = SpriteViewerState()
+        appState.viewers[websocket] = GlobalViewerState()
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
-    request.respond(200, headers, "Global UI sprite server")
+    request.respond(200, headers, "Global UI server")
 
 proc websocketHandler(
   websocket: WebSocket,
@@ -261,7 +261,7 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   previousTick = getMonoTime()
 
 proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
-  ## Runs the global UI sprite test server.
+  ## Runs the global UI test server.
   initAppState()
   let httpServer = newServer(
     httpHandler,
@@ -284,7 +284,7 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
     tick = 0
 
   while true:
-    var viewers: seq[tuple[websocket: WebSocket, state: SpriteViewerState]] = @[]
+    var viewers: seq[tuple[websocket: WebSocket, state: GlobalViewerState]] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:

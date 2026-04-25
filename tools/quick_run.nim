@@ -23,6 +23,7 @@ type
     address: string
     port: int
     players: int
+    saveReplayPath: string
 
   ClientLaunch = object
     title: string
@@ -33,7 +34,7 @@ proc repoRoot(): string =
   absolutePath(getCurrentDir())
 
 proc usage(): string =
-  "Usage: quick_run <game_folder> [port] [--players:N] [--address:ADDR]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4 --address:0.0.0.0"
+  "Usage: quick_run <game_folder> [port] [--players:N] [--address:ADDR] [--save-replay:PATH]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4 --address:0.0.0.0"
 
 proc parsePort(value: string): int =
   result = parseInt(value)
@@ -316,6 +317,10 @@ proc parseArgs(): QuickRunConfig =
         if val.len == 0:
           raise newException(ValueError, "--address requires a value.")
         result.address = val
+      of "save-replay":
+        if val.len == 0:
+          raise newException(ValueError, "--save-replay requires a value.")
+        result.saveReplayPath = val
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdShortOption:
@@ -350,6 +355,10 @@ proc runQuickRun(config: QuickRunConfig): int =
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
 
+  var serverArgs = @[portArg, addressArg]
+  if config.saveReplayPath.len > 0:
+    serverArgs.add("--save-replay:" & config.saveReplayPath)
+
   echo "Using ", config.address, ":", config.port, "."
 
   result = compileTarget(nimExe, rootDir, game.label & " server", game.sourceRelative)
@@ -361,7 +370,12 @@ proc runQuickRun(config: QuickRunConfig): int =
     return result
 
   try:
-    serverProcess = launchManagedProcess(game.label & " server", gameExe, game.workDir, [portArg, addressArg])
+    serverProcess = launchManagedProcess(
+      game.label & " server",
+      gameExe,
+      game.workDir,
+      serverArgs
+    )
   except CatchableError as e:
     echo "Failed to start server: ", e.msg
     cleanupChildren()

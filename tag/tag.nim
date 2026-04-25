@@ -16,7 +16,7 @@ const
   StopThreshold = 8
   FpsScale = 1000
   TargetFps = 24 * FpsScale
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   BackgroundColor = 12'u8
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
   FreezeTicks = 48

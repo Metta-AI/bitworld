@@ -5,7 +5,7 @@ import std/[locks, math, monotimes, os, parseopt, random, strutils, tables, time
 const
   MotionScale = 256
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
 
   Accel = 28
   DashBoost = 280

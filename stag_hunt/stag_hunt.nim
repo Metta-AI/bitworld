@@ -54,7 +54,7 @@ const
   ObstacleDensityPerMille = 110
 
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   BackgroundColor = 10'u8
 
 type

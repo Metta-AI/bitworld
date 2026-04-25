@@ -64,7 +64,14 @@ def strip_nim_literals(line: str) -> str:
 
 class SourcePolicyTest(unittest.TestCase):
     def test_training_nim_sources_stay_integer_only(self) -> None:
-        paths = sorted({spec.source for spec in ENV_SPECS.values()} | set(SHARED_NIM_SOURCES))
+        paths = set(SHARED_NIM_SOURCES)
+        for spec in ENV_SPECS.values():
+            paths.add(spec.source)
+            for dependency in ("server.nim", "sim.nim", "global.nim"):
+                candidate = spec.source.parent / dependency
+                if candidate.exists():
+                    paths.add(candidate)
+        paths = sorted(paths)
         violations = []
 
         for path in paths:
@@ -93,6 +100,14 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(parsed.score, 123)
         self.assertEqual(parsed.aux_value, 7)
         self.assertEqual(parsed.episode, 3)
+        self.assertTrue(parsed.connected)
+
+    def test_parse_reward_stream_payload(self) -> None:
+        parsed = parse_reward_payload("reward 127.0.0.1:9999 42\n")
+
+        self.assertEqual(parsed.score, 42)
+        self.assertEqual(parsed.aux_value, 0)
+        self.assertEqual(parsed.episode, 0)
         self.assertTrue(parsed.connected)
 
 

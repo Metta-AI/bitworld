@@ -18,7 +18,7 @@ const
   MinPlayerSpawnSpacing = 24
   FpsScale = 1000
   TargetFps = 24 * FpsScale
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
   PanelFillColor = 1'u8
   PanelBorderColor = 12'u8

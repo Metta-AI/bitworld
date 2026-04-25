@@ -1,11 +1,11 @@
-# Sprite Protocol
+# Global Protocol
 
-Sprite Protocol is a small binary protocol for sprite based displays. The
+Global Protocol is a small binary protocol for sprite based displays. The
 server sends sprite definitions and object placements. The client sends keyboard
 and mouse input.
 
-Sprite Protocol connects over WebSocket. The endpoint usually lives at
-`ws://address:port/sprite`.
+Global Protocol connects over WebSocket. The endpoint usually lives at
+`ws://address:port/global`.
 
 The protocol is designed to be simple to parse. Every message starts with a
 single message type byte, followed by a fixed set of little endian fields. Any
@@ -176,8 +176,13 @@ Sends the current mouse position.
 | Message type | `u8` | `0x82` |
 | X | `i16` | Mouse x position |
 | Y | `i16` | Mouse y position |
+| Layer | `u8` | Layer containing the mouse position |
 
-The coordinate system is the same as object coordinates.
+For the map layer, the coordinate system is the same as object coordinates. For
+UI layers, `X` and `Y` are local to that UI layer viewport.
+
+The client should send the topmost UI layer under the pointer when the pointer
+is over UI. Otherwise, it should send the map layer.
 
 ### Mouse Button
 

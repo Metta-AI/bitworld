@@ -67,7 +67,7 @@ const
 
   FpsScale = 1000
   TargetFps = 24 * FpsScale
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   FieldColor = 15'u8
   FieldAccentColor = 11'u8
   FieldPebbleColor = 1'u8

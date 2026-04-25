@@ -16,7 +16,7 @@ const
   ScoreIntervalTicks = 24
   FpsScale = 1000
   TargetFps = 24 * FpsScale
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   MotionScale = 256
   CursorAccel = 76
   CursorFrictionNum = 200

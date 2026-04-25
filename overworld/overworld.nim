@@ -18,7 +18,7 @@ const
   MinPlayerSpawnSpacing = 16
   FpsScale = 1000
   TargetFps = 24 * FpsScale
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   PlayerSize = 4
   SelectEscapeCount = 3
   SelectEscapeWindowMs = 800

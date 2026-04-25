@@ -22,7 +22,7 @@ const
   SaladScoreValue = 3
   FpsScale = 1000
   TargetFps = 24 * FpsScale
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
   DishOffsetY = 2
   CarryOffsetY = 0

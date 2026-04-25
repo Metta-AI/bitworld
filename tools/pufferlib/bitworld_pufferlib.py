@@ -117,10 +117,10 @@ def binary_is_fresh(spec: EnvironmentSpec) -> bool:
     if not spec.binary.exists():
         return False
 
-    newest_source = spec.source.stat().st_mtime
-    for shared_path in SHARED_NIM_SOURCES:
-        if shared_path.exists():
-            newest_source = max(newest_source, shared_path.stat().st_mtime)
+    source_paths = {spec.source, *SHARED_NIM_SOURCES}
+    for dependency in ("server.nim", "sim.nim", "global.nim"):
+        source_paths.add(spec.source.parent / dependency)
+    newest_source = max(path.stat().st_mtime for path in source_paths if path.exists())
     return spec.binary.stat().st_mtime >= newest_source
 
 
@@ -207,7 +207,18 @@ def unpack_frame(packet: bytes) -> np.ndarray:
 
 
 def parse_reward_payload(payload: bytes | str) -> RewardSnapshot:
-    data = json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
+    text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+    score = None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "reward":
+            score = int(parts[2])
+    if score is not None:
+        return RewardSnapshot(score=score, aux_value=0, episode=0, connected=True)
+    if not text.strip():
+        return RewardSnapshot(score=0, aux_value=0, episode=0, connected=False)
+
+    data = json.loads(text)
     return RewardSnapshot(
         score=int(data.get("score", data.get("reward", 0))),
         aux_value=int(data.get("auxValue", 0)),
@@ -252,6 +263,7 @@ class BitWorldWorker:
         self.action_repeat = action_repeat
         self.process: subprocess.Popen[str] | None = None
         self.connection: ClientConnection | None = None
+        self.reward_connection: ClientConnection | None = None
         self.log_file = None
         self.base_score = 0
         self.score = 0
@@ -295,7 +307,8 @@ class BitWorldWorker:
             stderr=subprocess.STDOUT,
             text=True,
         )
-        self.connection = self._connect()
+        self.connection = self._connect("/player")
+        self.reward_connection = self._connect_reward_stream()
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
             name=f"bitworld-{self.spec.name}-{self.env_id}-reader",
@@ -303,9 +316,9 @@ class BitWorldWorker:
         )
         self._reader_thread.start()
 
-    def _connect(self) -> ClientConnection:
+    def _connect(self, path: str) -> ClientConnection:
         deadline = time.time() + 10.0
-        url = f"ws://127.0.0.1:{self.port}/ws"
+        url = f"ws://127.0.0.1:{self.port}{path}"
         last_error: Exception | None = None
         while time.time() < deadline:
             try:
@@ -315,6 +328,13 @@ class BitWorldWorker:
                 time.sleep(0.05)
         raise RuntimeError(f"failed to connect to {url}") from last_error
 
+    def _connect_reward_stream(self) -> ClientConnection | None:
+        url = f"ws://127.0.0.1:{self.port}/reward"
+        try:
+            return connect(url, open_timeout=1.0, ping_interval=None, max_size=None, proxy=None)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _receive_packet(self) -> np.ndarray:
         assert self.connection is not None
         payload = self.connection.recv(timeout=10.0)
@@ -323,9 +343,35 @@ class BitWorldWorker:
         return unpack_frame(bytes(payload))
 
     def _poll_reward(self) -> RewardSnapshot:
+        if self.reward_connection is not None:
+            return self._poll_reward_stream()
+
         url = f"http://127.0.0.1:{self.port}/reward"
         with urllib.request.urlopen(url, timeout=2.0) as response:
             return parse_reward_payload(response.read())
+
+    def _poll_reward_stream(self) -> RewardSnapshot:
+        assert self.reward_connection is not None
+        deadline = time.time() + 10.0
+        snapshot: RewardSnapshot | None = None
+        while time.time() < deadline:
+            payload = self.reward_connection.recv(timeout=max(0.0, deadline - time.time()))
+            if not isinstance(payload, str):
+                raise TypeError(f"expected text reward websocket payload, got {type(payload)!r}")
+            snapshot = parse_reward_payload(payload)
+            while True:
+                try:
+                    payload = self.reward_connection.recv(timeout=0.0)
+                except TimeoutError:
+                    break
+                if not isinstance(payload, str):
+                    raise TypeError(f"expected text reward websocket payload, got {type(payload)!r}")
+                snapshot = parse_reward_payload(payload)
+            if snapshot.connected:
+                return snapshot
+        if snapshot is not None:
+            return snapshot
+        raise TimeoutError(f"timed out waiting for {self.spec.name} reward")
 
     def _reader_loop(self) -> None:
         assert self.connection is not None
@@ -372,6 +418,17 @@ class BitWorldWorker:
             start_seq = self._frame_seq
         previous_episode = self.episode
         self.connection.send(bytes([RESET_INPUT_MASK]), text=False)
+        if self.reward_connection is not None:
+            frame, _ = self._wait_for_frame(lambda _item, seq: seq > start_seq)
+            reward = self._poll_reward()
+            self.base_score = reward.score
+            self.score = reward.score
+            self.aux_value = reward.aux_value
+            self.episode = reward.episode
+            self.episode_return = 0.0
+            self.episode_steps = 0
+            return frame
+
         frame = None
         reward = None
         last_seq = start_seq
@@ -419,6 +476,13 @@ class BitWorldWorker:
             except Exception:  # noqa: BLE001
                 pass
             self.connection = None
+
+        if self.reward_connection is not None:
+            try:
+                self.reward_connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.reward_connection = None
 
         if self.process is not None:
             self.process.terminate()
