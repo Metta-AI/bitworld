@@ -8,6 +8,7 @@ const
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
   FrameFitMaxErrors = 260
   FrameFitMinCompared = 12000
+  LocalFrameSearchRadius = 8
   PlayerIgnoreRadius = 9
   PlayerDefaultPort = DefaultPort
   ViewerWindowWidth = 1820
@@ -48,6 +49,7 @@ type
 
   CameraLock = enum
     NoLock
+    LocalFrameMapLock
     FrameMapLock
 
   PathNode = object
@@ -194,6 +196,56 @@ proc scoreCamera(bot: Bot, cameraX, cameraY: int): CameraScore =
           return
   result.score = result.compared - result.errors * ScreenWidth
 
+proc acceptCameraScore(score: CameraScore): bool =
+  ## Returns true when a camera score is good enough to trust.
+  score.errors <= FrameFitMaxErrors and score.compared >= FrameFitMinCompared
+
+proc setCameraLock(
+  bot: var Bot,
+  x,
+  y: int,
+  score: CameraScore,
+  lock: CameraLock
+) =
+  ## Stores one accepted camera lock.
+  bot.cameraX = x
+  bot.cameraY = y
+  bot.cameraScore = score.score
+  bot.cameraLock = lock
+  bot.localized = true
+
+proc locateNearFrame(bot: var Bot): bool =
+  ## Tracks camera by scanning near the previous accepted camera.
+  if not bot.localized:
+    return false
+  var
+    bestScore = CameraScore(score: low(int), errors: high(int), compared: 0)
+    bestX = bot.cameraX
+    bestY = bot.cameraY
+  let
+    minX = max(0, bot.cameraX - LocalFrameSearchRadius)
+    maxX = min(MapWidth - ScreenWidth, bot.cameraX + LocalFrameSearchRadius)
+    minY = max(0, bot.cameraY - LocalFrameSearchRadius)
+    maxY = min(MapHeight - ScreenHeight, bot.cameraY + LocalFrameSearchRadius)
+  for y in minY .. maxY:
+    for x in minX .. maxX:
+      let score = bot.scoreCamera(x, y)
+      if score.errors < bestScore.errors or
+          (score.errors == bestScore.errors and
+          score.compared > bestScore.compared):
+        bestScore = score
+        bestX = x
+        bestY = y
+        if bestScore.errors == 0 and
+            bestScore.compared >= FrameFitMinCompared:
+          break
+    if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
+      break
+  if not acceptCameraScore(bestScore):
+    return false
+  bot.setCameraLock(bestX, bestY, bestScore, LocalFrameMapLock)
+  true
+
 proc locateByFrame(bot: var Bot): bool =
   ## Locates the camera by fitting the full screen rectangle to the map.
   var
@@ -217,23 +269,20 @@ proc locateByFrame(bot: var Bot): bool =
           break
     if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
       break
-  if bestScore.errors > FrameFitMaxErrors or
-      bestScore.compared < FrameFitMinCompared:
+  if not acceptCameraScore(bestScore):
     bot.cameraLock = NoLock
     bot.cameraScore = bestScore.score
     bot.localized = false
     return false
-  bot.cameraX = bestX
-  bot.cameraY = bestY
-  bot.cameraScore = bestScore.score
-  bot.cameraLock = FrameMapLock
-  bot.localized = true
+  bot.setCameraLock(bestX, bestY, bestScore, FrameMapLock)
   true
 
 proc updateLocation(bot: var Bot) =
   ## Updates the camera and player world estimate from the frame.
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
+  if bot.locateNearFrame():
+    return
   discard bot.locateByFrame()
 
 proc rememberVisibleMap(bot: var Bot) =
@@ -442,6 +491,7 @@ proc cameraLockName(lock: CameraLock): string =
   ## Returns a human-readable camera lock name.
   case lock
   of NoLock: "none"
+  of LocalFrameMapLock: "local frame"
   of FrameMapLock: "frame map"
 
 proc passable(bot: Bot, x, y: int): bool =
