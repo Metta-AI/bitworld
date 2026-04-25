@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitworld"
+version = "0.1.0"
+description = "Retro multiplayer research environments"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "numpy>=2.0",
+  "pufferlib @ git+https://github.com/PufferAI/PufferLib.git@4.0",
+  "torch>=2.0",
+  "websockets>=15.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Metta-AI/bitworld"
+Repository = "https://github.com/Metta-AI/bitworld.git"
+
+[tool.setuptools]
+packages = ["bitworld"]
+package-dir = { bitworld = "." }
+include-package-data = true
+
+[tool.setuptools.package-data]
+bitworld = [
+  "*.md",
+  "*.nimble",
+  "*.nims",
+  "**/*.aseprite",
+  "**/*.html",
+  "**/*.lock",
+  "**/*.md",
+  "**/*.nim",
+  "**/*.png",
+  "**/*.ttf",
+  "tools/pufferlib/*.py",
+  "tools/pufferlib/*.txt",
+]
