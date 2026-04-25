@@ -302,17 +302,36 @@ class BitWorldWorker:
         self.episode = reward.episode
 
     def _start_server(self) -> None:
+        ensure_bitworld_binary(self.spec)
         RUNLOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = RUNLOG_DIR / f"{self.spec.name}_{self.env_id}.log"
         self.log_file = log_path.open("w")
-        self.process = self._launch_server()
+        server_args = [
+            str(self.spec.binary),
+            "--address:127.0.0.1",
+            f"--port:{self.port}",
+            f"--fps:{self.fps}",
+            f"--seed:{self.seed}",
+        ]
+        if self.spec.name == "among_them":
+            server_args.append(
+                f"--config:{{\"minPlayers\":{self.spec.server_players},"
+                f"\"maxPlayers\":{self.spec.server_players}}}"
+            )
+        self.process = subprocess.Popen(
+            server_args,
+            cwd=self.spec.binary.parent,
+            stdout=self.log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         self.connection = self._connect("/player")
         for _ in range(self.spec.server_players - 1):
             self.companion_connections.append(self._connect("/player"))
         for player_id, connection in enumerate(self.companion_connections, start=1):
             thread = threading.Thread(
                 target=self._companion_reader_loop,
-                args=(player_id, connection),
+                args=(connection,),
                 name=f"bitworld-{self.spec.name}-{self.env_id}-companion-{player_id}-reader",
                 daemon=True,
             )
@@ -324,31 +343,6 @@ class BitWorldWorker:
             daemon=True,
         )
         self._reader_thread.start()
-
-    def _server_args(self) -> list[str]:
-        args = [
-            str(self.spec.binary),
-            "--address:127.0.0.1",
-            f"--port:{self.port}",
-            f"--fps:{self.fps}",
-            f"--seed:{self.seed}",
-        ]
-        if self.spec.name == "among_them":
-            args.append(
-                f"--config:{{\"minPlayers\":{self.spec.server_players},"
-                f"\"maxPlayers\":{self.spec.server_players}}}"
-            )
-        return args
-
-    def _launch_server(self) -> subprocess.Popen[str]:
-        ensure_bitworld_binary(self.spec)
-        return subprocess.Popen(
-            self._server_args(),
-            cwd=self.spec.binary.parent,
-            stdout=self.log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
 
     def _connect(self, path: str) -> ClientConnection:
         deadline = time.time() + 10.0
@@ -396,8 +390,7 @@ class BitWorldWorker:
                 self._frame_seq += 1
                 self._condition.notify_all()
 
-    def _companion_reader_loop(self, player_id: int, connection: ClientConnection) -> None:
-        del player_id
+    def _companion_reader_loop(self, connection: ClientConnection) -> None:
         while True:
             with self._condition:
                 if self._closed:
