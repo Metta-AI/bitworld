@@ -1295,23 +1295,15 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
     spriteY = player.y - SpriteDrawOffY
     centerX = spriteX + SpriteSize div 2
     centerY = spriteY + SpriteSize div 2
-    cameraX = clamp(
-      centerX - ScreenWidth div 2,
-      0,
-      max(0, MapWidth - ScreenWidth)
-    )
-    cameraY = clamp(
-      centerY - ScreenHeight div 2,
-      0,
-      max(0, MapHeight - ScreenHeight)
-    )
+    cameraX = centerX - ScreenWidth div 2
+    cameraY = centerY - ScreenHeight div 2
 
   for y in 0 ..< ScreenHeight:
     for x in 0 ..< ScreenWidth:
       let
         mx = cameraX + x
         my = cameraY + y
-      if mx < MapWidth and my < MapHeight:
+      if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
         sim.fb.putPixel(x, y, sim.mapPixels[mapIndex(mx, my)])
 
   let

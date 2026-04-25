@@ -42,7 +42,7 @@ const
   SteerDeadband = 2
   BrakeDeadband = 1
   StuckFrameThreshold = 8
-  JiggleDuration = 8
+  JiggleDuration = 16
   TaskHoldPadding = 8
 
 type
@@ -158,6 +158,22 @@ proc mapIndexSafe(x, y: int): int =
   ## Returns the map pixel index.
   y * MapWidth + x
 
+proc minCameraX(): int =
+  ## Returns the smallest possible centered camera X.
+  -ScreenWidth div 2 - SpriteSize
+
+proc maxCameraX(): int =
+  ## Returns the largest possible centered camera X.
+  MapWidth - ScreenWidth div 2 + SpriteSize
+
+proc minCameraY(): int =
+  ## Returns the smallest possible centered camera Y.
+  -ScreenHeight div 2 - SpriteSize
+
+proc maxCameraY(): int =
+  ## Returns the largest possible centered camera Y.
+  MapHeight - ScreenHeight div 2 + SpriteSize
+
 proc inMap(x, y: int): bool =
   ## Returns true when a world pixel is inside the Skeld map.
   x >= 0 and y >= 0 and x < MapWidth and y < MapHeight
@@ -193,16 +209,19 @@ proc ignoreFramePixel(frameColor: uint8, sx, sy: int): bool =
 
 proc scoreCamera(bot: Bot, cameraX, cameraY: int): CameraScore =
   ## Counts map-fit errors for a full 128x128 frame rectangle.
-  if cameraX < 0 or cameraY < 0 or
-      cameraX + ScreenWidth > MapWidth or
-      cameraY + ScreenHeight > MapHeight:
-    return CameraScore(score: low(int), errors: high(int), compared: 0)
   for sy in 0 ..< ScreenHeight:
     for sx in 0 ..< ScreenWidth:
       let frameColor = bot.unpacked[sy * ScreenWidth + sx]
       if ignoreFramePixel(frameColor, sx, sy):
         continue
-      let mapColor = bot.sim.mapPixels[mapIndexSafe(cameraX + sx, cameraY + sy)]
+      let
+        mx = cameraX + sx
+        my = cameraY + sy
+        mapColor =
+          if inMap(mx, my):
+            bot.sim.mapPixels[mapIndexSafe(mx, my)]
+          else:
+            SpaceColor
       if frameColor == mapColor:
         inc result.compared
       elif ShadowMap[mapColor and 0x0f] == frameColor:
@@ -242,10 +261,10 @@ proc locateNearFrame(bot: var Bot): bool =
     bestX = bot.cameraX
     bestY = bot.cameraY
   let
-    minX = max(0, bot.cameraX - LocalFrameSearchRadius)
-    maxX = min(MapWidth - ScreenWidth, bot.cameraX + LocalFrameSearchRadius)
-    minY = max(0, bot.cameraY - LocalFrameSearchRadius)
-    maxY = min(MapHeight - ScreenHeight, bot.cameraY + LocalFrameSearchRadius)
+    minX = max(minCameraX(), bot.cameraX - LocalFrameSearchRadius)
+    maxX = min(maxCameraX(), bot.cameraX + LocalFrameSearchRadius)
+    minY = max(minCameraY(), bot.cameraY - LocalFrameSearchRadius)
+    maxY = min(maxCameraY(), bot.cameraY + LocalFrameSearchRadius)
   for y in minY .. maxY:
     for x in minX .. maxX:
       let score = bot.scoreCamera(x, y)
@@ -275,8 +294,8 @@ proc locateByFrame(bot: var Bot): bool =
     )
     bestX = 0
     bestY = 0
-  for y in 0 .. MapHeight - ScreenHeight:
-    for x in 0 .. MapWidth - ScreenWidth:
+  for y in minCameraY() .. maxCameraY():
+    for x in minCameraX() .. maxCameraX():
       let score = bot.scoreCamera(x, y)
       if score.errors < bestScore.errors or
           (score.errors == bestScore.errors and
@@ -548,6 +567,10 @@ proc hasMovement(mask: uint8): bool =
   ## Returns true when an input mask contains directional movement.
   (mask and (ButtonUp or ButtonDown or ButtonLeft or ButtonRight)) != 0
 
+proc withoutButtons(mask, buttons: uint8): uint8 =
+  ## Returns an input mask with selected buttons released.
+  mask and not buttons
+
 proc updateStuckState(bot: var Bot) =
   ## Tracks when movement input is not changing position.
   if not bot.localized:
@@ -592,19 +615,25 @@ proc applyJiggle(bot: var Bot, mask: uint8): uint8 =
     vertical = (mask and (ButtonUp or ButtonDown)) != 0
     horizontal = (mask and (ButtonLeft or ButtonRight)) != 0
   if vertical and not horizontal:
+    result = mask.withoutButtons(ButtonUp or ButtonDown)
     if bot.jiggleSide == 0:
       result = result or ButtonLeft
     else:
       result = result or ButtonRight
   elif horizontal and not vertical:
+    result = mask.withoutButtons(ButtonLeft or ButtonRight)
     if bot.jiggleSide == 0:
       result = result or ButtonUp
     else:
       result = result or ButtonDown
-  elif bot.jiggleSide == 0:
-    result = result or ButtonLeft
   else:
-    result = result or ButtonRight
+    result = mask.withoutButtons(
+      ButtonUp or ButtonDown or ButtonLeft or ButtonRight
+    )
+    if bot.jiggleSide == 0:
+      result = result or ButtonLeft
+    else:
+      result = result or ButtonRight
 
 proc inputMaskSummary(mask: uint8): string =
   ## Returns a human-readable input mask.
