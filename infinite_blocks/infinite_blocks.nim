@@ -21,7 +21,7 @@ const
   ClearFlashTicks = 8
   ClearPauseTicks = 5
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
 
 type

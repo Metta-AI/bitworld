@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sprite Viewer</title>
+<title>Global Viewer</title>
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -36,7 +36,7 @@ canvas{
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
 const url=new URL(location.href);
-const address=url.searchParams.get("address")||"ws://localhost:8080/sprite";
+const address=url.searchParams.get("address")||"ws://localhost:8080/global";
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const palette=[
   [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],

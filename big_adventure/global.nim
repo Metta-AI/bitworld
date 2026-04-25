@@ -25,7 +25,7 @@ const
 var TransportSheet: Sprite
 
 type
-  SpriteViewerState* = object
+  GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
     mouseX*: int
@@ -38,15 +38,15 @@ type
     replaySeekTick*: int
     replayCommands*: seq[char]
 
-proc initSpriteViewerState*(): SpriteViewerState =
-  ## Returns the default state for one sprite protocol viewer.
+proc initGlobalViewerState*(): GlobalViewerState =
+  ## Returns the default state for one global protocol viewer.
   result.mouseLayer = MapLayerId
   result.selectedPlayerId = -1
   result.replaySeekTick = -1
   result.replayCommands = @[]
 
 proc spriteColor(color: uint8): uint8 =
-  ## Converts a game palette index to a sprite protocol pixel.
+  ## Converts a game palette index to a global protocol pixel.
   color + 1'u8
 
 proc transportSheet(): Sprite =
@@ -56,7 +56,7 @@ proc transportSheet(): Sprite =
   TransportSheet
 
 proc addU8(packet: var seq[uint8], value: uint8) =
-  ## Appends one unsigned byte to a sprite protocol packet.
+  ## Appends one unsigned byte to a global protocol packet.
   packet.add(value)
 
 proc addU16(packet: var seq[uint8], value: int) =
@@ -72,14 +72,14 @@ proc addI16(packet: var seq[uint8], value: int) =
   packet.add(uint8(v shr 8))
 
 proc addViewport(packet: var seq[uint8], layer, width, height: int) =
-  ## Appends a sprite protocol viewport message.
+  ## Appends a global protocol viewport message.
   packet.addU8(0x05)
   packet.addU8(uint8(layer))
   packet.addU16(width)
   packet.addU16(height)
 
 proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
-  ## Appends a sprite protocol layer definition message.
+  ## Appends a global protocol layer definition message.
   packet.addU8(0x06)
   packet.addU8(uint8(layer))
   packet.addU8(uint8(layerType))
@@ -90,7 +90,7 @@ proc addSprite(
   spriteId, width, height: int,
   pixels: openArray[uint8]
 ) =
-  ## Appends a sprite protocol sprite definition message.
+  ## Appends a global protocol sprite definition message.
   packet.addU8(0x01)
   packet.addU16(spriteId)
   packet.addU16(width)
@@ -102,7 +102,7 @@ proc addObject(
   packet: var seq[uint8],
   objectId, x, y, z, layer, spriteId: int
 ) =
-  ## Appends a sprite protocol object definition message.
+  ## Appends a global protocol object definition message.
   packet.addU8(0x02)
   packet.addU16(objectId)
   packet.addI16(x)
@@ -112,7 +112,7 @@ proc addObject(
   packet.addU16(spriteId)
 
 proc addDeleteObject(packet: var seq[uint8], objectId: int) =
-  ## Appends a sprite protocol object delete message.
+  ## Appends a global protocol object delete message.
   packet.addU8(0x03)
   packet.addU16(objectId)
 
@@ -122,11 +122,11 @@ proc readProtocolI16(blob: string, offset: int): int =
     (uint16(blob[offset + 1].uint8) shl 8)
   int(cast[int16](value))
 
-proc applySpriteViewerMessage*(
-  state: var SpriteViewerState,
+proc applyGlobalViewerMessage*(
+  state: var GlobalViewerState,
   message: string
 ) =
-  ## Applies one or more sprite protocol client messages.
+  ## Applies one or more global protocol client messages.
   var offset = 0
   while offset < message.len:
     let messageType = message[offset].uint8
@@ -246,7 +246,7 @@ proc buildSpriteProtocolActorSprite(
 proc buildSpriteProtocolRawSprite(
   sprite: Sprite
 ): tuple[width, height: int, pixels: seq[uint8]] =
-  ## Builds a raw sprite protocol sprite from a game sprite.
+  ## Builds a raw global protocol sprite from a game sprite.
   result.width = sprite.width
   result.height = sprite.height
   result.pixels = newSeq[uint8](sprite.width * sprite.height)
@@ -507,7 +507,7 @@ proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
     inc j
 
 proc playerObjectId(player: Actor): int =
-  ## Returns the stable sprite protocol object id for a player.
+  ## Returns the stable global protocol object id for a player.
   PlayerObjectBase + player.id
 
 proc playerSpriteId(playerIndex: int, selected: bool): int =
@@ -662,8 +662,8 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
 
 proc buildSpriteProtocolUpdates*(
   sim: var SimServer,
-  state: SpriteViewerState,
-  nextState: var SpriteViewerState,
+  state: GlobalViewerState,
+  nextState: var GlobalViewerState,
   replayTick = -1,
   replayPlaying = false,
   replaySpeed = 1,

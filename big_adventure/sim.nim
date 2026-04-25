@@ -32,8 +32,8 @@ const
   BossHp* = 10
   BossCoinValue* = 10
   TargetFps* = 24.0
-  WebSocketPath* = "/ws"
-  SpriteWebSocketPath* = "/sprite"
+  WebSocketPath* = "/player"
+  GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8
   HealthBarGray* = 1'u8

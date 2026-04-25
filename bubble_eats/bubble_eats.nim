@@ -63,7 +63,7 @@ const
   AutoBlinkMax = 140
 
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   FieldColor = 15'u8
   FieldAccentColor = 11'u8
   FieldPebbleColor = 1'u8

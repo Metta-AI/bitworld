@@ -17,7 +17,7 @@ const
   StopThreshold = 20
   MinPlayerSpawnSpacing = 24
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
   PanelFillColor = 1'u8
   PanelBorderColor = 12'u8

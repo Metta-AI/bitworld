@@ -15,7 +15,7 @@ const
   MaxSpeed = 352
   StopThreshold = 8
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   BackgroundColor = 12'u8
   PlayerColors = [3'u8, 7, 8, 14, 4, 11, 13, 15]
   FreezeTicks = 48

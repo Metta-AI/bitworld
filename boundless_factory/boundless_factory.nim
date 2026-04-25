@@ -8,7 +8,7 @@ const
   PalettePath = ClientDataDir / "pallete.png"
   NumbersPath = ClientDataDir / "numbers.png"
   FactorySheetPath = FactoryDataDir / "factory_sheet.png"
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   TargetFps = 24.0
 
   MapWidthTiles = 48

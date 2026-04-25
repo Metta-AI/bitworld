@@ -8,7 +8,7 @@ const
   ScreenshotDirName = "screenshots"
   ScreenshotPrefix = "screenshot"
   ScreenshotScalePower = 2
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   MinimumSplashMilliseconds = 1500'i64
   ReconnectDelayMilliseconds = 250'i64
   NetworkPollPasses = 8

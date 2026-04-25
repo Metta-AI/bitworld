@@ -49,7 +49,7 @@ const
   ShipKillScore = 5
 
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
 
   BackgroundColor = 12'u8
   HudBackdropColor = 1'u8

@@ -21,7 +21,7 @@ const
   MaxReturnCount = 9
   SaladScoreValue = 3
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
   DishOffsetY = 2
   CarryOffsetY = 0

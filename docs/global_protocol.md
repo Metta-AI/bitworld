@@ -1,11 +1,11 @@
-# Sprite Protocol
+# Global Protocol
 
-Sprite Protocol is a small binary protocol for sprite based displays. The
+Global Protocol is a small binary protocol for sprite based displays. The
 server sends sprite definitions and object placements. The client sends keyboard
 and mouse input.
 
-Sprite Protocol connects over WebSocket. The endpoint usually lives at
-`ws://address:port/sprite`.
+Global Protocol connects over WebSocket. The endpoint usually lives at
+`ws://address:port/global`.
 
 The protocol is designed to be simple to parse. Every message starts with a
 single message type byte, followed by a fixed set of little endian fields. Any

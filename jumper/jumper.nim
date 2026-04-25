@@ -19,7 +19,7 @@ const
   BoostJumpVel = -350
   MaxFallSpeed = 1000
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   BackgroundColor = 13'u8
   SkyColor = 14'u8
   PlayerColors = [3'u8, 7, 8, 14, 4, 11]

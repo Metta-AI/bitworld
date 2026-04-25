@@ -10,7 +10,7 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
-    spriteViewers: Table[WebSocket, SpriteViewerState]
+    globalViewers: Table[WebSocket, GlobalViewerState]
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
 
@@ -289,7 +289,7 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
-  appState.spriteViewers = initTable[WebSocket, SpriteViewerState]()
+  appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
 
@@ -461,8 +461,8 @@ proc applyReplayCommand(
     discard
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
-  if websocket in appState.spriteViewers:
-    appState.spriteViewers.del(websocket)
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
@@ -486,11 +486,11 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerAddresses[websocket] = request.remoteAddress
-  elif request.uri == SpriteWebSocketPath and request.httpMethod == "GET":
+  elif request.uri == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.spriteViewers[websocket] = initSpriteViewerState()
+        appState.globalViewers[websocket] = initGlobalViewerState()
   elif request.uri == RewardWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -510,7 +510,7 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.spriteViewers and
+        if websocket notin appState.globalViewers and
             websocket notin appState.rewardViewers:
           if appState.replayLoaded:
             appState.playerIndices[websocket] = -1
@@ -522,8 +522,8 @@ proc websocketHandler(
     if message.kind == BinaryMessage:
       {.gcsafe.}:
         withLock appState.lock:
-          if websocket in appState.spriteViewers:
-            appState.spriteViewers[websocket].applySpriteViewerMessage(
+          if websocket in appState.globalViewers:
+            appState.globalViewers[websocket].applyGlobalViewerMessage(
               message.data
             )
           elif message.data.len == InputPacketBytes and
@@ -597,8 +597,8 @@ proc runServerLoop*(
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
-      spriteViewers: seq[WebSocket] = @[]
-      spriteStates: seq[SpriteViewerState] = @[]
+      globalViewers: seq[WebSocket] = @[]
+      globalStates: seq[GlobalViewerState] = @[]
       rewardViewers: seq[WebSocket] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
@@ -654,15 +654,15 @@ proc runServerLoop*(
             ))
             replayWriter.lastMasks[playerIndex] = currentMask
           appState.lastAppliedMasks[websocket] = currentMask
-        for websocket, state in appState.spriteViewers.pairs:
-          spriteViewers.add(websocket)
-          spriteStates.add(state)
+        for websocket, state in appState.globalViewers.pairs:
+          globalViewers.add(websocket)
+          globalStates.add(state)
           if state.replaySeekTick >= 0:
             replaySeekTicks.add(state.replaySeekTick)
           for command in state.replayCommands:
             replayCommands.add(command)
-          appState.spriteViewers[websocket].replayCommands.setLen(0)
-          appState.spriteViewers[websocket].replaySeekTick = -1
+          appState.globalViewers[websocket].replayCommands.setLen(0)
+          appState.globalViewers[websocket].replaySeekTick = -1
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
 
@@ -706,10 +706,10 @@ proc runServerLoop*(
           withLock appState.lock:
             sim.removePlayer(websocket)
 
-    for i in 0 ..< spriteViewers.len:
-      var nextState: SpriteViewerState
+    for i in 0 ..< globalViewers.len:
+      var nextState: GlobalViewerState
       let packet = sim.buildSpriteProtocolUpdates(
-        spriteStates[i],
+        globalStates[i],
         nextState,
         if replayLoaded: sim.tickCount else: -1,
         replayPlayer.playing,
@@ -720,14 +720,14 @@ proc runServerLoop*(
       if packet.len == 0:
         continue
       try:
-        spriteViewers[i].send(blobFromBytes(packet), BinaryMessage)
+        globalViewers[i].send(blobFromBytes(packet), BinaryMessage)
         {.gcsafe.}:
           withLock appState.lock:
-            if spriteViewers[i] in appState.spriteViewers:
-              appState.spriteViewers[spriteViewers[i]] = nextState
+            if globalViewers[i] in appState.globalViewers:
+              appState.globalViewers[globalViewers[i]] = nextState
       except:
         {.gcsafe.}:
           withLock appState.lock:
-            sim.removePlayer(spriteViewers[i])
+            sim.removePlayer(globalViewers[i])
 
     runFrameLimiter(lastTick)

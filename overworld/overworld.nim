@@ -17,7 +17,7 @@ const
   StopThreshold = 16
   MinPlayerSpawnSpacing = 16
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   PlayerSize = 4
   SelectEscapeCount = 3
   SelectEscapeWindowMs = 800

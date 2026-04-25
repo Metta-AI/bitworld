@@ -91,8 +91,8 @@ const
     12,    # 14 light blue   -> dark navy
     9,     # 15 pale blue    -> dark teal
   ]
-  WebSocketPath* = "/ws"
-  SpriteWebSocketPath* = "/sprite"
+  WebSocketPath* = "/player"
+  GlobalWebSocketPath* = "/global"
 
 type
   PlayerRole* = enum

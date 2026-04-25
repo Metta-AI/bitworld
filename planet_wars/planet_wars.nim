@@ -15,7 +15,7 @@ const
   ShipLaneOffsetMax = 3
   ScoreIntervalTicks = 24
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   MotionScale = 256
   CursorAccel = 76
   CursorFrictionNum = 200

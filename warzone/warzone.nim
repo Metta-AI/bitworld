@@ -4,7 +4,7 @@ import std/[locks, math, monotimes, os, parseopt, random, strutils, tables, time
 
 const
   TargetFps = 24.0
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   BackgroundColor = 0'u8
   GroundColor = 9'u8
   SkyColor = 12'u8

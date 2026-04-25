@@ -3,7 +3,7 @@ import std/[heapqueue, math, monotimes, options, os, parseopt, strutils, times]
 
 const
   SheetTileSize = TileSize
-  WebSocketPath = "/ws"
+  WebSocketPath = "/player"
   PlayerCenterX = ScreenWidth div 2
   PlayerCenterY = ScreenHeight div 2
   HudHeight = 6
