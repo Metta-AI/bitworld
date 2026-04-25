@@ -20,7 +20,8 @@ const
   ChopWorkNeeded = 20
   MaxReturnCount = 9
   SaladScoreValue = 3
-  TargetFps = 24.0
+  FpsScale = 1000
+  TargetFps = 24 * FpsScale
   WebSocketPath = "/ws"
   FloorBackdropColor = 3'u8
   DishOffsetY = 2
@@ -931,11 +932,11 @@ proc websocketHandler(
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
-proc runFrameLimiter(previousTick: var MonoTime, targetFps: float) =
-  if targetFps <= 0.0:
+proc runFrameLimiter(previousTick: var MonoTime, targetFps: int) =
+  if targetFps <= 0:
     previousTick = getMonoTime()
     return
-  let frameDuration = initDuration(milliseconds = int(1000.0 / targetFps))
+  let frameDuration = initDuration(microseconds = (1_000_000 * FpsScale) div targetFps)
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
@@ -1065,7 +1066,7 @@ when isMainModule:
         else:
           pendingOption = "port"
       of "fps":
-        targetFps = parseFloat(val)
+        targetFps = parseInt(val) * FpsScale
       of "seed":
         seed = parseInt(val)
       else: discard

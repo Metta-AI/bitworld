@@ -21,7 +21,8 @@ const
   SnakeHp = 3
   BossHp = 10
   BossCoinValue = 10
-  TargetFps = 24.0
+  FpsScale = 1000
+  TargetFps = 24 * FpsScale
   WebSocketPath = "/ws"
   BackgroundColor = 12'u8
   HealthBarGray = 1'u8
@@ -1006,11 +1007,11 @@ proc websocketHandler(
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
-proc runFrameLimiter(previousTick: var MonoTime, targetFps: float) =
-  if targetFps <= 0.0:
+proc runFrameLimiter(previousTick: var MonoTime, targetFps: int) =
+  if targetFps <= 0:
     previousTick = getMonoTime()
     return
-  let frameDuration = initDuration(milliseconds = int(1000.0 / targetFps))
+  let frameDuration = initDuration(microseconds = (1_000_000 * FpsScale) div targetFps)
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
@@ -1129,7 +1130,7 @@ when isMainModule:
       case key
       of "address": address = val
       of "port": port = parseInt(val)
-      of "fps": targetFps = parseFloat(val)
+      of "fps": targetFps = parseInt(val) * FpsScale
       of "seed": seed = parseInt(val)
       else: discard
     else: discard

@@ -45,7 +45,7 @@ class BitWorldSmokeTest(unittest.TestCase):
                     num_envs=1,
                     max_episode_steps=4,
                     frame_stack=4,
-                    fps=0.0,
+                    fps=0,
                     action_repeat=1,
                     base_seed=1234,
                 )
@@ -70,7 +70,7 @@ class BitWorldSmokeTest(unittest.TestCase):
                     num_envs=1,
                     max_episode_steps=16,
                     frame_stack=4,
-                    fps=0.0,
+                    fps=0,
                     action_repeat=1,
                     base_seed=123,
                 )
@@ -92,7 +92,7 @@ class BitWorldSmokeTest(unittest.TestCase):
                     self.assertAlmostEqual(item.score, item.episode_return)
 
     def test_default_action_repeat_multi_env_autoreset(self) -> None:
-        env = BitWorldVecEnv("bubble_eats", num_envs=2, max_episode_steps=2, frame_stack=2, fps=0.0, base_seed=777)
+        env = BitWorldVecEnv("bubble_eats", num_envs=2, max_episode_steps=2, frame_stack=2, fps=0, base_seed=777)
         try:
             obs = env.reset()
             self.assertEqual(obs.shape, (2, FRAME_PIXELS * 2))

@@ -240,14 +240,14 @@ class BitWorldWorker:
         env_id: int,
         port: int,
         seed: int,
-        fps: float,
+        fps: int,
         action_repeat: int,
     ) -> None:
         self.spec = get_env_spec(spec)
         self.env_id = env_id
         self.port = port
         self.seed = seed
-        self.fps = fps
+        self.fps = int(fps)
         self.action_repeat = action_repeat
         self.process: subprocess.Popen[str] | None = None
         self.connection: ClientConnection | None = None
@@ -448,7 +448,7 @@ class BitWorldVecEnv:
         num_envs: int,
         max_episode_steps: int,
         frame_stack: int = 4,
-        fps: float = 0.0,
+        fps: int = 0,
         action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
         base_port: int | None = None,
@@ -466,6 +466,7 @@ class BitWorldVecEnv:
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
+        self.fps = int(fps)
         self.base_seed = base_seed
         self.base_port = base_port
         self.obs_size = FRAME_PIXELS * frame_stack
@@ -494,7 +495,7 @@ class BitWorldVecEnv:
                     env_id=env_id,
                     port=port,
                     seed=base_seed + env_id,
-                    fps=fps,
+                    fps=self.fps,
                     action_repeat=action_repeat,
                 )
                 self.workers.append(worker)
@@ -697,7 +698,7 @@ def train_policy(
     seed: int,
     model_path: Path,
     metrics_path: Path,
-    fps: float = 0.0,
+    fps: int = 0,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     hidden_size: int = 256,
 ) -> dict:
@@ -771,7 +772,7 @@ def evaluate_policy(
     max_episode_steps: int,
     frame_stack: int,
     seed: int,
-    fps: float = 0.0,
+    fps: int = 0,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     random_actions: bool = False,
     sample_actions: bool = True,

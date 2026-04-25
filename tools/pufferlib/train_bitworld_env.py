@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minibatch-size", type=int)
     parser.add_argument("--hidden-size", type=int)
     parser.add_argument("--seed", type=int, default=73)
-    parser.add_argument("--fps", type=float, default=0.0, help="Use 0 for uncapped training speed.")
+    parser.add_argument("--fps", type=int, default=0, help="Use 0 for uncapped training speed.")
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
