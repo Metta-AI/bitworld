@@ -1,3 +1,4 @@
+import std/os
 import protocol, sim
 import ../common/server
 
@@ -16,6 +17,17 @@ const
   ReplayControlsSpriteId = 4003
   ReplayTickObjectId = 4002
   ReplayControlsObjectId = 4003
+  TransportIconSize = 6
+  TransportIconHeight = 6
+  TransportIconCount = 5
+  TransportButtonGap = 2
+  TransportButtonStride = TransportIconSize + TransportButtonGap
+  TransportSpeedX = 0
+  TransportSpeedY = 8
+  TransportWidth = 108
+  TransportHeight = 14
+  TransportX = 2
+  TransportY = 1
 
 type
   SpriteViewerState* = object
@@ -31,15 +43,24 @@ type
     replaySeekTick*: int
     replayCommands*: seq[char]
 
+var TransportSheet: Sprite
+
 proc initSpriteViewerState*(): SpriteViewerState =
   ## Returns the default state for one sprite protocol viewer.
   result.mouseLayer = MapLayerId
   result.selectedJoinOrder = -1
   result.replaySeekTick = -1
   result.replayCommands = @[]
+
 proc spriteColor(color: uint8): uint8 =
   ## Converts a game palette index to a sprite protocol pixel.
   color + 1'u8
+
+proc transportSheet(): Sprite =
+  ## Returns the cached transport icon sheet.
+  if TransportSheet.width == 0:
+    TransportSheet = readRequiredSprite(clientDataDir() / "transport.png")
+  TransportSheet
 
 proc playerColorIndex(color: uint8): int =
   ## Returns the player color slot for a palette color.
@@ -269,6 +290,63 @@ proc putTextSpritePixel(
   if x < 0 or y < 0 or x >= width or y >= height:
     return
   pixels[y * width + x] = spriteColor(color)
+
+proc blitGlyph(
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  sprite: Sprite,
+  baseX, baseY: int,
+  color: uint8
+) =
+  ## Blits a single-color glyph into protocol pixels.
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      if sprite.pixels[sprite.spriteIndex(x, y)] ==
+          TransparentColorIndex:
+        continue
+      target.putTextSpritePixel(
+        targetWidth,
+        targetHeight,
+        baseX + x,
+        baseY + y,
+        color
+      )
+
+proc blitSmallText(
+  sim: SimServer,
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  text: string,
+  baseX, baseY: int,
+  color: uint8
+) =
+  ## Blits small text into protocol pixels.
+  var x = baseX
+  for ch in text:
+    if ch == ' ':
+      x += 6
+      continue
+    if ch >= '0' and ch <= '9':
+      target.blitGlyph(
+        targetWidth,
+        targetHeight,
+        sim.digitSprites[ord(ch) - ord('0')],
+        x,
+        baseY,
+        color
+      )
+    else:
+      let letter = letterIndex(ch)
+      if letter >= 0 and letter < sim.letterSprites.len:
+        target.blitGlyph(
+          targetWidth,
+          targetHeight,
+          sim.letterSprites[letter],
+          x,
+          baseY,
+          color
+        )
+    x += 6
 
 proc buildSpriteProtocolTextSprite(
   sim: SimServer,
@@ -525,24 +603,31 @@ proc replayCommandAt(layer, x, y: int): char =
   if layer != ReplayBottomLeftLayerId:
     return '\0'
   let
-    localX = x - 2
-    localY = y - 1
-  if localY >= 0 and localY < 8:
-    if localX >= 0 and localX < 36:
-      return ','
-    if localX >= 42:
-      return ' '
-    return '\0'
-  if localY < 8 or localY >= 16:
-    return '\0'
-  if localX >= 0 and localX < 12:
-    return '1'
-  if localX >= 18 and localX < 30:
-    return '2'
-  if localX >= 36 and localX < 48:
-    return '4'
-  if localX >= 54 and localX < 66:
-    return '8'
+    localX = x - TransportX
+    localY = y - TransportY
+  if localY >= 0 and localY < TransportIconHeight:
+    let index = localX div TransportButtonStride
+    if index < 0 or index >= TransportIconCount:
+      return '\0'
+    if localX - index * TransportButtonStride >= TransportIconSize:
+      return '\0'
+    case index
+    of 0: return '<'
+    of 1: return ' '
+    of 2: return 'e'
+    of 3: return 'r'
+    of 4: return 'b'
+    else: return '\0'
+  if localY >= TransportSpeedY and localY < TransportSpeedY + 6:
+    let speedX = localX - TransportSpeedX
+    if speedX >= 0 and speedX < 12:
+      return '1'
+    if speedX >= 16 and speedX < 28:
+      return '2'
+    if speedX >= 32 and speedX < 44:
+      return '4'
+    if speedX >= 48 and speedX < 60:
+      return '8'
   '\0'
 
 proc replayScrubTickAt(
@@ -602,6 +687,71 @@ proc buildReplayScrubberSprite(
       ReplayScrubberTrackY * ReplayScrubberWidth + knobX + 1
     ] = spriteColor(2'u8)
 
+proc blitTransportIcon(
+  target: var seq[uint8],
+  sheet: Sprite,
+  cell, baseX, baseY: int,
+  tint: uint8
+) =
+  ## Blits one transport icon cell into protocol pixels.
+  let sourceX = cell * TransportIconSize
+  for y in 0 ..< TransportIconHeight:
+    for x in 0 ..< TransportIconSize:
+      let colorIndex = sheet.pixels[sheet.spriteIndex(sourceX + x, y)]
+      if colorIndex == TransparentColorIndex:
+        continue
+      target[
+        (baseY + y) * TransportWidth + baseX + x
+      ] = spriteColor(tint)
+
+proc buildReplayControlsSprite(
+  sim: SimServer,
+  replayPlaying: bool,
+  replaySpeed: int,
+  replayLooping: bool
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds the replay transport controls sprite.
+  result.width = TransportWidth
+  result.height = TransportHeight
+  result.pixels = newSeq[uint8](TransportWidth * TransportHeight)
+  let
+    sheet = transportSheet()
+    iconCells = [
+      0,
+      if replayPlaying: 2 else: 1,
+      3,
+      4,
+      5
+    ]
+  for i in 0 ..< iconCells.len:
+    let tint =
+      if i == 3:
+        if replayLooping: 10'u8 else: 1'u8
+      else:
+        2'u8
+    result.pixels.blitTransportIcon(
+      sheet,
+      iconCells[i],
+      i * TransportButtonStride,
+      0,
+      tint
+    )
+
+  let speedTexts = ["1X", "2X", "4X", "8X"]
+  var x = TransportSpeedX
+  for i in 0 ..< speedTexts.len:
+    let color = if (1 shl i) == replaySpeed: 10'u8 else: 1'u8
+    sim.blitSmallText(
+      result.pixels,
+      TransportWidth,
+      TransportHeight,
+      speedTexts[i],
+      x,
+      TransportSpeedY,
+      color
+    )
+    x += 16
+
 proc buildSpriteProtocolUpdates*(
   sim: var SimServer,
   state: SpriteViewerState,
@@ -609,7 +759,8 @@ proc buildSpriteProtocolUpdates*(
   replayTick = -1,
   replayPlaying = false,
   replaySpeed = 1,
-  replayMaxTick = -1
+  replayMaxTick = -1,
+  replayLooping = false
 ): seq[uint8] =
   ## Builds global viewer object updates for the current tick.
   result = @[]
@@ -762,13 +913,10 @@ proc buildSpriteProtocolUpdates*(
         2'u8
       )
       scrubber = buildReplayScrubberSprite(replayTick, replayMaxTick)
-      controlText = sim.buildSpriteProtocolTextSprite(
-        [
-          "REWIND " &
-            (if replayPlaying: "PAUSE " & $replaySpeed & "X" else: "PLAY"),
-          "1X 2X 4X 8X"
-        ],
-        2'u8
+      controls = sim.buildReplayControlsSprite(
+        replayPlaying,
+        replaySpeed,
+        replayLooping
       )
     currentIds.add(ReplayTickObjectId)
     currentIds.add(ReplayControlsObjectId)
@@ -803,14 +951,14 @@ proc buildSpriteProtocolUpdates*(
     )
     result.addSprite(
       ReplayControlsSpriteId,
-      controlText.width,
-      controlText.height,
-      controlText.pixels
+      controls.width,
+      controls.height,
+      controls.pixels
     )
     result.addObject(
       ReplayControlsObjectId,
-      2,
-      1,
+      TransportX,
+      TransportY,
       0,
       ReplayBottomLeftLayerId,
       ReplayControlsSpriteId

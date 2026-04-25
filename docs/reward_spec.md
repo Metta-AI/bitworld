@@ -15,84 +15,64 @@ every simulation tick.
 ## Packet Format
 
 Each message is a newline separated packet. Each non-empty line starts with a
-name, followed by one or more space separated fields.
+name of the key, followed by address:port and value:
 
 ```text
-player 127.0.0.1 54002
-reward reward 1.0
+reward 127.0.0.1:54002 200
 ```
 
 The packet format is ASCII compatible UTF-8 text. Lines end with `\n`. A sender
 may use `\r\n`. A receiver should ignore empty lines.
 
-## Lines
-
-### Player
-
-Identifies the player that the following reward values belong to.
+## Line Format
 
 ```text
-player <address> <port>
+<name> <address>:<port> <value>
 ```
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| Name | `string` | Must be `player` |
+| Name | `string` | Name of the value |
 | Address | `string` | Player address |
 | Port | `u16` | Player port |
+| Value | `integer` | Value for this player |
 
-`Address` must not contain spaces. `Port` is written in base 10.
+`Address` and `Port` are written as one field separated by `:`. `Address` must
+not contain spaces. `Port` and `Value` are written as base 10 integers.
 
-### Reward
+The current required name is:
 
-Sends one named reward value for the current player and tick.
-
-```text
-reward <name> <value>
-```
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| Name | `string` | Must be `reward` |
-| Reward name | `string` | Name of the value |
-| Value | `float` | Reward value |
-
-The current required reward name is:
-
-| Reward name | Meaning |
+| Name | Meaning |
 | --- | --- |
 | `reward` | Reward used for training |
 
-The server must send `reward reward <value>` for each player in each tick
-packet. The value is written as a base 10 floating point number.
+The server must send one `reward` line for each player in each tick packet.
 
 ## Multiple Players
 
-A packet may contain reward data for multiple players. Each player block starts
-with a `player` line. Reward lines after a `player` line belong to that player
-until the next `player` line.
+A packet may contain reward data for multiple players. Each line identifies the
+player that the value belongs to.
 
 ```text
-player 127.0.0.1 54002
-reward reward 1.0
-player 127.0.0.1 54003
-reward reward -0.25
+reward 127.0.0.1:54002 200
+reward 127.0.0.1:54003 -25
 ```
 
-Reward lines before the first player line are invalid.
+The same packet should not contain two lines with the same name and player. If
+it does, the last line should replace earlier lines for that name and player.
 
 ## Future Values
 
-Future versions may add more reward names after the `reward` line name. Useful
-examples include:
+Future versions may add more names. Useful examples include:
 
 ```text
-reward advantage 0.4
-reward steps 12
+reward 127.0.0.1:54002 200
+advantage 127.0.0.1:54002 40
+steps 127.0.0.1:54002 12
 ```
 
-A receiver must read `reward reward <value>`. A receiver should ignore reward
-names it does not understand.
+A receiver must read `reward` values. A receiver should ignore names it does not
+understand.
 
 ## Message Rules
 

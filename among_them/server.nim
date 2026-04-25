@@ -61,6 +61,7 @@ type
     masks: seq[uint8]
     lastAppliedMasks: seq[uint8]
     playing: bool
+    looping: bool
     speedIndex: int
 
 
@@ -286,6 +287,7 @@ proc initReplayPlayer(data: ReplayData): ReplayPlayer =
   result.masks = @[]
   result.lastAppliedMasks = @[]
   result.playing = true
+  result.looping = false
   result.speedIndex = 0
 
 proc replaySpeed(replay: ReplayPlayer): int =
@@ -440,8 +442,7 @@ proc applyReplayCommand(
     replay.playing = false
     replay.seekReplay(sim, replay.replayMaxTick())
   of 'r':
-    replay.playing = true
-    replay.seekReplay(sim, 0)
+    replay.looping = not replay.looping
   of '.', '>':
     replay.playing = false
     replay.seekReplay(sim, sim.tickCount + ReplayFps * 5)
@@ -673,6 +674,9 @@ proc runServerLoop*(
         for _ in 0 ..< replayPlayer.replaySpeed():
           if replayPlayer.playing:
             replayPlayer.stepReplay(sim)
+        if replayPlayer.looping and not replayPlayer.playing:
+          replayPlayer.seekReplay(sim, 0)
+          replayPlayer.playing = true
     else:
       sim.step(inputs, prevInputs)
       prevInputs = inputs
@@ -720,7 +724,8 @@ proc runServerLoop*(
         if replayLoaded: sim.tickCount else: -1,
         replayPlayer.playing,
         replayPlayer.replaySpeed(),
-        replayPlayer.replayMaxTick()
+        replayPlayer.replayMaxTick(),
+        replayPlayer.looping
       )
       if packet.len == 0:
         continue

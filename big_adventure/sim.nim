@@ -34,6 +34,7 @@ const
   TargetFps* = 24.0
   WebSocketPath* = "/ws"
   SpriteWebSocketPath* = "/sprite"
+  RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8
   HealthBarGray* = 1'u8
   HealthBarGreen* = 10'u8
