@@ -60,6 +60,8 @@ A writer should emit records in the order they happened.
 | ---: | --- |
 | `0x01` | Tick hash |
 | `0x02` | Player input |
+| `0x03` | Player join |
+| `0x04` | Player leave |
 
 ### Tick Hash
 
@@ -116,6 +118,58 @@ bits. Each bit is `0` when the key is up and `1` when the key is down.
 The reserved bit should be written as `0`. A loader should ignore the reserved
 bit if it is set.
 
+### Player Join
+
+Records that a player joined the game.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Record type | `u8` | `0x03` |
+| Time | `u32` | Milliseconds since the start of the game |
+| Player | `u8` | Player index |
+| Address | `string` | Player address or display name |
+
+Player join records preserve player count, player order, and spawn order. A
+loader must create the player before applying input for that player.
+
+`Address` is informational. A game may use it for replay labels in the global
+view.
+
+### Player Leave
+
+Records that a player left the game.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Record type | `u8` | `0x04` |
+| Time | `u32` | Milliseconds since the start of the game |
+| Player | `u8` | Player index |
+
+A loader must remove the player before applying input for the same timestamp.
+Removing a player shifts later player indices in the same way as the live game.
+
+## Game Flags
+
+Bitworld games should implement these command line flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--save-replay:"filename"` | Save the current game as a replay file |
+| `--load-replay:"filename"` | Load and play a replay file |
+
+When `--save-replay` is set, the game should write a Bitreplay file while the
+normal game is running. The replay should contain all player inputs and one hash
+record for every simulation tick.
+
+When `--load-replay` is set, the game should run from the replay file instead
+of live player input. Connected player views should not do much during replay.
+They may show a simple waiting, disabled, or replay message, but they should not
+control the simulation.
+
+The global view should display the full game as it happened. Games should
+provide controls to scrub, stop, play, and change replay speed. The exact UI and
+control scheme are game specific.
+
 ## Replay Rules
 
 A loader must reject a replay when:
@@ -127,6 +181,9 @@ A loader must reject a replay when:
 - A record is truncated.
 - A record type is unknown.
 - Tick hash records are missing or not strictly increasing.
+- Player join records move backward in time.
+- Player leave records move backward in time.
+- Player input appears for a player before that player joins.
 - Input timestamps move backward.
 - The computed game hash does not match the recorded tick hash.
 
@@ -139,6 +196,8 @@ version must change too.
 A writer should record:
 
 - One header at the start of the file.
+- One player join record whenever a player joins.
+- One player leave record whenever a player leaves.
 - One tick hash record for every simulation tick.
 - One player input record whenever a player's key state changes.
 
