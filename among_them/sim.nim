@@ -37,7 +37,7 @@ const
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
   VentRange* = 16
-  TaskBarY* = -6
+  TaskBarGap* = 1
   ProgressEmpty* = 1'u8
   ProgressFilled* = 10'u8
   ReportRange* = 20
@@ -1367,7 +1367,11 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
       let
         task = sim.tasks[t]
         bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
-        bobY = bob[(sim.tickCount div 3) mod bob.len]
+        bobY =
+          if player.activeTask == t:
+            0
+          else:
+            bob[(sim.tickCount div 3) mod bob.len]
         iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
         iconSy = task.y - SpriteSize - 2 + bobY - cameraY
       if playerIndex < task.completed.len and task.completed[playerIndex]:
@@ -1378,6 +1382,15 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
       if tcx < 0 or tcx >= ScreenWidth or tcy < 0 or tcy >= ScreenHeight:
         continue
       sim.fb.blitSpriteRaw(sim.taskIconSprite, iconSx, iconSy)
+      if player.activeTask == t and player.taskProgress > 0:
+        let
+          barX = iconSx + SpriteSize div 2 - TaskBarWidth div 2
+          barY = iconSy + SpriteSize + TaskBarGap
+          filled =
+            player.taskProgress * TaskBarWidth div sim.config.taskCompleteTicks
+        for bx in 0 ..< TaskBarWidth:
+          let c = if bx < filled: ProgressFilled else: ProgressEmpty
+          sim.fb.putPixel(barX + bx, barY, c)
 
   if player.role == Crewmate and sim.config.showTaskArrows:
     let radarColor = 8'u8
@@ -1421,16 +1434,6 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
         ex = px + dx * (ey - py) / dy
         ex = clamp(ex, minX, maxX)
       sim.fb.putPixel(int(ex), int(ey), radarColor)
-
-  if player.role == Crewmate and player.activeTask >= 0 and player.taskProgress > 0:
-    let
-      barX = player.x - SpriteDrawOffX - cameraX
-      barY = player.y - SpriteDrawOffY - cameraY + TaskBarY
-      filled =
-        player.taskProgress * TaskBarWidth div sim.config.taskCompleteTicks
-    for bx in 0 ..< TaskBarWidth:
-      let c = if bx < filled: ProgressFilled else: ProgressEmpty
-      sim.fb.putPixel(barX + bx, barY, c)
 
   if player.role == Imposter and player.alive:
     let
