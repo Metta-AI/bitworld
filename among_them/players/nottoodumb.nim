@@ -6,7 +6,8 @@ const
   PlayerScreenY = ScreenHeight div 2
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
-  FrameFitMaxErrors = 260
+  FullFrameFitMaxErrors = 180
+  LocalFrameFitMaxErrors = 120
   FrameFitMinCompared = 12000
   LocalFrameSearchRadius = 8
   PlayerIgnoreRadius = 9
@@ -201,19 +202,35 @@ proc tileWidth(): int =
   ## Returns the path grid width in pixels.
   MapWidth
 
-proc ignoreFramePixel(frameColor: uint8, sx, sy: int): bool =
+proc ignoreTaskIconPixel(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel belongs to a matched task icon.
+  for icon in bot.visibleTaskIcons:
+    let
+      ix = sx - icon.x
+      iy = sy - icon.y
+    if ix < 0 or iy < 0 or
+        ix >= bot.taskSprite.width or
+        iy >= bot.taskSprite.height:
+      continue
+    if bot.taskSprite.pixels[bot.taskSprite.spriteIndex(ix, iy)] !=
+        TransparentColorIndex:
+      return true
+
+proc ignoreFramePixel(bot: Bot, frameColor: uint8, sx, sy: int): bool =
   ## Returns true for dynamic screen pixels that are not map evidence.
   if frameColor == RadarTaskColor:
+    return true
+  if bot.ignoreTaskIconPixel(sx, sy):
     return true
   abs(sx - PlayerScreenX) <= PlayerIgnoreRadius and
     abs(sy - PlayerScreenY) <= PlayerIgnoreRadius
 
-proc scoreCamera(bot: Bot, cameraX, cameraY: int): CameraScore =
+proc scoreCamera(bot: Bot, cameraX, cameraY, maxErrors: int): CameraScore =
   ## Counts map-fit errors for a full 128x128 frame rectangle.
   for sy in 0 ..< ScreenHeight:
     for sx in 0 ..< ScreenWidth:
       let frameColor = bot.unpacked[sy * ScreenWidth + sx]
-      if ignoreFramePixel(frameColor, sx, sy):
+      if bot.ignoreFramePixel(frameColor, sx, sy):
         continue
       let
         mx = cameraX + sx
@@ -230,14 +247,14 @@ proc scoreCamera(bot: Bot, cameraX, cameraY: int): CameraScore =
       else:
         inc result.compared
         inc result.errors
-        if result.errors > FrameFitMaxErrors:
+        if result.errors > maxErrors:
           result.score = -result.errors
           return
   result.score = result.compared - result.errors * ScreenWidth
 
-proc acceptCameraScore(score: CameraScore): bool =
+proc acceptCameraScore(score: CameraScore, maxErrors: int): bool =
   ## Returns true when a camera score is good enough to trust.
-  score.errors <= FrameFitMaxErrors and score.compared >= FrameFitMinCompared
+  score.errors <= maxErrors and score.compared >= FrameFitMinCompared
 
 proc setCameraLock(
   bot: var Bot,
@@ -252,6 +269,8 @@ proc setCameraLock(
   bot.cameraScore = score.score
   bot.cameraLock = lock
   bot.localized = true
+
+proc scanTaskIcons(bot: var Bot)
 
 proc locateNearFrame(bot: var Bot): bool =
   ## Tracks camera by scanning near the previous accepted camera.
@@ -268,7 +287,7 @@ proc locateNearFrame(bot: var Bot): bool =
     maxY = min(maxCameraY(), bot.cameraY + LocalFrameSearchRadius)
   for y in minY .. maxY:
     for x in minX .. maxX:
-      let score = bot.scoreCamera(x, y)
+      let score = bot.scoreCamera(x, y, LocalFrameFitMaxErrors)
       if score.errors < bestScore.errors or
           (score.errors == bestScore.errors and
           score.compared > bestScore.compared):
@@ -280,7 +299,7 @@ proc locateNearFrame(bot: var Bot): bool =
           break
     if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
       break
-  if not acceptCameraScore(bestScore):
+  if not acceptCameraScore(bestScore, LocalFrameFitMaxErrors):
     return false
   bot.setCameraLock(bestX, bestY, bestScore, LocalFrameMapLock)
   true
@@ -297,7 +316,7 @@ proc locateByFrame(bot: var Bot): bool =
     bestY = 0
   for y in minCameraY() .. maxCameraY():
     for x in minCameraX() .. maxCameraX():
-      let score = bot.scoreCamera(x, y)
+      let score = bot.scoreCamera(x, y, FullFrameFitMaxErrors)
       if score.errors < bestScore.errors or
           (score.errors == bestScore.errors and
           score.compared > bestScore.compared):
@@ -308,7 +327,7 @@ proc locateByFrame(bot: var Bot): bool =
           break
     if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
       break
-  if not acceptCameraScore(bestScore):
+  if not acceptCameraScore(bestScore, FullFrameFitMaxErrors):
     bot.cameraLock = NoLock
     bot.cameraScore = bestScore.score
     bot.localized = false
@@ -320,6 +339,7 @@ proc updateLocation(bot: var Bot) =
   ## Updates the camera and player world estimate from the frame.
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
+  bot.scanTaskIcons()
   if bot.locateNearFrame():
     return
   discard bot.locateByFrame()
@@ -489,14 +509,7 @@ proc taskIconRenderable(bot: Bot, task: TaskStation): bool =
     center = task.taskCenter()
     sx = center.x - bot.cameraX
     sy = center.y - bot.cameraY
-  if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
-    return false
-  let
-    mapColor = bot.sim.mapPixels[mapIndexSafe(center.x, center.y)] and 0x0f
-    frameColor = bot.unpacked[sy * ScreenWidth + sx]
-  if ShadowMap[mapColor] == frameColor and mapColor != frameColor:
-    return false
-  true
+  sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight
 
 proc taskIconSafelyVisible(bot: Bot, task: TaskStation): bool =
   ## Returns true when missing an icon is reliable evidence.
