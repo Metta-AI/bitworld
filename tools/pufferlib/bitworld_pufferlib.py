@@ -3,12 +3,12 @@ from __future__ import annotations
 import ctypes
 import json
 import socket
-import struct
 import subprocess
 import sys
 import threading
 import time
 import types
+import urllib.request
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,11 +24,8 @@ RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
 SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 128
 FRAME_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT
-RL_HEADER_BYTES = 9
-RL_FRAME_BYTES = RL_HEADER_BYTES + FRAME_PIXELS
-RL_MAGIC = b"BW"
-RL_VERSION = 1
-RL_RESET_MASK = 255
+PACKED_FRAME_BYTES = FRAME_PIXELS // 2
+RESET_INPUT_MASK = 255
 DEFAULT_ACTION_REPEAT = 4
 
 BUTTON_UP = 1
@@ -59,7 +56,7 @@ ACTION_MASKS = np.array([direction | button for direction in DIRECTION_MASKS for
 SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
-    REPO_ROOT / "common" / "rl_protocol.nim",
+    REPO_ROOT / "common" / "reward_protocol.nim",
 )
 
 
@@ -191,26 +188,31 @@ def reserve_port() -> int:
 
 
 @dataclass(frozen=True)
-class RlFrame:
-    frame: np.ndarray
+class RewardSnapshot:
     score: int
     aux_value: int
-    reset_id: int
+    episode: int
+    connected: bool
 
 
-def parse_rl_frame(packet: bytes) -> RlFrame:
-    if len(packet) != RL_FRAME_BYTES:
-        raise ValueError(f"expected {RL_FRAME_BYTES} bytes, received {len(packet)}")
-    if packet[:2] != RL_MAGIC:
-        raise ValueError(f"bad RL magic: {packet[:2]!r}")
-    if packet[2] != RL_VERSION:
-        raise ValueError(f"unsupported RL version: {packet[2]}")
+def unpack_frame(packet: bytes) -> np.ndarray:
+    if len(packet) != PACKED_FRAME_BYTES:
+        raise ValueError(f"expected {PACKED_FRAME_BYTES} packed frame bytes, received {len(packet)}")
+    packed = np.frombuffer(packet, dtype=np.uint8)
+    frame = np.empty(FRAME_PIXELS, dtype=np.uint8)
+    frame[0::2] = packed & 0x0F
+    frame[1::2] = packed >> 4
+    return frame
 
-    reset_id = int(packet[3])
-    aux_value = int(packet[4])
-    score = struct.unpack_from("<i", packet, 5)[0]
-    frame = np.frombuffer(packet, dtype=np.uint8, count=FRAME_PIXELS, offset=RL_HEADER_BYTES).copy()
-    return RlFrame(frame=frame, score=score, aux_value=aux_value, reset_id=reset_id)
+
+def parse_reward_payload(payload: bytes | str) -> RewardSnapshot:
+    data = json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
+    return RewardSnapshot(
+        score=int(data.get("score", data.get("reward", 0))),
+        aux_value=int(data.get("auxValue", 0)),
+        episode=int(data.get("episode", 0)),
+        connected=bool(data.get("connected", False)),
+    )
 
 
 def flatten_logs(logs: dict, prefix: str = "") -> dict[str, float]:
@@ -253,24 +255,26 @@ class BitWorldWorker:
         self.base_score = 0
         self.score = 0
         self.aux_value = 0
-        self.reset_id: int | None = None
+        self.episode = 0
         self.episode_return = 0.0
         self.episode_steps = 0
         self._condition = threading.Condition()
         self._frame_seq = 0
-        self._latest_frame: RlFrame | None = None
+        self._latest_frame: np.ndarray | None = None
         self._reader_error: Exception | None = None
         self._closed = False
         self._reader_thread: threading.Thread | None = None
         self._start_server()
         try:
             first_frame, _ = self._wait_for_frame(lambda _frame, _seq: True)
+            reward = self._poll_reward()
         except Exception:
             self.close()
             raise
-        self.score = first_frame.score
-        self.aux_value = first_frame.aux_value
-        self.reset_id = first_frame.reset_id
+        del first_frame
+        self.score = reward.score
+        self.aux_value = reward.aux_value
+        self.episode = reward.episode
 
     def _start_server(self) -> None:
         ensure_bitworld_binary(self.spec)
@@ -282,7 +286,6 @@ class BitWorldWorker:
                 str(self.spec.binary),
                 "--address:127.0.0.1",
                 f"--port:{self.port}",
-                "--rl",
                 f"--fps:{self.fps}",
                 f"--seed:{self.seed}",
             ],
@@ -301,7 +304,7 @@ class BitWorldWorker:
 
     def _connect(self) -> ClientConnection:
         deadline = time.time() + 10.0
-        url = f"ws://127.0.0.1:{self.port}/rl"
+        url = f"ws://127.0.0.1:{self.port}/ws"
         last_error: Exception | None = None
         while time.time() < deadline:
             try:
@@ -311,12 +314,17 @@ class BitWorldWorker:
                 time.sleep(0.05)
         raise RuntimeError(f"failed to connect to {url}") from last_error
 
-    def _receive_packet(self) -> RlFrame:
+    def _receive_packet(self) -> np.ndarray:
         assert self.connection is not None
         payload = self.connection.recv(timeout=10.0)
         if not isinstance(payload, (bytes, bytearray)):
             raise TypeError(f"expected binary websocket payload, got {type(payload)!r}")
-        return parse_rl_frame(bytes(payload))
+        return unpack_frame(bytes(payload))
+
+    def _poll_reward(self) -> RewardSnapshot:
+        url = f"http://127.0.0.1:{self.port}/reward"
+        with urllib.request.urlopen(url, timeout=2.0) as response:
+            return parse_reward_payload(response.read())
 
     def _reader_loop(self) -> None:
         assert self.connection is not None
@@ -344,7 +352,7 @@ class BitWorldWorker:
         self,
         predicate,
         timeout: float = 10.0,
-    ) -> tuple[RlFrame, int]:
+    ) -> tuple[np.ndarray, int]:
         deadline = time.time() + timeout
         with self._condition:
             while True:
@@ -354,23 +362,33 @@ class BitWorldWorker:
                     return self._latest_frame, self._frame_seq
                 remaining = deadline - time.time()
                 if remaining <= 0.0:
-                    raise TimeoutError(f"timed out waiting for {self.spec.name} RL frame")
+                    raise TimeoutError(f"timed out waiting for {self.spec.name} frame")
                 self._condition.wait(remaining)
 
     def reset(self) -> np.ndarray:
         assert self.connection is not None
-        previous_reset_id = self.reset_id
-        self.connection.send(bytes([RL_RESET_MASK]), text=False)
-        frame, _ = self._wait_for_frame(
-            lambda item, _seq: previous_reset_id is None or item.reset_id != previous_reset_id
-        )
-        self.base_score = frame.score
-        self.score = frame.score
-        self.aux_value = frame.aux_value
-        self.reset_id = frame.reset_id
+        with self._condition:
+            start_seq = self._frame_seq
+        previous_episode = self.episode
+        self.connection.send(bytes([RESET_INPUT_MASK]), text=False)
+        frame = None
+        reward = None
+        last_seq = start_seq
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            frame, last_seq = self._wait_for_frame(lambda _item, seq: seq > last_seq, timeout=deadline - time.time())
+            reward = self._poll_reward()
+            if reward.episode != previous_episode:
+                break
+        if frame is None or reward is None or reward.episode == previous_episode:
+            raise TimeoutError(f"timed out waiting for {self.spec.name} reset")
+        self.base_score = reward.score
+        self.score = reward.score
+        self.aux_value = reward.aux_value
+        self.episode = reward.episode
         self.episode_return = 0.0
         self.episode_steps = 0
-        return frame.frame
+        return frame
 
     def step(self, action_mask: int) -> tuple[np.ndarray, float]:
         assert self.connection is not None
@@ -378,14 +396,16 @@ class BitWorldWorker:
             start_seq = self._frame_seq
         self.connection.send(bytes([action_mask]), text=False)
         frame, _ = self._wait_for_frame(
-            lambda item, seq: item.reset_id == self.reset_id and seq >= start_seq + self.action_repeat
+            lambda _item, seq: seq >= start_seq + self.action_repeat
         )
-        reward = float(frame.score - self.score)
-        self.score = frame.score
-        self.aux_value = frame.aux_value
-        self.episode_return += reward
+        snapshot = self._poll_reward()
+        reward_delta = float(snapshot.score - self.score)
+        self.score = snapshot.score
+        self.aux_value = snapshot.aux_value
+        self.episode = snapshot.episode
+        self.episode_return += reward_delta
         self.episode_steps += 1
-        return frame.frame, reward
+        return frame, reward_delta
 
     def close(self) -> None:
         with self._condition:

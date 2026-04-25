@@ -80,7 +80,6 @@ Representative validated result on April 23, 2026 for `bubble_eats` with a 50k-s
 
 ## Notes
 
-- The Nim server now supports `--rl`, `--fps:<float>`, and `--seed:<int>`.
-- RL mode keeps the same asynchronous server loop as normal play and streams unpacked `128 x 128` palette-index frames plus score metadata.
-- The Python vecenv samples `--action-repeat` streamed frames per policy action and uses a reset counter in the frame header to align episode resets.
+- The Nim server uses its normal `/ws` websocket for input and packed pixel frames, plus `/reward` for the current cumulative episode reward.
+- The Python vecenv samples `--action-repeat` streamed frames per policy action and polls `/reward` for score deltas.
 - Some environments use shaped progress metrics instead of raw HUD score because their native score is too sparse for single-agent PPO to learn reliably within practical episode lengths.

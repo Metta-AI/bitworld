@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import struct
 import sys
 import unittest
 from pathlib import Path
@@ -9,25 +8,32 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bitworld_pufferlib import BitWorldVecEnv, ENV_SPECS, FRAME_PIXELS, RL_FRAME_BYTES, RL_HEADER_BYTES, RL_MAGIC, RL_VERSION, parse_rl_frame
+from bitworld_pufferlib import (
+    BitWorldVecEnv,
+    ENV_SPECS,
+    FRAME_PIXELS,
+    PACKED_FRAME_BYTES,
+    parse_reward_payload,
+    unpack_frame,
+)
 
 
-class ParsePacketTest(unittest.TestCase):
-    def test_parse_rl_frame(self) -> None:
-        frame = np.arange(FRAME_PIXELS, dtype=np.uint8)
-        packet = bytearray(RL_FRAME_BYTES)
-        packet[:2] = RL_MAGIC
-        packet[2] = RL_VERSION
-        packet[3] = 7
-        packet[4] = 7
-        struct.pack_into("<i", packet, 5, 123)
-        packet[RL_HEADER_BYTES:] = frame.tobytes()
+class ProtocolTest(unittest.TestCase):
+    def test_unpack_frame(self) -> None:
+        packed = np.arange(PACKED_FRAME_BYTES, dtype=np.uint8)
+        frame = unpack_frame(packed.tobytes())
 
-        parsed = parse_rl_frame(bytes(packet))
-        self.assertEqual(parsed.reset_id, 7)
+        self.assertEqual(frame.shape, (FRAME_PIXELS,))
+        np.testing.assert_array_equal(frame[0::2], packed & 0x0F)
+        np.testing.assert_array_equal(frame[1::2], packed >> 4)
+
+    def test_parse_reward_payload(self) -> None:
+        parsed = parse_reward_payload(b'{"score": 123, "auxValue": 7, "episode": 3, "connected": true}')
+
         self.assertEqual(parsed.score, 123)
         self.assertEqual(parsed.aux_value, 7)
-        np.testing.assert_array_equal(parsed.frame, frame)
+        self.assertEqual(parsed.episode, 3)
+        self.assertTrue(parsed.connected)
 
 
 class BitWorldSmokeTest(unittest.TestCase):
@@ -90,7 +96,7 @@ class BitWorldSmokeTest(unittest.TestCase):
         try:
             obs = env.reset()
             self.assertEqual(obs.shape, (2, FRAME_PIXELS * 2))
-            reset_ids = [worker.reset_id for worker in env.workers]
+            episodes = [worker.episode for worker in env.workers]
 
             env.step_discrete(np.zeros(2, dtype=np.int64))
             _, rewards, terminals, completed = env.step_discrete(np.zeros(2, dtype=np.int64))
@@ -98,7 +104,7 @@ class BitWorldSmokeTest(unittest.TestCase):
             self.assertEqual(rewards.shape, (2,))
             np.testing.assert_array_equal(terminals, np.ones(2, dtype=np.float32))
             self.assertEqual(len(completed), 2)
-            self.assertNotEqual(reset_ids, [worker.reset_id for worker in env.workers])
+            self.assertNotEqual(episodes, [worker.episode for worker in env.workers])
         finally:
             env.close()
 

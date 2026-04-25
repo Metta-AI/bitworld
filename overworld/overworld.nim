@@ -1,5 +1,5 @@
 import mummy, pixie, whisky
-import protocol, rl_protocol, server
+import protocol, reward_protocol, server
 import std/[algorithm, locks, monotimes, net, os, osproc, parseopt, random,
             strutils, tables, times]
 
@@ -99,14 +99,13 @@ type
     lastAppliedMasks: Table[mummy.WebSocket, uint8]
     playerIndices: Table[mummy.WebSocket, int]
     closedSockets: seq[mummy.WebSocket]
+    rewards: RewardState
     resetRequested: bool
 
   ServerThreadArgs = object
     server: ptr Server
     address: string
     port: int
-
-var rlModeEnabled = false
 
 proc repoDir(): string =
   getCurrentDir() / ".."
@@ -390,13 +389,9 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState, attackP
     player.lastRewardVillage = -1
 
   if attackPressed and player.inVillage < 0 and nearbyVillage >= 0:
-    if rlModeEnabled:
-      if nearbyVillage != player.lastRewardVillage:
-        inc player.rlScore
-        player.lastRewardVillage = nearbyVillage
-      player.velX = 0
-      player.velY = 0
-      return
+    if nearbyVillage != player.lastRewardVillage:
+      inc player.rlScore
+      player.lastRewardVillage = nearbyVillage
     player.inVillage = nearbyVillage
     player.confirmReady = false
     player.velX = 0
@@ -592,20 +587,16 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc rlMetric(sim: SimServer, playerIndex: int): RlMetric =
+proc rewardMetric(sim: SimServer, playerIndex: int): RewardMetric =
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return RlMetric(score: 0, auxValue: 0)
+    return RewardMetric(score: 0, auxValue: 0)
   let
     player = sim.players[playerIndex]
     nearbyVillage = sim.villageAt(player.x, player.y)
-  RlMetric(
+  RewardMetric(
     score: player.rlScore,
     auxValue: if nearbyVillage >= 0: nearbyVillage + 1 else: 0,
   )
-
-proc buildRlPacket(sim: var SimServer, playerIndex: int, resetCounter: uint8): seq[uint8] =
-  discard sim.render(playerIndex)
-  buildRlFramePacket(sim.fb.indices, sim.rlMetric(playerIndex), resetCounter)
 
 # --- Game process management ---
 
@@ -787,6 +778,7 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[mummy.WebSocket, uint8]()
   appState.playerIndices = initTable[mummy.WebSocket, int]()
   appState.closedSockets = @[]
+  appState.rewards = initRewardState()
   appState.resetRequested = false
 
 proc removePlayer(sim: var SimServer, websocket: mummy.WebSocket) =
@@ -796,6 +788,7 @@ proc removePlayer(sim: var SimServer, websocket: mummy.WebSocket) =
   appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
+  appState.rewards.detachRewardClient(websocket)
 
   sim.closeProxy(removedIndex)
 
@@ -814,23 +807,27 @@ proc removePlayer(sim: var SimServer, websocket: mummy.WebSocket) =
         newProxies[idx] = proxy
     sim.proxies = newProxies
 
+proc recordReward(websocket: mummy.WebSocket, metric: RewardMetric) =
+  {.gcsafe.}:
+    withLock appState.lock:
+      appState.rewards.recordReward(websocket, metric)
+
 proc httpHandler(request: Request) =
-  let expectedPath =
-    if rlModeEnabled:
-      RlWebSocketPath
-    else:
-      WebSocketPath
-  if request.uri == expectedPath and request.httpMethod == "GET":
+  if request.path == WebSocketPath and request.httpMethod == "GET":
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.rewards.captureRewardClient(request.remoteAddress)
     discard request.upgradeToWebSocket()
+  elif request.path == RewardHttpPath and request.httpMethod == "GET":
+    var snapshot: RewardSnapshot
+    {.gcsafe.}:
+      withLock appState.lock:
+        snapshot = appState.rewards.lookupReward(request.remoteAddress)
+    request.respondReward(snapshot)
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
-    let modeLabel =
-      if rlModeEnabled:
-        "Overworld RL WebSocket server"
-      else:
-        "Overworld WebSocket server"
-    request.respond(200, headers, modeLabel)
+    request.respond(200, headers, "BitWorld WebSocket server")
 
 proc websocketHandler(
   websocket: mummy.WebSocket,
@@ -841,15 +838,16 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerIndices[websocket] = 0x7fffffff
+        appState.playerIndices[websocket] = PendingPlayerIndex
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
+        appState.rewards.attachRewardClient(websocket)
   of MessageEvent:
     if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
       {.gcsafe.}:
         withLock appState.lock:
           let mask = blobToMask(message.data)
-          if rlModeEnabled and mask == RlResetMask:
+          if mask == ResetInputMask:
             appState.resetRequested = true
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
@@ -878,12 +876,10 @@ proc runFrameLimiter(previousTick: var MonoTime, targetFps: float) =
 proc runServerLoop(
   host = DefaultHost,
   port = DefaultPort,
-  rlMode = false,
   targetFps = TargetFps,
   seed = 0xDEAD
 ) =
   initAppState()
-  rlModeEnabled = rlMode
   let httpServer = newServer(
     httpHandler,
     websocketHandler,
@@ -899,7 +895,6 @@ proc runServerLoop(
     currentSeed = seed
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
-    resetCounter = 0'u8
 
   while true:
     var
@@ -921,14 +916,15 @@ proc runServerLoop(
           shouldReset = true
           appState.resetRequested = false
           for _, value in appState.playerIndices.mpairs:
-            value = 0x7fffffff
+            value = PendingPlayerIndex
           for _, value in appState.inputMasks.mpairs:
             value = 0
           for _, value in appState.lastAppliedMasks.mpairs:
             value = 0
+          appState.rewards.resetRewardEpisode()
         else:
           for websocket in appState.playerIndices.keys:
-            if appState.playerIndices[websocket] == 0x7fffffff:
+            if appState.playerIndices[websocket] == PendingPlayerIndex:
               appState.playerIndices[websocket] = sim.addPlayer()
 
 
@@ -951,17 +947,17 @@ proc runServerLoop(
 
     if shouldReset:
       inc currentSeed
-      resetCounter = uint8((int(resetCounter) + 1) and 0xFF)
       sim = initSimServer(currentSeed)
       {.gcsafe.}:
         withLock appState.lock:
           for websocket in appState.playerIndices.keys:
-            if appState.playerIndices[websocket] == 0x7fffffff:
+            if appState.playerIndices[websocket] == PendingPlayerIndex:
               appState.playerIndices[websocket] = sim.addPlayer()
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
       for i in 0 ..< sockets.len:
-        let frameBlob = blobFromBytes(sim.buildRlPacket(playerIndices[i], resetCounter))
+        sockets[i].recordReward(sim.rewardMetric(playerIndices[i]))
+        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
         try:
           sockets[i].send(frameBlob, BinaryMessage)
         except:
@@ -973,39 +969,36 @@ proc runServerLoop(
 
 
     # Handle enter-village transitions (only on fresh A press after release)
-    if not rlModeEnabled:
-      for i in 0 ..< sockets.len:
-        let pi = playerIndices[i]
-        if pi < 0 or pi >= sim.players.len:
-          continue
-        let player = sim.players[pi]
+    for i in 0 ..< sockets.len:
+      let pi = playerIndices[i]
+      if pi < 0 or pi >= sim.players.len:
+        continue
+      let player = sim.players[pi]
 
-        if player.inVillage >= 0 and player.confirmReady and pi notin sim.proxies:
-          if attackFlags[pi]:
-            let vi = player.inVillage
-            if sim.ensureGameRunning(vi):
-              if sim.connectProxy(pi, vi):
-                sim.players[pi].inVillage = -1
+      if player.inVillage >= 0 and player.confirmReady and pi notin sim.proxies:
+        if attackFlags[pi]:
+          let vi = player.inVillage
+          if sim.ensureGameRunning(vi):
+            if sim.connectProxy(pi, vi):
+              sim.players[pi].inVillage = -1
 
     # Tick proxied players and overworld
     var proxiedPlayers: seq[int]
-    if not rlModeEnabled:
-      for i in 0 ..< sockets.len:
-        let pi = playerIndices[i]
-        if pi in sim.proxies:
-          let sel = selectFlags[pi]
-          if sim.proxyTick(pi, masks[pi], sel):
-            proxiedPlayers.add(pi)
+    for i in 0 ..< sockets.len:
+      let pi = playerIndices[i]
+      if pi in sim.proxies:
+        let sel = selectFlags[pi]
+        if sim.proxyTick(pi, masks[pi], sel):
+          proxiedPlayers.add(pi)
 
     sim.step(inputs, attackFlags)
 
     # Send frames
     for i in 0 ..< sockets.len:
       let pi = playerIndices[i]
+      sockets[i].recordReward(sim.rewardMetric(pi))
       var frameBlob: string
-      if rlModeEnabled:
-        frameBlob = blobFromBytes(sim.buildRlPacket(pi, resetCounter))
-      elif pi in proxiedPlayers:
+      if pi in proxiedPlayers:
         frameBlob = blobFromBytes(sim.proxyFrame(pi))
       else:
         frameBlob = blobFromBytes(sim.render(pi))
@@ -1022,7 +1015,6 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
-    rlMode = false
     targetFps = TargetFps
     seed = 0xDEAD
   for kind, key, val in getopt():
@@ -1031,9 +1023,8 @@ when isMainModule:
       case key
       of "address": address = val
       of "port": port = parseInt(val)
-      of "rl": rlMode = true
       of "fps": targetFps = parseFloat(val)
       of "seed": seed = parseInt(val)
       else: discard
     else: discard
-  runServerLoop(address, port, rlMode = rlMode, targetFps = targetFps, seed = seed)
+  runServerLoop(address, port, targetFps = targetFps, seed = seed)
