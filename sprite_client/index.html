@@ -92,8 +92,27 @@ function clearBlack(){
 function mapPoint(event){
   return {
     x:Math.floor((event.clientX-panX)/zoom),
-    y:Math.floor((event.clientY-panY)/zoom)
+    y:Math.floor((event.clientY-panY)/zoom),
+    layer:(mapLayer()||{id:0}).id
   };
+}
+
+function mousePoint(event){
+  const orderedLayers=[...layers.values()].sort((a,b)=>
+    b.type-a.type||b.id-a.id
+  );
+  for(const layer of orderedLayers){
+    if(!layer.image||((layer.flags&UiFlag)===0))continue;
+    const pos=layerScreenPos(layer);
+    if(event.clientX<pos.x||event.clientY<pos.y||
+        event.clientX>=pos.x+pos.w||event.clientY>=pos.y+pos.h)continue;
+    return {
+      x:Math.floor((event.clientX-pos.x)*layer.width/pos.w),
+      y:Math.floor((event.clientY-pos.y)*layer.height/pos.h),
+      layer:layer.id
+    };
+  }
+  return mapPoint(event);
 }
 
 function writeI16(bytes,offset,value){
@@ -104,22 +123,24 @@ function writeI16(bytes,offset,value){
 
 function sendMousePosition(event){
   if(socket.readyState!==WebSocket.OPEN)return;
-  const point=mapPoint(event),bytes=new Uint8Array(5);
+  const point=mousePoint(event),bytes=new Uint8Array(6);
   bytes[0]=0x82;
   writeI16(bytes,1,point.x);
   writeI16(bytes,3,point.y);
+  bytes[5]=point.layer&255;
   socket.send(bytes);
 }
 
 function sendMouseButton(event,down){
   if(socket.readyState!==WebSocket.OPEN)return;
-  const point=mapPoint(event),bytes=new Uint8Array(8);
+  const point=mousePoint(event),bytes=new Uint8Array(9);
   bytes[0]=0x82;
   writeI16(bytes,1,point.x);
   writeI16(bytes,3,point.y);
-  bytes[5]=0x83;
-  bytes[6]=0x01;
-  bytes[7]=down?1:0;
+  bytes[5]=point.layer&255;
+  bytes[6]=0x83;
+  bytes[7]=0x01;
+  bytes[8]=down?1:0;
   socket.send(bytes);
 }
 

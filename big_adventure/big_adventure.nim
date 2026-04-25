@@ -52,9 +52,9 @@ const
   BottomRightLayerId = 3
   BottomRightLayerType = 3
   ReplayCenterBottomLayerId = 8
-  ReplayBottomRightLayerId = 9
+  ReplayBottomLeftLayerId = 9
   ReplayCenterBottomLayerType = 8
-  ReplayBottomRightLayerType = 3
+  ReplayBottomLeftLayerType = 4
   ZoomableLayerFlag = 1
   UiLayerFlag = 2
   PlayerSpriteBase = 100
@@ -1295,6 +1295,12 @@ proc applySpriteViewerMessage(
       state.mouseX = readProtocolI16(message, offset)
       state.mouseY = readProtocolI16(message, offset + 2)
       offset += 4
+      if offset < message.len and message[offset].uint8 notin
+          {0x81'u8, 0x82'u8, 0x83'u8}:
+        state.mouseLayer = int(message[offset].uint8)
+        inc offset
+      else:
+        state.mouseLayer = MapLayerId
     of 0x83:
       if offset + 2 > message.len:
         return
@@ -1594,6 +1600,32 @@ proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
       bestY = player.y
       result = player.id
 
+proc replayCommandAt(layer, x, y: int): char =
+  ## Returns the replay transport command under a UI coordinate.
+  if layer != ReplayBottomLeftLayerId:
+    return '\0'
+
+  let
+    localX = x - 2
+    localY = y - 1
+  if localY >= 0 and localY < 8:
+    if localX >= 0 and localX < 36:
+      return ','
+    if localX >= 42:
+      return ' '
+    return '\0'
+  if localY < 8 or localY >= 16:
+    return '\0'
+  if localX >= 0 and localX < 12:
+    return '1'
+  if localX >= 18 and localX < 30:
+    return '2'
+  if localX >= 36 and localX < 48:
+    return '4'
+  if localX >= 54 and localX < 66:
+    return '8'
+  '\0'
+
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
@@ -1610,11 +1642,11 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   )
   result.addViewport(ReplayCenterBottomLayerId, ScreenWidth, 8)
   result.addLayer(
-    ReplayBottomRightLayerId,
-    ReplayBottomRightLayerType,
+    ReplayBottomLeftLayerId,
+    ReplayBottomLeftLayerType,
     UiLayerFlag
   )
-  result.addViewport(ReplayBottomRightLayerId, 96, 16)
+  result.addViewport(ReplayBottomLeftLayerId, ScreenWidth, 16)
   result.addSprite(
     MapSpriteId,
     WorldWidthPixels,
@@ -1672,8 +1704,16 @@ proc buildSpriteProtocolUpdates(
   nextState = state
   nextState.replayCommands.setLen(0)
   if nextState.clickPending:
-    nextState.selectedPlayerId =
-      sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
+    let command = replayCommandAt(
+      nextState.mouseLayer,
+      nextState.mouseX,
+      nextState.mouseY
+    )
+    if replayTick >= 0 and command != '\0':
+      nextState.replayCommands.add(command)
+    elif nextState.mouseLayer == MapLayerId:
+      nextState.selectedPlayerId =
+        sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
     nextState.clickPending = false
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit()
@@ -1750,7 +1790,7 @@ proc buildSpriteProtocolUpdates(
       SelectedTextSpriteId
     )
 
-  if playerIndex >= 0 and replayTick < 0:
+  if playerIndex >= 0:
     let viewport = spritePixelsFromPackedFrame(
       sim.buildFramePacket(playerIndex)
     )
@@ -1778,8 +1818,9 @@ proc buildSpriteProtocolUpdates(
       )
       controlText = sim.buildSpriteProtocolTextSprite(
         [
-          if replayPlaying: "PAUSE " & $replaySpeed & "X" else: "PLAY",
-          "STOP 1X 2X 4X 8X"
+          "REWIND " &
+            (if replayPlaying: "PAUSE " & $replaySpeed & "X" else: "PLAY"),
+          "1X 2X 4X 8X"
         ],
         2'u8
       )
@@ -1810,7 +1851,7 @@ proc buildSpriteProtocolUpdates(
       2,
       1,
       0,
-      ReplayBottomRightLayerId,
+      ReplayBottomLeftLayerId,
       ReplayControlsSpriteId
     )
 
@@ -1968,13 +2009,18 @@ proc applyReplayCommand(
   case command
   of ' ', 'p', 'P':
     replay.playing = not replay.playing
-  of 's', 'S':
-    replay.playing = false
-    replay.seekReplay(sim, 0)
   of '+', '=':
     replay.speedIndex = min(replay.speedIndex + 1, 3)
   of '-', '_':
     replay.speedIndex = max(replay.speedIndex - 1, 0)
+  of '1':
+    replay.speedIndex = 0
+  of '2':
+    replay.speedIndex = 1
+  of '4':
+    replay.speedIndex = 2
+  of '8':
+    replay.speedIndex = 3
   of ',', '<':
     replay.playing = false
     replay.seekReplay(sim, max(0, sim.tickCount - ReplayFps * 5))

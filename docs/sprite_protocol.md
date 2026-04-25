@@ -176,8 +176,13 @@ Sends the current mouse position.
 | Message type | `u8` | `0x82` |
 | X | `i16` | Mouse x position |
 | Y | `i16` | Mouse y position |
+| Layer | `u8` | Layer containing the mouse position |
 
-The coordinate system is the same as object coordinates.
+For the map layer, the coordinate system is the same as object coordinates. For
+UI layers, `X` and `Y` are local to that UI layer viewport.
+
+The client should send the topmost UI layer under the pointer when the pointer
+is over UI. Otherwise, it should send the map layer.
 
 ### Mouse Button
 
