@@ -27,12 +27,15 @@ const
   ViewerTask = rgbx(255, 132, 146, 255)
   ViewerTaskGuess = rgbx(255, 220, 92, 255)
   ViewerRadarLine = rgbx(255, 220, 92, 210)
+  ViewerPath = rgbx(119, 218, 255, 230)
   ViewerWalk = rgbx(46, 61, 75, 255)
   ViewerWall = rgbx(86, 50, 56, 255)
   ViewerUnknown = rgbx(22, 26, 36, 255)
   RadarTaskColor = 8'u8
   RadarPeripheryMargin = 1
   RadarMatchTolerance = 2
+  PathLookahead = 10
+  TaskReachDistance = 5
 
 type
   TileKnowledge = enum
@@ -83,9 +86,11 @@ type
     intent: string
     goalX: int
     goalY: int
+    goalName: string
     hasGoal: bool
     hasPathStep: bool
     pathStep: PathStep
+    path: seq[PathStep]
     radarDots: seq[RadarDot]
     taskGuesses: seq[bool]
 
@@ -422,19 +427,25 @@ proc heuristic(ax, ay, bx, by: int): int =
   ## Returns Manhattan distance for path search.
   abs(ax - bx) + abs(ay - by)
 
-proc reconstructStep(
+proc reconstructPath(
   parents: openArray[int],
   startIndex,
   goalIndex: int
-): PathStep =
-  ## Reconstructs the next step from a parent table.
+): seq[PathStep] =
+  ## Reconstructs a complete path from a parent table.
   var stepIndex = goalIndex
-  while parents[stepIndex] != -1 and parents[stepIndex] != startIndex:
+  while stepIndex != startIndex and stepIndex >= 0:
+    result.add(PathStep(
+      found: true,
+      x: stepIndex mod tileWidth(),
+      y: stepIndex div tileWidth()
+    ))
     stepIndex = parents[stepIndex]
-  PathStep(found: true, x: stepIndex mod tileWidth(), y: stepIndex div tileWidth())
+  for i in 0 ..< result.len div 2:
+    swap(result[i], result[result.high - i])
 
-proc findPathStep(bot: Bot, goalX, goalY: int): PathStep =
-  ## Finds the next A* pixel step toward a goal.
+proc findPath(bot: Bot, goalX, goalY: int): seq[PathStep] =
+  ## Finds a complete A* pixel path toward a goal.
   let
     startX = bot.playerWorldX()
     startY = bot.playerWorldY()
@@ -462,7 +473,7 @@ proc findPathStep(bot: Bot, goalX, goalY: int): PathStep =
     if closed[current.index]:
       continue
     if current.index == goalIndex:
-      return reconstructStep(parents, startIndex, goalIndex)
+      return reconstructPath(parents, startIndex, goalIndex)
     closed[current.index] = true
     let
       x = current.index mod tileWidth()
@@ -526,6 +537,24 @@ proc maskForStep(bot: Bot, step: PathStep): uint8 =
     if dy > 0: return ButtonDown
   0
 
+proc choosePathStep(bot: Bot): PathStep =
+  ## Returns a short lookahead waypoint from the current path.
+  if bot.path.len == 0:
+    return
+  let index = min(bot.path.high, PathLookahead)
+  bot.path[index]
+
+proc nearGoal(bot: Bot): bool =
+  ## Returns true when the player is close enough to work on the goal.
+  if not bot.hasGoal:
+    return false
+  heuristic(
+    bot.playerWorldX(),
+    bot.playerWorldY(),
+    bot.goalX,
+    bot.goalY
+  ) <= TaskReachDistance
+
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   bot.updateLocation()
@@ -533,6 +562,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.updateTaskGuesses()
   bot.hasGoal = false
   bot.hasPathStep = false
+  bot.path.setLen(0)
   bot.intent = "localizing"
   if not bot.localized:
     bot.thought("waiting for a reliable map lock")
@@ -546,15 +576,21 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.hasGoal = true
   bot.goalX = goal.x
   bot.goalY = goal.y
-  bot.pathStep = bot.findPathStep(goal.x, goal.y)
+  bot.goalName = goal.name
+  if bot.nearGoal():
+    bot.intent = "doing task at " & goal.name
+    bot.thought("at task " & goal.name & ", holding action")
+    return ButtonA
+  bot.path = bot.findPath(goal.x, goal.y)
+  bot.pathStep = bot.choosePathStep()
   bot.hasPathStep = bot.pathStep.found
-  bot.intent = "path preview to " & goal.name
+  bot.intent = "A* to " & goal.name & " path=" & $bot.path.len
   let mask = bot.maskForStep(bot.pathStep)
   bot.thought(
     "map lock " & cameraLockName(bot.cameraLock) & " at camera (" &
     $bot.cameraX & ", " & $bot.cameraY & "), next " & movementName(mask)
   )
-  0
+  mask
 
 proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
   ## Extracts one 12x12 sprite from the local sprite sheet.
@@ -727,6 +763,24 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
       vec2(9, 9),
       ViewerTask
     )
+  if bot.path.len > 0:
+    var previous = vec2(
+      x + bot.playerWorldX().float32 * scale,
+      y + bot.playerWorldY().float32 * scale
+    )
+    for i in countup(0, bot.path.high, 8):
+      let current = vec2(
+        x + bot.path[i].x.float32 * scale,
+        y + bot.path[i].y.float32 * scale
+      )
+      sk.drawLine(previous, current, ViewerPath)
+      previous = current
+    if bot.hasGoal:
+      sk.drawLine(
+        previous,
+        vec2(x + bot.goalX.float32 * scale, y + bot.goalY.float32 * scale),
+        ViewerPath
+      )
   if bot.hasPathStep:
     sk.drawRect(
       vec2(
@@ -799,6 +853,7 @@ proc pumpViewer(
     "radar dots: " & $bot.radarDots.len & " task guesses=" &
       $bot.taskGuessCount() & "\n" &
     "intent: " & bot.intent & "\n" &
+    "path pixels: " & $bot.path.len & "\n" &
     "next input: " & inputMaskSummary(bot.lastMask) & "\n" &
     "last thought: " & (if bot.lastThought.len > 0: bot.lastThought else: "waiting")
   discard sk.drawText("Default", infoText, infoPos, ViewerText, infoSize.x, infoSize.y)

@@ -17,8 +17,8 @@ const
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
-  CollisionW* = 6
-  CollisionH* = 4
+  CollisionW* = 1
+  CollisionH* = 1
   SpriteDrawOffX* = 2
   SpriteDrawOffY* = 8
   MotionScale* = 256
