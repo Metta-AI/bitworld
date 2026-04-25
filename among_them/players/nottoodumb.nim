@@ -7,7 +7,7 @@ const
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
   FullFrameFitMaxErrors = 180
-  LocalFrameFitMaxErrors = 120
+  LocalFrameFitMaxErrors = 100
   FrameFitMinCompared = 12000
   LocalFrameSearchRadius = 8
   PlayerIgnoreRadius = 9
@@ -37,9 +37,9 @@ const
   RadarMatchTolerance = 2
   TaskIconSearchRadius = 2
   TaskClearScreenMargin = 8
-  TaskIconMissThreshold = 3
+  TaskIconMissThreshold = 8
   PathLookahead = 18
-  TaskInnerMargin = 4
+  TaskInnerMargin = 6
   SteerDeadband = 2
   BrakeDeadband = 1
   StuckFrameThreshold = 8
@@ -511,25 +511,17 @@ proc taskIconRenderable(bot: Bot, task: TaskStation): bool =
     sy = center.y - bot.cameraY
   sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight
 
-proc taskIconSafelyVisible(bot: Bot, task: TaskStation): bool =
-  ## Returns true when missing an icon is reliable evidence.
+proc taskIconClearAreaVisible(bot: Bot, task: TaskStation): bool =
+  ## Returns true when the full expected icon area is visible.
   if not bot.taskIconRenderable(task):
-    return false
-  let
-    taskX = task.x - bot.cameraX
-    taskY = task.y - bot.cameraY
-  if taskX < 0 or taskY < 0 or
-      taskX + task.w > ScreenWidth or
-      taskY + task.h > ScreenHeight:
     return false
   for bobY in -1 .. 1:
     let projected = bot.projectedTaskIcon(task, bobY)
     if not projected.visible:
       return false
-    if projected.x < TaskClearScreenMargin or
-        projected.y < TaskClearScreenMargin or
-        projected.x + SpriteSize > ScreenWidth - TaskClearScreenMargin or
-        projected.y + SpriteSize > ScreenHeight - TaskClearScreenMargin:
+    if projected.x < 0 or projected.y < 0 or
+        projected.x + SpriteSize > ScreenWidth or
+        projected.y + SpriteSize > ScreenHeight:
       return false
   true
 
@@ -561,9 +553,8 @@ proc updateTaskIcons(bot: var Bot) =
       bot.taskStates[i] = TaskMandatory
       bot.taskIconMisses[i] = 0
     elif bot.taskHoldTicks == 0 and
-        (bot.taskStates[i] == TaskMandatory or
-        (i < bot.radarTasks.len and bot.radarTasks[i])) and
-        bot.taskIconSafelyVisible(task) and
+        bot.taskStates[i] == TaskMandatory and
+        bot.taskIconClearAreaVisible(task) and
         bot.taskHoldIndex != i:
       inc bot.taskIconMisses[i]
       if bot.taskIconMisses[i] >= TaskIconMissThreshold:
@@ -784,15 +775,37 @@ proc taskGoalFor(
   index: int,
   state: TaskState
 ): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
-  ## Returns a task goal for one passable task index.
+  ## Returns a reachable task goal inside one task rectangle.
   if index < 0 or index >= bot.sim.tasks.len:
     return
   let
     task = bot.sim.tasks[index]
     center = task.taskCenter()
-  if not bot.passable(center.x, center.y):
+  var
+    bestDistance = high(int)
+    bestX = 0
+    bestY = 0
+  template considerRange(x0, y0, x1, y1: int) =
+    for y in max(task.y, y0) ..< min(task.y + task.h, y1):
+      for x in max(task.x, x0) ..< min(task.x + task.w, x1):
+        if not bot.passable(x, y):
+          continue
+        let distance = heuristic(center.x, center.y, x, y)
+        if distance < bestDistance:
+          bestDistance = distance
+          bestX = x
+          bestY = y
+  considerRange(
+    task.x + TaskInnerMargin,
+    task.y + TaskInnerMargin,
+    task.x + task.w - TaskInnerMargin,
+    task.y + task.h - TaskInnerMargin
+  )
+  if bestDistance == high(int):
+    considerRange(task.x, task.y, task.x + task.w, task.y + task.h)
+  if bestDistance == high(int):
     return
-  (true, index, center.x, center.y, task.name, state)
+  (true, index, bestX, bestY, task.name, state)
 
 proc nearestTaskGoal(
   bot: Bot
@@ -909,7 +922,11 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   if bot.taskHoldTicks == 0 and
       bot.taskHoldIndex >= 0 and
       bot.taskHoldIndex < bot.taskStates.len:
-    bot.taskStates[bot.taskHoldIndex] = TaskCompleted
+    let task = bot.sim.tasks[bot.taskHoldIndex]
+    if not bot.taskIconVisibleFor(task) and bot.taskIconClearAreaVisible(task):
+      bot.taskStates[bot.taskHoldIndex] = TaskCompleted
+    else:
+      bot.taskStates[bot.taskHoldIndex] = TaskMandatory
     bot.taskHoldIndex = -1
   bot.thought("at task " & name & ", holding action")
   ButtonA
@@ -1082,6 +1099,47 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
     )
     sk.drawLine(playerPos, dotPos, ViewerRadarLine)
     sk.drawRect(dotPos - vec2(4, 4), vec2(9, 9), ViewerTaskGuess)
+  for task in bot.sim.tasks:
+    let
+      taskX = task.x - bot.cameraX
+      taskY = task.y - bot.cameraY
+      taskVisible = taskX + task.w >= 0 and taskY + task.h >= 0 and
+        taskX < ScreenWidth and taskY < ScreenHeight
+    if not taskVisible:
+      continue
+    let
+      icon = bot.projectedTaskIcon(task, 0)
+      hasIcon = bot.taskIconVisibleFor(task)
+      color =
+        if hasIcon:
+          ViewerPlayer
+        else:
+          ViewerTask
+      taskPos = vec2(
+        x + taskX.float32 * pixelScale,
+        y + taskY.float32 * pixelScale
+      )
+      taskSize = vec2(
+        task.w.float32 * pixelScale,
+        task.h.float32 * pixelScale
+      )
+    sk.drawOutline(taskPos, taskSize, color, 2)
+    if icon.visible:
+      let
+        iconPos = vec2(
+          x + icon.x.float32 * pixelScale,
+          y + icon.y.float32 * pixelScale
+        )
+        iconSize = vec2(
+          SpriteSize.float32 * pixelScale,
+          SpriteSize.float32 * pixelScale
+        )
+      sk.drawOutline(iconPos, iconSize, color, 2)
+      sk.drawLine(
+        taskPos + taskSize * 0.5,
+        iconPos + iconSize * 0.5,
+        color
+      )
   for icon in bot.visibleTaskIcons:
     sk.drawOutline(
       vec2(

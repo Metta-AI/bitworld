@@ -1487,21 +1487,21 @@ proc initSimServer*(config: GameConfig): SimServer =
   )
 
   result.tasks = @[
-    TaskStation(name: "Empty Garbage", x: 556, y: 466, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Comms)", x: 668, y: 424, w: 16, h: 16),
-    TaskStation(name: "Fix Wires (Storage)", x: 574, y: 264, w: 16, h: 16),
-    TaskStation(name: "Fix Wires (Electrical)", x: 444, y: 30, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Electrical)", x: 350, y: 290, w: 16, h: 16),
-    TaskStation(name: "Calibrate Distributor", x: 430, y: 292, w: 16, h: 16),
-    TaskStation(name: "Submit Scan", x: 400, y: 232, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 386, y: 292, w: 16, h: 16),
-    TaskStation(name: "Inspect Sample", x: 422, y: 214, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Admin)", x: 596, y: 264, w: 16, h: 16),
-    TaskStation(name: "Align Engine (Lower)", x: 186, y: 326, w: 16, h: 16),
-    TaskStation(name: "Align Engine (Upper)", x: 202, y: 80, w: 16, h: 16),
-    TaskStation(name: "Swipe Card", x: 664, y: 306, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Cafeteria)", x: 600, y: 28, w: 16, h: 16),
-    TaskStation(name: "Empty Garbage (Upper)", x: 626, y: 54, w: 16, h: 16),
+    TaskStation(name: "Empty Garbage", x: 554, y: 465, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Comms)", x: 667, y: 419, w: 16, h: 16),
+    TaskStation(name: "Fix Wires (Storage)", x: 574, y: 269, w: 16, h: 16),
+    TaskStation(name: "Fix Wires (Electrical)", x: 444, y: 31, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Electrical)", x: 366, y: 289, w: 16, h: 16),
+    TaskStation(name: "Calibrate Distributor", x: 428, y: 295, w: 16, h: 16),
+    TaskStation(name: "Submit Scan", x: 400, y: 234, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 397, y: 295, w: 16, h: 16),
+    TaskStation(name: "Inspect Sample", x: 416, y: 222, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Admin)", x: 597, y: 267, w: 16, h: 16),
+    TaskStation(name: "Align Engine (Lower)", x: 162, y: 398, w: 16, h: 16),
+    TaskStation(name: "Align Engine (Upper)", x: 162, y: 156, w: 16, h: 16),
+    TaskStation(name: "Swipe Card", x: 670, y: 306, w: 16, h: 16),
+    TaskStation(name: "Upload Data (Cafeteria)", x: 612, y: 39, w: 16, h: 16),
+    TaskStation(name: "Empty Garbage (Upper)", x: 630, y: 60, w: 16, h: 16),
   ]
 
   result.vents = @[
