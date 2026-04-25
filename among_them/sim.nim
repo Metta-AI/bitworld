@@ -43,8 +43,9 @@ const
   ProgressFilled* = 10'u8
   ReportRange* = 20
   VoteResultTicks* = 72
-  MinPlayers* = 5
-  ImposterCount* = 1
+  MaxPlayers* = 20
+  MinPlayers* = MaxPlayers
+  ImposterCount* = 3
   VoteTimerTicks* = 240
   GameOverTicks* = 360
   TasksPerPlayer* = 4
@@ -167,6 +168,7 @@ type
     reportRange*: int
     voteResultTicks*: int
     minPlayers*: int
+    maxPlayers*: int
     imposterCount*: int
     voteTimerTicks*: int
     gameOverTicks*: int
@@ -368,6 +370,7 @@ proc defaultGameConfig*(): GameConfig =
     reportRange: ReportRange,
     voteResultTicks: VoteResultTicks,
     minPlayers: MinPlayers,
+    maxPlayers: MaxPlayers,
     imposterCount: ImposterCount,
     voteTimerTicks: VoteTimerTicks,
     gameOverTicks: GameOverTicks,
@@ -409,6 +412,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field targetFps must be positive.")
   if config.minPlayers < 1:
     raise newException(AmongThemError, "Config field minPlayers must be at least 1.")
+  if config.maxPlayers < config.minPlayers:
+    raise newException(AmongThemError, "Config field maxPlayers must be at least minPlayers.")
   if config.imposterCount < 0:
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
   if config.tasksPerPlayer < 0:
@@ -443,6 +448,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("reportRange", config.reportRange)
   node.readConfigInt("voteResultTicks", config.voteResultTicks)
   node.readConfigInt("minPlayers", config.minPlayers)
+  node.readConfigInt("maxPlayers", config.maxPlayers)
   node.readConfigInt("imposterCount", config.imposterCount)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
@@ -565,11 +571,13 @@ proc hasTask*(player: Player, taskIdx: int): bool =
       return true
   false
 
+proc scaledImposterCount(config: GameConfig, playerCount: int): int =
+  if playerCount <= 1:
+    return 0
+  min(config.imposterCount, min(max(1, playerCount div 6), playerCount - 1))
+
 proc startGame*(sim: var SimServer) =
-  let imposterCount = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
-  )
+  let imposterCount = sim.config.scaledImposterCount(sim.players.len)
   for player in sim.players.mitems:
     player.role = Crewmate
     player.assignedTasks = @[]

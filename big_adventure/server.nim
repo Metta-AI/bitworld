@@ -1,5 +1,6 @@
 import mummy
 import protocol, sim, global
+import ../common/server as commonServer
 import std/[locks, monotimes, os, tables, times]
 
 const
@@ -16,6 +17,7 @@ type
     playerAddresses: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
     rewardViewers: Table[WebSocket, bool]
+    rewardPacket: string
     closedSockets: seq[WebSocket]
 
   ServerThreadArgs = object
@@ -295,6 +297,7 @@ proc initAppState() =
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.rewardPacket = ""
   appState.closedSockets = @[]
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
@@ -496,10 +499,20 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
   elif request.uri == RewardWebSocketPath and request.httpMethod == "GET":
-    let websocket = request.upgradeToWebSocket()
-    {.gcsafe.}:
-      withLock appState.lock:
-        appState.rewardViewers[websocket] = true
+    if commonServer.isWebSocketUpgrade(request):
+      let websocket = request.upgradeToWebSocket()
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.rewardViewers[websocket] = true
+    else:
+      var packet: string
+      {.gcsafe.}:
+        withLock appState.lock:
+          packet = appState.rewardPacket
+      var headers: HttpHeaders
+      headers["Content-Type"] = "text/plain"
+      headers["Cache-Control"] = "no-store"
+      request.respond(200, headers, packet)
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -593,10 +606,11 @@ proc runServerLoop*(
     replayWriter.closeReplayWriter()
   appState.replayLoaded = replayLoaded
 
-  let httpServer = newServer(
+  let httpServer = commonServer.newServer(
     httpHandler,
     websocketHandler,
-    workerThreads = 4
+    workerThreads = 4,
+    tcpNoDelay = true
   )
 
   var serverThread: Thread[ServerThreadArgs]
@@ -718,6 +732,9 @@ proc runServerLoop*(
             rewardViewers.add(websocket)
 
       let rewardPacket = sim.buildRewardPacket()
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.rewardPacket = rewardPacket
       for i in 0 ..< sockets.len:
         let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
         try:
@@ -753,6 +770,9 @@ proc runServerLoop*(
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
     let rewardPacket = sim.buildRewardPacket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.rewardPacket = rewardPacket
 
     for i in 0 ..< sockets.len:
       let framePacket =

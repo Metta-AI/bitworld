@@ -1,6 +1,6 @@
 import mummy
 import pixie
-import std/os
+import std/[os, strutils]
 import protocol
 
 type
@@ -29,9 +29,11 @@ proc newServer*(
   maxHeadersLen = 8 * 1024,
   maxBodyLen = 1024 * 1024,
   maxMessageLen = 64 * 1024,
-  wsNoDelay: bool,
+  wsNoDelay = false,
+  tcpNoDelay = false,
 ): mummy.Server =
   discard wsNoDelay
+  discard tcpNoDelay
   mummy.newServer(
     handler,
     websocketHandler,
@@ -41,6 +43,13 @@ proc newServer*(
     maxBodyLen,
     maxMessageLen,
   )
+
+proc isWebSocketUpgrade*(request: Request): bool =
+  for _, header in request.headers:
+    if cmpIgnoreCase(header[0], "Upgrade") == 0 and
+        cmpIgnoreCase(header[1], "websocket") == 0:
+      return true
+  false
 
 proc spriteIndex*(sprite: Sprite, x, y: int): int =
   y * sprite.width + x

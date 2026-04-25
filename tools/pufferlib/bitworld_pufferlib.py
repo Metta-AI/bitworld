@@ -65,6 +65,8 @@ SHARED_NIM_SOURCES = (
 class EnvironmentSpec:
     name: str
     metric_name: str = "score"
+    server_players: int = 1
+    reward_tracks_episode: bool = True
     default_episode_steps: int = 64
     default_total_timesteps: int = 50_000
     learning_rate: float = 0.001
@@ -86,9 +88,20 @@ class EnvironmentSpec:
 
 
 ENV_SPECS: dict[str, EnvironmentSpec] = {
-    "among_them": EnvironmentSpec(name="among_them", metric_name="task_progress", default_episode_steps=512),
+    "among_them": EnvironmentSpec(
+        name="among_them",
+        metric_name="task_progress",
+        server_players=20,
+        reward_tracks_episode=False,
+        default_episode_steps=512,
+    ),
     "asteroid_arena": EnvironmentSpec(name="asteroid_arena", default_episode_steps=96),
-    "big_adventure": EnvironmentSpec(name="big_adventure", metric_name="coins_collected", default_episode_steps=512),
+    "big_adventure": EnvironmentSpec(
+        name="big_adventure",
+        metric_name="coins_collected",
+        reward_tracks_episode=False,
+        default_episode_steps=512,
+    ),
     "boundless_factory": EnvironmentSpec(name="boundless_factory", metric_name="factory_progress", default_episode_steps=1024),
     "bubble_eats": EnvironmentSpec(name="bubble_eats"),
     "fancy_cookout": EnvironmentSpec(name="fancy_cookout", metric_name="kitchen_progress", default_episode_steps=384),
@@ -209,13 +222,10 @@ def unpack_frame(packet: bytes) -> np.ndarray:
 
 def parse_reward_payload(payload: bytes | str) -> RewardSnapshot:
     text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
-    score = None
     for line in text.splitlines():
         parts = line.split()
         if len(parts) >= 3 and parts[0] == "reward":
-            score = int(parts[2])
-    if score is not None:
-        return RewardSnapshot(score=score, aux_value=0, episode=0, connected=True)
+            return RewardSnapshot(score=int(parts[2]), aux_value=0, episode=0, connected=True)
     if not text.strip():
         return RewardSnapshot(score=0, aux_value=0, episode=0, connected=False)
 
@@ -264,7 +274,7 @@ class BitWorldWorker:
         self.action_repeat = action_repeat
         self.process: subprocess.Popen[str] | None = None
         self.connection: ClientConnection | None = None
-        self.reward_connection: ClientConnection | None = None
+        self.companion_connections: list[ClientConnection] = []
         self.log_file = None
         self.base_score = 0
         self.score = 0
@@ -278,6 +288,7 @@ class BitWorldWorker:
         self._reader_error: Exception | None = None
         self._closed = False
         self._reader_thread: threading.Thread | None = None
+        self._companion_threads: list[threading.Thread] = []
         self._start_server()
         try:
             first_frame, _ = self._wait_for_frame(lambda _frame, _seq: True)
@@ -291,31 +302,53 @@ class BitWorldWorker:
         self.episode = reward.episode
 
     def _start_server(self) -> None:
-        ensure_bitworld_binary(self.spec)
         RUNLOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = RUNLOG_DIR / f"{self.spec.name}_{self.env_id}.log"
         self.log_file = log_path.open("w")
-        self.process = subprocess.Popen(
-            [
-                str(self.spec.binary),
-                "--address:127.0.0.1",
-                f"--port:{self.port}",
-                f"--fps:{self.fps}",
-                f"--seed:{self.seed}",
-            ],
-            cwd=self.spec.binary.parent,
-            stdout=self.log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        self.process = self._launch_server()
         self.connection = self._connect("/player")
-        self.reward_connection = self._connect_reward_stream()
+        for _ in range(self.spec.server_players - 1):
+            self.companion_connections.append(self._connect("/player"))
+        for player_id, connection in enumerate(self.companion_connections, start=1):
+            thread = threading.Thread(
+                target=self._companion_reader_loop,
+                args=(player_id, connection),
+                name=f"bitworld-{self.spec.name}-{self.env_id}-companion-{player_id}-reader",
+                daemon=True,
+            )
+            thread.start()
+            self._companion_threads.append(thread)
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
             name=f"bitworld-{self.spec.name}-{self.env_id}-reader",
             daemon=True,
         )
         self._reader_thread.start()
+
+    def _server_args(self) -> list[str]:
+        args = [
+            str(self.spec.binary),
+            "--address:127.0.0.1",
+            f"--port:{self.port}",
+            f"--fps:{self.fps}",
+            f"--seed:{self.seed}",
+        ]
+        if self.spec.name == "among_them":
+            args.append(
+                f"--config:{{\"minPlayers\":{self.spec.server_players},"
+                f"\"maxPlayers\":{self.spec.server_players}}}"
+            )
+        return args
+
+    def _launch_server(self) -> subprocess.Popen[str]:
+        ensure_bitworld_binary(self.spec)
+        return subprocess.Popen(
+            self._server_args(),
+            cwd=self.spec.binary.parent,
+            stdout=self.log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
 
     def _connect(self, path: str) -> ClientConnection:
         deadline = time.time() + 10.0
@@ -329,13 +362,6 @@ class BitWorldWorker:
                 time.sleep(0.05)
         raise RuntimeError(f"failed to connect to {url}") from last_error
 
-    def _connect_reward_stream(self) -> ClientConnection | None:
-        url = f"ws://127.0.0.1:{self.port}/reward"
-        try:
-            return connect(url, open_timeout=1.0, ping_interval=None, max_size=None, proxy=None)
-        except Exception:  # noqa: BLE001
-            return None
-
     def _receive_packet(self) -> np.ndarray:
         assert self.connection is not None
         payload = self.connection.recv(timeout=10.0)
@@ -344,35 +370,9 @@ class BitWorldWorker:
         return unpack_frame(bytes(payload))
 
     def _poll_reward(self) -> RewardSnapshot:
-        if self.reward_connection is not None:
-            return self._poll_reward_stream()
-
         url = f"http://127.0.0.1:{self.port}/reward"
         with urllib.request.urlopen(url, timeout=2.0) as response:
             return parse_reward_payload(response.read())
-
-    def _poll_reward_stream(self) -> RewardSnapshot:
-        assert self.reward_connection is not None
-        deadline = time.time() + 10.0
-        snapshot: RewardSnapshot | None = None
-        while time.time() < deadline:
-            payload = self.reward_connection.recv(timeout=max(0.0, deadline - time.time()))
-            if not isinstance(payload, str):
-                raise TypeError(f"expected text reward websocket payload, got {type(payload)!r}")
-            snapshot = parse_reward_payload(payload)
-            while True:
-                try:
-                    payload = self.reward_connection.recv(timeout=0.0)
-                except TimeoutError:
-                    break
-                if not isinstance(payload, str):
-                    raise TypeError(f"expected text reward websocket payload, got {type(payload)!r}")
-                snapshot = parse_reward_payload(payload)
-            if snapshot.connected:
-                return snapshot
-        if snapshot is not None:
-            return snapshot
-        raise TimeoutError(f"timed out waiting for {self.spec.name} reward")
 
     def _reader_loop(self) -> None:
         assert self.connection is not None
@@ -395,6 +395,25 @@ class BitWorldWorker:
                 self._latest_frame = frame
                 self._frame_seq += 1
                 self._condition.notify_all()
+
+    def _companion_reader_loop(self, player_id: int, connection: ClientConnection) -> None:
+        del player_id
+        while True:
+            with self._condition:
+                if self._closed:
+                    return
+            try:
+                payload = connection.recv(timeout=10.0)
+                if not isinstance(payload, (bytes, bytearray)):
+                    raise TypeError(f"expected binary websocket payload, got {type(payload)!r}")
+            except TimeoutError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                with self._condition:
+                    if not self._closed:
+                        self._reader_error = exc
+                        self._condition.notify_all()
+                return
 
     def _wait_for_frame(
         self,
@@ -419,7 +438,7 @@ class BitWorldWorker:
             start_seq = self._frame_seq
         previous_episode = self.episode
         self.connection.send(bytes([RESET_INPUT_MASK]), text=False)
-        if self.reward_connection is not None:
+        if not self.spec.reward_tracks_episode:
             frame, _ = self._wait_for_frame(lambda _item, seq: seq > start_seq)
             reward = self._poll_reward()
             self.base_score = reward.score
@@ -478,12 +497,12 @@ class BitWorldWorker:
                 pass
             self.connection = None
 
-        if self.reward_connection is not None:
+        for connection in self.companion_connections:
             try:
-                self.reward_connection.close()
+                connection.close()
             except Exception:  # noqa: BLE001
                 pass
-            self.reward_connection = None
+        self.companion_connections = []
 
         if self.process is not None:
             self.process.terminate()
@@ -497,6 +516,10 @@ class BitWorldWorker:
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=2.0)
             self._reader_thread = None
+
+        for thread in self._companion_threads:
+            thread.join(timeout=2.0)
+        self._companion_threads = []
 
         if self.log_file is not None:
             self.log_file.close()
