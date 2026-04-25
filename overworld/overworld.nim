@@ -811,11 +811,6 @@ proc removePlayer(sim: var SimServer, websocket: mummy.WebSocket) =
         newProxies[idx] = proxy
     sim.proxies = newProxies
 
-proc recordReward(websocket: mummy.WebSocket, metric: RewardMetric) =
-  {.gcsafe.}:
-    withLock appState.lock:
-      appState.rewards.recordReward(websocket, metric)
-
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET":
     {.gcsafe.}:
@@ -960,7 +955,9 @@ proc runServerLoop(
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
       for i in 0 ..< sockets.len:
-        sockets[i].recordReward(sim.rewardMetric(playerIndices[i]))
+        {.gcsafe.}:
+          withLock appState.lock:
+            appState.rewards.recordReward(sockets[i], sim.rewardMetric(playerIndices[i]))
         let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
         try:
           sockets[i].send(frameBlob, BinaryMessage)
@@ -1000,7 +997,9 @@ proc runServerLoop(
     # Send frames
     for i in 0 ..< sockets.len:
       let pi = playerIndices[i]
-      sockets[i].recordReward(sim.rewardMetric(pi))
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.rewards.recordReward(sockets[i], sim.rewardMetric(pi))
       var frameBlob: string
       if pi in proxiedPlayers:
         frameBlob = blobFromBytes(sim.proxyFrame(pi))

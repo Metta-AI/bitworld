@@ -667,11 +667,6 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
-proc recordReward(websocket: WebSocket, metric: RewardMetric) =
-  {.gcsafe.}:
-    withLock appState.lock:
-      appState.rewards.recordReward(websocket, metric)
-
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET":
     {.gcsafe.}:
@@ -811,7 +806,9 @@ proc runServerLoop*(
           if appState.playerIndices.len > 0:
             sim.configureRlMatch(appState.playerIndices.len)
       for i in 0 ..< sockets.len:
-        sockets[i].recordReward(sim.rewardMetric(playerIndices[i]))
+        {.gcsafe.}:
+          withLock appState.lock:
+            appState.rewards.recordReward(sockets[i], sim.rewardMetric(playerIndices[i]))
         let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
         try:
           sockets[i].send(frameBlob, BinaryMessage)
@@ -826,7 +823,9 @@ proc runServerLoop*(
     sim.step(inputs)
 
     for i in 0 ..< sockets.len:
-      sockets[i].recordReward(sim.rewardMetric(playerIndices[i]))
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.rewards.recordReward(sockets[i], sim.rewardMetric(playerIndices[i]))
       let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
