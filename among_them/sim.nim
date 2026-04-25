@@ -43,6 +43,7 @@ const
   ReportRange* = 20
   VoteResultTicks* = 72
   MinPlayers* = 5
+  ImposterCount* = 1
   VoteTimerTicks* = 240
   GameOverTicks* = 360
   TasksPerPlayer* = 4
@@ -146,6 +147,7 @@ type
     reportRange*: int
     voteResultTicks*: int
     minPlayers*: int
+    imposterCount*: int
     voteTimerTicks*: int
     gameOverTicks*: int
     tasksPerPlayer*: int
@@ -346,6 +348,7 @@ proc defaultGameConfig*(): GameConfig =
     reportRange: ReportRange,
     voteResultTicks: VoteResultTicks,
     minPlayers: MinPlayers,
+    imposterCount: ImposterCount,
     voteTimerTicks: VoteTimerTicks,
     gameOverTicks: GameOverTicks,
     tasksPerPlayer: TasksPerPlayer,
@@ -399,6 +402,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field targetFps must be positive.")
   if config.minPlayers < 1:
     raise newException(AmongThemError, "Config field minPlayers must be at least 1.")
+  if config.imposterCount < 0:
+    raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
   if config.tasksPerPlayer < 0:
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
   if config.voteTimerTicks <= 0:
@@ -431,6 +436,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("reportRange", config.reportRange)
   node.readConfigInt("voteResultTicks", config.voteResultTicks)
   node.readConfigInt("minPlayers", config.minPlayers)
+  node.readConfigInt("imposterCount", config.imposterCount)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
@@ -555,8 +561,21 @@ proc hasTask*(player: Player, taskIdx: int): bool =
   false
 
 proc startGame*(sim: var SimServer) =
-  let impIdx = sim.rng.rand(sim.players.len - 1)
-  sim.players[impIdx].role = Imposter
+  let imposterCount = min(
+    sim.config.imposterCount,
+    max(0, sim.players.len - 1)
+  )
+  for player in sim.players.mitems:
+    player.role = Crewmate
+    player.assignedTasks = @[]
+  var candidates: seq[int] = @[]
+  for i in 0 ..< sim.players.len:
+    candidates.add(i)
+  for j in countdown(candidates.high, 1):
+    let k = sim.rng.rand(j)
+    swap(candidates[j], candidates[k])
+  for i in 0 ..< imposterCount:
+    sim.players[candidates[i]].role = Imposter
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == Imposter:
       continue
@@ -1183,6 +1202,10 @@ proc allTasksDone*(sim: SimServer): bool =
   sim.totalTasksRemaining() == 0
 
 proc checkWinCondition*(sim: var SimServer) =
+  let hasImposters = min(
+    sim.config.imposterCount,
+    max(0, sim.players.len - 1)
+  ) > 0
   var aliveCrewmates = 0
   var aliveImposters = 0
   for p in sim.players:
@@ -1191,11 +1214,12 @@ proc checkWinCondition*(sim: var SimServer) =
         inc aliveCrewmates
       else:
         inc aliveImposters
-  if aliveImposters == 0 and sim.players.len > 0:
+  if hasImposters and aliveImposters == 0 and sim.players.len > 0:
     sim.phase = GameOver
     sim.winner = Crewmate
     sim.gameOverTimer = sim.config.gameOverTicks
-  elif aliveImposters >= aliveCrewmates and sim.players.len > 0:
+  elif hasImposters and aliveImposters >= aliveCrewmates and
+      sim.players.len > 0:
     sim.phase = GameOver
     sim.winner = Imposter
     sim.gameOverTimer = sim.config.gameOverTicks

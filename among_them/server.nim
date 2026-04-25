@@ -610,6 +610,10 @@ proc runServerLoop*(
                 prevInputs.delete(playerIndex)
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
+        if not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
+          sim.resetToLobby()
+          prevInputs = @[]
+          replayWriter.lastMasks = @[]
 
         if not replayLoaded:
           var newSockets: seq[WebSocket] = @[]
