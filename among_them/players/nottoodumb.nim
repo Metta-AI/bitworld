@@ -34,12 +34,16 @@ const
   RadarTaskColor = 8'u8
   RadarPeripheryMargin = 1
   RadarMatchTolerance = 2
+  TaskIconSearchRadius = 2
+  TaskIconScreenMargin = 5
+  TaskIconMissThreshold = 3
   PathLookahead = 18
-  TaskReachDistance = 5
+  TaskInnerMargin = 4
   SteerDeadband = 2
   BrakeDeadband = 1
   StuckFrameThreshold = 8
   JiggleDuration = 8
+  TaskHoldPadding = 8
 
 type
   TileKnowledge = enum
@@ -51,6 +55,12 @@ type
     NoLock
     LocalFrameMapLock
     FrameMapLock
+
+  TaskState = enum
+    TaskNotDoing
+    TaskMaybe
+    TaskMandatory
+    TaskCompleted
 
   PathNode = object
     priority: int
@@ -67,6 +77,10 @@ type
     compared: int
 
   RadarDot = object
+    x: int
+    y: int
+
+  IconMatch = object
     x: int
     y: int
 
@@ -98,6 +112,8 @@ type
     jiggleSide: int
     desiredMask: uint8
     controllerMask: uint8
+    taskHoldTicks: int
+    taskHoldIndex: int
     frameTick: int
     centerMicros: int
     astarMicros: int
@@ -106,13 +122,16 @@ type
     intent: string
     goalX: int
     goalY: int
+    goalIndex: int
     goalName: string
     hasGoal: bool
     hasPathStep: bool
     pathStep: PathStep
     path: seq[PathStep]
     radarDots: seq[RadarDot]
-    taskGuesses: seq[bool]
+    taskStates: seq[TaskState]
+    taskIconMisses: seq[int]
+    visibleTaskIcons: seq[IconMatch]
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
@@ -325,6 +344,42 @@ proc scanRadarDots(bot: var Bot) =
       if bot.unpacked[y * ScreenWidth + x] == RadarTaskColor:
         bot.radarDots.addRadarDot(x, y)
 
+proc matchesSprite(
+  frame: openArray[uint8],
+  sprite: Sprite,
+  x,
+  y: int
+): bool =
+  ## Returns true if a sprite exactly matches the frame.
+  if x < 0 or y < 0 or x + sprite.width > ScreenWidth or
+      y + sprite.height > ScreenHeight:
+    return false
+  var matchedOpaque = 0
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let color = sprite.pixels[sprite.spriteIndex(sx, sy)]
+      if color == TransparentColorIndex:
+        continue
+      inc matchedOpaque
+      if frame[(y + sy) * ScreenWidth + x + sx] != color:
+        return false
+  matchedOpaque > 0
+
+proc addIconMatch(matches: var seq[IconMatch], x, y: int) =
+  ## Adds one icon match unless a nearby icon already exists.
+  for match in matches:
+    if abs(match.x - x) <= 1 and abs(match.y - y) <= 1:
+      return
+  matches.add(IconMatch(x: x, y: y))
+
+proc scanTaskIcons(bot: var Bot) =
+  ## Scans the current frame for visible task icons.
+  bot.visibleTaskIcons.setLen(0)
+  for y in 0 .. ScreenHeight - bot.taskSprite.height:
+    for x in 0 .. ScreenWidth - bot.taskSprite.width:
+      if matchesSprite(bot.unpacked, bot.taskSprite, x, y):
+        bot.visibleTaskIcons.addIconMatch(x, y)
+
 proc projectedRadarDot(
   bot: Bot,
   task: TaskStation
@@ -371,8 +426,8 @@ proc projectedRadarDot(
 
 proc updateTaskGuesses(bot: var Bot) =
   ## Marks task candidates whose expected radar dots match yellow pixels.
-  if bot.taskGuesses.len != bot.sim.tasks.len:
-    bot.taskGuesses = newSeq[bool](bot.sim.tasks.len)
+  if bot.taskStates.len != bot.sim.tasks.len:
+    bot.taskStates = newSeq[TaskState](bot.sim.tasks.len)
   if not bot.localized:
     return
   bot.scanRadarDots()
@@ -385,7 +440,91 @@ proc updateTaskGuesses(bot: var Bot) =
     for dot in bot.radarDots:
       if abs(dot.x - projected.x) <= RadarMatchTolerance and
           abs(dot.y - projected.y) <= RadarMatchTolerance:
-        bot.taskGuesses[i] = true
+        if bot.taskStates[i] == TaskNotDoing:
+          bot.taskStates[i] = TaskMaybe
+
+proc projectedTaskIcon(
+  bot: Bot,
+  task: TaskStation,
+  bobY: int
+): tuple[visible: bool, x: int, y: int] =
+  ## Returns the expected screen position for a visible task icon.
+  if not bot.localized:
+    return
+  let
+    iconX = task.x + task.w div 2 - SpriteSize div 2 - bot.cameraX
+    iconY = task.y - SpriteSize - 2 + bobY - bot.cameraY
+  if iconX + SpriteSize < 0 or iconY + SpriteSize < 0 or
+      iconX >= ScreenWidth or iconY >= ScreenHeight:
+    return
+  (true, iconX, iconY)
+
+proc taskIconRenderable(bot: Bot, task: TaskStation): bool =
+  ## Returns true when the server could render the task icon.
+  let
+    center = task.taskCenter()
+    sx = center.x - bot.cameraX
+    sy = center.y - bot.cameraY
+  if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
+    return false
+  let
+    mapColor = bot.sim.mapPixels[mapIndexSafe(center.x, center.y)] and 0x0f
+    frameColor = bot.unpacked[sy * ScreenWidth + sx]
+  if ShadowMap[mapColor] == frameColor and mapColor != frameColor:
+    return false
+  true
+
+proc taskIconSafelyVisible(bot: Bot, task: TaskStation): bool =
+  ## Returns true when missing an icon is reliable evidence.
+  if not bot.taskIconRenderable(task):
+    return false
+  for bobY in -1 .. 1:
+    let projected = bot.projectedTaskIcon(task, bobY)
+    if not projected.visible:
+      return false
+    if projected.x < TaskIconScreenMargin or
+        projected.y < TaskIconScreenMargin or
+        projected.x + SpriteSize >= ScreenWidth - TaskIconScreenMargin or
+        projected.y + SpriteSize >= ScreenHeight - TaskIconScreenMargin:
+      return false
+  true
+
+proc taskIconVisibleFor(bot: Bot, task: TaskStation): bool =
+  ## Returns true if a visible task station has its icon on screen.
+  if not bot.taskIconRenderable(task):
+    return false
+  for bobY in -1 .. 1:
+    let projected = bot.projectedTaskIcon(task, bobY)
+    if not projected.visible:
+      continue
+    for icon in bot.visibleTaskIcons:
+      if abs(icon.x - projected.x) <= TaskIconSearchRadius and
+          abs(icon.y - projected.y) <= TaskIconSearchRadius:
+        return true
+
+proc updateTaskIcons(bot: var Bot) =
+  ## Updates task states from visible task icons.
+  if bot.taskStates.len != bot.sim.tasks.len:
+    bot.taskStates = newSeq[TaskState](bot.sim.tasks.len)
+  if bot.taskIconMisses.len != bot.sim.tasks.len:
+    bot.taskIconMisses = newSeq[int](bot.sim.tasks.len)
+  if not bot.localized:
+    return
+  bot.scanTaskIcons()
+  for i in 0 ..< bot.sim.tasks.len:
+    let task = bot.sim.tasks[i]
+    if bot.taskIconVisibleFor(task):
+      bot.taskStates[i] = TaskMandatory
+      bot.taskIconMisses[i] = 0
+    elif bot.taskStates[i] in {TaskMaybe, TaskMandatory} and
+        bot.taskIconSafelyVisible(task) and
+        not (bot.taskHoldTicks > 0 and bot.taskHoldIndex == i):
+      inc bot.taskIconMisses[i]
+      if bot.taskIconMisses[i] >= TaskIconMissThreshold:
+        bot.taskStates[i] = TaskNotDoing
+        bot.taskIconMisses[i] = 0
+    else:
+      bot.taskIconMisses[i] = 0
 
 proc thought(bot: var Bot, text: string) =
   ## Emits changed bot thoughts to stdout.
@@ -481,10 +620,10 @@ proc inputMaskSummary(mask: uint8): string =
     return "idle"
   parts.join(", ")
 
-proc taskGuessCount(bot: Bot): int =
-  ## Returns the number of task stations guessed from radar dots.
-  for guessed in bot.taskGuesses:
-    if guessed:
+proc taskStateCount(bot: Bot, state: TaskState): int =
+  ## Returns the number of tasks in one state.
+  for taskState in bot.taskStates:
+    if taskState == state:
       inc result
 
 proc cameraLockName(lock: CameraLock): string =
@@ -579,30 +718,33 @@ proc findPath(bot: Bot, goalX, goalY: int): seq[PathStep] =
         index: nextIndex
       ))
 
-proc nearestTaskGoal(bot: Bot): tuple[found: bool, x: int, y: int, name: string] =
-  ## Returns the closest known task station center.
+proc nearestTaskGoal(
+  bot: Bot
+): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
+  ## Returns the closest known active task station center.
   var bestDistance = high(int)
-  for i in 0 ..< bot.sim.tasks.len:
-    let task = bot.sim.tasks[i]
-    if bot.taskGuesses.len == bot.sim.tasks.len and not bot.taskGuesses[i]:
-      continue
-    let center = task.taskCenter()
-    if not bot.passable(center.x, center.y):
-      continue
-    let distance = heuristic(bot.playerWorldX(), bot.playerWorldY(), center.x, center.y)
-    if distance < bestDistance:
-      bestDistance = distance
-      result = (true, center.x, center.y, task.name)
-  if result.found:
-    return
-  for task in bot.sim.tasks:
-    let center = task.taskCenter()
-    if not bot.passable(center.x, center.y):
-      continue
-    let distance = heuristic(bot.playerWorldX(), bot.playerWorldY(), center.x, center.y)
-    if distance < bestDistance:
-      bestDistance = distance
-      result = (true, center.x, center.y, task.name)
+  for targetState in [TaskMandatory, TaskMaybe]:
+    bestDistance = high(int)
+    for i in 0 ..< bot.sim.tasks.len:
+      if bot.taskStates.len == bot.sim.tasks.len and
+          bot.taskStates[i] != targetState:
+        continue
+      let
+        task = bot.sim.tasks[i]
+        center = task.taskCenter()
+      if not bot.passable(center.x, center.y):
+        continue
+      let distance = heuristic(
+        bot.playerWorldX(),
+        bot.playerWorldY(),
+        center.x,
+        center.y
+      )
+      if distance < bestDistance:
+        bestDistance = distance
+        result = (true, i, center.x, center.y, task.name, targetState)
+    if result.found:
+      return
 
 proc axisMask(delta, velocity: int, negativeMask, positiveMask: uint8): uint8 =
   ## Returns steering for one axis with simple momentum braking.
@@ -637,16 +779,35 @@ proc choosePathStep(bot: Bot): PathStep =
   let index = min(bot.path.high, PathLookahead)
   bot.path[index]
 
-proc nearGoal(bot: Bot): bool =
-  ## Returns true when the player is close enough to work on the goal.
-  if not bot.hasGoal:
+proc taskReady(bot: Bot, task: TaskStation): bool =
+  ## Returns true when the player can safely hold action for a task.
+  let
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
+    innerX0 = task.x + TaskInnerMargin
+    innerY0 = task.y + TaskInnerMargin
+    innerX1 = task.x + task.w - TaskInnerMargin
+    innerY1 = task.y + task.h - TaskInnerMargin
+  if x < innerX0 or x >= innerX1 or y < innerY0 or y >= innerY1:
     return false
-  heuristic(
-    bot.playerWorldX(),
-    bot.playerWorldY(),
-    bot.goalX,
-    bot.goalY
-  ) <= TaskReachDistance
+  abs(bot.velocityX) + abs(bot.velocityY) <= 1
+
+proc holdTaskAction(bot: var Bot, name: string): uint8 =
+  ## Holds only the action button while completing a task.
+  bot.intent = "doing task at " & name & " hold=" & $bot.taskHoldTicks
+  bot.desiredMask = ButtonA
+  bot.controllerMask = ButtonA
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  if bot.taskHoldTicks > 0:
+    dec bot.taskHoldTicks
+  if bot.taskHoldTicks == 0 and
+      bot.taskHoldIndex >= 0 and
+      bot.taskHoldIndex < bot.taskStates.len:
+    bot.taskStates[bot.taskHoldIndex] = TaskCompleted
+    bot.taskHoldIndex = -1
+  bot.thought("at task " & name & ", holding action")
+  ButtonA
 
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
@@ -657,6 +818,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.updateStuckState()
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
+  bot.updateTaskIcons()
   bot.hasGoal = false
   bot.hasPathStep = false
   bot.path.setLen(0)
@@ -666,6 +828,13 @@ proc decideNextMask(bot: var Bot): uint8 =
   if not bot.localized:
     bot.thought("waiting for a reliable map lock")
     return 0
+  if bot.taskHoldTicks > 0:
+    return bot.holdTaskAction(
+      if bot.goalName.len > 0:
+        bot.goalName
+      else:
+        "task"
+    )
   let goal = bot.nearestTaskGoal()
   if not goal.found:
     bot.intent = "localized, no task goal"
@@ -675,17 +844,22 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.hasGoal = true
   bot.goalX = goal.x
   bot.goalY = goal.y
+  bot.goalIndex = goal.index
   bot.goalName = goal.name
-  if bot.nearGoal():
-    bot.intent = "doing task at " & goal.name
-    bot.thought("at task " & goal.name & ", holding action")
-    return ButtonA
+  if goal.state == TaskMandatory and
+      goal.index >= 0 and
+      goal.index < bot.sim.tasks.len and
+      bot.taskReady(bot.sim.tasks[goal.index]):
+    bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
+    bot.taskHoldIndex = goal.index
+    return bot.holdTaskAction(goal.name)
   let astarStart = getMonoTime()
   bot.path = bot.findPath(goal.x, goal.y)
   bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
   bot.pathStep = bot.choosePathStep()
   bot.hasPathStep = bot.pathStep.found
-  bot.intent = "A* to " & goal.name & " path=" & $bot.path.len
+  bot.intent = "A* to " & goal.name & " path=" & $bot.path.len &
+    " state=" & $goal.state
   bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
   bot.controllerMask = bot.desiredMask
   let mask = bot.applyJiggle(bot.controllerMask)
@@ -711,11 +885,14 @@ proc initBot(): Bot =
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
-  result.taskGuesses = newSeq[bool](result.sim.tasks.len)
+  result.taskStates = newSeq[TaskState](result.sim.tasks.len)
+  result.taskIconMisses = newSeq[int](result.sim.tasks.len)
   result.cameraX = clamp(ButtonX - 48, 0, MapWidth - ScreenWidth)
   result.cameraY = clamp(ButtonY - 66, 0, MapHeight - ScreenHeight)
   result.lastCameraX = result.cameraX
   result.lastCameraY = result.cameraY
+  result.taskHoldIndex = -1
+  result.goalIndex = -1
   result.cameraLock = NoLock
   result.intent = "waiting for first frame"
 
@@ -739,6 +916,18 @@ proc drawLine(sk: Silky, a, b: Vec2, color: ColorRGBX) =
       vec2(3, 3),
       color
     )
+
+proc taskStateColor(state: TaskState): ColorRGBX =
+  ## Returns a map marker color for a task state.
+  case state
+  of TaskNotDoing:
+    ViewerTask
+  of TaskMaybe:
+    ViewerTaskGuess
+  of TaskMandatory:
+    ViewerButton
+  of TaskCompleted:
+    ViewerMutedText
 
 proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
   ## Draws the latest 128x128 game frame.
@@ -810,23 +999,32 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
         vec2(max(1.0'f, scale * 2), max(1.0'f, scale * 2)),
         color
       )
-  for task in bot.sim.tasks:
-    let center = task.taskCenter()
+  for i in 0 ..< bot.sim.tasks.len:
+    let
+      task = bot.sim.tasks[i]
+      center = task.taskCenter()
+      state =
+        if bot.taskStates.len == bot.sim.tasks.len:
+          bot.taskStates[i]
+        else:
+          TaskNotDoing
     sk.drawRect(
       vec2(x + center.x.float32 * scale - 3, y + center.y.float32 * scale - 3),
       vec2(7, 7),
-      ViewerTask
+      taskStateColor(state)
     )
-  if bot.taskGuesses.len == bot.sim.tasks.len:
+  if bot.taskStates.len == bot.sim.tasks.len:
     for i in 0 ..< bot.sim.tasks.len:
-      if not bot.taskGuesses[i]:
+      if bot.taskStates[i] notin {TaskMaybe, TaskMandatory}:
         continue
-      let center = bot.sim.tasks[i].taskCenter()
-      let pos = vec2(
-        x + center.x.float32 * scale - 5,
-        y + center.y.float32 * scale - 5
-      )
-      sk.drawOutline(pos, vec2(11, 11), ViewerTaskGuess, 2)
+      let
+        center = bot.sim.tasks[i].taskCenter()
+        color = taskStateColor(bot.taskStates[i])
+        pos = vec2(
+          x + center.x.float32 * scale - 5,
+          y + center.y.float32 * scale - 5
+        )
+      sk.drawOutline(pos, vec2(11, 11), color, 2)
       if bot.localized:
         sk.drawLine(
           vec2(
@@ -931,7 +1129,7 @@ proc pumpViewer(
     )
     mapSize = vec2(MapWidth.float32 * ViewerMapScale, MapHeight.float32 * ViewerMapScale)
     infoPos = vec2(ViewerMargin, framePos.y + ScreenHeight.float32 * ViewerFrameScale + 28)
-    infoSize = vec2(frameSize.x.float32 - ViewerMargin * 2, 220)
+    infoSize = vec2(frameSize.x.float32 - ViewerMargin * 2, 300)
     sk = viewer.silky
   sk.beginUI(viewer.window, frameSize)
   sk.clearScreen(ViewerBackground)
@@ -947,10 +1145,27 @@ proc pumpViewer(
   sk.drawRect(infoPos - vec2(8, 8), infoSize + vec2(16, 16), ViewerPanel)
   sk.drawFrameView(bot, framePos.x, framePos.y)
   sk.drawMapView(bot, mapPos.x, mapPos.y)
+  let goalText =
+    if bot.hasGoal:
+      let ready =
+        bot.goalIndex >= 0 and
+        bot.goalIndex < bot.sim.tasks.len and
+        bot.taskReady(bot.sim.tasks[bot.goalIndex])
+      "goal: " & bot.goalName &
+        " dist=" & $heuristic(
+          bot.playerWorldX(),
+          bot.playerWorldY(),
+          bot.goalX,
+          bot.goalY
+        ) &
+        " ready=" & $ready & "\n"
+    else:
+      "goal: none\n"
   let infoText =
     "status: " & (if connected: "connected" else: "reconnecting") & "\n" &
     "url: " & url & "\n" &
     "client tick: " & $bot.frameTick & "\n" &
+    "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
     "timing center: " & $bot.centerMicros & "us (" &
       $(bot.centerMicros div 1000) & "ms)\n" &
     "timing A*: " & $bot.astarMicros & "us (" &
@@ -959,11 +1174,14 @@ proc pumpViewer(
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
     "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &
-    "radar dots: " & $bot.radarDots.len & " task guesses=" &
-      $bot.taskGuessCount() & "\n" &
+    "radar dots: " & $bot.radarDots.len &
+      " task icons=" & $bot.visibleTaskIcons.len & "\n" &
+    "tasks maybe=" & $bot.taskStateCount(TaskMaybe) &
+      " mandatory=" & $bot.taskStateCount(TaskMandatory) &
+      " completed=" & $bot.taskStateCount(TaskCompleted) & "\n" &
+    goalText &
     "intent: " & bot.intent & "\n" &
     "path pixels: " & $bot.path.len & "\n" &
-    "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
     "desired: " & inputMaskSummary(bot.desiredMask) & "\n" &
     "controller: " & inputMaskSummary(bot.controllerMask) & "\n" &
     "stuck: " & $bot.stuckFrames & " jiggle=" & $bot.jiggleTicks & "\n" &
