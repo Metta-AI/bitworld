@@ -362,7 +362,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, MapWidth, MapHeight)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, 128, 16)
+  result.addViewport(TopLeftLayerId, 160, 24)
   result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
   result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
   result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)

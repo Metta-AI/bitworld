@@ -5,7 +5,7 @@ import
 
 type
   AsepriteError* = object of ValueError
-    ## Raised when an Aseprite file cannot be decoded.
+    ## Raised when an aseprite file cannot be decoded.
 
   AsepriteColorDepth* = enum
     DepthIndexed = 8
@@ -68,13 +68,13 @@ const
   FrameHeaderBytes = 16
 
 proc fail(message: string) {.raises: [AsepriteError].} =
-  ## Raises a formatted Aseprite decoder error.
+  ## Raises a formatted aseprite decoder error.
   raise newException(AsepriteError, message)
 
 proc ensure(data: string, pos, bytes: int) {.raises: [AsepriteError].} =
   ## Ensures that a read can consume bytes from the buffer.
   if bytes < 0 or pos < 0 or pos + bytes > data.len:
-    fail("Invalid Aseprite data, unexpected end of file")
+    fail("Invalid aseprite data, unexpected end of file")
 
 proc readU8(data: string, pos: var int): int {.raises: [AsepriteError].} =
   ## Reads one unsigned byte.
@@ -107,7 +107,7 @@ proc readU32(data: string, pos: var int): int {.raises: [AsepriteError].} =
   pos += 4
 
 proc readString(data: string, pos: var int): string {.raises: [AsepriteError].} =
-  ## Reads an Aseprite length-prefixed UTF-8 string.
+  ## Reads an aseprite length-prefixed UTF-8 string.
   let len = data.readU16(pos)
   data.ensure(pos, len)
   result = data[pos ..< pos + len]
@@ -116,7 +116,7 @@ proc readString(data: string, pos: var int): string {.raises: [AsepriteError].} 
 proc skipTo(pos: var int, target: int) {.raises: [AsepriteError].} =
   ## Moves the stream position to an already validated target.
   if target < pos:
-    fail("Invalid Aseprite data, chunk reader passed its boundary")
+    fail("Invalid aseprite data, chunk reader passed its boundary")
   pos = target
 
 proc defaultPalette(): seq[ColorRGBA] {.raises: [].} =
@@ -127,17 +127,17 @@ proc defaultPalette(): seq[ColorRGBA] {.raises: [].} =
 
 proc parseHeader(data: string, pos: var int): AsepriteHeader
     {.raises: [AsepriteError].} =
-  ## Reads the fixed 128-byte Aseprite header.
+  ## Reads the fixed 128-byte aseprite header.
   data.ensure(pos, HeaderBytes)
   let start = pos
   result.fileSize = data.readU32(pos)
   if data.readU16(pos) != HeaderMagic:
-    fail("Invalid Aseprite magic number")
+    fail("Invalid aseprite magic number")
   result.frameCount = data.readU16(pos)
   result.width = data.readU16(pos)
   result.height = data.readU16(pos)
   if result.width <= 0 or result.height <= 0:
-    fail("Invalid Aseprite dimensions")
+    fail("Invalid aseprite dimensions")
   let depth = data.readU16(pos)
   case depth
   of 8:
@@ -147,7 +147,7 @@ proc parseHeader(data: string, pos: var int): AsepriteHeader
   of 32:
     result.colorDepth = DepthRgba
   else:
-    fail("Unsupported Aseprite color depth: " & $depth)
+    fail("Unsupported aseprite color depth: " & $depth)
   result.flags = data.readU32(pos)
   result.speed = data.readU16(pos)
   discard data.readU32(pos)
@@ -196,7 +196,7 @@ proc parseLayer(
   of 2:
     result.kind = LayerTilemap
   else:
-    fail("Unsupported Aseprite layer type: " & $kind)
+    fail("Unsupported aseprite layer type: " & $kind)
   result.childLevel = data.readU16(pos)
   discard data.readU16(pos)
   discard data.readU16(pos)
@@ -233,7 +233,7 @@ proc parseCel(
   of 3:
     result.kind = CelTilemap
   else:
-    fail("Unsupported Aseprite cel type: " & $kind)
+    fail("Unsupported aseprite cel type: " & $kind)
   result.zIndex = data.readI16(pos)
   pos += 5
 
@@ -258,11 +258,11 @@ proc parseCel(
       for i in 0 ..< raw.len:
         result.data[i] = raw[i].uint8
     except CatchableError:
-      fail("Invalid Aseprite compressed cel data")
+      fail("Invalid aseprite compressed cel data")
     let expected =
       result.width * result.height * bytesPerPixel(header.colorDepth)
     if result.data.len != expected:
-      fail("Invalid Aseprite compressed cel size")
+      fail("Invalid aseprite compressed cel size")
   of CelTilemap:
     result.width = data.readU16(pos)
     result.height = data.readU16(pos)
@@ -277,14 +277,14 @@ proc parseCel(
   pos.skipTo(chunkEnd)
 
 proc parseOldPalette(
-  sprite: var AsepriteSprite,
+  aseprite: var AsepriteSprite,
   data: string,
   pos: var int,
   chunkEnd: int,
   scale63: bool
 ) {.raises: [AsepriteError].} =
   ## Reads one of the legacy palette chunks.
-  if sprite.hasNewPalette:
+  if aseprite.hasNewPalette:
     pos.skipTo(chunkEnd)
     return
   var index = 0
@@ -302,26 +302,26 @@ proc parseOldPalette(
         rr = if scale63: (r * 255 div 63).uint8 else: r.uint8
         gg = if scale63: (g * 255 div 63).uint8 else: g.uint8
         bb = if scale63: (b * 255 div 63).uint8 else: b.uint8
-      if index + j >= sprite.palette.len:
-        sprite.palette.setLen(index + j + 1)
-      sprite.palette[index + j] = rgba(rr, gg, bb, 255)
+      if index + j >= aseprite.palette.len:
+        aseprite.palette.setLen(index + j + 1)
+      aseprite.palette[index + j] = rgba(rr, gg, bb, 255)
     index += count
   pos.skipTo(chunkEnd)
 
 proc parsePalette(
-  sprite: var AsepriteSprite,
+  aseprite: var AsepriteSprite,
   data: string,
   pos: var int,
   chunkEnd: int
 ) {.raises: [AsepriteError].} =
   ## Reads the current palette chunk.
-  sprite.hasNewPalette = true
+  aseprite.hasNewPalette = true
   let
     size = data.readU32(pos)
     first = data.readU32(pos)
     last = data.readU32(pos)
   pos += 8
-  sprite.palette.setLen(size)
+  aseprite.palette.setLen(size)
   for index in first .. last:
     let flags = data.readU16(pos)
     let
@@ -329,15 +329,15 @@ proc parsePalette(
       g = data.readU8(pos).uint8
       b = data.readU8(pos).uint8
       a = data.readU8(pos).uint8
-    if index >= sprite.palette.len:
-      sprite.palette.setLen(index + 1)
-    sprite.palette[index] = rgba(r, g, b, a)
+    if index >= aseprite.palette.len:
+      aseprite.palette.setLen(index + 1)
+    aseprite.palette[index] = rgba(r, g, b, a)
     if (flags and 1) != 0:
       discard data.readString(pos)
   pos.skipTo(chunkEnd)
 
 proc parseFrame(
-  sprite: var AsepriteSprite,
+  aseprite: var AsepriteSprite,
   data: string,
   pos: var int
 ): AsepriteFrame {.raises: [AsepriteError].} =
@@ -347,10 +347,10 @@ proc parseFrame(
     frameBytes = data.readU32(pos)
     frameEnd = frameStart + frameBytes
   if frameBytes < FrameHeaderBytes:
-    fail("Invalid Aseprite frame size")
+    fail("Invalid aseprite frame size")
   data.ensure(frameStart, frameBytes)
   if data.readU16(pos) != FrameMagic:
-    fail("Invalid Aseprite frame magic number")
+    fail("Invalid aseprite frame magic number")
   let oldChunkCount = data.readU16(pos)
   result.duration = data.readU16(pos)
   pos += 2
@@ -368,26 +368,26 @@ proc parseFrame(
       chunkType = data.readU16(pos)
       chunkEnd = chunkStart + chunkSize
     if chunkSize < 6:
-      fail("Invalid Aseprite chunk size")
+      fail("Invalid aseprite chunk size")
     data.ensure(chunkStart, chunkSize)
     case chunkType
     of ChunkLayer:
-      sprite.layers.add(parseLayer(data, pos, chunkEnd, sprite.header))
+      aseprite.layers.add(parseLayer(data, pos, chunkEnd, aseprite.header))
     of ChunkCel:
-      result.cels.add(parseCel(data, pos, chunkEnd, sprite.header))
+      result.cels.add(parseCel(data, pos, chunkEnd, aseprite.header))
     of ChunkOldPaletteShort:
-      parseOldPalette(sprite, data, pos, chunkEnd, false)
+      parseOldPalette(aseprite, data, pos, chunkEnd, false)
     of ChunkOldPaletteLong:
-      parseOldPalette(sprite, data, pos, chunkEnd, true)
+      parseOldPalette(aseprite, data, pos, chunkEnd, true)
     of ChunkPalette:
-      parsePalette(sprite, data, pos, chunkEnd)
+      parsePalette(aseprite, data, pos, chunkEnd)
     else:
       pos.skipTo(chunkEnd)
 
   pos.skipTo(frameEnd)
 
 proc decodeAseprite*(data: string): AsepriteSprite {.raises: [AsepriteError].} =
-  ## Decodes an Aseprite file from memory.
+  ## Decodes an aseprite file from memory.
   var pos = 0
   result.header = parseHeader(data, pos)
   result.palette = defaultPalette()
@@ -397,19 +397,19 @@ proc decodeAseprite*(data: string): AsepriteSprite {.raises: [AsepriteError].} =
 
 proc readAseprite*(path: string): AsepriteSprite
     {.raises: [AsepriteError, IOError].} =
-  ## Reads and decodes an Aseprite file from disk.
+  ## Reads and decodes an aseprite file from disk.
   if not fileExists(path):
-    raise newException(IOError, "Missing Aseprite asset: " & path)
+    raise newException(IOError, "Missing aseprite asset: " & path)
   decodeAseprite(readFile(path))
 
 proc pixelAt(
-  sprite: AsepriteSprite,
+  aseprite: AsepriteSprite,
   cel: AsepriteCel,
   i: int,
   transparentIndex: bool
 ): ColorRGBA {.raises: [].} =
   ## Converts one cel pixel to straight RGBA.
-  case sprite.header.colorDepth
+  case aseprite.header.colorDepth
   of DepthRgba:
     let base = i * 4
     rgba(
@@ -423,10 +423,10 @@ proc pixelAt(
     rgba(cel.data[base], cel.data[base], cel.data[base], cel.data[base + 1])
   of DepthIndexed:
     let index = cel.data[i].int
-    if transparentIndex and index == sprite.header.transparentIndex:
+    if transparentIndex and index == aseprite.header.transparentIndex:
       rgba(0, 0, 0, 0)
-    elif index < sprite.palette.len:
-      sprite.palette[index]
+    elif index < aseprite.palette.len:
+      aseprite.palette[index]
     else:
       rgba(0, 0, 0, 0)
 
@@ -445,7 +445,7 @@ proc blendPixel(dst, src: ColorRGBA, opacity: int): ColorRGBA {.raises: [].} =
   rgba(r.uint8, g.uint8, b.uint8, outA.uint8)
 
 proc sourceCel(
-  sprite: AsepriteSprite,
+  aseprite: AsepriteSprite,
   frameIndex: int,
   cel: AsepriteCel
 ): AsepriteCel {.raises: [].} =
@@ -453,9 +453,9 @@ proc sourceCel(
   discard frameIndex
   if cel.kind != CelLinked:
     return cel
-  if cel.linkedFrame < 0 or cel.linkedFrame >= sprite.frames.len:
+  if cel.linkedFrame < 0 or cel.linkedFrame >= aseprite.frames.len:
     return cel
-  for source in sprite.frames[cel.linkedFrame].cels:
+  for source in aseprite.frames[cel.linkedFrame].cels:
     if source.layerIndex == cel.layerIndex and source.kind != CelLinked:
       result = source
       result.x = cel.x
@@ -467,15 +467,15 @@ proc sourceCel(
 
 proc drawCel(
   image: Image,
-  sprite: AsepriteSprite,
+  aseprite: AsepriteSprite,
   cel: AsepriteCel
 ) {.raises: [].} =
   ## Draws a cel onto a rendered frame image.
   if cel.kind notin {CelRaw, CelCompressed}:
     return
-  if cel.layerIndex < 0 or cel.layerIndex >= sprite.layers.len:
+  if cel.layerIndex < 0 or cel.layerIndex >= aseprite.layers.len:
     return
-  let layer = sprite.layers[cel.layerIndex]
+  let layer = aseprite.layers[cel.layerIndex]
   if layer.kind != LayerNormal or not layer.visible:
     return
   let opacity = cel.opacity * layer.opacity div 255
@@ -490,35 +490,35 @@ proc drawCel(
       let dstX = cel.x + x
       if dstX < 0 or dstX >= image.width:
         continue
-      let src = sprite.pixelAt(cel, y * cel.width + x, not isBackground)
+      let src = aseprite.pixelAt(cel, y * cel.width + x, not isBackground)
       if src.a == 0:
         continue
       image[dstX, dstY] = blendPixel(image[dstX, dstY], src, opacity)
 
-proc renderFrame*(sprite: AsepriteSprite, frameIndex = 0): Image
+proc renderFrame*(aseprite: AsepriteSprite, frameIndex = 0): Image
     {.raises: [AsepriteError].} =
-  ## Renders one Aseprite frame with normal layer alpha blending.
-  if frameIndex < 0 or frameIndex >= sprite.frames.len:
-    fail("Aseprite frame index out of range: " & $frameIndex)
+  ## Renders one aseprite frame with normal layer alpha blending.
+  if frameIndex < 0 or frameIndex >= aseprite.frames.len:
+    fail("aseprite frame index out of range: " & $frameIndex)
   try:
-    result = newImage(sprite.header.width, sprite.header.height)
+    result = newImage(aseprite.header.width, aseprite.header.height)
   except PixieError:
-    fail("Invalid Aseprite dimensions")
+    fail("Invalid aseprite dimensions")
   result.fill(rgba(0, 0, 0, 0))
-  var cels = sprite.frames[frameIndex].cels
+  var cels = aseprite.frames[frameIndex].cels
   cels.sort(
     proc(a, b: AsepriteCel): int =
       cmp(a.layerIndex + a.zIndex, b.layerIndex + b.zIndex)
   )
   for cel in cels:
-    result.drawCel(sprite, sprite.sourceCel(frameIndex, cel))
+    result.drawCel(aseprite, aseprite.sourceCel(frameIndex, cel))
 
 proc readAsepriteImage*(path: string, frameIndex = 0): Image
     {.raises: [AsepriteError, IOError].} =
-  ## Reads an Aseprite file and renders one frame as a Pixie image.
+  ## Reads an aseprite file and renders one frame as a Pixie image.
   readAseprite(path).renderFrame(frameIndex)
 
 proc readAsepriteSprite*(path: string, frameIndex = 0): Sprite
     {.raises: [AsepriteError, IOError].} =
-  ## Reads an Aseprite file and renders one frame as a palette-indexed sprite.
+  ## Reads an aseprite file and renders one frame as a palette-indexed sprite.
   spriteFromImage(readAsepriteImage(path, frameIndex))
