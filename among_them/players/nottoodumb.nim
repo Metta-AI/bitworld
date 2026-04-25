@@ -103,6 +103,7 @@ type
     cameraLock: CameraLock
     cameraScore: int
     localized: bool
+    interstitial: bool
     haveMotionSample: bool
     previousPlayerWorldX: int
     previousPlayerWorldY: int
@@ -272,6 +273,18 @@ proc setCameraLock(
 
 proc scanTaskIcons(bot: var Bot)
 
+proc isInterstitialScreen(bot: Bot): bool =
+  ## Returns true when a black modal screen hides the map.
+  let
+    topLeft = bot.unpacked[0]
+    topRight = bot.unpacked[ScreenWidth - 1]
+    bottomLeft = bot.unpacked[(ScreenHeight - 1) * ScreenWidth]
+    bottomRight = bot.unpacked[ScreenHeight * ScreenWidth - 1]
+  topLeft == SpaceColor and
+    topRight == SpaceColor and
+    bottomLeft == SpaceColor and
+    bottomRight == SpaceColor
+
 proc locateNearFrame(bot: var Bot): bool =
   ## Tracks camera by scanning near the previous accepted camera.
   if not bot.localized:
@@ -339,6 +352,9 @@ proc updateLocation(bot: var Bot) =
   ## Updates the camera and player world estimate from the frame.
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
+  bot.interstitial = bot.isInterstitialScreen()
+  if bot.interstitial:
+    return
   bot.scanTaskIcons()
   if bot.locateNearFrame():
     return
@@ -937,6 +953,16 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.updateLocation()
   bot.centerMicros = int((getMonoTime() - centerStart).inMicroseconds)
   bot.astarMicros = 0
+  if bot.interstitial:
+    bot.updateMotionState()
+    bot.hasGoal = false
+    bot.hasPathStep = false
+    bot.path.setLen(0)
+    bot.desiredMask = 0
+    bot.controllerMask = 0
+    bot.intent = "interstitial screen mode"
+    bot.thought("interstitial screen mode")
+    return 0
   bot.updateMotionState()
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
