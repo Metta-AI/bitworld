@@ -93,6 +93,13 @@ const
     "dark navy",
     "black"
   ]
+  VoteCellW = 16
+  VoteCellH = 17
+  VoteStartY = 2
+  VoteSkipW = 28
+  VoteUnknown = -1
+  VoteSkip = -2
+  VoteBlackMarker = 12'u8
 
 type
   TileKnowledge = enum
@@ -152,6 +159,10 @@ type
     x: int
     y: int
     flipH: bool
+
+  VoteSlot = object
+    colorIndex: int
+    alive: bool
 
   Room = object
     name: string
@@ -220,6 +231,13 @@ type
     lastSeenTicks: array[PlayerColorCount, int]
     selfColorIndex: int
     knownImposters: array[PlayerColorCount, bool]
+    voting: bool
+    votePlayerCount: int
+    voteCursor: int
+    voteSelfSlot: int
+    voteTarget: int
+    voteSlots: array[MaxPlayers, VoteSlot]
+    voteChoices: array[PlayerColorCount, int]
     intent: string
     goalX: int
     goalY: int
@@ -552,6 +570,8 @@ proc updateRole(bot: var Bot)
 
 proc updateSelfColor(bot: var Bot)
 
+proc parseVotingScreen(bot: var Bot): bool
+
 proc asciiChar(index: int): char =
   ## Returns the character represented by one ASCII sprite index.
   char(index + ord(' '))
@@ -665,6 +685,19 @@ proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
   text == "CREW WINS" or text == "IMPS WIN"
 
+proc clearVotingState(bot: var Bot) =
+  ## Clears the parsed voting screen state.
+  bot.voting = false
+  bot.votePlayerCount = 0
+  bot.voteCursor = VoteUnknown
+  bot.voteSelfSlot = VoteUnknown
+  bot.voteTarget = VoteUnknown
+  for i in 0 ..< bot.voteSlots.len:
+    bot.voteSlots[i].colorIndex = VoteUnknown
+    bot.voteSlots[i].alive = false
+  for i in 0 ..< bot.voteChoices.len:
+    bot.voteChoices[i] = VoteUnknown
+
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
   bot.localized = false
@@ -695,6 +728,7 @@ proc resetRoundState(bot: var Bot) =
   bot.lastBodyReportX = low(int)
   bot.lastBodyReportY = low(int)
   bot.selfColorIndex = -1
+  bot.clearVotingState()
   for i in 0 ..< bot.lastSeenTicks.len:
     bot.lastSeenTicks[i] = 0
   for i in 0 ..< bot.knownImposters.len:
@@ -894,11 +928,13 @@ proc updateLocation(bot: var Bot) =
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
-    else:
+    elif not bot.parseVotingScreen():
       bot.rememberRoleReveal()
     return
   bot.interstitialText = ""
   bot.lastGameOverText = ""
+  if bot.voting:
+    bot.clearVotingState()
   if wasInterstitial:
     bot.reseedLocalizationAtHome()
   bot.updateRole()
@@ -1303,6 +1339,221 @@ proc matchesActorSprite(
     stableMatched >= minStablePixels and
     tintPixels >= minTintPixels and
     tintMatched >= minTintPixels
+
+proc actorColorIndex(
+  bot: Bot,
+  sprite: Sprite,
+  x,
+  y: int,
+  flipH: bool
+): int =
+  ## Returns the most likely tint color for an actor sprite.
+  var counts: array[PlayerColorCount, int]
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let srcX =
+        if flipH:
+          sprite.width - 1 - sx
+        else:
+          sx
+      let color = sprite.pixels[sprite.spriteIndex(srcX, sy)]
+      if color != TintColor:
+        continue
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        continue
+      let index = playerColorIndex(bot.unpacked[fy * ScreenWidth + fx])
+      if index >= 0:
+        inc counts[index]
+  var bestCount = 0
+  result = VoteUnknown
+  for i, count in counts:
+    if count > bestCount:
+      bestCount = count
+      result = i
+
+proc voteGridLayout(
+  count: int
+): tuple[cols: int, rows: int, startX: int, skipX: int, skipY: int] =
+  ## Returns the fixed voting grid geometry for a player count.
+  result.cols = min(count, 8)
+  result.rows = (count + result.cols - 1) div result.cols
+  let totalW = result.cols * VoteCellW
+  result.startX = (ScreenWidth - totalW) div 2
+  result.skipX = (ScreenWidth - VoteSkipW) div 2
+  result.skipY = VoteStartY + result.rows * VoteCellH + 1
+
+proc voteCellOrigin(
+  count,
+  index: int
+): tuple[x: int, y: int] =
+  ## Returns the top-left voting cell origin for a player slot.
+  let layout = voteGridLayout(count)
+  (
+    layout.startX + (index mod layout.cols) * VoteCellW,
+    VoteStartY + (index div layout.cols) * VoteCellH
+  )
+
+proc voteSkipTextMatches(bot: Bot, skipX, skipY: int): bool =
+  ## Returns true when the voting skip label is visible.
+  for y in max(0, skipY - 1) .. min(ScreenHeight - 6, skipY + 1):
+    let
+      minX = max(0, skipX - 2)
+      maxX = min(ScreenWidth - asciiTextWidth("SKIP"), skipX + 2)
+    for x in minX .. maxX:
+      if bot.asciiTextMatches("SKIP", x, y):
+        return true
+
+proc parseVoteSlot(
+  bot: Bot,
+  count,
+  index: int
+): VoteSlot =
+  ## Parses one voting grid slot.
+  result.colorIndex = VoteUnknown
+  let
+    cell = voteCellOrigin(count, index)
+    spriteX = cell.x + (VoteCellW - bot.playerSprite.width) div 2
+    spriteY = cell.y + 1
+  if bot.matchesCrewmate(spriteX, spriteY, false):
+    result.colorIndex = bot.crewmateColorIndex(spriteX, spriteY, false)
+    result.alive = true
+  elif bot.matchesActorSprite(
+    bot.bodySprite,
+    spriteX,
+    spriteY,
+    false,
+    BodyMaxMisses,
+    BodyMinStablePixels,
+    BodyMinTintPixels
+  ):
+    result.colorIndex = bot.actorColorIndex(
+      bot.bodySprite,
+      spriteX,
+      spriteY,
+      false
+    )
+    result.alive = false
+
+proc voteCellSelected(bot: Bot, count, index: int): bool =
+  ## Returns true when the local cursor outlines one player cell.
+  let cell = voteCellOrigin(count, index)
+  var hits = 0
+  for bx in 0 ..< VoteCellW:
+    if bot.unpacked[(cell.y - 1) * ScreenWidth + cell.x + bx] == 2'u8:
+      inc hits
+    if bot.unpacked[(cell.y + VoteCellH - 2) * ScreenWidth + cell.x + bx] ==
+        2'u8:
+      inc hits
+  hits >= VoteCellW
+
+proc voteSkipSelected(bot: Bot, skipX, skipY: int): bool =
+  ## Returns true when the local cursor outlines the skip option.
+  var hits = 0
+  for bx in 0 ..< VoteSkipW:
+    if bot.unpacked[(skipY - 1) * ScreenWidth + skipX + bx] == 2'u8:
+      inc hits
+    if bot.unpacked[(skipY + 6) * ScreenWidth + skipX + bx] == 2'u8:
+      inc hits
+  hits >= VoteSkipW
+
+proc voteSelfMarkerPresent(
+  bot: Bot,
+  count,
+  index: int,
+  colorIndex: int
+): bool =
+  ## Returns true when a voting slot has the local-player marker.
+  if colorIndex < 0 or colorIndex >= PlayerColors.len:
+    return false
+  let
+    cell = voteCellOrigin(count, index)
+    markerX = cell.x + VoteCellW div 2 - 1
+    markerY = cell.y - 2
+    a = bot.unpacked[markerY * ScreenWidth + markerX]
+    b = bot.unpacked[markerY * ScreenWidth + markerX + 1]
+    color = PlayerColors[colorIndex]
+  if color == SpaceColor:
+    a == 2'u8 and b == VoteBlackMarker
+  else:
+    a == color and b == color
+
+proc voteDotColorIndex(bot: Bot, x, y: int): int =
+  ## Returns the voter color index for one vote dot position.
+  if x < 0 or y < 0 or x >= ScreenWidth or y >= ScreenHeight:
+    return VoteUnknown
+  let color = bot.unpacked[y * ScreenWidth + x]
+  if color == 2'u8 and x > 0 and
+      bot.unpacked[y * ScreenWidth + x - 1] == VoteBlackMarker:
+    return playerColorIndex(SpaceColor)
+  if color == SpaceColor:
+    return VoteUnknown
+  playerColorIndex(color)
+
+proc parseVoteDotsForTarget(
+  bot: var Bot,
+  target,
+  dotX,
+  dotY: int
+) =
+  ## Parses the compact voter dots for one voting target.
+  for row in 0 ..< MaxPlayers:
+    let colorIndex = bot.voteDotColorIndex(
+      dotX + (row mod 8) * 2,
+      dotY + (row div 8)
+    )
+    if colorIndex >= 0 and colorIndex < bot.voteChoices.len:
+      bot.voteChoices[colorIndex] = target
+
+proc parseVotingCandidate(bot: var Bot, count: int): bool =
+  ## Parses the voting screen for one possible player count.
+  let layout = voteGridLayout(count)
+  if not bot.voteSkipTextMatches(layout.skipX, layout.skipY):
+    return false
+  var slots: array[MaxPlayers, VoteSlot]
+  for i in 0 ..< count:
+    slots[i] = bot.parseVoteSlot(count, i)
+    if slots[i].colorIndex == VoteUnknown:
+      return false
+    if slots[i].colorIndex != i:
+      return false
+
+  bot.clearVotingState()
+  bot.voting = true
+  bot.votePlayerCount = count
+  bot.voteCursor = VoteUnknown
+  bot.voteSelfSlot = VoteUnknown
+  for i in 0 ..< count:
+    bot.voteSlots[i] = slots[i]
+    if slots[i].alive and bot.voteCellSelected(count, i):
+      bot.voteCursor = i
+    if bot.voteSelfMarkerPresent(count, i, slots[i].colorIndex):
+      bot.voteSelfSlot = i
+      bot.selfColorIndex = slots[i].colorIndex
+    let cell = voteCellOrigin(count, i)
+    bot.parseVoteDotsForTarget(
+      i,
+      cell.x + 1,
+      cell.y + bot.playerSprite.height + 2
+    )
+  if bot.voteSkipSelected(layout.skipX, layout.skipY):
+    bot.voteCursor = count
+  bot.parseVoteDotsForTarget(
+    VoteSkip,
+    layout.skipX + VoteSkipW + 2,
+    layout.skipY
+  )
+  true
+
+proc parseVotingScreen(bot: var Bot): bool =
+  ## Parses the voting interstitial if it is currently visible.
+  bot.clearVotingState()
+  for count in countdown(MaxPlayers, 1):
+    if bot.parseVotingCandidate(count):
+      return true
+  false
 
 proc addBodyMatch(matches: var seq[BodyMatch], x, y: int) =
   ## Adds one body match unless a nearby match already exists.
@@ -2043,7 +2294,9 @@ proc sameBody(ax, ay, bx, by: int): bool =
     return false
   heuristic(ax, ay, bx, by) <= BodySearchRadius + 4
 
-proc suspectedColor(bot: Bot): tuple[found: bool, name: string, tick: int] =
+proc suspectedColor(
+  bot: Bot
+): tuple[found: bool, name: string, tick: int, colorIndex: int] =
   ## Returns the most recently seen crewmate color.
   var bestTick = 0
   for i, tick in bot.lastSeenTicks:
@@ -2053,7 +2306,7 @@ proc suspectedColor(bot: Bot): tuple[found: bool, name: string, tick: int] =
       continue
     if tick > bestTick and i < PlayerColorNames.len:
       bestTick = tick
-      result = (true, playerColorName(i), tick)
+      result = (true, playerColorName(i), tick, i)
 
 proc suspectSummary(bot: Bot): string =
   ## Returns a short debug summary for the current suspect.
@@ -2090,6 +2343,129 @@ proc queueBodyReport(bot: var Bot, x, y: int) =
   bot.lastBodyReportX = x
   bot.lastBodyReportY = y
   bot.pendingChat = bot.bodyRoomMessage(x, y)
+
+proc voteSlotForColor(bot: Bot, colorIndex: int): int =
+  ## Returns the voting slot index for one player color.
+  for i in 0 ..< bot.votePlayerCount:
+    if bot.voteSlots[i].colorIndex == colorIndex:
+      return i
+  VoteUnknown
+
+proc voteTargetName(bot: Bot, target: int): string =
+  ## Returns a short display name for a voting target.
+  if target == VoteSkip:
+    return "skip"
+  if target >= 0 and target < bot.votePlayerCount:
+    return playerColorName(bot.voteSlots[target].colorIndex)
+  "unknown"
+
+proc voteSummary(bot: Bot): string =
+  ## Returns a compact summary of parsed votes.
+  for i, choice in bot.voteChoices:
+    if choice == VoteUnknown:
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(playerColorName(i))
+    result.add("->")
+    result.add(bot.voteTargetName(choice))
+  if result.len == 0:
+    result = "none"
+
+proc selfVoteChoice(bot: Bot): int =
+  ## Returns the parsed vote choice for the local player.
+  if bot.selfColorIndex >= 0 and bot.selfColorIndex < bot.voteChoices.len:
+    return bot.voteChoices[bot.selfColorIndex]
+  if bot.voteSelfSlot >= 0 and bot.voteSelfSlot < bot.votePlayerCount:
+    let colorIndex = bot.voteSlots[bot.voteSelfSlot].colorIndex
+    if colorIndex >= 0 and colorIndex < bot.voteChoices.len:
+      return bot.voteChoices[colorIndex]
+  VoteUnknown
+
+proc nextVoteSelectable(bot: Bot, cursor, direction: int): int =
+  ## Returns the next selectable voting cursor slot.
+  let total = bot.votePlayerCount + 1
+  if total <= 0:
+    return VoteUnknown
+  var cur = cursor
+  for step in 1 .. total:
+    cur = (cur + direction + total) mod total
+    if cur == bot.votePlayerCount:
+      return cur
+    if cur >= 0 and cur < bot.votePlayerCount and bot.voteSlots[cur].alive:
+      return cur
+  VoteUnknown
+
+proc voteStepsTo(bot: Bot, target, direction: int): int =
+  ## Counts cursor steps in one direction to a target.
+  if bot.voteCursor == VoteUnknown:
+    return high(int)
+  var cur = bot.voteCursor
+  for step in 0 .. bot.votePlayerCount + 1:
+    if cur == target:
+      return step
+    cur = bot.nextVoteSelectable(cur, direction)
+    if cur == VoteUnknown:
+      return high(int)
+  high(int)
+
+proc voteMoveDirection(bot: Bot, target: int): int =
+  ## Chooses the shortest voting cursor direction toward a target.
+  let
+    leftSteps = bot.voteStepsTo(target, -1)
+    rightSteps = bot.voteStepsTo(target, 1)
+  if leftSteps < rightSteps:
+    -1
+  else:
+    1
+
+proc desiredVotingTarget(bot: Bot): int =
+  ## Chooses the voting target from current suspicion or skip.
+  let suspect = bot.suspectedColor()
+  if suspect.found:
+    let slot = bot.voteSlotForColor(suspect.colorIndex)
+    if slot >= 0 and slot != bot.voteSelfSlot and bot.voteSlots[slot].alive:
+      return slot
+  bot.votePlayerCount
+
+proc decideVotingMask(bot: var Bot): uint8 =
+  ## Chooses voting-screen input from parsed vote state.
+  bot.hasGoal = false
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.voteTarget = bot.desiredVotingTarget()
+  let ownVote = bot.selfVoteChoice()
+  if ownVote != VoteUnknown:
+    bot.desiredMask = 0
+    bot.controllerMask = 0
+    bot.intent = "voted " & bot.voteTargetName(ownVote)
+    bot.thought(bot.intent)
+    return 0
+  if bot.voteCursor != bot.voteTarget:
+    let direction = bot.voteMoveDirection(bot.voteTarget)
+    let mask =
+      if direction < 0:
+        ButtonLeft
+      else:
+        ButtonRight
+    bot.desiredMask =
+      if bot.lastMask == mask:
+        0
+      else:
+        mask
+    bot.controllerMask = bot.desiredMask
+    bot.intent = "voting cursor to " & bot.voteTargetName(bot.voteTarget)
+    bot.thought(bot.intent)
+    return bot.desiredMask
+  bot.desiredMask =
+    if bot.lastMask == ButtonA:
+      0
+    else:
+      ButtonA
+  bot.controllerMask = bot.desiredMask
+  bot.intent = "voting for " & bot.voteTargetName(bot.voteTarget)
+  bot.thought(bot.intent)
+  bot.desiredMask
 
 proc inReportRange(bot: Bot, targetX, targetY: int): bool =
   ## Returns true when the target point is in report range.
@@ -2484,6 +2860,8 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.hasGoal = false
     bot.hasPathStep = false
     bot.path.setLen(0)
+    if bot.voting:
+      return bot.decideVotingMask()
     bot.desiredMask = 0
     bot.controllerMask = 0
     bot.intent =
@@ -2618,6 +2996,7 @@ proc initBot(): Bot =
   result.cameraLock = NoLock
   result.role = RoleCrewmate
   result.selfColorIndex = -1
+  result.clearVotingState()
   result.intent = "waiting for first frame"
 
 proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
@@ -3038,6 +3417,11 @@ proc pumpViewer(
       " kill ready=" & $bot.imposterKillReady &
       " imp goal=" & $bot.imposterGoalIndex & "\n" &
     "known imps: " & bot.knownImposterSummary() & "\n" &
+    "voting: " & $bot.voting &
+      " count=" & $bot.votePlayerCount &
+      " cursor=" & bot.voteTargetName(bot.voteCursor) &
+      " target=" & bot.voteTargetName(bot.voteTarget) & "\n" &
+    "votes: " & bot.voteSummary() & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
     "home: " & (

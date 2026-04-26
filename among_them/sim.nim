@@ -1489,6 +1489,23 @@ proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc putVoteDot(fb: var Framebuffer, x, y: int, color: uint8) =
+  ## Draws one vote marker, including visible black votes.
+  if color == SpaceColor:
+    fb.putPixel(x - 1, y, 12'u8)
+    fb.putPixel(x, y, 2'u8)
+  else:
+    fb.putPixel(x, y, color)
+
+proc putSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
+  ## Draws the local voter marker, including visible black players.
+  if color == SpaceColor:
+    fb.putPixel(x, y, 2'u8)
+    fb.putPixel(x + 1, y, 12'u8)
+  else:
+    fb.putPixel(x, y, color)
+    fb.putPixel(x + 1, y, color)
+
 proc drawVoteChat*(sim: var SimServer, chatY: int) =
   ## Draws the visible voting chat messages.
   let
@@ -1573,8 +1590,11 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
         false
       )
     if pi == playerIndex:
-      sim.fb.putPixel(cx + cellW div 2 - 1, cy - 2, sim.players[pi].color)
-      sim.fb.putPixel(cx + cellW div 2, cy - 2, sim.players[pi].color)
+      sim.fb.putSelfMarker(
+        cx + cellW div 2 - 1,
+        cy - 2,
+        sim.players[pi].color
+      )
     if sim.players[pi].alive and
         playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
         sim.voteState.cursor[playerIndex] == pi:
@@ -1590,7 +1610,7 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
         let
           dotX = cx + 1 + (voterRow mod 8) * 2
           dotY = cy + SpriteSize + 2 + (voterRow div 8)
-        sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
+        sim.fb.putVoteDot(dotX, dotY, sim.players[vi].color)
         inc voterRow
 
   let skipY = startY + rows * cellH + 1
@@ -1611,7 +1631,7 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
       let
         dotX = skipX + skipW + 2 + (skipVoterRow mod 8) * 2
         dotY = skipY + (skipVoterRow div 8)
-      sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
+      sim.fb.putVoteDot(dotX, dotY, sim.players[vi].color)
       inc skipVoterRow
 
   sim.drawVoteChat(skipY + 10)
