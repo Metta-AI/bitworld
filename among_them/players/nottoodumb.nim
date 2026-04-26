@@ -1332,10 +1332,9 @@ proc updateTaskIcons(bot: var Bot) =
       bot.taskIconMisses[i] = 0
 
 proc thought(bot: var Bot, text: string) =
-  ## Emits changed bot thoughts to stdout.
+  ## Stores changed bot thoughts for the GUI.
   if text != bot.lastThought:
     bot.lastThought = text
-    echo text
 
 proc movementName(mask: uint8): string =
   ## Returns a compact movement label for one input mask.
@@ -2718,7 +2717,6 @@ proc runBot(
       let ws = newWebSocket(url)
       var lastMask = 0xff'u8
       connected = true
-      echo "Connected to ", url
       while viewer.viewerOpen():
         if gui:
           viewer.pumpViewer(bot, connected, url)
@@ -2744,9 +2742,8 @@ proc runBot(
           ws.send(message.get.data, Pong)
         of TextMessage, Pong:
           discard
-    except Exception as e:
+    except Exception:
       connected = false
-      echo "Bot reconnecting after error: ", e.msg
       if gui:
         let reconnectStart = getMonoTime()
         while viewer.viewerOpen() and
