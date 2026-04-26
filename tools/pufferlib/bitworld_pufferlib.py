@@ -814,6 +814,10 @@ class AmongThemNativeLibrary:
         self.lib.NimMain()
         self.lib.bitworld_at_last_error.argtypes = []
         self.lib.bitworld_at_last_error.restype = ctypes.c_char_p
+        self.lib.bitworld_at_tick_count.argtypes = [ctypes.c_int]
+        self.lib.bitworld_at_tick_count.restype = ctypes.c_int
+        self.lib.bitworld_at_game_hash.argtypes = [ctypes.c_int]
+        self.lib.bitworld_at_game_hash.restype = ctypes.c_uint64
         self.lib.bitworld_at_create.argtypes = [ctypes.c_int, ctypes.c_int]
         self.lib.bitworld_at_create.restype = ctypes.c_int
         self.lib.bitworld_at_reset.argtypes = [
