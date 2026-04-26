@@ -3,6 +3,7 @@ import std/[math, monotimes, options, os, parseopt, strutils, times]
 
 const
   AtlasPath = "dist/atlas.png"
+  AsciiPath = "data/ascii.png"
   LogoPath = "data/logo.png"
   ShellPath = "data/atlas/shell.png"
   ScreenshotDirName = "screenshots"
@@ -54,8 +55,12 @@ const
   SelectBaseX = 148 * LayoutScale
   SelectBaseY = 411 * LayoutScale
   TargetFps = 24.0
-  ChatKeyboardChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ .?!"
-  ChatKeyboardCols = 6
+  ChatMaxChars = 48
+  ChatGlyphW = 7
+  ChatGlyphH = 9
+  ChatRowStride = 9
+  ChatBoxMargin = 6
+  ChatPad = 4
 
 type
   ClientOptions = object
@@ -73,25 +78,10 @@ type
     selectPressed: bool
     topPressed: array[4, bool]
 
-  TextAssistPhase = enum
-    TextAssistOff
-    TextAssistAwaitOpenFrame
-    TextAssistOpening
-    TextAssistReady
-    TextAssistAwaitCloseFrame
-    TextAssistClosing
-
-  TextAssistState = object
-    phase: TextAssistPhase
-    pendingText: string
-    pendingDeletes: int
-    actionMasks: seq[uint8]
-    lastSeenFrameSerial: uint64
-    currentMask: uint8
-    currentKeyIndex: int
-    knownMessage: string
-    editingMessage: string
-    knownMessageValid: bool
+  ChatState = object
+    active: bool
+    draft: string
+    sprites: seq[Sprite]
 
   NetworkState = object
     ws: WebSocketHandle
@@ -117,209 +107,79 @@ type
     splashStartedAt: MonoTime
     selectedGamepadIndex: int
     network: NetworkState
-    textAssist: TextAssistState
+    chat: ChatState
 
 proc pointInRect(x, y, rx, ry, rw, rh: int): bool =
   x >= rx and y >= ry and x < rx + rw and y < ry + rh
 
-proc textAssistActive(client: ClientApp): bool =
-  client.textAssist.phase != TextAssistOff
-
-proc normalizeTextAssistRune(rune: Rune): char =
+proc normalizeChatRune(rune: Rune): char =
   let text = $rune
   if text.len != 1:
     return '\0'
+  let ch = text[0]
+  if ch >= ' ' and ch <= '~':
+    return ch
+  '\0'
 
-  var ch = text[0]
-  if ch >= 'a' and ch <= 'z':
-    ch = ch.toUpperAscii()
+proc asciiIndex(ch: char): int =
+  ord(ch) - ord(' ')
 
-  case ch
-  of 'A' .. 'Z', ' ', '.', '?', '!':
-    ch
-  else:
-    '\0'
+proc loadChatSprites(path: string): seq[Sprite] =
+  if not fileExists(path):
+    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
+  let
+    image = readImage(path)
+    cols = image.width div ChatGlyphW
+    rows = image.height div ChatRowStride
+    background = nearestPaletteIndex(image[0, 0])
+  result = @[]
+  for row in 0 ..< rows:
+    for col in 0 ..< cols:
+      var sprite = Sprite(width: ChatGlyphW, height: ChatGlyphH)
+      sprite.pixels = newSeq[uint8](ChatGlyphW * ChatGlyphH)
+      let
+        baseX = col * ChatGlyphW
+        baseY = row * ChatRowStride
+      for y in 0 ..< ChatGlyphH:
+        for x in 0 ..< ChatGlyphW:
+          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
+          sprite.pixels[sprite.spriteIndex(x, y)] =
+            if colorIndex == background:
+              TransparentColorIndex
+            else:
+              colorIndex
+      result.add(sprite)
 
-proc chatKeyboardIndex(ch: char): int =
-  for i in 0 ..< ChatKeyboardChars.len:
-    if ChatKeyboardChars[i] == ch:
-      return i
-  0
+proc chatActive(client: ClientApp): bool =
+  client.chat.active
 
-proc currentKeyIndexForMessage(message: string): int =
-  if message.len == 0:
-    return chatKeyboardIndex('A')
-  chatKeyboardIndex(message[^1])
+proc openChat(client: ClientApp) =
+  client.chat.active = true
+  client.chat.draft.setLen(0)
+  client.window.runeInputEnabled = true
 
-proc enqueueTextAssistPress(client: ClientApp, mask: uint8) =
-  client.textAssist.actionMasks.add(mask)
-  client.textAssist.actionMasks.add(0)
+proc closeChat(client: ClientApp) =
+  client.chat.active = false
+  client.chat.draft.setLen(0)
+  client.window.runeInputEnabled = false
 
-proc enqueueTextAssistChar(client: ClientApp, ch: char) =
-  let targetIndex = chatKeyboardIndex(ch)
-  var
-    currentCol = client.textAssist.currentKeyIndex mod ChatKeyboardCols
-    currentRow = client.textAssist.currentKeyIndex div ChatKeyboardCols
-    targetCol = targetIndex mod ChatKeyboardCols
-    targetRow = targetIndex div ChatKeyboardCols
+proc submitChat(client: ClientApp) =
+  if client.chat.draft.len > 0 and client.network.connected:
+    client.network.ws.send(blobFromChat(client.chat.draft), BinaryMessage)
+  client.closeChat()
 
-  while currentRow > targetRow:
-    client.enqueueTextAssistPress(ButtonUp)
-    dec currentRow
-  while currentRow < targetRow:
-    client.enqueueTextAssistPress(ButtonDown)
-    inc currentRow
-  while currentCol > targetCol:
-    client.enqueueTextAssistPress(ButtonLeft)
-    dec currentCol
-  while currentCol < targetCol:
-    client.enqueueTextAssistPress(ButtonRight)
-    inc currentCol
-
-  client.enqueueTextAssistPress(ButtonA)
-
-proc queueTextAssistRune(client: ClientApp, rune: Rune) =
-  if not client.textAssistActive():
+proc queueChatRune(client: ClientApp, rune: Rune) =
+  if not client.chatActive():
     return
-  let ch = normalizeTextAssistRune(rune)
-  if ch == '\0':
+  if client.chat.draft.len >= ChatMaxChars:
     return
-  client.textAssist.pendingText.add(ch)
+  let ch = normalizeChatRune(rune)
+  if ch != '\0':
+    client.chat.draft.add(ch)
 
-proc requestTextAssistDelete(client: ClientApp) =
-  if not client.textAssistActive():
-    return
-  if client.textAssist.pendingText.len > 0:
-    client.textAssist.pendingText.setLen(client.textAssist.pendingText.len - 1)
-  elif client.textAssist.phase in {TextAssistAwaitOpenFrame, TextAssistOpening, TextAssistReady}:
-    inc client.textAssist.pendingDeletes
-
-proc toggleTextAssist(client: ClientApp, currentFrameSerial: uint64) =
-  case client.textAssist.phase
-  of TextAssistOff:
-    client.textAssist.phase = TextAssistAwaitOpenFrame
-    client.textAssist.pendingText.setLen(0)
-    client.textAssist.pendingDeletes = 0
-    client.textAssist.actionMasks.setLen(0)
-    client.textAssist.currentMask = 0
-    client.textAssist.editingMessage.setLen(0)
-    client.textAssist.knownMessage.setLen(0)
-    client.textAssist.knownMessageValid = false
-    client.textAssist.currentKeyIndex = chatKeyboardIndex('A')
-    client.textAssist.lastSeenFrameSerial = currentFrameSerial
-  of TextAssistAwaitOpenFrame:
-    client.textAssist.phase = TextAssistOff
-    client.textAssist.pendingText.setLen(0)
-    client.textAssist.pendingDeletes = 0
-    client.textAssist.actionMasks.setLen(0)
-    client.textAssist.currentMask = 0
-    client.textAssist.editingMessage.setLen(0)
-    client.textAssist.currentKeyIndex = chatKeyboardIndex('A')
-  of TextAssistOpening:
-    client.textAssist.pendingText.setLen(0)
-    client.textAssist.pendingDeletes = 0
-    if client.textAssist.actionMasks.len >= 2:
-      client.textAssist.phase = TextAssistOff
-      client.textAssist.actionMasks.setLen(0)
-      client.textAssist.currentMask = 0
-      client.textAssist.editingMessage.setLen(0)
-      client.textAssist.currentKeyIndex = chatKeyboardIndex('A')
-    else:
-      client.textAssist.phase = TextAssistAwaitCloseFrame
-      client.textAssist.actionMasks.setLen(0)
-      client.textAssist.currentMask = 0
-      client.textAssist.lastSeenFrameSerial = currentFrameSerial
-  of TextAssistReady:
-    client.textAssist.phase = TextAssistAwaitCloseFrame
-    client.textAssist.pendingText.setLen(0)
-    client.textAssist.pendingDeletes = 0
-    client.textAssist.actionMasks.setLen(0)
-    client.textAssist.currentMask = 0
-    client.textAssist.lastSeenFrameSerial = currentFrameSerial
-  of TextAssistAwaitCloseFrame, TextAssistClosing:
-    discard
-
-proc applyTextAssistMaskEffect(client: ClientApp, mask: uint8) =
-  case mask
-  of ButtonUp:
-    client.textAssist.currentKeyIndex =
-      max(0, client.textAssist.currentKeyIndex - ChatKeyboardCols)
-  of ButtonDown:
-    client.textAssist.currentKeyIndex =
-      min(ChatKeyboardChars.high, client.textAssist.currentKeyIndex + ChatKeyboardCols)
-  of ButtonLeft:
-    if client.textAssist.currentKeyIndex mod ChatKeyboardCols > 0:
-      dec client.textAssist.currentKeyIndex
-  of ButtonRight:
-    if client.textAssist.currentKeyIndex mod ChatKeyboardCols < ChatKeyboardCols - 1 and
-        client.textAssist.currentKeyIndex < ChatKeyboardChars.high:
-      inc client.textAssist.currentKeyIndex
-  of ButtonA:
-    if client.textAssist.editingMessage.len < 16:
-      client.textAssist.editingMessage.add(ChatKeyboardChars[client.textAssist.currentKeyIndex])
-  of ButtonB:
-    if client.textAssist.editingMessage.len > 0:
-      client.textAssist.editingMessage.setLen(client.textAssist.editingMessage.len - 1)
-  of ButtonSelect:
-    if client.textAssist.phase == TextAssistClosing:
-      client.textAssist.knownMessage = client.textAssist.editingMessage.strip(chars = {' '})
-      client.textAssist.knownMessageValid = true
-      client.textAssist.currentKeyIndex = chatKeyboardIndex('A')
-  else:
-    discard
-
-proc popTextAssistMask(client: ClientApp): uint8 =
-  if client.textAssist.actionMasks.len == 0:
-    return 0
-  result = client.textAssist.actionMasks[0]
-  client.textAssist.actionMasks.delete(0)
-  client.applyTextAssistMaskEffect(result)
-
-proc popPendingTextChar(client: ClientApp): char =
-  result = client.textAssist.pendingText[0]
-  client.textAssist.pendingText.delete(0 .. 0)
-
-proc advanceTextAssist(client: ClientApp, currentFrameSerial: uint64): uint8 =
-  if not client.textAssistActive():
-    return 0
-
-  if currentFrameSerial == 0 or currentFrameSerial == client.textAssist.lastSeenFrameSerial:
-    return client.textAssist.currentMask
-
-  client.textAssist.lastSeenFrameSerial = currentFrameSerial
-
-  while client.textAssist.actionMasks.len == 0:
-    case client.textAssist.phase
-    of TextAssistOff:
-      client.textAssist.currentMask = 0
-      return 0
-    of TextAssistAwaitOpenFrame:
-      client.textAssist.editingMessage = ""
-      client.textAssist.currentKeyIndex = chatKeyboardIndex('A')
-      client.enqueueTextAssistPress(ButtonSelect)
-      client.textAssist.phase = TextAssistOpening
-    of TextAssistOpening:
-      client.textAssist.phase = TextAssistReady
-    of TextAssistReady:
-      if client.textAssist.pendingDeletes > 0:
-        dec client.textAssist.pendingDeletes
-        client.enqueueTextAssistPress(ButtonB)
-      elif client.textAssist.pendingText.len > 0:
-        let ch = client.popPendingTextChar()
-        client.enqueueTextAssistChar(ch)
-      else:
-        client.textAssist.currentMask = 0
-        return 0
-    of TextAssistAwaitCloseFrame:
-      client.enqueueTextAssistPress(ButtonSelect)
-      client.textAssist.phase = TextAssistClosing
-    of TextAssistClosing:
-      client.textAssist.phase = TextAssistOff
-      client.textAssist.currentMask = 0
-      return 0
-
-  client.textAssist.currentMask = client.popTextAssistMask()
-  client.textAssist.currentMask
+proc deleteChatChar(client: ClientApp) =
+  if client.chat.active and client.chat.draft.len > 0:
+    client.chat.draft.setLen(client.chat.draft.len - 1)
 
 proc detectShellSize(): IVec2 =
   if fileExists(ShellPath):
@@ -415,6 +275,94 @@ proc sampleColor(index: uint8): ColorRGBX =
   let swatch = Palette[index.int]
   rgbx(swatch.r, swatch.g, swatch.b, swatch.a)
 
+proc drawChatSprite(
+  client: ClientApp,
+  sprite: Sprite,
+  x, y, scale: int
+) =
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let index = sprite.pixels[sprite.spriteIndex(sx, sy)]
+      if index == TransparentColorIndex:
+        continue
+      client.silky.drawRect(
+        vec2((x + sx * scale).float32, (y + sy * scale).float32),
+        vec2(scale.float32, scale.float32),
+        sampleColor(index)
+      )
+
+proc drawChatText(
+  client: ClientApp,
+  text: string,
+  x, y, scale: int
+) =
+  var dx = x
+  for ch in text:
+    let idx = asciiIndex(ch)
+    if idx >= 0 and idx < client.chat.sprites.len:
+      client.drawChatSprite(client.chat.sprites[idx], dx, y, scale)
+    dx += ChatGlyphW * scale
+
+proc drawChatInput(
+  client: ClientApp,
+  originX, originY, viewportWidth, viewportHeight: int
+) =
+  if not client.chatActive():
+    return
+
+  let
+    scale = 1
+    boxW = min(
+      viewportWidth - ChatBoxMargin * 2,
+      ChatMaxChars * ChatGlyphW * scale + ChatPad * 2
+    )
+    boxH = ChatGlyphH * scale + ChatPad * 2
+    boxX = originX + (viewportWidth - boxW) div 2
+    boxY = originY + viewportHeight - boxH - ChatBoxMargin
+    textCapacity = max(0, (boxW - ChatPad * 2) div (ChatGlyphW * scale))
+
+  var text = client.chat.draft
+  if text.len > textCapacity:
+    text = text[text.len - textCapacity .. ^1]
+
+  client.silky.drawRect(
+    vec2(boxX.float32, boxY.float32),
+    vec2(boxW.float32, boxH.float32),
+    rgbx(0, 0, 0, 180)
+  )
+  client.silky.drawRect(
+    vec2(boxX.float32, boxY.float32),
+    vec2(boxW.float32, 1),
+    sampleColor(2)
+  )
+  client.silky.drawRect(
+    vec2(boxX.float32, (boxY + boxH - 1).float32),
+    vec2(boxW.float32, 1),
+    sampleColor(2)
+  )
+  client.silky.drawRect(
+    vec2(boxX.float32, boxY.float32),
+    vec2(1, boxH.float32),
+    sampleColor(2)
+  )
+  client.silky.drawRect(
+    vec2((boxX + boxW - 1).float32, boxY.float32),
+    vec2(1, boxH.float32),
+    sampleColor(2)
+  )
+
+  let
+    textX = boxX + ChatPad
+    textY = boxY + ChatPad
+  client.drawChatText(text, textX, textY, scale)
+  let caretX = textX + text.len * ChatGlyphW * scale
+  if caretX < boxX + boxW - ChatPad:
+    client.silky.drawRect(
+      vec2(caretX.float32, textY.float32),
+      vec2(1, (ChatGlyphH * scale).float32),
+      sampleColor(2)
+    )
+
 proc connectNetwork(client: ClientApp) =
   client.network.connected = false
   client.network.connecting = true
@@ -482,6 +430,7 @@ proc initClient*(
   builder.write(AtlasPath)
 
   loadPalette("data/pallete.png")
+  let chatSprites = loadChatSprites(AsciiPath)
 
   let windowSize = detectWindowSize(clientOptions.screenOnly)
 
@@ -505,10 +454,11 @@ proc initClient*(
   result.splashStartedAt = getMonoTime()
   result.screenOnly = clientOptions.screenOnly
   result.selectedGamepadIndex = max(0, clientOptions.selectedGamepadIndex)
+  result.chat.sprites = chatSprites
   result.window.runeInputEnabled = false
   let clientRef = result
   result.window.onRune = proc(rune: Rune) =
-    clientRef.queueTextAssistRune(rune)
+    clientRef.queueChatRune(rune)
   if clientOptions.windowPos.isSome:
     result.window.pos = clientOptions.windowPos.get
 
@@ -525,28 +475,31 @@ proc captureInputMask*(client: ClientApp): uint8 =
   let mouse = client.silky.mousePos
   let mouseDown = down[MouseLeft]
   let mousePressed = pressed[MouseLeft]
-  let currentFrameSerial = client.network.frameSerial
   var input: InputState
   client.shell = ShellVisualState()
 
   if pressed[KeyEnter]:
-    client.toggleTextAssist(currentFrameSerial)
-  if pressed[KeyBackspace]:
-    client.requestTextAssistDelete()
+    if client.chatActive():
+      client.submitChat()
+    else:
+      client.openChat()
+  if pressed[KeyBackspace] and client.chatActive():
+    client.deleteChatChar()
   if pressed[KeyF1]:
     client.screenshotRequested = true
 
-  let textAssistMode = client.textAssistActive()
-  let keyboardStartPressed = pressed[KeyTab] or (pressed[KeyP] and not textAssistMode)
+  let chatMode = client.chatActive()
+  let keyboardStartPressed =
+    not chatMode and (pressed[KeyTab] or pressed[KeyP])
   var reconnectPressed = keyboardStartPressed
 
-  input.up = down[KeyUp] or down[KeyW]
-  input.down = down[KeyDown] or down[KeyS]
-  input.left = down[KeyLeft] or down[KeyA]
-  input.right = down[KeyRight] or down[KeyD]
-  input.select = down[KeySpace]
-  input.b = down[KeyX] or down[KeyK]
-  input.attack = down[KeyZ] or down[KeyJ]
+  input.up = down[KeyUp] or (not chatMode and down[KeyW])
+  input.down = down[KeyDown] or (not chatMode and down[KeyS])
+  input.left = down[KeyLeft] or (not chatMode and down[KeyA])
+  input.right = down[KeyRight] or (not chatMode and down[KeyD])
+  input.select = not chatMode and down[KeySpace]
+  input.b = not chatMode and (down[KeyX] or down[KeyK])
+  input.attack = not chatMode and (down[KeyZ] or down[KeyJ])
 
   if mouseDown and not client.screenOnly:
     for i, buttonX in TopButtonXs:
@@ -635,26 +588,12 @@ proc captureInputMask*(client: ClientApp): uint8 =
   if input.down:
     client.shell.dpadOffsetY = PressOffset
 
-  if client.textAssistActive():
-    input = decodeInputMask(client.advanceTextAssist(currentFrameSerial))
-    client.shell = ShellVisualState()
-    for i in 0 ..< client.shell.topPressed.len:
-      client.shell.topPressed[i] = i == client.selectedGamepadIndex
-    if input.left:
-      client.shell.dpadOffsetX = -PressOffset
-    if input.right:
-      client.shell.dpadOffsetX = PressOffset
-    if input.up:
-      client.shell.dpadOffsetY = -PressOffset
-    if input.down:
-      client.shell.dpadOffsetY = PressOffset
-
   client.shell.aPressed = input.attack
   client.shell.bPressed = input.b
   client.shell.startPressed =
     startMouseHeld or
-    down[KeyTab] or
-    (down[KeyP] and not textAssistMode) or
+    (down[KeyTab] and not chatMode) or
+    (down[KeyP] and not chatMode) or
     (
       client.selectedGamepadIndex >= 0 and
       client.selectedGamepadIndex < gamepads.len and
@@ -771,6 +710,7 @@ proc drawFramebuffer*(client: ClientApp) =
         sampleColor(index)
       )
 
+  client.drawChatInput(originX, originY, viewportWidth, viewportHeight)
   client.silky.endUi()
   client.window.swapBuffers()
 
@@ -797,7 +737,10 @@ proc runClientLoop*(
     pollEvents()
     pollNetwork()
     if client.window.buttonPressed[KeyEscape]:
-      client.window.closeRequested = true
+      if client.chatActive():
+        client.closeChat()
+      else:
+        client.window.closeRequested = true
 
     let inputMask = client.captureInputMask()
     client.tickNetwork(inputMask)
