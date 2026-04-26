@@ -1,6 +1,6 @@
 import ../../common/protocol
 import ../../among_them/sim
-import std/os
+import std/[os, tables]
 
 const
   FramePixels = ScreenWidth * ScreenHeight
@@ -25,11 +25,13 @@ type
     prevInputs: seq[InputState]
     rewardSnapshot: seq[int]
     taskDistanceMaps: seq[seq[int]]
+    taskDistanceMapKey: string
     playerCount: int
     seed: int
 
 var
   envs: seq[NativeEnv]
+  taskDistanceMapCache: Table[string, seq[seq[int]]]
   lastError = ""
 
 proc repoRoot(): string =
@@ -133,12 +135,29 @@ proc buildTaskDistanceMap(sim: SimServer, taskIndex: int): seq[int] =
       queue[tail] = nextIndex
       inc tail
 
+proc taskDistanceMapKey(sim: SimServer): string =
+  result = newStringOfCap(sim.tasks.len * 32)
+  for task in sim.tasks:
+    result.add($task.x)
+    result.add(",")
+    result.add($task.y)
+    result.add(",")
+    result.add($task.w)
+    result.add(",")
+    result.add($task.h)
+    result.add(";")
+
 proc ensureTaskDistanceMaps(env: NativeEnv) =
-  if env.taskDistanceMaps.len == env.sim.tasks.len:
+  let key = env.sim.taskDistanceMapKey()
+  if env.taskDistanceMapKey == key and env.taskDistanceMaps.len == env.sim.tasks.len:
     return
-  env.taskDistanceMaps.setLen(env.sim.tasks.len)
-  for taskIndex in 0 ..< env.sim.tasks.len:
-    env.taskDistanceMaps[taskIndex] = env.sim.buildTaskDistanceMap(taskIndex)
+  if not taskDistanceMapCache.hasKey(key):
+    var maps = newSeq[seq[int]](env.sim.tasks.len)
+    for taskIndex in 0 ..< env.sim.tasks.len:
+      maps[taskIndex] = env.sim.buildTaskDistanceMap(taskIndex)
+    taskDistanceMapCache[key] = maps
+  env.taskDistanceMaps = taskDistanceMapCache[key]
+  env.taskDistanceMapKey = key
 
 proc taskCompleted(env: NativeEnv, playerIndex, taskIndex: int): bool =
   taskIndex >= 0 and
