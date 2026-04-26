@@ -121,19 +121,6 @@ def main() -> None:
         observation_mode=args.observation_mode,
         random_actions=True,
     )
-    teacher_baseline = None
-    if args.observation_mode == "state":
-        teacher_baseline = evaluate_policy(
-            spec=spec,
-            policy=None,
-            episodes=args.eval_episodes,
-            max_episode_steps=episode_steps,
-            frame_stack=checkpoint.frame_stack,
-            seed=args.seed + 30_000,
-            action_repeat=args.action_repeat,
-            observation_mode=args.observation_mode,
-            teacher_actions=True,
-        )
     summary = {
         "env": spec.name,
         "device": train_device,
@@ -142,7 +129,6 @@ def main() -> None:
         "metrics_path": str(metrics_path),
         "trained": trained,
         "random": random_baseline,
-        "teacher": teacher_baseline,
     }
     summary_path = output_dir / "eval_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
