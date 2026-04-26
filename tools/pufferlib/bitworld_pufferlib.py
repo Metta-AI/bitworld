@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ctypes
+import fcntl
 import json
+import os
 import platform
 import socket
 import subprocess
@@ -10,8 +12,10 @@ import threading
 import time
 import types
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
+from itertools import repeat
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,11 +23,6 @@ import numpy as np
 import torch
 from torch import nn
 from websockets.sync.client import ClientConnection, connect
-
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
@@ -58,6 +57,17 @@ DIRECTION_MASKS = np.array(
 )
 ACTION_BUTTON_MASKS = np.array([0, BUTTON_A, BUTTON_B], dtype=np.uint8)
 ACTION_MASKS = np.array([direction | button for direction in DIRECTION_MASKS for button in ACTION_BUTTON_MASKS], dtype=np.uint8)
+
+
+def native_worker_count(num_envs: int) -> int:
+    configured_workers = os.environ.get("BITWORLD_NATIVE_WORKERS")
+    if configured_workers is not None:
+        return min(num_envs, max(1, int(configured_workers)))
+    return min(
+        num_envs,
+        max(1, (os.cpu_count() or 1) // max(1, int(os.environ.get("WORLD_SIZE", "1")))),
+    )
+
 
 SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
@@ -173,8 +183,7 @@ def ensure_among_them_native_library() -> Path:
     nimcache = RUNLOG_DIR / "nimcache" / "among_them_native"
     nimcache.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w") as lock_file:
-        if fcntl is not None:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         if among_them_native_library_is_fresh():
             return library
         subprocess.run(
@@ -182,6 +191,8 @@ def ensure_among_them_native_library() -> Path:
                 "nim",
                 "c",
                 "--app:lib",
+                "-d:release",
+                "--opt:speed",
                 *nim_path_args(),
                 f"--nimcache:{nimcache}",
                 f"--out:{library}",
@@ -316,6 +327,10 @@ def load_puffer_trainer(use_gpu: bool):
                 prof.elapsed(profile.ROLLOUT, 0, 1)
                 self.global_step += self.total_agents * horizon
                 self.env_logs = self._vec.log()
+
+            def save_weights(self, path):
+                policy = self.policy.module if hasattr(self.policy, "module") else self.policy
+                torch.save(policy.state_dict(), path)
 
         return LegacyBitWorldPuffeRL
 
@@ -1076,6 +1091,9 @@ class BitWorldVecEnv:
         self._completed_lengths: deque[float] = deque(maxlen=100)
         self._completed_returns: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
+        self._executor = None
+        if self.spec.name == "among_them":
+            self._executor = ThreadPoolExecutor(max_workers=native_worker_count(num_envs))
 
         self.workers: list[BitWorldWorker | AmongThemNativeWorker] = []
         try:
@@ -1115,6 +1133,34 @@ class BitWorldVecEnv:
         self._frame_history[agent_slice, -1] = frames
         self._obs[agent_slice] = self._frame_history[agent_slice].reshape(frames.shape[0], -1)
 
+    def _step_env(self, env_id: int, action_indices: np.ndarray):
+        worker = self.workers[env_id]
+        agent_slice = self._agent_slice(env_id)
+        clipped = np.clip(action_indices[agent_slice], 0, self.action_count - 1).astype(np.int64)
+        action_masks = ACTION_MASKS[clipped]
+        if worker.agent_count == 1:
+            frame, reward = worker.step(int(action_masks[0]))
+            frames = self._frame_batch(frame, worker)
+            rewards = np.asarray([reward], dtype=np.float32)
+        else:
+            frames, rewards = worker.step(action_masks)
+            frames = self._frame_batch(frames, worker)
+
+        completed: list[EpisodeStats] = []
+        if worker.episode_steps >= self.max_episode_steps:
+            scores = (np.asarray(worker.score) - np.asarray(worker.base_score)).reshape(-1)
+            returns = np.asarray(worker.episode_return).reshape(-1)
+            completed = [
+                EpisodeStats(
+                    score=float(score),
+                    length=worker.episode_steps,
+                    episode_return=float(episode_return),
+                )
+                for score, episode_return in zip(scores, returns)
+            ]
+            frames = self._frame_batch(worker.reset(), worker)
+        return env_id, frames, rewards, completed
+
     def reset(self):
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
@@ -1130,34 +1176,21 @@ class BitWorldVecEnv:
         self._terminals.fill(0.0)
         self._truncations.fill(0.0)
         completed: list[EpisodeStats] = []
-        for env_id, worker in enumerate(self.workers):
+        env_ids = range(len(self.workers))
+        if self._executor is None:
+            step_results = [self._step_env(env_id, action_indices) for env_id in env_ids]
+        else:
+            step_results = list(self._executor.map(self._step_env, env_ids, repeat(action_indices)))
+
+        for env_id, frames, rewards, env_completed in step_results:
             agent_slice = self._agent_slice(env_id)
-            clipped = np.clip(action_indices[agent_slice], 0, self.action_count - 1).astype(np.int64)
-            action_masks = ACTION_MASKS[clipped]
-            if worker.agent_count == 1:
-                frame, reward = worker.step(int(action_masks[0]))
-                frames = self._frame_batch(frame, worker)
-                rewards = np.asarray([reward], dtype=np.float32)
-            else:
-                frames, rewards = worker.step(action_masks)
-                frames = self._frame_batch(frames, worker)
-            done = worker.episode_steps >= self.max_episode_steps
-            if done:
-                scores = (np.asarray(worker.score) - np.asarray(worker.base_score)).reshape(-1)
-                returns = np.asarray(worker.episode_return).reshape(-1)
-                for score, episode_return in zip(scores, returns):
-                    completed.append(
-                        EpisodeStats(
-                            score=float(score),
-                            length=worker.episode_steps,
-                            episode_return=float(episode_return),
-                        )
-                    )
-                    self._completed_scores.append(float(score))
-                    self._completed_lengths.append(float(worker.episode_steps))
-                    self._completed_returns.append(float(episode_return))
+            if env_completed:
+                for stats in env_completed:
+                    completed.append(stats)
+                    self._completed_scores.append(float(stats.score))
+                    self._completed_lengths.append(float(stats.length))
+                    self._completed_returns.append(float(stats.episode_return))
                 self._completed_episodes += 1
-                frames = self._frame_batch(worker.reset(), worker)
                 self._terminals[agent_slice] = 1.0
 
             self._rewards[agent_slice] = rewards
@@ -1221,6 +1254,8 @@ class BitWorldVecEnv:
     def close(self) -> None:
         for worker in self.workers:
             worker.close()
+        if self._executor is not None:
+            self._executor.shutdown()
 
 
 class BitWorldPolicy(nn.Module):
@@ -1396,11 +1431,25 @@ def train_policy(
 ) -> dict:
     resolved = get_env_spec(spec)
     train_device = resolve_train_device(device)
-    PuffeRL = load_puffer_trainer(use_gpu=train_device == "cuda")
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world_size > 1
+    if distributed:
+        if train_device != "cuda":
+            raise RuntimeError("torchrun DDP requires --device cuda")
+        torch.cuda.set_device(local_rank)
+        train_device = f"cuda:{local_rank}"
+        torch.distributed.init_process_group(backend="nccl", world_size=world_size, rank=rank)
+    PuffeRL = load_puffer_trainer(use_gpu=torch.device(train_device).type == "cuda")
+    checkpoint_path = checkpoint_path.resolve()
+    metrics_path = metrics_path.resolve()
     checkpoint_dir = checkpoint_path.parent / "checkpoints"
     log_dir = checkpoint_path.parent / "logs"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    if rank == 0:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
 
     vecenv = BitWorldVecEnv(
         spec=resolved,
@@ -1408,13 +1457,21 @@ def train_policy(
         max_episode_steps=max_episode_steps,
         frame_stack=frame_stack,
         action_repeat=action_repeat,
-        base_seed=seed,
+        base_seed=seed + rank * num_envs,
     )
     policy = BitWorldPolicy(
         frame_stack=frame_stack,
         action_count=vecenv.action_count,
         hidden_size=hidden_size,
     ).to(train_device)
+    if distributed:
+        policy = torch.nn.parallel.DistributedDataParallel(
+            policy,
+            device_ids=[local_rank],
+            output_device=local_rank,
+        )
+        policy.forward_eval = policy.module.forward_eval
+        policy.initial_state = policy.module.initial_state
     args = make_train_args(
         spec=resolved,
         total_timesteps=total_timesteps,
@@ -1427,42 +1484,61 @@ def train_policy(
         log_dir=log_dir,
     )
     args["train"]["device"] = train_device
+    args["rank"] = rank
+    args["world_size"] = world_size
+    args["gpu_id"] = local_rank
+    args["train"]["gpus"] = world_size
     trainer = PuffeRL(args, vecenv, policy, verbose=False)
-    print(
-        json.dumps(
-            {
-                "env": resolved.name,
-                "device": train_device,
-                "cuda_available": bool(torch.cuda.is_available()),
-                "policy_device": str(next(policy.parameters()).device),
-            }
-        ),
-        flush=True,
-    )
+    if rank == 0:
+        print(
+            json.dumps(
+                {
+                    "env": resolved.name,
+                    "device": train_device,
+                    "cuda_available": bool(torch.cuda.is_available()),
+                    "policy_device": str(next(policy.parameters()).device),
+                    "world_size": world_size,
+                }
+            ),
+            flush=True,
+        )
 
     history: list[dict[str, float]] = []
     try:
-        while trainer.global_step < total_timesteps:
+        while trainer.global_step * world_size < total_timesteps:
             trainer.rollouts()
             trainer.train()
             logs = trainer.log()
             flat_logs = flatten_logs(logs)
-            history.append(flat_logs)
-            print(
-                json.dumps(
-                    {
-                        "env": resolved.name,
-                        "steps": int(flat_logs["agent_steps"]),
-                        "sps": round(float(flat_logs["SPS"]), 2),
-                        "score": round(float(flat_logs.get("env/score", 0.0)), 3),
-                        "episode_length": round(float(flat_logs.get("env/episode_length", 0.0)), 1),
-                    }
-                ),
-                flush=True,
-            )
+            if rank == 0:
+                history.append(flat_logs)
+                print(
+                    json.dumps(
+                        {
+                            "env": resolved.name,
+                            "steps": int(flat_logs["agent_steps"]),
+                            "sps": round(float(flat_logs["SPS"]), 2),
+                            "score": round(float(flat_logs.get("env/score", 0.0)), 3),
+                            "episode_length": round(float(flat_logs.get("env/episode_length", 0.0)), 1),
+                        }
+                    ),
+                    flush=True,
+                )
     finally:
-        trainer.save_weights(str(checkpoint_path))
-        trainer.close()
+        try:
+            if rank == 0:
+                trainer.save_weights(str(checkpoint_path))
+        finally:
+            trainer.close()
+            if distributed:
+                torch.distributed.destroy_process_group()
+
+    if rank != 0:
+        return {
+            "env": resolved.name,
+            "device": train_device,
+            "history": history,
+        }
 
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {

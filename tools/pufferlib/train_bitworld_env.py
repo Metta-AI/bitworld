@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from bitworld_pufferlib import (
@@ -30,11 +31,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--local-rank", type=int, default=0)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    rank = int(os.environ.get("RANK", "0"))
     spec = get_env_spec(args.env)
     total_timesteps = args.total_timesteps if args.total_timesteps is not None else spec.default_total_timesteps
     episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
@@ -47,6 +50,7 @@ def main() -> None:
         raise ValueError("--minibatch-size must be <= total agents * horizon")
 
     output_dir = args.output_dir if args.output_dir is not None else Path(f"tools/runlogs/{spec.name}_pufferlib_training")
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"{spec.name}_policy.pt"
     metrics_path = output_dir / "train_metrics.json"
@@ -67,6 +71,9 @@ def main() -> None:
         hidden_size=hidden_size,
         device=args.device,
     )
+
+    if rank != 0:
+        return
 
     if args.eval_episodes <= 0:
         summary = {
