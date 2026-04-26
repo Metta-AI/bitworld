@@ -1049,11 +1049,10 @@ proc collectPills(sim: var SimServer) =
 
   sim.pills = remaining
 
-proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc renderPlayerFrame(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(FieldColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.fb.packFramebuffer()
-    return sim.fb.packed
+    return
 
   let
     player = sim.players[playerIndex]
@@ -1098,6 +1097,9 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
     for x in 0 ..< barWidth:
       sim.fb.putPixel(26 + x, 1, 7)
       sim.fb.putPixel(26 + x, 2, 8)
+
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
+  sim.renderPlayerFrame(playerIndex)
 
   sim.fb.packFramebuffer()
   sim.fb.packed
