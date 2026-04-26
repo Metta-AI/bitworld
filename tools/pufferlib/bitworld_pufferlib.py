@@ -101,6 +101,10 @@ def teacher_bc_epochs() -> int:
     return max(0, int(os.environ.get("BITWORLD_TEACHER_BC_EPOCHS", "1")))
 
 
+def teacher_logit_bias() -> float:
+    return float(os.environ.get("BITWORLD_TEACHER_LOGIT_BIAS", "8.0"))
+
+
 SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
@@ -1703,6 +1707,7 @@ class BitWorldPolicy(nn.Module):
         self.obs_shape = obs_shape or (
             (frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH) if observation_mode == "pixels" else (STATE_FEATURES * frame_stack,)
         )
+        self.teacher_logit_bias = teacher_logit_bias() if observation_mode == "state" else 0.0
         if observation_mode == "pixels":
             self.encoder = nn.Sequential(
                 nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4),
@@ -1752,6 +1757,12 @@ class BitWorldPolicy(nn.Module):
         x = self.encoder(x)
         x = self.body(x)
         logits = self.policy_head(x)
+        if self.teacher_logit_bias > 0:
+            flat_observations = observations.float().reshape(observations.shape[0], -1)
+            teacher_start = (self.frame_stack - 1) * STATE_FEATURES + STATE_TEACHER_FEATURE_OFFSET
+            teacher_end = teacher_start + STATE_TEACHER_ACTION_COUNT
+            teacher_logits = flat_observations[:, teacher_start:teacher_end]
+            logits = logits + teacher_logits * self.teacher_logit_bias
         values = self.value_head(x)
         return logits, values
 
