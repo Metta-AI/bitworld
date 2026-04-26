@@ -233,6 +233,44 @@ type
     originMx*, originMy*: int
     viewerIsGhost*: bool
 
+const
+  RenderStateHeaderFeatures = 22
+  RenderStateGridSize = 32
+  RenderStateGridFeatures = RenderStateGridSize * RenderStateGridSize
+  RenderStatePlayerSlots = MaxPlayers
+  RenderStatePlayerFeatures = 8
+  RenderStateBodySlots = MaxPlayers
+  RenderStateBodyFeatures = 8
+  RenderStateTaskSlots = 15
+  RenderStateTaskFeatures = 8
+  RenderStateGridOffset = RenderStateHeaderFeatures
+  RenderStatePlayerOffset = RenderStateGridOffset + RenderStateGridFeatures
+  RenderStateBodyOffset =
+    RenderStatePlayerOffset + RenderStatePlayerSlots * RenderStatePlayerFeatures
+  RenderStateTaskOffset =
+    RenderStateBodyOffset + RenderStateBodySlots * RenderStateBodyFeatures
+  RenderStateFeatures* =
+    RenderStateTaskOffset + RenderStateTaskSlots * RenderStateTaskFeatures
+
+  RenderKindPlayer = 1'u8
+  RenderKindBody = 2'u8
+  RenderKindTask = 3'u8
+
+  RenderPlayerPresent = 1'u8
+  RenderPlayerSelf = 2'u8
+  RenderPlayerAlive = 4'u8
+  RenderPlayerRoleImposter = 8'u8
+  RenderPlayerFlipH = 16'u8
+  RenderPlayerGhost = 32'u8
+  RenderPlayerSelected = 64'u8
+
+  RenderTaskAssigned = 1'u8
+  RenderTaskIncomplete = 2'u8
+  RenderTaskActive = 4'u8
+  RenderTaskIconVisible = 8'u8
+  RenderTaskArrowVisible = 16'u8
+  RenderTaskCompleted = 32'u8
+
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
   getCurrentDir() / ".." / "client" / "data"
@@ -1598,6 +1636,440 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
         sim.fb.putPixel(lx, textY + 3, 3'u8)
   sim.fb.packFramebuffer()
   sim.fb.packed
+
+proc renderStatePointShadowed(
+  sim: SimServer,
+  originMx, originMy, worldX, worldY: int
+): bool {.inline.} =
+  let
+    dx = worldX - originMx
+    dy = worldY - originMy
+    steps = max(abs(dx), abs(dy))
+  if steps == 0:
+    return false
+  for s in 1 .. steps:
+    let
+      rx = originMx + dx * s div steps
+      ry = originMy + dy * s div steps
+    if sim.isWall(rx, ry):
+      return true
+  false
+
+proc renderStateWorldPointVisible(
+  sim: SimServer,
+  view: PlayerView,
+  worldX, worldY: int
+): bool {.inline.} =
+  if not view.screenPointInFrame(worldX, worldY):
+    return false
+  view.viewerIsGhost or not sim.renderStatePointShadowed(
+    view.originMx,
+    view.originMy,
+    worldX,
+    worldY
+  )
+
+proc writeRenderStateHeader(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  var
+    selfAlive = 0'u8
+    selfRole = 0'u8
+    selfScreenX = 0'u8
+    selfScreenY = 0'u8
+    selfVelX = 0'u8
+    selfVelY = 0'u8
+    killCooldown = 0'u8
+    taskProgress = 0'u8
+    activeTask = 0'u8
+    buttonCallsUsed = 0'u8
+    viewerIsGhost = 0'u8
+    voteCursor = 0'u8
+    skipVotes = 0
+    voteTimer = 0'u8
+    ejectedPlayer = 0'u8
+
+  if playerIndex >= 0 and playerIndex < sim.players.len:
+    let
+      player = sim.players[playerIndex]
+      view = sim.playerView(playerIndex)
+      speedScale = max(1, sim.config.maxSpeed)
+    selfAlive = if player.alive: 1'u8 else: 0'u8
+    selfRole = uint8(ord(player.role))
+    selfScreenX = uint8(clamp(player.x - SpriteDrawOffX - view.cameraX, 0, 255))
+    selfScreenY = uint8(clamp(player.y - SpriteDrawOffY - view.cameraY, 0, 255))
+    selfVelX = uint8((clamp(player.velX, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    selfVelY = uint8((clamp(player.velY, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    if sim.config.killCooldownTicks > 0:
+      killCooldown = uint8(clamp(player.killCooldown * 255 div sim.config.killCooldownTicks, 0, 255))
+    if sim.config.taskCompleteTicks > 0:
+      taskProgress = uint8(clamp(player.taskProgress * 255 div sim.config.taskCompleteTicks, 0, 255))
+    activeTask = uint8(player.activeTask + 1)
+    buttonCallsUsed = uint8(player.buttonCallsUsed)
+    viewerIsGhost = if view.viewerIsGhost: 1'u8 else: 0'u8
+
+  if sim.phase == Voting and playerIndex >= 0 and playerIndex < sim.voteState.cursor.len:
+    voteCursor = uint8(clamp(sim.voteState.cursor[playerIndex] + 1, 0, 255))
+  if sim.phase == Voting:
+    for vote in sim.voteState.votes:
+      if vote == -2:
+        inc skipVotes
+    if sim.config.voteTimerTicks > 0:
+      voteTimer = uint8(clamp(sim.voteState.voteTimer * 255 div sim.config.voteTimerTicks, 0, 255))
+  if sim.phase == VoteResult:
+    ejectedPlayer = uint8(clamp(sim.voteState.ejectedPlayer + 1, 0, 255))
+
+  var offset = 0
+  template put(value: uint8) =
+    output[offset] = value
+    inc offset
+
+  put uint8(ord(sim.phase))
+  put uint8(clamp(playerIndex + 1, 0, 255))
+  put uint8(sim.players.len)
+  put selfAlive
+  put selfRole
+  put selfScreenX
+  put selfScreenY
+  put selfVelX
+  put selfVelY
+  put killCooldown
+  put taskProgress
+  put activeTask
+  put buttonCallsUsed
+  put uint8(sim.totalTasksRemaining())
+  put viewerIsGhost
+  put uint8(sim.tickCount mod 256)
+  put voteCursor
+  put uint8(skipVotes)
+  put voteTimer
+  put ejectedPlayer
+  put uint8(ord(sim.winner))
+  put(if sim.timeLimitReached: 1'u8 else: 0'u8)
+  doAssert offset == RenderStateHeaderFeatures
+
+proc writeRenderStateGrid(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    view = sim.playerView(playerIndex)
+    step = ScreenWidth div RenderStateGridSize
+  for gy in 0 ..< RenderStateGridSize:
+    for gx in 0 ..< RenderStateGridSize:
+      let
+        sx = gx * step + step div 2
+        sy = gy * step + step div 2
+        mx = view.cameraX + sx
+        my = view.cameraY + sy
+        index = RenderStateGridOffset + gy * RenderStateGridSize + gx
+      var color = SpaceColor
+      if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
+        let mapIdx = mapIndex(mx, my)
+        color = sim.mapPixels[mapIdx] and 0x0F
+        if sim.wallMask[mapIdx]:
+          color = color or 0x10
+        if sim.walkMask[mapIdx]:
+          color = color or 0x20
+      output[index] = color
+
+proc writeRenderStatePlayerSlot(
+  sim: SimServer,
+  playerIndex, targetIndex, sx, sy: int,
+  flags: uint8,
+  output: var openArray[uint8]
+) =
+  let
+    player = sim.players[targetIndex]
+    base = RenderStatePlayerOffset + targetIndex * RenderStatePlayerFeatures
+    roleFlag =
+      if targetIndex == playerIndex or sim.phase == GameOver:
+        if player.role == Imposter: RenderPlayerRoleImposter else: 0'u8
+      else:
+        0'u8
+  output[base] = RenderKindPlayer
+  output[base + 1] = uint8(clamp(sx, 0, 255))
+  output[base + 2] = uint8(clamp(sy, 0, 255))
+  output[base + 3] = player.color
+  output[base + 4] = flags or roleFlag
+  if targetIndex == playerIndex:
+    let speedScale = max(1, sim.config.maxSpeed)
+    output[base + 5] = uint8((clamp(player.velX, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    output[base + 6] = uint8((clamp(player.velY, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    if sim.config.killCooldownTicks > 0:
+      output[base + 7] = uint8(clamp(player.killCooldown * 255 div sim.config.killCooldownTicks, 0, 255))
+
+proc writeRenderStatePlayingPlayers(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    view = sim.playerView(playerIndex)
+    cameraX = view.cameraX
+    cameraY = view.cameraY
+  for i in 0 ..< sim.players.len:
+    let
+      p = sim.players[i]
+      sx = p.x - SpriteDrawOffX - cameraX
+      sy = p.y - SpriteDrawOffY - cameraY
+    var flags = RenderPlayerPresent
+    if i == playerIndex:
+      flags = flags or RenderPlayerSelf
+    if p.alive:
+      if i != playerIndex and
+          not sim.renderStateWorldPointVisible(
+            view,
+            p.x + CollisionW div 2,
+            p.y + CollisionH div 2
+          ):
+        continue
+      flags = flags or RenderPlayerAlive
+    elif view.viewerIsGhost:
+      flags = flags or RenderPlayerGhost
+    else:
+      continue
+    if p.flipH:
+      flags = flags or RenderPlayerFlipH
+    sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+
+proc writeRenderStateUiPlayers(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  let n = sim.players.len
+  if n == 0:
+    return
+  case sim.phase
+  of Lobby:
+    let startY = 26
+    for i in 0 ..< n:
+      let
+        col = i mod 6
+        row = i div 6
+        sx = 5 + col * 9
+        sy = startY + row * 9
+      var flags = RenderPlayerPresent or RenderPlayerAlive
+      if i == playerIndex:
+        flags = flags or RenderPlayerSelf
+      sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+  of Voting:
+    let
+      cellW = 16
+      cellH = 17
+      cols = min(n, 8)
+      totalW = cols * cellW
+      startX = (ScreenWidth - totalW) div 2
+      startY = 2
+    for i in 0 ..< n:
+      let
+        col = i mod cols
+        row = i div cols
+        cx = startX + col * cellW
+        cy = startY + row * cellH
+        sx = cx + (cellW - SpriteSize) div 2
+        sy = cy + 1
+      var flags = RenderPlayerPresent
+      if sim.players[i].alive:
+        flags = flags or RenderPlayerAlive
+      if i == playerIndex:
+        flags = flags or RenderPlayerSelf
+      if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
+          sim.voteState.cursor[playerIndex] == i:
+        flags = flags or RenderPlayerSelected
+      sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+      var votes = 0
+      for vote in sim.voteState.votes:
+        if vote == i:
+          inc votes
+      output[RenderStatePlayerOffset + i * RenderStatePlayerFeatures + 7] =
+        uint8(clamp(votes, 0, 255))
+  of VoteResult:
+    let ej = sim.voteState.ejectedPlayer
+    if ej >= 0 and ej < n:
+      var flags = RenderPlayerPresent or RenderPlayerSelected
+      if sim.players[ej].alive:
+        flags = flags or RenderPlayerAlive
+      if ej == playerIndex:
+        flags = flags or RenderPlayerSelf
+      sim.writeRenderStatePlayerSlot(
+        playerIndex,
+        ej,
+        ScreenWidth div 2 - SpriteSize div 2,
+        ScreenHeight div 2 - SpriteSize div 2,
+        flags,
+        output
+      )
+  of GameOver:
+    let
+      rowH = 14
+      rowsPerCol = 8
+      colW = ScreenWidth div 2
+      iconOffsetX = 4
+      startY = 16
+    for i in 0 ..< n:
+      let
+        col = i div rowsPerCol
+        row = i mod rowsPerCol
+        baseX = min(col, 1) * colW
+        y = startY + row * rowH
+        iconX = baseX + iconOffsetX
+        iconY = y + (rowH - SpriteSize) div 2
+      var flags = RenderPlayerPresent
+      if sim.players[i].alive:
+        flags = flags or RenderPlayerAlive
+      if i == playerIndex:
+        flags = flags or RenderPlayerSelf
+      sim.writeRenderStatePlayerSlot(playerIndex, i, iconX, iconY, flags, output)
+  of Playing:
+    discard
+
+proc writeRenderStateBodies(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    view = sim.playerView(playerIndex)
+    cameraX = view.cameraX
+    cameraY = view.cameraY
+  var slot = 0
+  for body in sim.bodies:
+    if slot >= RenderStateBodySlots:
+      break
+    if not sim.renderStateWorldPointVisible(
+      view,
+      body.x + CollisionW div 2,
+      body.y + CollisionH div 2
+    ):
+      continue
+    let
+      base = RenderStateBodyOffset + slot * RenderStateBodyFeatures
+      sx = body.x - SpriteDrawOffX - cameraX
+      sy = body.y - SpriteDrawOffY - cameraY
+    output[base] = RenderKindBody
+    output[base + 1] = uint8(clamp(sx, 0, 255))
+    output[base + 2] = uint8(clamp(sy, 0, 255))
+    output[base + 3] = body.color
+    output[base + 4] = 1
+    inc slot
+
+proc writeRenderStateTasks(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    player = sim.players[playerIndex]
+    view = sim.playerView(playerIndex)
+    cameraX = view.cameraX
+    cameraY = view.cameraY
+  if player.role != Crewmate:
+    return
+  for taskIndex in 0 ..< min(sim.tasks.len, RenderStateTaskSlots):
+    if not player.hasTask(taskIndex):
+      continue
+    let
+      task = sim.tasks[taskIndex]
+      completed =
+        playerIndex < task.completed.len and task.completed[playerIndex]
+      bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+      bobY =
+        if player.activeTask == taskIndex:
+          0
+        else:
+          bob[(sim.tickCount div 3) mod bob.len]
+      iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
+      iconSy = task.y - SpriteSize - 2 + bobY - cameraY
+      iconCenterX = task.x + task.w div 2
+      iconCenterY = task.y - SpriteSize div 2 - 2 + bobY
+      iconOnScreen =
+        iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
+        iconSx < ScreenWidth and iconSy < ScreenHeight
+      base = RenderStateTaskOffset + taskIndex * RenderStateTaskFeatures
+    var flags = RenderTaskAssigned
+    if completed:
+      flags = flags or RenderTaskCompleted
+    else:
+      flags = flags or RenderTaskIncomplete
+    if player.activeTask == taskIndex:
+      flags = flags or RenderTaskActive
+    output[base] = RenderKindTask
+    output[base + 3] = flags
+    if sim.config.taskCompleteTicks > 0:
+      output[base + 4] = uint8(clamp(player.taskProgress * 255 div sim.config.taskCompleteTicks, 0, 255))
+    output[base + 7] = uint8(taskIndex + 1)
+    if completed:
+      continue
+    if iconOnScreen:
+      flags = flags or RenderTaskIconVisible
+      output[base + 1] = uint8(clamp(iconSx, 0, 255))
+      output[base + 2] = uint8(clamp(iconSy, 0, 255))
+    elif sim.config.showTaskArrows:
+      let
+        px = float(player.x + CollisionW div 2 - view.cameraX)
+        py = float(player.y + CollisionH div 2 - view.cameraY)
+        dx = float(iconCenterX - view.cameraX) - px
+        dy = float(iconCenterY - view.cameraY) - py
+      if abs(dx) >= 0.5 or abs(dy) >= 0.5:
+        var ex, ey: float
+        let
+          minX = 0.0
+          maxX = float(ScreenWidth - 1)
+          minY = 0.0
+          maxY = float(ScreenHeight - 1)
+        if abs(dx) > abs(dy):
+          if dx > 0:
+            ex = maxX
+          else:
+            ex = minX
+          ey = py + dy * (ex - px) / dx
+          ey = clamp(ey, minY, maxY)
+        else:
+          if dy > 0:
+            ey = maxY
+          else:
+            ey = minY
+          ex = px + dx * (ey - py) / dy
+          ex = clamp(ex, minX, maxX)
+        flags = flags or RenderTaskArrowVisible
+        output[base + 5] = uint8(int(ex))
+        output[base + 6] = uint8(int(ey))
+    output[base + 3] = flags
+
+proc writeRenderStateObservation*(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  ## Writes the compact render-source observation used before pixel drawing.
+  if output.len != RenderStateFeatures:
+    raise newException(
+      AmongThemError,
+      "Render state observation must be " & $RenderStateFeatures & " bytes."
+    )
+  for i in 0 ..< output.len:
+    output[i] = 0
+  sim.writeRenderStateHeader(playerIndex, output)
+  sim.writeRenderStateGrid(playerIndex, output)
+  if sim.phase == Playing:
+    sim.writeRenderStatePlayingPlayers(playerIndex, output)
+    sim.writeRenderStateBodies(playerIndex, output)
+    sim.writeRenderStateTasks(playerIndex, output)
+  else:
+    sim.writeRenderStateUiPlayers(playerIndex, output)
 
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
