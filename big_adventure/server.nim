@@ -42,6 +42,7 @@ type
   ReplayData = object
     gameName: string
     gameVersion: string
+    configJson: string
     joins: seq[ReplayJoin]
     leaves: seq[ReplayLeave]
     inputs: seq[ReplayInput]
@@ -148,7 +149,7 @@ proc readReplayString(bytes: string, offset: var int): string =
   result = bytes[offset ..< offset + length]
   offset += length
 
-proc openReplayWriter(path: string): ReplayWriter =
+proc openReplayWriter(path: string, configJson: string): ReplayWriter =
   ## Opens a replay file and writes the header.
   if path.len == 0:
     return
@@ -161,6 +162,7 @@ proc openReplayWriter(path: string): ReplayWriter =
   result.file.writeReplayString(GameName)
   result.file.writeReplayString(GameVersion)
   result.file.writeU64(uint64(toUnix(getTime())) * 1000'u64)
+  result.file.writeReplayString(configJson)
 
 proc closeReplayWriter(writer: var ReplayWriter) =
   ## Closes a replay writer if it is open.
@@ -229,6 +231,7 @@ proc loadReplay(path: string): ReplayData =
   result.gameName = bytes.readReplayString(offset)
   result.gameVersion = bytes.readReplayString(offset)
   discard bytes.readU64(offset)
+  result.configJson = bytes.readReplayString(offset)
   if result.gameName != GameName:
     raise newException(ReplayError, "Replay game name does not match")
   if result.gameVersion != GameVersion:
@@ -565,11 +568,16 @@ proc runServerLoop*(
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
   let replayLoaded = loadReplayPath.len > 0
+  let replayData =
+    if replayLoaded:
+      loadReplay(loadReplayPath)
+    else:
+      ReplayData()
   var
-    replayWriter = openReplayWriter(saveReplayPath)
+    replayWriter = openReplayWriter(saveReplayPath, "{}")
     replayPlayer =
       if replayLoaded:
-        initReplayPlayer(loadReplay(loadReplayPath))
+        initReplayPlayer(replayData)
       else:
         ReplayPlayer()
   defer:

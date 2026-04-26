@@ -8,7 +8,7 @@ const
   GameName* = "big_adventure"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
-  ReplayFormatVersion* = 1'u16
+  ReplayFormatVersion* = 2'u16
   ReplayTickHashRecord* = 0x01'u8
   ReplayInputRecord* = 0x02'u8
   ReplayJoinRecord* = 0x03'u8

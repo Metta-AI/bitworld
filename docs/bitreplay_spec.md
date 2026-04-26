@@ -28,6 +28,7 @@ length followed by that many bytes. Strings are not null terminated.
 | Field | Type | Notes |
 | --- | --- | --- |
 | Header | `Header` | Replay identity and format data |
+| Initial config | `string` | JSON object used to create game config |
 | Records | `Record[]` | Tick hash and input records |
 
 All records start with a single record type byte. Unknown record types are
@@ -40,7 +41,7 @@ The header must be the first bytes in the file.
 | Field | Type | Notes |
 | --- | --- | --- |
 | Magic | `u8[8]` | ASCII `BITWORLD` |
-| Format version | `u16` | Must be `1` |
+| Format version | `u16` | Must be `2` |
 | Game name | `string` | Name of the game |
 | Game version | `string` | Version of the game |
 | Start time | `u64` | Milliseconds since Unix epoch, or `0` |
@@ -50,6 +51,19 @@ If either value does not match exactly, the game must not load the replay.
 
 `Start time` is informational. The simulation must use input timestamps relative
 to the start of the game, not wall clock time.
+
+## Initial Config
+
+The initial config must appear immediately after the header and before the
+first record. It is encoded as a `string` containing a UTF-8 JSON object.
+
+The config JSON must describe the game configuration used to create the replay.
+A writer should store the complete effective config after applying defaults,
+config files, and command line config values.
+
+A loader must create the simulation config from the replay config JSON before
+starting replay. Live config arguments must not change replay simulation
+behavior. A game with no configurable gameplay state should write `{}`.
 
 ## Records
 
@@ -178,6 +192,7 @@ A loader must reject a replay when:
 - The format version is not supported.
 - The game name does not match the running game.
 - The game version does not match the running game.
+- The initial config JSON is truncated or invalid for the game.
 - A record is truncated.
 - A record type is unknown.
 - Tick hash records are missing or not strictly increasing.
@@ -196,6 +211,7 @@ version must change too.
 A writer should record:
 
 - One header at the start of the file.
+- One initial config JSON string after the header.
 - One player join record whenever a player joins.
 - One player leave record whenever a player leaves.
 - One tick hash record for every simulation tick.

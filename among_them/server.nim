@@ -43,6 +43,7 @@ type
   ReplayData = object
     gameName: string
     gameVersion: string
+    configJson: string
     joins: seq[ReplayJoin]
     leaves: seq[ReplayLeave]
     inputs: seq[ReplayInput]
@@ -65,6 +66,8 @@ type
     looping: bool
     speedIndex: int
 
+const
+  PlaybackSpeeds = [1, 2, 3, 4, 8]
 
 proc tickTime(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
@@ -150,7 +153,7 @@ proc readReplayString(bytes: string, offset: var int): string =
   result = bytes[offset ..< offset + length]
   offset += length
 
-proc openReplayWriter(path: string): ReplayWriter =
+proc openReplayWriter(path: string, configJson: string): ReplayWriter =
   ## Opens a replay file and writes the header.
   if path.len == 0:
     return
@@ -163,6 +166,7 @@ proc openReplayWriter(path: string): ReplayWriter =
   result.file.writeReplayString(GameName)
   result.file.writeReplayString(GameVersion)
   result.file.writeU64(uint64(toUnix(getTime())) * 1000'u64)
+  result.file.writeReplayString(configJson)
 
 proc closeReplayWriter(writer: var ReplayWriter) =
   ## Closes a replay writer if it is open.
@@ -231,6 +235,7 @@ proc loadReplay(path: string): ReplayData =
   result.gameName = bytes.readReplayString(offset)
   result.gameVersion = bytes.readReplayString(offset)
   discard bytes.readU64(offset)
+  result.configJson = bytes.readReplayString(offset)
   if result.gameName != GameName:
     raise newException(ReplayError, "Replay game name does not match")
   if result.gameVersion != GameVersion:
@@ -293,11 +298,7 @@ proc initReplayPlayer(data: ReplayData): ReplayPlayer =
 
 proc replaySpeed(replay: ReplayPlayer): int =
   ## Returns the current integer replay speed.
-  case replay.speedIndex
-  of 0: 1
-  of 1: 2
-  of 2: 4
-  else: 8
+  PlaybackSpeeds[clamp(replay.speedIndex, 0, PlaybackSpeeds.high)]
 
 proc replayMaxTick(replay: ReplayPlayer): int =
   ## Returns the final tick available in the replay.
@@ -422,17 +423,19 @@ proc applyReplayCommand(
   of 'P':
     replay.playing = false
   of '+', '=':
-    replay.speedIndex = min(replay.speedIndex + 1, 3)
+    replay.speedIndex = min(replay.speedIndex + 1, PlaybackSpeeds.high)
   of '-', '_':
     replay.speedIndex = max(replay.speedIndex - 1, 0)
   of '1':
     replay.speedIndex = 0
   of '2':
     replay.speedIndex = 1
-  of '4':
+  of '3':
     replay.speedIndex = 2
-  of '8':
+  of '4':
     replay.speedIndex = 3
+  of '8':
+    replay.speedIndex = 4
   of ',', '<':
     replay.playing = false
     replay.seekReplay(sim, 0)
@@ -449,6 +452,30 @@ proc applyReplayCommand(
     replay.seekReplay(sim, sim.tickCount + ReplayFps * 5)
   else:
     discard
+
+proc applySpeedCommand(speedIndex: var int, command: char) =
+  ## Applies one live playback speed command.
+  case command
+  of '+', '=':
+    speedIndex = min(speedIndex + 1, PlaybackSpeeds.high)
+  of '-', '_':
+    speedIndex = max(speedIndex - 1, 0)
+  of '1':
+    speedIndex = 0
+  of '2':
+    speedIndex = 1
+  of '3':
+    speedIndex = 2
+  of '4':
+    speedIndex = 3
+  of '8':
+    speedIndex = 4
+  else:
+    discard
+
+proc playbackSpeed(speedIndex: int): int =
+  ## Returns the live playback speed for an index.
+  PlaybackSpeeds[clamp(speedIndex, 0, PlaybackSpeeds.high)]
 
 var appState: WebSocketAppState
 
@@ -594,11 +621,20 @@ proc runServerLoop*(
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
   let replayLoaded = loadReplayPath.len > 0
+  let replayData =
+    if replayLoaded:
+      loadReplay(loadReplayPath)
+    else:
+      ReplayData()
+  var simConfig = config
+  if replayLoaded:
+    simConfig = defaultGameConfig()
+    simConfig.update(replayData.configJson)
   var
-    replayWriter = openReplayWriter(saveReplayPath)
+    replayWriter = openReplayWriter(saveReplayPath, config.configJson())
     replayPlayer =
       if replayLoaded:
-        initReplayPlayer(loadReplay(loadReplayPath))
+        initReplayPlayer(replayData)
       else:
         ReplayPlayer()
   defer:
@@ -622,9 +658,10 @@ proc runServerLoop*(
   httpServer.waitUntilReady()
 
   var
-    sim = initSimServer(config)
+    sim = initSimServer(simConfig)
     lastTick = getMonoTime()
     prevInputs: seq[InputState]
+    liveSpeedIndex = 0
 
   while true:
     var
@@ -725,9 +762,16 @@ proc runServerLoop*(
           replayPlayer.seekReplay(sim, 0)
           replayPlayer.playing = true
     else:
-      sim.step(inputs, prevInputs)
+      for command in replayCommands:
+        liveSpeedIndex.applySpeedCommand(command)
+      var stepPrevInputs = prevInputs
+      for _ in 0 ..< playbackSpeed(liveSpeedIndex):
+        sim.step(inputs, stepPrevInputs)
+        stepPrevInputs = inputs
+        replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+        if sim.needsReregister:
+          break
       prevInputs = inputs
-      replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
     let rewardPacket = sim.buildRewardPacket()
 
@@ -778,11 +822,14 @@ proc runServerLoop*(
       let packet = sim.buildSpriteProtocolUpdates(
         globalStates[i],
         nextState,
-        if replayLoaded: sim.tickCount else: -1,
+        sim.tickCount,
         replayPlayer.playing,
-        replayPlayer.replaySpeed(),
-        replayPlayer.replayMaxTick(),
-        replayPlayer.looping
+        if replayLoaded: replayPlayer.replaySpeed()
+        else: playbackSpeed(liveSpeedIndex),
+        if replayLoaded: replayPlayer.replayMaxTick()
+        else: sim.tickCount,
+        replayPlayer.looping,
+        replayLoaded
       )
       if packet.len == 0:
         continue

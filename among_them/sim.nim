@@ -8,7 +8,7 @@ const
   GameName* = "among_them"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
-  ReplayFormatVersion* = 1'u16
+  ReplayFormatVersion* = 2'u16
   ReplayTickHashRecord* = 0x01'u8
   ReplayInputRecord* = 0x02'u8
   ReplayJoinRecord* = 0x03'u8
@@ -48,6 +48,7 @@ const
   GameOverTicks* = 360
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
+  ButtonCalls* = 1
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
@@ -160,6 +161,7 @@ type
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
+    buttonCalls*: int
 
   Player* = object
     x*, y*: int
@@ -175,6 +177,7 @@ type
     taskProgress*: int
     activeTask*: int
     ventCooldown*: int
+    buttonCallsUsed*: int
     assignedTasks*: seq[int]
     reward*: int
 
@@ -361,7 +364,8 @@ proc defaultGameConfig*(): GameConfig =
     gameOverTicks: GameOverTicks,
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
-    showTaskBubbles: true
+    showTaskBubbles: true,
+    buttonCalls: ButtonCalls
   )
 
 proc requireConfigObject(node: JsonNode) =
@@ -399,6 +403,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
   if config.tasksPerPlayer < 0:
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
+  if config.buttonCalls < 0:
+    raise newException(AmongThemError, "Config field buttonCalls must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
@@ -432,9 +438,37 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
+  node.readConfigInt("buttonCalls", config.buttonCalls)
+  node.readConfigInt("numberOfButtonCalls", config.buttonCalls)
   node.readConfigBool("showTaskArrows", config.showTaskArrows)
   node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
   config.validate()
+
+proc configJson*(config: GameConfig): string =
+  ## Returns the complete replay JSON for a gameplay config.
+  let node = %*{
+    "motionScale": config.motionScale,
+    "accel": config.accel,
+    "frictionNum": config.frictionNum,
+    "frictionDen": config.frictionDen,
+    "maxSpeed": config.maxSpeed,
+    "stopThreshold": config.stopThreshold,
+    "killRange": config.killRange,
+    "killCooldownTicks": config.killCooldownTicks,
+    "taskCompleteTicks": config.taskCompleteTicks,
+    "ventRange": config.ventRange,
+    "reportRange": config.reportRange,
+    "voteResultTicks": config.voteResultTicks,
+    "minPlayers": config.minPlayers,
+    "imposterCount": config.imposterCount,
+    "voteTimerTicks": config.voteTimerTicks,
+    "gameOverTicks": config.gameOverTicks,
+    "tasksPerPlayer": config.tasksPerPlayer,
+    "buttonCalls": config.buttonCalls,
+    "showTaskArrows": config.showTaskArrows,
+    "showTaskBubbles": config.showTaskBubbles
+  }
+  $node
 
 proc mapIndex*(x, y: int): int =
   y * MapWidth + x
@@ -478,6 +512,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.taskProgress)
     result.mixHashInt(player.activeTask)
     result.mixHashInt(player.ventCooldown)
+    result.mixHashInt(player.buttonCallsUsed)
     result.mixHashInt(player.reward)
     result.mixHashInt(player.assignedTasks.len)
     for task in player.assignedTasks:
@@ -798,11 +833,14 @@ proc tryCallButton*(sim: var SimServer, callerIndex: int) =
   let p = sim.players[callerIndex]
   if not p.alive:
     return
+  if p.buttonCallsUsed >= sim.config.buttonCalls:
+    return
   let
     px = p.x + CollisionW div 2
     py = p.y + CollisionH div 2
   if px >= ButtonX and px < ButtonX + ButtonW and
       py >= ButtonY and py < ButtonY + ButtonH:
+    inc sim.players[callerIndex].buttonCallsUsed
     sim.startVote()
 
 proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState) =

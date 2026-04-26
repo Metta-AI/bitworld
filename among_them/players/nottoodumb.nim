@@ -1264,16 +1264,6 @@ proc buttonGoal(
     return
   (true, -1, bestX, bestY, "Button", TaskMaybe)
 
-proc buttonReady(bot: Bot): bool =
-  ## Returns true when the player can press the emergency button.
-  let
-    x = bot.playerWorldX()
-    y = bot.playerWorldY()
-  if x < ButtonX or x >= ButtonX + ButtonW or
-      y < ButtonY or y >= ButtonY + ButtonH:
-    return false
-  abs(bot.velocityX) + abs(bot.velocityY) <= 1
-
 proc nearestTaskGoal(
   bot: Bot
 ): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
@@ -1509,16 +1499,6 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   bot.thought("at task " & name & ", holding action")
   ButtonA
 
-proc pressButtonAction(bot: var Bot): uint8 =
-  ## Presses only the action button while standing on the button.
-  bot.intent = "all tasks done, pressing button"
-  bot.desiredMask = ButtonA
-  bot.controllerMask = ButtonA
-  bot.hasPathStep = false
-  bot.path.setLen(0)
-  bot.thought("all tasks done, pressing button")
-  ButtonA
-
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   let centerStart = getMonoTime()
@@ -1570,8 +1550,6 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.goalY = goal.y
   bot.goalIndex = goal.index
   bot.goalName = goal.name
-  if goal.index < 0 and bot.buttonReady():
-    return bot.pressButtonAction()
   if goal.state == TaskMandatory and
       bot.taskGoalReady(goal):
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
@@ -1582,8 +1560,12 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
   bot.pathStep = bot.choosePathStep()
   bot.hasPathStep = bot.pathStep.found
-  bot.intent = "A* to " & goal.name & " path=" & $bot.path.len &
-    " state=" & $goal.state
+  bot.intent =
+    if goal.index < 0:
+      "gather at " & goal.name & " path=" & $bot.path.len
+    else:
+      "A* to " & goal.name & " path=" & $bot.path.len &
+        " state=" & $goal.state
   if goal.state == TaskMandatory and
       heuristic(
         bot.playerWorldX(),
