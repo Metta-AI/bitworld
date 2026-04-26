@@ -1753,12 +1753,12 @@ class BitWorldPolicy(nn.Module):
         x = observations.float()
         if self.observation_mode == "pixels":
             x = x.div(15.0)
-        x = x.reshape(-1, *self.obs_shape)
-        x = self.encoder(x)
+        policy_input = x.reshape(-1, *self.obs_shape)
+        x = self.encoder(policy_input)
         x = self.body(x)
         logits = self.policy_head(x)
         if self.teacher_logit_bias > 0:
-            flat_observations = observations.float().reshape(observations.shape[0], -1)
+            flat_observations = policy_input.reshape(policy_input.shape[0], -1)
             teacher_start = (self.frame_stack - 1) * STATE_FEATURES + STATE_TEACHER_FEATURE_OFFSET
             teacher_end = teacher_start + STATE_TEACHER_ACTION_COUNT
             teacher_logits = flat_observations[:, teacher_start:teacher_end]
