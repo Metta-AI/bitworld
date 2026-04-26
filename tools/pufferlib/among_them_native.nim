@@ -401,6 +401,16 @@ proc initNativeEnv(env: var NativeEnv) =
 proc bitworld_at_last_error*(): cstring {.cdecl, exportc, dynlib.} =
   lastError.cstring
 
+proc bitworld_at_tick_count*(handle: cint): cint {.cdecl, exportc, dynlib.} =
+  if validHandle(handle):
+    return cint(envs[int(handle)].sim.tickCount)
+  setLastError("Invalid Among Them native env handle.")
+
+proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
+  if validHandle(handle):
+    return envs[int(handle)].sim.gameHash()
+  discard setLastError("Invalid Among Them native env handle.")
+
 proc bitworld_at_create*(seed, playerCount: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
