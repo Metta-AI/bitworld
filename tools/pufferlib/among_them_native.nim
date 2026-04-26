@@ -580,3 +580,4 @@ proc bitworld_at_step_rewards*(
 proc bitworld_at_close*(handle: cint) {.cdecl, exportc, dynlib.} =
   if validHandle(handle):
     envs[int(handle)] = nil
+    taskDistanceMapCache.clear()
