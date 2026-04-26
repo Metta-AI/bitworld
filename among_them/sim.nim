@@ -27,7 +27,7 @@ const
   FrictionDen* = 256
   MaxSpeed* = 704
   StopThreshold* = 8
-  TargetFps* = 24.0
+  TargetFps* = 24
   SpaceColor* = 0'u8
   TintColor* = 3'u8
   ShadeTintColor* = 9'u8
@@ -147,7 +147,6 @@ type
     frictionDen*: int
     maxSpeed*: int
     stopThreshold*: int
-    targetFps*: float
     killRange*: int
     killCooldownTicks*: int
     taskCompleteTicks*: int
@@ -350,7 +349,6 @@ proc defaultGameConfig*(): GameConfig =
     frictionDen: FrictionDen,
     maxSpeed: MaxSpeed,
     stopThreshold: StopThreshold,
-    targetFps: TargetFps,
     killRange: KillRange,
     killCooldownTicks: KillCooldownTicks,
     taskCompleteTicks: TaskCompleteTicks,
@@ -380,19 +378,6 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
     raise newException(AmongThemError, "Config field " & name & " must be an integer.")
   value = item.getInt()
 
-proc readConfigFloat(node: JsonNode, name: string, value: var float) =
-  ## Reads one optional float config field.
-  if not node.hasKey(name):
-    return
-  let item = node[name]
-  case item.kind
-  of JInt:
-    value = float(item.getInt())
-  of JFloat:
-    value = item.getFloat()
-  else:
-    raise newException(AmongThemError, "Config field " & name & " must be a number.")
-
 proc readConfigBool(node: JsonNode, name: string, value: var bool) =
   ## Reads one optional boolean config field.
   if not node.hasKey(name):
@@ -408,8 +393,6 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field motionScale must be positive.")
   if config.frictionDen <= 0:
     raise newException(AmongThemError, "Config field frictionDen must be positive.")
-  if config.targetFps <= 0:
-    raise newException(AmongThemError, "Config field targetFps must be positive.")
   if config.minPlayers < 1:
     raise newException(AmongThemError, "Config field minPlayers must be at least 1.")
   if config.imposterCount < 0:
@@ -438,7 +421,6 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("frictionDen", config.frictionDen)
   node.readConfigInt("maxSpeed", config.maxSpeed)
   node.readConfigInt("stopThreshold", config.stopThreshold)
-  node.readConfigFloat("targetFps", config.targetFps)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
