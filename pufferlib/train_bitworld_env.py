@@ -6,13 +6,14 @@ import os
 from pathlib import Path
 
 from bitworld_pufferlib import (
+    AMONG_THEM_MAX_PLAYERS,
     ENV_SPECS,
     OBSERVATION_MODES,
     evaluate_policy,
-    get_env_spec,
     load_policy_checkpoint,
     resolve_train_device,
     train_policy,
+    with_server_players,
 )
 
 
@@ -21,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env", choices=sorted(ENV_SPECS), default="among_them")
     parser.add_argument("--total-timesteps", type=int)
     parser.add_argument("--num-envs", type=int, default=8)
+    parser.add_argument("--players", type=int, help=f"Among Them players per game, 1-{AMONG_THEM_MAX_PLAYERS}")
     parser.add_argument("--episode-steps", type=int)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--learning-rate", type=float)
@@ -40,7 +42,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     rank = int(os.environ.get("RANK", "0"))
-    spec = get_env_spec(args.env)
+    spec = with_server_players(args.env, args.players)
     total_timesteps = args.total_timesteps if args.total_timesteps is not None else spec.default_total_timesteps
     episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
     learning_rate = args.learning_rate if args.learning_rate is not None else spec.learning_rate
