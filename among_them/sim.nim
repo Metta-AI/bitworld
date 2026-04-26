@@ -29,6 +29,7 @@ const
   StopThreshold* = 8
   TargetFps* = 24
   SpaceColor* = 0'u8
+  MapVoidColor* = 12'u8
   TintColor* = 3'u8
   ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
@@ -53,9 +54,8 @@ const
   ButtonCalls* = 1
   VoteChatVisibleMessages* = 4
   VoteChatCharsPerLine* = 15
-  VoteChatLineCount* = 2
+  VoteChatLineCount* = 5
   VoteChatMaxChars* = VoteChatCharsPerLine * VoteChatLineCount
-  VoteChatRowH* = 19
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
@@ -455,6 +455,17 @@ proc sliceChatLine*(text: string, lineIndex: int): string =
     return ""
   let endIndex = min(text.len, startIndex + VoteChatCharsPerLine)
   text[startIndex ..< endIndex]
+
+proc chatLineCount*(text: string): int =
+  ## Returns the visible line count for one chat message.
+  max(1, min(
+    VoteChatLineCount,
+    (text.len + VoteChatCharsPerLine - 1) div VoteChatCharsPerLine
+  ))
+
+proc chatMessageHeight*(text: string): int =
+  ## Returns the pixel height for one chat message row.
+  max(SpriteSize, text.chatLineCount() * 9) + 2
 
 proc defaultGameConfig*(): GameConfig =
   ## Returns the default Among Them gameplay config.
@@ -1409,14 +1420,22 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
   if chatH <= 0:
     return
   sim.fb.fillRect(chatX, chatY, chatW, chatH, 0)
-  sim.fb.strokeRect(chatX, chatY, chatW, chatH, 1)
-  for i in 0 ..< sim.chatMessages.len:
-    let
-      message = sim.chatMessages[i]
-      rowY = chatY + 2 + i * VoteChatRowH
-      iconY = rowY + 3
-    if rowY + VoteChatRowH > chatY + chatH:
+  var
+    visible: seq[int] = @[]
+    usedH = 0
+  for i in countdown(sim.chatMessages.high, 0):
+    let messageH = sim.chatMessages[i].text.chatMessageHeight()
+    if usedH + messageH > chatH - 4:
       break
+    visible.add(i)
+    usedH += messageH
+  var rowY = chatY + 2
+  for j in countdown(visible.high, 0):
+    let
+      message = sim.chatMessages[visible[j]]
+      lineCount = message.text.chatLineCount()
+      messageH = message.text.chatMessageHeight()
+      iconY = rowY + max(0, (lineCount * 9 - SpriteSize) div 2)
     sim.fb.blitSpriteOutlined(
       sim.playerSprite,
       iconX,
@@ -1424,13 +1443,14 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
       message.color,
       false
     )
-    for lineIndex in 0 ..< VoteChatLineCount:
+    for lineIndex in 0 ..< lineCount:
       sim.fb.blitAsciiText(
         sim.asciiSprites,
         message.text.sliceChatLine(lineIndex),
         textX,
         rowY + lineIndex * 9
       )
+    rowY += messageH
 
 proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
@@ -2080,7 +2100,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
     return sim.buildVoteFrame(playerIndex)
   if sim.phase == VoteResult:
     return sim.buildResultFrame(playerIndex)
-  sim.fb.clearFrame(SpaceColor)
+  sim.fb.clearFrame(MapVoidColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     sim.fb.packFramebuffer()
     return sim.fb.packed
@@ -2112,8 +2132,9 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
           idx = sy * ScreenWidth + sx
         if not sim.shadowBuf[idx]:
           continue
-        if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight and
-            sim.wallMask[mapIndex(mx, my)]:
+        if mx < 0 or my < 0 or mx >= MapWidth or my >= MapHeight:
+          continue
+        if sim.wallMask[mapIndex(mx, my)]:
           continue
         sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
 
@@ -2285,20 +2306,45 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   result.tasks = @[
     TaskStation(name: "Empty Garbage", x: 554, y: 465, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Comms)", x: 667, y: 419, w: 16, h: 16),
-    TaskStation(name: "Fix Wires (Storage)", x: 574, y: 269, w: 16, h: 16),
-    TaskStation(name: "Fix Wires (Electrical)", x: 444, y: 31, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Electrical)", x: 366, y: 289, w: 16, h: 16),
+    TaskStation(name: "Upload Data From Communications", x: 667, y: 419, w: 16, h: 16),
+    TaskStation(name: "Fix Wires", x: 574, y: 269, w: 16, h: 16),
+    TaskStation(name: "Fix Wires", x: 444, y: 31, w: 16, h: 16),
+    TaskStation(name: "Fix Wires", x: 510, y: 322, w: 16, h: 16),
+    TaskStation(name: "Fix Wires", x: 392, y: 296, w: 16, h: 16),
+    TaskStation(name: "Fix Wires", x: 838, y: 222, w: 16, h: 16),
+    TaskStation(name: "Download Data", x: 352, y: 293, w: 16, h: 16),
     TaskStation(name: "Calibrate Distributor", x: 428, y: 295, w: 16, h: 16),
     TaskStation(name: "Submit Scan", x: 400, y: 234, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 397, y: 295, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 372, y: 293, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 760, y: 95, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 868, y: 196, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 186, y: 328, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 202, y: 82, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 297, y: 206, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 146, y: 209, w: 16, h: 16),
+    TaskStation(name: "Start Reactor", x: 123, y: 244, w: 16, h: 16),
+    TaskStation(name: "Unlock Manifolds", x: 107, y: 186, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 764, y: 349, w: 16, h: 16),
+    TaskStation(name: "Prime Shields", x: 703, y: 419, w: 16, h: 16),
+    TaskStation(name: "Divert Power", x: 715, y: 196, w: 16, h: 16),
+    TaskStation(name: "Clear Asteroids", x: 731, y: 95, w: 16, h: 16),
     TaskStation(name: "Inspect Sample", x: 416, y: 222, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Admin)", x: 597, y: 267, w: 16, h: 16),
-    TaskStation(name: "Align Engine (Lower)", x: 162, y: 398, w: 16, h: 16),
-    TaskStation(name: "Align Engine (Upper)", x: 162, y: 156, w: 16, h: 16),
+    TaskStation(name: "Upload Data", x: 597, y: 267, w: 16, h: 16),
+    TaskStation(name: "Align Engine Output", x: 162, y: 398, w: 16, h: 16),
+    TaskStation(name: "Align Engine Output", x: 162, y: 156, w: 16, h: 16),
     TaskStation(name: "Swipe Card", x: 670, y: 306, w: 16, h: 16),
-    TaskStation(name: "Upload Data (Cafeteria)", x: 612, y: 39, w: 16, h: 16),
-    TaskStation(name: "Empty Garbage (Upper)", x: 630, y: 60, w: 16, h: 16),
+    TaskStation(name: "Download Data", x: 612, y: 39, w: 16, h: 16),
+    TaskStation(name: "Chart Course", x: 896, y: 225, w: 16, h: 16),
+    TaskStation(name: "Stabilize Steering", x: 888, y: 250, w: 16, h: 16),
+    TaskStation(name: "Download Data", x: 888, y: 196, w: 16, h: 16),
+    TaskStation(name: "Download Data", x: 626, y: 432, w: 16, h: 16),
+    TaskStation(name: "Fuel Engines", x: 486, y: 419, w: 16, h: 16),
+    TaskStation(name: "Fuel Engines", x: 186, y: 393, w: 16, h: 16),
+    TaskStation(name: "Fuel Engines", x: 186, y: 151, w: 16, h: 16),
+    TaskStation(name: "Clean O2 Filter", x: 667, y: 197, w: 16, h: 16),
+    TaskStation(name: "Download Data", x: 723, y: 63, w: 16, h: 16),
+    TaskStation(name: "Empty Garbage", x: 630, y: 60, w: 16, h: 16),
+    TaskStation(name: "Empty Garbage", x: 651, y: 212, w: 16, h: 16),
   ]
 
   result.vents = @[

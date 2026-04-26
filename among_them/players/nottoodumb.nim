@@ -11,7 +11,7 @@ const
   FrameFitMinCompared = 12000
   LocalFrameSearchRadius = 8
   PlayerIgnoreRadius = 9
-  InterstitialBlackPercent = 92
+  InterstitialBlackPercent = 30
   HomeSearchRadius = 20
   PlayerDefaultPort = DefaultPort
   ViewerWindowWidth = 1820
@@ -72,6 +72,17 @@ const
   GhostMaxMisses = 9
   GhostMinStablePixels = 6
   GhostMinTintPixels = 6
+  PlayerColorCount = PlayerColors.len
+  PlayerColorNames = [
+    "red",
+    "orange",
+    "yellow",
+    "cyan",
+    "pink",
+    "lime",
+    "blue",
+    "white"
+  ]
 
 type
   TileKnowledge = enum
@@ -120,6 +131,7 @@ type
   CrewmateMatch = object
     x: int
     y: int
+    colorIndex: int
     flipH: bool
 
   BodyMatch = object
@@ -195,6 +207,7 @@ type
     lastBodySeenY: int
     lastBodyReportX: int
     lastBodyReportY: int
+    lastSeenTicks: array[PlayerColorCount, int]
     intent: string
     goalX: int
     goalY: int
@@ -293,6 +306,14 @@ proc buttonCameraX(): int =
 proc buttonCameraY(): int =
   ## Returns the initial camera Y guess around the emergency button.
   clamp(ButtonY + ButtonH div 2 - PlayerWorldOffY, minCameraY(), maxCameraY())
+
+proc cameraXForWorld(x: int): int =
+  ## Returns the camera X that centers one world X on the player.
+  clamp(x - PlayerWorldOffX, minCameraX(), maxCameraX())
+
+proc cameraYForWorld(y: int): int =
+  ## Returns the camera Y that centers one world Y on the player.
+  clamp(y - PlayerWorldOffY, minCameraY(), maxCameraY())
 
 proc inMap(x, y: int): bool =
   ## Returns true when a world pixel is inside the Skeld map.
@@ -474,7 +495,7 @@ proc scoreCamera(bot: Bot, cameraX, cameraY, maxErrors: int): CameraScore =
           if inMap(mx, my):
             bot.sim.mapPixels[mapIndexSafe(mx, my)]
           else:
-            SpaceColor
+            MapVoidColor
       if frameColor == mapColor:
         inc result.compared
       elif ShadowMap[mapColor and 0x0f] == frameColor:
@@ -653,6 +674,8 @@ proc resetRoundState(bot: var Bot) =
   bot.lastBodySeenY = low(int)
   bot.lastBodyReportX = low(int)
   bot.lastBodyReportY = low(int)
+  for i in 0 ..< bot.lastSeenTicks.len:
+    bot.lastSeenTicks[i] = 0
   bot.goalIndex = -1
   bot.goalName = ""
   bot.hasGoal = false
@@ -684,18 +707,37 @@ proc resetRoundState(bot: var Bot) =
     for i in 0 ..< bot.taskIconMisses.len:
       bot.taskIconMisses[i] = 0
 
+proc reseedLocalizationAtHome(bot: var Bot) =
+  ## Re-seeds localization around the remembered home point.
+  if bot.homeSet:
+    bot.cameraX = cameraXForWorld(bot.homeX)
+    bot.cameraY = cameraYForWorld(bot.homeY)
+  else:
+    bot.cameraX = buttonCameraX()
+    bot.cameraY = buttonCameraY()
+  bot.lastCameraX = bot.cameraX
+  bot.lastCameraY = bot.cameraY
+  bot.cameraLock = NoLock
+  bot.cameraScore = 0
+  bot.localized = false
+  bot.haveMotionSample = false
+  bot.velocityX = 0
+  bot.velocityY = 0
+  bot.stuckFrames = 0
+  bot.jiggleTicks = 0
+  bot.jiggleSide = 0
+  bot.desiredMask = 0
+  bot.controllerMask = 0
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  bot.goalIndex = -1
+  bot.goalName = ""
+  bot.hasGoal = false
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+
 proc isInterstitialScreen(bot: Bot): bool =
   ## Returns true when a black modal screen hides the map.
-  let
-    topLeft = bot.unpacked[0]
-    topRight = bot.unpacked[ScreenWidth - 1]
-    bottomLeft = bot.unpacked[(ScreenHeight - 1) * ScreenWidth]
-    bottomRight = bot.unpacked[ScreenHeight * ScreenWidth - 1]
-  if topLeft != SpaceColor or
-      topRight != SpaceColor or
-      bottomLeft != SpaceColor or
-      bottomRight != SpaceColor:
-    return false
   var black = 0
   for color in bot.unpacked:
     if color == SpaceColor:
@@ -815,6 +857,7 @@ proc locateByFrame(bot: var Bot): bool =
 
 proc updateLocation(bot: var Bot) =
   ## Updates the camera and player world estimate from the frame.
+  let wasInterstitial = bot.interstitial
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
   bot.interstitial = bot.isInterstitialScreen()
@@ -827,6 +870,8 @@ proc updateLocation(bot: var Bot) =
     return
   bot.interstitialText = ""
   bot.lastGameOverText = ""
+  if wasInterstitial:
+    bot.reseedLocalizationAtHome()
   bot.updateRole()
   bot.scanBodies()
   bot.scanGhosts()
@@ -1013,11 +1058,48 @@ proc playerBodyColor(color: uint8): bool =
     if color == ShadowMap[playerColor and 0x0f]:
       return true
 
+proc playerColorIndex(color: uint8): int =
+  ## Returns the tracked player color index for a palette color.
+  for i, playerColor in PlayerColors:
+    if color == playerColor:
+      return i
+  -1
+
 proc crewmatePixelMatches(spriteColor, frameColor: uint8): bool =
   ## Returns true when one crewmate sprite pixel matches the frame.
   if spriteColor == TintColor or spriteColor == ShadeTintColor:
     return playerBodyColor(frameColor)
   frameColor == spriteColor
+
+proc crewmateColorIndex(bot: Bot, x, y: int, flipH: bool): int =
+  ## Returns the most likely visible color for a crewmate match.
+  var counts: array[PlayerColorCount, int]
+  for sy in 0 ..< bot.playerSprite.height:
+    for sx in 0 ..< bot.playerSprite.width:
+      let srcX =
+        if flipH:
+          bot.playerSprite.width - 1 - sx
+        else:
+          sx
+      let color = bot.playerSprite.pixels[
+        bot.playerSprite.spriteIndex(srcX, sy)
+      ]
+      if color != TintColor:
+        continue
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        continue
+      let index = playerColorIndex(bot.unpacked[fy * ScreenWidth + fx])
+      if index >= 0:
+        inc counts[index]
+  var bestCount = 0
+  result = -1
+  for i, count in counts:
+    if count > bestCount:
+      bestCount = count
+      result = i
 
 proc matchesCrewmate(
   bot: Bot,
@@ -1071,14 +1153,22 @@ proc addCrewmateMatch(
   matches: var seq[CrewmateMatch],
   x,
   y: int,
+  colorIndex: int,
   flipH: bool
 ) =
   ## Adds one crewmate match unless a nearby match already exists.
-  for match in matches:
-    if abs(match.x - x) <= CrewmateSearchRadius and
-        abs(match.y - y) <= CrewmateSearchRadius:
+  for i in 0 ..< matches.len:
+    if abs(matches[i].x - x) <= CrewmateSearchRadius and
+        abs(matches[i].y - y) <= CrewmateSearchRadius:
+      if matches[i].colorIndex < 0 and colorIndex >= 0:
+        matches[i].colorIndex = colorIndex
       return
-  matches.add(CrewmateMatch(x: x, y: y, flipH: flipH))
+  matches.add(CrewmateMatch(
+    x: x,
+    y: y,
+    colorIndex: colorIndex,
+    flipH: flipH
+  ))
 
 proc scanCrewmates(bot: var Bot) =
   ## Scans the current frame for crewmates by stable sprite pixels.
@@ -1089,9 +1179,15 @@ proc scanCrewmates(bot: var Bot) =
           abs(y + SpriteSize div 2 - PlayerScreenY) <= PlayerIgnoreRadius:
         continue
       if bot.matchesCrewmate(x, y, false):
-        bot.visibleCrewmates.addCrewmateMatch(x, y, false)
+        let colorIndex = bot.crewmateColorIndex(x, y, false)
+        bot.visibleCrewmates.addCrewmateMatch(x, y, colorIndex, false)
       elif bot.matchesCrewmate(x, y, true):
-        bot.visibleCrewmates.addCrewmateMatch(x, y, true)
+        let colorIndex = bot.crewmateColorIndex(x, y, true)
+        bot.visibleCrewmates.addCrewmateMatch(x, y, colorIndex, true)
+  for crewmate in bot.visibleCrewmates:
+    if crewmate.colorIndex >= 0 and
+        crewmate.colorIndex < bot.lastSeenTicks.len:
+      bot.lastSeenTicks[crewmate.colorIndex] = bot.frameTick
 
 proc matchesActorSprite(
   bot: Bot,
@@ -1845,13 +1941,33 @@ proc sameBody(ax, ay, bx, by: int): bool =
     return false
   heuristic(ax, ay, bx, by) <= BodySearchRadius + 4
 
-proc bodyRoomMessage(x, y: int): string =
+proc suspectedColor(bot: Bot): tuple[found: bool, name: string, tick: int] =
+  ## Returns the most recently seen crewmate color.
+  var bestTick = 0
+  for i, tick in bot.lastSeenTicks:
+    if tick > bestTick and i < PlayerColorNames.len:
+      bestTick = tick
+      result = (true, PlayerColorNames[i], tick)
+
+proc suspectSummary(bot: Bot): string =
+  ## Returns a short debug summary for the current suspect.
+  let suspect = bot.suspectedColor()
+  if not suspect.found:
+    return "none"
+  suspect.name & " seen=" & $suspect.tick
+
+proc bodyRoomMessage(bot: Bot, x, y: int): string =
   ## Builds a short chat line that names a body's room.
   let room = roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
-  if room == "unknown":
-    "body"
-  else:
-    "body in " & room
+  let suspect = bot.suspectedColor()
+  result =
+    if room == "unknown":
+      "body"
+    else:
+      "body in " & room
+  if suspect.found:
+    result.add(" sus ")
+    result.add(suspect.name)
 
 proc queueBodySeen(bot: var Bot, x, y: int) =
   ## Stores the room for a discovered body until voting opens.
@@ -1859,7 +1975,7 @@ proc queueBodySeen(bot: var Bot, x, y: int) =
     return
   bot.lastBodySeenX = x
   bot.lastBodySeenY = y
-  bot.pendingChat = bodyRoomMessage(x, y)
+  bot.pendingChat = bot.bodyRoomMessage(x, y)
 
 proc queueBodyReport(bot: var Bot, x, y: int) =
   ## Stores the room for a reported body until voting opens.
@@ -1867,7 +1983,7 @@ proc queueBodyReport(bot: var Bot, x, y: int) =
     return
   bot.lastBodyReportX = x
   bot.lastBodyReportY = y
-  bot.pendingChat = bodyRoomMessage(x, y)
+  bot.pendingChat = bot.bodyRoomMessage(x, y)
 
 proc inReportRange(bot: Bot, targetX, targetY: int): bool =
   ## Returns true when the target point is in report range.
@@ -2768,6 +2884,7 @@ proc pumpViewer(
     "crewmates masked: " & $bot.visibleCrewmates.len &
       " bodies=" & $bot.visibleBodies.len &
       " ghosts=" & $bot.visibleGhosts.len & "\n" &
+    "suspect: " & bot.suspectSummary() & "\n" &
     "radar dots: " & $bot.radarDots.len &
       " radar tasks=" & $bot.radarTaskCount() &
       " checkout=" & $bot.checkoutTaskCount() &
