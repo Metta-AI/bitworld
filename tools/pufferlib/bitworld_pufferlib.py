@@ -34,6 +34,9 @@ PACKED_FRAME_BYTES = FRAME_PIXELS // 2
 STATE_FEATURES = 123
 RESET_INPUT_MASK = 255
 DEFAULT_ACTION_REPEAT = 4
+AMONG_THEM_STEP_ACTIVE = 0
+AMONG_THEM_STEP_TERMINAL = 1
+AMONG_THEM_STEP_TRUNCATED = 2
 OBSERVATION_MODES = {"pixels", "state"}
 STATE_TASK_FEATURE_OFFSET = 36
 STATE_TASK_FEATURES = 4
@@ -818,7 +821,7 @@ class AmongThemNativeLibrary:
         self.lib.bitworld_at_tick_count.restype = ctypes.c_int
         self.lib.bitworld_at_game_hash.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_game_hash.restype = ctypes.c_uint64
-        self.lib.bitworld_at_create.argtypes = [ctypes.c_int, ctypes.c_int]
+        self.lib.bitworld_at_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
         self.lib.bitworld_at_create.restype = ctypes.c_int
         self.lib.bitworld_at_reset.argtypes = [
             ctypes.c_int,
@@ -862,6 +865,7 @@ class AmongThemNativeLibrary:
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int),
             ctypes.POINTER(ctypes.c_float),
             ctypes.POINTER(ctypes.c_float),
         ]
@@ -903,6 +907,7 @@ class AmongThemNativeWorker:
         spec: EnvironmentSpec,
         env_id: int,
         seed: int,
+        max_episode_steps: int,
         action_repeat: int,
         observation_mode: str,
     ) -> None:
@@ -913,12 +918,13 @@ class AmongThemNativeWorker:
         self.spec = spec
         self.env_id = env_id
         self.seed = seed
+        self.max_ticks = max_episode_steps * action_repeat
         self.action_repeat = action_repeat
         self.observation_mode = observation_mode
         self.agent_count = spec.server_players
         self.native = among_them_native_library()
         self.handle = self.native.check(
-            self.native.lib.bitworld_at_create(seed, self.agent_count)
+            self.native.lib.bitworld_at_create(seed, self.agent_count, self.max_ticks)
         )
         feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
         dtype = np.uint8 if observation_mode == "pixels" else np.float32
@@ -929,6 +935,8 @@ class AmongThemNativeWorker:
         self.episode_return = np.zeros((self.agent_count,), dtype=np.float32)
         self.episode_steps = 0
         self.episode = 0
+        self.done = False
+        self.truncated = False
 
     def _obs_ptr(self):
         pointer_type = ctypes.c_uint8 if self.observation_mode == "pixels" else ctypes.c_float
@@ -959,6 +967,8 @@ class AmongThemNativeWorker:
         self.episode_return.fill(0.0)
         self.episode_steps = 0
         self.episode += 1
+        self.done = False
+        self.truncated = False
         return self.frames.copy()
 
     def step(self, action_masks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -967,7 +977,7 @@ class AmongThemNativeWorker:
             raise ValueError(f"expected {self.agent_count} Among Them action masks")
         masks = np.ascontiguousarray(masks)
         if self.observation_mode == "pixels":
-            self.native.check(
+            status = self.native.check(
                 self.native.lib.bitworld_at_step(
                     self.handle,
                     masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
@@ -977,7 +987,7 @@ class AmongThemNativeWorker:
                 )
             )
         else:
-            self.native.check(
+            status = self.native.check(
                 self.native.lib.bitworld_at_step_state(
                     self.handle,
                     masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
@@ -986,6 +996,10 @@ class AmongThemNativeWorker:
                     self._reward_ptr(),
                 )
             )
+        if status not in {AMONG_THEM_STEP_ACTIVE, AMONG_THEM_STEP_TERMINAL, AMONG_THEM_STEP_TRUNCATED}:
+            raise RuntimeError(f"unknown Among Them native step status {status}")
+        self.done = status != AMONG_THEM_STEP_ACTIVE
+        self.truncated = status == AMONG_THEM_STEP_TRUNCATED
         self.score += self.rewards
         self.episode_return += self.rewards
         self.episode_steps += 1
@@ -1322,6 +1336,8 @@ class BitWorldVecEnv:
             raise ValueError("frame_stack must be positive")
         if action_repeat <= 0:
             raise ValueError("action_repeat must be positive")
+        if max_episode_steps <= 0:
+            raise ValueError("max_episode_steps must be positive")
         if observation_mode not in OBSERVATION_MODES:
             raise ValueError(f"unknown observation_mode {observation_mode!r}")
 
@@ -1385,6 +1401,7 @@ class BitWorldVecEnv:
         self._state_prev_potential = np.zeros((self.total_agents,), dtype=np.float32)
         self._state_prev_task_progress = np.zeros((self.total_agents,), dtype=np.float32)
         self._state_teacher_actions = np.full((self.total_agents,), -1, dtype=np.int64)
+        self._state_statuses = np.zeros((self.num_envs,), dtype=np.int32)
         self._state_reward_shaping = state_reward_shaping_scale()
         self._state_progress_reward = state_progress_reward_scale()
         self._state_teacher_reward = state_teacher_reward_scale()
@@ -1401,6 +1418,7 @@ class BitWorldVecEnv:
                         spec=self.spec,
                         env_id=env_id,
                         seed=base_seed + env_id,
+                        max_episode_steps=max_episode_steps,
                         action_repeat=action_repeat,
                         observation_mode=observation_mode,
                     )
@@ -1466,6 +1484,7 @@ class BitWorldVecEnv:
         self._state_teacher_actions[:] = self._state_teacher_actions_from_frames()
         self.teacher_actions[:] = self._state_teacher_actions
         self._state_episode_steps = 0
+        self._state_statuses.fill(AMONG_THEM_STEP_ACTIVE)
         self._frame_history[:] = self._latest_frames[:, np.newaxis, :]
         self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
 
@@ -1514,7 +1533,13 @@ class BitWorldVecEnv:
             frames = self._frame_batch(frames, worker)
 
         completed: list[EpisodeStats] = []
-        if worker.episode_steps >= self.max_episode_steps:
+        if isinstance(worker, AmongThemNativeWorker):
+            done = worker.done
+            truncated = worker.truncated
+        else:
+            done = worker.episode_steps >= self.max_episode_steps
+            truncated = done
+        if done:
             scores = (np.asarray(worker.score) - np.asarray(worker.base_score)).reshape(-1)
             returns = np.asarray(worker.episode_return).reshape(-1)
             completed = [
@@ -1526,7 +1551,7 @@ class BitWorldVecEnv:
                 for score, episode_return in zip(scores, returns)
             ]
             frames = self._frame_batch(worker.reset(), worker)
-        return env_id, frames, rewards, completed
+        return env_id, frames, rewards, completed, truncated
 
     def reset(self):
         self._rewards.fill(0.0)
@@ -1558,6 +1583,7 @@ class BitWorldVecEnv:
                 self.agents_per_env,
                 self._state_action_masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
                 self.action_repeat,
+                self._state_statuses.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
                 self._latest_state_ptr(),
                 self._state_rewards_ptr(),
             )
@@ -1576,7 +1602,8 @@ class BitWorldVecEnv:
         self._state_episode_steps += 1
 
         completed: list[EpisodeStats] = []
-        if self._state_episode_steps >= self.max_episode_steps:
+        done = self._state_statuses != AMONG_THEM_STEP_ACTIVE
+        if np.any(done):
             terminal_rewards = self._rewards.copy()
             task_counts = self._state_completed_task_counts()
             for score, episode_return, tasks_completed in zip(self._state_score, self._state_episode_return, task_counts):
@@ -1592,9 +1619,11 @@ class BitWorldVecEnv:
                 self._completed_returns.append(stats.episode_return)
                 self._completed_tasks.append(stats.tasks_completed)
             self._completed_episodes += self.num_envs
+            env_truncations = self._state_statuses == AMONG_THEM_STEP_TRUNCATED
             self._reset_state_batch()
             self._rewards[:] = terminal_rewards
             self._terminals[:] = 1.0
+            self._truncations[:] = np.repeat(env_truncations.astype(np.float32), self.agents_per_env)
 
         self._frame_history[:, :-1] = self._frame_history[:, 1:]
         self._frame_history[:, -1] = self._latest_frames
@@ -1615,7 +1644,7 @@ class BitWorldVecEnv:
         else:
             step_results = list(self._executor.map(self._step_env, env_ids, repeat(action_indices)))
 
-        for env_id, frames, rewards, env_completed in step_results:
+        for env_id, frames, rewards, env_completed, truncated in step_results:
             agent_slice = self._agent_slice(env_id)
             if env_completed:
                 for stats in env_completed:
@@ -1625,6 +1654,8 @@ class BitWorldVecEnv:
                     self._completed_returns.append(float(stats.episode_return))
                 self._completed_episodes += 1
                 self._terminals[agent_slice] = 1.0
+                if truncated:
+                    self._truncations[agent_slice] = 1.0
 
             self._rewards[agent_slice] = rewards
             self._push_frames(agent_slice, frames)

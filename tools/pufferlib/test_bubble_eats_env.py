@@ -140,6 +140,15 @@ class BitWorldSmokeTest(unittest.TestCase):
         _, rewards, terminals, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
         self.assertEqual(rewards.shape, (env.total_agents,))
         self.assertEqual(terminals.shape, (env.total_agents,))
+        np.testing.assert_array_equal(terminals, np.zeros(env.total_agents, dtype=np.float32))
+        np.testing.assert_array_equal(env._truncations, np.zeros(env.total_agents, dtype=np.float32))
+
+        _, rewards, terminals, completed = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
+        self.assertEqual(rewards.shape, (env.total_agents,))
+        np.testing.assert_array_equal(terminals, np.ones(env.total_agents, dtype=np.float32))
+        np.testing.assert_array_equal(env._truncations, np.ones(env.total_agents, dtype=np.float32))
+        self.assertEqual(len(completed), env.total_agents)
+        self.assertEqual(max(item.score for item in completed), 100.0)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@ import std/[os, tables]
 
 const
   FramePixels = ScreenWidth * ScreenHeight
+  StepActive = 0.cint
+  StepTerminal = 1.cint
+  StepTruncated = 2.cint
   StateTaskFeatureOffset = 36
   StateTaskCount = 15
   StateTaskFeatures = 4
@@ -28,6 +31,7 @@ type
     taskDistanceMapKey: string
     playerCount: int
     seed: int
+    maxTicks: int
 
 var
   envs: seq[NativeEnv]
@@ -361,7 +365,13 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
     for actionIndex in 0 ..< ActionCount:
       put(if actionIndex == teacherAction: 1.0 else: 0.0)
 
-proc applyActionMasks(env: var NativeEnv, actionMasks: ptr uint8, actionRepeat: cint) =
+proc stepStatus(env: NativeEnv): cint =
+  if env.sim.phase != GameOver:
+    return StepActive
+  if env.sim.timeLimitReached: StepTruncated
+  else: StepTerminal
+
+proc applyActionMasks(env: var NativeEnv, actionMasks: ptr uint8, actionRepeat: cint): cint =
   if actionMasks.isNil:
     raise newException(ValueError, "Action pointer is nil.")
   if actionRepeat <= 0:
@@ -373,6 +383,9 @@ proc applyActionMasks(env: var NativeEnv, actionMasks: ptr uint8, actionRepeat: 
       env.prevInputs[playerIndex] = env.inputs[playerIndex]
       env.inputs[playerIndex] = decodeInputMask(actions[playerIndex])
     env.sim.step(env.inputs, env.prevInputs)
+    result = env.stepStatus()
+    if result != StepActive:
+      return
 
 proc initNativeEnv(env: var NativeEnv) =
   let previousDir = getCurrentDir()
@@ -380,6 +393,7 @@ proc initNativeEnv(env: var NativeEnv) =
   try:
     var config = defaultGameConfig()
     config.seed = env.seed
+    config.maxTicks = env.maxTicks
     config.minPlayers = env.playerCount
     config.imposterCount = min(
       config.imposterCount,
@@ -411,12 +425,18 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
 
-proc bitworld_at_create*(seed, playerCount: cint): cint {.cdecl, exportc, dynlib.} =
+proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
+    if maxTicks < 0:
+      return setLastError("maxTicks must be non-negative.")
 
-    var env = NativeEnv(seed: int(seed), playerCount: int(playerCount))
+    var env = NativeEnv(
+      seed: int(seed),
+      playerCount: int(playerCount),
+      maxTicks: int(maxTicks)
+    )
     env.initNativeEnv()
     envs.add(env)
     cint(envs.high)
@@ -473,10 +493,10 @@ proc bitworld_at_step*(
       return setLastError("Invalid Among Them native env handle.")
 
     var env = envs[int(handle)]
-    env.applyActionMasks(actionMasks, actionRepeat)
+    let status = env.applyActionMasks(actionMasks, actionRepeat)
     env.copyObservations(observations)
     env.copyRewardDeltas(rewards)
-    0
+    status
   except CatchableError as e:
     setLastError(e.msg)
 
@@ -492,10 +512,10 @@ proc bitworld_at_step_state*(
       return setLastError("Invalid Among Them native env handle.")
 
     var env = envs[int(handle)]
-    env.applyActionMasks(actionMasks, actionRepeat)
+    let status = env.applyActionMasks(actionMasks, actionRepeat)
     env.copyStateObservations(observations)
     env.copyRewardDeltas(rewards)
-    0
+    status
   except CatchableError as e:
     setLastError(e.msg)
 
@@ -537,6 +557,7 @@ proc bitworld_at_step_state_batch*(
   playerCount: cint,
   actionMasks: ptr uint8,
   actionRepeat: cint,
+  statuses: ptr cint,
   observations: ptr cfloat,
   rewards: ptr cfloat
 ): cint {.cdecl, exportc, dynlib.} =
@@ -545,6 +566,8 @@ proc bitworld_at_step_state_batch*(
       return setLastError("Handle pointer is nil.")
     if actionMasks.isNil:
       return setLastError("Action pointer is nil.")
+    if statuses.isNil:
+      return setLastError("Status pointer is nil.")
     if envCount <= 0:
       return setLastError("envCount must be positive.")
     if playerCount <= 0:
@@ -553,6 +576,7 @@ proc bitworld_at_step_state_batch*(
     let
       handleArray = cast[ptr UncheckedArray[cint]](handles)
       actions = cast[ptr UncheckedArray[uint8]](actionMasks)
+      statusOutput = cast[ptr UncheckedArray[cint]](statuses)
     for envIndex in 0 ..< int(envCount):
       let handle = handleArray[envIndex]
       if not validHandle(handle):
@@ -560,7 +584,7 @@ proc bitworld_at_step_state_batch*(
       var env = envs[int(handle)]
       if env.playerCount != int(playerCount):
         return setLastError("Unexpected player count in batch step.")
-      env.applyActionMasks(
+      statusOutput[envIndex] = env.applyActionMasks(
         cast[ptr uint8](addr actions[envIndex * int(playerCount)]),
         actionRepeat
       )
@@ -581,9 +605,9 @@ proc bitworld_at_step_rewards*(
       return setLastError("Invalid Among Them native env handle.")
 
     var env = envs[int(handle)]
-    env.applyActionMasks(actionMasks, actionRepeat)
+    let status = env.applyActionMasks(actionMasks, actionRepeat)
     env.copyRewardDeltas(rewards)
-    0
+    status
   except CatchableError as e:
     setLastError(e.msg)
 
