@@ -20,7 +20,8 @@ const
   ChopWorkNeeded = 20
   MaxReturnCount = 9
   SaladScoreValue = 3
-  TargetFps = 24.0
+  FpsScale = 1000
+  TargetFps = 24 * FpsScale
   WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
   DishOffsetY = 2
@@ -871,14 +872,21 @@ proc websocketHandler(
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
-proc runFrameLimiter(previousTick: var MonoTime) =
-  let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
+proc runFrameLimiter(previousTick: var MonoTime, targetFps: int) =
+  if targetFps <= 0:
+    previousTick = getMonoTime()
+    return
+  let frameDuration = initDuration(microseconds = (1_000_000 * FpsScale) div targetFps)
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runServerLoop(host = DefaultHost, port = DefaultPort) =
+proc runServerLoop(
+  host = DefaultHost,
+  port = DefaultPort,
+  targetFps = TargetFps
+) =
   initAppState()
 
   let httpServer = newServer(
@@ -935,12 +943,13 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
           withLock appState.lock:
             sim.removePlayer(sockets[i])
 
-    runFrameLimiter(lastTick)
+    runFrameLimiter(lastTick, targetFps)
 
 when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
+    targetFps = TargetFps
     pendingOption = ""
   for kind, key, val in getopt():
     case kind
@@ -957,6 +966,11 @@ when isMainModule:
           port = parseInt(val)
         else:
           pendingOption = "port"
+      of "fps":
+        if val.len > 0:
+          targetFps = parseInt(val) * FpsScale
+        else:
+          pendingOption = "fps"
       else: discard
     of cmdArgument:
       case pendingOption
@@ -964,8 +978,10 @@ when isMainModule:
         address = key
       of "port":
         port = parseInt(key)
+      of "fps":
+        targetFps = parseInt(key) * FpsScale
       else:
         discard
       pendingOption = ""
     else: discard
-  runServerLoop(address, port)
+  runServerLoop(address, port, targetFps)

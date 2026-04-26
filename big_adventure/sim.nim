@@ -31,7 +31,8 @@ const
   SnakeHp* = 3
   BossHp* = 10
   BossCoinValue* = 10
-  TargetFps* = 24.0
+  FpsScale* = 1000
+  TargetFps* = 24 * FpsScale
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"

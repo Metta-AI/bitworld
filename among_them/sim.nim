@@ -27,7 +27,8 @@ const
   FrictionDen* = 256
   MaxSpeed* = 704
   StopThreshold* = 8
-  TargetFps* = 24.0
+  FpsScale* = 1000
+  TargetFps* = 24 * FpsScale
   SpaceColor* = 0'u8
   TintColor* = 3'u8
   ShadeTintColor* = 9'u8
@@ -147,7 +148,7 @@ type
     frictionDen*: int
     maxSpeed*: int
     stopThreshold*: int
-    targetFps*: float
+    targetFps*: int
     killRange*: int
     killCooldownTicks*: int
     taskCompleteTicks*: int
@@ -408,8 +409,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field motionScale must be positive.")
   if config.frictionDen <= 0:
     raise newException(AmongThemError, "Config field frictionDen must be positive.")
-  if config.targetFps <= 0:
-    raise newException(AmongThemError, "Config field targetFps must be positive.")
+  if config.targetFps < 0:
+    raise newException(AmongThemError, "Config field fps must not be negative.")
   if config.minPlayers < 1:
     raise newException(AmongThemError, "Config field minPlayers must be at least 1.")
   if config.imposterCount < 0:
@@ -438,7 +439,11 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("frictionDen", config.frictionDen)
   node.readConfigInt("maxSpeed", config.maxSpeed)
   node.readConfigInt("stopThreshold", config.stopThreshold)
-  node.readConfigFloat("targetFps", config.targetFps)
+  if node.hasKey("fps"):
+    let item = node["fps"]
+    if item.kind != JInt:
+      raise newException(AmongThemError, "Config field fps must be an integer.")
+    config.targetFps = item.getInt() * FpsScale
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)

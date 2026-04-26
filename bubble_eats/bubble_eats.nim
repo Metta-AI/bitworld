@@ -62,7 +62,8 @@ const
   AutoBlinkMin = 48
   AutoBlinkMax = 140
 
-  TargetFps = 24.0
+  FpsScale = 1000
+  TargetFps = 24 * FpsScale
   WebSocketPath = "/player"
   FieldColor = 15'u8
   FieldAccentColor = 11'u8
@@ -1161,14 +1162,21 @@ proc websocketHandler(
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
-proc runFrameLimiter(previousTick: var MonoTime) =
-  let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
+proc runFrameLimiter(previousTick: var MonoTime, targetFps: int) =
+  if targetFps <= 0:
+    previousTick = getMonoTime()
+    return
+  let frameDuration = initDuration(microseconds = (1_000_000 * FpsScale) div targetFps)
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runServerLoop(host = DefaultHost, port = DefaultPort) =
+proc runServerLoop(
+  host = DefaultHost,
+  port = DefaultPort,
+  targetFps = TargetFps
+) =
   initAppState()
 
   let httpServer = newServer(
@@ -1226,12 +1234,13 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
           withLock appState.lock:
             sim.removePlayer(sockets[i])
 
-    runFrameLimiter(lastTick)
+    runFrameLimiter(lastTick, targetFps)
 
 when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
+    targetFps = TargetFps
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -1240,8 +1249,10 @@ when isMainModule:
         address = val
       of "port":
         port = parseInt(val)
+      of "fps":
+        targetFps = parseInt(val) * FpsScale
       else:
         discard
     else:
       discard
-  runServerLoop(address, port)
+  runServerLoop(address, port, targetFps)

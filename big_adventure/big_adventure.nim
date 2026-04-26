@@ -7,12 +7,13 @@ type
   RunConfig = object
     address: string
     port: int
+    targetFps: int
     saveReplayPath: string
     loadReplayPath: string
 
 proc defaultRunConfig(): RunConfig =
   ## Returns the default CLI config.
-  RunConfig(address: DefaultHost, port: DefaultPort)
+  RunConfig(address: DefaultHost, port: DefaultPort, targetFps: TargetFps)
 
 proc requireConfigObject(node: JsonNode) =
   ## Raises if the config JSON is not an object.
@@ -62,6 +63,12 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("loadReplay", config.loadReplayPath)
   node.readConfigString("saveReplayPath", config.saveReplayPath)
   node.readConfigString("loadReplayPath", config.loadReplayPath)
+  if node.hasKey("fps"):
+    var fps = 0
+    node.readConfigInt("fps", fps)
+    if fps < 0:
+      raise newException(BigAdventureError, "Config field fps must not be negative.")
+    config.targetFps = fps * FpsScale
 
 when isMainModule:
   var
@@ -74,6 +81,7 @@ when isMainModule:
       case key
       of "address": config.address = val
       of "port": config.port = parseInt(val)
+      of "fps": config.targetFps = parseInt(val) * FpsScale
       of "save-replay": config.saveReplayPath = val
       of "load-replay": config.loadReplayPath = val
       of "config": configJson = val
@@ -87,6 +95,7 @@ when isMainModule:
   runServerLoop(
     config.address,
     config.port,
+    config.targetFps,
     config.saveReplayPath,
     config.loadReplayPath
   )
