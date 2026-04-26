@@ -4,14 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
-import torch
-
 from bitworld_pufferlib import (
-    ACTION_MASKS,
-    BitWorldPolicy,
     ENV_SPECS,
     evaluate_policy,
     get_env_spec,
+    load_policy_checkpoint,
     resolve_train_device,
     train_policy,
 )
@@ -51,7 +48,7 @@ def main() -> None:
 
     output_dir = args.output_dir if args.output_dir is not None else Path(f"tools/runlogs/{spec.name}_pufferlib_training")
     output_dir.mkdir(parents=True, exist_ok=True)
-    model_path = output_dir / f"{spec.name}_policy.pt"
+    checkpoint_path = output_dir / f"{spec.name}_policy.pt"
     metrics_path = output_dir / "train_metrics.json"
 
     train_policy(
@@ -64,7 +61,7 @@ def main() -> None:
         horizon=horizon,
         minibatch_size=minibatch_size,
         seed=args.seed,
-        model_path=model_path,
+        checkpoint_path=checkpoint_path,
         metrics_path=metrics_path,
         action_repeat=args.action_repeat,
         hidden_size=hidden_size,
@@ -75,7 +72,7 @@ def main() -> None:
         summary = {
             "env": spec.name,
             "device": resolve_train_device(args.device),
-            "model_path": str(model_path),
+            "checkpoint": str(checkpoint_path),
             "metrics_path": str(metrics_path),
             "trained": None,
             "random": None,
@@ -86,21 +83,14 @@ def main() -> None:
         return
 
     train_device = resolve_train_device(args.device)
-    policy = BitWorldPolicy(
-        frame_stack=args.frame_stack,
-        action_count=len(ACTION_MASKS),
-        hidden_size=hidden_size,
-    ).to(train_device)
-    state_dict = torch.load(model_path, map_location=train_device)
-    policy.load_state_dict(state_dict)
-    policy.eval()
+    checkpoint = load_policy_checkpoint(checkpoint_path, device=train_device)
 
     trained = evaluate_policy(
         spec=spec,
-        policy=policy,
+        policy=checkpoint.policy,
         episodes=args.eval_episodes,
         max_episode_steps=episode_steps,
-        frame_stack=args.frame_stack,
+        frame_stack=checkpoint.frame_stack,
         seed=args.seed + 10_000,
         action_repeat=args.action_repeat,
         random_actions=False,
@@ -110,7 +100,7 @@ def main() -> None:
         policy=None,
         episodes=args.eval_episodes,
         max_episode_steps=episode_steps,
-        frame_stack=args.frame_stack,
+        frame_stack=checkpoint.frame_stack,
         seed=args.seed + 20_000,
         action_repeat=args.action_repeat,
         random_actions=True,
@@ -118,7 +108,7 @@ def main() -> None:
     summary = {
         "env": spec.name,
         "device": train_device,
-        "model_path": str(model_path),
+        "checkpoint": str(checkpoint_path),
         "metrics_path": str(metrics_path),
         "trained": trained,
         "random": random_baseline,
