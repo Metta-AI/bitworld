@@ -1,5 +1,5 @@
 import pixie, protocol, ../sim, ../../common/server, silky, whisky, windy
-import std/[heapqueue, monotimes, options, os, parseopt, strutils, times]
+import std/[heapqueue, monotimes, options, os, parseopt, random, strutils, times]
 
 const
   PlayerScreenX = ScreenWidth div 2
@@ -56,6 +56,10 @@ const
   CrewmateMaxMisses = 8
   CrewmateMinStablePixels = 8
   CrewmateMinBodyPixels = 8
+  KillIconX = 1
+  KillIconY = ScreenHeight - SpriteSize - 1
+  KillIconMaxMisses = 5
+  KillApproachRadius = 3
 
 type
   TileKnowledge = enum
@@ -73,6 +77,11 @@ type
     TaskMaybe
     TaskMandatory
     TaskCompleted
+
+  BotRole = enum
+    RoleUnknown
+    RoleCrewmate
+    RoleImposter
 
   PathNode = object
     priority: int
@@ -109,6 +118,11 @@ type
     sim: SimServer
     playerSprite: Sprite
     taskSprite: Sprite
+    killButtonSprite: Sprite
+    rng: Rand
+    role: BotRole
+    imposterKillReady: bool
+    imposterGoalIndex: int
     packed: seq[uint8]
     unpacked: seq[uint8]
     mapTiles: seq[TileKnowledge]
@@ -256,9 +270,26 @@ proc ignoreCrewmatePixel(bot: Bot, sx, sy: int): bool =
         TransparentColorIndex:
       return true
 
+proc ignoreKillIconPixel(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel belongs to the imposter kill icon.
+  if bot.role != RoleImposter:
+    return false
+  let
+    ix = sx - KillIconX
+    iy = sy - KillIconY
+  if ix < 0 or iy < 0 or
+      ix >= bot.killButtonSprite.width or
+      iy >= bot.killButtonSprite.height:
+    return false
+  bot.killButtonSprite.pixels[
+    bot.killButtonSprite.spriteIndex(ix, iy)
+  ] != TransparentColorIndex
+
 proc ignoreFramePixel(bot: Bot, frameColor: uint8, sx, sy: int): bool =
   ## Returns true for dynamic screen pixels that are not map evidence.
   if frameColor == RadarTaskColor:
+    return true
+  if bot.ignoreKillIconPixel(sx, sy):
     return true
   if bot.ignoreTaskIconPixel(sx, sy):
     return true
@@ -315,6 +346,8 @@ proc setCameraLock(
 proc scanTaskIcons(bot: var Bot)
 
 proc scanCrewmates(bot: var Bot)
+
+proc updateRole(bot: var Bot)
 
 proc asciiChar(index: int): char =
   ## Returns the character represented by one ASCII sprite index.
@@ -428,6 +461,9 @@ proc isGameOverText(text: string): bool =
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
   bot.localized = false
+  bot.role = RoleUnknown
+  bot.imposterKillReady = false
+  bot.imposterGoalIndex = -1
   bot.cameraLock = NoLock
   bot.cameraScore = 0
   bot.haveMotionSample = false
@@ -558,8 +594,12 @@ proc updateLocation(bot: var Bot) =
     return
   bot.interstitialText = ""
   bot.lastGameOverText = ""
+  bot.updateRole()
   bot.scanCrewmates()
-  bot.scanTaskIcons()
+  if bot.role == RoleImposter:
+    bot.visibleTaskIcons.setLen(0)
+  else:
+    bot.scanTaskIcons()
   if bot.locateNearFrame():
     return
   discard bot.locateByFrame()
@@ -650,6 +690,55 @@ proc maybeMatchesSprite(
   ## Returns true when a sprite may be present but imperfect.
   let score = spriteMisses(frame, sprite, x, y)
   score.opaque > 0 and score.misses <= TaskIconMaybeMisses
+
+proc matchesSpriteShadowed(
+  frame: openArray[uint8],
+  sprite: Sprite,
+  x,
+  y: int
+): bool =
+  ## Returns true if a shadowed sprite matches the frame.
+  var
+    misses = 0
+    opaque = 0
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let color = sprite.pixels[sprite.spriteIndex(sx, sy)]
+      if color == TransparentColorIndex:
+        continue
+      inc opaque
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        inc misses
+      elif frame[fy * ScreenWidth + fx] == ShadowMap[color and 0x0f]:
+        discard
+      else:
+        inc misses
+      if misses > KillIconMaxMisses:
+        return false
+  opaque > 0 and misses <= KillIconMaxMisses
+
+proc updateRole(bot: var Bot) =
+  ## Updates the known role from the fixed imposter kill icon.
+  let lit = matchesSprite(
+    bot.unpacked,
+    bot.killButtonSprite,
+    KillIconX,
+    KillIconY
+  )
+  let shaded = matchesSpriteShadowed(
+    bot.unpacked,
+    bot.killButtonSprite,
+    KillIconX,
+    KillIconY
+  )
+  bot.imposterKillReady = lit
+  if lit or shaded:
+    bot.role = RoleImposter
+  elif bot.role == RoleUnknown:
+    bot.role = RoleCrewmate
 
 proc addIconMatch(matches: var seq[IconMatch], x, y: int) =
   ## Adds one icon match unless a nearby icon already exists.
@@ -1070,6 +1159,13 @@ proc buttonFallbackReady(bot: Bot): bool =
     bot.checkoutTaskCount() == 0 and
     bot.taskStateCount(TaskMandatory) == 0
 
+proc roleName(role: BotRole): string =
+  ## Returns a human-readable role name.
+  case role
+  of RoleUnknown: "unknown"
+  of RoleCrewmate: "crewmate"
+  of RoleImposter: "imposter"
+
 proc cameraLockName(lock: CameraLock): string =
   ## Returns a human-readable camera lock name.
   case lock
@@ -1263,6 +1359,48 @@ proc buttonGoal(
   if bestDistance == high(int):
     return
   (true, -1, bestX, bestY, "Button", TaskMaybe)
+
+proc randomTaskIndex(bot: var Bot): int =
+  ## Returns a random task index for imposter roaming.
+  if bot.sim.tasks.len == 0:
+    return -1
+  bot.rng.rand(bot.sim.tasks.high)
+
+proc farthestTaskIndex(bot: Bot): int =
+  ## Returns the task farthest from the current player location.
+  var bestDistance = low(int)
+  for i in 0 ..< bot.sim.tasks.len:
+    let center = bot.sim.tasks[i].taskCenter()
+    let distance = heuristic(
+      bot.playerWorldX(),
+      bot.playerWorldY(),
+      center.x,
+      center.y
+    )
+    if distance > bestDistance:
+      bestDistance = distance
+      result = i
+
+proc visibleCrewmateWorld(
+  bot: Bot,
+  crewmate: CrewmateMatch
+): tuple[x: int, y: int] =
+  ## Converts one visible crewmate match into world coordinates.
+  (
+    bot.cameraX + crewmate.x + SpriteDrawOffX,
+    bot.cameraY + crewmate.y + SpriteDrawOffY
+  )
+
+proc inKillRange(bot: Bot, targetX, targetY: int): bool =
+  ## Returns true when the target point is in imposter kill range.
+  let
+    ax = bot.playerWorldX() + CollisionW div 2
+    ay = bot.playerWorldY() + CollisionH div 2
+    bx = targetX + CollisionW div 2
+    by = targetY + CollisionH div 2
+    dx = ax - bx
+    dy = ay - by
+  dx * dx + dy * dy <= bot.sim.config.killRange * bot.sim.config.killRange
 
 proc nearestTaskGoal(
   bot: Bot
@@ -1499,6 +1637,94 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   bot.thought("at task " & name & ", holding action")
   ButtonA
 
+proc navigateToPoint(
+  bot: var Bot,
+  x,
+  y: int,
+  name: string,
+  preciseRadius = TaskPreciseApproachRadius
+): uint8 =
+  ## Navigates toward one world point and returns the input mask.
+  bot.hasGoal = true
+  bot.goalX = x
+  bot.goalY = y
+  bot.goalName = name
+  let astarStart = getMonoTime()
+  bot.path = bot.findPath(x, y)
+  bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
+  bot.pathStep = bot.choosePathStep()
+  bot.hasPathStep = bot.pathStep.found
+  bot.intent = "A* to " & name & " path=" & $bot.path.len
+  if heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y) <= preciseRadius:
+    bot.intent = "precise approach to " & name
+    bot.desiredMask = bot.preciseMaskForGoal(x, y)
+  else:
+    bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
+  bot.controllerMask = bot.desiredMask
+  let mask = bot.applyJiggle(bot.controllerMask)
+  bot.thought(
+    "imposter " & cameraLockName(bot.cameraLock) & " at camera (" &
+    $bot.cameraX & ", " & $bot.cameraY & "), next " &
+    movementName(mask)
+  )
+  mask
+
+proc decideImposterMask(bot: var Bot): uint8 =
+  ## Chooses imposter movement and kill behavior.
+  bot.radarDots.setLen(0)
+  if bot.radarTasks.len != bot.sim.tasks.len:
+    bot.radarTasks = newSeq[bool](bot.sim.tasks.len)
+  if bot.checkoutTasks.len != bot.sim.tasks.len:
+    bot.checkoutTasks = newSeq[bool](bot.sim.tasks.len)
+  for i in 0 ..< bot.radarTasks.len:
+    bot.radarTasks[i] = false
+  for i in 0 ..< bot.checkoutTasks.len:
+    bot.checkoutTasks[i] = false
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  if bot.visibleCrewmates.len == 1 and bot.imposterKillReady:
+    let target = bot.visibleCrewmateWorld(bot.visibleCrewmates[0])
+    if bot.inKillRange(target.x, target.y):
+      bot.imposterGoalIndex = bot.farthestTaskIndex()
+      bot.intent = "kill lone crewmate"
+      bot.desiredMask = ButtonA
+      bot.controllerMask = ButtonA
+      bot.hasPathStep = false
+      bot.path.setLen(0)
+      bot.thought("lone crewmate in range, attacking")
+      return ButtonA
+    bot.goalIndex = -2
+    return bot.navigateToPoint(
+      target.x,
+      target.y,
+      "lone crewmate",
+      KillApproachRadius
+    )
+  if bot.sim.tasks.len == 0:
+    bot.intent = "imposter idle, no task stations"
+    bot.thought("imposter idle, no task stations")
+    return 0
+  if bot.imposterGoalIndex < 0 or bot.imposterGoalIndex >= bot.sim.tasks.len:
+    bot.imposterGoalIndex = bot.randomTaskIndex()
+  var goal = bot.taskGoalFor(bot.imposterGoalIndex, TaskMaybe)
+  if not goal.found:
+    bot.imposterGoalIndex = bot.randomTaskIndex()
+    goal = bot.taskGoalFor(bot.imposterGoalIndex, TaskMaybe)
+  if not goal.found:
+    bot.intent = "imposter idle, unreachable task station"
+    bot.thought("imposter idle, unreachable task station")
+    return 0
+  if heuristic(bot.playerWorldX(), bot.playerWorldY(), goal.x, goal.y) <=
+      TaskPreciseApproachRadius:
+    bot.imposterGoalIndex = bot.randomTaskIndex()
+    goal = bot.taskGoalFor(bot.imposterGoalIndex, TaskMaybe)
+    if not goal.found:
+      bot.intent = "imposter idle, no next task station"
+      bot.thought("imposter idle, no next task station")
+      return 0
+  bot.goalIndex = goal.index
+  bot.navigateToPoint(goal.x, goal.y, "fake task " & goal.name)
+
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   let centerStart = getMonoTime()
@@ -1532,6 +1758,8 @@ proc decideNextMask(bot: var Bot): uint8 =
   if not bot.localized:
     bot.thought("waiting for a reliable map lock")
     return 0
+  if bot.role == RoleImposter:
+    return bot.decideImposterMask()
   if bot.taskHoldTicks > 0:
     return bot.holdTaskAction(
       if bot.goalName.len > 0:
@@ -1599,7 +1827,9 @@ proc initBot(): Bot =
   result.sim = initSimServer(defaultGameConfig())
   let sheet = readImage("spritesheet.png")
   result.playerSprite = sheet.sheetSprite(0, 0)
+  result.killButtonSprite = sheet.sheetSprite(3, 0)
   result.taskSprite = sheet.sheetSprite(4, 0)
+  result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
@@ -1612,6 +1842,7 @@ proc initBot(): Bot =
   result.lastCameraX = result.cameraX
   result.lastCameraY = result.cameraY
   result.taskHoldIndex = -1
+  result.imposterGoalIndex = -1
   result.goalIndex = -1
   result.cameraLock = NoLock
   result.intent = "waiting for first frame"
@@ -1960,6 +2191,9 @@ proc pumpViewer(
       (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
       "\n" &
     "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
+    "role: " & roleName(bot.role) &
+      " kill ready=" & $bot.imposterKillReady &
+      " imp goal=" & $bot.imposterGoalIndex & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
     "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &

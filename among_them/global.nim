@@ -17,6 +17,10 @@ const
   ReplayControlsSpriteId = 4003
   ReplayTickObjectId = 4002
   ReplayControlsObjectId = 4003
+  InterstitialSpriteId = 4005
+  InterstitialObjectId = 4005
+  InterstitialLayerId = 2
+  InterstitialLayerType = 2
   TransportIconSize = 6
   TransportIconHeight = 6
   TransportIconCount = 5
@@ -354,6 +358,24 @@ proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
     result[j] = spriteColor((byte shr 4) and 0x0f)
     inc j
 
+proc hasInterstitialFrame(sim: SimServer): bool =
+  ## Returns true when the global viewer should show a neutral game screen.
+  sim.phase in {Lobby, Voting, VoteResult, GameOver}
+
+proc buildInterstitialFrame(sim: var SimServer): seq[uint8] =
+  ## Builds a neutral global-view interstitial frame.
+  case sim.phase
+  of Lobby:
+    sim.buildLobbyFrame(-1)
+  of Voting:
+    sim.buildVoteFrame(-1)
+  of VoteResult:
+    sim.buildResultFrame(-1)
+  of GameOver:
+    sim.buildGameOverFrame(-1)
+  else:
+    @[]
+
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
@@ -364,6 +386,8 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addViewport(MapLayerId, MapWidth, MapHeight)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
   result.addViewport(TopLeftLayerId, 160, 24)
+  result.addLayer(InterstitialLayerId, InterstitialLayerType, UiLayerFlag)
+  result.addViewport(InterstitialLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
   result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
   result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)
@@ -840,6 +864,26 @@ proc buildSpriteProtocolUpdates*(
         MapLayerId,
         TaskSpriteId
       )
+
+  if sim.hasInterstitialFrame():
+    let interstitial = spritePixelsFromPackedFrame(
+      sim.buildInterstitialFrame()
+    )
+    currentIds.add(InterstitialObjectId)
+    result.addSprite(
+      InterstitialSpriteId,
+      ScreenWidth,
+      ScreenHeight,
+      interstitial
+    )
+    result.addObject(
+      InterstitialObjectId,
+      0,
+      0,
+      0,
+      InterstitialLayerId,
+      InterstitialSpriteId
+    )
 
   let playerIndex = sim.selectedPlayerIndex(nextState.selectedJoinOrder)
   if playerIndex >= 0:
