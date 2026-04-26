@@ -45,8 +45,9 @@ def main() -> None:
     horizon = args.horizon if args.horizon is not None else spec.horizon
     minibatch_size = args.minibatch_size if args.minibatch_size is not None else spec.minibatch_size
     hidden_size = args.hidden_size if args.hidden_size is not None else spec.hidden_size
-    if minibatch_size > args.num_envs * horizon:
-        raise ValueError("--minibatch-size must be <= num-envs * horizon")
+    agents_per_env = spec.server_players if spec.name == "among_them" else 1
+    if minibatch_size > args.num_envs * agents_per_env * horizon:
+        raise ValueError("--minibatch-size must be <= total agents * horizon")
 
     output_dir = args.output_dir if args.output_dir is not None else Path(f"tools/runlogs/{spec.name}_pufferlib_training")
     output_dir.mkdir(parents=True, exist_ok=True)
