@@ -56,6 +56,8 @@ const
   ButtonY* = 114
   ButtonW* = 28
   ButtonH* = 34
+  HomeX* = 536
+  HomeY* = 120
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -165,6 +167,7 @@ type
 
   Player* = object
     x*, y*: int
+    homeX*, homeY*: int
     velX*, velY*: int
     carryX*, carryY*: int
     flipH*: bool
@@ -516,6 +519,8 @@ proc gameHash*(sim: SimServer): uint64 =
   for player in sim.players:
     result.mixHashInt(player.x)
     result.mixHashInt(player.y)
+    result.mixHashInt(player.homeX)
+    result.mixHashInt(player.homeY)
     result.mixHashInt(player.velX)
     result.mixHashInt(player.velY)
     result.mixHashInt(player.carryX)
@@ -566,18 +571,45 @@ proc canOccupy*(sim: SimServer, x, y: int): bool =
         return false
   true
 
-proc findSpawn*(sim: SimServer): tuple[x, y: int] =
+proc homePosition*(sim: SimServer, index, total: int): tuple[x, y: int] =
+  ## Returns one deterministic home position around the meeting button.
   let
-    buttonX = 536
-    buttonY = 120
+    buttonX = HomeX
+    buttonY = HomeY
     spawnRadius = 28
-    n = max(1, sim.players.len + 1)
-    angle = float(sim.players.len) * 2.0 * 3.14159265 / float(n)
+    n = max(1, total)
+    angle = float(index) * 2.0 * 3.14159265 / float(n)
     px = buttonX + int(float(spawnRadius) * cos(angle))
     py = buttonY + int(float(spawnRadius) * sin(angle))
   if sim.canOccupy(px, py):
     return (px, py)
   (buttonX, buttonY)
+
+proc resetPlayerToHome*(sim: var SimServer, playerIndex: int) =
+  ## Moves one player back to its saved meeting home position.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.players[playerIndex].x = sim.players[playerIndex].homeX
+  sim.players[playerIndex].y = sim.players[playerIndex].homeY
+  sim.players[playerIndex].velX = 0
+  sim.players[playerIndex].velY = 0
+  sim.players[playerIndex].carryX = 0
+  sim.players[playerIndex].carryY = 0
+  sim.players[playerIndex].activeTask = -1
+  sim.players[playerIndex].taskProgress = 0
+
+proc arrangeHomePositions*(sim: var SimServer) =
+  ## Saves and applies evenly spaced home positions for all players.
+  let total = sim.players.len
+  for i in 0 ..< total:
+    let home = sim.homePosition(i, total)
+    sim.players[i].homeX = home.x
+    sim.players[i].homeY = home.y
+    sim.resetPlayerToHome(i)
+
+proc findSpawn*(sim: SimServer): tuple[x, y: int] =
+  ## Returns the next lobby spawn position.
+  sim.homePosition(sim.players.len, sim.players.len + 1)
 
 proc rewardAccountIndex(sim: SimServer, address: string): int =
   ## Returns the reward account index for an address.
@@ -595,6 +627,8 @@ proc addPlayer*(sim: var SimServer, address: string): int =
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
+    homeX: spawn.x,
+    homeY: spawn.y,
     role: Crewmate,
     alive: true,
     killCooldown: sim.config.killCooldownTicks,
@@ -606,6 +640,7 @@ proc addPlayer*(sim: var SimServer, address: string): int =
       if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
       else: 0
   )
+  sim.arrangeHomePositions()
   for task in sim.tasks.mitems:
     task.completed.add(false)
   sim.players.high
@@ -643,6 +678,7 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   sim.addReward(playerIndex, TaskReward)
 
 proc startGame*(sim: var SimServer) =
+  sim.arrangeHomePositions()
   let imposterCount = min(
     sim.config.imposterCount,
     max(0, sim.players.len - 1)
@@ -1151,6 +1187,8 @@ proc applyVoteResult*(sim: var SimServer) =
   if ej >= 0 and ej < sim.players.len:
     sim.players[ej].alive = false
   sim.bodies.setLen(0)
+  for i in 0 ..< sim.players.len:
+    sim.resetPlayerToHome(i)
   sim.phase = Playing
 
 proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
