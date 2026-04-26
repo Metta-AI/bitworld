@@ -581,7 +581,7 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
     httpHandler,
     websocketHandler,
     workerThreads = 4,
-    wsNoDelay = true
+    tcpNoDelay = true
   )
   var serverThread: Thread[ServerThreadArgs]
   var serverPtr = cast[ptr Server](unsafeAddr httpServer)
