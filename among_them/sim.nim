@@ -89,7 +89,24 @@ const
   TaskObjectBase* = 3000
   SelectedTextObjectId* = 4000
   SelectedViewportObjectId* = 4001
-  PlayerColors* = [3'u8, 7, 8, 14, 4, 11, 13, 15]
+  PlayerColors* = [
+    3'u8,
+    7,
+    8,
+    14,
+    4,
+    11,
+    13,
+    15,
+    1,
+    2,
+    5,
+    6,
+    9,
+    10,
+    12,
+    0
+  ]
   ShadowMap* = [
     0'u8,  #  0 black       -> black
     12,    #  1 gray         -> dark navy

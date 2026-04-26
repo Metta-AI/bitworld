@@ -27,6 +27,8 @@ const
   ViewerViewport = rgbx(142, 193, 255, 180)
   ViewerButton = rgbx(255, 196, 88, 255)
   ViewerPlayer = rgbx(120, 255, 170, 255)
+  ViewerCrew = rgbx(82, 168, 255, 255)
+  ViewerImp = rgbx(255, 84, 96, 255)
   ViewerTask = rgbx(255, 132, 146, 255)
   ViewerTaskGuess = rgbx(255, 220, 92, 255)
   ViewerRadarLine = rgbx(255, 220, 92, 210)
@@ -77,11 +79,19 @@ const
     "red",
     "orange",
     "yellow",
-    "cyan",
+    "light blue",
     "pink",
     "lime",
     "blue",
-    "white"
+    "pale blue",
+    "gray",
+    "white",
+    "dark brown",
+    "brown",
+    "dark teal",
+    "green",
+    "dark navy",
+    "black"
   ]
 
 type
@@ -208,6 +218,8 @@ type
     lastBodyReportX: int
     lastBodyReportY: int
     lastSeenTicks: array[PlayerColorCount, int]
+    selfColorIndex: int
+    knownImposters: array[PlayerColorCount, bool]
     intent: string
     goalX: int
     goalY: int
@@ -530,11 +542,15 @@ proc scanTaskIcons(bot: var Bot)
 
 proc scanCrewmates(bot: var Bot)
 
+proc rememberRoleReveal(bot: var Bot)
+
 proc scanBodies(bot: var Bot)
 
 proc scanGhosts(bot: var Bot)
 
 proc updateRole(bot: var Bot)
+
+proc updateSelfColor(bot: var Bot)
 
 proc asciiChar(index: int): char =
   ## Returns the character represented by one ASCII sprite index.
@@ -635,6 +651,10 @@ proc detectInterstitialText(bot: Bot): string =
     return "CREW WINS"
   if bot.findAsciiText("IMPS WIN"):
     return "IMPS WIN"
+  if bot.findAsciiText("IMPS"):
+    return "IMPS"
+  if bot.findAsciiText("CREWMATE"):
+    return "CREWMATE"
   for y in 0 .. 20:
     let line = bot.readAsciiLine(y)
     if line.len > 0 and line != "??????????????????":
@@ -674,8 +694,11 @@ proc resetRoundState(bot: var Bot) =
   bot.lastBodySeenY = low(int)
   bot.lastBodyReportX = low(int)
   bot.lastBodyReportY = low(int)
+  bot.selfColorIndex = -1
   for i in 0 ..< bot.lastSeenTicks.len:
     bot.lastSeenTicks[i] = 0
+  for i in 0 ..< bot.knownImposters.len:
+    bot.knownImposters[i] = false
   bot.goalIndex = -1
   bot.goalName = ""
   bot.hasGoal = false
@@ -863,16 +886,23 @@ proc updateLocation(bot: var Bot) =
   bot.interstitial = bot.isInterstitialScreen()
   if bot.interstitial:
     bot.interstitialText = bot.detectInterstitialText()
+    bot.visibleTaskIcons.setLen(0)
+    bot.visibleCrewmates.setLen(0)
+    bot.visibleBodies.setLen(0)
+    bot.visibleGhosts.setLen(0)
     if bot.interstitialText.isGameOverText() and
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
+    else:
+      bot.rememberRoleReveal()
     return
   bot.interstitialText = ""
   bot.lastGameOverText = ""
   if wasInterstitial:
     bot.reseedLocalizationAtHome()
   bot.updateRole()
+  bot.updateSelfColor()
   bot.scanBodies()
   bot.scanGhosts()
   bot.scanCrewmates()
@@ -1188,6 +1218,41 @@ proc scanCrewmates(bot: var Bot) =
     if crewmate.colorIndex >= 0 and
         crewmate.colorIndex < bot.lastSeenTicks.len:
       bot.lastSeenTicks[crewmate.colorIndex] = bot.frameTick
+
+proc updateSelfColor(bot: var Bot) =
+  ## Learns the local player's color from the centered player sprite.
+  let
+    x = PlayerScreenX - bot.playerSprite.width div 2
+    y = PlayerScreenY - bot.playerSprite.height div 2
+  var colorIndex = -1
+  if bot.matchesCrewmate(x, y, false):
+    colorIndex = bot.crewmateColorIndex(x, y, false)
+  elif bot.matchesCrewmate(x, y, true):
+    colorIndex = bot.crewmateColorIndex(x, y, true)
+  if colorIndex >= 0 and colorIndex < PlayerColorCount:
+    bot.selfColorIndex = colorIndex
+
+proc rememberRoleReveal(bot: var Bot) =
+  ## Learns team colors from the role reveal interstitial screen.
+  if bot.interstitialText == "CREWMATE":
+    if bot.role == RoleUnknown:
+      bot.role = RoleCrewmate
+    return
+  if bot.interstitialText != "IMPS":
+    return
+  bot.role = RoleImposter
+  for y in 0 .. ScreenHeight - bot.playerSprite.height:
+    for x in 0 .. ScreenWidth - bot.playerSprite.width:
+      if bot.matchesCrewmate(x, y, false):
+        let colorIndex = bot.crewmateColorIndex(x, y, false)
+        bot.visibleCrewmates.addCrewmateMatch(x, y, colorIndex, false)
+      elif bot.matchesCrewmate(x, y, true):
+        let colorIndex = bot.crewmateColorIndex(x, y, true)
+        bot.visibleCrewmates.addCrewmateMatch(x, y, colorIndex, true)
+  for crewmate in bot.visibleCrewmates:
+    if crewmate.colorIndex >= 0 and
+        crewmate.colorIndex < bot.knownImposters.len:
+      bot.knownImposters[crewmate.colorIndex] = true
 
 proc matchesActorSprite(
   bot: Bot,
@@ -1632,6 +1697,30 @@ proc roleName(role: BotRole): string =
   of RoleCrewmate: "crewmate"
   of RoleImposter: "imposter"
 
+proc knownImposterColor(bot: Bot, colorIndex: int): bool =
+  ## Returns true if the color was shown as an imposter teammate.
+  colorIndex >= 0 and
+    colorIndex < bot.knownImposters.len and
+    bot.knownImposters[colorIndex]
+
+proc playerColorName(colorIndex: int): string =
+  ## Returns the visible player color name.
+  if colorIndex >= 0 and colorIndex < PlayerColorNames.len:
+    PlayerColorNames[colorIndex]
+  else:
+    "unknown"
+
+proc knownImposterSummary(bot: Bot): string =
+  ## Returns a compact debug string for known imposter colors.
+  for i, known in bot.knownImposters:
+    if not known:
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(playerColorName(i))
+  if result.len == 0:
+    result = "none"
+
 proc cameraLockName(lock: CameraLock): string =
   ## Returns a human-readable camera lock name.
   case lock
@@ -1913,6 +2002,19 @@ proc visibleCrewmateWorld(
     bot.cameraY + crewmate.y + SpriteDrawOffY
   )
 
+proc loneVisibleCrewmate(
+  bot: Bot
+): tuple[found: bool, crewmate: CrewmateMatch] =
+  ## Returns the only visible crewmate not known as an imposter.
+  for crewmate in bot.visibleCrewmates:
+    if bot.knownImposterColor(crewmate.colorIndex):
+      continue
+    if result.found:
+      result.found = false
+      return
+    result.found = true
+    result.crewmate = crewmate
+
 proc visibleBodyWorld(bot: Bot, body: BodyMatch): tuple[x: int, y: int] =
   ## Converts one visible body match into world coordinates.
   (
@@ -1945,9 +2047,13 @@ proc suspectedColor(bot: Bot): tuple[found: bool, name: string, tick: int] =
   ## Returns the most recently seen crewmate color.
   var bestTick = 0
   for i, tick in bot.lastSeenTicks:
+    if i == bot.selfColorIndex:
+      continue
+    if bot.knownImposterColor(i):
+      continue
     if tick > bestTick and i < PlayerColorNames.len:
       bestTick = tick
-      result = (true, PlayerColorNames[i], tick)
+      result = (true, playerColorName(i), tick)
 
 proc suspectSummary(bot: Bot): string =
   ## Returns a short debug summary for the current suspect.
@@ -2326,8 +2432,9 @@ proc decideImposterMask(bot: var Bot): uint8 =
         fleeGoal.y,
         "flee body to " & fleeGoal.name
       )
-  if bot.visibleCrewmates.len == 1 and bot.imposterKillReady:
-    let target = bot.visibleCrewmateWorld(bot.visibleCrewmates[0])
+  let loneCrewmate = bot.loneVisibleCrewmate()
+  if loneCrewmate.found and bot.imposterKillReady:
+    let target = bot.visibleCrewmateWorld(loneCrewmate.crewmate)
     if bot.inKillRange(target.x, target.y):
       bot.imposterGoalIndex = bot.farthestFakeTargetIndex()
       bot.intent = "kill lone crewmate"
@@ -2510,6 +2617,7 @@ proc initBot(): Bot =
   result.lastBodyReportY = low(int)
   result.cameraLock = NoLock
   result.role = RoleCrewmate
+  result.selfColorIndex = -1
   result.intent = "waiting for first frame"
 
 proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
@@ -2545,6 +2653,60 @@ proc taskStateColor(state: TaskState): ColorRGBX =
   of TaskCompleted:
     ViewerMutedText
 
+proc crewmateOutlineColor(bot: Bot, colorIndex: int): ColorRGBX =
+  ## Returns the debug outline color for one visible crewmate.
+  if bot.knownImposterColor(colorIndex):
+    ViewerImp
+  else:
+    ViewerCrew
+
+proc drawCrewmateFrameOutlines(
+  sk: Silky,
+  bot: Bot,
+  x,
+  y,
+  scale: float32
+) =
+  ## Draws visible crewmate team outlines in screen space.
+  for crewmate in bot.visibleCrewmates:
+    sk.drawOutline(
+      vec2(
+        x + crewmate.x.float32 * scale,
+        y + crewmate.y.float32 * scale
+      ),
+      vec2(
+        bot.playerSprite.width.float32 * scale,
+        bot.playerSprite.height.float32 * scale
+      ),
+      bot.crewmateOutlineColor(crewmate.colorIndex),
+      2
+    )
+
+proc drawCrewmateMapOutlines(
+  sk: Silky,
+  bot: Bot,
+  x,
+  y,
+  scale: float32
+) =
+  ## Draws visible crewmate team outlines in map space.
+  if not bot.localized:
+    return
+  for crewmate in bot.visibleCrewmates:
+    let
+      world = bot.visibleCrewmateWorld(crewmate)
+      spriteX = world.x - SpriteDrawOffX
+      spriteY = world.y - SpriteDrawOffY
+    sk.drawOutline(
+      vec2(x + spriteX.float32 * scale, y + spriteY.float32 * scale),
+      vec2(
+        bot.playerSprite.width.float32 * scale,
+        bot.playerSprite.height.float32 * scale
+      ),
+      bot.crewmateOutlineColor(crewmate.colorIndex),
+      2
+    )
+
 proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
   ## Draws the latest 128x128 game frame.
   let pixelScale = ViewerFrameScale
@@ -2561,6 +2723,7 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
         vec2(pixelScale, pixelScale),
         sampleColor(index)
       )
+  sk.drawCrewmateFrameOutlines(bot, x, y, pixelScale)
   if bot.interstitial:
     return
   let
@@ -2744,6 +2907,7 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
       vec2(5, 5),
       ViewerPlayer
     )
+    sk.drawCrewmateMapOutlines(bot, x, y, scale)
   if bot.homeSet:
     sk.drawOutline(
       vec2(x + bot.homeX.float32 * scale - 5, y + bot.homeY.float32 * scale - 5),
@@ -2868,10 +3032,12 @@ proc pumpViewer(
       "\n" &
     "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
     "role: " & roleName(bot.role) &
+      " self=" & playerColorName(bot.selfColorIndex) &
       " ghost=" & $bot.isGhost &
       " ghost icon frames=" & $bot.ghostIconFrames &
       " kill ready=" & $bot.imposterKillReady &
       " imp goal=" & $bot.imposterGoalIndex & "\n" &
+    "known imps: " & bot.knownImposterSummary() & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
     "home: " & (
