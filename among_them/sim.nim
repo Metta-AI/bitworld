@@ -2185,7 +2185,7 @@ proc writeRenderStateObservation*(
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Writes the compact render-source observation used before pixel drawing.
+  ## Writes the state observation used by pufferlib state mode.
   if output.len != RenderStateFeatures:
     raise newException(
       AmongThemError,

@@ -18,15 +18,24 @@ from bitworld_pufferlib import (
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    STATE_BODY_FEATURE_OFFSET,
+    STATE_BODY_FEATURES,
     STATE_FLAG_PLAYER_ROLE_IMPOSTER,
     STATE_FEATURES,
+    STATE_GRID_SIZE,
+    STATE_HEADER_FEATURES,
     STATE_PLAYER_FEATURE_OFFSET,
     STATE_PLAYER_FEATURES,
+    STATE_TASK_COUNT,
+    STATE_TASK_FEATURE_OFFSET,
+    STATE_TASK_FEATURES,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
     with_server_players,
 )
+
+STATE_PHASE_PLAYING = 1
 
 
 class ProtocolTest(unittest.TestCase):
@@ -57,6 +66,21 @@ class ProtocolTest(unittest.TestCase):
 
         self.assertEqual(len(ACTION_MASKS), 27)
         self.assertTrue(np.all((ACTION_MASKS.astype(np.int64) & ~allowed_buttons) == 0))
+
+    def test_state_observation_schema_includes_terrain_grid(self) -> None:
+        self.assertEqual(STATE_PLAYER_FEATURE_OFFSET, STATE_HEADER_FEATURES + STATE_GRID_SIZE * STATE_GRID_SIZE)
+        self.assertEqual(
+            STATE_BODY_FEATURE_OFFSET,
+            STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS,
+        )
+        self.assertEqual(
+            STATE_TASK_FEATURE_OFFSET,
+            STATE_BODY_FEATURE_OFFSET + STATE_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS,
+        )
+        self.assertEqual(
+            STATE_FEATURES,
+            STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT,
+        )
 
     def test_policy_checkpoint_loads_state_dict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -97,11 +121,13 @@ class BitWorldSmokeTest(unittest.TestCase):
                 obs = env.reset()
                 self.assertEqual(obs.shape, (expected_agents, FRAME_PIXELS * 4))
                 terminals_seen = 0
-                for _ in range(8):
+                for _ in range(160):
                     _, rewards, terminals, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
                     self.assertEqual(rewards.shape, (expected_agents,))
                     self.assertEqual(terminals.shape, (expected_agents,))
                     terminals_seen += int(terminals.sum())
+                    if terminals_seen >= 2:
+                        break
                 self.assertGreaterEqual(terminals_seen, 2)
 
     def test_episode_return_matches_score_across_resets(self) -> None:
@@ -145,7 +171,14 @@ class BitWorldSmokeTest(unittest.TestCase):
         self.assertNotEqual(episodes, [worker.episode for worker in env.workers])
 
     def test_among_them_direct_env_controls_all_players(self) -> None:
-        env = BitWorldVecEnv("among_them", num_envs=1, max_episode_steps=2, frame_stack=2, action_repeat=1, base_seed=99)
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=2,
+            frame_stack=2,
+            action_repeat=1,
+            base_seed=99,
+        )
         self.addCleanup(env.close)
 
         obs = env.reset()
@@ -158,8 +191,12 @@ class BitWorldSmokeTest(unittest.TestCase):
         np.testing.assert_array_equal(terminals, np.zeros(env.total_agents, dtype=np.float32))
         np.testing.assert_array_equal(env._truncations, np.zeros(env.total_agents, dtype=np.float32))
 
-        _, rewards, terminals, completed = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
-        self.assertEqual(rewards.shape, (env.total_agents,))
+        completed = []
+        for _ in range(160):
+            _, rewards, terminals, completed = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
+            self.assertEqual(rewards.shape, (env.total_agents,))
+            if len(completed) > 0:
+                break
         np.testing.assert_array_equal(terminals, np.ones(env.total_agents, dtype=np.float32))
         np.testing.assert_array_equal(env._truncations, np.ones(env.total_agents, dtype=np.float32))
         self.assertEqual(len(completed), env.total_agents)
@@ -189,6 +226,29 @@ class BitWorldSmokeTest(unittest.TestCase):
                 cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 7
                 self.assertEqual(int(obs[viewer_index, flags_feature]) & STATE_FLAG_PLAYER_ROLE_IMPOSTER, 0)
                 self.assertEqual(obs[viewer_index, cooldown_feature], 0)
+
+    def test_among_them_state_observations_include_terrain_grid(self) -> None:
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=4,
+            frame_stack=1,
+            action_repeat=1,
+            base_seed=99,
+            observation_mode="state",
+        )
+        self.addCleanup(env.close)
+
+        obs = env.reset()
+        for _ in range(160):
+            if int(obs[0, 0]) == STATE_PHASE_PLAYING:
+                break
+            obs, _, _, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
+        self.assertEqual(int(obs[0, 0]), STATE_PHASE_PLAYING)
+        grid = obs[0, STATE_HEADER_FEATURES:STATE_PLAYER_FEATURE_OFFSET]
+        self.assertEqual(grid.shape, (STATE_GRID_SIZE * STATE_GRID_SIZE,))
+        self.assertGreater(np.count_nonzero(grid), 0)
+        self.assertGreater(np.count_nonzero(grid & 0x20), 0)
 
     def test_among_them_state_observations_cover_max_players(self) -> None:
         spec = with_server_players("among_them", AMONG_THEM_MAX_PLAYERS)
