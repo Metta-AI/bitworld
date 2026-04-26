@@ -438,7 +438,8 @@ proc initClient*(
   result.window = newWindow(
     title = if clientOptions.title.len > 0: clientOptions.title else: "Bit World",
     size = windowSize,
-    style = Decorated,
+    # Decorated locks the current size on X11, so apply HiDPI sizing first.
+    style = DecoratedResizable,
     visible = true
   )
   makeContextCurrent(result.window)
@@ -449,6 +450,7 @@ proc initClient*(
   if result.window.contentScale > 1.0:
     result.silky.uiScale = 2.0
     result.window.size = windowSize * 2
+  result.window.style = Decorated
   result.unpacked = @[]
   result.splashPixels = loadSplashPixels()
   result.splashStartedAt = getMonoTime()
