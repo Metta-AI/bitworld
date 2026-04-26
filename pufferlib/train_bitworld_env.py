@@ -23,8 +23,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-timesteps", type=int)
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--players", type=int, help=f"Among Them players per game, 1-{AMONG_THEM_MAX_PLAYERS}")
-    parser.add_argument("--imposters", type=int, help="Among Them imposters per game")
-    parser.add_argument("--button-calls", type=int, help="Among Them emergency button calls per player")
     parser.add_argument("--episode-steps", type=int)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--learning-rate", type=float)
@@ -77,8 +75,6 @@ def main() -> None:
         hidden_size=hidden_size,
         device=args.device,
         observation_mode=args.observation_mode,
-        imposter_count=args.imposters,
-        button_calls=args.button_calls,
     )
 
     if rank != 0:
@@ -111,8 +107,6 @@ def main() -> None:
         seed=args.seed + 10_000,
         action_repeat=args.action_repeat,
         observation_mode=checkpoint.observation_mode,
-        imposter_count=args.imposters,
-        button_calls=args.button_calls,
         random_actions=False,
         sample_actions=False,
     )
@@ -125,8 +119,6 @@ def main() -> None:
         seed=args.seed + 20_000,
         action_repeat=args.action_repeat,
         observation_mode=args.observation_mode,
-        imposter_count=args.imposters,
-        button_calls=args.button_calls,
         random_actions=True,
     )
     summary = {

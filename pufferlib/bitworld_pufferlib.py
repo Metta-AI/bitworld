@@ -699,8 +699,6 @@ class AmongThemNativeLibrary:
             ctypes.c_int,
             ctypes.c_int,
             ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
         ]
         self.lib.bitworld_at_create.restype = ctypes.c_int
         self.lib.bitworld_at_reset.argtypes = [
@@ -790,17 +788,11 @@ class AmongThemNativeWorker:
         max_episode_steps: int,
         action_repeat: int,
         observation_mode: str,
-        imposter_count: int | None = None,
-        button_calls: int | None = None,
     ) -> None:
         if spec.name != "among_them":
             raise ValueError("AmongThemNativeWorker only supports among_them")
         if observation_mode not in OBSERVATION_MODES:
             raise ValueError(f"unknown observation_mode {observation_mode!r}")
-        if imposter_count is not None and not 0 <= imposter_count < spec.server_players:
-            raise ValueError("imposter_count must be between 0 and players - 1")
-        if button_calls is not None and button_calls < 0:
-            raise ValueError("button_calls must be non-negative")
         self.spec = spec
         self.env_id = env_id
         self.seed = seed
@@ -808,17 +800,9 @@ class AmongThemNativeWorker:
         self.action_repeat = action_repeat
         self.observation_mode = observation_mode
         self.agent_count = spec.server_players
-        self.imposter_count = imposter_count
-        self.button_calls = button_calls
         self.native = among_them_native_library()
         self.handle = self.native.check(
-            self.native.lib.bitworld_at_create(
-                seed,
-                self.agent_count,
-                self.max_ticks,
-                -1 if imposter_count is None else imposter_count,
-                -1 if button_calls is None else button_calls,
-            )
+            self.native.lib.bitworld_at_create(seed, self.agent_count, self.max_ticks)
         )
         feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
         dtype = np.uint8
@@ -1222,8 +1206,6 @@ class BitWorldVecEnv:
         action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
         observation_mode: str = "pixels",
-        imposter_count: int | None = None,
-        button_calls: int | None = None,
     ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
@@ -1241,18 +1223,8 @@ class BitWorldVecEnv:
             raise ValueError("state observations are only implemented for among_them")
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
-        if imposter_count is not None and self.spec.name != "among_them":
-            raise ValueError("imposter_count is only supported for among_them")
-        if imposter_count is not None and not 0 <= imposter_count < self.spec.server_players:
-            raise ValueError("imposter_count must be between 0 and players - 1")
-        if button_calls is not None and self.spec.name != "among_them":
-            raise ValueError("button_calls is only supported for among_them")
-        if button_calls is not None and button_calls < 0:
-            raise ValueError("button_calls must be non-negative")
         self.num_envs = num_envs
         self.observation_mode = observation_mode
-        self.imposter_count = imposter_count
-        self.button_calls = button_calls
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
         self.total_agents = num_envs * self.agents_per_env
         self.num_agents = self.total_agents
@@ -1325,8 +1297,6 @@ class BitWorldVecEnv:
                         max_episode_steps=max_episode_steps,
                         action_repeat=action_repeat,
                         observation_mode=observation_mode,
-                        imposter_count=imposter_count,
-                        button_calls=button_calls,
                     )
                 else:
                     worker = BitWorldWorker(
@@ -1839,8 +1809,6 @@ def train_policy(
     hidden_size: int = 256,
     device: str = "auto",
     observation_mode: str = "pixels",
-    imposter_count: int | None = None,
-    button_calls: int | None = None,
 ) -> dict:
     resolved = get_env_spec(spec)
     if observation_mode not in OBSERVATION_MODES:
@@ -1874,8 +1842,6 @@ def train_policy(
         action_repeat=action_repeat,
         base_seed=seed + rank * num_envs,
         observation_mode=observation_mode,
-        imposter_count=imposter_count,
-        button_calls=button_calls,
     )
     policy = BitWorldPolicy(
         frame_stack=frame_stack,
@@ -1919,8 +1885,6 @@ def train_policy(
                     "policy_device": str(next(policy.parameters()).device),
                     "world_size": world_size,
                     "observation_mode": observation_mode,
-                    "imposter_count": imposter_count,
-                    "button_calls": button_calls,
                 }
             ),
             flush=True,
@@ -1983,8 +1947,6 @@ def evaluate_policy(
     seed: int,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     observation_mode: str = "pixels",
-    imposter_count: int | None = None,
-    button_calls: int | None = None,
     random_actions: bool = False,
     sample_actions: bool = True,
 ) -> dict[str, float]:
@@ -1997,8 +1959,6 @@ def evaluate_policy(
         action_repeat=action_repeat,
         base_seed=seed,
         observation_mode=observation_mode,
-        imposter_count=imposter_count,
-        button_calls=button_calls,
     )
     rng = np.random.default_rng(seed)
     vecenv.reset()

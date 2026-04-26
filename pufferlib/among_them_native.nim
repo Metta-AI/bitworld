@@ -16,8 +16,6 @@ type
     rewardSnapshot: seq[int]
     renderStateScratch: seq[uint8]
     playerCount: int
-    imposterCount: int
-    buttonCalls: int
     seed: int
     maxTicks: int
 
@@ -119,11 +117,10 @@ proc initNativeEnv(env: var NativeEnv) =
     config.seed = env.seed
     config.maxTicks = env.maxTicks
     config.minPlayers = env.playerCount
-    if env.imposterCount >= 0:
-      config.imposterCount = env.imposterCount
-    config.imposterCount = min(config.imposterCount, max(0, env.playerCount - 1))
-    if env.buttonCalls >= 0:
-      config.buttonCalls = env.buttonCalls
+    config.imposterCount = min(
+      config.imposterCount,
+      max(0, env.playerCount - 1)
+    )
     env.sim = initSimServer(config)
   finally:
     setCurrentDir(previousDir)
@@ -150,7 +147,7 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
 
-proc bitworld_at_create*(seed, playerCount, maxTicks, imposterCount, buttonCalls: cint): cint {.cdecl, exportc, dynlib.} =
+proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
@@ -158,16 +155,10 @@ proc bitworld_at_create*(seed, playerCount, maxTicks, imposterCount, buttonCalls
       return setLastError("playerCount must be <= " & $MaxPlayers & ".")
     if maxTicks < 0:
       return setLastError("maxTicks must be non-negative.")
-    if imposterCount >= playerCount:
-      return setLastError("imposterCount must be less than playerCount.")
-    if buttonCalls < -1:
-      return setLastError("buttonCalls must be non-negative.")
 
     var env = NativeEnv(
       seed: int(seed),
       playerCount: int(playerCount),
-      imposterCount: int(imposterCount),
-      buttonCalls: int(buttonCalls),
       maxTicks: int(maxTicks)
     )
     env.initNativeEnv()
