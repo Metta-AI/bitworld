@@ -10,15 +10,6 @@ type
     saveReplayPath: string
     loadReplayPath: string
 
-proc defaultRunConfig(): RunConfig =
-  ## Returns the default CLI config.
-  RunConfig(address: DefaultHost, port: DefaultPort)
-
-proc requireConfigObject(node: JsonNode) =
-  ## Raises if the config JSON is not an object.
-  if node.kind != JObject:
-    raise newException(BigAdventureError, "Config must be a JSON object.")
-
 proc readConfigString(node: JsonNode, name: string, value: var string) =
   ## Reads one optional string config field.
   if not node.hasKey(name):
@@ -55,7 +46,8 @@ proc update(config: var RunConfig, jsonText: string) =
       BigAdventureError,
       "Could not parse config JSON: " & e.msg
     )
-  node.requireConfigObject()
+  if node.kind != JObject:
+    raise newException(BigAdventureError, "Config must be a JSON object.")
   node.readConfigString("address", config.address)
   node.readConfigInt("port", config.port)
   node.readConfigString("saveReplay", config.saveReplayPath)
@@ -65,7 +57,7 @@ proc update(config: var RunConfig, jsonText: string) =
 
 when isMainModule:
   var
-    config = defaultRunConfig()
+    config = RunConfig(address: DefaultHost, port: DefaultPort)
     configPath = ""
     configJson = ""
   for kind, key, val in getopt():
