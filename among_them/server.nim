@@ -537,7 +537,7 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == "/reward" and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
