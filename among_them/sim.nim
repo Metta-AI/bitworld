@@ -8,7 +8,7 @@ const
   GameName* = "among_them"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
-  ReplayFormatVersion* = 1'u16
+  ReplayFormatVersion* = 2'u16
   ReplayTickHashRecord* = 0x01'u8
   ReplayInputRecord* = 0x02'u8
   ReplayJoinRecord* = 0x03'u8
@@ -49,6 +49,7 @@ const
   MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
+  ButtonCalls* = 1
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
@@ -100,7 +101,6 @@ const
   ]
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
-  RewardWebSocketPath* = "/reward"
 
 type
   PlayerRole* = enum
@@ -148,6 +148,7 @@ type
     frictionDen*: int
     maxSpeed*: int
     stopThreshold*: int
+    seed*: int
     killRange*: int
     killCooldownTicks*: int
     taskCompleteTicks*: int
@@ -162,6 +163,7 @@ type
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
+    buttonCalls*: int
 
   Player* = object
     x*, y*: int
@@ -177,6 +179,7 @@ type
     taskProgress*: int
     activeTask*: int
     ventCooldown*: int
+    buttonCallsUsed*: int
     assignedTasks*: seq[int]
     reward*: int
 
@@ -351,6 +354,7 @@ proc defaultGameConfig*(): GameConfig =
     frictionDen: FrictionDen,
     maxSpeed: MaxSpeed,
     stopThreshold: StopThreshold,
+    seed: 0xA6019,
     killRange: KillRange,
     killCooldownTicks: KillCooldownTicks,
     taskCompleteTicks: TaskCompleteTicks,
@@ -364,13 +368,9 @@ proc defaultGameConfig*(): GameConfig =
     maxTicks: MaxTicks,
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
-    showTaskBubbles: true
+    showTaskBubbles: true,
+    buttonCalls: ButtonCalls
   )
-
-proc requireConfigObject(node: JsonNode) =
-  ## Raises if the config JSON is not an object.
-  if node.kind != JObject:
-    raise newException(AmongThemError, "Config must be a JSON object.")
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
   ## Reads one optional integer config field.
@@ -402,6 +402,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
   if config.tasksPerPlayer < 0:
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
+  if config.buttonCalls < 0:
+    raise newException(AmongThemError, "Config field buttonCalls must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
@@ -417,13 +419,15 @@ proc update*(config: var GameConfig, jsonText: string) =
     node = fromJson(jsonText)
   except jsony.JsonError as e:
     raise newException(AmongThemError, "Could not parse config JSON: " & e.msg)
-  node.requireConfigObject()
+  if node.kind != JObject:
+    raise newException(AmongThemError, "Config must be a JSON object.")
   node.readConfigInt("motionScale", config.motionScale)
   node.readConfigInt("accel", config.accel)
   node.readConfigInt("frictionNum", config.frictionNum)
   node.readConfigInt("frictionDen", config.frictionDen)
   node.readConfigInt("maxSpeed", config.maxSpeed)
   node.readConfigInt("stopThreshold", config.stopThreshold)
+  node.readConfigInt("seed", config.seed)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
@@ -436,9 +440,38 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("maxTicks", config.maxTicks)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
+  node.readConfigInt("buttonCalls", config.buttonCalls)
+  node.readConfigInt("numberOfButtonCalls", config.buttonCalls)
   node.readConfigBool("showTaskArrows", config.showTaskArrows)
   node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
   config.validate()
+
+proc configJson*(config: GameConfig): string =
+  ## Returns the complete replay JSON for a gameplay config.
+  let node = %*{
+    "motionScale": config.motionScale,
+    "accel": config.accel,
+    "frictionNum": config.frictionNum,
+    "frictionDen": config.frictionDen,
+    "maxSpeed": config.maxSpeed,
+    "stopThreshold": config.stopThreshold,
+    "seed": config.seed,
+    "killRange": config.killRange,
+    "killCooldownTicks": config.killCooldownTicks,
+    "taskCompleteTicks": config.taskCompleteTicks,
+    "ventRange": config.ventRange,
+    "reportRange": config.reportRange,
+    "voteResultTicks": config.voteResultTicks,
+    "minPlayers": config.minPlayers,
+    "imposterCount": config.imposterCount,
+    "voteTimerTicks": config.voteTimerTicks,
+    "gameOverTicks": config.gameOverTicks,
+    "tasksPerPlayer": config.tasksPerPlayer,
+    "buttonCalls": config.buttonCalls,
+    "showTaskArrows": config.showTaskArrows,
+    "showTaskBubbles": config.showTaskBubbles
+  }
+  $node
 
 proc mapIndex*(x, y: int): int =
   y * MapWidth + x
@@ -482,6 +515,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.taskProgress)
     result.mixHashInt(player.activeTask)
     result.mixHashInt(player.ventCooldown)
+    result.mixHashInt(player.buttonCallsUsed)
     result.mixHashInt(player.reward)
     result.mixHashInt(player.assignedTasks.len)
     for task in player.assignedTasks:
@@ -538,18 +572,11 @@ proc rewardAccountIndex(sim: SimServer, address: string): int =
       return i
   -1
 
-proc rewardForAddress(sim: SimServer, address: string): int =
-  ## Returns the accumulated reward for an address.
-  let index = sim.rewardAccountIndex(address)
-  if index >= 0:
-    sim.rewardAccounts[index].reward
-  else:
-    0
-
 proc addPlayer*(sim: var SimServer, address: string): int =
   let
     spawn = sim.findSpawn()
     order = sim.nextJoinOrder
+    rewardAccount = sim.rewardAccountIndex(address)
   inc sim.nextJoinOrder
   sim.players.add Player(
     x: spawn.x,
@@ -561,7 +588,9 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     address: address,
     color: PlayerColors[order mod PlayerColors.len],
     activeTask: -1,
-    reward: sim.rewardForAddress(address)
+    reward:
+      if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
+      else: 0
   )
   for task in sim.tasks.mitems:
     task.completed.add(false)
@@ -802,11 +831,14 @@ proc tryCallButton*(sim: var SimServer, callerIndex: int) =
   let p = sim.players[callerIndex]
   if not p.alive:
     return
+  if p.buttonCallsUsed >= sim.config.buttonCalls:
+    return
   let
     px = p.x + CollisionW div 2
     py = p.y + CollisionH div 2
   if px >= ButtonX and px < ButtonX + ButtonW and
       py >= ButtonY and py < ButtonY + ButtonH:
+    inc sim.players[callerIndex].buttonCallsUsed
     sim.startVote()
 
 proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState) =
@@ -1320,7 +1352,7 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
     return sim.buildLobbyFrame(playerIndex)
   if sim.phase == GameOver:
@@ -1513,7 +1545,7 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
 proc initSimServer*(config: GameConfig): SimServer =
   result.config = config
-  result.rng = initRand(0xA6019)
+  result.rng = initRand(config.seed)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
   result.asciiSprites = loadAsciiSprites("ascii.png")

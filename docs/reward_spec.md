@@ -15,10 +15,10 @@ every simulation tick.
 ## Packet Format
 
 Each message is a newline separated packet. Each non-empty line starts with a
-name of the key, followed by address:port and value:
+name of the key, followed by a player identity and value:
 
 ```text
-reward 127.0.0.1:54002 200
+reward player1 200
 ```
 
 The packet format is ASCII compatible UTF-8 text. Lines end with `\n`. A sender
@@ -27,18 +27,19 @@ may use `\r\n`. A receiver should ignore empty lines.
 ## Line Format
 
 ```text
-<name> <address>:<port> <value>
+<name> <player> <value>
 ```
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | Name | `string` | Name of the value |
-| Address | `string` | Player address |
-| Port | `u16` | Player port |
+| Player | `string` | Player identity |
 | Value | `integer` | Value for this player |
 
-`Address` and `Port` are written as one field separated by `:`. `Address` must
-not contain spaces. `Port` and `Value` are written as base 10 integers.
+`Player` is one field and must not contain spaces. A player may provide it when
+connecting to the player websocket with `?name=player1`. If no name is provided,
+the server may use a network identity such as `127.0.0.1:54002`. `Value` is
+written as a base 10 integer.
 
 The current required name is:
 

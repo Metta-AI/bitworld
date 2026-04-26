@@ -9,6 +9,23 @@ The client connects to a websocket endpoint. The usual path is:
 /bitscreen
 ```
 
+Game servers that expose player sessions usually use:
+
+```text
+/player
+```
+
+The player endpoint may accept a `name` query parameter:
+
+```text
+/player?name=player1
+```
+
+`name` is an optional player identity. Servers that support rewards or global
+display should use this value instead of the network address when naming the
+player. The value is URL decoded by the server. It must not contain spaces after
+server normalization.
+
 The protocol uses binary websocket messages.
 
 ## Screen

@@ -8,7 +8,7 @@ const
   GameName* = "big_adventure"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
-  ReplayFormatVersion* = 1'u16
+  ReplayFormatVersion* = 2'u16
   ReplayTickHashRecord* = 0x01'u8
   ReplayInputRecord* = 0x02'u8
   ReplayJoinRecord* = 0x03'u8
@@ -34,7 +34,6 @@ const
   TargetFps* = 24
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
-  RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8
   HealthBarGray* = 1'u8
   HealthBarGreen* = 10'u8
@@ -134,6 +133,7 @@ type
     letterSprites*: seq[Sprite]
     fb*: Framebuffer
     rng*: Rand
+    seed*: int
     tickCount*: int
     mobSpawnCooldown*: int
     nextPlayerId*: int
@@ -323,8 +323,9 @@ proc addPlayer*(sim: var SimServer, address: string): int =
   )
   sim.players.high
 
-proc initSimServer*(): SimServer =
-  result.rng = initRand(0xB1770)
+proc initSimServer*(seed = 0xB1770): SimServer =
+  result.seed = seed
+  result.rng = initRand(seed)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
   loadClientPalette()
@@ -918,7 +919,7 @@ proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX
       pos = projectToEdge(dx, dy)
     fb.putPixel(pos.x, pos.y, playerColor(i))
 
-proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed

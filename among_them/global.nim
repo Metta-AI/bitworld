@@ -17,6 +17,10 @@ const
   ReplayControlsSpriteId = 4003
   ReplayTickObjectId = 4002
   ReplayControlsObjectId = 4003
+  InterstitialSpriteId = 4005
+  InterstitialObjectId = 4005
+  InterstitialLayerId = 2
+  InterstitialLayerType = 2
   TransportIconSize = 6
   TransportIconHeight = 6
   TransportIconCount = 5
@@ -26,6 +30,7 @@ const
   TransportSpeedY = 8
   TransportWidth = 108
   TransportHeight = 14
+  TransportSpeedGap = 16
   TransportX = 2
   TransportY = 1
 
@@ -353,6 +358,24 @@ proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
     result[j] = spriteColor((byte shr 4) and 0x0f)
     inc j
 
+proc hasInterstitialFrame(sim: SimServer): bool =
+  ## Returns true when the global viewer should show a neutral game screen.
+  sim.phase in {Lobby, Voting, VoteResult, GameOver}
+
+proc buildInterstitialFrame(sim: var SimServer): seq[uint8] =
+  ## Builds a neutral global-view interstitial frame.
+  case sim.phase
+  of Lobby:
+    sim.buildLobbyFrame(-1)
+  of Voting:
+    sim.buildVoteFrame(-1)
+  of VoteResult:
+    sim.buildResultFrame(-1)
+  of GameOver:
+    sim.buildGameOverFrame(-1)
+  else:
+    @[]
+
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
@@ -363,6 +386,8 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addViewport(MapLayerId, MapWidth, MapHeight)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
   result.addViewport(TopLeftLayerId, 160, 24)
+  result.addLayer(InterstitialLayerId, InterstitialLayerType, UiLayerFlag)
+  result.addViewport(InterstitialLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
   result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
   result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)
@@ -586,8 +611,10 @@ proc replayCommandAt(layer, x, y: int): char =
     if speedX >= 16 and speedX < 28:
       return '2'
     if speedX >= 32 and speedX < 44:
-      return '4'
+      return '3'
     if speedX >= 48 and speedX < 60:
+      return '4'
+    if speedX >= 64 and speedX < 76:
       return '8'
   '\0'
 
@@ -613,7 +640,8 @@ proc replayScrubTickAt(
   clamp((clampedX * maxTick) div (ReplayScrubberWidth - 1), 0, maxTick)
 
 proc buildReplayScrubberSprite(
-  tick, maxTick: int
+  tick, maxTick: int,
+  enabled: bool
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a compact replay scrubber sprite.
   result.width = ReplayScrubberWidth
@@ -633,20 +661,22 @@ proc buildReplayScrubberSprite(
     result.pixels[
       ReplayScrubberTrackY * ReplayScrubberWidth + x
     ] = spriteColor(1'u8)
-  for x in 0 .. knobX:
-    result.pixels[
-      ReplayScrubberTrackY * ReplayScrubberWidth + x
-    ] = spriteColor(10'u8)
+  if enabled:
+    for x in 0 .. knobX:
+      result.pixels[
+        ReplayScrubberTrackY * ReplayScrubberWidth + x
+      ] = spriteColor(10'u8)
   for y in 0 ..< ReplayScrubberHeight:
-    result.pixels[y * ReplayScrubberWidth + knobX] = spriteColor(2'u8)
+    result.pixels[y * ReplayScrubberWidth + knobX] =
+      if enabled: spriteColor(2'u8) else: spriteColor(1'u8)
   if knobX > 0:
     result.pixels[
       ReplayScrubberTrackY * ReplayScrubberWidth + knobX - 1
-    ] = spriteColor(2'u8)
+    ] = if enabled: spriteColor(2'u8) else: spriteColor(1'u8)
   if knobX < ReplayScrubberWidth - 1:
     result.pixels[
       ReplayScrubberTrackY * ReplayScrubberWidth + knobX + 1
-    ] = spriteColor(2'u8)
+    ] = if enabled: spriteColor(2'u8) else: spriteColor(1'u8)
 
 proc blitTransportIcon(
   target: var seq[uint8],
@@ -669,7 +699,8 @@ proc buildReplayControlsSprite(
   sim: SimServer,
   replayPlaying: bool,
   replaySpeed: int,
-  replayLooping: bool
+  replayLooping: bool,
+  replayEnabled: bool
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds the replay transport controls sprite.
   result.width = TransportWidth
@@ -686,7 +717,9 @@ proc buildReplayControlsSprite(
     ]
   for i in 0 ..< iconCells.len:
     let tint =
-      if i == 3:
+      if not replayEnabled:
+        1'u8
+      elif i == 3:
         if replayLooping: 10'u8 else: 1'u8
       else:
         2'u8
@@ -698,10 +731,17 @@ proc buildReplayControlsSprite(
       tint
     )
 
-  let speedTexts = ["1X", "2X", "4X", "8X"]
+  let speedTexts = ["1X", "2X", "3X", "4X", "8X"]
   var x = TransportSpeedX
   for i in 0 ..< speedTexts.len:
-    let color = if (1 shl i) == replaySpeed: 10'u8 else: 1'u8
+    let speed =
+      case i
+      of 0: 1
+      of 1: 2
+      of 2: 3
+      of 3: 4
+      else: 8
+    let color = if speed == replaySpeed: 10'u8 else: 1'u8
     sim.blitSmallText(
       result.pixels,
       TransportWidth,
@@ -711,7 +751,7 @@ proc buildReplayControlsSprite(
       TransportSpeedY,
       color
     )
-    x += 16
+    x += TransportSpeedGap
 
 proc buildSpriteProtocolUpdates*(
   sim: var SimServer,
@@ -721,7 +761,8 @@ proc buildSpriteProtocolUpdates*(
   replayPlaying = false,
   replaySpeed = 1,
   replayMaxTick = -1,
-  replayLooping = false
+  replayLooping = false,
+  replayEnabled = false
 ): seq[uint8] =
   ## Builds global viewer object updates for the current tick.
   result = @[]
@@ -824,6 +865,26 @@ proc buildSpriteProtocolUpdates*(
         TaskSpriteId
       )
 
+  if sim.hasInterstitialFrame():
+    let interstitial = spritePixelsFromPackedFrame(
+      sim.buildInterstitialFrame()
+    )
+    currentIds.add(InterstitialObjectId)
+    result.addSprite(
+      InterstitialSpriteId,
+      ScreenWidth,
+      ScreenHeight,
+      interstitial
+    )
+    result.addObject(
+      InterstitialObjectId,
+      0,
+      0,
+      0,
+      InterstitialLayerId,
+      InterstitialSpriteId
+    )
+
   let playerIndex = sim.selectedPlayerIndex(nextState.selectedJoinOrder)
   if playerIndex >= 0:
     let
@@ -836,7 +897,7 @@ proc buildSpriteProtocolUpdates*(
         2'u8
       )
       viewport = spritePixelsFromPackedFrame(
-        sim.buildFramePacket(playerIndex)
+        sim.render(playerIndex)
       )
     currentIds.add(SelectedTextObjectId)
     currentIds.add(SelectedViewportObjectId)
@@ -869,63 +930,69 @@ proc buildSpriteProtocolUpdates*(
       SelectedViewportSpriteId
     )
 
-  if replayTick >= 0:
-    let
-      tickText = sim.buildSpriteProtocolTextSprite(
-        ["TICK " & $replayTick],
-        2'u8
-      )
-      scrubber = buildReplayScrubberSprite(replayTick, replayMaxTick)
-      controls = sim.buildReplayControlsSprite(
-        replayPlaying,
-        replaySpeed,
-        replayLooping
-      )
-    currentIds.add(ReplayTickObjectId)
-    currentIds.add(ReplayControlsObjectId)
-    currentIds.add(ReplayScrubberObjectId)
-    result.addSprite(
-      ReplayTickSpriteId,
-      tickText.width,
-      tickText.height,
-      tickText.pixels
+  let
+    controlTick = max(0, replayTick)
+    controlMaxTick = max(controlTick, replayMaxTick)
+    tickText = sim.buildSpriteProtocolTextSprite(
+      ["TICK " & $controlTick],
+      if replayEnabled: 2'u8 else: 1'u8
     )
-    result.addObject(
-      ReplayTickObjectId,
-      max(0, (ScreenWidth - tickText.width) div 2),
-      0,
-      0,
-      ReplayCenterBottomLayerId,
-      ReplayTickSpriteId
+    scrubber = buildReplayScrubberSprite(
+      controlTick,
+      controlMaxTick,
+      replayEnabled
     )
-    result.addSprite(
-      ReplayScrubberSpriteId,
-      scrubber.width,
-      scrubber.height,
-      scrubber.pixels
+    controls = sim.buildReplayControlsSprite(
+      replayPlaying,
+      replaySpeed,
+      replayLooping,
+      replayEnabled
     )
-    result.addObject(
-      ReplayScrubberObjectId,
-      max(0, (ScreenWidth - ReplayScrubberWidth) div 2),
-      ReplayScrubberY,
-      0,
-      ReplayCenterBottomLayerId,
-      ReplayScrubberSpriteId
-    )
-    result.addSprite(
-      ReplayControlsSpriteId,
-      controls.width,
-      controls.height,
-      controls.pixels
-    )
-    result.addObject(
-      ReplayControlsObjectId,
-      TransportX,
-      TransportY,
-      0,
-      ReplayBottomLeftLayerId,
-      ReplayControlsSpriteId
-    )
+  currentIds.add(ReplayTickObjectId)
+  currentIds.add(ReplayControlsObjectId)
+  currentIds.add(ReplayScrubberObjectId)
+  result.addSprite(
+    ReplayTickSpriteId,
+    tickText.width,
+    tickText.height,
+    tickText.pixels
+  )
+  result.addObject(
+    ReplayTickObjectId,
+    max(0, (ScreenWidth - tickText.width) div 2),
+    0,
+    0,
+    ReplayCenterBottomLayerId,
+    ReplayTickSpriteId
+  )
+  result.addSprite(
+    ReplayScrubberSpriteId,
+    scrubber.width,
+    scrubber.height,
+    scrubber.pixels
+  )
+  result.addObject(
+    ReplayScrubberObjectId,
+    max(0, (ScreenWidth - ReplayScrubberWidth) div 2),
+    ReplayScrubberY,
+    0,
+    ReplayCenterBottomLayerId,
+    ReplayScrubberSpriteId
+  )
+  result.addSprite(
+    ReplayControlsSpriteId,
+    controls.width,
+    controls.height,
+    controls.pixels
+  )
+  result.addObject(
+    ReplayControlsObjectId,
+    TransportX,
+    TransportY,
+    0,
+    ReplayBottomLeftLayerId,
+    ReplayControlsSpriteId
+  )
 
   for objectId in state.objectIds:
     if objectId notin currentIds:

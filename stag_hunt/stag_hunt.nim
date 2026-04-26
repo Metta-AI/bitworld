@@ -879,7 +879,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
         dec value
 
 proc httpHandler(request: Request) =
-  if request.uri == WebSocketPath and request.httpMethod == "GET":
+  if request.path == WebSocketPath and request.httpMethod == "GET":
     discard request.upgradeToWebSocket()
   else:
     var headers: HttpHeaders
@@ -927,7 +927,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
     httpHandler,
     websocketHandler,
     workerThreads = 4,
-    wsNoDelay = true
+    tcpNoDelay = true
   )
 
   var serverThread: Thread[ServerThreadArgs]

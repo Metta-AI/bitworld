@@ -27,6 +27,7 @@ const
 
 type
   Actor = object
+    name: string
     x, y: int
     sprite: Sprite
     facing: Facing
@@ -52,7 +53,10 @@ type
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    playerNames: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
+    rewardViewers: Table[WebSocket, bool]
+    resetRequested: bool
 
   ServerThreadArgs = object
     server: ptr Server
@@ -173,10 +177,11 @@ proc findPlayerSpawn(sim: SimServer): tuple[x, y: int] =
           return (px, py)
   (centerTx * TileSize, centerTy * TileSize)
 
-proc addPlayer(sim: var SimServer): int =
+proc addPlayer(sim: var SimServer, name: string): int =
   let spawn = sim.findPlayerSpawn()
   let isFirstPlayer = sim.players.len == 0
   sim.players.add Actor(
+    name: name,
     x: spawn.x,
     y: spawn.y,
     sprite: sim.playerSprite,
@@ -450,7 +455,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   if player.isIt:
     sim.fb.blitText(sim.letterSprites, "IT", ScreenWidth - 12, 0)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed
@@ -482,6 +487,14 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc buildRewardPacket(sim: SimServer): string =
+  for player in sim.players:
+    result.add("reward ")
+    result.add(player.name)
+    result.add(" ")
+    result.add($player.score)
+    result.add("\n")
+
 proc step(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
   for i in 0 ..< sim.players.len:
@@ -503,17 +516,23 @@ proc initAppState() =
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.playerNames = initTable[WebSocket, string]()
   appState.closedSockets = @[]
+  appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.resetRequested = false
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
   result.attack = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
     return
   let removedIndex = appState.playerIndices[websocket]
   appState.playerIndices.del(websocket)
+  appState.playerNames.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
@@ -522,9 +541,32 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
+proc cleanPlayerName(name: string): string =
+  result = name.strip()
+  for ch in result.mitems:
+    if ch.isSpaceAscii:
+      ch = '_'
+
+proc playerIdentity(request: Request): string =
+  let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
+  if name.len > 0:
+    return name
+  let parts = request.remoteAddress.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  request.remoteAddress
+
 proc httpHandler(request: Request) =
-  if request.uri == WebSocketPath and request.httpMethod == "GET":
-    discard request.upgradeToWebSocket()
+  if request.path == WebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerNames[websocket] = request.playerIdentity()
+  elif request.path == "/reward" and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.rewardViewers[websocket] = true
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -539,14 +581,21 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerIndices[websocket] = 0x7fffffff
-        appState.inputMasks[websocket] = 0
-        appState.lastAppliedMasks[websocket] = 0
+        if websocket notin appState.rewardViewers:
+          appState.playerIndices[websocket] = 0x7fffffff
+          appState.inputMasks[websocket] = 0
+          appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
     if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
       {.gcsafe.}:
         withLock appState.lock:
-          appState.inputMasks[websocket] = blobToMask(message.data)
+          let mask = blobToMask(message.data)
+          if mask == 255'u8:
+            appState.resetRequested = true
+            appState.inputMasks[websocket] = 0
+            appState.lastAppliedMasks[websocket] = 0
+          else:
+            appState.inputMasks[websocket] = mask
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -570,7 +619,7 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
     httpHandler,
     websocketHandler,
     workerThreads = 4,
-    wsNoDelay = true
+    tcpNoDelay = true
   )
   var serverThread: Thread[ServerThreadArgs]
   var serverPtr = cast[ptr Server](unsafeAddr httpServer)
@@ -586,6 +635,8 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
+      shouldReset = false
+      rewardViewers: seq[WebSocket] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -593,31 +644,69 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
 
-        for websocket in appState.playerIndices.keys:
-          if appState.playerIndices[websocket] == 0x7fffffff:
-            appState.playerIndices[websocket] = sim.addPlayer()
+        if appState.resetRequested:
+          shouldReset = true
+          appState.resetRequested = false
+          for _, value in appState.playerIndices.mpairs:
+            value = 0x7fffffff
+          for _, value in appState.inputMasks.mpairs:
+            value = 0
+          for _, value in appState.lastAppliedMasks.mpairs:
+            value = 0
 
-        inputs = newSeq[InputState](sim.players.len)
-        for websocket, playerIndex in appState.playerIndices.pairs:
-          if playerIndex < 0 or playerIndex >= inputs.len:
-            continue
-          let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
-          let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
-          inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
-          appState.lastAppliedMasks[websocket] = currentMask
-          sockets.add(websocket)
-          playerIndices.add(playerIndex)
+        if not shouldReset:
+          for websocket in appState.playerIndices.keys:
+            if appState.playerIndices[websocket] == 0x7fffffff:
+              let name = appState.playerNames.getOrDefault(websocket, "unknown")
+              appState.playerIndices[websocket] = sim.addPlayer(name)
+
+          inputs = newSeq[InputState](sim.players.len)
+          for websocket, playerIndex in appState.playerIndices.pairs:
+            if playerIndex < 0 or playerIndex >= inputs.len:
+              continue
+            let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
+            let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
+            inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
+            appState.lastAppliedMasks[websocket] = currentMask
+            sockets.add(websocket)
+            playerIndices.add(playerIndex)
+
+        for websocket in appState.rewardViewers.keys:
+          rewardViewers.add(websocket)
+
+    if shouldReset:
+      sim = initSimServer()
+      {.gcsafe.}:
+        withLock appState.lock:
+          for websocket in appState.playerIndices.keys:
+            if appState.playerIndices[websocket] == 0x7fffffff:
+              let name = appState.playerNames.getOrDefault(websocket, "unknown")
+              appState.playerIndices[websocket] = sim.addPlayer(name)
+            sockets.add(websocket)
+            playerIndices.add(appState.playerIndices[websocket])
+      for i in 0 ..< sockets.len:
+        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
+        sockets[i].send(frameBlob, BinaryMessage)
+      let rewardPacket = sim.buildRewardPacket()
+      for websocket in rewardViewers:
+        websocket.send(rewardPacket, TextMessage)
+      runFrameLimiter(lastTick)
+      continue
 
     sim.step(inputs)
 
     for i in 0 ..< sockets.len:
-      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+      let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(sockets[i])
+
+    let rewardPacket = sim.buildRewardPacket()
+    for websocket in rewardViewers:
+      websocket.send(rewardPacket, TextMessage)
 
     runFrameLimiter(lastTick)
 
