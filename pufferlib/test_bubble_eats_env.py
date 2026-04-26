@@ -16,12 +16,14 @@ from bitworld_pufferlib import (
     BitWorldPolicy,
     BitWorldVecEnv,
     ENV_SPECS,
+    EpisodeStats,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
     STATE_FLAG_PLAYER_ROLE_IMPOSTER,
     STATE_FEATURES,
     STATE_PLAYER_FEATURE_OFFSET,
     STATE_PLAYER_FEATURES,
+    env_log_key,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
@@ -57,6 +59,18 @@ class ProtocolTest(unittest.TestCase):
 
         self.assertEqual(len(ACTION_MASKS), 27)
         self.assertTrue(np.all((ACTION_MASKS.astype(np.int64) & ~allowed_buttons) == 0))
+
+    def test_episode_stats_emit_namespaced_info(self) -> None:
+        stats = EpisodeStats(score=3.0, length=4, episode_return=5.0, tasks_completed=2.0)
+
+        self.assertEqual(
+            stats.info("task_progress"),
+            {
+                "game": {"score": 3.0, "tasks_completed": 2.0, "task_progress": 3.0},
+                "episode": {"length": 4.0, "return": 5.0},
+            },
+        )
+        self.assertEqual(env_log_key("game/task_progress"), "env_game/task_progress")
 
     def test_policy_checkpoint_loads_state_dict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -316,7 +316,7 @@ class FastBitWorldPuffeRL:
         self.values = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
         self.rewards = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
         self.terminals = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
-        self.env_logs: dict[str, float] = {}
+        self.env_logs: dict = {}
 
     def rollouts(self):
         observations = self.vecenv._obs
@@ -423,7 +423,7 @@ class FastBitWorldPuffeRL:
             "agent_steps": float(global_steps),
             "SPS": float(sps),
             **{f"losses/{key}": value for key, value in losses.items()},
-            **{f"env/{key}": float(value) for key, value in self.env_logs.items()},
+            **{env_log_key(key): float(value) for key, value in flatten_logs(self.env_logs).items()},
         }
         if self.epoch % int(self.config["checkpoint_interval"]) == 0:
             self.save_weights(str(self.model_path))
@@ -483,12 +483,34 @@ def flatten_logs(logs: dict, prefix: str = "") -> dict[str, float]:
     return flat
 
 
+def env_log_key(key: str) -> str:
+    if "/" not in key:
+        return f"env/{key}"
+    namespace, metric = key.split("/", 1)
+    return f"env_{namespace}/{metric}"
+
+
 @dataclass
 class EpisodeStats:
     score: float
     length: int
     episode_return: float
     tasks_completed: float = 0.0
+
+    def info(self, metric_name: str) -> dict[str, dict[str, float]]:
+        game = {
+            "score": float(self.score),
+            "tasks_completed": float(self.tasks_completed),
+        }
+        if metric_name != "score":
+            game[metric_name] = float(self.score)
+        return {
+            "game": game,
+            "episode": {
+                "length": float(self.length),
+                "return": float(self.episode_return),
+            },
+        }
 
 
 @dataclass
@@ -1255,7 +1277,7 @@ class BitWorldVecEnv:
         self._truncations = np.zeros((self.total_agents,), dtype=np.float32)
         self.masks = np.ones((self.total_agents,), dtype=bool)
         self.agent_ids = np.arange(self.total_agents)
-        self.infos: list[dict[str, float]] = []
+        self.infos: list[dict] = []
         self.observation_space = spaces.Box(
             low=0,
             high=15 if observation_mode == "pixels" else 255,
@@ -1575,36 +1597,32 @@ class BitWorldVecEnv:
 
     def send(self, actions: np.ndarray) -> None:
         _, _, _, completed = self.step_discrete(np.asarray(actions, dtype=np.int64).reshape(-1))
-        self.infos = [
-            {
-                    "score": item.score,
-                    "episode_length": float(item.length),
-                    "episode_return": item.episode_return,
-                    "tasks_completed": item.tasks_completed,
-                }
-            for item in completed
-        ]
+        self.infos = [item.info(self.spec.metric_name) for item in completed]
 
     def cpu_step(self, actions_ptr: int) -> None:
         raw = (ctypes.c_float * (self.total_agents * self.num_atns)).from_address(actions_ptr)
         action_indices = np.ctypeslib.as_array(raw).reshape(self.total_agents, self.num_atns)[:, 0].astype(np.int64)
         self._apply_actions(action_indices)
 
-    def log(self) -> dict[str, float]:
+    def log(self) -> dict:
         score = float(np.mean(self._completed_scores)) if self._completed_scores else 0.0
         episode_length = float(np.mean(self._completed_lengths)) if self._completed_lengths else 0.0
         episode_return = float(np.mean(self._completed_returns)) if self._completed_returns else 0.0
         tasks_completed = float(np.mean(self._completed_tasks)) if self._completed_tasks else 0.0
-        logs = {
+        game = {
             "score": score,
-            "episode_length": episode_length,
-            "episode_return": episode_return,
             "tasks_completed": tasks_completed,
-            "n": float(self._completed_episodes),
         }
         if self.spec.metric_name != "score":
-            logs[self.spec.metric_name] = score
-        return logs
+            game[self.spec.metric_name] = score
+        return {
+            "game": game,
+            "episode": {
+                "length": episode_length,
+                "return": episode_return,
+                "count": float(self._completed_episodes),
+            },
+        }
 
     def render(self, env_id: int = 0) -> None:
         del env_id
@@ -1905,8 +1923,8 @@ def train_policy(
                             "env": resolved.name,
                             "steps": int(flat_logs["agent_steps"]),
                             "sps": round(float(flat_logs["SPS"]), 2),
-                            "score": round(float(flat_logs.get("env/score", 0.0)), 3),
-                            "episode_length": round(float(flat_logs.get("env/episode_length", 0.0)), 1),
+                            "score": round(float(flat_logs.get("env_game/score", 0.0)), 3),
+                            "episode_length": round(float(flat_logs.get("env_episode/length", 0.0)), 1),
                         }
                     ),
                     flush=True,
