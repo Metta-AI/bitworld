@@ -89,6 +89,10 @@ def state_teacher_reward_scale() -> float:
     return float(os.environ.get("BITWORLD_STATE_TEACHER_REWARD", "0.05"))
 
 
+def teacher_rollout_enabled() -> bool:
+    return os.environ.get("BITWORLD_TEACHER_ROLLOUT", "1") != "0"
+
+
 SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
@@ -358,11 +362,126 @@ def load_puffer_trainer(use_gpu: bool):
 
     pufferlib.pufferl.compute_puff_advantage = compute_puff_advantage_fallback
 
+    class BitWorldTeacherPuffeRL(pufferlib.pufferl.PuffeRL):
+        def evaluate(self):
+            profile = self.profile
+            epoch = self.epoch
+            profile("eval", epoch)
+            profile("eval_misc", epoch, nest=True)
+
+            config = self.config
+            device = config["device"]
+            use_teacher_rollout = teacher_rollout_enabled()
+
+            if config["use_rnn"]:
+                for key in self.lstm_h:
+                    self.lstm_h[key].zero_()
+                    self.lstm_c[key].zero_()
+
+            self.full_rows = 0
+            while self.full_rows < self.segments:
+                profile("env", epoch)
+                o, r, d, t, ta, info, env_id, mask = self.vecenv.recv()
+
+                profile("eval_misc", epoch)
+                env_id = slice(env_id[0], env_id[-1] + 1)
+                done_mask = d + t
+                del done_mask
+                self.global_step += int(mask.sum())
+
+                profile("eval_copy", epoch)
+                o = torch.as_tensor(o)
+                o_device = o.to(device)
+                r = torch.as_tensor(r).to(device)
+                d = torch.as_tensor(d).to(device)
+
+                profile("eval_forward", epoch)
+                with torch.no_grad(), self.amp_context:
+                    state = {
+                        "reward": r,
+                        "done": d,
+                        "env_id": env_id,
+                        "mask": mask,
+                    }
+
+                    if config["use_rnn"]:
+                        state["lstm_h"] = self.lstm_h[env_id.start]
+                        state["lstm_c"] = self.lstm_c[env_id.start]
+
+                    logits, value = self.policy.forward_eval(o_device, state)
+                    action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                    if use_teacher_rollout:
+                        teacher_action = torch.as_tensor(ta, device=device).long().reshape(action.shape)
+                        valid_teacher = (teacher_action >= 0) & (teacher_action < logits.shape[-1])
+                        if bool(valid_teacher.any()):
+                            teacher_logprobs = torch.log_softmax(logits, dim=-1).gather(
+                                dim=-1,
+                                index=teacher_action.clamp(0, logits.shape[-1] - 1).unsqueeze(-1),
+                            ).squeeze(-1)
+                            action = torch.where(valid_teacher, teacher_action, action)
+                            logprob = torch.where(valid_teacher, teacher_logprobs, logprob)
+                    r = torch.clamp(r, -1, 1)
+
+                profile("eval_copy", epoch)
+                with torch.no_grad():
+                    if config["use_rnn"]:
+                        self.lstm_h[env_id.start] = state["lstm_h"]
+                        self.lstm_c[env_id.start] = state["lstm_c"]
+
+                    l = self.ep_lengths[env_id.start].item()
+                    batch_rows = slice(
+                        self.ep_indices[env_id.start].item(),
+                        1 + self.ep_indices[env_id.stop - 1].item(),
+                    )
+
+                    if config["cpu_offload"]:
+                        self.observations[batch_rows, l] = o
+                    else:
+                        self.observations[batch_rows, l] = o_device
+
+                    self.actions[batch_rows, l] = action
+                    self.logprobs[batch_rows, l] = logprob
+                    self.rewards[batch_rows, l] = r
+                    self.terminals[batch_rows, l] = d.float()
+                    self.values[batch_rows, l] = value.flatten()
+
+                    self.ep_lengths[env_id] += 1
+                    if l + 1 >= config["bptt_horizon"]:
+                        num_full = env_id.stop - env_id.start
+                        self.ep_indices[env_id] = self.free_idx + torch.arange(num_full, device=config["device"]).int()
+                        self.ep_lengths[env_id] = 0
+                        self.free_idx += num_full
+                        self.full_rows += num_full
+
+                    action = action.cpu().numpy()
+                    if isinstance(logits, torch.distributions.Normal):
+                        action = np.clip(action, self.vecenv.action_space.low, self.vecenv.action_space.high)
+
+                profile("eval_misc", epoch)
+                for item in info:
+                    for key, value in pufferlib.unroll_nested_dict(item):
+                        if isinstance(value, np.ndarray):
+                            value = value.tolist()
+                        elif isinstance(value, (list, tuple)):
+                            self.stats[key].extend(value)
+                        else:
+                            self.stats[key].append(value)
+
+                profile("env", epoch)
+                self.vecenv.send(action)
+
+            profile("eval_misc", epoch)
+            self.free_idx = self.total_agents
+            self.ep_indices = torch.arange(self.total_agents, device=device, dtype=torch.int32)
+            self.ep_lengths.zero_()
+            profile.end()
+            return self.stats
+
     class BitWorldPuffeRL:
         def __init__(self, args, vecenv, policy, verbose: bool = False):
             del verbose
             self.model_path = Path(args["checkpoint_dir"]).parent / "pufferlib_latest.pt"
-            self.trainer = pufferlib.pufferl.PuffeRL(
+            self.trainer = BitWorldTeacherPuffeRL(
                 puffer_train_config(args),
                 vecenv,
                 policy,
