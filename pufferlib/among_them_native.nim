@@ -316,12 +316,14 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
     let
       base = outputBase + playerIndex * StateFeatures
       player = env.sim.players[playerIndex]
+      view = env.sim.playerView(playerIndex)
       teacherAction = env.taskTeacherMask(playerIndex).actionIndexForMask()
       taskCount = max(1, env.sim.tasks.len)
       maxSpeed = max(1, env.sim.config.maxSpeed)
       killCooldownTicks = max(1, env.sim.config.killCooldownTicks)
       taskCompleteTicks = max(1, env.sim.config.taskCompleteTicks)
     var i = 0
+    env.sim.castShadows(view.originMx, view.originMy, view.cameraX, view.cameraY)
 
     template put(value: cfloat) =
       output[base + i] = value
@@ -342,11 +344,18 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
     for otherIndex in 0 ..< 5:
       if otherIndex < env.sim.players.len:
         let other = env.sim.players[otherIndex]
-        put relNorm(other.x - player.x, MapWidth)
-        put relNorm(other.y - player.y, MapHeight)
-        put(if other.alive: 1.0 else: 0.0)
-        put(if other.role == Imposter: 1.0 else: 0.0)
-        put norm(other.killCooldown, killCooldownTicks)
+        let visible =
+          otherIndex == playerIndex or
+          env.sim.screenPointVisible(view, other.x + CollisionW div 2, other.y + CollisionH div 2)
+        if visible:
+          put relNorm(other.x - player.x, MapWidth)
+          put relNorm(other.y - player.y, MapHeight)
+          put(if other.alive: 1.0 else: 0.0)
+          put(if otherIndex == playerIndex and other.role == Imposter: 1.0 else: 0.0)
+          put(if otherIndex == playerIndex: norm(other.killCooldown, killCooldownTicks) else: 0.0)
+        else:
+          for _ in 0 ..< 5:
+            put 0.0
       else:
         for _ in 0 ..< 5:
           put 0.0
@@ -354,10 +363,22 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
     for taskIndex in 0 ..< 15:
       if taskIndex < env.sim.tasks.len:
         let task = env.sim.tasks[taskIndex]
-        put relNorm(task.x + task.w div 2 - player.x, MapWidth)
-        put relNorm(task.y + task.h div 2 - player.y, MapHeight)
-        put(if player.hasTask(taskIndex): 1.0 else: 0.0)
-        put(if playerIndex < task.completed.len and task.completed[playerIndex]: 1.0 else: 0.0)
+        let
+          assigned = player.hasTask(taskIndex)
+          completed = playerIndex < task.completed.len and task.completed[playerIndex]
+          iconX = task.x + task.w div 2
+          iconY = task.y - SpriteSize div 2 - 2
+          iconVisible =
+            player.role == Crewmate and assigned and not completed and
+            view.screenPointInFrame(iconX, iconY)
+        if iconVisible:
+          put relNorm(iconX - (player.x + CollisionW div 2), MapWidth)
+          put relNorm(iconY - (player.y + CollisionH div 2), MapHeight)
+        else:
+          put 0.0
+          put 0.0
+        put(if assigned: 1.0 else: 0.0)
+        put(if completed: 1.0 else: 0.0)
       else:
         for _ in 0 ..< 4:
           put 0.0

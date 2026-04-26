@@ -1483,6 +1483,7 @@ class BitWorldVecEnv:
         self._state_prev_task_progress[:] = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
         self._state_teacher_actions[:] = self._state_teacher_actions_from_frames()
         self.teacher_actions[:] = self._state_teacher_actions
+        self._hide_state_teacher_features()
         self._state_episode_steps = 0
         self._state_statuses.fill(AMONG_THEM_STEP_ACTIVE)
         self._frame_history[:] = self._latest_frames[:, np.newaxis, :]
@@ -1518,6 +1519,12 @@ class BitWorldVecEnv:
             STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT,
         ]
         return np.argmax(teacher_features, axis=1).astype(np.int64)
+
+    def _hide_state_teacher_features(self) -> None:
+        self._latest_frames[
+            :,
+            STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT,
+        ] = 0.0
 
     def _step_env(self, env_id: int, action_indices: np.ndarray):
         worker = self.workers[env_id]
@@ -1598,6 +1605,7 @@ class BitWorldVecEnv:
         self._state_prev_task_progress[:] = task_progress
         self._state_teacher_actions[:] = self._state_teacher_actions_from_frames()
         self.teacher_actions[:] = self._state_teacher_actions
+        self._hide_state_teacher_features()
         self._state_episode_return += self._rewards
         self._state_episode_steps += 1
 
