@@ -713,7 +713,7 @@ proc runServerLoop*(
             if appState.playerIndices[websocket] == 0x7fffffff:
               newSockets.add(websocket)
           for websocket in newSockets:
-            if sim.phase == Lobby:
+            if sim.phase == Lobby and sim.canAddPlayer():
               let address = appState.playerAddresses.getOrDefault(
                 websocket,
                 "unknown"
@@ -775,7 +775,14 @@ proc runServerLoop*(
       {.gcsafe.}:
         withLock appState.lock:
           appState.spectators = @[]
+          var reconnectSockets: seq[WebSocket] = @[]
           for websocket in appState.playerIndices.keys:
+            reconnectSockets.add(websocket)
+          for websocket in reconnectSockets:
+            if not sim.canAddPlayer():
+              appState.spectators.add(websocket)
+              appState.playerIndices.del(websocket)
+              continue
             let address = appState.playerAddresses.getOrDefault(
               websocket,
               "unknown"

@@ -42,6 +42,7 @@ const
   ProgressFilled* = 10'u8
   ReportRange* = 20
   VoteResultTicks* = 72
+  MaxPlayers* = 16
   MinPlayers* = 5
   ImposterCount* = 1
   VoteTimerTicks* = 240
@@ -414,6 +415,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field frictionDen must be positive.")
   if config.minPlayers < 1:
     raise newException(AmongThemError, "Config field minPlayers must be at least 1.")
+  if config.minPlayers > MaxPlayers:
+    raise newException(AmongThemError, "can't do more than 16 players.")
   if config.imposterCount < 0:
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
   if config.tasksPerPlayer < 0:
@@ -611,6 +614,10 @@ proc findSpawn*(sim: SimServer): tuple[x, y: int] =
   ## Returns the next lobby spawn position.
   sim.homePosition(sim.players.len, sim.players.len + 1)
 
+proc canAddPlayer*(sim: SimServer): bool =
+  ## Returns whether the game has room for another player.
+  sim.players.len < MaxPlayers
+
 proc rewardAccountIndex(sim: SimServer, address: string): int =
   ## Returns the reward account index for an address.
   for i in 0 ..< sim.rewardAccounts.len:
@@ -619,6 +626,8 @@ proc rewardAccountIndex(sim: SimServer, address: string): int =
   -1
 
 proc addPlayer*(sim: var SimServer, address: string): int =
+  if not sim.canAddPlayer():
+    raise newException(AmongThemError, "can't do more than 16 players.")
   let
     spawn = sim.findSpawn()
     order = sim.nextJoinOrder
@@ -1408,14 +1417,21 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.blitAsciiText(sim.asciiSprites, title, titleX, 2)
   let n = sim.players.len
   let
-    rowH = 16
-    iconX = 8
-    textX = 26
+    rowH = 14
+    rowsPerCol = 8
+    colW = ScreenWidth div 2
+    iconOffsetX = 4
+    textOffsetX = 19
     startY = 16
   for i in 0 ..< n:
     let
       p = sim.players[i]
-      y = startY + i * rowH
+      col = i div rowsPerCol
+      row = i mod rowsPerCol
+      baseX = min(col, 1) * colW
+      y = startY + row * rowH
+      iconX = baseX + iconOffsetX
+      textX = baseX + textOffsetX
       iconY = y + (rowH - SpriteSize) div 2
       textY = y + (rowH - 6) div 2
       roleStr = if p.role == Imposter: "IMP" else: "CREW"
