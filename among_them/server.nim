@@ -11,6 +11,7 @@ type
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
+    rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
 
@@ -459,6 +460,7 @@ proc initAppState() =
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
+  appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.spectators = @[]
 
@@ -468,6 +470,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       appState.spectators.delete(i)
   if websocket in appState.globalViewers:
     appState.globalViewers.del(websocket)
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
     return
   let removedIndex = appState.playerIndices[websocket]
@@ -492,6 +496,11 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
+  elif request.uri == RewardWebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.rewardViewers[websocket] = true
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -506,7 +515,8 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.globalViewers:
+        if websocket notin appState.globalViewers and
+            websocket notin appState.rewardViewers:
           if appState.replayLoaded:
             appState.playerIndices[websocket] = -1
           else:
@@ -542,6 +552,15 @@ proc runFrameLimiter(previousTick: var MonoTime, targetFps: float) =
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
+
+proc buildRewardPacket(sim: SimServer): string =
+  ## Builds one reward protocol packet for the current tick.
+  for player in sim.players:
+    result.add("reward ")
+    result.add(player.address)
+    result.add(" ")
+    result.add($player.reward)
+    result.add("\n")
 
 proc runServerLoop*(
   host = DefaultHost,
@@ -594,6 +613,7 @@ proc runServerLoop*(
       spectatorList: seq[WebSocket] = @[]
       globalViewers: seq[WebSocket] = @[]
       globalStates: seq[GlobalViewerState] = @[]
+      rewardViewers: seq[WebSocket] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
 
@@ -668,6 +688,8 @@ proc runServerLoop*(
             replayCommands.add(command)
           appState.globalViewers[websocket].replayCommands.setLen(0)
           appState.globalViewers[websocket].replaySeekTick = -1
+        for websocket in appState.rewardViewers.keys:
+          rewardViewers.add(websocket)
 
     if replayLoaded:
       for seekTick in replaySeekTicks:
@@ -685,6 +707,8 @@ proc runServerLoop*(
       sim.step(inputs, prevInputs)
       prevInputs = inputs
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+
+    let rewardPacket = sim.buildRewardPacket()
 
     if not replayLoaded and sim.needsReregister:
       sim.needsReregister = false
@@ -719,6 +743,14 @@ proc runServerLoop*(
           {.gcsafe.}:
             withLock appState.lock:
               sim.removePlayer(ws)
+
+    for websocket in rewardViewers:
+      try:
+        websocket.send(rewardPacket, TextMessage)
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            sim.removePlayer(websocket)
 
     for i in 0 ..< globalViewers.len:
       var nextState: GlobalViewerState

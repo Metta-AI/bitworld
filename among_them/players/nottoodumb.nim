@@ -120,6 +120,8 @@ type
     cameraScore: int
     localized: bool
     interstitial: bool
+    interstitialText: string
+    lastGameOverText: string
     haveMotionSample: bool
     previousPlayerWorldX: int
     previousPlayerWorldY: int
@@ -314,6 +316,159 @@ proc scanTaskIcons(bot: var Bot)
 
 proc scanCrewmates(bot: var Bot)
 
+proc asciiChar(index: int): char =
+  ## Returns the character represented by one ASCII sprite index.
+  char(index + ord(' '))
+
+proc asciiGlyphScore(
+  bot: Bot,
+  glyph: Sprite,
+  screenX,
+  screenY: int
+): tuple[misses: int, opaque: int] =
+  ## Scores one rendered ASCII glyph against the current screen.
+  for y in 0 ..< glyph.height:
+    for x in 0 ..< glyph.width:
+      let color = glyph.pixels[glyph.spriteIndex(x, y)]
+      if color == TransparentColorIndex:
+        continue
+      inc result.opaque
+      let
+        sx = screenX + x
+        sy = screenY + y
+      if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
+        inc result.misses
+        continue
+      if bot.unpacked[sy * ScreenWidth + sx] != color:
+        inc result.misses
+
+proc asciiTextScore(
+  bot: Bot,
+  text: string,
+  screenX,
+  screenY: int
+): tuple[misses: int, opaque: int] =
+  ## Scores one rendered ASCII text run against the current screen.
+  var offsetX = 0
+  for ch in text:
+    let idx = asciiIndex(ch)
+    if idx >= 0 and idx < bot.sim.asciiSprites.len:
+      let score = bot.asciiGlyphScore(
+        bot.sim.asciiSprites[idx],
+        screenX + offsetX,
+        screenY
+      )
+      result.misses += score.misses
+      result.opaque += score.opaque
+    offsetX += 7
+
+proc asciiTextWidth(text: string): int =
+  ## Returns the fixed-width ASCII text width.
+  text.len * 7
+
+proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
+  ## Returns true when text is visible at the given screen position.
+  let score = bot.asciiTextScore(text, x, y)
+  if score.opaque == 0:
+    return false
+  score.misses <= max(2, score.opaque div 16)
+
+proc findAsciiText(bot: Bot, text: string): bool =
+  ## Finds a rendered ASCII phrase in the top black-screen title area.
+  let maxX = ScreenWidth - asciiTextWidth(text)
+  if maxX < 0:
+    return false
+  for y in 0 .. 20:
+    for x in 0 .. maxX:
+      if bot.asciiTextMatches(text, x, y):
+        return true
+
+proc bestAsciiGlyph(bot: Bot, x, y: int): char =
+  ## Reads the best single ASCII glyph at a fixed character cell.
+  var
+    bestChar = ' '
+    bestMisses = high(int)
+    bestOpaque = 0
+  for i, glyph in bot.sim.asciiSprites:
+    let score = bot.asciiGlyphScore(glyph, x, y)
+    if score.opaque == 0:
+      continue
+    if score.misses < bestMisses:
+      bestMisses = score.misses
+      bestOpaque = score.opaque
+      bestChar = asciiChar(i)
+  if bestOpaque == 0:
+    return ' '
+  if bestMisses <= max(2, bestOpaque div 8):
+    return bestChar
+  '?'
+
+proc readAsciiLine(bot: Bot, y: int): string =
+  ## Reads a loose ASCII line from one black-screen text row.
+  for x in countup(0, ScreenWidth - 7, 7):
+    result.add(bot.bestAsciiGlyph(x, y))
+  result = result.strip()
+
+proc detectInterstitialText(bot: Bot): string =
+  ## Reads known interstitial ASCII text from a black screen.
+  if bot.findAsciiText("CREW WINS"):
+    return "CREW WINS"
+  if bot.findAsciiText("IMPS WIN"):
+    return "IMPS WIN"
+  for y in 0 .. 20:
+    let line = bot.readAsciiLine(y)
+    if line.len > 0 and line != "??????????????????":
+      return line
+  ""
+
+proc isGameOverText(text: string): bool =
+  ## Returns true when interstitial text means the round has ended.
+  text == "CREW WINS" or text == "IMPS WIN"
+
+proc resetRoundState(bot: var Bot) =
+  ## Clears per-round bot state after a detected game-over screen.
+  bot.localized = false
+  bot.cameraLock = NoLock
+  bot.cameraScore = 0
+  bot.haveMotionSample = false
+  bot.velocityX = 0
+  bot.velocityY = 0
+  bot.stuckFrames = 0
+  bot.jiggleTicks = 0
+  bot.jiggleSide = 0
+  bot.desiredMask = 0
+  bot.controllerMask = 0
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  bot.goalIndex = -1
+  bot.goalName = ""
+  bot.hasGoal = false
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.radarDots.setLen(0)
+  bot.visibleTaskIcons.setLen(0)
+  bot.visibleCrewmates.setLen(0)
+  if bot.radarTasks.len != bot.sim.tasks.len:
+    bot.radarTasks = newSeq[bool](bot.sim.tasks.len)
+  else:
+    for i in 0 ..< bot.radarTasks.len:
+      bot.radarTasks[i] = false
+  if bot.checkoutTasks.len != bot.sim.tasks.len:
+    bot.checkoutTasks = newSeq[bool](bot.sim.tasks.len)
+  else:
+    for i in 0 ..< bot.checkoutTasks.len:
+      bot.checkoutTasks[i] = false
+  if bot.taskStates.len != bot.sim.tasks.len:
+    bot.taskStates = newSeq[TaskState](bot.sim.tasks.len)
+  else:
+    for i in 0 ..< bot.taskStates.len:
+      bot.taskStates[i] = TaskNotDoing
+  if bot.taskIconMisses.len != bot.sim.tasks.len:
+    bot.taskIconMisses = newSeq[int](bot.sim.tasks.len)
+  else:
+    for i in 0 ..< bot.taskIconMisses.len:
+      bot.taskIconMisses[i] = 0
+
 proc isInterstitialScreen(bot: Bot): bool =
   ## Returns true when a black modal screen hides the map.
   let
@@ -395,7 +550,14 @@ proc updateLocation(bot: var Bot) =
   bot.lastCameraY = bot.cameraY
   bot.interstitial = bot.isInterstitialScreen()
   if bot.interstitial:
+    bot.interstitialText = bot.detectInterstitialText()
+    if bot.interstitialText.isGameOverText() and
+        bot.lastGameOverText != bot.interstitialText:
+      bot.resetRoundState()
+      bot.lastGameOverText = bot.interstitialText
     return
+  bot.interstitialText = ""
+  bot.lastGameOverText = ""
   bot.scanCrewmates()
   bot.scanTaskIcons()
   if bot.locateNearFrame():
@@ -1314,8 +1476,12 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.path.setLen(0)
     bot.desiredMask = 0
     bot.controllerMask = 0
-    bot.intent = "interstitial screen mode"
-    bot.thought("interstitial screen mode")
+    bot.intent =
+      if bot.interstitialText.len > 0:
+        "interstitial: " & bot.interstitialText
+      else:
+        "interstitial screen mode"
+    bot.thought(bot.intent)
     return 0
   bot.updateMotionState()
   bot.rememberVisibleMap()
@@ -1750,6 +1916,9 @@ proc pumpViewer(
       $(bot.centerMicros div 1000) & "ms)\n" &
     "timing A*: " & $bot.astarMicros & "us (" &
       $(bot.astarMicros div 1000) & "ms)\n" &
+    "interstitial text: " &
+      (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
+      "\n" &
     "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &

@@ -48,6 +48,9 @@ const
   GameOverTicks* = 360
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
+  TaskReward* = 1
+  KillReward* = 10
+  WinReward* = 100
   ButtonX* = 524
   ButtonY* = 114
   ButtonW* = 28
@@ -96,6 +99,7 @@ const
   ]
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
+  RewardWebSocketPath* = "/reward"
 
 type
   PlayerRole* = enum
@@ -131,6 +135,10 @@ type
   Body* = object
     x*, y*: int
     color*: uint8
+
+  RewardAccount* = object
+    address*: string
+    reward*: int
 
   GameConfig* = object
     motionScale*: int
@@ -169,10 +177,12 @@ type
     activeTask*: int
     ventCooldown*: int
     assignedTasks*: seq[int]
+    reward*: int
 
   SimServer* = object
     config*: GameConfig
     players*: seq[Player]
+    rewardAccounts*: seq[RewardAccount]
     bodies*: seq[Body]
     playerSprite*: Sprite
     bodySprite*: Sprite
@@ -486,6 +496,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.taskProgress)
     result.mixHashInt(player.activeTask)
     result.mixHashInt(player.ventCooldown)
+    result.mixHashInt(player.reward)
     result.mixHashInt(player.assignedTasks.len)
     for task in player.assignedTasks:
       result.mixHashInt(task)
@@ -534,6 +545,21 @@ proc findSpawn*(sim: SimServer): tuple[x, y: int] =
     return (px, py)
   (buttonX, buttonY)
 
+proc rewardAccountIndex(sim: SimServer, address: string): int =
+  ## Returns the reward account index for an address.
+  for i in 0 ..< sim.rewardAccounts.len:
+    if sim.rewardAccounts[i].address == address:
+      return i
+  -1
+
+proc rewardForAddress(sim: SimServer, address: string): int =
+  ## Returns the accumulated reward for an address.
+  let index = sim.rewardAccountIndex(address)
+  if index >= 0:
+    sim.rewardAccounts[index].reward
+  else:
+    0
+
 proc addPlayer*(sim: var SimServer, address: string): int =
   let
     spawn = sim.findSpawn()
@@ -548,7 +574,8 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     joinOrder: order,
     address: address,
     color: PlayerColors[order mod PlayerColors.len],
-    activeTask: -1
+    activeTask: -1,
+    reward: sim.rewardForAddress(address)
   )
   for task in sim.tasks.mitems:
     task.completed.add(false)
@@ -559,6 +586,32 @@ proc hasTask*(player: Player, taskIdx: int): bool =
     if t == taskIdx:
       return true
   false
+
+proc addReward*(sim: var SimServer, playerIndex, amount: int) =
+  ## Adds accumulated reward to a player and its address account.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let address = sim.players[playerIndex].address
+  var index = sim.rewardAccountIndex(address)
+  if index < 0:
+    sim.rewardAccounts.add RewardAccount(address: address, reward: 0)
+    index = sim.rewardAccounts.high
+  sim.rewardAccounts[index].reward += amount
+  sim.players[playerIndex].reward = sim.rewardAccounts[index].reward
+
+proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
+  ## Marks one player task complete and awards task reward.
+  if taskIndex < 0 or taskIndex >= sim.tasks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if playerIndex >= sim.tasks[taskIndex].completed.len:
+    return
+  if playerIndex < sim.tasks[taskIndex].completed.len and
+      sim.tasks[taskIndex].completed[playerIndex]:
+    return
+  sim.tasks[taskIndex].completed[playerIndex] = true
+  sim.addReward(playerIndex, TaskReward)
 
 proc startGame*(sim: var SimServer) =
   let imposterCount = min(
@@ -676,6 +729,7 @@ proc tryKill*(sim: var SimServer, killerIndex: int) =
       y: sim.players[bestTarget].y,
       color: sim.players[bestTarget].color
     )
+    sim.addReward(killerIndex, KillReward)
     sim.players[killerIndex].killCooldown = sim.config.killCooldownTicks
 
 proc tryVent*(sim: var SimServer, playerIndex: int) =
@@ -835,7 +889,7 @@ proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState
         player.taskProgress = 0
       inc player.taskProgress
       if player.taskProgress >= sim.config.taskCompleteTicks:
-        sim.tasks[inTask].completed[playerIndex] = true
+        sim.completeTask(playerIndex, inTask)
         player.activeTask = -1
         player.taskProgress = 0
     else:
@@ -934,7 +988,7 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState, prevIn
           player.taskProgress = 0
         inc player.taskProgress
         if player.taskProgress >= sim.config.taskCompleteTicks:
-          sim.tasks[inTask].completed[playerIndex] = true
+          sim.completeTask(playerIndex, inTask)
           player.activeTask = -1
           player.taskProgress = 0
       else:
@@ -1219,6 +1273,17 @@ proc totalTasksRemaining*(sim: SimServer): int =
 proc allTasksDone*(sim: SimServer): bool =
   sim.totalTasksRemaining() == 0
 
+proc finishGame*(sim: var SimServer, winner: PlayerRole) =
+  ## Moves to game over and awards all winning players.
+  if sim.phase == GameOver:
+    return
+  sim.phase = GameOver
+  sim.winner = winner
+  sim.gameOverTimer = sim.config.gameOverTicks
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].role == winner:
+      sim.addReward(i, WinReward)
+
 proc checkWinCondition*(sim: var SimServer) =
   let hasImposters = min(
     sim.config.imposterCount,
@@ -1233,18 +1298,12 @@ proc checkWinCondition*(sim: var SimServer) =
       else:
         inc aliveImposters
   if hasImposters and aliveImposters == 0 and sim.players.len > 0:
-    sim.phase = GameOver
-    sim.winner = Crewmate
-    sim.gameOverTimer = sim.config.gameOverTicks
+    sim.finishGame(Crewmate)
   elif hasImposters and aliveImposters >= aliveCrewmates and
       sim.players.len > 0:
-    sim.phase = GameOver
-    sim.winner = Imposter
-    sim.gameOverTimer = sim.config.gameOverTicks
+    sim.finishGame(Imposter)
   elif sim.allTasksDone() and sim.players.len > 0:
-    sim.phase = GameOver
-    sim.winner = Crewmate
-    sim.gameOverTimer = sim.config.gameOverTicks
+    sim.finishGame(Crewmate)
 
 proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
