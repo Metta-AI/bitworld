@@ -552,7 +552,7 @@ proc renderSelectionUI(sim: var SimServer, playerIndex: int) =
     sim.fb.blitText(sim.letterSprites, line, textX, boxY + 3 + i * 7)
   sim.fb.blitText(sim.letterSprites, "ENTER?", 14, boxY + boxH - 10)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(ColorGrass)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     sim.fb.packFramebuffer()
@@ -911,7 +911,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
       if pi in proxiedPlayers:
         frameBlob = blobFromBytes(sim.proxyFrame(pi))
       else:
-        frameBlob = blobFromBytes(sim.buildFramePacket(pi))
+        frameBlob = blobFromBytes(sim.render(pi))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

@@ -786,7 +786,7 @@ proc buildSpriteProtocolUpdates*(
 
   if playerIndex >= 0:
     let viewport = spritePixelsFromPackedFrame(
-      sim.buildFramePacket(playerIndex)
+      sim.render(playerIndex)
     )
     currentIds.add(SelectedViewportObjectId)
     result.addSprite(

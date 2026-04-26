@@ -689,7 +689,7 @@ proc runServerLoop*(
         if replayLoaded:
           sim.buildReplayFramePacket()
         else:
-          sim.buildFramePacket(playerIndices[i])
+          sim.render(playerIndices[i])
       let frameBlob = blobFromBytes(framePacket)
       try:
         sockets[i].send(frameBlob, BinaryMessage)
