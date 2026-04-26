@@ -10,13 +10,13 @@ source .venv/bin/activate
 ## Test
 
 ```bash
-python -m unittest tools/pufferlib/test_bubble_eats_env.py
+python -m unittest pufferlib/test_bubble_eats_env.py
 ```
 
 ## Train
 
 ```bash
-python tools/pufferlib/train_bitworld_env.py \
+python pufferlib/train_bitworld_env.py \
   --env among_them \
   --total-timesteps 50000 \
   --num-envs 8 \
@@ -38,7 +38,7 @@ Train or reuse a checkpoint, then run one PufferLib policy player with four Nim
 bot players:
 
 ```bash
-python tools/pufferlib/run_among_them_policy_match.py \
+python pufferlib/run_among_them_policy_match.py \
   --train-steps 50000 \
   --duration 60 \
   --device auto
@@ -50,7 +50,7 @@ four Nim bots, and connects the policy as `/player?name=puffer`.
 To connect a trained policy to an existing server:
 
 ```bash
-python tools/pufferlib/play_among_them_policy.py \
+python pufferlib/play_among_them_policy.py \
   tools/runlogs/among_them_policy_match/among_them_policy.pt \
   --address 127.0.0.1 \
   --port 2000 \
