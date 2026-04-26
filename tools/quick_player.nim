@@ -14,6 +14,7 @@ type
     address: string
     port: int
     gui: bool
+    namePrefix: string
 
 var
   playerProcesses: seq[Process]
@@ -26,7 +27,7 @@ proc repoRoot(): string =
 proc usage(): string =
   ## Returns command-line usage text.
   "Usage: quick_player <player_nim_file> [players] [--players:N] " &
-    "[--address:ADDR] [--port:N] [--gui]\n" &
+    "[--address:ADDR] [--port:N] [--gui] [--name-prefix:NAME]\n" &
     "Example: quick_player nottoodumb 4 --address:0.0.0.0 --port:2000\n" &
     "Example: quick_player among_them/players/nottoodumb.nim --players:2 --gui"
 
@@ -198,6 +199,7 @@ proc parseArgs(): QuickPlayerConfig =
   result.players = 1
   result.address = DefaultAddress
   result.port = DefaultPort
+  result.namePrefix = "player"
   for kind, key, val in getopt():
     case kind
     of cmdArgument:
@@ -218,6 +220,10 @@ proc parseArgs(): QuickPlayerConfig =
         result.port = parsePort(val)
       of "gui":
         result.gui = true
+      of "name-prefix":
+        if val.len == 0:
+          raise newException(ValueError, "--name-prefix requires a value.")
+        result.namePrefix = val
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdShortOption:
@@ -255,10 +261,14 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
   )
   if result != 0:
     return result
-  var args = @[addressArg, portArg]
-  if config.gui:
-    args.add("--gui")
   for i in 0 ..< config.players:
+    var args = @[
+      addressArg,
+      portArg,
+      "--name:" & config.namePrefix & $(i + 1)
+    ]
+    if config.gui:
+      args.add("--gui")
     try:
       playerProcesses.add(
         launchManagedProcess(

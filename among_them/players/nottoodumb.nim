@@ -839,9 +839,10 @@ proc updateTaskGuesses(bot: var Bot) =
     for dot in bot.radarDots:
       if abs(dot.x - projected.x) <= RadarMatchTolerance and
           abs(dot.y - projected.y) <= RadarMatchTolerance:
-        if bot.taskStates[i] != TaskCompleted:
-          bot.radarTasks[i] = true
-          bot.checkoutTasks[i] = true
+        bot.radarTasks[i] = true
+        bot.checkoutTasks[i] = true
+        if bot.taskStates[i] == TaskCompleted:
+          bot.taskStates[i] = TaskMaybe
 
 proc projectedTaskIcon(
   bot: Bot,
@@ -1062,6 +1063,13 @@ proc checkoutTaskCount(bot: Bot): int =
     if checkoutTask:
       inc result
 
+proc buttonFallbackReady(bot: Bot): bool =
+  ## Returns true when the button is the only useful remaining goal.
+  bot.radarDots.len == 0 and
+    bot.radarTaskCount() == 0 and
+    bot.checkoutTaskCount() == 0 and
+    bot.taskStateCount(TaskMandatory) == 0
+
 proc cameraLockName(lock: CameraLock): string =
   ## Returns a human-readable camera lock name.
   case lock
@@ -1232,6 +1240,40 @@ proc taskGoalFor(
     return
   (true, index, bestX, bestY, task.name, state)
 
+proc buttonGoal(
+  bot: Bot
+): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
+  ## Returns a reachable point inside the emergency button rectangle.
+  let
+    centerX = ButtonX + ButtonW div 2
+    centerY = ButtonY + ButtonH div 2
+  var
+    bestDistance = high(int)
+    bestX = 0
+    bestY = 0
+  for y in ButtonY ..< ButtonY + ButtonH:
+    for x in ButtonX ..< ButtonX + ButtonW:
+      if not bot.passable(x, y):
+        continue
+      let distance = heuristic(centerX, centerY, x, y)
+      if distance < bestDistance:
+        bestDistance = distance
+        bestX = x
+        bestY = y
+  if bestDistance == high(int):
+    return
+  (true, -1, bestX, bestY, "Button", TaskMaybe)
+
+proc buttonReady(bot: Bot): bool =
+  ## Returns true when the player can press the emergency button.
+  let
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
+  if x < ButtonX or x >= ButtonX + ButtonW or
+      y < ButtonY or y >= ButtonY + ButtonH:
+    return false
+  abs(bot.velocityX) + abs(bot.velocityY) <= 1
+
 proc nearestTaskGoal(
   bot: Bot
 ): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
@@ -1314,6 +1356,10 @@ proc nearestTaskGoal(
     if distance < bestDistance:
       bestDistance = distance
       result = goal
+  if result.found:
+    return
+  if bot.buttonFallbackReady():
+    return bot.buttonGoal()
 
 proc coastDistance(velocity: int): int =
   ## Returns how many pixels current velocity will carry without input.
@@ -1463,6 +1509,16 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   bot.thought("at task " & name & ", holding action")
   ButtonA
 
+proc pressButtonAction(bot: var Bot): uint8 =
+  ## Presses only the action button while standing on the button.
+  bot.intent = "all tasks done, pressing button"
+  bot.desiredMask = ButtonA
+  bot.controllerMask = ButtonA
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.thought("all tasks done, pressing button")
+  ButtonA
+
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   let centerStart = getMonoTime()
@@ -1514,6 +1570,8 @@ proc decideNextMask(bot: var Bot): uint8 =
   bot.goalY = goal.y
   bot.goalIndex = goal.index
   bot.goalName = goal.name
+  if goal.index < 0 and bot.buttonReady():
+    return bot.pressButtonAction()
   if goal.state == TaskMandatory and
       bot.taskGoalReady(goal):
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
@@ -1945,10 +2003,33 @@ proc viewerOpen(viewer: ViewerApp): bool =
   ## Returns true when the diagnostic viewer should keep running.
   viewer.isNil or not viewer.window.closeRequested
 
-proc runBot(host = DefaultHost, port = PlayerDefaultPort, gui = false) =
+proc queryEscape(value: string): string =
+  ## Escapes a small string for use in a websocket query parameter.
+  const Hex = "0123456789ABCDEF"
+  for ch in value:
+    if ch in {'a' .. 'z'} or ch in {'A' .. 'Z'} or ch in {'0' .. '9'} or
+        ch in {'-', '_', '.', '~'}:
+      result.add(ch)
+    else:
+      let byte = ord(ch)
+      result.add('%')
+      result.add(Hex[(byte shr 4) and 0x0f])
+      result.add(Hex[byte and 0x0f])
+
+proc runBot(
+  host = DefaultHost,
+  port = PlayerDefaultPort,
+  gui = false,
+  name = ""
+) =
   ## Connects to an Among Them server and processes player frames.
   var bot = initBot()
-  let url = "ws://" & host & ":" & $port & WebSocketPath
+  let url =
+    if name.len > 0:
+      "ws://" & host & ":" & $port & WebSocketPath &
+        "?name=" & name.queryEscape()
+    else:
+      "ws://" & host & ":" & $port & WebSocketPath
   var
     viewer =
       if gui: initViewerApp()
@@ -2002,6 +2083,7 @@ when isMainModule:
     address = DefaultHost
     port = PlayerDefaultPort
     gui = false
+    name = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -2012,8 +2094,10 @@ when isMainModule:
         port = parseInt(val)
       of "gui":
         gui = true
+      of "name":
+        name = val
       else:
         discard
     else:
       discard
-  runBot(address, port, gui)
+  runBot(address, port, gui, name)

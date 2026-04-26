@@ -1,6 +1,6 @@
 import mummy
 import protocol, sim, global
-import std/[locks, monotimes, os, tables, times]
+import std/[locks, monotimes, os, strutils, tables, times]
 
 type
   WebSocketAppState = object
@@ -485,18 +485,32 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
+proc cleanPlayerName(name: string): string =
+  ## Returns a protocol-safe player display name.
+  result = name.strip()
+  for ch in result.mitems:
+    if ch.isSpaceAscii:
+      ch = '_'
+
+proc playerIdentity(request: Request): string =
+  ## Returns the websocket player identity for rewards and displays.
+  let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
+  if name.len > 0:
+    return name
+  request.remoteAddress
+
 proc httpHandler(request: Request) =
-  if request.uri == WebSocketPath and request.httpMethod == "GET":
+  if request.path == WebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerAddresses[websocket] = request.remoteAddress
-  elif request.uri == GlobalWebSocketPath and request.httpMethod == "GET":
+        appState.playerAddresses[websocket] = request.playerIdentity()
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.uri == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -553,11 +567,18 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
+proc rewardAddress(address: string): string =
+  ## Formats one reward address as host:port.
+  let parts = address.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  address
+
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
   for player in sim.players:
     result.add("reward ")
-    result.add(player.address)
+    result.add(player.address.rewardAddress())
     result.add(" ")
     result.add($player.reward)
     result.add("\n")
