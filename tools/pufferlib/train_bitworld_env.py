@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bitworld_pufferlib import (
     ENV_SPECS,
+    OBSERVATION_MODES,
     evaluate_policy,
     get_env_spec,
     load_policy_checkpoint,
@@ -28,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-size", type=int)
     parser.add_argument("--seed", type=int, default=73)
     parser.add_argument("--action-repeat", type=int, default=4)
+    parser.add_argument("--observation-mode", choices=sorted(OBSERVATION_MODES), default="pixels")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
@@ -70,6 +72,7 @@ def main() -> None:
         action_repeat=args.action_repeat,
         hidden_size=hidden_size,
         device=args.device,
+        observation_mode=args.observation_mode,
     )
 
     if rank != 0:
@@ -79,6 +82,7 @@ def main() -> None:
         summary = {
             "env": spec.name,
             "device": resolve_train_device(args.device),
+            "observation_mode": args.observation_mode,
             "checkpoint": str(checkpoint_path),
             "metrics_path": str(metrics_path),
             "trained": None,
@@ -100,6 +104,7 @@ def main() -> None:
         frame_stack=checkpoint.frame_stack,
         seed=args.seed + 10_000,
         action_repeat=args.action_repeat,
+        observation_mode=checkpoint.observation_mode,
         random_actions=False,
     )
     random_baseline = evaluate_policy(
@@ -110,11 +115,13 @@ def main() -> None:
         frame_stack=checkpoint.frame_stack,
         seed=args.seed + 20_000,
         action_repeat=args.action_repeat,
+        observation_mode=args.observation_mode,
         random_actions=True,
     )
     summary = {
         "env": spec.name,
         "device": train_device,
+        "observation_mode": args.observation_mode,
         "checkpoint": str(checkpoint_path),
         "metrics_path": str(metrics_path),
         "trained": trained,

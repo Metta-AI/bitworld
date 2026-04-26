@@ -31,8 +31,14 @@ SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 128
 FRAME_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT
 PACKED_FRAME_BYTES = FRAME_PIXELS // 2
+STATE_FEATURES = 96
 RESET_INPUT_MASK = 255
 DEFAULT_ACTION_REPEAT = 4
+OBSERVATION_MODES = {"pixels", "state"}
+STATE_TASK_FEATURE_OFFSET = 36
+STATE_TASK_FEATURES = 4
+STATE_TASK_COUNT = 15
+STATE_TASK_PROGRESS_INDEX = 7
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -67,6 +73,14 @@ def native_worker_count(num_envs: int) -> int:
         num_envs,
         max(1, (os.cpu_count() or 1) // max(1, int(os.environ.get("WORLD_SIZE", "1")))),
     )
+
+
+def state_reward_shaping_scale() -> float:
+    return float(os.environ.get("BITWORLD_STATE_REWARD_SHAPING", "0.1"))
+
+
+def state_progress_reward_scale() -> float:
+    return float(os.environ.get("BITWORLD_STATE_PROGRESS_REWARD", "0.02"))
 
 
 SHARED_NIM_SOURCES = (
@@ -427,13 +441,21 @@ class PolicyCheckpoint:
     frame_stack: int
     action_count: int
     hidden_size: int
+    observation_mode: str
+    obs_shape: tuple[int, ...]
 
 
-def infer_policy_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int, int]:
-    frame_stack = int(state_dict["encoder.0.weight"].shape[1])
-    hidden_size = int(state_dict["body.0.weight"].shape[0])
+def infer_policy_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int, int, str, tuple[int, ...]]:
     action_count = int(state_dict["policy_head.bias"].shape[0])
-    return frame_stack, hidden_size, action_count
+    if "encoder.0.weight" in state_dict:
+        frame_stack = int(state_dict["encoder.0.weight"].shape[1])
+        hidden_size = int(state_dict["body.0.weight"].shape[0])
+        return frame_stack, hidden_size, action_count, "pixels", (frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH)
+    frame_stack = 1
+    hidden_size = int(state_dict["body.0.weight"].shape[0])
+    feature_count = int(state_dict["body.0.weight"].shape[1])
+    action_count = int(state_dict["policy_head.bias"].shape[0])
+    return frame_stack, hidden_size, action_count, "state", (feature_count,)
 
 
 def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
@@ -441,12 +463,16 @@ def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
     if not isinstance(checkpoint, dict):
         raise TypeError(f"unsupported policy checkpoint: {path}")
     state_dict = checkpoint
-    checkpoint_frame_stack, checkpoint_hidden_size, checkpoint_action_count = infer_policy_shape(state_dict)
+    checkpoint_frame_stack, checkpoint_hidden_size, checkpoint_action_count, observation_mode, obs_shape = infer_policy_shape(
+        state_dict
+    )
 
     policy = BitWorldPolicy(
         frame_stack=checkpoint_frame_stack,
         action_count=checkpoint_action_count,
         hidden_size=checkpoint_hidden_size,
+        observation_mode=observation_mode,
+        obs_shape=obs_shape,
     ).to(device)
     policy.load_state_dict(state_dict)
     policy.eval()
@@ -455,6 +481,8 @@ def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
         frame_stack=checkpoint_frame_stack,
         action_count=checkpoint_action_count,
         hidden_size=checkpoint_hidden_size,
+        observation_mode=observation_mode,
+        obs_shape=obs_shape,
     )
 
 
@@ -615,6 +643,12 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_reset.restype = ctypes.c_int
+        self.lib.bitworld_at_reset_state.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_reset_state.restype = ctypes.c_int
         self.lib.bitworld_at_step.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
@@ -623,6 +657,39 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step.restype = ctypes.c_int
+        self.lib.bitworld_at_step_state.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_step_state.restype = ctypes.c_int
+        self.lib.bitworld_at_reset_state_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_reset_state_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_step_state_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_step_state_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_step_rewards.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_step_rewards.restype = ctypes.c_int
         self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_close.restype = None
 
@@ -654,19 +721,25 @@ class AmongThemNativeWorker:
         env_id: int,
         seed: int,
         action_repeat: int,
+        observation_mode: str,
     ) -> None:
         if spec.name != "among_them":
             raise ValueError("AmongThemNativeWorker only supports among_them")
+        if observation_mode not in OBSERVATION_MODES:
+            raise ValueError(f"unknown observation_mode {observation_mode!r}")
         self.spec = spec
         self.env_id = env_id
         self.seed = seed
         self.action_repeat = action_repeat
+        self.observation_mode = observation_mode
         self.agent_count = spec.server_players
         self.native = among_them_native_library()
         self.handle = self.native.check(
             self.native.lib.bitworld_at_create(seed, self.agent_count)
         )
-        self.frames = np.zeros((self.agent_count, FRAME_PIXELS), dtype=np.uint8)
+        feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
+        dtype = np.uint8 if observation_mode == "pixels" else np.float32
+        self.frames = np.zeros((self.agent_count, feature_count), dtype=dtype)
         self.rewards = np.zeros((self.agent_count,), dtype=np.float32)
         self.base_score = np.zeros((self.agent_count,), dtype=np.float32)
         self.score = np.zeros((self.agent_count,), dtype=np.float32)
@@ -675,19 +748,29 @@ class AmongThemNativeWorker:
         self.episode = 0
 
     def _obs_ptr(self):
-        return self.frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+        pointer_type = ctypes.c_uint8 if self.observation_mode == "pixels" else ctypes.c_float
+        return self.frames.ctypes.data_as(ctypes.POINTER(pointer_type))
 
     def _reward_ptr(self):
         return self.rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
     def reset(self) -> np.ndarray:
-        self.native.check(
-            self.native.lib.bitworld_at_reset(
-                self.handle,
-                self._obs_ptr(),
-                self._reward_ptr(),
+        if self.observation_mode == "pixels":
+            self.native.check(
+                self.native.lib.bitworld_at_reset(
+                    self.handle,
+                    self._obs_ptr(),
+                    self._reward_ptr(),
+                )
             )
-        )
+        else:
+            self.native.check(
+                self.native.lib.bitworld_at_reset_state(
+                    self.handle,
+                    self._obs_ptr(),
+                    self._reward_ptr(),
+                )
+            )
         self.base_score.fill(0.0)
         self.score.fill(0.0)
         self.episode_return.fill(0.0)
@@ -700,15 +783,26 @@ class AmongThemNativeWorker:
         if masks.shape != (self.agent_count,):
             raise ValueError(f"expected {self.agent_count} Among Them action masks")
         masks = np.ascontiguousarray(masks)
-        self.native.check(
-            self.native.lib.bitworld_at_step(
-                self.handle,
-                masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
-                self.action_repeat,
-                self._obs_ptr(),
-                self._reward_ptr(),
+        if self.observation_mode == "pixels":
+            self.native.check(
+                self.native.lib.bitworld_at_step(
+                    self.handle,
+                    masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                    self.action_repeat,
+                    self._obs_ptr(),
+                    self._reward_ptr(),
+                )
             )
-        )
+        else:
+            self.native.check(
+                self.native.lib.bitworld_at_step_state(
+                    self.handle,
+                    masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                    self.action_repeat,
+                    self._obs_ptr(),
+                    self._reward_ptr(),
+                )
+            )
         self.score += self.rewards
         self.episode_return += self.rewards
         self.episode_steps += 1
@@ -1037,6 +1131,7 @@ class BitWorldVecEnv:
         frame_stack: int = 4,
         action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
+        observation_mode: str = "pixels",
     ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
@@ -1044,9 +1139,14 @@ class BitWorldVecEnv:
             raise ValueError("frame_stack must be positive")
         if action_repeat <= 0:
             raise ValueError("action_repeat must be positive")
+        if observation_mode not in OBSERVATION_MODES:
+            raise ValueError(f"unknown observation_mode {observation_mode!r}")
 
         self.spec = get_env_spec(spec)
+        if observation_mode == "state" and self.spec.name != "among_them":
+            raise ValueError("state observations are only implemented for among_them")
         self.num_envs = num_envs
+        self.observation_mode = observation_mode
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
         self.total_agents = num_envs * self.agents_per_env
         self.num_agents = self.total_agents
@@ -1054,21 +1154,24 @@ class BitWorldVecEnv:
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
-        self.obs_size = FRAME_PIXELS * frame_stack
+        self.obs_features = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
+        self.obs_dtype = np.uint8 if observation_mode == "pixels" else np.float32
+        self.obs_size = self.obs_features * frame_stack
         self.action_count = len(ACTION_MASKS)
         self.driver_env = self
         from gymnasium import spaces
 
         self.single_observation_space = spaces.Box(
-            low=0,
-            high=15,
+            low=0 if observation_mode == "pixels" else -1,
+            high=15 if observation_mode == "pixels" else 1,
             shape=(self.obs_size,),
-            dtype=np.uint8,
+            dtype=self.obs_dtype,
         )
         self.single_action_space = spaces.Discrete(self.action_count)
 
-        self._frame_history = np.zeros((self.total_agents, frame_stack, FRAME_PIXELS), dtype=np.uint8)
-        self._obs = np.zeros((self.total_agents, self.obs_size), dtype=np.uint8)
+        self._frame_history = np.zeros((self.total_agents, frame_stack, self.obs_features), dtype=self.obs_dtype)
+        self._latest_frames = np.zeros((self.total_agents, self.obs_features), dtype=self.obs_dtype)
+        self._obs = np.zeros((self.total_agents, self.obs_size), dtype=self.obs_dtype)
         self._rewards = np.zeros((self.total_agents,), dtype=np.float32)
         self._terminals = np.zeros((self.total_agents,), dtype=np.float32)
         self._truncations = np.zeros((self.total_agents,), dtype=np.float32)
@@ -1077,10 +1180,10 @@ class BitWorldVecEnv:
         self.agent_ids = np.arange(self.total_agents)
         self.infos: list[dict[str, float]] = []
         self.observation_space = spaces.Box(
-            low=0,
-            high=15,
+            low=0 if observation_mode == "pixels" else -1,
+            high=15 if observation_mode == "pixels" else 1,
             shape=self._obs.shape,
-            dtype=np.uint8,
+            dtype=self.obs_dtype,
         )
         self.action_space = spaces.Discrete(self.action_count)
         self.obs_ptr = self._obs.ctypes.data
@@ -1091,8 +1194,17 @@ class BitWorldVecEnv:
         self._completed_lengths: deque[float] = deque(maxlen=100)
         self._completed_returns: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
+        self._state_handles: np.ndarray | None = None
+        self._state_action_masks: np.ndarray | None = None
+        self._state_score = np.zeros((self.total_agents,), dtype=np.float32)
+        self._state_episode_return = np.zeros((self.total_agents,), dtype=np.float32)
+        self._state_prev_potential = np.zeros((self.total_agents,), dtype=np.float32)
+        self._state_prev_task_progress = np.zeros((self.total_agents,), dtype=np.float32)
+        self._state_reward_shaping = state_reward_shaping_scale()
+        self._state_progress_reward = state_progress_reward_scale()
+        self._state_episode_steps = 0
         self._executor = None
-        if self.spec.name == "among_them":
+        if self.spec.name == "among_them" and self.observation_mode == "pixels":
             self._executor = ThreadPoolExecutor(max_workers=native_worker_count(num_envs))
 
         self.workers: list[BitWorldWorker | AmongThemNativeWorker] = []
@@ -1104,6 +1216,7 @@ class BitWorldVecEnv:
                         env_id=env_id,
                         seed=base_seed + env_id,
                         action_repeat=action_repeat,
+                        observation_mode=observation_mode,
                     )
                 else:
                     worker = BitWorldWorker(
@@ -1114,6 +1227,12 @@ class BitWorldVecEnv:
                         action_repeat=action_repeat,
                     )
                 self.workers.append(worker)
+            if self.observation_mode == "state":
+                self._state_handles = np.asarray(
+                    [worker.handle for worker in self.workers if isinstance(worker, AmongThemNativeWorker)],
+                    dtype=np.int32,
+                )
+                self._state_action_masks = np.zeros((self.total_agents,), dtype=np.uint8)
         except Exception:
             self.close()
             raise
@@ -1123,15 +1242,58 @@ class BitWorldVecEnv:
         return slice(start, start + self.agents_per_env)
 
     def _frame_batch(self, frame: np.ndarray, worker: BitWorldWorker | AmongThemNativeWorker) -> np.ndarray:
-        frames = np.asarray(frame, dtype=np.uint8)
+        frames = np.asarray(frame, dtype=self.obs_dtype)
         if worker.agent_count == 1:
-            return frames.reshape(1, FRAME_PIXELS)
-        return frames.reshape(worker.agent_count, FRAME_PIXELS)
+            return frames.reshape(1, self.obs_features)
+        return frames.reshape(worker.agent_count, self.obs_features)
 
     def _push_frames(self, agent_slice: slice, frames: np.ndarray) -> None:
         self._frame_history[agent_slice, :-1] = self._frame_history[agent_slice, 1:]
         self._frame_history[agent_slice, -1] = frames
         self._obs[agent_slice] = self._frame_history[agent_slice].reshape(frames.shape[0], -1)
+
+    def _state_handles_ptr(self):
+        assert self._state_handles is not None
+        return self._state_handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+
+    def _latest_state_ptr(self):
+        return self._latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+    def _state_rewards_ptr(self):
+        return self._rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+    def _reset_state_batch(self) -> None:
+        native = among_them_native_library()
+        native.check(
+            native.lib.bitworld_at_reset_state_batch(
+                self._state_handles_ptr(),
+                self.num_envs,
+                self.agents_per_env,
+                self._latest_state_ptr(),
+                self._state_rewards_ptr(),
+            )
+        )
+        self._state_score.fill(0.0)
+        self._state_episode_return.fill(0.0)
+        self._state_prev_potential[:] = self._state_task_potential()
+        self._state_prev_task_progress[:] = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
+        self._state_episode_steps = 0
+        self._frame_history[:] = self._latest_frames[:, np.newaxis, :]
+        self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
+
+    def _state_task_potential(self) -> np.ndarray:
+        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:].reshape(
+            self.total_agents,
+            STATE_TASK_COUNT,
+            STATE_TASK_FEATURES,
+        )
+        assigned = task_features[:, :, 2] > 0.5
+        completed = task_features[:, :, 3] > 0.5
+        candidates = assigned & ~completed
+        distances = np.sqrt(np.square(task_features[:, :, 0]) + np.square(task_features[:, :, 1]))
+        distances = np.where(candidates, distances, np.inf)
+        nearest = np.min(distances, axis=1)
+        return np.where(np.isfinite(nearest), -nearest, 0.0).astype(np.float32)
 
     def _step_env(self, env_id: int, action_indices: np.ndarray):
         worker = self.workers[env_id]
@@ -1164,6 +1326,9 @@ class BitWorldVecEnv:
     def reset(self):
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
+        if self.observation_mode == "state":
+            self._reset_state_batch()
+            return self._obs
         for env_id, worker in enumerate(self.workers):
             agent_slice = self._agent_slice(env_id)
             frames = self._frame_batch(worker.reset(), worker)
@@ -1171,7 +1336,63 @@ class BitWorldVecEnv:
             self._obs[agent_slice] = self._frame_history[agent_slice].reshape(worker.agent_count, -1)
         return self._obs
 
+    def _apply_state_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
+        assert self._state_action_masks is not None
+        clipped = np.clip(action_indices, 0, self.action_count - 1).astype(np.int64)
+        self._state_action_masks[:] = ACTION_MASKS[clipped]
+        self._rewards.fill(0.0)
+        self._terminals.fill(0.0)
+        self._truncations.fill(0.0)
+
+        native = among_them_native_library()
+        native.check(
+            native.lib.bitworld_at_step_state_batch(
+                self._state_handles_ptr(),
+                self.num_envs,
+                self.agents_per_env,
+                self._state_action_masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                self.action_repeat,
+                self._latest_state_ptr(),
+                self._state_rewards_ptr(),
+            )
+        )
+        self._state_score += self._rewards
+        current_potential = self._state_task_potential()
+        task_progress = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
+        self._rewards += self._state_reward_shaping * (current_potential - self._state_prev_potential)
+        self._rewards += self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
+        self._state_prev_potential[:] = current_potential
+        self._state_prev_task_progress[:] = task_progress
+        self._state_episode_return += self._rewards
+        self._state_episode_steps += 1
+
+        completed: list[EpisodeStats] = []
+        if self._state_episode_steps >= self.max_episode_steps:
+            terminal_rewards = self._rewards.copy()
+            for score, episode_return in zip(self._state_score, self._state_episode_return):
+                stats = EpisodeStats(
+                    score=float(score),
+                    length=self._state_episode_steps,
+                    episode_return=float(episode_return),
+                )
+                completed.append(stats)
+                self._completed_scores.append(stats.score)
+                self._completed_lengths.append(float(stats.length))
+                self._completed_returns.append(stats.episode_return)
+            self._completed_episodes += self.num_envs
+            self._reset_state_batch()
+            self._rewards[:] = terminal_rewards
+            self._terminals[:] = 1.0
+
+        self._frame_history[:, :-1] = self._frame_history[:, 1:]
+        self._frame_history[:, -1] = self._latest_frames
+        self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
+        return completed
+
     def _apply_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
+        if self.observation_mode == "state":
+            return self._apply_state_actions(action_indices)
+
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
         self._truncations.fill(0.0)
@@ -1259,21 +1480,38 @@ class BitWorldVecEnv:
 
 
 class BitWorldPolicy(nn.Module):
-    def __init__(self, frame_stack: int, action_count: int, hidden_size: int = 256) -> None:
+    def __init__(
+        self,
+        frame_stack: int,
+        action_count: int,
+        hidden_size: int = 256,
+        observation_mode: str = "pixels",
+        obs_shape: tuple[int, ...] | None = None,
+    ) -> None:
         super().__init__()
+        if observation_mode not in OBSERVATION_MODES:
+            raise ValueError(f"unknown observation_mode {observation_mode!r}")
         self.frame_stack = frame_stack
-        self.encoder = nn.Sequential(
-            nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU(),
-            nn.Flatten(),
+        self.observation_mode = observation_mode
+        self.obs_shape = obs_shape or (
+            (frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH) if observation_mode == "pixels" else (STATE_FEATURES * frame_stack,)
         )
-        with torch.no_grad():
-            sample = torch.zeros(1, frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH)
-            encoded_size = int(self.encoder(sample).shape[1])
+        if observation_mode == "pixels":
+            self.encoder = nn.Sequential(
+                nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Flatten(),
+            )
+            with torch.no_grad():
+                sample = torch.zeros(1, *self.obs_shape)
+                encoded_size = int(self.encoder(sample).shape[1])
+        else:
+            self.encoder = nn.Flatten()
+            encoded_size = int(np.prod(self.obs_shape))
 
         self.body = nn.Sequential(
             nn.Linear(encoded_size, hidden_size),
@@ -1300,7 +1538,10 @@ class BitWorldPolicy(nn.Module):
 
     def forward_eval(self, observations: torch.Tensor, state=()):
         del state
-        x = observations.float().div(15.0).reshape(-1, self.frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH)
+        x = observations.float()
+        if self.observation_mode == "pixels":
+            x = x.div(15.0)
+        x = x.reshape(-1, *self.obs_shape)
         x = self.encoder(x)
         x = self.body(x)
         logits = self.policy_head(x)
@@ -1428,8 +1669,11 @@ def train_policy(
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     hidden_size: int = 256,
     device: str = "auto",
+    observation_mode: str = "pixels",
 ) -> dict:
     resolved = get_env_spec(spec)
+    if observation_mode not in OBSERVATION_MODES:
+        raise ValueError(f"unknown observation_mode {observation_mode!r}")
     train_device = resolve_train_device(device)
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -1458,11 +1702,14 @@ def train_policy(
         frame_stack=frame_stack,
         action_repeat=action_repeat,
         base_seed=seed + rank * num_envs,
+        observation_mode=observation_mode,
     )
     policy = BitWorldPolicy(
         frame_stack=frame_stack,
         action_count=vecenv.action_count,
         hidden_size=hidden_size,
+        observation_mode=observation_mode,
+        obs_shape=vecenv.single_observation_space.shape,
     ).to(train_device)
     if distributed:
         policy = torch.nn.parallel.DistributedDataParallel(
@@ -1498,6 +1745,7 @@ def train_policy(
                     "cuda_available": bool(torch.cuda.is_available()),
                     "policy_device": str(next(policy.parameters()).device),
                     "world_size": world_size,
+                    "observation_mode": observation_mode,
                 }
             ),
             flush=True,
@@ -1544,6 +1792,7 @@ def train_policy(
     summary = {
         "env": resolved.name,
         "device": train_device,
+        "observation_mode": observation_mode,
         "history": history,
     }
     metrics_path.write_text(json.dumps(summary, indent=2))
@@ -1558,6 +1807,7 @@ def evaluate_policy(
     frame_stack: int,
     seed: int,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
+    observation_mode: str = "pixels",
     random_actions: bool = False,
     sample_actions: bool = True,
 ) -> dict[str, float]:
@@ -1569,6 +1819,7 @@ def evaluate_policy(
         frame_stack=frame_stack,
         action_repeat=action_repeat,
         base_seed=seed,
+        observation_mode=observation_mode,
     )
     rng = np.random.default_rng(seed)
     vecenv.reset()
