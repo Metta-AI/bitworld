@@ -1,6 +1,6 @@
 import mummy, pixie
 import protocol, server
-import std/[algorithm, locks, monotimes, os, parseopt, random, strutils, tables, times]
+import std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
   ClientDataDir = ".." / "client" / "data"
@@ -8,8 +8,8 @@ const
   PalettePath = ClientDataDir / "pallete.png"
   NumbersPath = ClientDataDir / "numbers.png"
   FactorySheetPath = FactoryDataDir / "factory_sheet.png"
-  WebSocketPath = "/player"
   TargetFps = 24
+  WebSocketPath = "/player"
 
   MapWidthTiles = 48
   MapHeightTiles = 48
@@ -39,6 +39,11 @@ const
   PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
 
 type
+  RunConfig = object
+    address: string
+    port: int
+    seed: int
+
   Direction = enum
     DirUp
     DirRight
@@ -88,6 +93,7 @@ type
 
   Player = object
     id: int
+    name: string
     color: uint8
     cursorX: int
     cursorY: int
@@ -139,7 +145,10 @@ type
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    playerNames: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
+    rewardViewers: Table[WebSocket, bool]
+    resetRequested: bool
 
   ServerThreadArgs = object
     server: ptr Server
@@ -394,11 +403,12 @@ proc removePlayerLaunchPad(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].launchPadX = -1
   sim.players[playerIndex].launchPadY = -1
 
-proc addPlayer(sim: var SimServer): int =
+proc addPlayer(sim: var SimServer, name: string): int =
   inc sim.nextPlayerId
   let spawn = sim.findPlayerSpawn()
   sim.players.add Player(
     id: sim.nextPlayerId,
+    name: name,
     color: playerColorFor(sim.nextPlayerId),
     cursorX: spawn.x,
     cursorY: spawn.y,
@@ -871,6 +881,33 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc rewardScore(sim: SimServer, playerIndex: int): int =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return 0
+  let player = sim.players[playerIndex]
+  var buildProgress = 0
+  for cell in sim.cells:
+    case cell.building
+    of BuildingLaunchPad:
+      if cell.launchOwnerId == player.id:
+        buildProgress += 4
+    of BuildingExtractor:
+      buildProgress += 3
+    of BuildingBelt:
+      inc buildProgress
+    else:
+      discard
+  let itemProgress = min(12, sim.items.len)
+  player.score * 32 + buildProgress + itemProgress
+
+proc buildRewardPacket(sim: SimServer): string =
+  for i, player in sim.players:
+    result.add("reward ")
+    result.add(player.name)
+    result.add(" ")
+    result.add($sim.rewardScore(i))
+    result.add("\n")
+
 proc step(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
 
@@ -887,8 +924,8 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
   sim.advanceItems()
   sim.spawnExtractorItems()
 
-proc initSimServer(): SimServer =
-  result.rng = initRand(0xB0F512)
+proc initSimServer(seed: int): SimServer =
+  result.rng = initRand(seed)
   result.cells = newSeq[Cell](MapWidthTiles * MapHeightTiles)
   result.fb = initFramebuffer()
   loadPalette(PalettePath)
@@ -903,20 +940,20 @@ proc initAppState() =
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.playerNames = initTable[WebSocket, string]()
   appState.closedSockets = @[]
-
-proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
-  result = decodeInputMask(currentMask)
-  result.attack = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
-  result.b = (currentMask and ButtonB) != 0 and (previousMask and ButtonB) == 0
-  result.select = false
+  appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.resetRequested = false
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
     return
 
   let removedIndex = appState.playerIndices[websocket]
   appState.playerIndices.del(websocket)
+  appState.playerNames.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
 
@@ -927,13 +964,36 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
+proc cleanPlayerName(name: string): string =
+  result = name.strip()
+  for ch in result.mitems:
+    if ch.isSpaceAscii:
+      ch = '_'
+
+proc playerIdentity(request: Request): string =
+  let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
+  if name.len > 0:
+    return name
+  let parts = request.remoteAddress.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  request.remoteAddress
+
 proc httpHandler(request: Request) =
-  if request.uri == WebSocketPath and request.httpMethod == "GET":
-    discard request.upgradeToWebSocket()
+  if request.path == WebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerNames[websocket] = request.playerIdentity()
+  elif request.path == "/reward" and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.rewardViewers[websocket] = true
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
-    request.respond(200, headers, "Boundless Factory WebSocket server")
+    request.respond(200, headers, "BitWorld WebSocket server")
 
 proc websocketHandler(
   websocket: WebSocket,
@@ -944,14 +1004,21 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerIndices[websocket] = 0x7fffffff
-        appState.inputMasks[websocket] = 0
-        appState.lastAppliedMasks[websocket] = 0
+        if websocket notin appState.rewardViewers:
+          appState.playerIndices[websocket] = 0x7fffffff
+          appState.inputMasks[websocket] = 0
+          appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
     if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
       {.gcsafe.}:
         withLock appState.lock:
-          appState.inputMasks[websocket] = blobToMask(message.data)
+          let mask = blobToMask(message.data)
+          if mask == 255'u8:
+            appState.resetRequested = true
+            appState.inputMasks[websocket] = 0
+            appState.lastAppliedMasks[websocket] = 0
+          else:
+            appState.inputMasks[websocket] = mask
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -969,7 +1036,11 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
+proc runServerLoop*(
+  host = DefaultHost,
+  port = DefaultPort,
+  seed = 0xB0F512
+) =
   initAppState()
 
   let httpServer = newServer(
@@ -985,7 +1056,8 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
   httpServer.waitUntilReady()
 
   var
-    sim = initSimServer()
+    currentSeed = seed
+    sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
 
   while true:
@@ -993,6 +1065,8 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
+      shouldReset = false
+      rewardViewers: seq[WebSocket] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -1000,20 +1074,59 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
 
-        for websocket in appState.playerIndices.keys:
-          if appState.playerIndices[websocket] == 0x7fffffff:
-            appState.playerIndices[websocket] = sim.addPlayer()
+        if appState.resetRequested:
+          shouldReset = true
+          appState.resetRequested = false
+          for _, value in appState.playerIndices.mpairs:
+            value = 0x7fffffff
+          for _, value in appState.inputMasks.mpairs:
+            value = 0
+          for _, value in appState.lastAppliedMasks.mpairs:
+            value = 0
+        else:
+          for websocket in appState.playerIndices.keys:
+            if appState.playerIndices[websocket] == 0x7fffffff:
+              let name = appState.playerNames.getOrDefault(websocket, "unknown")
+              appState.playerIndices[websocket] = sim.addPlayer(name)
 
-        inputs = newSeq[InputState](sim.players.len)
-        for websocket, playerIndex in appState.playerIndices.pairs:
-          if playerIndex < 0 or playerIndex >= inputs.len:
-            continue
-          let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
-          let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
-          inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
-          appState.lastAppliedMasks[websocket] = currentMask
-          sockets.add(websocket)
-          playerIndices.add(playerIndex)
+          inputs = newSeq[InputState](sim.players.len)
+          for websocket, playerIndex in appState.playerIndices.pairs:
+            if playerIndex < 0 or playerIndex >= inputs.len:
+              continue
+            let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
+            let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
+            inputs[playerIndex] = decodeInputMask(currentMask)
+            inputs[playerIndex].attack =
+              (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
+            inputs[playerIndex].b =
+              (currentMask and ButtonB) != 0 and (previousMask and ButtonB) == 0
+            inputs[playerIndex].select = false
+            appState.lastAppliedMasks[websocket] = currentMask
+            sockets.add(websocket)
+            playerIndices.add(playerIndex)
+
+        for websocket in appState.rewardViewers.keys:
+          rewardViewers.add(websocket)
+
+    if shouldReset:
+      inc currentSeed
+      sim = initSimServer(currentSeed)
+      {.gcsafe.}:
+        withLock appState.lock:
+          for websocket in appState.playerIndices.keys:
+            if appState.playerIndices[websocket] == 0x7fffffff:
+              let name = appState.playerNames.getOrDefault(websocket, "unknown")
+              appState.playerIndices[websocket] = sim.addPlayer(name)
+            sockets.add(websocket)
+            playerIndices.add(appState.playerIndices[websocket])
+      for i in 0 ..< sockets.len:
+        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
+        sockets[i].send(frameBlob, BinaryMessage)
+      let rewardPacket = sim.buildRewardPacket()
+      for websocket in rewardViewers:
+        websocket.send(rewardPacket, TextMessage)
+      runFrameLimiter(lastTick)
+      continue
 
     sim.step(inputs)
 
@@ -1026,18 +1139,55 @@ proc runServerLoop*(host = DefaultHost, port = DefaultPort) =
           withLock appState.lock:
             sim.removePlayer(sockets[i])
 
+    let rewardPacket = sim.buildRewardPacket()
+    for websocket in rewardViewers:
+      websocket.send(rewardPacket, TextMessage)
+
     runFrameLimiter(lastTick)
+
+proc readConfigString(node: JsonNode, name: string, value: var string) =
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  if item.kind != JString:
+    raise newException(ValueError, "Config field " & name & " must be a string.")
+  value = item.getStr()
+
+proc readConfigInt(node: JsonNode, name: string, value: var int) =
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  if item.kind != JInt:
+    raise newException(ValueError, "Config field " & name & " must be an integer.")
+  value = item.getInt()
+
+proc update(config: var RunConfig, jsonText: string) =
+  if jsonText.len == 0:
+    return
+  let node = parseJson(jsonText)
+  if node.kind != JObject:
+    raise newException(ValueError, "Config must be a JSON object.")
+  node.readConfigString("address", config.address)
+  node.readConfigInt("port", config.port)
+  node.readConfigInt("seed", config.seed)
 
 when isMainModule:
   var
-    address = DefaultHost
-    port = DefaultPort
+    config = RunConfig(address: DefaultHost, port: DefaultPort, seed: 0xB0F512)
+    configJson = ""
+    configPath = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       case key
-      of "address": address = val
-      of "port": port = parseInt(val)
+      of "address": config.address = val
+      of "port": config.port = parseInt(val)
+      of "config": configJson = val
+      of "config-file": configPath = val
       else: discard
     else: discard
-  runServerLoop(address, port)
+  if configPath.len > 0:
+    config.update(readFile(configPath))
+  if configJson.len > 0:
+    config.update(configJson)
+  runServerLoop(config.address, config.port, seed = config.seed)
