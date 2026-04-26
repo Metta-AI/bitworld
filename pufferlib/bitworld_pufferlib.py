@@ -38,16 +38,27 @@ AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
 AMONG_THEM_MAX_PLAYERS = 16
 OBSERVATION_MODES = {"pixels", "state"}
-STATE_PLAYER_FEATURE_OFFSET = 11
-STATE_PLAYER_FEATURES = 5
+STATE_HEADER_FEATURES = 32
+STATE_GRID_SIZE = 32
+STATE_GRID_FEATURES = STATE_GRID_SIZE * STATE_GRID_SIZE
+STATE_PLAYER_FEATURE_OFFSET = STATE_HEADER_FEATURES + STATE_GRID_FEATURES
+STATE_PLAYER_FEATURES = 8
 STATE_PLAYER_COUNT = AMONG_THEM_MAX_PLAYERS
-STATE_TASK_FEATURE_OFFSET = STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * STATE_PLAYER_COUNT
-STATE_TASK_FEATURES = 4
+STATE_BODY_FEATURE_OFFSET = STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * STATE_PLAYER_COUNT
+STATE_BODY_FEATURES = 8
+STATE_BODY_COUNT = AMONG_THEM_MAX_PLAYERS
+STATE_TASK_FEATURE_OFFSET = STATE_BODY_FEATURE_OFFSET + STATE_BODY_FEATURES * STATE_BODY_COUNT
+STATE_TASK_FEATURES = 8
 STATE_TASK_COUNT = 15
-STATE_TASK_PROGRESS_INDEX = 7
-STATE_TEACHER_FEATURE_OFFSET = STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT
-STATE_TEACHER_ACTION_COUNT = 27
-STATE_FEATURES = STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT
+STATE_FEATURES = STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT
+STATE_TASK_PROGRESS_INDEX = 10
+STATE_TEACHER_FEATURE_OFFSET = STATE_FEATURES
+STATE_TEACHER_ACTION_COUNT = 0
+STATE_FLAG_TASK_ASSIGNED = 1
+STATE_FLAG_TASK_COMPLETED = 32
+STATE_FLAG_TASK_ICON_VISIBLE = 8
+STATE_FLAG_TASK_ARROW_VISIBLE = 16
+STATE_FLAG_PLAYER_ROLE_IMPOSTER = 8
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -92,10 +103,6 @@ def state_progress_reward_scale() -> float:
     return float(os.environ.get("BITWORLD_STATE_PROGRESS_REWARD", "0.02"))
 
 
-def state_teacher_reward_scale() -> float:
-    return float(os.environ.get("BITWORLD_STATE_TEACHER_REWARD", "0.05"))
-
-
 def teacher_rollout_enabled() -> bool:
     return os.environ.get("BITWORLD_TEACHER_ROLLOUT", "1") != "0"
 
@@ -106,10 +113,6 @@ def teacher_bc_coef() -> float:
 
 def teacher_bc_epochs() -> int:
     return max(0, int(os.environ.get("BITWORLD_TEACHER_BC_EPOCHS", "1")))
-
-
-def teacher_logit_bias() -> float:
-    return float(os.environ.get("BITWORLD_TEACHER_LOGIT_BIAS", "8.0"))
 
 
 SHARED_NIM_SOURCES = (
@@ -846,7 +849,7 @@ class AmongThemNativeLibrary:
         self.lib.bitworld_at_reset.restype = ctypes.c_int
         self.lib.bitworld_at_reset_state.argtypes = [
             ctypes.c_int,
-            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_reset_state.restype = ctypes.c_int
@@ -862,7 +865,7 @@ class AmongThemNativeLibrary:
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.c_int,
-            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step_state.restype = ctypes.c_int
@@ -870,7 +873,7 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_int),
             ctypes.c_int,
             ctypes.c_int,
-            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_reset_state_batch.restype = ctypes.c_int
@@ -881,7 +884,7 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_int),
-            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step_state_batch.restype = ctypes.c_int
@@ -942,7 +945,7 @@ class AmongThemNativeWorker:
             self.native.lib.bitworld_at_create(seed, self.agent_count, self.max_ticks)
         )
         feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
-        dtype = np.uint8 if observation_mode == "pixels" else np.float32
+        dtype = np.uint8
         self.frames = np.zeros((self.agent_count, feature_count), dtype=dtype)
         self.rewards = np.zeros((self.agent_count,), dtype=np.float32)
         self.base_score = np.zeros((self.agent_count,), dtype=np.float32)
@@ -954,8 +957,7 @@ class AmongThemNativeWorker:
         self.truncated = False
 
     def _obs_ptr(self):
-        pointer_type = ctypes.c_uint8 if self.observation_mode == "pixels" else ctypes.c_float
-        return self.frames.ctypes.data_as(ctypes.POINTER(pointer_type))
+        return self.frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
 
     def _reward_ptr(self):
         return self.rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
@@ -1371,15 +1373,15 @@ class BitWorldVecEnv:
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
         self.obs_features = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
-        self.obs_dtype = np.uint8 if observation_mode == "pixels" else np.float32
+        self.obs_dtype = np.uint8
         self.obs_size = self.obs_features * frame_stack
         self.action_count = len(ACTION_MASKS)
         self.driver_env = self
         from gymnasium import spaces
 
         self.single_observation_space = spaces.Box(
-            low=0 if observation_mode == "pixels" else -1,
-            high=15 if observation_mode == "pixels" else 1,
+            low=0,
+            high=15 if observation_mode == "pixels" else 255,
             shape=(self.obs_size,),
             dtype=self.obs_dtype,
         )
@@ -1396,8 +1398,8 @@ class BitWorldVecEnv:
         self.agent_ids = np.arange(self.total_agents)
         self.infos: list[dict[str, float]] = []
         self.observation_space = spaces.Box(
-            low=0 if observation_mode == "pixels" else -1,
-            high=15 if observation_mode == "pixels" else 1,
+            low=0,
+            high=15 if observation_mode == "pixels" else 255,
             shape=self._obs.shape,
             dtype=self.obs_dtype,
         )
@@ -1421,7 +1423,6 @@ class BitWorldVecEnv:
         self._state_statuses = np.zeros((self.num_envs,), dtype=np.int32)
         self._state_reward_shaping = state_reward_shaping_scale()
         self._state_progress_reward = state_progress_reward_scale()
-        self._state_teacher_reward = state_teacher_reward_scale()
         self._state_episode_steps = 0
         self._executor = None
         if self.spec.name == "among_them" and self.observation_mode == "pixels":
@@ -1478,7 +1479,7 @@ class BitWorldVecEnv:
         return self._state_handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
 
     def _latest_state_ptr(self):
-        return self._latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        return self._latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
 
     def _state_rewards_ptr(self):
         return self._rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
@@ -1507,41 +1508,40 @@ class BitWorldVecEnv:
         self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
 
     def _state_task_potential(self) -> np.ndarray:
-        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_TEACHER_FEATURE_OFFSET].reshape(
+        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
             self.total_agents,
             STATE_TASK_COUNT,
             STATE_TASK_FEATURES,
         )
-        assigned = task_features[:, :, 2] > 0.5
-        completed = task_features[:, :, 3] > 0.5
+        flags = task_features[:, :, 3].astype(np.uint8)
+        assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
+        completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
         candidates = assigned & ~completed
-        distances = np.sqrt(np.square(task_features[:, :, 0]) + np.square(task_features[:, :, 1]))
+        icon_visible = (flags & STATE_FLAG_TASK_ICON_VISIBLE) != 0
+        arrow_visible = (flags & STATE_FLAG_TASK_ARROW_VISIBLE) != 0
+        target_x = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 5], 64))
+        target_y = np.where(icon_visible, task_features[:, :, 2], np.where(arrow_visible, task_features[:, :, 6], 64))
+        distances = np.sqrt(np.square(target_x.astype(np.float32) - 64.0) + np.square(target_y.astype(np.float32) - 64.0))
         distances = np.where(candidates, distances, np.inf)
         nearest = np.min(distances, axis=1)
-        return np.where(np.isfinite(nearest), -nearest, 0.0).astype(np.float32)
+        return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
     def _state_completed_task_counts(self) -> np.ndarray:
-        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_TEACHER_FEATURE_OFFSET].reshape(
+        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
             self.total_agents,
             STATE_TASK_COUNT,
             STATE_TASK_FEATURES,
         )
-        assigned = task_features[:, :, 2] > 0.5
-        completed = task_features[:, :, 3] > 0.5
+        flags = task_features[:, :, 3].astype(np.uint8)
+        assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
+        completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
         return np.sum(assigned & completed, axis=1).astype(np.float32)
 
     def _state_teacher_actions_from_frames(self) -> np.ndarray:
-        teacher_features = self._latest_frames[
-            :,
-            STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT,
-        ]
-        return np.argmax(teacher_features, axis=1).astype(np.int64)
+        return np.full((self.total_agents,), -1, dtype=np.int64)
 
     def _hide_state_teacher_features(self) -> None:
-        self._latest_frames[
-            :,
-            STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT,
-        ] = 0.0
+        return
 
     def _step_env(self, env_id: int, action_indices: np.ndarray):
         worker = self.workers[env_id]
@@ -1599,7 +1599,6 @@ class BitWorldVecEnv:
         self._truncations.fill(0.0)
 
         native = among_them_native_library()
-        matched_teacher = clipped == self._state_teacher_actions
         native.check(
             native.lib.bitworld_at_step_state_batch(
                 self._state_handles_ptr(),
@@ -1617,7 +1616,6 @@ class BitWorldVecEnv:
         task_progress = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
         self._rewards += self._state_reward_shaping * (current_potential - self._state_prev_potential)
         self._rewards += self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
-        self._rewards += self._state_teacher_reward * matched_teacher.astype(np.float32)
         self._state_prev_potential[:] = current_potential
         self._state_prev_task_progress[:] = task_progress
         self._state_teacher_actions[:] = self._state_teacher_actions_from_frames()
@@ -1767,7 +1765,6 @@ class BitWorldPolicy(nn.Module):
         self.obs_shape = obs_shape or (
             (frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH) if observation_mode == "pixels" else (STATE_FEATURES * frame_stack,)
         )
-        self.teacher_logit_bias = teacher_logit_bias() if observation_mode == "state" else 0.0
         if observation_mode == "pixels":
             self.encoder = nn.Sequential(
                 nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4),
@@ -1813,16 +1810,12 @@ class BitWorldPolicy(nn.Module):
         x = observations.float()
         if self.observation_mode == "pixels":
             x = x.div(15.0)
+        else:
+            x = x.div(255.0)
         policy_input = x.reshape(-1, *self.obs_shape)
         x = self.encoder(policy_input)
         x = self.body(x)
         logits = self.policy_head(x)
-        if self.teacher_logit_bias > 0:
-            flat_observations = policy_input.reshape(policy_input.shape[0], -1)
-            teacher_start = (self.frame_stack - 1) * STATE_FEATURES + STATE_TEACHER_FEATURE_OFFSET
-            teacher_end = teacher_start + STATE_TEACHER_ACTION_COUNT
-            teacher_logits = flat_observations[:, teacher_start:teacher_end]
-            logits = logits + teacher_logits * self.teacher_logit_bias
         values = self.value_head(x)
         return logits, values
 

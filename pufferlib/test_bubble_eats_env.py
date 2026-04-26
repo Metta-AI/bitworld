@@ -18,6 +18,7 @@ from bitworld_pufferlib import (
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    STATE_FLAG_PLAYER_ROLE_IMPOSTER,
     STATE_FEATURES,
     STATE_PLAYER_COUNT,
     STATE_PLAYER_FEATURE_OFFSET,
@@ -181,6 +182,7 @@ class BitWorldSmokeTest(unittest.TestCase):
 
         obs = env.reset()
         self.assertEqual(obs.shape, (env.total_agents, STATE_FEATURES))
+        self.assertEqual(obs.dtype, np.uint8)
         teacher_slice = obs[:, STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT]
         np.testing.assert_array_equal(teacher_slice, np.zeros_like(teacher_slice))
 
@@ -188,10 +190,10 @@ class BitWorldSmokeTest(unittest.TestCase):
             for other_index in range(env.total_agents):
                 if other_index == viewer_index:
                     continue
-                role_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 3
-                cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 4
-                self.assertEqual(obs[viewer_index, role_feature], 0.0)
-                self.assertEqual(obs[viewer_index, cooldown_feature], 0.0)
+                flags_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 4
+                cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 7
+                self.assertEqual(int(obs[viewer_index, flags_feature]) & STATE_FLAG_PLAYER_ROLE_IMPOSTER, 0)
+                self.assertEqual(obs[viewer_index, cooldown_feature], 0)
 
     def test_among_them_state_observations_cover_max_players(self) -> None:
         spec = with_server_players("among_them", AMONG_THEM_MAX_PLAYERS)
