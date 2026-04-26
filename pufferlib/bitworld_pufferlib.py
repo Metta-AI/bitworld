@@ -278,244 +278,170 @@ def install_pufferlib_c_stub(use_gpu: bool) -> None:
     sys.modules["pufferlib._C"] = stub
 
 
-def compute_puff_advantage_fallback(
-    values: torch.Tensor,
-    rewards: torch.Tensor,
-    terminals: torch.Tensor,
-    ratio: torch.Tensor,
-    advantages: torch.Tensor,
-    gamma: float,
-    gae_lambda: float,
-    vtrace_rho_clip: float,
-    vtrace_c_clip: float,
-) -> torch.Tensor:
-    _, horizon = values.shape
-    advantages.zero_()
-    last_puffer_lambda = torch.zeros(values.shape[0], device=values.device)
-    for t in range(horizon - 2, -1, -1):
-        next_nonterminal = 1.0 - terminals[:, t + 1]
-        importance = ratio[:, t]
-        rho_t = torch.clamp(importance, max=vtrace_rho_clip)
-        c_t = torch.clamp(importance, max=vtrace_c_clip)
-        delta = rho_t * rewards[:, t + 1] + gamma * values[:, t + 1] * next_nonterminal - values[:, t]
-        last_puffer_lambda = delta + gamma * gae_lambda * c_t * last_puffer_lambda * next_nonterminal
-        advantages[:, t] = last_puffer_lambda
-    return advantages
+class FastBitWorldPuffeRL:
+    def __init__(self, args, vecenv, policy, verbose: bool = False):
+        del verbose
+        self.args = args
+        self.vecenv = vecenv
+        self.policy = policy
+        self.unwrapped_policy = policy.module if hasattr(policy, "module") else policy
+        self.config = puffer_train_config(args)
+        self.device = torch.device(self.config["device"])
+        self.world_size = int(args.get("world_size", 1))
+        self.horizon = int(self.config["bptt_horizon"])
+        self.total_agents = int(vecenv.total_agents)
+        self.batch_size = self.total_agents * self.horizon
+        self.minibatch_size = int(self.config["minibatch_size"])
+        self.model_path = Path(args["checkpoint_dir"]).parent / "pufferlib_latest.pt"
+        self.global_step = 0
+        self.epoch = 0
+        self.last_log_time = time.time()
+        self.last_log_step = 0
+        self._logs: dict[str, float] = {}
+        self.optimizer = torch.optim.Adam(
+            self.policy.parameters(),
+            lr=float(self.config["learning_rate"]),
+            betas=(float(self.config["adam_beta1"]), float(self.config["adam_beta2"])),
+            eps=float(self.config["adam_eps"]),
+        )
+        self.vecenv.async_reset(int(args["train"]["seed"]))
+        obs_shape = tuple(vecenv.single_observation_space.shape)
+        self.observations = torch.empty(
+            (self.horizon, self.total_agents, *obs_shape),
+            dtype=torch.uint8,
+            device=self.device,
+        )
+        self.actions = torch.empty((self.horizon, self.total_agents), dtype=torch.long, device=self.device)
+        self.logprobs = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
+        self.values = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
+        self.rewards = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
+        self.terminals = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
+        self.env_logs: dict[str, float] = {}
+
+    def rollouts(self):
+        observations = self.vecenv._obs
+        for t in range(self.horizon):
+            obs_device = torch.as_tensor(observations, device=self.device)
+            with torch.no_grad():
+                logits, value = self.policy.forward_eval(obs_device)
+                dist = torch.distributions.Categorical(logits=logits)
+                action = dist.sample()
+                logprob = dist.log_prob(action)
+            self.observations[t].copy_(obs_device)
+            self.actions[t].copy_(action)
+            self.logprobs[t].copy_(logprob)
+            self.values[t].copy_(value.flatten())
+            observations, rewards, terminals, _completed = self.vecenv.step_discrete(action.cpu().numpy())
+            self.rewards[t].copy_(torch.as_tensor(rewards, device=self.device))
+            self.terminals[t].copy_(torch.as_tensor(terminals, device=self.device).float())
+        self.global_step += self.batch_size
+        self.env_logs = self.vecenv.log()
+
+    def _advantages(self) -> tuple[torch.Tensor, torch.Tensor]:
+        advantages = torch.empty_like(self.rewards)
+        last_advantage = torch.zeros(self.total_agents, device=self.device)
+        next_value = torch.zeros(self.total_agents, device=self.device)
+        gamma = float(self.config["gamma"])
+        gae_lambda = float(self.config["gae_lambda"])
+        for t in range(self.horizon - 1, -1, -1):
+            next_nonterminal = 1.0 - self.terminals[t]
+            delta = self.rewards[t] + gamma * next_value * next_nonterminal - self.values[t]
+            last_advantage = delta + gamma * gae_lambda * next_nonterminal * last_advantage
+            advantages[t] = last_advantage
+            next_value = self.values[t]
+        returns = advantages + self.values
+        return advantages, returns
+
+    def train(self):
+        advantages, returns = self._advantages()
+        flat_observations = self.observations.reshape(self.batch_size, *self.vecenv.single_observation_space.shape)
+        flat_actions = self.actions.reshape(self.batch_size)
+        flat_old_logprobs = self.logprobs.reshape(self.batch_size)
+        flat_advantages = advantages.reshape(self.batch_size)
+        flat_returns = returns.reshape(self.batch_size)
+        flat_values = self.values.reshape(self.batch_size)
+        flat_advantages = (flat_advantages - flat_advantages.mean()) / (flat_advantages.std() + 1e-8)
+
+        clip_coef = float(self.config["clip_coef"])
+        vf_clip = float(self.config["vf_clip_coef"])
+        vf_coef = float(self.config["vf_coef"])
+        ent_coef = float(self.config["ent_coef"])
+        max_grad_norm = float(self.config["max_grad_norm"])
+        losses = {
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "old_approx_kl": 0.0,
+            "approx_kl": 0.0,
+            "clipfrac": 0.0,
+            "importance": 0.0,
+        }
+        minibatches = 0
+        self.optimizer.zero_grad()
+        for start in range(0, self.batch_size, self.minibatch_size):
+            end = min(start + self.minibatch_size, self.batch_size)
+            logits, new_values = self.policy(flat_observations[start:end])
+            dist = torch.distributions.Categorical(logits=logits)
+            new_logprobs = dist.log_prob(flat_actions[start:end])
+            entropy = dist.entropy().mean()
+            logratio = new_logprobs - flat_old_logprobs[start:end]
+            ratio = logratio.exp()
+            advantages_mb = flat_advantages[start:end]
+            pg_loss = torch.max(
+                -advantages_mb * ratio,
+                -advantages_mb * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef),
+            ).mean()
+            new_values = new_values.flatten()
+            old_values = flat_values[start:end]
+            returns_mb = flat_returns[start:end]
+            v_clipped = old_values + torch.clamp(new_values - old_values, -vf_clip, vf_clip)
+            v_loss = 0.5 * torch.max((new_values - returns_mb).square(), (v_clipped - returns_mb).square()).mean()
+            loss = pg_loss + vf_coef * v_loss - ent_coef * entropy
+            loss.backward()
+            with torch.no_grad():
+                losses["policy_loss"] += float(pg_loss)
+                losses["value_loss"] += float(v_loss)
+                losses["entropy"] += float(entropy)
+                losses["old_approx_kl"] += float((-logratio).mean())
+                losses["approx_kl"] += float(((ratio - 1) - logratio).mean())
+                losses["clipfrac"] += float(((ratio - 1.0).abs() > clip_coef).float().mean())
+                losses["importance"] += float(ratio.mean())
+            minibatches += 1
+        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
+        self.optimizer.step()
+        self.epoch += 1
+        for key in losses:
+            losses[key] /= max(1, minibatches)
+        now = time.time()
+        global_steps = self.global_step * self.world_size
+        step_delta = global_steps - self.last_log_step
+        elapsed = max(now - self.last_log_time, 1e-6)
+        sps = step_delta / elapsed
+        self.last_log_time = now
+        self.last_log_step = global_steps
+        self._logs = {
+            "agent_steps": float(global_steps),
+            "SPS": float(sps),
+            **{f"losses/{key}": value for key, value in losses.items()},
+            **{f"env/{key}": float(value) for key, value in self.env_logs.items()},
+        }
+        if self.epoch % int(self.config["checkpoint_interval"]) == 0:
+            self.save_weights(str(self.model_path))
+        return self._logs
+
+    def log(self) -> dict[str, float]:
+        return self._logs
+
+    def save_weights(self, path: str) -> None:
+        torch.save(self.unwrapped_policy.state_dict(), path)
+
+    def close(self) -> None:
+        self.vecenv.close()
 
 
 def load_puffer_trainer(use_gpu: bool):
     install_pufferlib_c_stub(use_gpu)
-    try:
-        from pufferlib import torch_pufferl
-    except ImportError:
-        torch_pufferl = None
-
-    if torch_pufferl is not None:
-        torch_pufferl.compute_puff_advantage = compute_puff_advantage_fallback
-
-        class LegacyBitWorldPuffeRL(torch_pufferl.PuffeRL):
-            def rollouts(self):
-                prof = self.profile
-                config = self.config
-                device = self.device
-                horizon = config["horizon"]
-
-                self.state = tuple(torch.zeros_like(s) for s in self.state) if self.state else ()
-                observations = self.vec_obs
-                rewards = torch.zeros(self.total_agents, device=device)
-                terminals = torch.zeros(self.total_agents, device=device)
-
-                profile = torch_pufferl.Profile
-                prof.mark(0)
-                for t in range(horizon):
-                    observation_device = torch.as_tensor(observations, device=device)
-
-                    prof.mark(1)
-                    with torch.no_grad():
-                        logits, value = self.policy.forward_eval(observation_device, self.state)
-                        state = self.state
-                        action, logprob, _ = torch_pufferl.sample_logits(logits)
-                    prof.mark(2)
-
-                    with torch.no_grad():
-                        self.state = state
-                        self.observations[t] = observation_device
-                        self.actions[t] = action
-                        self.logprobs[t] = logprob
-                        self.rewards[t] = torch.as_tensor(rewards, device=device)
-                        self.terminals[t] = torch.as_tensor(terminals, device=device).float()
-                        self.values[t] = value.flatten()
-
-                    prof.mark(2)
-                    actions_flat = (
-                        action.T if action.dim() > 1 else action.unsqueeze(-1)
-                    ).to(dtype=torch.float32).contiguous()
-                    if self.gpu:
-                        actions_flat = actions_flat.cuda()
-                        self._vec.gpu_step(actions_flat.data_ptr())
-                        torch.cuda.synchronize()
-                    else:
-                        actions_flat = actions_flat.cpu().contiguous()
-                        self._vec.cpu_step(actions_flat.data_ptr())
-
-                    observations, rewards, terminals = self.vec_obs, self.vec_rewards, self.vec_terminals
-                    prof.mark(3)
-                    prof.elapsed(profile.EVAL_GPU, 1, 2)
-                    prof.elapsed(profile.EVAL_ENV, 2, 3)
-
-                prof.mark(1)
-                prof.elapsed(profile.ROLLOUT, 0, 1)
-                self.global_step += self.total_agents * horizon
-                self.env_logs = self._vec.log()
-
-            def save_weights(self, path):
-                policy = self.policy.module if hasattr(self.policy, "module") else self.policy
-                torch.save(policy.state_dict(), path)
-
-        return LegacyBitWorldPuffeRL
-
-    import pufferlib.pufferl
-
-    pufferlib.pufferl.compute_puff_advantage = compute_puff_advantage_fallback
-
-    class BitWorldPuffeRLCore(pufferlib.pufferl.PuffeRL):
-        def evaluate(self):
-            profile = self.profile
-            epoch = self.epoch
-            profile("eval", epoch)
-            profile("eval_misc", epoch, nest=True)
-
-            config = self.config
-            device = config["device"]
-
-            if config["use_rnn"]:
-                for key in self.lstm_h:
-                    self.lstm_h[key].zero_()
-                    self.lstm_c[key].zero_()
-
-            self.full_rows = 0
-            while self.full_rows < self.segments:
-                profile("env", epoch)
-                o, r, d, t, info, env_id, mask = self.vecenv.recv()
-
-                profile("eval_misc", epoch)
-                env_id = slice(env_id[0], env_id[-1] + 1)
-                del t
-                self.global_step += int(mask.sum())
-
-                profile("eval_copy", epoch)
-                o = torch.as_tensor(o)
-                o_device = o.to(device)
-                r = torch.as_tensor(r).to(device)
-                d = torch.as_tensor(d).to(device)
-
-                profile("eval_forward", epoch)
-                with torch.no_grad(), self.amp_context:
-                    state = {
-                        "reward": r,
-                        "done": d,
-                        "env_id": env_id,
-                        "mask": mask,
-                    }
-
-                    if config["use_rnn"]:
-                        state["lstm_h"] = self.lstm_h[env_id.start]
-                        state["lstm_c"] = self.lstm_c[env_id.start]
-
-                    logits, value = self.policy.forward_eval(o_device, state)
-                    action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
-                    r = torch.clamp(r, -1, 1)
-
-                profile("eval_copy", epoch)
-                with torch.no_grad():
-                    if config["use_rnn"]:
-                        self.lstm_h[env_id.start] = state["lstm_h"]
-                        self.lstm_c[env_id.start] = state["lstm_c"]
-
-                    l = self.ep_lengths[env_id.start].item()
-                    batch_rows = slice(
-                        self.ep_indices[env_id.start].item(),
-                        1 + self.ep_indices[env_id.stop - 1].item(),
-                    )
-
-                    if config["cpu_offload"]:
-                        self.observations[batch_rows, l] = o
-                    else:
-                        self.observations[batch_rows, l] = o_device
-
-                    self.actions[batch_rows, l] = action
-                    self.logprobs[batch_rows, l] = logprob
-                    self.rewards[batch_rows, l] = r
-                    self.terminals[batch_rows, l] = d.float()
-                    self.values[batch_rows, l] = value.flatten()
-
-                    self.ep_lengths[env_id] += 1
-                    if l + 1 >= config["bptt_horizon"]:
-                        num_full = env_id.stop - env_id.start
-                        self.ep_indices[env_id] = self.free_idx + torch.arange(num_full, device=config["device"]).int()
-                        self.ep_lengths[env_id] = 0
-                        self.free_idx += num_full
-                        self.full_rows += num_full
-
-                    action = action.cpu().numpy()
-                    if isinstance(logits, torch.distributions.Normal):
-                        action = np.clip(action, self.vecenv.action_space.low, self.vecenv.action_space.high)
-
-                profile("eval_misc", epoch)
-                for item in info:
-                    for key, value in pufferlib.unroll_nested_dict(item):
-                        if isinstance(value, np.ndarray):
-                            value = value.tolist()
-                        elif isinstance(value, (list, tuple)):
-                            self.stats[key].extend(value)
-                        else:
-                            self.stats[key].append(value)
-
-                profile("env", epoch)
-                self.vecenv.send(action)
-
-            profile("eval_misc", epoch)
-            self.free_idx = self.total_agents
-            self.ep_indices = torch.arange(self.total_agents, device=device, dtype=torch.int32)
-            self.ep_lengths.zero_()
-            profile.end()
-            return self.stats
-
-    class BitWorldPuffeRL:
-        def __init__(self, args, vecenv, policy, verbose: bool = False):
-            del verbose
-            self.model_path = Path(args["checkpoint_dir"]).parent / "pufferlib_latest.pt"
-            self.trainer = BitWorldPuffeRLCore(
-                puffer_train_config(args),
-                vecenv,
-                policy,
-            )
-            self.global_step = self.trainer.global_step
-            self._logs: dict[str, float] | None = None
-
-        def rollouts(self):
-            self.trainer.evaluate()
-            self.global_step = self.trainer.global_step
-
-        def train(self):
-            self._logs = self.trainer.train()
-            self.global_step = self.trainer.global_step
-
-        def log(self) -> dict[str, float]:
-            if self._logs is None:
-                return self.trainer.mean_and_log()
-            return self._logs
-
-        def save_weights(self, path: str) -> None:
-            torch.save(self.trainer.uncompiled_policy.state_dict(), path)
-
-        def close(self) -> None:
-            with suppress(Exception):
-                self.trainer.vecenv.close()
-            with suppress(Exception):
-                self.trainer.utilization.stop()
-
-    return BitWorldPuffeRL
+    return FastBitWorldPuffeRL
 
 
 def reserve_port() -> int:
@@ -769,7 +695,14 @@ class AmongThemNativeLibrary:
         self.lib.bitworld_at_tick_count.restype = ctypes.c_int
         self.lib.bitworld_at_game_hash.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_game_hash.restype = ctypes.c_uint64
-        self.lib.bitworld_at_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        self.lib.bitworld_at_create.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
         self.lib.bitworld_at_create.restype = ctypes.c_int
         self.lib.bitworld_at_reset.argtypes = [
             ctypes.c_int,
@@ -858,11 +791,18 @@ class AmongThemNativeWorker:
         max_episode_steps: int,
         action_repeat: int,
         observation_mode: str,
+        imposter_count: int | None = None,
+        button_calls: int | None = None,
+        state_grid: bool = True,
     ) -> None:
         if spec.name != "among_them":
             raise ValueError("AmongThemNativeWorker only supports among_them")
         if observation_mode not in OBSERVATION_MODES:
             raise ValueError(f"unknown observation_mode {observation_mode!r}")
+        if imposter_count is not None and not 0 <= imposter_count < spec.server_players:
+            raise ValueError("imposter_count must be between 0 and players - 1")
+        if button_calls is not None and button_calls < 0:
+            raise ValueError("button_calls must be non-negative")
         self.spec = spec
         self.env_id = env_id
         self.seed = seed
@@ -870,9 +810,19 @@ class AmongThemNativeWorker:
         self.action_repeat = action_repeat
         self.observation_mode = observation_mode
         self.agent_count = spec.server_players
+        self.imposter_count = imposter_count
+        self.button_calls = button_calls
+        self.state_grid = bool(state_grid)
         self.native = among_them_native_library()
         self.handle = self.native.check(
-            self.native.lib.bitworld_at_create(seed, self.agent_count, self.max_ticks)
+            self.native.lib.bitworld_at_create(
+                seed,
+                self.agent_count,
+                self.max_ticks,
+                -1 if imposter_count is None else imposter_count,
+                -1 if button_calls is None else button_calls,
+                int(self.state_grid),
+            )
         )
         feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
         dtype = np.uint8
@@ -1276,6 +1226,9 @@ class BitWorldVecEnv:
         action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
         observation_mode: str = "pixels",
+        imposter_count: int | None = None,
+        button_calls: int | None = None,
+        state_grid: bool = True,
     ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
@@ -1293,8 +1246,19 @@ class BitWorldVecEnv:
             raise ValueError("state observations are only implemented for among_them")
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
+        if imposter_count is not None and self.spec.name != "among_them":
+            raise ValueError("imposter_count is only supported for among_them")
+        if imposter_count is not None and not 0 <= imposter_count < self.spec.server_players:
+            raise ValueError("imposter_count must be between 0 and players - 1")
+        if button_calls is not None and self.spec.name != "among_them":
+            raise ValueError("button_calls is only supported for among_them")
+        if button_calls is not None and button_calls < 0:
+            raise ValueError("button_calls must be non-negative")
         self.num_envs = num_envs
         self.observation_mode = observation_mode
+        self.imposter_count = imposter_count
+        self.button_calls = button_calls
+        self.state_grid = bool(state_grid)
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
         self.total_agents = num_envs * self.agents_per_env
         self.num_agents = self.total_agents
@@ -1367,6 +1331,9 @@ class BitWorldVecEnv:
                         max_episode_steps=max_episode_steps,
                         action_repeat=action_repeat,
                         observation_mode=observation_mode,
+                        imposter_count=imposter_count,
+                        button_calls=button_calls,
+                        state_grid=state_grid,
                     )
                 else:
                     worker = BitWorldWorker(
@@ -1412,35 +1379,53 @@ class BitWorldVecEnv:
     def _state_rewards_ptr(self):
         return self._rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-    def _reset_state_batch(self) -> None:
+    def _state_agent_rows(self, env_ids: np.ndarray) -> np.ndarray:
+        return (env_ids[:, np.newaxis] * self.agents_per_env + np.arange(self.agents_per_env)).reshape(-1)
+
+    def _reset_state_envs(self, env_ids: np.ndarray) -> None:
+        assert self._state_handles is not None
+        env_ids = np.asarray(env_ids, dtype=np.int32)
+        if env_ids.size == 0:
+            return
+
+        rows = self._state_agent_rows(env_ids)
         native = among_them_native_library()
+        handles = np.ascontiguousarray(self._state_handles[env_ids])
+        latest_frames = np.zeros((rows.size, self.obs_features), dtype=self.obs_dtype)
+        rewards = np.zeros((rows.size,), dtype=np.float32)
         native.check(
             native.lib.bitworld_at_reset_state_batch(
-                self._state_handles_ptr(),
-                self.num_envs,
+                handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+                env_ids.size,
                 self.agents_per_env,
-                self._latest_state_ptr(),
-                self._state_rewards_ptr(),
+                latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             )
         )
-        self._state_score.fill(0.0)
-        self._state_episode_return.fill(0.0)
-        self._state_prev_potential[:] = self._state_task_potential()
-        self._state_prev_task_progress[:] = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
-        self._state_episode_steps = 0
-        self._state_statuses.fill(AMONG_THEM_STEP_ACTIVE)
-        self._frame_history[:] = self._latest_frames[:, np.newaxis, :]
-        self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
+        self._latest_frames[rows] = latest_frames
+        self._rewards[rows] = rewards
+        self._state_score[rows] = 0.0
+        self._state_episode_return[rows] = 0.0
+        self._state_prev_potential[rows] = self._state_task_potential(rows)
+        self._state_prev_task_progress[rows] = self._latest_frames[rows, STATE_TASK_PROGRESS_INDEX]
+        self._state_statuses[env_ids] = AMONG_THEM_STEP_ACTIVE
+        self._frame_history[rows] = self._latest_frames[rows, np.newaxis, :]
+        self._obs[rows] = self._frame_history[rows].reshape(rows.size, -1)
 
-    def _state_task_features(self) -> np.ndarray:
-        return self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
-            self.total_agents,
+    def _reset_state_batch(self) -> None:
+        self._reset_state_envs(np.arange(self.num_envs, dtype=np.int32))
+        self._state_episode_steps = 0
+
+    def _state_task_features(self, rows: np.ndarray | None = None) -> np.ndarray:
+        frames = self._latest_frames if rows is None else self._latest_frames[rows]
+        return frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
+            frames.shape[0],
             STATE_TASK_COUNT,
             STATE_TASK_FEATURES,
         )
 
-    def _state_task_potential(self) -> np.ndarray:
-        task_features = self._state_task_features()
+    def _state_task_potential(self, rows: np.ndarray | None = None) -> np.ndarray:
+        task_features = self._state_task_features(rows)
         flags = task_features[:, :, 3].astype(np.uint8)
         assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
@@ -1454,8 +1439,8 @@ class BitWorldVecEnv:
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
-    def _state_completed_task_counts(self) -> np.ndarray:
-        task_features = self._state_task_features()
+    def _state_completed_task_counts(self, rows: np.ndarray | None = None) -> np.ndarray:
+        task_features = self._state_task_features(rows)
         flags = task_features[:, :, 3].astype(np.uint8)
         assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
@@ -1542,9 +1527,15 @@ class BitWorldVecEnv:
         completed: list[EpisodeStats] = []
         done = self._state_statuses != AMONG_THEM_STEP_ACTIVE
         if np.any(done):
-            terminal_rewards = self._rewards.copy()
-            task_counts = self._state_completed_task_counts()
-            for score, episode_return, tasks_completed in zip(self._state_score, self._state_episode_return, task_counts):
+            done_env_ids = np.flatnonzero(done).astype(np.int32)
+            done_rows = self._state_agent_rows(done_env_ids)
+            terminal_rewards = self._rewards[done_rows].copy()
+            task_counts = self._state_completed_task_counts(done_rows)
+            for score, episode_return, tasks_completed in zip(
+                self._state_score[done_rows],
+                self._state_episode_return[done_rows],
+                task_counts,
+            ):
                 stats = EpisodeStats(
                     score=float(score),
                     length=self._state_episode_steps,
@@ -1556,12 +1547,12 @@ class BitWorldVecEnv:
                 self._completed_lengths.append(float(stats.length))
                 self._completed_returns.append(stats.episode_return)
                 self._completed_tasks.append(stats.tasks_completed)
-            self._completed_episodes += self.num_envs
-            env_truncations = self._state_statuses == AMONG_THEM_STEP_TRUNCATED
-            self._reset_state_batch()
-            self._rewards[:] = terminal_rewards
-            self._terminals[:] = 1.0
-            self._truncations[:] = np.repeat(env_truncations.astype(np.float32), self.agents_per_env)
+            self._completed_episodes += done_env_ids.size
+            env_truncations = self._state_statuses[done_env_ids] == AMONG_THEM_STEP_TRUNCATED
+            self._reset_state_envs(done_env_ids)
+            self._rewards[done_rows] = terminal_rewards
+            self._terminals[done_rows] = 1.0
+            self._truncations[done_rows] = np.repeat(env_truncations.astype(np.float32), self.agents_per_env)
 
         self._frame_history[:, :-1] = self._frame_history[:, 1:]
         self._frame_history[:, -1] = self._latest_frames
@@ -1855,6 +1846,9 @@ def train_policy(
     hidden_size: int = 256,
     device: str = "auto",
     observation_mode: str = "pixels",
+    imposter_count: int | None = None,
+    button_calls: int | None = None,
+    state_grid: bool = True,
 ) -> dict:
     resolved = get_env_spec(spec)
     if observation_mode not in OBSERVATION_MODES:
@@ -1888,6 +1882,9 @@ def train_policy(
         action_repeat=action_repeat,
         base_seed=seed + rank * num_envs,
         observation_mode=observation_mode,
+        imposter_count=imposter_count,
+        button_calls=button_calls,
+        state_grid=state_grid,
     )
     policy = BitWorldPolicy(
         frame_stack=frame_stack,
@@ -1931,6 +1928,9 @@ def train_policy(
                     "policy_device": str(next(policy.parameters()).device),
                     "world_size": world_size,
                     "observation_mode": observation_mode,
+                    "imposter_count": imposter_count,
+                    "button_calls": button_calls,
+                    "state_grid": state_grid,
                 }
             ),
             flush=True,
@@ -1993,6 +1993,9 @@ def evaluate_policy(
     seed: int,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     observation_mode: str = "pixels",
+    imposter_count: int | None = None,
+    button_calls: int | None = None,
+    state_grid: bool = True,
     random_actions: bool = False,
     sample_actions: bool = True,
 ) -> dict[str, float]:
@@ -2005,6 +2008,9 @@ def evaluate_policy(
         action_repeat=action_repeat,
         base_seed=seed,
         observation_mode=observation_mode,
+        imposter_count=imposter_count,
+        button_calls=button_calls,
+        state_grid=state_grid,
     )
     rng = np.random.default_rng(seed)
     vecenv.reset()

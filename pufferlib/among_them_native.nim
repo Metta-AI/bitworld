@@ -16,6 +16,9 @@ type
     rewardSnapshot: seq[int]
     renderStateScratch: seq[uint8]
     playerCount: int
+    imposterCount: int
+    buttonCalls: int
+    stateGrid: bool
     seed: int
     maxTicks: int
 
@@ -69,7 +72,7 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr uint8, outputBa
     env.renderStateScratch = newSeq[uint8](RenderStateFeatures)
   let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
-    env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch)
+    env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch, env.stateGrid)
     copyMem(
       addr output[outputBase + playerIndex * RenderStateFeatures],
       unsafeAddr env.renderStateScratch[0],
@@ -98,22 +101,7 @@ proc applyActionMasks(env: var NativeEnv, actionMasks: ptr uint8, actionRepeat: 
     if result != StepActive:
       return
 
-proc initNativeEnv(env: var NativeEnv) =
-  let previousDir = getCurrentDir()
-  setCurrentDir(gameDir())
-  try:
-    var config = defaultGameConfig()
-    config.seed = env.seed
-    config.maxTicks = env.maxTicks
-    config.minPlayers = env.playerCount
-    config.imposterCount = min(
-      config.imposterCount,
-      max(0, env.playerCount - 1)
-    )
-    env.sim = initSimServer(config)
-  finally:
-    setCurrentDir(previousDir)
-
+proc addNativePlayers(env: var NativeEnv) =
   env.inputs = newSeq[InputState](env.playerCount)
   env.prevInputs = newSeq[InputState](env.playerCount)
   env.rewardSnapshot = newSeq[int](env.playerCount)
@@ -123,6 +111,32 @@ proc initNativeEnv(env: var NativeEnv) =
   env.sim.step(env.inputs, env.prevInputs)
   for playerIndex in 0 ..< env.playerCount:
     env.rewardSnapshot[playerIndex] = env.sim.players[playerIndex].reward
+
+proc initNativeEnv(env: var NativeEnv) =
+  let previousDir = getCurrentDir()
+  setCurrentDir(gameDir())
+  try:
+    var config = defaultGameConfig()
+    config.seed = env.seed
+    config.maxTicks = env.maxTicks
+    config.minPlayers = env.playerCount
+    if env.imposterCount >= 0:
+      config.imposterCount = env.imposterCount
+    config.imposterCount = min(config.imposterCount, max(0, env.playerCount - 1))
+    if env.buttonCalls >= 0:
+      config.buttonCalls = env.buttonCalls
+    env.sim = initSimServer(config)
+  finally:
+    setCurrentDir(previousDir)
+  env.addNativePlayers()
+
+proc resetNativeEnv(env: var NativeEnv) =
+  env.sim.resetToLobby()
+  env.sim.rewardAccounts = @[]
+  env.sim.voteState = VoteState(ejectedPlayer: -1)
+  env.sim.winner = Crewmate
+  env.sim.gameOverTimer = 0
+  env.addNativePlayers()
 
 proc bitworld_at_last_error*(): cstring {.cdecl, exportc, dynlib.} =
   lastError.cstring
@@ -137,7 +151,7 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
 
-proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
+proc bitworld_at_create*(seed, playerCount, maxTicks, imposterCount, buttonCalls, stateGrid: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
@@ -145,10 +159,19 @@ proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, expor
       return setLastError("playerCount must be <= " & $MaxPlayers & ".")
     if maxTicks < 0:
       return setLastError("maxTicks must be non-negative.")
+    if imposterCount >= playerCount:
+      return setLastError("imposterCount must be less than playerCount.")
+    if buttonCalls < -1:
+      return setLastError("buttonCalls must be non-negative.")
+    if stateGrid != 0 and stateGrid != 1:
+      return setLastError("stateGrid must be 0 or 1.")
 
     var env = NativeEnv(
       seed: int(seed),
       playerCount: int(playerCount),
+      imposterCount: int(imposterCount),
+      buttonCalls: int(buttonCalls),
+      stateGrid: stateGrid != 0,
       maxTicks: int(maxTicks)
     )
     env.initNativeEnv()
@@ -167,7 +190,7 @@ proc bitworld_at_reset*(
       return setLastError("Invalid Among Them native env handle.")
 
     var env = envs[int(handle)]
-    env.initNativeEnv()
+    env.resetNativeEnv()
     env.copyObservations(observations)
     let output = cast[ptr UncheckedArray[cfloat]](rewards)
     for playerIndex in 0 ..< env.playerCount:
@@ -186,7 +209,7 @@ proc bitworld_at_reset_state*(
       return setLastError("Invalid Among Them native env handle.")
 
     var env = envs[int(handle)]
-    env.initNativeEnv()
+    env.resetNativeEnv()
     env.copyStateObservations(observations)
     let output = cast[ptr UncheckedArray[cfloat]](rewards)
     for playerIndex in 0 ..< env.playerCount:
@@ -260,7 +283,7 @@ proc bitworld_at_reset_state_batch*(
       var env = envs[int(handleArray[envIndex])]
       if env.playerCount != playerCountInt:
         return setLastError("Unexpected player count in batch reset.")
-      env.initNativeEnv()
+      env.resetNativeEnv()
       let outputBase = envIndex * playerCountInt
       env.copyStateObservations(observations, outputBase * RenderStateFeatures)
       for playerIndex in 0 ..< playerCountInt:

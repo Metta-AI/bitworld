@@ -2072,7 +2072,8 @@ proc writeRenderStateTasks(
 proc writeRenderStateObservation*(
   sim: SimServer,
   playerIndex: int,
-  output: var openArray[uint8]
+  output: var openArray[uint8],
+  includeGrid = true
 ) =
   ## Writes the compact render-source observation used before pixel drawing.
   if output.len != RenderStateFeatures:
@@ -2083,7 +2084,8 @@ proc writeRenderStateObservation*(
   for i in 0 ..< output.len:
     output[i] = 0
   sim.writeRenderStateHeader(playerIndex, output)
-  sim.writeRenderStateGrid(playerIndex, output)
+  if includeGrid:
+    sim.writeRenderStateGrid(playerIndex, output)
   if sim.phase == Playing:
     sim.writeRenderStatePlayingPlayers(playerIndex, output)
     sim.writeRenderStateBodies(playerIndex, output)
