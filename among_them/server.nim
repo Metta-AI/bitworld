@@ -486,17 +486,18 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
         dec value
 
 proc httpHandler(request: Request) =
-  if request.uri == WebSocketPath and request.httpMethod == "GET":
+  if request.path == WebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerAddresses[websocket] = request.remoteAddress
-  elif request.uri == GlobalWebSocketPath and request.httpMethod == "GET":
+        let name = request.queryParams.getOrDefault("name", "")
+        appState.playerAddresses[websocket] = if name.len > 0: name else: request.remoteAddress
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.uri == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
