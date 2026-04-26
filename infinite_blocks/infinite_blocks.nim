@@ -871,7 +871,7 @@ proc runServerLoop(
     httpHandler,
     websocketHandler,
     workerThreads = 4,
-    wsNoDelay = true
+    tcpNoDelay = true
   )
 
   var serverThread: Thread[ServerThreadArgs]
