@@ -20,7 +20,7 @@ const
   ChopWorkNeeded = 20
   MaxReturnCount = 9
   SaladScoreValue = 3
-  TargetFps = 24.0
+  TargetFps = 24
   WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
   DishOffsetY = 2
@@ -872,7 +872,7 @@ proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
 proc runFrameLimiter(previousTick: var MonoTime) =
-  let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
+  let frameDuration = initDuration(microseconds = 1_000_000 div TargetFps)
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))

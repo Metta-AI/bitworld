@@ -20,7 +20,7 @@ const
   BackgroundColor = 0'u8
   ClearFlashTicks = 8
   ClearPauseTicks = 5
-  TargetFps = 24.0
+  TargetFps = 24
   WebSocketPath = "/player"
   PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
 
@@ -804,7 +804,7 @@ proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
 
 proc runFrameLimiter(previousTick: var MonoTime) =
-  let frameDuration = initDuration(milliseconds = int(1000.0 / TargetFps))
+  let frameDuration = initDuration(microseconds = 1_000_000 div TargetFps)
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
