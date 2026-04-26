@@ -49,7 +49,7 @@ proc copyObservations(env: var NativeEnv, observations: ptr uint8) =
 
   let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
-    env.sim.drawObservation(playerIndex)
+    discard env.sim.render(playerIndex)
     if env.sim.fb.indices.len != FramePixels:
       raise newException(ValueError, "Unexpected Among Them frame size.")
     copyMem(

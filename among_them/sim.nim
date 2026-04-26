@@ -1283,33 +1283,6 @@ proc isWall*(sim: SimServer, mx, my: int): bool =
     return true
   sim.wallMask[mapIndex(mx, my)]
 
-proc pointShadowed(sim: SimServer, originMx, originMy, worldX, worldY: int): bool {.inline.} =
-  ## Returns true when a wall blocks the ray from an origin to a world point.
-  let
-    dx = worldX - originMx
-    dy = worldY - originMy
-    steps = max(abs(dx), abs(dy))
-  if steps == 0:
-    return false
-  for s in 1 .. steps:
-    let
-      rx = originMx + dx * s div steps
-      ry = originMy + dy * s div steps
-    if sim.isWall(rx, ry):
-      return true
-  false
-
-proc worldPointVisible(sim: SimServer, view: PlayerView, worldX, worldY: int): bool {.inline.} =
-  ## Returns true when a world point is visible without requiring shadowBuf.
-  if not view.screenPointInFrame(worldX, worldY):
-    return false
-  view.viewerIsGhost or not sim.pointShadowed(
-    view.originMx,
-    view.originMy,
-    worldX,
-    worldY
-  )
-
 proc castShadows*(sim: var SimServer, originMx, originMy, cameraX, cameraY: int) =
   for i in 0 ..< sim.shadowBuf.len:
     sim.shadowBuf[i] = false
@@ -1318,7 +1291,20 @@ proc castShadows*(sim: var SimServer, originMx, originMy, cameraX, cameraY: int)
       let
         mx = cameraX + sx
         my = cameraY + sy
-      if sim.pointShadowed(originMx, originMy, mx, my):
+        dx = mx - originMx
+        dy = my - originMy
+        steps = max(abs(dx), abs(dy))
+      if steps == 0:
+        continue
+      var shadowed = false
+      for s in 1 .. steps:
+        let
+          rx = originMx + dx * s div steps
+          ry = originMy + dy * s div steps
+        if sim.isWall(rx, ry):
+          shadowed = true
+          break
+      if shadowed:
         sim.shadowBuf[sy * ScreenWidth + sx] = true
 
 proc allVotesCast*(sim: SimServer): bool =
@@ -1376,11 +1362,7 @@ proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
       break
   sim.voteState.cursor[playerIndex] = cur
 
-proc packCurrentFrame(sim: var SimServer): seq[uint8] =
-  sim.fb.packFramebuffer()
-  sim.fb.packed
-
-proc drawLobbyFrame(sim: var SimServer, playerIndex: int) =
+proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
@@ -1397,16 +1379,15 @@ proc drawLobbyFrame(sim: var SimServer, playerIndex: int) =
       sx = 5 + col * 9
       sy = startY + row * 9
     sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[i].color, false)
-
-proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.drawLobbyFrame(playerIndex)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
 proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
   sim.fb.clearFrame(0)
   sim.fb.blitAsciiText(sim.asciiSprites, "GAME IN", 11, 22)
   sim.fb.blitAsciiText(sim.asciiSprites, "PROGRESS", 8, 32)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
 proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   ## Builds a simple player screen for replay mode.
@@ -1414,7 +1395,8 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
   sim.fb.blitAsciiText(sim.asciiSprites, "GLOBAL", 20, 38)
   sim.fb.blitAsciiText(sim.asciiSprites, "VIEW", 20, 46)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
 proc drawVoteChat*(sim: var SimServer, chatY: int) =
   ## Draws the visible voting chat messages.
@@ -1450,32 +1432,29 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
         rowY + lineIndex * 9
       )
 
-proc voteGridLayout(n: int): tuple[
-  cellW, cellH, cols, rows, totalW, startX, startY: int
-] =
-  result.cellW = 16
-  result.cellH = 17
-  result.cols = min(n, 8)
-  result.rows = (n + result.cols - 1) div result.cols
-  result.totalW = result.cols * result.cellW
-  result.startX = (ScreenWidth - result.totalW) div 2
-  result.startY = 2
-
-proc drawVoteFrame(sim: var SimServer, playerIndex: int) =
+proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   if n == 0:
-    return
-  let layout = voteGridLayout(n)
+    sim.fb.packFramebuffer()
+    return sim.fb.packed
+  let
+    cellW = 16
+    cellH = 17
+    cols = min(n, 8)
+    rows = (n + cols - 1) div cols
+    totalW = cols * cellW
+    startX = (ScreenWidth - totalW) div 2
+    startY = 2
 
   for idx in 0 ..< n:
     let
       pi = idx
-      col = idx mod layout.cols
-      row = idx div layout.cols
-      cx = layout.startX + col * layout.cellW
-      cy = layout.startY + row * layout.cellH
-      spriteX = cx + (layout.cellW - SpriteSize) div 2
+      col = idx mod cols
+      row = idx div cols
+      cx = startX + col * cellW
+      cy = startY + row * cellH
+      spriteX = cx + (cellW - SpriteSize) div 2
       spriteY = cy + 1
     if sim.players[pi].alive:
       sim.fb.blitSpriteOutlined(
@@ -1494,17 +1473,17 @@ proc drawVoteFrame(sim: var SimServer, playerIndex: int) =
         false
       )
     if pi == playerIndex:
-      sim.fb.putPixel(cx + layout.cellW div 2 - 1, cy - 2, sim.players[pi].color)
-      sim.fb.putPixel(cx + layout.cellW div 2, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + cellW div 2 - 1, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + cellW div 2, cy - 2, sim.players[pi].color)
     if sim.players[pi].alive and
         playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
         sim.voteState.cursor[playerIndex] == pi:
-      for bx in 0 ..< layout.cellW:
+      for bx in 0 ..< cellW:
         sim.fb.putPixel(cx + bx, cy - 1, 2'u8)
-        sim.fb.putPixel(cx + bx, cy + layout.cellH - 2, 2'u8)
-      for by in 0 ..< layout.cellH:
+        sim.fb.putPixel(cx + bx, cy + cellH - 2, 2'u8)
+      for by in 0 ..< cellH:
         sim.fb.putPixel(cx, cy + by - 1, 2'u8)
-        sim.fb.putPixel(cx + layout.cellW - 1, cy + by - 1, 2'u8)
+        sim.fb.putPixel(cx + cellW - 1, cy + by - 1, 2'u8)
     var voterRow = 0
     for vi in 0 ..< n:
       if sim.voteState.votes[vi] == pi:
@@ -1514,7 +1493,7 @@ proc drawVoteFrame(sim: var SimServer, playerIndex: int) =
         sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
         inc voterRow
 
-  let skipY = layout.startY + layout.rows * layout.cellH + 1
+  let skipY = startY + rows * cellH + 1
   let skipW = 28
   let skipX = (ScreenWidth - skipW) div 2
   sim.fb.blitAsciiText(sim.asciiSprites, "SKIP", skipX, skipY)
@@ -1546,11 +1525,10 @@ proc drawVoteFrame(sim: var SimServer, playerIndex: int) =
     sim.fb.putPixel(2 + bx, barY, c)
     sim.fb.putPixel(2 + bx, barY + 1, c)
 
-proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.drawVoteFrame(playerIndex)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
-proc drawResultFrame(sim: var SimServer, playerIndex: int) =
+proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let ej = sim.voteState.ejectedPlayer
   if ej >= 0 and ej < sim.players.len:
@@ -1561,10 +1539,8 @@ proc drawResultFrame(sim: var SimServer, playerIndex: int) =
   else:
     sim.fb.blitAsciiText(sim.asciiSprites, "NO ONE", 46, 54)
     sim.fb.blitAsciiText(sim.asciiSprites, "DIED", 52, 64)
-
-proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.drawResultFrame(playerIndex)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
 proc totalTasksRemaining*(sim: SimServer): int =
   for i in 0 ..< sim.players.len:
@@ -1625,7 +1601,7 @@ proc checkWinCondition*(sim: var SimServer) =
   elif sim.allTasksDone() and sim.players.len > 0:
     sim.finishGame(Crewmate)
 
-proc drawGameOverFrame(sim: var SimServer, playerIndex: int) =
+proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let title =
     if sim.winner == Crewmate: "CREW WINS"
@@ -1658,10 +1634,8 @@ proc drawGameOverFrame(sim: var SimServer, playerIndex: int) =
     if not p.alive:
       for lx in textX ..< textX + roleStr.len * 7:
         sim.fb.putPixel(lx, textY + 3, 3'u8)
-
-proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.drawGameOverFrame(playerIndex)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
 proc byteClamp(value: int): uint8 =
   uint8(clamp(value, 0, 255))
@@ -1674,6 +1648,38 @@ proc fractionByte(value, maxValue: int): uint8 =
 proc signedByte(value, maxAbs: int): uint8 =
   let scale = max(1, maxAbs)
   byteClamp((clamp(value, -scale, scale) + scale) * 255 div (scale * 2))
+
+proc renderStatePointShadowed(
+  sim: SimServer,
+  originMx, originMy, worldX, worldY: int
+): bool {.inline.} =
+  let
+    dx = worldX - originMx
+    dy = worldY - originMy
+    steps = max(abs(dx), abs(dy))
+  if steps == 0:
+    return false
+  for s in 1 .. steps:
+    let
+      rx = originMx + dx * s div steps
+      ry = originMy + dy * s div steps
+    if sim.isWall(rx, ry):
+      return true
+  false
+
+proc renderStateWorldPointVisible(
+  sim: SimServer,
+  view: PlayerView,
+  worldX, worldY: int
+): bool {.inline.} =
+  if not view.screenPointInFrame(worldX, worldY):
+    return false
+  view.viewerIsGhost or not sim.renderStatePointShadowed(
+    view.originMx,
+    view.originMy,
+    worldX,
+    worldY
+  )
 
 proc slotOffset(base, slot, width: int): int =
   base + slot * width
@@ -1830,7 +1836,11 @@ proc writeRenderStatePlayingPlayers(
       flags = flags or RenderPlayerSelf
     if p.alive:
       if i != playerIndex and
-          not sim.worldPointVisible(view, p.x + CollisionW div 2, p.y + CollisionH div 2):
+          not sim.renderStateWorldPointVisible(
+            view,
+            p.x + CollisionW div 2,
+            p.y + CollisionH div 2
+          ):
         continue
       flags = flags or RenderPlayerAlive
     elif view.viewerIsGhost:
@@ -1863,14 +1873,20 @@ proc writeRenderStateUiPlayers(
         flags = flags or RenderPlayerSelf
       sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
   of Voting:
-    let layout = voteGridLayout(n)
+    let
+      cellW = 16
+      cellH = 17
+      cols = min(n, 8)
+      totalW = cols * cellW
+      startX = (ScreenWidth - totalW) div 2
+      startY = 2
     for i in 0 ..< n:
       let
-        col = i mod layout.cols
-        row = i div layout.cols
-        cx = layout.startX + col * layout.cellW
-        cy = layout.startY + row * layout.cellH
-        sx = cx + (layout.cellW - SpriteSize) div 2
+        col = i mod cols
+        row = i div cols
+        cx = startX + col * cellW
+        cy = startY + row * cellH
+        sx = cx + (cellW - SpriteSize) div 2
         sy = cy + 1
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
@@ -1942,7 +1958,11 @@ proc writeRenderStateBodies(
   for body in sim.bodies:
     if slot >= RenderStateBodySlots:
       break
-    if not sim.worldPointVisible(view, body.x + CollisionW div 2, body.y + CollisionH div 2):
+    if not sim.renderStateWorldPointVisible(
+      view,
+      body.x + CollisionW div 2,
+      body.y + CollisionH div 2
+    ):
       continue
     let
       base = slotOffset(RenderStateBodyOffset, slot, RenderStateBodyFeatures)
@@ -2061,22 +2081,19 @@ proc writeRenderStateObservation*(
   else:
     sim.writeRenderStateUiPlayers(playerIndex, output)
 
-proc drawObservation*(sim: var SimServer, playerIndex: int) =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
-    sim.drawLobbyFrame(playerIndex)
-    return
+    return sim.buildLobbyFrame(playerIndex)
   if sim.phase == GameOver:
-    sim.drawGameOverFrame(playerIndex)
-    return
+    return sim.buildGameOverFrame(playerIndex)
   if sim.phase == Voting:
-    sim.drawVoteFrame(playerIndex)
-    return
+    return sim.buildVoteFrame(playerIndex)
   if sim.phase == VoteResult:
-    sim.drawResultFrame(playerIndex)
-    return
+    return sim.buildResultFrame(playerIndex)
   sim.fb.clearFrame(SpaceColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
+    sim.fb.packFramebuffer()
+    return sim.fb.packed
 
   let
     player = sim.players[playerIndex]
@@ -2243,9 +2260,8 @@ proc drawObservation*(sim: var SimServer, playerIndex: int) =
   let dx = ScreenWidth - numStr.len * 7
   sim.fb.blitAsciiText(sim.asciiSprites, numStr, dx, 0)
 
-proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.drawObservation(playerIndex)
-  sim.packCurrentFrame()
+  sim.fb.packFramebuffer()
+  sim.fb.packed
 
 proc initSimServer*(config: GameConfig): SimServer =
   result.config = config
