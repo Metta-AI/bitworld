@@ -52,6 +52,9 @@ const
   StuckFrameThreshold = 8
   JiggleDuration = 16
   TaskHoldPadding = 8
+  CrewmateSearchRadius = 1
+  CrewmateMaxMisses = 3
+  CrewmateMinStablePixels = 8
 
 type
   TileKnowledge = enum
@@ -91,6 +94,11 @@ type
   IconMatch = object
     x: int
     y: int
+
+  CrewmateMatch = object
+    x: int
+    y: int
+    flipH: bool
 
   ViewerApp = ref object
     window: Window
@@ -142,6 +150,7 @@ type
     taskStates: seq[TaskState]
     taskIconMisses: seq[int]
     visibleTaskIcons: seq[IconMatch]
+    visibleCrewmates: seq[CrewmateMatch]
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
@@ -224,11 +233,32 @@ proc ignoreTaskIconPixel(bot: Bot, sx, sy: int): bool =
         TransparentColorIndex:
       return true
 
+proc ignoreCrewmatePixel(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel belongs to a matched crewmate.
+  for crewmate in bot.visibleCrewmates:
+    let
+      ix = sx - crewmate.x
+      iy = sy - crewmate.y
+    if ix < 0 or iy < 0 or
+        ix >= bot.playerSprite.width or
+        iy >= bot.playerSprite.height:
+      continue
+    let srcX =
+      if crewmate.flipH:
+        bot.playerSprite.width - 1 - ix
+      else:
+        ix
+    if bot.playerSprite.pixels[bot.playerSprite.spriteIndex(srcX, iy)] !=
+        TransparentColorIndex:
+      return true
+
 proc ignoreFramePixel(bot: Bot, frameColor: uint8, sx, sy: int): bool =
   ## Returns true for dynamic screen pixels that are not map evidence.
   if frameColor == RadarTaskColor:
     return true
   if bot.ignoreTaskIconPixel(sx, sy):
+    return true
+  if bot.ignoreCrewmatePixel(sx, sy):
     return true
   abs(sx - PlayerScreenX) <= PlayerIgnoreRadius and
     abs(sy - PlayerScreenY) <= PlayerIgnoreRadius
@@ -279,6 +309,8 @@ proc setCameraLock(
   bot.localized = true
 
 proc scanTaskIcons(bot: var Bot)
+
+proc scanCrewmates(bot: var Bot)
 
 proc isInterstitialScreen(bot: Bot): bool =
   ## Returns true when a black modal screen hides the map.
@@ -362,6 +394,7 @@ proc updateLocation(bot: var Bot) =
   bot.interstitial = bot.isInterstitialScreen()
   if bot.interstitial:
     return
+  bot.scanCrewmates()
   bot.scanTaskIcons()
   if bot.locateNearFrame():
     return
@@ -460,6 +493,76 @@ proc addIconMatch(matches: var seq[IconMatch], x, y: int) =
     if abs(match.x - x) <= 1 and abs(match.y - y) <= 1:
       return
   matches.add(IconMatch(x: x, y: y))
+
+proc stableCrewmateColor(color: uint8): bool =
+  ## Returns true for non-body crewmate sprite pixels.
+  color != TransparentColorIndex and
+    color != TintColor and
+    color != ShadeTintColor
+
+proc matchesCrewmate(
+  bot: Bot,
+  x,
+  y: int,
+  flipH: bool
+): bool =
+  ## Returns true when stable crewmate pixels match the frame.
+  var
+    matched = 0
+    misses = 0
+    stable = 0
+  for sy in 0 ..< bot.playerSprite.height:
+    for sx in 0 ..< bot.playerSprite.width:
+      let srcX =
+        if flipH:
+          bot.playerSprite.width - 1 - sx
+        else:
+          sx
+      let color = bot.playerSprite.pixels[
+        bot.playerSprite.spriteIndex(srcX, sy)
+      ]
+      if not stableCrewmateColor(color):
+        continue
+      inc stable
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        inc misses
+      elif bot.unpacked[fy * ScreenWidth + fx] == color:
+        inc matched
+      else:
+        inc misses
+      if misses > CrewmateMaxMisses:
+        return false
+  stable >= CrewmateMinStablePixels and
+    matched >= stable - CrewmateMaxMisses
+
+proc addCrewmateMatch(
+  matches: var seq[CrewmateMatch],
+  x,
+  y: int,
+  flipH: bool
+) =
+  ## Adds one crewmate match unless a nearby match already exists.
+  for match in matches:
+    if abs(match.x - x) <= CrewmateSearchRadius and
+        abs(match.y - y) <= CrewmateSearchRadius:
+      return
+  matches.add(CrewmateMatch(x: x, y: y, flipH: flipH))
+
+proc scanCrewmates(bot: var Bot) =
+  ## Scans the current frame for crewmates by stable sprite pixels.
+  bot.visibleCrewmates.setLen(0)
+  for y in 0 .. ScreenHeight - bot.playerSprite.height:
+    for x in 0 .. ScreenWidth - bot.playerSprite.width:
+      if abs(x + SpriteSize div 2 - PlayerScreenX) <= PlayerIgnoreRadius and
+          abs(y + SpriteSize div 2 - PlayerScreenY) <= PlayerIgnoreRadius:
+        continue
+      if bot.matchesCrewmate(x, y, false):
+        bot.visibleCrewmates.addCrewmateMatch(x, y, false)
+      elif bot.matchesCrewmate(x, y, true):
+        bot.visibleCrewmates.addCrewmateMatch(x, y, true)
 
 proc scanTaskIcons(bot: var Bot) =
   ## Scans expected task icon positions for visible task icons.
@@ -1572,6 +1675,7 @@ proc pumpViewer(
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
     "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &
+    "crewmates masked: " & $bot.visibleCrewmates.len & "\n" &
     "radar dots: " & $bot.radarDots.len &
       " radar tasks=" & $bot.radarTaskCount() &
       " task icons=" & $bot.visibleTaskIcons.len & "\n" &
