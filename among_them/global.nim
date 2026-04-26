@@ -21,6 +21,16 @@ const
   InterstitialObjectId = 4005
   InterstitialLayerId = 2
   InterstitialLayerType = 2
+  ImposterBarSpriteId = 701
+  ImposterBarObjectBase = 5000
+  ImposterBarWidth = 10
+  ImposterBarHeight = 2
+  ImposterBarYOffset = 4
+  TrailDotSpriteBase = 720
+  TrailDotObjectBase = 6000
+  TrailDotSize = 3
+  TrailDotSpacing = 10
+  TrailMaxDots = 10
   TransportIconSize = 6
   TransportIconHeight = 6
   TransportIconCount = 5
@@ -35,6 +45,15 @@ const
   TransportY = 1
 
 type
+  TrailDot = object
+    x, y: int
+    colorIndex: int
+
+  PlayerTrail = object
+    joinOrder: int
+    lastX, lastY: int
+    dots: seq[TrailDot]
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
@@ -47,6 +66,7 @@ type
     scrubbingReplay*: bool
     replaySeekTick*: int
     replayCommands*: seq[char]
+    trails: seq[PlayerTrail]
 
 var TransportSheet: Sprite
 
@@ -263,6 +283,18 @@ proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
       if colorIndex != TransparentColorIndex:
         result[sprite.spriteIndex(x, y)] = spriteColor(colorIndex)
 
+proc buildImposterBarSprite(): seq[uint8] =
+  ## Builds the global-only red impostor marker sprite.
+  result = newSeq[uint8](ImposterBarWidth * ImposterBarHeight)
+  for i in 0 ..< result.len:
+    result[i] = spriteColor(TintColor)
+
+proc buildTrailDotSprite(color: uint8): seq[uint8] =
+  ## Builds one global-only player trail dot sprite.
+  result = newSeq[uint8](TrailDotSize * TrailDotSize)
+  for i in 0 ..< result.len:
+    result[i] = spriteColor(color)
+
 proc putTextSpritePixel(
   pixels: var seq[uint8],
   width, height, x, y: int,
@@ -399,6 +431,19 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     sim.taskIconSprite.height,
     taskPixels
   )
+  result.addSprite(
+    ImposterBarSpriteId,
+    ImposterBarWidth,
+    ImposterBarHeight,
+    buildImposterBarSprite()
+  )
+  for i in 0 ..< PlayerColors.len:
+    result.addSprite(
+      TrailDotSpriteBase + i,
+      TrailDotSize,
+      TrailDotSize,
+      buildTrailDotSprite(PlayerColors[i])
+    )
   for i in 0 ..< PlayerColors.len:
     let
       playerRight = buildSpriteProtocolActorSprite(
@@ -508,6 +553,14 @@ proc spriteObjectId(player: Player): int =
   ## Returns the stable global protocol object id for a player.
   PlayerObjectBase + player.joinOrder
 
+proc spriteImposterBarObjectId(player: Player): int =
+  ## Returns the stable global protocol object id for an impostor bar.
+  ImposterBarObjectBase + player.joinOrder
+
+proc spriteTrailDotObjectId(joinOrder, dotIndex: int): int =
+  ## Returns the stable global protocol object id for a trail dot.
+  TrailDotObjectBase + joinOrder * TrailMaxDots + dotIndex
+
 proc spritePlayerX(player: Player): int =
   ## Returns the global viewer x position for a player sprite.
   player.x - SpriteDrawOffX - 1
@@ -515,6 +568,13 @@ proc spritePlayerX(player: Player): int =
 proc spritePlayerY(player: Player): int =
   ## Returns the global viewer y position for a player sprite.
   player.y - SpriteDrawOffY - 1
+
+proc trailCenter(player: Player): tuple[x, y: int] =
+  ## Returns the map position used for a player's trail.
+  (
+    x: player.x + CollisionW div 2,
+    y: player.y + CollisionH div 2
+  )
 
 proc spriteBodyObjectId(index: int): int =
   ## Returns the global protocol object id for a dead body.
@@ -537,6 +597,59 @@ proc taskStillNeeded(sim: SimServer, taskIndex: int): bool =
     if not sim.tasks[taskIndex].completed[i]:
       return true
   false
+
+proc trailIndex(state: GlobalViewerState, joinOrder: int): int =
+  ## Returns the trail index for one player join order.
+  for i in 0 ..< state.trails.len:
+    if state.trails[i].joinOrder == joinOrder:
+      return i
+  -1
+
+proc playerExists(sim: SimServer, joinOrder: int): bool =
+  ## Returns true when a player join order is still present.
+  for player in sim.players:
+    if player.joinOrder == joinOrder:
+      return true
+  false
+
+proc updateTrails(state: var GlobalViewerState, sim: SimServer) =
+  ## Updates global-only player trails from current player positions.
+  for i in countdown(state.trails.high, 0):
+    if not sim.playerExists(state.trails[i].joinOrder):
+      state.trails.delete(i)
+
+  for player in sim.players:
+    let
+      center = player.trailCenter()
+      colorIndex = playerColorIndex(player.color)
+    var index = state.trailIndex(player.joinOrder)
+    if index < 0:
+      state.trails.add PlayerTrail(
+        joinOrder: player.joinOrder,
+        lastX: center.x,
+        lastY: center.y,
+        dots: @[TrailDot(
+          x: center.x,
+          y: center.y,
+          colorIndex: colorIndex
+        )]
+      )
+      continue
+    if distSq(
+      center.x,
+      center.y,
+      state.trails[index].lastX,
+      state.trails[index].lastY
+    ) >= TrailDotSpacing * TrailDotSpacing:
+      state.trails[index].dots.add TrailDot(
+        x: center.x,
+        y: center.y,
+        colorIndex: colorIndex
+      )
+      state.trails[index].lastX = center.x
+      state.trails[index].lastY = center.y
+      while state.trails[index].dots.len > TrailMaxDots:
+        state.trails[index].dots.delete(0)
 
 proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   ## Returns the sprite id for a player in the global viewer.
@@ -819,7 +932,23 @@ proc buildSpriteProtocolUpdates*(
     result.addViewport(ReplayBottomLeftLayerId, ScreenWidth, 16)
     nextState.initialized = true
 
+  nextState.updateTrails(sim)
   var currentIds: seq[int] = @[]
+  for trail in nextState.trails:
+    for i in 0 ..< trail.dots.len:
+      let
+        dot = trail.dots[i]
+        objectId = spriteTrailDotObjectId(trail.joinOrder, i)
+      currentIds.add(objectId)
+      result.addObject(
+        objectId,
+        dot.x - TrailDotSize div 2,
+        dot.y - TrailDotSize div 2,
+        dot.y - 100,
+        MapLayerId,
+        TrailDotSpriteBase + dot.colorIndex
+      )
+
   for player in sim.players:
     let objectId = player.spriteObjectId()
     currentIds.add(objectId)
@@ -831,6 +960,21 @@ proc buildSpriteProtocolUpdates*(
       MapLayerId,
       player.spriteActorSpriteId(nextState.selectedJoinOrder)
     )
+    if player.role == Imposter:
+      let
+        barObjectId = player.spriteImposterBarObjectId()
+        barX = player.spritePlayerX() +
+          (sim.playerSprite.width + 2 - ImposterBarWidth) div 2
+        barY = player.spritePlayerY() - ImposterBarYOffset
+      currentIds.add(barObjectId)
+      result.addObject(
+        barObjectId,
+        barX,
+        barY,
+        30001,
+        MapLayerId,
+        ImposterBarSpriteId
+      )
 
   for i in 0 ..< sim.bodies.len:
     let

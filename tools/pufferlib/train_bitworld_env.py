@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from bitworld_pufferlib import (
     ENV_SPECS,
+    OBSERVATION_MODES,
     evaluate_policy,
     get_env_spec,
     load_policy_checkpoint,
@@ -27,14 +29,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-size", type=int)
     parser.add_argument("--seed", type=int, default=73)
     parser.add_argument("--action-repeat", type=int, default=4)
+    parser.add_argument("--observation-mode", choices=sorted(OBSERVATION_MODES), default="pixels")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--local-rank", type=int, default=0)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    rank = int(os.environ.get("RANK", "0"))
     spec = get_env_spec(args.env)
     total_timesteps = args.total_timesteps if args.total_timesteps is not None else spec.default_total_timesteps
     episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
@@ -47,6 +52,7 @@ def main() -> None:
         raise ValueError("--minibatch-size must be <= total agents * horizon")
 
     output_dir = args.output_dir if args.output_dir is not None else Path(f"tools/runlogs/{spec.name}_pufferlib_training")
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"{spec.name}_policy.pt"
     metrics_path = output_dir / "train_metrics.json"
@@ -66,12 +72,17 @@ def main() -> None:
         action_repeat=args.action_repeat,
         hidden_size=hidden_size,
         device=args.device,
+        observation_mode=args.observation_mode,
     )
+
+    if rank != 0:
+        return
 
     if args.eval_episodes <= 0:
         summary = {
             "env": spec.name,
             "device": resolve_train_device(args.device),
+            "observation_mode": args.observation_mode,
             "checkpoint": str(checkpoint_path),
             "metrics_path": str(metrics_path),
             "trained": None,
@@ -93,7 +104,9 @@ def main() -> None:
         frame_stack=checkpoint.frame_stack,
         seed=args.seed + 10_000,
         action_repeat=args.action_repeat,
+        observation_mode=checkpoint.observation_mode,
         random_actions=False,
+        sample_actions=False,
     )
     random_baseline = evaluate_policy(
         spec=spec,
@@ -103,15 +116,31 @@ def main() -> None:
         frame_stack=checkpoint.frame_stack,
         seed=args.seed + 20_000,
         action_repeat=args.action_repeat,
+        observation_mode=args.observation_mode,
         random_actions=True,
     )
+    teacher_baseline = None
+    if args.observation_mode == "state":
+        teacher_baseline = evaluate_policy(
+            spec=spec,
+            policy=None,
+            episodes=args.eval_episodes,
+            max_episode_steps=episode_steps,
+            frame_stack=checkpoint.frame_stack,
+            seed=args.seed + 30_000,
+            action_repeat=args.action_repeat,
+            observation_mode=args.observation_mode,
+            teacher_actions=True,
+        )
     summary = {
         "env": spec.name,
         "device": train_device,
+        "observation_mode": args.observation_mode,
         "checkpoint": str(checkpoint_path),
         "metrics_path": str(metrics_path),
         "trained": trained,
         "random": random_baseline,
+        "teacher": teacher_baseline,
     }
     summary_path = output_dir / "eval_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))

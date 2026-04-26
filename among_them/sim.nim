@@ -2,7 +2,7 @@ import jsony, pixie
 import protocol
 import ../client/aseprite
 import ../common/server
-import std/[json, math, os, random]
+import std/[json, math, os, random, strutils]
 
 const
   GameName* = "among_them"
@@ -33,7 +33,7 @@ const
   ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
   KillRange* = 20
-  KillCooldownTicks* = 120
+  KillCooldownTicks* = 1200
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
   VentRange* = 16
@@ -194,6 +194,7 @@ type
     killButtonSprite*: Sprite
     taskIconSprite*: Sprite
     ghostSprite*: Sprite
+    ghostIconSprite*: Sprite
     tasks*: seq[TaskStation]
     vents*: seq[Vent]
     mapPixels*: seq[uint8]
@@ -223,6 +224,21 @@ proc skeld2AsepritePath(): string =
     "skeld2.aseprite"
   else:
     "/Users/me/p/among_them/skeld2.aseprite"
+
+proc spriteSheetPath(): string =
+  ## Returns the best available sprite sheet path.
+  if fileExists("spritesheet.aseprite"):
+    "spritesheet.aseprite"
+  else:
+    "spritesheet.png"
+
+proc loadSpriteSheet*(): Image =
+  ## Loads the sprite sheet from aseprite when available.
+  let path = spriteSheetPath()
+  if path.endsWith(".aseprite"):
+    readAsepriteImage(path)
+  else:
+    readImage(path)
 
 proc asepritePixelAt(
   aseprite: AsepriteSprite,
@@ -432,6 +448,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
+  node.readConfigInt("imposterCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
   node.readConfigInt("ventRange", config.ventRange)
   node.readConfigInt("reportRange", config.reportRange)
@@ -460,6 +477,7 @@ proc configJson*(config: GameConfig): string =
     "seed": config.seed,
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
+    "imposterCooldownTicks": config.killCooldownTicks,
     "taskCompleteTicks": config.taskCompleteTicks,
     "ventRange": config.ventRange,
     "reportRange": config.reportRange,
@@ -848,6 +866,28 @@ proc tryCallButton*(sim: var SimServer, callerIndex: int) =
     inc sim.players[callerIndex].buttonCallsUsed
     sim.startVote()
 
+proc containGhost(player: var Player) =
+  ## Keeps ghost movement inside the map rectangle.
+  let
+    maxX = MapWidth - CollisionW
+    maxY = MapHeight - CollisionH
+  if player.x < 0:
+    player.x = 0
+    player.velX = max(player.velX, 0)
+    player.carryX = 0
+  elif player.x > maxX:
+    player.x = maxX
+    player.velX = min(player.velX, 0)
+    player.carryX = 0
+  if player.y < 0:
+    player.y = 0
+    player.velY = max(player.velY, 0)
+    player.carryY = 0
+  elif player.y > maxY:
+    player.y = maxY
+    player.velY = min(player.velY, 0)
+    player.carryY = 0
+
 proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState) =
   template player: untyped = sim.players[playerIndex]
   var inputX = 0
@@ -894,6 +934,7 @@ proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState
     let step = if player.carryY < 0: -1 else: 1
     player.y += step
     player.carryY -= step * sim.config.motionScale
+  player.containGhost()
 
   if player.role == Crewmate and input.attack:
     let
@@ -1548,7 +1589,12 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         ex = clamp(ex, minX, maxX)
       sim.fb.putPixel(int(ex), int(ey), radarColor)
 
-  if player.role == Imposter and player.alive:
+  if not player.alive:
+    let
+      iconX = 1
+      iconY = ScreenHeight - SpriteSize - 1
+    sim.fb.blitSpriteRaw(sim.ghostIconSprite, iconX, iconY)
+  elif player.role == Imposter:
     let
       iconX = 1
       iconY = ScreenHeight - SpriteSize - 1
@@ -1572,7 +1618,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   loadPalette(clientDataDir() / "pallete.png")
   result.asciiSprites = loadAsciiSprites("ascii.png")
 
-  let sheet = readImage("spritesheet.png")
+  let sheet = loadSpriteSheet()
   result.playerSprite = spriteFromImage(
     sheet.subImage(0, 0, SpriteSize, SpriteSize)
   )
@@ -1590,6 +1636,9 @@ proc initSimServer*(config: GameConfig): SimServer =
   )
   result.ghostSprite = spriteFromImage(
     sheet.subImage(SpriteSize * 6, 0, SpriteSize, SpriteSize)
+  )
+  result.ghostIconSprite = spriteFromImage(
+    sheet.subImage(SpriteSize * 7, 0, SpriteSize, SpriteSize)
   )
 
   result.tasks = @[
