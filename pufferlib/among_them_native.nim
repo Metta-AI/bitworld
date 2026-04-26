@@ -18,7 +18,6 @@ type
     playerCount: int
     imposterCount: int
     buttonCalls: int
-    stateGrid: bool
     seed: int
     maxTicks: int
 
@@ -72,7 +71,7 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr uint8, outputBa
     env.renderStateScratch = newSeq[uint8](RenderStateFeatures)
   let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
-    env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch, env.stateGrid)
+    env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch)
     copyMem(
       addr output[outputBase + playerIndex * RenderStateFeatures],
       unsafeAddr env.renderStateScratch[0],
@@ -151,7 +150,7 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
 
-proc bitworld_at_create*(seed, playerCount, maxTicks, imposterCount, buttonCalls, stateGrid: cint): cint {.cdecl, exportc, dynlib.} =
+proc bitworld_at_create*(seed, playerCount, maxTicks, imposterCount, buttonCalls: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
@@ -163,15 +162,12 @@ proc bitworld_at_create*(seed, playerCount, maxTicks, imposterCount, buttonCalls
       return setLastError("imposterCount must be less than playerCount.")
     if buttonCalls < -1:
       return setLastError("buttonCalls must be non-negative.")
-    if stateGrid != 0 and stateGrid != 1:
-      return setLastError("stateGrid must be 0 or 1.")
 
     var env = NativeEnv(
       seed: int(seed),
       playerCount: int(playerCount),
       imposterCount: int(imposterCount),
       buttonCalls: int(buttonCalls),
-      stateGrid: stateGrid != 0,
       maxTicks: int(maxTicks)
     )
     env.initNativeEnv()

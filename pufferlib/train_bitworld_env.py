@@ -25,7 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--players", type=int, help=f"Among Them players per game, 1-{AMONG_THEM_MAX_PLAYERS}")
     parser.add_argument("--imposters", type=int, help="Among Them imposters per game")
     parser.add_argument("--button-calls", type=int, help="Among Them emergency button calls per player")
-    parser.add_argument("--state-grid", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--episode-steps", type=int)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--learning-rate", type=float)
@@ -80,7 +79,6 @@ def main() -> None:
         observation_mode=args.observation_mode,
         imposter_count=args.imposters,
         button_calls=args.button_calls,
-        state_grid=args.state_grid,
     )
 
     if rank != 0:
@@ -115,7 +113,6 @@ def main() -> None:
         observation_mode=checkpoint.observation_mode,
         imposter_count=args.imposters,
         button_calls=args.button_calls,
-        state_grid=args.state_grid,
         random_actions=False,
         sample_actions=False,
     )
@@ -130,7 +127,6 @@ def main() -> None:
         observation_mode=args.observation_mode,
         imposter_count=args.imposters,
         button_calls=args.button_calls,
-        state_grid=args.state_grid,
         random_actions=True,
     )
     summary = {
