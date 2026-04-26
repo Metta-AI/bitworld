@@ -31,7 +31,7 @@ SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 128
 FRAME_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT
 PACKED_FRAME_BYTES = FRAME_PIXELS // 2
-STATE_FEATURES = 96
+STATE_FEATURES = 123
 RESET_INPUT_MASK = 255
 DEFAULT_ACTION_REPEAT = 4
 OBSERVATION_MODES = {"pixels", "state"}
@@ -39,6 +39,8 @@ STATE_TASK_FEATURE_OFFSET = 36
 STATE_TASK_FEATURES = 4
 STATE_TASK_COUNT = 15
 STATE_TASK_PROGRESS_INDEX = 7
+STATE_TEACHER_FEATURE_OFFSET = STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT
+STATE_TEACHER_ACTION_COUNT = 27
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -81,6 +83,10 @@ def state_reward_shaping_scale() -> float:
 
 def state_progress_reward_scale() -> float:
     return float(os.environ.get("BITWORLD_STATE_PROGRESS_REWARD", "0.02"))
+
+
+def state_teacher_reward_scale() -> float:
+    return float(os.environ.get("BITWORLD_STATE_TEACHER_REWARD", "0.05"))
 
 
 SHARED_NIM_SOURCES = (
@@ -1175,7 +1181,7 @@ class BitWorldVecEnv:
         self._rewards = np.zeros((self.total_agents,), dtype=np.float32)
         self._terminals = np.zeros((self.total_agents,), dtype=np.float32)
         self._truncations = np.zeros((self.total_agents,), dtype=np.float32)
-        self.teacher_actions = np.zeros((self.total_agents,), dtype=np.int64)
+        self.teacher_actions = np.full((self.total_agents,), -1, dtype=np.int64)
         self.masks = np.ones((self.total_agents,), dtype=bool)
         self.agent_ids = np.arange(self.total_agents)
         self.infos: list[dict[str, float]] = []
@@ -1200,8 +1206,10 @@ class BitWorldVecEnv:
         self._state_episode_return = np.zeros((self.total_agents,), dtype=np.float32)
         self._state_prev_potential = np.zeros((self.total_agents,), dtype=np.float32)
         self._state_prev_task_progress = np.zeros((self.total_agents,), dtype=np.float32)
+        self._state_teacher_actions = np.full((self.total_agents,), -1, dtype=np.int64)
         self._state_reward_shaping = state_reward_shaping_scale()
         self._state_progress_reward = state_progress_reward_scale()
+        self._state_teacher_reward = state_teacher_reward_scale()
         self._state_episode_steps = 0
         self._executor = None
         if self.spec.name == "among_them" and self.observation_mode == "pixels":
@@ -1277,12 +1285,14 @@ class BitWorldVecEnv:
         self._state_episode_return.fill(0.0)
         self._state_prev_potential[:] = self._state_task_potential()
         self._state_prev_task_progress[:] = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
+        self._state_teacher_actions[:] = self._state_teacher_actions_from_frames()
+        self.teacher_actions[:] = self._state_teacher_actions
         self._state_episode_steps = 0
         self._frame_history[:] = self._latest_frames[:, np.newaxis, :]
         self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
 
     def _state_task_potential(self) -> np.ndarray:
-        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:].reshape(
+        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_TEACHER_FEATURE_OFFSET].reshape(
             self.total_agents,
             STATE_TASK_COUNT,
             STATE_TASK_FEATURES,
@@ -1294,6 +1304,13 @@ class BitWorldVecEnv:
         distances = np.where(candidates, distances, np.inf)
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest, 0.0).astype(np.float32)
+
+    def _state_teacher_actions_from_frames(self) -> np.ndarray:
+        teacher_features = self._latest_frames[
+            :,
+            STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT,
+        ]
+        return np.argmax(teacher_features, axis=1).astype(np.int64)
 
     def _step_env(self, env_id: int, action_indices: np.ndarray):
         worker = self.workers[env_id]
@@ -1345,6 +1362,7 @@ class BitWorldVecEnv:
         self._truncations.fill(0.0)
 
         native = among_them_native_library()
+        matched_teacher = clipped == self._state_teacher_actions
         native.check(
             native.lib.bitworld_at_step_state_batch(
                 self._state_handles_ptr(),
@@ -1361,8 +1379,11 @@ class BitWorldVecEnv:
         task_progress = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
         self._rewards += self._state_reward_shaping * (current_potential - self._state_prev_potential)
         self._rewards += self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
+        self._rewards += self._state_teacher_reward * matched_teacher.astype(np.float32)
         self._state_prev_potential[:] = current_potential
         self._state_prev_task_progress[:] = task_progress
+        self._state_teacher_actions[:] = self._state_teacher_actions_from_frames()
+        self.teacher_actions[:] = self._state_teacher_actions
         self._state_episode_return += self._rewards
         self._state_episode_steps += 1
 
@@ -1809,6 +1830,7 @@ def evaluate_policy(
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     observation_mode: str = "pixels",
     random_actions: bool = False,
+    teacher_actions: bool = False,
     sample_actions: bool = True,
 ) -> dict[str, float]:
     resolved = get_env_spec(spec)
@@ -1829,7 +1851,9 @@ def evaluate_policy(
 
     try:
         while len(completed_scores) < episodes:
-            if random_actions:
+            if teacher_actions:
+                action_indices = vecenv.teacher_actions.copy()
+            elif random_actions:
                 action_indices = rng.integers(0, vecenv.action_count, size=(vecenv.total_agents,), dtype=np.int64)
             else:
                 if policy is None:
