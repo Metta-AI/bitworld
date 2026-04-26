@@ -99,7 +99,6 @@ const
   ]
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
-  RewardWebSocketPath* = "/reward"
 
 type
   PlayerRole* = enum
@@ -364,11 +363,6 @@ proc defaultGameConfig*(): GameConfig =
     showTaskBubbles: true
   )
 
-proc requireConfigObject(node: JsonNode) =
-  ## Raises if the config JSON is not an object.
-  if node.kind != JObject:
-    raise newException(AmongThemError, "Config must be a JSON object.")
-
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
   ## Reads one optional integer config field.
   if not node.hasKey(name):
@@ -414,7 +408,8 @@ proc update*(config: var GameConfig, jsonText: string) =
     node = fromJson(jsonText)
   except jsony.JsonError as e:
     raise newException(AmongThemError, "Could not parse config JSON: " & e.msg)
-  node.requireConfigObject()
+  if node.kind != JObject:
+    raise newException(AmongThemError, "Config must be a JSON object.")
   node.readConfigInt("motionScale", config.motionScale)
   node.readConfigInt("accel", config.accel)
   node.readConfigInt("frictionNum", config.frictionNum)
@@ -534,18 +529,11 @@ proc rewardAccountIndex(sim: SimServer, address: string): int =
       return i
   -1
 
-proc rewardForAddress(sim: SimServer, address: string): int =
-  ## Returns the accumulated reward for an address.
-  let index = sim.rewardAccountIndex(address)
-  if index >= 0:
-    sim.rewardAccounts[index].reward
-  else:
-    0
-
 proc addPlayer*(sim: var SimServer, address: string): int =
   let
     spawn = sim.findSpawn()
     order = sim.nextJoinOrder
+    rewardAccount = sim.rewardAccountIndex(address)
   inc sim.nextJoinOrder
   sim.players.add Player(
     x: spawn.x,
@@ -557,7 +545,9 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     address: address,
     color: PlayerColors[order mod PlayerColors.len],
     activeTask: -1,
-    reward: sim.rewardForAddress(address)
+    reward:
+      if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
+      else: 0
   )
   for task in sim.tasks.mitems:
     task.completed.add(false)
