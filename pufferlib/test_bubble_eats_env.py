@@ -18,12 +18,10 @@ from bitworld_pufferlib import (
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    STATE_FLAG_PLAYER_ROLE_IMPOSTER,
     STATE_FEATURES,
-    STATE_PLAYER_COUNT,
     STATE_PLAYER_FEATURE_OFFSET,
     STATE_PLAYER_FEATURES,
-    STATE_TEACHER_ACTION_COUNT,
-    STATE_TEACHER_FEATURE_OFFSET,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
@@ -181,17 +179,16 @@ class BitWorldSmokeTest(unittest.TestCase):
 
         obs = env.reset()
         self.assertEqual(obs.shape, (env.total_agents, STATE_FEATURES))
-        teacher_slice = obs[:, STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT]
-        np.testing.assert_array_equal(teacher_slice, np.zeros_like(teacher_slice))
+        self.assertEqual(obs.dtype, np.uint8)
 
         for viewer_index in range(env.total_agents):
             for other_index in range(env.total_agents):
                 if other_index == viewer_index:
                     continue
-                role_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 3
-                cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 4
-                self.assertEqual(obs[viewer_index, role_feature], 0.0)
-                self.assertEqual(obs[viewer_index, cooldown_feature], 0.0)
+                flags_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 4
+                cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 7
+                self.assertEqual(int(obs[viewer_index, flags_feature]) & STATE_FLAG_PLAYER_ROLE_IMPOSTER, 0)
+                self.assertEqual(obs[viewer_index, cooldown_feature], 0)
 
     def test_among_them_state_observations_cover_max_players(self) -> None:
         spec = with_server_players("among_them", AMONG_THEM_MAX_PLAYERS)
@@ -207,7 +204,6 @@ class BitWorldSmokeTest(unittest.TestCase):
         self.addCleanup(env.close)
 
         obs = env.reset()
-        self.assertEqual(STATE_PLAYER_COUNT, AMONG_THEM_MAX_PLAYERS)
         self.assertEqual(env.total_agents, AMONG_THEM_MAX_PLAYERS)
         self.assertEqual(obs.shape, (AMONG_THEM_MAX_PLAYERS, STATE_FEATURES))
 

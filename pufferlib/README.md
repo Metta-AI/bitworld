@@ -33,10 +33,11 @@ For `among_them`, the same policy controls all five players during training thro
 the native Nim bridge by default. Pass `--players 16` to train the maximum game
 size.
 
-`among_them` also supports `--observation-mode state` for fast native-state
-training. State observations use the same per-player camera and visibility gate
-as rendered frames; teacher actions are available to the trainer separately and
-are not included in the policy observation.
+`among_them` also supports `--observation-mode state` for compact render-source
+training. State observations are byte buffers produced from the same per-player
+camera, sampled map/mask layer, visible task icon, body, player, and voting UI
+inputs that feed the pixel renderer, before those inputs are expanded into a
+full frame.
 
 ## Play Among Them
 
