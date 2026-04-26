@@ -61,9 +61,12 @@ python tools/pufferlib/train_bitworld_env.py \
   --total-timesteps 50000 \
   --num-envs 8 \
   --action-repeat 4 \
+  --device auto
 ```
 
 Outputs land under `tools/runlogs/<env>_pufferlib_training/` unless you override `--output-dir`.
+
+`--device auto` uses CUDA when PyTorch can see a GPU and falls back to CPU otherwise. Use `--device cuda` to require GPU training, or `--device cpu` for a CPU-only run. Set `--eval-episodes 0` for a quick training-only probe when you do not want to spend time on the post-training evaluation pass.
 
 The training script saves:
 
