@@ -575,7 +575,7 @@ proc renderEditor(sim: var SimServer, playerIndex: int) =
 
     sim.drawEditorGlyph(EditorChars[index], cellX, cellY)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(FloorBackdropColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     sim.fb.packFramebuffer()
@@ -735,7 +735,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
     sim.step(inputs)
 
     for i in 0 ..< sockets.len:
-      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+      let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

@@ -700,7 +700,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   sim.fb.drawPreview(player.nextKind, player.color, ScreenWidth - 8, 0)
   sim.renderClearHud()
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed
@@ -859,7 +859,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
     sim.step(inputs)
 
     for i in 0 ..< sockets.len:
-      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+      let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:

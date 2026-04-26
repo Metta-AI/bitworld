@@ -918,7 +918,7 @@ proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX
       pos = projectToEdge(dx, dy)
     fb.putPixel(pos.x, pos.y, playerColor(i))
 
-proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed
