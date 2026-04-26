@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bitworld_pufferlib import (
     ACTION_MASKS,
+    BitWorldPolicy,
     BitWorldVecEnv,
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
 )
@@ -47,6 +51,18 @@ class ProtocolTest(unittest.TestCase):
 
         self.assertEqual(len(ACTION_MASKS), 27)
         self.assertTrue(np.all((ACTION_MASKS.astype(np.int64) & ~allowed_buttons) == 0))
+
+    def test_policy_checkpoint_loads_state_dict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "policy.pt"
+            policy = BitWorldPolicy(frame_stack=3, action_count=len(ACTION_MASKS), hidden_size=48)
+            torch.save(policy.state_dict(), path)
+
+            loaded = load_policy_checkpoint(path)
+
+            self.assertEqual(loaded.frame_stack, 3)
+            self.assertEqual(loaded.hidden_size, 48)
+            self.assertEqual(loaded.action_count, len(ACTION_MASKS))
 
 
 class BitWorldSmokeTest(unittest.TestCase):

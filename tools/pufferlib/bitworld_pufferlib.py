@@ -13,6 +13,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import numpy as np
 import torch
@@ -389,6 +390,183 @@ class EpisodeStats:
     score: float
     length: int
     episode_return: float
+
+
+@dataclass
+class PolicyCheckpoint:
+    policy: "BitWorldPolicy"
+    frame_stack: int
+    action_count: int
+    hidden_size: int
+
+
+def infer_policy_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int, int]:
+    frame_stack = int(state_dict["encoder.0.weight"].shape[1])
+    hidden_size = int(state_dict["body.0.weight"].shape[0])
+    action_count = int(state_dict["policy_head.bias"].shape[0])
+    return frame_stack, hidden_size, action_count
+
+
+def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
+    checkpoint = torch.load(path, map_location=device)
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"unsupported policy checkpoint: {path}")
+    state_dict = checkpoint
+    checkpoint_frame_stack, checkpoint_hidden_size, checkpoint_action_count = infer_policy_shape(state_dict)
+
+    policy = BitWorldPolicy(
+        frame_stack=checkpoint_frame_stack,
+        action_count=checkpoint_action_count,
+        hidden_size=checkpoint_hidden_size,
+    ).to(device)
+    policy.load_state_dict(state_dict)
+    policy.eval()
+    return PolicyCheckpoint(
+        policy=policy,
+        frame_stack=checkpoint_frame_stack,
+        action_count=checkpoint_action_count,
+        hidden_size=checkpoint_hidden_size,
+    )
+
+
+def select_policy_action(
+    policy: "BitWorldPolicy",
+    observation: np.ndarray,
+    device: str,
+    sample_actions: bool = True,
+) -> tuple[int, int]:
+    with torch.no_grad():
+        observation_tensor = torch.as_tensor(observation.reshape(1, -1), device=device)
+        logits, _ = policy.forward_eval(observation_tensor)
+        if sample_actions:
+            probs = torch.softmax(logits, dim=-1)
+            action_index = int(torch.multinomial(probs, 1).item())
+        else:
+            action_index = int(torch.argmax(logits, dim=-1).item())
+    action_index = max(0, min(action_index, len(ACTION_MASKS) - 1))
+    return action_index, int(ACTION_MASKS[action_index])
+
+
+def policy_player_url(address: str, port: int, name: str) -> str:
+    suffix = "?name=" + quote(name, safe="") if name else ""
+    return f"ws://{address}:{port}/player{suffix}"
+
+
+def connect_websocket(url: str, timeout: float = 10.0) -> ClientConnection:
+    deadline = time.time() + timeout
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            return connect(url, open_timeout=1.0, ping_interval=None, max_size=None, proxy=None)
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise RuntimeError(f"failed to connect to {url}") from last_error
+
+
+def run_policy_websocket_client(
+    checkpoint_path: Path,
+    address: str,
+    port: int,
+    name: str,
+    duration_seconds: float,
+    action_repeat: int = DEFAULT_ACTION_REPEAT,
+    device: str = "auto",
+    sample_actions: bool = True,
+) -> dict[str, object]:
+    if action_repeat <= 0:
+        raise ValueError("action_repeat must be positive")
+
+    resolved_device = resolve_train_device(device)
+    checkpoint = load_policy_checkpoint(checkpoint_path, device=resolved_device)
+    frame_history = np.zeros((checkpoint.frame_stack, FRAME_PIXELS), dtype=np.uint8)
+    unique_masks: set[int] = set()
+    stop = threading.Event()
+    frames_received = 0
+    actions_sent = 0
+    nonzero_actions = 0
+    reward = 0
+    reward_updates = 0
+
+    def reward_reader() -> None:
+        nonlocal reward, reward_updates
+        try:
+            with connect_websocket(f"ws://{address}:{port}/reward") as reward_ws:
+                while not stop.is_set():
+                    try:
+                        payload = reward_ws.recv(timeout=1.0)
+                    except TimeoutError:
+                        continue
+                    try:
+                        next_reward = parse_reward_payload(payload, name)
+                    except ValueError:
+                        continue
+                    reward = next_reward
+                    reward_updates += 1
+        except Exception:
+            return
+
+    reward_thread = threading.Thread(target=reward_reader, name="bitworld-policy-reward", daemon=True)
+    reward_thread.start()
+
+    url = policy_player_url(address, port, name)
+    deadline = time.monotonic() + duration_seconds if duration_seconds > 0 else None
+    last_action_frame = -action_repeat
+    last_mask: int | None = None
+
+    try:
+        with connect_websocket(url) as player_ws:
+            while deadline is None or time.monotonic() < deadline:
+                try:
+                    payload = player_ws.recv(timeout=1.0)
+                except TimeoutError:
+                    continue
+                if not isinstance(payload, (bytes, bytearray)):
+                    continue
+
+                frame = unpack_frame(bytes(payload))
+                if frames_received == 0:
+                    frame_history[:] = frame
+                else:
+                    frame_history[:-1] = frame_history[1:]
+                    frame_history[-1] = frame
+
+                frames_received += 1
+                if frames_received - last_action_frame < action_repeat:
+                    continue
+
+                _, action_mask = select_policy_action(
+                    checkpoint.policy,
+                    frame_history.reshape(-1),
+                    resolved_device,
+                    sample_actions=sample_actions,
+                )
+                if action_mask != last_mask:
+                    player_ws.send(bytes([action_mask]), text=False)
+                    last_mask = action_mask
+                    actions_sent += 1
+                    if action_mask != 0:
+                        nonzero_actions += 1
+                    unique_masks.add(action_mask)
+                last_action_frame = frames_received
+    finally:
+        stop.set()
+        reward_thread.join(timeout=2.0)
+
+    return {
+        "name": name,
+        "url": url,
+        "checkpoint": str(checkpoint_path),
+        "device": resolved_device,
+        "frame_stack": checkpoint.frame_stack,
+        "hidden_size": checkpoint.hidden_size,
+        "frames_received": frames_received,
+        "actions_sent": actions_sent,
+        "nonzero_actions": nonzero_actions,
+        "unique_action_masks": sorted(unique_masks),
+        "reward": reward,
+        "reward_updates": reward_updates,
+    }
 
 
 class AmongThemNativeLibrary:
@@ -1196,7 +1374,7 @@ def train_policy(
     horizon: int,
     minibatch_size: int,
     seed: int,
-    model_path: Path,
+    checkpoint_path: Path,
     metrics_path: Path,
     action_repeat: int = DEFAULT_ACTION_REPEAT,
     hidden_size: int = 256,
@@ -1205,8 +1383,8 @@ def train_policy(
     resolved = get_env_spec(spec)
     train_device = resolve_train_device(device)
     PuffeRL = load_puffer_trainer(use_gpu=train_device == "cuda")
-    checkpoint_dir = model_path.parent / "checkpoints"
-    log_dir = model_path.parent / "logs"
+    checkpoint_dir = checkpoint_path.parent / "checkpoints"
+    log_dir = checkpoint_path.parent / "logs"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1269,7 +1447,7 @@ def train_policy(
                 flush=True,
             )
     finally:
-        trainer.save_weights(str(model_path))
+        trainer.save_weights(str(checkpoint_path))
         trainer.close()
 
     metrics_path.parent.mkdir(parents=True, exist_ok=True)

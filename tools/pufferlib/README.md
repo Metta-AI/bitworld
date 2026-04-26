@@ -1,94 +1,58 @@
-# Bit World PufferLib 4.0
-
-This directory wires BitWorld's Nim websocket games into the PufferLib 4.0 torch backend without depending on PufferLib's compiled C env stack.
-
-Why this shape:
-
-- Bit World already runs as a fast Nim websocket game server.
-- The public `4.0` branch still exposes `torch_pufferl.PuffeRL`, `muon`, and the PPO/V-trace trainer code we want.
-- The generic Python `vector` / `emulation` helpers referenced in examples aren't shipped in the installed package, and `_C` is only required for the compiled env path.
-- For Bit World, the cleanest integration is a custom Python vecenv plus a tiny runtime `_C` shim, while keeping the actual trainer on upstream PufferLib 4.0.
-
-## What This Supports
-
-- all current BitWorld environments through one shared Python vecenv / policy / trainer path
-- one-player-per-server training workers
-- true server-side reward metrics from the game, not HUD OCR
-- fast reset via a single-byte reset command
-- async server-side ticking with policy-side action chunking
-- stacked 128x128 palette-index observations
-- direct training with `pufferlib.torch_pufferl.PuffeRL`
-
-Current environments and reward metrics:
-
-- `among_them`: `task_progress`
-- `asteroid_arena`: `score`
-- `big_adventure`: `coins_collected`
-- `boundless_factory`: `factory_progress`
-- `bubble_eats`: `score`
-- `fancy_cookout`: `kitchen_progress`
-- `free_chat`: `messages_published`
-- `infinite_blocks`: `score`
-- `overworld`: `villages_entered`
-- `planet_wars`: `score`
-- `tag`: `score`
+# BitWorld PufferLib
 
 ## Setup
-
-From the repo root:
 
 ```bash
 ./install.sh
 source .venv/bin/activate
 ```
 
-The installer uses `uv` for Python and Nimby for Nim dependencies.
-
-## Smoke Test
+## Test
 
 ```bash
-source .venv/bin/activate
 python -m unittest tools/pufferlib/test_bubble_eats_env.py
 ```
-
-This smoke test now exercises the full environment registry, not just `bubble_eats`.
 
 ## Train
 
 ```bash
-source .venv/bin/activate
 python tools/pufferlib/train_bitworld_env.py \
   --env among_them \
   --total-timesteps 50000 \
   --num-envs 8 \
-  --action-repeat 4 \
   --device auto
 ```
 
-Outputs land under `tools/runlogs/<env>_pufferlib_training/` unless you override `--output-dir`.
+Training writes one playable policy checkpoint:
 
-For `among_them`, each `--num-envs` instance contains five agents. The same
-policy controls every player, and observations/actions come from a native Nim
-simulation bridge rather than websocket player clients.
+```text
+tools/runlogs/among_them_pufferlib_training/among_them_policy.pt
+```
 
-`--device auto` uses CUDA when PyTorch can see a GPU and falls back to CPU otherwise. Use `--device cuda` to require GPU training, or `--device cpu` for a CPU-only run. Set `--eval-episodes 0` for a quick training-only probe when you do not want to spend time on the post-training evaluation pass.
+For `among_them`, the same policy controls all five players during training through
+the native Nim bridge.
 
-The training script saves:
+## Play Among Them
 
-- `<env>_policy.pt`
-- `train_metrics.json`
-- `eval_summary.json`
+Train or reuse a checkpoint, then run one PufferLib policy player with four Nim
+bot players:
 
-The evaluation summary compares the trained policy against a random baseline using sampled policy actions. This matches the way PPO policies are actually rolled out during training and avoids the false regressions caused by forcing greedy `argmax` on stochastic policies.
+```bash
+python tools/pufferlib/run_among_them_policy_match.py \
+  --train-steps 50000 \
+  --duration 60 \
+  --device auto
+```
 
-Representative validated result on April 23, 2026 for `bubble_eats` with a 50k-step run:
+The launcher prints a `/global` browser URL, starts a five-player server, connects
+four Nim bots, and connects the policy as `/player?name=puffer`.
 
-- trained policy: `mean_score = 1.18` over 100 held-out episodes
-- random baseline: `mean_score = 0.38` over 100 held-out episodes
+To connect a trained policy to an existing server:
 
-## Notes
-
-- Among Them training runs directly against Nim sim state and returns one observation/reward row per player.
-- The other games still use the normal `/player` websocket for input and packed pixel frames, plus `/reward` for cumulative episode reward.
-- The Python vecenv applies `--action-repeat` game ticks per policy action.
-- Some environments use shaped progress metrics instead of raw HUD score because their native score is too sparse for single-agent PPO to learn reliably within practical episode lengths.
+```bash
+python tools/pufferlib/play_among_them_policy.py \
+  tools/runlogs/among_them_policy_match/among_them_policy.pt \
+  --address 127.0.0.1 \
+  --port 2000 \
+  --name puffer
+```
