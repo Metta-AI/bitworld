@@ -107,4 +107,8 @@ Bit World is currently at the concept stage. This repository is the starting poi
 
 ## Tools
 
+Run `./install.sh` from the repo root to create `.venv` with `uv`, install the
+optional training dependencies, sync Nim dependencies with Nimby, and check that
+the native Among Them bridge builds.
+
 Use `tools/quick_run fancy_cookout` to let it pick a random port between `5000` and `10000`, or pass an explicit port like `tools/quick_run fancy_cookout 8080`. You can also launch multiple screen-only clients with `tools/quick_run free_chat --players:4`. `quick_run` compiles the selected Bit World server and the client, waits for the server to come up, and then launches both together on the requested port. It always sets a client title from the game name, and multiplayer runs center the first four clients on screen, bind joysticks `1` through `N`, and suffix titles with `Player 1`, `Player 2`, and so on. It also cleans up all child processes on exit and Ctrl+C.
