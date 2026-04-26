@@ -35,6 +35,7 @@ const
   OutlineColor* = 0'u8
   KillRange* = 20
   KillCooldownTicks* = 1200
+  RoleRevealTicks* = 120
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
   VentRange* = 16
@@ -123,6 +124,7 @@ type
     Voting
     VoteResult
     GameOver
+    RoleReveal
 
   VoteState* = object
     votes*: seq[int]
@@ -163,6 +165,7 @@ type
     seed*: int
     killRange*: int
     killCooldownTicks*: int
+    roleRevealTicks*: int
     taskCompleteTicks*: int
     ventRange*: int
     reportRange*: int
@@ -225,6 +228,7 @@ type
     asciiSprites*: seq[Sprite]
     winner*: PlayerRole
     gameOverTimer*: int
+    roleRevealTimer*: int
     timeLimitReached*: bool
     needsReregister*: bool
 
@@ -479,6 +483,7 @@ proc defaultGameConfig*(): GameConfig =
     seed: 0xA6019,
     killRange: KillRange,
     killCooldownTicks: KillCooldownTicks,
+    roleRevealTicks: RoleRevealTicks,
     taskCompleteTicks: TaskCompleteTicks,
     ventRange: VentRange,
     reportRange: ReportRange,
@@ -528,6 +533,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
   if config.buttonCalls < 0:
     raise newException(AmongThemError, "Config field buttonCalls must be non-negative.")
+  if config.roleRevealTicks < 0:
+    raise newException(AmongThemError, "Config field roleRevealTicks must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
@@ -555,6 +562,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("imposterCooldownTicks", config.killCooldownTicks)
+  node.readConfigInt("roleRevealTicks", config.roleRevealTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
   node.readConfigInt("ventRange", config.ventRange)
   node.readConfigInt("reportRange", config.reportRange)
@@ -584,6 +592,7 @@ proc configJson*(config: GameConfig): string =
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
     "imposterCooldownTicks": config.killCooldownTicks,
+    "roleRevealTicks": config.roleRevealTicks,
     "taskCompleteTicks": config.taskCompleteTicks,
     "ventRange": config.ventRange,
     "reportRange": config.reportRange,
@@ -623,6 +632,7 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(ord(sim.phase))
   result.mixHashInt(ord(sim.winner))
   result.mixHashInt(sim.gameOverTimer)
+  result.mixHashInt(sim.roleRevealTimer)
   result.mixHashInt(sim.gameStartTick)
   result.mixHashBool(sim.timeLimitReached)
   result.mixHashBool(sim.needsReregister)
@@ -823,8 +833,13 @@ proc startGame*(sim: var SimServer) =
       swap(indices[j], indices[k])
     sim.players[i].assignedTasks =
       indices[0 ..< min(sim.config.tasksPerPlayer, indices.len)]
-  sim.phase = Playing
-  sim.gameStartTick = sim.tickCount
+  sim.roleRevealTimer = sim.config.roleRevealTicks
+  if sim.roleRevealTimer > 0:
+    sim.phase = RoleReveal
+    sim.gameStartTick = -1
+  else:
+    sim.phase = Playing
+    sim.gameStartTick = sim.tickCount
   sim.timeLimitReached = false
 
 proc applyMomentumAxis(
@@ -1409,6 +1424,54 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
+  ## Builds the role reveal interstitial frame.
+  sim.fb.clearFrame(0)
+  let viewerIsImp =
+    playerIndex >= 0 and playerIndex < sim.players.len and
+    sim.players[playerIndex].role == Imposter
+  let title = if viewerIsImp: "IMPS" else: "CREWMATE"
+  sim.fb.blitAsciiText(
+    sim.asciiSprites,
+    title,
+    (ScreenWidth - title.len * 7) div 2,
+    14
+  )
+  var shown: seq[int] = @[]
+  if viewerIsImp:
+    for i in 0 ..< sim.players.len:
+      if sim.players[i].role == Imposter:
+        shown.add(i)
+  else:
+    for i in 0 ..< sim.players.len:
+      shown.add(i)
+  if shown.len == 0:
+    sim.fb.packFramebuffer()
+    return sim.fb.packed
+  let
+    cellW = 16
+    cellH = 18
+    cols = min(shown.len, 8)
+    totalW = cols * cellW
+    startX = (ScreenWidth - totalW) div 2
+    startY = 42
+  for slot in 0 ..< shown.len:
+    let
+      playerIdx = shown[slot]
+      col = slot mod cols
+      row = slot div cols
+      spriteX = startX + col * cellW + (cellW - SpriteSize) div 2
+      spriteY = startY + row * cellH
+    sim.fb.blitSpriteOutlined(
+      sim.playerSprite,
+      spriteX,
+      spriteY,
+      sim.players[playerIdx].color,
+      false
+    )
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
 proc drawVoteChat*(sim: var SimServer, chatY: int) =
   ## Draws the visible voting chat messages.
   let
@@ -1881,6 +1944,37 @@ proc writeRenderStateUiPlayers(
       if i == playerIndex:
         flags = flags or RenderPlayerSelf
       sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+  of RoleReveal:
+    let viewerIsImp =
+      playerIndex >= 0 and playerIndex < sim.players.len and
+      sim.players[playerIndex].role == Imposter
+    var shown: seq[int] = @[]
+    if viewerIsImp:
+      for i in 0 ..< n:
+        if sim.players[i].role == Imposter:
+          shown.add(i)
+    else:
+      for i in 0 ..< n:
+        shown.add(i)
+    if shown.len > 0:
+      let
+        cellW = 16
+        cellH = 18
+        cols = min(shown.len, 8)
+        totalW = cols * cellW
+        startX = (ScreenWidth - totalW) div 2
+        startY = 42
+      for slot in 0 ..< shown.len:
+        let
+          i = shown[slot]
+          col = slot mod cols
+          row = slot div cols
+          sx = startX + col * cellW + (cellW - SpriteSize) div 2
+          sy = startY + row * cellH
+        var flags = RenderPlayerPresent or RenderPlayerAlive
+        if i == playerIndex:
+          flags = flags or RenderPlayerSelf
+        sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
   of Voting:
     let
       cellW = 16
@@ -2094,6 +2188,8 @@ proc writeRenderStateObservation*(
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
     return sim.buildLobbyFrame(playerIndex)
+  if sim.phase == RoleReveal:
+    return sim.buildRoleRevealFrame(playerIndex)
   if sim.phase == GameOver:
     return sim.buildGameOverFrame(playerIndex)
   if sim.phase == Voting:
@@ -2398,6 +2494,7 @@ proc resetToLobby*(sim: var SimServer) =
   sim.nextJoinOrder = 0
   sim.tickCount = 0
   sim.gameStartTick = -1
+  sim.roleRevealTimer = 0
   sim.timeLimitReached = false
   sim.needsReregister = true
   for task in sim.tasks.mitems:
@@ -2409,6 +2506,13 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
   if sim.phase == Lobby:
     if sim.players.len >= sim.config.minPlayers:
       sim.startGame()
+    return
+
+  if sim.phase == RoleReveal:
+    dec sim.roleRevealTimer
+    if sim.roleRevealTimer <= 0:
+      sim.phase = Playing
+      sim.gameStartTick = sim.tickCount
     return
 
   if sim.phase == GameOver:
