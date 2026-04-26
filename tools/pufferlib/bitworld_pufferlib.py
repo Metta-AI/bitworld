@@ -439,6 +439,7 @@ class EpisodeStats:
     score: float
     length: int
     episode_return: float
+    tasks_completed: float = 0.0
 
 
 @dataclass
@@ -1199,6 +1200,7 @@ class BitWorldVecEnv:
         self._completed_scores: deque[float] = deque(maxlen=100)
         self._completed_lengths: deque[float] = deque(maxlen=100)
         self._completed_returns: deque[float] = deque(maxlen=100)
+        self._completed_tasks: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
         self._state_handles: np.ndarray | None = None
         self._state_action_masks: np.ndarray | None = None
@@ -1305,6 +1307,16 @@ class BitWorldVecEnv:
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest, 0.0).astype(np.float32)
 
+    def _state_completed_task_counts(self) -> np.ndarray:
+        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_TEACHER_FEATURE_OFFSET].reshape(
+            self.total_agents,
+            STATE_TASK_COUNT,
+            STATE_TASK_FEATURES,
+        )
+        assigned = task_features[:, :, 2] > 0.5
+        completed = task_features[:, :, 3] > 0.5
+        return np.sum(assigned & completed, axis=1).astype(np.float32)
+
     def _state_teacher_actions_from_frames(self) -> np.ndarray:
         teacher_features = self._latest_frames[
             :,
@@ -1390,16 +1402,19 @@ class BitWorldVecEnv:
         completed: list[EpisodeStats] = []
         if self._state_episode_steps >= self.max_episode_steps:
             terminal_rewards = self._rewards.copy()
-            for score, episode_return in zip(self._state_score, self._state_episode_return):
+            task_counts = self._state_completed_task_counts()
+            for score, episode_return, tasks_completed in zip(self._state_score, self._state_episode_return, task_counts):
                 stats = EpisodeStats(
                     score=float(score),
                     length=self._state_episode_steps,
                     episode_return=float(episode_return),
+                    tasks_completed=float(tasks_completed),
                 )
                 completed.append(stats)
                 self._completed_scores.append(stats.score)
                 self._completed_lengths.append(float(stats.length))
                 self._completed_returns.append(stats.episode_return)
+                self._completed_tasks.append(stats.tasks_completed)
             self._completed_episodes += self.num_envs
             self._reset_state_batch()
             self._rewards[:] = terminal_rewards
@@ -1464,10 +1479,11 @@ class BitWorldVecEnv:
         _, _, _, completed = self.step_discrete(np.asarray(actions, dtype=np.int64).reshape(-1))
         self.infos = [
             {
-                "score": item.score,
-                "episode_length": float(item.length),
-                "episode_return": item.episode_return,
-            }
+                    "score": item.score,
+                    "episode_length": float(item.length),
+                    "episode_return": item.episode_return,
+                    "tasks_completed": item.tasks_completed,
+                }
             for item in completed
         ]
 
@@ -1480,10 +1496,12 @@ class BitWorldVecEnv:
         score = float(np.mean(self._completed_scores)) if self._completed_scores else 0.0
         episode_length = float(np.mean(self._completed_lengths)) if self._completed_lengths else 0.0
         episode_return = float(np.mean(self._completed_returns)) if self._completed_returns else 0.0
+        tasks_completed = float(np.mean(self._completed_tasks)) if self._completed_tasks else 0.0
         logs = {
             "score": score,
             "episode_length": episode_length,
             "episode_return": episode_return,
+            "tasks_completed": tasks_completed,
             "n": float(self._completed_episodes),
         }
         if self.spec.metric_name != "score":
@@ -1847,6 +1865,7 @@ def evaluate_policy(
     vecenv.reset()
     completed_scores: list[float] = []
     completed_returns: list[float] = []
+    completed_tasks: list[float] = []
     policy_device = next(policy.parameters()).device if policy is not None else torch.device("cpu")
 
     try:
@@ -1870,6 +1889,7 @@ def evaluate_policy(
             for item in completed:
                 completed_scores.append(item.score)
                 completed_returns.append(item.episode_return)
+                completed_tasks.append(item.tasks_completed)
     finally:
         vecenv.close()
 
@@ -1877,7 +1897,9 @@ def evaluate_policy(
         "episodes": float(episodes),
         "mean_score": float(np.mean(completed_scores)),
         "mean_return": float(np.mean(completed_returns)),
+        "mean_tasks_completed": float(np.mean(completed_tasks)),
         "max_score": float(np.max(completed_scores)),
+        "max_tasks_completed": float(np.max(completed_tasks)),
     }
     if resolved.metric_name != "score":
         summary[f"mean_{resolved.metric_name}"] = summary["mean_score"]
