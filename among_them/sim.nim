@@ -45,12 +45,17 @@ const
   MaxPlayers* = 16
   MinPlayers* = 5
   ImposterCount* = 1
-  VoteTimerTicks* = 240
+  VoteTimerTicks* = 1440
   GameOverTicks* = 360
   MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
   ButtonCalls* = 1
+  VoteChatVisibleMessages* = 4
+  VoteChatCharsPerLine* = 15
+  VoteChatLineCount* = 2
+  VoteChatMaxChars* = VoteChatCharsPerLine * VoteChatLineCount
+  VoteChatRowH* = 19
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
@@ -140,6 +145,10 @@ type
     x*, y*: int
     color*: uint8
 
+  ChatMessage* = object
+    color*: uint8
+    text*: string
+
   RewardAccount* = object
     address*: string
     reward*: int
@@ -190,6 +199,7 @@ type
   SimServer* = object
     config*: GameConfig
     players*: seq[Player]
+    chatMessages*: seq[ChatMessage]
     rewardAccounts*: seq[RewardAccount]
     bodies*: seq[Body]
     playerSprite*: Sprite
@@ -409,6 +419,42 @@ proc blitAsciiText*(
     if idx >= 0 and idx < asciiSprites.len:
       fb.blitSprite(asciiSprites[idx], screenX + offsetX, screenY, 0, 0)
     offsetX += 7
+
+proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
+  ## Fills one clipped rectangle on a framebuffer.
+  if w <= 0 or h <= 0:
+    return
+  for py in y ..< y + h:
+    for px in x ..< x + w:
+      fb.putPixel(px, py, color)
+
+proc strokeRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
+  ## Strokes one clipped rectangle on a framebuffer.
+  if w <= 0 or h <= 0:
+    return
+  for px in x ..< x + w:
+    fb.putPixel(px, y, color)
+    fb.putPixel(px, y + h - 1, color)
+  for py in y ..< y + h:
+    fb.putPixel(x, py, color)
+    fb.putPixel(x + w - 1, py, color)
+
+proc cleanChatMessage*(message: string): string =
+  ## Returns a printable, bounded chat message.
+  let trimmed = message.strip()
+  for ch in trimmed:
+    if result.len >= VoteChatMaxChars:
+      return
+    if ch >= ' ' and ch <= '~':
+      result.add(ch)
+
+proc sliceChatLine*(text: string, lineIndex: int): string =
+  ## Returns one fixed-width chat line.
+  let startIndex = lineIndex * VoteChatCharsPerLine
+  if startIndex >= text.len:
+    return ""
+  let endIndex = min(text.len, startIndex + VoteChatCharsPerLine)
+  text[startIndex ..< endIndex]
 
 proc defaultGameConfig*(): GameConfig =
   ## Returns the default Among Them gameplay config.
@@ -906,6 +952,7 @@ proc tryVent*(sim: var SimServer, playerIndex: int) =
 
 proc startVote*(sim: var SimServer) =
   sim.phase = Voting
+  sim.chatMessages.setLen(0)
   let n = sim.players.len
   sim.voteState.votes = newSeq[int](n)
   sim.voteState.cursor = newSeq[int](n)
@@ -918,6 +965,24 @@ proc startVote*(sim: var SimServer) =
         firstAlive = j
         break
     sim.voteState.cursor[i] = firstAlive
+
+proc addVotingChat*(sim: var SimServer, playerIndex: int, message: string) =
+  ## Adds one visible chat message while voting.
+  if sim.phase != Voting:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if not sim.players[playerIndex].alive:
+    return
+  let text = cleanChatMessage(message)
+  if text.len == 0:
+    return
+  while sim.chatMessages.len >= VoteChatVisibleMessages:
+    sim.chatMessages.delete(0)
+  sim.chatMessages.add ChatMessage(
+    color: sim.players[playerIndex].color,
+    text: text
+  )
 
 proc tryReport*(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
   if sim.phase != Playing:
@@ -1294,6 +1359,7 @@ proc applyVoteResult*(sim: var SimServer) =
   if ej >= 0 and ej < sim.players.len:
     sim.players[ej].alive = false
   sim.bodies.setLen(0)
+  sim.chatMessages.setLen(0)
   for i in 0 ..< sim.players.len:
     sim.resetPlayerToHome(i)
   sim.phase = Playing
@@ -1357,20 +1423,53 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   sim.drawReplayFrame()
   sim.packCurrentFrame()
 
+proc drawVoteChat*(sim: var SimServer, chatY: int) =
+  ## Draws the visible voting chat messages.
+  let
+    chatX = 1
+    chatW = ScreenWidth - 2
+    chatH = ScreenHeight - chatY - 3
+    iconX = chatX + 3
+    textX = chatX + 20
+  if chatH <= 0:
+    return
+  sim.fb.fillRect(chatX, chatY, chatW, chatH, 0)
+  sim.fb.strokeRect(chatX, chatY, chatW, chatH, 1)
+  for i in 0 ..< sim.chatMessages.len:
+    let
+      message = sim.chatMessages[i]
+      rowY = chatY + 2 + i * VoteChatRowH
+      iconY = rowY + 3
+    if rowY + VoteChatRowH > chatY + chatH:
+      break
+    sim.fb.blitSpriteOutlined(
+      sim.playerSprite,
+      iconX,
+      iconY,
+      message.color,
+      false
+    )
+    for lineIndex in 0 ..< VoteChatLineCount:
+      sim.fb.blitAsciiText(
+        sim.asciiSprites,
+        message.text.sliceChatLine(lineIndex),
+        textX,
+        rowY + lineIndex * 9
+      )
+
 proc drawVoteFrame*(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   if n == 0:
     return
   let
-    cellW = 18
-    cellH = 20
-    cols = min(n, ScreenWidth div cellW)
+    cellW = 16
+    cellH = 17
+    cols = min(n, 8)
     rows = (n + cols - 1) div cols
     totalW = cols * cellW
-    totalH = rows * cellH + 8
     startX = (ScreenWidth - totalW) div 2
-    startY = (ScreenHeight - totalH) div 2
+    startY = 2
 
   for idx in 0 ..< n:
     let
@@ -1413,12 +1512,9 @@ proc drawVoteFrame*(sim: var SimServer, playerIndex: int) =
     for vi in 0 ..< n:
       if sim.voteState.votes[vi] == pi:
         let
-          dotX = cx + 2 + (voterRow mod 6) * 2
-          dotY = cy + SpriteSize + 3 + (voterRow div 6) * 2
+          dotX = cx + 1 + (voterRow mod 8) * 2
+          dotY = cy + SpriteSize + 2 + (voterRow div 8)
         sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
-        sim.fb.putPixel(dotX + 1, dotY, sim.players[vi].color)
-        sim.fb.putPixel(dotX, dotY + 1, sim.players[vi].color)
-        sim.fb.putPixel(dotX + 1, dotY + 1, sim.players[vi].color)
         inc voterRow
 
   let skipY = startY + rows * cellH + 1
@@ -1437,13 +1533,12 @@ proc drawVoteFrame*(sim: var SimServer, playerIndex: int) =
   for vi in 0 ..< n:
     if sim.voteState.votes[vi] == -2:
       let
-        dotX = skipX + skipW + 2 + (skipVoterRow mod 4) * 2
-        dotY = skipY + (skipVoterRow div 4) * 2
+        dotX = skipX + skipW + 2 + (skipVoterRow mod 8) * 2
+        dotY = skipY + (skipVoterRow div 8)
       sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
-      sim.fb.putPixel(dotX + 1, dotY, sim.players[vi].color)
-      sim.fb.putPixel(dotX, dotY + 1, sim.players[vi].color)
-      sim.fb.putPixel(dotX + 1, dotY + 1, sim.players[vi].color)
       inc skipVoterRow
+
+  sim.drawVoteChat(skipY + 10)
 
   let
     barY = ScreenHeight - 2
@@ -1585,41 +1680,6 @@ proc signedByte(value, maxAbs: int): uint8 =
 
 proc slotOffset(base, slot, width: int): int =
   base + slot * width
-
-proc renderStateTaskArrow(
-  player: Player,
-  view: PlayerView,
-  iconX, iconY: int
-): tuple[visible: bool, x, y: uint8] =
-  let
-    px = float(player.x + CollisionW div 2 - view.cameraX)
-    py = float(player.y + CollisionH div 2 - view.cameraY)
-    dx = float(iconX - view.cameraX) - px
-    dy = float(iconY - view.cameraY) - py
-  if abs(dx) < 0.5 and abs(dy) < 0.5:
-    return
-
-  var ex, ey: float
-  let
-    minX = 0.0
-    maxX = float(ScreenWidth - 1)
-    minY = 0.0
-    maxY = float(ScreenHeight - 1)
-  if abs(dx) > abs(dy):
-    if dx > 0:
-      ex = maxX
-    else:
-      ex = minX
-    ey = py + dy * (ex - px) / dx
-    ey = clamp(ey, minY, maxY)
-  else:
-    if dy > 0:
-      ey = maxY
-    else:
-      ey = minY
-    ex = px + dx * (ey - py) / dy
-    ex = clamp(ex, minX, maxX)
-  (true, byteClamp(int(ex)), byteClamp(int(ey)))
 
 proc writeRenderStateHeader(
   sim: SimServer,
@@ -1959,11 +2019,35 @@ proc writeRenderStateTasks(
       output[base + 1] = byteClamp(iconSx)
       output[base + 2] = byteClamp(iconSy)
     elif sim.config.showTaskArrows:
-      let arrow = renderStateTaskArrow(player, view, iconCenterX, iconCenterY)
-      if arrow.visible:
+      let
+        px = float(player.x + CollisionW div 2 - view.cameraX)
+        py = float(player.y + CollisionH div 2 - view.cameraY)
+        dx = float(iconCenterX - view.cameraX) - px
+        dy = float(iconCenterY - view.cameraY) - py
+      if abs(dx) >= 0.5 or abs(dy) >= 0.5:
+        var ex, ey: float
+        let
+          minX = 0.0
+          maxX = float(ScreenWidth - 1)
+          minY = 0.0
+          maxY = float(ScreenHeight - 1)
+        if abs(dx) > abs(dy):
+          if dx > 0:
+            ex = maxX
+          else:
+            ex = minX
+          ey = py + dy * (ex - px) / dx
+          ey = clamp(ey, minY, maxY)
+        else:
+          if dy > 0:
+            ey = maxY
+          else:
+            ey = minY
+          ex = px + dx * (ey - py) / dy
+          ex = clamp(ex, minX, maxX)
         flags = flags or RenderTaskArrowVisible
-        output[base + 5] = arrow.x
-        output[base + 6] = arrow.y
+        output[base + 5] = byteClamp(int(ex))
+        output[base + 6] = byteClamp(int(ey))
     output[base + 3] = flags
 
 proc writeRenderStateObservation*(
@@ -2260,6 +2344,7 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   result.shadowBuf = newSeq[bool](ScreenWidth * ScreenHeight)
   result.bodies = @[]
+  result.chatMessages = @[]
   result.players = @[]
   result.nextJoinOrder = 0
   result.gameStartTick = -1
@@ -2267,6 +2352,7 @@ proc initSimServer*(config: GameConfig): SimServer =
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
   sim.bodies = @[]
+  sim.chatMessages = @[]
   sim.players = @[]
   sim.nextJoinOrder = 0
   sim.tickCount = 0
