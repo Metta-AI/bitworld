@@ -7,7 +7,6 @@ const
   StepActive = 0.cint
   StepTerminal = 1.cint
   StepTruncated = 2.cint
-  StateFeatures* = RenderStateFeatures
 
 type
   NativeEnv = ref object
@@ -72,15 +71,15 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr uint8, outputBa
   if observations.isNil:
     raise newException(ValueError, "Observation pointer is nil.")
 
-  if env.renderStateScratch.len != StateFeatures:
-    env.renderStateScratch = newSeq[uint8](StateFeatures)
+  if env.renderStateScratch.len != RenderStateFeatures:
+    env.renderStateScratch = newSeq[uint8](RenderStateFeatures)
   let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
     env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch)
     copyMem(
-      addr output[outputBase + playerIndex * StateFeatures],
+      addr output[outputBase + playerIndex * RenderStateFeatures],
       unsafeAddr env.renderStateScratch[0],
-      StateFeatures
+      RenderStateFeatures
     )
 
 proc stepStatus(env: NativeEnv): cint =
@@ -256,19 +255,21 @@ proc bitworld_at_reset_state_batch*(
     if playerCount > MaxPlayers:
       return setLastError("playerCount must be <= " & $MaxPlayers & ".")
 
-    let handleArray = cast[ptr UncheckedArray[cint]](handles)
-    let rewardOutput = cast[ptr UncheckedArray[cfloat]](rewards)
+    let
+      playerCountInt = int(playerCount)
+      handleArray = cast[ptr UncheckedArray[cint]](handles)
+      rewardOutput = cast[ptr UncheckedArray[cfloat]](rewards)
     for envIndex in 0 ..< int(envCount):
-      let handle = handleArray[envIndex]
-      if not validHandle(handle):
+      if not validHandle(handleArray[envIndex]):
         return setLastError("Invalid Among Them native env handle.")
-      var env = envs[int(handle)]
-      if env.playerCount != int(playerCount):
+      var env = envs[int(handleArray[envIndex])]
+      if env.playerCount != playerCountInt:
         return setLastError("Unexpected player count in batch reset.")
       env.initNativeEnv()
-      env.copyStateObservations(observations, envIndex * int(playerCount) * StateFeatures)
-      for playerIndex in 0 ..< int(playerCount):
-        rewardOutput[envIndex * int(playerCount) + playerIndex] = 0.0
+      let outputBase = envIndex * playerCountInt
+      env.copyStateObservations(observations, outputBase * RenderStateFeatures)
+      for playerIndex in 0 ..< playerCountInt:
+        rewardOutput[outputBase + playerIndex] = 0.0
     0
   except CatchableError as e:
     setLastError(e.msg)
@@ -298,22 +299,23 @@ proc bitworld_at_step_state_batch*(
       return setLastError("playerCount must be <= " & $MaxPlayers & ".")
 
     let
+      playerCountInt = int(playerCount)
       handleArray = cast[ptr UncheckedArray[cint]](handles)
       actions = cast[ptr UncheckedArray[uint8]](actionMasks)
       statusOutput = cast[ptr UncheckedArray[cint]](statuses)
     for envIndex in 0 ..< int(envCount):
-      let handle = handleArray[envIndex]
-      if not validHandle(handle):
+      if not validHandle(handleArray[envIndex]):
         return setLastError("Invalid Among Them native env handle.")
-      var env = envs[int(handle)]
-      if env.playerCount != int(playerCount):
+      var env = envs[int(handleArray[envIndex])]
+      if env.playerCount != playerCountInt:
         return setLastError("Unexpected player count in batch step.")
+      let outputBase = envIndex * playerCountInt
       statusOutput[envIndex] = env.applyActionMasks(
-        cast[ptr uint8](addr actions[envIndex * int(playerCount)]),
+        cast[ptr uint8](addr actions[outputBase]),
         actionRepeat
       )
-      env.copyStateObservations(observations, envIndex * int(playerCount) * StateFeatures)
-      env.copyRewardDeltas(rewards, envIndex * int(playerCount))
+      env.copyStateObservations(observations, outputBase * RenderStateFeatures)
+      env.copyRewardDeltas(rewards, outputBase)
     0
   except CatchableError as e:
     setLastError(e.msg)
