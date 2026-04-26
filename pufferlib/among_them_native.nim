@@ -7,7 +7,10 @@ const
   StepActive = 0.cint
   StepTerminal = 1.cint
   StepTruncated = 2.cint
-  StateTaskFeatureOffset = 36
+  StatePlayerFeatureOffset = 11
+  StatePlayerCount = MaxPlayers
+  StatePlayerFeatures = 5
+  StateTaskFeatureOffset = StatePlayerFeatureOffset + StatePlayerCount * StatePlayerFeatures
   StateTaskCount = 15
   StateTaskFeatures = 4
   ActionCount = 27
@@ -341,7 +344,7 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
     put norm(player.buttonCallsUsed, max(1, env.sim.config.buttonCalls))
     put norm(ord(env.sim.phase), max(1, ord(high(GamePhase))))
 
-    for otherIndex in 0 ..< 5:
+    for otherIndex in 0 ..< StatePlayerCount:
       if otherIndex < env.sim.players.len:
         let other = env.sim.players[otherIndex]
         let visible =
@@ -354,13 +357,13 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
           put(if otherIndex == playerIndex and other.role == Imposter: 1.0 else: 0.0)
           put(if otherIndex == playerIndex: norm(other.killCooldown, killCooldownTicks) else: 0.0)
         else:
-          for _ in 0 ..< 5:
+          for _ in 0 ..< StatePlayerFeatures:
             put 0.0
       else:
-        for _ in 0 ..< 5:
+        for _ in 0 ..< StatePlayerFeatures:
           put 0.0
 
-    for taskIndex in 0 ..< 15:
+    for taskIndex in 0 ..< StateTaskCount:
       if taskIndex < env.sim.tasks.len:
         let task = env.sim.tasks[taskIndex]
         let
@@ -380,7 +383,7 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
         put(if assigned: 1.0 else: 0.0)
         put(if completed: 1.0 else: 0.0)
       else:
-        for _ in 0 ..< 4:
+        for _ in 0 ..< StateTaskFeatures:
           put 0.0
 
     for actionIndex in 0 ..< ActionCount:
@@ -450,6 +453,8 @@ proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, expor
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
+    if playerCount > MaxPlayers:
+      return setLastError("playerCount must be <= " & $MaxPlayers & ".")
     if maxTicks < 0:
       return setLastError("maxTicks must be non-negative.")
 
@@ -554,6 +559,8 @@ proc bitworld_at_reset_state_batch*(
       return setLastError("envCount must be positive.")
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
+    if playerCount > MaxPlayers:
+      return setLastError("playerCount must be <= " & $MaxPlayers & ".")
 
     let handleArray = cast[ptr UncheckedArray[cint]](handles)
     let rewardOutput = cast[ptr UncheckedArray[cfloat]](rewards)
@@ -593,6 +600,8 @@ proc bitworld_at_step_state_batch*(
       return setLastError("envCount must be positive.")
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
+    if playerCount > MaxPlayers:
+      return setLastError("playerCount must be <= " & $MaxPlayers & ".")
 
     let
       handleArray = cast[ptr UncheckedArray[cint]](handles)

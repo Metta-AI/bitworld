@@ -14,7 +14,7 @@ import types
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import repeat
 from pathlib import Path
 from urllib.parse import quote
@@ -31,19 +31,23 @@ SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 128
 FRAME_PIXELS = SCREEN_WIDTH * SCREEN_HEIGHT
 PACKED_FRAME_BYTES = FRAME_PIXELS // 2
-STATE_FEATURES = 123
 RESET_INPUT_MASK = 255
 DEFAULT_ACTION_REPEAT = 4
 AMONG_THEM_STEP_ACTIVE = 0
 AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
+AMONG_THEM_MAX_PLAYERS = 16
 OBSERVATION_MODES = {"pixels", "state"}
-STATE_TASK_FEATURE_OFFSET = 36
+STATE_PLAYER_FEATURE_OFFSET = 11
+STATE_PLAYER_FEATURES = 5
+STATE_PLAYER_COUNT = AMONG_THEM_MAX_PLAYERS
+STATE_TASK_FEATURE_OFFSET = STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * STATE_PLAYER_COUNT
 STATE_TASK_FEATURES = 4
 STATE_TASK_COUNT = 15
 STATE_TASK_PROGRESS_INDEX = 7
 STATE_TEACHER_FEATURE_OFFSET = STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT
 STATE_TEACHER_ACTION_COUNT = 27
+STATE_FEATURES = STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -159,6 +163,17 @@ def get_env_spec(spec: str | EnvironmentSpec) -> EnvironmentSpec:
         available = ", ".join(sorted(ENV_SPECS))
         raise KeyError(f"unknown BitWorld environment {spec!r}; expected one of: {available}")
     return ENV_SPECS[spec]
+
+
+def with_server_players(spec: str | EnvironmentSpec, players: int | None) -> EnvironmentSpec:
+    resolved = get_env_spec(spec)
+    if players is None:
+        return resolved
+    if resolved.name != "among_them":
+        raise ValueError("--players is only supported for among_them")
+    if players < 1 or players > AMONG_THEM_MAX_PLAYERS:
+        raise ValueError(f"--players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
+    return replace(resolved, server_players=players)
 
 
 def binary_is_fresh(spec: EnvironmentSpec) -> bool:
@@ -1344,6 +1359,8 @@ class BitWorldVecEnv:
         self.spec = get_env_spec(spec)
         if observation_mode == "state" and self.spec.name != "among_them":
             raise ValueError("state observations are only implemented for among_them")
+        if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
+            raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
         self.num_envs = num_envs
         self.observation_mode = observation_mode
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
@@ -1970,7 +1987,7 @@ def train_policy(
         action_count=vecenv.action_count,
         hidden_size=hidden_size,
         observation_mode=observation_mode,
-        obs_shape=vecenv.single_observation_space.shape,
+        obs_shape=vecenv.single_observation_space.shape if observation_mode == "state" else None,
     ).to(train_device)
     if distributed:
         policy = torch.nn.parallel.DistributedDataParallel(

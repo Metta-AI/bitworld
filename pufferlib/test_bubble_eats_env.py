@@ -12,17 +12,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bitworld_pufferlib import (
     ACTION_MASKS,
+    AMONG_THEM_MAX_PLAYERS,
     BitWorldPolicy,
     BitWorldVecEnv,
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
     STATE_FEATURES,
+    STATE_PLAYER_COUNT,
+    STATE_PLAYER_FEATURE_OFFSET,
+    STATE_PLAYER_FEATURES,
     STATE_TEACHER_ACTION_COUNT,
     STATE_TEACHER_FEATURE_OFFSET,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
+    with_server_players,
 )
 
 
@@ -66,6 +71,15 @@ class ProtocolTest(unittest.TestCase):
             self.assertEqual(loaded.frame_stack, 3)
             self.assertEqual(loaded.hidden_size, 48)
             self.assertEqual(loaded.action_count, len(ACTION_MASKS))
+
+    def test_pixel_policy_accepts_flat_observations(self) -> None:
+        policy = BitWorldPolicy(frame_stack=2, action_count=len(ACTION_MASKS), hidden_size=32)
+        observations = torch.zeros(4, FRAME_PIXELS * 2)
+
+        logits, values = policy.forward_eval(observations)
+
+        self.assertEqual(logits.shape, (4, len(ACTION_MASKS)))
+        self.assertEqual(values.shape, (4, 1))
 
 
 class BitWorldSmokeTest(unittest.TestCase):
@@ -170,16 +184,36 @@ class BitWorldSmokeTest(unittest.TestCase):
         teacher_slice = obs[:, STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT]
         np.testing.assert_array_equal(teacher_slice, np.zeros_like(teacher_slice))
 
-        other_feature_offset = 11
-        other_feature_count = 5
         for viewer_index in range(env.total_agents):
             for other_index in range(env.total_agents):
                 if other_index == viewer_index:
                     continue
-                role_feature = other_feature_offset + other_index * other_feature_count + 3
-                cooldown_feature = other_feature_offset + other_index * other_feature_count + 4
+                role_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 3
+                cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 4
                 self.assertEqual(obs[viewer_index, role_feature], 0.0)
                 self.assertEqual(obs[viewer_index, cooldown_feature], 0.0)
+
+    def test_among_them_state_observations_cover_max_players(self) -> None:
+        spec = with_server_players("among_them", AMONG_THEM_MAX_PLAYERS)
+        env = BitWorldVecEnv(
+            spec,
+            num_envs=1,
+            max_episode_steps=2,
+            frame_stack=1,
+            action_repeat=1,
+            base_seed=100,
+            observation_mode="state",
+        )
+        self.addCleanup(env.close)
+
+        obs = env.reset()
+        self.assertEqual(STATE_PLAYER_COUNT, AMONG_THEM_MAX_PLAYERS)
+        self.assertEqual(env.total_agents, AMONG_THEM_MAX_PLAYERS)
+        self.assertEqual(obs.shape, (AMONG_THEM_MAX_PLAYERS, STATE_FEATURES))
+
+    def test_among_them_rejects_more_than_max_players(self) -> None:
+        with self.assertRaises(ValueError):
+            with_server_players("among_them", AMONG_THEM_MAX_PLAYERS + 1)
 
 
 if __name__ == "__main__":

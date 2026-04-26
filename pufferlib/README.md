@@ -10,7 +10,7 @@ source .venv/bin/activate
 ## Test
 
 ```bash
-python -m unittest pufferlib/test_bubble_eats_env.py
+python pufferlib/test_bubble_eats_env.py
 ```
 
 ## Train
@@ -30,7 +30,8 @@ tools/runlogs/among_them_pufferlib_training/among_them_policy.pt
 ```
 
 For `among_them`, the same policy controls all five players during training through
-the native Nim bridge.
+the native Nim bridge by default. Pass `--players 16` to train the maximum game
+size.
 
 `among_them` also supports `--observation-mode state` for fast native-state
 training. State observations use the same per-player camera and visibility gate
