@@ -853,7 +853,7 @@ proc buildSpriteProtocolUpdates*(
         2'u8
       )
       viewport = spritePixelsFromPackedFrame(
-        sim.buildFramePacket(playerIndex)
+        sim.render(playerIndex)
       )
     currentIds.add(SelectedTextObjectId)
     currentIds.add(SelectedViewportObjectId)

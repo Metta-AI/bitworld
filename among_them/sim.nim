@@ -1354,7 +1354,7 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
     return sim.buildLobbyFrame(playerIndex)
   if sim.phase == GameOver:
