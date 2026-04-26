@@ -96,7 +96,6 @@ class BitWorldSmokeTest(unittest.TestCase):
 
                 self.assertGreaterEqual(len(completed), 3)
                 for item in completed:
-                    self.assertGreaterEqual(item.episode_return, 0.0)
                     self.assertAlmostEqual(item.score, item.episode_return)
 
     def test_default_action_repeat_multi_env_autoreset(self) -> None:

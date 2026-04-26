@@ -16,6 +16,7 @@ Repository = "https://github.com/Metta-AI/bitworld.git"
 
 [project.optional-dependencies]
 train = [
+  "gymnasium>=0.29",
   "numpy>=2.0",
   "pufferlib @ git+https://github.com/PufferAI/PufferLib.git@4.0",
   "torch>=2.0",

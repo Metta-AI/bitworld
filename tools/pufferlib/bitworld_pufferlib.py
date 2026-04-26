@@ -239,63 +239,108 @@ def compute_puff_advantage_fallback(
 
 def load_puffer_trainer(use_gpu: bool):
     install_pufferlib_c_stub(use_gpu)
-    from pufferlib import torch_pufferl
+    try:
+        from pufferlib import torch_pufferl
+    except ImportError:
+        torch_pufferl = None
 
-    torch_pufferl.compute_puff_advantage = compute_puff_advantage_fallback
+    if torch_pufferl is not None:
+        torch_pufferl.compute_puff_advantage = compute_puff_advantage_fallback
 
-    class BitWorldPuffeRL(torch_pufferl.PuffeRL):
-        def rollouts(self):
-            prof = self.profile
-            config = self.config
-            device = self.device
-            horizon = config["horizon"]
+        class LegacyBitWorldPuffeRL(torch_pufferl.PuffeRL):
+            def rollouts(self):
+                prof = self.profile
+                config = self.config
+                device = self.device
+                horizon = config["horizon"]
 
-            self.state = tuple(torch.zeros_like(s) for s in self.state) if self.state else ()
-            observations = self.vec_obs
-            rewards = torch.zeros(self.total_agents, device=device)
-            terminals = torch.zeros(self.total_agents, device=device)
+                self.state = tuple(torch.zeros_like(s) for s in self.state) if self.state else ()
+                observations = self.vec_obs
+                rewards = torch.zeros(self.total_agents, device=device)
+                terminals = torch.zeros(self.total_agents, device=device)
 
-            profile = torch_pufferl.Profile
-            prof.mark(0)
-            for t in range(horizon):
-                observation_device = torch.as_tensor(observations, device=device)
+                profile = torch_pufferl.Profile
+                prof.mark(0)
+                for t in range(horizon):
+                    observation_device = torch.as_tensor(observations, device=device)
+
+                    prof.mark(1)
+                    with torch.no_grad():
+                        logits, value = self.policy.forward_eval(observation_device, self.state)
+                        state = self.state
+                        action, logprob, _ = torch_pufferl.sample_logits(logits)
+                    prof.mark(2)
+
+                    with torch.no_grad():
+                        self.state = state
+                        self.observations[t] = observation_device
+                        self.actions[t] = action
+                        self.logprobs[t] = logprob
+                        self.rewards[t] = torch.as_tensor(rewards, device=device)
+                        self.terminals[t] = torch.as_tensor(terminals, device=device).float()
+                        self.values[t] = value.flatten()
+
+                    prof.mark(2)
+                    actions_flat = (
+                        action.T if action.dim() > 1 else action.unsqueeze(-1)
+                    ).to(dtype=torch.float32).contiguous()
+                    if self.gpu:
+                        actions_flat = actions_flat.cuda()
+                        self._vec.gpu_step(actions_flat.data_ptr())
+                        torch.cuda.synchronize()
+                    else:
+                        actions_flat = actions_flat.cpu().contiguous()
+                        self._vec.cpu_step(actions_flat.data_ptr())
+
+                    observations, rewards, terminals = self.vec_obs, self.vec_rewards, self.vec_terminals
+                    prof.mark(3)
+                    prof.elapsed(profile.EVAL_GPU, 1, 2)
+                    prof.elapsed(profile.EVAL_ENV, 2, 3)
 
                 prof.mark(1)
-                with torch.no_grad():
-                    logits, value, state = self.policy.forward_eval(observation_device, self.state)
-                    action, logprob, _ = torch_pufferl.sample_logits(logits)
-                prof.mark(2)
+                prof.elapsed(profile.ROLLOUT, 0, 1)
+                self.global_step += self.total_agents * horizon
+                self.env_logs = self._vec.log()
 
-                with torch.no_grad():
-                    self.state = state
-                    self.observations[t] = observation_device
-                    self.actions[t] = action
-                    self.logprobs[t] = logprob
-                    self.rewards[t] = torch.as_tensor(rewards, device=device)
-                    self.terminals[t] = torch.as_tensor(terminals, device=device).float()
-                    self.values[t] = value.flatten()
+        return LegacyBitWorldPuffeRL
 
-                prof.mark(2)
-                actions_flat = (
-                    action.T if action.dim() > 1 else action.unsqueeze(-1)
-                ).to(dtype=torch.float32).contiguous()
-                if self.gpu:
-                    actions_flat = actions_flat.cuda()
-                    self._vec.gpu_step(actions_flat.data_ptr())
-                    torch.cuda.synchronize()
-                else:
-                    actions_flat = actions_flat.cpu().contiguous()
-                    self._vec.cpu_step(actions_flat.data_ptr())
+    import pufferlib.pufferl
 
-                observations, rewards, terminals = self.vec_obs, self.vec_rewards, self.vec_terminals
-                prof.mark(3)
-                prof.elapsed(profile.EVAL_GPU, 1, 2)
-                prof.elapsed(profile.EVAL_ENV, 2, 3)
+    pufferlib.pufferl.compute_puff_advantage = compute_puff_advantage_fallback
 
-            prof.mark(1)
-            prof.elapsed(profile.ROLLOUT, 0, 1)
-            self.global_step += self.total_agents * horizon
-            self.env_logs = self._vec.log()
+    class BitWorldPuffeRL:
+        def __init__(self, args, vecenv, policy, verbose: bool = False):
+            del verbose
+            self.model_path = Path(args["checkpoint_dir"]).parent / "pufferlib_latest.pt"
+            self.trainer = pufferlib.pufferl.PuffeRL(
+                puffer_train_config(args),
+                vecenv,
+                policy,
+            )
+            self.global_step = self.trainer.global_step
+            self._logs: dict[str, float] | None = None
+
+        def rollouts(self):
+            self.trainer.evaluate()
+            self.global_step = self.trainer.global_step
+
+        def train(self):
+            self._logs = self.trainer.train()
+            self.global_step = self.trainer.global_step
+
+        def log(self) -> dict[str, float]:
+            if self._logs is None:
+                return self.trainer.mean_and_log()
+            return self._logs
+
+        def save_weights(self, path: str) -> None:
+            torch.save(self.trainer.uncompiled_policy.state_dict(), path)
+
+        def close(self) -> None:
+            with suppress(Exception):
+                self.trainer.vecenv.close()
+            with suppress(Exception):
+                self.trainer.utilization.stop()
 
     return BitWorldPuffeRL
 
@@ -797,17 +842,40 @@ class BitWorldVecEnv:
         self.num_envs = num_envs
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
         self.total_agents = num_envs * self.agents_per_env
+        self.num_agents = self.total_agents
+        self.agents_per_batch = self.total_agents
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
         self.obs_size = FRAME_PIXELS * frame_stack
         self.action_count = len(ACTION_MASKS)
         self.driver_env = self
+        from gymnasium import spaces
+
+        self.single_observation_space = spaces.Box(
+            low=0,
+            high=15,
+            shape=(self.obs_size,),
+            dtype=np.uint8,
+        )
+        self.single_action_space = spaces.Discrete(self.action_count)
 
         self._frame_history = np.zeros((self.total_agents, frame_stack, FRAME_PIXELS), dtype=np.uint8)
         self._obs = np.zeros((self.total_agents, self.obs_size), dtype=np.uint8)
         self._rewards = np.zeros((self.total_agents,), dtype=np.float32)
         self._terminals = np.zeros((self.total_agents,), dtype=np.float32)
+        self._truncations = np.zeros((self.total_agents,), dtype=np.float32)
+        self.teacher_actions = np.zeros((self.total_agents,), dtype=np.int64)
+        self.masks = np.ones((self.total_agents,), dtype=bool)
+        self.agent_ids = np.arange(self.total_agents)
+        self.infos: list[dict[str, float]] = []
+        self.observation_space = spaces.Box(
+            low=0,
+            high=15,
+            shape=self._obs.shape,
+            dtype=np.uint8,
+        )
+        self.action_space = spaces.Discrete(self.action_count)
         self.obs_ptr = self._obs.ctypes.data
         self.rewards_ptr = self._rewards.ctypes.data
         self.terminals_ptr = self._terminals.ctypes.data
@@ -868,6 +936,7 @@ class BitWorldVecEnv:
     def _apply_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
+        self._truncations.fill(0.0)
         completed: list[EpisodeStats] = []
         for env_id, worker in enumerate(self.workers):
             agent_slice = self._agent_slice(env_id)
@@ -906,6 +975,34 @@ class BitWorldVecEnv:
     def step_discrete(self, action_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[EpisodeStats]]:
         completed = self._apply_actions(action_indices)
         return self._obs, self._rewards, self._terminals, completed
+
+    def async_reset(self, seed: int | None = None) -> None:
+        del seed
+        self.reset()
+        self.infos = []
+
+    def recv(self):
+        return (
+            self._obs,
+            self._rewards,
+            self._terminals,
+            self._truncations,
+            self.teacher_actions,
+            self.infos,
+            self.agent_ids,
+            self.masks,
+        )
+
+    def send(self, actions: np.ndarray) -> None:
+        _, _, _, completed = self.step_discrete(np.asarray(actions, dtype=np.int64).reshape(-1))
+        self.infos = [
+            {
+                "score": item.score,
+                "episode_length": float(item.length),
+                "episode_return": item.episode_return,
+            }
+            for item in completed
+        ]
 
     def cpu_step(self, actions_ptr: int) -> None:
         raw = (ctypes.c_float * (self.total_agents * self.num_atns)).from_address(actions_ptr)
@@ -975,15 +1072,16 @@ class BitWorldPolicy(nn.Module):
         return ()
 
     def forward_eval(self, observations: torch.Tensor, state=()):
+        del state
         x = observations.float().div(15.0).reshape(-1, self.frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH)
         x = self.encoder(x)
         x = self.body(x)
         logits = self.policy_head(x)
         values = self.value_head(x)
-        return logits, values, state
+        return logits, values
 
     def forward(self, observations: torch.Tensor, state=()):
-        logits, values, _ = self.forward_eval(observations, state)
+        logits, values = self.forward_eval(observations, state)
         return logits, values
 
 
@@ -1043,6 +1141,51 @@ def make_train_args(
     }
 
 
+def puffer_train_config(args: dict) -> dict:
+    train = args["train"]
+    horizon = train["horizon"]
+    total_agents = args["vec"]["total_agents"]
+    batch_size = total_agents * horizon
+    total_timesteps = max(train["total_timesteps"], batch_size)
+    return {
+        "env": args["env_name"],
+        "torch_deterministic": False,
+        "seed": train["seed"],
+        "batch_size": batch_size,
+        "bptt_horizon": horizon,
+        "device": train["device"],
+        "cpu_offload": False,
+        "minibatch_size": min(train["minibatch_size"], batch_size),
+        "max_minibatch_size": min(train["minibatch_size"], batch_size),
+        "update_epochs": 1,
+        "compile": False,
+        "compile_mode": "default",
+        "compile_fullgraph": False,
+        "optimizer": "adam",
+        "learning_rate": train["learning_rate"],
+        "adam_beta1": train["beta1"],
+        "adam_beta2": train["beta2"],
+        "adam_eps": train["eps"],
+        "total_timesteps": total_timesteps,
+        "precision": "float32",
+        "use_rnn": False,
+        "prio_beta0": train["prio_beta0"],
+        "prio_alpha": train["prio_alpha"],
+        "clip_coef": train["clip_coef"],
+        "vf_clip_coef": train["vf_clip_coef"],
+        "gamma": train["gamma"],
+        "gae_lambda": train["gae_lambda"],
+        "vtrace_rho_clip": train["vtrace_rho_clip"],
+        "vtrace_c_clip": train["vtrace_c_clip"],
+        "vf_coef": train["vf_coef"],
+        "ent_coef": train["ent_coef"],
+        "max_grad_norm": train["max_grad_norm"],
+        "anneal_lr": bool(train["anneal_lr"]),
+        "checkpoint_interval": args["checkpoint_interval"],
+        "data_dir": args["checkpoint_dir"],
+    }
+
+
 def train_policy(
     spec: str | EnvironmentSpec,
     num_envs: int,
@@ -1091,6 +1234,7 @@ def train_policy(
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
     )
+    args["train"]["device"] = train_device
     trainer = PuffeRL(args, vecenv, policy, verbose=False)
     print(
         json.dumps(
@@ -1173,7 +1317,7 @@ def evaluate_policy(
                     raise ValueError("policy must be provided when random_actions is False")
                 with torch.no_grad():
                     observations = torch.as_tensor(vecenv._obs, device=policy_device)
-                    logits, _, _ = policy.forward_eval(observations)
+                    logits, _ = policy.forward_eval(observations)
                     if sample_actions:
                         probs = torch.softmax(logits, dim=-1)
                         action_indices = torch.multinomial(probs, 1).squeeze(-1).cpu().numpy()
