@@ -93,6 +93,14 @@ def teacher_rollout_enabled() -> bool:
     return os.environ.get("BITWORLD_TEACHER_ROLLOUT", "1") != "0"
 
 
+def teacher_bc_coef() -> float:
+    return float(os.environ.get("BITWORLD_TEACHER_BC_COEF", "1.0"))
+
+
+def teacher_bc_epochs() -> int:
+    return max(0, int(os.environ.get("BITWORLD_TEACHER_BC_EPOCHS", "1")))
+
+
 SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
@@ -495,12 +503,53 @@ def load_puffer_trainer(use_gpu: bool):
 
         def train(self):
             self._logs = self.trainer.train()
+            bc_loss = self._supervised_teacher_update()
+            if bc_loss is not None and self._logs is not None:
+                self._logs["losses/teacher_bc"] = bc_loss
             self.global_step = self.trainer.global_step
 
         def log(self) -> dict[str, float]:
             if self._logs is None:
                 return self.trainer.mean_and_log()
             return self._logs
+
+        def _supervised_teacher_update(self) -> float | None:
+            coef = teacher_bc_coef()
+            epochs = teacher_bc_epochs()
+            if coef <= 0 or epochs <= 0:
+                return None
+
+            trainer = self.trainer
+            device = trainer.config["device"]
+            observation_shape = trainer.vecenv.single_observation_space.shape
+            observations = trainer.observations.reshape(-1, *observation_shape).to(device)
+            actions = trainer.actions.reshape(-1).to(device=device, dtype=torch.long)
+            valid = (actions >= 0) & (actions < trainer.vecenv.action_space.n)
+            valid_indices = valid.nonzero(as_tuple=False).flatten()
+            if valid_indices.numel() == 0:
+                return None
+
+            batch_size = min(int(trainer.config["max_minibatch_size"]), int(valid_indices.numel()))
+            total_loss = 0.0
+            update_count = 0
+            for _ in range(epochs):
+                permutation = valid_indices[torch.randperm(valid_indices.numel(), device=device)]
+                for start in range(0, permutation.numel(), batch_size):
+                    batch_indices = permutation[start : start + batch_size]
+                    logits, _ = trainer.policy(observations[batch_indices])
+                    log_probs = torch.log_softmax(logits, dim=-1)
+                    loss = (
+                        -log_probs.gather(dim=-1, index=actions[batch_indices].unsqueeze(-1)).squeeze(-1).mean()
+                        * coef
+                    )
+                    trainer.optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(trainer.policy.parameters(), trainer.config["max_grad_norm"])
+                    trainer.optimizer.step()
+                    total_loss += float(loss.detach().item())
+                    update_count += 1
+
+            return total_loss / max(1, update_count)
 
         def save_weights(self, path: str) -> None:
             torch.save(self.trainer.uncompiled_policy.state_dict(), path)
