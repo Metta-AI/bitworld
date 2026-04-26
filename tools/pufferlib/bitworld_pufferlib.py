@@ -20,6 +20,11 @@ import torch
 from torch import nn
 from websockets.sync.client import ClientConnection, connect
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
 
@@ -164,18 +169,27 @@ def ensure_among_them_native_library() -> Path:
         return library
 
     library.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "nim",
-            "c",
-            "--app:lib",
-            *nim_path_args(),
-            f"--out:{library}",
-            "tools/pufferlib/among_them_native.nim",
-        ],
-        cwd=REPO_ROOT,
-        check=True,
-    )
+    lock_path = library.with_suffix(library.suffix + ".lock")
+    nimcache = RUNLOG_DIR / "nimcache" / "among_them_native"
+    nimcache.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if among_them_native_library_is_fresh():
+            return library
+        subprocess.run(
+            [
+                "nim",
+                "c",
+                "--app:lib",
+                *nim_path_args(),
+                f"--nimcache:{nimcache}",
+                f"--out:{library}",
+                "tools/pufferlib/among_them_native.nim",
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+        )
     return library
 
 
