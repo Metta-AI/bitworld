@@ -1,5 +1,9 @@
+import std/strutils
+
 switch("path", thisDir() & "/common")
-switch("path", thisDir() & "/../mummy/src")
+let localMummy = thisDir() & "/../mummy/src/mummy.nim"
+if fileExists(localMummy) and readFile(localMummy).contains("tcpNoDelay"):
+  switch("path", thisDir() & "/../mummy/src")
 switch("path", thisDir() & "/../paddy/src")
 switch("path", thisDir() & "/../whisky/src")
 switch("nimcache", getCurrentDir() & "/nimcache")
