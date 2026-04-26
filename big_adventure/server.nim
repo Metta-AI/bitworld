@@ -545,7 +545,7 @@ proc websocketHandler(
             appState.globalViewers[websocket].applyGlobalViewerMessage(
               message.data
             )
-          elif message.data.len == InputPacketBytes and
+          elif isInputPacket(message.data) and
               not appState.replayLoaded:
             let mask = blobToMask(message.data)
             if mask == 255'u8:

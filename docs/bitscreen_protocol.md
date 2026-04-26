@@ -74,12 +74,24 @@ Color indices `0 .. 15` use the Pico-8 palette:
 | `14` | `#ff77a8` |
 | `15` | `#ffccaa` |
 
-## Input
+## Client Packets
 
-The client may send a single byte containing the current controller state.
+The client may send binary packets. The first byte is the packet kind.
+
+| Kind | Name | Notes |
+| ---: | --- | --- |
+| `0` | Buttons | Current controller state |
+| `1` | Chat | ASCII chat message |
+
+Unknown packet kinds should be ignored.
+
+## Button Packet
+
+The client may send a button packet containing the current controller state.
 
 | Field | Type | Notes |
 | --- | --- | --- |
+| Packet | `u8` | Always `0` |
 | Buttons | `u8` | One bit per button |
 
 Each bit is `0` when the button is up and `1` when the button is down.
@@ -90,9 +102,9 @@ Each bit is `0` when the button is up and `1` when the button is down.
 | `1` | `0x02` | Down |
 | `2` | `0x04` | Left |
 | `3` | `0x08` | Right |
-| `4` | `0x10` | A |
-| `5` | `0x20` | B |
-| `6` | `0x40` | Select |
+| `4` | `0x10` | Select |
+| `5` | `0x20` | A |
+| `6` | `0x40` | B |
 | `7` | `0x80` | Reserved |
 
 The reserved bit must be sent as `0`. A receiver should ignore the reserved bit
@@ -101,11 +113,27 @@ if it is set.
 The client may send input whenever the state changes. The client may also resend
 the latest state at any interval.
 
+## Chat Packet
+
+The client may send a chat packet containing an ASCII string.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Packet | `u8` | Always `1` |
+| Text | `u8[]` | ASCII bytes |
+
+Text should use printable ASCII bytes from `0x20` through `0x7e`. Empty chat
+packets may be ignored. Games that do not support chat should ignore this
+packet.
+
 ## Message Rules
 
 A server-to-client binary message with length `8192` is a screen frame.
 
-A client-to-server binary message with length `1` is an input state.
+A client-to-server binary message with length `2` and first byte `0` is a
+button packet.
 
-Other binary message lengths are invalid in this version. Text websocket
-messages are not used by this protocol.
+A client-to-server binary message with first byte `1` is a chat packet.
+
+Other binary messages should be ignored. Text websocket messages are not used by
+this protocol.

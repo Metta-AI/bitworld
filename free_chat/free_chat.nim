@@ -1,7 +1,9 @@
-import mummy, pixie
+import
+  std/[json, locks, monotimes, os, parseopt, strutils, tables, times],
+  mummy, pixie,
+  ../client/aseprite,
+  server
 import protocol except TileSize
-import server
-import std/[json, locks, monotimes, os, parseopt, strutils, tables, times]
 
 const
   FancyTileSize = 12
@@ -19,29 +21,13 @@ const
   TargetFps = 24
   WebSocketPath = "/player"
   FloorBackdropColor = 3'u8
-  PanelFillColor = 1'u8
-  PanelBorderColor = 12'u8
-  HighlightFillColor = 10'u8
-  HighlightBorderColor = 14'u8
   BubbleFillColor = 1'u8
   BubbleBorderColor = 14'u8
-  CaretColor = 14'u8
-  MessageCharsPerLine = 8
-  MessageLineCount = 2
+  MessageCharsPerLine = 16
+  MessageLineCount = 3
   MessageMaxChars = MessageCharsPerLine * MessageLineCount
-  EditorChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ .?!"
-  EditorCols = 6
-  EditorRows = EditorChars.len div EditorCols
-  DraftBoxX = 4
-  DraftBoxY = 2
-  DraftBoxW = 56
-  DraftBoxH = 16
-  GridBoxX = 6
-  GridBoxY = 19
-  GridBoxW = 52
-  GridBoxH = 43
-  EditorCellW = 8
-  EditorCellH = 8
+  AsciiGlyphW = 7
+  AsciiGlyphH = 9
 
 type
   RunConfig = object
@@ -75,9 +61,6 @@ type
     carryX: int
     carryY: int
     message: string
-    draft: string
-    editing: bool
-    selectedCharIndex: int
     publishedCount: int
 
   PlayerInput = object
@@ -99,7 +82,7 @@ type
     props: seq[PropKind]
     sheetSprites: array[SheetSpriteKind, Sprite]
     playerSprites: seq[Sprite]
-    letterSprites: seq[Sprite]
+    asciiSprites: seq[Sprite]
     fb: Framebuffer
 
   WebSocketAppState = object
@@ -108,6 +91,7 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     playerNames: Table[WebSocket, string]
+    chatMessages: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
     rewardViewers: Table[WebSocket, bool]
     resetRequested: bool
@@ -132,8 +116,8 @@ proc palettePath(): string =
 proc sheetPath(): string =
   repoDir() / "free_chat" / "data" / "spritesheet.png"
 
-proc lettersPath(): string =
-  clientDataDir() / "letters.png"
+proc asciiPath(): string =
+  repoDir() / "free_chat" / "data" / "ascii.aseprite"
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
@@ -164,10 +148,6 @@ proc strokeRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
     fb.putPixel(x, py, color)
     fb.putPixel(x + w - 1, py, color)
 
-proc panelRect(fb: var Framebuffer, x, y, w, h: int) =
-  fb.fillRect(x, y, w, h, PanelFillColor)
-  fb.strokeRect(x, y, w, h, PanelBorderColor)
-
 proc lineCountForText(text: string): int =
   max(1, (text.len + MessageCharsPerLine - 1) div MessageCharsPerLine)
 
@@ -177,6 +157,49 @@ proc sliceMessageLine(text: string, lineIndex: int): string =
     return ""
   let endIndex = min(text.len, startIndex + MessageCharsPerLine)
   text[startIndex ..< endIndex]
+
+proc asciiIndex(ch: char): int =
+  ord(ch) - ord(' ')
+
+proc loadAsciiSprites(path: string): seq[Sprite] =
+  if not fileExists(path):
+    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
+  let
+    image = readAsepriteImage(path)
+    rowStride = 9
+    cols = image.width div AsciiGlyphW
+    rows = image.height div rowStride
+    background = nearestPaletteIndex(image[0, 0])
+  result = @[]
+  for row in 0 ..< rows:
+    for col in 0 ..< cols:
+      var sprite = Sprite(width: AsciiGlyphW, height: AsciiGlyphH)
+      sprite.pixels = newSeq[uint8](AsciiGlyphW * AsciiGlyphH)
+      let
+        baseX = col * AsciiGlyphW
+        baseY = row * rowStride
+      for y in 0 ..< AsciiGlyphH:
+        for x in 0 ..< AsciiGlyphW:
+          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
+          sprite.pixels[sprite.spriteIndex(x, y)] =
+            if colorIndex == background:
+              TransparentColorIndex
+            else:
+              colorIndex
+      result.add(sprite)
+
+proc blitAsciiText(
+  fb: var Framebuffer,
+  asciiSprites: seq[Sprite],
+  text: string,
+  screenX, screenY: int
+) =
+  var offsetX = 0
+  for ch in text:
+    let idx = asciiIndex(ch)
+    if idx >= 0 and idx < asciiSprites.len:
+      fb.blitSprite(asciiSprites[idx], screenX + offsetX, screenY, 0, 0)
+    offsetX += AsciiGlyphW
 
 proc sheetCellSprite(sheet: Image, cellX, cellY: int): Sprite =
   spriteFromImage(
@@ -275,17 +298,6 @@ proc findPlayerSpawn(sim: SimServer): tuple[x, y: int] =
 
   (centerTx * FancyTileSize, centerTy * FancyTileSize)
 
-proc editorIndexForChar(ch: char): int =
-  let target =
-    if ch >= 'a' and ch <= 'z':
-      chr(ord(ch) - ord('a') + ord('A'))
-    else:
-      ch
-  for i in 0 ..< EditorChars.len:
-    if EditorChars[i] == target:
-      return i
-  0
-
 proc addPlayer(sim: var SimServer, name: string): int =
   let
     spawn = sim.findPlayerSpawn()
@@ -295,8 +307,7 @@ proc addPlayer(sim: var SimServer, name: string): int =
     x: spawn.x,
     y: spawn.y,
     sprite: playerSprite,
-    facing: FaceDown,
-    selectedCharIndex: editorIndexForChar('A')
+    facing: FaceDown
   )
   sim.players.high
 
@@ -318,7 +329,7 @@ proc initSimServer(seed: int): SimServer =
     sheetImage.sheetCellSprite(2, 1),
     sheetImage.sheetCellSprite(3, 1)
   ]
-  result.letterSprites = loadLetterSprites(lettersPath())
+  result.asciiSprites = loadAsciiSprites(asciiPath())
   result.initPlaza()
 
 proc applyMomentumAxis(
@@ -346,17 +357,8 @@ proc applyMomentumAxis(
         carry = 0
         break
 
-proc stopPlayer(player: var Player) =
-  player.velX = 0
-  player.velY = 0
-  player.carryX = 0
-  player.carryY = 0
-
 proc applyMovementInput(sim: var SimServer, playerIndex: int, input: PlayerInput) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
-  if sim.players[playerIndex].editing:
-    sim.players[playerIndex].stopPlayer()
     return
 
   var inputX = 0
@@ -410,77 +412,6 @@ proc applyMovementInput(sim: var SimServer, playerIndex: int, input: PlayerInput
     false
   )
 
-proc selectedEditorChar(player: Player): char =
-  EditorChars[player.selectedCharIndex.clamp(0, EditorChars.high)]
-
-proc openEditor(player: var Player) =
-  player.editing = true
-  player.draft = ""
-  player.selectedCharIndex = editorIndexForChar('A')
-  player.stopPlayer()
-
-proc commitEditor(player: var Player) =
-  let published = player.draft.strip(chars = {' '})
-  player.message = published
-  if published.len > 0:
-    inc player.publishedCount
-  player.editing = false
-  player.stopPlayer()
-
-proc moveEditorSelection(player: var Player, dx, dy: int) =
-  var
-    col = player.selectedCharIndex mod EditorCols
-    row = player.selectedCharIndex div EditorCols
-  col = clamp(col + dx, 0, EditorCols - 1)
-  row = clamp(row + dy, 0, EditorRows - 1)
-  player.selectedCharIndex = row * EditorCols + col
-
-proc advanceDraft(player: var Player) =
-  if player.draft.len >= MessageMaxChars:
-    return
-  player.draft.add(player.selectedEditorChar())
-
-proc rewindDraft(player: var Player) =
-  if player.draft.len == 0:
-    return
-  player.draft.setLen(player.draft.len - 1)
-
-proc applyChatInput(sim: var SimServer, playerIndex: int, input: PlayerInput) =
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
-
-  var player = sim.players[playerIndex]
-  if not player.editing:
-    if input.selectPressed:
-      player.openEditor()
-  else:
-    if input.selectPressed:
-      player.commitEditor()
-
-  if player.editing:
-    if input.upPressed:
-      player.moveEditorSelection(0, -1)
-    if input.downPressed:
-      player.moveEditorSelection(0, 1)
-    if input.leftPressed:
-      player.moveEditorSelection(-1, 0)
-    if input.rightPressed:
-      player.moveEditorSelection(1, 0)
-    if input.bPressed:
-      player.rewindDraft()
-    if input.attackPressed:
-      player.advanceDraft()
-
-  sim.players[playerIndex] = player
-
-proc drawEditorGlyph(sim: var SimServer, ch: char, x, y: int) =
-  if ch == ' ':
-    sim.fb.fillRect(x + 1, y + 4, 4, 1, CaretColor)
-  else:
-    let idx = letterIndex(ch)
-    if idx >= 0 and idx < sim.letterSprites.len:
-      sim.fb.blitSprite(sim.letterSprites[idx], x, y, 0, 0)
-
 proc drawMessageBubble(
   sim: var SimServer,
   text: string,
@@ -497,8 +428,8 @@ proc drawMessageBubble(
         for lineIndex in 0 ..< lineCount:
           width = max(width, text.sliceMessageLine(lineIndex).len)
         width
-    bubbleWidth = min(ScreenWidth - 2, longestLineLen * 6 + 4)
-    bubbleHeight = lineCount * 6 + 4
+    bubbleWidth = min(ScreenWidth - 2, longestLineLen * AsciiGlyphW + 4)
+    bubbleHeight = lineCount * AsciiGlyphH + 4
     anchorX = worldX - cameraX
     anchorY = worldY - cameraY
     bubbleX = clamp(anchorX - bubbleWidth div 2, 1, ScreenWidth - bubbleWidth - 1)
@@ -511,11 +442,11 @@ proc drawMessageBubble(
   sim.fb.putPixel(pointerX - 1, bubbleY + bubbleHeight - 1, BubbleBorderColor)
   sim.fb.putPixel(pointerX + 1, bubbleY + bubbleHeight - 1, BubbleBorderColor)
   for lineIndex in 0 ..< lineCount:
-    sim.fb.blitText(
-      sim.letterSprites,
+    sim.fb.blitAsciiText(
+      sim.asciiSprites,
       text.sliceMessageLine(lineIndex),
       bubbleX + 2,
-      bubbleY + 2 + lineIndex * 6
+      bubbleY + 2 + lineIndex * AsciiGlyphH
     )
 
 proc renderWorld(sim: var SimServer, cameraX, cameraY: int) =
@@ -551,45 +482,6 @@ proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
         cameraY
       )
 
-proc renderEditor(sim: var SimServer, playerIndex: int) =
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
-
-  let player = sim.players[playerIndex]
-  if not player.editing:
-    return
-
-  sim.fb.panelRect(DraftBoxX, DraftBoxY, DraftBoxW, DraftBoxH)
-  let draftX = DraftBoxX + 4
-  let draftY = DraftBoxY + 3
-  let draftLineCount = player.draft.lineCountForText()
-  for lineIndex in 0 ..< draftLineCount:
-    let lineText = player.draft.sliceMessageLine(lineIndex)
-    if lineText.len > 0:
-      sim.fb.blitText(sim.letterSprites, lineText, draftX, draftY + lineIndex * 6)
-
-  if player.draft.len < MessageMaxChars:
-    let
-      caretRow = player.draft.len div MessageCharsPerLine
-      caretCol = player.draft.len mod MessageCharsPerLine
-      caretX = draftX + caretCol * 6
-      caretY = draftY + caretRow * 6 + 5
-    sim.fb.fillRect(caretX, caretY, 5, 1, CaretColor)
-
-  sim.fb.panelRect(GridBoxX, GridBoxY, GridBoxW, GridBoxH)
-  for index in 0 ..< EditorChars.len:
-    let
-      col = index mod EditorCols
-      row = index div EditorCols
-      cellX = GridBoxX + 2 + col * EditorCellW
-      cellY = GridBoxY + 2 + row * EditorCellH
-
-    if index == player.selectedCharIndex:
-      sim.fb.fillRect(cellX - 1, cellY - 1, 8, 8, HighlightFillColor)
-      sim.fb.strokeRect(cellX - 1, cellY - 1, 8, 8, HighlightBorderColor)
-
-    sim.drawEditorGlyph(EditorChars[index], cellX, cellY)
-
 proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(FloorBackdropColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -609,7 +501,6 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   sim.renderWorld(cameraX, cameraY)
   sim.renderPlayers(cameraX, cameraY)
-  sim.renderEditor(playerIndex)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -626,7 +517,6 @@ proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
     let input =
       if playerIndex < inputs.len: inputs[playerIndex]
       else: PlayerInput()
-    sim.applyChatInput(playerIndex, input)
     sim.applyMovementInput(playerIndex, input)
 
 var appState: WebSocketAppState
@@ -637,6 +527,7 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerNames = initTable[WebSocket, string]()
+  appState.chatMessages = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.resetRequested = false
@@ -664,6 +555,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   let removedIndex = appState.playerIndices[websocket]
   appState.playerIndices.del(websocket)
   appState.playerNames.del(websocket)
+  appState.chatMessages.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
 
@@ -678,6 +570,14 @@ proc cleanPlayerName(name: string): string =
   for ch in result.mitems:
     if ch.isSpaceAscii:
       ch = '_'
+
+proc cleanChatMessage(message: string): string =
+  let trimmed = message.strip()
+  for ch in trimmed:
+    if result.len >= MessageMaxChars:
+      return
+    if ch >= ' ' and ch <= '~':
+      result.add(ch)
 
 proc playerIdentity(request: Request): string =
   let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
@@ -718,16 +618,19 @@ proc websocketHandler(
           appState.inputMasks[websocket] = 0
           appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
-    if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
+    if message.kind == BinaryMessage:
       {.gcsafe.}:
         withLock appState.lock:
-          let mask = blobToMask(message.data)
-          if mask == 255'u8:
-            appState.resetRequested = true
-            appState.inputMasks[websocket] = 0
-            appState.lastAppliedMasks[websocket] = 0
-          else:
-            appState.inputMasks[websocket] = mask
+          if isInputPacket(message.data):
+            let mask = blobToMask(message.data)
+            if mask == 255'u8:
+              appState.resetRequested = true
+              appState.inputMasks[websocket] = 0
+              appState.lastAppliedMasks[websocket] = 0
+            else:
+              appState.inputMasks[websocket] = mask
+          elif isChatPacket(message.data):
+            appState.chatMessages[websocket] = blobToChat(message.data)
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -792,11 +695,20 @@ proc runServerLoop(
             value = 0
           for _, value in appState.lastAppliedMasks.mpairs:
             value = 0
+          appState.chatMessages.clear()
         else:
           for websocket in appState.playerIndices.keys:
             if appState.playerIndices[websocket] == 0x7fffffff:
               let name = appState.playerNames.getOrDefault(websocket, "unknown")
               appState.playerIndices[websocket] = sim.addPlayer(name)
+
+          for websocket, message in appState.chatMessages.pairs:
+            let playerIndex = appState.playerIndices.getOrDefault(websocket, -1)
+            if playerIndex >= 0 and playerIndex < sim.players.len:
+              sim.players[playerIndex].message = cleanChatMessage(message)
+              if sim.players[playerIndex].message.len > 0:
+                inc sim.players[playerIndex].publishedCount
+          appState.chatMessages.clear()
 
           inputs = newSeq[PlayerInput](sim.players.len)
           for websocket, playerIndex in appState.playerIndices.pairs:

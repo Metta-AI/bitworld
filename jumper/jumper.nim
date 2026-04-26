@@ -554,7 +554,7 @@ proc websocketHandler(
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
-    if message.kind == BinaryMessage and message.data.len == InputPacketBytes:
+    if message.kind == BinaryMessage and isInputPacket(message.data):
       {.gcsafe.}:
         withLock appState.lock:
           appState.inputMasks[websocket] = blobToMask(message.data)

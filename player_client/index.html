@@ -8,20 +8,37 @@
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{display:flex;align-items:center;justify-content:center}
 canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+input{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(80vw,520px);box-sizing:border-box;background:#0008;color:#fff;border:1px solid #fff8;padding:8px 10px;font:18px monospace;outline:0;display:none}
 </style>
 </head>
 <body>
 <canvas id="c" width="128" height="128"></canvas>
+<input id="i" maxlength="48" autocomplete="off" autocapitalize="off" spellcheck="false">
 <script>
-let c=document.getElementById("c"),x=c.getContext("2d"),d=x.createImageData(128,128),
+let c=document.getElementById("c"),i=document.getElementById("i"),x=c.getContext("2d"),d=x.createImageData(128,128),
 p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255],
 k={},l=255,w,u=new URL(location.href),a=u.searchParams.get("address")||"ws://localhost:8080/player",
-g=(u.searchParams.get("joystick")|0)-1;
+g=(u.searchParams.get("joystick")|0)-1,z=0;
+try{let v=new URL(a);if(v.pathname=="/")v.pathname="/player";a=v+""}catch(e){}
 x.imageSmoothingEnabled=false;
 onresize=e=>{let s=Math.min(innerWidth,innerHeight);c.style.width=s+"px";c.style.height=s+"px"};
 onresize();
-onkeydown=e=>{k[e.code]=1};
+onkeydown=e=>{
+  if(e.code=="Enter"){
+    e.preventDefault();
+    if(z){
+      let s=i.value.replace(/[^\x20-\x7e]/g,""),b=new Uint8Array(s.length+1);
+      if(s&&w.readyState==1){b[0]=1;for(let n=0;n<s.length;n++)b[n+1]=s.charCodeAt(n);w.send(b)}
+      i.value="";i.style.display="none";z=0;c.focus()
+    }else{z=1;i.style.display="block";i.focus()}
+    return
+  }
+  if(z&&e.code=="Escape"){e.preventDefault();i.value="";i.style.display="none";z=0;c.focus();return}
+  if(z&&e.code.startsWith("Arrow"))e.preventDefault();
+  k[e.code]=1
+};
 onkeyup=e=>{k[e.code]=0};
+i.oninput=e=>{i.value=i.value.replace(/[^\x20-\x7e]/g,"")};
 w=new WebSocket(a);
 w.binaryType="arraybuffer";
 w.onmessage=e=>{
@@ -38,14 +55,14 @@ w.onmessage=e=>{
 requestAnimationFrame(function f(){
   let r=navigator.getGamepads?navigator.getGamepads():[],o=g<0?0:g,b=r[o],h=0,
   lx=b?b.axes[0]||0:0,ly=b?b.axes[1]||0:0,t=.35;
-  h|=k.ArrowUp||k.KeyW||b&&(b.buttons[12]?.pressed||ly<=-t)?1:0;
-  h|=k.ArrowDown||k.KeyS||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
-  h|=k.ArrowLeft||k.KeyA||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
-  h|=k.ArrowRight||k.KeyD||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
-  h|=k.Space||b&&b.buttons[9]?.pressed?16:0;
-  h|=k.KeyZ||k.KeyJ||b&&b.buttons[0]?.pressed?32:0;
-  h|=k.KeyX||k.KeyK||b&&b.buttons[1]?.pressed?64:0;
-  if(w.readyState==1&&h!=l){w.send(new Uint8Array([h]));l=h}
+  h|=k.ArrowUp||!z&&k.KeyW||b&&(b.buttons[12]?.pressed||ly<=-t)?1:0;
+  h|=k.ArrowDown||!z&&k.KeyS||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
+  h|=k.ArrowLeft||!z&&k.KeyA||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
+  h|=k.ArrowRight||!z&&k.KeyD||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
+  h|=!z&&k.Space||b&&b.buttons[9]?.pressed?16:0;
+  h|=!z&&(k.KeyZ||k.KeyJ)||b&&b.buttons[0]?.pressed?32:0;
+  h|=!z&&(k.KeyX||k.KeyK)||b&&b.buttons[1]?.pressed?64:0;
+  if(w.readyState==1&&h!=l){w.send(new Uint8Array([0,h]));l=h}
   requestAnimationFrame(f);
 });
 </script>

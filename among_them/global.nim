@@ -9,6 +9,7 @@ const
   ReplayScrubberHeight = 5
   ReplayScrubberTrackY = 2
   ReplayScrubberY = 8
+  ReplayPanelHeight = 20
   ReplayCenterBottomLayerId = 8
   ReplayBottomLeftLayerId = 9
   ReplayCenterBottomLayerType = 8
@@ -39,7 +40,7 @@ const
   TransportSpeedX = 0
   TransportSpeedY = 8
   TransportWidth = 108
-  TransportHeight = 14
+  TransportHeight = 18
   TransportSpeedGap = 16
   TransportX = 2
   TransportY = 1
@@ -327,7 +328,7 @@ proc blitGlyph(
       )
 
 proc blitSmallText(
-  sim: SimServer,
+  game: SimServer,
   target: var seq[uint8],
   targetWidth, targetHeight: int,
   text: string,
@@ -337,12 +338,12 @@ proc blitSmallText(
   ## Blits small text into protocol pixels.
   var x = baseX
   for ch in text:
-    let idx = asciiIndex(ch)
-    if idx >= 0 and idx < sim.asciiSprites.len:
+    let idx = sim.asciiIndex(ch)
+    if idx >= 0 and idx < game.asciiSprites.len:
       target.blitGlyph(
         targetWidth,
         targetHeight,
-        sim.asciiSprites[idx],
+        game.asciiSprites[idx],
         x,
         baseY,
         color
@@ -350,7 +351,7 @@ proc blitSmallText(
     x += 7
 
 proc buildSpriteProtocolTextSprite(
-  sim: SimServer,
+  game: SimServer,
   lines: openArray[string],
   color: uint8
 ): tuple[width, height: int, pixels: seq[uint8]] =
@@ -364,9 +365,9 @@ proc buildSpriteProtocolTextSprite(
     let baseY = lineIndex * 9
     var baseX = 0
     for ch in line:
-      let idx = asciiIndex(ch)
-      if idx >= 0 and idx < sim.asciiSprites.len:
-        let sprite = sim.asciiSprites[idx]
+      let idx = sim.asciiIndex(ch)
+      if idx >= 0 and idx < game.asciiSprites.len:
+        let sprite = game.asciiSprites[idx]
         for y in 0 ..< sprite.height:
           for x in 0 ..< sprite.width:
             if sprite.pixels[sprite.spriteIndex(x, y)] !=
@@ -923,13 +924,13 @@ proc buildSpriteProtocolUpdates*(
       ReplayCenterBottomLayerType,
       UiLayerFlag
     )
-    result.addViewport(ReplayCenterBottomLayerId, ScreenWidth, 16)
+    result.addViewport(ReplayCenterBottomLayerId, ScreenWidth, ReplayPanelHeight)
     result.addLayer(
       ReplayBottomLeftLayerId,
       ReplayBottomLeftLayerType,
       UiLayerFlag
     )
-    result.addViewport(ReplayBottomLeftLayerId, ScreenWidth, 16)
+    result.addViewport(ReplayBottomLeftLayerId, ScreenWidth, ReplayPanelHeight)
     nextState.initialized = true
 
   nextState.updateTrails(sim)

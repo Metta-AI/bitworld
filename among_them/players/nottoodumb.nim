@@ -486,7 +486,7 @@ proc asciiTextScore(
   ## Scores one rendered ASCII text run against the current screen.
   var offsetX = 0
   for ch in text:
-    let idx = asciiIndex(ch)
+    let idx = sim.asciiIndex(ch)
     if idx >= 0 and idx < bot.sim.asciiSprites.len:
       let score = bot.asciiGlyphScore(
         bot.sim.asciiSprites[idx],
