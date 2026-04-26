@@ -60,24 +60,19 @@ proc currentReward(env: NativeEnv, playerIndex: int): int =
   else:
     0
 
-proc unpackFrame(frame: seq[uint8], target: ptr uint8, offset: int) =
-  if frame.len != ProtocolBytes:
-    raise newException(ValueError, "Unexpected Among Them frame size.")
-
-  let output = cast[ptr UncheckedArray[uint8]](target)
-  for i in 0 ..< ProtocolBytes:
-    let value = frame[i]
-    output[offset + i * 2] = value and 0x0f
-    output[offset + i * 2 + 1] = value shr 4
-
 proc copyObservations(env: var NativeEnv, observations: ptr uint8) =
   if observations.isNil:
     raise newException(ValueError, "Observation pointer is nil.")
 
+  let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
-    env.sim.render(playerIndex).unpackFrame(
-      observations,
-      playerIndex * FramePixels
+    env.sim.drawObservation(playerIndex)
+    if env.sim.fb.indices.len != FramePixels:
+      raise newException(ValueError, "Unexpected Among Them frame size.")
+    copyMem(
+      addr output[playerIndex * FramePixels],
+      unsafeAddr env.sim.fb.indices[0],
+      FramePixels
     )
 
 proc copyRewardDeltas(env: var NativeEnv, rewards: ptr cfloat, outputBase = 0) =
