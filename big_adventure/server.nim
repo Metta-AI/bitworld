@@ -1,11 +1,12 @@
 import mummy
 import protocol, sim, global
-import std/[locks, monotimes, os, tables, times]
+import std/[json, locks, monotimes, os, strutils, tables, times]
 
 type
   WebSocketAppState = object
     lock: Lock
     replayLoaded: bool
+    resetRequested: bool
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
@@ -407,7 +408,7 @@ proc stepReplay(replay: var ReplayPlayer, sim: var SimServer) =
 
 proc seekReplay(replay: var ReplayPlayer, sim: var SimServer, tick: int) =
   ## Seeks replay playback to a target tick.
-  sim = initSimServer()
+  sim = initSimServer(sim.seed)
   replay.resetReplay()
   while sim.tickCount < tick and replay.hashIndex < replay.data.hashes.len:
     replay.stepReplay(sim)
@@ -483,18 +484,33 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
+proc cleanPlayerName(name: string): string =
+  result = name.strip()
+  for ch in result.mitems:
+    if ch.isSpaceAscii:
+      ch = '_'
+
+proc playerIdentity(request: Request): string =
+  let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
+  if name.len > 0:
+    return name
+  let parts = request.remoteAddress.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  request.remoteAddress
+
 proc httpHandler(request: Request) =
-  if request.uri == WebSocketPath and request.httpMethod == "GET":
+  if request.path == WebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerAddresses[websocket] = request.remoteAddress
-  elif request.uri == GlobalWebSocketPath and request.httpMethod == "GET":
+        appState.playerAddresses[websocket] = request.playerIdentity()
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.uri == "/reward" and request.httpMethod == "GET":
+  elif request.path == "/reward" and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -531,13 +547,25 @@ proc websocketHandler(
             )
           elif message.data.len == InputPacketBytes and
               not appState.replayLoaded:
-            appState.inputMasks[websocket] = blobToMask(message.data)
+            let mask = blobToMask(message.data)
+            if mask == 255'u8:
+              appState.resetRequested = true
+              appState.inputMasks[websocket] = 0
+              appState.lastAppliedMasks[websocket] = 0
+            else:
+              appState.inputMasks[websocket] = mask
   of ErrorEvent:
     discard
   of CloseEvent:
     {.gcsafe.}:
       withLock appState.lock:
         appState.closedSockets.add(websocket)
+
+proc rewardAddress(address: string): string =
+  let parts = address.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  address
 
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)
@@ -553,7 +581,7 @@ proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
   for player in sim.players:
     result.add("reward ")
-    result.add(player.address)
+    result.add(player.address.rewardAddress())
     result.add(" ")
     result.add($player.coins)
     result.add("\n")
@@ -561,6 +589,7 @@ proc buildRewardPacket(sim: SimServer): string =
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
+  seed = 0xB1770,
   saveReplayPath = "",
   loadReplayPath = ""
 ) =
@@ -573,8 +602,17 @@ proc runServerLoop*(
       loadReplay(loadReplayPath)
     else:
       ReplayData()
+  var currentSeed = seed
+  if replayLoaded:
+    let node = parseJson(replayData.configJson)
+    if node.kind != JObject:
+      raise newException(ReplayError, "Replay config must be a JSON object")
+    if node.hasKey("seed"):
+      if node["seed"].kind != JInt:
+        raise newException(ReplayError, "Replay config field seed must be an integer")
+      currentSeed = node["seed"].getInt()
   var
-    replayWriter = openReplayWriter(saveReplayPath, "{}")
+    replayWriter = openReplayWriter(saveReplayPath, $(%*{"seed": currentSeed}))
     replayPlayer =
       if replayLoaded:
         initReplayPlayer(replayData)
@@ -597,7 +635,7 @@ proc runServerLoop*(
   httpServer.waitUntilReady()
 
   var
-    sim = initSimServer()
+    sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
 
   while true:
@@ -610,6 +648,7 @@ proc runServerLoop*(
       rewardViewers: seq[WebSocket] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
+      shouldReset = false
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -623,7 +662,17 @@ proc runServerLoop*(
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
 
-        if not replayLoaded:
+        if not replayLoaded and appState.resetRequested:
+          shouldReset = true
+          appState.resetRequested = false
+          for _, value in appState.playerIndices.mpairs:
+            value = 0x7fffffff
+          for _, value in appState.inputMasks.mpairs:
+            value = 0
+          for _, value in appState.lastAppliedMasks.mpairs:
+            value = 0
+
+        if not replayLoaded and not shouldReset:
           for websocket in appState.playerIndices.keys:
             if appState.playerIndices[websocket] != 0x7fffffff:
               continue
@@ -673,6 +722,38 @@ proc runServerLoop*(
           appState.globalViewers[websocket].replaySeekTick = -1
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+
+    if shouldReset:
+      inc currentSeed
+      sim = initSimServer(currentSeed)
+      replayWriter.lastMasks.setLen(0)
+      sockets.setLen(0)
+      playerIndices.setLen(0)
+      rewardViewers.setLen(0)
+      {.gcsafe.}:
+        withLock appState.lock:
+          for websocket in appState.playerIndices.keys:
+            let address = appState.playerAddresses.getOrDefault(
+              websocket,
+              "unknown"
+            )
+            appState.playerIndices[websocket] = sim.addPlayer(address)
+            appState.inputMasks[websocket] = 0
+            appState.lastAppliedMasks[websocket] = 0
+            sockets.add(websocket)
+            playerIndices.add(appState.playerIndices[websocket])
+          replayWriter.lastMasks.setLen(sim.players.len)
+          for websocket in appState.rewardViewers.keys:
+            rewardViewers.add(websocket)
+
+      let rewardPacket = sim.buildRewardPacket()
+      for i in 0 ..< sockets.len:
+        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
+        sockets[i].send(frameBlob, BinaryMessage)
+      for websocket in rewardViewers:
+        websocket.send(rewardPacket, TextMessage)
+      runFrameLimiter(lastTick)
+      continue
 
     if replayLoaded:
       for seekTick in replaySeekTicks:

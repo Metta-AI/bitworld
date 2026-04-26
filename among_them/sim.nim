@@ -147,6 +147,7 @@ type
     frictionDen*: int
     maxSpeed*: int
     stopThreshold*: int
+    seed*: int
     killRange*: int
     killCooldownTicks*: int
     taskCompleteTicks*: int
@@ -351,6 +352,7 @@ proc defaultGameConfig*(): GameConfig =
     frictionDen: FrictionDen,
     maxSpeed: MaxSpeed,
     stopThreshold: StopThreshold,
+    seed: 0xA6019,
     killRange: KillRange,
     killCooldownTicks: KillCooldownTicks,
     taskCompleteTicks: TaskCompleteTicks,
@@ -422,6 +424,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("frictionDen", config.frictionDen)
   node.readConfigInt("maxSpeed", config.maxSpeed)
   node.readConfigInt("stopThreshold", config.stopThreshold)
+  node.readConfigInt("seed", config.seed)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
@@ -448,6 +451,7 @@ proc configJson*(config: GameConfig): string =
     "frictionDen": config.frictionDen,
     "maxSpeed": config.maxSpeed,
     "stopThreshold": config.stopThreshold,
+    "seed": config.seed,
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
     "taskCompleteTicks": config.taskCompleteTicks,
@@ -1537,7 +1541,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
 proc initSimServer*(config: GameConfig): SimServer =
   result.config = config
-  result.rng = initRand(0xA6019)
+  result.rng = initRand(config.seed)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
   result.asciiSprites = loadAsciiSprites("ascii.png")
