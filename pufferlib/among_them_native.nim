@@ -36,12 +36,6 @@ proc setLastError(message: string): cint =
 proc validHandle(handle: cint): bool =
   handle >= 0 and int(handle) < envs.len and not envs[int(handle)].isNil
 
-proc currentReward(env: NativeEnv, playerIndex: int): int =
-  if playerIndex >= 0 and playerIndex < env.sim.players.len:
-    env.sim.players[playerIndex].reward
-  else:
-    0
-
 proc copyObservations(env: var NativeEnv, observations: ptr uint8) =
   if observations.isNil:
     raise newException(ValueError, "Observation pointer is nil.")
@@ -63,7 +57,7 @@ proc copyRewardDeltas(env: var NativeEnv, rewards: ptr cfloat, outputBase = 0) =
 
   let output = cast[ptr UncheckedArray[cfloat]](rewards)
   for playerIndex in 0 ..< env.playerCount:
-    let reward = env.currentReward(playerIndex)
+    let reward = env.sim.players[playerIndex].reward
     output[outputBase + playerIndex] = cfloat(reward - env.rewardSnapshot[playerIndex])
     env.rewardSnapshot[playerIndex] = reward
 
@@ -125,9 +119,10 @@ proc initNativeEnv(env: var NativeEnv) =
   env.rewardSnapshot = newSeq[int](env.playerCount)
   for playerIndex in 0 ..< env.playerCount:
     discard env.sim.addPlayer("player" & $(playerIndex + 1))
+  doAssert env.sim.players.len == env.playerCount
   env.sim.step(env.inputs, env.prevInputs)
   for playerIndex in 0 ..< env.playerCount:
-    env.rewardSnapshot[playerIndex] = env.currentReward(playerIndex)
+    env.rewardSnapshot[playerIndex] = env.sim.players[playerIndex].reward
 
 proc bitworld_at_last_error*(): cstring {.cdecl, exportc, dynlib.} =
   lastError.cstring

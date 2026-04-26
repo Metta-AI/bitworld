@@ -20,7 +20,6 @@ from bitworld_pufferlib import (
     PACKED_FRAME_BYTES,
     STATE_FLAG_PLAYER_ROLE_IMPOSTER,
     STATE_FEATURES,
-    STATE_PLAYER_COUNT,
     STATE_PLAYER_FEATURE_OFFSET,
     STATE_PLAYER_FEATURES,
     load_policy_checkpoint,
@@ -205,7 +204,6 @@ class BitWorldSmokeTest(unittest.TestCase):
         self.addCleanup(env.close)
 
         obs = env.reset()
-        self.assertEqual(STATE_PLAYER_COUNT, AMONG_THEM_MAX_PLAYERS)
         self.assertEqual(env.total_agents, AMONG_THEM_MAX_PLAYERS)
         self.assertEqual(obs.shape, (AMONG_THEM_MAX_PLAYERS, STATE_FEATURES))
 

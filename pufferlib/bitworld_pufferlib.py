@@ -40,14 +40,11 @@ AMONG_THEM_MAX_PLAYERS = 16
 OBSERVATION_MODES = {"pixels", "state"}
 STATE_HEADER_FEATURES = 22
 STATE_GRID_SIZE = 32
-STATE_GRID_FEATURES = STATE_GRID_SIZE * STATE_GRID_SIZE
-STATE_PLAYER_FEATURE_OFFSET = STATE_HEADER_FEATURES + STATE_GRID_FEATURES
+STATE_PLAYER_FEATURE_OFFSET = STATE_HEADER_FEATURES + STATE_GRID_SIZE * STATE_GRID_SIZE
 STATE_PLAYER_FEATURES = 8
-STATE_PLAYER_COUNT = AMONG_THEM_MAX_PLAYERS
-STATE_BODY_FEATURE_OFFSET = STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * STATE_PLAYER_COUNT
+STATE_BODY_FEATURE_OFFSET = STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS
 STATE_BODY_FEATURES = 8
-STATE_BODY_COUNT = AMONG_THEM_MAX_PLAYERS
-STATE_TASK_FEATURE_OFFSET = STATE_BODY_FEATURE_OFFSET + STATE_BODY_FEATURES * STATE_BODY_COUNT
+STATE_TASK_FEATURE_OFFSET = STATE_BODY_FEATURE_OFFSET + STATE_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS
 STATE_TASK_FEATURES = 8
 STATE_TASK_COUNT = 15
 STATE_FEATURES = STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT
@@ -1435,12 +1432,15 @@ class BitWorldVecEnv:
         self._frame_history[:] = self._latest_frames[:, np.newaxis, :]
         self._obs[:] = self._frame_history.reshape(self.total_agents, -1)
 
-    def _state_task_potential(self) -> np.ndarray:
-        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
+    def _state_task_features(self) -> np.ndarray:
+        return self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
             self.total_agents,
             STATE_TASK_COUNT,
             STATE_TASK_FEATURES,
         )
+
+    def _state_task_potential(self) -> np.ndarray:
+        task_features = self._state_task_features()
         flags = task_features[:, :, 3].astype(np.uint8)
         assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
@@ -1455,11 +1455,7 @@ class BitWorldVecEnv:
         return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
     def _state_completed_task_counts(self) -> np.ndarray:
-        task_features = self._latest_frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
-            self.total_agents,
-            STATE_TASK_COUNT,
-            STATE_TASK_FEATURES,
-        )
+        task_features = self._state_task_features()
         flags = task_features[:, :, 3].astype(np.uint8)
         assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
