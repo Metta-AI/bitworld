@@ -46,6 +46,7 @@ const
   ImposterCount* = 1
   VoteTimerTicks* = 240
   GameOverTicks* = 360
+  MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
   TaskReward* = 1
@@ -157,6 +158,7 @@ type
     imposterCount*: int
     voteTimerTicks*: int
     gameOverTicks*: int
+    maxTicks*: int
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
@@ -359,6 +361,7 @@ proc defaultGameConfig*(): GameConfig =
     imposterCount: ImposterCount,
     voteTimerTicks: VoteTimerTicks,
     gameOverTicks: GameOverTicks,
+    maxTicks: MaxTicks,
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
     showTaskBubbles: true
@@ -431,6 +434,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("imposterCount", config.imposterCount)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
+  node.readConfigInt("maxTicks", config.maxTicks)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
   node.readConfigBool("showTaskArrows", config.showTaskArrows)
   node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
@@ -1610,6 +1614,9 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
     if sim.players.len >= sim.config.minPlayers:
       sim.startGame()
     return
+
+  if sim.config.maxTicks > 0 and sim.tickCount >= sim.config.maxTicks and sim.phase == Playing:
+    sim.finishGame(Crewmate)
 
   if sim.phase == GameOver:
     dec sim.gameOverTimer
