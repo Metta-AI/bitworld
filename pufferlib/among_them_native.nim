@@ -1,5 +1,5 @@
-import ../../common/protocol
-import ../../among_them/sim
+import ../common/protocol
+import ../among_them/sim
 import std/[os, tables]
 
 const
@@ -39,7 +39,7 @@ var
   lastError = ""
 
 proc repoRoot(): string =
-  currentSourcePath().parentDir().parentDir().parentDir()
+  currentSourcePath().parentDir().parentDir()
 
 proc gameDir(): string =
   repoRoot() / "among_them"

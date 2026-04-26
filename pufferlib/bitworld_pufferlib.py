@@ -24,7 +24,7 @@ import torch
 from torch import nn
 from websockets.sync.client import ClientConnection, connect
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNLOG_DIR = REPO_ROOT / "tools" / "runlogs" / "pufferlib"
 
 SCREEN_WIDTH = 128
@@ -112,7 +112,7 @@ SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
 )
-AMONG_THEM_NATIVE_SOURCE = REPO_ROOT / "tools" / "pufferlib" / "among_them_native.nim"
+AMONG_THEM_NATIVE_SOURCE = REPO_ROOT / "pufferlib" / "among_them_native.nim"
 
 
 @dataclass(frozen=True)
@@ -235,7 +235,7 @@ def ensure_among_them_native_library() -> Path:
                 *nim_path_args(),
                 f"--nimcache:{nimcache}",
                 f"--out:{library}",
-                "tools/pufferlib/among_them_native.nim",
+                "pufferlib/among_them_native.nim",
             ],
             cwd=REPO_ROOT,
             check=True,

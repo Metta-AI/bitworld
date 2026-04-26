@@ -40,6 +40,6 @@ bitworld = [
   "**/*.nim",
   "**/*.png",
   "**/*.ttf",
-  "tools/pufferlib/*.py",
-  "tools/pufferlib/*.txt",
+  "pufferlib/*.py",
+  "pufferlib/*.txt",
 ]

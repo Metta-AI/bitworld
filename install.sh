@@ -30,7 +30,7 @@ nim --version | sed -n '1,4p'
 nimby -g sync nimby.lock
 
 echo "==> Checking native Among Them bridge"
-nim check tools/pufferlib/among_them_native.nim
+nim check pufferlib/among_them_native.nim
 
 cat <<'EOF'
 
@@ -40,8 +40,8 @@ Activate this environment with:
   source .venv/bin/activate
 
 Run a CUDA training smoke test with:
-  python tools/pufferlib/train_bitworld_env.py --env among_them --total-timesteps 40 --num-envs 1 --episode-steps 8 --frame-stack 2 --horizon 4 --minibatch-size 4 --hidden-size 32 --action-repeat 1 --device cuda --eval-episodes 0
+  python pufferlib/train_bitworld_env.py --env among_them --total-timesteps 40 --num-envs 1 --episode-steps 8 --frame-stack 2 --horizon 4 --minibatch-size 4 --hidden-size 32 --action-repeat 1 --device cuda --eval-episodes 0
 
 Run a longer training job with:
-  python tools/pufferlib/train_bitworld_env.py --env among_them --total-timesteps 50000 --num-envs 8 --action-repeat 4 --device cuda
+  python pufferlib/train_bitworld_env.py --env among_them --total-timesteps 50000 --num-envs 8 --action-repeat 4 --device cuda
 EOF
