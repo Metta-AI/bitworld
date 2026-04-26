@@ -234,42 +234,42 @@ type
     viewerIsGhost*: bool
 
 const
-  RenderStateHeaderFeatures* = 22
-  RenderStateGridSize* = 32
-  RenderStateGridFeatures* = RenderStateGridSize * RenderStateGridSize
-  RenderStatePlayerSlots* = MaxPlayers
-  RenderStatePlayerFeatures* = 8
-  RenderStateBodySlots* = MaxPlayers
-  RenderStateBodyFeatures* = 8
-  RenderStateTaskSlots* = 15
-  RenderStateTaskFeatures* = 8
-  RenderStateGridOffset* = RenderStateHeaderFeatures
-  RenderStatePlayerOffset* = RenderStateGridOffset + RenderStateGridFeatures
-  RenderStateBodyOffset* =
+  RenderStateHeaderFeatures = 22
+  RenderStateGridSize = 32
+  RenderStateGridFeatures = RenderStateGridSize * RenderStateGridSize
+  RenderStatePlayerSlots = MaxPlayers
+  RenderStatePlayerFeatures = 8
+  RenderStateBodySlots = MaxPlayers
+  RenderStateBodyFeatures = 8
+  RenderStateTaskSlots = 15
+  RenderStateTaskFeatures = 8
+  RenderStateGridOffset = RenderStateHeaderFeatures
+  RenderStatePlayerOffset = RenderStateGridOffset + RenderStateGridFeatures
+  RenderStateBodyOffset =
     RenderStatePlayerOffset + RenderStatePlayerSlots * RenderStatePlayerFeatures
-  RenderStateTaskOffset* =
+  RenderStateTaskOffset =
     RenderStateBodyOffset + RenderStateBodySlots * RenderStateBodyFeatures
   RenderStateFeatures* =
     RenderStateTaskOffset + RenderStateTaskSlots * RenderStateTaskFeatures
 
-  RenderKindPlayer* = 1'u8
-  RenderKindBody* = 2'u8
-  RenderKindTask* = 3'u8
+  RenderKindPlayer = 1'u8
+  RenderKindBody = 2'u8
+  RenderKindTask = 3'u8
 
-  RenderPlayerPresent* = 1'u8
-  RenderPlayerSelf* = 2'u8
-  RenderPlayerAlive* = 4'u8
-  RenderPlayerRoleImposter* = 8'u8
-  RenderPlayerFlipH* = 16'u8
-  RenderPlayerGhost* = 32'u8
-  RenderPlayerSelected* = 64'u8
+  RenderPlayerPresent = 1'u8
+  RenderPlayerSelf = 2'u8
+  RenderPlayerAlive = 4'u8
+  RenderPlayerRoleImposter = 8'u8
+  RenderPlayerFlipH = 16'u8
+  RenderPlayerGhost = 32'u8
+  RenderPlayerSelected = 64'u8
 
-  RenderTaskAssigned* = 1'u8
-  RenderTaskIncomplete* = 2'u8
-  RenderTaskActive* = 4'u8
-  RenderTaskIconVisible* = 8'u8
-  RenderTaskArrowVisible* = 16'u8
-  RenderTaskCompleted* = 32'u8
+  RenderTaskAssigned = 1'u8
+  RenderTaskIncomplete = 2'u8
+  RenderTaskActive = 4'u8
+  RenderTaskIconVisible = 8'u8
+  RenderTaskArrowVisible = 16'u8
+  RenderTaskCompleted = 32'u8
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
@@ -1283,7 +1283,7 @@ proc isWall*(sim: SimServer, mx, my: int): bool =
     return true
   sim.wallMask[mapIndex(mx, my)]
 
-proc pointShadowed*(sim: SimServer, originMx, originMy, worldX, worldY: int): bool {.inline.} =
+proc pointShadowed(sim: SimServer, originMx, originMy, worldX, worldY: int): bool {.inline.} =
   ## Returns true when a wall blocks the ray from an origin to a world point.
   let
     dx = worldX - originMx
@@ -1299,7 +1299,7 @@ proc pointShadowed*(sim: SimServer, originMx, originMy, worldX, worldY: int): bo
       return true
   false
 
-proc worldPointVisible*(sim: SimServer, view: PlayerView, worldX, worldY: int): bool {.inline.} =
+proc worldPointVisible(sim: SimServer, view: PlayerView, worldX, worldY: int): bool {.inline.} =
   ## Returns true when a world point is visible without requiring shadowBuf.
   if not view.screenPointInFrame(worldX, worldY):
     return false
@@ -1380,7 +1380,7 @@ proc packCurrentFrame(sim: var SimServer): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc drawLobbyFrame*(sim: var SimServer, playerIndex: int) =
+proc drawLobbyFrame(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
@@ -1402,25 +1402,18 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.drawLobbyFrame(playerIndex)
   sim.packCurrentFrame()
 
-proc drawSpectatorFrame*(sim: var SimServer) =
+proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
   sim.fb.clearFrame(0)
   sim.fb.blitAsciiText(sim.asciiSprites, "GAME IN", 11, 22)
   sim.fb.blitAsciiText(sim.asciiSprites, "PROGRESS", 8, 32)
-
-proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
-  sim.drawSpectatorFrame()
   sim.packCurrentFrame()
 
-proc drawReplayFrame*(sim: var SimServer) =
+proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   ## Builds a simple player screen for replay mode.
   sim.fb.clearFrame(SpaceColor)
   sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
   sim.fb.blitAsciiText(sim.asciiSprites, "GLOBAL", 20, 38)
   sim.fb.blitAsciiText(sim.asciiSprites, "VIEW", 20, 46)
-
-proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
-  ## Builds a simple player screen for replay mode.
-  sim.drawReplayFrame()
   sim.packCurrentFrame()
 
 proc drawVoteChat*(sim: var SimServer, chatY: int) =
@@ -1457,28 +1450,32 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
         rowY + lineIndex * 9
       )
 
-proc drawVoteFrame*(sim: var SimServer, playerIndex: int) =
+proc voteGridLayout(n: int): tuple[
+  cellW, cellH, cols, rows, totalW, startX, startY: int
+] =
+  result.cellW = 16
+  result.cellH = 17
+  result.cols = min(n, 8)
+  result.rows = (n + result.cols - 1) div result.cols
+  result.totalW = result.cols * result.cellW
+  result.startX = (ScreenWidth - result.totalW) div 2
+  result.startY = 2
+
+proc drawVoteFrame(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   if n == 0:
     return
-  let
-    cellW = 16
-    cellH = 17
-    cols = min(n, 8)
-    rows = (n + cols - 1) div cols
-    totalW = cols * cellW
-    startX = (ScreenWidth - totalW) div 2
-    startY = 2
+  let layout = voteGridLayout(n)
 
   for idx in 0 ..< n:
     let
       pi = idx
-      col = idx mod cols
-      row = idx div cols
-      cx = startX + col * cellW
-      cy = startY + row * cellH
-      spriteX = cx + (cellW - SpriteSize) div 2
+      col = idx mod layout.cols
+      row = idx div layout.cols
+      cx = layout.startX + col * layout.cellW
+      cy = layout.startY + row * layout.cellH
+      spriteX = cx + (layout.cellW - SpriteSize) div 2
       spriteY = cy + 1
     if sim.players[pi].alive:
       sim.fb.blitSpriteOutlined(
@@ -1497,17 +1494,17 @@ proc drawVoteFrame*(sim: var SimServer, playerIndex: int) =
         false
       )
     if pi == playerIndex:
-      sim.fb.putPixel(cx + cellW div 2 - 1, cy - 2, sim.players[pi].color)
-      sim.fb.putPixel(cx + cellW div 2, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + layout.cellW div 2 - 1, cy - 2, sim.players[pi].color)
+      sim.fb.putPixel(cx + layout.cellW div 2, cy - 2, sim.players[pi].color)
     if sim.players[pi].alive and
         playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
         sim.voteState.cursor[playerIndex] == pi:
-      for bx in 0 ..< cellW:
+      for bx in 0 ..< layout.cellW:
         sim.fb.putPixel(cx + bx, cy - 1, 2'u8)
-        sim.fb.putPixel(cx + bx, cy + cellH - 2, 2'u8)
-      for by in 0 ..< cellH:
+        sim.fb.putPixel(cx + bx, cy + layout.cellH - 2, 2'u8)
+      for by in 0 ..< layout.cellH:
         sim.fb.putPixel(cx, cy + by - 1, 2'u8)
-        sim.fb.putPixel(cx + cellW - 1, cy + by - 1, 2'u8)
+        sim.fb.putPixel(cx + layout.cellW - 1, cy + by - 1, 2'u8)
     var voterRow = 0
     for vi in 0 ..< n:
       if sim.voteState.votes[vi] == pi:
@@ -1517,7 +1514,7 @@ proc drawVoteFrame*(sim: var SimServer, playerIndex: int) =
         sim.fb.putPixel(dotX, dotY, sim.players[vi].color)
         inc voterRow
 
-  let skipY = startY + rows * cellH + 1
+  let skipY = layout.startY + layout.rows * layout.cellH + 1
   let skipW = 28
   let skipX = (ScreenWidth - skipW) div 2
   sim.fb.blitAsciiText(sim.asciiSprites, "SKIP", skipX, skipY)
@@ -1553,7 +1550,7 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.drawVoteFrame(playerIndex)
   sim.packCurrentFrame()
 
-proc drawResultFrame*(sim: var SimServer, playerIndex: int) =
+proc drawResultFrame(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(0)
   let ej = sim.voteState.ejectedPlayer
   if ej >= 0 and ej < sim.players.len:
@@ -1628,7 +1625,7 @@ proc checkWinCondition*(sim: var SimServer) =
   elif sim.allTasksDone() and sim.players.len > 0:
     sim.finishGame(Crewmate)
 
-proc drawGameOverFrame*(sim: var SimServer, playerIndex: int) =
+proc drawGameOverFrame(sim: var SimServer, playerIndex: int) =
   sim.fb.clearFrame(0)
   let title =
     if sim.winner == Crewmate: "CREW WINS"
@@ -1866,22 +1863,14 @@ proc writeRenderStateUiPlayers(
         flags = flags or RenderPlayerSelf
       sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
   of Voting:
-    let
-      cellW = 18
-      cellH = 20
-      cols = min(n, ScreenWidth div cellW)
-      rows = (n + cols - 1) div cols
-      totalW = cols * cellW
-      totalH = rows * cellH + 8
-      startX = (ScreenWidth - totalW) div 2
-      startY = (ScreenHeight - totalH) div 2
+    let layout = voteGridLayout(n)
     for i in 0 ..< n:
       let
-        col = i mod cols
-        row = i div cols
-        cx = startX + col * cellW
-        cy = startY + row * cellH
-        sx = cx + (cellW - SpriteSize) div 2
+        col = i mod layout.cols
+        row = i div layout.cols
+        cx = layout.startX + col * layout.cellW
+        cy = layout.startY + row * layout.cellH
+        sx = cx + (layout.cellW - SpriteSize) div 2
         sy = cy + 1
       var flags = RenderPlayerPresent
       if sim.players[i].alive:

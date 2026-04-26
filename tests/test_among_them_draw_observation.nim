@@ -75,20 +75,5 @@ proc testDrawObservationMatchesRender() =
   sim.finishGame(Crewmate)
   sim.assertRenderMatchesDraw(0, "game over")
 
-proc testDrawHelpersMatchFrameBuilders() =
-  var config = defaultGameConfig()
-  config.minPlayers = 3
-  var sim = initAmongThemForTest(config)
-  sim.addPlayers(3)
-
-  let spectatorFrame = sim.buildSpectatorFrame()
-  sim.drawSpectatorFrame()
-  assertFrameMatchesDrawn(spectatorFrame, sim.fb.indices, "spectator")
-
-  let replayFrame = sim.buildReplayFramePacket()
-  sim.drawReplayFrame()
-  assertFrameMatchesDrawn(replayFrame, sim.fb.indices, "replay")
-
 testDrawObservationMatchesRender()
-testDrawHelpersMatchFrameBuilders()
 echo "All tests passed"
