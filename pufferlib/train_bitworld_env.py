@@ -129,7 +129,6 @@ def main() -> None:
         "metrics_path": str(metrics_path),
         "trained": trained,
         "random": random_baseline,
-        "teacher": None,
     }
     summary_path = output_dir / "eval_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))

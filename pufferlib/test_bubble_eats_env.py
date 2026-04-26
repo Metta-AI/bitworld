@@ -23,8 +23,6 @@ from bitworld_pufferlib import (
     STATE_PLAYER_COUNT,
     STATE_PLAYER_FEATURE_OFFSET,
     STATE_PLAYER_FEATURES,
-    STATE_TEACHER_ACTION_COUNT,
-    STATE_TEACHER_FEATURE_OFFSET,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
@@ -183,8 +181,6 @@ class BitWorldSmokeTest(unittest.TestCase):
         obs = env.reset()
         self.assertEqual(obs.shape, (env.total_agents, STATE_FEATURES))
         self.assertEqual(obs.dtype, np.uint8)
-        teacher_slice = obs[:, STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT]
-        np.testing.assert_array_equal(teacher_slice, np.zeros_like(teacher_slice))
 
         for viewer_index in range(env.total_agents):
             for other_index in range(env.total_agents):

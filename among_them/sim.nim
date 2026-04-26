@@ -223,42 +223,8 @@ type
     originMx*, originMy*: int
     viewerIsGhost*: bool
 
-  RenderStateHeader* = enum
-    RshPhase,
-    RshPlayerIndex,
-    RshPlayerCount,
-    RshSelfAlive,
-    RshSelfRole,
-    RshSelfScreenX,
-    RshSelfScreenY,
-    RshSelfVelX,
-    RshSelfVelY,
-    RshKillCooldown,
-    RshTaskProgress,
-    RshActiveTask,
-    RshButtonCallsUsed,
-    RshRemainingTasks,
-    RshViewerIsGhost,
-    RshTick,
-    RshVoteCursor,
-    RshSkipVotes,
-    RshVoteTimer,
-    RshEjectedPlayer,
-    RshWinner,
-    RshTimeLimitReached,
-    RshReserved22,
-    RshReserved23,
-    RshReserved24,
-    RshReserved25,
-    RshReserved26,
-    RshReserved27,
-    RshReserved28,
-    RshReserved29,
-    RshReserved30,
-    RshReserved31
-
 const
-  RenderStateHeaderFeatures* = 32
+  RenderStateHeaderFeatures* = 22
   RenderStateGridSize* = 32
   RenderStateGridFeatures* = RenderStateGridSize * RenderStateGridSize
   RenderStatePlayerSlots* = MaxPlayers
@@ -1660,46 +1626,77 @@ proc writeRenderStateHeader(
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  output[ord(RshPhase)] = byteClamp(ord(sim.phase))
-  output[ord(RshPlayerIndex)] = byteClamp(playerIndex + 1)
-  output[ord(RshPlayerCount)] = byteClamp(sim.players.len)
-  output[ord(RshRemainingTasks)] = byteClamp(sim.totalTasksRemaining())
-  output[ord(RshTick)] = byteClamp(sim.tickCount mod 256)
-  output[ord(RshWinner)] = byteClamp(ord(sim.winner))
-  output[ord(RshTimeLimitReached)] = if sim.timeLimitReached: 1'u8 else: 0'u8
+  var
+    selfAlive = 0'u8
+    selfRole = 0'u8
+    selfScreenX = 0'u8
+    selfScreenY = 0'u8
+    selfVelX = 0'u8
+    selfVelY = 0'u8
+    killCooldown = 0'u8
+    taskProgress = 0'u8
+    activeTask = 0'u8
+    buttonCallsUsed = 0'u8
+    viewerIsGhost = 0'u8
+    voteCursor = 0'u8
+    skipVotes = 0
+    voteTimer = 0'u8
+    ejectedPlayer = 0'u8
 
   if playerIndex >= 0 and playerIndex < sim.players.len:
     let
       player = sim.players[playerIndex]
       view = sim.playerView(playerIndex)
-    output[ord(RshSelfAlive)] = if player.alive: 1'u8 else: 0'u8
-    output[ord(RshSelfRole)] = byteClamp(ord(player.role))
-    output[ord(RshSelfScreenX)] =
-      byteClamp(player.x - SpriteDrawOffX - view.cameraX)
-    output[ord(RshSelfScreenY)] =
-      byteClamp(player.y - SpriteDrawOffY - view.cameraY)
-    output[ord(RshSelfVelX)] = signedByte(player.velX, sim.config.maxSpeed)
-    output[ord(RshSelfVelY)] = signedByte(player.velY, sim.config.maxSpeed)
-    output[ord(RshKillCooldown)] =
-      fractionByte(player.killCooldown, sim.config.killCooldownTicks)
-    output[ord(RshTaskProgress)] =
-      fractionByte(player.taskProgress, sim.config.taskCompleteTicks)
-    output[ord(RshActiveTask)] = byteClamp(player.activeTask + 1)
-    output[ord(RshButtonCallsUsed)] = byteClamp(player.buttonCallsUsed)
-    output[ord(RshViewerIsGhost)] = if view.viewerIsGhost: 1'u8 else: 0'u8
+    selfAlive = if player.alive: 1'u8 else: 0'u8
+    selfRole = byteClamp(ord(player.role))
+    selfScreenX = byteClamp(player.x - SpriteDrawOffX - view.cameraX)
+    selfScreenY = byteClamp(player.y - SpriteDrawOffY - view.cameraY)
+    selfVelX = signedByte(player.velX, sim.config.maxSpeed)
+    selfVelY = signedByte(player.velY, sim.config.maxSpeed)
+    killCooldown = fractionByte(player.killCooldown, sim.config.killCooldownTicks)
+    taskProgress = fractionByte(player.taskProgress, sim.config.taskCompleteTicks)
+    activeTask = byteClamp(player.activeTask + 1)
+    buttonCallsUsed = byteClamp(player.buttonCallsUsed)
+    viewerIsGhost = if view.viewerIsGhost: 1'u8 else: 0'u8
 
   if sim.phase == Voting and playerIndex >= 0 and playerIndex < sim.voteState.cursor.len:
-    output[ord(RshVoteCursor)] = byteClamp(sim.voteState.cursor[playerIndex] + 1)
+    voteCursor = byteClamp(sim.voteState.cursor[playerIndex] + 1)
   if sim.phase == Voting:
-    var skipVotes = 0
     for vote in sim.voteState.votes:
       if vote == -2:
         inc skipVotes
-    output[ord(RshSkipVotes)] = byteClamp(skipVotes)
-    output[ord(RshVoteTimer)] =
-      fractionByte(sim.voteState.voteTimer, sim.config.voteTimerTicks)
+    voteTimer = fractionByte(sim.voteState.voteTimer, sim.config.voteTimerTicks)
   if sim.phase == VoteResult:
-    output[ord(RshEjectedPlayer)] = byteClamp(sim.voteState.ejectedPlayer + 1)
+    ejectedPlayer = byteClamp(sim.voteState.ejectedPlayer + 1)
+
+  var offset = 0
+  template put(value: uint8) =
+    output[offset] = value
+    inc offset
+
+  put byteClamp(ord(sim.phase))
+  put byteClamp(playerIndex + 1)
+  put byteClamp(sim.players.len)
+  put selfAlive
+  put selfRole
+  put selfScreenX
+  put selfScreenY
+  put selfVelX
+  put selfVelY
+  put killCooldown
+  put taskProgress
+  put activeTask
+  put buttonCallsUsed
+  put byteClamp(sim.totalTasksRemaining())
+  put viewerIsGhost
+  put byteClamp(sim.tickCount mod 256)
+  put voteCursor
+  put byteClamp(skipVotes)
+  put voteTimer
+  put ejectedPlayer
+  put byteClamp(ord(sim.winner))
+  put(if sim.timeLimitReached: 1'u8 else: 0'u8)
+  doAssert offset == RenderStateHeaderFeatures
 
 proc writeRenderStateGrid(
   sim: SimServer,
