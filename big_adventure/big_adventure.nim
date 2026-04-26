@@ -7,6 +7,7 @@ type
   RunConfig = object
     address: string
     port: int
+    seed: int
     saveReplayPath: string
     loadReplayPath: string
 
@@ -54,10 +55,11 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("loadReplay", config.loadReplayPath)
   node.readConfigString("saveReplayPath", config.saveReplayPath)
   node.readConfigString("loadReplayPath", config.loadReplayPath)
+  node.readConfigInt("seed", config.seed)
 
 when isMainModule:
   var
-    config = RunConfig(address: DefaultHost, port: DefaultPort)
+    config = RunConfig(address: DefaultHost, port: DefaultPort, seed: 0xB1770)
     configPath = ""
     configJson = ""
   for kind, key, val in getopt():
@@ -79,6 +81,7 @@ when isMainModule:
   runServerLoop(
     config.address,
     config.port,
+    config.seed,
     config.saveReplayPath,
     config.loadReplayPath
   )
