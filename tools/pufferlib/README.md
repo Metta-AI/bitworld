@@ -66,6 +66,10 @@ python tools/pufferlib/train_bitworld_env.py \
 
 Outputs land under `tools/runlogs/<env>_pufferlib_training/` unless you override `--output-dir`.
 
+For `among_them`, each `--num-envs` instance contains five agents. The same
+policy controls every player, and observations/actions come from a native Nim
+simulation bridge rather than websocket player clients.
+
 `--device auto` uses CUDA when PyTorch can see a GPU and falls back to CPU otherwise. Use `--device cuda` to require GPU training, or `--device cpu` for a CPU-only run. Set `--eval-episodes 0` for a quick training-only probe when you do not want to spend time on the post-training evaluation pass.
 
 The training script saves:
@@ -83,6 +87,7 @@ Representative validated result on April 23, 2026 for `bubble_eats` with a 50k-s
 
 ## Notes
 
-- The Nim server uses its normal `/ws` websocket for input and packed pixel frames, plus `/reward` for the current cumulative episode reward.
-- The Python vecenv samples `--action-repeat` streamed frames per policy action and polls `/reward` for score deltas.
+- Among Them training runs directly against Nim sim state and returns one observation/reward row per player.
+- The other games still use the normal `/player` websocket for input and packed pixel frames, plus `/reward` for cumulative episode reward.
+- The Python vecenv applies `--action-repeat` game ticks per policy action.
 - Some environments use shaped progress metrics instead of raw HUD score because their native score is too sparse for single-agent PPO to learn reliably within practical episode lengths.

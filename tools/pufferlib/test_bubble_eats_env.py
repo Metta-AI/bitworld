@@ -61,15 +61,16 @@ class BitWorldSmokeTest(unittest.TestCase):
                     action_repeat=1,
                     base_seed=1234,
                 )
+                expected_agents = ENV_SPECS[env_name].server_players if env_name == "among_them" else 1
                 self.addCleanup(env.close)
                 obs = env.reset()
-                self.assertEqual(obs.shape, (1, FRAME_PIXELS * 4))
+                self.assertEqual(obs.shape, (expected_agents, FRAME_PIXELS * 4))
                 terminals_seen = 0
                 for _ in range(8):
-                    _, rewards, terminals, _ = env.step_discrete(np.array([0], dtype=np.int64))
-                    self.assertEqual(rewards.shape, (1,))
-                    self.assertEqual(terminals.shape, (1,))
-                    terminals_seen += int(terminals[0])
+                    _, rewards, terminals, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
+                    self.assertEqual(rewards.shape, (expected_agents,))
+                    self.assertEqual(terminals.shape, (expected_agents,))
+                    terminals_seen += int(terminals.sum())
                 self.assertGreaterEqual(terminals_seen, 2)
 
     def test_episode_return_matches_score_across_resets(self) -> None:
@@ -89,11 +90,11 @@ class BitWorldSmokeTest(unittest.TestCase):
                 env.reset()
                 while len(completed) < 3:
                     _, _, _, batch_completed = env.step_discrete(
-                        rng.integers(0, env.action_count, size=(1,), dtype=np.int64)
+                        rng.integers(0, env.action_count, size=(env.total_agents,), dtype=np.int64)
                     )
                     completed.extend(batch_completed)
 
-                self.assertEqual(len(completed), 3)
+                self.assertGreaterEqual(len(completed), 3)
                 for item in completed:
                     self.assertGreaterEqual(item.episode_return, 0.0)
                     self.assertAlmostEqual(item.score, item.episode_return)
@@ -112,6 +113,18 @@ class BitWorldSmokeTest(unittest.TestCase):
         np.testing.assert_array_equal(terminals, np.ones(2, dtype=np.float32))
         self.assertEqual(len(completed), 2)
         self.assertNotEqual(episodes, [worker.episode for worker in env.workers])
+
+    def test_among_them_direct_env_controls_all_players(self) -> None:
+        env = BitWorldVecEnv("among_them", num_envs=1, max_episode_steps=2, frame_stack=2, action_repeat=1, base_seed=99)
+        self.addCleanup(env.close)
+
+        obs = env.reset()
+        self.assertEqual(env.total_agents, ENV_SPECS["among_them"].server_players)
+        self.assertEqual(obs.shape, (env.total_agents, FRAME_PIXELS * 2))
+
+        _, rewards, terminals, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
+        self.assertEqual(rewards.shape, (env.total_agents,))
+        self.assertEqual(terminals.shape, (env.total_agents,))
 
 
 if __name__ == "__main__":

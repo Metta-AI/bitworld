@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import platform
 import socket
 import subprocess
 import sys
@@ -56,6 +57,7 @@ SHARED_NIM_SOURCES = (
     REPO_ROOT / "common" / "protocol.nim",
     REPO_ROOT / "common" / "server.nim",
 )
+AMONG_THEM_NATIVE_SOURCE = REPO_ROOT / "tools" / "pufferlib" / "among_them_native.nim"
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,55 @@ def nim_path_args() -> list[str]:
         for source_dir in sorted(base.glob("*/src")):
             paths.append(source_dir)
     return [f"--path:{path}" for path in paths if path.exists()]
+
+
+def shared_library_suffix() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return ".dylib"
+    if system == "Windows":
+        return ".dll"
+    return ".so"
+
+
+def among_them_native_library_path() -> Path:
+    return RUNLOG_DIR / f"libamong_them_native{shared_library_suffix()}"
+
+
+def among_them_native_library_is_fresh() -> bool:
+    library = among_them_native_library_path()
+    if not library.exists():
+        return False
+
+    source_paths = {
+        AMONG_THEM_NATIVE_SOURCE,
+        REPO_ROOT / "among_them" / "sim.nim",
+        REPO_ROOT / "client" / "aseprite.nim",
+        *SHARED_NIM_SOURCES,
+    }
+    newest_source = max(path.stat().st_mtime for path in source_paths if path.exists())
+    return library.stat().st_mtime >= newest_source
+
+
+def ensure_among_them_native_library() -> Path:
+    library = among_them_native_library_path()
+    if among_them_native_library_is_fresh():
+        return library
+
+    library.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "nim",
+            "c",
+            "--app:lib",
+            *nim_path_args(),
+            f"--out:{library}",
+            "tools/pufferlib/among_them_native.nim",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    return library
 
 
 def ensure_bitworld_binary(spec: str | EnvironmentSpec) -> None:
@@ -295,7 +346,131 @@ class EpisodeStats:
     episode_return: float
 
 
+class AmongThemNativeLibrary:
+    def __init__(self) -> None:
+        library_path = ensure_among_them_native_library()
+        self.lib = ctypes.CDLL(str(library_path))
+        self.lib.NimMain.argtypes = []
+        self.lib.NimMain.restype = None
+        self.lib.NimMain()
+        self.lib.bitworld_at_last_error.argtypes = []
+        self.lib.bitworld_at_last_error.restype = ctypes.c_char_p
+        self.lib.bitworld_at_create.argtypes = [ctypes.c_int, ctypes.c_int]
+        self.lib.bitworld_at_create.restype = ctypes.c_int
+        self.lib.bitworld_at_reset.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_reset.restype = ctypes.c_int
+        self.lib.bitworld_at_step.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_step.restype = ctypes.c_int
+        self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
+        self.lib.bitworld_at_close.restype = None
+
+    def check(self, result: int) -> int:
+        if result >= 0:
+            return result
+        message = self.lib.bitworld_at_last_error()
+        if message:
+            raise RuntimeError(message.decode("utf-8", errors="replace"))
+        raise RuntimeError("Among Them native env failed")
+
+
+_AMONG_THEM_NATIVE_LIBRARY: AmongThemNativeLibrary | None = None
+
+
+def among_them_native_library() -> AmongThemNativeLibrary:
+    global _AMONG_THEM_NATIVE_LIBRARY
+    if _AMONG_THEM_NATIVE_LIBRARY is None:
+        _AMONG_THEM_NATIVE_LIBRARY = AmongThemNativeLibrary()
+    return _AMONG_THEM_NATIVE_LIBRARY
+
+
+class AmongThemNativeWorker:
+    agent_count: int
+
+    def __init__(
+        self,
+        spec: EnvironmentSpec,
+        env_id: int,
+        seed: int,
+        action_repeat: int,
+    ) -> None:
+        if spec.name != "among_them":
+            raise ValueError("AmongThemNativeWorker only supports among_them")
+        self.spec = spec
+        self.env_id = env_id
+        self.seed = seed
+        self.action_repeat = action_repeat
+        self.agent_count = spec.server_players
+        self.native = among_them_native_library()
+        self.handle = self.native.check(
+            self.native.lib.bitworld_at_create(seed, self.agent_count)
+        )
+        self.frames = np.zeros((self.agent_count, FRAME_PIXELS), dtype=np.uint8)
+        self.rewards = np.zeros((self.agent_count,), dtype=np.float32)
+        self.base_score = np.zeros((self.agent_count,), dtype=np.float32)
+        self.score = np.zeros((self.agent_count,), dtype=np.float32)
+        self.episode_return = np.zeros((self.agent_count,), dtype=np.float32)
+        self.episode_steps = 0
+        self.episode = 0
+
+    def _obs_ptr(self):
+        return self.frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+
+    def _reward_ptr(self):
+        return self.rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+    def reset(self) -> np.ndarray:
+        self.native.check(
+            self.native.lib.bitworld_at_reset(
+                self.handle,
+                self._obs_ptr(),
+                self._reward_ptr(),
+            )
+        )
+        self.base_score.fill(0.0)
+        self.score.fill(0.0)
+        self.episode_return.fill(0.0)
+        self.episode_steps = 0
+        self.episode += 1
+        return self.frames.copy()
+
+    def step(self, action_masks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        masks = np.asarray(action_masks, dtype=np.uint8)
+        if masks.shape != (self.agent_count,):
+            raise ValueError(f"expected {self.agent_count} Among Them action masks")
+        masks = np.ascontiguousarray(masks)
+        self.native.check(
+            self.native.lib.bitworld_at_step(
+                self.handle,
+                masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                self.action_repeat,
+                self._obs_ptr(),
+                self._reward_ptr(),
+            )
+        )
+        self.score += self.rewards
+        self.episode_return += self.rewards
+        self.episode_steps += 1
+        return self.frames.copy(), self.rewards.copy()
+
+    def close(self) -> None:
+        if self.handle >= 0:
+            self.native.lib.bitworld_at_close(self.handle)
+            self.handle = -1
+
+
 class BitWorldWorker:
+    agent_count = 1
+
     def __init__(
         self,
         spec: str | EnvironmentSpec,
@@ -620,7 +795,8 @@ class BitWorldVecEnv:
 
         self.spec = get_env_spec(spec)
         self.num_envs = num_envs
-        self.total_agents = num_envs
+        self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
+        self.total_agents = num_envs * self.agents_per_env
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
@@ -628,10 +804,10 @@ class BitWorldVecEnv:
         self.action_count = len(ACTION_MASKS)
         self.driver_env = self
 
-        self._frame_history = np.zeros((num_envs, frame_stack, FRAME_PIXELS), dtype=np.uint8)
-        self._obs = np.zeros((num_envs, self.obs_size), dtype=np.uint8)
-        self._rewards = np.zeros((num_envs,), dtype=np.float32)
-        self._terminals = np.zeros((num_envs,), dtype=np.float32)
+        self._frame_history = np.zeros((self.total_agents, frame_stack, FRAME_PIXELS), dtype=np.uint8)
+        self._obs = np.zeros((self.total_agents, self.obs_size), dtype=np.uint8)
+        self._rewards = np.zeros((self.total_agents,), dtype=np.float32)
+        self._terminals = np.zeros((self.total_agents,), dtype=np.float32)
         self.obs_ptr = self._obs.ctypes.data
         self.rewards_ptr = self._rewards.ctypes.data
         self.terminals_ptr = self._terminals.ctypes.data
@@ -641,32 +817,52 @@ class BitWorldVecEnv:
         self._completed_returns: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
 
-        self.workers: list[BitWorldWorker] = []
+        self.workers: list[BitWorldWorker | AmongThemNativeWorker] = []
         try:
             for env_id in range(num_envs):
-                worker = BitWorldWorker(
-                    spec=self.spec,
-                    env_id=env_id,
-                    port=reserve_port(),
-                    seed=base_seed + env_id,
-                    action_repeat=action_repeat,
-                )
+                if self.spec.name == "among_them":
+                    worker = AmongThemNativeWorker(
+                        spec=self.spec,
+                        env_id=env_id,
+                        seed=base_seed + env_id,
+                        action_repeat=action_repeat,
+                    )
+                else:
+                    worker = BitWorldWorker(
+                        spec=self.spec,
+                        env_id=env_id,
+                        port=reserve_port(),
+                        seed=base_seed + env_id,
+                        action_repeat=action_repeat,
+                    )
                 self.workers.append(worker)
         except Exception:
             self.close()
             raise
 
-    def _push_frame(self, env_id: int, frame: np.ndarray) -> None:
-        self._frame_history[env_id, :-1] = self._frame_history[env_id, 1:]
-        self._frame_history[env_id, -1] = frame
-        self._obs[env_id] = self._frame_history[env_id].reshape(-1)
+    def _agent_slice(self, env_id: int) -> slice:
+        start = env_id * self.agents_per_env
+        return slice(start, start + self.agents_per_env)
+
+    def _frame_batch(self, frame: np.ndarray, worker: BitWorldWorker | AmongThemNativeWorker) -> np.ndarray:
+        frames = np.asarray(frame, dtype=np.uint8)
+        if worker.agent_count == 1:
+            return frames.reshape(1, FRAME_PIXELS)
+        return frames.reshape(worker.agent_count, FRAME_PIXELS)
+
+    def _push_frames(self, agent_slice: slice, frames: np.ndarray) -> None:
+        self._frame_history[agent_slice, :-1] = self._frame_history[agent_slice, 1:]
+        self._frame_history[agent_slice, -1] = frames
+        self._obs[agent_slice] = self._frame_history[agent_slice].reshape(frames.shape[0], -1)
 
     def reset(self):
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
         for env_id, worker in enumerate(self.workers):
-            self._frame_history[env_id] = worker.reset()
-            self._obs[env_id] = self._frame_history[env_id].reshape(-1)
+            agent_slice = self._agent_slice(env_id)
+            frames = self._frame_batch(worker.reset(), worker)
+            self._frame_history[agent_slice] = frames[:, np.newaxis, :]
+            self._obs[agent_slice] = self._frame_history[agent_slice].reshape(worker.agent_count, -1)
         return self._obs
 
     def _apply_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
@@ -674,26 +870,37 @@ class BitWorldVecEnv:
         self._terminals.fill(0.0)
         completed: list[EpisodeStats] = []
         for env_id, worker in enumerate(self.workers):
-            action_index = int(np.clip(action_indices[env_id], 0, self.action_count - 1))
-            frame, reward = worker.step(int(ACTION_MASKS[action_index]))
+            agent_slice = self._agent_slice(env_id)
+            clipped = np.clip(action_indices[agent_slice], 0, self.action_count - 1).astype(np.int64)
+            action_masks = ACTION_MASKS[clipped]
+            if worker.agent_count == 1:
+                frame, reward = worker.step(int(action_masks[0]))
+                frames = self._frame_batch(frame, worker)
+                rewards = np.asarray([reward], dtype=np.float32)
+            else:
+                frames, rewards = worker.step(action_masks)
+                frames = self._frame_batch(frames, worker)
             done = worker.episode_steps >= self.max_episode_steps
             if done:
-                completed.append(
-                    EpisodeStats(
-                        score=float(worker.score - worker.base_score),
-                        length=worker.episode_steps,
-                        episode_return=worker.episode_return,
+                scores = (np.asarray(worker.score) - np.asarray(worker.base_score)).reshape(-1)
+                returns = np.asarray(worker.episode_return).reshape(-1)
+                for score, episode_return in zip(scores, returns):
+                    completed.append(
+                        EpisodeStats(
+                            score=float(score),
+                            length=worker.episode_steps,
+                            episode_return=float(episode_return),
+                        )
                     )
-                )
-                self._completed_scores.append(float(worker.score - worker.base_score))
-                self._completed_lengths.append(float(worker.episode_steps))
-                self._completed_returns.append(worker.episode_return)
+                    self._completed_scores.append(float(score))
+                    self._completed_lengths.append(float(worker.episode_steps))
+                    self._completed_returns.append(float(episode_return))
                 self._completed_episodes += 1
-                frame = worker.reset()
-                self._terminals[env_id] = 1.0
+                frames = self._frame_batch(worker.reset(), worker)
+                self._terminals[agent_slice] = 1.0
 
-            self._rewards[env_id] = reward
-            self._push_frame(env_id, frame)
+            self._rewards[agent_slice] = rewards
+            self._push_frames(agent_slice, frames)
         return completed
 
     def step_discrete(self, action_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[EpisodeStats]]:
@@ -784,7 +991,7 @@ def make_train_args(
     spec: str | EnvironmentSpec,
     total_timesteps: int,
     learning_rate: float,
-    num_envs: int,
+    total_agents: int,
     horizon: int,
     minibatch_size: int,
     seed: int,
@@ -829,7 +1036,7 @@ def make_train_args(
             "prio_beta0": 0.2,
         },
         "vec": {
-            "total_agents": num_envs,
+            "total_agents": total_agents,
             "num_buffers": 1,
             "num_threads": 1,
         },
@@ -877,7 +1084,7 @@ def train_policy(
         spec=resolved,
         total_timesteps=total_timesteps,
         learning_rate=learning_rate,
-        num_envs=num_envs,
+        total_agents=vecenv.total_agents,
         horizon=horizon,
         minibatch_size=minibatch_size,
         seed=seed,
@@ -960,7 +1167,7 @@ def evaluate_policy(
     try:
         while len(completed_scores) < episodes:
             if random_actions:
-                action_indices = rng.integers(0, vecenv.action_count, size=(1,), dtype=np.int64)
+                action_indices = rng.integers(0, vecenv.action_count, size=(vecenv.total_agents,), dtype=np.int64)
             else:
                 if policy is None:
                     raise ValueError("policy must be provided when random_actions is False")
