@@ -11,6 +11,8 @@ const
   FrameFitMinCompared = 12000
   LocalFrameSearchRadius = 8
   PlayerIgnoreRadius = 9
+  InterstitialBlackPercent = 92
+  HomeSearchRadius = 20
   PlayerDefaultPort = DefaultPort
   ViewerWindowWidth = 1820
   ViewerWindowHeight = 1060
@@ -59,7 +61,17 @@ const
   KillIconX = 1
   KillIconY = ScreenHeight - SpriteSize - 1
   KillIconMaxMisses = 5
+  GhostIconMaxMisses = 3
+  GhostIconFrameThreshold = 2
   KillApproachRadius = 3
+  BodySearchRadius = 1
+  BodyMaxMisses = 9
+  BodyMinStablePixels = 6
+  BodyMinTintPixels = 6
+  GhostSearchRadius = 1
+  GhostMaxMisses = 9
+  GhostMinStablePixels = 6
+  GhostMinTintPixels = 6
 
 type
   TileKnowledge = enum
@@ -110,6 +122,15 @@ type
     y: int
     flipH: bool
 
+  BodyMatch = object
+    x: int
+    y: int
+
+  GhostMatch = object
+    x: int
+    y: int
+    flipH: bool
+
   ViewerApp = ref object
     window: Window
     silky: Silky
@@ -117,10 +138,15 @@ type
   Bot = object
     sim: SimServer
     playerSprite: Sprite
+    bodySprite: Sprite
+    ghostSprite: Sprite
     taskSprite: Sprite
     killButtonSprite: Sprite
+    ghostIconSprite: Sprite
     rng: Rand
     role: BotRole
+    isGhost: bool
+    ghostIconFrames: int
     imposterKillReady: bool
     imposterGoalIndex: int
     packed: seq[uint8]
@@ -136,6 +162,10 @@ type
     interstitial: bool
     interstitialText: string
     lastGameOverText: string
+    gameStarted: bool
+    homeSet: bool
+    homeX: int
+    homeY: int
     haveMotionSample: bool
     previousPlayerWorldX: int
     previousPlayerWorldY: int
@@ -169,6 +199,8 @@ type
     taskIconMisses: seq[int]
     visibleTaskIcons: seq[IconMatch]
     visibleCrewmates: seq[CrewmateMatch]
+    visibleBodies: seq[BodyMatch]
+    visibleGhosts: seq[GhostMatch]
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
@@ -211,9 +243,21 @@ proc maxCameraY(): int =
   ## Returns the largest possible centered camera Y.
   MapHeight - ScreenHeight div 2 + SpriteSize
 
+proc buttonCameraX(): int =
+  ## Returns the initial camera X guess around the emergency button.
+  clamp(ButtonX + ButtonW div 2 - PlayerWorldOffX, minCameraX(), maxCameraX())
+
+proc buttonCameraY(): int =
+  ## Returns the initial camera Y guess around the emergency button.
+  clamp(ButtonY + ButtonH div 2 - PlayerWorldOffY, minCameraY(), maxCameraY())
+
 proc inMap(x, y: int): bool =
   ## Returns true when a world pixel is inside the Skeld map.
   x >= 0 and y >= 0 and x < MapWidth and y < MapHeight
+
+proc cameraCanHoldPlayer(cameraX, cameraY: int): bool =
+  ## Returns true when a camera candidate can center a real player.
+  inMap(cameraX + PlayerWorldOffX, cameraY + PlayerWorldOffY)
 
 proc playerWorldX(bot: Bot): int =
   ## Returns the inferred player collision X coordinate.
@@ -270,6 +314,39 @@ proc ignoreCrewmatePixel(bot: Bot, sx, sy: int): bool =
         TransparentColorIndex:
       return true
 
+proc ignoreBodyPixel(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel belongs to a matched dead body.
+  for body in bot.visibleBodies:
+    let
+      ix = sx - body.x
+      iy = sy - body.y
+    if ix < 0 or iy < 0 or
+        ix >= bot.bodySprite.width or
+        iy >= bot.bodySprite.height:
+      continue
+    if bot.bodySprite.pixels[bot.bodySprite.spriteIndex(ix, iy)] !=
+        TransparentColorIndex:
+      return true
+
+proc ignoreGhostPixel(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel belongs to a matched ghost.
+  for ghost in bot.visibleGhosts:
+    let
+      ix = sx - ghost.x
+      iy = sy - ghost.y
+    if ix < 0 or iy < 0 or
+        ix >= bot.ghostSprite.width or
+        iy >= bot.ghostSprite.height:
+      continue
+    let srcX =
+      if ghost.flipH:
+        bot.ghostSprite.width - 1 - ix
+      else:
+        ix
+    if bot.ghostSprite.pixels[bot.ghostSprite.spriteIndex(srcX, iy)] !=
+        TransparentColorIndex:
+      return true
+
 proc ignoreKillIconPixel(bot: Bot, sx, sy: int): bool =
   ## Returns true when a frame pixel belongs to the imposter kill icon.
   if bot.role != RoleImposter:
@@ -285,11 +362,32 @@ proc ignoreKillIconPixel(bot: Bot, sx, sy: int): bool =
     bot.killButtonSprite.spriteIndex(ix, iy)
   ] != TransparentColorIndex
 
+proc ignoreGhostIconPixel(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel belongs to the fixed ghost icon.
+  if not bot.isGhost and bot.ghostIconFrames == 0:
+    return false
+  let
+    ix = sx - KillIconX
+    iy = sy - KillIconY
+  if ix < 0 or iy < 0 or
+      ix >= bot.ghostIconSprite.width or
+      iy >= bot.ghostIconSprite.height:
+    return false
+  bot.ghostIconSprite.pixels[
+    bot.ghostIconSprite.spriteIndex(ix, iy)
+  ] != TransparentColorIndex
+
 proc ignoreFramePixel(bot: Bot, frameColor: uint8, sx, sy: int): bool =
   ## Returns true for dynamic screen pixels that are not map evidence.
   if frameColor == RadarTaskColor:
     return true
   if bot.ignoreKillIconPixel(sx, sy):
+    return true
+  if bot.ignoreGhostIconPixel(sx, sy):
+    return true
+  if bot.ignoreBodyPixel(sx, sy):
+    return true
+  if bot.ignoreGhostPixel(sx, sy):
     return true
   if bot.ignoreTaskIconPixel(sx, sy):
     return true
@@ -346,6 +444,10 @@ proc setCameraLock(
 proc scanTaskIcons(bot: var Bot)
 
 proc scanCrewmates(bot: var Bot)
+
+proc scanBodies(bot: var Bot)
+
+proc scanGhosts(bot: var Bot)
 
 proc updateRole(bot: var Bot)
 
@@ -461,7 +563,13 @@ proc isGameOverText(text: string): bool =
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
   bot.localized = false
-  bot.role = RoleUnknown
+  bot.gameStarted = false
+  bot.homeSet = false
+  bot.homeX = 0
+  bot.homeY = 0
+  bot.role = RoleCrewmate
+  bot.isGhost = false
+  bot.ghostIconFrames = 0
   bot.imposterKillReady = false
   bot.imposterGoalIndex = -1
   bot.cameraLock = NoLock
@@ -484,6 +592,8 @@ proc resetRoundState(bot: var Bot) =
   bot.radarDots.setLen(0)
   bot.visibleTaskIcons.setLen(0)
   bot.visibleCrewmates.setLen(0)
+  bot.visibleBodies.setLen(0)
+  bot.visibleGhosts.setLen(0)
   if bot.radarTasks.len != bot.sim.tasks.len:
     bot.radarTasks = newSeq[bool](bot.sim.tasks.len)
   else:
@@ -512,10 +622,16 @@ proc isInterstitialScreen(bot: Bot): bool =
     topRight = bot.unpacked[ScreenWidth - 1]
     bottomLeft = bot.unpacked[(ScreenHeight - 1) * ScreenWidth]
     bottomRight = bot.unpacked[ScreenHeight * ScreenWidth - 1]
-  topLeft == SpaceColor and
-    topRight == SpaceColor and
-    bottomLeft == SpaceColor and
-    bottomRight == SpaceColor
+  if topLeft != SpaceColor or
+      topRight != SpaceColor or
+      bottomLeft != SpaceColor or
+      bottomRight != SpaceColor:
+    return false
+  var black = 0
+  for color in bot.unpacked:
+    if color == SpaceColor:
+      inc black
+  black * 100 >= bot.unpacked.len * InterstitialBlackPercent
 
 proc locateNearFrame(bot: var Bot): bool =
   ## Tracks camera by scanning near the previous accepted camera.
@@ -550,17 +666,44 @@ proc locateNearFrame(bot: var Bot): bool =
   true
 
 proc locateByFrame(bot: var Bot): bool =
-  ## Locates the camera by fitting the full screen rectangle to the map.
+  ## Locates the camera by spiraling out from the best prior.
   var
     bestScore = CameraScore(
       score: low(int),
       errors: high(int),
       compared: 0
     )
-    bestX = 0
-    bestY = 0
-  for y in minCameraY() .. maxCameraY():
-    for x in minCameraX() .. maxCameraX():
+    bestX =
+      if bot.gameStarted:
+        bot.cameraX
+      else:
+        buttonCameraX()
+    bestY =
+      if bot.gameStarted:
+        bot.cameraY
+      else:
+        buttonCameraY()
+  let
+    minX = minCameraX()
+    maxX = maxCameraX()
+    minY = minCameraY()
+    maxY = maxCameraY()
+    seedX = clamp(bestX, minX, maxX)
+    seedY = clamp(bestY, minY, maxY)
+    maxRadius = max(
+      max(abs(seedX - minX), abs(seedX - maxX)),
+      max(abs(seedY - minY), abs(seedY - maxY))
+    )
+  bestX = seedX
+  bestY = seedY
+
+  template tryCamera(x, y: int): bool =
+    ## Scores one camera candidate if the player could be there.
+    if x < minX or x > maxX or y < minY or y > maxY:
+      false
+    elif not cameraCanHoldPlayer(x, y):
+      false
+    else:
       let score = bot.scoreCamera(x, y, FullFrameFitMaxErrors)
       if score.errors < bestScore.errors or
           (score.errors == bestScore.errors and
@@ -568,10 +711,31 @@ proc locateByFrame(bot: var Bot): bool =
         bestScore = score
         bestX = x
         bestY = y
-        if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
-          break
-    if bestScore.errors == 0 and bestScore.compared >= FrameFitMinCompared:
+        bestScore.errors == 0 and
+          bestScore.compared >= FrameFitMinCompared
+      else:
+        false
+
+  var done = tryCamera(seedX, seedY)
+  for radius in 1 .. maxRadius:
+    if done:
       break
+    for dx in -radius .. radius:
+      if tryCamera(seedX + dx, seedY - radius):
+        done = true
+        break
+      if tryCamera(seedX + dx, seedY + radius):
+        done = true
+        break
+    if done:
+      break
+    for dy in -radius + 1 .. radius - 1:
+      if tryCamera(seedX - radius, seedY + dy):
+        done = true
+        break
+      if tryCamera(seedX + radius, seedY + dy):
+        done = true
+        break
   if not acceptCameraScore(bestScore, FullFrameFitMaxErrors):
     bot.cameraLock = NoLock
     bot.cameraScore = bestScore.score
@@ -595,8 +759,10 @@ proc updateLocation(bot: var Bot) =
   bot.interstitialText = ""
   bot.lastGameOverText = ""
   bot.updateRole()
+  bot.scanBodies()
+  bot.scanGhosts()
   bot.scanCrewmates()
-  if bot.role == RoleImposter:
+  if bot.role == RoleImposter and not bot.isGhost:
     bot.visibleTaskIcons.setLen(0)
   else:
     bot.scanTaskIcons()
@@ -721,7 +887,24 @@ proc matchesSpriteShadowed(
   opaque > 0 and misses <= KillIconMaxMisses
 
 proc updateRole(bot: var Bot) =
-  ## Updates the known role from the fixed imposter kill icon.
+  ## Updates the known role from fixed status icons.
+  let ghostScore = spriteMisses(
+    bot.unpacked,
+    bot.ghostIconSprite,
+    KillIconX,
+    KillIconY
+  )
+  if ghostScore.opaque > 0 and ghostScore.misses <= GhostIconMaxMisses:
+    inc bot.ghostIconFrames
+    bot.imposterKillReady = false
+    if bot.ghostIconFrames >= GhostIconFrameThreshold:
+      bot.isGhost = true
+      if bot.role == RoleUnknown:
+        bot.role = RoleCrewmate
+    return
+  elif not bot.isGhost:
+    bot.ghostIconFrames = 0
+
   let lit = matchesSprite(
     bot.unpacked,
     bot.killButtonSprite,
@@ -840,6 +1023,114 @@ proc scanCrewmates(bot: var Bot) =
         bot.visibleCrewmates.addCrewmateMatch(x, y, false)
       elif bot.matchesCrewmate(x, y, true):
         bot.visibleCrewmates.addCrewmateMatch(x, y, true)
+
+proc matchesActorSprite(
+  bot: Bot,
+  sprite: Sprite,
+  x,
+  y: int,
+  flipH: bool,
+  maxMisses,
+  minStablePixels,
+  minTintPixels: int
+): bool =
+  ## Returns true when a tinted actor sprite matches the frame.
+  var
+    tintMatched = 0
+    tintPixels = 0
+    stableMatched = 0
+    misses = 0
+    stablePixels = 0
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let srcX =
+        if flipH:
+          sprite.width - 1 - sx
+        else:
+          sx
+      let color = sprite.pixels[sprite.spriteIndex(srcX, sy)]
+      if color == TransparentColorIndex:
+        continue
+      if stableCrewmateColor(color):
+        inc stablePixels
+      else:
+        inc tintPixels
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        inc misses
+      elif crewmatePixelMatches(color, bot.unpacked[fy * ScreenWidth + fx]):
+        if stableCrewmateColor(color):
+          inc stableMatched
+        else:
+          inc tintMatched
+      else:
+        inc misses
+      if misses > maxMisses:
+        return false
+  stablePixels >= minStablePixels and
+    stableMatched >= minStablePixels and
+    tintPixels >= minTintPixels and
+    tintMatched >= minTintPixels
+
+proc addBodyMatch(matches: var seq[BodyMatch], x, y: int) =
+  ## Adds one body match unless a nearby match already exists.
+  for match in matches:
+    if abs(match.x - x) <= BodySearchRadius and
+        abs(match.y - y) <= BodySearchRadius:
+      return
+  matches.add(BodyMatch(x: x, y: y))
+
+proc scanBodies(bot: var Bot) =
+  ## Scans the current frame for visible dead bodies.
+  bot.visibleBodies.setLen(0)
+  for y in 0 .. ScreenHeight - bot.bodySprite.height:
+    for x in 0 .. ScreenWidth - bot.bodySprite.width:
+      if bot.matchesActorSprite(
+        bot.bodySprite,
+        x,
+        y,
+        false,
+        BodyMaxMisses,
+        BodyMinStablePixels,
+        BodyMinTintPixels
+      ):
+        bot.visibleBodies.addBodyMatch(x, y)
+
+proc addGhostMatch(matches: var seq[GhostMatch], x, y: int, flipH: bool) =
+  ## Adds one ghost match unless a nearby match already exists.
+  for match in matches:
+    if abs(match.x - x) <= GhostSearchRadius and
+        abs(match.y - y) <= GhostSearchRadius:
+      return
+  matches.add(GhostMatch(x: x, y: y, flipH: flipH))
+
+proc scanGhosts(bot: var Bot) =
+  ## Scans the current frame for visible ghosts.
+  bot.visibleGhosts.setLen(0)
+  for y in 0 .. ScreenHeight - bot.ghostSprite.height:
+    for x in 0 .. ScreenWidth - bot.ghostSprite.width:
+      if bot.matchesActorSprite(
+        bot.ghostSprite,
+        x,
+        y,
+        false,
+        GhostMaxMisses,
+        GhostMinStablePixels,
+        GhostMinTintPixels
+      ):
+        bot.visibleGhosts.addGhostMatch(x, y, false)
+      elif bot.matchesActorSprite(
+        bot.ghostSprite,
+        x,
+        y,
+        true,
+        GhostMaxMisses,
+        GhostMinStablePixels,
+        GhostMinTintPixels
+      ):
+        bot.visibleGhosts.addGhostMatch(x, y, true)
 
 proc scanTaskIcons(bot: var Bot) =
   ## Scans expected task icon positions for visible task icons.
@@ -1153,11 +1444,22 @@ proc checkoutTaskCount(bot: Bot): int =
       inc result
 
 proc buttonFallbackReady(bot: Bot): bool =
-  ## Returns true when the button is the only useful remaining goal.
+  ## Returns true when home is the only useful remaining goal.
   bot.radarDots.len == 0 and
     bot.radarTaskCount() == 0 and
     bot.checkoutTaskCount() == 0 and
     bot.taskStateCount(TaskMandatory) == 0
+
+proc rememberHome(bot: var Bot) =
+  ## Records the first reliable round position as this bot's home.
+  if not bot.localized or bot.interstitial:
+    return
+  bot.gameStarted = true
+  if bot.homeSet:
+    return
+  bot.homeX = bot.playerWorldX()
+  bot.homeY = bot.playerWorldY()
+  bot.homeSet = true
 
 proc roleName(role: BotRole): string =
   ## Returns a human-readable role name.
@@ -1267,6 +1569,12 @@ proc pathDistance(bot: Bot, goalX, goalY: int): int =
     return high(int)
   path.len
 
+proc goalDistance(bot: Bot, goalX, goalY: int): int =
+  ## Returns the distance metric for choosing the next goal.
+  if bot.isGhost:
+    return heuristic(bot.playerWorldX(), bot.playerWorldY(), goalX, goalY)
+  bot.pathDistance(goalX, goalY)
+
 proc taskGoalFor(
   bot: Bot,
   index: int,
@@ -1360,26 +1668,76 @@ proc buttonGoal(
     return
   (true, -1, bestX, bestY, "Button", TaskMaybe)
 
-proc randomTaskIndex(bot: var Bot): int =
-  ## Returns a random task index for imposter roaming.
-  if bot.sim.tasks.len == 0:
-    return -1
-  bot.rng.rand(bot.sim.tasks.high)
+proc homeGoal(
+  bot: Bot
+): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
+  ## Returns this bot's remembered cafeteria home point.
+  if not bot.homeSet:
+    return bot.buttonGoal()
+  if bot.isGhost or bot.passable(bot.homeX, bot.homeY):
+    return (true, -1, bot.homeX, bot.homeY, "Home", TaskMaybe)
+  var
+    bestDistance = high(int)
+    bestX = 0
+    bestY = 0
+  for y in max(0, bot.homeY - HomeSearchRadius) ..
+      min(MapHeight - 1, bot.homeY + HomeSearchRadius):
+    for x in max(0, bot.homeX - HomeSearchRadius) ..
+        min(MapWidth - 1, bot.homeX + HomeSearchRadius):
+      if not bot.passable(x, y):
+        continue
+      let distance = heuristic(bot.homeX, bot.homeY, x, y)
+      if distance < bestDistance:
+        bestDistance = distance
+        bestX = x
+        bestY = y
+  if bestDistance == high(int):
+    return bot.buttonGoal()
+  (true, -1, bestX, bestY, "Home", TaskMaybe)
 
-proc farthestTaskIndex(bot: Bot): int =
-  ## Returns the task farthest from the current player location.
+proc fakeTargetCount(bot: Bot): int =
+  ## Returns the number of imposter fake target areas.
+  bot.sim.tasks.len + 1
+
+proc fakeTargetGoalFor(
+  bot: Bot,
+  index: int
+): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
+  ## Returns an imposter fake goal for a task or the button.
+  if index == bot.sim.tasks.len:
+    return bot.buttonGoal()
+  bot.taskGoalFor(index, TaskMaybe)
+
+proc randomFakeTargetIndex(bot: var Bot): int =
+  ## Returns a random imposter fake target index.
+  let count = bot.fakeTargetCount()
+  if count == 0:
+    return -1
+  bot.rng.rand(count - 1)
+
+proc fakeTargetCenter(
+  bot: Bot,
+  index: int
+): tuple[x: int, y: int] =
+  ## Returns the center point for an imposter fake target.
+  if index == bot.sim.tasks.len:
+    return (ButtonX + ButtonW div 2, ButtonY + ButtonH div 2)
+  bot.sim.tasks[index].taskCenter()
+
+proc farthestFakeTargetIndexFrom(bot: Bot, originX, originY: int): int =
+  ## Returns the fake target farthest from an origin point.
   var bestDistance = low(int)
-  for i in 0 ..< bot.sim.tasks.len:
-    let center = bot.sim.tasks[i].taskCenter()
-    let distance = heuristic(
-      bot.playerWorldX(),
-      bot.playerWorldY(),
-      center.x,
-      center.y
-    )
+  result = -1
+  for i in 0 ..< bot.fakeTargetCount():
+    let center = bot.fakeTargetCenter(i)
+    let distance = heuristic(originX, originY, center.x, center.y)
     if distance > bestDistance:
       bestDistance = distance
       result = i
+
+proc farthestFakeTargetIndex(bot: Bot): int =
+  ## Returns the fake target farthest from the current player location.
+  bot.farthestFakeTargetIndexFrom(bot.playerWorldX(), bot.playerWorldY())
 
 proc visibleCrewmateWorld(
   bot: Bot,
@@ -1390,6 +1748,39 @@ proc visibleCrewmateWorld(
     bot.cameraX + crewmate.x + SpriteDrawOffX,
     bot.cameraY + crewmate.y + SpriteDrawOffY
   )
+
+proc visibleBodyWorld(bot: Bot, body: BodyMatch): tuple[x: int, y: int] =
+  ## Converts one visible body match into world coordinates.
+  (
+    bot.cameraX + body.x + SpriteDrawOffX,
+    bot.cameraY + body.y + SpriteDrawOffY
+  )
+
+proc nearestBody(bot: Bot): tuple[found: bool, x: int, y: int] =
+  ## Returns the nearest visible body in world coordinates.
+  var bestDistance = high(int)
+  for body in bot.visibleBodies:
+    let world = bot.visibleBodyWorld(body)
+    let distance = heuristic(
+      bot.playerWorldX(),
+      bot.playerWorldY(),
+      world.x,
+      world.y
+    )
+    if distance < bestDistance:
+      bestDistance = distance
+      result = (true, world.x, world.y)
+
+proc inReportRange(bot: Bot, targetX, targetY: int): bool =
+  ## Returns true when the target point is in report range.
+  let
+    ax = bot.playerWorldX() + CollisionW div 2
+    ay = bot.playerWorldY() + CollisionH div 2
+    bx = targetX + CollisionW div 2
+    by = targetY + CollisionH div 2
+    dx = ax - bx
+    dy = ay - by
+  dx * dx + dy * dy <= bot.sim.config.reportRange * bot.sim.config.reportRange
 
 proc inKillRange(bot: Bot, targetX, targetY: int): bool =
   ## Returns true when the target point is in imposter kill range.
@@ -1413,7 +1804,7 @@ proc nearestTaskGoal(
     let goal = bot.taskGoalFor(i, TaskMandatory)
     if not goal.found:
       continue
-    let distance = bot.pathDistance(goal.x, goal.y)
+    let distance = bot.goalDistance(goal.x, goal.y)
     if distance < bestDistance:
       bestDistance = distance
       result = goal
@@ -1434,7 +1825,7 @@ proc nearestTaskGoal(
     let goal = bot.taskGoalFor(i, TaskMandatory)
     if not goal.found:
       continue
-    let distance = bot.pathDistance(goal.x, goal.y)
+    let distance = bot.goalDistance(goal.x, goal.y)
     if distance < bestDistance:
       bestDistance = distance
       result = goal
@@ -1460,7 +1851,7 @@ proc nearestTaskGoal(
     let goal = bot.taskGoalFor(i, TaskMaybe)
     if not goal.found:
       continue
-    let distance = bot.pathDistance(goal.x, goal.y)
+    let distance = bot.goalDistance(goal.x, goal.y)
     if distance < bestDistance:
       bestDistance = distance
       result = goal
@@ -1480,14 +1871,14 @@ proc nearestTaskGoal(
     let goal = bot.taskGoalFor(i, TaskMaybe)
     if not goal.found:
       continue
-    let distance = bot.pathDistance(goal.x, goal.y)
+    let distance = bot.goalDistance(goal.x, goal.y)
     if distance < bestDistance:
       bestDistance = distance
       result = goal
   if result.found:
     return
   if bot.buttonFallbackReady():
-    return bot.buttonGoal()
+    return bot.homeGoal()
 
 proc coastDistance(velocity: int): int =
   ## Returns how many pixels current velocity will carry without input.
@@ -1637,6 +2028,18 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   bot.thought("at task " & name & ", holding action")
   ButtonA
 
+proc reportBodyAction(bot: var Bot): uint8 =
+  ## Presses action to report a visible dead body.
+  bot.intent = "reporting dead body"
+  bot.desiredMask = ButtonA
+  bot.controllerMask = ButtonA
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  bot.thought("reporting dead body")
+  ButtonA
+
 proc navigateToPoint(
   bot: var Bot,
   x,
@@ -1649,21 +2052,36 @@ proc navigateToPoint(
   bot.goalX = x
   bot.goalY = y
   bot.goalName = name
-  let astarStart = getMonoTime()
-  bot.path = bot.findPath(x, y)
-  bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
-  bot.pathStep = bot.choosePathStep()
-  bot.hasPathStep = bot.pathStep.found
-  bot.intent = "A* to " & name & " path=" & $bot.path.len
-  if heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y) <= preciseRadius:
-    bot.intent = "precise approach to " & name
+  if bot.isGhost:
+    bot.path.setLen(0)
+    bot.hasPathStep = false
+    bot.astarMicros = 0
+    bot.intent = "ghost direct to " & name
     bot.desiredMask = bot.preciseMaskForGoal(x, y)
   else:
-    bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
+    let astarStart = getMonoTime()
+    bot.path = bot.findPath(x, y)
+    bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
+    bot.pathStep = bot.choosePathStep()
+    bot.hasPathStep = bot.pathStep.found
+    bot.intent = "A* to " & name & " path=" & $bot.path.len
+    if heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y) <=
+        preciseRadius:
+      bot.intent = "precise approach to " & name
+      bot.desiredMask = bot.preciseMaskForGoal(x, y)
+    else:
+      bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
   bot.controllerMask = bot.desiredMask
   let mask = bot.applyJiggle(bot.controllerMask)
+  let prefix =
+    if bot.role == RoleImposter:
+      "imposter "
+    elif bot.isGhost:
+      "ghost "
+    else:
+      "map lock "
   bot.thought(
-    "imposter " & cameraLockName(bot.cameraLock) & " at camera (" &
+    prefix & cameraLockName(bot.cameraLock) & " at camera (" &
     $bot.cameraX & ", " & $bot.cameraY & "), next " &
     movementName(mask)
   )
@@ -1682,10 +2100,21 @@ proc decideImposterMask(bot: var Bot): uint8 =
     bot.checkoutTasks[i] = false
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
+  let body = bot.nearestBody()
+  if body.found:
+    bot.imposterGoalIndex = bot.farthestFakeTargetIndexFrom(body.x, body.y)
+    let fleeGoal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
+    if fleeGoal.found:
+      bot.goalIndex = fleeGoal.index
+      return bot.navigateToPoint(
+        fleeGoal.x,
+        fleeGoal.y,
+        "flee body to " & fleeGoal.name
+      )
   if bot.visibleCrewmates.len == 1 and bot.imposterKillReady:
     let target = bot.visibleCrewmateWorld(bot.visibleCrewmates[0])
     if bot.inKillRange(target.x, target.y):
-      bot.imposterGoalIndex = bot.farthestTaskIndex()
+      bot.imposterGoalIndex = bot.farthestFakeTargetIndex()
       bot.intent = "kill lone crewmate"
       bot.desiredMask = ButtonA
       bot.controllerMask = ButtonA
@@ -1700,30 +2129,27 @@ proc decideImposterMask(bot: var Bot): uint8 =
       "lone crewmate",
       KillApproachRadius
     )
-  if bot.sim.tasks.len == 0:
-    bot.intent = "imposter idle, no task stations"
-    bot.thought("imposter idle, no task stations")
-    return 0
-  if bot.imposterGoalIndex < 0 or bot.imposterGoalIndex >= bot.sim.tasks.len:
-    bot.imposterGoalIndex = bot.randomTaskIndex()
-  var goal = bot.taskGoalFor(bot.imposterGoalIndex, TaskMaybe)
+  if bot.imposterGoalIndex < 0 or
+      bot.imposterGoalIndex >= bot.fakeTargetCount():
+    bot.imposterGoalIndex = bot.randomFakeTargetIndex()
+  var goal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
   if not goal.found:
-    bot.imposterGoalIndex = bot.randomTaskIndex()
-    goal = bot.taskGoalFor(bot.imposterGoalIndex, TaskMaybe)
+    bot.imposterGoalIndex = bot.randomFakeTargetIndex()
+    goal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
   if not goal.found:
-    bot.intent = "imposter idle, unreachable task station"
-    bot.thought("imposter idle, unreachable task station")
+    bot.intent = "imposter idle, unreachable fake target"
+    bot.thought("imposter idle, unreachable fake target")
     return 0
   if heuristic(bot.playerWorldX(), bot.playerWorldY(), goal.x, goal.y) <=
       TaskPreciseApproachRadius:
-    bot.imposterGoalIndex = bot.randomTaskIndex()
-    goal = bot.taskGoalFor(bot.imposterGoalIndex, TaskMaybe)
+    bot.imposterGoalIndex = bot.randomFakeTargetIndex()
+    goal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
     if not goal.found:
-      bot.intent = "imposter idle, no next task station"
-      bot.thought("imposter idle, no next task station")
+      bot.intent = "imposter idle, no next fake target"
+      bot.thought("imposter idle, no next fake target")
       return 0
   bot.goalIndex = goal.index
-  bot.navigateToPoint(goal.x, goal.y, "fake task " & goal.name)
+  bot.navigateToPoint(goal.x, goal.y, "fake target " & goal.name)
 
 proc decideNextMask(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
@@ -1758,8 +2184,21 @@ proc decideNextMask(bot: var Bot): uint8 =
   if not bot.localized:
     bot.thought("waiting for a reliable map lock")
     return 0
-  if bot.role == RoleImposter:
+  bot.rememberHome()
+  if bot.role == RoleImposter and not bot.isGhost:
     return bot.decideImposterMask()
+  if not bot.isGhost:
+    let body = bot.nearestBody()
+    if body.found:
+      if bot.inReportRange(body.x, body.y) and
+          abs(bot.velocityX) + abs(bot.velocityY) <= 1:
+        return bot.reportBodyAction()
+      return bot.navigateToPoint(
+        body.x,
+        body.y,
+        "dead body",
+        KillApproachRadius
+      )
   if bot.taskHoldTicks > 0:
     return bot.holdTaskAction(
       if bot.goalName.len > 0:
@@ -1783,6 +2222,8 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.taskHoldIndex = goal.index
     return bot.holdTaskAction(goal.name)
+  if bot.isGhost:
+    return bot.navigateToPoint(goal.x, goal.y, goal.name)
   let astarStart = getMonoTime()
   bot.path = bot.findPath(goal.x, goal.y)
   bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
@@ -1825,10 +2266,13 @@ proc initBot(): Bot =
   ## Builds a bot and loads all map and sprite data.
   setCurrentDir(gameDir())
   result.sim = initSimServer(defaultGameConfig())
-  let sheet = readImage("spritesheet.png")
+  let sheet = loadSpriteSheet()
   result.playerSprite = sheet.sheetSprite(0, 0)
+  result.bodySprite = sheet.sheetSprite(1, 0)
   result.killButtonSprite = sheet.sheetSprite(3, 0)
   result.taskSprite = sheet.sheetSprite(4, 0)
+  result.ghostSprite = sheet.sheetSprite(6, 0)
+  result.ghostIconSprite = sheet.sheetSprite(7, 0)
   result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
@@ -1837,14 +2281,15 @@ proc initBot(): Bot =
   result.checkoutTasks = newSeq[bool](result.sim.tasks.len)
   result.taskStates = newSeq[TaskState](result.sim.tasks.len)
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
-  result.cameraX = clamp(ButtonX - 48, 0, MapWidth - ScreenWidth)
-  result.cameraY = clamp(ButtonY - 66, 0, MapHeight - ScreenHeight)
+  result.cameraX = buttonCameraX()
+  result.cameraY = buttonCameraY()
   result.lastCameraX = result.cameraX
   result.lastCameraY = result.cameraY
   result.taskHoldIndex = -1
   result.imposterGoalIndex = -1
   result.goalIndex = -1
   result.cameraLock = NoLock
+  result.role = RoleCrewmate
   result.intent = "waiting for first frame"
 
 proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
@@ -2075,6 +2520,13 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
       vec2(5, 5),
       ViewerPlayer
     )
+  if bot.homeSet:
+    sk.drawOutline(
+      vec2(x + bot.homeX.float32 * scale - 5, y + bot.homeY.float32 * scale - 5),
+      vec2(10, 10),
+      ViewerButton,
+      1
+    )
   if bot.hasGoal:
     sk.drawRect(
       vec2(x + bot.goalX.float32 * scale - 4, y + bot.goalY.float32 * scale - 4),
@@ -2192,12 +2644,22 @@ proc pumpViewer(
       "\n" &
     "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
     "role: " & roleName(bot.role) &
+      " ghost=" & $bot.isGhost &
+      " ghost icon frames=" & $bot.ghostIconFrames &
       " kill ready=" & $bot.imposterKillReady &
       " imp goal=" & $bot.imposterGoalIndex & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
+    "home: " & (
+      if bot.homeSet:
+        "(" & $bot.homeX & ", " & $bot.homeY & ")"
+      else:
+        "unset"
+    ) & " started=" & $bot.gameStarted & "\n" &
     "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &
-    "crewmates masked: " & $bot.visibleCrewmates.len & "\n" &
+    "crewmates masked: " & $bot.visibleCrewmates.len &
+      " bodies=" & $bot.visibleBodies.len &
+      " ghosts=" & $bot.visibleGhosts.len & "\n" &
     "radar dots: " & $bot.radarDots.len &
       " radar tasks=" & $bot.radarTaskCount() &
       " checkout=" & $bot.checkoutTaskCount() &
