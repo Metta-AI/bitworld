@@ -6,10 +6,15 @@
 # normal ignores:
 *.exe
 nimcache
+nim.cfg
 tests/test.js
 tools/runlogs
 tmp/
 client/screenshots/
 *.log
+*.egg-info/
+*.pyc
+__pycache__/
+.venv/
 tools/quick_run.nim
 .DS_Store

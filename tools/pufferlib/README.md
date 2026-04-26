@@ -35,18 +35,19 @@ Current environments and reward metrics:
 
 ## Setup
 
-Use Python 3.12 or newer. On this machine, Python 3.12 is the safest choice.
+From the repo root:
 
 ```bash
-python3.12 -m venv .venv-puffer
-source .venv-puffer/bin/activate
-pip install -e '.[train]'
+./install.sh
+source .venv/bin/activate
 ```
+
+The installer uses `uv` for Python and Nimby for Nim dependencies.
 
 ## Smoke Test
 
 ```bash
-source .venv-puffer/bin/activate
+source .venv/bin/activate
 python -m unittest tools/pufferlib/test_bubble_eats_env.py
 ```
 
@@ -55,7 +56,7 @@ This smoke test now exercises the full environment registry, not just `bubble_ea
 ## Train
 
 ```bash
-source .venv-puffer/bin/activate
+source .venv/bin/activate
 python tools/pufferlib/train_bitworld_env.py \
   --env among_them \
   --total-timesteps 50000 \
