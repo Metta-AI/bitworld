@@ -106,6 +106,7 @@ def main() -> None:
         action_repeat=args.action_repeat,
         observation_mode=checkpoint.observation_mode,
         random_actions=False,
+        sample_actions=False,
     )
     random_baseline = evaluate_policy(
         spec=spec,
