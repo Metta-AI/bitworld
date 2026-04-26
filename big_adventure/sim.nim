@@ -322,8 +322,8 @@ proc addPlayer*(sim: var SimServer, address: string): int =
   )
   sim.players.high
 
-proc initSimServer*(): SimServer =
-  result.rng = initRand(0xB1770)
+proc initSimServer*(seed = 0xB1770): SimServer =
+  result.rng = initRand(seed)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
   loadClientPalette()

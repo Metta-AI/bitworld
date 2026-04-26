@@ -6,6 +6,7 @@ type
   WebSocketAppState = object
     lock: Lock
     replayLoaded: bool
+    resetRequested: bool
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
@@ -528,7 +529,13 @@ proc websocketHandler(
             )
           elif message.data.len == InputPacketBytes and
               not appState.replayLoaded:
-            appState.inputMasks[websocket] = blobToMask(message.data)
+            let mask = blobToMask(message.data)
+            if mask == 255'u8:
+              appState.resetRequested = true
+              appState.inputMasks[websocket] = 0
+              appState.lastAppliedMasks[websocket] = 0
+            else:
+              appState.inputMasks[websocket] = mask
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -558,6 +565,7 @@ proc buildRewardPacket(sim: SimServer): string =
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
+  seed = 0xB1770,
   saveReplayPath = "",
   loadReplayPath = ""
 ) =
@@ -589,7 +597,8 @@ proc runServerLoop*(
   httpServer.waitUntilReady()
 
   var
-    sim = initSimServer()
+    currentSeed = seed
+    sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
 
   while true:
@@ -602,6 +611,7 @@ proc runServerLoop*(
       rewardViewers: seq[WebSocket] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
+      shouldReset = false
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -615,7 +625,17 @@ proc runServerLoop*(
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
 
-        if not replayLoaded:
+        if not replayLoaded and appState.resetRequested:
+          shouldReset = true
+          appState.resetRequested = false
+          for _, value in appState.playerIndices.mpairs:
+            value = 0x7fffffff
+          for _, value in appState.inputMasks.mpairs:
+            value = 0
+          for _, value in appState.lastAppliedMasks.mpairs:
+            value = 0
+
+        if not replayLoaded and not shouldReset:
           for websocket in appState.playerIndices.keys:
             if appState.playerIndices[websocket] != 0x7fffffff:
               continue
@@ -665,6 +685,38 @@ proc runServerLoop*(
           appState.globalViewers[websocket].replaySeekTick = -1
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+
+    if shouldReset:
+      inc currentSeed
+      sim = initSimServer(currentSeed)
+      replayWriter.lastMasks.setLen(0)
+      sockets.setLen(0)
+      playerIndices.setLen(0)
+      rewardViewers.setLen(0)
+      {.gcsafe.}:
+        withLock appState.lock:
+          for websocket in appState.playerIndices.keys:
+            let address = appState.playerAddresses.getOrDefault(
+              websocket,
+              "unknown"
+            )
+            appState.playerIndices[websocket] = sim.addPlayer(address)
+            appState.inputMasks[websocket] = 0
+            appState.lastAppliedMasks[websocket] = 0
+            sockets.add(websocket)
+            playerIndices.add(appState.playerIndices[websocket])
+          replayWriter.lastMasks.setLen(sim.players.len)
+          for websocket in appState.rewardViewers.keys:
+            rewardViewers.add(websocket)
+
+      let rewardPacket = sim.buildRewardPacket()
+      for i in 0 ..< sockets.len:
+        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
+        sockets[i].send(frameBlob, BinaryMessage)
+      for websocket in rewardViewers:
+        websocket.send(rewardPacket, TextMessage)
+      runFrameLimiter(lastTick)
+      continue
 
     if replayLoaded:
       for seekTick in replaySeekTicks:
