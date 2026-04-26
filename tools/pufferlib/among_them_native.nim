@@ -24,12 +24,12 @@ type
     inputs: seq[InputState]
     prevInputs: seq[InputState]
     rewardSnapshot: seq[int]
+    taskDistanceMaps: seq[seq[int]]
     playerCount: int
     seed: int
 
 var
   envs: seq[NativeEnv]
-  taskDistanceMaps: seq[seq[int]]
   lastError = ""
 
 proc repoRoot(): string =
@@ -133,12 +133,12 @@ proc buildTaskDistanceMap(sim: SimServer, taskIndex: int): seq[int] =
       queue[tail] = nextIndex
       inc tail
 
-proc ensureTaskDistanceMaps(sim: SimServer) =
-  if taskDistanceMaps.len == sim.tasks.len:
+proc ensureTaskDistanceMaps(env: NativeEnv) =
+  if env.taskDistanceMaps.len == env.sim.tasks.len:
     return
-  taskDistanceMaps.setLen(sim.tasks.len)
-  for taskIndex in 0 ..< sim.tasks.len:
-    taskDistanceMaps[taskIndex] = sim.buildTaskDistanceMap(taskIndex)
+  env.taskDistanceMaps.setLen(env.sim.tasks.len)
+  for taskIndex in 0 ..< env.sim.tasks.len:
+    env.taskDistanceMaps[taskIndex] = env.sim.buildTaskDistanceMap(taskIndex)
 
 proc taskCompleted(env: NativeEnv, playerIndex, taskIndex: int): bool =
   taskIndex >= 0 and
@@ -157,15 +157,15 @@ proc playerInTask(env: NativeEnv, playerIndex, taskIndex: int): bool =
   px >= task.x and px < task.x + task.w and py >= task.y and py < task.y + task.h
 
 proc nearestAssignedTask(env: NativeEnv, playerIndex: int): int =
-  env.sim.ensureTaskDistanceMaps()
+  env.ensureTaskDistanceMaps()
   let player = env.sim.players[playerIndex]
   var bestDistance = NoPathDistance
   for taskIndex in player.assignedTasks:
-    if taskIndex < 0 or taskIndex >= taskDistanceMaps.len:
+    if taskIndex < 0 or taskIndex >= env.taskDistanceMaps.len:
       continue
     if env.taskCompleted(playerIndex, taskIndex):
       continue
-    let distance = taskDistanceMaps[taskIndex][mapIndex(player.x, player.y)]
+    let distance = env.taskDistanceMaps[taskIndex][mapIndex(player.x, player.y)]
     if distance < bestDistance:
       bestDistance = distance
       result = taskIndex
@@ -206,12 +206,12 @@ proc axisMask(delta, velocity: int, negativeMask, positiveMask: uint8, config: G
   0
 
 proc pathWaypoint(env: NativeEnv, taskIndex, startX, startY: int): tuple[found: bool, x, y: int] =
-  if taskIndex < 0 or taskIndex >= taskDistanceMaps.len:
+  if taskIndex < 0 or taskIndex >= env.taskDistanceMaps.len:
     return
   var
     x = startX
     y = startY
-    distance = taskDistanceMaps[taskIndex][mapIndex(x, y)]
+    distance = env.taskDistanceMaps[taskIndex][mapIndex(x, y)]
   if distance >= NoPathDistance:
     return
   result = (true, x, y)
@@ -226,7 +226,7 @@ proc pathWaypoint(env: NativeEnv, taskIndex, startX, startY: int): tuple[found: 
         ny = y + delta[1]
       if not env.sim.canOccupy(nx, ny):
         continue
-      let nextDistance = taskDistanceMaps[taskIndex][mapIndex(nx, ny)]
+      let nextDistance = env.taskDistanceMaps[taskIndex][mapIndex(nx, ny)]
       if nextDistance < bestDistance:
         bestX = nx
         bestY = ny
@@ -287,7 +287,7 @@ proc copyStateObservations(env: var NativeEnv, observations: ptr cfloat, outputB
   if observations.isNil:
     raise newException(ValueError, "Observation pointer is nil.")
 
-  env.sim.ensureTaskDistanceMaps()
+  env.ensureTaskDistanceMaps()
   let output = cast[ptr UncheckedArray[cfloat]](observations)
   for playerIndex in 0 ..< env.playerCount:
     let
