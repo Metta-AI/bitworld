@@ -1637,18 +1637,6 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc byteClamp(value: int): uint8 =
-  uint8(clamp(value, 0, 255))
-
-proc fractionByte(value, maxValue: int): uint8 =
-  if maxValue <= 0:
-    return 0
-  byteClamp(value * 255 div maxValue)
-
-proc signedByte(value, maxAbs: int): uint8 =
-  let scale = max(1, maxAbs)
-  byteClamp((clamp(value, -scale, scale) + scale) * 255 div (scale * 2))
-
 proc renderStatePointShadowed(
   sim: SimServer,
   originMx, originMy, worldX, worldY: int
@@ -1681,9 +1669,6 @@ proc renderStateWorldPointVisible(
     worldY
   )
 
-proc slotOffset(base, slot, width: int): int =
-  base + slot * width
-
 proc writeRenderStateHeader(
   sim: SimServer,
   playerIndex: int,
@@ -1710,36 +1695,40 @@ proc writeRenderStateHeader(
     let
       player = sim.players[playerIndex]
       view = sim.playerView(playerIndex)
+      speedScale = max(1, sim.config.maxSpeed)
     selfAlive = if player.alive: 1'u8 else: 0'u8
-    selfRole = byteClamp(ord(player.role))
-    selfScreenX = byteClamp(player.x - SpriteDrawOffX - view.cameraX)
-    selfScreenY = byteClamp(player.y - SpriteDrawOffY - view.cameraY)
-    selfVelX = signedByte(player.velX, sim.config.maxSpeed)
-    selfVelY = signedByte(player.velY, sim.config.maxSpeed)
-    killCooldown = fractionByte(player.killCooldown, sim.config.killCooldownTicks)
-    taskProgress = fractionByte(player.taskProgress, sim.config.taskCompleteTicks)
-    activeTask = byteClamp(player.activeTask + 1)
-    buttonCallsUsed = byteClamp(player.buttonCallsUsed)
+    selfRole = uint8(ord(player.role))
+    selfScreenX = uint8(clamp(player.x - SpriteDrawOffX - view.cameraX, 0, 255))
+    selfScreenY = uint8(clamp(player.y - SpriteDrawOffY - view.cameraY, 0, 255))
+    selfVelX = uint8((clamp(player.velX, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    selfVelY = uint8((clamp(player.velY, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    if sim.config.killCooldownTicks > 0:
+      killCooldown = uint8(clamp(player.killCooldown * 255 div sim.config.killCooldownTicks, 0, 255))
+    if sim.config.taskCompleteTicks > 0:
+      taskProgress = uint8(clamp(player.taskProgress * 255 div sim.config.taskCompleteTicks, 0, 255))
+    activeTask = uint8(player.activeTask + 1)
+    buttonCallsUsed = uint8(player.buttonCallsUsed)
     viewerIsGhost = if view.viewerIsGhost: 1'u8 else: 0'u8
 
   if sim.phase == Voting and playerIndex >= 0 and playerIndex < sim.voteState.cursor.len:
-    voteCursor = byteClamp(sim.voteState.cursor[playerIndex] + 1)
+    voteCursor = uint8(clamp(sim.voteState.cursor[playerIndex] + 1, 0, 255))
   if sim.phase == Voting:
     for vote in sim.voteState.votes:
       if vote == -2:
         inc skipVotes
-    voteTimer = fractionByte(sim.voteState.voteTimer, sim.config.voteTimerTicks)
+    if sim.config.voteTimerTicks > 0:
+      voteTimer = uint8(clamp(sim.voteState.voteTimer * 255 div sim.config.voteTimerTicks, 0, 255))
   if sim.phase == VoteResult:
-    ejectedPlayer = byteClamp(sim.voteState.ejectedPlayer + 1)
+    ejectedPlayer = uint8(clamp(sim.voteState.ejectedPlayer + 1, 0, 255))
 
   var offset = 0
   template put(value: uint8) =
     output[offset] = value
     inc offset
 
-  put byteClamp(ord(sim.phase))
-  put byteClamp(playerIndex + 1)
-  put byteClamp(sim.players.len)
+  put uint8(ord(sim.phase))
+  put uint8(clamp(playerIndex + 1, 0, 255))
+  put uint8(sim.players.len)
   put selfAlive
   put selfRole
   put selfScreenX
@@ -1750,14 +1739,14 @@ proc writeRenderStateHeader(
   put taskProgress
   put activeTask
   put buttonCallsUsed
-  put byteClamp(sim.totalTasksRemaining())
+  put uint8(sim.totalTasksRemaining())
   put viewerIsGhost
-  put byteClamp(sim.tickCount mod 256)
+  put uint8(sim.tickCount mod 256)
   put voteCursor
-  put byteClamp(skipVotes)
+  put uint8(skipVotes)
   put voteTimer
   put ejectedPlayer
-  put byteClamp(ord(sim.winner))
+  put uint8(ord(sim.winner))
   put(if sim.timeLimitReached: 1'u8 else: 0'u8)
   doAssert offset == RenderStateHeaderFeatures
 
@@ -1797,23 +1786,23 @@ proc writeRenderStatePlayerSlot(
 ) =
   let
     player = sim.players[targetIndex]
-    base = slotOffset(RenderStatePlayerOffset, targetIndex, RenderStatePlayerFeatures)
+    base = RenderStatePlayerOffset + targetIndex * RenderStatePlayerFeatures
     roleFlag =
       if targetIndex == playerIndex or sim.phase == GameOver:
         if player.role == Imposter: RenderPlayerRoleImposter else: 0'u8
       else:
         0'u8
   output[base] = RenderKindPlayer
-  output[base + 1] = byteClamp(sx)
-  output[base + 2] = byteClamp(sy)
+  output[base + 1] = uint8(clamp(sx, 0, 255))
+  output[base + 2] = uint8(clamp(sy, 0, 255))
   output[base + 3] = player.color
   output[base + 4] = flags or roleFlag
-  output[base + 5] =
-    if targetIndex == playerIndex: signedByte(player.velX, sim.config.maxSpeed) else: 0'u8
-  output[base + 6] =
-    if targetIndex == playerIndex: signedByte(player.velY, sim.config.maxSpeed) else: 0'u8
-  output[base + 7] =
-    if targetIndex == playerIndex: fractionByte(player.killCooldown, sim.config.killCooldownTicks) else: 0'u8
+  if targetIndex == playerIndex:
+    let speedScale = max(1, sim.config.maxSpeed)
+    output[base + 5] = uint8((clamp(player.velX, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    output[base + 6] = uint8((clamp(player.velY, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
+    if sim.config.killCooldownTicks > 0:
+      output[base + 7] = uint8(clamp(player.killCooldown * 255 div sim.config.killCooldownTicks, 0, 255))
 
 proc writeRenderStatePlayingPlayers(
   sim: SimServer,
@@ -1901,8 +1890,8 @@ proc writeRenderStateUiPlayers(
       for vote in sim.voteState.votes:
         if vote == i:
           inc votes
-      output[slotOffset(RenderStatePlayerOffset, i, RenderStatePlayerFeatures) + 7] =
-        byteClamp(votes)
+      output[RenderStatePlayerOffset + i * RenderStatePlayerFeatures + 7] =
+        uint8(clamp(votes, 0, 255))
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej >= 0 and ej < n:
@@ -1965,12 +1954,12 @@ proc writeRenderStateBodies(
     ):
       continue
     let
-      base = slotOffset(RenderStateBodyOffset, slot, RenderStateBodyFeatures)
+      base = RenderStateBodyOffset + slot * RenderStateBodyFeatures
       sx = body.x - SpriteDrawOffX - cameraX
       sy = body.y - SpriteDrawOffY - cameraY
     output[base] = RenderKindBody
-    output[base + 1] = byteClamp(sx)
-    output[base + 2] = byteClamp(sy)
+    output[base + 1] = uint8(clamp(sx, 0, 255))
+    output[base + 2] = uint8(clamp(sy, 0, 255))
     output[base + 3] = body.color
     output[base + 4] = 1
     inc slot
@@ -2009,7 +1998,7 @@ proc writeRenderStateTasks(
       iconOnScreen =
         iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
         iconSx < ScreenWidth and iconSy < ScreenHeight
-      base = slotOffset(RenderStateTaskOffset, taskIndex, RenderStateTaskFeatures)
+      base = RenderStateTaskOffset + taskIndex * RenderStateTaskFeatures
     var flags = RenderTaskAssigned
     if completed:
       flags = flags or RenderTaskCompleted
@@ -2019,14 +2008,15 @@ proc writeRenderStateTasks(
       flags = flags or RenderTaskActive
     output[base] = RenderKindTask
     output[base + 3] = flags
-    output[base + 4] = fractionByte(player.taskProgress, sim.config.taskCompleteTicks)
-    output[base + 7] = byteClamp(taskIndex + 1)
+    if sim.config.taskCompleteTicks > 0:
+      output[base + 4] = uint8(clamp(player.taskProgress * 255 div sim.config.taskCompleteTicks, 0, 255))
+    output[base + 7] = uint8(taskIndex + 1)
     if completed:
       continue
     if iconOnScreen:
       flags = flags or RenderTaskIconVisible
-      output[base + 1] = byteClamp(iconSx)
-      output[base + 2] = byteClamp(iconSy)
+      output[base + 1] = uint8(clamp(iconSx, 0, 255))
+      output[base + 2] = uint8(clamp(iconSy, 0, 255))
     elif sim.config.showTaskArrows:
       let
         px = float(player.x + CollisionW div 2 - view.cameraX)
@@ -2055,8 +2045,8 @@ proc writeRenderStateTasks(
           ex = px + dx * (ey - py) / dy
           ex = clamp(ex, minX, maxX)
         flags = flags or RenderTaskArrowVisible
-        output[base + 5] = byteClamp(int(ex))
-        output[base + 6] = byteClamp(int(ey))
+        output[base + 5] = uint8(int(ex))
+        output[base + 6] = uint8(int(ey))
     output[base + 3] = flags
 
 proc writeRenderStateObservation*(
