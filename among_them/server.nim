@@ -9,6 +9,7 @@ type
     resetRequested: bool
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
+    chatMessages: Table[WebSocket, string]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
@@ -485,6 +486,7 @@ proc initAppState() =
   appState.replayLoaded = false
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
+  appState.chatMessages = initTable[WebSocket, string]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
@@ -506,6 +508,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
+  appState.chatMessages.del(websocket)
   appState.playerAddresses.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
@@ -582,6 +585,10 @@ proc websocketHandler(
               appState.lastAppliedMasks[websocket] = 0
             else:
               appState.inputMasks[websocket] = mask
+          elif isChatPacket(message.data) and
+              not appState.replayLoaded and
+              websocket in appState.playerIndices:
+            appState.chatMessages[websocket] = blobToChat(message.data)
   of ErrorEvent:
     {.gcsafe.}:
       withLock appState.lock:
@@ -691,6 +698,7 @@ proc runServerLoop*(
         if not replayLoaded and appState.resetRequested:
           shouldReset = true
           appState.resetRequested = false
+          appState.chatMessages.clear()
         for websocket in appState.closedSockets:
           if not replayLoaded and websocket in appState.playerIndices:
             let playerIndex = appState.playerIndices[websocket]
@@ -750,6 +758,14 @@ proc runServerLoop*(
             ))
             replayWriter.lastMasks[playerIndex] = currentMask
           appState.lastAppliedMasks[websocket] = currentMask
+        if not replayLoaded:
+          for websocket, message in appState.chatMessages.pairs:
+            let playerIndex = appState.playerIndices.getOrDefault(
+              websocket,
+              -1
+            )
+            sim.addVotingChat(playerIndex, message)
+          appState.chatMessages.clear()
         spectatorList = appState.spectators
         for websocket, state in appState.globalViewers.pairs:
           globalViewers.add(websocket)
