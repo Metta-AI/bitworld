@@ -218,6 +218,11 @@ type
     timeLimitReached*: bool
     needsReregister*: bool
 
+  PlayerView* = object
+    cameraX*, cameraY*: int
+    originMx*, originMy*: int
+    viewerIsGhost*: bool
+
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
   getCurrentDir() / ".." / "client" / "data"
@@ -1140,6 +1145,36 @@ proc blitSpriteShadowed*(
       if colorIndex != TransparentColorIndex:
         fb.putPixel(screenX + x, screenY + y, ShadowMap[colorIndex and 0x0F])
 
+proc playerView*(sim: SimServer, playerIndex: int): PlayerView =
+  ## Returns the canonical per-player camera and visibility origin.
+  let
+    player = sim.players[playerIndex]
+    spriteX = player.x - SpriteDrawOffX
+    spriteY = player.y - SpriteDrawOffY
+    centerX = spriteX + SpriteSize div 2
+    centerY = spriteY + SpriteSize div 2
+  result.cameraX = centerX - ScreenWidth div 2
+  result.cameraY = centerY - ScreenHeight div 2
+  result.originMx = player.x + CollisionW div 2
+  result.originMy = player.y + CollisionH div 2
+  result.viewerIsGhost = not player.alive
+
+proc screenPointInFrame*(view: PlayerView, worldX, worldY: int): bool =
+  ## Returns true when a world point lands inside this player's camera frame.
+  let
+    sx = worldX - view.cameraX
+    sy = worldY - view.cameraY
+  sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight
+
+proc screenPointVisible*(sim: SimServer, view: PlayerView, worldX, worldY: int): bool =
+  ## Returns true when a world point is visible in this player's rendered view.
+  let
+    sx = worldX - view.cameraX
+    sy = worldY - view.cameraY
+  if not screenPointInFrame(view, worldX, worldY):
+    return false
+  view.viewerIsGhost or not sim.shadowBuf[sy * ScreenWidth + sx]
+
 proc isWall*(sim: SimServer, mx, my: int): bool =
   if mx < 0 or my < 0 or mx >= MapWidth or my >= MapHeight:
     return true
@@ -1485,12 +1520,9 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   let
     player = sim.players[playerIndex]
-    spriteX = player.x - SpriteDrawOffX
-    spriteY = player.y - SpriteDrawOffY
-    centerX = spriteX + SpriteSize div 2
-    centerY = spriteY + SpriteSize div 2
-    cameraX = centerX - ScreenWidth div 2
-    cameraY = centerY - ScreenHeight div 2
+    view = sim.playerView(playerIndex)
+    cameraX = view.cameraX
+    cameraY = view.cameraY
 
   for y in 0 ..< ScreenHeight:
     for x in 0 ..< ScreenWidth:
@@ -1501,10 +1533,8 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         sim.fb.putPixel(x, y, sim.mapPixels[mapIndex(mx, my)])
 
   let
-    viewerIsGhost = not player.alive
-    originMx = player.x + CollisionW div 2
-    originMy = player.y + CollisionH div 2
-  sim.castShadows(originMx, originMy, cameraX, cameraY)
+    viewerIsGhost = view.viewerIsGhost
+  sim.castShadows(view.originMx, view.originMy, cameraX, cameraY)
 
   if not viewerIsGhost:
     for sy in 0 ..< ScreenHeight:
@@ -1524,11 +1554,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
     let
       bsx = body.x - SpriteDrawOffX - cameraX
       bsy = body.y - SpriteDrawOffY - cameraY
-      bcx = body.x + CollisionW div 2 - cameraX
-      bcy = body.y + CollisionH div 2 - cameraY
-    if bcx < 0 or bcx >= ScreenWidth or bcy < 0 or bcy >= ScreenHeight:
-      continue
-    if not viewerIsGhost and sim.shadowBuf[bcy * ScreenWidth + bcx]:
+    if not sim.screenPointVisible(view, body.x + CollisionW div 2, body.y + CollisionH div 2):
       continue
     sim.fb.blitSpriteOutlined(sim.bodySprite, bsx, bsy, body.color, false)
 
@@ -1550,12 +1576,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       sy = p.y - SpriteDrawOffY - cameraY
     if p.alive:
       if i != playerIndex:
-        let
-          pcx = p.x + CollisionW div 2 - cameraX
-          pcy = p.y + CollisionH div 2 - cameraY
-        if pcx < 0 or pcx >= ScreenWidth or pcy < 0 or pcy >= ScreenHeight:
-          continue
-        if not viewerIsGhost and sim.shadowBuf[pcy * ScreenWidth + pcx]:
+        if not sim.screenPointVisible(view, p.x + CollisionW div 2, p.y + CollisionH div 2):
           continue
       sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, p.color, p.flipH)
     elif viewerIsGhost:

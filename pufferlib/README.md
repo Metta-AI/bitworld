@@ -32,6 +32,11 @@ tools/runlogs/among_them_pufferlib_training/among_them_policy.pt
 For `among_them`, the same policy controls all five players during training through
 the native Nim bridge.
 
+`among_them` also supports `--observation-mode state` for fast native-state
+training. State observations use the same per-player camera and visibility gate
+as rendered frames; teacher actions are available to the trainer separately and
+are not included in the policy observation.
+
 ## Play Among Them
 
 Train or reuse a checkpoint, then run one PufferLib policy player with four Nim

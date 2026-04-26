@@ -17,6 +17,9 @@ from bitworld_pufferlib import (
     ENV_SPECS,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    STATE_FEATURES,
+    STATE_TEACHER_ACTION_COUNT,
+    STATE_TEACHER_FEATURE_OFFSET,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
@@ -149,6 +152,34 @@ class BitWorldSmokeTest(unittest.TestCase):
         np.testing.assert_array_equal(env._truncations, np.ones(env.total_agents, dtype=np.float32))
         self.assertEqual(len(completed), env.total_agents)
         self.assertEqual(max(item.score for item in completed), 100.0)
+
+    def test_among_them_state_observations_do_not_leak_hidden_roles(self) -> None:
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=2,
+            frame_stack=1,
+            action_repeat=1,
+            base_seed=99,
+            observation_mode="state",
+        )
+        self.addCleanup(env.close)
+
+        obs = env.reset()
+        self.assertEqual(obs.shape, (env.total_agents, STATE_FEATURES))
+        teacher_slice = obs[:, STATE_TEACHER_FEATURE_OFFSET : STATE_TEACHER_FEATURE_OFFSET + STATE_TEACHER_ACTION_COUNT]
+        np.testing.assert_array_equal(teacher_slice, np.zeros_like(teacher_slice))
+
+        other_feature_offset = 11
+        other_feature_count = 5
+        for viewer_index in range(env.total_agents):
+            for other_index in range(env.total_agents):
+                if other_index == viewer_index:
+                    continue
+                role_feature = other_feature_offset + other_index * other_feature_count + 3
+                cooldown_feature = other_feature_offset + other_index * other_feature_count + 4
+                self.assertEqual(obs[viewer_index, role_feature], 0.0)
+                self.assertEqual(obs[viewer_index, cooldown_feature], 0.0)
 
 
 if __name__ == "__main__":
