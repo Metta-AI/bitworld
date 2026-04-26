@@ -912,12 +912,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
         frameBlob = blobFromBytes(sim.proxyFrame(pi))
       else:
         frameBlob = blobFromBytes(sim.render(pi))
-      try:
-        sockets[i].send(frameBlob, BinaryMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(sockets[i])
+      sockets[i].send(frameBlob, BinaryMessage)
 
     runFrameLimiter(lastTick)
 

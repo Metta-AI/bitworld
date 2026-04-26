@@ -860,12 +860,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
 
     for i in 0 ..< sockets.len:
       let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
-      try:
-        sockets[i].send(frameBlob, BinaryMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(sockets[i])
+      sockets[i].send(frameBlob, BinaryMessage)
 
     runFrameLimiter(lastTick)
 

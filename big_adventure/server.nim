@@ -691,20 +691,10 @@ proc runServerLoop*(
         else:
           sim.render(playerIndices[i])
       let frameBlob = blobFromBytes(framePacket)
-      try:
-        sockets[i].send(frameBlob, BinaryMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(sockets[i])
+      sockets[i].send(frameBlob, BinaryMessage)
 
     for websocket in rewardViewers:
-      try:
-        websocket.send(rewardPacket, TextMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(websocket)
+      websocket.send(rewardPacket, TextMessage)
 
     for i in 0 ..< globalViewers.len:
       var nextState: GlobalViewerState
@@ -719,15 +709,10 @@ proc runServerLoop*(
       )
       if packet.len == 0:
         continue
-      try:
-        globalViewers[i].send(blobFromBytes(packet), BinaryMessage)
-        {.gcsafe.}:
-          withLock appState.lock:
-            if globalViewers[i] in appState.globalViewers:
-              appState.globalViewers[globalViewers[i]] = nextState
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(globalViewers[i])
+      globalViewers[i].send(blobFromBytes(packet), BinaryMessage)
+      {.gcsafe.}:
+        withLock appState.lock:
+          if globalViewers[i] in appState.globalViewers:
+            appState.globalViewers[globalViewers[i]] = nextState
 
     runFrameLimiter(lastTick)
