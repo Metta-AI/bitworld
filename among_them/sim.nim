@@ -1383,10 +1383,8 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
         iconSy = task.y - SpriteSize - 2 + bobY - cameraY
       if playerIndex < task.completed.len and task.completed[playerIndex]:
         continue
-      let
-        tcx = task.x + task.w div 2 - cameraX
-        tcy = task.y + task.h div 2 - cameraY
-      if tcx < 0 or tcx >= ScreenWidth or tcy < 0 or tcy >= ScreenHeight:
+      if iconSx + SpriteSize <= 0 or iconSy + SpriteSize <= 0 or
+          iconSx >= ScreenWidth or iconSy >= ScreenHeight:
         continue
       sim.fb.blitSpriteRaw(sim.taskIconSprite, iconSx, iconSy)
       if player.activeTask == t and player.taskProgress > 0:
@@ -1409,15 +1407,24 @@ proc buildFramePacket*(sim: var SimServer, playerIndex: int): seq[uint8] =
       if playerIndex < task.completed.len and task.completed[playerIndex]:
         continue
       let
-        tcx = task.x + task.w div 2 - cameraX
-        tcy = task.y + task.h div 2 - cameraY
-      if tcx >= 0 and tcx < ScreenWidth and tcy >= 0 and tcy < ScreenHeight:
+        bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+        bobY =
+          if player.activeTask == t:
+            0
+          else:
+            bob[(sim.tickCount div 3) mod bob.len]
+        iconX = task.x + task.w div 2 - cameraX
+        iconY = task.y - SpriteSize div 2 - 2 + bobY - cameraY
+        iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
+        iconSy = task.y - SpriteSize - 2 + bobY - cameraY
+      if iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
+          iconSx < ScreenWidth and iconSy < ScreenHeight:
         continue
       let
         px = float(player.x + CollisionW div 2 - cameraX)
         py = float(player.y + CollisionH div 2 - cameraY)
-        dx = float(tcx) - px
-        dy = float(tcy) - py
+        dx = float(iconX) - px
+        dy = float(iconY) - py
       if abs(dx) < 0.5 and abs(dy) < 0.5:
         continue
       var ex, ey: float

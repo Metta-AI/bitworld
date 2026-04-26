@@ -6,8 +6,8 @@ const
   PlayerScreenY = ScreenHeight div 2
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
-  FullFrameFitMaxErrors = 180
-  LocalFrameFitMaxErrors = 180
+  FullFrameFitMaxErrors = 420
+  LocalFrameFitMaxErrors = 320
   FrameFitMinCompared = 12000
   LocalFrameSearchRadius = 8
   PlayerIgnoreRadius = 9
@@ -53,8 +53,9 @@ const
   JiggleDuration = 16
   TaskHoldPadding = 8
   CrewmateSearchRadius = 1
-  CrewmateMaxMisses = 3
+  CrewmateMaxMisses = 8
   CrewmateMinStablePixels = 8
+  CrewmateMinBodyPixels = 8
 
 type
   TileKnowledge = enum
@@ -147,6 +148,7 @@ type
     path: seq[PathStep]
     radarDots: seq[RadarDot]
     radarTasks: seq[bool]
+    checkoutTasks: seq[bool]
     taskStates: seq[TaskState]
     taskIconMisses: seq[int]
     visibleTaskIcons: seq[IconMatch]
@@ -500,6 +502,20 @@ proc stableCrewmateColor(color: uint8): bool =
     color != TintColor and
     color != ShadeTintColor
 
+proc playerBodyColor(color: uint8): bool =
+  ## Returns true when a frame color can be a crewmate body.
+  for playerColor in PlayerColors:
+    if color == playerColor:
+      return true
+    if color == ShadowMap[playerColor and 0x0f]:
+      return true
+
+proc crewmatePixelMatches(spriteColor, frameColor: uint8): bool =
+  ## Returns true when one crewmate sprite pixel matches the frame.
+  if spriteColor == TintColor or spriteColor == ShadeTintColor:
+    return playerBodyColor(frameColor)
+  frameColor == spriteColor
+
 proc matchesCrewmate(
   bot: Bot,
   x,
@@ -508,9 +524,11 @@ proc matchesCrewmate(
 ): bool =
   ## Returns true when stable crewmate pixels match the frame.
   var
-    matched = 0
+    bodyMatched = 0
+    bodyPixels = 0
+    matchedStable = 0
     misses = 0
-    stable = 0
+    stablePixels = 0
   for sy in 0 ..< bot.playerSprite.height:
     for sx in 0 ..< bot.playerSprite.width:
       let srcX =
@@ -521,22 +539,30 @@ proc matchesCrewmate(
       let color = bot.playerSprite.pixels[
         bot.playerSprite.spriteIndex(srcX, sy)
       ]
-      if not stableCrewmateColor(color):
+      if color == TransparentColorIndex:
         continue
-      inc stable
+      if stableCrewmateColor(color):
+        inc stablePixels
+      else:
+        inc bodyPixels
       let
         fx = x + sx
         fy = y + sy
       if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
         inc misses
-      elif bot.unpacked[fy * ScreenWidth + fx] == color:
-        inc matched
+      elif crewmatePixelMatches(color, bot.unpacked[fy * ScreenWidth + fx]):
+        if stableCrewmateColor(color):
+          inc matchedStable
+        else:
+          inc bodyMatched
       else:
         inc misses
       if misses > CrewmateMaxMisses:
         return false
-  stable >= CrewmateMinStablePixels and
-    matched >= stable - CrewmateMaxMisses
+  stablePixels >= CrewmateMinStablePixels and
+    matchedStable >= CrewmateMinStablePixels and
+    bodyPixels >= CrewmateMinBodyPixels and
+    bodyMatched >= CrewmateMinBodyPixels
 
 proc addCrewmateMatch(
   matches: var seq[CrewmateMatch],
@@ -587,20 +613,22 @@ proc projectedRadarDot(
   bot: Bot,
   task: TaskStation
 ): tuple[visible: bool, x: int, y: int] =
-  ## Projects an offscreen task center to its expected radar edge pixel.
+  ## Projects an offscreen task icon to its expected radar edge pixel.
   if not bot.localized:
     return
   let
-    center = task.taskCenter()
-    tcx = center.x - bot.cameraX
-    tcy = center.y - bot.cameraY
-  if tcx >= 0 and tcx < ScreenWidth and tcy >= 0 and tcy < ScreenHeight:
-    return (true, tcx, tcy)
+    iconSx = task.x + task.w div 2 - SpriteSize div 2 - bot.cameraX
+    iconSy = task.y - SpriteSize - 2 - bot.cameraY
+    iconX = iconSx + SpriteSize div 2
+    iconY = iconSy + SpriteSize div 2
+  if iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
+      iconSx < ScreenWidth and iconSy < ScreenHeight:
+    return (true, iconX, iconY)
   let
     px = float(bot.playerWorldX() + CollisionW div 2 - bot.cameraX)
     py = float(bot.playerWorldY() + CollisionH div 2 - bot.cameraY)
-    dx = float(tcx) - px
-    dy = float(tcy) - py
+    dx = float(iconX) - px
+    dy = float(iconY) - py
   if abs(dx) < 0.5 and abs(dy) < 0.5:
     return
   let
@@ -633,6 +661,8 @@ proc updateTaskGuesses(bot: var Bot) =
     bot.taskStates = newSeq[TaskState](bot.sim.tasks.len)
   if bot.radarTasks.len != bot.sim.tasks.len:
     bot.radarTasks = newSeq[bool](bot.sim.tasks.len)
+  if bot.checkoutTasks.len != bot.sim.tasks.len:
+    bot.checkoutTasks = newSeq[bool](bot.sim.tasks.len)
   for i in 0 ..< bot.radarTasks.len:
     bot.radarTasks[i] = false
   if not bot.localized:
@@ -649,6 +679,7 @@ proc updateTaskGuesses(bot: var Bot) =
           abs(dot.y - projected.y) <= RadarMatchTolerance:
         if bot.taskStates[i] != TaskCompleted:
           bot.radarTasks[i] = true
+          bot.checkoutTasks[i] = true
 
 proc projectedTaskIcon(
   bot: Bot,
@@ -728,6 +759,8 @@ proc updateTaskIcons(bot: var Bot) =
     bot.taskStates = newSeq[TaskState](bot.sim.tasks.len)
   if bot.taskIconMisses.len != bot.sim.tasks.len:
     bot.taskIconMisses = newSeq[int](bot.sim.tasks.len)
+  if bot.checkoutTasks.len != bot.sim.tasks.len:
+    bot.checkoutTasks = newSeq[bool](bot.sim.tasks.len)
   if not bot.localized:
     return
   bot.scanTaskIcons()
@@ -737,15 +770,21 @@ proc updateTaskIcons(bot: var Bot) =
       bot.taskStates[i] = TaskMandatory
       bot.taskIconMisses[i] = 0
     elif bot.taskHoldTicks == 0 and
-        bot.taskStates[i] == TaskMandatory and
         bot.taskIconClearAreaVisible(task) and
         not bot.taskIconMaybeVisibleFor(task) and
         (bot.radarTasks.len != bot.sim.tasks.len or not bot.radarTasks[i]) and
         bot.taskHoldIndex != i:
-      inc bot.taskIconMisses[i]
-      if bot.taskIconMisses[i] >= TaskIconMissThreshold:
-        bot.taskStates[i] = TaskCompleted
-        bot.taskIconMisses[i] = 0
+      if bot.taskStates[i] == TaskMandatory:
+        inc bot.taskIconMisses[i]
+        if bot.taskIconMisses[i] >= TaskIconMissThreshold:
+          bot.taskStates[i] = TaskCompleted
+          bot.checkoutTasks[i] = false
+          bot.taskIconMisses[i] = 0
+      elif bot.checkoutTasks[i]:
+        inc bot.taskIconMisses[i]
+        if bot.taskIconMisses[i] >= TaskIconMissThreshold:
+          bot.checkoutTasks[i] = false
+          bot.taskIconMisses[i] = 0
     else:
       bot.taskIconMisses[i] = 0
 
@@ -853,6 +892,12 @@ proc radarTaskCount(bot: Bot): int =
   ## Returns the number of current radar task candidates.
   for radarTask in bot.radarTasks:
     if radarTask:
+      inc result
+
+proc checkoutTaskCount(bot: Bot): int =
+  ## Returns the number of persistent checkout task candidates.
+  for checkoutTask in bot.checkoutTasks:
+    if checkoutTask:
       inc result
 
 proc cameraLockName(lock: CameraLock): string =
@@ -1065,6 +1110,32 @@ proc nearestTaskGoal(
     return
   if bot.goalIndex >= 0 and
       bot.goalIndex < bot.sim.tasks.len and
+      bot.taskStates.len == bot.sim.tasks.len and
+      bot.taskStates[bot.goalIndex] != TaskCompleted and
+      bot.checkoutTasks.len == bot.sim.tasks.len and
+      bot.checkoutTasks[bot.goalIndex]:
+    let goal = bot.taskGoalFor(bot.goalIndex, TaskMaybe)
+    if goal.found:
+      return goal
+  bestDistance = high(int)
+  for i in 0 ..< bot.sim.tasks.len:
+    if bot.checkoutTasks.len != bot.sim.tasks.len or
+        not bot.checkoutTasks[i]:
+      continue
+    if bot.taskStates.len == bot.sim.tasks.len and
+        bot.taskStates[i] == TaskCompleted:
+      continue
+    let goal = bot.taskGoalFor(i, TaskMaybe)
+    if not goal.found:
+      continue
+    let distance = bot.pathDistance(goal.x, goal.y)
+    if distance < bestDistance:
+      bestDistance = distance
+      result = goal
+  if result.found:
+    return
+  if bot.goalIndex >= 0 and
+      bot.goalIndex < bot.sim.tasks.len and
       bot.radarTasks.len == bot.sim.tasks.len and
       bot.radarTasks[bot.goalIndex]:
     let goal = bot.taskGoalFor(bot.goalIndex, TaskMaybe)
@@ -1222,6 +1293,8 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
     let task = bot.sim.tasks[bot.taskHoldIndex]
     if not bot.taskIconVisibleFor(task) and bot.taskIconClearAreaVisible(task):
       bot.taskStates[bot.taskHoldIndex] = TaskCompleted
+      if bot.checkoutTasks.len == bot.sim.tasks.len:
+        bot.checkoutTasks[bot.taskHoldIndex] = false
     else:
       bot.taskStates[bot.taskHoldIndex] = TaskMandatory
     bot.taskHoldIndex = -1
@@ -1325,6 +1398,7 @@ proc initBot(): Bot =
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
   result.radarTasks = newSeq[bool](result.sim.tasks.len)
+  result.checkoutTasks = newSeq[bool](result.sim.tasks.len)
   result.taskStates = newSeq[TaskState](result.sim.tasks.len)
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
   result.cameraX = clamp(ButtonX - 48, 0, MapWidth - ScreenWidth)
@@ -1510,9 +1584,14 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
     )
   if bot.taskStates.len == bot.sim.tasks.len:
     for i in 0 ..< bot.sim.tasks.len:
-      let isRadarTask =
-        bot.radarTasks.len == bot.sim.tasks.len and bot.radarTasks[i]
-      if bot.taskStates[i] != TaskMandatory and not isRadarTask:
+      let
+        isRadarTask =
+          bot.radarTasks.len == bot.sim.tasks.len and bot.radarTasks[i]
+        isCheckoutTask =
+          bot.checkoutTasks.len == bot.sim.tasks.len and bot.checkoutTasks[i]
+      if bot.taskStates[i] != TaskMandatory and
+          not isRadarTask and
+          not isCheckoutTask:
         continue
       let
         center = bot.sim.tasks[i].taskCenter()
@@ -1678,6 +1757,7 @@ proc pumpViewer(
     "crewmates masked: " & $bot.visibleCrewmates.len & "\n" &
     "radar dots: " & $bot.radarDots.len &
       " radar tasks=" & $bot.radarTaskCount() &
+      " checkout=" & $bot.checkoutTaskCount() &
       " task icons=" & $bot.visibleTaskIcons.len & "\n" &
     "tasks mandatory=" & $bot.taskStateCount(TaskMandatory) &
       " completed=" & $bot.taskStateCount(TaskCompleted) & "\n" &

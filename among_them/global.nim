@@ -499,6 +499,20 @@ proc spriteTaskObjectId(index: int): int =
   ## Returns the global protocol object id for a task bubble.
   TaskObjectBase + index
 
+proc taskStillNeeded(sim: SimServer, taskIndex: int): bool =
+  ## Returns true when any player still needs a task station.
+  for i in 0 ..< sim.players.len:
+    let player = sim.players[i]
+    if not player.hasTask(taskIndex):
+      continue
+    if taskIndex >= sim.tasks.len:
+      continue
+    if i >= sim.tasks[taskIndex].completed.len:
+      return true
+    if not sim.tasks[taskIndex].completed[i]:
+      return true
+  false
+
 proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   ## Returns the sprite id for a player in the global viewer.
   let
@@ -794,6 +808,8 @@ proc buildSpriteProtocolUpdates*(
   if sim.config.showTaskBubbles:
     let bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
     for i in 0 ..< sim.tasks.len:
+      if not sim.taskStillNeeded(i):
+        continue
       let
         task = sim.tasks[i]
         objectId = spriteTaskObjectId(i)
