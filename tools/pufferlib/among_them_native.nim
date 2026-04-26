@@ -4,6 +4,9 @@ import std/os
 
 const
   FramePixels = ScreenWidth * ScreenHeight
+  StepActive = 0.cint
+  StepTerminal = 1.cint
+  StepTruncated = 2.cint
 
 type
   NativeEnv = ref object
@@ -13,6 +16,7 @@ type
     rewardSnapshot: seq[int]
     playerCount: int
     seed: int
+    maxTicks: int
 
 var
   envs: seq[NativeEnv]
@@ -73,6 +77,7 @@ proc initNativeEnv(env: var NativeEnv) =
   try:
     var config = defaultGameConfig()
     config.seed = env.seed
+    config.maxTicks = env.maxTicks
     config.minPlayers = env.playerCount
     config.imposterCount = min(
       config.imposterCount,
@@ -94,12 +99,18 @@ proc initNativeEnv(env: var NativeEnv) =
 proc bitworld_at_last_error*(): cstring {.cdecl, exportc, dynlib.} =
   lastError.cstring
 
-proc bitworld_at_create*(seed, playerCount: cint): cint {.cdecl, exportc, dynlib.} =
+proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
+    if maxTicks < 0:
+      return setLastError("maxTicks must be non-negative.")
 
-    var env = NativeEnv(seed: int(seed), playerCount: int(playerCount))
+    var env = NativeEnv(
+      seed: int(seed),
+      playerCount: int(playerCount),
+      maxTicks: int(maxTicks)
+    )
     env.initNativeEnv()
     envs.add(env)
     cint(envs.high)
@@ -142,14 +153,20 @@ proc bitworld_at_step*(
 
     var env = envs[int(handle)]
     let actions = cast[ptr UncheckedArray[uint8]](actionMasks)
+    var stepResult = StepActive
     for _ in 0 ..< int(actionRepeat):
       for playerIndex in 0 ..< env.playerCount:
         env.prevInputs[playerIndex] = env.inputs[playerIndex]
         env.inputs[playerIndex] = decodeInputMask(actions[playerIndex])
       env.sim.step(env.inputs, env.prevInputs)
+      if env.sim.phase == GameOver:
+        stepResult =
+          if env.sim.timeLimitReached: StepTruncated
+          else: StepTerminal
+        break
     env.copyObservations(observations)
     env.copyRewardDeltas(rewards)
-    0
+    stepResult
   except CatchableError as e:
     setLastError(e.msg)
 

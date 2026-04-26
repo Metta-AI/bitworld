@@ -204,11 +204,13 @@ type
     rng*: Rand
     nextJoinOrder*: int
     tickCount*: int
+    gameStartTick*: int
     phase*: GamePhase
     voteState*: VoteState
     asciiSprites*: seq[Sprite]
     winner*: PlayerRole
     gameOverTimer*: int
+    timeLimitReached*: bool
     needsReregister*: bool
 
 proc clientDataDir*(): string =
@@ -407,7 +409,7 @@ proc validate(config: GameConfig) =
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
-      config.voteResultTicks < 0:
+      config.voteResultTicks < 0 or config.maxTicks < 0:
     raise newException(AmongThemError, "Timer config fields must not be negative.")
 
 proc update*(config: var GameConfig, jsonText: string) =
@@ -466,6 +468,7 @@ proc configJson*(config: GameConfig): string =
     "imposterCount": config.imposterCount,
     "voteTimerTicks": config.voteTimerTicks,
     "gameOverTicks": config.gameOverTicks,
+    "maxTicks": config.maxTicks,
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
     "showTaskArrows": config.showTaskArrows,
@@ -496,6 +499,8 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(ord(sim.phase))
   result.mixHashInt(ord(sim.winner))
   result.mixHashInt(sim.gameOverTimer)
+  result.mixHashInt(sim.gameStartTick)
+  result.mixHashBool(sim.timeLimitReached)
   result.mixHashBool(sim.needsReregister)
   result.mixHashInt(sim.nextJoinOrder)
   result.mixHashInt(sim.players.len)
@@ -656,6 +661,8 @@ proc startGame*(sim: var SimServer) =
     sim.players[i].assignedTasks =
       indices[0 ..< min(sim.config.tasksPerPlayer, indices.len)]
   sim.phase = Playing
+  sim.gameStartTick = sim.tickCount
+  sim.timeLimitReached = false
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -1291,16 +1298,31 @@ proc totalTasksRemaining*(sim: SimServer): int =
 proc allTasksDone*(sim: SimServer): bool =
   sim.totalTasksRemaining() == 0
 
-proc finishGame*(sim: var SimServer, winner: PlayerRole) =
+proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = false) =
   ## Moves to game over and awards all winning players.
   if sim.phase == GameOver:
     return
   sim.phase = GameOver
   sim.winner = winner
   sim.gameOverTimer = sim.config.gameOverTicks
+  sim.timeLimitReached = timeLimitReached
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == winner:
       sim.addReward(i, WinReward)
+
+proc gameTicksElapsed*(sim: SimServer): int =
+  ## Returns ticks elapsed since the current game left the lobby.
+  if sim.gameStartTick < 0:
+    return 0
+  max(0, sim.tickCount - sim.gameStartTick)
+
+proc maxTicksReached(sim: SimServer): bool =
+  sim.config.maxTicks > 0 and sim.phase in {Playing, Voting, VoteResult} and
+    sim.gameTicksElapsed() >= sim.config.maxTicks
+
+proc checkMaxTicks(sim: var SimServer) =
+  if sim.maxTicksReached():
+    sim.finishGame(Imposter, timeLimitReached = true)
 
 proc checkWinCondition*(sim: var SimServer) =
   let hasImposters = min(
@@ -1628,6 +1650,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.bodies = @[]
   result.players = @[]
   result.nextJoinOrder = 0
+  result.gameStartTick = -1
 
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
@@ -1635,6 +1658,8 @@ proc resetToLobby*(sim: var SimServer) =
   sim.players = @[]
   sim.nextJoinOrder = 0
   sim.tickCount = 0
+  sim.gameStartTick = -1
+  sim.timeLimitReached = false
   sim.needsReregister = true
   for task in sim.tasks.mitems:
     task.completed = @[]
@@ -1647,9 +1672,6 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
       sim.startGame()
     return
 
-  if sim.config.maxTicks > 0 and sim.tickCount >= sim.config.maxTicks and sim.phase == Playing:
-    sim.finishGame(Crewmate)
-
   if sim.phase == GameOver:
     dec sim.gameOverTimer
     if sim.gameOverTimer <= 0:
@@ -1661,6 +1683,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
     if sim.voteState.resultTimer <= 0:
       sim.applyVoteResult()
       sim.checkWinCondition()
+    sim.checkMaxTicks()
     return
 
   if sim.phase == Voting:
@@ -1689,6 +1712,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
           sim.voteState.votes[i] = cur
         if sim.allVotesCast():
           sim.tallyVotes()
+    sim.checkMaxTicks()
     return
 
   let bodiesBeforeTick = sim.bodies.len
@@ -1708,3 +1732,4 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
     sim.applyInput(playerIndex, input, prev, bodiesBeforeTick)
 
   sim.checkWinCondition()
+  sim.checkMaxTicks()
