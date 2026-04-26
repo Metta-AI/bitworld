@@ -131,6 +131,13 @@ type
     y: int
     flipH: bool
 
+  Room = object
+    name: string
+    x: int
+    y: int
+    w: int
+    h: int
+
   ViewerApp = ref object
     window: Window
     silky: Silky
@@ -183,6 +190,11 @@ type
     astarMicros: int
     lastMask: uint8
     lastThought: string
+    pendingChat: string
+    lastBodySeenX: int
+    lastBodySeenY: int
+    lastBodyReportX: int
+    lastBodyReportY: int
     intent: string
     goalX: int
     goalY: int
@@ -201,6 +213,37 @@ type
     visibleCrewmates: seq[CrewmateMatch]
     visibleBodies: seq[BodyMatch]
     visibleGhosts: seq[GhostMatch]
+
+const
+  Rooms = [
+    Room(name: "Upper Engine", x: 159, y: 62, w: 100, h: 112),
+    Room(name: "Reactor", x: 73, y: 184, w: 100, h: 112),
+    Room(name: "Reactor Hallway", x: 173, y: 174, w: 82, h: 136),
+    Room(name: "Electrial Hallway", x: 294, y: 409, w: 158, h: 38),
+    Room(name: "Electrial Hallway Bend", x: 259, y: 347, w: 88, h: 62),
+    Room(name: "Security", x: 255, y: 174, w: 73, h: 116),
+    Room(name: "Lower Engine", x: 159, y: 310, w: 100, h: 112),
+    Room(name: "Electrical", x: 347, y: 273, w: 105, h: 136),
+    Room(name: "Coms", x: 577, y: 411, w: 115, h: 82),
+    Room(name: "Coms Hallway", x: 577, y: 349, w: 118, h: 60),
+    Room(name: "Storage", x: 452, y: 318, w: 125, h: 175),
+    Room(name: "Admin Hallway", x: 452, y: 230, w: 141, h: 88),
+    Room(name: "Shields", x: 695, y: 344, w: 97, h: 96),
+    Room(name: "Nav Hallway", x: 717, y: 199, w: 90, h: 84),
+    Room(name: "Shields Hallway", x: 717, y: 283, w: 62, h: 61),
+    Room(name: "Admin", x: 593, y: 254, w: 102, h: 95),
+    Room(name: "Nav", x: 807, y: 180, w: 134, h: 103),
+    Room(name: "O2", x: 634, y: 199, w: 83, h: 45),
+    Room(name: "Weapons", x: 673, y: 47, w: 119, h: 152),
+    Room(name: "West Cafeteria", x: 428, y: 58, w: 32, h: 142),
+    Room(name: "Cafeteria", x: 460, y: 58, w: 152, h: 141),
+    Room(name: "North Cafeteria", x: 428, y: 0, w: 228, h: 58),
+    Room(name: "South Cafeteria", x: 452, y: 199, w: 182, h: 31),
+    Room(name: "East Cafeteria", x: 612, y: 58, w: 61, h: 141),
+    Room(name: "MedBay", x: 328, y: 140, w: 100, h: 117),
+    Room(name: "MedBay", x: 428, y: 210, w: 24, h: 47),
+    Room(name: "MedBay Hallway", x: 259, y: 85, w: 169, h: 55)
+  ]
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
@@ -266,6 +309,27 @@ proc playerWorldX(bot: Bot): int =
 proc playerWorldY(bot: Bot): int =
   ## Returns the inferred player collision Y coordinate.
   bot.cameraY + PlayerWorldOffY
+
+proc roomName(bot: Bot): string =
+  ## Returns the room containing the inferred player position.
+  if not bot.localized:
+    return "unknown"
+  let
+    px = bot.playerWorldX() + CollisionW div 2
+    py = bot.playerWorldY() + CollisionH div 2
+  for room in Rooms:
+    if px >= room.x and px < room.x + room.w and
+        py >= room.y and py < room.y + room.h:
+      return room.name
+  "unknown"
+
+proc roomNameAt(x, y: int): string =
+  ## Returns the room containing one world point.
+  for room in Rooms:
+    if x >= room.x and x < room.x + room.w and
+        y >= room.y and y < room.y + room.h:
+      return room.name
+  "unknown"
 
 proc taskCenter(task: TaskStation): tuple[x: int, y: int] =
   ## Returns the center pixel for a task station.
@@ -584,6 +648,11 @@ proc resetRoundState(bot: var Bot) =
   bot.controllerMask = 0
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
+  bot.pendingChat = ""
+  bot.lastBodySeenX = low(int)
+  bot.lastBodySeenY = low(int)
+  bot.lastBodyReportX = low(int)
+  bot.lastBodyReportY = low(int)
   bot.goalIndex = -1
   bot.goalName = ""
   bot.hasGoal = false
@@ -1770,6 +1839,36 @@ proc nearestBody(bot: Bot): tuple[found: bool, x: int, y: int] =
       bestDistance = distance
       result = (true, world.x, world.y)
 
+proc sameBody(ax, ay, bx, by: int): bool =
+  ## Returns true when two body sightings are probably the same body.
+  if bx == low(int) or by == low(int):
+    return false
+  heuristic(ax, ay, bx, by) <= BodySearchRadius + 4
+
+proc bodyRoomMessage(x, y: int): string =
+  ## Builds a short chat line that names a body's room.
+  let room = roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
+  if room == "unknown":
+    "body"
+  else:
+    "body in " & room
+
+proc queueBodySeen(bot: var Bot, x, y: int) =
+  ## Stores the room for a discovered body until voting opens.
+  if sameBody(x, y, bot.lastBodySeenX, bot.lastBodySeenY):
+    return
+  bot.lastBodySeenX = x
+  bot.lastBodySeenY = y
+  bot.pendingChat = bodyRoomMessage(x, y)
+
+proc queueBodyReport(bot: var Bot, x, y: int) =
+  ## Stores the room for a reported body until voting opens.
+  if sameBody(x, y, bot.lastBodyReportX, bot.lastBodyReportY):
+    return
+  bot.lastBodyReportX = x
+  bot.lastBodyReportY = y
+  bot.pendingChat = bodyRoomMessage(x, y)
+
 proc inReportRange(bot: Bot, targetX, targetY: int): bool =
   ## Returns true when the target point is in report range.
   let
@@ -2027,7 +2126,7 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   bot.thought("at task " & name & ", holding action")
   ButtonA
 
-proc reportBodyAction(bot: var Bot): uint8 =
+proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   ## Presses action to report a visible dead body.
   bot.intent = "reporting dead body"
   bot.desiredMask = ButtonA
@@ -2036,6 +2135,7 @@ proc reportBodyAction(bot: var Bot): uint8 =
   bot.path.setLen(0)
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
+  bot.queueBodyReport(x, y)
   bot.thought("reporting dead body")
   ButtonA
 
@@ -2189,9 +2289,10 @@ proc decideNextMask(bot: var Bot): uint8 =
   if not bot.isGhost:
     let body = bot.nearestBody()
     if body.found:
+      bot.queueBodySeen(body.x, body.y)
       if bot.inReportRange(body.x, body.y) and
           abs(bot.velocityX) + abs(bot.velocityY) <= 1:
-        return bot.reportBodyAction()
+        return bot.reportBodyAction(body.x, body.y)
       return bot.navigateToPoint(
         body.x,
         body.y,
@@ -2287,6 +2388,10 @@ proc initBot(): Bot =
   result.taskHoldIndex = -1
   result.imposterGoalIndex = -1
   result.goalIndex = -1
+  result.lastBodySeenX = low(int)
+  result.lastBodySeenY = low(int)
+  result.lastBodyReportX = low(int)
+  result.lastBodyReportY = low(int)
   result.cameraLock = NoLock
   result.role = RoleCrewmate
   result.intent = "waiting for first frame"
@@ -2340,6 +2445,8 @@ proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
         vec2(pixelScale, pixelScale),
         sampleColor(index)
       )
+  if bot.interstitial:
+    return
   let
     buttonX = ButtonX - bot.cameraX
     buttonY = ButtonY - bot.cameraY
@@ -2449,6 +2556,8 @@ proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
         vec2(max(1.0'f, scale * 2), max(1.0'f, scale * 2)),
         color
       )
+  if bot.interstitial:
+    return
   for i in 0 ..< bot.sim.tasks.len:
     let
       task = bot.sim.tasks[i]
@@ -2630,8 +2739,8 @@ proc pumpViewer(
     else:
       "goal: none\n"
   let infoText =
-    "status: " & (if connected: "connected" else: "reconnecting") & "\n" &
-    "url: " & url & "\n" &
+    "intent: " & bot.intent & "\n" &
+    "room: " & bot.roomName() & "\n" &
     "client tick: " & $bot.frameTick & "\n" &
     "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
     "timing center: " & $bot.centerMicros & "us (" &
@@ -2666,12 +2775,18 @@ proc pumpViewer(
     "tasks mandatory=" & $bot.taskStateCount(TaskMandatory) &
       " completed=" & $bot.taskStateCount(TaskCompleted) & "\n" &
     goalText &
-    "intent: " & bot.intent & "\n" &
     "path pixels: " & $bot.path.len & "\n" &
     "desired: " & inputMaskSummary(bot.desiredMask) & "\n" &
     "controller: " & inputMaskSummary(bot.controllerMask) & "\n" &
     "stuck: " & $bot.stuckFrames & " jiggle=" & $bot.jiggleTicks & "\n" &
-    "last thought: " & (if bot.lastThought.len > 0: bot.lastThought else: "waiting")
+    "last thought: " & (
+      if bot.lastThought.len > 0:
+        bot.lastThought
+      else:
+        "waiting"
+    ) & "\n" &
+    "status: " & (if connected: "connected" else: "reconnecting") & "\n" &
+    "url: " & url
   discard sk.drawText("Default", infoText, infoPos, ViewerText, infoSize.x, infoSize.y)
   sk.endUi()
   viewer.window.swapBuffers()
@@ -2738,6 +2853,11 @@ proc runBot(
           if nextMask != lastMask:
             ws.send(blobFromMask(nextMask), BinaryMessage)
             lastMask = nextMask
+          if bot.interstitial and
+              bot.pendingChat.len > 0 and
+              not bot.interstitialText.isGameOverText():
+            ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
+            bot.pendingChat = ""
         of Ping:
           ws.send(message.get.data, Pong)
         of TextMessage, Pong:
