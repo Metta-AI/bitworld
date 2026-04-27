@@ -100,13 +100,14 @@ proc humanizeLabel(label: string): string =
       result.add(part[1 .. ^1].toLowerAscii())
 
 proc primaryScreen(): Screen =
-  let screens = getScreens()
-  if screens.len == 0:
-    return Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
-  for screen in screens:
-    if screen.primary:
-      return screen
-  screens[0]
+  when declared(getScreens):
+    let screens = getScreens()
+    if screens.len > 0:
+      for screen in screens:
+        if screen.primary:
+          return screen
+      return screens[0]
+  Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
 
 proc clientLaunches(gameTitle: string, players: int): seq[ClientLaunch] =
   let screen = primaryScreen()
