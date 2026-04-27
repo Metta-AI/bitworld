@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -35,17 +34,32 @@ func main() {
 		log.Fatalf("dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusInternalError, "client error")
-
 	conn.SetReadLimit(1 << 20)
 
 	if err := conn.Write(ctx, websocket.MessageBinary, BuildInputPacket(0)); err != nil {
 		log.Fatalf("initial write: %v", err)
 	}
 
-	go keepAlive(ctx, conn)
+	var (
+		pixels       = make([]uint8, ScreenWidth*ScreenHeight)
+		sentMask     uint8 // server already has 0 from the initial packet above
+		currentPhase Phase
+		havePhase    bool
+		skipper      SkipController
+		frames       uint64
+	)
 
-	pixels := make([]uint8, ScreenWidth*ScreenHeight)
-	var frames uint64
+	sendMask := func(m uint8) error {
+		if m == sentMask {
+			return nil
+		}
+		if err := conn.Write(ctx, websocket.MessageBinary, BuildInputPacket(m)); err != nil {
+			return err
+		}
+		sentMask = m
+		return nil
+	}
+
 	for {
 		kind, data, err := conn.Read(ctx)
 		if err != nil {
@@ -69,28 +83,30 @@ func main() {
 			continue
 		}
 		frames++
-		if frames%24 == 1 {
-			var hist [16]int
-			for _, p := range pixels {
-				hist[p]++
-			}
-			log.Printf("frame %d palette=%v", frames, hist)
-		}
-	}
-}
 
-func keepAlive(ctx context.Context, conn *websocket.Conn) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := conn.Write(ctx, websocket.MessageBinary, BuildInputPacket(0)); err != nil {
-				log.Printf("keep-alive: %v", err)
-				return
+		phase := Classify(pixels)
+		if !havePhase || phase != currentPhase {
+			log.Printf("phase: %s (frame %d)", phase, frames)
+			currentPhase = phase
+			havePhase = true
+			if phase == PhaseVoting {
+				skipper = SkipController{}
 			}
+		}
+
+		var mask uint8
+		switch phase {
+		case PhaseActive:
+			mask = Steer(pixels)
+		case PhaseVoting:
+			mask = skipper.Next(pixels)
+		default:
+			mask = 0
+		}
+
+		if err := sendMask(mask); err != nil {
+			log.Printf("send mask=%#x: %v", mask, err)
+			return
 		}
 	}
 }
