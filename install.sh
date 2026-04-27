@@ -23,7 +23,7 @@ echo "==> Activating .venv"
 source .venv/bin/activate
 
 echo "==> Installing Python training dependencies"
-uv pip install -e '.[train]'
+uv pip install -e '.[train]' -r pufferlib/requirements.txt
 
 echo "==> Installing Nim dependencies"
 nim --version | sed -n '1,4p'
