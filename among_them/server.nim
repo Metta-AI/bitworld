@@ -71,6 +71,41 @@ type
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
 
+proc repoDir(): string =
+  ## Returns the Bit World repository directory.
+  currentSourcePath().parentDir().parentDir()
+
+proc staticClientHtmlPath(path: string): string =
+  ## Returns the local HTML file for a served client route.
+  case path
+  of "/client/player.html":
+    repoDir() / "player_client" / "index.html"
+  of "/client/global.html":
+    repoDir() / "global_client" / "index.html"
+  of "/client/rewards.html":
+    repoDir() / "reward_client" / "index.html"
+  else:
+    ""
+
+proc serveStaticClientHtml(request: Request): bool =
+  ## Serves one static HTML client page if the route matches.
+  if request.httpMethod != "GET":
+    return false
+  let filePath = staticClientHtmlPath(request.path)
+  if filePath.len == 0:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  if not fileExists(filePath):
+    request.respond(404, headers, "Missing static client: " & request.path)
+    return true
+  try:
+    request.respond(200, headers, readFile(filePath))
+  except IOError as e:
+    request.respond(500, headers, "Could not read static client: " & e.msg)
+  true
+
 proc tickTime(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
   uint32((int64(tick) * 1000'i64) div int64(ReplayFps))
@@ -546,6 +581,8 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.rewardViewers[websocket] = true
+  elif request.serveStaticClientHtml():
+    discard
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
