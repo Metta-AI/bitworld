@@ -100,6 +100,9 @@ const
   VoteUnknown = -1
   VoteSkip = -2
   VoteBlackMarker = 12'u8
+  VoteListenTicks = 100
+  VoteChatTextX = 21
+  VoteChatChars = 15
 
 type
   TileKnowledge = enum
@@ -236,6 +239,9 @@ type
     voteCursor: int
     voteSelfSlot: int
     voteTarget: int
+    voteStartTick: int
+    voteChatSusColor: int
+    voteChatText: string
     voteSlots: array[MaxPlayers, VoteSlot]
     voteChoices: array[PlayerColorCount, int]
     intent: string
@@ -692,6 +698,9 @@ proc clearVotingState(bot: var Bot) =
   bot.voteCursor = VoteUnknown
   bot.voteSelfSlot = VoteUnknown
   bot.voteTarget = VoteUnknown
+  bot.voteStartTick = -1
+  bot.voteChatSusColor = VoteUnknown
+  bot.voteChatText = ""
   for i in 0 ..< bot.voteSlots.len:
     bot.voteSlots[i].colorIndex = VoteUnknown
     bot.voteSlots[i].alive = false
@@ -1507,7 +1516,106 @@ proc parseVoteDotsForTarget(
     if colorIndex >= 0 and colorIndex < bot.voteChoices.len:
       bot.voteChoices[colorIndex] = target
 
-proc parseVotingCandidate(bot: var Bot, count: int): bool =
+proc readAsciiRun(bot: Bot, x, y, count: int): string =
+  ## Reads a fixed-width ASCII run from the current screen.
+  for i in 0 ..< count:
+    result.add(bot.bestAsciiGlyph(x + i * 7, y))
+  result = result.strip()
+
+proc usefulChatLine(line: string): bool =
+  ## Returns true when a parsed chat line contains real letters.
+  var
+    letters = 0
+    unknown = 0
+  for ch in line:
+    if ch in {'a' .. 'z'} or ch in {'A' .. 'Z'}:
+      inc letters
+    elif ch == '?':
+      inc unknown
+  letters >= 2 and unknown * 2 <= max(1, line.len)
+
+proc readVoteChatText(bot: Bot, count: int): string =
+  ## Reads visible voting chat text from the chat panel.
+  let
+    layout = voteGridLayout(count)
+    chatY = layout.skipY + 10
+  var previous = ""
+  for y in chatY + 2 ..< ScreenHeight - 6:
+    let line = bot.readAsciiRun(VoteChatTextX, y, VoteChatChars)
+    if not line.usefulChatLine():
+      continue
+    if line == previous:
+      continue
+    if result.len > 0:
+      result.add(' ')
+    result.add(line)
+    previous = line
+
+proc normalizeChatText(text: string): string =
+  ## Normalizes chat text for simple word matching.
+  var hadSpace = true
+  for ch in text:
+    var outCh = ch
+    if ch in {'A' .. 'Z'}:
+      outCh = char(ord(ch) - ord('A') + ord('a'))
+    if outCh in {'a' .. 'z'} or outCh in {'0' .. '9'}:
+      result.add(outCh)
+      hadSpace = false
+    elif not hadSpace:
+      result.add(' ')
+      hadSpace = true
+  result = result.strip()
+
+proc spanGap(aStart, aEnd, bStart, bEnd: int): int =
+  ## Returns the number of characters between two text spans.
+  if aEnd <= bStart:
+    bStart - aEnd
+  elif bEnd <= aStart:
+    aStart - bEnd
+  else:
+    0
+
+proc chatSusColorIndex(text: string): int =
+  ## Returns the player color that visible chat calls sus.
+  let
+    padded = " " & text.normalizeChatText() & " "
+    susNeedle = " sus "
+  result = VoteUnknown
+  var
+    bestSus = -1
+    bestGap = high(int)
+    bestLen = -1
+  for i, name in PlayerColorNames:
+    let colorNeedle = " " & name.normalizeChatText() & " "
+    var colorPos = padded.find(colorNeedle)
+    while colorPos >= 0:
+      let
+        colorStart = colorPos + 1
+        colorEnd = colorPos + colorNeedle.len - 1
+        colorLen = colorEnd - colorStart
+      var susPos = padded.find(susNeedle)
+      while susPos >= 0:
+        let
+          susStart = susPos + 1
+          susEnd = susPos + susNeedle.len - 1
+          gap = spanGap(colorStart, colorEnd, susStart, susEnd)
+        if gap <= VoteChatChars * 2 and (
+            susStart > bestSus or
+            (susStart == bestSus and gap < bestGap) or
+            (susStart == bestSus and gap == bestGap and
+              colorLen > bestLen)):
+          bestSus = susStart
+          bestGap = gap
+          bestLen = colorLen
+          result = i
+        susPos = padded.find(susNeedle, susPos + 1)
+      colorPos = padded.find(colorNeedle, colorPos + 1)
+
+proc parseVotingCandidate(
+  bot: var Bot,
+  count,
+  startTick: int
+): bool =
   ## Parses the voting screen for one possible player count.
   let layout = voteGridLayout(count)
   if not bot.voteSkipTextMatches(layout.skipX, layout.skipY):
@@ -1523,6 +1631,7 @@ proc parseVotingCandidate(bot: var Bot, count: int): bool =
   bot.clearVotingState()
   bot.voting = true
   bot.votePlayerCount = count
+  bot.voteStartTick = startTick
   bot.voteCursor = VoteUnknown
   bot.voteSelfSlot = VoteUnknown
   for i in 0 ..< count:
@@ -1545,14 +1654,21 @@ proc parseVotingCandidate(bot: var Bot, count: int): bool =
     layout.skipX + VoteSkipW + 2,
     layout.skipY
   )
+  bot.voteChatText = bot.readVoteChatText(count)
+  bot.voteChatSusColor = chatSusColorIndex(bot.voteChatText)
   true
 
 proc parseVotingScreen(bot: var Bot): bool =
   ## Parses the voting interstitial if it is currently visible.
-  bot.clearVotingState()
+  let startTick =
+    if bot.voting and bot.voteStartTick >= 0:
+      bot.voteStartTick
+    else:
+      bot.frameTick
   for count in countdown(MaxPlayers, 1):
-    if bot.parseVotingCandidate(count):
+    if bot.parseVotingCandidate(count, startTick):
       return true
+  bot.clearVotingState()
   false
 
 proc addBodyMatch(matches: var seq[BodyMatch], x, y: int) =
@@ -2421,6 +2537,10 @@ proc voteMoveDirection(bot: Bot, target: int): int =
 
 proc desiredVotingTarget(bot: Bot): int =
   ## Chooses the voting target from current suspicion or skip.
+  if bot.voteChatSusColor >= 0:
+    let slot = bot.voteSlotForColor(bot.voteChatSusColor)
+    if slot >= 0 and slot != bot.voteSelfSlot and bot.voteSlots[slot].alive:
+      return slot
   let suspect = bot.suspectedColor()
   if suspect.found:
     let slot = bot.voteSlotForColor(suspect.colorIndex)
@@ -2457,6 +2577,18 @@ proc decideVotingMask(bot: var Bot): uint8 =
     bot.intent = "voting cursor to " & bot.voteTargetName(bot.voteTarget)
     bot.thought(bot.intent)
     return bot.desiredMask
+  let listenedTicks =
+    if bot.voteStartTick >= 0:
+      bot.frameTick - bot.voteStartTick
+    else:
+      0
+  if listenedTicks < VoteListenTicks:
+    bot.desiredMask = 0
+    bot.controllerMask = 0
+    bot.intent = "ready, listening in vote chat " &
+      $listenedTicks & "/" & $VoteListenTicks
+    bot.thought(bot.intent)
+    return 0
   bot.desiredMask =
     if bot.lastMask == ButtonA:
       0
@@ -3419,9 +3551,12 @@ proc pumpViewer(
     "known imps: " & bot.knownImposterSummary() & "\n" &
     "voting: " & $bot.voting &
       " count=" & $bot.votePlayerCount &
+      " listen=" & $max(0, bot.frameTick - bot.voteStartTick) &
       " cursor=" & bot.voteTargetName(bot.voteCursor) &
       " target=" & bot.voteTargetName(bot.voteTarget) & "\n" &
     "votes: " & bot.voteSummary() & "\n" &
+    "vote chat sus: " & playerColorName(bot.voteChatSusColor) &
+      " text=" & bot.voteChatText & "\n" &
     "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
     "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
     "home: " & (
