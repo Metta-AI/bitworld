@@ -103,6 +103,7 @@ const
   VoteListenTicks = 100
   VoteChatTextX = 21
   VoteChatChars = 15
+  MaxFrameDrain = 32
 
 type
   TileKnowledge = enum
@@ -224,6 +225,8 @@ type
     frameTick: int
     centerMicros: int
     astarMicros: int
+    frameBacklog: int
+    skippedFrames: int
     lastMask: uint8
     lastThought: string
     pendingChat: string
@@ -3538,6 +3541,8 @@ proc pumpViewer(
       $(bot.centerMicros div 1000) & "ms)\n" &
     "timing A*: " & $bot.astarMicros & "us (" &
       $(bot.astarMicros div 1000) & "ms)\n" &
+    "frames dropped: " & $bot.frameBacklog &
+      " total=" & $bot.skippedFrames & "\n" &
     "interstitial text: " &
       (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
       "\n" &
@@ -3610,6 +3615,57 @@ proc queryEscape(value: string): string =
       result.add(Hex[(byte shr 4) and 0x0f])
       result.add(Hex[byte and 0x0f])
 
+proc acceptPlayerMessage(
+  ws: WebSocket,
+  message: Message,
+  latestFrame: var string,
+  frameCount: var int
+) =
+  ## Handles one websocket message while draining old frames.
+  case message.kind
+  of BinaryMessage:
+    if message.data.len == ProtocolBytes:
+      latestFrame = message.data
+      inc frameCount
+  of Ping:
+    ws.send(message.data, Pong)
+  of TextMessage, Pong:
+    discard
+
+proc receiveLatestFrame(ws: WebSocket, bot: var Bot, gui: bool): bool =
+  ## Receives queued frames and keeps only the newest full framebuffer.
+  let firstMessage = ws.receiveMessage(if gui: 10 else: -1)
+  if firstMessage.isNone:
+    bot.frameBacklog = 0
+    return false
+
+  var
+    latestFrame = ""
+    frameCount = 0
+    drained = 0
+  ws.acceptPlayerMessage(firstMessage.get, latestFrame, frameCount)
+  while drained < MaxFrameDrain:
+    let message = ws.receiveMessage(0)
+    if message.isNone:
+      break
+    ws.acceptPlayerMessage(message.get, latestFrame, frameCount)
+    inc drained
+
+  if frameCount == 0:
+    bot.frameBacklog = 0
+    return false
+
+  bot.frameBacklog = max(0, frameCount - 1)
+  bot.skippedFrames += bot.frameBacklog
+  if bot.frameBacklog > 0:
+    echo "frames dropped: ", bot.frameBacklog,
+      " total=", bot.skippedFrames,
+      " tick=", bot.frameTick + frameCount
+  bot.frameTick += frameCount
+  blobToBytes(latestFrame, bot.packed)
+  unpack4bpp(bot.packed, bot.unpacked)
+  true
+
 proc runBot(
   host = DefaultHost,
   port = PlayerDefaultPort,
@@ -3640,30 +3696,18 @@ proc runBot(
           if not viewer.viewerOpen():
             ws.close()
             break
-        let message = ws.receiveMessage(if gui: 10 else: -1)
-        if message.isNone:
+        if not ws.receiveLatestFrame(bot, gui):
           continue
-        case message.get.kind
-        of BinaryMessage:
-          if message.get.data.len != ProtocolBytes:
-            continue
-          blobToBytes(message.get.data, bot.packed)
-          unpack4bpp(bot.packed, bot.unpacked)
-          inc bot.frameTick
-          let nextMask = bot.decideNextMask()
-          bot.lastMask = nextMask
-          if nextMask != lastMask:
-            ws.send(blobFromMask(nextMask), BinaryMessage)
-            lastMask = nextMask
-          if bot.interstitial and
-              bot.pendingChat.len > 0 and
-              not bot.interstitialText.isGameOverText():
-            ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
-            bot.pendingChat = ""
-        of Ping:
-          ws.send(message.get.data, Pong)
-        of TextMessage, Pong:
-          discard
+        let nextMask = bot.decideNextMask()
+        bot.lastMask = nextMask
+        if nextMask != lastMask:
+          ws.send(blobFromMask(nextMask), BinaryMessage)
+          lastMask = nextMask
+        if bot.interstitial and
+            bot.pendingChat.len > 0 and
+            not bot.interstitialText.isGameOverText():
+          ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
+          bot.pendingChat = ""
     except Exception:
       connected = false
       if gui:
