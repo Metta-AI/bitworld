@@ -1,2 +1,4 @@
 websockets>=15.0
-pufferlib @ git+https://github.com/PufferAI/PufferLib.git@4.0
+# PufferLib 4.0 is not published on PyPI yet. Keep this direct reference out of
+# pyproject.toml because public PyPI uploads reject direct URL dependencies.
+pufferlib @ https://github.com/PufferAI/PufferLib/archive/refs/tags/experiments.tar.gz
