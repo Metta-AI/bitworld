@@ -1,6 +1,19 @@
 import pixie, protocol, ../sim, ../../common/server, silky, whisky, windy
 import std/[heapqueue, monotimes, options, os, parseopt, random, strutils, times]
 
+when not declared(AmongThemBotViewerTitle):
+  const AmongThemBotViewerTitle = "Among Them Bot Viewer"
+when not declared(AmongThemBotPathLookahead):
+  const AmongThemBotPathLookahead = 18
+when not declared(AmongThemBotCoastLookaheadTicks):
+  const AmongThemBotCoastLookaheadTicks = 8
+when not declared(AmongThemBotJiggleDuration):
+  const AmongThemBotJiggleDuration = 16
+when not declared(AmongThemBotTaskHoldPadding):
+  const AmongThemBotTaskHoldPadding = 8
+when not declared(AmongThemBotVoteListenTicks):
+  const AmongThemBotVoteListenTicks = 100
+
 const
   PlayerScreenX = ScreenWidth div 2
   PlayerScreenY = ScreenHeight div 2
@@ -46,16 +59,16 @@ const
   TaskIconInspectSize = 16
   TaskClearScreenMargin = 8
   TaskIconMissThreshold = 24
-  PathLookahead = 18
+  PathLookahead = AmongThemBotPathLookahead
   TaskInnerMargin = 6
   TaskPreciseApproachRadius = 12
-  CoastLookaheadTicks = 8
+  CoastLookaheadTicks = AmongThemBotCoastLookaheadTicks
   CoastArrivalPadding = 1
   SteerDeadband = 2
   BrakeDeadband = 1
   StuckFrameThreshold = 8
-  JiggleDuration = 16
-  TaskHoldPadding = 8
+  JiggleDuration = AmongThemBotJiggleDuration
+  TaskHoldPadding = AmongThemBotTaskHoldPadding
   CrewmateSearchRadius = 1
   CrewmateMaxMisses = 8
   CrewmateMinStablePixels = 8
@@ -100,7 +113,7 @@ const
   VoteUnknown = -1
   VoteSkip = -2
   VoteBlackMarker = 12'u8
-  VoteListenTicks = 100
+  VoteListenTicks = AmongThemBotVoteListenTicks
   VoteChatTextX = 21
   VoteChatChars = 15
 
@@ -3464,7 +3477,7 @@ proc initViewerApp(): ViewerApp =
   ## Opens the diagnostic viewer window.
   result = ViewerApp()
   result.window = newWindow(
-    title = "Among Them Bot Viewer",
+    title = AmongThemBotViewerTitle,
     size = ivec2(ViewerWindowWidth, ViewerWindowHeight),
     style = Decorated,
     visible = true
@@ -3501,7 +3514,7 @@ proc pumpViewer(
     sk = viewer.silky
   sk.beginUI(viewer.window, frameSize)
   sk.clearScreen(ViewerBackground)
-  discard sk.drawText("Default", "Among Them Bot Viewer", vec2(ViewerMargin, ViewerMargin), ViewerText)
+  discard sk.drawText("Default", AmongThemBotViewerTitle, vec2(ViewerMargin, ViewerMargin), ViewerText)
   discard sk.drawText("Default", "Live frame", vec2(framePos.x, framePos.y - 18), ViewerMutedText)
   discard sk.drawText("Default", "Map lock", vec2(mapPos.x, mapPos.y - 18), ViewerMutedText)
   sk.drawRect(
