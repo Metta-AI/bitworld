@@ -112,7 +112,8 @@ const
   VoteListenTicks = 100
   VoteChatTextX = 21
   VoteChatChars = 15
-  MaxFrameDrain = 32
+  FrameDropThreshold = 32
+  MaxFrameDrain = 128
 
 type
   TileKnowledge = enum
@@ -252,7 +253,9 @@ type
     localizePatchMicros: int
     localizeSpiralMicros: int
     astarMicros: int
-    frameBacklog: int
+    queuedFrames: seq[string]
+    frameBufferLen: int
+    framesDropped: int
     skippedFrames: int
     lastMask: uint8
     lastThought: string
@@ -3805,7 +3808,8 @@ proc pumpViewer(
     "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
     "timing center: " & $bot.centerMicros & "us (" &
       $(bot.centerMicros div 1000) & "ms)\n" &
-    "frames dropped: " & $bot.frameBacklog &
+    "frames buffered: " & $bot.frameBufferLen &
+      " dropped=" & $bot.framesDropped &
       " total=" & $bot.skippedFrames & "\n" &
     "interstitial text: " &
       (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
@@ -3882,51 +3886,63 @@ proc queryEscape(value: string): string =
 proc acceptPlayerMessage(
   ws: WebSocket,
   message: Message,
-  latestFrame: var string,
-  frameCount: var int
+  queuedFrames: var seq[string]
 ) =
-  ## Handles one websocket message while draining old frames.
+  ## Handles one websocket message while filling the local frame queue.
   case message.kind
   of BinaryMessage:
     if message.data.len == ProtocolBytes:
-      latestFrame = message.data
-      inc frameCount
+      queuedFrames.add(message.data)
   of Ping:
     ws.send(message.data, Pong)
   of TextMessage, Pong:
     discard
 
 proc receiveLatestFrame(ws: WebSocket, bot: var Bot, gui: bool): bool =
-  ## Receives queued frames and keeps only the newest full framebuffer.
-  let firstMessage = ws.receiveMessage(if gui: 10 else: -1)
-  if firstMessage.isNone:
-    bot.frameBacklog = 0
-    return false
+  ## Receives frames and only drops them under high backlog.
+  if bot.queuedFrames.len == 0:
+    let firstMessage = ws.receiveMessage(if gui: 10 else: -1)
+    if firstMessage.isNone:
+      bot.frameBufferLen = 0
+      bot.framesDropped = 0
+      return false
+    ws.acceptPlayerMessage(firstMessage.get, bot.queuedFrames)
 
-  var
-    latestFrame = ""
-    frameCount = 0
-    drained = 0
-  ws.acceptPlayerMessage(firstMessage.get, latestFrame, frameCount)
+  var drained = 0
   while drained < MaxFrameDrain:
     let message = ws.receiveMessage(0)
     if message.isNone:
       break
-    ws.acceptPlayerMessage(message.get, latestFrame, frameCount)
+    ws.acceptPlayerMessage(message.get, bot.queuedFrames)
     inc drained
 
-  if frameCount == 0:
-    bot.frameBacklog = 0
+  if bot.queuedFrames.len == 0:
+    bot.frameBufferLen = 0
+    bot.framesDropped = 0
     return false
 
-  bot.frameBacklog = max(0, frameCount - 1)
-  bot.skippedFrames += bot.frameBacklog
-  if bot.frameBacklog > 0:
-    echo "frames dropped: ", bot.frameBacklog,
+  var
+    frame = ""
+    frameAdvance = 1
+  bot.framesDropped = 0
+  if bot.queuedFrames.len >= FrameDropThreshold:
+    bot.framesDropped = bot.queuedFrames.len - 1
+    frameAdvance = bot.queuedFrames.len
+    frame = bot.queuedFrames[^1]
+    bot.queuedFrames.setLen(0)
+  else:
+    frame = bot.queuedFrames[0]
+    bot.queuedFrames.delete(0)
+
+  bot.frameBufferLen = bot.queuedFrames.len
+  bot.skippedFrames += bot.framesDropped
+  if bot.framesDropped > 0:
+    echo "frames dropped: ", bot.framesDropped,
+      " buffered=", frameAdvance,
       " total=", bot.skippedFrames,
-      " tick=", bot.frameTick + frameCount
-  bot.frameTick += frameCount
-  blobToBytes(latestFrame, bot.packed)
+      " tick=", bot.frameTick + frameAdvance
+  bot.frameTick += frameAdvance
+  blobToBytes(frame, bot.packed)
   unpack4bpp(bot.packed, bot.unpacked)
   true
 
@@ -3953,6 +3969,9 @@ proc runBot(
     try:
       let ws = newWebSocket(url)
       var lastMask = 0xff'u8
+      bot.queuedFrames.setLen(0)
+      bot.frameBufferLen = 0
+      bot.framesDropped = 0
       connected = true
       while viewer.viewerOpen():
         if gui:
