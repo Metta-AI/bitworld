@@ -33,7 +33,12 @@ pre{
 <script>
 const reward=document.getElementById("reward");
 const url=new URL(location.href);
-const address=url.searchParams.get("address")||"ws://localhost:8080/reward";
+function defaultAddress(path){
+  const protocol=location.protocol==="https:"?"wss:":"ws:";
+  const host=location.host||"localhost:8080";
+  return protocol+"//"+host+path;
+}
+const address=url.searchParams.get("address")||defaultAddress("/reward");
 const socket=new WebSocket(address);
 
 function show(text){

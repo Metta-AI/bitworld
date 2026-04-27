@@ -36,7 +36,12 @@ canvas{
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
 const url=new URL(location.href);
-const address=url.searchParams.get("address")||"ws://localhost:8080/global";
+function defaultAddress(path){
+  const protocol=location.protocol==="https:"?"wss:":"ws:";
+  const host=location.host||"localhost:8080";
+  return protocol+"//"+host+path;
+}
+const address=url.searchParams.get("address")||defaultAddress("/global");
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const palette=[
   [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],

@@ -1,12 +1,10 @@
-import std/[exitprocs, monotimes, net, os, osproc, parseopt, random, strutils, times]
+import std/[exitprocs, monotimes, net, os, osproc, parseopt, strutils, times]
 import windy
 
 const
   ClientSourceRelative = "client" / "client.nim"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
-  RandomPortMin = 5000
-  RandomPortMax = 10000
   ClientScreenOnlyWidth = 384
   ClientScreenOnlyHeight = 384
   ClientWindowMargin = 50
@@ -34,15 +32,17 @@ proc repoRoot(): string =
   absolutePath(getCurrentDir())
 
 proc usage(): string =
-  "Usage: quick_run <game_folder> [port] [--players:N] [--address:ADDR] [--save-replay:PATH]\nIf port is omitted, quick_run picks a random port between 5000 and 10000.\nWhen players is greater than 1, quick_run launches centered screen-only clients and binds joysticks 1..N.\nExample: quick_run fancy_cookout 8080 --players:4 --address:0.0.0.0"
+  "Usage: quick_run <game_folder> --address:ADDR --port:N " &
+    "[--players:N] [--save-replay:PATH]\n" &
+    "When players is greater than 1, quick_run launches centered " &
+    "screen-only clients and binds joysticks 1..N.\n" &
+    "Example: quick_run fancy_cookout --address:0.0.0.0 " &
+    "--port:8080 --players:4"
 
 proc parsePort(value: string): int =
   result = parseInt(value)
   if result < 1 or result > 65535:
     raise newException(ValueError, "Port must be between 1 and 65535.")
-
-proc chooseRandomPort(): int =
-  rand(RandomPortMin .. RandomPortMax)
 
 proc parsePlayers(value: string): int =
   result = parseInt(value)
@@ -300,8 +300,10 @@ proc waitForChildren(): int =
 
 proc parseArgs(): QuickRunConfig =
   var positional: seq[string]
+  var
+    addressSet = false
+    portSet = false
   result.players = 1
-  result.address = "localhost"
 
   for kind, key, val in getopt():
     case kind
@@ -317,6 +319,12 @@ proc parseArgs(): QuickRunConfig =
         if val.len == 0:
           raise newException(ValueError, "--address requires a value.")
         result.address = val
+        addressSet = true
+      of "port":
+        if val.len == 0:
+          raise newException(ValueError, "--port requires a value.")
+        result.port = parsePort(val)
+        portSet = true
       of "save-replay":
         if val.len == 0:
           raise newException(ValueError, "--save-replay requires a value.")
@@ -328,15 +336,14 @@ proc parseArgs(): QuickRunConfig =
     of cmdEnd:
       discard
 
-  if positional.len < 1 or positional.len > 2:
-    raise newException(ValueError, "Expected <game_folder> and optional [port].")
+  if positional.len != 1:
+    raise newException(ValueError, "Expected <game_folder>.")
+  if not addressSet:
+    raise newException(ValueError, "Expected --address:ADDR.")
+  if not portSet:
+    raise newException(ValueError, "Expected --port:N.")
 
   result.gameFolder = positional[0]
-  result.port =
-    if positional.len >= 2:
-      parsePort(positional[1])
-    else:
-      chooseRandomPort()
 
 proc runQuickRun(config: QuickRunConfig): int =
   let
@@ -429,7 +436,6 @@ proc runQuickRun(config: QuickRunConfig): int =
 when isMainModule:
   addExitProc(cleanupAtExit)
   setControlCHook(controlCHook)
-  randomize()
 
   try:
     quit(runQuickRun(parseArgs()))

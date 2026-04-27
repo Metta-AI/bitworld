@@ -26,10 +26,12 @@ proc repoRoot(): string =
 
 proc usage(): string =
   ## Returns command-line usage text.
-  "Usage: quick_player <player_nim_file> [players] [--players:N] " &
+  "Usage: quick_player <player_nim_file> --players:N " &
     "[--address:ADDR] [--port:N] [--gui] [--name-prefix:NAME]\n" &
-    "Example: quick_player nottoodumb 4 --address:0.0.0.0 --port:2000\n" &
-    "Example: quick_player among_them/players/nottoodumb.nim --players:2 --gui"
+    "Example: quick_player nottoodumb --players:4 " &
+    "--address:0.0.0.0 --port:2000\n" &
+    "Example: quick_player among_them/players/nottoodumb.nim " &
+    "--players:2 --gui"
 
 proc parsePort(value: string): int =
   ## Parses and validates a TCP port.
@@ -196,20 +198,29 @@ proc waitForPlayers(): int =
 proc parseArgs(): QuickPlayerConfig =
   ## Parses command-line arguments.
   var positional: seq[string]
-  result.players = 1
+  var
+    playersSet = false
+    pendingPlayers = false
   result.address = DefaultAddress
   result.port = DefaultPort
   result.namePrefix = "player"
   for kind, key, val in getopt():
     case kind
     of cmdArgument:
-      positional.add(key)
+      if pendingPlayers:
+        result.players = parsePlayers(key)
+        playersSet = true
+        pendingPlayers = false
+      else:
+        positional.add(key)
     of cmdLongOption:
       case key
       of "players":
         if val.len == 0:
-          raise newException(ValueError, "--players requires a value.")
-        result.players = parsePlayers(val)
+          pendingPlayers = true
+        else:
+          result.players = parsePlayers(val)
+          playersSet = true
       of "address":
         if val.len == 0:
           raise newException(ValueError, "--address requires a value.")
@@ -230,14 +241,16 @@ proc parseArgs(): QuickPlayerConfig =
       raise newException(ValueError, "Unknown option: -" & key)
     of cmdEnd:
       discard
-  if positional.len < 1 or positional.len > 2:
+  if pendingPlayers:
     raise newException(
       ValueError,
-      "Expected <player_nim_file> and optional [players]."
+      "--players requires a value."
     )
+  if positional.len != 1:
+    raise newException(ValueError, "Expected <player_nim_file>.")
+  if not playersSet:
+    raise newException(ValueError, "Expected --players:N.")
   result.playerFile = positional[0]
-  if positional.len == 2:
-    result.players = parsePlayers(positional[1])
 
 proc runQuickPlayer(config: QuickPlayerConfig): int =
   ## Compiles and launches multiple AI player processes.
