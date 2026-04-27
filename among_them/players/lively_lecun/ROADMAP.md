@@ -7,6 +7,11 @@ A Go player agent for `among_them`. Goal: complete crewmate tasks reliably.
 - **Cadence**: one milestone per session.
 - **Perception**: re-derived in idiomatic Go; `among_them/players/nottoodumb.nim` is a behavioral reference only, not a source to port.
 - **Role scope**: crewmate only. If assigned imposter we walk around without crashing; no kill / sabotage logic on this track.
+- **Robustness over precision**: prefer structural cues (region pixel counts, color-class ratios, blob detection) over exact-template or per-pixel comparisons. OCR is overkill for the time being. Thresholds should have wide margins against measured data so cosmetic rendering changes don't break the agent.
+
+## Test fixtures
+
+`testdata/phase_*.bin` are real 8192-byte frames captured from the sim at each phase. Regenerate with `nim c -r capture_fixtures.nim` (requires the repo's nim toolchain). Go tests load them via `os.ReadFile`. Keep these committed — they ground-truth the perception code.
 
 ## Key sim facts (verified)
 
