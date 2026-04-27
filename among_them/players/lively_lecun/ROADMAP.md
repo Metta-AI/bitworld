@@ -25,14 +25,18 @@ A Go player agent for `among_them`. Goal: complete crewmate tasks reliably.
 
 Connect, decode frames, exchange button packets, clean shutdown. Eleven unit tests covering protocol constants, packet build/parse, frame nibble order. Landed in commit `80bba76`.
 
-### M1 — Phase detection + reactive movement
+### M1 — Phase detection + reactive movement (DONE)
 
-Detect lobby / playing / voting / game-over from frame pixels. While playing, steer toward the strongest yellow radar marker on screen. While voting, vote skip.
-- `phase.go` — phase classifier from a `[16384]uint8` frame.
-- `steer.go` — find dominant on-screen yellow signal, return a button mask.
-- `main.go` — switch behavior by phase.
-- Tests: canned frames per phase; canned frames with markers on each edge.
-- Done when: agent stays in a game from start to finish, votes skip, never wedges.
+Three macro-phase classifier + behavior switch in `main.go`:
+
+- `phase.go` — `Classify(pixels)` returns `PhaseIdle` / `PhaseActive` / `PhaseVoting` from structural cues against the `testdata/phase_*.bin` fixtures.
+- `steer.go` — `Steer(pixels)` returns a button mask toward the centroid of yellow pixels (palette 10), with an exclusion box around the player's on-screen position and a deadband near center.
+- `vote.go` — `SkipController` alternates press/release frames to navigate to the SKIP cell and cast `ButtonA`. Detects "cursor on SKIP" via the palette-2 highlight top edge at y=19 (1-row layout) or y=36 (2-row).
+- `main.go` — phase-aware loop, send-on-change cache; resets `SkipController` on each entry to Voting.
+
+Verified live (commits `360b486`, `11158a4`, `98e2431`, `54ba4c2`): three agents against the Nim server with `maxTicks=200` observed `phase: idle (frame 1) → active (frame 121) → idle (frame 321)` — exactly matching `RoleRevealTicks=120` and `maxTicks=200` boundaries.
+
+Voting transitions are not reachable in a self-play smoke test (no body to report, no map-located call button) and remain covered by `vote_test.go` only.
 
 ### M2 — Wall-aware steering
 
