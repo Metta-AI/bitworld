@@ -1,5 +1,6 @@
 import pixie, protocol, ../sim, ../../common/server, silky, whisky, windy
-import std/[heapqueue, monotimes, options, os, parseopt, random, strutils, times]
+import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
+  strutils, times]
 
 const
   PlayerScreenX = ScreenWidth div 2
@@ -10,6 +11,14 @@ const
   LocalFrameFitMaxErrors = 320
   FrameFitMinCompared = 12000
   LocalFrameSearchRadius = 8
+  PatchSize = 8
+  PatchGridW = ScreenWidth div PatchSize
+  PatchGridH = ScreenHeight div PatchSize
+  PatchHashBase = 16777619'u64
+  PatchHashSeed = 14695981039346656037'u64
+  PatchMaxMatches = 4096
+  PatchTopCandidates = 16
+  PatchMinVotes = 3
   PlayerIgnoreRadius = 9
   InterstitialBlackPercent = 30
   HomeSearchRadius = 20
@@ -141,6 +150,16 @@ type
     errors: int
     compared: int
 
+  PatchEntry = object
+    hash: uint64
+    cameraX: int
+    cameraY: int
+
+  PatchCandidate = object
+    votes: int
+    cameraX: int
+    cameraY: int
+
   RadarDot = object
     x: int
     y: int
@@ -196,6 +215,10 @@ type
     packed: seq[uint8]
     unpacked: seq[uint8]
     mapTiles: seq[TileKnowledge]
+    patchEntries: seq[PatchEntry]
+    patchVotes: seq[uint16]
+    patchTouched: seq[int]
+    patchCandidates: seq[PatchCandidate]
     cameraX: int
     cameraY: int
     lastCameraX: int
@@ -224,6 +247,10 @@ type
     taskHoldIndex: int
     frameTick: int
     centerMicros: int
+    spriteScanMicros: int
+    localizeLocalMicros: int
+    localizePatchMicros: int
+    localizeSpiralMicros: int
     astarMicros: int
     frameBacklog: int
     skippedFrames: int
@@ -338,6 +365,19 @@ proc maxCameraY(): int =
   ## Returns the largest possible centered camera Y.
   MapHeight - ScreenHeight div 2 + SpriteSize
 
+proc cameraIndex(x, y: int): int =
+  ## Returns the patch vote index for one camera.
+  (y - minCameraY()) * (maxCameraX() - minCameraX() + 1) +
+    (x - minCameraX())
+
+proc cameraIndexX(index: int): int =
+  ## Returns the camera X coordinate for one vote index.
+  minCameraX() + index mod (maxCameraX() - minCameraX() + 1)
+
+proc cameraIndexY(index: int): int =
+  ## Returns the camera Y coordinate for one vote index.
+  minCameraY() + index div (maxCameraX() - minCameraX() + 1)
+
 proc buttonCameraX(): int =
   ## Returns the initial camera X guess around the emergency button.
   clamp(ButtonX + ButtonW div 2 - PlayerWorldOffX, minCameraX(), maxCameraX())
@@ -400,6 +440,24 @@ proc `<`(a, b: PathNode): bool =
   if a.priority == b.priority:
     return a.index < b.index
   a.priority < b.priority
+
+proc `<`(a, b: PatchEntry): bool =
+  ## Orders patch entries by hash and scan order.
+  if a.hash == b.hash:
+    if a.cameraY == b.cameraY:
+      a.cameraX < b.cameraX
+    else:
+      a.cameraY < b.cameraY
+  else:
+    a.hash < b.hash
+
+proc cmpPatchCandidate(a, b: PatchCandidate): int =
+  ## Sorts patch candidates by votes and scan order.
+  if a.votes != b.votes:
+    return cmp(b.votes, a.votes)
+  if a.cameraY != b.cameraY:
+    return cmp(a.cameraY, b.cameraY)
+  cmp(a.cameraX, b.cameraX)
 
 proc tileWidth(): int =
   ## Returns the path grid width in pixels.
@@ -546,6 +604,181 @@ proc scoreCamera(bot: Bot, cameraX, cameraY, maxErrors: int): CameraScore =
           result.score = -result.errors
           return
   result.score = result.compared - result.errors * ScreenWidth
+
+proc patchHashAdd(hash: uint64, color: uint8): uint64 =
+  ## Adds one color to an 8 by 8 patch hash.
+  hash * PatchHashBase + uint64(color and 0x0f) + 1'u64
+
+proc patchMapColor(bot: Bot, x, y: int): uint8 =
+  ## Returns the map color used by patch localization.
+  if inMap(x, y):
+    bot.sim.mapPixels[mapIndexSafe(x, y)]
+  else:
+    MapVoidColor
+
+proc mapPatchHash(bot: Bot, x, y: int): uint64 =
+  ## Hashes one 8 by 8 map patch.
+  result = PatchHashSeed
+  for py in 0 ..< PatchSize:
+    for px in 0 ..< PatchSize:
+      result = patchHashAdd(result, bot.patchMapColor(x + px, y + py))
+
+proc framePatchHash(
+  bot: Bot,
+  sx,
+  sy: int,
+  hash: var uint64
+): bool =
+  ## Hashes one clean 8 by 8 frame patch.
+  hash = PatchHashSeed
+  for py in 0 ..< PatchSize:
+    for px in 0 ..< PatchSize:
+      let
+        x = sx + px
+        y = sy + py
+        color = bot.unpacked[y * ScreenWidth + x]
+      if bot.ignoreFramePixel(color, x, y):
+        return false
+      hash = patchHashAdd(hash, color)
+  true
+
+proc buildPatchEntries(bot: var Bot) =
+  ## Builds a map patch hash index for fast localization.
+  let
+    minX = minCameraX()
+    maxX = maxCameraX() + ScreenWidth - PatchSize
+    minY = minCameraY()
+    maxY = maxCameraY() + ScreenHeight - PatchSize
+    width = maxCameraX() - minCameraX() + 1
+    height = maxCameraY() - minCameraY() + 1
+  bot.patchEntries = @[]
+  bot.patchEntries.setLen((maxX - minX + 1) * (maxY - minY + 1))
+  var i = 0
+  for y in minY .. maxY:
+    for x in minX .. maxX:
+      bot.patchEntries[i] = PatchEntry(
+        hash: bot.mapPatchHash(x, y),
+        cameraX: x,
+        cameraY: y
+      )
+      inc i
+  bot.patchEntries.sort()
+  bot.patchVotes = newSeq[uint16](width * height)
+  bot.patchTouched = @[]
+  bot.patchCandidates = @[]
+
+proc patchHashRange(
+  entries: openArray[PatchEntry],
+  hash: uint64
+): tuple[first, last: int] =
+  ## Returns the sorted range with a matching patch hash.
+  var
+    lo = 0
+    hi = entries.len
+  while lo < hi:
+    let mid = (lo + hi) div 2
+    if entries[mid].hash < hash:
+      lo = mid + 1
+    else:
+      hi = mid
+  result.first = lo
+  hi = entries.len
+  while lo < hi:
+    let mid = (lo + hi) div 2
+    if entries[mid].hash > hash:
+      hi = mid
+    else:
+      lo = mid + 1
+  result.last = lo
+
+proc addPatchVote(bot: var Bot, x, y: int) =
+  ## Adds one patch vote for a camera candidate.
+  if x < minCameraX() or x > maxCameraX() or
+      y < minCameraY() or y > maxCameraY():
+    return
+  if not cameraCanHoldPlayer(x, y):
+    return
+  let index = cameraIndex(x, y)
+  if bot.patchVotes[index] == 0:
+    bot.patchTouched.add(index)
+  bot.patchVotes[index] = bot.patchVotes[index] + 1
+
+proc collectPatchCandidates(bot: var Bot) =
+  ## Collects the best voted camera candidates.
+  bot.patchCandidates.setLen(0)
+  for index in bot.patchTouched:
+    let votes = bot.patchVotes[index].int
+    if votes < PatchMinVotes:
+      continue
+    bot.patchCandidates.add(PatchCandidate(
+      votes: votes,
+      cameraX: cameraIndexX(index),
+      cameraY: cameraIndexY(index)
+    ))
+  bot.patchCandidates.sort(cmpPatchCandidate)
+  if bot.patchCandidates.len > PatchTopCandidates:
+    bot.patchCandidates.setLen(PatchTopCandidates)
+
+proc clearPatchVotes(bot: var Bot) =
+  ## Clears patch vote counters touched by the last localization pass.
+  for index in bot.patchTouched:
+    bot.patchVotes[index] = 0
+  bot.patchTouched.setLen(0)
+
+proc acceptCameraScore(score: CameraScore, maxErrors: int): bool
+
+proc setCameraLock(
+  bot: var Bot,
+  x,
+  y: int,
+  score: CameraScore,
+  lock: CameraLock
+)
+
+proc locateByPatches(bot: var Bot): bool =
+  ## Locates the camera using 8 by 8 map patch votes.
+  if bot.patchEntries.len == 0:
+    return false
+  bot.clearPatchVotes()
+  for py in 0 ..< PatchGridH:
+    for px in 0 ..< PatchGridW:
+      let
+        sx = px * PatchSize
+        sy = py * PatchSize
+      var hash = 0'u64
+      if not bot.framePatchHash(sx, sy, hash):
+        continue
+      let range = patchHashRange(bot.patchEntries, hash)
+      if range.last - range.first > PatchMaxMatches:
+        continue
+      for i in range.first ..< range.last:
+        let
+          entry = bot.patchEntries[i]
+          x = entry.cameraX - sx
+          y = entry.cameraY - sy
+        bot.addPatchVote(x, y)
+  bot.collectPatchCandidates()
+  var
+    bestScore = CameraScore(score: low(int), errors: high(int), compared: 0)
+    bestX = 0
+    bestY = 0
+  for candidate in bot.patchCandidates:
+    let score = bot.scoreCamera(
+      candidate.cameraX,
+      candidate.cameraY,
+      FullFrameFitMaxErrors
+    )
+    if score.errors < bestScore.errors or
+        (score.errors == bestScore.errors and
+        score.compared > bestScore.compared):
+      bestScore = score
+      bestX = candidate.cameraX
+      bestY = candidate.cameraY
+  bot.clearPatchVotes()
+  if not acceptCameraScore(bestScore, FullFrameFitMaxErrors):
+    return false
+  bot.setCameraLock(bestX, bestY, bestScore, FrameMapLock)
+  true
 
 proc acceptCameraScore(score: CameraScore, maxErrors: int): bool =
   ## Returns true when a camera score is good enough to trust.
@@ -847,6 +1080,13 @@ proc locateNearFrame(bot: var Bot): bool =
 
 proc locateByFrame(bot: var Bot): bool =
   ## Locates the camera by spiraling out from the best prior.
+  let patchStart = getMonoTime()
+  if bot.locateByPatches():
+    bot.localizePatchMicros = int((getMonoTime() - patchStart).inMicroseconds)
+    bot.localizeSpiralMicros = 0
+    return true
+  bot.localizePatchMicros = int((getMonoTime() - patchStart).inMicroseconds)
+  let spiralStart = getMonoTime()
   var
     bestScore = CameraScore(
       score: low(int),
@@ -920,13 +1160,21 @@ proc locateByFrame(bot: var Bot): bool =
     bot.cameraLock = NoLock
     bot.cameraScore = bestScore.score
     bot.localized = false
+    bot.localizeSpiralMicros =
+      int((getMonoTime() - spiralStart).inMicroseconds)
     return false
   bot.setCameraLock(bestX, bestY, bestScore, FrameMapLock)
+  bot.localizeSpiralMicros =
+    int((getMonoTime() - spiralStart).inMicroseconds)
   true
 
 proc updateLocation(bot: var Bot) =
   ## Updates the camera and player world estimate from the frame.
   let wasInterstitial = bot.interstitial
+  bot.spriteScanMicros = 0
+  bot.localizeLocalMicros = 0
+  bot.localizePatchMicros = 0
+  bot.localizeSpiralMicros = 0
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
   bot.interstitial = bot.isInterstitialScreen()
@@ -949,6 +1197,7 @@ proc updateLocation(bot: var Bot) =
     bot.clearVotingState()
   if wasInterstitial:
     bot.reseedLocalizationAtHome()
+  let spriteStart = getMonoTime()
   bot.updateRole()
   bot.updateSelfColor()
   bot.scanBodies()
@@ -958,8 +1207,14 @@ proc updateLocation(bot: var Bot) =
     bot.visibleTaskIcons.setLen(0)
   else:
     bot.scanTaskIcons()
+  bot.spriteScanMicros = int((getMonoTime() - spriteStart).inMicroseconds)
+  let localStart = getMonoTime()
   if bot.locateNearFrame():
+    bot.localizeLocalMicros =
+      int((getMonoTime() - localStart).inMicroseconds)
     return
+  bot.localizeLocalMicros =
+    int((getMonoTime() - localStart).inMicroseconds)
   discard bot.locateByFrame()
 
 proc rememberVisibleMap(bot: var Bot) =
@@ -3117,6 +3372,7 @@ proc initBot(): Bot =
   result.checkoutTasks = newSeq[bool](result.sim.tasks.len)
   result.taskStates = newSeq[TaskState](result.sim.tasks.len)
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
+  result.buildPatchEntries()
   result.cameraX = buttonCameraX()
   result.cameraY = buttonCameraY()
   result.lastCameraX = result.cameraX
@@ -3535,12 +3791,20 @@ proc pumpViewer(
   let infoText =
     "intent: " & bot.intent & "\n" &
     "room: " & bot.roomName() & "\n" &
+    "timing sprite scans: " & $bot.spriteScanMicros & "us (" &
+      $(bot.spriteScanMicros div 1000) & "ms)\n" &
+    "timing localize local: " & $bot.localizeLocalMicros & "us (" &
+      $(bot.localizeLocalMicros div 1000) & "ms)\n" &
+    "timing localize patch: " & $bot.localizePatchMicros & "us (" &
+      $(bot.localizePatchMicros div 1000) & "ms)\n" &
+    "timing localize spiral: " & $bot.localizeSpiralMicros & "us (" &
+      $(bot.localizeSpiralMicros div 1000) & "ms)\n" &
+    "timing pathing: " & $bot.astarMicros & "us (" &
+      $(bot.astarMicros div 1000) & "ms)\n" &
     "client tick: " & $bot.frameTick & "\n" &
     "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
     "timing center: " & $bot.centerMicros & "us (" &
       $(bot.centerMicros div 1000) & "ms)\n" &
-    "timing A*: " & $bot.astarMicros & "us (" &
-      $(bot.astarMicros div 1000) & "ms)\n" &
     "frames dropped: " & $bot.frameBacklog &
       " total=" & $bot.skippedFrames & "\n" &
     "interstitial text: " &
