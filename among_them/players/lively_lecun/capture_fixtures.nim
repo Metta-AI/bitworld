@@ -1,13 +1,14 @@
 ## Captures reference frames for each among_them phase and writes them
-## to ./testdata/phase_*.bin for use as Go test fixtures.
+## to ./testdata/phase_*.bin for use as Go test fixtures. Also dumps the
+## skeld map as ./testdata/skeld_map.bin (508 968 unpacked palette indices)
+## and a ./testdata/fixtures.tsv sidecar with ground-truth camera/player
+## coordinates for the playing-phase fixtures so the M4 localizer has
+## something to compare against.
 ##
 ## Run from the repo root after `nim c` setup is in place:
 ##   nim c -r among_them/players/lively_lecun/capture_fixtures.nim
-##
-## Each phase is captured in isolation by setting up a sim, driving it to
-## the target phase, and dumping `sim.render(playerIndex=0)` (8192 bytes).
 
-import std/[os, strformat]
+import std/[os, strformat, strutils]
 import ../../../common/protocol
 import ../../sim
 
@@ -15,6 +16,8 @@ const
   ScriptDir = currentSourcePath.parentDir
   RootDir = ScriptDir.parentDir.parentDir.parentDir
   TestDataDir = ScriptDir / "testdata"
+
+var fixtureMeta: seq[string] = @[]
 
 proc setupSim(numPlayers: int, minPlayers = 3): SimServer =
   let prev = getCurrentDir()
@@ -38,6 +41,30 @@ proc writeFrame(name: string, frame: seq[uint8]) =
     s[i] = char(frame[i])
   writeFile(path, s)
   echo &"wrote {path} ({frame.len} bytes)"
+
+proc recordPlayerMeta(name: string, sim: SimServer, playerIndex: int) =
+  ## Records ground-truth camera/player coordinates for the M4 localizer.
+  ## Only meaningful during the Playing phase; called after writeFrame.
+  let view = sim.playerView(playerIndex)
+  let p = sim.players[playerIndex]
+  fixtureMeta.add(&"{name}\t{view.cameraX}\t{view.cameraY}\t{p.x}\t{p.y}")
+
+proc writeMapAsset(sim: SimServer) =
+  ## Dumps the rendered skeld map (palette indices, MapWidth*MapHeight bytes)
+  ## for client-side template matching.
+  createDir(TestDataDir)
+  let path = TestDataDir / "skeld_map.bin"
+  var s = newString(sim.mapPixels.len)
+  for i in 0 ..< sim.mapPixels.len:
+    s[i] = char(sim.mapPixels[i])
+  writeFile(path, s)
+  echo &"wrote {path} ({sim.mapPixels.len} bytes, {MapWidth}x{MapHeight})"
+
+proc writeMeta() =
+  let path = TestDataDir / "fixtures.tsv"
+  let header = "name\tcameraX\tcameraY\tplayerX\tplayerY"
+  writeFile(path, header & "\n" & fixtureMeta.join("\n") & "\n")
+  echo &"wrote {path} ({fixtureMeta.len} entries)"
 
 proc advanceUntil(sim: var SimServer, target: GamePhase, maxSteps = 400) =
   var inputs = newSeq[InputState](sim.players.len)
@@ -73,11 +100,18 @@ proc capture() =
     else:
       echo &"  skipped role_reveal capture (phase={sim.phase})"
 
+  # Map asset: write once from a freshly-initialised sim. mapPixels are
+  # the same regardless of phase / player count.
+  block:
+    var sim = setupSim(numPlayers = 3, minPlayers = 3)
+    writeMapAsset(sim)
+
   # Playing: advance past RoleReveal.
   block:
     var sim = setupSim(numPlayers = 3, minPlayers = 3)
     advanceUntil(sim, Playing)
     writeFrame("playing", sim.render(0))
+    recordPlayerMeta("playing", sim, 0)
 
   # Playing - on a task: teleport a crewmate onto one of their assigned
   # task stations so the task icon overlays the player's on-screen position.
@@ -96,6 +130,7 @@ proc capture() =
       sim.players[idx].x = task.x + task.w div 2
       sim.players[idx].y = task.y + task.h div 2
       writeFrame("playing_on_task", sim.render(idx))
+      recordPlayerMeta("playing_on_task", sim, idx)
     else:
       echo &"  skipped playing_on_task (no crewmate has tasks)"
 
@@ -127,4 +162,5 @@ proc capture() =
     writeFrame("game_over", sim.render(0))
 
 capture()
+writeMeta()
 echo "done"
