@@ -9,17 +9,20 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{display:flex;align-items:center;justify-content:center}
 canvas{image-rendering:pixelated;image-rendering:crisp-edges}
 input{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(80vw,520px);box-sizing:border-box;background:#0008;color:#fff;border:1px solid #fff8;padding:8px 10px;font:18px monospace;outline:0;display:none}
+#s{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e8e8e8;background:#000;font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;pointer-events:none}
 </style>
 </head>
 <body>
 <canvas id="c" width="128" height="128"></canvas>
 <input id="i" maxlength="48" autocomplete="off" autocapitalize="off" spellcheck="false">
+<div id="s">connecting...</div>
 <script>
-let c=document.getElementById("c"),i=document.getElementById("i"),x=c.getContext("2d"),d=x.createImageData(128,128),
+let c=document.getElementById("c"),i=document.getElementById("i"),s=document.getElementById("s"),x=c.getContext("2d"),d=x.createImageData(128,128),
 p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255],
 k={},l=255,w,u=new URL(location.href),m=location.host?((location.protocol=="https:"?"wss:":"ws:")+"//"+location.host):"ws://localhost:8080",a=u.searchParams.get("address")||m+"/player",
-g=(u.searchParams.get("joystick")|0)-1,z=0;
+g=(u.searchParams.get("joystick")|0)-1,z=0,r=Math.max(0,+u.searchParams.get("reconnect")||0),t=0,n;
 try{let v=new URL(a);if(v.pathname=="/")v.pathname="/player";a=v+""}catch(e){}
+n=o=>{s.textContent=o;s.style.display=o?"flex":"none"};
 x.imageSmoothingEnabled=false;
 onresize=e=>{let s=Math.min(innerWidth,innerHeight);c.style.width=s+"px";c.style.height=s+"px"};
 onresize();
@@ -39,19 +42,27 @@ onkeydown=e=>{
 };
 onkeyup=e=>{k[e.code]=0};
 i.oninput=e=>{i.value=i.value.replace(/[^\x20-\x7e]/g,"")};
-w=new WebSocket(a);
-w.binaryType="arraybuffer";
-w.onmessage=e=>{
-  let b=new Uint8Array(e.data),q=d.data,j=0,n,o;
-  if(b.length!=8192)return;
-  for(let i=0;i<8192;i++){
-    n=b[i];o=(n&15)*4;
-    q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
-    o=(n>>4)*4;
-    q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+(y=()=>{
+  n("connecting...");w=new WebSocket(a);w.binaryType="arraybuffer";l=255;
+  w.onopen=e=>n("");
+  w.onmessage=e=>{
+    let b=new Uint8Array(e.data),q=d.data,j=0,n,o;
+    if(b.length!=8192)return;
+    for(let i=0;i<8192;i++){
+      n=b[i];o=(n&15)*4;
+      q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+      o=(n>>4)*4;
+      q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+    }
+    x.putImageData(d,0,0);
+  };
+  let q=w;
+  q.onclose=q.onerror=e=>{
+    if(w!=q)return;
+    if(r){n("reconnecting...");if(!t)t=setTimeout(()=>{t=0;y()},r*1000)}
+    else n("disconnected...")
   }
-  x.putImageData(d,0,0);
-};
+})();
 requestAnimationFrame(function f(){
   let r=navigator.getGamepads?navigator.getGamepads():[],o=g<0?0:g,b=r[o],h=0,
   lx=b?b.axes[0]||0:0,ly=b?b.axes[1]||0:0,t=.35;

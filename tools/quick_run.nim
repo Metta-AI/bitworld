@@ -21,6 +21,7 @@ type
     address: string
     port: int
     players: int
+    reconnectSeconds: string
     saveReplayPath: string
 
   ClientLaunch = object
@@ -33,7 +34,7 @@ proc repoRoot(): string =
 
 proc usage(): string =
   "Usage: quick_run <game_folder> --address:ADDR --port:N " &
-    "[--players:N] [--save-replay:PATH]\n" &
+    "[--players:N] [--reconnect:N] [--save-replay:PATH]\n" &
     "When players is greater than 1, quick_run launches centered " &
     "screen-only clients and binds joysticks 1..N.\n" &
     "Example: quick_run fancy_cookout --address:0.0.0.0 " &
@@ -51,6 +52,12 @@ proc parsePlayers(value: string): int =
       ValueError,
       "--players must be between 1 and " & $MaxPlayers & "."
     )
+
+proc parseReconnect(value: string): string =
+  let seconds = parseFloat(value)
+  if not (seconds >= 0):
+    raise newException(ValueError, "--reconnect must be 0 or greater.")
+  value
 
 proc trimTrailingSeparators(value: string): string =
   result = value.strip()
@@ -330,6 +337,10 @@ proc parseArgs(): QuickRunConfig =
         if val.len == 0:
           raise newException(ValueError, "--save-replay requires a value.")
         result.saveReplayPath = val
+      of "reconnect":
+        if val.len == 0:
+          raise newException(ValueError, "--reconnect requires a value.")
+        result.reconnectSeconds = parseReconnect(val)
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdShortOption:
@@ -395,12 +406,15 @@ proc runQuickRun(config: QuickRunConfig): int =
 
   if config.players <= 1:
     try:
+      var clientArgs = @[portArg, "--title:" & gameTitle]
+      if config.reconnectSeconds.len > 0:
+        clientArgs.add("--reconnect:" & config.reconnectSeconds)
       clientProcesses.add(
         launchManagedProcess(
           "client",
           clientExe,
           clientWorkDir,
-          [portArg, "--title:" & gameTitle]
+          clientArgs
         )
       )
     except CatchableError as e:
@@ -411,19 +425,22 @@ proc runQuickRun(config: QuickRunConfig): int =
     let launches = clientLaunches(gameTitle, config.players)
     for i, launch in launches:
       try:
+        var clientArgs = @[
+          portArg,
+          "--screen-only",
+          "--title:" & launch.title,
+          "--joystick:" & $(i + 1),
+          "--x:" & $launch.x,
+          "--y:" & $launch.y
+        ]
+        if config.reconnectSeconds.len > 0:
+          clientArgs.add("--reconnect:" & config.reconnectSeconds)
         clientProcesses.add(
           launchManagedProcess(
             "client " & $(i + 1),
             clientExe,
             clientWorkDir,
-            [
-              portArg,
-              "--screen-only",
-              "--title:" & launch.title,
-              "--joystick:" & $(i + 1),
-              "--x:" & $launch.x,
-              "--y:" & $launch.y
-            ]
+            clientArgs
           )
         )
       except CatchableError as e:

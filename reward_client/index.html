@@ -39,24 +39,55 @@ function defaultAddress(path){
   return protocol+"//"+host+path;
 }
 const address=url.searchParams.get("address")||defaultAddress("/reward");
-const socket=new WebSocket(address);
+const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
+let socket=null,reconnectTimer=0;
 
 function show(text){
   reward.textContent=text;
 }
 
-socket.onmessage=event=>{
-  if(typeof event.data==="string"){
-    show(event.data);
-  }else if(event.data instanceof Blob){
-    event.data.text().then(show);
+function reconnect(ws){
+  if(socket!==ws)return;
+  socket=null;
+  if(reconnectSeconds>0){
+    show("reconnecting...");
+    if(!reconnectTimer){
+      reconnectTimer=setTimeout(()=>{
+        reconnectTimer=0;
+        connect();
+      },reconnectSeconds*1000);
+    }
   }else{
-    socket.close();
+    show("disconnected...");
   }
-};
-socket.onopen=()=>show("");
-socket.onclose=()=>show("disconnected...");
-socket.onerror=()=>show("disconnected...");
+}
+
+function connect(){
+  const ws=new WebSocket(address);
+  socket=ws;
+  ws.onmessage=event=>{
+    if(socket!==ws)return;
+    if(typeof event.data==="string"){
+      show(event.data);
+    }else if(event.data instanceof Blob){
+      event.data.text().then(text=>{
+        if(socket===ws)show(text);
+      });
+    }else{
+      ws.close();
+    }
+  };
+  ws.onopen=()=>{
+    if(socket===ws)show("");
+  };
+  ws.onclose=()=>reconnect(ws);
+  ws.onerror=()=>{
+    reconnect(ws);
+    try{ws.close()}catch(e){}
+  };
+}
+
+connect();
 </script>
 </body>
 </html>

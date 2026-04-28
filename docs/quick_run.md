@@ -73,4 +73,7 @@ You can also launch multiple players:
 .\tools\quick_run.exe fancy_cookout 8080 --players:4
 ```
 
+Add `--reconnect:5` to pass five-second client reconnects through to every
+launched client. Reconnect is off by default.
+
 When `--players:N` is greater than `1`, `quick_run` automatically passes `--screen-only`, `--title:...`, `--joystick:N`, `--x:N`, and `--y:N` to each client.

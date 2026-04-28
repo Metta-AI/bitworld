@@ -42,6 +42,7 @@ function defaultAddress(path){
   return protocol+"//"+host+path;
 }
 const address=url.searchParams.get("address")||defaultAddress("/global");
+const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const palette=[
   [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],
@@ -50,10 +51,9 @@ const palette=[
   [29,43,83,255],[131,118,156,255],[41,173,255,255],[255,204,170,255]
 ];
 let layers=new Map(),sprites=new Map(),objects=new Map();
-let socket=new WebSocket(address);
+let socket=null,reconnectTimer=0;
 let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
 let draggingMap=false,dragX=0,dragY=0;
-socket.binaryType="arraybuffer";
 ctx.imageSmoothingEnabled=false;
 
 function setStatus(text){
@@ -142,7 +142,7 @@ function writeI16(bytes,offset,value){
 }
 
 function sendMousePosition(event,preferredLayer=null){
-  if(socket.readyState!==WebSocket.OPEN)return;
+  if(!socket||socket.readyState!==WebSocket.OPEN)return;
   const point=mousePoint(event,preferredLayer);
   if(!point)return;
   const bytes=new Uint8Array(6);
@@ -154,7 +154,7 @@ function sendMousePosition(event,preferredLayer=null){
 }
 
 function sendMouseButton(event,down,preferredLayer=null){
-  if(socket.readyState!==WebSocket.OPEN)return;
+  if(!socket||socket.readyState!==WebSocket.OPEN)return;
   const point=mousePoint(event,preferredLayer);
   if(!point)return;
   const bytes=new Uint8Array(9);
@@ -241,7 +241,7 @@ function layerScreenPos(layer){
 }
 
 function draw(){
-  if(socket.readyState===WebSocket.CLOSED)return;
+  if(!socket||socket.readyState===WebSocket.CLOSED)return;
   ctx.imageSmoothingEnabled=false;
   clearBlack();
   const orderedLayers=[...layers.values()].sort((a,b)=>a.type-b.type||a.id-b.id);
@@ -323,16 +323,42 @@ function parse(bytes){
   draw();
 }
 
-socket.onmessage=event=>parse(new Uint8Array(event.data));
-socket.onopen=()=>setStatus("");
-socket.onclose=()=>{
+function reconnect(ws){
+  if(socket!==ws)return;
+  socket=null;
   clearBlack();
-  setStatus("disconnected...");
-};
-socket.onerror=()=>{
-  clearBlack();
-  setStatus("disconnected...");
-};
+  if(reconnectSeconds>0){
+    setStatus("reconnecting...");
+    if(!reconnectTimer){
+      reconnectTimer=setTimeout(()=>{
+        reconnectTimer=0;
+        connect();
+      },reconnectSeconds*1000);
+    }
+  }else{
+    setStatus("disconnected...");
+  }
+}
+
+function connect(){
+  const ws=new WebSocket(address);
+  socket=ws;
+  ws.binaryType="arraybuffer";
+  setStatus("connecting...");
+  ws.onmessage=event=>{
+    if(socket===ws)parse(new Uint8Array(event.data));
+  };
+  ws.onopen=()=>{
+    if(socket===ws)setStatus("");
+  };
+  ws.onclose=()=>reconnect(ws);
+  ws.onerror=()=>{
+    reconnect(ws);
+    try{ws.close()}catch(e){}
+  };
+}
+
+connect();
 
 addEventListener("resize",()=>{
   maybeFit();

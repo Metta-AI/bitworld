@@ -11,7 +11,6 @@ const
   ScreenshotScalePower = 2
   WebSocketPath = "/player"
   MinimumSplashMilliseconds = 1500'i64
-  ReconnectDelayMilliseconds = 250'i64
   NetworkPollPasses = 8
   LayoutScale = 2
   PressOffset = LayoutScale.float32
@@ -68,6 +67,7 @@ type
     windowPos: Option[IVec2]
     screenOnly: bool
     selectedGamepadIndex: int
+    reconnectDelayMilliseconds: int64
 
   ShellVisualState = object
     dpadOffsetX: float32
@@ -94,6 +94,7 @@ type
     connecting: bool
     hasFrame: bool
     lastConnectAttemptAt: MonoTime
+    reconnectDelayMilliseconds: int64
     errorMessage: string
 
   ClientApp* = ref object
@@ -200,6 +201,12 @@ proc parseSelectedGamepad(value: string): int =
   if parsed <= 0:
     return 0
   parsed - 1
+
+proc parseReconnectDelay(value: string): int64 =
+  let seconds = parseFloat(value)
+  if not (seconds > 0):
+    return 0
+  int64(round(seconds * 1000.0))
 
 proc screenshotDir(): string =
   getAppDir() / ScreenshotDirName
@@ -397,6 +404,7 @@ proc connectNetwork(client: ClientApp) =
     client.network.connected = false
     client.network.connecting = false
     client.network.hasFrame = false
+    client.network.lastConnectAttemptAt = getMonoTime()
     client.network.errorMessage = msg
 
   ws.onClose = proc() =
@@ -405,6 +413,7 @@ proc connectNetwork(client: ClientApp) =
     client.network.connected = false
     client.network.connecting = false
     client.network.hasFrame = false
+    client.network.lastConnectAttemptAt = getMonoTime()
 
 proc reconnectNetwork(client: ClientApp) =
   client.network.ws.close()
@@ -466,6 +475,8 @@ proc initClient*(
 
   result.network.latestFrame = newSeq[uint8](ProtocolBytes)
   result.network.url = "ws://" & host & ":" & $port & WebSocketPath
+  result.network.reconnectDelayMilliseconds =
+    clientOptions.reconnectDelayMilliseconds
   result.connectNetwork()
 
 proc shutdownClient(client: ClientApp) =
@@ -640,10 +651,13 @@ proc drawShellUi(client: ClientApp) =
 proc tickNetwork(client: ClientApp, inputMask: uint8) =
   client.network.desiredMask = inputMask
   if not client.network.connected:
+    if client.network.reconnectDelayMilliseconds <= 0:
+      return
     let elapsed =
       (getMonoTime() - client.network.lastConnectAttemptAt).inMilliseconds
-    if not client.network.connecting and elapsed >= ReconnectDelayMilliseconds:
-      client.connectNetwork()
+    if not client.network.connecting and
+      elapsed >= client.network.reconnectDelayMilliseconds:
+        client.connectNetwork()
     return
   if inputMask == client.network.lastSentMask:
     return
@@ -775,6 +789,8 @@ when isMainModule:
         clientOptions.title = val
       of "joystick", "gamepad", "controller":
         clientOptions.selectedGamepadIndex = parseSelectedGamepad(val)
+      of "reconnect":
+        clientOptions.reconnectDelayMilliseconds = parseReconnectDelay(val)
       else: discard
     else: discard
   if windowX.isSome or windowY.isSome:

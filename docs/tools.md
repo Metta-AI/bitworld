@@ -121,6 +121,9 @@ client/client.nim
 It connects to the player protocol and is what `quick_run` launches. It is best
 for normal local development and gamepad testing.
 
+Pass `--reconnect:5` to make it reconnect every five seconds after a disconnect.
+Reconnect is off by default.
+
 The HTML player client lives at:
 
 ```text
@@ -133,6 +136,9 @@ It is a tiny browser client for the same `/player` protocol. It accepts an
 ```text
 player_client/index.html?address=ws://localhost:8080/player
 ```
+
+Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
+Reconnect is off by default.
 
 This is useful when testing the protocol from a browser or sharing a minimal
 client with another tool.
@@ -153,6 +159,9 @@ replay transport controls.
 global_client/index.html?address=ws://localhost:8080/global
 ```
 
+Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
+Reconnect is off by default.
+
 ## Reward Client
 
 The HTML reward client lives at:
@@ -166,6 +175,9 @@ It connects to `/reward` and shows the latest reward packet as text.
 ```text
 reward_client/index.html?address=ws://localhost:8080/reward
 ```
+
+Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
+Reconnect is off by default.
 
 This client is intentionally small. It is mainly for checking that a game is
 emitting reward data in the format expected by training tools.
