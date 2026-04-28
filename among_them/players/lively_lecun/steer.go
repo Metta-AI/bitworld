@@ -1,7 +1,14 @@
 package main
 
 const (
-	yellowIndex           = 10
+	// Task markers from sim.nim's renderer. Palette 8 is the off-screen
+	// radar arrow color (radarColor in sim.nim:2337); palette 9 is the
+	// on-screen task icon sprite color, observed by inspecting the
+	// playing_on_task fixture (125 px of palette 9, none in regular
+	// playing). Palette 10 (yellow) is map decoration, not task-related.
+	taskRadarColor = 8
+	taskIconColor  = 9
+
 	playerScreenCenterX   = ScreenWidth / 2
 	playerScreenCenterY   = ScreenHeight / 2
 	playerExclusionRadius = 8 // half-side of a 16x16 box covering own sprite
@@ -9,9 +16,9 @@ const (
 )
 
 // Steer returns a button mask that walks the agent toward the centroid of
-// yellow pixels (palette index 10) in the frame. Yellow is the radar /
-// task-marker color; pulling the agent toward it is a cheap reactive
-// behavior that biases movement toward useful destinations.
+// task-marker pixels (palettes 8 and 9: off-screen radar arrows + on-screen
+// task icons). Pulling the agent toward task indicators is a cheap reactive
+// behavior that biases movement toward task stations.
 //
 // A small box around the player's on-screen position is excluded so the
 // agent isn't attracted to its own sprite if it has yellow accents.
@@ -30,7 +37,7 @@ func Steer(pixels []uint8) uint8 {
 		dy := y - playerScreenCenterY
 		row := pixels[y*ScreenWidth : (y+1)*ScreenWidth]
 		for x, v := range row {
-			if v != yellowIndex {
+			if v != taskRadarColor && v != taskIconColor {
 				continue
 			}
 			dx := x - playerScreenCenterX

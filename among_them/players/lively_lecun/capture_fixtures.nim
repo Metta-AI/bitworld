@@ -79,6 +79,26 @@ proc capture() =
     advanceUntil(sim, Playing)
     writeFrame("playing", sim.render(0))
 
+  # Playing - on a task: teleport a crewmate onto one of their assigned
+  # task stations so the task icon overlays the player's on-screen position.
+  block:
+    var sim = setupSim(numPlayers = 3, minPlayers = 3)
+    advanceUntil(sim, Playing)
+    var idx = -1
+    for i in 0 ..< sim.players.len:
+      if sim.players[i].role == Crewmate and sim.players[i].assignedTasks.len > 0:
+        idx = i
+        break
+    if idx >= 0:
+      let
+        taskIdx = sim.players[idx].assignedTasks[0]
+        task = sim.tasks[taskIdx]
+      sim.players[idx].x = task.x + task.w div 2
+      sim.players[idx].y = task.y + task.h div 2
+      writeFrame("playing_on_task", sim.render(idx))
+    else:
+      echo &"  skipped playing_on_task (no crewmate has tasks)"
+
   # Voting.
   block:
     var sim = setupSim(numPlayers = 3, minPlayers = 3)

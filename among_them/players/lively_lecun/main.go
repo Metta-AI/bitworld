@@ -47,6 +47,7 @@ func main() {
 		havePhase    bool
 		skipper      SkipController
 		bumper       Bumper
+		holder       TaskHolder
 		frames       uint64
 	)
 
@@ -98,10 +99,22 @@ func main() {
 		var mask uint8
 		switch phase {
 		case PhaseActive:
-			beforeP := bumper.Perturbs
-			mask = bumper.Adjust(pixels, Steer(pixels))
-			if bumper.Perturbs != beforeP {
-				log.Printf("bumper: perturb #%d (frame %d, mask %#x)", bumper.Perturbs, frames, mask)
+			wasHolding := holder.IsHolding()
+			beforeC := holder.Completes
+			if m, handled := holder.Adjust(pixels); handled {
+				mask = m
+				if !wasHolding {
+					log.Printf("task: holding (frame %d)", frames)
+				}
+				if holder.Completes != beforeC {
+					log.Printf("task: completed #%d (frame %d)", holder.Completes, frames)
+				}
+			} else {
+				beforeP := bumper.Perturbs
+				mask = bumper.Adjust(pixels, Steer(pixels))
+				if bumper.Perturbs != beforeP {
+					log.Printf("bumper: perturb #%d (frame %d, mask %#x)", bumper.Perturbs, frames, mask)
+				}
 			}
 		case PhaseVoting:
 			mask = skipper.Next(pixels)

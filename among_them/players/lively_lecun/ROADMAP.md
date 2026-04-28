@@ -46,11 +46,15 @@ The map's wall layer (`wallMask` in `among_them/sim.nim:2513-2517`) lives only o
 
 Verified live: three agents observed `idle (frame 1) → active (frame 121) → idle (frame 1121)` against a `maxTicks=1000` server, with one perturb event fired on agent Y at frame 128 — exactly the early-game "Steer wants vertical, but the camera hasn't started moving yet" case the layer is meant to catch.
 
-### M3 — Task pickup loop
+### M3 — Task pickup loop (PARTIALLY DONE)
 
-When a task icon is near screen center, release directions and hold for `taskCompleteTicks`, then resume. Combined with M1+M2 this should already complete real tasks "by accident."
-- Tests: canned "near task" frame yields empty-mask sustained; canned "moving" frame yields direction mask.
-- Done when: agent completes >0 tasks per game on average.
+`task.go` adds:
+- `OnTask(pixels)` — detects palette-9 (orange task icon) overlap in a 28×28 region above the player center. Verified by `playing_on_task` fixture: 17 hits vs 0 in regular `playing` and every other phase.
+- `TaskHolder` — state machine that releases direction inputs (mask=0) for `taskHoldTicks=80` once OnTask fires, matching `sim.nim:39`'s `TaskCompleteTicks=72` plus a small slack.
+
+`main.go` now layers behavior `TaskHolder → Bumper → Steer`. M3 also fixed a target-color bug discovered while building it: Steer was chasing palette 10 (yellow), which is map decoration. The actual task-direction signals are palette 8 (off-screen radar arrows, `radarColor` in `sim.nim:2337`) and palette 9 (on-screen task icons). `steer.go` now targets both.
+
+**Live limitation:** with reactive radar-arrow steering, agents walk into walls trying to reach off-screen tasks and spend most of their time in the Bumper's perturb cycle (52+ perturbs in 30 s in the live test). They don't actually reach tasks, so `OnTask` never fires in practice. The infrastructure is correct but task completion needs deliberate navigation — that's M4 (camera localization) + M5 (A\* to remembered task locations).
 
 ### M4 — Camera localization + persistent map
 

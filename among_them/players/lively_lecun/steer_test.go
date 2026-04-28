@@ -15,7 +15,7 @@ func paintBlob(p []uint8, x0, y0, w, h int, color uint8) {
 func TestSteerYellowAbove(t *testing.T) {
 	p := make([]uint8, ScreenWidth*ScreenHeight)
 	// Yellow blob centered at (64, 16) — far above the player center (64, 64).
-	paintBlob(p, 60, 12, 8, 8, yellowIndex)
+	paintBlob(p, 60, 12, 8, 8, taskIconColor)
 	if got := Steer(p); got != ButtonUp {
 		t.Errorf("got %#x, want ButtonUp (%#x)", got, ButtonUp)
 	}
@@ -23,7 +23,7 @@ func TestSteerYellowAbove(t *testing.T) {
 
 func TestSteerYellowBelow(t *testing.T) {
 	p := make([]uint8, ScreenWidth*ScreenHeight)
-	paintBlob(p, 60, 108, 8, 8, yellowIndex)
+	paintBlob(p, 60, 108, 8, 8, taskIconColor)
 	if got := Steer(p); got != ButtonDown {
 		t.Errorf("got %#x, want ButtonDown (%#x)", got, ButtonDown)
 	}
@@ -31,7 +31,7 @@ func TestSteerYellowBelow(t *testing.T) {
 
 func TestSteerYellowLeft(t *testing.T) {
 	p := make([]uint8, ScreenWidth*ScreenHeight)
-	paintBlob(p, 12, 60, 8, 8, yellowIndex)
+	paintBlob(p, 12, 60, 8, 8, taskIconColor)
 	if got := Steer(p); got != ButtonLeft {
 		t.Errorf("got %#x, want ButtonLeft (%#x)", got, ButtonLeft)
 	}
@@ -39,7 +39,7 @@ func TestSteerYellowLeft(t *testing.T) {
 
 func TestSteerYellowRight(t *testing.T) {
 	p := make([]uint8, ScreenWidth*ScreenHeight)
-	paintBlob(p, 108, 60, 8, 8, yellowIndex)
+	paintBlob(p, 108, 60, 8, 8, taskIconColor)
 	if got := Steer(p); got != ButtonRight {
 		t.Errorf("got %#x, want ButtonRight (%#x)", got, ButtonRight)
 	}
@@ -48,7 +48,7 @@ func TestSteerYellowRight(t *testing.T) {
 func TestSteerDiagonal(t *testing.T) {
 	p := make([]uint8, ScreenWidth*ScreenHeight)
 	// Upper-right corner — should set both Up and Right.
-	paintBlob(p, 108, 12, 8, 8, yellowIndex)
+	paintBlob(p, 108, 12, 8, 8, taskIconColor)
 	got := Steer(p)
 	if got&ButtonUp == 0 || got&ButtonRight == 0 {
 		t.Errorf("got %#x, want Up|Right (%#x)", got, ButtonUp|ButtonRight)
@@ -68,7 +68,7 @@ func TestSteerNoYellow(t *testing.T) {
 func TestSteerExclusionZone(t *testing.T) {
 	p := make([]uint8, ScreenWidth*ScreenHeight)
 	// Yellow only inside the player exclusion box (16x16 centered at 64,64).
-	paintBlob(p, 60, 60, 6, 6, yellowIndex)
+	paintBlob(p, 60, 60, 6, 6, taskIconColor)
 	if got := Steer(p); got != 0 {
 		t.Errorf("yellow inside exclusion zone should be ignored, got %#x", got)
 	}
@@ -81,8 +81,8 @@ func TestSteerDeadband(t *testing.T) {
 	// Use (64, 60) which is in exclusion. Try (78, 64) — dx=14, outside exclusion (8),
 	// well outside deadband (4) -> would set Right.
 	// To exercise deadband: paint a balanced pair so centroid lands near 0.
-	paintBlob(p, 50, 30, 4, 4, yellowIndex) // dx ≈ -12, dy ≈ -32
-	paintBlob(p, 74, 96, 4, 4, yellowIndex) // dx ≈ +12, dy ≈ +32
+	paintBlob(p, 50, 30, 4, 4, taskIconColor) // dx ≈ -12, dy ≈ -32
+	paintBlob(p, 74, 96, 4, 4, taskIconColor) // dx ≈ +12, dy ≈ +32
 	got := Steer(p)
 	// Centroids cancel on x (≈ 0), so no Left/Right; y still pulls down (positive avg).
 	if got&(ButtonLeft|ButtonRight) != 0 {
@@ -99,16 +99,14 @@ func TestSteerWrongSize(t *testing.T) {
 	}
 }
 
-// Smoke test against the real playing fixture: Steer must return a non-zero
-// mask (we know the fixture has 149 yellow pixels, mostly to the left/down).
-// We don't pin the exact direction since the fixture content may evolve as
-// the renderer changes; we just want assurance Steer doesn't return 0 when
-// there's a clear signal.
+// Smoke test against the real playing fixture: 41 palette-8 radar arrows in
+// the upper-left half of the screen yield a centroid offset of roughly
+// (-41, -23) from the player center, so Steer should set at least Up|Left.
 func TestSteerRealPlayingFixture(t *testing.T) {
 	pixels := loadPhaseFixture(t, "playing")
 	got := Steer(pixels)
-	if got == 0 {
-		t.Errorf("Steer on real playing fixture returned 0; expected a directional mask")
+	if got&ButtonUp == 0 || got&ButtonLeft == 0 {
+		t.Errorf("Steer(playing) = %#x, want at least Up|Left set", got)
 	}
 	t.Logf("Steer(playing fixture) = %#x", got)
 }
