@@ -926,8 +926,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
   let httpServer = newServer(
     httpHandler,
     websocketHandler,
-    workerThreads = 4,
-    tcpNoDelay = true
+    workerThreads = 4
   )
 
   var serverThread: Thread[ServerThreadArgs]
