@@ -3,12 +3,6 @@
 Bitscreen Protocol is a small websocket protocol for streaming a tiny indexed
 color screen and receiving simple controller input.
 
-The client connects to a websocket endpoint. The usual path is:
-
-```text
-/bitscreen
-```
-
 Game servers that expose player sessions usually use:
 
 ```text
