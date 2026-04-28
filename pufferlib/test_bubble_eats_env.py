@@ -19,10 +19,18 @@ from bitworld_pufferlib import (
     EpisodeStats,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
+    SCREEN_WIDTH,
+    STATE_BODY_FEATURE_OFFSET,
     STATE_FLAG_PLAYER_ROLE_IMPOSTER,
+    STATE_FLAG_TASK_COMPLETED,
     STATE_FEATURES,
+    STATE_GRID_SIZE,
+    STATE_HEADER_FEATURES,
     STATE_PLAYER_FEATURE_OFFSET,
     STATE_PLAYER_FEATURES,
+    STATE_TASK_COUNT,
+    STATE_TASK_FEATURE_OFFSET,
+    STATE_TASK_FEATURES,
     env_log_key,
     load_policy_checkpoint,
     parse_reward_payload,
@@ -203,6 +211,83 @@ class BitWorldSmokeTest(unittest.TestCase):
                 cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 7
                 self.assertEqual(int(obs[viewer_index, flags_feature]) & STATE_FLAG_PLAYER_ROLE_IMPOSTER, 0)
                 self.assertEqual(obs[viewer_index, cooldown_feature], 0)
+
+    def test_among_them_state_grid_matches_rendered_pixels(self) -> None:
+        state_env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=8,
+            frame_stack=1,
+            action_repeat=121,
+            base_seed=101,
+            observation_mode="state",
+        )
+        pixel_env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=8,
+            frame_stack=1,
+            action_repeat=121,
+            base_seed=101,
+            observation_mode="pixels",
+        )
+        self.addCleanup(state_env.close)
+        self.addCleanup(pixel_env.close)
+
+        state_env.reset()
+        pixel_env.reset()
+        actions = np.zeros((state_env.total_agents,), dtype=np.int64)
+        state_obs, _, _, _ = state_env.step_discrete(actions)
+        pixel_obs, _, _, _ = pixel_env.step_discrete(actions)
+
+        step = SCREEN_WIDTH // STATE_GRID_SIZE
+        sample_indices = np.asarray(
+            [
+                (gy * step + step // 2) * SCREEN_WIDTH + (gx * step + step // 2)
+                for gy in range(STATE_GRID_SIZE)
+                for gx in range(STATE_GRID_SIZE)
+            ],
+            dtype=np.int64,
+        )
+        grid_end = STATE_HEADER_FEATURES + STATE_GRID_SIZE * STATE_GRID_SIZE
+        state_grid = state_obs[:, STATE_HEADER_FEATURES:grid_end]
+        rendered_grid = pixel_obs[:, sample_indices]
+        np.testing.assert_array_equal(state_grid, rendered_grid)
+        self.assertLessEqual(int(state_grid.max()), 15)
+
+    def test_among_them_state_observations_hide_non_rendered_fields(self) -> None:
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=8,
+            frame_stack=1,
+            action_repeat=121,
+            base_seed=102,
+            observation_mode="state",
+        )
+        self.addCleanup(env.close)
+
+        env.reset()
+        obs, _, _, _ = env.step_discrete(np.zeros((env.total_agents,), dtype=np.int64))
+
+        hidden_header_indices = np.asarray([1, 2, 7, 8, 11, 12, 15, 19, 21], dtype=np.int64)
+        np.testing.assert_array_equal(obs[:, hidden_header_indices], 0)
+
+        player_features = obs[:, STATE_PLAYER_FEATURE_OFFSET:STATE_BODY_FEATURE_OFFSET].reshape(
+            env.total_agents,
+            AMONG_THEM_MAX_PLAYERS,
+            STATE_PLAYER_FEATURES,
+        )
+        np.testing.assert_array_equal(player_features[:, :, 5:7], 0)
+        self.assertTrue(np.all(np.isin(player_features[:, :, 7], [0, 1, 255])))
+
+        task_features = obs[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
+            env.total_agents,
+            STATE_TASK_COUNT,
+            STATE_TASK_FEATURES,
+        )
+        np.testing.assert_array_equal(task_features[:, :, 7], 0)
+        self.assertTrue(np.all((task_features[:, :, 3] & STATE_FLAG_TASK_COMPLETED) == 0))
 
     def test_among_them_state_observations_cover_max_players(self) -> None:
         spec = with_server_players("among_them", AMONG_THEM_MAX_PLAYERS)
