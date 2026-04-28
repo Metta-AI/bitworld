@@ -1,6 +1,6 @@
 # Among Them
 
-Among Them is a Bit World social deduction game set on the Skeld. Crewmates
+Among Them is a Bit World social deduction game set on a spaceship map. Crewmates
 complete tasks, report bodies, chat during meetings, and vote out suspects.
 Imposters try to blend in, use cooldown-limited kills, and survive the vote.
 
@@ -24,7 +24,7 @@ Useful config fields:
 - `imposterCooldownTicks`: Kill cooldown. This is the same as `killCooldownTicks`.
 - `voteTimerTicks`: Voting duration in ticks. At 24 FPS, 360 ticks is 15 seconds.
 - `buttonCalls`: Emergency button calls allowed per player.
-- `mapPath`: Map JSON file to load. The default is `map.json`.
+- `mapPath`: Map JSON file to load. The default is `vanta9.json`.
 
 You can also load config from a file:
 
@@ -42,21 +42,23 @@ nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"im
 
 ## Map Files
 
-The default map is `map.json`. It controls the Skeld image, Aseprite layer
+The default map is `vanta9.json`. It controls the map image, Aseprite layer
 indices, task stations, vents, emergency button rectangle, meeting home point,
 and room names used by the bots.
 Map images currently need to be `952x534`.
 
+The Skeld map is still available as `skeld.json`.
+
 Use a different map with `--map`:
 
 ```sh
-nim r among_them.nim --address:0.0.0.0 --port:2000 --map:map.json
+nim r among_them.nim --address:0.0.0.0 --port:2000 --map:vanta9.json
 ```
 
 Or set it in config:
 
 ```sh
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"map.json","minPlayers":8}'
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"skeld.json","minPlayers":8}'
 ```
 
 ## Browser Clients
@@ -111,10 +113,10 @@ Example with debug windows:
 nim r tools/quick_player nottoodumb --players:2 --address:localhost --port:2000 --gui
 ```
 
-When testing a custom map, pass the same map to the bots:
+When testing the Skeld map, pass the same map to the bots:
 
 ```sh
-nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000 --map:among_them/map.json
+nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000 --map:among_them/skeld.json
 ```
 
 ## Quick Local Run

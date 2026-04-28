@@ -14,7 +14,7 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
-  DefaultMapPath* = "map.json"
+  DefaultMapPath* = "vanta9.json"
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
@@ -633,7 +633,7 @@ proc loadMapLayers*(gameMap: AmongMap): tuple[mapImage, walkImage, wallImage: Im
   )
 
 proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
-  ## Loads the default Skeld map layers.
+  ## Loads the current default map layers.
   loadMapLayers(loadAmongMap())
 
 proc asciiIndex*(ch: char): int =

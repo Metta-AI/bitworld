@@ -1,0 +1,559 @@
+{
+  "name": "Vanta 9",
+  "width": 952,
+  "height": 534,
+  "asepritePath": "vanta9.aseprite",
+  "layers": {
+    "map": 0,
+    "walk": 1,
+    "walls": 2
+  },
+  "button": {
+    "x": 791,
+    "y": 228,
+    "w": 39,
+    "h": 34
+  },
+  "home": {
+    "x": 810,
+    "y": 245
+  },
+  "tasks": [
+    {
+      "name": "Empty Garbage",
+      "x": 482,
+      "y": 500,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Upload Data From Communications",
+      "x": 862,
+      "y": 423,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fix Wires",
+      "x": 782,
+      "y": 162,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fix Wires",
+      "x": 442,
+      "y": 40,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fix Wires",
+      "x": 342,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fix Wires",
+      "x": 482,
+      "y": 241,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fix Wires",
+      "x": 844,
+      "y": 322,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Download Data",
+      "x": 162,
+      "y": 182,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Calibrate Distributor",
+      "x": 402,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Submit Scan",
+      "x": 584,
+      "y": 80,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 304,
+      "y": 302,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 860,
+      "y": 101,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 581,
+      "y": 242,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 822,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 221,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 402,
+      "y": 442,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 123,
+      "y": 182,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Start Reactor",
+      "x": 342,
+      "y": 260,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Unlock Manifolds",
+      "x": 284,
+      "y": 222,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 782,
+      "y": 403,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Prime Shields",
+      "x": 763,
+      "y": 462,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Divert Power",
+      "x": 624,
+      "y": 442,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Clear Asteroids",
+      "x": 782,
+      "y": 102,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Inspect Sample",
+      "x": 542,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Upload Data",
+      "x": 844,
+      "y": 162,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Align Engine Output",
+      "x": 62,
+      "y": 487,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Align Engine Output",
+      "x": 62,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Swipe Card",
+      "x": 581,
+      "y": 282,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Download Data",
+      "x": 624,
+      "y": 40,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Chart Course",
+      "x": 522,
+      "y": 322,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Stabilize Steering",
+      "x": 564,
+      "y": 323,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Download Data",
+      "x": 522,
+      "y": 242,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Download Data",
+      "x": 542,
+      "y": 442,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fuel Engines",
+      "x": 62,
+      "y": 445,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fuel Engines",
+      "x": 123,
+      "y": 381,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Fuel Engines",
+      "x": 62,
+      "y": 86,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Clean O2 Filter",
+      "x": 402,
+      "y": 482,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Download Data",
+      "x": 762,
+      "y": 42,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Empty Garbage",
+      "x": 542,
+      "y": 122,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "Empty Garbage",
+      "x": 342,
+      "y": 442,
+      "w": 16,
+      "h": 16
+    }
+  ],
+  "vents": [
+    {
+      "x": 584,
+      "y": 326,
+      "w": 12,
+      "h": 10,
+      "group": "A",
+      "groupIndex": 1
+    },
+    {
+      "x": 900,
+      "y": 241,
+      "w": 12,
+      "h": 10,
+      "group": "A",
+      "groupIndex": 2
+    },
+    {
+      "x": 624,
+      "y": 126,
+      "w": 12,
+      "h": 10,
+      "group": "A",
+      "groupIndex": 3
+    },
+    {
+      "x": 765,
+      "y": 405,
+      "w": 12,
+      "h": 10,
+      "group": "B",
+      "groupIndex": 1
+    },
+    {
+      "x": 745,
+      "y": 326,
+      "w": 12,
+      "h": 10,
+      "group": "B",
+      "groupIndex": 2
+    },
+    {
+      "x": 764,
+      "y": 107,
+      "w": 12,
+      "h": 10,
+      "group": "C",
+      "groupIndex": 1
+    },
+    {
+      "x": 744,
+      "y": 164,
+      "w": 12,
+      "h": 10,
+      "group": "C",
+      "groupIndex": 2
+    },
+    {
+      "x": 404,
+      "y": 305,
+      "w": 12,
+      "h": 10,
+      "group": "D",
+      "groupIndex": 1
+    },
+    {
+      "x": 344,
+      "y": 485,
+      "w": 12,
+      "h": 10,
+      "group": "D",
+      "groupIndex": 2
+    },
+    {
+      "x": 244,
+      "y": 386,
+      "w": 12,
+      "h": 10,
+      "group": "D",
+      "groupIndex": 3
+    },
+    {
+      "x": 284,
+      "y": 305,
+      "w": 12,
+      "h": 10,
+      "group": "E",
+      "groupIndex": 1
+    },
+    {
+      "x": 223,
+      "y": 490,
+      "w": 12,
+      "h": 10,
+      "group": "E",
+      "groupIndex": 2
+    },
+    {
+      "x": 344,
+      "y": 88,
+      "w": 12,
+      "h": 10,
+      "group": "F",
+      "groupIndex": 1
+    },
+    {
+      "x": 223,
+      "y": 90,
+      "w": 12,
+      "h": 10,
+      "group": "F",
+      "groupIndex": 2
+    }
+  ],
+  "rooms": [
+    {
+      "name": "Upper Engine",
+      "x": 50,
+      "y": 10,
+      "w": 200,
+      "h": 142
+    },
+    {
+      "name": "Reactor",
+      "x": 272,
+      "y": 180,
+      "w": 158,
+      "h": 172
+    },
+    {
+      "name": "Lower Hallway",
+      "x": 336,
+      "y": 352,
+      "w": 372,
+      "h": 57
+    },
+    {
+      "name": "Lower Engine Hallway",
+      "x": 265,
+      "y": 354,
+      "w": 71,
+      "h": 152
+    },
+    {
+      "name": "Upper Engine Hallway",
+      "x": 251,
+      "y": 18,
+      "w": 85,
+      "h": 98
+    },
+    {
+      "name": "Weapons Hallway",
+      "x": 646,
+      "y": 27,
+      "w": 110,
+      "h": 118
+    },
+    {
+      "name": "Cafeteria Hallway",
+      "x": 625,
+      "y": 207,
+      "w": 110,
+      "h": 145
+    },
+    {
+      "name": "Lower Hallway",
+      "x": 436,
+      "y": 145,
+      "w": 295,
+      "h": 62
+    },
+    {
+      "name": "Electrial Hallway",
+      "x": 276,
+      "y": 116,
+      "w": 188,
+      "h": 64
+    },
+    {
+      "name": "Lower Engine",
+      "x": 49,
+      "y": 404,
+      "w": 216,
+      "h": 118
+    },
+    {
+      "name": "Electrical",
+      "x": 335,
+      "y": 14,
+      "w": 129,
+      "h": 90
+    },
+    {
+      "name": "Coms",
+      "x": 475,
+      "y": 410,
+      "w": 172,
+      "h": 116
+    },
+    {
+      "name": "Storage",
+      "x": 113,
+      "y": 152,
+      "w": 152,
+      "h": 252
+    },
+    {
+      "name": "Shields",
+      "x": 756,
+      "y": 375,
+      "w": 130,
+      "h": 112
+    },
+    {
+      "name": "Shields Hallway",
+      "x": 647,
+      "y": 410,
+      "w": 111,
+      "h": 96
+    },
+    {
+      "name": "Bridge",
+      "x": 468,
+      "y": 207,
+      "w": 142,
+      "h": 145
+    },
+    {
+      "name": "O2",
+      "x": 336,
+      "y": 414,
+      "w": 90,
+      "h": 92
+    },
+    {
+      "name": "Weapons",
+      "x": 756,
+      "y": 14,
+      "w": 134,
+      "h": 115
+    },
+    {
+      "name": "Cafeteria",
+      "x": 735,
+      "y": 133,
+      "w": 195,
+      "h": 217
+    },
+    {
+      "name": "MedBay",
+      "x": 536,
+      "y": 15,
+      "w": 111,
+      "h": 130
+    }
+  ]
+}

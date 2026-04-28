@@ -81,6 +81,8 @@ const
   BodyMaxMisses = 9
   BodyMinStablePixels = 6
   BodyMinTintPixels = 6
+  BodyMinLitTintPixels = 8
+  BodyMinDynamicPixels = 10
   GhostSearchRadius = 1
   GhostMaxMisses = 9
   GhostMinStablePixels = 6
@@ -373,7 +375,7 @@ proc cameraYForWorld(y: int): int =
   clamp(y - PlayerWorldOffY, minCameraY(), maxCameraY())
 
 proc inMap(x, y: int): bool =
-  ## Returns true when a world pixel is inside the Skeld map.
+  ## Returns true when a world pixel is inside the map.
   x >= 0 and y >= 0 and x < MapWidth and y < MapHeight
 
 proc cameraCanHoldPlayer(cameraX, cameraY: int): bool =
@@ -1619,6 +1621,90 @@ proc actorColorIndex(
       bestCount = count
       result = i
 
+proc actorLitTintPixels(
+  bot: Bot,
+  sprite: Sprite,
+  x,
+  y: int,
+  flipH: bool
+): int =
+  ## Counts actor tint pixels that are visible as direct player colors.
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let srcX =
+        if flipH:
+          sprite.width - 1 - sx
+        else:
+          sx
+      let color = sprite.pixels[sprite.spriteIndex(srcX, sy)]
+      if color != TintColor:
+        continue
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        continue
+      if playerColorIndex(bot.unpacked[fy * ScreenWidth + fx]) >= 0:
+        inc result
+
+proc frameColorMatchesMap(bot: Bot, sx, sy: int): bool =
+  ## Returns true when a frame pixel is explained by the static map.
+  let
+    mx = bot.cameraX + sx
+    my = bot.cameraY + sy
+    frameColor = bot.unpacked[sy * ScreenWidth + sx]
+    mapColor =
+      if inMap(mx, my):
+        bot.sim.mapPixels[mapIndexSafe(mx, my)]
+      else:
+        MapVoidColor
+  frameColor == mapColor or frameColor == ShadowMap[mapColor and 0x0f]
+
+proc actorDynamicPixels(
+  bot: Bot,
+  sprite: Sprite,
+  x,
+  y: int,
+  flipH: bool
+): int =
+  ## Counts actor pixels that cannot be explained by the static map.
+  if not bot.localized:
+    return BodyMinDynamicPixels
+  for sy in 0 ..< sprite.height:
+    for sx in 0 ..< sprite.width:
+      let srcX =
+        if flipH:
+          sprite.width - 1 - sx
+        else:
+          sx
+      if sprite.pixels[sprite.spriteIndex(srcX, sy)] ==
+          TransparentColorIndex:
+        continue
+      let
+        fx = x + sx
+        fy = y + sy
+      if fx < 0 or fy < 0 or fx >= ScreenWidth or fy >= ScreenHeight:
+        continue
+      if not bot.frameColorMatchesMap(fx, fy):
+        inc result
+
+proc matchesBodySprite(bot: Bot, x, y: int): bool =
+  ## Returns true when a visible dead body has dynamic sprite evidence.
+  if not bot.matchesActorSprite(
+    bot.bodySprite,
+    x,
+    y,
+    false,
+    BodyMaxMisses,
+    BodyMinStablePixels,
+    BodyMinTintPixels
+  ):
+    return false
+  bot.actorLitTintPixels(bot.bodySprite, x, y, false) >=
+    BodyMinLitTintPixels and
+    bot.actorDynamicPixels(bot.bodySprite, x, y, false) >=
+    BodyMinDynamicPixels
+
 proc voteGridLayout(
   count: int
 ): tuple[cols: int, rows: int, startX: int, skipX: int, skipY: int] =
@@ -1920,15 +2006,7 @@ proc scanBodies(bot: var Bot) =
   bot.visibleBodies.setLen(0)
   for y in 0 .. ScreenHeight - bot.bodySprite.height:
     for x in 0 .. ScreenWidth - bot.bodySprite.width:
-      if bot.matchesActorSprite(
-        bot.bodySprite,
-        x,
-        y,
-        false,
-        BodyMaxMisses,
-        BodyMinStablePixels,
-        BodyMinTintPixels
-      ):
+      if bot.matchesBodySprite(x, y):
         bot.visibleBodies.addBodyMatch(x, y)
 
 proc addGhostMatch(matches: var seq[GhostMatch], x, y: int, flipH: bool) =
