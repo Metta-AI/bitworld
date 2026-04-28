@@ -777,6 +777,25 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step_rewards.restype = ctypes.c_int
+        self.lib.bitworld_at_task_distances.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_task_distances.restype = ctypes.c_int
+        self.lib.bitworld_at_task_distances_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_task_distances_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_on_task_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_on_task_batch.restype = ctypes.c_int
         self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_close.restype = None
 
