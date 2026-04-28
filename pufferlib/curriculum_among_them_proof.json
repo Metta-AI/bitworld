@@ -1,0 +1,12 @@
+[
+  {
+    "total_timesteps": 1500000,
+    "imposter_count": 0,
+    "tasks_per_player": 1,
+    "task_complete_ticks": 24,
+    "action_repeat": 12,
+    "hidden_size": 64,
+    "shaping_rewards": true,
+    "players": 1
+  }
+]
