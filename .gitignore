@@ -1,11 +1,7 @@
-# ignore files with no extention:
-*
-!*/
-!*.*
-
 # normal ignores:
 *.exe
 nimcache
+out/
 nim.cfg
 tests/test.js
 tools/runlogs
