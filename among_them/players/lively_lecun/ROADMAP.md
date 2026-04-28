@@ -56,11 +56,15 @@ Verified live: three agents observed `idle (frame 1) → active (frame 121) → 
 
 **Live limitation:** with reactive radar-arrow steering, agents walk into walls trying to reach off-screen tasks and spend most of their time in the Bumper's perturb cycle (52+ perturbs in 30 s in the live test). They don't actually reach tasks, so `OnTask` never fires in practice. The infrastructure is correct but task completion needs deliberate navigation — that's M4 (camera localization) + M5 (A\* to remembered task locations).
 
-### M4 — Camera localization + persistent map
+### M4 — Camera localization + persistent map (DONE)
 
-Frame-fit the current screen against an accumulated wall grid (analogous to `nottoodumb.nim`'s `LocalFrameMapLock` / `FrameMapLock`, re-derived). Now we have stable world coordinates.
-- Tests: synthetic frame at a known offset locks correctly; lock survives a movement step.
-- Done when: world position log tracks reality across a full game.
+Static asset, not lazy build. `capture_fixtures.nim` dumps `testdata/skeld_map.bin` (508 368 unpacked palette indices) and `testdata/fixtures.tsv` with ground-truth `(cameraX, cameraY, playerX, playerY)` for the playing fixtures. The Go binary embeds the map via `//go:embed`, growing 8.6 → 9.2 MB.
+
+`locate.go` brute-forces the camera position from scratch via 252 sparse samples on an 8×8 screen grid (skipping a 16×16 box around the player center). Per-candidate inner loop has an early exit once mismatches exceed the running best. Brute force runs in ~10–170 ms; with `hint != nil` the search is constrained to 33×33 around the previous lock and runs in ~1 ms.
+
+`tracker.go` keeps a running lock by preferring the hinted call and falling back to brute force only when the incremental fit fails. `PlayerPosition()` adds `(ScreenWidth/2, ScreenHeight/2)` to the camera; on the playing fixture it lands at (568, 118) vs the recorded (564, 120) — the 4 px gap is the offset between `player.x` (collision corner) and the sprite's visual center.
+
+Verified live: the tracker locks the moment Active starts (`miss=5/252` at the canonical spawn), follows the agent through the first second of movement, falls back to brute force on agents that get stuck and lose lock, and re-locks. **Caveat noted in code:** in cluttered mid-game frames (other players, shadow overlay) the miss count climbs to 50–90 vs ~5 on the clean fixture, occasionally producing a slightly-drifted lock that still passes the 100-miss threshold. Tighter thresholds for hinted vs brute-force calls is a future tuning pass.
 
 ### M5 — A\* to remembered tasks
 

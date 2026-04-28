@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,9 @@ import (
 
 	"nhooyr.io/websocket"
 )
+
+//go:embed testdata/skeld_map.bin
+var skeldMapData []byte
 
 func main() {
 	addr := flag.String("address", "localhost", "server address")
@@ -40,6 +44,11 @@ func main() {
 		log.Fatalf("initial write: %v", err)
 	}
 
+	if len(skeldMapData) != MapWidth*MapHeight {
+		log.Fatalf("embedded map size = %d, want %d", len(skeldMapData), MapWidth*MapHeight)
+	}
+	tracker := NewTracker(&Map{Pixels: skeldMapData})
+
 	var (
 		pixels       = make([]uint8, ScreenWidth*ScreenHeight)
 		sentMask     uint8 // server already has 0 from the initial packet above
@@ -49,6 +58,7 @@ func main() {
 		bumper       Bumper
 		holder       TaskHolder
 		frames       uint64
+		lastPosLog   uint64
 	)
 
 	sendMask := func(m uint8) error {
@@ -99,6 +109,14 @@ func main() {
 		var mask uint8
 		switch phase {
 		case PhaseActive:
+			if cam, ok := tracker.Update(pixels); ok && frames-lastPosLog >= 24 {
+				if x, y, ok := tracker.PlayerPosition(); ok {
+					log.Printf("pos: (%d, %d) cam=(%d, %d) miss=%d brutes=%d",
+						x, y, cam.X, cam.Y, cam.Mismatches, tracker.Brutes)
+				}
+				lastPosLog = frames
+			}
+
 			wasHolding := holder.IsHolding()
 			beforeC := holder.Completes
 			if m, handled := holder.Adjust(pixels); handled {
