@@ -164,13 +164,23 @@ Reconnect is off by default.
 
 ## Reward Client
 
+The native reward client lives at:
+
+```text
+clients/reward_client.nim
+```
+
+It opens a small Silky window and connects to `/reward` to show the latest
+reward packet as text.
+
 The HTML reward client lives at:
 
 ```text
 clients/reward_client.html
 ```
 
-It connects to `/reward` and shows the latest reward packet as text.
+It connects to the same `/reward` endpoint and shows the latest reward packet
+as text.
 
 ```text
 clients/reward_client.html?address=ws://localhost:8080/reward
