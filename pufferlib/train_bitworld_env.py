@@ -47,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tasks-per-player", type=int, default=-1, help="Override config tasksPerPlayer; -1 keeps default.")
     parser.add_argument("--task-complete-ticks", type=int, default=-1, help="Override config taskCompleteTicks; -1 keeps default.")
     parser.add_argument("--kill-cooldown-ticks", type=int, default=-1, help="Override config killCooldownTicks; -1 keeps default.")
+    parser.add_argument("--ent-coef", type=float, default=0.01, help="Entropy coefficient for PPO.")
+    parser.add_argument("--no-anneal-lr", action="store_true", help="Disable learning rate annealing.")
     parser.add_argument(
         "--curriculum-file",
         type=Path,
@@ -121,6 +123,8 @@ def run_stage(
         task_complete_ticks=stage.get("task_complete_ticks", args.task_complete_ticks),
         kill_cooldown_ticks=stage.get("kill_cooldown_ticks", args.kill_cooldown_ticks),
         init_checkpoint_path=init_checkpoint_path,
+        ent_coef=stage.get("ent_coef", args.ent_coef),
+        anneal_lr=not stage.get("no_anneal_lr", args.no_anneal_lr),
     )
     return spec, episode_steps
 

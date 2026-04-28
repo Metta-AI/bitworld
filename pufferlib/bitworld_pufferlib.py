@@ -37,7 +37,7 @@ AMONG_THEM_STEP_ACTIVE = 0
 AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
 AMONG_THEM_MAX_PLAYERS = 16
-OBSERVATION_MODES = {"pixels", "state"}
+OBSERVATION_MODES = {"pixels", "state", "compact_state"}
 STATE_HEADER_FEATURES = 22
 STATE_GRID_SIZE = 32
 STATE_PLAYER_FEATURE_OFFSET = STATE_HEADER_FEATURES + STATE_GRID_SIZE * STATE_GRID_SIZE
@@ -54,6 +54,16 @@ STATE_FLAG_TASK_COMPLETED = 32
 STATE_FLAG_TASK_ICON_VISIBLE = 8
 STATE_FLAG_TASK_ARROW_VISIBLE = 16
 STATE_FLAG_PLAYER_ROLE_IMPOSTER = 8
+
+COMPACT_STATE_HEADER_INDICES = [0, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+COMPACT_STATE_HEADER_SIZE = len(COMPACT_STATE_HEADER_INDICES)
+COMPACT_STATE_FEATURES = COMPACT_STATE_HEADER_SIZE + STATE_TASK_FEATURES * STATE_TASK_COUNT
+
+
+def _extract_compact_state(full_state: np.ndarray) -> np.ndarray:
+    header = full_state[..., COMPACT_STATE_HEADER_INDICES]
+    tasks = full_state[..., STATE_TASK_FEATURE_OFFSET:STATE_FEATURES]
+    return np.concatenate([header, tasks], axis=-1)
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -96,6 +106,14 @@ def state_reward_shaping_scale() -> float:
 
 def state_progress_reward_scale() -> float:
     return float(os.environ.get("BITWORLD_STATE_PROGRESS_REWARD", "0.02"))
+
+
+def state_dense_reward_scale() -> float:
+    return float(os.environ.get("BITWORLD_STATE_DENSE_REWARD", "0.0"))
+
+
+def state_on_task_reward_scale() -> float:
+    return float(os.environ.get("BITWORLD_STATE_ON_TASK_REWARD", "0.0"))
 
 
 SHARED_NIM_SOURCES = (
@@ -827,6 +845,25 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_uint8),
         ]
         self.lib.bitworld_at_observe_state.restype = ctypes.c_int
+        self.lib.bitworld_at_task_distances.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_task_distances.restype = ctypes.c_int
+        self.lib.bitworld_at_on_task_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_on_task_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_task_distances_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_task_distances_batch.restype = ctypes.c_int
         self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_close.restype = None
 
@@ -1330,13 +1367,13 @@ class BitWorldVecEnv:
             raise ValueError(f"unknown observation_mode {observation_mode!r}")
 
         self.spec = get_env_spec(spec)
-        if observation_mode == "state" and self.spec.name != "among_them":
+        if observation_mode in ("state", "compact_state") and self.spec.name != "among_them":
             raise ValueError("state observations are only implemented for among_them")
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
-        if enable_state_shaping and (self.spec.name != "among_them" or observation_mode != "pixels"):
-            raise ValueError("enable_state_shaping requires among_them with pixel observations")
-        if enable_state_shaping:
+        if enable_state_shaping and self.spec.name != "among_them":
+            raise ValueError("enable_state_shaping requires among_them")
+        if enable_state_shaping and observation_mode == "pixels":
             collect_state_target = True
         if collect_state_target and (self.spec.name != "among_them" or observation_mode != "pixels"):
             raise ValueError("collect_state_target requires among_them with pixel observations")
@@ -1351,7 +1388,12 @@ class BitWorldVecEnv:
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
-        self.obs_features = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
+        if observation_mode == "pixels":
+            self.obs_features = FRAME_PIXELS
+        elif observation_mode == "compact_state":
+            self.obs_features = COMPACT_STATE_FEATURES
+        else:
+            self.obs_features = STATE_FEATURES
         self.obs_dtype = np.uint8
         self.obs_size = self.obs_features * frame_stack
         self.action_count = len(ACTION_MASKS)
@@ -1366,9 +1408,14 @@ class BitWorldVecEnv:
         )
         self.single_action_space = spaces.Discrete(self.action_count)
 
+        self._native_state_features = STATE_FEATURES if observation_mode in ("state", "compact_state") else 0
         self._frame_history = np.zeros((self.total_agents, frame_stack, self.obs_features), dtype=self.obs_dtype)
         self._latest_frames = np.zeros((self.total_agents, self.obs_features), dtype=self.obs_dtype)
         self._obs = np.zeros((self.total_agents, self.obs_size), dtype=self.obs_dtype)
+        if observation_mode == "compact_state":
+            self._native_state_buf = np.zeros((self.total_agents, STATE_FEATURES), dtype=self.obs_dtype)
+        else:
+            self._native_state_buf = None
         self._rewards = np.zeros((self.total_agents,), dtype=np.float32)
         self._terminals = np.zeros((self.total_agents,), dtype=np.float32)
         self._truncations = np.zeros((self.total_agents,), dtype=np.float32)
@@ -1401,7 +1448,12 @@ class BitWorldVecEnv:
         self._state_statuses = np.zeros((self.num_envs,), dtype=np.int32)
         self._state_reward_shaping = state_reward_shaping_scale()
         self._state_progress_reward = state_progress_reward_scale()
+        self._state_dense_reward = state_dense_reward_scale()
         self._state_episode_steps = 0
+        self._task_distances = np.ones((self.total_agents,), dtype=np.float32)
+        self._prev_task_distances = np.ones((self.total_agents,), dtype=np.float32)
+        self._on_task_flags = np.zeros((self.total_agents,), dtype=np.float32)
+        self._state_on_task_reward = state_on_task_reward_scale()
         self._executor = None
         if self.spec.name == "among_them" and self.observation_mode == "pixels":
             self._executor = ThreadPoolExecutor(max_workers=native_worker_count(num_envs))
@@ -1440,7 +1492,7 @@ class BitWorldVecEnv:
                         action_repeat=action_repeat,
                     )
                 self.workers.append(worker)
-            if self.observation_mode == "state":
+            if self.observation_mode in ("state", "compact_state"):
                 self._state_handles = np.asarray(
                     [worker.handle for worker in self.workers if isinstance(worker, AmongThemNativeWorker)],
                     dtype=np.int32,
@@ -1469,8 +1521,12 @@ class BitWorldVecEnv:
         assert self._state_handles is not None
         return self._state_handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
 
+    @property
+    def _full_state_buf(self) -> np.ndarray:
+        return self._native_state_buf if self._native_state_buf is not None else self._latest_frames
+
     def _latest_state_ptr(self):
-        return self._latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+        return self._full_state_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
 
     def _state_rewards_ptr(self):
         return self._rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
@@ -1487,23 +1543,38 @@ class BitWorldVecEnv:
         rows = self._state_agent_rows(env_ids)
         native = among_them_native_library()
         handles = np.ascontiguousarray(self._state_handles[env_ids])
-        latest_frames = np.zeros((rows.size, self.obs_features), dtype=self.obs_dtype)
+        native_buf = np.zeros((rows.size, STATE_FEATURES), dtype=self.obs_dtype)
         rewards = np.zeros((rows.size,), dtype=np.float32)
         native.check(
             native.lib.bitworld_at_reset_state_batch(
                 handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
                 env_ids.size,
                 self.agents_per_env,
-                latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                native_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
                 rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             )
         )
-        self._latest_frames[rows] = latest_frames
+        if self._native_state_buf is not None:
+            self._native_state_buf[rows] = native_buf
+            self._latest_frames[rows] = _extract_compact_state(native_buf)
+        else:
+            self._latest_frames[rows] = native_buf
         self._rewards[rows] = rewards
         self._state_score[rows] = 0.0
         self._state_episode_return[rows] = 0.0
-        self._state_prev_potential[rows] = self._state_task_potential(self._latest_frames, rows)
-        self._state_prev_task_progress[rows] = self._latest_frames[rows, STATE_TASK_PROGRESS_INDEX]
+        distances = np.zeros((rows.size,), dtype=np.float32)
+        native.check(
+            native.lib.bitworld_at_task_distances_batch(
+                handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+                env_ids.size,
+                self.agents_per_env,
+                distances.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            )
+        )
+        self._task_distances[rows] = distances
+        self._prev_task_distances[rows] = distances
+        self._state_prev_potential[rows] = -distances
+        self._state_prev_task_progress[rows] = self._full_state_buf[rows, STATE_TASK_PROGRESS_INDEX]
         self._state_statuses[env_ids] = AMONG_THEM_STEP_ACTIVE
         self._frame_history[rows] = self._latest_frames[rows, np.newaxis, :]
         self._obs[rows] = self._frame_history[rows].reshape(rows.size, -1)
@@ -1585,7 +1656,7 @@ class BitWorldVecEnv:
     def reset(self):
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
-        if self.observation_mode == "state":
+        if self.observation_mode in ("state", "compact_state"):
             self._reset_state_batch()
             return self._obs
         for env_id, worker in enumerate(self.workers):
@@ -1629,15 +1700,44 @@ class BitWorldVecEnv:
                 self._state_rewards_ptr(),
             )
         )
+        full_state = self._full_state_buf
+        if self._native_state_buf is not None:
+            self._latest_frames[:] = _extract_compact_state(self._native_state_buf)
         self._state_score += self._rewards
-        current_potential = self._state_task_potential(self._latest_frames)
-        task_progress = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
-        self._rewards += self._state_reward_shaping * (current_potential - self._state_prev_potential)
-        self._rewards += self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
+
+        native.check(
+            native.lib.bitworld_at_task_distances_batch(
+                self._state_handles_ptr(),
+                self.num_envs,
+                self.agents_per_env,
+                self._task_distances.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            )
+        )
+        native.check(
+            native.lib.bitworld_at_on_task_batch(
+                self._state_handles_ptr(),
+                self.num_envs,
+                self.agents_per_env,
+                self._on_task_flags.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            )
+        )
+        current_potential = -self._task_distances
+        task_progress = full_state[:, STATE_TASK_PROGRESS_INDEX]
+        shaping_delta = self._state_reward_shaping * (current_potential - self._state_prev_potential)
+        progress_delta = self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
+        dense_reward = self._state_dense_reward * (current_potential + 1.0)
+        on_task_reward = self._state_on_task_reward * self._on_task_flags
+        self._rewards += shaping_delta
+        self._rewards += progress_delta
+        self._rewards += dense_reward
+        self._rewards += on_task_reward
         self._state_prev_potential[:] = current_potential
         self._state_prev_task_progress[:] = task_progress
         self._state_episode_return += self._rewards
         self._state_episode_steps += 1
+        self._mean_potential = float(current_potential.mean())
+        self._mean_task_progress = float(task_progress.mean())
+        self._mean_shaping_step = float(shaping_delta.mean())
 
         completed: list[EpisodeStats] = []
         done = self._state_statuses != AMONG_THEM_STEP_ACTIVE
@@ -1645,7 +1745,7 @@ class BitWorldVecEnv:
             done_env_ids = np.flatnonzero(done).astype(np.int32)
             done_rows = self._state_agent_rows(done_env_ids)
             terminal_rewards = self._rewards[done_rows].copy()
-            task_counts = self._state_completed_task_counts(self._latest_frames, done_rows)
+            task_counts = self._state_completed_task_counts(full_state, done_rows)
             for score, episode_return, tasks_completed in zip(
                 self._state_score[done_rows],
                 self._state_episode_return[done_rows],
@@ -1656,12 +1756,14 @@ class BitWorldVecEnv:
                     length=self._state_episode_steps,
                     episode_return=float(episode_return),
                     tasks_completed=float(tasks_completed),
+                    shaping_return=float(episode_return - score),
                 )
                 completed.append(stats)
                 self._completed_scores.append(stats.score)
                 self._completed_lengths.append(float(stats.length))
                 self._completed_returns.append(stats.episode_return)
                 self._completed_tasks.append(stats.tasks_completed)
+                self._completed_shaping_returns.append(stats.shaping_return)
             self._completed_episodes += done_env_ids.size
             env_truncations = self._state_statuses[done_env_ids] == AMONG_THEM_STEP_TRUNCATED
             self._reset_state_envs(done_env_ids)
@@ -1675,7 +1777,7 @@ class BitWorldVecEnv:
         return completed
 
     def _apply_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
-        if self.observation_mode == "state":
+        if self.observation_mode in ("state", "compact_state"):
             return self._apply_state_actions(action_indices)
 
         self._rewards.fill(0.0)
@@ -1833,8 +1935,15 @@ class BitWorldPolicy(nn.Module):
                 sample = torch.zeros(1, *self.obs_shape)
                 encoded_size = int(self.encoder(sample).shape[1])
         else:
-            self.encoder = nn.Flatten()
-            encoded_size = int(np.prod(self.obs_shape))
+            flat_size = int(np.prod(self.obs_shape))
+            self.encoder = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(flat_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+            )
+            encoded_size = hidden_size
 
         self.body = nn.Sequential(
             nn.Linear(encoded_size, hidden_size),
@@ -1871,8 +1980,10 @@ class BitWorldPolicy(nn.Module):
         x = observations.float()
         if self.observation_mode == "pixels":
             x = x.div(15.0)
+        elif self.observation_mode == "compact_state":
+            x = x.div(128.0).sub(1.0)
         else:
-            x = x.div(255.0)
+            x = x.div(128.0).sub(1.0)
         policy_input = x.reshape(-1, *self.obs_shape)
         x = self.encoder(policy_input)
         return self.body(x)
@@ -1905,6 +2016,8 @@ def make_train_args(
     seed: int,
     checkpoint_dir: Path,
     log_dir: Path,
+    ent_coef: float = 0.01,
+    anneal_lr: bool = True,
 ) -> dict:
     resolved = get_env_spec(spec)
     return {
@@ -1923,7 +2036,7 @@ def make_train_args(
             "seed": seed,
             "total_timesteps": total_timesteps,
             "learning_rate": learning_rate,
-            "anneal_lr": 1,
+            "anneal_lr": 1 if anneal_lr else 0,
             "min_lr_ratio": 0.0,
             "gamma": 0.99,
             "gae_lambda": 0.95,
@@ -1932,7 +2045,7 @@ def make_train_args(
             "vf_coef": 2.0,
             "vf_clip_coef": 0.2,
             "max_grad_norm": 1.5,
-            "ent_coef": 0.01,
+            "ent_coef": ent_coef,
             "beta1": 0.95,
             "beta2": 0.999,
             "eps": 1e-12,
@@ -2019,6 +2132,8 @@ def train_policy(
     task_complete_ticks: int = -1,
     kill_cooldown_ticks: int = -1,
     init_checkpoint_path: Path | None = None,
+    ent_coef: float = 0.01,
+    anneal_lr: bool = True,
 ) -> dict:
     resolved = get_env_spec(spec)
     if observation_mode not in OBSERVATION_MODES:
@@ -2030,8 +2145,8 @@ def train_policy(
         raise ValueError("state_aux_coef > 0 requires --observation-mode pixels")
     if state_aux_active and resolved.name != "among_them":
         raise ValueError("state_aux_coef is only supported for among_them")
-    if enable_state_shaping and observation_mode != "pixels":
-        raise ValueError("--shaping-rewards requires --observation-mode pixels")
+    if enable_state_shaping and observation_mode not in ("pixels", "state", "compact_state"):
+        raise ValueError("--shaping-rewards requires --observation-mode pixels, state, or compact_state")
     if enable_state_shaping and resolved.name != "among_them":
         raise ValueError("--shaping-rewards is only supported for among_them")
     train_device = resolve_train_device(device)
@@ -2063,7 +2178,7 @@ def train_policy(
         action_repeat=action_repeat,
         base_seed=seed + rank * num_envs,
         observation_mode=observation_mode,
-        collect_state_target=state_aux_active or enable_state_shaping,
+        collect_state_target=state_aux_active or (enable_state_shaping and observation_mode == "pixels"),
         enable_state_shaping=enable_state_shaping,
         imposter_count=imposter_count,
         tasks_per_player=tasks_per_player,
@@ -2075,7 +2190,7 @@ def train_policy(
         action_count=vecenv.action_count,
         hidden_size=hidden_size,
         observation_mode=observation_mode,
-        obs_shape=vecenv.single_observation_space.shape if observation_mode == "state" else None,
+        obs_shape=vecenv.single_observation_space.shape if observation_mode in ("state", "compact_state") else None,
         state_aux=state_aux_active,
     ).to(train_device)
     if init_checkpoint_path is not None:
@@ -2104,6 +2219,8 @@ def train_policy(
         seed=seed,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
+        ent_coef=ent_coef,
+        anneal_lr=anneal_lr,
     )
     args["train"]["device"] = train_device
     args["rank"] = rank
