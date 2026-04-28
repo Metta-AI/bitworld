@@ -46,6 +46,7 @@ func main() {
 		currentPhase Phase
 		havePhase    bool
 		skipper      SkipController
+		bumper       Bumper
 		frames       uint64
 	)
 
@@ -97,7 +98,11 @@ func main() {
 		var mask uint8
 		switch phase {
 		case PhaseActive:
-			mask = Steer(pixels)
+			beforeP := bumper.Perturbs
+			mask = bumper.Adjust(pixels, Steer(pixels))
+			if bumper.Perturbs != beforeP {
+				log.Printf("bumper: perturb #%d (frame %d, mask %#x)", bumper.Perturbs, frames, mask)
+			}
 		case PhaseVoting:
 			mask = skipper.Next(pixels)
 		default:

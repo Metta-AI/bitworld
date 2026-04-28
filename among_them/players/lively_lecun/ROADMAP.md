@@ -38,11 +38,13 @@ Verified live (commits `360b486`, `11158a4`, `98e2431`, `54ba4c2`): three agents
 
 Voting transitions are not reachable in a self-play smoke test (no body to report, no map-located call button) and remain covered by `vote_test.go` only.
 
-### M2 — Wall-aware steering
+### M2 — Wall-aware steering (DONE)
 
-Read walkable vs wall from local screen tiles; back off / turn when blocked. Removes the "stuck against a wall" failure mode.
-- Tests: canned frames with walls in each direction, assert steering avoids them.
-- Done when: agent free-roams without getting pinned on geometry.
+The map's wall layer (`wallMask` in `among_them/sim.nim:2513-2517`) lives only on the server, so per-pixel "is this a wall" decisions on the client would require pre-extracting `skeld2.aseprite` layer 2 — too much yak-shaving for M2. Instead, `bump.go` watches frame-to-frame pixel motion: free movement scrolls the camera and changes thousands of pixels per frame, while being pinned only differs in tens of pixels (sprite animations). When motion stays low for `bumperStuckStreak` consecutive frames the `Bumper` substitutes a perpendicular cardinal direction for `bumperPerturbTicks`, then resumes the steering layer's preferred mask.
+
+`main.go`'s Active branch becomes `bumper.Adjust(pixels, Steer(pixels))`. Each perturb event also bumps `bumper.Perturbs` and emits a one-line log entry so live runs can see how often the agent is unsticking.
+
+Verified live: three agents observed `idle (frame 1) → active (frame 121) → idle (frame 1121)` against a `maxTicks=1000` server, with one perturb event fired on agent Y at frame 128 — exactly the early-game "Steer wants vertical, but the camera hasn't started moving yet" case the layer is meant to catch.
 
 ### M3 — Task pickup loop
 
