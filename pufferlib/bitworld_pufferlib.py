@@ -1436,13 +1436,13 @@ class BitWorldVecEnv:
         agent_slice = self._agent_slice(env_id)
         clipped = np.clip(action_indices[agent_slice], 0, self.action_count - 1).astype(np.int64)
         action_masks = ACTION_MASKS[clipped]
-        if worker.agent_count == 1:
+        if isinstance(worker, AmongThemNativeWorker):
+            frames, rewards = worker.step(action_masks)
+            frames = self._frame_batch(frames, worker)
+        else:
             frame, reward = worker.step(int(action_masks[0]))
             frames = self._frame_batch(frame, worker)
             rewards = np.asarray([reward], dtype=np.float32)
-        else:
-            frames, rewards = worker.step(action_masks)
-            frames = self._frame_batch(frames, worker)
 
         completed: list[EpisodeStats] = []
         if isinstance(worker, AmongThemNativeWorker):
