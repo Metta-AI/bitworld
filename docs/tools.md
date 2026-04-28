@@ -16,7 +16,7 @@ games listen on the player websocket path:
 
 The player protocol sends a 128x128 indexed color screen from the server and
 receives one byte of controller input from the client. See
-[`bitscreen_protocol.md`](bitscreen_protocol.md) for the packet layout.
+[`player_protocol_spec.md`](player_protocol_spec.md) for the packet layout.
 
 Many newer games also expose a global view:
 
@@ -25,7 +25,7 @@ Many newer games also expose a global view:
 ```
 
 The global protocol is used by map viewers, replay controls, and other full
-game views. See [`global_protocol.md`](global_protocol.md) for the binary
+game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the binary
 message format.
 
 Games that expose training rewards also listen on:
@@ -35,7 +35,7 @@ Games that expose training rewards also listen on:
 ```
 
 The reward protocol streams text reward packets, one packet per simulation
-tick. See [`reward_spec.md`](reward_spec.md) for the text format.
+tick. See [`reward_protocol_spec.md`](reward_protocol_spec.md) for the text format.
 
 ## JSON Config
 
@@ -145,15 +145,24 @@ client with another tool.
 
 ## Global Client
 
+The native global client lives at:
+
+```text
+clients/global_client.nim
+```
+
+It opens a resizable Silky window, connects to `/global`, renders the global
+protocol, and sends mouse and keyboard input back to the server. It uses the
+same shared atlas as the other native clients.
+
 The HTML global client lives at:
 
 ```text
 clients/global_client.html
 ```
 
-It connects to `/global` and renders the global protocol. It also sends mouse
-and keyboard input back to the server, which lets games implement global UI and
-replay transport controls.
+It connects to the same `/global` endpoint and is useful when testing the
+protocol from a browser.
 
 ```text
 clients/global_client.html?address=ws://localhost:8080/global
