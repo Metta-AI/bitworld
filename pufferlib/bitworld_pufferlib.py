@@ -279,7 +279,7 @@ def install_pufferlib_c_stub(use_gpu: bool) -> None:
 
 
 class FastBitWorldPuffeRL:
-    def __init__(self, args, vecenv, policy, verbose: bool = False):
+    def __init__(self, args, vecenv, policy, verbose: bool = False, state_aux_coef: float = 0.0):
         del verbose
         self.args = args
         self.vecenv = vecenv
@@ -317,6 +317,16 @@ class FastBitWorldPuffeRL:
         self.rewards = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
         self.terminals = torch.empty((self.horizon, self.total_agents), dtype=torch.float32, device=self.device)
         self.env_logs: dict = {}
+        self.state_aux_coef = float(state_aux_coef)
+        self.state_targets: torch.Tensor | None = None
+        if self.state_aux_coef > 0.0:
+            if self.vecenv.state_targets is None:
+                raise ValueError("state_aux_coef > 0 requires vecenv with collect_state_target=True")
+            self.state_targets = torch.empty(
+                (self.horizon, self.total_agents, STATE_FEATURES),
+                dtype=torch.uint8,
+                device=self.device,
+            )
 
     def rollouts(self):
         observations = self.vecenv._obs
@@ -334,6 +344,10 @@ class FastBitWorldPuffeRL:
             observations, rewards, terminals, _completed = self.vecenv.step_discrete(action.cpu().numpy())
             self.rewards[t].copy_(torch.as_tensor(rewards, device=self.device))
             self.terminals[t].copy_(torch.as_tensor(terminals, device=self.device).float())
+            if self.state_targets is not None:
+                state_target = self.vecenv.state_targets
+                assert state_target is not None
+                self.state_targets[t].copy_(torch.as_tensor(state_target, device=self.device))
         self.global_step += self.batch_size
         self.env_logs = self.vecenv.log()
 
@@ -361,6 +375,9 @@ class FastBitWorldPuffeRL:
         flat_returns = returns.reshape(self.batch_size)
         flat_values = self.values.reshape(self.batch_size)
         flat_advantages = (flat_advantages - flat_advantages.mean()) / (flat_advantages.std() + 1e-8)
+        flat_state_targets: torch.Tensor | None = None
+        if self.state_targets is not None:
+            flat_state_targets = self.state_targets.reshape(self.batch_size, STATE_FEATURES)
 
         clip_coef = float(self.config["clip_coef"])
         vf_clip = float(self.config["vf_clip_coef"])
@@ -375,12 +392,18 @@ class FastBitWorldPuffeRL:
             "approx_kl": 0.0,
             "clipfrac": 0.0,
             "importance": 0.0,
+            "state_aux_loss": 0.0,
         }
         minibatches = 0
         self.optimizer.zero_grad()
         for start in range(0, self.batch_size, self.minibatch_size):
             end = min(start + self.minibatch_size, self.batch_size)
-            logits, new_values = self.policy(flat_observations[start:end])
+            policy_out = self.policy(flat_observations[start:end])
+            if len(policy_out) == 3:
+                logits, new_values, state_pred = policy_out
+            else:
+                logits, new_values = policy_out
+                state_pred = None
             dist = torch.distributions.Categorical(logits=logits)
             new_logprobs = dist.log_prob(flat_actions[start:end])
             entropy = dist.entropy().mean()
@@ -397,6 +420,12 @@ class FastBitWorldPuffeRL:
             v_clipped = old_values + torch.clamp(new_values - old_values, -vf_clip, vf_clip)
             v_loss = 0.5 * torch.max((new_values - returns_mb).square(), (v_clipped - returns_mb).square()).mean()
             loss = pg_loss + vf_coef * v_loss - ent_coef * entropy
+            if state_pred is not None and flat_state_targets is not None:
+                target_mb = flat_state_targets[start:end].float().div(255.0)
+                state_aux_loss = (state_pred - target_mb).square().mean()
+                loss = loss + self.state_aux_coef * state_aux_loss
+            else:
+                state_aux_loss = None
             loss.backward()
             with torch.no_grad():
                 losses["policy_loss"] += float(pg_loss)
@@ -406,6 +435,8 @@ class FastBitWorldPuffeRL:
                 losses["approx_kl"] += float(((ratio - 1) - logratio).mean())
                 losses["clipfrac"] += float(((ratio - 1.0).abs() > clip_coef).float().mean())
                 losses["importance"] += float(ratio.mean())
+                if state_aux_loss is not None:
+                    losses["state_aux_loss"] += float(state_aux_loss)
             minibatches += 1
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
         self.optimizer.step()
@@ -544,6 +575,7 @@ def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
     checkpoint_frame_stack, checkpoint_hidden_size, checkpoint_action_count, observation_mode, obs_shape = infer_policy_shape(
         state_dict
     )
+    state_aux = "state_pred_head.weight" in state_dict
 
     policy = BitWorldPolicy(
         frame_stack=checkpoint_frame_stack,
@@ -551,6 +583,7 @@ def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
         hidden_size=checkpoint_hidden_size,
         observation_mode=observation_mode,
         obs_shape=obs_shape,
+        state_aux=state_aux,
     ).to(device)
     policy.load_state_dict(state_dict)
     policy.eval()
@@ -777,6 +810,11 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step_rewards.restype = ctypes.c_int
+        self.lib.bitworld_at_observe_state.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+        ]
+        self.lib.bitworld_at_observe_state.restype = ctypes.c_int
         self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_close.restype = None
 
@@ -810,6 +848,7 @@ class AmongThemNativeWorker:
         max_episode_steps: int,
         action_repeat: int,
         observation_mode: str,
+        collect_state_target: bool = False,
     ) -> None:
         if spec.name != "among_them":
             raise ValueError("AmongThemNativeWorker only supports among_them")
@@ -837,12 +876,30 @@ class AmongThemNativeWorker:
         self.episode = 0
         self.done = False
         self.truncated = False
+        self.collect_state_target = collect_state_target and observation_mode == "pixels"
+        if self.collect_state_target:
+            self.state_targets = np.zeros((self.agent_count, STATE_FEATURES), dtype=np.uint8)
+        else:
+            self.state_targets = None
 
     def _obs_ptr(self):
         return self.frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
 
     def _reward_ptr(self):
         return self.rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+    def _state_target_ptr(self):
+        return self.state_targets.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+
+    def _refresh_state_targets(self) -> None:
+        if not self.collect_state_target:
+            return
+        self.native.check(
+            self.native.lib.bitworld_at_observe_state(
+                self.handle,
+                self._state_target_ptr(),
+            )
+        )
 
     def reset(self) -> np.ndarray:
         if self.observation_mode == "pixels":
@@ -868,6 +925,7 @@ class AmongThemNativeWorker:
         self.episode += 1
         self.done = False
         self.truncated = False
+        self._refresh_state_targets()
         return self.frames.copy()
 
     def step(self, action_masks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -902,6 +960,7 @@ class AmongThemNativeWorker:
         self.score += self.rewards
         self.episode_return += self.rewards
         self.episode_steps += 1
+        self._refresh_state_targets()
         return self.frames.copy(), self.rewards.copy()
 
     def close(self) -> None:
@@ -1228,6 +1287,7 @@ class BitWorldVecEnv:
         action_repeat: int = DEFAULT_ACTION_REPEAT,
         base_seed: int = 73,
         observation_mode: str = "pixels",
+        collect_state_target: bool = False,
     ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
@@ -1245,8 +1305,11 @@ class BitWorldVecEnv:
             raise ValueError("state observations are only implemented for among_them")
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
+        if collect_state_target and (self.spec.name != "among_them" or observation_mode != "pixels"):
+            raise ValueError("collect_state_target requires among_them with pixel observations")
         self.num_envs = num_envs
         self.observation_mode = observation_mode
+        self.collect_state_target = collect_state_target
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
         self.total_agents = num_envs * self.agents_per_env
         self.num_agents = self.total_agents
@@ -1309,6 +1372,10 @@ class BitWorldVecEnv:
             self._executor = ThreadPoolExecutor(max_workers=native_worker_count(num_envs))
 
         self.workers: list[BitWorldWorker | AmongThemNativeWorker] = []
+        if self.collect_state_target:
+            self._state_target_buffer = np.zeros((self.total_agents, STATE_FEATURES), dtype=np.uint8)
+        else:
+            self._state_target_buffer = None
         try:
             for env_id in range(num_envs):
                 if self.spec.name == "among_them":
@@ -1319,6 +1386,7 @@ class BitWorldVecEnv:
                         max_episode_steps=max_episode_steps,
                         action_repeat=action_repeat,
                         observation_mode=observation_mode,
+                        collect_state_target=self.collect_state_target,
                     )
                 else:
                     worker = BitWorldWorker(
@@ -1466,7 +1534,10 @@ class BitWorldVecEnv:
                 for score, episode_return in zip(scores, returns)
             ]
             frames = self._frame_batch(worker.reset(), worker)
-        return env_id, frames, rewards, completed, truncated
+        state_targets = None
+        if self.collect_state_target and isinstance(worker, AmongThemNativeWorker) and worker.state_targets is not None:
+            state_targets = worker.state_targets.copy()
+        return env_id, frames, rewards, completed, truncated, state_targets
 
     def reset(self):
         self._rewards.fill(0.0)
@@ -1479,6 +1550,12 @@ class BitWorldVecEnv:
             frames = self._frame_batch(worker.reset(), worker)
             self._frame_history[agent_slice] = frames[:, np.newaxis, :]
             self._obs[agent_slice] = self._frame_history[agent_slice].reshape(worker.agent_count, -1)
+            if (
+                self._state_target_buffer is not None
+                and isinstance(worker, AmongThemNativeWorker)
+                and worker.state_targets is not None
+            ):
+                self._state_target_buffer[agent_slice] = worker.state_targets
         return self._obs
 
     def _apply_state_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
@@ -1561,7 +1638,7 @@ class BitWorldVecEnv:
         else:
             step_results = list(self._executor.map(self._step_env, env_ids, repeat(action_indices)))
 
-        for env_id, frames, rewards, env_completed, truncated in step_results:
+        for env_id, frames, rewards, env_completed, truncated, state_targets in step_results:
             agent_slice = self._agent_slice(env_id)
             if env_completed:
                 for stats in env_completed:
@@ -1576,11 +1653,17 @@ class BitWorldVecEnv:
 
             self._rewards[agent_slice] = rewards
             self._push_frames(agent_slice, frames)
+            if self._state_target_buffer is not None and state_targets is not None:
+                self._state_target_buffer[agent_slice] = state_targets
         return completed
 
     def step_discrete(self, action_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[EpisodeStats]]:
         completed = self._apply_actions(action_indices)
         return self._obs, self._rewards, self._terminals, completed
+
+    @property
+    def state_targets(self) -> np.ndarray | None:
+        return self._state_target_buffer
 
     def async_reset(self, seed: int | None = None) -> None:
         del seed
@@ -1645,6 +1728,7 @@ class BitWorldPolicy(nn.Module):
         hidden_size: int = 256,
         observation_mode: str = "pixels",
         obs_shape: tuple[int, ...] | None = None,
+        state_aux: bool = False,
     ) -> None:
         super().__init__()
         if observation_mode not in OBSERVATION_MODES:
@@ -1677,6 +1761,11 @@ class BitWorldPolicy(nn.Module):
         )
         self.policy_head = nn.Linear(hidden_size, action_count)
         self.value_head = nn.Linear(hidden_size, 1)
+        self.state_aux = state_aux and observation_mode == "pixels"
+        if self.state_aux:
+            self.state_pred_head = nn.Linear(hidden_size, STATE_FEATURES)
+        else:
+            self.state_pred_head = None
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -1689,13 +1778,15 @@ class BitWorldPolicy(nn.Module):
         nn.init.zeros_(self.policy_head.bias)
         nn.init.orthogonal_(self.value_head.weight, gain=1.0)
         nn.init.zeros_(self.value_head.bias)
+        if self.state_pred_head is not None:
+            nn.init.orthogonal_(self.state_pred_head.weight, gain=1.0)
+            nn.init.zeros_(self.state_pred_head.bias)
 
     def initial_state(self, batch_size: int, device: str = "cpu"):
         del batch_size, device
         return ()
 
-    def forward_eval(self, observations: torch.Tensor, state=()):
-        del state
+    def _features(self, observations: torch.Tensor) -> torch.Tensor:
         x = observations.float()
         if self.observation_mode == "pixels":
             x = x.div(15.0)
@@ -1703,14 +1794,24 @@ class BitWorldPolicy(nn.Module):
             x = x.div(255.0)
         policy_input = x.reshape(-1, *self.obs_shape)
         x = self.encoder(policy_input)
-        x = self.body(x)
-        logits = self.policy_head(x)
-        values = self.value_head(x)
+        return self.body(x)
+
+    def forward_eval(self, observations: torch.Tensor, state=()):
+        del state
+        features = self._features(observations)
+        logits = self.policy_head(features)
+        values = self.value_head(features)
         return logits, values
 
     def forward(self, observations: torch.Tensor, state=()):
-        logits, values = self.forward_eval(observations, state)
-        return logits, values
+        del state
+        features = self._features(observations)
+        logits = self.policy_head(features)
+        values = self.value_head(features)
+        if self.state_pred_head is None:
+            return logits, values
+        state_pred = self.state_pred_head(features)
+        return logits, values, state_pred
 
 
 def make_train_args(
@@ -1830,10 +1931,18 @@ def train_policy(
     hidden_size: int = 256,
     device: str = "auto",
     observation_mode: str = "pixels",
+    state_aux_coef: float = 0.0,
 ) -> dict:
     resolved = get_env_spec(spec)
     if observation_mode not in OBSERVATION_MODES:
         raise ValueError(f"unknown observation_mode {observation_mode!r}")
+    if state_aux_coef < 0.0:
+        raise ValueError("state_aux_coef must be non-negative")
+    state_aux_active = state_aux_coef > 0.0
+    if state_aux_active and observation_mode != "pixels":
+        raise ValueError("state_aux_coef > 0 requires --observation-mode pixels")
+    if state_aux_active and resolved.name != "among_them":
+        raise ValueError("state_aux_coef is only supported for among_them")
     train_device = resolve_train_device(device)
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -1863,6 +1972,7 @@ def train_policy(
         action_repeat=action_repeat,
         base_seed=seed + rank * num_envs,
         observation_mode=observation_mode,
+        collect_state_target=state_aux_active,
     )
     policy = BitWorldPolicy(
         frame_stack=frame_stack,
@@ -1870,6 +1980,7 @@ def train_policy(
         hidden_size=hidden_size,
         observation_mode=observation_mode,
         obs_shape=vecenv.single_observation_space.shape if observation_mode == "state" else None,
+        state_aux=state_aux_active,
     ).to(train_device)
     if distributed:
         policy = torch.nn.parallel.DistributedDataParallel(
@@ -1895,7 +2006,7 @@ def train_policy(
     args["world_size"] = world_size
     args["gpu_id"] = local_rank
     args["train"]["gpus"] = world_size
-    trainer = PuffeRL(args, vecenv, policy, verbose=False)
+    trainer = PuffeRL(args, vecenv, policy, verbose=False, state_aux_coef=state_aux_coef)
     if rank == 0:
         print(
             json.dumps(

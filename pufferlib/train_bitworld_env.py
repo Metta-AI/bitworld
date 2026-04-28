@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=73)
     parser.add_argument("--action-repeat", type=int, default=4)
     parser.add_argument("--observation-mode", choices=sorted(OBSERVATION_MODES), default="pixels")
+    parser.add_argument(
+        "--state-aux-coef",
+        type=float,
+        default=0.0,
+        help="Weight for auxiliary state-prediction loss (pixels mode, among_them only). 0 disables.",
+    )
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
@@ -75,6 +81,7 @@ def main() -> None:
         hidden_size=hidden_size,
         device=args.device,
         observation_mode=args.observation_mode,
+        state_aux_coef=args.state_aux_coef,
     )
 
     if rank != 0:

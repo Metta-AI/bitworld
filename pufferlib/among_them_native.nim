@@ -325,6 +325,20 @@ proc bitworld_at_step_state_batch*(
   except CatchableError as e:
     setLastError(e.msg)
 
+proc bitworld_at_observe_state*(
+  handle: cint,
+  observations: ptr uint8
+): cint {.cdecl, exportc, dynlib.} =
+  try:
+    if not validHandle(handle):
+      return setLastError("Invalid Among Them native env handle.")
+
+    var env = envs[int(handle)]
+    env.copyStateObservations(observations)
+    0
+  except CatchableError as e:
+    setLastError(e.msg)
+
 proc bitworld_at_step_rewards*(
   handle: cint,
   actionMasks: ptr uint8,
