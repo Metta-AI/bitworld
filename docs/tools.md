@@ -25,8 +25,8 @@ Many newer games also expose a global view:
 ```
 
 The global protocol is used by map viewers, replay controls, and other full
-game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the binary
-message format.
+game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the
+binary message format.
 
 Games that expose training rewards also listen on:
 
