@@ -15,6 +15,7 @@ client/screenshots/
 *.egg-info/
 *.pyc
 __pycache__/
+.nimby
 .venv/
 tools/quick_run.nim
 .DS_Store
