@@ -701,6 +701,7 @@ proc runServerLoop*(
     lastTick = getMonoTime()
     prevInputs: seq[InputState]
     liveSpeedIndex = 0
+    gamesPlayed = 0
 
   while true:
     var
@@ -714,6 +715,7 @@ proc runServerLoop*(
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
       shouldReset = false
+      quitAfterFrame = false
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -860,9 +862,16 @@ proc runServerLoop*(
         liveSpeedIndex.applySpeedCommand(command)
       var stepPrevInputs = prevInputs
       for _ in 0 ..< playbackSpeed(liveSpeedIndex):
+        let phaseBeforeStep = sim.phase
         sim.step(inputs, stepPrevInputs)
         stepPrevInputs = inputs
         replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+        if config.maxGames > 0 and phaseBeforeStep != GameOver and
+            sim.phase == GameOver:
+          inc gamesPlayed
+          if gamesPlayed >= config.maxGames:
+            quitAfterFrame = true
+            break
         if sim.needsReregister:
           break
       prevInputs = inputs
@@ -937,5 +946,10 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
+
+    if quitAfterFrame:
+      httpServer.close()
+      joinThread(serverThread)
+      break
 
     runFrameLimiter(lastTick)

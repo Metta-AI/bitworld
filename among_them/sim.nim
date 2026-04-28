@@ -51,6 +51,7 @@ const
   VoteTimerTicks* = 1440
   GameOverTicks* = 360
   MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
+  MaxGames* = 0  ## 0 = no limit.
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
   ButtonCalls* = 1
@@ -209,6 +210,7 @@ type
     voteTimerTicks*: int
     gameOverTicks*: int
     maxTicks*: int
+    maxGames*: int
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
@@ -314,11 +316,17 @@ const
 
 proc gameDir*(): string =
   ## Returns the Among Them game directory.
-  currentSourcePath().parentDir()
+  when defined(emscripten):
+    "among_them"
+  else:
+    currentSourcePath().parentDir()
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
-  gameDir() / ".." / "clients" / "data"
+  when defined(emscripten):
+    "clients" / "data"
+  else:
+    gameDir() / ".." / "clients" / "data"
 
 proc resolveGamePath*(path: string, baseDir = ""): string =
   ## Resolves a game data path against the map file and game directory.
@@ -753,6 +761,7 @@ proc defaultGameConfig*(): GameConfig =
     voteTimerTicks: VoteTimerTicks,
     gameOverTicks: GameOverTicks,
     maxTicks: MaxTicks,
+    maxGames: MaxGames,
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
     showTaskBubbles: true,
@@ -808,7 +817,8 @@ proc validate(config: GameConfig) =
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
-      config.voteResultTicks < 0 or config.maxTicks < 0:
+      config.voteResultTicks < 0 or config.maxTicks < 0 or
+      config.maxGames < 0:
     raise newException(AmongThemError, "Timer config fields must not be negative.")
 
 proc update*(config: var GameConfig, jsonText: string) =
@@ -842,6 +852,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("maxTicks", config.maxTicks)
+  node.readConfigInt("maxGames", config.maxGames)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
   node.readConfigInt("buttonCalls", config.buttonCalls)
   node.readConfigInt("numberOfButtonCalls", config.buttonCalls)
@@ -874,6 +885,7 @@ proc configJson*(config: GameConfig): string =
     "voteTimerTicks": config.voteTimerTicks,
     "gameOverTicks": config.gameOverTicks,
     "maxTicks": config.maxTicks,
+    "maxGames": config.maxGames,
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
     "mapPath": config.mapPath,
