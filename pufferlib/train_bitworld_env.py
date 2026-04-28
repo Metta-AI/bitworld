@@ -93,6 +93,7 @@ def run_stage(
     horizon = stage.get("horizon", args.horizon) or spec.horizon
     minibatch_size = stage.get("minibatch_size", args.minibatch_size) or spec.minibatch_size
     hidden_size = stage.get("hidden_size", args.hidden_size) or spec.hidden_size
+    action_repeat = stage.get("action_repeat", args.action_repeat)
     agents_per_env = spec.server_players if spec.name == "among_them" else 1
     if minibatch_size > args.num_envs * agents_per_env * horizon:
         raise ValueError("minibatch_size must be <= total agents * horizon")
@@ -109,7 +110,7 @@ def run_stage(
         seed=args.seed,
         checkpoint_path=checkpoint_path,
         metrics_path=metrics_path,
-        action_repeat=args.action_repeat,
+        action_repeat=action_repeat,
         hidden_size=hidden_size,
         device=args.device,
         observation_mode=args.observation_mode,

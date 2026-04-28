@@ -4,6 +4,7 @@
     "imposter_count": 0,
     "tasks_per_player": 1,
     "task_complete_ticks": 24,
+    "action_repeat": 12,
     "shaping_rewards": true,
     "players": 4
   },
@@ -12,6 +13,7 @@
     "imposter_count": 0,
     "tasks_per_player": 4,
     "task_complete_ticks": 48,
+    "action_repeat": 8,
     "shaping_rewards": true,
     "players": 4
   },
@@ -20,6 +22,7 @@
     "imposter_count": 1,
     "tasks_per_player": 4,
     "task_complete_ticks": 72,
+    "action_repeat": 4,
     "shaping_rewards": true,
     "players": 5
   },
@@ -28,6 +31,7 @@
     "imposter_count": 2,
     "tasks_per_player": 6,
     "task_complete_ticks": 72,
+    "action_repeat": 4,
     "shaping_rewards": true,
     "players": 8
   }
