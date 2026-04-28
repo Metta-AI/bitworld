@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Weight for auxiliary state-prediction loss (pixels mode, among_them only). 0 disables.",
     )
-    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--local-rank", type=int, default=0)

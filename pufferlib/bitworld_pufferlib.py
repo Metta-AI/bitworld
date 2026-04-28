@@ -258,10 +258,16 @@ def ensure_bitworld_binary(spec: str | EnvironmentSpec) -> None:
 
 def resolve_train_device(device: str = "auto") -> str:
     if device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("--device cuda requested, but torch.cuda.is_available() is false")
-    if device not in {"cpu", "cuda"}:
+    if device == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        raise RuntimeError("--device mps requested, but torch.backends.mps.is_available() is false")
+    if device not in {"cpu", "cuda", "mps"}:
         raise ValueError(f"unknown training device {device!r}")
     return device
 
@@ -2014,6 +2020,7 @@ def train_policy(
                     "env": resolved.name,
                     "device": train_device,
                     "cuda_available": bool(torch.cuda.is_available()),
+                    "mps_available": bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available()),
                     "policy_device": str(next(policy.parameters()).device),
                     "world_size": world_size,
                     "observation_mode": observation_mode,

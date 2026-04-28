@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", default="puffer")
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--action-repeat", type=int, default=DEFAULT_ACTION_REPEAT)
-    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     parser.add_argument(
         "--deterministic",
         action="store_true",

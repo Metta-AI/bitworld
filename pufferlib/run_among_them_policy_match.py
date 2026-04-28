@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--seed", type=int, default=73)
     parser.add_argument("--action-repeat", type=int, default=DEFAULT_ACTION_REPEAT)
-    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--address", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
