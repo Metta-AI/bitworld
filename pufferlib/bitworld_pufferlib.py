@@ -1417,10 +1417,13 @@ class BitWorldVecEnv:
         candidates = assigned & ~completed
         icon_visible = (flags & STATE_FLAG_TASK_ICON_VISIBLE) != 0
         arrow_visible = (flags & STATE_FLAG_TASK_ARROW_VISIBLE) != 0
-        target_x = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 5], 64))
-        target_y = np.where(icon_visible, task_features[:, :, 2], np.where(arrow_visible, task_features[:, :, 6], 64))
+        visible = icon_visible | arrow_visible
+        target_x = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 5], 0))
+        target_y = np.where(icon_visible, task_features[:, :, 2], np.where(arrow_visible, task_features[:, :, 6], 0))
         distances = np.sqrt(np.square(target_x.astype(np.float32) - 64.0) + np.square(target_y.astype(np.float32) - 64.0))
-        distances = np.where(candidates, distances, np.inf)
+        # When the task isn't visible on screen, use max distance so that
+        # discovering a task is always rewarding (not punishing).
+        distances = np.where(candidates & visible, distances, np.where(candidates, 128.0, np.inf))
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
