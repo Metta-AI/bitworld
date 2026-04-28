@@ -533,6 +533,7 @@ class EpisodeStats:
     length: int
     episode_return: float
     tasks_completed: float = 0.0
+    shaping_return: float = 0.0
 
     def info(self, metric_name: str) -> dict[str, dict[str, float]]:
         game = {
@@ -546,6 +547,7 @@ class EpisodeStats:
             "episode": {
                 "length": float(self.length),
                 "return": float(self.episode_return),
+                "shaping_return": float(self.shaping_return),
             },
         }
 
@@ -1388,6 +1390,7 @@ class BitWorldVecEnv:
         self._completed_lengths: deque[float] = deque(maxlen=100)
         self._completed_returns: deque[float] = deque(maxlen=100)
         self._completed_tasks: deque[float] = deque(maxlen=100)
+        self._completed_shaping_returns: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
         self._state_handles: np.ndarray | None = None
         self._state_action_masks: np.ndarray | None = None
@@ -1408,6 +1411,10 @@ class BitWorldVecEnv:
             self._state_target_buffer = np.zeros((self.total_agents, STATE_FEATURES), dtype=np.uint8)
         else:
             self._state_target_buffer = None
+        self._pixel_shaping_episode_return = np.zeros((self.total_agents,), dtype=np.float32)
+        self._mean_potential = 0.0
+        self._mean_task_progress = 0.0
+        self._mean_shaping_step = 0.0
         try:
             for env_id in range(num_envs):
                 if self.spec.name == "among_them":
@@ -1595,6 +1602,10 @@ class BitWorldVecEnv:
         if self.enable_state_shaping and self._state_target_buffer is not None:
             self._state_prev_potential[:] = self._state_task_potential(self._state_target_buffer)
             self._state_prev_task_progress[:] = self._state_target_buffer[:, STATE_TASK_PROGRESS_INDEX]
+            self._pixel_shaping_episode_return.fill(0.0)
+            self._mean_potential = float(self._state_prev_potential.mean())
+            self._mean_task_progress = float(self._state_prev_task_progress.mean())
+            self._mean_shaping_step = 0.0
         return self._obs
 
     def _apply_state_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
@@ -1678,19 +1689,15 @@ class BitWorldVecEnv:
             step_results = list(self._executor.map(self._step_env, env_ids, repeat(action_indices)))
 
         terminated_agents = np.zeros((self.total_agents,), dtype=bool)
+        per_env_completed: list[tuple[slice, list[EpisodeStats]]] = []
         for env_id, frames, rewards, env_completed, truncated, state_targets in step_results:
             agent_slice = self._agent_slice(env_id)
             if env_completed:
-                for stats in env_completed:
-                    completed.append(stats)
-                    self._completed_scores.append(float(stats.score))
-                    self._completed_lengths.append(float(stats.length))
-                    self._completed_returns.append(float(stats.episode_return))
-                self._completed_episodes += 1
                 self._terminals[agent_slice] = 1.0
                 terminated_agents[agent_slice] = True
                 if truncated:
                     self._truncations[agent_slice] = 1.0
+                per_env_completed.append((agent_slice, env_completed))
 
             self._rewards[agent_slice] = rewards
             self._push_frames(agent_slice, frames)
@@ -1704,10 +1711,26 @@ class BitWorldVecEnv:
             progress_delta = np.maximum(0.0, current_progress - self._state_prev_task_progress)
             potential_delta[terminated_agents] = 0.0
             progress_delta[terminated_agents] = 0.0
-            self._rewards += self._state_reward_shaping * potential_delta
-            self._rewards += self._state_progress_reward * progress_delta
+            shaping = self._state_reward_shaping * potential_delta + self._state_progress_reward * progress_delta
+            self._rewards += shaping
+            self._pixel_shaping_episode_return += shaping
+            self._mean_potential = float(current_potential.mean())
+            self._mean_task_progress = float(current_progress.mean())
+            self._mean_shaping_step = float(shaping.mean())
             self._state_prev_potential[:] = current_potential
             self._state_prev_task_progress[:] = current_progress
+
+        for agent_slice, env_completed in per_env_completed:
+            for offset, stats in enumerate(env_completed):
+                agent_idx = agent_slice.start + offset
+                stats.shaping_return = float(self._pixel_shaping_episode_return[agent_idx])
+                completed.append(stats)
+                self._completed_scores.append(float(stats.score))
+                self._completed_lengths.append(float(stats.length))
+                self._completed_returns.append(float(stats.episode_return))
+                self._completed_shaping_returns.append(stats.shaping_return)
+            self._completed_episodes += 1
+            self._pixel_shaping_episode_return[agent_slice] = 0.0
         return completed
 
     def step_discrete(self, action_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[EpisodeStats]]:
@@ -1748,9 +1771,13 @@ class BitWorldVecEnv:
         episode_length = float(np.mean(self._completed_lengths)) if self._completed_lengths else 0.0
         episode_return = float(np.mean(self._completed_returns)) if self._completed_returns else 0.0
         tasks_completed = float(np.mean(self._completed_tasks)) if self._completed_tasks else 0.0
+        shaping_return = float(np.mean(self._completed_shaping_returns)) if self._completed_shaping_returns else 0.0
         game = {
             "score": score,
             "tasks_completed": tasks_completed,
+            "mean_potential": self._mean_potential,
+            "mean_task_progress": self._mean_task_progress,
+            "mean_shaping_step": self._mean_shaping_step,
         }
         if self.spec.metric_name != "score":
             game[self.spec.metric_name] = score
@@ -1759,6 +1786,7 @@ class BitWorldVecEnv:
             "episode": {
                 "length": episode_length,
                 "return": episode_return,
+                "shaping_return": shaping_return,
                 "count": float(self._completed_episodes),
             },
         }
@@ -2116,6 +2144,11 @@ def train_policy(
                             "sps": round(float(flat_logs["SPS"]), 2),
                             "score": round(float(flat_logs.get("env_game/score", 0.0)), 3),
                             "episode_length": round(float(flat_logs.get("env_episode/length", 0.0)), 1),
+                            "episode_return": round(float(flat_logs.get("env_episode/return", 0.0)), 3),
+                            "shaping_return": round(float(flat_logs.get("env_episode/shaping_return", 0.0)), 3),
+                            "mean_potential": round(float(flat_logs.get("env_game/mean_potential", 0.0)), 3),
+                            "mean_task_progress": round(float(flat_logs.get("env_game/mean_task_progress", 0.0)), 3),
+                            "mean_shaping_step": round(float(flat_logs.get("env_game/mean_shaping_step", 0.0)), 4),
                         }
                     ),
                     flush=True,
