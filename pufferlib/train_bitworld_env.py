@@ -54,6 +54,16 @@ def parse_args() -> argparse.Namespace:
         "imposter_count, tasks_per_player, task_complete_ticks, kill_cooldown_ticks, learning_rate, "
         "shaping_rewards, state_aux_coef. Stages run sequentially with policy weights preserved.",
     )
+    parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        help="Load weights from this .pt file before training (continue from a prior run).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="If --output-dir contains a saved policy, load it as the init checkpoint.",
+    )
     parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
@@ -124,6 +134,19 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"{spec_for_paths.name}_policy.pt"
 
+    initial_checkpoint: Path | None = None
+    if args.init_checkpoint is not None:
+        initial_checkpoint = args.init_checkpoint.resolve()
+        if not initial_checkpoint.exists():
+            raise FileNotFoundError(f"--init-checkpoint not found: {initial_checkpoint}")
+    elif args.resume:
+        if checkpoint_path.exists():
+            initial_checkpoint = checkpoint_path
+        elif rank == 0:
+            print(json.dumps({"resume": "no checkpoint found", "looked_in": str(checkpoint_path)}), flush=True)
+    if initial_checkpoint is not None and rank == 0:
+        print(json.dumps({"resuming_from": str(initial_checkpoint)}), flush=True)
+
     if args.curriculum_file is not None:
         stages = json.loads(args.curriculum_file.read_text())
         if not isinstance(stages, list) or not stages:
@@ -132,7 +155,10 @@ def main() -> None:
         episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
         for stage_idx, stage in enumerate(stages):
             stage_metrics = output_dir / f"train_metrics_stage_{stage_idx}.json"
-            init_ckpt = checkpoint_path if stage_idx > 0 else None
+            if stage_idx == 0:
+                init_ckpt = initial_checkpoint
+            else:
+                init_ckpt = checkpoint_path
             if rank == 0:
                 print(json.dumps({"stage": stage_idx, "config": stage}), flush=True)
             spec, episode_steps = run_stage(
@@ -152,7 +178,7 @@ def main() -> None:
             output_dir=output_dir,
             checkpoint_path=checkpoint_path,
             metrics_path=metrics_path,
-            init_checkpoint_path=None,
+            init_checkpoint_path=initial_checkpoint,
         )
 
     if rank != 0:
