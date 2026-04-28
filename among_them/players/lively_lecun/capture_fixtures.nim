@@ -60,6 +60,56 @@ proc writeMapAsset(sim: SimServer) =
   writeFile(path, s)
   echo &"wrote {path} ({sim.mapPixels.len} bytes, {MapWidth}x{MapHeight})"
 
+proc writeWalksAsset(sim: SimServer) =
+  ## Dumps walkMask as little-endian bit-packed bytes (bit i -> byte i shr 3,
+  ## position i and 7) for client-side passability lookup. CollisionW=H=1 in
+  ## sim.nim:20-21, so the walk mask IS the player passability grid -- no
+  ## footprint inflation needed.
+  createDir(TestDataDir)
+  let
+    n = sim.walkMask.len
+    nBytes = (n + 7) shr 3
+  var bytes = newSeq[uint8](nBytes)
+  for i in 0 ..< n:
+    if sim.walkMask[i]:
+      bytes[i shr 3] = bytes[i shr 3] or uint8(1 shl (i and 7))
+  let path = TestDataDir / "walks.bin"
+  var s = newString(nBytes)
+  for i in 0 ..< nBytes:
+    s[i] = char(bytes[i])
+  writeFile(path, s)
+  # Count walkable pixels for sanity.
+  var walkable = 0
+  for v in sim.walkMask:
+    if v: inc walkable
+  echo &"wrote {path} ({nBytes} bytes; {walkable}/{n} walkable)"
+
+proc writeWalksProbe(sim: SimServer) =
+  ## Records ground-truth walkable/blocked sample points so the Go loader's
+  ## test can verify it interprets the bit packing the same way the sim does.
+  ## Format: TSV "x\ty\twalkable" with both walkable and non-walkable picks.
+  let path = TestDataDir / "walks_probe.tsv"
+  var lines = @["x\ty\twalkable"]
+  # Hand-pick a few coords known to be in different regions, plus the playing
+  # fixture's player coords (definitely walkable since the sim placed it there).
+  let probes = @[
+    (0, 0),                       # corner (out-of-ship area)
+    (MapWidth - 1, MapHeight - 1),# opposite corner
+    (564, 120),                   # playing fixture playerX/Y
+    (876, 204),                   # playing_on_task fixture playerX/Y
+    (476, 267),                   # rough map center
+    (100, 100),
+    (800, 50),
+    (50, 500),
+  ]
+  for (x, y) in probes:
+    let w = if 0 <= x and x < MapWidth and 0 <= y and y < MapHeight:
+              sim.walkMask[y * MapWidth + x]
+            else: false
+    lines.add(&"{x}\t{y}\t{w}")
+  writeFile(path, lines.join("\n") & "\n")
+  echo &"wrote {path} ({probes.len} probes)"
+
 proc writeMeta() =
   let path = TestDataDir / "fixtures.tsv"
   let header = "name\tcameraX\tcameraY\tplayerX\tplayerY"
@@ -100,11 +150,13 @@ proc capture() =
     else:
       echo &"  skipped role_reveal capture (phase={sim.phase})"
 
-  # Map asset: write once from a freshly-initialised sim. mapPixels are
-  # the same regardless of phase / player count.
+  # Map asset: write once from a freshly-initialised sim. mapPixels and
+  # walkMask are the same regardless of phase / player count.
   block:
     var sim = setupSim(numPlayers = 3, minPlayers = 3)
     writeMapAsset(sim)
+    writeWalksAsset(sim)
+    writeWalksProbe(sim)
 
   # Playing: advance past RoleReveal.
   block:
