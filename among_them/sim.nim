@@ -2386,8 +2386,11 @@ proc writeRenderStateTasks(
     cameraY = view.cameraY
   if player.role != Crewmate:
     return
-  for taskIndex in 0 ..< min(sim.tasks.len, RenderStateTaskSlots):
-    if not player.hasTask(taskIndex):
+  var slotIndex = 0
+  for taskIndex in player.assignedTasks:
+    if slotIndex >= RenderStateTaskSlots:
+      break
+    if taskIndex < 0 or taskIndex >= sim.tasks.len:
       continue
     let
       task = sim.tasks[taskIndex]
@@ -2406,7 +2409,7 @@ proc writeRenderStateTasks(
       iconOnScreen =
         iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
         iconSx < ScreenWidth and iconSy < ScreenHeight
-      base = RenderStateTaskOffset + taskIndex * RenderStateTaskFeatures
+      base = RenderStateTaskOffset + slotIndex * RenderStateTaskFeatures
     var flags = RenderTaskAssigned
     if completed:
       flags = flags or RenderTaskCompleted
@@ -2456,6 +2459,7 @@ proc writeRenderStateTasks(
         output[base + 5] = uint8(int(ex))
         output[base + 6] = uint8(int(ey))
     output[base + 3] = flags
+    inc slotIndex
 
 proc writeRenderStateObservation*(
   sim: SimServer,
