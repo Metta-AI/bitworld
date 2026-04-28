@@ -141,6 +141,10 @@ func main() {
 		case PhaseActive:
 			cam, locked := tracker.Update(pixels)
 			var player Point
+			if !locked && frames-lastPosLog >= 24 {
+				log.Printf("nolock: bestMiss=%d brutes=%d", tracker.LastMiss, tracker.Brutes)
+				lastPosLog = frames
+			}
 			if locked {
 				player = Point{cam.X + ScreenWidth/2, cam.Y + ScreenHeight/2}
 				var detected []Point
@@ -156,8 +160,16 @@ func main() {
 					}
 				}
 				if frames-lastPosLog >= 24 {
-					log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d tasks=%d",
-						player, cam.X, cam.Y, cam.Mismatches, tracker.Brutes, memory.Len())
+					var p8, p9 int
+					for _, v := range pixels {
+						if v == taskRadarColor {
+							p8++
+						} else if v == taskIconColor {
+							p9++
+						}
+					}
+					log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d tasks=%d pa8=%d pa9=%d",
+						player, cam.X, cam.Y, cam.Mismatches, tracker.Brutes, memory.Len(), p8, p9)
 					lastPosLog = frames
 				}
 				if !nav.HasGoal() {

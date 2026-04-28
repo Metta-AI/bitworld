@@ -12,7 +12,12 @@ type Camera struct {
 // typically misses 30-60 points (player sprite, other actors, shadow
 // overlay), while a wrong lock misses ~94% (≈237) since palette agreement
 // at random offsets is ~1/16 per pixel.
-const localizeMaxMiss = 100
+//
+// Live play shows transient bursts of ~100 mismatches when multiple
+// off-screen task radar arrows land on sample pixels at once; 100 was
+// just low enough to drop lock during those bursts. 140 still leaves a
+// >90-sample gap to wrong-lock territory.
+const localizeMaxMiss = 140
 
 // localizeSamples is a precomputed grid of (sx, sy) screen positions where
 // Localize compares the frame to candidate map pixels. An 8x8 stride from

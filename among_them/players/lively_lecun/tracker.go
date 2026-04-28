@@ -5,10 +5,11 @@ package main
 // and falling back to brute force only when that fails. The zero value is
 // not usable; call NewTracker.
 type Tracker struct {
-	Map    *Map
-	Last   Camera
-	Locked bool
-	Brutes int // count of brute-force locks (logging)
+	Map      *Map
+	Last     Camera
+	Locked   bool
+	Brutes   int // count of brute-force locks (logging)
+	LastMiss int // best Mismatches seen in the most recent Update call
 }
 
 func NewTracker(m *Map) *Tracker {
@@ -17,7 +18,9 @@ func NewTracker(m *Map) *Tracker {
 
 // Update inspects the current frame and returns (cam, ok). When ok is
 // false, no confident lock could be obtained from this frame and the
-// caller should treat position as unknown.
+// caller should treat position as unknown. LastMiss holds the best
+// Mismatches seen on the most recent Update (whether locked or not),
+// useful for diagnostics when lock is lost.
 func (t *Tracker) Update(frame []uint8) (Camera, bool) {
 	if t.Map == nil {
 		return Camera{}, false
@@ -25,11 +28,14 @@ func (t *Tracker) Update(frame []uint8) (Camera, bool) {
 	if t.Locked {
 		if cam, ok := Localize(frame, t.Map, &t.Last); ok {
 			t.Last = cam
+			t.LastMiss = cam.Mismatches
 			return cam, true
 		}
 		t.Locked = false
 	}
-	if cam, ok := Localize(frame, t.Map, nil); ok {
+	cam, ok := Localize(frame, t.Map, nil)
+	t.LastMiss = cam.Mismatches
+	if ok {
 		t.Last = cam
 		t.Locked = true
 		t.Brutes++
