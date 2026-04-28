@@ -66,13 +66,39 @@ Static asset, not lazy build. `capture_fixtures.nim` dumps `testdata/skeld_map.b
 
 Verified live: the tracker locks the moment Active starts (`miss=5/252` at the canonical spawn), follows the agent through the first second of movement, falls back to brute force on agents that get stuck and lose lock, and re-locks. **Caveat noted in code:** in cluttered mid-game frames (other players, shadow overlay) the miss count climbs to 50–90 vs ~5 on the clean fixture, occasionally producing a slightly-drifted lock that still passes the 100-miss threshold. Tighter thresholds for hinted vs brute-force calls is a future tuning pass.
 
-### M5 — A\* to remembered tasks
+### M5 — A\* to remembered tasks (PARTIALLY DONE)
 
-Remember world coordinates of tasks we've seen. A\* across the learned wall grid replaces M1's reactive steering with deliberate routing.
-- Tests: A\* unit tests on tiny synthetic grids; "remembered task at (x,y)" → first move correct.
-- Done when: agent reliably reaches any task it has previously seen.
+Static walkMask asset, A\* over pixel cells, Navigator → Bumper layering. The infrastructure all works; the live result is "deliberate navigation, but no task completions yet."
 
-### M6 — Task list awareness
+`capture_fixtures.nim` dumps `testdata/walks.bin` (bit-packed walkMask, 63 546 bytes) plus `walks_probe.tsv` ground-truth points. CollisionW=H=1 in `sim.nim:20-21`, so walkMask IS the player passability grid -- no footprint inflation needed. `walks.go` loads + unpacks; tests reproduce the probe ground truth.
+
+`astar.go` implements 4-connected A\* with Manhattan heuristic and a `container/heap`-backed open set. Unit tests on synthetic ASCII grids cover the standard cases (start==goal, straight, around walls, unreachable, OOB endpoints, shortest preference). On the real map: 443 cells in 6.7 ms between the two recorded fixture player positions, just 12% over Manhattan -- close to optimal and well inside the per-frame budget.
+
+`navigator.go` wraps the WalkMask + AStar pair in a per-frame interface: `SetGoal(p)` rejects unwalkable goals; `Next(player)` returns `(mask, arrived)` with replan when the player drifts >20 cells off the path or the path is exhausted. A `navLookahead=8` cell read smooths over corner oscillation. Simulated walk from playing fixture (564, 120) to playing_on_task fixture (876, 204): arrives in 384 single-cell moves, vs Manhattan distance 396.
+
+`task_seen.go` flood-fills palette-9 (taskIconColor) blobs in the screen frame, drops blobs <3 px or touching the edge, then unions blobs within 12 px (the sprite size) -- the 12×12 task icon mixes palettes, so flood-fill alone produces fragments. `IconScreenToTaskWorld` adds the camera offset and the SpriteSize/2 + 2 px geometry from `sim.nim:2316-2319` to land on the task body. `task_memory.go`: a small dedup'd set of remembered task locations.
+
+`main.go` now embeds both assets, runs Tracker → DetectTaskIcons → TaskMemory.Add (rejecting unwalkable goals) on every locked Active frame, and layers TaskHolder → Navigator → Bumper → Steer-fallback. A 120-frame "arrived but no TaskHolder" timeout drops false-positive task targets so the agent keeps trying.
+
+**Live result, three agents, 75 s game (`tasksPerPlayer=2`, `maxTicks=2000`):**
+
+| | tasks seen | nav targets | arrived | gave up | completed |
+|---|---|---|---|---|---|
+| X | 18 | 15 | 16 | 14 | 0 |
+| Y | 4 | 2 | 1 | 1 | 0 |
+| Z | 4 | 1 | 0 | 0 | 0 |
+
+Agents do successfully navigate to remembered "tasks" -- X arrived at and abandoned 14 spots in 75 s. But zero task completions, zero TaskHolder activations. The cause is `blitSpriteOutlined` (sim.nim:909-915): it tints player sprites by replacing wildcard pixels with the player's color, so any other player whose color happens to be 9 produces orange pixels we read as a task icon. The walkability filter doesn't help because other players also stand on walkable floor.
+
+What the M5 ladder actually proves end-to-end: the agent picks a goal, plans an A\* route, follows it to within ±4 px, then gives up cleanly when the goal turns out to be bogus. M6 must distinguish task icons from orange-tinted players -- candidate signals: bobbing (real icons bob ±1 px every 3 ticks, sim.nim:2312, 2347), multi-frame world-position stability (real icons don't drift; players do), or a sprite-template correlation against the known taskIconSprite shape.
+
+### M6 — Task identification (queued)
+
+Replace M5.6's palette-9-cluster heuristic with a check that distinguishes the real task icon from orange-tinted player sprites. Probable winner: multi-frame world-position stability over 4-6 frames.
+- Tests: synthetic frames with task vs. player at the same screen pos -> only the task is detected.
+- Done when: live agents complete their assigned tasks reliably.
+
+### M7 — Task list awareness
 
 Parse the on-screen task list / radar to know which tasks are *mine*, not just any task seen. Drives end-to-end "complete all my tasks → win as crewmate."
 - Tests: canned task-list overlay → parsed task set.

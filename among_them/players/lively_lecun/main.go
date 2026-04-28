@@ -16,6 +16,9 @@ import (
 //go:embed testdata/skeld_map.bin
 var skeldMapData []byte
 
+//go:embed testdata/walks.bin
+var walksData []byte
+
 func main() {
 	addr := flag.String("address", "localhost", "server address")
 	port := flag.Int("port", 8080, "server port")
@@ -47,7 +50,14 @@ func main() {
 	if len(skeldMapData) != MapWidth*MapHeight {
 		log.Fatalf("embedded map size = %d, want %d", len(skeldMapData), MapWidth*MapHeight)
 	}
+	wantWalks := (MapWidth*MapHeight + 7) / 8
+	if len(walksData) != wantWalks {
+		log.Fatalf("embedded walks size = %d, want %d", len(walksData), wantWalks)
+	}
 	tracker := NewTracker(&Map{Pixels: skeldMapData})
+	walks := &WalkMask{Bits: walksData}
+	nav := NewNavigator(walks)
+	var memory TaskMemory
 
 	var (
 		pixels       = make([]uint8, ScreenWidth*ScreenHeight)
@@ -59,7 +69,9 @@ func main() {
 		holder       TaskHolder
 		frames       uint64
 		lastPosLog   uint64
+		arrivedAt    uint64 // frame at which navigator first reported "arrived"; 0 means not currently arrived
 	)
+	const navArrivedTimeoutFrames uint64 = 120 // ~5 s @ 24 fps -- give up on bogus task targets
 
 	sendMask := func(m uint8) error {
 		if m == sentMask {
@@ -109,25 +121,78 @@ func main() {
 		var mask uint8
 		switch phase {
 		case PhaseActive:
-			if cam, ok := tracker.Update(pixels); ok && frames-lastPosLog >= 24 {
-				if x, y, ok := tracker.PlayerPosition(); ok {
-					log.Printf("pos: (%d, %d) cam=(%d, %d) miss=%d brutes=%d",
-						x, y, cam.X, cam.Y, cam.Mismatches, tracker.Brutes)
+			cam, locked := tracker.Update(pixels)
+			var player Point
+			if locked {
+				player = Point{cam.X + ScreenWidth/2, cam.Y + ScreenHeight/2}
+				// Memorize on-screen task icons (drops candidates whose
+				// world position isn't walkable -- e.g., orange-tinted
+				// player sprites that look like task icons).
+				for _, ic := range DetectTaskIcons(pixels) {
+					w := IconScreenToTaskWorld(ic, cam)
+					if walks.Walkable(w.X, w.Y) && memory.Add(w) {
+						log.Printf("task seen: %v (total %d)", w, memory.Len())
+					}
 				}
-				lastPosLog = frames
+				if frames-lastPosLog >= 24 {
+					log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d tasks=%d",
+						player, cam.X, cam.Y, cam.Mismatches, tracker.Brutes, memory.Len())
+					lastPosLog = frames
+				}
+				if !nav.HasGoal() {
+					if goal, _, ok := memory.Closest(player); ok {
+						if nav.SetGoal(goal) {
+							log.Printf("nav: target %v (player %v, dist %d)",
+								goal, player, manhattan(goal, player))
+						}
+					}
+				}
 			}
 
 			wasHolding := holder.IsHolding()
 			beforeC := holder.Completes
 			if m, handled := holder.Adjust(pixels); handled {
 				mask = m
+				arrivedAt = 0
 				if !wasHolding {
 					log.Printf("task: holding (frame %d)", frames)
 				}
 				if holder.Completes != beforeC {
 					log.Printf("task: completed #%d (frame %d)", holder.Completes, frames)
+					if locked {
+						if _, idx, ok := memory.Closest(player); ok {
+							memory.Forget(idx)
+						}
+					}
+					nav.Clear()
+				}
+			} else if locked && nav.HasGoal() {
+				navMask, arrived := nav.Next(player)
+				if arrived {
+					if arrivedAt == 0 {
+						arrivedAt = frames
+						log.Printf("nav: arrived at %v (waiting for TaskHolder)", nav.Goal())
+					}
+					if frames-arrivedAt > navArrivedTimeoutFrames {
+						log.Printf("nav: gave up on %v (no task fired in %d frames)",
+							nav.Goal(), navArrivedTimeoutFrames)
+						if _, idx, ok := memory.Closest(player); ok {
+							memory.Forget(idx)
+						}
+						nav.Clear()
+						arrivedAt = 0
+					}
+					mask = 0
+				} else {
+					arrivedAt = 0
+					beforeP := bumper.Perturbs
+					mask = bumper.Adjust(pixels, navMask)
+					if bumper.Perturbs != beforeP {
+						log.Printf("bumper: perturb #%d (frame %d, mask %#x)", bumper.Perturbs, frames, mask)
+					}
 				}
 			} else {
+				arrivedAt = 0
 				beforeP := bumper.Perturbs
 				mask = bumper.Adjust(pixels, Steer(pixels))
 				if bumper.Perturbs != beforeP {
