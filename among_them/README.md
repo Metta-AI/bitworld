@@ -24,6 +24,7 @@ Useful config fields:
 - `imposterCooldownTicks`: Kill cooldown. This is the same as `killCooldownTicks`.
 - `voteTimerTicks`: Voting duration in ticks. At 24 FPS, 360 ticks is 15 seconds.
 - `buttonCalls`: Emergency button calls allowed per player.
+- `mapPath`: Map JSON file to load. The default is `map.json`.
 
 You can also load config from a file:
 
@@ -39,6 +40,25 @@ win.
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
 ```
 
+## Map Files
+
+The default map is `map.json`. It controls the Skeld image, Aseprite layer
+indices, task stations, vents, emergency button rectangle, meeting home point,
+and room names used by the bots.
+Map images currently need to be `952x534`.
+
+Use a different map with `--map`:
+
+```sh
+nim r among_them.nim --address:0.0.0.0 --port:2000 --map:map.json
+```
+
+Or set it in config:
+
+```sh
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"map.json","minPlayers":8}'
+```
+
 ## Browser Clients
 
 The server serves these pages:
@@ -49,9 +69,9 @@ The server serves these pages:
 
 These routes are served from:
 
-- `clients/player_client.html`
-- `clients/global_client.html`
-- `clients/reward_client.html`
+- `player_client/index.html`
+- `global_client/index.html`
+- `reward_client/index.html`
 
 The player client connects to `/player`, the global viewer connects to
 `/global`, and the rewards viewer connects to `/reward` on the same host as
@@ -83,11 +103,18 @@ Useful `quick_player` options:
 - `--players:N`: Number of bots to start.
 - `--gui`: Open the bot debug viewer windows.
 - `--name-prefix:NAME`: Name bots `NAME1`, `NAME2`, and so on.
+- `--map:PATH`: Load the same map JSON as the server.
 
 Example with debug windows:
 
 ```sh
 nim r tools/quick_player nottoodumb --players:2 --address:localhost --port:2000 --gui
+```
+
+When testing a custom map, pass the same map to the bots:
+
+```sh
+nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000 --map:among_them/map.json
 ```
 
 ## Quick Local Run

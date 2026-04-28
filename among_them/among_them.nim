@@ -7,6 +7,7 @@ when isMainModule:
     port = DefaultPort
     configJson = ""
     configPath = ""
+    mapPath = ""
     saveReplayPath = ""
     loadReplayPath = ""
   for kind, key, val in getopt():
@@ -21,6 +22,8 @@ when isMainModule:
         configJson = val
       of "config-file":
         configPath = val
+      of "map":
+        mapPath = val
       of "save-replay":
         saveReplayPath = val
       of "load-replay":
@@ -32,4 +35,6 @@ when isMainModule:
     config.update(readFile(configPath))
   if configJson.len > 0:
     config.update(configJson)
+  if mapPath.len > 0:
+    config.mapPath = mapPath
   runServerLoop(address, port, config, saveReplayPath, loadReplayPath)

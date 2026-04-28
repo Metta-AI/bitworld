@@ -1,4 +1,6 @@
-import pixie, protocol, ../sim, ../../common/server, silky, whisky, windy
+import pixie, protocol, ../sim, ../../common/server
+when not defined(nottoodumbLibrary):
+  import silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
   strutils, times]
 
@@ -115,6 +117,11 @@ const
   FrameDropThreshold = 32
   MaxFrameDrain = 128
 
+when not defined(nottoodumbLibrary):
+  type ViewerApp = ref object
+    window: Window
+    silky: Silky
+
 type
   TileKnowledge = enum
     TileUnknown
@@ -187,17 +194,6 @@ type
   VoteSlot = object
     colorIndex: int
     alive: bool
-
-  Room = object
-    name: string
-    x: int
-    y: int
-    w: int
-    h: int
-
-  ViewerApp = ref object
-    window: Window
-    silky: Silky
 
   Bot = object
     sim: SimServer
@@ -296,37 +292,6 @@ type
     visibleBodies: seq[BodyMatch]
     visibleGhosts: seq[GhostMatch]
 
-const
-  Rooms = [
-    Room(name: "Upper Engine", x: 159, y: 62, w: 100, h: 112),
-    Room(name: "Reactor", x: 73, y: 184, w: 100, h: 112),
-    Room(name: "Reactor Hallway", x: 173, y: 174, w: 82, h: 136),
-    Room(name: "Electrial Hallway", x: 294, y: 409, w: 158, h: 38),
-    Room(name: "Electrial Hallway Bend", x: 259, y: 347, w: 88, h: 62),
-    Room(name: "Security", x: 255, y: 174, w: 73, h: 116),
-    Room(name: "Lower Engine", x: 159, y: 310, w: 100, h: 112),
-    Room(name: "Electrical", x: 347, y: 273, w: 105, h: 136),
-    Room(name: "Coms", x: 577, y: 411, w: 115, h: 82),
-    Room(name: "Coms Hallway", x: 577, y: 349, w: 118, h: 60),
-    Room(name: "Storage", x: 452, y: 318, w: 125, h: 175),
-    Room(name: "Admin Hallway", x: 452, y: 230, w: 141, h: 88),
-    Room(name: "Shields", x: 695, y: 344, w: 97, h: 96),
-    Room(name: "Nav Hallway", x: 717, y: 199, w: 90, h: 84),
-    Room(name: "Shields Hallway", x: 717, y: 283, w: 62, h: 61),
-    Room(name: "Admin", x: 593, y: 254, w: 102, h: 95),
-    Room(name: "Nav", x: 807, y: 180, w: 134, h: 103),
-    Room(name: "O2", x: 634, y: 199, w: 83, h: 45),
-    Room(name: "Weapons", x: 673, y: 47, w: 119, h: 152),
-    Room(name: "West Cafeteria", x: 428, y: 58, w: 32, h: 142),
-    Room(name: "Cafeteria", x: 460, y: 58, w: 152, h: 141),
-    Room(name: "North Cafeteria", x: 428, y: 0, w: 228, h: 58),
-    Room(name: "South Cafeteria", x: 452, y: 199, w: 182, h: 31),
-    Room(name: "East Cafeteria", x: 612, y: 58, w: 61, h: 141),
-    Room(name: "MedBay", x: 328, y: 140, w: 100, h: 117),
-    Room(name: "MedBay", x: 428, y: 210, w: 24, h: 47),
-    Room(name: "MedBay Hallway", x: 259, y: 85, w: 169, h: 55)
-  ]
-
 proc gameDir(): string =
   ## Returns the Among Them game directory.
   currentSourcePath().parentDir().parentDir()
@@ -381,13 +346,23 @@ proc cameraIndexY(index: int): int =
   ## Returns the camera Y coordinate for one vote index.
   minCameraY() + index div (maxCameraX() - minCameraX() + 1)
 
-proc buttonCameraX(): int =
+proc buttonCameraX(sim: SimServer): int =
   ## Returns the initial camera X guess around the emergency button.
-  clamp(ButtonX + ButtonW div 2 - PlayerWorldOffX, minCameraX(), maxCameraX())
+  let button = sim.gameMap.button
+  clamp(
+    button.x + button.w div 2 - PlayerWorldOffX,
+    minCameraX(),
+    maxCameraX()
+  )
 
-proc buttonCameraY(): int =
+proc buttonCameraY(sim: SimServer): int =
   ## Returns the initial camera Y guess around the emergency button.
-  clamp(ButtonY + ButtonH div 2 - PlayerWorldOffY, minCameraY(), maxCameraY())
+  let button = sim.gameMap.button
+  clamp(
+    button.y + button.h div 2 - PlayerWorldOffY,
+    minCameraY(),
+    maxCameraY()
+  )
 
 proc cameraXForWorld(x: int): int =
   ## Returns the camera X that centers one world X on the player.
@@ -420,15 +395,15 @@ proc roomName(bot: Bot): string =
   let
     px = bot.playerWorldX() + CollisionW div 2
     py = bot.playerWorldY() + CollisionH div 2
-  for room in Rooms:
+  for room in bot.sim.rooms:
     if px >= room.x and px < room.x + room.w and
         py >= room.y and py < room.y + room.h:
       return room.name
   "unknown"
 
-proc roomNameAt(x, y: int): string =
+proc roomNameAt(bot: Bot, x, y: int): string =
   ## Returns the room containing one world point.
-  for room in Rooms:
+  for room in bot.sim.rooms:
     if x >= room.x and x < room.x + room.w and
         y >= room.y and y < room.y + room.h:
       return room.name
@@ -1018,8 +993,8 @@ proc reseedLocalizationAtHome(bot: var Bot) =
     bot.cameraX = cameraXForWorld(bot.homeX)
     bot.cameraY = cameraYForWorld(bot.homeY)
   else:
-    bot.cameraX = buttonCameraX()
-    bot.cameraY = buttonCameraY()
+    bot.cameraX = bot.sim.buttonCameraX()
+    bot.cameraY = bot.sim.buttonCameraY()
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
   bot.cameraLock = NoLock
@@ -1100,12 +1075,12 @@ proc locateByFrame(bot: var Bot): bool =
       if bot.gameStarted:
         bot.cameraX
       else:
-        buttonCameraX()
+        bot.sim.buttonCameraX()
     bestY =
       if bot.gameStarted:
         bot.cameraY
       else:
-        buttonCameraY()
+        bot.sim.buttonCameraY()
   let
     minX = minCameraX()
     maxX = maxCameraX()
@@ -2530,14 +2505,15 @@ proc buttonGoal(
 ): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
   ## Returns a reachable point inside the emergency button rectangle.
   let
-    centerX = ButtonX + ButtonW div 2
-    centerY = ButtonY + ButtonH div 2
+    button = bot.sim.gameMap.button
+    centerX = button.x + button.w div 2
+    centerY = button.y + button.h div 2
   var
     bestDistance = high(int)
     bestX = 0
     bestY = 0
-  for y in ButtonY ..< ButtonY + ButtonH:
-    for x in ButtonX ..< ButtonX + ButtonW:
+  for y in button.y ..< button.y + button.h:
+    for x in button.x ..< button.x + button.w:
       if not bot.passable(x, y):
         continue
       let distance = heuristic(centerX, centerY, x, y)
@@ -2602,7 +2578,8 @@ proc fakeTargetCenter(
 ): tuple[x: int, y: int] =
   ## Returns the center point for an imposter fake target.
   if index == bot.sim.tasks.len:
-    return (ButtonX + ButtonW div 2, ButtonY + ButtonH div 2)
+    let button = bot.sim.gameMap.button
+    return (button.x + button.w div 2, button.y + button.h div 2)
   bot.sim.tasks[index].taskCenter()
 
 proc farthestFakeTargetIndexFrom(bot: Bot, originX, originY: int): int =
@@ -2694,7 +2671,7 @@ proc suspectSummary(bot: Bot): string =
 
 proc bodyRoomMessage(bot: Bot, x, y: int): string =
   ## Builds a short chat line that names a body's room.
-  let room = roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
+  let room = bot.roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
   let suspect = bot.suspectedColor()
   result =
     if room == "unknown":
@@ -3350,16 +3327,44 @@ proc decideNextMask(bot: var Bot): uint8 =
   )
   mask
 
+proc stepUnpackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
+  ## Steps the bot from one unpacked 4-bit framebuffer and returns an input mask.
+  if frame.len != ScreenWidth * ScreenHeight:
+    return 0
+  if bot.unpacked.len != frame.len:
+    bot.unpacked.setLen(frame.len)
+  for i, value in frame:
+    bot.unpacked[i] = value and 0x0f
+  inc bot.frameTick
+  result = bot.decideNextMask()
+  bot.lastMask = result
+
+proc stepPackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
+  ## Steps the bot from one packed 4-bit framebuffer and returns an input mask.
+  if frame.len != ProtocolBytes:
+    return 0
+  if bot.packed.len != frame.len:
+    bot.packed.setLen(frame.len)
+  for i, value in frame:
+    bot.packed[i] = value
+  unpack4bpp(bot.packed, bot.unpacked)
+  inc bot.frameTick
+  result = bot.decideNextMask()
+  bot.lastMask = result
+
 proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
   ## Extracts one 12x12 sprite from the local sprite sheet.
   spriteFromImage(
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
-proc initBot(): Bot =
+proc initBot(mapPath = ""): Bot =
   ## Builds a bot and loads all map and sprite data.
   setCurrentDir(gameDir())
-  result.sim = initSimServer(defaultGameConfig())
+  var config = defaultGameConfig()
+  if mapPath.len > 0:
+    config.mapPath = mapPath
+  result.sim = initSimServer(config)
   let sheet = loadSpriteSheet()
   result.playerSprite = sheet.sheetSprite(0, 0)
   result.bodySprite = sheet.sheetSprite(1, 0)
@@ -3376,8 +3381,8 @@ proc initBot(): Bot =
   result.taskStates = newSeq[TaskState](result.sim.tasks.len)
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
   result.buildPatchEntries()
-  result.cameraX = buttonCameraX()
-  result.cameraY = buttonCameraY()
+  result.cameraX = result.sim.buttonCameraX()
+  result.cameraY = result.sim.buttonCameraY()
   result.lastCameraX = result.cameraX
   result.lastCameraY = result.cameraY
   result.taskHoldIndex = -1
@@ -3393,621 +3398,738 @@ proc initBot(): Bot =
   result.clearVotingState()
   result.intent = "waiting for first frame"
 
-proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
-  ## Draws an unfilled rectangle.
-  sk.drawRect(pos, vec2(size.x, thickness), color)
-  sk.drawRect(vec2(pos.x, pos.y + size.y - thickness), vec2(size.x, thickness), color)
-  sk.drawRect(pos, vec2(thickness, size.y), color)
-  sk.drawRect(vec2(pos.x + size.x - thickness, pos.y), vec2(thickness, size.y), color)
+when defined(nottoodumbLibrary):
+  const TrainableMasks = [
+    0'u8,
+    ButtonA,
+    ButtonB,
+    ButtonUp,
+    ButtonUp or ButtonA,
+    ButtonUp or ButtonB,
+    ButtonDown,
+    ButtonDown or ButtonA,
+    ButtonDown or ButtonB,
+    ButtonLeft,
+    ButtonLeft or ButtonA,
+    ButtonLeft or ButtonB,
+    ButtonRight,
+    ButtonRight or ButtonA,
+    ButtonRight or ButtonB,
+    ButtonUp or ButtonLeft,
+    ButtonUp or ButtonLeft or ButtonA,
+    ButtonUp or ButtonLeft or ButtonB,
+    ButtonUp or ButtonRight,
+    ButtonUp or ButtonRight or ButtonA,
+    ButtonUp or ButtonRight or ButtonB,
+    ButtonDown or ButtonLeft,
+    ButtonDown or ButtonLeft or ButtonA,
+    ButtonDown or ButtonLeft or ButtonB,
+    ButtonDown or ButtonRight,
+    ButtonDown or ButtonRight or ButtonA,
+    ButtonDown or ButtonRight or ButtonB
+  ]
 
-proc drawLine(sk: Silky, a, b: Vec2, color: ColorRGBX) =
-  ## Draws a simple pixel-like line.
-  let
-    dx = b.x - a.x
-    dy = b.y - a.y
-    steps = max(1, int(max(abs(dx), abs(dy)) / 4.0'f))
-  for i in 0 .. steps:
-    let t = i.float32 / steps.float32
-    sk.drawRect(
-      vec2(a.x + dx * t - 1.0'f, a.y + dy * t - 1.0'f),
-      vec2(3, 3),
-      color
-    )
+  type NotTooDumbPolicy = ref object
+    bots: seq[Bot]
 
-proc taskStateColor(state: TaskState): ColorRGBX =
-  ## Returns a map marker color for a task state.
-  case state
-  of TaskNotDoing:
-    ViewerTask
-  of TaskMaybe:
-    ViewerTaskGuess
-  of TaskMandatory:
-    ViewerButton
-  of TaskCompleted:
-    ViewerMutedText
+  var NotTooDumbPolicies: seq[NotTooDumbPolicy]
 
-proc crewmateOutlineColor(bot: Bot, colorIndex: int): ColorRGBX =
-  ## Returns the debug outline color for one visible crewmate.
-  if bot.knownImposterColor(colorIndex):
-    ViewerImp
-  else:
-    ViewerCrew
+  proc actionIndexForMask(mask: uint8): int32 =
+    ## Maps a BitWorld button mask to the CoGames trainable action index.
+    for i, value in TrainableMasks:
+      if value == mask:
+        return i.int32
+    0'i32
 
-proc drawCrewmateFrameOutlines(
-  sk: Silky,
-  bot: Bot,
-  x,
-  y,
-  scale: float32
-) =
-  ## Draws visible crewmate team outlines in screen space.
-  for crewmate in bot.visibleCrewmates:
-    sk.drawOutline(
-      vec2(
-        x + crewmate.x.float32 * scale,
-        y + crewmate.y.float32 * scale
-      ),
-      vec2(
-        bot.playerSprite.width.float32 * scale,
-        bot.playerSprite.height.float32 * scale
-      ),
-      bot.crewmateOutlineColor(crewmate.colorIndex),
-      2
-    )
+  proc stepUnpackedFramePtr(
+    bot: var Bot,
+    frame: ptr UncheckedArray[uint8],
+    frameLen: int
+  ): uint8 =
+    ## Steps the bot from one pointer-backed unpacked framebuffer.
+    if frameLen != ScreenWidth * ScreenHeight:
+      return 0
+    if bot.unpacked.len != frameLen:
+      bot.unpacked.setLen(frameLen)
+    for i in 0 ..< frameLen:
+      bot.unpacked[i] = frame[i] and 0x0f
+    inc bot.frameTick
+    result = bot.decideNextMask()
+    bot.lastMask = result
 
-proc drawCrewmateMapOutlines(
-  sk: Silky,
-  bot: Bot,
-  x,
-  y,
-  scale: float32
-) =
-  ## Draws visible crewmate team outlines in map space.
-  if not bot.localized:
-    return
-  for crewmate in bot.visibleCrewmates:
+  proc nottoodumb_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
+    ## Creates a persistent Nim-backed NotTooDumb policy and returns its handle.
+    let count = max(1, int(numAgents))
+    var policy = NotTooDumbPolicy(bots: newSeq[Bot](count))
+    for i in 0 ..< count:
+      policy.bots[i] = initBot()
+    NotTooDumbPolicies.add(policy)
+    cint(NotTooDumbPolicies.len - 1)
+
+  proc nottoodumb_step_batch*(
+    handle: cint,
+    agentIds: ptr UncheckedArray[int32],
+    numAgentIds: cint,
+    numAgents: cint,
+    frameStack: cint,
+    height: cint,
+    width: cint,
+    observations: pointer,
+    actions: pointer
+  ) {.exportc, dynlib.} =
+    ## Steps a batch of unpacked pixel observations into CoGames action indices.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return
+    if observations.isNil or actions.isNil or agentIds.isNil:
+      return
+    if frameStack <= 0 or height != ScreenHeight or width != ScreenWidth:
+      return
+
     let
-      world = bot.visibleCrewmateWorld(crewmate)
-      spriteX = world.x - SpriteDrawOffX
-      spriteY = world.y - SpriteDrawOffY
-    sk.drawOutline(
-      vec2(x + spriteX.float32 * scale, y + spriteY.float32 * scale),
-      vec2(
-        bot.playerSprite.width.float32 * scale,
-        bot.playerSprite.height.float32 * scale
-      ),
-      bot.crewmateOutlineColor(crewmate.colorIndex),
-      2
-    )
+      policy = NotTooDumbPolicies[int(handle)]
+      obs = cast[ptr UncheckedArray[uint8]](observations)
+      outs = cast[ptr UncheckedArray[int32]](actions)
+      frameLen = int(height) * int(width)
+      rowStride = int(frameStack) * frameLen
+      latestOffset = (int(frameStack) - 1) * frameLen
 
-proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
-  ## Draws the latest 128x128 game frame.
-  let pixelScale = ViewerFrameScale
-  sk.drawRect(
-    vec2(x, y),
-    vec2(ScreenWidth.float32 * pixelScale, ScreenHeight.float32 * pixelScale),
-    ViewerPanelAlt
-  )
-  for py in 0 ..< ScreenHeight:
-    for px in 0 ..< ScreenWidth:
-      let index = bot.unpacked[py * ScreenWidth + px]
-      sk.drawRect(
-        vec2(x + px.float32 * pixelScale, y + py.float32 * pixelScale),
-        vec2(pixelScale, pixelScale),
-        sampleColor(index)
-      )
-  sk.drawCrewmateFrameOutlines(bot, x, y, pixelScale)
-  if bot.interstitial:
-    return
-  let
-    buttonX = ButtonX - bot.cameraX
-    buttonY = ButtonY - bot.cameraY
-  if buttonX + ButtonW >= 0 and buttonY + ButtonH >= 0 and
-      buttonX < ScreenWidth and buttonY < ScreenHeight:
-    sk.drawOutline(
-      vec2(x + buttonX.float32 * pixelScale, y + buttonY.float32 * pixelScale),
-      vec2(ButtonW.float32 * pixelScale, ButtonH.float32 * pixelScale),
-      ViewerButton,
-      2
-    )
-  sk.drawRect(
-    vec2(
-      x + PlayerScreenX.float32 * pixelScale - 3,
-      y + PlayerScreenY.float32 * pixelScale - 3
-    ),
-    vec2(7, 7),
-    ViewerPlayer
-  )
-  let playerPos = vec2(
-    x + PlayerScreenX.float32 * pixelScale,
-    y + PlayerScreenY.float32 * pixelScale
-  )
-  for dot in bot.radarDots:
-    let dotPos = vec2(
-      x + dot.x.float32 * pixelScale + pixelScale * 0.5,
-      y + dot.y.float32 * pixelScale + pixelScale * 0.5
-    )
-    sk.drawLine(playerPos, dotPos, ViewerRadarLine)
-    sk.drawRect(dotPos - vec2(4, 4), vec2(9, 9), ViewerTaskGuess)
-  for task in bot.sim.tasks:
-    let
-      taskX = task.x - bot.cameraX
-      taskY = task.y - bot.cameraY
-      taskVisible = taskX + task.w >= 0 and taskY + task.h >= 0 and
-        taskX < ScreenWidth and taskY < ScreenHeight
-    if not taskVisible:
-      continue
-    let
-      icon = bot.taskIconInspectRect(task)
-      hasIcon = bot.taskIconVisibleFor(task)
-      color =
-        if hasIcon:
-          ViewerPlayer
-        else:
-          ViewerTask
-      taskPos = vec2(
-        x + taskX.float32 * pixelScale,
-        y + taskY.float32 * pixelScale
-      )
-      taskSize = vec2(
-        task.w.float32 * pixelScale,
-        task.h.float32 * pixelScale
-      )
-    sk.drawOutline(taskPos, taskSize, color, 2)
-    if icon.x + icon.w >= 0 and icon.y + icon.h >= 0 and
-        icon.x < ScreenWidth and icon.y < ScreenHeight:
-      let
-        iconPos = vec2(
-          x + icon.x.float32 * pixelScale,
-          y + icon.y.float32 * pixelScale
-        )
-        iconSize = vec2(
-          icon.w.float32 * pixelScale,
-          icon.h.float32 * pixelScale
-        )
-      sk.drawOutline(iconPos, iconSize, color, 2)
-      sk.drawLine(
-        taskPos + taskSize * 0.5,
-        iconPos + iconSize * 0.5,
-        color
-      )
-  for icon in bot.visibleTaskIcons:
-    sk.drawOutline(
-      vec2(
-        x + icon.x.float32 * pixelScale,
-        y + icon.y.float32 * pixelScale
-      ),
-      vec2(
-        bot.taskSprite.width.float32 * pixelScale,
-        bot.taskSprite.height.float32 * pixelScale
-      ),
-      ViewerButton,
-      2
-    )
+    if policy.bots.len < int(numAgents):
+      let oldLen = policy.bots.len
+      policy.bots.setLen(int(numAgents))
+      for i in oldLen ..< policy.bots.len:
+        policy.bots[i] = initBot()
 
-proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
-  ## Draws the map, inferred viewport, and known task stations.
-  let scale = ViewerMapScale
-  sk.drawRect(
-    vec2(x, y),
-    vec2(MapWidth.float32 * scale, MapHeight.float32 * scale),
-    ViewerUnknown
-  )
-  for my in countup(0, MapHeight - 1, 2):
-    for mx in countup(0, MapWidth - 1, 2):
-      let idx = mapIndexSafe(mx, my)
-      let color =
-        if bot.sim.wallMask[idx]:
-          ViewerWall
-        elif bot.sim.walkMask[idx]:
-          ViewerWalk
-        else:
-          sampleColor(bot.sim.mapPixels[idx])
-      sk.drawRect(
-        vec2(x + mx.float32 * scale, y + my.float32 * scale),
-        vec2(max(1.0'f, scale * 2), max(1.0'f, scale * 2)),
-        color
-      )
-  if bot.interstitial:
-    return
-  for i in 0 ..< bot.sim.tasks.len:
-    let
-      task = bot.sim.tasks[i]
-      center = task.taskCenter()
-      state =
-        if bot.taskStates.len == bot.sim.tasks.len:
-          bot.taskStates[i]
-        else:
-          TaskNotDoing
-    sk.drawRect(
-      vec2(x + center.x.float32 * scale - 3, y + center.y.float32 * scale - 3),
-      vec2(7, 7),
-      taskStateColor(state)
-    )
-  if bot.taskStates.len == bot.sim.tasks.len:
-    for i in 0 ..< bot.sim.tasks.len:
-      let
-        isRadarTask =
-          bot.radarTasks.len == bot.sim.tasks.len and bot.radarTasks[i]
-        isCheckoutTask =
-          bot.checkoutTasks.len == bot.sim.tasks.len and bot.checkoutTasks[i]
-      if bot.taskStates[i] != TaskMandatory and
-          not isRadarTask and
-          not isCheckoutTask:
+    for row in 0 ..< int(numAgentIds):
+      let agentId = int(agentIds[row])
+      if agentId < 0 or agentId >= policy.bots.len:
+        outs[row] = 0
         continue
+      let frame = cast[ptr UncheckedArray[uint8]](
+        cast[uint](obs) + uint(row * rowStride + latestOffset)
+      )
+      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
+      outs[row] = actionIndexForMask(mask)
+
+when not defined(nottoodumbLibrary):
+  proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
+    ## Draws an unfilled rectangle.
+    sk.drawRect(pos, vec2(size.x, thickness), color)
+    sk.drawRect(vec2(pos.x, pos.y + size.y - thickness), vec2(size.x, thickness), color)
+    sk.drawRect(pos, vec2(thickness, size.y), color)
+    sk.drawRect(vec2(pos.x + size.x - thickness, pos.y), vec2(thickness, size.y), color)
+
+  proc drawLine(sk: Silky, a, b: Vec2, color: ColorRGBX) =
+    ## Draws a simple pixel-like line.
+    let
+      dx = b.x - a.x
+      dy = b.y - a.y
+      steps = max(1, int(max(abs(dx), abs(dy)) / 4.0'f))
+    for i in 0 .. steps:
+      let t = i.float32 / steps.float32
+      sk.drawRect(
+        vec2(a.x + dx * t - 1.0'f, a.y + dy * t - 1.0'f),
+        vec2(3, 3),
+        color
+      )
+
+  proc taskStateColor(state: TaskState): ColorRGBX =
+    ## Returns a map marker color for a task state.
+    case state
+    of TaskNotDoing:
+      ViewerTask
+    of TaskMaybe:
+      ViewerTaskGuess
+    of TaskMandatory:
+      ViewerButton
+    of TaskCompleted:
+      ViewerMutedText
+
+  proc crewmateOutlineColor(bot: Bot, colorIndex: int): ColorRGBX =
+    ## Returns the debug outline color for one visible crewmate.
+    if bot.knownImposterColor(colorIndex):
+      ViewerImp
+    else:
+      ViewerCrew
+
+  proc drawCrewmateFrameOutlines(
+    sk: Silky,
+    bot: Bot,
+    x,
+    y,
+    scale: float32
+  ) =
+    ## Draws visible crewmate team outlines in screen space.
+    for crewmate in bot.visibleCrewmates:
+      sk.drawOutline(
+        vec2(
+          x + crewmate.x.float32 * scale,
+          y + crewmate.y.float32 * scale
+        ),
+        vec2(
+          bot.playerSprite.width.float32 * scale,
+          bot.playerSprite.height.float32 * scale
+        ),
+        bot.crewmateOutlineColor(crewmate.colorIndex),
+        2
+      )
+
+  proc drawCrewmateMapOutlines(
+    sk: Silky,
+    bot: Bot,
+    x,
+    y,
+    scale: float32
+  ) =
+    ## Draws visible crewmate team outlines in map space.
+    if not bot.localized:
+      return
+    for crewmate in bot.visibleCrewmates:
       let
-        center = bot.sim.tasks[i].taskCenter()
-        color =
-          if bot.taskStates[i] == TaskMandatory:
-            taskStateColor(TaskMandatory)
-          else:
-            taskStateColor(TaskMaybe)
-        pos = vec2(
-          x + center.x.float32 * scale - 5,
-          y + center.y.float32 * scale - 5
-        )
-      sk.drawOutline(pos, vec2(11, 11), color, 2)
-      if bot.localized:
-        sk.drawLine(
-          vec2(
-            x + bot.playerWorldX().float32 * scale,
-            y + bot.playerWorldY().float32 * scale
-          ),
-          pos + vec2(5, 5),
-          ViewerRadarLine
-        )
-  sk.drawOutline(
-    vec2(
-      x + ButtonX.float32 * scale,
-      y + ButtonY.float32 * scale
-    ),
-    vec2(ButtonW.float32 * scale, ButtonH.float32 * scale),
-    ViewerButton,
-    1
-  )
-  if bot.localized:
-    sk.drawOutline(
-      vec2(x + bot.cameraX.float32 * scale, y + bot.cameraY.float32 * scale),
-      vec2(ScreenWidth.float32 * scale, ScreenHeight.float32 * scale),
-      ViewerViewport,
-      1
+        world = bot.visibleCrewmateWorld(crewmate)
+        spriteX = world.x - SpriteDrawOffX
+        spriteY = world.y - SpriteDrawOffY
+      sk.drawOutline(
+        vec2(x + spriteX.float32 * scale, y + spriteY.float32 * scale),
+        vec2(
+          bot.playerSprite.width.float32 * scale,
+          bot.playerSprite.height.float32 * scale
+        ),
+        bot.crewmateOutlineColor(crewmate.colorIndex),
+        2
+      )
+
+  proc drawFrameView(sk: Silky, bot: Bot, x, y: float32) =
+    ## Draws the latest 128x128 game frame.
+    let pixelScale = ViewerFrameScale
+    sk.drawRect(
+      vec2(x, y),
+      vec2(ScreenWidth.float32 * pixelScale, ScreenHeight.float32 * pixelScale),
+      ViewerPanelAlt
     )
+    for py in 0 ..< ScreenHeight:
+      for px in 0 ..< ScreenWidth:
+        let index = bot.unpacked[py * ScreenWidth + px]
+        sk.drawRect(
+          vec2(x + px.float32 * pixelScale, y + py.float32 * pixelScale),
+          vec2(pixelScale, pixelScale),
+          sampleColor(index)
+        )
+    sk.drawCrewmateFrameOutlines(bot, x, y, pixelScale)
+    if bot.interstitial:
+      return
+    let
+      button = bot.sim.gameMap.button
+      buttonX = button.x - bot.cameraX
+      buttonY = button.y - bot.cameraY
+    if buttonX + button.w >= 0 and buttonY + button.h >= 0 and
+        buttonX < ScreenWidth and buttonY < ScreenHeight:
+      sk.drawOutline(
+        vec2(x + buttonX.float32 * pixelScale, y + buttonY.float32 * pixelScale),
+        vec2(button.w.float32 * pixelScale, button.h.float32 * pixelScale),
+        ViewerButton,
+        2
+      )
     sk.drawRect(
       vec2(
-        x + bot.playerWorldX().float32 * scale - 2,
-        y + bot.playerWorldY().float32 * scale - 2
+        x + PlayerScreenX.float32 * pixelScale - 3,
+        y + PlayerScreenY.float32 * pixelScale - 3
       ),
-      vec2(5, 5),
+      vec2(7, 7),
       ViewerPlayer
     )
-    sk.drawCrewmateMapOutlines(bot, x, y, scale)
-  if bot.homeSet:
+    let playerPos = vec2(
+      x + PlayerScreenX.float32 * pixelScale,
+      y + PlayerScreenY.float32 * pixelScale
+    )
+    for dot in bot.radarDots:
+      let dotPos = vec2(
+        x + dot.x.float32 * pixelScale + pixelScale * 0.5,
+        y + dot.y.float32 * pixelScale + pixelScale * 0.5
+      )
+      sk.drawLine(playerPos, dotPos, ViewerRadarLine)
+      sk.drawRect(dotPos - vec2(4, 4), vec2(9, 9), ViewerTaskGuess)
+    for task in bot.sim.tasks:
+      let
+        taskX = task.x - bot.cameraX
+        taskY = task.y - bot.cameraY
+        taskVisible = taskX + task.w >= 0 and taskY + task.h >= 0 and
+          taskX < ScreenWidth and taskY < ScreenHeight
+      if not taskVisible:
+        continue
+      let
+        icon = bot.taskIconInspectRect(task)
+        hasIcon = bot.taskIconVisibleFor(task)
+        color =
+          if hasIcon:
+            ViewerPlayer
+          else:
+            ViewerTask
+        taskPos = vec2(
+          x + taskX.float32 * pixelScale,
+          y + taskY.float32 * pixelScale
+        )
+        taskSize = vec2(
+          task.w.float32 * pixelScale,
+          task.h.float32 * pixelScale
+        )
+      sk.drawOutline(taskPos, taskSize, color, 2)
+      if icon.x + icon.w >= 0 and icon.y + icon.h >= 0 and
+          icon.x < ScreenWidth and icon.y < ScreenHeight:
+        let
+          iconPos = vec2(
+            x + icon.x.float32 * pixelScale,
+            y + icon.y.float32 * pixelScale
+          )
+          iconSize = vec2(
+            icon.w.float32 * pixelScale,
+            icon.h.float32 * pixelScale
+          )
+        sk.drawOutline(iconPos, iconSize, color, 2)
+        sk.drawLine(
+          taskPos + taskSize * 0.5,
+          iconPos + iconSize * 0.5,
+          color
+        )
+    for icon in bot.visibleTaskIcons:
+      sk.drawOutline(
+        vec2(
+          x + icon.x.float32 * pixelScale,
+          y + icon.y.float32 * pixelScale
+        ),
+        vec2(
+          bot.taskSprite.width.float32 * pixelScale,
+          bot.taskSprite.height.float32 * pixelScale
+        ),
+        ViewerButton,
+        2
+      )
+
+  proc drawMapView(sk: Silky, bot: Bot, x, y: float32) =
+    ## Draws the map, inferred viewport, and known task stations.
+    let scale = ViewerMapScale
+    sk.drawRect(
+      vec2(x, y),
+      vec2(MapWidth.float32 * scale, MapHeight.float32 * scale),
+      ViewerUnknown
+    )
+    for my in countup(0, MapHeight - 1, 2):
+      for mx in countup(0, MapWidth - 1, 2):
+        let idx = mapIndexSafe(mx, my)
+        let color =
+          if bot.sim.wallMask[idx]:
+            ViewerWall
+          elif bot.sim.walkMask[idx]:
+            ViewerWalk
+          else:
+            sampleColor(bot.sim.mapPixels[idx])
+        sk.drawRect(
+          vec2(x + mx.float32 * scale, y + my.float32 * scale),
+          vec2(max(1.0'f, scale * 2), max(1.0'f, scale * 2)),
+          color
+        )
+    if bot.interstitial:
+      return
+    for i in 0 ..< bot.sim.tasks.len:
+      let
+        task = bot.sim.tasks[i]
+        center = task.taskCenter()
+        state =
+          if bot.taskStates.len == bot.sim.tasks.len:
+            bot.taskStates[i]
+          else:
+            TaskNotDoing
+      sk.drawRect(
+        vec2(x + center.x.float32 * scale - 3, y + center.y.float32 * scale - 3),
+        vec2(7, 7),
+        taskStateColor(state)
+      )
+    if bot.taskStates.len == bot.sim.tasks.len:
+      for i in 0 ..< bot.sim.tasks.len:
+        let
+          isRadarTask =
+            bot.radarTasks.len == bot.sim.tasks.len and bot.radarTasks[i]
+          isCheckoutTask =
+            bot.checkoutTasks.len == bot.sim.tasks.len and bot.checkoutTasks[i]
+        if bot.taskStates[i] != TaskMandatory and
+            not isRadarTask and
+            not isCheckoutTask:
+          continue
+        let
+          center = bot.sim.tasks[i].taskCenter()
+          color =
+            if bot.taskStates[i] == TaskMandatory:
+              taskStateColor(TaskMandatory)
+            else:
+              taskStateColor(TaskMaybe)
+          pos = vec2(
+            x + center.x.float32 * scale - 5,
+            y + center.y.float32 * scale - 5
+          )
+        sk.drawOutline(pos, vec2(11, 11), color, 2)
+        if bot.localized:
+          sk.drawLine(
+            vec2(
+              x + bot.playerWorldX().float32 * scale,
+              y + bot.playerWorldY().float32 * scale
+            ),
+            pos + vec2(5, 5),
+            ViewerRadarLine
+          )
+    let button = bot.sim.gameMap.button
     sk.drawOutline(
-      vec2(x + bot.homeX.float32 * scale - 5, y + bot.homeY.float32 * scale - 5),
-      vec2(10, 10),
+      vec2(
+        x + button.x.float32 * scale,
+        y + button.y.float32 * scale
+      ),
+      vec2(button.w.float32 * scale, button.h.float32 * scale),
       ViewerButton,
       1
     )
-  if bot.hasGoal:
-    sk.drawRect(
-      vec2(x + bot.goalX.float32 * scale - 4, y + bot.goalY.float32 * scale - 4),
-      vec2(9, 9),
-      ViewerTask
-    )
-  if bot.path.len > 0:
-    var previous = vec2(
-      x + bot.playerWorldX().float32 * scale,
-      y + bot.playerWorldY().float32 * scale
-    )
-    for i in countup(0, bot.path.high, 8):
-      let current = vec2(
-        x + bot.path[i].x.float32 * scale,
-        y + bot.path[i].y.float32 * scale
+    if bot.localized:
+      sk.drawOutline(
+        vec2(x + bot.cameraX.float32 * scale, y + bot.cameraY.float32 * scale),
+        vec2(ScreenWidth.float32 * scale, ScreenHeight.float32 * scale),
+        ViewerViewport,
+        1
       )
-      sk.drawLine(previous, current, ViewerPath)
-      previous = current
-    if bot.hasGoal:
-      sk.drawLine(
-        previous,
-        vec2(x + bot.goalX.float32 * scale, y + bot.goalY.float32 * scale),
-        ViewerPath
+      sk.drawRect(
+        vec2(
+          x + bot.playerWorldX().float32 * scale - 2,
+          y + bot.playerWorldY().float32 * scale - 2
+        ),
+        vec2(5, 5),
+        ViewerPlayer
       )
-  if bot.hasPathStep:
-    sk.drawRect(
-      vec2(
-        x + bot.pathStep.x.float32 * scale - 2,
-        y + bot.pathStep.y.float32 * scale - 2
-      ),
-      vec2(5, 5),
-      ViewerButton
-    )
-
-proc initViewerApp(): ViewerApp =
-  ## Opens the diagnostic viewer window.
-  result = ViewerApp()
-  result.window = newWindow(
-    title = "Among Them Bot Viewer",
-    size = ivec2(ViewerWindowWidth, ViewerWindowHeight),
-    style = Decorated,
-    visible = true
-  )
-  makeContextCurrent(result.window)
-  when not defined(useDirectX):
-    loadExtensions()
-  result.silky = newSilky(result.window, atlasPath())
-
-proc pumpViewer(
-  viewer: ViewerApp,
-  bot: Bot,
-  connected: bool,
-  url: string
-) =
-  ## Pumps and renders one viewer frame.
-  if viewer.isNil:
-    return
-  pollEvents()
-  if viewer.window.buttonPressed[KeyEscape]:
-    viewer.window.closeRequested = true
-  if viewer.window.closeRequested:
-    return
-  let
-    frameSize = viewer.window.size
-    framePos = vec2(ViewerMargin, ViewerMargin + 28)
-    mapPos = vec2(
-      framePos.x + ScreenWidth.float32 * ViewerFrameScale + 24,
-      ViewerMargin + 28
-    )
-    mapSize = vec2(MapWidth.float32 * ViewerMapScale, MapHeight.float32 * ViewerMapScale)
-    infoPos = vec2(ViewerMargin, framePos.y + ScreenHeight.float32 * ViewerFrameScale + 28)
-    infoSize = vec2(frameSize.x.float32 - ViewerMargin * 2, 300)
-    sk = viewer.silky
-  sk.beginUI(viewer.window, frameSize)
-  sk.clearScreen(ViewerBackground)
-  discard sk.drawText("Default", "Among Them Bot Viewer", vec2(ViewerMargin, ViewerMargin), ViewerText)
-  discard sk.drawText("Default", "Live frame", vec2(framePos.x, framePos.y - 18), ViewerMutedText)
-  discard sk.drawText("Default", "Map lock", vec2(mapPos.x, mapPos.y - 18), ViewerMutedText)
-  sk.drawRect(
-    framePos - vec2(8, 8),
-    vec2(ScreenWidth.float32 * ViewerFrameScale + 16, ScreenHeight.float32 * ViewerFrameScale + 16),
-    ViewerPanel
-  )
-  sk.drawRect(mapPos - vec2(8, 8), mapSize + vec2(16, 16), ViewerPanel)
-  sk.drawRect(infoPos - vec2(8, 8), infoSize + vec2(16, 16), ViewerPanel)
-  sk.drawFrameView(bot, framePos.x, framePos.y)
-  sk.drawMapView(bot, mapPos.x, mapPos.y)
-  let goalText =
+      sk.drawCrewmateMapOutlines(bot, x, y, scale)
+    if bot.homeSet:
+      sk.drawOutline(
+        vec2(x + bot.homeX.float32 * scale - 5, y + bot.homeY.float32 * scale - 5),
+        vec2(10, 10),
+        ViewerButton,
+        1
+      )
     if bot.hasGoal:
-      let ready =
-        bot.goalIndex >= 0 and
-        bot.goalIndex < bot.sim.tasks.len and
-        bot.taskReadyAtGoal(bot.goalIndex, bot.goalX, bot.goalY)
-      "goal: " & bot.goalName &
-        " dist=" & $heuristic(
-          bot.playerWorldX(),
-          bot.playerWorldY(),
-          bot.goalX,
-          bot.goalY
-        ) &
-        " ready=" & $ready & "\n"
-    else:
-      "goal: none\n"
-  let infoText =
-    "intent: " & bot.intent & "\n" &
-    "room: " & bot.roomName() & "\n" &
-    "timing sprite scans: " & $bot.spriteScanMicros & "us (" &
-      $(bot.spriteScanMicros div 1000) & "ms)\n" &
-    "timing localize local: " & $bot.localizeLocalMicros & "us (" &
-      $(bot.localizeLocalMicros div 1000) & "ms)\n" &
-    "timing localize patch: " & $bot.localizePatchMicros & "us (" &
-      $(bot.localizePatchMicros div 1000) & "ms)\n" &
-    "timing localize spiral: " & $bot.localizeSpiralMicros & "us (" &
-      $(bot.localizeSpiralMicros div 1000) & "ms)\n" &
-    "timing pathing: " & $bot.astarMicros & "us (" &
-      $(bot.astarMicros div 1000) & "ms)\n" &
-    "client tick: " & $bot.frameTick & "\n" &
-    "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
-    "timing center: " & $bot.centerMicros & "us (" &
-      $(bot.centerMicros div 1000) & "ms)\n" &
-    "frames buffered: " & $bot.frameBufferLen &
-      " dropped=" & $bot.framesDropped &
-      " total=" & $bot.skippedFrames & "\n" &
-    "interstitial text: " &
-      (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
-      "\n" &
-    "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
-    "role: " & roleName(bot.role) &
-      " self=" & playerColorName(bot.selfColorIndex) &
-      " ghost=" & $bot.isGhost &
-      " ghost icon frames=" & $bot.ghostIconFrames &
-      " kill ready=" & $bot.imposterKillReady &
-      " imp goal=" & $bot.imposterGoalIndex & "\n" &
-    "known imps: " & bot.knownImposterSummary() & "\n" &
-    "voting: " & $bot.voting &
-      " count=" & $bot.votePlayerCount &
-      " listen=" & $max(0, bot.frameTick - bot.voteStartTick) &
-      " cursor=" & bot.voteTargetName(bot.voteCursor) &
-      " target=" & bot.voteTargetName(bot.voteTarget) & "\n" &
-    "votes: " & bot.voteSummary() & "\n" &
-    "vote chat sus: " & playerColorName(bot.voteChatSusColor) &
-      " text=" & bot.voteChatText & "\n" &
-    "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
-    "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
-    "home: " & (
-      if bot.homeSet:
-        "(" & $bot.homeX & ", " & $bot.homeY & ")"
+      sk.drawRect(
+        vec2(x + bot.goalX.float32 * scale - 4, y + bot.goalY.float32 * scale - 4),
+        vec2(9, 9),
+        ViewerTask
+      )
+    if bot.path.len > 0:
+      var previous = vec2(
+        x + bot.playerWorldX().float32 * scale,
+        y + bot.playerWorldY().float32 * scale
+      )
+      for i in countup(0, bot.path.high, 8):
+        let current = vec2(
+          x + bot.path[i].x.float32 * scale,
+          y + bot.path[i].y.float32 * scale
+        )
+        sk.drawLine(previous, current, ViewerPath)
+        previous = current
+      if bot.hasGoal:
+        sk.drawLine(
+          previous,
+          vec2(x + bot.goalX.float32 * scale, y + bot.goalY.float32 * scale),
+          ViewerPath
+        )
+    if bot.hasPathStep:
+      sk.drawRect(
+        vec2(
+          x + bot.pathStep.x.float32 * scale - 2,
+          y + bot.pathStep.y.float32 * scale - 2
+        ),
+        vec2(5, 5),
+        ViewerButton
+      )
+
+  proc initViewerApp(): ViewerApp =
+    ## Opens the diagnostic viewer window.
+    result = ViewerApp()
+    result.window = newWindow(
+      title = "Among Them Bot Viewer",
+      size = ivec2(ViewerWindowWidth, ViewerWindowHeight),
+      style = Decorated,
+      visible = true
+    )
+    makeContextCurrent(result.window)
+    when not defined(useDirectX):
+      loadExtensions()
+    result.silky = newSilky(result.window, atlasPath())
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Pumps and renders one viewer frame.
+    if viewer.isNil:
+      return
+    pollEvents()
+    if viewer.window.buttonPressed[KeyEscape]:
+      viewer.window.closeRequested = true
+    if viewer.window.closeRequested:
+      return
+    let
+      frameSize = viewer.window.size
+      framePos = vec2(ViewerMargin, ViewerMargin + 28)
+      mapPos = vec2(
+        framePos.x + ScreenWidth.float32 * ViewerFrameScale + 24,
+        ViewerMargin + 28
+      )
+      mapSize = vec2(MapWidth.float32 * ViewerMapScale, MapHeight.float32 * ViewerMapScale)
+      infoPos = vec2(ViewerMargin, framePos.y + ScreenHeight.float32 * ViewerFrameScale + 28)
+      infoSize = vec2(frameSize.x.float32 - ViewerMargin * 2, 300)
+      sk = viewer.silky
+    sk.beginUI(viewer.window, frameSize)
+    sk.clearScreen(ViewerBackground)
+    discard sk.drawText("Default", "Among Them Bot Viewer", vec2(ViewerMargin, ViewerMargin), ViewerText)
+    discard sk.drawText("Default", "Live frame", vec2(framePos.x, framePos.y - 18), ViewerMutedText)
+    discard sk.drawText("Default", "Map lock", vec2(mapPos.x, mapPos.y - 18), ViewerMutedText)
+    sk.drawRect(
+      framePos - vec2(8, 8),
+      vec2(ScreenWidth.float32 * ViewerFrameScale + 16, ScreenHeight.float32 * ViewerFrameScale + 16),
+      ViewerPanel
+    )
+    sk.drawRect(mapPos - vec2(8, 8), mapSize + vec2(16, 16), ViewerPanel)
+    sk.drawRect(infoPos - vec2(8, 8), infoSize + vec2(16, 16), ViewerPanel)
+    sk.drawFrameView(bot, framePos.x, framePos.y)
+    sk.drawMapView(bot, mapPos.x, mapPos.y)
+    let goalText =
+      if bot.hasGoal:
+        let ready =
+          bot.goalIndex >= 0 and
+          bot.goalIndex < bot.sim.tasks.len and
+          bot.taskReadyAtGoal(bot.goalIndex, bot.goalX, bot.goalY)
+        "goal: " & bot.goalName &
+          " dist=" & $heuristic(
+            bot.playerWorldX(),
+            bot.playerWorldY(),
+            bot.goalX,
+            bot.goalY
+          ) &
+          " ready=" & $ready & "\n"
       else:
-        "unset"
-    ) & " started=" & $bot.gameStarted & "\n" &
-    "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &
-    "crewmates masked: " & $bot.visibleCrewmates.len &
-      " bodies=" & $bot.visibleBodies.len &
-      " ghosts=" & $bot.visibleGhosts.len & "\n" &
-    "suspect: " & bot.suspectSummary() & "\n" &
-    "radar dots: " & $bot.radarDots.len &
-      " radar tasks=" & $bot.radarTaskCount() &
-      " checkout=" & $bot.checkoutTaskCount() &
-      " task icons=" & $bot.visibleTaskIcons.len & "\n" &
-    "tasks mandatory=" & $bot.taskStateCount(TaskMandatory) &
-      " completed=" & $bot.taskStateCount(TaskCompleted) & "\n" &
-    goalText &
-    "path pixels: " & $bot.path.len & "\n" &
-    "desired: " & inputMaskSummary(bot.desiredMask) & "\n" &
-    "controller: " & inputMaskSummary(bot.controllerMask) & "\n" &
-    "stuck: " & $bot.stuckFrames & " jiggle=" & $bot.jiggleTicks & "\n" &
-    "last thought: " & (
-      if bot.lastThought.len > 0:
-        bot.lastThought
+        "goal: none\n"
+    let infoText =
+      "intent: " & bot.intent & "\n" &
+      "room: " & bot.roomName() & "\n" &
+      "timing sprite scans: " & $bot.spriteScanMicros & "us (" &
+        $(bot.spriteScanMicros div 1000) & "ms)\n" &
+      "timing localize local: " & $bot.localizeLocalMicros & "us (" &
+        $(bot.localizeLocalMicros div 1000) & "ms)\n" &
+      "timing localize patch: " & $bot.localizePatchMicros & "us (" &
+        $(bot.localizePatchMicros div 1000) & "ms)\n" &
+      "timing localize spiral: " & $bot.localizeSpiralMicros & "us (" &
+        $(bot.localizeSpiralMicros div 1000) & "ms)\n" &
+      "timing pathing: " & $bot.astarMicros & "us (" &
+        $(bot.astarMicros div 1000) & "ms)\n" &
+      "client tick: " & $bot.frameTick & "\n" &
+      "BUTTONS HELD: " & inputMaskSummary(bot.lastMask) & "\n" &
+      "timing center: " & $bot.centerMicros & "us (" &
+        $(bot.centerMicros div 1000) & "ms)\n" &
+      "frames buffered: " & $bot.frameBufferLen &
+        " dropped=" & $bot.framesDropped &
+        " total=" & $bot.skippedFrames & "\n" &
+      "interstitial text: " &
+        (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
+        "\n" &
+      "lock: " & cameraLockName(bot.cameraLock) & " score=" & $bot.cameraScore & "\n" &
+      "role: " & roleName(bot.role) &
+        " self=" & playerColorName(bot.selfColorIndex) &
+        " ghost=" & $bot.isGhost &
+        " ghost icon frames=" & $bot.ghostIconFrames &
+        " kill ready=" & $bot.imposterKillReady &
+        " imp goal=" & $bot.imposterGoalIndex & "\n" &
+      "known imps: " & bot.knownImposterSummary() & "\n" &
+      "voting: " & $bot.voting &
+        " count=" & $bot.votePlayerCount &
+        " listen=" & $max(0, bot.frameTick - bot.voteStartTick) &
+        " cursor=" & bot.voteTargetName(bot.voteCursor) &
+        " target=" & bot.voteTargetName(bot.voteTarget) & "\n" &
+      "votes: " & bot.voteSummary() & "\n" &
+      "vote chat sus: " & playerColorName(bot.voteChatSusColor) &
+        " text=" & bot.voteChatText & "\n" &
+      "camera: (" & $bot.cameraX & ", " & $bot.cameraY & ")\n" &
+      "player: (" & $bot.playerWorldX() & ", " & $bot.playerWorldY() & ")\n" &
+      "home: " & (
+        if bot.homeSet:
+          "(" & $bot.homeX & ", " & $bot.homeY & ")"
+        else:
+          "unset"
+      ) & " started=" & $bot.gameStarted & "\n" &
+      "velocity: (" & $bot.velocityX & ", " & $bot.velocityY & ")\n" &
+      "crewmates masked: " & $bot.visibleCrewmates.len &
+        " bodies=" & $bot.visibleBodies.len &
+        " ghosts=" & $bot.visibleGhosts.len & "\n" &
+      "suspect: " & bot.suspectSummary() & "\n" &
+      "radar dots: " & $bot.radarDots.len &
+        " radar tasks=" & $bot.radarTaskCount() &
+        " checkout=" & $bot.checkoutTaskCount() &
+        " task icons=" & $bot.visibleTaskIcons.len & "\n" &
+      "tasks mandatory=" & $bot.taskStateCount(TaskMandatory) &
+        " completed=" & $bot.taskStateCount(TaskCompleted) & "\n" &
+      goalText &
+      "path pixels: " & $bot.path.len & "\n" &
+      "desired: " & inputMaskSummary(bot.desiredMask) & "\n" &
+      "controller: " & inputMaskSummary(bot.controllerMask) & "\n" &
+      "stuck: " & $bot.stuckFrames & " jiggle=" & $bot.jiggleTicks & "\n" &
+      "last thought: " & (
+        if bot.lastThought.len > 0:
+          bot.lastThought
+        else:
+          "waiting"
+      ) & "\n" &
+      "status: " & (if connected: "connected" else: "reconnecting") & "\n" &
+      "url: " & url
+    discard sk.drawText("Default", infoText, infoPos, ViewerText, infoSize.x, infoSize.y)
+    sk.endUi()
+    viewer.window.swapBuffers()
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true when the diagnostic viewer should keep running.
+    viewer.isNil or not viewer.window.closeRequested
+
+  proc queryEscape(value: string): string =
+    ## Escapes a small string for use in a websocket query parameter.
+    const Hex = "0123456789ABCDEF"
+    for ch in value:
+      if ch in {'a' .. 'z'} or ch in {'A' .. 'Z'} or ch in {'0' .. '9'} or
+          ch in {'-', '_', '.', '~'}:
+        result.add(ch)
       else:
-        "waiting"
-    ) & "\n" &
-    "status: " & (if connected: "connected" else: "reconnecting") & "\n" &
-    "url: " & url
-  discard sk.drawText("Default", infoText, infoPos, ViewerText, infoSize.x, infoSize.y)
-  sk.endUi()
-  viewer.window.swapBuffers()
+        let byte = ord(ch)
+        result.add('%')
+        result.add(Hex[(byte shr 4) and 0x0f])
+        result.add(Hex[byte and 0x0f])
 
-proc viewerOpen(viewer: ViewerApp): bool =
-  ## Returns true when the diagnostic viewer should keep running.
-  viewer.isNil or not viewer.window.closeRequested
+  proc acceptPlayerMessage(
+    ws: WebSocket,
+    message: Message,
+    queuedFrames: var seq[string]
+  ) =
+    ## Handles one websocket message while filling the local frame queue.
+    case message.kind
+    of BinaryMessage:
+      if message.data.len == ProtocolBytes:
+        queuedFrames.add(message.data)
+    of Ping:
+      ws.send(message.data, Pong)
+    of TextMessage, Pong:
+      discard
 
-proc queryEscape(value: string): string =
-  ## Escapes a small string for use in a websocket query parameter.
-  const Hex = "0123456789ABCDEF"
-  for ch in value:
-    if ch in {'a' .. 'z'} or ch in {'A' .. 'Z'} or ch in {'0' .. '9'} or
-        ch in {'-', '_', '.', '~'}:
-      result.add(ch)
-    else:
-      let byte = ord(ch)
-      result.add('%')
-      result.add(Hex[(byte shr 4) and 0x0f])
-      result.add(Hex[byte and 0x0f])
+  proc receiveLatestFrame(ws: WebSocket, bot: var Bot, gui: bool): bool =
+    ## Receives frames and only drops them under high backlog.
+    if bot.queuedFrames.len == 0:
+      let firstMessage = ws.receiveMessage(if gui: 10 else: -1)
+      if firstMessage.isNone:
+        bot.frameBufferLen = 0
+        bot.framesDropped = 0
+        return false
+      ws.acceptPlayerMessage(firstMessage.get, bot.queuedFrames)
 
-proc acceptPlayerMessage(
-  ws: WebSocket,
-  message: Message,
-  queuedFrames: var seq[string]
-) =
-  ## Handles one websocket message while filling the local frame queue.
-  case message.kind
-  of BinaryMessage:
-    if message.data.len == ProtocolBytes:
-      queuedFrames.add(message.data)
-  of Ping:
-    ws.send(message.data, Pong)
-  of TextMessage, Pong:
-    discard
+    var drained = 0
+    while drained < MaxFrameDrain:
+      let message = ws.receiveMessage(0)
+      if message.isNone:
+        break
+      ws.acceptPlayerMessage(message.get, bot.queuedFrames)
+      inc drained
 
-proc receiveLatestFrame(ws: WebSocket, bot: var Bot, gui: bool): bool =
-  ## Receives frames and only drops them under high backlog.
-  if bot.queuedFrames.len == 0:
-    let firstMessage = ws.receiveMessage(if gui: 10 else: -1)
-    if firstMessage.isNone:
+    if bot.queuedFrames.len == 0:
       bot.frameBufferLen = 0
       bot.framesDropped = 0
       return false
-    ws.acceptPlayerMessage(firstMessage.get, bot.queuedFrames)
 
-  var drained = 0
-  while drained < MaxFrameDrain:
-    let message = ws.receiveMessage(0)
-    if message.isNone:
-      break
-    ws.acceptPlayerMessage(message.get, bot.queuedFrames)
-    inc drained
-
-  if bot.queuedFrames.len == 0:
-    bot.frameBufferLen = 0
+    var
+      frame = ""
+      frameAdvance = 1
     bot.framesDropped = 0
-    return false
-
-  var
-    frame = ""
-    frameAdvance = 1
-  bot.framesDropped = 0
-  if bot.queuedFrames.len >= FrameDropThreshold:
-    bot.framesDropped = bot.queuedFrames.len - 1
-    frameAdvance = bot.queuedFrames.len
-    frame = bot.queuedFrames[^1]
-    bot.queuedFrames.setLen(0)
-  else:
-    frame = bot.queuedFrames[0]
-    bot.queuedFrames.delete(0)
-
-  bot.frameBufferLen = bot.queuedFrames.len
-  bot.skippedFrames += bot.framesDropped
-  if bot.framesDropped > 0:
-    echo "frames dropped: ", bot.framesDropped,
-      " buffered=", frameAdvance,
-      " total=", bot.skippedFrames,
-      " tick=", bot.frameTick + frameAdvance
-  bot.frameTick += frameAdvance
-  blobToBytes(frame, bot.packed)
-  unpack4bpp(bot.packed, bot.unpacked)
-  true
-
-proc runBot(
-  host = DefaultHost,
-  port = PlayerDefaultPort,
-  gui = false,
-  name = ""
-) =
-  ## Connects to an Among Them server and processes player frames.
-  var bot = initBot()
-  let url =
-    if name.len > 0:
-      "ws://" & host & ":" & $port & WebSocketPath &
-        "?name=" & name.queryEscape()
-    else:
-      "ws://" & host & ":" & $port & WebSocketPath
-  var
-    viewer =
-      if gui: initViewerApp()
-      else: nil
-    connected = false
-  while viewer.viewerOpen():
-    try:
-      let ws = newWebSocket(url)
-      var lastMask = 0xff'u8
+    if bot.queuedFrames.len >= FrameDropThreshold:
+      bot.framesDropped = bot.queuedFrames.len - 1
+      frameAdvance = bot.queuedFrames.len
+      frame = bot.queuedFrames[^1]
       bot.queuedFrames.setLen(0)
-      bot.frameBufferLen = 0
-      bot.framesDropped = 0
-      connected = true
-      while viewer.viewerOpen():
-        if gui:
-          viewer.pumpViewer(bot, connected, url)
-          if not viewer.viewerOpen():
-            ws.close()
-            break
-        if not ws.receiveLatestFrame(bot, gui):
-          continue
-        let nextMask = bot.decideNextMask()
-        bot.lastMask = nextMask
-        if nextMask != lastMask:
-          ws.send(blobFromMask(nextMask), BinaryMessage)
-          lastMask = nextMask
-        if bot.interstitial and
-            bot.pendingChat.len > 0 and
-            not bot.interstitialText.isGameOverText():
-          ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
-          bot.pendingChat = ""
-    except Exception:
-      connected = false
-      if gui:
-        let reconnectStart = getMonoTime()
-        while viewer.viewerOpen() and
-            (getMonoTime() - reconnectStart).inMilliseconds < 250:
-          viewer.pumpViewer(bot, connected, url)
-          sleep(10)
-      else:
-        sleep(250)
+    else:
+      frame = bot.queuedFrames[0]
+      bot.queuedFrames.delete(0)
 
-when isMainModule:
+    bot.frameBufferLen = bot.queuedFrames.len
+    bot.skippedFrames += bot.framesDropped
+    if bot.framesDropped > 0:
+      echo "frames dropped: ", bot.framesDropped,
+        " buffered=", frameAdvance,
+        " total=", bot.skippedFrames,
+        " tick=", bot.frameTick + frameAdvance
+    bot.frameTick += frameAdvance
+    blobToBytes(frame, bot.packed)
+    unpack4bpp(bot.packed, bot.unpacked)
+    true
+
+  proc runBot(
+    host = DefaultHost,
+    port = PlayerDefaultPort,
+    gui = false,
+    name = "",
+    mapPath = ""
+  ) =
+    ## Connects to an Among Them server and processes player frames.
+    var bot = initBot(mapPath)
+    let url =
+      if name.len > 0:
+        "ws://" & host & ":" & $port & WebSocketPath &
+          "?name=" & name.queryEscape()
+      else:
+        "ws://" & host & ":" & $port & WebSocketPath
+    var
+      viewer =
+        if gui: initViewerApp()
+        else: nil
+      connected = false
+    while viewer.viewerOpen():
+      try:
+        let ws = newWebSocket(url)
+        var lastMask = 0xff'u8
+        bot.queuedFrames.setLen(0)
+        bot.frameBufferLen = 0
+        bot.framesDropped = 0
+        connected = true
+        while viewer.viewerOpen():
+          if gui:
+            viewer.pumpViewer(bot, connected, url)
+            if not viewer.viewerOpen():
+              ws.close()
+              break
+          if not ws.receiveLatestFrame(bot, gui):
+            continue
+          let nextMask = bot.decideNextMask()
+          bot.lastMask = nextMask
+          if nextMask != lastMask:
+            ws.send(blobFromMask(nextMask), BinaryMessage)
+            lastMask = nextMask
+          if bot.interstitial and
+              bot.pendingChat.len > 0 and
+              not bot.interstitialText.isGameOverText():
+            ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
+            bot.pendingChat = ""
+      except Exception:
+        connected = false
+        if gui:
+          let reconnectStart = getMonoTime()
+          while viewer.viewerOpen() and
+              (getMonoTime() - reconnectStart).inMilliseconds < 250:
+            viewer.pumpViewer(bot, connected, url)
+            sleep(10)
+        else:
+          sleep(250)
+
+when isMainModule and not defined(nottoodumbLibrary):
   var
     address = DefaultHost
     port = PlayerDefaultPort
     gui = false
     name = ""
+    mapPath = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4020,8 +4142,12 @@ when isMainModule:
         gui = true
       of "name":
         name = val
+      of "map":
+        mapPath = val
       else:
         discard
     else:
       discard
-  runBot(address, port, gui, name)
+  if mapPath.len > 0 and not mapPath.isAbsolute():
+    mapPath = absolutePath(mapPath)
+  runBot(address, port, gui, name, mapPath)
