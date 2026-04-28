@@ -47,6 +47,12 @@ The server serves these pages:
 - Global viewer: `http://localhost:2000/client/global.html`
 - Rewards: `http://localhost:2000/client/rewards.html`
 
+These routes are served from:
+
+- `clients/player_client.html`
+- `clients/global_client.html`
+- `clients/reward_client.html`
+
 The player client connects to `/player`, the global viewer connects to
 `/global`, and the rewards viewer connects to `/reward` on the same host as
 the page.

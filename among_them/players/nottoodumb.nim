@@ -333,7 +333,7 @@ proc gameDir(): string =
 
 proc atlasPath(): string =
   ## Returns the shared Silky atlas path.
-  gameDir() / ".." / "client" / "dist" / "atlas.png"
+  gameDir() / ".." / "clients" / "dist" / "atlas.png"
 
 proc unpack4bpp(packed: openArray[uint8], unpacked: var seq[uint8]) =
   ## Expands one packed 4 bit framebuffer into palette indices.

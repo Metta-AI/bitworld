@@ -1,7 +1,7 @@
 import
   std/[json, locks, monotimes, os, parseopt, strutils, tables, times],
   mummy, pixie,
-  ../client/aseprite,
+  bitworld/aseprite,
   server
 import protocol except TileSize
 
@@ -108,7 +108,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc palettePath(): string =
   clientDataDir() / "pallete.png"

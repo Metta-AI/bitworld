@@ -2,7 +2,7 @@ import std/[exitprocs, monotimes, net, os, osproc, parseopt, strutils, times]
 import windy
 
 const
-  ClientSourceRelative = "client" / "client.nim"
+  ClientSourceRelative = "clients" / "player_client.nim"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
   ClientScreenOnlyWidth = 384
@@ -370,7 +370,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     gameTitle = humanizeLabel(game.label)
     gameExe = exePathFor(rootDir, game.sourceRelative)
     clientExe = exePathFor(rootDir, ClientSourceRelative)
-    clientWorkDir = absolutePath(rootDir / "client")
+    clientWorkDir = absolutePath(rootDir / "clients")
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
 

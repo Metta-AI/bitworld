@@ -3,7 +3,7 @@ import protocol, server
 import std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const
-  ClientDataDir = ".." / "client" / "data"
+  ClientDataDir = ".." / "clients" / "data"
   FactoryDataDir = "data"
   PalettePath = ClientDataDir / "pallete.png"
   NumbersPath = ClientDataDir / "numbers.png"

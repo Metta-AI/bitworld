@@ -135,7 +135,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc sheetPath(): string =
   dataDir() / "spritesheet.png"
@@ -155,7 +155,7 @@ proc sheetRegionSprite(sheet: Image, x, y, width, height: int): Sprite =
   spriteFromImage(sheet.subImage(x, y, width, height))
 
 proc atlasPath(): string =
-  repoDir() / "client" / "dist" / "atlas.png"
+  repoDir() / "clients" / "dist" / "atlas.png"
 
 proc unpack4bpp(packed: openArray[uint8], unpacked: var seq[uint8]) =
   let targetLen = packed.len * 2

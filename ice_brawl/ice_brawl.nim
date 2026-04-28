@@ -120,7 +120,7 @@ proc repoDir(): string =
   getAppDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc palettePath(): string =
   clientDataDir() / "pallete.png"

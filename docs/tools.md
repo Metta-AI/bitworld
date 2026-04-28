@@ -115,7 +115,7 @@ There are two simple player clients.
 The native client lives at:
 
 ```text
-client/client.nim
+clients/player_client.nim
 ```
 
 It connects to the player protocol and is what `quick_run` launches. It is best
@@ -127,14 +127,14 @@ Reconnect is off by default.
 The HTML player client lives at:
 
 ```text
-player_client/index.html
+clients/player_client.html
 ```
 
 It is a tiny browser client for the same `/player` protocol. It accepts an
 `address` query parameter:
 
 ```text
-player_client/index.html?address=ws://localhost:8080/player
+clients/player_client.html?address=ws://localhost:8080/player
 ```
 
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
@@ -148,7 +148,7 @@ client with another tool.
 The HTML global client lives at:
 
 ```text
-global_client/index.html
+clients/global_client.html
 ```
 
 It connects to `/global` and renders the global protocol. It also sends mouse
@@ -156,7 +156,7 @@ and keyboard input back to the server, which lets games implement global UI and
 replay transport controls.
 
 ```text
-global_client/index.html?address=ws://localhost:8080/global
+clients/global_client.html?address=ws://localhost:8080/global
 ```
 
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
@@ -167,13 +167,13 @@ Reconnect is off by default.
 The HTML reward client lives at:
 
 ```text
-reward_client/index.html
+clients/reward_client.html
 ```
 
 It connects to `/reward` and shows the latest reward packet as text.
 
 ```text
-reward_client/index.html?address=ws://localhost:8080/reward
+clients/reward_client.html?address=ws://localhost:8080/reward
 ```
 
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
@@ -181,6 +181,20 @@ Reconnect is off by default.
 
 This client is intentionally small. It is mainly for checking that a game is
 emitting reward data in the format expected by training tools.
+
+## Client Assets
+
+Shared client art and UI assets live at:
+
+```text
+clients/data
+```
+
+The native player client writes its generated atlas here:
+
+```text
+clients/dist/atlas.png
+```
 
 ## Other Tools
 

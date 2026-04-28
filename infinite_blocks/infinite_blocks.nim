@@ -113,7 +113,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc boardIndex(x, y: int): int =
   y * BoardWidthCells + x

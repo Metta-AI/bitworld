@@ -125,7 +125,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc worldClampPixel(x, maxValue: int): int =
   max(0, min(maxValue, x))

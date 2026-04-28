@@ -145,7 +145,7 @@ proc repoDir*(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir*(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc sheetPath*(): string =
   dataDir() / "spritesheet.png"

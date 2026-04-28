@@ -1,11 +1,11 @@
 import
   std/os,
   pixie,
-  ../client/aseprite, protocol
+  bitworld/aseprite, protocol
 
 const
   RootDir = currentSourcePath.parentDir.parentDir
-  DataDir = RootDir / "client" / "data"
+  DataDir = RootDir / "clients" / "data"
 
 proc countPixelDiff(a, b: Image): int =
   ## Counts pixel differences between two same-sized images.

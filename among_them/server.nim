@@ -1,6 +1,7 @@
-import mummy
-import protocol, sim, global
-import std/[locks, monotimes, os, strutils, tables, times]
+import
+  std/[locks, monotimes, os, strutils, tables, times],
+  mummy,
+  bitworld/clients, protocol, sim, global
 
 type
   WebSocketAppState = object
@@ -71,27 +72,11 @@ type
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
 
-proc repoDir(): string =
-  ## Returns the Bit World repository directory.
-  currentSourcePath().parentDir().parentDir()
-
-proc staticClientHtmlPath(path: string): string =
-  ## Returns the local HTML file for a served client route.
-  case path
-  of "/client/player.html":
-    repoDir() / "player_client" / "index.html"
-  of "/client/global.html":
-    repoDir() / "global_client" / "index.html"
-  of "/client/rewards.html":
-    repoDir() / "reward_client" / "index.html"
-  else:
-    ""
-
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static HTML client page if the route matches.
   if request.httpMethod != "GET":
     return false
-  let filePath = staticClientHtmlPath(request.path)
+  let filePath = clientHtmlPath(request.path)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders

@@ -176,7 +176,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "client" / "data"
+  repoDir() / "clients" / "data"
 
 proc palettePath(): string =
   clientDataDir() / "pallete.png"

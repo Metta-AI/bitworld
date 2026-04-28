@@ -1,6 +1,6 @@
 import jsony, pixie
 import protocol
-import ../client/aseprite
+import bitworld/aseprite
 import ../common/server
 import std/[json, math, os, random, strutils]
 
@@ -294,7 +294,7 @@ const
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
-  getCurrentDir() / ".." / "client" / "data"
+  getCurrentDir() / ".." / "clients" / "data"
 
 proc skeld2AsepritePath(): string =
   ## Returns the best available skeld2 aseprite path.

@@ -1,4 +1,5 @@
 switch("path", thisDir() & "/common")
+switch("path", thisDir() & "/src")
 switch("path", thisDir() & "/../mummy/src")
 switch("path", thisDir() & "/../paddy/src")
 switch("path", thisDir() & "/../whisky/src")

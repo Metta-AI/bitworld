@@ -118,7 +118,7 @@ type
 var appState: WebSocketAppState
 
 proc repoDir(): string = getCurrentDir() / ".."
-proc clientDataDir(): string = repoDir() / "client" / "data"
+proc clientDataDir(): string = repoDir() / "clients" / "data"
 proc palettePath(): string = clientDataDir() / "pallete.png"
 proc numbersPath(): string = clientDataDir() / "numbers.png"
 proc lettersPath(): string = clientDataDir() / "letters.png"

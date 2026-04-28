@@ -5,7 +5,7 @@ license     = "MIT"
 
 srcDir = "."
 bin = @[
-  "client/client",
+  "clients/player_client",
   "asteroid_arena/asteroid_arena",
   "big_adventure/big_adventure",
   "big_adventure/player",
@@ -29,6 +29,7 @@ bin = @[
 ]
 
 switch("path", "common")
+switch("path", "src")
 switch("threads", "on")
 switch("mm", "orc")
 
