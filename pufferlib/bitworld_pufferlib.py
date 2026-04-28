@@ -2128,6 +2128,24 @@ def train_policy(
         )
 
     history: list[dict[str, float]] = []
+
+    def write_metrics() -> None:
+        if rank != 0:
+            return
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "env": resolved.name,
+            "device": train_device,
+            "observation_mode": observation_mode,
+            "history": history,
+        }
+        tmp_path = metrics_path.with_suffix(metrics_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(summary, indent=2))
+        os.replace(tmp_path, metrics_path)
+
+    if rank == 0:
+        write_metrics()
+
     try:
         while trainer.global_step * world_size < total_timesteps:
             trainer.rollouts()
@@ -2136,6 +2154,7 @@ def train_policy(
             flat_logs = flatten_logs(logs)
             if rank == 0:
                 history.append(flat_logs)
+                write_metrics()
                 print(
                     json.dumps(
                         {
@@ -2157,6 +2176,7 @@ def train_policy(
         try:
             if rank == 0:
                 trainer.save_weights(str(checkpoint_path))
+                write_metrics()
         finally:
             trainer.close()
             if distributed:
@@ -2169,14 +2189,12 @@ def train_policy(
             "history": history,
         }
 
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
         "env": resolved.name,
         "device": train_device,
         "observation_mode": observation_mode,
         "history": history,
     }
-    metrics_path.write_text(json.dumps(summary, indent=2))
     return summary
 
 
