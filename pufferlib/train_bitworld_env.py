@@ -38,6 +38,22 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Weight for auxiliary state-prediction loss (pixels mode, among_them only). 0 disables.",
     )
+    parser.add_argument(
+        "--shaping-rewards",
+        action="store_true",
+        help="Enable task-distance and task-progress shaping rewards in pixel mode (among_them only).",
+    )
+    parser.add_argument("--imposter-count", type=int, default=-1, help="Override config imposterCount; -1 keeps default.")
+    parser.add_argument("--tasks-per-player", type=int, default=-1, help="Override config tasksPerPlayer; -1 keeps default.")
+    parser.add_argument("--task-complete-ticks", type=int, default=-1, help="Override config taskCompleteTicks; -1 keeps default.")
+    parser.add_argument("--kill-cooldown-ticks", type=int, default=-1, help="Override config killCooldownTicks; -1 keeps default.")
+    parser.add_argument(
+        "--curriculum-file",
+        type=Path,
+        help="JSON file with a list of stage dicts. Each stage may set total_timesteps, players, "
+        "imposter_count, tasks_per_player, task_complete_ticks, kill_cooldown_ticks, learning_rate, "
+        "shaping_rewards, state_aux_coef. Stages run sequentially with policy weights preserved.",
+    )
     parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path)
@@ -45,25 +61,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    rank = int(os.environ.get("RANK", "0"))
-    spec = with_server_players(args.env, args.players)
-    total_timesteps = args.total_timesteps if args.total_timesteps is not None else spec.default_total_timesteps
-    episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
-    learning_rate = args.learning_rate if args.learning_rate is not None else spec.learning_rate
-    horizon = args.horizon if args.horizon is not None else spec.horizon
-    minibatch_size = args.minibatch_size if args.minibatch_size is not None else spec.minibatch_size
-    hidden_size = args.hidden_size if args.hidden_size is not None else spec.hidden_size
+def run_stage(
+    args: argparse.Namespace,
+    stage: dict,
+    output_dir: Path,
+    checkpoint_path: Path,
+    metrics_path: Path,
+    init_checkpoint_path: Path | None,
+) -> tuple:
+    players = stage.get("players", args.players)
+    spec = with_server_players(args.env, players)
+    total_timesteps = stage.get("total_timesteps", args.total_timesteps)
+    if total_timesteps is None:
+        total_timesteps = spec.default_total_timesteps
+    episode_steps = stage.get("episode_steps", args.episode_steps)
+    if episode_steps is None:
+        episode_steps = spec.default_episode_steps
+    learning_rate = stage.get("learning_rate", args.learning_rate)
+    if learning_rate is None:
+        learning_rate = spec.learning_rate
+    horizon = stage.get("horizon", args.horizon) or spec.horizon
+    minibatch_size = stage.get("minibatch_size", args.minibatch_size) or spec.minibatch_size
+    hidden_size = stage.get("hidden_size", args.hidden_size) or spec.hidden_size
     agents_per_env = spec.server_players if spec.name == "among_them" else 1
     if minibatch_size > args.num_envs * agents_per_env * horizon:
-        raise ValueError("--minibatch-size must be <= total agents * horizon")
-
-    output_dir = args.output_dir if args.output_dir is not None else Path(f"tools/runlogs/{spec.name}_pufferlib_training")
-    output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / f"{spec.name}_policy.pt"
-    metrics_path = output_dir / "train_metrics.json"
+        raise ValueError("minibatch_size must be <= total agents * horizon")
 
     train_policy(
         spec=spec,
@@ -81,8 +103,57 @@ def main() -> None:
         hidden_size=hidden_size,
         device=args.device,
         observation_mode=args.observation_mode,
-        state_aux_coef=args.state_aux_coef,
+        state_aux_coef=stage.get("state_aux_coef", args.state_aux_coef),
+        enable_state_shaping=stage.get("shaping_rewards", args.shaping_rewards),
+        imposter_count=stage.get("imposter_count", args.imposter_count),
+        tasks_per_player=stage.get("tasks_per_player", args.tasks_per_player),
+        task_complete_ticks=stage.get("task_complete_ticks", args.task_complete_ticks),
+        kill_cooldown_ticks=stage.get("kill_cooldown_ticks", args.kill_cooldown_ticks),
+        init_checkpoint_path=init_checkpoint_path,
     )
+    return spec, episode_steps
+
+
+def main() -> None:
+    args = parse_args()
+    rank = int(os.environ.get("RANK", "0"))
+    spec_for_paths = with_server_players(args.env, args.players)
+
+    output_dir = args.output_dir if args.output_dir is not None else Path(f"tools/runlogs/{spec_for_paths.name}_pufferlib_training")
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = output_dir / f"{spec_for_paths.name}_policy.pt"
+
+    if args.curriculum_file is not None:
+        stages = json.loads(args.curriculum_file.read_text())
+        if not isinstance(stages, list) or not stages:
+            raise ValueError("--curriculum-file must contain a non-empty JSON list of stage dicts")
+        spec = spec_for_paths
+        episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
+        for stage_idx, stage in enumerate(stages):
+            stage_metrics = output_dir / f"train_metrics_stage_{stage_idx}.json"
+            init_ckpt = checkpoint_path if stage_idx > 0 else None
+            if rank == 0:
+                print(json.dumps({"stage": stage_idx, "config": stage}), flush=True)
+            spec, episode_steps = run_stage(
+                args=args,
+                stage=stage,
+                output_dir=output_dir,
+                checkpoint_path=checkpoint_path,
+                metrics_path=stage_metrics,
+                init_checkpoint_path=init_ckpt,
+            )
+        metrics_path = output_dir / f"train_metrics_stage_{len(stages) - 1}.json"
+    else:
+        metrics_path = output_dir / "train_metrics.json"
+        spec, episode_steps = run_stage(
+            args=args,
+            stage={},
+            output_dir=output_dir,
+            checkpoint_path=checkpoint_path,
+            metrics_path=metrics_path,
+            init_checkpoint_path=None,
+        )
 
     if rank != 0:
         return

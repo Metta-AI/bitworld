@@ -760,6 +760,10 @@ class AmongThemNativeLibrary:
             ctypes.c_int,
             ctypes.c_int,
             ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
         ]
         self.lib.bitworld_at_create.restype = ctypes.c_int
         self.lib.bitworld_at_reset.argtypes = [
@@ -855,6 +859,10 @@ class AmongThemNativeWorker:
         action_repeat: int,
         observation_mode: str,
         collect_state_target: bool = False,
+        imposter_count: int = -1,
+        tasks_per_player: int = -1,
+        task_complete_ticks: int = -1,
+        kill_cooldown_ticks: int = -1,
     ) -> None:
         if spec.name != "among_them":
             raise ValueError("AmongThemNativeWorker only supports among_them")
@@ -869,7 +877,15 @@ class AmongThemNativeWorker:
         self.agent_count = spec.server_players
         self.native = among_them_native_library()
         self.handle = self.native.check(
-            self.native.lib.bitworld_at_create(seed, self.agent_count, self.max_ticks)
+            self.native.lib.bitworld_at_create(
+                seed,
+                self.agent_count,
+                self.max_ticks,
+                imposter_count,
+                tasks_per_player,
+                task_complete_ticks,
+                kill_cooldown_ticks,
+            )
         )
         feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
         dtype = np.uint8
@@ -1294,6 +1310,11 @@ class BitWorldVecEnv:
         base_seed: int = 73,
         observation_mode: str = "pixels",
         collect_state_target: bool = False,
+        enable_state_shaping: bool = False,
+        imposter_count: int = -1,
+        tasks_per_player: int = -1,
+        task_complete_ticks: int = -1,
+        kill_cooldown_ticks: int = -1,
     ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
@@ -1311,11 +1332,16 @@ class BitWorldVecEnv:
             raise ValueError("state observations are only implemented for among_them")
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
+        if enable_state_shaping and (self.spec.name != "among_them" or observation_mode != "pixels"):
+            raise ValueError("enable_state_shaping requires among_them with pixel observations")
+        if enable_state_shaping:
+            collect_state_target = True
         if collect_state_target and (self.spec.name != "among_them" or observation_mode != "pixels"):
             raise ValueError("collect_state_target requires among_them with pixel observations")
         self.num_envs = num_envs
         self.observation_mode = observation_mode
         self.collect_state_target = collect_state_target
+        self.enable_state_shaping = enable_state_shaping
         self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
         self.total_agents = num_envs * self.agents_per_env
         self.num_agents = self.total_agents
@@ -1393,6 +1419,10 @@ class BitWorldVecEnv:
                         action_repeat=action_repeat,
                         observation_mode=observation_mode,
                         collect_state_target=self.collect_state_target,
+                        imposter_count=imposter_count,
+                        tasks_per_player=tasks_per_player,
+                        task_complete_ticks=task_complete_ticks,
+                        kill_cooldown_ticks=kill_cooldown_ticks,
                     )
                 else:
                     worker = BitWorldWorker(
@@ -1465,7 +1495,7 @@ class BitWorldVecEnv:
         self._rewards[rows] = rewards
         self._state_score[rows] = 0.0
         self._state_episode_return[rows] = 0.0
-        self._state_prev_potential[rows] = self._state_task_potential(rows)
+        self._state_prev_potential[rows] = self._state_task_potential(self._latest_frames, rows)
         self._state_prev_task_progress[rows] = self._latest_frames[rows, STATE_TASK_PROGRESS_INDEX]
         self._state_statuses[env_ids] = AMONG_THEM_STEP_ACTIVE
         self._frame_history[rows] = self._latest_frames[rows, np.newaxis, :]
@@ -1475,16 +1505,16 @@ class BitWorldVecEnv:
         self._reset_state_envs(np.arange(self.num_envs, dtype=np.int32))
         self._state_episode_steps = 0
 
-    def _state_task_features(self, rows: np.ndarray | None = None) -> np.ndarray:
-        frames = self._latest_frames if rows is None else self._latest_frames[rows]
-        return frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
-            frames.shape[0],
+    def _state_task_features(self, frames: np.ndarray, rows: np.ndarray | None = None) -> np.ndarray:
+        selected = frames if rows is None else frames[rows]
+        return selected[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
+            selected.shape[0],
             STATE_TASK_COUNT,
             STATE_TASK_FEATURES,
         )
 
-    def _state_task_potential(self, rows: np.ndarray | None = None) -> np.ndarray:
-        task_features = self._state_task_features(rows)
+    def _state_task_potential(self, frames: np.ndarray, rows: np.ndarray | None = None) -> np.ndarray:
+        task_features = self._state_task_features(frames, rows)
         flags = task_features[:, :, 3].astype(np.uint8)
         assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
@@ -1501,8 +1531,8 @@ class BitWorldVecEnv:
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
-    def _state_completed_task_counts(self, rows: np.ndarray | None = None) -> np.ndarray:
-        task_features = self._state_task_features(rows)
+    def _state_completed_task_counts(self, frames: np.ndarray, rows: np.ndarray | None = None) -> np.ndarray:
+        task_features = self._state_task_features(frames, rows)
         flags = task_features[:, :, 3].astype(np.uint8)
         assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
@@ -1562,6 +1592,9 @@ class BitWorldVecEnv:
                 and worker.state_targets is not None
             ):
                 self._state_target_buffer[agent_slice] = worker.state_targets
+        if self.enable_state_shaping and self._state_target_buffer is not None:
+            self._state_prev_potential[:] = self._state_task_potential(self._state_target_buffer)
+            self._state_prev_task_progress[:] = self._state_target_buffer[:, STATE_TASK_PROGRESS_INDEX]
         return self._obs
 
     def _apply_state_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
@@ -1586,7 +1619,7 @@ class BitWorldVecEnv:
             )
         )
         self._state_score += self._rewards
-        current_potential = self._state_task_potential()
+        current_potential = self._state_task_potential(self._latest_frames)
         task_progress = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
         self._rewards += self._state_reward_shaping * (current_potential - self._state_prev_potential)
         self._rewards += self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
@@ -1601,7 +1634,7 @@ class BitWorldVecEnv:
             done_env_ids = np.flatnonzero(done).astype(np.int32)
             done_rows = self._state_agent_rows(done_env_ids)
             terminal_rewards = self._rewards[done_rows].copy()
-            task_counts = self._state_completed_task_counts(done_rows)
+            task_counts = self._state_completed_task_counts(self._latest_frames, done_rows)
             for score, episode_return, tasks_completed in zip(
                 self._state_score[done_rows],
                 self._state_episode_return[done_rows],
@@ -1644,6 +1677,7 @@ class BitWorldVecEnv:
         else:
             step_results = list(self._executor.map(self._step_env, env_ids, repeat(action_indices)))
 
+        terminated_agents = np.zeros((self.total_agents,), dtype=bool)
         for env_id, frames, rewards, env_completed, truncated, state_targets in step_results:
             agent_slice = self._agent_slice(env_id)
             if env_completed:
@@ -1654,6 +1688,7 @@ class BitWorldVecEnv:
                     self._completed_returns.append(float(stats.episode_return))
                 self._completed_episodes += 1
                 self._terminals[agent_slice] = 1.0
+                terminated_agents[agent_slice] = True
                 if truncated:
                     self._truncations[agent_slice] = 1.0
 
@@ -1661,6 +1696,18 @@ class BitWorldVecEnv:
             self._push_frames(agent_slice, frames)
             if self._state_target_buffer is not None and state_targets is not None:
                 self._state_target_buffer[agent_slice] = state_targets
+
+        if self.enable_state_shaping and self._state_target_buffer is not None:
+            current_potential = self._state_task_potential(self._state_target_buffer)
+            current_progress = self._state_target_buffer[:, STATE_TASK_PROGRESS_INDEX].astype(np.float32)
+            potential_delta = current_potential - self._state_prev_potential
+            progress_delta = np.maximum(0.0, current_progress - self._state_prev_task_progress)
+            potential_delta[terminated_agents] = 0.0
+            progress_delta[terminated_agents] = 0.0
+            self._rewards += self._state_reward_shaping * potential_delta
+            self._rewards += self._state_progress_reward * progress_delta
+            self._state_prev_potential[:] = current_potential
+            self._state_prev_task_progress[:] = current_progress
         return completed
 
     def step_discrete(self, action_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[EpisodeStats]]:
@@ -1938,6 +1985,12 @@ def train_policy(
     device: str = "auto",
     observation_mode: str = "pixels",
     state_aux_coef: float = 0.0,
+    enable_state_shaping: bool = False,
+    imposter_count: int = -1,
+    tasks_per_player: int = -1,
+    task_complete_ticks: int = -1,
+    kill_cooldown_ticks: int = -1,
+    init_checkpoint_path: Path | None = None,
 ) -> dict:
     resolved = get_env_spec(spec)
     if observation_mode not in OBSERVATION_MODES:
@@ -1949,6 +2002,10 @@ def train_policy(
         raise ValueError("state_aux_coef > 0 requires --observation-mode pixels")
     if state_aux_active and resolved.name != "among_them":
         raise ValueError("state_aux_coef is only supported for among_them")
+    if enable_state_shaping and observation_mode != "pixels":
+        raise ValueError("--shaping-rewards requires --observation-mode pixels")
+    if enable_state_shaping and resolved.name != "among_them":
+        raise ValueError("--shaping-rewards is only supported for among_them")
     train_device = resolve_train_device(device)
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -1978,7 +2035,12 @@ def train_policy(
         action_repeat=action_repeat,
         base_seed=seed + rank * num_envs,
         observation_mode=observation_mode,
-        collect_state_target=state_aux_active,
+        collect_state_target=state_aux_active or enable_state_shaping,
+        enable_state_shaping=enable_state_shaping,
+        imposter_count=imposter_count,
+        tasks_per_player=tasks_per_player,
+        task_complete_ticks=task_complete_ticks,
+        kill_cooldown_ticks=kill_cooldown_ticks,
     )
     policy = BitWorldPolicy(
         frame_stack=frame_stack,
@@ -1988,6 +2050,14 @@ def train_policy(
         obs_shape=vecenv.single_observation_space.shape if observation_mode == "state" else None,
         state_aux=state_aux_active,
     ).to(train_device)
+    if init_checkpoint_path is not None:
+        if not init_checkpoint_path.exists():
+            raise FileNotFoundError(f"init checkpoint not found: {init_checkpoint_path}")
+        loaded = torch.load(init_checkpoint_path, map_location=train_device)
+        if isinstance(loaded, dict):
+            policy.load_state_dict(loaded, strict=False)
+        else:
+            raise TypeError(f"unsupported init checkpoint format: {init_checkpoint_path}")
     if distributed:
         policy = torch.nn.parallel.DistributedDataParallel(
             policy,

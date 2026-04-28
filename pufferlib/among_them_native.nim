@@ -18,6 +18,10 @@ type
     playerCount: int
     seed: int
     maxTicks: int
+    imposterCount: int
+    tasksPerPlayer: int
+    taskCompleteTicks: int
+    killCooldownTicks: int
 
 var
   envs: seq[NativeEnv]
@@ -117,10 +121,18 @@ proc initNativeEnv(env: var NativeEnv) =
     config.seed = env.seed
     config.maxTicks = env.maxTicks
     config.minPlayers = env.playerCount
+    if env.imposterCount >= 0:
+      config.imposterCount = env.imposterCount
     config.imposterCount = min(
       config.imposterCount,
       max(0, env.playerCount - 1)
     )
+    if env.tasksPerPlayer >= 0:
+      config.tasksPerPlayer = env.tasksPerPlayer
+    if env.taskCompleteTicks >= 0:
+      config.taskCompleteTicks = env.taskCompleteTicks
+    if env.killCooldownTicks >= 0:
+      config.killCooldownTicks = env.killCooldownTicks
     env.sim = initSimServer(config)
   finally:
     setCurrentDir(previousDir)
@@ -147,7 +159,10 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
 
-proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
+proc bitworld_at_create*(
+  seed, playerCount, maxTicks: cint,
+  imposterCount, tasksPerPlayer, taskCompleteTicks, killCooldownTicks: cint
+): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
       return setLastError("playerCount must be positive.")
@@ -159,7 +174,11 @@ proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, expor
     var env = NativeEnv(
       seed: int(seed),
       playerCount: int(playerCount),
-      maxTicks: int(maxTicks)
+      maxTicks: int(maxTicks),
+      imposterCount: int(imposterCount),
+      tasksPerPlayer: int(tasksPerPlayer),
+      taskCompleteTicks: int(taskCompleteTicks),
+      killCooldownTicks: int(killCooldownTicks),
     )
     env.initNativeEnv()
     envs.add(env)
