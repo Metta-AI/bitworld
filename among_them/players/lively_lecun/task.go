@@ -48,21 +48,22 @@ type TaskHolder struct {
 }
 
 // Adjust returns (mask, handled). When handled is true the caller should
-// send the returned mask (always 0 — we're holding still). When false, the
-// caller falls through to its other behavior (Bumper+Steer in main.go).
+// send the returned mask (ButtonA only, no directions -- the sim requires
+// attack pressed and inputX/inputY both zero to advance taskProgress, per
+// sim.nim:1135-1152). When false, the caller falls through to Bumper+Steer.
 func (h *TaskHolder) Adjust(pixels []uint8) (uint8, bool) {
 	if h.holding > 0 {
 		h.holding--
 		if h.holding == 0 {
 			h.Completes++
 		}
-		return 0, true
+		return ButtonA, true
 	}
 	if OnTask(pixels) {
-		// Trigger call returns 0 itself, so the remaining decrement-only
+		// Trigger call returns ButtonA itself, so the remaining decrement-only
 		// handled returns is one fewer than the total hold.
 		h.holding = taskHoldTicks - 1
-		return 0, true
+		return ButtonA, true
 	}
 	return 0, false
 }

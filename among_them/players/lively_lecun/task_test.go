@@ -64,8 +64,8 @@ func TestTaskHolder_HoldsForTaskCompleteTicks(t *testing.T) {
 		if !handled {
 			t.Fatalf("step %d: expected handled=true while holding, got mask=%#x handled=false", i, mask)
 		}
-		if mask != 0 {
-			t.Errorf("step %d: expected mask=0 while holding, got %#x", i, mask)
+		if mask != ButtonA {
+			t.Errorf("step %d: expected mask=ButtonA while holding, got %#x", i, mask)
 		}
 	}
 	if h.Completes != 1 {

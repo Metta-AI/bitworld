@@ -58,6 +58,7 @@ func main() {
 	walks := &WalkMask{Bits: walksData}
 	nav := NewNavigator(walks)
 	var memory TaskMemory
+	var stable StabilityFilter
 
 	var (
 		pixels       = make([]uint8, ScreenWidth*ScreenHeight)
@@ -69,9 +70,26 @@ func main() {
 		holder       TaskHolder
 		frames       uint64
 		lastPosLog   uint64
+		lastBranch   string // most recent PhaseActive branch; logged on change
 		arrivedAt    uint64 // frame at which navigator first reported "arrived"; 0 means not currently arrived
+		lastPlayer   Point  // player world pos last seen while nav-stuck tracking; Point{} until initialized
+		lastPlayerF  uint64 // frame when lastPlayer was last updated
+		stuckPerturb uint8  // non-zero while we're force-nudging through a pinned corner
+		stuckLeft    int    // frames remaining of the current stuck perturb
 	)
+	logBranch := func(name string) {
+		if name != lastBranch {
+			log.Printf("branch: %s (frame %d)", name, frames)
+			lastBranch = name
+		}
+	}
 	const navArrivedTimeoutFrames uint64 = 120 // ~5 s @ 24 fps -- give up on bogus task targets
+	// How long the player's world position must be unchanged (while nav
+	// wants them to move) before we force a perpendicular nudge. Camera-
+	// based: far cleaner signal than pixelDiff because idle sprite/icon
+	// animation keeps pixelDiff above its threshold even when pinned.
+	const stuckFrames = 12
+	const stuckBurst = 8 // how long to force the perpendicular nudge
 
 	sendMask := func(m uint8) error {
 		if m == sentMask {
@@ -125,13 +143,16 @@ func main() {
 			var player Point
 			if locked {
 				player = Point{cam.X + ScreenWidth/2, cam.Y + ScreenHeight/2}
-				// Memorize on-screen task icons (drops candidates whose
-				// world position isn't walkable -- e.g., orange-tinted
-				// player sprites that look like task icons).
+				var detected []Point
 				for _, ic := range DetectTaskIcons(pixels) {
 					w := IconScreenToTaskWorld(ic, cam)
-					if walks.Walkable(w.X, w.Y) && memory.Add(w) {
-						log.Printf("task seen: %v (total %d)", w, memory.Len())
+					if walks.Walkable(w.X, w.Y) {
+						detected = append(detected, w)
+					}
+				}
+				for _, t := range stable.Update(detected) {
+					if memory.Add(t) {
+						log.Printf("task confirmed: %v (total %d)", t, memory.Len())
 					}
 				}
 				if frames-lastPosLog >= 24 {
@@ -151,7 +172,10 @@ func main() {
 
 			wasHolding := holder.IsHolding()
 			beforeC := holder.Completes
+			var desired uint8
+			var stuckEligible bool // true when we expect the player to be moving
 			if m, handled := holder.Adjust(pixels); handled {
+				logBranch("holder")
 				mask = m
 				arrivedAt = 0
 				if !wasHolding {
@@ -167,6 +191,7 @@ func main() {
 					nav.Clear()
 				}
 			} else if locked && nav.HasGoal() {
+				logBranch("nav")
 				navMask, arrived := nav.Next(player)
 				if arrived {
 					if arrivedAt == 0 {
@@ -185,16 +210,50 @@ func main() {
 					mask = 0
 				} else {
 					arrivedAt = 0
-					beforeP := bumper.Perturbs
-					mask = bumper.Adjust(pixels, navMask)
-					if bumper.Perturbs != beforeP {
-						log.Printf("bumper: perturb #%d (frame %d, mask %#x)", bumper.Perturbs, frames, mask)
-					}
+					desired = navMask
+					stuckEligible = true
 				}
 			} else {
+				if !locked {
+					logBranch("steer-nolock")
+				} else {
+					logBranch("steer-nogoal")
+				}
 				arrivedAt = 0
+				desired = Steer(pixels)
+				stuckEligible = locked && desired != 0
+			}
+
+			// Unified stuck detection: any branch that asks the player to
+			// move and has a locked tracker is eligible. Camera position
+			// is a cleaner stuck signal than pixel-diff because palette
+			// animation (idle sprites, icon blinks) keeps pixel-diff
+			// above its threshold even when the player is pinned.
+			if stuckEligible {
+				// Tracker jitters by a pixel or two per frame even when the
+				// player is pinned, so require > stuckJitter world-pixel
+				// movement to count as "moving."
+				const stuckJitter = 2
+				moved := lastPlayerF == 0 ||
+					absInt(player.X-lastPlayer.X) > stuckJitter ||
+					absInt(player.Y-lastPlayer.Y) > stuckJitter
+				if moved {
+					lastPlayer = player
+					lastPlayerF = frames
+				} else if stuckLeft == 0 && frames-lastPlayerF >= stuckFrames {
+					stuckPerturb = perpendicular(desired, int(frames))
+					stuckLeft = stuckBurst
+					lastPlayerF = frames
+					log.Printf("stuck: %v for %d frames; nudge=%#x (frame %d)",
+						player, stuckFrames, stuckPerturb, frames)
+				}
+				applied := desired
+				if stuckLeft > 0 {
+					applied = stuckPerturb
+					stuckLeft--
+				}
 				beforeP := bumper.Perturbs
-				mask = bumper.Adjust(pixels, Steer(pixels))
+				mask = bumper.Adjust(pixels, applied)
 				if bumper.Perturbs != beforeP {
 					log.Printf("bumper: perturb #%d (frame %d, mask %#x)", bumper.Perturbs, frames, mask)
 				}
@@ -205,6 +264,9 @@ func main() {
 			mask = 0
 		}
 
+		if mask != sentMask && frames > 100 {
+			log.Printf("mask: %#x -> %#x (frame %d)", sentMask, mask, frames)
+		}
 		if err := sendMask(mask); err != nil {
 			log.Printf("send mask=%#x: %v", mask, err)
 			return
