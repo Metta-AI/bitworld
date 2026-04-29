@@ -49,6 +49,9 @@ type Agent struct {
 	radarGoal      bool    // true when nav's current goal came from radar (guess)
 	radarBlack     []Point // radar-chosen targets A* couldn't reach from here
 	radarBlackFrom Point   // player pos when radarBlack was last populated
+
+	pendingChat string // drained by TakePendingChat(); emitted on websocket only
+	bodyGoal    bool   // true when nav's current goal is a body (highest priority)
 }
 
 // NewAgent returns an Agent using the embedded skeld map + walk mask. It
@@ -76,6 +79,11 @@ const (
 	agentStuckFrames         = 12  // camera-based stuck threshold
 	agentStuckBurst          = 8   // how long to force the perpendicular nudge
 	agentIconSnapDist        = 24  // snap noisy icon coords within this many world-pixels to the nearest TaskStation
+
+	// Report range = sim.nim:757 reportRange=20 default; check distSq ≤ 400
+	// against the body collision center at (body.x+CollisionW/2, body.y+CollisionH/2)
+	// (sim.nim:1304-1313). CollisionW=CollisionH=1, so the center is ~body.x/body.y.
+	agentReportRangeSq = 20 * 20
 )
 
 // Step consumes one fully-unpacked 128×128 palette-indexed frame and
@@ -180,6 +188,36 @@ func (a *Agent) radarStationGoal(arrows []RadarArrow, cam Camera, player Point) 
 	return TaskStations[best].Center, true
 }
 
+// TakePendingChat drains any pending chat message. Returns ("", false) when
+// nothing is queued. Used by the websocket loop; stdio callers ignore it
+// (Python protocol is one-byte-per-frame mask-only).
+func (a *Agent) TakePendingChat() (string, bool) {
+	if a.pendingChat == "" {
+		return "", false
+	}
+	msg := a.pendingChat
+	a.pendingChat = ""
+	return msg, true
+}
+
+// nearestBody picks the body match whose implied world position is closest
+// to the player. Returns (world, color, true) on success.
+func (a *Agent) nearestBody(pixels []uint8, cam Camera, player Point) (Point, uint8, bool) {
+	bodies := FindBodies(pixels)
+	if len(bodies) == 0 {
+		return Point{}, 0, false
+	}
+	bestI := 0
+	bestD := manhattan(BodyWorld(bodies[0], cam), player)
+	for i := 1; i < len(bodies); i++ {
+		d := manhattan(BodyWorld(bodies[i], cam), player)
+		if d < bestD {
+			bestI, bestD = i, d
+		}
+	}
+	return BodyWorld(bodies[bestI], cam), bodies[bestI].Color, true
+}
+
 func (a *Agent) logBranch(name string) {
 	if name != a.lastBranch {
 		log.Printf("branch: %s (frame %d)", name, a.frames)
@@ -242,6 +280,46 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 					}
 				}
 			}
+		}
+	}
+
+	// Body reporting: alive crewmates that spot a body should nav to it
+	// and press A when within report range (sim.nim:1298-1315 tryReport,
+	// reportRange=20, distSq ≤ 400). Imposters are deferred to M4; they
+	// must flee bodies instead of reporting. Ghosts cannot report
+	// (sim.nim:1302 requires p.alive).
+	if locked && !a.status.IsGhost() && !a.status.IsImposter() {
+		if bodyW, color, ok := a.nearestBody(pixels, cam, player); ok {
+			dx := bodyW.X - player.X
+			dy := bodyW.Y - player.Y
+			distSq := dx*dx + dy*dy
+			if distSq <= agentReportRangeSq {
+				if a.pendingChat == "" {
+					a.pendingChat = "body"
+				}
+				if !a.bodyGoal {
+					log.Printf("body: reporting color=%d at %v (player %v, dist²=%d)",
+						color, bodyW, player, distSq)
+				}
+				a.nav.Clear()
+				a.bodyGoal = false
+				return ButtonA
+			}
+			// Out of range: drop any existing goal and head to the body.
+			if !a.bodyGoal || a.nav.Goal() != bodyW {
+				if a.nav.SetGoal(bodyW) {
+					a.bodyGoal = true
+					a.radarGoal = false
+					a.arrivedAt = 0
+					log.Printf("body: nav to color=%d at %v (player %v, dist²=%d)",
+						color, bodyW, player, distSq)
+				}
+			}
+		} else if a.bodyGoal {
+			// Body left view; clear the goal so normal task/nav resumes.
+			a.nav.Clear()
+			a.bodyGoal = false
+			a.arrivedAt = 0
 		}
 	}
 

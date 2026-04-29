@@ -95,6 +95,16 @@ func runWebsocket(addr string, port int, name string) {
 			log.Printf("send mask=%#x: %v", mask, err)
 			return
 		}
+		// Drain any pending chat (body reports, etc). Websocket-only:
+		// the stdio protocol sends exactly one mask byte per input
+		// frame, so chat goes out-of-band here.
+		if msg, ok := agent.TakePendingChat(); ok {
+			if err := conn.Write(ctx, websocket.MessageBinary, BuildChatPacket(msg)); err != nil {
+				log.Printf("send chat %q: %v", msg, err)
+				return
+			}
+			log.Printf("chat: %q", msg)
+		}
 	}
 }
 
