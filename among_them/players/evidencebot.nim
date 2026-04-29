@@ -2805,6 +2805,33 @@ proc evidenceBasedSuspect(
     return (false, "", -1)
   (true, playerColorName(suspect), suspect)
 
+proc randomInnocentColor(bot: var Bot): int =
+  ## Picks a random non-self, non-teammate color we've seen alive this game.
+  ##
+  ## Used by the imposter to deflect blame. Prefers players we've actually
+  ## seen (lastSeenTicks > 0) so we don't accuse a color that isn't even in
+  ## the game; falls back to all non-self/non-teammate colors otherwise.
+  var
+    seenCount = 0
+    anyCount = 0
+    seenCandidates: array[PlayerColorCount, int]
+    anyCandidates: array[PlayerColorCount, int]
+  for i in 0 ..< PlayerColorCount:
+    if i == bot.selfColorIndex:
+      continue
+    if bot.knownImposterColor(i):
+      continue
+    anyCandidates[anyCount] = i
+    inc anyCount
+    if bot.lastSeenTicks[i] > 0:
+      seenCandidates[seenCount] = i
+      inc seenCount
+  if seenCount > 0:
+    return seenCandidates[bot.rng.rand(seenCount - 1)]
+  if anyCount > 0:
+    return anyCandidates[bot.rng.rand(anyCount - 1)]
+  -1
+
 proc suspectSummary(bot: Bot): string =
   ## Returns a short debug summary for the current suspect.
   let suspect = bot.suspectedColor()
@@ -2812,13 +2839,14 @@ proc suspectSummary(bot: Bot): string =
     return "none"
   suspect.name & " seen=" & $suspect.tick
 
-proc imposterBodyMessage(bot: Bot, base: string): string =
-  ## Imposter chat. For now, mirrors the original suspectedColor heuristic;
-  ## a later change replaces this with a random-innocent deflection.
-  let suspect = bot.suspectedColor()
-  if not suspect.found:
-    return base
-  base & " sus " & suspect.name
+proc imposterBodyMessage(bot: var Bot, base: string): string =
+  ## Imposter chat: "body in <room> sus <random innocent>". Random target
+  ## is the deflection — the most-recently-seen suspect is often the actual
+  ## victim (a tell), so we deliberately pick someone else.
+  let ci = bot.randomInnocentColor()
+  if ci >= 0 and ci < PlayerColorNames.len:
+    return base & " sus " & PlayerColorNames[ci]
+  base
 
 proc crewmateBodyMessage(bot: Bot, base: string): string =
   ## Crewmate chat: only accuses with firsthand evidence. Stays neutral
@@ -2828,11 +2856,11 @@ proc crewmateBodyMessage(bot: Bot, base: string): string =
     return base
   base & " sus " & suspect.name
 
-proc bodyRoomMessage(bot: Bot, x, y: int): string =
+proc bodyRoomMessage(bot: var Bot, x, y: int): string =
   ## Builds a short chat line that names a body's room.
   ##
   ## Branches by role:
-  ##   IMPOSTER — see imposterBodyMessage
+  ##   IMPOSTER — random non-imposter color (always accuses someone)
   ##   CREWMATE — only accuses with firsthand evidence (witnessed kill or
   ##              saw a player next to a body); otherwise stays neutral
   let room = bot.roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
@@ -3350,6 +3378,12 @@ proc decideImposterMask(bot: var Bot): uint8 =
   bot.taskHoldIndex = -1
   let body = bot.nearestBody()
   if body.found:
+    # Queue a sus chat ASAP. queueBodySeen dedupes via sameBody, so this only
+    # builds the message once per distinct body — but having pendingChat set
+    # before voting opens means we're first to chat when the meeting starts.
+    # Other nottoodumb-style bots read chat with chatSusColorIndex and tier-1
+    # bandwagon onto whoever's named first, so being first is the entire game.
+    bot.queueBodySeen(body.x, body.y)
     bot.imposterGoalIndex = bot.farthestFakeTargetIndexFrom(body.x, body.y)
     let fleeGoal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
     if fleeGoal.found:
