@@ -2257,6 +2257,7 @@ async def run_bot(host='localhost', port=8080, name='pybot', brain=None,
       last_intent = ''
       last_role = 0
       last_localized = False
+      brain_initialized = False
       async for message in ws:
         if isinstance(message, str):
           continue
@@ -2278,6 +2279,18 @@ async def run_bot(host='localhost', port=8080, name='pybot', brain=None,
           role_name = ['unknown', 'crewmate', 'imposter'][bot.role]
           logger.info('Role assigned: %s (ghost=%s)', role_name, bot.is_ghost)
           last_role = bot.role
+
+        if brain is not None and not brain_initialized and bot.role != 0 and bot.self_color_index >= 0:
+          from .learnings import generate_game_id, synthesize_learnings
+          role_name = ['unknown', 'crewmate', 'imposter'][bot.role]
+          brain.learnings_text = synthesize_learnings()
+          brain.init_game(
+            game_id=generate_game_id(),
+            role=role_name,
+            self_color=bot.self_color_index,
+          )
+          brain_initialized = True
+          logger.info('Brain initialized: role=%s color=%d', role_name, bot.self_color_index)
         if bot.localized and not last_localized:
           logger.info('Localized at (%d, %d) — room: %s',
                        bot.camera_x, bot.camera_y, bot.room_name())
@@ -2324,7 +2337,9 @@ async def run_bot(host='localhost', port=8080, name='pybot', brain=None,
           debug_server.emit_snapshot(bot)
           if bot.brain is not None:
             debug_server.emit_status(bot, bot.brain)
-          if bot.brain is not None and log_counter % 120 == 0:
+          else:
+            debug_server.emit_status(bot)
+          if bot.brain is not None and bot.frame_tick % 30 == 0:
             debug_server.emit_player_model(bot.brain.model, bot.frame_tick)
             debug_server.emit_memory(bot.brain.memory, bot.frame_tick)
 

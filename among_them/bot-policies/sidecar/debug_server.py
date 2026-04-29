@@ -97,20 +97,17 @@ class DebugServer:
       'ts': time.time(),
       **data,
     }, default=str)
-    dead = set()
-    for ws in self.clients:
+    for ws in list(self.clients):
       try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(self._safe_send(ws, msg, dead))
+        asyncio.ensure_future(self._safe_send(ws, msg))
       except RuntimeError:
         pass
-    self.clients -= dead
 
-  async def _safe_send(self, ws, msg, dead):
+  async def _safe_send(self, ws, msg):
     try:
       await ws.send(msg)
     except Exception:
-      dead.add(ws)
+      self.clients.discard(ws)
 
   def emit_snapshot(self, bot):
     """Emit a per-frame snapshot event with full bot state."""

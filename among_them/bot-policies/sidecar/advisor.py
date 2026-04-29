@@ -144,6 +144,10 @@ class Advisor:
       logger.warning('LLM call budget exhausted (%d/%d)', self.call_count, self.call_budget)
       return None
 
+    if not self.system_prompt:
+      logger.warning('Skipping LLM call — game not initialized (empty system prompt)')
+      return None
+
     user_msg = f'[TRIGGER: {trigger_type}]\n\n{context}'
     self.conversation.append({'role': 'user', 'content': user_msg})
 
