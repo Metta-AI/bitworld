@@ -223,6 +223,12 @@ proc sendBytes(app: GlobalApp, bytes: openArray[uint8]) =
   elif app.network.connected:
     app.network.ws.send(packet, BinaryMessage)
 
+proc sendPlayerButtons(app: GlobalApp) =
+  ## Sends the current player button mask for sprite player mode.
+  if not app.playerMode:
+    return
+  app.sendBytes([0x84'u8, app.heldButtons and 0x7f'u8])
+
 proc layerIndex(app: GlobalApp, id: int): GlobalLayer =
   ## Returns an existing layer or a default zoomable map layer.
   if id in app.layers:
@@ -838,12 +844,6 @@ proc sendInputText(app: GlobalApp, text: string) =
   for i, value in ascii:
     bytes[i + 3] = value
   app.sendBytes(bytes)
-
-proc sendPlayerButtons(app: GlobalApp) =
-  ## Sends the current player button mask for sprite player mode.
-  if not app.playerMode:
-    return
-  app.sendBytes([0x84'u8, app.heldButtons and 0x7f'u8])
 
 proc updatePlayerButtons(app: GlobalApp) =
   ## Sends player buttons when the held keyboard mask changes.
