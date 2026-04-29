@@ -214,6 +214,7 @@ type
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
+    showPlayerLabels*: bool
     buttonCalls*: int
     mapPath*: string
 
@@ -765,6 +766,7 @@ proc defaultGameConfig*(): GameConfig =
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
     showTaskBubbles: true,
+    showPlayerLabels: true,
     buttonCalls: ButtonCalls,
     mapPath: DefaultMapPath
   )
@@ -858,6 +860,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("numberOfButtonCalls", config.buttonCalls)
   node.readConfigBool("showTaskArrows", config.showTaskArrows)
   node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
+  node.readConfigBool("showPlayerLabels", config.showPlayerLabels)
   node.readConfigString("map", config.mapPath)
   node.readConfigString("mapPath", config.mapPath)
   config.validate()
@@ -890,7 +893,8 @@ proc configJson*(config: GameConfig): string =
     "buttonCalls": config.buttonCalls,
     "mapPath": config.mapPath,
     "showTaskArrows": config.showTaskArrows,
-    "showTaskBubbles": config.showTaskBubbles
+    "showTaskBubbles": config.showTaskBubbles,
+    "showPlayerLabels": config.showPlayerLabels
   }
   $node
 
