@@ -4,9 +4,11 @@ const
   PlayerClientRoute* = "/client/player.html"
   GlobalClientRoute* = "/client/global.html"
   RewardClientRoute* = "/client/rewards.html"
+  SnappyClientRoute* = "/client/snappyjs.min.js"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   RewardClientHtml* = "reward_client.html"
+  SnappyClientJs* = "snappyjs.min.js"
 
 proc repoDir*(): string =
   ## Returns the Bit World repository directory.
@@ -27,6 +29,22 @@ proc clientHtmlPath*(route: string): string =
     clientsDir() / RewardClientHtml
   else:
     ""
+
+proc clientStaticPath*(route: string): string =
+  ## Returns the local static client file for a served client route.
+  case route
+  of SnappyClientRoute:
+    clientsDir() / SnappyClientJs
+  else:
+    clientHtmlPath(route)
+
+proc clientStaticContentType*(route: string): string =
+  ## Returns the content type for a served static client file.
+  case route
+  of SnappyClientRoute:
+    "application/javascript; charset=utf-8"
+  else:
+    "text/html; charset=utf-8"
 
 proc readClientHtml*(route: string): string {.raises: [IOError].} =
   ## Reads the HTML for a served client route.

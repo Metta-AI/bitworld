@@ -1,6 +1,6 @@
 import
-  std/[algorithm, math, monotimes, os, tables, times],
-  chroma, pixie, protocol, silky, windy
+  std/[algorithm, math, monotimes, os, tables, times, uri],
+  chroma, pixie, protocol, silky, supersnappy, windy
 
 type
   GlobalLayer = object
@@ -11,6 +11,7 @@ type
 
   GlobalSprite = object
     width, height: int
+    label: string
     pixels: seq[uint8]
 
   GlobalObject = object
@@ -25,6 +26,7 @@ type
     atlasPath*: string
     palettePath*: string
     packetSink*: proc(packet: string)
+    playerMode*: bool
 
   NetworkState = object
     ws: WebSocketHandle
@@ -57,11 +59,14 @@ type
     activeMouseLayer: int
     draggingMap: bool
     dragX, dragY: float32
+    playerMode: bool
+    heldButtons: uint8
+    typing: bool
+    textBuffer: string
 
 const
   AtlasPath = "dist/atlas.png"
   PalettePath = "data/pallete.png"
-  WebSocketPath = "/global"
   TargetFps = 24.0
   WindowWidth = 900
   WindowHeight = 640
@@ -179,6 +184,15 @@ proc readU16(data: string, offset: int): int =
   ## Reads a little endian unsigned 16 bit integer.
   ord(data[offset]) or (ord(data[offset + 1]) shl 8)
 
+proc readU32(data: string, offset: int): int =
+  ## Reads a little endian unsigned 32 bit integer.
+  int(
+    uint32(data[offset].uint8) or
+    (uint32(data[offset + 1].uint8) shl 8) or
+    (uint32(data[offset + 2].uint8) shl 16) or
+    (uint32(data[offset + 3].uint8) shl 24)
+  )
+
 proc readI16(data: string, offset: int): int =
   ## Reads a little endian signed 16 bit integer.
   let value = data.readU16(offset)
@@ -193,6 +207,14 @@ proc writeI16(bytes: var seq[uint8], offset, value: int) =
   bytes[offset] = uint8(clamped and 0xff)
   bytes[offset + 1] = uint8(clamped shr 8)
 
+proc addressPath(address: string): string =
+  ## Returns the path component from a websocket address.
+  parseUri(address).path
+
+proc addressUsesPlayerMode(address: string): bool =
+  ## Returns true when the address targets the sprite player endpoint.
+  address.addressPath() == "/player2"
+
 proc sendBytes(app: GlobalApp, bytes: openArray[uint8]) =
   ## Sends one binary packet when connected.
   let packet = blobFromBytes(bytes)
@@ -200,6 +222,12 @@ proc sendBytes(app: GlobalApp, bytes: openArray[uint8]) =
     app.packetSink(packet)
   elif app.network.connected:
     app.network.ws.send(packet, BinaryMessage)
+
+proc sendPlayerButtons(app: GlobalApp) =
+  ## Sends the current player button mask for sprite player mode.
+  if not app.playerMode:
+    return
+  app.sendBytes([0x84'u8, app.heldButtons and 0x7f'u8])
 
 proc layerIndex(app: GlobalApp, id: int): GlobalLayer =
   ## Returns an existing layer or a default zoomable map layer.
@@ -320,13 +348,6 @@ proc orderedObjects(app: GlobalApp, layerId: int): seq[GlobalObject] =
         result = cmp(a.id, b.id)
   )
 
-proc paletteColor(index: uint8): ColorRGBX =
-  ## Converts a protocol color index to a display color.
-  if index == 0:
-    return rgbx(0, 0, 0, 0)
-  let color = Palette[(index.int - 1) and 15]
-  rgbx(color.r, color.g, color.b, 255)
-
 proc allocateLayerImage(app: GlobalApp, layer: var GlobalLayer) =
   ## Allocates an image buffer and texture for one layer.
   if layer.width <= 0 or layer.height <= 0:
@@ -380,11 +401,16 @@ proc buildLayerImage(app: GlobalApp, layer: var GlobalLayer) =
         let layerX = item.x + x
         if layerX < 0 or layerX >= layer.width:
           continue
-        let color = sprite.pixels[y * sprite.width + x]
-        if color == 0:
+        let pixelOffset = (y * sprite.width + x) * 4
+        if sprite.pixels[pixelOffset + 3] == 0:
           continue
         layer.image.data[layerY * layer.width + layerX] =
-          paletteColor(color)
+          rgbx(
+            sprite.pixels[pixelOffset],
+            sprite.pixels[pixelOffset + 1],
+            sprite.pixels[pixelOffset + 2],
+            sprite.pixels[pixelOffset + 3]
+          )
   layer.dirty = true
 
 proc uploadLayerImage(app: GlobalApp, layer: GlobalLayer) =
@@ -474,6 +500,35 @@ proc drawLayer(
     app.silky.drawRect(vec2(rect.x, rect.y), vec2(1, rect.h), line)
     app.silky.drawRect(vec2(rect.x + rect.w - 1, rect.y), vec2(1, rect.h), line)
 
+proc drawTextEntry(app: GlobalApp, logicalW, logicalH: float32) =
+  ## Draws the player text entry overlay when typing.
+  if not app.typing:
+    return
+  let
+    margin = 16.0'f
+    padding = 8.0'f
+    height = 34.0'f
+    width = min(720.0'f, max(180.0'f, logicalW - margin * 2.0'f))
+    x = floor((logicalW - width) * 0.5'f)
+    y = max(0.0'f, logicalH - height - 24.0'f)
+    fill = rgbx(0, 0, 0, 220)
+    line = rgbx(255, 255, 255, 130)
+  app.silky.drawRect(vec2(x, y), vec2(width, height), fill)
+  app.silky.drawRect(vec2(x, y), vec2(width, 1), line)
+  app.silky.drawRect(vec2(x, y + height - 1), vec2(width, 1), line)
+  app.silky.drawRect(vec2(x, y), vec2(1, height), line)
+  app.silky.drawRect(vec2(x + width - 1, y), vec2(1, height), line)
+  discard app.silky.drawText(
+    "Default",
+    app.textBuffer,
+    vec2(x + padding, y + 7.0'f),
+    rgbx(255, 255, 255, 255),
+    width - padding * 2.0'f,
+    height - padding * 2.0'f,
+    clip = true,
+    wordWrap = false
+  )
+
 proc statusText(app: GlobalApp): string =
   ## Returns the connection status text.
   if app.statusMessage.len > 0:
@@ -497,6 +552,7 @@ proc draw*(app: GlobalApp) =
   app.silky.clearScreen(rgbx(0, 0, 0, 255))
   for id in app.orderedLayerIds():
     app.drawLayer(app.layers[id], logicalW, logicalH)
+  app.drawTextEntry(logicalW, logicalH)
   let status = app.statusText()
   if status.len > 0:
     discard app.silky.drawText(
@@ -528,22 +584,40 @@ proc parseMessage*(app: GlobalApp, data: string) =
     inc offset
     case message
     of 0x01:
-      require(6)
+      require(10)
       let
         id = data.readU16(offset)
         width = data.readU16(offset + 2)
         height = data.readU16(offset + 4)
-        size = width * height
-      offset += 6
+        compressedSize = data.readU32(offset + 6)
+        size = width * height * 4
+      offset += 10
       if width <= 0 or height <= 0 or size < 0:
         app.network.ws.close()
         return
-      require(size)
+      require(compressedSize)
+      var compressed = newSeq[uint8](compressedSize)
+      for i in 0 ..< compressedSize:
+        compressed[i] = data[offset + i].uint8
+      offset += compressedSize
       var sprite = GlobalSprite(width: width, height: height)
-      sprite.pixels = newSeq[uint8](size)
-      for i in 0 ..< size:
-        sprite.pixels[i] = data[offset + i].uint8
-      offset += size
+      try:
+        sprite.pixels = supersnappy.uncompress(compressed)
+      except SnappyError:
+        app.network.ws.close()
+        return
+      if sprite.pixels.len != size:
+        app.network.ws.close()
+        return
+      require(2)
+      let labelLength = data.readU16(offset)
+      offset += 2
+      require(labelLength)
+      var label = newString(labelLength)
+      for i in 0 ..< labelLength:
+        label[i] = data[offset + i]
+      offset += labelLength
+      sprite.label = label
       app.sprites[id] = sprite
     of 0x02:
       require(11)
@@ -615,6 +689,7 @@ proc connectNetwork(app: GlobalApp) =
     app.network.connected = true
     app.network.connecting = false
     app.network.errorMessage = ""
+    app.sendPlayerButtons()
 
   ws.onMessage = proc(msg: string, kind: WebSocketMessageKind) =
     if app.network.ws != ws:
@@ -754,19 +829,64 @@ proc sendMouseButton(app: GlobalApp, down: bool, preferredLayer = -1) =
 
 proc sendInputText(app: GlobalApp, text: string) =
   ## Sends an ASCII input text packet.
-  if text.len == 0:
+  var ascii: seq[uint8] = @[]
+  for ch in text:
+    if ch >= ' ' and ch <= '~':
+      ascii.add(ch.uint8)
+      if ascii.len == uint16.high.int:
+        break
+  if ascii.len == 0:
     return
-  var bytes = newSeq[uint8](3 + text.len)
+  var bytes = newSeq[uint8](3 + ascii.len)
   bytes[0] = 0x81
-  bytes[1] = uint8(text.len and 0xff)
-  bytes[2] = uint8((text.len shr 8) and 0xff)
-  for i, ch in text:
-    bytes[i + 3] = ch.uint8
+  bytes[1] = uint8(ascii.len and 0xff)
+  bytes[2] = uint8((ascii.len shr 8) and 0xff)
+  for i, value in ascii:
+    bytes[i + 3] = value
   app.sendBytes(bytes)
 
-proc sendControl(app: GlobalApp, code: uint8) =
-  ## Sends one control input byte.
-  app.sendInputText($char(code))
+proc updatePlayerButtons(app: GlobalApp) =
+  ## Sends player buttons when the held keyboard mask changes.
+  let down = app.window.buttonDown
+  var next = 0'u8
+  if down[KeyUp]:
+    next = next or ButtonUp
+  if down[KeyDown]:
+    next = next or ButtonDown
+  if down[KeyLeft]:
+    next = next or ButtonLeft
+  if down[KeyRight]:
+    next = next or ButtonRight
+  if down[KeySpace]:
+    next = next or ButtonSelect
+  if down[KeyZ]:
+    next = next or ButtonA
+  if down[KeyX]:
+    next = next or ButtonB
+  if next == app.heldButtons:
+    return
+  app.heldButtons = next
+  app.sendPlayerButtons()
+
+proc startTyping(app: GlobalApp) =
+  ## Starts local player text entry and releases held buttons.
+  app.typing = true
+  app.textBuffer.setLen(0)
+  if app.heldButtons != 0:
+    app.heldButtons = 0
+    app.sendPlayerButtons()
+
+proc stopTyping(app: GlobalApp, send: bool) =
+  ## Stops local player text entry and optionally sends it.
+  if send:
+    app.sendInputText(app.textBuffer)
+  app.typing = false
+  app.textBuffer.setLen(0)
+
+proc deleteTextChar(app: GlobalApp) =
+  ## Deletes the last local text entry byte.
+  if app.textBuffer.len > 0:
+    app.textBuffer.setLen(app.textBuffer.len - 1)
 
 proc normalizeRune(rune: Rune): char =
   ## Converts a printable rune into one ASCII character.
@@ -791,16 +911,22 @@ proc handleInput*(app: GlobalApp) =
       int32(round(mouse.y.float32 / app.silky.uiScale))
     )
 
-  if pressed[KeyEscape]:
-    app.sendControl(0x1b)
-  if pressed[KeyBackspace]:
-    app.sendControl(0x08)
-  if pressed[KeyTab]:
-    app.sendControl(0x09)
-  if pressed[KeyEnter]:
-    app.sendControl(0x0a)
   if pressed[KeyR]:
     app.reconnectNetwork()
+
+  if app.playerMode:
+    if app.typing:
+      if pressed[KeyEnter]:
+        app.stopTyping(true)
+      elif pressed[KeyEscape]:
+        app.stopTyping(false)
+      elif pressed[KeyBackspace]:
+        app.deleteTextChar()
+    else:
+      if pressed[KeyEnter]:
+        app.startTyping()
+      else:
+        app.updatePlayerButtons()
 
   if pressed[MouseLeft]:
     let point = app.mousePoint()
@@ -866,8 +992,7 @@ when isMainModule:
     max(0, int64(parseFloat(value) * 1000.0))
 
 proc initGlobalApp*(
-  host = DefaultHost,
-  port = DefaultPort,
+  address = DefaultGlobalAddress,
   options = GlobalOptions()
 ): GlobalApp =
   ## Creates the native global client app.
@@ -913,15 +1038,19 @@ proc initGlobalApp*(
   result.autoFit = true
   result.activeMouseLayer = -1
   result.packetSink = options.packetSink
-  result.network.url = "ws://" & host & ":" & $port & WebSocketPath
+  result.playerMode =
+    options.playerMode or address.addressUsesPlayerMode()
+  result.network.url = address
   result.network.reconnectDelayMilliseconds =
     options.reconnectDelayMilliseconds
   let app = result
   result.window.runeInputEnabled = true
   result.window.onRune = proc(rune: Rune) =
     let ch = normalizeRune(rune)
-    if ch != '\0':
-      app.sendInputText($ch)
+    if ch == '\0':
+      return
+    if app.playerMode and app.typing:
+      app.textBuffer.add(ch)
   if result.packetSink == nil:
     result.connectNetwork()
   else:
@@ -956,12 +1085,11 @@ proc shutdown*(app: GlobalApp) =
     app.network.ws.close()
 
 proc runGlobalClient*(
-  host = DefaultHost,
-  port = DefaultPort,
+  address = DefaultGlobalAddress,
   options = GlobalOptions()
 ) =
   ## Runs the native global client.
-  let app = initGlobalApp(host, port, options)
+  let app = initGlobalApp(address, options)
   when not defined(emscripten):
     var lastTick = getMonoTime()
   while app.windowOpen:
@@ -981,8 +1109,7 @@ proc runGlobalClient*(
 
 when isMainModule:
   var
-    address = DefaultHost
-    port = DefaultPort
+    address = DefaultGlobalAddress
     options = GlobalOptions()
   for kind, key, val in getopt():
     case kind
@@ -990,8 +1117,8 @@ when isMainModule:
       case key
       of "address":
         address = val
-      of "port":
-        port = parseInt(val)
+      of "player":
+        options.playerMode = true
       of "title":
         options.title = val
       of "reconnect":
@@ -1000,4 +1127,4 @@ when isMainModule:
         discard
     else:
       discard
-  runGlobalClient(address, port, options)
+  runGlobalClient(address, options)

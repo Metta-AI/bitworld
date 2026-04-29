@@ -46,13 +46,13 @@ const
   ReportRange* = 20
   VoteResultTicks* = 72
   MaxPlayers* = 16
-  MinPlayers* = 5
-  ImposterCount* = 1
-  VoteTimerTicks* = 1440
+  MinPlayers* = 8
+  ImposterCount* = 2
+  VoteTimerTicks* = 600
   GameOverTicks* = 360
   MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
   MaxGames* = 0  ## 0 = no limit.
-  TasksPerPlayer* = 4
+  TasksPerPlayer* = 8
   ShowTaskArrows* = true
   ButtonCalls* = 1
   VoteChatVisibleMessages* = 4
@@ -122,6 +122,7 @@ const
     9,     # 15 pale blue    -> dark teal
   ]
   WebSocketPath* = "/player"
+  Player2WebSocketPath* = "/player2"
   GlobalWebSocketPath* = "/global"
 
 type
@@ -254,6 +255,7 @@ type
     vents*: seq[Vent]
     rooms*: seq[Room]
     mapPixels*: seq[uint8]
+    mapRgba*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
     fb*: Framebuffer
@@ -2717,9 +2719,18 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+  result.mapRgba = newSeq[uint8](MapWidth * MapHeight * 4)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
-      result.mapPixels[mapIndex(x, y)] = nearestPaletteIndex(mapImage[x, y])
+      let
+        pixel = mapImage[x, y]
+        index = mapIndex(x, y)
+        offset = index * 4
+      result.mapPixels[index] = nearestPaletteIndex(pixel)
+      result.mapRgba[offset] = pixel.r
+      result.mapRgba[offset + 1] = pixel.g
+      result.mapRgba[offset + 2] = pixel.b
+      result.mapRgba[offset + 3] = pixel.a
 
   result.walkMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
