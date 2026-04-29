@@ -55,6 +55,11 @@ type Agent struct {
 	bodyGoal    bool   // true when nav's current goal is a body (highest priority)
 
 	imposter *ImposterBrain // lazy-initialized when we observe an imposter role
+
+	// aliveOthers is the number of alive non-self players as of the
+	// last readable voting panel. -1 = unknown (pre-first-vote).
+	// Imposter endgame detection reads this minus our kills-this-round.
+	aliveOthers int
 }
 
 // NewAgent returns an Agent using the embedded skeld map + walk mask. It
@@ -77,6 +82,7 @@ func NewAgent() *Agent {
 	// (red), which would erroneously exclude red crewmates from suspect
 	// picks before SetSelf has ever been called.
 	a.suspect.SetSelf(255)
+	a.aliveOthers = -1
 	return a
 }
 
@@ -118,8 +124,29 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 				target = c
 			}
 			a.voter = VoteController{Target: target}
-			log.Printf("vote: entering voting, suspect=%d self=%d (frame %d)",
-				target, a.suspect.Self(), a.frames)
+			// Harvest alive-count from the voting panel. This feeds the
+			// imposter endgame rule (kill aggressively when ≤1 crewmate
+			// would remain after this kill).
+			if layout := parseVoteLayout(pixels); layout != nil {
+				n := 0
+				for i := 0; i < layout.n; i++ {
+					if layout.slotCells[i].alive {
+						n++
+					}
+				}
+				// Minus 1 for ourselves. layout doesn't mark self, but
+				// self is always an alive slot during voting.
+				if n > 0 {
+					a.aliveOthers = n - 1
+				}
+			}
+			// Reset the imposter's kill counter: it's tracked per round
+			// (between votes) for aliveOthers bookkeeping.
+			if a.imposter != nil {
+				a.imposter.killsThisRound = 0
+			}
+			log.Printf("vote: entering voting, suspect=%d self=%d alive_others=%d (frame %d)",
+				target, a.suspect.Self(), a.aliveOthers, a.frames)
 		}
 	}
 

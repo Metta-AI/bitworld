@@ -361,6 +361,97 @@ func TestImposter_VentClientCooldown(t *testing.T) {
 	}
 }
 
+// TestImposter_EndgameKillIgnoresWitness: aliveOthers=2 (us + 2
+// others; killing one leaves us tied, imposter wins). A nearby
+// witness normally blocks the kill; endgame overrides.
+func TestImposter_EndgameKillIgnoresWitness(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	a.aliveOthers = 2 // endgame: this kill wins
+
+	// Same layout as TestImposter_NoKillWithNearbyWitness: target +
+	// witness at Manhattan 12 world-px.
+	overlayCrewmate(pixels, 68, 58, 3, false)
+	overlayCrewmate(pixels, 80, 58, 11, false)
+	if n := len(FindCrewmates(pixels)); n != 2 {
+		t.Fatalf("precondition: want 2 crewmates, got %d", n)
+	}
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled {
+		t.Fatalf("expected handled=true")
+	}
+	if mask&ButtonA == 0 {
+		t.Fatalf("endgame must fire ButtonA, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_EndgameDoesNotKillOutOfRange: endgame override only
+// fires when the target is actually in kill range. An out-of-range
+// target falls through to normal chase logic.
+func TestImposter_EndgameDoesNotKillOutOfRange(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	a.aliveOthers = 2
+
+	// Far target: screen (110, 110) → world Manhattan ~104 from player
+	// (out of kill range; killRangeSq=400).
+	overlayCrewmate(pixels, 110, 110, 3, false)
+
+	mask, _ := a.stepImposter(pixels, cam, player)
+	if mask&ButtonA != 0 {
+		t.Fatalf("endgame must not kill out-of-range target, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_CrowdKillIgnoresWitness: target surrounded by 2+
+// other crewmates → crowd cover kicks in, the kill fires even
+// though there'd normally be witnesses.
+func TestImposter_CrowdKillIgnoresWitness(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	// aliveOthers unset (-1) so the endgame rule is inert; only the
+	// crowd rule should trigger.
+	if a.aliveOthers != -1 {
+		t.Fatalf("precondition: aliveOthers should default to -1, got %d", a.aliveOthers)
+	}
+
+	// Target at screen (68, 58), crowd neighbors at (80, 58) and (68, 68).
+	// World Manhattans to target: 12 and 10 world-px respectively, both
+	// ≤ imposterWitnessRange=48.
+	overlayCrewmate(pixels, 68, 58, 3, false)
+	overlayCrewmate(pixels, 80, 58, 11, false)
+	overlayCrewmate(pixels, 68, 68, 13, false)
+	if n := len(FindCrewmates(pixels)); n != 3 {
+		t.Fatalf("precondition: want 3 crewmates, got %d", n)
+	}
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled {
+		t.Fatalf("expected handled=true")
+	}
+	if mask&ButtonA == 0 {
+		t.Fatalf("crowd must fire ButtonA, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_NoAggressiveKillWithSingleWitness: a single nearby
+// witness doesn't satisfy the crowd rule (need ≥2), and if aliveOthers
+// isn't an endgame number, the override must not fire. The existing
+// witness-safe path then blocks the kill.
+func TestImposter_NoAggressiveKillWithSingleWitness(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	a.aliveOthers = 5 // not endgame
+
+	overlayCrewmate(pixels, 68, 58, 3, false)
+	overlayCrewmate(pixels, 80, 58, 11, false)
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled {
+		t.Fatalf("expected handled=true")
+	}
+	if mask&ButtonA != 0 {
+		t.Fatalf("single witness must still block kill, got mask=%#x", mask)
+	}
+}
+
 func goalIsTaskStation(p Point) bool {
 	for _, ts := range TaskStations {
 		if ts.Center == p {

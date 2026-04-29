@@ -64,6 +64,10 @@ type ImposterBrain struct {
 	// subsequent frame (which would just be ignored server-side and
 	// crowd out our other inputs). 0 = never vented.
 	lastVentF uint64
+
+	// Kills we've landed since the last voting phase. Subtracted from
+	// Agent.aliveOthers for the endgame aggressiveness rule.
+	killsThisRound int
 }
 
 // NewImposterBrain seeds a deterministic-per-agent RNG. Caller should
@@ -165,6 +169,24 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 	// across brief sprite dropouts to avoid chase→fake oscillation.
 	if a.status.KillReady() {
 		mates := FindCrewmates(pixels)
+		// Aggressive override: kill rules that ignore the witness-safety
+		// filter. Only fires when an in-range target also satisfies
+		// endgame or crowd-cover conditions. Checked before the
+		// witness-safe pick so the override prefers the fast win or the
+		// deniable crowd kill over a slower isolated chase.
+		if target, why, ok := pickAggressiveKill(mates, cam, player, a, brain); ok {
+			tgt := CrewmateWorld(target, cam)
+			if a.frames-brain.lastKillF > 4 {
+				log.Printf("imposter: kill(%s) color=%d at %v (player %v)",
+					why, target.Color, tgt, player)
+				brain.lastKillF = a.frames
+				brain.killsThisRound++
+			}
+			a.suspect.Forget(target.Color)
+			a.nav.Clear()
+			a.logBranch("imp-kill")
+			return ButtonA, true
+		}
 		if target, ok := pickKillCandidate(mates, cam, player, brain); ok {
 			tgt := CrewmateWorld(target, cam)
 			dx := tgt.X - player.X
@@ -178,6 +200,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 					log.Printf("imposter: kill color=%d at %v (player %v, dist²=%d)",
 						target.Color, tgt, player, distSq)
 					brain.lastKillF = a.frames
+					brain.killsThisRound++
 				}
 				// Drop the victim from suspect memory so vote-phase
 				// Pick() returns an *alive* crewmate color we've seen
@@ -263,6 +286,72 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 	}
 	a.logBranch("imp-fake")
 	return navMask, true
+}
+
+// pickAggressiveKill returns an in-kill-range mate that qualifies for
+// an override kill, ignoring the witness-safety filter. Two triggers:
+//
+//  1. Endgame: if killing this target would leave ≤ 1 alive crewmate
+//     other than us (i.e. aliveOthers - killsThisRound - 1 ≤ 1), the
+//     server-side win check (sim.nim:1987, imposters ≥ crewmates) will
+//     fire on our next kill — witnesses don't matter anymore.
+//  2. Crowd cover: target has ≥ 2 other alive mates within
+//     imposterWitnessRange of it. With 3+ players clustered, no single
+//     witness can credibly identify us as the killer.
+//
+// Returns (match, reason, true) on a qualifying hit. Reason is
+// embedded in the kill log line for later diagnosis.
+func pickAggressiveKill(mates []CrewmateMatch, cam Camera, player Point, a *Agent, brain *ImposterBrain) (CrewmateMatch, string, bool) {
+	if len(mates) == 0 {
+		return CrewmateMatch{}, "", false
+	}
+	endgame := a.aliveOthers > 0 && a.aliveOthers-brain.killsThisRound <= 2
+	worlds := make([]Point, len(mates))
+	for i, m := range mates {
+		worlds[i] = CrewmateWorld(m, cam)
+	}
+	bestI := -1
+	bestDist := -1
+	bestReason := ""
+	for i := range mates {
+		dx := worlds[i].X - player.X
+		dy := worlds[i].Y - player.Y
+		distSq := dx*dx + dy*dy
+		if distSq > imposterKillRangeSq {
+			continue
+		}
+		reason := ""
+		if endgame {
+			reason = "endgame"
+		} else {
+			// Crowd cover: count other mates near the target.
+			witnesses := 0
+			for j := range mates {
+				if j == i {
+					continue
+				}
+				if manhattan(worlds[i], worlds[j]) <= imposterWitnessRange {
+					witnesses++
+				}
+			}
+			if witnesses >= 2 {
+				reason = "crowd"
+			}
+		}
+		if reason == "" {
+			continue
+		}
+		// Among qualifying candidates prefer closest to us.
+		if bestI < 0 || distSq < bestDist {
+			bestI = i
+			bestDist = distSq
+			bestReason = reason
+		}
+	}
+	if bestI < 0 {
+		return CrewmateMatch{}, "", false
+	}
+	return mates[bestI], bestReason, true
 }
 
 // pickKillCandidate chooses the best crewmate from mates for a kill or
