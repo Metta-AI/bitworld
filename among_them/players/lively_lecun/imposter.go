@@ -68,7 +68,22 @@ type ImposterBrain struct {
 	// Kills we've landed since the last voting phase. Subtracted from
 	// Agent.aliveOthers for the endgame aggressiveness rule.
 	killsThisRound int
+
+	// Fake-station blacklist: TaskStations indices whose nav path was
+	// reported Unreachable from our last locked cell. Without this, the
+	// imposter spams fake-target re-rolls every frame from a dead-end
+	// pocket (A* fails, we clear fakeIdx, re-pick, fail again...) and
+	// never actually moves or chases. Expires when we've moved far
+	// enough that the reachability set is likely different — same pattern
+	// as agent.radarBlack (agent.go:90, 442-457).
+	fakeBlack     []int
+	fakeBlackFrom Point // player pos when fakeBlack was last populated
 }
+
+// imposterFakeBlackExpirePx mirrors agentRadarBlackExpirePx — once we
+// move this far from where we populated the blacklist, reachability is
+// almost certainly different, so clear it.
+const imposterFakeBlackExpirePx = 120
 
 // NewImposterBrain seeds a deterministic-per-agent RNG. Caller should
 // choose a unique seed per Agent (e.g. memory-address-derived) so multi-
@@ -255,9 +270,29 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 
 	// 3. Fake task camouflage. Pick a station if we don't have one or if
 	// enough time has passed without progress.
+	//
+	// Expire the Unreachable blacklist if we've moved far enough that the
+	// reachable-set is probably different.
+	if len(brain.fakeBlack) > 0 &&
+		(absInt(player.X-brain.fakeBlackFrom.X) > imposterFakeBlackExpirePx ||
+			absInt(player.Y-brain.fakeBlackFrom.Y) > imposterFakeBlackExpirePx) {
+		log.Printf("imposter: fake blacklist expired after moving %v->%v",
+			brain.fakeBlackFrom, player)
+		brain.fakeBlack = brain.fakeBlack[:0]
+	}
 	if brain.fakeIdx < 0 || brain.fakeIdx >= len(TaskStations) ||
 		a.frames-brain.fakeChosen > imposterFakeRotateFrames {
-		brain.fakeIdx = brain.rng.Intn(len(TaskStations))
+		idx, ok := brain.pickFakeStation()
+		if !ok {
+			// Everything reachable is blacklisted. Fall through to caller,
+			// which will wander via Steer/wanderer. Nav is cleared so we
+			// don't re-enter this branch on stale goal state.
+			a.nav.Clear()
+			brain.fakeIdx = -1
+			a.logBranch("imp-fake-nowhere")
+			return 0, false
+		}
+		brain.fakeIdx = idx
 		brain.fakeChosen = a.frames
 		goal := TaskStations[brain.fakeIdx].Center
 		a.nav.SetGoal(goal)
@@ -273,19 +308,53 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 	// If we've arrived at the fake target, cycle to the next one.
 	navMask, arrived := a.nav.Next(player)
 	if navMask == Unreachable {
+		// Record this station as unreachable-from-here. Don't just clear
+		// fakeIdx -- that made us re-roll every frame and thrash.
+		if len(brain.fakeBlack) == 0 {
+			brain.fakeBlackFrom = player
+		}
+		brain.fakeBlack = append(brain.fakeBlack, brain.fakeIdx)
+		log.Printf("imposter: fake target %s unreachable; blacklisting (frame %d)",
+			TaskStations[brain.fakeIdx].Name, a.frames)
 		a.nav.Clear()
 		brain.fakeIdx = -1
 		return 0, true
 	}
 	if arrived {
-		brain.fakeIdx = brain.rng.Intn(len(TaskStations))
-		brain.fakeChosen = a.frames
-		a.nav.SetGoal(TaskStations[brain.fakeIdx].Center)
-		log.Printf("imposter: reached fake target; next=%s (frame %d)",
-			TaskStations[brain.fakeIdx].Name, a.frames)
+		idx, ok := brain.pickFakeStation()
+		if ok {
+			brain.fakeIdx = idx
+			brain.fakeChosen = a.frames
+			a.nav.SetGoal(TaskStations[brain.fakeIdx].Center)
+			log.Printf("imposter: reached fake target; next=%s (frame %d)",
+				TaskStations[brain.fakeIdx].Name, a.frames)
+		}
 	}
 	a.logBranch("imp-fake")
 	return navMask, true
+}
+
+// pickFakeStation returns a TaskStations index that isn't in fakeBlack.
+// Returns (-1, false) when the entire station list is blacklisted — the
+// caller should fall back to wandering rather than re-rolling.
+func (b *ImposterBrain) pickFakeStation() (int, bool) {
+	allowed := make([]int, 0, len(TaskStations))
+	for i := range TaskStations {
+		blocked := false
+		for _, bi := range b.fakeBlack {
+			if bi == i {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			allowed = append(allowed, i)
+		}
+	}
+	if len(allowed) == 0 {
+		return -1, false
+	}
+	return allowed[b.rng.Intn(len(allowed))], true
 }
 
 // pickAggressiveKill returns an in-kill-range mate that qualifies for

@@ -200,6 +200,62 @@ func TestImposter_FakeTaskPicksStation(t *testing.T) {
 	}
 }
 
+// TestImposter_FakeBlacklistFallsThrough: when every TaskStation has
+// been blacklisted as unreachable-from-here, stepImposter must return
+// handled=false so the agent falls back to wander/steer, rather than
+// burning every frame on a re-roll that keeps failing.
+func TestImposter_FakeBlacklistFallsThrough(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	a.status.killReady = false
+
+	// Lazy-init the brain by stepping once, then poison its blacklist.
+	a.stepImposter(pixels, cam, player)
+	a.imposter.fakeBlack = a.imposter.fakeBlack[:0]
+	for i := range TaskStations {
+		a.imposter.fakeBlack = append(a.imposter.fakeBlack, i)
+	}
+	a.imposter.fakeIdx = -1
+	a.imposter.fakeBlackFrom = player
+	a.nav.Clear()
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if handled {
+		t.Fatalf("expected handled=false so caller can wander; got mask=%#x handled=true", mask)
+	}
+	if mask != 0 {
+		t.Fatalf("expected mask=0 on fall-through, got %#x", mask)
+	}
+}
+
+// TestImposter_FakeBlacklistExpiresOnMove: moving past the expire radius
+// must clear the blacklist so new stations become pickable again.
+func TestImposter_FakeBlacklistExpiresOnMove(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	a.status.killReady = false
+
+	a.stepImposter(pixels, cam, player)
+	a.imposter.fakeBlack = a.imposter.fakeBlack[:0]
+	for i := range TaskStations {
+		a.imposter.fakeBlack = append(a.imposter.fakeBlack, i)
+	}
+	a.imposter.fakeBlackFrom = player
+	a.imposter.fakeIdx = -1
+	a.nav.Clear()
+
+	// Move well past the expire radius.
+	moved := Point{player.X + imposterFakeBlackExpirePx + 10, player.Y}
+	_, handled := a.stepImposter(pixels, cam, moved)
+	if !handled {
+		t.Fatalf("expected handled=true after blacklist expiry")
+	}
+	if len(a.imposter.fakeBlack) != 0 {
+		t.Fatalf("blacklist should be empty after expiry, got %v", a.imposter.fakeBlack)
+	}
+	if !a.nav.HasGoal() {
+		t.Fatalf("expected nav goal set after expiry")
+	}
+}
+
 // TestImposter_FleeBeatsKill: a body and a lone in-range crewmate in the
 // same frame — flee branch wins; no ButtonA even though kill conditions
 // look satisfied. Mirrors sim.nim's self-report trap: an imposter who
