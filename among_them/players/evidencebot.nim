@@ -103,6 +103,22 @@ const
   ImposterFakeTaskChance = 1
   ImposterFakeTaskChanceDenom = 12
 
+  # Self-report tuning. After a kill we want the imposter to *report the
+  # body it just made* instead of fleeing — the meeting opens immediately,
+  # our queued random-innocent accusation flushes first, and we look like
+  # the helpful crewmate who "found" the body. Classic imposter play.
+  #
+  # ImposterSelfReportRecentTicks: how many ticks after pressing kill-A we
+  #   still treat the new body as "ours" for self-report purposes. The sim
+  #   typically needs 1-2 ticks to draw the body sprite, so this just has
+  #   to be wide enough to bridge that gap without misclassifying an
+  #   unrelated body discovered seconds later.
+  # ImposterSelfReportRadius: world-px tolerance between the victim's last
+  #   position and the body sprite's drawn position. Slightly looser than
+  #   the killer's own collision range to absorb sprite-draw offsets.
+  ImposterSelfReportRecentTicks = 30
+  ImposterSelfReportRadius = KillRange + 8
+
   BodySearchRadius = 1
   BodyMaxMisses = 9
   BodyMinStablePixels = 6
@@ -254,6 +270,13 @@ type
     imposterFakeTaskUntilTick: int
     imposterFakeTaskCooldownTick: int
     imposterPrevNearTaskIndex: int
+    # Self-report state. When the imposter presses A on a lone crewmate we
+    # remember (tick, world position) so the next frame's body-visible
+    # branch can recognise "this is the body I just made" and prefer
+    # reporting it over fleeing.
+    imposterLastKillTick: int
+    imposterLastKillX: int
+    imposterLastKillY: int
     packed: seq[uint8]
     unpacked: seq[uint8]
     mapTiles: seq[TileKnowledge]
@@ -999,6 +1022,9 @@ proc resetRoundState(bot: var Bot) =
   bot.imposterFakeTaskUntilTick = 0
   bot.imposterFakeTaskCooldownTick = 0
   bot.imposterPrevNearTaskIndex = -1
+  bot.imposterLastKillTick = 0
+  bot.imposterLastKillX = 0
+  bot.imposterLastKillY = 0
   bot.cameraLock = NoLock
   bot.cameraScore = 0
   bot.haveMotionSample = false
@@ -3556,7 +3582,11 @@ proc decideImposterMask(bot: var Bot): uint8 =
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
 
-  # 1. Flee from any visible body and queue chat ASAP.
+  # 1. React to a visible body. Two sub-cases:
+  #    a) The body is one we just made → SELF-REPORT (press A). The meeting
+  #       opens, our queued random-innocent chat fires first, and we look
+  #       like the helpful finder. Best-case imposter play.
+  #    b) Otherwise → flee normally and queue chat.
   let body = bot.nearestBody()
   if body.found:
     # queueBodySeen dedupes via sameBody, so this only builds the message
@@ -3566,6 +3596,33 @@ proc decideImposterMask(bot: var Bot): uint8 =
     # bandwagon onto whoever's named first, so being first is the entire
     # game.
     bot.queueBodySeen(body.x, body.y)
+
+    # Sub-case (a): is this the body we just made?
+    let recentKill =
+      bot.imposterLastKillTick > 0 and
+      bot.frameTick - bot.imposterLastKillTick <= ImposterSelfReportRecentTicks
+    if recentKill:
+      let
+        dx = body.x - bot.imposterLastKillX
+        dy = body.y - bot.imposterLastKillY
+        matchR2 = ImposterSelfReportRadius * ImposterSelfReportRadius
+      if dx * dx + dy * dy <= matchR2 and
+          bot.inReportRange(body.x, body.y) and
+          abs(bot.velocityX) + abs(bot.velocityY) <= 1:
+        # One-shot: clear so we don't re-trigger if the meeting somehow
+        # doesn't open on this press.
+        bot.imposterLastKillTick = 0
+        bot.imposterFakeTaskUntilTick = 0
+        bot.imposterFakeTaskIndex = -1
+        # After self-reporting we're the "alarm" — keep a fake-task
+        # cooldown so the immediate next round we don't pivot to a task
+        # the moment voting ends, which is its own tell.
+        bot.imposterFakeTaskCooldownTick =
+          bot.frameTick + ImposterFakeTaskCooldownTicks
+        bot.thought("self-reporting kill body")
+        return bot.reportBodyAction(body.x, body.y)
+
+    # Sub-case (b): not our kill (or out of report range / moving) → flee.
     bot.imposterGoalIndex = bot.farthestFakeTargetIndexFrom(body.x, body.y)
     let fleeGoal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
     if fleeGoal.found:
@@ -3597,6 +3654,11 @@ proc decideImposterMask(bot: var Bot): uint8 =
       bot.imposterFakeTaskIndex = -1
       bot.imposterFakeTaskCooldownTick =
         bot.frameTick + ImposterFakeTaskCooldownTicks
+      # Record the kill so next frame's body-visible branch self-reports
+      # instead of fleeing. The body draws at the victim's last position.
+      bot.imposterLastKillTick = bot.frameTick
+      bot.imposterLastKillX = target.x
+      bot.imposterLastKillY = target.y
       bot.thought("lone crewmate in range, attacking")
       return ButtonA
     bot.goalIndex = -2
@@ -3882,6 +3944,9 @@ proc initBot(mapPath = ""): Bot =
   result.imposterFakeTaskUntilTick = 0
   result.imposterFakeTaskCooldownTick = 0
   result.imposterPrevNearTaskIndex = -1
+  result.imposterLastKillTick = 0
+  result.imposterLastKillX = 0
+  result.imposterLastKillY = 0
   result.goalIndex = -1
   result.lastBodySeenX = low(int)
   result.lastBodySeenY = low(int)
