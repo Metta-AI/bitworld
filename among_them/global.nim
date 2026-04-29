@@ -1193,7 +1193,13 @@ proc buildSpriteProtocolPlayerUpdates*(
   var currentIds: seq[int] = @[]
   if sim.phase != Playing or playerIndex < 0 or
       playerIndex >= sim.players.len:
-    let interstitial = spritePixelsFromPackedFrame(sim.render(playerIndex))
+    let packedFrame =
+      if sim.phase == Playing and
+          (playerIndex < 0 or playerIndex >= sim.players.len):
+        sim.buildSpectatorFrame()
+      else:
+        sim.render(playerIndex)
+    let interstitial = spritePixelsFromPackedFrame(packedFrame)
     currentIds.add(Player2InterstitialObjectId)
     result.addSpriteChanged(
       nextState.spriteDefs,

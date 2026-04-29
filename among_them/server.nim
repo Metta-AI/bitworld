@@ -786,8 +786,11 @@ proc runServerLoop*(
               while replayWriter.lastMasks.len < sim.players.len:
                 replayWriter.lastMasks.add(0)
             else:
-              appState.spectators.add(websocket)
-              appState.playerIndices.del(websocket)
+              if websocket in appState.playerViewers:
+                appState.playerIndices[websocket] = -1
+              else:
+                appState.spectators.add(websocket)
+                appState.playerIndices.del(websocket)
 
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
@@ -855,8 +858,11 @@ proc runServerLoop*(
             reconnectSockets.add(websocket)
           for websocket in reconnectSockets:
             if not sim.canAddPlayer():
-              appState.spectators.add(websocket)
-              appState.playerIndices.del(websocket)
+              if websocket in appState.playerViewers:
+                appState.playerIndices[websocket] = -1
+              else:
+                appState.spectators.add(websocket)
+                appState.playerIndices.del(websocket)
               continue
             let address = appState.playerAddresses.getOrDefault(
               websocket,
