@@ -126,14 +126,19 @@ func TestImposter_NoKillWhenOnCooldown(t *testing.T) {
 	}
 }
 
-// TestImposter_NoKillWithWitnesses: kill-ready + >1 crewmate visible means
-// the kill would have a witness; imposter must not press A and should fall
-// through to fake-task.
-func TestImposter_NoKillWithWitnesses(t *testing.T) {
+// TestImposter_NoKillWithNearbyWitness: the kill target has a second
+// crewmate within witness range (Manhattan <= imposterWitnessRange world
+// px) of its world position. Imposter must not press A — that kill
+// would have a nearby witness.
+func TestImposter_NoKillWithNearbyWitness(t *testing.T) {
 	a, pixels, cam, player := imposterSetup()
 
-	overlayCrewmate(pixels, 68, 58, 3, false)    // in range
-	overlayCrewmate(pixels, 100, 100, 11, false) // witness, out of range
+	// Primary target in kill range: screen (68, 58) -> world (574, 120).
+	overlayCrewmate(pixels, 68, 58, 3, false)
+	// Witness close to target in world coords: screen (80, 58) -> world
+	// (586, 120). Manhattan distance to target = 12 world px, well within
+	// imposterWitnessRange = 48.
+	overlayCrewmate(pixels, 80, 58, 11, false)
 	if n := len(FindCrewmates(pixels)); n != 2 {
 		t.Fatalf("precondition: want 2 crewmates, got %d", n)
 	}
@@ -143,7 +148,31 @@ func TestImposter_NoKillWithWitnesses(t *testing.T) {
 		t.Fatalf("expected handled=true")
 	}
 	if mask&ButtonA != 0 {
-		t.Fatalf("kill with witness present must not press A, got mask=%#x", mask)
+		t.Fatalf("kill with nearby witness must not press A, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_KillWithFarWitness: a second crewmate visible but far
+// from the kill target (> imposterWitnessRange) should not block the
+// kill. This is the behavioral change from the old strict len==1 rule.
+func TestImposter_KillWithFarWitness(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+
+	// Primary target: screen (68, 58) -> world (574, 120).
+	overlayCrewmate(pixels, 68, 58, 3, false)
+	// Far crewmate: screen (110, 110) -> world (616, 172). Manhattan to
+	// target = 42 + 52 = 94, > imposterWitnessRange.
+	overlayCrewmate(pixels, 110, 110, 11, false)
+	if n := len(FindCrewmates(pixels)); n != 2 {
+		t.Fatalf("precondition: want 2 crewmates, got %d", n)
+	}
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled {
+		t.Fatalf("expected handled=true")
+	}
+	if mask&ButtonA == 0 {
+		t.Fatalf("far witness should not block kill, got mask=%#x", mask)
 	}
 }
 
