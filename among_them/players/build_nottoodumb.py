@@ -30,6 +30,8 @@ def build_nottoodumb() -> Path:
     cmd = [
         "nim",
         "c",
+        "-d:release",
+        "--opt:speed",
         "--app:lib",
         "-d:nottoodumbLibrary",
         f"--out:{out_path}",
