@@ -534,3 +534,210 @@ mostly black and do not attempt map parsing while the screen is an interstitial.
 
 Do not start with clever strategy. Start with seeing, localizing, and drawing
 what the bot believes. Strategy is easy once the perception layer stops lying.
+
+---
+
+## Running the Smart Bot with the Debugger GUI
+
+This section walks through running the Python smart bot (with LLM brain) in a
+full multiplayer game alongside other AI players, with the real-time browser
+debugger attached.
+
+### Quick Start (One Command)
+
+The fastest way to launch everything — server, Nim opponents, smart bot, and
+debugger — is the launcher script:
+
+```sh
+cd among_them/bot-policies
+./run_debug_game.sh
+```
+
+It starts the game server, spawns Nim AI opponents, launches the Python smart
+bot with the LLM brain and debugger, and opens the debugger + global view in
+your browser. Press `Ctrl+C` to stop everything cleanly.
+
+Override defaults with environment variables:
+
+```sh
+NIM_BOTS=7 MIN_PLAYERS=8 IMPOSTERS=2 PROVIDER=anthropic ./run_debug_game.sh
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST` | `localhost` | Server bind address |
+| `PORT` | `8080` | Server port |
+| `NIM_BOTS` | `4` | Number of Nim AI opponents |
+| `MIN_PLAYERS` | `5` | Players needed to start the game |
+| `IMPOSTERS` | `1` | Number of imposters |
+| `TASKS` | `4` | Tasks per player |
+| `PROVIDER` | `bedrock` | LLM provider: `bedrock`, `anthropic`, `openrouter` |
+| `MODEL` | (default) | Override LLM model name |
+| `DEBUG_PORT` | `9090` | Debug WebSocket port (HTTP = port + 1) |
+| `OPEN_BROWSER` | `1` | Set to `0` to skip auto-opening browser tabs |
+
+### Manual Setup (Step-by-Step)
+
+If you prefer to run each piece in its own terminal:
+
+### Prerequisites
+
+You need three things installed:
+
+1. **Nim compiler** — to build the game server and Nim AI opponents.
+2. **Python 3.12+** — already in the repo venv at `.venv/`.
+3. **Python dependencies** — Pillow, websockets, numpy, boto3, httpx.
+
+Install the Python packages (from the repo root):
+
+```sh
+cd /Users/aaln/experiments/softmax/bitworld
+python3 -m ensurepip --upgrade
+python3 -m pip install Pillow websockets numpy boto3 httpx python-dotenv
+```
+
+If you want the LLM brain to work, you also need AWS credentials configured
+for the `softmax` profile (used by Bedrock), or set `ANTHROPIC_API_KEY` /
+`OPENROUTER_API_KEY` environment variables and use `--provider anthropic` or
+`--provider openrouter` instead.
+
+### Step 1 — Start the Game Server
+
+Open a terminal and start the Among Them server:
+
+```sh
+cd /Users/aaln/experiments/softmax/bitworld/among_them
+nim r among_them.nim --address:localhost --port:8080 \
+  --config:'{"minPlayers":5,"imposterCount":1,"tasksPerPlayer":4,"voteTimerTicks":720}'
+```
+
+`minPlayers` controls how many players must join before the game starts.
+Set it lower (3-5) for quick testing.
+
+### Step 2 — Launch Nim AI Opponents
+
+In a second terminal, start the Nim bots to fill the lobby:
+
+```sh
+cd /Users/aaln/experiments/softmax/bitworld
+nim r tools/quick_player nottoodumb --players:4 --address:localhost --port:8080
+```
+
+This compiles `nottoodumb.nim` and spawns 4 copies. They will connect to the
+server and wait in the lobby. Adjust `--players:N` to match your `minPlayers`
+minus 1 (leaving one slot for the Python smart bot).
+
+### Step 3 — Launch the Python Smart Bot with Debugger
+
+In a third terminal, start the Python bot with the LLM brain and debugger GUI:
+
+```sh
+cd /Users/aaln/experiments/softmax/bitworld/among_them/bot-policies
+python3 -m sidecar.bot \
+  --brain \
+  --provider bedrock \
+  --name smartbot \
+  --host localhost \
+  --port 8080 \
+  --debug
+```
+
+You should see:
+
+```
+INFO: Brain enabled: provider=bedrock model=default
+INFO: Debug GUI will be at http://localhost:9091
+INFO: Connecting to ws://localhost:8080/player?name=smartbot
+INFO: Loaded sprites from .../spritesheet.png
+INFO: Loaded map data from .../skeld2.aseprite (952x534, 253280 walkable pixels)
+INFO: Connected to game server
+INFO: Debug GUI:  http://localhost:9091
+INFO: Debug WS:   ws://localhost:9090
+```
+
+### Step 4 — Open the Debugger Dashboard
+
+Open your browser and go to:
+
+```
+http://localhost:9091
+```
+
+The debugger has six panels:
+
+| Panel | What it shows |
+|---|---|
+| **Game View** | The bot's 128x128 viewport rendered in real time |
+| **Brain** | Current strategy directive, reasoning, and trigger alerts |
+| **LLM Calls** | Expandable log of every LLM call — context sent, response received, latency, tokens |
+| **Memory** | Episodic events timeline + strategic facts key-value store |
+| **Player Model** | Per-player suspicion bars, alive/dead status, last room |
+| **Status & Intent** | Phase, role, tick counter, LLM budget, and scrolling intent history |
+
+The dashboard auto-reconnects if the bot restarts.
+
+### Step 5 (Optional) — Watch as a Human Player
+
+To spectate or play alongside the bots, open the player client in another
+browser tab:
+
+```
+http://localhost:8080/client/player.html?address=ws://localhost:8080/player&name=spectator
+```
+
+Or view the god-mode global map:
+
+```
+http://localhost:8080/client/global.html?address=ws://localhost:8080/global
+```
+
+### CLI Reference
+
+The Python bot accepts these flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--host` | `localhost` | Game server hostname |
+| `--port` | `8080` | Game server port |
+| `--name` | `pybot` | Bot player name shown in-game |
+| `--brain` | off | Enable the LLM strategic brain |
+| `--provider` | `bedrock` | LLM provider: `bedrock`, `anthropic`, or `openrouter` |
+| `--model` | (default) | Override the LLM model name |
+| `--debug` | off | Start the debugger GUI server |
+| `--debug-port` | `9090` | WebSocket port for debug events (HTTP is +1) |
+
+### Running Without the LLM
+
+You can run the bot without any LLM calls — it will use its scripted decision
+logic (task completion, body reporting, voting heuristics):
+
+```sh
+python3 -m sidecar.bot --name smartbot --debug
+```
+
+The debugger still works and shows the perception pipeline, intent changes,
+and memory events. The Brain and LLM panels will be empty.
+
+### Troubleshooting
+
+**"Map data not loaded — localization will not work"**
+Pillow is not installed, or the bot can't find `skeld2.aseprite`. Make sure
+you run from `among_them/bot-policies/` and that Pillow is in your Python
+environment.
+
+**"Brain module not available"**
+The `--brain` flag was set but the sidecar modules failed to import. Check that
+boto3/httpx are installed and that `sidecar/prompts/system.md` exists.
+
+**Debugger shows "Reconnecting..."**
+The bot process isn't running, or the `--debug` flag was not passed. Check
+that the bot is running and the debug port (default 9090) is not blocked.
+
+**Game never starts**
+The lobby needs `minPlayers` connected players. Check that enough Nim bots
+are running. Use `--config:'{"minPlayers":3}'` for quick tests.
+
+**Bot just stands still**
+If the bot connects but doesn't move, it is probably not localized. Open the
+debugger — the Game View panel will show what the bot sees, and the view
+info bar will show `loc: no`. This usually means the map data didn't load.
