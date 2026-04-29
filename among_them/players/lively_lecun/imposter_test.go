@@ -261,6 +261,106 @@ func TestImposter_KillForgetsVictim(t *testing.T) {
 	}
 }
 
+// TestImposter_PostKillVentsWhenNearVent: a fresh kill flag plus an
+// in-range vent in the same frame must produce a ButtonB press,
+// preempting the body-flee branch (we haven't walked anywhere yet so
+// the body we just made would be in view next tick).
+func TestImposter_PostKillVentsWhenNearVent(t *testing.T) {
+	a := NewAgent()
+	a.status.latched = StatusImposterReady
+	a.status.killReady = true
+	pixels := make([]uint8, ScreenWidth*ScreenHeight)
+	// Use vent 0 at world (606, 339) as our anchor. Place the camera
+	// so the player lands exactly on it.
+	target := Vents[0].Center
+	cam := Camera{X: target.X - playerWorldOffX, Y: target.Y - playerWorldOffY}
+	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
+	if player != target {
+		t.Fatalf("setup error: player %v != vent %v", player, target)
+	}
+	// Mark a kill 1 frame ago so the post-kill window is active.
+	a.imposter = NewImposterBrain(1)
+	a.frames = 10
+	a.imposter.lastKillF = 9
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled {
+		t.Fatalf("expected handled=true on vent branch")
+	}
+	if mask != ButtonB {
+		t.Fatalf("expected ButtonB only, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_NoVentWhenFarFromVent: recent kill but player is not
+// standing on a vent — the vent branch must not fire and we fall
+// through to normal imposter logic.
+func TestImposter_NoVentWhenFarFromVent(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+	a.imposter = NewImposterBrain(1)
+	a.frames = 10
+	a.imposter.lastKillF = 9
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled {
+		t.Fatalf("expected handled=true")
+	}
+	if mask&ButtonB != 0 {
+		t.Fatalf("must not press B when no vent in range, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_NoVentOutsidePostKillWindow: player is on a vent but the
+// last kill was long ago — the vent branch is gated on the post-kill
+// window, so no ButtonB.
+func TestImposter_NoVentOutsidePostKillWindow(t *testing.T) {
+	a := NewAgent()
+	a.status.latched = StatusImposterReady
+	a.status.killReady = true
+	pixels := make([]uint8, ScreenWidth*ScreenHeight)
+	target := Vents[0].Center
+	cam := Camera{X: target.X - playerWorldOffX, Y: target.Y - playerWorldOffY}
+	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
+	a.imposter = NewImposterBrain(1)
+	a.frames = 1000
+	a.imposter.lastKillF = 10 // 990 frames ago, well outside window
+
+	mask, _ := a.stepImposter(pixels, cam, player)
+	if mask&ButtonB != 0 {
+		t.Fatalf("must not vent outside post-kill window, got mask=%#x", mask)
+	}
+}
+
+// TestImposter_VentClientCooldown: after the vent branch fires, a
+// second stepImposter call on the very next frame must not press B
+// again — the server's 30-tick cooldown would drop it, and sending B
+// every frame crowds out other inputs. The client should self-gate
+// via lastVentF.
+func TestImposter_VentClientCooldown(t *testing.T) {
+	a := NewAgent()
+	a.status.latched = StatusImposterReady
+	a.status.killReady = true
+	pixels := make([]uint8, ScreenWidth*ScreenHeight)
+	target := Vents[0].Center
+	cam := Camera{X: target.X - playerWorldOffX, Y: target.Y - playerWorldOffY}
+	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
+	a.imposter = NewImposterBrain(1)
+	a.frames = 10
+	a.imposter.lastKillF = 9
+
+	mask1, _ := a.stepImposter(pixels, cam, player)
+	if mask1 != ButtonB {
+		t.Fatalf("first vent frame: got mask=%#x, want ButtonB", mask1)
+	}
+	// Advance 1 frame. Still in post-kill window. Still on the vent.
+	// Client should refuse to press B again.
+	a.frames = 11
+	mask2, _ := a.stepImposter(pixels, cam, player)
+	if mask2&ButtonB != 0 {
+		t.Fatalf("client cooldown failed: second vent frame pressed B (mask=%#x)", mask2)
+	}
+}
+
 func goalIsTaskStation(p Point) bool {
 	for _, ts := range TaskStations {
 		if ts.Center == p {

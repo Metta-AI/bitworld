@@ -32,6 +32,14 @@ const (
 	// screen. Absorbs the 1-2 frame sprite dropouts that cause
 	// chase→fake→chase oscillation.
 	imposterChaseStickyFrames = 12
+
+	// Post-kill vent window: after an A-press kill, the next few frames
+	// are the ideal moment to teleport away from the body we just made.
+	// 6 frames ≈ 0.25s — enough to let the A-press release, then press B
+	// on a frame where we're still in VentRange of a nearby vent. The
+	// server's own ventCooldown (30 ticks, sim.nim:1261) ensures only the
+	// first successful B in this window teleports.
+	imposterPostKillVentFrames = 6
 )
 
 // ImposterBrain holds mutable imposter state: which fake task is the
@@ -50,6 +58,12 @@ type ImposterBrain struct {
 	chaseColor   uint8
 	chaseSeen    Point  // last world coord of the target
 	chaseSeenF   uint64 // frame target was last seen; 0 = not chasing
+
+	// Frame at which we last pressed ButtonB to vent. Mirrors the sim's
+	// 30-tick server-side cooldown so we don't keep pressing B every
+	// subsequent frame (which would just be ignored server-side and
+	// crowd out our other inputs). 0 = never vented.
+	lastVentF uint64
 }
 
 // NewImposterBrain seeds a deterministic-per-agent RNG. Caller should
@@ -76,6 +90,29 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		a.imposter = NewImposterBrain(int64(a.frames) ^ int64(uintptrOfAgent(a)))
 	}
 	brain := a.imposter
+
+	// 0. Post-kill vent. If we fired a kill in the last few frames and
+	// we're still standing within VentRange of a vent, press ButtonB to
+	// teleport. This beats the body-flee branch below on the body we
+	// just made; sim.nim:1221-1262 lets an imposter at distSq ≤ 256
+	// (VentRange=16) teleport to the next vent in the same group, with
+	// a 30-tick server-side cooldown afterward.
+	const ventCooldown = 30 // sim.nim:1261 hardcoded
+	if brain.lastKillF > 0 &&
+		a.frames-brain.lastKillF <= imposterPostKillVentFrames &&
+		(brain.lastVentF == 0 || a.frames-brain.lastVentF >= ventCooldown) {
+		if idx, ok := nearestVentInRange(player); ok {
+			a.nav.Clear()
+			a.radarGoal = false
+			a.bodyGoal = false
+			brain.fakeIdx = -1
+			brain.lastVentF = a.frames
+			log.Printf("imposter: vent group=%s at %v (player %v, frame %d)",
+				Vents[idx].Group, Vents[idx].Center, player, a.frames)
+			a.logBranch("imp-vent")
+			return ButtonB, true
+		}
+	}
 
 	// 1. Body in view: flee. Pick the farthest station from the body as
 	// our new goal. Never press A on a body as imposter (self-report).
