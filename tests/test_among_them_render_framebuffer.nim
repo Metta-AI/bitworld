@@ -55,6 +55,7 @@ proc testRenderLeavesFramebuffer() =
   var config = defaultGameConfig()
   config.minPlayers = 3
   config.tasksPerPlayer = 1
+  config.roleRevealTicks = 0
   var sim = initAmongThemForTest(config)
   sim.addPlayers(3)
   var inputs = newSeq[InputState](sim.players.len)
