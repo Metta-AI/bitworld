@@ -46,13 +46,13 @@ const
   ReportRange* = 20
   VoteResultTicks* = 72
   MaxPlayers* = 16
-  MinPlayers* = 5
-  ImposterCount* = 1
-  VoteTimerTicks* = 1440
+  MinPlayers* = 8
+  ImposterCount* = 2
+  VoteTimerTicks* = 600
   GameOverTicks* = 360
   MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
   MaxGames* = 0  ## 0 = no limit.
-  TasksPerPlayer* = 4
+  TasksPerPlayer* = 8
   ShowTaskArrows* = true
   ButtonCalls* = 1
   VoteChatVisibleMessages* = 4

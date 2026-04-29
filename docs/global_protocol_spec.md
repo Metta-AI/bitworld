@@ -4,8 +4,8 @@ Global Protocol is a small binary protocol for sprite based displays. The
 server sends sprite definitions and object placements. The client sends keyboard
 and mouse input.
 
-Global Protocol connects over WebSocket. The endpoint usually lives at
-`ws://address:port/global`.
+Global Protocol connects over WebSocket. The endpoint is a full websocket URL,
+such as `ws://localhost:8080/global`.
 
 The protocol is designed to be simple to parse. Every message starts with a
 single message type byte, followed by a fixed set of little endian fields. Any
