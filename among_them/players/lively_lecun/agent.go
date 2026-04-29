@@ -60,6 +60,14 @@ type Agent struct {
 	// last readable voting panel. -1 = unknown (pre-first-vote).
 	// Imposter endgame detection reads this minus our kills-this-round.
 	aliveOthers int
+
+	// idleStreak counts consecutive PhaseIdle frames. Once it exceeds
+	// agentIdleResetFrames we treat it as a real game boundary (lobby,
+	// game-over, or role-reveal screen) and reset latched role state,
+	// which would otherwise stick across games and run stepImposter
+	// when the server has reassigned us as a crewmate in a new round.
+	idleStreak    uint32
+	didIdleReset  bool
 }
 
 // NewAgent returns an Agent using the embedded skeld map + walk mask. It
@@ -98,6 +106,15 @@ const (
 	// against the body collision center at (body.x+CollisionW/2, body.y+CollisionH/2)
 	// (sim.nim:1304-1313). CollisionW=CollisionH=1, so the center is ~body.x/body.y.
 	agentReportRangeSq = 20 * 20
+
+	// Consecutive PhaseIdle frames that must accumulate before we treat
+	// it as a real game boundary and reset role state. A single idle
+	// frame can appear from camera-lock dropouts or a blanked frame
+	// (see TestAgent_GhostStillPlays), so we want a margin. ~2s at
+	// 24fps is long enough to clearly separate from transient
+	// mis-classification, short enough that lobby/game-over reliably
+	// exceed it.
+	agentIdleResetFrames = 48
 )
 
 // Step consumes one fully-unpacked 128×128 palette-indexed frame and
@@ -108,6 +125,33 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 	a.frames++
 
 	phase := Classify(pixels)
+	if phase == PhaseIdle {
+		a.idleStreak++
+	} else {
+		a.idleStreak = 0
+		a.didIdleReset = false
+	}
+	// Sustained idle (lobby, game-over, role-reveal) signals a game
+	// boundary. Reset latched role state so we don't carry an imposter
+	// latch from a prior game into a new one where we've been reassigned
+	// as a crewmate. One-shot per idle streak so a long lobby doesn't
+	// spam re-clears.
+	if phase == PhaseIdle && !a.didIdleReset && a.idleStreak >= agentIdleResetFrames {
+		a.didIdleReset = true
+		if a.status.latched != StatusUnknown {
+			log.Printf("reset: role latched=%v cleared after %d idle frames (frame %d)",
+				a.status.latched, a.idleStreak, a.frames)
+		}
+		a.status.latched = StatusUnknown
+		a.status.ghostFrames = 0
+		a.status.killReady = false
+		a.lastRole = StatusUnknown
+		a.imposter = nil
+		a.aliveOthers = -1
+		a.nav.Clear()
+		a.bodyGoal = false
+		a.radarGoal = false
+	}
 	if !a.havePhase || phase != a.currentPhase {
 		log.Printf("phase: %s (frame %d)", phase, a.frames)
 		a.currentPhase = phase

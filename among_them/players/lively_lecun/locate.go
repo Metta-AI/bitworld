@@ -19,6 +19,14 @@ type Camera struct {
 // >90-sample gap to wrong-lock territory.
 const localizeMaxMiss = 140
 
+// mapVoidColor mirrors sim.nim:33 `MapVoidColor = 12`. When the server's
+// camera extends past the map edge, sim.nim:2509 clears those off-map
+// pixels to MapVoidColor and then only overwrites the in-bounds ones
+// (sim.nim:2520-2526). For the tracker to lock at the east / south map
+// edge, samples that fall outside MapWidth/MapHeight must check against
+// this color rather than count as unconditional mismatches.
+const mapVoidColor uint8 = 12
+
 // localizeSamples is a precomputed grid of (sx, sy) screen positions where
 // Localize compares the frame to candidate map pixels. An 8x8 stride from
 // (4,4) yields 16x16 = 256 candidates; we drop those inside a 16x16 box
@@ -83,7 +91,9 @@ func Localize(frame []uint8, m *Map, hint *Camera) (Camera, bool) {
 					if s.v != m.Pixels[my*MapWidth+mx] {
 						miss++
 					}
-				} else {
+				} else if s.v != mapVoidColor {
+					// Off-map: server paints MapVoidColor there
+					// (sim.nim:2509). Anything else is a real miss.
 					miss++
 				}
 				if miss >= bestMiss {

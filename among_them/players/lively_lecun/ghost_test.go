@@ -2,6 +2,48 @@ package main
 
 import "testing"
 
+// TestAgent_IdleResetsImposterLatch: a sustained PhaseIdle streak
+// (lobby/role-reveal/game-over) must clear the imposter latch so a bot
+// who was imposter in game N doesn't keep running stepImposter in game
+// N+1 when the server has reassigned them as a crewmate. A transient
+// one-frame idle must NOT trigger the reset (that's the existing
+// TestAgent_GhostStillPlays contract).
+func TestAgent_IdleResetsImposterLatch(t *testing.T) {
+	a := NewAgent()
+	a.status.latched = StatusImposterReady
+	a.status.killReady = true
+	a.imposter = NewImposterBrain(1)
+	a.aliveOthers = 5
+	a.currentPhase = PhaseActive
+	a.havePhase = true
+
+	blank := make([]uint8, ScreenWidth*ScreenHeight)
+
+	// One idle frame: too short to trigger a reset. Latch must survive.
+	_ = a.Step(blank)
+	if a.status.latched != StatusImposterReady {
+		t.Fatalf("single idle frame wrongly cleared latch: got %v", a.status.latched)
+	}
+	if a.imposter == nil {
+		t.Fatalf("single idle frame wrongly cleared imposter brain")
+	}
+
+	// Feed a long idle streak. After agentIdleResetFrames blank frames
+	// the reset must fire exactly once.
+	for i := 0; i < agentIdleResetFrames+2; i++ {
+		_ = a.Step(blank)
+	}
+	if a.status.latched != StatusUnknown {
+		t.Fatalf("sustained idle streak failed to clear latch: got %v", a.status.latched)
+	}
+	if a.imposter != nil {
+		t.Fatalf("sustained idle streak failed to clear imposter brain")
+	}
+	if a.aliveOthers != -1 {
+		t.Fatalf("sustained idle streak failed to clear aliveOthers: got %d", a.aliveOthers)
+	}
+}
+
 // TestAgent_GhostStillPlays: once the ghost icon latches, stepActive must
 // still run the full task/nav/steer pipeline -- sim.nim:1356-1431 confirms
 // applyGhostMovement completes tasks for crewmate ghosts

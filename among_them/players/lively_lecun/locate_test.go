@@ -72,6 +72,58 @@ func TestLocalize_WrongSize(t *testing.T) {
 	}
 }
 
+// TestLocalize_EastEdgeWithVoid: at the map's east edge, the server paints
+// off-map pixels with MapVoidColor (sim.nim:2509). The tracker's off-map
+// samples must check against that color rather than count as unconditional
+// misses; otherwise lock silently fails when the camera reaches MapWidth -
+// ScreenWidth, which is exactly where several right-side task stations
+// live. Synthetic test: craft a frame where the leftmost ScreenWidth-K
+// columns mirror the map at (MapWidth-ScreenWidth, 0) and the rightmost
+// K columns are MapVoidColor.
+func TestLocalize_EastEdgeWithVoid(t *testing.T) {
+	m := loadMapForTest(t)
+	camX := MapWidth - ScreenWidth
+	// Pick a y-band that cuts through ship interior (Vents[3-7] live
+	// between y=70 and y=262, so the ship extends east to ~x=886 here),
+	// so east-edge void covers only the last ~66 columns. That leaves
+	// structured map content in the left two-thirds of the viewport to
+	// disambiguate the x offset. y=0 would be uniform space with many
+	// matching offsets.
+	camY := 150
+	pixels := make([]uint8, ScreenWidth*ScreenHeight)
+	for y := 0; y < ScreenHeight; y++ {
+		for x := 0; x < ScreenWidth; x++ {
+			mx := camX + x
+			my := camY + y
+			if mx >= 0 && mx < MapWidth && my >= 0 && my < MapHeight {
+				pixels[y*ScreenWidth+x] = m.Pixels[my*MapWidth+mx]
+			} else {
+				pixels[y*ScreenWidth+x] = mapVoidColor
+			}
+		}
+	}
+	// Blot out the player-center 16x16 box so we don't accidentally
+	// match a map pixel there (the real game shows the player sprite
+	// overlay; localizeSamples already excludes this region, but be
+	// explicit in case the exclusion changes).
+	for dy := -8; dy < 8; dy++ {
+		for dx := -8; dx < 8; dx++ {
+			px := playerScreenCenterX + dx
+			py := playerScreenCenterY + dy
+			if px >= 0 && px < ScreenWidth && py >= 0 && py < ScreenHeight {
+				pixels[py*ScreenWidth+px] = 0
+			}
+		}
+	}
+	cam, ok := Localize(pixels, m, nil)
+	if !ok {
+		t.Fatalf("east-edge lock failed: cam=%v miss=%d", cam, cam.Mismatches)
+	}
+	if cam.X != camX || cam.Y != camY {
+		t.Errorf("east-edge: got (%d, %d), want (%d, %d)", cam.X, cam.Y, camX, camY)
+	}
+}
+
 func TestClamp(t *testing.T) {
 	cases := []struct{ v, lo, hi, want int }{
 		{5, 0, 10, 5},
