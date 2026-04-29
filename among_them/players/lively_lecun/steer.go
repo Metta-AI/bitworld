@@ -1,13 +1,12 @@
 package main
 
 const (
-	// Task markers from sim.nim's renderer. Palette 8 is the off-screen
-	// radar arrow color (radarColor in sim.nim:2337); palette 9 is the
-	// on-screen task icon sprite color, observed by inspecting the
-	// playing_on_task fixture (125 px of palette 9, none in regular
-	// playing). Palette 10 (yellow) is map decoration, not task-related.
+	// Palette 8 is the off-screen radar arrow color (radarColor in
+	// sim.nim:2337). On-screen task icons are handled separately by
+	// FindTaskIcons / TaskMemory / Navigator; Steer is only the fallback
+	// for when we have no nav goal yet, so pulling toward radar arrows
+	// biases exploration toward off-screen tasks.
 	taskRadarColor = 8
-	taskIconColor  = 9
 
 	playerScreenCenterX   = ScreenWidth / 2
 	playerScreenCenterY   = ScreenHeight / 2
@@ -16,14 +15,15 @@ const (
 )
 
 // Steer returns a button mask that walks the agent toward the centroid of
-// task-marker pixels (palettes 8 and 9: off-screen radar arrows + on-screen
-// task icons). Pulling the agent toward task indicators is a cheap reactive
-// behavior that biases movement toward task stations.
+// off-screen radar-arrow pixels (palette 8). Pulling the agent toward radar
+// arrows is a cheap reactive behavior that biases movement toward tasks we
+// haven't yet seen on-screen. On-screen task icons are handled by the
+// FindTaskIcons / TaskMemory / Navigator pipeline, not here.
 //
 // A small box around the player's on-screen position is excluded so the
-// agent isn't attracted to its own sprite if it has yellow accents.
+// agent isn't attracted to its own sprite if it has radar-color accents.
 //
-// Returns 0 when there are no yellow pixels outside the exclusion zone or
+// Returns 0 when there are no radar pixels outside the exclusion zone or
 // when the centroid is within the deadband, so the caller can fall back
 // to other behavior (e.g., wandering).
 //
@@ -37,7 +37,7 @@ func Steer(pixels []uint8) uint8 {
 		dy := y - playerScreenCenterY
 		row := pixels[y*ScreenWidth : (y+1)*ScreenWidth]
 		for x, v := range row {
-			if v != taskRadarColor && v != taskIconColor {
+			if v != taskRadarColor {
 				continue
 			}
 			dx := x - playerScreenCenterX

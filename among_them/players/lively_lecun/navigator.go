@@ -30,15 +30,26 @@ func NewNavigator(w *WalkMask) *Navigator {
 	return &Navigator{Walk: w}
 }
 
-// SetGoal selects a new world target. Returns false if the goal cell isn't
-// walkable (caller should pick a different goal).
+// SetGoal selects a new world target. When the requested cell isn't
+// walkable (e.g. a task icon implies a box center that lands on the
+// surrounding furniture), the goal snaps to the nearest walkable cell
+// within navGoalSnapRadius. Returns false only when even the snapped goal
+// can't be found.
+const navGoalSnapRadius = 16
+
 func (n *Navigator) SetGoal(goal Point) bool {
-	if n.Walk == nil || !n.Walk.Walkable(goal.X, goal.Y) {
+	if n.Walk == nil {
 		n.haveGoal = false
 		n.path = nil
 		return false
 	}
-	n.goal = goal
+	snapped, ok := nearestWalkable(n.Walk, goal, navGoalSnapRadius)
+	if !ok {
+		n.haveGoal = false
+		n.path = nil
+		return false
+	}
+	n.goal = snapped
 	n.haveGoal = true
 	n.path = nil
 	n.pathIdx = 0
@@ -58,11 +69,18 @@ func (n *Navigator) HasGoal() bool { return n.haveGoal }
 // Goal returns the current goal (only meaningful when HasGoal()).
 func (n *Navigator) Goal() Point { return n.goal }
 
+// Unreachable is returned for the mask when the goal can't be reached from
+// the player's current cell (A* found no path). Callers should treat this
+// as a permanent failure for this goal and pick a different one; unlike
+// (0, false) it isn't "waiting for direction" noise.
+const Unreachable uint8 = 0xFF
+
 // Next inspects the current player position and returns:
-//   - mask: the button bits to press this frame (0 means "no input")
+//   - mask: the button bits to press this frame (0 means "no input";
+//     Unreachable means the goal has no path from here)
 //   - arrived: true when the player is within navArrivedRadius of the goal
 //
-// When no goal is set or the goal is unreachable, returns (0, false).
+// When no goal is set, returns (0, false).
 func (n *Navigator) Next(player Point) (mask uint8, arrived bool) {
 	if !n.haveGoal {
 		return 0, false
@@ -73,7 +91,7 @@ func (n *Navigator) Next(player Point) (mask uint8, arrived bool) {
 	if n.path == nil {
 		n.replan(player)
 		if n.path == nil {
-			return 0, false // no path
+			return Unreachable, false
 		}
 	}
 
@@ -96,7 +114,7 @@ func (n *Navigator) Next(player Point) (mask uint8, arrived bool) {
 	if bestD > navOffPathReplan {
 		n.replan(player)
 		if n.path == nil {
-			return 0, false
+			return Unreachable, false
 		}
 		n.pathIdx = 0
 	}
@@ -110,7 +128,18 @@ func (n *Navigator) Next(player Point) (mask uint8, arrived bool) {
 }
 
 func (n *Navigator) replan(from Point) {
-	n.path = AStar(from, n.goal, n.Walk.Walkable, MapWidth, MapHeight)
+	// The player's "center" is the cam-center world coord; the sprite is
+	// 16 wide, so the reported center often lands on the foot-row wall
+	// pixels of narrow corridors. A* refuses to start from a non-walkable
+	// cell, which made every radar goal look unreachable. Snap the start
+	// to the closest walkable cell before planning.
+	start := from
+	if !n.Walk.Walkable(start.X, start.Y) {
+		if snapped, ok := nearestWalkable(n.Walk, from, navGoalSnapRadius); ok {
+			start = snapped
+		}
+	}
+	n.path = AStar(start, n.goal, n.Walk.Walkable, MapWidth, MapHeight)
 	n.pathIdx = 0
 }
 

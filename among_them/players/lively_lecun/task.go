@@ -1,39 +1,32 @@
 package main
 
 const (
-	// Region centered above the player's on-screen position where a task
-	// icon overlay would land when the player is standing on a task. The
-	// icon sprite (12x12) is drawn ~14 px above the task's tile per
-	// sim.nim:2318-2319, and the player is at screen center (64,64).
-	taskRegionX0    = 50
-	taskRegionY0    = 36
-	taskRegionW     = 28
-	taskRegionH     = 28
-	taskOnThreshold = 8 // measured: 17 in playing_on_task, 0 in regular playing
-
 	// TaskCompleteTicks in sim.nim:39 is 72 by default. Hold a few extra
 	// ticks of slack to cover round-trip latency between our release and
 	// the server applying it.
 	taskHoldTicks = 80
+
+	// World-space half-side of the task box. Every in-game task rect is
+	// 16x16 (IconToTaskWorld derivation), so the player must be within 8
+	// world pixels of the task center on both axes to stand on it. Be
+	// slightly tighter than 8 to avoid firing at the edge.
+	onTaskRadius = 6
 )
 
-// OnTask reports whether a task-icon sprite is overlapping the player's
-// on-screen position. The icon is palette 9 (the on-screen task indicator
-// color, distinct from palette 8's off-screen radar arrows).
-func OnTask(pixels []uint8) bool {
-	if len(pixels) != ScreenWidth*ScreenHeight {
-		return false
-	}
-	var count int
-	for y := taskRegionY0; y < taskRegionY0+taskRegionH; y++ {
-		row := pixels[y*ScreenWidth : (y+1)*ScreenWidth]
-		for x := taskRegionX0; x < taskRegionX0+taskRegionW; x++ {
-			if row[x] == taskIconColor {
-				count++
-			}
+// OnTask reports whether an exact 12×12 task-icon template matches a task
+// that the player is standing on. Comparison is done in world space: the
+// icon implies a task-box center (IconToTaskWorld), and the player must be
+// within onTaskRadius of that center. Screen-space comparison is too loose
+// because the icon is drawn ~16 px above the task box, so a radius wide
+// enough to cover Y also wraps in nearby tasks on X.
+func OnTask(matches []IconMatch, player Point, cam Camera) bool {
+	for _, m := range matches {
+		w := IconToTaskWorld(m, cam)
+		if absInt(w.X-player.X) <= onTaskRadius && absInt(w.Y-player.Y) <= onTaskRadius {
+			return true
 		}
 	}
-	return count >= taskOnThreshold
+	return false
 }
 
 // TaskHolder turns "I see a task icon at my position" into "release direction
@@ -51,7 +44,7 @@ type TaskHolder struct {
 // send the returned mask (ButtonA only, no directions -- the sim requires
 // attack pressed and inputX/inputY both zero to advance taskProgress, per
 // sim.nim:1135-1152). When false, the caller falls through to Bumper+Steer.
-func (h *TaskHolder) Adjust(pixels []uint8) (uint8, bool) {
+func (h *TaskHolder) Adjust(matches []IconMatch, player Point, cam Camera) (uint8, bool) {
 	if h.holding > 0 {
 		h.holding--
 		if h.holding == 0 {
@@ -59,7 +52,7 @@ func (h *TaskHolder) Adjust(pixels []uint8) (uint8, bool) {
 		}
 		return ButtonA, true
 	}
-	if OnTask(pixels) {
+	if OnTask(matches, player, cam) {
 		// Trigger call returns ButtonA itself, so the remaining decrement-only
 		// handled returns is one fewer than the total hold.
 		h.holding = taskHoldTicks - 1

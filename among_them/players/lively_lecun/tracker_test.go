@@ -79,11 +79,9 @@ func TestTracker_PlayerPosition(t *testing.T) {
 		t.Fatal("PlayerPosition should be valid after lock")
 	}
 	want := loadFixtureMeta(t)["playing"]
-	// Camera-derived position should be within a few pixels of the true
-	// player position recorded in the fixture (the player sprite's draw
-	// origin has small offsets vs the player's collision center).
-	if absInt(x-want.PlayerX) > 4 || absInt(y-want.PlayerY) > 8 {
-		t.Errorf("PlayerPosition() = (%d, %d), want close to (%d, %d)", x, y, want.PlayerX, want.PlayerY)
+	// With the sprite-offset inversion, PlayerPosition should match the
+	// server's recorded player position exactly (modulo any lock error).
+	if x != want.PlayerX || y != want.PlayerY {
+		t.Errorf("PlayerPosition() = (%d, %d), want (%d, %d)", x, y, want.PlayerX, want.PlayerY)
 	}
-	t.Logf("PlayerPosition = (%d, %d), recorded = (%d, %d)", x, y, want.PlayerX, want.PlayerY)
 }

@@ -44,14 +44,26 @@ func (t *Tracker) Update(frame []uint8) (Camera, bool) {
 	return Camera{}, false
 }
 
-// PlayerPosition returns the player's approximate world coordinates,
-// derived from the camera lock. The player's visible sprite is centered
-// at (ScreenWidth/2, ScreenHeight/2) in screen space (sim.nim:1302-1303),
-// so adding that offset to the camera's top-left gives the player's
-// world position to within a few pixels.
+// PlayerPosition returns the player's world coordinates (exact, modulo
+// any sub-pixel lock error) derived from the camera. Inverting sim.nim's
+// cameraFor (sim.nim:1298-1303):
+//
+//	cameraX = (player.x - SpriteDrawOffX) + SpriteSize/2 - ScreenWidth/2
+//	        = player.x - 2 + 6 - 64 = player.x - 60
+//	cameraY = (player.y - SpriteDrawOffY) + SpriteSize/2 - ScreenHeight/2
+//	        = player.y - 8 + 6 - 64 = player.y - 66
+//
+// so player.x = cam.X + 60 and player.y = cam.Y + 66. This matches
+// sim.nim's task-hitbox check (sim.nim:1144), so using these coords with
+// onTaskRadius lands inside the real 16x16 task rect.
+const (
+	playerWorldOffX = 60
+	playerWorldOffY = 66
+)
+
 func (t *Tracker) PlayerPosition() (int, int, bool) {
 	if !t.Locked {
 		return 0, 0, false
 	}
-	return t.Last.X + ScreenWidth/2, t.Last.Y + ScreenHeight/2, true
+	return t.Last.X + playerWorldOffX, t.Last.Y + playerWorldOffY, true
 }
