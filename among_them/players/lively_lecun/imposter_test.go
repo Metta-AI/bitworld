@@ -222,6 +222,45 @@ func TestImposter_FleeBeatsKill(t *testing.T) {
 	}
 }
 
+// TestImposter_KillForgetsVictim: after the kill-branch fires ButtonA,
+// the victim's color must be dropped from SuspectTracker so the next
+// Pick() returns a still-alive crewmate. Without this, the imposter's
+// subsequent vote falls through to SKIP (dead slots are excluded by
+// findColor), which is worse than an accusation.
+func TestImposter_KillForgetsVictim(t *testing.T) {
+	a, pixels, cam, player := imposterSetup()
+
+	// Record a prior sighting of color 11 at an older frame. After the
+	// kill forgets color 3, Pick should return 11.
+	a.suspect.Record(11, 5)
+	// Same kill-in-range setup as TestImposter_KillInRange: crewmate
+	// color 3 at screen (68, 58).
+	overlayCrewmate(pixels, 68, 58, 3, false)
+	// The Step pipeline would have recorded color 3 before calling
+	// stepImposter; emulate that so we can confirm it's the one that
+	// gets cleared (not just "never recorded").
+	a.suspect.Record(3, 100)
+	if c, ok := a.suspect.Pick(); !ok || c != 3 {
+		t.Fatalf("precondition: Pick = (%d, %v), want (3, true)", c, ok)
+	}
+
+	mask, handled := a.stepImposter(pixels, cam, player)
+	if !handled || mask&ButtonA == 0 {
+		t.Fatalf("kill precondition failed: mask=%#x handled=%v", mask, handled)
+	}
+
+	c, ok := a.suspect.Pick()
+	if !ok {
+		t.Fatalf("Pick after kill: got (_, false); want alive crewmate")
+	}
+	if c == 3 {
+		t.Fatalf("Pick still returns dead victim color 3; Forget failed")
+	}
+	if c != 11 {
+		t.Fatalf("Pick: got %d, want 11 (the remaining recorded color)", c)
+	}
+}
+
 func goalIsTaskStation(p Point) bool {
 	for _, ts := range TaskStations {
 		if ts.Center == p {

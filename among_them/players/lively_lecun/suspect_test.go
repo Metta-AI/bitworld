@@ -100,6 +100,35 @@ func TestSelfColorFromScreen_RealFixture(t *testing.T) {
 	}
 }
 
+func TestSuspectTracker_Forget(t *testing.T) {
+	var s SuspectTracker
+	s.Record(3, 10)
+	s.Record(7, 20) // most recent
+	s.Forget(7)
+	c, ok := s.Pick()
+	if !ok || c != 3 {
+		t.Fatalf("Pick after Forget(7): got (%d, %v), want (3, true)", c, ok)
+	}
+	// Re-recording 7 at a newer frame brings it back to top of Pick.
+	s.Record(7, 30)
+	c, ok = s.Pick()
+	if !ok || c != 7 {
+		t.Fatalf("Pick after Record(7, 30) post-Forget: got (%d, %v), want (7, true)", c, ok)
+	}
+}
+
+func TestSuspectTracker_ForgetBadColor(t *testing.T) {
+	// Out-of-range colors must be no-ops (defensive, matching Record).
+	var s SuspectTracker
+	s.Record(3, 10)
+	s.Forget(200)
+	s.Forget(255)
+	c, ok := s.Pick()
+	if !ok || c != 3 {
+		t.Fatalf("Pick after bad-color Forgets: got (%d, %v), want (3, true)", c, ok)
+	}
+}
+
 func TestSuspectTracker_SetSelfClear(t *testing.T) {
 	var s SuspectTracker
 	s.SetSelf(3)

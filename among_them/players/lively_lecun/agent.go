@@ -273,10 +273,10 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 		}
 		// Suspect tracking: every active frame, record when each
 		// visible non-self crewmate color was last seen. Feeds the
-		// voting-phase suspect picker (M5). Also happens on imposter
-		// frames below -- stepImposter calls FindCrewmates again but
-		// doesn't write to the tracker since imposters vote to deflect,
-		// not to accuse (that's a future milestone).
+		// voting-phase suspect picker (M5). Imposters record too --
+		// stepImposter clears victim colors from the tracker after a
+		// kill (see SuspectTracker.Forget) so the vote falls on a
+		// crewmate that's still alive.
 		for _, m := range FindCrewmates(pixels) {
 			a.suspect.Record(m.Color, a.frames)
 		}

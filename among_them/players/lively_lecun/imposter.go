@@ -142,6 +142,13 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 						target.Color, tgt, player, distSq)
 					brain.lastKillF = a.frames
 				}
+				// Drop the victim from suspect memory so vote-phase
+				// Pick() returns an *alive* crewmate color we've seen
+				// recently. Dead slots are excluded by findColor, so
+				// without this the imposter's vote would fall to SKIP
+				// after most kills (since the freshly-killed color was
+				// always the most recent sighting).
+				a.suspect.Forget(target.Color)
 				a.nav.Clear()
 				a.logBranch("imp-kill")
 				return ButtonA, true

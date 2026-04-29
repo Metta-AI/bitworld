@@ -90,6 +90,19 @@ func selfColorFromScreen(pixels []uint8) uint8 {
 	return best
 }
 
+// Forget clears any sighting of color c. Used by imposters after a kill
+// so the victim's color doesn't dominate Pick() at the subsequent vote:
+// the voting panel excludes dead slots, so leaving a killed victim at
+// the top of the sighting list would force a SKIP fallback. Clearing
+// their entry lets Pick return the next-most-recent alive crewmate,
+// turning an imposter's vote into an actual accusation.
+func (s *SuspectTracker) Forget(c uint8) {
+	if c > 15 {
+		return
+	}
+	s.lastSeen[c] = 0
+}
+
 // Pick returns the color seen most recently, excluding self. Returns
 // (255, false) when no color has been recorded.
 func (s *SuspectTracker) Pick() (uint8, bool) {
