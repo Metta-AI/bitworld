@@ -196,7 +196,7 @@ class BitWorldSmokeTest(unittest.TestCase):
         np.testing.assert_array_equal(terminals, np.ones(env.total_agents, dtype=np.float32))
         np.testing.assert_array_equal(env._truncations, np.ones(env.total_agents, dtype=np.float32))
         self.assertEqual(len(completed), env.total_agents)
-        self.assertEqual(max(item.score for item in completed), 100.0)
+        self.assertEqual(max(item.score for item in completed), 0.0)
 
     def test_among_them_state_observations_do_not_leak_hidden_roles(self) -> None:
         env = BitWorldVecEnv(

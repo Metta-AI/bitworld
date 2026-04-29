@@ -28,7 +28,7 @@ proc testMaxTicksConfigJson() =
     "maxTicks should round-trip through config JSON"
 
 proc testMaxTicksStartsAtGameStart() =
-  ## Tests that maxTicks starts after lobby and times out as an imposter win.
+  ## Tests that maxTicks starts after lobby and times out as a draw/truncation.
   var config = defaultGameConfig()
   config.minPlayers = 3
   config.imposterCount = 1
@@ -59,16 +59,13 @@ proc testMaxTicksStartsAtGameStart() =
 
   sim.step(inputs, inputs)
   doAssert sim.phase == GameOver, "game should end once maxTicks is reached"
-  doAssert sim.winner == Imposter, "time budget should default to imposter win"
+  doAssert sim.winner == Crewmate,
+    "time budget should use the draw sentinel winner"
   doAssert sim.timeLimitReached, "time budget win should be marked as truncated"
 
-  var imposterRewards = 0
   for player in sim.players:
-    if player.role == Imposter:
-      inc imposterRewards
-      doAssert player.reward == WinReward,
-        "imposter should receive win reward on time budget"
-  doAssert imposterRewards == 1, "test setup should have one imposter"
+    doAssert player.reward == 0,
+      "time budget should not award win rewards"
 
 testMaxTicksConfigJson()
 testMaxTicksStartsAtGameStart()
