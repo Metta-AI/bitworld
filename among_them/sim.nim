@@ -2533,11 +2533,12 @@ proc clearRenderStateSlot(
   for offset in 0 ..< featureCount:
     output[base + offset] = 0
 
-proc writeRenderSourceObservation(
+proc writeRawRenderState(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
+  ## Internal raw state; never exposed directly.
   for i in 0 ..< output.len:
     output[i] = 0
   sim.writeRenderStateHeader(playerIndex, output)
@@ -2549,17 +2550,13 @@ proc writeRenderSourceObservation(
   else:
     sim.writeRenderStateUiPlayers(playerIndex, output)
 
-proc applyPixelRenderStateContract(
+proc sanitizeRenderStateForPixels(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Pixel-safe state contract:
-  ## - writeRenderState* helpers may populate raw render-source fields.
-  ## - writeRenderStateObservation must expose only what sim.render drew into
-  ##   sim.fb, plus stable UI layout entities needed to locate those pixels.
-  ## - Raw simulator counters/ids are cleared; visible bars/icons are
-  ##   re-derived from the same pixel quantization used by the renderer.
+  ## Pixel-safe contract: keep only what render() drew into sim.fb, with
+  ## visible UI values re-quantized to the same pixels.
   let killIcon = sim.renderStateKillIconByte(playerIndex)
   output[RenderHeaderSelfJoin] = 0'u8
   output[RenderHeaderPlayerCount] = 0'u8
@@ -2669,8 +2666,8 @@ proc writeRenderStateObservation*(
       "Render state observation must be " & $RenderStateFeatures & " bytes."
     )
   discard sim.render(playerIndex)
-  sim.writeRenderSourceObservation(playerIndex, output)
-  sim.applyPixelRenderStateContract(playerIndex, output)
+  sim.writeRawRenderState(playerIndex, output)
+  sim.sanitizeRenderStateForPixels(playerIndex, output)
 
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
