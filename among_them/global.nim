@@ -44,6 +44,17 @@ const
   TransportSpeedGap = 16
   TransportX = 2
   TransportY = 1
+  Player2KillSpriteId = 5000
+  Player2KillShadowSpriteId = 5001
+  Player2GhostIconSpriteId = 5002
+  Player2RemainingSpriteId = 5003
+  Player2ProgressSpriteId = 5004
+  Player2ArrowSpriteId = 5005
+  Player2InterstitialSpriteId = 5006
+  Player2InterstitialObjectId = 5006
+  Player2RemainingObjectId = 5007
+  Player2ProgressObjectId = 5008
+  Player2TaskArrowObjectBase = 7000
 
 type
   TrailDot = object
@@ -69,6 +80,10 @@ type
     replayCommands*: seq[char]
     trails: seq[PlayerTrail]
 
+  PlayerViewerState* = object
+    initialized*: bool
+    objectIds*: seq[int]
+
 var TransportSheet: Sprite
 
 proc initGlobalViewerState*(): GlobalViewerState =
@@ -77,6 +92,10 @@ proc initGlobalViewerState*(): GlobalViewerState =
   result.selectedJoinOrder = -1
   result.replaySeekTick = -1
   result.replayCommands = @[]
+
+proc initPlayerViewerState*(): PlayerViewerState =
+  ## Returns the default state for one sprite player viewer.
+  discard
 
 proc spriteColor(color: uint8): uint8 =
   ## Converts a game palette index to a global protocol pixel.
@@ -179,7 +198,7 @@ proc applyGlobalViewerMessage*(
       state.mouseY = readProtocolI16(message, offset + 2)
       offset += 4
       if offset < message.len and message[offset].uint8 notin
-          {0x81'u8, 0x82'u8, 0x83'u8}:
+          {0x81'u8, 0x82'u8, 0x83'u8, 0x84'u8}:
         state.mouseLayer = int(message[offset].uint8)
         inc offset
       else:
@@ -208,6 +227,54 @@ proc applyGlobalViewerMessage*(
       for i in 0 ..< length:
         state.replayCommands.add(message[offset + i])
       offset += length
+    of 0x84:
+      if offset + 1 > message.len:
+        return
+      inc offset
+    else:
+      return
+
+proc applyPlayerViewerMessage*(
+  state: var PlayerViewerState,
+  message: string,
+  inputMask: var uint8,
+  chatText: var string
+) =
+  ## Applies sprite player protocol input messages.
+  var offset = 0
+  while offset < message.len:
+    let messageType = message[offset].uint8
+    inc offset
+    case messageType
+    of 0x81:
+      if offset + 2 > message.len:
+        return
+      let length = int(uint16(message[offset].uint8) or
+        (uint16(message[offset + 1].uint8) shl 8))
+      offset += 2
+      if offset + length > message.len:
+        return
+      for i in 0 ..< length:
+        let value = message[offset + i].uint8
+        if value >= 32'u8 and value < 127'u8:
+          chatText.add(message[offset + i])
+      offset += length
+    of 0x82:
+      if offset + 4 > message.len:
+        return
+      offset += 4
+      if offset < message.len and message[offset].uint8 notin
+          {0x81'u8, 0x82'u8, 0x83'u8, 0x84'u8}:
+        inc offset
+    of 0x83:
+      if offset + 2 > message.len:
+        return
+      offset += 2
+    of 0x84:
+      if offset + 1 > message.len:
+        return
+      inputMask = message[offset].uint8 and 0x7f'u8
+      inc offset
     else:
       return
 
@@ -283,6 +350,22 @@ proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
       let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
       if colorIndex != TransparentColorIndex:
         result[sprite.spriteIndex(x, y)] = spriteColor(colorIndex)
+
+proc buildSpriteProtocolShadowSprite(sprite: Sprite): seq[uint8] =
+  ## Builds a shadowed global protocol sprite from a game sprite.
+  result = newSeq[uint8](sprite.width * sprite.height)
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
+      if colorIndex != TransparentColorIndex:
+        result[sprite.spriteIndex(x, y)] =
+          spriteColor(ShadowMap[colorIndex and 0x0f])
+
+proc buildSolidSprite(width, height: int, color: uint8): seq[uint8] =
+  ## Builds a solid protocol sprite.
+  result = newSeq[uint8](width * height)
+  for i in 0 ..< result.len:
+    result[i] = spriteColor(color)
 
 proc buildImposterBarSprite(): seq[uint8] =
   ## Builds the global-only red impostor marker sprite.
@@ -550,6 +633,102 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
       bodyPixels
     )
 
+proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
+  ## Builds the initial sprite player snapshot.
+  result = @[]
+  var mapPixels = newSeq[uint8](sim.mapPixels.len)
+  for i in 0 ..< sim.mapPixels.len:
+    mapPixels[i] = spriteColor(sim.mapPixels[i])
+  result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
+  result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+  result.addSprite(MapSpriteId, sim.gameMap.width, sim.gameMap.height, mapPixels)
+  result.addSprite(
+    TaskSpriteId,
+    sim.taskIconSprite.width,
+    sim.taskIconSprite.height,
+    buildSpriteProtocolRawSprite(sim.taskIconSprite)
+  )
+  result.addSprite(
+    Player2KillSpriteId,
+    sim.killButtonSprite.width,
+    sim.killButtonSprite.height,
+    buildSpriteProtocolRawSprite(sim.killButtonSprite)
+  )
+  result.addSprite(
+    Player2KillShadowSpriteId,
+    sim.killButtonSprite.width,
+    sim.killButtonSprite.height,
+    buildSpriteProtocolShadowSprite(sim.killButtonSprite)
+  )
+  result.addSprite(
+    Player2GhostIconSpriteId,
+    sim.ghostIconSprite.width,
+    sim.ghostIconSprite.height,
+    buildSpriteProtocolRawSprite(sim.ghostIconSprite)
+  )
+  result.addSprite(
+    Player2ArrowSpriteId,
+    1,
+    1,
+    buildSolidSprite(1, 1, 8'u8)
+  )
+  for i in 0 ..< PlayerColors.len:
+    let
+      playerRight = buildSpriteProtocolActorSprite(
+        sim.playerSprite,
+        PlayerColors[i],
+        false
+      )
+      playerLeft = buildSpriteProtocolActorSprite(
+        sim.playerSprite,
+        PlayerColors[i],
+        true
+      )
+      ghostRight = buildSpriteProtocolActorSprite(
+        sim.ghostSprite,
+        PlayerColors[i],
+        false
+      )
+      ghostLeft = buildSpriteProtocolActorSprite(
+        sim.ghostSprite,
+        PlayerColors[i],
+        true
+      )
+      bodyPixels = buildSpriteProtocolBodySprite(
+        sim.bodySprite,
+        PlayerColors[i]
+      )
+    result.addSprite(
+      PlayerSpriteBase + i * 2,
+      sim.playerSprite.width + 2,
+      sim.playerSprite.height + 2,
+      playerRight
+    )
+    result.addSprite(
+      PlayerSpriteBase + i * 2 + 1,
+      sim.playerSprite.width + 2,
+      sim.playerSprite.height + 2,
+      playerLeft
+    )
+    result.addSprite(
+      GhostSpriteBase + i * 2,
+      sim.ghostSprite.width + 2,
+      sim.ghostSprite.height + 2,
+      ghostRight
+    )
+    result.addSprite(
+      GhostSpriteBase + i * 2 + 1,
+      sim.ghostSprite.width + 2,
+      sim.ghostSprite.height + 2,
+      ghostLeft
+    )
+    result.addSprite(
+      BodySpriteBase + i,
+      sim.bodySprite.width + 2,
+      sim.bodySprite.height + 2,
+      bodyPixels
+    )
+
 proc spriteObjectId(player: Player): int =
   ## Returns the stable global protocol object id for a player.
   PlayerObjectBase + player.joinOrder
@@ -697,6 +876,289 @@ proc roleName(role: PlayerRole): string =
     return "CREWMATE"
   of Imposter:
     return "IMPOSTER"
+
+proc buildTaskProgressSprite(progress, total: int): seq[uint8] =
+  ## Builds the one-pixel high task progress bar sprite.
+  result = newSeq[uint8](TaskBarWidth)
+  let filled =
+    if total > 0:
+      clamp(progress * TaskBarWidth div total, 0, TaskBarWidth)
+    else:
+      0
+  for x in 0 ..< TaskBarWidth:
+    let color = if x < filled: ProgressFilled else: ProgressEmpty
+    result[x] = spriteColor(color)
+
+proc addSpritePlayerTaskArrows(
+  sim: SimServer,
+  playerIndex: int,
+  cameraX,
+  cameraY: int,
+  currentIds: var seq[int],
+  packet: var seq[uint8]
+) =
+  ## Adds off-screen task arrow objects to a sprite player packet.
+  if not sim.config.showTaskArrows:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if player.role != Crewmate:
+    return
+  let bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+  for taskIndex in player.assignedTasks:
+    if taskIndex < 0 or taskIndex >= sim.tasks.len:
+      continue
+    let task = sim.tasks[taskIndex]
+    if playerIndex < task.completed.len and task.completed[playerIndex]:
+      continue
+    let
+      bobY =
+        if player.activeTask == taskIndex:
+          0
+        else:
+          bob[(sim.tickCount div 3) mod bob.len]
+      iconX = task.x + task.w div 2 - cameraX
+      iconY = task.y - SpriteSize div 2 - 2 + bobY - cameraY
+      iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
+      iconSy = task.y - SpriteSize - 2 + bobY - cameraY
+    if iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
+        iconSx < ScreenWidth and iconSy < ScreenHeight:
+      continue
+    let
+      px = float(player.x + CollisionW div 2 - cameraX)
+      py = float(player.y + CollisionH div 2 - cameraY)
+      dx = float(iconX) - px
+      dy = float(iconY) - py
+    if abs(dx) < 0.5 and abs(dy) < 0.5:
+      continue
+    var ex, ey: float
+    let
+      minX = 0.0
+      maxX = float(ScreenWidth - 1)
+      minY = 0.0
+      maxY = float(ScreenHeight - 1)
+    if abs(dx) > abs(dy):
+      if dx > 0:
+        ex = maxX
+      else:
+        ex = minX
+      ey = py + dy * (ex - px) / dx
+      ey = clamp(ey, minY, maxY)
+    else:
+      if dy > 0:
+        ey = maxY
+      else:
+        ey = minY
+      ex = px + dx * (ey - py) / dy
+      ex = clamp(ex, minX, maxX)
+    let objectId = Player2TaskArrowObjectBase + taskIndex
+    currentIds.add(objectId)
+    packet.addObject(
+      objectId,
+      int(ex),
+      int(ey),
+      30000,
+      MapLayerId,
+      Player2ArrowSpriteId
+    )
+
+proc buildSpriteProtocolPlayerUpdates*(
+  sim: var SimServer,
+  playerIndex: int,
+  state: PlayerViewerState,
+  nextState: var PlayerViewerState
+): seq[uint8] =
+  ## Builds sprite protocol updates for one playable player view.
+  result = @[]
+  nextState = state
+  if not nextState.initialized:
+    result = sim.buildSpriteProtocolPlayerInit()
+    nextState.initialized = true
+
+  var currentIds: seq[int] = @[]
+  if sim.phase != Playing or playerIndex < 0 or
+      playerIndex >= sim.players.len:
+    let interstitial = spritePixelsFromPackedFrame(sim.render(playerIndex))
+    currentIds.add(Player2InterstitialObjectId)
+    result.addSprite(
+      Player2InterstitialSpriteId,
+      ScreenWidth,
+      ScreenHeight,
+      interstitial
+    )
+    result.addObject(
+      Player2InterstitialObjectId,
+      0,
+      0,
+      0,
+      MapLayerId,
+      Player2InterstitialSpriteId
+    )
+  else:
+    let
+      player = sim.players[playerIndex]
+      view = sim.playerView(playerIndex)
+      cameraX = view.cameraX
+      cameraY = view.cameraY
+      viewerIsGhost = view.viewerIsGhost
+    currentIds.add(MapObjectId)
+    result.addObject(
+      MapObjectId,
+      -cameraX,
+      -cameraY,
+      low(int16),
+      MapLayerId,
+      MapSpriteId
+    )
+
+    for i in 0 ..< sim.bodies.len:
+      let body = sim.bodies[i]
+      if not view.screenPointInFrame(
+        body.x + CollisionW div 2,
+        body.y + CollisionH div 2
+      ):
+        continue
+      let objectId = spriteBodyObjectId(i)
+      currentIds.add(objectId)
+      result.addObject(
+        objectId,
+        body.x - SpriteDrawOffX - 1 - cameraX,
+        body.y - SpriteDrawOffY - 1 - cameraY,
+        body.y,
+        MapLayerId,
+        BodySpriteBase + playerColorIndex(body.color)
+      )
+
+    for other in sim.players:
+      if not view.screenPointInFrame(
+        other.x + CollisionW div 2,
+        other.y + CollisionH div 2
+      ):
+        continue
+      if not other.alive and not viewerIsGhost:
+        continue
+      let objectId = other.spriteObjectId()
+      currentIds.add(objectId)
+      result.addObject(
+        objectId,
+        other.x - SpriteDrawOffX - 1 - cameraX,
+        other.y - SpriteDrawOffY - 1 - cameraY,
+        other.y,
+        MapLayerId,
+        other.spriteActorSpriteId(-1)
+      )
+
+    if player.role == Crewmate:
+      let bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+      for taskIndex in player.assignedTasks:
+        if taskIndex < 0 or taskIndex >= sim.tasks.len:
+          continue
+        let task = sim.tasks[taskIndex]
+        if playerIndex < task.completed.len and
+            task.completed[playerIndex]:
+          continue
+        let
+          bobY =
+            if player.activeTask == taskIndex:
+              0
+            else:
+              bob[(sim.tickCount div 3) mod bob.len]
+          iconSx =
+            task.x + task.w div 2 - SpriteSize div 2 - cameraX
+          iconSy = task.y - SpriteSize - 2 + bobY - cameraY
+        if iconSx + SpriteSize <= 0 or iconSy + SpriteSize <= 0 or
+            iconSx >= ScreenWidth or iconSy >= ScreenHeight:
+          continue
+        let objectId = spriteTaskObjectId(taskIndex)
+        currentIds.add(objectId)
+        result.addObject(
+          objectId,
+          iconSx,
+          iconSy,
+          30000,
+          MapLayerId,
+          TaskSpriteId
+        )
+        if player.activeTask == taskIndex and player.taskProgress > 0:
+          let
+            barX = iconSx + SpriteSize div 2 - TaskBarWidth div 2
+            barY = iconSy + SpriteSize + TaskBarGap
+          currentIds.add(Player2ProgressObjectId)
+          result.addSprite(
+            Player2ProgressSpriteId,
+            TaskBarWidth,
+            1,
+            buildTaskProgressSprite(
+              player.taskProgress,
+              sim.config.taskCompleteTicks
+            )
+          )
+          result.addObject(
+            Player2ProgressObjectId,
+            barX,
+            barY,
+            30001,
+            MapLayerId,
+            Player2ProgressSpriteId
+          )
+
+    sim.addSpritePlayerTaskArrows(
+      playerIndex,
+      cameraX,
+      cameraY,
+      currentIds,
+      result
+    )
+
+    if not player.alive:
+      currentIds.add(Player2RemainingObjectId)
+      result.addObject(
+        Player2RemainingObjectId,
+        1,
+        ScreenHeight - SpriteSize - 1,
+        30002,
+        MapLayerId,
+        Player2GhostIconSpriteId
+      )
+    elif player.role == Imposter:
+      currentIds.add(Player2RemainingObjectId)
+      result.addObject(
+        Player2RemainingObjectId,
+        1,
+        ScreenHeight - SpriteSize - 1,
+        30002,
+        MapLayerId,
+        if player.killCooldown > 0:
+          Player2KillShadowSpriteId
+        else:
+          Player2KillSpriteId
+      )
+
+    let
+      remainingText = $sim.totalTasksRemaining()
+      remaining = sim.buildSpriteProtocolTextSprite([remainingText], 2'u8)
+      textX = ScreenWidth - remaining.width
+    currentIds.add(SelectedTextObjectId)
+    result.addSprite(
+      Player2RemainingSpriteId,
+      remaining.width,
+      remaining.height,
+      remaining.pixels
+    )
+    result.addObject(
+      SelectedTextObjectId,
+      textX,
+      0,
+      30003,
+      MapLayerId,
+      Player2RemainingSpriteId
+    )
+
+  for objectId in state.objectIds:
+    if objectId notin currentIds:
+      result.addDeleteObject(objectId)
+  nextState.objectIds = currentIds
 
 proc replayCommandAt(layer, x, y: int): char =
   ## Returns the replay transport command under a UI coordinate.

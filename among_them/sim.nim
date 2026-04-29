@@ -122,6 +122,7 @@ const
     9,     # 15 pale blue    -> dark teal
   ]
   WebSocketPath* = "/player"
+  Player2WebSocketPath* = "/player2"
   GlobalWebSocketPath* = "/global"
 
 type

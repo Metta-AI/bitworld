@@ -27,14 +27,32 @@ canvas{
   pointer-events:none;
 }
 #status.hidden{display:none}
+#entry{
+  position:absolute;
+  left:50%;
+  bottom:24px;
+  transform:translateX(-50%);
+  max-width:min(720px,calc(100vw - 32px));
+  min-width:180px;
+  padding:10px 12px;
+  color:#fff;
+  background:rgba(0,0,0,.82);
+  border:1px solid rgba(255,255,255,.45);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font:16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+#entry.hidden{display:none}
 </style>
 </head>
 <body>
 <canvas id="c" width="1" height="1"></canvas>
 <div id="status">connecting...</div>
+<div id="entry" class="hidden"></div>
 <script>
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
+const entry=document.getElementById("entry");
 const url=new URL(location.href);
 function defaultAddress(path){
   const protocol=location.protocol==="https:"?"wss:":"ws:";
@@ -43,7 +61,14 @@ function defaultAddress(path){
 }
 const address=url.searchParams.get("address")||defaultAddress("/global");
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
+function addressPath(){
+  try{return new URL(address,location.href).pathname}catch(e){return""}
+}
+const playerMode=url.searchParams.get("player")==="1"||
+  addressPath()==="/player2";
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
+const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
+const ButtonSelect=16,ButtonA=32,ButtonB=64;
 const palette=[
   [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],
   [255,119,168,255],[95,87,79,255],[171,82,54,255],[255,163,0,255],
@@ -54,6 +79,7 @@ let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
 let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
 let draggingMap=false,dragX=0,dragY=0;
+let heldButtons=0,typing=false,textBuffer="";
 ctx.imageSmoothingEnabled=false;
 
 function setStatus(text){
@@ -139,6 +165,84 @@ function writeI16(bytes,offset,value){
   value=Math.max(-32768,Math.min(32767,value))&0xffff;
   bytes[offset]=value&255;
   bytes[offset+1]=value>>8;
+}
+
+function writeU16(bytes,offset,value){
+  value=Math.max(0,Math.min(65535,value))&0xffff;
+  bytes[offset]=value&255;
+  bytes[offset+1]=value>>8;
+}
+
+function sendPlayerButtons(){
+  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
+  socket.send(new Uint8Array([0x84,heldButtons&127]));
+}
+
+function setButton(bit,down){
+  const next=down?(heldButtons|bit):(heldButtons&~bit);
+  if(next===heldButtons)return;
+  heldButtons=next;
+  sendPlayerButtons();
+}
+
+function keyButton(key){
+  switch(key){
+    case "ArrowUp":return ButtonUp;
+    case "ArrowDown":return ButtonDown;
+    case "ArrowLeft":return ButtonLeft;
+    case "ArrowRight":return ButtonRight;
+    case " ":return ButtonSelect;
+    case "z":case "Z":return ButtonA;
+    case "x":case "X":return ButtonB;
+    default:return 0;
+  }
+}
+
+function asciiBytes(text){
+  const bytes=[];
+  for(let i=0;i<text.length;i++){
+    const code=text.charCodeAt(i);
+    if(code>=32&&code<127)bytes.push(code);
+  }
+  return bytes;
+}
+
+function sendInputText(text){
+  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
+  const bytes=asciiBytes(text).slice(0,65535);
+  if(bytes.length===0)return;
+  const packet=new Uint8Array(bytes.length+3);
+  packet[0]=0x81;
+  writeU16(packet,1,bytes.length);
+  packet.set(bytes,3);
+  socket.send(packet);
+}
+
+function updateEntry(){
+  if(!typing){
+    entry.classList.add("hidden");
+    entry.textContent="";
+    return;
+  }
+  entry.textContent="> "+textBuffer;
+  entry.classList.remove("hidden");
+}
+
+function startTyping(){
+  typing=true;
+  textBuffer="";
+  if(heldButtons!==0){
+    heldButtons=0;
+    sendPlayerButtons();
+  }
+  updateEntry();
+}
+
+function stopTyping(send){
+  if(send)sendInputText(textBuffer);
+  typing=false;
+  textBuffer="";
+  updateEntry();
 }
 
 function sendMousePosition(event,preferredLayer=null){
@@ -349,7 +453,10 @@ function connect(){
     if(socket===ws)parse(new Uint8Array(event.data));
   };
   ws.onopen=()=>{
-    if(socket===ws)setStatus("");
+    if(socket===ws){
+      setStatus("");
+      sendPlayerButtons();
+    }
   };
   ws.onclose=()=>reconnect(ws);
   ws.onerror=()=>{
@@ -407,6 +514,55 @@ addEventListener("pointerup",event=>{
 addEventListener("dblclick",()=>{
   autoFit=true;
   fit();
+});
+addEventListener("keydown",event=>{
+  if(!playerMode)return;
+  if(typing){
+    if(event.key==="Enter"){
+      event.preventDefault();
+      stopTyping(true);
+    }else if(event.key==="Escape"){
+      event.preventDefault();
+      stopTyping(false);
+    }else if(event.key==="Backspace"){
+      event.preventDefault();
+      textBuffer=textBuffer.slice(0,-1);
+      updateEntry();
+    }else if(event.key.length===1){
+      const code=event.key.charCodeAt(0);
+      if(code>=32&&code<127){
+        event.preventDefault();
+        textBuffer+=event.key;
+        updateEntry();
+      }
+    }
+    return;
+  }
+  if(event.key==="Enter"){
+    event.preventDefault();
+    startTyping();
+    return;
+  }
+  const bit=keyButton(event.key);
+  if(bit!==0){
+    event.preventDefault();
+    setButton(bit,true);
+  }
+});
+addEventListener("keyup",event=>{
+  if(!playerMode||typing)return;
+  const bit=keyButton(event.key);
+  if(bit!==0){
+    event.preventDefault();
+    setButton(bit,false);
+  }
+});
+addEventListener("blur",()=>{
+  if(!playerMode)return;
+  if(heldButtons!==0){
+    heldButtons=0;
+    sendPlayerButtons();
+  }
 });
 fit();
 </script>
