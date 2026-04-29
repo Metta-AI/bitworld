@@ -295,6 +295,34 @@ const
   RenderStateFeatures* =
     RenderStateTaskOffset + RenderStateTaskSlots * RenderStateTaskFeatures
 
+  RenderHeaderSelfJoin = 1
+  RenderHeaderPlayerCount = 2
+  RenderHeaderSelfRole = 4
+  RenderHeaderSelfScreenX = 5
+  RenderHeaderSelfScreenY = 6
+  RenderHeaderSelfVelX = 7
+  RenderHeaderSelfVelY = 8
+  RenderHeaderKillCooldown = 9
+  RenderHeaderTaskProgress = 10
+  RenderHeaderActiveTask = 11
+  RenderHeaderButtonCalls = 12
+  RenderHeaderTasksRemaining = 13
+  RenderHeaderTickModulo = 15
+  RenderHeaderVoteTimer = 18
+  RenderHeaderEjectedPlayer = 19
+  RenderHeaderWinner = 20
+  RenderHeaderTimeLimitCause = 21
+
+  RenderPlayerFlagsFeature = 4
+  RenderPlayerVelXFeature = 5
+  RenderPlayerVelYFeature = 6
+  RenderPlayerAuxFeature = 7
+
+  RenderTaskKindFeature = 0
+  RenderTaskFlagsFeature = 3
+  RenderTaskProgressFeature = 4
+  RenderTaskSourceIdFeature = 7
+
   RenderKindPlayer = 1'u8
   RenderKindBody = 2'u8
   RenderKindTask = 3'u8
@@ -2505,33 +2533,54 @@ proc clearRenderStateSlot(
   for offset in 0 ..< featureCount:
     output[base + offset] = 0
 
+proc writeRenderSourceObservation(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  for i in 0 ..< output.len:
+    output[i] = 0
+  sim.writeRenderStateHeader(playerIndex, output)
+  sim.writeRenderStateGrid(playerIndex, output)
+  if sim.phase == Playing:
+    sim.writeRenderStatePlayingPlayers(playerIndex, output)
+    sim.writeRenderStateBodies(playerIndex, output)
+    sim.writeRenderStateTasks(playerIndex, output)
+  else:
+    sim.writeRenderStateUiPlayers(playerIndex, output)
+
 proc applyPixelRenderStateContract(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Keep writeRenderState* as raw render-source helpers, then clamp the final
-  ## observation to information available in the rendered pixel frame.
+  ## Pixel-safe state contract:
+  ## - writeRenderState* helpers may populate raw render-source fields.
+  ## - writeRenderStateObservation must expose only what sim.render drew into
+  ##   sim.fb, plus stable UI layout entities needed to locate those pixels.
+  ## - Raw simulator counters/ids are cleared; visible bars/icons are
+  ##   re-derived from the same pixel quantization used by the renderer.
   let killIcon = sim.renderStateKillIconByte(playerIndex)
-  output[1] = 0'u8 # self join index
-  output[2] = 0'u8 # player count
+  output[RenderHeaderSelfJoin] = 0'u8
+  output[RenderHeaderPlayerCount] = 0'u8
   if sim.phase notin {Playing, RoleReveal, GameOver}:
-    output[4] = 0'u8 # role only appears in play affordances/reveal/end screens
+    output[RenderHeaderSelfRole] = 0'u8
   if sim.phase != Playing:
-    output[5] = 0'u8 # non-playing screens use UI slots, not world position
-    output[6] = 0'u8
-  output[7] = 0'u8 # exact velocity x
-  output[8] = 0'u8 # exact velocity y
-  output[9] = 0'u8 # exact kill cooldown
-  output[10] = 0'u8 # exact task progress
-  output[11] = 0'u8 # active task id
-  output[12] = 0'u8 # button calls used
-  output[15] = 0'u8 # tick modulo
-  output[19] = 0'u8 # ejected player index
-  output[20] = if sim.phase == GameOver: output[20] else: 0'u8
-  output[21] = 0'u8 # time-limit cause
+    output[RenderHeaderSelfScreenX] = 0'u8
+    output[RenderHeaderSelfScreenY] = 0'u8
+  output[RenderHeaderSelfVelX] = 0'u8
+  output[RenderHeaderSelfVelY] = 0'u8
+  output[RenderHeaderKillCooldown] = 0'u8
+  output[RenderHeaderTaskProgress] = 0'u8
+  output[RenderHeaderActiveTask] = 0'u8
+  output[RenderHeaderButtonCalls] = 0'u8
+  output[RenderHeaderTickModulo] = 0'u8
+  output[RenderHeaderEjectedPlayer] = 0'u8
+  output[RenderHeaderWinner] =
+    if sim.phase == GameOver: output[RenderHeaderWinner] else: 0'u8
+  output[RenderHeaderTimeLimitCause] = 0'u8
   if sim.phase != Playing:
-    output[13] = 0'u8
+    output[RenderHeaderTasksRemaining] = 0'u8
 
   for slot in 0 ..< RenderStatePlayerSlots:
     let base = RenderStatePlayerOffset + slot * RenderStatePlayerFeatures
@@ -2539,21 +2588,24 @@ proc applyPixelRenderStateContract(
       sim.phase in {RoleReveal, GameOver} or
       (sim.phase == Playing and slot == playerIndex and killIcon != 0'u8)
     if not roleFlagVisible:
-      output[base + 4] = output[base + 4] and (0xFF'u8 xor RenderPlayerRoleImposter)
-    output[base + 5] = 0'u8
-    output[base + 6] = 0'u8
+      output[base + RenderPlayerFlagsFeature] =
+        output[base + RenderPlayerFlagsFeature] and
+        (0xFF'u8 xor RenderPlayerRoleImposter)
+    output[base + RenderPlayerVelXFeature] = 0'u8
+    output[base + RenderPlayerVelYFeature] = 0'u8
     if sim.phase != Voting:
-      output[base + 7] = 0'u8
+      output[base + RenderPlayerAuxFeature] = 0'u8
 
   if sim.phase == Voting:
-    output[18] = sim.renderStateVoteTimerByte()
+    output[RenderHeaderVoteTimer] = sim.renderStateVoteTimerByte()
     return
 
   if sim.phase != Playing:
     return
 
-  output[4] = if killIcon != 0'u8: output[4] else: 0'u8
-  output[9] = killIcon
+  output[RenderHeaderSelfRole] =
+    if killIcon != 0'u8: output[RenderHeaderSelfRole] else: 0'u8
+  output[RenderHeaderKillCooldown] = killIcon
 
   let gridStep = ScreenWidth div RenderStateGridSize
   for gy in 0 ..< RenderStateGridSize:
@@ -2566,7 +2618,7 @@ proc applyPixelRenderStateContract(
 
   if playerIndex >= 0 and playerIndex < RenderStatePlayerSlots:
     let selfBase = RenderStatePlayerOffset + playerIndex * RenderStatePlayerFeatures
-    output[selfBase + 7] = killIcon
+    output[selfBase + RenderPlayerAuxFeature] = killIcon
 
   let taskProgressByte =
     if playerIndex >= 0 and playerIndex < sim.players.len:
@@ -2580,25 +2632,28 @@ proc applyPixelRenderStateContract(
   for slot in 0 ..< RenderStateTaskSlots:
     let
       base = RenderStateTaskOffset + slot * RenderStateTaskFeatures
-      flags = output[base + 3]
+      flags = output[base + RenderTaskFlagsFeature]
       visibleFlags = flags and (RenderTaskIconVisible or RenderTaskArrowVisible)
-    if output[base] != RenderKindTask or visibleFlags == 0'u8:
+    if output[base + RenderTaskKindFeature] != RenderKindTask or
+        visibleFlags == 0'u8:
       output.clearRenderStateSlot(base, RenderStateTaskFeatures)
       continue
 
     var pixelFlags = RenderTaskAssigned or RenderTaskIncomplete or visibleFlags
     if (flags and RenderTaskActive) != 0'u8:
       pixelFlags = pixelFlags or RenderTaskActive
-    output[base + 3] = pixelFlags
-    output[base + 4] =
+    output[base + RenderTaskFlagsFeature] = pixelFlags
+    output[base + RenderTaskProgressFeature] =
       if (pixelFlags and RenderTaskActive) != 0'u8 and
           (pixelFlags and RenderTaskIconVisible) != 0'u8:
         taskProgressByte
       else:
         0'u8
-    output[base + 7] = 0'u8
-    if output[10] == 0'u8 and output[base + 4] != 0'u8:
-      output[10] = output[base + 4]
+    output[base + RenderTaskSourceIdFeature] = 0'u8
+    if output[RenderHeaderTaskProgress] == 0'u8 and
+        output[base + RenderTaskProgressFeature] != 0'u8:
+      output[RenderHeaderTaskProgress] =
+        output[base + RenderTaskProgressFeature]
 
 proc writeRenderStateObservation*(
   sim: var SimServer,
@@ -2614,16 +2669,7 @@ proc writeRenderStateObservation*(
       "Render state observation must be " & $RenderStateFeatures & " bytes."
     )
   discard sim.render(playerIndex)
-  for i in 0 ..< output.len:
-    output[i] = 0
-  sim.writeRenderStateHeader(playerIndex, output)
-  sim.writeRenderStateGrid(playerIndex, output)
-  if sim.phase == Playing:
-    sim.writeRenderStatePlayingPlayers(playerIndex, output)
-    sim.writeRenderStateBodies(playerIndex, output)
-    sim.writeRenderStateTasks(playerIndex, output)
-  else:
-    sim.writeRenderStateUiPlayers(playerIndex, output)
+  sim.writeRenderSourceObservation(playerIndex, output)
   sim.applyPixelRenderStateContract(playerIndex, output)
 
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =

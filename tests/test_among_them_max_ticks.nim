@@ -41,9 +41,16 @@ proc testMaxTicksStartsAtGameStart() =
 
   var inputs = newSeq[InputState](sim.players.len)
   sim.step(inputs, inputs)
-  doAssert sim.phase == Playing, "game should start once minPlayers join"
+  doAssert sim.phase == RoleReveal,
+    "game should enter role reveal once minPlayers join"
   doAssert sim.gameTicksElapsed() == 0,
-    "max tick budget should start when play starts, not in lobby"
+    "max tick budget should not start during role reveal"
+
+  for _ in 0 ..< sim.config.roleRevealTicks:
+    sim.step(inputs, inputs)
+  doAssert sim.phase == Playing, "game should enter play after role reveal"
+  doAssert sim.gameTicksElapsed() == 0,
+    "max tick budget should start when play starts, not in lobby or role reveal"
 
   sim.step(inputs, inputs)
   doAssert sim.phase == Playing, "game should still be active before maxTicks"
