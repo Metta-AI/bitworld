@@ -52,6 +52,8 @@ type Agent struct {
 
 	pendingChat string // drained by TakePendingChat(); emitted on websocket only
 	bodyGoal    bool   // true when nav's current goal is a body (highest priority)
+
+	imposter *ImposterBrain // lazy-initialized when we observe an imposter role
 }
 
 // NewAgent returns an Agent using the embedded skeld map + walk mask. It
@@ -250,6 +252,16 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 			log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d tasks=%d matches=%d",
 				player, cam.X, cam.Y, cam.Mismatches, a.tracker.Brutes, a.memory.Len(), len(matches))
 			a.lastPosLog = a.frames
+		}
+		// Imposter path: entirely separate goal selection (flee bodies,
+		// chase lone crewmates, fake-task camouflage). Ghosts fall
+		// through to crewmate path since ghost-imposters still move
+		// normally. IsImposter latches on either ready or cooldown so
+		// we commit to this branch once the role is confirmed.
+		if a.status.IsImposter() && !a.status.IsGhost() {
+			if m, handled := a.stepImposter(pixels, cam, player); handled {
+				return m
+			}
 		}
 		if !a.nav.HasGoal() {
 			if goal, _, ok := a.memory.Closest(player); ok {
