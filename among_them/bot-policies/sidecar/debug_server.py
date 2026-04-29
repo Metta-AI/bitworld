@@ -3,6 +3,8 @@
 Runs alongside the bot on a separate port (default 9090).
 Broadcasts JSON events to all connected browser clients.
 Port 9090 = WebSocket, port 9091 = HTTP serving debugger.html.
+
+Tick history is stored for scrubbing/replay from the browser.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import base64
 import json
 import logging
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 try:
@@ -24,10 +27,11 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEBUGGER_HTML_PATH = Path(__file__).parent / 'debugger.html'
+MAX_HISTORY_TICKS = 6000
 
 
 class DebugServer:
-  """Async WebSocket debug event broadcaster with embedded HTTP file server."""
+  """Async WebSocket debug event broadcaster with tick history for replay."""
 
   def __init__(self, port: int = 9090):
     self.ws_port = port
@@ -36,6 +40,10 @@ class DebugServer:
     self._server = None
     self._http_server = None
     self._started = False
+
+    self.history: OrderedDict[int, dict] = OrderedDict()
+    self.paused = False
+    self.max_tick = 0
 
   async def start(self):
     if ws_serve is None:
@@ -83,13 +91,72 @@ class DebugServer:
     self.clients.add(ws)
     logger.info('Debug client connected (%d total)', len(self.clients))
     try:
-      async for _ in ws:
-        pass
+      async for raw in ws:
+        try:
+          msg = json.loads(raw)
+          await self._handle_client_message(ws, msg)
+        except (json.JSONDecodeError, Exception) as e:
+          logger.debug('Bad client message: %s', e)
     finally:
       self.clients.discard(ws)
       logger.info('Debug client disconnected (%d total)', len(self.clients))
 
-  def emit(self, event_type: str, data: dict):
+  async def _handle_client_message(self, ws, msg: dict):
+    cmd = msg.get('cmd')
+    if cmd == 'pause':
+      self.paused = True
+      logger.info('Debug: PAUSED at tick %d', self.max_tick)
+    elif cmd == 'resume':
+      self.paused = False
+      logger.info('Debug: RESUMED')
+    elif cmd == 'seek':
+      tick = msg.get('tick', 0)
+      frame = self._get_tick_frame(tick)
+      if frame:
+        await self._safe_send(ws, json.dumps(frame, default=str))
+    elif cmd == 'get_range':
+      start = msg.get('start', 0)
+      end = msg.get('end', self.max_tick)
+      frames = []
+      for t in range(start, end + 1):
+        f = self._get_tick_frame(t)
+        if f:
+          frames.append(f)
+      await self._safe_send(ws, json.dumps({
+        'type': 'tick_range',
+        'frames': frames,
+      }, default=str))
+
+  def _get_tick_frame(self, tick: int) -> dict | None:
+    """Retrieve the composite frame for a given tick from history."""
+    if tick in self.history:
+      return {'type': 'tick_frame', 'tick': tick, **self.history[tick]}
+    closest = None
+    for t in self.history:
+      if t <= tick:
+        closest = t
+      else:
+        break
+    if closest is not None:
+      return {'type': 'tick_frame', 'tick': closest, **self.history[closest]}
+    return None
+
+  def _record_tick(self, tick: int, event_type: str, data: dict):
+    """Record event data into the tick history."""
+    if tick not in self.history:
+      self.history[tick] = {}
+    self.history[tick][event_type] = data
+    if tick > self.max_tick:
+      self.max_tick = tick
+    while len(self.history) > MAX_HISTORY_TICKS:
+      self.history.popitem(last=False)
+
+  def emit(self, event_type: str, data: dict, tick: int = 0):
+    self._record_tick(tick, event_type, data)
+
+    if self.paused:
+      return
+
     if not self.clients:
       return
     msg = json.dumps({
@@ -97,20 +164,17 @@ class DebugServer:
       'ts': time.time(),
       **data,
     }, default=str)
-    dead = set()
-    for ws in self.clients:
+    for ws in list(self.clients):
       try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(self._safe_send(ws, msg, dead))
+        asyncio.ensure_future(self._safe_send(ws, msg))
       except RuntimeError:
         pass
-    self.clients -= dead
 
-  async def _safe_send(self, ws, msg, dead):
+  async def _safe_send(self, ws, msg):
     try:
       await ws.send(msg)
     except Exception:
-      dead.add(ws)
+      self.clients.discard(ws)
 
   def emit_snapshot(self, bot):
     """Emit a per-frame snapshot event with full bot state."""
@@ -118,7 +182,7 @@ class DebugServer:
     if bot.unpacked is not None:
       frame_b64 = base64.b64encode(bot.unpacked.tobytes()).decode('ascii')
 
-    self.emit('snapshot', {
+    data = {
       'tick': bot.frame_tick,
       'frame': frame_b64,
       'camera_x': bot.camera_x,
@@ -151,39 +215,43 @@ class DebugServer:
         {'x': b.x, 'y': b.y}
         for b in bot.visible_bodies
       ],
-    })
+    }
+    self.emit('snapshot', data, tick=bot.frame_tick)
 
   def emit_trigger(self, trigger, tick: int):
-    self.emit('trigger', {
+    data = {
       'tick': tick,
       'trigger_type': trigger.type.value,
       'priority': trigger.priority,
       'data': trigger.data,
-    })
+    }
+    self.emit('trigger', data, tick=tick)
 
   def emit_llm_request(self, trigger_type: str, context: str,
                        conversation_len: int, tick: int):
-    self.emit('llm_request', {
+    data = {
       'tick': tick,
       'trigger_type': trigger_type,
       'context': context,
       'conversation_len': conversation_len,
-    })
+    }
+    self.emit('llm_request', data, tick=tick)
 
   def emit_llm_response(self, trigger_type: str, response_text: str,
                         elapsed_ms: int, input_tokens: int,
                         output_tokens: int, tick: int):
-    self.emit('llm_response', {
+    data = {
       'tick': tick,
       'trigger_type': trigger_type,
       'response': response_text,
       'elapsed_ms': elapsed_ms,
       'input_tokens': input_tokens,
       'output_tokens': output_tokens,
-    })
+    }
+    self.emit('llm_response', data, tick=tick)
 
   def emit_directive(self, directive, tick: int):
-    self.emit('directive', {
+    data = {
       'tick': tick,
       'strategy': directive.strategy,
       'target_player': directive.target_player,
@@ -196,7 +264,8 @@ class DebugServer:
       'until': directive.until,
       'expires_tick': directive.expires_tick,
       'created_tick': directive.created_tick,
-    })
+    }
+    self.emit('directive', data, tick=tick)
 
   def emit_player_model(self, model, tick: int):
     from .memory import PLAYER_COLOR_NAMES
@@ -213,7 +282,7 @@ class DebugServer:
         'times_accused': info.times_accused,
         'alibi': info.alibi,
       }
-    self.emit('player_model', {'tick': tick, 'players': players})
+    self.emit('player_model', {'tick': tick, 'players': players}, tick=tick)
 
   def emit_memory(self, memory, tick: int):
     episodic = [
@@ -228,11 +297,12 @@ class DebugServer:
       'role': memory.role,
       'episodic': episodic,
       'strategic': strategic,
-    })
+    }, tick=tick)
 
   def emit_status(self, bot, brain=None):
+    tick = bot.frame_tick
     data = {
-      'tick': bot.frame_tick,
+      'tick': tick,
       'phase': 'voting' if bot.voting else ('interstitial' if bot.interstitial else 'playing'),
       'role': ['unknown', 'crewmate', 'imposter'][bot.role],
       'is_ghost': bot.is_ghost,
@@ -243,4 +313,4 @@ class DebugServer:
       data['llm_budget'] = brain.advisor.call_budget
       data['snapshots_processed'] = brain._snapshot_count
       data['game_id'] = brain.memory.game_id
-    self.emit('status', data)
+    self.emit('status', data, tick=tick)
