@@ -160,6 +160,7 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   </div>
   <div id="debugSprites"></div>
 </div>
+<script src="snappyjs.min.js"></script>
 <script>
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
@@ -576,9 +577,29 @@ function readU16(bytes,offset){
   return bytes[offset]|(bytes[offset+1]<<8);
 }
 
+function readU32(bytes,offset){
+  return (bytes[offset]|
+    (bytes[offset+1]<<8)|
+    (bytes[offset+2]<<16)|
+    (bytes[offset+3]*0x1000000))>>>0;
+}
+
 function readI16(bytes,offset){
   const value=readU16(bytes,offset);
   return value&0x8000?value-0x10000:value;
+}
+
+function decodeSpritePixels(compressed,width,height){
+  if(!window.SnappyJS){
+    throw new Error("SnappyJS is not loaded");
+  }
+  const expected=width*height*4;
+  const pixels=window.SnappyJS.uncompress(compressed,expected);
+  const rgba=pixels instanceof Uint8Array?pixels:new Uint8Array(pixels);
+  if(rgba.length!==expected){
+    throw new Error("Bad sprite pixel length");
+  }
+  return rgba;
 }
 
 function ensureLayer(id){
@@ -721,10 +742,17 @@ function parse(bytes){
       const id=readU16(bytes,offset);
       const width=readU16(bytes,offset+2);
       const height=readU16(bytes,offset+4);
-      offset+=6;
-      const size=width*height*4;
-      const pixels=bytes.slice(offset,offset+size);
-      offset+=size;
+      const compressedLength=readU32(bytes,offset+6);
+      offset+=10;
+      const compressed=bytes.slice(offset,offset+compressedLength);
+      offset+=compressedLength;
+      let pixels;
+      try{
+        pixels=decodeSpritePixels(compressed,width,height);
+      }catch(e){
+        socket.close();
+        break;
+      }
       const labelLength=readU16(bytes,offset);
       offset+=2;
       const label=textDecoder.decode(bytes.slice(offset,offset+labelLength));

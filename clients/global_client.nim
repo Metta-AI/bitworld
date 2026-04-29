@@ -1,6 +1,6 @@
 import
   std/[algorithm, math, monotimes, os, tables, times],
-  chroma, pixie, protocol, silky, windy
+  chroma, pixie, protocol, silky, supersnappy, windy
 
 type
   GlobalLayer = object
@@ -179,6 +179,15 @@ proc readU16(data: string, offset: int): int =
   ## Reads a little endian unsigned 16 bit integer.
   ord(data[offset]) or (ord(data[offset + 1]) shl 8)
 
+proc readU32(data: string, offset: int): int =
+  ## Reads a little endian unsigned 32 bit integer.
+  int(
+    uint32(data[offset].uint8) or
+    (uint32(data[offset + 1].uint8) shl 8) or
+    (uint32(data[offset + 2].uint8) shl 16) or
+    (uint32(data[offset + 3].uint8) shl 24)
+  )
+
 proc readI16(data: string, offset: int): int =
   ## Reads a little endian signed 16 bit integer.
   let value = data.readU16(offset)
@@ -320,13 +329,6 @@ proc orderedObjects(app: GlobalApp, layerId: int): seq[GlobalObject] =
         result = cmp(a.id, b.id)
   )
 
-proc paletteColor(index: uint8): ColorRGBX =
-  ## Converts a protocol color index to a display color.
-  if index == 0:
-    return rgbx(0, 0, 0, 0)
-  let color = Palette[(index.int - 1) and 15]
-  rgbx(color.r, color.g, color.b, 255)
-
 proc allocateLayerImage(app: GlobalApp, layer: var GlobalLayer) =
   ## Allocates an image buffer and texture for one layer.
   if layer.width <= 0 or layer.height <= 0:
@@ -380,11 +382,16 @@ proc buildLayerImage(app: GlobalApp, layer: var GlobalLayer) =
         let layerX = item.x + x
         if layerX < 0 or layerX >= layer.width:
           continue
-        let color = sprite.pixels[y * sprite.width + x]
-        if color == 0:
+        let pixelOffset = (y * sprite.width + x) * 4
+        if sprite.pixels[pixelOffset + 3] == 0:
           continue
         layer.image.data[layerY * layer.width + layerX] =
-          paletteColor(color)
+          rgbx(
+            sprite.pixels[pixelOffset],
+            sprite.pixels[pixelOffset + 1],
+            sprite.pixels[pixelOffset + 2],
+            sprite.pixels[pixelOffset + 3]
+          )
   layer.dirty = true
 
 proc uploadLayerImage(app: GlobalApp, layer: GlobalLayer) =
@@ -528,22 +535,36 @@ proc parseMessage*(app: GlobalApp, data: string) =
     inc offset
     case message
     of 0x01:
-      require(6)
+      require(10)
       let
         id = data.readU16(offset)
         width = data.readU16(offset + 2)
         height = data.readU16(offset + 4)
-        size = width * height
-      offset += 6
+        compressedSize = data.readU32(offset + 6)
+        size = width * height * 4
+      offset += 10
       if width <= 0 or height <= 0 or size < 0:
         app.network.ws.close()
         return
-      require(size)
+      require(compressedSize)
+      var compressed = newSeq[uint8](compressedSize)
+      for i in 0 ..< compressedSize:
+        compressed[i] = data[offset + i].uint8
+      offset += compressedSize
       var sprite = GlobalSprite(width: width, height: height)
-      sprite.pixels = newSeq[uint8](size)
-      for i in 0 ..< size:
-        sprite.pixels[i] = data[offset + i].uint8
-      offset += size
+      try:
+        sprite.pixels = supersnappy.uncompress(compressed)
+      except SnappyError:
+        app.network.ws.close()
+        return
+      if sprite.pixels.len != size:
+        app.network.ws.close()
+        return
+      require(2)
+      let labelLength = data.readU16(offset)
+      offset += 2
+      require(labelLength)
+      offset += labelLength
       app.sprites[id] = sprite
     of 0x02:
       require(11)

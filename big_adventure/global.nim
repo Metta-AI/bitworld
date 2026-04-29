@@ -1,6 +1,7 @@
+import std/[os, strutils]
+import supersnappy
 import protocol, sim
 import ../common/server
-import std/[os, strutils]
 
 const
   ReplayScrubberSpriteId = 404
@@ -75,6 +76,12 @@ proc addU16(packet: var seq[uint8], value: int) =
   packet.add(uint8(v and 0xff'u16))
   packet.add(uint8(v shr 8))
 
+proc addU32(packet: var seq[uint8], value: int) =
+  ## Appends one little endian unsigned 32 bit value.
+  let v = uint32(value)
+  for shift in countup(0, 24, 8):
+    packet.add(uint8((v shr shift) and 0xff'u32))
+
 proc addI16(packet: var seq[uint8], value: int) =
   ## Appends one little endian signed 16 bit value.
   let v = cast[uint16](int16(value))
@@ -106,8 +113,13 @@ proc addSprite(
   packet.addU16(spriteId)
   packet.addU16(width)
   packet.addU16(height)
-  for pixel in pixels:
-    packet.addU8(pixel)
+  var raw = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    raw[i] = pixels[i]
+  let compressed = supersnappy.compress(raw)
+  packet.addU32(compressed.len)
+  for byte in compressed:
+    packet.addU8(byte)
   packet.addU16(label.len)
   for ch in label:
     packet.addU8(uint8(ord(ch)))

@@ -74,14 +74,14 @@ const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static HTML client page if the route matches.
+  ## Serves one static client file if the route matches.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientHtmlPath(request.path)
+  let filePath = clientStaticPath(request.path)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Content-Type"] = clientStaticContentType(request.path)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & request.path)

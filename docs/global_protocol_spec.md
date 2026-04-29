@@ -40,13 +40,16 @@ Defines or replaces a sprite.
 | Sprite id | `u16` | Id of the sprite to define |
 | Width | `u16` | Sprite width in pixels |
 | Height | `u16` | Sprite height in pixels |
-| Pixels | `u8[]` | `Width * Height * 4` bytes |
+| Compressed length | `u32` | Number of compressed pixel bytes |
+| Compressed pixels | `u8[]` | Snappy compressed raw RGBA pixels |
 | Label length | `u16` | Number of UTF-8 label bytes |
 | Label | `u8[]` | Optional human-readable sprite label |
 
-Each pixel is four bytes in RGBA order: red, green, blue, alpha. Color channels
-are unpremultiplied `0 .. 255` values. An alpha value of `0` is fully
-transparent. An alpha value of `255` is fully opaque.
+The compressed pixel payload must be a Snappy stream. After decompression, the
+payload must be exactly `Width * Height * 4` bytes. Each pixel is four bytes in
+RGBA order: red, green, blue, alpha. Color channels are unpremultiplied
+`0 .. 255` values. An alpha value of `0` is fully transparent. An alpha value
+of `255` is fully opaque.
 
 If a sprite id already exists, the client must replace the old sprite data with
 the new definition. The label replaces the old label for that sprite id. A
@@ -295,7 +298,8 @@ A receiver should close the connection on malformed messages, including:
 
 - Unknown message types.
 - Truncated messages.
-- Sprite pixel payloads that do not match `Width * Height * 4`.
+- Sprite compressed payloads that fail Snappy decompression.
+- Sprite decompressed pixel payloads that do not match `Width * Height * 4`.
 - Sprite labels whose byte count does not match `Label length`.
 - Sprite dimensions whose product cannot fit in local memory.
 - Objects that reference unknown layers.
@@ -309,10 +313,12 @@ Unknown object ids in delete messages are not errors.
 
 This byte sequence defines sprite `7` as a `2x2` sprite labeled `test`, with
 four RGBA pixels: opaque red, opaque green, opaque blue, and transparent black.
+The compressed pixel payload is a Snappy stream that decompresses to the four
+RGBA pixels.
 
 ```text
-01 07 00 02 00 02 00
-ff 00 00 ff 00 ff 00 ff
+01 07 00 02 00 02 00 12 00 00 00
+10 3c ff 00 00 ff 00 ff 00 ff
 00 00 ff ff 00 00 00 00
 04 00 74 65 73 74
 ```
@@ -325,10 +331,8 @@ Decoded fields:
 | `07 00` | Sprite id `7` |
 | `02 00` | Width `2` |
 | `02 00` | Height `2` |
-| `ff 00 00 ff` | Pixel 0, opaque red |
-| `00 ff 00 ff` | Pixel 1, opaque green |
-| `00 00 ff ff` | Pixel 2, opaque blue |
-| `00 00 00 00` | Pixel 3, transparent |
+| `12 00 00 00` | Compressed pixel byte length `18` |
+| `10 3c ... 00` | Snappy compressed RGBA payload |
 | `04 00` | Label length `4` |
 | `74 65 73 74` | Label `test` |
 
