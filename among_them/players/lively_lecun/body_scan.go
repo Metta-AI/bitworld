@@ -205,6 +205,16 @@ func bodyScore(pixels []uint8, tlx, tly int) (miss, tested int) {
 	return miss, tested
 }
 
+// bodyMatchAt reports whether the body sprite is drawn anchored at
+// (tlx, tly) using the same thresholds FindBodies uses. Exposed for
+// callers that already know the anchor (e.g. the voting-panel layout
+// parser) and don't need the seed-scan phase.
+func bodyMatchAt(pixels []uint8, tlx, tly int) bool {
+	ensureBodyTables()
+	miss, tested := bodyScore(pixels, tlx, tly)
+	return tested >= bodyMatchMinTested && miss <= bodyMatchMaxMiss
+}
+
 // bodyTintColor infers the body's player color by majority-vote over the
 // tint pixels (palette 3 positions in the template). Returns 255 if no tint
 // pixels are visible. The shadow pixels (palette 9 positions) are ignored

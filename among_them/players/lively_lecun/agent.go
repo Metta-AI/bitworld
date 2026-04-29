@@ -33,7 +33,8 @@ type Agent struct {
 	currentPhase Phase
 	havePhase    bool
 	lastRole     StatusIconKind // most recent latched role, logged on change
-	skipper      SkipController
+	voter        VoteController
+	suspect      SuspectTracker
 	bumper       Bumper
 	holder       TaskHolder
 	wanderer     Wanderer
@@ -67,11 +68,16 @@ func NewAgent() *Agent {
 		panic(fmt.Sprintf("embedded walks size = %d, want %d", len(walksData), wantWalks))
 	}
 	walks := &WalkMask{Bits: walksData}
-	return &Agent{
+	a := &Agent{
 		tracker: NewTracker(&Map{Pixels: skeldMapData}),
 		walks:   walks,
 		nav:     NewNavigator(walks),
 	}
+	// 255 = "self color unknown". The zero value 0 is a real palette index
+	// (red), which would erroneously exclude red crewmates from suspect
+	// picks before SetSelf has ever been called.
+	a.suspect.SetSelf(255)
+	return a
 }
 
 const (
@@ -101,7 +107,19 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 		a.currentPhase = phase
 		a.havePhase = true
 		if phase == PhaseVoting {
-			a.skipper = SkipController{}
+			// Reset the controller and pick a suspect once, at phase
+			// entry. The panel is static for the duration of the vote,
+			// so the target doesn't need to re-evaluate per frame. If
+			// no suspect has been seen yet (e.g. we died before spotting
+			// anyone), Target stays 255 and the controller falls through
+			// to SKIP -- same behavior as v1.
+			target := uint8(255)
+			if c, ok := a.suspect.Pick(); ok {
+				target = c
+			}
+			a.voter = VoteController{Target: target}
+			log.Printf("vote: entering voting, suspect=%d self=%d (frame %d)",
+				target, a.suspect.Self(), a.frames)
 		}
 	}
 
@@ -122,7 +140,7 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 	case PhaseActive:
 		mask = a.stepActive(pixels)
 	case PhaseVoting:
-		mask = a.skipper.Next(pixels)
+		mask = a.voter.Next(pixels)
 	default:
 		// Emit a rotating cardinal so startup/lobby/game-over/role-reveal
 		// frames don't look like a frozen policy to outside observers
@@ -252,6 +270,28 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 			log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d tasks=%d matches=%d",
 				player, cam.X, cam.Y, cam.Mismatches, a.tracker.Brutes, a.memory.Len(), len(matches))
 			a.lastPosLog = a.frames
+		}
+		// Suspect tracking: every active frame, record when each
+		// visible non-self crewmate color was last seen. Feeds the
+		// voting-phase suspect picker (M5). Also happens on imposter
+		// frames below -- stepImposter calls FindCrewmates again but
+		// doesn't write to the tracker since imposters vote to deflect,
+		// not to accuse (that's a future milestone).
+		for _, m := range FindCrewmates(pixels) {
+			a.suspect.Record(m.Color, a.frames)
+		}
+		// Self-color detection: our own sprite is always drawn centered
+		// at (playerScreenX, playerScreenY) = (58, 58), with the local
+		// player's color substituted into the palette-3 tint positions
+		// (sim.nim:2569). We only need to learn this once; sample until
+		// we get a confident read, then latch. Without this,
+		// SuspectTracker can't exclude self from Pick, and we'd vote for
+		// our own color as soon as it's seen reflected elsewhere.
+		if a.suspect.Self() == 255 {
+			if c := selfColorFromScreen(pixels); c != 255 {
+				log.Printf("self-color: detected color=%d (frame %d)", c, a.frames)
+				a.suspect.SetSelf(c)
+			}
 		}
 		// Imposter path: entirely separate goal selection (flee bodies,
 		// chase lone crewmates, fake-task camouflage). Ghosts fall
