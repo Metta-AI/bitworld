@@ -722,9 +722,21 @@ proc cleanChatMessage*(message: string): string =
     if ch >= ' ' and ch <= '~':
       result.add(ch)
 
+proc nextChatLineStart(text: string, startIndex: int): int =
+  ## Returns the next fixed-width chat line start.
+  result = min(text.len, startIndex + VoteChatCharsPerLine)
+  while result < text.len and text[result] == ' ':
+    inc result
+
+proc chatLineStart(text: string, lineIndex: int): int =
+  ## Returns the source index for one visible chat line.
+  result = 0
+  for i in 0 ..< lineIndex:
+    result = text.nextChatLineStart(result)
+
 proc sliceChatLine*(text: string, lineIndex: int): string =
   ## Returns one fixed-width chat line.
-  let startIndex = lineIndex * VoteChatCharsPerLine
+  let startIndex = text.chatLineStart(lineIndex)
   if startIndex >= text.len:
     return ""
   let endIndex = min(text.len, startIndex + VoteChatCharsPerLine)
@@ -732,10 +744,14 @@ proc sliceChatLine*(text: string, lineIndex: int): string =
 
 proc chatLineCount*(text: string): int =
   ## Returns the visible line count for one chat message.
-  max(1, min(
-    VoteChatLineCount,
-    (text.len + VoteChatCharsPerLine - 1) div VoteChatCharsPerLine
-  ))
+  result = 1
+  var startIndex = 0
+  while startIndex < text.len and result < VoteChatLineCount:
+    let nextIndex = text.nextChatLineStart(startIndex)
+    if nextIndex >= text.len:
+      break
+    inc result
+    startIndex = nextIndex
 
 proc chatMessageHeight*(text: string): int =
   ## Returns the pixel height for one chat message row.
@@ -2816,6 +2832,8 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
       let prev =
         if i < prevInputs.len: prevInputs[i]
         else: InputState()
+      if sim.voteState.votes[i] != -1:
+        continue
       if (input.up and not prev.up) or (input.left and not prev.left):
         sim.moveCursor(i, -1)
       if (input.down and not prev.down) or (input.right and not prev.right):
