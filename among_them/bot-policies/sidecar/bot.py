@@ -140,6 +140,11 @@ GHOST_ICON_MAX_MISSES = 3
 GHOST_ICON_FRAME_THRESHOLD = 2
 KILL_APPROACH_RADIUS = 3
 
+# A non-self crewmate within this many world pixels of a body is "next to" it
+# for accusation purposes. Wide enough to forgive a step or two of motion,
+# tight enough to not implicate someone passing through the same room.
+WITNESS_NEAR_BODY_RADIUS = KILL_RANGE * 2  # 40 px
+
 BODY_SEARCH_RADIUS = 1
 BODY_MAX_MISSES = 9
 BODY_MIN_STABLE_PIXELS = 6
@@ -656,6 +661,15 @@ class Bot:
     self.last_seen_ticks = [0] * PLAYER_COLOR_COUNT
     self.self_color_index = -1
     self.known_imposters = [False] * PLAYER_COLOR_COUNT
+
+    # Evidence tracking for crewmate accusation logic.
+    # near_body_ticks[ci]      = last frame_tick a non-self color was seen near any visible body
+    # witnessed_kill_ticks[ci] = last frame_tick a non-self color was near a *newly* appeared body
+    # prev_visible_crewmate_world = last frame's crewmate world positions, for delta detection
+    self.near_body_ticks = [0] * PLAYER_COLOR_COUNT
+    self.witnessed_kill_ticks = [0] * PLAYER_COLOR_COUNT
+    self.prev_visible_crewmate_world: dict[int, tuple[int, int]] = {}
+    self.prev_visible_body_world: list[tuple[int, int]] = []
 
     self.voting = False
     self.vote_player_count = 0
@@ -1652,13 +1666,111 @@ class Bot:
         result = (PLAYER_COLOR_NAMES[i], tick, i)
     return result
 
+  # ---------------------------------------------------------------------
+  # Evidence tracking (crewmate accusation)
+  # ---------------------------------------------------------------------
+  def _update_evidence(self):
+    """Stamp colors that were near visible bodies this frame.
+
+    Two tiers:
+      near_body_ticks[ci]      = visible non-self color is within WITNESS_NEAR_BODY_RADIUS of any visible body
+      witnessed_kill_ticks[ci] = same, but only at the moment a body newly appears (likely the killer)
+    Bodies that were already visible last frame don't generate fresh kill-witness signals.
+    """
+    body_worlds = [self._visible_body_world(b) for b in self.visible_bodies]
+
+    cm_worlds: dict[int, tuple[int, int]] = {}
+    for cm in self.visible_crewmates:
+      if cm.color_index < 0 or cm.color_index == self.self_color_index:
+        continue
+      if self._known_imposter_color(cm.color_index):
+        continue
+      cm_worlds[cm.color_index] = self._visible_crewmate_world(cm)
+
+    near_r2 = WITNESS_NEAR_BODY_RADIUS * WITNESS_NEAR_BODY_RADIUS
+
+    # Tier 1: every visible non-self crewmate within radius of any visible body
+    for ci, (cx, cy) in cm_worlds.items():
+      for bx, by in body_worlds:
+        dx, dy = cx - bx, cy - by
+        if dx * dx + dy * dy <= near_r2:
+          self.near_body_ticks[ci] = self.frame_tick
+          break
+
+    # Tier 2: any *newly appeared* body that has a non-self crewmate adjacent →
+    # that crewmate is the most likely killer. We treat a body as "new" if no
+    # body was visible at roughly its position last frame.
+    for bx, by in body_worlds:
+      is_new = True
+      for px, py in self.prev_visible_body_world:
+        dx, dy = bx - px, by - py
+        # Same body if within a body sprite's width — bodies don't move
+        if dx * dx + dy * dy <= (SPRITE_SIZE * SPRITE_SIZE):
+          is_new = False
+          break
+      if not is_new:
+        continue
+      for ci, (cx, cy) in cm_worlds.items():
+        dx, dy = cx - bx, cy - by
+        if dx * dx + dy * dy <= near_r2:
+          self.witnessed_kill_ticks[ci] = self.frame_tick
+
+    self.prev_visible_crewmate_world = cm_worlds
+    self.prev_visible_body_world = body_worlds
+
+  def _evidence_based_suspect(self):
+    """Return (color_index, name) of the strongest evidence-backed suspect, or None.
+
+    Strict: only returns a suspect if we have firsthand evidence
+    (witnessed kill or saw them next to a body). Returns None otherwise so
+    the crewmate stays neutral instead of accusing on vibes.
+    """
+    # Tier 1: most recent witnessed kill wins
+    best_tick, suspect = 0, -1
+    for i, t in enumerate(self.witnessed_kill_ticks):
+      if i == self.self_color_index or self._known_imposter_color(i):
+        continue
+      if t > best_tick:
+        best_tick, suspect = t, i
+
+    # Tier 2: fall back to most recent near-body sighting
+    if suspect < 0:
+      for i, t in enumerate(self.near_body_ticks):
+        if i == self.self_color_index or self._known_imposter_color(i):
+          continue
+        if t > best_tick:
+          best_tick, suspect = t, i
+
+    if suspect < 0 or suspect >= len(PLAYER_COLOR_NAMES):
+      return None
+    return (suspect, PLAYER_COLOR_NAMES[suspect])
+
   def _body_room_message(self, x, y):
+    """Build the chat line for a body sighting.
+
+    Branches by role:
+      - IMPOSTER: most-recently-seen suspect (a later change replaces this)
+      - CREWMATE: only accuses if we have firsthand evidence (witnessed kill
+        or saw a player next to a body); otherwise stays neutral
+    """
     room = room_name_at(x + COLLISION_W // 2, y + COLLISION_H // 2)
-    msg = 'body' if room == 'unknown' else f'body in {room}'
+    base = 'body' if room == 'unknown' else f'body in {room}'
+
+    if self.role == BotRole.IMPOSTER:
+      return self._imposter_body_message(base)
+    return self._crewmate_body_message(base)
+
+  def _imposter_body_message(self, base):
     suspect = self._suspected_color()
-    if suspect:
-      msg += f' sus {suspect[0]}'
-    return msg
+    if suspect is None:
+      return base
+    return f'{base} sus {suspect[0]}'
+
+  def _crewmate_body_message(self, base):
+    suspect = self._evidence_based_suspect()
+    if suspect is None:
+      return base  # neutral — no firsthand evidence
+    return f'{base} sus {suspect[1]}'
 
   def _same_body(self, ax, ay, bx, by):
     if bx == INT_MIN or by == INT_MIN:
@@ -1901,16 +2013,35 @@ class Bot:
     return True
 
   def _desired_voting_target(self):
-    if self.vote_chat_sus_color >= 0:
-      slot = self._vote_slot_for_color(self.vote_chat_sus_color)
+    """Choose a voting slot.
+
+    IMPOSTER: keep the existing behavior — bandwagon onto chat-named sus
+      if any, else fall back to most-recently-seen color, else skip. Imposters
+      benefit from going along with the group's accusation.
+
+    CREWMATE: ignore chat entirely. Only vote for a player if we have
+      firsthand evidence (witnessed a kill or saw them next to a body).
+      Otherwise vote skip — staying neutral is worth more than guessing.
+    """
+    if self.role == BotRole.IMPOSTER:
+      if self.vote_chat_sus_color >= 0:
+        slot = self._vote_slot_for_color(self.vote_chat_sus_color)
+        if slot >= 0 and slot != self.vote_self_slot and self.vote_slots[slot].alive:
+          return slot
+      suspect = self._suspected_color()
+      if suspect:
+        slot = self._vote_slot_for_color(suspect[2])
+        if slot >= 0 and slot != self.vote_self_slot and self.vote_slots[slot].alive:
+          return slot
+      return self.vote_player_count  # skip
+
+    # Crewmate: evidence-only.
+    suspect = self._evidence_based_suspect()
+    if suspect is not None:
+      slot = self._vote_slot_for_color(suspect[0])
       if slot >= 0 and slot != self.vote_self_slot and self.vote_slots[slot].alive:
         return slot
-    suspect = self._suspected_color()
-    if suspect:
-      slot = self._vote_slot_for_color(suspect[2])
-      if slot >= 0 and slot != self.vote_self_slot and self.vote_slots[slot].alive:
-        return slot
-    return self.vote_player_count  # skip
+    return self.vote_player_count  # skip — neutral
 
   def _vote_slot_for_color(self, ci):
     for i in range(self.vote_player_count):
@@ -2124,6 +2255,11 @@ class Bot:
 
     if not self.localized:
       return 0
+
+    # Update evidence tracking BEFORE acting. Both crewmate accusations and
+    # imposter random-blame benefit from up-to-date sightings, and this only
+    # touches per-color tick stamps and previous-frame snapshots.
+    self._update_evidence()
 
     self.remember_home()
 
