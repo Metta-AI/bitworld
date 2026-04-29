@@ -57,9 +57,9 @@ const
   TaskIconInspectSize = 16
   TaskClearScreenMargin = 8
   TaskIconMissThreshold = 24
-  PathLookahead = 18
+  PathLookahead = 8
   TaskInnerMargin = 6
-  TaskPreciseApproachRadius = 12
+  TaskPreciseApproachRadius = 18
   CoastLookaheadTicks = 8
   CoastArrivalPadding = 1
   SteerDeadband = 2
@@ -243,6 +243,7 @@ type
     taskHoldTicks: int
     taskHoldIndex: int
     frameTick: int
+    frameAdvance: int
     centerMicros: int
     spriteScanMicros: int
     localizeLocalMicros: int
@@ -2045,17 +2046,23 @@ proc updateTaskGuesses(bot: var Bot) =
   bot.scanRadarDots()
   if bot.radarDots.len == 0:
     return
-  for i in 0 ..< bot.sim.tasks.len:
-    let projected = bot.projectedRadarDot(bot.sim.tasks[i])
-    if projected.visible:
-      continue
-    for dot in bot.radarDots:
-      if abs(dot.x - projected.x) <= RadarMatchTolerance and
-          abs(dot.y - projected.y) <= RadarMatchTolerance:
-        bot.radarTasks[i] = true
-        bot.checkoutTasks[i] = true
-        if bot.taskStates[i] == TaskCompleted:
-          bot.taskStates[i] = TaskMaybe
+  for dot in bot.radarDots:
+    var
+      bestIndex = -1
+      bestDistance = high(int)
+    for i in 0 ..< bot.sim.tasks.len:
+      let projected = bot.projectedRadarDot(bot.sim.tasks[i])
+      if projected.visible:
+        continue
+      let distance = abs(dot.x - projected.x) + abs(dot.y - projected.y)
+      if distance <= RadarMatchTolerance * 2 and distance < bestDistance:
+        bestDistance = distance
+        bestIndex = i
+    if bestIndex >= 0:
+      bot.radarTasks[bestIndex] = true
+      bot.checkoutTasks[bestIndex] = true
+      if bot.taskStates[bestIndex] == TaskCompleted:
+        bot.taskStates[bestIndex] = TaskMaybe
 
 proc projectedTaskIcon(
   bot: Bot,
@@ -2199,8 +2206,14 @@ proc updateMotionState(bot: var Bot) =
     x = bot.playerWorldX()
     y = bot.playerWorldY()
   if bot.haveMotionSample and bot.lastMask.hasMovement():
-    bot.velocityX = x - bot.previousPlayerWorldX
-    bot.velocityY = y - bot.previousPlayerWorldY
+    let advance = max(1, bot.frameAdvance)
+    proc normalizedVelocity(delta: int): int =
+      if delta >= 0:
+        (delta + advance div 2) div advance
+      else:
+        -((-delta + advance div 2) div advance)
+    bot.velocityX = normalizedVelocity(x - bot.previousPlayerWorldX)
+    bot.velocityY = normalizedVelocity(y - bot.previousPlayerWorldY)
     let moved = abs(bot.velocityX) + abs(bot.velocityY)
     if moved == 0:
       inc bot.stuckFrames
@@ -3030,13 +3043,10 @@ proc choosePathStep(bot: Bot): PathStep =
 proc taskReady(bot: Bot, task: TaskStation): bool =
   ## Returns true when the player can safely hold action for a task.
   let
-    x = bot.playerWorldX()
-    y = bot.playerWorldY()
-    innerX0 = task.x + TaskInnerMargin
-    innerY0 = task.y + TaskInnerMargin
-    innerX1 = task.x + task.w - TaskInnerMargin
-    innerY1 = task.y + task.h - TaskInnerMargin
-  if x < innerX0 or x >= innerX1 or y < innerY0 or y >= innerY1:
+    x = bot.playerWorldX() + CollisionW div 2
+    y = bot.playerWorldY() + CollisionH div 2
+  if x < task.x or x >= task.x + task.w or
+      y < task.y or y >= task.y + task.h:
     return false
   abs(bot.velocityX) + abs(bot.velocityY) <= 1
 
@@ -3046,14 +3056,25 @@ proc taskReadyAtGoal(bot: Bot, index, goalX, goalY: int): bool =
     return false
   let
     task = bot.sim.tasks[index]
-    x = bot.playerWorldX()
-    y = bot.playerWorldY()
+    x = bot.playerWorldX() + CollisionW div 2
+    y = bot.playerWorldY() + CollisionH div 2
   if x < task.x or x >= task.x + task.w or
       y < task.y or y >= task.y + task.h:
     return false
   if abs(bot.velocityX) + abs(bot.velocityY) > 1:
     return false
   bot.taskReady(task) or heuristic(x, y, goalX, goalY) <= 1
+
+proc insideTask(bot: Bot, index: int): bool =
+  ## Returns true when the player is inside one task rectangle.
+  if index < 0 or index >= bot.sim.tasks.len:
+    return false
+  let
+    task = bot.sim.tasks[index]
+    x = bot.playerWorldX() + CollisionW div 2
+    y = bot.playerWorldY() + CollisionH div 2
+  x >= task.x and x < task.x + task.w and
+    y >= task.y and y < task.y + task.h
 
 proc taskGoalReady(
   bot: Bot,
@@ -3093,6 +3114,24 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
     bot.taskHoldIndex = -1
   bot.thought("at task " & name & ", holding action")
   ButtonA
+
+proc brakeAtTaskAction(bot: var Bot, name: string): uint8 =
+  ## Brakes inside a task station until action holding is stable.
+  bot.intent = "settling at task " & name
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.desiredMask = 0
+  if bot.velocityX > 0:
+    bot.desiredMask = bot.desiredMask or ButtonLeft
+  elif bot.velocityX < 0:
+    bot.desiredMask = bot.desiredMask or ButtonRight
+  if bot.velocityY > 0:
+    bot.desiredMask = bot.desiredMask or ButtonUp
+  elif bot.velocityY < 0:
+    bot.desiredMask = bot.desiredMask or ButtonDown
+  bot.controllerMask = bot.desiredMask
+  bot.thought("settling at task " & name)
+  bot.desiredMask
 
 proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   ## Presses action to report a visible dead body.
@@ -3293,6 +3332,8 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.taskHoldIndex = goal.index
     return bot.holdTaskAction(goal.name)
+  if goal.state == TaskMandatory and bot.insideTask(goal.index):
+    return bot.brakeAtTaskAction(goal.name)
   if bot.isGhost:
     return bot.navigateToPoint(goal.x, goal.y, goal.name)
   let astarStart = getMonoTime()
@@ -3331,6 +3372,7 @@ proc stepUnpackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
   ## Steps the bot from one unpacked 4-bit framebuffer and returns an input mask.
   if frame.len != ScreenWidth * ScreenHeight:
     return 0
+  bot.frameAdvance = 1
   if bot.unpacked.len != frame.len:
     bot.unpacked.setLen(frame.len)
   for i, value in frame:
@@ -3343,6 +3385,7 @@ proc stepPackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
   ## Steps the bot from one packed 4-bit framebuffer and returns an input mask.
   if frame.len != ProtocolBytes:
     return 0
+  bot.frameAdvance = 1
   if bot.packed.len != frame.len:
     bot.packed.setLen(frame.len)
   for i, value in frame:
@@ -3428,6 +3471,7 @@ when defined(nottoodumbLibrary):
     ButtonDown or ButtonRight or ButtonA,
     ButtonDown or ButtonRight or ButtonB
   ]
+  const DebugStatsLen = 23
 
   type NotTooDumbPolicy = ref object
     bots: seq[Bot]
@@ -3444,7 +3488,8 @@ when defined(nottoodumbLibrary):
   proc stepUnpackedFramePtr(
     bot: var Bot,
     frame: ptr UncheckedArray[uint8],
-    frameLen: int
+    frameLen: int,
+    frameAdvance: int
   ): uint8 =
     ## Steps the bot from one pointer-backed unpacked framebuffer.
     if frameLen != ScreenWidth * ScreenHeight:
@@ -3453,7 +3498,8 @@ when defined(nottoodumbLibrary):
       bot.unpacked.setLen(frameLen)
     for i in 0 ..< frameLen:
       bot.unpacked[i] = frame[i] and 0x0f
-    inc bot.frameTick
+    bot.frameAdvance = max(1, frameAdvance)
+    bot.frameTick += bot.frameAdvance
     result = bot.decideNextMask()
     bot.lastMask = result
 
@@ -3474,13 +3520,14 @@ when defined(nottoodumbLibrary):
     frameStack: cint,
     height: cint,
     width: cint,
+    frameAdvances: pointer,
     observations: pointer,
     actions: pointer
   ) {.exportc, dynlib.} =
     ## Steps a batch of unpacked pixel observations into CoGames action indices.
     if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
       return
-    if observations.isNil or actions.isNil or agentIds.isNil:
+    if observations.isNil or actions.isNil or agentIds.isNil or frameAdvances.isNil:
       return
     if frameStack <= 0 or height != ScreenHeight or width != ScreenWidth:
       return
@@ -3489,6 +3536,7 @@ when defined(nottoodumbLibrary):
       policy = NotTooDumbPolicies[int(handle)]
       obs = cast[ptr UncheckedArray[uint8]](observations)
       outs = cast[ptr UncheckedArray[int32]](actions)
+      advances = cast[ptr UncheckedArray[int32]](frameAdvances)
       frameLen = int(height) * int(width)
       rowStride = int(frameStack) * frameLen
       latestOffset = (int(frameStack) - 1) * frameLen
@@ -3507,7 +3555,7 @@ when defined(nottoodumbLibrary):
       let frame = cast[ptr UncheckedArray[uint8]](
         cast[uint](obs) + uint(row * rowStride + latestOffset)
       )
-      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
+      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen, int(advances[row]))
       outs[row] = actionIndexForMask(mask)
 
   proc nottoodumb_take_chat*(
@@ -3548,6 +3596,50 @@ when defined(nottoodumbLibrary):
     if botIndex >= policy.bots.len:
       return 0
     cint(ord(policy.bots[botIndex].role))
+
+  proc nottoodumb_debug_stats*(
+    handle: cint,
+    agentId: cint,
+    output: pointer,
+    outputLen: cint
+  ): cint {.exportc, dynlib.} =
+    ## Writes compact numeric debug state for one bot.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return 0
+    if agentId < 0 or output.isNil or outputLen < DebugStatsLen:
+      return 0
+    let
+      policy = NotTooDumbPolicies[int(handle)]
+      botIndex = int(agentId)
+    if botIndex >= policy.bots.len:
+      return 0
+    let
+      bot = policy.bots[botIndex]
+      outStats = cast[ptr UncheckedArray[int32]](output)
+    outStats[0] = int32(bot.frameTick)
+    outStats[1] = int32(ord(bot.localized))
+    outStats[2] = int32(ord(bot.interstitial))
+    outStats[3] = int32(ord(bot.role))
+    outStats[4] = int32(bot.playerWorldX())
+    outStats[5] = int32(bot.playerWorldY())
+    outStats[6] = int32(ord(bot.cameraLock))
+    outStats[7] = int32(clamp(bot.cameraScore, low(int32).int, high(int32).int))
+    outStats[8] = int32(bot.taskStateCount(TaskMandatory))
+    outStats[9] = int32(bot.radarTaskCount())
+    outStats[10] = int32(bot.checkoutTaskCount())
+    outStats[11] = int32(bot.taskStateCount(TaskCompleted))
+    outStats[12] = int32(bot.taskHoldTicks)
+    outStats[13] = int32(bot.goalIndex)
+    outStats[14] = int32(bot.goalX)
+    outStats[15] = int32(bot.goalY)
+    outStats[16] = int32(bot.path.len)
+    outStats[17] = int32(bot.visibleTaskIcons.len)
+    outStats[18] = int32(bot.visibleCrewmates.len)
+    outStats[19] = int32(bot.lastMask)
+    outStats[20] = int32(bot.velocityX)
+    outStats[21] = int32(bot.velocityY)
+    outStats[22] = int32(ord(bot.hasGoal))
+    DebugStatsLen
 
 when not defined(nottoodumbLibrary):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =

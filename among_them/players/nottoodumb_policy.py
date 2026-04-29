@@ -60,6 +60,7 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
             ctypes.c_int,
             ctypes.c_void_p,
             ctypes.c_void_p,
+            ctypes.c_void_p,
         ]
         self._lib.nottoodumb_step_batch.restype = None
         self._num_agents = max(1, int(policy_env_info.num_agents))
@@ -74,6 +75,7 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
         batch_size = observations.shape[0]
         self._ensure_agent_count(batch_size)
         agent_ids = np.arange(batch_size, dtype=np.int32)
+        frame_advances = np.ones(batch_size, dtype=np.int32)
         actions = np.zeros(batch_size, dtype=np.int32)
         self._lib.nottoodumb_step_batch(
             self._handle,
@@ -83,6 +85,7 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
             ctypes.c_int(observations.shape[1]),
             ctypes.c_int(observations.shape[2]),
             ctypes.c_int(observations.shape[3]),
+            ctypes.c_void_p(frame_advances.ctypes.data),
             ctypes.c_void_p(observations.ctypes.data),
             ctypes.c_void_p(actions.ctypes.data),
         )
