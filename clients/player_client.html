@@ -70,7 +70,7 @@ requestAnimationFrame(function f(){
   h|=k.ArrowDown||!z&&k.KeyS||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
   h|=k.ArrowLeft||!z&&k.KeyA||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
   h|=k.ArrowRight||!z&&k.KeyD||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
-  h|=!z&&k.Space||b&&b.buttons[9]?.pressed?16:0;
+  h|=!z&&(k.Space||k.KeyL)||b&&b.buttons[9]?.pressed?16:0;
   h|=!z&&(k.KeyZ||k.KeyJ)||b&&b.buttons[0]?.pressed?32:0;
   h|=!z&&(k.KeyX||k.KeyK)||b&&b.buttons[1]?.pressed?64:0;
   if(w.readyState==1&&h!=l){w.send(new Uint8Array([0,h]));l=h}

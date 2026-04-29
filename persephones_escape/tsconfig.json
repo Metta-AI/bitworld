@@ -6,7 +6,7 @@
     "strict": true,
     "esModuleInterop": true,
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": ".."
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "../common/*.ts"]
 }

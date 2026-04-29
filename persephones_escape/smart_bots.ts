@@ -6,7 +6,7 @@ import {
   sendInput, sendChat, PACKED_FRAME_BYTES, unpackFrame,
   ActionQueue, menuActionSequence, hostageSelectSequence,
   moveToward, randomDir, randomPoint, distTo, isNearby,
-  type Point, type MenuAction,
+  type Point, type MenuAction, commMenuSequence,
 } from "./bot_utils.js";
 
 const count = parseInt(argv[2] ?? "6");
@@ -98,34 +98,18 @@ function doMenuAction(bot: BotState) {
   const roll = Math.random();
   let action: MenuAction;
 
-  if (roll < 0.15) {
-    action = "SHOW:COLOR-LOCAL";
-  } else if (roll < 0.25) {
-    action = "SHOW:CARD-LOCAL";
-  } else if (roll < 0.35) {
-    action = "SHOW:COLOR-ALL";
-  } else if (roll < 0.40) {
-    action = "SHOW:CARD-ALL";
-  } else if (roll < 0.55) {
-    action = "SHARE:OFFER";
-    bot.shareCooldown = TARGET_FPS * 5;
-  } else if (roll < 0.65) {
-    action = "SHARE:ACCEPT";
-  } else if (roll < 0.75) {
-    action = "USURP:ME";
-  } else if (roll < 0.82) {
-    action = "USURP:NONE";
-  } else if (roll < 0.88) {
-    action = "LEADER:PASS";
-  } else if (roll < 0.94) {
-    action = "INFO:ROLE";
-  } else {
+  if (roll < 0.3) {
+    action = "COMM:START";
+  } else if (roll < 0.5) {
+    action = "COMM:SHOUT";
+  } else if (roll < 0.7) {
     action = "INFO:SHARED";
+  } else {
+    action = "USURP:SELECT";
   }
 
   const seq = menuActionSequence(action, {
-    hasLeaderColumn: Math.random() < 0.3, // approximate
-    usurpListLength: 4, // approximate
+    usurpListLength: 4,
   });
   bot.actions.push(...seq);
 }

@@ -7,6 +7,7 @@ import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, b
 import { Sim } from "./sim.js";
 import { render } from "./renderer.js";
 import { buildGlobalFrame } from "./globalViewer.js";
+import { ReplayRecorder } from "./replay.js";
 
 interface ClientState {
   ws: WebSocket;
@@ -21,18 +22,25 @@ const PENDING = 0x7fffffff;
 function main() {
   let host = "localhost";
   let port = 8080;
+  let replayPath: string | null = null;
+  let seed = 0xb1770;
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith("--address=")) host = arg.slice("--address=".length);
     else if (arg.startsWith("--port=")) port = parseInt(arg.slice("--port=".length));
+    else if (arg.startsWith("--replay=")) replayPath = arg.slice("--replay=".length);
+    else if (arg.startsWith("--seed=")) seed = parseInt(arg.slice("--seed=".length));
     else if (i === 2 && !arg.startsWith("-")) host = arg;
     else if (i === 3 && !arg.startsWith("-")) port = parseInt(arg);
   }
 
-  const sim = new Sim();
+  const sim = new Sim(undefined, seed);
   const clients = new Map<WebSocket, ClientState>();
   const globalViewers = new Set<WebSocket>();
+  const recorder = replayPath
+    ? new ReplayRecorder(seed, replayPath, JSON.stringify({ seed }))
+    : null;
 
   const httpServer = createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -77,13 +85,21 @@ function main() {
         else client.inputMask = mask;
       } else if (isChatPacket(data) && client.playerIndex !== PENDING) {
         const text = blobToChat(data);
-        if (text.length > 0) sim.addChat(client.playerIndex, text);
+        if (text.length > 0) {
+          const p = sim.players[client.playerIndex];
+          if (p && p.inChatroom >= 0) {
+            sim.addChatroomChat(p.inChatroom, client.playerIndex, text);
+          } else {
+            sim.addGlobalChat(client.playerIndex, text);
+          }
+        }
       }
     });
 
     ws.on("close", () => {
       const c = clients.get(ws);
       if (c && c.playerIndex !== PENDING && c.playerIndex < sim.players.length) {
+        recorder?.writeLeave(c.playerIndex);
         sim.removePlayer(c.playerIndex);
         for (const [, other] of clients) {
           if (other !== c && other.playerIndex > c.playerIndex && other.playerIndex !== PENDING) {
@@ -99,6 +115,7 @@ function main() {
 
   httpServer.listen(port, host, () => {
     console.log(`${GAME_NAME} listening on ws://${host}:${port}/player`);
+    if (recorder) console.log(`Recording replay to ${replayPath}`);
   });
 
   let lastTick = performance.now();
@@ -113,19 +130,26 @@ function main() {
     lastTick = now;
 
     for (const [, client] of clients) {
-      if (client.playerIndex === PENDING) client.playerIndex = sim.addPlayer(client.name);
+      if (client.playerIndex === PENDING) {
+        client.playerIndex = sim.addPlayer(client.name);
+        recorder?.writeJoin(client.playerIndex, client.name);
+      }
     }
 
+    const inputMasks: number[] = new Array(sim.players.length).fill(0);
     const inputs: InputState[] = new Array(sim.players.length).fill(null).map(() => emptyInput());
     const prevInputs: InputState[] = new Array(sim.players.length).fill(null).map(() => emptyInput());
     for (const [, client] of clients) {
       if (client.playerIndex >= 0 && client.playerIndex < sim.players.length) {
+        inputMasks[client.playerIndex] = client.inputMask;
         inputs[client.playerIndex] = decodeInputMask(client.inputMask);
         prevInputs[client.playerIndex] = decodeInputMask(client.prevInputMask);
       }
     }
 
     try { sim.step(inputs, prevInputs); } catch (e) { console.error("step error:", e); }
+
+    recorder?.recordTick(inputMasks);
 
     if (sim.tickCount % (TARGET_FPS * 5) === 1) {
       console.log(`tick=${sim.tickCount} phase=${Phase[sim.phase]} players=${sim.players.length}`);
@@ -147,6 +171,17 @@ function main() {
 
     setTimeout(gameLoop, Math.max(1, frameDuration - (performance.now() - lastTick)));
   }
+
+  function shutdown() {
+    if (recorder) {
+      console.log(`Saving replay (${recorder.tickCount} ticks) to ${replayPath}`);
+      recorder.close();
+    }
+    process.exit(0);
+  }
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   gameLoop();
 }

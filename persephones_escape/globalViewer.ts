@@ -2,7 +2,7 @@ import type { Sim } from "./sim.js";
 import { Phase, Role, Room, PlayerShape } from "./types.js";
 import {
   ROOM_W, ROOM_H, PLAYER_SHAPES, TARGET_FPS,
-  ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME, CHAT_FADE_TICKS,
+  ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME,
 } from "./constants.js";
 import { SpritePacket, LayerType, LayerFlag, spriteColor, buildFilledTextSprite } from "./spriteProtocol.js";
 
@@ -22,6 +22,10 @@ const CHAT_A_SPRITE = 62;
 const CHAT_A_OBJECT = 62;
 const CHAT_B_SPRITE = 63;
 const CHAT_B_OBJECT = 63;
+const CR_A_SPRITE = 64;
+const CR_A_OBJECT = 64;
+const CR_B_SPRITE = 65;
+const CR_B_OBJECT = 65;
 
 const HUD_LAYER = 1;
 const LEFT_PANEL_LAYER = 2;
@@ -103,8 +107,8 @@ export function buildGlobalFrame(sim: Sim): Buffer {
 
   buildHud(sim, pkt);
 
-  buildRoomPanel(sim, pkt, Room.RoomA, LEFT_PANEL_LAYER, VOTE_A_SPRITE, VOTE_A_OBJECT, CHAT_A_SPRITE, CHAT_A_OBJECT);
-  buildRoomPanel(sim, pkt, Room.RoomB, RIGHT_PANEL_LAYER, VOTE_B_SPRITE, VOTE_B_OBJECT, CHAT_B_SPRITE, CHAT_B_OBJECT);
+  buildRoomPanel(sim, pkt, Room.RoomA, LEFT_PANEL_LAYER, VOTE_A_SPRITE, VOTE_A_OBJECT, CHAT_A_SPRITE, CHAT_A_OBJECT, CR_A_SPRITE, CR_A_OBJECT);
+  buildRoomPanel(sim, pkt, Room.RoomB, RIGHT_PANEL_LAYER, VOTE_B_SPRITE, VOTE_B_OBJECT, CHAT_B_SPRITE, CHAT_B_OBJECT, CR_B_SPRITE, CR_B_OBJECT);
 
   return pkt.toBuffer();
 }
@@ -139,6 +143,7 @@ function buildRoomPanel(
   layerId: number,
   voteSpriteId: number, voteObjId: number,
   chatSpriteId: number, chatObjId: number,
+  crSpriteId: number, crObjId: number,
 ) {
   const roomName = room === Room.RoomA ? ROOM_A_NAME : ROOM_B_NAME;
 
@@ -167,15 +172,15 @@ function buildRoomPanel(
   pkt.addObject(voteObjId, 0, 0, 0, layerId, voteSpriteId);
 
   const chatLines: { text: string; color: number }[] = [];
-  chatLines.push({ text: roomName + " CHAT", color: 2 });
+  chatLines.push({ text: roomName + " GLOBAL", color: 2 });
 
-  const msgs = sim.chatMessages.filter(
-    (m) => m.room === room && sim.tickCount - m.tick < CHAT_FADE_TICKS
-  ).slice(-4);
+  const globalMsgs = room === Room.RoomA ? sim.globalMessagesA : sim.globalMessagesB;
+  const recentMsgs = globalMsgs.slice(-4);
 
-  if (msgs.length > 0) {
-    for (const m of msgs) {
-      chatLines.push({ text: m.text.slice(0, 24), color: m.color });
+  if (recentMsgs.length > 0) {
+    for (const m of recentMsgs) {
+      const color = m.senderIndex >= 0 ? sim.playerColor(m.senderIndex) : 2;
+      chatLines.push({ text: m.text.slice(0, 24), color });
     }
   } else {
     chatLines.push({ text: "...", color: 1 });
@@ -184,4 +189,36 @@ function buildRoomPanel(
   const chatSprite = buildFilledTextSprite(chatLines, 0);
   pkt.addSprite(chatSpriteId, chatSprite.width, chatSprite.height, chatSprite.pixels);
   pkt.addObject(chatObjId, 0, voteSprite.height + 2, 0, layerId, chatSpriteId);
+
+  const crLines: { text: string; color: number }[] = [];
+  const roomChatrooms: { id: number; occupants: number[]; msgs: { text: string; color: number }[] }[] = [];
+  for (const cr of sim.chatrooms.values()) {
+    if (cr.room !== room) continue;
+    const occs = [...cr.occupants];
+    const recent = cr.messages.slice(-2);
+    const msgs = recent.map(m => ({
+      text: m.text.slice(0, 22),
+      color: m.type === 'system' ? 8 : (m.senderIndex >= 0 ? sim.playerColor(m.senderIndex) : 1),
+    }));
+    roomChatrooms.push({ id: cr.id, occupants: occs, msgs });
+  }
+
+  if (roomChatrooms.length > 0) {
+    crLines.push({ text: `CHATROOMS (${roomChatrooms.length})`, color: 8 });
+    for (const cr of roomChatrooms.slice(0, 3)) {
+      const occColors = cr.occupants.map(i => sim.playerColor(i));
+      const occLabel = occColors.length + " IN";
+      crLines.push({ text: `#${cr.id} ${occLabel}`, color: 1 });
+      for (const m of cr.msgs) {
+        crLines.push({ text: "  " + m.text, color: m.color });
+      }
+    }
+  }
+
+  if (crLines.length > 0) {
+    const chatSpriteH = chatLines.length * 7 + 2;
+    const crSprite = buildFilledTextSprite(crLines, 0);
+    pkt.addSprite(crSpriteId, crSprite.width, crSprite.height, crSprite.pixels);
+    pkt.addObject(crObjId, 0, voteSprite.height + 2 + chatSpriteH + 2, 0, layerId, crSpriteId);
+  }
 }

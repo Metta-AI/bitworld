@@ -66,85 +66,50 @@ export class ActionQueue {
 }
 
 // ---------------------------------------------------------------------------
-// Menu navigation — builds action sequences for specific menu operations
+// Action sequences for the new input system
 //
-// Menu layout (columns, left-to-right):
-//   0: INFO     — ROLE, SHARED
-//   1: SHOW     — CARD-LOCAL, COLOR-LOCAL, CARD-ALL, COLOR-ALL
-//   2: SHARE    — OFFER, [ACCEPT]
-//   3: LEADER   — PASS | ACCEPT  (only when applicable)
-//   3/4: USURP  — NONE, <player names...>, ME  (only non-leaders)
-//
-// Navigation: right/left to change column, up/down within column, A to select.
-// B opens/closes the menu.
+// Game world:  A opens comm menu (START/REQUEST/SHOUT), up/down navigate, A selects
+//              B toggles shared info screen
+//              SELECT opens global chat
+// Global chat: left/right navigate usurp candidates, B selects, A closes
+// Chatroom:    A exits, B opens action menu, left/right navigate, B selects
 // ---------------------------------------------------------------------------
 
 export type MenuAction =
-  | "INFO:ROLE" | "INFO:SHARED"
-  | "SHOW:CARD-LOCAL" | "SHOW:COLOR-LOCAL" | "SHOW:CARD-ALL" | "SHOW:COLOR-ALL"
-  | "SHARE:OFFER" | "SHARE:ACCEPT"
-  | "LEADER:PASS" | "LEADER:ACCEPT"
-  | "USURP:NONE" | "USURP:ME" | { usurpIndex: number };
+  | "COMM:START" | "COMM:SHOUT"
+  | "INFO:SHARED"
+  | "USURP:SELECT";
 
-interface MenuTarget {
-  col: number;
-  row: number;
+export function commMenuSequence(targetRow: number): number[] {
+  const seq: number[] = [];
+  seq.push(BUTTON_A, 0);
+  for (let i = 0; i < targetRow; i++) seq.push(BUTTON_DOWN, 0);
+  seq.push(BUTTON_A, 0);
+  return seq;
 }
 
-const MENU_MAP: Record<string, MenuTarget> = {
-  "INFO:ROLE":        { col: 0, row: 0 },
-  "INFO:SHARED":      { col: 0, row: 1 },
-  "SHOW:CARD-LOCAL":  { col: 1, row: 0 },
-  "SHOW:COLOR-LOCAL": { col: 1, row: 1 },
-  "SHOW:CARD-ALL":    { col: 1, row: 2 },
-  "SHOW:COLOR-ALL":   { col: 1, row: 3 },
-  "SHARE:OFFER":      { col: 2, row: 0 },
-  "SHARE:ACCEPT":     { col: 2, row: 1 },
-  "LEADER:PASS":      { col: 3, row: 0 },
-  "LEADER:ACCEPT":    { col: 3, row: 1 },
-};
-
 export function menuActionSequence(action: MenuAction, opts?: {
-  hasLeaderColumn: boolean;
-  usurpListLength: number;
+  usurpListLength?: number;
 }): number[] {
-  const seq: number[] = [];
-  // Open menu
-  seq.push(BUTTON_B, 0);
-
-  let col: number;
-  let row: number;
-
-  if (typeof action === "object" && "usurpIndex" in action) {
-    // USURP column is after LEADER (col 3) if leader column exists, otherwise col 3
-    col = opts?.hasLeaderColumn ? 4 : 3;
-    row = action.usurpIndex;
-  } else if (action === "USURP:NONE") {
-    col = opts?.hasLeaderColumn ? 4 : 3;
-    row = 0;
-  } else if (action === "USURP:ME") {
-    col = opts?.hasLeaderColumn ? 4 : 3;
-    row = (opts?.usurpListLength ?? 3) - 1; // ME is always last
-  } else {
-    const target = MENU_MAP[action];
-    if (!target) return seq; // unknown action, just open and close
-    col = target.col;
-    row = target.row;
+  if (action === "COMM:START") {
+    return commMenuSequence(0);
   }
-
-  // Navigate to column (menu opens at col 0)
-  for (let i = 0; i < col; i++) seq.push(BUTTON_RIGHT, 0);
-
-  // Navigate to row (menu opens at last row in each column; go up to row 0 first)
-  // Pressing down from row 0 wraps. Easiest: press up enough times to reach row 0, then down to target.
-  // Since we don't know column height, press up a safe number of times to wrap to top.
-  for (let i = 0; i < 8; i++) seq.push(BUTTON_UP, 0);
-  for (let i = 0; i < row; i++) seq.push(BUTTON_DOWN, 0);
-
-  // Select
-  seq.push(BUTTON_A, 0);
-
-  return seq;
+  if (action === "COMM:SHOUT") {
+    return commMenuSequence(2);
+  }
+  if (action === "INFO:SHARED") {
+    return [BUTTON_B, 0];
+  }
+  if (action === "USURP:SELECT") {
+    const seq: number[] = [];
+    seq.push(BUTTON_SELECT, 0);
+    const moves = Math.floor(Math.random() * (opts?.usurpListLength ?? 4));
+    for (let i = 0; i < moves; i++) seq.push(BUTTON_RIGHT, 0);
+    seq.push(BUTTON_B, 0);
+    seq.push(BUTTON_A, 0);
+    return seq;
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------

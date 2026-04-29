@@ -1,5 +1,5 @@
-import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ChatMessage, type Obstacle, type uint8, type GameConfig } from "./types.js";
-import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS, CHAT_VISIBLE_MESSAGES, CHAT_FADE_TICKS, SHARE_OFFER_TIMEOUT, OBSTACLE_SIZE, OBSTACLES_PER_ROOM, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, GAMBLER_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE } from "./constants.js";
+import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ChatMessage, type ChatroomMessage, type Chatroom, type Obstacle, type uint8, type GameConfig } from "./types.js";
+import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS, CHATROOM_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, OBSTACLES_PER_ROOM, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE } from "./constants.js";
 import { Framebuffer } from "./framebuffer.js";
 import { emptyInput } from "./protocol.js";
 import { clamp, distSq } from "./util.js";
@@ -34,6 +34,11 @@ export class Sim {
   committedB = false;
   hostageSelectTimer = 0;
 
+  chatrooms = new Map<number, Chatroom>();
+  nextChatroomId = 0;
+  globalMessagesA: ChatroomMessage[] = [];
+  globalMessagesB: ChatroomMessage[] = [];
+
   // Exchange animation state — positions before swap
   exchangeFromA: { pi: number; startX: number; startY: number }[] = [];
   exchangeFromB: { pi: number; startX: number; startY: number }[] = [];
@@ -44,12 +49,15 @@ export class Sim {
   exchangeDuration = 0;
   exchangeTimer = 0;
 
-  constructor(config: GameConfig = DEFAULT_GAME_CONFIG) {
+  seed: number;
+
+  constructor(config: GameConfig = DEFAULT_GAME_CONFIG, seed = 0xb1770) {
     this.config = config;
-    let seed = 0xb1770;
+    this.seed = seed;
+    let s = seed;
     this.rng = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
     };
     this.rebuildWallMap();
   }
@@ -247,47 +255,40 @@ export class Sim {
     if (!player) return;
 
     if (player.infoScreen !== "none") {
-      const anyPress = (input.attack && !prevInput.attack) || (input.b && !prevInput.b) ||
+      if (input.up && !prevInput.up) player.infoScrollOffset = Math.max(0, player.infoScrollOffset - 1);
+      if (input.down && !prevInput.down) player.infoScrollOffset++;
+      const closePress = (input.attack && !prevInput.attack) || (input.b && !prevInput.b) ||
         (input.select && !prevInput.select);
-      if (anyPress) player.infoScreen = "none";
+      if (closePress) { player.infoScreen = "none"; player.infoScrollOffset = 0; }
       return;
     }
 
-    if (player.menuOpen) {
-      if (input.b && !prevInput.b) {
-        player.menuOpen = false;
-        return;
-      }
-      const cols = this.menuColumns(pi);
-      if (cols.length > 0) {
-        player.menuCol = Math.min(player.menuCol, cols.length - 1);
-        const col = cols[player.menuCol];
-        player.menuRow = Math.min(player.menuRow, col.items.length - 1);
+    if (player.inChatroom >= 0) {
+      this.applyChatroomInput(pi, input, prevInput);
+      return;
+    }
 
-        if (input.left && !prevInput.left) {
-          player.menuCol = (player.menuCol - 1 + cols.length) % cols.length;
-          player.menuRow = cols[player.menuCol].items.length - 1;
-        }
-        if (input.right && !prevInput.right) {
-          player.menuCol = (player.menuCol + 1) % cols.length;
-          player.menuRow = cols[player.menuCol].items.length - 1;
-        }
-        if (input.up && !prevInput.up) {
-          const curCol = cols[player.menuCol];
-          player.menuRow = (player.menuRow - 1 + curCol.items.length) % curCol.items.length;
-        }
-        if (input.down && !prevInput.down) {
-          const curCol = cols[player.menuCol];
-          player.menuRow = (player.menuRow + 1) % curCol.items.length;
-        }
+    if (player.globalChatOpen) {
+      this.applyGlobalChatInput(pi, input, prevInput);
+      return;
+    }
+
+    // A-button comm menu (START CHAT / REQUEST / SHOUT)
+    if (player.commMenuOpen) {
+      if (input.attack && !prevInput.attack) { player.commMenuOpen = false; return; }
+      const items = this.commMenuItems(pi);
+      if (items.length > 0) {
+        player.commMenuRow = Math.min(player.commMenuRow, items.length - 1);
+        if (input.left && !prevInput.left) player.commMenuRow = (player.commMenuRow - 1 + items.length) % items.length;
+        if (input.right && !prevInput.right) player.commMenuRow = (player.commMenuRow + 1) % items.length;
       }
-      if (input.attack && !prevInput.attack) {
-        this.menuSelect(pi);
+      if (input.b && !prevInput.b && items.length > 0) {
+        this.commMenuSelect(pi, items[player.commMenuRow]);
       }
       return;
     }
 
-    const leaderSelecting = this.phase === Phase.HostageSelect && player.isLeader && !player.menuOpen;
+    const leaderSelecting = this.phase === Phase.HostageSelect && player.isLeader;
     if (leaderSelecting) {
       if (input.left && !prevInput.left) this.moveCursor(pi, -1);
       if (input.right && !prevInput.right) this.moveCursor(pi, 1);
@@ -296,8 +297,8 @@ export class Sim {
     } else {
       let inputX = 0;
       let inputY = 0;
-      if (input.left && !player.menuOpen) inputX -= 1;
-      if (input.right && !player.menuOpen) inputX += 1;
+      if (input.left) inputX -= 1;
+      if (input.right) inputX += 1;
       if (input.up) inputY -= 1;
       if (input.down) inputY += 1;
 
@@ -320,15 +321,22 @@ export class Sim {
       this.applyMomentumAxis(player, carryY, player.velY, false);
       player.carryX = carryX.val;
       player.carryY = carryY.val;
-
-      // Rooms are disjoint — no room switching via movement
     }
 
-    if (input.b && !prevInput.b && !player.menuOpen) {
+    // A opens comm menu
+    if (input.attack && !prevInput.attack && !leaderSelecting) {
       if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect) {
-        player.menuOpen = true;
-        player.menuCol = 0;
-        player.menuRow = 0;
+        player.commMenuOpen = true;
+        player.commMenuRow = 0;
+      }
+    }
+
+    // B toggles shared info screen
+    if (input.b && !prevInput.b) {
+      if (player.pendingChatroomEntry >= 0) {
+        this.cancelEntryRequest(pi);
+      } else {
+        player.infoScreen = player.infoScreen === "none" ? "shared" : "none";
       }
     }
 
@@ -336,6 +344,10 @@ export class Sim {
       if (this.phase === Phase.HostageSelect && player.isLeader) {
         if (player.room === Room.RoomA) this.committedA = true;
         else this.committedB = true;
+      } else if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect) {
+        player.globalChatOpen = true;
+        player.globalChatScroll = 0;
+        player.globalChatActionRow = 0;
       }
     }
 
@@ -346,156 +358,184 @@ export class Sim {
     }
   }
 
-  // ---- Menu ----
-
-  menuColumns(pi: number): { cat: string; items: string[] }[] {
+  applyChatroomInput(pi: number, input: InputState, prevInput: InputState) {
     const player = this.players[pi];
-    const cols: { cat: string; items: string[] }[] = [];
+    const cr = this.chatrooms.get(player.inChatroom);
+    if (!cr) { player.inChatroom = -1; return; }
 
-    cols.push({ cat: "INFO", items: ["ROLE", "SHARED"] });
+    // Accept target select sub-menu — pick which offerer to exchange with
+    if (player.shareSelectOpen) {
+      const offerers = this.chatroomShareOfferers(pi);
+      if (offerers.length === 0) { player.shareSelectOpen = false; return; }
+      player.shareSelectRow = Math.min(player.shareSelectRow, offerers.length - 1);
+      if (input.left && !prevInput.left) player.shareSelectRow = (player.shareSelectRow - 1 + offerers.length) % offerers.length;
+      if (input.right && !prevInput.right) player.shareSelectRow = (player.shareSelectRow + 1) % offerers.length;
+      if (input.b && !prevInput.b) {
+        const target = offerers[player.shareSelectRow];
+        player.revealedTo.add(target);
+        this.players[target].revealedTo.add(pi);
+        player.sharedWith.add(target);
+        this.players[target].sharedWith.add(pi);
+        cr.revealOffers.delete(target);
+        cr.revealOffers.delete(pi);
+        cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: "cards exchanged!" });
+        player.shareSelectOpen = false;
+      }
+      if (input.attack && !prevInput.attack) { player.shareSelectOpen = false; }
+      player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
+      return;
+    }
 
+    // B-button action menu in chatroom
+    if (player.chatMenuOpen) {
+      const actions = this.chatroomActions(pi);
+      if (actions.length > 0) {
+        player.chatMenuRow = Math.min(player.chatMenuRow, actions.length - 1);
+        if (input.left && !prevInput.left) player.chatMenuRow = (player.chatMenuRow - 1 + actions.length) % actions.length;
+        if (input.right && !prevInput.right) player.chatMenuRow = (player.chatMenuRow + 1) % actions.length;
+      }
+      if (input.b && !prevInput.b && actions.length > 0) {
+        this.chatroomActionSelect(pi, actions[player.chatMenuRow]);
+        player.chatMenuOpen = false;
+      }
+      if (input.attack && !prevInput.attack) { player.chatMenuOpen = false; }
+      player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
+      return;
+    }
+
+    // A exits chatroom
+    if (input.attack && !prevInput.attack) {
+      this.leaveChatroom(pi);
+      return;
+    }
+
+    // B opens action menu
+    if (input.b && !prevInput.b) {
+      player.chatMenuOpen = true;
+      player.chatMenuRow = 0;
+      return;
+    }
+
+    // Scroll messages
+    if (input.up && !prevInput.up) {
+      player.chatScrollOffset = Math.min(player.chatScrollOffset + 1, Math.max(0, cr.messages.length - 1));
+    }
+    if (input.down && !prevInput.down) {
+      player.chatScrollOffset = Math.max(player.chatScrollOffset - 1, 0);
+    }
+
+    player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
+  }
+
+  applyGlobalChatInput(pi: number, input: InputState, prevInput: InputState) {
+    const player = this.players[pi];
+    const msgs = this.globalMessagesForPlayer(pi);
+
+    // A closes global chat
+    if (input.attack && !prevInput.attack) {
+      player.globalChatLastRead = (player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB).length;
+      player.globalChatOpen = false;
+      player.globalChatScroll = 0;
+      return;
+    }
+
+    // B selects usurp candidate
+    if (input.b && !prevInput.b) {
+      const candidates = this.usurpCandidates(pi);
+      if (candidates.length > 0) {
+        const row = Math.min(player.globalChatActionRow, candidates.length - 1);
+        const item = candidates[row];
+        if (item === "NONE") player.usurpVote = -1;
+        else if (item === "ME") player.usurpVote = pi;
+        else {
+          const match = item.match(/^P(\d+)$/);
+          if (match) player.usurpVote = parseInt(match[1]);
+        }
+        this.checkUsurp(player.room);
+      }
+    }
+
+    // Left/right navigate usurp candidates
+    const candidates = this.usurpCandidates(pi);
+    if (candidates.length > 0) {
+      player.globalChatActionRow = Math.min(player.globalChatActionRow, candidates.length - 1);
+      if (input.left && !prevInput.left) player.globalChatActionRow = (player.globalChatActionRow - 1 + candidates.length) % candidates.length;
+      if (input.right && !prevInput.right) player.globalChatActionRow = (player.globalChatActionRow + 1) % candidates.length;
+    }
+
+    // Up/down scroll messages
+    if (input.up && !prevInput.up) {
+      player.globalChatScroll = Math.min(player.globalChatScroll + 1, Math.max(0, msgs.length - 1));
+    }
+    if (input.down && !prevInput.down) {
+      player.globalChatScroll = Math.max(player.globalChatScroll - 1, 0);
+    }
+
+    player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
+  }
+
+  // ---- Comm menu (A-button in game world) ----
+
+  commMenuItems(pi: number): string[] {
+    const player = this.players[pi];
+    const items: string[] = [];
     if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect) {
-      cols.push({ cat: "SHOW", items: ["CARD-NEAR", "COLOR-NEAR", "CARD-SIGHT", "COLOR-SIGHT"] });
-
-      const shareItems: string[] = ["OFFER"];
-      const nearby = this.playersInBubble(pi);
-      const pending = nearby.filter((i) => this.players[i].shareOfferTarget === pi);
-      if (pending.length > 0) shareItems.push("ACCEPT");
-      cols.push({ cat: "SHARE", items: shareItems });
-
-      const leaderItems: string[] = [];
-      if (player.isLeader) leaderItems.push("PASS");
-      const leaderIdx = player.room === Room.RoomA ? this.leaderA : this.leaderB;
-      if (leaderIdx >= 0 && leaderIdx < this.players.length && !player.isLeader) {
-        const leader = this.players[leaderIdx];
-        if (leader.leaderOfferTarget === pi) leaderItems.push("ACCEPT");
-      }
-      if (leaderItems.length > 0) cols.push({ cat: "LEADER", items: leaderItems });
-
-      if (!player.isLeader) {
-        const roommates: string[] = ["NONE"];
-        for (let i = 0; i < this.players.length; i++) {
-          if (i !== pi && this.players[i].room === player.room && !this.players[i].isLeader) {
-            roommates.push(`P${i}`);
-          }
-        }
-        roommates.push("ME");
-        cols.push({ cat: "USURP", items: roommates });
-      }
+      items.push("START");
+      const nearby = this.findNearbyChatroomPlayer(pi);
+      if (nearby >= 0 && player.pendingChatroomEntry < 0) items.push("REQUEST");
+      items.push("SHOUT");
     }
-
-    return cols;
+    return items;
   }
 
-  menuCurrentItem(pi: number): { cat: string; item: string } | null {
-    const cols = this.menuColumns(pi);
-    if (cols.length === 0) return null;
+  commMenuSelect(pi: number, item: string) {
     const player = this.players[pi];
-    const col = cols[Math.min(player.menuCol, cols.length - 1)];
-    const row = Math.min(player.menuRow, col.items.length - 1);
-    return { cat: col.cat, item: col.items[row] };
+    player.commMenuOpen = false;
+    switch (item) {
+      case "START":
+        if (player.pendingChatroomEntry < 0) this.createChatroom(pi);
+        break;
+      case "REQUEST": {
+        const nearby = this.findNearbyChatroomPlayer(pi);
+        if (nearby >= 0) {
+          const cr = this.chatrooms.get(this.players[nearby].inChatroom);
+          if (cr && player.pendingChatroomEntry < 0) this.requestChatroomEntry(pi, cr.id);
+        }
+        break;
+      }
+      case "SHOUT":
+        player.globalChatOpen = true;
+        player.globalChatScroll = 0;
+        player.globalChatActionRow = 0;
+        break;
+    }
   }
 
-  menuSelect(pi: number) {
+  // ---- Chatroom action items (B-button in chatroom) ----
+
+  chatroomShareOfferers(pi: number): number[] {
     const player = this.players[pi];
-    const cur = this.menuCurrentItem(pi);
-    if (!cur) return;
-    const key = `${cur.cat}:${cur.item}`;
+    const cr = this.chatrooms.get(player.inChatroom);
+    if (!cr) return [];
+    const offerers: number[] = [];
+    for (const oi of cr.revealOffers) {
+      if (oi !== pi && cr.occupants.has(oi)) offerers.push(oi);
+    }
+    return offerers;
+  }
 
-    switch (key) {
-      case "INFO:ROLE":
-        player.infoScreen = "role";
-        player.menuOpen = false;
-        break;
-      case "INFO:SHARED":
-        player.infoScreen = "shared";
-        player.menuOpen = false;
-        break;
-      case "SHOW:CARD-NEAR": {
-        const nearby = this.playersInBubble(pi);
-        for (const i of nearby) player.revealedTo.add(i);
-        player.menuOpen = false;
-        break;
-      }
-      case "SHOW:COLOR-NEAR": {
-        const nearby = this.playersInBubble(pi);
-        for (const i of nearby) player.colorRevealedTo.add(i);
-        player.menuOpen = false;
-        break;
-      }
-      case "SHOW:CARD-SIGHT": {
-        for (const i of this.playersInSight(pi)) player.revealedTo.add(i);
-        player.menuOpen = false;
-        break;
-      }
-      case "SHOW:COLOR-SIGHT": {
-        for (const i of this.playersInSight(pi)) player.colorRevealedTo.add(i);
-        player.menuOpen = false;
-        break;
-      }
-      case "SHARE:OFFER": {
-        const nearby = this.playersInBubble(pi);
-        if (nearby.length > 0) {
-          player.shareOfferTarget = nearby[0];
-          player.shareOfferTick = this.tickCount;
-        }
-        player.menuOpen = false;
-        break;
-      }
-      case "SHARE:ACCEPT": {
-        const nearby = this.playersInBubble(pi);
-        const pending = nearby.filter((i) => this.players[i].shareOfferTarget === pi);
-        if (pending.length > 0) {
-          const other = this.players[pending[0]];
-          player.revealedTo.add(pending[0]);
-          other.revealedTo.add(pi);
-          other.shareOfferTarget = -1;
-          player.shareOfferTarget = -1;
-        }
-        player.menuOpen = false;
-        break;
-      }
-      case "LEADER:PASS": {
-        const nearby = this.playersInBubble(pi);
-        if (nearby.length > 0) {
-          player.leaderOfferTarget = nearby[0];
-          player.leaderOfferTick = this.tickCount;
-        }
-        player.menuOpen = false;
-        break;
-      }
-      case "LEADER:ACCEPT": {
-        const leaderIdx = player.room === Room.RoomA ? this.leaderA : this.leaderB;
-        if (leaderIdx >= 0 && leaderIdx < this.players.length) {
-          const leader = this.players[leaderIdx];
-          if (leader.leaderOfferTarget === pi) {
-            leader.leaderOfferTarget = -1;
-            leader.isLeader = false;
-            this.setLeader(player.room, pi);
-          }
-        }
-        player.menuOpen = false;
-        break;
+  usurpCandidates(pi: number): string[] {
+    const player = this.players[pi];
+    if (player.isLeader) return [];
+    if (this.phase !== Phase.Playing && this.phase !== Phase.HostageSelect) return [];
+    const items: string[] = ["NONE"];
+    for (let i = 0; i < this.players.length; i++) {
+      if (i !== pi && this.players[i].room === player.room && !this.players[i].isLeader) {
+        items.push(`P${i}`);
       }
     }
-
-    if (cur.cat === "USURP") {
-      if (cur.item === "NONE") {
-        player.usurpVote = -1;
-      } else if (cur.item === "ME") {
-        player.usurpVote = pi;
-      } else {
-        for (let i = 0; i < this.players.length; i++) {
-          if (i !== pi && this.players[i].room === player.room &&
-              `P${i}` === cur.item) {
-            player.usurpVote = i;
-            break;
-          }
-        }
-      }
-      player.menuOpen = false;
-      this.checkUsurp(player.room);
-    }
+    items.push("ME");
+    return items;
   }
 
   checkUsurp(room: Room) {
@@ -585,6 +625,256 @@ export class Sim {
     return result;
   }
 
+  // ---- Chatrooms ----
+
+  createChatroom(pi: number) {
+    const player = this.players[pi];
+    if (player.inChatroom >= 0) return;
+    const id = this.nextChatroomId++;
+    const cr: Chatroom = {
+      id, room: player.room, ownerIndex: pi,
+      x: player.x, y: player.y,
+      occupants: new Set([pi]),
+      pendingEntry: [], pendingEntryTicks: [],
+      messages: [], revealOffers: new Set(), leaderOffer: -1,
+    };
+    this.chatrooms.set(id, cr);
+    player.inChatroom = id;
+    player.chatroomEntryTick = this.tickCount;
+    player.chatScrollOffset = 0;
+    player.chatMenuOpen = false; player.chatMenuRow = 0;
+    player.shareSelectOpen = false; player.shareSelectRow = 0;
+    player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
+  }
+
+  findNearbyChatroomPlayer(pi: number): number {
+    const player = this.players[pi];
+    const r2 = BUBBLE_RADIUS * BUBBLE_RADIUS;
+    for (let i = 0; i < this.players.length; i++) {
+      if (i === pi) continue;
+      const other = this.players[i];
+      if (other.room !== player.room || other.inChatroom < 0) continue;
+      if (distSq(player.x, player.y, other.x, other.y) <= r2) return i;
+    }
+    return -1;
+  }
+
+  requestChatroomEntry(pi: number, chatroomId: number) {
+    const cr = this.chatrooms.get(chatroomId);
+    if (!cr) return;
+    if (cr.occupants.has(pi)) return;
+    if (cr.pendingEntry.includes(pi)) return;
+    if (cr.occupants.size >= CHATROOM_MAX_OCCUPANTS) return;
+    cr.pendingEntry.push(pi);
+    cr.pendingEntryTicks.push(this.tickCount);
+    this.players[pi].pendingChatroomEntry = chatroomId;
+  }
+
+  grantChatroomEntry(chatroomId: number, requestingPi: number) {
+    const cr = this.chatrooms.get(chatroomId);
+    if (!cr) return;
+    const idx = cr.pendingEntry.indexOf(requestingPi);
+    if (idx < 0) return;
+    if (cr.occupants.size >= CHATROOM_MAX_OCCUPANTS) return;
+    cr.pendingEntry.splice(idx, 1);
+    cr.pendingEntryTicks.splice(idx, 1);
+    cr.occupants.add(requestingPi);
+    const p = this.players[requestingPi];
+    p.inChatroom = chatroomId;
+    p.chatroomEntryTick = this.tickCount;
+    p.pendingChatroomEntry = -1;
+    p.chatScrollOffset = 0;
+    p.chatMenuOpen = false; p.chatMenuRow = 0;
+    p.shareSelectOpen = false; p.shareSelectRow = 0;
+    p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;
+  }
+
+  denyChatroomEntry(chatroomId: number, requestingPi: number) {
+    const cr = this.chatrooms.get(chatroomId);
+    if (!cr) return;
+    const idx = cr.pendingEntry.indexOf(requestingPi);
+    if (idx < 0) return;
+    cr.pendingEntry.splice(idx, 1);
+    cr.pendingEntryTicks.splice(idx, 1);
+    this.players[requestingPi].pendingChatroomEntry = -1;
+  }
+
+  cancelEntryRequest(pi: number) {
+    const player = this.players[pi];
+    if (player.pendingChatroomEntry < 0) return;
+    const cr = this.chatrooms.get(player.pendingChatroomEntry);
+    if (cr) {
+      const idx = cr.pendingEntry.indexOf(pi);
+      if (idx >= 0) { cr.pendingEntry.splice(idx, 1); cr.pendingEntryTicks.splice(idx, 1); }
+    }
+    player.pendingChatroomEntry = -1;
+  }
+
+  leaveChatroom(pi: number) {
+    const player = this.players[pi];
+    const cr = this.chatrooms.get(player.inChatroom);
+    player.inChatroom = -1;
+    player.chatScrollOffset = 0;
+    player.chatMenuOpen = false;
+    player.shareSelectOpen = false;
+    if (!cr) return;
+    cr.occupants.delete(pi);
+    cr.revealOffers.delete(pi);
+    if (cr.leaderOffer === pi) cr.leaderOffer = -1;
+    if (cr.occupants.size === 0) {
+      for (const pendingPi of cr.pendingEntry) {
+        this.players[pendingPi].pendingChatroomEntry = -1;
+      }
+      this.chatrooms.delete(cr.id);
+    }
+  }
+
+  ejectAllChatrooms() {
+    for (const cr of this.chatrooms.values()) {
+      for (const oi of cr.occupants) {
+        this.players[oi].inChatroom = -1;
+        this.players[oi].chatScrollOffset = 0;
+      }
+      for (const pi of cr.pendingEntry) {
+        this.players[pi].pendingChatroomEntry = -1;
+      }
+    }
+    this.chatrooms.clear();
+  }
+
+  tickChatrooms() {
+    for (const cr of this.chatrooms.values()) {
+      for (let i = cr.pendingEntry.length - 1; i >= 0; i--) {
+        if (this.tickCount - cr.pendingEntryTicks[i] > ENTRY_REQUEST_TIMEOUT) {
+          this.players[cr.pendingEntry[i]].pendingChatroomEntry = -1;
+          cr.pendingEntry.splice(i, 1);
+          cr.pendingEntryTicks.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  chatroomActions(pi: number): string[] {
+    const player = this.players[pi];
+    const cr = this.chatrooms.get(player.inChatroom);
+    if (!cr) return [];
+    const actions: string[] = [];
+    actions.push("COLOR");
+    actions.push("ROLE");
+    if (cr.revealOffers.has(pi)) {
+      actions.push("UNOFFER");
+    } else {
+      actions.push("OFFER");
+    }
+    if (this.chatroomShareOfferers(pi).length > 0) actions.push("ACCEPT");
+    if (player.isLeader) actions.push("PASS");
+    if (cr.leaderOffer >= 0 && cr.leaderOffer !== pi && cr.occupants.has(cr.leaderOffer)) {
+      actions.push("TAKE");
+    }
+    if (cr.pendingEntry.length > 0) actions.push("GRANT");
+    actions.push("EXIT");
+    return actions;
+  }
+
+  chatroomActionSelect(pi: number, action: string) {
+    const player = this.players[pi];
+    const cr = this.chatrooms.get(player.inChatroom);
+    if (!cr) return;
+
+    switch (action) {
+      case "COLOR":
+        for (const oi of cr.occupants) {
+          if (oi !== pi) player.colorRevealedTo.add(oi);
+        }
+        cr.messages.push({ type: 'system', senderIndex: pi, tick: this.tickCount, text: "showed color" });
+        break;
+      case "ROLE":
+        for (const oi of cr.occupants) {
+          if (oi !== pi) player.revealedTo.add(oi);
+        }
+        cr.messages.push({ type: 'system', senderIndex: pi, tick: this.tickCount, text: "showed role" });
+        break;
+      case "OFFER":
+        cr.revealOffers.add(pi);
+        cr.messages.push({ type: 'system', senderIndex: pi, tick: this.tickCount, text: "offers to share" });
+        break;
+      case "UNOFFER":
+        cr.revealOffers.delete(pi);
+        cr.messages.push({ type: 'system', senderIndex: pi, tick: this.tickCount, text: "withdrew offer" });
+        break;
+      case "ACCEPT":
+        player.shareSelectOpen = true;
+        player.shareSelectRow = 0;
+        break;
+      case "PASS":
+        if (player.isLeader) {
+          cr.leaderOffer = pi;
+          cr.messages.push({ type: 'system', senderIndex: pi, tick: this.tickCount, text: "offers leadership" });
+        }
+        break;
+      case "TAKE":
+        if (cr.leaderOffer >= 0 && cr.leaderOffer !== pi) {
+          const leader = this.players[cr.leaderOffer];
+          if (leader && leader.isLeader) {
+            leader.isLeader = false;
+            this.setLeader(player.room, pi);
+            cr.leaderOffer = -1;
+            cr.messages.push({ type: 'system', senderIndex: pi, tick: this.tickCount, text: "became leader" });
+          }
+        }
+        break;
+      case "GRANT":
+        if (cr.pendingEntry.length > 0) {
+          this.grantChatroomEntry(cr.id, cr.pendingEntry[0]);
+        }
+        break;
+      case "EXIT":
+        this.leaveChatroom(pi);
+        break;
+    }
+  }
+
+  addChatroomChat(chatroomId: number, pi: number, text: string) {
+    const cr = this.chatrooms.get(chatroomId);
+    if (!cr || !cr.occupants.has(pi)) return;
+    const clean = text.slice(0, CHAT_MAX_CHARS).replace(/[^\x20-\x7e]/g, "");
+    if (clean.length === 0) return;
+    cr.messages.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: clean });
+  }
+
+  addGlobalChat(pi: number, text: string) {
+    if (pi < 0 || pi >= this.players.length) return;
+    const clean = text.slice(0, CHAT_MAX_CHARS).replace(/[^\x20-\x7e]/g, "");
+    if (clean.length === 0) return;
+    const player = this.players[pi];
+    const msg: ChatroomMessage = { type: 'text', senderIndex: pi, tick: this.tickCount, text: clean };
+    if (player.room === Room.RoomA) this.globalMessagesA.push(msg);
+    else this.globalMessagesB.push(msg);
+  }
+
+  globalMessagesForPlayer(pi: number): ChatroomMessage[] {
+    const player = this.players[pi];
+    const msgs = player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB;
+    return msgs.filter((m) => m.tick >= player.roomEntryTick);
+  }
+
+  chatroomMessagesForPlayer(pi: number): ChatroomMessage[] {
+    const player = this.players[pi];
+    const cr = this.chatrooms.get(player.inChatroom);
+    if (!cr) return [];
+    return cr.messages.filter((m) => m.tick >= player.chatroomEntryTick);
+  }
+
+  globalUnreadCount(pi: number): number {
+    const player = this.players[pi];
+    const msgs = player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB;
+    let count = 0;
+    for (let i = player.globalChatLastRead; i < msgs.length; i++) {
+      if (msgs[i].tick >= player.roomEntryTick) count++;
+    }
+    return count;
+  }
+
   addChat(pi: number, text: string) {
     if (pi < 0 || pi >= this.players.length) return;
     const clean = text.slice(0, CHAT_MAX_CHARS).replace(/[^\x20-\x7e]/g, "");
@@ -594,7 +884,7 @@ export class Sim {
       playerIndex: pi, color: this.playerColor(pi),
       text: clean, room: player.room, tick: this.tickCount,
     });
-    while (this.chatMessages.length > CHAT_VISIBLE_MESSAGES * 4) this.chatMessages.shift();
+    while (this.chatMessages.length > 64) this.chatMessages.shift();
   }
 
   setLeader(room: Room, pi: number) {
@@ -607,7 +897,6 @@ export class Sim {
       this.leaderB = pi;
     }
     player.isLeader = true;
-    player.leaderOfferTarget = -1;
   }
 
   // ---- Game setup ----
@@ -624,12 +913,16 @@ export class Sim {
       room, team: Team.TeamA, role: Role.Shades,
       shape: (this.players.length % shapeCount) as PlayerShape,
       isLeader: false, isHostage: false, selectedAsHostage: false,
-      revealedTo: new Set(), colorRevealedTo: new Set(),
+      revealedTo: new Set(), sharedWith: new Set(), colorRevealedTo: new Set(),
       colorIndex: this.players.length,
-      shareOfferTarget: -1, shareOfferTick: 0,
-      leaderOfferTarget: -1, leaderOfferTick: 0,
-      menuOpen: false, menuCol: 0, menuRow: 0, infoScreen: "none",
-      usurpVote: -1,
+      commMenuOpen: false, commMenuRow: 0,
+      chatMenuOpen: false, chatMenuRow: 0,
+      shareSelectOpen: false, shareSelectRow: 0,
+      infoScreen: "none", infoScrollOffset: 0, usurpVote: -1,
+      inChatroom: -1, chatroomEntryTick: 0, chatScrollOffset: 0,
+      pendingChatroomEntry: -1,
+      globalChatOpen: false, globalChatLastRead: 0, globalChatScroll: 0, globalChatActionRow: 0,
+      roomEntryTick: 0,
     });
     return this.players.length - 1;
   }
@@ -691,6 +984,7 @@ export class Sim {
       const pi = shuffled[k];
       const room = k < halfN ? Room.RoomA : Room.RoomB;
       this.players[pi].room = room;
+      this.players[pi].roomEntryTick = this.tickCount;
       const b = this.roomBounds(room);
       this.players[pi].x = b.x + 10 + this.randInt(Math.max(1, b.w - 20 - PLAYER_W));
       this.players[pi].y = b.y + 10 + this.randInt(Math.max(1, b.h - 20 - PLAYER_H));
@@ -729,9 +1023,12 @@ export class Sim {
     this.hostagesSelectedB = [];
     for (const p of this.players) {
       p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
-      p.shareOfferTarget = -1; p.leaderOfferTarget = -1;
-      p.menuOpen = false; p.infoScreen = "none"; p.usurpVote = -1;
+      p.commMenuOpen = false; p.chatMenuOpen = false; p.shareSelectOpen = false;
+      p.infoScreen = "none"; p.usurpVote = -1;
+      p.inChatroom = -1; p.pendingChatroomEntry = -1;
+      p.globalChatOpen = false;
     }
+    this.chatrooms.clear();
     this.hostagesPerRoom = this.getHostageCount();
     this.ensureLeaders();
   }
@@ -783,6 +1080,8 @@ export class Sim {
   }
 
   executeHostageExchange() {
+    this.ejectAllChatrooms();
+    for (const p of this.players) { p.globalChatOpen = false; }
     this.phase = Phase.HostageExchange;
 
     this.exchangeLeaderA = this.leaderA;
@@ -811,25 +1110,36 @@ export class Sim {
     this.exchangeTimer = this.exchangeDuration;
   }
 
+  private resetExchangedPlayer(pi: number) {
+    const p = this.players[pi];
+    p.usurpVote = -1;
+    p.globalChatLastRead = 0;
+    p.globalChatScroll = 0;
+  }
+
   finalizeExchange() {
     for (const h of this.exchangeFromA) {
       if (h.pi >= 0 && h.pi < this.players.length) {
         this.players[h.pi].room = Room.RoomB;
+        this.players[h.pi].roomEntryTick = this.tickCount;
         const b = this.roomBounds(Room.RoomB);
         this.players[h.pi].x = b.x + 10 + this.randInt(Math.max(1, b.w - 20 - PLAYER_W));
         this.players[h.pi].y = b.y + 10 + this.randInt(Math.max(1, b.h - 20 - PLAYER_H));
         this.players[h.pi].velX = 0; this.players[h.pi].velY = 0;
         this.players[h.pi].carryX = 0; this.players[h.pi].carryY = 0;
+        this.resetExchangedPlayer(h.pi);
       }
     }
     for (const h of this.exchangeFromB) {
       if (h.pi >= 0 && h.pi < this.players.length) {
         this.players[h.pi].room = Room.RoomA;
+        this.players[h.pi].roomEntryTick = this.tickCount;
         const b = this.roomBounds(Room.RoomA);
         this.players[h.pi].x = b.x + 10 + this.randInt(Math.max(1, b.w - 20 - PLAYER_W));
         this.players[h.pi].y = b.y + 10 + this.randInt(Math.max(1, b.h - 20 - PLAYER_H));
         this.players[h.pi].velX = 0; this.players[h.pi].velY = 0;
         this.players[h.pi].carryX = 0; this.players[h.pi].carryY = 0;
+        this.resetExchangedPlayer(h.pi);
       }
     }
     this.ensureLeaders();
@@ -848,12 +1158,10 @@ export class Sim {
       this.players[hadesIdx].room === this.players[persephoneIdx].room;
 
     const hadesSharedWithCerberus = hadesIdx >= 0 && cerberusIdx >= 0 &&
-      this.players[hadesIdx].revealedTo.has(cerberusIdx) &&
-      this.players[cerberusIdx].revealedTo.has(hadesIdx);
+      this.players[hadesIdx].sharedWith.has(cerberusIdx);
 
     const persephoneSharedWithDemeter = persephoneIdx >= 0 && demeterIdx >= 0 &&
-      this.players[persephoneIdx].revealedTo.has(demeterIdx) &&
-      this.players[demeterIdx].revealedTo.has(persephoneIdx);
+      this.players[persephoneIdx].sharedWith.has(demeterIdx);
 
     if (sameRoom) {
       if (hadesSharedWithCerberus) this.winner = Team.TeamA;
@@ -897,10 +1205,7 @@ export class Sim {
         for (let i = 0; i < this.players.length; i++) {
           this.applyInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
         }
-        for (const p of this.players) {
-          if (p.shareOfferTarget >= 0 && this.tickCount - p.shareOfferTick > SHARE_OFFER_TIMEOUT) p.shareOfferTarget = -1;
-          if (p.leaderOfferTarget >= 0 && this.tickCount - p.leaderOfferTick > SHARE_OFFER_TIMEOUT) p.leaderOfferTarget = -1;
-        }
+        this.tickChatrooms();
         if (this.roundTimer <= 0) this.beginHostageSelect();
         break;
       }
@@ -954,11 +1259,20 @@ export class Sim {
     this.leaderA = -1; this.leaderB = -1;
     this.hostagesSelectedA = []; this.hostagesSelectedB = [];
     this.chatMessages = []; this.obstacles = [];
+    this.chatrooms.clear(); this.nextChatroomId = 0;
+    this.globalMessagesA = []; this.globalMessagesB = [];
     for (const p of this.players) {
       p.team = Team.TeamA; p.role = Role.Shades;
       p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
-      p.revealedTo = new Set(); p.colorRevealedTo = new Set();
-      p.shareOfferTarget = -1; p.leaderOfferTarget = -1; p.menuOpen = false; p.infoScreen = "none"; p.usurpVote = -1;
+      p.revealedTo = new Set(); p.sharedWith = new Set(); p.colorRevealedTo = new Set();
+      p.commMenuOpen = false; p.commMenuRow = 0;
+      p.chatMenuOpen = false; p.chatMenuRow = 0;
+      p.shareSelectOpen = false; p.shareSelectRow = 0;
+      p.infoScreen = "none"; p.usurpVote = -1;
+      p.inChatroom = -1; p.chatroomEntryTick = 0; p.chatScrollOffset = 0;
+      p.pendingChatroomEntry = -1;
+      p.globalChatOpen = false; p.globalChatLastRead = 0; p.globalChatScroll = 0; p.globalChatActionRow = 0;
+      p.roomEntryTick = 0;
       p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;
       const b = this.roomBounds(p.room);
       p.x = b.x + 10 + this.randInt(Math.max(1, b.w - 20 - PLAYER_W));
@@ -976,7 +1290,6 @@ export class Sim {
       case Role.Demeter: return DEMETER_ROLE_NAME;
       case Role.Shades: return SHADES_ROLE_NAME;
       case Role.Nymphs: return NYMPHS_ROLE_NAME;
-      case Role.Gambler: return GAMBLER_ROLE_NAME;
     }
   }
 
@@ -984,7 +1297,6 @@ export class Sim {
     switch (team) {
       case Team.TeamA: return TEAM_A_COLOR;
       case Team.TeamB: return TEAM_B_COLOR;
-      case Team.Gambler: return 1;
     }
   }
 
@@ -1000,7 +1312,6 @@ export class Sim {
       case Role.Demeter: return { color: TEAM_B_COLOR, special: true };
       case Role.Shades: return { color: TEAM_A_COLOR, special: false };
       case Role.Nymphs: return { color: TEAM_B_COLOR, special: false };
-      case Role.Gambler: return { color: 1, special: false };
     }
   }
 }

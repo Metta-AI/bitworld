@@ -10,8 +10,8 @@ export enum Phase {
   GameOver,
 }
 
-export enum Team { TeamA, TeamB, Gambler }
-export enum Role { Hades, Persephone, Cerberus, Demeter, Shades, Nymphs, Gambler }
+export enum Team { TeamA, TeamB }
+export enum Role { Hades, Persephone, Cerberus, Demeter, Shades, Nymphs }
 export enum Room { RoomA, RoomB }
 
 export enum PlayerShape { Square, Diamond, Triangle, Circle, Cross, Star }
@@ -50,17 +50,27 @@ export interface Player {
   isHostage: boolean;
   selectedAsHostage: boolean;
   revealedTo: Set<number>;
+  sharedWith: Set<number>;
   colorRevealedTo: Set<number>;
   colorIndex: number;
-  shareOfferTarget: number;
-  shareOfferTick: number;
-  leaderOfferTarget: number;
-  leaderOfferTick: number;
-  menuOpen: boolean;
-  menuCol: number;
-  menuRow: number;
+  commMenuOpen: boolean;
+  commMenuRow: number;
+  chatMenuOpen: boolean;
+  chatMenuRow: number;
+  shareSelectOpen: boolean;
+  shareSelectRow: number;
   infoScreen: "none" | "role" | "shared";
+  infoScrollOffset: number;
   usurpVote: number;
+  inChatroom: number;
+  chatroomEntryTick: number;
+  chatScrollOffset: number;
+  pendingChatroomEntry: number;
+  globalChatOpen: boolean;
+  globalChatLastRead: number;
+  globalChatScroll: number;
+  globalChatActionRow: number;
+  roomEntryTick: number;
 }
 
 export interface ChatMessage {
@@ -69,6 +79,27 @@ export interface ChatMessage {
   text: string;
   room: Room;
   tick: number;
+}
+
+export interface ChatroomMessage {
+  type: 'text' | 'system';
+  senderIndex: number;
+  tick: number;
+  text: string;
+}
+
+export interface Chatroom {
+  id: number;
+  room: Room;
+  ownerIndex: number;
+  x: number;
+  y: number;
+  occupants: Set<number>;
+  pendingEntry: number[];
+  pendingEntryTicks: number[];
+  messages: ChatroomMessage[];
+  revealOffers: Set<number>;
+  leaderOffer: number;
 }
 
 export interface RoleEntry {

@@ -130,6 +130,10 @@ export class Framebuffer {
       if (ch === " ") { x += 4; continue; }
       const glyph = FONT[ch.toUpperCase()] ?? FONT[ch];
       if (!glyph) continue;
+      if (x + glyph[0].length > SCREEN_WIDTH) {
+        console.warn(`drawText: "${text}" overflows at x=${x} (screen width ${SCREEN_WIDTH})`);
+        break;
+      }
       this.drawChar(ch, x, sy, color);
       x += glyph[0].length + 1;
     }

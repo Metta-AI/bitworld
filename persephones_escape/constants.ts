@@ -14,13 +14,13 @@ export const CERBERUS_ROLE_NAME = "Cerberus";
 export const DEMETER_ROLE_NAME = "Demeter";
 export const SHADES_ROLE_NAME = `${TEAM_A_NAME}`;
 export const NYMPHS_ROLE_NAME = `${TEAM_B_NAME}`;
-export const GAMBLER_ROLE_NAME = "Gambler";
+
 
 export const ROOM_A_NAME = "Underworld";
 export const ROOM_B_NAME = "Mortal Realm";
 
-export const LEADER_A_NAME = `${ROOM_A_NAME} Leader`;
-export const LEADER_B_NAME = `${ROOM_B_NAME} Leader`;
+export const LEADER_A_NAME = "Nether Leader";
+export const LEADER_B_NAME = "Mortal Leader";
 
 // Bitworld protocol
 export const SCREEN_WIDTH = 128;
@@ -81,9 +81,8 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
 
 export const LOBBY_WAIT_TICKS = 5 * TARGET_FPS;
 export const CHAT_MAX_CHARS = 48;
-export const CHAT_VISIBLE_MESSAGES = 4;
-export const CHAT_FADE_TICKS = 5 * TARGET_FPS;
-export const SHARE_OFFER_TIMEOUT = 10 * TARGET_FPS;
+export const CHATROOM_MAX_OCCUPANTS = 4;
+export const ENTRY_REQUEST_TIMEOUT = 10 * TARGET_FPS;
 
 export const SHADOW_MAP: uint8[] = [0, 12, 9, 5, 5, 0, 5, 5, 5, 12, 9, 9, 0, 12, 12, 9];
 
