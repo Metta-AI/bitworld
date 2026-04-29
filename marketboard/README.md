@@ -18,7 +18,8 @@
   - or maybe you get a level reset? or maybe we could do ffxiv style where say you level gathering to 5, switch to crafter which is at 1, level crafter up, then if you switch back to gatherer, you resume lvl 5? but there's obviously a cost to splitting your effort across classes, it's better to specialize.
 - the clear "social dilemma" would be real market situations like price gouging or hoarding.
   - eg: if there was 1 gatherer and 3 crafters, the gatherer could hoard all the base materials and price gouge all the crafters.
- 
+- for 'non-zero-sum' the market is clearly not zero sum, gatherers 'create' value by gathering items, and crafters 'create' value by crafting gear that gatherers can use. 
+
 
 - gatherers get raw materials that crafters need.
   - oh, but crafters need to make something gatherers need..
@@ -28,6 +29,11 @@
 - maybe we could also have 2 or 3 tiers of resources? perhaps tier 2 requires a full set of tier 1 gear, and tier 3 requires a full set of tier 2 gear at minimum to gather?
   - higher level materials could craft better equipment.
 - keep materials simple: maybe 3 tiers of wood, and 3 tiers of ore (stone, copper, iron)
+
+- if agents can freely switch gatherer / crafter, we need to make clear incentives to focus on one.
+  - optimal 'non zero score' should be some agents focus gathering, other agents focus crafting, with no overlap for perfect specialization and efficiency.
+  - but obviously things never go smoothly! so how do the agents decide to deal with that? they may choose to price gouge or other behavior.
+  - there's also a flip side: agents that are too "nice" and undersell themselves might go broke. eg: if a crafter sells at a loss.
 
 - I'd like to avoid menus. maybe the marketboard could have some way of interfacing where agents stand on squares to decide how much to buy/sell?
   - should ponder more on this.
