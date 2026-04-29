@@ -81,6 +81,17 @@ Sell-only market (FFXIV style, no buy orders). Buyers are at the mercy of seller
 - continuous game, no forced rounds — natural rhythm emerges from gather/craft/sell cycles
 - match duration TBD, figure it out through playtesting
 
+## communication
+
+- agents can display a signal icon above their head (like cogames emoji system)
+- icons represent items: "tier 1 ore", "tier 3 boots", etc — signaling what they want or have
+- cycle through icons with d-pad, confirm with A
+- signals are cheap talk — no enforcement, no commitment
+  - a crafter signaling "I want tier 3 ore" tells gatherers there's demand, but the crafter can't guarantee a purchase
+  - agents can lie: signal demand for one thing to manipulate supply of another
+  - gatherers can see the signal, gather the item, and then sell to someone else or price gouge
+- keeps communication simple enough for RL agents while still enabling coordination (and deception)
+
 ## the cooperation spectrum
 
 Pure altruism is a losing strategy. Agents who sell below material cost go broke. You MUST price above your costs to survive. This creates a natural floor on selfishness — the interesting question isn't "cooperate or defect" but "how aggressive is too aggressive?"
@@ -125,3 +136,14 @@ The optimal strategy for maximum market cap isn't generosity — it's sustainabl
 - crafter specialization (armorer vs toolsmith)
 - reputation / trade history
 - alliances / shared stalls
+
+## distant ideas
+
+Not planned, but fun to think about.
+
+- **floors / progression zones**: locked areas that require collective effort to open, like SAO floor clearing. nobody has to push forward, but the economy stagnates if nobody does.
+- **information brokers**: agents who discover node spawn patterns could trade that knowledge for gold. signal system enables this — share info freely, sell it, or lie about it.
+- **PVP**: agents can attack and rob each other outside the safe hub. creates banditry, protection rackets, and escort demand. extremely spicy.
+- **item quality**: crafting could have a quality dimension — hold the button longer for better stats, but burn time you could spend making more items. quantity vs quality tradeoff.
+- **knowledge advantage stigma**: early-game agents who learn patterns first get an advantage. do other agents resent them? stop trading with them? or depend on them anyway because they need the materials?
+- **safe zones**: hub is safe, wilderness is not. simple and clean boundary between cooperation space and danger space.
