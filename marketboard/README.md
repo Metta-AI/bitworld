@@ -81,6 +81,17 @@ Sell-only market (FFXIV style, no buy orders). Buyers are at the mercy of seller
 - continuous game, no forced rounds — natural rhythm emerges from gather/craft/sell cycles
 - match duration TBD, figure it out through playtesting
 
+## the cooperation spectrum
+
+Pure altruism is a losing strategy. Agents who sell below material cost go broke. You MUST price above your costs to survive. This creates a natural floor on selfishness — the interesting question isn't "cooperate or defect" but "how aggressive is too aggressive?"
+
+- too nice: sell at/below cost, go broke, drag down market cap
+- fair: price above cost with reasonable margin, economy grows, market cap maximized
+- greedy: price gouge when you have leverage, get rich short-term, starve trading partners
+- predatory: corner supply, manipulate prices, high individual wealth but total market cap suffers
+
+The optimal strategy for maximum market cap isn't generosity — it's sustainable fair pricing where everyone stays in business. That's a harder equilibrium to find than simple cooperation, and better data for alignment research.
+
 ## emergent behaviors we hope to see
 
 - price discovery: agents learning fair market prices through trial and error
@@ -91,7 +102,7 @@ Sell-only market (FFXIV style, no buy orders). Buyers are at the mercy of seller
 - role switching in response to market conditions (too many crafters? someone switches to gathering)
 - information advantage: gatherers who learn tier 3 spawn patterns profiting from that knowledge
 
-## v2 ideas
+## v2 ideas: danger and permadeath
 
 - monsters near tier 2/3 gathering nodes (like EVE rats or mobs near FFXIV nodes)
 - new role: adventurer — fights monsters, needs crafter gear, creates 3-way dependency loop
@@ -99,6 +110,13 @@ Sell-only market (FFXIV style, no buy orders). Buyers are at the mercy of seller
 - risk vs reward: gather dangerous nodes solo or wait for an escort?
 - what happens when an agent runs out of gold? (always able to gather tier 1 with no gear as a fallback?)
 - inventory limits
+- **permadeath**: defeated adventurers die permanently and become spectators (like among_them ghosts)
+  - this is the ultimate altruism test: will an adventurer risk permanent death to protect a gatherer carrying valuable materials?
+  - the dead agent's individual score freezes, but their sacrifice may keep the economy running and total market cap higher
+  - creates natural tension: adventurers who play it safe are useless, adventurers who take risks might die
+  - gatherers would stop paying for escorts that won't actually fight — market pressure to be brave
+  - one death ripples through the whole economy: fewer escorts means less access to high-tier nodes, supply drops, prices spike, crafters idle
+  - crisis events: node droughts or monster surges that force agents to choose between self-preservation and protecting the group
 
 ## v3 ideas
 
