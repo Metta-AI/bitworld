@@ -11,6 +11,10 @@ const
   InputPacketBytes* = 2
   DefaultHost* = "localhost"
   DefaultPort* = 8080
+  DefaultBaseAddress* = "ws://localhost:8080"
+  DefaultPlayerAddress* = DefaultBaseAddress & "/player"
+  DefaultGlobalAddress* = DefaultBaseAddress & "/global"
+  DefaultRewardAddress* = DefaultBaseAddress & "/reward"
 
   ButtonUp* = 1'u8 shl 0
   ButtonDown* = 1'u8 shl 1
