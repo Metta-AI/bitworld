@@ -46,13 +46,13 @@ const
   ReportRange* = 20
   VoteResultTicks* = 72
   MaxPlayers* = 16
-  MinPlayers* = 5
-  ImposterCount* = 1
-  VoteTimerTicks* = 1440
+  MinPlayers* = 8
+  ImposterCount* = 2
+  VoteTimerTicks* = 600
   GameOverTicks* = 360
-  MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
+  MaxTicks* = 10_000  ## 0 = no limit.
   MaxGames* = 0  ## 0 = no limit.
-  TasksPerPlayer* = 4
+  TasksPerPlayer* = 8
   ShowTaskArrows* = true
   ButtonCalls* = 1
   VoteChatVisibleMessages* = 4
@@ -122,6 +122,7 @@ const
     9,     # 15 pale blue    -> dark teal
   ]
   WebSocketPath* = "/player"
+  Player2WebSocketPath* = "/player2"
   GlobalWebSocketPath* = "/global"
 
 type
@@ -254,6 +255,7 @@ type
     vents*: seq[Vent]
     rooms*: seq[Room]
     mapPixels*: seq[uint8]
+    mapRgba*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
     fb*: Framebuffer
@@ -852,6 +854,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("maxTicks", config.maxTicks)
+  node.readConfigInt("maxGameTicks", config.maxTicks)
   node.readConfigInt("maxGames", config.maxGames)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
   node.readConfigInt("buttonCalls", config.buttonCalls)
@@ -885,6 +888,7 @@ proc configJson*(config: GameConfig): string =
     "voteTimerTicks": config.voteTimerTicks,
     "gameOverTicks": config.gameOverTicks,
     "maxTicks": config.maxTicks,
+    "maxGameTicks": config.maxTicks,
     "maxGames": config.maxGames,
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
@@ -1951,6 +1955,8 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   sim.winner = winner
   sim.gameOverTimer = sim.config.gameOverTicks
   sim.timeLimitReached = timeLimitReached
+  if timeLimitReached:
+    return
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == winner:
       sim.addReward(i, WinReward)
@@ -1967,7 +1973,7 @@ proc maxTicksReached(sim: SimServer): bool =
 
 proc checkMaxTicks(sim: var SimServer) =
   if sim.maxTicksReached():
-    sim.finishGame(Imposter, timeLimitReached = true)
+    sim.finishGame(Crewmate, timeLimitReached = true)
 
 proc checkWinCondition*(sim: var SimServer) =
   let hasImposters = min(
@@ -1993,8 +1999,12 @@ proc checkWinCondition*(sim: var SimServer) =
 proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let title =
-    if sim.winner == Crewmate: "CREW WINS"
-    else: "IMPS WIN"
+    if sim.timeLimitReached:
+      "DRAW"
+    elif sim.winner == Crewmate:
+      "CREW WINS"
+    else:
+      "IMPS WIN"
   let titleW = title.len * 7
   let titleX = (ScreenWidth - titleW) div 2
   sim.fb.blitAsciiText(sim.asciiSprites, title, titleX, 2)
@@ -2717,9 +2727,18 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+  result.mapRgba = newSeq[uint8](MapWidth * MapHeight * 4)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
-      result.mapPixels[mapIndex(x, y)] = nearestPaletteIndex(mapImage[x, y])
+      let
+        pixel = mapImage[x, y]
+        index = mapIndex(x, y)
+        offset = index * 4
+      result.mapPixels[index] = nearestPaletteIndex(pixel)
+      result.mapRgba[offset] = pixel.r
+      result.mapRgba[offset + 1] = pixel.g
+      result.mapRgba[offset + 2] = pixel.b
+      result.mapRgba[offset + 3] = pixel.a
 
   result.walkMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:

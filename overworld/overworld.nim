@@ -642,7 +642,7 @@ proc ensureGameRunning(sim: var SimServer, villageIndex: int): bool =
     return true
 
   let v = sim.villages[villageIndex]
-  let exePath = repoDir() / v.folder / v.folder
+  let exePath = repoDir() / "out" / v.folder.addFileExt(ExeExts[0])
   if not fileExists(exePath):
     echo "Game executable not found: ", exePath
     return false

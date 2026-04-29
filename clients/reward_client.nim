@@ -4,7 +4,6 @@ import
 
 const
   AtlasPath = "dist/atlas.png"
-  WebSocketPath = "/reward"
   TargetFps = 24.0
   NetworkPollPasses = 8
   WindowWidth = 720
@@ -161,8 +160,7 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   previousTick = getMonoTime()
 
 proc initRewardApp(
-  host = DefaultHost,
-  port = DefaultPort,
+  address = DefaultRewardAddress,
   options = RewardOptions()
 ): RewardApp =
   ## Creates the native reward client app.
@@ -180,7 +178,7 @@ proc initRewardApp(
   if result.window.contentScale > 1.0:
     result.silky.uiScale = 2.0
     result.window.size = ivec2(WindowWidth, WindowHeight) * 2
-  result.network.url = "ws://" & host & ":" & $port & WebSocketPath
+  result.network.url = address
   result.network.reconnectDelayMilliseconds =
     options.reconnectDelayMilliseconds
   result.connectNetwork()
@@ -196,13 +194,12 @@ proc parseReconnectDelay(value: string): int64 =
   max(0, int64(parseFloat(value) * 1000.0))
 
 proc runRewardClient*(
-  host = DefaultHost,
-  port = DefaultPort,
+  address = DefaultRewardAddress,
   options = RewardOptions()
 ) =
   ## Runs the native reward client.
   var
-    app = initRewardApp(host, port, options)
+    app = initRewardApp(address, options)
     lastTick = getMonoTime()
   while app.windowOpen:
     pollEvents()
@@ -218,8 +215,7 @@ proc runRewardClient*(
 
 when isMainModule:
   var
-    address = DefaultHost
-    port = DefaultPort
+    address = DefaultRewardAddress
     options = RewardOptions()
   for kind, key, val in getopt():
     case kind
@@ -227,8 +223,6 @@ when isMainModule:
       case key
       of "address":
         address = val
-      of "port":
-        port = parseInt(val)
       of "title":
         options.title = val
       of "reconnect":
@@ -237,4 +231,4 @@ when isMainModule:
         discard
     else:
       discard
-  runRewardClient(address, port, options)
+  runRewardClient(address, options)

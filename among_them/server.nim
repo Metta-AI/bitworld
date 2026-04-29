@@ -14,6 +14,7 @@ type
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
+    playerViewers: Table[WebSocket, PlayerViewerState]
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
@@ -73,14 +74,14 @@ const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static HTML client page if the route matches.
+  ## Serves one static client file if the route matches.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientHtmlPath(request.path)
+  let filePath = clientStaticPath(request.path)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Content-Type"] = clientStaticContentType(request.path)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & request.path)
@@ -510,6 +511,7 @@ proc initAppState() =
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
+  appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.spectators = @[]
@@ -520,6 +522,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       appState.spectators.delete(i)
   if websocket in appState.globalViewers:
     appState.globalViewers.del(websocket)
+  if websocket in appState.playerViewers:
+    appState.playerViewers.del(websocket)
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
@@ -552,10 +556,18 @@ proc playerIdentity(request: Request): string =
 
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET":
+    let identity = request.playerIdentity()
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerAddresses[websocket] = request.playerIdentity()
+        appState.playerAddresses[websocket] = identity
+  elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
+    let identity = request.playerIdentity()
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerViewers[websocket] = initPlayerViewerState()
+        appState.playerAddresses[websocket] = identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -598,6 +610,19 @@ proc websocketHandler(
             appState.globalViewers[websocket].applyGlobalViewerMessage(
               message.data
             )
+          elif websocket in appState.playerViewers and
+              not appState.replayLoaded:
+            var
+              mask = appState.inputMasks.getOrDefault(websocket, 0)
+              chatText = ""
+            appState.playerViewers[websocket].applyPlayerViewerMessage(
+              message.data,
+              mask,
+              chatText
+            )
+            appState.inputMasks[websocket] = mask
+            if chatText.len > 0:
+              appState.chatMessages[websocket] = chatText
           elif isInputPacket(message.data) and
               not appState.replayLoaded:
             let mask = blobToMask(message.data)
@@ -712,6 +737,8 @@ proc runServerLoop*(
       globalViewers: seq[WebSocket] = @[]
       globalStates: seq[GlobalViewerState] = @[]
       rewardViewers: seq[WebSocket] = @[]
+      playerViewerFlags: seq[bool] = @[]
+      playerViewerStates: seq[PlayerViewerState] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
       shouldReset = false
@@ -759,14 +786,23 @@ proc runServerLoop*(
               while replayWriter.lastMasks.len < sim.players.len:
                 replayWriter.lastMasks.add(0)
             else:
-              appState.spectators.add(websocket)
-              appState.playerIndices.del(websocket)
+              if websocket in appState.playerViewers:
+                appState.playerIndices[websocket] = -1
+              else:
+                appState.spectators.add(websocket)
+                appState.playerIndices.del(websocket)
 
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
           sockets.add(websocket)
           playerIndices.add(playerIndex)
+          let isPlayerViewer = websocket in appState.playerViewers
+          playerViewerFlags.add(isPlayerViewer)
+          if isPlayerViewer:
+            playerViewerStates.add(appState.playerViewers[websocket])
+          else:
+            playerViewerStates.add(initPlayerViewerState())
           if replayLoaded:
             continue
           if playerIndex < 0 or playerIndex >= inputs.len:
@@ -812,6 +848,8 @@ proc runServerLoop*(
       playerIndices.setLen(0)
       spectatorList.setLen(0)
       rewardViewers.setLen(0)
+      playerViewerFlags.setLen(0)
+      playerViewerStates.setLen(0)
       {.gcsafe.}:
         withLock appState.lock:
           appState.spectators = @[]
@@ -820,8 +858,11 @@ proc runServerLoop*(
             reconnectSockets.add(websocket)
           for websocket in reconnectSockets:
             if not sim.canAddPlayer():
-              appState.spectators.add(websocket)
-              appState.playerIndices.del(websocket)
+              if websocket in appState.playerViewers:
+                appState.playerIndices[websocket] = -1
+              else:
+                appState.spectators.add(websocket)
+                appState.playerIndices.del(websocket)
               continue
             let address = appState.playerAddresses.getOrDefault(
               websocket,
@@ -830,15 +871,37 @@ proc runServerLoop*(
             appState.playerIndices[websocket] = sim.addPlayer(address)
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
+            let isPlayerViewer = websocket in appState.playerViewers
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
+            playerViewerFlags.add(isPlayerViewer)
+            if isPlayerViewer:
+              appState.playerViewers[websocket] = initPlayerViewerState()
+              playerViewerStates.add(appState.playerViewers[websocket])
+            else:
+              playerViewerStates.add(initPlayerViewerState())
           replayWriter.lastMasks.setLen(sim.players.len)
           for websocket in appState.rewardViewers.keys:
             rewardViewers.add(websocket)
 
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
-        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
+        let framePacket =
+          if playerViewerFlags[i]:
+            var nextState: PlayerViewerState
+            let packet = sim.buildSpriteProtocolPlayerUpdates(
+              playerIndices[i],
+              playerViewerStates[i],
+              nextState
+            )
+            {.gcsafe.}:
+              withLock appState.lock:
+                if sockets[i] in appState.playerViewers:
+                  appState.playerViewers[sockets[i]] = nextState
+            packet
+          else:
+            sim.render(playerIndices[i])
+        let frameBlob = blobFromBytes(framePacket)
         sockets[i].send(frameBlob, BinaryMessage)
       for websocket in rewardViewers:
         websocket.send(rewardPacket, TextMessage)
@@ -886,11 +949,25 @@ proc runServerLoop*(
             appState.playerIndices[websocket] = 0x7fffffff
           for websocket in appState.spectators:
             appState.playerIndices[websocket] = 0x7fffffff
+          for websocket in appState.playerViewers.keys:
+            appState.playerViewers[websocket] = initPlayerViewerState()
           appState.spectators = @[]
 
     for i in 0 ..< sockets.len:
       let framePacket =
-        if replayLoaded:
+        if playerViewerFlags[i]:
+          var nextState: PlayerViewerState
+          let packet = sim.buildSpriteProtocolPlayerUpdates(
+            playerIndices[i],
+            playerViewerStates[i],
+            nextState
+          )
+          {.gcsafe.}:
+            withLock appState.lock:
+              if sockets[i] in appState.playerViewers:
+                appState.playerViewers[sockets[i]] = nextState
+          packet
+        elif replayLoaded:
           sim.buildReplayFramePacket()
         else:
           sim.render(playerIndices[i])
