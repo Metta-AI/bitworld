@@ -556,16 +556,18 @@ proc playerIdentity(request: Request): string =
 
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET":
+    let identity = request.playerIdentity()
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerAddresses[websocket] = request.playerIdentity()
+        appState.playerAddresses[websocket] = identity
   elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
+    let identity = request.playerIdentity()
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerViewers[websocket] = initPlayerViewerState()
-        appState.playerAddresses[websocket] = request.playerIdentity()
+        appState.playerAddresses[websocket] = identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:

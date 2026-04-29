@@ -54,6 +54,9 @@ const
   Player2InterstitialObjectId = 5006
   Player2RemainingObjectId = 5007
   Player2ProgressObjectId = 5008
+  Player2ShadowSpriteId = 5009
+  Player2ShadowObjectId = 5009
+  Player2ShadowZ = -32767
   Player2TaskArrowObjectBase = 7000
 
 type
@@ -83,6 +86,7 @@ type
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    shadowPixels*: seq[uint8]
 
 var TransportSheet: Sprite
 
@@ -97,9 +101,19 @@ proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
   discard
 
-proc spriteColor(color: uint8): uint8 =
-  ## Converts a game palette index to a global protocol pixel.
-  color + 1'u8
+proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
+  ## Writes one palette color as a global protocol RGBA pixel.
+  let
+    rgba = Palette[color and 0x0f]
+    offset = pixelIndex * 4
+  pixels[offset] = rgba.r
+  pixels[offset + 1] = rgba.g
+  pixels[offset + 2] = rgba.b
+  pixels[offset + 3] = rgba.a
+
+proc newRgbaPixels(width, height: int): seq[uint8] =
+  ## Allocates a transparent RGBA sprite buffer.
+  newSeq[uint8](width * height * 4)
 
 proc transportSheet(): Sprite =
   ## Returns the cached transport icon sheet.
@@ -295,7 +309,7 @@ proc buildSpriteProtocolActorSprite(
     outWidth = sprite.width + 2
     outHeight = sprite.height + 2
     outline = if selected: 8'u8 else: OutlineColor
-  result = newSeq[uint8](outWidth * outHeight)
+  result = newRgbaPixels(outWidth, outHeight)
 
   proc outIndex(x, y: int): int =
     y * outWidth + x
@@ -311,7 +325,7 @@ proc buildSpriteProtocolActorSprite(
           sprite.isSolid(x, y - 1, flipH) or
           sprite.isSolid(x, y + 1, flipH)
         if adjacent:
-          result[outIndex(x + 1, y + 1)] = spriteColor(outline)
+          result.putRgbaPixel(outIndex(x + 1, y + 1), outline)
 
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
@@ -319,8 +333,10 @@ proc buildSpriteProtocolActorSprite(
       let colorIndex = sprite.pixels[sprite.spriteIndex(srcX, y)]
       if colorIndex == TransparentColorIndex:
         continue
-      result[outIndex(x + 1, y + 1)] =
-        spriteColor(actorColor(colorIndex, tint))
+      result.putRgbaPixel(
+        outIndex(x + 1, y + 1),
+        actorColor(colorIndex, tint)
+      )
 
 proc buildSpriteProtocolBodySprite(
   bodySprite: Sprite,
@@ -330,7 +346,7 @@ proc buildSpriteProtocolBodySprite(
   let
     outWidth = bodySprite.width + 2
     outHeight = bodySprite.height + 2
-  result = newSeq[uint8](outWidth * outHeight)
+  result = newRgbaPixels(outWidth, outHeight)
 
   proc outIndex(x, y: int): int =
     y * outWidth + x
@@ -339,45 +355,81 @@ proc buildSpriteProtocolBodySprite(
     for x in 0 ..< bodySprite.width:
       let colorIndex = bodySprite.pixels[bodySprite.spriteIndex(x, y)]
       if colorIndex != TransparentColorIndex:
-        result[outIndex(x + 1, y + 1)] =
-          spriteColor(actorColor(colorIndex, tint))
+        result.putRgbaPixel(
+          outIndex(x + 1, y + 1),
+          actorColor(colorIndex, tint)
+        )
 
 proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
   ## Builds a raw global protocol sprite from a game sprite.
-  result = newSeq[uint8](sprite.width * sprite.height)
+  result = newRgbaPixels(sprite.width, sprite.height)
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
       let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
       if colorIndex != TransparentColorIndex:
-        result[sprite.spriteIndex(x, y)] = spriteColor(colorIndex)
+        result.putRgbaPixel(sprite.spriteIndex(x, y), colorIndex)
 
 proc buildSpriteProtocolShadowSprite(sprite: Sprite): seq[uint8] =
   ## Builds a shadowed global protocol sprite from a game sprite.
-  result = newSeq[uint8](sprite.width * sprite.height)
+  result = newRgbaPixels(sprite.width, sprite.height)
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
       let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
       if colorIndex != TransparentColorIndex:
-        result[sprite.spriteIndex(x, y)] =
-          spriteColor(ShadowMap[colorIndex and 0x0f])
+        result.putRgbaPixel(
+          sprite.spriteIndex(x, y),
+          ShadowMap[colorIndex and 0x0f]
+        )
 
 proc buildSolidSprite(width, height: int, color: uint8): seq[uint8] =
   ## Builds a solid protocol sprite.
-  result = newSeq[uint8](width * height)
-  for i in 0 ..< result.len:
-    result[i] = spriteColor(color)
+  result = newRgbaPixels(width, height)
+  for i in 0 ..< width * height:
+    result.putRgbaPixel(i, color)
 
 proc buildImposterBarSprite(): seq[uint8] =
   ## Builds the global-only red impostor marker sprite.
-  result = newSeq[uint8](ImposterBarWidth * ImposterBarHeight)
-  for i in 0 ..< result.len:
-    result[i] = spriteColor(TintColor)
+  result = newRgbaPixels(ImposterBarWidth, ImposterBarHeight)
+  for i in 0 ..< ImposterBarWidth * ImposterBarHeight:
+    result.putRgbaPixel(i, TintColor)
 
 proc buildTrailDotSprite(color: uint8): seq[uint8] =
   ## Builds one global-only player trail dot sprite.
-  result = newSeq[uint8](TrailDotSize * TrailDotSize)
-  for i in 0 ..< result.len:
-    result[i] = spriteColor(color)
+  result = newRgbaPixels(TrailDotSize, TrailDotSize)
+  for i in 0 ..< TrailDotSize * TrailDotSize:
+    result.putRgbaPixel(i, color)
+
+proc buildMapSpritePixels(sim: SimServer): seq[uint8] =
+  ## Returns the true-color map pixels for a global protocol sprite.
+  if sim.mapRgba.len == sim.gameMap.width * sim.gameMap.height * 4:
+    return sim.mapRgba
+  result = newRgbaPixels(sim.gameMap.width, sim.gameMap.height)
+  for i in 0 ..< sim.mapPixels.len:
+    result.putRgbaPixel(i, sim.mapPixels[i])
+
+proc buildPlayerShadowSprite(
+  sim: SimServer,
+  cameraX, cameraY: int
+): seq[uint8] =
+  ## Builds one screen-sized transparent shadow overlay.
+  result = newRgbaPixels(ScreenWidth, ScreenHeight)
+  for sy in 0 ..< ScreenHeight:
+    for sx in 0 ..< ScreenWidth:
+      let
+        screenIndex = sy * ScreenWidth + sx
+        mx = cameraX + sx
+        my = cameraY + sy
+      if not sim.shadowBuf[screenIndex]:
+        continue
+      if mx < 0 or my < 0 or mx >= MapWidth or my >= MapHeight:
+        continue
+      let mapPixel = mapIndex(mx, my)
+      if sim.wallMask[mapPixel]:
+        continue
+      result.putRgbaPixel(
+        screenIndex,
+        ShadowMap[sim.mapPixels[mapPixel] and 0x0f]
+      )
 
 proc putTextSpritePixel(
   pixels: var seq[uint8],
@@ -387,7 +439,7 @@ proc putTextSpritePixel(
   ## Puts one protocol pixel into a text sprite.
   if x < 0 or y < 0 or x >= width or y >= height:
     return
-  pixels[y * width + x] = spriteColor(color)
+  pixels.putRgbaPixel(y * width + x, color)
 
 proc blitGlyph(
   target: var seq[uint8],
@@ -443,7 +495,7 @@ proc buildSpriteProtocolTextSprite(
   for line in lines:
     result.width = max(result.width, line.len * 7)
   result.height = max(1, lines.len * 9)
-  result.pixels = newSeq[uint8](result.width * result.height)
+  result.pixels = newRgbaPixels(result.width, result.height)
   for lineIndex, line in lines:
     let baseY = lineIndex * 9
     var baseX = 0
@@ -466,12 +518,12 @@ proc buildSpriteProtocolTextSprite(
 
 proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
   ## Converts a packed Bitworld frame into protocol sprite pixels.
-  result = newSeq[uint8](ScreenWidth * ScreenHeight)
+  result = newRgbaPixels(ScreenWidth, ScreenHeight)
   var j = 0
   for byte in packed:
-    result[j] = spriteColor(byte and 0x0f)
+    result.putRgbaPixel(j, byte and 0x0f)
     inc j
-    result[j] = spriteColor((byte shr 4) and 0x0f)
+    result.putRgbaPixel(j, (byte shr 4) and 0x0f)
     inc j
 
 proc hasInterstitialFrame(sim: SimServer): bool =
@@ -495,9 +547,7 @@ proc buildInterstitialFrame(sim: var SimServer): seq[uint8] =
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
-  var mapPixels = newSeq[uint8](sim.mapPixels.len)
-  for i in 0 ..< sim.mapPixels.len:
-    mapPixels[i] = spriteColor(sim.mapPixels[i])
+  let mapPixels = sim.buildMapSpritePixels()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, sim.gameMap.width, sim.gameMap.height)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
@@ -636,9 +686,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
 proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
-  var mapPixels = newSeq[uint8](sim.mapPixels.len)
-  for i in 0 ..< sim.mapPixels.len:
-    mapPixels[i] = spriteColor(sim.mapPixels[i])
+  let mapPixels = sim.buildMapSpritePixels()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
   result.addSprite(MapSpriteId, sim.gameMap.width, sim.gameMap.height, mapPixels)
@@ -879,7 +927,7 @@ proc roleName(role: PlayerRole): string =
 
 proc buildTaskProgressSprite(progress, total: int): seq[uint8] =
   ## Builds the one-pixel high task progress bar sprite.
-  result = newSeq[uint8](TaskBarWidth)
+  result = newRgbaPixels(TaskBarWidth, 1)
   let filled =
     if total > 0:
       clamp(progress * TaskBarWidth div total, 0, TaskBarWidth)
@@ -887,7 +935,7 @@ proc buildTaskProgressSprite(progress, total: int): seq[uint8] =
       0
   for x in 0 ..< TaskBarWidth:
     let color = if x < filled: ProgressFilled else: ProgressEmpty
-    result[x] = spriteColor(color)
+    result.putRgbaPixel(x, color)
 
 proc addSpritePlayerTaskArrows(
   sim: SimServer,
@@ -1002,6 +1050,8 @@ proc buildSpriteProtocolPlayerUpdates*(
       cameraX = view.cameraX
       cameraY = view.cameraY
       viewerIsGhost = view.viewerIsGhost
+    if not viewerIsGhost:
+      sim.castShadows(view.originMx, view.originMy, cameraX, cameraY)
     currentIds.add(MapObjectId)
     result.addObject(
       MapObjectId,
@@ -1011,10 +1061,30 @@ proc buildSpriteProtocolPlayerUpdates*(
       MapLayerId,
       MapSpriteId
     )
+    if not viewerIsGhost:
+      let shadowPixels = sim.buildPlayerShadowSprite(cameraX, cameraY)
+      currentIds.add(Player2ShadowObjectId)
+      if shadowPixels != state.shadowPixels:
+        result.addSprite(
+          Player2ShadowSpriteId,
+          ScreenWidth,
+          ScreenHeight,
+          shadowPixels
+        )
+        nextState.shadowPixels = shadowPixels
+      result.addObject(
+        Player2ShadowObjectId,
+        0,
+        0,
+        Player2ShadowZ,
+        MapLayerId,
+        Player2ShadowSpriteId
+      )
 
     for i in 0 ..< sim.bodies.len:
       let body = sim.bodies[i]
-      if not view.screenPointInFrame(
+      if not sim.screenPointVisible(
+        view,
         body.x + CollisionW div 2,
         body.y + CollisionH div 2
       ):
@@ -1036,7 +1106,15 @@ proc buildSpriteProtocolPlayerUpdates*(
         other.y + CollisionH div 2
       ):
         continue
-      if not other.alive and not viewerIsGhost:
+      if other.alive:
+        if other.joinOrder != player.joinOrder:
+          if not sim.screenPointVisible(
+            view,
+            other.x + CollisionW div 2,
+            other.y + CollisionH div 2
+          ):
+            continue
+      elif not viewerIsGhost:
         continue
       let objectId = other.spriteObjectId()
       currentIds.add(objectId)
@@ -1222,7 +1300,7 @@ proc buildReplayScrubberSprite(
   ## Builds a compact replay scrubber sprite.
   result.width = ReplayScrubberWidth
   result.height = ReplayScrubberHeight
-  result.pixels = newSeq[uint8](ReplayScrubberWidth * ReplayScrubberHeight)
+  result.pixels = newRgbaPixels(ReplayScrubberWidth, ReplayScrubberHeight)
   let knobX =
     if maxTick > 0:
       clamp(
@@ -1234,25 +1312,31 @@ proc buildReplayScrubberSprite(
       0
 
   for x in 0 ..< ReplayScrubberWidth:
-    result.pixels[
-      ReplayScrubberTrackY * ReplayScrubberWidth + x
-    ] = spriteColor(1'u8)
+    result.pixels.putRgbaPixel(
+      ReplayScrubberTrackY * ReplayScrubberWidth + x,
+      1'u8
+    )
   if enabled:
     for x in 0 .. knobX:
-      result.pixels[
-        ReplayScrubberTrackY * ReplayScrubberWidth + x
-      ] = spriteColor(10'u8)
+      result.pixels.putRgbaPixel(
+        ReplayScrubberTrackY * ReplayScrubberWidth + x,
+        10'u8
+      )
   for y in 0 ..< ReplayScrubberHeight:
-    result.pixels[y * ReplayScrubberWidth + knobX] =
-      if enabled: spriteColor(2'u8) else: spriteColor(1'u8)
+    result.pixels.putRgbaPixel(
+      y * ReplayScrubberWidth + knobX,
+      if enabled: 2'u8 else: 1'u8
+    )
   if knobX > 0:
-    result.pixels[
-      ReplayScrubberTrackY * ReplayScrubberWidth + knobX - 1
-    ] = if enabled: spriteColor(2'u8) else: spriteColor(1'u8)
+    result.pixels.putRgbaPixel(
+      ReplayScrubberTrackY * ReplayScrubberWidth + knobX - 1,
+      if enabled: 2'u8 else: 1'u8
+    )
   if knobX < ReplayScrubberWidth - 1:
-    result.pixels[
-      ReplayScrubberTrackY * ReplayScrubberWidth + knobX + 1
-    ] = if enabled: spriteColor(2'u8) else: spriteColor(1'u8)
+    result.pixels.putRgbaPixel(
+      ReplayScrubberTrackY * ReplayScrubberWidth + knobX + 1,
+      if enabled: 2'u8 else: 1'u8
+    )
 
 proc blitTransportIcon(
   target: var seq[uint8],
@@ -1267,9 +1351,10 @@ proc blitTransportIcon(
       let colorIndex = sheet.pixels[sheet.spriteIndex(sourceX + x, y)]
       if colorIndex == TransparentColorIndex:
         continue
-      target[
-        (baseY + y) * TransportWidth + baseX + x
-      ] = spriteColor(tint)
+      target.putRgbaPixel(
+        (baseY + y) * TransportWidth + baseX + x,
+        tint
+      )
 
 proc buildReplayControlsSprite(
   sim: SimServer,
@@ -1281,7 +1366,7 @@ proc buildReplayControlsSprite(
   ## Builds the replay transport controls sprite.
   result.width = TransportWidth
   result.height = TransportHeight
-  result.pixels = newSeq[uint8](TransportWidth * TransportHeight)
+  result.pixels = newRgbaPixels(TransportWidth, TransportHeight)
   let
     sheet = transportSheet()
     iconCells = [

@@ -40,10 +40,11 @@ Defines or replaces a sprite.
 | Sprite id | `u16` | Id of the sprite to define |
 | Width | `u16` | Sprite width in pixels |
 | Height | `u16` | Sprite height in pixels |
-| Pixels | `u8[]` | `Width * Height` bytes |
+| Pixels | `u8[]` | `Width * Height * 4` bytes |
 
-Each pixel is an 8 bit color index. The color palette is outside this version
-of the protocol.
+Each pixel is four bytes in RGBA order: red, green, blue, alpha. Color channels
+are unpremultiplied `0 .. 255` values. An alpha value of `0` is fully
+transparent. An alpha value of `255` is fully opaque.
 
 If a sprite id already exists, the client must replace the old sprite data with
 the new definition. A sprite with width `0` or height `0` is invalid.
@@ -259,7 +260,7 @@ The client keeps three tables:
 | State | Key | Value |
 | --- | --- | --- |
 | Layers | `u8 layer id` | Type, flags, viewport width, and viewport height |
-| Sprites | `u16 sprite id` | Width, height, and 8 bit pixel buffer |
+| Sprites | `u16 sprite id` | Width, height, and RGBA pixel buffer |
 | Objects | `u16 object id` | X, y, z, layer, and sprite id |
 
 The client draws all visible layers. Within a layer, objects use their current
@@ -277,8 +278,10 @@ layer. UI layer placement is selected by its layer type. For example, the top
 left layer is anchored to the top left of the screen and the center bottom layer
 is horizontally centered and anchored to the bottom of the screen.
 
-Pixel value `0` should be treated as transparent. Pixel values `1 .. 255` are
-opaque palette indices.
+Sprite pixels with alpha `0` should be treated as transparent. Sprite pixels
+with alpha greater than `0` should be composited over lower objects in draw
+order. Clients may use straight alpha compositing or simply overwrite
+destination pixels for fully opaque sprites.
 
 ## Error Handling
 
@@ -286,7 +289,7 @@ A receiver should close the connection on malformed messages, including:
 
 - Unknown message types.
 - Truncated messages.
-- Sprite pixel payloads that do not match `Width * Height`.
+- Sprite pixel payloads that do not match `Width * Height * 4`.
 - Sprite dimensions whose product cannot fit in local memory.
 - Objects that reference unknown layers.
 - Viewports with width `0` or height `0`.
@@ -297,11 +300,13 @@ Unknown object ids in delete messages are not errors.
 
 ## Example
 
-This byte sequence defines sprite `7` as a `2x2` sprite with four palette
-indices:
+This byte sequence defines sprite `7` as a `2x2` sprite with four RGBA pixels:
+opaque red, opaque green, opaque blue, and transparent black.
 
 ```text
-01 07 00 02 00 02 00 01 02 03 04
+01 07 00 02 00 02 00
+ff 00 00 ff 00 ff 00 ff
+00 00 ff ff 00 00 00 00
 ```
 
 Decoded fields:
@@ -312,7 +317,10 @@ Decoded fields:
 | `07 00` | Sprite id `7` |
 | `02 00` | Width `2` |
 | `02 00` | Height `2` |
-| `01 02 03 04` | Pixel data |
+| `ff 00 00 ff` | Pixel 0, opaque red |
+| `00 ff 00 ff` | Pixel 1, opaque green |
+| `00 00 ff ff` | Pixel 2, opaque blue |
+| `00 00 00 00` | Pixel 3, transparent |
 
 This byte sequence places object `3` at `x = 10`, `y = 20`, `z = 0`, layer
 `0`, using sprite `7`:

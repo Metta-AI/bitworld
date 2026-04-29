@@ -7,7 +7,7 @@
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-canvas{
+#c{
   position:absolute;
   left:0;
   top:0;
@@ -43,16 +43,106 @@ canvas{
   font:16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 #entry.hidden{display:none}
+#debugPanel{
+  position:absolute;
+  top:0;
+  right:0;
+  bottom:0;
+  width:320px;
+  color:#e8e8e8;
+  background:rgba(7,10,16,.94);
+  border-left:1px solid rgba(255,255,255,.22);
+  box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  pointer-events:auto;
+}
+#debugPanel.hidden{display:none}
+#debugHeader{
+  flex:0 0 auto;
+  padding:10px 12px;
+  border-bottom:1px solid rgba(255,255,255,.16);
+  font-weight:600;
+}
+#debugCounters{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:6px;
+  padding:10px 12px;
+  border-bottom:1px solid rgba(255,255,255,.16);
+}
+.debugCounter{
+  padding:6px 8px;
+  background:rgba(255,255,255,.07);
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:4px;
+}
+.debugCounterLabel{
+  display:block;
+  margin-bottom:2px;
+  color:#9ca7b8;
+  font-size:11px;
+  text-transform:uppercase;
+}
+#debugSprites{
+  flex:1 1 auto;
+  overflow:auto;
+}
+.debugSprite{
+  height:64px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 10px;
+  border-bottom:1px solid rgba(255,255,255,.08);
+  box-sizing:border-box;
+}
+.debugSpriteId{
+  width:64px;
+  color:#b8c3d6;
+  font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.debugSprite canvas{
+  position:static;
+  flex:0 0 64px;
+  display:block;
+  width:64px;
+  height:64px;
+  image-rendering:pixelated;
+  image-rendering:crisp-edges;
+}
+.debugSpriteSize{
+  color:#7f8ba0;
+  font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
 </style>
 </head>
 <body>
 <canvas id="c" width="1" height="1"></canvas>
 <div id="status">connecting...</div>
 <div id="entry" class="hidden"></div>
+<div id="debugPanel" class="hidden">
+  <div id="debugHeader">Protocol</div>
+  <div id="debugCounters">
+    <div class="debugCounter">
+      <span class="debugCounterLabel">Down</span>
+      <span id="debugDown">0 B</span>
+    </div>
+    <div class="debugCounter">
+      <span class="debugCounterLabel">Up</span>
+      <span id="debugUp">0 B</span>
+    </div>
+  </div>
+  <div id="debugSprites"></div>
+</div>
 <script>
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
 const entry=document.getElementById("entry");
+const debugPanel=document.getElementById("debugPanel");
+const debugDown=document.getElementById("debugDown");
+const debugUp=document.getElementById("debugUp");
+const debugSprites=document.getElementById("debugSprites");
 const url=new URL(location.href);
 function defaultAddress(path){
   const protocol=location.protocol==="https:"?"wss:":"ws:";
@@ -61,6 +151,19 @@ function defaultAddress(path){
 }
 const address=url.searchParams.get("address")||defaultAddress("/global");
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
+function websocketAddress(){
+  const name=url.searchParams.get("name");
+  if(!name)return address;
+  try{
+    const wsUrl=new URL(address,location.href);
+    if(wsUrl.protocol==="http:")wsUrl.protocol="ws:";
+    if(wsUrl.protocol==="https:")wsUrl.protocol="wss:";
+    wsUrl.searchParams.set("name",name);
+    return wsUrl.toString();
+  }catch(e){
+    return address;
+  }
+}
 function addressPath(){
   try{return new URL(address,location.href).pathname}catch(e){return""}
 }
@@ -69,18 +172,118 @@ const playerMode=url.searchParams.get("player")==="1"||
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
-const palette=[
-  [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],
-  [255,119,168,255],[95,87,79,255],[171,82,54,255],[255,163,0,255],
-  [255,236,39,255],[126,37,83,255],[0,135,81,255],[0,228,54,255],
-  [29,43,83,255],[131,118,156,255],[41,173,255,255],[255,204,170,255]
-];
 let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
 let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
 let draggingMap=false,dragX=0,dragY=0;
 let heldButtons=0,typing=false,textBuffer="";
+let debugOpen=false,debugSpritesDirty=true,debugSpriteTimer=0;
+let debugBytesDown=0,debugBytesUp=0;
 ctx.imageSmoothingEnabled=false;
+
+function formatBytes(value){
+  const units=["B","KB","MB","GB"];
+  let amount=value,unit=0;
+  while(amount>=1024&&unit<units.length-1){
+    amount/=1024;
+    unit++;
+  }
+  return (unit===0?String(amount):amount.toFixed(1))+" "+units[unit];
+}
+
+function updateDebugCounters(){
+  debugDown.textContent=formatBytes(debugBytesDown);
+  debugUp.textContent=formatBytes(debugBytesUp);
+}
+
+function previewSprite(canvas,sprite){
+  const size=64;
+  canvas.width=size;
+  canvas.height=size;
+  const previewCtx=canvas.getContext("2d");
+  const image=previewCtx.createImageData(size,size);
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const offset=(y*size+x)*4;
+      const shade=((Math.floor(x/8)+Math.floor(y/8))&1)?44:28;
+      image.data[offset]=shade;
+      image.data[offset+1]=shade;
+      image.data[offset+2]=shade;
+      image.data[offset+3]=255;
+    }
+  }
+  const scale=Math.min(size/sprite.width,size/sprite.height);
+  const drawWidth=Math.max(1,Math.floor(sprite.width*scale));
+  const drawHeight=Math.max(1,Math.floor(sprite.height*scale));
+  const baseX=Math.floor((size-drawWidth)/2);
+  const baseY=Math.floor((size-drawHeight)/2);
+  for(let y=0;y<drawHeight;y++){
+    for(let x=0;x<drawWidth;x++){
+      const srcX=Math.min(sprite.width-1,Math.floor(x/scale));
+      const srcY=Math.min(sprite.height-1,Math.floor(y/scale));
+      const srcOffset=(srcY*sprite.width+srcX)*4;
+      const alpha=sprite.pixels[srcOffset+3]/255;
+      if(alpha===0)continue;
+      const outOffset=((baseY+y)*size+baseX+x)*4;
+      image.data[outOffset]=Math.round(
+        sprite.pixels[srcOffset]*alpha+image.data[outOffset]*(1-alpha)
+      );
+      image.data[outOffset+1]=Math.round(
+        sprite.pixels[srcOffset+1]*alpha+image.data[outOffset+1]*(1-alpha)
+      );
+      image.data[outOffset+2]=Math.round(
+        sprite.pixels[srcOffset+2]*alpha+image.data[outOffset+2]*(1-alpha)
+      );
+    }
+  }
+  previewCtx.putImageData(image,0,0);
+}
+
+function refreshDebugSprites(){
+  debugSpriteTimer=0;
+  if(!debugOpen||!debugSpritesDirty)return;
+  debugSpritesDirty=false;
+  debugSprites.textContent="";
+  const ids=[...sprites.keys()].sort((a,b)=>a-b);
+  for(const id of ids){
+    const sprite=sprites.get(id);
+    const row=document.createElement("div");
+    const label=document.createElement("div");
+    const preview=document.createElement("canvas");
+    const size=document.createElement("div");
+    row.className="debugSprite";
+    label.className="debugSpriteId";
+    size.className="debugSpriteSize";
+    label.textContent="#"+id;
+    size.textContent=sprite.width+"x"+sprite.height;
+    previewSprite(preview,sprite);
+    row.append(label,preview,size);
+    debugSprites.append(row);
+  }
+}
+
+function scheduleDebugSprites(){
+  debugSpritesDirty=true;
+  if(!debugOpen||debugSpriteTimer)return;
+  debugSpriteTimer=setTimeout(refreshDebugSprites,120);
+}
+
+function toggleDebugPanel(){
+  debugOpen=!debugOpen;
+  debugPanel.classList.toggle("hidden",!debugOpen);
+  updateDebugCounters();
+  if(debugOpen){
+    debugSpritesDirty=true;
+    refreshDebugSprites();
+  }
+}
+
+function sendPacket(bytes){
+  if(!socket||socket.readyState!==WebSocket.OPEN)return;
+  debugBytesUp+=bytes.byteLength||bytes.length||0;
+  updateDebugCounters();
+  socket.send(bytes);
+}
 
 function setStatus(text){
   status.textContent=text;
@@ -175,7 +378,7 @@ function writeU16(bytes,offset,value){
 
 function sendPlayerButtons(){
   if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
-  socket.send(new Uint8Array([0x84,heldButtons&127]));
+  sendPacket(new Uint8Array([0x84,heldButtons&127]));
 }
 
 function setButton(bit,down){
@@ -215,7 +418,7 @@ function sendInputText(text){
   packet[0]=0x81;
   writeU16(packet,1,bytes.length);
   packet.set(bytes,3);
-  socket.send(packet);
+  sendPacket(packet);
 }
 
 function updateEntry(){
@@ -224,7 +427,7 @@ function updateEntry(){
     entry.textContent="";
     return;
   }
-  entry.textContent="> "+textBuffer;
+  entry.textContent=textBuffer;
   entry.classList.remove("hidden");
 }
 
@@ -254,7 +457,7 @@ function sendMousePosition(event,preferredLayer=null){
   writeI16(bytes,1,point.x);
   writeI16(bytes,3,point.y);
   bytes[5]=point.layer&255;
-  socket.send(bytes);
+  sendPacket(bytes);
 }
 
 function sendMouseButton(event,down,preferredLayer=null){
@@ -269,7 +472,7 @@ function sendMouseButton(event,down,preferredLayer=null){
   bytes[6]=0x83;
   bytes[7]=0x01;
   bytes[8]=down?1:0;
-  socket.send(bytes);
+  sendPacket(bytes);
 }
 
 function readU16(bytes,offset){
@@ -316,13 +519,35 @@ function setViewport(layerId,width,height){
   maybeFit();
 }
 
-function putPixel(layer,x,y,color){
-  if(x<0||y<0||x>=layer.width||y>=layer.height||color===0)return;
-  const rgba=palette[(color-1)&15],offset=(y*layer.width+x)*4;
-  layer.image.data[offset]=rgba[0];
-  layer.image.data[offset+1]=rgba[1];
-  layer.image.data[offset+2]=rgba[2];
-  layer.image.data[offset+3]=255;
+function putSpritePixel(layer,x,y,sprite,srcOffset){
+  if(x<0||y<0||x>=layer.width||y>=layer.height)return;
+  const srcA=sprite.pixels[srcOffset+3];
+  if(srcA===0)return;
+  const offset=(y*layer.width+x)*4;
+  if(srcA===255||layer.image.data[offset+3]===0){
+    layer.image.data[offset]=sprite.pixels[srcOffset];
+    layer.image.data[offset+1]=sprite.pixels[srcOffset+1];
+    layer.image.data[offset+2]=sprite.pixels[srcOffset+2];
+    layer.image.data[offset+3]=srcA;
+    return;
+  }
+  const dstA=layer.image.data[offset+3];
+  const srcAlpha=srcA/255,dstAlpha=dstA/255;
+  const outAlpha=srcAlpha+dstAlpha*(1-srcAlpha);
+  const dstWeight=dstAlpha*(1-srcAlpha);
+  layer.image.data[offset]=Math.round(
+    (sprite.pixels[srcOffset]*srcAlpha+
+      layer.image.data[offset]*dstWeight)/outAlpha
+  );
+  layer.image.data[offset+1]=Math.round(
+    (sprite.pixels[srcOffset+1]*srcAlpha+
+      layer.image.data[offset+1]*dstWeight)/outAlpha
+  );
+  layer.image.data[offset+2]=Math.round(
+    (sprite.pixels[srcOffset+2]*srcAlpha+
+      layer.image.data[offset+2]*dstWeight)/outAlpha
+  );
+  layer.image.data[offset+3]=Math.round(outAlpha*255);
 }
 
 function layerScreenPos(layer){
@@ -361,11 +586,12 @@ function draw(){
       if(!sprite)continue;
       for(let y=0;y<sprite.height;y++){
         for(let x=0;x<sprite.width;x++){
-          putPixel(
+          putSpritePixel(
             layer,
             object.x+x,
             object.y+y,
-            sprite.pixels[y*sprite.width+x]
+            sprite,
+            (y*sprite.width+x)*4
           );
         }
       }
@@ -392,13 +618,14 @@ function parse(bytes){
       const width=readU16(bytes,offset+2);
       const height=readU16(bytes,offset+4);
       offset+=6;
-      const size=width*height;
+      const size=width*height*4;
       sprites.set(id,{
         width,
         height,
         pixels:bytes.slice(offset,offset+size)
       });
       offset+=size;
+      scheduleDebugSprites();
     }else if(type===0x02){
       const id=readU16(bytes,offset);
       const x=readI16(bytes,offset+2);
@@ -445,12 +672,17 @@ function reconnect(ws){
 }
 
 function connect(){
-  const ws=new WebSocket(address);
+  const ws=new WebSocket(websocketAddress());
   socket=ws;
   ws.binaryType="arraybuffer";
   setStatus("connecting...");
   ws.onmessage=event=>{
-    if(socket===ws)parse(new Uint8Array(event.data));
+    if(socket===ws){
+      const bytes=new Uint8Array(event.data);
+      debugBytesDown+=bytes.byteLength;
+      updateDebugCounters();
+      parse(bytes);
+    }
   };
   ws.onopen=()=>{
     if(socket===ws){
@@ -515,7 +747,18 @@ addEventListener("dblclick",()=>{
   autoFit=true;
   fit();
 });
+for(const eventName of ["pointerdown","pointermove","pointerup","dblclick"]){
+  debugPanel.addEventListener(eventName,event=>event.stopPropagation());
+}
+debugPanel.addEventListener("wheel",event=>event.stopPropagation(),{
+  passive:true
+});
 addEventListener("keydown",event=>{
+  if(event.key==="F2"){
+    event.preventDefault();
+    toggleDebugPanel();
+    return;
+  }
   if(!playerMode)return;
   if(typing){
     if(event.key==="Enter"){

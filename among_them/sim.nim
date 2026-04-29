@@ -255,6 +255,7 @@ type
     vents*: seq[Vent]
     rooms*: seq[Room]
     mapPixels*: seq[uint8]
+    mapRgba*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
     fb*: Framebuffer
@@ -2718,9 +2719,18 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+  result.mapRgba = newSeq[uint8](MapWidth * MapHeight * 4)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
-      result.mapPixels[mapIndex(x, y)] = nearestPaletteIndex(mapImage[x, y])
+      let
+        pixel = mapImage[x, y]
+        index = mapIndex(x, y)
+        offset = index * 4
+      result.mapPixels[index] = nearestPaletteIndex(pixel)
+      result.mapRgba[offset] = pixel.r
+      result.mapRgba[offset + 1] = pixel.g
+      result.mapRgba[offset + 2] = pixel.b
+      result.mapRgba[offset + 3] = pixel.a
 
   result.walkMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:

@@ -94,9 +94,26 @@ proc addObject(
   packet.addU8(uint8(layer))
   packet.addU16(spriteId)
 
-proc spriteColor(color: uint8): uint8 =
-  ## Converts a game palette index to a global protocol pixel.
-  color + 1'u8
+proc ensureGlobalPalette() =
+  ## Loads the shared display palette when needed.
+  if Palette[2].a == 0:
+    loadPalette(
+      currentSourcePath().parentDir() / ".." / "clients" / "data" / "pallete.png"
+    )
+
+proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
+  ## Writes one palette color as a global protocol RGBA pixel.
+  let
+    rgba = Palette[color and 0x0f]
+    offset = pixelIndex * 4
+  pixels[offset] = rgba.r
+  pixels[offset + 1] = rgba.g
+  pixels[offset + 2] = rgba.b
+  pixels[offset + 3] = rgba.a
+
+proc newRgbaPixels(width, height: int): seq[uint8] =
+  ## Allocates a transparent RGBA sprite buffer.
+  newSeq[uint8](width * height * 4)
 
 proc glyphRows(ch: char): array[7, string] =
   ## Returns a tiny five by seven glyph.
@@ -122,7 +139,7 @@ proc textSprite(text: string, color: uint8): tuple[w, h: int, pixels: seq[uint8]
   ## Builds a transparent text sprite.
   result.w = max(1, text.len * 6 - 1)
   result.h = 7
-  result.pixels = newSeq[uint8](result.w * result.h)
+  result.pixels = newRgbaPixels(result.w, result.h)
   for i, ch in text:
     if ch == ' ':
       continue
@@ -130,11 +147,11 @@ proc textSprite(text: string, color: uint8): tuple[w, h: int, pixels: seq[uint8]
     for y in 0 ..< result.h:
       for x in 0 ..< 5:
         if rows[y][x] == '1':
-          result.pixels[y * result.w + i * 6 + x] = spriteColor(color)
+          result.pixels.putRgbaPixel(y * result.w + i * 6 + x, color)
 
 proc mapPixels(): seq[uint8] =
   ## Builds a large checker and grid map sprite.
-  result = newSeq[uint8](MapWidth * MapHeight)
+  result = newRgbaPixels(MapWidth, MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       let
@@ -147,18 +164,18 @@ proc mapPixels(): seq[uint8] =
             12'u8
           else:
             9'u8
-      result[y * MapWidth + x] = spriteColor(color)
+      result.putRgbaPixel(y * MapWidth + x, color)
 
 proc markerPixels(): seq[uint8] =
   ## Builds a small animated marker sprite.
-  result = newSeq[uint8](9 * 9)
+  result = newRgbaPixels(9, 9)
   for y in 0 ..< 9:
     for x in 0 ..< 9:
       let
         dx = x - 4
         dy = y - 4
       if abs(dx) + abs(dy) <= 4:
-        result[y * 9 + x] = spriteColor(8)
+        result.putRgbaPixel(y * 9 + x, 8)
 
 proc labelNames(): array[8, string] =
   ## Returns label names in UI layer order.
@@ -175,6 +192,7 @@ proc labelNames(): array[8, string] =
 
 proc buildInitPacket(): seq[uint8] =
   ## Builds the initial layered global protocol snapshot.
+  ensureGlobalPalette()
   result = @[]
   result.addLayer(MapLayerId, LayerMapZoomable, ZoomableLayerFlag)
   result.addViewport(MapLayerId, MapWidth, MapHeight)
