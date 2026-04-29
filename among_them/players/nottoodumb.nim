@@ -3510,6 +3510,45 @@ when defined(nottoodumbLibrary):
       let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
       outs[row] = actionIndexForMask(mask)
 
+  proc nottoodumb_take_chat*(
+    handle: cint,
+    agentId: cint,
+    output: pointer,
+    outputLen: cint
+  ): cint {.exportc, dynlib.} =
+    ## Copies and clears one bot's pending meeting chat evidence.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return 0
+    if agentId < 0 or output.isNil or outputLen <= 0:
+      return 0
+    let
+      policy = NotTooDumbPolicies[int(handle)]
+      botIndex = int(agentId)
+    if botIndex >= policy.bots.len:
+      return 0
+    let
+      message = policy.bots[botIndex].pendingChat
+      limit = min(message.len, int(outputLen) - 1)
+      bytes = cast[ptr UncheckedArray[char]](output)
+    for i in 0 ..< limit:
+      bytes[i] = message[i]
+    bytes[limit] = '\0'
+    policy.bots[botIndex].pendingChat = ""
+    cint(limit)
+
+  proc nottoodumb_role*(handle: cint, agentId: cint): cint {.exportc, dynlib.} =
+    ## Returns the bot's inferred role: 0 unknown, 1 crewmate, 2 imposter.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return 0
+    if agentId < 0:
+      return 0
+    let
+      policy = NotTooDumbPolicies[int(handle)]
+      botIndex = int(agentId)
+    if botIndex >= policy.bots.len:
+      return 0
+    cint(ord(policy.bots[botIndex].role))
+
 when not defined(nottoodumbLibrary):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
     ## Draws an unfilled rectangle.
