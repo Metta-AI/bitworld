@@ -87,6 +87,13 @@ type
     lastX, lastY: int
     dots: seq[TrailDot]
 
+  SpriteDefinition = object
+    spriteId: int
+    width: int
+    height: int
+    label: string
+    pixels: seq[uint8]
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
@@ -100,11 +107,12 @@ type
     replaySeekTick*: int
     replayCommands*: seq[char]
     trails: seq[PlayerTrail]
+    spriteDefs: seq[SpriteDefinition]
 
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
-    shadowPixels*: seq[uint8]
+    spriteDefs: seq[SpriteDefinition]
 
 var TransportSheet: Sprite
 
@@ -198,6 +206,60 @@ proc addSprite(
   packet.addU16(label.len)
   for ch in label:
     packet.addU8(uint8(ord(ch)))
+
+proc spriteDefinitionIndex(
+  defs: openArray[SpriteDefinition],
+  spriteId: int
+): int =
+  ## Returns the cache index for one sprite definition.
+  for i in 0 ..< defs.len:
+    if defs[i].spriteId == spriteId:
+      return i
+  -1
+
+proc pixelsMatch(a: openArray[uint8], b: openArray[uint8]): bool =
+  ## Returns true when two RGBA pixel payloads are identical.
+  if a.len != b.len:
+    return false
+  for i in 0 ..< a.len:
+    if a[i] != b[i]:
+      return false
+  true
+
+proc copyPixels(pixels: openArray[uint8]): seq[uint8] =
+  ## Copies one sprite payload into cache storage.
+  result = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    result[i] = pixels[i]
+
+proc addSpriteChanged(
+  packet: var seq[uint8],
+  defs: var seq[SpriteDefinition],
+  spriteId, width, height: int,
+  pixels: openArray[uint8],
+  label: string = ""
+) =
+  ## Appends a sprite definition only when it changed.
+  let index = defs.spriteDefinitionIndex(spriteId)
+  if index >= 0:
+    if defs[index].width == width and
+        defs[index].height == height and
+        defs[index].label == label and
+        defs[index].pixels.pixelsMatch(pixels):
+      return
+    defs[index].width = width
+    defs[index].height = height
+    defs[index].label = label
+    defs[index].pixels = copyPixels(pixels)
+  else:
+    defs.add SpriteDefinition(
+      spriteId: spriteId,
+      width: width,
+      height: height,
+      label: label,
+      pixels: copyPixels(pixels)
+    )
+  packet.addSprite(spriteId, width, height, pixels, label)
 
 proc addObject(
   packet: var seq[uint8],
@@ -572,7 +634,10 @@ proc buildInterstitialFrame(sim: var SimServer): seq[uint8] =
   else:
     @[]
 
-proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolInit(
+  sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition]
+): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
   let mapPixels = sim.buildMapSpritePixels()
@@ -584,7 +649,8 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addViewport(InterstitialLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
   result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     MapSpriteId,
     sim.gameMap.width,
     sim.gameMap.height,
@@ -593,14 +659,16 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   )
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
   let taskPixels = buildSpriteProtocolRawSprite(sim.taskIconSprite)
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     TaskSpriteId,
     sim.taskIconSprite.width,
     sim.taskIconSprite.height,
     taskPixels,
     "task bubble"
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     ImposterBarSpriteId,
     ImposterBarWidth,
     ImposterBarHeight,
@@ -608,7 +676,8 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     "imposter marker"
   )
   for i in 0 ..< PlayerColors.len:
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       TrailDotSpriteBase + i,
       TrailDotSize,
       TrailDotSize,
@@ -665,63 +734,72 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
         sim.bodySprite,
         PlayerColors[i]
       )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       PlayerSpriteBase + i * 2,
       sim.playerSprite.width + 2,
       sim.playerSprite.height + 2,
       playerRight,
       "player " & playerColorName(i) & " right"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       PlayerSpriteBase + i * 2 + 1,
       sim.playerSprite.width + 2,
       sim.playerSprite.height + 2,
       playerLeft,
       "player " & playerColorName(i) & " left"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       GhostSpriteBase + i * 2,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
       ghostRight,
       "ghost " & playerColorName(i) & " right"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       GhostSpriteBase + i * 2 + 1,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
       ghostLeft,
       "ghost " & playerColorName(i) & " left"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       SelectedPlayerSpriteBase + i * 2,
       sim.playerSprite.width + 2,
       sim.playerSprite.height + 2,
       selectedPlayerRight,
       "selected player " & playerColorName(i) & " right"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       SelectedPlayerSpriteBase + i * 2 + 1,
       sim.playerSprite.width + 2,
       sim.playerSprite.height + 2,
       selectedPlayerLeft,
       "selected player " & playerColorName(i) & " left"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       SelectedGhostSpriteBase + i * 2,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
       selectedGhostRight,
       "selected ghost " & playerColorName(i) & " right"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       SelectedGhostSpriteBase + i * 2 + 1,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
       selectedGhostLeft,
       "selected ghost " & playerColorName(i) & " left"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       BodySpriteBase + i,
       sim.bodySprite.width + 2,
       sim.bodySprite.height + 2,
@@ -729,48 +807,57 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
       "body " & playerColorName(i)
     )
 
-proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolPlayerInit(
+  sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition]
+): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
   let mapPixels = sim.buildMapSpritePixels()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     MapSpriteId,
     sim.gameMap.width,
     sim.gameMap.height,
     mapPixels,
     "map"
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     TaskSpriteId,
     sim.taskIconSprite.width,
     sim.taskIconSprite.height,
     buildSpriteProtocolRawSprite(sim.taskIconSprite),
     "task bubble"
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     Player2KillSpriteId,
     sim.killButtonSprite.width,
     sim.killButtonSprite.height,
     buildSpriteProtocolRawSprite(sim.killButtonSprite),
     "imposter icon"
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     Player2KillShadowSpriteId,
     sim.killButtonSprite.width,
     sim.killButtonSprite.height,
     buildSpriteProtocolShadowSprite(sim.killButtonSprite),
     "imposter icon cooldown"
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     Player2GhostIconSpriteId,
     sim.ghostIconSprite.width,
     sim.ghostIconSprite.height,
     buildSpriteProtocolRawSprite(sim.ghostIconSprite),
     "ghost icon"
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    spriteDefs,
     Player2ArrowSpriteId,
     1,
     1,
@@ -803,35 +890,40 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
         sim.bodySprite,
         PlayerColors[i]
       )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       PlayerSpriteBase + i * 2,
       sim.playerSprite.width + 2,
       sim.playerSprite.height + 2,
       playerRight,
       "player " & playerColorName(i) & " right"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       PlayerSpriteBase + i * 2 + 1,
       sim.playerSprite.width + 2,
       sim.playerSprite.height + 2,
       playerLeft,
       "player " & playerColorName(i) & " left"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       GhostSpriteBase + i * 2,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
       ghostRight,
       "ghost " & playerColorName(i) & " right"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       GhostSpriteBase + i * 2 + 1,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
       ghostLeft,
       "ghost " & playerColorName(i) & " left"
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      spriteDefs,
       BodySpriteBase + i,
       sim.bodySprite.width + 2,
       sim.bodySprite.height + 2,
@@ -1083,7 +1175,7 @@ proc buildSpriteProtocolPlayerUpdates*(
   result = @[]
   nextState = state
   if not nextState.initialized:
-    result = sim.buildSpriteProtocolPlayerInit()
+    result = sim.buildSpriteProtocolPlayerInit(nextState.spriteDefs)
     nextState.initialized = true
 
   var currentIds: seq[int] = @[]
@@ -1091,7 +1183,8 @@ proc buildSpriteProtocolPlayerUpdates*(
       playerIndex >= sim.players.len:
     let interstitial = spritePixelsFromPackedFrame(sim.render(playerIndex))
     currentIds.add(Player2InterstitialObjectId)
-    result.addSprite(
+    result.addSpriteChanged(
+      nextState.spriteDefs,
       Player2InterstitialSpriteId,
       ScreenWidth,
       ScreenHeight,
@@ -1127,15 +1220,14 @@ proc buildSpriteProtocolPlayerUpdates*(
     if not viewerIsGhost:
       let shadowPixels = sim.buildPlayerShadowSprite(cameraX, cameraY)
       currentIds.add(Player2ShadowObjectId)
-      if shadowPixels != state.shadowPixels:
-        result.addSprite(
-          Player2ShadowSpriteId,
-          ScreenWidth,
-          ScreenHeight,
-          shadowPixels,
-          "shadow"
-        )
-        nextState.shadowPixels = shadowPixels
+      result.addSpriteChanged(
+        nextState.spriteDefs,
+        Player2ShadowSpriteId,
+        ScreenWidth,
+        ScreenHeight,
+        shadowPixels,
+        "shadow"
+      )
       result.addObject(
         Player2ShadowObjectId,
         0,
@@ -1236,7 +1328,8 @@ proc buildSpriteProtocolPlayerUpdates*(
               else:
                 0
           currentIds.add(Player2ProgressObjectId)
-          result.addSprite(
+          result.addSpriteChanged(
+            nextState.spriteDefs,
             Player2ProgressSpriteId,
             TaskBarWidth,
             1,
@@ -1292,7 +1385,8 @@ proc buildSpriteProtocolPlayerUpdates*(
       remaining = sim.buildSpriteProtocolTextSprite([remainingText], 2'u8)
       textX = ScreenWidth - remaining.width
     currentIds.add(SelectedTextObjectId)
-    result.addSprite(
+    result.addSpriteChanged(
+      nextState.spriteDefs,
       Player2RemainingSpriteId,
       remaining.width,
       remaining.height,
@@ -1540,7 +1634,7 @@ proc buildSpriteProtocolUpdates*(
     if seekTick >= 0:
       nextState.replaySeekTick = seekTick
   if not nextState.initialized:
-    result = sim.buildSpriteProtocolInit()
+    result = sim.buildSpriteProtocolInit(nextState.spriteDefs)
     result.addLayer(
       ReplayCenterBottomLayerId,
       ReplayCenterBottomLayerType,
@@ -1637,7 +1731,8 @@ proc buildSpriteProtocolUpdates*(
       sim.buildInterstitialFrame()
     )
     currentIds.add(InterstitialObjectId)
-    result.addSprite(
+    result.addSpriteChanged(
+      nextState.spriteDefs,
       InterstitialSpriteId,
       ScreenWidth,
       ScreenHeight,
@@ -1669,7 +1764,8 @@ proc buildSpriteProtocolUpdates*(
       )
     currentIds.add(SelectedTextObjectId)
     currentIds.add(SelectedViewportObjectId)
-    result.addSprite(
+    result.addSpriteChanged(
+      nextState.spriteDefs,
       SelectedTextSpriteId,
       text.width,
       text.height,
@@ -1684,7 +1780,8 @@ proc buildSpriteProtocolUpdates*(
       TopLeftLayerId,
       SelectedTextSpriteId
     )
-    result.addSprite(
+    result.addSpriteChanged(
+      nextState.spriteDefs,
       SelectedViewportSpriteId,
       ScreenWidth,
       ScreenHeight,
@@ -1721,7 +1818,8 @@ proc buildSpriteProtocolUpdates*(
   currentIds.add(ReplayTickObjectId)
   currentIds.add(ReplayControlsObjectId)
   currentIds.add(ReplayScrubberObjectId)
-  result.addSprite(
+  result.addSpriteChanged(
+    nextState.spriteDefs,
     ReplayTickSpriteId,
     tickText.width,
     tickText.height,
@@ -1736,7 +1834,8 @@ proc buildSpriteProtocolUpdates*(
     ReplayCenterBottomLayerId,
     ReplayTickSpriteId
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    nextState.spriteDefs,
     ReplayScrubberSpriteId,
     scrubber.width,
     scrubber.height,
@@ -1751,7 +1850,8 @@ proc buildSpriteProtocolUpdates*(
     ReplayCenterBottomLayerId,
     ReplayScrubberSpriteId
   )
-  result.addSprite(
+  result.addSpriteChanged(
+    nextState.spriteDefs,
     ReplayControlsSpriteId,
     controls.width,
     controls.height,

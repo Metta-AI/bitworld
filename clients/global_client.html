@@ -98,7 +98,7 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   box-sizing:border-box;
 }
 .debugSpriteId{
-  width:64px;
+  width:50px;
   color:#b8c3d6;
   font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
@@ -111,9 +111,20 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   image-rendering:pixelated;
   image-rendering:crisp-edges;
 }
+.debugSprite.updated{
+  box-shadow:inset 0 0 0 1px #fff;
+}
+.debugSprite.updated canvas{
+  box-shadow:0 0 0 1px #fff;
+}
 .debugSpriteSize{
   color:#7f8ba0;
   font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.debugSpriteTraffic{
+  margin-top:2px;
+  color:#d7dee9;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 .debugSpriteMeta{
   min-width:0;
@@ -121,8 +132,13 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 }
 .debugSpriteText{
   overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:3;
+  line-clamp:3;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  line-height:1.15;
 }
 </style>
 </head>
@@ -182,12 +198,14 @@ const playerMode=url.searchParams.get("player")==="1"||
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
+const DebugUpdateFlashMs=900;
 let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
 let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
 let draggingMap=false,dragX=0,dragY=0;
 let heldButtons=0,typing=false,textBuffer="";
 let debugOpen=false,debugSpritesDirty=true,debugSpriteTimer=0;
+let debugUpdateTimer=0;
 let debugBytesDown=0,debugBytesUp=0;
 ctx.imageSmoothingEnabled=false;
 
@@ -254,6 +272,10 @@ function debugSpriteColor(id){
   return "hsl("+hue+",90%,55%)";
 }
 
+function spriteJustUpdated(sprite){
+  return sprite.updatedUntil&&performance.now()<sprite.updatedUntil;
+}
+
 function drawDebugSpriteBounds(layer,pos,object,sprite){
   const
     scaleX=pos.w/layer.width,
@@ -270,6 +292,10 @@ function drawDebugSpriteBounds(layer,pos,object,sprite){
     bh=Math.max(1,Math.round(h));
   ctx.save();
   ctx.lineWidth=1;
+  if(spriteJustUpdated(sprite)){
+    ctx.strokeStyle="#fff";
+    ctx.strokeRect(bx-1,by-1,bw+2,bh+2);
+  }
   ctx.strokeStyle=color;
   ctx.strokeRect(bx,by,bw,bh);
   ctx.font="8px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
@@ -299,16 +325,23 @@ function refreshDebugSprites(){
     const meta=document.createElement("div");
     const text=document.createElement("div");
     const size=document.createElement("div");
+    const traffic=document.createElement("div");
     row.className="debugSprite";
+    row.classList.toggle("updated",!!spriteJustUpdated(sprite));
     label.className="debugSpriteId";
     meta.className="debugSpriteMeta";
     text.className="debugSpriteText";
     size.className="debugSpriteSize";
+    traffic.className="debugSpriteTraffic";
     label.textContent="#"+id;
     text.textContent=sprite.label||"(no label)";
     size.textContent=sprite.width+"x"+sprite.height;
+    traffic.textContent=formatBytes(sprite.bytesDown||0)+" / "+
+      (sprite.updates||0)+"x";
     previewSprite(preview,sprite);
-    meta.append(text,size);
+    label.append(size);
+    label.append(traffic);
+    meta.append(text);
     row.append(label,preview,meta);
     debugSprites.append(row);
   }
@@ -318,6 +351,17 @@ function scheduleDebugSprites(){
   debugSpritesDirty=true;
   if(!debugOpen||debugSpriteTimer)return;
   debugSpriteTimer=setTimeout(refreshDebugSprites,120);
+}
+
+function scheduleDebugUpdateClear(){
+  if(debugUpdateTimer)clearTimeout(debugUpdateTimer);
+  debugUpdateTimer=setTimeout(()=>{
+    debugUpdateTimer=0;
+    if(!debugOpen)return;
+    debugSpritesDirty=true;
+    refreshDebugSprites();
+    draw();
+  },DebugUpdateFlashMs+40);
 }
 
 function toggleDebugPanel(){
@@ -673,6 +717,7 @@ function parse(bytes){
   while(offset<bytes.length){
     const type=bytes[offset++];
     if(type===0x01){
+      const packetStart=offset-1;
       const id=readU16(bytes,offset);
       const width=readU16(bytes,offset+2);
       const height=readU16(bytes,offset+4);
@@ -684,13 +729,19 @@ function parse(bytes){
       offset+=2;
       const label=textDecoder.decode(bytes.slice(offset,offset+labelLength));
       offset+=labelLength;
+      const previous=sprites.get(id);
+      const packetBytes=offset-packetStart;
       sprites.set(id,{
         width,
         height,
         pixels,
-        label
+        label,
+        updates:(previous?previous.updates:0)+1,
+        bytesDown:(previous?previous.bytesDown:0)+packetBytes,
+        updatedUntil:performance.now()+DebugUpdateFlashMs
       });
       scheduleDebugSprites();
+      scheduleDebugUpdateClear();
     }else if(type===0x02){
       const id=readU16(bytes,offset);
       const x=readI16(bytes,offset+2);
