@@ -1,5 +1,5 @@
 import
-  std/[algorithm, math, monotimes, os, parseopt, strutils, tables, times],
+  std/[algorithm, math, monotimes, os, tables, times],
   chroma, pixie, protocol, silky, windy
 
 type
@@ -19,9 +19,12 @@ type
   MousePoint = object
     x, y, layer: int
 
-  GlobalOptions = object
-    title: string
-    reconnectDelayMilliseconds: int64
+  GlobalOptions* = object
+    title*: string
+    reconnectDelayMilliseconds*: int64
+    atlasPath*: string
+    palettePath*: string
+    packetSink*: proc(packet: string)
 
   NetworkState = object
     ws: WebSocketHandle
@@ -38,11 +41,13 @@ type
     vertexBuffer: GLuint
     samplerLocation: GLint
 
-  GlobalApp = ref object
+  GlobalApp* = ref object
     window: Window
     silky: Silky
     renderer: RawRenderer
     network: NetworkState
+    packetSink: proc(packet: string)
+    statusMessage: string
     layers: Table[int, GlobalLayer]
     sprites: Table[int, GlobalSprite]
     objects: Table[int, GlobalObject]
@@ -58,14 +63,42 @@ const
   PalettePath = "data/pallete.png"
   WebSocketPath = "/global"
   TargetFps = 24.0
-  NetworkPollPasses = 8
   WindowWidth = 900
   WindowHeight = 640
   ZoomableFlag = 1
   UiFlag = 2
   MapLayerKind = 0
   UiZoom = 3.0'f
-  VertexShaderSource = """
+when not defined(emscripten):
+  const NetworkPollPasses = 8
+when defined(emscripten):
+  const
+    VertexShaderSource = """
+#version 300 es
+precision mediump float;
+layout (location = 0) in vec2 vertexPos;
+layout (location = 1) in vec2 vertexUv;
+out vec2 uv;
+void main()
+{
+  uv = vertexUv;
+  gl_Position = vec4(vertexPos, 0.0, 1.0);
+}
+"""
+    FragmentShaderSource = """
+#version 300 es
+precision mediump float;
+in vec2 uv;
+uniform sampler2D layerTexture;
+out vec4 fragColor;
+void main()
+{
+  fragColor = texture(layerTexture, uv);
+}
+"""
+else:
+  const
+    VertexShaderSource = """
 #version 410
 layout (location = 0) in vec2 vertexPos;
 layout (location = 1) in vec2 vertexUv;
@@ -76,7 +109,7 @@ void main()
   gl_Position = vec4(vertexPos, 0.0, 1.0);
 }
 """
-  FragmentShaderSource = """
+    FragmentShaderSource = """
 #version 410
 in vec2 uv;
 uniform sampler2D layerTexture;
@@ -162,8 +195,11 @@ proc writeI16(bytes: var seq[uint8], offset, value: int) =
 
 proc sendBytes(app: GlobalApp, bytes: openArray[uint8]) =
   ## Sends one binary packet when connected.
-  if app.network.connected:
-    app.network.ws.send(blobFromBytes(bytes), BinaryMessage)
+  let packet = blobFromBytes(bytes)
+  if app.packetSink != nil:
+    app.packetSink(packet)
+  elif app.network.connected:
+    app.network.ws.send(packet, BinaryMessage)
 
 proc layerIndex(app: GlobalApp, id: int): GlobalLayer =
   ## Returns an existing layer or a default zoomable map layer.
@@ -212,7 +248,7 @@ proc fit(app: GlobalApp) =
   app.panX = floor((logicalW - width * app.zoom) * 0.5)
   app.panY = floor((logicalH - height * app.zoom) * 0.5)
 
-proc maybeFit(app: GlobalApp) =
+proc maybeFit*(app: GlobalApp) =
   ## Fits the map when auto-fit mode is enabled.
   if app.autoFit:
     app.fit()
@@ -440,6 +476,8 @@ proc drawLayer(
 
 proc statusText(app: GlobalApp): string =
   ## Returns the connection status text.
+  if app.statusMessage.len > 0:
+    return app.statusMessage
   if app.network.connected:
     ""
   elif app.network.connecting:
@@ -449,7 +487,7 @@ proc statusText(app: GlobalApp): string =
   else:
     "disconnected..."
 
-proc draw(app: GlobalApp) =
+proc draw*(app: GlobalApp) =
   ## Draws the full global viewer.
   let
     frameSize = app.window.size
@@ -475,7 +513,7 @@ proc draw(app: GlobalApp) =
   app.silky.endUi()
   app.window.swapBuffers()
 
-proc parseMessage(app: GlobalApp, data: string) =
+proc parseMessage*(app: GlobalApp, data: string) =
   ## Parses one or more global protocol messages.
   var offset = 0
 
@@ -604,6 +642,8 @@ proc connectNetwork(app: GlobalApp) =
 
 proc reconnectNetwork(app: GlobalApp) =
   ## Closes the current socket and starts a new connection.
+  if app.packetSink != nil:
+    return
   app.network.ws.close()
   app.connectNetwork()
 
@@ -618,10 +658,13 @@ proc tickNetwork(app: GlobalApp) =
   if elapsed >= app.network.reconnectDelayMilliseconds:
     app.connectNetwork()
 
-proc pollNetwork() =
+proc pollNetwork*() =
   ## Pumps Windy network callbacks.
-  for i in 0 ..< NetworkPollPasses:
-    pollHttp()
+  when defined(emscripten):
+    discard
+  else:
+    for i in 0 ..< NetworkPollPasses:
+      pollHttp()
 
 proc mapPoint(app: GlobalApp, mouse: IVec2): MousePoint =
   ## Converts a window mouse position into map coordinates.
@@ -736,7 +779,7 @@ proc normalizeRune(rune: Rune): char =
   else:
     '\0'
 
-proc handleInput(app: GlobalApp) =
+proc handleInput*(app: GlobalApp) =
   ## Handles keyboard, mouse, pan, and zoom input.
   let
     pressed = app.window.buttonPressed
@@ -800,11 +843,11 @@ proc handleInput(app: GlobalApp) =
     app.autoFit = true
     app.fit()
 
-proc windowOpen(app: GlobalApp): bool =
+proc windowOpen*(app: GlobalApp): bool =
   ## Returns true while the global window should stay open.
   not app.window.closeRequested
 
-proc runFrameLimiter(previousTick: var MonoTime) =
+proc runFrameLimiter*(previousTick: var MonoTime) =
   ## Sleeps to keep the global client near the target frame rate.
   let frameDuration =
     initDuration(milliseconds = int(round(1000.0 / TargetFps)))
@@ -813,30 +856,52 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc parseReconnectDelay(value: string): int64 =
-  ## Parses reconnect seconds as milliseconds.
-  if value.len == 0:
-    return 0
-  max(0, int64(parseFloat(value) * 1000.0))
+when isMainModule:
+  import std/[parseopt, strutils]
 
-proc initGlobalApp(
+  proc parseReconnectDelay(value: string): int64 =
+    ## Parses reconnect seconds as milliseconds.
+    if value.len == 0:
+      return 0
+    max(0, int64(parseFloat(value) * 1000.0))
+
+proc initGlobalApp*(
   host = DefaultHost,
   port = DefaultPort,
   options = GlobalOptions()
 ): GlobalApp =
   ## Creates the native global client app.
-  loadPalette(PalettePath)
+  let
+    palettePath =
+      if options.palettePath.len > 0:
+        options.palettePath
+      else:
+        PalettePath
+    atlasPath =
+      if options.atlasPath.len > 0:
+        options.atlasPath
+      else:
+        AtlasPath
+  loadPalette(palettePath)
   result = GlobalApp()
-  result.window = newWindow(
-    title = if options.title.len > 0: options.title else: "Global Viewer",
-    size = ivec2(WindowWidth, WindowHeight),
-    style = DecoratedResizable,
-    visible = true
-  )
+  let title = if options.title.len > 0: options.title else: "Global Viewer"
+  when defined(emscripten):
+    result.window = newWindow(
+      title = title,
+      size = ivec2(WindowWidth, WindowHeight),
+      visible = true
+    )
+  else:
+    result.window = newWindow(
+      title = title,
+      size = ivec2(WindowWidth, WindowHeight),
+      style = DecoratedResizable,
+      visible = true
+    )
   makeContextCurrent(result.window)
-  when not defined(useDirectX):
+  when not defined(useDirectX) and not defined(emscripten):
     loadExtensions()
-  result.silky = newSilky(result.window, AtlasPath)
+  result.silky = newSilky(result.window, atlasPath)
   result.renderer = initRawRenderer()
   if result.window.contentScale > 1.0:
     result.silky.uiScale = 2.0
@@ -847,6 +912,7 @@ proc initGlobalApp(
   result.zoom = 1.0'f
   result.autoFit = true
   result.activeMouseLayer = -1
+  result.packetSink = options.packetSink
   result.network.url = "ws://" & host & ":" & $port & WebSocketPath
   result.network.reconnectDelayMilliseconds =
     options.reconnectDelayMilliseconds
@@ -856,12 +922,38 @@ proc initGlobalApp(
     let ch = normalizeRune(rune)
     if ch != '\0':
       app.sendInputText($ch)
-  result.connectNetwork()
+  if result.packetSink == nil:
+    result.connectNetwork()
+  else:
+    result.network.connected = true
   result.fit()
 
-proc shutdown(app: GlobalApp) =
+proc setStatus*(app: GlobalApp, message: string) =
+  ## Sets the overlay status message.
+  app.statusMessage = message
+
+proc setFileDropCallback*(app: GlobalApp, callback: FileDropCallback) =
+  ## Sets the browser and desktop file drop callback.
+  app.window.onFileDrop = callback
+
+proc windowUrl*(app: GlobalApp): string =
+  ## Returns the current window URL when the platform provides one.
+  app.window.url
+
+proc resetProtocolState*(app: GlobalApp) =
+  ## Clears all parsed global protocol state.
+  app.layers.clear()
+  app.sprites.clear()
+  app.objects.clear()
+  app.zoom = 1.0'f
+  app.panX = 0
+  app.panY = 0
+  app.autoFit = true
+
+proc shutdown*(app: GlobalApp) =
   ## Closes the global websocket.
-  app.network.ws.close()
+  if app.packetSink == nil:
+    app.network.ws.close()
 
 proc runGlobalClient*(
   host = DefaultHost,
@@ -869,20 +961,22 @@ proc runGlobalClient*(
   options = GlobalOptions()
 ) =
   ## Runs the native global client.
-  var
-    app = initGlobalApp(host, port, options)
-    lastTick = getMonoTime()
+  let app = initGlobalApp(host, port, options)
+  when not defined(emscripten):
+    var lastTick = getMonoTime()
   while app.windowOpen:
     pollEvents()
     pollNetwork()
-    if app.window.buttonPressed[KeyEscape] and
-      app.window.buttonDown[KeyLeftSuper]:
-        app.window.closeRequested = true
+    when not defined(emscripten):
+      if app.window.buttonPressed[KeyEscape] and
+        app.window.buttonDown[KeyLeftSuper]:
+          app.window.closeRequested = true
     app.handleInput()
     app.tickNetwork()
     app.maybeFit()
     app.draw()
-    runFrameLimiter(lastTick)
+    when not defined(emscripten):
+      runFrameLimiter(lastTick)
   app.shutdown()
 
 when isMainModule:

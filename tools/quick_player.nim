@@ -15,6 +15,7 @@ type
     port: int
     gui: bool
     namePrefix: string
+    mapPath: string
 
 var
   playerProcesses: seq[Process]
@@ -27,7 +28,8 @@ proc repoRoot(): string =
 proc usage(): string =
   ## Returns command-line usage text.
   "Usage: quick_player <player_nim_file> --players:N " &
-    "[--address:ADDR] [--port:N] [--gui] [--name-prefix:NAME]\n" &
+    "[--address:ADDR] [--port:N] [--gui] [--name-prefix:NAME] " &
+    "[--map:PATH]\n" &
     "Example: quick_player nottoodumb --players:4 " &
     "--address:0.0.0.0 --port:2000\n" &
     "Example: quick_player among_them/players/nottoodumb.nim " &
@@ -237,6 +239,10 @@ proc parseArgs(): QuickPlayerConfig =
         if val.len == 0:
           raise newException(ValueError, "--name-prefix requires a value.")
         result.namePrefix = val
+      of "map":
+        if val.len == 0:
+          raise newException(ValueError, "--map requires a value.")
+        result.mapPath = val
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdShortOption:
@@ -267,6 +273,13 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
     playerExe = exePathFor(rootDir, player.sourceRelative)
     addressArg = "--address:" & config.address
     portArg = "--port:" & $config.port
+    mapArg =
+      if config.mapPath.len == 0:
+        ""
+      elif config.mapPath.isAbsolute():
+        "--map:" & config.mapPath
+      else:
+        "--map:" & absolutePath(rootDir / config.mapPath)
   echo "Using ", config.address, ":", config.port, "."
   result = compilePlayer(
     nimExe,
@@ -284,6 +297,8 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
     ]
     if config.gui:
       args.add("--gui")
+    if mapArg.len > 0:
+      args.add(mapArg)
     try:
       playerProcesses.add(
         launchManagedProcess(

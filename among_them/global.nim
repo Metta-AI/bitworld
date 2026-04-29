@@ -416,14 +416,14 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   for i in 0 ..< sim.mapPixels.len:
     mapPixels[i] = spriteColor(sim.mapPixels[i])
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
-  result.addViewport(MapLayerId, MapWidth, MapHeight)
+  result.addViewport(MapLayerId, sim.gameMap.width, sim.gameMap.height)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
   result.addViewport(TopLeftLayerId, 160, 24)
   result.addLayer(InterstitialLayerId, InterstitialLayerType, UiLayerFlag)
   result.addViewport(InterstitialLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
   result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
-  result.addSprite(MapSpriteId, MapWidth, MapHeight, mapPixels)
+  result.addSprite(MapSpriteId, sim.gameMap.width, sim.gameMap.height, mapPixels)
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
   let taskPixels = buildSpriteProtocolRawSprite(sim.taskIconSprite)
   result.addSprite(

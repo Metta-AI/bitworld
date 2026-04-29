@@ -777,6 +777,25 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step_rewards.restype = ctypes.c_int
+        self.lib.bitworld_at_task_distances.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_task_distances.restype = ctypes.c_int
+        self.lib.bitworld_at_task_distances_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_task_distances_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_on_task_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.lib.bitworld_at_on_task_batch.restype = ctypes.c_int
         self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_close.restype = None
 
@@ -1417,10 +1436,13 @@ class BitWorldVecEnv:
         candidates = assigned & ~completed
         icon_visible = (flags & STATE_FLAG_TASK_ICON_VISIBLE) != 0
         arrow_visible = (flags & STATE_FLAG_TASK_ARROW_VISIBLE) != 0
-        target_x = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 5], 64))
-        target_y = np.where(icon_visible, task_features[:, :, 2], np.where(arrow_visible, task_features[:, :, 6], 64))
+        visible = icon_visible | arrow_visible
+        target_x = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 5], 0))
+        target_y = np.where(icon_visible, task_features[:, :, 2], np.where(arrow_visible, task_features[:, :, 6], 0))
         distances = np.sqrt(np.square(target_x.astype(np.float32) - 64.0) + np.square(target_y.astype(np.float32) - 64.0))
-        distances = np.where(candidates, distances, np.inf)
+        # When the task isn't visible on screen, use max distance so that
+        # discovering a task is always rewarding (not punishing).
+        distances = np.where(candidates & visible, distances, np.where(candidates, 128.0, np.inf))
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
@@ -1436,13 +1458,13 @@ class BitWorldVecEnv:
         agent_slice = self._agent_slice(env_id)
         clipped = np.clip(action_indices[agent_slice], 0, self.action_count - 1).astype(np.int64)
         action_masks = ACTION_MASKS[clipped]
-        if worker.agent_count == 1:
+        if isinstance(worker, AmongThemNativeWorker):
+            frames, rewards = worker.step(action_masks)
+            frames = self._frame_batch(frames, worker)
+        else:
             frame, reward = worker.step(int(action_masks[0]))
             frames = self._frame_batch(frame, worker)
             rewards = np.asarray([reward], dtype=np.float32)
-        else:
-            frames, rewards = worker.step(action_masks)
-            frames = self._frame_batch(frames, worker)
 
         completed: list[EpisodeStats] = []
         if isinstance(worker, AmongThemNativeWorker):

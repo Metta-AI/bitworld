@@ -14,6 +14,7 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
+  DefaultMapPath* = "map.json"
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
@@ -50,6 +51,7 @@ const
   VoteTimerTicks* = 1440
   GameOverTicks* = 360
   MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
+  MaxGames* = 0  ## 0 = no limit.
   TasksPerPlayer* = 4
   ShowTaskArrows* = true
   ButtonCalls* = 1
@@ -60,12 +62,6 @@ const
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
-  ButtonX* = 524
-  ButtonY* = 114
-  ButtonW* = 28
-  ButtonH* = 34
-  HomeX* = 536
-  HomeY* = 120
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -160,6 +156,28 @@ type
     group*: char
     groupIndex*: int
 
+  Room* = object
+    name*: string
+    x*, y*, w*, h*: int
+
+  MapRect* = object
+    x*, y*, w*, h*: int
+
+  MapPoint* = object
+    x*, y*: int
+
+  AmongMap* = object
+    name*: string
+    path*: string
+    asepritePath*: string
+    width*, height*: int
+    mapLayer*, walkLayer*, wallLayer*: int
+    button*: MapRect
+    home*: MapPoint
+    tasks*: seq[TaskStation]
+    vents*: seq[Vent]
+    rooms*: seq[Room]
+
   Body* = object
     x*, y*: int
     color*: uint8
@@ -192,10 +210,12 @@ type
     voteTimerTicks*: int
     gameOverTicks*: int
     maxTicks*: int
+    maxGames*: int
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
     buttonCalls*: int
+    mapPath*: string
 
   Player* = object
     x*, y*: int
@@ -229,8 +249,10 @@ type
     taskIconSprite*: Sprite
     ghostSprite*: Sprite
     ghostIconSprite*: Sprite
+    gameMap*: AmongMap
     tasks*: seq[TaskStation]
     vents*: seq[Vent]
+    rooms*: seq[Room]
     mapPixels*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
@@ -292,23 +314,57 @@ const
   RenderTaskArrowVisible = 16'u8
   RenderTaskCompleted = 32'u8
 
+proc gameDir*(): string =
+  ## Returns the Among Them game directory.
+  when defined(emscripten):
+    "among_them"
+  else:
+    currentSourcePath().parentDir()
+
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
-  getCurrentDir() / ".." / "clients" / "data"
-
-proc skeld2AsepritePath(): string =
-  ## Returns the best available skeld2 aseprite path.
-  if fileExists("skeld2.aseprite"):
-    "skeld2.aseprite"
+  when defined(emscripten):
+    "clients" / "data"
   else:
-    "/Users/me/p/among_them/skeld2.aseprite"
+    gameDir() / ".." / "clients" / "data"
+
+proc resolveGamePath*(path: string, baseDir = ""): string =
+  ## Resolves a game data path against the map file and game directory.
+  let trimmed = path.strip()
+  if trimmed.len == 0 or trimmed.isAbsolute():
+    return trimmed
+  if baseDir.len > 0:
+    let basePath = baseDir / trimmed
+    if fileExists(basePath):
+      return basePath
+  if fileExists(trimmed):
+    return trimmed
+  if baseDir.len > 0:
+    return baseDir / trimmed
+  gameDir() / trimmed
+
+proc resolveMapPath*(path: string): string =
+  ## Resolves an Among Them map JSON path.
+  let trimmed =
+    if path.strip().len == 0:
+      DefaultMapPath
+    else:
+      path.strip()
+  if trimmed.isAbsolute() or fileExists(trimmed):
+    trimmed
+  else:
+    gameDir() / trimmed
 
 proc spriteSheetPath(): string =
   ## Returns the best available sprite sheet path.
   if fileExists("spritesheet.aseprite"):
     "spritesheet.aseprite"
-  else:
+  elif fileExists(gameDir() / "spritesheet.aseprite"):
+    gameDir() / "spritesheet.aseprite"
+  elif fileExists("spritesheet.png"):
     "spritesheet.png"
+  else:
+    gameDir() / "spritesheet.png"
 
 proc loadSpriteSheet*(): Image =
   ## Loads the sprite sheet from aseprite when available.
@@ -317,6 +373,197 @@ proc loadSpriteSheet*(): Image =
     readAsepriteImage(path)
   else:
     readImage(path)
+
+proc requireObject(node: JsonNode, name: string): JsonNode =
+  ## Reads one required JSON object field.
+  if node.kind != JObject or not node.hasKey(name):
+    raise newException(AmongThemError, "Map is missing object field " & name & ".")
+  result = node[name]
+  if result.kind != JObject:
+    raise newException(AmongThemError, "Map field " & name & " must be an object.")
+
+proc requireArray(node: JsonNode, name: string): JsonNode =
+  ## Reads one required JSON array field.
+  if node.kind != JObject or not node.hasKey(name):
+    raise newException(AmongThemError, "Map is missing array field " & name & ".")
+  result = node[name]
+  if result.kind != JArray:
+    raise newException(AmongThemError, "Map field " & name & " must be an array.")
+
+proc requireString(node: JsonNode, name: string): string =
+  ## Reads one required JSON string field.
+  if node.kind != JObject or not node.hasKey(name):
+    raise newException(AmongThemError, "Map is missing string field " & name & ".")
+  let item = node[name]
+  if item.kind != JString:
+    raise newException(AmongThemError, "Map field " & name & " must be a string.")
+  item.getStr()
+
+proc optionalString(node: JsonNode, name, default: string): string =
+  ## Reads one optional JSON string field.
+  if node.kind != JObject or not node.hasKey(name):
+    return default
+  let item = node[name]
+  if item.kind != JString:
+    raise newException(AmongThemError, "Map field " & name & " must be a string.")
+  item.getStr()
+
+proc requireInt(node: JsonNode, name: string): int =
+  ## Reads one required JSON integer field.
+  if node.kind != JObject or not node.hasKey(name):
+    raise newException(AmongThemError, "Map is missing integer field " & name & ".")
+  let item = node[name]
+  if item.kind != JInt:
+    raise newException(AmongThemError, "Map field " & name & " must be an integer.")
+  item.getInt()
+
+proc optionalInt(node: JsonNode, name: string, default: int): int =
+  ## Reads one optional JSON integer field.
+  if node.kind != JObject or not node.hasKey(name):
+    return default
+  let item = node[name]
+  if item.kind != JInt:
+    raise newException(AmongThemError, "Map field " & name & " must be an integer.")
+  item.getInt()
+
+proc readMapRect(node: JsonNode, name: string): MapRect =
+  ## Reads one required map rectangle.
+  let item = node.requireObject(name)
+  MapRect(
+    x: item.requireInt("x"),
+    y: item.requireInt("y"),
+    w: item.requireInt("w"),
+    h: item.requireInt("h")
+  )
+
+proc readMapPoint(node: JsonNode, name: string): MapPoint =
+  ## Reads one required map point.
+  let item = node.requireObject(name)
+  MapPoint(
+    x: item.requireInt("x"),
+    y: item.requireInt("y")
+  )
+
+proc readTaskStation(node: JsonNode): TaskStation =
+  ## Reads one task station from map JSON.
+  TaskStation(
+    name: node.requireString("name"),
+    x: node.requireInt("x"),
+    y: node.requireInt("y"),
+    w: node.requireInt("w"),
+    h: node.requireInt("h")
+  )
+
+proc readVent(node: JsonNode): Vent =
+  ## Reads one vent from map JSON.
+  let group = node.requireString("group")
+  if group.len == 0:
+    raise newException(AmongThemError, "Map vent group cannot be empty.")
+  Vent(
+    x: node.requireInt("x"),
+    y: node.requireInt("y"),
+    w: node.requireInt("w"),
+    h: node.requireInt("h"),
+    group: group[0],
+    groupIndex: node.requireInt("groupIndex")
+  )
+
+proc readRoom(node: JsonNode): Room =
+  ## Reads one named room rectangle from map JSON.
+  Room(
+    name: node.requireString("name"),
+    x: node.requireInt("x"),
+    y: node.requireInt("y"),
+    w: node.requireInt("w"),
+    h: node.requireInt("h")
+  )
+
+proc validateMapRect(name: string, rect: MapRect, width, height: int) =
+  ## Raises if one map rectangle is outside the map.
+  if rect.w <= 0 or rect.h <= 0:
+    raise newException(AmongThemError, "Map " & name & " size must be positive.")
+  if rect.x < 0 or rect.y < 0 or
+      rect.x + rect.w > width or rect.y + rect.h > height:
+    raise newException(AmongThemError, "Map " & name & " is outside the map.")
+
+proc validateMapPoint(name: string, point: MapPoint, width, height: int) =
+  ## Raises if one map point is outside the map.
+  if point.x < 0 or point.y < 0 or point.x >= width or point.y >= height:
+    raise newException(AmongThemError, "Map " & name & " is outside the map.")
+
+proc validateMap(gameMap: AmongMap) =
+  ## Raises if a loaded map has invalid geometry.
+  if gameMap.asepritePath.len == 0:
+    raise newException(AmongThemError, "Map aseprite path cannot be empty.")
+  if gameMap.width != MapWidth or gameMap.height != MapHeight:
+    raise newException(
+      AmongThemError,
+      "Map dimensions must be " & $MapWidth & "x" & $MapHeight & "."
+    )
+  validateMapRect("button", gameMap.button, gameMap.width, gameMap.height)
+  validateMapPoint("home", gameMap.home, gameMap.width, gameMap.height)
+  for i, task in gameMap.tasks:
+    validateMapRect(
+      "task " & $i,
+      MapRect(x: task.x, y: task.y, w: task.w, h: task.h),
+      gameMap.width,
+      gameMap.height
+    )
+  for i, vent in gameMap.vents:
+    if vent.groupIndex < 1:
+      raise newException(AmongThemError, "Map vent " & $i & " index must be positive.")
+    validateMapRect(
+      "vent " & $i,
+      MapRect(x: vent.x, y: vent.y, w: vent.w, h: vent.h),
+      gameMap.width,
+      gameMap.height
+    )
+  for i, room in gameMap.rooms:
+    validateMapRect(
+      "room " & $i,
+      MapRect(x: room.x, y: room.y, w: room.w, h: room.h),
+      gameMap.width,
+      gameMap.height
+    )
+
+proc loadAmongMap*(path = ""): AmongMap =
+  ## Loads an Among Them map JSON file.
+  let
+    resolvedPath = resolveMapPath(path)
+    baseDir = resolvedPath.splitFile().dir
+  var node: JsonNode
+  try:
+    node = parseJson(readFile(resolvedPath))
+  except JsonParsingError as e:
+    raise newException(AmongThemError, "Could not parse map JSON: " & e.msg)
+  except IOError as e:
+    raise newException(AmongThemError, "Could not read map JSON: " & e.msg)
+  if node.kind != JObject:
+    raise newException(AmongThemError, "Map JSON must be an object.")
+
+  let layers = node.requireObject("layers")
+  result.name = node.optionalString("name", "Unknown")
+  result.path = resolvedPath
+  result.width = node.optionalInt("width", MapWidth)
+  result.height = node.optionalInt("height", MapHeight)
+  result.asepritePath = node.optionalString("asepritePath", "")
+  if result.asepritePath.len == 0:
+    result.asepritePath = node.requireString("aseprite")
+  result.asepritePath = resolveGamePath(result.asepritePath, baseDir)
+  result.mapLayer = layers.optionalInt("map", 0)
+  result.walkLayer = layers.optionalInt("walk", 1)
+  result.wallLayer = layers.optionalInt("walls", 2)
+  result.button = node.readMapRect("button")
+  result.home = node.readMapPoint("home")
+
+  for item in node.requireArray("tasks"):
+    result.tasks.add(item.readTaskStation())
+  for item in node.requireArray("vents"):
+    result.vents.add(item.readVent())
+  for item in node.requireArray("rooms"):
+    result.rooms.add(item.readRoom())
+
+  result.validateMap()
 
 proc asepritePixelAt(
   aseprite: AsepriteSprite,
@@ -351,11 +598,11 @@ proc asepriteLayerImage(
 ): Image =
   ## Renders one normal aseprite layer from the first frame.
   if aseprite.frames.len == 0:
-    raise newException(AmongThemError, "skeld2.aseprite has no frames.")
+    raise newException(AmongThemError, "Map aseprite has no frames.")
   if layerIndex < 0 or layerIndex >= aseprite.layers.len:
     raise newException(
       AmongThemError,
-      "skeld2.aseprite is missing layer " & $(layerIndex + 1) & "."
+      "Map aseprite is missing layer " & $(layerIndex + 1) & "."
     )
   result = newImage(aseprite.header.width, aseprite.header.height)
   result.fill(rgba(0, 0, 0, 0))
@@ -376,22 +623,26 @@ proc asepriteLayerImage(
         if pixel.a > 0:
           result[dstX, dstY] = pixel
 
-proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
-  ## Loads the skeld2 map, floor mask, and wall mask from aseprite layers.
+proc loadMapLayers*(gameMap: AmongMap): tuple[mapImage, walkImage, wallImage: Image] =
+  ## Loads the map, floor mask, and wall mask from aseprite layers.
   let
-    path = skeld2AsepritePath()
+    path = gameMap.asepritePath
     sprite = readAseprite(path)
-  if sprite.header.width != MapWidth or sprite.header.height != MapHeight:
+  if sprite.header.width != gameMap.width or sprite.header.height != gameMap.height:
     raise newException(
       AmongThemError,
-      "skeld2.aseprite dimensions must be " &
-        $MapWidth & "x" & $MapHeight & "."
+      path & " dimensions must be " &
+        $gameMap.width & "x" & $gameMap.height & "."
     )
   (
-    mapImage: sprite.asepriteLayerImage(0),
-    walkImage: sprite.asepriteLayerImage(1),
-    wallImage: sprite.asepriteLayerImage(2)
+    mapImage: sprite.asepriteLayerImage(gameMap.mapLayer),
+    walkImage: sprite.asepriteLayerImage(gameMap.walkLayer),
+    wallImage: sprite.asepriteLayerImage(gameMap.wallLayer)
   )
+
+proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
+  ## Loads the default Skeld map layers.
+  loadMapLayers(loadAmongMap())
 
 proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
@@ -510,10 +761,12 @@ proc defaultGameConfig*(): GameConfig =
     voteTimerTicks: VoteTimerTicks,
     gameOverTicks: GameOverTicks,
     maxTicks: MaxTicks,
+    maxGames: MaxGames,
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
     showTaskBubbles: true,
-    buttonCalls: ButtonCalls
+    buttonCalls: ButtonCalls,
+    mapPath: DefaultMapPath
   )
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
@@ -533,6 +786,15 @@ proc readConfigBool(node: JsonNode, name: string, value: var bool) =
   if item.kind != JBool:
     raise newException(AmongThemError, "Config field " & name & " must be a boolean.")
   value = item.getBool()
+
+proc readConfigString(node: JsonNode, name: string, value: var string) =
+  ## Reads one optional string config field.
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  if item.kind != JString:
+    raise newException(AmongThemError, "Config field " & name & " must be a string.")
+  value = item.getStr()
 
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
@@ -555,7 +817,8 @@ proc validate(config: GameConfig) =
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
-      config.voteResultTicks < 0 or config.maxTicks < 0:
+      config.voteResultTicks < 0 or config.maxTicks < 0 or
+      config.maxGames < 0:
     raise newException(AmongThemError, "Timer config fields must not be negative.")
 
 proc update*(config: var GameConfig, jsonText: string) =
@@ -589,11 +852,14 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("maxTicks", config.maxTicks)
+  node.readConfigInt("maxGames", config.maxGames)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
   node.readConfigInt("buttonCalls", config.buttonCalls)
   node.readConfigInt("numberOfButtonCalls", config.buttonCalls)
   node.readConfigBool("showTaskArrows", config.showTaskArrows)
   node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
+  node.readConfigString("map", config.mapPath)
+  node.readConfigString("mapPath", config.mapPath)
   config.validate()
 
 proc configJson*(config: GameConfig): string =
@@ -619,8 +885,10 @@ proc configJson*(config: GameConfig): string =
     "voteTimerTicks": config.voteTimerTicks,
     "gameOverTicks": config.gameOverTicks,
     "maxTicks": config.maxTicks,
+    "maxGames": config.maxGames,
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
+    "mapPath": config.mapPath,
     "showTaskArrows": config.showTaskArrows,
     "showTaskBubbles": config.showTaskBubbles
   }
@@ -713,16 +981,16 @@ proc canOccupy*(sim: SimServer, x, y: int): bool =
 proc homePosition*(sim: SimServer, index, total: int): tuple[x, y: int] =
   ## Returns one deterministic home position around the meeting button.
   let
-    buttonX = HomeX
-    buttonY = HomeY
+    homeX = sim.gameMap.home.x
+    homeY = sim.gameMap.home.y
     spawnRadius = 28
     n = max(1, total)
     angle = float(index) * 2.0 * 3.14159265 / float(n)
-    px = buttonX + int(float(spawnRadius) * cos(angle))
-    py = buttonY + int(float(spawnRadius) * sin(angle))
+    px = homeX + int(float(spawnRadius) * cos(angle))
+    py = homeY + int(float(spawnRadius) * sin(angle))
   if sim.canOccupy(px, py):
     return (px, py)
-  (buttonX, buttonY)
+  (homeX, homeY)
 
 proc resetPlayerToHome*(sim: var SimServer, playerIndex: int) =
   ## Moves one player back to its saved meeting home position.
@@ -1057,8 +1325,9 @@ proc tryCallButton*(sim: var SimServer, callerIndex: int) =
   let
     px = p.x + CollisionW div 2
     py = p.y + CollisionH div 2
-  if px >= ButtonX and px < ButtonX + ButtonW and
-      py >= ButtonY and py < ButtonY + ButtonH:
+    button = sim.gameMap.button
+  if px >= button.x and px < button.x + button.w and
+      py >= button.y and py < button.y + button.h:
     inc sim.players[callerIndex].buttonCallsUsed
     sim.startVote()
 
@@ -2129,8 +2398,11 @@ proc writeRenderStateTasks(
     cameraY = view.cameraY
   if player.role != Crewmate:
     return
-  for taskIndex in 0 ..< min(sim.tasks.len, RenderStateTaskSlots):
-    if not player.hasTask(taskIndex):
+  var slotIndex = 0
+  for taskIndex in player.assignedTasks:
+    if slotIndex >= RenderStateTaskSlots:
+      break
+    if taskIndex < 0 or taskIndex >= sim.tasks.len:
       continue
     let
       task = sim.tasks[taskIndex]
@@ -2149,7 +2421,7 @@ proc writeRenderStateTasks(
       iconOnScreen =
         iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
         iconSx < ScreenWidth and iconSy < ScreenHeight
-      base = RenderStateTaskOffset + taskIndex * RenderStateTaskFeatures
+      base = RenderStateTaskOffset + slotIndex * RenderStateTaskFeatures
     var flags = RenderTaskAssigned
     if completed:
       flags = flags or RenderTaskCompleted
@@ -2199,6 +2471,7 @@ proc writeRenderStateTasks(
         output[base + 5] = uint8(int(ex))
         output[base + 6] = uint8(int(ey))
     output[base + 3] = flags
+    inc slotIndex
 
 proc writeRenderStateObservation*(
   sim: SimServer,
@@ -2412,7 +2685,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.rng = initRand(config.seed)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
-  result.asciiSprites = loadAsciiSprites("ascii.png")
+  result.asciiSprites = loadAsciiSprites(gameDir() / "ascii.png")
 
   let sheet = loadSpriteSheet()
   result.playerSprite = spriteFromImage(
@@ -2437,68 +2710,12 @@ proc initSimServer*(config: GameConfig): SimServer =
     sheet.subImage(SpriteSize * 7, 0, SpriteSize, SpriteSize)
   )
 
-  result.tasks = @[
-    TaskStation(name: "Empty Garbage", x: 554, y: 465, w: 16, h: 16),
-    TaskStation(name: "Upload Data From Communications", x: 667, y: 419, w: 16, h: 16),
-    TaskStation(name: "Fix Wires", x: 574, y: 269, w: 16, h: 16),
-    TaskStation(name: "Fix Wires", x: 444, y: 31, w: 16, h: 16),
-    TaskStation(name: "Fix Wires", x: 510, y: 322, w: 16, h: 16),
-    TaskStation(name: "Fix Wires", x: 392, y: 296, w: 16, h: 16),
-    TaskStation(name: "Fix Wires", x: 838, y: 222, w: 16, h: 16),
-    TaskStation(name: "Download Data", x: 352, y: 293, w: 16, h: 16),
-    TaskStation(name: "Calibrate Distributor", x: 428, y: 295, w: 16, h: 16),
-    TaskStation(name: "Submit Scan", x: 400, y: 234, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 372, y: 293, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 760, y: 95, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 868, y: 196, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 186, y: 328, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 202, y: 82, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 297, y: 206, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 146, y: 209, w: 16, h: 16),
-    TaskStation(name: "Start Reactor", x: 123, y: 244, w: 16, h: 16),
-    TaskStation(name: "Unlock Manifolds", x: 107, y: 186, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 764, y: 349, w: 16, h: 16),
-    TaskStation(name: "Prime Shields", x: 703, y: 419, w: 16, h: 16),
-    TaskStation(name: "Divert Power", x: 715, y: 196, w: 16, h: 16),
-    TaskStation(name: "Clear Asteroids", x: 731, y: 95, w: 16, h: 16),
-    TaskStation(name: "Inspect Sample", x: 416, y: 222, w: 16, h: 16),
-    TaskStation(name: "Upload Data", x: 597, y: 267, w: 16, h: 16),
-    TaskStation(name: "Align Engine Output", x: 162, y: 398, w: 16, h: 16),
-    TaskStation(name: "Align Engine Output", x: 162, y: 156, w: 16, h: 16),
-    TaskStation(name: "Swipe Card", x: 670, y: 306, w: 16, h: 16),
-    TaskStation(name: "Download Data", x: 612, y: 39, w: 16, h: 16),
-    TaskStation(name: "Chart Course", x: 896, y: 225, w: 16, h: 16),
-    TaskStation(name: "Stabilize Steering", x: 888, y: 250, w: 16, h: 16),
-    TaskStation(name: "Download Data", x: 888, y: 196, w: 16, h: 16),
-    TaskStation(name: "Download Data", x: 626, y: 432, w: 16, h: 16),
-    TaskStation(name: "Fuel Engines", x: 486, y: 419, w: 16, h: 16),
-    TaskStation(name: "Fuel Engines", x: 186, y: 393, w: 16, h: 16),
-    TaskStation(name: "Fuel Engines", x: 186, y: 151, w: 16, h: 16),
-    TaskStation(name: "Clean O2 Filter", x: 667, y: 197, w: 16, h: 16),
-    TaskStation(name: "Download Data", x: 723, y: 63, w: 16, h: 16),
-    TaskStation(name: "Empty Garbage", x: 630, y: 60, w: 16, h: 16),
-    TaskStation(name: "Empty Garbage", x: 651, y: 212, w: 16, h: 16),
-  ]
+  result.gameMap = loadAmongMap(config.mapPath)
+  result.tasks = result.gameMap.tasks
+  result.vents = result.gameMap.vents
+  result.rooms = result.gameMap.rooms
 
-  result.vents = @[
-    Vent(x: 600, y: 334, w: 12, h: 10, group: 'A', groupIndex: 1),
-    Vent(x: 736, y: 264, w: 12, h: 10, group: 'A', groupIndex: 2),
-    Vent(x: 634, y: 142, w: 12, h: 10, group: 'A', groupIndex: 3),
-    Vent(x: 724, y: 70, w: 12, h: 10, group: 'B', groupIndex: 1),
-    Vent(x: 874, y: 214, w: 12, h: 10, group: 'B', groupIndex: 2),
-    Vent(x: 740, y: 422, w: 12, h: 10, group: 'C', groupIndex: 1),
-    Vent(x: 874, y: 262, w: 12, h: 10, group: 'C', groupIndex: 2),
-    Vent(x: 336, y: 220, w: 12, h: 10, group: 'D', groupIndex: 1),
-    Vent(x: 352, y: 298, w: 12, h: 10, group: 'D', groupIndex: 2),
-    Vent(x: 296, y: 274, w: 12, h: 10, group: 'D', groupIndex: 3),
-    Vent(x: 88, y: 120, w: 12, h: 10, group: 'E', groupIndex: 1),
-    Vent(x: 132, y: 272, w: 12, h: 10, group: 'E', groupIndex: 2),
-    Vent(x: 242, y: 408, w: 12, h: 10, group: 'E', groupIndex: 3),
-    Vent(x: 110, y: 196, w: 12, h: 10, group: 'F', groupIndex: 1),
-    Vent(x: 242, y: 84, w: 12, h: 10, group: 'F', groupIndex: 2),
-  ]
-
-  let (mapImage, walkImage, wallImage) = loadSkeld2Layers()
+  let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
