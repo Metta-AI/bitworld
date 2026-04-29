@@ -2081,12 +2081,6 @@ proc renderStateKillIconByte(sim: SimServer, playerIndex: int): uint8 =
     return 0'u8
   if player.killCooldown > 0: 1'u8 else: 255'u8
 
-proc renderStateQuantizeByteToBar(value: uint8, barWidth: int): uint8 =
-  if value == 0'u8 or barWidth <= 0:
-    return 0'u8
-  let filled = clamp(int(value) * barWidth div 255, 0, barWidth)
-  uint8(filled * 255 div barWidth)
-
 proc writeRenderStateHeader(
   sim: SimServer,
   playerIndex: int,
@@ -2518,12 +2512,38 @@ proc applyPixelRenderStateContract(
 ) =
   ## Keep writeRenderState* as raw render-source helpers, then clamp the final
   ## observation to information available in the rendered pixel frame.
+  let killIcon = sim.renderStateKillIconByte(playerIndex)
+  output[1] = 0'u8 # self join index
+  output[2] = 0'u8 # player count
+  if sim.phase notin {Playing, RoleReveal, GameOver}:
+    output[4] = 0'u8 # role only appears in play affordances/reveal/end screens
+  if sim.phase != Playing:
+    output[5] = 0'u8 # non-playing screens use UI slots, not world position
+    output[6] = 0'u8
+  output[7] = 0'u8 # exact velocity x
+  output[8] = 0'u8 # exact velocity y
+  output[9] = 0'u8 # exact kill cooldown
+  output[10] = 0'u8 # exact task progress
+  output[11] = 0'u8 # active task id
+  output[12] = 0'u8 # button calls used
   output[15] = 0'u8 # tick modulo
   output[19] = 0'u8 # ejected player index
   output[20] = if sim.phase == GameOver: output[20] else: 0'u8
   output[21] = 0'u8 # time-limit cause
   if sim.phase != Playing:
     output[13] = 0'u8
+
+  for slot in 0 ..< RenderStatePlayerSlots:
+    let base = RenderStatePlayerOffset + slot * RenderStatePlayerFeatures
+    let roleFlagVisible =
+      sim.phase in {RoleReveal, GameOver} or
+      (sim.phase == Playing and slot == playerIndex and killIcon != 0'u8)
+    if not roleFlagVisible:
+      output[base + 4] = output[base + 4] and (0xFF'u8 xor RenderPlayerRoleImposter)
+    output[base + 5] = 0'u8
+    output[base + 6] = 0'u8
+    if sim.phase != Voting:
+      output[base + 7] = 0'u8
 
   if sim.phase == Voting:
     output[18] = sim.renderStateVoteTimerByte()
@@ -2532,15 +2552,8 @@ proc applyPixelRenderStateContract(
   if sim.phase != Playing:
     return
 
-  output[1] = 0'u8 # self join index
-  output[2] = 0'u8 # player count
-  output[4] = if sim.renderStateKillIconByte(playerIndex) != 0'u8: output[4] else: 0'u8
-  output[7] = 0'u8 # exact velocity x
-  output[8] = 0'u8 # exact velocity y
-  output[9] = sim.renderStateKillIconByte(playerIndex)
-  output[10] = 0'u8 # exact task progress
-  output[11] = 0'u8 # active task id
-  output[12] = 0'u8 # button calls used
+  output[4] = if killIcon != 0'u8: output[4] else: 0'u8
+  output[9] = killIcon
 
   let gridStep = ScreenWidth div RenderStateGridSize
   for gy in 0 ..< RenderStateGridSize:
@@ -2551,15 +2564,19 @@ proc applyPixelRenderStateContract(
         index = RenderStateGridOffset + gy * RenderStateGridSize + gx
       output[index] = sim.fb.indices[sy * ScreenWidth + sx] and 0x0F
 
-  for slot in 0 ..< RenderStatePlayerSlots:
-    let base = RenderStatePlayerOffset + slot * RenderStatePlayerFeatures
-    output[base + 5] = 0'u8
-    output[base + 6] = 0'u8
-    output[base + 7] = 0'u8
   if playerIndex >= 0 and playerIndex < RenderStatePlayerSlots:
     let selfBase = RenderStatePlayerOffset + playerIndex * RenderStatePlayerFeatures
-    output[selfBase + 7] = output[9]
+    output[selfBase + 7] = killIcon
 
+  let taskProgressByte =
+    if playerIndex >= 0 and playerIndex < sim.players.len:
+      renderStateProgressByte(
+        sim.players[playerIndex].taskProgress,
+        sim.config.taskCompleteTicks,
+        TaskBarWidth
+      )
+    else:
+      0'u8
   for slot in 0 ..< RenderStateTaskSlots:
     let
       base = RenderStateTaskOffset + slot * RenderStateTaskFeatures
@@ -2576,7 +2593,7 @@ proc applyPixelRenderStateContract(
     output[base + 4] =
       if (pixelFlags and RenderTaskActive) != 0'u8 and
           (pixelFlags and RenderTaskIconVisible) != 0'u8:
-        renderStateQuantizeByteToBar(output[base + 4], TaskBarWidth)
+        taskProgressByte
       else:
         0'u8
     output[base + 7] = 0'u8
