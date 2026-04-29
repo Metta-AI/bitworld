@@ -31,6 +31,7 @@ proc testMaxTicksStartsAtGameStart() =
   ## Tests that maxTicks starts after lobby and times out as an imposter win.
   var config = defaultGameConfig()
   config.minPlayers = 3
+  config.imposterCount = 1
   config.maxTicks = 2
   config.tasksPerPlayer = 1
 

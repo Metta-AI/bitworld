@@ -38,6 +38,9 @@ from bitworld_pufferlib import (
     with_server_players,
 )
 
+# Default role reveal lasts 120 native ticks; this reaches one playing tick.
+AMONG_THEM_PLAY_ACTION_REPEAT = 121
+
 
 class ProtocolTest(unittest.TestCase):
     def test_unpack_frame(self) -> None:
@@ -106,12 +109,13 @@ class BitWorldSmokeTest(unittest.TestCase):
     def test_env_reset_and_autoreset_across_envs(self) -> None:
         for env_name in sorted(ENV_SPECS):
             with self.subTest(env=env_name):
+                is_among_them = env_name == "among_them"
                 env = BitWorldVecEnv(
                     env_name,
                     num_envs=1,
-                    max_episode_steps=4,
+                    max_episode_steps=1 if is_among_them else 4,
                     frame_stack=4,
-                    action_repeat=1,
+                    action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT if is_among_them else 1,
                     base_seed=1234,
                 )
                 expected_agents = ENV_SPECS[env_name].server_players if env_name == "among_them" else 1
@@ -167,7 +171,14 @@ class BitWorldSmokeTest(unittest.TestCase):
         self.assertNotEqual(episodes, [worker.episode for worker in env.workers])
 
     def test_among_them_direct_env_controls_all_players(self) -> None:
-        env = BitWorldVecEnv("among_them", num_envs=1, max_episode_steps=2, frame_stack=2, action_repeat=1, base_seed=99)
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=1,
+            frame_stack=2,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
+            base_seed=99,
+        )
         self.addCleanup(env.close)
 
         obs = env.reset()
@@ -218,7 +229,7 @@ class BitWorldSmokeTest(unittest.TestCase):
             num_envs=1,
             max_episode_steps=8,
             frame_stack=1,
-            action_repeat=121,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
             base_seed=101,
             observation_mode="state",
         )
@@ -227,7 +238,7 @@ class BitWorldSmokeTest(unittest.TestCase):
             num_envs=1,
             max_episode_steps=8,
             frame_stack=1,
-            action_repeat=121,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
             base_seed=101,
             observation_mode="pixels",
         )
@@ -261,7 +272,7 @@ class BitWorldSmokeTest(unittest.TestCase):
             num_envs=1,
             max_episode_steps=8,
             frame_stack=1,
-            action_repeat=121,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
             base_seed=102,
             observation_mode="state",
         )
