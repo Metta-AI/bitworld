@@ -202,6 +202,39 @@ Suggested mouse button control codes:
 | `0x02` | Right mouse button |
 | `0x03` | Middle mouse button |
 
+### Player Input
+
+Sends the current held player button state. This packet is intended for
+sprite-based player endpoints such as `/player2`, where the server renders the
+game through this protocol but still accepts the same controls as the original
+`/player` endpoint.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x84` |
+| Buttons | `u8` | Current held player button bitmask |
+
+Button bit values match the original player protocol:
+
+| Bit | Value | Meaning |
+| ---: | ---: | --- |
+| `0` | `0x01` | D-pad up |
+| `1` | `0x02` | D-pad down |
+| `2` | `0x04` | D-pad left |
+| `3` | `0x08` | D-pad right |
+| `4` | `0x10` | Select |
+| `5` | `0x20` | A |
+| `6` | `0x40` | B |
+
+The client should send this packet whenever the held button bitmask changes.
+The server should treat omitted bits as released. Bit `7` is reserved and must
+be sent as `0`.
+
+Clients that support typing should keep keyboard gameplay input separate from
+text input. While the client is in text entry mode, printable keys should update
+the local text buffer instead of changing the player input bitmask. When the
+text is submitted, the client should send the existing Input Text packet.
+
 ## Message Type Summary
 
 | Value | Direction | Message |
@@ -215,8 +248,9 @@ Suggested mouse button control codes:
 | `0x81` | Client to server | Input text |
 | `0x82` | Client to server | Mouse position |
 | `0x83` | Client to server | Mouse button |
+| `0x84` | Client to server | Player input |
 
-Message values `0x00`, `0x07 .. 0x7f`, and `0x84 .. 0xff` are reserved.
+Message values `0x00`, `0x07 .. 0x7f`, and `0x85 .. 0xff` are reserved.
 
 ## Rendering Model
 
