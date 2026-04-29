@@ -98,7 +98,8 @@ proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
 proc addSprite(
   packet: var seq[uint8],
   spriteId, width, height: int,
-  pixels: openArray[uint8]
+  pixels: openArray[uint8],
+  label: string = ""
 ) =
   ## Appends a global protocol sprite definition message.
   packet.addU8(0x01)
@@ -107,6 +108,9 @@ proc addSprite(
   packet.addU16(height)
   for pixel in pixels:
     packet.addU8(pixel)
+  packet.addU16(label.len)
+  for ch in label:
+    packet.addU8(uint8(ord(ch)))
 
 proc addObject(
   packet: var seq[uint8],

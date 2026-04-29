@@ -115,6 +115,15 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   color:#7f8ba0;
   font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
+.debugSpriteMeta{
+  min-width:0;
+  flex:1 1 auto;
+}
+.debugSpriteText{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 </style>
 </head>
 <body>
@@ -143,6 +152,7 @@ const debugPanel=document.getElementById("debugPanel");
 const debugDown=document.getElementById("debugDown");
 const debugUp=document.getElementById("debugUp");
 const debugSprites=document.getElementById("debugSprites");
+const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
 function defaultAddress(path){
   const protocol=location.protocol==="https:"?"wss:":"ws:";
@@ -239,6 +249,42 @@ function previewSprite(canvas,sprite){
   previewCtx.putImageData(image,0,0);
 }
 
+function debugSpriteColor(id){
+  const hue=(id*137.508)%360;
+  return "hsl("+hue+",90%,55%)";
+}
+
+function drawDebugSpriteBounds(layer,pos,object,sprite){
+  const
+    scaleX=pos.w/layer.width,
+    scaleY=pos.h/layer.height,
+    x=pos.x+object.x*scaleX,
+    y=pos.y+object.y*scaleY,
+    w=sprite.width*scaleX,
+    h=sprite.height*scaleY,
+    color=debugSpriteColor(object.spriteId),
+    label=sprite.label||("sprite "+object.spriteId),
+    bx=Math.round(x)+.5,
+    by=Math.round(y)+.5,
+    bw=Math.max(1,Math.round(w)),
+    bh=Math.max(1,Math.round(h));
+  ctx.save();
+  ctx.lineWidth=1;
+  ctx.strokeStyle=color;
+  ctx.strokeRect(bx,by,bw,bh);
+  ctx.font="8px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+  ctx.textBaseline="top";
+  const
+    textWidth=Math.ceil(ctx.measureText(label).width),
+    labelX=Math.max(0,Math.min(innerWidth-textWidth-4,Math.round(x))),
+    labelY=Math.max(0,Math.min(innerHeight-10,Math.round(y)-9));
+  ctx.fillStyle=color;
+  ctx.fillRect(labelX,labelY,textWidth+4,9);
+  ctx.fillStyle="#000";
+  ctx.fillText(label,labelX+2,labelY+1);
+  ctx.restore();
+}
+
 function refreshDebugSprites(){
   debugSpriteTimer=0;
   if(!debugOpen||!debugSpritesDirty)return;
@@ -250,14 +296,20 @@ function refreshDebugSprites(){
     const row=document.createElement("div");
     const label=document.createElement("div");
     const preview=document.createElement("canvas");
+    const meta=document.createElement("div");
+    const text=document.createElement("div");
     const size=document.createElement("div");
     row.className="debugSprite";
     label.className="debugSpriteId";
+    meta.className="debugSpriteMeta";
+    text.className="debugSpriteText";
     size.className="debugSpriteSize";
     label.textContent="#"+id;
+    text.textContent=sprite.label||"(no label)";
     size.textContent=sprite.width+"x"+sprite.height;
     previewSprite(preview,sprite);
-    row.append(label,preview,size);
+    meta.append(text,size);
+    row.append(label,preview,meta);
     debugSprites.append(row);
   }
 }
@@ -276,6 +328,7 @@ function toggleDebugPanel(){
     debugSpritesDirty=true;
     refreshDebugSprites();
   }
+  draw();
 }
 
 function sendPacket(bytes){
@@ -605,6 +658,12 @@ function draw(){
       ctx.lineWidth=1;
       ctx.strokeRect(x,y,Math.round(pos.w)-1,Math.round(pos.h)-1);
     }
+    if(debugOpen){
+      for(const object of ordered){
+        const sprite=sprites.get(object.spriteId);
+        if(sprite)drawDebugSpriteBounds(layer,pos,object,sprite);
+      }
+    }
   }
   setStatus("");
 }
@@ -619,12 +678,18 @@ function parse(bytes){
       const height=readU16(bytes,offset+4);
       offset+=6;
       const size=width*height*4;
+      const pixels=bytes.slice(offset,offset+size);
+      offset+=size;
+      const labelLength=readU16(bytes,offset);
+      offset+=2;
+      const label=textDecoder.decode(bytes.slice(offset,offset+labelLength));
+      offset+=labelLength;
       sprites.set(id,{
         width,
         height,
-        pixels:bytes.slice(offset,offset+size)
+        pixels,
+        label
       });
-      offset+=size;
       scheduleDebugSprites();
     }else if(type===0x02){
       const id=readU16(bytes,offset);

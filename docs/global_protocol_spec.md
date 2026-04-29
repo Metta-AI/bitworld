@@ -41,13 +41,19 @@ Defines or replaces a sprite.
 | Width | `u16` | Sprite width in pixels |
 | Height | `u16` | Sprite height in pixels |
 | Pixels | `u8[]` | `Width * Height * 4` bytes |
+| Label length | `u16` | Number of UTF-8 label bytes |
+| Label | `u8[]` | Optional human-readable sprite label |
 
 Each pixel is four bytes in RGBA order: red, green, blue, alpha. Color channels
 are unpremultiplied `0 .. 255` values. An alpha value of `0` is fully
 transparent. An alpha value of `255` is fully opaque.
 
 If a sprite id already exists, the client must replace the old sprite data with
-the new definition. A sprite with width `0` or height `0` is invalid.
+the new definition. The label replaces the old label for that sprite id. A
+label length of `0` means the sprite has no label. Labels are for tooling,
+debugging, and human inspection. They do not affect rendering.
+
+A sprite with width `0` or height `0` is invalid.
 
 ### Define Object
 
@@ -260,7 +266,7 @@ The client keeps three tables:
 | State | Key | Value |
 | --- | --- | --- |
 | Layers | `u8 layer id` | Type, flags, viewport width, and viewport height |
-| Sprites | `u16 sprite id` | Width, height, and RGBA pixel buffer |
+| Sprites | `u16 sprite id` | Width, height, label, and RGBA pixel buffer |
 | Objects | `u16 object id` | X, y, z, layer, and sprite id |
 
 The client draws all visible layers. Within a layer, objects use their current
@@ -290,6 +296,7 @@ A receiver should close the connection on malformed messages, including:
 - Unknown message types.
 - Truncated messages.
 - Sprite pixel payloads that do not match `Width * Height * 4`.
+- Sprite labels whose byte count does not match `Label length`.
 - Sprite dimensions whose product cannot fit in local memory.
 - Objects that reference unknown layers.
 - Viewports with width `0` or height `0`.
@@ -300,13 +307,14 @@ Unknown object ids in delete messages are not errors.
 
 ## Example
 
-This byte sequence defines sprite `7` as a `2x2` sprite with four RGBA pixels:
-opaque red, opaque green, opaque blue, and transparent black.
+This byte sequence defines sprite `7` as a `2x2` sprite labeled `test`, with
+four RGBA pixels: opaque red, opaque green, opaque blue, and transparent black.
 
 ```text
 01 07 00 02 00 02 00
 ff 00 00 ff 00 ff 00 ff
 00 00 ff ff 00 00 00 00
+04 00 74 65 73 74
 ```
 
 Decoded fields:
@@ -321,6 +329,8 @@ Decoded fields:
 | `00 ff 00 ff` | Pixel 1, opaque green |
 | `00 00 ff ff` | Pixel 2, opaque blue |
 | `00 00 00 00` | Pixel 3, transparent |
+| `04 00` | Label length `4` |
+| `74 65 73 74` | Label `test` |
 
 This byte sequence places object `3` at `x = 10`, `y = 20`, `z = 0`, layer
 `0`, using sprite `7`:
