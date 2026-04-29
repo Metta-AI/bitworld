@@ -84,7 +84,9 @@ proc ensurePlayerFile(
 
 proc exePathFor(rootDir, sourceRelative: string): string =
   ## Returns the compiled executable path for one source file.
-  absolutePath(rootDir / sourceRelative.changeFileExt(ExeExts[0]))
+  ## Mirrors `--outdir:./out` from config.nims.
+  let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
+  absolutePath(rootDir / "out" / exeName)
 
 proc stopManagedProcess(processRef: var Process, label: string) =
   ## Stops and closes one managed process.

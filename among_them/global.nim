@@ -788,8 +788,12 @@ proc interstitialTextItems(
       result.addTextItem(52, 64, ["DIED"])
   of GameOver:
     let title =
-      if sim.winner == Crewmate: "CREW WINS"
-      else: "IMPS WIN"
+      if sim.timeLimitReached:
+        "DRAW"
+      elif sim.winner == Crewmate:
+        "CREW WINS"
+      else:
+        "IMPS WIN"
     let
       titleW = title.len * 7
       titleX = (ScreenWidth - titleW) div 2
