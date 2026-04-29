@@ -1749,7 +1749,7 @@ class Bot:
     """Build the chat line for a body sighting.
 
     Branches by role:
-      - IMPOSTER: most-recently-seen suspect (a later change replaces this)
+      - IMPOSTER: random non-imposter color (deflection); always accuses
       - CREWMATE: only accuses if we have firsthand evidence (witnessed kill
         or saw a player next to a body); otherwise stays neutral
     """
@@ -1761,10 +1761,34 @@ class Bot:
     return self._crewmate_body_message(base)
 
   def _imposter_body_message(self, base):
-    suspect = self._suspected_color()
-    if suspect is None:
-      return base
-    return f'{base} sus {suspect[0]}'
+    ci = self._random_innocent_color()
+    if ci >= 0 and ci < len(PLAYER_COLOR_NAMES):
+      return f'{base} sus {PLAYER_COLOR_NAMES[ci]}'
+    return base
+
+  def _random_innocent_color(self):
+    """Pick a random non-self, non-known-imposter color we've seen alive this game.
+
+    Used by the imposter to deflect blame. Prefers players we've actually seen
+    (last_seen_ticks > 0) so we don't accuse a color that isn't even in the game.
+    """
+    candidates = []
+    for i in range(PLAYER_COLOR_COUNT):
+      if i == self.self_color_index:
+        continue
+      if self._known_imposter_color(i):
+        continue
+      if self.last_seen_ticks[i] > 0:
+        candidates.append(i)
+    if not candidates:
+      # fall back to anything non-self/non-teammate
+      for i in range(PLAYER_COLOR_COUNT):
+        if i == self.self_color_index or self._known_imposter_color(i):
+          continue
+        candidates.append(i)
+    if not candidates:
+      return -1
+    return self.rng.choice(candidates)
 
   def _crewmate_body_message(self, base):
     suspect = self._evidence_based_suspect()
