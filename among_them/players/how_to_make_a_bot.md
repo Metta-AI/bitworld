@@ -24,8 +24,8 @@ momentum, and keep a careful task state model.
 Start a server:
 
 ```sh
-cd /Users/me/p/bitworld
-nim r among_them/among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":6,"voteTimerTicks":360}'
+cd /Users/me/p/bitworld/among_them
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":6,"voteTimerTicks":360}'
 ```
 
 Start one bot with the debug viewer:
@@ -35,12 +35,22 @@ cd /Users/me/p/bitworld/among_them/players
 nim r nottoodumb.nim --address:0.0.0.0 --port:2000 --gui --name:player1
 ```
 
+
 Start many bots:
 
 ```sh
 cd /Users/me/p/bitworld
-nim r tools/quick_player nottoodumb 8 --address:localhost --port:2000
+nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000
 ```
+
+View a player's perspective from the browser:
+
+Open `bitworld/clients/index.html?address=ws://localhost:2000/player` in your browser.
+
+View the global map from the browser:
+
+Open `bitworld/clients/global_client.html?address=ws://localhost:2000/player` in your browser.
+
 
 ## Protocol Basics
 
