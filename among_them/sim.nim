@@ -49,6 +49,7 @@ const
   MinPlayers* = 8
   ImposterCount* = 2
   VoteTimerTicks* = 600
+  MessageCooldownTicks* = 100
   GameOverTicks* = 360
   MaxTicks* = 10_000  ## 0 = no limit.
   MaxGames* = 0  ## 0 = no limit.
@@ -209,6 +210,7 @@ type
     minPlayers*: int
     imposterCount*: int
     voteTimerTicks*: int
+    messageCooldownTicks*: int
     gameOverTicks*: int
     maxTicks*: int
     maxGames*: int
@@ -234,6 +236,7 @@ type
     activeTask*: int
     ventCooldown*: int
     buttonCallsUsed*: int
+    lastChatTick*: int
     assignedTasks*: seq[int]
     reward*: int
 
@@ -805,6 +808,7 @@ proc defaultGameConfig*(): GameConfig =
     minPlayers: MinPlayers,
     imposterCount: ImposterCount,
     voteTimerTicks: VoteTimerTicks,
+    messageCooldownTicks: MessageCooldownTicks,
     gameOverTicks: GameOverTicks,
     maxTicks: MaxTicks,
     maxGames: MaxGames,
@@ -862,6 +866,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field roleRevealTicks must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
+  if config.messageCooldownTicks < 0:
+    raise newException(AmongThemError, "Config field messageCooldownTicks must be non-negative.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
       config.voteResultTicks < 0 or config.maxTicks < 0 or
       config.maxGames < 0:
@@ -896,6 +902,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("minPlayers", config.minPlayers)
   node.readConfigInt("imposterCount", config.imposterCount)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
+  node.readConfigInt("messageCooldownTicks", config.messageCooldownTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("maxTicks", config.maxTicks)
   node.readConfigInt("maxGameTicks", config.maxTicks)
@@ -930,6 +937,7 @@ proc configJson*(config: GameConfig): string =
     "minPlayers": config.minPlayers,
     "imposterCount": config.imposterCount,
     "voteTimerTicks": config.voteTimerTicks,
+    "messageCooldownTicks": config.messageCooldownTicks,
     "gameOverTicks": config.gameOverTicks,
     "maxTicks": config.maxTicks,
     "maxGameTicks": config.maxTicks,
@@ -990,6 +998,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.activeTask)
     result.mixHashInt(player.ventCooldown)
     result.mixHashInt(player.buttonCallsUsed)
+    result.mixHashInt(player.lastChatTick)
     result.mixHashInt(player.reward)
     result.mixHashInt(player.assignedTasks.len)
     for task in player.assignedTasks:
@@ -1096,6 +1105,7 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     joinOrder: order,
     address: address,
     color: PlayerColors[order mod PlayerColors.len],
+    lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
     activeTask: -1,
     reward:
       if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
@@ -1318,6 +1328,7 @@ proc startVote*(sim: var SimServer) =
   sim.voteState.voteTimer = sim.config.voteTimerTicks
   for i in 0 ..< n:
     sim.voteState.votes[i] = -1
+    sim.players[i].lastChatTick = sim.tickCount - sim.config.messageCooldownTicks
     var firstAlive = 0
     for j in 0 ..< n:
       if sim.players[j].alive:
@@ -1333,9 +1344,15 @@ proc addVotingChat*(sim: var SimServer, playerIndex: int, message: string) =
     return
   if not sim.players[playerIndex].alive:
     return
+  let cooldown = sim.config.messageCooldownTicks
+  if cooldown > 0:
+    let elapsed = sim.tickCount - sim.players[playerIndex].lastChatTick
+    if elapsed < cooldown:
+      return
   let text = cleanChatMessage(message)
   if text.len == 0:
     return
+  sim.players[playerIndex].lastChatTick = sim.tickCount
   while sim.chatMessages.len >= VoteChatVisibleMessages:
     sim.chatMessages.delete(0)
   sim.chatMessages.add ChatMessage(

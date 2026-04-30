@@ -10,6 +10,7 @@ when isMainModule:
     mapPath = ""
     saveReplayPath = ""
     loadReplayPath = ""
+    messageCooldown = -1
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -28,6 +29,8 @@ when isMainModule:
         saveReplayPath = val
       of "load-replay":
         loadReplayPath = val
+      of "message-cooldown":
+        messageCooldown = max(0, parseInt(val))
       else: discard
     else: discard
   var config = defaultGameConfig()
@@ -37,4 +40,6 @@ when isMainModule:
     config.update(configJson)
   if mapPath.len > 0:
     config.mapPath = mapPath
+  if messageCooldown >= 0:
+    config.messageCooldownTicks = messageCooldown
   runServerLoop(address, port, config, saveReplayPath, loadReplayPath)
