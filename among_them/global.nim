@@ -132,6 +132,7 @@ type
     objectId: int
     x, y, z: int
     color: uint8
+    struck: bool
     label: string
     lines: seq[string]
 
@@ -610,7 +611,8 @@ proc blitSmallText(
 proc buildSpriteProtocolTextSprite(
   game: SimServer,
   lines: openArray[string],
-  color: uint8
+  color: uint8,
+  struck = false
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a transparent multi-line text sprite.
   result.width = 1
@@ -637,6 +639,16 @@ proc buildSpriteProtocolTextSprite(
                 color
               )
       baseX += 7
+    if struck:
+      let lineY = baseY + 3
+      for x in 0 ..< line.len * 7:
+        result.pixels.putTextSpritePixel(
+          result.width,
+          result.height,
+          x,
+          lineY,
+          3'u8
+        )
 
 proc textLabel(lines: openArray[string]): string =
   ## Returns a debugger label for one rendered text sprite.
@@ -650,7 +662,8 @@ proc addTextItem(
   x, y: int,
   lines: openArray[string],
   label = "",
-  color = ProtocolTextColor
+  color = ProtocolTextColor,
+  struck = false
 ) =
   ## Adds one text sprite placement to an interstitial layout.
   let index = items.len
@@ -660,7 +673,8 @@ proc addTextItem(
     x: x,
     y: y,
     z: ProtocolTextZ,
-    color: color
+    color: color,
+    struck: struck
   )
   for line in lines:
     item.lines.add(line)
@@ -812,7 +826,7 @@ proc interstitialTextItems(
         textX = baseX + textOffsetX
         textY = startY + row * rowH + (rowH - 6) div 2
         roleText = if p.role == Imposter: "IMP" else: "CREW"
-      result.addTextItem(textX, textY, [roleText])
+      result.addTextItem(textX, textY, [roleText], struck = not p.alive)
 
 proc addProtocolTextSprites(
   sim: SimServer,
@@ -825,7 +839,11 @@ proc addProtocolTextSprites(
   ## Adds separate text sprites for current interstitial text.
   let items = sim.interstitialTextItems(playerIndex)
   for item in items:
-    let text = sim.buildSpriteProtocolTextSprite(item.lines, item.color)
+    let text = sim.buildSpriteProtocolTextSprite(
+      item.lines,
+      item.color,
+      item.struck
+    )
     currentIds.add(item.objectId)
     packet.addSpriteChanged(
       spriteDefs,
