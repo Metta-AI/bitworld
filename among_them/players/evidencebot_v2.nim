@@ -259,7 +259,7 @@ type
     colorIndex: int
     alive: bool
 
-  Bot = object
+  Bot* = object
     sim: SimServer
     playerSprite: Sprite
     bodySprite: Sprite
@@ -3919,7 +3919,7 @@ proc decideImposterMask(bot: var Bot): uint8 =
   bot.goalIndex = goal.index
   bot.navigateToPoint(goal.x, goal.y, "fake target " & goal.name)
 
-proc decideNextMask(bot: var Bot): uint8 =
+proc decideNextMask*(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   let centerStart = getMonoTime()
   bot.updateLocation()
@@ -4062,7 +4062,7 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
-proc initBot(mapPath = ""): Bot =
+proc initBot*(mapPath = ""): Bot =
   ## Builds a bot and loads all map and sprite data.
   setCurrentDir(gameDir())
   var config = defaultGameConfig()
