@@ -28,9 +28,11 @@ proc testMaxTicksConfigJson() =
     "maxTicks should round-trip through config JSON"
 
 proc testMaxTicksStartsAtGameStart() =
-  ## Tests that maxTicks starts after lobby and times out as an imposter win.
+  ## Tests that maxTicks starts after lobby/reveal and times out as a draw.
   var config = defaultGameConfig()
   config.minPlayers = 3
+  config.imposterCount = 1
+  config.roleRevealTicks = 1
   config.maxTicks = 2
   config.tasksPerPlayer = 1
 
@@ -41,9 +43,15 @@ proc testMaxTicksStartsAtGameStart() =
 
   var inputs = newSeq[InputState](sim.players.len)
   sim.step(inputs, inputs)
-  doAssert sim.phase == Playing, "game should start once minPlayers join"
+  doAssert sim.phase == RoleReveal,
+    "game should enter role reveal once minPlayers join"
   doAssert sim.gameTicksElapsed() == 0,
-    "max tick budget should start when play starts, not in lobby"
+    "max tick budget should not count lobby or role reveal"
+
+  sim.step(inputs, inputs)
+  doAssert sim.phase == Playing, "game should enter play after role reveal"
+  doAssert sim.gameTicksElapsed() == 0,
+    "max tick budget should start when play starts"
 
   sim.step(inputs, inputs)
   doAssert sim.phase == Playing, "game should still be active before maxTicks"
@@ -51,16 +59,11 @@ proc testMaxTicksStartsAtGameStart() =
 
   sim.step(inputs, inputs)
   doAssert sim.phase == GameOver, "game should end once maxTicks is reached"
-  doAssert sim.winner == Imposter, "time budget should default to imposter win"
-  doAssert sim.timeLimitReached, "time budget win should be marked as truncated"
+  doAssert sim.timeLimitReached, "time budget result should be marked as truncated"
 
-  var imposterRewards = 0
   for player in sim.players:
-    if player.role == Imposter:
-      inc imposterRewards
-      doAssert player.reward == WinReward,
-        "imposter should receive win reward on time budget"
-  doAssert imposterRewards == 1, "test setup should have one imposter"
+    doAssert player.reward == 0,
+      "time budget draw should not award win reward"
 
 testMaxTicksConfigJson()
 testMaxTicksStartsAtGameStart()
