@@ -122,7 +122,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		(brain.lastVentF == 0 || a.frames-brain.lastVentF >= ventCooldown) {
 		if idx, ok := nearestVentInRange(player); ok {
 			a.nav.Clear()
-			a.radarGoal = false
+			a.goalStation = -1
 			a.bodyGoal = false
 			brain.fakeIdx = -1
 			brain.lastVentF = a.frames
@@ -153,7 +153,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 				if a.nav.SetGoal(goal) {
 					brain.fakeIdx = bestIdx
 					brain.fakeChosen = a.frames
-					a.radarGoal = false
+					a.goalStation = -1
 					a.bodyGoal = false
 					log.Printf("imposter: flee body %v to %s @ %v (frame %d)",
 						body, TaskStations[bestIdx].Name, goal, a.frames)
@@ -230,7 +230,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 			}
 			if a.nav.Goal() != tgt {
 				a.nav.SetGoal(tgt)
-				a.radarGoal = false
+				a.goalStation = -1
 				a.bodyGoal = false
 				log.Printf("imposter: chase color=%d to %v (player %v, dist²=%d)",
 					target.Color, tgt, player, distSq)
@@ -250,7 +250,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		if brain.chaseSeenF != 0 && a.frames-brain.chaseSeenF <= imposterChaseStickyFrames {
 			if a.nav.Goal() != brain.chaseSeen {
 				a.nav.SetGoal(brain.chaseSeen)
-				a.radarGoal = false
+				a.goalStation = -1
 				a.bodyGoal = false
 			}
 			a.logBranch("imp-chase")
@@ -296,7 +296,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		brain.fakeChosen = a.frames
 		goal := TaskStations[brain.fakeIdx].Center
 		a.nav.SetGoal(goal)
-		a.radarGoal = false
+		a.goalStation = -1
 		a.bodyGoal = false
 		log.Printf("imposter: fake target %s @ %v (frame %d)",
 			TaskStations[brain.fakeIdx].Name, goal, a.frames)

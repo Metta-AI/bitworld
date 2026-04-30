@@ -23,7 +23,7 @@ type Agent struct {
 	tracker *Tracker
 	walks   *WalkMask
 	nav     *Navigator
-	memory  TaskMemory
+	memory  *TaskMemory
 	status  StatusDetector
 
 	// per-frame working buffer for pixels; callers write into Step's
@@ -41,15 +41,23 @@ type Agent struct {
 	frames       uint64
 	lastPosLog   uint64
 	lastBranch   string // most recent PhaseActive branch; logged on change
-	arrivedAt    uint64 // frame at which navigator first reported "arrived"; 0 means not currently arrived
+	arrivedAt       uint64 // frame at which navigator first reported "arrived"; 0 means not currently arrived
+	arrivedLoggedAt Point  // last goal we emitted an "arrived at" log for; used to debounce against holder flicker
+
+	// After A* reports Unreachable we back off from station-nav for a few
+	// frames so we don't churn through every station's state. The suspend
+	// lifts when the player moves meaningfully or the counter expires.
+	navSuspendLeft  int
+	navSuspendPos   Point
 	lastPlayer   Point  // player world pos last seen while nav-stuck tracking
 	lastPlayerF  uint64 // frame when lastPlayer was last updated
 	stuckPerturb uint8  // non-zero while we're force-nudging through a pinned corner
 	stuckLeft    int    // frames remaining of the current stuck perturb
 
-	radarGoal      bool    // true when nav's current goal came from radar (guess)
-	radarBlack     []Point // radar-chosen targets A* couldn't reach from here
-	radarBlackFrom Point   // player pos when radarBlack was last populated
+	// goalStation is the TaskStations index of the current nav goal when
+	// it came from TaskMemory.BestGoal. -1 means the current goal is not a
+	// task station (body, imposter target, etc.) or there's no goal.
+	goalStation int
 
 	pendingChat string // drained by TakePendingChat(); emitted on websocket only
 	bodyGoal    bool   // true when nav's current goal is a body (highest priority)
@@ -82,9 +90,11 @@ func NewAgent() *Agent {
 	}
 	walks := &WalkMask{Bits: walksData}
 	a := &Agent{
-		tracker: NewTracker(&Map{Pixels: skeldMapData}),
-		walks:   walks,
-		nav:     NewNavigator(walks),
+		tracker:     NewTracker(&Map{Pixels: skeldMapData}),
+		walks:       walks,
+		nav:         NewNavigator(walks),
+		memory:      NewTaskMemory(),
+		goalStation: -1,
 	}
 	// 255 = "self color unknown". The zero value 0 is a real palette index
 	// (red), which would erroneously exclude red crewmates from suspect
@@ -95,12 +105,18 @@ func NewAgent() *Agent {
 }
 
 const (
-	agentRadarBlackRadius    = 24  // world px; any candidate within this of a blacklisted point is rejected
-	agentRadarBlackExpirePx  = 120 // see main.go comment below; adjacent stations are ~48px apart on skeld
-	agentNavArrivedTimeout   = 120 // ~5 s @ 24 fps -- give up on bogus task targets
-	agentStuckFrames         = 12  // camera-based stuck threshold
-	agentStuckBurst          = 8   // how long to force the perpendicular nudge
-	agentIconSnapDist        = 24  // snap noisy icon coords within this many world-pixels to the nearest TaskStation
+	agentNavArrivedTimeout = 120 // ~5 s @ 24 fps -- give up on bogus task targets
+	agentStuckFrames       = 12  // camera-based stuck threshold
+	agentStuckBurst        = 8   // how long to force the perpendicular nudge
+	agentIconSnapDist      = 24  // snap noisy icon coords within this many world-pixels to the nearest TaskStation
+
+	// After A* reports Unreachable we suspend station goal selection for
+	// this many frames, or until the player moves agentNavSuspendClearPx
+	// or more world-pixels away from where the failure occurred. Without
+	// this, a stuck player at a non-walkable cell churns BestGoal every
+	// frame and demotes every station in turn.
+	agentNavSuspendFrames  = 24
+	agentNavSuspendClearPx = 16
 
 	// Report range = sim.nim:757 reportRange=20 default; check distSq ≤ 400
 	// against the body collision center at (body.x+CollisionW/2, body.y+CollisionH/2)
@@ -150,7 +166,8 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 		a.aliveOthers = -1
 		a.nav.Clear()
 		a.bodyGoal = false
-		a.radarGoal = false
+		a.goalStation = -1
+		a.memory.Reset()
 	}
 	if !a.havePhase || phase != a.currentPhase {
 		log.Printf("phase: %s (frame %d)", phase, a.frames)
@@ -228,57 +245,6 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 	return mask
 }
 
-func (a *Agent) radarReject(p Point) bool {
-	for _, q := range a.radarBlack {
-		if absInt(p.X-q.X) <= agentRadarBlackRadius && absInt(p.Y-q.Y) <= agentRadarBlackRadius {
-			return true
-		}
-	}
-	return false
-}
-
-// radarStationGoal picks the best known TaskStation that lies along
-// one of the radar arrows' bearings and isn't in the radar blacklist,
-// memorized set, or completed set. Returns (center, true) on success.
-func (a *Agent) radarStationGoal(arrows []RadarArrow, cam Camera, player Point) (Point, bool) {
-	stationReject := func(i int) bool {
-		c := TaskStations[i].Center
-		if a.radarReject(c) {
-			return true
-		}
-		// Also skip stations in memory (we already have a direct goal
-		// for them) and in the memory blacklist (previously failed).
-		for _, q := range a.memory.Known {
-			if manhattan(c, q) <= taskMemoryMergeRadius {
-				return true
-			}
-		}
-		for _, q := range a.memory.Blacklisted {
-			if manhattan(c, q) <= taskMemoryMergeRadius {
-				return true
-			}
-		}
-		return false
-	}
-	best := -1
-	bestDist := -1
-	for _, arrow := range arrows {
-		bearing := Point{cam.X + arrow.ScreenX, cam.Y + arrow.ScreenY}
-		idx := NearestStationAlongBearing(player, bearing, stationReject)
-		if idx < 0 {
-			continue
-		}
-		d := manhattan(TaskStations[idx].Center, player)
-		if best < 0 || d < bestDist {
-			best, bestDist = idx, d
-		}
-	}
-	if best < 0 {
-		return Point{}, false
-	}
-	return TaskStations[best].Center, true
-}
-
 // TakePendingChat drains any pending chat message. Returns ("", false) when
 // nothing is queued. Used by the websocket loop; stdio callers ignore it
 // (Python protocol is one-byte-per-frame mask-only).
@@ -309,6 +275,16 @@ func (a *Agent) nearestBody(pixels []uint8, cam Camera, player Point) (Point, ui
 	return BodyWorld(bodies[bestI], cam), bodies[bestI].Color, true
 }
 
+func (a *Agent) countKnown() int {
+	n := 0
+	for i := range TaskStations {
+		if a.memory.State(i) == TaskKnown {
+			n++
+		}
+	}
+	return n
+}
+
 func (a *Agent) logBranch(name string) {
 	if name != a.lastBranch {
 		log.Printf("branch: %s (frame %d)", name, a.frames)
@@ -324,22 +300,16 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 		a.lastPosLog = a.frames
 	}
 	var matches []IconMatch
+	var arrows []RadarArrow
 	if locked {
 		player = Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
 		matches = FindTaskIcons(pixels)
-		for _, m := range matches {
-			w := IconToTaskWorld(m, cam)
-			if idx := SnapToStation(w, agentIconSnapDist); idx >= 0 {
-				w = TaskStations[idx].Center
-			}
-			if a.memory.Add(w) {
-				log.Printf("task memorized: %v (total %d, icon@%d,%d)",
-					w, a.memory.Len(), m.ScreenX, m.ScreenY)
-			}
-		}
+		arrows = FindRadarArrows(pixels)
+		a.memory.Update(player, cam, matches, arrows)
 		if a.frames-a.lastPosLog >= 24 {
-			log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d tasks=%d matches=%d",
-				player, cam.X, cam.Y, cam.Mismatches, a.tracker.Brutes, a.memory.Len(), len(matches))
+			log.Printf("pos: %v cam=(%d, %d) miss=%d brutes=%d known=%d matches=%d arrows=%d",
+				player, cam.X, cam.Y, cam.Mismatches, a.tracker.Brutes,
+				a.countKnown(), len(matches), len(arrows))
 			a.lastPosLog = a.frames
 		}
 		// Suspect tracking: every active frame, record when each
@@ -374,33 +344,42 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 				return m
 			}
 		}
-		if !a.nav.HasGoal() {
-			if goal, _, ok := a.memory.Closest(player); ok {
-				if a.nav.SetGoal(goal) {
-					a.radarGoal = false
-					log.Printf("nav: target %v (player %v, dist %d)",
-						goal, player, manhattan(goal, player))
+		// Goal selection: pick the best station by (state-priority, distance).
+		// Only crewmates chase task stations. Imposters that fall through
+		// from stepImposter (e.g. imp-fake-nowhere) should wander via
+		// Steer/wanderer rather than picking a task station -- otherwise
+		// A* failures from unreachable-from-here spots loop forever,
+		// demoting every station in turn.
+		// Expire nav-suspend when the player has moved far enough that
+		// A* reachability has likely changed (e.g. we wandered off the
+		// non-walkable spot).
+		if a.navSuspendLeft > 0 {
+			if absInt(player.X-a.navSuspendPos.X) >= agentNavSuspendClearPx ||
+				absInt(player.Y-a.navSuspendPos.Y) >= agentNavSuspendClearPx {
+				a.navSuspendLeft = 0
+			} else {
+				a.navSuspendLeft--
+			}
+		}
+		if idx := a.memory.BestGoal(player); idx >= 0 && !a.bodyGoal &&
+			a.navSuspendLeft == 0 &&
+			!(a.status.IsImposter() && !a.status.IsGhost()) {
+			c := TaskStations[idx].Center
+			if !a.nav.HasGoal() {
+				if a.nav.SetGoal(c) {
+					a.goalStation = idx
+					log.Printf("nav: target %v [station %d, tier %d] (player %v, dist %d)",
+						c, idx, a.memory.Priority(idx), player, manhattan(c, player))
 				}
-			} else if arrows := FindRadarArrows(pixels); len(arrows) > 0 {
-				if len(a.radarBlack) > 0 &&
-					(absInt(player.X-a.radarBlackFrom.X) > agentRadarBlackExpirePx ||
-						absInt(player.Y-a.radarBlackFrom.Y) > agentRadarBlackExpirePx) {
-					log.Printf("nav: radar blacklist expired after moving %v->%v",
-						a.radarBlackFrom, player)
-					a.radarBlack = a.radarBlack[:0]
-				}
-				if goal, ok := a.radarStationGoal(arrows, cam, player); ok {
-					if a.nav.SetGoal(goal) {
-						a.radarGoal = true
-						log.Printf("nav: radar station target %v (player %v, %d arrows)",
-							goal, player, len(arrows))
-					}
-				} else if goal, ok := RadarGoal(arrows, cam, a.walks, a.radarReject); ok {
-					if a.nav.SetGoal(goal) {
-						a.radarGoal = true
-						log.Printf("nav: radar target %v (player %v, %d arrows)",
-							goal, player, len(arrows))
-					}
+			} else if a.goalStation >= 0 &&
+				a.memory.Priority(idx) < a.memory.Priority(a.goalStation) &&
+				idx != a.goalStation {
+				if a.nav.SetGoal(c) {
+					log.Printf("nav: preempt station %d (tier %d) -> %d (tier %d) at %v",
+						a.goalStation, a.memory.Priority(a.goalStation),
+						idx, a.memory.Priority(idx), c)
+					a.goalStation = idx
+					a.arrivedAt = 0
 				}
 			}
 		}
@@ -432,7 +411,7 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 			if !a.bodyGoal || a.nav.Goal() != bodyW {
 				if a.nav.SetGoal(bodyW) {
 					a.bodyGoal = true
-					a.radarGoal = false
+					a.goalStation = -1
 					a.arrivedAt = 0
 					log.Printf("body: nav to color=%d at %v (player %v, dist²=%d)",
 						color, bodyW, player, distSq)
@@ -460,81 +439,57 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 		}
 		if a.holder.Completes != beforeC {
 			log.Printf("task: completed #%d (frame %d)", a.holder.Completes, a.frames)
-			if locked {
-				if _, idx, ok := a.memory.Closest(player); ok {
-					a.memory.Forget(idx)
-				}
+			if a.goalStation >= 0 {
+				a.memory.Mark(a.goalStation, TaskSeenNo)
 			}
 			a.nav.Clear()
+			a.goalStation = -1
 		}
 	} else if locked && a.nav.HasGoal() {
-		// A memorized task that's come into view preempts any radar
-		// goal -- radar goals are rough estimates along a bearing,
-		// memorized tasks are confirmed locations.
-		if a.radarGoal {
-			if goal, _, ok := a.memory.Closest(player); ok {
-				if a.nav.SetGoal(goal) {
-					a.radarGoal = false
-					a.arrivedAt = 0
-					log.Printf("nav: memorized target preempts radar: %v (player %v, dist %d)",
-						goal, player, manhattan(goal, player))
-				}
-			}
-		}
 		a.logBranch("nav")
 		navMask, arrived := a.nav.Next(player)
 		if navMask == Unreachable {
-			if a.radarGoal {
-				log.Printf("nav: radar target %v unreachable; blacklisting", a.nav.Goal())
-				if len(a.radarBlack) == 0 {
-					a.radarBlackFrom = player
-				}
-				a.radarBlack = append(a.radarBlack, a.nav.Goal())
+			if a.goalStation >= 0 {
+				log.Printf("nav: station %d at %v unreachable; demoting to seen_no",
+					a.goalStation, a.nav.Goal())
+				a.memory.Mark(a.goalStation, TaskSeenNo)
 			} else {
-				log.Printf("nav: memorized target %v unreachable; blacklisting", a.nav.Goal())
-				if task, idx, ok := a.memory.Closest(player); ok {
-					a.memory.Forget(idx)
-					a.memory.Blacklist(task)
-				}
+				log.Printf("nav: goal %v unreachable", a.nav.Goal())
 			}
 			a.nav.Clear()
-			a.radarGoal = false
+			a.goalStation = -1
 			a.arrivedAt = 0
+			a.navSuspendLeft = agentNavSuspendFrames
+			a.navSuspendPos = player
 			return 0
 		}
 		if arrived {
-			if a.radarGoal {
-				log.Printf("nav: reached radar target %v; re-polling", a.nav.Goal())
-				if len(a.radarBlack) == 0 {
-					a.radarBlackFrom = player
+			if a.arrivedAt == 0 {
+				a.arrivedAt = a.frames
+			}
+			if a.arrivedLoggedAt != a.nav.Goal() {
+				a.arrivedLoggedAt = a.nav.Goal()
+				log.Printf("nav: arrived at %v (waiting for TaskHolder)", a.nav.Goal())
+			}
+			if a.frames-a.arrivedAt > agentNavArrivedTimeout {
+				log.Printf("nav: gave up on %v (no task fired in %d frames); demoting to seen_no",
+					a.nav.Goal(), agentNavArrivedTimeout)
+				if a.goalStation >= 0 {
+					a.memory.Mark(a.goalStation, TaskSeenNo)
 				}
-				a.radarBlack = append(a.radarBlack, a.nav.Goal())
 				a.nav.Clear()
-				a.radarGoal = false
+				a.goalStation = -1
 				a.arrivedAt = 0
 				mask = 0
 			} else {
-				if a.arrivedAt == 0 {
-					a.arrivedAt = a.frames
-					log.Printf("nav: arrived at %v (waiting for TaskHolder)", a.nav.Goal())
-				}
-				if a.frames-a.arrivedAt > agentNavArrivedTimeout {
-					log.Printf("nav: gave up on %v (no task fired in %d frames); blacklisting",
-						a.nav.Goal(), agentNavArrivedTimeout)
-					if task, idx, ok := a.memory.Closest(player); ok {
-						a.memory.Forget(idx)
-						a.memory.Blacklist(task)
-					}
-					a.nav.Clear()
-					a.arrivedAt = 0
-					mask = 0
+				// Arrived at the nav cell but TaskHolder hasn't engaged
+				// yet; jitter toward the exact station center so a tiny
+				// offset doesn't leave us idle.
+				if a.goalStation >= 0 {
+					desired = maskTowards(player, TaskStations[a.goalStation].Center)
+					stuckEligible = desired != 0
 				} else {
-					if task, _, ok := a.memory.Closest(player); ok {
-						desired = maskTowards(player, task)
-						stuckEligible = desired != 0
-					} else {
-						mask = 0
-					}
+					mask = 0
 				}
 			}
 		} else {
