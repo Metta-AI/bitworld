@@ -18,6 +18,20 @@ proc thought*(bot: var Bot, text: string) =
   if text != bot.diag.lastThought:
     bot.diag.lastThought = text
 
+proc fired*(bot: var Bot, branchId: string) =
+  ## Records that a named policy branch fired this frame. The branchId
+  ## is a stable string matching the canonical list in BRANCH_IDS.md.
+  ## See `decideNextMask` for the invariant: every code path through it
+  ## must call `fired` exactly once before returning.
+  bot.diag.branchId = branchId
+
+proc fired*(bot: var Bot, branchId, intent: string) =
+  ## Combined helper: records the branch ID and the human-readable
+  ## intent string in one call. Equivalent to `bot.fired(branchId);
+  ## bot.diag.intent = intent`.
+  bot.diag.branchId = branchId
+  bot.diag.intent = intent
+
 proc roleName*(role: BotRole): string =
   case role
   of RoleUnknown: "unknown"

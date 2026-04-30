@@ -150,7 +150,9 @@ proc decideCrewmateMask*(bot: var Bot): uint8 =
       bot.queueBodySeen(body.x, body.y)
       if bot.inReportRange(body.x, body.y) and
           abs(bot.motion.velocityX) + abs(bot.motion.velocityY) <= 1:
+        bot.fired("policy_crew.body.report_in_range")
         return bot.reportBodyAction(body.x, body.y)
+      bot.fired("policy_crew.body.navigate_to_body")
       return bot.navigateToPoint(
         body.x,
         body.y,
@@ -158,6 +160,7 @@ proc decideCrewmateMask*(bot: var Bot): uint8 =
         KillApproachRadius
       )
   if bot.tasks.holdTicks > 0:
+    bot.fired("policy_crew.task.continue_hold")
     return bot.holdTaskAction(
       if bot.goal.name.len > 0:
         bot.goal.name
@@ -166,7 +169,7 @@ proc decideCrewmateMask*(bot: var Bot): uint8 =
     )
   let goal = bot.nearestTaskGoal()
   if not goal.found:
-    bot.diag.intent = "localized, no task goal"
+    bot.fired("policy_crew.idle.no_goal", "localized, no task goal")
     bot.thought("localized near (" & $bot.percep.playerWorldX() & ", " &
       $bot.percep.playerWorldY() & ")")
     return 0
@@ -178,25 +181,28 @@ proc decideCrewmateMask*(bot: var Bot): uint8 =
   if goal.state == TaskMandatory and bot.taskGoalReady(goal):
     bot.tasks.holdTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.tasks.holdIndex = goal.index
+    bot.fired("policy_crew.task.start_hold")
     return bot.holdTaskAction(goal.name)
   if bot.isGhost:
+    bot.fired("policy_crew.task.ghost_nav")
     return bot.navigateToPoint(goal.x, goal.y, goal.name)
   let astarStart = getMonoTime()
   bot.goal.path = findPath(bot.percep, bot.sim, goal.x, goal.y)
   bot.perf.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
   bot.goal.pathStep = choosePathStep(bot.goal.path)
   bot.goal.hasPathStep = bot.goal.pathStep.found
-  bot.diag.intent =
+  let astarIntent =
     if goal.index < 0:
       "gather at " & goal.name & " path=" & $bot.goal.path.len
     else:
       "A* to " & goal.name & " path=" & $bot.goal.path.len &
         " state=" & $goal.state
+  bot.fired("policy_crew.task.astar", astarIntent)
   if goal.state == TaskMandatory and
       heuristic(bot.percep.playerWorldX(), bot.percep.playerWorldY(),
                 goal.x, goal.y) <= TaskPreciseApproachRadius:
-    bot.diag.intent = "precise task approach to " & goal.name &
-      " state=" & $goal.state
+    bot.fired("policy_crew.task.precise_approach",
+      "precise task approach to " & goal.name & " state=" & $goal.state)
     bot.motion.desiredMask = preciseMaskForGoal(bot.percep, bot.motion,
                                                goal.x, goal.y)
   else:

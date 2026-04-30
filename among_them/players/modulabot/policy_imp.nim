@@ -272,6 +272,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
         bot.imposter.fakeTaskIndex = -1
         bot.imposter.fakeTaskCooldownTick =
           bot.frameTick + ImposterFakeTaskCooldownTicks
+        bot.fired("policy_imp.body.self_report")
         bot.thought("self-reporting kill body")
         return bot.reportBodyAction(body.x, body.y)
 
@@ -282,6 +283,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
       bot.goal.index = fleeGoal.index
       bot.imposter.fakeTaskUntilTick = 0
       bot.imposter.fakeTaskIndex = -1
+      bot.fired("policy_imp.body.flee")
       return bot.navigateToPoint(
         fleeGoal.x,
         fleeGoal.y,
@@ -294,7 +296,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
     let target = bot.percep.visibleCrewmateWorld(loneCrewmate.crewmate)
     if bot.inKillRange(target.x, target.y):
       bot.imposter.goalIndex = bot.farthestFakeTargetIndex()
-      bot.diag.intent = "kill lone crewmate"
+      bot.fired("policy_imp.kill.in_range", "kill lone crewmate")
       bot.motion.desiredMask = ButtonA
       bot.motion.controllerMask = ButtonA
       bot.goal.hasPathStep = false
@@ -311,6 +313,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
     bot.goal.index = -2
     bot.imposter.fakeTaskUntilTick = 0
     bot.imposter.fakeTaskIndex = -1
+    bot.fired("policy_imp.kill.hunt")
     return bot.navigateToPoint(
       target.x,
       target.y,
@@ -331,13 +334,15 @@ proc decideImposterMask*(bot: var Bot): uint8 =
       center.y
     )
     if dist <= TaskPreciseApproachRadius:
-      bot.diag.intent = "fake task at " & $bot.imposter.fakeTaskIndex
+      bot.fired("policy_imp.fake_task.holding",
+        "fake task at " & $bot.imposter.fakeTaskIndex)
       bot.motion.desiredMask = ButtonA
       bot.motion.controllerMask = ButtonA
       bot.goal.hasPathStep = false
       bot.goal.path.setLen(0)
       bot.thought("fake-tasking, holding action")
       return ButtonA
+    bot.fired("policy_imp.fake_task.setup")
     return bot.navigateToPoint(
       center.x,
       center.y,
@@ -354,6 +359,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
     let goal = bot.fakeTargetGoalFor(bot.imposter.goalIndex)
     if goal.found:
       bot.goal.index = goal.index
+      bot.fired("policy_imp.central_room.force_leave")
       return bot.navigateToPoint(
         goal.x,
         goal.y,
@@ -371,6 +377,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
           bot.imposter.fakeTaskIndex < bot.sim.tasks.len:
         let task = bot.sim.tasks[bot.imposter.fakeTaskIndex]
         let center = task.taskCenter()
+        bot.fired("policy_imp.fake_task.setup_in_tail")
         return bot.navigateToPoint(
           center.x,
           center.y,
@@ -379,6 +386,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
         )
       let target = bot.percep.visibleCrewmateWorld(visMatch.crewmate)
       bot.goal.index = -3
+      bot.fired("policy_imp.follow.tail")
       return bot.navigateToPoint(
         target.x,
         target.y,
@@ -393,6 +401,7 @@ proc decideImposterMask*(bot: var Bot): uint8 =
       bot.imposter.fakeTaskIndex < bot.sim.tasks.len:
     let task = bot.sim.tasks[bot.imposter.fakeTaskIndex]
     let center = task.taskCenter()
+    bot.fired("policy_imp.fake_task.setup_in_wander")
     return bot.navigateToPoint(
       center.x,
       center.y,
@@ -408,7 +417,8 @@ proc decideImposterMask*(bot: var Bot): uint8 =
     bot.imposter.goalIndex = bot.randomFakeTargetIndex()
     goal = bot.fakeTargetGoalFor(bot.imposter.goalIndex)
   if not goal.found:
-    bot.diag.intent = "imposter idle, unreachable fake target"
+    bot.fired("policy_imp.wander.idle_unreachable",
+      "imposter idle, unreachable fake target")
     bot.thought("imposter idle, unreachable fake target")
     return 0
   if heuristic(bot.percep.playerWorldX(), bot.percep.playerWorldY(),
@@ -416,8 +426,10 @@ proc decideImposterMask*(bot: var Bot): uint8 =
     bot.imposter.goalIndex = bot.randomFakeTargetIndex()
     goal = bot.fakeTargetGoalFor(bot.imposter.goalIndex)
     if not goal.found:
-      bot.diag.intent = "imposter idle, no next fake target"
+      bot.fired("policy_imp.wander.idle_no_target",
+        "imposter idle, no next fake target")
       bot.thought("imposter idle, no next fake target")
       return 0
   bot.goal.index = goal.index
+  bot.fired("policy_imp.wander.next_target")
   bot.navigateToPoint(goal.x, goal.y, "fake target " & goal.name)

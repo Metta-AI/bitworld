@@ -349,8 +349,13 @@ proc reseedAfterInterstitial*(bot: var Bot) =
 proc decideNextMask*(bot: var Bot): uint8 =
   ## Master per-frame orchestrator. Implements the pipeline from
   ## DESIGN.md §5. Strategy parity with v2:3922-4032.
+  ##
+  ## Every code path through this proc must set `bot.diag.branchId`
+  ## via `bot.fired(...)` before returning; downstream tracing work
+  ## relies on this invariant.
   let centerStart = getMonoTime()
   let wasInterstitial = bot.percep.interstitial
+  bot.diag.branchId = ""
 
   # 1. Cheap interstitial gate. Lives in `localize` because it scans
   # the unpacked frame for black-pixel ratio.
@@ -379,11 +384,15 @@ proc decideNextMask*(bot: var Bot): uint8 =
       return mask
     bot.motion.desiredMask = 0
     bot.motion.controllerMask = 0
-    bot.diag.intent =
+    let intent =
       if bot.percep.interstitialText.len > 0:
         "interstitial: " & bot.percep.interstitialText
       else:
         "interstitial screen mode"
+    if bot.percep.interstitialText.isGameOverText():
+      bot.fired("bot.interstitial.game_over", intent)
+    else:
+      bot.fired("bot.interstitial.role_reveal", intent)
     bot.thought(bot.diag.intent)
     bot.percep.snapshotPrevFrame()
     return 0
@@ -428,8 +437,9 @@ proc decideNextMask*(bot: var Bot): uint8 =
   bot.goal.path.setLen(0)
   bot.motion.desiredMask = 0
   bot.motion.controllerMask = 0
-  bot.diag.intent = "localizing"
+  bot.fired("bot.localizing", "localizing")
   if not bot.percep.localized:
+    bot.fired("bot.not_localized", "waiting for a reliable map lock")
     bot.thought("waiting for a reliable map lock")
     bot.percep.snapshotPrevFrame()
     return 0
