@@ -3597,6 +3597,7 @@ proc initBot(mapPath = ""): Bot =
   result.intent = "waiting for first frame"
 
 when defined(italkalotLibrary):
+  const ITalkALotAbiVersion = 1
   const TrainableMasks = [
     0'u8,
     ButtonA,
@@ -3631,6 +3632,10 @@ when defined(italkalotLibrary):
     bots: seq[Bot]
 
   var ITalkALotPolicies: seq[ITalkALotPolicy]
+
+  proc italkalot_abi_version*(): cint {.exportc, dynlib.} =
+    ## Returns the shared-library ABI version expected by Python wrappers.
+    cint(ITalkALotAbiVersion)
 
   proc actionIndexForMask(mask: uint8): int32 =
     ## Maps a BitWorld button mask to the CoGames trainable action index.

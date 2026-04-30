@@ -1,4 +1,4 @@
-"""ctypes bridge for the Nim NotTooDumb BitWorld policy."""
+"""ctypes bridge for the Nim IVoteWell BitWorld policy."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import platform
 from pathlib import Path
 
 import numpy as np
-from among_them.players.build_nottoodumb import NOTTOODUMB_ABI_VERSION, build_nottoodumb
+from among_them.players.build_ivotewell import IVOTEWELL_ABI_VERSION, build_ivotewell
 
 from mettagrid.bitworld import (
     BITWORLD_ACTION_COUNT,
@@ -20,13 +20,13 @@ from mettagrid.policy.policy_env_interface import PolicyEnvInterface
 from mettagrid.simulator import Action, AgentObservation
 
 
-class _NotTooDumbNimAgentPolicy(AgentPolicy):
+class _IVoteWellNimAgentPolicy(AgentPolicy):
     """Single-agent fallback wrapper around the batched Nim policy."""
 
     def __init__(
         self,
         policy_env_info: PolicyEnvInterface,
-        parent: "NotTooDumbNimPolicy",
+        parent: "IVoteWellNimPolicy",
         agent_id: int,
     ):
         super().__init__(policy_env_info)
@@ -39,22 +39,22 @@ class _NotTooDumbNimAgentPolicy(AgentPolicy):
         return Action(name=self._policy_env_info.action_names[action_index])
 
 
-class NotTooDumbNimPolicy(MultiAgentPolicy):
-    """Runs ``nottoodumb.nim`` through a compiled shared library."""
+class IVoteWellNimPolicy(MultiAgentPolicy):
+    """Runs ``ivotewell.nim`` through a compiled shared library."""
 
-    short_names = ["nottoodumb_nim"]
+    short_names = ["ivotewell_nim"]
 
     def __init__(self, policy_env_info: PolicyEnvInterface, device: str = "cpu"):
         super().__init__(policy_env_info, device=device)
         if tuple(policy_env_info.action_names) != BITWORLD_ACTION_NAMES:
             raise ValueError(
-                "NotTooDumbNimPolicy requires the "
+                "IVoteWellNimPolicy requires the "
                 f"{BITWORLD_ACTION_COUNT}-action BitWorld action space."
             )
         self._lib = self._load_library()
-        self._lib.nottoodumb_new_policy.argtypes = [ctypes.c_int]
-        self._lib.nottoodumb_new_policy.restype = ctypes.c_int
-        self._lib.nottoodumb_step_batch.argtypes = [
+        self._lib.italkalot_new_policy.argtypes = [ctypes.c_int]
+        self._lib.italkalot_new_policy.restype = ctypes.c_int
+        self._lib.italkalot_step_batch.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_int32),
             ctypes.c_int,
@@ -64,24 +64,22 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
             ctypes.c_int,
             ctypes.c_void_p,
             ctypes.c_void_p,
-            ctypes.c_void_p,
         ]
-        self._lib.nottoodumb_step_batch.restype = None
+        self._lib.italkalot_step_batch.restype = None
         self._num_agents = max(1, int(policy_env_info.num_agents))
-        self._handle = int(self._lib.nottoodumb_new_policy(self._num_agents))
+        self._handle = int(self._lib.italkalot_new_policy(self._num_agents))
         self._last_actions = np.zeros(self._num_agents, dtype=np.int32)
 
     def agent_policy(self, agent_id: int) -> AgentPolicy:
-        return _NotTooDumbNimAgentPolicy(self._policy_env_info, self, agent_id)
+        return _IVoteWellNimAgentPolicy(self._policy_env_info, self, agent_id)
 
     def step_batch(self, raw_observations: np.ndarray, raw_actions: np.ndarray) -> None:
         observations = self._normalize_observations(raw_observations)
         batch_size = observations.shape[0]
         self._ensure_agent_count(batch_size)
         agent_ids = np.arange(batch_size, dtype=np.int32)
-        frame_advances = np.ones(batch_size, dtype=np.int32)
         actions = np.zeros(batch_size, dtype=np.int32)
-        self._lib.nottoodumb_step_batch(
+        self._lib.italkalot_step_batch(
             self._handle,
             agent_ids.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
             ctypes.c_int(batch_size),
@@ -89,7 +87,6 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
             ctypes.c_int(observations.shape[1]),
             ctypes.c_int(observations.shape[2]),
             ctypes.c_int(observations.shape[3]),
-            ctypes.c_void_p(frame_advances.ctypes.data),
             ctypes.c_void_p(observations.ctypes.data),
             ctypes.c_void_p(actions.ctypes.data),
         )
@@ -135,7 +132,7 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
     def _load_library(self) -> ctypes.CDLL:
         lib_path = Path(__file__).resolve().parent / _library_name()
         if _library_needs_rebuild(lib_path):
-            lib_path = build_nottoodumb()
+            lib_path = build_ivotewell()
         lib = ctypes.CDLL(str(lib_path))
         _verify_library_abi(lib, lib_path)
         return lib
@@ -144,17 +141,17 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
 def _library_name() -> str:
     system = platform.system()
     if system == "Darwin":
-        return "libnottoodumb.dylib"
+        return "libivotewell.dylib"
     if system == "Windows":
-        return "nottoodumb.dll"
-    return "libnottoodumb.so"
+        return "ivotewell.dll"
+    return "libivotewell.so"
 
 
 def _library_needs_rebuild(lib_path: Path) -> bool:
     if not lib_path.exists():
         return True
     try:
-        return int(_abi_stamp_path(lib_path).read_text().strip()) != NOTTOODUMB_ABI_VERSION
+        return int(_abi_stamp_path(lib_path).read_text().strip()) != IVOTEWELL_ABI_VERSION
     except (OSError, ValueError):
         return True
 
@@ -165,19 +162,19 @@ def _abi_stamp_path(lib_path: Path) -> Path:
 
 def _verify_library_abi(lib: ctypes.CDLL, lib_path: Path) -> None:
     try:
-        abi_version = lib.nottoodumb_abi_version
+        abi_version = lib.italkalot_abi_version
     except AttributeError as exc:
         raise RuntimeError(
-            f"NotTooDumb library {lib_path} does not export an ABI version."
+            f"IVoteWell library {lib_path} does not export an ABI version."
         ) from exc
     abi_version.argtypes = []
     abi_version.restype = ctypes.c_int
     actual = int(abi_version())
-    if actual != NOTTOODUMB_ABI_VERSION:
+    if actual != IVOTEWELL_ABI_VERSION:
         raise RuntimeError(
-            f"NotTooDumb library {lib_path} has ABI version {actual}, "
-            f"expected {NOTTOODUMB_ABI_VERSION}."
+            f"IVoteWell library {lib_path} has ABI version {actual}, "
+            f"expected {IVOTEWELL_ABI_VERSION}."
         )
 
 
-AmongThemPolicy = NotTooDumbNimPolicy
+AmongThemPolicy = IVoteWellNimPolicy

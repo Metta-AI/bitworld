@@ -1,4 +1,4 @@
-"""Build helper for the Nim NotTooDumb shared library."""
+"""Build helper for the Nim IVoteWell shared library."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ PLAYERS_DIR = Path(__file__).resolve().parent
 NIM_VERSION = "2.2.4"
 NIMBY_VERSION = "0.1.26"
 NIMBY_SYNC_LOCK = Path.home() / ".nimby" / ".python_sync.lock"
-NOTTOODUMB_ABI_VERSION = 2
+IVOTEWELL_ABI_VERSION = 1
 
 
 def _resolve_root() -> Path:
@@ -37,8 +37,8 @@ ROOT = _resolve_root()
 NIMBY_LOCK = ROOT / "nimby.lock"
 
 
-def build_nottoodumb() -> Path:
-    """Builds the NotTooDumb shared library and returns its path."""
+def build_ivotewell() -> Path:
+    """Builds the IVoteWell shared library and returns its path."""
     _install_nim()
     _sync_nimby()
     out_path = PLAYERS_DIR / _library_name()
@@ -48,19 +48,19 @@ def build_nottoodumb() -> Path:
         "-d:release",
         "--opt:speed",
         "--app:lib",
-        "-d:nottoodumbLibrary",
+        "-d:italkalotLibrary",
         f"--out:{out_path}",
         f"--path:{ROOT / 'common'}",
         f"--path:{ROOT / 'src'}",
         *_nim_paths_from_lock(NIMBY_LOCK),
-        str(PLAYERS_DIR / "nottoodumb.nim"),
+        str(PLAYERS_DIR / "ivotewell.nim"),
     ]
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         print(result.stdout, file=sys.stderr)
-        raise RuntimeError(f"Failed to build NotTooDumb Nim library: {result.returncode}")
-    _abi_stamp_path(out_path).write_text(f"{NOTTOODUMB_ABI_VERSION}\n")
+        raise RuntimeError(f"Failed to build IVoteWell Nim library: {result.returncode}")
+    _abi_stamp_path(out_path).write_text(f"{IVOTEWELL_ABI_VERSION}\n")
     return out_path
 
 
@@ -178,10 +178,10 @@ def _nim_paths_from_lock(lock_path: Path) -> list[str]:
 def _library_name() -> str:
     system = platform.system()
     if system == "Darwin":
-        return "libnottoodumb.dylib"
+        return "libivotewell.dylib"
     if system == "Windows":
-        return "nottoodumb.dll"
-    return "libnottoodumb.so"
+        return "ivotewell.dll"
+    return "libivotewell.so"
 
 
 def _abi_stamp_path(lib_path: Path) -> Path:
@@ -189,4 +189,4 @@ def _abi_stamp_path(lib_path: Path) -> Path:
 
 
 if __name__ == "__main__":
-    print(build_nottoodumb())
+    print(build_ivotewell())
