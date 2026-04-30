@@ -108,9 +108,19 @@ func (m *TaskMemory) Update(player Point, cam Camera, icons []IconMatch, arrows 
 		}
 	}
 
-	// (2) Arrows → reset per-station no-arrow streak and demote exclusion.
-	// Aggregate which stations are along current arrows so a station is
-	// counted at most once per frame even when several arrows cluster.
+	// (2) Arrows → reset per-station no-arrow streak. Aggregate which
+	// stations are along current arrows so a station is counted at most
+	// once per frame even when several arrows cluster.
+	//
+	// An arrow only *prevents* demotion to RadarExcluded on a station
+	// that's still Maybe; it does NOT promote an already-excluded station
+	// back to Maybe. Promotion to Maybe was creating a tier-1 tie between
+	// every arrow-resolved station and every other Maybe, which made
+	// BestGoal pick by distance alone -- the agent would wander between
+	// nearby Maybes while its assigned (arrowed) stations stayed tied
+	// and never preferred. Now RadarExcluded is a terminal decision
+	// (modulo Mark/Reset), so the tier-1 pool shrinks to just the
+	// stations where arrow evidence landed early enough to keep them.
 	arrowed := make(map[int]struct{}, len(arrows))
 	for _, ar := range arrows {
 		bearing := Point{cam.X + ar.ScreenX, cam.Y + ar.ScreenY}
@@ -120,9 +130,6 @@ func (m *TaskMemory) Update(player Point, cam Camera, icons []IconMatch, arrows 
 	}
 	for idx := range arrowed {
 		m.noArrowStreak[idx] = 0
-		if m.state[idx] == TaskRadarExcluded {
-			m.state[idx] = TaskMaybe
-		}
 	}
 
 	// (3) Per-station streak bookkeeping.

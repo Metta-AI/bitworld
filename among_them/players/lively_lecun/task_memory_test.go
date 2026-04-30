@@ -53,7 +53,7 @@ func TestTaskMemory_RadarExcludedAfterKFrames(t *testing.T) {
 	}
 }
 
-func TestTaskMemory_ArrowResetsStreakAndDemotesExclusion(t *testing.T) {
+func TestTaskMemory_ArrowResetsStreakButDoesNotPromoteExclusion(t *testing.T) {
 	m := NewTaskMemory()
 	cam := camFor(0)
 	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
@@ -75,10 +75,38 @@ func TestTaskMemory_ArrowResetsStreakAndDemotesExclusion(t *testing.T) {
 		t.Fatalf("setup: expected TaskRadarExcluded, got %v", got)
 	}
 
-	// One frame with an arrow toward the target: back to TaskMaybe.
+	// An arrow arriving late must NOT promote back to Maybe: once a
+	// station demotes, it stays demoted so tier-1 Maybes remain a small
+	// set biased toward the player's known arrow history.
 	m.Update(player, cam, nil, []RadarArrow{arr})
+	if got := m.State(target); got != TaskRadarExcluded {
+		t.Fatalf("arrow after exclusion: state(%d) = %v, want TaskRadarExcluded (no promotion)", target, got)
+	}
+}
+
+func TestTaskMemory_ArrowKeepsMaybe(t *testing.T) {
+	m := NewTaskMemory()
+	cam := camFor(0)
+	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
+
+	target, arr, ok := anyResolvableStation(cam, player)
+	if !ok {
+		t.Fatalf("setup: no border-pixel bearing resolves to any station")
+	}
+
+	// K-1 no-arrow frames: right up to the brink of demotion.
+	for i := 0; i < noArrowK-1; i++ {
+		m.Update(player, cam, nil, nil)
+	}
 	if got := m.State(target); got != TaskMaybe {
-		t.Fatalf("arrow frame: state(%d) = %v, want TaskMaybe", target, got)
+		t.Fatalf("pre-arrow: state(%d) = %v, want TaskMaybe", target, got)
+	}
+	// An arrow on this frame resets the no-arrow streak, so the next
+	// on-the-nose frame without an arrow must not demote.
+	m.Update(player, cam, nil, []RadarArrow{arr})
+	m.Update(player, cam, nil, nil)
+	if got := m.State(target); got != TaskMaybe {
+		t.Fatalf("post-arrow: state(%d) = %v, want TaskMaybe (arrow should have reset streak)", target, got)
 	}
 }
 
