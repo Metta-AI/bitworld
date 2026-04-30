@@ -167,6 +167,23 @@ suite "ascii text":
     check second == "body in nav"
     check scanned == @messages
 
+  test "dark background is ignored":
+    var sim = initAmongThemForTest(defaultGameConfig())
+    let text = "red sus"
+    sim.clearInterstitialFrame()
+    check not sim.fb.indices.findAsciiText(sim.asciiSprites, text).found
+    sim.fb.blitAsciiText(sim.asciiSprites, text, 13, 47)
+    let
+      found = sim.fb.indices.findAsciiText(sim.asciiSprites, text)
+      line = sim.fb.indices.readAsciiRun(
+        sim.asciiSprites,
+        found.x,
+        found.y,
+        text.len
+      )
+    check found.found
+    check line == text
+
   test "chat wrap drops leading space":
     let
       font = loadTestAsciiSprites()

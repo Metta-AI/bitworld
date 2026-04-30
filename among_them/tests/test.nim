@@ -7,5 +7,6 @@ import
   test_screens,
   test_start_wait,
   test_stats,
+  test_vote_reader,
   test_vote_cooldown
 {.warning[UnusedImport]: on.}

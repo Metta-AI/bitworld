@@ -16,6 +16,7 @@ const
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
   DefaultMapPath* = "map.json"
+  DarkBgPath* = "darkbg.aseprite"
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
@@ -277,6 +278,7 @@ type
     rooms*: seq[Room]
     mapPixels*: seq[uint8]
     mapRgba*: seq[uint8]
+    darkBgPixels*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
     fb*: Framebuffer
@@ -696,6 +698,21 @@ proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
   ## Loads the default Skeld map layers.
   loadMapLayers(loadAmongMap())
 
+proc loadDarkBgPixels*(): seq[uint8] =
+  ## Loads the dark interstitial background as palette pixels.
+  let image = readAsepriteImage(gameDir() / DarkBgPath)
+  if image.width != ScreenWidth or image.height != ScreenHeight:
+    raise newException(
+      AmongThemError,
+      DarkBgPath & " must be " & $ScreenWidth & "x" & $ScreenHeight & "."
+    )
+  result = newSeq[uint8](ScreenWidth * ScreenHeight)
+  for y in 0 ..< ScreenHeight:
+    for x in 0 ..< ScreenWidth:
+      let color = nearestPaletteIndex(image[x, y])
+      result[y * ScreenWidth + x] =
+        if color == TransparentColorIndex: SpaceColor else: color
+
 proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
   ord(ch) - ord(' ')
@@ -723,6 +740,17 @@ proc blitCenteredAsciiText*(
   let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2
   fb.blitAsciiText(asciiSprites, text, screenX, screenY)
 
+proc blitCenteredAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: PixelFont,
+  text: string,
+  screenY,
+  offsetX: int
+) =
+  ## Draws horizontally offset centered text.
+  let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2 + offsetX
+  fb.blitAsciiText(asciiSprites, text, screenX, screenY)
+
 proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Fills one clipped rectangle on a framebuffer.
   if w <= 0 or h <= 0:
@@ -730,6 +758,18 @@ proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in y ..< y + h:
     for px in x ..< x + w:
       fb.putPixel(px, py, color)
+
+proc fillDarkBg*(sim: SimServer, fb: var Framebuffer) =
+  ## Fills a framebuffer with the dark interstitial background.
+  if sim.darkBgPixels.len != ScreenWidth * ScreenHeight:
+    fb.clearFrame(SpaceColor)
+    return
+  for i in 0 ..< fb.indices.len:
+    fb.indices[i] = sim.darkBgPixels[i]
+
+proc clearInterstitialFrame*(sim: var SimServer) =
+  ## Clears the shared framebuffer to the dark interstitial background.
+  sim.fillDarkBg(sim.fb)
 
 proc strokeRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Strokes one clipped rectangle on a framebuffer.
@@ -1872,7 +1912,7 @@ proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
   sim.voteState.cursor[playerIndex] = cur
 
 proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
   if needed > 0:
@@ -1896,15 +1936,23 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packed
 
 proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
-  sim.fb.clearFrame(0)
-  sim.fb.blitAsciiText(sim.asciiSprites, "GAME IN", 11, 22)
-  sim.fb.blitAsciiText(sim.asciiSprites, "PROGRESS", 8, 32)
+  sim.clearInterstitialFrame()
+  let
+    gap = 10
+    blockH = sim.asciiSprites.height * 2 + gap
+    startY = (ScreenHeight - blockH) div 2
+  sim.fb.blitCenteredAsciiText(sim.asciiSprites, "GAME IN", startY)
+  sim.fb.blitCenteredAsciiText(
+    sim.asciiSprites,
+    "PROGRESS",
+    startY + sim.asciiSprites.height + gap
+  )
   sim.fb.packFramebuffer()
   sim.fb.packed
 
 proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   ## Builds a simple player screen for replay mode.
-  sim.fb.clearFrame(SpaceColor)
+  sim.clearInterstitialFrame()
   sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
   sim.fb.blitAsciiText(sim.asciiSprites, "GLOBAL", 20, 38)
   sim.fb.blitAsciiText(sim.asciiSprites, "VIEW", 20, 46)
@@ -1913,7 +1961,7 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
 
 proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   ## Builds the role reveal interstitial frame.
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let viewerIsImp =
     playerIndex >= 0 and playerIndex < sim.players.len and
     sim.players[playerIndex].role == Imposter
@@ -2020,7 +2068,7 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
     rowY += messageH
 
 proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let n = sim.players.len
   if n == 0:
     sim.fb.packFramebuffer()
@@ -2119,16 +2167,17 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packed
 
 proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let ej = sim.voteState.ejectedPlayer
   if ej >= 0 and ej < sim.players.len:
     let
       sx = ScreenWidth div 2 - SpriteSize div 2
       sy = ScreenHeight div 2 - SpriteSize div 2
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "WAS KILLED", sy - 12)
     sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[ej].color, false)
   else:
-    sim.fb.blitAsciiText(sim.asciiSprites, "NO ONE", 46, 54)
-    sim.fb.blitAsciiText(sim.asciiSprites, "DIED", 52, 64)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "NO ONE", 54, 3)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "DIED", 64, 3)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -2193,7 +2242,7 @@ proc checkWinCondition*(sim: var SimServer) =
     sim.finishGame(Crewmate)
 
 proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let title =
     if sim.timeLimitReached:
       "DRAW"
@@ -3052,6 +3101,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
   result.mapRgba = newSeq[uint8](MapWidth * MapHeight * 4)
+  result.darkBgPixels = loadDarkBgPixels()
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       let

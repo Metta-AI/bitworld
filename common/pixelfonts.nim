@@ -10,6 +10,8 @@ const
   LastPrintableAscii* = 126
   PrintableAsciiCount* = LastPrintableAscii - FirstPrintableAscii + 1
   DefaultGlyphSpacing* = 1
+  WhiteTextIndex* = 2'u8
+  WhiteTextThreshold = 180'u8
 
 type
   PixelFontError* = object of ValueError
@@ -51,9 +53,19 @@ proc isMarker(pixel: ColorRGBA): bool {.raises: [].} =
     pixel.g > 160'u8 and
     pixel.b < 120'u8
 
-proc isSameColor(a, b: ColorRGBA): bool {.raises: [].} =
-  ## Returns true when two RGBA pixels are exactly equal.
-  a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a
+proc isWhiteTextPixel*(pixel: ColorRGBA): bool {.raises: [].} =
+  ## Returns true when one RGBA pixel is white text ink.
+  pixel.a > 20'u8 and
+    pixel.r >= WhiteTextThreshold and
+    pixel.g >= WhiteTextThreshold and
+    pixel.b >= WhiteTextThreshold
+
+proc isWhiteTextIndex*(index: uint8): bool {.raises: [].} =
+  ## Returns true when one palette index is white text ink.
+  if index == WhiteTextIndex:
+    return true
+  let pixel = Palette[int(index and 0x0f'u8)]
+  pixel.isWhiteTextPixel()
 
 proc glyphIndex*(font: PixelFont, ch: char): int {.raises: [].} =
   ## Returns the glyph index for a printable ASCII character.
@@ -123,10 +135,7 @@ proc decodePixelFont*(
     for gy in 0 ..< result.height:
       for gx in 0 ..< width:
         let pixel = image[x + gx, gy]
-        glyph.pixels[gy * width + gx] =
-          pixel.a > 20'u8 and
-          not pixel.isSameColor(result.background) and
-          not pixel.isMarker()
+        glyph.pixels[gy * width + gx] = pixel.isWhiteTextPixel()
     result.glyphs.add(glyph)
     x += width + spacing
     inc code
@@ -206,12 +215,12 @@ proc imagePixelOn(
   y: int,
   background: ColorRGBA
 ): bool {.raises: [].} =
-  ## Returns true when one image pixel is not background.
+  ## Returns true when one image pixel is white text ink.
+  discard background
   if image == nil or x < 0 or y < 0 or
       x >= image.width or y >= image.height:
     return false
-  let pixel = image[x, y]
-  pixel.a > 20'u8 and not pixel.isSameColor(background)
+  image[x, y].isWhiteTextPixel()
 
 proc framePixelOn(
   frame: openArray[uint8],
@@ -219,13 +228,14 @@ proc framePixelOn(
   y: int,
   background: uint8
 ): bool {.raises: [].} =
-  ## Returns true when one framebuffer pixel is not background.
+  ## Returns true when one framebuffer pixel is white text ink.
+  discard background
   if x < 0 or y < 0 or x >= ScreenWidth or y >= ScreenHeight:
     return false
   let index = y * ScreenWidth + x
   if index < 0 or index >= frame.len:
     return false
-  frame[index] != background
+  frame[index].isWhiteTextIndex()
 
 proc glyphScore*(
   image: Image,

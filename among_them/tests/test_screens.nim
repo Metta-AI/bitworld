@@ -15,16 +15,19 @@ type
     name: string
     pixels: seq[uint8]
 
+when defined(updateGoldens) or defined(updateScreenGoldens):
+  const DefinedUpdateGoldens = true
+else:
+  const DefinedUpdateGoldens = false
+
 proc updateGoldens(): bool =
   ## Returns whether golden PNGs should be updated.
-  when defined(updateGoldens) or defined(updateScreenGoldens):
-    result = true
-  else:
-    let
-      update = getEnv("UPDATE_GOLDENS").toLowerAscii()
-      updateAmong = getEnv("AMONG_THEM_UPDATE_GOLDENS").toLowerAscii()
-    result = update in ["1", "true", "yes"] or
-      updateAmong in ["1", "true", "yes"]
+  if DefinedUpdateGoldens:
+    return true
+  let
+    update = getEnv("UPDATE_GOLDENS").toLowerAscii()
+    updateAmong = getEnv("AMONG_THEM_UPDATE_GOLDENS").toLowerAscii()
+  update in ["1", "true", "yes"] or updateAmong in ["1", "true", "yes"]
 
 proc initAmongThemForTest(config: GameConfig): SimServer =
   ## Initializes Among Them from the game directory.

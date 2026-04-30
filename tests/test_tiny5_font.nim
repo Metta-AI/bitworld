@@ -64,10 +64,14 @@ proc testTiny5ImageOcr(font: PixelFont) =
   ## Tests exact OCR against text rendered into a Pixie image.
   echo "Testing tiny5 image OCR"
   let
-    background = font.background
+    background = rgba(19, 34, 52, 255)
     text = "red sus"
   var image = newImage(128, 128)
   image.fill(background)
+  for y in 0 ..< image.height:
+    for x in 0 ..< image.width:
+      if (x + y) mod 17 == 0:
+        image[x, y] = rgba(255, 0, 0, 255)
   image.drawText(font, text, 13, 19, rgba(255, 255, 255, 255))
   let
     score = image.textScore(font, text, 13, 19)
@@ -88,8 +92,8 @@ proc testTiny5FramebufferOcr(font: PixelFont) =
   echo "Testing tiny5 framebuffer OCR"
   let text = "vote skip"
   var fb = initFramebuffer()
-  fb.clearFrame(0)
-  fb.drawText(font, text, 5, 87, 1'u8)
+  fb.clearFrame(5)
+  fb.drawText(font, text, 5, 87, WhiteTextIndex)
   let
     score = fb.indices.textScore(font, text, 5, 87)
     mismatch = fb.indices.textScore(font, "vote red", 5, 87)
@@ -103,6 +107,12 @@ proc testTiny5FramebufferOcr(font: PixelFont) =
   doAssert found.x == 5, "frame OCR should find the expected x"
   doAssert found.y == 87, "frame OCR should find the expected y"
   doAssert read == text, "frame OCR should read the rendered text"
+
+  var colored = initFramebuffer()
+  colored.clearFrame(0)
+  colored.drawText(font, text, 5, 87, 1'u8)
+  doAssert colored.indices.textScore(font, text, 5, 87).glyphError() > 0,
+    "frame OCR should ignore non-white glyph pixels"
 
 let font = readPixelFont(FontPath)
 testTiny5Decode(font)
