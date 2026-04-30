@@ -49,12 +49,17 @@ Removed:
   naturally sort to the bottom; a separate terminal exclusion state is
   redundant and the "terminal after 6 missed ticks" behavior is exactly the
   over-aggressive filtering that caused the bug.
-- `noArrowStreak`, `noArrowK`, `onScreenNoIconK` — no longer needed. Stations
-  leave Maybe only via visual inspection (`Known` or `SeenNo`).
+- `noArrowStreak`, `noArrowK`, `offScreenMargin` — the radar-derived
+  demotion to `RadarExcluded` disappears with the state itself.
+- `NearestStationAlongBearing` — the per-arrow lookup is replaced by the
+  per-station forward prediction. The function becomes dead code and is
+  deleted (no caller outside this module).
 
-Retained: `Known`, `Maybe`, `SeenNo`. Promotion paths unchanged — visual icon
-detection flips Maybe → Known; on-screen without the icon flips Maybe →
-SeenNo.
+Retained: `Known`, `Maybe`, `SeenNo` states and the on-screen-no-icon
+machinery (`onScreenNoIconStreak`, `onScreenNoIconK`, `onScreenMargin`)
+that demotes Maybe → SeenNo after visual inspection. Promotion paths
+unchanged — visual icon detection flips Maybe → Known; on-screen without
+the icon flips Maybe → SeenNo.
 
 ### Per-tick radar matching (inverted)
 
