@@ -125,7 +125,11 @@
             ]);
         };
 
-        bitworld = pkgs.stdenv.mkDerivation {
+        # Builds and installs the given list of binaries. Pass the full
+        # bitworldBins list for a kitchen-sink build, or a single-element
+        # list to build just one game/bot — used by mkDockerImage below
+        # so each per-binary image only compiles what it ships.
+        mkBitworld = bins: pkgs.stdenv.mkDerivation {
           pname = "bitworld";
           version = "0.1.0";
           src = cleanedSrc;
@@ -151,7 +155,7 @@
             ${lib.concatMapStringsSep "\n" (b: ''
               echo ">>> Building ${b}"
               nim c "${b}.nim"
-            '') bitworldBins}
+            '') bins}
             runHook postBuild
           '';
 
@@ -193,30 +197,42 @@
                 makeWrapper "$out/libexec/bitworld/${binName}" "$out/bin/${binName}" \
                   --chdir "$out/share/bitworld/${gameDir}"
               ''
-            ) bitworldBins}
+            ) bins}
             runHook postInstall
           '';
         };
 
-        dockerImage = pkgs.dockerTools.buildLayeredImage {
-          name = "bitworld";
-          tag = "latest";
-          contents = [
-            bitworld
-            pkgs.bashInteractive
-            pkgs.coreutils
-          ] ++ runtimeLibs;
-          config = {
-            Env = [
-              "PATH=/bin"
-              "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
-            ];
-            Cmd = [ "/bin/bash" ];
+        bitworld = mkBitworld bitworldBins;
+
+        # One Docker image per binary. Add new entries below as needed —
+        # each builds independently so you only pay for what you ship.
+        mkDockerImage = bin:
+          let
+            binName = baseNameOf bin;
+            pkg = mkBitworld [ bin ];
+          in pkgs.dockerTools.buildLayeredImage {
+            name = "bitworld-${binName}";
+            tag = "latest";
+            contents = [
+              pkg
+              pkgs.bashInteractive
+              pkgs.coreutils
+            ] ++ runtimeLibs;
+            config = {
+              Env = [
+                "PATH=/bin"
+                "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
+              ];
+              Cmd = [ "/bin/${binName}" ];
+            };
           };
-        };
+
+        dockerImageAmongThem = mkDockerImage "among_them/among_them";
+        dockerImageNottoodumb = mkDockerImage "among_them/players/nottoodumb";
       in {
         packages = lib.optionalAttrs isLinux {
-          inherit bitworld dockerImage vendoredDeps;
+          inherit bitworld vendoredDeps
+            dockerImageAmongThem dockerImageNottoodumb;
           default = bitworld;
         };
 
