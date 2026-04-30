@@ -72,3 +72,7 @@ else:
   when not defined(debug):
     --define:release
     --define:noAutoGLerrorCheck
+
+  # Bots that connect outbound need OpenSSL so they can talk wss://.
+  when projectName() == "nottoodumb":
+    --define:ssl

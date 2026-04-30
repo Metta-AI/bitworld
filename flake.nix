@@ -79,6 +79,7 @@
           freetype
           udev    # paddy gamepad input on linux
           libevdev
+          openssl # nottoodumb dynamically loads libssl for wss:// connects
         ];
 
         # Fixed-output derivation: runs `nimby sync` to vendor every dep
@@ -226,7 +227,15 @@
               pkgs.bashInteractive
               pkgs.coreutils
               pkgs.tini
+              pkgs.cacert # so libssl-using bots can verify wss:// servers
             ] ++ runtimeLibs;
+            # pkgs.cacert ships /etc/ssl/certs/ca-bundle.crt, but Nim's
+            # std/net hardcodes the Debian path /etc/ssl/certs/ca-certificates.crt
+            # (and ignores SSL_CERT_FILE in the default verifyMode). Symlink so
+            # Nim finds it.
+            extraCommands = ''
+              ln -sf ca-bundle.crt etc/ssl/certs/ca-certificates.crt
+            '';
             config = {
               Env = [
                 "PATH=/bin"
