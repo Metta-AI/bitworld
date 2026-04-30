@@ -17,7 +17,16 @@ else:
   # CLI build: parser, runner, defaults.
   import std/[os, parseopt, strutils]
   import protocol
+  import types
   import viewer/runner
+
+  proc parseTraceLevel(s: string): TraceLevel =
+    case s.toLowerAscii()
+    of "off":       tlOff
+    of "events":    tlEvents
+    of "decisions": tlDecisions
+    of "full":      tlFull
+    else:           tlDecisions
 
 when isMainModule and not defined(modulabotLibrary):
   var
@@ -27,6 +36,15 @@ when isMainModule and not defined(modulabotLibrary):
     name = ""
     mapPath = ""
     framesPath = ""
+    traceDir = getEnv("MODULABOT_TRACE_DIR")
+    traceLevel = parseTraceLevel(getEnv("MODULABOT_TRACE_LEVEL", "decisions"))
+    traceSnapshotPeriod = block:
+      let s = getEnv("MODULABOT_TRACE_SNAPSHOT_PERIOD", "120")
+      try: parseInt(s) except ValueError: 120
+    traceMeta = getEnv("MODULABOT_TRACE_META")
+    traceFramesDump = block:
+      let s = getEnv("MODULABOT_TRACE_FRAMES_DUMP", "1").toLowerAscii()
+      s != "0" and s != "false" and s != "off"
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -43,6 +61,18 @@ when isMainModule and not defined(modulabotLibrary):
         mapPath = val
       of "frames":
         framesPath = val
+      of "trace-dir":
+        traceDir = val
+      of "trace-level":
+        traceLevel = parseTraceLevel(val)
+      of "trace-snapshot-period":
+        traceSnapshotPeriod = parseInt(val)
+      of "trace-meta":
+        traceMeta = val
+      of "trace-frames-dump":
+        traceFramesDump = true
+      of "no-trace-frames-dump":
+        traceFramesDump = false
       else:
         discard
     else:
@@ -51,4 +81,8 @@ when isMainModule and not defined(modulabotLibrary):
     mapPath = absolutePath(mapPath)
   if framesPath.len > 0 and not framesPath.isAbsolute():
     framesPath = absolutePath(framesPath)
-  runBot(address, port, gui, name, mapPath, framesPath)
+  if traceDir.len > 0 and not traceDir.isAbsolute():
+    traceDir = absolutePath(traceDir)
+  runBot(address, port, gui, name, mapPath, framesPath,
+         traceDir, traceLevel, traceSnapshotPeriod, traceMeta,
+         traceFramesDump)

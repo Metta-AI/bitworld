@@ -6,7 +6,7 @@
 ## passed the runner currently warns and proceeds headless.
 
 when not defined(modulabotLibrary):
-  import std/[monotimes, options, os, times]
+  import std/[json, monotimes, options, os, times]
   import whisky
 
   import protocol
@@ -16,6 +16,7 @@ when not defined(modulabotLibrary):
   import ../frame  # unpack4bpp
   import ../bot
   import ../ascii  # for isGameOverText
+  import ../trace
   import viewer    # initViewerApp / pumpViewer / viewerOpen
 
   const
@@ -114,7 +115,10 @@ when not defined(modulabotLibrary):
     discard file.writeBuffer(unsafeAddr unpacked[0], unpacked.len)
 
   proc runBot*(host: string; port: int; gui: bool; name: string;
-               mapPath: string; framesPath: string = "") =
+               mapPath: string; framesPath: string = "";
+               traceDir: string = ""; traceLevel: TraceLevel = tlDecisions;
+               traceSnapshotPeriod: int = 120; traceMeta: string = "";
+               traceFramesDump: bool = true) =
     ## Connects to an Among Them server and processes frames in a
     ## reconnect loop. When `gui` is true, opens the diagnostic
     ## viewer window; pressing Esc or closing the window terminates
@@ -123,20 +127,68 @@ when not defined(modulabotLibrary):
     ## `framesPath` (`--frames:<file>`): when non-empty, writes every
     ## received unpacked frame to `<file>`. Used to capture real-game
     ## frames for offline parity testing.
+    ##
+    ## `traceDir` (`--trace-dir:<path>`): when non-empty, opens a
+    ## structured trace under that root. See TRACING.md.
     let paths = defaultPaths(mapPath)
     var bot = initBot(paths)
     var dumpFile: File = nil
-    if framesPath.len > 0:
+    var effectiveFramesPath = framesPath
+    # If tracing is on and no explicit --frames was passed, default to
+    # capturing into the session directory. Replay tools resolve this
+    # via manifest.config.frames_dump_path.
+    if traceDir.len > 0 and traceFramesDump and effectiveFramesPath.len == 0:
+      let sessionDir = traceDir / (if name.len > 0: name else: "modulabot")
       try:
-        dumpFile = open(framesPath, fmWrite)
-        echo "modulabot: capturing frames to ", framesPath
+        createDir(sessionDir)
+      except IOError, OSError:
+        discard
+      effectiveFramesPath = sessionDir / "frames.bin"
+    if effectiveFramesPath.len > 0:
+      try:
+        dumpFile = open(effectiveFramesPath, fmWrite)
+        echo "modulabot: capturing frames to ", effectiveFramesPath
       except IOError:
-        echo "modulabot: failed to open frame dump path ", framesPath,
-          ", continuing without capture"
+        echo "modulabot: failed to open frame dump path ",
+          effectiveFramesPath, ", continuing without capture"
         dumpFile = nil
     defer:
       if dumpFile != nil:
         dumpFile.close()
+
+    # Trace writer setup. The seed is the one that initBot used; we
+    # don't currently surface it back from initBot so we record 0
+    # (meaning "clock-derived"). When `--seed` plumbing is added this
+    # field can be populated authoritatively.
+    if traceDir.len > 0:
+      let configJson = $(%*{
+        "host":      host,
+        "port":      port,
+        "map":       mapPath,
+        "name":      name,
+        "transport": "websocket"
+      })
+      bot.trace = openTrace(
+        rootDir        = traceDir,
+        botName        = (if name.len > 0: name else: "modulabot"),
+        level          = traceLevel,
+        snapshotPeriod = traceSnapshotPeriod,
+        captureFrames  = (effectiveFramesPath.len > 0),
+        harnessMeta    = traceMeta,
+        masterSeed     = 0,
+        framesPath     = effectiveFramesPath,
+        configJson     = configJson
+      )
+      bot.trace.beginRound(bot, isMidRound = true)
+      echo "modulabot: tracing to ", traceDir,
+           " level=", traceLevel,
+           " session=", bot.trace.sessionId
+    defer:
+      if not bot.trace.isNil:
+        try:
+          bot.trace.closeTrace(bot, "process_exit")
+        except CatchableError:
+          discard
     var viewerApp: ViewerApp =
       if gui: initViewerApp(paths.atlasPath)
       else: nil
@@ -173,8 +225,14 @@ when not defined(modulabotLibrary):
           if bot.percep.interstitial and
               bot.chat.pendingChat.len > 0 and
               not bot.percep.interstitialText.isGameOverText():
-            ws.send(blobFromChat(bot.chat.pendingChat), BinaryMessage)
+            let chatText = bot.chat.pendingChat
+            ws.send(blobFromChat(chatText), BinaryMessage)
             bot.chat.pendingChat = ""
+            if not bot.trace.isNil:
+              try:
+                bot.trace.emitChatSent(bot, chatText)
+              except CatchableError:
+                discard
       except Exception:
         connected = false
         if gui:

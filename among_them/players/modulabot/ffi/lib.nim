@@ -12,9 +12,11 @@
 ## untouched.
 
 when defined(modulabotLibrary):
+  import std/strutils
   import protocol      # for Button* constants, ScreenWidth/Height
   import ../types
   import ../bot
+  import ../trace
 
   const ModulabotAbiVersion* = 1
     ## Bumped whenever the FFI surface (symbols, signatures, action table)
@@ -79,12 +81,75 @@ when defined(modulabotLibrary):
     ## Returns the shared-library ABI version expected by Python wrappers.
     cint(ModulabotAbiVersion)
 
+  # Trace-init plumbing for the Python harness. Optional: callers that
+  # want tracing call `modulabot_init_trace` BEFORE `modulabot_new_policy`,
+  # and the new policy will attach a trace writer per agent.
+  type TraceInit = object
+    rootDir: string
+    level: TraceLevel
+    snapshotPeriod: int
+    captureFrames: bool
+    harnessMeta: string
+
+  var PendingTraceInit: TraceInit
+  var TraceInitArmed = false
+
+  proc parseTraceLevelInt(level: cint): TraceLevel =
+    case int(level)
+    of 0: tlOff
+    of 1: tlEvents
+    of 2: tlDecisions
+    of 3: tlFull
+    else: tlDecisions
+
+  proc modulabot_init_trace*(
+      rootDir: cstring,
+      level: cint,
+      snapshotPeriod: cint,
+      captureFrames: cint,
+      harnessMeta: cstring): cint {.exportc, dynlib.} =
+    ## Arms a pending trace configuration. The next call to
+    ## `modulabot_new_policy` will attach a trace writer (with one
+    ## independent `TraceWriter` per agent) using these settings.
+    ## Returns 0 on success, non-zero on failure (e.g. unset rootDir).
+    if rootDir.isNil:
+      return 1
+    let root = $rootDir
+    if root.len == 0:
+      return 1
+    PendingTraceInit = TraceInit(
+      rootDir:        root,
+      level:          parseTraceLevelInt(level),
+      snapshotPeriod: max(0, int(snapshotPeriod)),
+      captureFrames:  captureFrames != 0,
+      harnessMeta:    (if harnessMeta.isNil: "" else: $harnessMeta)
+    )
+    TraceInitArmed = true
+    cint(0)
+
+  proc attachTraceForAgent(bot: var Bot, agentIndex: int) =
+    if not TraceInitArmed: return
+    if PendingTraceInit.level == tlOff: return
+    bot.trace = openTrace(
+      rootDir        = PendingTraceInit.rootDir,
+      botName        = "ffi-agent-" & intToStr(agentIndex, 3),
+      level          = PendingTraceInit.level,
+      snapshotPeriod = PendingTraceInit.snapshotPeriod,
+      captureFrames  = PendingTraceInit.captureFrames,
+      harnessMeta    = PendingTraceInit.harnessMeta,
+      masterSeed     = 0,
+      framesPath     = "",
+      configJson     = """{"transport":"ffi"}"""
+    )
+    bot.trace.beginRound(bot, isMidRound = false)
+
   proc modulabot_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
     ## Creates a persistent Nim-backed Modulabot policy and returns its handle.
     let count = max(1, int(numAgents))
     var policy = ModulabotPolicy(bots: newSeq[Bot](count))
     for i in 0 ..< count:
       policy.bots[i] = initBot()
+      attachTraceForAgent(policy.bots[i], i)
     ModulabotPolicies.add(policy)
     cint(ModulabotPolicies.len - 1)
 
@@ -120,6 +185,7 @@ when defined(modulabotLibrary):
       policy.bots.setLen(int(numAgents))
       for i in oldLen ..< policy.bots.len:
         policy.bots[i] = initBot()
+        attachTraceForAgent(policy.bots[i], i)
 
     for row in 0 ..< int(numAgentIds):
       let agentId = int(agentIds[row])
