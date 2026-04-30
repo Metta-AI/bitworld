@@ -19,3 +19,4 @@ __pycache__/
 .venv/
 tools/quick_run.nim
 .DS_Store
+replays/
