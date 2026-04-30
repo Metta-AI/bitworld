@@ -16,16 +16,16 @@ import WebSocket from "ws";
 import { argv } from "process";
 import {
   TARGET_FPS, BUTTON_A,
-} from "./constants.js";
+} from "../constants.js";
 import {
   sendInput, PACKED_FRAME_BYTES, unpackFrame, ActionQueue,
   moveToward, randomDir, randomPoint,
   type Point,
-} from "./bot_utils.js";
-import { Room } from "./types.js";
+} from "../bot_utils.js";
+import { Room } from "../types.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-} from "./belief_state.js";
+} from "../belief_state.js";
 import {
   parseArgs, executeBaseCommand, tickMovement, tickWander,
   type BotController, type ParsedCommand,

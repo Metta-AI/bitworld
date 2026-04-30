@@ -1,15 +1,15 @@
 import WebSocket from "ws";
-import { BUTTON_A, BUTTON_B, BUTTON_SELECT } from "./constants.js";
-import { Room } from "./types.js";
+import { BUTTON_A, BUTTON_B, BUTTON_SELECT } from "../constants.js";
+import { Room } from "../types.js";
 import {
   sendInput, sendChat, truncateChatInput, ActionQueue,
   menuSequence, COMMAND_ACTIONS,
   hostageSelectSequence,
   moveToward, randomDir, randomPoint, clamp,
   type Point,
-} from "./bot_utils.js";
-import { chatMenuSequenceWithTargetPick } from "./menu_defs.js";
-import { type BeliefState } from "./belief_state.js";
+} from "../bot_utils.js";
+import { chatMenuSequenceWithTargetPick } from "../menu_defs.js";
+import { type BeliefState } from "../belief_state.js";
 
 // ---------------------------------------------------------------------------
 // CLI argument parser

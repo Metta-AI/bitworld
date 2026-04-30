@@ -3,9 +3,9 @@
  * tsx debug_frame.ts [ws://localhost:PORT/player]
  */
 import WebSocket from "ws";
-import { PACKED_FRAME_BYTES, unpackFrame } from "./bot_utils.js";
-import { SCREEN_WIDTH, SCREEN_HEIGHT } from "./constants.js";
-import { parsePhase, parseRoleRevealScreen, readTextAt } from "./frame_parser.js";
+import { PACKED_FRAME_BYTES, unpackFrame } from "../bot_utils.js";
+import { SCREEN_WIDTH, SCREEN_HEIGHT } from "../constants.js";
+import { parsePhase, parseRoleRevealScreen, readTextAt } from "../frame_parser.js";
 
 const url = process.argv[2] ?? "ws://localhost:8080/player";
 const ws = new WebSocket(`${url}?name=debug_probe`, { perMessageDeflate: false });

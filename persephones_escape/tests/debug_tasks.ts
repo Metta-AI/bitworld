@@ -3,17 +3,17 @@
  * the whole pursue_chat → grant → color → role → mutual-exchange flow.
  */
 
-import { Sim } from "./sim.js";
-import { DEFAULT_GAME_CONFIG } from "./constants.js";
-import { decodeInputMask, emptyInput } from "./protocol.js";
-import type { InputState } from "./types.js";
-import { render } from "./renderer.js";
+import { Sim } from "../sim.js";
+import { DEFAULT_GAME_CONFIG } from "../constants.js";
+import { decodeInputMask, emptyInput } from "../protocol.js";
+import type { InputState } from "../types.js";
+import { render } from "../renderer.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-} from "./belief_state.js";
-import { unpackFrame, ActionQueue } from "./bot_utils.js";
-import type { BotController } from "./bot_common.js";
-import { runTasks, createTaskInstance, createEventBuffer, eventBufferLines, type TaskInstance, type Task } from "./tasks.js";
+} from "../belief_state.js";
+import { unpackFrame, ActionQueue } from "../bot_utils.js";
+import type { BotController } from "../bots/bot_common.js";
+import { runTasks, createTaskInstance, createEventBuffer, eventBufferLines, type TaskInstance, type Task } from "../bots/tasks.js";
 
 const sim = new Sim(
   { ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, hostages: 1 }], obstacleCount: 0 },

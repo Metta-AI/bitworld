@@ -4,10 +4,10 @@
  * that coalesceChatFragments merges them back.
  */
 
-import { Sim } from "./sim.js";
-import { DEFAULT_GAME_CONFIG, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_TOTAL } from "./constants.js";
-import { coalesceChatFragments } from "./util.js";
-import { Team, Role } from "./types.js";
+import { Sim } from "../sim.js";
+import { DEFAULT_GAME_CONFIG, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_TOTAL } from "../constants.js";
+import { coalesceChatFragments } from "../util.js";
+import { Team, Role } from "../types.js";
 
 const sim = new Sim(
   {

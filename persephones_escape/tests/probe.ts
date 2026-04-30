@@ -1,7 +1,7 @@
 import WebSocket from "ws";
-import { PACKED_FRAME_BYTES, unpackFrame, readPosition } from "./bot_utils.js";
-import { parsePhase, parsePlayingHud, parseRoleRevealScreen, readTextAt } from "./frame_parser.js";
-import { SCREEN_WIDTH } from "./constants.js";
+import { PACKED_FRAME_BYTES, unpackFrame, readPosition } from "../bot_utils.js";
+import { parsePhase, parsePlayingHud, parseRoleRevealScreen, readTextAt } from "../frame_parser.js";
+import { SCREEN_WIDTH } from "../constants.js";
 
 const ws = new WebSocket("ws://localhost:8080/player?name=probe", { perMessageDeflate: false });
 let count = 0;

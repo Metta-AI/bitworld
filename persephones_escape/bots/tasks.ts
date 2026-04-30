@@ -16,9 +16,9 @@
  */
 
 import type WebSocket from "ws";
-import { BUTTON_A } from "./constants.js";
-import { sendInput, sendChat, truncateChatInput, moveToward } from "./bot_utils.js";
-import { chatMenuSequenceWithTargetPick } from "./menu_defs.js";
+import { BUTTON_A } from "../constants.js";
+import { sendInput, sendChat, truncateChatInput, moveToward } from "../bot_utils.js";
+import { chatMenuSequenceWithTargetPick } from "../menu_defs.js";
 import type { BotController } from "./bot_common.js";
 
 // ---------------------------------------------------------------------------

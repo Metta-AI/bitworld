@@ -92,7 +92,7 @@ function parseCliArgs() {
     port: parseInt(args["port"] ?? "9090"),
     replayDir: args["replay-dir"] ?? null,
     model: args["model"] ?? undefined,
-    botScript: args["bot-script"] ?? "llm_bot.ts",
+    botScript: args["bot-script"] ?? "bots/llm_bot.ts",
     botPrefix: args["bot-prefix"] ?? "llm_",
   };
 }
@@ -210,14 +210,14 @@ function runMatch(
     const url = `ws://localhost:${port}/player`;
 
     httpServer.listen(port, "localhost", () => {
-      const smartProc = spawn("npx", ["tsx", "smart_bots.ts", String(smartBotCount), url], {
+      const smartProc = spawn("npx", ["tsx", "bots/smart_bots.ts", String(smartBotCount), url], {
         stdio: ["ignore", "pipe", "pipe"],
         cwd: import.meta.dirname,
       });
       children.push(smartProc);
 
       for (let i = 0; i < llmBotCount; i++) {
-        const llmArgs = ["tsx", "llm_bot.ts", "--name", `llm_${i + 1}`, "--url", url];
+        const llmArgs = ["tsx", "bots/llm_bot.ts", "--name", `llm_${i + 1}`, "--url", url];
         if (llmModel) llmArgs.push("--model", llmModel);
         const llmProc = spawn("npx", llmArgs, {
           stdio: ["ignore", "pipe", "pipe"],
