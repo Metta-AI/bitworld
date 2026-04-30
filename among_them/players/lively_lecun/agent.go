@@ -486,7 +486,23 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 		}
 	} else if locked && a.nav.HasGoal() {
 		a.logBranch("nav")
-		navMask, arrived := a.nav.Next(player)
+		var navMask uint8
+		var arrived bool
+		if a.status.IsGhost() {
+			// Ghosts pass through walls (sim.nim:1334 containGhost only
+			// clamps to the map rect). A* paths thread through walled
+			// corridors and create zigzags that cancel vertical travel,
+			// leaving a ghost drifting slowly off-axis. Steer straight at
+			// the goal instead.
+			goal := a.nav.Goal()
+			if manhattan(player, goal) <= navArrivedRadius {
+				arrived = true
+			} else {
+				navMask = maskTowards(player, goal)
+			}
+		} else {
+			navMask, arrived = a.nav.Next(player)
+		}
 		if navMask == Unreachable {
 			if a.goalStation >= 0 {
 				log.Printf("nav: station %d at %v unreachable; demoting to seen_no",
