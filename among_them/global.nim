@@ -2312,7 +2312,7 @@ proc buildSpriteProtocolUpdates*(
       nextState.mouseY,
       replayMaxTick
     )
-    if replayTick >= 0 and seekTick >= 0:
+    if replayEnabled and replayTick >= 0 and seekTick >= 0:
       nextState.scrubbingReplay = true
       nextState.replaySeekTick = seekTick
     elif replayTick >= 0:
@@ -2330,7 +2330,8 @@ proc buildSpriteProtocolUpdates*(
       nextState.selectedJoinOrder =
         sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
     nextState.clickPending = false
-  if replayTick >= 0 and nextState.mouseDown and nextState.scrubbingReplay:
+  if replayEnabled and replayTick >= 0 and nextState.mouseDown and
+      nextState.scrubbingReplay:
     let seekTick = replayScrubTickAt(
       nextState.mouseLayer,
       nextState.mouseX,
@@ -2566,7 +2567,7 @@ proc buildSpriteProtocolUpdates*(
     scrubber = buildReplayScrubberSprite(
       controlTick,
       controlMaxTick,
-      replayEnabled
+      replayEnabled or controlMaxTick > 0
     )
     controls = sim.buildReplayControlsSprite(
       replayPlaying,

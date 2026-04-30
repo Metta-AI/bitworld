@@ -73,6 +73,13 @@ type
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
 
+proc liveProgressMaxTick(config: GameConfig): int =
+  ## Returns the live viewer tick-bar budget.
+  if config.maxTicks > 0:
+    config.maxTicks
+  else:
+    MaxTicks
+
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static client file if the route matches.
   if request.httpMethod != "GET":
@@ -1033,7 +1040,7 @@ proc runServerLoop*(
         if replayLoaded: replayPlayer.replaySpeed()
         else: playbackSpeed(liveSpeedIndex),
         if replayLoaded: replayPlayer.replayMaxTick()
-        else: sim.tickCount,
+        else: liveProgressMaxTick(config),
         replayPlayer.looping,
         replayLoaded
       )
