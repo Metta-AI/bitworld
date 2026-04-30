@@ -20,6 +20,7 @@ import types
 import geometry
 import frame
 import sprite_match
+import memory
 
 const
   GhostIconMaxMisses* = 3
@@ -147,9 +148,22 @@ proc scanCrewmates*(bot: var Bot) =
         let ci = crewmateColorIndex(bot.io.unpacked, sprite, x, y, true)
         bot.percep.visibleCrewmates.addCrewmateMatch(x, y, ci, true)
   for crewmate in bot.percep.visibleCrewmates:
-    if crewmate.colorIndex >= 0 and
-        crewmate.colorIndex < bot.identity.lastSeen.len:
-      bot.identity.lastSeen[crewmate.colorIndex] = bot.frameTick
+    if crewmate.colorIndex < 0 or
+        crewmate.colorIndex >= PlayerColorCount:
+      continue
+    # Skip known imposter teammates — we don't track alibi / suspect
+    # state for them.
+    if crewmate.colorIndex < bot.identity.knownImposters.len and
+        bot.identity.knownImposters[crewmate.colorIndex]:
+      continue
+    # Skip self (we shouldn't normally see our own sprite scan-
+    # matched, but dead-ghost edge cases can surface it).
+    if crewmate.colorIndex == bot.identity.selfColor:
+      continue
+    let world = bot.percep.visibleCrewmateWorld(crewmate)
+    let roomId = bot.sim.roomIdAt(world.x, world.y)
+    discard bot.memory.appendSighting(
+      bot.frameTick, crewmate.colorIndex, world.x, world.y, roomId)
 
 proc updateSelfColor*(bot: var Bot) =
   ## Reads the centred player sprite's tint and stores the resulting

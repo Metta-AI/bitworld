@@ -181,15 +181,118 @@ type
   Identity* = object
     selfColor*: int                       ## v2: bot.selfColorIndex; -1 unknown
     knownImposters*: PerColor[bool]
-    lastSeen*: PerColor[int]              ## tick of last sighting per colour
 
   Evidence* = object
-    ## Per-colour witness bookkeeping for the crewmate accusation policy.
+    ## Per-colour witness bookkeeping for the crewmate accusation
+    ## policy. These scalars are a hot-path cache mirror of
+    ## `memory.summaries`; they are populated from inside
+    ## `updateEvidence` alongside the richer memory appends so that
+    ## existing voting code (`evidenceBasedSuspect`) keeps the exact
+    ## scalar semantics it had pre-memory. See DESIGN.md §13.6.
     nearBodyTicks*: PerColor[int]
     witnessedKillTicks*: PerColor[int]
     prevCrewmateX*: PerColor[int]         ## -1 = not visible last frame
     prevCrewmateY*: PerColor[int]
     prevBodies*: seq[tuple[x: int, y: int]]
+
+  # -----------------------------------------------------------------
+  # Long-term memory (DESIGN.md §13)
+  # -----------------------------------------------------------------
+
+  SightingEvent* = object
+    ## One observation of a non-self, non-teammate crewmate. Appended
+    ## by the actor scan; dedup'd in-module against
+    ## `Memory.lastSightingIndex[colorIndex]`.
+    tick*: int
+    colorIndex*: int
+    x*, y*: int
+    roomId*: int                          ## -1 if outside any named room
+
+  BodyWitness* = object
+    ## One crewmate within witness radius of a body at the frame the
+    ## body was first recorded.
+    colorIndex*: int
+    dx*, dy*: int                         ## offset from body
+
+  BodyEvent* = object
+    ## First-seen record of a distinct body. Round-lifetime dedup by
+    ## position (see memory.appendBody).
+    tick*: int
+    x*, y*: int
+    roomId*: int
+    witnesses*: seq[BodyWitness]
+    isNewBody*: bool                      ## v2's "witnessedKill" signal
+
+  MeetingEvent* = object
+    ## One completed meeting, appended at meeting close (voting screen
+    ## just went away). `votes` matches the live semantics of
+    ## `VotingState.choices` — each entry is a slot index, `VoteSkip`,
+    ## or `VoteUnknown`. Consumers translate slot → colour themselves.
+    startTick*: int
+    endTick*: int
+    reporter*: int                        ## -1 if unknown (v1 default)
+    selfVote*: int                        ## slot index / VoteSkip /
+                                          ## VoteUnknown
+    votes*: PerColor[int]
+    ejected*: int                         ## -1 if skipped or unknown
+                                          ## (v1 default)
+    chatLines*: seq[string]               ## raw OCR; speakers in v2
+
+  AlibiEvent* = object
+    ## Positive-innocence signal: a colour seen at or near a task
+    ## terminal. v1 populates on task-icon co-visibility; richer
+    ## rules (task-completion flash correlation) are v1.1.
+    tick*: int
+    colorIndex*: int
+    taskIndex*: int
+
+  PlayerSummary* = object
+    ## Per-colour aggregate updated incrementally on each append.
+    ## Replaces `Identity.lastSeen` and supersets it with location
+    ## and derived counts.
+    lastSeenTick*: int
+    lastSeenX*, lastSeenY*: int
+    lastSeenRoomId*: int
+    timesNearBody*: int
+    timesWitnessedKill*: int
+    timesVotedForMe*: int
+    timesIVotedForThem*: int
+    timesVotedWithMe*: int
+    taskBits*: uint64                     ## which task indices seen
+    distinctTasksObserved*: int           ## popcount(taskBits), cached
+    ejected*: bool
+
+  Memory* = object
+    ## Round-scoped long-term evidence memory. See DESIGN.md §13.
+    ##
+    ## Lifetime rules:
+    ##   * `resetForNewRound` clears everything at role reveal /
+    ##     game-over edges.
+    ##   * `trimAtMeetingEnd` drops `sightings` and `alibis` with
+    ##     `tick < lastMeetingEndTick`; `bodies` and `meetings`
+    ##     persist for the whole round.
+    ##   * Summaries update incrementally on each append regardless
+    ##     of dedup/trim — so queries like "last time I saw X" stay
+    ##     accurate even after the raw log is trimmed.
+    sightings*: seq[SightingEvent]
+    bodies*: seq[BodyEvent]
+    meetings*: seq[MeetingEvent]
+    alibis*: seq[AlibiEvent]
+    summaries*: PerColor[PlayerSummary]
+    lastSightingIndex*: PerColor[int]     ## -1 if no sighting this
+                                          ## round; index into
+                                          ## `sightings` for dedup.
+                                          ## Stale after trim — but
+                                          ## dedup only cares about
+                                          ## *recent* entries so
+                                          ## false-positive dedup
+                                          ## after trim is safe
+                                          ## (we'd just append more
+                                          ## aggressively for a few
+                                          ## frames).
+    lastMeetingEndTick*: int              ## sighting/alibi trim
+                                          ## boundary; -1 if no
+                                          ## meeting yet this round.
 
   ImposterState* = object
     killReady*: bool
@@ -372,7 +475,14 @@ type
     prevVoteChoices*: PerColor[int]
     prevStuckActive*: bool
     prevStuckStartTick*: int
-    prevBodyWorldPositions*: seq[tuple[x, y: int]]
+    # Memory shadow — last-observed length of the round-lifetime
+    # body log, used by trace to detect new appends in O(1).
+    # Replaces v1's `prevBodyWorldPositions` diff state
+    # (DESIGN.md §13.6). `meeting_ended` is still emitted from the
+    # interstitial-edge detector (voting.active true→false), which
+    # happens in the same frame as the `memory.appendMeeting`
+    # call, so a separate meeting-growth shadow is unnecessary.
+    prevBodiesCount*: int
     # Meeting bookkeeping
     meetingActive*: bool
     meetingIndex*: int                    ## 1-indexed within round
@@ -410,6 +520,7 @@ type
     goal*: Goal
     identity*: Identity
     evidence*: Evidence
+    memory*: Memory
     imposter*: ImposterState
     voting*: VotingState
     chat*: ChatState

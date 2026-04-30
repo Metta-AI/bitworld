@@ -16,3 +16,26 @@ const
     ## scans are trusted as still accurate. Set during the parity bake.
     ## Too tight wastes scans every frame; too loose lets stale matches
     ## poison post-vote frames. See DESIGN.md §5 for context.
+
+  # -----------------------------------------------------------------
+  # Long-term memory (DESIGN.md §13)
+  # -----------------------------------------------------------------
+
+  MemorySightingDedupTicks* = 5
+    ## A new `SightingEvent` for colour `c` is suppressed if the
+    ## previous sighting for `c` fell within this many ticks AND
+    ## within `MemorySightingDedupPixels` world-px. Per-colour
+    ## summary (lastSeenTick / lastSeenX / lastSeenY) updates on
+    ## every visible frame regardless; dedup only bounds raw-log
+    ## growth.
+  MemorySightingDedupPixels* = 16
+    ## Companion to `MemorySightingDedupTicks`. See there.
+  MemoryBodyDedupPx* = 6
+    ## Round-lifetime body dedup threshold. A body seen more than
+    ## this many world-px away from any existing `BodyEvent` is
+    ## appended as a distinct discovery. Smaller than
+    ## `SpriteSize` on purpose: bodies don't move, so any real
+    ## second body is further than a sprite's worth of jitter.
+  MemoryAlibiCooldownTicks* = 20
+    ## Per-(colour, task) dedup — suppress an `AlibiEvent` for the
+    ## same colour + task if one fired within this many ticks.

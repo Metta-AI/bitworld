@@ -25,7 +25,11 @@ import voting
 import tuning_snapshot
 
 const
-  SchemaVersion = 1
+  SchemaVersion = 2
+    ## v2 bump (DESIGN.md §13.6): trace writer consumes the new
+    ## `Memory` event log as single source of truth for body
+    ## discoveries. Existing event shapes are unchanged; v1 readers
+    ## can consume v2 traces without modification.
   StuckFrameThresholdLocal = StuckFrameThreshold
     ## Local alias to avoid pulling motion's full namespace; this is
     ## the value `motion.updateMotionState` uses to begin a jiggle.
@@ -137,39 +141,13 @@ proc emitDecision(t: TraceWriter, bot: Bot, mask: uint8,
 # ---------------------------------------------------------------------------
 # Body diff helpers
 # ---------------------------------------------------------------------------
-
-const
-  BodySameThresholdSq = SpriteSize * SpriteSize
-    ## Squared world-px distance below which two body sightings are the
-    ## same body. Mirrors evidence.nim's tier-2 same-body threshold.
-
-proc detectNewBodies(t: TraceWriter, bot: Bot): seq[tuple[x, y: int]] =
-  ## Returns world coordinates of bodies visible this frame that
-  ## weren't in the writer's prev-bodies snapshot. Both lists are
-  ## kept in world coordinates so the diff is camera-independent.
-  result = @[]
-  if not bot.percep.localized:
-    return
-  for body in bot.percep.visibleBodies:
-    let world = bot.percep.visibleBodyWorld(body)
-    var seen = false
-    for prev in t.prevBodyWorldPositions:
-      let
-        dx = world.x - prev.x
-        dy = world.y - prev.y
-      if dx * dx + dy * dy <= BodySameThresholdSq:
-        seen = true
-        break
-    if not seen:
-      result.add((x: world.x, y: world.y))
-
-proc snapshotBodiesWorld(bot: Bot): seq[tuple[x, y: int]] =
-  result = @[]
-  if not bot.percep.localized:
-    return
-  for body in bot.percep.visibleBodies:
-    let world = bot.percep.visibleBodyWorld(body)
-    result.add((x: world.x, y: world.y))
+#
+# Prior to v2, the trace writer kept its own `prevBodyWorldPositions`
+# shadow and diffed the visible-body list frame-to-frame. That state
+# is redundant with `Memory.bodies`, which already captures the
+# round-lifetime set of distinct bodies with deterministic dedup.
+# The writer now observes `memory.bodies.len` growth instead; this is
+# the §13.6 single-source-of-truth refactor.
 
 # ---------------------------------------------------------------------------
 # Manifest write
@@ -331,7 +309,7 @@ proc resetShadow(t: TraceWriter, bot: Bot) =
     t.prevVoteChoices[i] = VoteUnknown
   t.prevStuckActive = false
   t.prevStuckStartTick = 0
-  t.prevBodyWorldPositions = @[]
+  t.prevBodiesCount = bot.memory.bodies.len
   t.meetingActive = false
   t.meetingIndex = 0
   t.meetingStartTick = 0
@@ -536,50 +514,41 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
     for i in 0 ..< m:
       t.prevTaskResolved[i] = bot.tasks.resolved[i]
 
-  # Body diff (run before updating prevBodies snapshot)
-  if bot.percep.localized:
-    let newBodies = detectNewBodies(t, bot)
-    for body in newBodies:
+  # Body diff: replaced v1's per-frame position-shadow with a
+  # simple length-growth check against memory.bodies. memory owns
+  # dedup (MemoryBodyDedupPx), so each new entry is guaranteed to
+  # be a distinct body worth emitting once. Witness translation
+  # runs off the BodyEvent payload that memory already recorded.
+  if bot.memory.bodies.len > t.prevBodiesCount:
+    for i in t.prevBodiesCount ..< bot.memory.bodies.len:
+      let bev = bot.memory.bodies[i]
       var witnesses = newJArray()
-      for cm in bot.percep.visibleCrewmates:
-        if cm.colorIndex < 0: continue
-        if cm.colorIndex == bot.identity.selfColor: continue
-        if bot.knownImposterColor(cm.colorIndex): continue
-        let world = bot.percep.visibleCrewmateWorld(cm)
-        let
-          dx = world.x - body.x
-          dy = world.y - body.y
-        if dx * dx + dy * dy <= WitnessNearBodyRadius * WitnessNearBodyRadius:
-          witnesses.add(%playerColorName(cm.colorIndex))
+      for w in bev.witnesses:
+        witnesses.add(%playerColorName(w.colorIndex))
       let recentKill =
         bot.role == RoleImposter and
         bot.imposter.lastKillTick > 0 and
-        tick - bot.imposter.lastKillTick <= 60
-      emitEvent(t, tick, "body_seen_first", %*{
-        "world_pos":          [body.x, body.y],
-        "room":               bot.sim.roomNameAt(body.x, body.y),
+        bev.tick - bot.imposter.lastKillTick <= 60
+      emitEvent(t, bev.tick, "body_seen_first", %*{
+        "world_pos":          [bev.x, bev.y],
+        "room":               bot.sim.roomNameAt(bev.x, bev.y),
         "witnesses_nearby":   witnesses,
-        "self_recent_kill":   recentKill
+        "self_recent_kill":   recentKill,
+        "is_new_body":        bev.isNewBody
       })
       inc t.counters.bodiesSeenFirst
-      # Tier-2 evidence stamping (witnessed kill on tick this frame)
-      for cm in bot.percep.visibleCrewmates:
-        if cm.colorIndex < 0: continue
-        if cm.colorIndex == bot.identity.selfColor: continue
-        if bot.knownImposterColor(cm.colorIndex): continue
-        let world = bot.percep.visibleCrewmateWorld(cm)
-        let
-          dx = world.x - body.x
-          dy = world.y - body.y
-        if dx * dx + dy * dy <= WitnessNearBodyRadius * WitnessNearBodyRadius:
-          emitEvent(t, tick, "kill_witnessed", %*{
-            "suspect":          playerColorName(cm.colorIndex),
-            "body_world_pos":   [body.x, body.y],
-            "room":             bot.sim.roomNameAt(body.x, body.y)
+      # Tier-2 kill_witnessed: one event per witness on a new-body
+      # discovery, matching v1's behaviour. Persistent / first-seen
+      # dead bodies (where isNewBody=false) do not emit kill_witnessed.
+      if bev.isNewBody:
+        for w in bev.witnesses:
+          emitEvent(t, bev.tick, "kill_witnessed", %*{
+            "suspect":          playerColorName(w.colorIndex),
+            "body_world_pos":   [bev.x, bev.y],
+            "room":             bot.sim.roomNameAt(bev.x, bev.y)
           })
           inc t.counters.killsWitnessed
-    # Refresh body snapshot in world coords for next frame's diff.
-    t.prevBodyWorldPositions = snapshotBodiesWorld(bot)
+    t.prevBodiesCount = bot.memory.bodies.len
 
   # Kill executed (imposter): edge on imposter.lastKillTick
   if bot.role == RoleImposter and

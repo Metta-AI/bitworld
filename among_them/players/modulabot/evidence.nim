@@ -17,6 +17,7 @@ import ../../sim
 
 import types
 import geometry
+import memory      # BodyEvent appends + per-colour summary reads
 import path  # for `heuristic`
 
 # ---------------------------------------------------------------------------
@@ -113,12 +114,16 @@ proc suspectedColor*(bot: Bot): tuple[found: bool, name: string,
   ## Returns the most recently seen non-self, non-teammate colour.
   ## Used by the imposter to bandwagon on chat; the crewmate's vote
   ## logic uses `evidenceBasedSuspect` instead.
+  ##
+  ## Reads the memory summary instead of the old `identity.lastSeen`
+  ## scalar (DESIGN.md §13.5 migration).
   var bestTick = 0
-  for i, tick in bot.identity.lastSeen:
+  for i in 0 ..< PlayerColorCount:
     if i == bot.identity.selfColor:
       continue
     if bot.knownImposterColor(i):
       continue
+    let tick = bot.memory.summaries[i].lastSeenTick
     if tick > bestTick and i < PlayerColorNames.len:
       bestTick = tick
       result = (true, playerColorName(i), tick, i)
@@ -178,6 +183,12 @@ proc updateEvidence*(bot: var Bot) =
 
   # Tier 2: any *new* body (no body within ~SpriteSize last frame)
   # gives the near crewmate(s) the stronger witnessedKill stamp.
+  # Also appends a BodyEvent to long-term memory with the witness
+  # snapshot — memory does its own round-lifetime dedup so a body
+  # appearing "new this frame" for a second time (after briefly
+  # leaving the viewport) will NOT create a duplicate memory entry.
+  # The scalar witnessedKillTicks cache keeps v2 re-stamp semantics
+  # for evidenceBasedSuspect parity.
   let kill2 = SpriteSize * SpriteSize
   for body in bodyWorlds:
     var isNew = true
@@ -190,12 +201,25 @@ proc updateEvidence*(bot: var Bot) =
         break
     if not isNew:
       continue
+    # Build witness snapshot for the memory event. We use the
+    # already-filtered cmColors/cmX/cmY arrays so self/teammate
+    # skips are consistent with the scalar tier.
+    var witnesses: seq[BodyWitness] = @[]
     for k in 0 ..< cmCount:
       let
         dx = cmX[k] - body.x
         dy = cmY[k] - body.y
       if dx * dx + dy * dy <= nearR2:
         bot.evidence.witnessedKillTicks[cmColors[k]] = bot.frameTick
+        witnesses.add(BodyWitness(
+          colorIndex: cmColors[k],
+          dx: dx,
+          dy: dy
+        ))
+    let roomId = bot.sim.roomIdAt(body.x, body.y)
+    discard bot.memory.appendBody(
+      bot.frameTick, body.x, body.y, roomId, witnesses,
+      isNewBody = true)
 
   # Persist this frame's positions for next frame's diff.
   for i in 0 ..< PlayerColorCount:
@@ -249,10 +273,11 @@ proc evidenceBasedSuspect*(bot: Bot): tuple[found: bool, name: string,
 
 proc randomInnocentColor*(bot: var Bot): int =
   ## Picks a random non-self, non-teammate colour we've seen alive
-  ## this game. Prefers actually-seen colours (lastSeen > 0); falls
-  ## back to all non-self/non-teammate colours otherwise.
+  ## this game. Prefers actually-seen colours (lastSeenTick > 0);
+  ## falls back to all non-self/non-teammate colours otherwise.
   ##
   ## Pulls from `bot.rngs.imposterChat` (Q6: per-consumer substream).
+  ## Reads memory summaries (DESIGN.md §13.5 migration).
   var
     seenCount = 0
     anyCount = 0
@@ -265,7 +290,7 @@ proc randomInnocentColor*(bot: var Bot): int =
       continue
     anyCandidates[anyCount] = i
     inc anyCount
-    if bot.identity.lastSeen[i] > 0:
+    if bot.memory.summaries[i].lastSeenTick > 0:
       seenCandidates[seenCount] = i
       inc seenCount
   if seenCount > 0:
