@@ -497,6 +497,13 @@ type
     # happens in the same frame as the `memory.appendMeeting`
     # call, so a separate meeting-growth shadow is unnecessary.
     prevBodiesCount*: int
+    # Memory shadow — last-observed length of the round-lifetime
+    # alibi log. Growth emits `alibi_observed`. Like bodies, memory
+    # owns dedup (per-(colour, task) within
+    # `MemoryAlibiCooldownTicks`), so each new entry is an event
+    # worth emitting. Meeting-boundary trim (§13.3) shrinks the log;
+    # on shrinkage we just re-baseline the shadow.
+    prevAlibisCount*: int
     # Meeting bookkeeping
     meetingActive*: bool
     meetingIndex*: int                    ## 1-indexed within round
@@ -510,6 +517,15 @@ type
     warnedEmptyBranchId*: bool
     # Counters
     counters*: ManifestCounters
+    # Session-level rollup. Written to
+    # `<trace-root>/<bot-name>/<session-id>/_session.json` at every
+    # round close so a partially-played session still has a usable
+    # index if the process exits between rounds. `sessionCounters`
+    # is the sum of per-round counters; `sessionRoundIds` / the
+    # parallel `sessionResults` list is in round-close order.
+    sessionCounters*: ManifestCounters
+    sessionRoundIds*: seq[int]
+    sessionResults*: seq[string]
     # Final-manifest record (built up across the round)
     config*: string                       ## inline JSON string
     tuningSnapshot*: string               ## inline JSON string

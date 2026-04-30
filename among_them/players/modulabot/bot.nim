@@ -474,6 +474,7 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
   bot.updateTaskIcons()
+  bot.recordTaskAlibis()
 
   bot.goal.has = false
   bot.goal.hasPathStep = false

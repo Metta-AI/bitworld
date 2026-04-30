@@ -39,3 +39,12 @@ const
   MemoryAlibiCooldownTicks* = 20
     ## Per-(colour, task) dedup — suppress an `AlibiEvent` for the
     ## same colour + task if one fired within this many ticks.
+  MemoryAlibiTaskRadiusPx* = 12
+    ## Manhattan distance (world px) from a visible crewmate's centre
+    ## to a task station's centre at or below which we treat the
+    ## crewmate as "at the task terminal" and emit an `AlibiEvent`.
+    ## Task rects are small (~14-18 px on a side) and the crewmate
+    ## sprite occupies most of the rect when they're standing on it,
+    ## so a slightly-larger-than-rect-half radius covers the usual
+    ## doing-the-task pose without picking up crewmates merely
+    ## passing through an adjacent corridor.

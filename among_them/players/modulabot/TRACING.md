@@ -471,9 +471,32 @@ non-null only on snapshots emitted at `meeting_started`.
 - `<round-id>` — zero-padded round counter, e.g. `0003`. `0000` is
   reserved for "started mid-round" partial games.
 
-A `_session.json` may optionally be written at `<trace-root>/<bot-name>/<session-id>/`
-holding session-level metadata (start/end time, number of rounds,
-configuration). Deferred to v1.1 unless harness needs it earlier.
+A `_session.json` file is written at
+`<trace-root>/<bot-name>/<session-id>/_session.json` on every round
+close (and on `closeTrace` if the session ended without any rounds).
+Schema:
+
+```jsonc
+{
+  "schema_version":        1,
+  "session_id":            "2026-04-30T23-27-51Z-11451",
+  "bot_name":              "modulabot",
+  "booted_unix_ms":        1777591671424,    // when openTrace fired
+  "last_updated_unix_ms":  1777591677859,    // most recent rewrite
+  "master_seed":           42,
+  "rounds_completed":      3,                // len(round_ids)
+  "round_ids":             [0, 1, 2],        // close order
+  "round_results":         ["crew_wins",     // matches round_ids[]
+                            "imps_win",
+                            "unknown"],
+  "summary_counters":      { ...ManifestCounters sum across rounds... }
+}
+```
+
+The file is rewritten in full at every close, so a process crash
+between rounds still leaves a usable cross-round index. Harness
+tooling should prefer `_session.json` over parsing every
+`manifest.json` when it only needs session-level aggregates.
 
 ## 6. Hook points
 
@@ -1061,9 +1084,23 @@ K games (configurable, default `K = 10`); the harness can flag
 specific games for retention via a sentinel file
 `<round-dir>/RETAIN`.
 
-This rotation is implemented as a v1.1 cron-style sweep, not in the
-hot path. v1 ships without rotation; document the disk-cost
-expectation.
+Rotation is not hot-path. The bot writes every frames dump forever;
+a separate out-of-process sweeper (`tools/frames_sweep.nim`)
+implements the retention policy. Invoke it between runs, from cron,
+or from the harness's post-game hook:
+
+```
+nim r tools/frames_sweep.nim --root:<trace-root> [--keep:10] \
+                             [--dry-run] [--verbose]
+```
+
+The sweeper walks `<root>/<bot>/<session>/round-*`, orders rounds
+newest-first by `manifest.started_unix_ms` (falling back to round-
+directory mtime), and deletes the external file pointed at by each
+pruned round's `manifest.config.frames_dump_path`. The rest of each
+round (manifest, events, decisions, snapshots) is preserved.
+Pinned rounds (`RETAIN` sentinel) never count against the K budget
+and are never swept.
 
 ### 14.7 OCR'd chat lines have no speaker attribution
 
@@ -1080,11 +1117,13 @@ before returning. Listed as `bot.interstitial.*` and
 
 ### 14.9 `selfColor` reset semantics
 
-`identity.selfColor` is set once and not cleared by `resetRoundState`
-(verify during implementation; if false, document and adjust). The
-trace emits `self_color_known` only on the first non-(-1) write per
-session. If the value can change mid-session, add a
-`self_color_changed` event in v1.1.
+`identity.selfColor` is set once and not cleared by `resetRoundState`.
+The trace emits `self_color_known` on the first non-(-1) write per
+session and `self_color_changed` on any subsequent change
+(`trace.nim:430`), so a harness that caches the manifest's
+`self.color_index` can treat `self_color_changed` events as the
+authoritative signal to refresh the cache. Both event types are
+listed in `test/validate_trace.nim` `KnownEventTypes`.
 
 ### 14.10 OS path-segment compatibility
 

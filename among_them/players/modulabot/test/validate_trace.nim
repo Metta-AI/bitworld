@@ -21,6 +21,7 @@ const
     "body_reported", "meeting_started", "meeting_ended",
     "vote_observed", "vote_cast",
     "chat_observed", "chat_sent",
+    "alibi_observed",
     "stuck_detected", "stuck_resolved",
     "disconnect", "reconnect",
     "became_ghost",

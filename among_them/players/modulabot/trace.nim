@@ -37,6 +37,8 @@ const
   DecisionsFileName = "decisions.jsonl"
   SnapshotsFileName = "snapshots.jsonl"
   ManifestFileName = "manifest.json"
+  SessionIndexFileName = "_session.json"
+  SessionIndexSchemaVersion = 1
   PartialManifestSentinelKey = "ended_reason"
 
 proc nowMs(): int64 =
@@ -66,6 +68,12 @@ proc roundDirFor(t: TraceWriter, roundId: int): string =
   ## Per-round directory: <root>/<bot>/<session>/<round>.
   t.rootDir / safeFsName(t.botName) / t.sessionId / "round-" &
     intToStr(roundId, 4)
+
+proc sessionDirFor(t: TraceWriter): string =
+  ## Session-level directory: <root>/<bot>/<session>. Holds
+  ## `_session.json` (the cross-round rollup) alongside the per-round
+  ## subdirectories.
+  t.rootDir / safeFsName(t.botName) / t.sessionId
 
 # ---------------------------------------------------------------------------
 # JSON line emission helpers
@@ -174,6 +182,27 @@ proc countersToJson(c: ManifestCounters): JsonNode =
     "snapshots_emitted":   c.snapshotsEmitted
   }
 
+proc addCounters(dst: var ManifestCounters, src: ManifestCounters) =
+  ## Adds every field of `src` into `dst`. Used to roll per-round
+  ## `counters` into `sessionCounters` at round close.
+  dst.ticksTotal         += src.ticksTotal
+  dst.ticksLocalized     += src.ticksLocalized
+  dst.framesDropped      += src.framesDropped
+  dst.meetingsAttended   += src.meetingsAttended
+  dst.votesCast          += src.votesCast
+  dst.skipsVoted         += src.skipsVoted
+  dst.killsExecuted      += src.killsExecuted
+  dst.killsWitnessed     += src.killsWitnessed
+  dst.bodiesSeenFirst    += src.bodiesSeenFirst
+  dst.bodiesReported     += src.bodiesReported
+  dst.tasksCompleted     += src.tasksCompleted
+  dst.chatsSent          += src.chatsSent
+  dst.chatsObserved      += src.chatsObserved
+  dst.stuckEpisodes      += src.stuckEpisodes
+  dst.branchTransitions  += src.branchTransitions
+  dst.eventsEmitted      += src.eventsEmitted
+  dst.snapshotsEmitted   += src.snapshotsEmitted
+
 proc roleString(role: BotRole): string =
   case role
   of RoleUnknown: "unknown"
@@ -275,6 +304,44 @@ proc writeManifest(t: TraceWriter, bot: Bot, ended: bool,
   except IOError, OSError:
     discard
 
+proc writeSessionIndex(t: TraceWriter) =
+  ## Writes `_session.json` to the session directory. Captures rolled-
+  ## up counters, the ordered list of completed rounds, and their
+  ## per-round results for a cheap cross-round index the harness can
+  ## consume without parsing every manifest. Rewritten at every round
+  ## close and again at session close so a process crash mid-run
+  ## still leaves a usable index.
+  if t.isNil or t.rootDir.len == 0 or t.sessionId.len == 0:
+    return
+  let sessionDir = sessionDirFor(t)
+  let path = sessionDir / SessionIndexFileName
+  var roundIds = newJArray()
+  for rid in t.sessionRoundIds:
+    roundIds.add(%rid)
+  var results = newJArray()
+  for r in t.sessionResults:
+    results.add(%r)
+  let node = %*{
+    "schema_version":        SessionIndexSchemaVersion,
+    "session_id":            t.sessionId,
+    "bot_name":              t.botName,
+    "booted_unix_ms":        t.bootedUnixMs,
+    "last_updated_unix_ms":  nowMs(),
+    "master_seed":           t.masterSeed,
+    "rounds_completed":      t.sessionRoundIds.len,
+    "round_ids":             roundIds,
+    "round_results":         results,
+    "summary_counters":      countersToJson(t.sessionCounters)
+  }
+  try:
+    createDir(sessionDir)
+    let f = open(path, fmWrite)
+    defer: f.close()
+    f.write(node.pretty(2))
+    f.write('\n')
+  except IOError, OSError:
+    discard
+
 # ---------------------------------------------------------------------------
 # Round lifecycle
 # ---------------------------------------------------------------------------
@@ -351,7 +418,8 @@ proc beginRound*(t: TraceWriter, bot: var Bot, isMidRound: bool) =
 proc endRound*(t: TraceWriter, bot: var Bot, reason: string,
                gameOverText: string) =
   ## Closes the current round: emits any final events, writes the
-  ## final manifest, and closes file handles. Idempotent.
+  ## final manifest, rolls the round's counters into the session-level
+  ## index, and closes file handles. Idempotent.
   if t.isNil or not t.roundOpen:
     return
   if reason == "game_over_text" and gameOverText.len > 0:
@@ -362,6 +430,10 @@ proc endRound*(t: TraceWriter, bot: var Bot, reason: string,
               })
   writeManifest(t, bot, ended = true, endedReason = reason,
                 finalGameOverText = gameOverText)
+  addCounters(t.sessionCounters, t.counters)
+  t.sessionRoundIds.add(t.roundId)
+  t.sessionResults.add(resolveResult(gameOverText))
+  writeSessionIndex(t)
   closeRoundFiles(t)
   t.roundOpen = false
 
@@ -403,6 +475,12 @@ proc closeTrace*(t: TraceWriter, bot: var Bot, reason: string) =
     return
   if t.roundOpen:
     endRound(t, bot, reason, bot.percep.lastGameOverText)
+  else:
+    # A session that closed without any rounds still benefits from a
+    # skeleton `_session.json` so offline tooling can tell the session
+    # existed but was empty (e.g. process exited before the first
+    # localized frame).
+    writeSessionIndex(t)
 
 # ---------------------------------------------------------------------------
 # Per-frame trace hook
@@ -549,6 +627,24 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
           })
           inc t.counters.killsWitnessed
     t.prevBodiesCount = bot.memory.bodies.len
+
+  # Alibi diff: memory owns per-(colour, task) dedup, so each new
+  # entry is one event worth emitting. `trimAtMeetingEnd` can shrink
+  # the log at a meeting boundary; on shrinkage we simply rebase the
+  # shadow — we never emit retroactively for trimmed entries.
+  if bot.memory.alibis.len > t.prevAlibisCount:
+    for i in t.prevAlibisCount ..< bot.memory.alibis.len:
+      let aev = bot.memory.alibis[i]
+      var taskName = "task-" & $aev.taskIndex
+      if aev.taskIndex >= 0 and aev.taskIndex < bot.sim.tasks.len:
+        taskName = bot.sim.tasks[aev.taskIndex].name
+      emitEvent(t, aev.tick, "alibi_observed", %*{
+        "color":      playerColorName(aev.colorIndex),
+        "task_index": aev.taskIndex,
+        "task_name":  taskName
+      })
+  t.prevAlibisCount = bot.memory.alibis.len
+  t.prevAlibisCount = bot.memory.alibis.len
 
   # Kill executed (imposter): edge on imposter.lastKillTick
   if bot.role == RoleImposter and

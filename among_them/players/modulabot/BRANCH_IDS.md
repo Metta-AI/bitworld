@@ -7,8 +7,8 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 |---|---|
 | `bot.interstitial.game_over` | `bot.nim:400` |
 | `bot.interstitial.role_reveal` | `bot.nim:402` |
-| `bot.localizing` | `bot.nim:483` |
-| `bot.not_localized` | `bot.nim:485` |
+| `bot.localizing` | `bot.nim:484` |
+| `bot.not_localized` | `bot.nim:486` |
 | `policy_crew.body.navigate_to_body` | `policy_crew.nim:155` |
 | `policy_crew.body.report_in_range` | `policy_crew.nim:153` |
 | `policy_crew.idle.no_goal` | `policy_crew.nim:172` |

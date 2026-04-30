@@ -22,6 +22,8 @@ import path
 import motion
 import diag
 import chat
+import memory
+import tuning
 
 const
   HomeSearchRadius* = 20
@@ -266,6 +268,43 @@ proc updateTaskIcons*(bot: var Bot) =
         bot.tasks.iconMisses[i] = 0
     else:
       bot.tasks.iconMisses[i] = 0
+
+proc recordTaskAlibis*(bot: var Bot) =
+  ## For each visible non-self, non-teammate crewmate standing within
+  ## `MemoryAlibiTaskRadiusPx` of a task-station centre, append one
+  ## `AlibiEvent` to memory. Implements the "colour seen at a task
+  ## terminal" trigger from DESIGN.md §13.1.
+  ##
+  ## Per-(colour, task) dedup inside `memory.appendAlibi` (cooldown
+  ## `MemoryAlibiCooldownTicks`) keeps the raw log from ballooning while
+  ## a crewmate lingers on one terminal. Co-visibility with a task icon
+  ## isn't required: task icons are our own HUD assignments, not other
+  ## crewmates', so we infer "they're at a terminal" from the crewmate
+  ## sprite's world position alone.
+  ##
+  ## Requires localization — the sighting→world-coord transform depends
+  ## on the camera lock.
+  if not bot.percep.localized:
+    return
+  if bot.percep.visibleCrewmates.len == 0 or bot.sim.tasks.len == 0:
+    return
+  for crewmate in bot.percep.visibleCrewmates:
+    if crewmate.colorIndex < 0 or crewmate.colorIndex >= PlayerColorCount:
+      continue
+    if crewmate.colorIndex == bot.identity.selfColor:
+      continue
+    if crewmate.colorIndex < bot.identity.knownImposters.len and
+        bot.identity.knownImposters[crewmate.colorIndex]:
+      continue
+    let world = bot.percep.visibleCrewmateWorld(crewmate)
+    let
+      cx = world.x + CollisionW div 2
+      cy = world.y + CollisionH div 2
+    for taskIndex in 0 ..< bot.sim.tasks.len:
+      let center = bot.sim.tasks[taskIndex].taskCenter()
+      if heuristic(cx, cy, center.x, center.y) <= MemoryAlibiTaskRadiusPx:
+        discard bot.memory.appendAlibi(
+          bot.frameTick, crewmate.colorIndex, taskIndex)
 
 # ---------------------------------------------------------------------------
 # Counting / fallback predicate

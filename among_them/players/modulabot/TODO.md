@@ -14,12 +14,35 @@ out in each entry.
 
 ### Alibi log wiring (`memory.appendAlibi` has no callers)
 
-`memory.appendAlibi()` exists and is fully implemented — dedup logic, trim
-rules, schema — but nothing ever calls it. The intended caller is `tasks.nim`,
-which should invoke it when a crewmate is seen co-visible with a task terminal
-at the moment of a task-completion icon flash (the "alibi" signal).
+~~Resolved 2026-04-30.~~ `memory.appendAlibi()` is now called from
+`tasks.recordTaskAlibis`, invoked once per frame after
+`updateTaskIcons` in `bot.nim:477`. The proc iterates
+`bot.percep.visibleCrewmates` × `bot.sim.tasks` and appends one
+`AlibiEvent` for each co-visibility within
+`MemoryAlibiTaskRadiusPx` (Manhattan, new tuning knob, default
+12 px). Self, known imposter teammates, and unknown-colour
+matches are filtered out — same filter `scanCrewmates` uses for
+sighting attribution. Per-(colour, task) dedup inside
+`memory.appendAlibi` (existing `MemoryAlibiCooldownTicks = 20`)
+keeps the raw log from ballooning while a crewmate lingers on
+one terminal.
 
-Ref: `DESIGN.md §13.9`, `memory.nim:228`
+Also wired:
+
+- `alibi_observed` trace event (new), emitted via a
+  `prevAlibisCount` shadow on `TraceWriter` (mirror of the
+  `prevBodiesCount` pattern from §13.6). Payload carries the
+  colour name, task index, and task name. Added to
+  `test/validate_trace.nim` known-event list.
+- `MemoryAlibiCooldownTicks`, `MemoryAlibiTaskRadiusPx`, and the
+  other three memory knobs (`MemorySightingDedupTicks`,
+  `MemorySightingDedupPixels`, `MemoryBodyDedupPx`) added to
+  `tuning_snapshot.nim` so harness lineage tracking sees them.
+- Parity unchanged: black-mode 500/5000-frame seeds 42 remain
+  100% match both with and without `--trace-dir`.
+
+Ref: `tasks.nim:283`, `bot.nim:477`, `trace.nim:561`,
+`tuning.nim:39–49`.
 
 ### `MeetingEvent.reporter` and `.ejected` always -1
 
@@ -68,33 +91,44 @@ Ref: `voting.nim`, `trace.nim:226`, `trace.nim:671`,
 
 ### Frames-dump rotation / retention policy
 
-The trace writer keeps all frames dumps forever — roughly 117 MB/game
-uncompressed (~5–10 MB gzipped). There is no sweep. A long training run (e.g.
-50 games) accumulates ~6 GB raw / ~250 MB gzipped before any pruning. The
-design specifies a cron-style sweeper that keeps the last K=10 games, with a
-`RETAIN` sentinel file to pin specific runs. Nothing in `trace_smoke.sh` or
-elsewhere implements this today.
-
-Ref: `TRACING.md §14.6`, `DESIGN.md §854–856`
+~~Resolved 2026-04-30.~~ Shipped as a standalone tool,
+`tools/frames_sweep.nim`, per `TRACING.md §14.6`. The tool walks
+`<trace-root>/<bot>/<session>/round-*`, orders rounds newest-first
+by `manifest.started_unix_ms` (falling back to round-dir mtime),
+keeps the last K (default 10) plus any pinned with a `RETAIN`
+sentinel, and deletes the external file pointed at by each pruned
+round's `manifest.config.frames_dump_path`. Manifests, events,
+decisions, and snapshots are preserved — only the large frames
+dump is swept. `--dry-run` for inspection, `--verbose` for
+per-entry logging. Exit non-zero on delete failure. Not wired
+into `trace_smoke.sh` because sweep is a harness/cron concern,
+not a build gate.
 
 ### `_session.json` cross-game lineage file
 
-The design calls for an optional `_session.json` at
-`<trace-root>/<bot-name>/<session-id>/` containing rolled-up counters and a
-list of round IDs for the session. Not written anywhere today. Useful once the
-harness starts training across many games and needs a session-level index
-without parsing every individual round file.
-
-Ref: `TRACING.md §5`
+~~Resolved 2026-04-30.~~ The trace writer now writes
+`<trace-root>/<bot-name>/<session-id>/_session.json` at every
+round close (and on `closeTrace` even when no round completed,
+leaving a skeleton file for offline tooling). Schema v1 carries
+rolled-up `summary_counters` summed across all rounds in the
+session, the ordered `round_ids` and parallel `round_results`
+lists (close order, each entry `"crew_wins"` / `"imps_win"` /
+`"unknown"`), the `master_seed`, and wall-clock start / last-
+update timestamps. Rewritten in full at every close so a process
+crash between rounds still leaves a usable index. Implementation
+lives in `trace.writeSessionIndex` (`trace.nim:307`) with new
+`TraceWriter.sessionCounters` / `sessionRoundIds` /
+`sessionResults` fields. `TRACING.md §5` updated with the schema.
 
 ### `self_color_changed` trace event
 
-If `identity.selfColor` can change mid-session (e.g. after a reconnect into a
-new lobby), the trace has no event for it. A `self_color_changed` event was
-noted as a v1.1 addition. Until this is added, any harness that caches
-`self_color` from the manifest may silently use a stale value.
-
-Ref: `TRACING.md §14.9`
+~~Resolved 2026-04-30.~~ The trace writer already emits
+`self_color_changed` on any `identity.selfColor` transition where
+the previous value was also non-negative (`trace.nim:436–442`). The
+TODO entry was stale documentation residue from the original
+trace-writer plan; the event has shipped since the first trace
+commit (`86ba8d3`). `TRACING.md §14.9` has been updated to
+reflect the shipped behaviour.
 
 ---
 
@@ -136,17 +170,21 @@ Ref: `DESIGN.md §4`
 
 ### `tuning_snapshot` exhaustiveness check is manual / absent
 
-`TRACING.md §10.3` says CI should run a grep that warns when a `const` is
-added to a policy module without a corresponding key in `tuning_snapshot.nim`.
-`tools/trace_smoke.sh` runs parity + smoke + branch-ID drift checks but does
-**not** include this grep. As new tuning knobs are added, they can silently
-go missing from the manifest's `tuning_snapshot` object.
-
-Action: add a grep step to `trace_smoke.sh` (or a separate `make lint`
-target) that cross-checks policy-module `const` declarations against
-`tuning_snapshot.nim`.
-
-Ref: `TRACING.md §10.3`, `tools/trace_smoke.sh`
+~~Resolved 2026-04-30.~~ Shipped as a new Nim tool,
+`tools/check_tuning_snapshot.nim`, wired into
+`tools/trace_smoke.sh` as step `[7/7]`. The tool scans every
+policy module in `PolicyModules` for `  Name* = value`
+declarations and verifies each name is either registered in
+`tuning_snapshot.nim` or listed in the `SnapshotExempt`
+whitelist (with a one-line reason per exempt entry). The five
+memory / alibi knobs and the v2 teleport threshold are now all
+registered; eleven constants are exempt (`PlayerColorNames`,
+the `Patch*` hash / derived-geometry constants, `KillIconY`,
+and the five voting-screen layout constants). A negative test
+(delete an entry from `tuning_snapshot.nim`) was confirmed to
+fail the check during development. Replaces the grep approach
+described in §10.3 with an identifier-parsing Nim tool for
+cross-platform CI portability.
 
 ### `TeleportThresholdPx` was never empirically validated
 
