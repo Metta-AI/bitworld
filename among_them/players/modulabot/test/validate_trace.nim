@@ -82,8 +82,8 @@ proc validateManifest(round: string, node: JsonNode) =
     if not node.hasKey(required):
       fail(round, &"manifest missing field '{required}'")
   if node.hasKey("schema_version") and
-      node["schema_version"].getInt != 1:
-    fail(round, &"manifest.schema_version != 1: " &
+      node["schema_version"].getInt notin [1, 2]:
+    fail(round, &"manifest.schema_version unsupported: " &
                 $node["schema_version"])
   if node.hasKey("self"):
     let s = node["self"]

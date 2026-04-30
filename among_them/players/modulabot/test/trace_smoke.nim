@@ -101,7 +101,7 @@ proc main() =
   let manifest = parseFile(manifestPath)
   doAssert manifest.kind == JObject
   doAssert manifest.hasKey("schema_version")
-  doAssert manifest["schema_version"].getInt == 1
+  doAssert manifest["schema_version"].getInt in [1, 2]
   doAssert manifest.hasKey("session_id")
   doAssert manifest.hasKey("round_id")
   doAssert manifest.hasKey("started_unix_ms")

@@ -770,8 +770,18 @@ check 659/659 still holds after viewer port.
 
 Open per the original plan. Phase 0–2 deliverables are all green;
 the v0 baseline is parity-validated against v2 to the extent
-mathematically possible (see Phase 2 status). Possible directions
-in priority order:
+mathematically possible (see Phase 2 status).
+
+**Long-term memory (v1)** shipped — see §13. Replaces v0's scalar
+evidence latches with an event log (sightings, bodies, meetings,
+plus an alibis log awaiting a caller) and per-colour summaries.
+`identity.lastSeen` retired in favour of
+`memory.summaries[i].lastSeenTick`. Trace schema bumped to v2;
+`body_seen_first` now sourced from `memory.bodies` with an
+`is_new_body` field. Self-consistency parity 500/500 across seeds
+1 / 42 / 100 / 7777.
+
+Possible directions in priority order:
 
 1. Better evidence model — quantitative suspicion scores instead of
    binary tiers (witnessed-kill vs near-body).
@@ -1066,3 +1076,255 @@ gameplay. Format is a flat concatenation of unpacked frames; record
 count is `filesize / 16384`. The mask is *not* recorded — the parity
 harness re-derives it by running each bot on the captured frame,
 which is the right semantic for offline parity testing.
+
+---
+
+## 13. Long-term memory (v1) — shipped
+
+v0 evidence was a single scalar per colour (most-recent `nearBodyTicks`
+and `witnessedKillTicks`). That collapsed time and co-witness structure
+and made it hard for the voting/planning policies — or the outer-loop
+LLM harness — to reason about patterns across a round. v1 adds an
+event log plus incrementally-maintained per-player summaries,
+preserving the scalar cache for parity with v0 voting logic.
+
+Implementation landed in `memory.nim`, `types.nim`, `evidence.nim`,
+`actors.nim`, `bot.nim`, and `trace.nim`. Parity validated:
+self-consistency remains 500/500 across seeds 1 / 42 / 100 / 7777 in
+black mode and 50/50 in mixed mode; trace remains non-perturbing
+(500/500 with `--trace-dir` attached to bot A).
+
+### 13.1. Event categories
+
+Four categories, all round-scoped. Raw sightings and alibis are
+trimmed at meeting boundaries; bodies and meetings persist for the
+whole round.
+
+| Category | Trigger | Lifetime |
+|---|---|---|
+| Sighting | Non-self, non-teammate colour visible this frame (dedup'd by tick Δ + pixel Δ) | Trimmed at meeting close; summary persists |
+| Body | Body newly appears (v2 "witnessedKill" signal), or first-seen body persists | Retained for the round |
+| Meeting | Voting screen closes | Retained for the round |
+| Alibi | Colour seen at a task terminal, or a task-completion flash co-occurs with a recently-seen colour | Trimmed at meeting close; summary persists |
+
+### 13.2. Types
+
+Added to `types.nim` alongside `Evidence`:
+
+```nim
+type
+  SightingEvent* = object
+    tick*: int
+    colorIndex*: int
+    x*, y*: int
+    roomId*: int                  # -1 if outside any named room
+
+  BodyWitness* = object
+    colorIndex*: int
+    dx*, dy*: int                 # offset from body at witness tick
+
+  BodyEvent* = object
+    tick*: int
+    x*, y*: int
+    roomId*: int
+    witnesses*: seq[BodyWitness]
+    isNewBody*: bool              # v2's "witnessedKill" signal
+
+  MeetingEvent* = object
+    startTick*: int
+    endTick*: int
+    reporter*: int                # -1 if unknown (v1 will usually be -1;
+                                  # deferred with chat speaker attribution)
+    selfVote*: int                # VoteSkip / color / VoteUnknown
+    votes*: PerColor[int]
+    ejected*: int                 # -1 if skipped or unknown
+    chatLines*: seq[string]       # raw OCR, speakers attributed in v2
+
+  AlibiEvent* = object
+    tick*: int
+    colorIndex*: int
+    taskIndex*: int
+
+  PlayerSummary* = object
+    lastSeenTick*: int
+    lastSeenX*, lastSeenY*: int
+    lastSeenRoomId*: int
+    timesNearBody*: int
+    timesWitnessedKill*: int
+    timesVotedForMe*: int
+    timesIVotedForThem*: int
+    timesVotedWithMe*: int
+    taskBits*: uint64             # which task indices we've seen them at
+    distinctTasksObserved*: int   # popcount(taskBits), cached
+    ejected*: bool
+
+  Memory* = object
+    sightings*: seq[SightingEvent]
+    bodies*: seq[BodyEvent]
+    meetings*: seq[MeetingEvent]
+    alibis*: seq[AlibiEvent]
+    summaries*: PerColor[PlayerSummary]
+    lastMeetingEndTick*: int      # sighting/alibi trim boundary
+
+# Bot gains:
+#   memory*: Memory
+```
+
+Lives in a new `memory.nim` module, imported by `evidence.nim`,
+`voting.nim`, and both `policy_*` modules. `evidence.nim`'s existing
+`updateEvidence` keeps its current signature but becomes a thin
+consumer of `memory.recordBodyFrame(...)` — the scalar
+`nearBodyTicks` / `witnessedKillTicks` remain as a hot-path cache
+populated from memory appends so existing voting code (`evidence.nim`
+`evidenceBasedSuspect`) keeps working unchanged.
+
+### 13.3. Lifetime rules
+
+- **Round reset:** clear all four logs and summaries at the role-reveal
+  interstitial (or equivalent round-boundary signal). Mirrors how
+  humans play; avoids cross-round leakage.
+- **Trim at meeting close:** after the voting screen closes and the
+  `MeetingEvent` is appended, discard `SightingEvent`s and
+  `AlibiEvent`s with `tick < lastMeetingEndTick`. Their contribution
+  has already updated the per-colour summary on write; the raw
+  records exist only for the "since last meeting" reasoning window.
+- **Body and meeting logs never trim:** at most ~10 of each per round.
+
+### 13.4. Dedup and thresholds
+
+Sightings are the hot-path category. Dedup rule: don't append a new
+`SightingEvent` for colour `c` if the previous sighting for `c` was
+within `MemorySightingDedupTicks` ticks AND within
+`MemorySightingDedupPixels` pixels. Both constants live in
+`tuning.nim`. Starting values `5 / 16` — bake during first integration
+test. The per-colour summary (`lastSeenTick`, `lastSeenX/Y`) updates
+on *every* visible frame regardless of dedup; the dedup only governs
+raw event-log growth.
+
+### 13.5. Migration of `identity.lastSeen`
+
+`identity.lastSeen: PerColor[int]` is removed. Its callers (in
+`evidence.nim`'s `suspectedColor` and `randomInnocentColor`, plus any
+direct reads from `policy_*`) switch to
+`bot.memory.summaries[i].lastSeenTick`. One-shot audit; parity
+(self-consistency) must remain 100% — the timing of
+`lastSeenTick` writes must match v2-era `identity.lastSeen` writes
+exactly (same frames, same colours skipped).
+
+### 13.6. `trace.nim` consolidation
+
+Single-source-of-truth rule: the trace writer observes `Memory`
+appends instead of maintaining parallel diff state.
+
+Diff fields on `TraceWriter` (`types.nim`) that became redundant and
+were removed:
+
+| Field | Replacement |
+|---|---|
+| `prevBodyWorldPositions` | `prevBodiesCount` shadow over `memory.bodies` — new entries emit `body_seen_first` events from the BodyEvent payload (witnesses, roomId, isNewBody). |
+
+Fields from the original plan that were **kept** (deviation from the
+design):
+
+| Field | Reason |
+|---|---|
+| `prevSelfVoteChoice` | Per-tick change detection for the `vote_cast` event during an active meeting. `MeetingEvent` is finalized at meeting close and can't drive edge-triggered events that fire *inside* a meeting. |
+| `prevVoteChoices` | Same reason, for `vote_observed` events as each other player's vote lands. |
+
+These two are not genuinely "redundant" — `MeetingEvent.votes` is an
+aggregate final snapshot, whereas trace wants to emit one event per
+vote transition as it happens. Reconciling that would require either
+(a) live-updating `memory.meetings[^1]` on every observed vote change,
+which duplicates `voting.choices` across two locations, or (b) moving
+per-tick vote events out of trace. Neither is a win; the kept shadows
+are the pragmatic choice.
+
+Fields that stay (not memory-backed, never were in scope):
+
+| Field | Reason |
+|---|---|
+| `prevStuckActive` / `prevStuckStartTick` | Motion state, not observation memory |
+| `prevRole` / `prevIsGhost` / `prevSelfColor` | Bot scalars, not memory |
+| `prevInterstitial` / `prevInterstitialText` / `prevGameOverText` | Perception, not memory |
+| `prevLocalized` / `prevCameraLock` | Perception, not memory |
+| `prevTaskStates` / `prevTaskResolved` | Task state, not observation memory |
+| `prevKillReady` | Imposter state, not observation memory |
+
+Trace schema bumped to v2; the v1→v2 change is additive (one new
+field `is_new_body` on `body_seen_first`, existing fields unchanged).
+`validate_trace` and `trace_smoke` were updated to accept schema v1
+and v2.
+
+### 13.7. Deferred / out of scope for v1
+
+- **Chat-based accusation attribution** — blocked by deferred speaker
+  attribution (TRACING.md §15). `MeetingEvent.chatLines` reserves the
+  raw OCR slot; v2 backfills speakers without a breaking schema change.
+- **Task-claim / location-claim parsing** — same blocker.
+- **Disappearance events** (visible → gone → body appears at last-seen
+  location) — computable from the sighting + body logs post-hoc; no
+  need for a separate event category in v1.
+- **Co-presence windows** — computable from the sighting log on
+  demand; don't pre-aggregate.
+- **Ring-buffer caps** — the meeting-boundary trim rule bounds the
+  hot categories to ~O(ticks since last meeting). Cap introduction
+  is a v1.1 concern if profile data shows it's needed.
+
+### 13.8. Determinism / parity implications
+
+- Self-consistency parity test must stay 100%. Two identically-seeded
+  bots must produce identical `Memory` state → identical emitted
+  trace events.
+- Iteration order matters: `visibleCrewmates` ordering is already
+  deterministic (scan order); appending in that order keeps the
+  sighting log deterministic.
+- The trace refactor changes the *code path* for emitting body/vote
+  events but not their *content*. Existing `validate_trace` tooling
+  should continue passing.
+
+### 13.9. Implementation (shipped)
+
+Landed in order:
+
+1. Types + Memory scaffolding (`types.nim`, `memory.nim`,
+   `tuning.nim` knobs).
+2. `identity.lastSeen` migrated to `memory.summaries[i].lastSeenTick`
+   in `evidence.nim` (`suspectedColor`, `randomInnocentColor`),
+   `actors.nim` (`scanCrewmates` → `memory.appendSighting`),
+   `bot.nim` (`resetRoundState`, `initBot`). Self-consistency parity
+   remained 500/500.
+3. `updateEvidence` in `evidence.nim` extended to call
+   `memory.appendBody` alongside the scalar `witnessedKillTicks`
+   cache on new-body detection. Parity preserved.
+4. `trace.nim` refactored to consume `memory.bodies` for
+   `body_seen_first` / `kill_witnessed` events via a `prevBodiesCount`
+   shadow. `prevBodyWorldPositions` removed; schema bumped to v2.
+   Validators updated. Parity preserved (with and without
+   `--trace-dir` attached).
+5. Meeting close in `decideNextMaskCore` now appends a
+   `MeetingEvent` to memory before calling `clearVotingState`.
+   `bot.memory.recordVoteForMe` / `recordIVotedForThem` translate
+   slot→colour once per meeting so the summary counters are
+   authoritative. `memory.trimAtMeetingEnd` drops sighting/alibi
+   raw events older than the meeting end.
+
+#### Implementation notes
+
+- **Hook shape.** The originally-proposed `onAppend` callback on
+  Memory was dropped in favour of a pull model: trace shadows
+  `memory.bodies.len` and observes growth. This avoids a callback
+  plumbing layer and keeps `memory.nim` as pure data + pure append
+  procs with no dependency on trace. The "single source of truth"
+  rule still holds — there's only one place that records a body
+  (`memory.appendBody`) and one place that emits the event.
+- **Alibi appends deferred.** The schema and append proc are in
+  place, but no caller invokes `memory.appendAlibi` yet. Wiring
+  (from `tasks.nim` on co-visibility of a task icon + crewmate) is
+  a follow-up; the v1 log is empty for alibis until that lands.
+- **`reporter` / `ejected`** remain `-1` in `MeetingEvent` as
+  planned. Adding these requires perception work (detecting who
+  called the meeting from the intro animation; detecting who was
+  ejected from the post-vote cutscene) that is outside the memory
+  module's scope.
+
+

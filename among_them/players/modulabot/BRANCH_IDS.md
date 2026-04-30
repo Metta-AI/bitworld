@@ -5,10 +5,10 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 
 | Branch ID | Source |
 |---|---|
-| `bot.interstitial.game_over` | `bot.nim:395` |
-| `bot.interstitial.role_reveal` | `bot.nim:397` |
-| `bot.localizing` | `bot.nim:442` |
-| `bot.not_localized` | `bot.nim:444` |
+| `bot.interstitial.game_over` | `bot.nim:400` |
+| `bot.interstitial.role_reveal` | `bot.nim:402` |
+| `bot.localizing` | `bot.nim:483` |
+| `bot.not_localized` | `bot.nim:485` |
 | `policy_crew.body.navigate_to_body` | `policy_crew.nim:155` |
 | `policy_crew.body.report_in_range` | `policy_crew.nim:153` |
 | `policy_crew.idle.no_goal` | `policy_crew.nim:172` |

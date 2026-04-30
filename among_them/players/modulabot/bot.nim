@@ -23,6 +23,7 @@ import motion
 import voting
 import tasks
 import evidence
+import memory
 import policy_crew
 import policy_imp
 import diag
@@ -80,7 +81,9 @@ proc initRngStreams*(masterSeed: int64): RngStreams =
 
 proc initIdentity*(): Identity =
   result.selfColor = -1
-  # `knownImposters` and `lastSeen` zero-initialize correctly.
+  # `knownImposters` zero-initializes correctly. `lastSeen` was
+  # removed in the memory migration (DESIGN.md §13.5); callers now
+  # read `memory.summaries[i].lastSeenTick`.
 
 proc initEvidence*(): Evidence =
   for i in 0 ..< PlayerColorCount:
@@ -195,6 +198,7 @@ proc initBot*(paths: Paths = defaultPaths(), masterSeed: int64 = 0): Bot =
   result.goal = initGoal()
   result.identity = initIdentity()
   result.evidence = initEvidence()
+  result.memory = initMemory()
   result.imposter = initImposterState()
   result.voting = initVotingState()
   result.chat = initChatState()
@@ -275,8 +279,6 @@ proc resetRoundState*(bot: var Bot) =
   bot.chat.lastBodyReportY = low(int)
   bot.identity.selfColor = -1
   bot.clearVotingState()
-  for i in 0 ..< bot.identity.lastSeen.len:
-    bot.identity.lastSeen[i] = 0
   for i in 0 ..< bot.identity.knownImposters.len:
     bot.identity.knownImposters[i] = false
   for i in 0 ..< PlayerColorCount:
@@ -285,6 +287,7 @@ proc resetRoundState*(bot: var Bot) =
     bot.evidence.prevCrewmateX[i] = -1
     bot.evidence.prevCrewmateY[i] = -1
   bot.evidence.prevBodies.setLen(0)
+  bot.memory.resetForNewRound()
   bot.goal.index = -1
   bot.goal.name = ""
   bot.goal.has = false
@@ -404,6 +407,42 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
   bot.percep.interstitialText = ""
   bot.percep.lastGameOverText = ""
   if bot.voting.active:
+    # Meeting just ended: snapshot the final voting-screen state into
+    # long-term memory before the state is cleared. This is the one
+    # place where MeetingEvent is appended. v1 leaves `reporter` and
+    # `ejected` unknown (-1); filling them in is deferred to a v1.1
+    # pass that adds the requisite perception.
+    var votes: PerColor[int]
+    for i in 0 ..< PlayerColorCount:
+      votes[i] = bot.voting.choices[i]
+    let selfChoice = bot.selfVoteChoice()
+    let meeting = MeetingEvent(
+      startTick: bot.voting.startTick,
+      endTick: bot.frameTick,
+      reporter: -1,
+      selfVote: selfChoice,
+      votes: votes,
+      ejected: -1,
+      chatLines: bot.voting.chatLines
+    )
+    bot.memory.appendMeeting(meeting)
+    # timesVotedForMe / timesIVotedForThem translation: requires the
+    # slot → colour map, which lives in bot.voting.slots. Do it here
+    # once per meeting, then let memory own the counters.
+    let selfSlot = bot.voting.selfSlot
+    for voterColor in 0 ..< PlayerColorCount:
+      let target = bot.voting.choices[voterColor]
+      if target == VoteUnknown:
+        continue
+      if target == selfSlot and selfSlot >= 0:
+        bot.memory.recordVoteForMe(voterColor)
+    if selfChoice >= 0 and selfChoice < bot.voting.playerCount:
+      let targetColor = bot.voting.slots[selfChoice].colorIndex
+      if targetColor >= 0:
+        bot.memory.recordIVotedForThem(targetColor)
+    # Trim raw sighting/alibi logs to the meeting boundary. Bodies
+    # and meetings persist; summaries are unaffected.
+    bot.memory.trimAtMeetingEnd(bot.frameTick)
     bot.clearVotingState()
   if wasInterstitial:
     bot.reseedAfterInterstitial()
