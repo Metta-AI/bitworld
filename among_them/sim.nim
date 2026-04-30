@@ -2216,6 +2216,31 @@ proc writeRenderStateHeader(
   put(if sim.timeLimitReached: 1'u8 else: 0'u8)
   doAssert offset == RenderStateHeaderFeatures
 
+proc writeRenderStateGrid(
+  sim: SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    view = sim.playerView(playerIndex)
+    step = ScreenWidth div RenderStateGridSize
+  for gy in 0 ..< RenderStateGridSize:
+    for gx in 0 ..< RenderStateGridSize:
+      let
+        sx = gx * step + step div 2
+        sy = gy * step + step div 2
+        mx = view.cameraX + sx
+        my = view.cameraY + sy
+        index = RenderStateGridOffset + gy * RenderStateGridSize + gx
+      var color = MapVoidColor
+      if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
+        let mapIdx = mapIndex(mx, my)
+        # Static map colors are allowed, but collision masks are not.
+        color = sim.mapPixels[mapIdx] and 0x0F
+      output[index] = color
+
 proc writeRenderStatePlayerSlot(
   sim: SimServer,
   playerIndex, targetIndex, sx, sy: int,
@@ -2719,10 +2744,10 @@ proc writeRawRenderState(
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Internal raw state; never exposed directly.
   for i in 0 ..< output.len:
     output[i] = 0
   sim.writeRenderStateHeader(playerIndex, output)
+  sim.writeRenderStateGrid(playerIndex, output)
   if sim.phase == Playing:
     sim.writeRenderStatePlayingPlayers(playerIndex, output)
     sim.writeRenderStateBodies(playerIndex, output)
@@ -2735,8 +2760,8 @@ proc sanitizeRenderStateForPixels(
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Pixel-safe contract: keep only what render() drew into sim.fb, with
-  ## visible UI values re-quantized to the same pixels.
+  ## Pixel-safe contract for dynamic state: keep only visible fields, with UI
+  ## values re-quantized to visible pixel-scale bars/icons.
   let killIcon = sim.renderStateKillIconByte(playerIndex)
   output[RenderHeaderSelfJoin] = 0'u8
   output[RenderHeaderPlayerCount] = 0'u8
@@ -2784,15 +2809,6 @@ proc sanitizeRenderStateForPixels(
     if killIcon != 0'u8: output[RenderHeaderSelfRole] else: 0'u8
   output[RenderHeaderKillCooldown] = killIcon
 
-  let gridStep = ScreenWidth div RenderStateGridSize
-  for gy in 0 ..< RenderStateGridSize:
-    for gx in 0 ..< RenderStateGridSize:
-      let
-        sx = gx * gridStep + gridStep div 2
-        sy = gy * gridStep + gridStep div 2
-        index = RenderStateGridOffset + gy * RenderStateGridSize + gx
-      output[index] = sim.fb.indices[sy * ScreenWidth + sx] and 0x0F
-
   if playerIndex >= 0 and playerIndex < RenderStatePlayerSlots:
     let selfBase = RenderStatePlayerOffset + playerIndex * RenderStatePlayerFeatures
     output[selfBase + RenderPlayerAuxFeature] = killIcon
@@ -2837,13 +2853,12 @@ proc writeRenderStateObservation*(
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Writes a compact observation constrained to the rendered pixel frame.
+  ## Writes a compact observation without hidden dynamic state.
   if output.len != RenderStateFeatures:
     raise newException(
       AmongThemError,
       "Render state observation must be " & $RenderStateFeatures & " bytes."
     )
-  discard sim.render(playerIndex)
   sim.writeRawRenderState(playerIndex, output)
   sim.sanitizeRenderStateForPixels(playerIndex, output)
 
