@@ -9,6 +9,7 @@ type
     replayLoaded: bool
     resetRequested: bool
     kickRequests: seq[string]
+    kickedIdentities: Table[string, bool]
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     chatMessages: Table[WebSocket, string]
@@ -510,6 +511,13 @@ proc playbackSpeed(speedIndex: int): int =
   ## Returns the live playback speed for an index.
   PlaybackSpeeds[clamp(speedIndex, 0, PlaybackSpeeds.high)]
 
+proc rewardAddress(address: string): string =
+  ## Formats one reward address as host:port.
+  let parts = address.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  address
+
 var appState: WebSocketAppState
 
 proc initAppState() =
@@ -517,6 +525,7 @@ proc initAppState() =
   appState.replayLoaded = false
   appState.resetRequested = false
   appState.kickRequests = @[]
+  appState.kickedIdentities = initTable[string, bool]()
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.chatMessages = initTable[WebSocket, string]()
@@ -539,6 +548,10 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
+    appState.inputMasks.del(websocket)
+    appState.lastAppliedMasks.del(websocket)
+    appState.chatMessages.del(websocket)
+    appState.playerAddresses.del(websocket)
     return
   let removedIndex = appState.playerIndices[websocket]
   appState.playerIndices.del(websocket)
@@ -551,6 +564,26 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
+
+proc movePlayerToSpectator(sim: var SimServer, websocket: WebSocket) =
+  ## Removes a player slot while keeping the websocket on spectator frames.
+  for i in countdown(appState.spectators.high, 0):
+    if appState.spectators[i] == websocket:
+      appState.spectators.delete(i)
+  if websocket in appState.playerViewers:
+    appState.playerViewers.del(websocket)
+  if websocket in appState.playerIndices:
+    let removedIndex = appState.playerIndices[websocket]
+    appState.playerIndices.del(websocket)
+    appState.inputMasks.del(websocket)
+    appState.lastAppliedMasks.del(websocket)
+    appState.chatMessages.del(websocket)
+    if removedIndex >= 0 and removedIndex < sim.players.len:
+      sim.players.delete(removedIndex)
+      for ws, value in appState.playerIndices.mpairs:
+        if value > removedIndex:
+          dec value
+  appState.spectators.add(websocket)
 
 proc cleanPlayerName(name: string): string =
   ## Returns a protocol-safe player display name.
@@ -652,12 +685,22 @@ proc websocketHandler(
       withLock appState.lock:
         if websocket notin appState.globalViewers and
             websocket notin appState.rewardViewers:
-          if appState.replayLoaded:
+          let
+            address = appState.playerAddresses.getOrDefault(websocket, "")
+            identity = address.rewardAddress()
+            isKicked =
+              websocket notin appState.playerViewers and
+              (address in appState.kickedIdentities or
+                identity in appState.kickedIdentities)
+          if isKicked:
+            appState.spectators.add(websocket)
+          elif appState.replayLoaded:
             appState.playerIndices[websocket] = -1
           else:
             appState.playerIndices[websocket] = 0x7fffffff
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+          if websocket in appState.playerIndices:
+            appState.inputMasks[websocket] = 0
+            appState.lastAppliedMasks[websocket] = 0
   of MessageEvent:
     if message.kind == BinaryMessage:
       {.gcsafe.}:
@@ -680,7 +723,8 @@ proc websocketHandler(
             if chatText.len > 0:
               appState.chatMessages[websocket] = chatText
           elif isInputPacket(message.data) and
-              not appState.replayLoaded:
+              not appState.replayLoaded and
+              websocket in appState.playerIndices:
             let mask = blobToMask(message.data)
             if mask == 255'u8:
               appState.resetRequested = true
@@ -710,13 +754,6 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
-
-proc rewardAddress(address: string): string =
-  ## Formats one reward address as host:port.
-  let parts = address.splitWhitespace()
-  if parts.len >= 2:
-    return parts[0] & ":" & parts[1]
-  address
 
 proc rewardAccountFor(sim: SimServer, address: string): int =
   ## Returns the reward account index for one address.
@@ -823,7 +860,6 @@ proc runServerLoop*(
       playerViewerStates: seq[PlayerViewerState] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
-      kickedSockets: seq[WebSocket] = @[]
       shouldReset = false
       quitAfterFrame = false
 
@@ -852,6 +888,8 @@ proc runServerLoop*(
             let identity = address.rewardAddress()
             for requestedIdentity in requestedKicks:
               if address == requestedIdentity or identity == requestedIdentity:
+                appState.kickedIdentities[address] = true
+                appState.kickedIdentities[identity] = true
                 if websocket notin socketsToKick:
                   socketsToKick.add(websocket)
           for websocket in socketsToKick:
@@ -863,8 +901,7 @@ proc runServerLoop*(
                   replayWriter.lastMasks.delete(playerIndex)
                 if playerIndex < prevInputs.len:
                   prevInputs.delete(playerIndex)
-              sim.removePlayer(websocket)
-              kickedSockets.add(websocket)
+            sim.movePlayerToSpectator(websocket)
         if not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
           sim.resetToLobby()
           prevInputs = @[]
@@ -876,11 +913,18 @@ proc runServerLoop*(
             if appState.playerIndices[websocket] == 0x7fffffff:
               newSockets.add(websocket)
           for websocket in newSockets:
-            if sim.phase == Lobby and sim.canAddPlayer():
-              let address = appState.playerAddresses.getOrDefault(
-                websocket,
-                "unknown"
-              )
+            let address = appState.playerAddresses.getOrDefault(
+              websocket,
+              "unknown"
+            )
+            let identity = address.rewardAddress()
+            if address in appState.kickedIdentities or
+                identity in appState.kickedIdentities:
+              appState.spectators.add(websocket)
+              appState.playerIndices.del(websocket)
+              appState.inputMasks.del(websocket)
+              appState.lastAppliedMasks.del(websocket)
+            elif sim.phase == Lobby and sim.canAddPlayer():
               appState.playerIndices[websocket] = sim.addPlayer(address)
               replayWriter.writeJoin(
                 tickTime(sim.tickCount),
@@ -943,12 +987,6 @@ proc runServerLoop*(
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
 
-    for websocket in kickedSockets:
-      try:
-        websocket.close()
-      except:
-        discard
-
     if shouldReset:
       let rewardAccounts = sim.rewardAccounts
       inc config.seed
@@ -964,10 +1002,13 @@ proc runServerLoop*(
       playerViewerStates.setLen(0)
       {.gcsafe.}:
         withLock appState.lock:
-          appState.spectators = @[]
+          appState.kickedIdentities.clear()
           var reconnectSockets: seq[WebSocket] = @[]
           for websocket in appState.playerIndices.keys:
             reconnectSockets.add(websocket)
+          for websocket in appState.spectators:
+            reconnectSockets.add(websocket)
+          appState.spectators = @[]
           for websocket in reconnectSockets:
             if not sim.canAddPlayer():
               if websocket in appState.playerViewers:

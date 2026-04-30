@@ -835,6 +835,15 @@ proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
   text == "CREW WINS" or text == "IMPS WIN"
 
+proc isLobbyText(text: string): bool =
+  ## Returns true for lobby/waiting screens that imply a fresh match state.
+  text == "GAME" or text == "STARTING" or text == "WAITING" or
+    text == "NEED MORE!" or text.startsWith("IN ")
+
+proc isRoleRevealText(text: string): bool =
+  ## Returns true when the server is revealing a fresh role assignment.
+  text == "CREWMATE" or text == "IMPS"
+
 proc clearVotingState(bot: var Bot) =
   ## Clears the parsed voting screen state.
   bot.voting = false
@@ -1092,11 +1101,16 @@ proc updateLocation(bot: var Bot) =
     bot.visibleCrewmates.setLen(0)
     bot.visibleBodies.setLen(0)
     bot.visibleGhosts.setLen(0)
+    if bot.interstitialText.isLobbyText() and
+        (bot.gameStarted or bot.homeSet):
+      bot.resetRoundState()
     if bot.interstitialText.isGameOverText() and
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
     elif not bot.parseVotingScreen():
+      if bot.interstitialText.isRoleRevealText() and bot.gameStarted:
+        bot.resetRoundState()
       bot.rememberRoleReveal()
     return
   bot.interstitialText = ""
