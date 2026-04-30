@@ -872,3 +872,47 @@ proc buildStateJson*(sim: SimServer, playerIndex: int): string =
   root["playerListings"] = playerListings
 
   $root
+
+proc mixHash(hash: var uint64, value: uint64) =
+  hash = hash xor value
+  hash *= 1099511628211'u64
+
+proc mixHashInt(hash: var uint64, value: int) =
+  hash.mixHash(cast[uint64](int64(value)))
+
+proc mixHashBool(hash: var uint64, value: bool) =
+  hash.mixHashInt(ord(value))
+
+proc gameHash*(sim: SimServer): uint64 =
+  result = 14695981039346656037'u64
+  result.mixHashInt(sim.tickCount)
+  result.mixHashInt(sim.players.len)
+  for player in sim.players:
+    result.mixHashInt(player.x)
+    result.mixHashInt(player.y)
+    result.mixHashInt(player.velX)
+    result.mixHashInt(player.velY)
+    result.mixHashInt(player.carryX)
+    result.mixHashInt(player.carryY)
+    result.mixHashInt(ord(player.facing))
+    result.mixHashInt(ord(player.role))
+    result.mixHashInt(ord(player.state))
+    result.mixHashInt(player.gold)
+    result.mixHashInt(player.actionProgress)
+    result.mixHashInt(player.actionTargetIndex)
+    for item in ItemKind:
+      result.mixHashInt(player.inv.counts[item])
+    for i in 0 ..< GearSlotCount:
+      result.mixHashInt(ord(player.equippedGear[i]))
+    result.mixHashInt(player.listings.len)
+    for listing in player.listings:
+      result.mixHashInt(ord(listing.item))
+      result.mixHashInt(listing.quantity)
+      result.mixHashInt(listing.priceEach)
+  for obj in sim.objects:
+    result.mixHashBool(obj.depleted)
+    result.mixHashInt(obj.respawnTimer)
+  for listing in sim.npcListings:
+    result.mixHashInt(ord(listing.item))
+    result.mixHashInt(listing.quantity)
+    result.mixHashInt(listing.priceEach)

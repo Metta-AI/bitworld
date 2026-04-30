@@ -261,7 +261,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
     if sim.letterSprites.len > 0:
       sim.fb.blitText(sim.letterSprites, "X", 50 + 18, ScreenHeight - 11)
 
-proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(FloorBackdropColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return sim.fb.packed
@@ -285,7 +285,7 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc loadRenderAssets(sim: var SimServer) =
+proc loadRenderAssets*(sim: var SimServer) =
   loadPalette(palettePath())
   sim.fb = initFramebuffer()
   sim.digitSprites = loadDigitSprites(numbersPath())

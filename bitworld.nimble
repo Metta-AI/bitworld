@@ -37,7 +37,9 @@ bin = @[
   "marketboard/players/zorori",
   "marketboard/players/solenne",
   "marketboard/players/rkhenna",
-  "marketboard/players/pipitori"
+  "marketboard/players/pipitori",
+  "marketboard/replay_viewer",
+  "tools/batch_market"
 ]
 
 switch("path", "common")

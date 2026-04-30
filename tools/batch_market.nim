@@ -1,0 +1,234 @@
+import std/[algorithm, os, parseopt, random, strformat, strutils]
+import
+  ../marketboard/sim,
+  ../marketboard/excitement,
+  ../marketboard/replays,
+  ../marketboard/players/common,
+  ../marketboard/players/still_forge as sf,
+  ../marketboard/players/iron_works as iw,
+  ../marketboard/players/colm as colm_bot,
+  ../marketboard/players/zorori as zr,
+  ../marketboard/players/solenne as sol,
+  ../marketboard/players/rkhenna as rk,
+  ../marketboard/players/pipitori as pip
+
+const
+  DefaultMatches = 100
+  DefaultTicks = 5000
+  DefaultTop = 5
+  DefaultReplayDir = "replays"
+  BotCount = 7
+  MinBots = 5
+  MaxBots = 9
+
+type
+  BotKind* = enum
+    bkStillForge
+    bkIronWorks
+    bkColm
+    bkZorori
+    bkSolenne
+    bkRkhenna
+    bkPipitori
+
+  BotRunner = object
+    kind: BotKind
+    name: string
+    prevMask: uint8
+    case botKind: BotKind
+    of bkStillForge: sfState: sf.BotState
+    of bkIronWorks: iwState: iw.BotState
+    of bkColm: colmState: colm_bot.BotState
+    of bkZorori: zrState: zr.BotState
+    of bkSolenne: solState: sol.BotState
+    of bkRkhenna: rkState: rk.BotState
+    of bkPipitori: pipState: pip.BotState
+
+  BatchConfig = object
+    matches: int
+    ticks: int
+    top: int
+    replayDir: string
+
+  MatchResult = object
+    seed: int
+    score: float
+    lineup: seq[string]
+    replayPath: string
+    topMoments: seq[int]
+
+proc botName(kind: BotKind, index: int): string =
+  case kind
+  of bkStillForge: "StillForge" & $index
+  of bkIronWorks: "IronWorks" & $index
+  of bkColm: "Colm" & $index
+  of bkZorori: "Zorori" & $index
+  of bkSolenne: "Solenne" & $index
+  of bkRkhenna: "Rkhenna" & $index
+  of bkPipitori: "Pipitori" & $index
+
+proc initBotRunner(kind: BotKind, index: int): BotRunner =
+  let name = botName(kind, index)
+  case kind
+  of bkStillForge:
+    result = BotRunner(kind: bkStillForge, botKind: bkStillForge, name: name)
+  of bkIronWorks:
+    result = BotRunner(kind: bkIronWorks, botKind: bkIronWorks, name: name)
+  of bkColm:
+    result = BotRunner(kind: bkColm, botKind: bkColm, name: name)
+  of bkZorori:
+    result = BotRunner(kind: bkZorori, botKind: bkZorori, name: name)
+  of bkSolenne:
+    result = BotRunner(kind: bkSolenne, botKind: bkSolenne, name: name)
+  of bkRkhenna:
+    result = BotRunner(kind: bkRkhenna, botKind: bkRkhenna, name: name)
+  of bkPipitori:
+    result = BotRunner(kind: bkPipitori, botKind: bkPipitori, name: name)
+
+proc decide(bot: var BotRunner, state: GameState): uint8 =
+  case bot.botKind
+  of bkStillForge: sf.decide(bot.sfState, state)
+  of bkIronWorks: iw.decide(bot.iwState, state)
+  of bkColm: colm_bot.decide(bot.colmState, state)
+  of bkZorori: zr.decide(bot.zrState, state)
+  of bkSolenne: sol.decide(bot.solState, state)
+  of bkRkhenna: rk.decide(bot.rkState, state)
+  of bkPipitori: pip.decide(bot.pipState, state)
+
+proc generateLineup(rng: var Rand): seq[BotKind] =
+  let count = rng.rand(MinBots .. MaxBots)
+  for _ in 0 ..< count:
+    result.add BotKind(rng.rand(BotCount - 1))
+  rng.shuffle(result)
+
+proc runMatch(seed: int, ticks: int, replayPath: string): MatchResult =
+  var rng = initRand(seed)
+  let lineup = generateLineup(rng)
+
+  var sim = initSimServer(0)
+  var bots: seq[BotRunner]
+  var writer = openMbReplayWriter(replayPath, "{}")
+  var tracker: ExcitementTracker
+
+  var nameCounters: array[BotKind, int]
+  for kind in lineup:
+    inc nameCounters[kind]
+    let bot = initBotRunner(kind, nameCounters[kind])
+    let idx = sim.addPlayer(bot.name)
+    bots.add bot
+    writer.writeJoin(tickTime(sim.tickCount), idx, bot.name)
+    while writer.lastMasks.len <= idx:
+      writer.lastMasks.add(0)
+
+  for tick in 0 ..< ticks:
+    var inputs = newSeq[PlayerInput](sim.players.len)
+    for i in 0 ..< bots.len:
+      if i >= sim.players.len:
+        break
+      let stateJson = sim.buildStateJson(i)
+      let state = parseGameState(stateJson)
+      let mask = bots[i].decide(state)
+
+      if i < writer.lastMasks.len and mask != writer.lastMasks[i]:
+        writer.writeInput(MbReplayInput(
+          time: tickTime(sim.tickCount),
+          player: uint8(i),
+          keys: mask
+        ))
+        writer.lastMasks[i] = mask
+
+      inputs[i] = maskToPlayerInput(mask, bots[i].prevMask)
+      bots[i].prevMask = mask
+
+    sim.step(inputs)
+    writer.writeHash(uint32(sim.tickCount), sim.gameHash())
+
+    if sim.tickCount mod SnapshotInterval == 0:
+      tracker.recordTick(sim)
+
+  writer.closeMbReplayWriter()
+
+  result.seed = seed
+  result.score = tracker.excitementScore()
+  result.lineup = newSeq[string](lineup.len)
+  for i, kind in lineup:
+    result.lineup[i] = $kind
+  result.replayPath = replayPath
+  result.topMoments = tracker.topMoments(3)
+
+proc parseArgs(): BatchConfig =
+  result.matches = DefaultMatches
+  result.ticks = DefaultTicks
+  result.top = DefaultTop
+  result.replayDir = DefaultReplayDir
+
+  for kind, key, val in getopt():
+    case kind
+    of cmdLongOption:
+      case key
+      of "matches":
+        result.matches = parseInt(val)
+      of "ticks":
+        result.ticks = parseInt(val)
+      of "top":
+        result.top = parseInt(val)
+      of "replay-dir":
+        result.replayDir = val
+      else:
+        raise newException(ValueError, "Unknown option: --" & key)
+    else:
+      discard
+
+proc run(config: BatchConfig) =
+  let previousDir = getCurrentDir()
+  let rootDir = getCurrentDir()
+  setCurrentDir(rootDir / "marketboard")
+
+  createDir(rootDir / config.replayDir)
+
+  var results: seq[MatchResult]
+
+  echo &"Running {config.matches} matches, {config.ticks} ticks each..."
+  echo ""
+
+  for i in 0 ..< config.matches:
+    let seed = i
+    let replayPath = rootDir / config.replayDir / &"match_{seed:04d}.mbreplay"
+    let res = runMatch(seed, config.ticks, replayPath)
+    results.add res
+
+    let lineupStr = res.lineup.join(", ")
+    echo &"  match {seed:4d}: score={res.score:8.2f}  bots=[{lineupStr}]"
+
+  setCurrentDir(previousDir)
+
+  results.sort(proc(a, b: MatchResult): int = cmp(b.score, a.score))
+
+  echo ""
+  echo &"Top {config.top} most exciting matches:"
+  echo &"{'=':#>60}"
+  for i in 0 ..< min(config.top, results.len):
+    let r = results[i]
+    let lineupStr = r.lineup.join(", ")
+    echo &"  #{i+1}: seed={r.seed:4d}  score={r.score:8.2f}"
+    echo &"       bots=[{lineupStr}]"
+    echo &"       replay: {r.replayPath}"
+    if r.topMoments.len > 0:
+      echo &"       key moments at ticks: {r.topMoments}"
+    echo ""
+
+  if results.len > config.top:
+    for i in config.top ..< results.len:
+      try:
+        removeFile(results[i].replayPath)
+      except CatchableError:
+        discard
+    echo &"Kept top {config.top} replays, removed {results.len - config.top} others."
+
+when isMainModule:
+  try:
+    run(parseArgs())
+  except ValueError as e:
+    echo e.msg
+    echo "Usage: batch_market [--matches:100] [--ticks:5000] [--top:5] [--replay-dir:replays/]"
+    quit(1)
