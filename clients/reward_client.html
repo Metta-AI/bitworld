@@ -46,6 +46,20 @@ function show(text){
   reward.textContent=text;
 }
 
+function filterRewardLines(text){
+  const out=[];
+  const lines=text.split("\n");
+  for(const line of lines){
+    const trimmed=line.replace(/\r$/,"");
+    if(!trimmed)continue;
+    const parts=trimmed.split(/\s+/);
+    if(parts.length>=1&&parts[0]==="reward"){
+      out.push(trimmed);
+    }
+  }
+  return out.join("\n");
+}
+
 function reconnect(ws){
   if(socket!==ws)return;
   socket=null;
@@ -68,10 +82,10 @@ function connect(){
   ws.onmessage=event=>{
     if(socket!==ws)return;
     if(typeof event.data==="string"){
-      show(event.data);
+      show(filterRewardLines(event.data));
     }else if(event.data instanceof Blob){
       event.data.text().then(text=>{
-        if(socket===ws)show(text);
+        if(socket===ws)show(filterRewardLines(text));
       });
     }else{
       ws.close();

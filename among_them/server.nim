@@ -662,14 +662,41 @@ proc rewardAddress(address: string): string =
     return parts[0] & ":" & parts[1]
   address
 
+proc rewardAccountFor(sim: SimServer, address: string): int =
+  ## Returns the reward account index for one address.
+  for i in 0 ..< sim.rewardAccounts.len:
+    if sim.rewardAccounts[i].address == address:
+      return i
+  -1
+
+proc addStatLine(
+  packet: var string,
+  name, identity: string,
+  value: int
+) =
+  ## Appends one metric line to a reward protocol packet.
+  packet.add(name)
+  packet.add(' ')
+  packet.add(identity)
+  packet.add(' ')
+  packet.add($value)
+  packet.add('\n')
+
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
   for player in sim.players:
-    result.add("reward ")
-    result.add(player.address.rewardAddress())
-    result.add(" ")
-    result.add($player.reward)
-    result.add("\n")
+    let
+      identity = player.address.rewardAddress()
+      accountIndex = sim.rewardAccountFor(player.address)
+    result.addStatLine("reward", identity, player.reward)
+    if accountIndex >= 0:
+      let account = sim.rewardAccounts[accountIndex]
+      result.addStatLine("wins_imposter", identity, account.winsImposter)
+      result.addStatLine("wins_crewmate", identity, account.winsCrewmate)
+      result.addStatLine("games_imposter", identity, account.gamesImposter)
+      result.addStatLine("games_crewmate", identity, account.gamesCrewmate)
+      result.addStatLine("kills", identity, account.kills)
+      result.addStatLine("tasks", identity, account.tasks)
 
 proc runServerLoop*(
   host = DefaultHost,

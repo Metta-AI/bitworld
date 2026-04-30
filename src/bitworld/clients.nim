@@ -5,10 +5,12 @@ const
   GlobalClientRoute* = "/client/global.html"
   RewardClientRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/client/snappyjs.min.js"
+  StatsClientRoute* = "/client/stats.html"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
+  StatsClientHtml* = "stats.html"
 
 proc repoDir*(): string =
   ## Returns the Bit World repository directory.
@@ -27,6 +29,8 @@ proc clientHtmlPath*(route: string): string =
     clientsDir() / GlobalClientHtml
   of RewardClientRoute:
     clientsDir() / RewardClientHtml
+  of StatsClientRoute:
+    clientsDir() / StatsClientHtml
   else:
     ""
 

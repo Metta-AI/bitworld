@@ -191,6 +191,12 @@ type
   RewardAccount* = object
     address*: string
     reward*: int
+    winsImposter*: int
+    winsCrewmate*: int
+    gamesImposter*: int
+    gamesCrewmate*: int
+    kills*: int
+    tasks*: int
 
   GameConfig* = object
     motionScale*: int
@@ -217,6 +223,7 @@ type
     tasksPerPlayer*: int
     showTaskArrows*: bool
     showTaskBubbles*: bool
+    showPlayerLabels*: bool
     buttonCalls*: int
     mapPath*: string
 
@@ -815,6 +822,7 @@ proc defaultGameConfig*(): GameConfig =
     tasksPerPlayer: TasksPerPlayer,
     showTaskArrows: ShowTaskArrows,
     showTaskBubbles: true,
+    showPlayerLabels: true,
     buttonCalls: ButtonCalls,
     mapPath: DefaultMapPath
   )
@@ -912,6 +920,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("numberOfButtonCalls", config.buttonCalls)
   node.readConfigBool("showTaskArrows", config.showTaskArrows)
   node.readConfigBool("showTaskBubbles", config.showTaskBubbles)
+  node.readConfigBool("showPlayerLabels", config.showPlayerLabels)
   node.readConfigString("map", config.mapPath)
   node.readConfigString("mapPath", config.mapPath)
   config.validate()
@@ -946,7 +955,8 @@ proc configJson*(config: GameConfig): string =
     "buttonCalls": config.buttonCalls,
     "mapPath": config.mapPath,
     "showTaskArrows": config.showTaskArrows,
-    "showTaskBubbles": config.showTaskBubbles
+    "showTaskBubbles": config.showTaskBubbles,
+    "showPlayerLabels": config.showPlayerLabels
   }
   $node
 
@@ -1134,6 +1144,56 @@ proc addReward*(sim: var SimServer, playerIndex, amount: int) =
   sim.rewardAccounts[index].reward += amount
   sim.players[playerIndex].reward = sim.rewardAccounts[index].reward
 
+proc rewardAccountForPlayer(
+  sim: var SimServer,
+  playerIndex: int
+): int =
+  ## Returns the reward account index for a player, creating it if missing.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return -1
+  let address = sim.players[playerIndex].address
+  result = sim.rewardAccountIndex(address)
+  if result < 0:
+    sim.rewardAccounts.add RewardAccount(address: address, reward: 0)
+    result = sim.rewardAccounts.high
+
+proc recordGameRoleAssigned*(
+  sim: var SimServer,
+  playerIndex: int
+) =
+  ## Increments the lifetime role-assignment counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  if sim.players[playerIndex].role == Imposter:
+    inc sim.rewardAccounts[index].gamesImposter
+  else:
+    inc sim.rewardAccounts[index].gamesCrewmate
+
+proc recordGameWin*(sim: var SimServer, playerIndex: int) =
+  ## Increments the lifetime per-role win counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  if sim.players[playerIndex].role == Imposter:
+    inc sim.rewardAccounts[index].winsImposter
+  else:
+    inc sim.rewardAccounts[index].winsCrewmate
+
+proc recordKill*(sim: var SimServer, playerIndex: int) =
+  ## Increments the lifetime kill counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].kills
+
+proc recordTask*(sim: var SimServer, playerIndex: int) =
+  ## Increments the lifetime task-completion counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].tasks
+
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   ## Marks one player task complete and awards task reward.
   if taskIndex < 0 or taskIndex >= sim.tasks.len:
@@ -1147,6 +1207,7 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
     return
   sim.tasks[taskIndex].completed[playerIndex] = true
   sim.addReward(playerIndex, TaskReward)
+  sim.recordTask(playerIndex)
 
 proc startGame*(sim: var SimServer) =
   sim.arrangeHomePositions()
@@ -1165,6 +1226,8 @@ proc startGame*(sim: var SimServer) =
     swap(candidates[j], candidates[k])
   for i in 0 ..< imposterCount:
     sim.players[candidates[i]].role = Imposter
+  for i in 0 ..< sim.players.len:
+    sim.recordGameRoleAssigned(i)
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == Imposter:
       continue
@@ -1273,6 +1336,7 @@ proc tryKill*(sim: var SimServer, killerIndex: int) =
       color: sim.players[bestTarget].color
     )
     sim.addReward(killerIndex, KillReward)
+    sim.recordKill(killerIndex)
     sim.players[killerIndex].killCooldown = sim.config.killCooldownTicks
 
 proc tryVent*(sim: var SimServer, playerIndex: int) =
@@ -2021,6 +2085,7 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == winner:
       sim.addReward(i, WinReward)
+      sim.recordGameWin(i)
 
 proc gameTicksElapsed*(sim: SimServer): int =
   ## Returns ticks elapsed since the current game left the lobby.
