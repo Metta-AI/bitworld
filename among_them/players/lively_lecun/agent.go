@@ -54,6 +54,13 @@ type Agent struct {
 	stuckPerturb uint8  // non-zero while we're force-nudging through a pinned corner
 	stuckLeft    int    // frames remaining of the current stuck perturb
 
+	// prevPlayer/prevPlayerF measure per-frame player displacement for the
+	// coast-to-stop logic. Unlike lastPlayer (which gates stuck detection
+	// and only updates on >2 px movement), this updates every locked
+	// frame so |Δplayer| is a proper speed estimate.
+	prevPlayer  Point
+	prevPlayerF uint64
+
 	// goalStation is the TaskStations index of the current nav goal when
 	// it came from TaskMemory.BestGoal. -1 means the current goal is not a
 	// task station (body, imposter target, etc.) or there's no goal.
@@ -122,6 +129,19 @@ const (
 	// against the body collision center at (body.x+CollisionW/2, body.y+CollisionH/2)
 	// (sim.nim:1304-1313). CollisionW=CollisionH=1, so the center is ~body.x/body.y.
 	agentReportRangeSq = 20 * 20
+
+	// Coast-to-stop near a goal. Players have momentum (sim.nim:26-30:
+	// Accel=76, FrictionNum=144/256, MaxSpeed=704, StopThreshold=8 on a
+	// carryX/velX*MotionScale=256 accumulator). Friction decays velocity
+	// ~44% per tick, so from near top speed it takes ~8 ticks and ~22
+	// world-px to coast to a stop. Inside agentCoastRadius of the goal,
+	// if player speed (|Δplayer|/frame, Manhattan) is ≥ agentCoastSpeed,
+	// we emit mask=0 so friction brakes us. This stops orbit-around-goal
+	// as well as head-on overshoot -- tangential speed decays just as
+	// radial does. Below the threshold, normal steering resumes so we
+	// converge from a near-stop onto the station center.
+	agentCoastRadius = 12
+	agentCoastSpeed  = 3
 
 	// Consecutive PhaseIdle frames that must accumulate before we treat
 	// it as a real game boundary and reset role state. A single idle
@@ -285,6 +305,19 @@ func (a *Agent) countKnown() int {
 	return n
 }
 
+// shouldCoast returns true when the player is close enough to goal that
+// momentum will carry us in and moving fast enough that a steer input
+// this frame would overshoot. It's speed-based (not direction-based) so
+// an agent orbiting the goal -- tangential velocity, no radial progress
+// -- also brakes.
+func shouldCoast(player, goal Point, speed int) bool {
+	if speed < agentCoastSpeed {
+		return false
+	}
+	return absInt(player.X-goal.X) <= agentCoastRadius &&
+		absInt(player.Y-goal.Y) <= agentCoastRadius
+}
+
 func (a *Agent) logBranch(name string) {
 	if name != a.lastBranch {
 		log.Printf("branch: %s (frame %d)", name, a.frames)
@@ -295,6 +328,7 @@ func (a *Agent) logBranch(name string) {
 func (a *Agent) stepActive(pixels []uint8) uint8 {
 	cam, locked := a.tracker.Update(pixels)
 	var player Point
+	var speed int // Manhattan px since previous locked frame; 0 while !locked or first lock
 	if !locked && a.frames-a.lastPosLog >= 24 {
 		log.Printf("nolock: bestMiss=%d brutes=%d", a.tracker.LastMiss, a.tracker.Brutes)
 		a.lastPosLog = a.frames
@@ -303,6 +337,11 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 	var arrows []RadarArrow
 	if locked {
 		player = Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
+		if a.prevPlayerF != 0 && a.frames-a.prevPlayerF == 1 {
+			speed = absInt(player.X-a.prevPlayer.X) + absInt(player.Y-a.prevPlayer.Y)
+		}
+		a.prevPlayer = player
+		a.prevPlayerF = a.frames
 		matches = FindTaskIcons(pixels)
 		arrows = FindRadarArrows(pixels)
 		a.memory.Update(player, cam, matches, arrows)
@@ -481,21 +520,30 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 				a.goalStation = -1
 				a.arrivedAt = 0
 				mask = 0
-			} else {
+			} else if a.goalStation >= 0 {
 				// Arrived at the nav cell but TaskHolder hasn't engaged
 				// yet; jitter toward the exact station center so a tiny
-				// offset doesn't leave us idle.
-				if a.goalStation >= 0 {
-					desired = maskTowards(player, TaskStations[a.goalStation].Center)
-					stuckEligible = desired != 0
-				} else {
+				// offset doesn't leave us idle. Coast (emit 0) when we're
+				// already close and moving fast so momentum settles us
+				// instead of overshooting or orbiting.
+				center := TaskStations[a.goalStation].Center
+				if shouldCoast(player, center, speed) {
 					mask = 0
+				} else {
+					desired = maskTowards(player, center)
+					stuckEligible = desired != 0
 				}
+			} else {
+				mask = 0
 			}
 		} else {
 			a.arrivedAt = 0
-			desired = navMask
-			stuckEligible = true
+			if shouldCoast(player, a.nav.Goal(), speed) {
+				mask = 0
+			} else {
+				desired = navMask
+				stuckEligible = true
+			}
 		}
 	} else {
 		a.arrivedAt = 0
