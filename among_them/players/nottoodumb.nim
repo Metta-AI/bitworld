@@ -4072,16 +4072,20 @@ when not defined(nottoodumbLibrary):
     port = PlayerDefaultPort,
     gui = false,
     name = "",
-    mapPath = ""
+    mapPath = "",
+    url = ""
   ) =
     ## Connects to an Among Them server and processes player frames.
+    ## If `url` is non-empty it is used verbatim as the WebSocket endpoint
+    ## (scheme, host, port, path); otherwise we build ws://host:port/player.
     var bot = initBot(mapPath)
-    let url =
-      if name.len > 0:
-        "ws://" & host & ":" & $port & WebSocketPath &
-          "?name=" & name.queryEscape()
-      else:
-        "ws://" & host & ":" & $port & WebSocketPath
+    let endpoint =
+      if url.len > 0: url
+      else: "ws://" & host & ":" & $port & WebSocketPath
+    let connectUrl =
+      if name.len == 0: endpoint
+      else: endpoint &
+        (if '?' in endpoint: "&" else: "?") & "name=" & name.queryEscape()
     var
       viewer =
         if gui: initViewerApp()
@@ -4089,7 +4093,7 @@ when not defined(nottoodumbLibrary):
       connected = false
     while viewer.viewerOpen():
       try:
-        let ws = newWebSocket(url)
+        let ws = newWebSocket(connectUrl)
         var lastMask = 0xff'u8
         bot.queuedFrames.setLen(0)
         bot.frameBufferLen = 0
@@ -4097,7 +4101,7 @@ when not defined(nottoodumbLibrary):
         connected = true
         while viewer.viewerOpen():
           if gui:
-            viewer.pumpViewer(bot, connected, url)
+            viewer.pumpViewer(bot, connected, connectUrl)
             if not viewer.viewerOpen():
               ws.close()
               break
@@ -4119,7 +4123,7 @@ when not defined(nottoodumbLibrary):
           let reconnectStart = getMonoTime()
           while viewer.viewerOpen() and
               (getMonoTime() - reconnectStart).inMilliseconds < 250:
-            viewer.pumpViewer(bot, connected, url)
+            viewer.pumpViewer(bot, connected, connectUrl)
             sleep(10)
         else:
           sleep(250)
@@ -4131,6 +4135,7 @@ when isMainModule and not defined(nottoodumbLibrary):
     gui = false
     name = ""
     mapPath = ""
+    url = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4145,10 +4150,12 @@ when isMainModule and not defined(nottoodumbLibrary):
         name = val
       of "map":
         mapPath = val
+      of "url":
+        url = val
       else:
         discard
     else:
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath)
+  runBot(address, port, gui, name, mapPath, url)
