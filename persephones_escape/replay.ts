@@ -1,7 +1,7 @@
 import { writeFileSync, readFileSync, openSync, writeSync, closeSync } from "fs";
-import { TARGET_FPS } from "./constants.js";
-import { decodeInputMask, emptyInput } from "./protocol.js";
-import type { InputState } from "./types.js";
+import { TARGET_FPS } from "./game/constants.js";
+import { decodeInputMask, emptyInput } from "./game/protocol.js";
+import type { InputState } from "./game/types.js";
 
 const REPLAY_MAGIC = "BITWORLD";
 const FORMAT_VERSION = 1;

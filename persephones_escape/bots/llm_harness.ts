@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { argv } from "process";
 import {
   BUTTON_B,
-} from "../constants.js";
+} from "../game/constants.js";
 import {
   sendInput, PACKED_FRAME_BYTES, unpackFrame,
   ActionQueue,

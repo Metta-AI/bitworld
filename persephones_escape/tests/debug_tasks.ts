@@ -3,10 +3,10 @@
  * the whole pursue_chat → grant → color → role → mutual-exchange flow.
  */
 
-import { Sim } from "../sim.js";
-import { DEFAULT_GAME_CONFIG } from "../constants.js";
-import { decodeInputMask, emptyInput } from "../protocol.js";
-import type { InputState } from "../types.js";
+import { Sim } from "../game/sim.js";
+import { DEFAULT_GAME_CONFIG } from "../game/constants.js";
+import { decodeInputMask, emptyInput } from "../game/protocol.js";
+import type { InputState } from "../game/types.js";
 import { render } from "../rendering/renderer.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,

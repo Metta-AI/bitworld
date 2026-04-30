@@ -1,9 +1,9 @@
 /**
  * Tiny test: send a shout via addGlobalChat, render, check parseLastShout.
  */
-import { Sim } from "../sim.js";
-import { DEFAULT_GAME_CONFIG } from "../constants.js";
-import { Phase } from "../types.js";
+import { Sim } from "../game/sim.js";
+import { DEFAULT_GAME_CONFIG } from "../game/constants.js";
+import { Phase } from "../game/types.js";
 import { render } from "../rendering/renderer.js";
 import { unpackFrame } from "../bots/bot_utils.js";
 import { parseLastShout, parsePhase } from "../bots/frame_parser.js";

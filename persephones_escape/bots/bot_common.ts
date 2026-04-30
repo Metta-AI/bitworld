@@ -1,6 +1,6 @@
 import WebSocket from "ws";
-import { BUTTON_A, BUTTON_B, BUTTON_SELECT } from "../constants.js";
-import { Room } from "../types.js";
+import { BUTTON_A, BUTTON_B, BUTTON_SELECT } from "../game/constants.js";
+import { Room } from "../game/types.js";
 import {
   sendInput, sendChat, truncateChatInput, ActionQueue,
   menuSequence, COMMAND_ACTIONS,
@@ -8,7 +8,7 @@ import {
   moveToward, randomDir, randomPoint, clamp,
   type Point,
 } from "./bot_utils.js";
-import { chatMenuSequenceWithTargetPick } from "../menu_defs.js";
+import { chatMenuSequenceWithTargetPick } from "../game/menu_defs.js";
 import { type BeliefState } from "./belief_state.js";
 
 // ---------------------------------------------------------------------------

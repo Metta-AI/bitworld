@@ -16,13 +16,13 @@ import WebSocket from "ws";
 import { argv } from "process";
 import {
   TARGET_FPS, BUTTON_A,
-} from "../constants.js";
+} from "../game/constants.js";
 import {
   sendInput, PACKED_FRAME_BYTES, unpackFrame, ActionQueue,
   moveToward, randomDir, randomPoint,
   type Point,
 } from "./bot_utils.js";
-import { Room } from "../types.js";
+import { Room } from "../game/types.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
 } from "./belief_state.js";

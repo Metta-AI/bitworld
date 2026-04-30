@@ -3,8 +3,8 @@ import { argv } from "process";
 import {
   TARGET_FPS, PLAYER_W, PLAYER_H, BUBBLE_RADIUS, ROOM_W,
   BUTTON_A, BUTTON_B, BUTTON_SELECT,
-} from "../constants.js";
-import { Room } from "../types.js";
+} from "../game/constants.js";
+import { Room } from "../game/types.js";
 import {
   sendInput, sendChat, PACKED_FRAME_BYTES, unpackFrame,
   ActionQueue, menuSequence, hostageSelectSequence,

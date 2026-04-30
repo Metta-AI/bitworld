@@ -4,7 +4,7 @@
  */
 import WebSocket from "ws";
 import { PACKED_FRAME_BYTES, unpackFrame } from "../bots/bot_utils.js";
-import { SCREEN_WIDTH, SCREEN_HEIGHT } from "../constants.js";
+import { SCREEN_WIDTH, SCREEN_HEIGHT } from "../game/constants.js";
 import { parsePhase, parseRoleRevealScreen, readTextAt } from "../bots/frame_parser.js";
 
 const url = process.argv[2] ?? "ws://localhost:8080/player";

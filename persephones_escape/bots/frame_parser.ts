@@ -14,8 +14,8 @@ import {
   ROOM_A_NAME, ROOM_B_NAME,
   HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME,
   DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME,
-} from "../constants.js";
-import { Room, PlayerShape } from "../types.js";
+} from "../game/constants.js";
+import { Room, PlayerShape } from "../game/types.js";
 import type { Point } from "./bot_utils.js";
 
 // ---------------------------------------------------------------------------

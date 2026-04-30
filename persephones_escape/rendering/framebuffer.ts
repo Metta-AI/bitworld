@@ -1,5 +1,5 @@
-import type { uint8 } from "../types.js";
-import { SCREEN_WIDTH, SCREEN_HEIGHT, PROTOCOL_BYTES } from "../constants.js";
+import type { uint8 } from "../game/types.js";
+import { SCREEN_WIDTH, SCREEN_HEIGHT, PROTOCOL_BYTES } from "../game/constants.js";
 
 function f(rows: string[]): number[][] {
   return rows.map((r) => [...r].map((c) => (c === "#" ? 1 : 0)));

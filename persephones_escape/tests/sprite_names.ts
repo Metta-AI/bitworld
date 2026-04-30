@@ -1,4 +1,4 @@
-import { playerSpriteName, spriteNameFromPaletteColor, PLAYER_COLORS } from "../constants.js";
+import { playerSpriteName, spriteNameFromPaletteColor, PLAYER_COLORS } from "../game/constants.js";
 
 console.log("=== playerSpriteName (by colorIndex) ===");
 for (let i = 0; i < 12; i++) {

@@ -4,13 +4,13 @@
  * produces, and verify the offer appears in sim state.
  */
 
-import { Sim } from "../sim.js";
-import { DEFAULT_GAME_CONFIG } from "../constants.js";
-import { decodeInputMask, emptyInput } from "../protocol.js";
-import type { InputState } from "../types.js";
-import { Phase } from "../types.js";
-import { chatMenuSequence } from "../menu_defs.js";
-import { BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_UP, BUTTON_DOWN } from "../constants.js";
+import { Sim } from "../game/sim.js";
+import { DEFAULT_GAME_CONFIG } from "../game/constants.js";
+import { decodeInputMask, emptyInput } from "../game/protocol.js";
+import type { InputState } from "../game/types.js";
+import { Phase } from "../game/types.js";
+import { chatMenuSequence } from "../game/menu_defs.js";
+import { BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_UP, BUTTON_DOWN } from "../game/constants.js";
 
 const config = {
   ...DEFAULT_GAME_CONFIG,

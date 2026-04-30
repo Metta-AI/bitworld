@@ -1,5 +1,5 @@
 import { type uint8, PlayerShape, Role, Team, type GameConfig } from "./types.js";
-import { SPRITES } from "../common/sprites.js";
+import { SPRITES } from "../../common/sprites.js";
 
 // Parameterized names — change these to retheme
 export const GAME_NAME = "Persephone's Escape";

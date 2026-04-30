@@ -6,8 +6,8 @@ import {
   BUBBLE_RADIUS, TARGET_FPS, BOTTOM_BAR_H,
   MINIMAP_SIZE, MINIMAP_X, MINIMAP_Y,
   CHAT_MAX_TOTAL,
-} from "../constants.js";
-import { Room } from "../types.js";
+} from "../game/constants.js";
+import { Room } from "../game/types.js";
 import WebSocket from "ws";
 
 // ---------------------------------------------------------------------------
@@ -81,8 +81,8 @@ export class ActionQueue {
 // Menu system — re-export from menu_defs for bot consumption
 // ---------------------------------------------------------------------------
 
-export { menuSequence, COMMAND_ACTIONS, MENU_DEFS } from "../menu_defs.js";
-export type { MenuDef } from "../menu_defs.js";
+export { menuSequence, COMMAND_ACTIONS, MENU_DEFS } from "../game/menu_defs.js";
+export type { MenuDef } from "../game/menu_defs.js";
 
 // ---------------------------------------------------------------------------
 // Hostage selection — builds action sequences for leaders during HostageSelect

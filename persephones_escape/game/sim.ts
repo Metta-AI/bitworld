@@ -1,6 +1,6 @@
 import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ChatMessage, type ChatroomMessage, type Chatroom, type Obstacle, type uint8, type GameConfig } from "./types.js";
 import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, CHATROOM_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig, playerSpriteName } from "./constants.js";
-import { Framebuffer } from "./rendering/framebuffer.js";
+import { Framebuffer } from "../rendering/framebuffer.js";
 import { emptyInput } from "./protocol.js";
 import { clamp, distSq } from "./util.js";
 import {

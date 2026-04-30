@@ -1,11 +1,11 @@
-import type { Sim } from "../sim.js";
-import { Phase, Role, Room, Team, PlayerShape } from "../types.js";
-import type { Chatroom } from "../types.js";
+import type { Sim } from "../game/sim.js";
+import { Phase, Role, Room, Team, PlayerShape } from "../game/types.js";
+import type { Chatroom } from "../game/types.js";
 import {
   PLAYER_SHAPES, PLAYER_W, TARGET_FPS,
   ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME,
   TEAM_A_COLOR, TEAM_B_COLOR,
-} from "../constants.js";
+} from "../game/constants.js";
 import { SpritePacket, LayerType, LayerFlag, spriteColor, buildFilledTextSprite } from "./spriteProtocol.js";
 import { Framebuffer } from "./framebuffer.js";
 
