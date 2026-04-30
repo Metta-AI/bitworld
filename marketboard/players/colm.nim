@@ -45,7 +45,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if p.role == "Gatherer":
       if p.inv.wood > 0 or p.inv.stone > 0:
         bot.phase = PathToSellStall
-      elif p.equippedGearCount < GearSlotCount and p.gold >= 20:
+      elif hasAffordableGear(state, p):
         bot.phase = CheckGear
       else:
         bot.phase = PathToNode
@@ -200,11 +200,14 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of CheckGear:
     bot.ticksInPhase = 0
+    if not hasAffordableGear(state, p):
+      bot.phase = PathToNode
+      return 0
     let emptySlot = firstEmptyGearSlot(p)
     if emptySlot < 0 or p.gold < 20:
       bot.phase = PathToNode
       return 0
-    bot.targetGearItem = gearItemForSlot(emptySlot, "Wood")
+    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearMaterial(state, emptySlot, p.gold))
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
     bot.phase = PathToBuyStall
     return 0

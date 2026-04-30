@@ -362,6 +362,26 @@ proc itemCursorIndex*(item: string): int =
     if name == item: return i
   0
 
+proc hasAffordableGear*(state: GameState, player: BotPlayer): bool =
+  let slot = firstEmptyGearSlot(player)
+  if slot < 0: return false
+  let all = state.allListings()
+  for material in ["Wood", "Stone"]:
+    let item = gearItemForSlot(slot, material)
+    let listing = cheapestListing(all, item)
+    if listing.isSome and listing.get().priceEach <= player.gold:
+      return true
+  false
+
+proc bestGearMaterial*(state: GameState, slot: int, gold: int): string =
+  let all = state.allListings()
+  for material in ["Wood", "Stone"]:
+    let item = gearItemForSlot(slot, material)
+    let listing = cheapestListing(all, item)
+    if listing.isSome and listing.get().priceEach <= gold:
+      return material
+  "Wood"
+
 # ── A* Pathfinding ──
 
 const
