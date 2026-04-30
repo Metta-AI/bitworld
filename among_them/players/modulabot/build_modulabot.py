@@ -7,7 +7,6 @@ file, output path, and `-d:` define change.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import platform
 import shutil
@@ -19,13 +18,40 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 MODULABOT_DIR = Path(__file__).resolve().parent
 PLAYERS_DIR = MODULABOT_DIR.parent
-ROOT = PLAYERS_DIR.parents[1]
-NIMBY_LOCK = ROOT / "nimby.lock"
 NIM_VERSION = "2.2.4"
 NIMBY_VERSION = "0.1.26"
 NIMBY_SYNC_LOCK = Path.home() / ".nimby" / ".python_sync.lock"
+# Keep in sync with `ffi/lib.nim:ModulabotAbiVersion`.
+MODULABOT_ABI_VERSION = 1
+
+
+def _resolve_root() -> Path:
+    """Walks upward from the modulabot directory until it finds a `nimby.lock`.
+
+    The default layout puts the lock at the bitworld repo root
+    (``MODULABOT_DIR.parents[3]``), but the cogames bundler may relocate the
+    `players/modulabot/` tree. Searching upward for the lock keeps the helper
+    working in both layouts. As a last resort the tournament image's
+    ``/root/.nimby/nim`` already has the toolchain installed, so we tolerate
+    the lock living next to the modulabot directory.
+    """
+    for candidate in (MODULABOT_DIR, *MODULABOT_DIR.parents):
+        if (candidate / "nimby.lock").is_file():
+            return candidate
+    # Fall back to the historical default; the build will fail loudly later
+    # with a clear message if the lock truly isn't there.
+    return MODULABOT_DIR.parents[2] if len(MODULABOT_DIR.parents) >= 3 else MODULABOT_DIR
+
+
+ROOT = _resolve_root()
+NIMBY_LOCK = ROOT / "nimby.lock"
 
 
 def build_modulabot() -> Path:
@@ -36,9 +62,20 @@ def build_modulabot() -> Path:
     cmd = [
         "nim",
         "c",
+        "-d:release",
+        "--opt:speed",
         "--app:lib",
         "-d:modulabotLibrary",
         f"--out:{out_path}",
+        # Source paths the bot imports outside of its own directory:
+        #   `import protocol`           -> common/protocol.nim
+        #   `import ../../sim`          -> among_them/sim.nim
+        #   `import ../../../common/*`  -> common/*.nim
+        #   `import bitworld/aseprite`  -> src/bitworld/aseprite.nim
+        # `config.nims` adds these in the in-repo build, but we set them
+        # explicitly so the build also works in the cogames bundle layout.
+        f"--path:{ROOT / 'common'}",
+        f"--path:{ROOT / 'src'}",
         *_nim_paths_from_lock(NIMBY_LOCK),
         str(MODULABOT_DIR / "modulabot.nim"),
     ]
@@ -47,6 +84,7 @@ def build_modulabot() -> Path:
         print(result.stderr, file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         raise RuntimeError(f"Failed to build Modulabot Nim library: {result.returncode}")
+    _abi_stamp_path(out_path).write_text(f"{MODULABOT_ABI_VERSION}\n")
     return out_path
 
 
@@ -60,6 +98,9 @@ def _sync_nimby() -> None:
 
 def _run_nimby_serialized(args: list[str], *, cwd: Path) -> None:
     NIMBY_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:
+        subprocess.check_call(args, cwd=cwd)
+        return
     with open(NIMBY_SYNC_LOCK, "w") as lock_fd:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         subprocess.check_call(args, cwd=cwd)
@@ -165,6 +206,10 @@ def _library_name() -> str:
     if system == "Windows":
         return "modulabot.dll"
     return "libmodulabot.so"
+
+
+def _abi_stamp_path(lib_path: Path) -> Path:
+    return lib_path.with_name(f"{lib_path.name}.abi")
 
 
 if __name__ == "__main__":

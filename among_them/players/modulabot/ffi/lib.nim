@@ -16,6 +16,12 @@ when defined(modulabotLibrary):
   import ../types
   import ../bot
 
+  const ModulabotAbiVersion* = 1
+    ## Bumped whenever the FFI surface (symbols, signatures, action table)
+    ## changes. The Python wrapper checks this against its own constant and
+    ## refuses to load a mismatched library. Keep in sync with
+    ## `build_modulabot.py:MODULABOT_ABI_VERSION`.
+
   const TrainableMasks = [
     0'u8,
     ButtonA,
@@ -68,6 +74,10 @@ when defined(modulabotLibrary):
     inc bot.frameTick
     result = bot.decideNextMask()
     bot.io.lastMask = result
+
+  proc modulabot_abi_version*(): cint {.exportc, dynlib.} =
+    ## Returns the shared-library ABI version expected by Python wrappers.
+    cint(ModulabotAbiVersion)
 
   proc modulabot_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
     ## Creates a persistent Nim-backed Modulabot policy and returns its handle.
