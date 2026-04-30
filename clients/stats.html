@@ -37,8 +37,10 @@ header h1{
   font-size:12px;
 }
 #wrap{
-  flex:1;
+  flex:1 1 50%;
+  min-height:0;
   overflow:auto;
+  border-bottom:1px solid #1f1f1f;
 }
 table{
   border-collapse:collapse;
@@ -86,6 +88,61 @@ tbody tr:hover{
 .dim{
   color:#777;
 }
+#joinQr{
+  flex:1 1 50%;
+  min-height:180px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:18px;
+  overflow:auto;
+  background:#0d0d0d;
+}
+#joinQr.hidden{
+  display:none;
+}
+#joinQrCode{
+  width:min(32vh,32vw,240px);
+  min-width:132px;
+  aspect-ratio:1;
+  padding:10px;
+  background:#fff;
+  box-sizing:border-box;
+}
+#joinQrCode svg{
+  display:block;
+  width:100%;
+  height:100%;
+}
+#joinQrCaption{
+  max-width:min(40vw,420px);
+  color:#cfcfcf;
+  line-height:1.45;
+  overflow-wrap:anywhere;
+}
+#joinQrLabel{
+  display:block;
+  margin-bottom:6px;
+  color:#fff;
+  font-size:16px;
+  font-weight:600;
+}
+#joinQrHost{
+  color:#888;
+  font-size:12px;
+}
+@media (max-width:700px){
+  #joinQr{
+    flex-direction:column;
+    gap:10px;
+    padding:14px;
+    box-sizing:border-box;
+  }
+  #joinQrCaption{
+    max-width:100%;
+    text-align:center;
+  }
+}
 </style>
 </head>
 <body>
@@ -101,6 +158,14 @@ tbody tr:hover{
     <tbody id="body"></tbody>
   </table>
 </div>
+<div id="joinQr" class="hidden">
+  <div id="joinQrCode"></div>
+  <div id="joinQrCaption">
+    <span id="joinQrLabel"></span>
+    <span id="joinQrHost"></span>
+  </div>
+</div>
+<script src="qrcode.min.js"></script>
 <script>
 const COLUMNS=[
   {key:"identity",label:"player",numeric:false},
@@ -151,6 +216,54 @@ const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
 const head=document.getElementById("head");
 const body=document.getElementById("body");
 const status=document.getElementById("status");
+const joinQr=document.getElementById("joinQr");
+const joinQrCode=document.getElementById("joinQrCode");
+const joinQrLabel=document.getElementById("joinQrLabel");
+const joinQrHost=document.getElementById("joinQrHost");
+
+function joinUrlFromAddress(){
+  const playerAddress=new URL(address,location.href);
+  if(playerAddress.protocol==="http:")playerAddress.protocol="ws:";
+  if(playerAddress.protocol==="https:")playerAddress.protocol="wss:";
+  playerAddress.pathname="/player";
+  const playerPage=new URL(playerAddress.toString());
+  if(playerPage.protocol==="ws:")playerPage.protocol="http:";
+  if(playerPage.protocol==="wss:")playerPage.protocol="https:";
+  playerPage.pathname="/client/player.html";
+  playerPage.search="";
+  playerPage.hash="";
+  playerPage.searchParams.set("address",playerAddress.toString());
+  return playerPage;
+}
+
+function renderJoinQr(){
+  if(!joinQr||!joinQrCode||!joinQrLabel||!joinQrHost)return;
+  let playerPage;
+  try{
+    playerPage=joinUrlFromAddress();
+  }catch(e){
+    return;
+  }
+  const loopback=/^(localhost|127\.|::1$|\[::1\])/i.test(playerPage.host);
+  joinQrLabel.textContent=loopback
+    ?"open stats at LAN IP to share"
+    :"scan to join";
+  joinQrHost.textContent=playerPage.host||"";
+  if(typeof qrcode!=="function"){
+    joinQrCode.textContent="";
+    joinQr.classList.remove("hidden");
+    return;
+  }
+  try{
+    const qr=qrcode(0,"M");
+    qr.addData(playerPage.toString());
+    qr.make();
+    joinQrCode.innerHTML=qr.createSvgTag({scalable:true});
+    joinQr.classList.remove("hidden");
+  }catch(e){
+    joinQr.classList.add("hidden");
+  }
+}
 
 function buildHead(){
   head.innerHTML="";
@@ -295,6 +408,7 @@ function connect(){
 
 buildHead();
 render();
+renderJoinQr();
 connect();
 </script>
 </body>
