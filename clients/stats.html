@@ -368,7 +368,6 @@ async function postControl(path,params){
 }
 
 async function restartCurrentMatch(){
-  if(!window.confirm("Restart the current match?"))return;
   if(restartMatch)restartMatch.disabled=true;
   setControlStatus("restarting...");
   try{
