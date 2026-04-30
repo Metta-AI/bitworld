@@ -27,29 +27,23 @@ const
     "game_over", "trace_warning"
   ]
   KnownBranchIds = [
+    # Keep in sync with BRANCH_IDS.md (auto-generated from
+    # `bot.fired(...)` call sites by `tools/gen_branch_ids.nim`).
     "bot.interstitial.role_reveal",
     "bot.interstitial.game_over",
-    "bot.interstitial.voting_screen",
     "bot.localizing",
     "bot.not_localized",
     "policy_crew.body.report_in_range",
     "policy_crew.body.navigate_to_body",
-    "policy_crew.task.holding",
     "policy_crew.task.continue_hold",
     "policy_crew.task.start_hold",
-    "policy_crew.task.mandatory_visible",
-    "policy_crew.task.mandatory_sticky",
-    "policy_crew.task.mandatory_nearest",
-    "policy_crew.task.checkout_sticky",
-    "policy_crew.task.checkout_nearest",
-    "policy_crew.task.radar_sticky",
-    "policy_crew.task.radar_nearest",
-    "policy_crew.task.home_fallback",
     "policy_crew.task.precise_approach",
     "policy_crew.task.astar",
     "policy_crew.task.ghost_nav",
     "policy_crew.idle.no_goal",
     "policy_imp.body.self_report",
+    "policy_imp.body.vent_escape",
+    "policy_imp.body.vent_approach",
     "policy_imp.body.flee",
     "policy_imp.kill.in_range",
     "policy_imp.kill.hunt",

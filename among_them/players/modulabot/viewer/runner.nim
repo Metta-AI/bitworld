@@ -1,9 +1,10 @@
 ## Websocket runner: connection, frame draining, mask emission, chat
 ## flushing, reconnect loop.
 ##
-## Phase 1 port from v2:4709-4840. The viewer (`--gui`) is not yet
-## implemented in modulabot (phase 2 deliverable); when `--gui` is
-## passed the runner currently warns and proceeds headless.
+## Phase 1 port from v2:4709-4840. The viewer (`--gui`) is fully
+## wired via `viewer/viewer.nim` (`initViewerApp` / `pumpViewer` /
+## `viewerOpen`); when `--gui` is passed the runner opens the
+## diagnostic window and closes it on Esc or window-close.
 
 when not defined(modulabotLibrary):
   import std/[json, monotimes, options, os, times]
