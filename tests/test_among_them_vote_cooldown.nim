@@ -28,14 +28,8 @@ proc testVoteResultResetsImposterCooldown() =
 
   var sim = initAmongThemForTest(config)
   sim.addPlayers(3)
-  sim.assignRolesAndTasks()
-
-  var imposter = -1
-  for i, player in sim.players:
-    if player.role == Imposter:
-      imposter = i
-      break
-  doAssert imposter >= 0, "test should have an impostor"
+  let imposter = 0
+  sim.players[imposter].role = Imposter
 
   sim.players[imposter].killCooldown = 17
   sim.startVote()
