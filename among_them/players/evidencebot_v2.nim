@@ -119,6 +119,28 @@ const
   ImposterSelfReportRecentTicks = 30
   ImposterSelfReportRadius = KillRange + 8
 
+  # Central-room stuck detection. End-game gathers can stall the imposter
+  # indefinitely: every crewmate has finished tasks and is standing in
+  # the cafeteria around the emergency button. Two or more crewmates are
+  # always in view, so the lone-crewmate kill condition never fires; the
+  # follow/swap loop in priority 5 just orbits the same group forever.
+  #
+  # ImposterCentralRoomStuckTicks: how long we'll tolerate "in the
+  #   central room with >= ImposterCentralRoomMinCrewmates non-teammate
+  #   crewmates visible" before forcing a leave. Counter resets whenever
+  #   the conditions break.
+  # ImposterCentralRoomLeaveTicks: how long the forced-leave window lasts
+  #   once triggered. During it, the bot navigates to the fake target
+  #   farthest from the central room, ignoring follow/wander logic.
+  #   Priorities 1-3 (body / kill in range / hunt lone crewmate) still
+  #   fire normally — forced-leave only overrides 4-6.
+  # ImposterCentralRoomMinCrewmates: minimum visible non-teammate
+  #   crewmates to count this frame as "stuck". Two is enough — with
+  #   only one visible we'd already be in the lone-crewmate branch.
+  ImposterCentralRoomStuckTicks = 360
+  ImposterCentralRoomLeaveTicks = 240
+  ImposterCentralRoomMinCrewmates = 2
+
   BodySearchRadius = 1
   BodyMaxMisses = 9
   BodyMinStablePixels = 6
@@ -277,6 +299,14 @@ type
     imposterLastKillTick: int
     imposterLastKillX: int
     imposterLastKillY: int
+    # Central-room stuck detection. `imposterCentralRoomTicks` counts
+    # consecutive frames of "in the central room with >= 2 visible
+    # non-teammate crewmates"; resets when conditions break or while
+    # already leaving. When it crosses ImposterCentralRoomStuckTicks we
+    # latch `imposterForceLeaveUntilTick = frameTick + LeaveTicks` and
+    # the imposter ignores follow/wander logic until that future tick.
+    imposterCentralRoomTicks: int
+    imposterForceLeaveUntilTick: int
     packed: seq[uint8]
     unpacked: seq[uint8]
     mapTiles: seq[TileKnowledge]
@@ -498,6 +528,23 @@ proc roomNameAt(bot: Bot, x, y: int): string =
         y >= room.y and y < room.y + room.h:
       return room.name
   "unknown"
+
+proc centralRoomCenter(bot: Bot): tuple[x: int, y: int] =
+  ## Returns the central (button) room's reference point in world coords.
+  let button = bot.sim.gameMap.button
+  (button.x + button.w div 2, button.y + button.h div 2)
+
+proc centralRoomName(bot: Bot): string =
+  ## Returns the room name containing the emergency button.
+  let center = bot.centralRoomCenter()
+  bot.roomNameAt(center.x, center.y)
+
+proc inCentralRoom(bot: Bot): bool =
+  ## Returns true when the player is currently inside the central room.
+  if not bot.localized:
+    return false
+  let central = bot.centralRoomName()
+  central != "unknown" and bot.roomName() == central
 
 proc taskCenter(task: TaskStation): tuple[x: int, y: int] =
   ## Returns the center pixel for a task station.
@@ -1032,6 +1079,8 @@ proc resetRoundState(bot: var Bot) =
   bot.imposterLastKillTick = 0
   bot.imposterLastKillX = 0
   bot.imposterLastKillY = 0
+  bot.imposterCentralRoomTicks = 0
+  bot.imposterForceLeaveUntilTick = 0
   bot.cameraLock = NoLock
   bot.cameraScore = 0
   bot.haveMotionSample = false
@@ -3627,6 +3676,10 @@ proc decideImposterMask(bot: var Bot): uint8 =
   ##      the kill (existing hunt behaviour).
   ##   4. Active fake-task timer → navigate to / stand on the task,
   ##      pressing A so we look like a crewmate doing it.
+  ##   4.5. Forced central-room exit (v2). If we've been stuck in the
+  ##      central room with >= 2 visible crewmates for too long, navigate
+  ##      to the fake target farthest from the central room. Overrides
+  ##      5 and 6 but not 1-3 — real kill / body opportunities still win.
   ##   5. Any non-teammate crewmate visible → follow one (swapping
   ##      between targets in groups), with a chance to interrupt for a
   ##      fake task when passing a task station.
@@ -3643,6 +3696,26 @@ proc decideImposterMask(bot: var Bot): uint8 =
     bot.checkoutTasks[i] = false
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
+
+  # Central-room stuck tracking. Counter advances only while we're idling
+  # in the cafeteria with a crowd; resets the moment we leave, the crowd
+  # thins, or a forced-leave window is already active.
+  let visibleCount = bot.visibleNonTeammateCrewmates().len
+  if bot.frameTick < bot.imposterForceLeaveUntilTick:
+    bot.imposterCentralRoomTicks = 0
+  elif bot.inCentralRoom() and
+      visibleCount >= ImposterCentralRoomMinCrewmates:
+    inc bot.imposterCentralRoomTicks
+    if bot.imposterCentralRoomTicks >= ImposterCentralRoomStuckTicks:
+      bot.imposterForceLeaveUntilTick =
+        bot.frameTick + ImposterCentralRoomLeaveTicks
+      bot.imposterCentralRoomTicks = 0
+      # Cancel any active fake task — forced-leave should actually leave,
+      # not stand still pretending to do a task in the central room.
+      bot.imposterFakeTaskUntilTick = 0
+      bot.imposterFakeTaskIndex = -1
+  else:
+    bot.imposterCentralRoomTicks = 0
 
   # 1. React to a visible body. Two sub-cases:
   #    a) The body is one we just made → SELF-REPORT (press A). The meeting
@@ -3763,6 +3836,24 @@ proc decideImposterMask(bot: var Bot): uint8 =
       "fake task setup",
       TaskPreciseApproachRadius
     )
+
+  # 4.5. Forced central-room exit. We've been idling in the cafeteria
+  # with a crowd for too long; navigate to the fake target farthest
+  # from the central room and ride it out. Falls through to the wander
+  # branch only if no fake target is reachable, so we never stall here.
+  if bot.frameTick < bot.imposterForceLeaveUntilTick:
+    let central = bot.centralRoomCenter()
+    bot.imposterGoalIndex = bot.farthestFakeTargetIndexFrom(
+      central.x, central.y
+    )
+    let goal = bot.fakeTargetGoalFor(bot.imposterGoalIndex)
+    if goal.found:
+      bot.goalIndex = goal.index
+      return bot.navigateToPoint(
+        goal.x,
+        goal.y,
+        "leave central to " & goal.name
+      )
 
   # 5. Follow a visible crewmate, swapping between targets in groups.
   let followee = bot.pickFolloweeColor()
@@ -4010,6 +4101,8 @@ proc initBot(mapPath = ""): Bot =
   result.imposterLastKillTick = 0
   result.imposterLastKillX = 0
   result.imposterLastKillY = 0
+  result.imposterCentralRoomTicks = 0
+  result.imposterForceLeaveUntilTick = 0
   result.goalIndex = -1
   result.lastBodySeenX = low(int)
   result.lastBodySeenY = low(int)

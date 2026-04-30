@@ -334,9 +334,11 @@ social-engineering bots, and the imposter is a social engineer.
 
 ## 9. v2 changes
 
-Where v1 was inefficient: it spent significant time loitering at task
-stations that weren't its own. Three causes, all in the crewmate task
-pipeline:
+v2 targets two distinct pathologies in v1:
+
+**Crewmate task loitering.** Significant time was spent at task
+stations that weren't the bot's own. Three causes, all in the crewmate
+task pipeline:
 
 - **Slow false-positive cleanup.** Dropping a wrong `checkoutTasks[]`
   flag required `TaskIconMissThreshold = 24` consecutive clean-view
@@ -349,9 +351,15 @@ pipeline:
   clearing a flag, a later radar dot could re-flag the same wrong
   station and send the bot back.
 
-`evidencebot_v2.nim` fixes all three. None of the perception, A\*,
-imposter, voting, or evidence logic is touched; the diff is contained in
-the crewmate task pipeline.
+**Imposter end-game orbit.** When all crewmates had finished tasks and
+were standing in the cafeteria around the emergency button, the
+imposter's follow loop could circle the same group of players
+indefinitely. With ≥2 crewmates always in view the lone-crewmate kill
+condition never fired, and the bot never tried to reset the situation
+by leaving and forcing the group to fragment.
+
+Changes 1–3 fix the first; change 4 fixes the second. None of the
+perception, A\*, voting, or evidence logic is touched.
 
 ### Change 1 — eager checkout cleanup
 
@@ -404,9 +412,52 @@ re-flagged into `radarTasks[]` or `checkoutTasks[]`, and a
 - The bot's effective task list shrinks monotonically through the round;
   in the limit, only genuine outstanding assignments remain candidates.
 
-The `taskResolved[]` array is reset cleanly in `resetRoundState`
-(`:1094–1098`) so each new round starts fresh, and is initialized in
-`initBot` (`:3963`).
+The `taskResolved[]` array is reset cleanly in `resetRoundState` so
+each new round starts fresh, and is initialized in `initBot`.
+
+### Change 4 — imposter central-room stuck detection
+
+End-game gathers used to stall v1 indefinitely: when every crewmate had
+finished tasks and was idling in the cafeteria around the emergency
+button, the imposter's priority-5 follow loop would orbit the same
+group forever. With ≥2 crewmates always in view, the lone-crewmate kill
+condition could never fire, so the bot just rotated followees in place.
+
+v2 adds:
+
+- Two new `Bot` fields (`imposterCentralRoomTicks`,
+  `imposterForceLeaveUntilTick`) tracking how long we've been idling in
+  the central room with a crowd, and how long a forced-leave window is
+  active.
+- Three constants tuning the trigger and the duration:
+  `ImposterCentralRoomStuckTicks = 360` (~12 s before a leave is
+  forced), `ImposterCentralRoomLeaveTicks = 240` (~8 s leave window),
+  `ImposterCentralRoomMinCrewmates = 2`.
+- Three helpers near the existing `roomNameAt`: `centralRoomCenter`,
+  `centralRoomName`, `inCentralRoom`. The central room is whichever
+  room contains the emergency button.
+- A counter at the top of `decideImposterMask`. Each frame it
+  increments while the bot is in the central room and ≥2 non-teammate
+  crewmates are visible; it resets the moment any condition breaks, or
+  while the leave window is already active.
+- A new **priority 4.5** between the existing fake-task continuation
+  (4) and the follow loop (5). When the leave window is active, the
+  imposter navigates to the fake target *farthest from the central
+  room* and rides it out — so it actually leaves, instead of just
+  picking another fake target that might be on the cafeteria's
+  doorstep.
+
+Triggering the leave also clears any active fake task, since a fake
+task in the central room would defeat the purpose. Priorities 1–3
+(body / kill / hunt) remain ahead of 4.5, so a real opportunity always
+wins.
+
+The interaction with the follow logic in priority 5 is naturally
+self-limiting: the leave window expires, the bot returns, and if the
+crowd hasn't dispersed the counter starts over. The bot oscillates
+between "in the cafeteria with the crowd" and "wandering the map" —
+which is also the period when a crewmate is most likely to peel off
+alone, giving the imposter a real kill window.
 
 ---
 
@@ -415,7 +466,7 @@ The `taskResolved[]` array is reset cleanly in `resetRoundState`
 | File | Purpose |
 |---|---|
 | `evidencebot.nim` | Original bot. Stable. |
-| `evidencebot_v2.nim` | Same perception and policy, with the three task-pipeline improvements above. Crewmate task throughput should be measurably higher; imposter / voting / evidence behaviour is byte-identical to v1. |
+| `evidencebot_v2.nim` | Same perception and policy, with the four improvements above. Crewmate task throughput should be measurably higher; the imposter no longer perma-orbits end-game gathers; voting / evidence behaviour is byte-identical to v1. |
 | `evidencebot_strategy.md` | This document. |
 
 Both bots compile to standalone binaries (CLI mode) or shared
