@@ -39,6 +39,7 @@ type
     actionTargetIndex*: int
     sellPrice*: int
     buyQuantity*: int
+    buyItemCursor*: int
     signalIcon*: int
     inv*: BotInventory
     listings*: seq[BotListing]
@@ -83,6 +84,7 @@ proc parseGameState*(jsonStr: string): GameState =
     result.player.actionTargetIndex = p["actionTargetIndex"].getInt()
     result.player.sellPrice = p["sellPrice"].getInt()
     result.player.buyQuantity = p["buyQuantity"].getInt()
+    result.player.buyItemCursor = p["buyItemCursor"].getInt()
     result.player.signalIcon = p["signalIcon"].getInt()
     result.player.inv = parseInventory(p["inv"])
     for l in p["listings"]:

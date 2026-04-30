@@ -31,7 +31,8 @@ bin = @[
   "among_them/replay_viewer",
   "global_ui/global_ui",
   "marketboard/marketboard",
-  "marketboard/players/still_forge"
+  "marketboard/players/still_forge",
+  "marketboard/players/iron_works"
 ]
 
 switch("path", "common")

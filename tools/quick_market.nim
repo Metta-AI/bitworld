@@ -5,6 +5,7 @@ const
   ClientSource = "clients" / "player_client.nim"
   BotSources = [
     ("StillForge", "marketboard" / "players" / "still_forge.nim"),
+    ("IronWorks", "marketboard" / "players" / "iron_works.nim"),
   ]
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100

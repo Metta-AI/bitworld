@@ -500,6 +500,206 @@ proc testFullGatherSellBuyCycle() =
   doAssert sim.players[gatherer].gold == gathererGold + 12
   doAssert sim.players[gatherer].listings.len == 0
 
+# ── Peer economy loop: gatherer sells, crafter buys, crafts gear, sells gear ──
+
+proc testPeerEconomyLoop() =
+  var sim = initMarketboardForTest()
+  sim.npcListings.setLen(0)
+  let gatherer = sim.addPlayer("gatherer")
+  let crafter = sim.addPlayer("crafter")
+  sim.players[gatherer].role = Gatherer
+  sim.players[crafter].role = Crafter
+
+  # Gatherer lists 3 wood at 8g each
+  sim.players[gatherer].inv.wood = 3
+  let si = sim.findObjectIndex(SellStallObj)
+  let sellStall = sim.objects[si]
+  sim.players[gatherer].x = sellStall.tx * MbTileSize
+  sim.players[gatherer].y = sellStall.ty * MbTileSize
+  sim.players[gatherer].velX = 0
+  sim.players[gatherer].velY = 0
+  sim.players[gatherer].sellPrice = 8
+  sim.pressA(gatherer, FaceDown)
+  doAssert sim.players[gatherer].state == AtSellStall
+  # Sell 3 units (press A 3 times with release between)
+  for _ in 0 ..< 3:
+    sim.pressA(gatherer, FaceDown)
+  doAssert sim.players[gatherer].inv.wood == 0
+  doAssert sim.players[gatherer].listings.len == 3
+  sim.pressB(gatherer)
+
+  # Crafter buys 3 wood from gatherer's listings
+  let bi = sim.findObjectIndex(BuyStallObj)
+  let buyStall = sim.objects[bi]
+  sim.players[crafter].x = buyStall.tx * MbTileSize
+  sim.players[crafter].y = buyStall.ty * MbTileSize
+  sim.players[crafter].velX = 0
+  sim.players[crafter].velY = 0
+  let crafterGold = sim.players[crafter].gold
+  let gathererGold = sim.players[gatherer].gold
+
+  var inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[crafter].aPressed = true
+  inputs[crafter].aHeld = true
+  sim.step(inputs)
+  doAssert sim.players[crafter].state == AtBuyStall
+
+  # Set buyQuantity to 3
+  for _ in 0 ..< 2:
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[crafter].up = true
+    sim.step(inputs)
+  doAssert sim.players[crafter].buyQuantity == 3
+
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[crafter].aPressed = true
+  inputs[crafter].aHeld = true
+  sim.step(inputs)
+
+  doAssert sim.players[crafter].inv.wood == 3,
+    "crafter should have 3 wood, got " & $sim.players[crafter].inv.wood
+  doAssert sim.players[crafter].gold == crafterGold - 24,
+    "crafter should spend 24g (3x8)"
+  doAssert sim.players[gatherer].gold == gathererGold + 24,
+    "gatherer should receive 24g"
+  doAssert sim.players[gatherer].listings.len == 0,
+    "gatherer listings should be empty after purchase"
+
+  sim.pressB(crafter)
+
+  # Crafter crafts gear
+  let ci = sim.findObjectIndex(CraftStationObj)
+  let craftStation = sim.objects[ci]
+  sim.players[crafter].x = craftStation.tx * MbTileSize
+  sim.players[crafter].y = craftStation.ty * MbTileSize
+  sim.players[crafter].velX = 0
+  sim.players[crafter].velY = 0
+  sim.pressA(crafter, FaceDown)
+  doAssert sim.players[crafter].state == Crafting
+  sim.holdA(crafter, CraftWorkNeeded - 1)
+  doAssert sim.players[crafter].inv.wood == 0
+  doAssert sim.players[crafter].inv.woodGear == 1
+
+  # Crafter sells gear at 30g
+  sim.players[crafter].x = sellStall.tx * MbTileSize
+  sim.players[crafter].y = sellStall.ty * MbTileSize
+  sim.players[crafter].velX = 0
+  sim.players[crafter].velY = 0
+  sim.players[crafter].sellPrice = 30
+  sim.pressA(crafter, FaceDown)
+  doAssert sim.players[crafter].state == AtSellStall
+  sim.pressA(crafter, FaceDown)
+  doAssert sim.players[crafter].inv.woodGear == 0
+  doAssert sim.players[crafter].listings.len == 1
+  doAssert sim.players[crafter].listings[0].item == WoodGear
+  doAssert sim.players[crafter].listings[0].priceEach == 30
+
+# ── Buy from player listing with gold transfer ──
+
+proc testBuyFromPlayerListing() =
+  var sim = initMarketboardForTest()
+  sim.npcListings.setLen(0)
+  let seller = sim.addPlayer("seller")
+  let buyer = sim.addPlayer("buyer")
+
+  # Seller lists 1 wood at 15g
+  sim.players[seller].inv.wood = 1
+  let si = sim.findObjectIndex(SellStallObj)
+  let stall = sim.objects[si]
+  sim.players[seller].x = stall.tx * MbTileSize
+  sim.players[seller].y = stall.ty * MbTileSize
+  sim.players[seller].sellPrice = 15
+  sim.pressA(seller, FaceDown)
+  sim.pressA(seller, FaceDown)
+  doAssert sim.players[seller].listings.len == 1
+  sim.pressB(seller)
+
+  # Buyer buys it
+  let bi = sim.findObjectIndex(BuyStallObj)
+  let buyStall = sim.objects[bi]
+  sim.players[buyer].x = buyStall.tx * MbTileSize
+  sim.players[buyer].y = buyStall.ty * MbTileSize
+  let sellerGold = sim.players[seller].gold
+  let buyerGold = sim.players[buyer].gold
+
+  var inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[buyer].aPressed = true
+  inputs[buyer].aHeld = true
+  sim.step(inputs)
+  doAssert sim.players[buyer].state == AtBuyStall
+
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[buyer].aPressed = true
+  inputs[buyer].aHeld = true
+  sim.step(inputs)
+
+  doAssert sim.players[buyer].inv.wood == 1
+  doAssert sim.players[buyer].gold == buyerGold - 15
+  doAssert sim.players[seller].gold == sellerGold + 15
+  doAssert sim.players[seller].listings.len == 0,
+    "seller listing should be removed after purchase"
+
+# ── Buy edge cases: insufficient gold and empty market ──
+
+proc testBuyInsufficientGoldAndEmptyMarket() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("test")
+
+  # Part A: insufficient gold
+  sim.npcListings.setLen(0)
+  sim.npcListings.add MarketListing(sellerIndex: -1, item: WoodItem, quantity: 1, priceEach: 5)
+  sim.players[idx].gold = 3
+
+  let bi = sim.findObjectIndex(BuyStallObj)
+  let buyStall = sim.objects[bi]
+  sim.players[idx].x = buyStall.tx * MbTileSize
+  sim.players[idx].y = buyStall.ty * MbTileSize
+
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].state == AtBuyStall
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].inv.wood == 0, "should not buy with insufficient gold"
+  doAssert sim.players[idx].gold == 3, "gold should be unchanged"
+  doAssert sim.npcListings[0].quantity == 1, "listing should be untouched"
+
+  # Part B: empty market
+  sim.npcListings.setLen(0)
+  sim.players[idx].gold = 100
+
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].inv.wood == 0, "should not buy from empty market"
+  doAssert sim.players[idx].gold == 100, "gold should be unchanged with empty market"
+  doAssert sim.players[idx].state == AtBuyStall, "should still be at buy stall"
+
+# ── Max sell slots ──
+
+proc testMaxSellSlots() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("test")
+  sim.players[idx].inv.wood = 5
+
+  let si = sim.findObjectIndex(SellStallObj)
+  let stall = sim.objects[si]
+  sim.players[idx].x = stall.tx * MbTileSize
+  sim.players[idx].y = stall.ty * MbTileSize
+
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].state == AtSellStall
+
+  # Sell 4 units (max slots)
+  for i in 0 ..< 4:
+    sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].listings.len == MaxSellSlots,
+    "should have " & $MaxSellSlots & " listings, got " & $sim.players[idx].listings.len
+  doAssert sim.players[idx].inv.wood == 1, "should have 1 wood remaining"
+
+  # 5th sell should fail silently
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].listings.len == MaxSellSlots,
+    "should still have " & $MaxSellSlots & " listings after overflow attempt"
+  doAssert sim.players[idx].inv.wood == 1,
+    "wood should be unchanged after failed sell"
+
 echo "Running marketboard tests..."
 testPlayerSpawnsWithStartingGold()
 echo "  spawn: OK"
@@ -537,4 +737,12 @@ testGoldTransfer()
 echo "  gold transfer: OK"
 testFullGatherSellBuyCycle()
 echo "  full gather-sell-buy cycle: OK"
+testPeerEconomyLoop()
+echo "  peer economy loop: OK"
+testBuyFromPlayerListing()
+echo "  buy from player listing: OK"
+testBuyInsufficientGoldAndEmptyMarket()
+echo "  buy edge cases (insufficient gold + empty market): OK"
+testMaxSellSlots()
+echo "  max sell slots: OK"
 echo "All tests passed"

@@ -724,6 +724,7 @@ proc buildStateJson*(sim: SimServer, playerIndex: int): string =
     pj["actionTargetIndex"] = %p.actionTargetIndex
     pj["sellPrice"] = %p.sellPrice
     pj["buyQuantity"] = %p.buyQuantity
+    pj["buyItemCursor"] = %p.buyItemCursor
     pj["signalIcon"] = %p.signalIcon
     var inv = newJObject()
     inv["wood"] = %p.inv.wood

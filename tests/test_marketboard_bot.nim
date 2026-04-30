@@ -269,6 +269,176 @@ proc testBotFullGatherSellCycle() =
     " inv.wood=" & $sim.players[idx].inv.wood &
     " state=" & $sim.players[idx].state
 
+proc testBotFullBuyCraftSellCycle() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("bot")
+  sim.players[idx].role = Crafter
+
+  # --- Buy phase: teleport adjacent to BuyStallObj, buy 3 wood ---
+  var buyStallTx, buyStallTy: int
+  for obj in sim.objects:
+    if obj.kind == BuyStallObj:
+      buyStallTx = obj.tx
+      buyStallTy = obj.ty
+      break
+  # Place to the left of the buy stall
+  sim.players[idx].x = (buyStallTx - 1) * MbTileSize
+  sim.players[idx].y = buyStallTy * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+  sim.players[idx].facing = FaceRight
+
+  let startGold = sim.players[idx].gold
+  var prevMask = 0'u8
+
+  # Face right toward stall then press A to enter
+  var inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx] = maskToInput(buildMask(right = true), 0)
+  sim.step(inputs)
+  prevMask = buildMask(right = true)
+
+  # Enter buy stall: press A without direction to avoid cursor shift from right input
+  for tick in 0 ..< 10:
+    let state = parseGameState(sim.buildStateJson(idx))
+    if state.player.state == "AtBuyStall":
+      break
+    var mask: uint8
+    if (prevMask and ButtonA) != 0:
+      mask = 0
+    else:
+      mask = ButtonA
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx] = maskToInput(mask, prevMask)
+    sim.step(inputs)
+    prevMask = mask
+
+  doAssert sim.players[idx].state == AtBuyStall, "should be at buy stall, state=" & $sim.players[idx].state
+
+  # Set buyQuantity to 3 (default is 1, press up twice)
+  for _ in 0 ..< 2:
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx] = maskToInput(ButtonUp, 0)
+    sim.step(inputs)
+  doAssert sim.players[idx].buyQuantity == 3, "buyQuantity should be 3, got " & $sim.players[idx].buyQuantity
+
+  # Press A to buy
+  prevMask = ButtonUp
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx] = maskToInput(ButtonA, prevMask)
+  sim.step(inputs)
+  prevMask = ButtonA
+
+  doAssert sim.players[idx].inv.wood == 3, "should have 3 wood, got " & $sim.players[idx].inv.wood
+  doAssert sim.players[idx].gold == startGold - 3 * WoodBasePrice,
+    "gold should decrease by 15, got " & $sim.players[idx].gold
+
+  # Exit buy stall
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx] = maskToInput(0, prevMask)
+  sim.step(inputs)
+  prevMask = 0
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx] = maskToInput(ButtonB, prevMask)
+  sim.step(inputs)
+  prevMask = ButtonB
+
+  doAssert sim.players[idx].state == Idle, "should be idle after exiting buy stall"
+
+  # --- Craft phase: teleport to CraftStationObj, craft gear ---
+  var craftTx, craftTy: int
+  for obj in sim.objects:
+    if obj.kind == CraftStationObj:
+      craftTx = obj.tx
+      craftTy = obj.ty
+      break
+  sim.players[idx].x = craftTx * MbTileSize
+  sim.players[idx].y = craftTy * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  # Press A to start crafting
+  prevMask = 0
+  for tick in 0 ..< 5:
+    let state = parseGameState(sim.buildStateJson(idx))
+    if state.player.state == "Crafting":
+      break
+    var mask: uint8
+    if (prevMask and ButtonA) != 0:
+      mask = 0
+    else:
+      mask = facingMask(craftTx, craftTy, state.player.tx, state.player.ty) or ButtonA
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx] = maskToInput(mask, prevMask)
+    sim.step(inputs)
+    prevMask = mask
+
+  doAssert sim.players[idx].state == Crafting, "should be crafting, state=" & $sim.players[idx].state
+
+  # Hold A for CraftWorkNeeded ticks
+  for _ in 0 ..< CraftWorkNeeded:
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx] = maskToInput(ButtonA, ButtonA)
+    sim.step(inputs)
+
+  doAssert sim.players[idx].inv.wood == 0, "wood should be consumed, got " & $sim.players[idx].inv.wood
+  doAssert sim.players[idx].inv.woodGear == 1, "should have 1 woodGear, got " & $sim.players[idx].inv.woodGear
+  doAssert sim.players[idx].state == Idle, "should be idle after crafting"
+
+  # --- Sell phase: teleport to SellStallObj, sell gear ---
+  var sellStallTx, sellStallTy: int
+  for obj in sim.objects:
+    if obj.kind == SellStallObj:
+      sellStallTx = obj.tx
+      sellStallTy = obj.ty
+      break
+  sim.players[idx].x = (sellStallTx + 1) * MbTileSize
+  sim.players[idx].y = sellStallTy * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+  sim.players[idx].facing = FaceLeft
+
+  # Face toward stall
+  prevMask = 0
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx] = maskToInput(buildMask(left = true), 0)
+  sim.step(inputs)
+  prevMask = buildMask(left = true)
+
+  # Enter sell stall
+  for tick in 0 ..< 10:
+    let state = parseGameState(sim.buildStateJson(idx))
+    if state.player.state == "AtSellStall":
+      break
+    var mask: uint8
+    if (prevMask and ButtonA) != 0:
+      mask = 0
+    else:
+      mask = ButtonA
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx] = maskToInput(mask, prevMask)
+    sim.step(inputs)
+    prevMask = mask
+
+  doAssert sim.players[idx].state == AtSellStall, "should be at sell stall"
+
+  # Set price to 30 (default is 10, press up 20 times)
+  for _ in 0 ..< 20:
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx] = maskToInput(ButtonUp, 0)
+    sim.step(inputs)
+  doAssert sim.players[idx].sellPrice == 30, "sellPrice should be 30, got " & $sim.players[idx].sellPrice
+
+  # Press A to confirm sell
+  prevMask = ButtonUp
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx] = maskToInput(ButtonA, prevMask)
+  sim.step(inputs)
+
+  doAssert sim.players[idx].inv.woodGear == 0, "woodGear should be sold, got " & $sim.players[idx].inv.woodGear
+  doAssert sim.players[idx].listings.len == 1, "should have 1 listing, got " & $sim.players[idx].listings.len
+  doAssert sim.players[idx].listings[0].item == WoodGear, "listing should be WoodGear"
+  doAssert sim.players[idx].listings[0].priceEach == 30, "listing price should be 30"
+
 echo "Running bot integration tests..."
 testStateJsonRoundTrip()
 echo "  state JSON round-trip: OK"
@@ -282,4 +452,6 @@ testBotFullGatherCycle()
 echo "  bot full gather cycle: OK"
 testBotFullGatherSellCycle()
 echo "  bot full gather-sell cycle: OK"
+testBotFullBuyCraftSellCycle()
+echo "  bot full buy-craft-sell cycle: OK"
 echo "All bot tests passed"
