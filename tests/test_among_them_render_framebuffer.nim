@@ -54,12 +54,18 @@ proc testRenderLeavesFramebuffer() =
 
   var config = defaultGameConfig()
   config.minPlayers = 3
+  config.imposterCount = 1
   config.tasksPerPlayer = 1
-  config.roleRevealTicks = 0
+  config.roleRevealTicks = 2
   var sim = initAmongThemForTest(config)
   sim.addPlayers(3)
   var inputs = newSeq[InputState](sim.players.len)
   sim.step(inputs, inputs)
+  doAssert sim.phase == RoleReveal, "test game should have entered role reveal"
+  sim.assertRenderLeavesFramebuffer(0, "role reveal")
+
+  for _ in 0 ..< sim.config.roleRevealTicks:
+    sim.step(inputs, inputs)
   doAssert sim.phase == Playing, "test game should have entered play"
 
   sim.assertRenderLeavesFramebuffer(0, "playing")
