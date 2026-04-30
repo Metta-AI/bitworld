@@ -16,4 +16,9 @@ __pycache__/
 tools/quick_run.nim
 among_them/players/libnottoodumb.*
 among_them/players/nottoodumb.dll
+among_them/players/modulabot/modulabot
+among_them/players/modulabot/libmodulabot.*
+among_them/players/modulabot/test/parity
+among_them/players/modulabot/test/trace_smoke
+among_them/players/modulabot/test/validate_trace
 .DS_Store
