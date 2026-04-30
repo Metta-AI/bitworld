@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Smart Bot Debugger</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#c9d1d9;--dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#bc8cff}
+body{background:var(--bg);color:var(--text);font:12px/1.4 'SF Mono',Consolas,monospace;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:6px 12px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+header h1{font-size:13px;color:var(--accent);font-weight:600}
+.conn-dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
+.conn-dot.on{background:var(--green)}
+#connLabel{color:var(--dim);font-size:11px}
+#tickLabel{margin-left:auto;color:var(--dim);font-size:11px}
+.grid{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr;gap:1px;background:var(--border);overflow:hidden}
+.panel{background:var(--panel);display:flex;flex-direction:column;overflow:hidden}
+.panel-head{padding:5px 8px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;flex-shrink:0;display:flex;align-items:center;gap:6px}
+.panel-body{flex:1;overflow-y:auto;padding:6px 8px}
+.badge{display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600}
+.badge-green{background:#238636;color:#fff}
+.badge-red{background:#da3633;color:#fff}
+.badge-orange{background:#9e6a03;color:#fff}
+.badge-purple{background:#8957e5;color:#fff}
+.badge-blue{background:#1f6feb;color:#fff}
+.badge-gray{background:#30363d;color:var(--dim)}
+
+/* Game View */
+#gameCanvas{image-rendering:pixelated;width:100%;max-height:260px;display:block;margin:0 auto}
+.view-info{padding:4px 8px;font-size:10px;color:var(--dim);border-top:1px solid var(--border)}
+
+/* Brain */
+.directive-card{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;margin-bottom:6px}
+.directive-card .strat{font-size:13px;font-weight:700;color:var(--accent)}
+.directive-card .reasoning{color:var(--dim);margin-top:3px;font-size:11px;white-space:pre-wrap}
+.trigger-flash{background:var(--bg);border:1px solid var(--orange);border-radius:4px;padding:4px 8px;margin-bottom:4px;font-size:11px;animation:flash .6s}
+@keyframes flash{0%,100%{border-color:var(--orange)}50%{border-color:var(--accent);background:#1a1f2b}}
+
+/* LLM Log */
+.llm-entry{background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:4px;font-size:11px}
+.llm-entry summary{padding:4px 8px;cursor:pointer;display:flex;align-items:center;gap:6px;list-style:none}
+.llm-entry summary::-webkit-details-marker{display:none}
+.llm-entry .detail{padding:6px 8px;border-top:1px solid var(--border);white-space:pre-wrap;max-height:200px;overflow-y:auto;font-size:10px;color:var(--dim)}
+.llm-entry .detail-label{font-weight:700;color:var(--text);margin-bottom:2px}
+.latency{color:var(--orange);font-weight:600}
+.tokens{color:var(--dim)}
+
+/* Memory */
+.tab-bar{display:flex;gap:0;border-bottom:1px solid var(--border)}
+.tab-btn{padding:4px 10px;font-size:11px;background:none;border:none;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.ep-event{padding:2px 0;border-bottom:1px solid #1c2028;font-size:11px;display:flex;gap:6px}
+.ep-tick{color:var(--dim);min-width:40px;text-align:right}
+.ep-hall{font-size:9px;padding:1px 4px;border-radius:2px;min-width:55px;text-align:center}
+.hall-sightings{background:#1a3a1a;color:#3fb950}
+.hall-kills{background:#3d1a1a;color:#f85149}
+.hall-meetings{background:#1a2a3d;color:#58a6ff}
+.hall-movement{background:#2a2a1a;color:#d29922}
+.hall-social{background:#2a1a3d;color:#bc8cff}
+.hall-suspicion{background:#3d2a1a;color:#f0883e}
+.landmark-star{color:#d29922}
+.fact-row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #1c2028;font-size:11px}
+.fact-key{color:var(--dim);max-width:55%}
+.fact-val{color:var(--text);text-align:right}
+
+/* Player Model */
+.player-row{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #1c2028}
+.color-swatch{width:14px;height:14px;border-radius:3px;flex-shrink:0}
+.player-name{min-width:70px;font-size:11px}
+.sus-bar-bg{flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+.sus-bar{height:100%;border-radius:4px;transition:width .3s}
+.player-meta{font-size:10px;color:var(--dim);min-width:80px;text-align:right}
+
+/* Status */
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin-bottom:8px}
+.status-grid dt{color:var(--dim);font-size:10px}
+.status-grid dd{font-size:12px;font-weight:600}
+.intent-log{font-size:10px;color:var(--dim)}
+.intent-log div{padding:1px 0;border-bottom:1px solid #1c2028}
+.intent-log .current{color:var(--text);font-weight:600}
+
+/* scrollbar */
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:var(--panel)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* Player identity */
+.player-id-badge{display:flex;align-items:center;gap:6px;padding:3px 10px;border:2px solid var(--border);border-radius:6px;background:var(--bg);margin-left:8px}
+.player-id-swatch{width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.2)}
+.player-id-badge span:first-of-type{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+
+/* Transport bar */
+.transport{background:var(--panel);border-top:1px solid var(--border);padding:4px 12px;display:flex;align-items:center;gap:8px;flex-shrink:0;height:36px}
+.transport-btn{background:none;border:1px solid var(--border);color:var(--dim);border-radius:4px;width:28px;height:24px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;padding:0}
+.transport-btn:hover{background:var(--bg);color:var(--text);border-color:var(--accent)}
+.transport-btn.active{background:var(--accent);color:#000;border-color:var(--accent)}
+.transport-btn.paused-btn.active{background:var(--orange);border-color:var(--orange)}
+.scrubber-wrap{flex:1;display:flex;align-items:center;gap:8px}
+.scrubber{flex:1;height:6px;background:var(--bg);border-radius:3px;position:relative;cursor:pointer;overflow:visible}
+.scrubber-fill{height:100%;background:var(--accent);border-radius:3px;pointer-events:none;position:absolute;left:0;top:0}
+.scrubber-knob{width:12px;height:12px;border-radius:50%;background:var(--accent);position:absolute;top:-3px;pointer-events:none;transform:translateX(-50%)}
+.scrubber-events{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none}
+.scrubber-mark{position:absolute;top:-2px;width:2px;height:10px;border-radius:1px;opacity:.7}
+.scrubber-mark.trigger{background:var(--orange)}
+.scrubber-mark.llm{background:var(--purple)}
+.scrubber-mark.directive{background:var(--green)}
+.tick-display{font-size:11px;color:var(--dim);min-width:90px;text-align:center;font-variant-numeric:tabular-nums}
+.tick-display .current-tick{color:var(--text);font-weight:700}
+.speed-btn{background:none;border:none;color:var(--dim);font-size:10px;cursor:pointer;padding:2px 4px;border-radius:2px}
+.speed-btn:hover,.speed-btn.active{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <div class="conn-dot" id="connDot"></div>
+  <span id="connLabel">Disconnected</span>
+  <h1>SMART BOT DEBUGGER</h1>
+  <div id="playerIdBadge" class="player-id-badge" style="display:none">
+    <div class="player-id-swatch" id="playerSwatch"></div>
+    <span id="playerColorName">---</span>
+    <span class="badge badge-gray" id="playerRoleBadge">---</span>
+  </div>
+  <span id="tickLabel">tick: ---</span>
+</header>
+<div class="grid">
+  <!-- 1. Game View -->
+  <div class="panel">
+    <div class="panel-head">Game View</div>
+    <div class="panel-body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px">
+      <canvas id="gameCanvas" width="128" height="128"></canvas>
+    </div>
+    <div class="view-info" id="viewInfo">pos: --- | room: --- | localized: no</div>
+  </div>
+  <!-- 2. Brain -->
+  <div class="panel">
+    <div class="panel-head">Brain <span class="badge badge-gray" id="brainBudget">LLM 0/50</span></div>
+    <div class="panel-body" id="brainBody">
+      <div id="triggerArea"></div>
+      <div id="directiveArea"><div style="color:var(--dim)">No directive yet</div></div>
+    </div>
+  </div>
+  <!-- 3. LLM Log -->
+  <div class="panel">
+    <div class="panel-head">LLM Calls</div>
+    <div class="panel-body" id="llmBody" style="display:flex;flex-direction:column-reverse"></div>
+  </div>
+  <!-- 4. Memory -->
+  <div class="panel">
+    <div class="panel-head">Memory</div>
+    <div style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+      <div class="tab-bar">
+        <button class="tab-btn active" onclick="showTab('episodic',this)">Episodic</button>
+        <button class="tab-btn" onclick="showTab('strategic',this)">Strategic</button>
+      </div>
+      <div class="panel-body" id="episodicTab"></div>
+      <div class="panel-body" id="strategicTab" style="display:none"></div>
+    </div>
+  </div>
+  <!-- 5. Player Model -->
+  <div class="panel">
+    <div class="panel-head">Player Model</div>
+    <div class="panel-body" id="playerBody"></div>
+  </div>
+  <!-- 6. Status -->
+  <div class="panel">
+    <div class="panel-head">Status & Intent</div>
+    <div class="panel-body">
+      <dl class="status-grid" id="statusGrid">
+        <dt>Player</dt><dd id="sPlayer"><span style="color:var(--dim)">detecting...</span></dd>
+        <dt>Phase</dt><dd id="sPhase">---</dd>
+        <dt>Role</dt><dd id="sRole">---</dd>
+        <dt>Ghost</dt><dd id="sGhost">---</dd>
+        <dt>LLM Calls</dt><dd id="sLLM">---</dd>
+        <dt>Tick</dt><dd id="sTick">---</dd>
+        <dt>Game ID</dt><dd id="sGameId">---</dd>
+      </dl>
+      <div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:3px">Intent History</div>
+      <div class="intent-log" id="intentLog"></div>
+    </div>
+  </div>
+</div>
+
+<div class="transport" id="transportBar">
+  <button class="transport-btn" id="btnStepBack" title="Step back (Left arrow)">&#9664;&#9664;</button>
+  <button class="transport-btn paused-btn" id="btnPause" title="Pause / Resume (Space)">&#9646;&#9646;</button>
+  <button class="transport-btn" id="btnStepFwd" title="Step forward (Right arrow)">&#9654;&#9654;</button>
+  <div class="scrubber-wrap">
+    <div class="tick-display"><span class="current-tick" id="tCurrent">0</span> / <span id="tMax">0</span></div>
+    <div class="scrubber" id="scrubber">
+      <div class="scrubber-fill" id="scrubberFill"></div>
+      <div class="scrubber-knob" id="scrubberKnob" style="left:0"></div>
+      <div class="scrubber-events" id="scrubberEvents"></div>
+    </div>
+  </div>
+  <span id="speedGroup">
+    <button class="speed-btn active" data-speed="1">1x</button>
+    <button class="speed-btn" data-speed="2">2x</button>
+    <button class="speed-btn" data-speed="4">4x</button>
+    <button class="speed-btn" data-speed="8">8x</button>
+  </span>
+</div>
+
+<script>
+const PALETTE = [
+  [0,0,0],[29,43,83],[126,37,83],[0,135,81],
+  [171,82,54],[95,87,79],[194,195,199],[255,241,232],
+  [255,0,77],[255,163,0],[255,236,39],[0,228,54],
+  [41,173,255],[131,118,156],[255,119,168],[255,204,170]
+];
+const COLOR_NAMES = [
+  'red','orange','yellow','lt blue','pink','lime',
+  'blue','pale blue','gray','white','dk brown','brown',
+  'dk teal','green','dk navy','black'
+];
+const PLAYER_CSS = [
+  '#ff004d','#ffa300','#ffec27','#29adff','#ff77a8','#00e436',
+  '#1d2b53','#7e2553','#5f574f','#fff1e8','#ab5236','#c2c3c7',
+  '#008751','#00e436','#1d2b53','#000000'
+];
+
+let ws = null, reconnTimer = null, selfColorIdx = -1;
+const ctx = document.getElementById('gameCanvas').getContext('2d');
+const imgData = ctx.createImageData(128, 128);
+let intentHistory = [];
+
+// Transport state
+let isPaused = false;
+let viewTick = 0;
+let maxTick = 0;
+let playSpeed = 1;
+let scrubbing = false;
+const tickHistory = new Map();
+const HISTORY_CAP = 6000;
+
+function recordTick(tick, evType, data) {
+  if (!tickHistory.has(tick)) tickHistory.set(tick, {});
+  tickHistory.get(tick)[evType] = data;
+  if (tick > maxTick) maxTick = tick;
+  if (!isPaused) viewTick = tick;
+  while (tickHistory.size > HISTORY_CAP) {
+    tickHistory.delete(tickHistory.keys().next().value);
+  }
+  updateScrubber();
+}
+
+function sendCmd(cmd, extra) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ cmd, ...extra }));
+}
+
+function togglePause() {
+  isPaused = !isPaused;
+  const btn = document.getElementById('btnPause');
+  btn.classList.toggle('active', isPaused);
+  btn.innerHTML = isPaused ? '&#9654;' : '&#9646;&#9646;';
+  sendCmd(isPaused ? 'pause' : 'resume');
+  if (!isPaused) viewTick = maxTick;
+}
+
+function stepBack() {
+  if (!isPaused) togglePause();
+  const ticks = Array.from(tickHistory.keys()).sort((a, b) => a - b);
+  const idx = ticks.findLastIndex(t => t < viewTick);
+  if (idx >= 0) { viewTick = ticks[idx]; renderTickFrame(viewTick); }
+}
+
+function stepForward() {
+  if (!isPaused) togglePause();
+  const ticks = Array.from(tickHistory.keys()).sort((a, b) => a - b);
+  const idx = ticks.findIndex(t => t > viewTick);
+  if (idx >= 0) { viewTick = ticks[idx]; renderTickFrame(viewTick); }
+}
+
+function seekToTick(tick) {
+  if (!isPaused) togglePause();
+  const ticks = Array.from(tickHistory.keys()).sort((a, b) => a - b);
+  let best = ticks[0] || 0;
+  for (const t of ticks) { if (t <= tick) best = t; else break; }
+  viewTick = best;
+  renderTickFrame(viewTick);
+}
+
+function renderTickFrame(tick) {
+  const frame = tickHistory.get(tick);
+  if (!frame) return;
+  if (frame.snapshot) onSnapshot({ ...frame.snapshot, type: 'snapshot' });
+  if (frame.status) onStatus({ ...frame.status, type: 'status' });
+  if (frame.player_model) onPlayerModel({ ...frame.player_model, type: 'player_model' });
+  if (frame.memory) onMemory({ ...frame.memory, type: 'memory' });
+  updateScrubber();
+}
+
+function updateScrubber() {
+  const pct = maxTick > 0 ? (viewTick / maxTick) * 100 : 0;
+  document.getElementById('scrubberFill').style.width = pct + '%';
+  document.getElementById('scrubberKnob').style.left = pct + '%';
+  document.getElementById('tCurrent').textContent = viewTick;
+  document.getElementById('tMax').textContent = maxTick;
+}
+
+function connect() {
+  const host = location.hostname || 'localhost';
+  const wsPort = (parseInt(location.port, 10) || 9091) - 1;
+  ws = new WebSocket(`ws://${host}:${wsPort}`);
+  ws.onopen = () => {
+    document.getElementById('connDot').classList.add('on');
+    document.getElementById('connLabel').textContent = 'Connected';
+    clearTimeout(reconnTimer);
+  };
+  ws.onclose = () => {
+    document.getElementById('connDot').classList.remove('on');
+    document.getElementById('connLabel').textContent = 'Reconnecting...';
+    reconnTimer = setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    try {
+      const ev = JSON.parse(e.data);
+      if (ev.type === 'tick_frame') { renderTickFrame(ev.tick); return; }
+      const tick = ev.tick || 0;
+      if (ev.type) recordTick(tick, ev.type, ev);
+      if (!isPaused) handleEvent(ev);
+    } catch(err) { console.error(err); }
+  };
+}
+
+function handleEvent(ev) {
+  switch(ev.type) {
+    case 'snapshot': onSnapshot(ev); break;
+    case 'trigger': onTrigger(ev); break;
+    case 'llm_request': onLLMRequest(ev); break;
+    case 'llm_response': onLLMResponse(ev); break;
+    case 'directive': onDirective(ev); break;
+    case 'player_model': onPlayerModel(ev); break;
+    case 'memory': onMemory(ev); break;
+    case 'status': onStatus(ev); break;
+  }
+}
+
+function onSnapshot(ev) {
+  document.getElementById('tickLabel').textContent = `tick: ${ev.tick}`;
+
+  // render frame
+  if (ev.frame) {
+    const raw = atob(ev.frame);
+    for (let i = 0; i < 16384; i++) {
+      const ci = raw.charCodeAt(i);
+      const c = PALETTE[ci] || [0,0,0];
+      imgData.data[i*4] = c[0];
+      imgData.data[i*4+1] = c[1];
+      imgData.data[i*4+2] = c[2];
+      imgData.data[i*4+3] = 255;
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  // player identity badge
+  selfColorIdx = ev.self_color != null ? ev.self_color : -1;
+  updatePlayerIdentity(ev.self_color, ev.role);
+
+  // view info
+  const loc = ev.localized ? 'yes' : 'no';
+  const colorTag = ev.self_color >= 0 ? COLOR_NAMES[ev.self_color] || `c${ev.self_color}` : '?';
+  document.getElementById('viewInfo').textContent =
+    `YOU: ${colorTag} | pos: (${ev.player_x},${ev.player_y}) | room: ${ev.room} | loc: ${loc} | vel: (${ev.velocity_x},${ev.velocity_y})`;
+
+  // intent
+  if (ev.intent) {
+    if (!intentHistory.length || intentHistory[0] !== ev.intent) {
+      intentHistory.unshift(ev.intent);
+      if (intentHistory.length > 30) intentHistory.length = 30;
+      renderIntents();
+    }
+  }
+
+  // status fields
+  document.getElementById('sTick').textContent = ev.tick;
+  const ph = ev.voting ? 'voting' : (ev.interstitial ? 'interstitial' : 'playing');
+  document.getElementById('sPhase').innerHTML = phBadge(ph);
+  document.getElementById('sRole').innerHTML = roleBadge(ev.role);
+  document.getElementById('sGhost').textContent = ev.is_ghost ? 'YES' : 'no';
+}
+
+function updatePlayerIdentity(colorIdx, role) {
+  const badge = document.getElementById('playerIdBadge');
+  const sPlayer = document.getElementById('sPlayer');
+  if (colorIdx < 0) {
+    badge.style.display = 'none';
+    sPlayer.innerHTML = '<span style="color:var(--dim)">detecting...</span>';
+    return;
+  }
+  badge.style.display = 'flex';
+  const css = PLAYER_CSS[colorIdx] || '#888';
+  const name = COLOR_NAMES[colorIdx] || `color ${colorIdx}`;
+  document.getElementById('playerSwatch').style.background = css;
+  document.getElementById('playerSwatch').style.borderColor = css;
+  document.getElementById('playerColorName').textContent = name;
+  document.getElementById('playerColorName').style.color = css;
+  badge.style.borderColor = css;
+  const rb = document.getElementById('playerRoleBadge');
+  if (role === 'imposter') {
+    rb.textContent = 'IMPOSTER';
+    rb.className = 'badge badge-red';
+  } else if (role === 'crewmate') {
+    rb.textContent = 'CREWMATE';
+    rb.className = 'badge badge-green';
+  } else {
+    rb.textContent = role || '---';
+    rb.className = 'badge badge-gray';
+  }
+  sPlayer.innerHTML = `<span style="color:${css};font-weight:700">${name.toUpperCase()}</span>`;
+}
+
+function phBadge(ph) {
+  const cls = ph === 'voting' ? 'badge-purple' : ph === 'interstitial' ? 'badge-orange' : 'badge-green';
+  return `<span class="badge ${cls}">${ph}</span>`;
+}
+function roleBadge(r) {
+  const cls = r === 'imposter' ? 'badge-red' : r === 'crewmate' ? 'badge-green' : 'badge-gray';
+  return `<span class="badge ${cls}">${r}</span>`;
+}
+
+function renderIntents() {
+  const el = document.getElementById('intentLog');
+  el.innerHTML = intentHistory.map((t, i) =>
+    `<div class="${i === 0 ? 'current' : ''}">${t}</div>`
+  ).join('');
+}
+
+function onTrigger(ev) {
+  const area = document.getElementById('triggerArea');
+  const div = document.createElement('div');
+  div.className = 'trigger-flash';
+  div.innerHTML = `<span class="badge badge-orange">${ev.trigger_type}</span> p=${ev.priority} tick=${ev.tick}`;
+  area.prepend(div);
+  while (area.children.length > 8) area.removeChild(area.lastChild);
+}
+
+function onDirective(ev) {
+  const area = document.getElementById('directiveArea');
+  area.innerHTML = `<div class="directive-card">
+    <div class="strat">${ev.strategy}</div>
+    ${ev.target_player ? `<div>Target: <b>${ev.target_player}</b></div>` : ''}
+    ${ev.target_room ? `<div>Room: <b>${ev.target_room}</b></div>` : ''}
+    ${ev.chat_message ? `<div>Chat: <i>"${esc(ev.chat_message)}"</i></div>` : ''}
+    ${ev.navigate_to ? `<div>Nav: (${ev.navigate_to.join(',')})</div>` : ''}
+    <div class="reasoning">${esc(ev.reasoning)}</div>
+    <div style="margin-top:3px;font-size:10px;color:var(--dim)">expires tick ${ev.expires_tick} | hold=${ev.hold}</div>
+  </div>`;
+}
+
+let llmPending = {};
+function onLLMRequest(ev) {
+  llmPending[ev.tick] = ev;
+}
+
+function onLLMResponse(ev) {
+  const req = llmPending[ev.tick] || {};
+  delete llmPending[ev.tick];
+  const el = document.getElementById('llmBody');
+  const details = document.createElement('details');
+  details.className = 'llm-entry';
+  details.innerHTML = `<summary>
+    <span class="badge badge-blue">${ev.trigger_type}</span>
+    <span class="latency">${ev.elapsed_ms}ms</span>
+    <span class="tokens">${ev.input_tokens}in/${ev.output_tokens}out</span>
+    <span style="color:var(--dim);margin-left:auto">t=${ev.tick}</span>
+  </summary>
+  <div class="detail">
+    <div class="detail-label">Narrator Context Sent:</div>
+    <div>${esc(req.context || '(not captured)')}</div>
+    <br>
+    <div class="detail-label">LLM Response:</div>
+    <div>${esc(ev.response)}</div>
+  </div>`;
+  el.prepend(details);
+  while (el.children.length > 50) el.removeChild(el.lastChild);
+
+  document.getElementById('brainBudget').textContent =
+    `LLM ${el.children.length}/50`;
+}
+
+function onPlayerModel(ev) {
+  const el = document.getElementById('playerBody');
+  const entries = Object.entries(ev.players || {})
+    .sort((a, b) => b[1].suspicion - a[1].suspicion);
+  el.innerHTML = entries.map(([name, p]) => {
+    const ci = p.color || 0;
+    const css = PLAYER_CSS[ci] || '#888';
+    const susPct = Math.round((p.suspicion || 0) * 100);
+    const susColor = susPct > 50 ? 'var(--red)' : susPct > 20 ? 'var(--orange)' : 'var(--green)';
+    const statusBadge = p.status === 'dead' ? '<span class="badge badge-red">DEAD</span>'
+      : p.status === 'ejected' ? '<span class="badge badge-purple">EJECT</span>'
+      : '';
+    const isSelf = ci === selfColorIdx;
+    const selfTag = isSelf ? '<span class="badge badge-blue" style="font-size:9px;margin-left:2px">YOU</span>' : '';
+    const rowStyle = isSelf ? 'border:1px solid var(--accent);border-radius:4px;padding:3px 4px;background:rgba(88,166,255,.08)' : '';
+    return `<div class="player-row" style="${rowStyle}">
+      <div class="color-swatch" style="background:${css}"></div>
+      <div class="player-name">${name} ${selfTag}${statusBadge}</div>
+      <div class="sus-bar-bg"><div class="sus-bar" style="width:${susPct}%;background:${susColor}"></div></div>
+      <div class="player-meta">${susPct}% | ${p.last_room || '?'}</div>
+    </div>`;
+  }).join('');
+}
+
+function onMemory(ev) {
+  // Episodic
+  const epEl = document.getElementById('episodicTab');
+  const eps = (ev.episodic || []).slice().reverse();
+  epEl.innerHTML = eps.map(e => {
+    const star = e.landmark ? '<span class="landmark-star">*</span>' : '';
+    return `<div class="ep-event">
+      <span class="ep-tick">${e.tick}</span>
+      <span class="ep-hall hall-${e.hall}">${e.hall}</span>
+      <span>${star}${esc(e.text)}</span>
+    </div>`;
+  }).join('');
+
+  // Strategic
+  const stEl = document.getElementById('strategicTab');
+  const facts = Object.entries(ev.strategic || {});
+  stEl.innerHTML = facts.map(([k, f]) =>
+    `<div class="fact-row">
+      <span class="fact-key">${esc(k)}</span>
+      <span class="fact-val">${esc(String(typeof f.value === 'object' ? JSON.stringify(f.value) : f.value))}</span>
+    </div>`
+  ).join('');
+}
+
+function onStatus(ev) {
+  document.getElementById('sTick').textContent = ev.tick;
+  document.getElementById('sPhase').innerHTML = phBadge(ev.phase || '---');
+  document.getElementById('sRole').innerHTML = roleBadge(ev.role || '---');
+  document.getElementById('sGhost').textContent = ev.is_ghost ? 'YES' : 'no';
+  document.getElementById('sLLM').textContent = `${ev.llm_calls || 0}/${ev.llm_budget || 50}`;
+  document.getElementById('sGameId').textContent = ev.game_id || '---';
+  document.getElementById('brainBudget').textContent = `LLM ${ev.llm_calls || 0}/${ev.llm_budget || 50}`;
+}
+
+function showTab(name, btn) {
+  document.getElementById('episodicTab').style.display = name === 'episodic' ? '' : 'none';
+  document.getElementById('strategicTab').style.display = name === 'strategic' ? '' : 'none';
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// Transport bindings
+document.getElementById('btnPause').addEventListener('click', togglePause);
+document.getElementById('btnStepBack').addEventListener('click', stepBack);
+document.getElementById('btnStepFwd').addEventListener('click', stepForward);
+document.getElementById('speedGroup').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-speed]');
+  if (!btn) return;
+  playSpeed = parseInt(btn.dataset.speed, 10);
+  document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+});
+
+const scrubberEl = document.getElementById('scrubber');
+scrubberEl.addEventListener('mousedown', (e) => {
+  scrubbing = true;
+  const pct = (e.clientX - scrubberEl.getBoundingClientRect().left) / scrubberEl.offsetWidth;
+  seekToTick(Math.round(pct * maxTick));
+});
+document.addEventListener('mousemove', (e) => {
+  if (!scrubbing) return;
+  const rect = scrubberEl.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  seekToTick(Math.round(pct * maxTick));
+});
+document.addEventListener('mouseup', () => { scrubbing = false; });
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+  else if (e.code === 'ArrowLeft') { e.preventDefault(); stepBack(); }
+  else if (e.code === 'ArrowRight') { e.preventDefault(); stepForward(); }
+});
+
+connect();
+</script>
+</body>
+</html>
