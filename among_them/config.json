@@ -1,4 +1,5 @@
 {
   "gameId": "among_them",
-  "minPlayers": 5
+  "minPlayers": 5,
+  "maxTicks": 10000
 }
