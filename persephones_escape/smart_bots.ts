@@ -1,12 +1,15 @@
 import WebSocket from "ws";
 import { argv } from "process";
-import { TARGET_FPS, ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, BUBBLE_RADIUS } from "./constants.js";
+import {
+  TARGET_FPS, PLAYER_W, PLAYER_H, BUBBLE_RADIUS, ROOM_W,
+  BUTTON_A, BUTTON_B, BUTTON_SELECT,
+} from "./constants.js";
 import { Room } from "./types.js";
 import {
   sendInput, sendChat, PACKED_FRAME_BYTES, unpackFrame,
-  ActionQueue, menuActionSequence, hostageSelectSequence,
+  ActionQueue, menuSequence, hostageSelectSequence,
   moveToward, randomDir, randomPoint, distTo, isNearby,
-  type Point, type MenuAction, commMenuSequence,
+  type Point,
 } from "./bot_utils.js";
 
 const count = parseInt(argv[2] ?? "6");
@@ -82,8 +85,8 @@ function botStep(bot: BotState) {
     bot.wanderTicks = 10 + Math.floor(Math.random() * 20);
   }
 
-  const myX = ROOM_W / 2; // approximate — we don't track position from frames
-  const myY = ROOM_H / 2;
+  const myX = ROOM_W / 2;
+  const myY = ROOM_W / 2;
   const mask = moveToward(myX, myY, bot.wanderTarget.x, bot.wanderTarget.y);
   sendInput(bot.ws, mask || randomDir());
 }
@@ -96,22 +99,24 @@ function doMenuAction(bot: BotState) {
   bot.menuCooldown = TARGET_FPS * 3;
 
   const roll = Math.random();
-  let action: MenuAction;
 
   if (roll < 0.3) {
-    action = "COMM:START";
+    // A creates chatroom directly
+    bot.actions.push(BUTTON_A, 0);
   } else if (roll < 0.5) {
-    action = "COMM:SHOUT";
+    // SELECT opens comm menu, A selects SHOUT (index 0)
+    bot.actions.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
   } else if (roll < 0.7) {
-    action = "INFO:SHARED";
+    // B opens info screen directly
+    bot.actions.push(BUTTON_B, 0);
   } else {
-    action = "USURP:SELECT";
+    // SELECT opens comm menu, A selects SHOUT, then navigate usurp and A votes
+    bot.actions.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
+    const moves = Math.floor(Math.random() * 4);
+    for (let i = 0; i < moves; i++) bot.actions.push(0x08, 0); // RIGHT
+    bot.actions.push(BUTTON_A, 0);
+    bot.actions.push(BUTTON_SELECT, 0); // close global chat
   }
-
-  const seq = menuActionSequence(action, {
-    usurpListLength: 4,
-  });
-  bot.actions.push(...seq);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,20 +124,20 @@ function doMenuAction(bot: BotState) {
 // ---------------------------------------------------------------------------
 
 function doHostageSelect(bot: BotState) {
-  // Simulate what a leader would do: move cursor to a few positions, toggle, commit
-  const picks = 1 + Math.floor(Math.random() * 2);
+  // Open global chat (via comm menu SHOUT), pick hostages, commit
   const seq: number[] = [];
+  seq.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
+  const picks = 1 + Math.floor(Math.random() * 2);
   for (let i = 0; i < picks; i++) {
     const moves = 1 + Math.floor(Math.random() * 3);
     for (let j = 0; j < moves; j++) {
       seq.push(Math.random() < 0.5 ? 0x04 : 0x08); // LEFT or RIGHT
       seq.push(0);
     }
-    seq.push(0x20); // A — toggle
-    seq.push(0);
+    seq.push(BUTTON_A, 0); // toggle
   }
-  seq.push(0x10); // SELECT — commit
-  seq.push(0);
+  seq.push(BUTTON_B, 0); // commit
+  seq.push(BUTTON_SELECT, 0); // close global chat
   bot.actions.push(...seq);
 }
 

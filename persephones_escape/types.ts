@@ -14,7 +14,7 @@ export enum Team { TeamA, TeamB }
 export enum Role { Hades, Persephone, Cerberus, Demeter, Shades, Nymphs }
 export enum Room { RoomA, RoomB }
 
-export enum PlayerShape { Square, Diamond, Triangle, Circle, Cross, Star }
+export enum PlayerShape { Circle, Square, Triangle, Diamond, Star, Cross, XShape, Heart, Crescent, Bolt, Hourglass, Ring }
 
 export interface InputState {
   up: boolean;
@@ -56,9 +56,11 @@ export interface Player {
   commMenuOpen: boolean;
   commMenuRow: number;
   chatMenuOpen: boolean;
-  chatMenuRow: number;
+  chatMenuCat: number;
+  chatMenuItem: number;
   shareSelectOpen: boolean;
   shareSelectRow: number;
+  shareSelectMode: "card" | "color";
   infoScreen: "none" | "role" | "shared";
   infoScrollOffset: number;
   usurpVote: number;
@@ -71,6 +73,7 @@ export interface Player {
   globalChatScroll: number;
   globalChatActionRow: number;
   roomEntryTick: number;
+  lastActionTicks: Map<string, number>;
 }
 
 export interface ChatMessage {
@@ -99,13 +102,14 @@ export interface Chatroom {
   pendingEntryTicks: number[];
   messages: ChatroomMessage[];
   revealOffers: Set<number>;
+  colorOffers: Set<number>;
   leaderOffer: number;
 }
 
 export interface RoleEntry {
   role: Role;
   team: Team;
-  count: number | "fill";
+  count: number;
 }
 
 export interface RoundConfig {
@@ -114,8 +118,17 @@ export interface RoundConfig {
 }
 
 export interface GameConfig {
-  minPlayers: number;
-  maxPlayers: number;
   roles: RoleEntry[];
   rounds: RoundConfig[];
+  /** Number of obstacles per room. If undefined, auto-scales with player count. Use 0 to disable. */
+  obstacleCount?: number;
+  /** Max characters per line of a chat message. Messages longer than this wrap to the next line. */
+  chatMaxCharsPerLine?: number;
+  /** Per-action rate limits in ticks. Keys are action names (e.g. "chat", "C.OFFER", "EXIT").
+   *  "_default" sets the fallback for unlisted actions. */
+  actionRateLimits?: Record<string, number>;
+  /** If set, players whose name starts with this prefix all start in RoomA together (useful for testing). */
+  groupNamePrefixInRoomA?: string;
+  /** If true, chatroom entry requests are auto-granted (useful for testing). */
+  autoGrantChatroomEntry?: boolean;
 }

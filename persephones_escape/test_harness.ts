@@ -12,17 +12,55 @@ import { spawn, type ChildProcess } from "child_process";
 import { argv } from "process";
 import { mkdirSync } from "fs";
 import { Phase, Team, Role, type InputState, type GameConfig } from "./types.js";
-import { DEFAULT_GAME_CONFIG, TARGET_FPS, LOBBY_WAIT_TICKS } from "./constants.js";
+import { DEFAULT_GAME_CONFIG, TARGET_FPS, LOBBY_WAIT_TICKS, playerCountFromConfig } from "./constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./protocol.js";
 import { Sim } from "./sim.js";
 import { render } from "./renderer.js";
 import { ReplayRecorder } from "./replay.js";
+import { buildGlobalFrame } from "./globalViewer.js";
 
 // ---------------------------------------------------------------------------
 // Config presets
 // ---------------------------------------------------------------------------
 
 const CONFIGS: Record<string, GameConfig> = {
+  tiny: {
+    ...DEFAULT_GAME_CONFIG,
+    rounds: [{ durationSecs: 1, hostages: 1 }],
+  },
+  short: {
+    ...DEFAULT_GAME_CONFIG,
+    rounds: [{ durationSecs: 30, hostages: 1 }],
+  },
+  empty: {
+    ...DEFAULT_GAME_CONFIG,
+    rounds: [{ durationSecs: 30, hostages: 1 }],
+    obstacleCount: 0,
+  },
+  simple: {
+    // Simple test: 6 players (all 4 key roles + 1 Shades + 1 Nymphs grunt),
+    // LLMs all in RoomA together, no obstacles, 60s round.
+    roles: [
+      { role: Role.Hades, team: Team.TeamA, count: 1 },
+      { role: Role.Persephone, team: Team.TeamB, count: 1 },
+      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
+      { role: Role.Demeter, team: Team.TeamB, count: 1 },
+      { role: Role.Shades, team: Team.TeamA, count: 1 },
+      { role: Role.Nymphs, team: Team.TeamB, count: 1 },
+    ],
+    rounds: [{ durationSecs: 60, hostages: 1 }],
+    obstacleCount: 0,
+    groupNamePrefixInRoomA: "llm_",
+  },
+  empty3: {
+    ...DEFAULT_GAME_CONFIG,
+    rounds: [
+      { durationSecs: 45, hostages: 2 },
+      { durationSecs: 45, hostages: 2 },
+      { durationSecs: 45, hostages: 2 },
+    ],
+    obstacleCount: 0,
+  },
   fast: DEFAULT_GAME_CONFIG,
   medium: {
     ...DEFAULT_GAME_CONFIG,
@@ -54,6 +92,8 @@ function parseCliArgs() {
     port: parseInt(args["port"] ?? "9090"),
     replayDir: args["replay-dir"] ?? null,
     model: args["model"] ?? undefined,
+    botScript: args["bot-script"] ?? "llm_bot.ts",
+    botPrefix: args["bot-prefix"] ?? "llm_",
   };
 }
 
@@ -101,14 +141,24 @@ function runMatch(
 
     const httpServer = createServer();
     const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+    const globalWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+    const globalViewers = new Set<WebSocket>();
 
     httpServer.on("upgrade", (req, socket, head) => {
       const { pathname } = new URL(req.url ?? "/", `http://${req.headers.host}`);
       if (pathname === "/player") {
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+      } else if (pathname === "/global") {
+        globalWss.handleUpgrade(req, socket, head, (ws) => globalWss.emit("connection", ws, req));
       } else {
         socket.destroy();
       }
+    });
+
+    globalWss.on("connection", (ws) => {
+      globalViewers.add(ws);
+      ws.on("close", () => globalViewers.delete(ws));
+      ws.on("error", () => { globalViewers.delete(ws); ws.close(); });
     });
 
     wss.on("connection", (ws, req) => {
@@ -172,6 +222,10 @@ function runMatch(
         const llmProc = spawn("npx", llmArgs, {
           stdio: ["ignore", "pipe", "pipe"],
           cwd: import.meta.dirname,
+        });
+        llmProc.stdout?.on("data", (d: Buffer) => {
+          const msg = d.toString().trim();
+          if (msg) process.stdout.write(`  [llm_${i + 1}] ${msg}\n`);
         });
         llmProc.stderr?.on("data", (d: Buffer) => {
           const msg = d.toString().trim();
@@ -254,6 +308,12 @@ function runMatch(
         }
         client.prevInputMask = client.inputMask;
       }
+      if (globalViewers.size > 0) {
+        const frame = buildGlobalFrame(sim);
+        for (const ws of globalViewers) {
+          try { ws.send(frame); } catch { /* */ }
+        }
+      }
 
       if (!resultCaptured) {
         setTimeout(gameLoop, Math.max(1, frameDuration - (performance.now() - lastTick)));
@@ -296,8 +356,9 @@ async function main() {
   if (opts.replayDir) mkdirSync(opts.replayDir, { recursive: true });
 
   const totalPlayers = opts.smartBots + opts.llmBots;
-  if (totalPlayers < config.minPlayers) {
-    console.error(`Need at least ${config.minPlayers} players, got ${totalPlayers}`);
+  const expectedPlayers = playerCountFromConfig(config);
+  if (totalPlayers < expectedPlayers) {
+    console.error(`Need at least ${expectedPlayers} players, got ${totalPlayers}`);
     process.exit(1);
   }
 

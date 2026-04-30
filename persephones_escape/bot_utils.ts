@@ -66,59 +66,19 @@ export class ActionQueue {
 }
 
 // ---------------------------------------------------------------------------
-// Action sequences for the new input system
-//
-// Game world:  A opens comm menu (START/REQUEST/SHOUT), up/down navigate, A selects
-//              B toggles shared info screen
-//              SELECT opens global chat
-// Global chat: left/right navigate usurp candidates, B selects, A closes
-// Chatroom:    A exits, B opens action menu, left/right navigate, B selects
+// Menu system — re-export from menu_defs for bot consumption
 // ---------------------------------------------------------------------------
 
-export type MenuAction =
-  | "COMM:START" | "COMM:SHOUT"
-  | "INFO:SHARED"
-  | "USURP:SELECT";
-
-export function commMenuSequence(targetRow: number): number[] {
-  const seq: number[] = [];
-  seq.push(BUTTON_A, 0);
-  for (let i = 0; i < targetRow; i++) seq.push(BUTTON_DOWN, 0);
-  seq.push(BUTTON_A, 0);
-  return seq;
-}
-
-export function menuActionSequence(action: MenuAction, opts?: {
-  usurpListLength?: number;
-}): number[] {
-  if (action === "COMM:START") {
-    return commMenuSequence(0);
-  }
-  if (action === "COMM:SHOUT") {
-    return commMenuSequence(2);
-  }
-  if (action === "INFO:SHARED") {
-    return [BUTTON_B, 0];
-  }
-  if (action === "USURP:SELECT") {
-    const seq: number[] = [];
-    seq.push(BUTTON_SELECT, 0);
-    const moves = Math.floor(Math.random() * (opts?.usurpListLength ?? 4));
-    for (let i = 0; i < moves; i++) seq.push(BUTTON_RIGHT, 0);
-    seq.push(BUTTON_B, 0);
-    seq.push(BUTTON_A, 0);
-    return seq;
-  }
-  return [];
-}
+export { menuSequence, COMMAND_ACTIONS, MENU_DEFS } from "./menu_defs.js";
+export type { MenuDef } from "./menu_defs.js";
 
 // ---------------------------------------------------------------------------
 // Hostage selection — builds action sequences for leaders during HostageSelect
+// Hostage picker is inside global chat: A toggles, B commits, SELECT closes
 // ---------------------------------------------------------------------------
 
 export function hostageSelectSequence(targetIndices: number[], eligible: number[]): number[] {
   const seq: number[] = [];
-  // cursor starts at 0, navigate to each target and toggle
   let cursor = 0;
   for (const target of targetIndices) {
     const targetPos = eligible.indexOf(target);
@@ -129,11 +89,10 @@ export function hostageSelectSequence(targetIndices: number[], eligible: number[
     } else if (delta < 0) {
       for (let i = 0; i < -delta; i++) seq.push(BUTTON_LEFT, 0);
     }
-    seq.push(BUTTON_A, 0); // toggle
+    seq.push(BUTTON_A, 0);
     cursor = targetPos;
   }
-  // commit
-  seq.push(BUTTON_SELECT, 0);
+  seq.push(BUTTON_B, 0);
   return seq;
 }
 
@@ -151,9 +110,11 @@ export function findPath(
   wallMap: Uint8Array,
   from: Point,
   to: Point,
+  roomW = ROOM_W,
+  roomH = ROOM_H,
 ): Point[] | null {
-  const gridW = Math.ceil(ROOM_W / PATH_STEP);
-  const gridH = Math.ceil(ROOM_H / PATH_STEP);
+  const gridW = Math.ceil(roomW / PATH_STEP);
+  const gridH = Math.ceil(roomH / PATH_STEP);
 
   const startGx = Math.floor(from.x / PATH_STEP);
   const startGy = Math.floor(from.y / PATH_STEP);
@@ -168,8 +129,8 @@ export function findPath(
     for (let dy = 0; dy < PLAYER_H; dy++) {
       for (let dx = 0; dx < PLAYER_W; dx++) {
         const wx = px + dx, wy = py + dy;
-        if (wx < 0 || wy < 0 || wx >= ROOM_W || wy >= ROOM_H) return true;
-        if (wallMap[wy * ROOM_W + wx]) return true;
+        if (wx < 0 || wy < 0 || wx >= roomW || wy >= roomH) return true;
+        if (wallMap[wy * roomW + wx]) return true;
       }
     }
     return false;
@@ -265,15 +226,15 @@ export function randomDir(): number {
   return DIRS[Math.floor(Math.random() * DIRS.length)];
 }
 
-export function randomPoint(room: Room): Point {
+export function randomPoint(room: Room, roomW = ROOM_W, roomH = ROOM_H): Point {
   const margin = PLAYER_W + 2;
   return {
-    x: margin + Math.floor(Math.random() * (ROOM_W - 2 * margin)),
-    y: margin + Math.floor(Math.random() * (ROOM_H - 2 * margin)),
+    x: margin + Math.floor(Math.random() * (roomW - 2 * margin)),
+    y: margin + Math.floor(Math.random() * (roomH - 2 * margin)),
   };
 }
 
-function clamp(v: number, lo: number, hi: number): number {
+export function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
@@ -310,11 +271,11 @@ const TOP_BAR = 9;
 const HALF_W = Math.floor(SCREEN_WIDTH / 2);
 const PLAYER_CENTER_SCREEN_Y = 64;
 
-export function readPosition(frame: Uint8Array): Position | null {
+export function readPosition(frame: Uint8Array, roomW = ROOM_W, roomH = ROOM_H): Position | null {
   const room = detectRoom(frame);
   if (room === null) return null;
 
-  const coarse = readMinimapPlayerDot(frame);
+  const coarse = readMinimapPlayerDot(frame, roomW, roomH);
   if (!coarse) return null;
 
   const alt = room === Room.RoomA ? ROOM_A_ALT : ROOM_B_ALT;
@@ -324,8 +285,10 @@ export function readPosition(frame: Uint8Array): Position | null {
     return { room, x: coarse.x - Math.floor(PLAYER_W / 2), y: coarse.y - Math.floor(PLAYER_H / 2) };
   }
 
-  const approxCamX = clamp(coarse.x - HALF_W, 0, ROOM_W - SCREEN_WIDTH);
-  const approxCamY = clamp(coarse.y - PLAYER_CENTER_SCREEN_Y, -TOP_BAR, ROOM_H - SCREEN_HEIGHT + BOTTOM_BAR_H);
+  const maxCamX = Math.max(0, roomW - SCREEN_WIDTH);
+  const maxCamY = Math.max(-TOP_BAR, roomH - SCREEN_HEIGHT + BOTTOM_BAR_H);
+  const approxCamX = clamp(coarse.x - HALF_W, 0, maxCamX);
+  const approxCamY = clamp(coarse.y - PLAYER_CENTER_SCREEN_Y, -TOP_BAR, maxCamY);
 
   const dotWorldXApprox = approxCamX + dot.sx;
   const dotWorldYApprox = approxCamY + dot.sy;
@@ -333,9 +296,6 @@ export function readPosition(frame: Uint8Array): Position | null {
   const tileNy = Math.round((dotWorldYApprox - DOT_OFFSET) / DOT_GRID);
   const exactCamX = tileNx * DOT_GRID + DOT_OFFSET - dot.sx;
   const exactCamY = tileNy * DOT_GRID + DOT_OFFSET - dot.sy;
-
-  const maxCamX = ROOM_W - SCREEN_WIDTH;
-  const maxCamY = ROOM_H - SCREEN_HEIGHT + BOTTOM_BAR_H;
   const pcx = (exactCamX > 0 && exactCamX < maxCamX)
     ? exactCamX + HALF_W
     : coarse.x;
@@ -368,9 +328,9 @@ function detectRoom(frame: Uint8Array): Room | null {
   return null;
 }
 
-function readMinimapPlayerDot(frame: Uint8Array): Point | null {
-  const cellW = ROOM_W / MINIMAP_SIZE;
-  const cellH = ROOM_H / MINIMAP_SIZE;
+function readMinimapPlayerDot(frame: Uint8Array, roomW = ROOM_W, roomH = ROOM_H): Point | null {
+  const cellW = roomW / MINIMAP_SIZE;
+  const cellH = roomH / MINIMAP_SIZE;
   let dotMx = -1, dotMy = -1;
   for (let my = 0; my < MINIMAP_SIZE; my++) {
     for (let mx = 0; mx < MINIMAP_SIZE; mx++) {

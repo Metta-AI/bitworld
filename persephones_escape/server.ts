@@ -130,9 +130,12 @@ function main() {
     lastTick = now;
 
     for (const [, client] of clients) {
-      if (client.playerIndex === PENDING) {
-        client.playerIndex = sim.addPlayer(client.name);
-        recorder?.writeJoin(client.playerIndex, client.name);
+      if (client.playerIndex === PENDING && sim.phase === Phase.Lobby) {
+        const pi = sim.addPlayer(client.name);
+        if (pi >= 0) {
+          client.playerIndex = pi;
+          recorder?.writeJoin(pi, client.name);
+        }
       }
     }
 

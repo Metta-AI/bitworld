@@ -1,13 +1,14 @@
 import { Room } from "./types.js";
-import { ROOM_W, ROOM_H, MINIMAP_SIZE, BUBBLE_RADIUS, TARGET_FPS } from "./constants.js";
+import { ROOM_W, ROOM_H, SCREEN_WIDTH, SCREEN_HEIGHT, BUBBLE_RADIUS, TARGET_FPS, TEAM_A_COLOR, TEAM_A_NAME, TEAM_B_NAME, spriteNameFromPaletteColor } from "./constants.js";
 import { readPosition, type Point } from "./bot_utils.js";
 import {
   parsePhase, parsePlayingHud, parseRoleRevealScreen, scanMinimapPlayers,
-  type ParsedPhase, type MinimapDot,
+  parseChatroomStatus, parseLastShout, scanSpeechBubbles,
+  type ParsedPhase, type InfoScreenEntry, type MinimapDot,
 } from "./frame_parser.js";
 
 // ---------------------------------------------------------------------------
-// Belief state — accumulated knowledge from frame parsing + own actions
+// Belief state — accumulated knowledge from info screen polling + actions
 // ---------------------------------------------------------------------------
 
 export interface PlayerBelief {
@@ -18,6 +19,7 @@ export interface PlayerBelief {
   knownRole: string | null;
   knownTeam: string | null;
   isLeader: boolean;
+  inChatroom: boolean;
   weSharedWith: boolean;
   theyRevealedCard: boolean;
   theyRevealedColor: boolean;
@@ -35,14 +37,30 @@ export interface BeliefState {
   round: number;
   timerSecs: number;
   players: Map<number, PlayerBelief>;
+  minimapDots: MinimapDot[];
   nearbyColors: number[];
   prevNearbyColors: number[];
-  minimapDots: MinimapDot[];
   chatLog: { tick: number; from: string; text: string }[];
   actionLog: { tick: number; action: string }[];
   tick: number;
   lastRoleCheckTick: number;
+  lastInfoPollTick: number;
   roomName: string | null;
+  roomW: number;
+  roomH: number;
+  playerCount: number;
+  pendingRoleOffer: boolean;
+  pendingColorOffer: boolean;
+  pendingEntry: boolean;
+  prevPendingRoleOffer: boolean;
+  /** In chatroom: number of occupants including self, parsed from the top-bar sprites. */
+  occupantCount: number;
+  /** Colors of other occupants (not self) in the current chatroom. */
+  occupantColors: number[];
+  /** Last N shouts seen in the overworld strip; each one deduplicated. */
+  shoutLog: { tick: number; text: string }[];
+  /** Most recently parsed shout text; used to dedupe against shoutLog. */
+  lastShoutText: string | null;
 }
 
 export function createBeliefState(name: string): BeliefState {
@@ -58,22 +76,32 @@ export function createBeliefState(name: string): BeliefState {
     round: 0,
     timerSecs: 0,
     players: new Map(),
+    minimapDots: [],
     nearbyColors: [],
     prevNearbyColors: [],
-    minimapDots: [],
     chatLog: [],
     actionLog: [],
     tick: 0,
     lastRoleCheckTick: -999,
+    lastInfoPollTick: -999,
     roomName: null,
+    roomW: ROOM_W,
+    roomH: ROOM_H,
+    playerCount: 0,
+    pendingRoleOffer: false,
+    pendingColorOffer: false,
+    pendingEntry: false,
+    prevPendingRoleOffer: false,
+    occupantCount: 0,
+    occupantColors: [],
+    shoutLog: [],
+    lastShoutText: null,
   };
 }
 
-export function updateFromFrame(state: BeliefState, frame: Uint8Array): void {
+export function updatePhase(state: BeliefState, frame: Uint8Array): void {
   state.tick++;
   state.prevPhase = state.phase;
-  state.prevNearbyColors = [...state.nearbyColors];
-
   state.phase = parsePhase(frame);
 
   if (state.phase === "role_reveal" && state.myRole === null) {
@@ -83,6 +111,13 @@ export function updateFromFrame(state: BeliefState, frame: Uint8Array): void {
       state.myTeam = info.team;
       state.roomName = info.room;
       state.myRoom = info.room.toUpperCase().includes("UNDERWORLD") ? Room.RoomA : Room.RoomB;
+      if (info.roomSize > 0) {
+        state.roomW = info.roomSize;
+        state.roomH = info.roomSize;
+      }
+      if (info.playerCount > 0) {
+        state.playerCount = info.playerCount;
+      }
     }
   }
 
@@ -94,64 +129,154 @@ export function updateFromFrame(state: BeliefState, frame: Uint8Array): void {
     }
   }
 
-  if (state.phase === "playing" || state.phase === "hostage_select") {
-    const pos = readPosition(frame);
-    if (pos) {
-      state.myPos = { x: pos.x, y: pos.y };
-      state.myRoom = pos.room;
-    }
+  state.prevPendingRoleOffer = state.pendingRoleOffer;
+  if (state.phase === "chatroom") {
+    const status = parseChatroomStatus(frame);
+    state.pendingRoleOffer = status.pendingRoleOffer;
+    state.pendingColorOffer = status.pendingColorOffer;
+    state.pendingEntry = status.pendingEntry;
+    state.occupantCount = status.occupantCount;
+    // Self sprite is the first occupant slot in the top bar. Others are the rest.
+    state.occupantColors = status.occupantColors.slice(1);
+  } else {
+    state.pendingRoleOffer = false;
+    state.pendingColorOffer = false;
+    state.pendingEntry = false;
+    state.occupantCount = 0;
+    state.occupantColors = [];
+  }
 
-    const hud = parsePlayingHud(frame);
-    if (hud) {
-      state.round = hud.round;
-      state.timerSecs = hud.timerSecs;
-      if (hud.roleName && state.myRole === null) {
-        state.myRole = hud.roleName;
-      }
-    }
-
-    if (state.myRoom !== null) {
-      state.minimapDots = scanMinimapPlayers(frame, state.myRoom);
-      updatePlayerBeliefs(state);
+  // Parse the last-shout strip. Only log when the text changes.
+  if (state.phase === "playing") {
+    const shout = parseLastShout(frame);
+    if (shout && shout !== state.lastShoutText) {
+      state.shoutLog.push({ tick: state.tick, text: shout });
+      if (state.shoutLog.length > 20) state.shoutLog.shift();
+      state.lastShoutText = shout;
     }
   }
 }
 
-function updatePlayerBeliefs(state: BeliefState): void {
+export function updateMinimap(state: BeliefState, frame: Uint8Array): void {
+  if (state.phase !== "playing" && state.phase !== "hostage_select") return;
+  if (state.myRoom === null) return;
+  state.minimapDots = scanMinimapPlayers(frame, state.myRoom, state.roomW, state.roomH);
   const nearby: number[] = [];
-
   for (const dot of state.minimapDots) {
     if (dot.isSelf) continue;
     let belief = state.players.get(dot.color);
     if (!belief) {
       belief = {
-        color: dot.color,
-        lastRoom: state.myRoom,
-        lastPos: null,
-        lastSeenTick: state.tick,
-        knownRole: null,
-        knownTeam: null,
-        isLeader: false,
-        weSharedWith: false,
-        theyRevealedCard: false,
-        theyRevealedColor: false,
+        color: dot.color, lastRoom: state.myRoom, lastPos: null,
+        lastSeenTick: state.tick, knownRole: null, knownTeam: null,
+        isLeader: false, inChatroom: false, weSharedWith: false,
+        theyRevealedCard: false, theyRevealedColor: false,
       };
       state.players.set(dot.color, belief);
     }
     belief.lastRoom = state.myRoom;
     belief.lastPos = { x: dot.worldX, y: dot.worldY };
     belief.lastSeenTick = state.tick;
-
     if (state.myPos) {
       const dx = dot.worldX - state.myPos.x;
       const dy = dot.worldY - state.myPos.y;
-      if (Math.sqrt(dx * dx + dy * dy) <= BUBBLE_RADIUS * 2) {
+      // Minimap cell resolution is ~roomSize/20 ≈ 5 world units, so loosen by 1 cell
+      if (Math.sqrt(dx * dx + dy * dy) <= BUBBLE_RADIUS + 5) {
         nearby.push(dot.color);
       }
     }
   }
-
+  state.prevNearbyColors = state.nearbyColors;
   state.nearbyColors = nearby;
+
+  // Reset inChatroom for all known players, then detect from speech bubbles
+  for (const b of state.players.values()) b.inChatroom = false;
+  const bubbles = scanSpeechBubbles(frame);
+  for (const bub of bubbles) {
+    // Read the player's fill color from center of the 7x7 sprite
+    const cx = bub.screenX + 3;
+    const cy = bub.screenY + 3;
+    if (cx >= 0 && cx < SCREEN_WIDTH && cy >= 0 && cy < SCREEN_HEIGHT) {
+      const c = frame[cy * SCREEN_WIDTH + cx];
+      if (c !== 0 && c !== 1) {
+        const b = state.players.get(c);
+        if (b) b.inChatroom = true;
+      }
+    }
+  }
+}
+
+export function updatePosition(state: BeliefState, frame: Uint8Array): void {
+  if (state.phase !== "playing" && state.phase !== "hostage_select") return;
+  const pos = readPosition(frame, state.roomW, state.roomH);
+  if (pos) {
+    state.myPos = { x: pos.x, y: pos.y };
+    state.myRoom = pos.room;
+  }
+}
+
+export function updateHud(state: BeliefState, frame: Uint8Array): void {
+  if (state.phase !== "playing" && state.phase !== "hostage_select") return;
+  const hud = parsePlayingHud(frame);
+  if (hud) {
+    state.round = hud.round;
+    state.timerSecs = hud.timerSecs;
+    if (hud.roleName && state.myRole === null) {
+      state.myRole = hud.roleName;
+    }
+  }
+}
+
+export function updateFromInfoScreen(state: BeliefState, entries: InfoScreenEntry[]): boolean {
+  let newInfo = false;
+  state.lastInfoPollTick = state.tick;
+
+  for (const entry of entries) {
+    if (entry.isSelf) {
+      if (entry.teamColor !== null && state.myTeam === null) {
+        state.myTeam = entry.teamColor === TEAM_A_COLOR ? TEAM_A_NAME : TEAM_B_NAME;
+      }
+      continue;
+    }
+
+    let belief = state.players.get(entry.playerColor);
+    if (!belief) {
+      belief = {
+        color: entry.playerColor,
+        lastRoom: null,
+        lastPos: null,
+        lastSeenTick: state.tick,
+        knownRole: null,
+        knownTeam: null,
+        isLeader: false,
+        inChatroom: false,
+        weSharedWith: false,
+        theyRevealedCard: false,
+        theyRevealedColor: false,
+      };
+      state.players.set(entry.playerColor, belief);
+      newInfo = true;
+    }
+
+    belief.lastSeenTick = state.tick;
+
+    if (entry.roleName && !belief.knownRole) {
+      belief.knownRole = entry.roleName;
+      belief.theyRevealedCard = true;
+      newInfo = true;
+    }
+    if (entry.teamColor !== null && !belief.knownTeam) {
+      belief.knownTeam = entry.teamColor === TEAM_A_COLOR ? TEAM_A_NAME : TEAM_B_NAME;
+      belief.theyRevealedColor = true;
+      newInfo = true;
+    }
+    if (entry.colorOnlyReveal && !belief.theyRevealedColor) {
+      belief.theyRevealedColor = true;
+      newInfo = true;
+    }
+  }
+
+  return newInfo;
 }
 
 export function updateFromCommand(state: BeliefState, command: string): void {
@@ -164,8 +289,11 @@ export function updateFromCommand(state: BeliefState, command: string): void {
 // ---------------------------------------------------------------------------
 
 export type TriggerEvent =
-  | "game_start" | "round_start" | "player_nearby" | "player_left"
-  | "hostage_phase" | "room_changed" | "idle" | "role_learned";
+  | "game_start" | "round_start" | "info_updated"
+  | "hostage_phase" | "idle" | "role_learned" | "periodic"
+  | "player_nearby" | "player_left"
+  | "role_offer_pending"
+  | "shout_received";
 
 export function checkTriggers(
   state: BeliefState,
@@ -192,18 +320,32 @@ export function checkTriggers(
     return "role_learned";
   }
 
+  // Fire immediately when a role offer appears (no cooldown — this is a win-path trigger).
+  if (state.pendingRoleOffer && !state.prevPendingRoleOffer) {
+    return "role_offer_pending";
+  }
+
+  // Fire when a new shout arrives (most recent entry added this tick).
+  const latestShout = state.shoutLog[state.shoutLog.length - 1];
+  if (latestShout && latestShout.tick === state.tick) {
+    return "shout_received";
+  }
+
   if (state.tick - lastPromptTick < cooldown) return null;
 
   if (state.nearbyColors.length > 0 && state.prevNearbyColors.length === 0) {
     return "player_nearby";
   }
-
   if (state.nearbyColors.length === 0 && state.prevNearbyColors.length > 0) {
     return "player_left";
   }
 
   if (!hasActiveGoal && state.tick - lastPromptTick > TARGET_FPS * 3) {
     return "idle";
+  }
+
+  if (state.phase === "playing" && state.tick - lastPromptTick > TARGET_FPS * 5) {
+    return "periodic";
   }
 
   return null;
@@ -217,7 +359,7 @@ export function formatContextDump(state: BeliefState, event: TriggerEvent): stri
   const lines: string[] = [];
 
   lines.push(`EVENT: ${event}`);
-  lines.push(`TICK: ${state.tick} | ROUND: ${state.round}/3 | TIME: ~${state.timerSecs}s | PHASE: ${state.phase}`);
+  lines.push(`TICK: ${state.tick} | ROUND: ${state.round}/3 | TIME: ~${state.timerSecs}s | PHASE: ${state.phase} | ROOM: ${state.roomW}x${state.roomH}`);
   lines.push("");
 
   lines.push("MY STATE:");
@@ -225,35 +367,49 @@ export function formatContextDump(state: BeliefState, event: TriggerEvent): stri
   if (state.myPos) {
     lines.push(`  Position: (${state.myPos.x}, ${state.myPos.y}) | Leader: ${state.amLeader ? "yes" : "no"}`);
   }
+  if (state.phase === "chatroom") {
+    lines.push(`  IN CHATROOM. pending_role_offer=${state.pendingRoleOffer} pending_color_offer=${state.pendingColorOffer} pending_entry=${state.pendingEntry}`);
+    if (state.pendingEntry) {
+      lines.push(`  >>> Another player wants to enter your chatroom. Use "grant_entry" to let them in, or ignore to keep them out.`);
+    }
+    if (state.pendingRoleOffer) {
+      lines.push(`  >>> Another occupant has offered a MUTUAL ROLE EXCHANGE. If you accept and they turn out to be your key partner, your team WINS. If they're an enemy you leak your role. Only the two keys (Hades+Cerberus for Shades, Persephone+Demeter for Nymphs) trigger the win.`);
+    } else if (state.pendingColorOffer) {
+      lines.push(`  >>> Another occupant has offered a COLOR EXCHANGE. color_accept reveals teams to each other (safe, no role info).`);
+    }
+  } else if (state.phase === "waiting_entry") {
+    lines.push(`  WAITING TO ENTER ANOTHER PLAYER'S CHATROOM. Just "wait" — the owner must grant_entry. Do not press action buttons or you'll cancel your request.`);
+  }
   lines.push("");
 
-  const nearbyBeliefs = state.nearbyColors
-    .map(c => state.players.get(c))
-    .filter((b): b is PlayerBelief => b !== null && b !== undefined);
-
-  if (nearbyBeliefs.length > 0) {
-    lines.push("NEARBY PLAYERS (interaction range):");
-    for (const b of nearbyBeliefs) {
-      lines.push(`  ${playerDesc(b)}`);
+  if (state.nearbyColors.length > 0) {
+    lines.push(`NEARBY PLAYERS (in chatroom range — press open_chatroom to interact):`);
+    for (const c of state.nearbyColors) {
+      const b = state.players.get(c);
+      lines.push(`  ${b ? playerDesc(b) : spriteNameFromPaletteColor(c)}`);
     }
     lines.push("");
   }
 
-  if (state.minimapDots.length > 1) {
-    const others = state.minimapDots.filter(d => !d.isSelf);
-    if (others.length > 0) {
-      lines.push("ROOM PLAYERS (minimap):");
-      const descs = others.map(d => `[color=${d.color}] ~(${d.worldX},${d.worldY})`);
-      lines.push("  " + descs.join(" | "));
-      lines.push("");
-    }
+  const otherDots = state.minimapDots.filter(d => !d.isSelf);
+  if (otherDots.length > 0) {
+    lines.push("OTHERS IN ROOM (from minimap):");
+    lines.push("  " + otherDots.map(d => `${spriteNameFromPaletteColor(d.color)} ~(${d.worldX},${d.worldY})`).join(" | "));
+    lines.push("");
   }
 
-  const knownPlayers = [...state.players.values()].filter(
-    b => b.knownRole || b.knownTeam || b.weSharedWith
-  );
+  if (state.shoutLog.length > 0) {
+    lines.push("RECENT SHOUTS (global room chat):");
+    for (const s of state.shoutLog.slice(-8)) {
+      lines.push(`  tick=${s.tick}: "${s.text}"`);
+    }
+    lines.push("");
+  }
+
+  const knownPlayers = [...state.players.values()];
   if (knownPlayers.length > 0) {
-    lines.push("KNOWN PLAYERS:");
+    const staleness = state.tick - state.lastInfoPollTick;
+    lines.push(`KNOWN PLAYERS (polled ${staleness} ticks ago):`);
     for (const b of knownPlayers) {
       lines.push(`  ${playerDesc(b)}`);
     }
@@ -282,7 +438,7 @@ export function formatContextDump(state: BeliefState, event: TriggerEvent): stri
 
   lines.push("COMMANDS:");
   lines.push("  Movement: move_to <x> <y>, approach_nearest, wander, wait");
-  lines.push("  Chatroom: open_chatroom, reveal, show_color, accept_reveal, exit_chatroom, chat <msg>");
+  lines.push("  Chatroom: open_chatroom, color_offer, color_accept, show_role, role_offer, role_accept, exit_chatroom, chat <msg>");
   lines.push("  Leadership: leader_pass, leader_take, grant_entry");
   lines.push("  Menu: info_shared, start_chat, shout <msg>");
   lines.push("  Hostage: select_hostages <indices>, commit_hostages");
@@ -297,10 +453,11 @@ function roomStr(room: Room | null): string {
 }
 
 function playerDesc(b: PlayerBelief): string {
-  const parts = [`[color=${b.color}]`];
+  const parts = [spriteNameFromPaletteColor(b.color)];
   if (b.lastPos) parts.push(`~(${b.lastPos.x},${b.lastPos.y})`);
   if (b.knownRole) parts.push(`role: ${b.knownRole}`);
   else if (b.knownTeam) parts.push(`team: ${b.knownTeam}`);
+  if (b.inChatroom) parts.push("IN CHATROOM");
   if (b.weSharedWith) parts.push("MUTUAL SHARE");
   return parts.join(", ");
 }
@@ -316,19 +473,19 @@ function buildStrategicContext(state: BeliefState): string {
   if (role === "HADES") {
     lines.push("  Win: I (Hades) must mutually share cards with Cerberus.");
     const cerb = findKnownByRole(state, "Cerberus");
-    lines.push(cerb ? `  Cerberus: FOUND [color=${cerb.color}], shared: ${cerb.weSharedWith}` : "  Cerberus: NOT FOUND.");
+    lines.push(cerb ? `  Cerberus: FOUND ${spriteNameFromPaletteColor(cerb.color)}, shared: ${cerb.weSharedWith}` : "  Cerberus: NOT FOUND.");
   } else if (role === "CERBERUS") {
     lines.push("  Win: Hades must mutually share cards with me (Cerberus).");
     const hades = findKnownByRole(state, "Hades");
-    lines.push(hades ? `  Hades: FOUND [color=${hades.color}], shared: ${hades.weSharedWith}` : "  Hades: NOT FOUND.");
+    lines.push(hades ? `  Hades: FOUND ${spriteNameFromPaletteColor(hades.color)}, shared: ${hades.weSharedWith}` : "  Hades: NOT FOUND.");
   } else if (role === "PERSEPHONE") {
     lines.push("  Win: I (Persephone) must mutually share cards with Demeter.");
     const dem = findKnownByRole(state, "Demeter");
-    lines.push(dem ? `  Demeter: FOUND [color=${dem.color}], shared: ${dem.weSharedWith}` : "  Demeter: NOT FOUND.");
+    lines.push(dem ? `  Demeter: FOUND ${spriteNameFromPaletteColor(dem.color)}, shared: ${dem.weSharedWith}` : "  Demeter: NOT FOUND.");
   } else if (role === "DEMETER") {
     lines.push("  Win: Persephone must mutually share cards with me (Demeter).");
     const pers = findKnownByRole(state, "Persephone");
-    lines.push(pers ? `  Persephone: FOUND [color=${pers.color}], shared: ${pers.weSharedWith}` : "  Persephone: NOT FOUND.");
+    lines.push(pers ? `  Persephone: FOUND ${spriteNameFromPaletteColor(pers.color)}, shared: ${pers.weSharedWith}` : "  Persephone: NOT FOUND.");
   } else {
     lines.push(`  Win: Help my team (${state.myTeam}) by finding and assisting key roles.`);
   }

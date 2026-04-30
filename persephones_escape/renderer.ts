@@ -1,17 +1,61 @@
 import type { Sim } from "./sim.js";
 import type { uint8 } from "./types.js";
 import { Phase, Team, Role, Room, PlayerShape } from "./types.js";
-import { Framebuffer } from "./framebuffer.js";
+import { Framebuffer, FrameRegion } from "./framebuffer.js";
 import {
-  SCREEN_WIDTH, SCREEN_HEIGHT, ROOM_W, ROOM_H,
+  SCREEN_WIDTH, SCREEN_HEIGHT,
   PLAYER_W, PLAYER_H,
   TARGET_FPS,
   BOTTOM_BAR_H, MINIMAP_SIZE, MINIMAP_X, MINIMAP_Y,
   SHADOW_MAP, PLAYER_SHAPES,
   TEAM_A_NAME, TEAM_B_NAME, TEAM_A_COLOR, TEAM_B_COLOR,
   ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME,
+  playerCountFromConfig,
 } from "./constants.js";
-import { clamp } from "./util.js";
+import { clamp, coalesceChatFragments } from "./util.js";
+import { CHATROOM_MENU, chatMenuAction, chatMenuItemLabel } from "./menu_defs.js";
+
+function drawRichText(sim: Sim, fb: Framebuffer, text: string, x: number, y: number, color: uint8) {
+  let cx = x;
+  let i = 0;
+  while (i < text.length && cx < SCREEN_WIDTH - 2) {
+    if (text.charCodeAt(i) === 1 && i + 1 < text.length) {
+      const pi = text.charCodeAt(i + 1);
+      if (pi >= 0 && pi < sim.players.length) {
+        const p = sim.players[pi];
+        drawPlayerSprite(fb, cx, y, p.shape, sim.playerColor(pi));
+        cx += PLAYER_W + 1;
+      }
+      i += 2;
+    } else if (text[i] === " ") {
+      cx += 4;
+      i++;
+    } else {
+      const glyph = fb.glyphFor(text[i]);
+      if (glyph) {
+        for (let gy = 0; gy < glyph.length; gy++) {
+          for (let gx = 0; gx < glyph[gy].length; gx++) {
+            if (glyph[gy][gx]) fb.putPixel(cx + gx, y + gy, color);
+          }
+        }
+        cx += glyph[0].length + 1;
+      }
+      i++;
+    }
+  }
+}
+
+function drawChatMessage(sim: Sim, fb: Framebuffer, m: { type: string; senderIndex: number; text: string }, x: number, y: number) {
+  if (m.type === 'system') {
+    drawRichText(sim, fb, m.text, x, y, 8);
+  } else if (m.senderIndex >= 0 && m.senderIndex < sim.players.length) {
+    const p = sim.players[m.senderIndex];
+    drawPlayerSprite(fb, x, y, p.shape, sim.playerColor(m.senderIndex));
+    drawRichText(sim, fb, m.text, x + PLAYER_W + 1, y, sim.playerColor(m.senderIndex));
+  } else {
+    drawRichText(sim, fb, m.text, x, y, 2);
+  }
+}
 
 function drawRoleSlot(sim: Sim, fb: Framebuffer, sx: number, slotY: number, role: Role) {
   const ind = sim.roleIndicator(role);
@@ -40,15 +84,15 @@ export function playerView(sim: Sim, pi: number): { cameraX: number; cameraY: nu
   const visH = SCREEN_HEIGHT - topBar - botBar;
   const targetY = cy - topBar - Math.floor(visH / 2);
   return {
-    cameraX: clamp(cx - Math.floor(SCREEN_WIDTH / 2), 0, ROOM_W - SCREEN_WIDTH),
-    cameraY: clamp(targetY, -topBar, ROOM_H - SCREEN_HEIGHT + botBar),
+    cameraX: clamp(cx - Math.floor(SCREEN_WIDTH / 2), 0, Math.max(0, sim.roomW - SCREEN_WIDTH)),
+    cameraY: clamp(targetY, -topBar, Math.max(-topBar, sim.roomH - SCREEN_HEIGHT + botBar)),
     originMx: cx,
     originMy: cy,
   };
 }
 
 export function drawPlayerSprite(fb: Framebuffer, sx: number, sy: number, shape: PlayerShape, color: uint8) {
-  const pat = PLAYER_SHAPES[shape] ?? PLAYER_SHAPES[PlayerShape.Square];
+  const pat = PLAYER_SHAPES[shape];
   for (let dy = 0; dy < 7; dy++) {
     for (let dx = 0; dx < 7; dx++) {
       const v = pat[dy][dx];
@@ -56,48 +100,6 @@ export function drawPlayerSprite(fb: Framebuffer, sx: number, sy: number, shape:
       else if (v === 2) fb.putPixel(sx + dx, sy + dy, color);
     }
   }
-}
-
-export function renderHostageGrid(sim: Sim, fb: Framebuffer, viewerIndex: number) {
-  const viewer = sim.players[viewerIndex];
-  if (!viewer) return;
-  const eligible = sim.eligibleHostages(viewer.room);
-  if (eligible.length === 0) return;
-
-  const cursor = viewer.room === Room.RoomA ? sim.hostageCursorA : sim.hostageCursorB;
-  const selected = viewer.room === Room.RoomA ? sim.hostagesSelectedA : sim.hostagesSelectedB;
-
-  const cellW = 12; const cellH = 14;
-  const cols = Math.min(eligible.length, 4);
-  const rows = Math.ceil(eligible.length / cols);
-  const gridW = cols * cellW;
-  const gridH = rows * cellH;
-  const gridX = Math.floor((SCREEN_WIDTH - gridW) / 2);
-  const gridY = Math.floor((SCREEN_HEIGHT - BOTTOM_BAR_H - gridH) / 2);
-
-  fb.fillRect(gridX - 2, gridY - 2, gridW + 4, gridH + 10, 0);
-
-  for (let k = 0; k < eligible.length; k++) {
-    const pi = eligible[k];
-    const col = k % cols;
-    const row = Math.floor(k / cols);
-    const cx = gridX + col * cellW;
-    const cy = gridY + row * cellH;
-    const color = sim.playerColor(pi);
-    const spriteX = cx + Math.floor((cellW - PLAYER_W) / 2);
-    const spriteY = cy + 1;
-    drawPlayerSprite(fb, spriteX, spriteY, sim.players[pi].shape, color);
-
-    if (selected.includes(pi)) {
-      fb.putPixel(cx + cellW - 3, cy + 1, 11);
-      fb.putPixel(cx + cellW - 2, cy + 2, 11);
-      fb.putPixel(cx + cellW - 3, cy + 3, 11);
-    }
-    if (k === cursor % eligible.length) fb.drawRect(cx, cy, cellW, cellH, 2);
-  }
-
-  const label = `${selected.length}/${sim.hostagesPerRoom} HOSTAGES`;
-  fb.drawText(label, gridX + Math.floor((gridW - fb.measureText(label)) / 2), gridY + gridH + 2, 2);
 }
 
 function renderChatroomView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer {
@@ -120,10 +122,12 @@ function renderChatroomView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buf
   fb.fillRect(0, barY, SCREEN_WIDTH, BOTTOM_BAR_H, 0);
 
   if (viewer.shareSelectOpen) {
-    const offerers = sim.chatroomShareOfferers(viewerIndex);
+    const isColor = viewer.shareSelectMode === "color";
+    const offerers = isColor ? sim.chatroomColorOfferers(viewerIndex) : sim.chatroomShareOfferers(viewerIndex);
     if (offerers.length > 0) {
-      fb.drawText("ACCEPT:", 2, barY + 2, 8);
-      let sx = 2 + fb.measureText("ACCEPT:") + 2;
+      const label = isColor ? "COLOR:" : "ROLE:";
+      fb.drawText(label, 2, barY + 2, 8);
+      let sx = 2 + fb.measureText(label) + 2;
       const row = Math.min(viewer.shareSelectRow, offerers.length - 1);
       for (let t = 0; t < offerers.length; t++) {
         const p = sim.players[offerers[t]];
@@ -135,13 +139,26 @@ function renderChatroomView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buf
       }
     }
   } else if (viewer.chatMenuOpen) {
-    const actions = sim.chatroomActions(viewerIndex);
-    if (actions.length > 0) {
-      const row = Math.min(viewer.chatMenuRow, actions.length - 1);
-      fb.drawText(`< ${actions[row]} >`, 2, barY + 2, 2);
+    const cat = CHATROOM_MENU[viewer.chatMenuCat];
+    if (cat) {
+      const toggled = sim.chatroomToggledActions(viewerIndex);
+      const itemIdx = Math.min(viewer.chatMenuItem, cat.items.length - 1);
+      const action = chatMenuAction(viewer.chatMenuCat, itemIdx, toggled);
+      const label = action ? chatMenuItemLabel(cat, itemIdx, toggled.has(cat.items[itemIdx].action)) : "";
+      const enabled = action ? sim.chatroomActionEnabled(viewerIndex, action) : false;
+      const color: uint8 = enabled ? 2 : 1;
+      fb.drawText(`(${cat.label}) ${label}`, 2, barY + 2, color);
     }
   } else {
-    fb.drawText("J:EXIT  K:ACTIONS  ENTER:MSG", 2, barY + 2, 1);
+    fb.drawText("L:EXIT  K:ACTIONS  ENTER:MSG", 2, barY + 2, 1);
+    // Pending-offer indicators — steady, not blinking — so frame parsers can detect reliably.
+    const roleOfferers = sim.chatroomShareOfferers(viewerIndex);
+    const colorOfferers = sim.chatroomColorOfferers(viewerIndex);
+    if (roleOfferers.length > 0) {
+      fb.drawText("R!", SCREEN_WIDTH - 10, barY + 2, 8);
+    } else if (colorOfferers.length > 0) {
+      fb.drawText("C!", SCREEN_WIDTH - 10, barY + 2, 8);
+    }
   }
 
   const msgAreaTop = 10;
@@ -150,8 +167,19 @@ function renderChatroomView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buf
   const maxLines = Math.floor((msgAreaBot - msgAreaTop) / lineH);
 
   const messages = sim.chatroomMessagesForPlayer(viewerIndex);
+  const hasPending = !!(cr && cr.pendingEntry.length > 0);
 
-  if (cr && cr.pendingEntry.length > 0) {
+  const showCount = Math.min(messages.length, maxLines - (hasPending ? 1 : 0));
+  const startIdx = Math.max(0, messages.length - showCount - viewer.chatScrollOffset);
+  let y = msgAreaBot - showCount * lineH - (hasPending ? lineH : 0);
+  for (let i = startIdx; i < startIdx + showCount && i < messages.length; i++) {
+    const m = messages[i];
+    drawChatMessage(sim, fb, m, 2, y);
+    y += lineH;
+  }
+
+  // Draw pending-entry indicator LAST so it's not overwritten by messages.
+  if (hasPending && cr) {
     const reqPi = cr.pendingEntry[0];
     const reqP = sim.players[reqPi];
     if (reqP) {
@@ -161,18 +189,6 @@ function renderChatroomView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buf
       drawPlayerSprite(fb, 8, reqY, reqP.shape, sim.playerColor(reqPi));
       fb.drawText("WANTS IN", 8 + PLAYER_W + 2, reqY, 8);
     }
-  }
-
-  const showCount = Math.min(messages.length, maxLines - (cr && cr.pendingEntry.length > 0 ? 1 : 0));
-  const startIdx = Math.max(0, messages.length - showCount - viewer.chatScrollOffset);
-  let y = msgAreaBot - showCount * lineH;
-  for (let i = startIdx; i < startIdx + showCount && i < messages.length; i++) {
-    const m = messages[i];
-    const color = m.type === 'system' ? 8 : (m.senderIndex >= 0 ? sim.playerColor(m.senderIndex) : 2);
-    const prefix = m.type === 'system' ? "* " : ". ";
-    const displayText = (prefix + m.text).slice(0, 30);
-    fb.drawText(displayText, 2, y, color);
-    y += lineH;
   }
 
   fb.pack();
@@ -189,40 +205,90 @@ function renderGlobalChatView(sim: Sim, fb: Framebuffer, viewerIndex: number): B
 
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
   fb.fillRect(0, barY, SCREEN_WIDTH, BOTTOM_BAR_H, 0);
-  const candidates = sim.usurpCandidates(viewerIndex);
-  if (candidates.length > 0) {
-    const row = Math.min(viewer.globalChatActionRow, candidates.length - 1);
-    const cand = candidates[row];
-    const label = "USURP: ";
-    fb.drawText(label, 2, barY + 2, 1);
-    const afterLabel = 2 + fb.measureText(label);
-    const pMatch = cand.match(/^P(\d+)$/);
-    if (pMatch) {
-      const pi = parseInt(pMatch[1]);
-      const p = sim.players[pi];
-      if (p) drawPlayerSprite(fb, afterLabel, barY + 1, p.shape, sim.playerColor(pi));
-    } else {
-      fb.drawText(cand, afterLabel, barY + 2, 2);
+
+  const leaderHostage = sim.phase === Phase.HostageSelect && viewer.isLeader;
+
+  let votingBottomY = 10;
+
+  if (leaderHostage) {
+    const eligible = sim.eligibleHostages(viewer.room);
+    const cursor = viewer.room === Room.RoomA ? sim.hostageCursorA : sim.hostageCursorB;
+    const selected = viewer.room === Room.RoomA ? sim.hostagesSelectedA : sim.hostagesSelectedB;
+    const committed = viewer.room === Room.RoomA ? sim.committedA : sim.committedB;
+
+    if (eligible.length > 0 && !committed) {
+      const cellW = 12; const cellH = 14;
+      const cols = Math.min(eligible.length, 4);
+      const rows = Math.ceil(eligible.length / cols);
+      const gridW = cols * cellW;
+      const gridH = rows * cellH;
+      const gridX = Math.floor((SCREEN_WIDTH - gridW) / 2);
+      const gridY = 11;
+
+      for (let k = 0; k < eligible.length; k++) {
+        const pi = eligible[k];
+        const col = k % cols;
+        const row = Math.floor(k / cols);
+        const cx = gridX + col * cellW;
+        const cy = gridY + row * cellH;
+        const color = sim.playerColor(pi);
+        const spriteX = cx + Math.floor((cellW - PLAYER_W) / 2);
+        const spriteY = cy + 1;
+        drawPlayerSprite(fb, spriteX, spriteY, sim.players[pi].shape, color);
+
+        if (selected.includes(pi)) {
+          fb.putPixel(cx + cellW - 3, cy + 1, 11);
+          fb.putPixel(cx + cellW - 2, cy + 2, 11);
+          fb.putPixel(cx + cellW - 3, cy + 3, 11);
+        }
+        if (k === cursor % eligible.length) fb.drawRect(cx, cy, cellW, cellH, 2);
+      }
+
+      const label = `${selected.length}/${sim.hostagesPerRoom} HOSTAGES`;
+      fb.drawText(label, gridX + Math.floor((gridW - fb.measureText(label)) / 2), gridY + gridH + 2, 2);
+      votingBottomY = gridY + gridH + 10;
+    } else if (committed) {
+      fb.drawText("COMMITTED", Math.floor((SCREEN_WIDTH - fb.measureText("COMMITTED")) / 2), 14, 2);
+      votingBottomY = 24;
     }
+    fb.drawText("J:TOG  K:COMMIT  L:CLOSE", 2, barY + 2, 1);
   } else {
-    fb.drawText("J:CLOSE  ENTER:TYPE", 2, barY + 2, 1);
+    const candidates = sim.usurpCandidates(viewerIndex);
+    if (candidates.length > 0) {
+      const row = Math.min(viewer.globalChatActionRow, candidates.length - 1);
+      const cand = candidates[row];
+      const label = "USURP: ";
+      fb.drawText(label, 2, 11, 1);
+      const afterLabel = 2 + fb.measureText(label);
+      const pMatch = cand.match(/^P(\d+)$/);
+      if (pMatch) {
+        const pi = parseInt(pMatch[1]);
+        const p = sim.players[pi];
+        if (p) drawPlayerSprite(fb, afterLabel, 11, p.shape, sim.playerColor(pi));
+      } else {
+        fb.drawText(cand, afterLabel, 11, 2);
+      }
+      votingBottomY = 20;
+    }
+    fb.drawText("L:CLOSE  ENTER:TYPE", 2, barY + 2, 1);
   }
 
-  const msgAreaTop = 10;
+  fb.fillRect(0, votingBottomY, SCREEN_WIDTH, 1, 1);
+
+  const msgAreaTop = votingBottomY + 2;
   const msgAreaBot = barY - 1;
   const lineH = 7;
   const maxLines = Math.floor((msgAreaBot - msgAreaTop) / lineH);
 
-  const messages = sim.globalMessagesForPlayer(viewerIndex);
-  const showCount = Math.min(messages.length, maxLines);
-  const startIdx = Math.max(0, messages.length - showCount - viewer.globalChatScroll);
-  let y = msgAreaBot - showCount * lineH;
-  for (let i = startIdx; i < startIdx + showCount && i < messages.length; i++) {
-    const m = messages[i];
-    const color = m.type === 'system' ? 8 : (m.senderIndex >= 0 ? sim.playerColor(m.senderIndex) : 2);
-    const displayText = m.text.slice(0, 30);
-    fb.drawText(displayText, 2, y, color);
-    y += lineH;
+  if (maxLines > 0) {
+    const messages = sim.globalMessagesForPlayer(viewerIndex);
+    const showCount = Math.min(messages.length, maxLines);
+    const startIdx = Math.max(0, messages.length - showCount - viewer.globalChatScroll);
+    let y = msgAreaBot - showCount * lineH;
+    for (let i = startIdx; i < startIdx + showCount && i < messages.length; i++) {
+      drawChatMessage(sim, fb, messages[i], 2, y);
+      y += lineH;
+    }
   }
 
   fb.pack();
@@ -231,84 +297,112 @@ function renderGlobalChatView(sim: Sim, fb: Framebuffer, viewerIndex: number): B
 
 function renderMinimap(sim: Sim, fb: Framebuffer, viewerIndex: number) {
   const viewer = sim.players[viewerIndex];
-  const scaleX = MINIMAP_SIZE / ROOM_W;
-  const scaleY = MINIMAP_SIZE / ROOM_H;
+  const scaleX = MINIMAP_SIZE / sim.roomW;
+  const scaleY = MINIMAP_SIZE / sim.roomH;
   const base = sim.floorColor(viewer.room);
 
-  fb.fillRect(MINIMAP_X - 1, MINIMAP_Y - 1, MINIMAP_SIZE + 2, MINIMAP_SIZE + 2, 0);
-  fb.drawRect(MINIMAP_X - 1, MINIMAP_Y - 1, MINIMAP_SIZE + 2, MINIMAP_SIZE + 2, 1);
-  fb.fillRect(MINIMAP_X, MINIMAP_Y, MINIMAP_SIZE, MINIMAP_SIZE, base);
+  // Minimap overlays everything — write directly to indices
+  const put = (x: number, y: number, c: uint8) => {
+    if (x >= 0 && y >= 0 && x < SCREEN_WIDTH && y < SCREEN_HEIGHT)
+      fb.indices[y * SCREEN_WIDTH + x] = c & 0x0f;
+  };
+  const fill = (rx: number, ry: number, rw: number, rh: number, c: uint8) => {
+    for (let py = Math.max(0, ry); py < Math.min(SCREEN_HEIGHT, ry + rh); py++)
+      for (let px = Math.max(0, rx); px < Math.min(SCREEN_WIDTH, rx + rw); px++)
+        fb.indices[py * SCREEN_WIDTH + px] = c & 0x0f;
+  };
+
+  fill(MINIMAP_X - 1, MINIMAP_Y - 1, MINIMAP_SIZE + 2, MINIMAP_SIZE + 2, 0);
+  for (let dx = 0; dx < MINIMAP_SIZE + 2; dx++) {
+    put(MINIMAP_X - 1 + dx, MINIMAP_Y - 1, 1);
+    put(MINIMAP_X - 1 + dx, MINIMAP_Y + MINIMAP_SIZE, 1);
+  }
+  for (let dy = 0; dy < MINIMAP_SIZE + 2; dy++) {
+    put(MINIMAP_X - 1, MINIMAP_Y - 1 + dy, 1);
+    put(MINIMAP_X + MINIMAP_SIZE, MINIMAP_Y - 1 + dy, 1);
+  }
+  fill(MINIMAP_X, MINIMAP_Y, MINIMAP_SIZE, MINIMAP_SIZE, base);
 
   for (const ob of sim.obstacles) {
     if (ob.room !== viewer.room) continue;
-    const ox = MINIMAP_X + Math.floor(ob.x * scaleX);
-    const oy = MINIMAP_Y + Math.floor(ob.y * scaleY);
-    fb.putPixel(ox, oy, 5);
+    put(MINIMAP_X + Math.floor(ob.x * scaleX), MINIMAP_Y + Math.floor(ob.y * scaleY), 5);
   }
 
   const showAll = sim.phase === Phase.Lobby || sim.phase === Phase.Reveal || sim.phase === Phase.GameOver;
   const useFog = sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect;
   const camView = playerView(sim, viewerIndex);
-  for (let i = 0; i < sim.players.length; i++) {
-    if (i === viewerIndex) {
-      const px = MINIMAP_X + Math.floor((sim.players[i].x + PLAYER_W / 2) * scaleX);
-      const py = MINIMAP_Y + Math.floor((sim.players[i].y + PLAYER_H / 2) * scaleY);
-      fb.putPixel(px, py, 2);
-      continue;
-    }
+  const n = sim.players.length;
+  const mmOrder: number[] = [];
+  for (let k = 1; k < n; k++) mmOrder.push((viewerIndex + k) % n);
+  mmOrder.push(viewerIndex);
+  for (const i of mmOrder) {
     const p = sim.players[i];
     if (!showAll && p.room !== viewer.room) continue;
-    if (useFog) {
+    if (i !== viewerIndex && useFog) {
       const sx = p.x + Math.floor(PLAYER_W / 2) - camView.cameraX;
       const sy = p.y + Math.floor(PLAYER_H / 2) - camView.cameraY;
       if (sx >= 0 && sx < SCREEN_WIDTH && sy >= 0 && sy < SCREEN_HEIGHT && sim.shadowBuf[sy * SCREEN_WIDTH + sx]) continue;
     }
-    const px = MINIMAP_X + Math.floor((p.x + PLAYER_W / 2) * scaleX);
-    const py = MINIMAP_Y + Math.floor((p.y + PLAYER_H / 2) * scaleY);
-    fb.putPixel(px, py, sim.playerColor(i));
+    put(MINIMAP_X + Math.floor((p.x + PLAYER_W / 2) * scaleX), MINIMAP_Y + Math.floor((p.y + PLAYER_H / 2) * scaleY), i === viewerIndex ? 2 : sim.playerColor(i));
   }
 }
 
-function renderHud(sim: Sim, fb: Framebuffer, viewerIndex: number) {
+function renderHud(
+  sim: Sim, fb: Framebuffer, viewerIndex: number,
+  topBar: FrameRegion, bottomBar: FrameRegion, chatStrip: FrameRegion | null,
+) {
   const viewer = sim.players[viewerIndex];
   if (!viewer) return;
 
-  fb.fillRect(0, 0, SCREEN_WIDTH, 9, 0);
+  topBar.fillRect(topBar.x0, topBar.y0, topBar.w, topBar.h, 0);
   switch (sim.phase) {
     case Phase.Lobby: {
-      fb.drawText(`${sim.players.length}/${sim.config.minPlayers} PLAYERS`, 2, 2, 2);
+      topBar.drawText(`${sim.players.length}/${playerCountFromConfig(sim.config)} PLAYERS`, 2, 2, 2);
       if (sim.lobbyCountdown > 0) {
-        fb.drawText(`START ${Math.ceil(sim.lobbyCountdown / TARGET_FPS)}`, 80, 2, 8);
+        topBar.drawText(`START ${Math.ceil(sim.lobbyCountdown / TARGET_FPS)}`, 80, 2, 8);
       }
       break;
     }
     case Phase.Playing: {
       const secs = Math.max(0, Math.ceil(sim.roundTimer / TARGET_FPS));
-      fb.drawText(`R${sim.currentRound + 1} ${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`, 2, 2, 2);
+      topBar.drawText(`R${sim.currentRound + 1} ${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`, 2, 2, 2);
       const rn = sim.roleName(viewer.role);
-      fb.drawText(rn, SCREEN_WIDTH - MINIMAP_SIZE - 4 - fb.measureText(rn), 2, sim.teamColor(viewer.team));
+      topBar.drawText(rn, SCREEN_WIDTH - MINIMAP_SIZE - 4 - topBar.measureText(rn), 2, sim.teamColor(viewer.team));
+      if (chatStrip) {
+        const globalMsgs = coalesceChatFragments(sim.globalMessagesForPlayer(viewerIndex));
+        const last = globalMsgs[globalMsgs.length - 1];
+        if (last && last.type === 'text') {
+          const stripY = chatStrip.y0;
+          chatStrip.fillRect(chatStrip.x0, stripY, chatStrip.w, chatStrip.h, 0);
+          const senderColor = last.senderIndex >= 0 ? sim.playerColor(last.senderIndex) : 2;
+          chatStrip.putPixel(0, stripY, 8);
+          chatStrip.putPixel(0, stripY + 1, 8);
+          chatStrip.putPixel(0, stripY + 2, 8);
+          chatStrip.drawText(last.text.slice(0, 29), 2, stripY, senderColor);
+        }
+      }
       break;
     }
     case Phase.HostageSelect: {
       const committed = viewer.room === Room.RoomA ? sim.committedA : sim.committedB;
       const secs = Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS));
       if (viewer.isLeader && !committed) {
-        fb.drawText(`SELECT ${secs}S`, 2, 2, 8);
+        topBar.drawText(`SELECT ${secs}S`, 2, 2, 8);
       } else if (committed) {
-        fb.drawText("WAITING...", 2, 2, 2);
+        topBar.drawText("WAITING...", 2, 2, 2);
       } else {
         const ln = viewer.room === Room.RoomA ? LEADER_A_NAME : LEADER_B_NAME;
-        fb.drawText(`${ln.toUpperCase()} PICKS ${secs}S`, 2, 2, 1);
+        topBar.drawText(`${ln.toUpperCase()} PICKS ${secs}S`, 2, 2, 1);
       }
       break;
     }
     case Phase.HostageExchange:
-      fb.drawText("EXCHANGING", 2, 2, 8);
+      topBar.drawText("EXCHANGING", 2, 2, 8);
       break;
     case Phase.Reveal: {
       const winText = sim.winner === Team.TeamA ? `${TEAM_A_NAME} WIN!` : sim.winner === Team.TeamB ? `${TEAM_B_NAME} WIN!` : "NO ONE WINS!";
       const wc = sim.winner === Team.TeamA ? TEAM_A_COLOR : sim.winner === Team.TeamB ? TEAM_B_COLOR : 1;
-      fb.drawText("REVEAL!", 2, 2, 2);
+      topBar.drawText("REVEAL!", 2, 2, 2);
       fb.drawText(winText, Math.floor((SCREEN_WIDTH - fb.measureText(winText)) / 2), 60, wc);
       break;
     }
@@ -320,28 +414,26 @@ function renderHud(sim: Sim, fb: Framebuffer, viewerIndex: number) {
     }
   }
 
-  const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
-  fb.fillRect(0, barY, SCREEN_WIDTH, BOTTOM_BAR_H, 0);
+  const barY = bottomBar.y0;
+  bottomBar.fillRect(bottomBar.x0, barY, bottomBar.w, bottomBar.h, 0);
 
   if (viewer.commMenuOpen) {
     const items = sim.commMenuItems(viewerIndex);
     const row = Math.min(viewer.commMenuRow, items.length - 1);
     const item = items[row] ?? "";
-    fb.drawText(`< ${item} >`, 2, barY + 2, 2);
+    bottomBar.drawText(`< ${item} >`, 2, barY + 2, 2);
   } else if (sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect) {
-    if (sim.phase === Phase.HostageSelect && viewer.isLeader) {
-      fb.drawText("L:COMMIT  </>:PICK  J:TOG", 2, barY + 2, 1);
-    } else if (viewer.pendingChatroomEntry >= 0) {
-      fb.drawText("WAITING...", 2, barY + 2, 8);
+    if (viewer.pendingChatroomEntry >= 0) {
+      bottomBar.drawText("WAITING...", 2, barY + 2, 8);
       const unread = sim.globalUnreadCount(viewerIndex);
       if (unread > 0 && (sim.tickCount & 16)) {
-        fb.putPixel(SCREEN_WIDTH - 4, barY + 4, 11);
+        bottomBar.putPixel(SCREEN_WIDTH - 4, barY + 4, 11);
       }
     } else {
-      fb.drawText("J:COMM  K:INFO  L:GLOBAL", 2, barY + 2, 1);
+      bottomBar.drawText("J:CHAT  K:INFO  L:MENU", 2, barY + 2, 1);
       const unread = sim.globalUnreadCount(viewerIndex);
       if (unread > 0 && (sim.tickCount & 16)) {
-        fb.putPixel(SCREEN_WIDTH - 4, barY + 4, 11);
+        bottomBar.putPixel(SCREEN_WIDTH - 4, barY + 4, 11);
       }
     }
   }
@@ -359,20 +451,30 @@ function renderIntro(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer {
   const teamName = viewer.team === Team.TeamA ? TEAM_A_NAME : viewer.team === Team.TeamB ? TEAM_B_NAME : "NEUTRAL";
   const roomName = viewer.room === Room.RoomA ? ROOM_A_NAME : ROOM_B_NAME;
 
-  let y = 12;
+  const rolesInPlay: string[] = [];
+  const seen = new Set<string>();
+  for (const p of sim.players) {
+    const rn = sim.roleName(p.role);
+    if (!seen.has(rn)) { seen.add(rn); rolesInPlay.push(rn); }
+  }
+
+  let y = 8;
   const cx = (text: string) => Math.floor((SCREEN_WIDTH - fb.measureText(text)) / 2);
 
   fb.drawText("YOU ARE", cx("YOU ARE"), y, 2); y += 10;
   fb.drawText(roleName, cx(roleName), y, tc); y += 10;
-  fb.drawText(teamName + " TEAM", cx(teamName + " TEAM"), y, tc); y += 14;
+  fb.drawText(teamName + " TEAM", cx(teamName + " TEAM"), y, tc); y += 10;
   fb.drawText("ASSIGNED TO", cx("ASSIGNED TO"), y, 1); y += 8;
-  fb.drawText(roomName, cx(roomName), y, 2); y += 16;
+  fb.drawText(roomName, cx(roomName), y, 2); y += 10;
+
+  const infoLine = `${sim.players.length}P  ${sim.roomW}x${sim.roomH}`;
+  fb.drawText(infoLine, cx(infoLine), y, 1); y += 8;
+  const rolesLine = rolesInPlay.join(" ");
+  fb.drawText(rolesLine, cx(rolesLine), y, 1); y += 10;
 
   fb.drawText("WASD  MOVE", 14, y, 1); y += 8;
-  fb.drawText("J     COMM", 14, y, 1); y += 8;
-  fb.drawText("K     INFO", 14, y, 1); y += 8;
-  fb.drawText("L     GLOBAL/COMMIT", 14, y, 1); y += 8;
-  fb.drawText("ENTER TYPE", 14, y, 1); y += 12;
+  fb.drawText("J     COMM  K  INFO", 14, y, 1); y += 8;
+  fb.drawText("L     GLOBAL/COMMIT", 14, y, 1); y += 10;
 
   const secs = Math.ceil(sim.revealTimer / TARGET_FPS);
   const startText = `STARTING IN ${secs}`;
@@ -493,8 +595,11 @@ function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer 
     }
   }
 
-  const exchText = "HOSTAGE EXCHANGE";
-  fb.drawText(exchText, Math.floor((SCREEN_WIDTH - fb.measureText(exchText)) / 2), 14, 8);
+  const cx = (text: string) => Math.floor((SCREEN_WIDTH - fb.measureText(text)) / 2);
+
+  // Title
+  const title = "HOSTAGE EXCHANGE";
+  fb.drawText(title, cx(title), 14, 8);
 
   const departing = inRoomA ? sim.exchangeFromA : sim.exchangeFromB;
   const arriving = inRoomA ? sim.exchangeFromB : sim.exchangeFromA;
@@ -503,21 +608,17 @@ function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer 
 
   let y = 26;
 
-  // Leader(s)
+  // Your room's leader
+  const leaderLabel = isLeader ? "LEADERS" : "LEADER";
+  fb.drawText(leaderLabel, 8, y, 2);
+  y += 7;
+  renderExchangeRow(sim, fb, myLeader, 10, y);
   if (isLeader) {
-    fb.drawText("LEADERS", 8, y, 2);
-    y += 7;
-    renderExchangeRow(sim, fb, myLeader, 10, y);
     renderExchangeRow(sim, fb, otherLeader, 30, y);
-    y += 14;
-  } else {
-    fb.drawText("LEADER", 8, y, 2);
-    y += 7;
-    renderExchangeRow(sim, fb, myLeader, 10, y);
-    y += 14;
   }
+  y += 14;
 
-  // Departing hostages
+  // Both hostage groups
   fb.drawText("DEPARTING", 8, y, 8);
   y += 7;
   for (const h of departing) {
@@ -525,7 +626,6 @@ function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer 
     y += 14;
   }
 
-  // Arriving hostages
   fb.drawText("ARRIVING", 8, y, 11);
   y += 7;
   for (const h of arriving) {
@@ -580,6 +680,15 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     return renderGlobalChatView(sim, fb, viewerIndex);
   }
 
+  // Claim HUD regions before drawing world — world pixels can't bleed in
+  const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
+  const topBar = fb.region("hud-top", 0, 0, SCREEN_WIDTH, 9);
+  const bottomBar = fb.region("hud-bottom", 0, barY, SCREEN_WIDTH, BOTTOM_BAR_H);
+  const chatStrip = (sim.phase === Phase.Playing)
+    ? fb.region("hud-chat-strip", 0, barY - 7, SCREEN_WIDTH, 7)
+    : null;
+  const drawMinimap = sim.phase !== Phase.Lobby;
+
   const view = playerView(sim, viewerIndex);
   const { cameraX, cameraY } = view;
 
@@ -588,7 +697,7 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     for (let sx = 0; sx < SCREEN_WIDTH; sx++) {
       const mx = cameraX + sx;
       const my = cameraY + sy;
-      if (mx < 0 || my < 0 || mx >= ROOM_W || my >= ROOM_H) {
+      if (mx < 0 || my < 0 || mx >= sim.roomW || my >= sim.roomH) {
         fb.putPixel(sx, sy, 0);
       } else if (sim.isWallInRoom(room, mx, my)) {
         fb.putPixel(sx, sy, 5);
@@ -605,9 +714,9 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     const base = sim.floorColor(room);
     const alt = room === Room.RoomA ? 6 : 10;
     for (let idx = 0; idx < SCREEN_WIDTH * SCREEN_HEIGHT; idx++) {
-      if (sim.shadowBuf[idx]) {
+      if (sim.shadowBuf[idx] && fb.owners[idx] === 0) {
         const c = fb.indices[idx] & 0x0f;
-        if (c !== base && c !== alt) {
+        if (c !== 5) {
           fb.indices[idx] = SHADOW_MAP[c];
         }
       }
@@ -615,7 +724,13 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
   }
 
   const showAll = sim.phase === Phase.Reveal || sim.phase === Phase.GameOver || sim.phase === Phase.Lobby;
-  for (let i = 0; i < sim.players.length; i++) {
+  const n = sim.players.length;
+  const drawOrder: number[] = [];
+  for (let k = 1; k < n; k++) {
+    drawOrder.push((viewerIndex + k) % n);
+  }
+  drawOrder.push(viewerIndex);
+  for (const i of drawOrder) {
     const p = sim.players[i];
     if (!showAll && p.room !== viewer.room) continue;
 
@@ -645,10 +760,13 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     if (p.selectedAsHostage) fb.putPixel(sx + 3, sy - 1, 3);
 
     if (p.inChatroom >= 0) {
-      fb.putPixel(sx + 2, sy - 3, 2);
-      fb.putPixel(sx + 3, sy - 3, 2);
-      fb.putPixel(sx + 4, sy - 3, 2);
-      fb.putPixel(sx + 3, sy - 2, 2);
+      fb.putPixel(sx - 3, sy - 3, 2);
+      fb.putPixel(sx - 2, sy - 3, 2);
+      fb.putPixel(sx - 1, sy - 3, 2);
+      fb.putPixel(sx - 3, sy - 2, 2);
+      fb.putPixel(sx - 2, sy - 2, 2);
+      fb.putPixel(sx - 1, sy - 2, 2);
+      fb.putPixel(sx,     sy - 1, 2);
     }
 
     if (p.pendingChatroomEntry >= 0 && (sim.tickCount & 8)) {
@@ -665,13 +783,9 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     }
   }
 
-  if (sim.phase === Phase.HostageSelect && viewer.isLeader) {
-    renderHostageGrid(sim, fb, viewerIndex);
-  }
+  renderHud(sim, fb, viewerIndex, topBar, bottomBar, chatStrip);
 
-  renderHud(sim, fb, viewerIndex);
-
-  if (sim.phase !== Phase.Lobby) {
+  if (drawMinimap) {
     renderMinimap(sim, fb, viewerIndex);
   }
 

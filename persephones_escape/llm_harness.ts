@@ -1,21 +1,24 @@
 import WebSocket from "ws";
 import { argv } from "process";
 import {
-  ROOM_W, ROOM_H, TARGET_FPS,
-  BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT,
+  BUTTON_B,
 } from "./constants.js";
-import { Room } from "./types.js";
 import {
-  sendInput, sendChat, PACKED_FRAME_BYTES, unpackFrame,
-  ActionQueue, menuActionSequence, hostageSelectSequence,
-  moveToward, randomDir, randomPoint, readPosition,
-  type Point, type MenuAction,
+  sendInput, PACKED_FRAME_BYTES, unpackFrame,
+  ActionQueue,
 } from "./bot_utils.js";
 import {
-  createBeliefState, updateFromFrame, updateFromCommand,
+  createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
+  updateFromInfoScreen,
   checkTriggers, formatContextDump,
-  type BeliefState, type TriggerEvent,
+  type TriggerEvent,
 } from "./belief_state.js";
+import { parseInfoScreen } from "./frame_parser.js";
+import {
+  parseArgs, parseCommand, executeBaseCommand,
+  tickMovement, tickWander,
+  type BotController,
+} from "./bot_common.js";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -27,74 +30,19 @@ const name = args["name"] ?? "llm_bot";
 const llmUrl = args["llm-url"] ?? "http://localhost:5000/decide";
 const llmTimeout = parseInt(args["llm-timeout"] ?? "3000");
 
-function parseArgs(raw: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < raw.length; i++) {
-    if (raw[i].startsWith("--") && i + 1 < raw.length) {
-      out[raw[i].slice(2)] = raw[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Command definitions
-// ---------------------------------------------------------------------------
-
-interface ParsedCommand {
-  type: string;
-  args: string[];
-}
-
-function parseCommand(line: string): ParsedCommand | null {
-  const trimmed = line.trim().split("\n")[0].trim();
-  if (!trimmed) return null;
-  if (trimmed.toLowerCase().startsWith("chat ")) {
-    return { type: "chat", args: [trimmed.slice(5)] };
-  }
-  const parts = trimmed.split(/\s+/);
-  return { type: parts[0].toLowerCase(), args: parts.slice(1) };
-}
-
-const CHATROOM_ACTIONS = ["COLOR", "ROLE", "OFFER", "UNOFFER", "ACCEPT", "PASS", "TAKE", "GRANT", "EXIT"];
-
-function chatroomActionSequence(action: string): number[] {
-  const idx = CHATROOM_ACTIONS.indexOf(action.toUpperCase());
-  if (idx < 0) return [];
-  const seq: number[] = [];
-  // Navigate: press right from position 0 to reach the action.
-  // Since we don't know current position, press left many times to reset to 0.
-  for (let i = 0; i < CHATROOM_ACTIONS.length; i++) {
-    seq.push(BUTTON_LEFT, 0);
-  }
-  for (let i = 0; i < idx; i++) {
-    seq.push(BUTTON_RIGHT, 0);
-  }
-  seq.push(BUTTON_A, 0);
-  return seq;
-}
-
-// Menu commands (only INFO and USURP remain in the menu system)
-const MENU_COMMANDS: Record<string, MenuAction> = {
-  info_shared: "INFO:SHARED",
-  usurp: "USURP:SELECT",
-  start_chat: "COMM:START",
-  shout: "COMM:SHOUT",
-};
-
 // ---------------------------------------------------------------------------
 // Bot state
 // ---------------------------------------------------------------------------
 
 const ws = new WebSocket(`${botUrl}?name=${name}`, { perMessageDeflate: false });
-const actions = new ActionQueue();
 const belief = createBeliefState(name);
 
-let movementTarget: Point | null = null;
-let wandering = false;
-let wanderTarget: Point | null = null;
-let wanderTicks = 0;
+const bot: BotController = {
+  ws, actions: new ActionQueue(), belief, name,
+  movementTarget: null, wandering: false,
+  wanderTarget: null, wanderTicks: 0,
+};
+
 let llmBusy = false;
 let lastPromptTick = -999;
 
@@ -132,7 +80,7 @@ async function promptLLM(event: TriggerEvent): Promise<void> {
     const raw = body.command ?? "";
     console.log(`[${name}] LLM response: ${raw}`);
 
-    const cmd = parseCommand(raw);
+    const cmd = parseCommand(raw, name);
     if (cmd) executeCommand(cmd);
   } catch (e: any) {
     if (e.name === "AbortError") {
@@ -140,7 +88,7 @@ async function promptLLM(event: TriggerEvent): Promise<void> {
     } else {
       console.error(`[${name}] LLM error:`, e.message);
     }
-    wandering = true;
+    bot.wandering = true;
   } finally {
     llmBusy = false;
   }
@@ -150,117 +98,45 @@ async function promptLLM(event: TriggerEvent): Promise<void> {
 // Command execution
 // ---------------------------------------------------------------------------
 
-function executeCommand(cmd: ParsedCommand): void {
-  updateFromCommand(belief, cmd.type + (cmd.args.length ? " " + cmd.args.join(" ") : ""));
-
-  // Menu actions (INFO, USURP)
-  const menuAction = MENU_COMMANDS[cmd.type];
-  if (menuAction) {
-    const nearbyCount = belief.minimapDots.filter(d => !d.isSelf).length;
-    const seq = menuActionSequence(menuAction, {
-      usurpListLength: Math.max(3, nearbyCount + 2),
-    });
-    actions.push(...seq);
-    movementTarget = null;
-    wandering = false;
-    return;
-  }
-
-  // Chatroom actions (require being in a chatroom)
-  const chatroomCmds: Record<string, string> = {
-    reveal: "REVEAL",
-    show_color: "COLOR",
-    accept_reveal: "ACCEPT",
-    leader_pass: "PASS",
-    leader_take: "TAKE",
-    grant_entry: "GRANT",
-    exit_chatroom: "EXIT",
-  };
-  const crAction = chatroomCmds[cmd.type];
-  if (crAction) {
-    const seq = chatroomActionSequence(crAction);
-    actions.push(...seq);
-    movementTarget = null;
-    wandering = false;
-    return;
-  }
+function executeCommand(cmd: ReturnType<typeof parseCommand>): void {
+  if (!cmd) return;
+  if (executeBaseCommand(cmd, bot)) return;
 
   switch (cmd.type) {
-    case "move_to": {
-      const x = parseInt(cmd.args[0]);
-      const y = parseInt(cmd.args[1]);
-      if (!isNaN(x) && !isNaN(y)) {
-        movementTarget = { x: clamp(x, 0, ROOM_W - 1), y: clamp(y, 0, ROOM_H - 1) };
-        wandering = false;
-      }
-      break;
-    }
-
     case "approach_nearest": {
-      const others = belief.minimapDots.filter(d => !d.isSelf);
-      if (others.length > 0 && belief.myPos) {
-        let best = others[0];
+      const withPos = [...belief.players.values()].filter(b => b.lastPos !== null);
+      if (withPos.length > 0 && belief.myPos) {
+        let best = withPos[0];
         let bestDist = Infinity;
-        for (const d of others) {
-          const dx = d.worldX - belief.myPos.x;
-          const dy = d.worldY - belief.myPos.y;
+        for (const b of withPos) {
+          const dx = b.lastPos!.x - belief.myPos.x;
+          const dy = b.lastPos!.y - belief.myPos.y;
           const dist = dx * dx + dy * dy;
-          if (dist < bestDist) { bestDist = dist; best = d; }
+          if (dist < bestDist) { bestDist = dist; best = b; }
         }
-        movementTarget = { x: best.worldX, y: best.worldY };
-        wandering = false;
+        bot.movementTarget = { x: best.lastPos!.x, y: best.lastPos!.y };
+        bot.wandering = false;
       } else {
-        wandering = true;
+        bot.wandering = true;
       }
       break;
     }
-
-    case "open_chatroom": {
-      // Press A to create/join chatroom
-      actions.push(BUTTON_A, 0);
-      break;
-    }
-
-    case "chat": {
-      const text = cmd.args.join(" ").slice(0, 48);
-      if (text) sendChat(ws, text);
-      break;
-    }
-
-    case "select_hostages": {
-      const indices = cmd.args.map(s => parseInt(s)).filter(n => !isNaN(n));
-      if (indices.length > 0) {
-        const eligible = Array.from({ length: 16 }, (_, i) => i);
-        const seq = hostageSelectSequence(indices, eligible);
-        actions.push(...seq);
-      }
-      break;
-    }
-
-    case "commit_hostages": {
-      actions.push(BUTTON_SELECT, 0);
-      break;
-    }
-
-    case "wait":
-      movementTarget = null;
-      wandering = false;
-      break;
-
-    case "wander":
-      wandering = true;
-      movementTarget = null;
-      break;
-
     default:
       console.log(`[${name}] Unknown command: ${cmd.type}`);
       break;
   }
 }
 
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
-}
+// ---------------------------------------------------------------------------
+// Info screen polling
+// ---------------------------------------------------------------------------
+
+let inChatroom = false;
+let infoPollState: "closed" | "opening" | "reading" | "closing" = "closed";
+let infoPollWaitFrames = 0;
+let infoPollCooldown = 0;
+const INFO_POLL_INTERVAL = 72;
+const INFO_SETTLE_FRAMES = 3;
 
 // ---------------------------------------------------------------------------
 // Frame loop
@@ -270,47 +146,74 @@ function onFrame(data: Buffer): void {
   if (data.length !== PACKED_FRAME_BYTES) return;
   const frame = unpackFrame(data);
 
-  updateFromFrame(belief, frame);
+  updatePhase(belief, frame);
 
-  // 1. Drain action queue
-  if (!actions.empty) {
-    sendInput(ws, actions.shift()!);
+  if (!bot.actions.empty) {
+    sendInput(ws, bot.actions.shift()!);
+    if (infoPollState === "opening" || infoPollState === "closing") {
+      infoPollWaitFrames--;
+      if (infoPollWaitFrames <= 0) {
+        infoPollState = infoPollState === "opening" ? "reading" : "closed";
+        if (infoPollState === "closed") infoPollCooldown = INFO_POLL_INTERVAL;
+      }
+    }
     return;
   }
 
-  // 2. Active movement toward a target
-  if (movementTarget && belief.myPos) {
-    const dx = movementTarget.x - belief.myPos.x;
-    const dy = movementTarget.y - belief.myPos.y;
-    if (dx * dx + dy * dy > 9) {
-      const mask = moveToward(belief.myPos.x, belief.myPos.y, movementTarget.x, movementTarget.y);
-      if (mask) {
-        sendInput(ws, mask);
-        return;
-      }
-    }
-    movementTarget = null;
+  if (infoPollState === "opening") {
+    infoPollWaitFrames--;
+    if (infoPollWaitFrames <= 0) infoPollState = "reading";
   }
 
-  // 3. Check for LLM trigger events
-  const event = checkTriggers(belief, lastPromptTick, wandering || movementTarget !== null);
-  if (event && !llmBusy) {
-    promptLLM(event);
+  if (infoPollState === "reading") {
+    const entries = parseInfoScreen(frame);
+    if (entries) {
+      const newInfo = updateFromInfoScreen(belief, entries);
+      if (newInfo && !llmBusy) promptLLM("info_updated");
+    }
+    bot.actions.push(BUTTON_B, 0);
+    infoPollState = "closing";
+    infoPollWaitFrames = 2;
+    return;
   }
 
-  // 4. Default behavior: wander
-  if (wandering || (!movementTarget && actions.empty)) {
-    if (!wanderTarget || wanderTicks <= 0) {
-      wanderTarget = randomPoint(belief.myRoom ?? Room.RoomA);
-      wanderTicks = 15 + Math.floor(Math.random() * 40);
+  if (infoPollState === "closing") {
+    infoPollWaitFrames--;
+    if (infoPollWaitFrames <= 0) {
+      infoPollState = "closed";
+      infoPollCooldown = INFO_POLL_INTERVAL;
     }
-    wanderTicks--;
-    if (belief.myPos) {
-      const mask = moveToward(belief.myPos.x, belief.myPos.y, wanderTarget.x, wanderTarget.y);
-      sendInput(ws, mask || randomDir());
-    } else {
-      sendInput(ws, randomDir());
+  }
+
+  const canPoll = infoPollState === "closed"
+    && !inChatroom && bot.actions.empty
+    && (belief.phase === "playing" || belief.phase === "hostage_select");
+  if (canPoll) {
+    infoPollCooldown--;
+    if (infoPollCooldown <= 0) {
+      bot.actions.push(BUTTON_B, 0);
+      infoPollState = "opening";
+      infoPollWaitFrames = INFO_SETTLE_FRAMES;
+      return;
     }
+  }
+
+  updateMinimap(belief, frame);
+
+  if (bot.movementTarget || bot.wandering) {
+    updatePosition(belief, frame);
+  }
+
+  if (tickMovement(bot)) return;
+
+  const event = checkTriggers(belief, lastPromptTick, bot.movementTarget !== null);
+  if (event) {
+    updateHud(belief, frame);
+    if (!llmBusy) promptLLM(event);
+  }
+
+  if (bot.wandering || (!bot.movementTarget && bot.actions.empty)) {
+    tickWander(bot);
   }
 }
 
