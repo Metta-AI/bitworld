@@ -57,13 +57,13 @@ const
   TasksPerPlayer* = 8
   ShowTaskArrows* = true
   ButtonCalls* = 1
-  VoteChatVisibleMessages* = 4
+  VoteChatVisibleMessages* = 6
   VoteChatIconX* = 1
   VoteChatTextX* = VoteChatIconX + SpriteSize + 1
   VoteChatRightPad* = 1
   VoteChatTextPixels* = ScreenWidth - VoteChatTextX - VoteChatRightPad
   VoteChatCharsPerLine* = 32
-  VoteChatLineCount* = 5
+  VoteChatLineCount* = 10
   VoteChatMaxChars* = VoteChatCharsPerLine * VoteChatLineCount
   TextColor* = 2'u8
   TextLineHeight* = 7

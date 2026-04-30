@@ -138,8 +138,16 @@ proc testVotingChatTextRoundTrip() =
   var sim = initAmongThemForTest(config)
   sim.addPlayers(8)
   sim.startVote()
-  sim.addVotingChat(3, "red sus")
-  sim.addVotingChat(4, "body in nav")
+  let messages = [
+    "red sus",
+    "body in nav",
+    "blue covered red",
+    "green did tasks",
+    "yellow saw lime",
+    "skip maybe"
+  ]
+  for i, message in messages:
+    sim.addVotingChat(i, message)
   discard sim.buildVoteFrame(0)
 
   let
@@ -160,8 +168,8 @@ proc testVotingChatTextRoundTrip() =
 
   doAssert first == "red sus", "first chat line should survive voting UI"
   doAssert second == "body in nav", "second chat line should survive voting UI"
-  doAssert scanned == @["red sus", "body in nav"],
-    "voting chat scan should ignore UI noise"
+  doAssert scanned == @messages,
+    "voting chat scan should preserve six visible messages"
 
 proc testChatWrapDropsLeadingSpace() =
   ## Tests that wrapped chat lines do not start with split spaces.
