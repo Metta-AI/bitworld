@@ -5,11 +5,13 @@ const
   GlobalClientRoute* = "/client/global.html"
   RewardClientRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/client/snappyjs.min.js"
+  QrcodeClientRoute* = "/client/qrcode.min.js"
   StatsClientRoute* = "/client/stats.html"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
+  QrcodeClientJs* = "qrcode.min.js"
   StatsClientHtml* = "stats.html"
 
 proc repoDir*(): string =
@@ -39,13 +41,15 @@ proc clientStaticPath*(route: string): string =
   case route
   of SnappyClientRoute:
     clientsDir() / SnappyClientJs
+  of QrcodeClientRoute:
+    clientsDir() / QrcodeClientJs
   else:
     clientHtmlPath(route)
 
 proc clientStaticContentType*(route: string): string =
   ## Returns the content type for a served static client file.
   case route
-  of SnappyClientRoute:
+  of SnappyClientRoute, QrcodeClientRoute:
     "application/javascript; charset=utf-8"
   else:
     "text/html; charset=utf-8"
