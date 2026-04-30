@@ -188,20 +188,22 @@
 
             # One wrapper per binary that chdirs into the binary's source
             # directory before exec — that's the CWD the games expect.
-            # Bots under <game>/players/ chdir to the parent <game>/ since
-            # they share assets (sprite sheet, palette) with the game itself.
+            # Bots under <game>/players/ instead chdir to the project root
+            # ($out/share/bitworld) since they expect to be invoked from
+            # there (their gameDir() resolves a "<game>" subdir of CWD).
             ${lib.concatMapStringsSep "\n" (b:
               let
                 binName = baseNameOf b;
                 srcDir = dirOf b;
-                chdirRel =
-                  if lib.hasSuffix "/players" srcDir
-                  then dirOf srcDir
-                  else srcDir;
+                isBot = lib.hasSuffix "/players" srcDir;
+                chdirAbs =
+                  if isBot
+                  then "$out/share/bitworld"
+                  else "$out/share/bitworld/${srcDir}";
               in ''
-                mkdir -p "$out/share/bitworld/${chdirRel}"
+                mkdir -p "${chdirAbs}"
                 makeWrapper "$out/libexec/bitworld/${binName}" "$out/bin/${binName}" \
-                  --chdir "$out/share/bitworld/${chdirRel}"
+                  --chdir "${chdirAbs}"
               ''
             ) bins}
             runHook postInstall
