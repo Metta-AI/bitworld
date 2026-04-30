@@ -47,6 +47,7 @@ proc clearVotingState*(bot: var Bot) =
   bot.voting.startTick = -1
   bot.voting.chatSusColor = VoteUnknown
   bot.voting.chatText = ""
+  bot.voting.chatLines.setLen(0)
   for i in 0 ..< bot.voting.slots.len:
     bot.voting.slots[i].colorIndex = VoteUnknown
     bot.voting.slots[i].alive = false
@@ -198,7 +199,13 @@ proc usefulChatLine*(line: string): bool =
       inc unknown
   letters >= 2 and unknown * 2 <= max(1, line.len)
 
-proc readVoteChatText*(bot: Bot, count: int): string =
+iterator visibleChatLines*(bot: Bot, count: int): string =
+  ## Yields each chat line currently rendered on the voting screen, in
+  ## row order, with sequential duplicates collapsed and useless lines
+  ## (no letters, mostly `?` glyphs) skipped. The trace writer
+  ## consumes this directly to detect newly-observed lines without a
+  ## second OCR pass; `readVoteChatText` is now a thin wrapper that
+  ## concatenates the same yields.
   let
     layout = voteGridLayout(count)
     chatY = layout.skipY + 10
@@ -209,10 +216,17 @@ proc readVoteChatText*(bot: Bot, count: int): string =
       continue
     if line == previous:
       continue
+    yield line
+    previous = line
+
+proc readVoteChatText*(bot: Bot, count: int): string =
+  ## Concatenated OCR of the voting chat region. Used by
+  ## `chatSusColorIndex` for sus-target detection. Refactored in
+  ## Phase 2 to share `visibleChatLines` with the trace writer.
+  for line in bot.visibleChatLines(count):
     if result.len > 0:
       result.add(' ')
     result.add(line)
-    previous = line
 
 proc normalizeChatText*(text: string): string =
   ## Lowercase + collapse non-alphanumerics into single spaces.
@@ -320,7 +334,16 @@ proc parseVotingCandidate*(bot: var Bot, count, startTick: int): bool =
     layout.skipX + VoteSkipW + 2,
     layout.skipY
   )
-  bot.voting.chatText = bot.readVoteChatText(count)
+  # Cache per-line OCR for the trace writer (chat_observed events).
+  bot.voting.chatLines.setLen(0)
+  for line in bot.visibleChatLines(count):
+    bot.voting.chatLines.add(line)
+  # Rebuild the concatenated text used by chatSusColorIndex.
+  bot.voting.chatText.setLen(0)
+  for line in bot.voting.chatLines:
+    if bot.voting.chatText.len > 0:
+      bot.voting.chatText.add(' ')
+    bot.voting.chatText.add(line)
   bot.voting.chatSusColor = chatSusColorIndex(bot.voting.chatText)
   true
 
@@ -471,7 +494,8 @@ proc decideVotingMask*(bot: var Bot): uint8 =
   if ownVote != VoteUnknown:
     bot.motion.desiredMask = 0
     bot.motion.controllerMask = 0
-    bot.diag.intent = "voted " & bot.voteTargetName(ownVote)
+    bot.fired("voting.idle.already_voted",
+      "voted " & bot.voteTargetName(ownVote))
     bot.thought(bot.diag.intent)
     return 0
   if bot.voting.cursor != bot.voting.target:
@@ -487,7 +511,8 @@ proc decideVotingMask*(bot: var Bot): uint8 =
       else:
         mask
     bot.motion.controllerMask = bot.motion.desiredMask
-    bot.diag.intent = "voting cursor to " & bot.voteTargetName(bot.voting.target)
+    bot.fired("voting.cursor.move",
+      "voting cursor to " & bot.voteTargetName(bot.voting.target))
     bot.thought(bot.diag.intent)
     return bot.motion.desiredMask
   let listenedTicks =
@@ -498,8 +523,9 @@ proc decideVotingMask*(bot: var Bot): uint8 =
   if listenedTicks < VoteListenTicks:
     bot.motion.desiredMask = 0
     bot.motion.controllerMask = 0
-    bot.diag.intent = "ready, listening in vote chat " &
-      $listenedTicks & "/" & $VoteListenTicks
+    bot.fired("voting.cursor.listen",
+      "ready, listening in vote chat " &
+        $listenedTicks & "/" & $VoteListenTicks)
     bot.thought(bot.diag.intent)
     return 0
   bot.motion.desiredMask =
@@ -508,6 +534,7 @@ proc decideVotingMask*(bot: var Bot): uint8 =
     else:
       ButtonA
   bot.motion.controllerMask = bot.motion.desiredMask
-  bot.diag.intent = "voting for " & bot.voteTargetName(bot.voting.target)
+  bot.fired("voting.press_a",
+    "voting for " & bot.voteTargetName(bot.voting.target))
   bot.thought(bot.diag.intent)
   bot.motion.desiredMask

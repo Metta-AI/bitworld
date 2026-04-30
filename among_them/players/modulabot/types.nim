@@ -221,6 +221,11 @@ type
     startTick*: int
     chatSusColor*: int
     chatText*: string
+    chatLines*: seq[string]               ## per-line OCR cache, populated
+                                          ## alongside chatText; used by
+                                          ## the trace writer to emit
+                                          ## chat_observed events without
+                                          ## a second OCR pass.
     slots*: array[MaxPlayers, VoteSlot]
     choices*: PerColor[int]               ## what each colour voted for
 
@@ -233,6 +238,13 @@ type
     ## Human-readable activity description. Distinct from Perf timings.
     intent*: string                       ## set by policy: "doing task", "flee body", ...
     lastThought*: string                  ## last raw debug log line
+    branchId*: string                     ## stable ID of the policy branch
+                                          ## that fired this frame; see
+                                          ## BRANCH_IDS.md for the canonical
+                                          ## list. Reset to "" at the top of
+                                          ## decideNextMask; every code
+                                          ## path must call bot.fired(...)
+                                          ## before returning.
 
   Perf* = object
     ## Per-frame timing micros for the viewer. Reset at each frame's
