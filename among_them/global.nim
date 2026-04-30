@@ -1,6 +1,7 @@
 import std/os
 import supersnappy
 import protocol, sim
+import ../common/pixelfonts
 import ../common/server
 
 const
@@ -586,15 +587,14 @@ proc putTextSpritePixel(
 proc blitGlyph(
   target: var seq[uint8],
   targetWidth, targetHeight: int,
-  sprite: Sprite,
+  glyph: PixelGlyph,
   baseX, baseY: int,
   color: uint8
 ) =
   ## Blits a single-color glyph into protocol pixels.
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] ==
-          TransparentColorIndex:
+  for y in 0 ..< glyph.height:
+    for x in 0 ..< glyph.width:
+      if not glyph.glyphPixel(x, y):
         continue
       target.putTextSpritePixel(
         targetWidth,
@@ -615,17 +615,16 @@ proc blitSmallText(
   ## Blits small text into protocol pixels.
   var x = baseX
   for ch in text:
-    let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < game.asciiSprites.len:
-      target.blitGlyph(
-        targetWidth,
-        targetHeight,
-        game.asciiSprites[idx],
-        x,
-        baseY,
-        color
-      )
-    x += 7
+    let glyph = game.asciiSprites.glyphAt(ch)
+    target.blitGlyph(
+      targetWidth,
+      targetHeight,
+      glyph,
+      x,
+      baseY,
+      color
+    )
+    x += game.asciiSprites.glyphAdvance(ch)
 
 proc buildSpriteProtocolTextSprite(
   game: SimServer,
@@ -636,31 +635,26 @@ proc buildSpriteProtocolTextSprite(
   ## Builds a transparent multi-line text sprite.
   result.width = 1
   for line in lines:
-    result.width = max(result.width, line.len * 7)
-  result.height = max(1, lines.len * 9)
+    result.width = max(result.width, game.asciiSprites.textWidth(line))
+  result.height = max(1, lines.len * TextLineHeight)
   result.pixels = newRgbaPixels(result.width, result.height)
   for lineIndex, line in lines:
-    let baseY = lineIndex * 9
+    let baseY = lineIndex * TextLineHeight
     var baseX = 0
     for ch in line:
-      let idx = sim.asciiIndex(ch)
-      if idx >= 0 and idx < game.asciiSprites.len:
-        let sprite = game.asciiSprites[idx]
-        for y in 0 ..< sprite.height:
-          for x in 0 ..< sprite.width:
-            if sprite.pixels[sprite.spriteIndex(x, y)] !=
-                TransparentColorIndex:
-              result.pixels.putTextSpritePixel(
-                result.width,
-                result.height,
-                baseX + x,
-                baseY + y,
-                color
-              )
-      baseX += 7
+      let glyph = game.asciiSprites.glyphAt(ch)
+      result.pixels.blitGlyph(
+        result.width,
+        result.height,
+        glyph,
+        baseX,
+        baseY,
+        color
+      )
+      baseX += game.asciiSprites.glyphAdvance(ch)
     if struck:
       let lineY = baseY + 3
-      for x in 0 ..< line.len * 7:
+      for x in 0 ..< game.asciiSprites.textWidth(line):
         result.pixels.putTextSpritePixel(
           result.width,
           result.height,
@@ -712,27 +706,27 @@ proc addVisibleVoteChatText(
   ## Adds separate text sprites for visible voting chat messages.
   let
     chatH = ScreenHeight - chatY - 3
-    textX = 21
+    textX = VoteChatTextX
   if chatH <= 0:
     return
   var
     visible: seq[int] = @[]
     usedH = 0
   for i in countdown(sim.chatMessages.high, 0):
-    let messageH = sim.chatMessages[i].text.chatMessageHeight()
-    if usedH + messageH > chatH - 4:
+    let messageH = sim.asciiSprites.chatMessageHeight(sim.chatMessages[i].text)
+    if usedH + messageH > chatH - 2:
       break
     visible.add(i)
     usedH += messageH
-  var rowY = chatY + 2
+  var rowY = chatY + 1
   for j in countdown(visible.high, 0):
     let
       message = sim.chatMessages[visible[j]]
-      lineCount = message.text.chatLineCount()
-      messageH = message.text.chatMessageHeight()
+      lineCount = sim.asciiSprites.chatLineCount(message.text)
+      messageH = sim.asciiSprites.chatMessageHeight(message.text)
     var lines: seq[string] = @[]
     for lineIndex in 0 ..< lineCount:
-      lines.add(message.text.sliceChatLine(lineIndex))
+      lines.add(sim.asciiSprites.sliceChatLine(message.text, lineIndex))
     items.addTextItem(textX, rowY, lines, message.text)
     rowY += messageH
 
@@ -746,25 +740,25 @@ proc addVisibleVoteChatIcons(
   ## Adds separate player sprites for visible voting chat speakers.
   let
     chatH = ScreenHeight - chatY - 3
-    iconX = 4
+    iconX = VoteChatIconX
   if chatH <= 0:
     return
   var
     visible: seq[int] = @[]
     usedH = 0
   for i in countdown(sim.chatMessages.high, 0):
-    let messageH = sim.chatMessages[i].text.chatMessageHeight()
-    if usedH + messageH > chatH - 4:
+    let messageH = sim.asciiSprites.chatMessageHeight(sim.chatMessages[i].text)
+    if usedH + messageH > chatH - 2:
       break
     visible.add(i)
     usedH += messageH
-  var rowY = chatY + 2
+  var rowY = chatY + 1
   for j in countdown(visible.high, 0):
     let
       message = sim.chatMessages[visible[j]]
-      lineCount = message.text.chatLineCount()
-      messageH = message.text.chatMessageHeight()
-      iconY = rowY + max(0, (lineCount * 9 - SpriteSize) div 2)
+      lineCount = sim.asciiSprites.chatLineCount(message.text)
+      messageH = sim.asciiSprites.chatMessageHeight(message.text)
+      iconY = rowY + max(0, (lineCount * TextLineHeight - SpriteSize) div 2)
       objectId = ProtocolChatIconObjectBase + j
       spriteId = PlayerSpriteBase + playerColorIndex(message.color) * 2
     currentIds.add(objectId)
@@ -800,7 +794,11 @@ proc interstitialTextItems(
       playerIndex >= 0 and playerIndex < sim.players.len and
       sim.players[playerIndex].role == Imposter
     let title = if viewerIsImp: "IMPS" else: "CREWMATE"
-    result.addTextItem((ScreenWidth - title.len * 7) div 2, 14, [title])
+    result.addTextItem(
+      (ScreenWidth - sim.asciiSprites.textWidth(title)) div 2,
+      14,
+      [title]
+    )
   of Voting:
     let n = sim.players.len
     if n > 0:
@@ -828,7 +826,7 @@ proc interstitialTextItems(
       else:
         "IMPS WIN"
     let
-      titleW = title.len * 7
+      titleW = sim.asciiSprites.textWidth(title)
       titleX = (ScreenWidth - titleW) div 2
       rowH = 14
       rowsPerCol = 8
@@ -998,9 +996,9 @@ proc buildSpriteProtocolVoteFrame(
       inc skipVoterRow
 
   let
-    chatX = 1
+    chatX = 0
     chatY = skipY + 10
-    chatW = ScreenWidth - 2
+    chatW = ScreenWidth
     chatH = ScreenHeight - chatY - 3
   if chatH > 0:
     fb.fillRect(chatX, chatY, chatW, chatH, 0)

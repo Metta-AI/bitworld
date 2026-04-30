@@ -161,3 +161,7 @@ Then open the global viewer:
 ```text
 http://localhost:2000/client/global.html
 ```
+
+## Note for usability
+
+Don't run things from the executable like `./among_them ...`. Run the `nim r among_them.nim ...` always.

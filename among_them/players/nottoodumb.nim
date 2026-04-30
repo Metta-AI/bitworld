@@ -1,4 +1,4 @@
-import pixie, protocol, ../sim, ../../common/server
+import pixie, protocol, ../sim, ../texts, ../../common/server
 when not defined(nottoodumbLibrary):
   import silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -112,8 +112,8 @@ const
   VoteSkip = -2
   VoteBlackMarker = 12'u8
   VoteListenTicks = 100
-  VoteChatTextX = 21
-  VoteChatChars = 15
+  VoteChatTextX = sim.VoteChatTextX
+  VoteChatChars = VoteChatCharsPerLine
   FrameDropThreshold = 32
   MaxFrameDrain = 128
 
@@ -793,66 +793,17 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
-proc asciiChar(index: int): char =
-  ## Returns the character represented by one ASCII sprite index.
-  char(index + ord(' '))
-
-proc asciiGlyphScore(
-  bot: Bot,
-  glyph: Sprite,
-  screenX,
-  screenY: int
-): tuple[misses: int, opaque: int] =
-  ## Scores one rendered ASCII glyph against the current screen.
-  for y in 0 ..< glyph.height:
-    for x in 0 ..< glyph.width:
-      let color = glyph.pixels[glyph.spriteIndex(x, y)]
-      if color == TransparentColorIndex:
-        continue
-      inc result.opaque
-      let
-        sx = screenX + x
-        sy = screenY + y
-      if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
-        inc result.misses
-        continue
-      if bot.unpacked[sy * ScreenWidth + sx] != color:
-        inc result.misses
-
-proc asciiTextScore(
-  bot: Bot,
-  text: string,
-  screenX,
-  screenY: int
-): tuple[misses: int, opaque: int] =
-  ## Scores one rendered ASCII text run against the current screen.
-  var offsetX = 0
-  for ch in text:
-    let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < bot.sim.asciiSprites.len:
-      let score = bot.asciiGlyphScore(
-        bot.sim.asciiSprites[idx],
-        screenX + offsetX,
-        screenY
-      )
-      result.misses += score.misses
-      result.opaque += score.opaque
-    offsetX += 7
-
-proc asciiTextWidth(text: string): int =
-  ## Returns the fixed-width ASCII text width.
-  text.len * 7
+proc asciiTextWidth(bot: Bot, text: string): int =
+  ## Returns the tiny UI text width.
+  texts.asciiTextWidth(bot.sim.asciiSprites, text)
 
 proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
   ## Returns true when text is visible at the given screen position.
-  let score = bot.asciiTextScore(text, x, y)
-  if score.opaque == 0:
-    return false
-  score.misses <= max(2, score.opaque div 16)
+  texts.asciiTextMatches(bot.unpacked, bot.sim.asciiSprites, text, x, y)
 
 proc findAsciiText(bot: Bot, text: string): bool =
   ## Finds a rendered ASCII phrase in the top black-screen title area.
-  let maxX = ScreenWidth - asciiTextWidth(text)
+  let maxX = ScreenWidth - bot.asciiTextWidth(text)
   if maxX < 0:
     return false
   for y in 0 .. 20:
@@ -860,31 +811,9 @@ proc findAsciiText(bot: Bot, text: string): bool =
       if bot.asciiTextMatches(text, x, y):
         return true
 
-proc bestAsciiGlyph(bot: Bot, x, y: int): char =
-  ## Reads the best single ASCII glyph at a fixed character cell.
-  var
-    bestChar = ' '
-    bestMisses = high(int)
-    bestOpaque = 0
-  for i, glyph in bot.sim.asciiSprites:
-    let score = bot.asciiGlyphScore(glyph, x, y)
-    if score.opaque == 0:
-      continue
-    if score.misses < bestMisses:
-      bestMisses = score.misses
-      bestOpaque = score.opaque
-      bestChar = asciiChar(i)
-  if bestOpaque == 0:
-    return ' '
-  if bestMisses <= max(2, bestOpaque div 8):
-    return bestChar
-  '?'
-
 proc readAsciiLine(bot: Bot, y: int): string =
   ## Reads a loose ASCII line from one black-screen text row.
-  for x in countup(0, ScreenWidth - 7, 7):
-    result.add(bot.bestAsciiGlyph(x, y))
-  result = result.strip()
+  texts.readAsciiLine(bot.unpacked, bot.sim.asciiSprites, y)
 
 proc detectInterstitialText(bot: Bot): string =
   ## Reads known interstitial ASCII text from a black screen.
@@ -1647,7 +1576,7 @@ proc voteSkipTextMatches(bot: Bot, skipX, skipY: int): bool =
   for y in max(0, skipY - 1) .. min(ScreenHeight - 6, skipY + 1):
     let
       minX = max(0, skipX - 2)
-      maxX = min(ScreenWidth - asciiTextWidth("SKIP"), skipX + 2)
+      maxX = min(ScreenWidth - bot.asciiTextWidth("SKIP"), skipX + 2)
     for x in minX .. maxX:
       if bot.asciiTextMatches("SKIP", x, y):
         return true
@@ -1754,10 +1683,8 @@ proc parseVoteDotsForTarget(
       bot.voteChoices[colorIndex] = target
 
 proc readAsciiRun(bot: Bot, x, y, count: int): string =
-  ## Reads a fixed-width ASCII run from the current screen.
-  for i in 0 ..< count:
-    result.add(bot.bestAsciiGlyph(x + i * 7, y))
-  result = result.strip()
+  ## Reads a variable-width tiny text run from the current screen.
+  texts.readAsciiRun(bot.unpacked, bot.sim.asciiSprites, x, y, count)
 
 proc usefulChatLine(line: string): bool =
   ## Returns true when a parsed chat line contains real letters.

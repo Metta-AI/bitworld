@@ -1,6 +1,7 @@
 import jsony, pixie
 import protocol
 import bitworld/aseprite
+import ../common/pixelfonts
 import ../common/server
 import std/[json, math, os, random, strutils]
 
@@ -48,7 +49,7 @@ const
   MaxPlayers* = 16
   MinPlayers* = 8
   ImposterCount* = 2
-  VoteTimerTicks* = 600
+  VoteTimerTicks* = 6000
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
   MaxTicks* = 10_000  ## 0 = no limit.
@@ -57,9 +58,15 @@ const
   ShowTaskArrows* = true
   ButtonCalls* = 1
   VoteChatVisibleMessages* = 4
-  VoteChatCharsPerLine* = 15
+  VoteChatIconX* = 1
+  VoteChatTextX* = VoteChatIconX + SpriteSize + 1
+  VoteChatRightPad* = 1
+  VoteChatTextPixels* = ScreenWidth - VoteChatTextX - VoteChatRightPad
+  VoteChatCharsPerLine* = 32
   VoteChatLineCount* = 5
   VoteChatMaxChars* = VoteChatCharsPerLine * VoteChatLineCount
+  TextColor* = 2'u8
+  TextLineHeight* = 7
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
@@ -276,7 +283,7 @@ type
     gameStartTick*: int
     phase*: GamePhase
     voteState*: VoteState
-    asciiSprites*: seq[Sprite]
+    asciiSprites*: PixelFont
     winner*: PlayerRole
     gameOverTimer*: int
     roleRevealTimer*: int
@@ -688,49 +695,18 @@ proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
   ord(ch) - ord(' ')
 
-proc loadAsciiSprites*(path: string): seq[Sprite] =
-  ## Loads the fixed seven by nine ASCII glyph sheet.
-  if not fileExists(path):
-    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
-  let
-    image = readImage(path)
-    glyphWidth = 7
-    glyphHeight = 9
-    rowStride = 9
-    cols = image.width div glyphWidth
-    rows = image.height div rowStride
-    background = nearestPaletteIndex(image[0, 0])
-  result = @[]
-  for row in 0 ..< rows:
-    for col in 0 ..< cols:
-      var sprite = Sprite(width: glyphWidth, height: glyphHeight)
-      sprite.pixels = newSeq[uint8](glyphWidth * glyphHeight)
-      let
-        baseX = col * glyphWidth
-        baseY = row * rowStride
-      for y in 0 ..< glyphHeight:
-        for x in 0 ..< glyphWidth:
-          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
-          sprite.pixels[sprite.spriteIndex(x, y)] =
-            if colorIndex == background:
-              TransparentColorIndex
-            else:
-              colorIndex
-      result.add(sprite)
+proc loadAsciiSprites*(path: string): PixelFont =
+  ## Loads the tiny variable-width ASCII pixel font.
+  readPixelFont(path)
 
 proc blitAsciiText*(
   fb: var Framebuffer,
-  asciiSprites: seq[Sprite],
+  asciiSprites: PixelFont,
   text: string,
   screenX, screenY: int
 ) =
-  ## Draws text using the Among Them ASCII glyph sheet.
-  var offsetX = 0
-  for ch in text:
-    let idx = asciiIndex(ch)
-    if idx >= 0 and idx < asciiSprites.len:
-      fb.blitSprite(asciiSprites[idx], screenX + offsetX, screenY, 0, 0)
-    offsetX += 7
+  ## Draws text using the Among Them tiny UI font.
+  fb.drawText(asciiSprites, text, screenX, screenY, TextColor)
 
 proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Fills one clipped rectangle on a framebuffer.
@@ -760,40 +736,62 @@ proc cleanChatMessage*(message: string): string =
     if ch >= ' ' and ch <= '~':
       result.add(ch)
 
-proc nextChatLineStart(text: string, startIndex: int): int =
-  ## Returns the next fixed-width chat line start.
-  result = min(text.len, startIndex + VoteChatCharsPerLine)
-  while result < text.len and text[result] == ' ':
-    inc result
+proc nextChatLineStart(
+  font: PixelFont,
+  text: string,
+  startIndex: int
+): int =
+  ## Returns the next pixel-width chat line start.
+  var
+    x = 0
+    lastSpace = -1
+    i = startIndex
+  while i < text.len:
+    let ch = text[i]
+    let advance = font.glyphAdvance(ch)
+    if x > 0 and x + advance > VoteChatTextPixels:
+      if lastSpace > startIndex:
+        result = lastSpace
+      else:
+        result = i
+      while result < text.len and text[result] == ' ':
+        inc result
+      return
+    x += advance
+    if ch == ' ':
+      lastSpace = i + 1
+    inc i
+  text.len
 
-proc chatLineStart(text: string, lineIndex: int): int =
+proc chatLineStart(font: PixelFont, text: string, lineIndex: int): int =
   ## Returns the source index for one visible chat line.
   result = 0
   for i in 0 ..< lineIndex:
-    result = text.nextChatLineStart(result)
+    result = font.nextChatLineStart(text, result)
 
-proc sliceChatLine*(text: string, lineIndex: int): string =
-  ## Returns one fixed-width chat line.
-  let startIndex = text.chatLineStart(lineIndex)
+proc sliceChatLine*(font: PixelFont, text: string, lineIndex: int): string =
+  ## Returns one pixel-width chat line.
+  let startIndex = font.chatLineStart(text, lineIndex)
   if startIndex >= text.len:
     return ""
-  let endIndex = min(text.len, startIndex + VoteChatCharsPerLine)
-  text[startIndex ..< endIndex]
+  let endIndex = font.nextChatLineStart(text, startIndex)
+  result = text[startIndex ..< endIndex]
+  result = result.strip()
 
-proc chatLineCount*(text: string): int =
+proc chatLineCount*(font: PixelFont, text: string): int =
   ## Returns the visible line count for one chat message.
   result = 1
   var startIndex = 0
   while startIndex < text.len and result < VoteChatLineCount:
-    let nextIndex = text.nextChatLineStart(startIndex)
+    let nextIndex = font.nextChatLineStart(text, startIndex)
     if nextIndex >= text.len:
       break
     inc result
     startIndex = nextIndex
 
-proc chatMessageHeight*(text: string): int =
+proc chatMessageHeight*(font: PixelFont, text: string): int =
   ## Returns the pixel height for one chat message row.
-  max(SpriteSize, text.chatLineCount() * 9) + 2
+  max(SpriteSize, font.chatLineCount(text) * TextLineHeight) + 1
 
 proc defaultGameConfig*(): GameConfig =
   ## Returns the default Among Them gameplay config.
@@ -1849,7 +1847,7 @@ proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.blitAsciiText(
     sim.asciiSprites,
     title,
-    (ScreenWidth - title.len * 7) div 2,
+    (ScreenWidth - sim.asciiSprites.textWidth(title)) div 2,
     14
   )
   var shown: seq[int] = @[]
@@ -1907,11 +1905,11 @@ proc putSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
 proc drawVoteChat*(sim: var SimServer, chatY: int) =
   ## Draws the visible voting chat messages.
   let
-    chatX = 1
-    chatW = ScreenWidth - 2
+    chatX = 0
+    chatW = ScreenWidth
     chatH = ScreenHeight - chatY - 3
-    iconX = chatX + 3
-    textX = chatX + 20
+    iconX = VoteChatIconX
+    textX = VoteChatTextX
   if chatH <= 0:
     return
   sim.fb.fillRect(chatX, chatY, chatW, chatH, 0)
@@ -1919,18 +1917,18 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
     visible: seq[int] = @[]
     usedH = 0
   for i in countdown(sim.chatMessages.high, 0):
-    let messageH = sim.chatMessages[i].text.chatMessageHeight()
-    if usedH + messageH > chatH - 4:
+    let messageH = sim.asciiSprites.chatMessageHeight(sim.chatMessages[i].text)
+    if usedH + messageH > chatH - 2:
       break
     visible.add(i)
     usedH += messageH
-  var rowY = chatY + 2
+  var rowY = chatY + 1
   for j in countdown(visible.high, 0):
     let
       message = sim.chatMessages[visible[j]]
-      lineCount = message.text.chatLineCount()
-      messageH = message.text.chatMessageHeight()
-      iconY = rowY + max(0, (lineCount * 9 - SpriteSize) div 2)
+      lineCount = sim.asciiSprites.chatLineCount(message.text)
+      messageH = sim.asciiSprites.chatMessageHeight(message.text)
+      iconY = rowY + max(0, (lineCount * TextLineHeight - SpriteSize) div 2)
     sim.fb.blitSpriteOutlined(
       sim.playerSprite,
       iconX,
@@ -1941,9 +1939,9 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
     for lineIndex in 0 ..< lineCount:
       sim.fb.blitAsciiText(
         sim.asciiSprites,
-        message.text.sliceChatLine(lineIndex),
+        sim.asciiSprites.sliceChatLine(message.text, lineIndex),
         textX,
-        rowY + lineIndex * 9
+        rowY + lineIndex * TextLineHeight
       )
     rowY += messageH
 
@@ -2131,7 +2129,7 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
       "CREW WINS"
     else:
       "IMPS WIN"
-  let titleW = title.len * 7
+  let titleW = sim.asciiSprites.textWidth(title)
   let titleX = (ScreenWidth - titleW) div 2
   sim.fb.blitAsciiText(sim.asciiSprites, title, titleX, 2)
   let n = sim.players.len
@@ -2157,7 +2155,7 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
     sim.fb.blitSpriteOutlined(sim.playerSprite, iconX, iconY, p.color, false)
     sim.fb.blitAsciiText(sim.asciiSprites, roleStr, textX, textY)
     if not p.alive:
-      for lx in textX ..< textX + roleStr.len * 7:
+      for lx in textX ..< textX + sim.asciiSprites.textWidth(roleStr):
         sim.fb.putPixel(lx, textY + 3, 3'u8)
   sim.fb.packFramebuffer()
   sim.fb.packed
@@ -2808,7 +2806,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   let remaining = sim.totalTasksRemaining()
   let numStr = $remaining
-  let dx = ScreenWidth - numStr.len * 7
+  let dx = ScreenWidth - sim.asciiSprites.textWidth(numStr)
   sim.fb.blitAsciiText(sim.asciiSprites, numStr, dx, 0)
 
   sim.fb.packFramebuffer()
@@ -2949,7 +2947,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.rng = initRand(config.seed)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
-  result.asciiSprites = loadAsciiSprites(gameDir() / "ascii.png")
+  result.asciiSprites = loadAsciiSprites(gameDir() / "tiny5.aseprite")
 
   let sheet = loadSpriteSheet()
   result.playerSprite = spriteFromImage(

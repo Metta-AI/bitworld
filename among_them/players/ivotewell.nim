@@ -113,9 +113,9 @@ const
   VoteBlackMarker = 12'u8
   VoteListenBaseTicks = 100
   VoteListenRandomTicks = 100
-  VoteChatIconX = 4
-  VoteChatTextX = 21
-  VoteChatChars = 15
+  VoteChatIconX = sim.VoteChatIconX
+  VoteChatTextX = sim.VoteChatTextX
+  VoteChatChars = VoteChatCharsPerLine
   VoteChatSpeakerSearch = 24
   FrameDropThreshold = 32
   MaxFrameDrain = 128
@@ -808,9 +808,9 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
-proc asciiTextWidth(text: string): int =
-  ## Returns the fixed-width ASCII text width.
-  texts.asciiTextWidth(text)
+proc asciiTextWidth(bot: Bot, text: string): int =
+  ## Returns the tiny UI text width.
+  texts.asciiTextWidth(bot.sim.asciiSprites, text)
 
 proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
   ## Returns true when text is visible at the given screen position.
@@ -818,7 +818,7 @@ proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
 
 proc findAsciiText(bot: Bot, text: string): bool =
   ## Finds a rendered ASCII phrase in the top black-screen title area.
-  let maxX = ScreenWidth - asciiTextWidth(text)
+  let maxX = ScreenWidth - bot.asciiTextWidth(text)
   if maxX < 0:
     return false
   for y in 0 .. 20:
@@ -1597,7 +1597,7 @@ proc voteSkipTextMatches(bot: Bot, skipX, skipY: int): bool =
   for y in max(0, skipY - 1) .. min(ScreenHeight - 6, skipY + 1):
     let
       minX = max(0, skipX - 2)
-      maxX = min(ScreenWidth - asciiTextWidth("SKIP"), skipX + 2)
+      maxX = min(ScreenWidth - bot.asciiTextWidth("SKIP"), skipX + 2)
     for x in minX .. maxX:
       if bot.asciiTextMatches("SKIP", x, y):
         return true

@@ -2,6 +2,7 @@ import
   std/os,
   ../among_them/sim,
   ../among_them/texts,
+  ../common/pixelfonts,
   ../common/protocol,
   ../common/server
 
@@ -21,13 +22,13 @@ proc initAmongThemForTest(config: GameConfig): SimServer =
   finally:
     setCurrentDir(previousDir)
 
-proc loadTestAsciiSprites(): seq[Sprite] =
-  ## Loads the Among Them ASCII sprites for text OCR tests.
+proc loadTestAsciiSprites(): PixelFont =
+  ## Loads the Among Them tiny ASCII font for text OCR tests.
   loadPalette(RootDir / "clients" / "data" / "pallete.png")
-  loadAsciiSprites(RootDir / "among_them" / "ascii.png")
+  loadAsciiSprites(RootDir / "among_them" / "tiny5.aseprite")
 
 proc renderText(
-  asciiSprites: seq[Sprite],
+  asciiSprites: PixelFont,
   text: string,
   x,
   y: int
@@ -39,13 +40,13 @@ proc renderText(
   fb.indices
 
 proc assertTextRoundTrip(
-  asciiSprites: seq[Sprite],
+  asciiSprites: PixelFont,
   sample: TextCase
 ) =
   ## Checks that rendered text can be read back from pixels.
-  doAssert sample.x + sample.text.asciiTextWidth() <= ScreenWidth,
+  doAssert sample.x + asciiSprites.asciiTextWidth(sample.text) <= ScreenWidth,
     "test text should fit on the screen"
-  doAssert sample.y + 9 <= ScreenHeight,
+  doAssert sample.y + asciiSprites.height <= ScreenHeight,
     "test text should fit vertically"
 
   let
@@ -92,7 +93,7 @@ proc votingChatY(playerCount: int): int =
     cols = min(playerCount, 8)
     rows = (playerCount + cols - 1) div cols
     skipY = 2 + rows * 17 + 1
-  skipY + 12
+  skipY + 11
 
 proc usefulChatLine(line: string): bool =
   ## Returns true when a scanned chat line is usable text.
@@ -108,7 +109,7 @@ proc usefulChatLine(line: string): bool =
 
 proc scanVotingChatRows(
   frame: openArray[uint8],
-  asciiSprites: seq[Sprite],
+  asciiSprites: PixelFont,
   startY: int
 ): seq[string] =
   ## Scans voting chat rows the same way the player does.
@@ -117,7 +118,7 @@ proc scanVotingChatRows(
   for y in startY ..< ScreenHeight - 6:
     let line = frame.readAsciiRun(
       asciiSprites,
-      21,
+      VoteChatTextX,
       y,
       VoteChatCharsPerLine
     )
@@ -146,14 +147,14 @@ proc testVotingChatTextRoundTrip() =
     scanned = sim.fb.indices.scanVotingChatRows(sim.asciiSprites, y)
     first = sim.fb.indices.readAsciiRun(
       sim.asciiSprites,
-      21,
+      VoteChatTextX,
       y,
       VoteChatCharsPerLine
     )
     second = sim.fb.indices.readAsciiRun(
       sim.asciiSprites,
-      21,
-      y + 14,
+      VoteChatTextX,
+      y + 13,
       VoteChatCharsPerLine
     )
 
@@ -164,16 +165,22 @@ proc testVotingChatTextRoundTrip() =
 
 proc testChatWrapDropsLeadingSpace() =
   ## Tests that wrapped chat lines do not start with split spaces.
-  let message = "123456789012345 that breaks"
-  doAssert message.sliceChatLine(0) == "123456789012345",
-    "first wrapped chat line should fill the width"
-  doAssert message.sliceChatLine(1) == "that breaks",
+  let
+    font = loadTestAsciiSprites()
+    message = "hi there i am not that bad i did all that and this thing"
+    first = font.sliceChatLine(message, 0)
+    second = font.sliceChatLine(message, 1)
+  doAssert first.len > 15,
+    "first wrapped chat line should use the tiny font width"
+  doAssert font.textWidth(first) <= VoteChatTextPixels,
+    "first wrapped chat line should fit the screen width"
+  doAssert second.len > 0 and second[0] != ' ',
     "second wrapped chat line should skip the split space"
-  doAssert message.chatLineCount() == 2,
+  doAssert font.chatLineCount(message) >= 2,
     "wrapped chat should count only visible lines"
 
-  let trailingSpace = "123456789012345 "
-  doAssert trailingSpace.chatLineCount() == 1,
+  let trailingSpace = "short trailing "
+  doAssert font.chatLineCount(trailingSpace) == 1,
     "trailing split spaces should not create an empty line"
 
 testAsciiTextRoundTrips()

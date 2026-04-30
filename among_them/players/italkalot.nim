@@ -1,6 +1,6 @@
 import pixie, protocol, ../sim, ../texts, ../../common/server
 when not defined(italkalotLibrary):
-  import silky, whisky, windy
+  import bitworld/ais/openai, silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
   strutils, times]
 
@@ -113,9 +113,10 @@ const
   VoteBlackMarker = 12'u8
   VoteListenBaseTicks = 100
   VoteListenRandomTicks = 100
-  VoteChatIconX = 4
-  VoteChatTextX = 21
-  VoteChatChars = 15
+  VoteAiTurnWaitTicks = 100
+  VoteChatIconX = sim.VoteChatIconX
+  VoteChatTextX = sim.VoteChatTextX
+  VoteChatChars = VoteChatCharsPerLine
   VoteChatSpeakerSearch = 24
   FrameDropThreshold = 32
   MaxFrameDrain = 128
@@ -288,7 +289,18 @@ type
     voteChatLines: seq[VoteChatLine]
     voteSlots: array[MaxPlayers, VoteSlot]
     voteChoices: array[PlayerColorCount, int]
+    voteRecordedChoices: array[PlayerColorCount, int]
+    voteHistory: seq[string]
+    voteChatHistory: seq[string]
+    voteMeetingIndex: int
+    voteHistoryStartTick: int
     lastVoteFrame: string
+    aiChatTurn: int
+    aiNextTurnTick: int
+    aiChatReply: string
+    aiVoteFrame: string
+    aiVoteTarget: int
+    aiVoteReply: string
     intent: string
     goalX: int
     goalY: int
@@ -307,6 +319,9 @@ type
     visibleCrewmates: seq[CrewmateMatch]
     visibleBodies: seq[BodyMatch]
     visibleGhosts: seq[GhostMatch]
+
+when not defined(italkalotLibrary):
+  var openAiKeyLoaded = false
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
@@ -808,9 +823,9 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
-proc asciiTextWidth(text: string): int =
-  ## Returns the fixed-width ASCII text width.
-  texts.asciiTextWidth(text)
+proc asciiTextWidth(bot: Bot, text: string): int =
+  ## Returns the tiny UI text width.
+  texts.asciiTextWidth(bot.sim.asciiSprites, text)
 
 proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
   ## Returns true when text is visible at the given screen position.
@@ -818,7 +833,7 @@ proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
 
 proc findAsciiText(bot: Bot, text: string): bool =
   ## Finds a rendered ASCII phrase in the top black-screen title area.
-  let maxX = ScreenWidth - asciiTextWidth(text)
+  let maxX = ScreenWidth - bot.asciiTextWidth(text)
   if maxX < 0:
     return false
   for y in 0 .. 20:
@@ -868,6 +883,32 @@ proc clearVotingState(bot: var Bot) =
   for i in 0 ..< bot.voteChoices.len:
     bot.voteChoices[i] = VoteUnknown
 
+proc clearAiVote(bot: var Bot) =
+  ## Clears the cached OpenAI voting decision.
+  bot.aiVoteFrame = ""
+  bot.aiVoteTarget = VoteUnknown
+  bot.aiVoteReply = ""
+
+proc clearAiConversation(bot: var Bot) =
+  ## Clears the cached OpenAI voting conversation state.
+  bot.clearAiVote()
+  bot.aiChatTurn = 0
+  bot.aiNextTurnTick = -1
+  bot.aiChatReply = ""
+
+proc clearRecordedVotes(bot: var Bot) =
+  ## Clears the votes already logged for the current meeting.
+  for i in 0 ..< bot.voteRecordedChoices.len:
+    bot.voteRecordedChoices[i] = VoteUnknown
+
+proc clearVoteHistory(bot: var Bot) =
+  ## Clears all remembered voting history for one round.
+  bot.voteHistory.setLen(0)
+  bot.voteChatHistory.setLen(0)
+  bot.voteMeetingIndex = 0
+  bot.voteHistoryStartTick = -1
+  bot.clearRecordedVotes()
+
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
   bot.localized = false
@@ -899,6 +940,8 @@ proc resetRoundState(bot: var Bot) =
   bot.lastBodyReportY = low(int)
   bot.selfColorIndex = -1
   bot.lastVoteFrame = ""
+  bot.clearAiConversation()
+  bot.clearVoteHistory()
   bot.clearVotingState()
   for i in 0 ..< bot.lastSeenTicks.len:
     bot.lastSeenTicks[i] = 0
@@ -1123,6 +1166,7 @@ proc updateLocation(bot: var Bot) =
   bot.lastGameOverText = ""
   if bot.voting:
     bot.lastVoteFrame = ""
+    bot.clearAiConversation()
     bot.clearVotingState()
   if wasInterstitial:
     bot.reseedLocalizationAtHome()
@@ -1597,7 +1641,7 @@ proc voteSkipTextMatches(bot: Bot, skipX, skipY: int): bool =
   for y in max(0, skipY - 1) .. min(ScreenHeight - 6, skipY + 1):
     let
       minX = max(0, skipX - 2)
-      maxX = min(ScreenWidth - asciiTextWidth("SKIP"), skipX + 2)
+      maxX = min(ScreenWidth - bot.asciiTextWidth("SKIP"), skipX + 2)
     for x in minX .. maxX:
       if bot.asciiTextMatches("SKIP", x, y):
         return true
@@ -1954,6 +1998,7 @@ proc parseVotingScreen(bot: var Bot): bool =
       return true
   if bot.voting:
     bot.lastVoteFrame = ""
+    bot.clearAiConversation()
   bot.clearVotingState()
   false
 
@@ -2772,11 +2817,86 @@ proc queueBodyReport(bot: var Bot, x, y: int) =
 
 proc voteTargetName(bot: Bot, target: int): string =
   ## Returns a short display name for a voting target.
-  if target == VoteSkip:
+  if target == VoteSkip or target == bot.votePlayerCount:
     return "skip"
   if target >= 0 and target < bot.votePlayerCount:
     return playerColorName(bot.voteSlots[target].colorIndex)
   "unknown"
+
+proc beginVoteHistoryMeeting(bot: var Bot) =
+  ## Starts tracking vote history for a new meeting.
+  if bot.voteStartTick < 0:
+    return
+  if bot.voteHistoryStartTick == bot.voteStartTick:
+    return
+  bot.voteHistoryStartTick = bot.voteStartTick
+  inc bot.voteMeetingIndex
+  bot.clearRecordedVotes()
+  bot.clearAiConversation()
+
+proc recordVoteHistory(bot: var Bot) =
+  ## Records newly observed votes into the round vote history.
+  bot.beginVoteHistoryMeeting()
+  for i, choice in bot.voteChoices:
+    if choice == VoteUnknown:
+      continue
+    if bot.voteRecordedChoices[i] != VoteUnknown:
+      continue
+    bot.voteRecordedChoices[i] = choice
+    bot.voteHistory.add(
+      "meeting " & $bot.voteMeetingIndex & ": " &
+      playerColorName(i) & " voted against " &
+      bot.voteTargetName(choice)
+    )
+
+proc voteHistoryText(bot: Bot): string =
+  ## Returns all previously observed votes as prompt text.
+  if bot.voteHistory.len == 0:
+    return "previous votes: none\n"
+  result = "previous votes:\n"
+  for line in bot.voteHistory:
+    result.add(line)
+    result.add('\n')
+
+proc votingChoicesText(bot: Bot): string =
+  ## Returns the legal voting choices for the current meeting.
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetCanBeSus(i):
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(bot.voteTargetName(i))
+  if result.len > 0:
+    result.add(", ")
+  result.add("skip")
+
+proc accusationChoicesText(bot: Bot): string =
+  ## Returns the living non-self colors that can be accused.
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetCanBeSus(i):
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(bot.voteTargetName(i))
+  if result.len == 0:
+    result = "none"
+
+proc voteCommandTarget(bot: Bot, reply: string): int =
+  ## Parses a constrained AI vote command into a voting target.
+  let normalized = reply.normalizeChatText()
+  if normalized == "skip" or normalized == "vote skip" or
+      (" " & normalized & " ").contains(" vote skip "):
+    return bot.votePlayerCount
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetCanBeSus(i):
+      continue
+    let
+      name = bot.voteTargetName(i).normalizeChatText()
+      padded = " " & normalized & " "
+    if normalized == name or normalized == "vote " & name or
+        padded.contains(" vote " & name & " "):
+      return i
+  VoteUnknown
 
 proc voteSusTargetName(bot: Bot): string =
   ## Returns the current living non-self sus target name.
@@ -2800,6 +2920,25 @@ proc voteSummary(bot: Bot): string =
 proc voteChatSpeakerName(line: VoteChatLine): string =
   ## Returns a display name for one parsed chat speaker.
   playerColorName(line.speakerColor)
+
+proc recordChatHistory(bot: var Bot) =
+  ## Records newly observed chat lines into the round chat history.
+  bot.beginVoteHistoryMeeting()
+  for line in bot.voteChatLines:
+    let entry =
+      "meeting " & $bot.voteMeetingIndex & ": " &
+      line.voteChatSpeakerName() & ": " & line.text
+    if entry notin bot.voteChatHistory:
+      bot.voteChatHistory.add(entry)
+
+proc voteChatHistoryText(bot: Bot): string =
+  ## Returns all observed voting chat as prompt text.
+  if bot.voteChatHistory.len == 0:
+    return "chat history: none\n"
+  result = "chat history:\n"
+  for line in bot.voteChatHistory:
+    result.add(line)
+    result.add('\n')
 
 proc voteBodyLocationText(text: string): string =
   ## Extracts a visible body location from normalized chat text.
@@ -2849,7 +2988,7 @@ proc addVotingFrameVotes(bot: Bot, text: var string) =
   if not found:
     text.add("votes: none\n")
 
-proc votingAsciiFrame(bot: Bot): string =
+proc votingAsciiFrame(bot: Bot, includeDecision = true): string =
   ## Builds the plain text voting frame for LLM-style reasoning.
   result = "--- voting ---\n"
   for i in 0 ..< bot.votePlayerCount:
@@ -2871,9 +3010,10 @@ proc votingAsciiFrame(bot: Bot): string =
   result.add(bot.voteSusTargetName())
   result.add('\n')
   bot.addVotingFrameVotes(result)
-  result.add("vote target: ")
-  result.add(bot.voteTargetName(bot.voteTarget))
-  result.add('\n')
+  if includeDecision:
+    result.add("vote target: ")
+    result.add(bot.voteTargetName(bot.voteTarget))
+    result.add('\n')
   result.add("--- end voting ---")
 
 proc printVotingFrame(bot: var Bot) =
@@ -2883,6 +3023,171 @@ proc printVotingFrame(bot: var Bot) =
     return
   bot.lastVoteFrame = frame
   echo frame
+
+proc cleanAiChatReply(reply: string): string =
+  ## Converts a constrained AI chat reply to a game chat message.
+  result = reply.strip()
+  let lower = result.toLowerAscii()
+  if lower.startsWith("say:"):
+    result = result[4 .. ^1].strip()
+  elif lower.startsWith("say "):
+    result = result[4 .. ^1].strip()
+  elif lower.startsWith("chat:"):
+    result = result[5 .. ^1].strip()
+  if result.len >= 2 and (
+      (result[0] == '"' and result[^1] == '"') or
+      (result[0] == '\'' and result[^1] == '\'')):
+    result = result[1 ..< result.high].strip()
+  result = cleanChatMessage(result)
+
+proc votingChatPrompt(bot: Bot, frame: string, turn: int): string =
+  ## Builds the OpenAI prompt for one voting chat turn.
+  "You are " & playerColorName(bot.selfColorIndex) & ".\n" &
+    "Your role is " & roleName(bot.role) & ".\n" &
+    "This is chat turn " & $turn & " of 2 before voting.\n" &
+    "Living players you may accuse: " & bot.accusationChoicesText() & "\n" &
+    "If you are imposter, accuse a living non-self player.\n" &
+    "If you are crew, accuse a living player only when the transcript " &
+    "or vote history gives evidence.\n" &
+    "Say one short useful message under 70 characters.\n" &
+    "Reply with exactly one line: say <message>.\n" &
+    bot.voteHistoryText() &
+    bot.voteChatHistoryText() &
+    "---vote---\n" & frame
+
+proc openAiVotingChat(bot: var Bot, frame: string, turn: int): string =
+  ## Asks OpenAI for one voting chat message.
+  when defined(italkalotLibrary):
+    ""
+  else:
+    if openai.aiKey.len == 0:
+      return ""
+    var messages = @[
+      openai.ConversationMessage(
+        role: "system",
+        content:
+          "You are chatting during an Among Them vote. " &
+          "Do not mention being an AI. " &
+          "Do not accuse yourself or dead players. " &
+          "Output exactly: say <short message>."
+      ),
+      openai.ConversationMessage(
+        role: "user",
+        content: bot.votingChatPrompt(frame, turn)
+      )
+    ]
+    try:
+      let reply = openai.talkToAI(messages).strip()
+      bot.aiChatReply = reply
+      result = cleanAiChatReply(reply)
+      if result.len == 0:
+        echo "AI chat invalid: ", reply
+      else:
+        echo "AI chat: ", result
+    except CatchableError as err:
+      bot.aiChatReply = "error: " & err.msg
+      echo "AI chat error: ", err.msg
+
+proc waitForVotingConversation(bot: var Bot, frame: string): bool =
+  ## Advances the two OpenAI chat turns before voting.
+  when defined(italkalotLibrary):
+    false
+  else:
+    if openai.aiKey.len == 0:
+      bot.aiChatTurn = 3
+      return false
+    if bot.pendingChat.len > 0:
+      bot.intent = "waiting to send queued chat"
+      bot.thought(bot.intent)
+      return true
+
+    template queueAiChat(turn: int) =
+      let message = bot.openAiVotingChat(frame, turn)
+      if message.len > 0:
+        bot.pendingChat = message
+      bot.aiChatTurn = turn
+      bot.aiNextTurnTick = bot.frameTick + VoteAiTurnWaitTicks
+      bot.intent =
+        if message.len > 0:
+          "chat turn " & $turn & ": " & message
+        else:
+          "chat turn " & $turn & " skipped"
+      bot.thought(bot.intent)
+
+    case bot.aiChatTurn
+    of 0:
+      queueAiChat(1)
+      return true
+    of 1:
+      if bot.frameTick < bot.aiNextTurnTick:
+        bot.intent = "waiting after chat turn 1 " &
+          $max(0, bot.aiNextTurnTick - bot.frameTick)
+        bot.thought(bot.intent)
+        return true
+      queueAiChat(2)
+      return true
+    of 2:
+      if bot.frameTick < bot.aiNextTurnTick:
+        bot.intent = "waiting after chat turn 2 " &
+          $max(0, bot.aiNextTurnTick - bot.frameTick)
+        bot.thought(bot.intent)
+        return true
+      bot.aiChatTurn = 3
+    else:
+      discard
+    false
+
+proc votingPrompt(bot: Bot, frame: string): string =
+  ## Builds the OpenAI prompt for one voting decision.
+  "Legal vote choices: " & bot.votingChoicesText() & "\n" &
+    "Do not vote for yourself or dead players.\n" &
+    "Reply with exactly one line: vote <color> or vote skip.\n" &
+    bot.voteHistoryText() &
+    bot.voteChatHistoryText() &
+    "---vote---\n" & frame
+
+proc openAiVotingTarget(bot: var Bot, frame: string): int =
+  ## Asks OpenAI for a constrained voting target.
+  when defined(italkalotLibrary):
+    VoteUnknown
+  else:
+    let prompt = bot.votingPrompt(frame)
+    if prompt == bot.aiVoteFrame:
+      return bot.aiVoteTarget
+    bot.aiVoteFrame = prompt
+    bot.aiVoteTarget = VoteUnknown
+    bot.aiVoteReply = ""
+    if openai.aiKey.len == 0:
+      return VoteUnknown
+    var messages = @[
+      openai.ConversationMessage(
+        role: "system",
+        content:
+          "You vote in Among Them. Use the OCR transcript only. " &
+          "If a living player is called sus, vote that player. " &
+          "If someone voted against you, vote that living player. " &
+          "Never vote for yourself or a dead player. " &
+          "If there is no good target, vote skip. " &
+          "Output exactly: vote <color> or vote skip."
+      ),
+      openai.ConversationMessage(
+        role: "user",
+        content: prompt
+      )
+    ]
+    try:
+      let reply = openai.talkToAI(messages).strip()
+      bot.aiVoteReply = reply
+      bot.aiVoteTarget = bot.voteCommandTarget(reply)
+      if bot.aiVoteTarget == VoteUnknown:
+        echo "AI vote invalid: ", reply
+      else:
+        echo "AI vote target: ", bot.voteTargetName(bot.aiVoteTarget)
+      bot.aiVoteTarget
+    except CatchableError as err:
+      bot.aiVoteReply = "error: " & err.msg
+      echo "AI vote error: ", err.msg
+      VoteUnknown
 
 proc selfVoteChoice(bot: Bot): int =
   ## Returns the parsed vote choice for the local player.
@@ -2985,9 +3290,19 @@ proc decideVotingMask(bot: var Bot): uint8 =
   bot.hasPathStep = false
   bot.path.setLen(0)
   bot.voteTarget = bot.desiredVotingTarget()
+  let listenedTicks =
+    if bot.voteStartTick >= 0:
+      bot.frameTick - bot.voteStartTick
+    else:
+      0
+  if bot.voteDelayTicks < 0:
+    bot.voteDelayTicks = bot.randomVoteDelay()
   let instantVote =
     bot.voteTarget >= 0 and bot.ownSusVotingTarget() == bot.voteTarget
+  bot.recordVoteHistory()
+  bot.recordChatHistory()
   bot.printVotingFrame()
+  let aiFrame = bot.votingAsciiFrame(false)
   let ownVote = bot.selfVoteChoice()
   if ownVote != VoteUnknown:
     bot.desiredMask = 0
@@ -2995,6 +3310,14 @@ proc decideVotingMask(bot: var Bot): uint8 =
     bot.intent = "voted " & bot.voteTargetName(ownVote)
     bot.thought(bot.intent)
     return 0
+  if bot.waitForVotingConversation(aiFrame):
+    bot.desiredMask = 0
+    bot.controllerMask = 0
+    return 0
+  if listenedTicks >= bot.voteDelayTicks:
+    let aiTarget = bot.openAiVotingTarget(aiFrame)
+    if aiTarget != VoteUnknown:
+      bot.voteTarget = aiTarget
   if bot.voteCursor != bot.voteTarget:
     let direction = bot.voteMoveDirection(bot.voteTarget)
     let mask =
@@ -3011,13 +3334,6 @@ proc decideVotingMask(bot: var Bot): uint8 =
     bot.intent = "voting cursor to " & bot.voteTargetName(bot.voteTarget)
     bot.thought(bot.intent)
     return bot.desiredMask
-  let listenedTicks =
-    if bot.voteStartTick >= 0:
-      bot.frameTick - bot.voteStartTick
-    else:
-      0
-  if bot.voteDelayTicks < 0:
-    bot.voteDelayTicks = bot.randomVoteDelay()
   if not instantVote and listenedTicks < bot.voteDelayTicks:
     bot.desiredMask = 0
     bot.controllerMask = 0
@@ -3556,9 +3872,28 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
+proc loadOpenAiKey() =
+  ## Loads the OpenAI key from ~/secrets/openai.key.
+  when defined(italkalotLibrary):
+    discard
+  else:
+    if openAiKeyLoaded:
+      return
+    openAiKeyLoaded = true
+    let keyPath = getHomeDir() / "secrets" / "openai.key"
+    if not fileExists(keyPath):
+      echo "OpenAI key not found: ", keyPath
+      return
+    openai.aiKey = readFile(keyPath).strip()
+    if openai.aiKey.len == 0:
+      echo "OpenAI key is empty: ", keyPath
+    else:
+      echo "OpenAI key loaded: ", keyPath
+
 proc initBot(mapPath = ""): Bot =
   ## Builds a bot and loads all map and sprite data.
   setCurrentDir(gameDir())
+  loadOpenAiKey()
   var config = defaultGameConfig()
   if mapPath.len > 0:
     config.mapPath = mapPath
@@ -3593,6 +3928,8 @@ proc initBot(mapPath = ""): Bot =
   result.cameraLock = NoLock
   result.role = RoleCrewmate
   result.selfColorIndex = -1
+  result.clearAiVote()
+  result.clearVoteHistory()
   result.clearVotingState()
   result.intent = "waiting for first frame"
 
