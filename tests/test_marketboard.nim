@@ -789,7 +789,7 @@ proc testFullGearSet() =
   sim.players[idx].gathererGear[ord(SlotPants)] = LeatherPants
   sim.players[idx].gathererGear[ord(SlotShoes)] = LeatherShoes
   let fullWork = sim.players[idx].effectiveGatherWork()
-  let expected = GatherWorkNeeded * (100 - 5 * GearBonusPerSlot) div 100
+  let expected = max(1, GatherWorkNeeded * (100 - 5 * GearBonusPerSlot) div 100)
   doAssert fullWork == expected,
     "full gear should give " & $expected & " gather ticks, got " & $fullWork
   doAssert sim.players[idx].equippedGearCount() == 5

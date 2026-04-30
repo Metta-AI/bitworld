@@ -39,7 +39,8 @@ bin = @[
   "marketboard/players/rkhenna",
   "marketboard/players/pipitori",
   "marketboard/replay_viewer",
-  "tools/batch_market"
+  "tools/batch_market",
+  "tools/quick_replay"
 ]
 
 switch("path", "common")

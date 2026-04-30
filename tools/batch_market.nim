@@ -49,6 +49,7 @@ type
     ticks: int
     top: int
     replayDir: string
+    fixedLineup: bool
 
   MatchResult = object
     seed: int
@@ -95,15 +96,19 @@ proc decide(bot: var BotRunner, state: GameState): uint8 =
   of bkRkhenna: rk.decide(bot.rkState, state)
   of bkPipitori: pip.decide(bot.pipState, state)
 
-proc generateLineup(rng: var Rand): seq[BotKind] =
+proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
+  if fixed:
+    for kind in BotKind:
+      result.add kind
+    return
   let count = rng.rand(MinBots .. MaxBots)
   for _ in 0 ..< count:
     result.add BotKind(rng.rand(BotCount - 1))
   rng.shuffle(result)
 
-proc runMatch(seed: int, ticks: int, replayPath: string): MatchResult =
+proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): MatchResult =
   var rng = initRand(seed)
-  let lineup = generateLineup(rng)
+  let lineup = generateLineup(rng, fixedLineup)
 
   var sim = initSimServer(0)
   var bots: seq[BotRunner]
@@ -174,6 +179,8 @@ proc parseArgs(): BatchConfig =
         result.top = parseInt(val)
       of "replay-dir":
         result.replayDir = val
+      of "fixed-lineup":
+        result.fixedLineup = true
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     else:
@@ -194,7 +201,7 @@ proc run(config: BatchConfig) =
   for i in 0 ..< config.matches:
     let seed = i
     let replayPath = rootDir / config.replayDir / &"match_{seed:04d}.mbreplay"
-    let res = runMatch(seed, config.ticks, replayPath)
+    let res = runMatch(seed, config.ticks, replayPath, config.fixedLineup)
     results.add res
 
     let lineupStr = res.lineup.join(", ")
@@ -230,5 +237,5 @@ when isMainModule:
     run(parseArgs())
   except ValueError as e:
     echo e.msg
-    echo "Usage: batch_market [--matches:100] [--ticks:5000] [--top:5] [--replay-dir:replays/]"
+    echo "Usage: batch_market [--matches:100] [--ticks:5000] [--top:5] [--replay-dir:replays/] [--fixed-lineup]"
     quit(1)

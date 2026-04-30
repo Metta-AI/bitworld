@@ -11,7 +11,7 @@ const
   Accel* = 80
   FrictionNum* = 180
   FrictionDen* = 256
-  MaxSpeed* = 960
+  MaxSpeed* = 480
   StopThreshold* = 20
   MinPlayerSpawnSpacing* = 16
   GatherWorkNeeded* = 48
@@ -39,7 +39,7 @@ const
   HubCenterTx* = 16
   HubCenterTy* = 16
   GearSlotCount* = 5
-  GearBonusPerSlot* = 10
+  GearBonusPerSlot* = 20
 
 type
   Role* = enum

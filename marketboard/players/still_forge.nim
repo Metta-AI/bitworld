@@ -39,6 +39,10 @@ type
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
   inc bot.ticksInPhase
+  if bot.ticksInPhase > 600:
+    bot.phase = WaitForState
+    bot.ticksInPhase = 0
+    return 0
 
   case bot.phase
   of WaitForState:
@@ -295,10 +299,6 @@ proc runBot(host: string, port: int, name: string) =
     sendInput(ws, mask)
     bot.prevMask = mask
 
-    if bot.ticksInPhase > 300:
-      echo "Still Forge stuck in ", bot.phase, " for ", bot.ticksInPhase, " ticks, resetting"
-      bot.phase = WaitForState
-      bot.ticksInPhase = 0
 
 when isMainModule:
   var

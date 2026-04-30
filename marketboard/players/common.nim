@@ -668,7 +668,7 @@ proc followPath*(nav: var Navigator, px, py: int): uint8 =
 
   if px == nav.lastPx and py == nav.lastPy:
     inc nav.stuckTicks
-    if nav.stuckTicks > 6:
+    if nav.stuckTicks > 12:
       nav.useAltAxis = not nav.useAltAxis
       nav.stuckTicks = 0
   else:

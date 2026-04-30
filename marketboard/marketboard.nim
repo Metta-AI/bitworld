@@ -224,6 +224,17 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
     if sim.letterSprites.len > 0:
       sim.fb.blitText(sim.letterSprites, "C", 40 + 18, invY2)
 
+  let invY3 = 25
+  let t3Wood = player.inv.ironwood
+  let t3Ore = player.inv.iron
+  if t3Wood > 0 or t3Ore > 0:
+    sim.fb.renderNumber(sim.digitSprites, t3Wood, 1, invY3)
+    if sim.letterSprites.len > 0:
+      sim.fb.blitText(sim.letterSprites, "I", 1 + 18, invY3)
+    sim.fb.renderNumber(sim.digitSprites, t3Ore, 40, invY3)
+    if sim.letterSprites.len > 0:
+      sim.fb.blitText(sim.letterSprites, "R", 40 + 18, invY3)
+
   if sim.letterSprites.len > 0 and player.state == Idle:
     var labelObjIndex = -1
     let target = player.interactionTile()
@@ -245,6 +256,24 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
         let hint = "HOLD A"
         let hintX = (ScreenWidth - hint.len * 6) div 2
         sim.fb.blitText(sim.letterSprites, hint, hintX, ScreenHeight - 7)
+      elif obj.kind == GatherNodeObj and not obj.depleted:
+        var hint = ""
+        if player.role != Gatherer:
+          hint = "NEED GATHERER"
+        elif not player.canGatherMaterial(obj.material):
+          hint = "NEED T" & $(materialTier(obj.material) - 1) & " GEAR"
+        if hint.len > 0:
+          let hintX = (ScreenWidth - hint.len * 6) div 2
+          sim.fb.blitText(sim.letterSprites, hint, hintX, ScreenHeight - 7)
+      elif obj.kind == CraftStationObj:
+        var hint = ""
+        if player.role != Crafter:
+          hint = "NEED CRAFTER"
+        elif not player.inv.hasCraftMaterials():
+          hint = "NEED MATERIALS"
+        if hint.len > 0:
+          let hintX = (ScreenWidth - hint.len * 6) div 2
+          sim.fb.blitText(sim.letterSprites, hint, hintX, ScreenHeight - 7)
 
   if player.state == Gathering:
     sim.drawProgressBar(player.actionProgress, player.effectiveGatherWork(), 50, ScreenHeight - 5)
