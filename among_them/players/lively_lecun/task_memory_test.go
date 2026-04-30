@@ -29,124 +29,6 @@ func TestTaskMemory_IconPromotesImmediately(t *testing.T) {
 	}
 }
 
-func TestTaskMemory_RadarExcludedAfterKFrames(t *testing.T) {
-	m := NewTaskMemory()
-	// Put camera on station 0; station 5 is far off-screen.
-	cam := camFor(0)
-	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
-	target := 5 // arbitrary station not near station 0
-
-	// K-1 frames with no arrow: stay TaskMaybe.
-	for i := 0; i < noArrowK-1; i++ {
-		m.Update(player, cam, nil, nil)
-	}
-	if got := m.State(target); got != TaskMaybe {
-		t.Fatalf("after %d no-arrow frames: state(%d) = %v, want TaskMaybe",
-			noArrowK-1, target, got)
-	}
-
-	// Kth frame: flip to TaskRadarExcluded.
-	m.Update(player, cam, nil, nil)
-	if got := m.State(target); got != TaskRadarExcluded {
-		t.Fatalf("after %d no-arrow frames: state(%d) = %v, want TaskRadarExcluded",
-			noArrowK, target, got)
-	}
-}
-
-func TestTaskMemory_ArrowResetsStreakButDoesNotPromoteExclusion(t *testing.T) {
-	m := NewTaskMemory()
-	cam := camFor(0)
-	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
-
-	// Pick any station the resolver can return from this camera. Not all
-	// stations sit on a viewport-edge bearing that NearestStationAlongBearing
-	// accepts (many are occluded by closer stations along the same ray) --
-	// just use whatever the border scan actually picks.
-	target, arr, ok := anyResolvableStation(cam, player)
-	if !ok {
-		t.Fatalf("setup: no border-pixel bearing resolves to any station")
-	}
-
-	// Force into TaskRadarExcluded.
-	for i := 0; i < noArrowK; i++ {
-		m.Update(player, cam, nil, nil)
-	}
-	if got := m.State(target); got != TaskRadarExcluded {
-		t.Fatalf("setup: expected TaskRadarExcluded, got %v", got)
-	}
-
-	// An arrow arriving late must NOT promote back to Maybe: once a
-	// station demotes, it stays demoted so tier-1 Maybes remain a small
-	// set biased toward the player's known arrow history.
-	m.Update(player, cam, nil, []RadarArrow{arr})
-	if got := m.State(target); got != TaskRadarExcluded {
-		t.Fatalf("arrow after exclusion: state(%d) = %v, want TaskRadarExcluded (no promotion)", target, got)
-	}
-}
-
-func TestTaskMemory_ArrowKeepsMaybe(t *testing.T) {
-	m := NewTaskMemory()
-	cam := camFor(0)
-	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
-
-	target, arr, ok := anyResolvableStation(cam, player)
-	if !ok {
-		t.Fatalf("setup: no border-pixel bearing resolves to any station")
-	}
-
-	// K-1 no-arrow frames: right up to the brink of demotion.
-	for i := 0; i < noArrowK-1; i++ {
-		m.Update(player, cam, nil, nil)
-	}
-	if got := m.State(target); got != TaskMaybe {
-		t.Fatalf("pre-arrow: state(%d) = %v, want TaskMaybe", target, got)
-	}
-	// An arrow on this frame resets the no-arrow streak, so the next
-	// on-the-nose frame without an arrow must not demote.
-	m.Update(player, cam, nil, []RadarArrow{arr})
-	m.Update(player, cam, nil, nil)
-	if got := m.State(target); got != TaskMaybe {
-		t.Fatalf("post-arrow: state(%d) = %v, want TaskMaybe (arrow should have reset streak)", target, got)
-	}
-}
-
-// anyResolvableStation returns (station, arrow, true) for any station that
-// the border-scan heuristic picks for some edge pixel. Used to keep the test
-// robust against the specific geometry of TaskStations.
-func anyResolvableStation(cam Camera, player Point) (int, RadarArrow, bool) {
-	try := func(sx, sy int) (int, RadarArrow, bool) {
-		bearing := Point{cam.X + sx, cam.Y + sy}
-		if idx := NearestStationAlongBearing(player, bearing, nil); idx >= 0 {
-			c := TaskStations[idx].Center
-			offScreen := c.X < cam.X-offScreenMargin ||
-				c.X >= cam.X+ScreenWidth+offScreenMargin ||
-				c.Y < cam.Y-offScreenMargin ||
-				c.Y >= cam.Y+ScreenHeight+offScreenMargin
-			if offScreen {
-				return idx, RadarArrow{sx, sy}, true
-			}
-		}
-		return -1, RadarArrow{}, false
-	}
-	for x := 0; x < ScreenWidth; x++ {
-		if i, a, ok := try(x, 0); ok {
-			return i, a, true
-		}
-		if i, a, ok := try(x, ScreenHeight-1); ok {
-			return i, a, true
-		}
-	}
-	for y := 1; y < ScreenHeight-1; y++ {
-		if i, a, ok := try(0, y); ok {
-			return i, a, true
-		}
-		if i, a, ok := try(ScreenWidth-1, y); ok {
-			return i, a, true
-		}
-	}
-	return -1, RadarArrow{}, false
-}
-
 func TestTaskMemory_SeenNoAfterOnScreenKFramesWithoutIcon(t *testing.T) {
 	m := NewTaskMemory()
 	// Put camera on station 0 so station 0 is well inside on-screen.
@@ -234,7 +116,7 @@ func TestTaskMemory_Reset(t *testing.T) {
 	m := NewTaskMemory()
 	m.Mark(0, TaskKnown)
 	m.Mark(5, TaskSeenNo)
-	m.Mark(10, TaskRadarExcluded)
+	m.Mark(10, TaskSeenNo)
 	m.Reset()
 	for i := range TaskStations {
 		if got := m.State(i); got != TaskMaybe {
