@@ -16,9 +16,9 @@
  */
 
 import type WebSocket from "ws";
-import { BUTTON_A, CHAT_MAX_TOTAL } from "./constants.js";
-import { sendInput, sendChat, moveToward } from "./bot_utils.js";
-import { chatMenuSequence } from "./menu_defs.js";
+import { BUTTON_A } from "./constants.js";
+import { sendInput, sendChat, truncateChatInput, moveToward } from "./bot_utils.js";
+import { chatMenuSequenceWithTargetPick } from "./menu_defs.js";
 import type { BotController } from "./bot_common.js";
 
 // ---------------------------------------------------------------------------
@@ -44,21 +44,26 @@ export type Task =
   // LOOP tasks (singleton per kind)
   | { kind: "loop_auto_grant" }
   | { kind: "loop_auto_accept_color" }
-  | { kind: "loop_auto_accept_role" }
-  | { kind: "loop_read_global"; intervalTicks: number };
+  | { kind: "loop_auto_accept_role" };
 
-const LOOP_KINDS = new Set<string>([
-  "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
-  "loop_read_global",
+// Each task kind must appear in exactly one of these sets. If you add a new
+// kind, put it in the correct set — the classification functions use strict
+// lookups, so an omitted kind will fail isOnceTask/isSequenceTask/isLoopTask.
+const ONCE_KINDS = new Set<string>([
+  "shout", "chat", "exit_chatroom",
 ]);
 
 const SEQUENCE_KINDS = new Set<string>([
-  "pursue_chat", "pursue_exchange", "walk_to",
+  "walk_to", "pursue_chat", "pursue_exchange",
 ]);
 
-export function isLoopTask(t: Task): boolean { return LOOP_KINDS.has(t.kind); }
+const LOOP_KINDS = new Set<string>([
+  "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
+]);
+
+export function isOnceTask(t: Task): boolean { return ONCE_KINDS.has(t.kind); }
 export function isSequenceTask(t: Task): boolean { return SEQUENCE_KINDS.has(t.kind); }
-export function isOnceTask(t: Task): boolean { return !isLoopTask(t) && !isSequenceTask(t); }
+export function isLoopTask(t: Task): boolean { return LOOP_KINDS.has(t.kind); }
 
 // ---------------------------------------------------------------------------
 // Runtime state
@@ -200,24 +205,21 @@ function fail(reason: string): TaskResult { return { kind: "failed", reason }; }
 function done(reason?: string): TaskResult { return { kind: "done", reason }; }
 
 function pushChatAction(bot: BotController, action: string): boolean {
-  const seq = chatMenuSequence(action);
+  const seq = chatMenuSequenceWithTargetPick(action);
   if (seq.length === 0) return false;
-  if (action === "R.ACCPT" || action === "C.ACCPT") {
-    seq.push(BUTTON_A, 0);  // auto-confirm target-select
-  }
   bot.actions.push(...seq);
   return true;
 }
 
-const CHAT_ACTION_BY_KIND: Record<string, string> = {
-  offer_color: "C.OFFER",
-  offer_role: "R.OFFER",
-  accept_color: "C.ACCPT",
-  accept_role: "R.ACCPT",
-  grant_entry: "GRANT",
-  exit_chatroom: "EXIT",
-  show_role_oneway: "ROLE",
-};
+// After creating our own chatroom, wait this many ticks before giving up on
+// the target joining. Random jitter is added so symmetric bots desync — two
+// bots exiting at the same tick would then both create chatrooms again and
+// never pair up.
+const GRANT_WAIT_MIN_TICKS = 12;
+const GRANT_WAIT_JITTER_TICKS = 37;
+function randomGrantDeadline(tick: number): number {
+  return tick + GRANT_WAIT_MIN_TICKS + Math.floor(Math.random() * GRANT_WAIT_JITTER_TICKS);
+}
 
 function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResult {
   const belief = bot.belief;
@@ -230,31 +232,28 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
     if (tick - ti.startTick > limit) return fail("timeout");
   }
 
+  // Shared: send a chat message and return an emit reason that includes the
+  // literal bytes sent and a TRUNCATED warning if the input was clipped.
+  const fireChat = (raw: string): TaskResult => {
+    const { sent, truncated } = truncateChatInput(raw);
+    sendChat(ws, sent);
+    sendInput(ws, 0);
+    ti.lastFiredTick = tick;
+    const reason = truncated
+      ? `sent "${sent}" (TRUNCATED from ${raw.length} chars)`
+      : `sent "${sent}"`;
+    return emit(reason);
+  };
+
   switch (t.kind) {
     // ---- ONCE chat tasks ----
     case "shout": {
       if (belief.phase !== "playing" && belief.phase !== "hostage_select") return SKIP;
-      const sent = t.text.slice(0, CHAT_MAX_TOTAL);
-      sendChat(ws, sent);
-      sendInput(ws, 0);
-      ti.lastFiredTick = tick;
-      const truncated = sent.length < t.text.length;
-      const reason = truncated
-        ? `sent "${sent}" (TRUNCATED from ${t.text.length} → ${CHAT_MAX_TOTAL} chars)`
-        : `sent "${sent}"`;
-      return emit(reason);
+      return fireChat(t.text);
     }
     case "chat": {
       if (belief.phase !== "chatroom") return SKIP;
-      const sent = t.text.slice(0, CHAT_MAX_TOTAL);
-      sendChat(ws, sent);
-      sendInput(ws, 0);
-      ti.lastFiredTick = tick;
-      const truncated = sent.length < t.text.length;
-      const reason = truncated
-        ? `sent "${sent}" (TRUNCATED from ${t.text.length} → ${CHAT_MAX_TOTAL} chars)`
-        : `sent "${sent}"`;
-      return emit(reason);
+      return fireChat(t.text);
     }
 
     case "exit_chatroom": {
@@ -319,7 +318,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         sendInput(ws, bot.actions.shift()!);
         if (ti.createdOwnChatroomTick === null) {
           ti.createdOwnChatroomTick = tick;
-          ti.grantDeadlineTick = tick + 12 + Math.floor(Math.random() * 37);
+          ti.grantDeadlineTick = randomGrantDeadline(tick);
         }
         return EMIT;
       }
@@ -340,7 +339,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
       sendInput(ws, bot.actions.shift()!);
       if (ti.createdOwnChatroomTick === null) {
         ti.createdOwnChatroomTick = tick;
-        ti.grantDeadlineTick = tick + 12 + Math.floor(Math.random() * 37);
+        ti.grantDeadlineTick = randomGrantDeadline(tick);
       }
       return EMIT;
     }
@@ -435,7 +434,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         sendInput(ws, bot.actions.shift()!);
         if (ti.createdOwnChatroomTick === null) {
           ti.createdOwnChatroomTick = tick;
-          ti.grantDeadlineTick = tick + 12 + Math.floor(Math.random() * 37);
+          ti.grantDeadlineTick = randomGrantDeadline(tick);
         }
         return EMIT;
       }
@@ -457,7 +456,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
       sendInput(ws, bot.actions.shift()!);
       if (ti.createdOwnChatroomTick === null) {
         ti.createdOwnChatroomTick = tick;
-        ti.grantDeadlineTick = tick + 12 + Math.floor(Math.random() * 37);
+        ti.grantDeadlineTick = randomGrantDeadline(tick);
       }
       return EMIT;
     }
@@ -483,13 +482,6 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
-    }
-
-    case "loop_read_global": {
-      const interval = t.intervalTicks;
-      if (tick - ti.lastFiredTick < interval) return SKIP;
-      ti.lastFiredTick = tick;
-      return SKIP;
     }
   }
   return SKIP;
@@ -563,7 +555,6 @@ const VALID_KINDS = new Set<string>([
   "shout", "chat", "exit_chatroom",
   "walk_to", "pursue_chat", "pursue_exchange",
   "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
-  "loop_read_global",
 ]);
 
 function coerceTask(raw: any): Task | null {
@@ -586,9 +577,6 @@ function coerceTask(raw: any): Task | null {
     case "walk_to":
       return Number.isFinite(raw.x) && Number.isFinite(raw.y) && Number.isFinite(raw.timeLimitTicks)
         ? { kind: "walk_to", x: raw.x | 0, y: raw.y | 0, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
-    case "loop_read_global":
-      return Number.isFinite(raw.intervalTicks)
-        ? { kind: k, intervalTicks: Math.max(1, raw.intervalTicks | 0) } : null;
     case "exit_chatroom":
     case "loop_auto_grant": case "loop_auto_accept_color": case "loop_auto_accept_role":
       return { kind: k } as Task;

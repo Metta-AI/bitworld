@@ -41,7 +41,6 @@ export interface BeliefState {
   nearbyColors: number[];
   prevNearbyColors: number[];
   chatLog: { tick: number; from: string; text: string }[];
-  actionLog: { tick: number; action: string }[];
   tick: number;
   lastRoleCheckTick: number;
   lastInfoPollTick: number;
@@ -80,7 +79,6 @@ export function createBeliefState(name: string): BeliefState {
     nearbyColors: [],
     prevNearbyColors: [],
     chatLog: [],
-    actionLog: [],
     tick: 0,
     lastRoleCheckTick: -999,
     lastInfoPollTick: -999,
@@ -279,11 +277,6 @@ export function updateFromInfoScreen(state: BeliefState, entries: InfoScreenEntr
   return newInfo;
 }
 
-export function updateFromCommand(state: BeliefState, command: string): void {
-  state.actionLog.push({ tick: state.tick, action: command });
-  if (state.actionLog.length > 50) state.actionLog.shift();
-}
-
 // ---------------------------------------------------------------------------
 // Trigger events — detect decision points for the LLM
 // ---------------------------------------------------------------------------
@@ -422,13 +415,6 @@ export function formatContextDump(state: BeliefState, event: TriggerEvent): stri
     for (const m of recentChat) {
       lines.push(`  ${m.from}: ${m.text}`);
     }
-    lines.push("");
-  }
-
-  const recentActions = state.actionLog.slice(-5);
-  if (recentActions.length > 0) {
-    lines.push("MY RECENT ACTIONS:");
-    lines.push("  " + recentActions.map(a => a.action).join(" | "));
     lines.push("");
   }
 

@@ -13,8 +13,8 @@ export const HADES_ROLE_NAME = "Hades";
 export const PERSEPHONE_ROLE_NAME = "Persephone";
 export const CERBERUS_ROLE_NAME = "Cerberus";
 export const DEMETER_ROLE_NAME = "Demeter";
-export const SHADES_ROLE_NAME = `${TEAM_A_NAME}`;
-export const NYMPHS_ROLE_NAME = `${TEAM_B_NAME}`;
+export const SHADES_ROLE_NAME = "Shade";
+export const NYMPHS_ROLE_NAME = "Nymph";
 
 
 export const ROOM_A_NAME = "Underworld";
@@ -91,8 +91,8 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
     { role: Role.Persephone, team: Team.TeamB, count: 1 },
     { role: Role.Cerberus, team: Team.TeamA, count: 1 },
     { role: Role.Demeter, team: Team.TeamB, count: 1 },
-    { role: Role.Shades, team: Team.TeamA, count: 4 },
-    { role: Role.Nymphs, team: Team.TeamB, count: 4 },
+    { role: Role.Shades, team: Team.TeamA, count: 3 },
+    { role: Role.Nymphs, team: Team.TeamB, count: 3 },
   ],
   rounds: [
     { durationSecs: 15, hostages: 1 },

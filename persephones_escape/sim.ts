@@ -1,5 +1,5 @@
 import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ChatMessage, type ChatroomMessage, type Chatroom, type Obstacle, type uint8, type GameConfig } from "./types.js";
-import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, CHATROOM_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig } from "./constants.js";
+import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, CHATROOM_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig, playerSpriteName } from "./constants.js";
 import { Framebuffer } from "./framebuffer.js";
 import { emptyInput } from "./protocol.js";
 import { clamp, distSq } from "./util.js";
@@ -60,6 +60,8 @@ export class Sim {
   exchangeDuration = 0;
   exchangeTimer = 0;
 
+  gameLog: { tick: number; event: string }[] = [];
+
   seed: number;
 
   constructor(config: GameConfig = DEFAULT_GAME_CONFIG, seed = 0xb1770) {
@@ -75,6 +77,14 @@ export class Sim {
 
   randInt(max: number): number {
     return Math.floor(this.rng() * max);
+  }
+
+  private pn(pi: number): string {
+    return playerSpriteName(pi);
+  }
+
+  private log(event: string) {
+    this.gameLog.push({ tick: this.tickCount, event });
   }
 
   // ---- World geometry ----
@@ -423,6 +433,7 @@ export class Sim {
           cr.colorOffers.delete(target);
           cr.colorOffers.delete(pi);
           cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} swapped colors ${pref(target)}` });
+          this.log(`${this.pn(pi)} and ${this.pn(target)} exchanged colors`);
         } else {
           player.revealedTo.add(target);
           this.players[target].revealedTo.add(pi);
@@ -431,6 +442,7 @@ export class Sim {
           cr.revealOffers.delete(target);
           cr.revealOffers.delete(pi);
           cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} shared roles ${pref(target)}` });
+          this.log(`${this.pn(pi)} and ${this.pn(target)} shared roles`);
         }
         player.shareSelectOpen = false;
       }
@@ -721,6 +733,7 @@ export class Sim {
     player.chatMenuOpen = false; player.chatMenuCat = 0; player.chatMenuItem = 0;
     player.shareSelectOpen = false; player.shareSelectRow = 0;
     player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
+    this.log(`${this.pn(pi)} opened chatroom`);
   }
 
   findNearbyChatroomPlayer(pi: number): number {
@@ -764,6 +777,7 @@ export class Sim {
     p.chatMenuOpen = false; p.chatMenuCat = 0; p.chatMenuItem = 0;
     p.shareSelectOpen = false; p.shareSelectRow = 0;
     p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;
+    this.log(`${this.pn(requestingPi)} joined ${this.pn(cr.ownerIndex)}'s chatroom`);
   }
 
   denyChatroomEntry(chatroomId: number, requestingPi: number) {
@@ -887,10 +901,12 @@ export class Sim {
           if (oi !== pi) player.revealedTo.add(oi);
         }
         cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} showed role` });
+        this.log(`${this.pn(pi)} showed role to chatroom`);
         break;
       case "R.OFFER":
         cr.revealOffers.add(pi);
         cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} offered role` });
+        this.log(`${this.pn(pi)} offered role exchange`);
         break;
       case "R.UNOFFR":
         cr.revealOffers.delete(pi);
@@ -916,6 +932,7 @@ export class Sim {
             this.setLeader(player.room, pi);
             cr.leaderOffer = -1;
             cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} took lead from ${pref(prevLeader)}` });
+            this.log(`${this.pn(pi)} took leadership from ${this.pn(prevLeader)}`);
           }
         }
         break;
@@ -963,6 +980,7 @@ export class Sim {
     for (const line of lines) {
       cr.messages.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: line });
     }
+    this.log(`${this.pn(pi)} chatroom: ${lines.join("")}`);
   }
 
   addGlobalChat(pi: number, text: string) {
@@ -973,6 +991,7 @@ export class Sim {
     for (const line of lines) {
       dest.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: line });
     }
+    this.log(`${this.pn(pi)} global: ${lines.join("")}`);
   }
 
   globalMessagesForPlayer(pi: number): ChatroomMessage[] {
@@ -1021,6 +1040,7 @@ export class Sim {
       this.leaderB = pi;
     }
     player.isLeader = true;
+    this.log(`${this.pn(pi)} became leader of ${player.room === Room.RoomA ? "Underworld" : "Mortal Realm"}`);
   }
 
   // ---- Game setup ----
@@ -1179,9 +1199,15 @@ export class Sim {
     this.phase = Phase.RoleReveal;
     this.revealTimer = 5 * TARGET_FPS;
     this.currentRound = 0;
+    this.gameLog = [];
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      this.log(`${this.pn(i)} = ${this.roleName(p.role)} (${p.team === Team.TeamA ? "Shades" : "Nymphs"}) in ${p.room === Room.RoomA ? "Underworld" : "Mortal Realm"}`);
+    }
   }
 
   startRound() {
+    this.log(`--- Round ${this.currentRound + 1} started ---`);
     this.phase = Phase.Playing;
     const roundCfg = this.config.rounds[this.currentRound];
     this.roundTimer = (roundCfg?.durationSecs ?? 60) * TARGET_FPS;
@@ -1340,6 +1366,8 @@ export class Sim {
       else if (hadesSharedWithCerberus) this.winner = Team.TeamA;
       else this.winner = null;
     }
+    this.log(`--- Game over: ${this.winner === Team.TeamA ? "Shades" : this.winner === Team.TeamB ? "Nymphs" : "no one"} wins ---`);
+    this.log(`Hades/Cerberus shared: ${hadesSharedWithCerberus}, Persephone/Demeter shared: ${persephoneSharedWithDemeter}, same room: ${sameRoom}`);
   }
 
   // ---- Main tick ----
@@ -1482,5 +1510,57 @@ export class Sim {
       case Role.Shades: return { color: TEAM_A_COLOR, special: false };
       case Role.Nymphs: return { color: TEAM_B_COLOR, special: false };
     }
+  }
+
+  generatePlayerLog(pi: number): string {
+    const p = this.players[pi];
+    const name = this.pn(pi);
+    const lines: string[] = [];
+
+    lines.push(`=== GAME LOG: ${name} ===`);
+    lines.push(`Role: ${this.roleName(p.role)} | Team: ${p.team === Team.TeamA ? "Shades" : "Nymphs"}`);
+    lines.push(`Result: ${this.winner === null ? "Draw" : this.winner === p.team ? "WIN" : "LOSS"}`);
+    lines.push("");
+
+    lines.push("INTERACTIONS:");
+    if (p.sharedWith.size > 0) {
+      lines.push(`  Shared roles with: ${[...p.sharedWith].map(i => this.pn(i)).join(", ")}`);
+    }
+    if (p.colorRevealedTo.size > 0) {
+      lines.push(`  Exchanged colors with: ${[...p.colorRevealedTo].map(i => this.pn(i)).join(", ")}`);
+    }
+    if (p.revealedTo.size > 0) {
+      const showOnly = [...p.revealedTo].filter(i => !p.sharedWith.has(i));
+      if (showOnly.length > 0) {
+        lines.push(`  Showed role to: ${showOnly.map(i => this.pn(i)).join(", ")}`);
+      }
+    }
+    if (p.sharedWith.size === 0 && p.colorRevealedTo.size === 0 && p.revealedTo.size === 0) {
+      lines.push("  (none)");
+    }
+    lines.push("");
+
+    lines.push("TIMELINE:");
+    for (const entry of this.gameLog) {
+      if (entry.event.includes(name)) {
+        const secs = (entry.tick / TARGET_FPS).toFixed(1);
+        lines.push(`  ${secs}s: ${entry.event}`);
+      }
+    }
+    lines.push("");
+
+    return lines.join("\n");
+  }
+
+  generateFullLog(): string {
+    const lines: string[] = [];
+    lines.push("=== FULL GAME LOG ===");
+    lines.push(`Players: ${this.players.length} | Winner: ${this.winner === Team.TeamA ? "Shades" : this.winner === Team.TeamB ? "Nymphs" : "Draw"}`);
+    lines.push("");
+    for (const entry of this.gameLog) {
+      const secs = (entry.tick / TARGET_FPS).toFixed(1);
+      lines.push(`${secs}s: ${entry.event}`);
+    }
+    return lines.join("\n");
   }
 }

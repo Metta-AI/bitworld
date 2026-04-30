@@ -80,7 +80,6 @@ Three task categories:
   { "kind": "loop_auto_grant" }              // auto-grant any pending chatroom entry
   { "kind": "loop_auto_accept_color" }       // auto-accept any incoming color offer
   { "kind": "loop_auto_accept_role" }        // auto-accept any incoming role offer (WIN if partner)
-  { "kind": "loop_read_global", "intervalTicks": 72 }  // passive: pings for new global chats
 
 ============================================================
 RESPONSE FORMAT

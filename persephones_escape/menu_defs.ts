@@ -216,6 +216,22 @@ export function chatMenuSequence(action: string): number[] {
   return seq;
 }
 
+/**
+ * Full chatroom-menu action sequence INCLUDING the target-picker auto-confirm
+ * for R.ACCPT / C.ACCPT. Those two actions open a sub-menu listing offerers;
+ * pressing the select button again picks the first (and usually only) offerer,
+ * which is almost always the correct choice. Returns [] if the action is
+ * unknown. Safe to push directly into a bot's action queue.
+ */
+export function chatMenuSequenceWithTargetPick(action: string): number[] {
+  const seq = chatMenuSequence(action);
+  if (seq.length === 0) return seq;
+  if (action === "R.ACCPT" || action === "C.ACCPT") {
+    seq.push(CHATROOM_SELECT_BUTTON, 0);
+  }
+  return seq;
+}
+
 // ---------------------------------------------------------------------------
 // Command → action mapping
 // ---------------------------------------------------------------------------

@@ -1,18 +1,15 @@
 import WebSocket from "ws";
-import { BUTTON_A, BUTTON_B, BUTTON_SELECT, CHAT_MAX_TOTAL } from "./constants.js";
+import { BUTTON_A, BUTTON_B, BUTTON_SELECT } from "./constants.js";
 import { Room } from "./types.js";
 import {
-  sendInput, sendChat, ActionQueue,
+  sendInput, sendChat, truncateChatInput, ActionQueue,
   menuSequence, COMMAND_ACTIONS,
   hostageSelectSequence,
   moveToward, randomDir, randomPoint, clamp,
   type Point,
 } from "./bot_utils.js";
-import { chatMenuSequence } from "./menu_defs.js";
-import {
-  updateFromCommand,
-  type BeliefState,
-} from "./belief_state.js";
+import { chatMenuSequenceWithTargetPick } from "./menu_defs.js";
+import { type BeliefState } from "./belief_state.js";
 
 // ---------------------------------------------------------------------------
 // CLI argument parser
@@ -94,8 +91,6 @@ export { clamp };
 const COMM_ITEMS = ["SHOUT", "INFO"];
 
 export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): boolean {
-  updateFromCommand(bot.belief, cmd.type + (cmd.args.length ? " " + cmd.args.join(" ") : ""));
-
   const cmdAction = COMMAND_ACTIONS[cmd.type];
   if (cmdAction) {
     // Chatroom commands only make sense when we're actually inside a chatroom.
@@ -107,13 +102,7 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
     }
     let seq: number[];
     if (cmdAction.context === "chatroom") {
-      seq = chatMenuSequence(cmdAction.action);
-      // R.ACCPT and C.ACCPT open a target-select sub-menu. With a single offerer
-      // (the common case), auto-confirm by pressing A. When multiple offerers
-      // exist, this still picks the first one, which is a reasonable default.
-      if (cmdAction.action === "R.ACCPT" || cmdAction.action === "C.ACCPT") {
-        seq.push(BUTTON_A, 0);
-      }
+      seq = chatMenuSequenceWithTargetPick(cmdAction.action);
     } else {
       const items = cmdAction.context === "comm" ? COMM_ITEMS
         : cmdAction.context === "info" ? ["open"]
@@ -145,8 +134,8 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
       bot.actions.push(BUTTON_A, 0);
       return true;
     case "chat": {
-      const text = cmd.args.join(" ").slice(0, CHAT_MAX_TOTAL);
-      if (text) sendChat(bot.ws, text);
+      const { sent } = truncateChatInput(cmd.args.join(" "));
+      if (sent) sendChat(bot.ws, sent);
       return true;
     }
     case "select_hostages": {

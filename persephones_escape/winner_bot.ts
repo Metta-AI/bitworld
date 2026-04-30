@@ -25,7 +25,6 @@ import {
 import { Room } from "./types.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-  updateFromCommand,
 } from "./belief_state.js";
 import {
   parseArgs, executeBaseCommand, tickMovement, tickWander,

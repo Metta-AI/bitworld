@@ -1,8 +1,9 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer } from "http";
 import { argv } from "process";
+import { mkdirSync, writeFileSync } from "fs";
 import { Phase, type InputState } from "./types.js";
-import { GAME_NAME, TARGET_FPS } from "./constants.js";
+import { GAME_NAME, TARGET_FPS, playerSpriteName } from "./constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./protocol.js";
 import { Sim } from "./sim.js";
 import { render } from "./renderer.js";
@@ -150,7 +151,12 @@ function main() {
       }
     }
 
+    const prevPhase = sim.phase;
     try { sim.step(inputs, prevInputs); } catch (e) { console.error("step error:", e); }
+
+    if (sim.phase === Phase.GameOver && prevPhase !== Phase.GameOver) {
+      writeGameLogs(sim);
+    }
 
     recorder?.recordTick(inputMasks);
 
@@ -181,6 +187,20 @@ function main() {
       recorder.close();
     }
     process.exit(0);
+  }
+
+  function writeGameLogs(sim: Sim) {
+    const dir = `logs/${Date.now()}`;
+    mkdirSync(dir, { recursive: true });
+
+    writeFileSync(`${dir}/full.log`, sim.generateFullLog());
+
+    for (let i = 0; i < sim.players.length; i++) {
+      const name = playerSpriteName(i).replace(/ /g, "_").toLowerCase();
+      writeFileSync(`${dir}/${name}.log`, sim.generatePlayerLog(i));
+    }
+
+    console.log(`Game logs written to ${dir}/`);
   }
 
   process.on("SIGINT", shutdown);

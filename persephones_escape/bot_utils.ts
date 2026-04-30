@@ -5,6 +5,7 @@ import {
   ROOM_W, ROOM_H, PLAYER_W, PLAYER_H,
   BUBBLE_RADIUS, TARGET_FPS, BOTTOM_BAR_H,
   MINIMAP_SIZE, MINIMAP_X, MINIMAP_Y,
+  CHAT_MAX_TOTAL,
 } from "./constants.js";
 import { Room } from "./types.js";
 import WebSocket from "ws";
@@ -25,6 +26,17 @@ export function sendChat(ws: WebSocket, text: string) {
   buf[0] = 1; // PACKET_CHAT
   for (let i = 0; i < text.length; i++) buf[i + 1] = text.charCodeAt(i) & 0x7f;
   ws.send(buf);
+}
+
+/**
+ * Truncate a chat message to the maximum that sim.chatRateCheck will accept
+ * without dropping characters. Longer inputs are trimmed to CHAT_MAX_TOTAL.
+ * Returns { sent, truncated } so callers can report the actual wire payload
+ * and whether any content was dropped.
+ */
+export function truncateChatInput(text: string): { sent: string; truncated: boolean } {
+  if (text.length <= CHAT_MAX_TOTAL) return { sent: text, truncated: false };
+  return { sent: text.slice(0, CHAT_MAX_TOTAL), truncated: true };
 }
 
 // ---------------------------------------------------------------------------
