@@ -4104,9 +4104,12 @@ when not defined(nottoodumbLibrary):
         if gui: initViewerApp()
         else: nil
       connected = false
+      notifiedFailure = false
     while viewer.viewerOpen():
       try:
         let ws = newWebSocket(connectUrl)
+        echo "connected to ", connectUrl
+        notifiedFailure = false
         var lastMask = 0xff'u8
         bot.queuedFrames.setLen(0)
         bot.frameBufferLen = 0
@@ -4130,7 +4133,12 @@ when not defined(nottoodumbLibrary):
               not bot.interstitialText.isGameOverText():
             ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
             bot.pendingChat = ""
-      except Exception:
+      except Exception as e:
+        if connected:
+          echo "connection lost: ", e.msg
+        elif not notifiedFailure:
+          echo "connection failed: ", e.msg
+          notifiedFailure = true
         connected = false
         if gui:
           let reconnectStart = getMonoTime()
