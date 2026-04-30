@@ -4067,6 +4067,18 @@ when not defined(nottoodumbLibrary):
     unpack4bpp(bot.packed, bot.unpacked)
     true
 
+  proc ensureWsPath(url: string, defaultPath: string): string =
+    ## Inserts `defaultPath` if the URL has no path beyond the authority,
+    ## so `--url:ws://host:port` still hits the WebSocket endpoint.
+    let s = url.find("://")
+    let start = if s < 0: 0 else: s + 3
+    for i in start ..< url.len:
+      case url[i]
+      of '/': return url
+      of '?', '#': return url[0 ..< i] & defaultPath & url[i .. ^1]
+      else: discard
+    url & defaultPath
+
   proc runBot(
     host = DefaultHost,
     port = PlayerDefaultPort,
@@ -4076,11 +4088,12 @@ when not defined(nottoodumbLibrary):
     url = ""
   ) =
     ## Connects to an Among Them server and processes player frames.
-    ## If `url` is non-empty it is used verbatim as the WebSocket endpoint
-    ## (scheme, host, port, path); otherwise we build ws://host:port/player.
+    ## If `url` is non-empty it is used as the WebSocket endpoint (scheme,
+    ## host, port, path); otherwise we build ws://host:port/player. A
+    ## missing path is filled in with WebSocketPath.
     var bot = initBot(mapPath)
     let endpoint =
-      if url.len > 0: url
+      if url.len > 0: ensureWsPath(url, WebSocketPath)
       else: "ws://" & host & ":" & $port & WebSocketPath
     let connectUrl =
       if name.len == 0: endpoint
