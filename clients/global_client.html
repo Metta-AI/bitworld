@@ -977,13 +977,27 @@ function renderJoinQr(){
   const code=document.getElementById("joinQrCode");
   const caption=document.getElementById("joinQrCaption");
   if(!node||!code||!caption)return;
-  let joinUrl;
-  try{joinUrl=new URL("/client/player.html",location.href).toString()}
+  let joinUrl,joinHost;
+  try{
+    const playerAddress=new URL(address,location.href);
+    if(playerAddress.protocol==="http:")playerAddress.protocol="ws:";
+    if(playerAddress.protocol==="https:")playerAddress.protocol="wss:";
+    playerAddress.pathname="/player";
+    const playerPage=new URL(playerAddress.toString());
+    if(playerPage.protocol==="ws:")playerPage.protocol="http:";
+    if(playerPage.protocol==="wss:")playerPage.protocol="https:";
+    playerPage.pathname="/client/player.html";
+    playerPage.search="";
+    playerPage.hash="";
+    playerPage.searchParams.set("address",playerAddress.toString());
+    joinUrl=playerPage.toString();
+    joinHost=playerPage.host;
+  }
   catch(e){return}
-  const loopback=/^(localhost|127\.|::1$|\[::1\])/i.test(location.hostname);
+  const loopback=/^(localhost|127\.|::1$|\[::1\])/i.test(joinHost);
   caption.textContent=loopback
     ?"open this page at LAN IP to share"
-    :"scan to join · "+(location.host||"");
+    :"scan to join · "+(joinHost||"");
   if(typeof qrcode!=="function"){
     code.textContent="";
     node.classList.remove("hidden");
