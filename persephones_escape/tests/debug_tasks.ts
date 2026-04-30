@@ -7,7 +7,7 @@ import { Sim } from "../sim.js";
 import { DEFAULT_GAME_CONFIG } from "../constants.js";
 import { decodeInputMask, emptyInput } from "../protocol.js";
 import type { InputState } from "../types.js";
-import { render } from "../renderer.js";
+import { render } from "../rendering/renderer.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
 } from "../bots/belief_state.js";

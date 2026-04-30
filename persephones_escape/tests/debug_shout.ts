@@ -4,7 +4,7 @@
 import { Sim } from "../sim.js";
 import { DEFAULT_GAME_CONFIG } from "../constants.js";
 import { Phase } from "../types.js";
-import { render } from "../renderer.js";
+import { render } from "../rendering/renderer.js";
 import { unpackFrame } from "../bots/bot_utils.js";
 import { parseLastShout, parsePhase } from "../bots/frame_parser.js";
 

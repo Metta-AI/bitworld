@@ -1,6 +1,6 @@
-import type { Sim } from "./sim.js";
-import type { uint8 } from "./types.js";
-import { Phase, Team, Role, Room, PlayerShape } from "./types.js";
+import type { Sim } from "../sim.js";
+import type { uint8 } from "../types.js";
+import { Phase, Team, Role, Room, PlayerShape } from "../types.js";
 import { Framebuffer, FrameRegion } from "./framebuffer.js";
 import {
   SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -11,9 +11,9 @@ import {
   TEAM_A_NAME, TEAM_B_NAME, TEAM_A_COLOR, TEAM_B_COLOR,
   ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME,
   playerCountFromConfig,
-} from "./constants.js";
-import { clamp, coalesceChatFragments } from "./util.js";
-import { CHATROOM_MENU, chatMenuAction, chatMenuItemLabel } from "./menu_defs.js";
+} from "../constants.js";
+import { clamp, coalesceChatFragments } from "../util.js";
+import { CHATROOM_MENU, chatMenuAction, chatMenuItemLabel } from "../menu_defs.js";
 
 function drawRichText(sim: Sim, fb: Framebuffer, text: string, x: number, y: number, color: uint8) {
   let cx = x;

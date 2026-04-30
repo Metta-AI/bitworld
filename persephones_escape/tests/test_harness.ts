@@ -11,13 +11,13 @@ import { createServer, type Server as HttpServer } from "http";
 import { spawn, type ChildProcess } from "child_process";
 import { argv } from "process";
 import { mkdirSync } from "fs";
-import { Phase, Team, Role, type InputState, type GameConfig } from "./types.js";
-import { DEFAULT_GAME_CONFIG, TARGET_FPS, LOBBY_WAIT_TICKS, playerCountFromConfig } from "./constants.js";
-import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./protocol.js";
-import { Sim } from "./sim.js";
-import { render } from "./renderer.js";
-import { ReplayRecorder } from "./replay.js";
-import { buildGlobalFrame } from "./globalViewer.js";
+import { Phase, Team, Role, type InputState, type GameConfig } from "../types.js";
+import { DEFAULT_GAME_CONFIG, TARGET_FPS, LOBBY_WAIT_TICKS, playerCountFromConfig } from "../constants.js";
+import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "../protocol.js";
+import { Sim } from "../sim.js";
+import { render } from "../rendering/renderer.js";
+import { ReplayRecorder } from "../replay.js";
+import { buildGlobalFrame } from "../rendering/globalViewer.js";
 
 // ---------------------------------------------------------------------------
 // Config presets
@@ -92,7 +92,7 @@ function parseCliArgs() {
     port: parseInt(args["port"] ?? "9090"),
     replayDir: args["replay-dir"] ?? null,
     model: args["model"] ?? undefined,
-    botScript: args["bot-script"] ?? "bots/llm_bot.ts",
+    botScript: args["bot-script"] ?? "../bots/llm_bot.ts",
     botPrefix: args["bot-prefix"] ?? "llm_",
   };
 }
@@ -210,14 +210,14 @@ function runMatch(
     const url = `ws://localhost:${port}/player`;
 
     httpServer.listen(port, "localhost", () => {
-      const smartProc = spawn("npx", ["tsx", "bots/smart_bots.ts", String(smartBotCount), url], {
+      const smartProc = spawn("npx", ["tsx", "../bots/smart_bots.ts", String(smartBotCount), url], {
         stdio: ["ignore", "pipe", "pipe"],
         cwd: import.meta.dirname,
       });
       children.push(smartProc);
 
       for (let i = 0; i < llmBotCount; i++) {
-        const llmArgs = ["tsx", "bots/llm_bot.ts", "--name", `llm_${i + 1}`, "--url", url];
+        const llmArgs = ["tsx", "../bots/llm_bot.ts", "--name", `llm_${i + 1}`, "--url", url];
         if (llmModel) llmArgs.push("--model", llmModel);
         const llmProc = spawn("npx", llmArgs, {
           stdio: ["ignore", "pipe", "pipe"],

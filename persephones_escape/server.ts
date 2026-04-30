@@ -6,8 +6,8 @@ import { Phase, type InputState } from "./types.js";
 import { GAME_NAME, TARGET_FPS, playerSpriteName } from "./constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./protocol.js";
 import { Sim } from "./sim.js";
-import { render } from "./renderer.js";
-import { buildGlobalFrame } from "./globalViewer.js";
+import { render } from "./rendering/renderer.js";
+import { buildGlobalFrame } from "./rendering/globalViewer.js";
 import { ReplayRecorder } from "./replay.js";
 
 interface ClientState {

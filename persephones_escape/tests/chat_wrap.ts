@@ -1,7 +1,7 @@
 import { Sim } from "../sim.js";
 import { DEFAULT_GAME_CONFIG, CHAT_MAX_CHARS_PER_LINE, SCREEN_WIDTH, SCREEN_HEIGHT, PROTOCOL_BYTES } from "../constants.js";
-import { render } from "../renderer.js";
-import { Framebuffer } from "../framebuffer.js";
+import { render } from "../rendering/renderer.js";
+import { Framebuffer } from "../rendering/framebuffer.js";
 import { emptyInput } from "../protocol.js";
 
 console.log(`CHAT_MAX_CHARS_PER_LINE = ${CHAT_MAX_CHARS_PER_LINE}`);
