@@ -22,6 +22,7 @@ bin = @[
   "overworld/overworld",
   "tools/quick_run",
   "tools/quick_player",
+  "tools/quick_market",
   "tools/ptswap",
   "tag/tag",
   "jumper/jumper",
@@ -29,7 +30,8 @@ bin = @[
   "among_them/among_them",
   "among_them/replay_viewer",
   "global_ui/global_ui",
-  "marketboard/marketboard"
+  "marketboard/marketboard",
+  "marketboard/players/still_forge"
 ]
 
 switch("path", "common")
