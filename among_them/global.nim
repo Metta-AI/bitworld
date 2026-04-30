@@ -670,6 +670,10 @@ proc textLabel(lines: openArray[string]): string =
       result.add("\n")
     result.add(line)
 
+proc centeredTextX(sim: SimServer, text: string): int =
+  ## Returns the centered x position for interstitial text.
+  (ScreenWidth - sim.asciiSprites.textWidth(text)) div 2
+
 proc addTextItem(
   items: var seq[ProtocolTextItem],
   x, y: int,
@@ -780,11 +784,17 @@ proc interstitialTextItems(
   case sim.phase
   of Lobby:
     let needed = max(0, sim.config.minPlayers - sim.players.len)
-    result.addTextItem(11, 4, ["WAITING"])
     if needed > 0:
-      result.addTextItem(2, 14, ["NEED MORE!"])
+      result.addTextItem(sim.centeredTextX("WAITING"), 4, ["WAITING"])
+      result.addTextItem(sim.centeredTextX("NEED MORE!"), 14, ["NEED MORE!"])
     else:
-      result.addTextItem(14, 14, ["READY!"])
+      result.addTextItem(sim.centeredTextX("GAME"), 2, ["GAME"])
+      result.addTextItem(sim.centeredTextX("STARTING"), 11, ["STARTING"])
+      let
+        seconds = sim.lobbyStartSecondsRemaining()
+        line = "IN " & $seconds
+      if seconds > 0:
+        result.addTextItem(sim.centeredTextX(line), 20, [line])
   of Playing:
     if playerIndex < 0 or playerIndex >= sim.players.len:
       result.addTextItem(11, 22, ["GAME IN"])
@@ -1073,7 +1083,7 @@ proc addProtocolLobbyActorSprites(
   ## Adds separate player sprites for the lobby interstitial.
   if sim.phase != Lobby:
     return
-  let startY = 26
+  let startY = sim.lobbyIconStartY()
   for i in 0 ..< sim.players.len:
     let
       col = i mod 6

@@ -49,6 +49,8 @@ const
   MaxPlayers* = 16
   MinPlayers* = 8
   ImposterCount* = 2
+  AutoImposterCount* = true
+  StartWaitTicks* = 5 * TargetFps
   VoteTimerTicks* = 6000
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
@@ -222,6 +224,8 @@ type
     voteResultTicks*: int
     minPlayers*: int
     imposterCount*: int
+    autoImposterCount*: bool
+    startWaitTicks*: int
     voteTimerTicks*: int
     messageCooldownTicks*: int
     gameOverTicks*: int
@@ -281,6 +285,7 @@ type
     nextJoinOrder*: int
     tickCount*: int
     gameStartTick*: int
+    startWaitTimer*: int
     phase*: GamePhase
     voteState*: VoteState
     asciiSprites*: PixelFont
@@ -708,6 +713,16 @@ proc blitAsciiText*(
   ## Draws text using the Among Them tiny UI font.
   fb.drawText(asciiSprites, text, screenX, screenY, TextColor)
 
+proc blitCenteredAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: PixelFont,
+  text: string,
+  screenY: int
+) =
+  ## Draws centered text using the Among Them tiny UI font.
+  let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2
+  fb.blitAsciiText(asciiSprites, text, screenX, screenY)
+
 proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Fills one clipped rectangle on a framebuffer.
   if w <= 0 or h <= 0:
@@ -812,6 +827,8 @@ proc defaultGameConfig*(): GameConfig =
     voteResultTicks: VoteResultTicks,
     minPlayers: MinPlayers,
     imposterCount: ImposterCount,
+    autoImposterCount: AutoImposterCount,
+    startWaitTicks: StartWaitTicks,
     voteTimerTicks: VoteTimerTicks,
     messageCooldownTicks: MessageCooldownTicks,
     gameOverTicks: GameOverTicks,
@@ -864,6 +881,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "can't do more than 16 players.")
   if config.imposterCount < 0:
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
+  if config.startWaitTicks < 0:
+    raise newException(AmongThemError, "Config field startWaitTicks must be non-negative.")
   if config.tasksPerPlayer < 0:
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
   if config.buttonCalls < 0:
@@ -906,7 +925,17 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("reportRange", config.reportRange)
   node.readConfigInt("voteResultTicks", config.voteResultTicks)
   node.readConfigInt("minPlayers", config.minPlayers)
+  let
+    hasImposterCount = node.hasKey("imposterCount")
+    hasAutoImposterCount =
+      node.hasKey("autoImposterCount") or node.hasKey("imposterRatio")
   node.readConfigInt("imposterCount", config.imposterCount)
+  node.readConfigBool("autoImposterCount", config.autoImposterCount)
+  node.readConfigBool("imposterRatio", config.autoImposterCount)
+  if hasImposterCount and not hasAutoImposterCount:
+    config.autoImposterCount = false
+  node.readConfigInt("startWaitTicks", config.startWaitTicks)
+  node.readConfigInt("gameStartWaitTicks", config.startWaitTicks)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("messageCooldownTicks", config.messageCooldownTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
@@ -943,6 +972,8 @@ proc configJson*(config: GameConfig): string =
     "voteResultTicks": config.voteResultTicks,
     "minPlayers": config.minPlayers,
     "imposterCount": config.imposterCount,
+    "autoImposterCount": config.autoImposterCount,
+    "startWaitTicks": config.startWaitTicks,
     "voteTimerTicks": config.voteTimerTicks,
     "messageCooldownTicks": config.messageCooldownTicks,
     "gameOverTicks": config.gameOverTicks,
@@ -957,6 +988,45 @@ proc configJson*(config: GameConfig): string =
     "showPlayerLabels": config.showPlayerLabels
   }
   $node
+
+proc ratioImposterCount*(playerCount: int): int =
+  ## Returns the default impostor count for a player count.
+  if playerCount < 5:
+    return 0
+  (playerCount - 3) div 2
+
+proc effectiveImposterCount*(config: GameConfig, playerCount: int): int =
+  ## Returns the active impostor count for a config and player count.
+  let desired =
+    if config.autoImposterCount:
+      ratioImposterCount(playerCount)
+    else:
+      config.imposterCount
+  min(desired, max(0, playerCount - 1))
+
+proc lobbyIsStarting*(sim: SimServer): bool =
+  ## Returns whether the lobby is in the start countdown.
+  sim.players.len >= sim.config.minPlayers
+
+proc lobbyStartTicksRemaining*(sim: SimServer): int =
+  ## Returns ticks left before the lobby starts the game.
+  if not sim.lobbyIsStarting() or sim.config.startWaitTicks <= 0:
+    return 0
+  if sim.startWaitTimer > 0:
+    sim.startWaitTimer
+  else:
+    sim.config.startWaitTicks
+
+proc lobbyStartSecondsRemaining*(sim: SimServer): int =
+  ## Returns visible seconds left before the lobby starts the game.
+  let ticks = sim.lobbyStartTicksRemaining()
+  if ticks <= 0:
+    return 0
+  max(1, (ticks + TargetFps - 1) div TargetFps)
+
+proc lobbyIconStartY*(sim: SimServer): int =
+  ## Returns the lobby icon row y coordinate.
+  if sim.lobbyIsStarting(): 32 else: 26
 
 proc mapIndex*(x, y: int): int =
   y * MapWidth + x
@@ -983,6 +1053,7 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.gameOverTimer)
   result.mixHashInt(sim.roleRevealTimer)
   result.mixHashInt(sim.gameStartTick)
+  result.mixHashInt(sim.startWaitTimer)
   result.mixHashBool(sim.timeLimitReached)
   result.mixHashBool(sim.needsReregister)
   result.mixHashInt(sim.nextJoinOrder)
@@ -1209,10 +1280,7 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
 
 proc startGame*(sim: var SimServer) =
   sim.arrangeHomePositions()
-  let imposterCount = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
-  )
+  let imposterCount = sim.config.effectiveImposterCount(sim.players.len)
   for player in sim.players.mitems:
     player.role = Crewmate
     player.assignedTasks = @[]
@@ -1807,12 +1875,16 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(0)
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
-  sim.fb.blitAsciiText(sim.asciiSprites, "WAITING", 11, 4)
   if needed > 0:
-    sim.fb.blitAsciiText(sim.asciiSprites, "NEED MORE!", 2, 14)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "WAITING", 4)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "NEED MORE!", 14)
   else:
-    sim.fb.blitAsciiText(sim.asciiSprites, "READY!", 14, 14)
-  let startY = 26
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "GAME", 2)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "STARTING", 11)
+    let seconds = sim.lobbyStartSecondsRemaining()
+    if seconds > 0:
+      sim.fb.blitCenteredAsciiText(sim.asciiSprites, "IN " & $seconds, 20)
+  let startY = sim.lobbyIconStartY()
   for i in 0 ..< n:
     let
       col = i mod 6
@@ -2102,10 +2174,8 @@ proc checkMaxTicks(sim: var SimServer) =
     sim.finishGame(Crewmate, timeLimitReached = true)
 
 proc checkWinCondition*(sim: var SimServer) =
-  let hasImposters = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
-  ) > 0
+  let hasImposters =
+    sim.config.effectiveImposterCount(sim.players.len) > 0
   var aliveCrewmates = 0
   var aliveImposters = 0
   for p in sim.players:
@@ -2395,7 +2465,7 @@ proc writeRenderStateUiPlayers(
     return
   case sim.phase
   of Lobby:
-    let startY = 26
+    let startY = sim.lobbyIconStartY()
     for i in 0 ..< n:
       let
         col = i mod 6
@@ -3012,6 +3082,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.players = @[]
   result.nextJoinOrder = 0
   result.gameStartTick = -1
+  result.startWaitTimer = 0
 
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
@@ -3021,18 +3092,32 @@ proc resetToLobby*(sim: var SimServer) =
   sim.nextJoinOrder = 0
   sim.tickCount = 0
   sim.gameStartTick = -1
+  sim.startWaitTimer = 0
   sim.roleRevealTimer = 0
   sim.timeLimitReached = false
   sim.needsReregister = true
   for task in sim.tasks.mitems:
     task.completed = @[]
 
+proc stepLobby(sim: var SimServer) =
+  ## Advances the lobby start countdown.
+  if sim.players.len < sim.config.minPlayers:
+    sim.startWaitTimer = 0
+    return
+  if sim.config.startWaitTicks <= 0:
+    sim.startGame()
+    return
+  if sim.startWaitTimer <= 0:
+    sim.startWaitTimer = sim.config.startWaitTicks
+  dec sim.startWaitTimer
+  if sim.startWaitTimer <= 0:
+    sim.startGame()
+
 proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArray[InputState]) =
   inc sim.tickCount
 
   if sim.phase == Lobby:
-    if sim.players.len >= sim.config.minPlayers:
-      sim.startGame()
+    sim.stepLobby()
     return
 
   if sim.phase == RoleReveal:
