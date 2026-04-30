@@ -217,12 +217,17 @@
               pkg
               pkgs.bashInteractive
               pkgs.coreutils
+              pkgs.tini
             ] ++ runtimeLibs;
             config = {
               Env = [
                 "PATH=/bin"
                 "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
               ];
+              # tini sits at PID 1 so SIGINT/SIGTERM reach the binary;
+              # otherwise the kernel drops default-action signals to PID 1
+              # and `podman run` Ctrl+C silently does nothing.
+              Entrypoint = [ "/bin/tini" "--" ];
               Cmd = [ "/bin/${binName}" ];
             };
           };
