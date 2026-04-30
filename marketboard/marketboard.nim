@@ -203,6 +203,10 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   sim.fb.renderNumber(sim.digitSprites, player.inv.stone, 40, invY)
   if sim.letterSprites.len > 0:
     sim.fb.blitText(sim.letterSprites, "S", 40 + 18, invY)
+  let gearCount = player.equippedGearCount()
+  if sim.letterSprites.len > 0:
+    let gearText = "G" & $gearCount
+    sim.fb.blitText(sim.letterSprites, gearText, 70, invY)
 
   if sim.letterSprites.len > 0 and player.state == Idle:
     var labelObjIndex = -1
@@ -226,7 +230,7 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
         sim.fb.blitText(sim.letterSprites, hint, hintX, ScreenHeight - 7)
 
   if player.state == Gathering:
-    sim.drawProgressBar(player.actionProgress, GatherWorkNeeded, 50, ScreenHeight - 5)
+    sim.drawProgressBar(player.actionProgress, player.effectiveGatherWork(), 50, ScreenHeight - 5)
   elif player.state == Crafting:
     sim.drawProgressBar(player.actionProgress, CraftWorkNeeded, 50, ScreenHeight - 5)
 

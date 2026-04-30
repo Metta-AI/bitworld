@@ -6,6 +6,11 @@ const
   BotSources = [
     ("StillForge", "marketboard" / "players" / "still_forge.nim"),
     ("IronWorks", "marketboard" / "players" / "iron_works.nim"),
+    ("Colm", "marketboard" / "players" / "colm.nim"),
+    ("Zorori", "marketboard" / "players" / "zorori.nim"),
+    ("Solenne", "marketboard" / "players" / "solenne.nim"),
+    ("Rkhenna", "marketboard" / "players" / "rkhenna.nim"),
+    ("Pipitori", "marketboard" / "players" / "pipitori.nim"),
   ]
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
@@ -148,7 +153,7 @@ proc waitForChildren(): int =
 proc parseArgs(): QuickMarketConfig =
   result.address = "localhost"
   result.port = 8080
-  result.bots = @["StillForge", "StillForge2", "IronWorks", "IronWorks2"]
+  result.bots = @["StillForge", "IronWorks", "Colm", "Zorori", "Solenne", "Rkhenna", "Pipitori"]
 
   for kind, key, val in getopt():
     case kind

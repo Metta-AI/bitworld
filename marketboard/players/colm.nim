@@ -1,7 +1,6 @@
-# Iron Works -- Roegadyn Hellsguard. Specialist crafter.
-# Picks the Crafter role at game start and never switches. Buys wood from
-# the market, crafts gear at the station, sells gear at a fair margin.
-# The forgemaster counterpart to Still Forge the gatherer.
+# Colm Thatcher -- Hyur Midlander. Undercutter.
+# Gatherer specialist who gathers both wood and stone. Always prices 1g below
+# the cheapest listing. If no listings exist, uses base price.
 
 import std/[options, os, parseopt, strutils]
 import whisky
@@ -11,26 +10,30 @@ import common
 type
   BotPhase* = enum
     WaitForState
-    PathToCrafterStall
-    InteractCrafterStall
-    PathToBuyStall
-    InteractBuyStall
-    BuyMaterials
-    ExitBuy
-    PathToCraftStation
-    StartCrafting
-    HoldCrafting
+    PathToGathererStall
+    InteractGathererStall
+    PathToNode
+    StartGathering
+    HoldGathering
     PathToSellStall
     InteractSellStall
     SetPrice
     ConfirmSell
     ExitSell
+    CheckGear
+    PathToBuyStall
+    InteractBuyStall
+    SelectGearItem
+    BuyGear
+    ExitBuy
 
   BotState* = object
     phase*: BotPhase
     nav*: Navigator
     prevMask*: uint8
     ticksInPhase*: int
+    targetGearItem*: string
+    targetGearCursor*: int
 
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
@@ -39,36 +42,36 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   case bot.phase
   of WaitForState:
     bot.ticksInPhase = 0
-    if p.role == "Crafter":
-      if p.inv.hasAnyGear:
+    if p.role == "Gatherer":
+      if p.inv.wood > 0 or p.inv.stone > 0:
         bot.phase = PathToSellStall
-      elif p.inv.wood >= 3:
-        bot.phase = PathToCraftStation
+      elif p.equippedGearCount < GearSlotCount and p.gold >= 20:
+        bot.phase = CheckGear
       else:
-        bot.phase = PathToBuyStall
+        bot.phase = PathToNode
     else:
-      bot.phase = PathToCrafterStall
+      bot.phase = PathToGathererStall
     return 0
 
-  of PathToCrafterStall:
-    if p.role == "Crafter":
-      bot.phase = PathToBuyStall
+  of PathToGathererStall:
+    if p.role == "Gatherer":
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
-    let stallOpt = nearestObject(state, "CrafterStallObj")
+    let stallOpt = nearestObject(state, "GathererStallObj")
     if stallOpt.isNone: return 0
     let stall = stallOpt.get()
     if isAdjacentTo(p.x, p.y, stall.tx, stall.ty):
-      bot.phase = InteractCrafterStall
+      bot.phase = InteractGathererStall
       bot.ticksInPhase = 0
       return facingMask(stall.tx, stall.ty, p.tx, p.ty)
     if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
       bot.nav.navigateAdjacent(state, stall.tx, stall.ty)
     return bot.nav.followPath(p.x, p.y)
 
-  of InteractCrafterStall:
-    if p.role == "Crafter":
-      bot.phase = PathToBuyStall
+  of InteractGathererStall:
+    if p.role == "Gatherer":
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     if bot.ticksInPhase > 20:
@@ -77,121 +80,54 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       return 0
     if (bot.prevMask and ButtonA) != 0:
       return 0
-    let stallOpt = nearestObject(state, "CrafterStallObj")
+    let stallOpt = nearestObject(state, "GathererStallObj")
     if stallOpt.isSome:
       let stall = stallOpt.get()
       return facingMask(stall.tx, stall.ty, p.tx, p.ty) or ButtonA
     return ButtonA
 
-  of PathToBuyStall:
-    if p.inv.wood >= 3:
-      bot.phase = PathToCraftStation
+  of PathToNode:
+    let nodeOpt = nearestObject(state, "GatherNodeObj")
+    if nodeOpt.isNone: return 0
+    let node = nodeOpt.get()
+    if isOnTile(p.x, p.y, node.tx, node.ty) or isAdjacentTo(p.x, p.y, node.tx, node.ty):
+      bot.phase = StartGathering
       bot.ticksInPhase = 0
-      return 0
-    let stallOpt = nearestObject(state, "BuyStallObj")
-    if stallOpt.isNone: return 0
-    let stall = stallOpt.get()
-    if isAdjacentTo(p.x, p.y, stall.tx, stall.ty):
-      bot.phase = InteractBuyStall
-      bot.ticksInPhase = 0
-      return facingMask(stall.tx, stall.ty, p.tx, p.ty)
+      return facingMask(node.tx, node.ty, p.tx, p.ty)
     if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
-      bot.nav.navigateAdjacent(state, stall.tx, stall.ty)
+      bot.nav.navigateTo(state, node.tx, node.ty)
     return bot.nav.followPath(p.x, p.y)
 
-  of InteractBuyStall:
-    if p.state == "AtBuyStall":
-      bot.phase = BuyMaterials
-      bot.ticksInPhase = 0
-      return 0
-    if bot.ticksInPhase > 20:
-      bot.phase = WaitForState
-      bot.ticksInPhase = 0
-      return 0
-    if (bot.prevMask and ButtonA) != 0:
-      return 0
-    return ButtonA
-
-  of BuyMaterials:
-    if p.state != "AtBuyStall":
-      bot.phase = WaitForState
-      bot.ticksInPhase = 0
-      return 0
-    let needed = 3 - p.inv.wood
-    if needed <= 0:
-      bot.phase = ExitBuy
-      bot.ticksInPhase = 0
-      return 0
-    if not hasListings(state, "WoodItem") or p.gold < cheapestPrice(state, "WoodItem"):
-      bot.phase = ExitBuy
-      bot.ticksInPhase = 0
-      return 0
-    if p.buyQuantity < needed:
-      return ButtonUp
-    if p.buyQuantity > needed:
-      return ButtonDown
-    if (bot.prevMask and ButtonA) != 0:
-      return 0
-    return ButtonA
-
-  of ExitBuy:
-    if p.state == "Idle":
-      bot.ticksInPhase = 0
-      if p.inv.wood >= 3:
-        bot.phase = PathToCraftStation
-      else:
-        bot.phase = PathToBuyStall
-      return 0
-    if (bot.prevMask and ButtonB) != 0:
-      return 0
-    return ButtonB
-
-  of PathToCraftStation:
-    if p.inv.wood < 3:
-      bot.phase = PathToBuyStall
-      bot.ticksInPhase = 0
-      return 0
-    let stationOpt = nearestObject(state, "CraftStationObj", undepleted = false)
-    if stationOpt.isNone: return 0
-    let station = stationOpt.get()
-    if isOnTile(p.x, p.y, station.tx, station.ty) or isAdjacentTo(p.x, p.y, station.tx, station.ty):
-      bot.phase = StartCrafting
-      bot.ticksInPhase = 0
-      return facingMask(station.tx, station.ty, p.tx, p.ty)
-    if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
-      bot.nav.navigateAdjacent(state, station.tx, station.ty)
-    return bot.nav.followPath(p.x, p.y)
-
-  of StartCrafting:
-    if p.state == "Crafting":
-      bot.phase = HoldCrafting
+  of StartGathering:
+    if p.state == "Gathering":
+      bot.phase = HoldGathering
       bot.ticksInPhase = 0
       return ButtonA
-    if p.inv.wood < 3 and p.inv.stone < 3:
-      bot.phase = WaitForState
+    if bot.ticksInPhase > 10:
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     if (bot.prevMask and ButtonA) != 0:
       return 0
-    let stationOpt = nearestObject(state, "CraftStationObj", undepleted = false)
-    if stationOpt.isSome:
-      let station = stationOpt.get()
-      return facingMask(station.tx, station.ty, p.tx, p.ty) or ButtonA
+    let nodeOpt = nearestObject(state, "GatherNodeObj")
+    if nodeOpt.isSome:
+      let node = nodeOpt.get()
+      return facingMask(node.tx, node.ty, p.tx, p.ty) or ButtonA
     return ButtonA
 
-  of HoldCrafting:
+  of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if p.inv.hasAnyGear:
+      if p.inv.wood > 0 or p.inv.stone > 0:
         bot.phase = PathToSellStall
       else:
-        bot.phase = PathToBuyStall
+        bot.phase = PathToNode
       return 0
     return ButtonA
 
   of PathToSellStall:
-    if not p.inv.hasAnyGear:
-      bot.phase = PathToBuyStall
+    if p.inv.wood == 0 and p.inv.stone == 0:
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     let stallOpt = nearestObject(state, "SellStallObj")
@@ -227,7 +163,11 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = WaitForState
       bot.ticksInPhase = 0
       return 0
-    let targetPrice = 30
+    var itemName = "WoodItem"
+    if p.inv.wood > 0: itemName = "WoodItem"
+    elif p.inv.stone > 0: itemName = "StoneItem"
+    let cheapest = cheapestPrice(state, itemName)
+    let targetPrice = if cheapest < int.high: max(1, cheapest - 1) else: 5
     if p.sellPrice < targetPrice:
       return ButtonUp
     elif p.sellPrice > targetPrice:
@@ -241,7 +181,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = WaitForState
       bot.ticksInPhase = 0
       return 0
-    if not p.inv.hasAnyGear:
+    if p.inv.wood == 0 and p.inv.stone == 0 and not p.inv.hasAnyGear:
       bot.phase = ExitSell
       bot.ticksInPhase = 0
       return 0
@@ -251,7 +191,78 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of ExitSell:
     if p.state == "Idle":
-      bot.phase = PathToBuyStall
+      bot.phase = CheckGear
+      bot.ticksInPhase = 0
+      return 0
+    if (bot.prevMask and ButtonB) != 0:
+      return 0
+    return ButtonB
+
+  of CheckGear:
+    bot.ticksInPhase = 0
+    let emptySlot = firstEmptyGearSlot(p)
+    if emptySlot < 0 or p.gold < 20:
+      bot.phase = PathToNode
+      return 0
+    bot.targetGearItem = gearItemForSlot(emptySlot, "Wood")
+    bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
+    bot.phase = PathToBuyStall
+    return 0
+
+  of PathToBuyStall:
+    let stallOpt = nearestObject(state, "BuyStallObj")
+    if stallOpt.isNone: return 0
+    let stall = stallOpt.get()
+    if isAdjacentTo(p.x, p.y, stall.tx, stall.ty):
+      bot.phase = InteractBuyStall
+      bot.ticksInPhase = 0
+      return facingMask(stall.tx, stall.ty, p.tx, p.ty)
+    if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
+      bot.nav.navigateAdjacent(state, stall.tx, stall.ty)
+    return bot.nav.followPath(p.x, p.y)
+
+  of InteractBuyStall:
+    if p.state == "AtBuyStall":
+      bot.phase = SelectGearItem
+      bot.ticksInPhase = 0
+      return 0
+    if bot.ticksInPhase > 20:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if (bot.prevMask and ButtonA) != 0:
+      return 0
+    return ButtonA
+
+  of SelectGearItem:
+    if p.state != "AtBuyStall":
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if p.buyItemCursor < bot.targetGearCursor:
+      return ButtonRight
+    if p.buyItemCursor > bot.targetGearCursor:
+      return ButtonLeft
+    bot.phase = BuyGear
+    bot.ticksInPhase = 0
+    return 0
+
+  of BuyGear:
+    if p.state != "AtBuyStall":
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if p.buyQuantity < 1:
+      return ButtonUp
+    if (bot.prevMask and ButtonA) != 0:
+      bot.phase = ExitBuy
+      bot.ticksInPhase = 0
+      return 0
+    return ButtonA
+
+  of ExitBuy:
+    if p.state == "Idle":
+      bot.phase = CheckGear
       bot.ticksInPhase = 0
       return 0
     if (bot.prevMask and ButtonB) != 0:
@@ -259,7 +270,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonB
 
 proc runBot(host: string, port: int, name: string) =
-  echo "Iron Works connecting to ", host, ":", port, " as ", name
+  echo "Colm Thatcher connecting to ", host, ":", port, " as ", name
   let ws = connectBot(host, port, name)
   var bot = BotState(phase: WaitForState)
 
@@ -274,7 +285,7 @@ proc runBot(host: string, port: int, name: string) =
     bot.prevMask = mask
 
     if bot.ticksInPhase > 300:
-      echo "Iron Works stuck in ", bot.phase, " for ", bot.ticksInPhase, " ticks, resetting"
+      echo "Colm stuck in ", bot.phase, " for ", bot.ticksInPhase, " ticks, resetting"
       bot.phase = WaitForState
       bot.ticksInPhase = 0
 
@@ -282,7 +293,7 @@ when isMainModule:
   var
     host = "localhost"
     port = 8080
-    name = "IronWorks"
+    name = "Colm"
     pendingOption = ""
 
   for kind, key, val in getopt():

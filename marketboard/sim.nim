@@ -21,11 +21,12 @@ const
   MaxSellSlots* = 4
   WoodBasePrice* = 5
   StoneBasePrice* = 5
-  WoodGearBasePrice* = 20
-  StoneGearBasePrice* = 20
+  GearBasePrice* = 20
   MaxSignalIcons* = 4
   HubCenterTx* = 16
   HubCenterTy* = 16
+  GearSlotCount* = 5
+  GearBonusPerSlot* = 10
 
 type
   Role* = enum
@@ -33,11 +34,26 @@ type
     Gatherer
     Crafter
 
+  GearSlot* = enum
+    SlotHat
+    SlotShirt
+    SlotGloves
+    SlotPants
+    SlotShoes
+
   ItemKind* = enum
     WoodItem
     StoneItem
-    WoodGear
-    StoneGear
+    WoodHat
+    WoodShirt
+    WoodGloves
+    WoodPants
+    WoodShoes
+    StoneHat
+    StoneShirt
+    StoneGloves
+    StonePants
+    StoneShoes
 
   PlayerState* = enum
     Idle
@@ -73,10 +89,7 @@ type
     priceEach*: int
 
   Inventory* = object
-    wood*: int
-    stone*: int
-    woodGear*: int
-    stoneGear*: int
+    counts*: array[ItemKind, int]
 
   Player* = object
     name*: string
@@ -90,6 +103,7 @@ type
     crafterLevel*: int
     gold*: int
     inv*: Inventory
+    equippedGear*: array[GearSlotCount, ItemKind]
     state*: PlayerState
     actionProgress*: int
     actionTargetIndex*: int
@@ -97,6 +111,7 @@ type
     sellPrice*: int
     buyItemCursor*: int
     buyQuantity*: int
+    craftCursor*: int
     listings*: seq[MarketListing]
     signalIcon*: int
 
@@ -141,64 +156,109 @@ proc makePlayerSprite*(): Sprite =
       else:
         result.pixels[y * 7 + x] = TransparentColorIndex
 
+proc wood*(inv: Inventory): int = inv.counts[WoodItem]
+proc stone*(inv: Inventory): int = inv.counts[StoneItem]
+proc `wood=`*(inv: var Inventory, val: int) = inv.counts[WoodItem] = val
+proc `stone=`*(inv: var Inventory, val: int) = inv.counts[StoneItem] = val
+
+proc isGearItem*(item: ItemKind): bool =
+  item notin {WoodItem, StoneItem}
+
+proc gearSlotOf*(item: ItemKind): GearSlot =
+  case item
+  of WoodHat, StoneHat: SlotHat
+  of WoodShirt, StoneShirt: SlotShirt
+  of WoodGloves, StoneGloves: SlotGloves
+  of WoodPants, StonePants: SlotPants
+  of WoodShoes, StoneShoes: SlotShoes
+  of WoodItem, StoneItem: SlotHat
+
+proc isWoodGear*(item: ItemKind): bool =
+  item in {WoodHat, WoodShirt, WoodGloves, WoodPants, WoodShoes}
+
+proc isStoneGear*(item: ItemKind): bool =
+  item in {StoneHat, StoneShirt, StoneGloves, StonePants, StoneShoes}
+
+proc woodGearForSlot*(slot: GearSlot): ItemKind =
+  case slot
+  of SlotHat: WoodHat
+  of SlotShirt: WoodShirt
+  of SlotGloves: WoodGloves
+  of SlotPants: WoodPants
+  of SlotShoes: WoodShoes
+
+proc stoneGearForSlot*(slot: GearSlot): ItemKind =
+  case slot
+  of SlotHat: StoneHat
+  of SlotShirt: StoneShirt
+  of SlotGloves: StoneGloves
+  of SlotPants: StonePants
+  of SlotShoes: StoneShoes
+
+proc isGearSlotFilled*(player: Player, slot: GearSlot): bool =
+  player.equippedGear[ord(slot)].isGearItem()
+
+proc equippedGearCount*(player: Player): int =
+  for i in 0 ..< GearSlotCount:
+    if player.equippedGear[i].isGearItem():
+      inc result
+
+proc tryEquipGear*(player: var Player, item: ItemKind): bool =
+  if not item.isGearItem(): return false
+  let slot = gearSlotOf(item)
+  if player.isGearSlotFilled(slot): return false
+  player.equippedGear[ord(slot)] = item
+  true
+
+proc effectiveGatherWork*(player: Player): int =
+  let bonus = player.equippedGearCount() * GearBonusPerSlot
+  max(1, GatherWorkNeeded * (100 - bonus) div 100)
+
+proc effectiveMaxSpeed*(player: Player): int =
+  let bonus = player.equippedGearCount() * GearBonusPerSlot
+  MaxSpeed * (100 + bonus) div 100
+
 proc itemBasePrice*(item: ItemKind): int =
   case item
   of WoodItem: WoodBasePrice
   of StoneItem: StoneBasePrice
-  of WoodGear: WoodGearBasePrice
-  of StoneGear: StoneGearBasePrice
+  else: GearBasePrice
 
 proc itemCount*(inv: Inventory, item: ItemKind): int =
-  case item
-  of WoodItem: inv.wood
-  of StoneItem: inv.stone
-  of WoodGear: inv.woodGear
-  of StoneGear: inv.stoneGear
+  inv.counts[item]
 
 proc addItem*(inv: var Inventory, item: ItemKind, count: int = 1) =
-  case item
-  of WoodItem: inv.wood += count
-  of StoneItem: inv.stone += count
-  of WoodGear: inv.woodGear += count
-  of StoneGear: inv.stoneGear += count
+  inv.counts[item] += count
 
 proc removeItem*(inv: var Inventory, item: ItemKind, count: int = 1): bool =
-  let current = inv.itemCount(item)
-  if current < count:
-    return false
-  case item
-  of WoodItem: inv.wood -= count
-  of StoneItem: inv.stone -= count
-  of WoodGear: inv.woodGear -= count
-  of StoneGear: inv.stoneGear -= count
+  if inv.counts[item] < count: return false
+  inv.counts[item] -= count
   true
 
 proc inventoryValue*(inv: Inventory): int =
-  inv.wood * itemBasePrice(WoodItem) +
-  inv.stone * itemBasePrice(StoneItem) +
-  inv.woodGear * itemBasePrice(WoodGear) +
-  inv.stoneGear * itemBasePrice(StoneGear)
+  for item in ItemKind:
+    result += inv.counts[item] * itemBasePrice(item)
 
 proc sellableItems*(inv: Inventory): seq[ItemKind] =
-  if inv.wood > 0: result.add WoodItem
-  if inv.stone > 0: result.add StoneItem
-  if inv.woodGear > 0: result.add WoodGear
-  if inv.stoneGear > 0: result.add StoneGear
+  for item in ItemKind:
+    if inv.counts[item] > 0:
+      result.add item
 
-proc craftableItem*(inv: Inventory): ItemKind =
-  if inv.wood >= 3:
-    return WoodGear
-  if inv.stone >= 3:
-    return StoneGear
-  WoodGear
+proc craftableItem*(player: Player): ItemKind =
+  let cursor = player.craftCursor mod GearSlotCount
+  let slot = GearSlot(cursor)
+  if player.inv.counts[WoodItem] >= 3:
+    return woodGearForSlot(slot)
+  if player.inv.counts[StoneItem] >= 3:
+    return stoneGearForSlot(slot)
+  woodGearForSlot(slot)
 
 proc hasCraftMaterials*(inv: Inventory): bool =
-  inv.wood >= 3 or inv.stone >= 3
+  inv.counts[WoodItem] >= 3 or inv.counts[StoneItem] >= 3
 
 proc craftMaterialItem*(gear: ItemKind): ItemKind =
-  case gear
-  of WoodGear: WoodItem
-  of StoneGear: StoneItem
+  if gear.isWoodGear(): WoodItem
+  elif gear.isStoneGear(): StoneItem
   else: WoodItem
 
 proc objectIndexAt*(sim: SimServer, tx, ty: int): int =
@@ -274,10 +334,9 @@ proc initNpcListings*(sim: var SimServer) =
     sim.npcListings.add MarketListing(sellerIndex: -1, item: WoodItem, quantity: 1, priceEach: WoodBasePrice)
   for _ in 0 ..< 4:
     sim.npcListings.add MarketListing(sellerIndex: -1, item: StoneItem, quantity: 1, priceEach: StoneBasePrice)
-  for _ in 0 ..< 2:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: WoodGear, quantity: 1, priceEach: WoodGearBasePrice)
-  for _ in 0 ..< 2:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: StoneGear, quantity: 1, priceEach: StoneGearBasePrice)
+  for slot in GearSlot:
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: woodGearForSlot(slot), quantity: 1, priceEach: GearBasePrice)
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: stoneGearForSlot(slot), quantity: 1, priceEach: GearBasePrice)
 
 proc canOccupy*(sim: SimServer, x, y, width, height: int): bool =
   if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
@@ -384,9 +443,10 @@ proc applyMovementInput*(sim: var SimServer, playerIndex: int, input: PlayerInpu
   if input.up: dec inputY
   if input.down: inc inputY
 
+  let maxSpd = sim.players[playerIndex].effectiveMaxSpeed()
   if inputX != 0:
     sim.players[playerIndex].velX =
-      clamp(sim.players[playerIndex].velX + inputX * Accel, -MaxSpeed, MaxSpeed)
+      clamp(sim.players[playerIndex].velX + inputX * Accel, -maxSpd, maxSpd)
   else:
     sim.players[playerIndex].velX =
       (sim.players[playerIndex].velX * FrictionNum) div FrictionDen
@@ -395,7 +455,7 @@ proc applyMovementInput*(sim: var SimServer, playerIndex: int, input: PlayerInpu
 
   if inputY != 0:
     sim.players[playerIndex].velY =
-      clamp(sim.players[playerIndex].velY + inputY * Accel, -MaxSpeed, MaxSpeed)
+      clamp(sim.players[playerIndex].velY + inputY * Accel, -maxSpd, maxSpd)
   else:
     sim.players[playerIndex].velY =
       (sim.players[playerIndex].velY * FrictionNum) div FrictionDen
@@ -489,7 +549,9 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
         if sim.players[playerIndex].gold < cost:
           continue
         sim.players[playerIndex].gold -= cost
-        sim.players[playerIndex].inv.addItem(wantedItem, canBuy)
+        for _ in 0 ..< canBuy:
+          if not sim.players[playerIndex].tryEquipGear(wantedItem):
+            sim.players[playerIndex].inv.addItem(wantedItem)
         entry.listing.quantity -= canBuy
         if not entry.isNpc and entry.listing.sellerIndex >= 0 and
            entry.listing.sellerIndex < sim.players.len:
@@ -562,7 +624,8 @@ proc updateActionProgress*(sim: var SimServer, playerIndex: int) =
   let state = sim.players[playerIndex].state
   if state == Gathering:
     inc sim.players[playerIndex].actionProgress
-    if sim.players[playerIndex].actionProgress >= GatherWorkNeeded:
+    let gatherNeeded = sim.players[playerIndex].effectiveGatherWork()
+    if sim.players[playerIndex].actionProgress >= gatherNeeded:
       let objIdx = sim.players[playerIndex].actionTargetIndex
       if objIdx >= 0 and objIdx < sim.objects.len:
         let material = sim.objects[objIdx].material
@@ -574,10 +637,12 @@ proc updateActionProgress*(sim: var SimServer, playerIndex: int) =
   elif state == Crafting:
     inc sim.players[playerIndex].actionProgress
     if sim.players[playerIndex].actionProgress >= CraftWorkNeeded:
-      let gear = sim.players[playerIndex].inv.craftableItem()
+      let gear = sim.players[playerIndex].craftableItem()
       let material = craftMaterialItem(gear)
       if sim.players[playerIndex].inv.removeItem(material, 3):
-        sim.players[playerIndex].inv.addItem(gear)
+        if not sim.players[playerIndex].tryEquipGear(gear):
+          sim.players[playerIndex].inv.addItem(gear)
+        inc sim.players[playerIndex].craftCursor
         inc sim.players[playerIndex].crafterLevel
       sim.cancelAction(playerIndex)
 
@@ -662,8 +727,16 @@ proc itemShortName*(item: ItemKind): string =
   case item
   of WoodItem: "WOOD"
   of StoneItem: "STONE"
-  of WoodGear: "WGEAR"
-  of StoneGear: "SGEAR"
+  of WoodHat: "W HAT"
+  of WoodShirt: "W SHRT"
+  of WoodGloves: "W GLVS"
+  of WoodPants: "W PNTS"
+  of WoodShoes: "W SHOE"
+  of StoneHat: "S HAT"
+  of StoneShirt: "S SHRT"
+  of StoneGloves: "S GLVS"
+  of StonePants: "S PNTS"
+  of StoneShoes: "S SHOE"
 
 proc objectLabel*(obj: WorldObject): string =
   case obj.kind
@@ -692,8 +765,15 @@ proc rewardScore*(sim: SimServer, playerIndex: int): int =
   let player = sim.players[playerIndex]
   result = player.gold
   result += player.inv.inventoryValue()
+  for i in 0 ..< GearSlotCount:
+    if player.equippedGear[i].isGearItem():
+      result += itemBasePrice(player.equippedGear[i])
   for listing in player.listings:
     result += listing.priceEach * listing.quantity
+
+proc totalMarketCap*(sim: SimServer): int =
+  for i in 0 ..< sim.players.len:
+    result += sim.rewardScore(i)
 
 proc buildRewardPacket*(sim: SimServer): string =
   for i, player in sim.players:
@@ -727,11 +807,14 @@ proc buildStateJson*(sim: SimServer, playerIndex: int): string =
     pj["buyItemCursor"] = %p.buyItemCursor
     pj["signalIcon"] = %p.signalIcon
     var inv = newJObject()
-    inv["wood"] = %p.inv.wood
-    inv["stone"] = %p.inv.stone
-    inv["woodGear"] = %p.inv.woodGear
-    inv["stoneGear"] = %p.inv.stoneGear
+    for item in ItemKind:
+      inv[$item] = %p.inv.counts[item]
     pj["inv"] = inv
+    pj["equippedGearCount"] = %p.equippedGearCount()
+    var gear = newJArray()
+    for i in 0 ..< GearSlotCount:
+      gear.add %($p.equippedGear[i])
+    pj["equippedGear"] = gear
     var listings = newJArray()
     for l in p.listings:
       var lj = newJObject()

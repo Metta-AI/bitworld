@@ -364,7 +364,7 @@ proc testCrafting() =
     "crafting start failed. " & sim.describePos(idx)
   sim.holdA(idx, CraftWorkNeeded - 1)
   doAssert sim.players[idx].inv.wood == 0
-  doAssert sim.players[idx].inv.woodGear == 1
+  doAssert sim.players[idx].equippedGear[ord(SlotHat)] == WoodHat
 
 # ── Selling ──
 
@@ -578,9 +578,10 @@ proc testPeerEconomyLoop() =
   doAssert sim.players[crafter].state == Crafting
   sim.holdA(crafter, CraftWorkNeeded - 1)
   doAssert sim.players[crafter].inv.wood == 0
-  doAssert sim.players[crafter].inv.woodGear == 1
+  doAssert sim.players[crafter].equippedGear[ord(SlotHat)] == WoodHat
 
-  # Crafter sells gear at 30g
+  # Crafter sells gear at 30g — put a WoodHat in inventory directly
+  sim.players[crafter].inv.counts[WoodHat] = 1
   sim.players[crafter].x = sellStall.tx * MbTileSize
   sim.players[crafter].y = sellStall.ty * MbTileSize
   sim.players[crafter].velX = 0
@@ -589,9 +590,9 @@ proc testPeerEconomyLoop() =
   sim.pressA(crafter, FaceDown)
   doAssert sim.players[crafter].state == AtSellStall
   sim.pressA(crafter, FaceDown)
-  doAssert sim.players[crafter].inv.woodGear == 0
+  doAssert sim.players[crafter].inv.counts[WoodHat] == 0
   doAssert sim.players[crafter].listings.len == 1
-  doAssert sim.players[crafter].listings[0].item == WoodGear
+  doAssert sim.players[crafter].listings[0].item == WoodHat
   doAssert sim.players[crafter].listings[0].priceEach == 30
 
 # ── Buy from player listing with gold transfer ──
@@ -700,6 +701,142 @@ proc testMaxSellSlots() =
   doAssert sim.players[idx].inv.wood == 1,
     "wood should be unchanged after failed sell"
 
+# ── Equipment tests ──
+
+proc testGearEquipOnBuy() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("buyer")
+  sim.players[idx].role = Gatherer
+
+  let bi = sim.findObjectIndex(BuyStallObj)
+  let stall = sim.objects[bi]
+  sim.players[idx].x = stall.tx * MbTileSize
+  sim.players[idx].y = stall.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].state == AtBuyStall
+
+  # Select WoodHat (cursor index 2)
+  sim.players[idx].buyItemCursor = ord(WoodHat)
+  sim.players[idx].buyQuantity = 1
+  sim.pressA(idx, FaceDown)
+
+  doAssert sim.players[idx].equippedGear[ord(SlotHat)] == WoodHat,
+    "WoodHat should auto-equip into hat slot"
+  doAssert sim.players[idx].inv.counts[WoodHat] == 0,
+    "WoodHat should not be in inventory after equipping"
+  doAssert sim.players[idx].equippedGearCount() == 1
+
+proc testGearGoesToInventoryIfSlotFilled() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("buyer")
+  sim.players[idx].role = Gatherer
+  sim.players[idx].equippedGear[ord(SlotHat)] = StoneHat
+
+  let bi = sim.findObjectIndex(BuyStallObj)
+  let stall = sim.objects[bi]
+  sim.players[idx].x = stall.tx * MbTileSize
+  sim.players[idx].y = stall.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].state == AtBuyStall
+
+  sim.players[idx].buyItemCursor = ord(WoodHat)
+  sim.players[idx].buyQuantity = 1
+  sim.pressA(idx, FaceDown)
+
+  doAssert sim.players[idx].equippedGear[ord(SlotHat)] == StoneHat,
+    "hat slot should still have StoneHat"
+  doAssert sim.players[idx].inv.counts[WoodHat] == 1,
+    "WoodHat should be in inventory since hat slot is filled"
+
+proc testGearBoostsGatherSpeed() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("gatherer")
+  sim.players[idx].role = Gatherer
+
+  let ni = sim.findWoodNodeIndex()
+  let node = sim.objects[ni]
+  sim.players[idx].x = node.tx * MbTileSize
+  sim.players[idx].y = node.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  # Gather without gear: takes GatherWorkNeeded (48) ticks
+  let normalWork = sim.players[idx].effectiveGatherWork()
+  doAssert normalWork == GatherWorkNeeded,
+    "no gear should mean normal gather speed, got " & $normalWork
+
+  # Equip 3 slots (30% bonus)
+  sim.players[idx].equippedGear[ord(SlotHat)] = WoodHat
+  sim.players[idx].equippedGear[ord(SlotShirt)] = WoodShirt
+  sim.players[idx].equippedGear[ord(SlotGloves)] = WoodGloves
+  let boostedWork = sim.players[idx].effectiveGatherWork()
+  let expected = GatherWorkNeeded * (100 - 3 * GearBonusPerSlot) div 100
+  doAssert boostedWork == expected,
+    "3 gear should give " & $expected & " gather ticks, got " & $boostedWork
+
+proc testFullGearSet() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("gatherer")
+  sim.players[idx].role = Gatherer
+  sim.players[idx].equippedGear[ord(SlotHat)] = WoodHat
+  sim.players[idx].equippedGear[ord(SlotShirt)] = WoodShirt
+  sim.players[idx].equippedGear[ord(SlotGloves)] = WoodGloves
+  sim.players[idx].equippedGear[ord(SlotPants)] = WoodPants
+  sim.players[idx].equippedGear[ord(SlotShoes)] = WoodShoes
+  let fullWork = sim.players[idx].effectiveGatherWork()
+  let expected = GatherWorkNeeded * (100 - 5 * GearBonusPerSlot) div 100
+  doAssert fullWork == expected,
+    "full gear should give " & $expected & " gather ticks, got " & $fullWork
+  doAssert sim.players[idx].equippedGearCount() == 5
+
+proc testGearBoostsMovementSpeed() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("gatherer")
+  sim.players[idx].role = Gatherer
+
+  let normalSpeed = sim.players[idx].effectiveMaxSpeed()
+  doAssert normalSpeed == MaxSpeed,
+    "no gear should mean normal speed, got " & $normalSpeed
+
+  sim.players[idx].equippedGear[ord(SlotHat)] = WoodHat
+  sim.players[idx].equippedGear[ord(SlotShirt)] = WoodShirt
+  let boostedSpeed = sim.players[idx].effectiveMaxSpeed()
+  let expected = MaxSpeed * (100 + 2 * GearBonusPerSlot) div 100
+  doAssert boostedSpeed == expected,
+    "2 gear should give speed " & $expected & ", got " & $boostedSpeed
+
+proc testCraftProducesSlotItems() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("crafter")
+  sim.players[idx].role = Crafter
+  sim.players[idx].gold = 500
+
+  let ci = sim.findObjectIndex(CraftStationObj)
+  let craftStation = sim.objects[ci]
+  sim.players[idx].x = craftStation.tx * MbTileSize
+  sim.players[idx].y = craftStation.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  # Craft 5 times with 3 wood each
+  let expectedItems = [WoodHat, WoodShirt, WoodGloves, WoodPants, WoodShoes]
+  for craft in 0 ..< 5:
+    sim.players[idx].inv.wood = 3
+    sim.pressA(idx, FaceDown)
+    doAssert sim.players[idx].state == Crafting,
+      "craft " & $craft & " should start crafting"
+    sim.holdA(idx, CraftWorkNeeded - 1)
+    doAssert sim.players[idx].state == Idle
+    doAssert sim.players[idx].equippedGear[craft] == expectedItems[craft],
+      "craft " & $craft & " should produce " & $expectedItems[craft] &
+      " got " & $sim.players[idx].equippedGear[craft]
+
 echo "Running marketboard tests..."
 testPlayerSpawnsWithStartingGold()
 echo "  spawn: OK"
@@ -745,4 +882,16 @@ testBuyInsufficientGoldAndEmptyMarket()
 echo "  buy edge cases (insufficient gold + empty market): OK"
 testMaxSellSlots()
 echo "  max sell slots: OK"
+testGearEquipOnBuy()
+echo "  gear equip on buy: OK"
+testGearGoesToInventoryIfSlotFilled()
+echo "  gear goes to inventory if slot filled: OK"
+testGearBoostsGatherSpeed()
+echo "  gear boosts gather speed: OK"
+testFullGearSet()
+echo "  full gear set: OK"
+testGearBoostsMovementSpeed()
+echo "  gear boosts movement speed: OK"
+testCraftProducesSlotItems()
+echo "  craft produces slot items: OK"
 echo "All tests passed"

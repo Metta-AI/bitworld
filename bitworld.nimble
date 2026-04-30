@@ -32,7 +32,12 @@ bin = @[
   "global_ui/global_ui",
   "marketboard/marketboard",
   "marketboard/players/still_forge",
-  "marketboard/players/iron_works"
+  "marketboard/players/iron_works",
+  "marketboard/players/colm",
+  "marketboard/players/zorori",
+  "marketboard/players/solenne",
+  "marketboard/players/rkhenna",
+  "marketboard/players/pipitori"
 ]
 
 switch("path", "common")

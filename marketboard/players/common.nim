@@ -2,9 +2,21 @@ import std/[heapqueue, json, math, options, sets]
 import whisky
 import protocol
 
+const
+  ItemNames* = [
+    "WoodItem", "StoneItem",
+    "WoodHat", "WoodShirt", "WoodGloves", "WoodPants", "WoodShoes",
+    "StoneHat", "StoneShirt", "StoneGloves", "StonePants", "StoneShoes"
+  ]
+  GearSlotCount* = 5
+  GearItemNames* = [
+    "WoodHat", "WoodShirt", "WoodGloves", "WoodPants", "WoodShoes",
+    "StoneHat", "StoneShirt", "StoneGloves", "StonePants", "StoneShoes"
+  ]
+
 type
   BotInventory* = object
-    wood*, stone*, woodGear*, stoneGear*: int
+    counts*: array[12, int]
 
   BotListing* = object
     sellerIndex*: int
@@ -42,6 +54,8 @@ type
     buyItemCursor*: int
     signalIcon*: int
     inv*: BotInventory
+    equippedGear*: array[GearSlotCount, string]
+    equippedGearCount*: int
     listings*: seq[BotListing]
 
   GameState* = object
@@ -52,11 +66,30 @@ type
     npcListings*: seq[BotListing]
     playerListings*: seq[BotListing]
 
+proc itemIndex*(name: string): int =
+  for i, n in ItemNames:
+    if n == name: return i
+  -1
+
+proc wood*(inv: BotInventory): int = inv.counts[0]
+proc stone*(inv: BotInventory): int = inv.counts[1]
+
+proc itemCount*(inv: BotInventory, name: string): int =
+  let idx = itemIndex(name)
+  if idx >= 0: inv.counts[idx] else: 0
+
+proc hasAnyGear*(inv: BotInventory): bool =
+  for i in 2 ..< 12:
+    if inv.counts[i] > 0: return true
+  false
+
+proc isGearItem*(name: string): bool =
+  name in GearItemNames
+
 proc parseInventory(node: JsonNode): BotInventory =
-  result.wood = node["wood"].getInt()
-  result.stone = node["stone"].getInt()
-  result.woodGear = node["woodGear"].getInt()
-  result.stoneGear = node["stoneGear"].getInt()
+  for i, name in ItemNames:
+    if node.hasKey(name):
+      result.counts[i] = node[name].getInt()
 
 proc parseListing(node: JsonNode): BotListing =
   result.sellerIndex = node.getOrDefault("sellerIndex").getInt(-1)
@@ -87,6 +120,13 @@ proc parseGameState*(jsonStr: string): GameState =
     result.player.buyItemCursor = p["buyItemCursor"].getInt()
     result.player.signalIcon = p["signalIcon"].getInt()
     result.player.inv = parseInventory(p["inv"])
+    result.player.equippedGearCount = p["equippedGearCount"].getInt()
+    if p.hasKey("equippedGear"):
+      var gearIdx = 0
+      for g in p["equippedGear"]:
+        if gearIdx < GearSlotCount:
+          result.player.equippedGear[gearIdx] = g.getStr()
+        inc gearIdx
     for l in p["listings"]:
       result.player.listings.add parseListing(l)
 
@@ -261,6 +301,66 @@ proc cheapestListing*(listings: seq[BotListing], item: string): Option[BotListin
 
 proc allListings*(state: GameState): seq[BotListing] =
   result = state.npcListings & state.playerListings
+
+proc cheapestPrice*(state: GameState, item: string): int =
+  let all = state.allListings()
+  let listing = cheapestListing(all, item)
+  if listing.isSome: listing.get().priceEach else: int.high
+
+proc highestPrice*(state: GameState, item: string): int =
+  var best = 0
+  for l in state.allListings():
+    if l.item == item and l.quantity > 0 and l.priceEach > best:
+      best = l.priceEach
+  best
+
+proc supplyCount*(state: GameState, item: string): int =
+  for l in state.allListings():
+    if l.item == item:
+      result += l.quantity
+
+proc hasListings*(state: GameState, item: string): bool =
+  for l in state.allListings():
+    if l.item == item and l.quantity > 0: return true
+  false
+
+proc materialCostForGear*(state: GameState): int =
+  let woodPrice = cheapestPrice(state, "WoodItem")
+  let stonePrice = cheapestPrice(state, "StoneItem")
+  let cheapest = min(woodPrice, stonePrice)
+  if cheapest >= int.high div 3:
+    return int.high
+  cheapest * 3
+
+proc gearSlotName*(index: int): string =
+  case index
+  of 0: "Hat"
+  of 1: "Shirt"
+  of 2: "Gloves"
+  of 3: "Pants"
+  of 4: "Shoes"
+  else: "Unknown"
+
+proc firstEmptyGearSlot*(player: BotPlayer): int =
+  for i in 0 ..< GearSlotCount:
+    if player.equippedGear[i] == "" or player.equippedGear[i] == "WoodItem":
+      return i
+  -1
+
+proc gearItemForSlot*(slot: int, material: string): string =
+  let prefix = if material == "Stone": "Stone" else: "Wood"
+  case slot
+  of 0: prefix & "Hat"
+  of 1: prefix & "Shirt"
+  of 2: prefix & "Gloves"
+  of 3: prefix & "Pants"
+  of 4: prefix & "Shoes"
+  else: prefix & "Hat"
+
+proc itemCursorIndex*(item: string): int =
+  for i, name in ItemNames:
+    if name == item: return i
+  0
 
 # ── A* Pathfinding ──
 

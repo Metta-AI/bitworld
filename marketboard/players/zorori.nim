@@ -1,21 +1,26 @@
-# Still Forge -- Roegadyn Hellsguard. Specialist gatherer.
-# Picks one role at game start and never switches. Gathers wood, returns to sell
-# at a fair markup above base value. After selling, buys gear to fill empty
-# equipment slots (up to 5). Steady and reliable -- the backbone of a healthy economy.
+# Zorori Babori -- Lalafell Dunesfolk. Hoarder.
+# Gatherer who aggressively gathers both wood and stone but only sells when
+# conditions favor it: no other listings exist, or prices are above 2x base.
+# When selling, prices at the highest listing price. Creates scarcity.
 
 import std/[options, os, parseopt, strutils]
 import whisky
 import protocol
 import common
 
+const
+  BasePrice = 5
+  SellThreshold = BasePrice * 2
+
 type
   BotPhase* = enum
     WaitForState
     PathToGathererStall
     InteractGathererStall
-    PathToWoodNode
+    PathToNode
     StartGathering
     HoldGathering
+    EvaluateSell
     PathToSellStall
     InteractSellStall
     SetPrice
@@ -44,19 +49,19 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of WaitForState:
     bot.ticksInPhase = 0
     if p.role == "Gatherer":
-      if p.inv.wood > 0:
-        bot.phase = PathToSellStall
+      if p.inv.wood > 0 or p.inv.stone > 0:
+        bot.phase = EvaluateSell
       elif p.equippedGearCount < GearSlotCount and p.gold >= 20:
         bot.phase = CheckGear
       else:
-        bot.phase = PathToWoodNode
+        bot.phase = PathToNode
     else:
       bot.phase = PathToGathererStall
     return 0
 
   of PathToGathererStall:
     if p.role == "Gatherer":
-      bot.phase = PathToWoodNode
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     let stallOpt = nearestObject(state, "GathererStallObj")
@@ -72,7 +77,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of InteractGathererStall:
     if p.role == "Gatherer":
-      bot.phase = PathToWoodNode
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     if bot.ticksInPhase > 20:
@@ -87,8 +92,8 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       return facingMask(stall.tx, stall.ty, p.tx, p.ty) or ButtonA
     return ButtonA
 
-  of PathToWoodNode:
-    let nodeOpt = nearestObject(state, "GatherNodeObj", material = "WoodItem")
+  of PathToNode:
+    let nodeOpt = nearestObject(state, "GatherNodeObj")
     if nodeOpt.isNone: return 0
     let node = nodeOpt.get()
     if isOnTile(p.x, p.y, node.tx, node.ty) or isAdjacentTo(p.x, p.y, node.tx, node.ty):
@@ -105,12 +110,12 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.ticksInPhase = 0
       return ButtonA
     if bot.ticksInPhase > 10:
-      bot.phase = PathToWoodNode
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     if (bot.prevMask and ButtonA) != 0:
       return 0
-    let nodeOpt = nearestObject(state, "GatherNodeObj", material = "WoodItem")
+    let nodeOpt = nearestObject(state, "GatherNodeObj")
     if nodeOpt.isSome:
       let node = nodeOpt.get()
       return facingMask(node.tx, node.ty, p.tx, p.ty) or ButtonA
@@ -119,16 +124,33 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if p.inv.wood > 0:
-        bot.phase = PathToSellStall
+      if p.inv.wood > 0 or p.inv.stone > 0:
+        bot.phase = EvaluateSell
       else:
-        bot.phase = PathToWoodNode
+        bot.phase = PathToNode
       return 0
     return ButtonA
 
+  of EvaluateSell:
+    bot.ticksInPhase = 0
+    var shouldSell = false
+    if p.inv.wood > 0:
+      let cp = cheapestPrice(state, "WoodItem")
+      if not hasListings(state, "WoodItem") or cp >= SellThreshold:
+        shouldSell = true
+    if p.inv.stone > 0:
+      let cp = cheapestPrice(state, "StoneItem")
+      if not hasListings(state, "StoneItem") or cp >= SellThreshold:
+        shouldSell = true
+    if shouldSell:
+      bot.phase = PathToSellStall
+    else:
+      bot.phase = PathToNode
+    return 0
+
   of PathToSellStall:
-    if p.inv.wood == 0:
-      bot.phase = CheckGear
+    if p.inv.wood == 0 and p.inv.stone == 0:
+      bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
     let stallOpt = nearestObject(state, "SellStallObj")
@@ -164,7 +186,11 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = WaitForState
       bot.ticksInPhase = 0
       return 0
-    let targetPrice = 8
+    var itemName = "WoodItem"
+    if p.inv.wood > 0: itemName = "WoodItem"
+    elif p.inv.stone > 0: itemName = "StoneItem"
+    let hp = highestPrice(state, itemName)
+    let targetPrice = if hp > 0: hp else: BasePrice * 3
     if p.sellPrice < targetPrice:
       return ButtonUp
     elif p.sellPrice > targetPrice:
@@ -199,7 +225,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     bot.ticksInPhase = 0
     let emptySlot = firstEmptyGearSlot(p)
     if emptySlot < 0 or p.gold < 20:
-      bot.phase = PathToWoodNode
+      bot.phase = PathToNode
       return 0
     bot.targetGearItem = gearItemForSlot(emptySlot, "Wood")
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
@@ -267,7 +293,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonB
 
 proc runBot(host: string, port: int, name: string) =
-  echo "Still Forge connecting to ", host, ":", port, " as ", name
+  echo "Zorori Babori connecting to ", host, ":", port, " as ", name
   let ws = connectBot(host, port, name)
   var bot = BotState(phase: WaitForState)
 
@@ -282,7 +308,7 @@ proc runBot(host: string, port: int, name: string) =
     bot.prevMask = mask
 
     if bot.ticksInPhase > 300:
-      echo "Still Forge stuck in ", bot.phase, " for ", bot.ticksInPhase, " ticks, resetting"
+      echo "Zorori stuck in ", bot.phase, " for ", bot.ticksInPhase, " ticks, resetting"
       bot.phase = WaitForState
       bot.ticksInPhase = 0
 
@@ -290,7 +316,7 @@ when isMainModule:
   var
     host = "localhost"
     port = 8080
-    name = "StillForge"
+    name = "Zorori"
     pendingOption = ""
 
   for kind, key, val in getopt():
