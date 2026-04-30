@@ -20,3 +20,4 @@ __pycache__/
 tools/quick_run.nim
 .DS_Store
 replays/
+replay_atlas.png

@@ -1,7 +1,8 @@
-import std/[algorithm, os, parseopt, random, strformat, strutils]
+import std/[algorithm, json, os, parseopt, random, strformat, strutils]
 import
   ../marketboard/sim,
   ../marketboard/excitement,
+  ../marketboard/legends,
   ../marketboard/replays,
   ../marketboard/players/common,
   ../marketboard/players/still_forge as sf,
@@ -57,6 +58,8 @@ type
     lineup: seq[string]
     replayPath: string
     topMoments: seq[int]
+    legendEventCount: int
+    topLegendEvents: seq[LegendEvent]
 
 proc botName(kind: BotKind, index: int): string =
   case kind
@@ -114,6 +117,7 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
   var bots: seq[BotRunner]
   var writer = openMbReplayWriter(replayPath, "{}")
   var tracker: ExcitementTracker
+  var legendTracker = initLegendTracker()
 
   var nameCounters: array[BotKind, int]
   for kind in lineup:
@@ -148,10 +152,18 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
     sim.step(inputs)
     writer.writeHash(uint32(sim.tickCount), sim.gameHash())
 
+    legendTracker.analyze(sim)
     if sim.tickCount mod SnapshotInterval == 0:
       tracker.recordTick(sim)
 
   writer.closeMbReplayWriter()
+
+  let legendsPath = replayPath.replace(".mbreplay", ".legends.json")
+  var legendJson = legendTracker.toJson()
+  legendJson["replayFile"] = %replayPath
+  legendJson["totalTicks"] = %sim.tickCount
+  legendJson["summary"] = %legendTracker.summary(sim.players.len, sim.tickCount)
+  writeFile(legendsPath, $legendJson)
 
   result.seed = seed
   result.score = tracker.excitementScore()
@@ -160,6 +172,8 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
     result.lineup[i] = $kind
   result.replayPath = replayPath
   result.topMoments = tracker.topMoments(3)
+  result.legendEventCount = legendTracker.events.len
+  result.topLegendEvents = legendTracker.topEvents(3)
 
 proc parseArgs(): BatchConfig =
   result.matches = DefaultMatches
@@ -205,7 +219,7 @@ proc run(config: BatchConfig) =
     results.add res
 
     let lineupStr = res.lineup.join(", ")
-    echo &"  match {seed:4d}: score={res.score:8.2f}  bots=[{lineupStr}]"
+    echo &"  match {seed:4d}: score={res.score:8.2f}  legends={res.legendEventCount:3d}  bots=[{lineupStr}]"
 
   setCurrentDir(previousDir)
 
@@ -222,12 +236,17 @@ proc run(config: BatchConfig) =
     echo &"       replay: {r.replayPath}"
     if r.topMoments.len > 0:
       echo &"       key moments at ticks: {r.topMoments}"
+    if r.topLegendEvents.len > 0:
+      echo &"       top legend events ({r.legendEventCount} total):"
+      for le in r.topLegendEvents:
+        echo &"         tick {le.tick:5d}: {le.description}"
     echo ""
 
   if results.len > config.top:
     for i in config.top ..< results.len:
       try:
         removeFile(results[i].replayPath)
+        removeFile(results[i].replayPath.replace(".mbreplay", ".legends.json"))
       except CatchableError:
         discard
     echo &"Kept top {config.top} replays, removed {results.len - config.top} others."
