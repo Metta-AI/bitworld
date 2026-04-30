@@ -28,11 +28,10 @@ proc testMaxTicksConfigJson() =
     "maxTicks should round-trip through config JSON"
 
 proc testMaxTicksStartsAtGameStart() =
-  ## Tests that maxTicks starts after lobby/reveal and times out as a draw.
+  ## Tests that maxTicks starts after lobby and times out as a draw/truncation.
   var config = defaultGameConfig()
   config.minPlayers = 3
   config.imposterCount = 1
-  config.roleRevealTicks = 1
   config.maxTicks = 2
   config.tasksPerPlayer = 1
 
@@ -46,12 +45,13 @@ proc testMaxTicksStartsAtGameStart() =
   doAssert sim.phase == RoleReveal,
     "game should enter role reveal once minPlayers join"
   doAssert sim.gameTicksElapsed() == 0,
-    "max tick budget should not count lobby or role reveal"
+    "max tick budget should not start during role reveal"
 
-  sim.step(inputs, inputs)
+  for _ in 0 ..< sim.config.roleRevealTicks:
+    sim.step(inputs, inputs)
   doAssert sim.phase == Playing, "game should enter play after role reveal"
   doAssert sim.gameTicksElapsed() == 0,
-    "max tick budget should start when play starts"
+    "max tick budget should start when play starts, not in lobby or role reveal"
 
   sim.step(inputs, inputs)
   doAssert sim.phase == Playing, "game should still be active before maxTicks"
@@ -59,11 +59,13 @@ proc testMaxTicksStartsAtGameStart() =
 
   sim.step(inputs, inputs)
   doAssert sim.phase == GameOver, "game should end once maxTicks is reached"
-  doAssert sim.timeLimitReached, "time budget result should be marked as truncated"
+  doAssert sim.winner == Crewmate,
+    "time budget should use the draw sentinel winner"
+  doAssert sim.timeLimitReached, "time budget win should be marked as truncated"
 
   for player in sim.players:
     doAssert player.reward == 0,
-      "time budget draw should not award win reward"
+      "time budget should not award win rewards"
 
 testMaxTicksConfigJson()
 testMaxTicksStartsAtGameStart()
