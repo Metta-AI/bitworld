@@ -10,7 +10,7 @@ import {
   ActionQueue, menuSequence, hostageSelectSequence,
   moveToward, randomDir, randomPoint, distTo, isNearby,
   type Point,
-} from "../bot_utils.js";
+} from "./bot_utils.js";
 
 const count = parseInt(argv[2] ?? "6");
 const url = argv[3] ?? "ws://localhost:8080/player";

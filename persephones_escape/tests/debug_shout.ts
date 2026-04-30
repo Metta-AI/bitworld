@@ -5,8 +5,8 @@ import { Sim } from "../sim.js";
 import { DEFAULT_GAME_CONFIG } from "../constants.js";
 import { Phase } from "../types.js";
 import { render } from "../renderer.js";
-import { unpackFrame } from "../bot_utils.js";
-import { parseLastShout, parsePhase } from "../frame_parser.js";
+import { unpackFrame } from "../bots/bot_utils.js";
+import { parseLastShout, parsePhase } from "../bots/frame_parser.js";
 
 const sim = new Sim({ ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, hostages: 1 }], obstacleCount: 0 }, 42);
 for (let i = 0; i < 2; i++) sim.addPlayer(`p${i}`);

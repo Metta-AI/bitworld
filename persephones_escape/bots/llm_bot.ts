@@ -15,12 +15,12 @@ import { argv } from "process";
 import {
   BedrockRuntimeClient, ConverseCommand, type Message,
 } from "@aws-sdk/client-bedrock-runtime";
-import { PACKED_FRAME_BYTES, unpackFrame, ActionQueue } from "../bot_utils.js";
+import { PACKED_FRAME_BYTES, unpackFrame, ActionQueue } from "./bot_utils.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
   checkTriggers, formatContextDump,
   type TriggerEvent,
-} from "../belief_state.js";
+} from "./belief_state.js";
 import { parseArgs, type BotController } from "./bot_common.js";
 import {
   mergeTasks, parseTaskUpdate, runTasks, tasksToPromptLines,

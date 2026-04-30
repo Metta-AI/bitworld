@@ -13,8 +13,8 @@ import { render } from "../renderer.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
   type BeliefState,
-} from "../belief_state.js";
-import { unpackFrame, ActionQueue, type Point } from "../bot_utils.js";
+} from "../bots/belief_state.js";
+import { unpackFrame, ActionQueue, type Point } from "../bots/bot_utils.js";
 import type { BotController } from "../bots/bot_common.js";
 import { defaultPolicy, runPolicy, type Policy } from "../bots/policy.js";
 
@@ -155,7 +155,7 @@ if (sim.players[0].sharedWith.has(1) && sim.players[1].sharedWith.has(0)) {
 }
 
 console.log("\n== Debug: parse P1's current frame ==");
-import { parseChatroomStatus, parsePhase } from "../frame_parser.js";
+import { parseChatroomStatus, parsePhase } from "../bots/frame_parser.js";
 const p1Buf = render(sim, 1);
 const p1Frame = unpackFrame(p1Buf);
 console.log(`P1 phase=${parsePhase(p1Frame)}`);

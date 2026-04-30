@@ -7,9 +7,9 @@ import {
   hostageSelectSequence,
   moveToward, randomDir, randomPoint, clamp,
   type Point,
-} from "../bot_utils.js";
+} from "./bot_utils.js";
 import { chatMenuSequenceWithTargetPick } from "../menu_defs.js";
-import { type BeliefState } from "../belief_state.js";
+import { type BeliefState } from "./belief_state.js";
 
 // ---------------------------------------------------------------------------
 // CLI argument parser

@@ -6,14 +6,14 @@ import {
 import {
   sendInput, PACKED_FRAME_BYTES, unpackFrame,
   ActionQueue,
-} from "../bot_utils.js";
+} from "./bot_utils.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
   updateFromInfoScreen,
   checkTriggers, formatContextDump,
   type TriggerEvent,
-} from "../belief_state.js";
-import { parseInfoScreen } from "../frame_parser.js";
+} from "./belief_state.js";
+import { parseInfoScreen } from "./frame_parser.js";
 import {
   parseArgs, parseCommand, executeBaseCommand,
   tickMovement, tickWander,

@@ -10,8 +10,8 @@ import type { InputState } from "../types.js";
 import { render } from "../renderer.js";
 import {
   createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-} from "../belief_state.js";
-import { unpackFrame, ActionQueue } from "../bot_utils.js";
+} from "../bots/belief_state.js";
+import { unpackFrame, ActionQueue } from "../bots/bot_utils.js";
 import type { BotController } from "../bots/bot_common.js";
 import { runTasks, createTaskInstance, createEventBuffer, eventBufferLines, type TaskInstance, type Task } from "../bots/tasks.js";
 

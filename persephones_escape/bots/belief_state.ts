@@ -1,5 +1,5 @@
-import { Room } from "./types.js";
-import { ROOM_W, ROOM_H, SCREEN_WIDTH, SCREEN_HEIGHT, BUBBLE_RADIUS, TARGET_FPS, TEAM_A_COLOR, TEAM_A_NAME, TEAM_B_NAME, spriteNameFromPaletteColor } from "./constants.js";
+import { Room } from "../types.js";
+import { ROOM_W, ROOM_H, SCREEN_WIDTH, SCREEN_HEIGHT, BUBBLE_RADIUS, TARGET_FPS, TEAM_A_COLOR, TEAM_A_NAME, TEAM_B_NAME, spriteNameFromPaletteColor } from "../constants.js";
 import { readPosition, type Point } from "./bot_utils.js";
 import {
   parsePhase, parsePlayingHud, parseRoleRevealScreen, scanMinimapPlayers,

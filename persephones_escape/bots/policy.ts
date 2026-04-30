@@ -11,9 +11,9 @@ import { Room } from "../types.js";
 import {
   sendInput, sendChat, moveToward, randomDir, randomPoint, clamp,
   type Point,
-} from "../bot_utils.js";
+} from "./bot_utils.js";
 import type { BotController } from "./bot_common.js";
-import type { BeliefState } from "../belief_state.js";
+import type { BeliefState } from "./belief_state.js";
 import { chatMenuSequence, COMMAND_ACTIONS } from "../menu_defs.js";
 
 // ---------------------------------------------------------------------------
