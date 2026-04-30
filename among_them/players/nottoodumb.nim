@@ -4197,7 +4197,8 @@ when not defined(nottoodumbLibrary):
         " buffered=", frameAdvance,
         " total=", bot.skippedFrames,
         " tick=", bot.frameTick + frameAdvance
-    bot.frameTick += frameAdvance
+    bot.frameAdvance = max(1, frameAdvance)
+    bot.frameTick += bot.frameAdvance
     blobToBytes(frame, bot.packed)
     unpack4bpp(bot.packed, bot.unpacked)
     true
