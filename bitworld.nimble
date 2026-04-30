@@ -28,7 +28,8 @@ bin = @[
   "warzone/warzone",
   "among_them/among_them",
   "among_them/replay_viewer",
-  "global_ui/global_ui"
+  "global_ui/global_ui",
+  "marketboard/marketboard"
 ]
 
 switch("path", "common")

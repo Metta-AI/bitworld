@@ -137,6 +137,26 @@ The optimal strategy for maximum market cap isn't generosity — it's sustainabl
 - reputation / trade history
 - alliances / shared stalls
 
+## legends mode
+
+Inspired by Dwarf Fortress legends mode. AI games are hard to follow in real-time, especially on a hallway TV. A post-game replay tool that finds the most dramatic moments and replays them with context.
+
+Event detection (thresholds on data we're already tracking):
+- price spikes / market cornering
+- economic collapses and recoveries
+- first agent to reach a new tier
+- role switches under pressure (everyone pivoting at once)
+- near-death saves (v2: adventurer intervenes at the last second)
+- permadeath moments (v2)
+- market cap inflection points
+
+Output: sorted highlight reel with text overlays explaining what happened.
+- "Player 3 bought all tier 2 ore and relisted at 4x the price"
+- "Player 1 switched from crafter to gatherer after tier 2 ore ran out"
+- "Player 5 defended Player 2 from a goblin while they gathered tier 3 wood" (v2)
+
+Start marketboard-specific, generalize across bitworld games later.
+
 ## distant ideas
 
 Not planned, but fun to think about.
