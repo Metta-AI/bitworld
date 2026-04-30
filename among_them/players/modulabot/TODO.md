@@ -35,14 +35,36 @@ Ref: `bot.nim:412–413`, `types.nim:233–238`, `TRACING.md §14`
 
 ### Chat speaker attribution (`speaker: null` hardcoded)
 
-Every `chat_observed` trace event emits `"speaker": null`. The design calls
-for sampling speaker-pip pixels immediately left of `VoteChatTextX = 21` to
-identify the speaker's colour. When implemented, `manifest.trace_settings
-.speaker_attribution` should change from `"none"` to `"color_pip"`. The
-schema field is already reserved; adding attribution won't break existing
-trace consumers.
+~~Resolved 2026-04-30.~~ `chat_observed` events now carry the
+speaker colour, sampled from the per-message pip rendered at
+`VoteChatIconX = 1` (sim constant) immediately left of the chat
+text column. `manifest.trace_settings.speaker_attribution` changed
+from `"none"` to `"color_pip"`. Implementation spans
+`voting.readVoteChatSpeakers` + `voting.voteChatSpeakerForLine`
+(prefer-above tie-break handles wrapped multi-line messages),
+`VotingState.chatLines` / `MeetingEvent.chatLines` are now
+`seq[VoteChatLine]` (speaker + text + y), and `trace.emitEvent`
+emits the colour name in `chat_observed.speaker`.
 
-Ref: `trace.nim:670`, `TRACING.md §15`, `types.nim:239`
+While fixing this:
+
+- Ported modulabot's OCR to the shared `among_them/texts.nim`
+  engine (variable-width tiny5; two-sided miss/extra scoring). The
+  previous fixed-7-px stride in `ascii.nim` / `voting.readAsciiRun`
+  silently mis-read every chat line after the font migration.
+- `VoteChatTextX` and `VoteChatChars` in `voting.nim` now source
+  from `sim` (`VoteChatTextX`, `VoteChatCharsPerLine`) so the next
+  font / layout retune does not need a modulabot-side patch.
+- The chat-panel scan window moved from `chatY + 2` to `chatY + 1`
+  — the sim draws the first message at `rowY = chatY + 1`, so the
+  previous window dropped the oldest visible message by one pixel.
+- Added `test/speaker_attribution.nim` (4 scenarios:
+  all-colours-in-order, interleaved non-palette-order speakers,
+  wrapped 3-line message, empty chat). Wired into
+  `tools/trace_smoke.sh` step `[5/6]`.
+
+Ref: `voting.nim`, `trace.nim:226`, `trace.nim:671`,
+`test/speaker_attribution.nim`, `TRACING.md §15`.
 
 ### Frames-dump rotation / retention policy
 
@@ -82,28 +104,19 @@ These are correctness concerns that were flagged but not resolved.
 
 ### `bot.interstitial.voting_screen` branch ID — missing from source
 
-`TRACING.md §8.2` lists `bot.interstitial.voting_screen` as a canonical branch
-ID (attributed to `bot.nim:368`), and `test/validate_trace.nim` includes it in
-the allowed-IDs list. However:
+~~Resolved 2026-04-30.~~ The voting-screen branch ID was stale doc
+residue, not a missing `bot.fired(...)` call. When the interstitial
+gate fires during an active meeting (`bot.nim:388`), the frame is
+dispatched to `decideVotingMask` which always fires a `voting.*`
+branch ID before returning, so the `voting.*` family fully covers
+that path. Stale entries removed from `TRACING.md §8.2` and
+`test/validate_trace.nim`; `BRANCH_IDS.md` was already correct.
 
-- It does **not** appear in `BRANCH_IDS.md` (which lists 31 IDs; this would
-  be the 32nd).
-- There is no `bot.fired("bot.interstitial.voting_screen", ...)` call anywhere
-  in source.
-
-Either (a) the voting-screen interstitial early-return path was supposed to
-fire this branch ID but the call was never added — making it a genuine missing
-`bot.fired(...)` — or (b) TRACING.md and `validate_trace.nim` have stale
-entries from an earlier design that changed. The `warnEmptyBranchOnce`
-mechanism in `trace.nim:910–920` should surface this at runtime if (a), but
-only if tracing is enabled when the voting screen is hit.
-
-Action: run a traced game to the voting screen and check whether a
-`trace_warning` event fires; then either add the `bot.fired(...)` call or
-remove the stale entries from the docs and validator.
-
-Ref: `TRACING.md §8.2`, `BRANCH_IDS.md`, `test/validate_trace.nim:32`,
-`trace.nim:910–920`
+While fixing this, also synced the other stale `policy_crew.task.*`
+entries in `validate_trace.nim` (`holding`, `mandatory_*`, `checkout_*`,
+`radar_*`, `home_fallback`) and added missing real IDs
+(`policy_imp.body.vent_escape`, `policy_imp.body.vent_approach`) that
+would have caused valid runs to fail validation.
 
 ### Scan-ordering parity risk on teleport
 
@@ -153,21 +166,15 @@ Minor doc rot to clean up when passing through affected files.
 
 ### Stale comment in `viewer/runner.nim:4–6`
 
-The header comment says the viewer (`--gui`) is "not yet implemented
-(phase 2 deliverable)." The viewer has been complete since Phase 2 shipped.
-The comment should be updated to reflect that `--gui` is fully functional.
-
-Ref: `viewer/runner.nim:4–6`
+~~Resolved 2026-04-30.~~ Header comment updated to reflect that
+`--gui` is fully wired via `viewer/viewer.nim`.
 
 ### Phase numbering gap in `DESIGN.md §8` / `§11`
 
-The original plan defined Phases 0–4. The status log shows 0, 1, 2, 3
-(open), then jumps to "Phase 5 — tracing." Phase 4 vanished. The
-introduction of tracing as Phase 5 was an in-flight renaming that was never
-reconciled in the phase table. Not a correctness issue, but makes the status
-section confusing to read.
-
-Ref: `DESIGN.md §8`, `§11`
+~~Resolved 2026-04-30.~~ Added a lead-in note to §11 explaining the
+phase numbering drift from §8 during execution, and renumbered
+"Phase 5 — tracing" to "Phase 4 — tracing" so the status log reads
+0, 1, 2, 3, 4 consecutively.
 
 ---
 
@@ -184,12 +191,26 @@ combine weak signals (proximity, timing, task-skip patterns) that the current
 model discards. This is the highest-leverage Phase 3 item since it affects
 every accusation and vote.
 
+**Unblocked 2026-04-30 by speaker attribution.** With
+`chat_observed.speaker` now populated, the evidence model can now
+include chat-derived signals — "who accused whom", "who typed
+first", "who stayed silent" — that previously had no colour anchor.
+Start by adding `chat_accusation` and `chat_silence` features to
+the suspect scorer.
+
 ### 2. Smarter imposter chat
 
 Current imposter chat is minimal and pattern-fixed. Improvements:
 - Vary message timing so it doesn't look like a bot reacting on a fixed delay.
 - Add fake-task callouts ("just did electrical") timed to task animations.
 - Parse and react to chat content beyond the simple "did anyone say sus" check.
+
+**Unblocked 2026-04-30 by speaker attribution.** The "parse and
+react to chat content" bullet now has everything it needs:
+`chat_observed` events carry both the text (OCR) and the speaker
+colour, so an imposter can now deflect away from a crewmate who
+accused the imposter's teammate, or chain-pile-on a victim that
+another live crewmate already called out.
 
 ### 3. Real ghost behavior
 
@@ -207,6 +228,12 @@ Log when the crewmate vote pattern looks like a bandwagon (several votes
 arriving in rapid succession on the same target after a leader vote). Don't
 act on it yet — preserve the evidence-only voting rule — but capturing the
 pattern in traces will let us decide later whether to exploit or counter it.
+
+**Meaningfully unblocked 2026-04-30 by speaker attribution.**
+Bandwagon detection is much more informative now that chat events
+carry the speaker: a "leader vote" can be correlated with "the
+colour who posted `sus X` a moment earlier". Before, the chat
+trigger and the vote cast were separate anonymous signals.
 
 ### 5. `--seed` flag for v2
 

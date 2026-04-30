@@ -223,6 +223,16 @@ type
     witnesses*: seq[BodyWitness]
     isNewBody*: bool                      ## v2's "witnessedKill" signal
 
+  VoteChatLine* = object
+    ## One OCR'd line of voting-screen chat, with the speaker colour
+    ## sampled from the per-line icon pip rendered to the left of the
+    ## text column. `speakerColor = VoteUnknown` (-1) when the pip
+    ## could not be resolved (e.g. line-to-icon association was out
+    ## of the search window, or the icon sprite didn't match).
+    speakerColor*: int                    ## VoteUnknown if unresolved
+    y*: int                               ## row y of the text line (debug)
+    text*: string                         ## raw OCR'd line (post-strip)
+
   MeetingEvent* = object
     ## One completed meeting, appended at meeting close (voting screen
     ## just went away). `votes` matches the live semantics of
@@ -236,7 +246,8 @@ type
     votes*: PerColor[int]
     ejected*: int                         ## -1 if skipped or unknown
                                           ## (v1 default)
-    chatLines*: seq[string]               ## raw OCR; speakers in v2
+    chatLines*: seq[VoteChatLine]         ## raw OCR + per-line speaker
+                                          ## colour (color-pip attribution)
 
   AlibiEvent* = object
     ## Positive-innocence signal: a colour seen at or near a task
@@ -333,11 +344,14 @@ type
     startTick*: int
     chatSusColor*: int
     chatText*: string
-    chatLines*: seq[string]               ## per-line OCR cache, populated
-                                          ## alongside chatText; used by
-                                          ## the trace writer to emit
-                                          ## chat_observed events without
-                                          ## a second OCR pass.
+    chatLines*: seq[VoteChatLine]         ## per-line OCR cache with
+                                          ## per-line speaker colour
+                                          ## (`color_pip` attribution).
+                                          ## Populated alongside
+                                          ## chatText; consumed by the
+                                          ## trace writer to emit
+                                          ## chat_observed events
+                                          ## without a second OCR pass.
     slots*: array[MaxPlayers, VoteSlot]
     choices*: PerColor[int]               ## what each colour voted for
 

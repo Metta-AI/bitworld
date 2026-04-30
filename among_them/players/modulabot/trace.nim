@@ -223,7 +223,7 @@ proc writeManifest(t: TraceWriter, bot: Bot, ended: bool,
   let traceSettings = %*{
     "level":                  ($t.level)[2 .. ^1].toLowerAscii(),
     "snapshot_period_ticks":  t.snapshotPeriod,
-    "speaker_attribution":    "none",
+    "speaker_attribution":    "color_pip",
     "frames_dump_captured":   t.captureFrames
   }
   var configNode: JsonNode = newJObject()
@@ -650,24 +650,29 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
   # Chat-observed: every new OCR'd line during this meeting.
   if bot.voting.active and t.meetingActive:
     for line in bot.voting.chatLines:
-      let norm = normalizeChatText(line)
+      let norm = normalizeChatText(line.text)
       if norm.len == 0:
         continue
       if norm in t.meetingSeenChat:
         continue
       t.meetingSeenChat.add(norm)
       var qPlaceholder = 0
-      for ch in line:
+      for ch in line.text:
         if ch == '?': inc qPlaceholder
       let quality = if qPlaceholder == 0: "clean" else: "noisy"
       let isSelf = t.meetingSelfQueuedNormalized.len > 0 and
                    norm == t.meetingSelfQueuedNormalized
+      let speakerNode =
+        if line.speakerColor >= 0 and line.speakerColor < PlayerColorCount:
+          %playerColorName(line.speakerColor)
+        else:
+          newJNull()
       emitEvent(t, tick, "chat_observed", %*{
         "meeting_index":      t.meetingIndex,
-        "line":               line,
+        "line":               line.text,
         "first_seen_tick":    tick,
         "ocr_quality":        quality,
-        "speaker":            newJNull(),
+        "speaker":            speakerNode,
         "matches_self_chat":  isSelf
       })
       inc t.counters.chatsObserved

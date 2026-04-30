@@ -32,9 +32,9 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 | `policy_imp.wander.idle_no_target` | `policy_imp.nim:522` |
 | `policy_imp.wander.idle_unreachable` | `policy_imp.nim:513` |
 | `policy_imp.wander.next_target` | `policy_imp.nim:527` |
-| `voting.cursor.listen` | `voting.nim:526` |
-| `voting.cursor.move` | `voting.nim:514` |
-| `voting.idle.already_voted` | `voting.nim:497` |
-| `voting.press_a` | `voting.nim:537` |
+| `voting.cursor.listen` | `voting.nim:644` |
+| `voting.cursor.move` | `voting.nim:632` |
+| `voting.idle.already_voted` | `voting.nim:615` |
+| `voting.press_a` | `voting.nim:655` |
 
 _Total distinct branch IDs: 31_
