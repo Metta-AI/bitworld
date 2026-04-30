@@ -294,7 +294,7 @@ type
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
-  currentSourcePath().parentDir().parentDir()
+  getCurrentDir()
 
 proc atlasPath(): string =
   ## Returns the shared Silky atlas path.
