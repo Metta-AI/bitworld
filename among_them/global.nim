@@ -39,6 +39,10 @@ const
   PlayerNameObjectBase = 7000
   PlayerNameZ = 30002
   PlayerNameMaxChars = 16
+  PlayerNameGlyphWidth = 6
+  PlayerNameGlyphHeight = 8
+  PlayerNameCharAdvance = 6
+  PlayerNameLineHeight = 8
   PlayerNameColor = 2'u8
   TransportIconSize = 6
   TransportIconHeight = 6
@@ -631,36 +635,56 @@ proc buildSpriteProtocolTextSprite(
   game: SimServer,
   lines: openArray[string],
   color: uint8,
-  struck = false
+  struck = false,
+  glyphWidth = 7,
+  glyphHeight = 9,
+  charAdvance = 7,
+  lineHeight = 9
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a transparent multi-line text sprite.
   result.width = 1
   for line in lines:
-    result.width = max(result.width, line.len * 7)
-  result.height = max(1, lines.len * 9)
+    result.width = max(result.width, line.len * charAdvance)
+  result.height = max(1, lines.len * lineHeight)
   result.pixels = newRgbaPixels(result.width, result.height)
   for lineIndex, line in lines:
-    let baseY = lineIndex * 9
+    let baseY = lineIndex * lineHeight
     var baseX = 0
     for ch in line:
       let idx = sim.asciiIndex(ch)
       if idx >= 0 and idx < game.asciiSprites.len:
         let sprite = game.asciiSprites[idx]
-        for y in 0 ..< sprite.height:
-          for x in 0 ..< sprite.width:
-            if sprite.pixels[sprite.spriteIndex(x, y)] !=
-                TransparentColorIndex:
-              result.pixels.putTextSpritePixel(
-                result.width,
-                result.height,
-                baseX + x,
-                baseY + y,
-                color
+        for y in 0 ..< glyphHeight:
+          let
+            srcY0 = (y * sprite.height) div glyphHeight
+            srcY1 = min(
+              sprite.height,
+              max(srcY0 + 1, ((y + 1) * sprite.height + glyphHeight - 1) div glyphHeight)
+            )
+          for x in 0 ..< glyphWidth:
+            let
+              srcX0 = (x * sprite.width) div glyphWidth
+              srcX1 = min(
+                sprite.width,
+                max(srcX0 + 1, ((x + 1) * sprite.width + glyphWidth - 1) div glyphWidth)
               )
-      baseX += 7
+            block visiblePixel:
+              for srcY in srcY0 ..< srcY1:
+                for srcX in srcX0 ..< srcX1:
+                  if sprite.pixels[sprite.spriteIndex(srcX, srcY)] !=
+                      TransparentColorIndex:
+                    result.pixels.putTextSpritePixel(
+                      result.width,
+                      result.height,
+                      baseX + x,
+                      baseY + y,
+                      color
+                    )
+                    break visiblePixel
+      baseX += charAdvance
     if struck:
-      let lineY = baseY + 3
-      for x in 0 ..< line.len * 7:
+      let lineY = baseY + glyphHeight div 2
+      for x in 0 ..< line.len * charAdvance:
         result.pixels.putTextSpritePixel(
           result.width,
           result.height,
@@ -2416,7 +2440,11 @@ proc buildSpriteProtocolUpdates*(
         labelLines = playerLabelLines(sim, player, playerIndex)
         label = sim.buildSpriteProtocolTextSprite(
           labelLines,
-          PlayerNameColor
+          PlayerNameColor,
+          glyphWidth = PlayerNameGlyphWidth,
+          glyphHeight = PlayerNameGlyphHeight,
+          charAdvance = PlayerNameCharAdvance,
+          lineHeight = PlayerNameLineHeight
         )
         labelSpriteId = player.spritePlayerNameSpriteId()
         labelObjectId = player.spritePlayerNameObjectId()
