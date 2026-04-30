@@ -22,6 +22,7 @@ import geometry
 import evidence
 import motion
 import voting
+import tuning
 import tuning_snapshot
 
 const
@@ -109,6 +110,54 @@ proc emitEvent(t: TraceWriter, tick: int, kind: string,
   writeJsonLine(t.eventsFile, line)
   inc t.counters.eventsEmitted
 
+proc tallyBandwagon*(tally: openArray[VoteTallyEntry], targetCode, tick: int):
+    tuple[count, firstTick: int, voters: seq[int]] =
+  ## Pure counter for `meetingVoteTally`: returns how many votes on
+  ## `targetCode` fall inside the rolling `VoteBandwagonWindowTicks`
+  ## window ending at `tick`, the earliest such vote's tick, and the
+  ## voter-colour list (append order, which is observation order).
+  ## Split out so the vote-bandwagon detector can be unit-tested
+  ## independently of the full trace writer state.
+  ##
+  ## The window is inclusive on both sides: entries with
+  ## `tick - entry.tick in 0 .. VoteBandwagonWindowTicks` count.
+  ## Future entries (`entry.tick > tick`) are excluded defensively;
+  ## in normal operation the tally is append-only in tick order so
+  ## this never fires, but a test harness may inject out-of-order
+  ## entries.
+  result.count = 0
+  result.firstTick = tick
+  result.voters = @[]
+  for entry in tally:
+    if entry.targetCode != targetCode: continue
+    if entry.tick > tick: continue
+    if tick - entry.tick > VoteBandwagonWindowTicks: continue
+    inc result.count
+    if entry.tick < result.firstTick:
+      result.firstTick = entry.tick
+    result.voters.add(entry.voter)
+
+proc tierName(tier: TaskGoalTier): string =
+  ## Snake-case name for `decisions.jsonl` consumers. Mirrors the
+  ## eight-tier comments in `policy_crew.nearestTaskGoal`.
+  case tier
+  of TierNone:              "none"
+  of TierMandatoryVisible:  "mandatory_visible"
+  of TierMandatorySticky:   "mandatory_sticky"
+  of TierMandatoryNearest:  "mandatory_nearest"
+  of TierCheckoutSticky:    "checkout_sticky"
+  of TierCheckoutNearest:   "checkout_nearest"
+  of TierRadarSticky:       "radar_sticky"
+  of TierRadarNearest:      "radar_nearest"
+  of TierHomeFallback:      "home_fallback"
+
+proc tierSetToJson(tiers: set[TaskGoalTier]): JsonNode =
+  result = newJArray()
+  for t in TaskGoalTier:
+    if t == TierNone: continue
+    if t in tiers:
+      result.add(%tierName(t))
+
 proc emitDecision(t: TraceWriter, bot: Bot, mask: uint8,
                   prevBranch: string, prevDuration: int) =
   ## Writes one line to decisions.jsonl on a branch transition.
@@ -123,6 +172,15 @@ proc emitDecision(t: TraceWriter, bot: Bot, mask: uint8,
       }
       if bot.goal.path.len > 0:
         g["path_len"] = %bot.goal.path.len
+      # Counterfactual annotation (crewmate task selection only; for
+      # every other branch `selectedTier == TierNone` and the fields
+      # reduce to the inert "none" / empty-array pair).
+      g["selected_tier"] = %tierName(bot.goal.selectedTier)
+      g["tier_candidates"] = tierSetToJson(bot.goal.tierCandidates)
+      var rejected = bot.goal.tierCandidates
+      if bot.goal.selectedTier != TierNone:
+        rejected.excl(bot.goal.selectedTier)
+      g["tier_rejected"] = tierSetToJson(rejected)
       g
     else:
       newJNull()
@@ -711,6 +769,8 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
         t.meetingVoteCast = false
         t.meetingSelfQueuedNormalized = ""
         t.meetingSeenChat.setLen(0)
+        t.meetingVoteTally.setLen(0)
+        t.meetingBandwagonFired.setLen(0)
         emitEvent(t, tick, "meeting_started", %*{
           "meeting_index":            t.meetingIndex,
           "ticks_since_round_start":  tick - t.roundStartTick,
@@ -780,18 +840,40 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
       if bot.voting.choices[ci] != t.prevVoteChoices[ci] and
           bot.voting.choices[ci] != VoteUnknown:
         var targetName = "unknown"
+        var targetCode = VoteUnknown    ## colour index / VoteSkip / -1
         if bot.voting.choices[ci] == VoteSkip or
             bot.voting.choices[ci] == bot.voting.playerCount:
           targetName = "skip"
+          targetCode = VoteSkip
         elif bot.voting.choices[ci] >= 0 and
             bot.voting.choices[ci] < bot.voting.slots.len and
             bot.voting.slots[bot.voting.choices[ci]].colorIndex >= 0:
           let tc = bot.voting.slots[bot.voting.choices[ci]].colorIndex
           targetName = playerColorName(tc)
+          targetCode = tc
         emitEvent(t, tick, "vote_observed", %*{
           "voter":  playerColorName(ci),
           "target": targetName
         })
+        # Append to tally, then check for bandwagon on this target.
+        t.meetingVoteTally.add(VoteTallyEntry(
+          voter: ci, targetCode: targetCode, tick: tick))
+        if targetCode != VoteUnknown and
+            targetCode notin t.meetingBandwagonFired:
+          let stats = tallyBandwagon(t.meetingVoteTally, targetCode, tick)
+          if stats.count >= VoteBandwagonThreshold:
+            var voters = newJArray()
+            for v in stats.voters:
+              voters.add(%playerColorName(v))
+            emitEvent(t, tick, "vote_bandwagon_detected", %*{
+              "meeting_index":     t.meetingIndex,
+              "target":            targetName,
+              "votes_in_window":   stats.count,
+              "window_ticks":      VoteBandwagonWindowTicks,
+              "first_vote_tick":   stats.firstTick,
+              "voters":            voters
+            })
+            t.meetingBandwagonFired.add(targetCode)
         t.prevVoteChoices[ci] = bot.voting.choices[ci]
 
     # Self vote cast

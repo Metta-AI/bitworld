@@ -33,6 +33,8 @@ proc tuningSnapshot*(): JsonNode =
     "MemoryBodyDedupPx":                MemoryBodyDedupPx,
     "MemoryAlibiCooldownTicks":         MemoryAlibiCooldownTicks,
     "MemoryAlibiTaskRadiusPx":          MemoryAlibiTaskRadiusPx,
+    "VoteBandwagonThreshold":           VoteBandwagonThreshold,
+    "VoteBandwagonWindowTicks":         VoteBandwagonWindowTicks,
     # voting.nim
     "VoteCellW":                        VoteCellW,
     "VoteCellH":                        VoteCellH,

@@ -262,24 +262,37 @@ Ghosts currently just continue doing tasks. Real options:
 
 ### 4. Vote bandwagon detection
 
-Log when the crewmate vote pattern looks like a bandwagon (several votes
-arriving in rapid succession on the same target after a leader vote). Don't
-act on it yet — preserve the evidence-only voting rule — but capturing the
-pattern in traces will let us decide later whether to exploit or counter it.
+~~Resolved 2026-04-30.~~ New trace event
+`vote_bandwagon_detected` fires once per `(meeting, target)` the
+first time ≥ `VoteBandwagonThreshold = 3` votes land on the same
+target inside a `VoteBandwagonWindowTicks = 120` (≈ 5 s) rolling
+window. Skip-cascades trigger the same signal. Payload: target,
+votes-in-window, first-vote tick, ordered voter colour list. The
+detector is a pure helper, `trace.tallyBandwagon`, exercised by
+`test/vote_bandwagon.nim` (5 scenarios including boundary /
+out-of-window / different-target / empty). Preserves the
+evidence-only voting rule — no policy reads the flag; it's
+trace-only lineage for the harness. `MeetingEvent.chatLines`
+already carries speaker attribution (see "Chat speaker
+attribution" above), so chat-led vs. spontaneous bandwagon
+classification can be added later as an offline feature without
+changing the event schema.
 
-**Meaningfully unblocked 2026-04-30 by speaker attribution.**
-Bandwagon detection is much more informative now that chat events
-carry the speaker: a "leader vote" can be correlated with "the
-colour who posted `sus X` a moment earlier". Before, the chat
-trigger and the vote cast were separate anonymous signals.
+Ref: `trace.nim:133`, `tuning.nim:56–66`,
+`test/vote_bandwagon.nim`.
 
 ### 5. `--seed` flag for v2
 
-Patch `evidencebot_v2` to accept a `--seed` flag. Currently v2 seeds its RNG
-from clock+pid, so parity tests can only exercise the crewmate code path (the
-deterministic prefix before the first imposter RNG branch). With a fixed seed,
-imposter-path parity becomes testable, which is important if Phase 3 changes
-touch imposter policy.
+~~Resolved 2026-04-30.~~ `evidencebot_v2.initBot` now accepts a
+`masterSeed: int64 = -1` argument (`-1` preserves the historical
+clock+pid behaviour so production callers are unaffected); the
+standalone CLI gained `--seed:<int>`; the parity harness
+(`test/parity.nim`) passes the shared `--seed` through to
+`evidencebot_v2.initBot` in the `runVsV2` path. Imposter-code
+parity against v2 is now 100% with seed 42 and 7777 in black
+mode (matching the crewmate-path behaviour). The parity docstring
+is updated to reflect that RNG-dependent divergence is no longer
+"expected drift".
 
 ---
 
@@ -289,12 +302,26 @@ Items from `TRACING.md §15` and the decisions log that are further out.
 
 ### Counterfactual annotations in trace
 
-Record which tier of `nearestTaskGoal` was considered but rejected at each
-decision point. The goal struct already carries enough state for offline
-reconstruction; the trace just doesn't surface it. Would make the trace much
-more useful for post-hoc policy analysis and debugging.
+~~Resolved 2026-04-30.~~ `policy_crew.nearestTaskGoal` now
+annotates `bot.goal.selectedTier` (winning tier 1..8) and
+`bot.goal.tierCandidates` (set of tiers whose preconditions were
+met this frame). `decisions.jsonl -> goal.selected_tier`,
+`.tier_candidates`, and `.tier_rejected` surface the triple so an
+offline harness can reconstruct "which alternatives were
+considered and rejected at each decision point." New
+`TaskGoalTier` enum in `types.nim` is the canonical label; the
+tier names (`"mandatory_visible"`, `"radar_nearest"`, etc.)
+mirror the numbered comments in `nearestTaskGoal`. Parity-safe:
+the first-found-wins invariant on the returned goal is
+preserved, the new candidate sweep is pure-precondition checks
+(no extra `taskGoalFor` or A\*), and `TaskGoalTier.TierNone`
+stays selected for every non-crewmate branch so no trace
+consumer has to treat them specially. Parity remains 500/500
+black-mode with and without `--trace-dir`.
 
-Ref: `TRACING.md §15`
+Ref: `policy_crew.nearestTaskGoal` (`policy_crew.nim:35`),
+`trace.emitDecision` (`trace.nim:152`), `TaskGoalTier`
+(`types.nim:173`), `TRACING.md §4.3`.
 
 ### Streaming trace (WebSocket proxy)
 

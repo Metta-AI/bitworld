@@ -166,6 +166,26 @@ type
     holdTicks*: int              ## v2: bot.taskHoldTicks
     holdIndex*: int              ## v2: bot.taskHoldIndex; -1 = no hold
 
+  TaskGoalTier* = enum
+    ## Canonical label for the eight-tier fallback in
+    ## `policy_crew.nearestTaskGoal`. The order matches the code
+    ## (tier 1 highest priority through tier 8 the home/button
+    ## fallback) so a trace consumer can map `selected_tier`
+    ## directly onto that file's comments.
+    ##
+    ## Used only as a trace-surface annotation on `Goal` (see
+    ## `Goal.selectedTier` / `Goal.tierCandidates`). Policy code
+    ## never reads these — they're write-only diagnostics.
+    TierNone,
+    TierMandatoryVisible,   ## Tier 1: visible mandatory icon this frame
+    TierMandatorySticky,    ## Tier 2: keep the previously-selected mandatory task
+    TierMandatoryNearest,   ## Tier 3: closest task in state TaskMandatory
+    TierCheckoutSticky,     ## Tier 4: keep the previously-selected checkout task
+    TierCheckoutNearest,    ## Tier 5: closest non-completed checkout task
+    TierRadarSticky,        ## Tier 6: keep the previously-selected radar task
+    TierRadarNearest,       ## Tier 7: closest radar task
+    TierHomeFallback        ## Tier 8: home / button (nothing else usable)
+
   Goal* = object
     ## Q1 resolved: shared between crewmate and imposter policies.
     ## `index` is interpreted by the active policy (task index for crew,
@@ -177,6 +197,27 @@ type
     hasPathStep*: bool
     pathStep*: PathStep
     path*: seq[PathStep]
+    selectedTier*: TaskGoalTier           ## Which tier of
+                                          ## `policy_crew.nearestTaskGoal`
+                                          ## supplied the current goal.
+                                          ## `tgtNone` on non-crewmate
+                                          ## frames or when no goal
+                                          ## was selected. Written
+                                          ## solely for trace
+                                          ## counterfactual annotation
+                                          ## (`decisions.jsonl ->
+                                          ## goal.selected_tier`).
+    tierCandidates*: set[TaskGoalTier]    ## Which tiers had a viable
+                                          ## candidate this frame —
+                                          ## superset of
+                                          ## `{selectedTier}` when
+                                          ## one was chosen. Policy
+                                          ## doesn't read this; trace
+                                          ## surfaces the difference
+                                          ## `tierCandidates -
+                                          ## {selectedTier}` as the
+                                          ## rejected-alternatives
+                                          ## set.
 
   Identity* = object
     selfColor*: int                       ## v2: bot.selfColorIndex; -1 unknown
@@ -439,6 +480,19 @@ type
     eventsEmitted*: int
     snapshotsEmitted*: int
 
+  VoteTallyEntry* = object
+    ## One observed vote during an active meeting. Append-only log on
+    ## `TraceWriter.meetingVoteTally`; consumed by the vote-bandwagon
+    ## detector. `targetCode` encodes the vote target as either a
+    ## colour index (0..PlayerColorCount-1), the `VoteSkip` sentinel,
+    ## or -1 for "unknown", so a single integer identifies the shared
+    ## target across voters. `tick` is the trace writer's observation
+    ## tick (when `vote_observed` fired), not necessarily the cursor-
+    ## landing tick in voting state.
+    voter*: int
+    targetCode*: int
+    tick*: int
+
   TraceWriter* = ref object
     ## Append-only structured trace writer. Owns all file handles and
     ## diff state for emitting events.jsonl, decisions.jsonl,
@@ -511,6 +565,18 @@ type
     meetingVoteCast*: bool
     meetingSelfQueuedNormalized*: string  ## normalized self chat to dedupe
     meetingSeenChat*: seq[string]         ## normalized lines already emitted
+    meetingVoteTally*: seq[VoteTallyEntry]  ## observed votes this meeting,
+                                          ## append-only until meeting close.
+                                          ## Fed by the `vote_observed`
+                                          ## emitter; used by the bandwagon
+                                          ## detector to count votes in a
+                                          ## rolling window per target.
+    meetingBandwagonFired*: seq[int]      ## target slot/colour codes we've
+                                          ## already emitted a
+                                          ## `vote_bandwagon_detected` event
+                                          ## for this meeting. Dedups follow-
+                                          ## up votes that keep the window
+                                          ## count above threshold.
     # Per-frame snapshot scheduling
     lastSnapshotTick*: int
     # Soft warnings (one-shot per round)

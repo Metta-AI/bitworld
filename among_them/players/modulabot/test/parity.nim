@@ -11,11 +11,12 @@
 ##   2. **v2 comparison (`--vs:v2`).** One modulabot and one
 ##      evidencebot_v2 instance run through the same frame stream
 ##      and diff their output masks. This is the strategy-parity
-##      test: divergence is a bug if it appears in
-##      crewmate / interstitial / vote paths, and an *expected*
-##      drift on RNG-dependent imposter paths (v2 seeds RNG from
-##      clock+pid with no override; modulabot seeds from `--seed`
-##      via Q6 substreams).
+##      test: with both bots sharing the `--seed` (v2 now accepts
+##      `--seed` / `initBot(masterSeed)`; previously it seeded from
+##      clock+pid with no override), RNG-dependent imposter paths
+##      are reproducible and every divergence — crewmate, vote,
+##      perception, or imposter — is a real bug rather than
+##      "expected drift".
 ##
 ## ## Frame sources
 ##
@@ -151,15 +152,16 @@ proc runVsV2(frames: seq[seq[uint8]], seed: int64,
   ## Builds one modulabot and one evidencebot_v2 instance and runs
   ## them through the same frame stream, diffing output masks.
   ##
-  ## v2 has no `--seed` plumbing (its `initBot()` seeds from
-  ## `getTime() ^ pid`). For non-RNG paths (crewmate, interstitial,
-  ## vote, perception) divergence is a real bug. For RNG-dependent
-  ## imposter paths (random innocent picks, fake-task die rolls,
-  ## followee swap selection) divergence is *expected*; this proc
-  ## reports raw counts and lets the caller interpret.
+  ## Both bots now seed from the same `--seed`: v2 gained
+  ## `initBot(mapPath, masterSeed)` with a -1 sentinel preserving
+  ## the original clock+pid behaviour for production callers. With
+  ## a shared seed, RNG-dependent imposter paths (random-innocent
+  ## picks, fake-task dice, followee swaps) become reproducible, so
+  ## divergence on those paths is now a bug rather than "expected
+  ## drift".
   var
     mb = bot.initBot(masterSeed = seed)
-    v2 = evidencebot_v2.initBot()
+    v2 = evidencebot_v2.initBot(masterSeed = seed)
     divergent = 0
   for i, frame in frames:
     let mbMask = mb.stepUnpackedFrame(frame)

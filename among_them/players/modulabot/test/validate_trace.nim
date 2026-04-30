@@ -19,7 +19,7 @@ const
     "task_state_change", "task_completed", "task_resolved_not_mine",
     "kill_executed", "body_seen_first", "kill_witnessed",
     "body_reported", "meeting_started", "meeting_ended",
-    "vote_observed", "vote_cast",
+    "vote_observed", "vote_cast", "vote_bandwagon_detected",
     "chat_observed", "chat_sent",
     "alibi_observed",
     "stuck_detected", "stuck_resolved",

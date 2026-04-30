@@ -4063,8 +4063,15 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
-proc initBot*(mapPath = ""): Bot =
+proc initBot*(mapPath = ""; masterSeed: int64 = -1): Bot =
   ## Builds a bot and loads all map and sprite data.
+  ##
+  ## `masterSeed`: pass a non-negative value for a deterministic RNG
+  ## seed. The default `-1` keeps the historical clock+pid behaviour
+  ## so production callers are unaffected. Parity harnesses (see
+  ## `modulabot/test/parity.nim`) pass an explicit seed so the
+  ## imposter code path — which reads RNG on fake-task dice and
+  ## random-innocent picks — becomes reproducible.
   setCurrentDir(gameDir())
   var config = defaultGameConfig()
   if mapPath.len > 0:
@@ -4077,7 +4084,11 @@ proc initBot*(mapPath = ""): Bot =
   result.taskSprite = sheet.sheetSprite(4, 0)
   result.ghostSprite = sheet.sheetSprite(6, 0)
   result.ghostIconSprite = sheet.sheetSprite(7, 0)
-  result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
+  result.rng =
+    if masterSeed >= 0:
+      initRand(masterSeed)
+    else:
+      initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
@@ -4788,10 +4799,11 @@ when not defined(evidencebotLibrary):
     port = PlayerDefaultPort,
     gui = false,
     name = "",
-    mapPath = ""
+    mapPath = "",
+    masterSeed: int64 = -1
   ) =
     ## Connects to an Among Them server and processes player frames.
-    var bot = initBot(mapPath)
+    var bot = initBot(mapPath, masterSeed)
     let url =
       if name.len > 0:
         "ws://" & host & ":" & $port & WebSocketPath &
@@ -4847,6 +4859,7 @@ when isMainModule and not defined(evidencebotLibrary):
     gui = false
     name = ""
     mapPath = ""
+    masterSeed = -1'i64
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4861,10 +4874,16 @@ when isMainModule and not defined(evidencebotLibrary):
         name = val
       of "map":
         mapPath = val
+      of "seed":
+        try:
+          masterSeed = parseBiggestInt(val).int64
+        except ValueError:
+          echo "invalid --seed: ", val
+          quit(2)
       else:
         discard
     else:
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath)
+  runBot(address, port, gui, name, mapPath, masterSeed)

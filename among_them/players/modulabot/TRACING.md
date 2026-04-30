@@ -295,6 +295,8 @@ Schema for every line: `{tick: int, wall_ms: int, type: string,
 | `meeting_ended` | `meeting_index: int`, `duration_ticks: int` | interstitial → non-interstitial transition where the interstitial was a meeting |
 | `vote_observed` | `voter: color_name`, `target: color_name\|"skip"\|"unknown"` | `voting.choices[ci]` transitions from `VoteUnknown` to a value (per-meeting, once per voter) |
 | `vote_cast` | `target: color_name\|"skip"`, `ticks_after_meeting_start: int`, `rationale: string` | `voting.selfVoteChoice` first non-`VoteUnknown` per meeting |
+| `vote_bandwagon_detected` | `meeting_index: int`, `target: color_name\|"skip"`, `votes_in_window: int`, `window_ticks: int`, `first_vote_tick: int`, `voters: [color_name,...]` | Fires once per `(meeting, target)` the first time ≥ `VoteBandwagonThreshold` (default 3) votes land on the same target inside a rolling `VoteBandwagonWindowTicks` (default 120 ≈ 5 s) window. Trace-only signal; no policy reads it. See TODO.md Phase 3 §4. |
+| `alibi_observed` | `color: name`, `task_index: int`, `task_name: string` | `memory.alibis` grows; the co-visibility rule in `tasks.recordTaskAlibis` fired for this (colour, task) pair |
 | `chat_observed` | `meeting_index: int`, `line: string`, `first_seen_tick: int`, `ocr_quality: "clean"\|"noisy"`, `speaker: color_name\|null`, `matches_self_chat: bool` | New OCR'd line during a meeting (see §6.3); `speaker` is the colour sampled from the per-message pip at `VoteChatIconX`, or null if the pip could not be resolved |
 | `chat_sent` | `text: string`, `queued_at_tick: int` | `runner.nim:176` (mask path) |
 | `stuck_detected` | `world_pos: [x,y]`, `goal: name?` | `motion.stuckFrames` crosses `StuckFrameThreshold` |
@@ -363,10 +365,13 @@ the next line) without doubling line count.
     "camera_lock": "FrameMapLock"
   },
   "goal": {
-    "name":      "upload-data",
-    "index":     6,
-    "world_pos": [488, 320],
-    "path_len":  14
+    "name":             "upload-data",
+    "index":            6,
+    "world_pos":        [488, 320],
+    "path_len":         14,
+    "selected_tier":    "mandatory_nearest",
+    "tier_candidates":  ["mandatory_nearest", "radar_nearest"],
+    "tier_rejected":    ["radar_nearest"]
   }
 }
 ```
@@ -385,6 +390,21 @@ Field notes:
   `"FrameMapLock"`.
 - `goal` — emitted only when `bot.goal.has`. If goal is set without
   a path step, `path_len` is omitted.
+- `goal.selected_tier` — which tier of
+  `policy_crew.nearestTaskGoal` produced the current goal. One of
+  `"none"`, `"mandatory_visible"`, `"mandatory_sticky"`,
+  `"mandatory_nearest"`, `"checkout_sticky"`, `"checkout_nearest"`,
+  `"radar_sticky"`, `"radar_nearest"`, `"home_fallback"`. Non-
+  crewmate branches (imposter, interstitial, voting, body-report)
+  emit `"none"`; the field is always present when `goal` is.
+- `goal.tier_candidates` — superset of `{selected_tier}` listing
+  every tier whose precondition was satisfied this frame. A
+  candidate being listed does not guarantee `taskGoalFor` would
+  have returned a reachable pixel for it; the set is a cheap
+  state-based approximation sufficient for offline counterfactual
+  analysis.
+- `goal.tier_rejected` — `tier_candidates \ {selected_tier}`,
+  surfaced as a convenience so consumers don't have to compute it.
 
 `--trace-level:full` switches `decisions.jsonl` to **per-frame**
 emission (every `decideNextMask` call writes a line, even if

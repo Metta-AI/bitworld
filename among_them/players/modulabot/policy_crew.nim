@@ -32,14 +32,60 @@ import tasks
 # Goal picking
 # ---------------------------------------------------------------------------
 
-proc nearestTaskGoal*(bot: Bot): TaskGoal =
+proc nearestTaskGoal*(bot: var Bot): TaskGoal =
   ## Returns the closest known active task station goal under the
   ## eight-tier fallback. Return is `(found: false, ...)` only when
   ## absolutely nothing is known and we don't even have a button
   ## fallback.
   ##
-  ## Verbatim port of v2:3251-3336 modulo sub-record renames.
+  ## Verbatim port of v2:3251-3336 modulo sub-record renames, with a
+  ## write-only counterfactual annotation: `bot.goal.selectedTier`
+  ## records which tier returned the winning goal, and
+  ## `bot.goal.tierCandidates` records which tiers had at least one
+  ## viable candidate (preconditions met) this frame. Trace consumes
+  ## the pair to surface `decisions.jsonl -> goal.selected_tier` /
+  ## `.tier_candidates` / `.tier_rejected`; policy code never reads
+  ## them. The first-found-wins contract is preserved, so the
+  ## `result` return value is bit-for-bit identical to the pre-
+  ## annotation behaviour.
   var bestDistance = high(int)
+  bot.goal.selectedTier = TierNone
+  bot.goal.tierCandidates = {}
+
+  template noteWinner(tier: TaskGoalTier) =
+    if bot.goal.selectedTier == TierNone:
+      bot.goal.selectedTier = tier
+
+  # Viability (precondition) sweep for tier_candidates: cheap O(N_tasks)
+  # membership tests, never running `taskGoalFor`. A tier being in the
+  # set does not guarantee `taskGoalFor` would succeed for every
+  # matching task, but it does mean at least one task's *state*
+  # precondition for the tier was met. Overcount on taskGoalFor-fails
+  # is acceptable for a counterfactual signal.
+  let statesOk = bot.tasks.states.len == bot.sim.tasks.len
+  let checkoutOk = bot.tasks.checkout.len == bot.sim.tasks.len
+  let radarOk = bot.tasks.radar.len == bot.sim.tasks.len
+  for i in 0 ..< bot.sim.tasks.len:
+    if bot.taskIconVisibleFor(bot.sim.tasks[i]):
+      bot.goal.tierCandidates.incl(TierMandatoryVisible)
+    if statesOk and bot.tasks.states[i] == TaskMandatory:
+      bot.goal.tierCandidates.incl(TierMandatoryNearest)
+    if checkoutOk and bot.tasks.checkout[i] and
+        statesOk and bot.tasks.states[i] != TaskCompleted:
+      bot.goal.tierCandidates.incl(TierCheckoutNearest)
+    if radarOk and bot.tasks.radar[i]:
+      bot.goal.tierCandidates.incl(TierRadarNearest)
+  if bot.goal.index >= 0 and bot.goal.index < bot.sim.tasks.len and statesOk:
+    if bot.tasks.states[bot.goal.index] == TaskMandatory:
+      bot.goal.tierCandidates.incl(TierMandatorySticky)
+    if checkoutOk and bot.tasks.checkout[bot.goal.index] and
+        bot.tasks.states[bot.goal.index] != TaskCompleted:
+      bot.goal.tierCandidates.incl(TierCheckoutSticky)
+    if radarOk and bot.tasks.radar[bot.goal.index]:
+      bot.goal.tierCandidates.incl(TierRadarSticky)
+  if bot.buttonFallbackReady():
+    bot.goal.tierCandidates.incl(TierHomeFallback)
+
   # Tier 1: visible mandatory icons.
   for i in 0 ..< bot.sim.tasks.len:
     if not bot.taskIconVisibleFor(bot.sim.tasks[i]):
@@ -53,6 +99,7 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bestDistance = distance
       result = goal
   if result.found:
+    noteWinner(TierMandatoryVisible)
     return
   # Tier 2: sticky previous mandatory goal.
   if bot.goal.index >= 0 and
@@ -61,6 +108,7 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bot.tasks.states[bot.goal.index] == TaskMandatory:
     let goal = bot.taskGoalFor(bot.goal.index, TaskMandatory)
     if goal.found:
+      noteWinner(TierMandatorySticky)
       return goal
   # Tier 3: nearest mandatory.
   bestDistance = high(int)
@@ -77,6 +125,7 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bestDistance = distance
       result = goal
   if result.found:
+    noteWinner(TierMandatoryNearest)
     return
   # Tier 4: sticky checkout goal.
   if bot.goal.index >= 0 and
@@ -87,6 +136,7 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bot.tasks.checkout[bot.goal.index]:
     let goal = bot.taskGoalFor(bot.goal.index, TaskMaybe)
     if goal.found:
+      noteWinner(TierCheckoutSticky)
       return goal
   # Tier 5: nearest non-completed checkout.
   bestDistance = high(int)
@@ -106,6 +156,7 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bestDistance = distance
       result = goal
   if result.found:
+    noteWinner(TierCheckoutNearest)
     return
   # Tier 6: sticky radar goal.
   if bot.goal.index >= 0 and
@@ -114,6 +165,7 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bot.tasks.radar[bot.goal.index]:
     let goal = bot.taskGoalFor(bot.goal.index, TaskMaybe)
     if goal.found:
+      noteWinner(TierRadarSticky)
       return goal
   # Tier 7: nearest radar task.
   bestDistance = high(int)
@@ -129,9 +181,11 @@ proc nearestTaskGoal*(bot: Bot): TaskGoal =
       bestDistance = distance
       result = goal
   if result.found:
+    noteWinner(TierRadarNearest)
     return
   # Tier 8: home/button fallback if nothing else is useful.
   if bot.buttonFallbackReady():
+    noteWinner(TierHomeFallback)
     return bot.homeGoal()
 
 # ---------------------------------------------------------------------------
