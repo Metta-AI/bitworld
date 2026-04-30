@@ -54,6 +54,7 @@ proc tuningSnapshot*(): JsonNode =
     "ImposterFakeTaskChanceDenom":      ImposterFakeTaskChanceDenom,
     "ImposterSelfReportRecentTicks":    ImposterSelfReportRecentTicks,
     "ImposterSelfReportRadius":         ImposterSelfReportRadius,
+    "ImposterVentCooldownTicks":        ImposterVentCooldownTicks,
     "ImposterCentralRoomStuckTicks":    ImposterCentralRoomStuckTicks,
     "ImposterCentralRoomLeaveTicks":    ImposterCentralRoomLeaveTicks,
     "ImposterCentralRoomMinCrewmates":  ImposterCentralRoomMinCrewmates,

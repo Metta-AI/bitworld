@@ -209,6 +209,15 @@ type
     # expires. Prevents the end-game lobby orbit pathology.
     centralRoomTicks*: int
     forceLeaveUntilTick*: int
+    # Vent escape state. When a body is visible and no non-teammate crewmate
+    # can see the imposter, the bot navigates to the nearest vent and presses
+    # B to teleport away. `ventTargetIndex` caches the chosen vent across
+    # frames so the approach path stays stable; -1 = no active vent target.
+    # `ventCooldownTick` prevents re-venting immediately after a teleport
+    # (the server enforces its own 30-tick cooldown, but we add a conservative
+    # bot-side gate to avoid spamming ButtonB on every frame while in range).
+    ventTargetIndex*: int
+    ventCooldownTick*: int
 
   VotingState* = object
     ## Voting-screen UI state machine. `active` is true while we believe

@@ -11,11 +11,17 @@
 ## Bot` (matching v2) because they read from two different sub-records
 ## (`io.unpacked` for the frame, `sim.asciiSprites` for the atlas) and
 ## sub-record purity for read-only helpers buys nothing.
+##
+## `sim.asciiSprites` is a `PixelFont` (see `common/pixelfonts.nim`).
+## Each `PixelGlyph` stores 1-bit pixels (`glyphPixel(x, y): bool`);
+## the game renders text in `TextColor`. The old `Sprite`-based
+## `asciiGlyphScore` has been updated accordingly.
 
 import std/strutils
 import protocol
 import ../../sim
 import ../../../common/server
+import ../../../common/pixelfonts
 
 import types
 
@@ -24,14 +30,18 @@ proc asciiChar*(index: int): char =
   ## space).
   char(index + ord(' '))
 
-proc asciiGlyphScore*(bot: Bot, glyph: Sprite,
+proc asciiGlyphScore*(bot: Bot, glyph: PixelGlyph,
                      screenX, screenY: int): tuple[misses: int, opaque: int] =
   ## Scores one rendered ASCII glyph against the current frame: counts
-  ## opaque pixels and how many of them disagree with the live frame.
+  ## foreground glyph pixels ("opaque") and how many of them disagree
+  ## with the live frame (i.e. the frame pixel is not TextColor).
+  ##
+  ## Updated from the original Sprite-based version: `PixelGlyph.pixels`
+  ## are 1-bit booleans accessed via `glyphPixel(x, y)`, and text is
+  ## always rendered in `TextColor` on screen.
   for y in 0 ..< glyph.height:
     for x in 0 ..< glyph.width:
-      let color = glyph.pixels[glyph.spriteIndex(x, y)]
-      if color == TransparentColorIndex:
+      if not glyph.glyphPixel(x, y):
         continue
       inc result.opaque
       let
@@ -40,7 +50,7 @@ proc asciiGlyphScore*(bot: Bot, glyph: Sprite,
       if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
         inc result.misses
         continue
-      if bot.io.unpacked[sy * ScreenWidth + sx] != color:
+      if bot.io.unpacked[sy * ScreenWidth + sx] != TextColor:
         inc result.misses
 
 proc asciiTextScore*(bot: Bot, text: string,
@@ -49,9 +59,9 @@ proc asciiTextScore*(bot: Bot, text: string,
   var offsetX = 0
   for ch in text:
     let idx = asciiIndex(ch)
-    if idx >= 0 and idx < bot.sim.asciiSprites.len:
+    if idx >= 0 and idx < bot.sim.asciiSprites.glyphs.len:
       let score = bot.asciiGlyphScore(
-        bot.sim.asciiSprites[idx],
+        bot.sim.asciiSprites.glyphs[idx],
         screenX + offsetX,
         screenY
       )
@@ -90,7 +100,7 @@ proc bestAsciiGlyph*(bot: Bot, x, y: int): char =
     bestChar = ' '
     bestMisses = high(int)
     bestOpaque = 0
-  for i, glyph in bot.sim.asciiSprites:
+  for i, glyph in bot.sim.asciiSprites.glyphs:
     let score = bot.asciiGlyphScore(glyph, x, y)
     if score.opaque == 0:
       continue

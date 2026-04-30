@@ -93,9 +93,11 @@ proc initImposterState*(): ImposterState =
   result.followeeColor = -1
   result.fakeTaskIndex = -1
   result.prevNearTaskIndex = -1
-  # `centralRoomTicks` and `forceLeaveUntilTick` are zero-initialized.
-  # Tick-stamp sentinels at 0 are fine — `frameTick` starts at 0 too, and
-  # a check like `tick - lastKillTick < threshold` uses signed arithmetic.
+  result.ventTargetIndex = -1
+  # `centralRoomTicks`, `forceLeaveUntilTick`, and `ventCooldownTick` are
+  # zero-initialized. Tick-stamp sentinels at 0 are fine — `frameTick`
+  # starts at 0 too, and a check like `tick - lastKillTick < threshold`
+  # uses signed arithmetic.
 
 proc initVotingState*(): VotingState =
   result.cursor = VoteUnknown

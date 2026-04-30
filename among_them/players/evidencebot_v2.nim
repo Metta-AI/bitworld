@@ -1,4 +1,4 @@
-import pixie, protocol, ../sim, ../../common/server
+import pixie, protocol, ../sim, ../../common/server, ../../common/pixelfonts
 when not defined(evidencebotLibrary):
   import silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -935,15 +935,16 @@ proc asciiChar(index: int): char =
 
 proc asciiGlyphScore(
   bot: Bot,
-  glyph: Sprite,
+  glyph: PixelGlyph,
   screenX,
   screenY: int
 ): tuple[misses: int, opaque: int] =
   ## Scores one rendered ASCII glyph against the current screen.
+  ## Updated from Sprite-based to PixelGlyph-based: glyphs are 1-bit
+  ## booleans; text is rendered in TextColor.
   for y in 0 ..< glyph.height:
     for x in 0 ..< glyph.width:
-      let color = glyph.pixels[glyph.spriteIndex(x, y)]
-      if color == TransparentColorIndex:
+      if not glyph.glyphPixel(x, y):
         continue
       inc result.opaque
       let
@@ -952,7 +953,7 @@ proc asciiGlyphScore(
       if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
         inc result.misses
         continue
-      if bot.unpacked[sy * ScreenWidth + sx] != color:
+      if bot.unpacked[sy * ScreenWidth + sx] != TextColor:
         inc result.misses
 
 proc asciiTextScore(
@@ -965,9 +966,9 @@ proc asciiTextScore(
   var offsetX = 0
   for ch in text:
     let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < bot.sim.asciiSprites.len:
+    if idx >= 0 and idx < bot.sim.asciiSprites.glyphs.len:
       let score = bot.asciiGlyphScore(
-        bot.sim.asciiSprites[idx],
+        bot.sim.asciiSprites.glyphs[idx],
         screenX + offsetX,
         screenY
       )
@@ -1002,7 +1003,7 @@ proc bestAsciiGlyph(bot: Bot, x, y: int): char =
     bestChar = ' '
     bestMisses = high(int)
     bestOpaque = 0
-  for i, glyph in bot.sim.asciiSprites:
+  for i, glyph in bot.sim.asciiSprites.glyphs:
     let score = bot.asciiGlyphScore(glyph, x, y)
     if score.opaque == 0:
       continue

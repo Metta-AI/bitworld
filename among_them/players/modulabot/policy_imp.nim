@@ -51,6 +51,13 @@ const
     ## treated as "ours" for self-report purposes.
   ImposterSelfReportRadius* = KillRange + 8
 
+  # Vent escape tuning.
+  ImposterVentCooldownTicks* = 60
+    ## Bot-side ticks to wait before attempting to vent again after a
+    ## successful vent press. The server enforces its own 30-tick
+    ## ventCooldown; this more conservative gate prevents spamming
+    ## ButtonB on every frame while standing on the destination vent.
+
   # Central-room stuck mitigation.
   ImposterCentralRoomStuckTicks* = 360
     ## Ticks of "in central room with crowd" before forcing a leave.
@@ -101,6 +108,46 @@ proc farthestFakeTargetIndex*(bot: Bot): int =
                                   bot.percep.playerWorldY())
 
 # ---------------------------------------------------------------------------
+# Vent helpers
+# ---------------------------------------------------------------------------
+
+proc ventCenter*(bot: Bot, index: int): tuple[x: int, y: int] =
+  ## World coordinate center of the vent at `index`.
+  let v = bot.sim.vents[index]
+  (v.x + v.w div 2, v.y + v.h div 2)
+
+proc inVentRange*(bot: Bot, ventX, ventY: int): bool =
+  ## True when the player's collision center is within the server's
+  ## `VentRange` of (ventX, ventY). Mirrors the range check in
+  ## `sim.tryVent` so the bot only presses B when the server will
+  ## actually honour the request.
+  let
+    px = bot.percep.playerWorldX() + CollisionW div 2
+    py = bot.percep.playerWorldY() + CollisionH div 2
+    dx = px - ventX
+    dy = py - ventY
+  dx * dx + dy * dy <= VentRange * VentRange
+
+proc nearestVentIndex*(bot: Bot): int =
+  ## Returns the index of the nearest vent (Manhattan distance from the
+  ## player's collision centre), or -1 when the map has no vents.
+  result = -1
+  if bot.sim.vents.len == 0:
+    return
+  var bestDist = high(int)
+  let
+    px = bot.percep.playerWorldX() + CollisionW div 2
+    py = bot.percep.playerWorldY() + CollisionH div 2
+  for i, v in bot.sim.vents:
+    let
+      vx = v.x + v.w div 2
+      vy = v.y + v.h div 2
+      d = abs(px - vx) + abs(py - vy)
+    if d < bestDist:
+      bestDist = d
+      result = i
+
+# ---------------------------------------------------------------------------
 # Visible-crewmate helpers
 # ---------------------------------------------------------------------------
 
@@ -117,6 +164,14 @@ proc visibleNonTeammateCrewmates*(bot: Bot): seq[CrewmateMatch] =
     if bot.knownImposterColor(ci):
       continue
     result.add(crewmate)
+
+proc noCrewmatesWatching*(bot: Bot): bool =
+  ## True when no non-teammate crewmate is visible on screen. The
+  ## visible crewmate list is exactly "players whose sprites appear in
+  ## our camera view", which is the closest the bot has to a line-of-
+  ## sight predicate. Used as the safety gate before venting: the
+  ## imposter only vents when no one on screen can witness it.
+  bot.visibleNonTeammateCrewmates().len == 0
 
 proc findVisibleByColor*(bot: Bot,
                         colorIndex: int): tuple[found: bool,
@@ -276,7 +331,45 @@ proc decideImposterMask*(bot: var Bot): uint8 =
         bot.thought("self-reporting kill body")
         return bot.reportBodyAction(body.x, body.y)
 
-    # Sub-case (b): not our kill → flee to farthest fake target.
+    # Sub-case (b): unobserved body → vent escape. No non-teammate
+    # crewmate is visible on screen, so no one can witness the teleport.
+    # Navigate to the nearest vent; press B when in range.
+    if bot.noCrewmatesWatching() and
+        bot.sim.vents.len > 0 and
+        bot.frameTick >= bot.imposter.ventCooldownTick:
+      # Reuse the cached vent target when still valid; otherwise pick the
+      # nearest vent fresh. Caching avoids oscillating between two equidistant
+      # vents across consecutive frames.
+      if bot.imposter.ventTargetIndex < 0 or
+          bot.imposter.ventTargetIndex >= bot.sim.vents.len:
+        bot.imposter.ventTargetIndex = bot.nearestVentIndex()
+      let ventIdx = bot.imposter.ventTargetIndex
+      if ventIdx >= 0:
+        let vc = bot.ventCenter(ventIdx)
+        if bot.inVentRange(vc.x, vc.y):
+          # In range — press B to vent. Clear the target and set a cooldown
+          # so we don't spam ButtonB on the destination vent next frame.
+          bot.imposter.ventTargetIndex = -1
+          bot.imposter.ventCooldownTick =
+            bot.frameTick + ImposterVentCooldownTicks
+          bot.imposter.fakeTaskUntilTick = 0
+          bot.imposter.fakeTaskIndex = -1
+          bot.fired("policy_imp.body.vent_escape",
+            "vent escape from body at " &
+            $body.x & "," & $body.y)
+          bot.thought("body visible, unobserved — pressing B to vent")
+          return ButtonB
+        # Not yet in range — navigate toward the vent.
+        bot.fired("policy_imp.body.vent_approach",
+          "approach vent " & $ventIdx & " to escape body")
+        bot.thought("approaching vent to escape body")
+        return bot.navigateToPoint(vc.x, vc.y,
+          "vent " & $ventIdx & " escape")
+
+    # Sub-case (c): body visible with witnesses (or no vents) → flee on
+    # foot to the farthest fake target. Clear any stale vent target so the
+    # next unobserved opportunity starts fresh.
+    bot.imposter.ventTargetIndex = -1
     bot.imposter.goalIndex = bot.farthestFakeTargetIndexFrom(body.x, body.y)
     let fleeGoal = bot.fakeTargetGoalFor(bot.imposter.goalIndex)
     if fleeGoal.found:
