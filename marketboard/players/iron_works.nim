@@ -148,7 +148,7 @@ proc decide(bot: var BotState, state: GameState): uint8 =
       bot.ticksInPhase = 0
       return facingMask(station.tx, station.ty, p.tx, p.ty)
     if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
-      bot.nav.navigateTo(state, station.tx, station.ty)
+      bot.nav.navigateAdjacent(state, station.tx, station.ty)
     return bot.nav.followPath(p.x, p.y)
 
   of StartCrafting:

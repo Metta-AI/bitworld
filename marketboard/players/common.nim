@@ -281,6 +281,9 @@ type
     path*: seq[TilePos]
     pathIndex*: int
     blocked: set[uint16]
+    lastPx, lastPy: int
+    stuckTicks: int
+    useAltAxis: bool
 
 proc fCost(node: PathNode): int = node.gCost + node.hCost
 proc `<`(a, b: PathNode): bool = a.fCost < b.fCost
@@ -388,16 +391,43 @@ proc navigateAdjacent*(nav: var Navigator, state: GameState, targetTx, targetTy:
   nav.pathIndex = if path.len > 1: 1 else: 0
 
 proc followPath*(nav: var Navigator, px, py: int): uint8 =
-  ## Returns a movement mask to follow the current path. Returns 0 when arrived.
   if nav.path.len == 0 or nav.pathIndex >= nav.path.len:
     return 0'u8
   let target = nav.path[nav.pathIndex]
   if isOnTile(px, py, target.tx, target.ty):
     inc nav.pathIndex
+    nav.stuckTicks = 0
+    nav.useAltAxis = false
     if nav.pathIndex >= nav.path.len:
       return 0'u8
     return nav.followPath(px, py)
-  walkToward(px, py, target.tx, target.ty)
+
+  if px == nav.lastPx and py == nav.lastPy:
+    inc nav.stuckTicks
+    if nav.stuckTicks > 6:
+      nav.useAltAxis = not nav.useAltAxis
+      nav.stuckTicks = 0
+  else:
+    nav.stuckTicks = 0
+    nav.useAltAxis = false
+  nav.lastPx = px
+  nav.lastPy = py
+
+  let
+    targetPx = target.tx * BotTileSize
+    targetPy = target.ty * BotTileSize
+    dx = targetPx - px
+    dy = targetPy - py
+
+  if nav.useAltAxis:
+    if dy != 0:
+      if dy < 0: buildMask(up = true) else: buildMask(down = true)
+    elif dx != 0:
+      if dx < 0: buildMask(left = true) else: buildMask(right = true)
+    else:
+      0'u8
+  else:
+    walkToward(px, py, target.tx, target.ty)
 
 proc hasPath*(nav: Navigator): bool =
   nav.path.len > 0 and nav.pathIndex < nav.path.len

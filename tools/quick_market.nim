@@ -116,8 +116,13 @@ proc waitForServerReady(port: int): bool =
   false
 
 proc findBotSource(name: string): string =
+  let lower = name.toLowerAscii()
   for (botName, source) in BotSources:
-    if botName.toLowerAscii() == name.toLowerAscii():
+    if botName.toLowerAscii() == lower:
+      return source
+  # Allow suffixed names like "StillForge2" to match "StillForge"
+  for (botName, source) in BotSources:
+    if lower.startsWith(botName.toLowerAscii()):
       return source
   raise newException(ValueError, "Unknown bot: " & name & ". Available: " &
     BotSources.mapIt(it[0]).join(", "))
@@ -143,7 +148,7 @@ proc waitForChildren(): int =
 proc parseArgs(): QuickMarketConfig =
   result.address = "localhost"
   result.port = 8080
-  result.bots = @["StillForge"]
+  result.bots = @["StillForge", "StillForge2", "IronWorks", "IronWorks2"]
 
   for kind, key, val in getopt():
     case kind

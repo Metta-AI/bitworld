@@ -214,9 +214,16 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
       if inTileBounds(standing.tx, standing.ty):
         labelObjIndex = sim.objectIndexAt(standing.tx, standing.ty)
     if labelObjIndex >= 0:
-      let label = sim.objects[labelObjIndex].objectLabel()
+      let obj = sim.objects[labelObjIndex]
+      let label = obj.objectLabel()
       let labelX = (ScreenWidth - label.len * 6) div 2
-      sim.fb.blitText(sim.letterSprites, label, labelX, ScreenHeight - 8)
+      sim.fb.blitText(sim.letterSprites, label, labelX, ScreenHeight - 14)
+      let canGather = obj.kind == GatherNodeObj and not obj.depleted and player.role == Gatherer
+      let canCraft = obj.kind == CraftStationObj and player.role == Crafter and player.inv.hasCraftMaterials()
+      if canGather or canCraft:
+        let hint = "HOLD A"
+        let hintX = (ScreenWidth - hint.len * 6) div 2
+        sim.fb.blitText(sim.letterSprites, hint, hintX, ScreenHeight - 7)
 
   if player.state == Gathering:
     sim.drawProgressBar(player.actionProgress, GatherWorkNeeded, 50, ScreenHeight - 5)
