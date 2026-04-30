@@ -11,6 +11,7 @@ const
     "PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes",
   ]
   GearSlotCount* = 5
+  BotMaxSellSlots* = 8
   GearItemNames* = [
     "LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes",
     "ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes",
@@ -327,6 +328,19 @@ proc cheapestListing*(listings: seq[BotListing], item: string): Option[BotListin
 proc allListings*(state: GameState): seq[BotListing] =
   result = state.npcListings & state.playerListings
 
+proc botItemBasePrice*(item: string): int =
+  case item
+  of "WoodItem": 5
+  of "StoneItem": 5
+  of "HardwoodItem": 10
+  of "CopperItem": 10
+  of "IronwoodItem": 20
+  of "IronItem": 20
+  of "LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes": 20
+  of "ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes": 35
+  of "PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes": 80
+  else: 5
+
 proc cheapestPrice*(state: GameState, item: string): int =
   let all = state.allListings()
   let listing = cheapestListing(all, item)
@@ -442,6 +456,78 @@ proc bestGearTier*(state: GameState, slot: int, gold: int): int =
       return tier
   1
 
+proc nextGearTarget*(state: GameState, player: BotPlayer): tuple[slot: int, tier: int, item: string] =
+  result = (-1, 0, "")
+  let emptySlot = firstEmptyGearSlot(player)
+  if emptySlot >= 0:
+    return (emptySlot, 1, gearItemForSlot(emptySlot, 1))
+  let all = state.allListings()
+  var bestSlot = -1
+  var bestTier = 0
+  var bestPrice = int.high
+  for i in 0 ..< GearSlotCount:
+    let currentTier = gearTier(player.equippedGear[i])
+    if currentTier >= 3: continue
+    let targetTier = currentTier + 1
+    let item = gearItemForSlot(i, targetTier)
+    let listing = cheapestListing(all, item)
+    if listing.isSome and listing.get().priceEach < bestPrice:
+      bestSlot = i
+      bestTier = targetTier
+      bestPrice = listing.get().priceEach
+  if bestSlot >= 0:
+    result = (bestSlot, bestTier, gearItemForSlot(bestSlot, bestTier))
+
+proc hasAffordableGearUpgrade*(state: GameState, player: BotPlayer): bool =
+  let target = nextGearTarget(state, player)
+  if target.slot < 0: return false
+  let all = state.allListings()
+  let listing = cheapestListing(all, target.item)
+  listing.isSome and listing.get().priceEach <= player.gold
+
+proc materialsForTier*(tier: int): tuple[matA, matB: string] =
+  case tier
+  of 2: ("HardwoodItem", "CopperItem")
+  of 3: ("IronwoodItem", "IronItem")
+  else: ("WoodItem", "StoneItem")
+
+proc hasAnyRawMaterials*(inv: BotInventory): bool =
+  inv.wood > 0 or inv.stone > 0 or inv.hardwood > 0 or
+  inv.copper > 0 or inv.ironwood > 0 or inv.iron > 0
+
+proc hasEnoughMaterialsForCraft*(inv: BotInventory): bool =
+  inv.wood >= 3 or inv.stone >= 3 or inv.hardwood >= 3 or
+  inv.copper >= 3 or inv.ironwood >= 3 or inv.iron >= 3
+
+proc preferredMaterial*(baseMaterial: string, tier: int): string =
+  case baseMaterial
+  of "WoodItem":
+    case tier
+    of 2: "HardwoodItem"
+    of 3: "IronwoodItem"
+    else: "WoodItem"
+  of "StoneItem":
+    case tier
+    of 2: "CopperItem"
+    of 3: "IronItem"
+    else: "StoneItem"
+  else: ""
+
+proc nearestGatherableNode*(state: GameState, player: BotPlayer,
+                            preferMaterial: string = ""): Option[BotObject] =
+  let maxTier = highestGatherableTier(player)
+  for tier in countdown(maxTier, 1):
+    let (matA, matB) = materialsForTier(tier)
+    if preferMaterial.len > 0:
+      let preferred = preferredMaterial(preferMaterial, tier)
+      let node = nearestObject(state, "GatherNodeObj", material = preferred)
+      if node.isSome: return node
+    let nodeA = nearestObject(state, "GatherNodeObj", material = matA)
+    if nodeA.isSome: return nodeA
+    let nodeB = nearestObject(state, "GatherNodeObj", material = matB)
+    if nodeB.isSome: return nodeB
+  none(BotObject)
+
 # ── A* Pathfinding ──
 
 const
@@ -472,14 +558,12 @@ proc tileKey(tx, ty: int): uint16 =
   uint16(ty * MapWidth + tx)
 
 proc buildCollisionMap*(state: GameState): Navigator =
-  # Walls (border)
   for tx in 0 ..< MapWidth:
     result.blocked.incl tileKey(tx, 0)
     result.blocked.incl tileKey(tx, MapHeight - 1)
   for ty in 1 ..< MapHeight - 1:
     result.blocked.incl tileKey(0, ty)
     result.blocked.incl tileKey(MapWidth - 1, ty)
-  # Objects with collision (everything except GatherNodeObj)
   for obj in state.objects:
     if obj.kind != "GatherNodeObj":
       result.blocked.incl tileKey(obj.tx, obj.ty)
@@ -600,12 +684,18 @@ proc followPath*(nav: var Navigator, px, py: int): uint8 =
     dy = targetPy - py
 
   if nav.useAltAxis:
-    if dy != 0:
-      if dy < 0: buildMask(up = true) else: buildMask(down = true)
-    elif dx != 0:
-      if dx < 0: buildMask(left = true) else: buildMask(right = true)
+    if abs(dx) > abs(dy):
+      if dy != 0:
+        if dy < 0: buildMask(up = true) else: buildMask(down = true)
+      elif dx != 0:
+        if dx < 0: buildMask(left = true) else: buildMask(right = true)
+      else: 0'u8
     else:
-      0'u8
+      if dx != 0:
+        if dx < 0: buildMask(left = true) else: buildMask(right = true)
+      elif dy != 0:
+        if dy < 0: buildMask(up = true) else: buildMask(down = true)
+      else: 0'u8
   else:
     walkToward(px, py, target.tx, target.ty)
 

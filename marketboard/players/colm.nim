@@ -43,9 +43,9 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of WaitForState:
     bot.ticksInPhase = 0
     if p.role == "Gatherer":
-      if p.inv.wood > 0 or p.inv.stone > 0:
+      if hasAnyRawMaterials(p.inv):
         bot.phase = PathToSellStall
-      elif hasAffordableGear(state, p):
+      elif hasAffordableGearUpgrade(state, p):
         bot.phase = CheckGear
       else:
         bot.phase = PathToNode
@@ -87,7 +87,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of PathToNode:
-    let nodeOpt = nearestObject(state, "GatherNodeObj")
+    let nodeOpt = nearestGatherableNode(state, p)
     if nodeOpt.isNone: return 0
     let node = nodeOpt.get()
     if isOnTile(p.x, p.y, node.tx, node.ty) or isAdjacentTo(p.x, p.y, node.tx, node.ty):
@@ -109,7 +109,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       return 0
     if (bot.prevMask and ButtonA) != 0:
       return 0
-    let nodeOpt = nearestObject(state, "GatherNodeObj")
+    let nodeOpt = nearestGatherableNode(state, p)
     if nodeOpt.isSome:
       let node = nodeOpt.get()
       return facingMask(node.tx, node.ty, p.tx, p.ty) or ButtonA
@@ -118,7 +118,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if p.inv.wood > 0 or p.inv.stone > 0:
+      if hasAnyRawMaterials(p.inv):
         bot.phase = PathToSellStall
       else:
         bot.phase = PathToNode
@@ -126,7 +126,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of PathToSellStall:
-    if p.inv.wood == 0 and p.inv.stone == 0:
+    if not hasAnyRawMaterials(p.inv):
       bot.phase = PathToNode
       bot.ticksInPhase = 0
       return 0
@@ -164,8 +164,10 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.ticksInPhase = 0
       return 0
     var itemName = "WoodItem"
-    if p.inv.wood > 0: itemName = "WoodItem"
-    elif p.inv.stone > 0: itemName = "StoneItem"
+    for mat in RawMaterialNames:
+      if p.inv.itemCount(mat) > 0:
+        itemName = mat
+        break
     let cheapest = cheapestPrice(state, itemName)
     let targetPrice = if cheapest < int.high: max(1, cheapest - 1) else: 5
     if p.sellPrice < targetPrice:
@@ -181,7 +183,11 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = WaitForState
       bot.ticksInPhase = 0
       return 0
-    if p.inv.wood == 0 and p.inv.stone == 0 and not p.inv.hasAnyGear:
+    if not hasAnyRawMaterials(p.inv) and not p.inv.hasAnyGear:
+      bot.phase = ExitSell
+      bot.ticksInPhase = 0
+      return 0
+    if p.listings.len >= BotMaxSellSlots:
       bot.phase = ExitSell
       bot.ticksInPhase = 0
       return 0
@@ -200,14 +206,16 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of CheckGear:
     bot.ticksInPhase = 0
-    if not hasAffordableGear(state, p):
+    let target = nextGearTarget(state, p)
+    if target.slot < 0:
       bot.phase = PathToNode
       return 0
-    let emptySlot = firstEmptyGearSlot(p)
-    if emptySlot < 0 or p.gold < 20:
+    let all = state.allListings()
+    let listing = cheapestListing(all, target.item)
+    if listing.isNone or listing.get().priceEach > p.gold:
       bot.phase = PathToNode
       return 0
-    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearTier(state, emptySlot, p.gold))
+    bot.targetGearItem = target.item
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
     bot.phase = PathToBuyStall
     return 0

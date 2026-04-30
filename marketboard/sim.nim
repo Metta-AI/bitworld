@@ -23,8 +23,8 @@ const
   NodeRespawnT1* = 240
   NodeRespawnT2* = 360
   NodeRespawnT3* = 480
-  StartingGold* = 100
-  MaxSellSlots* = 4
+  StartingGold* = 300
+  MaxSellSlots* = 8
   WoodBasePrice* = 5
   StoneBasePrice* = 5
   HardwoodBasePrice* = 10
@@ -33,8 +33,8 @@ const
   IronBasePrice* = 20
   GearBasePrice* = 20
   T1GearBasePrice* = 20
-  T2GearBasePrice* = 50
-  T3GearBasePrice* = 120
+  T2GearBasePrice* = 35
+  T3GearBasePrice* = 80
   MaxSignalIcons* = 4
   HubCenterTx* = 16
   HubCenterTy* = 16
@@ -303,6 +303,15 @@ proc tryEquipGear*(player: var Player, item: ItemKind): bool =
   player.setActiveGearSlot(slot, item)
   true
 
+proc tryUpgradeGear*(player: var Player, item: ItemKind): bool =
+  if not item.isGearItem(): return false
+  let slot = gearSlotOf(item)
+  let currentTier = gearTier(player.activeGear()[ord(slot)])
+  let newTier = gearTier(item)
+  if newTier <= currentTier: return false
+  player.setActiveGearSlot(slot, item)
+  true
+
 proc hasFullGearSetOfTier*(player: Player, tier: int): bool =
   let gear = player.activeGear()
   for i in 0 ..< GearSlotCount:
@@ -354,14 +363,15 @@ proc hasCraftMaterials*(inv: Inventory): bool =
   false
 
 proc craftableItem*(player: Player): ItemKind =
-  let cursor = player.craftCursor mod GearSlotCount
-  let slot = GearSlot(cursor)
-  for tier in countdown(3, 1):
-    let gear = gearForSlot(slot, tier)
-    let material = craftRecipeMaterial(gear)
-    if player.inv.counts[material] >= 3 and player.canCraftFromMaterial(material):
-      return gear
-  gearForSlot(slot, 1)
+  for offset in 0 ..< GearSlotCount:
+    let slotIdx = (player.craftCursor + offset) mod GearSlotCount
+    let slot = GearSlot(slotIdx)
+    for tier in countdown(3, 1):
+      let gear = gearForSlot(slot, tier)
+      let material = craftRecipeMaterial(gear)
+      if player.inv.counts[material] >= 3 and player.canCraftFromMaterial(material):
+        return gear
+  gearForSlot(GearSlot(player.craftCursor mod GearSlotCount), 1)
 
 proc objectIndexAt*(sim: SimServer, tx, ty: int): int =
   for i, obj in sim.objects:
@@ -471,11 +481,11 @@ proc initNpcListings*(sim: var SimServer) =
   sim.npcListings.add MarketListing(sellerIndex: -1, item: IronwoodItem, quantity: 1, priceEach: IronwoodBasePrice)
   sim.npcListings.add MarketListing(sellerIndex: -1, item: IronItem, quantity: 1, priceEach: IronBasePrice)
   for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 1), quantity: 1, priceEach: T1GearBasePrice)
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 1), quantity: 8, priceEach: T1GearBasePrice)
   for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 2), quantity: 1, priceEach: T2GearBasePrice)
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 2), quantity: 3, priceEach: T2GearBasePrice)
   for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 3), quantity: 1, priceEach: T3GearBasePrice)
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 3), quantity: 3, priceEach: T3GearBasePrice)
 
 proc canOccupy*(sim: SimServer, x, y, width, height: int): bool =
   if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
@@ -690,7 +700,8 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
         sim.players[playerIndex].gold -= cost
         for _ in 0 ..< canBuy:
           if not sim.players[playerIndex].tryEquipGear(wantedItem):
-            sim.players[playerIndex].inv.addItem(wantedItem)
+            if not sim.players[playerIndex].tryUpgradeGear(wantedItem):
+              sim.players[playerIndex].inv.addItem(wantedItem)
         entry.listing.quantity -= canBuy
         if not entry.isNpc and entry.listing.sellerIndex >= 0 and
            entry.listing.sellerIndex < sim.players.len:
@@ -782,7 +793,8 @@ proc updateActionProgress*(sim: var SimServer, playerIndex: int) =
       let material = craftRecipeMaterial(gear)
       if sim.players[playerIndex].inv.removeItem(material, 3):
         if not sim.players[playerIndex].tryEquipGear(gear):
-          sim.players[playerIndex].inv.addItem(gear)
+          if not sim.players[playerIndex].tryUpgradeGear(gear):
+            sim.players[playerIndex].inv.addItem(gear)
         inc sim.players[playerIndex].craftCursor
         inc sim.players[playerIndex].crafterLevel
       sim.cancelAction(playerIndex)

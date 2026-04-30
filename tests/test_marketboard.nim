@@ -677,7 +677,7 @@ proc testBuyInsufficientGoldAndEmptyMarket() =
 proc testMaxSellSlots() =
   var sim = initMarketboardForTest()
   let idx = sim.addPlayer("test")
-  sim.players[idx].inv.wood = 5
+  sim.players[idx].inv.wood = MaxSellSlots + 1
 
   let si = sim.findObjectIndex(SellStallObj)
   let stall = sim.objects[si]
@@ -687,14 +687,13 @@ proc testMaxSellSlots() =
   sim.pressA(idx, FaceDown)
   doAssert sim.players[idx].state == AtSellStall
 
-  # Sell 4 units (max slots)
-  for i in 0 ..< 4:
+  for i in 0 ..< MaxSellSlots:
     sim.pressA(idx, FaceDown)
   doAssert sim.players[idx].listings.len == MaxSellSlots,
     "should have " & $MaxSellSlots & " listings, got " & $sim.players[idx].listings.len
   doAssert sim.players[idx].inv.wood == 1, "should have 1 wood remaining"
 
-  # 5th sell should fail silently
+  # Next sell should fail silently (slots full)
   sim.pressA(idx, FaceDown)
   doAssert sim.players[idx].listings.len == MaxSellSlots,
     "should still have " & $MaxSellSlots & " listings after overflow attempt"
@@ -749,10 +748,10 @@ proc testGearGoesToInventoryIfSlotFilled() =
   sim.players[idx].buyQuantity = 1
   sim.pressA(idx, FaceDown)
 
-  doAssert sim.players[idx].gathererGear[ord(SlotHat)] == LeatherHat,
-    "hat slot should still have LeatherHat"
-  doAssert sim.players[idx].inv.counts[ChainHat] == 1,
-    "ChainHat should be in inventory since hat slot is filled"
+  doAssert sim.players[idx].gathererGear[ord(SlotHat)] == ChainHat,
+    "ChainHat (T2) should upgrade LeatherHat (T1) in hat slot"
+  doAssert sim.players[idx].inv.counts[ChainHat] == 0,
+    "ChainHat should not be in inventory after upgrading"
 
 proc testGearBoostsGatherSpeed() =
   var sim = initMarketboardForTest()

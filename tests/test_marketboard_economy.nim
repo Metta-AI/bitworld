@@ -12,7 +12,9 @@ import
   ../marketboard/players/rkhenna as rk,
   ../marketboard/players/pipitori as pi
 
-const RootDir = currentSourcePath.parentDir.parentDir
+const
+  RootDir = currentSourcePath.parentDir.parentDir
+  GearSlotCount = sim.GearSlotCount
 
 proc findObjectIndex(sim: SimServer, kind: WorldObjectKind): int =
   for i, obj in sim.objects:
@@ -393,6 +395,222 @@ proc testFullEconomySimulation() =
       break
   doAssert anyTraded, "at least one bot should have traded (gold != starting gold)"
 
+proc testGearUpgradeAtBuyStall() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("upgrader")
+  sim.players[idx].role = Gatherer
+  sim.players[idx].gathererGear[ord(SlotHat)] = LeatherHat
+  sim.players[idx].gold = 200
+
+  let bi = sim.findObjectIndex(BuyStallObj)
+  let stall = sim.objects[bi]
+  sim.players[idx].x = stall.tx * MbTileSize
+  sim.players[idx].y = stall.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  var inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx].aPressed = true
+  inputs[idx].aHeld = true
+  sim.step(inputs)
+  doAssert sim.players[idx].state == AtBuyStall
+
+  sim.players[idx].buyItemCursor = ord(ChainHat)
+  sim.players[idx].buyQuantity = 1
+  inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx].aPressed = true
+  inputs[idx].aHeld = true
+  sim.step(inputs)
+
+  doAssert sim.players[idx].gathererGear[ord(SlotHat)] == ChainHat,
+    "ChainHat (T2) should upgrade LeatherHat (T1), got " &
+    $sim.players[idx].gathererGear[ord(SlotHat)]
+
+proc testGearUpgradeViaCrafting() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("crafter")
+  sim.players[idx].role = Crafter
+  sim.players[idx].crafterGear = [LeatherHat, LeatherShirt, LeatherGloves, LeatherPants, LeatherShoes]
+  sim.players[idx].inv.counts[CopperItem] = 3
+
+  let ci = sim.findObjectIndex(CraftStationObj)
+  let station = sim.objects[ci]
+  sim.players[idx].x = station.tx * MbTileSize
+  sim.players[idx].y = station.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+
+  sim.players[idx].facing = FaceDown
+  var inputs = newSeq[PlayerInput](sim.players.len)
+  inputs[idx].aPressed = true
+  inputs[idx].aHeld = true
+  sim.step(inputs)
+  doAssert sim.players[idx].state == Crafting
+
+  for _ in 0 ..< 200:
+    inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[idx].aHeld = true
+    sim.step(inputs)
+
+  var hasT2 = false
+  for i in 0 ..< GearSlotCount:
+    if gearTier(sim.players[idx].crafterGear[i]) >= 2:
+      hasT2 = true
+      break
+  doAssert hasT2, "crafting with copper should produce T2 gear that upgrades a slot"
+
+proc testTryUpgradeRejectsDowngrade() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("tester")
+  sim.players[idx].role = Gatherer
+  sim.players[idx].gathererGear[ord(SlotHat)] = ChainHat
+
+  let downgraded = sim.players[idx].tryUpgradeGear(LeatherHat)
+  doAssert not downgraded, "tryUpgradeGear should reject downgrade (Chain -> Leather)"
+  doAssert sim.players[idx].gathererGear[ord(SlotHat)] == ChainHat
+
+  let upgraded = sim.players[idx].tryUpgradeGear(PlateHat)
+  doAssert upgraded, "tryUpgradeGear should accept upgrade (Chain -> Plate)"
+  doAssert sim.players[idx].gathererGear[ord(SlotHat)] == PlateHat
+
+proc testNextGearTargetProgression() =
+  var player = BotPlayer()
+  player.gold = 1000
+  var state = GameState()
+  for i in 0 ..< GearSlotCount:
+    state.npcListings.add BotListing(item: T1GearNames[i], quantity: 3, priceEach: 20)
+    state.npcListings.add BotListing(item: T2GearNames[i], quantity: 3, priceEach: 35)
+    state.npcListings.add BotListing(item: T3GearNames[i], quantity: 3, priceEach: 80)
+
+  let empty = nextGearTarget(state, player)
+  doAssert empty.slot == 0 and empty.tier == 1,
+    "empty gear should target slot 0, tier 1"
+
+  for i in 0 ..< GearSlotCount:
+    player.equippedGear[i] = T1GearNames[i]
+  let fullT1 = nextGearTarget(state, player)
+  doAssert fullT1.slot >= 0 and fullT1.tier == 2,
+    "full T1 should target tier 2, got slot=" & $fullT1.slot & " tier=" & $fullT1.tier
+
+  player.equippedGear[0] = T2GearNames[0]
+  let mixed = nextGearTarget(state, player)
+  doAssert mixed.tier == 2 and mixed.slot != 0,
+    "mixed T1/T2 should target lowest-tier slot for T2 upgrade"
+
+  for i in 0 ..< GearSlotCount:
+    player.equippedGear[i] = T3GearNames[i]
+  let fullT3 = nextGearTarget(state, player)
+  doAssert fullT3.slot == -1,
+    "full T3 gear should return no target"
+
+proc testBotTierProgression() =
+  var sim = initMarketboardForTest()
+
+  let names = ["StillForge", "IronWorks", "Colm", "Zorori", "Solenne", "Rkhenna", "Pipitori"]
+  var indices: array[7, int]
+  for i, name in names:
+    indices[i] = sim.addPlayer(name)
+
+  var sfBot = sf.BotState(phase: sf.WaitForState)
+  var iwBot = iw.BotState(phase: iw.WaitForState)
+  var coBot = co.BotState(phase: co.WaitForState)
+  var zoBot = zo.BotState(phase: zo.WaitForState)
+  var soBot = so.BotState(phase: so.WaitForState)
+  var rkBot = rk.BotState(phase: rk.WaitForState)
+  var piBot = pi.BotState(phase: pi.WaitForState)
+
+  var prevMasks: array[7, uint8]
+
+  const SimTicks = 30000
+
+  for tick in 0 ..< SimTicks:
+    var masks: array[7, uint8]
+
+    let s0 = parseGameState(sim.buildStateJson(indices[0]))
+    masks[0] = sfBot.decide(s0)
+    sfBot.prevMask = masks[0]
+
+    let s1 = parseGameState(sim.buildStateJson(indices[1]))
+    masks[1] = iwBot.decide(s1)
+    iwBot.prevMask = masks[1]
+
+    let s2 = parseGameState(sim.buildStateJson(indices[2]))
+    masks[2] = coBot.decide(s2)
+    coBot.prevMask = masks[2]
+
+    let s3 = parseGameState(sim.buildStateJson(indices[3]))
+    masks[3] = zoBot.decide(s3)
+    zoBot.prevMask = masks[3]
+
+    let s4 = parseGameState(sim.buildStateJson(indices[4]))
+    masks[4] = soBot.decide(s4)
+    soBot.prevMask = masks[4]
+
+    let s5 = parseGameState(sim.buildStateJson(indices[5]))
+    masks[5] = rkBot.decide(s5)
+    rkBot.prevMask = masks[5]
+
+    let s6 = parseGameState(sim.buildStateJson(indices[6]))
+    masks[6] = piBot.decide(s6)
+    piBot.prevMask = masks[6]
+
+    var inputs = newSeq[PlayerInput](sim.players.len)
+    for i in 0 ..< 7:
+      inputs[indices[i]] = maskToInput(masks[i], prevMasks[i])
+    sim.step(inputs)
+    prevMasks = masks
+
+    if tick mod 5000 == 4999:
+      echo "    tick ", tick + 1, ":"
+      for i, name in names:
+        let p = sim.players[indices[i]]
+        let gc = p.equippedGearCount()
+        echo "      ", name, ": gold=", p.gold, " gear=", gc, "/5 role=", p.role,
+          " state=", p.state,
+          " wood=", p.inv.counts[WoodItem], " stone=", p.inv.counts[StoneItem],
+          " hw=", p.inv.counts[HardwoodItem], " cu=", p.inv.counts[CopperItem]
+      echo "      SF phase=", sfBot.phase, " path=", sfBot.nav.hasPath,
+        " IW phase=", iwBot.phase,
+        " CO phase=", coBot.phase, " ZO phase=", zoBot.phase
+      echo "      SO phase=", soBot.phase, " RK phase=", rkBot.phase, " PI phase=", piBot.phase
+      echo "      phases: SF=", sfBot.phase, " IW=", iwBot.phase,
+        " CO=", coBot.phase, " ZO=", zoBot.phase,
+        " SO=", soBot.phase, " RK=", rkBot.phase, " PI=", piBot.phase
+      var listings = 0
+      for p in sim.players:
+        listings += p.listings.len
+      echo "      NPC listings=", sim.npcListings.len, " player listings=", listings
+      if tick == 4999:
+        for pi in 0 ..< sim.players.len:
+          for li in sim.players[pi].listings:
+            echo "      listing: ", sim.players[pi].name, " sells ", li.item, " qty=", li.quantity, " @", li.priceEach
+        for nl in sim.npcListings:
+          echo "      NPC: ", nl.item, " qty=", nl.quantity, " @", nl.priceEach
+
+  let finalCap = sim.totalMarketCap()
+  echo "  [Tier Progression] Initial: ", 7 * StartingGold, " Final: ", finalCap
+
+  var maxTier = 0
+  for i, name in names:
+    let role = sim.players[indices[i]].role
+    var bestGatherTier = 0
+    for s in 0 ..< GearSlotCount:
+      let t = gearTier(sim.players[indices[i]].gathererGear[s])
+      if t > bestGatherTier: bestGatherTier = t
+    var bestCraftTier = 0
+    for s in 0 ..< GearSlotCount:
+      let t = gearTier(sim.players[indices[i]].crafterGear[s])
+      if t > bestCraftTier: bestCraftTier = t
+    let bt = max(bestGatherTier, bestCraftTier)
+    if bt > maxTier: maxTier = bt
+    let gearCount = sim.players[indices[i]].equippedGearCount()
+    let score = sim.rewardScore(indices[i])
+    echo "    ", name, ": score=", score, " role=", role,
+      " gear=", gearCount, "/5 gatherMax=T", bestGatherTier, " craftMax=T", bestCraftTier
+
+  doAssert maxTier >= 3,
+    "at least one bot should reach T3 gear, best was T" & $maxTier
+
 echo "Running economy tests..."
 testTotalMarketCap()
 echo "  total market cap calculation: OK"
@@ -412,4 +630,14 @@ testStartGatheringExitsWhenDepleted()
 echo "  StartGathering exits when depleted: OK"
 testFullEconomySimulation()
 echo "  full economy simulation: OK"
+testGearUpgradeAtBuyStall()
+echo "  gear upgrade at buy stall: OK"
+testGearUpgradeViaCrafting()
+echo "  gear upgrade via crafting: OK"
+testTryUpgradeRejectsDowngrade()
+echo "  tryUpgrade rejects downgrade: OK"
+testNextGearTargetProgression()
+echo "  nextGearTarget progression: OK"
+testBotTierProgression()
+echo "  bot tier progression: OK"
 echo "All economy tests passed"
