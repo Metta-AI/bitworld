@@ -240,7 +240,7 @@ type
     lastThought*: string                  ## last raw debug log line
     branchId*: string                     ## stable ID of the policy branch
                                           ## that fired this frame; see
-                                          ## BRANCH_IDS.md for the canonical
+                                          ## TRACING.md §8 for the canonical
                                           ## list. Reset to "" at the top of
                                           ## decideNextMask; every code
                                           ## path must call bot.fired(...)
@@ -284,6 +284,105 @@ type
     atlasPath*: string                    ## .../bitworld/clients/dist/atlas.png
     mapPath*: string                      ## empty = let sim use DefaultMapPath
 
+  TraceLevel* = enum
+    ## Verbosity tier for the trace writer. See TRACING.md §10.
+    tlOff
+    tlEvents
+    tlDecisions
+    tlFull
+
+  ManifestCounters* = object
+    ## Accumulated per-round statistics; flushed into manifest.json at
+    ## round end. Updated incrementally by the trace writer; never read
+    ## by policy code.
+    ticksTotal*: int
+    ticksLocalized*: int
+    framesDropped*: int
+    meetingsAttended*: int
+    votesCast*: int
+    skipsVoted*: int
+    killsExecuted*: int
+    killsWitnessed*: int
+    bodiesSeenFirst*: int
+    bodiesReported*: int
+    tasksCompleted*: int
+    chatsSent*: int
+    chatsObserved*: int
+    stuckEpisodes*: int
+    branchTransitions*: int
+    eventsEmitted*: int
+    snapshotsEmitted*: int
+
+  TraceWriter* = ref object
+    ## Append-only structured trace writer. Owns all file handles and
+    ## diff state for emitting events.jsonl, decisions.jsonl,
+    ## snapshots.jsonl, and manifest.json. Implementation lives in
+    ## `trace.nim`; this type is in `types.nim` only because `Bot` must
+    ## hold a nilable reference to it.
+    ##
+    ## All fields are private to the trace writer; nothing else should
+    ## read or write them. The asterisk on the field is for cross-module
+    ## visibility, not a public-API claim.
+    rootDir*: string
+    botName*: string
+    sessionId*: string
+    level*: TraceLevel
+    snapshotPeriod*: int
+    captureFrames*: bool
+    harnessMeta*: string                  ## raw harness-meta JSON object text
+    bootedUnixMs*: int64                  ## set once at openTrace
+    # Round bookkeeping
+    nextRoundId*: int                     ## next roundId to allocate
+    roundOpen*: bool
+    roundId*: int
+    roundDir*: string
+    roundStartedUnixMs*: int64
+    roundStartTick*: int
+    startedMidRound*: bool
+    # File handles (nil when closed)
+    eventsFile*: File
+    decisionsFile*: File
+    snapshotsFile*: File
+    framesFile*: File
+    # Per-decision shadow
+    prevBranchId*: string
+    prevBranchEnterTick*: int
+    # Per-event shadow (Phase 1 minimum set)
+    prevLocalized*: bool
+    prevCameraLock*: CameraLock
+    prevSelfColor*: int
+    prevRole*: BotRole
+    prevIsGhost*: bool
+    prevKillReady*: bool
+    prevInterstitial*: bool
+    prevInterstitialText*: string
+    prevGameOverText*: string
+    prevTaskStates*: seq[TaskState]
+    prevTaskResolved*: seq[bool]
+    prevSelfVoteChoice*: int
+    prevVoteChoices*: PerColor[int]
+    prevStuckActive*: bool
+    prevStuckStartTick*: int
+    prevBodyWorldPositions*: seq[tuple[x, y: int]]
+    # Meeting bookkeeping
+    meetingActive*: bool
+    meetingIndex*: int                    ## 1-indexed within round
+    meetingStartTick*: int
+    meetingVoteCast*: bool
+    meetingSelfQueuedNormalized*: string  ## normalized self chat to dedupe
+    meetingSeenChat*: seq[string]         ## normalized lines already emitted
+    # Per-frame snapshot scheduling
+    lastSnapshotTick*: int
+    # Soft warnings (one-shot per round)
+    warnedEmptyBranchId*: bool
+    # Counters
+    counters*: ManifestCounters
+    # Final-manifest record (built up across the round)
+    config*: string                       ## inline JSON string
+    tuningSnapshot*: string               ## inline JSON string
+    masterSeed*: int64
+    framesPath*: string                   ## passed-through external --frames if any
+
   Bot* = object
     ## Top-level bot state. Cross-cutting scalars stay flat; everything
     ## else lives in a sub-record. See DESIGN.md §3 for rationale.
@@ -307,6 +406,9 @@ type
     chat*: ChatState
     diag*: Diag
     perf*: Perf
+    trace*: TraceWriter                   ## nil when tracing disabled.
+                                          ## Populated by the runner / FFI
+                                          ## init when --trace-dir is set.
 
   # Voting cursor sentinel values. v2 used module-level constants
   # (`VoteUnknown = -1`, `VoteSkip = -2`); they're tightly coupled to
