@@ -140,12 +140,31 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   overflow-wrap:anywhere;
   line-height:1.15;
 }
+#joinQr{
+  position:absolute;
+  top:8px;
+  right:8px;
+  padding:6px;
+  background:#fff;
+  color:#000;
+  font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  text-align:center;
+  border-radius:4px;
+  pointer-events:none;
+}
+#joinQr.hidden{display:none}
+#joinQrCode svg{display:block;width:112px;height:112px}
+#joinQrCaption{margin-top:4px;line-height:1.2;white-space:nowrap}
 </style>
 </head>
 <body>
 <canvas id="c" width="1" height="1"></canvas>
 <div id="status">connecting...</div>
 <div id="entry" class="hidden"></div>
+<div id="joinQr" class="hidden">
+  <div id="joinQrCode"></div>
+  <div id="joinQrCaption"></div>
+</div>
 <div id="debugPanel" class="hidden">
   <div id="debugHeader">Protocol</div>
   <div id="debugCounters">
@@ -161,6 +180,7 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   <div id="debugSprites"></div>
 </div>
 <script src="snappyjs.min.js"></script>
+<script src="qrcode.min.js"></script>
 <script>
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
@@ -951,6 +971,35 @@ addEventListener("blur",()=>{
     sendPlayerButtons();
   }
 });
+function renderJoinQr(){
+  if(playerMode)return;
+  const node=document.getElementById("joinQr");
+  const code=document.getElementById("joinQrCode");
+  const caption=document.getElementById("joinQrCaption");
+  if(!node||!code||!caption)return;
+  let joinUrl;
+  try{joinUrl=new URL("/client/player.html",location.href).toString()}
+  catch(e){return}
+  const loopback=/^(localhost|127\.|::1$|\[::1\])/i.test(location.hostname);
+  caption.textContent=loopback
+    ?"open this page at LAN IP to share"
+    :"scan to join · "+(location.host||"");
+  if(typeof qrcode!=="function"){
+    code.textContent="";
+    node.classList.remove("hidden");
+    return;
+  }
+  try{
+    const qr=qrcode(0,"M");
+    qr.addData(joinUrl);
+    qr.make();
+    code.innerHTML=qr.createSvgTag({scalable:true});
+    node.classList.remove("hidden");
+  }catch(e){
+    node.classList.add("hidden");
+  }
+}
+renderJoinQr();
 fit();
 </script>
 </body>
