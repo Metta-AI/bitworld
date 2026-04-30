@@ -222,7 +222,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if emptySlot < 0 or p.gold < 20:
       bot.phase = PathToStoneNode
       return 0
-    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearMaterial(state, emptySlot, p.gold))
+    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearTier(state, emptySlot, p.gold))
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
     bot.phase = PathToBuyStall
     return 0

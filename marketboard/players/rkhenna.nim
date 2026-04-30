@@ -64,7 +64,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of EvaluateMarket:
     bot.ticksInPhase = 0
     let matPrice = min(cheapestPrice(state, "WoodItem"), cheapestPrice(state, "StoneItem"))
-    let gearPrice = cheapestPrice(state, "WoodHat")
+    let gearPrice = cheapestPrice(state, "LeatherHat")
     let matCost = materialCostForGear(state)
 
     if matPrice >= MaterialScarcityThreshold:
@@ -385,7 +385,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.ticksInPhase = 0
       return 0
     var itemName = "WoodItem"
-    if p.inv.hasAnyGear: itemName = "WoodHat"
+    if p.inv.hasAnyGear: itemName = "LeatherHat"
     elif p.inv.wood > 0: itemName = "WoodItem"
     elif p.inv.stone > 0: itemName = "StoneItem"
     let cp = cheapestPrice(state, itemName)
@@ -429,7 +429,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if emptySlot < 0 or p.gold < 20:
       bot.phase = WaitForState
       return 0
-    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearMaterial(state, emptySlot, p.gold))
+    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearTier(state, emptySlot, p.gold))
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
     bot.phase = PathToBuyGearStall
     return 0

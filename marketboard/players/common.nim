@@ -4,19 +4,26 @@ import protocol
 
 const
   ItemNames* = [
-    "WoodItem", "StoneItem",
-    "WoodHat", "WoodShirt", "WoodGloves", "WoodPants", "WoodShoes",
-    "StoneHat", "StoneShirt", "StoneGloves", "StonePants", "StoneShoes"
+    "WoodItem", "HardwoodItem", "IronwoodItem",
+    "StoneItem", "CopperItem", "IronItem",
+    "LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes",
+    "ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes",
+    "PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes",
   ]
   GearSlotCount* = 5
   GearItemNames* = [
-    "WoodHat", "WoodShirt", "WoodGloves", "WoodPants", "WoodShoes",
-    "StoneHat", "StoneShirt", "StoneGloves", "StonePants", "StoneShoes"
+    "LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes",
+    "ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes",
+    "PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes",
+  ]
+  RawMaterialNames* = [
+    "WoodItem", "HardwoodItem", "IronwoodItem",
+    "StoneItem", "CopperItem", "IronItem",
   ]
 
 type
   BotInventory* = object
-    counts*: array[12, int]
+    counts*: array[21, int]
 
   BotListing* = object
     sellerIndex*: int
@@ -55,6 +62,8 @@ type
     signalIcon*: int
     inv*: BotInventory
     equippedGear*: array[GearSlotCount, string]
+    gathererGear*: array[GearSlotCount, string]
+    crafterGear*: array[GearSlotCount, string]
     equippedGearCount*: int
     listings*: seq[BotListing]
 
@@ -72,14 +81,18 @@ proc itemIndex*(name: string): int =
   -1
 
 proc wood*(inv: BotInventory): int = inv.counts[0]
-proc stone*(inv: BotInventory): int = inv.counts[1]
+proc hardwood*(inv: BotInventory): int = inv.counts[1]
+proc ironwood*(inv: BotInventory): int = inv.counts[2]
+proc stone*(inv: BotInventory): int = inv.counts[3]
+proc copper*(inv: BotInventory): int = inv.counts[4]
+proc iron*(inv: BotInventory): int = inv.counts[5]
 
 proc itemCount*(inv: BotInventory, name: string): int =
   let idx = itemIndex(name)
   if idx >= 0: inv.counts[idx] else: 0
 
 proc hasAnyGear*(inv: BotInventory): bool =
-  for i in 2 ..< 12:
+  for i in 6 ..< 21:
     if inv.counts[i] > 0: return true
   false
 
@@ -126,6 +139,18 @@ proc parseGameState*(jsonStr: string): GameState =
       for g in p["equippedGear"]:
         if gearIdx < GearSlotCount:
           result.player.equippedGear[gearIdx] = g.getStr()
+        inc gearIdx
+    if p.hasKey("gathererGear"):
+      var gearIdx = 0
+      for g in p["gathererGear"]:
+        if gearIdx < GearSlotCount:
+          result.player.gathererGear[gearIdx] = g.getStr()
+        inc gearIdx
+    if p.hasKey("crafterGear"):
+      var gearIdx = 0
+      for g in p["crafterGear"]:
+        if gearIdx < GearSlotCount:
+          result.player.crafterGear[gearIdx] = g.getStr()
         inc gearIdx
     for l in p["listings"]:
       result.player.listings.add parseListing(l)
@@ -324,10 +349,24 @@ proc hasListings*(state: GameState, item: string): bool =
     if l.item == item and l.quantity > 0: return true
   false
 
-proc materialCostForGear*(state: GameState): int =
-  let woodPrice = cheapestPrice(state, "WoodItem")
-  let stonePrice = cheapestPrice(state, "StoneItem")
-  let cheapest = min(woodPrice, stonePrice)
+proc materialCostForGear*(state: GameState, tier: int = 1): int =
+  var prices: seq[int]
+  case tier
+  of 1:
+    prices.add cheapestPrice(state, "WoodItem")
+    prices.add cheapestPrice(state, "StoneItem")
+  of 2:
+    prices.add cheapestPrice(state, "HardwoodItem")
+    prices.add cheapestPrice(state, "CopperItem")
+  of 3:
+    prices.add cheapestPrice(state, "IronwoodItem")
+    prices.add cheapestPrice(state, "IronItem")
+  else:
+    prices.add cheapestPrice(state, "WoodItem")
+    prices.add cheapestPrice(state, "StoneItem")
+  var cheapest = int.high
+  for p in prices:
+    if p < cheapest: cheapest = p
   if cheapest >= int.high div 3:
     return int.high
   cheapest * 3
@@ -343,44 +382,65 @@ proc gearSlotName*(index: int): string =
 
 proc firstEmptyGearSlot*(player: BotPlayer): int =
   for i in 0 ..< GearSlotCount:
-    if player.equippedGear[i] == "" or player.equippedGear[i] == "WoodItem":
+    if player.equippedGear[i] == "" or not isGearItem(player.equippedGear[i]):
       return i
   -1
 
-proc gearItemForSlot*(slot: int, material: string): string =
-  let prefix = if material == "Stone": "Stone" else: "Wood"
-  case slot
-  of 0: prefix & "Hat"
-  of 1: prefix & "Shirt"
-  of 2: prefix & "Gloves"
-  of 3: prefix & "Pants"
-  of 4: prefix & "Shoes"
-  else: prefix & "Hat"
+const
+  T1GearNames* = ["LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes"]
+  T2GearNames* = ["ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes"]
+  T3GearNames* = ["PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes"]
+
+proc gearItemForSlot*(slot: int, tier: int = 1): string =
+  case tier
+  of 2: T2GearNames[slot.clamp(0, 4)]
+  of 3: T3GearNames[slot.clamp(0, 4)]
+  else: T1GearNames[slot.clamp(0, 4)]
+
+proc gearTier*(name: string): int =
+  if name in T1GearNames: 1
+  elif name in T2GearNames: 2
+  elif name in T3GearNames: 3
+  else: 0
+
+proc hasFullGearSet*(player: BotPlayer, tier: int): bool =
+  for i in 0 ..< GearSlotCount:
+    let gt = gearTier(player.equippedGear[i])
+    if gt < tier: return false
+  true
+
+proc canGatherTier*(player: BotPlayer, tier: int): bool =
+  if tier <= 1: return true
+  player.hasFullGearSet(tier - 1)
+
+proc highestGatherableTier*(player: BotPlayer): int =
+  result = 1
+  if player.hasFullGearSet(1): result = 2
+  if player.hasFullGearSet(2): result = 3
 
 proc itemCursorIndex*(item: string): int =
   for i, name in ItemNames:
     if name == item: return i
   0
 
-proc hasAffordableGear*(state: GameState, player: BotPlayer): bool =
+proc hasAffordableGear*(state: GameState, player: BotPlayer, tier: int = 1): bool =
   let slot = firstEmptyGearSlot(player)
   if slot < 0: return false
   let all = state.allListings()
-  for material in ["Wood", "Stone"]:
-    let item = gearItemForSlot(slot, material)
-    let listing = cheapestListing(all, item)
-    if listing.isSome and listing.get().priceEach <= player.gold:
-      return true
+  let item = gearItemForSlot(slot, tier)
+  let listing = cheapestListing(all, item)
+  if listing.isSome and listing.get().priceEach <= player.gold:
+    return true
   false
 
-proc bestGearMaterial*(state: GameState, slot: int, gold: int): string =
+proc bestGearTier*(state: GameState, slot: int, gold: int): int =
   let all = state.allListings()
-  for material in ["Wood", "Stone"]:
-    let item = gearItemForSlot(slot, material)
+  for tier in [1, 2, 3]:
+    let item = gearItemForSlot(slot, tier)
     let listing = cheapestListing(all, item)
     if listing.isSome and listing.get().priceEach <= gold:
-      return material
-  "Wood"
+      return tier
+  1
 
 # ── A* Pathfinding ──
 

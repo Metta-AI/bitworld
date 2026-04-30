@@ -381,11 +381,11 @@ proc testBotFullBuyCraftSellCycle() =
     sim.step(inputs)
 
   doAssert sim.players[idx].inv.wood == 0, "wood should be consumed, got " & $sim.players[idx].inv.wood
-  doAssert sim.players[idx].equippedGear[ord(SlotHat)] == WoodHat, "should have WoodHat equipped"
+  doAssert sim.players[idx].crafterGear[ord(SlotHat)] == LeatherHat, "should have LeatherHat equipped"
   doAssert sim.players[idx].state == Idle, "should be idle after crafting"
 
   # Put a gear item in inventory for the sell test (crafted one auto-equipped)
-  sim.players[idx].inv.counts[WoodHat] = 1
+  sim.players[idx].inv.counts[LeatherHat] = 1
 
   # --- Sell phase: teleport to SellStallObj, sell gear ---
   var sellStallTx, sellStallTy: int
@@ -437,9 +437,9 @@ proc testBotFullBuyCraftSellCycle() =
   inputs[idx] = maskToInput(ButtonA, prevMask)
   sim.step(inputs)
 
-  doAssert sim.players[idx].inv.counts[WoodHat] == 0, "WoodHat should be sold, got " & $sim.players[idx].inv.counts[WoodHat]
+  doAssert sim.players[idx].inv.counts[LeatherHat] == 0, "LeatherHat should be sold, got " & $sim.players[idx].inv.counts[LeatherHat]
   doAssert sim.players[idx].listings.len == 1, "should have 1 listing, got " & $sim.players[idx].listings.len
-  doAssert sim.players[idx].listings[0].item == WoodHat, "listing should be WoodHat"
+  doAssert sim.players[idx].listings[0].item == LeatherHat, "listing should be LeatherHat"
   doAssert sim.players[idx].listings[0].priceEach == 30, "listing price should be 30"
 
 echo "Running bot integration tests..."

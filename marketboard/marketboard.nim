@@ -66,10 +66,15 @@ proc objectSprite(kind: WorldObjectKind, depleted: bool, material: ItemKind): Sp
   of GatherNodeObj:
     if depleted:
       makeOutlinedSprite(5, 1, MbTileSize)
-    elif material == WoodItem:
-      makeOutlinedSprite(11, 4, MbTileSize)
     else:
-      makeOutlinedSprite(6, 5, MbTileSize)
+      case material
+      of WoodItem: makeOutlinedSprite(11, 4, MbTileSize)
+      of StoneItem: makeOutlinedSprite(6, 5, MbTileSize)
+      of HardwoodItem: makeOutlinedSprite(3, 4, MbTileSize)
+      of CopperItem: makeOutlinedSprite(9, 5, MbTileSize)
+      of IronwoodItem: makeOutlinedSprite(2, 1, MbTileSize)
+      of IronItem: makeOutlinedSprite(14, 1, MbTileSize)
+      else: makeOutlinedSprite(7, 1, MbTileSize)
   of CraftStationObj:
     makeOutlinedSprite(6, 0, MbTileSize)
   of SellStallObj:
@@ -208,6 +213,17 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
     let gearText = "G" & $gearCount
     sim.fb.blitText(sim.letterSprites, gearText, 70, invY)
 
+  let invY2 = 17
+  let t2Wood = player.inv.hardwood
+  let t2Ore = player.inv.copper
+  if t2Wood > 0 or t2Ore > 0:
+    sim.fb.renderNumber(sim.digitSprites, t2Wood, 1, invY2)
+    if sim.letterSprites.len > 0:
+      sim.fb.blitText(sim.letterSprites, "H", 1 + 18, invY2)
+    sim.fb.renderNumber(sim.digitSprites, t2Ore, 40, invY2)
+    if sim.letterSprites.len > 0:
+      sim.fb.blitText(sim.letterSprites, "C", 40 + 18, invY2)
+
   if sim.letterSprites.len > 0 and player.state == Idle:
     var labelObjIndex = -1
     let target = player.interactionTile()
@@ -222,7 +238,8 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
       let label = obj.objectLabel()
       let labelX = (ScreenWidth - label.len * 6) div 2
       sim.fb.blitText(sim.letterSprites, label, labelX, ScreenHeight - 14)
-      let canGather = obj.kind == GatherNodeObj and not obj.depleted and player.role == Gatherer
+      let canGather = obj.kind == GatherNodeObj and not obj.depleted and player.role == Gatherer and
+                      player.canGatherMaterial(obj.material)
       let canCraft = obj.kind == CraftStationObj and player.role == Crafter and player.inv.hasCraftMaterials()
       if canGather or canCraft:
         let hint = "HOLD A"
@@ -232,7 +249,8 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   if player.state == Gathering:
     sim.drawProgressBar(player.actionProgress, player.effectiveGatherWork(), 50, ScreenHeight - 5)
   elif player.state == Crafting:
-    sim.drawProgressBar(player.actionProgress, CraftWorkNeeded, 50, ScreenHeight - 5)
+    let gear = player.craftableItem()
+    sim.drawProgressBar(player.actionProgress, craftWorkForTier(gearTier(gear)), 50, ScreenHeight - 5)
 
   if player.state == AtSellStall:
     for px in 0 ..< ScreenWidth:

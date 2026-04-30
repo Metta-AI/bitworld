@@ -15,13 +15,26 @@ const
   StopThreshold* = 20
   MinPlayerSpawnSpacing* = 16
   GatherWorkNeeded* = 48
-  CraftWorkNeeded* = 72
+  CraftWorkNeeded* = 48
+  CraftWorkT1* = 48
+  CraftWorkT2* = 72
+  CraftWorkT3* = 120
   NodeRespawnTicks* = 240
+  NodeRespawnT1* = 240
+  NodeRespawnT2* = 360
+  NodeRespawnT3* = 480
   StartingGold* = 100
   MaxSellSlots* = 4
   WoodBasePrice* = 5
   StoneBasePrice* = 5
+  HardwoodBasePrice* = 10
+  CopperBasePrice* = 10
+  IronwoodBasePrice* = 20
+  IronBasePrice* = 20
   GearBasePrice* = 20
+  T1GearBasePrice* = 20
+  T2GearBasePrice* = 50
+  T3GearBasePrice* = 120
   MaxSignalIcons* = 4
   HubCenterTx* = 16
   HubCenterTy* = 16
@@ -43,17 +56,26 @@ type
 
   ItemKind* = enum
     WoodItem
+    HardwoodItem
+    IronwoodItem
     StoneItem
-    WoodHat
-    WoodShirt
-    WoodGloves
-    WoodPants
-    WoodShoes
-    StoneHat
-    StoneShirt
-    StoneGloves
-    StonePants
-    StoneShoes
+    CopperItem
+    IronItem
+    LeatherHat
+    LeatherShirt
+    LeatherGloves
+    LeatherPants
+    LeatherShoes
+    ChainHat
+    ChainShirt
+    ChainGloves
+    ChainPants
+    ChainShoes
+    PlateHat
+    PlateShirt
+    PlateGloves
+    PlatePants
+    PlateShoes
 
   PlayerState* = enum
     Idle
@@ -103,7 +125,8 @@ type
     crafterLevel*: int
     gold*: int
     inv*: Inventory
-    equippedGear*: array[GearSlotCount, ItemKind]
+    gathererGear*: array[GearSlotCount, ItemKind]
+    crafterGear*: array[GearSlotCount, ItemKind]
     state*: PlayerState
     actionProgress*: int
     actionTargetIndex*: int
@@ -158,57 +181,144 @@ proc makePlayerSprite*(): Sprite =
 
 proc wood*(inv: Inventory): int = inv.counts[WoodItem]
 proc stone*(inv: Inventory): int = inv.counts[StoneItem]
+proc hardwood*(inv: Inventory): int = inv.counts[HardwoodItem]
+proc copper*(inv: Inventory): int = inv.counts[CopperItem]
+proc ironwood*(inv: Inventory): int = inv.counts[IronwoodItem]
+proc iron*(inv: Inventory): int = inv.counts[IronItem]
 proc `wood=`*(inv: var Inventory, val: int) = inv.counts[WoodItem] = val
 proc `stone=`*(inv: var Inventory, val: int) = inv.counts[StoneItem] = val
 
+const RawMaterials* = {WoodItem, HardwoodItem, IronwoodItem, StoneItem, CopperItem, IronItem}
+
+proc isRawMaterial*(item: ItemKind): bool =
+  item in RawMaterials
+
 proc isGearItem*(item: ItemKind): bool =
-  item notin {WoodItem, StoneItem}
+  not item.isRawMaterial()
+
+proc materialTier*(item: ItemKind): int =
+  case item
+  of WoodItem, StoneItem: 1
+  of HardwoodItem, CopperItem: 2
+  of IronwoodItem, IronItem: 3
+  else: 0
+
+proc gearTier*(item: ItemKind): int =
+  case item
+  of LeatherHat .. LeatherShoes: 1
+  of ChainHat .. ChainShoes: 2
+  of PlateHat .. PlateShoes: 3
+  else: 0
 
 proc gearSlotOf*(item: ItemKind): GearSlot =
   case item
-  of WoodHat, StoneHat: SlotHat
-  of WoodShirt, StoneShirt: SlotShirt
-  of WoodGloves, StoneGloves: SlotGloves
-  of WoodPants, StonePants: SlotPants
-  of WoodShoes, StoneShoes: SlotShoes
-  of WoodItem, StoneItem: SlotHat
+  of LeatherHat, ChainHat, PlateHat: SlotHat
+  of LeatherShirt, ChainShirt, PlateShirt: SlotShirt
+  of LeatherGloves, ChainGloves, PlateGloves: SlotGloves
+  of LeatherPants, ChainPants, PlatePants: SlotPants
+  of LeatherShoes, ChainShoes, PlateShoes: SlotShoes
+  else: SlotHat
 
-proc isWoodGear*(item: ItemKind): bool =
-  item in {WoodHat, WoodShirt, WoodGloves, WoodPants, WoodShoes}
+proc gearForSlot*(slot: GearSlot, tier: int): ItemKind =
+  case tier
+  of 2:
+    case slot
+    of SlotHat: ChainHat
+    of SlotShirt: ChainShirt
+    of SlotGloves: ChainGloves
+    of SlotPants: ChainPants
+    of SlotShoes: ChainShoes
+  of 3:
+    case slot
+    of SlotHat: PlateHat
+    of SlotShirt: PlateShirt
+    of SlotGloves: PlateGloves
+    of SlotPants: PlatePants
+    of SlotShoes: PlateShoes
+  else:
+    case slot
+    of SlotHat: LeatherHat
+    of SlotShirt: LeatherShirt
+    of SlotGloves: LeatherGloves
+    of SlotPants: LeatherPants
+    of SlotShoes: LeatherShoes
 
-proc isStoneGear*(item: ItemKind): bool =
-  item in {StoneHat, StoneShirt, StoneGloves, StonePants, StoneShoes}
+proc craftRecipeMaterial*(item: ItemKind): ItemKind =
+  case item
+  of LeatherHat, LeatherGloves, LeatherShoes: WoodItem
+  of LeatherShirt, LeatherPants: StoneItem
+  of ChainHat, ChainGloves, ChainShoes: CopperItem
+  of ChainShirt, ChainPants: HardwoodItem
+  of PlateHat, PlateGloves, PlateShoes: IronItem
+  of PlateShirt, PlatePants: IronwoodItem
+  else: WoodItem
 
-proc woodGearForSlot*(slot: GearSlot): ItemKind =
-  case slot
-  of SlotHat: WoodHat
-  of SlotShirt: WoodShirt
-  of SlotGloves: WoodGloves
-  of SlotPants: WoodPants
-  of SlotShoes: WoodShoes
+proc craftWorkForTier*(tier: int): int =
+  case tier
+  of 2: CraftWorkT2
+  of 3: CraftWorkT3
+  else: CraftWorkT1
 
-proc stoneGearForSlot*(slot: GearSlot): ItemKind =
-  case slot
-  of SlotHat: StoneHat
-  of SlotShirt: StoneShirt
-  of SlotGloves: StoneGloves
-  of SlotPants: StonePants
-  of SlotShoes: StoneShoes
+proc nodeRespawnForMaterial*(material: ItemKind): int =
+  case materialTier(material)
+  of 2: NodeRespawnT2
+  of 3: NodeRespawnT3
+  else: NodeRespawnT1
+
+proc itemBasePrice*(item: ItemKind): int =
+  case item
+  of WoodItem: WoodBasePrice
+  of StoneItem: StoneBasePrice
+  of HardwoodItem: HardwoodBasePrice
+  of CopperItem: CopperBasePrice
+  of IronwoodItem: IronwoodBasePrice
+  of IronItem: IronBasePrice
+  of LeatherHat .. LeatherShoes: T1GearBasePrice
+  of ChainHat .. ChainShoes: T2GearBasePrice
+  of PlateHat .. PlateShoes: T3GearBasePrice
+
+proc activeGear*(player: Player): array[GearSlotCount, ItemKind] =
+  case player.role
+  of Gatherer, NoRole: player.gathererGear
+  of Crafter: player.crafterGear
+
+proc setActiveGearSlot*(player: var Player, slot: GearSlot, item: ItemKind) =
+  case player.role
+  of Gatherer, NoRole: player.gathererGear[ord(slot)] = item
+  of Crafter: player.crafterGear[ord(slot)] = item
 
 proc isGearSlotFilled*(player: Player, slot: GearSlot): bool =
-  player.equippedGear[ord(slot)].isGearItem()
+  player.activeGear()[ord(slot)].isGearItem()
 
 proc equippedGearCount*(player: Player): int =
+  let gear = player.activeGear()
   for i in 0 ..< GearSlotCount:
-    if player.equippedGear[i].isGearItem():
+    if gear[i].isGearItem():
       inc result
 
 proc tryEquipGear*(player: var Player, item: ItemKind): bool =
   if not item.isGearItem(): return false
   let slot = gearSlotOf(item)
   if player.isGearSlotFilled(slot): return false
-  player.equippedGear[ord(slot)] = item
+  player.setActiveGearSlot(slot, item)
   true
+
+proc hasFullGearSetOfTier*(player: Player, tier: int): bool =
+  let gear = player.activeGear()
+  for i in 0 ..< GearSlotCount:
+    if not gear[i].isGearItem(): return false
+    if gearTier(gear[i]) < tier: return false
+  true
+
+proc canGatherMaterial*(player: Player, material: ItemKind): bool =
+  let tier = materialTier(material)
+  if tier <= 1: return true
+  player.hasFullGearSetOfTier(tier - 1)
+
+proc canCraftFromMaterial*(player: Player, material: ItemKind): bool =
+  let tier = materialTier(material)
+  if tier <= 1: return true
+  player.hasFullGearSetOfTier(tier - 1)
 
 proc effectiveGatherWork*(player: Player): int =
   let bonus = player.equippedGearCount() * GearBonusPerSlot
@@ -217,12 +327,6 @@ proc effectiveGatherWork*(player: Player): int =
 proc effectiveMaxSpeed*(player: Player): int =
   let bonus = player.equippedGearCount() * GearBonusPerSlot
   MaxSpeed * (100 + bonus) div 100
-
-proc itemBasePrice*(item: ItemKind): int =
-  case item
-  of WoodItem: WoodBasePrice
-  of StoneItem: StoneBasePrice
-  else: GearBasePrice
 
 proc itemCount*(inv: Inventory, item: ItemKind): int =
   inv.counts[item]
@@ -244,22 +348,20 @@ proc sellableItems*(inv: Inventory): seq[ItemKind] =
     if inv.counts[item] > 0:
       result.add item
 
+proc hasCraftMaterials*(inv: Inventory): bool =
+  for mat in [WoodItem, StoneItem, HardwoodItem, CopperItem, IronwoodItem, IronItem]:
+    if inv.counts[mat] >= 3: return true
+  false
+
 proc craftableItem*(player: Player): ItemKind =
   let cursor = player.craftCursor mod GearSlotCount
   let slot = GearSlot(cursor)
-  if player.inv.counts[WoodItem] >= 3:
-    return woodGearForSlot(slot)
-  if player.inv.counts[StoneItem] >= 3:
-    return stoneGearForSlot(slot)
-  woodGearForSlot(slot)
-
-proc hasCraftMaterials*(inv: Inventory): bool =
-  inv.counts[WoodItem] >= 3 or inv.counts[StoneItem] >= 3
-
-proc craftMaterialItem*(gear: ItemKind): ItemKind =
-  if gear.isWoodGear(): WoodItem
-  elif gear.isStoneGear(): StoneItem
-  else: WoodItem
+  for tier in countdown(3, 1):
+    let gear = gearForSlot(slot, tier)
+    let material = craftRecipeMaterial(gear)
+    if player.inv.counts[material] >= 3 and player.canCraftFromMaterial(material):
+      return gear
+  gearForSlot(slot, 1)
 
 proc objectIndexAt*(sim: SimServer, tx, ty: int): int =
   for i, obj in sim.objects:
@@ -317,26 +419,63 @@ proc initMap*(sim: var SimServer) =
     sim.addObject(GatherNodeObj, pos[0], pos[1], WoodItem)
 
   let stonePositions = [
-    (HubCenterTx - 11, HubCenterTy - 11),
-    (HubCenterTx + 11, HubCenterTy - 11),
-    (HubCenterTx - 12, HubCenterTy),
-    (HubCenterTx + 12, HubCenterTy),
-    (HubCenterTx - 11, HubCenterTy + 11),
-    (HubCenterTx + 11, HubCenterTy + 11),
-    (HubCenterTx, HubCenterTy - 12),
-    (HubCenterTx, HubCenterTy + 12),
+    (HubCenterTx - 7, HubCenterTy - 3),
+    (HubCenterTx + 7, HubCenterTy - 3),
+    (HubCenterTx - 7, HubCenterTy + 3),
+    (HubCenterTx + 7, HubCenterTy + 3),
+    (HubCenterTx - 3, HubCenterTy - 7),
+    (HubCenterTx + 3, HubCenterTy + 7),
   ]
   for pos in stonePositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], StoneItem)
+
+  let hardwoodPositions = [
+    (HubCenterTx - 10, HubCenterTy - 10),
+    (HubCenterTx + 10, HubCenterTy - 10),
+    (HubCenterTx - 10, HubCenterTy + 10),
+    (HubCenterTx + 10, HubCenterTy + 10),
+  ]
+  for pos in hardwoodPositions:
+    sim.addObject(GatherNodeObj, pos[0], pos[1], HardwoodItem)
+
+  let copperPositions = [
+    (HubCenterTx - 11, HubCenterTy),
+    (HubCenterTx + 11, HubCenterTy),
+    (HubCenterTx, HubCenterTy - 11),
+    (HubCenterTx, HubCenterTy + 11),
+  ]
+  for pos in copperPositions:
+    sim.addObject(GatherNodeObj, pos[0], pos[1], CopperItem)
+
+  let ironwoodPositions = [
+    (3, 3), (28, 3), (3, 28),
+  ]
+  for pos in ironwoodPositions:
+    sim.addObject(GatherNodeObj, pos[0], pos[1], IronwoodItem)
+
+  let ironPositions = [
+    (28, 28), (3, 16), (28, 16),
+  ]
+  for pos in ironPositions:
+    sim.addObject(GatherNodeObj, pos[0], pos[1], IronItem)
 
 proc initNpcListings*(sim: var SimServer) =
   for _ in 0 ..< 4:
     sim.npcListings.add MarketListing(sellerIndex: -1, item: WoodItem, quantity: 1, priceEach: WoodBasePrice)
   for _ in 0 ..< 4:
     sim.npcListings.add MarketListing(sellerIndex: -1, item: StoneItem, quantity: 1, priceEach: StoneBasePrice)
+  for _ in 0 ..< 2:
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: HardwoodItem, quantity: 1, priceEach: HardwoodBasePrice)
+  for _ in 0 ..< 2:
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: CopperItem, quantity: 1, priceEach: CopperBasePrice)
+  sim.npcListings.add MarketListing(sellerIndex: -1, item: IronwoodItem, quantity: 1, priceEach: IronwoodBasePrice)
+  sim.npcListings.add MarketListing(sellerIndex: -1, item: IronItem, quantity: 1, priceEach: IronBasePrice)
   for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: woodGearForSlot(slot), quantity: 1, priceEach: GearBasePrice)
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: stoneGearForSlot(slot), quantity: 1, priceEach: GearBasePrice)
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 1), quantity: 1, priceEach: T1GearBasePrice)
+  for slot in GearSlot:
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 2), quantity: 1, priceEach: T2GearBasePrice)
+  for slot in GearSlot:
+    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 3), quantity: 1, priceEach: T3GearBasePrice)
 
 proc canOccupy*(sim: SimServer, x, y, width, height: int): bool =
   if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
@@ -595,7 +734,8 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
   of CrafterStallObj:
     sim.players[playerIndex].role = Crafter
   of GatherNodeObj:
-    if player.role == Gatherer and not obj.depleted:
+    if player.role == Gatherer and not obj.depleted and
+       player.canGatherMaterial(obj.material):
       sim.players[playerIndex].state = Gathering
       sim.players[playerIndex].actionProgress = 0
       sim.players[playerIndex].actionTargetIndex = objIndex
@@ -631,14 +771,15 @@ proc updateActionProgress*(sim: var SimServer, playerIndex: int) =
         let material = sim.objects[objIdx].material
         sim.players[playerIndex].inv.addItem(material)
         sim.objects[objIdx].depleted = true
-        sim.objects[objIdx].respawnTimer = NodeRespawnTicks
+        sim.objects[objIdx].respawnTimer = nodeRespawnForMaterial(material)
         inc sim.players[playerIndex].gathererLevel
       sim.cancelAction(playerIndex)
   elif state == Crafting:
     inc sim.players[playerIndex].actionProgress
-    if sim.players[playerIndex].actionProgress >= CraftWorkNeeded:
-      let gear = sim.players[playerIndex].craftableItem()
-      let material = craftMaterialItem(gear)
+    let gear = sim.players[playerIndex].craftableItem()
+    let craftWork = craftWorkForTier(gearTier(gear))
+    if sim.players[playerIndex].actionProgress >= craftWork:
+      let material = craftRecipeMaterial(gear)
       if sim.players[playerIndex].inv.removeItem(material, 3):
         if not sim.players[playerIndex].tryEquipGear(gear):
           sim.players[playerIndex].inv.addItem(gear)
@@ -726,17 +867,26 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
 proc itemShortName*(item: ItemKind): string =
   case item
   of WoodItem: "WOOD"
+  of HardwoodItem: "HDWD"
+  of IronwoodItem: "IRWD"
   of StoneItem: "STONE"
-  of WoodHat: "W HAT"
-  of WoodShirt: "W SHRT"
-  of WoodGloves: "W GLVS"
-  of WoodPants: "W PNTS"
-  of WoodShoes: "W SHOE"
-  of StoneHat: "S HAT"
-  of StoneShirt: "S SHRT"
-  of StoneGloves: "S GLVS"
-  of StonePants: "S PNTS"
-  of StoneShoes: "S SHOE"
+  of CopperItem: "COPR"
+  of IronItem: "IRON"
+  of LeatherHat: "L HAT"
+  of LeatherShirt: "L SHRT"
+  of LeatherGloves: "L GLVS"
+  of LeatherPants: "L PNTS"
+  of LeatherShoes: "L SHOE"
+  of ChainHat: "C HAT"
+  of ChainShirt: "C SHRT"
+  of ChainGloves: "C GLVS"
+  of ChainPants: "C PNTS"
+  of ChainShoes: "C SHOE"
+  of PlateHat: "P HAT"
+  of PlateShirt: "P SHRT"
+  of PlateGloves: "P GLVS"
+  of PlatePants: "P PNTS"
+  of PlateShoes: "P SHOE"
 
 proc objectLabel*(obj: WorldObject): string =
   case obj.kind
@@ -745,7 +895,11 @@ proc objectLabel*(obj: WorldObject): string =
       return "DEPLETED"
     case obj.material
     of WoodItem: "WOOD NODE"
+    of HardwoodItem: "HDWD NODE"
+    of IronwoodItem: "IRWD NODE"
     of StoneItem: "STONE NODE"
+    of CopperItem: "COPR NODE"
+    of IronItem: "IRON NODE"
     else: "NODE"
   of CraftStationObj: "CRAFT"
   of SellStallObj: "SELL"
@@ -766,8 +920,10 @@ proc rewardScore*(sim: SimServer, playerIndex: int): int =
   result = player.gold
   result += player.inv.inventoryValue()
   for i in 0 ..< GearSlotCount:
-    if player.equippedGear[i].isGearItem():
-      result += itemBasePrice(player.equippedGear[i])
+    if player.gathererGear[i].isGearItem():
+      result += itemBasePrice(player.gathererGear[i])
+    if player.crafterGear[i].isGearItem():
+      result += itemBasePrice(player.crafterGear[i])
   for listing in player.listings:
     result += listing.priceEach * listing.quantity
 
@@ -812,9 +968,18 @@ proc buildStateJson*(sim: SimServer, playerIndex: int): string =
     pj["inv"] = inv
     pj["equippedGearCount"] = %p.equippedGearCount()
     var gear = newJArray()
+    let activeG = p.activeGear()
     for i in 0 ..< GearSlotCount:
-      gear.add %($p.equippedGear[i])
+      gear.add %($activeG[i])
     pj["equippedGear"] = gear
+    var gatherGear = newJArray()
+    for i in 0 ..< GearSlotCount:
+      gatherGear.add %($p.gathererGear[i])
+    pj["gathererGear"] = gatherGear
+    var craftGear = newJArray()
+    for i in 0 ..< GearSlotCount:
+      craftGear.add %($p.crafterGear[i])
+    pj["crafterGear"] = craftGear
     var listings = newJArray()
     for l in p.listings:
       var lj = newJObject()
@@ -903,7 +1068,9 @@ proc gameHash*(sim: SimServer): uint64 =
     for item in ItemKind:
       result.mixHashInt(player.inv.counts[item])
     for i in 0 ..< GearSlotCount:
-      result.mixHashInt(ord(player.equippedGear[i]))
+      result.mixHashInt(ord(player.gathererGear[i]))
+    for i in 0 ..< GearSlotCount:
+      result.mixHashInt(ord(player.crafterGear[i]))
     result.mixHashInt(player.listings.len)
     for listing in player.listings:
       result.mixHashInt(ord(listing.item))

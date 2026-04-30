@@ -47,10 +47,10 @@ proc testTotalMarketCap() =
   sim.players[p0].gold = 50
   sim.players[p0].inv.wood = 2
   sim.players[p1].gold = 80
-  sim.players[p1].equippedGear[ord(SlotHat)] = WoodHat
+  sim.players[p1].gathererGear[ord(SlotHat)] = LeatherHat
 
   let cap = sim.totalMarketCap()
-  let expected = (50 + 2 * WoodBasePrice) + (80 + GearBasePrice)
+  let expected = (50 + 2 * WoodBasePrice) + (80 + T1GearBasePrice)
   doAssert cap == expected,
     "totalMarketCap should be " & $expected & ", got " & $cap
   doAssert cap == sim.rewardScore(p0) + sim.rewardScore(p1),
@@ -121,9 +121,9 @@ proc testMarketCapPreservedByCrafting() =
     sim.step(inputs)
 
   let finalCap = sim.totalMarketCap()
-  doAssert finalCap == StartingGold + GearBasePrice,
+  doAssert finalCap == StartingGold + T1GearBasePrice,
     "crafting 3 wood (15g) into gear (20g) should give cap " &
-    $(StartingGold + GearBasePrice) & ", got " & $finalCap
+    $(StartingGold + T1GearBasePrice) & ", got " & $finalCap
 
 proc testMarketCapPreservedByTrading() =
   var sim = initMarketboardForTest()
@@ -380,8 +380,8 @@ proc testFullEconomySimulation() =
   for i, name in names:
     let score = sim.rewardScore(indices[i])
     let role = sim.players[indices[i]].role
-    let gear = sim.players[indices[i]].equippedGearCount()
-    echo "    ", name, ": score=", score, " role=", role, " gear=", gear, "/5"
+    let gearCount = sim.players[indices[i]].equippedGearCount()
+    echo "    ", name, ": score=", score, " role=", role, " gear=", gearCount, "/5"
 
   doAssert finalCap >= 900,
     "market cap should reach 900+, got " & $finalCap

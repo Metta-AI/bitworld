@@ -109,7 +109,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       else:
         bot.phase = PathToBuyStall
       return 0
-    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearMaterial(state, emptySlot, p.gold))
+    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearTier(state, emptySlot, p.gold))
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
     bot.phase = PathToBuyGearStall
     return 0

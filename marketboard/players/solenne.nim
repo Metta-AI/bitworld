@@ -62,7 +62,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of EvaluateRole:
     bot.ticksInPhase = 0
-    let hasGearSupply = hasListings(state, "WoodHat") or hasListings(state, "StoneHat")
+    let hasGearSupply = hasListings(state, "LeatherHat") or hasListings(state, "LeatherShirt")
     let hasMaterialSupply = hasListings(state, "WoodItem") or hasListings(state, "StoneItem")
     if not hasMaterialSupply:
       bot.wantedRole = "Gatherer"
@@ -426,7 +426,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if emptySlot < 0 or p.gold < 20:
       bot.phase = WaitForState
       return 0
-    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearMaterial(state, emptySlot, p.gold))
+    bot.targetGearItem = gearItemForSlot(emptySlot, bestGearTier(state, emptySlot, p.gold))
     bot.targetGearCursor = itemCursorIndex(bot.targetGearItem)
     bot.phase = PathToBuyGearStall
     return 0
