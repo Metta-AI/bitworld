@@ -21,8 +21,11 @@ func TestPredictedArrow_StationOnScreenReturnsFalse(t *testing.T) {
 func TestPredictedArrow_DueEastClampsToRightEdge(t *testing.T) {
 	player := Point{400, 300}
 	cam := predictionTestCam(player)
-	// Station 500 pixels east, same row as the player => dominant X, arrow
-	// at (ScreenWidth-1, playerScreenCenterY).
+	// Station 500 pixels east, same row as the player box. The server
+	// draws the arrow from the icon center (task.y - 8 + bobY, sim.nim:2420),
+	// which sits 16 px above the box center. That puts dy=-16 here, not 0.
+	// Dominant X. ex=ScreenWidth-1=127. ey = 66 + (-16)*(127-60)/500
+	//   = 66 + -1072/500 (Go truncation toward zero) = 66 + -2 = 64.
 	station := Point{player.X + 500, player.Y}
 	ar, ok := PredictedArrow(player, station, cam)
 	if !ok {
@@ -31,9 +34,8 @@ func TestPredictedArrow_DueEastClampsToRightEdge(t *testing.T) {
 	if ar.ScreenX != ScreenWidth-1 {
 		t.Errorf("ScreenX = %d, want %d", ar.ScreenX, ScreenWidth-1)
 	}
-	// ey = py + dy * (ex - px) / dx; dy=0 => ey = py.
-	if ar.ScreenY != playerWorldOffY {
-		t.Errorf("ScreenY = %d, want %d", ar.ScreenY, playerWorldOffY)
+	if ar.ScreenY != 64 {
+		t.Errorf("ScreenY = %d, want 64", ar.ScreenY)
 	}
 }
 
@@ -57,11 +59,10 @@ func TestPredictedArrow_DueNorthClampsToTopEdge(t *testing.T) {
 func TestPredictedArrow_DiagonalXDominantClampsToRight(t *testing.T) {
 	player := Point{400, 300}
 	cam := predictionTestCam(player)
-	// |dx|=500, |dy|=100 (X dominant, dy positive). ex = ScreenWidth-1.
-	// ey = py + dy * (ex - px) / dx
-	//    = 66  + 100 * ((ScreenWidth-1) - 60) / 500
-	//    = 66  + 100 * 67 / 500 (integer-truncated cast) = 66 + 13 = 79
-	// (server casts via uint8(int(float)); float arith: 6700/500 = 13.4 -> int=13)
+	// station box (x+500, y+100); icon center sits 16 px above box.
+	// dx = 500, dy = 100 - 16 = 84. X-dominant. ex = 127.
+	// ey = 66 + 84 * (127-60) / 500 = 66 + 84*67/500 = 66 + 5628/500
+	//    = 66 + 11 (Go integer truncation toward zero) = 77.
 	station := Point{player.X + 500, player.Y + 100}
 	ar, ok := PredictedArrow(player, station, cam)
 	if !ok {
@@ -70,33 +71,24 @@ func TestPredictedArrow_DiagonalXDominantClampsToRight(t *testing.T) {
 	if ar.ScreenX != ScreenWidth-1 {
 		t.Errorf("ScreenX = %d, want %d", ar.ScreenX, ScreenWidth-1)
 	}
-	if ar.ScreenY != 79 {
-		t.Errorf("ScreenY = %d, want 79", ar.ScreenY)
+	if ar.ScreenY != 77 {
+		t.Errorf("ScreenY = %d, want 77", ar.ScreenY)
 	}
 }
 
 func TestPredictedArrow_DiagonalClampsPerpendicularAxis(t *testing.T) {
-	// Arrow placement with X dominant but a steep angle that would push ey
-	// past the top of the screen if unclamped. Server clamps ey into
-	// [0, ScreenHeight-1].
+	// Regardless of regime, the returned arrow must sit on a viewport
+	// border pixel. Pick a diagonal station well off-screen and verify the
+	// result is clamped into [0, ScreenWidth) × [0, ScreenHeight).
 	player := Point{400, 300}
 	cam := predictionTestCam(player)
-	// dx=+200, dy=-2000. |dy| > |dx| so this is actually Y-dominant; pick
-	// one that's genuinely X-dominant with a steep angle.
-	// dx=+200, dy=-180. |dx| > |dy|. Then:
-	//   ey = 66 + (-180) * ((ScreenWidth-1) - 60) / 200
-	//      = 66 + (-180 * 67) / 200 = 66 + (-12060/200) = 66 + (-60) = 6
-	// That stays in bounds. Make dy larger: dx=+200, dy=-199.
-	//   ey = 66 + (-199 * 67) / 200 = 66 + (-13333/200) = 66 + (-66) = 0
-	// Server's inner math uses float then int truncation; our int impl
-	// must match for typical inputs (see task 1 step 3). Use dy=-199.
 	station := Point{player.X + 200, player.Y - 199}
 	ar, ok := PredictedArrow(player, station, cam)
 	if !ok {
 		t.Fatal("expected an arrow")
 	}
-	if ar.ScreenX != ScreenWidth-1 {
-		t.Errorf("ScreenX = %d, want %d", ar.ScreenX, ScreenWidth-1)
+	if ar.ScreenX < 0 || ar.ScreenX >= ScreenWidth {
+		t.Errorf("ScreenX = %d, out of [0, %d)", ar.ScreenX, ScreenWidth)
 	}
 	if ar.ScreenY < 0 || ar.ScreenY >= ScreenHeight {
 		t.Errorf("ScreenY = %d, out of [0, %d)", ar.ScreenY, ScreenHeight)

@@ -508,16 +508,17 @@ func TestImposter_NoAggressiveKillWithSingleWitness(t *testing.T) {
 	}
 }
 
-// goalIsTaskStation accepts any goal that lies within Navigator's snap
-// radius of a TaskStation center. Three station centers (indexes 1, 11,
-// 19) sit on non-walkable pixels, and SetGoal snaps them 1-2 px to the
-// nearest walkable cell before storing. The contract the test cares
-// about is "the agent's goal came from TaskStations"; exact equality
-// would spuriously fail whenever the RNG picks one of those three.
+// goalIsTaskStation accepts any goal within Manhattan navArrivedRadius
+// of a TaskStation center. Three station centers (indexes 1, 11, 19) sit
+// on non-walkable pixels, and SetGoal snaps them to the nearest walkable
+// cell (1-2 Manhattan px in every measured case). The contract the test
+// cares about is "the agent's goal came from TaskStations"; exact
+// equality spuriously fails when the RNG picks one of those three.
+// navArrivedRadius is the tightest meaningful tolerance — once the
+// player is within it, Navigator treats us as at the station.
 func goalIsTaskStation(p Point) bool {
 	for _, ts := range TaskStations {
-		if absInt(ts.Center.X-p.X) <= navGoalSnapRadius &&
-			absInt(ts.Center.Y-p.Y) <= navGoalSnapRadius {
+		if manhattan(ts.Center, p) <= navArrivedRadius {
 			return true
 		}
 	}

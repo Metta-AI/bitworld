@@ -61,10 +61,22 @@ func nearestWalkable(w *WalkMask, p Point, maxRadius int) (Point, bool) {
 	return Point{}, false
 }
 
+// iconCenterOffsetY is the offset from TaskStation.Center.Y to the icon
+// sprite's center used by the server for arrow geometry. TaskStation.Center
+// is the box center (task.y + 8); the arrow server uses iconCenterY =
+// task.y - SpriteSize/2 - 2 + bobY (sim.nim:2420), which is 16 px above the
+// box center. bobY ∈ {-1, 0, 1} and falls within radarMatchTol, so we fix
+// the offset at -16.
+const iconCenterOffsetY = -16
+
 // PredictedArrow returns the screen-space pixel where the server would draw
 // this station's radar arrow, mirroring sim.nim:2443-2472. Returns
-// (_, false) when the station's center is inside the viewport (the server
-// draws the icon instead of an arrow in that case).
+// (_, false) when the station's icon would be on-screen (the server draws
+// the icon instead of an arrow in that case).
+//
+// Input station is the task box center (TaskStation.Center); internally we
+// translate to the icon center (shifted up by 16 px) to match the server's
+// dx/dy deltas, which use iconCenterX/iconCenterY (sim.nim:2447-2448).
 //
 // CollisionW = CollisionH = 1 (sim.nim:20-21), so with integer division
 // px = player.X - cam.X and py = player.Y - cam.Y. The server's float
@@ -74,15 +86,22 @@ func nearestWalkable(w *WalkMask, p Point, maxRadius int) (Point, bool) {
 // division's numerator is bounded because the perpendicular axis later
 // gets clamped to the viewport).
 func PredictedArrow(player, station Point, cam Camera) (RadarArrow, bool) {
-	sx := station.X - cam.X
-	sy := station.Y - cam.Y
-	if sx >= 0 && sx < ScreenWidth && sy >= 0 && sy < ScreenHeight {
+	// iconCenterX = station.X; iconCenterY = station.Y + iconCenterOffsetY.
+	iconCx := station.X - cam.X
+	iconCy := station.Y + iconCenterOffsetY - cam.Y
+	// Server's iconOnScreen (sim.nim:2421-2423) tests whether the 12×12 icon
+	// sprite (top-left at iconC - SpriteSize/2) intersects the viewport. The
+	// half-offsets below expand/contract the center bounds by SpriteSize/2=6
+	// so this matches `iconSx+12>0 && iconSx<ScreenWidth` etc. exactly.
+	const half = 6
+	if iconCx+half > 0 && iconCx-half < ScreenWidth &&
+		iconCy+half > 0 && iconCy-half < ScreenHeight {
 		return RadarArrow{}, false
 	}
 	px := player.X - cam.X
 	py := player.Y - cam.Y
-	dx := sx - px
-	dy := sy - py
+	dx := iconCx - px
+	dy := iconCy - py
 	if dx == 0 && dy == 0 {
 		return RadarArrow{}, false
 	}

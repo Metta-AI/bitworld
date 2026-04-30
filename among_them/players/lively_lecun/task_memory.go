@@ -142,11 +142,9 @@ func (m *TaskMemory) Update(player Point, cam Camera, icons []IconMatch, arrows 
 			c.Y >= cam.Y+onScreenMargin &&
 			c.Y < cam.Y+ScreenHeight-onScreenMargin
 		if !onScreen {
-			// Off-screen or edge-band: leave the streak unchanged so a
-			// station isn't falsely reset when the player grazes past.
-			// (The original code zeroed it in the off-screen branch; the
-			// effect is the same now that there's no radar-driven demotion
-			// competing for the fields.)
+			// Off-screen: a streak from the last visible pass is stale.
+			// Zero it so a brief glance later doesn't compound with an
+			// old partial streak and flip to SeenNo on a single frame.
 			m.onScreenNoIconStreak[i] = 0
 			continue
 		}
