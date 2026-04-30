@@ -27,6 +27,27 @@ const localizeMaxMiss = 140
 // this color rather than count as unconditional mismatches.
 const mapVoidColor uint8 = 12
 
+// The server doesn't clamp the camera to the map rect -- sim.nim:1571-1572
+// sets cameraX = player.x - 60 / cameraY = player.y - 66 without any
+// clamping, while player.x/y are bounded only by [0, MapWidth-CollisionW]
+// / [0, MapHeight-CollisionH]. So the camera can range:
+//
+//	cameraX in [-playerWorldOffX, MapWidth-CollisionW-playerWorldOffX]
+//	cameraY in [-playerWorldOffY, MapHeight-CollisionH-playerWorldOffY]
+//
+// The previous bounds [0, MapWidth-ScreenWidth] / [0, MapHeight-ScreenHeight]
+// excluded ~60 columns of valid camera positions on each side, which is
+// exactly where agents ended up stuck against walls: the server painted the
+// real camera past our search range, so brute-force returned a best-case
+// miss around 140-150 at the boundary of our range and the tracker never
+// relocked.
+const (
+	minCameraX = -playerWorldOffX
+	minCameraY = -playerWorldOffY
+	maxCameraX = MapWidth - 1 - playerWorldOffX  // CollisionW = 1
+	maxCameraY = MapHeight - 1 - playerWorldOffY // CollisionH = 1
+)
+
 // localizeSamples is a precomputed grid of (sx, sy) screen positions where
 // Localize compares the frame to candidate map pixels. An 8x8 stride from
 // (4,4) yields 16x16 = 256 candidates; we drop those inside a 16x16 box
@@ -59,13 +80,13 @@ func Localize(frame []uint8, m *Map, hint *Camera) (Camera, bool) {
 		return Camera{}, false
 	}
 	const trackRadius = 16
-	minCX, maxCX := 0, MapWidth-ScreenWidth
-	minCY, maxCY := 0, MapHeight-ScreenHeight
+	minCX, maxCX := minCameraX, maxCameraX
+	minCY, maxCY := minCameraY, maxCameraY
 	if hint != nil {
-		minCX = clamp(hint.X-trackRadius, 0, MapWidth-ScreenWidth)
-		maxCX = clamp(hint.X+trackRadius, 0, MapWidth-ScreenWidth)
-		minCY = clamp(hint.Y-trackRadius, 0, MapHeight-ScreenHeight)
-		maxCY = clamp(hint.Y+trackRadius, 0, MapHeight-ScreenHeight)
+		minCX = clamp(hint.X-trackRadius, minCameraX, maxCameraX)
+		maxCX = clamp(hint.X+trackRadius, minCameraX, maxCameraX)
+		minCY = clamp(hint.Y-trackRadius, minCameraY, maxCameraY)
+		maxCY = clamp(hint.Y+trackRadius, minCameraY, maxCameraY)
 	}
 
 	// Precompute the frame's sample values so the inner loop only touches

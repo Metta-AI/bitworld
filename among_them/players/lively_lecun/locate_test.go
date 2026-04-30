@@ -124,6 +124,61 @@ func TestLocalize_EastEdgeWithVoid(t *testing.T) {
 	}
 }
 
+// TestLocalize_CameraPastOldBounds: a player standing all the way east or
+// south produces a camera beyond the old [0, MapWidth-ScreenWidth] /
+// [0, MapHeight-ScreenHeight] search range, since the server computes the
+// camera from player pos with no edge clamp (sim.nim:1571-1572). Before the
+// bounds extension, the brute-force's best-in-range candidate returned
+// miss ~140 at the boundary and lock never reacquired. This exercises both
+// axes past the old maxima.
+func TestLocalize_CameraPastOldBounds(t *testing.T) {
+	m := loadMapForTest(t)
+	// (camX, camY) pushed past the old upper-right corner. These are valid
+	// outputs of the server's cameraFor formula when the player is near
+	// the east/south map edge. We bias y toward the ship interior so the
+	// viewport still contains enough structured content to disambiguate,
+	// even with void columns on the east or void rows on the south.
+	cases := []struct{ camX, camY int }{
+		{MapWidth - ScreenWidth + 30, 200}, // east edge, mid-ship row
+		{MapWidth - ScreenWidth + 50, 150}, // further east, upper-ship
+		{500, -50},                         // north edge, mid-ship col
+	}
+	for _, c := range cases {
+		pixels := make([]uint8, ScreenWidth*ScreenHeight)
+		for y := 0; y < ScreenHeight; y++ {
+			for x := 0; x < ScreenWidth; x++ {
+				mx := c.camX + x
+				my := c.camY + y
+				if mx >= 0 && mx < MapWidth && my >= 0 && my < MapHeight {
+					pixels[y*ScreenWidth+x] = m.Pixels[my*MapWidth+mx]
+				} else {
+					pixels[y*ScreenWidth+x] = mapVoidColor
+				}
+			}
+		}
+		// Blot out the 16x16 player-center box.
+		for dy := -8; dy < 8; dy++ {
+			for dx := -8; dx < 8; dx++ {
+				px := playerScreenCenterX + dx
+				py := playerScreenCenterY + dy
+				if px >= 0 && px < ScreenWidth && py >= 0 && py < ScreenHeight {
+					pixels[py*ScreenWidth+px] = 0
+				}
+			}
+		}
+		cam, ok := Localize(pixels, m, nil)
+		if !ok {
+			t.Errorf("cam=(%d,%d): lock failed, got %v miss=%d",
+				c.camX, c.camY, cam, cam.Mismatches)
+			continue
+		}
+		if cam.X != c.camX || cam.Y != c.camY {
+			t.Errorf("cam=(%d,%d): got (%d,%d) miss=%d",
+				c.camX, c.camY, cam.X, cam.Y, cam.Mismatches)
+		}
+	}
+}
+
 func TestClamp(t *testing.T) {
 	cases := []struct{ v, lo, hi, want int }{
 		{5, 0, 10, 5},
