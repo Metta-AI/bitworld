@@ -1787,6 +1787,8 @@ proc applyVoteResult*(sim: var SimServer) =
   sim.chatMessages.setLen(0)
   for i in 0 ..< sim.players.len:
     sim.resetPlayerToHome(i)
+    if sim.players[i].alive and sim.players[i].role == Imposter:
+      sim.players[i].killCooldown = sim.config.killCooldownTicks
   sim.phase = Playing
 
 proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
