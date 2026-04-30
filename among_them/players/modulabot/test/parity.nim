@@ -32,6 +32,8 @@ import std/[parseopt, random, strformat, strutils]
 import protocol
 
 import ../bot
+import ../types
+import ../trace
 import ../../evidencebot_v2  # v2's Bot, initBot, decideNextMask now exported
 
 const
@@ -104,15 +106,33 @@ proc loadReplayFrames(path: string): seq[seq[uint8]] =
 # ---------------------------------------------------------------------------
 
 proc runSelfConsistency(frames: seq[seq[uint8]], seed: int64,
-                       verbose: bool): int =
+                       verbose: bool, traceDir: string): int =
   ## Builds two modulabot instances with the same master seed, runs
   ## them through the same frame stream, returns the count of
   ## divergent frames. Q6's per-consumer substreams + identical seed
   ## means imposter RNG paths should also match byte-for-byte.
+  ##
+  ## When `traceDir` is non-empty, attaches a trace writer to bot A
+  ## only. The expectation is that trace output is non-perturbing —
+  ## divergence here would mean the writer has a side effect on the
+  ## bot (TRACING.md §13.2).
   var
     botA = bot.initBot(masterSeed = seed)
     botB = bot.initBot(masterSeed = seed)
     divergent = 0
+  if traceDir.len > 0:
+    botA.trace = openTrace(
+      rootDir        = traceDir,
+      botName        = "parity-A",
+      level          = tlDecisions,
+      snapshotPeriod = 60,
+      captureFrames  = false,
+      harnessMeta    = """{"experiment_id":"parity"}""",
+      masterSeed     = seed,
+      framesPath     = "",
+      configJson     = """{"transport":"none","mode":"parity"}"""
+    )
+    botA.trace.beginRound(botA, isMidRound = false)
   for i, frame in frames:
     let maskA = botA.stepUnpackedFrame(frame)
     let maskB = botB.stepUnpackedFrame(frame)
@@ -122,6 +142,8 @@ proc runSelfConsistency(frames: seq[seq[uint8]], seed: int64,
         echo &"  frame {i:>4}: A={maskA:#04x}  B={maskB:#04x}  DIVERGE"
     elif verbose:
       echo &"  frame {i:>4}: {maskA:#04x}  match"
+  if not botA.trace.isNil:
+    botA.trace.closeTrace(botA, "parity_end")
   divergent
 
 proc runVsV2(frames: seq[seq[uint8]], seed: int64,
@@ -173,6 +195,7 @@ proc main() =
     verbose = false
     replayPath = ""
     test = TestSelf
+    traceDir = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -183,6 +206,7 @@ proc main() =
       of "verbose": verbose = true
       of "replay": replayPath = val
       of "vs": test = parseTest(val)
+      of "trace-dir": traceDir = val
       else: discard
     else: discard
 
@@ -205,7 +229,8 @@ proc main() =
 
   let (divergent, total) =
     case test
-    of TestSelf: (runSelfConsistency(frames, seed, verbose), frames.len)
+    of TestSelf: (runSelfConsistency(frames, seed, verbose, traceDir),
+                  frames.len)
     of TestVsV2: runVsV2(frames, seed, verbose)
 
   let pct =

@@ -20,7 +20,7 @@ proc thought*(bot: var Bot, text: string) =
 
 proc fired*(bot: var Bot, branchId: string) =
   ## Records that a named policy branch fired this frame. The branchId
-  ## is a stable string matching the canonical list in BRANCH_IDS.md.
+  ## is a stable string matching the canonical list in TRACING.md §8.
   ## See `decideNextMask` for the invariant: every code path through it
   ## must call `fired` exactly once before returning.
   bot.diag.branchId = branchId

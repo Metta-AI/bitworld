@@ -26,6 +26,7 @@ import evidence
 import policy_crew
 import policy_imp
 import diag
+import trace
 
 # ---------------------------------------------------------------------------
 # Path resolution
@@ -346,13 +347,14 @@ proc reseedAfterInterstitial*(bot: var Bot) =
 # Per-frame pipeline
 # ---------------------------------------------------------------------------
 
-proc decideNextMask*(bot: var Bot): uint8 =
+proc decideNextMaskCore(bot: var Bot): uint8 =
   ## Master per-frame orchestrator. Implements the pipeline from
   ## DESIGN.md §5. Strategy parity with v2:3922-4032.
   ##
-  ## Every code path through this proc must set `bot.diag.branchId`
-  ## via `bot.fired(...)` before returning; downstream tracing work
-  ## relies on this invariant.
+  ## This is the core implementation; `decideNextMask` wraps it with
+  ## the trace-writer hook. Every code path through this proc must
+  ## set `bot.diag.branchId` via `bot.fired(...)` before returning;
+  ## see TRACING.md §8.4 for the invariant.
   let centerStart = getMonoTime()
   let wasInterstitial = bot.percep.interstitial
   bot.diag.branchId = ""
@@ -457,6 +459,19 @@ proc decideNextMask*(bot: var Bot): uint8 =
   # 7. End-of-frame snapshot for next frame's first-pass scan.
   bot.percep.snapshotPrevFrame()
   mask
+
+proc decideNextMask*(bot: var Bot): uint8 =
+  ## Public entry point. Wraps `decideNextMaskCore` with the trace
+  ## hook. Determinism contract: `traceFrame` reads bot state but does
+  ## not mutate it (modulo trace-writer's own internal shadow). The
+  ## existing parity test must continue to pass when this hook is
+  ## active; see TRACING.md §13.
+  result = decideNextMaskCore(bot)
+  if not bot.trace.isNil:
+    try:
+      bot.trace.traceFrame(bot, result)
+    except CatchableError:
+      discard
 
 # ---------------------------------------------------------------------------
 # Public step entry points (called by both the websocket runner and the
