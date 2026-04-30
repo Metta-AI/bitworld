@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import platform
 import shutil
@@ -14,12 +13,18 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 PLAYERS_DIR = Path(__file__).resolve().parent
 ROOT = PLAYERS_DIR.parents[1]
 NIMBY_LOCK = ROOT / "nimby.lock"
 NIM_VERSION = "2.2.4"
 NIMBY_VERSION = "0.1.26"
 NIMBY_SYNC_LOCK = Path.home() / ".nimby" / ".python_sync.lock"
+NOTTOODUMB_ABI_VERSION = 2
 
 
 def build_nottoodumb() -> Path:
@@ -43,6 +48,7 @@ def build_nottoodumb() -> Path:
         print(result.stderr, file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         raise RuntimeError(f"Failed to build NotTooDumb Nim library: {result.returncode}")
+    _abi_stamp_path(out_path).write_text(f"{NOTTOODUMB_ABI_VERSION}\n")
     return out_path
 
 
@@ -56,6 +62,9 @@ def _sync_nimby() -> None:
 
 def _run_nimby_serialized(args: list[str], *, cwd: Path) -> None:
     NIMBY_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:
+        subprocess.check_call(args, cwd=cwd)
+        return
     with open(NIMBY_SYNC_LOCK, "w") as lock_fd:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         subprocess.check_call(args, cwd=cwd)
@@ -161,6 +170,10 @@ def _library_name() -> str:
     if system == "Windows":
         return "nottoodumb.dll"
     return "libnottoodumb.so"
+
+
+def _abi_stamp_path(lib_path: Path) -> Path:
+    return lib_path.with_name(f"{lib_path.name}.abi")
 
 
 if __name__ == "__main__":

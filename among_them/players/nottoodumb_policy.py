@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-import os
 import platform
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +12,8 @@ from mettagrid.bitworld import BITWORLD_ACTION_COUNT, BITWORLD_ACTION_NAMES, SCR
 from mettagrid.policy.policy import AgentPolicy, MultiAgentPolicy
 from mettagrid.policy.policy_env_interface import PolicyEnvInterface
 from mettagrid.simulator import Action, AgentObservation
+
+from among_them.players.build_nottoodumb import NOTTOODUMB_ABI_VERSION, build_nottoodumb
 
 
 class _NotTooDumbNimAgentPolicy(AgentPolicy):
@@ -130,12 +130,11 @@ class NotTooDumbNimPolicy(MultiAgentPolicy):
 
     def _load_library(self) -> ctypes.CDLL:
         lib_path = Path(__file__).resolve().parent / _library_name()
-        if not lib_path.exists():
-            subprocess.check_call(
-                [os.sys.executable, "-m", "among_them.players.build_nottoodumb"],
-                cwd=Path(__file__).resolve().parents[2],
-            )
-        return ctypes.CDLL(str(lib_path))
+        if _library_needs_rebuild(lib_path):
+            lib_path = build_nottoodumb()
+        lib = ctypes.CDLL(str(lib_path))
+        _verify_library_abi(lib, lib_path)
+        return lib
 
 
 def _library_name() -> str:
@@ -145,3 +144,33 @@ def _library_name() -> str:
     if system == "Windows":
         return "nottoodumb.dll"
     return "libnottoodumb.so"
+
+
+def _library_needs_rebuild(lib_path: Path) -> bool:
+    if not lib_path.exists():
+        return True
+    try:
+        return int(_abi_stamp_path(lib_path).read_text().strip()) != NOTTOODUMB_ABI_VERSION
+    except (OSError, ValueError):
+        return True
+
+
+def _abi_stamp_path(lib_path: Path) -> Path:
+    return lib_path.with_name(f"{lib_path.name}.abi")
+
+
+def _verify_library_abi(lib: ctypes.CDLL, lib_path: Path) -> None:
+    try:
+        abi_version = lib.nottoodumb_abi_version
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"NotTooDumb library {lib_path} does not export an ABI version."
+        ) from exc
+    abi_version.argtypes = []
+    abi_version.restype = ctypes.c_int
+    actual = int(abi_version())
+    if actual != NOTTOODUMB_ABI_VERSION:
+        raise RuntimeError(
+            f"NotTooDumb library {lib_path} has ABI version {actual}, "
+            f"expected {NOTTOODUMB_ABI_VERSION}."
+        )

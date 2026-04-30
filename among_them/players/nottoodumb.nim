@@ -3442,6 +3442,7 @@ proc initBot(mapPath = ""): Bot =
   result.intent = "waiting for first frame"
 
 when defined(nottoodumbLibrary):
+  const NotTooDumbAbiVersion = 2
   const TrainableMasks = [
     0'u8,
     ButtonA,
@@ -3477,6 +3478,10 @@ when defined(nottoodumbLibrary):
     bots: seq[Bot]
 
   var NotTooDumbPolicies: seq[NotTooDumbPolicy]
+
+  proc nottoodumb_abi_version*(): cint {.exportc, dynlib.} =
+    ## Returns the shared-library ABI version expected by Python wrappers.
+    cint(NotTooDumbAbiVersion)
 
   proc actionIndexForMask(mask: uint8): int32 =
     ## Maps a BitWorld button mask to the CoGames trainable action index.
