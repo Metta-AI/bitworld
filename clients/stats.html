@@ -381,7 +381,6 @@ async function restartCurrentMatch(){
 }
 
 async function kickPlayer(identity,button){
-  if(!window.confirm("Kick "+identity+"?"))return;
   button.disabled=true;
   setControlStatus("kicking "+identity+"...");
   try{
