@@ -866,34 +866,46 @@ HTTP dispatch + worker thread to Nim, gated behind the existing
 The current `tools/quick_player.nim` always runs `nim c <file>`
 without `-d` defines and only forwards `--address`/`--port`/
 `--name`/`--gui`/`--map` to the spawned binary. To make it work
-with the LLM build, we have three options:
+with the LLM build, we had three options:
 
 - [ ] **A. Add `--define:KEY[=VAL]` passthrough to
-      `quick_player`.** Most surgical — extends `compilePlayer`
-      to accept extra `nim c` args. Caveat: this *does* edit
-      `tools/quick_player.nim`, which is outside the
-      `among_them/players/mod_talks/` scope rule. Unclear
-      whether the user's "don't mess with bitworld outside the
-      players directory" includes `tools/`; flag for review.
-- [ ] **B. New mod_talks-specific runner script.**
-      `among_them/players/mod_talks/scripts/quick_player_llm.sh`
-      that wraps the standard build + N-process spawn:
-      ```sh
-      #!/usr/bin/env bash
-      # Builds mod_talks_llm once, then spawns N copies against
-      # an existing server. Drop-in alternative to quick_player
-      # for the LLM build path.
-      ```
-      Stays inside the players directory. Slightly less
-      idiomatic but respects the scope rule.
-- [ ] **C. Don't extend either.** User builds the LLM binary
-      manually (`nim c -d:modTalksLlm ...`) and uses bash
-      one-liners (`for i in {1..8}; do mod_talks_llm
-      --address:... --port:... --name:llm$i & done`) for
-      multi-process runs.
-- [ ] **Decision pending user input.** Default: ship B (script
-      under `mod_talks/scripts/`); defer A unless the user
-      explicitly approves a `tools/` edit.
+      `quick_player`.** Outside-scope edit;
+      deferred — leave `tools/quick_player.nim` to the
+      bitworld team. Use option B instead.
+- [x] **B. New mod_talks-specific runner script.**
+      `scripts/quick_player_llm.sh` lands as the in-scope
+      alternative. Builds the LLM binary on first run (or with
+      `--rebuild`), spawns N copies against an existing server,
+      traps SIGINT/SIGTERM/EXIT and cleans up child PIDs so
+      Ctrl-C doesn't leave orphan bots running.
+- [ ] **C. Don't extend either.** Bash one-liners are still
+      possible for advanced users; `quick_player_llm.sh` is the
+      one-stop default.
+
+Implementation notes:
+
+- **Build is opt-in.** The first invocation runs `nim c
+  -d:release -d:modTalksLlm -d:ssl -o:mod_talks_llm
+  modulabot.nim` from the repo root. Subsequent invocations
+  reuse the cached binary unless `--rebuild` is passed.
+- **Provider creds are pre-flighted.** When neither
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_PROFILE`, nor
+  `AWS_ACCESS_KEY_ID` is set (and `MODTALKS_LLM_DISABLE` isn't
+  forced), the script logs a warning that bots will run
+  rule-based. Doesn't fail — sometimes that's what the user
+  actually wants.
+- **`--llm-provider` and `--llm-model` pass through** to each
+  spawned bot; combined with the env-var auto-detect inside
+  `mod_talks_llm`, this gives the same provider-selection
+  surface as a single CLI run.
+- **No server** is spawned. The user pre-flights a server on
+  the requested HOST:PORT — the script just connects N bots to
+  it. This matches `tools/quick_player`'s split.
+- **Smoke verified:** 3-bot spawn against `127.0.0.1:1` (no
+  server) with `ANTHROPIC_API_KEY` set printed three identical
+  `provider=anthropic_direct model=claude-sonnet-4-5` lines and
+  cleaned up properly on timeout. Same with `AWS_PROFILE`
+  pointed at Bedrock.
 
 ### 6.6 Sprint 6 acceptance
 
@@ -1103,3 +1115,16 @@ PR for detailed design discussions.
   unit tests + 1 live smoke test
   (`test/llm_provider_live_smoke.nim`). Parity 500/500 across
   seeds {1, 42, 7777} preserved.
+- **2026-05-01** — Sprint 6.5 landed. Picked option B
+  (in-scope script wrapper) over option A (touching
+  `tools/quick_player.nim`). New
+  `scripts/quick_player_llm.sh` builds `mod_talks_llm` on
+  first run, spawns N copies against an existing server,
+  forwards `--llm-provider`/`--llm-model` flags, traps
+  SIGINT/SIGTERM/EXIT to clean up child PIDs. Pre-flights
+  provider creds with a warning when none are detected.
+  Smoke verified with 3 bots × {Anthropic-direct,
+  Bedrock} both showing the expected provider line.
+  Sprint 6 sub-tasks 6.1-6.5 are now all shipped; 6.6
+  acceptance is the user's first end-to-end live game
+  against a real server.

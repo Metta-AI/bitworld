@@ -106,7 +106,30 @@ Env vars (auto-detected when no flag is given): `ANTHROPIC_API_KEY`,
 `MODTALKS_LLM_MODEL`. Bedrock requires the AWS CLI on PATH; auth
 goes through the standard boto3 credential chain.
 
-For multiple LLM bots against the same server (one process each):
+For multiple LLM bots against the same server, use the Sprint 6.5
+wrapper script — it builds the binary, spawns N copies, and traps
+Ctrl-C to clean up children:
+
+```sh
+ANTHROPIC_API_KEY=sk-ant-... \
+  among_them/players/mod_talks/scripts/quick_player_llm.sh \
+  -n 8 -a my.server.com -p 2000
+```
+
+Or with Bedrock:
+
+```sh
+AWS_PROFILE=softmax AWS_REGION=us-east-1 \
+  among_them/players/mod_talks/scripts/quick_player_llm.sh \
+  -n 8 -a my.server.com -p 2000
+```
+
+The script accepts `--name-prefix`, `--llm-provider`, `--llm-model`,
+and `--rebuild` flags; pass `--help` for the full list. It does
+NOT spawn its own server — pre-flight a server on the requested
+host:port before running.
+
+If you'd rather drive the spawn manually:
 
 ```sh
 for i in 1 2 3 4 5 6 7 8; do
@@ -216,6 +239,9 @@ cogames/
 
 scripts/
   launch_mod_talks_llm_local.py   # local Bedrock smoke harness
+                                  # (Python launcher, cogames-shape)
+  quick_player_llm.sh             # Sprint 6.5 — build + spawn N bots
+                                  # against an existing server
 
 tools/
   gen_branch_ids.nim       # regenerates BRANCH_IDS.md
