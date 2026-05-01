@@ -737,6 +737,13 @@ type
     # `trace_settings` so the harness can trivially slice runs.
     llmCompiledIn*: bool
     llmLayerActive*: bool
+    # Sprint 5.1 — optional dump of every dispatched LLM context to
+    # disk under `<round_dir>/llm_contexts/`. Used by the prompt-eval
+    # harness. Off by default; flipped on by `MODTALKS_LLM_CAPTURE=1`
+    # at trace-writer construction.
+    captureLlmContexts*: bool
+    llmCaptureSeq*: int                   ## monotonic counter for
+                                          ## llm_contexts/ filenames
 
   Bot* = object
     ## Top-level bot state. Cross-cutting scalars stay flat; everything

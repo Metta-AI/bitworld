@@ -444,7 +444,11 @@ proc openTrace*(rootDir, botName: string, level: TraceLevel,
     config:         configJson,
     tuningSnapshot: $tuningSnapshot(),
     llmCompiledIn:  when defined(modTalksLlm): true else: false,
-    llmLayerActive: false
+    llmLayerActive: false,
+    captureLlmContexts:
+      getEnv("MODTALKS_LLM_CAPTURE", "").toLowerAscii() in
+        ["1", "true", "yes", "on"],
+    llmCaptureSeq: 0
   )
   try:
     createDir(result.rootDir / safeFsName(result.botName) / result.sessionId)
@@ -1003,6 +1007,33 @@ proc emitLlmDispatched*(t: TraceWriter, bot: var Bot;
     "stage":          llmStageName(stage),
     "context_bytes":  contextBytes
   })
+
+proc emitLlmContextCapture*(t: TraceWriter, bot: var Bot;
+                            kind: LlmCallKind; contextJson: string) =
+  ## Optional: writes the full dispatched context to a separate file
+  ## under `<round_dir>/llm_contexts/<seq>_<kind>.json`. Used by the
+  ## Sprint 5.1 prompt-eval harness to replay real dispatched
+  ## contexts against candidate prompts. Off by default — flip with
+  ## `MODTALKS_LLM_CAPTURE=1` so production traces stay light.
+  ##
+  ## The Nim side just writes the file; harness scoring lives in
+  ## `tools/llm_prompt_eval.py` (Sprint 5.1).
+  if t.isNil or t.level == tlOff or not t.roundOpen:
+    return
+  if not t.captureLlmContexts:
+    return
+  let dir = t.roundDir / "llm_contexts"
+  try:
+    createDir(dir)
+  except IOError, OSError:
+    return
+  inc t.llmCaptureSeq
+  let fname = "ctx_" & intToStr(t.llmCaptureSeq, 5) & "_" &
+              llmCallKindKey(kind) & "_t" & $bot.frameTick & ".json"
+  try:
+    writeFile(dir / fname, contextJson)
+  except IOError, OSError:
+    discard
 
 proc emitLlmDecision*(t: TraceWriter, bot: var Bot;
                       kind: LlmCallKind;
