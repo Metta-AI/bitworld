@@ -9,6 +9,27 @@
 *.pyc
 
 __pycache__/
+.nimby
+.venv/
+tools/quick_run.nim
+among_them/players/libnottoodumb.*
+among_them/players/nottoodumb.dll
+among_them/players/modulabot/modulabot
+among_them/players/modulabot/libmodulabot.*
+among_them/players/modulabot/test/parity
+among_them/players/modulabot/test/trace_smoke
+among_them/players/modulabot/test/validate_trace
+among_them/players/mod_talks/mod_talks
+among_them/players/mod_talks/mod_talks_llm
+among_them/players/mod_talks/libmodulabot.*
+among_them/players/mod_talks/test/parity
+among_them/players/mod_talks/test/parity_llm
+among_them/players/mod_talks/test/trace_smoke
+among_them/players/mod_talks/test/validate_trace
+among_them/players/mod_talks/__pycache__/
+among_them/players/mod_talks/nimcache/
+among_them/among_them
+.DS_Store
 client/screenshots/
 nimcache/
 out/
