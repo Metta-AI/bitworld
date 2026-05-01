@@ -105,5 +105,21 @@ proc tuningSnapshot*(): JsonNode =
     # frame.nim
     "RadarTaskColor":                   int(RadarTaskColor),
     "PlayerIgnoreRadius":               PlayerIgnoreRadius,
-    "KillIconX":                        KillIconX
+    "KillIconX":                        KillIconX,
+    # tuning.nim — LLM voting (Sprint 5.4). All knobs that the
+    # outer-loop harness might A/B should appear here so manifests
+    # tag every game with its compiled-in LLM configuration.
+    "MemorySightingDedupTicks":         MemorySightingDedupTicks,
+    "MemorySightingDedupPixels":        MemorySightingDedupPixels,
+    "MemoryBodyDedupPx":                MemoryBodyDedupPx,
+    "MemoryAlibiCooldownTicks":         MemoryAlibiCooldownTicks,
+    "MemorySelfKeyframeCap":            MemorySelfKeyframeCap,
+    "MemoryAlibiMatchRadius":           MemoryAlibiMatchRadius,
+    "LlmAccuseThreshold":               LlmAccuseThreshold,
+    "LlmVoteThreshold":                 LlmVoteThreshold,
+    "LlmChatReactionCooldownTicks":     LlmChatReactionCooldownTicks,
+    "LlmMaxChatLen":                    LlmMaxChatLen,
+    "LlmMaxContextLen":                 LlmMaxContextLen,
+    "LlmMaxContextBytes":               LlmMaxContextBytes,
+    "LlmPersuadeEnabled":               LlmPersuadeEnabled
   }

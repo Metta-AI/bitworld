@@ -31,7 +31,7 @@
 ## deterministic injection point for free once a mock response file
 ## is wired into the Python side.
 
-import std/[json, sequtils, strutils, tables, times]
+import std/[json, os, sequtils, strutils, tables, times]
 
 import types
 import tuning
@@ -657,6 +657,10 @@ proc dispatchCall(bot: var Bot; kind: LlmCallKind) =
   if not bot.trace.isNil:
     emitLlmDispatched(bot.trace, bot, kind, bot.llmVoting.stage,
                       contextJson.len)
+    # Sprint 5.1 — optional capture of dispatched contexts for the
+    # prompt-eval harness. Cheap when MODTALKS_LLM_CAPTURE is unset
+    # (the writer no-ops on the captureLlmContexts gate).
+    emitLlmContextCapture(bot.trace, bot, kind, contextJson)
 
 # ---------------------------------------------------------------------------
 # Response handling
@@ -1185,11 +1189,19 @@ proc tickLlmVoting*(bot: var Bot) =
       (highConfidence or listenElapsed):
     chooseVoteTarget(bot)
     bot.llmVoting.stage = lvsVoting
-    # Optional persuasion (crewmate, high confidence).
-    when LlmPersuadeEnabled:
-      if bot.role != RoleImposter and highConfidence and
-          not bot.llmVoting.request.pending:
-        dispatchCall(bot, lckPersuade)
+    # Optional persuasion (crewmate, high confidence). The
+    # `LlmPersuadeEnabled` constant in tuning.nim is the default but
+    # can be overridden at runtime via `MODTALKS_PERSUADE` (Sprint
+    # 5.2 — lets us run A/B campaigns without recompiling).
+    let persuadeOn =
+      if existsEnv("MODTALKS_PERSUADE"):
+        getEnv("MODTALKS_PERSUADE", "").toLowerAscii() in
+          ["1", "true", "yes", "on"]
+      else:
+        LlmPersuadeEnabled
+    if persuadeOn and bot.role != RoleImposter and highConfidence and
+        not bot.llmVoting.request.pending:
+      dispatchCall(bot, lckPersuade)
 
   # Mock-LLM hook: in test runs the fixture pump delivers scripted
   # responses immediately after dispatch. Real-provider runs skip

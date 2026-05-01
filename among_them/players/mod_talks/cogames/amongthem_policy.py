@@ -456,6 +456,11 @@ class _AnthropicController:
     call blocks the worker thread for its duration; the main thread
     only blocks once at the end of ``step_batch`` while gathering
     completed futures.
+
+    Sprint 5.3 — kept as the default provider. An OpenAI fallback
+    sibling (``_OpenAIController``) lives below for environments
+    without Anthropic credentials. The selector lives in
+    ``_build_llm_controller``.
     """
 
     def __init__(self) -> None:
@@ -669,6 +674,138 @@ class _AnthropicController:
         return _strip_markdown_code_fence("".join(text_parts))
 
 
+class _OpenAIController:
+    """Sprint 5.3 — stub OpenAI provider for environments without
+    Anthropic credentials.
+
+    Initialised when ``OPENAI_API_KEY`` is set AND no Anthropic
+    credentials are present. Mirrors the ``_AnthropicController``
+    interface (``enabled`` property, ``complete(role, kind,
+    context_json, timeout_seconds) -> str``) so it slots into the
+    same dispatch path. NOT yet live-tested in a tournament run
+    because we don't have OpenAI creds in the lobby; ship as
+    structural support and turn on when the keys arrive.
+
+    Tool-use mapping: OpenAI uses ``tools=[{"type":"function",
+    "function":{...}}]`` which is structurally similar to the
+    Anthropic shape. The translation lives in ``_complete_with_tool``.
+    """
+
+    def __init__(self) -> None:
+        self._client: Any = None
+        self._model: str = ""
+        self._init_client()
+
+    @property
+    def enabled(self) -> bool:
+        return self._client is not None
+
+    def _init_client(self) -> None:
+        if _env_flag_enabled("MODTALKS_LLM_DISABLE"):
+            return
+        try:
+            openai = importlib.import_module("openai")
+        except ImportError:
+            logger.info(
+                "OpenAI provider unavailable: `openai` package not installed"
+            )
+            return
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return
+        try:
+            self._client = openai.OpenAI(api_key=api_key)
+            self._model = os.getenv("MODTALKS_LLM_MODEL", "").strip() or \
+                          "gpt-4o-mini"
+            logger.info("mod_talks LLM via OpenAI model=%s", self._model)
+        except Exception:  # pragma: no cover
+            logger.exception("OpenAI controller init failed")
+            self._client = None
+
+    def _system_prompt(self, role: int) -> str:
+        if role == _ROLE_IMPOSTER:
+            return _SYSTEM_PROMPT_BASE + _SYSTEM_PROMPT_IMPOSTER
+        return _SYSTEM_PROMPT_BASE + _SYSTEM_PROMPT_CREWMATE
+
+    def complete(
+        self, *, role: int, kind: str, context_json: str,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> str:
+        if self._client is None:
+            return ""
+        anth_tool = _LLM_TOOL_DEFINITIONS.get(kind)
+        if anth_tool is None:
+            return ""  # OpenAI path requires tool-use; bail otherwise
+        # Translate Anthropic tool shape → OpenAI function shape.
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": anth_tool["name"],
+                "description": anth_tool["description"],
+                "parameters": anth_tool["input_schema"],
+            },
+        }]
+        messages = [
+            {"role": "system", "content": self._system_prompt(role)},
+            {"role": "user", "content":
+                "Given the following game state (JSON), call the tool to "
+                "submit your decision.\n\n" + context_json},
+        ]
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=tools,
+                tool_choice={"type": "function",
+                             "function": {"name": anth_tool["name"]}},
+                temperature=DEFAULT_TEMPERATURE,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                timeout=timeout_seconds,
+            )
+        except Exception:  # pragma: no cover
+            logger.exception("OpenAI call raised")
+            return ""
+        try:
+            choice = resp.choices[0]
+            tool_calls = getattr(choice.message, "tool_calls", None) or []
+            if tool_calls:
+                return tool_calls[0].function.arguments
+        except (IndexError, AttributeError):
+            pass
+        return getattr(getattr(resp.choices[0], "message", None),
+                       "content", "") or ""
+
+
+def _build_llm_controller() -> Any:
+    """Selects the LLM provider controller based on env vars.
+
+    Preference order (Sprint 5.3):
+      1. Anthropic (Bedrock or direct) — default; handles the production
+         tournament path.
+      2. OpenAI — fallback when ANTHROPIC_API_KEY is unset and
+         OPENAI_API_KEY is set.
+
+    Returns the first enabled controller, or ``_AnthropicController``
+    (which will report ``enabled=False`` if creds are missing) so the
+    rest of the policy can rely on a stable interface.
+    """
+    if _env_flag_enabled("MODTALKS_PROVIDER_OPENAI"):
+        c = _OpenAIController()
+        if c.enabled:
+            return c
+    anth = _AnthropicController()
+    if anth.enabled:
+        return anth
+    # Fall through to OpenAI if Anthropic init failed but OpenAI is
+    # configured (rare, but supports environments where Anthropic creds
+    # didn't load cleanly).
+    if os.getenv("OPENAI_API_KEY"):
+        c = _OpenAIController()
+        if c.enabled:
+            return c
+    return anth  # disabled controller — Nim layer will stay rule-based
+
+
 def _strip_markdown_code_fence(text: str) -> str:
     """Extracts a JSON object from model output, tolerating prose around it.
 
@@ -804,7 +941,7 @@ class AmongThemPolicy(MultiAgentPolicy):
         self._handle = int(self._lib.modulabot_new_policy(self._num_agents))
         self._last_actions = np.zeros(self._num_agents, dtype=np.int32)
         self._pending_chat: dict[int, str] = {}
-        self._llm = _AnthropicController()
+        self._llm = _build_llm_controller()
         self._llm_enabled_agents: set[int] = set()
         # Pre-allocate FFI buffers once. All ctypes calls are on the
         # MultiAgentPolicy main thread so we can reuse them.

@@ -170,6 +170,37 @@ def main() -> None:
 
     os.environ.setdefault("BITWORLD_REPO_PATH", str(REPO_ROOT))
 
+    # Auto-stamp provider / model / persuade-on into MODULABOT_TRACE_META so
+    # captured manifests group cleanly by configuration in the prompt-eval
+    # harness (Sprint 5.3). Existing meta values are preserved; we only add
+    # keys that aren't already set.
+    using_bedrock_env = (
+        os.getenv("CLAUDE_CODE_USE_BEDROCK", "").lower() in {"1", "true", "yes"}
+        or not os.getenv("ANTHROPIC_API_KEY")
+    )
+    auto_meta = {
+        "llm_provider": "bedrock" if using_bedrock_env else "anthropic_direct",
+        "llm_model": (
+            os.getenv("MODTALKS_LLM_MODEL", "")
+            or ("claude-sonnet-4-5" if using_bedrock_env else "claude-sonnet-4-5")
+        ),
+        "llm_persuade": "1" if (
+            os.getenv("MODTALKS_PERSUADE", "").lower() in {"1", "true", "yes"}
+        ) else "0",
+        "llm_disabled": "1" if (
+            os.getenv("MODTALKS_LLM_DISABLE", "").lower() in {"1", "true", "yes"}
+        ) else "0",
+    }
+    existing_meta = os.getenv("MODULABOT_TRACE_META", "").strip()
+    pairs: list[str] = []
+    if existing_meta:
+        pairs.append(existing_meta)
+    for k, v in auto_meta.items():
+        if v and f"{k}=" not in existing_meta:
+            pairs.append(f"{k}={v}")
+    if pairs:
+        os.environ["MODULABOT_TRACE_META"] = ",".join(pairs)
+
     _install_fixed_port_server(args)
     bitworld_runner._find_bitworld_binary = lambda _config: args.binary
 
@@ -184,7 +215,9 @@ def main() -> None:
         f"profile={os.getenv('AWS_PROFILE', '<unset>')} "
         f"region={os.getenv('AWS_REGION', '<unset>')} "
         f"model={os.getenv('MODTALKS_LLM_MODEL', '<default>')} "
-        f"disabled={os.getenv('MODTALKS_LLM_DISABLE', '0')}",
+        f"disabled={os.getenv('MODTALKS_LLM_DISABLE', '0')} "
+        f"persuade={os.getenv('MODTALKS_PERSUADE', '0')} "
+        f"capture={os.getenv('MODTALKS_LLM_CAPTURE', '0')}",
         flush=True,
     )
 
