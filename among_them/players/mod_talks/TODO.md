@@ -155,6 +155,156 @@ initial guess rather than an empirically chosen one.
 
 Ref: `DESIGN.md §5`
 
+### Live-game smoke surfaced two real bugs (2026-05-01)
+
+First end-to-end smoke run with 8 `mod_talks_llm` bots vs. a
+local `among_them` server (Bedrock provider, `voteTimerTicks=600`).
+Trace evidence preserved at `/tmp/mod_talks_live/traces/` from
+session `2026-05-01T19-04-29Z`. Both bugs predate Sprint 6 and
+were merely surfaced by the live LLM dispatch path.
+
+#### Bug 1 — `parseVotingScreen` fails 2 ticks after meeting opens
+
+Symptom: at meeting open, every bot fires one decision at branch
+`voting.cursor.move` (mask=left, "voting cursor to unknown"),
+then on the next frame falls to `bot.interstitial.role_reveal`
+with garbled OCR text (e.g. `.,~//j.//~.j/]`) and stays there
+for the entire meeting + post-meeting period. `mask=idle` for
+60+ seconds.
+
+The user's earlier observation of bots "all moving left, then
+left/still/right after the meeting" is consistent with: the
+voting screen briefly registers (one-tick mask=left for the
+cursor), then `parseVotingScreen` returns false, the
+interstitial detector keeps firing on the discussion-table
+backdrop, and `decideNextMaskCore` returns 0 every frame. Any
+on-screen drift the user sees post-meeting is residual server-
+side physics, not bot input.
+
+Critical downstream effect: because `tickLlmVoting` is gated on
+`bot.voting.active`, a failed `parseVotingScreen` means the LLM
+state machine never advances past `lvsFormingHypothesis`. The
+hypothesis call still completes (~9 s on Bedrock) and
+`onLlmResponse` runs, but the bot is stuck on the wrong branch
+so no chat ever gets routed to `pendingChat`.
+
+Likely culprits, in order of suspicion:
+1. **Voting-grid pixel layout drift.** `voting.nim`'s grid
+   constants (`VoteCellW=16`, `VoteCellH=17`, `VoteStartY=2`,
+   `VoteSkipW=28`) may not match the current `among_them/sim.nim`
+   render. Validate by capturing a frame at meeting tick and
+   running it through `parseVotingScreen` in isolation.
+2. **Interstitial detector false-positive on the discussion-
+   table backdrop.** `isInterstitialScreen` uses a black-pixel
+   ratio threshold; the discussion table render may push that
+   ratio above the gate even though the voting grid is the
+   actual content.
+3. **Frame channel desync.** Less likely given the bots all
+   parsed pre-meeting frames correctly, but worth checking with
+   `MODULABOT_TRACE_LEVEL=frame` to dump every frame.
+
+Reproduction recipe (`among_them/players/mod_talks/scripts/quick_player_llm.sh`
++ server with `voteTimerTicks:600`, `MODULABOT_TRACE_DIR` set,
+Bedrock creds available, body manually triggered).
+
+#### Bug 2 — medium-confidence hypothesis produces no chat
+
+By design, `applyHypothesisResponse` (`llm.nim:818`)
+transitions to `lvsListening` on medium/low confidence with no
+chat queued. Reactions only fire when other players speak
+(`hasUnreadChat` gate at `llm.nim:1170`). With 8 mod_talks
+bots all forming medium-confidence hypotheses, no one breaks
+the silence: 4/8 stayed silent the entire meeting in the
+2026-05-01 smoke. The two crewmates with high-confidence
+hypotheses and the two imposters (preemptive strategize)
+chatted; everyone else was mute.
+
+Combined with the body-discovery template firing identically
+for all 8 bots at meeting open, the bot population reads as
+"all preprogrammed" even though half the participants did
+produce LLM-generated chat.
+
+This is partly a tuning issue (`VoteListenTicks=100`, ~4.2 s
+@ 24 fps, is shorter than Bedrock P50 latency ~9 s — by the
+time the hypothesis returns, the bot has already committed
+to a vote) and partly a design choice (hypothesis schema in
+`LLM_VOTING.md §307` has no `chat` field). Both knobs are
+worth reconsidering. Candidate fixes:
+
+- Add `opening_statement` (string, optional) to the
+  hypothesis tool-use schema; queue it via `queueOurChat` in
+  `applyHypothesisResponse` for medium/low confidence.
+- OR: dispatch a `react` call once on the
+  `lvsFormingHypothesis → lvsListening` transition, bypassing
+  the `hasUnreadChat` gate so the first speaker is bootstrapped.
+- OR: bump `VoteListenTicks` to ≥ Bedrock P95 latency and rely
+  on the existing react loop to keep the meeting alive
+  (assumes Bug 1 is fixed first — without working
+  parseVotingScreen, more listen time doesn't help).
+
+Briefly experimented with the `VoteListenTicks: 100→250` bump
+during the smoke; reverted because it was speculative pre-
+investigation. Mention it in the final fix design.
+
+Ref: `llm.nim:818`, `voting.nim:30`, trace session
+`/tmp/mod_talks_live/traces/2026-05-01T19-04-29Z`
+
+---
+
+## Sprint 7 — remaining work (2026-05-01)
+
+### LLM dispatch blocks the websocket (discovered during Sprint 7)
+
+Bedrock calls via `startProcess("aws", ...)` take 5-9s. Blocking
+the frame loop for that long overflows the server's websocket
+send buffer (~170 frames × 8KB > OS buffer). The server drops the
+player, and `receiveMessage(-1)` hangs forever.
+
+Three approaches tried:
+
+1. **Synchronous dispatch** (italkalot pattern): blocks inside
+   `decideNextMask`. LLM response IS delivered but the websocket
+   dies. italkalot survives because its OpenAI/curly calls are
+   ~1-3s (in-process HTTP, no `fork()`).
+2. **Threaded Channel dispatch**: `Channel.tryRecv` under
+   `--mm:orc` never delivers results in the bot binary (despite
+   working in a standalone test). Multiple configurations tried:
+   `create()`-allocated struct, module-level globals,
+   `{.threadvar.}` (wrong — per-thread copies), atomic flag +
+   blocking `recv`. None worked.
+3. **Subprocess polling**: `startProcess` + `process.running()`
+   polled each frame. Frame loop stays alive (1970+ frames at
+   22fps). Most promising but needs live verification with a
+   meeting.
+
+Current implementation: subprocess polling (#3) in
+`llm_dispatch.nim`. Next step: run a longer test (5+ min) that
+triggers a meeting to confirm `tryGather` returns the result.
+
+Ref: `llm_dispatch.nim`, `LLM_SPRINTS.md §7`
+
+### Orphan bot processes survive kill
+
+When `quick_player_llm.sh`'s trap fires or when `pkill` targets
+bot processes, some mod_talks_llm processes survive and continue
+occupying server player slots. This makes subsequent test runs
+join servers with stale bots. Workaround: `pkill -9 -f
+mod_talks_llm` before each run. Root cause likely the shell
+trap not reaching all child PIDs, or the `aws` subprocess
+surviving the parent's death.
+
+Ref: `scripts/quick_player_llm.sh`
+
+### `parseVotingCandidate` join-order bug also affects other bots
+
+The `slots[i].colorIndex != i` assumption that was fixed in
+mod_talks also exists in `italkalot.nim:1944` and
+`nottoodumb.nim` (same line). Those bots will fail to parse the
+voting screen on non-fresh servers. Out of scope for mod_talks
+but worth noting.
+
+Ref: `italkalot.nim:1944`, `nottoodumb.nim`
+
 ---
 
 ## Phase 3 — Divergence (inherited from modulabot, partly subsumed by Sprints 2-5)

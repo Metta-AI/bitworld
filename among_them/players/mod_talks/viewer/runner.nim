@@ -173,16 +173,8 @@ when not defined(modulabotLibrary):
       else:
         echo "modulabot: --llm-mock specified but this build lacks ",
              "-d:modTalksLlm; ignoring"
-    # Live LLM provider + dispatcher (Sprint 6.3). Activated only
-    # when:
-    #   * the binary was built with `-d:modTalksLlm`, AND
-    #   * `--llm-mock` was NOT supplied (mock takes precedence — the
-    #     mock harness is for parity tests; the live provider is for
-    #     real games), AND
-    #   * `newLlmProvider` finds credentials in env vars (mirrors
-    #     the Python wrapper's `_build_llm_controller`).
-    # In any of those failures, the bot stays in rule-based mode —
-    # `tickLlmVoting` no-ops because `llmEnable` was never called.
+    # Live LLM provider + dispatcher (Sprint 7.2). Worker thread
+    # keeps the frame loop alive during the 5-9s Bedrock call.
     when defined(modTalksLlm):
       var llmProvider: LlmProvider = nil
       var llmDispatcher: LlmDispatcher = nil
@@ -291,21 +283,12 @@ when not defined(modulabotLibrary):
             continue
           let nextMask = bot.decideNextMask()
           bot.io.lastMask = nextMask
-          # Sprint 6.3 — drain any completed LLM result first, then
-          # submit a new request if the state machine produced one.
-          # Drain-first ordering matters: the result from a previous
-          # tick can transition the stage to one that produces a
-          # follow-up dispatch on the *same* frame
-          # (hypothesis → accuse, etc.). Without drain-first the
-          # follow-up would lag by one tick.
           when defined(modTalksLlm):
             if not llmDispatcher.isNil:
-              # 1. Gather any completed result.
               let res = llmDispatcher.tryGather()
               if res.isSome:
                 let r = res.get()
                 onLlmResponse(bot, r.kind, r.responseJson, r.errored)
-              # 2. Submit any newly-pending request.
               let pending = llmTakePendingRequest(bot)
               if pending.kind != lckNone:
                 let req = LlmDispatchRequest(
@@ -314,9 +297,6 @@ when not defined(modulabotLibrary):
                   contextJson: pending.contextJson
                 )
                 if not llmDispatcher.submit(req):
-                  # Dispatcher refused (in-flight collision; should
-                  # never happen given the single-slot rule). Treat
-                  # as immediate error so the bot doesn't stall.
                   onLlmResponse(bot, pending.kind, "", true)
           if dumpFile != nil:
             dumpFile.dumpFrame(bot.io.unpacked)

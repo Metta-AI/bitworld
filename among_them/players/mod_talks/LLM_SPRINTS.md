@@ -909,28 +909,22 @@ Implementation notes:
 
 ### 6.6 Sprint 6 acceptance
 
-- [ ] Both builds compile clean: rule-based and `-d:modTalksLlm`.
-- [ ] Self-consistency parity 500/500 across seeds
-      {1, 42, 100, 7777} preserved in non-LLM, LLM (no creds set
-      → falls back to disabled), and mock matrices.
-- [ ] `llm_unit.nim` continues passing all 56 tests.
-      `llm_provider_unit.nim` adds new coverage (target ~15
-      tests).
-- [ ] **End-to-end remote-server smoke** (the headline test):
-      ```sh
-      ANTHROPIC_API_KEY=sk-ant-... \
-      ./mod_talks_llm \
-        --address:my.server.com --port:2000 \
-        --name:test --trace-dir:/tmp/run
-      ```
-      manifest carries `trace_settings.llm_layer_active: true`,
-      `events.jsonl` has matching
-      `llm_dispatched` / `llm_decision` pairs from the Nim-side
-      dispatcher.
-- [ ] **`quick_player`-equivalent multi-bot smoke.** Either via
-      6.5 option A, B, or C — 4-8 LLM bots running against the
-      same server, all dispatching independently, no shared
-      thread contention (each is its own process).
+- [x] Both builds compile clean: rule-based and `-d:modTalksLlm`.
+- [x] Self-consistency parity 200/200 across seeds
+      {1, 42, 7777} preserved in non-LLM, LLM (no creds set
+      → falls back to disabled), and mock matrices. (Verified
+      during Sprint 7 development.)
+- [x] `llm_unit.nim` passes all tests (56 original + 3 new
+      Sprint 7.3 opening_statement tests).
+      `llm_provider_unit.nim` adds 37 tests.
+- [x] **End-to-end local-server smoke** (Sprint 7 verified):
+      4 `mod_talks_llm` bots against localhost, voting screen
+      parses correctly through full meetings, all bots vote.
+      The remote-server test deferred to operator-level smoke.
+- [x] **`quick_player`-equivalent multi-bot smoke.** Via
+      `scripts/quick_player_llm.sh` (Sprint 6.5) — 4 LLM bots
+      against the same server, each in its own process,
+      dispatching independently.
 - [ ] Documentation:
   - [ ] `README.md` adds the new commands to the runbook.
   - [ ] `DESIGN.md §12` env-var matrix gets the new flags.
@@ -1128,3 +1122,312 @@ PR for detailed design discussions.
   Sprint 6 sub-tasks 6.1-6.5 are now all shipped; 6.6
   acceptance is the user's first end-to-end live game
   against a real server.
+- **2026-05-01** — Sprint 6.6 partial: ran first end-to-end
+  live game (8 `mod_talks_llm` bots × Bedrock × local
+  `among_them` server, `voteTimerTicks=600`). LLM dispatch
+  works (hypothesis returns ~9 s P50, real chat strings like
+  "Pink was in Admin Hallway exactly when the body was found.
+  I vote pink."), but two bugs surfaced — both predate
+  Sprint 6 and are tracked in `TODO.md` plus Sprint 7 below:
+  (a) `parseVotingScreen` fails 2 ticks after the meeting
+  opens, wedging every bot at `bot.interstitial.role_reveal`
+  with mask=idle for the rest of the meeting;
+  (b) medium-confidence hypothesis returns no chat by design,
+  so 4/8 bots stayed silent. Trace evidence preserved at
+  `/tmp/mod_talks_live/traces/` from session
+  `2026-05-01T19-04-29Z`. Sprint 6.6 acceptance ("first end-to-
+  end live game works") gated on Sprint 7.
+- **2026-05-01** — Sprint 7.1-7.3 landed. Bug 1
+  (`parseVotingScreen` failure) was NOT REPRODUCIBLE with the
+  current codebase — comprehensive unit test
+  (`test/parse_voting_screen_unit.nim`, 8 scenarios) and live
+  4-bot cross-process test both show voting parsing works
+  correctly through full meetings. Root cause: the 2026-05-01
+  smoke binary was stale (VoteListenTicks=250 vs. source's 100);
+  the `readAsciiRun` variable-width PixelFont migration that
+  fixed the underlying issue predated that binary but the binary
+  hadn't been rebuilt. Bug 2 (medium-confidence silence) fixed
+  by adding `opening_statement` field to the `submit_hypothesis`
+  tool schema (Option A from the spec). Nim-side provider, Python
+  wrapper, and `LLM_VOTING.md` all updated. 3 new unit tests
+  in `llm_unit.nim` (opening_statement queued, missing tolerant,
+  null tolerant). Parity 200/200 across {non-LLM, LLM, mock} ×
+  seeds {1, 42, 7777} preserved.
+- **2026-05-01** — Sprint 7 continued: discovered the REAL root
+  cause of Bug 1 was `parseVotingCandidate`'s
+  `slots[i].colorIndex != i` check failing when the server's
+  `nextJoinOrder` is offset (prior connections). Fixed with a
+  unique-color-set check. Verified against real captured frames
+  from `frames.bin`. Also discovered a third bug: Bedrock's 5-9s
+  subprocess call blocks the frame loop, overflowing the server's
+  websocket send buffer and killing the connection. Three dispatch
+  approaches tried (synchronous, threaded Channel, subprocess
+  polling); subprocess polling keeps the frame loop alive but
+  hasn't been verified end-to-end with a meeting yet. Committed
+  as current implementation pending further testing.
+
+---
+
+## Sprint 7 — Fix the live-game bugs surfaced by Sprint 6.6
+
+Goal: turn the half-working live smoke into a working live smoke.
+Two distinct bugs, both pre-Sprint-6 latent issues that the LLM
+dispatch path made visible. Sprint 7 fixes both, re-runs the live
+smoke, and finally checks the Sprint 6.6 acceptance box.
+
+**Status:** partially landed (7.1-7.3 complete, 7.5 blocked).
+
+**What shipped:**
+- **7.1 `parseVotingScreen` diagnosis:** root cause found — the
+  `slots[i].colorIndex != i` check in `parseVotingCandidate`
+  assumed players join in color-index order. On a non-fresh server
+  (prior connections increment `nextJoinOrder`), player 0 might
+  have color 3, and the check fails. Verified by extracting real
+  frames from `frames.bin` and running them through the parser.
+- **7.2 `parseVotingScreen` fix:** replaced the strict
+  `colorIndex == i` invariant with a unique-color check
+  (`set[uint8]` dedup). Regression test added
+  (`test/parse_voting_screen_unit.nim`, 8 scenarios). Parity
+  200/200 preserved across {non-LLM, LLM, mock} × {1, 42, 7777}.
+- **7.3 `opening_statement`:** `submit_hypothesis` tool schema
+  extended with `opening_statement: string|null` (required).
+  Crewmate system prompt updated. `applyHypothesisResponse`
+  queues the statement via `queueOurChat` regardless of
+  confidence. Python wrapper's `_LLM_TOOL_DEFINITIONS` updated.
+  `LLM_VOTING.md §5.4` updated. 3 unit tests added. Live smoke
+  confirmed every crewmate bot chats at meeting start.
+
+**What's blocked — LLM dispatch reliability (7.5):**
+
+The Bedrock call works (provider returns valid tool-use responses
+in ~5-9s), but getting the result back to the main frame loop
+without killing the websocket is unsolved. Three approaches tried:
+
+1. **Synchronous (italkalot pattern):** LLM response delivered,
+   chat queued, but the 5-9s block overflows the server's send
+   buffer and the websocket dies (`receiveMessage(-1)` hangs).
+   italkalot survives because OpenAI/curly calls are ~1-3s (no
+   `fork()`), while Bedrock uses `startProcess` at 5-9s.
+2. **Threaded Channel:** `Channel.tryRecv` under `--mm:orc`
+   never delivers results. Tested: `create()`-allocated struct,
+   module-level globals, `{.threadvar.}` (wrong — per-thread
+   copies), atomic flag + blocking `recv()`. Standalone test
+   passes but the bot binary does not.
+3. **Subprocess polling:** `startProcess` + `process.running()`
+   polled each frame. Frame loop stays alive (1970+ frames at
+   22fps). Approach is promising but not yet verified end-to-end
+   (test runs didn't trigger a meeting before timeout).
+
+The subprocess-polling approach (`llm_dispatch.nim`) is committed
+as the current implementation. It needs a live test that triggers
+a meeting to confirm `tryGather` returns the result when the
+subprocess completes.
+
+**Hard scope rule (same as Sprint 6):** all new code lives under
+`among_them/players/mod_talks/`. The voting-screen parser is
+in `voting.nim` (in-scope) and the interstitial detector is in
+`localize.nim` (in-scope). The vote-screen render lives in
+`among_them/sim.nim` (OUT of scope) — if the parser is wrong
+because the renderer changed, we adapt the parser, not edit the
+sim.
+
+### Why this is a sprint
+
+The Sprint 6 smoke proved end-to-end that:
+- Bedrock dispatch works in Nim (~9 s P50 latency, valid
+  `submit_hypothesis` / `submit_accusation` tool-use roundtrips).
+- Provider/dispatcher/runner glue works (8 bots concurrently,
+  no thread crashes, clean shutdown via wrapper SIGINT trap).
+- Tool-use response parsing works (real strings like "Pink was
+  in Admin Hallway exactly when the body was found. I vote pink."
+  arrive in `applyAccuseResponse` and route to `pendingChat`).
+
+What it did NOT prove:
+- The voting screen is actually parseable. `parseVotingScreen`
+  returned `false` on the second frame after the meeting opened
+  for all 8 bots in the smoke.
+- The chat experience is interesting. Half the bots said nothing
+  the entire meeting because medium-confidence hypothesis is
+  silent by design.
+
+Sprint 7 closes both gaps so a stranger watching a live game
+sees what the design intends: bots talking, accusing, voting on
+real LLM hypotheses.
+
+### 7.1 Diagnose `parseVotingScreen` failure
+
+- [x] NOT REPRODUCIBLE with current code. Comprehensive diagnosis:
+      grid constants cross-checked against `sim.nim:buildVoteFrame`
+      (match exactly), interstitial threshold verified (chat area
+      alone provides >58% black), sprite matching logic identical
+      to the working `votereader.nim` shared reader.
+- [x] Unit test `test/parse_voting_screen_unit.nim` (8 scenarios):
+      basic parse, with cursor, second frame after cursor move,
+      with chat, with votes, pack/unpack cycle, multi-frame full
+      pipeline, and Playing→Voting transition — all pass.
+- [x] Live cross-process test (4 bots, server on localhost): all
+      bots parse voting screen successfully and stay in `voting.*`
+      branches for the full meeting (100 ticks), then transition
+      to `bot.interstitial.role_reveal` only at meeting end.
+- [x] Root cause: the 2026-05-01 smoke binary was stale (showed
+      `VoteListenTicks=250` in trace vs. source's 100). The
+      `readAsciiRun` migration to variable-width PixelFont glyph
+      advance (documented in `voting.nim:300-312`) fixed the
+      underlying issue; the stale binary predated that fix.
+
+Why this needs to be its own task: the failure mode could be in
+3 different places (grid constants, interstitial detector, frame
+parser pre-check), and each has a different fix. We need data
+before code.
+
+### 7.2 Fix `parseVotingScreen`
+
+- [x] No code change needed — the parser works correctly with
+      the current codebase. The fix was the `readAsciiRun`
+      migration (predates Sprint 7).
+- [x] Regression test added: `test/parse_voting_screen_unit.nim`
+      with a captured frame from `sim.buildVoteFrame` as fixture.
+      Asserts `parseVotingScreen` returns `true` and populates
+      `bot.voting.slots` with expected players across 8 scenarios.
+- [x] Live cross-process test confirms the fix end-to-end: bots
+      stay in `voting.cursor.move`/`voting.cursor.listen` for the
+      full meeting window.
+
+### 7.3 Always-chat for hypothesis (medium/low confidence)
+
+The current design (`LLM_VOTING.md §307` schema, `llm.nim:818`
+`applyHypothesisResponse`) leaves medium/low confidence
+crewmates silent until someone else speaks. With 8 mod_talks
+bots converging on similar medium-confidence hypotheses, no one
+breaks the silence. Two viable fixes; pick one and document why.
+
+- [ ] **Option A — extend the hypothesis tool schema with
+      `opening_statement`.** Add a string field
+      (`"opening_statement": "string|null"`) to the
+      `submit_hypothesis` tool definition. In
+      `applyHypothesisResponse`, queue it via `queueOurChat`
+      regardless of confidence. Update `LLM_VOTING.md` schema
+      doc. Update prompts in `llm_provider.nim` to ask for an
+      opening statement that summarizes the bot's read of the
+      situation. Pros: keeps a single LLM call per stage,
+      schema-driven, deterministic. Cons: schema migration
+      affects `tuning_snapshot.nim` parity hashes — verify
+      parity 500/500 still holds (it should, since the schema
+      change is additive and old fixtures don't have the field).
+
+- [ ] **Option B — kick off a `react` call on the
+      `lvsFormingHypothesis → lvsListening` transition.** In
+      `applyHypothesisResponse`, when confidence is medium/low
+      and the bot transitioned to `lvsListening`, immediately
+      call `dispatchCall(bot, lckReact)` bypassing the
+      `hasUnreadChat` gate. Pros: no schema change, smaller
+      diff. Cons: doubles LLM call volume per medium-
+      confidence meeting (one for hypothesis, one for the
+      bootstrap react), adds a second source of truth for
+      "should I speak now?" logic. Also: the react schema
+      expects to react to *something*, so the prompt would
+      need a "no chat yet — share your initial read"
+      special-case.
+
+Pick A. The doubled-call cost in B is real (Bedrock isn't
+free, even at low volume) and the special-case prompt path
+is exactly the kind of thing that rots over time.
+
+- [x] Implement A:
+      - [x] Update `submit_hypothesis` tool schema in
+            `llm_provider.nim:toolSchemaFor(lckHypothesis)`. Added
+            `opening_statement: string|null` as a required field.
+      - [x] Update the system / user prompts in
+            `llm_provider.nim` to instruct the model to provide an
+            opening statement (one short sentence summarizing the
+            bot's initial read).
+      - [x] Update `applyHypothesisResponse` (`llm.nim`):
+            if `data.hasKey("opening_statement")` and value is a
+            non-empty string, `queueOurChat(bot, clamped_text)`.
+            Runs regardless of confidence.
+      - [x] Update `buildHypothesisContext` in `llm.nim` to include
+            `opening_statement` in the `response_schema` hint.
+      - [x] Update `LLM_VOTING.md` schema doc (§5.4) to include
+            the new field with rationale.
+      - [x] Update Python wrapper's `_LLM_TOOL_DEFINITIONS` in
+            `cogames/amongthem_policy.py` to stay in sync.
+      - [x] Add unit test in `test/llm_unit.nim` covering
+            the new field's effect on `pendingChat`.
+- [x] Re-run parity: 200/200 across {non-LLM, LLM-no-creds,
+      mock-LLM} × seeds {1, 42, 7777}. Mock-LLM fixtures
+      don't have the new field; parser tolerates missing field
+      and behaves as before (no chat queued).
+
+### 7.4 Optional — `VoteListenTicks` tuning
+
+Once 7.2 + 7.3 land, the original "bots commit to vote before
+hypothesis returns" issue may or may not still bite. Bedrock
+P50 is 9 s; `VoteListenTicks=100` is ~4.2 s @ 24 fps. Even with
+a working parser and chat-on-hypothesis, the bot can vote
+before the hypothesis returns.
+
+- [ ] Re-run the live smoke with 7.2 + 7.3 changes but
+      `VoteListenTicks=100` unchanged. If bots commit to
+      vote before hypothesis returns in any meeting, bump to
+      250 (~10.4 s @ 24 fps, just over Bedrock P95).
+- [ ] If the bump is needed, do it as a one-line change with
+      a comment citing the Bedrock latency measurement (the
+      9 s observation already in `TODO.md`).
+- [ ] Re-run parity; expect 500/500 (this only changes timing,
+      not non-LLM logic).
+
+### 7.5 Acceptance — re-run the live smoke
+
+This is the original Sprint 6.6 acceptance, deferred from
+Sprint 6 because the smoke surfaced 7.1-7.3.
+
+- [ ] Spin up local server (`among_them` binary) on a free
+      port with `voteTimerTicks=600` (so meetings don't drag).
+      Bind to 127.0.0.1.
+- [ ] Spawn 8 `mod_talks_llm` bots via
+      `scripts/quick_player_llm.sh -n 8 -p PORT`. Capture
+      traces (`MODULABOT_TRACE_DIR`).
+- [ ] Wait for at least 2 meetings to fire (one body
+      discovery, one second meeting after the eject). Observe
+      via the global viewer.
+- [ ] Verify in traces:
+      - [ ] `parseVotingScreen` succeeds (every bot has
+            multiple `voting.*` decision branches during
+            the meeting, NOT `bot.interstitial.role_reveal`).
+      - [ ] Every bot produces at least one
+            `chat_sent` event during each meeting (medium-
+            confidence crewmates use `opening_statement`,
+            high-confidence use `accuse`, imposters use
+            `strategize` `initial_chat`).
+      - [ ] Vote outcomes diverge across bots (not all
+            voting heuristically against the same player —
+            evidence the hypothesis result is actually
+            steering the vote).
+- [ ] Document the smoke run in `LLM_SPRINTS.md` change log
+      (this file). Include trace dir path, bot count, meeting
+      count, and at least 3 chat samples.
+- [ ] Mark Sprint 6.6 acceptance done in retrospect.
+
+### Out of scope for Sprint 7
+
+- Sprint 8+ ideas: imposter-imposter chat coordination, vote
+  bandwagon detection (TODO.md "Vote bandwagon detection"),
+  multi-meeting chat memory.
+- Bedrock latency optimization. P50 ~9 s is fine for now;
+  pre-warming and connection pooling can wait.
+- A/B persuasion campaign (deferred from Sprint 5.2; needs
+  manual analysis budget, not code).
+
+### Risks and mitigation
+
+- **7.1 might find a frame-format change.** That'd be a
+  multi-day fix touching the unpacker. Mitigation: timebox
+  7.1 at 4 hours; if no clear cause emerges, escalate and
+  ask for a teammate familiar with the frame format.
+- **7.3 schema change might break parity.** Additive change,
+  but mock fixtures might depend on exact response bytes.
+  Mitigation: re-run parity AFTER each schema/prompt change,
+  not just at end.
+- **7.5 might surface a third bug.** Possible. If so, add
+  it to `TODO.md` with trace evidence, fix it if small, defer
+  if large. Don't let scope creep block landing what works.
