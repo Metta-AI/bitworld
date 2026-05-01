@@ -94,3 +94,35 @@ const
     ## Gate on the optional Stage 4 persuasion call. Off by default to
     ## keep the per-meeting call count low; flip for aggressive
     ## configurations.
+
+  # -----------------------------------------------------------------
+  # Sprint 6 — Nim-side LLM provider (`llm_provider.nim`)
+  # -----------------------------------------------------------------
+  # Per-call-kind HTTP timeouts in seconds. Mirror the values in
+  # `cogames/amongthem_policy.py:PER_KIND_TIMEOUT_SECONDS` so the
+  # Python and Nim dispatch paths behave identically. Forming-stage
+  # calls (hypothesis, strategize) get the longest budget because
+  # they fire once per meeting and gate everything that follows;
+  # accuse / persuade are short responses with tight budgets;
+  # react / imposter_react share a budget that fits inside the
+  # chat-cooldown gap. LLM_VOTING.md §9 specifies the rationale.
+
+  LlmTimeoutHypothesisSec* = 20.0
+  LlmTimeoutStrategizeSec* = 20.0
+  LlmTimeoutReactSec* = 15.0
+  LlmTimeoutImposterReactSec* = 15.0
+  LlmTimeoutAccuseSec* = 10.0
+  LlmTimeoutPersuadeSec* = 10.0
+  LlmTimeoutDefaultSec* = 15.0
+    ## Fallback budget for unrecognised kinds — should never hit in
+    ## practice; the kind enum is closed.
+
+  # Retry policy — mirrors Sprint 4.4's Python `_RETRY_BACKOFF_SECONDS`.
+  # First retry waits 0.5 s, second waits 1.5 s. Any retry whose
+  # next-backoff would push past the per-call timeout is abandoned
+  # and the call returns errored.
+  LlmRetryMaxAttempts* = 3
+    ## Total HTTP attempts (1 initial + 2 retries).
+  LlmRetryBackoffSecs* = [0.5'f32, 1.5'f32]
+    ## Length must equal `LlmRetryMaxAttempts - 1`.
+
