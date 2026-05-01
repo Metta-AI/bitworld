@@ -1,0 +1,6 @@
+{"kind": "hypothesis", "response": {"suspects": [{"color": "red", "likelihood": 0.82, "reasoning": "near a body during the last round"}, {"color": "blue", "likelihood": 0.15, "reasoning": "no strong signal"}], "confidence": "high", "key_evidence": ["red near body at electrical"]}, "errored": false}
+{"kind": "accuse", "response": {"chat": "red was near the body in electrical"}, "errored": false}
+{"kind": "react", "response": {"suspects": [{"color": "red", "likelihood": 0.85, "reasoning": "confirmed by purple"}], "confidence": "high", "action": "silent", "chat": null}, "errored": false}
+{"kind": "strategize", "response": {"best_target": "green", "strategy": "bandwagon", "timing": "late", "reasoning": "quiet meeting, let others lead", "initial_chat": null}, "errored": false}
+{"kind": "imposter_react", "response": {"action": "corroborate", "chat": "yeah green was acting weird", "reasoning": "adding noise to bandwagon"}, "errored": false}
+{"kind": "persuade", "response": {"chat": "we really need to vote red"}, "errored": false}

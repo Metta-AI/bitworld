@@ -26,6 +26,7 @@ among_them/players/mod_talks/test/parity
 among_them/players/mod_talks/test/parity_llm
 among_them/players/mod_talks/test/trace_smoke
 among_them/players/mod_talks/test/validate_trace
+among_them/players/mod_talks/test/llm_unit
 among_them/players/mod_talks/__pycache__/
 among_them/players/mod_talks/nimcache/
 among_them/among_them

@@ -34,6 +34,8 @@ import protocol
 import ../bot
 import ../types
 import ../trace
+when defined(modTalksLlm):
+  import ../llm  # llmMockEnable for --llm-mock test mode
 import ../../evidencebot_v2  # v2's Bot, initBot, decideNextMask now exported
 
 const
@@ -106,7 +108,8 @@ proc loadReplayFrames(path: string): seq[seq[uint8]] =
 # ---------------------------------------------------------------------------
 
 proc runSelfConsistency(frames: seq[seq[uint8]], seed: int64,
-                       verbose: bool, traceDir: string): int =
+                       verbose: bool, traceDir: string;
+                       llmMockPath: string = ""): int =
   ## Builds two modulabot instances with the same master seed, runs
   ## them through the same frame stream, returns the count of
   ## divergent frames. Q6's per-consumer substreams + identical seed
@@ -116,10 +119,27 @@ proc runSelfConsistency(frames: seq[seq[uint8]], seed: int64,
   ## only. The expectation is that trace output is non-perturbing —
   ## divergence here would mean the writer has a side effect on the
   ## bot (TRACING.md §13.2).
+  ##
+  ## When `llmMockPath` is non-empty (Sprint 3.2), both bots load
+  ## the same scripted LLM fixture via `llmMockEnable`. They should
+  ## consume the fixture in lockstep and still produce identical
+  ## masks frame-for-frame. Only meaningful when built with
+  ## `-d:modTalksLlm`; in non-LLM builds the flag is silently
+  ## ignored.
   var
     botA = bot.initBot(masterSeed = seed)
     botB = bot.initBot(masterSeed = seed)
     divergent = 0
+  if llmMockPath.len > 0:
+    when defined(modTalksLlm):
+      try:
+        llmMockEnable(botA, llmMockPath)
+        llmMockEnable(botB, llmMockPath)
+      except CatchableError as err:
+        echo "parity: failed to load --llm-mock fixture: ", err.msg
+        quit(2)
+    else:
+      echo "parity: --llm-mock ignored (build lacks -d:modTalksLlm)"
   if traceDir.len > 0:
     botA.trace = openTrace(
       rootDir        = traceDir,
@@ -196,6 +216,7 @@ proc main() =
     replayPath = ""
     test = TestSelf
     traceDir = ""
+    llmMockPath = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -207,6 +228,7 @@ proc main() =
       of "replay": replayPath = val
       of "vs": test = parseTest(val)
       of "trace-dir": traceDir = val
+      of "llm-mock": llmMockPath = val
       else: discard
     else: discard
 
@@ -229,7 +251,8 @@ proc main() =
 
   let (divergent, total) =
     case test
-    of TestSelf: (runSelfConsistency(frames, seed, verbose, traceDir),
+    of TestSelf: (runSelfConsistency(frames, seed, verbose, traceDir,
+                                      llmMockPath),
                   frames.len)
     of TestVsV2: runVsV2(frames, seed, verbose)
 

@@ -45,6 +45,7 @@ when isMainModule and not defined(modulabotLibrary):
     traceFramesDump = block:
       let s = getEnv("MODULABOT_TRACE_FRAMES_DUMP", "1").toLowerAscii()
       s != "0" and s != "false" and s != "off"
+    llmMockPath = getEnv("MODTALKS_LLM_MOCK")
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -73,6 +74,8 @@ when isMainModule and not defined(modulabotLibrary):
         traceFramesDump = true
       of "no-trace-frames-dump":
         traceFramesDump = false
+      of "llm-mock":
+        llmMockPath = val
       else:
         discard
     else:
@@ -83,6 +86,8 @@ when isMainModule and not defined(modulabotLibrary):
     framesPath = absolutePath(framesPath)
   if traceDir.len > 0 and not traceDir.isAbsolute():
     traceDir = absolutePath(traceDir)
+  if llmMockPath.len > 0 and not llmMockPath.isAbsolute():
+    llmMockPath = absolutePath(llmMockPath)
   runBot(address, port, gui, name, mapPath, framesPath,
          traceDir, traceLevel, traceSnapshotPeriod, traceMeta,
-         traceFramesDump)
+         traceFramesDump, llmMockPath)

@@ -17,6 +17,8 @@ when not defined(modulabotLibrary):
   import ../bot
   import ../ascii  # for isGameOverText
   import ../trace
+  when defined(modTalksLlm):
+    import ../llm  # llmMockEnable — optional LLM-mock plumbing
   import viewer    # initViewerApp / pumpViewer / viewerOpen
 
   const
@@ -118,7 +120,8 @@ when not defined(modulabotLibrary):
                mapPath: string; framesPath: string = "";
                traceDir: string = ""; traceLevel: TraceLevel = tlDecisions;
                traceSnapshotPeriod: int = 120; traceMeta: string = "";
-               traceFramesDump: bool = true) =
+               traceFramesDump: bool = true;
+               llmMockPath: string = "") =
     ## Connects to an Among Them server and processes frames in a
     ## reconnect loop. When `gui` is true, opens the diagnostic
     ## viewer window; pressing Esc or closing the window terminates
@@ -130,8 +133,32 @@ when not defined(modulabotLibrary):
     ##
     ## `traceDir` (`--trace-dir:<path>`): when non-empty, opens a
     ## structured trace under that root. See TRACING.md.
+    ##
+    ## `llmMockPath` (`--llm-mock:<file>`): enables the mock-LLM
+    ## harness (Sprint 3.1). Requires `-d:modTalksLlm`; warned
+    ## and ignored otherwise. Mutually exclusive with the real
+    ## provider — when set, `llmEnable` is called against the
+    ## mock fixture instead of the Python-side enable path.
     let paths = defaultPaths(mapPath)
     var bot = initBot(paths)
+
+    # LLM-mock harness (Sprint 3.1). Enabled only when built with
+    # `-d:modTalksLlm` AND `--llm-mock:PATH` was passed. The bot's
+    # LLM state machine becomes active and consumes scripted
+    # responses from the fixture file instead of making real
+    # Bedrock / Anthropic calls.
+    if llmMockPath.len > 0:
+      when defined(modTalksLlm):
+        try:
+          llmMockEnable(bot, llmMockPath)
+          echo "modulabot: llm-mock loaded from ", llmMockPath,
+               " entries=", bot.llm.mock.entries.len
+        except CatchableError as err:
+          echo "modulabot: failed to load --llm-mock fixture: ",
+               err.msg
+      else:
+        echo "modulabot: --llm-mock specified but this build lacks ",
+             "-d:modTalksLlm; ignoring"
     var dumpFile: File = nil
     var effectiveFramesPath = framesPath
     # If tracing is on and no explicit --frames was passed, default to

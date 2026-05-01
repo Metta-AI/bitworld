@@ -319,73 +319,127 @@ Goal: refactoring `llm.nim` is currently high-risk because nothing
 tests it. Fix that before any prompt engineering sprint or provider
 swap.
 
+**Status:** ✅ Landed 2026-04-30. Mock harness running through the
+parity test, 51 unit tests pass, context-trim policy in place,
+parity 500/500 across {1, 42, 100, 7777} in four matrices
+(non-LLM, LLM, mock-basic, mock-errored).
+
 ### 3.1 Mock LLM mode — CLI flag + FFI hook
 
-- [ ] Add `--llm-mock:PATH` to `modulabot.nim` CLI parser.
-- [ ] When set, the Nim side reads responses from a JSONL file in
-      order. Each line: `{"kind": "hypothesis"|..., "response": {...},
-      "errored": bool}`. Nim consumes the next matching entry when
-      Python calls `modulabot_take_llm_request` OR when a stubbed
-      internal dispatcher fires.
-- [ ] Preferred implementation: add a `modulabot_set_llm_mock_path`
-      FFI entry point; Python reads the file and feeds responses via
-      the existing `modulabot_set_llm_response` path. Keeps the mock
-      logic on the Python side where JSON file handling is trivial.
-- [ ] Document the mock JSONL schema in `LLM_VOTING.md §11`.
+- [x] `LlmMockEntry` + `LlmMock` types in `types.nim`; loaded into
+      `LlmState.mock`.
+- [x] `llmMockLoadFromFile` parses JSONL fixtures (skips blank
+      lines, raises on unknown call kinds, raises on non-object
+      lines).
+- [x] `llmMockEnable` flips both `mock.enabled` and
+      `llmVoting.enabled` so `tickLlmVoting` becomes active and
+      consumes scripted responses instead of dispatching real
+      provider calls.
+- [x] `llmMockPump` drains pending requests in a bounded loop
+      (16 per tick max) — applying a response often dispatches
+      the next call, so transitive draining keeps fixture-driven
+      tests fast.
+- [x] Strict FIFO with kind-mismatch detection: a fixture entry
+      whose `kind` doesn't match the pending call is consumed but
+      injected as an error and counted in
+      `mock.mismatchCount` for diagnostics.
+- [x] Out-of-fixtures behavior: when the bot has more requests
+      than the fixture has entries, remaining calls are
+      auto-errored so the bot degrades to rule-based voting
+      rather than wedging.
+- [x] `--llm-mock:PATH` CLI flag in `modulabot.nim` (also reads
+      `MODTALKS_LLM_MOCK` env var). When the build lacks
+      `-d:modTalksLlm`, the flag is warned and ignored.
+
+Implementation note — design choice on dispatch path:
+- The plan originally proposed a Python-side mock (Python reads
+  the JSONL file and feeds via `modulabot_set_llm_response`).
+  Implemented entirely in Nim instead because (1) `parity.nim`
+  doesn't run Python, (2) it keeps the test surface simpler, and
+  (3) the same code path is exercised end-to-end as a live game,
+  just without the HTTP round-trip. Trade-off: the Python wrapper
+  doesn't see scripted responses through its own code, but
+  Sprint 4 brings concurrency to Python anyway and that
+  refactor will deserve its own integration test.
 
 ### 3.2 Parity harness `--mode:llm-mock`
 
-- [ ] Add a mode to `test/parity.nim` that runs two bot instances with
-      the same seed and the same mock JSONL, asserting mask equality.
-- [ ] Acceptance: 100% self-consistency on a 500-frame replay with
-      5+ meetings.
-- [ ] Also add a degraded-mock test: every response errored → mask
-      sequence must equal the non-LLM baseline (fallback correctness).
+- [x] Added `--llm-mock:PATH` to `test/parity.nim`. When set,
+      `runSelfConsistency` loads the same fixture into both bot
+      instances before stepping. They consume entries in lockstep
+      and must produce identical masks.
+- [x] Two reference fixtures shipped under
+      `test/fixtures/`:
+      - `llm_mock_basic.jsonl` — a clean run through every call
+        kind (hypothesis, accuse, react, strategize,
+        imposter_react, persuade) with realistic responses.
+      - `llm_mock_all_errored.jsonl` — every entry errored, used
+        to verify the fallback path stays parity-clean.
+- [x] Parity 500/500 across seeds {1, 42, 100, 7777} in both
+      mock fixtures.
 
 ### 3.3 Unit tests for `llm.nim`
 
-- [ ] New file: `test/llm_unit.nim`.
-- [ ] Fixtures: canned JSON responses for each `LlmCallKind`
-      (well-formed, missing fields, extra fields, wrong types,
-      malformed JSON, empty string).
-- [ ] Tests:
-  - [ ] `parseSuspects` sorts and filters correctly.
-  - [ ] `applyHypothesisResponse` transitions stage correctly by
-        confidence and by presence of safe-color suspects.
-  - [ ] `applyStrategizeResponse` rejects a `best_target` in
-        `safe_colors`.
-  - [ ] `clampChat` truncates at word boundary and strips control
-        characters (verify current behavior, decide if non-ASCII
-        handling needs changing — see Sprint 4 §4.4).
-  - [ ] `colorIndexByName` is case-insensitive and whitespace-tolerant.
-  - [ ] `onMeetingEnd` resets state without clobbering `enabled`.
-- [ ] Build and run via `tools/trace_smoke.sh` or a new
-      `tools/llm_unit.sh`; add to CI loop.
+- [x] New file: `test/llm_unit.nim`. Exits non-zero on first
+      failure; prints per-test pass/fail labels.
+- [x] 51 tests covering:
+  - [x] `clampChat` — short, control-char strip, newline-to-space,
+        word-boundary truncation.
+  - [x] `colorIndexByName` — exact, case-insensitive, whitespace
+        tolerance, unknown, empty.
+  - [x] `confidenceFromLikelihood` — three-tier mapping including
+        inclusive thresholds at 0.75 and 0.45.
+  - [x] `normalizeForDedup` — lowercasing, punctuation collapse,
+        idempotence.
+  - [x] `parseSuspects` — sort, drop unknown colors, missing
+        fields, nil node.
+  - [x] `isSafeColor` — self, known imposter, out-of-range
+        defensive cases.
+  - [x] `llmMockLoadFromFile` — basic, blank-line tolerance,
+        unknown-kind rejection, non-object rejection.
+  - [x] `initLlmVotingState` / `resetLlmVotingState` — defaults,
+        `enabled` preservation across reset.
+  - [x] `trimContextInPlace` (Sprint 3.4) — already-fits, halve
+        sightings, drop chat summaries, fully-unfittable case.
 
 ### 3.4 Context-size enforcement
 
-- [ ] In `dispatchCall`, after building `contextJson`, check against
-      `LlmMaxContextLen` and `_LLM_CONTEXT_BUFFER_SIZE`
-      (16384 in Python).
-- [ ] If over budget, trim in order: oldest sightings → older chat
-      lines → prior meeting chat summaries. Re-measure after each
-      trim pass.
-- [ ] If still over budget, emit an `llm_error` (from 1.2) with
-      `reason: "context_overflow"` and fall back immediately (no
-      dispatch).
-- [ ] Regression test: generate a synthetic memory log with 1000+
-      sightings and verify dispatch succeeds (trimmed) rather than
-      blowing past the FFI buffer.
+- [x] Refactored builders (`buildHypothesisContext` et al.) to
+      return `JsonNode` instead of pre-serialized strings.
+      `dispatchCall` now serializes once after applying trim.
+- [x] `trimContextInPlace` proc in `llm.nim`: progressive 7-tier
+      trim policy applied to the JSON tree:
+  1. Halve `round_events.sightings_since_last_meeting`.
+  2. Halve `chat_since_last_update`.
+  3. Halve `full_chat_log`.
+  4. Drop `prior_meetings[].chat_summary` arrays.
+  5. Drop `prior_meetings` entirely.
+  6. Drop `round_events.sightings_since_last_meeting` entirely.
+  7. Drop `evidence_scores` (last resort).
+- [x] Two budget constants in `tuning.nim`:
+      `LlmMaxContextLen = 7500` (soft target the trim aims for)
+      and `LlmMaxContextBytes = 15500` (hard ceiling matching
+      `_LLM_CONTEXT_BUFFER_SIZE` from the Python wrapper minus
+      ~900 bytes safety margin).
+- [x] On overflow (trim couldn't reduce below the hard ceiling):
+      emit `llm_error{reason: "context_overflow"}`, bump fallback
+      counter, transition forming-stage to listening so vote-time
+      fallback fires. No `LlmRequestSlot` is created.
+- [x] Newest-first array order preserved by all halvers — the
+      most recent observations are most decision-relevant.
 
 ### 3.5 Sprint 3 acceptance
 
-- [ ] `nim r test/parity.nim --mode:llm-mock --replay:<capture>
-      --llm-mock:<fixture>` passes with 100% mask agreement.
-- [ ] `nim r test/parity.nim --mode:llm-mock --replay:<capture>
-      --llm-mock:<all-errored-fixture>` produces masks identical to
-      the non-LLM baseline.
-- [ ] `nim r test/llm_unit.nim` passes all subtests.
-- [ ] `tools/trace_smoke.sh` (or equivalent) runs the full new suite.
+- [x] All builds compile clean (non-LLM CLI, LLM CLI,
+      `libmodulabot.dylib`, `parity`, `parity_llm`, `llm_unit`).
+- [x] Self-consistency parity 500/500 across seeds
+      {1, 42, 100, 7777} × matrices
+      {non-LLM, LLM, mock-basic, mock-errored}.
+- [x] `llm_unit.nim` runs all 51 tests green.
+- [x] Mock-LLM parity exercises the full state machine end-to-end
+      including dispatchCall, applyHypothesisResponse,
+      applyStrategizeResponse, applyAccuseResponse, etc., yet
+      remains deterministic.
 
 ---
 
@@ -598,3 +652,13 @@ PR for detailed design discussions.
   across seeds {1, 42, 100, 7777} in both builds. Live Bedrock
   smoke confirmed schema-v3 manifest carries
   `speaker_attribution: "color_pip"`.
+- **2026-04-30** — Sprint 3 landed: mock-LLM harness wired into
+  `tickLlmVoting` + parity harness, `llm_unit.nim` with 51 tests
+  covering pure helpers + mock loader + trim helper, context
+  builders refactored to return `JsonNode` so a 7-tier trim
+  policy can apply before serialization. Parity 500/500 across
+  seeds {1, 42, 100, 7777} × matrices {non-LLM, LLM, mock-basic,
+  mock-errored}. Two reference fixtures shipped at
+  `test/fixtures/`. Design choice: mock pump runs in Nim rather
+  than Python — keeps `parity.nim` self-contained and exercises
+  the same code path as live runs minus the HTTP round-trip.

@@ -85,7 +85,7 @@ proc resetLlmVotingState*(s: var LlmVotingState) =
 # Chat history management
 # ---------------------------------------------------------------------------
 
-proc normalizeForDedup(line: string): string =
+proc normalizeForDedup*(line: string): string =
   ## Aggressive normalization — lowercased, alnum-only, single spaces.
   ## Mirrors `voting.normalizeChatText` but kept local so this module
   ## doesn't re-import every voting helper.
@@ -333,17 +333,104 @@ proc myLocationHistoryJson(bot: Bot; limit = 20): JsonNode =
 # ---------------------------------------------------------------------------
 # Per-task context builders
 # ---------------------------------------------------------------------------
+#
+# Each builder returns a `JsonNode` instead of a serialised string so
+# `dispatchCall` can apply the Sprint 3.4 trim policy before the
+# context crosses the FFI boundary. The trim helper drops oversized
+# fields in priority order — see `trimContextInPlace` below.
 
-proc buildHypothesisContext(bot: Bot): string =
+proc trimContextInPlace*(ctx: JsonNode, maxBytes: int): bool =
+  ## Mutates `ctx` (a JObject) in place by progressively dropping or
+  ## shrinking known-large fields until its serialized form fits in
+  ## `maxBytes`. Returns true on success, false when even the
+  ## fully-trimmed context exceeds the budget.
+  ##
+  ## Trim order, gentlest → most aggressive (Sprint 3.4):
+  ##   1. Halve `round_events.sightings_since_last_meeting` (oldest
+  ##      first, since the array is newest-first by emission order).
+  ##   2. Halve `chat_since_last_update`.
+  ##   3. Halve `full_chat_log` (imposter-only).
+  ##   4. Drop `prior_meetings[].chat_summary` arrays (keep meeting
+  ##      structure, lose verbatim chat).
+  ##   5. Drop `prior_meetings` entirely.
+  ##   6. Drop `round_events.sightings_since_last_meeting` entirely.
+  ##   7. Drop `evidence_scores` (last resort — strips the headline
+  ##      reasoning input).
+  ##
+  ## Each step re-checks `$ctx`.len; we stop as soon as the budget
+  ## clears. The most-recent half of every truncated array is kept
+  ## because more-recent observations are more decision-relevant.
+  if ctx.kind != JObject:
+    return ($ctx).len <= maxBytes
+  if ($ctx).len <= maxBytes:
+    return true
+
+  proc halveArrayKeepNewest(arr: JsonNode) =
+    if arr.isNil or arr.kind != JArray:
+      return
+    let keep = arr.len div 2
+    if keep == 0 and arr.len > 0:
+      return
+    # Arrays we trim are newest-first (countdown emit order), so we
+    # keep the first `keep` entries and drop the older tail.
+    while arr.len > keep:
+      arr.elems.delete(arr.elems.high)
+
+  template fits: bool = ($ctx).len <= maxBytes
+
+  # 1. Sightings.
+  if ctx.hasKey("round_events"):
+    let re = ctx["round_events"]
+    if re.kind == JObject and re.hasKey("sightings_since_last_meeting"):
+      halveArrayKeepNewest(re["sightings_since_last_meeting"])
+  if fits: return true
+
+  # 2. Recent chat.
+  if ctx.hasKey("chat_since_last_update"):
+    halveArrayKeepNewest(ctx["chat_since_last_update"])
+  if fits: return true
+
+  # 3. Full chat log (imposter).
+  if ctx.hasKey("full_chat_log"):
+    halveArrayKeepNewest(ctx["full_chat_log"])
+  if fits: return true
+
+  # 4. Prior-meeting chat summaries.
+  if ctx.hasKey("prior_meetings") and ctx["prior_meetings"].kind == JArray:
+    for m in ctx["prior_meetings"]:
+      if m.kind == JObject and m.hasKey("chat_summary"):
+        m["chat_summary"] = newJArray()
+  if fits: return true
+
+  # 5. Drop prior_meetings entirely.
+  if ctx.hasKey("prior_meetings"):
+    ctx.delete("prior_meetings")
+  if fits: return true
+
+  # 6. Drop sightings entirely.
+  if ctx.hasKey("round_events") and ctx["round_events"].kind == JObject:
+    let re = ctx["round_events"]
+    if re.hasKey("sightings_since_last_meeting"):
+      re.delete("sightings_since_last_meeting")
+  if fits: return true
+
+  # 7. Drop evidence_scores. Beyond this we have nothing else safe
+  # to shed without changing semantics; if still over budget, the
+  # caller emits llm_error{reason: "context_overflow"}.
+  if ctx.hasKey("evidence_scores"):
+    ctx.delete("evidence_scores")
+  fits
+
+proc buildHypothesisContext(bot: Bot): JsonNode =
   ## LLM_VOTING.md §3.1 crewmate hypothesis.
-  var ctx = newJObject()
-  ctx["task"] = %"hypothesis"
-  ctx["role_hint"] = %"crewmate"
-  ctx["self_color"] = %playerColorName(bot.identity.selfColor)
-  ctx["living_players"] = colorNameArray(bot.colorsAlive())
-  ctx["round_events"] = roundEventsJson(bot)
-  ctx["prior_meetings"] = priorMeetingsJson(bot)
-  ctx["evidence_scores"] = evidenceScoresJson(bot)
+  result = newJObject()
+  result["task"] = %"hypothesis"
+  result["role_hint"] = %"crewmate"
+  result["self_color"] = %playerColorName(bot.identity.selfColor)
+  result["living_players"] = colorNameArray(bot.colorsAlive())
+  result["round_events"] = roundEventsJson(bot)
+  result["prior_meetings"] = priorMeetingsJson(bot)
+  result["evidence_scores"] = evidenceScoresJson(bot)
   # Schema for constrained output (provider will validate).
   var schema = newJObject()
   schema["suspects"] = %* [{
@@ -353,36 +440,34 @@ proc buildHypothesisContext(bot: Bot): string =
   }]
   schema["confidence"] = %"high|medium|low"
   schema["key_evidence"] = %["string", "..."]
-  ctx["response_schema"] = schema
-  $ctx
+  result["response_schema"] = schema
 
-proc buildAccuseContext(bot: Bot): string =
+proc buildAccuseContext(bot: Bot): JsonNode =
   ## LLM_VOTING.md §3.2 crewmate accusation chat.
-  var ctx = newJObject()
-  ctx["task"] = %"accuse"
+  result = newJObject()
+  result["task"] = %"accuse"
   let h = bot.llmVoting.hypothesis
   if h.suspects.len > 0:
     let top = h.suspects[0]
-    ctx["suspect"] = %playerColorName(top.colorIndex)
-    ctx["likelihood"] = %top.likelihood
-    ctx["reasoning"] = %top.reasoning
-  ctx["key_evidence"] = block:
+    result["suspect"] = %playerColorName(top.colorIndex)
+    result["likelihood"] = %top.likelihood
+    result["reasoning"] = %top.reasoning
+  result["key_evidence"] = block:
     var arr = newJArray()
     for e in h.keyEvidence:
       arr.add(%e)
     arr
-  ctx["self_color"] = %playerColorName(bot.identity.selfColor)
-  ctx["max_chat_len"] = %LlmMaxChatLen
+  result["self_color"] = %playerColorName(bot.identity.selfColor)
+  result["max_chat_len"] = %LlmMaxChatLen
   var schema = newJObject()
   schema["chat"] = %("string, <= " & $LlmMaxChatLen & " chars, name the suspect")
-  ctx["response_schema"] = schema
-  $ctx
+  result["response_schema"] = schema
 
-proc buildReactContext(bot: Bot): string =
+proc buildReactContext(bot: Bot): JsonNode =
   ## LLM_VOTING.md §3.3 crewmate react / belief-update.
-  var ctx = newJObject()
-  ctx["task"] = %"react"
-  ctx["self_color"] = %playerColorName(bot.identity.selfColor)
+  result = newJObject()
+  result["task"] = %"react"
+  result["self_color"] = %playerColorName(bot.identity.selfColor)
   var hyp = newJObject()
   hyp["suspects"] = block:
     var arr = newJArray()
@@ -394,10 +479,10 @@ proc buildReactContext(bot: Bot): string =
       arr.add(o)
     arr
   hyp["confidence"] = %bot.llmVoting.hypothesis.confidence
-  ctx["current_hypothesis"] = hyp
-  ctx["chat_since_last_update"] = chatLogJson(bot, recentOnly = true)
-  ctx["my_prior_statements"] = myStatementsJson(bot)
-  ctx["living_players"] = colorNameArray(bot.colorsAlive())
+  result["current_hypothesis"] = hyp
+  result["chat_since_last_update"] = chatLogJson(bot, recentOnly = true)
+  result["my_prior_statements"] = myStatementsJson(bot)
+  result["living_players"] = colorNameArray(bot.colorsAlive())
   var schema = newJObject()
   schema["suspects"] = %* [{
     "color": "string",
@@ -407,26 +492,25 @@ proc buildReactContext(bot: Bot): string =
   schema["confidence"] = %"high|medium|low"
   schema["action"] = %"speak|ask|silent"
   schema["chat"] = %("string or null, <= " & $LlmMaxChatLen & " chars")
-  ctx["response_schema"] = schema
-  $ctx
+  result["response_schema"] = schema
 
-proc buildStrategizeContext(bot: Bot): string =
+proc buildStrategizeContext(bot: Bot): JsonNode =
   ## LLM_VOTING.md §4.1 imposter strategy.
   ## Critical: `safe_colors` comes from `knownImposters` + self. Never
   ## let the model target anyone in that list. The prompt (system
   ## message, §5.3) enforces this; we also reject any response whose
   ## `best_target` is in safe_colors at parse time.
-  var ctx = newJObject()
-  ctx["task"] = %"strategize"
-  ctx["safe_colors"] = safeColorsArray(bot)
-  ctx["self_color"] = %playerColorName(bot.identity.selfColor)
-  ctx["living_players"] = colorNameArray(bot.colorsAlive())
+  result = newJObject()
+  result["task"] = %"strategize"
+  result["safe_colors"] = safeColorsArray(bot)
+  result["self_color"] = %playerColorName(bot.identity.selfColor)
+  result["living_players"] = colorNameArray(bot.colorsAlive())
   # Self location history from `Memory.selfKeyframes` (Sprint 2.2).
   # Empty until the bot has transitioned between named rooms; the
   # system prompt ("only claim locations you've been to") makes an
   # empty list a safe fallback (LLM stays vague rather than
   # fabricating).
-  ctx["my_location_history"] = myLocationHistoryJson(bot)
+  result["my_location_history"] = myLocationHistoryJson(bot)
   # Bodies this round and their witness colours.
   var bodies = newJArray()
   for body in bot.memory.bodies:
@@ -438,10 +522,10 @@ proc buildStrategizeContext(bot: Bot): string =
       near.add(%playerColorName(w.colorIndex))
     b["near_players"] = near
     bodies.add(b)
-  ctx["bodies_this_round"] = bodies
-  ctx["evidence_scores"] = evidenceScoresJson(bot)
-  ctx["prior_meetings"] = priorMeetingsJson(bot)
-  ctx["my_prior_statements"] = myStatementsJson(bot)
+  result["bodies_this_round"] = bodies
+  result["evidence_scores"] = evidenceScoresJson(bot)
+  result["prior_meetings"] = priorMeetingsJson(bot)
+  result["my_prior_statements"] = myStatementsJson(bot)
   var schema = newJObject()
   schema["best_target"] =
     %"string — a living non-safe player to target for ejection"
@@ -450,26 +534,25 @@ proc buildStrategizeContext(bot: Bot): string =
   schema["reasoning"] = %"internal, one sentence"
   schema["initial_chat"] =
     %("string or null, <= " & $LlmMaxChatLen & " chars")
-  ctx["response_schema"] = schema
-  $ctx
+  result["response_schema"] = schema
 
-proc buildImposterReactContext(bot: Bot): string =
+proc buildImposterReactContext(bot: Bot): JsonNode =
   ## LLM_VOTING.md §4.2. Note the full chat log (Q-LLM8).
-  var ctx = newJObject()
-  ctx["task"] = %"imposter_react"
+  result = newJObject()
+  result["task"] = %"imposter_react"
   let strat = bot.llmVoting.imposterStrategy
-  ctx["strategy"] = %strat.strategy
-  ctx["best_target"] =
+  result["strategy"] = %strat.strategy
+  result["best_target"] =
     if strat.bestTarget >= 0 and strat.bestTarget < PlayerColorNames.len:
       %playerColorName(strat.bestTarget)
     else:
       newJNull()
-  ctx["timing"] = %strat.timing
-  ctx["safe_colors"] = safeColorsArray(bot)
-  ctx["self_color"] = %playerColorName(bot.identity.selfColor)
-  ctx["living_players"] = colorNameArray(bot.colorsAlive())
-  ctx["my_location_history"] = myLocationHistoryJson(bot)
-  ctx["bodies_this_round"] = block:
+  result["timing"] = %strat.timing
+  result["safe_colors"] = safeColorsArray(bot)
+  result["self_color"] = %playerColorName(bot.identity.selfColor)
+  result["living_players"] = colorNameArray(bot.colorsAlive())
+  result["my_location_history"] = myLocationHistoryJson(bot)
+  result["bodies_this_round"] = block:
     var arr = newJArray()
     for body in bot.memory.bodies:
       var b = newJObject()
@@ -477,23 +560,22 @@ proc buildImposterReactContext(bot: Bot): string =
       b["tick_relative"] = %(bot.frameTick - body.tick)
       arr.add(b)
     arr
-  ctx["full_chat_log"] = chatLogJson(bot, recentOnly = false, limit = 80)
-  ctx["my_prior_statements"] = myStatementsJson(bot)
+  result["full_chat_log"] = chatLogJson(bot, recentOnly = false, limit = 80)
+  result["my_prior_statements"] = myStatementsJson(bot)
   var schema = newJObject()
   schema["action"] = %"corroborate|deflect|accuse|silent"
   schema["chat"] =
     %("string or null, <= " & $LlmMaxChatLen & " chars")
   schema["reasoning"] = %"internal, one sentence"
-  ctx["response_schema"] = schema
-  $ctx
+  result["response_schema"] = schema
 
-proc buildPersuadeContext(bot: Bot): string =
-  var ctx = newJObject()
-  ctx["task"] = %"persuade"
+proc buildPersuadeContext(bot: Bot): JsonNode =
+  result = newJObject()
+  result["task"] = %"persuade"
   let h = bot.llmVoting.hypothesis
   if h.suspects.len > 0:
-    ctx["suspect"] = %playerColorName(h.suspects[0].colorIndex)
-  ctx["key_evidence"] = block:
+    result["suspect"] = %playerColorName(h.suspects[0].colorIndex)
+  result["key_evidence"] = block:
     var arr = newJArray()
     for e in h.keyEvidence:
       arr.add(%e)
@@ -501,8 +583,7 @@ proc buildPersuadeContext(bot: Bot): string =
   var schema = newJObject()
   schema["chat"] =
     %("string, <= " & $LlmMaxChatLen & " chars, persuade others to vote")
-  ctx["response_schema"] = schema
-  $ctx
+  result["response_schema"] = schema
 
 # ---------------------------------------------------------------------------
 # Request dispatch
@@ -518,9 +599,15 @@ proc dispatchCall(bot: var Bot; kind: LlmCallKind) =
   ## Emits an `llm_dispatched` trace event and bumps session
   ## `totalDispatched` / `byKindDispatched` so the harness can pair
   ## each dispatch with its eventual decision or error.
+  ##
+  ## Sprint 3.4: applies `trimContextInPlace` before serialization,
+  ## then re-checks the size budget. If even the trimmed context
+  ## exceeds the budget the dispatch is aborted and an `llm_error`
+  ## with `reason: "context_overflow"` is emitted; the state
+  ## machine falls back to rule-based voting at vote time.
   if bot.llmVoting.request.pending:
     return
-  let contextJson =
+  let ctxNode =
     case kind
     of lckHypothesis:     buildHypothesisContext(bot)
     of lckAccuse:         buildAccuseContext(bot)
@@ -528,7 +615,31 @@ proc dispatchCall(bot: var Bot; kind: LlmCallKind) =
     of lckStrategize:     buildStrategizeContext(bot)
     of lckImposterReact:  buildImposterReactContext(bot)
     of lckPersuade:       buildPersuadeContext(bot)
-    of lckNone:           ""
+    of lckNone:           nil
+  if ctxNode.isNil or ctxNode.kind != JObject:
+    return
+  # Apply trim policy before serialization. `LlmMaxContextLen` is
+  # the soft target the trim policy aims for; `LlmMaxContextBytes`
+  # is the hard ceiling that maps to the FFI buffer size on the
+  # Python side. Trimming aggressively at the soft target leaves
+  # headroom for the Python wrapper's prompt envelope.
+  let fits = trimContextInPlace(ctxNode, LlmMaxContextLen)
+  let contextJson = $ctxNode
+  if not fits or contextJson.len > LlmMaxContextBytes:
+    inc bot.llm.counters.totalErrored
+    inc bot.llm.counters.byKindErrored[kind]
+    if not bot.trace.isNil:
+      emitLlmError(bot.trace, bot, kind, bot.llmVoting.stage,
+                   "context_overflow",
+                   "context " & $contextJson.len & " bytes exceeds " &
+                   "LlmMaxContextBytes after trim",
+                   bot.frameTick, 0'i64, contextJson)
+    # Degrade gracefully: bump fallback counter and let the state
+    # machine reach `lvsListening` so vote-time fallback fires.
+    inc bot.llm.counters.totalFallbacks
+    if bot.llmVoting.stage in {lvsFormingHypothesis, lvsFormingStrategy}:
+      bot.llmVoting.stage = lvsListening
+    return
   if contextJson.len == 0:
     return
   let wallMs = int64(epochTime() * 1000.0)
@@ -551,12 +662,12 @@ proc dispatchCall(bot: var Bot; kind: LlmCallKind) =
 # Response handling
 # ---------------------------------------------------------------------------
 
-proc confidenceFromLikelihood(l: float32): string =
+proc confidenceFromLikelihood*(l: float32): string =
   if l >= LlmAccuseThreshold: "high"
   elif l >= 0.45'f32: "medium"
   else: "low"
 
-proc colorIndexByName(name: string): int =
+proc colorIndexByName*(name: string): int =
   ## Case-insensitive, whitespace-trimmed match against PlayerColorNames.
   let norm = name.strip().toLowerAscii()
   if norm.len == 0:
@@ -566,7 +677,7 @@ proc colorIndexByName(name: string): int =
       return i
   -1
 
-proc clampChat(text: string): string =
+proc clampChat*(text: string): string =
   ## Trim to `LlmMaxChatLen` at a word boundary when possible. Strips
   ## control characters and non-printable ASCII.
   var cleaned = ""
@@ -583,14 +694,14 @@ proc clampChat(text: string): string =
     cut = cut[0 ..< sp]
   cut.strip()
 
-proc isSafeColor(bot: Bot; colorIndex: int): bool =
+proc isSafeColor*(bot: Bot; colorIndex: int): bool =
   if colorIndex < 0 or colorIndex >= PlayerColorCount:
     return true
   if colorIndex == bot.identity.selfColor:
     return true
   bot.identity.knownImposters[colorIndex]
 
-proc parseSuspects(node: JsonNode): seq[LlmSuspect] =
+proc parseSuspects*(node: JsonNode): seq[LlmSuspect] =
   if node.isNil or node.kind != JArray:
     return
   for item in node:
@@ -920,6 +1031,16 @@ proc onMeetingStart*(bot: var Bot) =
     bot.llmVoting.stage = lvsFormingHypothesis
     dispatchCall(bot, lckHypothesis)
 
+# Forward declarations for mock-LLM harness procs defined below. The
+# mock section lives after `tickLlmVoting` for readability (lifecycle
+# → mock harness → FFI surface) but `tickLlmVoting` needs to invoke
+# the pump. Nim's lookup requires the name to be visible before first
+# call, so we pre-declare here. `parseLlmCallKind` lives in the FFI
+# section (called by `modulabot_set_llm_response`) but the mock
+# loader parses fixture entries using the same mapping.
+proc llmMockPump*(bot: var Bot)
+proc parseLlmCallKind*(name: string): LlmCallKind
+
 proc tickLlmVoting*(bot: var Bot) =
   ## Advances the state machine each frame while voting is active.
   ## Idempotent when nothing has changed. Must be called AFTER
@@ -970,11 +1091,135 @@ proc tickLlmVoting*(bot: var Bot) =
           not bot.llmVoting.request.pending:
         dispatchCall(bot, lckPersuade)
 
+  # Mock-LLM hook: in test runs the fixture pump delivers scripted
+  # responses immediately after dispatch. Real-provider runs skip
+  # this (mock.enabled is false) and wait for Python to feed
+  # responses via the FFI. Pumping AFTER the dispatch logic ensures
+  # the stage transitions triggered by each mock response are
+  # visible to the next iteration.
+  if bot.llm.mock.enabled:
+    llmMockPump(bot)
+
 proc onMeetingEnd*(bot: var Bot) =
   ## Called when the voting screen closes. Resets state for the next
   ## meeting but preserves `enabled` and the myStatements log is
   ## cleared because next meeting's constraints differ.
   resetLlmVotingState(bot.llmVoting)
+
+# ---------------------------------------------------------------------------
+# Mock LLM harness (Sprint 3.1-3.2)
+# ---------------------------------------------------------------------------
+#
+# Deterministic scripted-response queue used by `test/parity.nim --mode:llm-mock`
+# and by the `--llm-mock:PATH` CLI flag. When enabled, `llmMockPump` drains
+# any pending request immediately with the next fixture entry, bypassing the
+# Python wrapper and the real provider entirely.
+#
+# Fixture format (JSONL, one entry per line):
+#
+#   {"kind": "hypothesis",       "response": {...}, "errored": false}
+#   {"kind": "strategize",       "response": {...}, "errored": false}
+#   {"kind": "imposter_react",   "response": {},    "errored": true}
+#
+# Unknown fields are ignored. `response` is stringified back to JSON and
+# fed to `onLlmResponse` exactly as if Python had returned it, so every
+# downstream behaviour (parsing, validation, fallback) is exercised.
+
+proc llmMockLoadFromFile*(bot: var Bot; path: string) =
+  ## Parses a JSONL fixture into `bot.llm.mock`. Each non-empty line
+  ## must be a JSON object. Malformed lines raise — callers should
+  ## validate fixtures at test-authoring time rather than silently
+  ## swallow errors that would make the scripted test look like it
+  ## passed.
+  bot.llm.mock.entries.setLen(0)
+  bot.llm.mock.cursor = 0
+  bot.llm.mock.mismatchCount = 0
+  let lines = readFile(path).splitLines()
+  for lineNum, raw in lines:
+    let line = raw.strip()
+    if line.len == 0:
+      continue
+    let node = parseJson(line)
+    if node.kind != JObject:
+      raise newException(ValueError,
+        "llm-mock:" & path & ":" & $(lineNum + 1) &
+        " expected a JSON object")
+    let kindStr =
+      if node.hasKey("kind"): node["kind"].getStr()
+      else: ""
+    let kind = parseLlmCallKind(kindStr)
+    if kind == lckNone and kindStr != "none":
+      raise newException(ValueError,
+        "llm-mock:" & path & ":" & $(lineNum + 1) &
+        " unknown call kind '" & kindStr & "'")
+    var errored = false
+    if node.hasKey("errored"):
+      errored = node["errored"].getBool()
+    var responseJson = ""
+    if not errored and node.hasKey("response"):
+      responseJson = $node["response"]
+    bot.llm.mock.entries.add(LlmMockEntry(
+      kind: kind,
+      responseJson: responseJson,
+      errored: errored
+    ))
+
+proc llmMockEnable*(bot: var Bot; path: string) =
+  ## Loads the fixture at `path` and flips both `llm.mock.enabled`
+  ## and `llmVoting.enabled` so `tickLlmVoting` will dispatch and
+  ## the mock pump will deliver responses. Safe to call in place of
+  ## `llmEnable` — this is the entry point the CLI / parity harness
+  ## use. Real Bedrock / Anthropic is bypassed when the mock is
+  ## enabled.
+  llmMockLoadFromFile(bot, path)
+  bot.llm.mock.enabled = true
+  bot.llmVoting.enabled = true
+  if not bot.trace.isNil:
+    setLlmLayerActive(bot.trace, bot)
+
+proc llmMockPump*(bot: var Bot) =
+  ## Delivers the next fixture entry if one is queued and a request
+  ## is pending. Called from `tickLlmVoting`; also called by CLI
+  ## drivers that poll outside the state machine (e.g. to flush
+  ## final responses at end of run).
+  ##
+  ## Strict FIFO: an entry whose `kind` doesn't match the pending
+  ## request is STILL consumed, but the response is injected as an
+  ## error and the mismatch is counted for diagnostics. Fixture
+  ## authors are expected to script the exact dispatch order; any
+  ## divergence is a real test failure.
+  ##
+  ## Pumps in a bounded loop: applying a response often dispatches
+  ## the next call (e.g. hypothesis → accuse), so draining those
+  ## transitively within a single tick makes fixture-driven tests
+  ## finish in O(fixtures) ticks rather than one-per-dispatch.
+  ## The bound prevents runaway loops if the state machine ever
+  ## degenerates.
+  if not bot.llm.mock.enabled:
+    return
+  const PumpLimitPerCall = 16
+  var pumped = 0
+  while pumped < PumpLimitPerCall and bot.llmVoting.request.pending:
+    inc pumped
+    if bot.llm.mock.cursor >= bot.llm.mock.entries.len:
+      # Out of fixture entries but the state machine still has
+      # requests in flight. Inject an error so the bot degrades to
+      # rule-based voting rather than wedging.
+      let kind = bot.llmVoting.request.callKind
+      onLlmResponse(bot, kind, "", true)
+      continue
+    let entry = bot.llm.mock.entries[bot.llm.mock.cursor]
+    let pendingKind = bot.llmVoting.request.callKind
+    inc bot.llm.mock.cursor
+    if entry.kind != pendingKind:
+      inc bot.llm.mock.mismatchCount
+      # Still echo the pending-kind back to onLlmResponse so the
+      # state machine's transition rules fire on the correct stage;
+      # but mark errored so the fixture author's intent isn't
+      # incorrectly applied.
+      onLlmResponse(bot, pendingKind, "", true)
+      continue
+    onLlmResponse(bot, entry.kind, entry.responseJson, entry.errored)
 
 # ---------------------------------------------------------------------------
 # FFI surface (called from `ffi/lib.nim`)

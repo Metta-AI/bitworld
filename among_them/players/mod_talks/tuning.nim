@@ -76,11 +76,20 @@ const
     ## the cogames `AmongThemMeetingDirective` 75-char limit with a
     ## small margin for our own punctuation.
   LlmMaxContextLen* = 7500
-    ## Cap on serialized context JSON. Protects against runaway
-    ## memory/chat-history bloat on long rounds. If the context exceeds
-    ## this, we truncate older `chatHistory` entries and older
-    ## `memory.sightings` entries before serialising. See
-    ## `llm.nim:buildContext`.
+    ## Soft target for context-JSON serialization size in bytes
+    ## ("aim for ≤ this; trim on the way to it"). The Sprint 3.4 trim
+    ## policy uses this as the budget for `trimContextInPlace` —
+    ## fields are dropped one tier at a time until the serialized
+    ## form fits.
+  LlmMaxContextBytes* = 15500
+    ## Hard ceiling for the FFI buffer crossing into Python (Sprint
+    ## 3.4). The Python-side buffer caps at 16 384 bytes
+    ## (`_LLM_CONTEXT_BUFFER_SIZE` in `cogames/amongthem_policy.py`);
+    ## this leaves ~900 bytes of safety margin for NUL terminators
+    ## and any future header bytes. If the trimmed context still
+    ## exceeds this, the dispatch is aborted with an
+    ## `llm_error{reason: "context_overflow"}` and the state
+    ## machine falls back to rule-based voting.
   LlmPersuadeEnabled* = false
     ## Gate on the optional Stage 4 persuasion call. Off by default to
     ## keep the per-meeting call count low; flip for aggressive
