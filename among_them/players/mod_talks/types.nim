@@ -498,17 +498,19 @@ type
     ## `LlmVotingState` which is per-meeting. Populated by
     ## `llmEnable` at FFI init and touched by `dispatchCall` /
     ## `onLlmResponse` for counter maintenance.
-    ##
-    ## LLM_VOTING.md §7.6 also described an `LlmConfig` (provider,
-    ## model, timeouts). Deferred to Sprint 5 — the Python wrapper
-    ## currently owns provider selection end-to-end and the Nim side
-    ## doesn't need to know yet.
     counters*: LlmSessionCounters
     layerActiveAckTick*: int            ## bot.frameTick when Python called
                                         ## modulabot_enable_llm; -1 if never
     mock*: LlmMock                      ## deterministic scripted-response
                                         ## queue (Sprint 3.1). `mock.enabled`
                                         ## short-circuits real dispatch.
+    providerPtr*: pointer               ## Sprint 7.2: opaque ptr to
+                                        ## LlmProvider (set by runner).
+                                        ## When non-nil, dispatchCall calls
+                                        ## complete() synchronously and
+                                        ## feeds the result to onLlmResponse
+                                        ## inline — matching italkalot's
+                                        ## proven pattern.
 
   ImposterState* = object
     killReady*: bool
