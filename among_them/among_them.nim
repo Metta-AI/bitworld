@@ -46,6 +46,15 @@ when isMainModule:
     config.mapPath = mapPath
   if messageCooldown >= 0:
     config.messageCooldownTicks = messageCooldown
+  echo "Using map file: " & config.mapPath
+  if configPath.len > 0:
+    echo "Using config file: " & configPath
+  if loadReplayPath.len > 0:
+    echo "Using replay load file: " & loadReplayPath
+  if saveReplayPath.len > 0:
+    echo "Using replay save file: " & saveReplayPath
+  if saveScoresPath.len > 0:
+    echo "Using results save file: " & saveScoresPath
   runServerLoop(
     address,
     port,

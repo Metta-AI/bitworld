@@ -202,22 +202,41 @@ http://localhost:2000/client/global.html
 
 ## Slots setup for tournament runner.
 
-Name and token are not optional, but role and color options and game specific.
+Names and tokens are not optional, but role and color are game specific.
+The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
+`slots[0]`.
+
+Example config.json:
+
+```json
+{
+  "maxGames":1,
+  "imposterCooldownTicks":100,
+  "tokens":[
+    "0xBADA55_0",
+    "0xBADA55_1",
+    "0xBADA55_2",
+    "0xBADA55_3",
+    "0xBADA55_4",
+    "0xBADA55_5",
+    "0xBADA55_6",
+    "0xBADA55_7"
+  ],
+  "slots":[
+    {"name":"player1","role":"crewmate","color":"red"},
+    {"name":"player2","role":"crewmate","color":"blue"},
+    {"name":"player3","role":"crewmate","color":"green"},
+    {"name":"player4","role":"crewmate","color":"yellow"},
+    {"name":"player5","role":"crewmate","color":"lime"},
+    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player7","role":"imposter","color":"pink"},
+    {"name":"player8","role":"imposter","color":"orange"}
+  ]
+}
+```
 
 ```sh
-nim r among_them.nim --address:0.0.0.0 --port:2000 --save-scores:scores.json --config:'{
-"maxGames":1,
-"imposterCooldownTicks":100,
-"slots":[
-  {"name":"player1","token":"0xBADA55_0","role":"crewmate","color":"red"},
-  {"name":"player2","token":"0xBADA55_1","role":"crewmate","color":"blue"},
-  {"name":"player3","token":"0xBADA55_2","role":"crewmate","color":"green"},
-  {"name":"player4","token":"0xBADA55_3","role":"crewmate","color":"yellow"},
-  {"name":"player5","token":"0xBADA55_4","role":"crewmate","color":"lime"},
-  {"name":"player6","token":"0xBADA55_5","role":"crewmate","color":"cyan"},
-  {"name":"player7","token":"0xBADA55_6","role":"imposter","color":"pink"},
-  {"name":"player8","token":"0xBADA55_7","role":"imposter","color":"orange"}
-]}'
+nim r among_them.nim --address:0.0.0.0 --port:2000 --save-scores:scores.json --config-file:config.json
 ```
 
 If the game has a slots config, then the player *MUST* use the slot count.

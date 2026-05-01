@@ -1017,6 +1017,35 @@ proc readConfigSlots(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
       slot.hasColor = true
     slots.add(slot)
 
+proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
+  ## Reads optional fixed player slot tokens.
+  if not node.hasKey("tokens"):
+    return
+  let items = node["tokens"]
+  if items.kind != JArray:
+    raise newException(AmongThemError, "Config field tokens must be an array.")
+  if items.len > MaxPlayers:
+    raise newException(
+      AmongThemError,
+      "Config field tokens cannot have more than 16 entries."
+    )
+  if slots.len < items.len:
+    slots.setLen(items.len)
+  for i, item in items.elems:
+    if item.kind != JString:
+      raise newException(
+        AmongThemError,
+        "Config field tokens[" & $i & "] must be a string."
+      )
+    let token = item.getStr()
+    if slots[i].token.len > 0 and slots[i].token != token:
+      raise newException(
+        AmongThemError,
+        "Config field tokens[" & $i & "] conflicts with slots[" & $i &
+          "].token."
+      )
+    slots[i].token = token
+
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
   if config.motionScale <= 0:
@@ -1115,6 +1144,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigString("map", config.mapPath)
   node.readConfigString("mapPath", config.mapPath)
   node.readConfigSlots(config.slots)
+  node.readConfigTokens(config.slots)
   config.validate()
 
 proc slotRoleText(slot: PlayerSlotConfig): string =
@@ -1172,13 +1202,14 @@ proc slotColorText(slot: PlayerSlotConfig): string =
 
 proc configJson*(config: GameConfig): string =
   ## Returns the complete replay JSON for a gameplay config.
-  var slots = newJArray()
+  var
+    slots = newJArray()
+    tokens = newJArray()
   for slot in config.slots:
     var item = newJObject()
     if slot.name.len > 0:
       item["name"] = %slot.name
-    if slot.token.len > 0:
-      item["token"] = %slot.token
+    tokens.add(%slot.token)
     if slot.hasRole:
       item["role"] = %slot.slotRoleText()
     if slot.hasColor:
@@ -1216,6 +1247,7 @@ proc configJson*(config: GameConfig): string =
     "showTaskArrows": config.showTaskArrows,
     "showTaskBubbles": config.showTaskBubbles,
     "showPlayerLabels": config.showPlayerLabels,
+    "tokens": tokens,
     "slots": slots
   }
   $node

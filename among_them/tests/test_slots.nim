@@ -5,15 +5,24 @@ import
 
 const
   GameDir = currentSourcePath.parentDir.parentDir
-  ExampleSlotsJson = """{"slots":[
-    {"name":"player1","token":"0xBADA55_0","role":"crewmate","color":"red"},
-    {"name":"player2","token":"0xBADA55_1","role":"crewmate","color":"blue"},
-    {"name":"player3","token":"0xBADA55_2","role":"crewmate","color":"green"},
-    {"name":"player4","token":"0xBADA55_3","role":"crewmate","color":"yellow"},
-    {"name":"player5","token":"0xBADA55_4","role":"crewmate","color":"lime"},
-    {"name":"player6","token":"0xBADA55_5","role":"crewmate","color":"cyan"},
-    {"name":"player7","token":"0xBADA55_6","role":"imposter","color":"pink"},
-    {"name":"player8","token":"0xBADA55_7","role":"imposter","color":"orange"}
+  ExampleSlotsJson = """{"tokens":[
+    "0xBADA55_0",
+    "0xBADA55_1",
+    "0xBADA55_2",
+    "0xBADA55_3",
+    "0xBADA55_4",
+    "0xBADA55_5",
+    "0xBADA55_6",
+    "0xBADA55_7"
+  ],"slots":[
+    {"name":"player1","role":"crewmate","color":"red"},
+    {"name":"player2","role":"crewmate","color":"blue"},
+    {"name":"player3","role":"crewmate","color":"green"},
+    {"name":"player4","role":"crewmate","color":"yellow"},
+    {"name":"player5","role":"crewmate","color":"lime"},
+    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player7","role":"imposter","color":"pink"},
+    {"name":"player8","role":"imposter","color":"orange"}
   ]}"""
 
 proc initAmongThemForTest(config: GameConfig): SimServer =
@@ -33,7 +42,7 @@ proc roleFor(sim: SimServer, address: string): PlayerRole =
   raise newException(AmongThemError, "Missing test player " & address & ".")
 
 suite "player slots":
-  test "config parses example slots":
+  test "config parses example slots and tokens":
     var config = defaultGameConfig()
     config.update(ExampleSlotsJson)
 
@@ -52,7 +61,10 @@ suite "player slots":
     check config.slots[7].color == PlayerColors[1]
 
     let serialized = parseJson(config.configJson())
+    check serialized["tokens"].len == 8
+    check serialized["tokens"][6].getStr() == "0xBADA55_6"
     check serialized["slots"].len == 8
+    check not serialized["slots"][6].hasKey("token")
     check serialized["slots"][5]["color"].getStr() == "light blue"
 
     var roundTrip = defaultGameConfig()
@@ -98,6 +110,10 @@ suite "player slots":
       config.update("""{"slots":[{"name":"same"},{"name":"same"}]}""")
     expect AmongThemError:
       config.update("""{"slots":[{"token":"same"},{"token":"same"}]}""")
+    expect AmongThemError:
+      config.update("""{"tokens":["same","same"]}""")
+    expect AmongThemError:
+      config.update("""{"tokens":["new"],"slots":[{"token":"old"}]}""")
 
   test "bad configured color is rejected":
     var config = defaultGameConfig()
