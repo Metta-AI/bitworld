@@ -13,33 +13,6 @@
         aarch64-linux  = { suffix = "Linux-ARM64"; hash = "sha256-MJWc9sCCZlS3jC2RgNOQspma0/wtXX5pt4AoUZ7kjKk="; };
         aarch64-darwin = { suffix = "macOS-ARM64"; hash = "sha256-JDGFj9jjksALrvvrHOwaFzR3V1lBRkFHU5gzyLm2sCw="; };
       };
-
-      # Mirrors the bin = @[...] list in bitworld.nimble. Update both together.
-      bitworldBins = [
-        "clients/global_client"
-        "clients/player_client"
-        "clients/reward_client"
-        "asteroid_arena/asteroid_arena"
-        "big_adventure/big_adventure"
-        # "big_adventure/player"  # Currently broken: imports big_adventure/server which shadows common/server, hiding Sprite.
-        "brushwalk/brushwalk"
-        "bubble_eats/bubble_eats"
-        "free_chat/free_chat"
-        "fancy_cookout/fancy_cookout"
-        "ice_brawl/ice_brawl"
-        "infinite_blocks/infinite_blocks"
-        "planet_wars/planet_wars"
-        "stag_hunt/stag_hunt"
-        "overworld/overworld"
-        "tools/quick_run"
-        "tools/quick_player"
-        "tools/ptswap"
-        "tag/tag"
-        "jumper/jumper"
-        "warzone/warzone"
-        "among_them/among_them"
-        "global_ui/global_ui"
-      ];
     in
     flake-utils.lib.eachSystem (builtins.attrNames nimbyRelease) (system:
       let
@@ -111,7 +84,7 @@
           outputHashAlgo = "sha256";
           # Update this hash whenever nimby.lock changes (Nix will print the
           # expected value on hash mismatch).
-          outputHash = "sha256-v4w8oPksEhkJaoqGIr+aj/u5lmPfwzsS1kGtRLbb6eo=";
+          outputHash = "sha256-nCB1qYc8S8N8b7+N2fagzmgERE426+jbfbvfykNn7ds=";
         };
 
         # Filter out user/build artifacts so changes to them don't bust
@@ -126,20 +99,16 @@
             ]);
         };
 
-        # Builds and installs the given list of binaries. Pass the full
-        # bitworldBins list for a kitchen-sink build, or a single-element
-        # list to build just one game/bot — used by mkDockerImage below
-        # so each per-binary image only compiles what it ships.
-        mkBitworld = bins: pkgs.stdenv.mkDerivation {
-          pname = "bitworld";
+        # Shared build chrome for both packages: nim toolchain wired up to
+        # vendoredDeps, runtime libs on LD_LIBRARY_PATH so dlopen'd things
+        # (libssl, libGL, ...) work both at build and at runtime.
+        commonAttrs = {
           version = "0.1.0";
           src = cleanedSrc;
           nativeBuildInputs = [ pkgs.nim pkgs.pkg-config pkgs.makeWrapper ];
           buildInputs = runtimeLibs;
-
           LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
           LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
-
           configurePhase = ''
             runHook preConfigure
             cp -r --no-preserve=mode ${vendoredDeps} .nimby
@@ -148,114 +117,115 @@
             sed 's|--path:"|--path:".nimby/|' .nimby/nim.cfg > nim.cfg
             runHook postConfigure
           '';
+        };
 
+        # Compiles among_them, copies its runtime assets into the standard
+        # repo-shaped layout under share/, and wraps the binary so it
+        # chdirs into share/bitworld/among_them at exec time (matching the
+        # CWD getCurrentDir()-based asset paths in sim.nim expect).
+        bitworldAmongThem = pkgs.stdenv.mkDerivation (commonAttrs // {
+          pname = "bitworld-among_them";
           buildPhase = ''
             runHook preBuild
             export HOME=$TMPDIR
             mkdir -p out
-            ${lib.concatMapStringsSep "\n" (b: ''
-              echo ">>> Building ${b}"
-              nim c "${b}.nim"
-            '') bins}
+            nim c among_them/among_them.nim
             runHook postBuild
           '';
-
           installPhase = ''
             runHook preInstall
-            mkdir -p $out/libexec/bitworld $out/bin $out/share/bitworld
-
-            # The compiled binaries themselves (not user-facing — wrappers below).
-            for f in out/*; do
-              [[ -f "$f" && -x "$f" ]] || continue
-              install -m 0755 "$f" "$out/libexec/bitworld/$(basename "$f")"
-            done
-
-            # Copy each game's data/ tree, preserving the repo's layout so
-            # binaries can keep using their existing CWD-relative paths
-            # (e.g. "data/pallete.png").
-            for d in */data; do
-              [[ -d "$d" ]] || continue
-              mkdir -p "$out/share/bitworld/$(dirname "$d")"
-              cp -r "$d" "$out/share/bitworld/$d"
-            done
-
-            # among_them keeps its runtime assets loose in among_them/
-            # rather than under a data/ subdir, so copy them explicitly.
-            mkdir -p "$out/share/bitworld/among_them"
+            mkdir -p $out/libexec/bitworld $out/bin \
+              $out/share/bitworld/among_them $out/share/bitworld/clients
+            install -m 0755 out/among_them $out/libexec/bitworld/among_them
+            cp -r clients/data $out/share/bitworld/clients/
             for f in among_them/*.png among_them/*.json among_them/*.aseprite; do
               [[ -f "$f" ]] || continue
-              cp "$f" "$out/share/bitworld/among_them/"
+              cp "$f" $out/share/bitworld/among_them/
             done
-
-            # One wrapper per binary that chdirs into the binary's source
-            # directory before exec — that's the CWD the games expect.
-            # Bots under <game>/players/ instead chdir to the project root
-            # ($out/share/bitworld) since they expect to be invoked from
-            # there (their gameDir() resolves a "<game>" subdir of CWD).
-            ${lib.concatMapStringsSep "\n" (b:
-              let
-                binName = baseNameOf b;
-                srcDir = dirOf b;
-                isBot = lib.hasSuffix "/players" srcDir;
-                chdirAbs =
-                  if isBot
-                  then "$out/share/bitworld"
-                  else "$out/share/bitworld/${srcDir}";
-              in ''
-                mkdir -p "${chdirAbs}"
-                makeWrapper "$out/libexec/bitworld/${binName}" "$out/bin/${binName}" \
-                  --chdir "${chdirAbs}"
-              ''
-            ) bins}
+            makeWrapper $out/libexec/bitworld/among_them $out/bin/among_them \
+              --chdir $out/share/bitworld/among_them
             runHook postInstall
           '';
+        });
+
+        # Same idea for the bot: it shares the among_them assets and runs
+        # with the same CWD, so the asset layout and wrapper match.
+        bitworldNottoodumb = pkgs.stdenv.mkDerivation (commonAttrs // {
+          pname = "bitworld-nottoodumb";
+          buildPhase = ''
+            runHook preBuild
+            export HOME=$TMPDIR
+            mkdir -p out
+            nim c among_them/players/nottoodumb.nim
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out/libexec/bitworld $out/bin \
+              $out/share/bitworld/among_them $out/share/bitworld/clients
+            install -m 0755 out/nottoodumb $out/libexec/bitworld/nottoodumb
+            cp -r clients/data $out/share/bitworld/clients/
+            for f in among_them/*.png among_them/*.json among_them/*.aseprite; do
+              [[ -f "$f" ]] || continue
+              cp "$f" $out/share/bitworld/among_them/
+            done
+            makeWrapper $out/libexec/bitworld/nottoodumb $out/bin/nottoodumb \
+              --chdir $out/share/bitworld/among_them
+            runHook postInstall
+          '';
+        });
+
+        dockerImageAmongThem = pkgs.dockerTools.buildLayeredImage {
+          name = "bitworld-among_them";
+          tag = "latest";
+          contents = [
+            bitworldAmongThem
+            pkgs.bashInteractive
+            pkgs.coreutils
+            pkgs.tini
+          ] ++ runtimeLibs;
+          config = {
+            Env = [
+              "PATH=/bin"
+              "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
+            ];
+            # tini at PID 1 so SIGINT/SIGTERM actually reach the binary;
+            # the kernel drops default-action signals to PID 1, so without
+            # an init `podman run` Ctrl+C silently does nothing.
+            Entrypoint = [ "/bin/tini" "--" ];
+            Cmd = [ "/bin/among_them" ];
+          };
         };
 
-        bitworld = mkBitworld bitworldBins;
-
-        # One Docker image per binary. Add new entries below as needed —
-        # each builds independently so you only pay for what you ship.
-        mkDockerImage = bin:
-          let
-            binName = baseNameOf bin;
-            pkg = mkBitworld [ bin ];
-          in pkgs.dockerTools.buildLayeredImage {
-            name = "bitworld-${binName}";
-            tag = "latest";
-            contents = [
-              pkg
-              pkgs.bashInteractive
-              pkgs.coreutils
-              pkgs.tini
-              pkgs.cacert # so libssl-using bots can verify wss:// servers
-            ] ++ runtimeLibs;
-            # pkgs.cacert ships /etc/ssl/certs/ca-bundle.crt, but Nim's
-            # std/net hardcodes the Debian path /etc/ssl/certs/ca-certificates.crt
-            # (and ignores SSL_CERT_FILE in the default verifyMode). Symlink so
-            # Nim finds it.
-            extraCommands = ''
-              ln -sf ca-bundle.crt etc/ssl/certs/ca-certificates.crt
-            '';
-            config = {
-              Env = [
-                "PATH=/bin"
-                "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
-              ];
-              # tini sits at PID 1 so SIGINT/SIGTERM reach the binary;
-              # otherwise the kernel drops default-action signals to PID 1
-              # and `podman run` Ctrl+C silently does nothing.
-              Entrypoint = [ "/bin/tini" "--" ];
-              Cmd = [ "/bin/${binName}" ];
-            };
+        dockerImageNottoodumb = pkgs.dockerTools.buildLayeredImage {
+          name = "bitworld-nottoodumb";
+          tag = "latest";
+          contents = [
+            bitworldNottoodumb
+            pkgs.bashInteractive
+            pkgs.coreutils
+            pkgs.tini
+            pkgs.cacert # bots dial out over wss://, need a trust store
+          ] ++ runtimeLibs;
+          # pkgs.cacert ships /etc/ssl/certs/ca-bundle.crt; Nim's std/net
+          # hardcodes the Debian path ca-certificates.crt and ignores
+          # SSL_CERT_FILE in its default verifyMode, so symlink it.
+          extraCommands = ''
+            ln -sf ca-bundle.crt etc/ssl/certs/ca-certificates.crt
+          '';
+          config = {
+            Env = [
+              "PATH=/bin"
+              "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
+            ];
+            Entrypoint = [ "/bin/tini" "--" ];
+            Cmd = [ "/bin/nottoodumb" ];
           };
-
-        dockerImageAmongThem = mkDockerImage "among_them/among_them";
-        dockerImageNottoodumb = mkDockerImage "among_them/players/nottoodumb";
+        };
       in {
         packages = lib.optionalAttrs isLinux {
-          inherit bitworld vendoredDeps
-            dockerImageAmongThem dockerImageNottoodumb;
-          default = bitworld;
+          inherit vendoredDeps dockerImageAmongThem dockerImageNottoodumb;
+          default = dockerImageAmongThem;
         };
 
         devShells.default = pkgs.mkShell {
