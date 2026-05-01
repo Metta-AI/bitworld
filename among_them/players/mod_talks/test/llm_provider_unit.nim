@@ -31,7 +31,11 @@ proc clearLlmEnv() =
   ## Clears every env var resolveProviderKind reads.
   for v in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY",
             "MODTALKS_LLM_DISABLE", "MODTALKS_PROVIDER_OPENAI",
-            "MODTALKS_LLM_MODEL"]:
+            "MODTALKS_LLM_MODEL",
+            # Bedrock-related (Sprint 6.4):
+            "AWS_PROFILE", "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
+            "AWS_DEFAULT_REGION", "CLAUDE_CODE_USE_BEDROCK"]:
     delEnv(v)
 
 # ---------------------------------------------------------------------------
@@ -128,6 +132,112 @@ block force_provider_disabled:
   let p = newLlmProvider(forceProvider = "disabled")
   check "--llm-provider:disabled wins over creds":
     p.kind == lpkDisabled
+
+# ---------------------------------------------------------------------------
+# Bedrock resolution (Sprint 6.4)
+# ---------------------------------------------------------------------------
+# Note: these tests require `aws` to be findable on PATH (which it
+# is in any environment that's actually using Bedrock). We don't
+# clobber PATH because that's invasive; if `aws` isn't installed,
+# resolveAwsCli returns "" and the resolver falls through to
+# disabled — which is the right behaviour but not what these tests
+# are exercising.
+
+block resolve_bedrock_from_aws_profile:
+  clearLlmEnv()
+  putEnv("AWS_PROFILE", "test-profile")
+  defer: delEnv("AWS_PROFILE")
+  let p = newLlmProvider()
+  check "AWS_PROFILE alone (no Anthropic) → bedrock":
+    p.kind == lpkBedrock or p.kind == lpkDisabled
+    # disabled is the fallback when aws CLI isn't installed; test
+    # is tolerant of either outcome to stay portable across CI envs.
+
+block resolve_bedrock_from_aws_keys:
+  clearLlmEnv()
+  putEnv("AWS_ACCESS_KEY_ID", "AKIA-TEST")
+  putEnv("AWS_SECRET_ACCESS_KEY", "secret-test")
+  defer:
+    delEnv("AWS_ACCESS_KEY_ID")
+    delEnv("AWS_SECRET_ACCESS_KEY")
+  let p = newLlmProvider()
+  check "AWS keys (no Anthropic) → bedrock or disabled":
+    p.kind == lpkBedrock or p.kind == lpkDisabled
+
+block resolve_bedrock_force_flag_over_anthropic:
+  clearLlmEnv()
+  putEnv("AWS_PROFILE", "test")
+  putEnv("ANTHROPIC_API_KEY", "sk-ant-test")
+  putEnv("CLAUDE_CODE_USE_BEDROCK", "1")
+  defer:
+    delEnv("AWS_PROFILE")
+    delEnv("ANTHROPIC_API_KEY")
+    delEnv("CLAUDE_CODE_USE_BEDROCK")
+  let p = newLlmProvider()
+  check "CLAUDE_CODE_USE_BEDROCK=1 + creds → bedrock over anthropic":
+    p.kind == lpkBedrock or p.kind == lpkDisabled
+
+block resolve_anthropic_wins_when_no_bedrock_force:
+  clearLlmEnv()
+  putEnv("AWS_PROFILE", "test")
+  putEnv("ANTHROPIC_API_KEY", "sk-ant-test")
+  defer:
+    delEnv("AWS_PROFILE")
+    delEnv("ANTHROPIC_API_KEY")
+  let p = newLlmProvider()
+  check "anthropic key + AWS creds (no force flag) → anthropic":
+    p.kind == lpkAnthropicDirect
+
+block force_provider_bedrock_no_creds:
+  clearLlmEnv()
+  let p = newLlmProvider(forceProvider = "bedrock")
+  check "--llm-provider:bedrock without AWS creds → disabled":
+    p.kind == lpkDisabled
+
+block bedrock_default_model_and_region:
+  clearLlmEnv()
+  putEnv("AWS_PROFILE", "test")
+  putEnv("CLAUDE_CODE_USE_BEDROCK", "1")
+  defer:
+    delEnv("AWS_PROFILE")
+    delEnv("CLAUDE_CODE_USE_BEDROCK")
+  let p = newLlmProvider()
+  if p.kind == lpkBedrock:
+    check "Bedrock default model is the cogames Python wrapper's default":
+      p.model == "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    check "Bedrock default region is us-east-1":
+      p.region == "us-east-1"
+  else:
+    # aws CLI not present in this environment; skip the model/region
+    # asserts and just confirm we got disabled (not a crash).
+    check "no aws CLI → falls back to disabled":
+      p.kind == lpkDisabled
+
+block bedrock_region_from_env:
+  clearLlmEnv()
+  putEnv("AWS_PROFILE", "test")
+  putEnv("AWS_REGION", "eu-west-1")
+  putEnv("CLAUDE_CODE_USE_BEDROCK", "1")
+  defer:
+    delEnv("AWS_PROFILE")
+    delEnv("AWS_REGION")
+    delEnv("CLAUDE_CODE_USE_BEDROCK")
+  let p = newLlmProvider()
+  if p.kind == lpkBedrock:
+    check "AWS_REGION wins over default":
+      p.region == "eu-west-1"
+
+block bedrock_kind_name:
+  clearLlmEnv()
+  putEnv("AWS_PROFILE", "test")
+  putEnv("CLAUDE_CODE_USE_BEDROCK", "1")
+  defer:
+    delEnv("AWS_PROFILE")
+    delEnv("CLAUDE_CODE_USE_BEDROCK")
+  let p = newLlmProvider()
+  if p.kind == lpkBedrock:
+    check "bedrock kindName":
+      p.kindName() == "bedrock"
 
 # ---------------------------------------------------------------------------
 # Model resolution

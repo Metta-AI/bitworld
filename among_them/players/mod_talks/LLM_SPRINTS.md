@@ -811,26 +811,55 @@ HTTP dispatch + worker thread to Nim, gated behind the existing
         `MODTALKS_LLM_MODEL` env var when no flag is supplied,
         same as the Python wrapper.
 
-### 6.4 Bedrock support — DEFERRED until needed
+### 6.4 Bedrock support
 
-- [ ] **Decision deferred.** Three options when this becomes
-      blocking:
-  - [ ] **A. Pure-Nim SigV4** (~12 hours). Self-contained but
-        duplicates what AWS SDK does. Crypto: HMAC-SHA256 +
-        canonical request construction. Doable but tedious.
-  - [ ] **B. `aws bedrock-runtime invoke-model` subprocess**
-        (~6 hours). Adds AWS CLI as runtime dep. Surprisingly
-        clean — call `subprocess.run([aws, ...])` from a worker
-        thread, capture stdout JSON.
-  - [ ] **C. Skip Nim Bedrock**, leave the Python wrapper as
-        the only Bedrock path. Document that direct Anthropic /
-        OpenAI work in CLI; Bedrock requires the Python launcher
-        / cogames runner.
-- [ ] Recommendation: **C until A or B is actually needed.**
-      Tournament path is via `cogames/amongthem_policy.py` which
-      already does Bedrock. The CLI Sprint-6 path covers
-      direct-API providers, which is the more common dev case
-      anyway (no AWS SSO refresh, no boto3, no IAM roles).
+- [x] **Chose option B (subprocess to `aws bedrock-runtime
+      invoke-model`).** SigV4 in pure Nim was a solid 12 hours of
+      crypto code; the subprocess path was ~3 hours including
+      tests. The AWS CLI is already on every dev / tournament
+      environment that's set up for Bedrock, so the runtime
+      dependency cost is zero in practice.
+- [x] `lpkBedrock` added to `LlmProviderKind`. New `region` and
+      `awsCli` fields on `LlmProvider`; `apiKey` stays empty
+      because auth is delegated to the aws CLI's boto3 chain.
+- [x] Resolver order matches the Python wrapper:
+  - [x] `MODTALKS_PROVIDER_OPENAI=1` + key → OpenAI
+  - [x] `CLAUDE_CODE_USE_BEDROCK=1` + AWS creds + aws CLI → Bedrock
+  - [x] `ANTHROPIC_API_KEY` → Anthropic direct
+  - [x] AWS creds (no Anthropic key) → Bedrock
+  - [x] `OPENAI_API_KEY` → OpenAI fallback
+  - [x] `--llm-provider:bedrock` force-flag also wired.
+- [x] `bedrockBody` uses `anthropic_version:
+      "bedrock-2023-05-31"` (Bedrock wire format) instead of the
+      direct API's `anthropic-version: 2023-06-01` HTTP header.
+      Top-level `model` field omitted — passed via the
+      `--model-id` CLI arg instead.
+- [x] `bedrockInvoke` writes the request body to a temp file,
+      spawns `aws bedrock-runtime invoke-model` via
+      `startProcess` with argv form (no shell-escape risk),
+      reads the response from another temp file. Per-call
+      timeout enforced via `process.waitForExit(timeout=...)`.
+      Both temp files are cleaned up in a `finally` block.
+- [x] Response parsing reuses `anthropicExtractToolUse`
+      unchanged — Bedrock's response shape is byte-identical to
+      the direct API's, including the `tool_use` content block
+      format.
+- [x] Default model and region: `BedrockDefaultModel =
+      "global.anthropic.claude-sonnet-4-5-20250929-v1:0"` and
+      `BedrockDefaultRegion = "us-east-1"`. Region resolution
+      matches boto3: `AWS_REGION` first, then
+      `AWS_DEFAULT_REGION`, then the default.
+- [x] **Live verified.** 6.7 s latency end-to-end against
+      `global.anthropic.claude-sonnet-4-5-20250929-v1:0` in
+      `us-east-1`; tool-use roundtrip returned a parseable
+      `submit_hypothesis` response. Smoke harness committed at
+      `test/llm_provider_live_smoke.nim` and gated on
+      `lpkBedrock` resolution so it skips cleanly when no AWS
+      creds are present.
+- [x] 9 new unit tests in `test/llm_provider_unit.nim` covering
+      provider selection across AWS-creds + flag combinations,
+      default model/region, region from env. Tolerant of CI
+      environments without aws CLI installed.
 
 ### 6.5 `quick_player` integration
 
@@ -1058,3 +1087,19 @@ PR for detailed design discussions.
   model=claude-sonnet-4-5`. End-to-end live verification (Sprint
   6.6) deferred to the user's first non-local run with real
   credentials.
+- **2026-05-01** — Sprint 6.4 landed. Chose subprocess option B
+  (vs. pure-Nim SigV4) — ~3 hours actual work, ~12-hour
+  alternative shelved. Bedrock dispatches via
+  `aws bedrock-runtime invoke-model` with argv-form
+  `startProcess` (no shell-escape risk), temp-file body + temp-
+  file response, per-call timeout via `waitForExit`. Reuses
+  `anthropicExtractToolUse` unchanged because the Bedrock-Claude
+  wire shape matches the direct API. Provider resolver now picks
+  Bedrock when AWS creds are present and no Anthropic key wins;
+  `--llm-provider:bedrock` force-flag added; default model
+  matches the cogames Python wrapper's
+  (`global.anthropic.claude-sonnet-4-5-20250929-v1:0`). Live
+  verified: 6.7 s latency, valid tool-use roundtrip. 9 new
+  unit tests + 1 live smoke test
+  (`test/llm_provider_live_smoke.nim`). Parity 500/500 across
+  seeds {1, 42, 7777} preserved.

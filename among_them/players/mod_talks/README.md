@@ -96,13 +96,15 @@ Optional flags:
 
 | Flag | Effect |
 |---|---|
-| `--llm-provider:anthropic\|openai\|disabled` | Force a specific provider (overrides env-var auto-detect) |
+| `--llm-provider:anthropic\|openai\|bedrock\|disabled` | Force a specific provider (overrides env-var auto-detect) |
 | `--llm-model:NAME` | Override default model id |
 
 Env vars (auto-detected when no flag is given): `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `MODTALKS_PROVIDER_OPENAI=1`,
-`MODTALKS_LLM_DISABLE=1`, `MODTALKS_LLM_MODEL`. Bedrock is **not**
-supported on the CLI path — use the Python launcher (B) for that.
+`OPENAI_API_KEY`, AWS creds (`AWS_PROFILE` or
+`AWS_ACCESS_KEY_ID`+`AWS_SECRET_ACCESS_KEY`), `MODTALKS_PROVIDER_OPENAI=1`,
+`CLAUDE_CODE_USE_BEDROCK=1`, `MODTALKS_LLM_DISABLE=1`,
+`MODTALKS_LLM_MODEL`. Bedrock requires the AWS CLI on PATH; auth
+goes through the standard boto3 credential chain.
 
 For multiple LLM bots against the same server (one process each):
 
@@ -115,12 +117,16 @@ done
 wait
 ```
 
-#### B. Python launcher (cogames-shape; Bedrock-only convenience)
+#### B. Python launcher (cogames-shape)
 
 Spawns a local server and 8 bots through the cogames-style policy
-wrapper, so it matches the tournament runtime. Useful when you
-specifically want Bedrock (the CLI path doesn't support Bedrock —
-use direct Anthropic API instead).
+wrapper, so it matches the tournament runtime exactly. Useful for
+parity-checking against tournament behaviour or when you
+specifically want the Python wrapper's concurrent
+ThreadPoolExecutor for measuring its `step_batch` latency.
+
+For most other use cases, prefer path A — Bedrock works there
+too as of Sprint 6.4.
 
 Prereqs: built server, built dylib (`MODULABOT_LLM=1 python3
 build_modulabot.py`), metta venv, AWS SSO logged in.
@@ -236,14 +242,14 @@ support:
 
 | Path | Owner | Anthropic | OpenAI | Bedrock |
 |---|---|:---:|:---:|:---:|
-| **CLI binary** (`mod_talks_llm`) | `llm_provider.nim` (Sprint 6) | ✅ | ✅ | ❌ |
+| **CLI binary** (`mod_talks_llm`) | `llm_provider.nim` (Sprint 6) | ✅ | ✅ | ✅ (via `aws` CLI subprocess) |
 | **Python launcher** (`amongthem_policy.py`) | `_build_llm_controller` | ✅ | ✅ | ✅ |
 
 Env vars (work for both paths):
 
 | Want | Env vars |
 |---|---|
-| AWS Bedrock (Python launcher only) | `AWS_PROFILE` or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`; `AWS_REGION`; `CLAUDE_CODE_USE_BEDROCK=1` |
+| AWS Bedrock | `AWS_PROFILE` or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`; `AWS_REGION`; optionally `CLAUDE_CODE_USE_BEDROCK=1` to force Bedrock when an Anthropic key is also present |
 | Anthropic direct API | `ANTHROPIC_API_KEY` |
 | OpenAI fallback | `OPENAI_API_KEY` (+ optional `MODTALKS_PROVIDER_OPENAI=1` to force when both keys are set) |
 | Disable LLM entirely | `MODTALKS_LLM_DISABLE=1` |
@@ -253,11 +259,19 @@ Default models:
 
 - CLI Anthropic-direct: `claude-sonnet-4-5`
 - CLI OpenAI-direct: `gpt-4o-mini`
-- Python launcher Bedrock: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- CLI / Python Bedrock: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
 
-The CLI binary also accepts `--llm-provider:NAME` and
+The CLI binary additionally accepts `--llm-provider:NAME` and
 `--llm-model:NAME` flags as overrides to the env-var resolution.
 The Python launcher does not — it goes through env vars only.
+
+**CLI Bedrock requirements:** the `aws` CLI must be installed and
+on PATH (`brew install awscli` or
+[install instructions](https://aws.amazon.com/cli/)). Auth uses
+the standard boto3 credential chain — same env vars and
+`~/.aws/config` profiles boto3 reads. The Nim CLI binary itself
+never sees AWS keys; it shells out to `aws bedrock-runtime
+invoke-model`.
 
 ## Status snapshot
 
