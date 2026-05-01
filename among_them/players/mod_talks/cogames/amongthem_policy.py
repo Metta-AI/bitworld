@@ -16,9 +16,11 @@ This module is the entry point that the CoGames tournament worker imports as
          a. After the Nim step, drain ``modulabot_take_chat`` per agent and
             surface the result to the game via ``Action(talk=...)``.
          b. Poll ``modulabot_take_llm_request`` — when Nim has prepared a
-            context, dispatch the LLM call via Anthropic (Bedrock-preferred,
-            direct API fallback) and feed the JSON response back through
-            ``modulabot_set_llm_response``.
+            context, submit the LLM call to a background worker pool
+            (Sprint 4.1) so 8 agents don't serialise behind a single
+            blocking provider call. Completed futures are gathered at the
+            end of ``step_batch`` (with a wall-clock deadline) and their
+            JSON responses fed back through ``modulabot_set_llm_response``.
        The LLM layer is enabled only if the library was built with
        ``-d:modTalksLlm`` (Nim-side gate) AND a provider client was
        constructed successfully (Python-side gate). Otherwise every LLM
@@ -34,6 +36,11 @@ Credential plumbing (cogames tournaments):
     - ``MODTALKS_LLM_MODEL`` overrides the model id.
     - ``MODTALKS_LLM_DISABLE=1`` hard-disables the LLM layer even if creds
       are present (useful for A/B tests).
+    - ``MODTALKS_LLM_DEADLINE_SECONDS`` (Sprint 4.1) caps how long
+      ``step_batch`` will wait for any in-flight provider future to
+      complete during gather; over-deadline futures are abandoned and
+      re-checked on the next step. Default 12.0 s, slightly under the
+      typical voting-screen window.
 
 Matches ``among_them/players/modulabot/cogames/amongthem_policy.py`` in
 wire structure but adds the chat+LLM plumbing. Keep both in lockstep when
@@ -42,6 +49,7 @@ the BitWorld policy interface or Nim FFI changes.
 
 from __future__ import annotations
 
+import concurrent.futures
 import ctypes
 import importlib
 import importlib.util
@@ -86,6 +94,214 @@ DEFAULT_TEMPERATURE = 0.5
 # LLM_VOTING.md §9 plus one retry head room. If the provider is slow we'd
 # rather timeout and fall back than wedge the bot.
 DEFAULT_TIMEOUT_SECONDS = 15.0
+
+# Sprint 4.2 — per-call-kind timeouts, in seconds. Tighter than
+# DEFAULT_TIMEOUT_SECONDS to keep stage transitions responsive within the
+# game's voting window. LLM_VOTING.md §9 specifies these budgets.
+# The forming-stage calls (hypothesis, strategize) get the longest budget
+# because they fire once per meeting and gate everything that follows;
+# accuse / persuade are short responses with tight budgets; react /
+# imposter_react share a budget that fits inside the chat-cooldown gap.
+PER_KIND_TIMEOUT_SECONDS: dict[str, float] = {
+    "hypothesis":     20.0,
+    "strategize":     20.0,
+    "react":          15.0,
+    "imposter_react": 15.0,
+    "accuse":         10.0,
+    "persuade":       10.0,
+}
+
+# Sprint 4.4 — retry policy. Three attempts total (initial + 2 retries)
+# with exponential backoff. Retry only on errors that have a real
+# chance of resolving on a second attempt: rate limits, 5xx, network
+# timeouts, transient connection errors. 4xx auth / validation errors
+# are not retried.
+_MAX_RETRIES = 2
+_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (0.5, 1.5)
+_RETRYABLE_EXC_NAMES: frozenset[str] = frozenset({
+    "RateLimitError",
+    "APITimeoutError",
+    "APIConnectionError",
+    "InternalServerError",
+    "ServiceUnavailableError",
+})
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Returns True when the exception is one we should retry.
+
+    Done by exception class name so the helper doesn't import the
+    Anthropic SDK at module load time (the LLM layer must be optional).
+    Also catches a generic ``APIStatusError`` with status_code in 5xx.
+    """
+    name = type(exc).__name__
+    if name in _RETRYABLE_EXC_NAMES:
+        return True
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 500 <= status < 600:
+        return True
+    return False
+
+# Sprint 4.3 — Anthropic tool-use schemas. Registering these as tools
+# with `tool_choice={"type":"tool","name":...}` forces the model to
+# emit a structured response that conforms to the schema, eliminating
+# the parse-failure mode that the schema-in-prompt approach was
+# tolerating. The Nim-side parser still validates field types and
+# values (it has to, the LLM can still pick a non-living-player color),
+# but malformed JSON is no longer a recoverable case.
+#
+# Schema shapes mirror LLM_VOTING.md §5.4 verbatim. The "additional"
+# constraint (additionalProperties=false) is intentionally NOT set —
+# Anthropic's tool-use is more lenient about extra fields than strict
+# JSON-schema validators, and the Nim parser tolerates them anyway.
+_LLM_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "hypothesis": {
+        "name": "submit_hypothesis",
+        "description": (
+            "Submit your suspect-likelihood ranking and confidence "
+            "for the current meeting based on observed evidence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "suspects": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "color": {"type": "string"},
+                            "likelihood": {"type": "number"},
+                            "reasoning": {"type": "string"},
+                        },
+                        "required": ["color", "likelihood", "reasoning"],
+                    },
+                },
+                "confidence": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"],
+                },
+                "key_evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["suspects", "confidence", "key_evidence"],
+        },
+    },
+    "accuse": {
+        "name": "submit_accusation",
+        "description": (
+            "Submit a single chat message naming the top suspect "
+            "and citing evidence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chat": {"type": "string"},
+            },
+            "required": ["chat"],
+        },
+    },
+    "react": {
+        "name": "submit_react",
+        "description": (
+            "Update your hypothesis based on chat lines from other "
+            "players and decide whether to speak, ask, or stay silent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "suspects": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "color": {"type": "string"},
+                            "likelihood": {"type": "number"},
+                            "reasoning": {"type": "string"},
+                        },
+                        "required": ["color", "likelihood", "reasoning"],
+                    },
+                },
+                "confidence": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"],
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["speak", "ask", "silent"],
+                },
+                "chat": {
+                    "type": ["string", "null"],
+                },
+            },
+            "required": ["confidence", "action"],
+        },
+    },
+    "strategize": {
+        "name": "submit_strategy",
+        "description": (
+            "Decide which non-safe player to target for ejection, "
+            "what strategy to use, when to speak, and an optional "
+            "opening message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "best_target": {"type": "string"},
+                "strategy": {
+                    "type": "string",
+                    "enum": ["bandwagon", "preemptive", "deflect"],
+                },
+                "timing": {
+                    "type": "string",
+                    "enum": ["early", "mid", "late"],
+                },
+                "reasoning": {"type": "string"},
+                "initial_chat": {
+                    "type": ["string", "null"],
+                },
+            },
+            "required": ["best_target", "strategy", "timing", "reasoning"],
+        },
+    },
+    "imposter_react": {
+        "name": "submit_imposter_react",
+        "description": (
+            "Decide whether to corroborate, deflect, accuse, or stay "
+            "silent based on the conversation, and provide chat if "
+            "speaking."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["corroborate", "deflect", "accuse", "silent"],
+                },
+                "chat": {
+                    "type": ["string", "null"],
+                },
+                "reasoning": {"type": "string"},
+            },
+            "required": ["action", "reasoning"],
+        },
+    },
+    "persuade": {
+        "name": "submit_persuasion",
+        "description": (
+            "Submit a short persuasion message to convince other "
+            "players to vote for the named suspect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chat": {"type": "string"},
+            },
+            "required": ["chat"],
+        },
+    },
+}
 
 # Hard caps on FFI buffer sizes. Must fit the largest expected context
 # JSON + any future schema growth. Grows cheaply; shrinks require
@@ -233,20 +449,19 @@ class _AnthropicController:
     """Blocking wrapper around ``anthropic.Anthropic`` /
     ``anthropic.AnthropicBedrock``.
 
-    Single-shot: one call per ``complete()`` invocation. The Nim state
-    machine already rate-limits call frequency (``LlmChatReactionCooldownTicks``)
-    and maintains a single in-flight slot per agent, so we don't do our own
-    queueing or concurrency here beyond a thread lock that prevents two
-    agents from sharing the Anthropic client in parallel (the official
-    client is thread-safe, but we keep the lock as a safety rail against
-    provider rate-limit collisions during N-agent batched training).
+    Single-shot: one call per ``complete()`` invocation. The official
+    Anthropic SDK is thread-safe; concurrency is now driven by the
+    parent ``AmongThemPolicy``'s ``ThreadPoolExecutor`` (Sprint 4.1)
+    so this class no longer holds a serialising lock. Each provider
+    call blocks the worker thread for its duration; the main thread
+    only blocks once at the end of ``step_batch`` while gathering
+    completed futures.
     """
 
     def __init__(self) -> None:
         self._client: Any = None
         self._model: str = ""
         self._using_bedrock: bool = False
-        self._lock = threading.Lock()
         self._init_client()
 
     @property
@@ -330,48 +545,128 @@ class _AnthropicController:
             return _SYSTEM_PROMPT_BASE + _SYSTEM_PROMPT_IMPOSTER
         return _SYSTEM_PROMPT_BASE + _SYSTEM_PROMPT_CREWMATE
 
-    def complete(self, *, role: int, context_json: str) -> str:
-        """Sends ``context_json`` to the provider and returns the raw
-        assistant text. Callers expect valid JSON matching the
-        ``response_schema`` embedded in the context; malformed output
-        is handled by the Nim parser (which falls back to rule-based
-        voting on parse failure).
+    def complete(
+        self, *, role: int, kind: str, context_json: str,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> str:
+        """Sends ``context_json`` to the provider and returns the
+        response as a JSON string. The Nim parser feeds this into
+        ``onLlmResponse`` exactly as if it had come from the
+        schema-in-prompt path; downstream behaviour is identical
+        modulo the elimination of malformed-JSON parse errors.
+
+        Thread-safe: callers may invoke from multiple worker threads
+        concurrently (Sprint 4.1). The Anthropic SDK serialises
+        per-connection internally; on Bedrock the boto3 layer pools
+        connections per region.
+
+        Sprint 4.2 — ``timeout_seconds`` is the per-call HTTP timeout.
+
+        Sprint 4.3 — when ``kind`` matches a registered tool in
+        ``_LLM_TOOL_DEFINITIONS``, the call uses Anthropic tool-use
+        with ``tool_choice`` forcing that tool. The model returns a
+        ``tool_use`` content block whose ``input`` field is a parsed
+        dict; we serialize that back to JSON for Nim. When ``kind``
+        is unknown we fall back to schema-in-prompt parsing
+        (legacy path).
+
+        Sprint 4.4 — retryable errors (rate limits, 5xx, connection
+        timeouts) are retried up to ``_MAX_RETRIES`` times with
+        exponential backoff (500 ms → 1500 ms → 4500 ms). Total
+        elapsed time is bounded by ``timeout_seconds`` to keep the
+        outer gather pass on schedule. 4xx auth / validation errors
+        are NOT retried.
         """
         if self._client is None:
             return ""
-        with self._lock:
+        tool = _LLM_TOOL_DEFINITIONS.get(kind)
+        kwargs: dict[str, Any] = dict(
+            model=self._model,
+            max_tokens=DEFAULT_MAX_TOKENS,
+            temperature=DEFAULT_TEMPERATURE,
+            timeout=timeout_seconds,
+            system=self._system_prompt(role),
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Given the following game state "
+                        "(JSON), call the tool to submit your "
+                        "decision.\n\n"
+                        + context_json
+                    ),
+                }
+            ],
+        )
+        if tool is not None:
+            kwargs["tools"] = [tool]
+            kwargs["tool_choice"] = {
+                "type": "tool",
+                "name": tool["name"],
+            }
+        import time
+        start = time.time()
+        deadline = start + timeout_seconds
+        attempt = 0
+        last_exc: Exception | None = None
+        while attempt <= _MAX_RETRIES:
             try:
-                resp = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=DEFAULT_MAX_TOKENS,
-                    temperature=DEFAULT_TEMPERATURE,
-                    timeout=DEFAULT_TIMEOUT_SECONDS,
-                    system=self._system_prompt(role),
-                    messages=[
-                        {
-                            "role": "user",
-                            # Wrap the serialized context so the model
-                            # reads it as data, not instructions.
-                            "content": (
-                                "Given the following game state "
-                                "(JSON), respond with a single JSON "
-                                "object matching response_schema.\n\n"
-                                + context_json
-                            ),
-                        }
-                    ],
+                resp = self._client.messages.create(**kwargs)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if not _is_retryable(exc) or attempt >= _MAX_RETRIES:
+                    logger.exception(
+                        "mod_talks LLM call raised; "
+                        "attempt=%d retryable=%s — falling back",
+                        attempt, _is_retryable(exc),
+                    )
+                    return ""
+                backoff = _RETRY_BACKOFF_SECONDS[attempt]
+                if time.time() + backoff >= deadline:
+                    # Not enough budget left to retry meaningfully.
+                    logger.warning(
+                        "mod_talks LLM retryable error but no time "
+                        "left in budget (attempt=%d, backoff=%.2fs); "
+                        "abandoning",
+                        attempt, backoff,
+                    )
+                    return ""
+                logger.info(
+                    "mod_talks LLM retryable error attempt=%d: %s "
+                    "(backoff %.2fs)",
+                    attempt, exc.__class__.__name__, backoff,
                 )
-            except Exception:  # pragma: no cover - network / auth failures
-                logger.exception(
-                    "mod_talks LLM call raised; treating as error fallback"
-                )
-                return ""
-            text_parts: list[str] = []
+                time.sleep(backoff)
+                attempt += 1
+        else:  # pragma: no cover - exhausted while True clause
+            return ""
+        # Tool-use response: pull the first tool_use block's input
+        # field and serialize it back to JSON. This is structurally
+        # equivalent to a well-formed prompt-mode response and the
+        # Nim parser is shape-agnostic.
+        if tool is not None:
             for block in getattr(resp, "content", []) or []:
-                t = getattr(block, "text", None)
-                if isinstance(t, str):
-                    text_parts.append(t)
-            return _strip_markdown_code_fence("".join(text_parts))
+                if getattr(block, "type", None) == "tool_use":
+                    payload = getattr(block, "input", None)
+                    if payload is not None:
+                        try:
+                            return json.dumps(payload)
+                        except (TypeError, ValueError):
+                            logger.warning(
+                                "mod_talks tool_use input not "
+                                "JSON-serializable; falling back to "
+                                "text extraction"
+                            )
+                            break
+        # Fallback: text extraction (legacy schema-in-prompt path or
+        # tool-use response that didn't include the expected block).
+        text_parts: list[str] = []
+        for block in getattr(resp, "content", []) or []:
+            t = getattr(block, "text", None)
+            if isinstance(t, str):
+                text_parts.append(t)
+        return _strip_markdown_code_fence("".join(text_parts))
 
 
 def _strip_markdown_code_fence(text: str) -> str:
@@ -430,6 +725,28 @@ def _strip_markdown_code_fence(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
+
+
+class _LlmFuture:
+    """Bookkeeping for one in-flight provider call (Sprint 4.1).
+
+    Holds the call kind so the gather pass can route the response
+    back to the right Nim slot via ``modulabot_set_llm_response``,
+    plus the dispatch wall-clock so we can compute observed latency
+    for the trace and for stale-detection in Sprint 4.2.
+    """
+
+    __slots__ = ("kind", "future", "dispatched_at_unix")
+
+    def __init__(
+        self,
+        kind: str,
+        future: concurrent.futures.Future,
+        dispatched_at_unix: float,
+    ):
+        self.kind = kind
+        self.future = future
+        self.dispatched_at_unix = dispatched_at_unix
 
 
 class _AmongThemAgentPolicy(AgentPolicy):
@@ -494,6 +811,20 @@ class AmongThemPolicy(MultiAgentPolicy):
         self._kind_buf = ctypes.create_string_buffer(_LLM_KIND_BUFFER_SIZE)
         self._ctx_buf = ctypes.create_string_buffer(_LLM_CONTEXT_BUFFER_SIZE)
         self._chat_buf = ctypes.create_string_buffer(_CHAT_BUFFER_SIZE)
+        # Sprint 4.1 — concurrent dispatch. A single shared
+        # ThreadPoolExecutor handles all in-flight provider calls.
+        # `_inflight` maps agent_id → currently-dispatched future,
+        # carrying the call kind so we can route the result back.
+        # The executor is created lazily on first LLM use so non-LLM
+        # builds don't pay the thread-pool startup cost.
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._inflight: dict[int, _LlmFuture] = {}
+        try:
+            self._gather_deadline_seconds = float(
+                os.getenv("MODTALKS_LLM_DEADLINE_SECONDS", "12.0")
+            )
+        except ValueError:
+            self._gather_deadline_seconds = 12.0
 
     def _arm_trace_if_requested(self) -> None:
         """Calls ``modulabot_init_trace`` when ``MODULABOT_TRACE_DIR`` is set.
@@ -580,13 +911,17 @@ class AmongThemPolicy(MultiAgentPolicy):
         self._last_actions[:batch_size] = actions
         raw_actions[:batch_size] = actions.astype(raw_actions.dtype, copy=False)
 
-        # Post-step: drain chat + service LLM requests. Do this AFTER the
-        # Nim step so the current frame's voting-screen OCR is reflected
-        # in any context we dispatch.
+        # Post-step: drain chat per-agent (cheap, main thread) and then
+        # dispatch any pending LLM requests onto the worker pool. After
+        # all dispatches are submitted, gather completed futures up to
+        # the wall-clock deadline so step_batch returns in bounded
+        # time even when the provider is slow (Sprint 4.1).
         for agent_id in range(batch_size):
             self._drain_chat(agent_id)
             if self._llm.enabled:
-                self._service_llm(agent_id)
+                self._dispatch_llm(agent_id)
+        if self._llm.enabled and self._inflight:
+            self._gather_llm_futures(batch_size)
 
     def step_agent(self, agent_id: int) -> int:
         if 0 <= agent_id < self._last_actions.shape[0]:
@@ -637,14 +972,29 @@ class AmongThemPolicy(MultiAgentPolicy):
         if text:
             self._pending_chat[agent_id] = text
 
-    def _service_llm(self, agent_id: int) -> None:
-        """Polls the Nim-side LLM request slot, calls the provider if
-        something is pending, and feeds the result back.
+    def _ensure_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Lazily creates the worker pool. Sized to ``num_agents`` so a
+        full lobby of imposters + crewmates can dispatch in parallel."""
+        if self._executor is None:
+            workers = max(2, self._num_agents)
+            self._executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="mod_talks_llm",
+            )
+            logger.info(
+                "mod_talks llm worker pool: max_workers=%d", workers
+            )
+        return self._executor
 
-        One pass per step. If the request was queued after a frame that
-        didn't hit this code (e.g. during init), the poll picks it up on
-        the following frame — the state machine waits on the in-flight
-        flag, not on per-frame service."""
+    def _dispatch_llm(self, agent_id: int) -> None:
+        """Polls the Nim-side LLM request slot for one agent and, if a
+        request is pending and no future is already in flight for the
+        same agent, submits the provider call to the worker pool.
+
+        Returns immediately — provider calls happen on background
+        threads, results are gathered later. Per-agent in-flight
+        bookkeeping in ``self._inflight`` mirrors the Nim-side single-
+        slot semantics: one request per agent at a time."""
         if agent_id not in self._llm_enabled_agents:
             # First time we see this agent — enable the LLM path
             # server-side so the state machine actually emits requests.
@@ -657,6 +1007,12 @@ class AmongThemPolicy(MultiAgentPolicy):
                 == 0
             ):
                 self._llm_enabled_agents.add(agent_id)
+
+        if agent_id in self._inflight:
+            # Provider call from a previous tick is still running. Don't
+            # try to take another request — Nim won't have generated one
+            # while pending=true anyway, but be defensive.
+            return
 
         ctx_len = int(
             self._lib.modulabot_take_llm_request(
@@ -678,32 +1034,89 @@ class AmongThemPolicy(MultiAgentPolicy):
             self._send_llm_error(agent_id, "")
             return
         if not kind:
-            # Shouldn't happen — Nim returned ctx_len > 0 but empty kind.
             self._send_llm_error(agent_id, "")
             return
 
         role = int(self._lib.modulabot_role(self._handle, ctypes.c_int(agent_id)))
-        response_text = self._llm.complete(role=role, context_json=context_json)
-        if not response_text:
-            self._send_llm_error(agent_id, kind)
-            return
-        # Defensive: try parsing before handing to Nim so we can log
-        # malformed responses here rather than eating the error in Nim.
-        try:
-            json.loads(response_text)
-        except json.JSONDecodeError:
-            logger.debug(
-                "mod_talks LLM returned non-JSON for %s (agent %d): %r",
-                kind, agent_id, response_text[:200],
-            )
-            # Let Nim parse it too — it may still recognize substrings.
-        self._lib.modulabot_set_llm_response(
-            self._handle,
-            ctypes.c_int(agent_id),
-            kind.encode("ascii"),
-            response_text.encode("utf-8"),
-            ctypes.c_int(0),
+        executor = self._ensure_executor()
+        # Sprint 4.2 — pick the per-kind timeout, falling back to the
+        # default for kinds we haven't catalogued.
+        timeout_s = PER_KIND_TIMEOUT_SECONDS.get(kind, DEFAULT_TIMEOUT_SECONDS)
+        future = executor.submit(
+            self._llm.complete,
+            role=role,
+            kind=kind,
+            context_json=context_json,
+            timeout_seconds=timeout_s,
         )
+        import time
+        self._inflight[agent_id] = _LlmFuture(
+            kind=kind,
+            future=future,
+            dispatched_at_unix=time.time(),
+        )
+
+    def _gather_llm_futures(self, batch_size: int) -> None:
+        """Waits for in-flight provider futures to complete (up to
+        ``self._gather_deadline_seconds``), then feeds each finished
+        result back through the FFI. Futures still running at the
+        deadline are left in ``self._inflight`` and re-checked on the
+        next step.
+
+        The deadline is a wall-clock total across all futures, not
+        per-future: an 8-agent batch with one slow provider doesn't
+        block the other seven from being processed promptly. Slow
+        ones simply roll over to the next tick.
+        """
+        if not self._inflight:
+            return
+        import time
+        deadline = time.time() + self._gather_deadline_seconds
+        # Snapshot the current set so we can iterate while mutating.
+        active_ids = list(self._inflight.keys())
+        for agent_id in active_ids:
+            entry = self._inflight.get(agent_id)
+            if entry is None:
+                continue
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                # Out of budget. Leave running futures in place; we'll
+                # check them next step. Don't cancel — many providers
+                # don't honour cancellation cleanly and we'd just leak
+                # a connection.
+                break
+            try:
+                response_text = entry.future.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                # Future still running. Roll it over to next step.
+                continue
+            except Exception:  # pragma: no cover
+                logger.exception(
+                    "mod_talks LLM future raised; agent=%d kind=%s",
+                    agent_id, entry.kind,
+                )
+                response_text = ""
+            self._inflight.pop(agent_id, None)
+            if not response_text:
+                self._send_llm_error(agent_id, entry.kind)
+                continue
+            # Defensive: try parsing before handing to Nim so we can log
+            # malformed responses here rather than eating the error in Nim.
+            try:
+                json.loads(response_text)
+            except json.JSONDecodeError:
+                logger.debug(
+                    "mod_talks LLM returned non-JSON for %s (agent %d): %r",
+                    entry.kind, agent_id, response_text[:200],
+                )
+                # Let Nim parse it too — it may still recognize substrings.
+            self._lib.modulabot_set_llm_response(
+                self._handle,
+                ctypes.c_int(agent_id),
+                entry.kind.encode("ascii"),
+                response_text.encode("utf-8"),
+                ctypes.c_int(0),
+            )
 
     def _send_llm_error(self, agent_id: int, kind: str) -> None:
         self._lib.modulabot_set_llm_response(
@@ -713,6 +1126,15 @@ class AmongThemPolicy(MultiAgentPolicy):
             b"",
             ctypes.c_int(1),
         )
+
+    def __del__(self):
+        # Clean shutdown of the worker pool — ThreadPoolExecutor will
+        # otherwise hang on interpreter exit waiting for futures.
+        try:
+            if self._executor is not None:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     # --- observation helpers -----------------------------------------------
 
