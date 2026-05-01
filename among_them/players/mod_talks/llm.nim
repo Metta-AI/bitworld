@@ -677,15 +677,83 @@ proc colorIndexByName*(name: string): int =
       return i
   -1
 
+proc transliterateAscii*(text: string): string =
+  ## Maps common non-ASCII Unicode characters to their nearest ASCII
+  ## equivalents (Sprint 4.5). The BitWorld chat renderer's PixelFont
+  ## only handles printable ASCII (`pixelfonts.glyphIndex` indexes into
+  ## a single printable-ASCII range and falls back to `?` for anything
+  ## else); LLM-generated chat that uses smart quotes / em-dashes /
+  ## ellipses / non-Latin punctuation looked clipped before this proc
+  ## existed.
+  ##
+  ## Strategy: a hand-curated mapping for the high-traffic punctuation
+  ## the model emits, plus a passthrough for printable ASCII. Anything
+  ## not in either set is dropped (safer than letting it become a `?`
+  ## glyph that signals an error to the OCR validator).
+  result = newStringOfCap(text.len)
+  var i = 0
+  while i < text.len:
+    let b0 = text[i]
+    if ord(b0) < 0x80:
+      # Printable ASCII passes through; control chars become spaces
+      # (matches the prior behavior of `clampChat`).
+      if ord(b0) >= 0x20 and ord(b0) < 0x7F:
+        result.add(b0)
+      elif b0 == '\n' or b0 == '\t':
+        result.add(' ')
+      inc i
+      continue
+    # Multi-byte UTF-8 sequence. Decode minimally then map.
+    var codepoint = 0
+    var skip = 1
+    if (ord(b0) and 0xE0) == 0xC0 and i + 1 < text.len:
+      codepoint = ((ord(b0) and 0x1F) shl 6) or
+                  (ord(text[i + 1]) and 0x3F)
+      skip = 2
+    elif (ord(b0) and 0xF0) == 0xE0 and i + 2 < text.len:
+      codepoint = ((ord(b0) and 0x0F) shl 12) or
+                  ((ord(text[i + 1]) and 0x3F) shl 6) or
+                  (ord(text[i + 2]) and 0x3F)
+      skip = 3
+    elif (ord(b0) and 0xF8) == 0xF0 and i + 3 < text.len:
+      codepoint = ((ord(b0) and 0x07) shl 18) or
+                  ((ord(text[i + 1]) and 0x3F) shl 12) or
+                  ((ord(text[i + 2]) and 0x3F) shl 6) or
+                  (ord(text[i + 3]) and 0x3F)
+      skip = 4
+    else:
+      # Invalid lead byte — skip one and resync.
+      inc i
+      continue
+    case codepoint
+    # Quote pairs.
+    of 0x2018, 0x2019, 0x201A, 0x201B, 0x2032: result.add('\'')
+    of 0x201C, 0x201D, 0x201E, 0x201F, 0x2033: result.add('"')
+    # Dashes.
+    of 0x2013, 0x2014, 0x2015, 0x2212: result.add('-')
+    # Ellipsis.
+    of 0x2026:
+      result.add('.')
+      result.add('.')
+      result.add('.')
+    # Various spaces → single space.
+    of 0x00A0, 0x2002, 0x2003, 0x2009, 0x200A: result.add(' ')
+    # Bullet variants.
+    of 0x2022, 0x2023, 0x25E6: result.add('*')
+    # Currency we might see in chat.
+    of 0x20AC: result.add('E')           ## € → E (best-effort)
+    of 0x00A3: result.add('L')           ## £ → L
+    of 0x00A5: result.add('Y')           ## ¥ → Y
+    # Anything else: drop. Better than emitting a sentinel that the
+    # OCR validator treats as a question mark.
+    else: discard
+    inc i, skip
+
 proc clampChat*(text: string): string =
-  ## Trim to `LlmMaxChatLen` at a word boundary when possible. Strips
-  ## control characters and non-printable ASCII.
-  var cleaned = ""
-  for ch in text.strip():
-    if ord(ch) >= 0x20 and ord(ch) < 0x7F:
-      cleaned.add(ch)
-    elif ch == '\n' or ch == '\t':
-      cleaned.add(' ')
+  ## Trim to `LlmMaxChatLen` at a word boundary when possible.
+  ## Transliterates non-ASCII via `transliterateAscii` before
+  ## counting characters (Sprint 4.5).
+  let cleaned = transliterateAscii(text).strip()
   if cleaned.len <= LlmMaxChatLen:
     return cleaned
   var cut = cleaned[0 ..< LlmMaxChatLen]
@@ -877,9 +945,24 @@ proc onLlmResponse*(bot: var Bot; kind: LlmCallKind;
   ## emits exactly one `llm_decision` OR one `llm_error` event (never
   ## both) and bumps the matching counter, so the harness can reliably
   ## pair dispatches with outcomes.
+  ##
+  ## Sprint 4.2 stale-response rule: a response that arrives after the
+  ## state machine has already transitioned past its dispatch stage is
+  ## treated as stale. Two cases:
+  ##   * meeting ended (`lvsIdle`) — the entire LlmVotingState has
+  ##     been reset; applying the response would mutate the next
+  ##     meeting's state.
+  ##   * forming-stage call (hypothesis / strategize) but the bot has
+  ##     advanced past forming — the fallback path already fired
+  ##     when the dispatch budget elapsed; applying the response
+  ##     would overwrite a valid evidence-based decision.
+  ## Stale responses are dropped with `llm_error{reason: "stale"}`
+  ## but the request slot is still cleared so the state machine can
+  ## dispatch the next call.
   let stageBefore = bot.llmVoting.stage
   let dispatchedTick = bot.llmVoting.request.dispatchedTick
   let dispatchedWallMs = bot.llmVoting.request.dispatchedWallMs
+  let dispatchStage = bot.llmVoting.request.stage
   # `contextBytes` survives `llmTakePendingRequest`'s clear of
   # `contextJson`; reading `.contextJson.len` here would be zero in
   # the live FFI path because Python has already taken the payload.
@@ -888,6 +971,23 @@ proc onLlmResponse*(bot: var Bot; kind: LlmCallKind;
 
   bot.llmVoting.request.pending = false
   bot.llmVoting.request.callKind = lckNone
+
+  # --- Stale-response path (Sprint 4.2) -----------------------------------
+  let isFormingKind = kind in {lckHypothesis, lckStrategize}
+  let stageMovedPastForming =
+    isFormingKind and
+    dispatchStage in {lvsFormingHypothesis, lvsFormingStrategy} and
+    stageBefore notin {lvsFormingHypothesis, lvsFormingStrategy}
+  let meetingEnded = stageBefore == lvsIdle and dispatchStage != lvsIdle
+  if stageMovedPastForming or meetingEnded:
+    inc bot.llm.counters.totalErrored
+    inc bot.llm.counters.byKindErrored[kind]
+    if not bot.trace.isNil:
+      emitLlmError(bot.trace, bot, kind, stageBefore, "stale",
+                   (if meetingEnded: "meeting ended before response"
+                    else: "stage advanced past dispatch"),
+                   dispatchedTick, dispatchedWallMs, responseJson)
+    return
 
   # --- Error paths ---------------------------------------------------------
   if errored or responseJson.len == 0:

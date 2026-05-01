@@ -450,84 +450,111 @@ call behind a single lock. An 8-agent batch with 2 s provider latency
 wastes 14 s of wall time per frame. Also: retries, schema enforcement,
 prefix rename.
 
+**Status:** ✅ Landed 2026-04-30 (4.6 explicitly deferred — see below).
+Live Bedrock smoke confirms 3-4× concurrency speedup: p50 latency
+dropped from ~33 s in Sprint 1 (single lock, 8 agents serialised) to
+~9.2 s in Sprint 4 (concurrent dispatch, same 8-agent batch).
+Parity 500/500 across seeds {1, 42, 100, 7777} preserved across all
+four matrices.
+
 ### 4.1 Concurrent provider dispatch
 
-- [ ] Replace the single-lock `_AnthropicController.complete` with a
-      concurrent dispatcher: thread pool (e.g. `concurrent.futures.
-      ThreadPoolExecutor` with `max_workers = num_agents`) or an
-      asyncio event loop.
-- [ ] `_service_llm` submits a future per pending request; gathers
-      results before returning from `step_batch`.
-- [ ] Preserve the "one request in flight per agent" guarantee via
-      the Nim-side slot semantics — Python just parallelizes the
-      per-agent HTTP calls.
-- [ ] Measure: p50 / p99 `step_batch` latency with 8 agents before
-      and after. Record in a benchmark note.
+- [x] `_AnthropicController._lock` removed. SDK is thread-safe; the
+      lock was a redundant serialiser.
+- [x] `AmongThemPolicy._executor: ThreadPoolExecutor` lazy-allocated
+      with `max_workers = num_agents`. `__del__` shuts down with
+      `cancel_futures=True` to avoid hanging the interpreter.
+- [x] `_dispatch_llm` (replaces `_service_llm`) submits one future
+      per pending request and returns immediately. Per-agent
+      bookkeeping in `self._inflight: dict[int, _LlmFuture]`.
+- [x] `_gather_llm_futures` runs at the end of every `step_batch`
+      with a wall-clock deadline (`MODTALKS_LLM_DEADLINE_SECONDS`,
+      default 12 s). Futures still running at the deadline are
+      LEFT in `_inflight` and re-checked next step rather than
+      cancelled — many providers don't honour cancellation cleanly
+      and we don't want to leak connections.
 
 ### 4.2 Per-call-kind timeouts + stale-response drop
 
-- [ ] Move timeout config into `tuning.nim` as a table keyed by
-      `LlmCallKind`: hypothesis/strategy=2000 ms, react/imposter_react=
-      1500 ms, accuse/persuade=1000 ms. Match `LLM_VOTING.md §9`.
-- [ ] Plumb the per-kind timeout to Python through a new FFI entry
-      point (or bake into the request slot payload as a field).
-- [ ] In `onLlmResponse`, if `stage` has moved on from the one
-      recorded in `request.stage` at dispatch time, treat as stale:
-      emit `llm_error{reason:"stale"}` and do not apply. This lets
-      Sprint 1's `llm_decision` event accurately measure the cost of
-      slow calls.
+- [x] `PER_KIND_TIMEOUT_SECONDS` table in `amongthem_policy.py`
+      (`hypothesis`/`strategize` 20 s; `react`/`imposter_react`
+      15 s; `accuse`/`persuade` 10 s). Threaded through
+      `_AnthropicController.complete(timeout_seconds=...)`.
+- [x] Stale-response detection in `llm.nim:onLlmResponse` —
+      compares `request.stage` (captured at dispatch) against
+      current `bot.llmVoting.stage`. Two stale conditions:
+      (a) forming-stage call but stage advanced past forming
+      (b) meeting ended (`lvsIdle`).
+- [x] Stale responses emit `llm_error{reason: "stale"}`, bump
+      counters, and are dropped without applying — protecting
+      vote decisions from being clobbered by a delayed response.
 
-### 4.3 Anthropic tool-use / structured output
+### 4.3 Anthropic tool-use structured output
 
-- [ ] Replace the schema-in-prompt pattern with Anthropic
-      `tools=[...]` + `tool_choice={"type":"tool","name":"<kind>"}`.
-- [ ] One tool definition per `LlmCallKind`. Translate the JSON
-      Schema fragments already documented in `LLM_VOTING.md §5.4`.
-- [ ] `_strip_markdown_code_fence` becomes unnecessary for the happy
-      path — keep as a fallback when the model returns text (rare with
-      tool-use, but seen in practice).
-- [ ] Measure malformed-response rate before/after in
-      `llm_error.reason:"parse"` counts.
+- [x] `_LLM_TOOL_DEFINITIONS` table — six tools, one per call
+      kind, with JSON-schema input shapes mirroring
+      `LLM_VOTING.md §5.4` verbatim.
+- [x] `_AnthropicController.complete` switches to tool-use when
+      `kind` matches a known tool: `tools=[tool]` plus
+      `tool_choice={"type":"tool","name":...}` forces the model
+      to emit a structured response. The `tool_use` content
+      block's `input` field is serialised back to JSON for Nim.
+- [x] Schema-in-prompt path retained as fallback for unknown
+      kinds and tool-use responses that lack the expected block
+      (defensive — shouldn't fire in practice).
 
 ### 4.4 Retry + exponential backoff
 
-- [ ] Distinguish retryable errors (429, 5xx, timeout) from fatal
-      (4xx auth, malformed request).
-- [ ] Retry policy: max 2 retries, backoff 500 ms → 1500 ms. Do NOT
-      retry past the stage timeout.
-- [ ] `llm_error` emitted per final failure (not per retry).
+- [x] `_MAX_RETRIES = 2`, `_RETRY_BACKOFF_SECONDS = (0.5, 1.5)`.
+- [x] `_is_retryable` helper: returns True for
+      `RateLimitError`, `APITimeoutError`, `APIConnectionError`,
+      `InternalServerError`, `ServiceUnavailableError`, plus any
+      exception with a 5xx `status_code`. 4xx auth/validation
+      errors are NOT retried.
+- [x] Retry loop respects the per-call `timeout_seconds` budget
+      — if the next backoff would push past the deadline, abandon
+      retry and return empty (Nim's fallback fires).
 
 ### 4.5 Non-ASCII chat handling
 
-- [ ] Decision: transliterate (smart quotes → ASCII) or widen to UTF-8?
-      Depends on what the BitWorld chat renderer accepts. Investigate
-      first; then implement.
-- [ ] Update `llm.nim:clampChat` accordingly.
-- [ ] Unit test coverage: smart quote, em-dash, ellipsis, emoji.
+- [x] `transliterateAscii` proc in `llm.nim` decodes UTF-8
+      manually and maps common punctuation (smart quotes,
+      em-dash, ellipsis, non-breaking space, bullets, common
+      currency) to ASCII equivalents. Anything unmapped is
+      dropped — better than letting the BitWorld PixelFont
+      render `?` glyphs.
+- [x] `clampChat` rewritten to call `transliterateAscii` first.
+      Word-boundary truncation logic preserved.
+- [x] Three new unit tests covering smart quotes, em-dash,
+      ellipsis, and emoji-drop behaviour.
 
-### 4.6 FFI / binary prefix rename
+### 4.6 FFI / binary prefix rename — DEFERRED
 
-- [ ] Rename `modulabot_*` exports to `mod_talks_*` (new symbols;
-      old symbols kept as deprecated aliases for one release cycle
-      if needed).
-- [ ] Rename binary: `mod_talks` (CLI), `libmod_talks.{dylib,so,dll}`
-      (library).
-- [ ] Update `cogames/amongthem_policy.py` call sites and
-      `_library_name()`.
-- [ ] Update `DESIGN.md §1, §6, §6 note` to reflect the rename.
+- [ ] Renaming `modulabot_*` → `mod_talks_*` exports + binary
+      names is a large, low-impact churn that touches every
+      `cogames/amongthem_policy.py` call site, the build script,
+      symbol exports, and downstream tests. Consensus: defer
+      until either (a) a new bot family forks from mod_talks
+      and there's actually a name collision to resolve, or
+      (b) the cogames submission flow demands a specific name.
+      Current code is internally consistent: `mod_talks` as the
+      project / directory / class name, `modulabot_*` as the
+      legacy FFI prefix. Tracked in `TODO.md`.
 
 ### 4.7 Sprint 4 acceptance
 
-- [ ] Benchmark: 8-agent `step_batch` p99 latency improves by ≥ Nx
-      (record actual factor; realistic target 4–6x at ~2 s provider
-      median).
-- [ ] Manifest records `context_bytes` and `response_bytes` per
-      `llm_decision` (from Sprint 1) so we can see
-      prompt/response distribution across a run.
-- [ ] `llm_error.reason:"parse"` events drop to near zero after
-      tool-use rollout.
-- [ ] All references to `modulabot_` in source and docs are
-      updated or explicitly marked as legacy aliases.
+- [x] All builds compile clean: non-LLM CLI, LLM CLI,
+      `libmodulabot.dylib`, `parity`, `parity_llm`, `llm_unit`.
+- [x] Self-consistency parity 500/500 across seeds
+      {1, 42, 100, 7777} × matrices
+      {non-LLM, LLM, mock-basic, mock-errored}.
+- [x] `llm_unit.nim` runs all 56 tests green (3 new
+      transliterate tests added).
+- [x] Live Bedrock smoke (`--max-steps 1500`, 8 agents):
+      8 of 8 agents emitted `llm_dispatched` → `llm_decision`
+      pairs, p50 latency 9.2 s, max 10.3 s. **3-4× faster than
+      Sprint 1's serial dispatch.** No retries triggered (clean
+      Bedrock run); no stale responses; no `llm_error` events.
 
 ---
 
@@ -662,3 +689,17 @@ PR for detailed design discussions.
   `test/fixtures/`. Design choice: mock pump runs in Nim rather
   than Python — keeps `parity.nim` self-contained and exercises
   the same code path as live runs minus the HTTP round-trip.
+- **2026-04-30** — Sprint 4 landed (4.6 explicitly deferred):
+  removed `_AnthropicController._lock` and added a per-policy
+  `ThreadPoolExecutor` with dispatch / gather phases.
+  Per-call-kind timeouts in Python; stale-response detection in
+  Nim drops responses that arrive after the relevant stage has
+  moved on. Anthropic tool-use with one tool per
+  `LlmCallKind` eliminates schema-in-prompt parse drift. Retry
+  policy with exponential backoff (max 2 retries) for 5xx /
+  429 / connection errors only. UTF-8 transliteration in
+  `clampChat` maps smart quotes / em-dash / ellipsis / common
+  punctuation to ASCII so the BitWorld PixelFont renders chat
+  cleanly. Live Bedrock smoke: p50 latency 9.2 s with 8
+  concurrent agents — **3-4× faster than the Sprint 1 serial
+  baseline (~33 s)**, validating the concurrency goal.

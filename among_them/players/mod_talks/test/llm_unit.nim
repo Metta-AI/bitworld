@@ -67,6 +67,30 @@ block clampChat_truncates_at_word_boundary:
     # Should end on a complete word (no trailing partial).
     cut.len == 0 or cut[^1] != ' '
 
+block clampChat_smart_quotes:
+  # Smart quotes (U+2018/U+2019/U+201C/U+201D) + em-dash + ellipsis.
+  let smart = "they\u2019re sus \u2014 saw them in \u201celectrical\u201d\u2026"
+  let cleaned = clampChat(smart)
+  check "clampChat transliterates smart quotes to ASCII":
+    "they're sus" in cleaned
+  check "clampChat transliterates em-dash to hyphen":
+    " - " in cleaned
+  check "clampChat transliterates ellipsis to triple dot":
+    "..." in cleaned
+  check "clampChat output is pure printable ASCII":
+    var allAscii = true
+    for ch in cleaned:
+      if ord(ch) < 0x20 or ord(ch) >= 0x7F:
+        allAscii = false
+    allAscii
+
+block transliterate_drops_unmappable:
+  # Emoji has no ASCII equivalent in our table; drop.
+  let emojied = "ok\xF0\x9F\x98\x80sus"   ## "ok😀sus"
+  let cleaned = transliterateAscii(emojied)
+  check "transliterate drops unmapped multi-byte":
+    cleaned == "oksus"
+
 # ---------------------------------------------------------------------------
 # colorIndexByName
 # ---------------------------------------------------------------------------
