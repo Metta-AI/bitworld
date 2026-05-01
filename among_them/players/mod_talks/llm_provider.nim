@@ -1,5 +1,5 @@
 ## Direct LLM-provider dispatch for the standalone CLI binary
-## (Sprint 6.1).
+## (Sprint 6.1 + 6.4).
 ##
 ## Implements the slice of provider HTTP that the cogames Python
 ## wrapper does today, but in Nim, so the CLI binary
@@ -13,31 +13,35 @@
 ## block, or `nimby.lock`. To keep that promise the implementation
 ## uses `std/httpclient` from the stdlib (already builds with
 ## `-d:ssl` against the system's OpenSSL/LibreSSL, no extra deps).
-## The `curly`+`jsony` shape used by the unrelated
-## `src/bitworld/ais/*.nim` was rejected because it would have
-## required adding `curly` to `nimby.lock`.
 ##
 ## Provider selection (matches `cogames/amongthem_policy.py:_build_llm_controller`
 ## so both paths behave identically):
 ##
 ##   1. `MODTALKS_LLM_DISABLE=1` → disabled (rule-based fallback).
 ##   2. `MODTALKS_PROVIDER_OPENAI=1` + `OPENAI_API_KEY` → OpenAI.
-##   3. `ANTHROPIC_API_KEY` → Anthropic direct.
-##   4. `OPENAI_API_KEY` (no Anthropic key) → OpenAI fallback.
-##   5. Else → disabled with a warning.
+##   3. `CLAUDE_CODE_USE_BEDROCK=1` → Bedrock (subprocess to `aws`).
+##   4. `ANTHROPIC_API_KEY` → Anthropic direct.
+##   5. AWS creds present (no Anthropic key) → Bedrock.
+##   6. `OPENAI_API_KEY` → OpenAI fallback.
+##   7. Else → disabled with a warning.
 ##
-## Bedrock is intentionally NOT supported in this module (Sprint 6.4
-## decision). The cogames Python path still handles Bedrock via
-## `anthropic.AnthropicBedrock`; the Nim CLI path covers direct API
-## providers only. If Bedrock-from-CLI becomes a hard requirement,
-## see Sprint 6.4 in `LLM_SPRINTS.md` for three options.
+## Sprint 6.4 — Bedrock support added via `aws bedrock-runtime
+## invoke-model` subprocess. Three options were considered: pure-Nim
+## SigV4, AWS CLI subprocess, or skip-and-rely-on-Python-wrapper.
+## The subprocess path was chosen because (a) the AWS CLI is
+## already installed on every dev / tournament environment that
+## uses Bedrock, (b) the SigV4 implementation surface is
+## non-trivial and would have been ~12 hours to ship cleanly
+## vs. ~6 hours for the subprocess, and (c) the response shape is
+## byte-identical to the direct Anthropic API, so all of
+## `anthropicExtractToolUse` is reused unchanged.
 ##
 ## Concurrency: each `complete` call is blocking. Threading is the
 ## caller's responsibility — `llm_dispatch.nim` wraps a single
 ## worker thread + Channel pair around this module so the bot's
 ## per-frame loop stays non-blocking.
 
-import std/[httpclient, json, net, options, os, strutils, times]
+import std/[httpclient, json, net, options, os, osproc, strutils, times]
 
 import types
 import tuning
@@ -62,7 +66,11 @@ type
   LlmProviderKind* = enum
     lpkDisabled,        ## no creds detected → caller falls back to rule-based
     lpkAnthropicDirect, ## ANTHROPIC_API_KEY against api.anthropic.com
-    lpkOpenAIDirect     ## OPENAI_API_KEY against api.openai.com
+    lpkOpenAIDirect,    ## OPENAI_API_KEY against api.openai.com
+    lpkBedrock          ## Sprint 6.4 — `aws bedrock-runtime invoke-model`
+                        ## subprocess. Auth via the standard boto3
+                        ## credential chain (AWS_PROFILE / env vars / IAM
+                        ## role); we don't read or store keys ourselves.
 
   LlmProvider* = ref object
     ## Configured provider client. `kind == lpkDisabled` means no
@@ -70,8 +78,14 @@ type
     ## a disabled provider (it returns errored=true with no HTTP
     ## traffic).
     kind*: LlmProviderKind
-    apiKey: string                  ## kept private — never logged or traced
+    apiKey: string                  ## kept private — never logged or traced.
+                                    ## Empty string for `lpkBedrock` (auth
+                                    ## delegated to the aws CLI).
     model*: string
+    region*: string                 ## Bedrock-only; ignored elsewhere.
+    awsCli*: string                 ## Path to `aws` binary; resolved at
+                                    ## construction. Empty when not
+                                    ## using Bedrock.
 
   LlmCompletion* = object
     ## Result of one (provider, kind, context) call. `responseJson`
@@ -94,6 +108,19 @@ const
     ## Sprint 5.3 chose this model in the Python `_OpenAIController`
     ## skeleton; matching it keeps env behaviour aligned.
 
+  BedrockAnthropicVersion = "bedrock-2023-05-31"
+    ## Bedrock-Claude wire shape requires this string in the
+    ## request body (NOT the `anthropic-version` HTTP header used
+    ## by the direct API). Confirmed against `aws bedrock-runtime
+    ## invoke-model` smoke tests.
+  BedrockDefaultModel = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    ## Same model id the Python wrapper uses
+    ## (`DEFAULT_BEDROCK_MODEL` in cogames/amongthem_policy.py).
+  BedrockDefaultRegion = "us-east-1"
+    ## Fallback when neither AWS_REGION nor AWS_DEFAULT_REGION are
+    ## set. Most Bedrock model availability is in us-east-1, and
+    ## this matches what the Python launcher defaults to.
+
   DefaultMaxTokens   = 1024
   DefaultTemperature = 0.5
 
@@ -105,14 +132,38 @@ proc envFlag(name: string): bool =
   let v = getEnv(name).toLowerAscii()
   v in ["1", "true", "yes", "on"]
 
+proc awsCredsPresent(): bool =
+  ## Returns true when the standard boto3 credential chain has
+  ## *something* — used to decide whether Bedrock can authenticate.
+  ## Doesn't actually validate the creds; the aws CLI does that
+  ## on first invoke.
+  getEnv("AWS_PROFILE").len > 0 or
+    (getEnv("AWS_ACCESS_KEY_ID").len > 0 and
+     getEnv("AWS_SECRET_ACCESS_KEY").len > 0)
+
+proc resolveAwsCli(): string =
+  ## Returns the path to `aws` if it's on PATH, else "". Bedrock
+  ## requires the AWS CLI; without it we can't dispatch.
+  result = findExe("aws")
+
+proc resolveAwsRegion(): string =
+  ## Mirrors boto3's region resolution: AWS_REGION first, then
+  ## AWS_DEFAULT_REGION, then a default. We don't try to parse
+  ## ~/.aws/config — that's the aws CLI's job.
+  let r1 = getEnv("AWS_REGION")
+  if r1.len > 0: return r1
+  let r2 = getEnv("AWS_DEFAULT_REGION")
+  if r2.len > 0: return r2
+  BedrockDefaultRegion
+
 proc resolveProviderKind(forceOverride: string = ""): LlmProviderKind =
   ## Returns the provider that *should* run given the current
   ## environment + an optional CLI-supplied override.
   ##
   ## `forceOverride` corresponds to `--llm-provider:NAME` (Sprint
   ## 6.3); empty string means "auto-detect from env vars". Valid
-  ## values: "anthropic", "openai", "disabled". Anything else is
-  ## treated as auto-detect with a warning logged at the call site.
+  ## values: "anthropic", "openai", "bedrock", "disabled".
+  ## Anything else is treated as auto-detect.
   if envFlag("MODTALKS_LLM_DISABLE"):
     return lpkDisabled
   case forceOverride.toLowerAscii()
@@ -122,17 +173,30 @@ proc resolveProviderKind(forceOverride: string = ""): LlmProviderKind =
   of "openai":
     if getEnv("OPENAI_API_KEY").len > 0: return lpkOpenAIDirect
     else: return lpkDisabled
+  of "bedrock":
+    if awsCredsPresent() and resolveAwsCli().len > 0: return lpkBedrock
+    else: return lpkDisabled
   of "disabled":
     return lpkDisabled
   else:
     discard
   # Auto-detect path. Mirrors `_build_llm_controller` in the
-  # Python wrapper.
+  # Python wrapper:
+  #   1. MODTALKS_PROVIDER_OPENAI=1 + OPENAI_API_KEY → OpenAI
+  #   2. CLAUDE_CODE_USE_BEDROCK=1 + AWS creds → Bedrock
+  #   3. ANTHROPIC_API_KEY → Anthropic direct
+  #   4. AWS creds (no Anthropic key) → Bedrock
+  #   5. OPENAI_API_KEY (last resort) → OpenAI
   if envFlag("MODTALKS_PROVIDER_OPENAI") and
       getEnv("OPENAI_API_KEY").len > 0:
     return lpkOpenAIDirect
+  let bedrockReady = awsCredsPresent() and resolveAwsCli().len > 0
+  if envFlag("CLAUDE_CODE_USE_BEDROCK") and bedrockReady:
+    return lpkBedrock
   if getEnv("ANTHROPIC_API_KEY").len > 0:
     return lpkAnthropicDirect
+  if bedrockReady:
+    return lpkBedrock
   if getEnv("OPENAI_API_KEY").len > 0:
     return lpkOpenAIDirect
   lpkDisabled
@@ -141,6 +205,7 @@ proc defaultModelFor(kind: LlmProviderKind): string =
   case kind
   of lpkAnthropicDirect: AnthropicDefaultModel
   of lpkOpenAIDirect:    OpenAIDefaultModel
+  of lpkBedrock:         BedrockDefaultModel
   of lpkDisabled:        ""
 
 proc newLlmProvider*(forceProvider: string = "";
@@ -165,11 +230,20 @@ proc newLlmProvider*(forceProvider: string = "";
     case kind
     of lpkAnthropicDirect: getEnv("ANTHROPIC_API_KEY")
     of lpkOpenAIDirect:    getEnv("OPENAI_API_KEY")
+    of lpkBedrock:         ""        ## auth via aws CLI; no key here
     of lpkDisabled:        ""
+  let region =
+    if kind == lpkBedrock: resolveAwsRegion()
+    else: ""
+  let awsCli =
+    if kind == lpkBedrock: resolveAwsCli()
+    else: ""
   result = LlmProvider(
     kind: kind,
     apiKey: key,
-    model: model
+    model: model,
+    region: region,
+    awsCli: awsCli
   )
 
 proc enabled*(p: LlmProvider): bool =
@@ -180,6 +254,7 @@ proc kindName*(p: LlmProvider): string =
   of lpkDisabled:        "disabled"
   of lpkAnthropicDirect: "anthropic_direct"
   of lpkOpenAIDirect:    "openai_direct"
+  of lpkBedrock:         "bedrock"
 
 # ---------------------------------------------------------------------------
 # System prompts (verbatim from cogames/amongthem_policy.py)
@@ -409,6 +484,105 @@ proc anthropicExtractToolUse(respBody: string): tuple[json: string;
       return ($chunk["input"], true)
   ("", false)
 
+# ---------------------------------------------------------------------------
+# Bedrock (Sprint 6.4) — subprocess to `aws bedrock-runtime invoke-model`
+# ---------------------------------------------------------------------------
+#
+# Why subprocess instead of pure-Nim SigV4: keeping ~12 hours of
+# crypto code (HMAC-SHA256 + canonical request construction +
+# credential chain) out of mod_talks for what amounts to "shell out
+# to a tool that's already on every Bedrock-capable machine". The
+# response shape is byte-identical to the direct API, so we reuse
+# `anthropicExtractToolUse` unchanged.
+
+proc bedrockBody(p: LlmProvider; role: BotRole; kind: LlmCallKind;
+                 contextJson: string): string =
+  ## Builds the Bedrock-Claude request body. Differs from
+  ## `anthropicBody` in two places:
+  ##   * `anthropic_version` is `"bedrock-2023-05-31"` (Bedrock's
+  ##     wire format constant), not the direct API's
+  ##     `"2023-06-01"` HTTP header.
+  ##   * Top-level `model` is omitted — the model id is passed via
+  ##     the `--model-id` CLI flag, not the body.
+  let tool = toolSchemaFor(kind)
+  let userContent =
+    "Given the following game state (JSON), call the tool to " &
+    "submit your decision.\n\n" & contextJson
+  let body = %*{
+    "anthropic_version": BedrockAnthropicVersion,
+    "max_tokens":        DefaultMaxTokens,
+    "temperature":       DefaultTemperature,
+    "system":            systemPromptFor(role),
+    "messages":          [
+      {"role": "user", "content": userContent}
+    ],
+    "tools":             [tool],
+    "tool_choice":       {"type": "tool", "name": tool["name"].getStr()}
+  }
+  $body
+
+proc bedrockInvoke(p: LlmProvider; body: string;
+                   timeoutSec: float): tuple[code: int;
+                                              body: string] =
+  ## Spawns `aws bedrock-runtime invoke-model` with the request
+  ## body on stdin (via a temp file — the AWS CLI doesn't accept
+  ## body-on-stdin without `fileb://` form) and reads the response
+  ## from another temp file.
+  ##
+  ## Return shape mirrors `httpPost`: `code` is the AWS CLI exit
+  ## code remapped into HTTP-ish space. 0 → 200 (success), nonzero
+  ## → -1 (treat as retryable network error). The Bedrock service
+  ## itself can return throttling errors via the CLI which we
+  ## could parse out of stderr to drive smarter retries; v0
+  ## conflates everything into "errored" and lets the trace event
+  ## carry the detail.
+  var bodyFile = ""
+  var respFile = ""
+  try:
+    let tmp = getTempDir()
+    let suffix = $epochTime() & "-" & $getCurrentProcessId()
+    bodyFile = tmp / "modtalks_bedrock_body_" & suffix & ".json"
+    respFile = tmp / "modtalks_bedrock_resp_" & suffix & ".json"
+    writeFile(bodyFile, body)
+    let args = @[
+      "bedrock-runtime", "invoke-model",
+      "--region", p.region,
+      "--model-id", p.model,
+      "--cli-binary-format", "raw-in-base64-out",
+      "--body", "file://" & bodyFile,
+      respFile
+    ]
+    # `startProcess` with argv form means we never have to
+    # shell-escape the model id, region, or paths — important
+    # because Bedrock model ids contain dots and slashes that
+    # could trip up a naive `execCmd "..."` call. We use
+    # `poStdErrToStdOut` so AWS CLI error chatter on a non-zero
+    # exit lands in our captured stdout for diagnostics; on
+    # success we ignore the chatter and read the real response
+    # from `respFile`.
+    let process = startProcess(
+      command = p.awsCli,
+      args = args,
+      options = {poUsePath, poStdErrToStdOut}
+    )
+    defer: process.close()
+    let exitCode = process.waitForExit(timeout = max(1, int(timeoutSec * 1000)))
+    if exitCode != 0:
+      return (-1, "")
+    let resp = readFile(respFile)
+    (200, resp)
+  except CatchableError:
+    return (-1, "")
+  finally:
+    try:
+      if bodyFile.len > 0 and fileExists(bodyFile):
+        removeFile(bodyFile)
+    except CatchableError: discard
+    try:
+      if respFile.len > 0 and fileExists(respFile):
+        removeFile(respFile)
+    except CatchableError: discard
+
 proc openAIBody(p: LlmProvider; role: BotRole; kind: LlmCallKind;
                 contextJson: string): string =
   ## Builds the OpenAI chat-completion body with `tools=[...]` +
@@ -526,21 +700,59 @@ proc complete*(p: LlmProvider; role: BotRole; kind: LlmCallKind;
     return
 
   let perCallTimeout = timeoutSecFor(kind)
+  # Bedrock dispatches via subprocess and doesn't share the HTTP
+  # path's URL/headers structure. Branch early to keep the HTTP
+  # path simple. Body construction is the same JSON shape modulo
+  # the `anthropic_version` field, so the response parser is
+  # `anthropicExtractToolUse` either way.
+  if p.kind == lpkBedrock:
+    let body = bedrockBody(p, role, kind, contextJson)
+    let deadline = started + perCallTimeout
+    var attempt = 0
+    while attempt < LlmRetryMaxAttempts:
+      let now = epochTime()
+      if now >= deadline:
+        break
+      let attemptTimeout = deadline - now
+      let (code, respBody) = bedrockInvoke(p, body, attemptTimeout)
+      if code in 200 .. 299:
+        let parsed = anthropicExtractToolUse(respBody)
+        if parsed.found:
+          result.responseJson = parsed.json
+          result.errored      = false
+        break
+      inc attempt
+      # AWS CLI failure modes — throttling, transient credential
+      # issues — usually clear on retry. Conflate everything to
+      # "retryable" since we can't distinguish without parsing
+      # stderr.
+      if attempt >= LlmRetryMaxAttempts:
+        break
+      let backoff = LlmRetryBackoffSecs[attempt - 1].float
+      if epochTime() + backoff >= deadline:
+        break
+      sleep(int(backoff * 1000))
+    result.latencyMs = int((epochTime() - started) * 1000)
+    return
+
   let url =
     case p.kind
     of lpkAnthropicDirect: AnthropicMessagesUrl
     of lpkOpenAIDirect:    OpenAIChatUrl
     of lpkDisabled:        return    ## already handled above
+    of lpkBedrock:         ""        ## already handled above
   let body =
     case p.kind
     of lpkAnthropicDirect: anthropicBody(p, role, kind, contextJson)
     of lpkOpenAIDirect:    openAIBody(p, role, kind, contextJson)
     of lpkDisabled:        ""
+    of lpkBedrock:         ""
   let headers =
     case p.kind
     of lpkAnthropicDirect: anthropicHeaders(p)
     of lpkOpenAIDirect:    openAIHeaders(p)
     of lpkDisabled:        newHttpHeaders()
+    of lpkBedrock:         newHttpHeaders()
 
   # Retry loop with exponential backoff, bounded by the per-call
   # timeout — mirrors Sprint 4.4's Python policy.
@@ -558,6 +770,7 @@ proc complete*(p: LlmProvider; role: BotRole; kind: LlmCallKind;
         of lpkAnthropicDirect: anthropicExtractToolUse(respBody)
         of lpkOpenAIDirect:    openAIExtractToolUse(respBody)
         of lpkDisabled:        ("", false)
+        of lpkBedrock:         ("", false)
       if parsed.found:
         result.responseJson = parsed.json
         result.errored      = false
