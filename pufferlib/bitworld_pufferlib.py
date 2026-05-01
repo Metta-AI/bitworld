@@ -496,14 +496,35 @@ class EpisodeStats:
     length: int
     episode_return: float
     tasks_completed: float = 0.0
+    winner: str = ""
+    game_ticks: int = 0
+    total_kills: int = 0
+    total_ejections: int = 0
+    crewmate_tasks_done: int = 0
+    crewmate_tasks_total: int = 0
+    time_limit_reached: bool = False
+    imposter_count: int = 0
+    crewmate_win: bool = False
+    imposter_win: bool = False
+    task_completion_rate: float = 0.0
 
     def info(self, metric_name: str) -> dict[str, dict[str, float]]:
-        game = {
+        game: dict[str, float] = {
             "score": float(self.score),
             "tasks_completed": float(self.tasks_completed),
         }
         if metric_name != "score":
             game[metric_name] = float(self.score)
+        if self.winner:
+            game["crewmate_win"] = 1.0 if self.crewmate_win else 0.0
+            game["imposter_win"] = 1.0 if self.imposter_win else 0.0
+            game["total_kills"] = float(self.total_kills)
+            game["total_ejections"] = float(self.total_ejections)
+            game["crewmate_tasks_done"] = float(self.crewmate_tasks_done)
+            game["crewmate_tasks_total"] = float(self.crewmate_tasks_total)
+            game["task_completion_rate"] = self.task_completion_rate
+            game["game_ticks"] = float(self.game_ticks)
+            game["time_limit_reached"] = 1.0 if self.time_limit_reached else 0.0
         return {
             "game": game,
             "episode": {
@@ -796,6 +817,12 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_on_task_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_episode_stats.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int,
+        ]
+        self.lib.bitworld_at_episode_stats.restype = ctypes.c_int
         self.lib.bitworld_at_close.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_close.restype = None
 
@@ -922,6 +949,47 @@ class AmongThemNativeWorker:
         self.episode_return += self.rewards
         self.episode_steps += 1
         return self.frames.copy(), self.rewards.copy()
+
+    # Episode stats buffer layout — must match Nim constants
+    _STAT_WINNER = 0
+    _STAT_GAME_TICKS = 1
+    _STAT_TOTAL_KILLS = 2
+    _STAT_TOTAL_EJECTIONS = 3
+    _STAT_CREWMATE_TASKS_DONE = 4
+    _STAT_CREWMATE_TASKS_TOTAL = 5
+    _STAT_TIME_LIMIT_REACHED = 6
+    _STAT_IMPOSTER_COUNT = 7
+    _STAT_PLAYER_BASE = 8
+    _STAT_PLAYER_STRIDE = 6
+
+    def collect_episode_stats(self) -> dict[str, float]:
+        buf_size = self._STAT_PLAYER_BASE + self.agent_count * self._STAT_PLAYER_STRIDE
+        buf = np.zeros(buf_size, dtype=np.float32)
+        self.native.check(
+            self.native.lib.bitworld_at_episode_stats(
+                self.handle,
+                buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                buf_size,
+            )
+        )
+        imposter_win = buf[self._STAT_WINNER] > 0.5
+        crewmate_tasks_total = int(buf[self._STAT_CREWMATE_TASKS_TOTAL])
+        crewmate_tasks_done = int(buf[self._STAT_CREWMATE_TASKS_DONE])
+        return {
+            "winner": "imposter" if imposter_win else "crewmate",
+            "game_ticks": int(buf[self._STAT_GAME_TICKS]),
+            "total_kills": int(buf[self._STAT_TOTAL_KILLS]),
+            "total_ejections": int(buf[self._STAT_TOTAL_EJECTIONS]),
+            "crewmate_tasks_done": crewmate_tasks_done,
+            "crewmate_tasks_total": crewmate_tasks_total,
+            "time_limit_reached": buf[self._STAT_TIME_LIMIT_REACHED] > 0.5,
+            "imposter_count": int(buf[self._STAT_IMPOSTER_COUNT]),
+            "crewmate_win": not imposter_win,
+            "imposter_win": imposter_win,
+            "task_completion_rate": (
+                crewmate_tasks_done / crewmate_tasks_total if crewmate_tasks_total > 0 else 0.0
+            ),
+        }
 
     def close(self) -> None:
         if self.handle >= 0:
@@ -1453,6 +1521,42 @@ class BitWorldVecEnv:
         completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
         return np.sum(assigned & completed, axis=1).astype(np.float32)
 
+    def _collect_rich_stats_batch(self, done_env_ids: np.ndarray) -> list[dict[str, float]]:
+        assert self._state_handles is not None
+        native = among_them_native_library()
+        results: list[dict[str, float]] = []
+        buf_size = AmongThemNativeWorker._STAT_PLAYER_BASE + self.agents_per_env * AmongThemNativeWorker._STAT_PLAYER_STRIDE
+        buf = np.zeros(buf_size, dtype=np.float32)
+        for env_id in done_env_ids:
+            handle = int(self._state_handles[env_id])
+            native.check(
+                native.lib.bitworld_at_episode_stats(
+                    handle,
+                    buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    buf_size,
+                )
+            )
+            S = AmongThemNativeWorker
+            imposter_win = buf[S._STAT_WINNER] > 0.5
+            crewmate_tasks_total = int(buf[S._STAT_CREWMATE_TASKS_TOTAL])
+            crewmate_tasks_done = int(buf[S._STAT_CREWMATE_TASKS_DONE])
+            results.append({
+                "winner": "imposter" if imposter_win else "crewmate",
+                "game_ticks": int(buf[S._STAT_GAME_TICKS]),
+                "total_kills": int(buf[S._STAT_TOTAL_KILLS]),
+                "total_ejections": int(buf[S._STAT_TOTAL_EJECTIONS]),
+                "crewmate_tasks_done": crewmate_tasks_done,
+                "crewmate_tasks_total": crewmate_tasks_total,
+                "time_limit_reached": buf[S._STAT_TIME_LIMIT_REACHED] > 0.5,
+                "imposter_count": int(buf[S._STAT_IMPOSTER_COUNT]),
+                "crewmate_win": not imposter_win,
+                "imposter_win": imposter_win,
+                "task_completion_rate": (
+                    crewmate_tasks_done / crewmate_tasks_total if crewmate_tasks_total > 0 else 0.0
+                ),
+            })
+        return results
+
     def _step_env(self, env_id: int, action_indices: np.ndarray):
         worker = self.workers[env_id]
         agent_slice = self._agent_slice(env_id)
@@ -1476,11 +1580,17 @@ class BitWorldVecEnv:
         if done:
             scores = (np.asarray(worker.score) - np.asarray(worker.base_score)).reshape(-1)
             returns = np.asarray(worker.episode_return).reshape(-1)
+            rich = (
+                worker.collect_episode_stats()
+                if isinstance(worker, AmongThemNativeWorker)
+                else {}
+            )
             completed = [
                 EpisodeStats(
                     score=float(score),
                     length=worker.episode_steps,
                     episode_return=float(episode_return),
+                    **rich,
                 )
                 for score, episode_return in zip(scores, returns)
             ]
@@ -1538,16 +1648,20 @@ class BitWorldVecEnv:
             done_rows = self._state_agent_rows(done_env_ids)
             terminal_rewards = self._rewards[done_rows].copy()
             task_counts = self._state_completed_task_counts(done_rows)
-            for score, episode_return, tasks_completed in zip(
+            rich_stats_per_env = self._collect_rich_stats_batch(done_env_ids)
+            for idx, (score, episode_return, tasks_completed) in enumerate(zip(
                 self._state_score[done_rows],
                 self._state_episode_return[done_rows],
                 task_counts,
-            ):
+            )):
+                env_idx = idx // self.agents_per_env
+                rich = rich_stats_per_env[env_idx] if env_idx < len(rich_stats_per_env) else {}
                 stats = EpisodeStats(
                     score=float(score),
                     length=self._state_episode_steps,
                     episode_return=float(episode_return),
                     tasks_completed=float(tasks_completed),
+                    **rich,
                 )
                 completed.append(stats)
                 self._completed_scores.append(stats.score)

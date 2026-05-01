@@ -165,6 +165,8 @@ proc initNativeEnv(env: var NativeEnv) =
   setCurrentDir(gameDir())
   try:
     var config = defaultGameConfig()
+    if fileExists("config.json"):
+      config.update(readFile("config.json"))
     config.seed = env.seed
     config.maxTicks = env.maxTicks
     config.minPlayers = env.playerCount
@@ -457,6 +459,96 @@ proc bitworld_at_on_task_batch*(
         return setLastError("Unexpected player count in batch on_task query.")
       env.copyOnTaskFlags(flags, envIndex * playerCountInt)
     0
+  except CatchableError as e:
+    setLastError(e.msg)
+
+const
+  ## Episode stats buffer layout (flat cfloat array).
+  ## Global stats (indices 0-7):
+  STAT_WINNER* = 0           ## 0=Crewmate, 1=Imposter
+  STAT_GAME_TICKS* = 1       ## Ticks elapsed since game start
+  STAT_TOTAL_KILLS* = 2      ## Bodies on the ground
+  STAT_TOTAL_EJECTIONS* = 3  ## Players removed by vote
+  STAT_CREWMATE_TASKS_DONE* = 4  ## Tasks completed by all crewmates
+  STAT_CREWMATE_TASKS_TOTAL* = 5 ## Total assigned crewmate tasks
+  STAT_TIME_LIMIT_REACHED* = 6   ## 1 if game ended by max ticks
+  STAT_IMPOSTER_COUNT* = 7       ## Number of imposters in this game
+  ## Per-player stats start at index 8, stride 6 per player:
+  STAT_PLAYER_BASE* = 8
+  STAT_PLAYER_STRIDE* = 6
+  ## Per-player offsets:
+  STAT_P_ROLE* = 0            ## 0=Crewmate, 1=Imposter
+  STAT_P_ALIVE* = 1           ## 1=alive at game end, 0=dead
+  STAT_P_TASKS_DONE* = 2      ## Tasks this player completed
+  STAT_P_TASKS_ASSIGNED* = 3  ## Tasks assigned to this player
+  STAT_P_REWARD* = 4          ## Cumulative reward
+  STAT_P_KILL_COOLDOWN* = 5   ## Remaining kill cooldown (proxy for recent kill)
+
+proc episodeStatsSize*(playerCount: int): int =
+  STAT_PLAYER_BASE + playerCount * STAT_PLAYER_STRIDE
+
+proc copyEpisodeStats(env: var NativeEnv, output: ptr cfloat) =
+  let buf = cast[ptr UncheckedArray[cfloat]](output)
+  let sim = env.sim
+
+  buf[STAT_WINNER] = if sim.winner == Imposter: 1.0 else: 0.0
+  buf[STAT_GAME_TICKS] = cfloat(sim.gameTicksElapsed())
+  buf[STAT_TOTAL_KILLS] = cfloat(sim.bodies.len)
+
+  var ejections = 0
+  var crewTasksDone = 0
+  var crewTasksTotal = 0
+  var imposterCount = 0
+
+  for i in 0 ..< sim.players.len:
+    let p = sim.players[i]
+    let base = STAT_PLAYER_BASE + i * STAT_PLAYER_STRIDE
+    buf[base + STAT_P_ROLE] = if p.role == Imposter: 1.0 else: 0.0
+    buf[base + STAT_P_ALIVE] = if p.alive: 1.0 else: 0.0
+    buf[base + STAT_P_REWARD] = cfloat(p.reward)
+    buf[base + STAT_P_KILL_COOLDOWN] = cfloat(p.killCooldown)
+
+    if p.role == Imposter:
+      inc imposterCount
+      buf[base + STAT_P_TASKS_DONE] = 0.0
+      buf[base + STAT_P_TASKS_ASSIGNED] = 0.0
+    else:
+      var done = 0
+      for taskIndex in p.assignedTasks:
+        if taskIndex >= 0 and taskIndex < sim.tasks.len:
+          if i < sim.tasks[taskIndex].completed.len and
+              sim.tasks[taskIndex].completed[i]:
+            inc done
+      buf[base + STAT_P_TASKS_DONE] = cfloat(done)
+      buf[base + STAT_P_TASKS_ASSIGNED] = cfloat(p.assignedTasks.len)
+      crewTasksDone += done
+      crewTasksTotal += p.assignedTasks.len
+
+    if not p.alive and p.role != Imposter:
+      discard  # killed crewmate — already counted in bodies
+    elif not p.alive and p.role == Imposter:
+      inc ejections  # dead imposter = ejected by vote (kills don't target imposters)
+
+  buf[STAT_TOTAL_EJECTIONS] = cfloat(ejections)
+  buf[STAT_CREWMATE_TASKS_DONE] = cfloat(crewTasksDone)
+  buf[STAT_CREWMATE_TASKS_TOTAL] = cfloat(crewTasksTotal)
+  buf[STAT_TIME_LIMIT_REACHED] = if sim.timeLimitReached: 1.0 else: 0.0
+  buf[STAT_IMPOSTER_COUNT] = cfloat(imposterCount)
+
+proc bitworld_at_episode_stats*(
+  handle: cint,
+  output: ptr cfloat,
+  bufferSize: cint
+): cint {.cdecl, exportc, dynlib.} =
+  try:
+    if not validHandle(handle):
+      return setLastError("Invalid Among Them native env handle.")
+    var env = envs[int(handle)]
+    let needed = episodeStatsSize(env.playerCount)
+    if int(bufferSize) < needed:
+      return setLastError("Episode stats buffer too small: need " & $needed & " floats.")
+    env.copyEpisodeStats(output)
+    cint(needed)
   except CatchableError as e:
     setLastError(e.msg)
 
