@@ -479,6 +479,12 @@ function sendPlayerButtons(){
   sendPacket(new Uint8Array([0x84,heldButtons&127]));
 }
 
+function resetPlayerButtons(){
+  if(heldButtons===0)return;
+  heldButtons=0;
+  sendPlayerButtons();
+}
+
 function setButton(bit,down){
   const next=down?(heldButtons|bit):(heldButtons&~bit);
   if(next===heldButtons)return;
@@ -532,10 +538,7 @@ function updateEntry(){
 function startTyping(){
   typing=true;
   textBuffer="";
-  if(heldButtons!==0){
-    heldButtons=0;
-    sendPlayerButtons();
-  }
+  resetPlayerButtons();
   updateEntry();
 }
 
@@ -800,6 +803,7 @@ function parse(bytes){
 
 function reconnect(ws){
   if(socket!==ws)return;
+  resetPlayerButtons();
   socket=null;
   clearBlack();
   if(reconnectSeconds>0){
@@ -946,10 +950,11 @@ addEventListener("keyup",event=>{
 });
 addEventListener("blur",()=>{
   if(!playerMode)return;
-  if(heldButtons!==0){
-    heldButtons=0;
-    sendPlayerButtons();
-  }
+  resetPlayerButtons();
+});
+addEventListener("pagehide",resetPlayerButtons);
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)resetPlayerButtons();
 });
 fit();
 </script>
