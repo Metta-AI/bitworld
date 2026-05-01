@@ -39,6 +39,19 @@ const
   MemoryAlibiCooldownTicks* = 20
     ## Per-(colour, task) dedup — suppress an `AlibiEvent` for the
     ## same colour + task if one fired within this many ticks.
+  MemorySelfKeyframeCap* = 64
+    ## Maximum `SelfKeyframe` entries retained per round. Oldest
+    ## trimmed first on overflow. 64 gives ~3.5 transitions/min over
+    ## a 18-min game ceiling — comfortable headroom vs. typical
+    ## room-change frequency. Feeds `my_location_history` in
+    ## imposter contexts (Sprint 2.2).
+  MemoryAlibiMatchRadius* = 28
+    ## World-pixel radius around a task centre within which a visible
+    ## crewmate counts as "at the terminal". 28 ≈ 2.3 × CollisionW —
+    ## generous enough to catch a crewmate standing at the interact
+    ## prompt on either side of the station, tight enough that a
+    ## crewmate just walking past a doorway doesn't score an alibi.
+    ## Sprint 2.3 (`LLM_SPRINTS.md §2.3`).
 
   # -----------------------------------------------------------------
   # LLM voting integration (LLM_VOTING.md)

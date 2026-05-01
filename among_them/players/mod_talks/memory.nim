@@ -43,10 +43,12 @@ proc initMemory*(): Memory =
     result.summaries[i].lastSeenY = low(int)
     result.summaries[i].lastSeenRoomId = -1
   result.lastMeetingEndTick = -1
+  result.lastSelfRoomId = -1
   result.sightings = @[]
   result.bodies = @[]
   result.meetings = @[]
   result.alibis = @[]
+  result.selfKeyframes = @[]
 
 proc resetForNewRound*(m: var Memory) =
   ## Clears everything. Called at round boundaries (game-over edge,
@@ -252,4 +254,35 @@ proc appendAlibi*(m: var Memory, tick, colorIndex, taskIndex: int): bool =
   if (s.taskBits and bit) == 0:
     s.taskBits = s.taskBits or bit
     s.distinctTasksObserved = countSetBits(s.taskBits)
+  true
+
+# ---------------------------------------------------------------------------
+# Self-position keyframes (Sprint 2.2)
+# ---------------------------------------------------------------------------
+
+proc observeSelfRoom*(m: var Memory, tick, roomId: int): bool =
+  ## Records a keyframe when the bot's current room differs from the
+  ## last observed one. Returns true if a keyframe was appended.
+  ## Ring-buffer capped at `MemorySelfKeyframeCap` — oldest is
+  ## dropped on overflow. Never trimmed at meeting boundaries (see
+  ## `trimAtMeetingEnd`); the imposter's alibi-building needs the
+  ## full pre-meeting history.
+  ##
+  ## Room `-1` (outside any named room — corridors, intersections)
+  ## is NOT recorded. A bot wandering a corridor between two rooms
+  ## should look like "room A → room B", not "room A → nowhere →
+  ## room B". Transitions through the null room still update
+  ## `lastSelfRoomId` so we catch the next real-room arrival.
+  if roomId < 0:
+    # Don't record "nowhere" keyframes, but mark the previous room
+    # as tentatively-exited so the next named arrival will be
+    # distinct from it.
+    m.lastSelfRoomId = -1
+    return false
+  if roomId == m.lastSelfRoomId:
+    return false
+  m.lastSelfRoomId = roomId
+  m.selfKeyframes.add(SelfKeyframe(tick: tick, roomId: roomId))
+  while m.selfKeyframes.len > MemorySelfKeyframeCap:
+    m.selfKeyframes.delete(0)
   true

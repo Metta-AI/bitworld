@@ -22,6 +22,8 @@ import path
 import motion
 import diag
 import chat
+import memory
+import tuning
 
 const
   HomeSearchRadius* = 20
@@ -266,6 +268,45 @@ proc updateTaskIcons*(bot: var Bot) =
         bot.tasks.iconMisses[i] = 0
     else:
       bot.tasks.iconMisses[i] = 0
+
+proc updateAlibiObservations*(bot: var Bot) =
+  ## Scans for crewmate × task-icon co-location and appends positive-
+  ## innocence alibis to `bot.memory`. Sprint 2.3
+  ## (`LLM_SPRINTS.md §2.3`). Dedup is enforced inside
+  ## `memory.appendAlibi` (per-(colour, task) within
+  ## `MemoryAlibiCooldownTicks`), so this proc is safe to call every
+  ## frame.
+  ##
+  ## Signal: a non-self crewmate stands within `MemoryAlibiMatchRadius`
+  ## world-pixels of a task station centre AND the task's icon is
+  ## currently rendered (`taskIconVisibleFor`). The rendered-icon
+  ## requirement filters already-completed tasks (their icons vanish
+  ## on completion) so we don't keep recording alibis at stations
+  ## nobody is actually using. Self is skipped — we don't alibi
+  ## ourselves.
+  if not bot.percep.localized:
+    return
+  if bot.percep.visibleCrewmates.len == 0:
+    return
+  if bot.sim.tasks.len == 0:
+    return
+  const R = MemoryAlibiMatchRadius
+  for taskIndex, task in bot.sim.tasks:
+    if not bot.taskIconVisibleFor(task):
+      continue
+    let center = taskCenter(task)
+    for crewmate in bot.percep.visibleCrewmates:
+      if crewmate.colorIndex < 0 or
+          crewmate.colorIndex == bot.identity.selfColor:
+        continue
+      let world = bot.percep.visibleCrewmateWorld(crewmate)
+      let dx = world.x - center.x
+      let dy = world.y - center.y
+      if dx * dx + dy * dy > R * R:
+        continue
+      discard bot.memory.appendAlibi(
+        bot.frameTick, crewmate.colorIndex, taskIndex
+      )
 
 # ---------------------------------------------------------------------------
 # Counting / fallback predicate
