@@ -7,13 +7,17 @@ import platform
 from pathlib import Path
 
 import numpy as np
+from among_them.players.build_nottoodumb import NOTTOODUMB_ABI_VERSION, build_nottoodumb
 
-from mettagrid.bitworld import BITWORLD_ACTION_COUNT, BITWORLD_ACTION_NAMES, SCREEN_HEIGHT, SCREEN_WIDTH
+from mettagrid.bitworld import (
+    BITWORLD_ACTION_COUNT,
+    BITWORLD_ACTION_NAMES,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+)
 from mettagrid.policy.policy import AgentPolicy, MultiAgentPolicy
 from mettagrid.policy.policy_env_interface import PolicyEnvInterface
 from mettagrid.simulator import Action, AgentObservation
-
-from among_them.players.build_nottoodumb import NOTTOODUMB_ABI_VERSION, build_nottoodumb
 
 
 class _NotTooDumbNimAgentPolicy(AgentPolicy):
@@ -174,3 +178,6 @@ def _verify_library_abi(lib: ctypes.CDLL, lib_path: Path) -> None:
             f"NotTooDumb library {lib_path} has ABI version {actual}, "
             f"expected {NOTTOODUMB_ABI_VERSION}."
         )
+
+
+AmongThemPolicy = NotTooDumbNimPolicy

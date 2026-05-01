@@ -28,7 +28,12 @@ cogames submissions --season "$SEASON" --policy "$POLICY_NAME"
 cogames leaderboard "$SEASON" --policy "$POLICY_NAME"
 ```
 
-If shipping a new bot for the first time, follow §3.
+If shipping a new bot for the first time, follow §4.
+
+If the game you're targeting is **not** in `cogames season list` (e.g. a
+private eval, a ladder that hasn't opened yet, or you just want to stage
+a policy without attaching it to a tournament), see §3 — upload without
+a season.
 
 ---
 
@@ -111,7 +116,135 @@ This catches stale binaries before they corrupt a tournament run.
 
 ---
 
-## 3. Adding a new Nim-backed bot's submission package
+## 3. Uploading without submitting to a tournament
+
+Sometimes you want to upload a policy **without** attaching it to any
+season. Common reasons:
+
+* The game you're targeting is not on the public season list
+  (`cogames season list` doesn't show it).
+* You want to stage a build, share its name with a teammate, and decide
+  later which season to submit it into.
+* You're iterating rapidly and don't want each bundle to enter the
+  tournament queue.
+* You want to validate that a bundle builds and runs on the worker
+  image without polluting a leaderboard.
+
+### 3.1 How `cogames upload` handles seasons
+
+`cogames upload` has three mutually exclusive behaviors w.r.t. seasons:
+
+| Flags | Behavior |
+|---|---|
+| `--season <name>` | Upload **and** submit to `<name>`. |
+| (neither flag) | Upload **and** submit to the server's default season. |
+| `--no-submit` | Upload only. The policy is stored and reusable; no season is touched. |
+
+`--no-submit` is the one you want when the target game isn't on the
+public-facing season list.
+
+### 3.2 Direct-CLI upload (no season)
+
+The `ship.sh` helper requires `SEASON`, so for a season-less upload
+invoke `cogames upload` directly. Run from the **bitworld repo root**:
+
+```bash
+# Pure-Python policy:
+cogames upload \
+  -p class=my_policy.AmongThemPolicy \
+  -f path/to/my_policy.py \
+  -n "$USER-mybot-$(date +%Y%m%d-%H%M%S)" \
+  --no-submit
+
+# Nim-backed policy (modulabot-style). Mirror the INCLUDES array from
+# among_them/players/<bot>/cogames/ship.sh:
+cogames upload \
+  -p class=amongthem_policy.AmongThemPolicy \
+  -f among_them/players/<bot>/cogames/amongthem_policy.py \
+  -f among_them/players/<bot> \
+  -f among_them/sim.nim \
+  -f common \
+  -f src/bitworld \
+  -f nimby.lock \
+  -n "$USER-<bot>-$(date +%Y%m%d-%H%M%S)" \
+  --no-submit
+```
+
+Notes:
+
+* `--no-submit` still runs the 10-step Docker validation gate. Combine
+  with `--skip-validation` if the bot is perception-based and trips the
+  no-op-actions check (see §6).
+* **Validation against the wrong pool.** When no matching season exists,
+  the validator falls back to the server's default season's pool config
+  (currently `beta-cvc`). That pool pins an older mettagrid image which
+  may be missing modules your wrapper imports (e.g. `mettagrid.bitworld`
+  was added in mettagrid ≥ 0.26 but the `compat-v0.25` image ships
+  0.25.5). This produces a `ModuleNotFoundError` at validation time
+  that has nothing to do with your bot. `--image` does not fully
+  override this because the pool's `requirements.txt` is baked into the
+  image. In this case `--skip-validation` is correct — you're not
+  hiding a bot bug, you're skipping a validator that has no compatible
+  pool to validate against.
+* `--dry-run` is orthogonal: it runs validation only and uploads
+  nothing, regardless of `--no-submit`. Use `--dry-run` to check the
+  bundle, then re-run with `--no-submit` to actually upload.
+* The uploaded policy shows up in `cogames submissions` with no season
+  attached. You can reference it later by name.
+
+### 3.3 Attaching an uploaded policy to a season later
+
+Once a matching season appears (or you pick one), promote an existing
+upload without rebundling:
+
+```bash
+# Submit latest version:
+cogames submit <policy-name> --season <season>
+
+# Or pin a specific version:
+cogames submit <policy-name>:v3 --season <season>
+```
+
+List what you've uploaded and which versions exist:
+
+```bash
+cogames submissions                   # all your uploads
+cogames submissions -p <policy-name>  # versions of one policy
+```
+
+### 3.4 Pre-bundling with `cogames create-bundle`
+
+If you want a reusable artifact on disk (for sharing, archiving, or
+uploading from CI), build the zip separately:
+
+```bash
+cogames create-bundle \
+  -p class=amongthem_policy.AmongThemPolicy \
+  -f among_them/players/<bot>/cogames/amongthem_policy.py \
+  -f among_them/players/<bot> \
+  -f among_them/sim.nim \
+  -f common \
+  -f src/bitworld \
+  -f nimby.lock \
+  -o submission.zip
+
+# Validate it without uploading:
+cogames validate-bundle submission.zip
+
+# Upload it later (no season):
+cogames upload -p ./submission.zip -n "$USER-<bot>-$(date +%Y%m%d-%H%M%S)" --no-submit
+
+# Or upload + submit in one step when a season is ready:
+cogames upload -p ./submission.zip -n "$USER-<bot>-$(date +%Y%m%d-%H%M%S)" --season <season>
+```
+
+This is also the most robust path for submitting to games that ship
+their own seasons out-of-band — build the bundle once, hand it off,
+and let whoever runs the season upload it.
+
+---
+
+## 4. Adding a new Nim-backed bot's submission package
 
 Layout convention:
 
@@ -138,11 +271,11 @@ Steps:
 4. Smoke-test the wrapper without `mettagrid` installed by stubbing
    it. See the smoke-test pattern in `cogames/README.md` if needed.
 5. Update `ship.sh` `INCLUDES` to list the bot's transitive Nim source
-   dependencies (see §4).
+   dependencies (see §5).
 
 ---
 
-## 4. Bundle layout — what to ship
+## 5. Bundle layout — what to ship
 
 `cogames upload` / `cogames ship` accepts `-f <path>` flags. Layout in the
 shipped zip is governed by `cogames/cli/submit.py:_bundle_target_for_include`:
@@ -184,7 +317,7 @@ included via `-f` end up in the worker).
 
 ---
 
-## 5. The 10-step validation gate
+## 6. The 10-step validation gate
 
 `cogames upload --dry-run` and `cogames ship` (without `--skip-validation`)
 run the policy in Docker for **exactly 10 steps**
@@ -225,7 +358,7 @@ where it will fail every match.
 
 ---
 
-## 6. Iterating after submission
+## 7. Iterating after submission
 
 Matches are asynchronous and may take minutes to hours. Tournament servers
 won't queue your bot instantly. Status commands:
@@ -257,7 +390,7 @@ season operator removes it.
 
 ---
 
-## 7. Common errors → fixes
+## 8. Common errors → fixes
 
 Keyed by literal error text or symptom.
 
@@ -267,17 +400,17 @@ Keyed by literal error text or symptom.
 | `error: Failed to spawn: softmax` | `uv run softmax` in a project that doesn't depend on `softmax-cli`. | `cogames auth login` instead. No `uv run`. |
 | `Docker not found` / `Docker daemon is not running` | Need Docker for `--dry-run` validation. | macOS: `open -a Docker`; wait for `docker info` to succeed. |
 | `Path does not exist: <path>` | `-f` arg references a file not present from cwd. | Run `cogames` from bitworld repo root. Verify the path. |
-| `Policy took no actions (all no-ops)` | 10-step validation gate; perception bots can't localize that fast. | Use `--skip-validation`. See §5 decision tree. |
+| `Policy took no actions (all no-ops)` | 10-step validation gate; perception bots can't localize that fast. | Use `--skip-validation`. See §6 decision tree. |
 | `Modulabot library ... has ABI version N, expected M` | Stale `.dylib` cached on disk. | Delete `among_them/players/<bot>/lib<bot>.*` and let the wrapper rebuild. |
 | `Modulabot library ... does not export an ABI version` | Built before the ABI export was added. | Rebuild from current source. |
-| `cannot open file: protocol` (in dry-run Nim build) | Missing transitive Nim source in the bundle. | Add the missing dir to `ship.sh` `INCLUDES`. See §4. |
+| `cannot open file: protocol` (in dry-run Nim build) | Missing transitive Nim source in the bundle. | Add the missing dir to `ship.sh` `INCLUDES`. See §5. |
 | `Could not locate modulabot source directory` | Wrapper can't find `build_<bot>.py`. | The `-f among_them/players/<bot>` include is missing or relative paths are off. Run from repo root. |
 | `No leaderboard entries for season '<name>'` | Matches haven't completed yet, or season has no finished matches. | Wait. Re-check in 15–30 min. |
 | `No matches found in season '<name>'` from `cogames matches` | Same as above, or filter combo returns empty. | Wait, then re-check. Try without `--policy` filter to see all matches. |
 
 ---
 
-## 8. Things never to do
+## 9. Things never to do
 
 * **Never** ship into a non-AmongThem season. Verify with
   `cogames season show <name>`.
@@ -295,7 +428,7 @@ Keyed by literal error text or symptom.
 
 ---
 
-## 9. Useful references
+## 10. Useful references
 
 In this repo:
 

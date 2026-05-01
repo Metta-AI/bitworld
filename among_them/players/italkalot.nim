@@ -1,4 +1,4 @@
-import pixie, protocol, ../sim, ../texts, ../../common/server
+import pixie, protocol, ../sim, ../texts, ../votereader, ../../common/server
 when not defined(italkalotLibrary):
   import bitworld/ais/openai, silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -1993,9 +1993,41 @@ proc parseVotingScreen(bot: var Bot): bool =
       bot.voteStartTick
     else:
       bot.frameTick
-  for count in countdown(MaxPlayers, 1):
-    if bot.parseVotingCandidate(count, startTick):
-      return true
+  let read = parseVoteFrame(
+    bot.unpacked,
+    bot.sim.asciiSprites,
+    bot.playerSprite,
+    bot.bodySprite
+  )
+  if read.found:
+    bot.clearVotingState()
+    bot.voting = true
+    bot.votePlayerCount = read.playerCount
+    bot.voteStartTick = startTick
+    bot.voteCursor = read.cursor
+    bot.voteSelfSlot = read.selfSlot
+    for i in 0 ..< read.playerCount:
+      bot.voteSlots[i].colorIndex = read.slots[i].colorIndex
+      bot.voteSlots[i].alive = read.slots[i].alive
+    for i in 0 ..< min(bot.voteChoices.len, read.choices.len):
+      bot.voteChoices[i] = read.choices[i]
+    if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+      bot.selfColorIndex = read.slots[read.selfSlot].colorIndex
+    bot.voteChatLines.setLen(0)
+    for entry in read.chat:
+      for line in entry.lines:
+        bot.voteChatLines.add VoteChatLine(
+          speakerColor: entry.colorIndex,
+          y: 0,
+          text: line
+        )
+    bot.voteChatText = read.chatText
+    bot.voteChatSusColor =
+      if bot.voteSusColorAllowed(read.chatSusColor):
+        read.chatSusColor
+      else:
+        VoteUnknown
+    return true
   if bot.voting:
     bot.lastVoteFrame = ""
     bot.clearAiConversation()

@@ -19,12 +19,22 @@ except ImportError:
     fcntl = None
 
 PLAYERS_DIR = Path(__file__).resolve().parent
-ROOT = PLAYERS_DIR.parents[1]
-NIMBY_LOCK = ROOT / "nimby.lock"
 NIM_VERSION = "2.2.4"
 NIMBY_VERSION = "0.1.26"
 NIMBY_SYNC_LOCK = Path.home() / ".nimby" / ".python_sync.lock"
 NOTTOODUMB_ABI_VERSION = 2
+
+
+def _resolve_root() -> Path:
+    """Walks upward from the players directory until it finds nimby.lock."""
+    for candidate in (PLAYERS_DIR, *PLAYERS_DIR.parents):
+        if (candidate / "nimby.lock").is_file():
+            return candidate
+    return PLAYERS_DIR.parents[1]
+
+
+ROOT = _resolve_root()
+NIMBY_LOCK = ROOT / "nimby.lock"
 
 
 def build_nottoodumb() -> Path:
@@ -40,6 +50,8 @@ def build_nottoodumb() -> Path:
         "--app:lib",
         "-d:nottoodumbLibrary",
         f"--out:{out_path}",
+        f"--path:{ROOT / 'common'}",
+        f"--path:{ROOT / 'src'}",
         *_nim_paths_from_lock(NIMBY_LOCK),
         str(PLAYERS_DIR / "nottoodumb.nim"),
     ]

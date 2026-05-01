@@ -1,4 +1,6 @@
-import pixie, protocol, ../sim, ../../common/server
+import
+  pixie, protocol, ../sim, ../votereader, ../../common/server,
+  ../../common/pixelfonts
 when not defined(evidencebotLibrary):
   import silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -881,15 +883,14 @@ proc asciiChar(index: int): char =
 
 proc asciiGlyphScore(
   bot: Bot,
-  glyph: Sprite,
+  glyph: PixelGlyph,
   screenX,
   screenY: int
 ): tuple[misses: int, opaque: int] =
   ## Scores one rendered ASCII glyph against the current screen.
   for y in 0 ..< glyph.height:
     for x in 0 ..< glyph.width:
-      let color = glyph.pixels[glyph.spriteIndex(x, y)]
-      if color == TransparentColorIndex:
+      if not glyph.glyphPixel(x, y):
         continue
       inc result.opaque
       let
@@ -898,7 +899,7 @@ proc asciiGlyphScore(
       if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
         inc result.misses
         continue
-      if bot.unpacked[sy * ScreenWidth + sx] != color:
+      if bot.unpacked[sy * ScreenWidth + sx] != TextColor:
         inc result.misses
 
 proc asciiTextScore(
@@ -911,9 +912,9 @@ proc asciiTextScore(
   var offsetX = 0
   for ch in text:
     let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < bot.sim.asciiSprites.len:
+    if idx >= 0 and idx < bot.sim.asciiSprites.glyphs.len:
       let score = bot.asciiGlyphScore(
-        bot.sim.asciiSprites[idx],
+        bot.sim.asciiSprites.glyphs[idx],
         screenX + offsetX,
         screenY
       )
@@ -948,7 +949,7 @@ proc bestAsciiGlyph(bot: Bot, x, y: int): char =
     bestChar = ' '
     bestMisses = high(int)
     bestOpaque = 0
-  for i, glyph in bot.sim.asciiSprites:
+  for i, glyph in bot.sim.asciiSprites.glyphs:
     let score = bot.asciiGlyphScore(glyph, x, y)
     if score.opaque == 0:
       continue
@@ -1999,9 +2000,29 @@ proc parseVotingScreen(bot: var Bot): bool =
       bot.voteStartTick
     else:
       bot.frameTick
-  for count in countdown(MaxPlayers, 1):
-    if bot.parseVotingCandidate(count, startTick):
-      return true
+  let read = parseVoteFrame(
+    bot.unpacked,
+    bot.sim.asciiSprites,
+    bot.playerSprite,
+    bot.bodySprite
+  )
+  if read.found:
+    bot.clearVotingState()
+    bot.voting = true
+    bot.votePlayerCount = read.playerCount
+    bot.voteStartTick = startTick
+    bot.voteCursor = read.cursor
+    bot.voteSelfSlot = read.selfSlot
+    for i in 0 ..< read.playerCount:
+      bot.voteSlots[i].colorIndex = read.slots[i].colorIndex
+      bot.voteSlots[i].alive = read.slots[i].alive
+    for i in 0 ..< min(bot.voteChoices.len, read.choices.len):
+      bot.voteChoices[i] = read.choices[i]
+    if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+      bot.selfColorIndex = read.slots[read.selfSlot].colorIndex
+    bot.voteChatText = read.chatText
+    bot.voteChatSusColor = read.chatSusColor
+    return true
   bot.clearVotingState()
   false
 

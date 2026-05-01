@@ -1,13 +1,23 @@
 import
-  std/[locks, monotimes, os, strutils, tables, times],
+  std/[locks, monotimes, nativesockets, os, strutils, tables, times],
   mummy,
   bitworld/clients, protocol, sim, global
 
+when defined(posix):
+  from std/posix import SHUT_RDWR, shutdown
+
 type
+  WebSocketSocketFields = object
+    server: Server
+    clientSocket: SocketHandle
+    clientId: uint64
+
   WebSocketAppState = object
     lock: Lock
     replayLoaded: bool
     resetRequested: bool
+    kickRequests: seq[string]
+    kickedIdentities: Table[string, bool]
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     chatMessages: Table[WebSocket, string]
@@ -72,6 +82,8 @@ type
 
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
+  ControlRestartPath = "/control/restart"
+  ControlKickPath = "/control/kick"
 
 proc liveProgressMaxTick(config: GameConfig): int =
   ## Returns the live viewer tick-bar budget.
@@ -507,11 +519,21 @@ proc playbackSpeed(speedIndex: int): int =
   ## Returns the live playback speed for an index.
   PlaybackSpeeds[clamp(speedIndex, 0, PlaybackSpeeds.high)]
 
+proc rewardAddress(address: string): string =
+  ## Formats one reward address as host:port.
+  let parts = address.splitWhitespace()
+  if parts.len >= 2:
+    return parts[0] & ":" & parts[1]
+  address
+
 var appState: WebSocketAppState
 
 proc initAppState() =
   initLock(appState.lock)
   appState.replayLoaded = false
+  appState.resetRequested = false
+  appState.kickRequests = @[]
+  appState.kickedIdentities = initTable[string, bool]()
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.chatMessages = initTable[WebSocket, string]()
@@ -534,6 +556,10 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
   if websocket notin appState.playerIndices:
+    appState.inputMasks.del(websocket)
+    appState.lastAppliedMasks.del(websocket)
+    appState.chatMessages.del(websocket)
+    appState.playerAddresses.del(websocket)
     return
   let removedIndex = appState.playerIndices[websocket]
   appState.playerIndices.del(websocket)
@@ -561,15 +587,64 @@ proc playerIdentity(request: Request): string =
     return name
   request.remoteAddress
 
+proc controlHeaders(): HttpHeaders =
+  ## Returns headers for stats-page control requests.
+  result["Content-Type"] = "text/plain; charset=utf-8"
+  result["Cache-Control"] = "no-cache"
+  result["Access-Control-Allow-Origin"] = "*"
+  result["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+  result["Access-Control-Allow-Headers"] = "Content-Type"
+
+proc respondControl(request: Request, status: int, body: string) =
+  ## Sends a plain text control response.
+  request.respond(status, controlHeaders(), body)
+
+proc replayControlsDisabled(): bool =
+  ## Returns true when live match controls are disabled.
+  {.gcsafe.}:
+    withLock appState.lock:
+      result = appState.replayLoaded
+
+proc disconnectWebSocket(websocket: WebSocket) =
+  ## Tears down a player connection immediately.
+  when defined(posix):
+    let fields = cast[WebSocketSocketFields](websocket)
+    discard shutdown(fields.clientSocket, SHUT_RDWR)
+  else:
+    websocket.close()
+
+proc identityIsKicked(identity: string): bool =
+  ## Returns true when an identity is blocked from rejoining this match.
+  let rewardIdentity = identity.rewardAddress()
+  {.gcsafe.}:
+    withLock appState.lock:
+      result =
+        identity in appState.kickedIdentities or
+        rewardIdentity in appState.kickedIdentities
+
+proc respondKicked(request: Request) =
+  ## Rejects a kicked player before upgrading to a WebSocket.
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  headers["Connection"] = "close"
+  request.respond(409, headers, "player was kicked\n")
+
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET":
     let identity = request.playerIdentity()
+    if identity.identityIsKicked():
+      request.respondKicked()
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerAddresses[websocket] = identity
   elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
     let identity = request.playerIdentity()
+    if identity.identityIsKicked():
+      request.respondKicked()
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -585,6 +660,32 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.rewardViewers[websocket] = true
+  elif (request.path == ControlRestartPath or request.path == ControlKickPath) and
+      request.httpMethod == "OPTIONS":
+    request.respondControl(204, "")
+  elif request.path == ControlRestartPath and request.httpMethod == "POST":
+    if replayControlsDisabled():
+      request.respondControl(409, "match controls are disabled for replays\n")
+    else:
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.resetRequested = true
+      request.respondControl(202, "restart queued\n")
+  elif request.path == ControlKickPath and request.httpMethod == "POST":
+    if replayControlsDisabled():
+      request.respondControl(409, "match controls are disabled for replays\n")
+    else:
+      let identity = request.queryParams.getOrDefault(
+        "identity",
+        ""
+      ).cleanPlayerName()
+      if identity.len == 0:
+        request.respondControl(400, "missing identity\n")
+      else:
+        {.gcsafe.}:
+          withLock appState.lock:
+            appState.kickRequests.add(identity)
+        request.respondControl(202, "kick queued\n")
   elif request.serveStaticClientHtml():
     discard
   else:
@@ -599,16 +700,32 @@ proc websocketHandler(
 ) =
   case event
   of OpenEvent:
+    var closeKickedSocket = false
     {.gcsafe.}:
       withLock appState.lock:
         if websocket notin appState.globalViewers and
             websocket notin appState.rewardViewers:
-          if appState.replayLoaded:
+          let
+            address = appState.playerAddresses.getOrDefault(websocket, "")
+            identity = address.rewardAddress()
+            isKicked =
+              address in appState.kickedIdentities or
+                identity in appState.kickedIdentities
+          if isKicked:
+            appState.playerAddresses.del(websocket)
+            appState.inputMasks.del(websocket)
+            appState.lastAppliedMasks.del(websocket)
+            appState.chatMessages.del(websocket)
+            closeKickedSocket = true
+          elif appState.replayLoaded:
             appState.playerIndices[websocket] = -1
           else:
             appState.playerIndices[websocket] = 0x7fffffff
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+          if websocket in appState.playerIndices:
+            appState.inputMasks[websocket] = 0
+            appState.lastAppliedMasks[websocket] = 0
+    if closeKickedSocket:
+      websocket.disconnectWebSocket()
   of MessageEvent:
     if message.kind == BinaryMessage:
       {.gcsafe.}:
@@ -631,7 +748,8 @@ proc websocketHandler(
             if chatText.len > 0:
               appState.chatMessages[websocket] = chatText
           elif isInputPacket(message.data) and
-              not appState.replayLoaded:
+              not appState.replayLoaded and
+              websocket in appState.playerIndices:
             let mask = blobToMask(message.data)
             if mask == 255'u8:
               appState.resetRequested = true
@@ -661,13 +779,6 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
-
-proc rewardAddress(address: string): string =
-  ## Formats one reward address as host:port.
-  let parts = address.splitWhitespace()
-  if parts.len >= 2:
-    return parts[0] & ":" & parts[1]
-  address
 
 proc rewardAccountFor(sim: SimServer, address: string): int =
   ## Returns the reward account index for one address.
@@ -764,6 +875,7 @@ proc runServerLoop*(
   while true:
     var
       sockets: seq[WebSocket] = @[]
+      socketsToClose: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
       spectatorList: seq[WebSocket] = @[]
@@ -794,6 +906,29 @@ proc runServerLoop*(
                 prevInputs.delete(playerIndex)
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
+        if not replayLoaded and appState.kickRequests.len > 0:
+          let requestedKicks = appState.kickRequests
+          appState.kickRequests = @[]
+          var socketsToKick: seq[WebSocket] = @[]
+          for websocket, address in appState.playerAddresses.pairs:
+            let identity = address.rewardAddress()
+            for requestedIdentity in requestedKicks:
+              if address == requestedIdentity or identity == requestedIdentity:
+                appState.kickedIdentities[address] = true
+                appState.kickedIdentities[identity] = true
+                if websocket notin socketsToKick:
+                  socketsToKick.add(websocket)
+          for websocket in socketsToKick:
+            if websocket in appState.playerIndices:
+              let playerIndex = appState.playerIndices[websocket]
+              if playerIndex >= 0 and playerIndex < sim.players.len:
+                replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
+                if playerIndex < replayWriter.lastMasks.len:
+                  replayWriter.lastMasks.delete(playerIndex)
+                if playerIndex < prevInputs.len:
+                  prevInputs.delete(playerIndex)
+            sim.removePlayer(websocket)
+            socketsToClose.add(websocket)
         if not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
           sim.resetToLobby()
           prevInputs = @[]
@@ -805,11 +940,16 @@ proc runServerLoop*(
             if appState.playerIndices[websocket] == 0x7fffffff:
               newSockets.add(websocket)
           for websocket in newSockets:
-            if sim.phase == Lobby and sim.canAddPlayer():
-              let address = appState.playerAddresses.getOrDefault(
-                websocket,
-                "unknown"
-              )
+            let address = appState.playerAddresses.getOrDefault(
+              websocket,
+              "unknown"
+            )
+            let identity = address.rewardAddress()
+            if address in appState.kickedIdentities or
+                identity in appState.kickedIdentities:
+              sim.removePlayer(websocket)
+              socketsToClose.add(websocket)
+            elif sim.phase == Lobby and sim.canAddPlayer():
               appState.playerIndices[websocket] = sim.addPlayer(address)
               replayWriter.writeJoin(
                 tickTime(sim.tickCount),
@@ -872,9 +1012,14 @@ proc runServerLoop*(
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
 
+    for websocket in socketsToClose:
+      websocket.disconnectWebSocket()
+
     if shouldReset:
+      let rewardAccounts = sim.rewardAccounts
       inc config.seed
       sim = initSimServer(config)
+      sim.rewardAccounts = rewardAccounts
       prevInputs = @[]
       replayWriter.lastMasks = @[]
       sockets.setLen(0)
@@ -885,10 +1030,13 @@ proc runServerLoop*(
       playerViewerStates.setLen(0)
       {.gcsafe.}:
         withLock appState.lock:
-          appState.spectators = @[]
+          appState.kickedIdentities.clear()
           var reconnectSockets: seq[WebSocket] = @[]
           for websocket in appState.playerIndices.keys:
             reconnectSockets.add(websocket)
+          for websocket in appState.spectators:
+            reconnectSockets.add(websocket)
+          appState.spectators = @[]
           for websocket in reconnectSockets:
             if not sim.canAddPlayer():
               if websocket in appState.playerViewers:
