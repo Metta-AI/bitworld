@@ -1,6 +1,8 @@
 # Modulabot Trace Generation
 
-Status: **shipped** (Phase 1–4 complete). Sibling to `DESIGN.md`.
+Status: **shipped** (Phases 1–5 complete; LLM observability shipped in
+Sprint 1, plus Sprint 2 speaker attribution and Sprint 5 context capture
+both extend the schema). Sibling to `DESIGN.md`.
 
 This document is the design + implementation spec for the structured
 trace-generation system in modulabot. The trace exists to feed an
@@ -19,39 +21,54 @@ The trace is sourced **only from the bot's own experience** (its
 | 2 | snapshots.jsonl, per-line chat capture | ✅ shipped |
 | 3 | auto frames-dump, parity-with-trace, validator | ✅ shipped |
 | 4 | FFI `modulabot_init_trace`, branch-IDs doc generator, smoke pipeline | ✅ shipped |
+| 5 | LLM event family + manifest fields (Sprint 1) | ✅ shipped |
+| 5+ | Speaker attribution on `chat_observed` (Sprint 2.1) | ✅ shipped |
+| 5+ | Optional context capture for prompt-eval (Sprint 5.1) | ✅ shipped |
 
 Verified: all four parity modes (no-trace + with-trace × black + mixed)
-report 100% match. The trace writer is non-perturbing.
+report 100% match. The trace writer is non-perturbing. Schema-version
+history: v1 (initial), v2 (`is_new_body` on body events), v3 (LLM event
+family + manifest LLM flags + `summary_counters.llm` block).
 
 ### Files
 
 | Path | Purpose |
 |---|---|
-| `trace.nim` | The writer. Manifest + events + decisions + snapshots, JSON serialisation, diff-state, lifecycle. |
-| `tuning_snapshot.nim` | Single-source-of-truth proc dumping every policy const into the manifest. |
+| `trace.nim` | The writer. Manifest + events + decisions + snapshots, JSON serialisation, diff-state, lifecycle. Owns the LLM event emitters (`emitLlmDispatched`, `emitLlmDecision`, `emitLlmError`, `emitLlmContextCapture`, `setLlmLayerActive`). |
+| `tuning_snapshot.nim` | Single-source-of-truth proc dumping every policy const into the manifest. Sprint 5.4 added all 14 `tuning.nim` LLM/Memory knobs. |
 | `diag.nim` | Adds `bot.fired(branchId, intent)` helper used by every policy branch. |
-| `types.nim` | Adds `TraceWriter`, `TraceLevel`, `ManifestCounters`, `Diag.branchId`, `VotingState.chatLines`, `Bot.trace`. |
-| `voting.nim` | Refactored `readVoteChatText` into a `visibleChatLines` iterator + `chatLines` cache. |
-| `bot.nim` | Splits `decideNextMaskCore` from the public `decideNextMask` wrapper that calls `traceFrame`. |
-| `viewer/runner.nim` | Opens the writer at `initBot`, mirrors chat sends, auto-defaults the frames dump. |
-| `modulabot.nim` | Five new CLI flags + five env vars. |
-| `ffi/lib.nim` | `modulabot_init_trace` exported proc; per-agent trace attachment. |
-| `test/parity.nim` | `--trace-dir` flag for trace-on parity checks. |
+| `types.nim` | Adds `TraceWriter`, `TraceLevel`, `ManifestCounters`, `LlmSessionCounters`, `Diag.branchId`, `VotingState.chatLines: seq[VoteChatLine]`, `Bot.trace`. |
+| `voting.nim` | `visibleChatLines` iterator yields `VoteChatLine` (text + speaker pip color); `detectChatSpeaker` does the pip detection. `detectResultEjection` reads the post-vote result frame for `MeetingEvent.ejected`. |
+| `bot.nim` | Splits `decideNextMaskCore` from the public `decideNextMask` wrapper that calls `traceFrame`. `finalizeMeeting` proc owns meeting-event append (Sprint 2.4). |
+| `viewer/runner.nim` | Opens the writer at `initBot`, mirrors chat sends, auto-defaults the frames dump, optionally enables LLM-mock harness. |
+| `modulabot.nim` | CLI flags + env vars (see `DESIGN.md §12`). |
+| `ffi/lib.nim` | `modulabot_init_trace` exported proc; per-agent trace attachment. The Python wrapper at `cogames/amongthem_policy.py:_arm_trace_if_requested` calls it from env vars. |
+| `test/parity.nim` | `--trace-dir` flag for trace-on parity checks; `--llm-mock` flag for Sprint 3 mock-mode parity. |
 | `test/trace_smoke.nim` | End-to-end smoke (trace-on vs trace-off + schema checks). |
-| `test/validate_trace.nim` | Schema validator. |
+| `test/validate_trace.nim` | Schema validator (accepts v1, v2, v3). |
+| `test/llm_unit.nim` | 56-test unit suite for `llm.nim` pure helpers + mock + trim. |
 | `tools/gen_branch_ids.nim` | Generates `BRANCH_IDS.md` from `bot.fired("...")` call sites. |
-| `tools/trace_smoke.sh` | Local CI: build + parity + smoke + branch-ID drift detection. |
-| `BRANCH_IDS.md` | Auto-generated catalog of all 29 branch IDs. |
+| `tools/trace_smoke.sh` | Local CI: build + parity (no/with trace) + smoke + branch-ID drift + llm_unit + tuning_snapshot exhaustiveness. |
+| `tools/llm_prompt_eval.py` | Sprint 5.1 prompt-eval harness — replays captured contexts against a candidate prompt and scores responses. |
+| `BRANCH_IDS.md` | Auto-generated catalog of branch IDs (currently 31). |
 
 ### Quick-start
 
 Run a tracing modulabot against a local server:
 
 ```sh
-./modulabot --address:localhost --port:2000 --name:trace-bot \
+./mod_talks --address:localhost --port:2000 --name:trace-bot \
   --trace-dir:/tmp/runs \
   --trace-level:decisions \
   --trace-meta:experiment_id=baseline
+```
+
+Add LLM context capture for prompt-eval replay (Sprint 5.1):
+
+```sh
+MODTALKS_LLM_CAPTURE=1 ./mod_talks_llm \
+  --address:localhost --port:2000 --name:trace-bot \
+  --trace-dir:/tmp/runs
 ```
 
 Inspect a generated trace:
@@ -167,8 +184,22 @@ snapshot. This keeps policy code untouched aside from branch IDs.
 
 ## 4. Trace schema
 
-`schema_version` is per-manifest. A bump means "regenerate everything"
-— old and new versions are not co-mixable in the same harness run.
+`schema_version` is per-manifest. Bumps are additive within a major
+schema (so a v3 reader must accept v1, v2, and v3 manifests; only
+NEW fields are added). The shipped progression:
+
+- **v1** — Phase 1 baseline (manifest, events, decisions, snapshots).
+- **v2** — `is_new_body` field on `body_seen_first` events; trace
+  writer consumes `Memory.bodies` instead of its own diff state
+  (DESIGN.md §13.6).
+- **v3** — Sprint 1 LLM observability: new `llm_dispatched` /
+  `llm_decision` / `llm_error` / `llm_layer_active` event types;
+  manifest gains `trace_settings.llm_compiled_in` /
+  `.llm_layer_active`; `summary_counters.llm` block is mandatory.
+  Sprint 2.1 `chat_observed` events now carry real
+  `speaker` field instead of null.
+
+`validate_trace.nim` accepts v1, v2, v3.
 
 ### 4.1 `manifest.json`
 
@@ -178,7 +209,7 @@ One JSON object per round (game). Written at round start with the
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "session_id": "2026-04-30T19:14:02Z-pid12345",
   "round_id": 3,
   "bot_name": "modulabot",                 // from --name; "modulabot" if unset
@@ -213,27 +244,27 @@ One JSON object per round (game). Written at round start with the
   "tuning_snapshot": {
     // Full snapshot of every const that influences policy.
     // Sourced from a single proc tuningSnapshot() in tuning.nim.
+    // See tuning_snapshot.nim for the canonical list (~60 entries).
+    // Sprint 5.4 added all 14 LLM/Memory tuning knobs.
     "TeleportThresholdPx":              32,
-    "PathLookahead":                    18,
-    "TaskPreciseApproachRadius":        12,
-    "TaskIconMissThreshold":            24,
-    "ImposterFollowSwapMinTicks":      240,
-    "ImposterCentralRoomStuckTicks":   360,
-    "ImposterSelfReportRadius":         24,
-    "ImposterSelfReportRecentTicks":    30,
     "VoteListenTicks":                 100,
-    "WitnessNearBodyRadius":            16,
-    "StuckFrameThreshold":               8,
-    "JiggleDuration":                   16,
-    "GhostIconFrameThreshold":           2
-    // ... see §10.2 for the canonical extraction proc.
+    "LlmAccuseThreshold":              0.75,
+    "LlmVoteThreshold":                0.50,
+    "LlmChatReactionCooldownTicks":     48,
+    "LlmMaxChatLen":                    72,
+    "LlmMaxContextLen":               7500,
+    "LlmMaxContextBytes":            15500,
+    "LlmPersuadeEnabled":            false
+    // ... rest in tuning_snapshot.nim
   },
 
   "trace_settings": {
     "level":                  "decisions", // "events" | "decisions" | "full"
     "snapshot_period_ticks":  120,
-    "speaker_attribution":    "none",      // v2 will set "color_pip" or similar
-    "frames_dump_captured":   true
+    "speaker_attribution":    "color_pip", // v3: "color_pip" once Sprint 2.1 shipped; "none" only for pre-Sprint-2 traces
+    "frames_dump_captured":   true,
+    "llm_compiled_in":        true,        // v3: set from -d:modTalksLlm at openTrace
+    "llm_layer_active":       true         // v3: flipped by setLlmLayerActive when modulabot_enable_llm fires
   },
 
   "summary_counters": {
@@ -253,12 +284,31 @@ One JSON object per round (game). Written at round start with the
     "stuck_episodes":           2,
     "branch_transitions":     842,
     "events_emitted":         197,
-    "snapshots_emitted":       60
+    "snapshots_emitted":       60,
+    // v3: process-lifetime LLM session counters snapshot. Always
+    // present even in non-LLM builds (zeros). Reset to 0 on
+    // initBot; unlike the per-round counters above, these survive
+    // round rollovers within a session.
+    "llm": {
+      "total_dispatched":      12,
+      "total_completed":       11,
+      "total_errored":          1,
+      "total_fallbacks":        2,
+      "total_chat_queued":      4,
+      "by_kind_dispatched": {
+        "hypothesis": 4, "accuse": 2, "react": 3,
+        "strategize": 1, "imposter_react": 2, "persuade": 0
+      },
+      "by_kind_completed":  { "hypothesis": 4, "accuse": 2, "react": 3, "strategize": 1, "imposter_react": 1, "persuade": 0 },
+      "by_kind_errored":    { "hypothesis": 0, "accuse": 0, "react": 0, "strategize": 0, "imposter_react": 1, "persuade": 0 }
+    }
   },
 
   "harness_meta": {
     // Free-form, populated from --trace-meta=k=v,...
     // Outer-loop tracks lineage here.
+    // Sprint 5.3: launch_mod_talks_llm_local.py auto-stamps
+    // llm_provider, llm_model, llm_persuade, llm_disabled.
     "experiment_id":     "exp-2026-04-30-a",
     "parent_trace_id":   "round-2",
     "bot_variant":       "v0.3-suspicion-decay"
@@ -295,13 +345,18 @@ Schema for every line: `{tick: int, wall_ms: int, type: string,
 | `meeting_ended` | `meeting_index: int`, `duration_ticks: int` | interstitial → non-interstitial transition where the interstitial was a meeting |
 | `vote_observed` | `voter: color_name`, `target: color_name\|"skip"\|"unknown"` | `voting.choices[ci]` transitions from `VoteUnknown` to a value (per-meeting, once per voter) |
 | `vote_cast` | `target: color_name\|"skip"`, `ticks_after_meeting_start: int`, `rationale: string` | `voting.selfVoteChoice` first non-`VoteUnknown` per meeting |
-| `chat_observed` | `meeting_index: int`, `line: string`, `first_seen_tick: int`, `ocr_quality: "clean"\|"noisy"`, `speaker: null`, `matches_self_chat: bool` | New OCR'd line during a meeting (see §6.3) |
-| `chat_sent` | `text: string`, `queued_at_tick: int` | `runner.nim:176` (mask path) |
+| `chat_observed` | `meeting_index: int`, `line: string`, `first_seen_tick: int`, `ocr_quality: "clean"\|"noisy"`, `speaker: color_name\|null`, `matches_self_chat: bool` | New OCR'd line during a meeting. Sprint 2.1: `speaker` carries the pip-detected color name; null only when detection failed. |
+| `chat_sent` | `text: string`, `queued_at_tick: int` | `runner.nim` (mask path) |
 | `stuck_detected` | `world_pos: [x,y]`, `goal: name?` | `motion.stuckFrames` crosses `StuckFrameThreshold` |
 | `stuck_resolved` | `ticks_jiggling: int` | `motion.stuckFrames` returns to 0 after a jiggle episode |
 | `disconnect` | (none) | WS error in `runner.nim` |
 | `reconnect` | (none) | WS reconnect in the runner outer loop |
-| `game_over` | `title: string`, `result: ...` | `bot.nim:364-367` (game-over text edge) |
+| `game_over` | `title: string`, `result: ...` | game-over text edge |
+| `trace_warning` | `kind: string`, `message: string` | One-shot warnings (e.g. empty branch ID) |
+| `llm_layer_active` (v3) | `compiled_in: bool` | Emitted once when `setLlmLayerActive` is called from `llmEnable` (FFI ack from Python wrapper). Marks the tick the LLM went live in this round. |
+| `llm_dispatched` (v3) | `call_kind: string`, `stage: string`, `context_bytes: int` | `llm.nim:dispatchCall` fills the request slot. Pair with the matching `llm_decision` / `llm_error` by `call_kind` + `tick`. |
+| `llm_decision` (v3) | `call_kind`, `stage_before`, `stage_after`, `confidence: string\|null`, `latency_ms: int`, `dispatched_tick: int`, `ticks_in_flight: int`, `context_bytes`, `response_bytes`, `chat_queued: bool`, `fallback: bool` | Successful response applied. `latency_ms` is wall-clock between dispatch and apply. |
+| `llm_error` (v3) | `call_kind`, `stage`, `reason: "http"\|"empty_response"\|"parse"\|"validation"\|"stale"\|"context_overflow"`, `detail: string`, `latency_ms`, `dispatched_tick`, `response_preview: string` | Provider error, parse failure, validation failure, stale (Sprint 4.2 stage-advanced), or context overflow (Sprint 3.4). `response_preview` capped at 200 chars. |
 
 #### Worked example (events.jsonl)
 
@@ -330,7 +385,16 @@ Schema for every line: `{tick: int, wall_ms: int, type: string,
 {"tick": 1612, "wall_ms": 67167, "type": "chat_observed",
  "meeting_index": 1, "line": "i was in admin",
  "first_seen_tick": 1612, "ocr_quality": "clean",
- "speaker": null, "matches_self_chat": false}
+ "speaker": "lime", "matches_self_chat": false}
+{"tick": 1655, "wall_ms": 68958, "type": "llm_dispatched",
+ "call_kind": "imposter_react", "stage": "reacting",
+ "context_bytes": 4218}
+{"tick": 1655, "wall_ms": 76123, "type": "llm_decision",
+ "call_kind": "imposter_react", "stage_before": "reacting",
+ "stage_after": "reacting", "confidence": null,
+ "latency_ms": 7165, "dispatched_tick": 1655,
+ "ticks_in_flight": 0, "context_bytes": 4218,
+ "response_bytes": 198, "chat_queued": true, "fallback": false}
 {"tick": 1701, "wall_ms": 70875, "type": "vote_cast",
  "target": "blue", "ticks_after_meeting_start": 181,
  "rationale": "chat_sus_color"}
@@ -544,7 +608,10 @@ On every voting-screen frame, for each line in `bot.voting.chatLines`:
 - `matches_self_chat` is true when the normalised line equals
   `selfQueuedNormalized` (set when the bot last queued a chat).
 
-`speaker` is always `null` in v1. See §15 for v2 plans.
+`speaker` was always `null` in v1/v2; Sprint 2.1 (schema v3) populates
+it from `voting.detectChatSpeaker` (pip-color detection). Falls back
+to null only when detection is below `VoteChatPipMinPixels` confidence
+threshold — rare for normal chat, common for blank/black frames.
 
 `ocr_quality` is `"clean"` when the line has no `?` glyphs,
 `"noisy"` otherwise.
@@ -728,38 +795,49 @@ The `<file_stem>` segment makes the source location unambiguous;
 
 | Branch ID | Source site | Description |
 |---|---|---|
-| `bot.interstitial.role_reveal` | `bot.nim:357` | inside CREWMATE/IMPS interstitial |
-| `bot.interstitial.voting_screen` | `bot.nim:368` | inside meeting interstitial (delegates to voting) |
-| `bot.interstitial.game_over` | `bot.nim:364` | game-over title detected |
-| `bot.not_localized` | `bot.nim:432` | not localized; mask 0 |
-| `policy_crew.body.report_in_range` | `policy_crew.nim:153` | nearby body, in report range |
-| `policy_crew.body.navigate_to_body` | `policy_crew.nim:155` | nearby body, navigating to it |
-| `policy_crew.task.holding` | shared via `tasks.holdTaskAction` (`tasks.nim:362`) | holding A on real task |
-| `policy_crew.task.mandatory_visible` | `policy_crew.nim:43` | visible mandatory icon |
-| `policy_crew.task.mandatory_sticky` | `policy_crew.nim:62` | sticky mandatory |
-| `policy_crew.task.mandatory_nearest` | `policy_crew.nim:75` | nearest mandatory |
-| `policy_crew.task.checkout_sticky` | `policy_crew.nim:88` | sticky checkout |
-| `policy_crew.task.checkout_nearest` | `policy_crew.nim:96` | nearest checkout |
-| `policy_crew.task.radar_sticky` | `policy_crew.nim:108` | sticky radar |
-| `policy_crew.task.radar_nearest` | `policy_crew.nim:115` | nearest radar |
-| `policy_crew.task.home_fallback` | `policy_crew.nim:128` | home/button fallback |
-| `policy_crew.task.precise_approach` | `policy_crew.nim:198` | within precise radius |
-| `policy_crew.task.astar` | `policy_crew.nim:189` | A* navigation step |
-| `policy_crew.idle.no_goal` | `policy_crew.nim:169` | no goal selectable |
-| `policy_imp.body.self_report` | `policy_imp.nim:258` | self-report own kill |
-| `policy_imp.body.flee` | `policy_imp.nim:278` | flee from someone else's discovery |
-| `policy_imp.kill.in_range` | `policy_imp.nim:293` | press A on kill |
-| `policy_imp.kill.hunt` | `policy_imp.nim:312` | hunt lone crewmate (out of range) |
-| `policy_imp.fake_task.holding` | `policy_imp.nim:322` | holding A on fake station |
-| `policy_imp.central_room.force_leave` | `policy_imp.nim:349` | forced exit from central room |
-| `policy_imp.follow.tail` | `policy_imp.nim:364` | tailing followee |
-| `policy_imp.wander.next_target` | `policy_imp.nim:390` | wandering to next fake target |
-| `policy_imp.wander.idle_unreachable` | `policy_imp.nim:411` | idle, unreachable target |
-| `policy_imp.wander.idle_no_target` | `policy_imp.nim:419` | idle, no target |
-| `voting.idle.already_voted` | `voting.nim:474` | already voted; idle |
-| `voting.cursor.move` | `voting.nim:490` | cursor moving toward target |
-| `voting.cursor.listen` | `voting.nim:501` | cursor on target, listening for chat |
-| `voting.press_a` | `voting.nim:511` | pressing A to vote |
+| `bot.interstitial.role_reveal` | `bot.nim` interstitial branch | inside CREWMATE/IMPS interstitial |
+| `bot.interstitial.game_over` | `bot.nim` interstitial branch | game-over title detected |
+| `bot.localizing` | `bot.nim` post-interstitial path | actively running localization |
+| `bot.not_localized` | `bot.nim` post-interstitial path | localization failed; mask 0 |
+| `policy_crew.body.report_in_range` | `policy_crew.nim` | nearby body, in report range |
+| `policy_crew.body.navigate_to_body` | `policy_crew.nim` | nearby body, navigating to it |
+| `policy_crew.task.holding` | shared via `tasks.holdTaskAction` (`tasks.nim`) | holding A on real task |
+| `policy_crew.task.mandatory_visible` | `policy_crew.nim` | visible mandatory icon |
+| `policy_crew.task.mandatory_sticky` | `policy_crew.nim` | sticky mandatory |
+| `policy_crew.task.mandatory_nearest` | `policy_crew.nim` | nearest mandatory |
+| `policy_crew.task.checkout_sticky` | `policy_crew.nim` | sticky checkout |
+| `policy_crew.task.checkout_nearest` | `policy_crew.nim` | nearest checkout |
+| `policy_crew.task.radar_sticky` | `policy_crew.nim` | sticky radar |
+| `policy_crew.task.radar_nearest` | `policy_crew.nim` | nearest radar |
+| `policy_crew.task.home_fallback` | `policy_crew.nim` | home/button fallback |
+| `policy_crew.task.precise_approach` | `policy_crew.nim` | within precise radius |
+| `policy_crew.task.astar` | `policy_crew.nim` | A* navigation step |
+| `policy_crew.task.continue_hold` | `policy_crew.nim` | continuing A-hold on a task |
+| `policy_crew.task.ghost_nav` | `policy_crew.nim` | ghost navigation |
+| `policy_crew.idle.no_goal` | `policy_crew.nim` | no goal selectable |
+| `policy_imp.body.self_report` | `policy_imp.nim` | self-report own kill |
+| `policy_imp.body.flee` | `policy_imp.nim` | flee from someone else's discovery |
+| `policy_imp.kill.in_range` | `policy_imp.nim` | press A on kill |
+| `policy_imp.kill.hunt` | `policy_imp.nim` | hunt lone crewmate (out of range) |
+| `policy_imp.fake_task.holding` | `policy_imp.nim` | holding A on fake station |
+| `policy_imp.fake_task.setup` | `policy_imp.nim` | starting a fake-task hold |
+| `policy_imp.fake_task.setup_in_tail` | `policy_imp.nim` | fake-task hold during tail |
+| `policy_imp.fake_task.setup_in_wander` | `policy_imp.nim` | fake-task hold during wander |
+| `policy_imp.central_room.force_leave` | `policy_imp.nim` | forced exit from central room |
+| `policy_imp.follow.tail` | `policy_imp.nim` | tailing followee |
+| `policy_imp.wander.next_target` | `policy_imp.nim` | wandering to next fake target |
+| `policy_imp.wander.idle_unreachable` | `policy_imp.nim` | idle, unreachable target |
+| `policy_imp.wander.idle_no_target` | `policy_imp.nim` | idle, no target |
+| `voting.idle.already_voted` | `voting.nim` | already voted; idle |
+| `voting.cursor.move` | `voting.nim` | cursor moving toward target |
+| `voting.cursor.listen` | `voting.nim` | cursor on target, listening for chat |
+| `voting.press_a` | `voting.nim` | pressing A to vote |
+
+`BRANCH_IDS.md` is the auto-generated source-of-truth — it carries
+exact line numbers and is regenerated by
+`nim r tools/gen_branch_ids.nim`. The table above is a stable
+reference; line numbers are deliberately omitted to avoid stale-link
+churn from unrelated edits.
 
 ### 8.3 Documentation generation
 
@@ -1053,9 +1131,15 @@ This rotation is implemented as a v1.1 cron-style sweep, not in the
 hot path. v1 ships without rotation; document the disk-cost
 expectation.
 
-### 14.7 OCR'd chat lines have no speaker attribution
+### 14.7 OCR'd chat lines now carry speaker attribution (Sprint 2.1)
 
-Documented in §6.3. v1 ships with `speaker: null`. v2 plans in §15.
+Originally documented as a v1 limitation. Resolved: schema v3
+emits real `speaker` color names from
+`voting.detectChatSpeaker`. Falls back to `null` only when the
+pip detector confidence is below `VoteChatPipMinPixels` (rare in
+practice — multi-line messages always self-attribute because the
+sim renders one sprite per message and each text row of the
+message overlaps the sprite vertically).
 
 ### 14.8 The `decideNextMask` early-return paths
 
@@ -1096,11 +1180,12 @@ before emitting (configurable; default 1).
 
 ## 15. v2 / future work
 
-- **Chat speaker attribution.** Investigate the on-screen voting chat
-  format. Sample pixels at `x < VoteChatTextX = 21` for a per-line
-  speaker glyph or colour swatch. Add a fallback OCR of the speaker
-  prefix if found. On success, set `manifest.trace_settings.speaker_attribution
-  = "color_pip"` and populate `chat_observed.speaker`.
+- **Chat speaker attribution — SHIPPED in Sprint 2.1.**
+  `voting.detectChatSpeaker` samples pixels in
+  `[VoteChatPipX0..VoteChatPipX1, textY..textY+TextLineHeight]`
+  for `PlayerColors` palette matches and returns the dominant
+  color index. Manifest `trace_settings.speaker_attribution` is
+  now `"color_pip"`; `chat_observed.speaker` is populated.
 - **Cross-game lineage in a session.** Optional `_session.json`
   with rolled-up counters and a list of round IDs.
 - **Frames-dump rotation.** Cron-style sweeper that compresses and
@@ -1160,9 +1245,39 @@ Deliverable: a recorded game can be replayed end-to-end at
 
 Deliverable: harness-ready, documented, CI-validated tracing.
 
+### Phase 5 — LLM observability + capture (Sprint 1, 2.1, 5.1)
+
+Layered on top of Phases 1-4 by the mod_talks LLM sprint sequence.
+Schema bumped to v3; all v3 additions are backward-compatible.
+
+18. **Sprint 1.** New event types `llm_dispatched` /
+    `llm_decision` / `llm_error` / `llm_layer_active` emitted from
+    `llm.nim` via the `emitLlm*` procs in `trace.nim`. Manifest
+    gains `trace_settings.llm_compiled_in` (set from
+    `-d:modTalksLlm` at `openTrace`) and `.llm_layer_active`
+    (flipped by `setLlmLayerActive` when the FFI ack fires). New
+    `summary_counters.llm` block snapshots process-lifetime LLM
+    counters. `MODULABOT_TRACE_DIR` plumbed through the FFI path
+    via `cogames/amongthem_policy.py:_arm_trace_if_requested`.
+19. **Sprint 2.1.** `chat_observed` events carry real
+    `speaker` (color name) from `voting.detectChatSpeaker`.
+    `trace_settings.speaker_attribution` flipped from `"none"`
+    to `"color_pip"`.
+20. **Sprint 5.1.** Optional context-capture pipeline:
+    `MODTALKS_LLM_CAPTURE=1` writes dispatched contexts to
+    `<round>/llm_contexts/ctx_<seq>_<kind>_t<tick>.json` for
+    offline replay through `tools/llm_prompt_eval.py`. Off by
+    default; production traces stay light.
+
+Deliverable: every LLM dispatch and decision is observable in
+the trace; the same captured contexts can be replayed against
+candidate prompts to score response quality.
+
 ---
 
 ## Appendix A — Estimated volume per 5-min game
+
+Schema-v1 baseline (LLM layer disabled or unused):
 
 | Stream | Lines | Bytes/line | Total |
 |---|---|---|---|
@@ -1177,3 +1292,21 @@ Deliverable: harness-ready, documented, CI-validated tracing.
 Fifty games of trace data fit in ~10–20 MB. Fifty games with frames
 dumps fit in ~250 MB compressed. Both are manageable for a
 self-improvement loop.
+
+### Schema-v3 additions (with LLM layer active)
+
+When `-d:modTalksLlm` is on AND a provider responds during the run,
+the trace gains LLM events on top of the v1 baseline:
+
+| Stream addition | Per game (typical) | Bytes/line | Total |
+|---|---|---|---|
+| `llm_dispatched` events | 1–10 | ~100 B | 0.1–1 KB |
+| `llm_decision` events | 1–10 | ~300 B | 0.3–3 KB |
+| `llm_error` events | 0–3 | ~250 B | 0–0.8 KB |
+| `llm_layer_active` event | 1 | ~80 B | 80 B |
+| `llm_contexts/` (Sprint 5.1, opt-in) | 1–10 | 1–8 KB | 1–80 KB |
+| Manifest LLM blocks | — | — | adds ~0.5 KB to manifest.json |
+
+In practice the LLM-layer overhead is dominated by the optional
+context-capture (`MODTALKS_LLM_CAPTURE=1`); decision/error events
+themselves are negligible compared to `decisions.jsonl`.

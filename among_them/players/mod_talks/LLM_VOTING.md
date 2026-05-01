@@ -7,28 +7,47 @@ integration points in existing modules.
 
 ## Implementation status
 
-**Initial integration has shipped.** This document remains the authoritative
-design reference, but it is no longer a forward-looking spec — most of it is
-implemented. Remaining work is tracked as checkboxes in `LLM_SPRINTS.md`.
+**Shipped through Sprint 5.** Most of this document is implemented. Where
+the doc and the code disagree, **the code is authoritative**; the doc
+captures the original intent + rationale, plus enough detail to read the
+implementation. Treat this as design history, not as a runnable spec.
 
-Short summary of what's live vs. pending (detail in `DESIGN.md §11 Phase 4`):
+The sprint-by-sprint history with checkboxes is in `LLM_SPRINTS.md`.
+Short summary:
 
-- **Shipped:** Nim state machine (`llm.nim`), `Bot` types (`LlmVotingState`,
-  `LlmState`), FFI surface, Anthropic Bedrock/direct Python wrapper,
-  observability (schema v3 `llm_dispatched` / `llm_decision` / `llm_error`
-  events, manifest flags, session counters), local launcher, compile-time
-  gate `-d:modTalksLlm` with parity preserved in the non-LLM build.
-- **Pending (see `LLM_SPRINTS.md`):** speaker attribution (Q-LLM9
-  prerequisite — shipped without), self-location history, alibi log wiring,
-  ejection detection, mock-LLM parity mode, `llm.nim` unit tests, concurrent
-  Python-side dispatch, Anthropic tool-use for structured output, prompt-eval
-  harness, persuasion experiment, multi-provider config.
+- **Sprints 1-5 shipped:** Nim state machine (`llm.nim`), `Bot` types
+  (`LlmVotingState`, `LlmState`, `LlmMock`, `VoteChatLine`,
+  `SelfKeyframe`), FFI surface, Anthropic Bedrock + direct Python wrapper
+  with `_OpenAIController` fallback skeleton, mock-LLM harness,
+  trace observability (schema v3, optional context capture), concurrent
+  dispatch (3-4× faster than the Sprint 1 baseline), per-call-kind
+  timeouts, stale-response detection, Anthropic tool-use, retry/backoff,
+  UTF-8 transliteration, prompt-eval harness, runtime persuasion toggle,
+  multi-provider lineage in manifest harness_meta. Compile-time gate
+  `-d:modTalksLlm` with parity preserved in the non-LLM build.
+- **Deferred follow-ups (need access / budget, not code):** 40+ game
+  persuasion A/B campaign (Sprint 5.2); live OpenAI verification
+  (Sprint 5.3 — needs `OPENAI_API_KEY`).
+- **Cancelled:** Sprint 4.6 FFI prefix rename (low-impact churn —
+  see `DESIGN.md §1.5`).
 
-Where this doc's prescriptions disagree with the current implementation
-(notably §6 "side-channel thread" — replaced by the Python-dispatch "Option
-B" amendment, and §11 mock-LLM mode — deferred to Sprint 3), the code is
-authoritative. Treat this doc as intent plus rationale, not as a runnable
-checklist.
+Where this doc's prescriptions disagree with the implementation:
+
+- **§6 "side-channel thread in Nim" — superseded.** The Sprint 4
+  implementation moves concurrency to the Python wrapper's
+  `ThreadPoolExecutor` (`AmongThemPolicy._executor`). The Nim side
+  has a single `LlmRequestSlot`; the Python wrapper polls it,
+  dispatches futures, and feeds JSON responses back via
+  `modulabot_set_llm_response`. See `LLM_SPRINTS.md §4.1`.
+- **§11 "mock-LLM mode" — implementation diverged.** The plan
+  proposed a Python-side mock; the Sprint 3 implementation runs
+  the mock entirely in Nim (`llmMockEnable` / `llmMockPump`) so
+  `parity.nim` doesn't need Python. Same code path is exercised
+  as live runs minus HTTP.
+- **§12 Q-LLM1/Q-LLM6 "Bedrock auth pending investigation" —
+  resolved.** The Python wrapper uses `anthropic.AnthropicBedrock`
+  with the standard boto3 credential chain. See
+  `cogames/amongthem_policy.py:_AnthropicController._init_client`.
 
 ---
 
@@ -68,14 +87,16 @@ checklist.
   site. Without the flag, the compiled binary is bit-for-bit identical to
   modulabot. This keeps the parity harness and CoGames submission unaffected
   until the integration is ready.
-- **Speaker attribution must be implemented first (Q-LLM9 resolved).** Chat
-  lines fed to the LLM reaction and strategy calls carry `"speaker": null`
-  until speaker-pip detection is implemented (see `TRACING.md §15`). Without
-  attribution, the LLM cannot identify who made which claim, cannot weigh
-  speaker credibility, and the imposter cannot distinguish a crewmate
-  accusing the target from a fellow imposter doing so. This degrades reaction
-  quality significantly enough that speaker attribution is a **prerequisite**
-  for the LLM integration sprint — implement it before writing `llm.nim`.
+- **Speaker attribution (Q-LLM9 resolved, Sprint 2.1 shipped).** Original
+  intent was that speaker attribution should land BEFORE writing `llm.nim`.
+  In practice we shipped it as Sprint 2.1, after the Sprint 1 integration
+  proved the rest of the LLM plumbing worked. Detection lives in
+  `voting.detectChatSpeaker` (samples PlayerColors palette pixels in the
+  chat-row pip rectangle and returns the dominant color index).
+  `LlmChatEntry.speakerColor` carries the result through to the LLM
+  context. Multi-line messages auto-attribute because the sim renders
+  one 12×12 sprite per message and each text row of the message overlaps
+  the sprite vertically.
 
 ---
 
@@ -731,6 +752,19 @@ in the `llm_decision` trace event but never emitted as chat.
 
 ## 6. Async call architecture
 
+> **AMENDMENT (Sprint 4.1) — superseded by Python-side concurrency.**
+> The original design called for a side-channel thread inside Nim
+> (`Thread[LlmClient]` + `Channel[LlmRequest]`). The Sprint 1
+> implementation deferred this in favour of letting the Python wrapper
+> own all HTTP I/O ("Option B"): Nim exposes a single
+> `LlmRequestSlot`, the Python wrapper polls it and dispatches.
+> Sprint 4.1 then added a `ThreadPoolExecutor` on the Python side so
+> N agents dispatch concurrently. The text below describes the
+> original intent and remains useful as design rationale, but the
+> implementation lives in
+> `cogames/amongthem_policy.py:AmongThemPolicy._dispatch_llm` /
+> `_gather_llm_futures` rather than in `llm.nim`.
+
 The voting phase runs frame-by-frame. A synchronous HTTP call inside
 `decideVotingMask` would freeze the control loop for the LLM's round-trip
 latency (typically 200–2000 ms). This is unacceptable.
@@ -775,23 +809,22 @@ The thread reads from `requestQueue`, performs the HTTP call (using
 `resultQueue`. The main thread polls `pollLlmResult` each frame and acts on
 the result when `status == lsDone`.
 
-**Provider wrappers:** `src/bitworld/ais/` already contains `claude.nim`,
-`openai.nim`, `gemini.nim`, `xai.nim`. `llm.nim` should dispatch to whichever
-provider is configured via `LlmProvider` in `tuning.nim` rather than
-hard-coding a specific provider.
+**Provider wrappers (status):** `src/bitworld/ais/` contains `claude.nim`,
+`openai.nim`, `gemini.nim`, `xai.nim`. The Sprint 5.3 implementation
+chose to dispatch from Python instead — `_AnthropicController` and
+`_OpenAIController` in `cogames/amongthem_policy.py`, selected via
+`_build_llm_controller`. This avoided porting SigV4 signing into Nim.
 
-**Selected provider: AWS Bedrock + `claude-sonnet-4-6`** (Q-LLM1 resolved,
-pending investigation). The existing `claude.nim` wrapper targets the direct
-Anthropic API; Bedrock uses a different invocation endpoint and auth model
-(AWS SigV4 signing rather than an `x-api-key` header). The wrapper will need
-adaptation or a new `bedrock.nim` module in `src/bitworld/ais/`.
-
-> **FLAG (Q-LLM1 + Q-LLM6):** AWS Bedrock auth and credential plumbing are
-> not yet worked out. Both the invocation endpoint format and the credential
-> source (IAM role, environment variables, `~/.aws/credentials`, or
-> harness-injected) need investigation before `llm.nim` can be written.
-> Resolve this before starting the `llm.nim` implementation sprint. See
-> Q-LLM1 and Q-LLM6 in §12.
+**Selected provider: AWS Bedrock + `claude-sonnet-4-5-20250929-v1:0`**
+(Q-LLM1 + Q-LLM6 resolved). Implemented via
+`anthropic.AnthropicBedrock` in the Python wrapper, which uses the
+standard boto3 credential chain (`AWS_PROFILE`, `AWS_REGION`,
+`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, IAM role env vars).
+`CLAUDE_CODE_USE_BEDROCK=1` forces Bedrock even when an Anthropic API
+key is present. Direct `anthropic.Anthropic` API is the fallback.
+OpenAI fallback (Sprint 5.3) is structural — turn on via
+`OPENAI_API_KEY` + `MODTALKS_PROVIDER_OPENAI=1` once the credentials
+are available.
 
 ---
 
@@ -880,38 +913,55 @@ Added to `Bot` alongside `VotingState`:
 llmVoting*: LlmVotingState
 ```
 
-### 7.6 `LlmConfig` (in `LlmState`, owned by `bot.nim`)
+### 7.6 `LlmConfig` — superseded by env-var configuration
+
+The original plan was a Nim-side `LlmConfig` carrying provider /
+model / credentials. That never landed: the Python wrapper owns
+provider selection end-to-end (Sprint 5.3
+`_build_llm_controller`), and the Nim side doesn't actually need to
+know which provider answered the call. The actual `LlmState` shape
+that shipped:
 
 ```nim
+# types.nim — see actual definition for full doc
 type
-  LlmConfig* = object
-    provider*: string    # "bedrock-claude" | "claude" | "openai" | "gemini" | "xai"
-    model*: string       # e.g. "anthropic.claude-sonnet-4-6-20250514-v1:0" for Bedrock
-    # Credential fields — exact shape TBD pending Q-LLM1/Q-LLM6 Bedrock investigation.
-    # Direct Anthropic: apiKey string.
-    # Bedrock: AWS region + role ARN or env-var credentials; never traced.
-    credentialHint*: string   # placeholder; will be replaced once Bedrock auth is resolved
-    timeoutMs*: int
-```
-```nim
-type
+  LlmSessionCounters* = object  # process-lifetime tally
+    totalDispatched*, totalCompleted*, totalErrored*: int
+    totalFallbacks*, totalChatQueued*: int
+    byKindDispatched*, byKindCompleted*, byKindErrored*:
+      array[LlmCallKind, int]
+
+  LlmMock* = object             # Sprint 3.1 — scripted-response queue
+    enabled*: bool
+    entries*: seq[LlmMockEntry]
+    cursor*, mismatchCount*: int
+
   LlmState* = object
-    config*: LlmConfig
-    client*: LlmClient   # owns the side-channel thread
-    totalCallsSession*: int
-    totalFallbacksSession*: int
-```
+    counters*: LlmSessionCounters
+    layerActiveAckTick*: int    # tick when modulabot_enable_llm fired
+    mock*: LlmMock              # zero-cost when `mock.enabled = false`
 
-Added at the top level of `Bot`:
-
-```nim
-# types.nim — Bot object
+# Bot field:
 llm*: LlmState
 ```
+
+Provider lineage now lives in the trace manifest's `harness_meta`
+(Sprint 5.3): `llm_provider`, `llm_model`, `llm_persuade`,
+`llm_disabled`. The launcher
+(`scripts/launch_mod_talks_llm_local.py`) auto-stamps these so the
+prompt-eval harness can group runs by configuration.
 
 ---
 
 ## 8. Integration points in existing modules
+
+> Original design table follows. The as-shipped table is in
+> `DESIGN.md §14.5`. Where they disagree, `DESIGN.md §14.5` is
+> authoritative. The mismatches are mostly in `bot.nim` (the
+> "starts the side-channel thread" step never landed because
+> Sprint 4.1 moved concurrency to Python) and the new types
+> added in Sprint 2-5 (`VoteChatLine`, `SelfKeyframe`, `LlmMock`,
+> `LlmRequestSlot`, `LlmSessionCounters`).
 
 | Module | Change |
 |---|---|
@@ -971,46 +1021,64 @@ hypothesis call, so both roles have a similar call budget in practice.
 
 ---
 
-## 11. Parity and regression testing
+## 11. Parity and regression testing — shipped (Sprint 3)
 
-The `LlmEnabled` compile flag (`-d:modTalksLlm`) is the primary regression
-guard: without it, the binary is modulabot. The existing `test/parity.nim`
-harness must continue to pass 100% self-consistency without the flag.
+The `-d:modTalksLlm` compile flag is the primary regression guard:
+without it, the binary is bit-for-bit modulabot. `test/parity.nim`
+verifies this on every commit; parity 500/500 across seeds
+{1, 42, 100, 7777}.
 
-With `when defined(modTalksLlm)`:
+The Sprint 3 mock-LLM harness adds three more matrices on top of
+that baseline. All four are exercised by `tools/trace_smoke.sh`
+and individually runnable:
 
-1. **Mock LLM mode.** Add `--llm-mock:PATH` to `modulabot.nim`'s CLI parser.
-   When set, `llm.nim` reads responses from a JSONL file (one response per
-   line, consumed in order) instead of making HTTP calls. This enables
-   deterministic parity testing of the LLM state machine without a live
-   provider.
+1. **Mock LLM CLI flag.** `--llm-mock:PATH` on `modulabot.nim`
+   loads a JSONL fixture (`{"kind", "response", "errored"}` per
+   line) into `bot.llm.mock`. `tickLlmVoting` calls
+   `llmMockPump` after dispatch, which delivers entries to
+   `onLlmResponse` in strict FIFO. Bypasses Python and the live
+   provider entirely. Implementation in `llm.nim:llmMockEnable` /
+   `llmMockPump`.
 
-2. **Self-consistency with mock.** Two bot instances with the same master seed
-   and the same mock JSONL file must produce identical masks. Add a
-   `--mode:llm-mock` path to `test/parity.nim`.
+2. **Parity harness `--llm-mock:PATH`.** `test/parity.nim` loads
+   the same fixture into both bot instances. They consume entries
+   in lockstep; masks must match frame-for-frame. Verified
+   500/500 across seeds {1, 42, 100, 7777} on
+   `test/fixtures/llm_mock_basic.jsonl`.
 
-3. **Fallback parity.** If every mock response is an error (`lsError`), the
-   bot must produce masks identical to the non-LLM build — confirming the
-   fallback path is exact.
+3. **Fallback parity.** Every entry in
+   `test/fixtures/llm_mock_all_errored.jsonl` is errored; the
+   resulting masks must equal the non-LLM baseline (rule-based
+   fallback path). Verified 500/500 across the same seed set.
 
-4. **Trace validation.** Extend `test/validate_trace.nim` to accept
-   `llm_decision` events and validate their schema.
+4. **Trace validation.** `test/validate_trace.nim` accepts the
+   schema-v3 LLM event family (`llm_dispatched`, `llm_decision`,
+   `llm_error`, `llm_layer_active`) and the new manifest fields
+   (`trace_settings.llm_compiled_in` / `.llm_layer_active`,
+   `summary_counters.llm`).
+
+5. **Unit tests.** `test/llm_unit.nim` (Sprint 3.3) — 56 tests
+   covering pure helpers, mock loader, trim policy, response
+   parsers, and the new `transliterateAscii` (Sprint 4.5). Run
+   with `nim r -d:modTalksLlm test/llm_unit.nim`.
 
 ---
 
-## 12. Open questions (Q-LLM*)
+## 12. Open questions (Q-LLM*) — closed
 
-All questions have been resolved via Q&A on 2026-04-30. Resolutions are
-baked into the design above; this table records the decisions for traceability.
+All nine questions resolved on 2026-04-30 (design Q&A) and shipped
+through Sprints 1-5. This table is the historical record; the table
+*Resolution* column reflects what actually shipped, not what was
+proposed at design time.
 
-| # | Question | Resolution | Where reflected |
+| # | Question | Resolution (as shipped) | Where in code |
 |---|---|---|---|
-| Q-LLM1 | Provider and model? | **AWS Bedrock + `claude-sonnet-4-6`** — pending investigation of Bedrock invocation endpoint and auth differences from direct Anthropic API. `src/bitworld/ais/claude.nim` will need adaptation or a new `bedrock.nim`. See FLAG in §6. | §6 provider note, §7.6 `LlmConfig` |
-| Q-LLM2 | Side-channel thread vs. `asyncdispatch`? | **Thread + Channel** confirmed. Simpler ownership model; matches existing Nim codebase patterns. | §6 async architecture |
-| Q-LLM3 | Timeout budget for hypothesis/strategy call? | **2 000 ms** confirmed. Dispatched on meeting-start frame; result must arrive before `VoteListenTicks` (≈4 s). | §9 timing analysis |
-| Q-LLM4 | Structured output vs. post-parse validation? | **Provider structured output / tool-use** — register output schemas as tool definitions at the provider level; server-side enforcement eliminates parse errors. Schema-in-prompt retained only as a fallback for providers that don't support it. | §5.4 task schemas |
-| Q-LLM5 | Imposter LLM scope — corroboration only or full strategic reasoning? | **Full strategic reasoning.** The imposter uses the LLM to decide who to target, when to speak, whether to preemptively accuse, whether to deflect, and what to say — not just to phrase a corroboration message. | §4 imposter pipeline (full rewrite), §5.3 prompt, §5.4 schemas, §7.1 stage enum, §7.5 state |
-| Q-LLM6 | API key / credential management? | **Under investigation — flagged alongside Q-LLM1.** AWS Bedrock uses SigV4 signing rather than a simple API key; the credential source (IAM role, env vars, `~/.aws/credentials`, or harness-injected) must be determined before `llm.nim` can be written. The `LlmConfig.credentialHint` field is a placeholder. | §6 FLAG, §7.6 `LlmConfig` |
-| Q-LLM7 | Per-meeting call budget cap? | **No hard cap.** Call frequency is governed solely by `LlmChatReactionCooldownMs`. The initial strategy/hypothesis call fires immediately on meeting start and is not rate-limited. | §7.5 `LlmVotingState` (no `callsThisMeeting`), §8 tuning.nim row, §9 call frequency note, §10 (row removed) |
-| Q-LLM8 | How to prevent imposter from generating claims that contradict real events other players witnessed? | **Include `full_chat_log` in every imposter reaction context.** The complete conversation so far is passed on every call. The system prompt (§5.3) explicitly instructs the model to read every prior message and not contradict any claim, staying silent if it cannot make a consistent statement. | §4.2 `imposter_react` context, §5.3 imposter prompt |
-| Q-LLM9 | Speaker attribution as prerequisite? | **Yes — unblock speaker attribution before starting the LLM integration sprint.** Without knowing who said what, the LLM cannot weigh speaker credibility, the imposter cannot distinguish crewmate vs. fellow-imposter accusers, and reaction quality degrades significantly. Speaker-pip detection (sampling pixels left of `VoteChatTextX = 21`) must ship first. | §1 hard constraints, §7.4 `LlmChatEntry` |
+| Q-LLM1 | Provider and model? | **AWS Bedrock via `anthropic.AnthropicBedrock`**, model `global.anthropic.claude-sonnet-4-5-20250929-v1:0`. Direct Anthropic API is the fallback. OpenAI fallback added in Sprint 5.3 (structural only — needs creds for live verification). | `cogames/amongthem_policy.py:_AnthropicController._init_client`, `_OpenAIController`, `_build_llm_controller` |
+| Q-LLM2 | Side-channel thread vs. `asyncdispatch`? | **Neither — Python-side ThreadPoolExecutor** (Sprint 4.1). Nim has a single `LlmRequestSlot`; the Python wrapper polls it and dispatches concurrent futures. | `cogames/amongthem_policy.py:AmongThemPolicy._executor`, `_dispatch_llm`, `_gather_llm_futures` |
+| Q-LLM3 | Timeout budget for hypothesis/strategy call? | **20 s for forming-stage calls, 15 s for react, 10 s for accuse/persuade** (Sprint 4.2). Per-kind table; was originally a flat 2 s budget but provider latency made the tighter budgets unrealistic. | `cogames/amongthem_policy.py:PER_KIND_TIMEOUT_SECONDS` |
+| Q-LLM4 | Structured output vs. post-parse validation? | **Anthropic tool-use** (Sprint 4.3) with one tool per `LlmCallKind`. Schema-in-prompt path retained as fallback for unknown kinds and tool-use responses missing the expected block. | `cogames/amongthem_policy.py:_LLM_TOOL_DEFINITIONS`, `_AnthropicController.complete` |
+| Q-LLM5 | Imposter LLM scope — corroboration only or full strategic reasoning? | **Full strategic reasoning.** The imposter uses the LLM for `strategize` (target / strategy / timing / opening chat) plus `imposter_react` (corroborate / deflect / accuse / silent each turn). | `llm.nim:buildStrategizeContext`, `buildImposterReactContext`, `applyStrategizeResponse` |
+| Q-LLM6 | API key / credential management? | **boto3 credential chain.** `AnthropicBedrock` reads `AWS_PROFILE` / `AWS_REGION` / env-var creds / `~/.aws/credentials` automatically. `CLAUDE_CODE_USE_BEDROCK=1` forces Bedrock when both Anthropic and AWS creds are present. | `cogames/amongthem_policy.py:_AnthropicController._init_client` |
+| Q-LLM7 | Per-meeting call budget cap? | **No hard cap.** Call frequency governed by `LlmChatReactionCooldownTicks`. | `llm.nim:tickLlmVoting` |
+| Q-LLM8 | Prevent imposter from contradicting witnessed events? | **`full_chat_log` in every `imposter_react` context** plus system-prompt instructions to read every prior message and stay silent if no consistent claim is possible. | `llm.nim:buildImposterReactContext`, `cogames/amongthem_policy.py:_SYSTEM_PROMPT_IMPOSTER` |
+| Q-LLM9 | Speaker attribution as prerequisite? | **Implemented Sprint 2.1, after the rest of the LLM layer landed.** Plan said "first"; reality was Sprint 1 shipped without it and Sprint 2.1 added it once the integration was running. | `voting.detectChatSpeaker`, `LlmChatEntry.speakerColor` |

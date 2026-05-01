@@ -5,10 +5,10 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 
 | Branch ID | Source |
 |---|---|
-| `bot.interstitial.game_over` | `bot.nim:416` |
-| `bot.interstitial.role_reveal` | `bot.nim:418` |
-| `bot.localizing` | `bot.nim:503` |
-| `bot.not_localized` | `bot.nim:505` |
+| `bot.interstitial.game_over` | `bot.nim:488` |
+| `bot.interstitial.role_reveal` | `bot.nim:490` |
+| `bot.localizing` | `bot.nim:539` |
+| `bot.not_localized` | `bot.nim:541` |
 | `policy_crew.body.navigate_to_body` | `policy_crew.nim:155` |
 | `policy_crew.body.report_in_range` | `policy_crew.nim:153` |
 | `policy_crew.idle.no_goal` | `policy_crew.nim:172` |
@@ -32,9 +32,9 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 | `policy_imp.wander.idle_no_target` | `policy_imp.nim:522` |
 | `policy_imp.wander.idle_unreachable` | `policy_imp.nim:513` |
 | `policy_imp.wander.next_target` | `policy_imp.nim:527` |
-| `voting.cursor.listen` | `voting.nim:547` |
-| `voting.cursor.move` | `voting.nim:535` |
-| `voting.idle.already_voted` | `voting.nim:518` |
-| `voting.press_a` | `voting.nim:558` |
+| `voting.cursor.listen` | `voting.nim:671` |
+| `voting.cursor.move` | `voting.nim:659` |
+| `voting.idle.already_voted` | `voting.nim:642` |
+| `voting.press_a` | `voting.nim:682` |
 
 _Total distinct branch IDs: 31_

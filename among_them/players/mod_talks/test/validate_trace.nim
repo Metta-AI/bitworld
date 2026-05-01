@@ -32,7 +32,11 @@ const
   KnownBranchIds = [
     "bot.interstitial.role_reveal",
     "bot.interstitial.game_over",
-    "bot.interstitial.voting_screen",
+    # Note: the voting-screen interstitial path doesn't emit its own
+    # branch id — when `voting.active` is true the interstitial
+    # branch delegates to `decideVotingMask`, which fires its own
+    # `voting.*` ids. The historical `bot.interstitial.voting_screen`
+    # entry was removed during the 2026-05-01 doc audit.
     "bot.localizing",
     "bot.not_localized",
     "policy_crew.body.report_in_range",

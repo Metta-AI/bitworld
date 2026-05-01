@@ -1,9 +1,13 @@
 ## Websocket runner: connection, frame draining, mask emission, chat
-## flushing, reconnect loop.
+## flushing, reconnect loop, viewer lifecycle, trace writer attachment,
+## optional LLM-mock harness wiring.
 ##
-## Phase 1 port from v2:4709-4840. The viewer (`--gui`) is not yet
-## implemented in modulabot (phase 2 deliverable); when `--gui` is
-## passed the runner currently warns and proceeds headless.
+## Phase 1 port from v2:4709-4840. The viewer (`--gui`) shipped with
+## Phase 2; closing the window or pressing Esc terminates the bot
+## cleanly. Trace writer attachment + auto frames-dump shipped with
+## Phase 5 (TRACING.md). The optional `--llm-mock:PATH` flag is wired
+## here under `when defined(modTalksLlm)` so test runs can exercise the
+## LLM state machine without making real provider calls (Sprint 3.1).
 
 when not defined(modulabotLibrary):
   import std/[json, monotimes, options, os, times]
