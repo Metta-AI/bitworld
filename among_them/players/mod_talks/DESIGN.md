@@ -1,20 +1,29 @@
 # mod_talks — Design Report
 
-A fork of `modulabot` that will add LLM-powered chatting and reasoning during
+A fork of `modulabot` that adds LLM-powered chatting and reasoning during
 the voting phase. All perception, navigation, task, and evidence machinery is
 inherited from modulabot unchanged. The divergence point is `voting.nim` and
-`chat.nim`, where LLM calls will replace (or augment) the current rule-based
-chat templates and evidence-based vote decisions.
+`chat.nim`, where LLM calls augment the current rule-based chat templates
+and evidence-based vote decisions.
 
-**Status of LLM integration: planned, not yet implemented.** Everything
-described under §14 (LLM voting integration) is a design target. The current
-codebase is a direct copy of modulabot at the point it forked; the LLM
-plumbing does not exist yet.
+**Status of LLM integration: shipped through Sprint 5.** The Nim state
+machine, FFI surface, Anthropic Bedrock/direct Python wrapper, mock harness,
+trace observability, concurrent dispatch, and prompt-eval pipeline are all
+live behind the `-d:modTalksLlm` compile-time gate. Without the gate, builds
+remain bit-for-bit identical to modulabot (parity 500/500 preserved).
+Remaining work is tracked sprint-by-sprint in `LLM_SPRINTS.md`; high-level
+status sits in §14.
+
+The fastest read for new contributors is `README.md` (lobby setup +
+build/run quickstart), then this file (architecture + design history),
+then `LLM_VOTING.md` (LLM-layer detail), then `LLM_SPRINTS.md`
+(implementation status checkboxes).
 
 ---
 
 The sections below describe the inherited modulabot architecture verbatim.
-§14 (new) documents the planned LLM additions.
+§14 documents the LLM additions at high level; full design and per-call
+context schemas live in `LLM_VOTING.md`.
 
 This is a design doc. The original review pass resolved all 12 open
 questions; their resolutions are baked into the body below and recorded in
@@ -39,18 +48,24 @@ integration layer.
 4. **Easy to extend.** Adding a new policy module (e.g. an alternate imposter
    playbook) should not require touching the perception layer. Inherited from
    modulabot.
-5. **Same FFI shape, new prefix.** Exports `modulabot_new_policy` and
+5. **Same FFI shape, legacy prefix.** Exports `modulabot_new_policy` and
    `modulabot_step_batch` matching the existing batch/handle convention. The
    Python harness gains a new policy entry; existing nottoodumb/evidencebot
-   and modulabot builds are untouched. *(Note: the binary and FFI prefix will
-   be renamed from `modulabot_` to `mod_talks_` when the LLM integration work
-   begins — deferred to avoid churn before the LLM layer exists.)*
-6. **LLM-powered chat and reasoning during voting (planned).** During the
-   voting phase, replace or augment the current rule-based chat templates and
-   evidence-based vote selection with calls to an LLM. The LLM receives a
-   structured context derived from `Memory`, `VotingState`, and visible chat
-   lines, and returns either a vote target or a chat message to send. See §14
-   for the full design.
+   and modulabot builds are untouched. *(Note: the original plan called for
+   renaming the FFI prefix from `modulabot_` to `mod_talks_` once the LLM
+   layer landed. Sprint 4.6 explicitly cancelled the rename — high-churn
+   refactor across the Python wrapper, build script, exports, and tests for
+   no behaviour change. Revisit only when a real name collision appears or
+   a cogames submission demands it. The current state is internally
+   consistent: `mod_talks` as project / directory / Python class name,
+   `modulabot_*` as the legacy FFI prefix.)*
+6. **LLM-powered chat and reasoning during voting (shipped).** During the
+   voting phase, the LLM receives a structured context derived from
+   `Memory`, `VotingState`, and visible chat lines, and returns either a
+   vote target or a chat message. The Nim state machine (`llm.nim`) plus
+   the Python wrapper (`cogames/amongthem_policy.py`) implement the design;
+   §14 carries the high-level summary and `LLM_VOTING.md` carries the full
+   per-call schemas.
 
 ### Non-goals (explicitly)
 
@@ -580,15 +595,12 @@ proc modulabot_step_batch*(...) {.exportc, dynlib.}
 ```
 
 Same calling convention, same `TrainableMasks` table, same handle-registry
-pattern as nottoodumb/evidencebot. Renamed prefix is the only change.
+pattern as nottoodumb/evidencebot. The FFI prefix stayed `modulabot_*` —
+see §1.5 for why the planned rename was cancelled in Sprint 4.6.
 
-The Python harness will need a new policy entry pointing at the new symbols;
-that's a single config edit on the Python side and not mod_talks's concern.
-
-> **Note on prefix renaming:** The FFI symbols and binary name currently still
-> carry the `modulabot` prefix (inherited from the copy). They will be renamed
-> to `mod_talks_*` when the LLM integration work begins — there is no value in
-> doing a pure rename commit before the substantive LLM changes land.
+The Python harness uses a new policy entry pointing at the existing symbols;
+the wrapper at `cogames/amongthem_policy.py` is the source of truth for that
+binding.
 
 ---
 
@@ -802,35 +814,43 @@ is gated by `when not defined(modulabotLibrary)`.
 Behavior preserved verbatim modulo sub-record renames; final parity
 check 659/659 still holds after viewer port.
 
-### Phase 3 — divergence (open)
+### Phase 3 — divergence (partially shipped through Sprint 2-3 alibi work)
 
-Open per the original plan. Phase 0–2 deliverables are all green;
-the v0 baseline is parity-validated against v2 to the extent
-mathematically possible (see Phase 2 status).
+Originally framed as "open per the original plan." Sprint 2 work
+moved several Phase-3 items forward:
+  - **Long-term memory (v1)** shipped — see §13. Event log
+    (sightings, bodies, meetings, alibis) plus per-colour summaries.
+    `identity.lastSeen` retired in favour of
+    `memory.summaries[i].lastSeenTick`. Trace schema bumped to v2.
+  - **Alibi log wiring** shipped in Sprint 2.3 — `tasks.nim`
+    `updateAlibiObservations` calls `memory.appendAlibi` on
+    crewmate × task-icon co-visibility within
+    `MemoryAlibiMatchRadius`. The "awaiting a caller" placeholder
+    in this section is now satisfied.
+  - **Self-position keyframes** shipped in Sprint 2.2 —
+    `Memory.selfKeyframes` records every room transition;
+    `myLocationHistoryJson` feeds the imposter LLM context.
 
-**Long-term memory (v1)** shipped — see §13. Replaces v0's scalar
-evidence latches with an event log (sightings, bodies, meetings,
-plus an alibis log awaiting a caller) and per-colour summaries.
-`identity.lastSeen` retired in favour of
-`memory.summaries[i].lastSeenTick`. Trace schema bumped to v2;
-`body_seen_first` now sourced from `memory.bodies` with an
-`is_new_body` field. Self-consistency parity 500/500 across seeds
-1 / 42 / 100 / 7777.
+Self-consistency parity 500/500 across seeds 1 / 42 / 100 / 7777
+preserved through every Phase-3 increment.
 
-Possible directions in priority order:
+Remaining Phase-3 directions, none of which have been started:
 
 1. Better evidence model — quantitative suspicion scores instead of
-   binary tiers (witnessed-kill vs near-body).
-2. Smarter imposter chat — vary timing, add fake-task callouts,
-   react to chat content beyond just "did anyone say sus".
+   binary tiers (witnessed-kill vs near-body). Likely subsumed by
+   Phase-4 LLM reasoning; may not be worth doing as a separate
+   rule-based scoring pass.
+2. Smarter imposter chat — partly addressed by Phase 4's
+   `imposter_react` LLM path. Pre-meeting "fake-task callout"
+   chat (during gameplay, not voting) remains rule-based.
 3. Real ghost behavior — currently ghosts just keep doing tasks;
-   could vent-watch, escort suspects, etc.
-4. Vote bandwagon detection on the crewmate side — log the pattern
-   without acting on it (preserve the evidence-only voting rule).
+   could vent-watch, escort suspects, etc. Independent of LLM work.
+4. Vote bandwagon detection on the crewmate side — partly addressed
+   by Phase 4's `react` belief-update calls; the rule-based
+   counterpart could log the pattern in trace events. Not started.
 5. Patch v2 to accept `--seed` — would let parity testing exercise
-   imposter paths properly, useful if a phase 3 change touches the
-   imposter policy and we want to verify it doesn't break crewmate
-   behavior.
+   imposter paths properly. Tracked in `TODO.md`. Useful only if a
+   non-LLM strategy change ever lands.
 
 ### Phase 5 — tracing for outer-loop self-improvement ✅
 
@@ -897,48 +917,71 @@ investigation.
 See `TRACING.md` for full schemas, hook points, the open-questions
 log, and the implementation status table.
 
-### Phase 4 — LLM voting integration (in progress)
+### Phase 4 — LLM voting integration (Sprint 1-5 shipped)
 
 This is the primary new direction for mod_talks. High-level design in
-§14; detailed design in `LLM_VOTING.md`; remaining work tracked
-sprint-by-sprint in `LLM_SPRINTS.md`.
+§14; detailed design in `LLM_VOTING.md`; sprint-by-sprint
+implementation status in `LLM_SPRINTS.md` (the source of truth).
 
-**What has landed:**
+**Sprint-by-sprint summary:**
 
-- Nim state machine (`llm.nim`, ~900 LOC): per-role pipelines,
-  chat-history ingestion, context-JSON assembly for all six call
-  kinds, response parsing + validation, fallback paths.
-- `Bot` type extensions (`types.nim`): `LlmVotingState` (per-meeting)
-  and `LlmState` (process-lifetime counters + trace hooks).
-- FFI surface (`ffi/lib.nim`): `modulabot_enable_llm`,
-  `modulabot_take_llm_request`, `modulabot_set_llm_response`,
-  `modulabot_take_chat`, `modulabot_role`. All no-op cleanly in the
-  non-LLM build.
-- Python wrapper (`cogames/amongthem_policy.py`): polls the FFI each
-  frame, performs provider calls via `anthropic.AnthropicBedrock`
-  (preferred) or `anthropic.Anthropic` (direct API), feeds JSON
-  responses back.
-- Trace observability (schema v3, Sprint 1): `llm_dispatched`,
-  `llm_decision`, `llm_error`, `llm_layer_active` events;
-  `trace_settings.llm_compiled_in` + `.llm_layer_active` flags; a
-  session-counter snapshot under `summary_counters.llm` in every
-  manifest.
-- Local launcher for end-to-end testing
-  (`scripts/launch_mod_talks_llm_local.py`).
-- Build gate: `-d:modTalksLlm` (`build_modulabot.py` respects
-  `MODULABOT_LLM=1`). Without the flag, masks are bit-for-bit
-  identical to modulabot. Parity harness validates this.
+- **Sprint 1 — Observability.** Trace schema v3:
+  `llm_dispatched` / `llm_decision` / `llm_error` /
+  `llm_layer_active` events; `trace_settings.llm_compiled_in` /
+  `.llm_layer_active` flags; session counters under
+  `summary_counters.llm`. `MODULABOT_TRACE_DIR` works in the FFI
+  path (was CLI-only).
+- **Sprint 2 — Inputs the LLM was starving on.** Speaker pip
+  detection (`voting.detectChatSpeaker`) flips
+  `trace_settings.speaker_attribution: "color_pip"`. Self-position
+  keyframes (`Memory.selfKeyframes`) feed `my_location_history`
+  for imposter contexts. Alibi log wired
+  (`tasks.updateAlibiObservations`). Ejection detection
+  (`voting.detectResultEjection`) populates
+  `MeetingEvent.ejected`. Latent unreachable-meeting-finalize bug
+  caught and fixed (`bot.finalizeMeeting`).
+- **Sprint 3 — Regression-safe `llm.nim`.** Mock-LLM harness
+  (`llmMockLoadFromFile` / `llmMockEnable` / `llmMockPump`) runs
+  scripted JSONL fixtures without HTTP. `--mode:llm-mock` in
+  `parity.nim`. 56-test suite in `test/llm_unit.nim`. Context
+  builders refactored to return `JsonNode` so a 7-tier
+  `trimContextInPlace` policy guards the FFI buffer.
+- **Sprint 4 — Concurrency, tool-use, retries, transliteration.**
+  `ThreadPoolExecutor` in `AmongThemPolicy` with dispatch / gather
+  phases (3-4× speedup verified live). Per-call-kind timeouts.
+  Stale-response detection in `onLlmResponse`. Anthropic tool-use
+  with one tool per `LlmCallKind`. Retry/backoff for retryable
+  exceptions. UTF-8 → ASCII transliteration in `clampChat`.
+- **Sprint 5 — Quality iteration infrastructure.** Prompt-eval
+  harness at `tools/llm_prompt_eval.py` plus optional context
+  capture (`MODTALKS_LLM_CAPTURE=1` writes
+  `<round>/llm_contexts/`). `LlmPersuadeEnabled` runtime-toggle
+  (`MODTALKS_PERSUADE`). `_OpenAIController` skeleton with
+  `_build_llm_controller` selector. Manifest lineage:
+  `harness_meta.{llm_provider, llm_model, llm_persuade,
+  llm_disabled}`. All 14 public `tuning.nim` constants reflected
+  in `tuning_snapshot.nim`; `trace_smoke.sh` step 7 warns on
+  drift.
 
-**What is not in yet** (see `LLM_SPRINTS.md` for full breakdown):
+**Sprint 4.6 — FFI prefix rename — explicitly cancelled.** See
+§1.5 for rationale.
 
-- Speaker attribution (Q-LLM9 prerequisite, Sprint 2).
-- Self-location history & alibi log wiring (Sprint 2).
-- Ejection detection for `MeetingEvent.ejected` (Sprint 2).
-- Mock-LLM parity mode + unit tests for `llm.nim` (Sprint 3).
-- Concurrent Python-side dispatch + per-kind timeouts +
-  Anthropic tool-use (Sprint 4).
-- Prompt-eval harness, multi-provider config, persuasion experiment
-  (Sprint 5).
+**Deferred follow-ups** (need access / budget, not code):
+
+- 40+ game persuasion A/B campaign (Sprint 5.2).
+- Live OpenAI verification (Sprint 5.3 — needs `OPENAI_API_KEY`).
+
+**Known minor limitations** (logged, not on the critical path):
+
+- Manifest staleness on truncated runs — manifest is rewritten at
+  `endRound`. FFI-path runs that exit mid-round show stale
+  `trace_settings.llm_layer_active: false` and zero
+  `summary_counters.llm`. Emitted events are correct.
+- `validate_trace` rejects rounds with unclosed meetings — fires
+  on `--max-steps` truncation. Consider a `--allow-truncated`
+  flag.
+- Reporter detection (who pressed the meeting button) deferred
+  separate from ejected detection.
 
 ---
 
@@ -958,14 +1001,21 @@ cd /Users/me/p/bitworld
 nim c -o:among_them/players/mod_talks/mod_talks \
   among_them/players/mod_talks/modulabot.nim
 
-# Shared library (FFI for the training harness).
-nim c --app:lib -d:modulabotLibrary \
-  -o:among_them/players/mod_talks/libmodulabot.dylib \
+# CLI binary with the LLM layer enabled (requires modTalksLlm define).
+nim c -d:modTalksLlm \
+  -o:among_them/players/mod_talks/mod_talks_llm \
   among_them/players/mod_talks/modulabot.nim
 
-# Or use the bundled Python helper (handles nimby + Nim version).
-python3 among_them/players/mod_talks/build_modulabot.py
+# Shared library (FFI for the cogames runner / training harness).
+# The Python helper handles nimby + Nim version + adds -d:modTalksLlm
+# automatically when MODULABOT_LLM=1 is set.
+MODULABOT_LLM=1 python3 \
+  among_them/players/mod_talks/build_modulabot.py
 ```
+
+Without `-d:modTalksLlm`, every LLM call site is dead-coded out and
+the bot is bit-for-bit identical to modulabot. The parity harness
+(`test/parity.nim`) verifies this on every commit.
 
 ### CLI flags
 
@@ -982,10 +1032,36 @@ python3 among_them/players/mod_talks/build_modulabot.py
 | `--trace-snapshot-period:N` | `120` | Ticks between belief-state snapshots |
 | `--trace-meta:K=V[,K=V]*` | empty | Free-form metadata into `manifest.harness_meta` for lineage tracking |
 | `--trace-frames-dump` / `--no-trace-frames-dump` | on (when `--trace-dir` set) | Auto-dump frames to `<trace-dir>/<bot>/<session>/frames.bin` for replay |
+| `--llm-mock:PATH` | empty | Sprint 3.1 — load scripted JSONL responses instead of dispatching real provider calls. Requires `-d:modTalksLlm`; ignored otherwise |
 
-Env-var equivalents: `MODULABOT_TRACE_DIR`, `MODULABOT_TRACE_LEVEL`,
-`MODULABOT_TRACE_SNAPSHOT_PERIOD`, `MODULABOT_TRACE_META`,
-`MODULABOT_TRACE_FRAMES_DUMP`. Explicit flags win over env vars.
+### Environment variables
+
+CLI flags above each have a `MODULABOT_*` env-var equivalent
+(explicit flags win). The full set:
+
+| Env var | Equivalent flag | Effect |
+|---|---|---|
+| `MODULABOT_TRACE_DIR` | `--trace-dir` | Trace output root |
+| `MODULABOT_TRACE_LEVEL` | `--trace-level` | Trace verbosity |
+| `MODULABOT_TRACE_SNAPSHOT_PERIOD` | `--trace-snapshot-period` | Snapshot cadence |
+| `MODULABOT_TRACE_META` | `--trace-meta` | Manifest harness_meta |
+| `MODULABOT_TRACE_FRAMES_DUMP` | `--[no-]trace-frames-dump` | Auto-frame-capture |
+| `MODTALKS_LLM_MOCK` | `--llm-mock` | Mock JSONL fixture path |
+
+LLM-only env vars (consumed by `cogames/amongthem_policy.py`):
+
+| Env var | Effect |
+|---|---|
+| `ANTHROPIC_API_KEY` | Direct Anthropic API key (alternative to Bedrock) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` / `AWS_PROFILE` | Bedrock credentials (preferred) |
+| `CLAUDE_CODE_USE_BEDROCK=1` | Force Bedrock even with `ANTHROPIC_API_KEY` set |
+| `OPENAI_API_KEY` | OpenAI fallback (Sprint 5.3, structural — not yet live-tested) |
+| `MODTALKS_PROVIDER_OPENAI=1` | Force OpenAI provider even if Anthropic creds are present |
+| `MODTALKS_LLM_MODEL` | Override default model id |
+| `MODTALKS_LLM_DISABLE=1` | Hard-disable the LLM layer (bot runs as rule-based modulabot) |
+| `MODTALKS_LLM_DEADLINE_SECONDS` | Sprint 4.1 — wall-clock cap for `step_batch` to gather in-flight futures (default 12.0) |
+| `MODTALKS_PERSUADE=1` | Sprint 5.2 — runtime override for `LlmPersuadeEnabled` |
+| `MODTALKS_LLM_CAPTURE=1` | Sprint 5.1 — write dispatched contexts under `<round>/llm_contexts/` for prompt-eval replay |
 
 Note: modulabot defaults to `:8080`, but most local Among-Them
 servers bind to `:2000` or `:8080` depending on how they were
@@ -1022,6 +1098,39 @@ among_them/players/mod_talks/mod_talks \
   --address:localhost --port:2000 --name:mt1 \
   --trace-dir:/tmp/runs \
   --trace-meta:experiment_id=baseline,git_sha=$(git rev-parse HEAD)
+```
+
+With the mock-LLM harness (deterministic; no real provider calls):
+
+```sh
+among_them/players/mod_talks/mod_talks_llm \
+  --address:localhost --port:2000 --name:mt1 \
+  --llm-mock:among_them/players/mod_talks/test/fixtures/llm_mock_basic.jsonl
+```
+
+### Live LLM games (cogames runner)
+
+The end-to-end Bedrock launcher lives at
+`scripts/launch_mod_talks_llm_local.py` and uses metta's
+`bitworld_runner.run_bitworld_episode` (so the run shape matches
+the cogames tournament worker exactly). Prereqs: built server,
+built dylib (`MODULABOT_LLM=1 python3 build_modulabot.py`),
+metta venv, AWS SSO logged in.
+
+```sh
+AWS_PROFILE=softmax AWS_REGION=us-east-1 CLAUDE_CODE_USE_BEDROCK=1 \
+  MODULABOT_TRACE_DIR=/tmp/run \
+  ~/coding/metta/.venv/bin/python \
+  among_them/players/mod_talks/scripts/launch_mod_talks_llm_local.py \
+  --port 8081 --no-browser --max-steps 5000
+```
+
+Add `MODTALKS_LLM_CAPTURE=1` to dump dispatched contexts under
+`<trace>/<bot>/<session>/round-NNNN/llm_contexts/` for the prompt-eval
+harness:
+
+```sh
+MODTALKS_LLM_CAPTURE=1 ... launch_mod_talks_llm_local.py ...
 ```
 
 This writes one round directory per game under
@@ -1212,12 +1321,15 @@ type
   MeetingEvent* = object
     startTick*: int
     endTick*: int
-    reporter*: int                # -1 if unknown (v1 will usually be -1;
-                                  # deferred with chat speaker attribution)
+    reporter*: int                # -1 if unknown — reporter detection
+                                  # deferred (separate perception work)
     selfVote*: int                # VoteSkip / color / VoteUnknown
     votes*: PerColor[int]
-    ejected*: int                 # -1 if skipped or unknown
-    chatLines*: seq[string]       # raw OCR, speakers attributed in v2
+    ejected*: int                 # -1 unknown / -2 skipped / else color
+                                  # (Sprint 2.4 populates from
+                                  # voting.detectResultEjection)
+    chatLines*: seq[VoteChatLine] # OCR + speaker attribution
+                                  # (Sprint 2.1 — was seq[string])
 
   AlibiEvent* = object
     tick*: int
@@ -1329,17 +1441,24 @@ Fields that stay (not memory-backed, never were in scope):
 | `prevTaskStates` / `prevTaskResolved` | Task state, not observation memory |
 | `prevKillReady` | Imposter state, not observation memory |
 
-Trace schema bumped to v2; the v1→v2 change is additive (one new
-field `is_new_body` on `body_seen_first`, existing fields unchanged).
-`validate_trace` and `trace_smoke` were updated to accept schema v1
-and v2.
+Trace schema bumped to v2 in v1 memory work; v3 in Sprint 1
+(LLM observability). Both bumps are additive — `is_new_body` on
+`body_seen_first` (v2), and the LLM event family
+(`llm_dispatched` / `llm_decision` / `llm_error` /
+`llm_layer_active`) plus manifest fields
+`trace_settings.llm_compiled_in` / `.llm_layer_active` and
+`summary_counters.llm` (v3). `validate_trace` and `trace_smoke`
+accept schemas v1, v2, and v3.
 
-### 13.7. Deferred / out of scope for v1
+### 13.7. Deferred / out of scope (v1)
 
-- **Chat-based accusation attribution** — blocked by deferred speaker
-  attribution (TRACING.md §15). `MeetingEvent.chatLines` reserves the
-  raw OCR slot; v2 backfills speakers without a breaking schema change.
-- **Task-claim / location-claim parsing** — same blocker.
+- **Chat-based accusation attribution** — partly addressed.
+  Speaker attribution shipped in Sprint 2.1 via
+  `voting.detectChatSpeaker`; `MeetingEvent.chatLines` carries
+  speaker-color indices. Higher-level "X accused Y at tick N"
+  parsing remains future work.
+- **Task-claim / location-claim parsing** — future work; would
+  layer on top of the chat-line + speaker stream.
 - **Disappearance events** (visible → gone → body appears at last-seen
   location) — computable from the sighting + body logs post-hoc; no
   need for a separate event category in v1.
@@ -1396,32 +1515,51 @@ Landed in order:
   procs with no dependency on trace. The "single source of truth"
   rule still holds — there's only one place that records a body
   (`memory.appendBody`) and one place that emits the event.
-- **Alibi appends deferred.** The schema and append proc are in
-  place, but no caller invokes `memory.appendAlibi` yet. Wiring
-  (from `tasks.nim` on co-visibility of a task icon + crewmate) is
-  a follow-up; the v1 log is empty for alibis until that lands.
-- **`reporter` / `ejected`** remain `-1` in `MeetingEvent` as
-  planned. Adding these requires perception work (detecting who
-  called the meeting from the intro animation; detecting who was
-  ejected from the post-vote cutscene) that is outside the memory
-  module's scope.
+- **Alibi appends shipped (Sprint 2.3).** Wired from
+  `tasks.nim:updateAlibiObservations` on co-visibility of a task
+  icon + crewmate within `MemoryAlibiMatchRadius` world-pixels of
+  the task centre. Self is filtered at the call site.
+- **`reporter` deferred, `ejected` shipped (Sprint 2.4).**
+  Ejected-color detection lives in
+  `voting.nim:detectResultEjection` — reads the post-vote result
+  frame for either the centered player sprite or the "NO ONE DIED"
+  text. Stored in `VotingState.resultEjected` (preserved across
+  `clearVotingState` for the meeting finalizer to consume).
+  `MeetingEvent.ejected` schema is now three-state: `-1` unknown,
+  `-2` skipped, else color index. Reporter detection (who pressed
+  the meeting button) remains deferred — separate perception work,
+  lower leverage than the ejection outcome.
+- **Self-position keyframes (Sprint 2.2).** New
+  `Memory.selfKeyframes: seq[SelfKeyframe]` recorded by
+  `observeSelfRoom` on every named-room transition (corridors with
+  `roomId == -1` skipped). Ring-buffer cap
+  `MemorySelfKeyframeCap = 64`. Never trimmed at meeting boundary
+  — imposter LLM context needs the full pre-meeting history.
+- **Schema migrated to `seq[VoteChatLine]` (Sprint 2.1).**
+  `MeetingEvent.chatLines` was `seq[string]` in the v1 schema;
+  it's now `seq[VoteChatLine]` carrying per-line speaker
+  attribution from `voting.detectChatSpeaker`.
 
 ---
 
 ## 14. LLM voting integration
 
-This section describes the intended design for the LLM layer at a high level.
-The full detailed design — pipeline stages, state machine, type definitions,
-prompt architecture, async call mechanism, timing analysis, and open questions —
-is in `LLM_VOTING.md`. Remaining work is tracked as checkboxes in
-`LLM_SPRINTS.md`.
+This section describes the LLM layer at a high level. The full detailed
+design — pipeline stages, state machine, type definitions, prompt
+architecture, async call mechanism, timing analysis, and open questions —
+is in `LLM_VOTING.md`. Sprint-by-sprint implementation status with
+checkboxes is in `LLM_SPRINTS.md` (the source of truth for "what
+shipped vs. what's outstanding").
 
-**Status: initial integration shipped.** The Nim state machine, FFI, Anthropic
-Bedrock/direct wrapper, and a local launcher all exist and run end-to-end.
-What's not in yet is the set of inputs the model needs (speaker attribution,
-self-location, alibis, ejection outcomes), deterministic tests, concurrency
-in the Python dispatch path, and prompt evaluation. See `LLM_SPRINTS.md` for
-the sprint-by-sprint plan and current progress.
+**Status: shipped through Sprint 5.** The Nim state machine, FFI,
+Anthropic Bedrock/direct + OpenAI Python wrappers, mock-LLM harness,
+trace observability with optional context capture, concurrent dispatch,
+per-call-kind timeouts + tool-use + retries + UTF-8 transliteration,
+and the prompt-eval harness all exist and have been verified live.
+Two follow-ups remain deferred (40+ game persuasion A/B; live OpenAI
+verification) — both need access / budget rather than code. See §11
+Phase 4 for the sprint-by-sprint summary and `LLM_SPRINTS.md` for
+checkboxes.
 
 ### 14.1 Motivation
 
@@ -1486,16 +1624,20 @@ the flag, the binary is bit-for-bit equivalent to modulabot and the
 parity harness must continue to pass at 100%. The flag is off by
 default.
 
-### 14.5 Integration points (summary)
+### 14.5 Integration points (summary, as shipped)
 
 | Where | What changes |
 |---|---|
-| `types.nim` | Add `LlmVotingState`, `LlmState` sub-records to `Bot` |
-| `voting.nim` | Use `llmVoting.voteTarget` when set; call `llmVoting.tick(bot)` each frame |
+| `types.nim` | Adds `LlmVotingState`, `LlmState`, `LlmMock`, `VoteChatLine`, `SelfKeyframe` to the `Bot` composition (+ `LlmCallKind`, `LlmVotingStage`, `LlmRequestSlot`, `LlmSuspect`, `LlmHypothesis`, `LlmImposterStrategy`, `LlmChatEntry`, `LlmSessionCounters`, `LlmMockEntry`) |
+| `voting.nim` | `decideVotingMask` consults `llmVoting.voteTarget` when set; `tickLlmVoting(bot)` runs each frame inside `bot.nim`'s interstitial branch when voting is active. New `detectChatSpeaker` (Sprint 2.1) and `detectResultEjection` (Sprint 2.4) procs. |
 | `chat.nim` | No change; LLM queues via existing `pendingChat` path |
-| `llm.nim` (new) | Context assembly, side-channel thread, HTTP dispatch, response parsing |
-| `tuning.nim` | `LlmAccuseThreshold`, `LlmVoteThreshold`, `LlmBandwagonMinAccusers`, `LlmChatReactionCooldownMs`, `LlmMaxCallsPerMeeting`, `LlmMaxChatLen` |
-| `trace.nim` | Add `llm_decision` event: call type, stage, confidence, latency, fallback flag |
+| `llm.nim` (new) | Context assembly (returns `JsonNode` so `trimContextInPlace` can apply Sprint 3.4's 7-tier shrink policy), state-machine pipelines for both roles, response parsing/validation, mock harness (Sprint 3.1), session-counter maintenance, FFI surface |
+| `bot.nim` | New `finalizeMeeting` proc owns `MeetingEvent` append (Sprint 2.4 fix). `decideNextMaskCore` calls `tickLlmVoting` after `parseVotingScreen`. `initBot` zero-inits `LlmState`. `resetRoundState` clears LLM voting state but preserves `enabled`. |
+| `tuning.nim` | `LlmAccuseThreshold`, `LlmVoteThreshold`, `LlmChatReactionCooldownTicks`, `LlmMaxChatLen`, `LlmMaxContextLen`, `LlmMaxContextBytes`, `LlmPersuadeEnabled`, plus the Memory tunables `MemorySelfKeyframeCap`, `MemoryAlibiMatchRadius` |
+| `trace.nim` | New event types: `llm_dispatched`, `llm_decision`, `llm_error`, `llm_layer_active`. Manifest gains `trace_settings.llm_compiled_in` / `.llm_layer_active` and `summary_counters.llm` (Sprint 1). Optional `llm_contexts/` dump (Sprint 5.1). Schema bumped to v3. |
+| `tuning_snapshot.nim` | All 14 LLM/Memory tunables added (Sprint 5.4) so manifests carry the full LLM configuration. |
+| `ffi/lib.nim` | `modulabot_enable_llm`, `modulabot_take_llm_request`, `modulabot_set_llm_response`, `modulabot_take_chat`, `modulabot_role`. Concurrency lives in the Python wrapper, not here. |
+| `cogames/amongthem_policy.py` | `_AnthropicController` (default), `_OpenAIController` (Sprint 5.3 skeleton), `_build_llm_controller` selector. `AmongThemPolicy._executor` is a `ThreadPoolExecutor` with dispatch/gather phases (Sprint 4.1). Per-call-kind timeouts, retry/backoff, Anthropic tool-use. |
 
 ### 14.6 Open questions (Q-LLM1–Q-LLM9)
 

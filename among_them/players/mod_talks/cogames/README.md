@@ -4,10 +4,17 @@ This directory packages the Nim mod_talks bot for the Softmax CoGames AmongThem
 tournament. It is a thin wrapper, not a fork: the bot's source-of-truth lives
 one directory up at `among_them/players/mod_talks/`.
 
-mod_talks is a fork of modulabot. At the time of the fork the LLM voting
-integration described in `DESIGN.md §14` is not yet implemented; the bot
-behavior in tournament play is identical to modulabot at the fork point until
-that work lands.
+mod_talks is a fork of modulabot. The LLM voting integration described in
+`DESIGN.md §14` and detailed in `LLM_VOTING.md` shipped through Sprint 5
+(see `LLM_SPRINTS.md`); the Python wrapper here owns the provider dispatch
+loop. Tournament behaviour with `-d:modTalksLlm` enabled and live Anthropic
+Bedrock / direct credentials uses the LLM during voting; without the flag
+or without credentials, the bot runs as rule-based modulabot.
+
+The shared library built from this tree (`MODULABOT_LLM=1 python3
+build_modulabot.py`) bakes in the LLM gate. The Python wrapper detects
+credentials at policy init and falls back to rule-based behaviour
+gracefully when none are present (see `MODTALKS_LLM_DISABLE`).
 
 ## Layout
 
