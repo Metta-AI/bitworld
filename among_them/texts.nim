@@ -74,10 +74,10 @@ proc rowHasText(
   x,
   y: int
 ): bool =
-  ## Returns true when one screen pixel is non-background.
+  ## Returns true when one screen pixel is white text ink.
   if x < 0 or y < 0 or x >= ScreenWidth or y >= ScreenHeight:
     return false
-  frame[y * ScreenWidth + x] != TextBackground
+  frame[y * ScreenWidth + x].isWhiteTextIndex()
 
 proc readAsciiLine*(
   frame: openArray[uint8],

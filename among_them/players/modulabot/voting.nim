@@ -12,6 +12,7 @@ import std/strutils
 
 import protocol
 import ../../sim
+import ../../votereader
 import ../../../common/server
 
 import types
@@ -292,59 +293,47 @@ proc chatSusColorIndex*(text: string): int =
 # Top-level parser
 # ---------------------------------------------------------------------------
 
+proc applyVoteReaderFrame(
+  bot: var Bot,
+  read: VoteReaderFrame,
+  startTick: int
+) =
+  ## Copies a shared vote-reader result into bot voting state.
+  bot.clearVotingState()
+  bot.voting.active = true
+  bot.voting.playerCount = read.playerCount
+  bot.voting.startTick = startTick
+  bot.voting.cursor = read.cursor
+  bot.voting.selfSlot = read.selfSlot
+  for i in 0 ..< read.playerCount:
+    bot.voting.slots[i].colorIndex = read.slots[i].colorIndex
+    bot.voting.slots[i].alive = read.slots[i].alive
+  for i in 0 ..< min(bot.voting.choices.len, read.choices.len):
+    bot.voting.choices[i] = read.choices[i]
+  if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+    bot.identity.selfColor = read.slots[read.selfSlot].colorIndex
+  bot.voting.chatLines.setLen(0)
+  for entry in read.chat:
+    for line in entry.lines:
+      bot.voting.chatLines.add(line)
+  bot.voting.chatText = read.chatText
+  bot.voting.chatSusColor = read.chatSusColor
+
 proc parseVotingCandidate*(bot: var Bot, count, startTick: int): bool =
   ## Tries to parse the voting screen for a specific player count.
   ## Returns false unless every slot resolves to a colour matching
   ## its index — that's the strict invariant that makes "no, this
   ## isn't the voting screen" the only failure mode.
-  let layout = voteGridLayout(count)
-  if not bot.voteSkipTextMatches(layout.skipX, layout.skipY):
-    return false
-  var slots: array[MaxPlayers, VoteSlot]
-  for i in 0 ..< count:
-    slots[i] = bot.parseVoteSlot(count, i)
-    if slots[i].colorIndex == VoteUnknown:
-      return false
-    if slots[i].colorIndex != i:
-      return false
-
-  bot.clearVotingState()
-  bot.voting.active = true
-  bot.voting.playerCount = count
-  bot.voting.startTick = startTick
-  bot.voting.cursor = VoteUnknown
-  bot.voting.selfSlot = VoteUnknown
-  for i in 0 ..< count:
-    bot.voting.slots[i] = slots[i]
-    if slots[i].alive and bot.voteCellSelected(count, i):
-      bot.voting.cursor = i
-    if bot.voteSelfMarkerPresent(count, i, slots[i].colorIndex):
-      bot.voting.selfSlot = i
-      bot.identity.selfColor = slots[i].colorIndex
-    let cell = voteCellOrigin(count, i)
-    bot.parseVoteDotsForTarget(
-      i,
-      cell.x + 1,
-      cell.y + bot.sprites.player.height + 2
-    )
-  if bot.voteSkipSelected(layout.skipX, layout.skipY):
-    bot.voting.cursor = count
-  bot.parseVoteDotsForTarget(
-    VoteSkip,
-    layout.skipX + VoteSkipW + 2,
-    layout.skipY
+  let read = parseVoteFrame(
+    bot.io.unpacked,
+    bot.sim.asciiSprites,
+    bot.sprites.player,
+    bot.sprites.body,
+    count
   )
-  # Cache per-line OCR for the trace writer (chat_observed events).
-  bot.voting.chatLines.setLen(0)
-  for line in bot.visibleChatLines(count):
-    bot.voting.chatLines.add(line)
-  # Rebuild the concatenated text used by chatSusColorIndex.
-  bot.voting.chatText.setLen(0)
-  for line in bot.voting.chatLines:
-    if bot.voting.chatText.len > 0:
-      bot.voting.chatText.add(' ')
-    bot.voting.chatText.add(line)
-  bot.voting.chatSusColor = chatSusColorIndex(bot.voting.chatText)
+  if not read.found:
+    return false
+  bot.applyVoteReaderFrame(read, startTick)
   true
 
 proc parseVotingScreen*(bot: var Bot): bool =

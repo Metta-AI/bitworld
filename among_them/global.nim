@@ -797,8 +797,16 @@ proc interstitialTextItems(
         result.addTextItem(sim.centeredTextX(line), 20, [line])
   of Playing:
     if playerIndex < 0 or playerIndex >= sim.players.len:
-      result.addTextItem(11, 22, ["GAME IN"])
-      result.addTextItem(8, 32, ["PROGRESS"])
+      let
+        gap = 10
+        blockH = sim.asciiSprites.height * 2 + gap
+        startY = (ScreenHeight - blockH) div 2
+      result.addTextItem(sim.centeredTextX("GAME IN"), startY, ["GAME IN"])
+      result.addTextItem(
+        sim.centeredTextX("PROGRESS"),
+        startY + sim.asciiSprites.height + gap,
+        ["PROGRESS"]
+      )
   of RoleReveal:
     let viewerIsImp =
       playerIndex >= 0 and playerIndex < sim.players.len and
@@ -825,8 +833,10 @@ proc interstitialTextItems(
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej < 0 or ej >= sim.players.len:
-      result.addTextItem(46, 54, ["NO ONE"])
-      result.addTextItem(52, 64, ["DIED"])
+      result.addTextItem(sim.centeredTextX("NO ONE") + 3, 54, ["NO ONE"])
+      result.addTextItem(sim.centeredTextX("DIED") + 3, 64, ["DIED"])
+    else:
+      result.addTextItem(sim.centeredTextX("WAS KILLED"), 46, ["WAS KILLED"])
   of GameOver:
     let title =
       if sim.timeLimitReached:
@@ -926,10 +936,10 @@ proc putProtocolSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
     fb.putPixel(x, y, color)
     fb.putPixel(x + 1, y, color)
 
-proc buildSpriteProtocolBlankFrame(color = 0'u8): seq[uint8] =
+proc buildSpriteProtocolBlankFrame(sim: SimServer): seq[uint8] =
   ## Builds a packed blank frame for sprite protocol interstitials.
   var fb = initFramebuffer()
-  fb.clearFrame(color)
+  sim.fillDarkBg(fb)
   fb.packFramebuffer()
   fb.packed
 
@@ -939,7 +949,7 @@ proc buildSpriteProtocolVoteFrame(
 ): seq[uint8] =
   ## Builds a voting background without baked text or player icons.
   var fb = initFramebuffer()
-  fb.clearFrame(0)
+  sim.fillDarkBg(fb)
   let n = sim.players.len
   if n == 0:
     fb.packFramebuffer()
@@ -1259,7 +1269,7 @@ proc buildInterstitialFrame(
     if includeText:
       sim.buildLobbyFrame(-1)
     else:
-      buildSpriteProtocolBlankFrame()
+      sim.buildSpriteProtocolBlankFrame()
   of Voting:
     if includeText:
       sim.buildVoteFrame(-1)
@@ -1269,12 +1279,12 @@ proc buildInterstitialFrame(
     if includeText:
       sim.buildResultFrame(-1)
     else:
-      buildSpriteProtocolBlankFrame()
+      sim.buildSpriteProtocolBlankFrame()
   of GameOver:
     if includeText:
       sim.buildGameOverFrame(-1)
     else:
-      buildSpriteProtocolBlankFrame()
+      sim.buildSpriteProtocolBlankFrame()
   else:
     @[]
 
@@ -1873,13 +1883,13 @@ proc buildSpriteProtocolPlayerUpdates*(
     let packedFrame =
       if sim.phase == Playing and
           (playerIndex < 0 or playerIndex >= sim.players.len):
-        buildSpriteProtocolBlankFrame()
+        sim.buildSpriteProtocolBlankFrame()
       elif sim.phase in {Lobby, RoleReveal}:
-        buildSpriteProtocolBlankFrame()
+        sim.buildSpriteProtocolBlankFrame()
       elif sim.phase == Voting:
         sim.buildSpriteProtocolVoteFrame(playerIndex)
       elif sim.phase in {VoteResult, GameOver}:
-        buildSpriteProtocolBlankFrame()
+        sim.buildSpriteProtocolBlankFrame()
       else:
         sim.render(playerIndex)
     let interstitial = spritePixelsFromPackedFrame(packedFrame)
