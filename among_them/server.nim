@@ -691,6 +691,7 @@ proc httpHandler(request: Request) =
         appState.playerAddresses[websocket] = identity
         appState.playerSlots[websocket] = slot
         appState.playerTokens[websocket] = token
+    echo "player connected: ", identity
   elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
@@ -706,6 +707,7 @@ proc httpHandler(request: Request) =
         appState.playerAddresses[websocket] = identity
         appState.playerSlots[websocket] = slot
         appState.playerTokens[websocket] = token
+    echo "player connected: ", identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -819,14 +821,16 @@ proc websocketHandler(
               not appState.replayLoaded and
               websocket in appState.playerIndices:
             appState.chatMessages[websocket] = blobToChat(message.data)
-  of ErrorEvent:
+  of ErrorEvent, CloseEvent:
+    var who = ""
     {.gcsafe.}:
       withLock appState.lock:
+        let alreadyClosed = websocket in appState.closedSockets
         appState.closedSockets.add(websocket)
-  of CloseEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        appState.closedSockets.add(websocket)
+        if not alreadyClosed and websocket in appState.playerAddresses:
+          who = appState.playerAddresses[websocket]
+    if who.len > 0:
+      echo "player disconnected: ", who
 
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   args.server[].serve(Port(args.port), args.address)

@@ -46,6 +46,12 @@ win.
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
 ```
 
+You can also build and run docker images for the game and the player:
+
+Game: `docker run --rm --name among_them -p 2000:2000 $(docker load -q -i $(nix build .#dockerImageAmongThem --print-out-paths --quiet --no-link --out-link dockerImageAmongThem.tar.gz) | sed -n 's/^Loaded image: //p') among_them --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'`
+
+Player: `docker run --rm --name nottoodumb --network=host $(docker load -q -i $(nix build .#dockerImageNottoodumb --print-out-paths --quiet --no-link --out-link dockerImageNottoodumb.tar.gz) | sed -n 's/^Loaded image: //p') nottoodumb --url:ws://localhost:2000 --name:player1`
+
 ## Runner Environment
 
 Tournament and Cogame runners can configure file paths with environment

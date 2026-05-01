@@ -295,7 +295,9 @@ type
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
-  currentSourcePath().parentDir().parentDir()
+  ## Expects to be invoked with CWD = among_them/players/, the dir
+  ## quick_player and the Docker wrapper land in.
+  getCurrentDir().parentDir()
 
 proc atlasPath(): string =
   ## Returns the shared Silky atlas path.
@@ -4164,29 +4166,49 @@ when not defined(nottoodumbLibrary):
     unpack4bpp(bot.packed, bot.unpacked)
     true
 
+  proc ensureWsPath(url: string, defaultPath: string): string =
+    ## Inserts `defaultPath` if the URL has no path beyond the authority,
+    ## so `--url:ws://host:port` still hits the WebSocket endpoint.
+    let s = url.find("://")
+    let start = if s < 0: 0 else: s + 3
+    for i in start ..< url.len:
+      case url[i]
+      of '/': return url
+      of '?', '#': return url[0 ..< i] & defaultPath & url[i .. ^1]
+      else: discard
+    url & defaultPath
+
   proc runBot(
     host = DefaultHost,
     port = PlayerDefaultPort,
     gui = false,
     name = "",
-    mapPath = ""
+    mapPath = "",
+    url = ""
   ) =
     ## Connects to an Among Them server and processes player frames.
+    ## If `url` is non-empty it is used as the WebSocket endpoint (scheme,
+    ## host, port, path); otherwise we build ws://host:port/player. A
+    ## missing path is filled in with WebSocketPath.
     var bot = initBot(mapPath)
-    let url =
-      if name.len > 0:
-        "ws://" & host & ":" & $port & WebSocketPath &
-          "?name=" & name.queryEscape()
-      else:
-        "ws://" & host & ":" & $port & WebSocketPath
+    let endpoint =
+      if url.len > 0: ensureWsPath(url, WebSocketPath)
+      else: "ws://" & host & ":" & $port & WebSocketPath
+    let connectUrl =
+      if name.len == 0: endpoint
+      else: endpoint &
+        (if '?' in endpoint: "&" else: "?") & "name=" & name.queryEscape()
     var
       viewer =
         if gui: initViewerApp()
         else: nil
       connected = false
+      notifiedFailure = false
     while viewer.viewerOpen():
       try:
-        let ws = newWebSocket(url)
+        let ws = newWebSocket(connectUrl)
+        echo "connected to ", connectUrl
+        notifiedFailure = false
         var lastMask = 0xff'u8
         bot.queuedFrames.setLen(0)
         bot.frameBufferLen = 0
@@ -4194,7 +4216,7 @@ when not defined(nottoodumbLibrary):
         connected = true
         while viewer.viewerOpen():
           if gui:
-            viewer.pumpViewer(bot, connected, url)
+            viewer.pumpViewer(bot, connected, connectUrl)
             if not viewer.viewerOpen():
               ws.close()
               break
@@ -4210,13 +4232,18 @@ when not defined(nottoodumbLibrary):
               not bot.interstitialText.isGameOverText():
             ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
             bot.pendingChat = ""
-      except Exception:
+      except Exception as e:
+        if connected:
+          echo "connection lost: ", e.msg
+        elif not notifiedFailure:
+          echo "connection failed: ", e.msg
+          notifiedFailure = true
         connected = false
         if gui:
           let reconnectStart = getMonoTime()
           while viewer.viewerOpen() and
               (getMonoTime() - reconnectStart).inMilliseconds < 250:
-            viewer.pumpViewer(bot, connected, url)
+            viewer.pumpViewer(bot, connected, connectUrl)
             sleep(10)
         else:
           sleep(250)
@@ -4228,6 +4255,7 @@ when isMainModule and not defined(nottoodumbLibrary):
     gui = false
     name = ""
     mapPath = ""
+    url = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4242,10 +4270,12 @@ when isMainModule and not defined(nottoodumbLibrary):
         name = val
       of "map":
         mapPath = val
+      of "url":
+        url = val
       else:
         discard
     else:
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath)
+  runBot(address, port, gui, name, mapPath, url)
