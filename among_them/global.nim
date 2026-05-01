@@ -1735,7 +1735,7 @@ proc updateTrails(state: var GlobalViewerState, sim: SimServer) =
 proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   ## Returns the sprite id for a player in the global viewer.
   let
-    colorIndex = player.joinOrder mod PlayerColors.len
+    colorIndex = playerColorIndex(player.color)
     side = if player.flipH: 1 else: 0
     selected = player.joinOrder == selectedJoinOrder
   if player.alive and selected:

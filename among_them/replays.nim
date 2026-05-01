@@ -16,7 +16,9 @@ type
   ReplayJoin* = object
     time*: uint32
     player*: uint8
-    address*: string
+    name*: string
+    slot*: int
+    token*: string
 
   ReplayLeave* = object
     time*: uint32
@@ -69,6 +71,10 @@ proc writeU32(file: File, value: uint32) =
   for shift in countup(0, 24, 8):
     file.writeU8(uint8((value shr shift) and 0xff'u32))
 
+proc writeI16(file: File, value: int) =
+  ## Writes one little endian signed 16 bit value.
+  file.writeU16(cast[uint16](int16(value)))
+
 proc writeU64(file: File, value: uint64) =
   ## Writes one little endian unsigned 64 bit value.
   for shift in countup(0, 56, 8):
@@ -101,6 +107,10 @@ proc readU16(bytes: string, offset: var int): uint16 =
   result = uint16(bytes[offset].uint8) or
     (uint16(bytes[offset + 1].uint8) shl 8)
   offset += 2
+
+proc readI16(bytes: string, offset: var int): int =
+  ## Reads one little endian signed 16 bit value.
+  int(cast[int16](bytes.readU16(offset)))
 
 proc readU32(bytes: string, offset: var int): uint32 =
   ## Reads one little endian unsigned 32 bit value.
@@ -166,7 +176,9 @@ proc writeJoin*(
   writer: var ReplayWriter,
   time: uint32,
   player: int,
-  address: string
+  name: string,
+  slot: int,
+  token: string
 ) =
   ## Writes one player join replay record.
   if not writer.enabled:
@@ -174,7 +186,9 @@ proc writeJoin*(
   writer.file.writeU8(ReplayJoinRecord)
   writer.file.writeU32(time)
   writer.file.writeU8(uint8(player))
-  writer.file.writeReplayString(address)
+  writer.file.writeReplayString(name)
+  writer.file.writeI16(slot)
+  writer.file.writeReplayString(token)
 
 proc writeLeave*(writer: var ReplayWriter, time: uint32, player: int) =
   ## Writes one player leave replay record.
@@ -252,7 +266,9 @@ proc parseReplayBytes*(bytes: string): ReplayData =
       let join = ReplayJoin(
         time: bytes.readU32(offset),
         player: bytes.readU8(offset),
-        address: bytes.readReplayString(offset)
+        name: bytes.readReplayString(offset),
+        slot: bytes.readI16(offset),
+        token: bytes.readReplayString(offset)
       )
       if join.time < lastJoinTime:
         raise newException(ReplayError, "Replay join timestamps move backward")
@@ -328,7 +344,7 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let join = replay.data.joins[replay.joinIndex]
     if int(join.player) != sim.players.len:
       raise newException(ReplayError, "Replay player join order is invalid")
-    discard sim.addPlayer(join.address)
+    discard sim.addPlayer(join.name, join.slot, join.token)
     replay.ensureReplayPlayer(int(join.player))
     inc replay.joinIndex
 

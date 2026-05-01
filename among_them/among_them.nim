@@ -10,6 +10,7 @@ when isMainModule:
     mapPath = ""
     saveReplayPath = ""
     loadReplayPath = ""
+    saveScoresPath = ""
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind
@@ -29,6 +30,8 @@ when isMainModule:
         saveReplayPath = val
       of "load-replay":
         loadReplayPath = val
+      of "save-scores":
+        saveScoresPath = val
       of "message-cooldown":
         messageCooldown = max(0, parseInt(val))
       else: discard
@@ -42,4 +45,11 @@ when isMainModule:
     config.mapPath = mapPath
   if messageCooldown >= 0:
     config.messageCooldownTicks = messageCooldown
-  runServerLoop(address, port, config, saveReplayPath, loadReplayPath)
+  runServerLoop(
+    address,
+    port,
+    config,
+    saveReplayPath,
+    loadReplayPath,
+    saveScoresPath
+  )

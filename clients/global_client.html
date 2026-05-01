@@ -179,14 +179,19 @@ function defaultAddress(path){
 const address=url.searchParams.get("address")||defaultAddress("/global");
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
 function websocketAddress(){
-  const name=url.searchParams.get("name");
-  if(!name)return address;
   try{
     const wsUrl=new URL(address,location.href);
     if(wsUrl.protocol==="http:")wsUrl.protocol="ws:";
     if(wsUrl.protocol==="https:")wsUrl.protocol="wss:";
-    wsUrl.searchParams.set("name",name);
-    return wsUrl.toString();
+    let changed=wsUrl.toString()!==address;
+    for(const key of ["name","slot","token"]){
+      const value=url.searchParams.get(key);
+      if(value!==null){
+        wsUrl.searchParams.set(key,value);
+        changed=true;
+      }
+    }
+    return changed?wsUrl.toString():address;
   }catch(e){
     return address;
   }

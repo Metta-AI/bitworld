@@ -167,6 +167,57 @@ Then open the global viewer:
 http://localhost:2000/client/global.html
 ```
 
+## Slots setup for tournament runner.
+
+Name and token are not optional, but role and color options and game specific.
+
+```sh
+nim r among_them.nim --address:0.0.0.0 --port:2000 --save-scores:scores.json --config:'{
+"maxGames":1,
+"imposterCooldownTicks":100,
+"slots":[
+  {"name":"player1","token":"0xBADA55_0","role":"crewmate","color":"red"},
+  {"name":"player2","token":"0xBADA55_1","role":"crewmate","color":"blue"},
+  {"name":"player3","token":"0xBADA55_2","role":"crewmate","color":"green"},
+  {"name":"player4","token":"0xBADA55_3","role":"crewmate","color":"yellow"},
+  {"name":"player5","token":"0xBADA55_4","role":"crewmate","color":"lime"},
+  {"name":"player6","token":"0xBADA55_5","role":"crewmate","color":"cyan"},
+  {"name":"player7","token":"0xBADA55_6","role":"imposter","color":"pink"},
+  {"name":"player8","token":"0xBADA55_7","role":"imposter","color":"orange"}
+]}'
+```
+
+If the game has a slots config, then the player *MUST* use the slot count.
+They *MAY* use the name and token.
+
+http://localhost:2000/client/player.html?name=player1&token=0xBADA55_0&slot=0
+http://localhost:2000/client/player.html?name=player2&token=0xBADA55_1&slot=1
+http://localhost:2000/client/player.html?name=player3&token=0xBADA55_2&slot=2
+http://localhost:2000/client/player.html?name=player4&token=0xBADA55_3&slot=3
+http://localhost:2000/client/player.html?name=player5&token=0xBADA55_4&slot=4
+http://localhost:2000/client/player.html?name=player6&token=0xBADA55_5&slot=5
+http://localhost:2000/client/player.html?name=player7&token=0xBADA55_6&slot=6
+http://localhost:2000/client/player.html?name=player8&token=0xBADA55_7&slot=7
+
+When a game finishes (max games set to 1 or higher) --save-scores is used to save the scores to a file.
+
+The file uses json format and must have be an array of objects with with reward as a required field.
+Game might choose to give name, win, tasks, kills and any other fields, but it must give reward.
+
+```json
+[
+  {"name": "player1", "reward": 8, "win": false, "tasks": 8, "kills": 0},
+  {"name": "player2", "reward": 8, "win": false, "tasks": 8, "kills": 0},
+  {"name": "player3", "reward": 7, "win": false, "tasks": 7, "kills": 0},
+  {"name": "player4", "reward": 6, "win": false, "tasks": 6, "kills": 0},
+  {"name": "player5", "reward": 8, "win": false, "tasks": 8, "kills": 0},
+  {"name": "player6", "reward": 8, "win": false, "tasks": 8, "kills": 0},
+  {"name": "player7", "reward": 160, "win": true, "tasks": 0, "kills": 6},
+  {"name": "player8", "reward": 130, "win": true, "tasks": 0, "kills": 3}
+]
+```
+
+
 ## Note for usability
 
 Don't run things from the executable like `./among_them ...`. Run the `nim r among_them.nim ...` always.

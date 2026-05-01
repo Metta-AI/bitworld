@@ -1,5 +1,5 @@
 import
-  std/[os, sequtils, strutils, unittest],
+  std/[json, os, sequtils, strutils, unittest],
   ../../common/protocol,
   ../sim
 
@@ -283,3 +283,31 @@ suite "stats":
         if role == Imposter: "wins_crewmate " & address & " 0"
         else: "wins_crewmate " & address & " 1"
       check expected in packet
+
+  test "player result json reflects rewards and wins":
+    let config = defaultGameConfig()
+    var sim = initAmongThemForTest(config)
+
+    let imposterIndex = sim.addPlayer("imposter", 1)
+    let crewIndex = sim.addPlayer("crew", 0)
+    sim.players[imposterIndex].role = Imposter
+    sim.players[crewIndex].role = Crewmate
+    sim.addReward(imposterIndex, 5)
+    sim.addReward(crewIndex, 3)
+    sim.recordKill(imposterIndex)
+    sim.recordTask(crewIndex)
+    sim.recordTask(crewIndex)
+    sim.finishGame(Imposter)
+
+    let results = parseJson(sim.playerResultsJson())
+    check results.len == 2
+    check results[0]["name"].getStr() == "crew"
+    check results[0]["reward"].getInt() == 3
+    check not results[0]["win"].getBool()
+    check results[0]["tasks"].getInt() == 2
+    check results[0]["kills"].getInt() == 0
+    check results[1]["name"].getStr() == "imposter"
+    check results[1]["reward"].getInt() == 5 + WinReward
+    check results[1]["win"].getBool()
+    check results[1]["tasks"].getInt() == 0
+    check results[1]["kills"].getInt() == 1

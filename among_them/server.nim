@@ -23,6 +23,8 @@ type
     chatMessages: Table[WebSocket, string]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
+    playerSlots: Table[WebSocket, int]
+    playerTokens: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
     playerViewers: Table[WebSocket, PlayerViewerState]
     rewardViewers: Table[WebSocket, bool]
@@ -48,7 +50,9 @@ type
   ReplayJoin = object
     time: uint32
     player: uint8
-    address: string
+    name: string
+    slot: int
+    token: string
 
   ReplayLeave = object
     time: uint32
@@ -130,6 +134,10 @@ proc writeU32(file: File, value: uint32) =
   for shift in countup(0, 24, 8):
     file.writeU8(uint8((value shr shift) and 0xff'u32))
 
+proc writeI16(file: File, value: int) =
+  ## Writes one little endian signed 16 bit value.
+  file.writeU16(cast[uint16](int16(value)))
+
 proc writeU64(file: File, value: uint64) =
   ## Writes one little endian unsigned 64 bit value.
   for shift in countup(0, 56, 8):
@@ -162,6 +170,10 @@ proc readU16(bytes: string, offset: var int): uint16 =
   result = uint16(bytes[offset].uint8) or
     (uint16(bytes[offset + 1].uint8) shl 8)
   offset += 2
+
+proc readI16(bytes: string, offset: var int): int =
+  ## Reads one little endian signed 16 bit value.
+  int(cast[int16](bytes.readU16(offset)))
 
 proc readU32(bytes: string, offset: var int): uint32 =
   ## Reads one little endian unsigned 32 bit value.
@@ -227,7 +239,9 @@ proc writeJoin(
   writer: var ReplayWriter,
   time: uint32,
   player: int,
-  address: string
+  name: string,
+  slot: int,
+  token: string
 ) =
   ## Writes one player join replay record.
   if not writer.enabled:
@@ -235,7 +249,9 @@ proc writeJoin(
   writer.file.writeU8(ReplayJoinRecord)
   writer.file.writeU32(time)
   writer.file.writeU8(uint8(player))
-  writer.file.writeReplayString(address)
+  writer.file.writeReplayString(name)
+  writer.file.writeI16(slot)
+  writer.file.writeReplayString(token)
 
 proc writeLeave(writer: var ReplayWriter, time: uint32, player: int) =
   ## Writes one player leave replay record.
@@ -313,7 +329,9 @@ proc loadReplay(path: string): ReplayData =
       let join = ReplayJoin(
         time: bytes.readU32(offset),
         player: bytes.readU8(offset),
-        address: bytes.readReplayString(offset)
+        name: bytes.readReplayString(offset),
+        slot: bytes.readI16(offset),
+        token: bytes.readReplayString(offset)
       )
       if join.time < lastJoinTime:
         raise newException(ReplayError, "Replay join timestamps move backward")
@@ -384,7 +402,7 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let join = replay.data.joins[replay.joinIndex]
     if int(join.player) != sim.players.len:
       raise newException(ReplayError, "Replay player join order is invalid")
-    discard sim.addPlayer(join.address)
+    discard sim.addPlayer(join.name, join.slot, join.token)
     replay.ensureReplayPlayer(int(join.player))
     inc replay.joinIndex
 
@@ -540,6 +558,8 @@ proc initAppState() =
   appState.chatMessages = initTable[WebSocket, string]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
+  appState.playerSlots = initTable[WebSocket, int]()
+  appState.playerTokens = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
@@ -561,6 +581,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     appState.lastAppliedMasks.del(websocket)
     appState.chatMessages.del(websocket)
     appState.playerAddresses.del(websocket)
+    appState.playerSlots.del(websocket)
+    appState.playerTokens.del(websocket)
     return
   let removedIndex = appState.playerIndices[websocket]
   appState.playerIndices.del(websocket)
@@ -568,6 +590,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.lastAppliedMasks.del(websocket)
   appState.chatMessages.del(websocket)
   appState.playerAddresses.del(websocket)
+  appState.playerSlots.del(websocket)
+  appState.playerTokens.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
@@ -587,6 +611,22 @@ proc playerIdentity(request: Request): string =
   if name.len > 0:
     return name
   request.remoteAddress
+
+proc playerSlot(request: Request): int =
+  ## Returns the requested player slot or -1 for automatic assignment.
+  let text = request.queryParams.getOrDefault("slot", "").strip()
+  if text.len == 0:
+    return -1
+  try:
+    result = parseInt(text)
+  except ValueError:
+    return MaxPlayers
+  if result < 0 or result >= MaxPlayers:
+    return MaxPlayers
+
+proc playerToken(request: Request): string =
+  ## Returns the player join token.
+  request.queryParams.getOrDefault("token", "").strip()
 
 proc controlHeaders(): HttpHeaders =
   ## Returns headers for stats-page control requests.
@@ -638,7 +678,10 @@ proc httpHandler(request: Request) =
     headers["Cache-Control"] = "no-cache"
     request.respond(200, headers, "healthy")
   elif request.path == WebSocketPath and request.httpMethod == "GET":
-    let identity = request.playerIdentity()
+    let
+      identity = request.playerIdentity()
+      slot = request.playerSlot()
+      token = request.playerToken()
     if identity.identityIsKicked():
       request.respondKicked()
       return
@@ -646,8 +689,13 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerAddresses[websocket] = identity
+        appState.playerSlots[websocket] = slot
+        appState.playerTokens[websocket] = token
   elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
-    let identity = request.playerIdentity()
+    let
+      identity = request.playerIdentity()
+      slot = request.playerSlot()
+      token = request.playerToken()
     if identity.identityIsKicked():
       request.respondKicked()
       return
@@ -656,6 +704,8 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerAddresses[websocket] = identity
+        appState.playerSlots[websocket] = slot
+        appState.playerTokens[websocket] = token
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -719,6 +769,8 @@ proc websocketHandler(
                 identity in appState.kickedIdentities
           if isKicked:
             appState.playerAddresses.del(websocket)
+            appState.playerSlots.del(websocket)
+            appState.playerTokens.del(websocket)
             appState.inputMasks.del(websocket)
             appState.lastAppliedMasks.del(websocket)
             appState.chatMessages.del(websocket)
@@ -827,7 +879,8 @@ proc runServerLoop*(
   port = DefaultPort,
   initialConfig = defaultGameConfig(),
   saveReplayPath = "",
-  loadReplayPath = ""
+  loadReplayPath = "",
+  saveScoresPath = ""
 ) =
   initAppState()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
@@ -950,17 +1003,36 @@ proc runServerLoop*(
               websocket,
               "unknown"
             )
+            let
+              slot = appState.playerSlots.getOrDefault(websocket, -1)
+              token = appState.playerTokens.getOrDefault(websocket, "")
             let identity = address.rewardAddress()
             if address in appState.kickedIdentities or
                 identity in appState.kickedIdentities:
               sim.removePlayer(websocket)
               socketsToClose.add(websocket)
+            elif sim.playerAddressOccupied(address):
+              sim.removePlayer(websocket)
+              socketsToClose.add(websocket)
             elif sim.phase == Lobby and sim.canAddPlayer():
-              appState.playerIndices[websocket] = sim.addPlayer(address)
+              try:
+                appState.playerIndices[websocket] = sim.addPlayer(
+                  address,
+                  slot,
+                  token
+                )
+              except AmongThemError:
+                sim.removePlayer(websocket)
+                socketsToClose.add(websocket)
+                continue
+              appState.playerSlots[websocket] =
+                sim.players[appState.playerIndices[websocket]].joinOrder
               replayWriter.writeJoin(
                 tickTime(sim.tickCount),
                 appState.playerIndices[websocket],
-                address
+                address,
+                slot,
+                token
               )
               while replayWriter.lastMasks.len < sim.players.len:
                 replayWriter.lastMasks.add(0)
@@ -1055,7 +1127,21 @@ proc runServerLoop*(
               websocket,
               "unknown"
             )
-            appState.playerIndices[websocket] = sim.addPlayer(address)
+            let
+              slot = appState.playerSlots.getOrDefault(websocket, -1)
+              token = appState.playerTokens.getOrDefault(websocket, "")
+            try:
+              appState.playerIndices[websocket] = sim.addPlayer(
+                address,
+                slot,
+                token
+              )
+            except AmongThemError:
+              sim.removePlayer(websocket)
+              socketsToClose.add(websocket)
+              continue
+            appState.playerSlots[websocket] =
+              sim.players[appState.playerIndices[websocket]].joinOrder
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
             let isPlayerViewer = websocket in appState.playerViewers
@@ -1212,6 +1298,8 @@ proc runServerLoop*(
             sim.removePlayer(globalViewers[i])
 
     if quitAfterFrame:
+      if saveScoresPath.len > 0:
+        writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
       httpServer.close()
       joinThread(serverThread)
       break
