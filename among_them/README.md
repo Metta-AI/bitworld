@@ -202,7 +202,6 @@ http://localhost:2000/client/global.html
 
 ## Slots setup for tournament runner.
 
-Names and tokens are not optional, but role and color are game specific.
 The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
 `slots[0]`.
 
@@ -236,7 +235,10 @@ Example config.json:
 ```
 
 ```sh
-nim r among_them.nim --address:0.0.0.0 --port:2000 --save-scores:scores.json --config-file:config.json
+set -gx COGAME_CONFIG_PATH config.json
+set -gx COGAME_SAVE_RESULTS_PATH ../tmp/scores.json
+set -gx COGAME_SAVE_REPLAY_PATH ../tmp/replay.rep
+nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
 If the game has a slots config, then the player *MUST* use the slot count.
