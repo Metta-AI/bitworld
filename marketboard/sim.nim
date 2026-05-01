@@ -379,6 +379,16 @@ proc objectIndexAt*(sim: SimServer, tx, ty: int): int =
       return i
   -1
 
+proc isUsefulObject*(player: Player, obj: WorldObject): bool =
+  case obj.kind
+  of GatherNodeObj:
+    not obj.depleted and player.role == Gatherer and
+    player.canGatherMaterial(obj.material)
+  of CraftStationObj:
+    player.role == Crafter and player.inv.hasCraftMaterials()
+  of SellStallObj, BuyStallObj, GathererStallObj, CrafterStallObj:
+    true
+
 proc addObject*(sim: var SimServer, kind: WorldObjectKind, tx, ty: int, material = WoodItem) =
   if not inTileBounds(tx, ty):
     return
@@ -645,6 +655,32 @@ proc interactionTile*(player: Player): tuple[tx, ty: int] =
   of FaceLeft: (centerTx - 1, centerTy)
   of FaceRight: (centerTx + 1, centerTy)
 
+proc bestInteractionTile*(sim: SimServer, player: Player): tuple[tx, ty: int] =
+  let primary = player.interactionTile()
+  if inTileBounds(primary.tx, primary.ty):
+    let idx = sim.objectIndexAt(primary.tx, primary.ty)
+    if idx >= 0 and player.isUsefulObject(sim.objects[idx]):
+      return primary
+  let standing = player.standingTile()
+  if inTileBounds(standing.tx, standing.ty):
+    let idx = sim.objectIndexAt(standing.tx, standing.ty)
+    if idx >= 0 and player.isUsefulObject(sim.objects[idx]):
+      return standing
+  var bestDist = int.high
+  var bestTile = primary
+  for dy in -2 .. 2:
+    for dx in -2 .. 2:
+      let dist = abs(dx) + abs(dy)
+      if dist == 0 or dist > 2: continue
+      let tx = standing.tx + dx
+      let ty = standing.ty + dy
+      if not inTileBounds(tx, ty): continue
+      let idx = sim.objectIndexAt(tx, ty)
+      if idx >= 0 and player.isUsefulObject(sim.objects[idx]) and dist < bestDist:
+        bestDist = dist
+        bestTile = (tx, ty)
+  bestTile
+
 proc cancelAction*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].state = Idle
   sim.players[playerIndex].actionProgress = 0
@@ -727,14 +763,10 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
   if player.state != Idle:
     return
 
-  let target = player.interactionTile()
+  let target = sim.bestInteractionTile(player)
   var objIndex = -1
   if inTileBounds(target.tx, target.ty):
     objIndex = sim.objectIndexAt(target.tx, target.ty)
-  if objIndex < 0:
-    let standing = player.standingTile()
-    if inTileBounds(standing.tx, standing.ty):
-      objIndex = sim.objectIndexAt(standing.tx, standing.ty)
   if objIndex < 0:
     return
 

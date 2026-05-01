@@ -611,6 +611,49 @@ proc testBotTierProgression() =
   doAssert maxTier >= 3,
     "at least one bot should reach T3 gear, best was T" & $maxTier
 
+proc testDynamicPricingFlow() =
+  var sim = initMarketboardForTest()
+
+  let sfIdx = sim.addPlayer("StillForge")
+  let iwIdx = sim.addPlayer("IronWorks")
+
+  var sfBot = sf.BotState(phase: sf.WaitForState)
+  var iwBot = iw.BotState(phase: iw.WaitForState)
+  var prevMasks: array[2, uint8]
+
+  const SimTicks = 5000
+
+  for tick in 0 ..< SimTicks:
+    let s0 = parseGameState(sim.buildStateJson(sfIdx))
+    let m0 = sfBot.decide(s0)
+    sfBot.prevMask = m0
+
+    let s1 = parseGameState(sim.buildStateJson(iwIdx))
+    let m1 = iwBot.decide(s1)
+    iwBot.prevMask = m1
+
+    var inputs = newSeq[PlayerInput](sim.players.len)
+    inputs[sfIdx] = maskToInput(m0, prevMasks[0])
+    inputs[iwIdx] = maskToInput(m1, prevMasks[1])
+    sim.step(inputs)
+    prevMasks[0] = m0
+    prevMasks[1] = m1
+
+  echo "    SF: gold=", sim.players[sfIdx].gold, " listings=", sim.players[sfIdx].listings.len,
+    " role=", sim.players[sfIdx].role
+  echo "    IW: gold=", sim.players[iwIdx].gold, " listings=", sim.players[iwIdx].listings.len,
+    " role=", sim.players[iwIdx].role
+
+  doAssert sim.players[sfIdx].role == Gatherer,
+    "StillForge should be a Gatherer, got " & $sim.players[sfIdx].role
+  doAssert sim.players[iwIdx].role == Crafter,
+    "IronWorks should be a Crafter, got " & $sim.players[iwIdx].role
+  doAssert sim.players[iwIdx].gold > 1,
+    "IronWorks should not be broke, gold=" & $sim.players[iwIdx].gold
+  doAssert sim.players[sfIdx].listings.len < BotMaxSellSlots,
+    "StillForge should sell materials (not max out listings), listings=" &
+    $sim.players[sfIdx].listings.len
+
 echo "Running economy tests..."
 testTotalMarketCap()
 echo "  total market cap calculation: OK"
@@ -640,4 +683,6 @@ testNextGearTargetProgression()
 echo "  nextGearTarget progression: OK"
 testBotTierProgression()
 echo "  bot tier progression: OK"
+testDynamicPricingFlow()
+echo "  dynamic pricing flow: OK"
 echo "All economy tests passed"

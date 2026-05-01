@@ -34,6 +34,7 @@ type
     ticksInPhase*: int
     targetGearItem*: string
     targetGearCursor*: int
+    pricingState*: PricingState
 
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
@@ -173,7 +174,8 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
         itemName = mat
         break
     let cheapest = cheapestPrice(state, itemName)
-    let targetPrice = if cheapest < int.high: max(1, cheapest - 1) else: 5
+    let baseTarget = if cheapest < int.high: max(1, cheapest - 1) else: 5
+    let targetPrice = dynamicPrice(bot.pricingState, p.listings.len, baseTarget)
     if p.sellPrice < targetPrice:
       return ButtonUp
     elif p.sellPrice > targetPrice:

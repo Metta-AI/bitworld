@@ -76,6 +76,11 @@ type
     npcListings*: seq[BotListing]
     playerListings*: seq[BotListing]
 
+  PricingState* = object
+    lastListingCount*: int
+    staleTicks*: int
+    demandTicks*: int
+
 proc itemIndex*(name: string): int =
   for i, n in ItemNames:
     if n == name: return i
@@ -99,6 +104,26 @@ proc hasAnyGear*(inv: BotInventory): bool =
 
 proc isGearItem*(name: string): bool =
   name in GearItemNames
+
+proc dynamicPrice*(ps: var PricingState, currentListings: int, baseTarget: int): int =
+  ## Adjust price based on whether listings are selling or stale.
+  if currentListings < ps.lastListingCount:
+    inc ps.demandTicks
+    ps.staleTicks = 0
+  elif ps.lastListingCount > 0:
+    inc ps.staleTicks
+    ps.demandTicks = 0
+  ps.lastListingCount = currentListings
+  result = baseTarget
+  if ps.staleTicks >= 5:
+    result = baseTarget - 2
+  elif ps.staleTicks >= 2:
+    result = baseTarget - 1
+  elif ps.demandTicks >= 3:
+    result = baseTarget + 2
+  elif ps.demandTicks >= 1:
+    result = baseTarget + 1
+  result = max(1, result)
 
 proc parseInventory(node: JsonNode): BotInventory =
   for i, name in ItemNames:

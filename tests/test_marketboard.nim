@@ -841,6 +841,25 @@ proc testCraftProducesSlotItems() =
       "craft " & $craft & " should produce " & $expectedItems[craft] &
       " got " & $sim.players[idx].crafterGear[craft]
 
+proc testBestInteractionTileSnap() =
+  var sim = initMarketboardForTest()
+  let idx = sim.addPlayer("test")
+  sim.players[idx].role = Gatherer
+  let nodeIdx = sim.findWoodNodeIndex()
+  let node = sim.objects[nodeIdx]
+  sim.players[idx].x = (node.tx - 1) * MbTileSize
+  sim.players[idx].y = node.ty * MbTileSize
+  sim.players[idx].velX = 0
+  sim.players[idx].velY = 0
+  sim.players[idx].facing = FaceLeft
+  let raw = sim.players[idx].interactionTile()
+  doAssert raw.tx != node.tx or raw.ty != node.ty,
+    "raw interactionTile should NOT point at node"
+  let best = sim.bestInteractionTile(sim.players[idx])
+  doAssert best.tx == node.tx and best.ty == node.ty,
+    "bestInteractionTile should snap to nearby wood node. got=(" &
+    $best.tx & "," & $best.ty & ") expected=(" & $node.tx & "," & $node.ty & ")"
+
 echo "Running marketboard tests..."
 testPlayerSpawnsWithStartingGold()
 echo "  spawn: OK"
@@ -898,4 +917,6 @@ testGearBoostsMovementSpeed()
 echo "  gear boosts movement speed: OK"
 testCraftProducesSlotItems()
 echo "  craft produces slot items: OK"
+testBestInteractionTileSnap()
+echo "  best interaction tile snap: OK"
 echo "All tests passed"

@@ -49,6 +49,7 @@ type
     wantedRole*: string
     targetGearItem*: string
     targetGearCursor*: int
+    pricingState*: PricingState
 
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
@@ -389,17 +390,18 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = WaitForState
       bot.ticksInPhase = 0
       return 0
-    var targetPrice: int
+    var baseTarget: int
     if p.inv.hasAnyGear:
       let matCost = materialCostForGear(state)
-      targetPrice = if matCost < int.high: matCost + GearSellMargin else: 20 + GearSellMargin
+      baseTarget = if matCost < int.high: matCost + GearSellMargin else: 20 + GearSellMargin
     else:
       var matName = "WoodItem"
       for mat in RawMaterialNames:
         if p.inv.itemCount(mat) > 0:
           matName = mat
           break
-      targetPrice = botItemBasePrice(matName) + 1
+      baseTarget = botItemBasePrice(matName) + 1
+    let targetPrice = dynamicPrice(bot.pricingState, p.listings.len, baseTarget)
     if p.sellPrice < targetPrice:
       return ButtonUp
     elif p.sellPrice > targetPrice:

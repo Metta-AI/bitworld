@@ -86,6 +86,16 @@ proc objectSprite(kind: WorldObjectKind, depleted: bool, material: ItemKind): Sp
   of CrafterStallObj:
     makeOutlinedSprite(8, 2, MbTileSize)
 
+proc objectTileLetter(kind: WorldObjectKind, depleted: bool): char =
+  case kind
+  of GatherNodeObj:
+    if depleted: ' ' else: 'G'
+  of CraftStationObj: 'C'
+  of SellStallObj: 'S'
+  of BuyStallObj: 'B'
+  of GathererStallObj: 'G'
+  of CrafterStallObj: 'F'
+
 proc roleTint(role: Role): uint8 =
   case role
   of NoRole: 6'u8
@@ -134,11 +144,20 @@ proc renderObjects(sim: var SimServer, cameraX, cameraY: int) =
       cameraX,
       cameraY
     )
+    if sim.letterSprites.len > 0:
+      let letter = objectTileLetter(obj.kind, obj.depleted)
+      if letter != ' ':
+        sim.fb.blitText(sim.letterSprites, $letter,
+          obj.tx * MbTileSize - cameraX + 1,
+          obj.ty * MbTileSize - cameraY + 1)
 
 proc renderSelection(sim: var SimServer, playerIndex, cameraX, cameraY: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
-  let target = sim.players[playerIndex].interactionTile()
+  let player = sim.players[playerIndex]
+  if player.state in {Gathering, Crafting}:
+    return
+  let target = sim.bestInteractionTile(player)
   if not inTileBounds(target.tx, target.ty):
     return
   let
@@ -152,6 +171,35 @@ proc renderSelection(sim: var SimServer, playerIndex, cameraX, cameraY: int) =
   for py in 1 ..< MbTileSize - 1:
     sim.fb.putPixel(screenX, screenY + py, 10)
     sim.fb.putPixel(screenX + MbTileSize - 1, screenY + py, 10)
+
+proc renderActionProgress(sim: var SimServer, playerIndex, cameraX, cameraY: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len: return
+  let player = sim.players[playerIndex]
+  if player.state notin {Gathering, Crafting}: return
+  let targetIdx = player.actionTargetIndex
+  if targetIdx < 0 or targetIdx >= sim.objects.len: return
+  let obj = sim.objects[targetIdx]
+  let screenX = obj.tx * MbTileSize - cameraX
+  let screenY = obj.ty * MbTileSize - cameraY
+  let totalWork =
+    if player.state == Gathering: player.effectiveGatherWork()
+    else:
+      let gear = player.craftableItem()
+      craftWorkForTier(gearTier(gear))
+  let filled = min(28, player.actionProgress * 28 div max(1, totalWork))
+  var perimX, perimY: array[28, int]
+  var i = 0
+  for x in 0 ..< MbTileSize:
+    perimX[i] = x; perimY[i] = 0; inc i
+  for y in 1 ..< MbTileSize - 1:
+    perimX[i] = MbTileSize - 1; perimY[i] = y; inc i
+  for x in countdown(MbTileSize - 1, 0):
+    perimX[i] = x; perimY[i] = MbTileSize - 1; inc i
+  for y in countdown(MbTileSize - 2, 1):
+    perimX[i] = 0; perimY[i] = y; inc i
+  for j in 0 ..< 28:
+    let color: uint8 = if j < filled: 14 else: 1
+    sim.fb.putPixel(screenX + perimX[j], screenY + perimY[j], color)
 
 proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
   for player in sim.players:
@@ -235,15 +283,18 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
     if sim.letterSprites.len > 0:
       sim.fb.blitText(sim.letterSprites, "R", 40 + 18, invY3)
 
+  if sim.letterSprites.len > 0 and player.role == NoRole and player.state == Idle:
+    let prompt = "PICK A ROLE"
+    let promptX = (ScreenWidth - prompt.len * 6) div 2
+    sim.fb.blitText(sim.letterSprites, prompt, promptX, ScreenHeight div 2 - 10)
+    sim.fb.blitText(sim.letterSprites, "GATHERER", 2, ScreenHeight div 2)
+    sim.fb.blitText(sim.letterSprites, "CRAFTER", ScreenWidth - 7 * 6 - 2, ScreenHeight div 2)
+
   if sim.letterSprites.len > 0 and player.state == Idle:
     var labelObjIndex = -1
-    let target = player.interactionTile()
+    let target = sim.bestInteractionTile(player)
     if inTileBounds(target.tx, target.ty):
       labelObjIndex = sim.objectIndexAt(target.tx, target.ty)
-    if labelObjIndex < 0:
-      let standing = player.standingTile()
-      if inTileBounds(standing.tx, standing.ty):
-        labelObjIndex = sim.objectIndexAt(standing.tx, standing.ty)
     if labelObjIndex >= 0:
       let obj = sim.objects[labelObjIndex]
       let label = obj.objectLabel()
@@ -327,6 +378,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.renderTerrain(cameraX, cameraY)
   sim.renderObjects(cameraX, cameraY)
   sim.renderSelection(playerIndex, cameraX, cameraY)
+  sim.renderActionProgress(playerIndex, cameraX, cameraY)
   sim.renderPlayers(cameraX, cameraY)
   sim.renderHud(playerIndex)
   sim.fb.packFramebuffer()
