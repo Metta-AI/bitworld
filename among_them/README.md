@@ -90,17 +90,22 @@ Run tool commands from the repo root:
 cd /Users/me/p/bitworld
 ```
 
+The default starter policy for `quick_player` is **`evidencebot_v2`**
+(`among_them/players/evidencebot_v2.nim`): same perception stack as the older
+bots, with evidence-grounded voting and improved crewmate task throughput. For a
+smaller baseline implementation, use **`nottoodumb`**.
+
 Start one AI player first. This is useful with `minPlayers:1`,
 `imposterCount:0`, and `tasksPerPlayer:1` while testing.
 
 ```sh
-nim r tools/quick_player nottoodumb --players:1 --address:localhost --port:2000
+nim r tools/quick_player evidencebot_v2 --players:1 --address:localhost --port:2000
 ```
 
 Then start several AI players at once:
 
 ```sh
-nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000
+nim r tools/quick_player evidencebot_v2 --players:8 --address:localhost --port:2000
 ```
 
 Useful `quick_player` options:
@@ -113,13 +118,13 @@ Useful `quick_player` options:
 Example with debug windows:
 
 ```sh
-nim r tools/quick_player nottoodumb --players:2 --address:localhost --port:2000 --gui
+nim r tools/quick_player evidencebot_v2 --players:2 --address:localhost --port:2000 --gui
 ```
 
 When testing a custom map, pass the same map to the bots:
 
 ```sh
-nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000 --map:among_them/map.json
+nim r tools/quick_player evidencebot_v2 --players:8 --address:localhost --port:2000 --map:among_them/map.json
 ```
 
 ## Quick Local Run
@@ -158,7 +163,7 @@ In another terminal, start 8 AI players:
 
 ```sh
 cd /Users/me/p/bitworld
-nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000
+nim r tools/quick_player evidencebot_v2 --players:8 --address:localhost --port:2000
 ```
 
 Then open the global viewer:
