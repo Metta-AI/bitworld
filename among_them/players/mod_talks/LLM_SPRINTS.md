@@ -699,136 +699,117 @@ HTTP dispatch + worker thread to Nim, gated behind the existing
 
 ### 6.1 Nim-side LLM provider module (`llm_provider.nim`)
 
-- [ ] New file `among_them/players/mod_talks/llm_provider.nim`.
+- [x] New file `among_them/players/mod_talks/llm_provider.nim`.
       Self-contained — does NOT import or extend
-      `src/bitworld/ais/claude.nim`. We re-implement the slice we
-      need so the bitworld repo stays untouched.
-- [ ] Dependencies: `curly` for HTTP, `jsony` for JSON, both
-      already locked in `nimby.lock` and used elsewhere in the
-      repo so no new package surface.
-- [ ] Provider abstraction:
-      ```nim
-      type
-        LlmProviderKind* = enum
-          lpkDisabled,           ## no creds detected → rule-based fallback
-          lpkAnthropicDirect,    ## ANTHROPIC_API_KEY
-          lpkOpenAIDirect        ## OPENAI_API_KEY (parity with Sprint 5.3
-                                 ## Python skeleton; live-verify in 6.3)
-          # lpkBedrock           ## deferred to 6.4 — see below
-
-        LlmProvider* = ref object
-          kind*: LlmProviderKind
-          apiKey*: string
-          model*: string
-          baseUrl*: string
-
-      proc newLlmProvider*(): LlmProvider
-      proc complete*(p: LlmProvider; role: int; kind: LlmCallKind;
-                     contextJson: string; timeoutSec: float):
-                     tuple[response: string; errored: bool;
-                           latencyMs: int]
-      ```
-- [ ] `newLlmProvider` env-var resolution (matches the Python
-      wrapper's preference order so the two paths behave
-      identically):
-  - [ ] `MODTALKS_LLM_DISABLE=1` → return `lpkDisabled`.
-  - [ ] `MODTALKS_PROVIDER_OPENAI=1` + `OPENAI_API_KEY` → OpenAI.
-  - [ ] `ANTHROPIC_API_KEY` → Anthropic direct.
-  - [ ] `OPENAI_API_KEY` (no Anthropic key) → OpenAI fallback.
-  - [ ] Else → `lpkDisabled` with a warning log.
-- [ ] Tool-use schema construction. Port the Anthropic
-      `_LLM_TOOL_DEFINITIONS` table from
-      `cogames/amongthem_policy.py` to a Nim const table; emit
-      the same per-`LlmCallKind` tool definitions in the request
-      body so the model is forced to emit structured output (no
-      schema-in-prompt parse drift).
-- [ ] Per-call-kind timeouts. Port the
-      `PER_KIND_TIMEOUT_SECONDS` table from the Python wrapper.
-      Move the values into `tuning.nim` so both paths read the
-      same source of truth.
-- [ ] Retry/backoff. Port the Sprint 4.4 retry policy: max 2
-      retries, exponential backoff `(0.5s, 1.5s)`, retry only on
-      5xx / 429 / connection errors / timeouts, abandon if next
-      backoff would push past the call deadline.
-- [ ] Response parsing. For tool-use responses, extract the
-      first `tool_use` content block's `input` and serialize
-      back to JSON. Fallback path for legacy text responses
-      (matches the Python `_strip_markdown_code_fence` semantics).
-- [ ] Unit tests in `test/llm_provider_unit.nim`:
-  - [ ] `newLlmProvider()` returns `lpkDisabled` when no env vars
-        present (cleanest: clear env vars in test).
-  - [ ] `newLlmProvider()` selects the correct provider for each
-        env-var combination.
-  - [ ] Tool definitions match the Anthropic shape
-        (object compare against a captured fixture).
-  - [ ] Mock HTTP via local server — POST to `127.0.0.1:0` and
-        verify request body shape matches expected.
+      `src/bitworld/ais/claude.nim`.
+- [x] Dependencies: **`std/httpclient` + `std/json` only.** The
+      original plan called for `curly` + `jsony`, but `curly`
+      isn't in `nimby.lock` and adding it would touch
+      `bitworld.nimble`, breaking the scope rule. `std/httpclient`
+      is in the stdlib (zero new package surface) and works fine
+      against api.anthropic.com / api.openai.com when the binary
+      is built with `-d:ssl`. The build script
+      (`build_modulabot.py`) adds `-d:ssl` automatically when
+      `MODULABOT_LLM=1` is set; a static `{.error.}` in
+      `llm_provider.nim` catches accidental hand-builds that
+      forget the flag.
+- [x] Provider abstraction: `LlmProvider` ref-object with
+      `kind` ∈ {`lpkDisabled`, `lpkAnthropicDirect`,
+      `lpkOpenAIDirect`}, `apiKey` (private), `model`. `complete`
+      proc takes `(role: BotRole, kind: LlmCallKind, contextJson)`
+      and returns `LlmCompletion{responseJson, errored, latencyMs}`.
+- [x] `newLlmProvider` env-var resolution:
+  - [x] `MODTALKS_LLM_DISABLE=1` → `lpkDisabled`.
+  - [x] `MODTALKS_PROVIDER_OPENAI=1` + `OPENAI_API_KEY` → OpenAI.
+  - [x] `ANTHROPIC_API_KEY` → Anthropic direct (preferred).
+  - [x] `OPENAI_API_KEY` (no Anthropic) → OpenAI fallback.
+  - [x] Else → `lpkDisabled` (caller logs the warning).
+- [x] Tool-use schema construction. `toolSchemaFor(kind)` returns
+      the per-`LlmCallKind` Anthropic schema (verbatim from
+      `_LLM_TOOL_DEFINITIONS` in the Python wrapper). The OpenAI
+      body builder translates the Anthropic shape to OpenAI
+      `function.parameters` 1:1.
+- [x] Per-call-kind timeouts in `tuning.nim` as
+      `LlmTimeout{Hypothesis,Strategize,React,ImposterReact,Accuse,Persuade}Sec`
+      + `LlmTimeoutDefaultSec`. `timeoutSecFor(kind)` reads them.
+      Mirrors `PER_KIND_TIMEOUT_SECONDS` in the Python wrapper.
+- [x] Retry/backoff in `tuning.nim` as `LlmRetryMaxAttempts = 3`
+      (1 initial + 2 retries) and `LlmRetryBackoffSecs = [0.5, 1.5]`.
+      Retry on 5xx, 429, connection errors, timeouts. Abandon if
+      next backoff would push past per-call deadline. Matches
+      Sprint 4.4 Python policy.
+- [x] Response parsing: `anthropicExtractToolUse` walks the
+      Anthropic content array for the first `tool_use` block,
+      re-serializes its `input` field as JSON. `openAIExtractToolUse`
+      walks `choices[0].message.tool_calls[0].function.arguments`.
+- [x] Unit tests in `test/llm_provider_unit.nim` — 28 tests:
+      provider resolution across all env-var combinations and CLI
+      overrides, model resolution priority, prompt content checks
+      (including the §5.3 "no literal 'imposter' in imposter
+      prompt" rule), per-kind timeout values match the Python
+      wrapper, disabled-provider short-circuits without HTTP.
 
 ### 6.2 Worker thread / dispatch (`llm_dispatch.nim`)
 
-- [ ] New file `among_them/players/mod_talks/llm_dispatch.nim`.
-- [ ] Single-agent dispatcher (CLI binary path = one agent per
-      process, so we don't need the Python wrapper's per-agent
-      futures map):
-      ```nim
-      type
-        LlmDispatcher* = ref object
-          thread: Thread[ptr LlmDispatcherCtx]
-          provider: LlmProvider
-          requests: Channel[LlmRequest]
-          results: Channel[LlmResult]
-          inflight: bool
-          shutdown: Atomic[bool]
-      ```
-- [ ] Lifecycle:
-  - [ ] `initLlmDispatcher(provider): LlmDispatcher` spawns the
-        worker thread with `Channel.open()`.
-  - [ ] `submitLlmCall(d, request): bool` — non-blocking; true
-        if accepted (slot was empty), false if a call is already
-        in flight (Nim state machine respects single-slot
-        semantics so this should never collide).
-  - [ ] `tryGatherLlmResult(d, deadlineMs): Option[LlmResult]` —
-        non-blocking poll; returns `some(...)` if the worker has
-        produced a result, `none` otherwise.
-  - [ ] `closeLlmDispatcher(d)` flips the shutdown atomic, closes
-        the request channel, joins the thread.
-- [ ] Worker loop body: read request → call
-      `provider.complete(...)` → write result. Provider call
-      already includes timeouts and retries (6.1); the worker
-      itself just blocks on the HTTP call.
-- [ ] Determinism: the dispatcher is bypassed when
-      `bot.llm.mock.enabled = true` (Sprint 3.1's mock harness
-      stays the deterministic test path). Live dispatch is
-      explicitly non-deterministic by design.
+- [x] New file `among_them/players/mod_talks/llm_dispatch.nim`.
+- [x] Single-agent dispatcher: `LlmDispatcher` ref-object owning a
+      `Thread[ptr WorkerCtx]` + two `Channel`s + an `Atomic[bool]`
+      shutdown flag. The worker context is heap-allocated via
+      `create()` so the Nim ref doesn't have to cross the thread
+      boundary (which under ORC requires care that's not worth the
+      complexity).
+- [x] Lifecycle:
+  - [x] `initLlmDispatcher(provider)` allocates context, opens
+        channels, spawns the worker.
+  - [x] `submit(d, request)` — non-blocking; returns `false` if
+        a call is already in flight (single-slot rule
+        belt-and-suspenders).
+  - [x] `tryGather(d): Option[LlmDispatchResult]` — non-blocking
+        poll using `Channel.tryRecv`; clears the in-flight flag
+        on success.
+  - [x] `closeLlmDispatcher(d)` flips shutdown, sends a sentinel
+        request to unblock the worker's `recv`, joins the thread,
+        closes channels, frees the context. Idempotent.
+- [x] Worker loop body: read request → call
+      `provider.complete(...)` (which already does timeout +
+      retry from 6.1) → send result. Exits cleanly on shutdown.
+- [x] Disabled-provider short-circuit: `submit` against a disabled
+      provider immediately enqueues an errored result so
+      `tryGather` next tick fires the rule-based fallback. Avoids
+      the worker pulling against a no-op `complete`.
 
 ### 6.3 `runner.nim` integration + new CLI flags
 
-- [ ] In `viewer/runner.nim:runBot` (under
+- [x] In `viewer/runner.nim:runBot` (under
       `when defined(modTalksLlm)`):
-  - [ ] Construct `LlmProvider` at startup; if `lpkDisabled` log
-        a warning and skip the rest (bot runs as rule-based
-        modulabot).
-  - [ ] Construct `LlmDispatcher` from the provider.
-  - [ ] Call `llmEnable(bot)` so `tickLlmVoting` becomes active.
-  - [ ] In the per-frame loop, after each `decideNextMask`:
-        1. If `llmTakePendingRequest(bot)` returns a non-`lckNone`
-           kind, build an `LlmRequest` and `submitLlmCall`.
-        2. Call `tryGatherLlmResult(deadline=0)` and if a result
-           is ready, feed it via `onLlmResponse(bot, kind, json,
-           errored)`.
-  - [ ] On `runBot` exit (clean or error), call
-        `closeLlmDispatcher(d)` so the worker thread doesn't
-        leak.
-- [ ] New CLI flags (mutually exclusive with `--llm-mock`):
-  - [ ] `--llm-provider:anthropic|openai|disabled` — overrides
-        env-var auto-detection.
-  - [ ] `--llm-model:NAME` — overrides default model id (also
-        respects `MODTALKS_LLM_MODEL` env var, like the Python
-        wrapper).
-- [ ] Logging — print the provider/model on first successful
-      call so operators can confirm the dispatch path live
-      (matches the Python wrapper's `mod_talks LLM via
-      AnthropicBedrock ...` info line).
+  - [x] Constructs `LlmProvider` at startup. If
+        `lpkDisabled`, logs `"no llm credentials detected
+        (set ANTHROPIC_API_KEY or OPENAI_API_KEY); running
+        rule-based"` and skips dispatcher setup. Bot stays in
+        rule-based mode (`tickLlmVoting` no-ops because
+        `llmEnable` was never called).
+  - [x] Constructs `LlmDispatcher` from the provider when enabled
+        and calls `llmEnable(bot)`.
+  - [x] Per-frame loop after `decideNextMask`:
+        drain-first via `tryGather` →  `onLlmResponse`,
+        then submit any newly-pending request via
+        `llmTakePendingRequest` → `submit`. Drain-first matters
+        because applying a result often dispatches a follow-up
+        call (hypothesis → accuse) that should fire on the same
+        frame.
+  - [x] `defer: closeLlmDispatcher(d)` so the worker thread is
+        joined cleanly on normal exit and on exception unwind.
+  - [x] Logs `"modulabot: llm provider=anthropic_direct
+        model=claude-sonnet-4-5"` (or equivalent) at startup so
+        operators can confirm the dispatch path before the first
+        meeting.
+- [x] New CLI flags (in `modulabot.nim`):
+  - [x] `--llm-provider:anthropic|openai|disabled` —
+        passes through to `newLlmProvider(forceProvider=...)`.
+  - [x] `--llm-model:NAME` — passes through to
+        `newLlmProvider(modelOverride=...)`. Respects
+        `MODTALKS_LLM_MODEL` env var when no flag is supplied,
+        same as the Python wrapper.
 
 ### 6.4 Bedrock support — DEFERRED until needed
 
@@ -1055,3 +1036,25 @@ PR for detailed design discussions.
   deferred (Python wrapper still owns Bedrock). Tournament
   path via `cogames/amongthem_policy.py` is unchanged. Effort
   estimate: ~17 hours / 2 days.
+- **2026-05-01** — Sprint 6.1 + 6.2 + 6.3 landed.
+  `llm_provider.nim` (~570 LOC) implements direct Anthropic +
+  OpenAI HTTP dispatch with tool-use forced via `tool_choice`,
+  per-call-kind timeouts, retry/backoff. Switched to
+  `std/httpclient` (stdlib) instead of `curly` so no edits to
+  shared `nimby.lock` / `bitworld.nimble` were needed — `-d:ssl`
+  is wired into `build_modulabot.py` automatically when
+  `MODULABOT_LLM=1` is set, with a static `{.error.}` guard for
+  hand-builds that forget the flag. `llm_dispatch.nim` (~190
+  LOC) wraps it with a single worker thread + two `Channel`s,
+  one-agent-per-process. `viewer/runner.nim` constructs both at
+  startup, calls `llmEnable(bot)`, runs a drain-first
+  per-frame poll loop, joins the worker on exit. New CLI flags
+  `--llm-provider` / `--llm-model`. Both builds compile clean.
+  Parity 500/500 across {non-LLM, LLM-no-creds, mock-LLM} ×
+  seeds {1, 42, 7777}. 28 new unit tests in
+  `test/llm_provider_unit.nim` plus existing 56 still pass.
+  CLI smoke confirms `mod_talks_llm` boots, detects creds,
+  prints `modulabot: llm provider=anthropic_direct
+  model=claude-sonnet-4-5`. End-to-end live verification (Sprint
+  6.6) deferred to the user's first non-local run with real
+  credentials.

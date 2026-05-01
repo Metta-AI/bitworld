@@ -46,6 +46,12 @@ when isMainModule and not defined(modulabotLibrary):
       let s = getEnv("MODULABOT_TRACE_FRAMES_DUMP", "1").toLowerAscii()
       s != "0" and s != "false" and s != "off"
     llmMockPath = getEnv("MODTALKS_LLM_MOCK")
+    # Sprint 6.3 — direct LLM provider (no Python wrapper). Empty
+    # string for either of these is "fall through to env-var auto-
+    # detect and provider default", which mirrors the Python
+    # wrapper's behaviour.
+    llmProviderOverride = ""
+    llmModelOverride = getEnv("MODTALKS_LLM_MODEL")
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -76,6 +82,10 @@ when isMainModule and not defined(modulabotLibrary):
         traceFramesDump = false
       of "llm-mock":
         llmMockPath = val
+      of "llm-provider":
+        llmProviderOverride = val
+      of "llm-model":
+        llmModelOverride = val
       else:
         discard
     else:
@@ -90,4 +100,5 @@ when isMainModule and not defined(modulabotLibrary):
     llmMockPath = absolutePath(llmMockPath)
   runBot(address, port, gui, name, mapPath, framesPath,
          traceDir, traceLevel, traceSnapshotPeriod, traceMeta,
-         traceFramesDump, llmMockPath)
+         traceFramesDump, llmMockPath,
+         llmProviderOverride, llmModelOverride)

@@ -22,7 +22,11 @@ when not defined(modulabotLibrary):
   import ../ascii  # for isGameOverText
   import ../trace
   when defined(modTalksLlm):
-    import ../llm  # llmMockEnable — optional LLM-mock plumbing
+    import ../llm           # llmMockEnable, llmEnable,
+                            # llmTakePendingRequest, onLlmResponse
+    import ../llm_provider  # newLlmProvider, kindName
+    import ../llm_dispatch  # initLlmDispatcher, submit, tryGather
+    import std/options
   import viewer    # initViewerApp / pumpViewer / viewerOpen
 
   const
@@ -125,7 +129,9 @@ when not defined(modulabotLibrary):
                traceDir: string = ""; traceLevel: TraceLevel = tlDecisions;
                traceSnapshotPeriod: int = 120; traceMeta: string = "";
                traceFramesDump: bool = true;
-               llmMockPath: string = "") =
+               llmMockPath: string = "";
+               llmProviderOverride: string = "";
+               llmModelOverride: string = "") =
     ## Connects to an Among Them server and processes frames in a
     ## reconnect loop. When `gui` is true, opens the diagnostic
     ## viewer window; pressing Esc or closing the window terminates
@@ -138,11 +144,15 @@ when not defined(modulabotLibrary):
     ## `traceDir` (`--trace-dir:<path>`): when non-empty, opens a
     ## structured trace under that root. See TRACING.md.
     ##
-    ## `llmMockPath` (`--llm-mock:<file>`): enables the mock-LLM
-    ## harness (Sprint 3.1). Requires `-d:modTalksLlm`; warned
-    ## and ignored otherwise. Mutually exclusive with the real
-    ## provider — when set, `llmEnable` is called against the
-    ## mock fixture instead of the Python-side enable path.
+    ## `llmMockPath` (`--llm-mock:<file>`): enables the deterministic
+    ## mock-LLM harness (Sprint 3.1). Mutually exclusive with the
+    ## live LLM provider — when set, scripted responses come from
+    ## the fixture instead of any real provider.
+    ##
+    ## `llmProviderOverride` (`--llm-provider:NAME`): forces a
+    ## specific provider; empty string = auto-detect. Sprint 6.3.
+    ## `llmModelOverride` (`--llm-model:NAME`): forces a specific
+    ## model id; empty string = provider default. Sprint 6.3.
     let paths = defaultPaths(mapPath)
     var bot = initBot(paths)
 
@@ -163,6 +173,39 @@ when not defined(modulabotLibrary):
       else:
         echo "modulabot: --llm-mock specified but this build lacks ",
              "-d:modTalksLlm; ignoring"
+    # Live LLM provider + dispatcher (Sprint 6.3). Activated only
+    # when:
+    #   * the binary was built with `-d:modTalksLlm`, AND
+    #   * `--llm-mock` was NOT supplied (mock takes precedence — the
+    #     mock harness is for parity tests; the live provider is for
+    #     real games), AND
+    #   * `newLlmProvider` finds credentials in env vars (mirrors
+    #     the Python wrapper's `_build_llm_controller`).
+    # In any of those failures, the bot stays in rule-based mode —
+    # `tickLlmVoting` no-ops because `llmEnable` was never called.
+    when defined(modTalksLlm):
+      var llmProvider: LlmProvider = nil
+      var llmDispatcher: LlmDispatcher = nil
+      if llmMockPath.len == 0:
+        llmProvider = newLlmProvider(
+          forceProvider = llmProviderOverride,
+          modelOverride = llmModelOverride
+        )
+        if llmProvider.enabled():
+          llmDispatcher = initLlmDispatcher(llmProvider)
+          llmEnable(bot)
+          echo "modulabot: llm provider=", llmProvider.kindName(),
+               " model=", llmProvider.model
+        else:
+          echo "modulabot: no llm credentials detected ",
+               "(set ANTHROPIC_API_KEY or OPENAI_API_KEY); ",
+               "running rule-based"
+      defer:
+        if not llmDispatcher.isNil:
+          try:
+            closeLlmDispatcher(llmDispatcher)
+          except CatchableError:
+            discard
     var dumpFile: File = nil
     var effectiveFramesPath = framesPath
     # If tracing is on and no explicit --frames was passed, default to
@@ -248,6 +291,33 @@ when not defined(modulabotLibrary):
             continue
           let nextMask = bot.decideNextMask()
           bot.io.lastMask = nextMask
+          # Sprint 6.3 — drain any completed LLM result first, then
+          # submit a new request if the state machine produced one.
+          # Drain-first ordering matters: the result from a previous
+          # tick can transition the stage to one that produces a
+          # follow-up dispatch on the *same* frame
+          # (hypothesis → accuse, etc.). Without drain-first the
+          # follow-up would lag by one tick.
+          when defined(modTalksLlm):
+            if not llmDispatcher.isNil:
+              # 1. Gather any completed result.
+              let res = llmDispatcher.tryGather()
+              if res.isSome:
+                let r = res.get()
+                onLlmResponse(bot, r.kind, r.responseJson, r.errored)
+              # 2. Submit any newly-pending request.
+              let pending = llmTakePendingRequest(bot)
+              if pending.kind != lckNone:
+                let req = LlmDispatchRequest(
+                  role: bot.role,
+                  kind: pending.kind,
+                  contextJson: pending.contextJson
+                )
+                if not llmDispatcher.submit(req):
+                  # Dispatcher refused (in-flight collision; should
+                  # never happen given the single-slot rule). Treat
+                  # as immediate error so the bot doesn't stall.
+                  onLlmResponse(bot, pending.kind, "", true)
           if dumpFile != nil:
             dumpFile.dumpFrame(bot.io.unpacked)
           if nextMask != lastMask:
