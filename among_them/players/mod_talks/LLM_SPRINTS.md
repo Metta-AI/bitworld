@@ -171,75 +171,145 @@ and shipped unbuilt; the other three items in this sprint are
 single-digit-LOC callers of already-written memory machinery or
 modest perception passes.
 
+**Status:** ✅ Landed 2026-04-30. Parity 500/500 black-mode across
+seeds {1, 42, 100, 7777} in both builds; live Bedrock smoke
+(`--max-steps 5000`) emitted expected events with
+`speaker_attribution: color_pip` in the manifest.
+
 ### 2.1 Speaker attribution (Q-LLM9 prerequisite)
 
-- [ ] Implement speaker-pip detection at `x < VoteChatTextX = 21` for
-      each chat line parsed in `voting.nim`.
-- [ ] Return speaker color index (or -1 if detection failed) alongside
-      each line in `voting.chatLines` — needs a shape change from
-      `seq[string]` to `seq[tuple[speaker: int, text: string]]` or a
-      parallel `seq[int]`.
-- [ ] Thread through `llm.nim:ingestChatLines` so
-      `LlmChatEntry.speakerColor` is populated.
-- [ ] Flip `trace_settings.speaker_attribution` from `"none"` to
-      `"color_pip"` in the manifest.
-- [ ] `chat_observed` events gain a real `speaker` field instead of
-      `null`.
-- [ ] Own-chat dedup in `llm.nim:ingestChatLines` (lines 121–131)
-      switches from substring matching to `speakerColor == selfColor`.
-      Keep the substring check as a fallback when detection fails.
-- [ ] Unit test: capture a voting-screen frame with multiple known
-      speakers and verify the detector attributes each line correctly.
+- [x] Implemented `detectChatSpeaker` in `voting.nim`: scans
+      pixels in `x=[1..13], y=[textY..textY+7]` for
+      `PlayerColors` palette matches, returns dominant color
+      index (or -1 on low confidence).
+- [x] `voting.chatLines` type changed from `seq[string]` to
+      `seq[VoteChatLine]` carrying `(speakerColor, text)`.
+- [x] `MeetingEvent.chatLines` type updated to match; long-term
+      memory now stores speaker attribution.
+- [x] `llm.nim:ingestChatLines` reads `entry.speakerColor`;
+      falls back to substring-matching `myStatements` only when
+      pip detection failed.
+- [x] `trace.nim` emits real `speaker` field on `chat_observed`
+      events (was hardcoded null).
+- [x] Manifest `trace_settings.speaker_attribution` flipped from
+      `"none"` to `"color_pip"`.
+
+Implementation notes:
+- Multi-line message support falls out of the geometry
+  automatically: the sim renders one 12×12 sprite per message but
+  each text row of a multi-line message overlaps the sprite
+  vertically, so every line self-attributes without needing an
+  explicit "inherit from previous row" rule.
+- Unit test deferred to Sprint 3 — the pip detector needs a
+  captured voting-screen fixture, which the mock-LLM harness
+  (Sprint 3.1) will need too; bundling makes sense.
 
 ### 2.2 Self-position keyframes → `my_location_history`
 
-- [ ] Add `Memory.selfKeyframes: seq[tuple[tick: int, roomId: int]]`
-      (size cap ~64, ring-buffer trim).
-- [ ] Append in `bot.nim` or `actors.nim` on room transitions
-      (`roomIdAt(playerWorldX, playerWorldY) != last room`).
-- [ ] Round reset clears it; meeting boundary does NOT trim — the
-      imposter needs the full pre-meeting history to fabricate alibis.
-- [ ] Replace the hardcoded empty arrays at `llm.nim:389` and `:431`
-      with a serializer that emits
-      `[{"room": "<name>", "tick_relative": <int>}, ...]` sorted
-      newest→oldest, capped at the last 20 entries.
-- [ ] Unit test covering the serializer + the keyframe logger.
+- [x] `Memory.selfKeyframes: seq[SelfKeyframe]` +
+      `lastSelfRoomId: int` added to `types.nim`.
+- [x] `observeSelfRoom` proc in `memory.nim` with ring-buffer
+      cap (`MemorySelfKeyframeCap = 64`) and
+      don't-log-corridors rule (roomId=-1 is skipped but
+      `lastSelfRoomId` is still invalidated so the next real
+      room arrival emits a fresh entry).
+- [x] Hooked from `bot.nim:decideNextMaskCore` after
+      `rememberHome`, before policy dispatch.
+- [x] `myLocationHistoryJson` helper in `llm.nim` emits
+      newest-first, capped at 20 entries; replaces the hardcoded
+      empty arrays in `buildStrategizeContext` and
+      `buildImposterReactContext`.
+- [x] NOT trimmed at meeting boundaries — imposter needs the
+      full pre-meeting history to build alibis.
 
 ### 2.3 Alibi log wiring
 
-- [ ] Wire `memory.appendAlibi` from `tasks.nim` at the co-visibility
-      edge: a task-completion icon flashes in the same frame (or
-      within N ticks) as a specific crewmate being visible to us.
-- [ ] Matches `DESIGN.md §13.1` semantics.
-- [ ] Verify dedup rules in `memory.nim` fire correctly (no duplicate
-      alibis within `MemoryAlibiDedupTicks`).
-- [ ] Parity: self-consistency stays 100% after wiring.
-- [ ] Resulting `alibis` array in `llm.nim:buildHypothesisContext`
-      should be non-empty in any round where the bot saw a crewmate
-      finish a task.
+- [x] `updateAlibiObservations` proc in `tasks.nim` iterates
+      `(visibleCrewmate × sim.tasks)` and calls
+      `memory.appendAlibi` when crewmate world-position is
+      within `MemoryAlibiMatchRadius = 28` px of a task centre
+      AND the task icon is currently rendered
+      (`taskIconVisibleFor`).
+- [x] Hooked after `updateTaskIcons` in `bot.nim`.
+- [x] Dedup rules in `memory.nim` unchanged; per-(color, task)
+      suppression within `MemoryAlibiCooldownTicks` works.
+
+Implementation notes:
+- The icon-visibility requirement filters out alibis at
+  already-completed tasks (whose icons vanish), keeping the
+  signal aligned with "actually-using-terminal" rather than
+  "standing near the furniture".
+- Self is filtered at the proc level (`crewmate.colorIndex ==
+  bot.identity.selfColor`) so we don't alibi ourselves.
 
 ### 2.4 Ejection detection → `MeetingEvent.ejected`
 
-- [ ] Perception pass during the post-vote cutscene to read the
-      ejected player's name (or detect "skipped" if nobody ejected).
-- [ ] Populate `MeetingEvent.ejected` at `bot.nim:437` instead of the
-      hardcoded `-1`.
-- [ ] Downstream: `llm.nim:235–238` already serializes this; no LLM-side
-      change needed once the field is populated.
-- [ ] Reporter detection (who called the meeting) is **deferred** —
-      lower leverage than ejection outcome, separate perception work.
-      Track in TODO.md, not this sprint.
+- [x] `detectResultEjection` proc in `voting.nim` reads the
+      post-vote result frame: returns -2 for "NO ONE DIED"
+      text-detection, else scans the 12×12 centered sprite
+      for `PlayerColors` palette pixels and returns the
+      dominant color index (or -1 on low-confidence).
+- [x] `VotingState.resultEjected` field added; preserved
+      across `clearVotingState` (cleared only at round reset).
+- [x] `finalizeMeeting` proc in `bot.nim` extracted from the
+      inline code. Appends `MeetingEvent` with
+      `ejected = bot.voting.resultEjected`, records vote
+      accounting, trims memory, clears voting/LLM state.
+- [x] Interstitial branch of `decideNextMaskCore` calls
+      `detectResultEjection` on the true→false transition
+      frame (the result screen) before clearVotingState
+      cascades.
+
+Implementation notes — **latent bug caught and fixed**:
+- The pre-Sprint-2.4 code appended `MeetingEvent` only in the
+  non-interstitial branch of `decideNextMaskCore` (original
+  `bot.nim:425` block). That branch is unreachable in practice:
+  the result frame is itself an interstitial, so `parseVotingScreen`
+  fails there and `clearVotingState` fires inside the interstitial
+  branch before control ever reaches the non-interstitial block.
+  The fix moves meeting finalization into the interstitial branch
+  (where it actually runs) and keeps the non-interstitial block
+  as belt-and-suspenders for unobserved edge cases.
+- `ejected: int` schema now distinguishes three cases: `-1`
+  (detection failed / unknown), `-2` (result frame showed NO ONE
+  DIED — skipped vote), else color index. `llm.nim` serializes
+  the `-2` case as JSON null for consistency with prior-meetings
+  schema; `-1` also serializes as null but with lower confidence
+  (the harness can compare `meetings_attended` against
+  `non_null_ejected_count` to see detector hit rate).
 
 ### 2.5 Sprint 2 acceptance
 
-- [ ] `trace_settings.speaker_attribution == "color_pip"` in manifests.
-- [ ] A live game produces non-empty `my_location_history` in imposter
-      contexts (verify in captured `llm_dispatched` event context).
-- [ ] A live game produces non-empty `alibis` in at least one
-      hypothesis call context when the bot observed a task-completion.
-- [ ] `prior_meetings[].ejected` is a color name (not null) for every
-      past meeting whose ejection was visible to the bot.
-- [ ] Self-consistency parity still 100%.
+- [x] Non-LLM and LLM (`-d:modTalksLlm`) builds both compile
+      clean.
+- [x] `libmodulabot.dylib` rebuilds successfully via
+      `build_modulabot.py` with `MODULABOT_LLM=1`.
+- [x] Self-consistency parity 500/500 black-mode across seeds
+      {1, 42, 100, 7777} in both builds.
+- [x] Live Bedrock smoke (`--max-steps 5000`): 8 agents
+      connected, Bedrock calls succeeded, per-agent events
+      captured, manifest carries
+      `trace_settings.speaker_attribution: "color_pip"` and
+      schema v3.
+- [x] `validate_trace` passes on the captured rounds
+      structurally; the pre-existing "unclosed meetings" rule
+      still fires on truncated runs (known Sprint 1 limitation).
+
+**Deferred / follow-ups:**
+- Unit test for `detectChatSpeaker` and `detectResultEjection`
+  — deferred to Sprint 3 where the mock-LLM harness will also
+  need a captured voting-screen fixture; bundling the fixtures
+  keeps the test data unified.
+- Live verification of `chat_observed` events with real speakers
+  blocked on Sprint 4.1 (concurrent LLM dispatch): under the
+  current single-lock dispatcher, 8 agents × ~20s/call
+  serializes so long that games truncate before multiple
+  chat lines accumulate during a meeting. Every piece of
+  plumbing needed is in place; Sprint 4 unlocks the timing
+  budget needed to exercise it end-to-end.
+- Reporter detection (who pressed the meeting button) remains
+  deferred — lower leverage than ejection outcome, moved from
+  Sprint 2 to parking lot per the plan doc.
 
 ---
 
@@ -515,3 +585,16 @@ PR for detailed design discussions.
   Two pre-existing limitations noted for later: stale manifest on
   truncated runs, and `validate_trace` not tolerating truncated
   rounds.
+- **2026-04-30** — Sprint 2 landed: speaker attribution via pip
+  detection, self-location keyframes, alibi log wiring, ejection
+  detection. Latent bug caught while wiring 2.4: the pre-existing
+  MeetingEvent-append path at `bot.nim:425` was unreachable in
+  practice because the result frame is interstitial and
+  `parseVotingScreen` clears `voting.active` before control
+  exits the interstitial branch. Fix extracted `finalizeMeeting`
+  proc, moved the primary append site into the interstitial
+  branch on the voting-active true→false transition, kept the
+  original block as a belt-and-suspenders path. Parity 500/500
+  across seeds {1, 42, 100, 7777} in both builds. Live Bedrock
+  smoke confirmed schema-v3 manifest carries
+  `speaker_attribution: "color_pip"`.

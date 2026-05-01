@@ -233,6 +233,17 @@ type
     witnesses*: seq[BodyWitness]
     isNewBody*: bool                      ## v2's "witnessedKill" signal
 
+  VoteChatLine* = object
+    ## One OCR'd voting-screen chat line plus its attributed speaker.
+    ## `speakerColor` is -1 when speaker-pip detection failed (sprite
+    ## obscured, palette ambiguity) — callers should fall back to
+    ## prior-line attribution (multi-line messages share one sprite)
+    ## or treat as unknown. Introduced in Sprint 2.1
+    ## (`LLM_SPRINTS.md §2.1`). Prior to v3 this was a bare
+    ## `seq[string]` with speaker attribution deferred.
+    speakerColor*: int                    ## player color index, -1 unknown
+    text*: string
+
   MeetingEvent* = object
     ## One completed meeting, appended at meeting close (voting screen
     ## just went away). `votes` matches the live semantics of
@@ -245,8 +256,8 @@ type
                                           ## VoteUnknown
     votes*: PerColor[int]
     ejected*: int                         ## -1 if skipped or unknown
-                                          ## (v1 default)
-    chatLines*: seq[string]               ## raw OCR; speakers in v2
+                                          ## (Sprint 2.4 will populate)
+    chatLines*: seq[VoteChatLine]         ## raw OCR + attributed speakers
 
   AlibiEvent* = object
     ## Positive-innocence signal: a colour seen at or near a task
@@ -255,6 +266,19 @@ type
     tick*: int
     colorIndex*: int
     taskIndex*: int
+
+  SelfKeyframe* = object
+    ## One room-transition keyframe for the bot's own position.
+    ## Feeds `my_location_history` in imposter LLM contexts so the
+    ## model can build alibi claims consistent with where the bot
+    ## actually went. Appended on every transition from one
+    ## named room to another; cap-bounded by
+    ## `MemorySelfKeyframeCap`. Introduced in Sprint 2.2
+    ## (`LLM_SPRINTS.md §2.2`). Cleared only at round reset — NOT
+    ## at meeting boundaries, because the imposter needs the full
+    ## pre-meeting history.
+    tick*: int
+    roomId*: int
 
   PlayerSummary* = object
     ## Per-colour aggregate updated incrementally on each append.
@@ -303,6 +327,12 @@ type
     lastMeetingEndTick*: int              ## sighting/alibi trim
                                           ## boundary; -1 if no
                                           ## meeting yet this round.
+    selfKeyframes*: seq[SelfKeyframe]     ## bot's own room-transition
+                                          ## history; Sprint 2.2.
+                                          ## Never trimmed mid-round.
+    lastSelfRoomId*: int                  ## last room the keyframe
+                                          ## logger saw us in; -1
+                                          ## means "not yet recorded".
 
   # -----------------------------------------------------------------
   # LLM voting integration (LLM_VOTING.md)
@@ -488,11 +518,24 @@ type
     startTick*: int
     chatSusColor*: int
     chatText*: string
-    chatLines*: seq[string]               ## per-line OCR cache, populated
-                                          ## alongside chatText; used by
-                                          ## the trace writer to emit
-                                          ## chat_observed events without
-                                          ## a second OCR pass.
+    chatLines*: seq[VoteChatLine]         ## per-line OCR cache + attributed
+                                          ## speakers; populated alongside
+                                          ## chatText. Used by the trace
+                                          ## writer and `llm.nim` without a
+                                          ## second OCR pass.
+    resultEjected*: int                   ## Result-frame detection (Sprint
+                                          ## 2.4). -1 = not yet detected /
+                                          ## unknown, -2 = skipped ("NO ONE
+                                          ## DIED"), otherwise the ejected
+                                          ## player's color index. Populated
+                                          ## by `detectResultEjection` on the
+                                          ## first post-vote interstitial
+                                          ## frame; consumed by the meeting
+                                          ## finalizer in `bot.nim`. Survives
+                                          ## `clearVotingState` (cleared only
+                                          ## on round reset) so the value is
+                                          ## still readable at MeetingEvent
+                                          ## append time.
     slots*: array[MaxPlayers, VoteSlot]
     choices*: PerColor[int]               ## what each colour voted for
 

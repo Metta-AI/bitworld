@@ -32,6 +32,18 @@ const
     ## pressing A. Lets chat fully load and absorb late "sus X" calls.
   VoteChatTextX* = 21
   VoteChatChars* = 15
+  # Speaker-pip geometry. Mirrors sim.nim:drawVoteChat — a 12x12
+  # player sprite is rendered at iconX=1 per message (not per line).
+  # Multi-line messages show the sprite once at the message's top
+  # row; subsequent text lines have no sprite and share the prior
+  # attribution. Introduced in Sprint 2.1
+  # (`LLM_SPRINTS.md §2.1`, `LLM_VOTING.md §1.5` prerequisite).
+  VoteChatPipX0* = 1                      ## inclusive
+  VoteChatPipX1* = 13                     ## exclusive (covers the 12-px sprite)
+  VoteChatPipMinPixels* = 6
+    ## Minimum colored-pixel count in the pip rectangle for a speaker
+    ## attribution to count as confident. Below this threshold we
+    ## fall back to "unattributed" (caller continues prior speaker).
 
 # ---------------------------------------------------------------------------
 # State management
@@ -39,6 +51,11 @@ const
 
 proc clearVotingState*(bot: var Bot) =
   ## Resets the voting sub-record to its sentinel-initialized form.
+  ## Note: `resultEjected` is *not* cleared here — it carries across
+  ## the voting-screen → result-frame → gameplay transition so the
+  ## meeting finalizer can read it. The round-reset path in `bot.nim`
+  ## clears it when a new round begins.
+  let savedResultEjected = bot.voting.resultEjected
   bot.voting.active = false
   bot.voting.playerCount = 0
   bot.voting.cursor = VoteUnknown
@@ -48,11 +65,68 @@ proc clearVotingState*(bot: var Bot) =
   bot.voting.chatSusColor = VoteUnknown
   bot.voting.chatText = ""
   bot.voting.chatLines.setLen(0)
+  bot.voting.resultEjected = savedResultEjected
   for i in 0 ..< bot.voting.slots.len:
     bot.voting.slots[i].colorIndex = VoteUnknown
     bot.voting.slots[i].alive = false
   for i in 0 ..< bot.voting.choices.len:
     bot.voting.choices[i] = VoteUnknown
+
+# ---------------------------------------------------------------------------
+# Result-frame detection (Sprint 2.4)
+# ---------------------------------------------------------------------------
+
+const
+  VoteResultSpriteMinPixels* = 6
+    ## Minimum count of player-color pixels inside the centered-sprite
+    ## rectangle for `detectResultEjection` to commit a color. Below
+    ## this, detection is deemed ambiguous and the caller keeps the
+    ## existing `resultEjected` value (likely -1, unknown).
+
+proc detectResultEjection*(bot: Bot): int =
+  ## Returns the ejected player's color index for the post-vote
+  ## result frame, or a sentinel: -2 = skipped / no one died, -1 =
+  ## detection failed (not a recognisable result frame).
+  ##
+  ## The sim renders the result frame (`sim.nim:buildResultFrame`)
+  ## as a clear-black framebuffer plus either:
+  ##   * "NO ONE" at (46, 54) and "DIED" at (52, 64) when no player
+  ##     was ejected, or
+  ##   * a single 12×12 player sprite tinted with the ejected player's
+  ##     color at the screen center.
+  ##
+  ## Sprint 2.4 (`LLM_SPRINTS.md §2.4`). Intended to run during the
+  ## first post-vote interstitial frame; `bot.nim`'s meeting finalizer
+  ## copies the result into the `MeetingEvent.ejected` field.
+  if bot.asciiTextMatches("NO ONE", 46, 54) or
+      bot.asciiTextMatches("DIED", 52, 64):
+    return -2
+  const
+    sx = ScreenWidth div 2 - SpriteSize div 2
+    sy = ScreenHeight div 2 - SpriteSize div 2
+  var counts: array[PlayerColorCount, int]
+  for y in sy ..< sy + SpriteSize:
+    if y < 0 or y >= ScreenHeight:
+      continue
+    let rowBase = y * ScreenWidth
+    for x in sx ..< sx + SpriteSize:
+      if x < 0 or x >= ScreenWidth:
+        continue
+      let c = bot.io.unpacked[rowBase + x]
+      if c == SpaceColor:
+        continue
+      let idx = playerColorIndex(c)
+      if idx >= 0 and idx < PlayerColorCount:
+        inc counts[idx]
+  var bestIdx = -1
+  var bestCount = 0
+  for i, n in counts:
+    if n > bestCount:
+      bestCount = n
+      bestIdx = i
+  if bestCount < VoteResultSpriteMinPixels:
+    return -1
+  bestIdx
 
 # ---------------------------------------------------------------------------
 # Grid layout
@@ -182,6 +256,47 @@ proc parseVoteDotsForTarget*(bot: var Bot, target,
 # Chat text OCR
 # ---------------------------------------------------------------------------
 
+proc detectChatSpeaker*(bot: Bot, textY: int): int =
+  ## Returns the player-color index of the speaker whose pip sprite
+  ## is rendered in the icon column (x=1..12) overlapping text row
+  ## `textY`. Returns -1 when no confident attribution is available
+  ## (no sprite on this row, mostly-black pip region, or ambiguous
+  ## color pixels below the confidence floor).
+  ##
+  ## Implementation: count PlayerColors palette hits in the pip
+  ## rectangle `[VoteChatPipX0..VoteChatPipX1, textY..textY+TextLineHeight]`
+  ## and pick the dominant non-zero index. The sim renders a 12-pixel
+  ## player sprite per message (`sim.nim:drawVoteChat`); for multi-line
+  ## messages every text row of the message overlaps the sprite, so
+  ## every text line self-attributes without needing speaker-inheritance
+  ## from the caller.
+  const
+    TextLineH = 7
+  let
+    yStart = max(0, textY)
+    yEnd = min(ScreenHeight, textY + TextLineH)
+  if yEnd <= yStart:
+    return -1
+  var counts: array[PlayerColorCount, int]
+  for y in yStart ..< yEnd:
+    let rowBase = y * ScreenWidth
+    for x in VoteChatPipX0 ..< VoteChatPipX1:
+      let c = bot.io.unpacked[rowBase + x]
+      if c == SpaceColor:
+        continue
+      let idx = playerColorIndex(c)
+      if idx >= 0 and idx < PlayerColorCount:
+        inc counts[idx]
+  var bestIdx = -1
+  var bestCount = 0
+  for i, n in counts:
+    if n > bestCount:
+      bestCount = n
+      bestIdx = i
+  if bestCount < VoteChatPipMinPixels:
+    return -1
+  bestIdx
+
 # ---------------------------------------------------------------------------
 # Chat text OCR
 # ---------------------------------------------------------------------------
@@ -208,13 +323,19 @@ proc usefulChatLine*(line: string): bool =
       inc unknown
   letters >= 2 and unknown * 2 <= max(1, line.len)
 
-iterator visibleChatLines*(bot: Bot, count: int): string =
+iterator visibleChatLines*(bot: Bot, count: int): VoteChatLine =
   ## Yields each chat line currently rendered on the voting screen, in
   ## row order, with sequential duplicates collapsed and useless lines
-  ## (no letters, mostly `?` glyphs) skipped. The trace writer
-  ## consumes this directly to detect newly-observed lines without a
-  ## second OCR pass; `readVoteChatText` is now a thin wrapper that
-  ## concatenates the same yields.
+  ## (no letters, mostly `?` glyphs) skipped. Each yielded entry pairs
+  ## the OCR text with a speaker-color index from `detectChatSpeaker`,
+  ## or -1 when pip detection wasn't confident (rare; multi-line
+  ## messages still self-attribute per line because the sprite
+  ## overlaps every text row of its message — see `detectChatSpeaker`).
+  ##
+  ## The trace writer and `llm.nim` consume this directly to detect
+  ## newly-observed lines without a second OCR pass;
+  ## `readVoteChatText` is a thin wrapper that concatenates the same
+  ## yields for `chatSusColorIndex`.
   let
     layout = voteGridLayout(count)
     chatY = layout.skipY + 10
@@ -225,7 +346,10 @@ iterator visibleChatLines*(bot: Bot, count: int): string =
       continue
     if line == previous:
       continue
-    yield line
+    yield VoteChatLine(
+      speakerColor: bot.detectChatSpeaker(y),
+      text: line
+    )
     previous = line
 
 proc readVoteChatText*(bot: Bot, count: int): string =
@@ -235,7 +359,7 @@ proc readVoteChatText*(bot: Bot, count: int): string =
   for line in bot.visibleChatLines(count):
     if result.len > 0:
       result.add(' ')
-    result.add(line)
+    result.add(line.text)
 
 proc normalizeChatText*(text: string): string =
   ## Lowercase + collapse non-alphanumerics into single spaces.
@@ -352,7 +476,7 @@ proc parseVotingCandidate*(bot: var Bot, count, startTick: int): bool =
   for line in bot.voting.chatLines:
     if bot.voting.chatText.len > 0:
       bot.voting.chatText.add(' ')
-    bot.voting.chatText.add(line)
+    bot.voting.chatText.add(line.text)
   bot.voting.chatSusColor = chatSusColorIndex(bot.voting.chatText)
   true
 

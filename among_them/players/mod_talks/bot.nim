@@ -284,6 +284,9 @@ proc resetRoundState*(bot: var Bot) =
   bot.chat.lastBodyReportX = low(int)
   bot.chat.lastBodyReportY = low(int)
   bot.identity.selfColor = -1
+  bot.voting.resultEjected = -1      ## Reset across rounds; preserved
+                                     ## across clearVotingState within
+                                     ## a meeting (Sprint 2.4).
   bot.clearVotingState()
   for i in 0 ..< bot.identity.knownImposters.len:
     bot.identity.knownImposters[i] = false
@@ -334,6 +337,55 @@ proc resetRoundState*(bot: var Bot) =
     for i in 0 ..< bot.tasks.resolved.len:
       bot.tasks.resolved[i] = false
 
+proc finalizeMeeting*(bot: var Bot) =
+  ## Appends a `MeetingEvent` to `bot.memory` using the current
+  ## `VotingState` as the source of truth, then clears voting /
+  ## LLM-voting state and trims per-meeting memory. Intended to
+  ## run exactly once per meeting, on the frame that transitions
+  ## from "voting active" to "voting done". Idempotent against a
+  ## no-op `bot.voting.active == false` call.
+  ##
+  ## Reads `bot.voting.resultEjected` for the ejected color
+  ## (Sprint 2.4); value is -1 when detection failed or was not
+  ## attempted, -2 for "skipped / no one died", else the color
+  ## index. `MeetingEvent.ejected` normalises both -1 and -2 into
+  ## the schema convention: -1 == "unknown", -2 stays as "skipped".
+  if not bot.voting.active:
+    return
+  var votes: PerColor[int]
+  for i in 0 ..< PlayerColorCount:
+    votes[i] = bot.voting.choices[i]
+  let selfChoice = bot.selfVoteChoice()
+  let meeting = MeetingEvent(
+    startTick: bot.voting.startTick,
+    endTick: bot.frameTick,
+    reporter: -1,                       ## Sprint 2.4 deferred
+    selfVote: selfChoice,
+    votes: votes,
+    ejected: bot.voting.resultEjected,  ## -1 unknown, -2 skipped, else color
+    chatLines: bot.voting.chatLines
+  )
+  bot.memory.appendMeeting(meeting)
+  let selfSlot = bot.voting.selfSlot
+  for voterColor in 0 ..< PlayerColorCount:
+    let target = bot.voting.choices[voterColor]
+    if target == VoteUnknown:
+      continue
+    if target == selfSlot and selfSlot >= 0:
+      bot.memory.recordVoteForMe(voterColor)
+  if selfChoice >= 0 and selfChoice < bot.voting.playerCount:
+    let targetColor = bot.voting.slots[selfChoice].colorIndex
+    if targetColor >= 0:
+      bot.memory.recordIVotedForThem(targetColor)
+  bot.memory.trimAtMeetingEnd(bot.frameTick)
+  when defined(modTalksLlm):
+    onMeetingEnd(bot)
+  bot.clearVotingState()
+  # resultEjected has now been consumed into the MeetingEvent; reset
+  # so the next meeting starts clean. Not cleared by clearVotingState
+  # (that function preserves it specifically for this handoff).
+  bot.voting.resultEjected = -1
+
 proc reseedAfterInterstitial*(bot: var Bot) =
   ## Called when leaving an interstitial (transition from
   ## `bot.percep.interstitial = true` last frame to `false` this
@@ -383,12 +435,32 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
     bot.percep.visibleCrewmates.setLen(0)
     bot.percep.visibleBodies.setLen(0)
     bot.percep.visibleGhosts.setLen(0)
+    # Snapshot voting state BEFORE parseVotingScreen runs, so we can
+    # detect the true→false transition that happens when the
+    # post-vote result frame fails the vote-grid check. The result
+    # frame is the one chance we have to read the ejected player's
+    # color (Sprint 2.4) — any later frame is either black or
+    # back-to-gameplay.
+    let wasVotingActive = bot.voting.active
     if bot.percep.interstitialText.isGameOverText() and
         bot.percep.lastGameOverText != bot.percep.interstitialText:
       bot.resetRoundState()
       bot.percep.lastGameOverText = bot.percep.interstitialText
     elif not bot.parseVotingScreen():
       bot.rememberRoleReveal()
+      if wasVotingActive and not bot.voting.active:
+        # Meeting just ended on this frame. The current frame is the
+        # result screen (or the first generic interstitial after it);
+        # try to read the ejected player's color before we lose the
+        # pixels. If this isn't actually a recognisable result frame
+        # (e.g. interstitial shows up before the result is rendered),
+        # `detectResultEjection` returns -1 and the meeting is
+        # finalized with `ejected: -1`, matching pre-Sprint-2.4
+        # behaviour.
+        let ejected = bot.detectResultEjection()
+        if ejected != -1:
+          bot.voting.resultEjected = ejected
+        bot.finalizeMeeting()
     bot.perf.centerMicros = int((getMonoTime() - centerStart).inMicroseconds)
     bot.perf.astarMicros = 0
     bot.motion.updateMotionState(bot.percep, bot.io.lastMask)
@@ -423,47 +495,10 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
   bot.percep.interstitialText = ""
   bot.percep.lastGameOverText = ""
   if bot.voting.active:
-    # Meeting just ended: snapshot the final voting-screen state into
-    # long-term memory before the state is cleared. This is the one
-    # place where MeetingEvent is appended. v1 leaves `reporter` and
-    # `ejected` unknown (-1); filling them in is deferred to a v1.1
-    # pass that adds the requisite perception.
-    var votes: PerColor[int]
-    for i in 0 ..< PlayerColorCount:
-      votes[i] = bot.voting.choices[i]
-    let selfChoice = bot.selfVoteChoice()
-    let meeting = MeetingEvent(
-      startTick: bot.voting.startTick,
-      endTick: bot.frameTick,
-      reporter: -1,
-      selfVote: selfChoice,
-      votes: votes,
-      ejected: -1,
-      chatLines: bot.voting.chatLines
-    )
-    bot.memory.appendMeeting(meeting)
-    # timesVotedForMe / timesIVotedForThem translation: requires the
-    # slot → colour map, which lives in bot.voting.slots. Do it here
-    # once per meeting, then let memory own the counters.
-    let selfSlot = bot.voting.selfSlot
-    for voterColor in 0 ..< PlayerColorCount:
-      let target = bot.voting.choices[voterColor]
-      if target == VoteUnknown:
-        continue
-      if target == selfSlot and selfSlot >= 0:
-        bot.memory.recordVoteForMe(voterColor)
-    if selfChoice >= 0 and selfChoice < bot.voting.playerCount:
-      let targetColor = bot.voting.slots[selfChoice].colorIndex
-      if targetColor >= 0:
-        bot.memory.recordIVotedForThem(targetColor)
-    # Trim raw sighting/alibi logs to the meeting boundary. Bodies
-    # and meetings persist; summaries are unaffected.
-    bot.memory.trimAtMeetingEnd(bot.frameTick)
-    when defined(modTalksLlm):
-      # Clear LLM meeting state (hypothesis, chat history, strategy).
-      # `enabled` survives for the next meeting.
-      onMeetingEnd(bot)
-    bot.clearVotingState()
+    # Belt-and-suspenders: if voting ends without passing through an
+    # interstitial frame (rare / unobserved in practice), finalize
+    # here. The primary path is the interstitial branch above.
+    bot.finalizeMeeting()
   if wasInterstitial:
     bot.reseedAfterInterstitial()
 
@@ -494,6 +529,7 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
   bot.updateTaskIcons()
+  bot.updateAlibiObservations()
 
   bot.goal.has = false
   bot.goal.hasPathStep = false
@@ -510,6 +546,13 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
   # 6. Evidence + home memory then policy dispatch.
   bot.updateEvidence()
   bot.rememberHome()
+
+  # Self-position keyframe: Sprint 2.2, feeds
+  # `my_location_history` in the imposter LLM context. Only fires on
+  # room transitions; deduped inside `observeSelfRoom`.
+  let selfRoom = roomIdAt(bot.sim, bot.percep.playerWorldX(),
+                          bot.percep.playerWorldY())
+  discard bot.memory.observeSelfRoom(bot.frameTick, selfRoom)
 
   let mask =
     if bot.role == RoleImposter and not bot.isGhost:

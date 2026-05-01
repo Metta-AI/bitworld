@@ -107,12 +107,16 @@ proc ingestChatLines*(bot: var Bot) =
   ## `seenLines` dedup set, appends true-novelty entries to
   ## `chatHistory`, and flags `hasUnreadChat`.
   ##
-  ## Speaker attribution stays -1 (Q-LLM9 deferred). We *do* detect
-  ## lines that match something we queued ourselves this meeting so
-  ## the LLM isn't reasoning about its own statements as if they came
-  ## from a stranger.
+  ## Speaker attribution (Sprint 2.1): primary source is the pip
+  ## detector in `voting.detectChatSpeaker`, which runs during
+  ## `parseVotingScreen` and stamps each `VoteChatLine.speakerColor`.
+  ## Fall back to substring-matching our own `myStatements` only when
+  ## the pip was unattributed (-1) — once we know a line was spoken
+  ## by our own color we can mark it `mine` with confidence and
+  ## short-circuit the fuzzy match.
   var s = addr bot.llmVoting
-  for raw in bot.voting.chatLines:
+  for entry in bot.voting.chatLines:
+    let raw = entry.text
     let norm = normalizeForDedup(raw)
     if norm.len == 0:
       continue
@@ -124,19 +128,25 @@ proc ingestChatLines*(bot: var Bot) =
     if seen:
       continue
     s.seenLines.add(norm)
-    # Was this one of ours?
+    # Attribution: pip detector wins. On a confident self-color pip
+    # this skips the fuzzy substring scan. Fuzzy fallback is kept for
+    # lines whose pip detection failed (pip area obscured or
+    # ambiguous) so we don't regress on multi-line dedup.
     var mine = false
-    for own in s.myStatements:
-      let ownNorm = normalizeForDedup(own)
-      if ownNorm.len == 0:
-        continue
-      if ownNorm == norm or
-          (norm.len >= 4 and ownNorm.contains(norm)) or
-          (ownNorm.len >= 4 and norm.contains(ownNorm)):
-        mine = true
-        break
+    if entry.speakerColor >= 0 and entry.speakerColor == bot.identity.selfColor:
+      mine = true
+    elif entry.speakerColor < 0:
+      for own in s.myStatements:
+        let ownNorm = normalizeForDedup(own)
+        if ownNorm.len == 0:
+          continue
+        if ownNorm == norm or
+            (norm.len >= 4 and ownNorm.contains(norm)) or
+            (ownNorm.len >= 4 and norm.contains(ownNorm)):
+          mine = true
+          break
     s.chatHistory.add(LlmChatEntry(
-      speakerColor: -1,
+      speakerColor: entry.speakerColor,
       line: raw,
       tickObserved: bot.frameTick,
       mine: mine
@@ -256,7 +266,15 @@ proc priorMeetingsJson(bot: Bot): JsonNode =
       entry["self_vote"] = newJNull()
     var chat = newJArray()
     for line in m.chatLines:
-      chat.add(%line)
+      # Emit speaker attribution now that it's available (Sprint 2.1).
+      # Past meetings gain a "<color>: <text>" prefix so the LLM can
+      # weigh prior claims by speaker without a schema change to the
+      # array shape. Unattributed lines stay bare.
+      if line.speakerColor >= 0 and
+          line.speakerColor < PlayerColorNames.len:
+        chat.add(%(playerColorName(line.speakerColor) & ": " & line.text))
+      else:
+        chat.add(%line.text)
     entry["chat_summary"] = chat
     result.add(entry)
 
@@ -293,6 +311,24 @@ proc myStatementsJson(bot: Bot): JsonNode =
   result = newJArray()
   for line in bot.llmVoting.myStatements:
     result.add(%line)
+
+proc myLocationHistoryJson(bot: Bot; limit = 20): JsonNode =
+  ## Serializes the bot's own room-transition log for imposter LLM
+  ## contexts (Sprint 2.2). Emits newest-first, capped at `limit`
+  ## entries, tick-relative to the current frame. Empty array when
+  ## `Memory.selfKeyframes` hasn't accumulated anything yet.
+  result = newJArray()
+  let kf = bot.memory.selfKeyframes
+  var taken = 0
+  for i in countdown(kf.high, 0):
+    if taken >= limit:
+      break
+    let e = kf[i]
+    result.add(%*{
+      "room":          roomNameForId(bot, e.roomId),
+      "tick_relative": bot.frameTick - e.tick
+    })
+    inc taken
 
 # ---------------------------------------------------------------------------
 # Per-task context builders
@@ -385,14 +421,12 @@ proc buildStrategizeContext(bot: Bot): string =
   ctx["safe_colors"] = safeColorsArray(bot)
   ctx["self_color"] = %playerColorName(bot.identity.selfColor)
   ctx["living_players"] = colorNameArray(bot.colorsAlive())
-  # My own location history — last N sightings of self (we don't log
-  # our own sightings; use the memory summary + last meeting events).
-  # TODO: extend memory to log self-position keyframes. For now we
-  # pass self's last room via the most recent summary write (which
-  # actors.nim doesn't currently update for self). Pass an empty list
-  # until this lands; imposter constraint is "don't fabricate
-  # locations" so empty is safe (LLM will say less, not more).
-  ctx["my_location_history"] = newJArray()
+  # Self location history from `Memory.selfKeyframes` (Sprint 2.2).
+  # Empty until the bot has transitioned between named rooms; the
+  # system prompt ("only claim locations you've been to") makes an
+  # empty list a safe fallback (LLM stays vague rather than
+  # fabricating).
+  ctx["my_location_history"] = myLocationHistoryJson(bot)
   # Bodies this round and their witness colours.
   var bodies = newJArray()
   for body in bot.memory.bodies:
@@ -434,7 +468,7 @@ proc buildImposterReactContext(bot: Bot): string =
   ctx["safe_colors"] = safeColorsArray(bot)
   ctx["self_color"] = %playerColorName(bot.identity.selfColor)
   ctx["living_players"] = colorNameArray(bot.colorsAlive())
-  ctx["my_location_history"] = newJArray()
+  ctx["my_location_history"] = myLocationHistoryJson(bot)
   ctx["bodies_this_round"] = block:
     var arr = newJArray()
     for body in bot.memory.bodies:
