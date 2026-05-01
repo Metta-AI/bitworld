@@ -427,19 +427,30 @@ proc chatSusColorIndex*(text: string): int =
 
 proc parseVotingCandidate*(bot: var Bot, count, startTick: int): bool =
   ## Tries to parse the voting screen for a specific player count.
-  ## Returns false unless every slot resolves to a colour matching
-  ## its index — that's the strict invariant that makes "no, this
-  ## isn't the voting screen" the only failure mode.
+  ## Returns false unless every slot resolves to a valid, unique
+  ## colour. (Sprint 7.2: the previous invariant required
+  ## `slots[i].colorIndex == i`, which only held on a fresh server
+  ## where joinOrder matched player index. On a server with prior
+  ## connections, joinOrder is offset and the check failed on every
+  ## frame, wedging the bot at `bot.interstitial.role_reveal` for
+  ## the entire meeting.)
   let layout = voteGridLayout(count)
   if not bot.voteSkipTextMatches(layout.skipX, layout.skipY):
     return false
   var slots: array[MaxPlayers, VoteSlot]
+  var seenColors: set[uint8]   ## dedup — reject frames where two
+                               ## slots resolve to the same colour
   for i in 0 ..< count:
     slots[i] = bot.parseVoteSlot(count, i)
     if slots[i].colorIndex == VoteUnknown:
       return false
-    if slots[i].colorIndex != i:
+    if slots[i].colorIndex < 0 or
+        slots[i].colorIndex >= PlayerColorCount:
       return false
+    let cu = uint8(slots[i].colorIndex)
+    if cu in seenColors:
+      return false              ## duplicate colour → not a real grid
+    seenColors.incl(cu)
 
   bot.clearVotingState()
   bot.voting.active = true
