@@ -80,6 +80,12 @@ def build_modulabot() -> Path:
     ]
     if enable_llm:
         cmd.append("-d:modTalksLlm")
+        # Sprint 6.3 — the Nim-side LLM provider in `llm_provider.nim`
+        # uses `std/httpclient` against api.anthropic.com and
+        # api.openai.com (both HTTPS-only). `-d:ssl` flips the stdlib
+        # to link against OpenSSL/LibreSSL. Without this the binary
+        # builds but every HTTPS request immediately errors at runtime.
+        cmd.append("-d:ssl")
     cmd.extend([
         f"--out:{out_path}",
         # Source paths the bot imports outside of its own directory:
