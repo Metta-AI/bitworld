@@ -440,6 +440,9 @@ proc buildHypothesisContext(bot: Bot): JsonNode =
   }]
   schema["confidence"] = %"high|medium|low"
   schema["key_evidence"] = %["string", "..."]
+  schema["opening_statement"] =
+    %("string or null, <= " & $LlmMaxChatLen &
+      " chars — a brief chat message sharing your initial read")
   result["response_schema"] = schema
 
 proc buildAccuseContext(bot: Bot): JsonNode =
@@ -836,6 +839,17 @@ proc applyHypothesisResponse(bot: var Bot; data: JsonNode) =
     not bot.isSafeColor(it.colorIndex)
   if bot.llmVoting.hypothesis.suspects.len == 0:
     bot.llmVoting.hypothesis.valid = false
+  # Sprint 7.3: queue the opening_statement as chat regardless of
+  # confidence. This ensures every crewmate bot speaks at least once
+  # per meeting, even when the hypothesis is medium/low confidence.
+  # Without this, medium-confidence bots stay silent until someone
+  # else speaks (the hasUnreadChat gate), leading to 8-bot meetings
+  # where nobody breaks the silence.
+  if data.hasKey("opening_statement") and
+      data["opening_statement"].kind == JString:
+    let text = clampChat(data["opening_statement"].getStr())
+    if text.len > 0:
+      queueOurChat(bot, text)
   # Transition based on confidence.
   if bot.llmVoting.hypothesis.valid and h.confidence == "high":
     bot.llmVoting.stage = lvsAccusing
@@ -1149,10 +1163,20 @@ proc tickLlmVoting*(bot: var Bot) =
   ## Advances the state machine each frame while voting is active.
   ## Idempotent when nothing has changed. Must be called AFTER
   ## `parseVotingScreen` so `bot.voting.chatLines` is fresh.
+  ##
+  ## Sprint 7.2: when `providerPtr` is set (CLI path), executes at
+  ## most ONE pending LLM call per frame, synchronously. This blocks
+  ## the frame loop for the call duration (~5-9s) but returns
+  ## immediately after, letting the websocket drain queued frames
+  ## before the next call. Follow-up calls (e.g. hypothesis→accuse)
+  ## are dispatched on the NEXT frame, not the same one. This matches
+  ## the italkalot pattern where each frame does at most one blocking
+  ## LLM call and returns mask=0 (idle) in between.
   if not bot.llmVoting.enabled:
     return
   if not bot.voting.active:
     return
+
   if bot.llmVoting.stage == lvsIdle:
     onMeetingStart(bot)
     return

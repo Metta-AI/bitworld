@@ -383,6 +383,82 @@ block trim_unfittable_returns_false:
     not ok
 
 # ---------------------------------------------------------------------------
+# applyHypothesisResponse — opening_statement (Sprint 7.3)
+# ---------------------------------------------------------------------------
+
+block hypothesis_opening_statement:
+  # Test that `applyHypothesisResponse` queues the opening_statement
+  # as chat when present and non-empty.
+  var bot: Bot
+  bot.llmVoting = initLlmVotingState()
+  bot.llmVoting.enabled = true
+  bot.llmVoting.stage = lvsFormingHypothesis
+  bot.identity.selfColor = 5  # lime — NOT red, so "red" suspect isn't filtered
+  bot.chat.pendingChat = ""
+  let data = parseJson("""{
+    "suspects": [{"color": "red", "likelihood": 0.5, "reasoning": "saw near body"}],
+    "confidence": "medium",
+    "key_evidence": ["near body"],
+    "opening_statement": "I saw red near the body in electrical."
+  }""")
+  # We can't call applyHypothesisResponse directly because it's
+  # not exported. But we can call onLlmResponse which routes to it.
+  bot.llmVoting.request.pending = true
+  bot.llmVoting.request.callKind = lckHypothesis
+  bot.llmVoting.request.stage = lvsFormingHypothesis
+  onLlmResponse(bot, lckHypothesis, $data, false)
+  check "opening_statement queued as pendingChat":
+    bot.chat.pendingChat.len > 0
+  check "opening_statement text matches":
+    "electrical" in bot.chat.pendingChat
+  check "hypothesis valid after opening_statement":
+    bot.llmVoting.hypothesis.valid
+  check "stage transitioned to lvsListening (medium confidence)":
+    bot.llmVoting.stage == lvsListening
+
+block hypothesis_no_opening_statement:
+  # Verify backward compat: when opening_statement is missing, no
+  # chat is queued (medium confidence path).
+  var bot: Bot
+  bot.llmVoting = initLlmVotingState()
+  bot.llmVoting.enabled = true
+  bot.llmVoting.stage = lvsFormingHypothesis
+  bot.identity.selfColor = 5
+  bot.chat.pendingChat = ""
+  let data = parseJson("""{
+    "suspects": [{"color": "blue", "likelihood": 0.4, "reasoning": "suspicious"}],
+    "confidence": "low",
+    "key_evidence": ["suspicious"]
+  }""")
+  bot.llmVoting.request.pending = true
+  bot.llmVoting.request.callKind = lckHypothesis
+  bot.llmVoting.request.stage = lvsFormingHypothesis
+  onLlmResponse(bot, lckHypothesis, $data, false)
+  check "no chat queued without opening_statement":
+    bot.chat.pendingChat.len == 0
+
+block hypothesis_null_opening_statement:
+  # Verify null opening_statement doesn't queue chat.
+  var bot: Bot
+  bot.llmVoting = initLlmVotingState()
+  bot.llmVoting.enabled = true
+  bot.llmVoting.stage = lvsFormingHypothesis
+  bot.identity.selfColor = 5
+  bot.chat.pendingChat = ""
+  let data = parseJson("""{
+    "suspects": [{"color": "pink", "likelihood": 0.6, "reasoning": "vented"}],
+    "confidence": "medium",
+    "key_evidence": ["vented"],
+    "opening_statement": null
+  }""")
+  bot.llmVoting.request.pending = true
+  bot.llmVoting.request.callKind = lckHypothesis
+  bot.llmVoting.request.stage = lvsFormingHypothesis
+  onLlmResponse(bot, lckHypothesis, $data, false)
+  check "no chat queued with null opening_statement":
+    bot.chat.pendingChat.len == 0
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

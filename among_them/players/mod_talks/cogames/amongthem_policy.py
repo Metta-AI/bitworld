@@ -158,8 +158,10 @@ _LLM_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "hypothesis": {
         "name": "submit_hypothesis",
         "description": (
-            "Submit your suspect-likelihood ranking and confidence "
-            "for the current meeting based on observed evidence."
+            "Submit your suspect-likelihood ranking, confidence, and "
+            "an opening statement for the current meeting based on "
+            "observed evidence. The opening_statement is a short chat "
+            "message summarizing your read of the situation."
         ),
         "input_schema": {
             "type": "object",
@@ -184,8 +186,14 @@ _LLM_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "opening_statement": {
+                    "type": ["string", "null"],
+                },
             },
-            "required": ["suspects", "confidence", "key_evidence"],
+            "required": [
+                "suspects", "confidence", "key_evidence",
+                "opening_statement",
+            ],
         },
     },
     "accuse": {

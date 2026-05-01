@@ -269,7 +269,9 @@ Respond ONLY with valid JSON matching the response_schema in the user message. D
 
   SystemPromptCrewmate = """
 
-You are a crewmate — you are not a saboteur. Reason honestly. If you have strong evidence against someone, say so clearly. If you are uncertain, say so and ask others for information. Do not accuse randomly. Base every accusation on something specific you observed."""
+You are a crewmate — you are not a saboteur. Reason honestly. If you have strong evidence against someone, say so clearly. If you are uncertain, say so and ask others for information. Do not accuse randomly. Base every accusation on something specific you observed.
+
+When submitting your hypothesis, always include an opening_statement: a brief chat message (one short sentence) sharing your initial read of the situation — what you saw, who looks suspicious, or that you have no strong leads yet. This message is sent to all players at the start of the meeting."""
 
   SystemPromptImposter = """
 
@@ -321,16 +323,20 @@ proc toolSchemaFor(kind: LlmCallKind): JsonNode =
     %*{
       "name": "submit_hypothesis",
       "description":
-        "Submit your suspect-likelihood ranking and confidence " &
-        "for the current meeting based on observed evidence.",
+        "Submit your suspect-likelihood ranking, confidence, and " &
+        "an opening statement for the current meeting based on " &
+        "observed evidence. The opening_statement is a short chat " &
+        "message summarizing your read of the situation — it will " &
+        "be sent to all players regardless of confidence level.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "suspects":     suspectsArraySchema(),
-          "confidence":   {"type": "string", "enum": ["high", "medium", "low"]},
-          "key_evidence": {"type": "array", "items": {"type": "string"}}
+          "suspects":          suspectsArraySchema(),
+          "confidence":        {"type": "string", "enum": ["high", "medium", "low"]},
+          "key_evidence":      {"type": "array", "items": {"type": "string"}},
+          "opening_statement": {"type": ["string", "null"]}
         },
-        "required": ["suspects", "confidence", "key_evidence"]
+        "required": ["suspects", "confidence", "key_evidence", "opening_statement"]
       }
     }
   of lckAccuse:
@@ -787,6 +793,21 @@ proc complete*(p: LlmProvider; role: BotRole; kind: LlmCallKind;
     if epochTime() + backoff >= deadline:
       break
     sleep(int(backoff * 1000))
-
   result.latencyMs = int((epochTime() - started) * 1000)
+
+# ---------------------------------------------------------------------------
+# Public helpers for subprocess-based dispatch (Sprint 7.2)
+# ---------------------------------------------------------------------------
+
+proc bedrockBodyPublic*(p: LlmProvider; role: BotRole; kind: LlmCallKind;
+                        contextJson: string): string =
+  ## Public wrapper so `llm_dispatch.nim` can build the Bedrock
+  ## request body without duplicating the tool-schema logic.
+  bedrockBody(p, role, kind, contextJson)
+
+proc extractToolUsePublic*(p: LlmProvider; respBody: string):
+    tuple[json: string; found: bool] =
+  ## Public wrapper for parsing the Bedrock/Anthropic tool-use response.
+  anthropicExtractToolUse(respBody)
+
 
