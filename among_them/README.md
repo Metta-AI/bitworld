@@ -32,12 +32,38 @@ You can also load config from a file:
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config-file:config.json
 ```
 
+The same config file can be provided through the environment:
+
+```sh
+COGAME_CONFIG_PATH=config.json nim r among_them.nim --address:0.0.0.0 --port:2000
+```
+
 For the first test, it is useful to run one player with one task and no
 imposters. With no imposters, the crewmate only needs to complete all tasks to
 win.
 
 ```sh
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
+```
+
+## Runner Environment
+
+Tournament and Cogame runners can configure file paths with environment
+variables. Command line flags override these values when both are set.
+
+| Variable | Meaning |
+| --- | --- |
+| `COGAME_CONFIG_PATH` | Path to the config JSON file |
+| `COGAME_SAVE_RESULTS_PATH` | Path where final scores are written |
+| `COGAME_SAVE_REPLAY_PATH` | Optional path where a replay is written |
+
+Results are written when `maxGames` is set to 1 or higher.
+
+```sh
+COGAME_CONFIG_PATH=config.json \
+COGAME_SAVE_RESULTS_PATH=scores.json \
+COGAME_SAVE_REPLAY_PATH=run.bitreplay \
+nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
 ## Map Files
@@ -150,6 +176,8 @@ You can save a replay while using `quick_run`:
 nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:2 --save-replay:among_them.replay
 ```
 
+You can also set `COGAME_SAVE_REPLAY_PATH` before running the server.
+
 ## Common Setup
 
 Start an 8-player game with two imposters:
@@ -204,10 +232,12 @@ http://localhost:2000/client/player.html?name=player6&token=0xBADA55_5&slot=5
 http://localhost:2000/client/player.html?name=player7&token=0xBADA55_6&slot=6
 http://localhost:2000/client/player.html?name=player8&token=0xBADA55_7&slot=7
 
-When a game finishes (max games set to 1 or higher) --save-scores is used to save the scores to a file.
+When a game finishes with `maxGames` set to 1 or higher, `--save-scores` saves
+the scores to a file. `COGAME_SAVE_RESULTS_PATH` can be used instead.
 
-The file uses json format and must have be an array of objects with with reward as a required field.
-Game might choose to give name, win, tasks, kills and any other fields, but it must give reward.
+The file uses JSON format and must be an array of objects with `reward` as a
+required field. The game can include `name`, `win`, `tasks`, `kills`, and other
+fields.
 
 ```json
 [

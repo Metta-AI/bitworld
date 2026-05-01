@@ -1,16 +1,17 @@
-import protocol, sim, server
-import std/[parseopt, strutils]
+import
+  std/[os, parseopt, strutils],
+  protocol, sim, server
 
 when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
     configJson = ""
-    configPath = ""
+    configPath = getEnv("COGAME_CONFIG_PATH")
     mapPath = ""
-    saveReplayPath = ""
+    saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH")
     loadReplayPath = ""
-    saveScoresPath = ""
+    saveScoresPath = getEnv("COGAME_SAVE_RESULTS_PATH")
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind

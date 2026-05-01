@@ -86,7 +86,7 @@ type
 
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
-  HealthPath = "/health"
+  HealthPath = "/healthz"
   ControlRestartPath = "/control/restart"
   ControlKickPath = "/control/kick"
 

@@ -50,6 +50,14 @@ The JSON must be an object. Fields override the game's default config. Unknown
 fields are ignored by the current games, and fields with the wrong type raise a
 game-specific error.
 
+Game runners may also set:
+
+| Environment variable | Meaning |
+| --- | --- |
+| `COGAME_CONFIG_PATH` | Path to the config JSON file |
+| `COGAME_SAVE_RESULTS_PATH` | Path where the game writes final results |
+| `COGAME_SAVE_REPLAY_PATH` | Optional path where the game writes a replay |
+
 The common top-level server fields are:
 
 | Field | Type | Meaning |
