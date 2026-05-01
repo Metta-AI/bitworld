@@ -4,8 +4,8 @@ Global Protocol is a small binary protocol for sprite based displays. The
 server sends sprite definitions and object placements. The client sends keyboard
 and mouse input.
 
-Global Protocol connects over WebSocket. The endpoint usually lives at
-`ws://address:port/global`.
+Global Protocol connects over WebSocket. The endpoint is a full websocket URL,
+such as `ws://localhost:8080/global`.
 
 The protocol is designed to be simple to parse. Every message starts with a
 single message type byte, followed by a fixed set of little endian fields. Any
@@ -40,13 +40,23 @@ Defines or replaces a sprite.
 | Sprite id | `u16` | Id of the sprite to define |
 | Width | `u16` | Sprite width in pixels |
 | Height | `u16` | Sprite height in pixels |
-| Pixels | `u8[]` | `Width * Height` bytes |
+| Compressed length | `u32` | Number of compressed pixel bytes |
+| Compressed pixels | `u8[]` | Snappy compressed raw RGBA pixels |
+| Label length | `u16` | Number of UTF-8 label bytes |
+| Label | `u8[]` | Optional human-readable sprite label |
 
-Each pixel is an 8 bit color index. The color palette is outside this version
-of the protocol.
+The compressed pixel payload must be a Snappy stream. After decompression, the
+payload must be exactly `Width * Height * 4` bytes. Each pixel is four bytes in
+RGBA order: red, green, blue, alpha. Color channels are unpremultiplied
+`0 .. 255` values. An alpha value of `0` is fully transparent. An alpha value
+of `255` is fully opaque.
 
 If a sprite id already exists, the client must replace the old sprite data with
-the new definition. A sprite with width `0` or height `0` is invalid.
+the new definition. The label replaces the old label for that sprite id. A
+label length of `0` means the sprite has no label. Labels are for tooling,
+debugging, and human inspection. They do not affect rendering.
+
+A sprite with width `0` or height `0` is invalid.
 
 ### Define Object
 
@@ -202,6 +212,43 @@ Suggested mouse button control codes:
 | `0x02` | Right mouse button |
 | `0x03` | Middle mouse button |
 
+### Player Input
+
+Sends the current held player button state. This packet is intended for
+sprite-based player endpoints such as `/player2`, where the server renders the
+game through this protocol but still accepts the same controls as the original
+`/player` endpoint.
+
+Player endpoints may accept the same join query parameters as `/player`:
+`name`, `slot`, and `token`. `slot` is zero-based and lets the server assign a
+stable player position. `token` may be used for simple slot auth.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x84` |
+| Buttons | `u8` | Current held player button bitmask |
+
+Button bit values match the original player protocol:
+
+| Bit | Value | Meaning |
+| ---: | ---: | --- |
+| `0` | `0x01` | D-pad up |
+| `1` | `0x02` | D-pad down |
+| `2` | `0x04` | D-pad left |
+| `3` | `0x08` | D-pad right |
+| `4` | `0x10` | Select |
+| `5` | `0x20` | A |
+| `6` | `0x40` | B |
+
+The client should send this packet whenever the held button bitmask changes.
+The server should treat omitted bits as released. Bit `7` is reserved and must
+be sent as `0`.
+
+Clients that support typing should keep keyboard gameplay input separate from
+text input. While the client is in text entry mode, printable keys should update
+the local text buffer instead of changing the player input bitmask. When the
+text is submitted, the client should send the existing Input Text packet.
+
 ## Message Type Summary
 
 | Value | Direction | Message |
@@ -215,8 +262,9 @@ Suggested mouse button control codes:
 | `0x81` | Client to server | Input text |
 | `0x82` | Client to server | Mouse position |
 | `0x83` | Client to server | Mouse button |
+| `0x84` | Client to server | Player input |
 
-Message values `0x00`, `0x07 .. 0x7f`, and `0x84 .. 0xff` are reserved.
+Message values `0x00`, `0x07 .. 0x7f`, and `0x85 .. 0xff` are reserved.
 
 ## Rendering Model
 
@@ -225,7 +273,7 @@ The client keeps three tables:
 | State | Key | Value |
 | --- | --- | --- |
 | Layers | `u8 layer id` | Type, flags, viewport width, and viewport height |
-| Sprites | `u16 sprite id` | Width, height, and 8 bit pixel buffer |
+| Sprites | `u16 sprite id` | Width, height, label, and RGBA pixel buffer |
 | Objects | `u16 object id` | X, y, z, layer, and sprite id |
 
 The client draws all visible layers. Within a layer, objects use their current
@@ -243,8 +291,10 @@ layer. UI layer placement is selected by its layer type. For example, the top
 left layer is anchored to the top left of the screen and the center bottom layer
 is horizontally centered and anchored to the bottom of the screen.
 
-Pixel value `0` should be treated as transparent. Pixel values `1 .. 255` are
-opaque palette indices.
+Sprite pixels with alpha `0` should be treated as transparent. Sprite pixels
+with alpha greater than `0` should be composited over lower objects in draw
+order. Clients may use straight alpha compositing or simply overwrite
+destination pixels for fully opaque sprites.
 
 ## Error Handling
 
@@ -252,7 +302,9 @@ A receiver should close the connection on malformed messages, including:
 
 - Unknown message types.
 - Truncated messages.
-- Sprite pixel payloads that do not match `Width * Height`.
+- Sprite compressed payloads that fail Snappy decompression.
+- Sprite decompressed pixel payloads that do not match `Width * Height * 4`.
+- Sprite labels whose byte count does not match `Label length`.
 - Sprite dimensions whose product cannot fit in local memory.
 - Objects that reference unknown layers.
 - Viewports with width `0` or height `0`.
@@ -263,11 +315,16 @@ Unknown object ids in delete messages are not errors.
 
 ## Example
 
-This byte sequence defines sprite `7` as a `2x2` sprite with four palette
-indices:
+This byte sequence defines sprite `7` as a `2x2` sprite labeled `test`, with
+four RGBA pixels: opaque red, opaque green, opaque blue, and transparent black.
+The compressed pixel payload is a Snappy stream that decompresses to the four
+RGBA pixels.
 
 ```text
-01 07 00 02 00 02 00 01 02 03 04
+01 07 00 02 00 02 00 12 00 00 00
+10 3c ff 00 00 ff 00 ff 00 ff
+00 00 ff ff 00 00 00 00
+04 00 74 65 73 74
 ```
 
 Decoded fields:
@@ -278,7 +335,10 @@ Decoded fields:
 | `07 00` | Sprite id `7` |
 | `02 00` | Width `2` |
 | `02 00` | Height `2` |
-| `01 02 03 04` | Pixel data |
+| `12 00 00 00` | Compressed pixel byte length `18` |
+| `10 3c ... 00` | Snappy compressed RGBA payload |
+| `04 00` | Label length `4` |
+| `74 65 73 74` | Label `test` |
 
 This byte sequence places object `3` at `x = 10`, `y = 20`, `z = 0`, layer
 `0`, using sprite `7`:

@@ -9,16 +9,24 @@ Game servers that expose player sessions usually use:
 /player
 ```
 
-The player endpoint may accept a `name` query parameter:
+The player endpoint may accept `name`, `slot`, and `token` query parameters:
 
 ```text
-/player?name=player1
+/player?name=player1&slot=0&token=0xBADA55
 ```
 
 `name` is an optional player identity. Servers that support rewards or global
 display should use this value instead of the network address when naming the
 player. The value is URL decoded by the server. It must not contain spaces after
 server normalization.
+
+`slot` is an optional zero-based player slot. A server may use it to assign a
+stable color, start position, and configured role. If the slot is missing, the
+server assigns the first valid open slot.
+
+`token` is an optional basic join secret. Servers may validate it against their
+game config before accepting the websocket. A player whose configured name or
+token does not match should be disconnected.
 
 The protocol uses binary websocket messages.
 

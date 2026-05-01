@@ -1,0 +1,563 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stats Viewer</title>
+<style>
+html,body{
+  margin:0;
+  width:100%;
+  height:100%;
+  background:#0b0b0b;
+}
+body{
+  color:#e8e8e8;
+  font:14px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  display:flex;
+  flex-direction:column;
+}
+header{
+  padding:10px 16px;
+  border-bottom:1px solid #1f1f1f;
+  display:flex;
+  align-items:center;
+  gap:16px;
+}
+header h1{
+  margin:0;
+  font-size:14px;
+  font-weight:600;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:#9bd1ff;
+}
+#status{
+  color:#888;
+  font-size:12px;
+}
+#wrap{
+  flex:1 1 50%;
+  min-height:0;
+  overflow:auto;
+  border-bottom:1px solid #1f1f1f;
+}
+table{
+  border-collapse:collapse;
+  width:100%;
+  table-layout:auto;
+}
+thead th{
+  position:sticky;
+  top:0;
+  background:#161616;
+  color:#cfcfcf;
+  text-align:right;
+  padding:8px 12px;
+  border-bottom:1px solid #2a2a2a;
+  cursor:pointer;
+  user-select:none;
+  white-space:nowrap;
+  font-weight:600;
+}
+thead th.identity{
+  text-align:left;
+}
+thead th .arrow{
+  display:inline-block;
+  width:10px;
+  margin-left:4px;
+  color:#9bd1ff;
+}
+tbody td{
+  padding:6px 12px;
+  text-align:right;
+  border-bottom:1px solid #161616;
+  white-space:nowrap;
+}
+tbody td.identity{
+  text-align:left;
+  color:#fff;
+}
+.identityCell{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.kickButton{
+  width:20px;
+  height:20px;
+  flex:0 0 20px;
+  border:1px solid #5b2626;
+  border-radius:4px;
+  background:#261010;
+  color:#ff9a9a;
+  font:700 12px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  line-height:18px;
+  text-align:center;
+  cursor:pointer;
+}
+.kickButton:hover{
+  background:#3a1717;
+  color:#fff;
+}
+.kickButton:disabled{
+  cursor:default;
+  opacity:.5;
+}
+tbody tr:nth-child(2n){
+  background:#101010;
+}
+tbody tr:hover{
+  background:#1a1a1a;
+}
+.dim{
+  color:#777;
+}
+#joinQr{
+  flex:1 1 50%;
+  min-height:180px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:18px;
+  overflow:auto;
+  background:#0d0d0d;
+}
+#joinQr.hidden{
+  display:none;
+}
+#joinQrCode{
+  width:min(32vh,32vw,240px);
+  min-width:132px;
+  aspect-ratio:1;
+  padding:10px;
+  background:#fff;
+  box-sizing:border-box;
+}
+#joinQrCode svg{
+  display:block;
+  width:100%;
+  height:100%;
+}
+#joinQrCaption{
+  max-width:min(40vw,420px);
+  color:#cfcfcf;
+  line-height:1.45;
+  overflow-wrap:anywhere;
+}
+#joinQrLabel{
+  display:block;
+  margin-bottom:6px;
+  color:#fff;
+  font-size:16px;
+  font-weight:600;
+}
+#joinQrHost{
+  color:#888;
+  font-size:12px;
+}
+#matchControls{
+  margin-top:12px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+#restartMatch{
+  border:1px solid #2d5f83;
+  border-radius:4px;
+  background:#102131;
+  color:#d9f0ff;
+  padding:7px 10px;
+  font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  cursor:pointer;
+}
+#restartMatch:hover{
+  background:#17344d;
+}
+#restartMatch:disabled{
+  cursor:default;
+  opacity:.55;
+}
+#controlStatus{
+  color:#888;
+  font-size:12px;
+}
+#controlStatus.error{
+  color:#ff9a9a;
+}
+@media (max-width:700px){
+  #joinQr{
+    flex-direction:column;
+    gap:10px;
+    padding:14px;
+    box-sizing:border-box;
+  }
+  #joinQrCaption{
+    max-width:100%;
+    text-align:center;
+  }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Player Stats</h1>
+  <div id="status">connecting...</div>
+</header>
+<div id="wrap">
+  <table>
+    <thead>
+      <tr id="head"></tr>
+    </thead>
+    <tbody id="body"></tbody>
+  </table>
+</div>
+<div id="joinQr" class="hidden">
+  <div id="joinQrCode"></div>
+  <div id="joinQrCaption">
+    <span id="joinQrLabel"></span>
+    <span id="joinQrHost"></span>
+    <div id="matchControls">
+      <button id="restartMatch" type="button">Restart match</button>
+      <span id="controlStatus"></span>
+    </div>
+  </div>
+</div>
+<script src="qrcode.min.js"></script>
+<script>
+const COLUMNS=[
+  {key:"identity",label:"player",numeric:false},
+  {key:"reward",label:"reward",numeric:true},
+  {key:"games",label:"games",numeric:true,derived:r=>r.games_imposter+r.games_crewmate},
+  {key:"wins",label:"wins",numeric:true,derived:r=>r.wins_imposter+r.wins_crewmate},
+  {key:"win_rate",label:"win %",numeric:true,
+    derived:r=>{
+      const games=r.games_imposter+r.games_crewmate;
+      return games>0?(r.wins_imposter+r.wins_crewmate)/games:0;
+    },
+    format:v=>v>0?(v*100).toFixed(1)+"%":""
+  },
+  {key:"games_imposter",label:"imp games",numeric:true},
+  {key:"wins_imposter",label:"imp wins",numeric:true},
+  {key:"imp_rate",label:"imp %",numeric:true,
+    derived:r=>r.games_imposter>0?r.wins_imposter/r.games_imposter:0,
+    format:v=>v>0?(v*100).toFixed(1)+"%":""
+  },
+  {key:"games_crewmate",label:"crew games",numeric:true},
+  {key:"wins_crewmate",label:"crew wins",numeric:true},
+  {key:"crew_rate",label:"crew %",numeric:true,
+    derived:r=>r.games_crewmate>0?r.wins_crewmate/r.games_crewmate:0,
+    format:v=>v>0?(v*100).toFixed(1)+"%":""
+  },
+  {key:"kills",label:"kills",numeric:true},
+  {key:"tasks",label:"tasks",numeric:true}
+];
+
+const STAT_KEYS=[
+  "reward","wins_imposter","wins_crewmate",
+  "games_imposter","games_crewmate","kills","tasks"
+];
+
+const players=new Map();
+let sortKey="reward";
+let sortDir=-1;
+let controlStatusTimer=0;
+
+const url=new URL(location.href);
+function defaultAddress(path){
+  const protocol=location.protocol==="https:"?"wss:":"ws:";
+  const host=location.host||"localhost:8080";
+  return protocol+"//"+host+path;
+}
+const address=url.searchParams.get("address")||defaultAddress("/reward");
+const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
+
+const head=document.getElementById("head");
+const body=document.getElementById("body");
+const status=document.getElementById("status");
+const joinQr=document.getElementById("joinQr");
+const joinQrCode=document.getElementById("joinQrCode");
+const joinQrLabel=document.getElementById("joinQrLabel");
+const joinQrHost=document.getElementById("joinQrHost");
+const restartMatch=document.getElementById("restartMatch");
+const controlStatus=document.getElementById("controlStatus");
+
+function joinUrlFromAddress(){
+  const playerAddress=new URL(address,location.href);
+  if(playerAddress.protocol==="http:")playerAddress.protocol="ws:";
+  if(playerAddress.protocol==="https:")playerAddress.protocol="wss:";
+  playerAddress.pathname="/player";
+  const playerPage=new URL(playerAddress.toString());
+  if(playerPage.protocol==="ws:")playerPage.protocol="http:";
+  if(playerPage.protocol==="wss:")playerPage.protocol="https:";
+  playerPage.pathname="/client/player.html";
+  playerPage.search="";
+  playerPage.hash="";
+  playerPage.searchParams.set("address",playerAddress.toString());
+  return playerPage;
+}
+
+function renderJoinQr(){
+  if(!joinQr||!joinQrCode||!joinQrLabel||!joinQrHost)return;
+  let playerPage;
+  try{
+    playerPage=joinUrlFromAddress();
+  }catch(e){
+    return;
+  }
+  const loopback=/^(localhost|127\.|::1$|\[::1\])/i.test(playerPage.host);
+  joinQrLabel.textContent=loopback
+    ?"open stats at LAN IP to share"
+    :"scan to join";
+  joinQrHost.textContent=playerPage.host||"";
+  if(typeof qrcode!=="function"){
+    joinQrCode.textContent="";
+    joinQr.classList.remove("hidden");
+    return;
+  }
+  try{
+    const qr=qrcode(0,"M");
+    qr.addData(playerPage.toString());
+    qr.make();
+    joinQrCode.innerHTML=qr.createSvgTag({scalable:true});
+    joinQr.classList.remove("hidden");
+  }catch(e){
+    joinQr.classList.add("hidden");
+  }
+}
+
+function controlUrl(path){
+  const target=new URL(address,location.href);
+  if(target.protocol==="ws:")target.protocol="http:";
+  if(target.protocol==="wss:")target.protocol="https:";
+  target.pathname=path;
+  target.search="";
+  target.hash="";
+  return target;
+}
+
+function setControlStatus(text,isError=false){
+  if(!controlStatus)return;
+  controlStatus.textContent=text;
+  controlStatus.classList.toggle("error",isError);
+  if(controlStatusTimer)clearTimeout(controlStatusTimer);
+  if(text){
+    controlStatusTimer=setTimeout(()=>{
+      controlStatusTimer=0;
+      controlStatus.textContent="";
+      controlStatus.classList.remove("error");
+    },3000);
+  }
+}
+
+async function postControl(path,params){
+  const target=controlUrl(path);
+  if(params){
+    for(const [key,value] of Object.entries(params)){
+      target.searchParams.set(key,value);
+    }
+  }
+  const response=await fetch(target.toString(),{method:"POST"});
+  if(!response.ok){
+    let text="";
+    try{text=(await response.text()).trim()}catch(e){}
+    throw new Error(text||("HTTP "+response.status));
+  }
+}
+
+async function restartCurrentMatch(){
+  if(restartMatch)restartMatch.disabled=true;
+  setControlStatus("restarting...");
+  try{
+    await postControl("/control/restart");
+    setControlStatus("restart queued");
+  }catch(e){
+    setControlStatus(e.message||"restart failed",true);
+  }finally{
+    if(restartMatch)restartMatch.disabled=false;
+  }
+}
+
+async function kickPlayer(identity,button){
+  button.disabled=true;
+  setControlStatus("kicking "+identity+"...");
+  try{
+    await postControl("/control/kick",{identity});
+    setControlStatus("kick queued");
+  }catch(e){
+    button.disabled=false;
+    setControlStatus(e.message||"kick failed",true);
+  }
+}
+
+function buildHead(){
+  head.innerHTML="";
+  for(const col of COLUMNS){
+    const th=document.createElement("th");
+    th.textContent=col.label;
+    if(!col.numeric)th.classList.add("identity");
+    const arrow=document.createElement("span");
+    arrow.className="arrow";
+    arrow.textContent=sortKey===col.key?(sortDir>0?"\u25B2":"\u25BC"):"";
+    th.appendChild(arrow);
+    th.onclick=()=>{
+      if(sortKey===col.key){
+        sortDir=-sortDir;
+      }else{
+        sortKey=col.key;
+        sortDir=col.numeric?-1:1;
+      }
+      buildHead();
+      render();
+    };
+    head.appendChild(th);
+  }
+}
+
+function ensurePlayer(name){
+  let row=players.get(name);
+  if(!row){
+    row={identity:name,connected:false};
+    for(const k of STAT_KEYS)row[k]=0;
+    players.set(name,row);
+  }
+  return row;
+}
+
+function applyPacket(text){
+  for(const row of players.values())row.connected=false;
+  const lines=text.split("\n");
+  for(const line of lines){
+    const trimmed=line.replace(/\r$/,"").trim();
+    if(!trimmed)continue;
+    const parts=trimmed.split(/\s+/);
+    if(parts.length<3)continue;
+    const name=parts[0];
+    const identity=parts[1];
+    const value=Number(parts[2]);
+    if(!Number.isFinite(value))continue;
+    if(!STAT_KEYS.includes(name))continue;
+    const row=ensurePlayer(identity);
+    row.connected=true;
+    row[name]=value;
+  }
+}
+
+function colValue(row,col){
+  if(col.derived)return col.derived(row);
+  if(col.key==="identity")return row.identity;
+  return row[col.key]||0;
+}
+
+function render(){
+  const col=COLUMNS.find(c=>c.key===sortKey)||COLUMNS[1];
+  const rows=Array.from(players.values());
+  rows.sort((a,b)=>{
+    const va=colValue(a,col);
+    const vb=colValue(b,col);
+    if(typeof va==="string"||typeof vb==="string"){
+      return String(va).localeCompare(String(vb))*sortDir;
+    }
+    return (va-vb)*sortDir;
+  });
+  body.innerHTML="";
+  for(const row of rows){
+    const tr=document.createElement("tr");
+    for(const c of COLUMNS){
+      const td=document.createElement("td");
+      const v=colValue(row,c);
+      if(c.key==="identity"){
+        td.classList.add("identity");
+        const cell=document.createElement("div");
+        const label=document.createElement("span");
+        cell.className="identityCell";
+        label.textContent=v;
+        if(row.connected){
+          const kick=document.createElement("button");
+          kick.type="button";
+          kick.className="kickButton";
+          kick.textContent="X";
+          kick.title="Kick "+v;
+          kick.setAttribute("aria-label","Kick "+v);
+          kick.onclick=event=>{
+            event.stopPropagation();
+            kickPlayer(v,kick);
+          };
+          cell.appendChild(kick);
+        }
+        cell.appendChild(label);
+        td.appendChild(cell);
+      }else if(c.format){
+        const text=c.format(v);
+        td.textContent=text||"";
+        if(!text)td.classList.add("dim");
+      }else{
+        td.textContent=String(v);
+        if(v===0)td.classList.add("dim");
+      }
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
+
+let socket=null,reconnectTimer=0;
+
+function reconnect(ws){
+  if(socket!==ws)return;
+  socket=null;
+  if(reconnectSeconds>0){
+    status.textContent="reconnecting in "+reconnectSeconds+"s...";
+    if(!reconnectTimer){
+      reconnectTimer=setTimeout(()=>{
+        reconnectTimer=0;
+        connect();
+      },reconnectSeconds*1000);
+    }
+  }else{
+    status.textContent="disconnected";
+  }
+}
+
+function handle(text){
+  applyPacket(text);
+  render();
+  status.textContent=address+"  ("+players.size+" players)";
+}
+
+function connect(){
+  status.textContent="connecting to "+address+"...";
+  const ws=new WebSocket(address);
+  socket=ws;
+  ws.onmessage=event=>{
+    if(socket!==ws)return;
+    if(typeof event.data==="string"){
+      handle(event.data);
+    }else if(event.data instanceof Blob){
+      event.data.text().then(text=>{
+        if(socket===ws)handle(text);
+      });
+    }else{
+      ws.close();
+    }
+  };
+  ws.onopen=()=>{
+    if(socket===ws)status.textContent=address;
+  };
+  ws.onclose=()=>reconnect(ws);
+  ws.onerror=()=>{
+    reconnect(ws);
+    try{ws.close()}catch(e){}
+  };
+}
+
+buildHead();
+render();
+renderJoinQr();
+if(restartMatch)restartMatch.onclick=restartCurrentMatch;
+connect();
+</script>
+</body>
+</html>

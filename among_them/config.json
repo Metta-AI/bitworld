@@ -1,4 +1,24 @@
 {
-  "gameId": "among_them",
-  "minPlayers": 5
+  "maxGames":1,
+  "imposterCooldownTicks":100,
+  "tokens":[
+    "0xBADA55_0",
+    "0xBADA55_1",
+    "0xBADA55_2",
+    "0xBADA55_3",
+    "0xBADA55_4",
+    "0xBADA55_5",
+    "0xBADA55_6",
+    "0xBADA55_7"
+  ],
+  "slots":[
+    {"name":"player1","role":"crewmate","color":"red"},
+    {"name":"player2","role":"crewmate","color":"blue"},
+    {"name":"player3","role":"crewmate","color":"green"},
+    {"name":"player4","role":"crewmate","color":"yellow"},
+    {"name":"player5","role":"crewmate","color":"lime"},
+    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player7","role":"imposter","color":"pink"},
+    {"name":"player8","role":"imposter","color":"orange"}
+  ]
 }

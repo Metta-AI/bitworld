@@ -7,7 +7,7 @@
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-canvas{
+#c{
   position:absolute;
   left:0;
   top:0;
@@ -27,14 +27,149 @@ canvas{
   pointer-events:none;
 }
 #status.hidden{display:none}
+#entry{
+  position:absolute;
+  left:50%;
+  bottom:24px;
+  transform:translateX(-50%);
+  max-width:min(720px,calc(100vw - 32px));
+  min-width:180px;
+  padding:10px 12px;
+  color:#fff;
+  background:rgba(0,0,0,.82);
+  border:1px solid rgba(255,255,255,.45);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font:16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+#entry.hidden{display:none}
+#debugPanel{
+  position:absolute;
+  top:0;
+  right:0;
+  bottom:0;
+  width:320px;
+  color:#e8e8e8;
+  background:rgba(7,10,16,.94);
+  border-left:1px solid rgba(255,255,255,.22);
+  box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  pointer-events:auto;
+}
+#debugPanel.hidden{display:none}
+#debugHeader{
+  flex:0 0 auto;
+  padding:10px 12px;
+  border-bottom:1px solid rgba(255,255,255,.16);
+  font-weight:600;
+}
+#debugCounters{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:6px;
+  padding:10px 12px;
+  border-bottom:1px solid rgba(255,255,255,.16);
+}
+.debugCounter{
+  padding:6px 8px;
+  background:rgba(255,255,255,.07);
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:4px;
+}
+.debugCounterLabel{
+  display:block;
+  margin-bottom:2px;
+  color:#9ca7b8;
+  font-size:11px;
+  text-transform:uppercase;
+}
+#debugSprites{
+  flex:1 1 auto;
+  overflow:auto;
+}
+.debugSprite{
+  height:64px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 10px;
+  border-bottom:1px solid rgba(255,255,255,.08);
+  box-sizing:border-box;
+}
+.debugSpriteId{
+  width:50px;
+  color:#b8c3d6;
+  font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.debugSprite canvas{
+  position:static;
+  flex:0 0 64px;
+  display:block;
+  width:64px;
+  height:64px;
+  image-rendering:pixelated;
+  image-rendering:crisp-edges;
+}
+.debugSprite.updated{
+  box-shadow:inset 0 0 0 1px #fff;
+}
+.debugSprite.updated canvas{
+  box-shadow:0 0 0 1px #fff;
+}
+.debugSpriteSize{
+  color:#7f8ba0;
+  font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.debugSpriteTraffic{
+  margin-top:2px;
+  color:#d7dee9;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.debugSpriteMeta{
+  min-width:0;
+  flex:1 1 auto;
+}
+.debugSpriteText{
+  overflow:hidden;
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:3;
+  line-clamp:3;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  line-height:1.15;
+}
 </style>
 </head>
 <body>
 <canvas id="c" width="1" height="1"></canvas>
 <div id="status">connecting...</div>
+<div id="entry" class="hidden"></div>
+<div id="debugPanel" class="hidden">
+  <div id="debugHeader">Protocol</div>
+  <div id="debugCounters">
+    <div class="debugCounter">
+      <span class="debugCounterLabel">Down</span>
+      <span id="debugDown">0 B</span>
+    </div>
+    <div class="debugCounter">
+      <span class="debugCounterLabel">Up</span>
+      <span id="debugUp">0 B</span>
+    </div>
+  </div>
+  <div id="debugSprites"></div>
+</div>
+<script src="snappyjs.min.js"></script>
 <script>
 const canvas=document.getElementById("c"),ctx=canvas.getContext("2d");
 const status=document.getElementById("status");
+const entry=document.getElementById("entry");
+const debugPanel=document.getElementById("debugPanel");
+const debugDown=document.getElementById("debugDown");
+const debugUp=document.getElementById("debugUp");
+const debugSprites=document.getElementById("debugSprites");
+const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
 function defaultAddress(path){
   const protocol=location.protocol==="https:"?"wss:":"ws:";
@@ -43,18 +178,215 @@ function defaultAddress(path){
 }
 const address=url.searchParams.get("address")||defaultAddress("/global");
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
+function websocketAddress(){
+  try{
+    const wsUrl=new URL(address,location.href);
+    if(wsUrl.protocol==="http:")wsUrl.protocol="ws:";
+    if(wsUrl.protocol==="https:")wsUrl.protocol="wss:";
+    let changed=wsUrl.toString()!==address;
+    for(const key of ["name","slot","token"]){
+      const value=url.searchParams.get(key);
+      if(value!==null){
+        wsUrl.searchParams.set(key,value);
+        changed=true;
+      }
+    }
+    return changed?wsUrl.toString():address;
+  }catch(e){
+    return address;
+  }
+}
+function addressPath(){
+  try{return new URL(address,location.href).pathname}catch(e){return""}
+}
+const playerMode=url.searchParams.get("player")==="1"||
+  addressPath()==="/player2";
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
-const palette=[
-  [0,0,0,255],[194,195,199,255],[255,241,232,255],[255,0,77,255],
-  [255,119,168,255],[95,87,79,255],[171,82,54,255],[255,163,0,255],
-  [255,236,39,255],[126,37,83,255],[0,135,81,255],[0,228,54,255],
-  [29,43,83,255],[131,118,156,255],[41,173,255,255],[255,204,170,255]
-];
+const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
+const ButtonSelect=16,ButtonA=32,ButtonB=64;
+const DebugUpdateFlashMs=900;
 let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
 let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
 let draggingMap=false,dragX=0,dragY=0;
+let heldButtons=0,typing=false,textBuffer="";
+let debugOpen=false,debugSpritesDirty=true,debugSpriteTimer=0;
+let debugUpdateTimer=0;
+let debugBytesDown=0,debugBytesUp=0;
 ctx.imageSmoothingEnabled=false;
+
+function formatBytes(value){
+  const units=["B","KB","MB","GB"];
+  let amount=value,unit=0;
+  while(amount>=1024&&unit<units.length-1){
+    amount/=1024;
+    unit++;
+  }
+  return (unit===0?String(amount):amount.toFixed(1))+" "+units[unit];
+}
+
+function updateDebugCounters(){
+  debugDown.textContent=formatBytes(debugBytesDown);
+  debugUp.textContent=formatBytes(debugBytesUp);
+}
+
+function previewSprite(canvas,sprite){
+  const size=64;
+  canvas.width=size;
+  canvas.height=size;
+  const previewCtx=canvas.getContext("2d");
+  const image=previewCtx.createImageData(size,size);
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const offset=(y*size+x)*4;
+      const shade=((Math.floor(x/8)+Math.floor(y/8))&1)?44:28;
+      image.data[offset]=shade;
+      image.data[offset+1]=shade;
+      image.data[offset+2]=shade;
+      image.data[offset+3]=255;
+    }
+  }
+  const scale=Math.min(size/sprite.width,size/sprite.height);
+  const drawWidth=Math.max(1,Math.floor(sprite.width*scale));
+  const drawHeight=Math.max(1,Math.floor(sprite.height*scale));
+  const baseX=Math.floor((size-drawWidth)/2);
+  const baseY=Math.floor((size-drawHeight)/2);
+  for(let y=0;y<drawHeight;y++){
+    for(let x=0;x<drawWidth;x++){
+      const srcX=Math.min(sprite.width-1,Math.floor(x/scale));
+      const srcY=Math.min(sprite.height-1,Math.floor(y/scale));
+      const srcOffset=(srcY*sprite.width+srcX)*4;
+      const alpha=sprite.pixels[srcOffset+3]/255;
+      if(alpha===0)continue;
+      const outOffset=((baseY+y)*size+baseX+x)*4;
+      image.data[outOffset]=Math.round(
+        sprite.pixels[srcOffset]*alpha+image.data[outOffset]*(1-alpha)
+      );
+      image.data[outOffset+1]=Math.round(
+        sprite.pixels[srcOffset+1]*alpha+image.data[outOffset+1]*(1-alpha)
+      );
+      image.data[outOffset+2]=Math.round(
+        sprite.pixels[srcOffset+2]*alpha+image.data[outOffset+2]*(1-alpha)
+      );
+    }
+  }
+  previewCtx.putImageData(image,0,0);
+}
+
+function debugSpriteColor(id){
+  const hue=(id*137.508)%360;
+  return "hsl("+hue+",90%,55%)";
+}
+
+function spriteJustUpdated(sprite){
+  return sprite.updatedUntil&&performance.now()<sprite.updatedUntil;
+}
+
+function drawDebugSpriteBounds(layer,pos,object,sprite){
+  const
+    scaleX=pos.w/layer.width,
+    scaleY=pos.h/layer.height,
+    x=pos.x+object.x*scaleX,
+    y=pos.y+object.y*scaleY,
+    w=sprite.width*scaleX,
+    h=sprite.height*scaleY,
+    color=debugSpriteColor(object.spriteId),
+    label=sprite.label||("sprite "+object.spriteId),
+    bx=Math.round(x)+.5,
+    by=Math.round(y)+.5,
+    bw=Math.max(1,Math.round(w)),
+    bh=Math.max(1,Math.round(h));
+  ctx.save();
+  ctx.lineWidth=1;
+  if(spriteJustUpdated(sprite)){
+    ctx.strokeStyle="#fff";
+    ctx.strokeRect(bx-1,by-1,bw+2,bh+2);
+  }
+  ctx.strokeStyle=color;
+  ctx.strokeRect(bx,by,bw,bh);
+  ctx.font="8px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+  ctx.textBaseline="top";
+  const
+    textWidth=Math.ceil(ctx.measureText(label).width),
+    labelX=Math.max(0,Math.min(innerWidth-textWidth-4,Math.round(x))),
+    labelY=Math.max(0,Math.min(innerHeight-10,Math.round(y)-9));
+  ctx.fillStyle=color;
+  ctx.fillRect(labelX,labelY,textWidth+4,9);
+  ctx.fillStyle="#000";
+  ctx.fillText(label,labelX+2,labelY+1);
+  ctx.restore();
+}
+
+function refreshDebugSprites(){
+  debugSpriteTimer=0;
+  if(!debugOpen||!debugSpritesDirty)return;
+  debugSpritesDirty=false;
+  debugSprites.textContent="";
+  const ids=[...sprites.keys()].sort((a,b)=>a-b);
+  for(const id of ids){
+    const sprite=sprites.get(id);
+    const row=document.createElement("div");
+    const label=document.createElement("div");
+    const preview=document.createElement("canvas");
+    const meta=document.createElement("div");
+    const text=document.createElement("div");
+    const size=document.createElement("div");
+    const traffic=document.createElement("div");
+    row.className="debugSprite";
+    row.classList.toggle("updated",!!spriteJustUpdated(sprite));
+    label.className="debugSpriteId";
+    meta.className="debugSpriteMeta";
+    text.className="debugSpriteText";
+    size.className="debugSpriteSize";
+    traffic.className="debugSpriteTraffic";
+    label.textContent="#"+id;
+    text.textContent=sprite.label||"(no label)";
+    size.textContent=sprite.width+"x"+sprite.height;
+    traffic.textContent=formatBytes(sprite.bytesDown||0)+" / "+
+      (sprite.updates||0)+"x";
+    previewSprite(preview,sprite);
+    label.append(size);
+    label.append(traffic);
+    meta.append(text);
+    row.append(label,preview,meta);
+    debugSprites.append(row);
+  }
+}
+
+function scheduleDebugSprites(){
+  debugSpritesDirty=true;
+  if(!debugOpen||debugSpriteTimer)return;
+  debugSpriteTimer=setTimeout(refreshDebugSprites,120);
+}
+
+function scheduleDebugUpdateClear(){
+  if(debugUpdateTimer)clearTimeout(debugUpdateTimer);
+  debugUpdateTimer=setTimeout(()=>{
+    debugUpdateTimer=0;
+    if(!debugOpen)return;
+    debugSpritesDirty=true;
+    refreshDebugSprites();
+    draw();
+  },DebugUpdateFlashMs+40);
+}
+
+function toggleDebugPanel(){
+  debugOpen=!debugOpen;
+  debugPanel.classList.toggle("hidden",!debugOpen);
+  updateDebugCounters();
+  if(debugOpen){
+    debugSpritesDirty=true;
+    refreshDebugSprites();
+  }
+  draw();
+}
+
+function sendPacket(bytes){
+  if(!socket||socket.readyState!==WebSocket.OPEN)return;
+  debugBytesUp+=bytes.byteLength||bytes.length||0;
+  updateDebugCounters();
+  socket.send(bytes);
+}
 
 function setStatus(text){
   status.textContent=text;
@@ -141,6 +473,87 @@ function writeI16(bytes,offset,value){
   bytes[offset+1]=value>>8;
 }
 
+function writeU16(bytes,offset,value){
+  value=Math.max(0,Math.min(65535,value))&0xffff;
+  bytes[offset]=value&255;
+  bytes[offset+1]=value>>8;
+}
+
+function sendPlayerButtons(){
+  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
+  sendPacket(new Uint8Array([0x84,heldButtons&127]));
+}
+
+function resetPlayerButtons(){
+  if(heldButtons===0)return;
+  heldButtons=0;
+  sendPlayerButtons();
+}
+
+function setButton(bit,down){
+  const next=down?(heldButtons|bit):(heldButtons&~bit);
+  if(next===heldButtons)return;
+  heldButtons=next;
+  sendPlayerButtons();
+}
+
+function keyButton(key){
+  switch(key){
+    case "ArrowUp":return ButtonUp;
+    case "ArrowDown":return ButtonDown;
+    case "ArrowLeft":return ButtonLeft;
+    case "ArrowRight":return ButtonRight;
+    case " ":return ButtonSelect;
+    case "z":case "Z":return ButtonA;
+    case "x":case "X":return ButtonB;
+    default:return 0;
+  }
+}
+
+function asciiBytes(text){
+  const bytes=[];
+  for(let i=0;i<text.length;i++){
+    const code=text.charCodeAt(i);
+    if(code>=32&&code<127)bytes.push(code);
+  }
+  return bytes;
+}
+
+function sendInputText(text){
+  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
+  const bytes=asciiBytes(text).slice(0,65535);
+  if(bytes.length===0)return;
+  const packet=new Uint8Array(bytes.length+3);
+  packet[0]=0x81;
+  writeU16(packet,1,bytes.length);
+  packet.set(bytes,3);
+  sendPacket(packet);
+}
+
+function updateEntry(){
+  if(!typing){
+    entry.classList.add("hidden");
+    entry.textContent="";
+    return;
+  }
+  entry.textContent=textBuffer;
+  entry.classList.remove("hidden");
+}
+
+function startTyping(){
+  typing=true;
+  textBuffer="";
+  resetPlayerButtons();
+  updateEntry();
+}
+
+function stopTyping(send){
+  if(send)sendInputText(textBuffer);
+  typing=false;
+  textBuffer="";
+  updateEntry();
+}
+
 function sendMousePosition(event,preferredLayer=null){
   if(!socket||socket.readyState!==WebSocket.OPEN)return;
   const point=mousePoint(event,preferredLayer);
@@ -150,7 +563,7 @@ function sendMousePosition(event,preferredLayer=null){
   writeI16(bytes,1,point.x);
   writeI16(bytes,3,point.y);
   bytes[5]=point.layer&255;
-  socket.send(bytes);
+  sendPacket(bytes);
 }
 
 function sendMouseButton(event,down,preferredLayer=null){
@@ -165,16 +578,36 @@ function sendMouseButton(event,down,preferredLayer=null){
   bytes[6]=0x83;
   bytes[7]=0x01;
   bytes[8]=down?1:0;
-  socket.send(bytes);
+  sendPacket(bytes);
 }
 
 function readU16(bytes,offset){
   return bytes[offset]|(bytes[offset+1]<<8);
 }
 
+function readU32(bytes,offset){
+  return (bytes[offset]|
+    (bytes[offset+1]<<8)|
+    (bytes[offset+2]<<16)|
+    (bytes[offset+3]*0x1000000))>>>0;
+}
+
 function readI16(bytes,offset){
   const value=readU16(bytes,offset);
   return value&0x8000?value-0x10000:value;
+}
+
+function decodeSpritePixels(compressed,width,height){
+  if(!window.SnappyJS){
+    throw new Error("SnappyJS is not loaded");
+  }
+  const expected=width*height*4;
+  const pixels=window.SnappyJS.uncompress(compressed,expected);
+  const rgba=pixels instanceof Uint8Array?pixels:new Uint8Array(pixels);
+  if(rgba.length!==expected){
+    throw new Error("Bad sprite pixel length");
+  }
+  return rgba;
 }
 
 function ensureLayer(id){
@@ -212,13 +645,35 @@ function setViewport(layerId,width,height){
   maybeFit();
 }
 
-function putPixel(layer,x,y,color){
-  if(x<0||y<0||x>=layer.width||y>=layer.height||color===0)return;
-  const rgba=palette[(color-1)&15],offset=(y*layer.width+x)*4;
-  layer.image.data[offset]=rgba[0];
-  layer.image.data[offset+1]=rgba[1];
-  layer.image.data[offset+2]=rgba[2];
-  layer.image.data[offset+3]=255;
+function putSpritePixel(layer,x,y,sprite,srcOffset){
+  if(x<0||y<0||x>=layer.width||y>=layer.height)return;
+  const srcA=sprite.pixels[srcOffset+3];
+  if(srcA===0)return;
+  const offset=(y*layer.width+x)*4;
+  if(srcA===255||layer.image.data[offset+3]===0){
+    layer.image.data[offset]=sprite.pixels[srcOffset];
+    layer.image.data[offset+1]=sprite.pixels[srcOffset+1];
+    layer.image.data[offset+2]=sprite.pixels[srcOffset+2];
+    layer.image.data[offset+3]=srcA;
+    return;
+  }
+  const dstA=layer.image.data[offset+3];
+  const srcAlpha=srcA/255,dstAlpha=dstA/255;
+  const outAlpha=srcAlpha+dstAlpha*(1-srcAlpha);
+  const dstWeight=dstAlpha*(1-srcAlpha);
+  layer.image.data[offset]=Math.round(
+    (sprite.pixels[srcOffset]*srcAlpha+
+      layer.image.data[offset]*dstWeight)/outAlpha
+  );
+  layer.image.data[offset+1]=Math.round(
+    (sprite.pixels[srcOffset+1]*srcAlpha+
+      layer.image.data[offset+1]*dstWeight)/outAlpha
+  );
+  layer.image.data[offset+2]=Math.round(
+    (sprite.pixels[srcOffset+2]*srcAlpha+
+      layer.image.data[offset+2]*dstWeight)/outAlpha
+  );
+  layer.image.data[offset+3]=Math.round(outAlpha*255);
 }
 
 function layerScreenPos(layer){
@@ -257,11 +712,12 @@ function draw(){
       if(!sprite)continue;
       for(let y=0;y<sprite.height;y++){
         for(let x=0;x<sprite.width;x++){
-          putPixel(
+          putSpritePixel(
             layer,
             object.x+x,
             object.y+y,
-            sprite.pixels[y*sprite.width+x]
+            sprite,
+            (y*sprite.width+x)*4
           );
         }
       }
@@ -275,6 +731,12 @@ function draw(){
       ctx.lineWidth=1;
       ctx.strokeRect(x,y,Math.round(pos.w)-1,Math.round(pos.h)-1);
     }
+    if(debugOpen){
+      for(const object of ordered){
+        const sprite=sprites.get(object.spriteId);
+        if(sprite)drawDebugSpriteBounds(layer,pos,object,sprite);
+      }
+    }
   }
   setStatus("");
 }
@@ -284,17 +746,38 @@ function parse(bytes){
   while(offset<bytes.length){
     const type=bytes[offset++];
     if(type===0x01){
+      const packetStart=offset-1;
       const id=readU16(bytes,offset);
       const width=readU16(bytes,offset+2);
       const height=readU16(bytes,offset+4);
-      offset+=6;
-      const size=width*height;
+      const compressedLength=readU32(bytes,offset+6);
+      offset+=10;
+      const compressed=bytes.slice(offset,offset+compressedLength);
+      offset+=compressedLength;
+      let pixels;
+      try{
+        pixels=decodeSpritePixels(compressed,width,height);
+      }catch(e){
+        socket.close();
+        break;
+      }
+      const labelLength=readU16(bytes,offset);
+      offset+=2;
+      const label=textDecoder.decode(bytes.slice(offset,offset+labelLength));
+      offset+=labelLength;
+      const previous=sprites.get(id);
+      const packetBytes=offset-packetStart;
       sprites.set(id,{
         width,
         height,
-        pixels:bytes.slice(offset,offset+size)
+        pixels,
+        label,
+        updates:(previous?previous.updates:0)+1,
+        bytesDown:(previous?previous.bytesDown:0)+packetBytes,
+        updatedUntil:performance.now()+DebugUpdateFlashMs
       });
-      offset+=size;
+      scheduleDebugSprites();
+      scheduleDebugUpdateClear();
     }else if(type===0x02){
       const id=readU16(bytes,offset);
       const x=readI16(bytes,offset+2);
@@ -325,6 +808,7 @@ function parse(bytes){
 
 function reconnect(ws){
   if(socket!==ws)return;
+  resetPlayerButtons();
   socket=null;
   clearBlack();
   if(reconnectSeconds>0){
@@ -341,15 +825,23 @@ function reconnect(ws){
 }
 
 function connect(){
-  const ws=new WebSocket(address);
+  const ws=new WebSocket(websocketAddress());
   socket=ws;
   ws.binaryType="arraybuffer";
   setStatus("connecting...");
   ws.onmessage=event=>{
-    if(socket===ws)parse(new Uint8Array(event.data));
+    if(socket===ws){
+      const bytes=new Uint8Array(event.data);
+      debugBytesDown+=bytes.byteLength;
+      updateDebugCounters();
+      parse(bytes);
+    }
   };
   ws.onopen=()=>{
-    if(socket===ws)setStatus("");
+    if(socket===ws){
+      setStatus("");
+      sendPlayerButtons();
+    }
   };
   ws.onclose=()=>reconnect(ws);
   ws.onerror=()=>{
@@ -407,6 +899,67 @@ addEventListener("pointerup",event=>{
 addEventListener("dblclick",()=>{
   autoFit=true;
   fit();
+});
+for(const eventName of ["pointerdown","pointermove","pointerup","dblclick"]){
+  debugPanel.addEventListener(eventName,event=>event.stopPropagation());
+}
+debugPanel.addEventListener("wheel",event=>event.stopPropagation(),{
+  passive:true
+});
+addEventListener("keydown",event=>{
+  if(event.key==="F2"){
+    event.preventDefault();
+    toggleDebugPanel();
+    return;
+  }
+  if(!playerMode)return;
+  if(typing){
+    if(event.key==="Enter"){
+      event.preventDefault();
+      stopTyping(true);
+    }else if(event.key==="Escape"){
+      event.preventDefault();
+      stopTyping(false);
+    }else if(event.key==="Backspace"){
+      event.preventDefault();
+      textBuffer=textBuffer.slice(0,-1);
+      updateEntry();
+    }else if(event.key.length===1){
+      const code=event.key.charCodeAt(0);
+      if(code>=32&&code<127){
+        event.preventDefault();
+        textBuffer+=event.key;
+        updateEntry();
+      }
+    }
+    return;
+  }
+  if(event.key==="Enter"){
+    event.preventDefault();
+    startTyping();
+    return;
+  }
+  const bit=keyButton(event.key);
+  if(bit!==0){
+    event.preventDefault();
+    setButton(bit,true);
+  }
+});
+addEventListener("keyup",event=>{
+  if(!playerMode||typing)return;
+  const bit=keyButton(event.key);
+  if(bit!==0){
+    event.preventDefault();
+    setButton(bit,false);
+  }
+});
+addEventListener("blur",()=>{
+  if(!playerMode)return;
+  resetPlayerButtons();
+});
+addEventListener("pagehide",resetPlayerButtons);
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)resetPlayerButtons();
 });
 fit();
 </script>

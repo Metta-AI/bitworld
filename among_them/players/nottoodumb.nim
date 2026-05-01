@@ -1,4 +1,4 @@
-import pixie, protocol, ../sim, ../../common/server
+import pixie, protocol, ../sim, ../texts, ../votereader, ../../common/server
 when not defined(nottoodumbLibrary):
   import silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -57,9 +57,9 @@ const
   TaskIconInspectSize = 16
   TaskClearScreenMargin = 8
   TaskIconMissThreshold = 24
-  PathLookahead = 18
+  PathLookahead = 8
   TaskInnerMargin = 6
-  TaskPreciseApproachRadius = 12
+  TaskPreciseApproachRadius = 18
   CoastLookaheadTicks = 8
   CoastArrivalPadding = 1
   SteerDeadband = 2
@@ -112,8 +112,8 @@ const
   VoteSkip = -2
   VoteBlackMarker = 12'u8
   VoteListenTicks = 100
-  VoteChatTextX = 21
-  VoteChatChars = 15
+  VoteChatTextX = sim.VoteChatTextX
+  VoteChatChars = VoteChatCharsPerLine
   FrameDropThreshold = 32
   MaxFrameDrain = 128
 
@@ -243,6 +243,7 @@ type
     taskHoldTicks: int
     taskHoldIndex: int
     frameTick: int
+    frameAdvance: int
     centerMicros: int
     spriteScanMicros: int
     localizeLocalMicros: int
@@ -793,66 +794,17 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
-proc asciiChar(index: int): char =
-  ## Returns the character represented by one ASCII sprite index.
-  char(index + ord(' '))
-
-proc asciiGlyphScore(
-  bot: Bot,
-  glyph: Sprite,
-  screenX,
-  screenY: int
-): tuple[misses: int, opaque: int] =
-  ## Scores one rendered ASCII glyph against the current screen.
-  for y in 0 ..< glyph.height:
-    for x in 0 ..< glyph.width:
-      let color = glyph.pixels[glyph.spriteIndex(x, y)]
-      if color == TransparentColorIndex:
-        continue
-      inc result.opaque
-      let
-        sx = screenX + x
-        sy = screenY + y
-      if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
-        inc result.misses
-        continue
-      if bot.unpacked[sy * ScreenWidth + sx] != color:
-        inc result.misses
-
-proc asciiTextScore(
-  bot: Bot,
-  text: string,
-  screenX,
-  screenY: int
-): tuple[misses: int, opaque: int] =
-  ## Scores one rendered ASCII text run against the current screen.
-  var offsetX = 0
-  for ch in text:
-    let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < bot.sim.asciiSprites.len:
-      let score = bot.asciiGlyphScore(
-        bot.sim.asciiSprites[idx],
-        screenX + offsetX,
-        screenY
-      )
-      result.misses += score.misses
-      result.opaque += score.opaque
-    offsetX += 7
-
-proc asciiTextWidth(text: string): int =
-  ## Returns the fixed-width ASCII text width.
-  text.len * 7
+proc asciiTextWidth(bot: Bot, text: string): int =
+  ## Returns the tiny UI text width.
+  texts.asciiTextWidth(bot.sim.asciiSprites, text)
 
 proc asciiTextMatches(bot: Bot, text: string, x, y: int): bool =
   ## Returns true when text is visible at the given screen position.
-  let score = bot.asciiTextScore(text, x, y)
-  if score.opaque == 0:
-    return false
-  score.misses <= max(2, score.opaque div 16)
+  texts.asciiTextMatches(bot.unpacked, bot.sim.asciiSprites, text, x, y)
 
 proc findAsciiText(bot: Bot, text: string): bool =
   ## Finds a rendered ASCII phrase in the top black-screen title area.
-  let maxX = ScreenWidth - asciiTextWidth(text)
+  let maxX = ScreenWidth - bot.asciiTextWidth(text)
   if maxX < 0:
     return false
   for y in 0 .. 20:
@@ -860,31 +812,9 @@ proc findAsciiText(bot: Bot, text: string): bool =
       if bot.asciiTextMatches(text, x, y):
         return true
 
-proc bestAsciiGlyph(bot: Bot, x, y: int): char =
-  ## Reads the best single ASCII glyph at a fixed character cell.
-  var
-    bestChar = ' '
-    bestMisses = high(int)
-    bestOpaque = 0
-  for i, glyph in bot.sim.asciiSprites:
-    let score = bot.asciiGlyphScore(glyph, x, y)
-    if score.opaque == 0:
-      continue
-    if score.misses < bestMisses:
-      bestMisses = score.misses
-      bestOpaque = score.opaque
-      bestChar = asciiChar(i)
-  if bestOpaque == 0:
-    return ' '
-  if bestMisses <= max(2, bestOpaque div 8):
-    return bestChar
-  '?'
-
 proc readAsciiLine(bot: Bot, y: int): string =
   ## Reads a loose ASCII line from one black-screen text row.
-  for x in countup(0, ScreenWidth - 7, 7):
-    result.add(bot.bestAsciiGlyph(x, y))
-  result = result.strip()
+  texts.readAsciiLine(bot.unpacked, bot.sim.asciiSprites, y)
 
 proc detectInterstitialText(bot: Bot): string =
   ## Reads known interstitial ASCII text from a black screen.
@@ -905,6 +835,15 @@ proc detectInterstitialText(bot: Bot): string =
 proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
   text == "CREW WINS" or text == "IMPS WIN"
+
+proc isLobbyText(text: string): bool =
+  ## Returns true for lobby/waiting screens that imply a fresh match state.
+  text == "GAME" or text == "STARTING" or text == "WAITING" or
+    text == "NEED MORE!" or text.startsWith("IN ")
+
+proc isRoleRevealText(text: string): bool =
+  ## Returns true when the server is revealing a fresh role assignment.
+  text == "CREWMATE" or text == "IMPS"
 
 proc clearVotingState(bot: var Bot) =
   ## Clears the parsed voting screen state.
@@ -1163,11 +1102,16 @@ proc updateLocation(bot: var Bot) =
     bot.visibleCrewmates.setLen(0)
     bot.visibleBodies.setLen(0)
     bot.visibleGhosts.setLen(0)
+    if bot.interstitialText.isLobbyText() and
+        (bot.gameStarted or bot.homeSet):
+      bot.resetRoundState()
     if bot.interstitialText.isGameOverText() and
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
     elif not bot.parseVotingScreen():
+      if bot.interstitialText.isRoleRevealText() and bot.gameStarted:
+        bot.resetRoundState()
       bot.rememberRoleReveal()
     return
   bot.interstitialText = ""
@@ -1647,7 +1591,7 @@ proc voteSkipTextMatches(bot: Bot, skipX, skipY: int): bool =
   for y in max(0, skipY - 1) .. min(ScreenHeight - 6, skipY + 1):
     let
       minX = max(0, skipX - 2)
-      maxX = min(ScreenWidth - asciiTextWidth("SKIP"), skipX + 2)
+      maxX = min(ScreenWidth - bot.asciiTextWidth("SKIP"), skipX + 2)
     for x in minX .. maxX:
       if bot.asciiTextMatches("SKIP", x, y):
         return true
@@ -1754,10 +1698,8 @@ proc parseVoteDotsForTarget(
       bot.voteChoices[colorIndex] = target
 
 proc readAsciiRun(bot: Bot, x, y, count: int): string =
-  ## Reads a fixed-width ASCII run from the current screen.
-  for i in 0 ..< count:
-    result.add(bot.bestAsciiGlyph(x + i * 7, y))
-  result = result.strip()
+  ## Reads a variable-width tiny text run from the current screen.
+  texts.readAsciiRun(bot.unpacked, bot.sim.asciiSprites, x, y, count)
 
 proc usefulChatLine(line: string): bool =
   ## Returns true when a parsed chat line contains real letters.
@@ -1902,9 +1844,29 @@ proc parseVotingScreen(bot: var Bot): bool =
       bot.voteStartTick
     else:
       bot.frameTick
-  for count in countdown(MaxPlayers, 1):
-    if bot.parseVotingCandidate(count, startTick):
-      return true
+  let read = parseVoteFrame(
+    bot.unpacked,
+    bot.sim.asciiSprites,
+    bot.playerSprite,
+    bot.bodySprite
+  )
+  if read.found:
+    bot.clearVotingState()
+    bot.voting = true
+    bot.votePlayerCount = read.playerCount
+    bot.voteStartTick = startTick
+    bot.voteCursor = read.cursor
+    bot.voteSelfSlot = read.selfSlot
+    for i in 0 ..< read.playerCount:
+      bot.voteSlots[i].colorIndex = read.slots[i].colorIndex
+      bot.voteSlots[i].alive = read.slots[i].alive
+    for i in 0 ..< min(bot.voteChoices.len, read.choices.len):
+      bot.voteChoices[i] = read.choices[i]
+    if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+      bot.selfColorIndex = read.slots[read.selfSlot].colorIndex
+    bot.voteChatText = read.chatText
+    bot.voteChatSusColor = read.chatSusColor
+    return true
   bot.clearVotingState()
   false
 
@@ -2046,17 +2008,23 @@ proc updateTaskGuesses(bot: var Bot) =
   bot.scanRadarDots()
   if bot.radarDots.len == 0:
     return
-  for i in 0 ..< bot.sim.tasks.len:
-    let projected = bot.projectedRadarDot(bot.sim.tasks[i])
-    if projected.visible:
-      continue
-    for dot in bot.radarDots:
-      if abs(dot.x - projected.x) <= RadarMatchTolerance and
-          abs(dot.y - projected.y) <= RadarMatchTolerance:
-        bot.radarTasks[i] = true
-        bot.checkoutTasks[i] = true
-        if bot.taskStates[i] == TaskCompleted:
-          bot.taskStates[i] = TaskMaybe
+  for dot in bot.radarDots:
+    var
+      bestIndex = -1
+      bestDistance = high(int)
+    for i in 0 ..< bot.sim.tasks.len:
+      let projected = bot.projectedRadarDot(bot.sim.tasks[i])
+      if projected.visible:
+        continue
+      let distance = abs(dot.x - projected.x) + abs(dot.y - projected.y)
+      if distance <= RadarMatchTolerance * 2 and distance < bestDistance:
+        bestDistance = distance
+        bestIndex = i
+    if bestIndex >= 0:
+      bot.radarTasks[bestIndex] = true
+      bot.checkoutTasks[bestIndex] = true
+      if bot.taskStates[bestIndex] == TaskCompleted:
+        bot.taskStates[bestIndex] = TaskMaybe
 
 proc projectedTaskIcon(
   bot: Bot,
@@ -2200,8 +2168,14 @@ proc updateMotionState(bot: var Bot) =
     x = bot.playerWorldX()
     y = bot.playerWorldY()
   if bot.haveMotionSample and bot.lastMask.hasMovement():
-    bot.velocityX = x - bot.previousPlayerWorldX
-    bot.velocityY = y - bot.previousPlayerWorldY
+    let advance = max(1, bot.frameAdvance)
+    proc normalizedVelocity(delta: int): int =
+      if delta >= 0:
+        (delta + advance div 2) div advance
+      else:
+        -((-delta + advance div 2) div advance)
+    bot.velocityX = normalizedVelocity(x - bot.previousPlayerWorldX)
+    bot.velocityY = normalizedVelocity(y - bot.previousPlayerWorldY)
     let moved = abs(bot.velocityX) + abs(bot.velocityY)
     if moved == 0:
       inc bot.stuckFrames
@@ -3031,13 +3005,10 @@ proc choosePathStep(bot: Bot): PathStep =
 proc taskReady(bot: Bot, task: TaskStation): bool =
   ## Returns true when the player can safely hold action for a task.
   let
-    x = bot.playerWorldX()
-    y = bot.playerWorldY()
-    innerX0 = task.x + TaskInnerMargin
-    innerY0 = task.y + TaskInnerMargin
-    innerX1 = task.x + task.w - TaskInnerMargin
-    innerY1 = task.y + task.h - TaskInnerMargin
-  if x < innerX0 or x >= innerX1 or y < innerY0 or y >= innerY1:
+    x = bot.playerWorldX() + CollisionW div 2
+    y = bot.playerWorldY() + CollisionH div 2
+  if x < task.x or x >= task.x + task.w or
+      y < task.y or y >= task.y + task.h:
     return false
   abs(bot.velocityX) + abs(bot.velocityY) <= 1
 
@@ -3047,14 +3018,25 @@ proc taskReadyAtGoal(bot: Bot, index, goalX, goalY: int): bool =
     return false
   let
     task = bot.sim.tasks[index]
-    x = bot.playerWorldX()
-    y = bot.playerWorldY()
+    x = bot.playerWorldX() + CollisionW div 2
+    y = bot.playerWorldY() + CollisionH div 2
   if x < task.x or x >= task.x + task.w or
       y < task.y or y >= task.y + task.h:
     return false
   if abs(bot.velocityX) + abs(bot.velocityY) > 1:
     return false
   bot.taskReady(task) or heuristic(x, y, goalX, goalY) <= 1
+
+proc insideTask(bot: Bot, index: int): bool =
+  ## Returns true when the player is inside one task rectangle.
+  if index < 0 or index >= bot.sim.tasks.len:
+    return false
+  let
+    task = bot.sim.tasks[index]
+    x = bot.playerWorldX() + CollisionW div 2
+    y = bot.playerWorldY() + CollisionH div 2
+  x >= task.x and x < task.x + task.w and
+    y >= task.y and y < task.y + task.h
 
 proc taskGoalReady(
   bot: Bot,
@@ -3094,6 +3076,24 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
     bot.taskHoldIndex = -1
   bot.thought("at task " & name & ", holding action")
   ButtonA
+
+proc brakeAtTaskAction(bot: var Bot, name: string): uint8 =
+  ## Brakes inside a task station until action holding is stable.
+  bot.intent = "settling at task " & name
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.desiredMask = 0
+  if bot.velocityX > 0:
+    bot.desiredMask = bot.desiredMask or ButtonLeft
+  elif bot.velocityX < 0:
+    bot.desiredMask = bot.desiredMask or ButtonRight
+  if bot.velocityY > 0:
+    bot.desiredMask = bot.desiredMask or ButtonUp
+  elif bot.velocityY < 0:
+    bot.desiredMask = bot.desiredMask or ButtonDown
+  bot.controllerMask = bot.desiredMask
+  bot.thought("settling at task " & name)
+  bot.desiredMask
 
 proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   ## Presses action to report a visible dead body.
@@ -3294,6 +3294,8 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.taskHoldIndex = goal.index
     return bot.holdTaskAction(goal.name)
+  if goal.state == TaskMandatory and bot.insideTask(goal.index):
+    return bot.brakeAtTaskAction(goal.name)
   if bot.isGhost:
     return bot.navigateToPoint(goal.x, goal.y, goal.name)
   let astarStart = getMonoTime()
@@ -3332,6 +3334,7 @@ proc stepUnpackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
   ## Steps the bot from one unpacked 4-bit framebuffer and returns an input mask.
   if frame.len != ScreenWidth * ScreenHeight:
     return 0
+  bot.frameAdvance = 1
   if bot.unpacked.len != frame.len:
     bot.unpacked.setLen(frame.len)
   for i, value in frame:
@@ -3344,6 +3347,7 @@ proc stepPackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
   ## Steps the bot from one packed 4-bit framebuffer and returns an input mask.
   if frame.len != ProtocolBytes:
     return 0
+  bot.frameAdvance = 1
   if bot.packed.len != frame.len:
     bot.packed.setLen(frame.len)
   for i, value in frame:
@@ -3400,6 +3404,7 @@ proc initBot(mapPath = ""): Bot =
   result.intent = "waiting for first frame"
 
 when defined(nottoodumbLibrary):
+  const NotTooDumbAbiVersion = 2
   const TrainableMasks = [
     0'u8,
     ButtonA,
@@ -3429,11 +3434,16 @@ when defined(nottoodumbLibrary):
     ButtonDown or ButtonRight or ButtonA,
     ButtonDown or ButtonRight or ButtonB
   ]
+  const DebugStatsLen = 23
 
   type NotTooDumbPolicy = ref object
     bots: seq[Bot]
 
   var NotTooDumbPolicies: seq[NotTooDumbPolicy]
+
+  proc nottoodumb_abi_version*(): cint {.exportc, dynlib.} =
+    ## Returns the shared-library ABI version expected by Python wrappers.
+    cint(NotTooDumbAbiVersion)
 
   proc actionIndexForMask(mask: uint8): int32 =
     ## Maps a BitWorld button mask to the CoGames trainable action index.
@@ -3445,7 +3455,8 @@ when defined(nottoodumbLibrary):
   proc stepUnpackedFramePtr(
     bot: var Bot,
     frame: ptr UncheckedArray[uint8],
-    frameLen: int
+    frameLen: int,
+    frameAdvance: int
   ): uint8 =
     ## Steps the bot from one pointer-backed unpacked framebuffer.
     if frameLen != ScreenWidth * ScreenHeight:
@@ -3454,7 +3465,8 @@ when defined(nottoodumbLibrary):
       bot.unpacked.setLen(frameLen)
     for i in 0 ..< frameLen:
       bot.unpacked[i] = frame[i] and 0x0f
-    inc bot.frameTick
+    bot.frameAdvance = max(1, frameAdvance)
+    bot.frameTick += bot.frameAdvance
     result = bot.decideNextMask()
     bot.lastMask = result
 
@@ -3475,13 +3487,14 @@ when defined(nottoodumbLibrary):
     frameStack: cint,
     height: cint,
     width: cint,
+    frameAdvances: pointer,
     observations: pointer,
     actions: pointer
   ) {.exportc, dynlib.} =
     ## Steps a batch of unpacked pixel observations into CoGames action indices.
     if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
       return
-    if observations.isNil or actions.isNil or agentIds.isNil:
+    if observations.isNil or actions.isNil or agentIds.isNil or frameAdvances.isNil:
       return
     if frameStack <= 0 or height != ScreenHeight or width != ScreenWidth:
       return
@@ -3490,6 +3503,7 @@ when defined(nottoodumbLibrary):
       policy = NotTooDumbPolicies[int(handle)]
       obs = cast[ptr UncheckedArray[uint8]](observations)
       outs = cast[ptr UncheckedArray[int32]](actions)
+      advances = cast[ptr UncheckedArray[int32]](frameAdvances)
       frameLen = int(height) * int(width)
       rowStride = int(frameStack) * frameLen
       latestOffset = (int(frameStack) - 1) * frameLen
@@ -3508,8 +3522,91 @@ when defined(nottoodumbLibrary):
       let frame = cast[ptr UncheckedArray[uint8]](
         cast[uint](obs) + uint(row * rowStride + latestOffset)
       )
-      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
+      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen, int(advances[row]))
       outs[row] = actionIndexForMask(mask)
+
+  proc nottoodumb_take_chat*(
+    handle: cint,
+    agentId: cint,
+    output: pointer,
+    outputLen: cint
+  ): cint {.exportc, dynlib.} =
+    ## Copies and clears one bot's pending meeting chat evidence.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return 0
+    if agentId < 0 or output.isNil or outputLen <= 0:
+      return 0
+    let
+      policy = NotTooDumbPolicies[int(handle)]
+      botIndex = int(agentId)
+    if botIndex >= policy.bots.len:
+      return 0
+    let
+      message = policy.bots[botIndex].pendingChat
+      limit = min(message.len, int(outputLen) - 1)
+      bytes = cast[ptr UncheckedArray[char]](output)
+    for i in 0 ..< limit:
+      bytes[i] = message[i]
+    bytes[limit] = '\0'
+    policy.bots[botIndex].pendingChat = ""
+    cint(limit)
+
+  proc nottoodumb_role*(handle: cint, agentId: cint): cint {.exportc, dynlib.} =
+    ## Returns the bot's inferred role: 0 unknown, 1 crewmate, 2 imposter.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return 0
+    if agentId < 0:
+      return 0
+    let
+      policy = NotTooDumbPolicies[int(handle)]
+      botIndex = int(agentId)
+    if botIndex >= policy.bots.len:
+      return 0
+    cint(ord(policy.bots[botIndex].role))
+
+  proc nottoodumb_debug_stats*(
+    handle: cint,
+    agentId: cint,
+    output: pointer,
+    outputLen: cint
+  ): cint {.exportc, dynlib.} =
+    ## Writes compact numeric debug state for one bot.
+    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+      return 0
+    if agentId < 0 or output.isNil or outputLen < DebugStatsLen:
+      return 0
+    let
+      policy = NotTooDumbPolicies[int(handle)]
+      botIndex = int(agentId)
+    if botIndex >= policy.bots.len:
+      return 0
+    let
+      bot = policy.bots[botIndex]
+      outStats = cast[ptr UncheckedArray[int32]](output)
+    outStats[0] = int32(bot.frameTick)
+    outStats[1] = int32(ord(bot.localized))
+    outStats[2] = int32(ord(bot.interstitial))
+    outStats[3] = int32(ord(bot.role))
+    outStats[4] = int32(bot.playerWorldX())
+    outStats[5] = int32(bot.playerWorldY())
+    outStats[6] = int32(ord(bot.cameraLock))
+    outStats[7] = int32(clamp(bot.cameraScore, low(int32).int, high(int32).int))
+    outStats[8] = int32(bot.taskStateCount(TaskMandatory))
+    outStats[9] = int32(bot.radarTaskCount())
+    outStats[10] = int32(bot.checkoutTaskCount())
+    outStats[11] = int32(bot.taskStateCount(TaskCompleted))
+    outStats[12] = int32(bot.taskHoldTicks)
+    outStats[13] = int32(bot.goalIndex)
+    outStats[14] = int32(bot.goalX)
+    outStats[15] = int32(bot.goalY)
+    outStats[16] = int32(bot.path.len)
+    outStats[17] = int32(bot.visibleTaskIcons.len)
+    outStats[18] = int32(bot.visibleCrewmates.len)
+    outStats[19] = int32(bot.lastMask)
+    outStats[20] = int32(bot.velocityX)
+    outStats[21] = int32(bot.velocityY)
+    outStats[22] = int32(ord(bot.hasGoal))
+    DebugStatsLen
 
 when not defined(nottoodumbLibrary):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
@@ -4062,7 +4159,8 @@ when not defined(nottoodumbLibrary):
         " buffered=", frameAdvance,
         " total=", bot.skippedFrames,
         " tick=", bot.frameTick + frameAdvance
-    bot.frameTick += frameAdvance
+    bot.frameAdvance = max(1, frameAdvance)
+    bot.frameTick += bot.frameAdvance
     blobToBytes(frame, bot.packed)
     unpack4bpp(bot.packed, bot.unpacked)
     true

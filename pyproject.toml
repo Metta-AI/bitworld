@@ -17,6 +17,7 @@ Repository = "https://github.com/Metta-AI/bitworld.git"
 [project.optional-dependencies]
 train = [
   "gymnasium>=0.29",
+  "mettagrid>=0.26,<0.27",
   "numpy>=2.0",
   "torch>=2.0",
   "websockets>=15.0",

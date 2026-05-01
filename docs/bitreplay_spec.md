@@ -17,6 +17,7 @@ All integer fields are unsigned unless stated otherwise.
 | --- | ---: | --- |
 | `u8` | 1 byte | Raw byte |
 | `u16` | 2 bytes | Little endian |
+| `i16` | 2 bytes | Little endian two's complement |
 | `u32` | 4 bytes | Little endian |
 | `u64` | 8 bytes | Little endian |
 
@@ -41,7 +42,7 @@ The header must be the first bytes in the file.
 | Field | Type | Notes |
 | --- | --- | --- |
 | Magic | `u8[8]` | ASCII `BITWORLD` |
-| Format version | `u16` | Must be `2` |
+| Format version | `u16` | Must be `3` |
 | Game name | `string` | Name of the game |
 | Game version | `string` | Version of the game |
 | Start time | `u64` | Milliseconds since Unix epoch, or `0` |
@@ -141,13 +142,16 @@ Records that a player joined the game.
 | Record type | `u8` | `0x03` |
 | Time | `u32` | Milliseconds since the start of the game |
 | Player | `u8` | Player index |
-| Address | `string` | Player address or display name |
+| Name | `string` | Player name or display identity |
+| Slot | `i16` | Requested player slot, or `-1` for automatic |
+| Token | `string` | Player join token, or empty string |
 
 Player join records preserve player count, player order, and spawn order. A
 loader must create the player before applying input for that player.
 
-`Address` is informational. A game may use it for replay labels in the global
-view.
+`Name`, `Slot`, and `Token` are the player contract values used when the live
+player connected. A game may use them to reconstruct configured slot, color, and
+role assignments during replay.
 
 ### Player Leave
 
