@@ -7,16 +7,16 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 |---|---|
 | `bot.interstitial.game_over` | `bot.nim:400` |
 | `bot.interstitial.role_reveal` | `bot.nim:402` |
-| `bot.localizing` | `bot.nim:483` |
-| `bot.not_localized` | `bot.nim:485` |
-| `policy_crew.body.navigate_to_body` | `policy_crew.nim:155` |
-| `policy_crew.body.report_in_range` | `policy_crew.nim:153` |
-| `policy_crew.idle.no_goal` | `policy_crew.nim:172` |
-| `policy_crew.task.astar` | `policy_crew.nim:200` |
-| `policy_crew.task.continue_hold` | `policy_crew.nim:163` |
-| `policy_crew.task.ghost_nav` | `policy_crew.nim:187` |
-| `policy_crew.task.precise_approach` | `policy_crew.nim:204` |
-| `policy_crew.task.start_hold` | `policy_crew.nim:184` |
+| `bot.localizing` | `bot.nim:486` |
+| `bot.not_localized` | `bot.nim:488` |
+| `policy_crew.body.navigate_to_body` | `policy_crew.nim:209` |
+| `policy_crew.body.report_in_range` | `policy_crew.nim:207` |
+| `policy_crew.idle.no_goal` | `policy_crew.nim:226` |
+| `policy_crew.task.astar` | `policy_crew.nim:254` |
+| `policy_crew.task.continue_hold` | `policy_crew.nim:217` |
+| `policy_crew.task.ghost_nav` | `policy_crew.nim:241` |
+| `policy_crew.task.precise_approach` | `policy_crew.nim:258` |
+| `policy_crew.task.start_hold` | `policy_crew.nim:238` |
 | `policy_imp.body.flee` | `policy_imp.nim:379` |
 | `policy_imp.body.self_report` | `policy_imp.nim:330` |
 | `policy_imp.body.vent_approach` | `policy_imp.nim:363` |
@@ -32,9 +32,9 @@ any `bot.fired(...)` site. Cross-references TRACING.md §8.2.
 | `policy_imp.wander.idle_no_target` | `policy_imp.nim:522` |
 | `policy_imp.wander.idle_unreachable` | `policy_imp.nim:513` |
 | `policy_imp.wander.next_target` | `policy_imp.nim:527` |
-| `voting.cursor.listen` | `voting.nim:526` |
-| `voting.cursor.move` | `voting.nim:514` |
-| `voting.idle.already_voted` | `voting.nim:497` |
-| `voting.press_a` | `voting.nim:537` |
+| `voting.cursor.listen` | `voting.nim:644` |
+| `voting.cursor.move` | `voting.nim:632` |
+| `voting.idle.already_voted` | `voting.nim:615` |
+| `voting.press_a` | `voting.nim:655` |
 
 _Total distinct branch IDs: 31_

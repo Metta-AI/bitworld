@@ -14,12 +14,35 @@ out in each entry.
 
 ### Alibi log wiring (`memory.appendAlibi` has no callers)
 
-`memory.appendAlibi()` exists and is fully implemented — dedup logic, trim
-rules, schema — but nothing ever calls it. The intended caller is `tasks.nim`,
-which should invoke it when a crewmate is seen co-visible with a task terminal
-at the moment of a task-completion icon flash (the "alibi" signal).
+~~Resolved 2026-04-30.~~ `memory.appendAlibi()` is now called from
+`tasks.recordTaskAlibis`, invoked once per frame after
+`updateTaskIcons` in `bot.nim:477`. The proc iterates
+`bot.percep.visibleCrewmates` × `bot.sim.tasks` and appends one
+`AlibiEvent` for each co-visibility within
+`MemoryAlibiTaskRadiusPx` (Manhattan, new tuning knob, default
+12 px). Self, known imposter teammates, and unknown-colour
+matches are filtered out — same filter `scanCrewmates` uses for
+sighting attribution. Per-(colour, task) dedup inside
+`memory.appendAlibi` (existing `MemoryAlibiCooldownTicks = 20`)
+keeps the raw log from ballooning while a crewmate lingers on
+one terminal.
 
-Ref: `DESIGN.md §13.9`, `memory.nim:228`
+Also wired:
+
+- `alibi_observed` trace event (new), emitted via a
+  `prevAlibisCount` shadow on `TraceWriter` (mirror of the
+  `prevBodiesCount` pattern from §13.6). Payload carries the
+  colour name, task index, and task name. Added to
+  `test/validate_trace.nim` known-event list.
+- `MemoryAlibiCooldownTicks`, `MemoryAlibiTaskRadiusPx`, and the
+  other three memory knobs (`MemorySightingDedupTicks`,
+  `MemorySightingDedupPixels`, `MemoryBodyDedupPx`) added to
+  `tuning_snapshot.nim` so harness lineage tracking sees them.
+- Parity unchanged: black-mode 500/5000-frame seeds 42 remain
+  100% match both with and without `--trace-dir`.
+
+Ref: `tasks.nim:283`, `bot.nim:477`, `trace.nim:561`,
+`tuning.nim:39–49`.
 
 ### `MeetingEvent.reporter` and `.ejected` always -1
 
@@ -35,44 +58,77 @@ Ref: `bot.nim:412–413`, `types.nim:233–238`, `TRACING.md §14`
 
 ### Chat speaker attribution (`speaker: null` hardcoded)
 
-Every `chat_observed` trace event emits `"speaker": null`. The design calls
-for sampling speaker-pip pixels immediately left of `VoteChatTextX = 21` to
-identify the speaker's colour. When implemented, `manifest.trace_settings
-.speaker_attribution` should change from `"none"` to `"color_pip"`. The
-schema field is already reserved; adding attribution won't break existing
-trace consumers.
+~~Resolved 2026-04-30.~~ `chat_observed` events now carry the
+speaker colour, sampled from the per-message pip rendered at
+`VoteChatIconX = 1` (sim constant) immediately left of the chat
+text column. `manifest.trace_settings.speaker_attribution` changed
+from `"none"` to `"color_pip"`. Implementation spans
+`voting.readVoteChatSpeakers` + `voting.voteChatSpeakerForLine`
+(prefer-above tie-break handles wrapped multi-line messages),
+`VotingState.chatLines` / `MeetingEvent.chatLines` are now
+`seq[VoteChatLine]` (speaker + text + y), and `trace.emitEvent`
+emits the colour name in `chat_observed.speaker`.
 
-Ref: `trace.nim:670`, `TRACING.md §15`, `types.nim:239`
+While fixing this:
+
+- Ported modulabot's OCR to the shared `among_them/texts.nim`
+  engine (variable-width tiny5; two-sided miss/extra scoring). The
+  previous fixed-7-px stride in `ascii.nim` / `voting.readAsciiRun`
+  silently mis-read every chat line after the font migration.
+- `VoteChatTextX` and `VoteChatChars` in `voting.nim` now source
+  from `sim` (`VoteChatTextX`, `VoteChatCharsPerLine`) so the next
+  font / layout retune does not need a modulabot-side patch.
+- The chat-panel scan window moved from `chatY + 2` to `chatY + 1`
+  — the sim draws the first message at `rowY = chatY + 1`, so the
+  previous window dropped the oldest visible message by one pixel.
+- Added `test/speaker_attribution.nim` (4 scenarios:
+  all-colours-in-order, interleaved non-palette-order speakers,
+  wrapped 3-line message, empty chat). Wired into
+  `tools/trace_smoke.sh` step `[5/6]`.
+
+Ref: `voting.nim`, `trace.nim:226`, `trace.nim:671`,
+`test/speaker_attribution.nim`, `TRACING.md §15`.
 
 ### Frames-dump rotation / retention policy
 
-The trace writer keeps all frames dumps forever — roughly 117 MB/game
-uncompressed (~5–10 MB gzipped). There is no sweep. A long training run (e.g.
-50 games) accumulates ~6 GB raw / ~250 MB gzipped before any pruning. The
-design specifies a cron-style sweeper that keeps the last K=10 games, with a
-`RETAIN` sentinel file to pin specific runs. Nothing in `trace_smoke.sh` or
-elsewhere implements this today.
-
-Ref: `TRACING.md §14.6`, `DESIGN.md §854–856`
+~~Resolved 2026-04-30.~~ Shipped as a standalone tool,
+`tools/frames_sweep.nim`, per `TRACING.md §14.6`. The tool walks
+`<trace-root>/<bot>/<session>/round-*`, orders rounds newest-first
+by `manifest.started_unix_ms` (falling back to round-dir mtime),
+keeps the last K (default 10) plus any pinned with a `RETAIN`
+sentinel, and deletes the external file pointed at by each pruned
+round's `manifest.config.frames_dump_path`. Manifests, events,
+decisions, and snapshots are preserved — only the large frames
+dump is swept. `--dry-run` for inspection, `--verbose` for
+per-entry logging. Exit non-zero on delete failure. Not wired
+into `trace_smoke.sh` because sweep is a harness/cron concern,
+not a build gate.
 
 ### `_session.json` cross-game lineage file
 
-The design calls for an optional `_session.json` at
-`<trace-root>/<bot-name>/<session-id>/` containing rolled-up counters and a
-list of round IDs for the session. Not written anywhere today. Useful once the
-harness starts training across many games and needs a session-level index
-without parsing every individual round file.
-
-Ref: `TRACING.md §5`
+~~Resolved 2026-04-30.~~ The trace writer now writes
+`<trace-root>/<bot-name>/<session-id>/_session.json` at every
+round close (and on `closeTrace` even when no round completed,
+leaving a skeleton file for offline tooling). Schema v1 carries
+rolled-up `summary_counters` summed across all rounds in the
+session, the ordered `round_ids` and parallel `round_results`
+lists (close order, each entry `"crew_wins"` / `"imps_win"` /
+`"unknown"`), the `master_seed`, and wall-clock start / last-
+update timestamps. Rewritten in full at every close so a process
+crash between rounds still leaves a usable index. Implementation
+lives in `trace.writeSessionIndex` (`trace.nim:307`) with new
+`TraceWriter.sessionCounters` / `sessionRoundIds` /
+`sessionResults` fields. `TRACING.md §5` updated with the schema.
 
 ### `self_color_changed` trace event
 
-If `identity.selfColor` can change mid-session (e.g. after a reconnect into a
-new lobby), the trace has no event for it. A `self_color_changed` event was
-noted as a v1.1 addition. Until this is added, any harness that caches
-`self_color` from the manifest may silently use a stale value.
-
-Ref: `TRACING.md §14.9`
+~~Resolved 2026-04-30.~~ The trace writer already emits
+`self_color_changed` on any `identity.selfColor` transition where
+the previous value was also non-negative (`trace.nim:436–442`). The
+TODO entry was stale documentation residue from the original
+trace-writer plan; the event has shipped since the first trace
+commit (`86ba8d3`). `TRACING.md §14.9` has been updated to
+reflect the shipped behaviour.
 
 ---
 
@@ -82,28 +138,19 @@ These are correctness concerns that were flagged but not resolved.
 
 ### `bot.interstitial.voting_screen` branch ID — missing from source
 
-`TRACING.md §8.2` lists `bot.interstitial.voting_screen` as a canonical branch
-ID (attributed to `bot.nim:368`), and `test/validate_trace.nim` includes it in
-the allowed-IDs list. However:
+~~Resolved 2026-04-30.~~ The voting-screen branch ID was stale doc
+residue, not a missing `bot.fired(...)` call. When the interstitial
+gate fires during an active meeting (`bot.nim:388`), the frame is
+dispatched to `decideVotingMask` which always fires a `voting.*`
+branch ID before returning, so the `voting.*` family fully covers
+that path. Stale entries removed from `TRACING.md §8.2` and
+`test/validate_trace.nim`; `BRANCH_IDS.md` was already correct.
 
-- It does **not** appear in `BRANCH_IDS.md` (which lists 31 IDs; this would
-  be the 32nd).
-- There is no `bot.fired("bot.interstitial.voting_screen", ...)` call anywhere
-  in source.
-
-Either (a) the voting-screen interstitial early-return path was supposed to
-fire this branch ID but the call was never added — making it a genuine missing
-`bot.fired(...)` — or (b) TRACING.md and `validate_trace.nim` have stale
-entries from an earlier design that changed. The `warnEmptyBranchOnce`
-mechanism in `trace.nim:910–920` should surface this at runtime if (a), but
-only if tracing is enabled when the voting screen is hit.
-
-Action: run a traced game to the voting screen and check whether a
-`trace_warning` event fires; then either add the `bot.fired(...)` call or
-remove the stale entries from the docs and validator.
-
-Ref: `TRACING.md §8.2`, `BRANCH_IDS.md`, `test/validate_trace.nim:32`,
-`trace.nim:910–920`
+While fixing this, also synced the other stale `policy_crew.task.*`
+entries in `validate_trace.nim` (`holding`, `mandatory_*`, `checkout_*`,
+`radar_*`, `home_fallback`) and added missing real IDs
+(`policy_imp.body.vent_escape`, `policy_imp.body.vent_approach`) that
+would have caused valid runs to fail validation.
 
 ### Scan-ordering parity risk on teleport
 
@@ -123,17 +170,21 @@ Ref: `DESIGN.md §4`
 
 ### `tuning_snapshot` exhaustiveness check is manual / absent
 
-`TRACING.md §10.3` says CI should run a grep that warns when a `const` is
-added to a policy module without a corresponding key in `tuning_snapshot.nim`.
-`tools/trace_smoke.sh` runs parity + smoke + branch-ID drift checks but does
-**not** include this grep. As new tuning knobs are added, they can silently
-go missing from the manifest's `tuning_snapshot` object.
-
-Action: add a grep step to `trace_smoke.sh` (or a separate `make lint`
-target) that cross-checks policy-module `const` declarations against
-`tuning_snapshot.nim`.
-
-Ref: `TRACING.md §10.3`, `tools/trace_smoke.sh`
+~~Resolved 2026-04-30.~~ Shipped as a new Nim tool,
+`tools/check_tuning_snapshot.nim`, wired into
+`tools/trace_smoke.sh` as step `[7/7]`. The tool scans every
+policy module in `PolicyModules` for `  Name* = value`
+declarations and verifies each name is either registered in
+`tuning_snapshot.nim` or listed in the `SnapshotExempt`
+whitelist (with a one-line reason per exempt entry). The five
+memory / alibi knobs and the v2 teleport threshold are now all
+registered; eleven constants are exempt (`PlayerColorNames`,
+the `Patch*` hash / derived-geometry constants, `KillIconY`,
+and the five voting-screen layout constants). A negative test
+(delete an entry from `tuning_snapshot.nim`) was confirmed to
+fail the check during development. Replaces the grep approach
+described in §10.3 with an identifier-parsing Nim tool for
+cross-platform CI portability.
 
 ### `TeleportThresholdPx` was never empirically validated
 
@@ -153,21 +204,15 @@ Minor doc rot to clean up when passing through affected files.
 
 ### Stale comment in `viewer/runner.nim:4–6`
 
-The header comment says the viewer (`--gui`) is "not yet implemented
-(phase 2 deliverable)." The viewer has been complete since Phase 2 shipped.
-The comment should be updated to reflect that `--gui` is fully functional.
-
-Ref: `viewer/runner.nim:4–6`
+~~Resolved 2026-04-30.~~ Header comment updated to reflect that
+`--gui` is fully wired via `viewer/viewer.nim`.
 
 ### Phase numbering gap in `DESIGN.md §8` / `§11`
 
-The original plan defined Phases 0–4. The status log shows 0, 1, 2, 3
-(open), then jumps to "Phase 5 — tracing." Phase 4 vanished. The
-introduction of tracing as Phase 5 was an in-flight renaming that was never
-reconciled in the phase table. Not a correctness issue, but makes the status
-section confusing to read.
-
-Ref: `DESIGN.md §8`, `§11`
+~~Resolved 2026-04-30.~~ Added a lead-in note to §11 explaining the
+phase numbering drift from §8 during execution, and renumbered
+"Phase 5 — tracing" to "Phase 4 — tracing" so the status log reads
+0, 1, 2, 3, 4 consecutively.
 
 ---
 
@@ -184,12 +229,26 @@ combine weak signals (proximity, timing, task-skip patterns) that the current
 model discards. This is the highest-leverage Phase 3 item since it affects
 every accusation and vote.
 
+**Unblocked 2026-04-30 by speaker attribution.** With
+`chat_observed.speaker` now populated, the evidence model can now
+include chat-derived signals — "who accused whom", "who typed
+first", "who stayed silent" — that previously had no colour anchor.
+Start by adding `chat_accusation` and `chat_silence` features to
+the suspect scorer.
+
 ### 2. Smarter imposter chat
 
 Current imposter chat is minimal and pattern-fixed. Improvements:
 - Vary message timing so it doesn't look like a bot reacting on a fixed delay.
 - Add fake-task callouts ("just did electrical") timed to task animations.
 - Parse and react to chat content beyond the simple "did anyone say sus" check.
+
+**Unblocked 2026-04-30 by speaker attribution.** The "parse and
+react to chat content" bullet now has everything it needs:
+`chat_observed` events carry both the text (OCR) and the speaker
+colour, so an imposter can now deflect away from a crewmate who
+accused the imposter's teammate, or chain-pile-on a victim that
+another live crewmate already called out.
 
 ### 3. Real ghost behavior
 
@@ -203,18 +262,37 @@ Ghosts currently just continue doing tasks. Real options:
 
 ### 4. Vote bandwagon detection
 
-Log when the crewmate vote pattern looks like a bandwagon (several votes
-arriving in rapid succession on the same target after a leader vote). Don't
-act on it yet — preserve the evidence-only voting rule — but capturing the
-pattern in traces will let us decide later whether to exploit or counter it.
+~~Resolved 2026-04-30.~~ New trace event
+`vote_bandwagon_detected` fires once per `(meeting, target)` the
+first time ≥ `VoteBandwagonThreshold = 3` votes land on the same
+target inside a `VoteBandwagonWindowTicks = 120` (≈ 5 s) rolling
+window. Skip-cascades trigger the same signal. Payload: target,
+votes-in-window, first-vote tick, ordered voter colour list. The
+detector is a pure helper, `trace.tallyBandwagon`, exercised by
+`test/vote_bandwagon.nim` (5 scenarios including boundary /
+out-of-window / different-target / empty). Preserves the
+evidence-only voting rule — no policy reads the flag; it's
+trace-only lineage for the harness. `MeetingEvent.chatLines`
+already carries speaker attribution (see "Chat speaker
+attribution" above), so chat-led vs. spontaneous bandwagon
+classification can be added later as an offline feature without
+changing the event schema.
+
+Ref: `trace.nim:133`, `tuning.nim:56–66`,
+`test/vote_bandwagon.nim`.
 
 ### 5. `--seed` flag for v2
 
-Patch `evidencebot_v2` to accept a `--seed` flag. Currently v2 seeds its RNG
-from clock+pid, so parity tests can only exercise the crewmate code path (the
-deterministic prefix before the first imposter RNG branch). With a fixed seed,
-imposter-path parity becomes testable, which is important if Phase 3 changes
-touch imposter policy.
+~~Resolved 2026-04-30.~~ `evidencebot_v2.initBot` now accepts a
+`masterSeed: int64 = -1` argument (`-1` preserves the historical
+clock+pid behaviour so production callers are unaffected); the
+standalone CLI gained `--seed:<int>`; the parity harness
+(`test/parity.nim`) passes the shared `--seed` through to
+`evidencebot_v2.initBot` in the `runVsV2` path. Imposter-code
+parity against v2 is now 100% with seed 42 and 7777 in black
+mode (matching the crewmate-path behaviour). The parity docstring
+is updated to reflect that RNG-dependent divergence is no longer
+"expected drift".
 
 ---
 
@@ -224,12 +302,26 @@ Items from `TRACING.md §15` and the decisions log that are further out.
 
 ### Counterfactual annotations in trace
 
-Record which tier of `nearestTaskGoal` was considered but rejected at each
-decision point. The goal struct already carries enough state for offline
-reconstruction; the trace just doesn't surface it. Would make the trace much
-more useful for post-hoc policy analysis and debugging.
+~~Resolved 2026-04-30.~~ `policy_crew.nearestTaskGoal` now
+annotates `bot.goal.selectedTier` (winning tier 1..8) and
+`bot.goal.tierCandidates` (set of tiers whose preconditions were
+met this frame). `decisions.jsonl -> goal.selected_tier`,
+`.tier_candidates`, and `.tier_rejected` surface the triple so an
+offline harness can reconstruct "which alternatives were
+considered and rejected at each decision point." New
+`TaskGoalTier` enum in `types.nim` is the canonical label; the
+tier names (`"mandatory_visible"`, `"radar_nearest"`, etc.)
+mirror the numbered comments in `nearestTaskGoal`. Parity-safe:
+the first-found-wins invariant on the returned goal is
+preserved, the new candidate sweep is pure-precondition checks
+(no extra `taskGoalFor` or A\*), and `TaskGoalTier.TierNone`
+stays selected for every non-crewmate branch so no trace
+consumer has to treat them specially. Parity remains 500/500
+black-mode with and without `--trace-dir`.
 
-Ref: `TRACING.md §15`
+Ref: `policy_crew.nearestTaskGoal` (`policy_crew.nim:35`),
+`trace.emitDecision` (`trace.nim:152`), `TaskGoalTier`
+(`types.nim:173`), `TRACING.md §4.3`.
 
 ### Streaming trace (WebSocket proxy)
 

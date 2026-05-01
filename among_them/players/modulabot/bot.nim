@@ -474,10 +474,13 @@ proc decideNextMaskCore(bot: var Bot): uint8 =
   bot.rememberVisibleMap()
   bot.updateTaskGuesses()
   bot.updateTaskIcons()
+  bot.recordTaskAlibis()
 
   bot.goal.has = false
   bot.goal.hasPathStep = false
   bot.goal.path.setLen(0)
+  bot.goal.selectedTier = TierNone
+  bot.goal.tierCandidates = {}
   bot.motion.desiredMask = 0
   bot.motion.controllerMask = 0
   bot.fired("bot.localizing", "localizing")

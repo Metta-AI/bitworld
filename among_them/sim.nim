@@ -16,6 +16,7 @@ const
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
   DefaultMapPath* = "map.json"
+  DarkBgPath* = "darkbg.aseprite"
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
@@ -49,6 +50,8 @@ const
   MaxPlayers* = 16
   MinPlayers* = 8
   ImposterCount* = 2
+  AutoImposterCount* = true
+  StartWaitTicks* = 5 * TargetFps
   VoteTimerTicks* = 6000
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
@@ -222,6 +225,8 @@ type
     voteResultTicks*: int
     minPlayers*: int
     imposterCount*: int
+    autoImposterCount*: bool
+    startWaitTicks*: int
     voteTimerTicks*: int
     messageCooldownTicks*: int
     gameOverTicks*: int
@@ -273,6 +278,7 @@ type
     rooms*: seq[Room]
     mapPixels*: seq[uint8]
     mapRgba*: seq[uint8]
+    darkBgPixels*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
     fb*: Framebuffer
@@ -281,6 +287,7 @@ type
     nextJoinOrder*: int
     tickCount*: int
     gameStartTick*: int
+    startWaitTimer*: int
     phase*: GamePhase
     voteState*: VoteState
     asciiSprites*: PixelFont
@@ -691,6 +698,21 @@ proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
   ## Loads the default Skeld map layers.
   loadMapLayers(loadAmongMap())
 
+proc loadDarkBgPixels*(): seq[uint8] =
+  ## Loads the dark interstitial background as palette pixels.
+  let image = readAsepriteImage(gameDir() / DarkBgPath)
+  if image.width != ScreenWidth or image.height != ScreenHeight:
+    raise newException(
+      AmongThemError,
+      DarkBgPath & " must be " & $ScreenWidth & "x" & $ScreenHeight & "."
+    )
+  result = newSeq[uint8](ScreenWidth * ScreenHeight)
+  for y in 0 ..< ScreenHeight:
+    for x in 0 ..< ScreenWidth:
+      let color = nearestPaletteIndex(image[x, y])
+      result[y * ScreenWidth + x] =
+        if color == TransparentColorIndex: SpaceColor else: color
+
 proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
   ord(ch) - ord(' ')
@@ -708,6 +730,27 @@ proc blitAsciiText*(
   ## Draws text using the Among Them tiny UI font.
   fb.drawText(asciiSprites, text, screenX, screenY, TextColor)
 
+proc blitCenteredAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: PixelFont,
+  text: string,
+  screenY: int
+) =
+  ## Draws centered text using the Among Them tiny UI font.
+  let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2
+  fb.blitAsciiText(asciiSprites, text, screenX, screenY)
+
+proc blitCenteredAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: PixelFont,
+  text: string,
+  screenY,
+  offsetX: int
+) =
+  ## Draws horizontally offset centered text.
+  let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2 + offsetX
+  fb.blitAsciiText(asciiSprites, text, screenX, screenY)
+
 proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Fills one clipped rectangle on a framebuffer.
   if w <= 0 or h <= 0:
@@ -715,6 +758,18 @@ proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in y ..< y + h:
     for px in x ..< x + w:
       fb.putPixel(px, py, color)
+
+proc fillDarkBg*(sim: SimServer, fb: var Framebuffer) =
+  ## Fills a framebuffer with the dark interstitial background.
+  if sim.darkBgPixels.len != ScreenWidth * ScreenHeight:
+    fb.clearFrame(SpaceColor)
+    return
+  for i in 0 ..< fb.indices.len:
+    fb.indices[i] = sim.darkBgPixels[i]
+
+proc clearInterstitialFrame*(sim: var SimServer) =
+  ## Clears the shared framebuffer to the dark interstitial background.
+  sim.fillDarkBg(sim.fb)
 
 proc strokeRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Strokes one clipped rectangle on a framebuffer.
@@ -812,6 +867,8 @@ proc defaultGameConfig*(): GameConfig =
     voteResultTicks: VoteResultTicks,
     minPlayers: MinPlayers,
     imposterCount: ImposterCount,
+    autoImposterCount: AutoImposterCount,
+    startWaitTicks: StartWaitTicks,
     voteTimerTicks: VoteTimerTicks,
     messageCooldownTicks: MessageCooldownTicks,
     gameOverTicks: GameOverTicks,
@@ -864,6 +921,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "can't do more than 16 players.")
   if config.imposterCount < 0:
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
+  if config.startWaitTicks < 0:
+    raise newException(AmongThemError, "Config field startWaitTicks must be non-negative.")
   if config.tasksPerPlayer < 0:
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
   if config.buttonCalls < 0:
@@ -906,7 +965,17 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("reportRange", config.reportRange)
   node.readConfigInt("voteResultTicks", config.voteResultTicks)
   node.readConfigInt("minPlayers", config.minPlayers)
+  let
+    hasImposterCount = node.hasKey("imposterCount")
+    hasAutoImposterCount =
+      node.hasKey("autoImposterCount") or node.hasKey("imposterRatio")
   node.readConfigInt("imposterCount", config.imposterCount)
+  node.readConfigBool("autoImposterCount", config.autoImposterCount)
+  node.readConfigBool("imposterRatio", config.autoImposterCount)
+  if hasImposterCount and not hasAutoImposterCount:
+    config.autoImposterCount = false
+  node.readConfigInt("startWaitTicks", config.startWaitTicks)
+  node.readConfigInt("gameStartWaitTicks", config.startWaitTicks)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
   node.readConfigInt("messageCooldownTicks", config.messageCooldownTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
@@ -943,6 +1012,8 @@ proc configJson*(config: GameConfig): string =
     "voteResultTicks": config.voteResultTicks,
     "minPlayers": config.minPlayers,
     "imposterCount": config.imposterCount,
+    "autoImposterCount": config.autoImposterCount,
+    "startWaitTicks": config.startWaitTicks,
     "voteTimerTicks": config.voteTimerTicks,
     "messageCooldownTicks": config.messageCooldownTicks,
     "gameOverTicks": config.gameOverTicks,
@@ -957,6 +1028,45 @@ proc configJson*(config: GameConfig): string =
     "showPlayerLabels": config.showPlayerLabels
   }
   $node
+
+proc ratioImposterCount*(playerCount: int): int =
+  ## Returns the default impostor count for a player count.
+  if playerCount < 5:
+    return 0
+  (playerCount - 3) div 2
+
+proc effectiveImposterCount*(config: GameConfig, playerCount: int): int =
+  ## Returns the active impostor count for a config and player count.
+  let desired =
+    if config.autoImposterCount:
+      ratioImposterCount(playerCount)
+    else:
+      config.imposterCount
+  min(desired, max(0, playerCount - 1))
+
+proc lobbyIsStarting*(sim: SimServer): bool =
+  ## Returns whether the lobby is in the start countdown.
+  sim.players.len >= sim.config.minPlayers
+
+proc lobbyStartTicksRemaining*(sim: SimServer): int =
+  ## Returns ticks left before the lobby starts the game.
+  if not sim.lobbyIsStarting() or sim.config.startWaitTicks <= 0:
+    return 0
+  if sim.startWaitTimer > 0:
+    sim.startWaitTimer
+  else:
+    sim.config.startWaitTicks
+
+proc lobbyStartSecondsRemaining*(sim: SimServer): int =
+  ## Returns visible seconds left before the lobby starts the game.
+  let ticks = sim.lobbyStartTicksRemaining()
+  if ticks <= 0:
+    return 0
+  max(1, (ticks + TargetFps - 1) div TargetFps)
+
+proc lobbyIconStartY*(sim: SimServer): int =
+  ## Returns the lobby icon row y coordinate.
+  if sim.lobbyIsStarting(): 32 else: 26
 
 proc mapIndex*(x, y: int): int =
   y * MapWidth + x
@@ -983,6 +1093,7 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.gameOverTimer)
   result.mixHashInt(sim.roleRevealTimer)
   result.mixHashInt(sim.gameStartTick)
+  result.mixHashInt(sim.startWaitTimer)
   result.mixHashBool(sim.timeLimitReached)
   result.mixHashBool(sim.needsReregister)
   result.mixHashInt(sim.nextJoinOrder)
@@ -1209,10 +1320,7 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
 
 proc startGame*(sim: var SimServer) =
   sim.arrangeHomePositions()
-  let imposterCount = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
-  )
+  let imposterCount = sim.config.effectiveImposterCount(sim.players.len)
   for player in sim.players.mitems:
     player.role = Crewmate
     player.assignedTasks = @[]
@@ -1804,15 +1912,19 @@ proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
   sim.voteState.cursor[playerIndex] = cur
 
 proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
-  sim.fb.blitAsciiText(sim.asciiSprites, "WAITING", 11, 4)
   if needed > 0:
-    sim.fb.blitAsciiText(sim.asciiSprites, "NEED MORE!", 2, 14)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "WAITING", 4)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "NEED MORE!", 14)
   else:
-    sim.fb.blitAsciiText(sim.asciiSprites, "READY!", 14, 14)
-  let startY = 26
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "GAME", 2)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "STARTING", 11)
+    let seconds = sim.lobbyStartSecondsRemaining()
+    if seconds > 0:
+      sim.fb.blitCenteredAsciiText(sim.asciiSprites, "IN " & $seconds, 20)
+  let startY = sim.lobbyIconStartY()
   for i in 0 ..< n:
     let
       col = i mod 6
@@ -1824,15 +1936,23 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packed
 
 proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
-  sim.fb.clearFrame(0)
-  sim.fb.blitAsciiText(sim.asciiSprites, "GAME IN", 11, 22)
-  sim.fb.blitAsciiText(sim.asciiSprites, "PROGRESS", 8, 32)
+  sim.clearInterstitialFrame()
+  let
+    gap = 10
+    blockH = sim.asciiSprites.height * 2 + gap
+    startY = (ScreenHeight - blockH) div 2
+  sim.fb.blitCenteredAsciiText(sim.asciiSprites, "GAME IN", startY)
+  sim.fb.blitCenteredAsciiText(
+    sim.asciiSprites,
+    "PROGRESS",
+    startY + sim.asciiSprites.height + gap
+  )
   sim.fb.packFramebuffer()
   sim.fb.packed
 
 proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   ## Builds a simple player screen for replay mode.
-  sim.fb.clearFrame(SpaceColor)
+  sim.clearInterstitialFrame()
   sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
   sim.fb.blitAsciiText(sim.asciiSprites, "GLOBAL", 20, 38)
   sim.fb.blitAsciiText(sim.asciiSprites, "VIEW", 20, 46)
@@ -1841,7 +1961,7 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
 
 proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   ## Builds the role reveal interstitial frame.
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let viewerIsImp =
     playerIndex >= 0 and playerIndex < sim.players.len and
     sim.players[playerIndex].role == Imposter
@@ -1948,7 +2068,7 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
     rowY += messageH
 
 proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let n = sim.players.len
   if n == 0:
     sim.fb.packFramebuffer()
@@ -2047,16 +2167,17 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packed
 
 proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let ej = sim.voteState.ejectedPlayer
   if ej >= 0 and ej < sim.players.len:
     let
       sx = ScreenWidth div 2 - SpriteSize div 2
       sy = ScreenHeight div 2 - SpriteSize div 2
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "WAS KILLED", sy - 12)
     sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[ej].color, false)
   else:
-    sim.fb.blitAsciiText(sim.asciiSprites, "NO ONE", 46, 54)
-    sim.fb.blitAsciiText(sim.asciiSprites, "DIED", 52, 64)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "NO ONE", 54, 3)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "DIED", 64, 3)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -2102,10 +2223,8 @@ proc checkMaxTicks(sim: var SimServer) =
     sim.finishGame(Crewmate, timeLimitReached = true)
 
 proc checkWinCondition*(sim: var SimServer) =
-  let hasImposters = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
-  ) > 0
+  let hasImposters =
+    sim.config.effectiveImposterCount(sim.players.len) > 0
   var aliveCrewmates = 0
   var aliveImposters = 0
   for p in sim.players:
@@ -2123,7 +2242,7 @@ proc checkWinCondition*(sim: var SimServer) =
     sim.finishGame(Crewmate)
 
 proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let title =
     if sim.timeLimitReached:
       "DRAW"
@@ -2395,7 +2514,7 @@ proc writeRenderStateUiPlayers(
     return
   case sim.phase
   of Lobby:
-    let startY = 26
+    let startY = sim.lobbyIconStartY()
     for i in 0 ..< n:
       let
         col = i mod 6
@@ -2982,6 +3101,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
   result.mapRgba = newSeq[uint8](MapWidth * MapHeight * 4)
+  result.darkBgPixels = loadDarkBgPixels()
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
       let
@@ -3012,6 +3132,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.players = @[]
   result.nextJoinOrder = 0
   result.gameStartTick = -1
+  result.startWaitTimer = 0
 
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
@@ -3021,18 +3142,32 @@ proc resetToLobby*(sim: var SimServer) =
   sim.nextJoinOrder = 0
   sim.tickCount = 0
   sim.gameStartTick = -1
+  sim.startWaitTimer = 0
   sim.roleRevealTimer = 0
   sim.timeLimitReached = false
   sim.needsReregister = true
   for task in sim.tasks.mitems:
     task.completed = @[]
 
+proc stepLobby(sim: var SimServer) =
+  ## Advances the lobby start countdown.
+  if sim.players.len < sim.config.minPlayers:
+    sim.startWaitTimer = 0
+    return
+  if sim.config.startWaitTicks <= 0:
+    sim.startGame()
+    return
+  if sim.startWaitTimer <= 0:
+    sim.startWaitTimer = sim.config.startWaitTicks
+  dec sim.startWaitTimer
+  if sim.startWaitTimer <= 0:
+    sim.startGame()
+
 proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArray[InputState]) =
   inc sim.tickCount
 
   if sim.phase == Lobby:
-    if sim.players.len >= sim.config.minPlayers:
-      sim.startGame()
+    sim.stepLobby()
     return
 
   if sim.phase == RoleReveal:

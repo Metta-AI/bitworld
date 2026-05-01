@@ -166,6 +166,26 @@ type
     holdTicks*: int              ## v2: bot.taskHoldTicks
     holdIndex*: int              ## v2: bot.taskHoldIndex; -1 = no hold
 
+  TaskGoalTier* = enum
+    ## Canonical label for the eight-tier fallback in
+    ## `policy_crew.nearestTaskGoal`. The order matches the code
+    ## (tier 1 highest priority through tier 8 the home/button
+    ## fallback) so a trace consumer can map `selected_tier`
+    ## directly onto that file's comments.
+    ##
+    ## Used only as a trace-surface annotation on `Goal` (see
+    ## `Goal.selectedTier` / `Goal.tierCandidates`). Policy code
+    ## never reads these — they're write-only diagnostics.
+    TierNone,
+    TierMandatoryVisible,   ## Tier 1: visible mandatory icon this frame
+    TierMandatorySticky,    ## Tier 2: keep the previously-selected mandatory task
+    TierMandatoryNearest,   ## Tier 3: closest task in state TaskMandatory
+    TierCheckoutSticky,     ## Tier 4: keep the previously-selected checkout task
+    TierCheckoutNearest,    ## Tier 5: closest non-completed checkout task
+    TierRadarSticky,        ## Tier 6: keep the previously-selected radar task
+    TierRadarNearest,       ## Tier 7: closest radar task
+    TierHomeFallback        ## Tier 8: home / button (nothing else usable)
+
   Goal* = object
     ## Q1 resolved: shared between crewmate and imposter policies.
     ## `index` is interpreted by the active policy (task index for crew,
@@ -177,6 +197,27 @@ type
     hasPathStep*: bool
     pathStep*: PathStep
     path*: seq[PathStep]
+    selectedTier*: TaskGoalTier           ## Which tier of
+                                          ## `policy_crew.nearestTaskGoal`
+                                          ## supplied the current goal.
+                                          ## `tgtNone` on non-crewmate
+                                          ## frames or when no goal
+                                          ## was selected. Written
+                                          ## solely for trace
+                                          ## counterfactual annotation
+                                          ## (`decisions.jsonl ->
+                                          ## goal.selected_tier`).
+    tierCandidates*: set[TaskGoalTier]    ## Which tiers had a viable
+                                          ## candidate this frame —
+                                          ## superset of
+                                          ## `{selectedTier}` when
+                                          ## one was chosen. Policy
+                                          ## doesn't read this; trace
+                                          ## surfaces the difference
+                                          ## `tierCandidates -
+                                          ## {selectedTier}` as the
+                                          ## rejected-alternatives
+                                          ## set.
 
   Identity* = object
     selfColor*: int                       ## v2: bot.selfColorIndex; -1 unknown
@@ -223,6 +264,16 @@ type
     witnesses*: seq[BodyWitness]
     isNewBody*: bool                      ## v2's "witnessedKill" signal
 
+  VoteChatLine* = object
+    ## One OCR'd line of voting-screen chat, with the speaker colour
+    ## sampled from the per-line icon pip rendered to the left of the
+    ## text column. `speakerColor = VoteUnknown` (-1) when the pip
+    ## could not be resolved (e.g. line-to-icon association was out
+    ## of the search window, or the icon sprite didn't match).
+    speakerColor*: int                    ## VoteUnknown if unresolved
+    y*: int                               ## row y of the text line (debug)
+    text*: string                         ## raw OCR'd line (post-strip)
+
   MeetingEvent* = object
     ## One completed meeting, appended at meeting close (voting screen
     ## just went away). `votes` matches the live semantics of
@@ -236,7 +287,8 @@ type
     votes*: PerColor[int]
     ejected*: int                         ## -1 if skipped or unknown
                                           ## (v1 default)
-    chatLines*: seq[string]               ## raw OCR; speakers in v2
+    chatLines*: seq[VoteChatLine]         ## raw OCR + per-line speaker
+                                          ## colour (color-pip attribution)
 
   AlibiEvent* = object
     ## Positive-innocence signal: a colour seen at or near a task
@@ -333,11 +385,14 @@ type
     startTick*: int
     chatSusColor*: int
     chatText*: string
-    chatLines*: seq[string]               ## per-line OCR cache, populated
-                                          ## alongside chatText; used by
-                                          ## the trace writer to emit
-                                          ## chat_observed events without
-                                          ## a second OCR pass.
+    chatLines*: seq[VoteChatLine]         ## per-line OCR cache with
+                                          ## per-line speaker colour
+                                          ## (`color_pip` attribution).
+                                          ## Populated alongside
+                                          ## chatText; consumed by the
+                                          ## trace writer to emit
+                                          ## chat_observed events
+                                          ## without a second OCR pass.
     slots*: array[MaxPlayers, VoteSlot]
     choices*: PerColor[int]               ## what each colour voted for
 
@@ -425,6 +480,19 @@ type
     eventsEmitted*: int
     snapshotsEmitted*: int
 
+  VoteTallyEntry* = object
+    ## One observed vote during an active meeting. Append-only log on
+    ## `TraceWriter.meetingVoteTally`; consumed by the vote-bandwagon
+    ## detector. `targetCode` encodes the vote target as either a
+    ## colour index (0..PlayerColorCount-1), the `VoteSkip` sentinel,
+    ## or -1 for "unknown", so a single integer identifies the shared
+    ## target across voters. `tick` is the trace writer's observation
+    ## tick (when `vote_observed` fired), not necessarily the cursor-
+    ## landing tick in voting state.
+    voter*: int
+    targetCode*: int
+    tick*: int
+
   TraceWriter* = ref object
     ## Append-only structured trace writer. Owns all file handles and
     ## diff state for emitting events.jsonl, decisions.jsonl,
@@ -483,6 +551,13 @@ type
     # happens in the same frame as the `memory.appendMeeting`
     # call, so a separate meeting-growth shadow is unnecessary.
     prevBodiesCount*: int
+    # Memory shadow — last-observed length of the round-lifetime
+    # alibi log. Growth emits `alibi_observed`. Like bodies, memory
+    # owns dedup (per-(colour, task) within
+    # `MemoryAlibiCooldownTicks`), so each new entry is an event
+    # worth emitting. Meeting-boundary trim (§13.3) shrinks the log;
+    # on shrinkage we just re-baseline the shadow.
+    prevAlibisCount*: int
     # Meeting bookkeeping
     meetingActive*: bool
     meetingIndex*: int                    ## 1-indexed within round
@@ -490,12 +565,33 @@ type
     meetingVoteCast*: bool
     meetingSelfQueuedNormalized*: string  ## normalized self chat to dedupe
     meetingSeenChat*: seq[string]         ## normalized lines already emitted
+    meetingVoteTally*: seq[VoteTallyEntry]  ## observed votes this meeting,
+                                          ## append-only until meeting close.
+                                          ## Fed by the `vote_observed`
+                                          ## emitter; used by the bandwagon
+                                          ## detector to count votes in a
+                                          ## rolling window per target.
+    meetingBandwagonFired*: seq[int]      ## target slot/colour codes we've
+                                          ## already emitted a
+                                          ## `vote_bandwagon_detected` event
+                                          ## for this meeting. Dedups follow-
+                                          ## up votes that keep the window
+                                          ## count above threshold.
     # Per-frame snapshot scheduling
     lastSnapshotTick*: int
     # Soft warnings (one-shot per round)
     warnedEmptyBranchId*: bool
     # Counters
     counters*: ManifestCounters
+    # Session-level rollup. Written to
+    # `<trace-root>/<bot-name>/<session-id>/_session.json` at every
+    # round close so a partially-played session still has a usable
+    # index if the process exits between rounds. `sessionCounters`
+    # is the sum of per-round counters; `sessionRoundIds` / the
+    # parallel `sessionResults` list is in round-close order.
+    sessionCounters*: ManifestCounters
+    sessionRoundIds*: seq[int]
+    sessionResults*: seq[string]
     # Final-manifest record (built up across the round)
     config*: string                       ## inline JSON string
     tuningSnapshot*: string               ## inline JSON string

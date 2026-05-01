@@ -79,6 +79,32 @@ tbody td.identity{
   text-align:left;
   color:#fff;
 }
+.identityCell{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.kickButton{
+  width:20px;
+  height:20px;
+  flex:0 0 20px;
+  border:1px solid #5b2626;
+  border-radius:4px;
+  background:#261010;
+  color:#ff9a9a;
+  font:700 12px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  line-height:18px;
+  text-align:center;
+  cursor:pointer;
+}
+.kickButton:hover{
+  background:#3a1717;
+  color:#fff;
+}
+.kickButton:disabled{
+  cursor:default;
+  opacity:.5;
+}
 tbody tr:nth-child(2n){
   background:#101010;
 }
@@ -131,6 +157,36 @@ tbody tr:hover{
   color:#888;
   font-size:12px;
 }
+#matchControls{
+  margin-top:12px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+#restartMatch{
+  border:1px solid #2d5f83;
+  border-radius:4px;
+  background:#102131;
+  color:#d9f0ff;
+  padding:7px 10px;
+  font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  cursor:pointer;
+}
+#restartMatch:hover{
+  background:#17344d;
+}
+#restartMatch:disabled{
+  cursor:default;
+  opacity:.55;
+}
+#controlStatus{
+  color:#888;
+  font-size:12px;
+}
+#controlStatus.error{
+  color:#ff9a9a;
+}
 @media (max-width:700px){
   #joinQr{
     flex-direction:column;
@@ -163,6 +219,10 @@ tbody tr:hover{
   <div id="joinQrCaption">
     <span id="joinQrLabel"></span>
     <span id="joinQrHost"></span>
+    <div id="matchControls">
+      <button id="restartMatch" type="button">Restart match</button>
+      <span id="controlStatus"></span>
+    </div>
   </div>
 </div>
 <script src="qrcode.min.js"></script>
@@ -203,6 +263,7 @@ const STAT_KEYS=[
 const players=new Map();
 let sortKey="reward";
 let sortDir=-1;
+let controlStatusTimer=0;
 
 const url=new URL(location.href);
 function defaultAddress(path){
@@ -220,6 +281,8 @@ const joinQr=document.getElementById("joinQr");
 const joinQrCode=document.getElementById("joinQrCode");
 const joinQrLabel=document.getElementById("joinQrLabel");
 const joinQrHost=document.getElementById("joinQrHost");
+const restartMatch=document.getElementById("restartMatch");
+const controlStatus=document.getElementById("controlStatus");
 
 function joinUrlFromAddress(){
   const playerAddress=new URL(address,location.href);
@@ -265,6 +328,70 @@ function renderJoinQr(){
   }
 }
 
+function controlUrl(path){
+  const target=new URL(address,location.href);
+  if(target.protocol==="ws:")target.protocol="http:";
+  if(target.protocol==="wss:")target.protocol="https:";
+  target.pathname=path;
+  target.search="";
+  target.hash="";
+  return target;
+}
+
+function setControlStatus(text,isError=false){
+  if(!controlStatus)return;
+  controlStatus.textContent=text;
+  controlStatus.classList.toggle("error",isError);
+  if(controlStatusTimer)clearTimeout(controlStatusTimer);
+  if(text){
+    controlStatusTimer=setTimeout(()=>{
+      controlStatusTimer=0;
+      controlStatus.textContent="";
+      controlStatus.classList.remove("error");
+    },3000);
+  }
+}
+
+async function postControl(path,params){
+  const target=controlUrl(path);
+  if(params){
+    for(const [key,value] of Object.entries(params)){
+      target.searchParams.set(key,value);
+    }
+  }
+  const response=await fetch(target.toString(),{method:"POST"});
+  if(!response.ok){
+    let text="";
+    try{text=(await response.text()).trim()}catch(e){}
+    throw new Error(text||("HTTP "+response.status));
+  }
+}
+
+async function restartCurrentMatch(){
+  if(restartMatch)restartMatch.disabled=true;
+  setControlStatus("restarting...");
+  try{
+    await postControl("/control/restart");
+    setControlStatus("restart queued");
+  }catch(e){
+    setControlStatus(e.message||"restart failed",true);
+  }finally{
+    if(restartMatch)restartMatch.disabled=false;
+  }
+}
+
+async function kickPlayer(identity,button){
+  button.disabled=true;
+  setControlStatus("kicking "+identity+"...");
+  try{
+    await postControl("/control/kick",{identity});
+    setControlStatus("kick queued");
+  }catch(e){
+    button.disabled=false;
+    setControlStatus(e.message||"kick failed",true);
+  }
+}
+
 function buildHead(){
   head.innerHTML="";
   for(const col of COLUMNS){
@@ -292,7 +419,7 @@ function buildHead(){
 function ensurePlayer(name){
   let row=players.get(name);
   if(!row){
-    row={identity:name};
+    row={identity:name,connected:false};
     for(const k of STAT_KEYS)row[k]=0;
     players.set(name,row);
   }
@@ -300,6 +427,7 @@ function ensurePlayer(name){
 }
 
 function applyPacket(text){
+  for(const row of players.values())row.connected=false;
   const lines=text.split("\n");
   for(const line of lines){
     const trimmed=line.replace(/\r$/,"").trim();
@@ -312,6 +440,7 @@ function applyPacket(text){
     if(!Number.isFinite(value))continue;
     if(!STAT_KEYS.includes(name))continue;
     const row=ensurePlayer(identity);
+    row.connected=true;
     row[name]=value;
   }
 }
@@ -341,7 +470,25 @@ function render(){
       const v=colValue(row,c);
       if(c.key==="identity"){
         td.classList.add("identity");
-        td.textContent=v;
+        const cell=document.createElement("div");
+        const label=document.createElement("span");
+        cell.className="identityCell";
+        label.textContent=v;
+        if(row.connected){
+          const kick=document.createElement("button");
+          kick.type="button";
+          kick.className="kickButton";
+          kick.textContent="X";
+          kick.title="Kick "+v;
+          kick.setAttribute("aria-label","Kick "+v);
+          kick.onclick=event=>{
+            event.stopPropagation();
+            kickPlayer(v,kick);
+          };
+          cell.appendChild(kick);
+        }
+        cell.appendChild(label);
+        td.appendChild(cell);
       }else if(c.format){
         const text=c.format(v);
         td.textContent=text||"";
@@ -409,6 +556,7 @@ function connect(){
 buildHead();
 render();
 renderJoinQr();
+if(restartMatch)restartMatch.onclick=restartCurrentMatch;
 connect();
 </script>
 </body>

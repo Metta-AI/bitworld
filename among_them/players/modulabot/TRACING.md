@@ -232,7 +232,7 @@ One JSON object per round (game). Written at round start with the
   "trace_settings": {
     "level":                  "decisions", // "events" | "decisions" | "full"
     "snapshot_period_ticks":  120,
-    "speaker_attribution":    "none",      // v2 will set "color_pip" or similar
+    "speaker_attribution":    "color_pip", // "none" pre-2026-04-30
     "frames_dump_captured":   true
   },
 
@@ -295,7 +295,9 @@ Schema for every line: `{tick: int, wall_ms: int, type: string,
 | `meeting_ended` | `meeting_index: int`, `duration_ticks: int` | interstitial → non-interstitial transition where the interstitial was a meeting |
 | `vote_observed` | `voter: color_name`, `target: color_name\|"skip"\|"unknown"` | `voting.choices[ci]` transitions from `VoteUnknown` to a value (per-meeting, once per voter) |
 | `vote_cast` | `target: color_name\|"skip"`, `ticks_after_meeting_start: int`, `rationale: string` | `voting.selfVoteChoice` first non-`VoteUnknown` per meeting |
-| `chat_observed` | `meeting_index: int`, `line: string`, `first_seen_tick: int`, `ocr_quality: "clean"\|"noisy"`, `speaker: null`, `matches_self_chat: bool` | New OCR'd line during a meeting (see §6.3) |
+| `vote_bandwagon_detected` | `meeting_index: int`, `target: color_name\|"skip"`, `votes_in_window: int`, `window_ticks: int`, `first_vote_tick: int`, `voters: [color_name,...]` | Fires once per `(meeting, target)` the first time ≥ `VoteBandwagonThreshold` (default 3) votes land on the same target inside a rolling `VoteBandwagonWindowTicks` (default 120 ≈ 5 s) window. Trace-only signal; no policy reads it. See TODO.md Phase 3 §4. |
+| `alibi_observed` | `color: name`, `task_index: int`, `task_name: string` | `memory.alibis` grows; the co-visibility rule in `tasks.recordTaskAlibis` fired for this (colour, task) pair |
+| `chat_observed` | `meeting_index: int`, `line: string`, `first_seen_tick: int`, `ocr_quality: "clean"\|"noisy"`, `speaker: color_name\|null`, `matches_self_chat: bool` | New OCR'd line during a meeting (see §6.3); `speaker` is the colour sampled from the per-message pip at `VoteChatIconX`, or null if the pip could not be resolved |
 | `chat_sent` | `text: string`, `queued_at_tick: int` | `runner.nim:176` (mask path) |
 | `stuck_detected` | `world_pos: [x,y]`, `goal: name?` | `motion.stuckFrames` crosses `StuckFrameThreshold` |
 | `stuck_resolved` | `ticks_jiggling: int` | `motion.stuckFrames` returns to 0 after a jiggle episode |
@@ -330,7 +332,7 @@ Schema for every line: `{tick: int, wall_ms: int, type: string,
 {"tick": 1612, "wall_ms": 67167, "type": "chat_observed",
  "meeting_index": 1, "line": "i was in admin",
  "first_seen_tick": 1612, "ocr_quality": "clean",
- "speaker": null, "matches_self_chat": false}
+ "speaker": "green", "matches_self_chat": false}
 {"tick": 1701, "wall_ms": 70875, "type": "vote_cast",
  "target": "blue", "ticks_after_meeting_start": 181,
  "rationale": "chat_sus_color"}
@@ -363,10 +365,13 @@ the next line) without doubling line count.
     "camera_lock": "FrameMapLock"
   },
   "goal": {
-    "name":      "upload-data",
-    "index":     6,
-    "world_pos": [488, 320],
-    "path_len":  14
+    "name":             "upload-data",
+    "index":            6,
+    "world_pos":        [488, 320],
+    "path_len":         14,
+    "selected_tier":    "mandatory_nearest",
+    "tier_candidates":  ["mandatory_nearest", "radar_nearest"],
+    "tier_rejected":    ["radar_nearest"]
   }
 }
 ```
@@ -385,6 +390,21 @@ Field notes:
   `"FrameMapLock"`.
 - `goal` — emitted only when `bot.goal.has`. If goal is set without
   a path step, `path_len` is omitted.
+- `goal.selected_tier` — which tier of
+  `policy_crew.nearestTaskGoal` produced the current goal. One of
+  `"none"`, `"mandatory_visible"`, `"mandatory_sticky"`,
+  `"mandatory_nearest"`, `"checkout_sticky"`, `"checkout_nearest"`,
+  `"radar_sticky"`, `"radar_nearest"`, `"home_fallback"`. Non-
+  crewmate branches (imposter, interstitial, voting, body-report)
+  emit `"none"`; the field is always present when `goal` is.
+- `goal.tier_candidates` — superset of `{selected_tier}` listing
+  every tier whose precondition was satisfied this frame. A
+  candidate being listed does not guarantee `taskGoalFor` would
+  have returned a reachable pixel for it; the set is a cheap
+  state-based approximation sufficient for offline counterfactual
+  analysis.
+- `goal.tier_rejected` — `tier_candidates \ {selected_tier}`,
+  surfaced as a convenience so consumers don't have to compute it.
 
 `--trace-level:full` switches `decisions.jsonl` to **per-frame**
 emission (every `decideNextMask` call writes a line, even if
@@ -471,9 +491,32 @@ non-null only on snapshots emitted at `meeting_started`.
 - `<round-id>` — zero-padded round counter, e.g. `0003`. `0000` is
   reserved for "started mid-round" partial games.
 
-A `_session.json` may optionally be written at `<trace-root>/<bot-name>/<session-id>/`
-holding session-level metadata (start/end time, number of rounds,
-configuration). Deferred to v1.1 unless harness needs it earlier.
+A `_session.json` file is written at
+`<trace-root>/<bot-name>/<session-id>/_session.json` on every round
+close (and on `closeTrace` if the session ended without any rounds).
+Schema:
+
+```jsonc
+{
+  "schema_version":        1,
+  "session_id":            "2026-04-30T23-27-51Z-11451",
+  "bot_name":              "modulabot",
+  "booted_unix_ms":        1777591671424,    // when openTrace fired
+  "last_updated_unix_ms":  1777591677859,    // most recent rewrite
+  "master_seed":           42,
+  "rounds_completed":      3,                // len(round_ids)
+  "round_ids":             [0, 1, 2],        // close order
+  "round_results":         ["crew_wins",     // matches round_ids[]
+                            "imps_win",
+                            "unknown"],
+  "summary_counters":      { ...ManifestCounters sum across rounds... }
+}
+```
+
+The file is rewritten in full at every close, so a process crash
+between rounds still leaves a usable cross-round index. Harness
+tooling should prefer `_session.json` over parsing every
+`manifest.json` when it only needs session-level aggregates.
 
 ## 6. Hook points
 
@@ -544,7 +587,13 @@ On every voting-screen frame, for each line in `bot.voting.chatLines`:
 - `matches_self_chat` is true when the normalised line equals
   `selfQueuedNormalized` (set when the bot last queued a chat).
 
-`speaker` is always `null` in v1. See §15 for v2 plans.
+`speaker` is the colour name sampled from the per-message pip at
+`VoteChatIconX` (sim constant, currently `1`), one scan per visible
+chat row via `voting.readVoteChatSpeakers` + per-line pairing via
+`voting.voteChatSpeakerForLine` (see §15, resolved 2026-04-30). It
+is `null` when no pip resolved within `VoteChatSpeakerSearch = 24`
+rows of the text line — e.g. if OCR picked up a line with no
+renderable pip above it.
 
 `ocr_quality` is `"clean"` when the line has no `?` glyphs,
 `"noisy"` otherwise.
@@ -728,38 +777,44 @@ The `<file_stem>` segment makes the source location unambiguous;
 
 | Branch ID | Source site | Description |
 |---|---|---|
-| `bot.interstitial.role_reveal` | `bot.nim:357` | inside CREWMATE/IMPS interstitial |
-| `bot.interstitial.voting_screen` | `bot.nim:368` | inside meeting interstitial (delegates to voting) |
-| `bot.interstitial.game_over` | `bot.nim:364` | game-over title detected |
-| `bot.not_localized` | `bot.nim:432` | not localized; mask 0 |
+| `bot.interstitial.role_reveal` | `bot.nim:402` | inside CREWMATE/IMPS interstitial |
+| `bot.interstitial.game_over` | `bot.nim:400` | game-over title detected |
+| `bot.localizing` | `bot.nim:483` | still localizing; mask 0 |
+| `bot.not_localized` | `bot.nim:485` | not localized; mask 0 |
 | `policy_crew.body.report_in_range` | `policy_crew.nim:153` | nearby body, in report range |
 | `policy_crew.body.navigate_to_body` | `policy_crew.nim:155` | nearby body, navigating to it |
-| `policy_crew.task.holding` | shared via `tasks.holdTaskAction` (`tasks.nim:362`) | holding A on real task |
-| `policy_crew.task.mandatory_visible` | `policy_crew.nim:43` | visible mandatory icon |
-| `policy_crew.task.mandatory_sticky` | `policy_crew.nim:62` | sticky mandatory |
-| `policy_crew.task.mandatory_nearest` | `policy_crew.nim:75` | nearest mandatory |
-| `policy_crew.task.checkout_sticky` | `policy_crew.nim:88` | sticky checkout |
-| `policy_crew.task.checkout_nearest` | `policy_crew.nim:96` | nearest checkout |
-| `policy_crew.task.radar_sticky` | `policy_crew.nim:108` | sticky radar |
-| `policy_crew.task.radar_nearest` | `policy_crew.nim:115` | nearest radar |
-| `policy_crew.task.home_fallback` | `policy_crew.nim:128` | home/button fallback |
-| `policy_crew.task.precise_approach` | `policy_crew.nim:198` | within precise radius |
-| `policy_crew.task.astar` | `policy_crew.nim:189` | A* navigation step |
-| `policy_crew.idle.no_goal` | `policy_crew.nim:169` | no goal selectable |
-| `policy_imp.body.self_report` | `policy_imp.nim:258` | self-report own kill |
-| `policy_imp.body.flee` | `policy_imp.nim:278` | flee from someone else's discovery |
-| `policy_imp.kill.in_range` | `policy_imp.nim:293` | press A on kill |
-| `policy_imp.kill.hunt` | `policy_imp.nim:312` | hunt lone crewmate (out of range) |
-| `policy_imp.fake_task.holding` | `policy_imp.nim:322` | holding A on fake station |
-| `policy_imp.central_room.force_leave` | `policy_imp.nim:349` | forced exit from central room |
-| `policy_imp.follow.tail` | `policy_imp.nim:364` | tailing followee |
-| `policy_imp.wander.next_target` | `policy_imp.nim:390` | wandering to next fake target |
-| `policy_imp.wander.idle_unreachable` | `policy_imp.nim:411` | idle, unreachable target |
-| `policy_imp.wander.idle_no_target` | `policy_imp.nim:419` | idle, no target |
-| `voting.idle.already_voted` | `voting.nim:474` | already voted; idle |
-| `voting.cursor.move` | `voting.nim:490` | cursor moving toward target |
-| `voting.cursor.listen` | `voting.nim:501` | cursor on target, listening for chat |
-| `voting.press_a` | `voting.nim:511` | pressing A to vote |
+| `policy_crew.task.continue_hold` | `policy_crew.nim:163` | continuing hold-A on real task |
+| `policy_crew.task.start_hold` | `policy_crew.nim:184` | starting hold-A on real task |
+| `policy_crew.task.ghost_nav` | `policy_crew.nim:187` | ghost navigation to task |
+| `policy_crew.task.astar` | `policy_crew.nim:200` | A* navigation step toward task |
+| `policy_crew.task.precise_approach` | `policy_crew.nim:204` | within precise radius of task |
+| `policy_crew.idle.no_goal` | `policy_crew.nim:172` | no goal selectable |
+| `policy_imp.body.self_report` | `policy_imp.nim:330` | self-report own kill |
+| `policy_imp.body.vent_escape` | `policy_imp.nim:357` | vent to escape body discovery |
+| `policy_imp.body.vent_approach` | `policy_imp.nim:363` | approach vent to flee body |
+| `policy_imp.body.flee` | `policy_imp.nim:379` | flee from someone else's discovery |
+| `policy_imp.kill.in_range` | `policy_imp.nim:392` | press A on kill |
+| `policy_imp.kill.hunt` | `policy_imp.nim:409` | hunt lone crewmate (out of range) |
+| `policy_imp.fake_task.holding` | `policy_imp.nim:430` | holding A on fake station |
+| `policy_imp.fake_task.setup` | `policy_imp.nim:438` | navigating to set up a fake task |
+| `policy_imp.fake_task.setup_in_tail` | `policy_imp.nim:473` | fake-task setup while tailing |
+| `policy_imp.fake_task.setup_in_wander` | `policy_imp.nim:497` | fake-task setup while wandering |
+| `policy_imp.central_room.force_leave` | `policy_imp.nim:455` | forced exit from central room |
+| `policy_imp.follow.tail` | `policy_imp.nim:482` | tailing followee |
+| `policy_imp.wander.next_target` | `policy_imp.nim:527` | wandering to next fake target |
+| `policy_imp.wander.idle_unreachable` | `policy_imp.nim:513` | idle, unreachable target |
+| `policy_imp.wander.idle_no_target` | `policy_imp.nim:522` | idle, no target |
+| `voting.idle.already_voted` | `voting.nim:497` | already voted; idle |
+| `voting.cursor.move` | `voting.nim:514` | cursor moving toward target |
+| `voting.cursor.listen` | `voting.nim:526` | cursor on target, listening for chat |
+| `voting.press_a` | `voting.nim:537` | pressing A to vote |
+
+Note: when the interstitial gate fires during an active meeting
+(`bot.percep.interstitial and bot.voting.active`), the voting-screen
+frame is dispatched directly to `decideVotingMask`, which always fires
+one of the `voting.*` IDs above. There is no separate
+`bot.interstitial.voting_screen` ID — the `voting.*` family covers
+that path.
 
 ### 8.3 Documentation generation
 
@@ -1049,13 +1104,29 @@ K games (configurable, default `K = 10`); the harness can flag
 specific games for retention via a sentinel file
 `<round-dir>/RETAIN`.
 
-This rotation is implemented as a v1.1 cron-style sweep, not in the
-hot path. v1 ships without rotation; document the disk-cost
-expectation.
+Rotation is not hot-path. The bot writes every frames dump forever;
+a separate out-of-process sweeper (`tools/frames_sweep.nim`)
+implements the retention policy. Invoke it between runs, from cron,
+or from the harness's post-game hook:
+
+```
+nim r tools/frames_sweep.nim --root:<trace-root> [--keep:10] \
+                             [--dry-run] [--verbose]
+```
+
+The sweeper walks `<root>/<bot>/<session>/round-*`, orders rounds
+newest-first by `manifest.started_unix_ms` (falling back to round-
+directory mtime), and deletes the external file pointed at by each
+pruned round's `manifest.config.frames_dump_path`. The rest of each
+round (manifest, events, decisions, snapshots) is preserved.
+Pinned rounds (`RETAIN` sentinel) never count against the K budget
+and are never swept.
 
 ### 14.7 OCR'd chat lines have no speaker attribution
 
-Documented in §6.3. v1 ships with `speaker: null`. v2 plans in §15.
+~~Resolved 2026-04-30.~~ See §15: `chat_observed.speaker` now
+carries the per-line colour sampled from the speaker pip, and
+`manifest.trace_settings.speaker_attribution = "color_pip"`.
 
 ### 14.8 The `decideNextMask` early-return paths
 
@@ -1066,11 +1137,13 @@ before returning. Listed as `bot.interstitial.*` and
 
 ### 14.9 `selfColor` reset semantics
 
-`identity.selfColor` is set once and not cleared by `resetRoundState`
-(verify during implementation; if false, document and adjust). The
-trace emits `self_color_known` only on the first non-(-1) write per
-session. If the value can change mid-session, add a
-`self_color_changed` event in v1.1.
+`identity.selfColor` is set once and not cleared by `resetRoundState`.
+The trace emits `self_color_known` on the first non-(-1) write per
+session and `self_color_changed` on any subsequent change
+(`trace.nim:430`), so a harness that caches the manifest's
+`self.color_index` can treat `self_color_changed` events as the
+authoritative signal to refresh the cache. Both event types are
+listed in `test/validate_trace.nim` `KnownEventTypes`.
 
 ### 14.10 OS path-segment compatibility
 
@@ -1096,11 +1169,16 @@ before emitting (configurable; default 1).
 
 ## 15. v2 / future work
 
-- **Chat speaker attribution.** Investigate the on-screen voting chat
-  format. Sample pixels at `x < VoteChatTextX = 21` for a per-line
-  speaker glyph or colour swatch. Add a fallback OCR of the speaker
-  prefix if found. On success, set `manifest.trace_settings.speaker_attribution
-  = "color_pip"` and populate `chat_observed.speaker`.
+- ~~**Chat speaker attribution.**~~ Resolved 2026-04-30. Implemented
+  in `voting.readVoteChatSpeakers` (scans pips at `VoteChatIconX = 1`,
+  one per visible chat row, via `matchesCrewmate` + `crewmateColorIndex`)
+  and `voting.voteChatSpeakerForLine` (prefer-above tie-break so
+  wrapped multi-line messages don't mis-attribute their last row to
+  the next speaker). `manifest.trace_settings.speaker_attribution`
+  is now `"color_pip"`; `chat_observed.speaker` carries the colour
+  name or `null` when the pip is out of the search window. Verified
+  by `test/speaker_attribution.nim` (4 scenarios: all-colours-in-
+  order, non-palette-order interleaved, wrapped 3-line, empty chat).
 - **Cross-game lineage in a session.** Optional `_session.json`
   with rolled-up counters and a list of round IDs.
 - **Frames-dump rotation.** Cron-style sweeper that compresses and

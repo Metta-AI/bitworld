@@ -22,6 +22,7 @@ import geometry
 import evidence
 import motion
 import voting
+import tuning
 import tuning_snapshot
 
 const
@@ -37,6 +38,8 @@ const
   DecisionsFileName = "decisions.jsonl"
   SnapshotsFileName = "snapshots.jsonl"
   ManifestFileName = "manifest.json"
+  SessionIndexFileName = "_session.json"
+  SessionIndexSchemaVersion = 1
   PartialManifestSentinelKey = "ended_reason"
 
 proc nowMs(): int64 =
@@ -66,6 +69,12 @@ proc roundDirFor(t: TraceWriter, roundId: int): string =
   ## Per-round directory: <root>/<bot>/<session>/<round>.
   t.rootDir / safeFsName(t.botName) / t.sessionId / "round-" &
     intToStr(roundId, 4)
+
+proc sessionDirFor(t: TraceWriter): string =
+  ## Session-level directory: <root>/<bot>/<session>. Holds
+  ## `_session.json` (the cross-round rollup) alongside the per-round
+  ## subdirectories.
+  t.rootDir / safeFsName(t.botName) / t.sessionId
 
 # ---------------------------------------------------------------------------
 # JSON line emission helpers
@@ -101,6 +110,54 @@ proc emitEvent(t: TraceWriter, tick: int, kind: string,
   writeJsonLine(t.eventsFile, line)
   inc t.counters.eventsEmitted
 
+proc tallyBandwagon*(tally: openArray[VoteTallyEntry], targetCode, tick: int):
+    tuple[count, firstTick: int, voters: seq[int]] =
+  ## Pure counter for `meetingVoteTally`: returns how many votes on
+  ## `targetCode` fall inside the rolling `VoteBandwagonWindowTicks`
+  ## window ending at `tick`, the earliest such vote's tick, and the
+  ## voter-colour list (append order, which is observation order).
+  ## Split out so the vote-bandwagon detector can be unit-tested
+  ## independently of the full trace writer state.
+  ##
+  ## The window is inclusive on both sides: entries with
+  ## `tick - entry.tick in 0 .. VoteBandwagonWindowTicks` count.
+  ## Future entries (`entry.tick > tick`) are excluded defensively;
+  ## in normal operation the tally is append-only in tick order so
+  ## this never fires, but a test harness may inject out-of-order
+  ## entries.
+  result.count = 0
+  result.firstTick = tick
+  result.voters = @[]
+  for entry in tally:
+    if entry.targetCode != targetCode: continue
+    if entry.tick > tick: continue
+    if tick - entry.tick > VoteBandwagonWindowTicks: continue
+    inc result.count
+    if entry.tick < result.firstTick:
+      result.firstTick = entry.tick
+    result.voters.add(entry.voter)
+
+proc tierName(tier: TaskGoalTier): string =
+  ## Snake-case name for `decisions.jsonl` consumers. Mirrors the
+  ## eight-tier comments in `policy_crew.nearestTaskGoal`.
+  case tier
+  of TierNone:              "none"
+  of TierMandatoryVisible:  "mandatory_visible"
+  of TierMandatorySticky:   "mandatory_sticky"
+  of TierMandatoryNearest:  "mandatory_nearest"
+  of TierCheckoutSticky:    "checkout_sticky"
+  of TierCheckoutNearest:   "checkout_nearest"
+  of TierRadarSticky:       "radar_sticky"
+  of TierRadarNearest:      "radar_nearest"
+  of TierHomeFallback:      "home_fallback"
+
+proc tierSetToJson(tiers: set[TaskGoalTier]): JsonNode =
+  result = newJArray()
+  for t in TaskGoalTier:
+    if t == TierNone: continue
+    if t in tiers:
+      result.add(%tierName(t))
+
 proc emitDecision(t: TraceWriter, bot: Bot, mask: uint8,
                   prevBranch: string, prevDuration: int) =
   ## Writes one line to decisions.jsonl on a branch transition.
@@ -115,6 +172,15 @@ proc emitDecision(t: TraceWriter, bot: Bot, mask: uint8,
       }
       if bot.goal.path.len > 0:
         g["path_len"] = %bot.goal.path.len
+      # Counterfactual annotation (crewmate task selection only; for
+      # every other branch `selectedTier == TierNone` and the fields
+      # reduce to the inert "none" / empty-array pair).
+      g["selected_tier"] = %tierName(bot.goal.selectedTier)
+      g["tier_candidates"] = tierSetToJson(bot.goal.tierCandidates)
+      var rejected = bot.goal.tierCandidates
+      if bot.goal.selectedTier != TierNone:
+        rejected.excl(bot.goal.selectedTier)
+      g["tier_rejected"] = tierSetToJson(rejected)
       g
     else:
       newJNull()
@@ -174,6 +240,27 @@ proc countersToJson(c: ManifestCounters): JsonNode =
     "snapshots_emitted":   c.snapshotsEmitted
   }
 
+proc addCounters(dst: var ManifestCounters, src: ManifestCounters) =
+  ## Adds every field of `src` into `dst`. Used to roll per-round
+  ## `counters` into `sessionCounters` at round close.
+  dst.ticksTotal         += src.ticksTotal
+  dst.ticksLocalized     += src.ticksLocalized
+  dst.framesDropped      += src.framesDropped
+  dst.meetingsAttended   += src.meetingsAttended
+  dst.votesCast          += src.votesCast
+  dst.skipsVoted         += src.skipsVoted
+  dst.killsExecuted      += src.killsExecuted
+  dst.killsWitnessed     += src.killsWitnessed
+  dst.bodiesSeenFirst    += src.bodiesSeenFirst
+  dst.bodiesReported     += src.bodiesReported
+  dst.tasksCompleted     += src.tasksCompleted
+  dst.chatsSent          += src.chatsSent
+  dst.chatsObserved      += src.chatsObserved
+  dst.stuckEpisodes      += src.stuckEpisodes
+  dst.branchTransitions  += src.branchTransitions
+  dst.eventsEmitted      += src.eventsEmitted
+  dst.snapshotsEmitted   += src.snapshotsEmitted
+
 proc roleString(role: BotRole): string =
   case role
   of RoleUnknown: "unknown"
@@ -223,7 +310,7 @@ proc writeManifest(t: TraceWriter, bot: Bot, ended: bool,
   let traceSettings = %*{
     "level":                  ($t.level)[2 .. ^1].toLowerAscii(),
     "snapshot_period_ticks":  t.snapshotPeriod,
-    "speaker_attribution":    "none",
+    "speaker_attribution":    "color_pip",
     "frames_dump_captured":   t.captureFrames
   }
   var configNode: JsonNode = newJObject()
@@ -271,6 +358,44 @@ proc writeManifest(t: TraceWriter, bot: Bot, ended: bool,
     let f = open(path, fmWrite)
     defer: f.close()
     f.write(manifest.pretty(2))
+    f.write('\n')
+  except IOError, OSError:
+    discard
+
+proc writeSessionIndex(t: TraceWriter) =
+  ## Writes `_session.json` to the session directory. Captures rolled-
+  ## up counters, the ordered list of completed rounds, and their
+  ## per-round results for a cheap cross-round index the harness can
+  ## consume without parsing every manifest. Rewritten at every round
+  ## close and again at session close so a process crash mid-run
+  ## still leaves a usable index.
+  if t.isNil or t.rootDir.len == 0 or t.sessionId.len == 0:
+    return
+  let sessionDir = sessionDirFor(t)
+  let path = sessionDir / SessionIndexFileName
+  var roundIds = newJArray()
+  for rid in t.sessionRoundIds:
+    roundIds.add(%rid)
+  var results = newJArray()
+  for r in t.sessionResults:
+    results.add(%r)
+  let node = %*{
+    "schema_version":        SessionIndexSchemaVersion,
+    "session_id":            t.sessionId,
+    "bot_name":              t.botName,
+    "booted_unix_ms":        t.bootedUnixMs,
+    "last_updated_unix_ms":  nowMs(),
+    "master_seed":           t.masterSeed,
+    "rounds_completed":      t.sessionRoundIds.len,
+    "round_ids":             roundIds,
+    "round_results":         results,
+    "summary_counters":      countersToJson(t.sessionCounters)
+  }
+  try:
+    createDir(sessionDir)
+    let f = open(path, fmWrite)
+    defer: f.close()
+    f.write(node.pretty(2))
     f.write('\n')
   except IOError, OSError:
     discard
@@ -351,7 +476,8 @@ proc beginRound*(t: TraceWriter, bot: var Bot, isMidRound: bool) =
 proc endRound*(t: TraceWriter, bot: var Bot, reason: string,
                gameOverText: string) =
   ## Closes the current round: emits any final events, writes the
-  ## final manifest, and closes file handles. Idempotent.
+  ## final manifest, rolls the round's counters into the session-level
+  ## index, and closes file handles. Idempotent.
   if t.isNil or not t.roundOpen:
     return
   if reason == "game_over_text" and gameOverText.len > 0:
@@ -362,6 +488,10 @@ proc endRound*(t: TraceWriter, bot: var Bot, reason: string,
               })
   writeManifest(t, bot, ended = true, endedReason = reason,
                 finalGameOverText = gameOverText)
+  addCounters(t.sessionCounters, t.counters)
+  t.sessionRoundIds.add(t.roundId)
+  t.sessionResults.add(resolveResult(gameOverText))
+  writeSessionIndex(t)
   closeRoundFiles(t)
   t.roundOpen = false
 
@@ -403,6 +533,12 @@ proc closeTrace*(t: TraceWriter, bot: var Bot, reason: string) =
     return
   if t.roundOpen:
     endRound(t, bot, reason, bot.percep.lastGameOverText)
+  else:
+    # A session that closed without any rounds still benefits from a
+    # skeleton `_session.json` so offline tooling can tell the session
+    # existed but was empty (e.g. process exited before the first
+    # localized frame).
+    writeSessionIndex(t)
 
 # ---------------------------------------------------------------------------
 # Per-frame trace hook
@@ -550,6 +686,24 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
           inc t.counters.killsWitnessed
     t.prevBodiesCount = bot.memory.bodies.len
 
+  # Alibi diff: memory owns per-(colour, task) dedup, so each new
+  # entry is one event worth emitting. `trimAtMeetingEnd` can shrink
+  # the log at a meeting boundary; on shrinkage we simply rebase the
+  # shadow — we never emit retroactively for trimmed entries.
+  if bot.memory.alibis.len > t.prevAlibisCount:
+    for i in t.prevAlibisCount ..< bot.memory.alibis.len:
+      let aev = bot.memory.alibis[i]
+      var taskName = "task-" & $aev.taskIndex
+      if aev.taskIndex >= 0 and aev.taskIndex < bot.sim.tasks.len:
+        taskName = bot.sim.tasks[aev.taskIndex].name
+      emitEvent(t, aev.tick, "alibi_observed", %*{
+        "color":      playerColorName(aev.colorIndex),
+        "task_index": aev.taskIndex,
+        "task_name":  taskName
+      })
+  t.prevAlibisCount = bot.memory.alibis.len
+  t.prevAlibisCount = bot.memory.alibis.len
+
   # Kill executed (imposter): edge on imposter.lastKillTick
   if bot.role == RoleImposter and
       bot.imposter.lastKillTick == tick and bot.imposter.lastKillTick > 0:
@@ -615,6 +769,8 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
         t.meetingVoteCast = false
         t.meetingSelfQueuedNormalized = ""
         t.meetingSeenChat.setLen(0)
+        t.meetingVoteTally.setLen(0)
+        t.meetingBandwagonFired.setLen(0)
         emitEvent(t, tick, "meeting_started", %*{
           "meeting_index":            t.meetingIndex,
           "ticks_since_round_start":  tick - t.roundStartTick,
@@ -650,24 +806,29 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
   # Chat-observed: every new OCR'd line during this meeting.
   if bot.voting.active and t.meetingActive:
     for line in bot.voting.chatLines:
-      let norm = normalizeChatText(line)
+      let norm = normalizeChatText(line.text)
       if norm.len == 0:
         continue
       if norm in t.meetingSeenChat:
         continue
       t.meetingSeenChat.add(norm)
       var qPlaceholder = 0
-      for ch in line:
+      for ch in line.text:
         if ch == '?': inc qPlaceholder
       let quality = if qPlaceholder == 0: "clean" else: "noisy"
       let isSelf = t.meetingSelfQueuedNormalized.len > 0 and
                    norm == t.meetingSelfQueuedNormalized
+      let speakerNode =
+        if line.speakerColor >= 0 and line.speakerColor < PlayerColorCount:
+          %playerColorName(line.speakerColor)
+        else:
+          newJNull()
       emitEvent(t, tick, "chat_observed", %*{
         "meeting_index":      t.meetingIndex,
-        "line":               line,
+        "line":               line.text,
         "first_seen_tick":    tick,
         "ocr_quality":        quality,
-        "speaker":            newJNull(),
+        "speaker":            speakerNode,
         "matches_self_chat":  isSelf
       })
       inc t.counters.chatsObserved
@@ -679,18 +840,40 @@ proc detectAndEmitEvents(t: TraceWriter, bot: var Bot) =
       if bot.voting.choices[ci] != t.prevVoteChoices[ci] and
           bot.voting.choices[ci] != VoteUnknown:
         var targetName = "unknown"
+        var targetCode = VoteUnknown    ## colour index / VoteSkip / -1
         if bot.voting.choices[ci] == VoteSkip or
             bot.voting.choices[ci] == bot.voting.playerCount:
           targetName = "skip"
+          targetCode = VoteSkip
         elif bot.voting.choices[ci] >= 0 and
             bot.voting.choices[ci] < bot.voting.slots.len and
             bot.voting.slots[bot.voting.choices[ci]].colorIndex >= 0:
           let tc = bot.voting.slots[bot.voting.choices[ci]].colorIndex
           targetName = playerColorName(tc)
+          targetCode = tc
         emitEvent(t, tick, "vote_observed", %*{
           "voter":  playerColorName(ci),
           "target": targetName
         })
+        # Append to tally, then check for bandwagon on this target.
+        t.meetingVoteTally.add(VoteTallyEntry(
+          voter: ci, targetCode: targetCode, tick: tick))
+        if targetCode != VoteUnknown and
+            targetCode notin t.meetingBandwagonFired:
+          let stats = tallyBandwagon(t.meetingVoteTally, targetCode, tick)
+          if stats.count >= VoteBandwagonThreshold:
+            var voters = newJArray()
+            for v in stats.voters:
+              voters.add(%playerColorName(v))
+            emitEvent(t, tick, "vote_bandwagon_detected", %*{
+              "meeting_index":     t.meetingIndex,
+              "target":            targetName,
+              "votes_in_window":   stats.count,
+              "window_ticks":      VoteBandwagonWindowTicks,
+              "first_vote_tick":   stats.firstTick,
+              "voters":            voters
+            })
+            t.meetingBandwagonFired.add(targetCode)
         t.prevVoteChoices[ci] = bot.voting.choices[ci]
 
     # Self vote cast

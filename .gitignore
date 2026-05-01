@@ -1,15 +1,13 @@
 # normal ignores:
+.*
 *.exe
-nimcache
-out/
-nim.cfg
-tests/test.js
-tools/runlogs
-tmp/
-client/screenshots/
+*.dll
+*.dylib
+*.dylib.abi
 *.log
 *.egg-info/
 *.pyc
+
 __pycache__/
 .nimby
 .venv/
@@ -32,3 +30,7 @@ among_them/players/mod_talks/__pycache__/
 among_them/players/mod_talks/nimcache/
 among_them/among_them
 .DS_Store
+client/screenshots/
+nimcache/
+out/
+tmp/

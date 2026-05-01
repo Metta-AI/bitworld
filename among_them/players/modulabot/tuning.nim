@@ -39,3 +39,29 @@ const
   MemoryAlibiCooldownTicks* = 20
     ## Per-(colour, task) dedup — suppress an `AlibiEvent` for the
     ## same colour + task if one fired within this many ticks.
+  MemoryAlibiTaskRadiusPx* = 12
+    ## Manhattan distance (world px) from a visible crewmate's centre
+    ## to a task station's centre at or below which we treat the
+    ## crewmate as "at the task terminal" and emit an `AlibiEvent`.
+    ## Task rects are small (~14-18 px on a side) and the crewmate
+    ## sprite occupies most of the rect when they're standing on it,
+    ## so a slightly-larger-than-rect-half radius covers the usual
+    ## doing-the-task pose without picking up crewmates merely
+    ## passing through an adjacent corridor.
+
+  # -----------------------------------------------------------------
+  # Trace-only analysis knobs (TRACING.md)
+  # -----------------------------------------------------------------
+
+  VoteBandwagonThreshold* = 3
+    ## Minimum vote count landing on the same target within a
+    ## `VoteBandwagonWindowTicks` window to count as a bandwagon.
+    ## Three is the smallest setting that captures the usual
+    ## "leader + two followers" pattern while rejecting unrelated
+    ## vote pairs. The signal is trace-only: the policy never acts
+    ## on it, per TODO.md #4 in the Phase-3 list.
+  VoteBandwagonWindowTicks* = 120
+    ## Rolling window (ticks) used to count votes on the same
+    ## target. 120 ticks ≈ 5 s at 24 fps — long enough to absorb
+    ## a chat-reaction delay, short enough that a slow accumulation
+    ## of independent evidence-based votes doesn't trip the flag.

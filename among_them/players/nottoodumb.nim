@@ -1,4 +1,4 @@
-import pixie, protocol, ../sim, ../texts, ../../common/server
+import pixie, protocol, ../sim, ../texts, ../votereader, ../../common/server
 when not defined(nottoodumbLibrary):
   import silky, whisky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -835,6 +835,15 @@ proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
   text == "CREW WINS" or text == "IMPS WIN"
 
+proc isLobbyText(text: string): bool =
+  ## Returns true for lobby/waiting screens that imply a fresh match state.
+  text == "GAME" or text == "STARTING" or text == "WAITING" or
+    text == "NEED MORE!" or text.startsWith("IN ")
+
+proc isRoleRevealText(text: string): bool =
+  ## Returns true when the server is revealing a fresh role assignment.
+  text == "CREWMATE" or text == "IMPS"
+
 proc clearVotingState(bot: var Bot) =
   ## Clears the parsed voting screen state.
   bot.voting = false
@@ -1092,11 +1101,16 @@ proc updateLocation(bot: var Bot) =
     bot.visibleCrewmates.setLen(0)
     bot.visibleBodies.setLen(0)
     bot.visibleGhosts.setLen(0)
+    if bot.interstitialText.isLobbyText() and
+        (bot.gameStarted or bot.homeSet):
+      bot.resetRoundState()
     if bot.interstitialText.isGameOverText() and
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
     elif not bot.parseVotingScreen():
+      if bot.interstitialText.isRoleRevealText() and bot.gameStarted:
+        bot.resetRoundState()
       bot.rememberRoleReveal()
     return
   bot.interstitialText = ""
@@ -1829,9 +1843,29 @@ proc parseVotingScreen(bot: var Bot): bool =
       bot.voteStartTick
     else:
       bot.frameTick
-  for count in countdown(MaxPlayers, 1):
-    if bot.parseVotingCandidate(count, startTick):
-      return true
+  let read = parseVoteFrame(
+    bot.unpacked,
+    bot.sim.asciiSprites,
+    bot.playerSprite,
+    bot.bodySprite
+  )
+  if read.found:
+    bot.clearVotingState()
+    bot.voting = true
+    bot.votePlayerCount = read.playerCount
+    bot.voteStartTick = startTick
+    bot.voteCursor = read.cursor
+    bot.voteSelfSlot = read.selfSlot
+    for i in 0 ..< read.playerCount:
+      bot.voteSlots[i].colorIndex = read.slots[i].colorIndex
+      bot.voteSlots[i].alive = read.slots[i].alive
+    for i in 0 ..< min(bot.voteChoices.len, read.choices.len):
+      bot.voteChoices[i] = read.choices[i]
+    if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+      bot.selfColorIndex = read.slots[read.selfSlot].colorIndex
+    bot.voteChatText = read.chatText
+    bot.voteChatSusColor = read.chatSusColor
+    return true
   bot.clearVotingState()
   false
 

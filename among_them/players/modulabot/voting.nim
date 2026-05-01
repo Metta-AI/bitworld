@@ -12,6 +12,7 @@ import std/strutils
 
 import protocol
 import ../../sim
+import ../../votereader
 import ../../../common/server
 
 import types
@@ -30,8 +31,27 @@ const
   VoteListenTicks* = 100
     ## Frames to wait after the cursor lands on the target before
     ## pressing A. Lets chat fully load and absorb late "sus X" calls.
-  VoteChatTextX* = 21
-  VoteChatChars* = 15
+  VoteChatTextX* = sim.VoteChatTextX
+    ## Left x of the chat text column. Sourced from sim so the font
+    ## migration to variable-width tiny5 does not strand an OCR
+    ## offset tuned for the previous fixed-7-px grid.
+  VoteChatChars* = sim.VoteChatCharsPerLine
+    ## Maximum glyphs read per chat line. Variable-width glyphs
+    ## advance by their own width so `readRun` terminates when the
+    ## remaining panel width is exhausted regardless.
+  VoteChatIconX* = sim.VoteChatIconX
+    ## Left x of the per-message speaker-icon sprite rendered in the
+    ## voting chat panel (see `sim.drawVoteChat`). Mirrors the sim
+    ## constant so the crewmate sprite matcher resolves the pip
+    ## against `bot.sprites.player` at the exact pixel where the sim
+    ## blits it.
+  VoteChatSpeakerSearch* = 24
+    ## Maximum vertical distance (pixels) from a chat text-line y to
+    ## a speaker pip's sprite-top y before we declare the pip
+    ## unrelated. Worst-case offset for a single sprite (12 px tall)
+    ## above a 2-line message (14 px) is well under this. Too tight
+    ## drops valid pairings; too loose would mis-attribute lines to
+    ## the preceding message's icon.
 
 # ---------------------------------------------------------------------------
 # State management
@@ -85,7 +105,7 @@ proc voteSkipTextMatches*(bot: Bot, skipX, skipY: int): bool =
   for y in max(0, skipY - 1) .. min(ScreenHeight - 6, skipY + 1):
     let
       minX = max(0, skipX - 2)
-      maxX = min(ScreenWidth - asciiTextWidth("SKIP"), skipX + 2)
+      maxX = min(ScreenWidth - bot.asciiTextWidth("SKIP"), skipX + 2)
     for x in minX .. maxX:
       if bot.asciiTextMatches("SKIP", x, y):
         return true
@@ -182,11 +202,6 @@ proc parseVoteDotsForTarget*(bot: var Bot, target,
 # Chat text OCR
 # ---------------------------------------------------------------------------
 
-proc readAsciiRun*(bot: Bot, x, y, count: int): string =
-  for i in 0 ..< count:
-    result.add(bot.bestAsciiGlyph(x + i * 7, y))
-  result = result.strip()
-
 proc usefulChatLine*(line: string): bool =
   ## True when a parsed line contains real letters (not just `?`s).
   var
@@ -199,34 +214,130 @@ proc usefulChatLine*(line: string): bool =
       inc unknown
   letters >= 2 and unknown * 2 <= max(1, line.len)
 
-iterator visibleChatLines*(bot: Bot, count: int): string =
+iterator visibleChatLines*(bot: Bot, count: int):
+    tuple[y: int, text: string] =
   ## Yields each chat line currently rendered on the voting screen, in
   ## row order, with sequential duplicates collapsed and useless lines
-  ## (no letters, mostly `?` glyphs) skipped. The trace writer
-  ## consumes this directly to detect newly-observed lines without a
-  ## second OCR pass; `readVoteChatText` is now a thin wrapper that
-  ## concatenates the same yields.
+  ## (no letters, mostly `?` glyphs) skipped. Each yield carries the
+  ## row y so callers can associate the line with a speaker pip. The
+  ## trace writer consumes the text path; `parseVotingCandidate` pairs
+  ## each (y, text) with a speaker colour via `readVoteChatSpeakers`.
+  ##
+  ## Scan starts at `chatY + 1`: the sim's `drawVoteChat` sets the
+  ## first message's `rowY` to `chatY + 1`, so OCR has to begin there
+  ## too. Starting at `chatY + 2` — as the pre-font-migration reader
+  ## did — dropped the first-visible message by exactly one pixel.
   let
     layout = voteGridLayout(count)
     chatY = layout.skipY + 10
   var previous = ""
-  for y in chatY + 2 ..< ScreenHeight - 6:
+  for y in chatY + 1 ..< ScreenHeight - 6:
     let line = bot.readAsciiRun(VoteChatTextX, y, VoteChatChars)
     if not line.usefulChatLine():
       continue
     if line == previous:
       continue
-    yield line
+    yield (y, line)
     previous = line
+
+proc voteChatSpeakerAt*(bot: Bot, y: int): int =
+  ## Reads one voting-chat speaker-icon colour at a given sprite-top
+  ## y coordinate. Returns `VoteUnknown` if the player sprite does
+  ## not match at `(VoteChatIconX, y)`. Mirrors the crewmate sprite
+  ## match used elsewhere so palette variants (shaded vs. plain)
+  ## resolve identically here.
+  if y < 0 or y > ScreenHeight - bot.sprites.player.height:
+    return VoteUnknown
+  if not matchesCrewmate(bot.io.unpacked, bot.sprites.player,
+                         VoteChatIconX, y, false):
+    return VoteUnknown
+  let idx = crewmateColorIndex(bot.io.unpacked, bot.sprites.player,
+                               VoteChatIconX, y, false)
+  if idx < 0:
+    return VoteUnknown
+  idx
+
+proc readVoteChatSpeakers*(bot: Bot, count: int):
+    seq[tuple[y: int, colorIndex: int]] =
+  ## Scans the voting chat panel for speaker icons. Returns one
+  ## `(spriteTopY, colorIndex)` entry per visible pip. Consecutive
+  ## y-coordinates inside a single sprite (12 px) are collapsed so
+  ## one pip yields one entry. Order matches top-to-bottom render
+  ## order, matching the chat-line yield order from
+  ## `visibleChatLines`. Scan starts at `chatY + 1` (where the
+  ## first pip's sprite top can land for a single-line message)
+  ## rather than `chatY + 2`, to avoid missing the oldest visible
+  ## pip.
+  let
+    layout = voteGridLayout(count)
+    chatY = layout.skipY + 10
+    yMax = ScreenHeight - bot.sprites.player.height
+  if yMax < chatY + 1:
+    return
+  for y in chatY + 1 .. yMax:
+    let colorIndex = bot.voteChatSpeakerAt(y)
+    if colorIndex == VoteUnknown:
+      continue
+    if result.len > 0 and abs(result[^1].y - y) < bot.sprites.player.height div 2:
+      continue
+    result.add((y: y, colorIndex: colorIndex))
+
+proc voteChatSpeakerForLine*(speakers: openArray[tuple[y: int,
+                                                       colorIndex: int]],
+                             textY: int): int =
+  ## Returns the speaker colour for one chat text-line y.
+  ##
+  ## Strategy: prefer the pip at or above the line (largest
+  ## `pip.y <= textY`). This handles the common case (pip's top edge
+  ## is at the first text-line y for a 1-line message) and every
+  ## case where the text line is one of the middle / lower lines of
+  ## a wrapped multi-line message (pip is centered on the text
+  ## block, so middle / lower lines are always below pip.y).
+  ##
+  ## Fallback: if no pip sits at or above the line — which happens
+  ## when the text line is the FIRST line of a wrapped message
+  ## (pip is centered below the first line by up to
+  ## `(VoteChatLineCount * TextLineHeight - SpriteSize) / 2` ≈ 29
+  ## pixels for an extreme 10-line message, but typically ≤ 6 for
+  ## realistic 2–3 line messages) — fall back to the nearest pip
+  ## below within `VoteChatSpeakerSearch` rows.
+  ##
+  ## Equidistant pure-nearest attribution (italkalot's approach)
+  ## mis-credits the last line of a multi-line message to the next
+  ## speaker's pip; the prefer-above bias fixes that without
+  ## dropping valid pairings.
+  result = VoteUnknown
+  var
+    bestAboveY = low(int)
+    bestAboveColor = VoteUnknown
+    bestBelowY = high(int)
+    bestBelowColor = VoteUnknown
+  for speaker in speakers:
+    if speaker.y <= textY:
+      if speaker.y > bestAboveY:
+        bestAboveY = speaker.y
+        bestAboveColor = speaker.colorIndex
+    else:
+      if speaker.y < bestBelowY:
+        bestBelowY = speaker.y
+        bestBelowColor = speaker.colorIndex
+  if bestAboveColor != VoteUnknown and
+      textY - bestAboveY <= VoteChatSpeakerSearch:
+    return bestAboveColor
+  if bestBelowColor != VoteUnknown and
+      bestBelowY - textY <= VoteChatSpeakerSearch:
+    return bestBelowColor
+  result = VoteUnknown
 
 proc readVoteChatText*(bot: Bot, count: int): string =
   ## Concatenated OCR of the voting chat region. Used by
-  ## `chatSusColorIndex` for sus-target detection. Refactored in
-  ## Phase 2 to share `visibleChatLines` with the trace writer.
+  ## `chatSusColorIndex` for sus-target detection. Shares the
+  ## `visibleChatLines` iterator with the trace writer so both
+  ## paths see identical line boundaries.
   for line in bot.visibleChatLines(count):
     if result.len > 0:
       result.add(' ')
-    result.add(line)
+    result.add(line.text)
 
 proc normalizeChatText*(text: string): string =
   ## Lowercase + collapse non-alphanumerics into single spaces.
@@ -297,53 +408,54 @@ proc parseVotingCandidate*(bot: var Bot, count, startTick: int): bool =
   ## Returns false unless every slot resolves to a colour matching
   ## its index — that's the strict invariant that makes "no, this
   ## isn't the voting screen" the only failure mode.
-  let layout = voteGridLayout(count)
-  if not bot.voteSkipTextMatches(layout.skipX, layout.skipY):
+  ##
+  ## Slot / cursor / self-slot / choices come from the shared
+  ## `parseVoteFrame` reader in `votereader.nim` (one OCR pass
+  ## tuned for all bots). Chat-line OCR is done locally so we can
+  ## attach per-line speaker colour + row y to the `VoteChatLine`
+  ## records the trace writer and long-term memory consume —
+  ## granularity the shared reader currently folds into one entry
+  ## per message.
+  let read = parseVoteFrame(
+    bot.io.unpacked,
+    bot.sim.asciiSprites,
+    bot.sprites.player,
+    bot.sprites.body,
+    count
+  )
+  if not read.found:
     return false
-  var slots: array[MaxPlayers, VoteSlot]
-  for i in 0 ..< count:
-    slots[i] = bot.parseVoteSlot(count, i)
-    if slots[i].colorIndex == VoteUnknown:
-      return false
-    if slots[i].colorIndex != i:
-      return false
-
   bot.clearVotingState()
   bot.voting.active = true
-  bot.voting.playerCount = count
+  bot.voting.playerCount = read.playerCount
   bot.voting.startTick = startTick
-  bot.voting.cursor = VoteUnknown
-  bot.voting.selfSlot = VoteUnknown
-  for i in 0 ..< count:
-    bot.voting.slots[i] = slots[i]
-    if slots[i].alive and bot.voteCellSelected(count, i):
-      bot.voting.cursor = i
-    if bot.voteSelfMarkerPresent(count, i, slots[i].colorIndex):
-      bot.voting.selfSlot = i
-      bot.identity.selfColor = slots[i].colorIndex
-    let cell = voteCellOrigin(count, i)
-    bot.parseVoteDotsForTarget(
-      i,
-      cell.x + 1,
-      cell.y + bot.sprites.player.height + 2
-    )
-  if bot.voteSkipSelected(layout.skipX, layout.skipY):
-    bot.voting.cursor = count
-  bot.parseVoteDotsForTarget(
-    VoteSkip,
-    layout.skipX + VoteSkipW + 2,
-    layout.skipY
-  )
-  # Cache per-line OCR for the trace writer (chat_observed events).
+  bot.voting.cursor = read.cursor
+  bot.voting.selfSlot = read.selfSlot
+  for i in 0 ..< read.playerCount:
+    bot.voting.slots[i].colorIndex = read.slots[i].colorIndex
+    bot.voting.slots[i].alive = read.slots[i].alive
+  for i in 0 ..< min(bot.voting.choices.len, read.choices.len):
+    bot.voting.choices[i] = read.choices[i]
+  if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+    bot.identity.selfColor = read.slots[read.selfSlot].colorIndex
+  # Cache per-line OCR + speaker attribution for the trace writer
+  # (chat_observed events) and long-term memory. Speaker pips are
+  # scanned once per frame and paired with each text line by nearest
+  # sprite-top y.
   bot.voting.chatLines.setLen(0)
+  let speakers = bot.readVoteChatSpeakers(count)
   for line in bot.visibleChatLines(count):
-    bot.voting.chatLines.add(line)
+    bot.voting.chatLines.add(VoteChatLine(
+      speakerColor: voteChatSpeakerForLine(speakers, line.y),
+      y: line.y,
+      text: line.text
+    ))
   # Rebuild the concatenated text used by chatSusColorIndex.
   bot.voting.chatText.setLen(0)
   for line in bot.voting.chatLines:
     if bot.voting.chatText.len > 0:
       bot.voting.chatText.add(' ')
-    bot.voting.chatText.add(line)
+    bot.voting.chatText.add(line.text)
   bot.voting.chatSusColor = chatSusColorIndex(bot.voting.chatText)
   true
 

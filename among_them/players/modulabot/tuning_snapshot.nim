@@ -28,6 +28,13 @@ proc tuningSnapshot*(): JsonNode =
   result = %*{
     # tuning.nim
     "TeleportThresholdPx":              TeleportThresholdPx,
+    "MemorySightingDedupTicks":         MemorySightingDedupTicks,
+    "MemorySightingDedupPixels":        MemorySightingDedupPixels,
+    "MemoryBodyDedupPx":                MemoryBodyDedupPx,
+    "MemoryAlibiCooldownTicks":         MemoryAlibiCooldownTicks,
+    "MemoryAlibiTaskRadiusPx":          MemoryAlibiTaskRadiusPx,
+    "VoteBandwagonThreshold":           VoteBandwagonThreshold,
+    "VoteBandwagonWindowTicks":         VoteBandwagonWindowTicks,
     # voting.nim
     "VoteCellW":                        VoteCellW,
     "VoteCellH":                        VoteCellH,

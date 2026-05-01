@@ -66,6 +66,7 @@ The server serves these pages:
 - Player: `http://localhost:2000/client/player.html`
 - Global viewer: `http://localhost:2000/client/global.html`
 - Rewards: `http://localhost:2000/client/rewards.html`
+- Stats and join QR: `http://localhost:2000/client/stats.html`
 
 These routes are served from:
 
@@ -76,6 +77,10 @@ These routes are served from:
 The player client connects to `/player`, the global viewer connects to
 `/global`, and the rewards viewer connects to `/reward` on the same host as
 the page.
+
+The stats page also exposes live match controls. Use `Restart match` to queue a
+new match with the current connected players, or the `X` beside a connected
+player to kick that player from the game.
 
 ## Run AI Players
 
