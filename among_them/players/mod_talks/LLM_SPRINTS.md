@@ -666,6 +666,284 @@ live games to be conclusive).
 
 ---
 
+## Sprint 6 — LLM as a first-class citizen of the CLI binary
+
+Goal: the LLM voting layer should work everywhere the rest of
+mod_talks works — `quick_player`, standalone CLI runs, remote
+servers — without requiring the Python wrapper. The Python wrapper
+stays the canonical cogames-tournament path; Sprint 6 makes it
+optional for everything else.
+
+**Status:** planned, not started. See the design report in chat
+(2026-05-01) for the architectural background. Estimated effort:
+~17 hours / 2 working days.
+
+**Hard scope rule:** all new code lives under
+`among_them/players/mod_talks/`. No edits to `src/bitworld/ais/`,
+`common/`, `among_them/sim.nim`, or other shared repo files —
+those belong to the bitworld team. We re-implement the small
+slice of provider HTTP we need rather than extending shared
+modules.
+
+### Why this is a sprint
+
+The current `mod_talks_llm` CLI binary accepts `-d:modTalksLlm`
+and connects to any server via `--address:HOST --port:N`, but
+`llmEnable(bot)` is never called and `tickLlmVoting` no-ops. The
+LLM dispatch loop only exists in the Python wrapper at
+`cogames/amongthem_policy.py`. That makes the LLM unreachable
+from `quick_player`, from any non-cogames runner, and from any
+remote-server scenario. Sprint 6 closes that gap by porting the
+HTTP dispatch + worker thread to Nim, gated behind the existing
+`-d:modTalksLlm` flag.
+
+### 6.1 Nim-side LLM provider module (`llm_provider.nim`)
+
+- [ ] New file `among_them/players/mod_talks/llm_provider.nim`.
+      Self-contained — does NOT import or extend
+      `src/bitworld/ais/claude.nim`. We re-implement the slice we
+      need so the bitworld repo stays untouched.
+- [ ] Dependencies: `curly` for HTTP, `jsony` for JSON, both
+      already locked in `nimby.lock` and used elsewhere in the
+      repo so no new package surface.
+- [ ] Provider abstraction:
+      ```nim
+      type
+        LlmProviderKind* = enum
+          lpkDisabled,           ## no creds detected → rule-based fallback
+          lpkAnthropicDirect,    ## ANTHROPIC_API_KEY
+          lpkOpenAIDirect        ## OPENAI_API_KEY (parity with Sprint 5.3
+                                 ## Python skeleton; live-verify in 6.3)
+          # lpkBedrock           ## deferred to 6.4 — see below
+
+        LlmProvider* = ref object
+          kind*: LlmProviderKind
+          apiKey*: string
+          model*: string
+          baseUrl*: string
+
+      proc newLlmProvider*(): LlmProvider
+      proc complete*(p: LlmProvider; role: int; kind: LlmCallKind;
+                     contextJson: string; timeoutSec: float):
+                     tuple[response: string; errored: bool;
+                           latencyMs: int]
+      ```
+- [ ] `newLlmProvider` env-var resolution (matches the Python
+      wrapper's preference order so the two paths behave
+      identically):
+  - [ ] `MODTALKS_LLM_DISABLE=1` → return `lpkDisabled`.
+  - [ ] `MODTALKS_PROVIDER_OPENAI=1` + `OPENAI_API_KEY` → OpenAI.
+  - [ ] `ANTHROPIC_API_KEY` → Anthropic direct.
+  - [ ] `OPENAI_API_KEY` (no Anthropic key) → OpenAI fallback.
+  - [ ] Else → `lpkDisabled` with a warning log.
+- [ ] Tool-use schema construction. Port the Anthropic
+      `_LLM_TOOL_DEFINITIONS` table from
+      `cogames/amongthem_policy.py` to a Nim const table; emit
+      the same per-`LlmCallKind` tool definitions in the request
+      body so the model is forced to emit structured output (no
+      schema-in-prompt parse drift).
+- [ ] Per-call-kind timeouts. Port the
+      `PER_KIND_TIMEOUT_SECONDS` table from the Python wrapper.
+      Move the values into `tuning.nim` so both paths read the
+      same source of truth.
+- [ ] Retry/backoff. Port the Sprint 4.4 retry policy: max 2
+      retries, exponential backoff `(0.5s, 1.5s)`, retry only on
+      5xx / 429 / connection errors / timeouts, abandon if next
+      backoff would push past the call deadline.
+- [ ] Response parsing. For tool-use responses, extract the
+      first `tool_use` content block's `input` and serialize
+      back to JSON. Fallback path for legacy text responses
+      (matches the Python `_strip_markdown_code_fence` semantics).
+- [ ] Unit tests in `test/llm_provider_unit.nim`:
+  - [ ] `newLlmProvider()` returns `lpkDisabled` when no env vars
+        present (cleanest: clear env vars in test).
+  - [ ] `newLlmProvider()` selects the correct provider for each
+        env-var combination.
+  - [ ] Tool definitions match the Anthropic shape
+        (object compare against a captured fixture).
+  - [ ] Mock HTTP via local server — POST to `127.0.0.1:0` and
+        verify request body shape matches expected.
+
+### 6.2 Worker thread / dispatch (`llm_dispatch.nim`)
+
+- [ ] New file `among_them/players/mod_talks/llm_dispatch.nim`.
+- [ ] Single-agent dispatcher (CLI binary path = one agent per
+      process, so we don't need the Python wrapper's per-agent
+      futures map):
+      ```nim
+      type
+        LlmDispatcher* = ref object
+          thread: Thread[ptr LlmDispatcherCtx]
+          provider: LlmProvider
+          requests: Channel[LlmRequest]
+          results: Channel[LlmResult]
+          inflight: bool
+          shutdown: Atomic[bool]
+      ```
+- [ ] Lifecycle:
+  - [ ] `initLlmDispatcher(provider): LlmDispatcher` spawns the
+        worker thread with `Channel.open()`.
+  - [ ] `submitLlmCall(d, request): bool` — non-blocking; true
+        if accepted (slot was empty), false if a call is already
+        in flight (Nim state machine respects single-slot
+        semantics so this should never collide).
+  - [ ] `tryGatherLlmResult(d, deadlineMs): Option[LlmResult]` —
+        non-blocking poll; returns `some(...)` if the worker has
+        produced a result, `none` otherwise.
+  - [ ] `closeLlmDispatcher(d)` flips the shutdown atomic, closes
+        the request channel, joins the thread.
+- [ ] Worker loop body: read request → call
+      `provider.complete(...)` → write result. Provider call
+      already includes timeouts and retries (6.1); the worker
+      itself just blocks on the HTTP call.
+- [ ] Determinism: the dispatcher is bypassed when
+      `bot.llm.mock.enabled = true` (Sprint 3.1's mock harness
+      stays the deterministic test path). Live dispatch is
+      explicitly non-deterministic by design.
+
+### 6.3 `runner.nim` integration + new CLI flags
+
+- [ ] In `viewer/runner.nim:runBot` (under
+      `when defined(modTalksLlm)`):
+  - [ ] Construct `LlmProvider` at startup; if `lpkDisabled` log
+        a warning and skip the rest (bot runs as rule-based
+        modulabot).
+  - [ ] Construct `LlmDispatcher` from the provider.
+  - [ ] Call `llmEnable(bot)` so `tickLlmVoting` becomes active.
+  - [ ] In the per-frame loop, after each `decideNextMask`:
+        1. If `llmTakePendingRequest(bot)` returns a non-`lckNone`
+           kind, build an `LlmRequest` and `submitLlmCall`.
+        2. Call `tryGatherLlmResult(deadline=0)` and if a result
+           is ready, feed it via `onLlmResponse(bot, kind, json,
+           errored)`.
+  - [ ] On `runBot` exit (clean or error), call
+        `closeLlmDispatcher(d)` so the worker thread doesn't
+        leak.
+- [ ] New CLI flags (mutually exclusive with `--llm-mock`):
+  - [ ] `--llm-provider:anthropic|openai|disabled` — overrides
+        env-var auto-detection.
+  - [ ] `--llm-model:NAME` — overrides default model id (also
+        respects `MODTALKS_LLM_MODEL` env var, like the Python
+        wrapper).
+- [ ] Logging — print the provider/model on first successful
+      call so operators can confirm the dispatch path live
+      (matches the Python wrapper's `mod_talks LLM via
+      AnthropicBedrock ...` info line).
+
+### 6.4 Bedrock support — DEFERRED until needed
+
+- [ ] **Decision deferred.** Three options when this becomes
+      blocking:
+  - [ ] **A. Pure-Nim SigV4** (~12 hours). Self-contained but
+        duplicates what AWS SDK does. Crypto: HMAC-SHA256 +
+        canonical request construction. Doable but tedious.
+  - [ ] **B. `aws bedrock-runtime invoke-model` subprocess**
+        (~6 hours). Adds AWS CLI as runtime dep. Surprisingly
+        clean — call `subprocess.run([aws, ...])` from a worker
+        thread, capture stdout JSON.
+  - [ ] **C. Skip Nim Bedrock**, leave the Python wrapper as
+        the only Bedrock path. Document that direct Anthropic /
+        OpenAI work in CLI; Bedrock requires the Python launcher
+        / cogames runner.
+- [ ] Recommendation: **C until A or B is actually needed.**
+      Tournament path is via `cogames/amongthem_policy.py` which
+      already does Bedrock. The CLI Sprint-6 path covers
+      direct-API providers, which is the more common dev case
+      anyway (no AWS SSO refresh, no boto3, no IAM roles).
+
+### 6.5 `quick_player` integration
+
+The current `tools/quick_player.nim` always runs `nim c <file>`
+without `-d` defines and only forwards `--address`/`--port`/
+`--name`/`--gui`/`--map` to the spawned binary. To make it work
+with the LLM build, we have three options:
+
+- [ ] **A. Add `--define:KEY[=VAL]` passthrough to
+      `quick_player`.** Most surgical — extends `compilePlayer`
+      to accept extra `nim c` args. Caveat: this *does* edit
+      `tools/quick_player.nim`, which is outside the
+      `among_them/players/mod_talks/` scope rule. Unclear
+      whether the user's "don't mess with bitworld outside the
+      players directory" includes `tools/`; flag for review.
+- [ ] **B. New mod_talks-specific runner script.**
+      `among_them/players/mod_talks/scripts/quick_player_llm.sh`
+      that wraps the standard build + N-process spawn:
+      ```sh
+      #!/usr/bin/env bash
+      # Builds mod_talks_llm once, then spawns N copies against
+      # an existing server. Drop-in alternative to quick_player
+      # for the LLM build path.
+      ```
+      Stays inside the players directory. Slightly less
+      idiomatic but respects the scope rule.
+- [ ] **C. Don't extend either.** User builds the LLM binary
+      manually (`nim c -d:modTalksLlm ...`) and uses bash
+      one-liners (`for i in {1..8}; do mod_talks_llm
+      --address:... --port:... --name:llm$i & done`) for
+      multi-process runs.
+- [ ] **Decision pending user input.** Default: ship B (script
+      under `mod_talks/scripts/`); defer A unless the user
+      explicitly approves a `tools/` edit.
+
+### 6.6 Sprint 6 acceptance
+
+- [ ] Both builds compile clean: rule-based and `-d:modTalksLlm`.
+- [ ] Self-consistency parity 500/500 across seeds
+      {1, 42, 100, 7777} preserved in non-LLM, LLM (no creds set
+      → falls back to disabled), and mock matrices.
+- [ ] `llm_unit.nim` continues passing all 56 tests.
+      `llm_provider_unit.nim` adds new coverage (target ~15
+      tests).
+- [ ] **End-to-end remote-server smoke** (the headline test):
+      ```sh
+      ANTHROPIC_API_KEY=sk-ant-... \
+      ./mod_talks_llm \
+        --address:my.server.com --port:2000 \
+        --name:test --trace-dir:/tmp/run
+      ```
+      manifest carries `trace_settings.llm_layer_active: true`,
+      `events.jsonl` has matching
+      `llm_dispatched` / `llm_decision` pairs from the Nim-side
+      dispatcher.
+- [ ] **`quick_player`-equivalent multi-bot smoke.** Either via
+      6.5 option A, B, or C — 4-8 LLM bots running against the
+      same server, all dispatching independently, no shared
+      thread contention (each is its own process).
+- [ ] Documentation:
+  - [ ] `README.md` adds the new commands to the runbook.
+  - [ ] `DESIGN.md §12` env-var matrix gets the new flags.
+  - [ ] `LLM_VOTING.md` Q-LLM2 / §6 amendment notes that the
+        Nim-side dispatcher is a parallel implementation of
+        Option B's Python concurrency for the CLI path.
+
+### Notes on dependencies and the scope rule
+
+- **Stays inside `players/mod_talks/`:** `llm_provider.nim`,
+  `llm_dispatch.nim`, new tests, scripts, doc updates,
+  `runner.nim` (already in `players/mod_talks/viewer/`),
+  `tuning.nim`, `modulabot.nim` (CLI flag plumbing).
+- **Touches outside the scope rule (flag for review before
+  landing):** `tools/quick_player.nim` if option 6.5-A is
+  chosen. Default: don't.
+- **Never touched:** `src/bitworld/ais/*`, `common/`,
+  `among_them/sim.nim`. The fact that `claude.nim` exists in
+  the shared repo is irrelevant — we re-implement the small
+  slice we need.
+
+### Out of scope for Sprint 6 (explicitly)
+
+- Bedrock support in Nim (deferred to a follow-up sprint when
+  there's a concrete ask).
+- Async/non-blocking HTTP. The single-worker-thread design is
+  adequate for one-agent-per-process; if `quick_player` ever
+  starts running multiple agents in one process, this might
+  need revisiting.
+- Provider-side prompt caching (Anthropic's `cache_control`).
+  Worth measuring once the eval harness has enough data to
+  estimate cost-per-game, but not a Sprint 6 goal.
+
+---
+
 ## Parking lot (explicitly out of scope for these sprints)
 
 Items from the report and from inherited modulabot TODOs that
@@ -764,3 +1042,16 @@ PR for detailed design discussions.
   `tuning_snapshot.nim`; `trace_smoke.sh` grep step warns on
   drift. Final parity: 500/500 across seeds {1, 42, 7777} in
   non-LLM, LLM, and mock-LLM matrices.
+- **2026-05-01** — Sprint 6 planned (not started). Triggered by
+  the realisation that the LLM voting layer doesn't work with
+  remote servers or `quick_player`: the dispatch loop only
+  exists in the Python wrapper. Sprint 6 ports HTTP dispatch +
+  worker thread to Nim under
+  `among_them/players/mod_talks/llm_provider.nim` /
+  `llm_dispatch.nim`, gated behind `-d:modTalksLlm`. Scope rule
+  for the sprint: no edits to shared bitworld files
+  (`src/bitworld/ais/*`, `common/`, `among_them/sim.nim`).
+  Direct Anthropic + OpenAI providers in scope; Bedrock
+  deferred (Python wrapper still owns Bedrock). Tournament
+  path via `cogames/amongthem_policy.py` is unchanged. Effort
+  estimate: ~17 hours / 2 days.
