@@ -82,6 +82,7 @@ type
 
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
+  HealthPath = "/health"
   ControlRestartPath = "/control/restart"
   ControlKickPath = "/control/kick"
 
@@ -631,7 +632,12 @@ proc respondKicked(request: Request) =
   request.respond(409, headers, "player was kicked\n")
 
 proc httpHandler(request: Request) =
-  if request.path == WebSocketPath and request.httpMethod == "GET":
+  if request.path == HealthPath and request.httpMethod == "GET":
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain; charset=utf-8"
+    headers["Cache-Control"] = "no-cache"
+    request.respond(200, headers, "healthy")
+  elif request.path == WebSocketPath and request.httpMethod == "GET":
     let identity = request.playerIdentity()
     if identity.identityIsKicked():
       request.respondKicked()
