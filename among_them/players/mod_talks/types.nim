@@ -445,6 +445,34 @@ type
                                         ## (see modulabot_enable_llm). Without
                                         ## this the state machine stays Idle.
 
+  LlmMockEntry* = object
+    ## One scripted LLM response for deterministic testing
+    ## (Sprint 3.1). Consumed in strict FIFO order by `llmMockPump`
+    ## — a `kind` mismatch between the pending request and the next
+    ## entry is treated as a fixture authoring error, not a
+    ## recoverable case. The mock loader is lenient: unknown fields
+    ## are ignored so fixture files can carry annotations the bot
+    ## doesn't need.
+    kind*: LlmCallKind
+    responseJson*: string               ## stringified JSON the bot
+                                        ## would have received from
+                                        ## the provider; empty when
+                                        ## `errored = true`.
+    errored*: bool
+
+  LlmMock* = object
+    ## Scripted-response queue. `enabled` is flipped by
+    ## `llmMockEnable`; when true, `tickLlmVoting` short-circuits
+    ## each pending dispatch by calling `onLlmResponse` with the
+    ## next fixture entry. This bypasses the Python wrapper and
+    ## the real provider, keeping regression tests fully
+    ## deterministic (Sprint 3.1, 3.2).
+    enabled*: bool
+    entries*: seq[LlmMockEntry]
+    cursor*: int                        ## next entry index to consume
+    mismatchCount*: int                 ## diagnostic — expected-vs-actual
+                                        ## kind mismatches seen this session
+
   LlmSessionCounters* = object
     ## Session-lifetime tally of LLM activity. Unlike
     ## `ManifestCounters` (per-round), these accumulate across the
@@ -478,6 +506,9 @@ type
     counters*: LlmSessionCounters
     layerActiveAckTick*: int            ## bot.frameTick when Python called
                                         ## modulabot_enable_llm; -1 if never
+    mock*: LlmMock                      ## deterministic scripted-response
+                                        ## queue (Sprint 3.1). `mock.enabled`
+                                        ## short-circuits real dispatch.
 
   ImposterState* = object
     killReady*: bool
