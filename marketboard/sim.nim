@@ -763,10 +763,14 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
   if player.state != Idle:
     return
 
-  let target = sim.bestInteractionTile(player)
+  let target = player.interactionTile()
   var objIndex = -1
   if inTileBounds(target.tx, target.ty):
     objIndex = sim.objectIndexAt(target.tx, target.ty)
+  if objIndex < 0:
+    let standing = player.standingTile()
+    if inTileBounds(standing.tx, standing.ty):
+      objIndex = sim.objectIndexAt(standing.tx, standing.ty)
   if objIndex < 0:
     return
 
