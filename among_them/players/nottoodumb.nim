@@ -295,8 +295,9 @@ type
 
 proc gameDir(): string =
   ## Returns the Among Them game directory.
-  ## Expects to be invoked from the bitworld project root.
-  getCurrentDir() / "among_them"
+  ## Expects to be invoked with CWD = among_them/players/, the dir
+  ## quick_player and the Docker wrapper land in.
+  getCurrentDir().parentDir()
 
 proc atlasPath(): string =
   ## Returns the shared Silky atlas path.

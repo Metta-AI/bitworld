@@ -148,8 +148,9 @@
           '';
         });
 
-        # Same idea for the bot: it shares the among_them assets and runs
-        # with the same CWD, so the asset layout and wrapper match.
+        # The bot shares the game's assets but launches from
+        # among_them/players/ — same CWD quick_player gives it — so its
+        # gameDir() walks one level up to find spritesheet.png et al.
         bitworldNottoodumb = pkgs.stdenv.mkDerivation (commonAttrs // {
           pname = "bitworld-nottoodumb";
           buildPhase = ''
@@ -162,7 +163,8 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out/libexec/bitworld $out/bin \
-              $out/share/bitworld/among_them $out/share/bitworld/clients
+              $out/share/bitworld/among_them/players \
+              $out/share/bitworld/clients
             install -m 0755 out/nottoodumb $out/libexec/bitworld/nottoodumb
             cp -r clients/data $out/share/bitworld/clients/
             for f in among_them/*.png among_them/*.json among_them/*.aseprite; do
@@ -170,7 +172,7 @@
               cp "$f" $out/share/bitworld/among_them/
             done
             makeWrapper $out/libexec/bitworld/nottoodumb $out/bin/nottoodumb \
-              --chdir $out/share/bitworld/among_them
+              --chdir $out/share/bitworld/among_them/players
             runHook postInstall
           '';
         });
