@@ -701,9 +701,17 @@ The six task types and their output schemas:
 {
   "suspects": [{"color": "string", "likelihood": "float 0-1", "reasoning": "string"}],
   "confidence": "high|medium|low",
-  "key_evidence": ["string"]
+  "key_evidence": ["string"],
+  "opening_statement": "string|null"
 }
 ```
+
+`opening_statement` (Sprint 7.3): a brief chat message (one short sentence)
+sharing the crewmate's initial read of the situation. Queued via `queueOurChat`
+regardless of confidence level, so every crewmate bot speaks at least once per
+meeting. Without this field, medium/low-confidence bots stayed silent until
+another player spoke (`hasUnreadChat` gate), leading to all-silent meetings
+when every bot converged on similar medium-confidence hypotheses.
 
 **`accuse`** (crewmate Stage 2):
 ```json
