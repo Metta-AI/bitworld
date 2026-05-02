@@ -25,27 +25,23 @@ RUN nimby --global sync nimby.lock && \
   cat nim.cfg >> /root/.nimby/nim/config/nim.cfg
 
 COPY . .
-WORKDIR /workspace/bitworld/among_them
-ARG NimFlags="-d:debug --opt:speed --stackTrace:on --lineTrace:on --checks:on --panics:off"
-ARG NimCommand="c"
-ARG NimMain="among_them.nim"
-RUN nim $NimCommand \
-  $NimFlags \
+WORKDIR /workspace/bitworld/planet_wars
+RUN nim c \
+  -d:release \
   --nimcache:/tmp/bitworld-nimcache \
-  --out:among_them \
-  $NimMain
+  --out:planet_wars \
+  planet_wars.nim
 
 # Run Docker.
 FROM alpine
 
 WORKDIR /workspace/bitworld
-COPY --from=build /workspace/bitworld/among_them/among_them /bin/among_them
-COPY --from=build /workspace/bitworld/among_them/*.json ./among_them/
-COPY --from=build /workspace/bitworld/among_them/*.aseprite ./among_them/
-COPY --from=build /workspace/bitworld/among_them/*.png ./among_them/
+COPY --from=build \
+  /workspace/bitworld/planet_wars/planet_wars \
+  /bin/planet_wars
 COPY --from=build /workspace/bitworld/clients/*.html ./clients/
 COPY --from=build /workspace/bitworld/clients/*.js ./clients/
 COPY --from=build /workspace/bitworld/clients/data ./clients/data
 
-WORKDIR /workspace/bitworld/among_them
-CMD ["/bin/among_them", "--address:0.0.0.0", "--port:2000"]
+WORKDIR /workspace/bitworld/planet_wars
+CMD ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]

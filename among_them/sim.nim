@@ -114,6 +114,24 @@ const
     12,
     0
   ]
+  PlayerColorNames* = [
+    "red",
+    "orange",
+    "yellow",
+    "light blue",
+    "pink",
+    "lime",
+    "blue",
+    "pale blue",
+    "gray",
+    "white",
+    "dark brown",
+    "brown",
+    "dark teal",
+    "green",
+    "dark navy",
+    "black"
+  ]
   ShadowMap* = [
     0'u8,  #  0 black       -> black
     12,    #  1 gray         -> dark navy
@@ -150,6 +168,11 @@ type
     VoteResult
     GameOver
     RoleReveal
+
+  VoteCallKind* = enum
+    VoteCalledUnknown
+    VoteCalledButton
+    VoteCalledBody
 
   VoteState* = object
     votes*: seq[int]
@@ -305,6 +328,9 @@ type
     roleRevealTimer*: int
     timeLimitReached*: bool
     needsReregister*: bool
+    lastLobbyPlayersLogged*: int
+    lastLobbyNeededLogged*: int
+    lastLobbySecondsLogged*: int
 
   PlayerView* = object
     cameraX*, cameraY*: int
@@ -939,6 +965,13 @@ proc normalizedSlotColor(text: string): string =
   result = result.replace("-", " ")
   result = result.replace(" ", "")
 
+proc playerColorText*(color: uint8): string =
+  ## Returns the readable player color name.
+  for i in 0 ..< PlayerColors.len:
+    if PlayerColors[i] == color:
+      return PlayerColorNames[i]
+  "unknown"
+
 proc readSlotColor(text: string, slotIndex: int): uint8 =
   ## Reads one slot color string.
   case text.normalizedSlotColor()
@@ -1161,44 +1194,7 @@ proc slotColorText(slot: PlayerSlotConfig): string =
   ## Returns a JSON color string for one slot.
   if not slot.hasColor:
     return ""
-  for i in 0 ..< PlayerColors.len:
-    if PlayerColors[i] == slot.color:
-      case i
-      of 0:
-        return "red"
-      of 1:
-        return "orange"
-      of 2:
-        return "yellow"
-      of 3:
-        return "light blue"
-      of 4:
-        return "pink"
-      of 5:
-        return "lime"
-      of 6:
-        return "blue"
-      of 7:
-        return "pale blue"
-      of 8:
-        return "gray"
-      of 9:
-        return "white"
-      of 10:
-        return "dark brown"
-      of 11:
-        return "brown"
-      of 12:
-        return "dark teal"
-      of 13:
-        return "green"
-      of 14:
-        return "dark navy"
-      of 15:
-        return "black"
-      else:
-        discard
-  "unknown"
+  playerColorText(slot.color)
 
 proc configJson*(config: GameConfig): string =
   ## Returns the complete replay JSON for a gameplay config.
@@ -1286,6 +1282,56 @@ proc lobbyStartSecondsRemaining*(sim: SimServer): int =
   if ticks <= 0:
     return 0
   max(1, (ticks + TargetFps - 1) div TargetFps)
+
+proc roleText(role: PlayerRole): string =
+  ## Returns the readable role name.
+  case role
+  of Crewmate:
+    "crew"
+  of Imposter:
+    "imposter"
+
+proc playerText(sim: SimServer, playerIndex: int): string =
+  ## Returns the readable player color for one player index.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return "unknown"
+  playerColorText(sim.players[playerIndex].color)
+
+proc logGameEvent(text: string) =
+  ## Writes one game event to stdout for Docker logs.
+  echo text
+
+proc voteTargetText(sim: SimServer, vote: int): string =
+  ## Returns a readable vote target.
+  if vote == -2:
+    return "skip"
+  if vote >= 0 and vote < sim.players.len:
+    return sim.playerText(vote)
+  "unknown"
+
+proc logLobbyWaiting(sim: var SimServer) =
+  ## Logs waiting-for-player state when it changes.
+  let
+    needed = max(0, sim.config.minPlayers - sim.players.len)
+    players = sim.players.len
+  if players == sim.lastLobbyPlayersLogged and
+      needed == sim.lastLobbyNeededLogged:
+    return
+  sim.lastLobbyPlayersLogged = players
+  sim.lastLobbyNeededLogged = needed
+  sim.lastLobbySecondsLogged = -1
+  logGameEvent(
+    "waiting for players: " & $players & "/" &
+      $sim.config.minPlayers & ", need " & $needed & " more"
+  )
+
+proc logLobbyCountdown(sim: var SimServer) =
+  ## Logs the lobby countdown once per visible second.
+  let seconds = sim.lobbyStartSecondsRemaining()
+  if seconds <= 0 or seconds == sim.lastLobbySecondsLogged:
+    return
+  sim.lastLobbySecondsLogged = seconds
+  logGameEvent("game starting in " & $seconds)
 
 proc lobbyIconStartY*(sim: SimServer): int =
   ## Returns the lobby icon row y coordinate.
@@ -1785,6 +1831,10 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   sim.recordTask(playerIndex)
 
 proc startGame*(sim: var SimServer) =
+  logGameEvent(
+    "game started: players=" & $sim.players.len &
+      ", imposters=" & $sim.config.effectiveImposterCount(sim.players.len)
+  )
   sim.arrangeHomePositions()
   let imposterCount = sim.config.effectiveImposterCount(sim.players.len)
   for player in sim.players.mitems:
@@ -1831,6 +1881,9 @@ proc startGame*(sim: var SimServer) =
     sim.phase = Playing
     sim.gameStartTick = sim.tickCount
   sim.timeLimitReached = false
+  sim.lastLobbyPlayersLogged = -1
+  sim.lastLobbyNeededLogged = -1
+  sim.lastLobbySecondsLogged = -1
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -1888,6 +1941,7 @@ proc actorColor*(colorIndex, tint: uint8): uint8 =
   colorIndex
 
 proc tryKill*(sim: var SimServer, killerIndex: int) =
+  ## Kills the nearest eligible crewmate in range.
   let killer = sim.players[killerIndex]
   if killer.role != Imposter or not killer.alive:
     return
@@ -1913,6 +1967,10 @@ proc tryKill*(sim: var SimServer, killerIndex: int) =
       bestDist = d
       bestTarget = i
   if bestTarget >= 0:
+    logGameEvent(
+      playerColorText(sim.players[bestTarget].color) &
+        " killed by " & playerColorText(killer.color) & " (imposter)"
+    )
     sim.players[bestTarget].alive = false
     sim.bodies.add Body(
       x: sim.players[bestTarget].x,
@@ -1967,7 +2025,26 @@ proc tryVent*(sim: var SimServer, playerIndex: int) =
         sim.players[playerIndex].ventCooldown = 30
       return
 
-proc startVote*(sim: var SimServer) =
+proc startVote*(
+  sim: var SimServer,
+  kind = VoteCalledUnknown,
+  callerIndex = -1,
+  bodyColor = 255'u8
+) =
+  ## Starts a voting meeting and logs its cause.
+  case kind
+  of VoteCalledBody:
+    logGameEvent(
+      "vote called: " & sim.playerText(callerIndex) &
+        " called body (" & playerColorText(bodyColor) & ")"
+    )
+  of VoteCalledButton:
+    logGameEvent(
+      "vote called: " & sim.playerText(callerIndex) &
+        " called emergency button"
+    )
+  of VoteCalledUnknown:
+    logGameEvent("vote called")
   sim.phase = Voting
   sim.chatMessages.setLen(0)
   let n = sim.players.len
@@ -2007,8 +2084,12 @@ proc addVotingChat*(sim: var SimServer, playerIndex: int, message: string) =
     color: sim.players[playerIndex].color,
     text: text
   )
+  logGameEvent(
+    "vote chat: " & sim.playerText(playerIndex) & ": " & text
+  )
 
 proc tryReport*(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
+  ## Starts a vote when a living player reports a nearby body.
   if sim.phase != Playing:
     return
   let p = sim.players[reporterIndex]
@@ -2024,10 +2105,11 @@ proc tryReport*(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
       bx = body.x + CollisionW div 2
       by = body.y + CollisionH div 2
     if distSq(px, py, bx, by) <= rangeSq:
-      sim.startVote()
+      sim.startVote(VoteCalledBody, reporterIndex, body.color)
       return
 
 proc tryCallButton*(sim: var SimServer, callerIndex: int) =
+  ## Starts a vote when a living player presses the meeting button.
   if sim.phase != Playing:
     return
   let p = sim.players[callerIndex]
@@ -2042,7 +2124,7 @@ proc tryCallButton*(sim: var SimServer, callerIndex: int) =
   if px >= button.x and px < button.x + button.w and
       py >= button.y and py < button.y + button.h:
     inc sim.players[callerIndex].buttonCallsUsed
-    sim.startVote()
+    sim.startVote(VoteCalledButton, callerIndex)
 
 proc containGhost(player: var Player) =
   ## Keeps ghost movement inside the map rectangle.
@@ -2339,6 +2421,7 @@ proc allVotesCast*(sim: SimServer): bool =
   true
 
 proc tallyVotes*(sim: var SimServer) =
+  ## Counts the votes and moves to the vote-result phase.
   var counts = newSeq[int](sim.players.len)
   var skipCount = 0
   for i in 0 ..< sim.players.len:
@@ -2358,10 +2441,14 @@ proc tallyVotes*(sim: var SimServer) =
       tied = false
     elif counts[i] == maxVotes and counts[i] > 0:
       tied = true
-  if tied or maxVotes == 0:
+  if tied or maxVotes == 0 or maxPlayer < 0:
     sim.voteState.ejectedPlayer = -1
+    logGameEvent("vote ended: no one killed by vote")
   else:
     sim.voteState.ejectedPlayer = maxPlayer
+    logGameEvent(
+      "vote ended: " & sim.playerText(maxPlayer) & " killed by vote"
+    )
   sim.phase = VoteResult
   sim.voteState.resultTimer = sim.config.voteResultTicks
 
@@ -2675,6 +2762,10 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   ## Moves to game over and awards all winning players.
   if sim.phase == GameOver:
     return
+  if timeLimitReached:
+    logGameEvent(roleText(winner) & " win: time limit reached")
+  else:
+    logGameEvent(roleText(winner) & " win")
   sim.phase = GameOver
   sim.winner = winner
   sim.gameOverTimer = sim.config.gameOverTicks
@@ -3613,6 +3704,9 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.nextJoinOrder = 0
   result.gameStartTick = -1
   result.startWaitTimer = 0
+  result.lastLobbyPlayersLogged = -1
+  result.lastLobbyNeededLogged = -1
+  result.lastLobbySecondsLogged = -1
 
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
@@ -3626,6 +3720,9 @@ proc resetToLobby*(sim: var SimServer) =
   sim.roleRevealTimer = 0
   sim.timeLimitReached = false
   sim.needsReregister = true
+  sim.lastLobbyPlayersLogged = -1
+  sim.lastLobbyNeededLogged = -1
+  sim.lastLobbySecondsLogged = -1
   for task in sim.tasks.mitems:
     task.completed = @[]
 
@@ -3633,6 +3730,7 @@ proc stepLobby(sim: var SimServer) =
   ## Advances the lobby start countdown.
   if sim.players.len < sim.config.minPlayers:
     sim.startWaitTimer = 0
+    sim.logLobbyWaiting()
     return
   if sim.config.startWaitTicks <= 0:
     sim.startGame()
@@ -3642,6 +3740,8 @@ proc stepLobby(sim: var SimServer) =
   dec sim.startWaitTimer
   if sim.startWaitTimer <= 0:
     sim.startGame()
+  else:
+    sim.logLobbyCountdown()
 
 proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArray[InputState]) =
   inc sim.tickCount
@@ -3697,6 +3797,10 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
           sim.voteState.votes[i] = -2
         else:
           sim.voteState.votes[i] = cur
+        logGameEvent(
+          "vote cast: " & sim.playerText(i) & " voted " &
+            sim.voteTargetText(sim.voteState.votes[i])
+        )
         if sim.allVotesCast():
           sim.tallyVotes()
     sim.checkMaxTicks()

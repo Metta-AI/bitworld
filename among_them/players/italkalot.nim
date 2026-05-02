@@ -151,6 +151,11 @@ type
     RoleCrewmate
     RoleImposter
 
+  AiRequestKind = enum
+    AiNoRequest
+    AiChatRequest
+    AiVoteRequest
+
   PathNode = object
     priority: int
     index: int
@@ -271,6 +276,7 @@ type
     skippedFrames: int
     lastMask: uint8
     lastThought: string
+    lastLogEvent: string
     pendingChat: string
     lastBodySeenX: int
     lastBodySeenY: int
@@ -304,6 +310,10 @@ type
     aiVoteFrame: string
     aiVoteTarget: int
     aiVoteReply: string
+    aiRequestKind: AiRequestKind
+    aiRequestTurn: int
+    aiRequestTag: string
+    aiRequestSerial: int
     intent: string
     goalX: int
     goalY: int
@@ -826,6 +836,8 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
+proc knownImposterSummary(bot: Bot): string
+
 proc asciiTextWidth(bot: Bot, text: string): int =
   ## Returns the tiny UI text width.
   texts.asciiTextWidth(bot.sim.asciiSprites, text)
@@ -892,8 +904,15 @@ proc clearAiVote(bot: var Bot) =
   bot.aiVoteTarget = VoteUnknown
   bot.aiVoteReply = ""
 
+proc clearAiRequest(bot: var Bot) =
+  ## Clears the active OpenAI request marker.
+  bot.aiRequestKind = AiNoRequest
+  bot.aiRequestTurn = 0
+  bot.aiRequestTag = ""
+
 proc clearAiConversation(bot: var Bot) =
   ## Clears the cached OpenAI voting conversation state.
+  bot.clearAiRequest()
   bot.clearAiVote()
   bot.aiChatTurn = 0
   bot.aiNextTurnTick = -1
@@ -936,6 +955,7 @@ proc resetRoundState(bot: var Bot) =
   bot.controllerMask = 0
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
+  bot.lastLogEvent = ""
   bot.pendingChat = ""
   bot.lastBodySeenX = low(int)
   bot.lastBodySeenY = low(int)
@@ -1516,6 +1536,7 @@ proc rememberRoleReveal(bot: var Bot) =
   if bot.interstitialText == "CREWMATE":
     if bot.role == RoleUnknown:
       bot.role = RoleCrewmate
+    bot.logEvent("I am a crewmate")
     return
   if bot.interstitialText != "IMPS":
     return
@@ -1532,6 +1553,7 @@ proc rememberRoleReveal(bot: var Bot) =
     if crewmate.colorIndex >= 0 and
         crewmate.colorIndex < bot.knownImposters.len:
       bot.knownImposters[crewmate.colorIndex] = true
+  bot.logEvent("I am an imposter; imps: " & bot.knownImposterSummary())
 
 proc matchesActorSprite(
   bot: Bot,
@@ -2298,6 +2320,13 @@ proc thought(bot: var Bot, text: string) =
   ## Stores changed bot thoughts for the GUI.
   if text != bot.lastThought:
     bot.lastThought = text
+
+proc logEvent(bot: var Bot, text: string) =
+  ## Prints one changed high-level bot event.
+  if text.len == 0 or text == bot.lastLogEvent:
+    return
+  bot.lastLogEvent = text
+  echo text
 
 proc movementName(mask: uint8): string =
   ## Returns a compact movement label for one input mask.
@@ -3090,14 +3119,24 @@ proc votingChatPrompt(bot: Bot, frame: string, turn: int): string =
     bot.voteChatHistoryText() &
     "---vote---\n" & frame
 
-proc openAiVotingChat(bot: var Bot, frame: string, turn: int): string =
-  ## Asks OpenAI for one voting chat message.
-  when defined(italkalotLibrary):
-    ""
-  else:
-    if openai.aiKey.len == 0:
-      return ""
-    var messages = @[
+when not defined(italkalotLibrary):
+  proc aiRequestLabel(kind: AiRequestKind): string =
+    ## Returns a short label for one OpenAI request kind.
+    case kind
+    of AiNoRequest:
+      "none"
+    of AiChatRequest:
+      "chat"
+    of AiVoteRequest:
+      "vote"
+
+  proc votingChatMessages(
+    bot: Bot,
+    frame: string,
+    turn: int
+  ): seq[openai.ConversationMessage] =
+    ## Builds OpenAI messages for one voting chat turn.
+    @[
       openai.ConversationMessage(
         role: "system",
         content:
@@ -3111,17 +3150,119 @@ proc openAiVotingChat(bot: var Bot, frame: string, turn: int): string =
         content: bot.votingChatPrompt(frame, turn)
       )
     ]
-    try:
-      let reply = openai.talkToAI(messages).strip()
-      bot.aiChatReply = reply
-      result = cleanAiChatReply(reply)
-      if result.len == 0:
-        echo "AI chat invalid: ", reply
+
+  proc votingTargetMessages(
+    bot: Bot,
+    prompt: string
+  ): seq[openai.ConversationMessage] =
+    ## Builds OpenAI messages for one voting target decision.
+    @[
+      openai.ConversationMessage(
+        role: "system",
+        content:
+          "You vote in Among Them. Use the OCR transcript only. " &
+          "If a living player is called sus, vote that player. " &
+          "If someone voted against you, vote that living player. " &
+          "Never vote for yourself or a dead player. " &
+          "If there is no good target, vote skip. " &
+          "Output exactly: vote <color> or vote skip."
+      ),
+      openai.ConversationMessage(
+        role: "user",
+        content: prompt
+      )
+    ]
+
+  proc startOpenAiRequest(
+    bot: var Bot,
+    kind: AiRequestKind,
+    messages: openArray[openai.ConversationMessage],
+    turn = 0
+  ): bool =
+    ## Starts one pollable OpenAI request for the bot.
+    if openai.aiKey.len == 0 or bot.aiRequestKind != AiNoRequest:
+      return false
+    inc bot.aiRequestSerial
+    bot.aiRequestKind = kind
+    bot.aiRequestTurn = turn
+    bot.aiRequestTag =
+      $bot.aiRequestSerial & "-" & kind.aiRequestLabel() &
+        "-" & $bot.frameTick
+    result = openai.startTalkToAI(messages, bot.aiRequestTag)
+    if not result:
+      bot.clearAiRequest()
+
+  proc applyOpenAiChatResult(bot: var Bot, reply: string, turn: int) =
+    ## Applies one OpenAI chat response to the voting state.
+    bot.aiChatReply = reply
+    let message = cleanAiChatReply(reply)
+    if message.len > 0:
+      bot.pendingChat = message
+      echo "AI chat: ", message
+    elif reply.len > 0:
+      echo "AI chat invalid: ", reply
+    bot.aiChatTurn = turn
+    bot.aiNextTurnTick = bot.frameTick + VoteAiTurnWaitTicks
+    bot.intent =
+      if message.len > 0:
+        "chat turn " & $turn & ": " & message
       else:
-        echo "AI chat: ", result
-    except CatchableError as err:
-      bot.aiChatReply = "error: " & err.msg
-      echo "AI chat error: ", err.msg
+        "chat turn " & $turn & " skipped"
+    bot.thought(bot.intent)
+
+  proc applyOpenAiVoteResult(bot: var Bot, reply: string) =
+    ## Applies one OpenAI vote response to the voting state.
+    bot.aiVoteReply = reply
+    bot.aiVoteTarget = bot.voteCommandTarget(reply)
+    if bot.aiVoteTarget == VoteUnknown:
+      echo "AI vote invalid: ", reply
+    else:
+      echo "AI vote target: ", bot.voteTargetName(bot.aiVoteTarget)
+
+  proc pollOpenAiRequest(bot: var Bot): bool =
+    ## Polls and applies a finished OpenAI request if one is ready.
+    let response = openai.pollTalkToAI()
+    if not response.done:
+      return false
+    if response.tag != bot.aiRequestTag:
+      return false
+    let
+      kind = bot.aiRequestKind
+      turn = bot.aiRequestTurn
+    bot.clearAiRequest()
+    if not response.ok:
+      case kind
+      of AiChatRequest:
+        bot.aiChatReply = "error: " & response.error
+        bot.aiChatTurn = turn
+        bot.aiNextTurnTick = bot.frameTick + VoteAiTurnWaitTicks
+        bot.intent = "chat turn " & $turn & " skipped"
+        bot.thought(bot.intent)
+        echo "AI chat error: ", response.error
+      of AiVoteRequest:
+        bot.aiVoteReply = "error: " & response.error
+        bot.aiVoteTarget = VoteUnknown
+        echo "AI vote error: ", response.error
+      of AiNoRequest:
+        discard
+      return true
+    case kind
+    of AiChatRequest:
+      bot.applyOpenAiChatResult(response.reply.strip(), turn)
+    of AiVoteRequest:
+      bot.applyOpenAiVoteResult(response.reply.strip())
+    of AiNoRequest:
+      discard
+    true
+
+  proc beginOpenAiVotingChat(bot: var Bot, frame: string, turn: int) =
+    ## Starts one non-blocking OpenAI voting chat request.
+    let messages = bot.votingChatMessages(frame, turn)
+    if bot.startOpenAiRequest(AiChatRequest, messages, turn):
+      bot.intent = "waiting for AI chat turn " & $turn
+      bot.thought(bot.intent)
+    else:
+      bot.applyOpenAiChatResult("", turn)
 
 proc waitForVotingConversation(bot: var Bot, frame: string): bool =
   ## Advances the two OpenAI chat turns before voting.
@@ -3131,27 +3272,20 @@ proc waitForVotingConversation(bot: var Bot, frame: string): bool =
     if openai.aiKey.len == 0:
       bot.aiChatTurn = 3
       return false
+    discard bot.pollOpenAiRequest()
+    if bot.aiRequestKind != AiNoRequest:
+      bot.intent =
+        "waiting for AI " & bot.aiRequestKind.aiRequestLabel()
+      bot.thought(bot.intent)
+      return true
     if bot.pendingChat.len > 0:
       bot.intent = "waiting to send queued chat"
       bot.thought(bot.intent)
       return true
 
-    template queueAiChat(turn: int) =
-      let message = bot.openAiVotingChat(frame, turn)
-      if message.len > 0:
-        bot.pendingChat = message
-      bot.aiChatTurn = turn
-      bot.aiNextTurnTick = bot.frameTick + VoteAiTurnWaitTicks
-      bot.intent =
-        if message.len > 0:
-          "chat turn " & $turn & ": " & message
-        else:
-          "chat turn " & $turn & " skipped"
-      bot.thought(bot.intent)
-
     case bot.aiChatTurn
     of 0:
-      queueAiChat(1)
+      bot.beginOpenAiVotingChat(frame, 1)
       return true
     of 1:
       if bot.frameTick < bot.aiNextTurnTick:
@@ -3159,7 +3293,7 @@ proc waitForVotingConversation(bot: var Bot, frame: string): bool =
           $max(0, bot.aiNextTurnTick - bot.frameTick)
         bot.thought(bot.intent)
         return true
-      queueAiChat(2)
+      bot.beginOpenAiVotingChat(frame, 2)
       return true
     of 2:
       if bot.frameTick < bot.aiNextTurnTick:
@@ -3186,43 +3320,24 @@ proc openAiVotingTarget(bot: var Bot, frame: string): int =
   when defined(italkalotLibrary):
     VoteUnknown
   else:
+    discard bot.pollOpenAiRequest()
     let prompt = bot.votingPrompt(frame)
     if prompt == bot.aiVoteFrame:
       return bot.aiVoteTarget
+    if bot.aiRequestKind != AiNoRequest:
+      return VoteUnknown
     bot.aiVoteFrame = prompt
     bot.aiVoteTarget = VoteUnknown
     bot.aiVoteReply = ""
     if openai.aiKey.len == 0:
       return VoteUnknown
-    var messages = @[
-      openai.ConversationMessage(
-        role: "system",
-        content:
-          "You vote in Among Them. Use the OCR transcript only. " &
-          "If a living player is called sus, vote that player. " &
-          "If someone voted against you, vote that living player. " &
-          "Never vote for yourself or a dead player. " &
-          "If there is no good target, vote skip. " &
-          "Output exactly: vote <color> or vote skip."
-      ),
-      openai.ConversationMessage(
-        role: "user",
-        content: prompt
-      )
-    ]
-    try:
-      let reply = openai.talkToAI(messages).strip()
-      bot.aiVoteReply = reply
-      bot.aiVoteTarget = bot.voteCommandTarget(reply)
-      if bot.aiVoteTarget == VoteUnknown:
-        echo "AI vote invalid: ", reply
-      else:
-        echo "AI vote target: ", bot.voteTargetName(bot.aiVoteTarget)
-      bot.aiVoteTarget
-    except CatchableError as err:
-      bot.aiVoteReply = "error: " & err.msg
-      echo "AI vote error: ", err.msg
-      VoteUnknown
+    let messages = bot.votingTargetMessages(prompt)
+    if bot.startOpenAiRequest(AiVoteRequest, messages):
+      bot.intent = "waiting for AI vote"
+      bot.thought(bot.intent)
+    else:
+      bot.aiVoteReply = "error: could not start OpenAI request"
+    VoteUnknown
 
 proc selfVoteChoice(bot: Bot): int =
   ## Returns the parsed vote choice for the local player.
@@ -3351,6 +3466,12 @@ proc decideVotingMask(bot: var Bot): uint8 =
     return 0
   if listenedTicks >= bot.voteDelayTicks:
     let aiTarget = bot.openAiVotingTarget(aiFrame)
+    if bot.aiRequestKind == AiVoteRequest:
+      bot.desiredMask = 0
+      bot.controllerMask = 0
+      bot.intent = "waiting for AI vote"
+      bot.thought(bot.intent)
+      return 0
     if aiTarget != VoteUnknown:
       bot.voteTarget = aiTarget
   if bot.voteCursor != bot.voteTarget:
@@ -3908,22 +4029,17 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
   )
 
 proc loadOpenAiKey() =
-  ## Loads the OpenAI key from ~/secrets/openai.key.
+  ## Checks that the OpenAI key was loaded from the environment.
   when defined(italkalotLibrary):
     discard
   else:
     if openAiKeyLoaded:
       return
     openAiKeyLoaded = true
-    let keyPath = getHomeDir() / "secrets" / "openai.key"
-    if not fileExists(keyPath):
-      echo "OpenAI key not found: ", keyPath
-      return
-    openai.aiKey = readFile(keyPath).strip()
-    if openai.aiKey.len == 0:
-      echo "OpenAI key is empty: ", keyPath
+    if openai.aiKey.len > 0:
+      echo "OpenAI key loaded from environment"
     else:
-      echo "OpenAI key loaded: ", keyPath
+      echo "OPENAI_KEY not set"
 
 proc initBot(mapPath = ""): Bot =
   ## Builds a bot and loads all map and sprite data.

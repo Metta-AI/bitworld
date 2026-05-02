@@ -1,8 +1,9 @@
-import std/json
-import curly, jsony
+import
+  std/[json, os],
+  curly, jsony
 
 var
-  claudeKey* = ""
+  claudeKey* = getEnv("CLAUDE_KEY")
 let
   claudeUrl = "https://api.anthropic.com/v1/messages"
   claudeModel = "claude-opus-4-6"

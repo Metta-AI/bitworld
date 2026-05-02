@@ -1,8 +1,9 @@
-import std/json
-import curly
+import
+  std/[json, os],
+  curly
 
 var
-  geminiKey* = ""
+  geminiKey* = getEnv("GEMINI_KEY")
 let
   geminiModel = "gemini-2.5-flash"
   curl = newCurlPool(3)

@@ -6,6 +6,9 @@ import
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
 
+const
+  BotVoteFrameStride = 6
+
 type
   WebSocketSocketFields = object
     server: Server
@@ -545,6 +548,22 @@ proc rewardAddress(address: string): string =
     return parts[0] & ":" & parts[1]
   address
 
+proc isThrottledBotAddress(address: string): bool =
+  ## Returns true for bots that can pause while waiting on LLM calls.
+  address.startsWith("italkalot-")
+
+proc shouldSendPlayerFrame(
+  sim: SimServer,
+  address: string,
+  isPlayerViewer: bool
+): bool =
+  ## Returns true when a player socket should receive this frame.
+  if isPlayerViewer:
+    return true
+  if sim.phase == Voting and address.isThrottledBotAddress():
+    return sim.tickCount mod BotVoteFrameStride == 0
+  true
+
 var appState: WebSocketAppState
 
 proc initAppState() =
@@ -567,6 +586,7 @@ proc initAppState() =
   appState.spectators = @[]
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  ## Removes a websocket and keeps live player indices consistent.
   for i in countdown(appState.spectators.high, 0):
     if appState.spectators[i] == websocket:
       appState.spectators.delete(i)
@@ -594,6 +614,22 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerTokens.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
+    if sim.phase in {Voting, VoteResult}:
+      if removedIndex < sim.voteState.votes.len:
+        sim.voteState.votes.delete(removedIndex)
+      if removedIndex < sim.voteState.cursor.len:
+        sim.voteState.cursor.delete(removedIndex)
+      let skipIndex = sim.players.len
+      for vote in sim.voteState.votes.mitems:
+        if vote > removedIndex:
+          dec vote
+        if vote > skipIndex:
+          vote = -2
+      for cursor in sim.voteState.cursor.mitems:
+        if cursor > removedIndex:
+          dec cursor
+        if cursor > skipIndex:
+          cursor = skipIndex
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
@@ -940,6 +976,7 @@ proc runServerLoop*(
       sockets: seq[WebSocket] = @[]
       socketsToClose: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
+      playerAddresses: seq[string] = @[]
       inputs: seq[InputState]
       spectatorList: seq[WebSocket] = @[]
       globalViewers: seq[WebSocket] = @[]
@@ -1052,6 +1089,9 @@ proc runServerLoop*(
         for websocket, playerIndex in appState.playerIndices.pairs:
           sockets.add(websocket)
           playerIndices.add(playerIndex)
+          playerAddresses.add(
+            appState.playerAddresses.getOrDefault(websocket, "")
+          )
           let isPlayerViewer = websocket in appState.playerViewers
           playerViewerFlags.add(isPlayerViewer)
           if isPlayerViewer:
@@ -1106,6 +1146,7 @@ proc runServerLoop*(
       replayWriter.lastMasks = @[]
       sockets.setLen(0)
       playerIndices.setLen(0)
+      playerAddresses.setLen(0)
       spectatorList.setLen(0)
       rewardViewers.setLen(0)
       playerViewerFlags.setLen(0)
@@ -1151,6 +1192,7 @@ proc runServerLoop*(
             let isPlayerViewer = websocket in appState.playerViewers
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
+            playerAddresses.add(address)
             playerViewerFlags.add(isPlayerViewer)
             if isPlayerViewer:
               appState.playerViewers[websocket] = initPlayerViewerState()
@@ -1163,6 +1205,11 @@ proc runServerLoop*(
 
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
+        if not sim.shouldSendPlayerFrame(
+          playerAddresses[i],
+          playerViewerFlags[i]
+        ):
+          continue
         let framePacket =
           if playerViewerFlags[i]:
             var nextState: PlayerViewerState
@@ -1231,6 +1278,11 @@ proc runServerLoop*(
           appState.spectators = @[]
 
     for i in 0 ..< sockets.len:
+      if not sim.shouldSendPlayerFrame(
+        playerAddresses[i],
+        playerViewerFlags[i]
+      ):
+        continue
       let framePacket =
         if playerViewerFlags[i]:
           var nextState: PlayerViewerState

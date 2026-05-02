@@ -1,7 +1,9 @@
-import curly, jsony
+import
+  std/os,
+  curly, jsony
 
 var
-  xaiKey* = ""
+  xaiKey* = getEnv("XAI_KEY")
 let
   xaiUrl = "https://api.x.ai/v1/chat/completions"
   xaiModel = "grok-4-latest"

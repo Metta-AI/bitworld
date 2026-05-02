@@ -12,6 +12,7 @@ const
   DefaultPort = 2080
   GamePortStart = 2100
   GamePortEnd = 2199
+  MaxBotLaunchCount = 16
   DockerBinEnv = "GAMES_SERVER_DOCKER"
   DockerImageEnv = "GAMES_SERVER_IMAGE"
   DockerModeEnv = "GAMES_SERVER_MODE"
@@ -19,16 +20,19 @@ const
   WorkspaceRootEnv = "GAMES_SERVER_WORKSPACE_ROOT"
   NotTooDumbImageEnv = "GAMES_SERVER_NOTTOODUMB_IMAGE"
   IVoteALotImageEnv = "GAMES_SERVER_IVOTEALOT_IMAGE"
-  DefaultDockerImage = "bitworld-among-them"
+  ITalkALotImageEnv = "GAMES_SERVER_ITALKALOT_IMAGE"
+  DefaultDockerImage = "ghcr.io/treeform/bitworld-among-them-runner:latest"
   DefaultDockerMode = "release"
-  DefaultNotTooDumbImage = "bitworld-nottoodumb"
-  DefaultIVoteALotImage = "bitworld-ivotewell"
+  DefaultNotTooDumbImage = "ghcr.io/treeform/bitworld-nottoodumb:latest"
+  DefaultIVoteALotImage = "ghcr.io/treeform/bitworld-ivotewell:latest"
+  DefaultITalkALotImage = "ghcr.io/treeform/bitworld-italkalot:latest"
   ContainerReplayDir = "/replays"
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
   LogsPath = "/logs"
   HealthPath = "/healthz"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
+  AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
   BotLabelValue = "among_them_bot"
@@ -44,6 +48,7 @@ const
   ReplayKind = "replay"
   NotTooDumbBot = "nottoodumb"
   IVoteALotBot = "ivotealot"
+  ITalkALotBot = "italkalot"
   BotHost = "host.docker.internal"
   PageCss = """
 body {
@@ -157,6 +162,7 @@ type
   BotKind = enum
     NotTooDumb
     IVoteALot
+    ITalkALot
 
   GameContainer = object
     name: string
@@ -177,6 +183,29 @@ type
     name: string
     size: int64
     modified: int64
+
+var
+  aiKeyEnvMask = 0
+
+proc loadAiKeyEnvs() =
+  ## Loads AI key environment names once at server startup.
+  aiKeyEnvMask = 0
+  var names: seq[string]
+  for i, name in AiKeyEnvNames:
+    if getEnv(name).len > 0:
+      aiKeyEnvMask = aiKeyEnvMask or (1 shl i)
+      names.add(name)
+  if names.len > 0:
+    echo "AI env keys loaded: ", names.join(", ")
+  else:
+    echo "AI env keys loaded: none"
+
+proc addAiEnvArgs(args: var seq[string]) =
+  ## Adds Docker env forwarding args for configured AI keys.
+  for i, name in AiKeyEnvNames:
+    if (aiKeyEnvMask and (1 shl i)) != 0:
+      args.add("-e")
+      args.add(name)
 
 proc esc(text: string): string =
   ## Escapes HTML special characters.
@@ -293,6 +322,8 @@ proc botImage(kind: BotKind): string =
     envValue(NotTooDumbImageEnv, DefaultNotTooDumbImage)
   of IVoteALot:
     envValue(IVoteALotImageEnv, DefaultIVoteALotImage)
+  of ITalkALot:
+    envValue(ITalkALotImageEnv, DefaultITalkALotImage)
 
 proc defaultWorkspaceRoot(): string =
   ## Returns the host workspace root mounted by runner containers.
@@ -346,6 +377,10 @@ proc requireDocker(args: openArray[string]): string =
     )
   res.output.strip()
 
+proc pullDockerImage(image: string) =
+  ## Pulls the latest version of one Docker image.
+  discard requireDocker(@["pull", image])
+
 proc portAvailable(port: int): bool =
   ## Returns true when the host can bind a TCP port.
   var socket = newSocket()
@@ -377,6 +412,8 @@ proc botKindLabel(kind: BotKind): string =
     NotTooDumbBot
   of IVoteALot:
     IVoteALotBot
+  of ITalkALot:
+    ITalkALotBot
 
 proc botKindTitle(kind: BotKind): string =
   ## Returns the display label for one bot kind.
@@ -385,6 +422,8 @@ proc botKindTitle(kind: BotKind): string =
     "nottoodumb"
   of IVoteALot:
     "ivotealot"
+  of ITalkALot:
+    "italkalot"
 
 proc botBinary(kind: BotKind): string =
   ## Returns the executable path inside one bot image.
@@ -393,6 +432,8 @@ proc botBinary(kind: BotKind): string =
     "/bin/nottoodumb"
   of IVoteALot:
     "/bin/ivotewell"
+  of ITalkALot:
+    "/bin/italkalot"
 
 proc parseBotKind(value: string): BotKind =
   ## Converts a form value or Docker label into a bot kind.
@@ -401,6 +442,8 @@ proc parseBotKind(value: string): BotKind =
     NotTooDumb
   of IVoteALotBot, "ivotewell":
     IVoteALot
+  of ITalkALotBot:
+    ITalkALot
   else:
     raise newException(GamesServerError, "unknown bot kind")
 
@@ -641,14 +684,26 @@ proc replayGameName(port: int): string =
   ## Builds a unique replay Docker container name.
   "among_them_replay_" & $port & "_" & $getTime().toUnix()
 
-proc botContainerName(game: GameContainer, bot: BotKind): string =
+proc launchStamp(index: int): string =
+  ## Builds a compact unique suffix for batch launches.
+  $(int64(epochTime() * 1000)) & "_" & $index
+
+proc botContainerName(
+  game: GameContainer,
+  bot: BotKind,
+  stamp: string
+): string =
   ## Builds a unique bot Docker container name.
   "among_them_bot_" & botKindLabel(bot) & "_" &
-    $game.port & "_" & $getTime().toUnix()
+    $game.port & "_" & stamp
 
-proc botPlayerName(game: GameContainer, bot: BotKind): string =
+proc botPlayerName(
+  game: GameContainer,
+  bot: BotKind,
+  stamp: string
+): string =
   ## Builds a visible in-game name for one bot.
-  botKindTitle(bot) & "-" & $game.port & "-" & $getTime().toUnix()
+  botKindTitle(bot) & "-" & $game.port & "-" & stamp
 
 proc replayName(name: string): string =
   ## Builds the replay file name for one game.
@@ -717,6 +772,7 @@ proc baseDockerArgs(
   if saveReplay:
     result.add("-e")
     result.add(CogameReplayEnv & "=" & ContainerReplayDir / replay)
+  addAiEnvArgs(result)
 
 proc runnerScript(config: string, loadReplay: string): string =
   ## Builds the shell command for the local Nim runner image.
@@ -768,7 +824,8 @@ proc botRunArgs(
   name: string,
   game: GameContainer,
   bot: BotKind,
-  created: int64
+  created: int64,
+  stamp: string
 ): seq[string] =
   ## Builds Docker arguments for one bot container.
   result = @[
@@ -784,17 +841,19 @@ proc botRunArgs(
     "--label",
     BotKindLabel & "=" & botKindLabel(bot),
     "--label",
-    CreatedLabel & "=" & $created,
-    botImage(bot),
-    botBinary(bot),
-    "--address:" & BotHost,
-    "--port:" & $game.port,
-    "--name:" & botPlayerName(game, bot)
+    CreatedLabel & "=" & $created
   ]
+  addAiEnvArgs(result)
+  result.add(botImage(bot))
+  result.add(botBinary(bot))
+  result.add("--address:" & BotHost)
+  result.add("--port:" & $game.port)
+  result.add("--name:" & botPlayerName(game, bot, stamp))
 
 proc createGame(form: seq[(string, string)]): GameContainer =
   ## Starts a new Among Them Docker container.
   ensureReplayDir()
+  pullDockerImage(dockerImage())
   let
     port = findOpenPort()
     created = getTime().toUnix()
@@ -816,6 +875,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
 proc createReplayGame(replay: string): GameContainer =
   ## Starts an Among Them Docker container in replay mode.
   ensureReplayDir()
+  pullDockerImage(dockerImage())
   let cleanReplay = cleanReplayName(replay)
   if cleanReplay.len == 0 or cleanReplay != replay:
     raise newException(GamesServerError, "invalid replay file name")
@@ -911,18 +971,26 @@ proc waitForHealth(game: GameContainer): bool =
       return true
     sleep(250)
 
-proc createBot(gameName: string, bot: BotKind): BotContainer =
-  ## Starts one bot Docker container for a live game.
+proc createBots(
+  gameName: string,
+  bot: BotKind,
+  count: int
+): seq[BotContainer] =
+  ## Starts one or more bot Docker containers for a live game.
   let game = inspectGame(gameName)
   if game.kind != LiveGame:
     raise newException(GamesServerError, "bots can only join live games")
   if not gameHealthy(game):
     raise newException(GamesServerError, "game is not healthy yet")
-  let
-    created = getTime().toUnix()
-    name = botContainerName(game, bot)
-  discard requireDocker(botRunArgs(name, game, bot, created))
-  result = inspectBot(name)
+  let cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+  pullDockerImage(botImage(bot))
+  for i in 1 .. cleanCount:
+    let
+      created = getTime().toUnix()
+      stamp = launchStamp(i)
+      name = botContainerName(game, bot, stamp)
+    discard requireDocker(botRunArgs(name, game, bot, created, stamp))
+    result.add(inspectBot(name))
 
 proc fmtCreated(created: int64): string =
   ## Formats a Unix timestamp for display.
@@ -1087,10 +1155,20 @@ proc renderGamesTable(
                   option:
                     value botKindLabel(IVoteALot)
                     say botKindTitle(IVoteALot)
+                  option:
+                    value botKindLabel(ITalkALot)
+                    say botKindTitle(ITalkALot)
+                say " "
+                select:
+                  name "count"
+                  for count in 1 .. MaxBotLaunchCount:
+                    option:
+                      value $count
+                      say $count
                 say " "
                 button ".button":
                   ttype "submit"
-                  say "Add bot"
+                  say "Add"
             elif game.status == "running":
               say "wait"
             elif gameBots.len == 0:
@@ -1474,8 +1552,12 @@ proc botHandler(request: Request) =
   let
     name = formValue(form, "name")
     bot = parseBotKind(formValue(form, "bot"))
-    container = createBot(name, bot)
-  request.respondRedirect("/?notice=started+" & container.name)
+    count = cleanConfigValue(form, "count", 1, 1, MaxBotLaunchCount)
+    containers = createBots(name, bot, count)
+  if containers.len == 1:
+    request.respondRedirect("/?notice=started+" & containers[0].name)
+  else:
+    request.respondRedirect("/?notice=started+" & $containers.len & "+bots")
 
 proc stopBotHandler(request: Request) =
   ## Handles stop-bot requests.
@@ -1550,6 +1632,7 @@ proc httpHandler(request: Request) =
 
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
+  loadAiKeyEnvs()
   let server = newServer(httpHandler, workerThreads = 4)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
