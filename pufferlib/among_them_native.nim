@@ -87,6 +87,34 @@ proc copyTaskDistances(env: var NativeEnv, distances: ptr cfloat, outputBase = 0
         nearest = dist
     output[outputBase + playerIndex] = cfloat(nearest / float(maxDist))
 
+proc copyKillDistances(env: var NativeEnv, distances: ptr cfloat, outputBase = 0) =
+  ## For imposters: normalized distance to nearest alive crewmate.
+  ## Returns 1.0 for crewmates, dead players, and non-Playing phase.
+  if distances.isNil:
+    raise newException(ValueError, "Distance pointer is nil.")
+  let output = cast[ptr UncheckedArray[cfloat]](distances)
+  let maxDist = cfloat(sqrt(float(MapWidth * MapWidth + MapHeight * MapHeight)))
+  for playerIndex in 0 ..< env.playerCount:
+    let player = env.sim.players[playerIndex]
+    if not player.alive or player.role != Imposter or env.sim.phase != Playing:
+      output[outputBase + playerIndex] = 1.0
+      continue
+    let px = float(player.x)
+    let py = float(player.y)
+    var nearest = maxDist
+    for targetIndex in 0 ..< env.playerCount:
+      if targetIndex == playerIndex:
+        continue
+      let target = env.sim.players[targetIndex]
+      if not target.alive or target.role != Crewmate:
+        continue
+      let tx = float(target.x)
+      let ty = float(target.y)
+      let dist = sqrt((px - tx) * (px - tx) + (py - ty) * (py - ty))
+      if dist < nearest:
+        nearest = dist
+    output[outputBase + playerIndex] = cfloat(nearest / float(maxDist))
+
 proc copyOnTaskFlags(env: var NativeEnv, flags: ptr cfloat, outputBase = 0) =
   if flags.isNil:
     raise newException(ValueError, "Flags pointer is nil.")
@@ -458,6 +486,33 @@ proc bitworld_at_on_task_batch*(
       if env.playerCount != playerCountInt:
         return setLastError("Unexpected player count in batch on_task query.")
       env.copyOnTaskFlags(flags, envIndex * playerCountInt)
+    0
+  except CatchableError as e:
+    setLastError(e.msg)
+
+proc bitworld_at_kill_distances_batch*(
+  handles: ptr cint,
+  envCount: cint,
+  playerCount: cint,
+  distances: ptr cfloat
+): cint {.cdecl, exportc, dynlib.} =
+  try:
+    if handles.isNil:
+      return setLastError("Handle pointer is nil.")
+    if envCount <= 0:
+      return setLastError("envCount must be positive.")
+    if playerCount <= 0:
+      return setLastError("playerCount must be positive.")
+    let
+      playerCountInt = int(playerCount)
+      handleArray = cast[ptr UncheckedArray[cint]](handles)
+    for envIndex in 0 ..< int(envCount):
+      if not validHandle(handleArray[envIndex]):
+        return setLastError("Invalid Among Them native env handle.")
+      var env = envs[int(handleArray[envIndex])]
+      if env.playerCount != playerCountInt:
+        return setLastError("Unexpected player count in batch kill distance query.")
+      env.copyKillDistances(distances, envIndex * playerCountInt)
     0
   except CatchableError as e:
     setLastError(e.msg)
