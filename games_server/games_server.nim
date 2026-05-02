@@ -26,6 +26,7 @@ const
   ContainerReplayDir = "/replays"
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
+  LogsPath = "/logs"
   HealthPath = "/healthz"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
   ServerLabelKey = "bitworld.games_server"
@@ -129,6 +130,16 @@ th {
 }
 .footer {
   margin: 12px 0 0;
+}
+.logs {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #707096;
+  background: #000020;
+  color: #eeeeff;
+  font: 11px Monaco, Consolas, monospace;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 """
 
@@ -355,6 +366,10 @@ proc cleanContainerName(value: string): string =
   if result.len > 96:
     result = result[0 .. 95]
 
+proc logUrl(name: string): string =
+  ## Builds the log viewer URL for one container.
+  LogsPath & "?name=" & cleanContainerName(name)
+
 proc botKindLabel(kind: BotKind): string =
   ## Returns the stable form value for one bot kind.
   case kind
@@ -545,6 +560,30 @@ proc botsForGame(
   for bot in bots:
     if bot.game == gameName:
       result.add(bot)
+
+proc managedContainerName(name: string): string =
+  ## Validates that a container belongs to this game server.
+  let safeName = cleanContainerName(name)
+  if safeName.len == 0 or safeName != name:
+    raise newException(GamesServerError, "invalid container name")
+  try:
+    discard inspectGame(safeName)
+    return safeName
+  except GamesServerError:
+    discard
+  try:
+    discard inspectBot(safeName)
+    return safeName
+  except GamesServerError:
+    discard
+  raise newException(
+    GamesServerError,
+    "container is not managed by games_server"
+  )
+
+proc containerLogs(name: string): string =
+  ## Reads current Docker logs for one managed container.
+  requireDocker(@["logs", managedContainerName(name)])
 
 proc cleanReplayName(value: string): string =
   ## Keeps only replay file name characters.
@@ -804,6 +843,12 @@ proc stopBotsForGame(gameName: string) =
     if bot.status == "running":
       discard requireDocker(@["stop", bot.name])
 
+proc stopBot(name: string) =
+  ## Stops one running managed bot container.
+  let bot = inspectBot(name)
+  if bot.status == "running":
+    discard requireDocker(@["stop", bot.name])
+
 proc stopGame(name: string) =
   ## Stops a running managed game container.
   let game = inspectGame(name)
@@ -973,10 +1018,12 @@ proc renderGamesTable(
           say "Created"
         th ".head":
           say "Control"
+        th ".head":
+          say "Logs"
       if games.len == 0:
         tr:
           td ".row1 center":
-            colspan "8"
+            colspan "9"
             say "No games created yet."
       for i, game in games:
         let
@@ -1024,12 +1071,6 @@ proc renderGamesTable(
             else:
               say "-"
           td rowClass & " nowrap":
-            if gameBots.len > 0:
-              for j, bot in gameBots:
-                if j > 0:
-                  say ", "
-                say botKindTitle(bot.bot) & " " & esc(bot.status)
-              say " "
             if healthy:
               form:
                 action "/games/bot"
@@ -1054,6 +1095,8 @@ proc renderGamesTable(
               say "wait"
             elif gameBots.len == 0:
               say "-"
+            else:
+              say ""
           td rowClass & " nowrap":
             say fmtCreated(game.created)
           td rowClass & " center":
@@ -1070,6 +1113,46 @@ proc renderGamesTable(
                   say "Stop"
             else:
               say "Stopped"
+          td rowClass & " center":
+            a:
+              href logUrl(game.name)
+              target "_blank"
+              say "logs"
+        for bot in gameBots:
+          tr:
+            td rowClass:
+              say ""
+            td rowClass & " nowrap":
+              say esc(bot.status)
+            td rowClass:
+              say ""
+            td rowClass:
+              say ""
+            td rowClass:
+              say ""
+            td rowClass & " nowrap":
+              say esc(bot.name)
+            td rowClass & " nowrap":
+              say fmtCreated(bot.created)
+            td rowClass & " center":
+              if bot.status == "running":
+                form:
+                  action "/games/bot/stop"
+                  tmethod "post"
+                  input:
+                    ttype "hidden"
+                    name "name"
+                    value bot.name
+                  button ".button":
+                    ttype "submit"
+                    say "Stop"
+              else:
+                say "Stopped"
+            td rowClass & " center":
+              a:
+                href logUrl(bot.name)
+                target "_blank"
+                say "logs"
 
 proc renderReplayServersTable(
   request: Request,
@@ -1093,10 +1176,12 @@ proc renderReplayServersTable(
           say "Created"
         th ".head":
           say "Control"
+        th ".head":
+          say "Logs"
       if servers.len == 0:
         tr:
           td ".row1 center":
-            colspan "7"
+            colspan "8"
             say "No replay servers started yet."
       for i, server in servers:
         let
@@ -1143,6 +1228,11 @@ proc renderReplayServersTable(
                   say "Stop"
             else:
               say "Stopped"
+          td rowClass & " center":
+            a:
+              href logUrl(server.name)
+              target "_blank"
+              say "logs"
 
 proc renderReplaysTable(replays: seq[ReplayFile]): string =
   ## Renders the saved replay file list.
@@ -1249,6 +1339,43 @@ proc renderPage(
             say "Docker label: " & ServerLabel & ". Ports: " &
               $GamePortStart & "-" & $GamePortEnd & "."
 
+proc renderLogsPage(name, logText: string): string =
+  ## Renders current Docker logs for one container.
+  let cleanLog =
+    if logText.len == 0:
+      "(no logs yet)"
+    else:
+      logText
+  render:
+    html:
+      head:
+        title:
+          say "Logs: " & esc(name)
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".page":
+          table:
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say "Logs"
+                p ".small":
+                  say esc(name)
+              td ".row2 right small":
+                a:
+                  href logUrl(name)
+                  say "Refresh"
+                say " | "
+                a:
+                  href "/"
+                  say "Back"
+          p ".small":
+            say " "
+          pre ".logs":
+            say esc(cleanLog)
+
 proc htmlHeaders(): HttpHeaders =
   ## Builds standard HTML response headers.
   result["Content-Type"] = "text/html; charset=utf-8"
@@ -1350,6 +1477,19 @@ proc botHandler(request: Request) =
     container = createBot(name, bot)
   request.respondRedirect("/?notice=started+" & container.name)
 
+proc stopBotHandler(request: Request) =
+  ## Handles stop-bot requests.
+  let name = formValue(parseFormBody(request), "name")
+  stopBot(name)
+  request.respondRedirect("/?notice=stopped+" & cleanContainerName(name))
+
+proc logsHandler(request: Request) =
+  ## Handles Docker log viewer requests.
+  let name = queryValue(request, "name")
+  if name.len == 0:
+    raise newException(GamesServerError, "missing container name")
+  request.respondHtml(200, renderLogsPage(name, containerLogs(name)))
+
 proc notFoundHandler(request: Request) =
   ## Handles unknown routes.
   let containers = safeListGames()
@@ -1386,10 +1526,14 @@ proc httpHandler(request: Request) =
   try:
     if request.path == "/" and request.httpMethod == "GET":
       request.indexHandler()
+    elif request.path == LogsPath and request.httpMethod == "GET":
+      request.logsHandler()
     elif request.path == "/games/create" and request.httpMethod == "POST":
       request.createHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
       request.botHandler()
+    elif request.path == "/games/bot/stop" and request.httpMethod == "POST":
+      request.stopBotHandler()
     elif request.path == "/games/stop" and request.httpMethod == "POST":
       request.stopHandler()
     elif request.path == ReplayPlayPath and request.httpMethod == "POST":
