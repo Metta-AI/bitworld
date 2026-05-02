@@ -1,6 +1,8 @@
 import pixie, protocol, ../sim, ../texts, ../votereader, ../../common/server
 when not defined(italkalotLibrary):
-  import bitworld/ais/openai, silky, whisky, windy
+  import bitworld/ais/openai, whisky
+  when not defined(botHeadless):
+    import silky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
   strutils, times]
 
@@ -123,8 +125,9 @@ const
 
 when not defined(italkalotLibrary):
   type ViewerApp = ref object
-    window: Window
-    silky: Silky
+    when not defined(botHeadless):
+      window: Window
+      silky: Silky
 
 type
   TileKnowledge = enum
@@ -4077,7 +4080,7 @@ when defined(italkalotLibrary):
       let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
       outs[row] = actionIndexForMask(mask)
 
-when not defined(italkalotLibrary):
+when not defined(italkalotLibrary) and not defined(botHeadless):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
     ## Draws an unfilled rectangle.
     sk.drawRect(pos, vec2(size.x, thickness), color)
@@ -4557,6 +4560,25 @@ when not defined(italkalotLibrary):
     ## Returns true when the diagnostic viewer should keep running.
     viewer.isNil or not viewer.window.closeRequested
 
+when not defined(italkalotLibrary) and defined(botHeadless):
+  proc initViewerApp(): ViewerApp =
+    ## Returns no viewer for headless builds.
+    nil
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Ignores viewer frames in headless builds.
+    discard
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true because headless builds have no viewer window.
+    true
+
+when not defined(italkalotLibrary):
   proc queryEscape(value: string): string =
     ## Escapes a small string for use in a websocket query parameter.
     const Hex = "0123456789ABCDEF"

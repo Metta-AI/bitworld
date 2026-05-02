@@ -312,7 +312,7 @@ proc loadReplay(path: string): ReplayData =
         tick = bytes.readU32(offset)
         hash = bytes.readU64(offset)
       if int(tick) <= lastTick:
-        raise newException(ReplayError, "Replay tick hashes move backward")
+        break
       lastTick = int(tick)
       result.hashes.add(ReplayHash(tick: tick, hash: hash))
     of ReplayInputRecord:
