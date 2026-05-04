@@ -62,12 +62,80 @@ export const CONFIGS: Record<string, GameConfig> = {
     obstacleCount: 0,
   },
 
+  debug2r: {
+    roles: [
+      { role: Role.Hades, team: Team.TeamA, count: 1 },
+      { role: Role.Persephone, team: Team.TeamB, count: 1 },
+      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
+      { role: Role.Demeter, team: Team.TeamB, count: 1 },
+      { role: Role.Shades, team: Team.TeamA, count: 4 },
+      { role: Role.Nymphs, team: Team.TeamB, count: 4 },
+    ],
+    rounds: [
+      { durationSecs: 60, hostages: 1 },
+      { durationSecs: 60, hostages: 1 },
+    ],
+    obstacleCount: 0,
+  },
+
   medium: {
     ...DEFAULT_GAME_CONFIG,
     rounds: [
       { durationSecs: 180, hostages: 1 },
       { durationSecs: 120, hostages: 1 },
       { durationSecs: 60, hostages: 1 },
+    ],
+  },
+
+  medium6: {
+    roles: [
+      { role: Role.Hades, team: Team.TeamA, count: 1 },
+      { role: Role.Persephone, team: Team.TeamB, count: 1 },
+      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
+      { role: Role.Demeter, team: Team.TeamB, count: 1 },
+      { role: Role.Shades, team: Team.TeamA, count: 1 },
+      { role: Role.Nymphs, team: Team.TeamB, count: 1 },
+    ],
+    rounds: [
+      { durationSecs: 180, hostages: 1 },
+      { durationSecs: 120, hostages: 1 },
+      { durationSecs: 60, hostages: 1 },
+    ],
+  },
+
+  medium12: {
+    roles: [
+      { role: Role.Hades, team: Team.TeamA, count: 1 },
+      { role: Role.Persephone, team: Team.TeamB, count: 1 },
+      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
+      { role: Role.Demeter, team: Team.TeamB, count: 1 },
+      { role: Role.Shades, team: Team.TeamA, count: 4 },
+      { role: Role.Nymphs, team: Team.TeamB, count: 4 },
+    ],
+    rounds: [
+      { durationSecs: 300, hostages: 2 },
+      { durationSecs: 240, hostages: 2 },
+      { durationSecs: 180, hostages: 2 },
+      { durationSecs: 120, hostages: 1 },
+      { durationSecs: 60, hostages: 1 },
+    ],
+  },
+
+  medium12_half: {
+    roles: [
+      { role: Role.Hades, team: Team.TeamA, count: 1 },
+      { role: Role.Persephone, team: Team.TeamB, count: 1 },
+      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
+      { role: Role.Demeter, team: Team.TeamB, count: 1 },
+      { role: Role.Shades, team: Team.TeamA, count: 4 },
+      { role: Role.Nymphs, team: Team.TeamB, count: 4 },
+    ],
+    rounds: [
+      { durationSecs: 150, hostages: 2 },
+      { durationSecs: 120, hostages: 2 },
+      { durationSecs: 90, hostages: 2 },
+      { durationSecs: 60, hostages: 1 },
+      { durationSecs: 30, hostages: 1 },
     ],
   },
 };
@@ -266,11 +334,11 @@ export function loadConfigFile(path: string): GameConfig {
     config.groupNamePrefixInRoomA = obj.groupNamePrefixInRoomA;
   }
 
-  if (obj.autoGrantChatroomEntry !== undefined) {
-    if (typeof obj.autoGrantChatroomEntry !== "boolean") {
-      throw new Error(`Config file "${path}": "autoGrantChatroomEntry" must be a boolean`);
+  if (obj.autoGrantWhisperEntry !== undefined) {
+    if (typeof obj.autoGrantWhisperEntry !== "boolean") {
+      throw new Error(`Config file "${path}": "autoGrantWhisperEntry" must be a boolean`);
     }
-    config.autoGrantChatroomEntry = obj.autoGrantChatroomEntry;
+    config.autoGrantWhisperEntry = obj.autoGrantWhisperEntry;
   }
 
   return config;

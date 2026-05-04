@@ -114,8 +114,11 @@ export const CHAT_MAX_LINES = 2;
 export const CHAT_MAX_TOTAL = CHAT_MAX_CHARS_PER_LINE * CHAT_MAX_LINES;
 
 export const ACTION_RATE_LIMIT_TICKS = 2 * TARGET_FPS;
-export const CHATROOM_MAX_OCCUPANTS = 4;
+export const WHISPER_MAX_OCCUPANTS = 4;
 export const ENTRY_REQUEST_TIMEOUT = 10 * TARGET_FPS;
+
+export const LEADER_SUMMIT_DURATION_SECS = 15;
+export const LEADER_ROOM_NAME = "Summit";
 
 export const SHADOW_MAP: uint8[] = [0, 12, 9, 5, 5, 0, 5, 5, 5, 12, 9, 9, 0, 12, 12, 9];
 
@@ -160,6 +163,26 @@ export function playerSpriteName(colorIndex: number): string {
 
 export function spriteNameFromPaletteColor(paletteColor: number): string {
   return COLOR_NAMES[paletteColor] ?? `COLOR${paletteColor}`;
+}
+
+export function characterName(paletteColor: number, shape: PlayerShape): string {
+  return `${COLOR_LETTERS[paletteColor] ?? "?"} ${SHAPE_NAMES[shape] ?? "?"}`;
+}
+
+const VALID_COLOR_LETTERS = new Set(Object.values(COLOR_LETTERS));
+const VALID_SHAPE_NAMES = new Set(Object.values(SHAPE_NAMES));
+
+export function isValidCharacterName(s: string): boolean {
+  const sp = s.indexOf(" ");
+  if (sp < 0) return false;
+  return VALID_COLOR_LETTERS.has(s.slice(0, sp)) && VALID_SHAPE_NAMES.has(s.slice(sp + 1));
+}
+
+export function paletteColorFromLetter(letter: string): number | null {
+  for (const [k, v] of Object.entries(COLOR_LETTERS)) {
+    if (v === letter) return parseInt(k);
+  }
+  return null;
 }
 
 export const PLAYER_SHAPES: Record<PlayerShape, number[][]> = {

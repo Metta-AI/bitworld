@@ -1,4 +1,4 @@
-import type { ChatroomMessage } from "./types.js";
+import type { WhisperMessage } from "./types.js";
 
 export function clamp(val: number, min: number, max: number): number {
   return val < min ? min : val > max ? max : val;
@@ -18,9 +18,9 @@ export function distSq(ax: number, ay: number, bx: number, by: number): number {
  * text at a fixed character count (possibly mid-word). Readers that need a
  * whitespace separator between lines should insert their own.
  */
-export function coalesceChatFragments(messages: ChatroomMessage[]): ChatroomMessage[] {
+export function coalesceChatFragments(messages: WhisperMessage[]): WhisperMessage[] {
   if (messages.length === 0) return messages;
-  const out: ChatroomMessage[] = [];
+  const out: WhisperMessage[] = [];
   for (const m of messages) {
     const prev = out[out.length - 1];
     if (

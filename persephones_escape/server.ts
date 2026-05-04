@@ -137,10 +137,10 @@ function main() {
         const text = blobToChat(data);
         if (text.length > 0) {
           const p = sim.players[client.playerIndex];
-          if (p && p.inChatroom >= 0) {
-            sim.addChatroomChat(p.inChatroom, client.playerIndex, text);
+          if (p && p.inWhisper >= 0) {
+            sim.addWhisperChat(p.inWhisper, client.playerIndex, text);
           } else {
-            sim.addGlobalChat(client.playerIndex, text);
+            sim.addShout(client.playerIndex, text);
           }
         }
       }

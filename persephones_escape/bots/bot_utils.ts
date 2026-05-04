@@ -86,7 +86,7 @@ export type { MenuDef } from "../game/menu_defs.js";
 
 // ---------------------------------------------------------------------------
 // Hostage selection — builds action sequences for leaders during HostageSelect
-// Hostage picker is inside global chat: A toggles, B commits, SELECT closes
+// Hostage picker is inside shout: A toggles, B commits, SELECT closes
 // ---------------------------------------------------------------------------
 
 export function hostageSelectSequence(targetIndices: number[], eligible: number[]): number[] {

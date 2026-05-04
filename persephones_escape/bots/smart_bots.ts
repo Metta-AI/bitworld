@@ -101,7 +101,7 @@ function doMenuAction(bot: BotState) {
   const roll = Math.random();
 
   if (roll < 0.3) {
-    // A creates chatroom directly
+    // A creates whisper directly
     bot.actions.push(BUTTON_A, 0);
   } else if (roll < 0.5) {
     // SELECT opens comm menu, A selects SHOUT (index 0)
@@ -115,7 +115,7 @@ function doMenuAction(bot: BotState) {
     const moves = Math.floor(Math.random() * 4);
     for (let i = 0; i < moves; i++) bot.actions.push(0x08, 0); // RIGHT
     bot.actions.push(BUTTON_A, 0);
-    bot.actions.push(BUTTON_SELECT, 0); // close global chat
+    bot.actions.push(BUTTON_SELECT, 0); // close shout
   }
 }
 
@@ -124,7 +124,7 @@ function doMenuAction(bot: BotState) {
 // ---------------------------------------------------------------------------
 
 function doHostageSelect(bot: BotState) {
-  // Open global chat (via comm menu SHOUT), pick hostages, commit
+  // Open shout (via comm menu SHOUT), pick hostages, commit
   const seq: number[] = [];
   seq.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
   const picks = 1 + Math.floor(Math.random() * 2);
@@ -137,7 +137,7 @@ function doHostageSelect(bot: BotState) {
     seq.push(BUTTON_A, 0); // toggle
   }
   seq.push(BUTTON_B, 0); // commit
-  seq.push(BUTTON_SELECT, 0); // close global chat
+  seq.push(BUTTON_SELECT, 0); // close shout
   bot.actions.push(...seq);
 }
 

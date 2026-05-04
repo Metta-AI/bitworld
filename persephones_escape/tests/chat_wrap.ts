@@ -11,13 +11,13 @@ for (let i = 0; i < 10; i++) sim.addPlayer(`p${i}`);
 sim.startGame();
 sim.startRound();
 
-// Put p0 in a chatroom, then add p1
-sim.createChatroom(0);
-const crId = sim.players[0].inChatroom;
-const cr = sim.chatrooms.get(crId)!;
+// Put p0 in a whisper, then add p1
+sim.createWhisper(0);
+const crId = sim.players[0].inWhisper;
+const cr = sim.whispers.get(crId)!;
 cr.occupants.add(1);
-sim.players[1].inChatroom = crId;
-sim.players[1].chatroomEntryTick = 0;
+sim.players[1].inWhisper = crId;
+sim.players[1].whisperEntryTick = 0;
 
 function advanceTicks(n: number) {
   for (let t = 0; t < n; t++) {
@@ -37,7 +37,7 @@ advanceTicks(120);
 const msg = "HELLO WORLD THIS IS A LONG MSG TEST!";
 console.log(`\nTest 1: Wrap long message`);
 console.log(`  Sending: "${msg}" (len=${msg.length})`);
-sim.addChatroomChat(crId, 0, msg);
+sim.addWhisperChat(crId, 0, msg);
 
 const msgs1 = textMessages();
 console.assert(msgs1.length === 2, `Expected 2 messages, got ${msgs1.length}`);
@@ -50,7 +50,7 @@ console.log(`  OK: "${msgs1[0].text}" + "${msgs1[1].text}"`);
 // --- Test 2: Exactly 18 chars stays as one line ---
 advanceTicks(120);
 const before2 = textMessages().length;
-sim.addChatroomChat(crId, 0, "EXACTLY 18 CHARS!!");
+sim.addWhisperChat(crId, 0, "EXACTLY 18 CHARS!!");
 const after2 = textMessages();
 console.log(`\nTest 2: Exactly 18 chars`);
 console.assert(after2.length === before2 + 1, `Expected ${before2 + 1} messages, got ${after2.length}`);
@@ -61,7 +61,7 @@ console.log(`  OK: "${after2[after2.length - 1].text}"`);
 // --- Test 3: Short message stays as one line ---
 advanceTicks(120);
 const before3 = textMessages().length;
-sim.addChatroomChat(crId, 0, "hi");
+sim.addWhisperChat(crId, 0, "hi");
 const after3 = textMessages();
 console.log(`\nTest 3: Short message`);
 console.assert(after3.length === before3 + 1, `Expected ${before3 + 1} messages, got ${after3.length}`);
@@ -71,7 +71,7 @@ console.log(`  OK: "${after3[after3.length - 1].text}"`);
 // --- Test 4: Message >36 chars is capped at 2 lines ---
 advanceTicks(120);
 const before4 = textMessages().length;
-sim.addChatroomChat(crId, 0, "A".repeat(50));
+sim.addWhisperChat(crId, 0, "A".repeat(50));
 const after4 = textMessages();
 console.log(`\nTest 4: >36 chars capped at 2 lines`);
 console.assert(after4.length === before4 + 2, `Expected ${before4 + 2} messages, got ${after4.length}`);
@@ -80,7 +80,7 @@ console.assert(after4[after4.length - 1].text.length === 18, `Line 2 len: ${afte
 console.log(`  OK: 2 lines of 18 chars each (50 char input truncated to 36)`);
 
 // --- Test 5: Rate-limited message is rejected ---
-sim.addChatroomChat(crId, 0, "should fail");
+sim.addWhisperChat(crId, 0, "should fail");
 const after5 = textMessages();
 console.log(`\nTest 5: Rate-limited rejection`);
 console.assert(after5.length === after4.length, `Expected ${after4.length} (unchanged), got ${after5.length}`);
@@ -88,11 +88,11 @@ console.log(`  OK: message rejected (rate limited)`);
 
 // --- Test 6: Wrapped lines render in the framebuffer ---
 advanceTicks(120);
-sim.addChatroomChat(crId, 0, "LINE ONE RENDER!! LINE TWO RENDER!!");
+sim.addWhisperChat(crId, 0, "LINE ONE RENDER!! LINE TWO RENDER!!");
 
 let viewerIdx = -1;
 for (let i = 0; i < sim.players.length; i++) {
-  if (sim.players[i].inChatroom === crId) { viewerIdx = i; break; }
+  if (sim.players[i].inWhisper === crId) { viewerIdx = i; break; }
 }
 
 const packed = render(sim, viewerIdx);

@@ -18,7 +18,7 @@ export interface MenuDef {
 
 export const MENU_DEFS = {
   comm:       { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_SELECT, openSequence: [BUTTON_SELECT, 0] },
-  chatroom:   { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_B,      openSequence: [BUTTON_B, 0] },
+  whisper:   { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_B,      openSequence: [BUTTON_B, 0] },
   share:      { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
   global:     { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
   hostage:    { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
@@ -26,7 +26,7 @@ export const MENU_DEFS = {
 } satisfies Record<string, MenuDef>;
 
 // ---------------------------------------------------------------------------
-// 2D chatroom menu — categories (L/R) × items (U/D)
+// 2D whisper menu — categories (L/R) × items (U/D)
 // ---------------------------------------------------------------------------
 
 export interface MenuItem2D {
@@ -39,7 +39,7 @@ export interface MenuCategory2D {
   items: MenuItem2D[];
 }
 
-export const CHATROOM_MENU: MenuCategory2D[] = [
+export const WHISPER_MENU: MenuCategory2D[] = [
   {
     label: "COLOR",
     items: [
@@ -71,19 +71,19 @@ export const CHATROOM_MENU: MenuCategory2D[] = [
   },
 ];
 
-export const CHATROOM_OPEN_BUTTON = BUTTON_B;
-export const CHATROOM_CLOSE_BUTTON = BUTTON_SELECT;
-export const CHATROOM_SELECT_BUTTON = BUTTON_A;
+export const WHISPER_OPEN_BUTTON = BUTTON_B;
+export const WHISPER_CLOSE_BUTTON = BUTTON_SELECT;
+export const WHISPER_SELECT_BUTTON = BUTTON_A;
 
-export function chatMenuItemLabel(cat: MenuCategory2D, itemIdx: number, toggled: boolean): string {
+export function whisperMenuItemLabel(cat: MenuCategory2D, itemIdx: number, toggled: boolean): string {
   const item = cat.items[itemIdx];
   if (!item) return "";
   if (toggled && item.toggleAction) return item.toggleAction;
   return item.action;
 }
 
-export function chatMenuAction(catIdx: number, itemIdx: number, toggledSet: Set<string>): string | null {
-  const cat = CHATROOM_MENU[catIdx];
+export function whisperMenuAction(catIdx: number, itemIdx: number, toggledSet: Set<string>): string | null {
+  const cat = WHISPER_MENU[catIdx];
   if (!cat) return null;
   const item = cat.items[itemIdx];
   if (!item) return null;
@@ -91,9 +91,9 @@ export function chatMenuAction(catIdx: number, itemIdx: number, toggledSet: Set<
   return item.action;
 }
 
-export function findChatMenuPosition(action: string): { catIdx: number; itemIdx: number } | null {
-  for (let c = 0; c < CHATROOM_MENU.length; c++) {
-    const cat = CHATROOM_MENU[c];
+export function findWhisperMenuPosition(action: string): { catIdx: number; itemIdx: number } | null {
+  for (let c = 0; c < WHISPER_MENU.length; c++) {
+    const cat = WHISPER_MENU[c];
     for (let i = 0; i < cat.items.length; i++) {
       if (cat.items[i].action === action || cat.items[i].toggleAction === action) {
         return { catIdx: c, itemIdx: i };
@@ -171,22 +171,22 @@ export function menuSequence(context: string, action: string, items: string[]): 
 }
 
 // ---------------------------------------------------------------------------
-// 2D chatroom menu navigation + sequence building
+// 2D whisper menu navigation + sequence building
 // ---------------------------------------------------------------------------
 
-export function navigateChatMenu(
+export function navigateWhisperMenu(
   input: InputState, prev: InputState,
   catIdx: number, itemIdx: number,
 ): { catIdx: number; itemIdx: number } {
-  const catCount = CHATROOM_MENU.length;
+  const catCount = WHISPER_MENU.length;
   if (pressed(input, prev, BUTTON_LEFT)) catIdx = (catIdx - 1 + catCount) % catCount;
   if (pressed(input, prev, BUTTON_RIGHT)) catIdx = (catIdx + 1) % catCount;
 
-  const itemCount = CHATROOM_MENU[catIdx].items.length;
+  const itemCount = WHISPER_MENU[catIdx].items.length;
   if (pressed(input, prev, BUTTON_UP)) itemIdx = (itemIdx - 1 + itemCount) % itemCount;
   if (pressed(input, prev, BUTTON_DOWN)) itemIdx = (itemIdx + 1) % itemCount;
 
-  itemIdx = Math.min(itemIdx, CHATROOM_MENU[catIdx].items.length - 1);
+  itemIdx = Math.min(itemIdx, WHISPER_MENU[catIdx].items.length - 1);
   return { catIdx, itemIdx };
 }
 
@@ -197,37 +197,37 @@ function shortestWrapSteps(from: number, to: number, count: number): { steps: nu
   return fwd <= bwd ? { steps: fwd, dir: 1 } : { steps: bwd, dir: -1 };
 }
 
-export function chatMenuSequence(action: string): number[] {
-  const pos = findChatMenuPosition(action);
+export function whisperMenuSequence(action: string): number[] {
+  const pos = findWhisperMenuPosition(action);
   if (!pos) return [];
 
-  const seq: number[] = [CHATROOM_OPEN_BUTTON, 0];
+  const seq: number[] = [WHISPER_OPEN_BUTTON, 0];
 
-  const catNav = shortestWrapSteps(0, pos.catIdx, CHATROOM_MENU.length);
+  const catNav = shortestWrapSteps(0, pos.catIdx, WHISPER_MENU.length);
   const catButton = catNav.dir === 1 ? BUTTON_RIGHT : BUTTON_LEFT;
   for (let i = 0; i < catNav.steps; i++) seq.push(catButton, 0);
 
-  const itemCount = CHATROOM_MENU[pos.catIdx].items.length;
+  const itemCount = WHISPER_MENU[pos.catIdx].items.length;
   const itemNav = shortestWrapSteps(0, pos.itemIdx, itemCount);
   const itemButton = itemNav.dir === 1 ? BUTTON_DOWN : BUTTON_UP;
   for (let i = 0; i < itemNav.steps; i++) seq.push(itemButton, 0);
 
-  seq.push(CHATROOM_SELECT_BUTTON, 0);
+  seq.push(WHISPER_SELECT_BUTTON, 0);
   return seq;
 }
 
 /**
- * Full chatroom-menu action sequence INCLUDING the target-picker auto-confirm
+ * Full whisper-menu action sequence INCLUDING the target-picker auto-confirm
  * for R.ACCPT / C.ACCPT. Those two actions open a sub-menu listing offerers;
  * pressing the select button again picks the first (and usually only) offerer,
  * which is almost always the correct choice. Returns [] if the action is
  * unknown. Safe to push directly into a bot's action queue.
  */
-export function chatMenuSequenceWithTargetPick(action: string): number[] {
-  const seq = chatMenuSequence(action);
+export function whisperMenuSequenceWithTargetPick(action: string): number[] {
+  const seq = whisperMenuSequence(action);
   if (seq.length === 0) return seq;
   if (action === "R.ACCPT" || action === "C.ACCPT") {
-    seq.push(CHATROOM_SELECT_BUTTON, 0);
+    seq.push(WHISPER_SELECT_BUTTON, 0);
   }
   return seq;
 }
@@ -237,17 +237,17 @@ export function chatMenuSequenceWithTargetPick(action: string): number[] {
 // ---------------------------------------------------------------------------
 
 export const COMMAND_ACTIONS: Record<string, { context: string; action: string }> = {
-  color_offer:    { context: "chatroom", action: "C.OFFER" },
-  color_withdraw: { context: "chatroom", action: "C.UNOFFR" },
-  color_accept:   { context: "chatroom", action: "C.ACCPT" },
-  show_role:      { context: "chatroom", action: "ROLE" },
-  role_offer:     { context: "chatroom", action: "R.OFFER" },
-  role_withdraw:  { context: "chatroom", action: "R.UNOFFR" },
-  role_accept:    { context: "chatroom", action: "R.ACCPT" },
-  leader_pass:    { context: "chatroom", action: "PASS" },
-  leader_take:    { context: "chatroom", action: "TAKE" },
-  grant_entry:    { context: "chatroom", action: "GRANT" },
-  exit_chatroom:  { context: "chatroom", action: "EXIT" },
+  color_offer:    { context: "whisper", action: "C.OFFER" },
+  color_withdraw: { context: "whisper", action: "C.UNOFFR" },
+  color_accept:   { context: "whisper", action: "C.ACCPT" },
+  show_role:      { context: "whisper", action: "ROLE" },
+  role_offer:     { context: "whisper", action: "R.OFFER" },
+  role_withdraw:  { context: "whisper", action: "R.UNOFFR" },
+  role_accept:    { context: "whisper", action: "R.ACCPT" },
+  leader_pass:    { context: "whisper", action: "PASS" },
+  leader_take:    { context: "whisper", action: "TAKE" },
+  grant_entry:    { context: "whisper", action: "GRANT" },
+  exit_whisper:  { context: "whisper", action: "EXIT" },
   shout:          { context: "comm", action: "SHOUT" },
   info_shared:    { context: "info", action: "open" },
 };

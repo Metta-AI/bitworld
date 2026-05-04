@@ -6,7 +6,7 @@
  * and the bot evaluates the policy in priority order on each frame.
  */
 
-import { BUTTON_A, BUTTON_B, BUTTON_SELECT } from "../game/constants.js";
+import { BUTTON_A, BUTTON_B, BUTTON_SELECT, paletteColorFromLetter } from "../game/constants.js";
 import { Room } from "../game/types.js";
 import {
   sendInput, sendChat, moveToward, randomDir, randomPoint, clamp,
@@ -14,36 +14,35 @@ import {
 } from "./bot_utils.js";
 import type { BotController } from "./bot_common.js";
 import type { BeliefState } from "./belief_state.js";
-import { chatMenuSequence, COMMAND_ACTIONS } from "../game/menu_defs.js";
+import { whisperMenuSequence, COMMAND_ACTIONS } from "../game/menu_defs.js";
 
 // ---------------------------------------------------------------------------
 // Policy schema
 // ---------------------------------------------------------------------------
 
 export interface Policy {
-  /** Auto-grant chatroom entry requests. */
+  /** Auto-grant whisper entry requests. */
   autoGrantEntry: boolean;
   /** Auto-accept role exchange offers (only safe if you've verified partner). */
   autoAcceptRoleOffer: boolean;
   /** Auto-accept color exchange offers. */
   autoAcceptColorOffer: boolean;
-  /** When in a chatroom with at least 2 occupants, auto-offer color reveal. */
+  /** When in a whisper with at least 2 occupants, auto-offer color reveal. */
   autoOfferColor: boolean;
-  /** When in a chatroom with at least 2 occupants, auto-offer role reveal. */
+  /** When in a whisper with at least 2 occupants, auto-offer role reveal. */
   autoOfferRole: boolean;
 
   /**
-   * Ordered list of players to pursue. Bot walks toward the first color it
-   * can see on the minimap. Specifying colors that aren't visible is fine —
-   * they're skipped.
+   * Ordered list of players to pursue by character name (e.g. "R CRCL").
+   * Bot walks toward the first one it can see on the minimap.
    */
-  pursueColorOrder: number[];
+  pursueOrder: string[];
 
   /**
-   * When we reach a pursued player (within bubble range), open a chatroom.
-   * After that, fall through to in-chatroom auto-* flags.
+   * When we reach a pursued player (within bubble range), open a whisper.
+   * After that, fall through to in-whisper auto-* flags.
    */
-  openChatroomOnReach: boolean;
+  openWhisperOnReach: boolean;
 
   /** If true, wander when no pursue targets visible. */
   wanderIfIdle: boolean;
@@ -51,14 +50,14 @@ export interface Policy {
   /** Chat messages to shout into global room chat, consumed one per tick. */
   shoutQueue: string[];
 
-  /** Chat messages to send to current chatroom, consumed one per tick. */
+  /** Chat messages to send to current whisper, consumed one per tick. */
   chatQueue: string[];
 
   /**
-   * Walk toward a specific world-space point. Higher priority than pursueColorOrder.
-   * When within ~10 units of the target and openChatroomOnReach is true, the bot
-   * presses A (creating a local chatroom OR requesting entry to any chatroom nearby).
-   * Use this to coordinate meetups via global chat.
+   * Walk toward a specific world-space point. Higher priority than pursueOrder.
+   * When within ~10 units of the target and openWhisperOnReach is true, the bot
+   * presses A (creating a local whisper OR requesting entry to any whisper nearby).
+   * Use this to coordinate meetups via shout.
    */
   targetPoint: { x: number; y: number } | null;
 }
@@ -70,8 +69,8 @@ export function defaultPolicy(): Policy {
     autoAcceptColorOffer: true,
     autoOfferColor: false,
     autoOfferRole: false,
-    pursueColorOrder: [],
-    openChatroomOnReach: true,
+    pursueOrder: [],
+    openWhisperOnReach: true,
     wanderIfIdle: true,
     shoutQueue: [],
     chatQueue: [],
@@ -87,8 +86,8 @@ export function mergePolicy(current: Policy, update: Partial<Policy>): Policy {
     autoAcceptColorOffer: update.autoAcceptColorOffer ?? current.autoAcceptColorOffer,
     autoOfferColor: update.autoOfferColor ?? current.autoOfferColor,
     autoOfferRole: update.autoOfferRole ?? current.autoOfferRole,
-    pursueColorOrder: update.pursueColorOrder ?? current.pursueColorOrder,
-    openChatroomOnReach: update.openChatroomOnReach ?? current.openChatroomOnReach,
+    pursueOrder: update.pursueOrder ?? current.pursueOrder,
+    openWhisperOnReach: update.openWhisperOnReach ?? current.openWhisperOnReach,
     wanderIfIdle: update.wanderIfIdle ?? current.wanderIfIdle,
     shoutQueue: update.shoutQueue ?? current.shoutQueue,
     chatQueue: update.chatQueue ?? current.chatQueue,
@@ -103,8 +102,8 @@ export function policyToPrompt(policy: Policy): string {
     autoAcceptColorOffer: policy.autoAcceptColorOffer,
     autoOfferColor: policy.autoOfferColor,
     autoOfferRole: policy.autoOfferRole,
-    pursueColorOrder: policy.pursueColorOrder,
-    openChatroomOnReach: policy.openChatroomOnReach,
+    pursueOrder: policy.pursueOrder,
+    openWhisperOnReach: policy.openWhisperOnReach,
     wanderIfIdle: policy.wanderIfIdle,
     targetPoint: policy.targetPoint,
     pendingShouts: policy.shoutQueue.length,
@@ -134,10 +133,10 @@ export function parsePolicyUpdate(raw: string, name?: string): Partial<Policy> |
     if (typeof obj.autoAcceptColorOffer === "boolean") update.autoAcceptColorOffer = obj.autoAcceptColorOffer;
     if (typeof obj.autoOfferColor === "boolean") update.autoOfferColor = obj.autoOfferColor;
     if (typeof obj.autoOfferRole === "boolean") update.autoOfferRole = obj.autoOfferRole;
-    if (Array.isArray(obj.pursueColorOrder)) {
-      update.pursueColorOrder = obj.pursueColorOrder.filter((n: any) => Number.isInteger(n));
+    if (Array.isArray(obj.pursueOrder)) {
+      update.pursueOrder = obj.pursueOrder.filter((n: any) => typeof n === "string");
     }
-    if (typeof obj.openChatroomOnReach === "boolean") update.openChatroomOnReach = obj.openChatroomOnReach;
+    if (typeof obj.openWhisperOnReach === "boolean") update.openWhisperOnReach = obj.openWhisperOnReach;
     if (typeof obj.wanderIfIdle === "boolean") update.wanderIfIdle = obj.wanderIfIdle;
     if (obj.targetPoint === null) {
       update.targetPoint = null;
@@ -159,9 +158,9 @@ export function parsePolicyUpdate(raw: string, name?: string): Partial<Policy> |
 // Executor — runs every frame, consults the policy and emits one action
 // ---------------------------------------------------------------------------
 
-/** Push a chatroom-menu command sequence into the bot's action queue. */
+/** Push a whisper-menu command sequence into the bot's action queue. */
 function pushChatCommand(bot: BotController, action: string) {
-  const seq = chatMenuSequence(action);
+  const seq = whisperMenuSequence(action);
   if (action === "R.ACCPT" || action === "C.ACCPT") {
     seq.push(BUTTON_A, 0);  // auto-confirm the target-select sub-menu
   }
@@ -184,8 +183,8 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
     return true;
   }
 
-  // Priority 2: inside a chatroom — apply auto-actions
-  if (belief.phase === "chatroom") {
+  // Priority 2: inside a whisper — apply auto-actions
+  if (belief.phase === "whisper") {
     // Highest priority: grant pending entry if configured
     if (policy.autoGrantEntry && belief.pendingEntry) {
       pushChatCommand(bot, "GRANT");
@@ -226,7 +225,7 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
       sendInput(ws, bot.actions.shift()!);
       return true;
     }
-    // Nothing to do in chatroom — idle
+    // Nothing to do in whisper — idle
     sendInput(ws, 0);
     return true;
   }
@@ -236,7 +235,7 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
   // Priority 3: shout from shoutQueue
   if (policy.shoutQueue.length > 0) {
     // In overworld, sendChat goes to the global room chat automatically (server
-    // routes based on whether player is in chatroom).
+    // routes based on whether player is in whisper).
     const msg = policy.shoutQueue.shift()!;
     sendChat(ws, msg);
     sendInput(ws, 0);
@@ -250,8 +249,8 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
     const dy = policy.targetPoint.y - belief.myPos.y;
     const distSq = dx * dx + dy * dy;
     if (distSq <= (10 * 10)) {
-      // Arrived at meetup point. Try to open/join a chatroom.
-      if (policy.openChatroomOnReach) {
+      // Arrived at meetup point. Try to open/join a whisper.
+      if (policy.openWhisperOnReach) {
         bot.actions.push(BUTTON_A, 0);
         sendInput(ws, bot.actions.shift()!);
         return true;
@@ -266,19 +265,21 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
     return true;
   }
 
-  // Priority 4: pursue a player in pursueColorOrder
-  if (belief.myPos && policy.pursueColorOrder.length > 0) {
-    for (const color of policy.pursueColorOrder) {
-      const dot = belief.minimapDots.find(d => d.color === color && !d.isSelf);
+  // Priority 4: pursue a player in pursueOrder
+  if (belief.myPos && policy.pursueOrder.length > 0) {
+    for (const target of policy.pursueOrder) {
+      const targetColor = paletteColorFromLetter(target.split(" ")[0]);
+      if (targetColor === null) continue;
+      const dot = belief.minimapDots.find(d => d.color === targetColor && !d.isSelf);
       if (!dot) continue;
 
-      // If within chatroom bubble range, open_chatroom
+      // If within whisper bubble range, open_whisper
       const dx = dot.worldX - belief.myPos.x;
       const dy = dot.worldY - belief.myPos.y;
       const distSq = dx * dx + dy * dy;
 
-      if (distSq <= (10 * 10) && policy.openChatroomOnReach) {
-        // Within grabbing distance — try to open chatroom
+      if (distSq <= (10 * 10) && policy.openWhisperOnReach) {
+        // Within grabbing distance — try to open whisper
         bot.actions.push(BUTTON_A, 0);
         sendInput(ws, bot.actions.shift()!);
         return true;

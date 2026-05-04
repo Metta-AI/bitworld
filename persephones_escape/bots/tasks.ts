@@ -10,16 +10,19 @@
  *           A new loop of the same kind replaces the existing one.
  *
  * Context routing: each task kind declares which phases it can execute in.
- * Movement tasks don't run while in chatroom. Chatroom tasks don't run while
+ * Movement tasks don't run while in whisper. Whisper tasks don't run while
  * in overworld. Tasks that can't apply in the current phase are skipped, not
  * removed — they wait for the phase to change (subject to their time limit).
  */
 
 import type WebSocket from "ws";
-import { BUTTON_A } from "../game/constants.js";
-import { sendInput, sendChat, truncateChatInput, moveToward } from "./bot_utils.js";
-import { chatMenuSequenceWithTargetPick } from "../game/menu_defs.js";
+import { BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT, isValidCharacterName, characterName } from "../game/constants.js";
+import { sendInput, sendChat, truncateChatInput, moveToward, menuSequence, COMMAND_ACTIONS } from "./bot_utils.js";
+import { whisperMenuSequenceWithTargetPick } from "../game/menu_defs.js";
+import { parseHostageGrid, parseUsurpCandidate } from "./frame_parser.js";
+import { colorFromCharName, type BeliefState } from "./belief_state.js";
 import type { BotController } from "./bot_common.js";
+import type { MinimapDot } from "./frame_parser.js";
 
 // ---------------------------------------------------------------------------
 // Task definitions
@@ -29,36 +32,39 @@ export type Task =
   // ONCE tasks
   | { kind: "shout"; text: string }
   | { kind: "chat"; text: string }
-  | { kind: "exit_chatroom" }
-  // SEQUENCE tasks — high level; handle their own chatroom dance
+  | { kind: "exit_whisper" }
+  // SEQUENCE tasks — high level; handle their own whisper dance
   | { kind: "walk_to"; x: number; y: number; timeLimitTicks: number }
-  | { kind: "pursue_chat"; targetColor: number; timeLimitTicks: number }
+  | { kind: "pursue_chat"; target: string; timeLimitTicks: number }
   /**
-   * pursue_exchange — walk to targetColor, get into the same chatroom, then
+   * pursue_exchange — walk to target, get into the same whisper, then
    * perform a mutual exchange. "role" triggers R.OFFER and auto-accepts any
    * pending R offer from that target. "color" does the same with C.OFFER/C.ACCPT.
-   * On successful mutual exchange (sim confirms via "swapped/shared" system msg
-   * or a re-offer no longer being pending), task succeeds. On timeout, fails.
    */
-  | { kind: "pursue_exchange"; targetColor: number; exchange: "role" | "color"; timeLimitTicks: number }
+  | { kind: "pursue_exchange"; target: string; exchange: "role" | "color"; timeLimitTicks: number }
   // LOOP tasks (singleton per kind)
   | { kind: "loop_auto_grant" }
   | { kind: "loop_auto_accept_color" }
-  | { kind: "loop_auto_accept_role" };
+  | { kind: "loop_auto_accept_role" }
+  // SEQUENCE — usurp vote
+  | { kind: "usurp_vote"; target: string; timeLimitTicks: number }
+  // PRECOMMIT — persists like a loop, fires once when conditions are met, then stays for next round
+  | { kind: "precommit_hostages"; targets: string[] };
 
 // Each task kind must appear in exactly one of these sets. If you add a new
 // kind, put it in the correct set — the classification functions use strict
 // lookups, so an omitted kind will fail isOnceTask/isSequenceTask/isLoopTask.
 const ONCE_KINDS = new Set<string>([
-  "shout", "chat", "exit_chatroom",
+  "shout", "chat", "exit_whisper",
 ]);
 
 const SEQUENCE_KINDS = new Set<string>([
-  "walk_to", "pursue_chat", "pursue_exchange",
+  "walk_to", "pursue_chat", "pursue_exchange", "usurp_vote",
 ]);
 
 const LOOP_KINDS = new Set<string>([
   "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
+  "precommit_hostages",
 ]);
 
 export function isOnceTask(t: Task): boolean { return ONCE_KINDS.has(t.kind); }
@@ -74,20 +80,30 @@ export interface TaskInstance {
   startTick: number;
   lastFiredTick: number;
   // pursue_chat / pursue_exchange runtime
-  createdOwnChatroomTick: number | null;
+  createdOwnWhisperTick: number | null;
   grantDeadlineTick: number | null;
   lastSawTargetTick: number;
   startedEmitted: boolean;
-  // pursue_exchange: whether we've sent our offer in the current chatroom yet.
+  // pursue_exchange: whether we've sent our offer in the current whisper yet.
   offerSentTick: number | null;
+  // pursue_exchange: detailed status for LLM visibility
+  exchangeStatus: string;
+  // precommit_hostages state machine
+  hostageState: "idle" | "opening_chat" | "selecting" | "committing" | "done";
+  hostageRound: number;
+  // usurp_vote state machine
+  usurpState: "idle" | "opening" | "navigating" | "voting" | "closing";
+  usurpNavCount: number;
 }
 
 export function createTaskInstance(task: Task, tick: number): TaskInstance {
   return {
     task, startTick: tick, lastFiredTick: -1,
-    createdOwnChatroomTick: null, grantDeadlineTick: null,
+    createdOwnWhisperTick: null, grantDeadlineTick: null,
     lastSawTargetTick: -Infinity, startedEmitted: false,
-    offerSentTick: null,
+    offerSentTick: null, exchangeStatus: "searching for target",
+    hostageState: "idle", hostageRound: -1,
+    usurpState: "idle", usurpNavCount: 0,
   };
 }
 
@@ -118,16 +134,11 @@ export function createEventBuffer(): EventBuffer { return { events: [] }; }
 
 export function pushEvent(buf: EventBuffer, ev: TaskEvent): void {
   buf.events.push(ev);
-  // Hard cap just to prevent runaway — normal flow flushes every LLM call.
   if (buf.events.length > 500) buf.events.shift();
 }
 
-/** Reset the buffer. Call this AFTER applying an LLM response, so the next
- *  prompt sees only events that happened between responses. */
 export function flushEvents(buf: EventBuffer): void { buf.events = []; }
 
-/** Render the event buffer for the LLM prompt (shows EVERY buffered event,
- *  since the buffer represents the gap since the last LLM response). */
 export function eventBufferLines(buf: EventBuffer): string[] {
   if (buf.events.length === 0) return ["  (no events since last response)"];
   return buf.events.map(ev => {
@@ -142,19 +153,18 @@ export function eventBufferLines(buf: EventBuffer): string[] {
 // ---------------------------------------------------------------------------
 
 export interface TaskUpdate {
-  /** "all" = wipe every task; "non_loop" = wipe only ONCE/SEQUENCE; undefined = keep. */
-  clear?: "all" | "non_loop";
-  /** Tasks to append at the END of the list (after clear, if any). Loops are deduped by kind. */
+  clear?: "all" | "non_loop" | "non_loop_unsafe";
   append?: Task[];
 }
 
-/**
- * Apply an LLM update to the current task list.
- *   - clear="all"     -> start from empty list
- *   - clear="non_loop"-> drop every ONCE/SEQUENCE task, keep loops
- *   - append: [...]   -> added to the END. Loops of an existing kind REPLACE
- *                        the existing loop (runtime resets, new interval wins).
- */
+function isActiveSequence(ti: TaskInstance): boolean {
+  if (!isSequenceTask(ti.task)) return false;
+  if (ti.task.kind === "pursue_exchange" || ti.task.kind === "pursue_chat") {
+    return ti.createdOwnWhisperTick !== null || ti.offerSentTick !== null;
+  }
+  return false;
+}
+
 export function mergeTasks(
   current: TaskInstance[],
   update: TaskUpdate,
@@ -165,11 +175,18 @@ export function mergeTasks(
   if (update.clear === "all") {
     if (buf) for (const ti of current) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: "clear:all" });
     result = [];
-  } else if (update.clear === "non_loop") {
+  } else if (update.clear === "non_loop_unsafe") {
     if (buf) for (const ti of current) {
-      if (!isLoopTask(ti.task)) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: "clear:non_loop" });
+      if (!isLoopTask(ti.task)) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: "clear:non_loop_unsafe" });
     }
     result = current.filter(ti => isLoopTask(ti.task));
+  } else if (update.clear === "non_loop") {
+    if (buf) for (const ti of current) {
+      if (!isLoopTask(ti.task) && !isActiveSequence(ti)) {
+        pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: "clear:non_loop" });
+      }
+    }
+    result = current.filter(ti => isLoopTask(ti.task) || isActiveSequence(ti));
   } else {
     result = [...current];
   }
@@ -190,6 +207,26 @@ export function mergeTasks(
 }
 
 // ---------------------------------------------------------------------------
+// Target resolution — character name → minimap dot
+// ---------------------------------------------------------------------------
+
+function findTargetDot(belief: BeliefState, target: string): MinimapDot | undefined {
+  const targetColor = colorFromCharName(target);
+  if (targetColor === null) return undefined;
+  const dots = belief.minimapDots.filter(d => d.color === targetColor && !d.isSelf);
+  if (dots.length <= 1) return dots[0];
+  // Ambiguous color — use last known position to disambiguate
+  const player = belief.players.get(target);
+  if (!player?.lastPos) return dots[0];
+  let best = dots[0], bestDist = Infinity;
+  for (const d of dots) {
+    const dist = (d.worldX - player.lastPos.x) ** 2 + (d.worldY - player.lastPos.y) ** 2;
+    if (dist < bestDist) { bestDist = dist; best = d; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 
@@ -205,16 +242,12 @@ function fail(reason: string): TaskResult { return { kind: "failed", reason }; }
 function done(reason?: string): TaskResult { return { kind: "done", reason }; }
 
 function pushChatAction(bot: BotController, action: string): boolean {
-  const seq = chatMenuSequenceWithTargetPick(action);
+  const seq = whisperMenuSequenceWithTargetPick(action);
   if (seq.length === 0) return false;
   bot.actions.push(...seq);
   return true;
 }
 
-// After creating our own chatroom, wait this many ticks before giving up on
-// the target joining. Random jitter is added so symmetric bots desync — two
-// bots exiting at the same tick would then both create chatrooms again and
-// never pair up.
 const GRANT_WAIT_MIN_TICKS = 12;
 const GRANT_WAIT_JITTER_TICKS = 37;
 function randomGrantDeadline(tick: number): number {
@@ -232,8 +265,6 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
     if (tick - ti.startTick > limit) return fail("timeout");
   }
 
-  // Shared: send a chat message and return an emit reason that includes the
-  // literal bytes sent and a TRUNCATED warning if the input was clipped.
   const fireChat = (raw: string): TaskResult => {
     const { sent, truncated } = truncateChatInput(raw);
     sendChat(ws, sent);
@@ -248,17 +279,17 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
   switch (t.kind) {
     // ---- ONCE chat tasks ----
     case "shout": {
-      if (belief.phase !== "playing" && belief.phase !== "hostage_select") return SKIP;
+      if (belief.phase !== "playing" && belief.phase !== "hostage_select" && belief.phase !== "leader_summit") return SKIP;
       return fireChat(t.text);
     }
     case "chat": {
-      if (belief.phase !== "chatroom") return SKIP;
+      if (belief.phase !== "whisper" && belief.phase !== "leader_summit") return SKIP;
       return fireChat(t.text);
     }
 
-    case "exit_chatroom": {
-      if (belief.phase !== "chatroom") return SKIP;
-      if (!pushChatAction(bot, "EXIT")) return fail("chatMenuSequence returned empty");
+    case "exit_whisper": {
+      if (belief.phase !== "whisper") return SKIP;
+      if (!pushChatAction(bot, "EXIT")) return fail("whisperMenuSequence returned empty");
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
@@ -266,7 +297,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
     // ---- SEQUENCE tasks ----
     case "walk_to": {
-      if (belief.phase !== "playing" || !belief.myPos) return SKIP;
+      if ((belief.phase !== "playing" && belief.phase !== "leader_summit") || !belief.myPos) return SKIP;
       const dx = t.x - belief.myPos.x;
       const dy = t.y - belief.myPos.y;
       if (dx * dx + dy * dy <= 9) return done(`arrived at (${t.x},${t.y})`);
@@ -276,13 +307,13 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
     }
 
     case "pursue_chat": {
-      if (belief.phase === "waiting_entry" && ti.createdOwnChatroomTick !== null) {
-        ti.createdOwnChatroomTick = null;
+      if (belief.phase === "waiting_entry" && ti.createdOwnWhisperTick !== null) {
+        ti.createdOwnWhisperTick = null;
         ti.grantDeadlineTick = null;
       }
 
-      if (belief.phase === "chatroom") {
-        if (ti.createdOwnChatroomTick !== null
+      if (belief.phase === "whisper") {
+        if (ti.createdOwnWhisperTick !== null
             && ti.grantDeadlineTick !== null
             && tick > ti.grantDeadlineTick) {
           if (belief.pendingEntry) {
@@ -293,12 +324,12 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
           }
           if (pushChatAction(bot, "EXIT")) {
             sendInput(ws, bot.actions.shift()!);
-            ti.createdOwnChatroomTick = null;
+            ti.createdOwnWhisperTick = null;
             ti.grantDeadlineTick = null;
             return EMIT;
           }
         }
-        return done("entered chatroom");
+        return done("entered whisper");
       }
 
       if (belief.phase === "waiting_entry") {
@@ -306,18 +337,16 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         return EMIT;
       }
 
-      if (belief.phase !== "playing" || !belief.myPos) return SKIP;
+      if ((belief.phase !== "playing" && belief.phase !== "leader_summit") || !belief.myPos) return SKIP;
 
-      const targetDot = belief.minimapDots.find(
-        d => d.color === t.targetColor && !d.isSelf,
-      );
+      const targetDot = findTargetDot(belief, t.target);
 
       if (!targetDot) {
         if (tick - ti.lastSawTargetTick > 12) return SKIP;
         bot.actions.push(BUTTON_A, 0);
         sendInput(ws, bot.actions.shift()!);
-        if (ti.createdOwnChatroomTick === null) {
-          ti.createdOwnChatroomTick = tick;
+        if (ti.createdOwnWhisperTick === null) {
+          ti.createdOwnWhisperTick = tick;
           ti.grantDeadlineTick = randomGrantDeadline(tick);
         }
         return EMIT;
@@ -337,71 +366,93 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
       bot.actions.push(BUTTON_A, 0);
       sendInput(ws, bot.actions.shift()!);
-      if (ti.createdOwnChatroomTick === null) {
-        ti.createdOwnChatroomTick = tick;
+      if (ti.createdOwnWhisperTick === null) {
+        ti.createdOwnWhisperTick = tick;
         ti.grantDeadlineTick = randomGrantDeadline(tick);
       }
       return EMIT;
     }
 
     case "pursue_exchange": {
-      // This task owns the full pipeline: walk → chatroom → offer → wait for
-      // accept. Succeeds when the sim's offer state clears (a true exchange
-      // cleared the offers from both sides), fails on timeout.
-      if (belief.phase === "waiting_entry" && ti.createdOwnChatroomTick !== null) {
-        ti.createdOwnChatroomTick = null;
+      if (belief.phase === "waiting_entry" && ti.createdOwnWhisperTick !== null) {
+        ti.createdOwnWhisperTick = null;
         ti.grantDeadlineTick = null;
       }
       if (belief.phase === "waiting_entry") {
+        ti.exchangeStatus = "waiting for entry to whisper";
         sendInput(ws, 0);
         return EMIT;
       }
 
-      // --- In chatroom: try to exchange ---
-      if (belief.phase === "chatroom") {
-        // Auto-accept pending offer of matching kind — this completes the exchange.
+      // --- In whisper: try to exchange ---
+      if (belief.phase === "whisper") {
         const wantRole = t.exchange === "role";
+        const targetBelief = belief.players.get(t.target);
+        const targetInWhisper = belief.occupantNames.includes(t.target);
+        const occupantList = belief.occupantNames.join(", ");
+        const occCount = belief.occupantCount;
+
+        // Check if exchange already completed (belief updated from info screen / system msgs)
+        if (targetBelief) {
+          if (wantRole && targetBelief.knownRole) {
+            return done(`role exchange complete — ${t.target} is ${targetBelief.knownRole}`);
+          }
+          if (!wantRole && targetBelief.knownTeam) {
+            return done(`color exchange complete — ${t.target} is ${targetBelief.knownTeam}`);
+          }
+        }
+
+        // Accept pending offers from others
         if (wantRole && belief.pendingRoleOffer) {
           if (pushChatAction(bot, "R.ACCPT")) {
+            ti.exchangeStatus = `accepting role offer (${occCount} in whisper: ${occupantList})`;
             sendInput(ws, bot.actions.shift()!);
-            return done("accepted role offer (exchange in progress)");
+            return EMIT;
           }
         }
         if (!wantRole && belief.pendingColorOffer) {
           if (pushChatAction(bot, "C.ACCPT")) {
+            ti.exchangeStatus = `accepting color offer (${occCount} in whisper: ${occupantList})`;
             sendInput(ws, bot.actions.shift()!);
-            return done("accepted color offer (exchange in progress)");
+            return EMIT;
           }
         }
 
-        // If we already sent our offer: if it got consumed (sim completed the
-        // exchange) the pending flag from us clears — we'd see the offers gone
-        // from the chatroom. We can't query sim state directly, but if we've
-        // waited more than ~30 ticks after offering and the occupant is still
-        // with us, the exchange probably completed. Succeed.
+        // We already sent our offer — wait for others or check completion
         if (ti.offerSentTick !== null) {
-          if (tick - ti.offerSentTick > 30) {
-            return done("offer completed (timeout-success)");
+          const waitTicks = tick - ti.offerSentTick;
+          if (wantRole) {
+            ti.exchangeStatus = `offer sent, waiting ${waitTicks} ticks — ${occCount} occupants: [${occupantList}]`
+              + (targetInWhisper ? ` — target ${t.target} IS here` : ` — target ${t.target} NOT in whisper`)
+              + (belief.pendingRoleOffer ? " — R! indicator (someone offered back)" : " — no R! indicator yet");
+          } else {
+            ti.exchangeStatus = `offer sent, waiting ${waitTicks} ticks — ${occCount} occupants: [${occupantList}]`
+              + (targetInWhisper ? ` — target ${t.target} IS here` : ` — target ${t.target} NOT in whisper`)
+              + (belief.pendingColorOffer ? " — C! indicator (someone offered back)" : " — no C! indicator yet");
+          }
+          if (waitTicks > 72) {
+            return fail(`offer timed out after ${waitTicks} ticks — ${ti.exchangeStatus}`);
           }
           sendInput(ws, 0);
           return EMIT;
         }
 
-        // Need another occupant before offering. If alone, just wait or retry.
+        // Alone in whisper — grant entry or wait
         if (belief.occupantCount < 2) {
-          // If our grant deadline passed, exit so we can re-pursue.
-          if (ti.createdOwnChatroomTick !== null
+          ti.exchangeStatus = "alone in whisper, waiting for others to join";
+          if (ti.createdOwnWhisperTick !== null
               && ti.grantDeadlineTick !== null
               && tick > ti.grantDeadlineTick) {
+            ti.exchangeStatus = "alone in whisper too long, exiting to retry";
             if (pushChatAction(bot, "EXIT")) {
               sendInput(ws, bot.actions.shift()!);
-              ti.createdOwnChatroomTick = null;
+              ti.createdOwnWhisperTick = null;
               ti.grantDeadlineTick = null;
               return EMIT;
             }
           }
-          // Grant if anyone's trying to join (they might be our target).
           if (belief.pendingEntry && pushChatAction(bot, "GRANT")) {
+            ti.exchangeStatus = "granting entry to pending player";
             sendInput(ws, bot.actions.shift()!);
             return EMIT;
           }
@@ -409,31 +460,30 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
           return EMIT;
         }
 
-        // We have company — send our offer.
+        // 2+ occupants — send our offer
+        ti.exchangeStatus = `sending ${t.exchange} offer — ${occCount} occupants: [${occupantList}]`
+          + (targetInWhisper ? ` — target ${t.target} IS here` : ` — target ${t.target} NOT in whisper`);
         const action = wantRole ? "R.OFFER" : "C.OFFER";
         if (pushChatAction(bot, action)) {
           sendInput(ws, bot.actions.shift()!);
           ti.offerSentTick = tick;
           return EMIT;
         }
-        return fail("chatMenuSequence for offer returned empty");
+        return fail("whisperMenuSequence for offer returned empty");
       }
 
       // --- Overworld: walk toward target ---
-      if (belief.phase !== "playing" || !belief.myPos) return SKIP;
+      if ((belief.phase !== "playing" && belief.phase !== "leader_summit") || !belief.myPos) return SKIP;
 
-      const targetDot = belief.minimapDots.find(
-        d => d.color === t.targetColor && !d.isSelf,
-      );
+      const targetDot = findTargetDot(belief, t.target);
 
       if (!targetDot) {
-        // Target may be on top of us (self-dot overwrites). Press A if we saw
-        // them very recently.
+        ti.exchangeStatus = `target ${t.target} not visible on minimap`;
         if (tick - ti.lastSawTargetTick > 12) return SKIP;
         bot.actions.push(BUTTON_A, 0);
         sendInput(ws, bot.actions.shift()!);
-        if (ti.createdOwnChatroomTick === null) {
-          ti.createdOwnChatroomTick = tick;
+        if (ti.createdOwnWhisperTick === null) {
+          ti.createdOwnWhisperTick = tick;
           ti.grantDeadlineTick = randomGrantDeadline(tick);
         }
         return EMIT;
@@ -446,16 +496,18 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
       const distSqE = dxe * dxe + dye * dye;
 
       if (distSqE > 100) {
+        const dist = Math.round(Math.sqrt(distSqE));
+        ti.exchangeStatus = `walking to ${t.target} — ${dist} units away`;
         const mask = moveToward(belief.myPos.x, belief.myPos.y, targetDot.worldX, targetDot.worldY);
         sendInput(ws, mask || 0);
         return EMIT;
       }
 
-      // Within bubble — press A to create/join chatroom.
+      ti.exchangeStatus = `reached ${t.target}, opening whisper`;
       bot.actions.push(BUTTON_A, 0);
       sendInput(ws, bot.actions.shift()!);
-      if (ti.createdOwnChatroomTick === null) {
-        ti.createdOwnChatroomTick = tick;
+      if (ti.createdOwnWhisperTick === null) {
+        ti.createdOwnWhisperTick = tick;
         ti.grantDeadlineTick = randomGrantDeadline(tick);
       }
       return EMIT;
@@ -463,25 +515,163 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
     // ---- LOOP tasks ----
     case "loop_auto_grant": {
-      if (belief.phase !== "chatroom" || !belief.pendingEntry) return SKIP;
+      if (belief.phase !== "whisper" || !belief.pendingEntry) return SKIP;
       if (!pushChatAction(bot, "GRANT")) return SKIP;
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
     }
     case "loop_auto_accept_color": {
-      if (belief.phase !== "chatroom" || !belief.pendingColorOffer) return SKIP;
+      if (belief.phase !== "whisper" || !belief.pendingColorOffer) return SKIP;
       if (!pushChatAction(bot, "C.ACCPT")) return SKIP;
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
     }
     case "loop_auto_accept_role": {
-      if (belief.phase !== "chatroom" || !belief.pendingRoleOffer) return SKIP;
+      if (belief.phase !== "whisper" || !belief.pendingRoleOffer) return SKIP;
       if (!pushChatAction(bot, "R.ACCPT")) return SKIP;
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
+    }
+
+    case "usurp_vote": {
+      if (belief.phase !== "playing" && belief.phase !== "unknown" && belief.phase !== "hostage_select") return SKIP;
+      if (belief.amLeader) return fail("I am leader, cannot usurp");
+
+      if (ti.usurpState === "idle") {
+        bot.actions.push(BUTTON_SELECT, 0);
+        sendInput(ws, bot.actions.shift()!);
+        ti.usurpState = "opening";
+        return EMIT;
+      }
+
+      if (ti.usurpState === "opening") {
+        if (!bot.lastFrame) { sendInput(ws, 0); return EMIT; }
+        const cand = parseUsurpCandidate(bot.lastFrame);
+        if (!cand) {
+          if (tick - ti.startTick > 30) return fail("shout view not detected");
+          sendInput(ws, 0);
+          return EMIT;
+        }
+        ti.usurpState = "navigating";
+        ti.usurpNavCount = 0;
+      }
+
+      if (ti.usurpState === "navigating") {
+        if (!bot.lastFrame) { sendInput(ws, 0); return EMIT; }
+        const cand = parseUsurpCandidate(bot.lastFrame);
+        if (!cand) return fail("lost shout view");
+
+        // Usurp candidate only shows color (single sprite), match on color
+        const targetColor = colorFromCharName(t.target);
+        if (cand.isPlayer && targetColor !== null && cand.color === targetColor) {
+          bot.actions.push(BUTTON_A, 0);
+          sendInput(ws, bot.actions.shift()!);
+          ti.usurpState = "closing";
+          return EMIT;
+        }
+
+        if (ti.usurpNavCount > 14) return fail("target not in candidate list");
+        bot.actions.push(BUTTON_RIGHT, 0);
+        sendInput(ws, bot.actions.shift()!);
+        ti.usurpNavCount++;
+        return EMIT;
+      }
+
+      if (ti.usurpState === "closing") {
+        bot.actions.push(BUTTON_SELECT, 0);
+        sendInput(ws, bot.actions.shift()!);
+        return done("voted");
+      }
+
+      return SKIP;
+    }
+
+    case "precommit_hostages": {
+      if (belief.phase !== "hostage_select") {
+        if (ti.hostageState !== "idle") {
+          ti.hostageState = "idle";
+          ti.hostageRound = -1;
+        }
+        return SKIP;
+      }
+      if (!belief.amLeader) return SKIP;
+
+      if (ti.hostageState === "done" && ti.hostageRound === belief.round) return SKIP;
+
+      if (ti.hostageState === "idle" || (ti.hostageState === "done" && ti.hostageRound !== belief.round)) {
+        ti.hostageState = "opening_chat";
+        ti.hostageRound = belief.round;
+        const items = ["SHOUT", "INFO"];
+        const seq = menuSequence("comm", "SHOUT", items);
+        bot.actions.push(...seq);
+        sendInput(ws, bot.actions.shift()!);
+        return EMIT;
+      }
+
+      if (ti.hostageState === "opening_chat") {
+        if (!bot.lastFrame) { sendInput(ws, 0); return EMIT; }
+        const grid = parseHostageGrid(bot.lastFrame);
+        if (!grid) {
+          sendInput(ws, 0);
+          return EMIT;
+        }
+        ti.hostageState = "selecting";
+      }
+
+      if (ti.hostageState === "selecting") {
+        if (!bot.lastFrame) { sendInput(ws, 0); return EMIT; }
+        const grid = parseHostageGrid(bot.lastFrame);
+        if (!grid) { sendInput(ws, 0); return EMIT; }
+
+        // Build character names for each grid entry, match against targets
+        const targetSet = new Set(t.targets);
+
+        for (let i = 0; i < grid.eligible.length; i++) {
+          const entry = grid.eligible[i];
+          const entryName = entry.shape !== null
+            ? characterName(entry.color, entry.shape)
+            : null;
+          const isTarget = entryName !== null && targetSet.has(entryName);
+          const isSelected = grid.selectedPositions.includes(i);
+          if (isTarget && !isSelected) {
+            const delta = i - grid.cursorPosition;
+            if (delta > 0) {
+              for (let d = 0; d < delta; d++) bot.actions.push(BUTTON_RIGHT, 0);
+            } else if (delta < 0) {
+              for (let d = 0; d < -delta; d++) bot.actions.push(BUTTON_LEFT, 0);
+            }
+            bot.actions.push(BUTTON_A, 0);
+            sendInput(ws, bot.actions.shift()!);
+            return EMIT;
+          }
+          if (!isTarget && isSelected) {
+            const delta = i - grid.cursorPosition;
+            if (delta > 0) {
+              for (let d = 0; d < delta; d++) bot.actions.push(BUTTON_RIGHT, 0);
+            } else if (delta < 0) {
+              for (let d = 0; d < -delta; d++) bot.actions.push(BUTTON_LEFT, 0);
+            }
+            bot.actions.push(BUTTON_A, 0);
+            sendInput(ws, bot.actions.shift()!);
+            return EMIT;
+          }
+        }
+
+        ti.hostageState = "committing";
+        bot.actions.push(BUTTON_B, 0);
+        sendInput(ws, bot.actions.shift()!);
+        return EMIT;
+      }
+
+      if (ti.hostageState === "committing") {
+        ti.hostageState = "done";
+        return SKIP;
+      }
+
+      return SKIP;
     }
   }
   return SKIP;
@@ -499,13 +689,11 @@ export function runTasks(
 ): TaskInstance[] {
   const tick = bot.belief.tick;
 
-  // Priority 0: drain in-progress action queue
   if (!bot.actions.empty) {
     sendInput(ws, bot.actions.shift()!);
     return tasks;
   }
 
-  // Priority 1: waiting_entry — sit still
   if (bot.belief.phase === "waiting_entry") {
     sendInput(ws, 0);
     return tasks;
@@ -519,26 +707,21 @@ export function runTasks(
     const result = tryTask(ti, bot, ws);
 
     if (result.kind === "emitted") {
-      // First successful fire of this task — emit "started".
       if (buf && !ti.startedEmitted) {
         pushEvent(buf, { tick, task: ti.task, kind: "started" });
         ti.startedEmitted = true;
       }
       if (isOnceTask(ti.task)) {
         if (buf) pushEvent(buf, { tick, task: ti.task, kind: "fired", reason: result.reason });
-        // drop
       } else {
         kept.push(ti);
       }
       emitted = true;
     } else if (result.kind === "done") {
       if (buf) pushEvent(buf, { tick, task: ti.task, kind: "succeeded", reason: result.reason });
-      // drop
     } else if (result.kind === "failed") {
       if (buf) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: result.reason });
-      // drop
     } else {
-      // skip — keep task, continue
       kept.push(ti);
     }
   }
@@ -552,9 +735,10 @@ export function runTasks(
 // ---------------------------------------------------------------------------
 
 const VALID_KINDS = new Set<string>([
-  "shout", "chat", "exit_chatroom",
-  "walk_to", "pursue_chat", "pursue_exchange",
+  "shout", "chat", "exit_whisper",
+  "walk_to", "pursue_chat", "pursue_exchange", "usurp_vote",
   "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
+  "precommit_hostages",
 ]);
 
 function coerceTask(raw: any): Task | null {
@@ -566,20 +750,28 @@ function coerceTask(raw: any): Task | null {
     case "chat":
       return typeof raw.text === "string" ? { kind: k, text: String(raw.text) } : null;
     case "pursue_chat":
-      return Number.isFinite(raw.targetColor) && Number.isFinite(raw.timeLimitTicks)
-        ? { kind: "pursue_chat", targetColor: raw.targetColor | 0, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
+      return typeof raw.target === "string" && isValidCharacterName(raw.target) && Number.isFinite(raw.timeLimitTicks)
+        ? { kind: "pursue_chat", target: raw.target, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
     case "pursue_exchange": {
       const ex = raw.exchange === "role" || raw.exchange === "color" ? raw.exchange : null;
       if (!ex) return null;
-      return Number.isFinite(raw.targetColor) && Number.isFinite(raw.timeLimitTicks)
-        ? { kind: "pursue_exchange", targetColor: raw.targetColor | 0, exchange: ex, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
+      return typeof raw.target === "string" && isValidCharacterName(raw.target) && Number.isFinite(raw.timeLimitTicks)
+        ? { kind: "pursue_exchange", target: raw.target, exchange: ex, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
     }
+    case "usurp_vote":
+      return typeof raw.target === "string" && isValidCharacterName(raw.target) && Number.isFinite(raw.timeLimitTicks)
+        ? { kind: "usurp_vote", target: raw.target, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
     case "walk_to":
       return Number.isFinite(raw.x) && Number.isFinite(raw.y) && Number.isFinite(raw.timeLimitTicks)
         ? { kind: "walk_to", x: raw.x | 0, y: raw.y | 0, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
-    case "exit_chatroom":
+    case "exit_whisper":
     case "loop_auto_grant": case "loop_auto_accept_color": case "loop_auto_accept_role":
       return { kind: k } as Task;
+    case "precommit_hostages": {
+      if (!Array.isArray(raw.targets)) return null;
+      const targets = raw.targets.filter((s: any) => typeof s === "string" && isValidCharacterName(s));
+      return targets.length > 0 ? { kind: "precommit_hostages", targets } : null;
+    }
   }
   return null;
 }
@@ -594,10 +786,9 @@ export function parseTaskUpdate(raw: string, name?: string): TaskUpdate | null {
   try {
     const obj = JSON.parse(raw.slice(start, end + 1));
     const update: TaskUpdate = {};
-    if (obj.clear === "all" || obj.clear === "non_loop") {
+    if (obj.clear === "all" || obj.clear === "non_loop" || obj.clear === "non_loop_unsafe") {
       update.clear = obj.clear;
     } else if (obj.clear === true) {
-      // tolerate "clear: true" as an alias for "all"
       update.clear = "all";
     }
     if (Array.isArray(obj.append)) {
@@ -624,13 +815,24 @@ export function tasksToPromptLines(tasks: TaskInstance[], tick: number): string[
     if (isSequenceTask(t)) {
       const limit = (t as any).timeLimitTicks as number;
       meta.push(`elapsed=${tick - ti.startTick}/${limit}`);
-      if (t.kind === "pursue_chat" && ti.createdOwnChatroomTick !== null) {
+      if ((t.kind === "pursue_chat" || t.kind === "pursue_exchange") && ti.createdOwnWhisperTick !== null) {
         const remaining = ti.grantDeadlineTick !== null ? ti.grantDeadlineTick - tick : "?";
-        meta.push(`own_chatroom wait=${remaining}`);
+        meta.push(`own_whisper wait=${remaining}`);
+      }
+      if (t.kind === "pursue_exchange") {
+        meta.push(ti.exchangeStatus);
+        if (ti.offerSentTick !== null || ti.createdOwnWhisperTick !== null) {
+          meta.push(">>> protected from clear");
+        }
+      } else if ((t.kind === "pursue_chat") && ti.createdOwnWhisperTick !== null) {
+        meta.push(">>> IN WHISPER — protected from clear");
       }
     }
     if (isLoopTask(t) && "intervalTicks" in t) {
       meta.push(`interval=${(t as any).intervalTicks} last=${ti.lastFiredTick}`);
+    }
+    if (t.kind === "precommit_hostages" && ti.hostageState !== "idle") {
+      meta.push(`state=${ti.hostageState} round=${ti.hostageRound}`);
     }
     const body = JSON.stringify(t);
     lines.push(`  [${i + 1}] ${body}${meta.length ? " (" + meta.join(" ") + ")" : ""}`);

@@ -1,6 +1,6 @@
 /**
  * Integration test: send a chat message longer than 18 chars, confirm it
- * renders as two fragments in the chatroom (separately displayable), and
+ * renders as two fragments in the whisper (separately displayable), and
  * that coalesceChatFragments merges them back.
  */
 
@@ -29,19 +29,19 @@ for (let i = 0; i < 6; i++) sim.addPlayer(`p${i}`);
 sim.startGame();
 sim.startRound();
 
-// P0 shouts a 30-char message into global chat.
+// P0 shouts a 30-char message into shout.
 const msg = "hello team meet at 50 50";
-sim.addGlobalChat(0, msg);
+sim.addShout(0, msg);
 
 // Raw messages should be one or two fragments (one here because 24 < 36).
-const roomMsgs = sim.globalMessagesForPlayer(0);
+const roomMsgs = sim.shoutMessagesForPlayer(0);
 console.log(`raw fragments (len=${msg.length}, perLine=${CHAT_MAX_CHARS_PER_LINE}):`);
 for (const m of roomMsgs) console.log(`  "${m.text}" (len=${m.text.length})`);
 
 // Try a multi-line case
 const long = "alpha bravo charlie delta echo foxtrot";
-sim.addGlobalChat(1, long);
-const roomMsgs2 = sim.globalMessagesForPlayer(0);
+sim.addShout(1, long);
+const roomMsgs2 = sim.shoutMessagesForPlayer(0);
 console.log(`\nafter long shout ("${long}" len=${long.length}):`);
 for (const m of roomMsgs2) console.log(`  from=${m.senderIndex} tick=${m.tick} "${m.text}"`);
 

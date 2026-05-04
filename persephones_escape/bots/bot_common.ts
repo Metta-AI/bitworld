@@ -8,7 +8,7 @@ import {
   moveToward, randomDir, randomPoint, clamp,
   type Point,
 } from "./bot_utils.js";
-import { chatMenuSequenceWithTargetPick } from "../game/menu_defs.js";
+import { whisperMenuSequenceWithTargetPick } from "../game/menu_defs.js";
 import { type BeliefState } from "./belief_state.js";
 
 // ---------------------------------------------------------------------------
@@ -37,9 +37,9 @@ export interface ParsedCommand {
 
 const VALID_COMMANDS = new Set([
   "move_to", "approach_nearest", "wander", "wait",
-  "open_chatroom", "color_offer", "color_withdraw", "color_accept",
+  "open_whisper", "color_offer", "color_withdraw", "color_accept",
   "show_role", "role_offer", "role_withdraw", "role_accept",
-  "exit_chatroom", "chat",
+  "exit_whisper", "chat",
   "leader_pass", "leader_take", "grant_entry",
   "info_shared", "start_chat", "shout",
   "select_hostages", "commit_hostages",
@@ -84,6 +84,7 @@ export interface BotController {
   wandering: boolean;
   wanderTarget: Point | null;
   wanderTicks: number;
+  lastFrame: Uint8Array | null;
 }
 
 export { clamp };
@@ -93,16 +94,16 @@ const COMM_ITEMS = ["SHOUT", "INFO"];
 export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): boolean {
   const cmdAction = COMMAND_ACTIONS[cmd.type];
   if (cmdAction) {
-    // Chatroom commands only make sense when we're actually inside a chatroom.
+    // Whisper commands only make sense when we're actually inside a whisper.
     // If we're waiting to enter, the B/arrow inputs will cancel our entry request
     // or walk the world character. Swallow the command.
-    if (cmdAction.context === "chatroom" && bot.belief.phase !== "chatroom") {
-      console.log(`[${bot.name}] chatroom command ${cmd.type} ignored — phase=${bot.belief.phase}`);
+    if (cmdAction.context === "whisper" && bot.belief.phase !== "whisper") {
+      console.log(`[${bot.name}] whisper command ${cmd.type} ignored — phase=${bot.belief.phase}`);
       return true;
     }
     let seq: number[];
-    if (cmdAction.context === "chatroom") {
-      seq = chatMenuSequenceWithTargetPick(cmdAction.action);
+    if (cmdAction.context === "whisper") {
+      seq = whisperMenuSequenceWithTargetPick(cmdAction.action);
     } else {
       const items = cmdAction.context === "comm" ? COMM_ITEMS
         : cmdAction.context === "info" ? ["open"]
@@ -130,7 +131,7 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
       }
       return true;
     }
-    case "open_chatroom":
+    case "open_whisper":
       bot.actions.push(BUTTON_A, 0);
       return true;
     case "chat": {
@@ -170,7 +171,7 @@ export function tickMovement(bot: BotController): boolean {
   if (bot.movementTarget && bot.belief.myPos) {
     const dx = bot.movementTarget.x - bot.belief.myPos.x;
     const dy = bot.movementTarget.y - bot.belief.myPos.y;
-    // Stop within 10 units (close enough to open a chatroom)
+    // Stop within 10 units (close enough to open a whisper)
     if (dx * dx + dy * dy > 100) {
       const mask = moveToward(bot.belief.myPos.x, bot.belief.myPos.y, bot.movementTarget.x, bot.movementTarget.y);
       if (mask) { sendInput(bot.ws, mask); return true; }

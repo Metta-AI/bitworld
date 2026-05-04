@@ -1,5 +1,5 @@
 /**
- * Tiny test: send a shout via addGlobalChat, render, check parseLastShout.
+ * Tiny test: send a shout via addShout, render, check parseLastShout.
  */
 import { Sim } from "../game/sim.js";
 import { DEFAULT_GAME_CONFIG } from "../game/constants.js";
@@ -18,9 +18,9 @@ sim.players[1].room = 0;
 sim.players[0].x = 50; sim.players[0].y = 50;
 sim.players[1].x = 60; sim.players[1].y = 50;
 
-sim.addGlobalChat(1, "meet at 10 10");
-console.log(`globalMessagesA.length=${sim.globalMessagesA.length}`);
-console.log(`messages for P0: ${JSON.stringify(sim.globalMessagesForPlayer(0))}`);
+sim.addShout(1, "meet at 10 10");
+console.log(`shoutMessagesA.length=${sim.shoutMessagesA.length}`);
+console.log(`messages for P0: ${JSON.stringify(sim.shoutMessagesForPlayer(0))}`);
 
 const p0Buf = render(sim, 0);
 const p0Frame = unpackFrame(p0Buf);

@@ -4,7 +4,7 @@
  */
 
 import { Sim } from "../game/sim.js";
-import { DEFAULT_GAME_CONFIG } from "../game/constants.js";
+import { DEFAULT_GAME_CONFIG, playerSpriteName } from "../game/constants.js";
 import { decodeInputMask, emptyInput } from "../game/protocol.js";
 import type { InputState } from "../game/types.js";
 import { render } from "../rendering/renderer.js";
@@ -50,19 +50,19 @@ const bot1: BotController = { ws: ws1 as any, actions: new ActionQueue(), belief
 
 // Task lists. The scenario: Hades-like bot0 pursues color of bot1 and offers
 // role; bot1 auto-accepts. Both auto-grant entry and auto-accept color.
-const color0 = sim.playerColor(0);
-const color1 = sim.playerColor(1);
-console.log(`player colors: 0=${color0}, 1=${color1}`);
+const name0 = playerSpriteName(0);
+const name1 = playerSpriteName(1);
+console.log(`player names: 0=${name0}, 1=${name1}`);
 
 let tasks0: TaskInstance[] = ([
   { kind: "loop_auto_grant" },
-  { kind: "pursue_exchange", targetColor: color1, exchange: "role", timeLimitTicks: 600 },
+  { kind: "pursue_exchange", target: name1, exchange: "role", timeLimitTicks: 600 },
 ] as Task[]).map(t => createTaskInstance(t, 0));
 
 let tasks1: TaskInstance[] = ([
   { kind: "loop_auto_grant" },
   { kind: "loop_auto_accept_role" },
-  { kind: "pursue_chat", targetColor: color0, timeLimitTicks: 600 },
+  { kind: "pursue_chat", target: name0, timeLimitTicks: 600 },
 ] as Task[]).map(t => createTaskInstance(t, 0));
 
 const events0 = createEventBuffer();
@@ -90,12 +90,12 @@ function tick() {
 }
 
 for (let t = 0; t < 400; t++) {
-  const preP0 = { inCr: sim.players[0].inChatroom, pend: sim.players[0].pendingChatroomEntry };
-  const preP1 = { inCr: sim.players[1].inChatroom, pend: sim.players[1].pendingChatroomEntry };
+  const preP0 = { inCr: sim.players[0].inWhisper, pend: sim.players[0].pendingWhisperEntry };
+  const preP1 = { inCr: sim.players[1].inWhisper, pend: sim.players[1].pendingWhisperEntry };
   tick();
   // Detect state change in either player this tick
-  const postP0 = { inCr: sim.players[0].inChatroom, pend: sim.players[0].pendingChatroomEntry };
-  const postP1 = { inCr: sim.players[1].inChatroom, pend: sim.players[1].pendingChatroomEntry };
+  const postP0 = { inCr: sim.players[0].inWhisper, pend: sim.players[0].pendingWhisperEntry };
+  const postP1 = { inCr: sim.players[1].inWhisper, pend: sim.players[1].pendingWhisperEntry };
   if (preP0.inCr !== postP0.inCr || preP0.pend !== postP0.pend) {
     console.log(`  t=${t}: P0 state change inCr ${preP0.inCr}→${postP0.inCr} pend ${preP0.pend}→${postP0.pend} pos=(${sim.players[0].x},${sim.players[0].y})`);
   }
@@ -112,10 +112,10 @@ for (let t = 0; t < 400; t++) {
     console.log(`  P1 phase=${belief1.phase} myPos=${JSON.stringify(belief1.myPos)} dots=${belief1.minimapDots.map(d => `[c=${d.color}@${d.worldX},${d.worldY}${d.isSelf?",self":""}]`).join(" ")}`);
   }
   if (t % 20 === 0) {
-    const cr0 = sim.chatrooms.get(sim.players[0].inChatroom);
+    const cr0 = sim.whispers.get(sim.players[0].inWhisper);
     console.log(
-      `t=${t} P0:(${sim.players[0].x},${sim.players[0].y}) inCr=${sim.players[0].inChatroom} ` +
-      `P1:(${sim.players[1].x},${sim.players[1].y}) inCr=${sim.players[1].inChatroom} ` +
+      `t=${t} P0:(${sim.players[0].x},${sim.players[0].y}) inCr=${sim.players[0].inWhisper} ` +
+      `P1:(${sim.players[1].x},${sim.players[1].y}) inCr=${sim.players[1].inWhisper} ` +
       `occ=[${cr0 ? [...cr0.occupants].join(",") : ""}] ` +
       `revealOffers=[${cr0 ? [...cr0.revealOffers].join(",") : ""}] ` +
       `shared=${[...sim.players[0].sharedWith].join(",")}|${[...sim.players[1].sharedWith].join(",")} ` +

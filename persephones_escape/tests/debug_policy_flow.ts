@@ -66,7 +66,7 @@ const policy0: Policy = {
   autoAcceptRoleOffer: true,
   autoOfferColor: true,   // one-shot: fires once
   autoOfferRole: false,
-  pursueColorOrder: [],
+  pursueOrder: [],
   wanderIfIdle: false,
 };
 const policy1: Policy = {
@@ -76,7 +76,7 @@ const policy1: Policy = {
   autoAcceptRoleOffer: true,
   autoOfferColor: false,
   autoOfferRole: true,   // one-shot: fires once
-  pursueColorOrder: [],
+  pursueOrder: [],
   wanderIfIdle: false,
 };
 
@@ -108,38 +108,38 @@ function tick() {
 }
 
 // Step 1: both bots press A first tick (from policy)
-// Initially: NO chatroom. What does the policy do?
+// Initially: NO whisper. What does the policy do?
 
 for (let t = 0; t < 5; t++) {
   tick();
-  console.log(`t=${t}: P0.inChatroom=${sim.players[0].inChatroom} P1.inChatroom=${sim.players[1].inChatroom}`);
+  console.log(`t=${t}: P0.inWhisper=${sim.players[0].inWhisper} P1.inWhisper=${sim.players[1].inWhisper}`);
 }
 
-// First, get them into a chatroom via open_chatroom policy... wait, open_chatroom
-// isn't a policy directly. Let's manually press A first (simulating LLM "open_chatroom")
+// First, get them into a whisper via open_whisper policy... wait, open_whisper
+// isn't a policy directly. Let's manually press A first (simulating LLM "open_whisper")
 // via the actions queue.
 
-// Actually, policy's "openChatroomOnReach=true" only applies when pursuing.
-// In this test, pursueColorOrder is empty, so no pursuing happens.
-// Let me just manually have P0 create a chatroom and P1 request entry.
+// Actually, policy's "openWhisperOnReach=true" only applies when pursuing.
+// In this test, pursueOrder is empty, so no pursuing happens.
+// Let me just manually have P0 create a whisper and P1 request entry.
 
-console.log("\n== Manually: P0 creates chatroom, P1 requests entry ==");
+console.log("\n== Manually: P0 creates whisper, P1 requests entry ==");
 // P0 press A
 bot0.actions.push(0x20, 0);  // BUTTON_A
 for (let t = 0; t < 3; t++) tick();
-console.log(`  P0.inChatroom=${sim.players[0].inChatroom}`);
+console.log(`  P0.inWhisper=${sim.players[0].inWhisper}`);
 
 // P1 press A (requests entry since within bubble of P0)
 bot1.actions.push(0x20, 0);
 for (let t = 0; t < 3; t++) tick();
-console.log(`  P1.inChatroom=${sim.players[1].inChatroom} pendingEntry=${sim.players[1].pendingChatroomEntry}`);
+console.log(`  P1.inWhisper=${sim.players[1].inWhisper} pendingEntry=${sim.players[1].pendingWhisperEntry}`);
 
 console.log("\n== Let the policy run — P0 should auto-grant ==");
 for (let t = 0; t < 60; t++) {
   tick();
   if (t % 5 === 0) {
-    const cr = sim.chatrooms.get(sim.players[0].inChatroom);
-    console.log(`  t=${t}: chatroom occupants=[${cr ? [...cr.occupants].join(",") : ""}] revealOffers=[${cr ? [...cr.revealOffers].join(",") : ""}] colorOffers=[${cr ? [...cr.colorOffers].join(",") : ""}]`);
+    const cr = sim.whispers.get(sim.players[0].inWhisper);
+    console.log(`  t=${t}: whisper occupants=[${cr ? [...cr.occupants].join(",") : ""}] revealOffers=[${cr ? [...cr.revealOffers].join(",") : ""}] colorOffers=[${cr ? [...cr.colorOffers].join(",") : ""}]`);
     console.log(`         P0.sharedWith=[${[...sim.players[0].sharedWith].join(",")}] P1.sharedWith=[${[...sim.players[1].sharedWith].join(",")}]`);
     console.log(`         policy0.autoOfferColor=${policy0.autoOfferColor} policy1.autoOfferRole=${policy1.autoOfferRole}`);
   }
@@ -155,8 +155,8 @@ if (sim.players[0].sharedWith.has(1) && sim.players[1].sharedWith.has(0)) {
 }
 
 console.log("\n== Debug: parse P1's current frame ==");
-import { parseChatroomStatus, parsePhase } from "../bots/frame_parser.js";
+import { parseWhisperStatus, parsePhase } from "../bots/frame_parser.js";
 const p1Buf = render(sim, 1);
 const p1Frame = unpackFrame(p1Buf);
 console.log(`P1 phase=${parsePhase(p1Frame)}`);
-console.log(`P1 chatroom status=${JSON.stringify(parseChatroomStatus(p1Frame))}`);
+console.log(`P1 whisper status=${JSON.stringify(parseWhisperStatus(p1Frame))}`);

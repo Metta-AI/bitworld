@@ -40,7 +40,7 @@ const belief = createBeliefState(name);
 const bot: BotController = {
   ws, actions: new ActionQueue(), belief, name,
   movementTarget: null, wandering: false,
-  wanderTarget: null, wanderTicks: 0,
+  wanderTarget: null, wanderTicks: 0, lastFrame: null,
 };
 
 let llmBusy = false;
@@ -131,7 +131,7 @@ function executeCommand(cmd: ReturnType<typeof parseCommand>): void {
 // Info screen polling
 // ---------------------------------------------------------------------------
 
-let inChatroom = false;
+let inWhisper = false;
 let infoPollState: "closed" | "opening" | "reading" | "closing" = "closed";
 let infoPollWaitFrames = 0;
 let infoPollCooldown = 0;
@@ -186,7 +186,7 @@ function onFrame(data: Buffer): void {
   }
 
   const canPoll = infoPollState === "closed"
-    && !inChatroom && bot.actions.empty
+    && !inWhisper && bot.actions.empty
     && (belief.phase === "playing" || belief.phase === "hostage_select");
   if (canPoll) {
     infoPollCooldown--;

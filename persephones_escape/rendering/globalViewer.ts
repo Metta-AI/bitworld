@@ -1,10 +1,10 @@
 import type { Sim } from "../game/sim.js";
 import { Phase, Role, Room, Team, PlayerShape } from "../game/types.js";
-import type { Chatroom } from "../game/types.js";
+import type { Whisper } from "../game/types.js";
 import {
   PLAYER_SHAPES, PLAYER_W, TARGET_FPS,
   ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME,
-  TEAM_A_COLOR, TEAM_B_COLOR,
+  TEAM_A_COLOR, TEAM_B_COLOR, playerSpriteName,
 } from "../game/constants.js";
 import { SpritePacket, LayerType, LayerFlag, spriteColor, buildFilledTextSprite } from "./spriteProtocol.js";
 import { Framebuffer } from "./framebuffer.js";
@@ -24,10 +24,10 @@ const HUD_OBJECT = 50;
 const LEGEND_SPRITE = 51;
 const LEGEND_OBJECT = 51;
 
-const GCHAT_A_SPRITE = 60;
-const GCHAT_A_OBJECT = 60;
-const GCHAT_B_SPRITE = 61;
-const GCHAT_B_OBJECT = 61;
+const SHOUT_A_SPRITE = 60;
+const SHOUT_A_OBJECT = 60;
+const SHOUT_B_SPRITE = 61;
+const SHOUT_B_OBJECT = 61;
 
 const VOTE_A_SPRITE = 62;
 const VOTE_A_OBJECT = 62;
@@ -38,25 +38,26 @@ const CR_SLOT_SPRITE_BASE = 70;
 const CR_SLOT_OBJECT_BASE = 70;
 const CR_SLOTS = 3;
 
+
 // ---------------------------------------------------------------------------
 // Layer IDs
 // ---------------------------------------------------------------------------
 
 const MAP_LAYER = 0;
 const HUD_LAYER = 1;
-const GCHAT_A_LAYER = 2;   // TopLeft — Room A global chat
-const GCHAT_B_LAYER = 3;   // TopRight — Room B global chat
+const SHOUT_A_LAYER = 2;   // TopLeft — Room A shout
+const SHOUT_B_LAYER = 3;   // TopRight — Room B shout
 const VOTE_A_LAYER = 4;    // BottomLeft — Room A leader/votes
 const VOTE_B_LAYER = 5;    // BottomRight — Room B leader/votes
-const CR_A_LAYER = 6;      // LeftCenter — Room A private chatrooms
-const CR_B_LAYER = 7;      // RightCenter — Room B private chatrooms
+const CR_A_LAYER = 6;      // LeftCenter — Room A private whispers
+const CR_B_LAYER = 7;      // RightCenter — Room B private whispers
 const STATE_LAYER = 8;     // BottomCenter — legend + leaders
 
 const GAP = 16;
 
 // Fixed panel sizes (in sprite pixels, rendered at UiZoom=3 on client)
-const CHAT_PANEL_W = 80;
-const CHAT_PANEL_LINES = 6;
+const SHOUT_PANEL_W = 80;
+const SHOUT_PANEL_LINES = 10;
 const VOTE_PANEL_W = 80;
 const CR_SLOT_W = 80;
 const CR_SLOT_H = 50;
@@ -80,8 +81,8 @@ export function buildGlobalFrame(sim: Sim): Buffer {
   pkt.setViewport(MAP_LAYER, ROOM_W * 2 + GAP + padX * 2, ROOM_H + padY * 2);
 
   pkt.defineLayer(HUD_LAYER, LayerType.TopCenter, LayerFlag.Ui);
-  pkt.defineLayer(GCHAT_A_LAYER, LayerType.TopLeft, LayerFlag.Ui);
-  pkt.defineLayer(GCHAT_B_LAYER, LayerType.Interstitial, LayerFlag.Ui);
+  pkt.defineLayer(SHOUT_A_LAYER, LayerType.TopLeft, LayerFlag.Ui);
+  pkt.defineLayer(SHOUT_B_LAYER, LayerType.Interstitial, LayerFlag.Ui);
   pkt.defineLayer(VOTE_A_LAYER, LayerType.BottomLeft, LayerFlag.Ui);
   pkt.defineLayer(VOTE_B_LAYER, LayerType.BottomRight, LayerFlag.Ui);
   pkt.defineLayer(CR_A_LAYER, LayerType.LeftCenter, LayerFlag.Ui);
@@ -98,17 +99,18 @@ export function buildGlobalFrame(sim: Sim): Buffer {
   // HUD
   buildHud(sim, pkt);
 
-  // Global chat panels (top corners)
-  buildGlobalChat(sim, pkt, Room.RoomA, GCHAT_A_LAYER, GCHAT_A_SPRITE, GCHAT_A_OBJECT);
-  buildGlobalChat(sim, pkt, Room.RoomB, GCHAT_B_LAYER, GCHAT_B_SPRITE, GCHAT_B_OBJECT);
+  // Shout panels (top corners)
+  buildShoutPanel(sim, pkt, Room.RoomA, SHOUT_A_LAYER, SHOUT_A_SPRITE, SHOUT_A_OBJECT);
+  buildShoutPanel(sim, pkt, Room.RoomB, SHOUT_B_LAYER, SHOUT_B_SPRITE, SHOUT_B_OBJECT);
 
   // Vote panels (bottom corners)
   buildVotePanel(sim, pkt, Room.RoomA, VOTE_A_LAYER, VOTE_A_SPRITE, VOTE_A_OBJECT);
   buildVotePanel(sim, pkt, Room.RoomB, VOTE_B_LAYER, VOTE_B_SPRITE, VOTE_B_OBJECT);
 
-  // Private chatroom slots (side panels)
-  buildChatroomSlots(sim, pkt, Room.RoomA, CR_A_LAYER, 0);
-  buildChatroomSlots(sim, pkt, Room.RoomB, CR_B_LAYER, CR_SLOTS);
+  // Private whisper slots (side panels)
+  updateWhisperCache(sim);
+  buildWhisperSlots(sim, pkt, Room.RoomA, CR_A_LAYER, 0);
+  buildWhisperSlots(sim, pkt, Room.RoomB, CR_B_LAYER, CR_SLOTS);
 
   // Legend
   buildLegend(sim, pkt);
@@ -132,53 +134,70 @@ function buildRoomSprite(sim: Sim, pkt: SpritePacket, room: Room, spriteId: numb
   pkt.addSprite(spriteId, rw, rh, pixels);
 }
 
+// Sprite layout: 10 wide x 14 tall. Player shape at cols 3-9, rows 4-10.
+// Bubble (when in whisper): L-shape at cols 0-3 rows 0-2 (one-pixel gap above
+// player shape at row 3), matching renderer.ts at (sx-3..sx, sy-4..sy-2).
+// Object is anchored at (p.x - PLAYER_SPRITE_OFFSET_X, p.y - PLAYER_SPRITE_OFFSET_Y).
+const PLAYER_SPRITE_OFFSET_X = 3;
+const PLAYER_SPRITE_OFFSET_Y = 4;
+
 function buildPlayerSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: number) {
   const p = sim.players[pi];
   const color = sim.playerColor(pi);
   const ind = sim.roleIndicator(p.role);
-  const sw = 7, sh = 13;
+  const sw = 10, sh = 14;
+  const shapeX = PLAYER_SPRITE_OFFSET_X;
+  const shapeY = PLAYER_SPRITE_OFFSET_Y;
   const px = new Uint8Array(sw * sh);
 
   if (p.isLeader) {
     const cc = spriteColor(8);
-    px[0 * sw + 1] = cc; px[0 * sw + 3] = cc; px[0 * sw + 5] = cc;
-    px[1 * sw + 2] = cc; px[1 * sw + 3] = cc; px[1 * sw + 4] = cc;
+    px[(shapeY - 3) * sw + (shapeX + 1)] = cc;
+    px[(shapeY - 3) * sw + (shapeX + 3)] = cc;
+    px[(shapeY - 3) * sw + (shapeX + 5)] = cc;
+    px[(shapeY - 2) * sw + (shapeX + 2)] = cc;
+    px[(shapeY - 2) * sw + (shapeX + 3)] = cc;
+    px[(shapeY - 2) * sw + (shapeX + 4)] = cc;
   }
 
   const pat = PLAYER_SHAPES[p.shape];
   for (let dy = 0; dy < 7; dy++) {
     for (let dx = 0; dx < 7; dx++) {
       const v = pat[dy][dx];
-      if (v === 1) px[(dy + 3) * sw + dx] = spriteColor(0);
-      else if (v === 2) px[(dy + 3) * sw + dx] = spriteColor(color);
+      if (v === 1) px[(dy + shapeY) * sw + (dx + shapeX)] = spriteColor(0);
+      else if (v === 2) px[(dy + shapeY) * sw + (dx + shapeX)] = spriteColor(color);
     }
   }
 
   const rc = spriteColor(ind.color);
+  const barY0 = shapeY + 8;
   for (let dx = 1; dx <= 5; dx++) {
-    px[11 * sw + dx] = rc;
-    px[12 * sw + dx] = rc;
+    px[barY0 * sw + (dx + shapeX)] = rc;
+    px[(barY0 + 1) * sw + (dx + shapeX)] = rc;
   }
   if (ind.special) {
     const dot = spriteColor(p.role === Role.Hades ? 8 : 2);
-    px[11 * sw + 3] = dot;
-    px[12 * sw + 3] = dot;
+    px[barY0 * sw + (3 + shapeX)] = dot;
+    px[(barY0 + 1) * sw + (3 + shapeX)] = dot;
   }
 
-  if (p.inChatroom >= 0) {
-    const bc = spriteColor(1);
-    px[0 * sw + 2] = bc; px[0 * sw + 3] = bc; px[0 * sw + 4] = bc;
-    px[1 * sw + 3] = bc;
+  if (p.inWhisper >= 0) {
+    const bc = spriteColor(2);
+    px[0 * sw + 0] = bc; px[0 * sw + 1] = bc; px[0 * sw + 2] = bc;
+    px[1 * sw + 0] = bc; px[1 * sw + 1] = bc; px[1 * sw + 2] = bc;
+    px[2 * sw + 3] = bc;
   }
 
-  if (p.pendingChatroomEntry >= 0 && (sim.tickCount & 8)) {
-    px[2 * sw + 3] = spriteColor(8);
+  if (p.pendingWhisperEntry >= 0 && (sim.tickCount & 8)) {
+    px[(shapeY - 1) * sw + (shapeX + 3)] = spriteColor(8);
   }
 
   if (p.selectedAsHostage && sim.phase === Phase.HostageSelect) {
     const hc = spriteColor(8);
-    px[2 * sw + 0] = hc; px[2 * sw + 6] = hc;
-    px[10 * sw + 0] = hc; px[10 * sw + 6] = hc;
+    px[(shapeY - 1) * sw + (shapeX + 0)] = hc;
+    px[(shapeY - 1) * sw + (shapeX + 6)] = hc;
+    px[(shapeY + 7) * sw + (shapeX + 0)] = hc;
+    px[(shapeY + 7) * sw + (shapeX + 6)] = hc;
   }
 
   pkt.addSprite(spriteId, sw, sh, px);
@@ -195,7 +214,7 @@ function buildNormalMapView(sim: Sim, pkt: SpritePacket, padX: number, padY: num
     const p = sim.players[i];
     buildPlayerSprite(sim, pkt, i, PLAYER_SPRITE_BASE + i);
     const roomOffX = p.room === Room.RoomB ? roomBOffX : 0;
-    pkt.addObject(PLAYER_OBJECT_BASE + i, padX + roomOffX + p.x, padY + p.y - 6, i, 0, PLAYER_SPRITE_BASE + i);
+    pkt.addObject(PLAYER_OBJECT_BASE + i, padX + roomOffX + p.x - PLAYER_SPRITE_OFFSET_X, padY + p.y - PLAYER_SPRITE_OFFSET_Y, i, 0, PLAYER_SPRITE_BASE + i);
   }
 }
 
@@ -267,61 +286,168 @@ function buildExchangeView(
 // ---------------------------------------------------------------------------
 
 function buildHud(sim: Sim, pkt: SpritePacket) {
+  const secs = Math.ceil(sim.revealTimer / TARGET_FPS);
+  const showSchedule = sim.phase === Phase.RoleReveal && secs <= 8;
+
   const lines: { text: string; color: number }[] = [];
-  const phaseText = Phase[sim.phase].toUpperCase();
-  let hudText = `${phaseText}  P:${sim.players.length}`;
-  if (sim.phase === Phase.Playing) {
-    const secs = Math.max(0, Math.ceil(sim.roundTimer / TARGET_FPS));
-    hudText += `  R${sim.currentRound + 1} ${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`;
-  }
-  lines.push({ text: hudText, color: 2 });
 
-  if (sim.phase !== Phase.Lobby) {
-    const hi = findByRole(sim, Role.Hades);
-    const pi = findByRole(sim, Role.Persephone);
-    const ci = findByRole(sim, Role.Cerberus);
-    const di = findByRole(sim, Role.Demeter);
+  if (showSchedule) {
+    lines.push({ text: "ROUND SCHEDULE", color: 2 });
+    lines.push({ text: "ROUND  TIME  HOSTAGE", color: 1 });
+    const rounds = sim.config.rounds;
+    for (let i = 0; i < Math.min(rounds.length, 5); i++) {
+      const r = rounds[i];
+      const mins = Math.floor(r.durationSecs / 60);
+      const rsecs = r.durationSecs % 60;
+      const timeStr = `${mins}:${rsecs.toString().padStart(2, "0")}`;
+      lines.push({ text: `  ${i + 1}      ${timeStr}     ${r.hostages}`, color: 2 });
+    }
+    lines.push({ text: `STARTING IN ${secs}`, color: 2 });
+  } else {
+    const phaseText = Phase[sim.phase].toUpperCase();
+    let hudText = `${phaseText}  P:${sim.players.length}`;
+    if (sim.phase === Phase.Playing) {
+      const roundSecs = Math.max(0, Math.ceil(sim.roundTimer / TARGET_FPS));
+      hudText += `  R${sim.currentRound + 1} ${Math.floor(roundSecs / 60)}:${(roundSecs % 60).toString().padStart(2, "0")}`;
+    }
+    lines.push({ text: hudText, color: 2 });
 
-    const sameRoom = hi >= 0 && pi >= 0 && sim.players[hi].room === sim.players[pi].room;
-    const hcShared = hi >= 0 && ci >= 0 && sim.players[hi].sharedWith.has(ci);
-    const pdShared = pi >= 0 && di >= 0 && sim.players[pi].sharedWith.has(di);
+    if (sim.phase === Phase.RoleReveal) {
+      lines.push({ text: `STARTING IN ${secs}`, color: 2 });
+    }
 
-    lines.push({ text: `HADES AND PERSEPHONE: ${sameRoom ? "IN SAME ROOM" : "NOT IN SAME ROOM"}`, color: sameRoom ? 8 : 1 });
-    lines.push({ text: `HADES HAS ${hcShared ? "FOUND" : "NOT FOUND"} CERBERUS`, color: hcShared ? 11 : 1 });
-    lines.push({ text: `PERSEPHONE HAS ${pdShared ? "FOUND" : "NOT FOUND"} DEMETER`, color: pdShared ? 11 : 1 });
+    if (sim.phase === Phase.LeaderSummit) {
+      const summitSecs = Math.max(0, Math.ceil(sim.leaderSummitTimer / TARGET_FPS));
+      lines.push({ text: `SUMMIT ${summitSecs}s — LEADERS NEGOTIATING`, color: 8 });
+      const hostA = sim.hostagesSelectedA.map(i => playerTag(sim, i)).join(", ");
+      const hostB = sim.hostagesSelectedB.map(i => playerTag(sim, i)).join(", ");
+      if (hostA) lines.push({ text: `UW HOSTAGES: ${hostA}`, color: TEAM_A_COLOR });
+      if (hostB) lines.push({ text: `MR HOSTAGES: ${hostB}`, color: TEAM_B_COLOR });
+      const summitCr = sim.whispers.get(sim.leaderSummitWhisperId);
+      if (summitCr) {
+        const recent = summitCr.messages.slice(-4);
+        for (const m of recent) {
+          if (m.type === "system") {
+            lines.push({ text: `[${m.text}]`, color: 1 });
+          } else {
+            const tag = playerTag(sim, m.senderIndex);
+            lines.push({ text: `${tag}: ${m.text}`, color: 2 });
+          }
+        }
+      }
+    }
 
-    if (sim.winner !== null) {
-      const tc = sim.winner === Team.TeamA ? TEAM_A_COLOR : TEAM_B_COLOR;
-      const name = sim.winner === Team.TeamA ? "SHADES" : "NYMPHS";
-      lines.push({ text: `WINNER: ${name}`, color: tc });
+    if (sim.phase !== Phase.Lobby && sim.phase !== Phase.RoleReveal) {
+      const hi = findByRole(sim, Role.Hades);
+      const pi = findByRole(sim, Role.Persephone);
+      const ci = findByRole(sim, Role.Cerberus);
+      const di = findByRole(sim, Role.Demeter);
+
+      const sameRoom = hi >= 0 && pi >= 0 && sim.players[hi].room === sim.players[pi].room;
+      const hcShared = hi >= 0 && ci >= 0 && sim.players[hi].sharedWith.has(ci);
+      const pdShared = pi >= 0 && di >= 0 && sim.players[pi].sharedWith.has(di);
+
+      lines.push({ text: `HADES AND PERSEPHONE: ${sameRoom ? "IN SAME ROOM" : "NOT IN SAME ROOM"}`, color: sameRoom ? 8 : 1 });
+      lines.push({ text: `HADES HAS ${hcShared ? "FOUND" : "NOT FOUND"} CERBERUS`, color: hcShared ? 11 : 1 });
+      lines.push({ text: `PERSEPHONE HAS ${pdShared ? "FOUND" : "NOT FOUND"} DEMETER`, color: pdShared ? 11 : 1 });
+
+      if (sim.phase === Phase.Reveal || sim.phase === Phase.GameOver) {
+        lines.push({ text: "", color: 0 });
+        if (sim.winner !== null) {
+          const tc = sim.winner === Team.TeamA ? TEAM_A_COLOR : TEAM_B_COLOR;
+          const name = sim.winner === Team.TeamA ? "SHADES" : "NYMPHS";
+          lines.push({ text: `>>> ${name} WIN <<<`, color: tc });
+        } else {
+          lines.push({ text: ">>> NO WINNER — DRAW <<<", color: 8 });
+        }
+      }
     }
   }
 
-  const sprite = buildFilledTextSprite(lines, 0);
-  pkt.setViewport(HUD_LAYER, sprite.width, sprite.height);
-  pkt.addSprite(HUD_SPRITE, sprite.width, sprite.height, sprite.pixels);
+  const textSprite = buildFilledTextSprite(lines, 0);
+  const barH = 5;
+  const barGap = 2;
+  const barW = roundsBarWidth(sim);
+  const totalW = Math.max(textSprite.width, barW);
+  const totalH = textSprite.height + barGap + barH;
+  const pixels = new Uint8Array(totalW * totalH);
+
+  for (let y = 0; y < textSprite.height; y++) {
+    for (let x = 0; x < textSprite.width; x++) {
+      pixels[y * totalW + x] = textSprite.pixels[y * textSprite.width + x];
+    }
+  }
+
+  drawRoundsBar(sim, pixels, totalW, textSprite.height + barGap, barH);
+
+  pkt.setViewport(HUD_LAYER, totalW, totalH);
+  pkt.addSprite(HUD_SPRITE, totalW, totalH, pixels);
   pkt.addObject(HUD_OBJECT, 0, 0, 0, HUD_LAYER, HUD_SPRITE);
 }
 
+function roundsBarWidth(sim: Sim): number {
+  const pxPerSec = 0.5;
+  let totalSecs = 0;
+  for (const r of sim.config.rounds) totalSecs += r.durationSecs;
+  return Math.ceil(totalSecs * pxPerSec) + 2;
+}
+
+function drawRoundsBar(sim: Sim, pixels: Uint8Array, bufW: number, barY: number, barH: number) {
+  const pxPerSec = 0.5;
+  const rounds = sim.config.rounds;
+  let elapsedSecs = 0;
+
+  for (let i = 0; i < rounds.length; i++) {
+    const x0 = Math.floor(elapsedSecs * pxPerSec) + 1;
+    const x1 = Math.floor((elapsedSecs + rounds[i].durationSecs) * pxPerSec) + 1;
+
+    const isPast = sim.phase !== Phase.Lobby && sim.phase !== Phase.RoleReveal && i < sim.currentRound;
+    const isActive = sim.phase === Phase.Playing && i === sim.currentRound;
+    const isFuture = !isPast && !isActive;
+
+    const color = isActive ? 11 : isPast ? 5 : 1;
+    const sc = spriteColor(color);
+
+    for (let x = x0; x < x1 && x < bufW; x++) {
+      for (let y = barY; y < barY + barH; y++) {
+        pixels[y * bufW + x] = sc;
+      }
+    }
+
+    if (isActive && sim.roundTimer > 0) {
+      const elapsed = rounds[i].durationSecs * TARGET_FPS - sim.roundTimer;
+      const cx = Math.floor((elapsedSecs + elapsed / TARGET_FPS) * pxPerSec) + 1;
+      if (cx >= x0 && cx < x1 && cx < bufW) {
+        const mc = spriteColor(2);
+        for (let y = barY; y < barY + barH; y++) {
+          pixels[y * bufW + cx] = mc;
+        }
+      }
+    }
+
+    elapsedSecs += rounds[i].durationSecs;
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Global chat panels (top corners)
+// Shout panels (top corners)
 // ---------------------------------------------------------------------------
 
-function buildGlobalChat(
+function buildShoutPanel(
   sim: Sim, pkt: SpritePacket, room: Room,
   layerId: number, spriteId: number, objId: number,
 ) {
   const fb = new Framebuffer();
   const roomName = room === Room.RoomA ? ROOM_A_NAME : ROOM_B_NAME;
   const lineH = 7;
-  const w = CHAT_PANEL_W;
-  const h = CHAT_PANEL_LINES * lineH + 2;
+  const w = SHOUT_PANEL_W;
+  const h = SHOUT_PANEL_LINES * lineH + 2;
   const pixels = new Uint8Array(w * h);
 
-  drawTextIntoPixels(fb, pixels, w, h, 1, 1, `${roomName} CHAT`, 2);
+  drawTextIntoPixels(fb, pixels, w, h, 1, 1, `${roomName} SHOUT`, 2);
 
-  const globalMsgs = room === Room.RoomA ? sim.globalMessagesA : sim.globalMessagesB;
-  const recent = globalMsgs.slice(-(CHAT_PANEL_LINES - 1));
+  const shoutMsgs = room === Room.RoomA ? sim.shoutMessagesA : sim.shoutMessagesB;
+  const recent = shoutMsgs.slice(-(SHOUT_PANEL_LINES - 1));
 
   if (recent.length > 0) {
     let y = lineH + 1;
@@ -417,7 +543,7 @@ function buildVotePanel(
 }
 
 // ---------------------------------------------------------------------------
-// Private chatroom slots (side panels)
+// Private whisper slots (side panels)
 // ---------------------------------------------------------------------------
 
 function drawSmallSprite(
@@ -439,7 +565,7 @@ function drawSmallSprite(
   }
 }
 
-function renderChatroomSlot(sim: Sim, cr: Chatroom | null): { width: number; height: number; pixels: Uint8Array } {
+function renderWhisperSlot(sim: Sim, cr: Whisper | null): { width: number; height: number; pixels: Uint8Array } {
   const fb = new Framebuffer();
   const lineH = 7;
   const headerH = 9;
@@ -577,7 +703,36 @@ function drawRichChatMsg(
   }
 }
 
-function buildChatroomSlots(
+interface CachedWhisper {
+  snapshot: Whisper;
+  closeTick: number;
+}
+
+const whisperCache = new Map<number, CachedWhisper>();
+const knownWhisperIds = new Set<number>();
+const WHISPER_PERSIST_TICKS = TARGET_FPS;
+
+function updateWhisperCache(sim: Sim) {
+  const currentIds = new Set<number>();
+  for (const cr of sim.whispers.values()) {
+    if (cr.occupants.size >= 2) currentIds.add(cr.id);
+  }
+  for (const id of knownWhisperIds) {
+    if (!currentIds.has(id) && !whisperCache.has(id)) {
+      const cr = sim.whispers.get(id);
+      if (cr) {
+        whisperCache.set(id, { snapshot: { ...cr, occupants: new Set(cr.occupants), pendingEntry: [...cr.pendingEntry], pendingEntryTicks: [...cr.pendingEntryTicks], messages: [...cr.messages], revealOffers: new Set(cr.revealOffers), colorOffers: new Set(cr.colorOffers) }, closeTick: sim.tickCount });
+      }
+    }
+  }
+  knownWhisperIds.clear();
+  for (const id of currentIds) knownWhisperIds.add(id);
+  for (const [id, cached] of whisperCache) {
+    if (sim.tickCount - cached.closeTick > WHISPER_PERSIST_TICKS) whisperCache.delete(id);
+  }
+}
+
+function buildWhisperSlots(
   sim: Sim, pkt: SpritePacket, room: Room,
   layerId: number, slotOffset: number,
 ) {
@@ -585,9 +740,12 @@ function buildChatroomSlots(
   const totalH = CR_SLOTS * CR_SLOT_H + (CR_SLOTS - 1) * SLOT_GAP;
   pkt.setViewport(layerId, CR_SLOT_W, totalH);
 
-  const roomCrs: Chatroom[] = [];
-  for (const cr of sim.chatrooms.values()) {
+  const roomCrs: Whisper[] = [];
+  for (const cr of sim.whispers.values()) {
     if (cr.room === room && cr.occupants.size >= 2) roomCrs.push(cr);
+  }
+  for (const cached of whisperCache.values()) {
+    if (cached.snapshot.room === room) roomCrs.push(cached.snapshot);
   }
 
   const cycleOffset = roomCrs.length > CR_SLOTS
@@ -598,7 +756,7 @@ function buildChatroomSlots(
     const cr = i < roomCrs.length
       ? roomCrs[(cycleOffset + i) % roomCrs.length]
       : null;
-    const slot = renderChatroomSlot(sim, cr);
+    const slot = renderWhisperSlot(sim, cr);
     const spriteId = CR_SLOT_SPRITE_BASE + slotOffset + i;
     const objId = CR_SLOT_OBJECT_BASE + slotOffset + i;
     pkt.addSprite(spriteId, slot.width, slot.height, slot.pixels);
@@ -612,6 +770,11 @@ function buildChatroomSlots(
 
 function findByRole(sim: Sim, role: Role): number {
   return sim.players.findIndex(p => p.role === role);
+}
+
+function playerTag(sim: Sim, pi: number): string {
+  if (pi < 0 || pi >= sim.players.length) return "?";
+  return playerSpriteName(sim.players[pi].colorIndex);
 }
 
 const TEAM_ROLE_ORDER: [Team, Role][] = [

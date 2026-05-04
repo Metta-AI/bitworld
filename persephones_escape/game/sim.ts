@@ -1,12 +1,12 @@
-import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ChatMessage, type ChatroomMessage, type Chatroom, type Obstacle, type uint8, type GameConfig } from "./types.js";
-import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, CHATROOM_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig, playerSpriteName } from "./constants.js";
+import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ShoutMessage, type WhisperMessage, type Whisper, type Obstacle, type uint8, type GameConfig } from "./types.js";
+import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, WHISPER_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig, playerSpriteName, LEADER_SUMMIT_DURATION_SECS } from "./constants.js";
 import { Framebuffer } from "../rendering/framebuffer.js";
 import { emptyInput } from "./protocol.js";
 import { clamp, distSq } from "./util.js";
 import {
   MENU_DEFS, pressed, anyPressed, navigateMenu,
-  CHATROOM_MENU, CHATROOM_OPEN_BUTTON, CHATROOM_CLOSE_BUTTON, CHATROOM_SELECT_BUTTON,
-  navigateChatMenu, chatMenuAction,
+  WHISPER_MENU, WHISPER_OPEN_BUTTON, WHISPER_CLOSE_BUTTON, WHISPER_SELECT_BUTTON,
+  navigateWhisperMenu, whisperMenuAction,
 } from "./menu_defs.js";
 
 function pref(pi: number): string {
@@ -15,7 +15,7 @@ function pref(pi: number): string {
 
 export class Sim {
   players: Player[] = [];
-  chatMessages: ChatMessage[] = [];
+  chatMessages: ShoutMessage[] = [];
   obstacles: Obstacle[] = [];
   roomW = ROOM_W;
   roomH = ROOM_H;
@@ -45,10 +45,15 @@ export class Sim {
   committedB = false;
   hostageSelectTimer = 0;
 
-  chatrooms = new Map<number, Chatroom>();
-  nextChatroomId = 0;
-  globalMessagesA: ChatroomMessage[] = [];
-  globalMessagesB: ChatroomMessage[] = [];
+  leaderSummitTimer = 0;
+  leaderSummitWhisperId = -1;
+  leaderSummitOrigRoomA = Room.RoomA;
+  leaderSummitOrigRoomB = Room.RoomB;
+
+  whispers = new Map<number, Whisper>();
+  nextWhisperId = 0;
+  shoutMessagesA: WhisperMessage[] = [];
+  shoutMessagesB: WhisperMessage[] = [];
 
   // Exchange animation state — positions before swap
   exchangeFromA: { pi: number; startX: number; startY: number }[] = [];
@@ -319,19 +324,19 @@ export class Sim {
       if (input.up && !prevInput.up) player.infoScrollOffset = Math.max(0, player.infoScrollOffset - 1);
       if (input.down && !prevInput.down) player.infoScrollOffset++;
       if (anyPressed(input, prevInput, MENU_DEFS.info.closeButton!,
-        MENU_DEFS.comm.openButton!, MENU_DEFS.chatroom.closeButton!)) {
+        MENU_DEFS.comm.openButton!, MENU_DEFS.whisper.closeButton!)) {
         player.infoScreen = "none"; player.infoScrollOffset = 0;
       }
       return;
     }
 
-    if (player.inChatroom >= 0) {
-      this.applyChatroomInput(pi, input, prevInput);
+    if (player.inWhisper >= 0) {
+      this.applyWhisperInput(pi, input, prevInput);
       return;
     }
 
-    if (player.globalChatOpen) {
-      this.applyGlobalChatInput(pi, input, prevInput);
+    if (player.shoutOpen) {
+      this.applyShoutInput(pi, input, prevInput);
       return;
     }
 
@@ -377,22 +382,28 @@ export class Sim {
       player.carryY = carryY.val;
     }
 
-    // A creates/requests chatroom entry
-    if (pressed(input, prevInput, MENU_DEFS.chatroom.selectButton)) {
-      if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect) {
-        const nearby = this.findNearbyChatroomPlayer(pi);
-        if (nearby >= 0 && player.pendingChatroomEntry < 0) {
-          const cr = this.chatrooms.get(this.players[nearby].inChatroom);
-          if (cr) this.requestChatroomEntry(pi, cr.id);
-        } else if (player.pendingChatroomEntry < 0) {
-          this.createChatroom(pi);
+    // A creates/requests whisper entry, auto-pulls nearby free player
+    if (pressed(input, prevInput, MENU_DEFS.whisper.selectButton)) {
+      if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
+        const nearbyWhisperer = this.findNearbyWhisperPlayer(pi);
+        if (nearbyWhisperer >= 0 && player.pendingWhisperEntry < 0) {
+          const cr = this.whispers.get(this.players[nearbyWhisperer].inWhisper);
+          if (cr) this.requestWhisperEntry(pi, cr.id);
+        } else if (player.pendingWhisperEntry < 0) {
+          this.createWhisper(pi);
+          if (player.inWhisper >= 0) {
+            const nearbyFree = this.findNearbyFreePlayer(pi);
+            if (nearbyFree >= 0) {
+              this.addToWhisper(player.inWhisper, nearbyFree);
+            }
+          }
         }
       }
     }
 
     // B toggles shared info screen / cancels entry
     if (pressed(input, prevInput, MENU_DEFS.info.openButton!)) {
-      if (player.pendingChatroomEntry >= 0) {
+      if (player.pendingWhisperEntry >= 0) {
         this.cancelEntryRequest(pi);
       } else {
         player.infoScreen = player.infoScreen === "none" ? "shared" : "none";
@@ -401,7 +412,7 @@ export class Sim {
 
     // SELECT opens comm menu
     if (pressed(input, prevInput, MENU_DEFS.comm.openButton!)) {
-      if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect) {
+      if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
         player.commMenuOpen = true;
         player.commMenuRow = 0;
       }
@@ -412,37 +423,25 @@ export class Sim {
     }
   }
 
-  applyChatroomInput(pi: number, input: InputState, prevInput: InputState) {
+  applyWhisperInput(pi: number, input: InputState, prevInput: InputState) {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
-    if (!cr) { player.inChatroom = -1; return; }
+    const cr = this.whispers.get(player.inWhisper);
+    if (!cr) { player.inWhisper = -1; return; }
 
     const shareDef = MENU_DEFS.share;
 
     if (player.shareSelectOpen) {
       const offerers = player.shareSelectMode === "color"
-        ? this.chatroomColorOfferers(pi)
-        : this.chatroomShareOfferers(pi);
+        ? this.whisperColorOfferers(pi)
+        : this.whisperShareOfferers(pi);
       if (offerers.length === 0) { player.shareSelectOpen = false; return; }
       player.shareSelectRow = navigateMenu(input, prevInput, shareDef, offerers.length, player.shareSelectRow);
       if (pressed(input, prevInput, shareDef.selectButton)) {
         const target = offerers[player.shareSelectRow];
         if (player.shareSelectMode === "color") {
-          player.colorRevealedTo.add(target);
-          this.players[target].colorRevealedTo.add(pi);
-          cr.colorOffers.delete(target);
-          cr.colorOffers.delete(pi);
-          cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} swapped colors ${pref(target)}` });
-          this.log(`${this.pn(pi)} and ${this.pn(target)} exchanged colors`);
+          this.executeColorSwap(cr, pi, target);
         } else {
-          player.revealedTo.add(target);
-          this.players[target].revealedTo.add(pi);
-          player.sharedWith.add(target);
-          this.players[target].sharedWith.add(pi);
-          cr.revealOffers.delete(target);
-          cr.revealOffers.delete(pi);
-          cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} shared roles ${pref(target)}` });
-          this.log(`${this.pn(pi)} and ${this.pn(target)} shared roles`);
+          this.executeRoleSwap(cr, pi, target);
         }
         player.shareSelectOpen = false;
       }
@@ -453,58 +452,60 @@ export class Sim {
       return;
     }
 
-    if (player.chatMenuOpen) {
-      const nav = navigateChatMenu(input, prevInput, player.chatMenuCat, player.chatMenuItem);
-      player.chatMenuCat = nav.catIdx;
-      player.chatMenuItem = nav.itemIdx;
+    if (player.whisperMenuOpen) {
+      const nav = navigateWhisperMenu(input, prevInput, player.whisperMenuCat, player.whisperMenuItem);
+      player.whisperMenuCat = nav.catIdx;
+      player.whisperMenuItem = nav.itemIdx;
 
-      if (pressed(input, prevInput, CHATROOM_SELECT_BUTTON)) {
-        const toggledSet = this.chatroomToggledActions(pi);
-        const action = chatMenuAction(player.chatMenuCat, player.chatMenuItem, toggledSet);
-        if (action && this.chatroomActionEnabled(pi, action)) {
-          this.chatroomActionSelect(pi, action);
-          player.chatMenuOpen = false;
+      if (pressed(input, prevInput, WHISPER_SELECT_BUTTON)) {
+        const toggledSet = this.whisperToggledActions(pi);
+        const action = whisperMenuAction(player.whisperMenuCat, player.whisperMenuItem, toggledSet);
+        if (action && this.whisperActionEnabled(pi, action)) {
+          this.whisperActionSelect(pi, action);
+          player.whisperMenuOpen = false;
         }
       }
-      if (pressed(input, prevInput, CHATROOM_CLOSE_BUTTON)) {
-        player.chatMenuOpen = false;
+      if (pressed(input, prevInput, WHISPER_CLOSE_BUTTON)) {
+        player.whisperMenuOpen = false;
       }
       player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
       return;
     }
 
-    if (pressed(input, prevInput, CHATROOM_CLOSE_BUTTON)) {
-      this.leaveChatroom(pi);
+    const isSummit = this.phase === Phase.LeaderSummit && cr.id === this.leaderSummitWhisperId;
+
+    if (!isSummit && pressed(input, prevInput, WHISPER_CLOSE_BUTTON)) {
+      this.leaveWhisper(pi);
       return;
     }
 
-    if (pressed(input, prevInput, CHATROOM_OPEN_BUTTON)) {
-      player.chatMenuOpen = true;
-      player.chatMenuCat = 0;
-      player.chatMenuItem = 0;
+    if (!isSummit && pressed(input, prevInput, WHISPER_OPEN_BUTTON)) {
+      player.whisperMenuOpen = true;
+      player.whisperMenuCat = 0;
+      player.whisperMenuItem = 0;
       return;
     }
 
     if (input.up && !prevInput.up) {
-      player.chatScrollOffset = Math.min(player.chatScrollOffset + 1, Math.max(0, cr.messages.length - 1));
+      player.whisperScrollOffset = Math.min(player.whisperScrollOffset + 1, Math.max(0, cr.messages.length - 1));
     }
     if (input.down && !prevInput.down) {
-      player.chatScrollOffset = Math.max(player.chatScrollOffset - 1, 0);
+      player.whisperScrollOffset = Math.max(player.whisperScrollOffset - 1, 0);
     }
 
     player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
   }
 
-  applyGlobalChatInput(pi: number, input: InputState, prevInput: InputState) {
+  applyShoutInput(pi: number, input: InputState, prevInput: InputState) {
     const player = this.players[pi];
-    const msgs = this.globalMessagesForPlayer(pi);
+    const msgs = this.shoutMessagesForPlayer(pi);
     const gDef = MENU_DEFS.global;
     const hDef = MENU_DEFS.hostage;
 
     if (gDef.closeButton && pressed(input, prevInput, gDef.closeButton)) {
-      player.globalChatLastRead = (player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB).length;
-      player.globalChatOpen = false;
-      player.globalChatScroll = 0;
+      player.shoutLastRead = (player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB).length;
+      player.shoutOpen = false;
+      player.shoutScroll = 0;
       return;
     }
 
@@ -519,7 +520,7 @@ export class Sim {
         if (player.room === Room.RoomA) this.hostageCursorA = newCursor;
         else this.hostageCursorB = newCursor;
         if (pressed(input, prevInput, hDef.selectButton)) this.handleHostageToggle(pi);
-        if (pressed(input, prevInput, MENU_DEFS.chatroom.openButton!)) {
+        if (pressed(input, prevInput, MENU_DEFS.whisper.openButton!)) {
           if (player.room === Room.RoomA) this.committedA = true;
           else this.committedB = true;
         }
@@ -528,7 +529,7 @@ export class Sim {
       if (pressed(input, prevInput, gDef.selectButton)) {
         const candidates = this.usurpCandidates(pi);
         if (candidates.length > 0) {
-          const row = Math.min(player.globalChatActionRow, candidates.length - 1);
+          const row = Math.min(player.shoutActionRow, candidates.length - 1);
           const item = candidates[row];
           const prevVote = player.usurpVote;
           if (item === "NONE") player.usurpVote = -1;
@@ -538,8 +539,8 @@ export class Sim {
             if (match) player.usurpVote = parseInt(match[1]);
           }
           if (player.usurpVote !== prevVote && player.usurpVote >= 0) {
-            const globalMsgs = player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB;
-            globalMsgs.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} voted for ${pref(player.usurpVote)}` });
+            const shoutMsgs = player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB;
+            shoutMsgs.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} voted for ${pref(player.usurpVote)}` });
           }
           this.checkUsurp(player.room);
         }
@@ -547,15 +548,15 @@ export class Sim {
 
       const candidates = this.usurpCandidates(pi);
       if (candidates.length > 0) {
-        player.globalChatActionRow = navigateMenu(input, prevInput, gDef, candidates.length, player.globalChatActionRow);
+        player.shoutActionRow = navigateMenu(input, prevInput, gDef, candidates.length, player.shoutActionRow);
       }
     }
 
     if (input.up && !prevInput.up) {
-      player.globalChatScroll = Math.min(player.globalChatScroll + 1, Math.max(0, msgs.length - 1));
+      player.shoutScroll = Math.min(player.shoutScroll + 1, Math.max(0, msgs.length - 1));
     }
     if (input.down && !prevInput.down) {
-      player.globalChatScroll = Math.max(player.globalChatScroll - 1, 0);
+      player.shoutScroll = Math.max(player.shoutScroll - 1, 0);
     }
 
     player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
@@ -565,7 +566,7 @@ export class Sim {
 
   commMenuItems(pi: number): string[] {
     const items: string[] = [];
-    if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect) {
+    if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
       items.push("SHOUT");
       items.push("INFO");
     }
@@ -577,9 +578,9 @@ export class Sim {
     player.commMenuOpen = false;
     switch (item) {
       case "SHOUT":
-        player.globalChatOpen = true;
-        player.globalChatScroll = 0;
-        player.globalChatActionRow = 0;
+        player.shoutOpen = true;
+        player.shoutScroll = 0;
+        player.shoutActionRow = 0;
         break;
       case "INFO":
         player.infoScreen = "shared";
@@ -588,11 +589,31 @@ export class Sim {
     }
   }
 
-  // ---- Chatroom action items (B-button in chatroom) ----
+  // ---- Whisper action items (B-button in whisper) ----
 
-  chatroomShareOfferers(pi: number): number[] {
+  private executeColorSwap(cr: { colorOffers: Set<number>; messages: any[]; occupants: Set<number> }, pi: number, target: number) {
+    this.players[pi].colorRevealedTo.add(target);
+    this.players[target].colorRevealedTo.add(pi);
+    cr.colorOffers.delete(target);
+    cr.colorOffers.delete(pi);
+    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} swapped colors ${pref(target)}` });
+    this.log(`${this.pn(pi)} and ${this.pn(target)} exchanged colors`);
+  }
+
+  private executeRoleSwap(cr: { revealOffers: Set<number>; messages: any[]; occupants: Set<number> }, pi: number, target: number) {
+    this.players[pi].revealedTo.add(target);
+    this.players[target].revealedTo.add(pi);
+    this.players[pi].sharedWith.add(target);
+    this.players[target].sharedWith.add(pi);
+    cr.revealOffers.delete(target);
+    cr.revealOffers.delete(pi);
+    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} shared roles ${pref(target)}` });
+    this.log(`${this.pn(pi)} and ${this.pn(target)} shared roles`);
+  }
+
+  whisperShareOfferers(pi: number): number[] {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
+    const cr = this.whispers.get(player.inWhisper);
     if (!cr) return [];
     const offerers: number[] = [];
     for (const oi of cr.revealOffers) {
@@ -601,9 +622,9 @@ export class Sim {
     return offerers;
   }
 
-  chatroomColorOfferers(pi: number): number[] {
+  whisperColorOfferers(pi: number): number[] {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
+    const cr = this.whispers.get(player.inWhisper);
     if (!cr) return [];
     const offerers: number[] = [];
     for (const oi of cr.colorOffers) {
@@ -713,100 +734,127 @@ export class Sim {
     return result;
   }
 
-  // ---- Chatrooms ----
+  // ---- Whispers ----
 
-  createChatroom(pi: number) {
+  createWhisper(pi: number) {
     const player = this.players[pi];
-    if (player.inChatroom >= 0) return;
-    const id = this.nextChatroomId++;
-    const cr: Chatroom = {
+    if (player.inWhisper >= 0) return;
+    const id = this.nextWhisperId++;
+    const cr: Whisper = {
       id, room: player.room, ownerIndex: pi,
       x: player.x, y: player.y,
       occupants: new Set([pi]),
       pendingEntry: [], pendingEntryTicks: [],
       messages: [], revealOffers: new Set(), colorOffers: new Set(), leaderOffer: -1,
     };
-    this.chatrooms.set(id, cr);
-    player.inChatroom = id;
-    player.chatroomEntryTick = this.tickCount;
-    player.chatScrollOffset = 0;
-    player.chatMenuOpen = false; player.chatMenuCat = 0; player.chatMenuItem = 0;
+    this.whispers.set(id, cr);
+    player.inWhisper = id;
+    player.whisperEntryTick = this.tickCount;
+    player.whisperScrollOffset = 0;
+    player.whisperMenuOpen = false; player.whisperMenuCat = 0; player.whisperMenuItem = 0;
     player.shareSelectOpen = false; player.shareSelectRow = 0;
     player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
-    this.log(`${this.pn(pi)} opened chatroom`);
+    this.log(`${this.pn(pi)} opened whisper`);
   }
 
-  findNearbyChatroomPlayer(pi: number): number {
+  findNearbyWhisperPlayer(pi: number): number {
     const player = this.players[pi];
     const r2 = BUBBLE_RADIUS * BUBBLE_RADIUS;
     for (let i = 0; i < this.players.length; i++) {
       if (i === pi) continue;
       const other = this.players[i];
-      if (other.room !== player.room || other.inChatroom < 0) continue;
+      if (other.room !== player.room || other.inWhisper < 0) continue;
       if (distSq(player.x, player.y, other.x, other.y) <= r2) return i;
     }
     return -1;
   }
 
-  requestChatroomEntry(pi: number, chatroomId: number) {
-    const cr = this.chatrooms.get(chatroomId);
+  requestWhisperEntry(pi: number, whisperId: number) {
+    const cr = this.whispers.get(whisperId);
     if (!cr) return;
     if (cr.occupants.has(pi)) return;
     if (cr.pendingEntry.includes(pi)) return;
-    if (cr.occupants.size >= CHATROOM_MAX_OCCUPANTS) return;
+    if (cr.occupants.size >= WHISPER_MAX_OCCUPANTS) return;
     cr.pendingEntry.push(pi);
     cr.pendingEntryTicks.push(this.tickCount);
-    this.players[pi].pendingChatroomEntry = chatroomId;
+    this.players[pi].pendingWhisperEntry = whisperId;
     cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} requests entry` });
   }
 
-  grantChatroomEntry(chatroomId: number, requestingPi: number) {
-    const cr = this.chatrooms.get(chatroomId);
+  addToWhisper(whisperId: number, pi: number) {
+    const cr = this.whispers.get(whisperId);
     if (!cr) return;
-    const idx = cr.pendingEntry.indexOf(requestingPi);
-    if (idx < 0) return;
-    if (cr.occupants.size >= CHATROOM_MAX_OCCUPANTS) return;
-    cr.pendingEntry.splice(idx, 1);
-    cr.pendingEntryTicks.splice(idx, 1);
-    cr.occupants.add(requestingPi);
-    const p = this.players[requestingPi];
-    p.inChatroom = chatroomId;
-    p.chatroomEntryTick = this.tickCount;
-    p.pendingChatroomEntry = -1;
-    p.chatScrollOffset = 0;
-    p.chatMenuOpen = false; p.chatMenuCat = 0; p.chatMenuItem = 0;
+    if (cr.occupants.has(pi)) return;
+    if (cr.occupants.size >= WHISPER_MAX_OCCUPANTS) return;
+    const p = this.players[pi];
+    if (p.inWhisper >= 0) return;
+    cr.occupants.add(pi);
+    cr.colorOffers.clear();
+    cr.revealOffers.clear();
+    p.inWhisper = whisperId;
+    p.whisperEntryTick = this.tickCount;
+    p.pendingWhisperEntry = -1;
+    p.whisperScrollOffset = 0;
+    p.whisperMenuOpen = false; p.whisperMenuCat = 0; p.whisperMenuItem = 0;
     p.shareSelectOpen = false; p.shareSelectRow = 0;
     p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;
-    this.log(`${this.pn(requestingPi)} joined ${this.pn(cr.ownerIndex)}'s chatroom`);
+    this.log(`${this.pn(pi)} joined ${this.pn(cr.ownerIndex)}'s whisper`);
   }
 
-  denyChatroomEntry(chatroomId: number, requestingPi: number) {
-    const cr = this.chatrooms.get(chatroomId);
+  grantWhisperEntry(whisperId: number, requestingPi: number) {
+    const cr = this.whispers.get(whisperId);
+    if (!cr) return;
+    const idx = cr.pendingEntry.indexOf(requestingPi);
+    if (idx < 0) return;
+    if (cr.occupants.size >= WHISPER_MAX_OCCUPANTS) return;
+    cr.pendingEntry.splice(idx, 1);
+    cr.pendingEntryTicks.splice(idx, 1);
+    this.addToWhisper(whisperId, requestingPi);
+  }
+
+  findNearbyFreePlayer(pi: number): number {
+    const player = this.players[pi];
+    const r2 = BUBBLE_RADIUS * BUBBLE_RADIUS;
+    let bestDist = Infinity;
+    let bestPi = -1;
+    for (let i = 0; i < this.players.length; i++) {
+      if (i === pi) continue;
+      const other = this.players[i];
+      if (other.room !== player.room) continue;
+      if (other.inWhisper >= 0 || other.pendingWhisperEntry >= 0) continue;
+      const d = distSq(player.x, player.y, other.x, other.y);
+      if (d <= r2 && d < bestDist) { bestDist = d; bestPi = i; }
+    }
+    return bestPi;
+  }
+
+  denyWhisperEntry(whisperId: number, requestingPi: number) {
+    const cr = this.whispers.get(whisperId);
     if (!cr) return;
     const idx = cr.pendingEntry.indexOf(requestingPi);
     if (idx < 0) return;
     cr.pendingEntry.splice(idx, 1);
     cr.pendingEntryTicks.splice(idx, 1);
-    this.players[requestingPi].pendingChatroomEntry = -1;
+    this.players[requestingPi].pendingWhisperEntry = -1;
   }
 
   cancelEntryRequest(pi: number) {
     const player = this.players[pi];
-    if (player.pendingChatroomEntry < 0) return;
-    const cr = this.chatrooms.get(player.pendingChatroomEntry);
+    if (player.pendingWhisperEntry < 0) return;
+    const cr = this.whispers.get(player.pendingWhisperEntry);
     if (cr) {
       const idx = cr.pendingEntry.indexOf(pi);
       if (idx >= 0) { cr.pendingEntry.splice(idx, 1); cr.pendingEntryTicks.splice(idx, 1); }
     }
-    player.pendingChatroomEntry = -1;
+    player.pendingWhisperEntry = -1;
   }
 
-  leaveChatroom(pi: number) {
+  leaveWhisper(pi: number) {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
-    player.inChatroom = -1;
-    player.chatScrollOffset = 0;
-    player.chatMenuOpen = false;
+    const cr = this.whispers.get(player.inWhisper);
+    player.inWhisper = -1;
+    player.whisperScrollOffset = 0;
+    player.whisperMenuOpen = false;
     player.shareSelectOpen = false;
     if (!cr) return;
     cr.occupants.delete(pi);
@@ -816,30 +864,30 @@ export class Sim {
     cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} left` });
     if (cr.occupants.size === 0) {
       for (const pendingPi of cr.pendingEntry) {
-        this.players[pendingPi].pendingChatroomEntry = -1;
+        this.players[pendingPi].pendingWhisperEntry = -1;
       }
-      this.chatrooms.delete(cr.id);
+      this.whispers.delete(cr.id);
     }
   }
 
-  ejectAllChatrooms() {
-    for (const cr of this.chatrooms.values()) {
+  ejectAllWhispers() {
+    for (const cr of this.whispers.values()) {
       for (const oi of cr.occupants) {
-        this.players[oi].inChatroom = -1;
-        this.players[oi].chatScrollOffset = 0;
+        this.players[oi].inWhisper = -1;
+        this.players[oi].whisperScrollOffset = 0;
       }
       for (const pi of cr.pendingEntry) {
-        this.players[pi].pendingChatroomEntry = -1;
+        this.players[pi].pendingWhisperEntry = -1;
       }
     }
-    this.chatrooms.clear();
+    this.whispers.clear();
   }
 
-  tickChatrooms() {
-    for (const cr of this.chatrooms.values()) {
+  tickWhispers() {
+    for (const cr of this.whispers.values()) {
       for (let i = cr.pendingEntry.length - 1; i >= 0; i--) {
         if (this.tickCount - cr.pendingEntryTicks[i] > ENTRY_REQUEST_TIMEOUT) {
-          this.players[cr.pendingEntry[i]].pendingChatroomEntry = -1;
+          this.players[cr.pendingEntry[i]].pendingWhisperEntry = -1;
           cr.pendingEntry.splice(i, 1);
           cr.pendingEntryTicks.splice(i, 1);
         }
@@ -847,27 +895,27 @@ export class Sim {
     }
   }
 
-  chatroomToggledActions(pi: number): Set<string> {
+  whisperToggledActions(pi: number): Set<string> {
     const toggled = new Set<string>();
-    const cr = this.chatrooms.get(this.players[pi].inChatroom);
+    const cr = this.whispers.get(this.players[pi].inWhisper);
     if (!cr) return toggled;
     if (cr.colorOffers.has(pi)) toggled.add("C.OFFER");
     if (cr.revealOffers.has(pi)) toggled.add("R.OFFER");
     return toggled;
   }
 
-  chatroomActionEnabled(pi: number, action: string): boolean {
+  whisperActionEnabled(pi: number, action: string): boolean {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
+    const cr = this.whispers.get(player.inWhisper);
     if (!cr) return false;
     switch (action) {
       case "C.OFFER": return !cr.colorOffers.has(pi);
       case "C.UNOFFR": return cr.colorOffers.has(pi);
-      case "C.ACCPT": return this.chatroomColorOfferers(pi).length > 0;
+      case "C.ACCPT": return this.whisperColorOfferers(pi).length > 0;
       case "ROLE": return true;
       case "R.OFFER": return !cr.revealOffers.has(pi);
       case "R.UNOFFR": return cr.revealOffers.has(pi);
-      case "R.ACCPT": return this.chatroomShareOfferers(pi).length > 0;
+      case "R.ACCPT": return this.whisperShareOfferers(pi).length > 0;
       case "PASS": return player.isLeader;
       case "TAKE": return cr.leaderOffer >= 0 && cr.leaderOffer !== pi && cr.occupants.has(cr.leaderOffer);
       case "GRANT": return cr.pendingEntry.length > 0;
@@ -876,17 +924,23 @@ export class Sim {
     }
   }
 
-  chatroomActionSelect(pi: number, action: string) {
+  whisperActionSelect(pi: number, action: string) {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
+    const cr = this.whispers.get(player.inWhisper);
     if (!cr) return;
     if (!this.actionRateCheck(pi, action)) return;
 
     switch (action) {
-      case "C.OFFER":
+      case "C.OFFER": {
         cr.colorOffers.add(pi);
-        cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} offered color` });
+        const colorOfferers = this.whisperColorOfferers(pi);
+        if (colorOfferers.length === 1) {
+          this.executeColorSwap(cr, pi, colorOfferers[0]);
+        } else {
+          cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} offered color` });
+        }
         break;
+      }
       case "C.UNOFFR":
         cr.colorOffers.delete(pi);
         cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} withdrew color` });
@@ -901,13 +955,19 @@ export class Sim {
           if (oi !== pi) player.revealedTo.add(oi);
         }
         cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} showed role` });
-        this.log(`${this.pn(pi)} showed role to chatroom`);
+        this.log(`${this.pn(pi)} showed role to whisper`);
         break;
-      case "R.OFFER":
+      case "R.OFFER": {
         cr.revealOffers.add(pi);
-        cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} offered role` });
-        this.log(`${this.pn(pi)} offered role exchange`);
+        const roleOfferers = this.whisperShareOfferers(pi);
+        if (roleOfferers.length === 1) {
+          this.executeRoleSwap(cr, pi, roleOfferers[0]);
+        } else {
+          cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} offered role` });
+          this.log(`${this.pn(pi)} offered role exchange`);
+        }
         break;
+      }
       case "R.UNOFFR":
         cr.revealOffers.delete(pi);
         cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} withdrew role` });
@@ -939,12 +999,12 @@ export class Sim {
       case "GRANT":
         if (cr.pendingEntry.length > 0) {
           const entrant = cr.pendingEntry[0];
-          this.grantChatroomEntry(cr.id, entrant);
+          this.grantWhisperEntry(cr.id, entrant);
           cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} granted ${pref(entrant)}` });
         }
         break;
       case "EXIT":
-        this.leaveChatroom(pi);
+        this.leaveWhisper(pi);
         break;
     }
   }
@@ -972,46 +1032,46 @@ export class Sim {
     return lines;
   }
 
-  addChatroomChat(chatroomId: number, pi: number, text: string) {
-    const cr = this.chatrooms.get(chatroomId);
+  addWhisperChat(whisperId: number, pi: number, text: string) {
+    const cr = this.whispers.get(whisperId);
     if (!cr || !cr.occupants.has(pi)) return;
     const lines = this.chatRateCheck(pi, text);
     if (!lines) return;
     for (const line of lines) {
       cr.messages.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: line });
     }
-    this.log(`${this.pn(pi)} chatroom: ${lines.join("")}`);
+    this.log(`${this.pn(pi)} whisper: ${lines.join("")}`);
   }
 
-  addGlobalChat(pi: number, text: string) {
+  addShout(pi: number, text: string) {
     const lines = this.chatRateCheck(pi, text);
     if (!lines) return;
     const player = this.players[pi];
-    const dest = player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB;
+    const dest = player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB;
     for (const line of lines) {
       dest.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: line });
     }
     this.log(`${this.pn(pi)} global: ${lines.join("")}`);
   }
 
-  globalMessagesForPlayer(pi: number): ChatroomMessage[] {
+  shoutMessagesForPlayer(pi: number): WhisperMessage[] {
     const player = this.players[pi];
-    const msgs = player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB;
+    const msgs = player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB;
     return msgs.filter((m) => m.tick >= player.roomEntryTick);
   }
 
-  chatroomMessagesForPlayer(pi: number): ChatroomMessage[] {
+  whisperMessagesForPlayer(pi: number): WhisperMessage[] {
     const player = this.players[pi];
-    const cr = this.chatrooms.get(player.inChatroom);
+    const cr = this.whispers.get(player.inWhisper);
     if (!cr) return [];
-    return cr.messages.filter((m) => m.tick >= player.chatroomEntryTick);
+    return cr.messages.filter((m: WhisperMessage) => m.tick >= player.whisperEntryTick);
   }
 
-  globalUnreadCount(pi: number): number {
+  shoutUnreadCount(pi: number): number {
     const player = this.players[pi];
-    const msgs = player.room === Room.RoomA ? this.globalMessagesA : this.globalMessagesB;
+    const msgs = player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB;
     let count = 0;
-    for (let i = player.globalChatLastRead; i < msgs.length; i++) {
+    for (let i = player.shoutLastRead; i < msgs.length; i++) {
       if (msgs[i].tick >= player.roomEntryTick) count++;
     }
     return count;
@@ -1061,12 +1121,12 @@ export class Sim {
       revealedTo: new Set(), sharedWith: new Set(), colorRevealedTo: new Set(),
       colorIndex: this.players.length,
       commMenuOpen: false, commMenuRow: 0,
-      chatMenuOpen: false, chatMenuCat: 0, chatMenuItem: 0,
+      whisperMenuOpen: false, whisperMenuCat: 0, whisperMenuItem: 0,
       shareSelectOpen: false, shareSelectRow: 0, shareSelectMode: "card" as const,
       infoScreen: "none", infoScrollOffset: 0, usurpVote: -1,
-      inChatroom: -1, chatroomEntryTick: 0, chatScrollOffset: 0,
-      pendingChatroomEntry: -1,
-      globalChatOpen: false, globalChatLastRead: 0, globalChatScroll: 0, globalChatActionRow: 0,
+      inWhisper: -1, whisperEntryTick: 0, whisperScrollOffset: 0,
+      pendingWhisperEntry: -1,
+      shoutOpen: false, shoutLastRead: 0, shoutScroll: 0, shoutActionRow: 0,
       roomEntryTick: 0,
       lastActionTicks: new Map<string, number>(),
     });
@@ -1197,7 +1257,7 @@ export class Sim {
     this.rebuildWallMap();
     this.assignRoles();
     this.phase = Phase.RoleReveal;
-    this.revealTimer = 5 * TARGET_FPS;
+    this.revealTimer = 16 * TARGET_FPS;
     this.currentRound = 0;
     this.gameLog = [];
     for (let i = 0; i < this.players.length; i++) {
@@ -1217,12 +1277,12 @@ export class Sim {
     this.hostagesSelectedB = [];
     for (const p of this.players) {
       p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
-      p.commMenuOpen = false; p.chatMenuOpen = false; p.shareSelectOpen = false;
+      p.commMenuOpen = false; p.whisperMenuOpen = false; p.shareSelectOpen = false;
       p.infoScreen = "none"; p.usurpVote = -1;
-      p.inChatroom = -1; p.pendingChatroomEntry = -1;
-      p.globalChatOpen = false;
+      p.inWhisper = -1; p.pendingWhisperEntry = -1;
+      p.shoutOpen = false;
     }
-    this.chatrooms.clear();
+    this.whispers.clear();
     this.hostagesPerRoom = this.getHostageCount();
     this.ensureLeaders();
   }
@@ -1253,7 +1313,12 @@ export class Sim {
     this.hostageCursorA = 0; this.hostageCursorB = 0;
     this.committedA = false; this.committedB = false;
     this.hostageSelectTimer = 15 * TARGET_FPS;
-    for (const p of this.players) p.selectedAsHostage = false;
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      p.selectedAsHostage = false;
+      if (p.inWhisper >= 0) this.leaveWhisper(i);
+      p.pendingWhisperEntry = -1;
+    }
   }
 
   autoFillHostages(room: Room) {
@@ -1268,14 +1333,88 @@ export class Sim {
     }
   }
 
+  beginLeaderSummit() {
+    this.phase = Phase.LeaderSummit;
+    this.leaderSummitTimer = LEADER_SUMMIT_DURATION_SECS * TARGET_FPS;
+
+    this.ejectAllWhispers();
+
+    const announceA = this.hostagesSelectedA.map(i => pref(i)).join(", ");
+    const announceB = this.hostagesSelectedB.map(i => pref(i)).join(", ");
+    this.shoutMessagesA.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `HOSTAGES: ${announceA}` });
+    this.shoutMessagesB.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `HOSTAGES: ${announceB}` });
+    this.log(`Hostages from Underworld: ${this.hostagesSelectedA.map(i => this.pn(i)).join(", ")}`);
+    this.log(`Hostages from Mortal Realm: ${this.hostagesSelectedB.map(i => this.pn(i)).join(", ")}`);
+
+    const id = this.nextWhisperId++;
+    const cr: Whisper = {
+      id, room: Room.LeaderRoom, ownerIndex: this.leaderA,
+      x: 0, y: 0,
+      occupants: new Set<number>(),
+      pendingEntry: [], pendingEntryTicks: [],
+      messages: [], revealOffers: new Set(), colorOffers: new Set(), leaderOffer: -1,
+    };
+
+    if (this.leaderA >= 0 && this.leaderA < this.players.length) {
+      this.leaderSummitOrigRoomA = this.players[this.leaderA].room;
+    }
+    if (this.leaderB >= 0 && this.leaderB < this.players.length) {
+      this.leaderSummitOrigRoomB = this.players[this.leaderB].room;
+    }
+
+    for (const li of [this.leaderA, this.leaderB]) {
+      if (li >= 0 && li < this.players.length) {
+        const p = this.players[li];
+        p.room = Room.LeaderRoom;
+        p.inWhisper = id;
+        p.whisperEntryTick = this.tickCount;
+        p.whisperScrollOffset = 0;
+        p.whisperMenuOpen = false; p.whisperMenuCat = 0; p.whisperMenuItem = 0;
+        p.shareSelectOpen = false; p.shareSelectRow = 0;
+        p.shoutOpen = false;
+        p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;
+        cr.occupants.add(li);
+      }
+    }
+
+    this.whispers.set(id, cr);
+    this.leaderSummitWhisperId = id;
+    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `LEADER SUMMIT` });
+    this.log(`Leader summit began`);
+  }
+
+  endLeaderSummit() {
+    const cr = this.whispers.get(this.leaderSummitWhisperId);
+    if (cr) {
+      for (const oi of cr.occupants) {
+        const p = this.players[oi];
+        p.inWhisper = -1;
+        p.whisperScrollOffset = 0;
+        p.whisperMenuOpen = false;
+        p.shareSelectOpen = false;
+      }
+      this.whispers.delete(this.leaderSummitWhisperId);
+    }
+    this.leaderSummitWhisperId = -1;
+
+    if (this.leaderA >= 0 && this.leaderA < this.players.length) {
+      this.players[this.leaderA].room = this.leaderSummitOrigRoomA;
+    }
+    if (this.leaderB >= 0 && this.leaderB < this.players.length) {
+      this.players[this.leaderB].room = this.leaderSummitOrigRoomB;
+    }
+
+    this.executeHostageExchange();
+  }
+
   exchangeProgress(): number {
     if (this.exchangeDuration <= 0) return 1;
     return 1 - this.exchangeTimer / this.exchangeDuration;
   }
 
   executeHostageExchange() {
-    this.ejectAllChatrooms();
-    for (const p of this.players) { p.globalChatOpen = false; }
+    this.ejectAllWhispers();
+    for (const p of this.players) { p.shoutOpen = false; }
     this.phase = Phase.HostageExchange;
 
     this.exchangeLeaderA = this.leaderA;
@@ -1300,15 +1439,15 @@ export class Sim {
       }
     }
 
-    this.exchangeDuration = 3 * TARGET_FPS;
+    this.exchangeDuration = 8 * TARGET_FPS;
     this.exchangeTimer = this.exchangeDuration;
   }
 
   private resetExchangedPlayer(pi: number) {
     const p = this.players[pi];
     p.usurpVote = -1;
-    p.globalChatLastRead = 0;
-    p.globalChatScroll = 0;
+    p.shoutLastRead = 0;
+    p.shoutScroll = 0;
   }
 
   finalizeExchange() {
@@ -1401,7 +1540,7 @@ export class Sim {
         for (let i = 0; i < this.players.length; i++) {
           this.applyInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
         }
-        this.tickChatrooms();
+        this.tickWhispers();
         if (this.roundTimer <= 0) this.beginHostageSelect();
         break;
       }
@@ -1413,7 +1552,18 @@ export class Sim {
         if ((this.committedA && this.committedB) || this.hostageSelectTimer <= 0) {
           this.autoFillHostages(Room.RoomA);
           this.autoFillHostages(Room.RoomB);
-          this.executeHostageExchange();
+          this.beginLeaderSummit();
+        }
+        break;
+      }
+      case Phase.LeaderSummit: {
+        this.leaderSummitTimer--;
+        for (let i = 0; i < this.players.length; i++) {
+          this.applyInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
+        }
+        this.tickWhispers();
+        if (this.leaderSummitTimer <= 0) {
+          this.endLeaderSummit();
         }
         break;
       }
@@ -1455,19 +1605,21 @@ export class Sim {
     this.leaderA = -1; this.leaderB = -1;
     this.hostagesSelectedA = []; this.hostagesSelectedB = [];
     this.chatMessages = []; this.obstacles = [];
-    this.chatrooms.clear(); this.nextChatroomId = 0;
-    this.globalMessagesA = []; this.globalMessagesB = [];
+    this.whispers.clear(); this.nextWhisperId = 0;
+    this.shoutMessagesA = []; this.shoutMessagesB = [];
+    this.leaderSummitTimer = 0; this.leaderSummitWhisperId = -1;
+    this.leaderSummitOrigRoomA = Room.RoomA; this.leaderSummitOrigRoomB = Room.RoomB;
     for (const p of this.players) {
       p.team = Team.TeamA; p.role = Role.Shades;
       p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
       p.revealedTo = new Set(); p.sharedWith = new Set(); p.colorRevealedTo = new Set();
       p.commMenuOpen = false; p.commMenuRow = 0;
-      p.chatMenuOpen = false; p.chatMenuCat = 0; p.chatMenuItem = 0;
+      p.whisperMenuOpen = false; p.whisperMenuCat = 0; p.whisperMenuItem = 0;
       p.shareSelectOpen = false; p.shareSelectRow = 0;
       p.infoScreen = "none"; p.usurpVote = -1;
-      p.inChatroom = -1; p.chatroomEntryTick = 0; p.chatScrollOffset = 0;
-      p.pendingChatroomEntry = -1;
-      p.globalChatOpen = false; p.globalChatLastRead = 0; p.globalChatScroll = 0; p.globalChatActionRow = 0;
+      p.inWhisper = -1; p.whisperEntryTick = 0; p.whisperScrollOffset = 0;
+      p.pendingWhisperEntry = -1;
+      p.shoutOpen = false; p.shoutLastRead = 0; p.shoutScroll = 0; p.shoutActionRow = 0;
       p.roomEntryTick = 0;
       p.lastActionTicks = new Map<string, number>();
       p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;

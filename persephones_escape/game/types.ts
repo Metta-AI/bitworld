@@ -5,6 +5,7 @@ export enum Phase {
   RoleReveal,
   Playing,
   HostageSelect,
+  LeaderSummit,
   HostageExchange,
   Reveal,
   GameOver,
@@ -12,7 +13,7 @@ export enum Phase {
 
 export enum Team { TeamA, TeamB }
 export enum Role { Hades, Persephone, Cerberus, Demeter, Shades, Nymphs }
-export enum Room { RoomA, RoomB }
+export enum Room { RoomA, RoomB, LeaderRoom }
 
 export enum PlayerShape { Circle, Square, Triangle, Diamond, Star, Cross, XShape, Heart, Crescent, Bolt, Hourglass, Ring }
 
@@ -55,28 +56,28 @@ export interface Player {
   colorIndex: number;
   commMenuOpen: boolean;
   commMenuRow: number;
-  chatMenuOpen: boolean;
-  chatMenuCat: number;
-  chatMenuItem: number;
+  whisperMenuOpen: boolean;
+  whisperMenuCat: number;
+  whisperMenuItem: number;
   shareSelectOpen: boolean;
   shareSelectRow: number;
   shareSelectMode: "card" | "color";
   infoScreen: "none" | "role" | "shared";
   infoScrollOffset: number;
   usurpVote: number;
-  inChatroom: number;
-  chatroomEntryTick: number;
-  chatScrollOffset: number;
-  pendingChatroomEntry: number;
-  globalChatOpen: boolean;
-  globalChatLastRead: number;
-  globalChatScroll: number;
-  globalChatActionRow: number;
+  inWhisper: number;
+  whisperEntryTick: number;
+  whisperScrollOffset: number;
+  pendingWhisperEntry: number;
+  shoutOpen: boolean;
+  shoutLastRead: number;
+  shoutScroll: number;
+  shoutActionRow: number;
   roomEntryTick: number;
   lastActionTicks: Map<string, number>;
 }
 
-export interface ChatMessage {
+export interface ShoutMessage {
   playerIndex: number;
   color: uint8;
   text: string;
@@ -84,14 +85,14 @@ export interface ChatMessage {
   tick: number;
 }
 
-export interface ChatroomMessage {
+export interface WhisperMessage {
   type: 'text' | 'system';
   senderIndex: number;
   tick: number;
   text: string;
 }
 
-export interface Chatroom {
+export interface Whisper {
   id: number;
   room: Room;
   ownerIndex: number;
@@ -100,7 +101,7 @@ export interface Chatroom {
   occupants: Set<number>;
   pendingEntry: number[];
   pendingEntryTicks: number[];
-  messages: ChatroomMessage[];
+  messages: WhisperMessage[];
   revealOffers: Set<number>;
   colorOffers: Set<number>;
   leaderOffer: number;
@@ -129,6 +130,6 @@ export interface GameConfig {
   actionRateLimits?: Record<string, number>;
   /** If set, players whose name starts with this prefix all start in RoomA together (useful for testing). */
   groupNamePrefixInRoomA?: string;
-  /** If true, chatroom entry requests are auto-granted (useful for testing). */
-  autoGrantChatroomEntry?: boolean;
+  /** If true, whisper entry requests are auto-granted (useful for testing). */
+  autoGrantWhisperEntry?: boolean;
 }

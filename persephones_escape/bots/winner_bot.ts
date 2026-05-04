@@ -3,8 +3,8 @@
  *
  * Policy:
  *   1. When phase becomes playing, approach the nearest visible player.
- *   2. When close, open_chatroom.
- *   3. Inside chatroom, offer a role exchange (role_offer) and also role_accept
+ *   2. When close, open_whisper.
+ *   3. Inside whisper, offer a role exchange (role_offer) and also role_accept
  *      any pending offers. If someone offered, accept — the worst case is we
  *      leak our role, the best case is instant team win.
  *
@@ -48,7 +48,7 @@ const belief = createBeliefState(botName);
 const bot: BotController = {
   ws, actions: new ActionQueue(), belief, name: botName,
   movementTarget: null, wandering: true,
-  wanderTarget: null, wanderTicks: 0,
+  wanderTarget: null, wanderTicks: 0, lastFrame: null,
 };
 
 // Throttle: only issue a policy action every N ticks so we can see state between.
@@ -86,7 +86,7 @@ function exec(type: string, args: string[] = []) {
 function runPolicy(): void {
   // Accept any pending role offer immediately — the sim only registers the
   // mutual exchange if both are key partners; otherwise we just leak a role.
-  if (belief.phase === "chatroom") {
+  if (belief.phase === "whisper") {
     if (belief.pendingRoleOffer) {
       exec("role_accept");
       return;
@@ -100,10 +100,10 @@ function runPolicy(): void {
     return;
   }
 
-  if (belief.phase === "playing" || belief.phase === "hostage_select") {
-    // If someone is nearby, open chatroom immediately.
-    if (belief.nearbyColors.length > 0) {
-      exec("open_chatroom");
+  if (belief.phase === "playing" || belief.phase === "hostage_select" || belief.phase === "leader_summit") {
+    // If someone is nearby, open whisper immediately.
+    if (belief.nearbyNames.length > 0) {
+      exec("open_whisper");
       return;
     }
     // Otherwise walk toward the nearest known player.
@@ -111,7 +111,7 @@ function runPolicy(): void {
     return;
   }
 
-  // Lobby / role_reveal / etc: do nothing.
+  // Lobby / role_reveal / leader_summit (as leader) / etc: do nothing.
 }
 
 // ---------------------------------------------------------------------------

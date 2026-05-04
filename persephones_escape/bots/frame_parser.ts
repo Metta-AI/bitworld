@@ -64,12 +64,11 @@ export function readTextAtAnyColor(
 
 export type ParsedPhase =
   | "lobby" | "playing" | "hostage_select" | "hostage_exchange"
-  | "role_reveal" | "reveal" | "game_over" | "info_screen"
-  | "chatroom" | "waiting_entry" | "unknown";
+  | "leader_summit" | "role_reveal" | "reveal" | "game_over" | "info_screen"
+  | "whisper" | "waiting_entry" | "unknown";
 
-// S/5 and O/0 have identical 3x5 glyphs — normalize for text comparison
 function norm(s: string): string {
-  return s.replace(/5/g, "S").replace(/0/g, "O");
+  return s;
 }
 
 export function parsePhase(frame: Uint8Array): ParsedPhase {
@@ -80,10 +79,14 @@ export function parsePhase(frame: Uint8Array): ParsedPhase {
     if (inner === 0) return "role_reveal";
   }
 
-  const hudText = readTextAt(frame, 2, 2, 2);
-  if (norm(hudText).startsWith("CHAT")) return "chatroom";
+  const hudText8pre = readTextAt(frame, 2, 2, 8, 10);
+  if (norm(hudText8pre).startsWith("SUMMIT")) return "leader_summit";
 
-  // Check bottom-bar "WAITING..." indicator (means pendingChatroomEntry is set).
+  const hudText = readTextAt(frame, 2, 2, 2);
+  if (norm(hudText).startsWith("WHISP")) return "whisper";
+  if (norm(hudText).includes("SHOUT")) return "playing";
+
+  // Check bottom-bar "WAITING..." indicator (means pendingWhisperEntry is set).
   // In this state, overworld is still shown but B/A actions will cancel/break.
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
   const barTxt = readTextAt(frame, 2, barY + 2, 8, 10);
@@ -98,9 +101,12 @@ export function parsePhase(frame: Uint8Array): ParsedPhase {
   if (norm(hudText8).startsWith("EXCHANGING")) return "hostage_exchange";
 
   const hudText1 = readTextAt(frame, 2, 2, 1);
+  if (norm(hudText1).startsWith("LEADERS")) return "leader_summit";
   if (norm(hudText1).includes("PICK")) return "hostage_select";
 
   if (border0 !== 0 && border0 === border2) return "info_screen";
+
+  if (norm(hudText).startsWith("KNOWN")) return "info_screen";
 
   return "unknown";
 }
@@ -114,6 +120,7 @@ export interface HudInfo {
   timerSecs: number;
   roleName: string | null;
   roleColor: number;
+  isLeader: boolean;
 }
 
 // Convert ambiguous text back to digits for numeric parsing
@@ -132,13 +139,19 @@ export function parsePlayingHud(frame: Uint8Array): HudInfo | null {
 
   let roleName: string | null = null;
   let roleColor = 0;
+  let isLeader = false;
   for (const color of [TEAM_A_COLOR, TEAM_B_COLOR]) {
     const maxRoleWidth = 11 * 4;
     const startX = SCREEN_WIDTH - MINIMAP_SIZE - 4 - maxRoleWidth;
     for (let x = Math.max(0, startX); x < SCREEN_WIDTH - MINIMAP_SIZE - 4; x++) {
       const t = readTextAt(frame, x, 2, color, 12);
       if (t.length >= 3) {
-        roleName = t;
+        if (t.endsWith("*")) {
+          isLeader = true;
+          roleName = t.slice(0, -1);
+        } else {
+          roleName = t;
+        }
         roleColor = color;
         break;
       }
@@ -146,7 +159,7 @@ export function parsePlayingHud(frame: Uint8Array): HudInfo | null {
     if (roleName) break;
   }
 
-  return { round, timerSecs, roleName, roleColor };
+  return { round, timerSecs, roleName, roleColor, isLeader };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +173,8 @@ export interface RoleRevealInfo {
   teamColor: number;
   playerCount: number;
   roomSize: number;
+  spriteColor: number | null;
+  spriteShape: PlayerShape | null;
 }
 
 const ROLE_NAMES = [
@@ -176,7 +191,7 @@ export function parseRoleRevealScreen(frame: Uint8Array): RoleRevealInfo | null 
   if (frame[2 * SCREEN_WIDTH + 2] !== borderColor) return null;
   if (frame[4 * SCREEN_WIDTH + 4] !== 0) return null;
 
-  for (const baseY of [8, 12, 20]) {
+  for (const baseY of [18, 8, 12, 20]) {
     const youAre = readTextAt(frame, 0, baseY, 2, 20);
     const youAreNorm = norm(youAre).replace(/\s/g, "");
     if (!youAreNorm.includes("YOUARE")) {
@@ -230,7 +245,17 @@ export function parseRoleRevealScreen(frame: Uint8Array): RoleRevealInfo | null 
       if (roomSize > 0) break;
     }
 
-    return { role: roleProper ?? role, team, room, teamColor: borderColor, playerCount, roomSize };
+    let spriteColor: number | null = null;
+    let spriteShape: PlayerShape | null = null;
+    const spriteX = Math.floor((SCREEN_WIDTH - PLAYER_W) / 2);
+    const spriteY = 8;
+    const spriteMatch = matchShapeAt(frame, spriteX, spriteY);
+    if (spriteMatch && spriteMatch.color !== 0) {
+      spriteColor = spriteMatch.color;
+      spriteShape = spriteMatch.shape;
+    }
+
+    return { role: roleProper ?? role, team, room, teamColor: borderColor, playerCount, roomSize, spriteColor, spriteShape };
   }
 
   return null;
@@ -420,10 +445,36 @@ export function parseInfoScreen(frame: Uint8Array): InfoScreenEntry[] | null {
 }
 
 // ---------------------------------------------------------------------------
-// Speech bubble detection — find players who are in a chatroom
+// Usurp candidate detection (shout view)
 // ---------------------------------------------------------------------------
 
-// Bubble pattern (color 2, rendered at sx-3,sy-3 relative to player sprite):
+/**
+ * When the shout panel is open and the player is not leader, the usurp
+ * candidate is rendered at y=11. If it's a player, their sprite (7×7) is
+ * drawn after the "USURP: " label. Return the palette color at the sprite
+ * center, or null if the shout view isn't detected.
+ */
+export function parseUsurpCandidate(frame: Uint8Array): { color: number; isPlayer: boolean } | null {
+  const shoutText = readTextAt(frame, 2, 2, 2);
+  if (!shoutText.includes("SHOUT")) return null;
+  const usurpText = readTextAt(frame, 2, 11, 1);
+  if (!norm(usurpText).startsWith("USURP")) return null;
+  // "USURP: " label is 27px wide at x=2, so sprite starts at x=29
+  // Sprite center is at (29+3, 11+3) = (32, 14)
+  const cx = 32;
+  const cy = 14;
+  const c = frame[cy * SCREEN_WIDTH + cx];
+  if (c === 0) return null;
+  const isPlayer = PLAYER_COLORS.includes(c);
+  return { color: c, isPlayer };
+}
+
+// ---------------------------------------------------------------------------
+// Speech bubble detection — find players who are in a whisper
+// ---------------------------------------------------------------------------
+
+// Bubble pattern (color 2, rendered at sx-3,sy-4 relative to player sprite —
+// one-pixel gap above the 7x7 player shape):
 //   2 2 2 0
 //   2 2 2 0
 //   0 0 0 2
@@ -449,23 +500,29 @@ export function scanSpeechBubbles(frame: Uint8Array): { screenX: number; screenY
       if (px(x, y + 2) === BUBBLE_COLOR) continue;
       if (px(x + 1, y + 2) === BUBBLE_COLOR) continue;
       if (px(x + 2, y + 2) === BUBBLE_COLOR) continue;
-      // Player sprite top-left is at (x+3, y+3)
-      results.push({ screenX: x + 3, screenY: y + 3 });
+      // Player sprite top-left is at (x+3, y+4)
+      results.push({ screenX: x + 3, screenY: y + 4 });
     }
   }
   return results;
 }
 
 // ---------------------------------------------------------------------------
-// Chatroom pending-offer detection
+// Whisper pending-offer detection
 // ---------------------------------------------------------------------------
 
-export interface ChatroomStatus {
+export interface OccupantInfo {
+  color: number;
+  shape: PlayerShape | null;
+}
+
+export interface WhisperStatus {
   pendingRoleOffer: boolean;
   pendingColorOffer: boolean;
   pendingEntry: boolean;
   occupantCount: number;
   occupantColors: number[];
+  occupants: OccupantInfo[];
 }
 
 /**
@@ -474,7 +531,12 @@ export interface ChatroomStatus {
  * The text is drawn in the sender's player color, not a fixed color, so we scan
  * all non-background colors at that row.
  */
-export function parseLastShout(frame: Uint8Array): string | null {
+export interface ShoutInfo {
+  text: string;
+  senderColor: number;
+}
+
+export function parseLastShout(frame: Uint8Array): ShoutInfo | null {
   const stripY = SCREEN_HEIGHT - BOTTOM_BAR_H - 7;
   // Marker: color-8 pixels at x=0, y in [stripY, stripY+2]
   let hasMarker = false;
@@ -494,12 +556,175 @@ export function parseLastShout(frame: Uint8Array): string | null {
   }
   for (const c of colors) {
     const txt = readTextAt(frame, 2, stripY, c, 29);
-    if (txt.length >= 2) return txt;
+    if (txt.length >= 2) return { text: txt, senderColor: c };
   }
   return null;
 }
 
-export function parseChatroomStatus(frame: Uint8Array): ChatroomStatus {
+// ---------------------------------------------------------------------------
+// Chat message parsing — whisper and shout views
+// ---------------------------------------------------------------------------
+
+export interface ParsedChatLine {
+  type: "text" | "system";
+  senderColor: number;     // 0 for system messages
+  senderShape: PlayerShape | null;
+  text: string;
+}
+
+const CHAT_LINE_H = 7;
+const CHAT_MSG_SPRITE_X = 2;
+const CHAT_MSG_TEXT_X = 2 + PLAYER_W + 1;  // 10
+const CHAT_MSG_AREA_TOP = 10;
+const NOISELESS_THRESHOLD = 1;
+
+function parseChatLinesInRegion(
+  frame: Uint8Array, yTop: number, yBot: number,
+): ParsedChatLine[] {
+  const lines: ParsedChatLine[] = [];
+  for (let y = yTop; y + CHAT_LINE_H <= yBot; y += CHAT_LINE_H) {
+    // Check if this line has any non-black pixels at all
+    let hasContent = false;
+    for (let dy = 0; dy < CHAT_LINE_H && !hasContent; dy++) {
+      for (let x = 0; x < SCREEN_WIDTH && !hasContent; x++) {
+        if (frame[(y + dy) * SCREEN_WIDTH + x] !== 0) hasContent = true;
+      }
+    }
+    if (!hasContent) continue;
+
+    // Try to match a player sprite at (2, y) — indicates a player message
+    const shapeMatch = matchShapeAt(frame, CHAT_MSG_SPRITE_X, y);
+    if (shapeMatch && shapeMatch.color !== 0) {
+      // Player message: text at (10, y) in sender's color
+      const txt = readTextAt(frame, CHAT_MSG_TEXT_X, y, shapeMatch.color, 20);
+      if (txt.length > 0) {
+        lines.push({
+          type: "text",
+          senderColor: shapeMatch.color,
+          senderShape: shapeMatch.shape,
+          text: txt,
+        });
+        continue;
+      }
+    }
+
+    // System message: color 8 text at (2, y), no sprite
+    const sysTxt = readTextAt(frame, 2, y, 8, 25);
+    if (sysTxt.length > 0) {
+      lines.push({ type: "system", senderColor: 0, senderShape: null, text: sysTxt });
+      continue;
+    }
+
+    // Fallback: try reading text in any color at (2, y)
+    const anyResult = readTextAtAnyColor(frame, 2, y, 25);
+    if (anyResult && anyResult.text.length > 0) {
+      lines.push({ type: "text", senderColor: anyResult.color, senderShape: null, text: anyResult.text });
+    }
+  }
+  return lines;
+}
+
+export function parseWhisperMessages(frame: Uint8Array): ParsedChatLine[] {
+  const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
+  return parseChatLinesInRegion(frame, CHAT_MSG_AREA_TOP, barY - 1);
+}
+
+export function parseShoutMessages(frame: Uint8Array): ParsedChatLine[] {
+  // Shout: message area starts below the voting/usurp bar divider line.
+  // The divider is a 1px horizontal line in color 1. Scan downward from y=10.
+  let dividerY = -1;
+  for (let y = 10; y < 30; y++) {
+    if (frame[y * SCREEN_WIDTH] === 1) {
+      let solid = true;
+      for (let x = 1; x < SCREEN_WIDTH / 2; x++) {
+        if (frame[y * SCREEN_WIDTH + x] !== 1) { solid = false; break; }
+      }
+      if (solid) { dividerY = y; break; }
+    }
+  }
+  if (dividerY < 0) return [];
+  const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
+  return parseChatLinesInRegion(frame, dividerY + 2, barY - 1);
+}
+
+// ---------------------------------------------------------------------------
+// Hostage grid parsing — leader's hostage picker in shout view
+// ---------------------------------------------------------------------------
+
+export interface HostageGridEntry {
+  color: number;
+  shape: PlayerShape | null;
+}
+
+export interface HostageGridInfo {
+  /** Eligible hostages in grid order (left-to-right, top-to-bottom). */
+  eligible: HostageGridEntry[];
+  /** Colors of eligible hostages (parallel to eligible, for backward compat). */
+  eligibleColors: number[];
+  /** Which positions (indices into eligible) are currently selected. */
+  selectedPositions: number[];
+  /** Current cursor position. */
+  cursorPosition: number;
+}
+
+const HOSTAGE_CELL_W = 12;
+const HOSTAGE_CELL_H = 14;
+const HOSTAGE_GRID_Y = 11;
+const HOSTAGE_MAX_COLS = 4;
+
+export function parseHostageGrid(frame: Uint8Array): HostageGridInfo | null {
+  const eligible: HostageGridEntry[] = [];
+  const eligibleColors: number[] = [];
+  const selectedPositions: number[] = [];
+  let cursorPosition = 0;
+
+  // Scan up to 12 cells (3 rows of 4)
+  for (let cols = HOSTAGE_MAX_COLS; cols >= 1; cols--) {
+    const gridW = cols * HOSTAGE_CELL_W;
+    const gridX = Math.floor((SCREEN_WIDTH - gridW) / 2);
+    const testX = gridX + Math.floor((HOSTAGE_CELL_W - PLAYER_W) / 2) + 3; // sprite center x
+    const testY = HOSTAGE_GRID_Y + 1 + 3; // sprite center y
+
+    const c = frame[testY * SCREEN_WIDTH + testX];
+    if (c === 0 || c === 1) continue; // no sprite here
+
+    // Found the grid. Scan all cells.
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < cols; col++) {
+        const cx = gridX + col * HOSTAGE_CELL_W;
+        const cy = HOSTAGE_GRID_Y + row * HOSTAGE_CELL_H;
+        const spriteX = cx + Math.floor((HOSTAGE_CELL_W - PLAYER_W) / 2);
+        const spriteY = cy + 1;
+        if (spriteY + PLAYER_H >= SCREEN_HEIGHT) break;
+
+        const match = matchShapeAt(frame, spriteX, spriteY);
+        if (!match || match.color === 0) continue;
+
+        const pos = eligible.length;
+        eligible.push({ color: match.color, shape: match.shape });
+        eligibleColors.push(match.color);
+
+        // Check for selection checkmark (green pixel at cx+cellW-3, cy+1)
+        const checkX = cx + HOSTAGE_CELL_W - 3;
+        const checkY = cy + 1;
+        if (frame[checkY * SCREEN_WIDTH + checkX] === 11) {
+          selectedPositions.push(pos);
+        }
+
+        // Check for cursor rectangle (color 2 border at cx, cy)
+        if (frame[cy * SCREEN_WIDTH + cx] === 2) {
+          cursorPosition = pos;
+        }
+      }
+    }
+    break;
+  }
+
+  if (eligible.length === 0) return null;
+  return { eligible, eligibleColors, selectedPositions, cursorPosition };
+}
+
+export function parseWhisperStatus(frame: Uint8Array): WhisperStatus {
   // Offer indicators drawn in color 8 at (SCREEN_WIDTH - 10, barY + 2).
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
   const offerTxt = readTextAt(frame, SCREEN_WIDTH - 10, barY + 2, 8, 2);
@@ -517,24 +742,15 @@ export function parseChatroomStatus(frame: Uint8Array): ChatroomStatus {
     if (pendingEntry) break;
   }
 
-  // Count occupant sprites in the top bar. They're drawn at x=22, 31, 40, ... (stride 9),
-  // y=1..7 in the sprite's color. We detect by scanning the row for non-background pixels.
   const occupantColors: number[] = [];
-  const topSpriteY = 4;  // middle of the 7-tall sprite row (y=1..7)
+  const occupants: OccupantInfo[] = [];
   for (let slot = 0; slot < 12; slot++) {
     const sx = 22 + slot * (PLAYER_W + 2);
     if (sx + PLAYER_W > SCREEN_WIDTH - 2) break;
-    // Any non-zero pixel in the sprite bounding box signals an occupant.
-    let color = 0;
-    for (let dy = 0; dy < PLAYER_H; dy++) {
-      for (let dx = 0; dx < PLAYER_W; dx++) {
-        const c = frame[(1 + dy) * SCREEN_WIDTH + (sx + dx)];
-        if (c !== 0 && c !== 1) { color = c; break; }
-      }
-      if (color !== 0) break;
-    }
-    if (color === 0) break;  // first empty slot = end of occupants
-    occupantColors.push(color);
+    const match = matchShapeAt(frame, sx, 1);
+    if (!match || match.color === 0) break;
+    occupantColors.push(match.color);
+    occupants.push({ color: match.color, shape: match.shape });
   }
 
   return {
@@ -543,5 +759,6 @@ export function parseChatroomStatus(frame: Uint8Array): ChatroomStatus {
     pendingEntry,
     occupantCount: occupantColors.length,
     occupantColors,
+    occupants,
   };
 }

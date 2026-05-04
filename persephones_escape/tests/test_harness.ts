@@ -14,7 +14,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer } from "http";
 import { spawn, type ChildProcess } from "child_process";
 import { argv } from "process";
-import { mkdirSync } from "fs";
+import { mkdirSync, readFileSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import { Phase, Team, Role, type InputState, type GameConfig } from "../game/types.js";
 import { DEFAULT_GAME_CONFIG, TARGET_FPS, LOBBY_WAIT_TICKS, playerCountFromConfig } from "../game/constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "../game/protocol.js";
@@ -132,10 +134,10 @@ function runMatch(
           const text = blobToChat(data);
           if (text.length > 0) {
             const p = sim.players[client.playerIndex];
-            if (p && p.inChatroom >= 0) {
-              sim.addChatroomChat(p.inChatroom, client.playerIndex, text);
+            if (p && p.inWhisper >= 0) {
+              sim.addWhisperChat(p.inWhisper, client.playerIndex, text);
             } else {
-              sim.addGlobalChat(client.playerIndex, text);
+              sim.addShout(client.playerIndex, text);
             }
           }
         }
@@ -161,7 +163,7 @@ function runMatch(
     const children: ChildProcess[] = [];
     const url = `ws://localhost:${port}/player`;
 
-    httpServer.listen(port, "localhost", () => {
+    httpServer.listen(port, "0.0.0.0", () => {
       const smartProc = spawn("npx", ["tsx", "../bots/smart_bots.ts", String(smartBotCount), url], {
         stdio: ["ignore", "pipe", "pipe"],
         cwd: import.meta.dirname,
@@ -250,7 +252,7 @@ function runMatch(
           httpServer.close(() => {
             resolve({ winner, llmTeam: llmTeamCapture, llmRole: llmRoleCapture, ticks });
           });
-        }, 500);
+        }, 10000);
       }
 
       // Send frames
@@ -276,7 +278,10 @@ function runMatch(
 
     // Safety timeout — if game doesn't end in reasonable time
     const totalRoundSecs = config.rounds.reduce((s, r) => s + r.durationSecs, 0);
-    const maxWaitMs = (totalRoundSecs + 60) * 1000;
+    // Account for lobby wait, role reveal, hostage-select (15s per round), exchange animations (3s),
+    // reveal/gameover phases, and LLM-induced slowdown (sim may run slower than real time).
+    const overhead = 60 + config.rounds.length * 25 + 30;
+    const maxWaitMs = Math.ceil((totalRoundSecs + overhead) * 1.5) * 1000;
     setTimeout(() => {
       if (!resultCaptured) {
         resultCaptured = true;
