@@ -14,7 +14,7 @@ type
     inputs: seq[InputState]
     prevInputs: seq[InputState]
     rewardSnapshot: seq[int]
-    renderStateScratch: seq[uint8]
+    player2ObservationScratch: seq[uint8]
     playerCount: int
     seed: int
     maxTicks: int
@@ -112,19 +112,19 @@ proc copyOnTaskFlags(env: var NativeEnv, flags: ptr cfloat, outputBase = 0) =
         break
     output[outputBase + playerIndex] = if onTask: 1.0 else: 0.0
 
-proc copyStateObservations(env: var NativeEnv, observations: ptr uint8, outputBase = 0) =
+proc copyPlayer2Observations(env: var NativeEnv, observations: ptr uint8, outputBase = 0) =
   if observations.isNil:
     raise newException(ValueError, "Observation pointer is nil.")
 
-  if env.renderStateScratch.len != RenderStateFeatures:
-    env.renderStateScratch = newSeq[uint8](RenderStateFeatures)
+  if env.player2ObservationScratch.len != Player2ObservationFeatures:
+    env.player2ObservationScratch = newSeq[uint8](Player2ObservationFeatures)
   let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
-    env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch)
+    env.sim.writePlayer2Observation(playerIndex, env.player2ObservationScratch)
     copyMem(
-      addr output[outputBase + playerIndex * RenderStateFeatures],
-      unsafeAddr env.renderStateScratch[0],
-      RenderStateFeatures
+      addr output[outputBase + playerIndex * Player2ObservationFeatures],
+      unsafeAddr env.player2ObservationScratch[0],
+      Player2ObservationFeatures
     )
 
 proc stepStatus(env: NativeEnv): cint =
@@ -237,7 +237,7 @@ proc bitworld_at_reset*(
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_reset_state*(
+proc bitworld_at_reset_player2*(
   handle: cint,
   observations: ptr uint8,
   rewards: ptr cfloat
@@ -248,7 +248,7 @@ proc bitworld_at_reset_state*(
 
     var env = envs[int(handle)]
     env.resetNativeEnv()
-    env.copyStateObservations(observations)
+    env.copyPlayer2Observations(observations)
     let output = cast[ptr UncheckedArray[cfloat]](rewards)
     for playerIndex in 0 ..< env.playerCount:
       output[playerIndex] = 0.0
@@ -275,7 +275,7 @@ proc bitworld_at_step*(
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_step_state*(
+proc bitworld_at_step_player2*(
   handle: cint,
   actionMasks: ptr uint8,
   actionRepeat: cint,
@@ -288,13 +288,13 @@ proc bitworld_at_step_state*(
 
     var env = envs[int(handle)]
     let status = env.applyActionMasks(actionMasks, actionRepeat)
-    env.copyStateObservations(observations)
+    env.copyPlayer2Observations(observations)
     env.copyRewardDeltas(rewards)
     status
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_reset_state_batch*(
+proc bitworld_at_reset_player2_batch*(
   handles: ptr cint,
   envCount: cint,
   playerCount: cint,
@@ -323,14 +323,14 @@ proc bitworld_at_reset_state_batch*(
         return setLastError("Unexpected player count in batch reset.")
       env.resetNativeEnv()
       let outputBase = envIndex * playerCountInt
-      env.copyStateObservations(observations, outputBase * RenderStateFeatures)
+      env.copyPlayer2Observations(observations, outputBase * Player2ObservationFeatures)
       for playerIndex in 0 ..< playerCountInt:
         rewardOutput[outputBase + playerIndex] = 0.0
     0
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_step_state_batch*(
+proc bitworld_at_step_player2_batch*(
   handles: ptr cint,
   envCount: cint,
   playerCount: cint,
@@ -370,7 +370,7 @@ proc bitworld_at_step_state_batch*(
         cast[ptr uint8](addr actions[outputBase]),
         actionRepeat
       )
-      env.copyStateObservations(observations, outputBase * RenderStateFeatures)
+      env.copyPlayer2Observations(observations, outputBase * Player2ObservationFeatures)
       env.copyRewardDeltas(rewards, outputBase)
     0
   except CatchableError as e:
