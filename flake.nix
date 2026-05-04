@@ -55,37 +55,31 @@
           openssl # nottoodumb dynamically loads libssl for wss:// connects
         ];
 
-        # Fixed-output derivation: runs `nimby sync` to vendor every dep
-        # listed in nimby.lock into .nimby/<name>/. Network is allowed
-        # because outputHash is set; the hash covers the entire vendored
-        # tree, so updating nimby.lock requires updating outputHash too.
-        vendoredDeps = pkgs.stdenv.mkDerivation {
-          pname = "bitworld-deps";
-          version = "0.1.0";
-          src = ./nimby.lock;
-          dontUnpack = true;
-          nativeBuildInputs = [ nimby pkgs.git pkgs.cacert ];
-          buildPhase = ''
-            export HOME=$TMPDIR
-            export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-            mkdir -p workspace
-            cp $src workspace/nimby.lock
-            mkdir workspace/.nimby
-            (cd workspace/.nimby && nimby sync ../nimby.lock)
-            # Drop .git dirs so the output hash is content-deterministic.
-            find workspace/.nimby -name .git -type d -prune -exec rm -rf {} +
-          '';
-          installPhase = ''
-            mkdir -p $out
-            cp -r workspace/.nimby/. $out/
-          '';
-          outputHashMode = "recursive";
-          outputHashAlgo = "sha256";
-          # Update this hash whenever nimby.lock changes (Nix will print the
-          # expected value on hash mismatch).
-          outputHash = "sha256-nCB1qYc8S8N8b7+N2fagzmgERE426+jbfbvfykNn7ds=";
-        };
+        # Parse nimby.lock and fetch each dep via builtins.fetchGit.
+        # No fixed-output hash needed — revs pin the content.
+        parseLockLine = line:
+          let parts = builtins.filter builtins.isString (builtins.split " " line);
+          in if builtins.length parts >= 4 then {
+            name = builtins.elemAt parts 0;
+            url = builtins.elemAt parts 2;
+            rev = builtins.elemAt parts 3;
+          } else null;
+        lockContents = builtins.readFile ./nimby.lock;
+        lockLines = builtins.filter (l: l != "")
+          (builtins.filter builtins.isString (builtins.split "\n" lockContents));
+        lockEntries = builtins.filter (e: e != null) (map parseLockLine lockLines);
+        nimCfgContents = lib.concatMapStringsSep "\n" (entry:
+          ''--path:"${entry.name}/src"''
+        ) lockEntries;
+        vendoredDeps = pkgs.runCommand "bitworld-deps" {} (''
+          mkdir -p $out
+        '' + lib.concatMapStrings (entry: ''
+          ln -s ${builtins.fetchGit { url = entry.url; rev = entry.rev; allRefs = true; }} $out/${entry.name}
+        '') lockEntries + ''
+          cat > $out/nim.cfg <<'NIMCFG'
+          ${nimCfgContents}
+          NIMCFG
+        '');
 
         # Filter out user/build artifacts so changes to them don't bust
         # the build cache and they don't leak into the derivation.
@@ -224,9 +218,20 @@
             Cmd = [ "/bin/nottoodumb" ];
           };
         };
+        # On darwin, reference the aarch64-linux packages so that
+        # `nix build .#dockerImageAmongThem` works on both platforms.
+        # The nix-darwin linux-builder handles the actual compilation.
+        linuxDockerImageAmongThem = if isLinux then dockerImageAmongThem
+          else self.packages."aarch64-linux".dockerImageAmongThem;
+        linuxDockerImageNottoodumb = if isLinux then dockerImageNottoodumb
+          else self.packages."aarch64-linux".dockerImageNottoodumb;
+
       in {
-        packages = lib.optionalAttrs isLinux {
-          inherit vendoredDeps dockerImageAmongThem dockerImageNottoodumb;
+        packages = {
+          dockerImageAmongThem = linuxDockerImageAmongThem;
+          dockerImageNottoodumb = linuxDockerImageNottoodumb;
+        } // lib.optionalAttrs isLinux {
+          inherit vendoredDeps;
           default = dockerImageAmongThem;
         };
 

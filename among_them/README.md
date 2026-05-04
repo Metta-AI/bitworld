@@ -52,6 +52,23 @@ Game: `docker run --rm --name among_them -p 2000:2000 $(docker load -q -i $(nix 
 
 Player: `docker run --rm --name nottoodumb --network=host $(docker load -q -i $(nix build .#dockerImageNottoodumb --print-out-paths --quiet --no-link --out-link dockerImageNottoodumb.tar.gz) | sed -n 's/^Loaded image: //p') nottoodumb --url:ws://localhost:2000 --name:player1`
 
+### Building docker images on macOS
+
+The docker images are Linux artifacts. On macOS, builds are routed to the
+nix-darwin linux-builder VM automatically. One-time setup:
+
+1. Add to your nix-darwin configuration (e.g. `darwin.nix`):
+   ```nix
+   nix.linux-builder.enable = true;
+   ```
+2. Run `darwin-rebuild switch`.
+3. Accept the builder VM's SSH host key (once):
+   ```sh
+   sudo ssh -i /etc/nix/builder_ed25519 -o StrictHostKeyChecking=accept-new -p 31022 builder@localhost echo ok
+   ```
+
+After this, the `nix build` commands above work identically on macOS and Linux.
+
 ## Runner Environment
 
 Tournament and Cogame runners can configure file paths with environment
