@@ -4151,7 +4151,7 @@ proc initBot*(mapPath = ""; masterSeed: int64 = -1): Bot =
 when defined(evidencebotLibrary):
   const EvidenceBotV2AbiVersion = 1
 
-  proc nottoodumb_abi_version*(): cint {.exportc, dynlib.} =
+  proc evidencebot_v2_abi_version*(): cint {.exportc, dynlib.} =
     ## Returns the EvidenceBot v2 ABI version for Python verification.
     EvidenceBotV2AbiVersion
 
@@ -4185,10 +4185,10 @@ when defined(evidencebotLibrary):
     ButtonDown or ButtonRight or ButtonB
   ]
 
-  type NotTooDumbPolicy = ref object
+  type EvidenceBotV2FFIPolicy = ref object
     bots: seq[Bot]
 
-  var NotTooDumbPolicies: seq[NotTooDumbPolicy]
+  var EvidenceBotV2Policies: seq[EvidenceBotV2FFIPolicy]
 
   proc actionIndexForMask(mask: uint8): int32 =
     ## Maps a BitWorld button mask to the CoGames trainable action index.
@@ -4213,16 +4213,16 @@ when defined(evidencebotLibrary):
     result = bot.decideNextMask()
     bot.lastMask = result
 
-  proc nottoodumb_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
-    ## Creates a persistent Nim-backed NotTooDumb policy and returns its handle.
+  proc evidencebot_v2_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
+    ## Creates a persistent Nim-backed EvidenceBot v2 policy and returns its handle.
     let count = max(1, int(numAgents))
-    var policy = NotTooDumbPolicy(bots: newSeq[Bot](count))
+    var policy = EvidenceBotV2FFIPolicy(bots: newSeq[Bot](count))
     for i in 0 ..< count:
       policy.bots[i] = initBot()
-    NotTooDumbPolicies.add(policy)
-    cint(NotTooDumbPolicies.len - 1)
+    EvidenceBotV2Policies.add(policy)
+    cint(EvidenceBotV2Policies.len - 1)
 
-  proc nottoodumb_step_batch*(
+  proc evidencebot_v2_step_batch*(
     handle: cint,
     agentIds: ptr UncheckedArray[int32],
     numAgentIds: cint,
@@ -4234,7 +4234,7 @@ when defined(evidencebotLibrary):
     actions: pointer
   ) {.exportc, dynlib.} =
     ## Steps a batch of unpacked pixel observations into CoGames action indices.
-    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+    if handle < 0 or int(handle) >= EvidenceBotV2Policies.len:
       return
     if observations.isNil or actions.isNil or agentIds.isNil:
       return
@@ -4242,7 +4242,7 @@ when defined(evidencebotLibrary):
       return
 
     let
-      policy = NotTooDumbPolicies[int(handle)]
+      policy = EvidenceBotV2Policies[int(handle)]
       obs = cast[ptr UncheckedArray[uint8]](observations)
       outs = cast[ptr UncheckedArray[int32]](actions)
       frameLen = int(height) * int(width)
