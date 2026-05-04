@@ -193,13 +193,16 @@ LLM-prefixed names onto TeamA first made wins possible.
 The default obstacle layout creates narrow corridors which the naive
 `moveToward(dx, dy)` movement gets pinned against. `obstacleCount: 0` in
 the test config removes that variable while debugging the agent layer.
+These settings are now captured in the `simple` and `empty` presets in
+`game/config_presets.ts`.
 
 ### Grouping LLMs in the same room
 
 Random room assignment meant the Hades LLM and Cerberus LLM often started
 in different rooms (cross-room exchange is impossible within a single
 round). `groupNamePrefixInRoomA: "llm_"` puts all LLM-prefixed players in
-RoomA, so they're always mutually reachable.
+RoomA, so they're always mutually reachable. This is part of the `simple`
+preset in `game/config_presets.ts`.
 
 ## Debug infrastructure that paid off
 

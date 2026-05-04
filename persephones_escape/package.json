@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx server.ts",
+    "start:simple": "tsx server.ts --config=simple",
+    "start:medium": "tsx server.ts --config=medium",
     "dev": "tsx watch server.ts"
   },
   "dependencies": {
