@@ -1,0 +1,12 @@
+.git
+.github
+.*
+out/
+tmp/
+nimcache/
+replays/
+__pycache__/
+*.log
+*.exe
+*.dll
+*.dylib
