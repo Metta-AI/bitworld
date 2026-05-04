@@ -4149,6 +4149,12 @@ proc initBot*(mapPath = ""; masterSeed: int64 = -1): Bot =
   result.intent = "waiting for first frame"
 
 when defined(evidencebotLibrary):
+  const EvidenceBotV2AbiVersion = 1
+
+  proc nottoodumb_abi_version*(): cint {.exportc, dynlib.} =
+    ## Returns the EvidenceBot v2 ABI version for Python verification.
+    EvidenceBotV2AbiVersion
+
   const TrainableMasks = [
     0'u8,
     ButtonA,
