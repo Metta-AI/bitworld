@@ -836,6 +836,8 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
+proc logEvent(bot: var Bot, text: string)
+
 proc knownImposterSummary(bot: Bot): string
 
 proc asciiTextWidth(bot: Bot, text: string): int =
@@ -2013,6 +2015,7 @@ proc parseVotingCandidate(
 
 proc parseVotingScreen(bot: var Bot): bool =
   ## Parses the voting interstitial if it is currently visible.
+  let wasVoting = bot.voting
   let startTick =
     if bot.voting and bot.voteStartTick >= 0:
       bot.voteStartTick
@@ -2052,6 +2055,8 @@ proc parseVotingScreen(bot: var Bot): bool =
         read.chatSusColor
       else:
         VoteUnknown
+    if not wasVoting:
+      bot.logEvent("voting")
     return true
   if bot.voting:
     bot.lastVoteFrame = ""
@@ -3458,6 +3463,7 @@ proc decideVotingMask(bot: var Bot): uint8 =
     bot.desiredMask = 0
     bot.controllerMask = 0
     bot.intent = "voted " & bot.voteTargetName(ownVote)
+    bot.logEvent(bot.intent)
     bot.thought(bot.intent)
     return 0
   if bot.waitForVotingConversation(aiFrame):
@@ -3504,6 +3510,7 @@ proc decideVotingMask(bot: var Bot): uint8 =
       ButtonA
   bot.controllerMask = bot.desiredMask
   bot.intent = "voting for " & bot.voteTargetName(bot.voteTarget)
+  bot.logEvent(bot.intent)
   bot.thought(bot.intent)
   bot.desiredMask
 
@@ -3744,6 +3751,7 @@ proc taskGoalReady(
 proc holdTaskAction(bot: var Bot, name: string): uint8 =
   ## Holds only the action button while completing a task.
   bot.intent = "doing task at " & name & " hold=" & $bot.taskHoldTicks
+  bot.logEvent("doing task: " & name)
   bot.desiredMask = ButtonA
   bot.controllerMask = ButtonA
   bot.hasPathStep = false
@@ -3758,6 +3766,7 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
       bot.taskStates[bot.taskHoldIndex] = TaskCompleted
       if bot.checkoutTasks.len == bot.sim.tasks.len:
         bot.checkoutTasks[bot.taskHoldIndex] = false
+      bot.logEvent("completed task: " & task.name)
     else:
       bot.taskStates[bot.taskHoldIndex] = TaskMandatory
     bot.taskHoldIndex = -1
@@ -3930,6 +3939,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   if not bot.isGhost:
     let body = bot.nearestBody()
     if body.found:
+      bot.logEvent("going to report a body")
       bot.queueBodySeen(body.x, body.y)
       if bot.inReportRange(body.x, body.y) and
           abs(bot.velocityX) + abs(bot.velocityY) <= 1:
@@ -3953,6 +3963,8 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.thought("localized near (" & $bot.playerWorldX() & ", " &
       $bot.playerWorldY() & ")")
     return 0
+  if goal.index >= 0:
+    bot.logEvent("going to do nearest task: " & goal.name)
   bot.hasGoal = true
   bot.goalX = goal.x
   bot.goalY = goal.y
