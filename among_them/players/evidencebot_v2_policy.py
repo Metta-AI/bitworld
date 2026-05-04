@@ -5,10 +5,10 @@ tournament pipeline. It implements the ``MultiAgentPolicy`` interface expected
 by the BitWorld AmongThem runner, routing raw pixel observations to the Nim
 core and returning trainable action indices.
 
-The Nim FFI exports ``nottoodumb_new_policy`` and ``nottoodumb_step_batch``
-(historical naming carried over from the nottoodumb lineage). Unlike the
-nottoodumb wrapper, the step_batch signature here omits the ``frameAdvances``
-parameter — EvidenceBot v2 always advances by one tick per frame internally.
+The Nim FFI exports ``evidencebot_v2_new_policy`` and
+``evidencebot_v2_step_batch``. Unlike the nottoodumb wrapper, the step_batch
+signature here omits the ``frameAdvances`` parameter — EvidenceBot v2 always
+advances by one tick per frame internally.
 """
 
 from __future__ import annotations
@@ -74,10 +74,10 @@ class EvidenceBotV2NimPolicy(MultiAgentPolicy):
                 f"{BITWORLD_ACTION_COUNT}-action BitWorld action space."
             )
         self._lib = self._load_library()
-        self._lib.nottoodumb_new_policy.argtypes = [ctypes.c_int]
-        self._lib.nottoodumb_new_policy.restype = ctypes.c_int
+        self._lib.evidencebot_v2_new_policy.argtypes = [ctypes.c_int]
+        self._lib.evidencebot_v2_new_policy.restype = ctypes.c_int
         # EvidenceBot v2 step_batch takes 9 parameters (no frameAdvances).
-        self._lib.nottoodumb_step_batch.argtypes = [
+        self._lib.evidencebot_v2_step_batch.argtypes = [
             ctypes.c_int,                    # handle
             ctypes.POINTER(ctypes.c_int32),  # agentIds
             ctypes.c_int,                    # numAgentIds
@@ -88,9 +88,9 @@ class EvidenceBotV2NimPolicy(MultiAgentPolicy):
             ctypes.c_void_p,                 # observations
             ctypes.c_void_p,                 # actions (output)
         ]
-        self._lib.nottoodumb_step_batch.restype = None
+        self._lib.evidencebot_v2_step_batch.restype = None
         self._num_agents = max(1, int(policy_env_info.num_agents))
-        self._handle = int(self._lib.nottoodumb_new_policy(self._num_agents))
+        self._handle = int(self._lib.evidencebot_v2_new_policy(self._num_agents))
         self._last_actions = np.zeros(self._num_agents, dtype=np.int32)
 
     def agent_policy(self, agent_id: int) -> AgentPolicy:
@@ -102,7 +102,7 @@ class EvidenceBotV2NimPolicy(MultiAgentPolicy):
         self._ensure_agent_count(batch_size)
         agent_ids = np.arange(batch_size, dtype=np.int32)
         actions = np.zeros(batch_size, dtype=np.int32)
-        self._lib.nottoodumb_step_batch(
+        self._lib.evidencebot_v2_step_batch(
             self._handle,
             agent_ids.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
             ctypes.c_int(batch_size),
@@ -185,7 +185,7 @@ def _abi_stamp_path(lib_path: Path) -> Path:
 
 def _verify_library_abi(lib: ctypes.CDLL, lib_path: Path) -> None:
     try:
-        abi_version = lib.nottoodumb_abi_version
+        abi_version = lib.evidencebot_v2_abi_version
     except AttributeError as exc:
         raise RuntimeError(
             f"EvidenceBot v2 library {lib_path} does not export an ABI version."
