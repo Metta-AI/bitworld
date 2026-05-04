@@ -184,6 +184,7 @@
             bitworldAmongThem
             pkgs.bashInteractive
             pkgs.coreutils
+            pkgs.curl # Used to extract logs at runtime in cloudflare
             pkgs.tini
           ] ++ runtimeLibs;
           config = {
@@ -206,6 +207,7 @@
             bitworldNottoodumb
             pkgs.bashInteractive
             pkgs.coreutils
+            pkgs.curl # Used to extract logs at runtime in cloudflare
             pkgs.tini
             pkgs.cacert # bots dial out over wss://, need a trust store
           ] ++ runtimeLibs;
