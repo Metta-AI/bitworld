@@ -206,6 +206,59 @@ Then open the global viewer:
 http://localhost:2000/client/global.html
 ```
 
+## Submit to the Alignment League
+
+EvidenceBot v2 can be submitted to the Alignment League leaderboard via
+the `cogames` CLI. Run all commands from the repo root (`bitworld/`).
+
+1. Install cogames and authenticate:
+
+```sh
+uv venv .venv --python 3.12
+source .venv/bin/activate
+uv pip install cogames
+cogames auth login
+```
+
+2. Pick an Among Them season:
+
+```sh
+cogames season list
+```
+
+3. Upload and submit (replace `<SEASON>` with the season name):
+
+```sh
+POLICY_NAME="$USER-evidencebot-v2"
+SEASON=<SEASON>
+
+cogames upload \
+  -p class=evidencebot_v2_policy.EvidenceBotV2NimPolicy \
+  -f among_them/players/evidencebot_v2_policy.py \
+  -f among_them/players/build_evidencebot_v2.py \
+  -f among_them/players/evidencebot_v2.nim \
+  -f among_them/sim.nim \
+  -f among_them/votereader.nim \
+  -f common \
+  -f src/bitworld \
+  -f nimby.lock \
+  -n "$POLICY_NAME" \
+  --season "$SEASON"
+```
+
+The tournament worker compiles the Nim library inside Docker automatically.
+No pre-built binary is needed.
+
+4. Check submission status:
+
+```sh
+cogames submissions --season "$SEASON" --policy "$POLICY_NAME"
+```
+
+To validate locally without uploading, add `--dry-run` to the upload command.
+This runs one episode in the tournament Docker image and reports whether the
+policy loads and steps without errors.
+
 ## Slots setup for tournament runner.
 
 The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
