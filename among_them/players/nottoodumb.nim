@@ -4300,4 +4300,8 @@ when isMainModule and not defined(nottoodumbLibrary):
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
+  let target =
+    if url.len > 0: url
+    else: "ws://" & address & ":" & $port
+  echo "starting nottoodumb -> ", target
   runBot(address, port, gui, name, mapPath, url)

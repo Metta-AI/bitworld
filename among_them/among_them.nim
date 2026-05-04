@@ -55,6 +55,7 @@ when isMainModule:
     echo "Using replay save file: " & saveReplayPath
   if saveScoresPath.len > 0:
     echo "Using results save file: " & saveScoresPath
+  echo "starting among_them on ", address, ":", port
   runServerLoop(
     address,
     port,
