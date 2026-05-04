@@ -597,7 +597,17 @@ function readI16(bytes,offset){
   return value&0x8000?value-0x10000:value;
 }
 
-function decodeSpritePixels(compressed,width,height){
+// PICO-8-style 16-color palette for raw-palette sprite formats (e.g.
+// Persephone's Escape).  Index 0 = fully transparent; indices 1-16 map
+// to palette entries 0-15.
+const PALETTE=[
+  [0,0,0],[194,195,199],[255,241,232],[255,0,77],
+  [255,119,168],[95,87,79],[171,82,54],[255,163,0],
+  [255,236,39],[126,37,83],[0,135,81],[0,228,54],
+  [29,43,83],[131,118,156],[41,173,255],[255,204,170]
+];
+
+function decodeSpritePixelsSnappy(compressed,width,height){
   if(!window.SnappyJS){
     throw new Error("SnappyJS is not loaded");
   }
@@ -608,6 +618,48 @@ function decodeSpritePixels(compressed,width,height){
     throw new Error("Bad sprite pixel length");
   }
   return rgba;
+}
+
+function decodeSpritePixelsRaw(bytes,offset,width,height){
+  const count=width*height;
+  const pixels=new Uint8Array(count*4);
+  for(let j=0;j<count;j++){
+    const idx=bytes[offset+j];
+    if(idx===0){
+      // transparent — leave RGBA as 0,0,0,0
+    }else{
+      const c=PALETTE[(idx-1)&15];
+      const out=j*4;
+      pixels[out]=c[0];pixels[out+1]=c[1];
+      pixels[out+2]=c[2];pixels[out+3]=255;
+    }
+  }
+  return pixels;
+}
+
+// Detect whether an addSprite payload uses the Snappy-compressed RGBA
+// format (u32 compressedLen + data + u16 labelLen + label) or the raw
+// palette-index format (w*h bytes, no header/label).
+//
+// The raw format uses 1-byte palette indices in 0..16.  We sample the
+// first few pixel bytes: if they are all <= 16, the data is almost
+// certainly raw palette (Snappy streams start with a varint-encoded
+// uncompressed length which for w*h*4 RGBA will be much larger than
+// 16 for any non-trivial sprite).
+function isSpriteSnappy(bytes,headerEnd,remaining,width,height){
+  const pixelCount=width*height;
+  if(pixelCount===0)return false;
+  // Raw format needs exactly w*h bytes; if there aren't enough bytes
+  // in the message for that, it can't be raw.
+  if(remaining<pixelCount)return true;
+  // Sample the first few bytes of payload.  Raw palette indices are in
+  // [0, 16].  Snappy's leading varint encodes w*h*4 which exceeds 16
+  // for any sprite wider/taller than 2px.
+  const samplesToCheck=Math.min(pixelCount,8);
+  for(let i=0;i<samplesToCheck;i++){
+    if(bytes[headerEnd+i]>16)return true;
+  }
+  return false;
 }
 
 function ensureLayer(id){
@@ -750,21 +802,28 @@ function parse(bytes){
       const id=readU16(bytes,offset);
       const width=readU16(bytes,offset+2);
       const height=readU16(bytes,offset+4);
-      const compressedLength=readU32(bytes,offset+6);
-      offset+=10;
-      const compressed=bytes.slice(offset,offset+compressedLength);
-      offset+=compressedLength;
-      let pixels;
-      try{
-        pixels=decodeSpritePixels(compressed,width,height);
-      }catch(e){
-        socket.close();
-        break;
+      offset+=6;
+      const remaining=bytes.length-offset;
+      let pixels,label="";
+      if(isSpriteSnappy(bytes,offset,remaining,width,height)){
+        const compressedLength=readU32(bytes,offset);
+        offset+=4;
+        const compressed=bytes.slice(offset,offset+compressedLength);
+        offset+=compressedLength;
+        try{
+          pixels=decodeSpritePixelsSnappy(compressed,width,height);
+        }catch(e){
+          socket.close();
+          break;
+        }
+        const labelLength=readU16(bytes,offset);
+        offset+=2;
+        label=textDecoder.decode(bytes.slice(offset,offset+labelLength));
+        offset+=labelLength;
+      }else{
+        pixels=decodeSpritePixelsRaw(bytes,offset,width,height);
+        offset+=width*height;
       }
-      const labelLength=readU16(bytes,offset);
-      offset+=2;
-      const label=textDecoder.decode(bytes.slice(offset,offset+labelLength));
-      offset+=labelLength;
       const previous=sprites.get(id);
       const packetBytes=offset-packetStart;
       sprites.set(id,{
