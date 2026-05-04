@@ -15,3 +15,8 @@ nimcache/
 out/
 tmp/
 games_server/replays/*
+
+# compiled binaries and test artifacts
+among_them/players/modulabot/modulabot
+among_them/players/modulabot/test/parity
+nim.cfg
