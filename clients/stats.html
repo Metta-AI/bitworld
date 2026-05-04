@@ -289,10 +289,7 @@ function joinUrlFromAddress(){
   if(playerAddress.protocol==="http:")playerAddress.protocol="ws:";
   if(playerAddress.protocol==="https:")playerAddress.protocol="wss:";
   playerAddress.pathname="/player";
-  const playerPage=new URL(playerAddress.toString());
-  if(playerPage.protocol==="ws:")playerPage.protocol="http:";
-  if(playerPage.protocol==="wss:")playerPage.protocol="https:";
-  playerPage.pathname="/client/player.html";
+  const playerPage=new URL("/client/player.html",location.href);
   playerPage.search="";
   playerPage.hash="";
   playerPage.searchParams.set("address",playerAddress.toString());

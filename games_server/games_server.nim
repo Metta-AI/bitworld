@@ -31,6 +31,7 @@ const
   ReplayPlayPath = "/replays/play"
   LogsPath = "/logs"
   HealthPath = "/healthz"
+  ClientPath = "/client/"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ServerLabelKey = "bitworld.games_server"
@@ -269,6 +270,16 @@ proc decodeUrlComponent(value: string): string =
     else:
       result.add(value[i])
       inc i
+
+proc encodeUrlComponent(value: string): string =
+  ## Encodes a string for use as one URL query value.
+  for c in value:
+    case c
+    of 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '-', '_', '.', '~':
+      result.add(c)
+    else:
+      result.add('%')
+      result.add(ord(c).toHex(2))
 
 proc parseUrlPairs(value: string): seq[(string, string)] =
   ## Parses URL encoded key/value pairs.
@@ -943,9 +954,34 @@ proc hostName(request: Request): string =
     return raw[0 ..< colon]
   raw
 
+proc hostHeader(request: Request): string =
+  ## Extracts the browser-visible host with its port.
+  result = request.headers["Host"].strip()
+  if result.len == 0:
+    result = "localhost:" & $DefaultPort
+
+proc gameWebSocketUrl(
+  request: Request,
+  game: GameContainer,
+  path: string
+): string =
+  ## Builds a browser websocket URL for a game endpoint.
+  "ws://" & request.hostName() & ":" & $game.port & path
+
 proc gameUrl(request: Request, game: GameContainer, page: string): string =
   ## Builds a browser URL for a game client page.
-  "http://" & request.hostName() & ":" & $game.port & "/client/" & page
+  let socketPath =
+    case page
+    of "player.html":
+      "/player"
+    of "rewards.html", "reward.html", "stats.html":
+      "/reward"
+    else:
+      "/global"
+  "http://" & request.hostHeader() & ClientPath & page &
+    "?address=" & encodeUrlComponent(
+      gameWebSocketUrl(request, game, socketPath)
+    )
 
 proc healthUrl(game: GameContainer): string =
   ## Builds the local health URL for one game container.
@@ -1454,9 +1490,44 @@ proc renderLogsPage(name, logText: string): string =
           pre ".logs":
             say esc(cleanLog)
 
+proc clientRoot(): string =
+  ## Returns the shared client asset directory.
+  parentDir(parentDir(currentSourcePath())) / "clients"
+
+proc clientAsset(path: string): string =
+  ## Maps one public client route to a local asset path.
+  case path
+  of "/client/global.html", "/client/global_client.html":
+    clientRoot() / "global_client.html"
+  of "/client/player.html", "/client/player_client.html":
+    clientRoot() / "player_client.html"
+  of "/client/reward.html", "/client/rewards.html",
+      "/client/reward_client.html":
+    clientRoot() / "reward_client.html"
+  of "/client/stats.html":
+    clientRoot() / "stats.html"
+  of "/client/snappyjs.min.js":
+    clientRoot() / "snappyjs.min.js"
+  of "/client/qrcode.min.js":
+    clientRoot() / "qrcode.min.js"
+  else:
+    ""
+
+proc clientContentType(path: string): string =
+  ## Returns a content type for one shared client asset.
+  if path.endsWith(".js"):
+    "text/javascript; charset=utf-8"
+  else:
+    "text/html; charset=utf-8"
+
 proc htmlHeaders(): HttpHeaders =
   ## Builds standard HTML response headers.
   result["Content-Type"] = "text/html; charset=utf-8"
+  result["Cache-Control"] = "no-cache"
+
+proc contentHeaders(contentType: string): HttpHeaders =
+  ## Builds standard static content response headers.
+  result["Content-Type"] = contentType
   result["Cache-Control"] = "no-cache"
 
 proc redirectHeaders(location: string): HttpHeaders =
@@ -1467,6 +1538,15 @@ proc redirectHeaders(location: string): HttpHeaders =
 proc respondHtml(request: Request, status: int, body: string) =
   ## Sends an HTML response.
   request.respond(status, htmlHeaders(), body)
+
+proc respondContent(
+  request: Request,
+  status: int,
+  contentType,
+  body: string
+) =
+  ## Sends a static content response.
+  request.respond(status, contentHeaders(contentType), body)
 
 proc respondRedirect(request: Request, location: string) =
   ## Sends a redirect response.
@@ -1587,6 +1667,18 @@ proc notFoundHandler(request: Request) =
     )
   )
 
+proc clientHandler(request: Request) =
+  ## Handles shared client asset requests.
+  let path = clientAsset(request.path)
+  if path.len == 0 or not fileExists(path):
+    request.notFoundHandler()
+    return
+  request.respondContent(
+    200,
+    clientContentType(path),
+    readFile(path)
+  )
+
 proc errorHandler(request: Request, e: ref Exception) =
   ## Handles expected and unexpected server errors.
   stderr.writeLine("[games_server] ", e.msg)
@@ -1610,6 +1702,8 @@ proc httpHandler(request: Request) =
       request.indexHandler()
     elif request.path == LogsPath and request.httpMethod == "GET":
       request.logsHandler()
+    elif request.path.startsWith(ClientPath) and request.httpMethod == "GET":
+      request.clientHandler()
     elif request.path == "/games/create" and request.httpMethod == "POST":
       request.createHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
