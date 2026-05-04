@@ -1761,7 +1761,12 @@ proc playerResultsJson*(sim: SimServer): string =
   ## Returns final player rewards and win states as JSON.
   var
     order: seq[int] = @[]
-    items = newJArray()
+    names = newJArray()
+    scores = newJArray()
+    win = newJArray()
+    tasksList = newJArray()
+    killsList = newJArray()
+    results = newJObject()
   for i in 0 ..< sim.players.len:
     order.add(i)
   for i in 1 ..< order.len:
@@ -1782,14 +1787,17 @@ proc playerResultsJson*(sim: SimServer): string =
       kills =
         if accountIndex >= 0: sim.rewardAccounts[accountIndex].kills
         else: 0
-    items.add(%*{
-      "name": player.address,
-      "reward": player.reward,
-      "win": (not sim.timeLimitReached and player.role == sim.winner),
-      "tasks": tasks,
-      "kills": kills
-    })
-  $items
+    names.add(%player.address)
+    scores.add(%player.reward)
+    win.add(%(not sim.timeLimitReached and player.role == sim.winner))
+    tasksList.add(%tasks)
+    killsList.add(%kills)
+  results["names"] = names
+  results["scores"] = scores
+  results["win"] = win
+  results["tasks"] = tasksList
+  results["kills"] = killsList
+  $results
 
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   ## Marks one player task complete and awards task reward.
