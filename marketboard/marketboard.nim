@@ -61,13 +61,13 @@ proc makeOutlinedSprite(fill, outline: uint8, size: int): Sprite =
       else:
         result.pixels[y * size + x] = fill
 
-proc objectSprite(kind: WorldObjectKind, depleted: bool, material: ItemKind): Sprite =
-  case kind
+proc objectSprite(obj: WorldObject): Sprite =
+  case obj.kind
   of GatherNodeObj:
-    if depleted:
+    if obj.depleted:
       makeOutlinedSprite(5, 1, MbTileSize)
     else:
-      case material
+      case obj.material
       of WoodItem: makeOutlinedSprite(11, 4, MbTileSize)
       of StoneItem: makeOutlinedSprite(6, 5, MbTileSize)
       of HardwoodItem: makeOutlinedSprite(3, 4, MbTileSize)
@@ -76,7 +76,10 @@ proc objectSprite(kind: WorldObjectKind, depleted: bool, material: ItemKind): Sp
       of IronItem: makeOutlinedSprite(14, 1, MbTileSize)
       else: makeOutlinedSprite(7, 1, MbTileSize)
   of CraftStationObj:
-    makeOutlinedSprite(6, 0, MbTileSize)
+    case obj.craftTier
+    of 2: makeOutlinedSprite(8, 0, MbTileSize)
+    of 3: makeOutlinedSprite(14, 0, MbTileSize)
+    else: makeOutlinedSprite(6, 0, MbTileSize)
   of SellStallObj:
     makeOutlinedSprite(9, 4, MbTileSize)
   of BuyStallObj:
@@ -85,6 +88,8 @@ proc objectSprite(kind: WorldObjectKind, depleted: bool, material: ItemKind): Sp
     makeOutlinedSprite(11, 3, MbTileSize)
   of CrafterStallObj:
     makeOutlinedSprite(8, 2, MbTileSize)
+  of CancelStallObj:
+    makeOutlinedSprite(4, 1, MbTileSize)
 
 proc objectTileLetter(kind: WorldObjectKind, depleted: bool): char =
   case kind
@@ -95,6 +100,7 @@ proc objectTileLetter(kind: WorldObjectKind, depleted: bool): char =
   of BuyStallObj: 'B'
   of GathererStallObj: 'G'
   of CrafterStallObj: 'F'
+  of CancelStallObj: 'X'
 
 proc roleTint(role: Role): uint8 =
   case role
@@ -136,7 +142,7 @@ proc renderTerrain(sim: var SimServer, cameraX, cameraY: int) =
 
 proc renderObjects(sim: var SimServer, cameraX, cameraY: int) =
   for obj in sim.objects:
-    let sprite = objectSprite(obj.kind, obj.depleted, obj.material)
+    let sprite = objectSprite(obj)
     sim.fb.blitSprite(
       sprite,
       obj.tx * MbTileSize,
@@ -184,7 +190,7 @@ proc renderActionProgress(sim: var SimServer, playerIndex, cameraX, cameraY: int
   let totalWork =
     if player.state == Gathering: player.effectiveGatherWork()
     else:
-      let gear = player.craftableItem()
+      let gear = obj.craftStationItem()
       craftWorkForTier(gearTier(gear))
   let filled = min(28, player.actionProgress * 28 div max(1, totalWork))
   var perimX, perimY: array[28, int]
@@ -329,8 +335,10 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   if player.state == Gathering:
     sim.drawProgressBar(player.actionProgress, player.effectiveGatherWork(), 50, ScreenHeight - 5)
   elif player.state == Crafting:
-    let gear = player.craftableItem()
-    sim.drawProgressBar(player.actionProgress, craftWorkForTier(gearTier(gear)), 50, ScreenHeight - 5)
+    let targetIdx = player.actionTargetIndex
+    if targetIdx >= 0 and targetIdx < sim.objects.len:
+      let gear = sim.objects[targetIdx].craftStationItem()
+      sim.drawProgressBar(player.actionProgress, craftWorkForTier(gearTier(gear)), 50, ScreenHeight - 5)
 
   if player.state == AtSellStall:
     for px in 0 ..< ScreenWidth:

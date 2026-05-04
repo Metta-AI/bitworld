@@ -9,7 +9,7 @@ import protocol
 import common
 
 const
-  BasePrice = 5
+  BasePrice = 3
   SellThreshold = BasePrice + 2
 
 type
@@ -32,6 +32,8 @@ type
     SelectGearItem
     BuyGear
     ExitBuy
+    PathToCancelStall
+    InteractCancelStall
 
   BotState* = object
     phase*: BotPhase
@@ -54,10 +56,12 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of WaitForState:
     bot.ticksInPhase = 0
     if p.role == "Gatherer":
-      if hasAnyRawMaterials(p.inv):
-        bot.phase = EvaluateSell
+      if shouldCancelListings(p):
+        bot.phase = PathToCancelStall
       elif hasAffordableGearUpgrade(state, p):
         bot.phase = CheckGear
+      elif hasAnyRawMaterials(p.inv) and p.canSellMore:
+        bot.phase = EvaluateSell
       else:
         bot.phase = PathToNode
     else:
@@ -98,8 +102,19 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of PathToNode:
+    if hasAnyRawMaterials(p.inv) and p.canSellMore:
+      bot.phase = EvaluateSell
+      bot.ticksInPhase = 0
+      return 0
     let nodeOpt = nearestGatherableNode(state, p)
-    if nodeOpt.isNone: return 0
+    if nodeOpt.isNone:
+      let anyNode = nearestObject(state, "GatherNodeObj", undepleted = false)
+      if anyNode.isSome:
+        let node = anyNode.get()
+        if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
+          bot.nav.navigateTo(state, node.tx, node.ty)
+        return bot.nav.followPath(p.x, p.y)
+      return 0
     let node = nodeOpt.get()
     if isOnTile(p.x, p.y, node.tx, node.ty) or isAdjacentTo(p.x, p.y, node.tx, node.ty):
       bot.phase = StartGathering
@@ -129,7 +144,11 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if hasAnyRawMaterials(p.inv):
+      if shouldCancelListings(p):
+        bot.phase = PathToCancelStall
+      elif hasAffordableGearUpgrade(state, p):
+        bot.phase = CheckGear
+      elif hasAnyRawMaterials(p.inv) and p.canSellMore:
         bot.phase = EvaluateSell
       else:
         bot.phase = PathToNode
@@ -145,7 +164,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
         if not hasListings(state, mat) or cp >= SellThreshold:
           shouldSell = true
           break
-    if shouldSell:
+    if shouldSell and p.canSellMore:
       bot.phase = PathToSellStall
     elif hasAffordableGearUpgrade(state, p):
       bot.phase = CheckGear
@@ -308,6 +327,38 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if (bot.prevMask and ButtonB) != 0:
       return 0
     return ButtonB
+
+  of PathToCancelStall:
+    let stallOpt = nearestObject(state, "CancelStallObj")
+    if stallOpt.isNone:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    let stall = stallOpt.get()
+    if isAdjacentTo(p.x, p.y, stall.tx, stall.ty):
+      bot.phase = InteractCancelStall
+      bot.ticksInPhase = 0
+      return facingMask(stall.tx, stall.ty, p.tx, p.ty)
+    if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
+      bot.nav.navigateAdjacent(state, stall.tx, stall.ty)
+    return bot.nav.followPath(p.x, p.y)
+
+  of InteractCancelStall:
+    if p.listings.len == 0:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if bot.ticksInPhase > 20:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if (bot.prevMask and ButtonA) != 0:
+      return 0
+    let stallOpt = nearestObject(state, "CancelStallObj")
+    if stallOpt.isSome:
+      let stall = stallOpt.get()
+      return facingMask(stall.tx, stall.ty, p.tx, p.ty) or ButtonA
+    return ButtonA
 
 proc runBot(host: string, port: int, name: string) =
   echo "Zorori Babori connecting to ", host, ":", port, " as ", name

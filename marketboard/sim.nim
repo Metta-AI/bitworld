@@ -3,15 +3,15 @@ import server
 
 const
   MbTileSize* = 8
-  WorldWidthTiles* = 32
-  WorldHeightTiles* = 32
+  WorldWidthTiles* = 48
+  WorldHeightTiles* = 48
   WorldWidthPixels* = WorldWidthTiles * MbTileSize
   WorldHeightPixels* = WorldHeightTiles * MbTileSize
   MotionScale* = 256
   Accel* = 80
   FrictionNum* = 180
   FrictionDen* = 256
-  MaxSpeed* = 480
+  MaxSpeed* = 320
   StopThreshold* = 20
   MinPlayerSpawnSpacing* = 16
   GatherWorkNeeded* = 48
@@ -19,27 +19,28 @@ const
   CraftWorkT1* = 48
   CraftWorkT2* = 72
   CraftWorkT3* = 120
-  NodeRespawnTicks* = 240
-  NodeRespawnT1* = 240
-  NodeRespawnT2* = 360
-  NodeRespawnT3* = 480
-  StartingGold* = 300
+  NodeRespawnTicks* = 120
+  NodeRespawnT1* = 120
+  NodeRespawnT2* = 180
+  NodeRespawnT3* = 240
+  StartingGold* = 500
   MaxSellSlots* = 8
-  WoodBasePrice* = 5
-  StoneBasePrice* = 5
-  HardwoodBasePrice* = 10
-  CopperBasePrice* = 10
-  IronwoodBasePrice* = 20
-  IronBasePrice* = 20
-  GearBasePrice* = 20
-  T1GearBasePrice* = 20
-  T2GearBasePrice* = 35
-  T3GearBasePrice* = 80
+  ListingExpiryTicks* = 3000
+  WoodBasePrice* = 3
+  StoneBasePrice* = 3
+  HardwoodBasePrice* = 8
+  CopperBasePrice* = 8
+  IronwoodBasePrice* = 15
+  IronBasePrice* = 15
+  GearBasePrice* = 15
+  T1GearBasePrice* = 15
+  T2GearBasePrice* = 30
+  T3GearBasePrice* = 60
   MaxSignalIcons* = 4
-  HubCenterTx* = 16
-  HubCenterTy* = 16
+  HubCenterTx* = 24
+  HubCenterTy* = 24
   GearSlotCount* = 5
-  GearBonusPerSlot* = 20
+  GearBonusPerSlot* = 10
 
 type
   Role* = enum
@@ -96,6 +97,7 @@ type
     BuyStallObj
     GathererStallObj
     CrafterStallObj
+    CancelStallObj
 
   WorldObject* = object
     kind*: WorldObjectKind
@@ -103,12 +105,15 @@ type
     material*: ItemKind
     depleted*: bool
     respawnTimer*: int
+    craftSlot*: GearSlot
+    craftTier*: int
 
   MarketListing* = object
     sellerIndex*: int
     item*: ItemKind
     quantity*: int
     priceEach*: int
+    age*: int
 
   Inventory* = object
     counts*: array[ItemKind, int]
@@ -303,6 +308,23 @@ proc tryEquipGear*(player: var Player, item: ItemKind): bool =
   player.setActiveGearSlot(slot, item)
   true
 
+proc autoEquipFromInventory*(player: var Player) =
+  for item in ItemKind:
+    if not item.isGearItem(): continue
+    if player.inv.counts[item] <= 0: continue
+    let slot = gearSlotOf(item)
+    let currentTier = gearTier(player.activeGear()[ord(slot)])
+    let newTier = gearTier(item)
+    if not player.isGearSlotFilled(slot) or newTier > currentTier:
+      if not player.isGearSlotFilled(slot):
+        player.setActiveGearSlot(slot, item)
+        player.inv.counts[item] -= 1
+      elif newTier > currentTier:
+        let oldItem = player.activeGear()[ord(slot)]
+        player.setActiveGearSlot(slot, item)
+        player.inv.counts[item] -= 1
+        player.inv.counts[oldItem] += 1
+
 proc tryUpgradeGear*(player: var Player, item: ItemKind): bool =
   if not item.isGearItem(): return false
   let slot = gearSlotOf(item)
@@ -373,6 +395,15 @@ proc craftableItem*(player: Player): ItemKind =
         return gear
   gearForSlot(GearSlot(player.craftCursor mod GearSlotCount), 1)
 
+proc craftStationItem*(obj: WorldObject): ItemKind =
+  gearForSlot(obj.craftSlot, obj.craftTier)
+
+proc canCraftAt*(player: Player, obj: WorldObject): bool =
+  if player.role != Crafter: return false
+  let gear = obj.craftStationItem()
+  let material = craftRecipeMaterial(gear)
+  player.inv.counts[material] >= 3 and player.canCraftFromMaterial(material)
+
 proc objectIndexAt*(sim: SimServer, tx, ty: int): int =
   for i, obj in sim.objects:
     if obj.tx == tx and obj.ty == ty:
@@ -385,8 +416,8 @@ proc isUsefulObject*(player: Player, obj: WorldObject): bool =
     not obj.depleted and player.role == Gatherer and
     player.canGatherMaterial(obj.material)
   of CraftStationObj:
-    player.role == Crafter and player.inv.hasCraftMaterials()
-  of SellStallObj, BuyStallObj, GathererStallObj, CrafterStallObj:
+    player.canCraftAt(obj)
+  of SellStallObj, BuyStallObj, GathererStallObj, CrafterStallObj, CancelStallObj:
     true
 
 proc addObject*(sim: var SimServer, kind: WorldObjectKind, tx, ty: int, material = WoodItem) =
@@ -395,6 +426,13 @@ proc addObject*(sim: var SimServer, kind: WorldObjectKind, tx, ty: int, material
   sim.objects.add WorldObject(kind: kind, tx: tx, ty: ty, material: material)
   if kind != GatherNodeObj:
     sim.tiles[tileIndex(tx, ty)] = true
+
+proc addCraftStation*(sim: var SimServer, tx, ty: int, slot: GearSlot, tier: int) =
+  if not inTileBounds(tx, ty):
+    return
+  sim.objects.add WorldObject(kind: CraftStationObj, tx: tx, ty: ty,
+                              craftSlot: slot, craftTier: tier)
+  sim.tiles[tileIndex(tx, ty)] = true
 
 proc initMap*(sim: var SimServer) =
   for tx in 0 ..< WorldWidthTiles:
@@ -408,73 +446,109 @@ proc initMap*(sim: var SimServer) =
     sim.tileKinds[tileIndex(0, ty)] = WallTile
     sim.tileKinds[tileIndex(WorldWidthTiles - 1, ty)] = WallTile
 
-  for ty in HubCenterTy - 3 .. HubCenterTy + 3:
-    for tx in HubCenterTx - 4 .. HubCenterTx + 4:
+  # North plaza — role selection (y=18..19)
+  for ty in 18 .. 19:
+    for tx in HubCenterTx - 3 .. HubCenterTx + 3:
+      if inTileBounds(tx, ty):
+        sim.tileKinds[tileIndex(tx, ty)] = PathTile
+  sim.addObject(GathererStallObj, HubCenterTx - 2, 18)
+  sim.addObject(CrafterStallObj, HubCenterTx + 2, 18)
+
+  # Main street connecting north to south (x=center, y=19..30)
+  for ty in 20 .. 30:
+    for tx in HubCenterTx - 1 .. HubCenterTx + 1:
       if inTileBounds(tx, ty):
         sim.tileKinds[tileIndex(tx, ty)] = PathTile
 
-  sim.addObject(GathererStallObj, HubCenterTx - 3, HubCenterTy - 2)
-  sim.addObject(CrafterStallObj, HubCenterTx + 3, HubCenterTy - 2)
+  # West market — sell stalls (x=18..20, y=22..24)
+  for ty in 22 .. 24:
+    for tx in 18 .. HubCenterTx - 1:
+      if inTileBounds(tx, ty):
+        sim.tileKinds[tileIndex(tx, ty)] = PathTile
+  sim.addObject(SellStallObj, 18, 22)
+  sim.addObject(SellStallObj, 18, 24)
 
-  sim.addObject(CraftStationObj, HubCenterTx - 1, HubCenterTy + 2)
-  sim.addObject(CraftStationObj, HubCenterTx + 1, HubCenterTy + 2)
+  # East market — buy stalls (x=28..30, y=22..24)
+  for ty in 22 .. 24:
+    for tx in HubCenterTx + 1 .. 30:
+      if inTileBounds(tx, ty):
+        sim.tileKinds[tileIndex(tx, ty)] = PathTile
+  sim.addObject(BuyStallObj, 30, 22)
+  sim.addObject(BuyStallObj, 30, 24)
 
-  sim.addObject(SellStallObj, HubCenterTx - 3, HubCenterTy)
-  sim.addObject(SellStallObj, HubCenterTx - 3, HubCenterTy + 1)
+  # Cancel stall — center of main street
+  sim.addObject(CancelStallObj, HubCenterTx, 21)
 
-  sim.addObject(BuyStallObj, HubCenterTx + 3, HubCenterTy)
-  sim.addObject(BuyStallObj, HubCenterTx + 3, HubCenterTy + 1)
+  # South workshop — craft stations 5x3 grid (y=27..29)
+  for ty in 26 .. 30:
+    for tx in HubCenterTx - 3 .. HubCenterTx + 3:
+      if inTileBounds(tx, ty):
+        sim.tileKinds[tileIndex(tx, ty)] = PathTile
+  for slotIdx in 0 ..< GearSlotCount:
+    for tier in 1 .. 3:
+      let tx = HubCenterTx - 2 + slotIdx
+      let ty = 26 + tier
+      sim.addCraftStation(tx, ty, GearSlot(slotIdx), tier)
 
+  # T1 gathering — close ring around town
   let woodPositions = [
-    (HubCenterTx - 6, HubCenterTy - 6),
-    (HubCenterTx + 6, HubCenterTy - 6),
-    (HubCenterTx - 7, HubCenterTy),
-    (HubCenterTx + 7, HubCenterTy),
-    (HubCenterTx - 6, HubCenterTy + 6),
-    (HubCenterTx + 6, HubCenterTy + 6),
-    (HubCenterTx, HubCenterTy - 7),
-    (HubCenterTx, HubCenterTy + 7),
+    (HubCenterTx - 10, HubCenterTy - 10),
+    (HubCenterTx + 10, HubCenterTy - 10),
+    (HubCenterTx - 12, HubCenterTy),
+    (HubCenterTx + 12, HubCenterTy),
+    (HubCenterTx - 10, HubCenterTy + 10),
+    (HubCenterTx + 10, HubCenterTy + 10),
+    (HubCenterTx, HubCenterTy - 12),
+    (HubCenterTx, HubCenterTy + 12),
+    (HubCenterTx - 12, HubCenterTy - 5),
+    (HubCenterTx + 12, HubCenterTy - 5),
+    (HubCenterTx - 12, HubCenterTy + 5),
+    (HubCenterTx + 12, HubCenterTy + 5),
   ]
   for pos in woodPositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], WoodItem)
 
   let stonePositions = [
-    (HubCenterTx - 7, HubCenterTy - 3),
-    (HubCenterTx + 7, HubCenterTy - 3),
-    (HubCenterTx - 7, HubCenterTy + 3),
-    (HubCenterTx + 7, HubCenterTy + 3),
-    (HubCenterTx - 3, HubCenterTy - 7),
-    (HubCenterTx + 3, HubCenterTy + 7),
+    (HubCenterTx - 10, HubCenterTy - 5),
+    (HubCenterTx + 10, HubCenterTy - 5),
+    (HubCenterTx - 10, HubCenterTy + 5),
+    (HubCenterTx + 10, HubCenterTy + 5),
+    (HubCenterTx - 5, HubCenterTy - 10),
+    (HubCenterTx + 5, HubCenterTy + 10),
+    (HubCenterTx + 5, HubCenterTy - 10),
+    (HubCenterTx - 5, HubCenterTy + 10),
   ]
   for pos in stonePositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], StoneItem)
 
+  # T2 gathering — mid ring
   let hardwoodPositions = [
-    (HubCenterTx - 10, HubCenterTy - 10),
-    (HubCenterTx + 10, HubCenterTy - 10),
-    (HubCenterTx - 10, HubCenterTy + 10),
-    (HubCenterTx + 10, HubCenterTy + 10),
+    (HubCenterTx - 16, HubCenterTy - 16),
+    (HubCenterTx + 16, HubCenterTy - 16),
+    (HubCenterTx - 16, HubCenterTy + 16),
+    (HubCenterTx + 16, HubCenterTy + 16),
   ]
   for pos in hardwoodPositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], HardwoodItem)
 
   let copperPositions = [
-    (HubCenterTx - 11, HubCenterTy),
-    (HubCenterTx + 11, HubCenterTy),
-    (HubCenterTx, HubCenterTy - 11),
-    (HubCenterTx, HubCenterTy + 11),
+    (HubCenterTx - 18, HubCenterTy),
+    (HubCenterTx + 18, HubCenterTy),
+    (HubCenterTx, HubCenterTy - 18),
+    (HubCenterTx, HubCenterTy + 18),
   ]
   for pos in copperPositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], CopperItem)
 
+  # T3 gathering — map corners
   let ironwoodPositions = [
-    (3, 3), (28, 3), (3, 28),
+    (3, 3), (44, 3), (3, 44),
   ]
   for pos in ironwoodPositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], IronwoodItem)
 
   let ironPositions = [
-    (28, 28), (3, 16), (28, 16),
+    (44, 44), (3, 24), (44, 24),
   ]
   for pos in ironPositions:
     sim.addObject(GatherNodeObj, pos[0], pos[1], IronItem)
@@ -484,18 +558,7 @@ proc initNpcListings*(sim: var SimServer) =
     sim.npcListings.add MarketListing(sellerIndex: -1, item: WoodItem, quantity: 1, priceEach: WoodBasePrice)
   for _ in 0 ..< 4:
     sim.npcListings.add MarketListing(sellerIndex: -1, item: StoneItem, quantity: 1, priceEach: StoneBasePrice)
-  for _ in 0 ..< 2:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: HardwoodItem, quantity: 1, priceEach: HardwoodBasePrice)
-  for _ in 0 ..< 2:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: CopperItem, quantity: 1, priceEach: CopperBasePrice)
-  sim.npcListings.add MarketListing(sellerIndex: -1, item: IronwoodItem, quantity: 1, priceEach: IronwoodBasePrice)
-  sim.npcListings.add MarketListing(sellerIndex: -1, item: IronItem, quantity: 1, priceEach: IronBasePrice)
-  for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 1), quantity: 8, priceEach: T1GearBasePrice)
-  for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 2), quantity: 3, priceEach: T2GearBasePrice)
-  for slot in GearSlot:
-    sim.npcListings.add MarketListing(sellerIndex: -1, item: gearForSlot(slot, 3), quantity: 3, priceEach: T3GearBasePrice)
+  discard
 
 proc canOccupy*(sim: SimServer, x, y, width, height: int): bool =
   if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
@@ -767,6 +830,9 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
   var objIndex = -1
   if inTileBounds(target.tx, target.ty):
     objIndex = sim.objectIndexAt(target.tx, target.ty)
+  if objIndex >= 0 and sim.objects[objIndex].kind == CraftStationObj and
+     not player.canCraftAt(sim.objects[objIndex]):
+    objIndex = -1
   if objIndex < 0:
     let standing = player.standingTile()
     if inTileBounds(standing.tx, standing.ty):
@@ -787,7 +853,7 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
       sim.players[playerIndex].actionProgress = 0
       sim.players[playerIndex].actionTargetIndex = objIndex
   of CraftStationObj:
-    if player.role == Crafter and player.inv.hasCraftMaterials():
+    if player.canCraftAt(obj):
       sim.players[playerIndex].state = Crafting
       sim.players[playerIndex].actionProgress = 0
       sim.players[playerIndex].actionTargetIndex = objIndex
@@ -798,6 +864,10 @@ proc handleAction*(sim: var SimServer, playerIndex: int) =
     sim.players[playerIndex].state = AtBuyStall
     sim.players[playerIndex].buyItemCursor = 0
     sim.players[playerIndex].buyQuantity = 1
+  of CancelStallObj:
+    for listing in sim.players[playerIndex].listings:
+      sim.players[playerIndex].inv.addItem(listing.item, listing.quantity)
+    sim.players[playerIndex].listings.setLen(0)
 
 proc handleCancel*(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -823,15 +893,16 @@ proc updateActionProgress*(sim: var SimServer, playerIndex: int) =
       sim.cancelAction(playerIndex)
   elif state == Crafting:
     inc sim.players[playerIndex].actionProgress
-    let gear = sim.players[playerIndex].craftableItem()
+    let objIdx = sim.players[playerIndex].actionTargetIndex
+    if objIdx < 0 or objIdx >= sim.objects.len:
+      sim.cancelAction(playerIndex)
+      return
+    let gear = sim.objects[objIdx].craftStationItem()
     let craftWork = craftWorkForTier(gearTier(gear))
     if sim.players[playerIndex].actionProgress >= craftWork:
       let material = craftRecipeMaterial(gear)
       if sim.players[playerIndex].inv.removeItem(material, 3):
-        if not sim.players[playerIndex].tryEquipGear(gear):
-          if not sim.players[playerIndex].tryUpgradeGear(gear):
-            sim.players[playerIndex].inv.addItem(gear)
-        inc sim.players[playerIndex].craftCursor
+        sim.players[playerIndex].inv.addItem(gear)
         inc sim.players[playerIndex].crafterLevel
       sim.cancelAction(playerIndex)
 
@@ -909,6 +980,20 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
       if playerIndex < inputs.len:
         sim.handleStallInput(playerIndex, inputs[playerIndex])
 
+  for playerIndex in 0 ..< sim.players.len:
+    var i = sim.players[playerIndex].listings.high
+    while i >= 0:
+      inc sim.players[playerIndex].listings[i].age
+      if sim.players[playerIndex].listings[i].age >= ListingExpiryTicks:
+        sim.players[playerIndex].inv.addItem(sim.players[playerIndex].listings[i].item)
+        sim.players[playerIndex].listings.delete(i)
+      dec i
+
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].state == Idle and
+       sim.players[playerIndex].role != Crafter:
+      sim.players[playerIndex].autoEquipFromInventory()
+
   sim.updateNodes()
   inc sim.tickCount
 
@@ -949,11 +1034,19 @@ proc objectLabel*(obj: WorldObject): string =
     of CopperItem: "COPR NODE"
     of IronItem: "IRON NODE"
     else: "NODE"
-  of CraftStationObj: "CRAFT"
+  of CraftStationObj:
+    let slotName = case obj.craftSlot
+      of SlotHat: "HAT"
+      of SlotShirt: "SHRT"
+      of SlotGloves: "GLVS"
+      of SlotPants: "PNTS"
+      of SlotShoes: "SHOE"
+    "T" & $obj.craftTier & " " & slotName
   of SellStallObj: "SELL"
   of BuyStallObj: "BUY"
   of GathererStallObj: "GATHERER"
   of CrafterStallObj: "CRAFTER"
+  of CancelStallObj: "CANCEL"
 
 proc roleShortName*(role: Role): string =
   case role
@@ -1007,6 +1100,7 @@ proc buildStateJson*(sim: SimServer, playerIndex: int): string =
     pj["actionProgress"] = %p.actionProgress
     pj["actionTargetIndex"] = %p.actionTargetIndex
     pj["sellPrice"] = %p.sellPrice
+    pj["sellItemCursor"] = %p.sellItemCursor
     pj["buyQuantity"] = %p.buyQuantity
     pj["buyItemCursor"] = %p.buyItemCursor
     pj["signalIcon"] = %p.signalIcon
@@ -1046,6 +1140,9 @@ proc buildStateJson*(sim: SimServer, playerIndex: int): string =
     oj["ty"] = %obj.ty
     oj["material"] = %($obj.material)
     oj["depleted"] = %obj.depleted
+    if obj.kind == CraftStationObj:
+      oj["craftSlot"] = %ord(obj.craftSlot)
+      oj["craftTier"] = %obj.craftTier
     objects.add oj
   root["objects"] = objects
 

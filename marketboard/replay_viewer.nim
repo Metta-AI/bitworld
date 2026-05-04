@@ -103,23 +103,47 @@ proc loadReplay(viewer: ReplayViewerApp, path: string) =
     viewer.statusText = "Error: " & e.msg
     echo "Could not load replay ", path, ": ", e.msg
 
+proc wrapText(text: string, maxChars: int): tuple[line1, line2: string] =
+  if text.len <= maxChars:
+    return (text, "")
+  var splitAt = maxChars
+  while splitAt > 0 and text[splitAt] != ' ':
+    dec splitAt
+  if splitAt == 0:
+    splitAt = maxChars
+  let rest = text[splitAt ..< text.len].strip()
+  if rest.len < 4:
+    var earlier = splitAt - 1
+    while earlier > 0 and text[earlier] != ' ':
+      dec earlier
+    if earlier > 0:
+      splitAt = earlier
+  result.line1 = text[0 ..< splitAt].strip()
+  let finalRest = text[splitAt ..< text.len].strip()
+  result.line2 = if finalRest.len > maxChars: finalRest[0 ..< maxChars] else: finalRest
+
 proc renderLegendOverlay(viewer: ReplayViewerApp) =
   if not viewer.legendsEnabled or viewer.overlayTicksLeft <= 0:
     return
   if viewer.sim.letterSprites.len == 0:
     return
-  let text = viewer.activeOverlay
-  let textWidth = text.len * 6
-  let boxWidth = min(textWidth + 4, ScreenWidth - 2)
+  let maxChars = (ScreenWidth - 6) div 6
+  let (line1, line2) = wrapText(viewer.activeOverlay, maxChars)
+  let hasLine2 = line2.len > 0
+  let lineWidth = max(line1.len, line2.len) * 6
+  let boxWidth = min(lineWidth + 4, ScreenWidth - 2)
+  let boxHeight = if hasLine2: 17 else: 9
   let boxX = (ScreenWidth - boxWidth) div 2
   let boxY = 10
-  for y in boxY ..< boxY + 9:
+  for y in boxY ..< boxY + boxHeight:
     for x in boxX ..< boxX + boxWidth:
       if x >= 0 and x < ScreenWidth and y >= 0 and y < ScreenHeight:
         viewer.sim.fb.indices[y * ScreenWidth + x] = 0
-  let maxChars = (boxWidth - 4) div 6
-  let displayText = if text.len > maxChars: text[0 ..< maxChars] else: text
-  viewer.sim.fb.blitText(viewer.sim.letterSprites, displayText, boxX + 2, boxY + 2)
+  let x1 = (ScreenWidth - line1.len * 6) div 2
+  viewer.sim.fb.blitText(viewer.sim.letterSprites, line1, x1, boxY + 2)
+  if hasLine2:
+    let x2 = (ScreenWidth - line2.len * 6) div 2
+    viewer.sim.fb.blitText(viewer.sim.letterSprites, line2, x2, boxY + 10)
   viewer.sim.fb.packFramebuffer()
 
 proc checkLegendEvents(viewer: ReplayViewerApp) =

@@ -19,6 +19,12 @@ proc findObjectIndex(sim: SimServer, kind: WorldObjectKind): int =
       return i
   -1
 
+proc findCraftStation(sim: SimServer, slot: GearSlot, tier: int): int =
+  for i, obj in sim.objects:
+    if obj.kind == CraftStationObj and obj.craftSlot == slot and obj.craftTier == tier:
+      return i
+  -1
+
 proc findWoodNodeIndex(sim: SimServer): int =
   for i, obj in sim.objects:
     if obj.kind == GatherNodeObj and obj.material == WoodItem and not obj.depleted:
@@ -364,7 +370,8 @@ proc testCrafting() =
     "crafting start failed. " & sim.describePos(idx)
   sim.holdA(idx, CraftWorkNeeded - 1)
   doAssert sim.players[idx].inv.wood == 0
-  doAssert sim.players[idx].crafterGear[ord(SlotHat)] == LeatherHat
+  doAssert sim.players[idx].inv.counts[LeatherHat] == 1,
+    "crafted LeatherHat should be in inventory"
 
 # ── Selling ──
 
@@ -578,10 +585,8 @@ proc testPeerEconomyLoop() =
   doAssert sim.players[crafter].state == Crafting
   sim.holdA(crafter, CraftWorkNeeded - 1)
   doAssert sim.players[crafter].inv.wood == 0
-  doAssert sim.players[crafter].crafterGear[ord(SlotHat)] == LeatherHat
-
-  # Crafter sells gear at 30g — put a LeatherHat in inventory directly
-  sim.players[crafter].inv.counts[LeatherHat] = 1
+  doAssert sim.players[crafter].inv.counts[LeatherHat] == 1,
+    "crafted LeatherHat should be in inventory"
   sim.players[crafter].x = sellStall.tx * MbTileSize
   sim.players[crafter].y = sellStall.ty * MbTileSize
   sim.players[crafter].velX = 0
@@ -704,6 +709,7 @@ proc testMaxSellSlots() =
 
 proc testGearEquipOnBuy() =
   var sim = initMarketboardForTest()
+  sim.npcListings.add MarketListing(sellerIndex: -1, item: LeatherHat, quantity: 1, priceEach: T1GearBasePrice)
   let idx = sim.addPlayer("buyer")
   sim.players[idx].role = Gatherer
 
@@ -717,7 +723,6 @@ proc testGearEquipOnBuy() =
   sim.pressA(idx, FaceDown)
   doAssert sim.players[idx].state == AtBuyStall
 
-  # Select LeatherHat (cursor index)
   sim.players[idx].buyItemCursor = ord(LeatherHat)
   sim.players[idx].buyQuantity = 1
   sim.pressA(idx, FaceDown)
@@ -730,6 +735,7 @@ proc testGearEquipOnBuy() =
 
 proc testGearGoesToInventoryIfSlotFilled() =
   var sim = initMarketboardForTest()
+  sim.npcListings.add MarketListing(sellerIndex: -1, item: ChainHat, quantity: 1, priceEach: T2GearBasePrice)
   let idx = sim.addPlayer("buyer")
   sim.players[idx].role = Gatherer
   sim.players[idx].gathererGear[ord(SlotHat)] = LeatherHat
@@ -816,18 +822,17 @@ proc testCraftProducesSlotItems() =
   sim.players[idx].role = Crafter
   sim.players[idx].gold = 500
 
-  let ci = sim.findObjectIndex(CraftStationObj)
-  let craftStation = sim.objects[ci]
-  sim.players[idx].x = craftStation.tx * MbTileSize
-  sim.players[idx].y = craftStation.ty * MbTileSize
-  sim.players[idx].velX = 0
-  sim.players[idx].velY = 0
-
-  # Craft 5 times — each slot uses a specific material per recipe
-  # Hat=Wood, Shirt=Stone, Gloves=Wood, Pants=Stone, Shoes=Wood
   let expectedItems = [LeatherHat, LeatherShirt, LeatherGloves, LeatherPants, LeatherShoes]
   let expectedMats = [WoodItem, StoneItem, WoodItem, StoneItem, WoodItem]
+  let slots = [SlotHat, SlotShirt, SlotGloves, SlotPants, SlotShoes]
   for craft in 0 ..< 5:
+    let ci = sim.findCraftStation(slots[craft], 1)
+    doAssert ci >= 0, "craft station for slot " & $slots[craft] & " not found"
+    let craftStation = sim.objects[ci]
+    sim.players[idx].x = craftStation.tx * MbTileSize
+    sim.players[idx].y = craftStation.ty * MbTileSize
+    sim.players[idx].velX = 0
+    sim.players[idx].velY = 0
     if expectedMats[craft] == WoodItem:
       sim.players[idx].inv.wood = 3
     else:
@@ -837,9 +842,40 @@ proc testCraftProducesSlotItems() =
       "craft " & $craft & " should start crafting"
     sim.holdA(idx, CraftWorkNeeded - 1)
     doAssert sim.players[idx].state == Idle
-    doAssert sim.players[idx].crafterGear[craft] == expectedItems[craft],
-      "craft " & $craft & " should produce " & $expectedItems[craft] &
-      " got " & $sim.players[idx].crafterGear[craft]
+    doAssert sim.players[idx].inv.counts[expectedItems[craft]] == 1,
+      "craft " & $craft & " should produce " & $expectedItems[craft] & " in inventory"
+
+proc testCancelStallBulkCancel() =
+  var sim = initMarketboardForTest()
+  sim.npcListings.setLen(0)
+  let idx = sim.addPlayer("test")
+  sim.players[idx].inv.wood = 3
+
+  let si = sim.findObjectIndex(SellStallObj)
+  let stall = sim.objects[si]
+  sim.players[idx].x = stall.tx * MbTileSize
+  sim.players[idx].y = stall.ty * MbTileSize
+  sim.players[idx].sellPrice = 10
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].state == AtSellStall
+  for _ in 0 ..< 3:
+    sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].listings.len == 3
+  doAssert sim.players[idx].inv.wood == 0
+  sim.pressB(idx)
+  doAssert sim.players[idx].state == Idle
+
+  let ci = sim.findObjectIndex(CancelStallObj)
+  let cancelStall = sim.objects[ci]
+  sim.players[idx].x = cancelStall.tx * MbTileSize
+  sim.players[idx].y = (cancelStall.ty - 1) * MbTileSize
+  sim.pressA(idx, FaceDown)
+  doAssert sim.players[idx].listings.len == 0,
+    "cancel stall should clear all listings, got " & $sim.players[idx].listings.len
+  doAssert sim.players[idx].inv.wood == 3,
+    "cancel stall should return items to inventory"
+  doAssert sim.players[idx].state == Idle,
+    "cancel stall should not change player state"
 
 proc testBestInteractionTileSnap() =
   var sim = initMarketboardForTest()
@@ -917,6 +953,8 @@ testGearBoostsMovementSpeed()
 echo "  gear boosts movement speed: OK"
 testCraftProducesSlotItems()
 echo "  craft produces slot items: OK"
+testCancelStallBulkCancel()
+echo "  cancel stall bulk cancel: OK"
 testBestInteractionTileSnap()
 echo "  best interaction tile snap: OK"
 echo "All tests passed"

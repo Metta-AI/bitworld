@@ -41,6 +41,8 @@ type
     SelectGearItem
     BuyGear
     ExitBuyGear
+    PathToCancelStall
+    InteractCancelStall
 
   BotState* = object
     phase*: BotPhase
@@ -68,7 +70,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of EvaluateMarket:
     bot.ticksInPhase = 0
-    let tier = highestGatherableTier(p)
+    let tier = bestAvailableCraftTier(state, p)
     let (matA, matB) = materialsForTier(tier)
     let matPrice = min(cheapestPrice(state, matA), cheapestPrice(state, matB))
     let gearPrice = cheapestPrice(state, gearItemForSlot(0, tier))
@@ -88,30 +90,44 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
         else:
           bot.phase = PathToCrafterStall
       elif p.role == "Gatherer":
-        if hasAnyRawMaterials(p.inv):
-          bot.phase = PathToSellStall
+        if shouldCancelListings(p):
+          bot.phase = PathToCancelStall
         elif hasAffordableGearUpgrade(state, p):
           bot.phase = CheckGear
+        elif hasAnyRawMaterials(p.inv) and p.canSellMore:
+          bot.phase = PathToSellStall
         else:
           bot.phase = PathToNode
       else:
-        if p.inv.hasAnyGear:
+        if p.inv.hasAnyGear and p.canSellMore:
           bot.phase = PathToSellStall
         elif hasEnoughMaterialsForCraft(p.inv):
           bot.phase = PathToCraftStation
+        elif shouldCancelListings(p):
+          bot.phase = PathToCancelStall
+        elif hasAffordableGearUpgrade(state, p):
+          bot.phase = CheckGear
         else:
           bot.phase = PathToBuyStall
     else:
       if p.role == "Gatherer":
-        if hasAnyRawMaterials(p.inv):
+        if shouldCancelListings(p):
+          bot.phase = PathToCancelStall
+        elif hasAffordableGearUpgrade(state, p):
+          bot.phase = CheckGear
+        elif hasAnyRawMaterials(p.inv) and p.canSellMore:
           bot.phase = PathToSellStall
         else:
           bot.phase = PathToNode
       else:
-        if p.inv.hasAnyGear:
+        if p.inv.hasAnyGear and p.canSellMore:
           bot.phase = PathToSellStall
         elif hasEnoughMaterialsForCraft(p.inv):
           bot.phase = PathToCraftStation
+        elif shouldCancelListings(p):
+          bot.phase = PathToCancelStall
+        elif hasAffordableGearUpgrade(state, p):
+          bot.phase = CheckGear
         else:
           bot.phase = PathToBuyStall
     return 0
@@ -183,8 +199,19 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of PathToNode:
+    if hasAnyRawMaterials(p.inv) and p.canSellMore:
+      bot.phase = PathToSellStall
+      bot.ticksInPhase = 0
+      return 0
     let nodeOpt = nearestGatherableNode(state, p)
-    if nodeOpt.isNone: return 0
+    if nodeOpt.isNone:
+      let anyNode = nearestObject(state, "GatherNodeObj", undepleted = false)
+      if anyNode.isSome:
+        let node = anyNode.get()
+        if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
+          bot.nav.navigateTo(state, node.tx, node.ty)
+        return bot.nav.followPath(p.x, p.y)
+      return 0
     let node = nodeOpt.get()
     if isOnTile(p.x, p.y, node.tx, node.ty) or isAdjacentTo(p.x, p.y, node.tx, node.ty):
       bot.phase = StartGathering
@@ -214,7 +241,11 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if hasAnyRawMaterials(p.inv):
+      if shouldCancelListings(p):
+        bot.phase = PathToCancelStall
+      elif hasAffordableGearUpgrade(state, p):
+        bot.phase = CheckGear
+      elif hasAnyRawMaterials(p.inv) and p.canSellMore:
         bot.phase = PathToSellStall
       else:
         bot.phase = WaitForState
@@ -259,7 +290,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = ExitBuyMat
       bot.ticksInPhase = 0
       return 0
-    let craftTier = highestGatherableTier(p)
+    let craftTier = bestAvailableCraftTier(state, p)
     let (matA, matB) = materialsForTier(craftTier)
     let priceA = cheapestPrice(state, matA)
     let priceB = cheapestPrice(state, matB)
@@ -516,6 +547,38 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if (bot.prevMask and ButtonB) != 0:
       return 0
     return ButtonB
+
+  of PathToCancelStall:
+    let stallOpt = nearestObject(state, "CancelStallObj")
+    if stallOpt.isNone:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    let stall = stallOpt.get()
+    if isAdjacentTo(p.x, p.y, stall.tx, stall.ty):
+      bot.phase = InteractCancelStall
+      bot.ticksInPhase = 0
+      return facingMask(stall.tx, stall.ty, p.tx, p.ty)
+    if not bot.nav.hasPath or bot.ticksInPhase mod 30 == 1:
+      bot.nav.navigateAdjacent(state, stall.tx, stall.ty)
+    return bot.nav.followPath(p.x, p.y)
+
+  of InteractCancelStall:
+    if p.listings.len == 0:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if bot.ticksInPhase > 20:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    if (bot.prevMask and ButtonA) != 0:
+      return 0
+    let stallOpt = nearestObject(state, "CancelStallObj")
+    if stallOpt.isSome:
+      let stall = stallOpt.get()
+      return facingMask(stall.tx, stall.ty, p.tx, p.ty) or ButtonA
+    return ButtonA
 
 proc runBot(host: string, port: int, name: string) =
   echo "R'khenna connecting to ", host, ":", port, " as ", name

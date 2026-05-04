@@ -381,11 +381,8 @@ proc testBotFullBuyCraftSellCycle() =
     sim.step(inputs)
 
   doAssert sim.players[idx].inv.wood == 0, "wood should be consumed, got " & $sim.players[idx].inv.wood
-  doAssert sim.players[idx].crafterGear[ord(SlotHat)] == LeatherHat, "should have LeatherHat equipped"
+  doAssert sim.players[idx].inv.counts[LeatherHat] == 1, "crafted LeatherHat should be in inventory"
   doAssert sim.players[idx].state == Idle, "should be idle after crafting"
-
-  # Put a gear item in inventory for the sell test (crafted one auto-equipped)
-  sim.players[idx].inv.counts[LeatherHat] = 1
 
   # --- Sell phase: teleport to SellStallObj, sell gear ---
   var sellStallTx, sellStallTy: int

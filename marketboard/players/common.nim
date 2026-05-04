@@ -37,6 +37,8 @@ type
     tx*, ty*: int
     material*: string
     depleted*: bool
+    craftSlot*: int
+    craftTier*: int
 
   BotOtherPlayer* = object
     index*: int
@@ -58,6 +60,7 @@ type
     actionProgress*: int
     actionTargetIndex*: int
     sellPrice*: int
+    sellItemCursor*: int
     buyQuantity*: int
     buyItemCursor*: int
     signalIcon*: int
@@ -155,6 +158,7 @@ proc parseGameState*(jsonStr: string): GameState =
     result.player.actionProgress = p["actionProgress"].getInt()
     result.player.actionTargetIndex = p["actionTargetIndex"].getInt()
     result.player.sellPrice = p["sellPrice"].getInt()
+    result.player.sellItemCursor = p["sellItemCursor"].getInt()
     result.player.buyQuantity = p["buyQuantity"].getInt()
     result.player.buyItemCursor = p["buyItemCursor"].getInt()
     result.player.signalIcon = p["signalIcon"].getInt()
@@ -182,13 +186,18 @@ proc parseGameState*(jsonStr: string): GameState =
       result.player.listings.add parseListing(l)
 
   for obj in root["objects"]:
-    result.objects.add BotObject(
+    var bo = BotObject(
       kind: obj["kind"].getStr(),
       tx: obj["tx"].getInt(),
       ty: obj["ty"].getInt(),
       material: obj["material"].getStr(),
       depleted: obj["depleted"].getBool()
     )
+    if obj.hasKey("craftSlot"):
+      bo.craftSlot = obj["craftSlot"].getInt()
+    if obj.hasKey("craftTier"):
+      bo.craftTier = obj["craftTier"].getInt()
+    result.objects.add bo
 
   for p in root["players"]:
     result.players.add BotOtherPlayer(
@@ -355,16 +364,16 @@ proc allListings*(state: GameState): seq[BotListing] =
 
 proc botItemBasePrice*(item: string): int =
   case item
-  of "WoodItem": 5
-  of "StoneItem": 5
-  of "HardwoodItem": 10
-  of "CopperItem": 10
-  of "IronwoodItem": 20
-  of "IronItem": 20
-  of "LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes": 20
-  of "ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes": 35
-  of "PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes": 80
-  else: 5
+  of "WoodItem": 3
+  of "StoneItem": 3
+  of "HardwoodItem": 8
+  of "CopperItem": 8
+  of "IronwoodItem": 15
+  of "IronItem": 15
+  of "LeatherHat", "LeatherShirt", "LeatherGloves", "LeatherPants", "LeatherShoes": 15
+  of "ChainHat", "ChainShirt", "ChainGloves", "ChainPants", "ChainShoes": 30
+  of "PlateHat", "PlateShirt", "PlateGloves", "PlatePants", "PlateShoes": 60
+  else: 3
 
 proc cheapestPrice*(state: GameState, item: string): int =
   let all = state.allListings()
@@ -483,17 +492,14 @@ proc bestGearTier*(state: GameState, slot: int, gold: int): int =
 
 proc nextGearTarget*(state: GameState, player: BotPlayer): tuple[slot: int, tier: int, item: string] =
   result = (-1, 0, "")
-  let emptySlot = firstEmptyGearSlot(player)
-  if emptySlot >= 0:
-    return (emptySlot, 1, gearItemForSlot(emptySlot, 1))
   let all = state.allListings()
   var bestSlot = -1
   var bestTier = 0
   var bestPrice = int.high
   for i in 0 ..< GearSlotCount:
     let currentTier = gearTier(player.equippedGear[i])
-    if currentTier >= 3: continue
-    let targetTier = currentTier + 1
+    let targetTier = if currentTier == 0: 1 else: currentTier + 1
+    if targetTier > 3: continue
     let item = gearItemForSlot(i, targetTier)
     let listing = cheapestListing(all, item)
     if listing.isSome and listing.get().priceEach < bestPrice:
@@ -516,6 +522,68 @@ proc materialsForTier*(tier: int): tuple[matA, matB: string] =
   of 3: ("IronwoodItem", "IronItem")
   else: ("WoodItem", "StoneItem")
 
+proc bestAvailableCraftTier*(state: GameState, player: BotPlayer): int =
+  let maxTier = highestGatherableTier(player)
+  for tier in countdown(maxTier, 1):
+    let (matA, matB) = materialsForTier(tier)
+    if hasListings(state, matA) or hasListings(state, matB):
+      return tier
+  1
+
+proc canSellMore*(player: BotPlayer): bool =
+  player.listings.len < BotMaxSellSlots
+
+proc shouldCancelListings*(player: BotPlayer): bool =
+  player.listings.len >= BotMaxSellSlots
+
+proc firstGearSellCursor*(player: BotPlayer): int =
+  var idx = 0
+  for i, name in ItemNames:
+    if player.inv.itemCount(name) > 0:
+      if isGearItem(name):
+        return idx
+      inc idx
+  -1
+
+proc canAffordAnyMaterial*(state: GameState, player: BotPlayer): bool =
+  for tier in countdown(3, 1):
+    let (matA, matB) = materialsForTier(tier)
+    if hasListings(state, matA) and cheapestPrice(state, matA) <= player.gold:
+      return true
+    if hasListings(state, matB) and cheapestPrice(state, matB) <= player.gold:
+      return true
+  false
+
+proc craftRecipeMaterialName*(gearName: string): string =
+  case gearName
+  of "LeatherHat", "LeatherGloves", "LeatherShoes": "WoodItem"
+  of "LeatherShirt", "LeatherPants": "StoneItem"
+  of "ChainHat", "ChainGloves", "ChainShoes": "CopperItem"
+  of "ChainShirt", "ChainPants": "HardwoodItem"
+  of "PlateHat", "PlateGloves", "PlateShoes": "IronItem"
+  of "PlateShirt", "PlatePants": "IronwoodItem"
+  else: "WoodItem"
+
+proc underSuppliedMaterial*(player: BotPlayer, state: GameState, tier: int): string =
+  let (matA, matB) = materialsForTier(tier)
+  let slotNames = case tier
+    of 2: T2GearNames
+    of 3: T3GearNames
+    else: T1GearNames
+  var matASupply, matBSupply = 0
+  for l in player.listings:
+    if craftRecipeMaterialName(l.item) == matA: inc matASupply
+    elif craftRecipeMaterialName(l.item) == matB: inc matBSupply
+  for i in 0 ..< GearSlotCount:
+    let gearName = slotNames[i]
+    if player.inv.itemCount(gearName) > 0:
+      let mat = craftRecipeMaterialName(gearName)
+      if mat == matA: inc matASupply
+      elif mat == matB: inc matBSupply
+  if matBSupply < matASupply: matB
+  elif matASupply < matBSupply: matA
+  else: ""
+
 proc hasAnyRawMaterials*(inv: BotInventory): bool =
   inv.wood > 0 or inv.stone > 0 or inv.hardwood > 0 or
   inv.copper > 0 or inv.ironwood > 0 or inv.iron > 0
@@ -523,6 +591,45 @@ proc hasAnyRawMaterials*(inv: BotInventory): bool =
 proc hasEnoughMaterialsForCraft*(inv: BotInventory): bool =
   inv.wood >= 3 or inv.stone >= 3 or inv.hardwood >= 3 or
   inv.copper >= 3 or inv.ironwood >= 3 or inv.iron >= 3
+
+proc materialForCraftStation*(slot: int, tier: int): string =
+  let gearName = gearItemForSlot(slot, tier)
+  craftRecipeMaterialName(gearName)
+
+proc hasMaterialsForStation*(inv: BotInventory, slot: int, tier: int): bool =
+  let mat = materialForCraftStation(slot, tier)
+  inv.itemCount(mat) >= 3
+
+proc bestCraftStation*(state: GameState, player: BotPlayer): Option[BotObject] =
+  var supplyCount: array[3, array[5, int]]
+  let all = state.allListings()
+  for l in all:
+    let t = gearTier(l.item)
+    if t == 0: continue
+    for s in 0 ..< GearSlotCount:
+      if l.item == gearItemForSlot(s, t):
+        supplyCount[t - 1][s] += l.quantity
+        break
+  for s in 0 ..< GearSlotCount:
+    for t in 1 .. 3:
+      let gearName = gearItemForSlot(s, t)
+      supplyCount[t - 1][s] += player.inv.itemCount(gearName)
+
+  var bestObj: BotObject
+  var bestSupply = int.high
+  var found = false
+  for obj in state.objects:
+    if obj.kind != "CraftStationObj": continue
+    if not player.inv.hasMaterialsForStation(obj.craftSlot, obj.craftTier):
+      continue
+    if obj.craftTier >= 2 and not player.hasFullGearSet(obj.craftTier - 1):
+      continue
+    let supply = supplyCount[obj.craftTier - 1][obj.craftSlot]
+    if supply < bestSupply:
+      bestSupply = supply
+      bestObj = obj
+      found = true
+  if found: some(bestObj) else: none(BotObject)
 
 proc preferredMaterial*(baseMaterial: string, tier: int): string =
   case baseMaterial
@@ -541,6 +648,9 @@ proc preferredMaterial*(baseMaterial: string, tier: int): string =
 proc nearestGatherableNode*(state: GameState, player: BotPlayer,
                             preferMaterial: string = ""): Option[BotObject] =
   let maxTier = highestGatherableTier(player)
+  if preferMaterial.len > 0:
+    let baseNode = nearestObject(state, "GatherNodeObj", material = preferMaterial)
+    if baseNode.isSome: return baseNode
   for tier in countdown(maxTier, 1):
     let (matA, matB) = materialsForTier(tier)
     if preferMaterial.len > 0:
@@ -556,8 +666,8 @@ proc nearestGatherableNode*(state: GameState, player: BotPlayer,
 # ── A* Pathfinding ──
 
 const
-  MapWidth* = 32
-  MapHeight* = 32
+  MapWidth* = 48
+  MapHeight* = 48
 
 type
   TilePos* = tuple[tx, ty: int]

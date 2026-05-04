@@ -3,6 +3,7 @@ import std/[os, osproc, strutils, parseopt, strformat]
 const
   BatchSource = "tools" / "batch_market.nim"
   ViewerSource = "marketboard" / "replay_viewer.nim"
+  HeadlessSource = "tools" / "headless_sim.nim"
   DefaultTicks = 10000
   DefaultReplayDir = "replays"
 
@@ -11,11 +12,17 @@ proc repoRoot(): string =
 
 when isMainModule:
   var ticks = DefaultTicks
+  var headless = false
+  var checkpointInterval = 5000
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       if key == "ticks" and val.len > 0:
         ticks = parseInt(val)
+      elif key == "headless":
+        headless = true
+      elif key == "interval" and val.len > 0:
+        checkpointInterval = parseInt(val)
     else: discard
 
   let
@@ -25,29 +32,37 @@ when isMainModule:
     echo "Unable to find 'nim' on PATH."
     quit(1)
 
-  echo "Compiling batch runner..."
-  var rc = execCmd(&"{nimExe} c {rootDir / BatchSource}")
-  if rc != 0:
-    quit(rc)
+  if headless:
+    echo "Compiling headless sim..."
+    var rc = execCmd(&"{nimExe} c {rootDir / HeadlessSource}")
+    if rc != 0:
+      quit(rc)
+    let exe = rootDir / HeadlessSource.changeFileExt(ExeExts[0])
+    quit(execCmd(&"{exe} --ticks:{ticks} --interval:{checkpointInterval}"))
+  else:
+    echo "Compiling batch runner..."
+    var rc = execCmd(&"{nimExe} c {rootDir / BatchSource}")
+    if rc != 0:
+      quit(rc)
 
-  echo "Compiling replay viewer..."
-  rc = execCmd(&"{nimExe} c {rootDir / ViewerSource}")
-  if rc != 0:
-    quit(rc)
+    echo "Compiling replay viewer..."
+    rc = execCmd(&"{nimExe} c {rootDir / ViewerSource}")
+    if rc != 0:
+      quit(rc)
 
-  echo &"Recording 1 match ({ticks} ticks)..."
-  let batchExe = rootDir / BatchSource.changeFileExt(ExeExts[0])
-  rc = execCmd(&"{batchExe} --matches:1 --ticks:{ticks} --fixed-lineup")
-  if rc != 0:
-    echo "Match recording failed."
-    quit(rc)
+    echo &"Recording 1 match ({ticks} ticks)..."
+    let batchExe = rootDir / BatchSource.changeFileExt(ExeExts[0])
+    rc = execCmd(&"{batchExe} --matches:1 --ticks:{ticks} --fixed-lineup")
+    if rc != 0:
+      echo "Match recording failed."
+      quit(rc)
 
-  let replayPath = rootDir / DefaultReplayDir / "match_0000.mbreplay"
-  if not fileExists(replayPath):
-    echo "Replay file not found at ", replayPath
-    quit(1)
+    let replayPath = rootDir / DefaultReplayDir / "match_0000.mbreplay"
+    if not fileExists(replayPath):
+      echo "Replay file not found at ", replayPath
+      quit(1)
 
-  echo "Opening replay viewer..."
-  let viewerExe = rootDir / ViewerSource.changeFileExt(ExeExts[0])
-  let viewerWorkDir = rootDir / "marketboard"
-  quit(execShellCmd(&"cd {viewerWorkDir} && {viewerExe} {replayPath}"))
+    echo "Opening replay viewer..."
+    let viewerExe = rootDir / ViewerSource.changeFileExt(ExeExts[0])
+    let viewerWorkDir = rootDir / "marketboard"
+    quit(execShellCmd(&"cd {viewerWorkDir} && {viewerExe} {replayPath}"))
