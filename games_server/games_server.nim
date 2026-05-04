@@ -1636,6 +1636,7 @@ proc botRunArgs(
     "run",
     "-d",
     "--init",
+    "--add-host=host.docker.internal:host-gateway",
     "--name",
     name,
     "--label",
@@ -1757,23 +1758,39 @@ proc createReplayGame(replay: string): GameContainer =
   result = inspectGame(name)
 
 proc stopBotsForGame(gameName: string) =
-  ## Stops running bot containers attached to one game.
+  ## Stops and removes bot containers attached to one game.
   for bot in botsForGame(safeListBots(), gameName):
     if bot.status == "running":
-      discard requireDocker(@["stop", bot.name])
+      discard dockerResult(@["stop", bot.name])
+    discard dockerResult(@["rm", "-f", bot.name])
 
 proc stopBot(name: string) =
-  ## Stops one running managed bot container.
+  ## Stops and removes one managed bot container.
   let bot = inspectBot(name)
   if bot.status == "running":
-    discard requireDocker(@["stop", bot.name])
+    discard dockerResult(@["stop", bot.name])
+  discard dockerResult(@["rm", "-f", bot.name])
 
 proc stopGame(name: string) =
-  ## Stops a running managed game container.
+  ## Stops and removes a managed game container and its bots.
   let game = inspectGame(name)
   stopBotsForGame(game.name)
   if game.status == "running":
-    discard requireDocker(@["stop", game.name])
+    discard dockerResult(@["stop", game.name])
+  discard dockerResult(@["rm", "-f", game.name])
+
+proc shutdownAll() =
+  ## Stops and removes all managed containers.
+  echo "Shutting down all managed containers..."
+  for bot in safeListBots():
+    if bot.status == "running":
+      discard dockerResult(@["stop", bot.name])
+    discard dockerResult(@["rm", "-f", bot.name])
+  for game in safeListGames():
+    if game.status == "running":
+      discard dockerResult(@["stop", game.name])
+    discard dockerResult(@["rm", "-f", game.name])
+  echo "All containers cleaned up."
 
 proc stopManagedContainer(name: string) =
   ## Stops one managed game, replay server, or bot container.
