@@ -26,7 +26,7 @@ RUN nimby --global sync nimby.lock && \
 
 COPY . .
 WORKDIR /workspace/bitworld/among_them
-ARG NimFlags="-d:release --opt:speed --stackTrace:on"
+ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on"
 ARG NimCommand="c"
 ARG NimMain="among_them.nim"
 RUN nim $NimCommand \

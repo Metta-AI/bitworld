@@ -10,8 +10,6 @@ from std/httpclient import close, getContent, newHttpClient
 const
   DefaultHost = "0.0.0.0"
   DefaultPort = 2080
-  GamePortStart = 2100
-  GamePortEnd = 2199
   MaxBotLaunchCount = 16
   DockerBinEnv = "GAMES_SERVER_DOCKER"
   DockerImageEnv = "GAMES_SERVER_IMAGE"
@@ -426,18 +424,6 @@ proc pullDockerImage(image: string) =
   ## Pulls the latest version of one Docker image.
   discard requireDocker(@["pull", image])
 
-proc portAvailable(port: int): bool =
-  ## Returns true when the host can bind a TCP port.
-  var socket = newSocket()
-  try:
-    socket.setSockOpt(OptReuseAddr, true)
-    socket.bindAddr(Port(port), "0.0.0.0")
-    result = true
-  except OSError:
-    result = false
-  finally:
-    socket.close()
-
 proc cleanContainerName(value: string): string =
   ## Keeps only Docker-safe container name characters.
   for c in value:
@@ -734,11 +720,22 @@ proc botCountField(bot: BotKind): string =
   botKindLabel(bot) & "Bots"
 
 proc findOpenPort(): int =
-  ## Finds the first available game host port.
-  for port in GamePortStart .. GamePortEnd:
-    if portAvailable(port):
-      return port
-  raise newException(GamesServerError, "no free game ports are available")
+  ## Asks the OS to reserve and report one free host port.
+  var socket = newSocket()
+  try:
+    socket.setSockOpt(OptReuseAddr, true)
+    socket.bindAddr(Port(0), "0.0.0.0")
+    let (_, port) = socket.getLocalAddr()
+    result = port.int
+  except OSError as e:
+    raise newException(
+      GamesServerError,
+      "could not ask OS for a free port: " & e.msg
+    )
+  finally:
+    socket.close()
+  if result <= 0:
+    raise newException(GamesServerError, "OS returned an invalid free port")
 
 proc gameName(port: int): string =
   ## Builds a unique Docker container name.
@@ -1376,6 +1373,22 @@ proc stopGame(name: string) =
   stopBotsForGame(game.name)
   if game.status == "running":
     discard requireDocker(@["stop", game.name])
+
+proc stopBotsForStoppedGames(
+  containers: seq[GameContainer],
+  bots: seq[BotContainer]
+): int =
+  ## Stops running bots whose parent game container has stopped.
+  for bot in bots:
+    if bot.status != "running":
+      continue
+    for game in containers:
+      if game.name != bot.game:
+        continue
+      if game.kind == LiveGame and game.status != "running":
+        discard requireDocker(@["stop", bot.name])
+        inc result
+      break
 
 proc parseFormBody(request: Request): seq[(string, string)] =
   ## Parses an application/x-www-form-urlencoded request body.
@@ -2020,8 +2033,7 @@ proc renderPage(
                 say "Replays"
           say replaysTable
           p ".footer small":
-            say "Docker label: " & ServerLabel & ". Ports: " &
-              $GamePortStart & "-" & $GamePortEnd & "."
+            say "Docker label: " & ServerLabel & ". Ports: OS assigned."
 
 proc renderCreatePage(notice = ""): string =
   ## Renders the create-game page.
@@ -2282,8 +2294,10 @@ proc respondIndex(request: Request, notice = "") =
   ## Sends the index page.
   let
     containers = listGames()
-    bots = listBots()
     replays = listReplays()
+  var bots = listBots()
+  if stopBotsForStoppedGames(containers, bots) > 0:
+    bots = listBots()
   request.respondHtml(200, renderPage(
     request,
     liveGames(containers),
