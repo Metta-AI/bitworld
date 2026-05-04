@@ -74,6 +74,26 @@ accepts values such as `motionScale`, `maxSpeed`, `killRange`,
 `killCooldownTicks`, `minPlayers`, `tasksPerPlayer`, `showTaskArrows`, and
 `showTaskBubbles`.
 
+### Persephone's Escape (TypeScript)
+
+Persephone's Escape is a TypeScript game run with `tsx` and uses a different
+CLI convention from the Nim games.  Flags use `--key=value` syntax (not
+`--key:value`), and config is split into two mutually exclusive options:
+
+```text
+--config=NAME          Select a built-in config preset by name
+--config-file=PATH     Load a GameConfig from a JSON file
+```
+
+Available presets are defined in `persephones_escape/game/config_presets.ts`
+(e.g. `default`, `fast`, `tiny`, `short`, `empty`, `simple`, `empty3`,
+`medium`).  JSON config files use the same `GameConfig` shape; role and team
+values may be strings (`"Hades"`, `"TeamA"`) or numeric enum ordinals.
+
+Other server flags: `--address=HOST`, `--port=PORT`, `--seed=N`,
+`--replay=PATH`.  See the doc comment at the top of
+`persephones_escape/server.ts` for full usage details.
+
 ## Replays
 
 Bitworld games can save and load deterministic replay files.

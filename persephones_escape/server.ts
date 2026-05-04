@@ -1,11 +1,38 @@
+/**
+ * Persephone's Escape — WebSocket game server.
+ *
+ * Usage:
+ *   tsx server.ts [options]
+ *
+ * Options:
+ *   --address=HOST       Bind address (default: localhost)
+ *   --port=PORT          Bind port (default: 8080)
+ *   --seed=N             RNG seed (default: 0xb1770)
+ *   --config=NAME        Named config preset (see game/config_presets.ts)
+ *   --config-file=PATH   Load GameConfig from a JSON file
+ *   --replay=PATH        Record a binary replay to PATH
+ *
+ * Config resolution (mutually exclusive):
+ *   --config selects a built-in preset by name (default, fast, tiny, short,
+ *   empty, simple, empty3, medium).  --config-file loads an arbitrary
+ *   GameConfig from a JSON file — role and team values may be specified as
+ *   strings ("Hades", "TeamA") or numeric enum ordinals.  If neither flag
+ *   is given, DEFAULT_GAME_CONFIG is used.
+ *
+ * Examples:
+ *   tsx server.ts
+ *   tsx server.ts --config=simple --seed=42
+ *   tsx server.ts --config-file=my_config.json --port=9090
+ */
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer } from "http";
 import { argv } from "process";
 import { mkdirSync, writeFileSync } from "fs";
-import { Phase, type InputState } from "./game/types.js";
-import { GAME_NAME, TARGET_FPS, playerSpriteName } from "./game/constants.js";
+import { Phase, type InputState, type GameConfig } from "./game/types.js";
+import { GAME_NAME, TARGET_FPS, playerSpriteName, DEFAULT_GAME_CONFIG, playerCountFromConfig } from "./game/constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./game/protocol.js";
 import { Sim } from "./game/sim.js";
+import { CONFIGS, resolveConfigName, loadConfigFile } from "./game/config_presets.js";
 import { render } from "./rendering/renderer.js";
 import { buildGlobalFrame } from "./rendering/globalViewer.js";
 import { ReplayRecorder } from "./replay.js";
@@ -25,6 +52,8 @@ function main() {
   let port = 8080;
   let replayPath: string | null = null;
   let seed = 0xb1770;
+  let configName: string | null = null;
+  let configFile: string | null = null;
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -32,15 +61,35 @@ function main() {
     else if (arg.startsWith("--port=")) port = parseInt(arg.slice("--port=".length));
     else if (arg.startsWith("--replay=")) replayPath = arg.slice("--replay=".length);
     else if (arg.startsWith("--seed=")) seed = parseInt(arg.slice("--seed=".length));
+    else if (arg.startsWith("--config=")) configName = arg.slice("--config=".length);
+    else if (arg.startsWith("--config-file=")) configFile = arg.slice("--config-file=".length);
     else if (i === 2 && !arg.startsWith("-")) host = arg;
     else if (i === 3 && !arg.startsWith("-")) port = parseInt(arg);
   }
 
-  const sim = new Sim(undefined, seed);
+  if (configName && configFile) {
+    console.error("Error: --config and --config-file are mutually exclusive. Pick one.");
+    process.exit(1);
+  }
+
+  let config: GameConfig;
+  let configSource: string;
+  if (configFile) {
+    config = loadConfigFile(configFile);
+    configSource = configFile;
+  } else if (configName) {
+    config = resolveConfigName(configName);
+    configSource = configName;
+  } else {
+    config = DEFAULT_GAME_CONFIG;
+    configSource = "default";
+  }
+
+  const sim = new Sim(config, seed);
   const clients = new Map<WebSocket, ClientState>();
   const globalViewers = new Set<WebSocket>();
   const recorder = replayPath
-    ? new ReplayRecorder(seed, replayPath, JSON.stringify({ seed }))
+    ? new ReplayRecorder(seed, replayPath, JSON.stringify({ seed, config: configSource }))
     : null;
 
   const httpServer = createServer((req, res) => {
@@ -116,6 +165,7 @@ function main() {
 
   httpServer.listen(port, host, () => {
     console.log(`${GAME_NAME} listening on ws://${host}:${port}/player`);
+    console.log(`Config: ${configSource} (${playerCountFromConfig(config)} players, ${config.rounds.length} rounds)`);
     if (recorder) console.log(`Recording replay to ${replayPath}`);
   });
 

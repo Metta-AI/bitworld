@@ -2,8 +2,12 @@
  * Automated match tester — runs LLM bots vs smart bots and reports win rates.
  *
  * Usage:
- *   tsx test_harness.ts [--matches N] [--config fast|medium] [--llm-bots N]
+ *   tsx test_harness.ts [--matches N] [--config NAME] [--llm-bots N]
  *                       [--smart-bots N] [--port PORT] [--replay-dir DIR]
+ *                       [--model MODEL] [--bot-script PATH] [--bot-prefix PFX]
+ *
+ * Available config presets (defined in game/config_presets.ts):
+ *   default, fast, tiny, short, empty, simple, empty3, medium
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -18,59 +22,7 @@ import { Sim } from "../game/sim.js";
 import { render } from "../rendering/renderer.js";
 import { ReplayRecorder } from "../replay.js";
 import { buildGlobalFrame } from "../rendering/globalViewer.js";
-
-// ---------------------------------------------------------------------------
-// Config presets
-// ---------------------------------------------------------------------------
-
-const CONFIGS: Record<string, GameConfig> = {
-  tiny: {
-    ...DEFAULT_GAME_CONFIG,
-    rounds: [{ durationSecs: 1, hostages: 1 }],
-  },
-  short: {
-    ...DEFAULT_GAME_CONFIG,
-    rounds: [{ durationSecs: 30, hostages: 1 }],
-  },
-  empty: {
-    ...DEFAULT_GAME_CONFIG,
-    rounds: [{ durationSecs: 30, hostages: 1 }],
-    obstacleCount: 0,
-  },
-  simple: {
-    // Simple test: 6 players (all 4 key roles + 1 Shades + 1 Nymphs grunt),
-    // LLMs all in RoomA together, no obstacles, 60s round.
-    roles: [
-      { role: Role.Hades, team: Team.TeamA, count: 1 },
-      { role: Role.Persephone, team: Team.TeamB, count: 1 },
-      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
-      { role: Role.Demeter, team: Team.TeamB, count: 1 },
-      { role: Role.Shades, team: Team.TeamA, count: 1 },
-      { role: Role.Nymphs, team: Team.TeamB, count: 1 },
-    ],
-    rounds: [{ durationSecs: 60, hostages: 1 }],
-    obstacleCount: 0,
-    groupNamePrefixInRoomA: "llm_",
-  },
-  empty3: {
-    ...DEFAULT_GAME_CONFIG,
-    rounds: [
-      { durationSecs: 45, hostages: 2 },
-      { durationSecs: 45, hostages: 2 },
-      { durationSecs: 45, hostages: 2 },
-    ],
-    obstacleCount: 0,
-  },
-  fast: DEFAULT_GAME_CONFIG,
-  medium: {
-    ...DEFAULT_GAME_CONFIG,
-    rounds: [
-      { durationSecs: 180, hostages: 1 },
-      { durationSecs: 120, hostages: 1 },
-      { durationSecs: 60, hostages: 1 },
-    ],
-  },
-};
+import { CONFIGS } from "../game/config_presets.js";
 
 // ---------------------------------------------------------------------------
 // CLI args
