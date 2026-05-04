@@ -219,6 +219,10 @@ sprite-based player endpoints such as `/player2`, where the server renders the
 game through this protocol but still accepts the same controls as the original
 `/player` endpoint.
 
+Player endpoints may accept the same join query parameters as `/player`:
+`name`, `slot`, and `token`. `slot` is zero-based and lets the server assign a
+stable player position. `token` may be used for simple slot auth.
+
 | Field | Type | Notes |
 | --- | --- | --- |
 | Message type | `u8` | `0x84` |

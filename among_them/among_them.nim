@@ -1,15 +1,18 @@
-import protocol, sim, server
-import std/[parseopt, strutils]
+import
+  std/[os, parseopt, strutils],
+  protocol, sim, server
 
 when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
     configJson = ""
-    configPath = ""
+    configPath = getEnv("COGAME_CONFIG_PATH")
     mapPath = ""
-    saveReplayPath = ""
+    saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH")
     loadReplayPath = ""
+    saveScoresPath = getEnv("COGAME_SAVE_RESULTS_PATH")
+    messageCooldown = -1
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -28,6 +31,10 @@ when isMainModule:
         saveReplayPath = val
       of "load-replay":
         loadReplayPath = val
+      of "save-scores":
+        saveScoresPath = val
+      of "message-cooldown":
+        messageCooldown = max(0, parseInt(val))
       else: discard
     else: discard
   var config = defaultGameConfig()
@@ -37,4 +44,22 @@ when isMainModule:
     config.update(configJson)
   if mapPath.len > 0:
     config.mapPath = mapPath
-  runServerLoop(address, port, config, saveReplayPath, loadReplayPath)
+  if messageCooldown >= 0:
+    config.messageCooldownTicks = messageCooldown
+  echo "Using map file: " & config.mapPath
+  if configPath.len > 0:
+    echo "Using config file: " & configPath
+  if loadReplayPath.len > 0:
+    echo "Using replay load file: " & loadReplayPath
+  if saveReplayPath.len > 0:
+    echo "Using replay save file: " & saveReplayPath
+  if saveScoresPath.len > 0:
+    echo "Using results save file: " & saveScoresPath
+  runServerLoop(
+    address,
+    port,
+    config,
+    saveReplayPath,
+    loadReplayPath,
+    saveScoresPath
+  )

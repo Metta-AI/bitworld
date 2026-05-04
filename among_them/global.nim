@@ -1,6 +1,7 @@
 import std/os
 import supersnappy
 import protocol, sim
+import ../common/pixelfonts
 import ../common/server
 
 const
@@ -23,16 +24,23 @@ const
   InterstitialObjectId = 4005
   InterstitialLayerId = 2
   InterstitialLayerType = 2
-  ImposterBarSpriteId = 701
+  ImposterBarSpriteBase = 740
   ImposterBarObjectBase = 5000
   ImposterBarWidth = 10
   ImposterBarHeight = 2
   ImposterBarYOffset = 4
+  ImposterBarBackgroundColor = 5'u8
+  ImposterBarReadyColor = 3'u8
   TrailDotSpriteBase = 720
   TrailDotObjectBase = 6000
   TrailDotSize = 3
   TrailDotSpacing = 10
   TrailMaxDots = 10
+  PlayerNameSpriteBase = 7000
+  PlayerNameObjectBase = 7000
+  PlayerNameZ = 30002
+  PlayerNameMaxChars = 16
+  PlayerNameColor = 2'u8
   TransportIconSize = 6
   TransportIconHeight = 6
   TransportIconCount = 5
@@ -132,6 +140,7 @@ type
     objectId: int
     x, y, z: int
     color: uint8
+    struck: bool
     label: string
     lines: seq[string]
 
@@ -509,11 +518,23 @@ proc buildSolidSprite(width, height: int, color: uint8): seq[uint8] =
   for i in 0 ..< width * height:
     result.putRgbaPixel(i, color)
 
-proc buildImposterBarSprite(): seq[uint8] =
-  ## Builds the global-only red impostor marker sprite.
+proc buildImposterBarSprite(
+  cooldown, maxCooldown: int
+): seq[uint8] =
+  ## Builds the global-only impostor cooldown indicator sprite.
   result = newRgbaPixels(ImposterBarWidth, ImposterBarHeight)
   for i in 0 ..< ImposterBarWidth * ImposterBarHeight:
-    result.putRgbaPixel(i, TintColor)
+    result.putRgbaPixel(i, ImposterBarBackgroundColor)
+  let filled =
+    if maxCooldown <= 0 or cooldown <= 0:
+      ImposterBarWidth
+    else:
+      let remaining = clamp(cooldown, 0, maxCooldown)
+      let ready = maxCooldown - remaining
+      clamp((ready * ImposterBarWidth) div maxCooldown, 0, ImposterBarWidth)
+  for y in 0 ..< ImposterBarHeight:
+    for x in 0 ..< filled:
+      result.putRgbaPixel(y * ImposterBarWidth + x, ImposterBarReadyColor)
 
 proc buildTrailDotSprite(color: uint8): seq[uint8] =
   ## Builds one global-only player trail dot sprite.
@@ -566,15 +587,14 @@ proc putTextSpritePixel(
 proc blitGlyph(
   target: var seq[uint8],
   targetWidth, targetHeight: int,
-  sprite: Sprite,
+  glyph: PixelGlyph,
   baseX, baseY: int,
   color: uint8
 ) =
   ## Blits a single-color glyph into protocol pixels.
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] ==
-          TransparentColorIndex:
+  for y in 0 ..< glyph.height:
+    for x in 0 ..< glyph.width:
+      if not glyph.glyphPixel(x, y):
         continue
       target.putTextSpritePixel(
         targetWidth,
@@ -595,48 +615,53 @@ proc blitSmallText(
   ## Blits small text into protocol pixels.
   var x = baseX
   for ch in text:
-    let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < game.asciiSprites.len:
-      target.blitGlyph(
-        targetWidth,
-        targetHeight,
-        game.asciiSprites[idx],
-        x,
-        baseY,
-        color
-      )
-    x += 7
+    let glyph = game.asciiSprites.glyphAt(ch)
+    target.blitGlyph(
+      targetWidth,
+      targetHeight,
+      glyph,
+      x,
+      baseY,
+      color
+    )
+    x += game.asciiSprites.glyphAdvance(ch)
 
 proc buildSpriteProtocolTextSprite(
   game: SimServer,
   lines: openArray[string],
-  color: uint8
+  color: uint8,
+  struck = false
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a transparent multi-line text sprite.
   result.width = 1
   for line in lines:
-    result.width = max(result.width, line.len * 7)
-  result.height = max(1, lines.len * 9)
+    result.width = max(result.width, game.asciiSprites.textWidth(line))
+  result.height = max(1, lines.len * TextLineHeight)
   result.pixels = newRgbaPixels(result.width, result.height)
   for lineIndex, line in lines:
-    let baseY = lineIndex * 9
+    let baseY = lineIndex * TextLineHeight
     var baseX = 0
     for ch in line:
-      let idx = sim.asciiIndex(ch)
-      if idx >= 0 and idx < game.asciiSprites.len:
-        let sprite = game.asciiSprites[idx]
-        for y in 0 ..< sprite.height:
-          for x in 0 ..< sprite.width:
-            if sprite.pixels[sprite.spriteIndex(x, y)] !=
-                TransparentColorIndex:
-              result.pixels.putTextSpritePixel(
-                result.width,
-                result.height,
-                baseX + x,
-                baseY + y,
-                color
-              )
-      baseX += 7
+      let glyph = game.asciiSprites.glyphAt(ch)
+      result.pixels.blitGlyph(
+        result.width,
+        result.height,
+        glyph,
+        baseX,
+        baseY,
+        color
+      )
+      baseX += game.asciiSprites.glyphAdvance(ch)
+    if struck:
+      let lineY = baseY + 3
+      for x in 0 ..< game.asciiSprites.textWidth(line):
+        result.pixels.putTextSpritePixel(
+          result.width,
+          result.height,
+          x,
+          lineY,
+          3'u8
+        )
 
 proc textLabel(lines: openArray[string]): string =
   ## Returns a debugger label for one rendered text sprite.
@@ -645,12 +670,17 @@ proc textLabel(lines: openArray[string]): string =
       result.add("\n")
     result.add(line)
 
+proc centeredTextX(sim: SimServer, text: string): int =
+  ## Returns the centered x position for interstitial text.
+  (ScreenWidth - sim.asciiSprites.textWidth(text)) div 2
+
 proc addTextItem(
   items: var seq[ProtocolTextItem],
   x, y: int,
   lines: openArray[string],
   label = "",
-  color = ProtocolTextColor
+  color = ProtocolTextColor,
+  struck = false
 ) =
   ## Adds one text sprite placement to an interstitial layout.
   let index = items.len
@@ -660,7 +690,8 @@ proc addTextItem(
     x: x,
     y: y,
     z: ProtocolTextZ,
-    color: color
+    color: color,
+    struck: struck
   )
   for line in lines:
     item.lines.add(line)
@@ -679,27 +710,27 @@ proc addVisibleVoteChatText(
   ## Adds separate text sprites for visible voting chat messages.
   let
     chatH = ScreenHeight - chatY - 3
-    textX = 21
+    textX = VoteChatTextX
   if chatH <= 0:
     return
   var
     visible: seq[int] = @[]
     usedH = 0
   for i in countdown(sim.chatMessages.high, 0):
-    let messageH = sim.chatMessages[i].text.chatMessageHeight()
-    if usedH + messageH > chatH - 4:
+    let messageH = sim.asciiSprites.chatMessageHeight(sim.chatMessages[i].text)
+    if usedH + messageH > chatH - 2:
       break
     visible.add(i)
     usedH += messageH
-  var rowY = chatY + 2
+  var rowY = chatY + 1
   for j in countdown(visible.high, 0):
     let
       message = sim.chatMessages[visible[j]]
-      lineCount = message.text.chatLineCount()
-      messageH = message.text.chatMessageHeight()
+      lineCount = sim.asciiSprites.chatLineCount(message.text)
+      messageH = sim.asciiSprites.chatMessageHeight(message.text)
     var lines: seq[string] = @[]
     for lineIndex in 0 ..< lineCount:
-      lines.add(message.text.sliceChatLine(lineIndex))
+      lines.add(sim.asciiSprites.sliceChatLine(message.text, lineIndex))
     items.addTextItem(textX, rowY, lines, message.text)
     rowY += messageH
 
@@ -713,25 +744,25 @@ proc addVisibleVoteChatIcons(
   ## Adds separate player sprites for visible voting chat speakers.
   let
     chatH = ScreenHeight - chatY - 3
-    iconX = 4
+    iconX = VoteChatIconX
   if chatH <= 0:
     return
   var
     visible: seq[int] = @[]
     usedH = 0
   for i in countdown(sim.chatMessages.high, 0):
-    let messageH = sim.chatMessages[i].text.chatMessageHeight()
-    if usedH + messageH > chatH - 4:
+    let messageH = sim.asciiSprites.chatMessageHeight(sim.chatMessages[i].text)
+    if usedH + messageH > chatH - 2:
       break
     visible.add(i)
     usedH += messageH
-  var rowY = chatY + 2
+  var rowY = chatY + 1
   for j in countdown(visible.high, 0):
     let
       message = sim.chatMessages[visible[j]]
-      lineCount = message.text.chatLineCount()
-      messageH = message.text.chatMessageHeight()
-      iconY = rowY + max(0, (lineCount * 9 - SpriteSize) div 2)
+      lineCount = sim.asciiSprites.chatLineCount(message.text)
+      messageH = sim.asciiSprites.chatMessageHeight(message.text)
+      iconY = rowY + max(0, (lineCount * TextLineHeight - SpriteSize) div 2)
       objectId = ProtocolChatIconObjectBase + j
       spriteId = PlayerSpriteBase + playerColorIndex(message.color) * 2
     currentIds.add(objectId)
@@ -753,21 +784,39 @@ proc interstitialTextItems(
   case sim.phase
   of Lobby:
     let needed = max(0, sim.config.minPlayers - sim.players.len)
-    result.addTextItem(11, 4, ["WAITING"])
     if needed > 0:
-      result.addTextItem(2, 14, ["NEED MORE!"])
+      result.addTextItem(sim.centeredTextX("WAITING"), 4, ["WAITING"])
+      result.addTextItem(sim.centeredTextX("NEED MORE!"), 14, ["NEED MORE!"])
     else:
-      result.addTextItem(14, 14, ["READY!"])
+      result.addTextItem(sim.centeredTextX("GAME"), 2, ["GAME"])
+      result.addTextItem(sim.centeredTextX("STARTING"), 11, ["STARTING"])
+      let
+        seconds = sim.lobbyStartSecondsRemaining()
+        line = "IN " & $seconds
+      if seconds > 0:
+        result.addTextItem(sim.centeredTextX(line), 20, [line])
   of Playing:
     if playerIndex < 0 or playerIndex >= sim.players.len:
-      result.addTextItem(11, 22, ["GAME IN"])
-      result.addTextItem(8, 32, ["PROGRESS"])
+      let
+        gap = 10
+        blockH = sim.asciiSprites.height * 2 + gap
+        startY = (ScreenHeight - blockH) div 2
+      result.addTextItem(sim.centeredTextX("GAME IN"), startY, ["GAME IN"])
+      result.addTextItem(
+        sim.centeredTextX("PROGRESS"),
+        startY + sim.asciiSprites.height + gap,
+        ["PROGRESS"]
+      )
   of RoleReveal:
     let viewerIsImp =
       playerIndex >= 0 and playerIndex < sim.players.len and
       sim.players[playerIndex].role == Imposter
     let title = if viewerIsImp: "IMPS" else: "CREWMATE"
-    result.addTextItem((ScreenWidth - title.len * 7) div 2, 14, [title])
+    result.addTextItem(
+      (ScreenWidth - sim.asciiSprites.textWidth(title)) div 2,
+      14,
+      [title]
+    )
   of Voting:
     let n = sim.players.len
     if n > 0:
@@ -784,14 +833,20 @@ proc interstitialTextItems(
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej < 0 or ej >= sim.players.len:
-      result.addTextItem(46, 54, ["NO ONE"])
-      result.addTextItem(52, 64, ["DIED"])
+      result.addTextItem(sim.centeredTextX("NO ONE") + 3, 54, ["NO ONE"])
+      result.addTextItem(sim.centeredTextX("DIED") + 3, 64, ["DIED"])
+    else:
+      result.addTextItem(sim.centeredTextX("WAS KILLED"), 46, ["WAS KILLED"])
   of GameOver:
     let title =
-      if sim.winner == Crewmate: "CREW WINS"
-      else: "IMPS WIN"
+      if sim.timeLimitReached:
+        "DRAW"
+      elif sim.winner == Crewmate:
+        "CREW WINS"
+      else:
+        "IMPS WIN"
     let
-      titleW = title.len * 7
+      titleW = sim.asciiSprites.textWidth(title)
       titleX = (ScreenWidth - titleW) div 2
       rowH = 14
       rowsPerCol = 8
@@ -808,7 +863,7 @@ proc interstitialTextItems(
         textX = baseX + textOffsetX
         textY = startY + row * rowH + (rowH - 6) div 2
         roleText = if p.role == Imposter: "IMP" else: "CREW"
-      result.addTextItem(textX, textY, [roleText])
+      result.addTextItem(textX, textY, [roleText], struck = not p.alive)
 
 proc addProtocolTextSprites(
   sim: SimServer,
@@ -821,7 +876,11 @@ proc addProtocolTextSprites(
   ## Adds separate text sprites for current interstitial text.
   let items = sim.interstitialTextItems(playerIndex)
   for item in items:
-    let text = sim.buildSpriteProtocolTextSprite(item.lines, item.color)
+    let text = sim.buildSpriteProtocolTextSprite(
+      item.lines,
+      item.color,
+      item.struck
+    )
     currentIds.add(item.objectId)
     packet.addSpriteChanged(
       spriteDefs,
@@ -877,10 +936,10 @@ proc putProtocolSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
     fb.putPixel(x, y, color)
     fb.putPixel(x + 1, y, color)
 
-proc buildSpriteProtocolBlankFrame(color = 0'u8): seq[uint8] =
+proc buildSpriteProtocolBlankFrame(sim: SimServer): seq[uint8] =
   ## Builds a packed blank frame for sprite protocol interstitials.
   var fb = initFramebuffer()
-  fb.clearFrame(color)
+  sim.fillDarkBg(fb)
   fb.packFramebuffer()
   fb.packed
 
@@ -890,7 +949,7 @@ proc buildSpriteProtocolVoteFrame(
 ): seq[uint8] =
   ## Builds a voting background without baked text or player icons.
   var fb = initFramebuffer()
-  fb.clearFrame(0)
+  sim.fillDarkBg(fb)
   let n = sim.players.len
   if n == 0:
     fb.packFramebuffer()
@@ -957,9 +1016,9 @@ proc buildSpriteProtocolVoteFrame(
       inc skipVoterRow
 
   let
-    chatX = 1
+    chatX = 0
     chatY = skipY + 10
-    chatW = ScreenWidth - 2
+    chatW = ScreenWidth
     chatH = ScreenHeight - chatY - 3
   if chatH > 0:
     fb.fillRect(chatX, chatY, chatW, chatH, 0)
@@ -1034,7 +1093,7 @@ proc addProtocolLobbyActorSprites(
   ## Adds separate player sprites for the lobby interstitial.
   if sim.phase != Lobby:
     return
-  let startY = 26
+  let startY = sim.lobbyIconStartY()
   for i in 0 ..< sim.players.len:
     let
       col = i mod 6
@@ -1210,7 +1269,7 @@ proc buildInterstitialFrame(
     if includeText:
       sim.buildLobbyFrame(-1)
     else:
-      buildSpriteProtocolBlankFrame()
+      sim.buildSpriteProtocolBlankFrame()
   of Voting:
     if includeText:
       sim.buildVoteFrame(-1)
@@ -1220,12 +1279,12 @@ proc buildInterstitialFrame(
     if includeText:
       sim.buildResultFrame(-1)
     else:
-      buildSpriteProtocolBlankFrame()
+      sim.buildSpriteProtocolBlankFrame()
   of GameOver:
     if includeText:
       sim.buildGameOverFrame(-1)
     else:
-      buildSpriteProtocolBlankFrame()
+      sim.buildSpriteProtocolBlankFrame()
   else:
     @[]
 
@@ -1261,14 +1320,6 @@ proc buildSpriteProtocolInit(
     sim.taskIconSprite.height,
     taskPixels,
     "task bubble"
-  )
-  result.addSpriteChanged(
-    spriteDefs,
-    ImposterBarSpriteId,
-    ImposterBarWidth,
-    ImposterBarHeight,
-    buildImposterBarSprite(),
-    "imposter marker"
   )
   for i in 0 ..< PlayerColors.len:
     result.addSpriteChanged(
@@ -1534,6 +1585,59 @@ proc spriteImposterBarObjectId(player: Player): int =
   ## Returns the stable global protocol object id for an impostor bar.
   ImposterBarObjectBase + player.joinOrder
 
+proc spriteImposterBarSpriteId(player: Player): int =
+  ## Returns the global protocol sprite id for one impostor's cooldown bar.
+  ImposterBarSpriteBase + player.joinOrder
+
+proc spritePlayerNameObjectId(player: Player): int =
+  ## Returns the stable global protocol object id for a player name label.
+  PlayerNameObjectBase + player.joinOrder
+
+proc spritePlayerNameSpriteId(player: Player): int =
+  ## Returns the global protocol sprite id for a player name label.
+  PlayerNameSpriteBase + player.joinOrder
+
+proc playerLabelText(player: Player): string =
+  ## Returns the per-player name label text for the global viewer.
+  result = player.address
+  if result.len == 0:
+    result = "?"
+  if result.len > PlayerNameMaxChars:
+    result.setLen(PlayerNameMaxChars)
+
+proc voteLabelLine(sim: SimServer, playerIndex: int): string =
+  ## Returns the vote indicator line for one player during a vote.
+  if sim.phase notin {Voting, VoteResult}:
+    return ""
+  if playerIndex < 0 or playerIndex >= sim.voteState.votes.len:
+    return ""
+  if not sim.players[playerIndex].alive:
+    return ""
+  let vote = sim.voteState.votes[playerIndex]
+  if vote == -1:
+    return "-> ?"
+  if vote == -2:
+    return "-> skip"
+  if vote < 0 or vote >= sim.players.len:
+    return ""
+  var target = sim.players[vote].address
+  if target.len == 0:
+    target = "?"
+  if target.len > PlayerNameMaxChars:
+    target.setLen(PlayerNameMaxChars)
+  "-> " & target
+
+proc playerLabelLines(
+  sim: SimServer,
+  player: Player,
+  playerIndex: int
+): seq[string] =
+  ## Returns label lines (name plus optional vote) for one player.
+  result = @[playerLabelText(player)]
+  let voteLine = voteLabelLine(sim, playerIndex)
+  if voteLine.len > 0:
+    result.add(voteLine)
+
 proc spriteTrailDotObjectId(joinOrder, dotIndex: int): int =
   ## Returns the stable global protocol object id for a trail dot.
   TrailDotObjectBase + joinOrder * TrailMaxDots + dotIndex
@@ -1631,7 +1735,7 @@ proc updateTrails(state: var GlobalViewerState, sim: SimServer) =
 proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   ## Returns the sprite id for a player in the global viewer.
   let
-    colorIndex = player.joinOrder mod PlayerColors.len
+    colorIndex = playerColorIndex(player.color)
     side = if player.flipH: 1 else: 0
     selected = player.joinOrder == selectedJoinOrder
   if player.alive and selected:
@@ -1779,13 +1883,13 @@ proc buildSpriteProtocolPlayerUpdates*(
     let packedFrame =
       if sim.phase == Playing and
           (playerIndex < 0 or playerIndex >= sim.players.len):
-        buildSpriteProtocolBlankFrame()
+        sim.buildSpriteProtocolBlankFrame()
       elif sim.phase in {Lobby, RoleReveal}:
-        buildSpriteProtocolBlankFrame()
+        sim.buildSpriteProtocolBlankFrame()
       elif sim.phase == Voting:
         sim.buildSpriteProtocolVoteFrame(playerIndex)
       elif sim.phase in {VoteResult, GameOver}:
-        buildSpriteProtocolBlankFrame()
+        sim.buildSpriteProtocolBlankFrame()
       else:
         sim.render(playerIndex)
     let interstitial = spritePixelsFromPackedFrame(packedFrame)
@@ -2226,7 +2330,7 @@ proc buildSpriteProtocolUpdates*(
       nextState.mouseY,
       replayMaxTick
     )
-    if replayTick >= 0 and seekTick >= 0:
+    if replayEnabled and replayTick >= 0 and seekTick >= 0:
       nextState.scrubbingReplay = true
       nextState.replaySeekTick = seekTick
     elif replayTick >= 0:
@@ -2244,7 +2348,8 @@ proc buildSpriteProtocolUpdates*(
       nextState.selectedJoinOrder =
         sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
     nextState.clickPending = false
-  if replayTick >= 0 and nextState.mouseDown and nextState.scrubbingReplay:
+  if replayEnabled and replayTick >= 0 and nextState.mouseDown and
+      nextState.scrubbingReplay:
     let seekTick = replayScrubTickAt(
       nextState.mouseLayer,
       nextState.mouseX,
@@ -2286,7 +2391,8 @@ proc buildSpriteProtocolUpdates*(
         TrailDotSpriteBase + dot.colorIndex
       )
 
-  for player in sim.players:
+  for playerIndex in 0 ..< sim.players.len:
+    let player = sim.players[playerIndex]
     let objectId = player.spriteObjectId()
     currentIds.add(objectId)
     result.addObject(
@@ -2300,17 +2406,56 @@ proc buildSpriteProtocolUpdates*(
     if player.role == Imposter:
       let
         barObjectId = player.spriteImposterBarObjectId()
+        barSpriteId = player.spriteImposterBarSpriteId()
         barX = player.spritePlayerX() +
           (sim.playerSprite.width + 2 - ImposterBarWidth) div 2
         barY = player.spritePlayerY() - ImposterBarYOffset
       currentIds.add(barObjectId)
+      result.addSprite(
+        barSpriteId,
+        ImposterBarWidth,
+        ImposterBarHeight,
+        buildImposterBarSprite(
+          player.killCooldown,
+          sim.config.killCooldownTicks
+        )
+      )
       result.addObject(
         barObjectId,
         barX,
         barY,
         30001,
         MapLayerId,
-        ImposterBarSpriteId
+        barSpriteId
+      )
+
+    if sim.config.showPlayerLabels:
+      let
+        labelLines = playerLabelLines(sim, player, playerIndex)
+        label = sim.buildSpriteProtocolTextSprite(
+          labelLines,
+          PlayerNameColor
+        )
+        labelSpriteId = player.spritePlayerNameSpriteId()
+        labelObjectId = player.spritePlayerNameObjectId()
+        labelX = player.spritePlayerX() +
+          (sim.playerSprite.width + 2 - label.width) div 2
+        labelY = player.spritePlayerY() - ImposterBarYOffset -
+          label.height - 1
+      currentIds.add(labelObjectId)
+      result.addSprite(
+        labelSpriteId,
+        label.width,
+        label.height,
+        label.pixels
+      )
+      result.addObject(
+        labelObjectId,
+        labelX,
+        labelY,
+        PlayerNameZ,
+        MapLayerId,
+        labelSpriteId
       )
 
   for i in 0 ..< sim.bodies.len:
@@ -2440,7 +2585,7 @@ proc buildSpriteProtocolUpdates*(
     scrubber = buildReplayScrubberSprite(
       controlTick,
       controlMaxTick,
-      replayEnabled
+      replayEnabled or controlMaxTick > 0
     )
     controls = sim.buildReplayControlsSprite(
       replayPlaying,

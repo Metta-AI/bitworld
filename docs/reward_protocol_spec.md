@@ -49,6 +49,23 @@ The current required name is:
 
 The server must send one `reward` line for each player in each tick packet.
 
+Servers may also emit per-player stat lines using the same line format.
+A receiver should treat any unknown name as opaque and ignore it. The
+following names are currently emitted by Among Them and are stable:
+
+| Name | Meaning |
+| --- | --- |
+| `wins_imposter` | Lifetime games won as impostor |
+| `wins_crewmate` | Lifetime games won as crewmate |
+| `games_imposter` | Lifetime games started as impostor |
+| `games_crewmate` | Lifetime games started as crewmate |
+| `kills` | Lifetime kills (impostor) |
+| `tasks` | Lifetime task completions |
+
+Stat values are cumulative for the lifetime of one player identity on the
+server. They reset only when the server restarts (current Among Them
+behavior; future implementations may persist them).
+
 ## Multiple Players
 
 A packet may contain reward data for multiple players. Each line identifies the

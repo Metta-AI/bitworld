@@ -7,6 +7,7 @@ switch("path", RootDir & "/src")
 switch("path", RootDir & "/../mummy/src")
 switch("path", RootDir & "/../paddy/src")
 switch("path", RootDir & "/../whisky/src")
+switch("outdir", thisDir() & "/out")
 
 when defined(emscripten):
   const OutputDir = RootDir / "among_them" / "emscripten"
@@ -71,3 +72,7 @@ else:
   when not defined(debug):
     --define:release
     --define:noAutoGLerrorCheck
+
+  # Bots that connect outbound need OpenSSL so they can talk wss://.
+  when projectName() == "nottoodumb":
+    --define:ssl

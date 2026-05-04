@@ -30,6 +30,8 @@ proc usage(): string =
   "Usage: quick_player <player_nim_file> --players:N " &
     "[--address:ADDR] [--port:N] [--gui] [--name-prefix:NAME] " &
     "[--map:PATH]\n" &
+    "If --name-prefix is omitted the player file label is used " &
+    "(e.g. 'nottoodumb1', 'nottoodumb2', ...).\n" &
     "Example: quick_player nottoodumb --players:4 " &
     "--address:0.0.0.0 --port:2000\n" &
     "Example: quick_player among_them/players/nottoodumb.nim " &
@@ -84,7 +86,9 @@ proc ensurePlayerFile(
 
 proc exePathFor(rootDir, sourceRelative: string): string =
   ## Returns the compiled executable path for one source file.
-  absolutePath(rootDir / sourceRelative.changeFileExt(ExeExts[0]))
+  ## Mirrors `--outdir:./out` from config.nims.
+  let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
+  absolutePath(rootDir / "out" / exeName)
 
 proc stopManagedProcess(processRef: var Process, label: string) =
   ## Stops and closes one managed process.
@@ -205,7 +209,7 @@ proc parseArgs(): QuickPlayerConfig =
     pendingPlayers = false
   result.address = DefaultAddress
   result.port = DefaultPort
-  result.namePrefix = "player"
+  result.namePrefix = ""
   for kind, key, val in getopt():
     case kind
     of cmdArgument:
@@ -269,6 +273,9 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
   let
     player = ensurePlayerFile(rootDir, config.playerFile)
     playerExe = exePathFor(rootDir, player.sourceRelative)
+    namePrefix =
+      if config.namePrefix.len > 0: config.namePrefix
+      else: player.label
     addressArg = "--address:" & config.address
     portArg = "--port:" & $config.port
     mapArg =
@@ -291,7 +298,7 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
     var args = @[
       addressArg,
       portArg,
-      "--name:" & config.namePrefix & $(i + 1)
+      "--name:" & namePrefix & $(i + 1)
     ]
     if config.gui:
       args.add("--gui")
