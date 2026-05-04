@@ -35,7 +35,7 @@ size.
 
 `among_them` also supports `--observation-mode player2` for compact
 render-source training. Player2 observations use a small visible-only schema:
-five header bytes, a sampled map-color grid, and visible player, body, task
+four header bytes, a sampled map-color grid, and visible player, body, task
 icon, task arrow, and voting UI slots from the same inputs that feed the
 `/player2` sprite route.
 

@@ -338,15 +338,15 @@ type
     viewerIsGhost*: bool
 
 const
-  Player2ObservationHeaderFeatures = 5
+  Player2ObservationHeaderFeatures = 4
   Player2ObservationGridSize = 32
   Player2ObservationGridFeatures = Player2ObservationGridSize * Player2ObservationGridSize
   Player2ObservationPlayerSlots = MaxPlayers
-  Player2ObservationPlayerFeatures = 5
+  Player2ObservationPlayerFeatures = 4
   Player2ObservationBodySlots = MaxPlayers
   Player2ObservationBodyFeatures = 4
   Player2ObservationTaskSlots = 15
-  Player2ObservationTaskFeatures = 6
+  Player2ObservationTaskFeatures = 5
   Player2ObservationGridOffset = Player2ObservationHeaderFeatures
   Player2ObservationPlayerOffset = Player2ObservationGridOffset + Player2ObservationGridFeatures
   Player2ObservationBodyOffset =
@@ -359,25 +359,18 @@ const
   RenderHeaderKillIcon = 1
   RenderHeaderTaskProgress = 2
   RenderHeaderTasksRemaining = 3
-  RenderHeaderVoteTimer = 4
 
   RenderPlayerFlagsFeature = 3
-  RenderPlayerAuxFeature = 4
 
   RenderTaskFlagsFeature = 4
-  RenderTaskProgressFeature = 5
 
   RenderPlayerPresent = 1'u8
-  RenderPlayerSelf = 2'u8
   RenderPlayerAlive = 4'u8
-  RenderPlayerRoleImposter = 8'u8
   RenderPlayerFlipH = 16'u8
   RenderPlayerGhost = 32'u8
-  RenderPlayerSelected = 64'u8
 
   RenderTaskIconVisible = 1'u8
   RenderTaskArrowVisible = 2'u8
-  RenderTaskActive = 4'u8
 
 proc gameDir*(): string =
   ## Returns the Among Them game directory.
@@ -2874,15 +2867,6 @@ proc player2ObservationProgressByte(progress, totalTicks, barWidth: int): uint8 
   let filled = clamp(progress * barWidth div totalTicks, 0, barWidth)
   uint8(filled * 255 div barWidth)
 
-proc player2ObservationVoteTimerByte(sim: SimServer): uint8 =
-  if sim.phase != Voting or sim.config.voteTimerTicks <= 0:
-    return 0'u8
-  player2ObservationProgressByte(
-    sim.voteState.voteTimer,
-    sim.config.voteTimerTicks,
-    ScreenWidth - 4
-  )
-
 proc player2ObservationKillIconByte(sim: SimServer, playerIndex: int): uint8 =
   if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
     return 0'u8
@@ -2906,8 +2890,6 @@ proc writePlayer2ObservationHeader(
         TaskBarWidth
       )
     output[RenderHeaderTasksRemaining] = uint8(clamp(sim.totalTasksRemaining(), 0, 255))
-  elif sim.phase == Voting:
-    output[RenderHeaderVoteTimer] = sim.player2ObservationVoteTimerByte()
 
 proc writePlayer2ObservationGrid(
   sim: SimServer,
@@ -2934,30 +2916,35 @@ proc writePlayer2ObservationGrid(
         color = sim.mapPixels[mapIdx] and 0x0F
       output[index] = color
 
+proc writePlayer2ObservationPlayerSlotAt(
+  sim: SimServer,
+  playerIndex, targetIndex, slotIndex, sx, sy: int,
+  flags: uint8,
+  output: var openArray[uint8]
+) =
+  let
+    player = sim.players[targetIndex]
+    base = Player2ObservationPlayerOffset + slotIndex * Player2ObservationPlayerFeatures
+  output[base] = uint8(clamp(sx, 0, 255))
+  output[base + 1] = uint8(clamp(sy, 0, 255))
+  output[base + 2] = player.color
+  output[base + RenderPlayerFlagsFeature] = flags
+
 proc writePlayer2ObservationPlayerSlot(
   sim: SimServer,
   playerIndex, targetIndex, sx, sy: int,
   flags: uint8,
   output: var openArray[uint8]
 ) =
-  let
-    player = sim.players[targetIndex]
-    base = Player2ObservationPlayerOffset + targetIndex * Player2ObservationPlayerFeatures
-    roleVisible =
-      sim.phase == GameOver or
-      (targetIndex == playerIndex and
-        (sim.phase == RoleReveal or sim.player2ObservationKillIconByte(playerIndex) != 0'u8))
-    roleFlag =
-      if roleVisible:
-        if player.role == Imposter: RenderPlayerRoleImposter else: 0'u8
-      else:
-        0'u8
-  output[base] = uint8(clamp(sx, 0, 255))
-  output[base + 1] = uint8(clamp(sy, 0, 255))
-  output[base + 2] = player.color
-  output[base + RenderPlayerFlagsFeature] = flags or roleFlag
-  if targetIndex == playerIndex:
-    output[base + RenderPlayerAuxFeature] = sim.player2ObservationKillIconByte(playerIndex)
+  sim.writePlayer2ObservationPlayerSlotAt(
+    playerIndex,
+    targetIndex,
+    targetIndex,
+    sx,
+    sy,
+    flags,
+    output
+  )
 
 proc writePlayer2ObservationPlayingPlayers(
   sim: SimServer,
@@ -2975,9 +2962,9 @@ proc writePlayer2ObservationPlayingPlayers(
       p = sim.players[i]
       sx = p.x - SpriteDrawOffX - cameraX
       sy = p.y - SpriteDrawOffY - cameraY
+    if not view.screenPointInFrame(p.x + CollisionW div 2, p.y + CollisionH div 2):
+      continue
     var flags = RenderPlayerPresent
-    if i == playerIndex:
-      flags = flags or RenderPlayerSelf
     if p.alive:
       if i != playerIndex and
           not sim.player2ObservationWorldPointVisible(
@@ -3013,8 +3000,6 @@ proc writePlayer2ObservationUiPlayers(
         sx = 5 + col * 9
         sy = startY + row * 9
       var flags = RenderPlayerPresent or RenderPlayerAlive
-      if i == playerIndex:
-        flags = flags or RenderPlayerSelf
       sim.writePlayer2ObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
   of RoleReveal:
     let viewerIsImp =
@@ -3044,9 +3029,15 @@ proc writePlayer2ObservationUiPlayers(
           sx = startX + col * cellW + (cellW - SpriteSize) div 2
           sy = startY + row * cellH
         var flags = RenderPlayerPresent or RenderPlayerAlive
-        if i == playerIndex:
-          flags = flags or RenderPlayerSelf
-        sim.writePlayer2ObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
+        sim.writePlayer2ObservationPlayerSlotAt(
+          playerIndex,
+          i,
+          slot,
+          sx,
+          sy,
+          flags,
+          output
+        )
   of Voting:
     let
       cellW = 16
@@ -3066,29 +3057,17 @@ proc writePlayer2ObservationUiPlayers(
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
-      if i == playerIndex:
-        flags = flags or RenderPlayerSelf
-      if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
-          sim.voteState.cursor[playerIndex] == i:
-        flags = flags or RenderPlayerSelected
       sim.writePlayer2ObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
-      var votes = 0
-      for vote in sim.voteState.votes:
-        if vote == i:
-          inc votes
-      output[Player2ObservationPlayerOffset + i * Player2ObservationPlayerFeatures + RenderPlayerAuxFeature] =
-        uint8(clamp(votes, 0, 255))
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej >= 0 and ej < n:
-      var flags = RenderPlayerPresent or RenderPlayerSelected
+      var flags = RenderPlayerPresent
       if sim.players[ej].alive:
         flags = flags or RenderPlayerAlive
-      if ej == playerIndex:
-        flags = flags or RenderPlayerSelf
-      sim.writePlayer2ObservationPlayerSlot(
+      sim.writePlayer2ObservationPlayerSlotAt(
         playerIndex,
         ej,
+        0,
         ScreenWidth div 2 - SpriteSize div 2,
         ScreenHeight div 2 - SpriteSize div 2,
         flags,
@@ -3112,8 +3091,6 @@ proc writePlayer2ObservationUiPlayers(
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
-      if i == playerIndex:
-        flags = flags or RenderPlayerSelf
       sim.writePlayer2ObservationPlayerSlot(playerIndex, i, iconX, iconY, flags, output)
   of Playing:
     discard
@@ -3149,6 +3126,91 @@ proc writePlayer2ObservationBodies(
     output[base + 3] = 1
     inc slot
 
+proc writePlayer2ObservationTaskEntry(
+  sim: SimServer,
+  playerIndex, taskIndex: int,
+  iconPass: bool,
+  slotIndex: var int,
+  output: var openArray[uint8]
+) =
+  if slotIndex >= Player2ObservationTaskSlots:
+    return
+  if taskIndex < 0 or taskIndex >= sim.tasks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    player = sim.players[playerIndex]
+    task = sim.tasks[taskIndex]
+  if player.role != Crewmate or not player.hasTask(taskIndex):
+    return
+  if playerIndex < task.completed.len and task.completed[playerIndex]:
+    return
+
+  let
+    view = sim.playerView(playerIndex)
+    cameraX = view.cameraX
+    cameraY = view.cameraY
+    bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+    bobY =
+      if player.activeTask == taskIndex:
+        0
+      else:
+        bob[(sim.tickCount div 3) mod bob.len]
+    iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
+    iconSy = task.y - SpriteSize - 2 + bobY - cameraY
+    iconCenterX = task.x + task.w div 2
+    iconCenterY = task.y - SpriteSize div 2 - 2 + bobY
+    iconOnScreen =
+      iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
+      iconSx < ScreenWidth and iconSy < ScreenHeight
+    base = Player2ObservationTaskOffset + slotIndex * Player2ObservationTaskFeatures
+  var flags = 0'u8
+  if iconOnScreen:
+    if not iconPass:
+      return
+    flags = flags or RenderTaskIconVisible
+    output[base] = uint8(clamp(iconSx, 0, 255))
+    output[base + 1] = uint8(clamp(iconSy, 0, 255))
+  elif sim.config.showTaskArrows:
+    if iconPass:
+      return
+    let
+      px = float(player.x + CollisionW div 2 - view.cameraX)
+      py = float(player.y + CollisionH div 2 - view.cameraY)
+      dx = float(iconCenterX - view.cameraX) - px
+      dy = float(iconCenterY - view.cameraY) - py
+    if abs(dx) < 0.5 and abs(dy) < 0.5:
+      return
+    var ex, ey: float
+    let
+      minX = 0.0
+      maxX = float(ScreenWidth - 1)
+      minY = 0.0
+      maxY = float(ScreenHeight - 1)
+    if abs(dx) > abs(dy):
+      if dx > 0:
+        ex = maxX
+      else:
+        ex = minX
+      ey = py + dy * (ex - px) / dx
+      ey = clamp(ey, minY, maxY)
+    else:
+      if dy > 0:
+        ey = maxY
+      else:
+        ey = minY
+      ex = px + dx * (ey - py) / dy
+      ex = clamp(ex, minX, maxX)
+    flags = flags or RenderTaskArrowVisible
+    output[base + 2] = uint8(int(ex))
+    output[base + 3] = uint8(int(ey))
+  else:
+    return
+
+  output[base + RenderTaskFlagsFeature] = flags
+  inc slotIndex
+
 proc writePlayer2ObservationTasks(
   sim: SimServer,
   playerIndex: int,
@@ -3156,86 +3218,14 @@ proc writePlayer2ObservationTasks(
 ) =
   if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
     return
-  let
-    player = sim.players[playerIndex]
-    view = sim.playerView(playerIndex)
-    cameraX = view.cameraX
-    cameraY = view.cameraY
+  let player = sim.players[playerIndex]
   if player.role != Crewmate:
     return
   var slotIndex = 0
-  for taskIndex in player.assignedTasks:
-    if slotIndex >= Player2ObservationTaskSlots:
-      break
-    if taskIndex < 0 or taskIndex >= sim.tasks.len:
-      continue
-    let
-      task = sim.tasks[taskIndex]
-      completed =
-        playerIndex < task.completed.len and task.completed[playerIndex]
-      bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
-      bobY =
-        if player.activeTask == taskIndex:
-          0
-        else:
-          bob[(sim.tickCount div 3) mod bob.len]
-      iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
-      iconSy = task.y - SpriteSize - 2 + bobY - cameraY
-      iconCenterX = task.x + task.w div 2
-      iconCenterY = task.y - SpriteSize div 2 - 2 + bobY
-      iconOnScreen =
-        iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
-        iconSx < ScreenWidth and iconSy < ScreenHeight
-      base = Player2ObservationTaskOffset + slotIndex * Player2ObservationTaskFeatures
-    if completed:
-      continue
-    var flags = 0'u8
-    if player.activeTask == taskIndex:
-      flags = flags or RenderTaskActive
-    if sim.config.taskCompleteTicks > 0:
-      output[base + RenderTaskProgressFeature] =
-        player2ObservationProgressByte(
-          player.taskProgress,
-          sim.config.taskCompleteTicks,
-          TaskBarWidth
-        )
-    if iconOnScreen:
-      flags = flags or RenderTaskIconVisible
-      output[base] = uint8(clamp(iconSx, 0, 255))
-      output[base + 1] = uint8(clamp(iconSy, 0, 255))
-    elif sim.config.showTaskArrows:
-      let
-        px = float(player.x + CollisionW div 2 - view.cameraX)
-        py = float(player.y + CollisionH div 2 - view.cameraY)
-        dx = float(iconCenterX - view.cameraX) - px
-        dy = float(iconCenterY - view.cameraY) - py
-      if abs(dx) >= 0.5 or abs(dy) >= 0.5:
-        var ex, ey: float
-        let
-          minX = 0.0
-          maxX = float(ScreenWidth - 1)
-          minY = 0.0
-          maxY = float(ScreenHeight - 1)
-        if abs(dx) > abs(dy):
-          if dx > 0:
-            ex = maxX
-          else:
-            ex = minX
-          ey = py + dy * (ex - px) / dx
-          ey = clamp(ey, minY, maxY)
-        else:
-          if dy > 0:
-            ey = maxY
-          else:
-            ey = minY
-          ex = px + dx * (ey - py) / dy
-          ex = clamp(ex, minX, maxX)
-        flags = flags or RenderTaskArrowVisible
-        output[base + 2] = uint8(int(ex))
-        output[base + 3] = uint8(int(ey))
-    if (flags and (RenderTaskIconVisible or RenderTaskArrowVisible)) != 0'u8:
-      output[base + RenderTaskFlagsFeature] = flags
-      inc slotIndex
+  for taskIndex in 0 ..< sim.tasks.len:
+    sim.writePlayer2ObservationTaskEntry(playerIndex, taskIndex, true, slotIndex, output)
+  for taskIndex in 0 ..< sim.tasks.len:
+    sim.writePlayer2ObservationTaskEntry(playerIndex, taskIndex, false, slotIndex, output)
 
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:

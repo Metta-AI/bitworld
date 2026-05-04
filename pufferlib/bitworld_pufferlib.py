@@ -39,20 +39,19 @@ AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
 AMONG_THEM_MAX_PLAYERS = 16
 OBSERVATION_MODES = {"pixels", "player2"}
-PLAYER2_HEADER_FEATURES = 5
+PLAYER2_HEADER_FEATURES = 4
 PLAYER2_GRID_SIZE = 32
 PLAYER2_PLAYER_FEATURE_OFFSET = PLAYER2_HEADER_FEATURES + PLAYER2_GRID_SIZE * PLAYER2_GRID_SIZE
-PLAYER2_PLAYER_FEATURES = 5
+PLAYER2_PLAYER_FEATURES = 4
 PLAYER2_BODY_FEATURE_OFFSET = PLAYER2_PLAYER_FEATURE_OFFSET + PLAYER2_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS
 PLAYER2_BODY_FEATURES = 4
 PLAYER2_TASK_FEATURE_OFFSET = PLAYER2_BODY_FEATURE_OFFSET + PLAYER2_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS
-PLAYER2_TASK_FEATURES = 6
+PLAYER2_TASK_FEATURES = 5
 PLAYER2_TASK_COUNT = 15
 PLAYER2_FEATURES = PLAYER2_TASK_FEATURE_OFFSET + PLAYER2_TASK_FEATURES * PLAYER2_TASK_COUNT
 PLAYER2_KILL_ICON_INDEX = 1
 PLAYER2_TASK_PROGRESS_INDEX = 2
 PLAYER2_TASKS_REMAINING_INDEX = 3
-PLAYER2_VOTE_TIMER_INDEX = 4
 PLAYER2_FLAG_TASK_ICON_VISIBLE = 1
 PLAYER2_FLAG_TASK_ARROW_VISIBLE = 2
 PLAYER2_FLAG_PLAYER_ROLE_IMPOSTER = 8
@@ -65,11 +64,9 @@ AMONG_THEM_PHASE_GAME_OVER = 4
 AMONG_THEM_PHASE_ROLE_REVEAL = 5
 
 PLAYER2_FLAG_PLAYER_PRESENT = 1
-PLAYER2_FLAG_PLAYER_SELF = 2
 PLAYER2_FLAG_PLAYER_ALIVE = 4
 PLAYER2_FLAG_PLAYER_FLIP_H = 16
 PLAYER2_FLAG_PLAYER_GHOST = 32
-PLAYER2_FLAG_PLAYER_SELECTED = 64
 
 MAP_VOID_COLOR = 12
 SPRITE_DRAW_OFF_X = 2
@@ -267,6 +264,7 @@ def among_them_native_library_is_fresh() -> bool:
 
     source_paths = {
         AMONG_THEM_NATIVE_SOURCE,
+        REPO_ROOT / "among_them" / "global.nim",
         REPO_ROOT / "among_them" / "sim.nim",
         REPO_ROOT / "client" / "aseprite.nim",
         *SHARED_NIM_SOURCES,
@@ -677,6 +675,7 @@ class Player2SpriteInfo:
     label: str
     kind: str
     color_index: int = -1
+    flip_h: bool = False
     pixels: np.ndarray | None = None
 
 
@@ -859,39 +858,40 @@ def actor_color_name(label: str, prefix: str) -> str:
     return value
 
 
-def classify_player2_sprite(label: str) -> tuple[str, int]:
+def classify_player2_sprite(label: str) -> tuple[str, int, bool]:
     lowered = label.lower()
     if lowered == "map":
-        return "map", -1
+        return "map", -1, False
     if lowered == "task bubble":
-        return "task", -1
+        return "task", -1, False
     if lowered == "task arrow":
-        return "arrow", -1
+        return "arrow", -1, False
     if lowered == "imposter icon":
-        return "imposter", -1
+        return "imposter", -1, False
     if lowered == "imposter icon cooldown":
-        return "imposter_cooldown", -1
+        return "imposter_cooldown", -1, False
     if lowered == "ghost icon":
-        return "ghost_icon", -1
+        return "ghost_icon", -1, False
     if lowered == "player screen":
-        return "screen", -1
+        return "screen", -1, False
     if lowered.startswith("task counter "):
-        return "counter", -1
+        return "counter", -1, False
     if lowered.startswith("progress bar "):
-        return "progress", -1
+        return "progress", -1, False
     if lowered.startswith("body "):
-        return "body", color_index_from_name(lowered[len("body ") :])
+        return "body", color_index_from_name(lowered[len("body ") :]), False
+    flip_h = lowered.endswith(" left")
     if lowered.startswith("selected player "):
-        return "player", color_index_from_name(actor_color_name(lowered, "selected player "))
+        return "player", color_index_from_name(actor_color_name(lowered, "selected player ")), flip_h
     if lowered.startswith("selected ghost "):
-        return "ghost", color_index_from_name(actor_color_name(lowered, "selected ghost "))
+        return "ghost", color_index_from_name(actor_color_name(lowered, "selected ghost ")), flip_h
     if lowered.startswith("player "):
-        return "player", color_index_from_name(actor_color_name(lowered, "player "))
+        return "player", color_index_from_name(actor_color_name(lowered, "player ")), flip_h
     if lowered.startswith("ghost "):
-        return "ghost", color_index_from_name(actor_color_name(lowered, "ghost "))
+        return "ghost", color_index_from_name(actor_color_name(lowered, "ghost ")), flip_h
     if label:
-        return "text", -1
-    return "unknown", -1
+        return "text", -1, False
+    return "unknown", -1, False
 
 
 class Player2ObservationAdapter:
@@ -937,13 +937,14 @@ class Player2ObservationAdapter:
                     return changed
                 label = packet[offset : offset + label_len].decode("utf-8", errors="replace")
                 offset += label_len
-                kind, color_index = classify_player2_sprite(label)
+                kind, color_index, flip_h = classify_player2_sprite(label)
                 self.sprites[sprite_id] = Player2SpriteInfo(
                     width=width,
                     height=height,
                     label=label,
                     kind=kind,
                     color_index=color_index,
+                    flip_h=flip_h,
                     pixels=self._sprite_pixels(kind, width, height, compressed),
                 )
                 changed = True
@@ -1082,9 +1083,11 @@ class Player2ObservationAdapter:
             sprite = self._sprite(obj)
             if sprite is None:
                 continue
-            if sprite.kind not in {"player", "ghost"}:
+            vote_slot = self._vote_player_slot(object_id)
+            is_dead_vote_candidate = vote_slot is not None and sprite.kind == "body"
+            if sprite.kind not in {"player", "ghost"} and not is_dead_vote_candidate:
                 continue
-            slot = self._player_slot(object_id)
+            slot = vote_slot if vote_slot is not None else self._player_slot(object_id)
             if slot is None:
                 continue
             sx = obj.x + 1
@@ -1092,23 +1095,21 @@ class Player2ObservationAdapter:
             flags = PLAYER2_FLAG_PLAYER_PRESENT
             if sprite.kind == "player":
                 flags |= PLAYER2_FLAG_PLAYER_ALIVE
-            else:
+            elif sprite.kind == "ghost":
                 flags |= PLAYER2_FLAG_PLAYER_GHOST
-            if abs(sx - 58) <= 1 and abs(sy - 60) <= 1:
-                flags |= PLAYER2_FLAG_PLAYER_SELF
-                if kill_icon:
-                    flags |= PLAYER2_FLAG_PLAYER_ROLE_IMPOSTER
+            if sprite.flip_h:
+                flags |= PLAYER2_FLAG_PLAYER_FLIP_H
             base = PLAYER2_PLAYER_FEATURE_OFFSET + slot * PLAYER2_PLAYER_FEATURES
             obs[base] = np.uint8(max(0, min(255, sx)))
             obs[base + 1] = np.uint8(max(0, min(255, sy)))
             if 0 <= sprite.color_index < len(PLAYER_COLORS):
                 obs[base + 2] = PLAYER_COLORS[sprite.color_index]
             obs[base + 3] = flags
-            if flags & PLAYER2_FLAG_PLAYER_SELF:
-                obs[base + 4] = kill_icon
 
         body_slot = 0
         for object_id, obj in sorted(self.objects.items()):
+            if self._vote_player_slot(object_id) is not None:
+                continue
             sprite = self._sprite(obj)
             if sprite is None or sprite.kind != "body" or body_slot >= AMONG_THEM_MAX_PLAYERS:
                 continue
@@ -1140,10 +1141,15 @@ class Player2ObservationAdapter:
                 obs[base + 2] = np.uint8(max(0, min(255, obj.x)))
                 obs[base + 3] = np.uint8(max(0, min(255, obj.y)))
             obs[base + 4] = flags
-            if flags & PLAYER2_FLAG_TASK_ICON_VISIBLE:
-                obs[base + 5] = progress_byte
             task_slot += 1
         return obs
+
+    @staticmethod
+    def _vote_player_slot(object_id: int) -> int | None:
+        slot = object_id - PROTOCOL_VOTE_ICON_OBJECT_BASE
+        if 0 <= slot < AMONG_THEM_MAX_PLAYERS:
+            return slot
+        return None
 
     def _player_slot(self, object_id: int) -> int | None:
         bases = (
@@ -1308,6 +1314,13 @@ class AmongThemNativeLibrary:
         self.lib.bitworld_at_tick_count.restype = ctypes.c_int
         self.lib.bitworld_at_game_hash.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_game_hash.restype = ctypes.c_uint64
+        self.lib.bitworld_at_player2_packet.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int,
+        ]
+        self.lib.bitworld_at_player2_packet.restype = ctypes.c_int
         self.lib.bitworld_at_create.argtypes = [
             ctypes.c_int,
             ctypes.c_int,

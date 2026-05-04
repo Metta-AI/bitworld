@@ -1,5 +1,5 @@
 import ../common/protocol
-import ../among_them/sim
+import ../among_them/[global, sim]
 import std/[math, os]
 
 const
@@ -15,6 +15,7 @@ type
     prevInputs: seq[InputState]
     rewardSnapshot: seq[int]
     player2ObservationScratch: seq[uint8]
+    player2ViewerStates: seq[PlayerViewerState]
     playerCount: int
     seed: int
     maxTicks: int
@@ -153,6 +154,7 @@ proc addNativePlayers(env: var NativeEnv) =
   env.inputs = newSeq[InputState](env.playerCount)
   env.prevInputs = newSeq[InputState](env.playerCount)
   env.rewardSnapshot = newSeq[int](env.playerCount)
+  env.player2ViewerStates = newSeq[PlayerViewerState](env.playerCount)
   for playerIndex in 0 ..< env.playerCount:
     discard env.sim.addPlayer("player" & $(playerIndex + 1))
   doAssert env.sim.players.len == env.playerCount
@@ -197,6 +199,44 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
   if validHandle(handle):
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
+
+proc bitworld_at_player2_packet*(
+  handle: cint,
+  playerIndex: cint,
+  output: ptr uint8,
+  outputCapacity: cint
+): cint {.cdecl, exportc, dynlib.} =
+  try:
+    if not validHandle(handle):
+      return setLastError("Invalid Among Them native env handle.")
+    if output.isNil:
+      return setLastError("Output pointer is nil.")
+    if outputCapacity <= 0:
+      return setLastError("Output capacity must be positive.")
+
+    var env = envs[int(handle)]
+    let playerIndexInt = int(playerIndex)
+    if playerIndexInt < 0 or playerIndexInt >= env.playerCount:
+      return setLastError("Invalid player index.")
+    if env.player2ViewerStates.len != env.playerCount:
+      env.player2ViewerStates = newSeq[PlayerViewerState](env.playerCount)
+
+    var nextState: PlayerViewerState
+    let packet = env.sim.buildSpriteProtocolPlayerUpdates(
+      playerIndexInt,
+      env.player2ViewerStates[playerIndexInt],
+      nextState
+    )
+    if packet.len > int(outputCapacity):
+      return setLastError(
+        "Player2 packet buffer is too small: need " & $packet.len & " bytes."
+      )
+    env.player2ViewerStates[playerIndexInt] = nextState
+    if packet.len > 0:
+      copyMem(output, unsafeAddr packet[0], packet.len)
+    cint(packet.len)
+  except CatchableError as e:
+    setLastError(e.msg)
 
 proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
   try:
