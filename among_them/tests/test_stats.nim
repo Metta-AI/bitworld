@@ -300,14 +300,14 @@ suite "stats":
     sim.finishGame(Imposter)
 
     let results = parseJson(sim.playerResultsJson())
-    check results.len == 2
-    check results[0]["name"].getStr() == "crew"
-    check results[0]["reward"].getInt() == 3
-    check not results[0]["win"].getBool()
-    check results[0]["tasks"].getInt() == 2
-    check results[0]["kills"].getInt() == 0
-    check results[1]["name"].getStr() == "imposter"
-    check results[1]["reward"].getInt() == 5 + WinReward
-    check results[1]["win"].getBool()
-    check results[1]["tasks"].getInt() == 0
-    check results[1]["kills"].getInt() == 1
+    check results["names"].len == 2
+    check results["names"][0].getStr() == "crew"
+    check results["scores"][0].getInt() == 3
+    check not results["win"][0].getBool()
+    check results["tasks"][0].getInt() == 2
+    check results["kills"][0].getInt() == 0
+    check results["names"][1].getStr() == "imposter"
+    check results["scores"][1].getInt() == 5 + WinReward
+    check results["win"][1].getBool()
+    check results["tasks"][1].getInt() == 0
+    check results["kills"][1].getInt() == 1

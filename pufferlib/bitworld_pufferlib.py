@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -37,23 +38,77 @@ AMONG_THEM_STEP_ACTIVE = 0
 AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
 AMONG_THEM_MAX_PLAYERS = 16
-OBSERVATION_MODES = {"pixels", "state"}
-STATE_HEADER_FEATURES = 22
-STATE_GRID_SIZE = 32
-STATE_PLAYER_FEATURE_OFFSET = STATE_HEADER_FEATURES + STATE_GRID_SIZE * STATE_GRID_SIZE
-STATE_PLAYER_FEATURES = 8
-STATE_BODY_FEATURE_OFFSET = STATE_PLAYER_FEATURE_OFFSET + STATE_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS
-STATE_BODY_FEATURES = 8
-STATE_TASK_FEATURE_OFFSET = STATE_BODY_FEATURE_OFFSET + STATE_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS
-STATE_TASK_FEATURES = 8
-STATE_TASK_COUNT = 15
-STATE_FEATURES = STATE_TASK_FEATURE_OFFSET + STATE_TASK_FEATURES * STATE_TASK_COUNT
-STATE_TASK_PROGRESS_INDEX = 10
-STATE_FLAG_TASK_ASSIGNED = 1
-STATE_FLAG_TASK_COMPLETED = 32
-STATE_FLAG_TASK_ICON_VISIBLE = 8
-STATE_FLAG_TASK_ARROW_VISIBLE = 16
-STATE_FLAG_PLAYER_ROLE_IMPOSTER = 8
+OBSERVATION_MODES = {"pixels", "player2"}
+PLAYER2_HEADER_FEATURES = 4
+PLAYER2_GRID_SIZE = 32
+PLAYER2_PLAYER_FEATURE_OFFSET = PLAYER2_HEADER_FEATURES + PLAYER2_GRID_SIZE * PLAYER2_GRID_SIZE
+PLAYER2_PLAYER_FEATURES = 4
+PLAYER2_BODY_FEATURE_OFFSET = PLAYER2_PLAYER_FEATURE_OFFSET + PLAYER2_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS
+PLAYER2_BODY_FEATURES = 4
+PLAYER2_TASK_FEATURE_OFFSET = PLAYER2_BODY_FEATURE_OFFSET + PLAYER2_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS
+PLAYER2_TASK_FEATURES = 5
+PLAYER2_TASK_COUNT = 15
+PLAYER2_FEATURES = PLAYER2_TASK_FEATURE_OFFSET + PLAYER2_TASK_FEATURES * PLAYER2_TASK_COUNT
+PLAYER2_KILL_ICON_INDEX = 1
+PLAYER2_TASK_PROGRESS_INDEX = 2
+PLAYER2_TASKS_REMAINING_INDEX = 3
+PLAYER2_FLAG_TASK_ICON_VISIBLE = 1
+PLAYER2_FLAG_TASK_ARROW_VISIBLE = 2
+PLAYER2_FLAG_PLAYER_ROLE_IMPOSTER = 8
+
+AMONG_THEM_PHASE_LOBBY = 0
+AMONG_THEM_PHASE_PLAYING = 1
+AMONG_THEM_PHASE_VOTING = 2
+AMONG_THEM_PHASE_VOTE_RESULT = 3
+AMONG_THEM_PHASE_GAME_OVER = 4
+AMONG_THEM_PHASE_ROLE_REVEAL = 5
+
+PLAYER2_FLAG_PLAYER_PRESENT = 1
+PLAYER2_FLAG_PLAYER_ALIVE = 4
+PLAYER2_FLAG_PLAYER_FLIP_H = 16
+PLAYER2_FLAG_PLAYER_GHOST = 32
+
+MAP_VOID_COLOR = 12
+SPRITE_DRAW_OFF_X = 2
+SPRITE_DRAW_OFF_Y = 8
+SPRITE_SIZE = 12
+TASK_BAR_WIDTH = 14
+
+PLAYER_OBJECT_BASE = 1000
+BODY_OBJECT_BASE = 2000
+TASK_OBJECT_BASE = 3000
+SELECTED_TEXT_OBJECT_ID = 4000
+PLAYER2_INTERSTITIAL_OBJECT_ID = 5006
+PLAYER2_REMAINING_OBJECT_ID = 5007
+PLAYER2_PROGRESS_OBJECT_ID = 5008
+PLAYER2_TASK_ARROW_OBJECT_BASE = 7000
+PROTOCOL_TEXT_OBJECT_BASE = 9000
+PROTOCOL_CHAT_ICON_OBJECT_BASE = 9200
+PROTOCOL_VOTE_ICON_OBJECT_BASE = 9300
+PROTOCOL_LOBBY_ICON_OBJECT_BASE = 9400
+PROTOCOL_ROLE_ICON_OBJECT_BASE = 9500
+PROTOCOL_RESULT_ICON_OBJECT_BASE = 9600
+PROTOCOL_GAME_OVER_ICON_OBJECT_BASE = 9700
+
+PLAYER_COLOR_NAMES = [
+    "red",
+    "orange",
+    "yellow",
+    "light blue",
+    "pink",
+    "lime",
+    "blue",
+    "pale blue",
+    "gray",
+    "white",
+    "dark brown",
+    "brown",
+    "dark teal",
+    "green",
+    "dark navy",
+    "black",
+]
+PLAYER_COLORS = np.array([3, 7, 8, 14, 4, 11, 13, 15, 1, 2, 5, 6, 9, 10, 12, 0], dtype=np.uint8)
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -90,12 +145,12 @@ def native_worker_count(num_envs: int) -> int:
     )
 
 
-def state_reward_shaping_scale() -> float:
-    return float(os.environ.get("BITWORLD_STATE_REWARD_SHAPING", "0.1"))
+def player2_reward_shaping_scale() -> float:
+    return float(os.environ.get("BITWORLD_PLAYER2_REWARD_SHAPING", "0.1"))
 
 
-def state_progress_reward_scale() -> float:
-    return float(os.environ.get("BITWORLD_STATE_PROGRESS_REWARD", "0.02"))
+def player2_progress_reward_scale() -> float:
+    return float(os.environ.get("BITWORLD_PLAYER2_PROGRESS_REWARD", "0.02"))
 
 
 SHARED_NIM_SOURCES = (
@@ -164,7 +219,7 @@ def with_server_players(spec: str | EnvironmentSpec, players: int | None) -> Env
 
 def binary_is_fresh(spec: EnvironmentSpec) -> bool:
     source = REPO_ROOT / spec.name / f"{spec.name}.nim"
-    binary = REPO_ROOT / spec.name / spec.name
+    binary = bitworld_binary_path(spec)
     if not binary.exists():
         return False
 
@@ -173,6 +228,10 @@ def binary_is_fresh(spec: EnvironmentSpec) -> bool:
         source_paths.add(source.parent / dependency)
     newest_source = max(path.stat().st_mtime for path in source_paths if path.exists())
     return binary.stat().st_mtime >= newest_source
+
+
+def bitworld_binary_path(spec: EnvironmentSpec) -> Path:
+    return REPO_ROOT / "out" / spec.name
 
 
 def nim_path_args() -> list[str]:
@@ -205,6 +264,7 @@ def among_them_native_library_is_fresh() -> bool:
 
     source_paths = {
         AMONG_THEM_NATIVE_SOURCE,
+        REPO_ROOT / "among_them" / "global.nim",
         REPO_ROOT / "among_them" / "sim.nim",
         REPO_ROOT / "client" / "aseprite.nim",
         *SHARED_NIM_SOURCES,
@@ -249,8 +309,10 @@ def ensure_bitworld_binary(spec: str | EnvironmentSpec) -> None:
     if binary_is_fresh(resolved):
         return
 
+    binary = bitworld_binary_path(resolved)
+    binary.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["nim", "c", *nim_path_args(), f"{resolved.name}/{resolved.name}.nim"],
+        ["nim", "c", *nim_path_args(), f"--out:{binary}", f"{resolved.name}/{resolved.name}.nim"],
         cwd=REPO_ROOT,
         check=True,
     )
@@ -533,7 +595,9 @@ def infer_policy_shape(state_dict: dict[str, torch.Tensor]) -> tuple[int, int, i
     hidden_size = int(state_dict["body.0.weight"].shape[0])
     feature_count = int(state_dict["body.0.weight"].shape[1])
     action_count = int(state_dict["policy_head.bias"].shape[0])
-    return frame_stack, hidden_size, action_count, "state", (feature_count,)
+    if feature_count % PLAYER2_FEATURES == 0:
+        frame_stack = max(1, feature_count // PLAYER2_FEATURES)
+    return frame_stack, hidden_size, action_count, "player2", (feature_count,)
 
 
 def load_policy_checkpoint(path: Path, device: str = "cpu") -> PolicyCheckpoint:
@@ -587,6 +651,11 @@ def policy_player_url(address: str, port: int, name: str) -> str:
     return f"ws://{address}:{port}/player{suffix}"
 
 
+def policy_player2_url(address: str, port: int, name: str) -> str:
+    suffix = "?name=" + quote(name, safe="") if name else ""
+    return f"ws://{address}:{port}/player2{suffix}"
+
+
 def connect_websocket(url: str, timeout: float = 10.0) -> ClientConnection:
     deadline = time.time() + timeout
     last_error: Exception | None = None
@@ -597,6 +666,508 @@ def connect_websocket(url: str, timeout: float = 10.0) -> ClientConnection:
             last_error = exc
             time.sleep(0.05)
     raise RuntimeError(f"failed to connect to {url}") from last_error
+
+
+@dataclass
+class Player2SpriteInfo:
+    width: int
+    height: int
+    label: str
+    kind: str
+    color_index: int = -1
+    flip_h: bool = False
+    pixels: np.ndarray | None = None
+
+
+@dataclass
+class Player2ObjectInfo:
+    x: int
+    y: int
+    z: int
+    layer: int
+    sprite_id: int
+
+
+def read_u16(data: bytes, offset: int) -> int:
+    return data[offset] | (data[offset + 1] << 8)
+
+
+def read_i16(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<h", data, offset)[0]
+
+
+def read_u32(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<I", data, offset)[0]
+
+
+def snappy_decompress(data: bytes) -> bytes:
+    index = 0
+    expected = 0
+    shift = 0
+    while True:
+        if index >= len(data):
+            raise ValueError("truncated snappy length")
+        byte = data[index]
+        index += 1
+        expected |= (byte & 0x7F) << shift
+        if byte < 128:
+            break
+        shift += 7
+
+    output = bytearray()
+    while index < len(data):
+        tag = data[index]
+        index += 1
+        tag_type = tag & 0x03
+        if tag_type == 0:
+            length_code = tag >> 2
+            if length_code < 60:
+                length = length_code + 1
+            else:
+                extra = length_code - 59
+                if index + extra > len(data):
+                    raise ValueError("truncated snappy literal length")
+                length = int.from_bytes(data[index : index + extra], "little") + 1
+                index += extra
+            if index + length > len(data):
+                raise ValueError("truncated snappy literal")
+            output.extend(data[index : index + length])
+            index += length
+            continue
+
+        if tag_type == 1:
+            if index >= len(data):
+                raise ValueError("truncated snappy copy1")
+            length = ((tag >> 2) & 0x07) + 4
+            offset = ((tag & 0xE0) << 3) | data[index]
+            index += 1
+        elif tag_type == 2:
+            if index + 2 > len(data):
+                raise ValueError("truncated snappy copy2")
+            length = (tag >> 2) + 1
+            offset = read_u16(data, index)
+            index += 2
+        else:
+            if index + 4 > len(data):
+                raise ValueError("truncated snappy copy4")
+            length = (tag >> 2) + 1
+            offset = read_u32(data, index)
+            index += 4
+
+        if offset <= 0 or offset > len(output):
+            raise ValueError("invalid snappy copy offset")
+        for _ in range(length):
+            output.append(output[-offset])
+
+    if len(output) != expected:
+        raise ValueError(f"snappy length mismatch: expected {expected}, got {len(output)}")
+    return bytes(output)
+
+
+def png_rgba_pixels(path: Path) -> tuple[int, int, bytes]:
+    data = path.read_bytes()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError(f"not a PNG: {path}")
+    offset = 8
+    width = height = color_type = bit_depth = None
+    compressed = bytearray()
+    while offset + 8 <= len(data):
+        length = struct.unpack_from(">I", data, offset)[0]
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk = data[offset + 8 : offset + 8 + length]
+        offset += 12 + length
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk[:10])[:4]
+        elif chunk_type == b"IDAT":
+            compressed.extend(chunk)
+        elif chunk_type == b"IEND":
+            break
+    if width is None or height is None or bit_depth != 8 or color_type not in {2, 6}:
+        raise ValueError(f"unsupported PNG format: {path}")
+
+    channels = 4 if color_type == 6 else 3
+    stride = width * channels
+    raw = zlib_decompress(bytes(compressed))
+    previous = bytearray(stride)
+    rows: list[bytes] = []
+    cursor = 0
+    for _ in range(height):
+        filter_type = raw[cursor]
+        cursor += 1
+        row = bytearray(raw[cursor : cursor + stride])
+        cursor += stride
+        for i in range(stride):
+            left = row[i - channels] if i >= channels else 0
+            up = previous[i]
+            up_left = previous[i - channels] if i >= channels else 0
+            if filter_type == 1:
+                row[i] = (row[i] + left) & 0xFF
+            elif filter_type == 2:
+                row[i] = (row[i] + up) & 0xFF
+            elif filter_type == 3:
+                row[i] = (row[i] + ((left + up) // 2)) & 0xFF
+            elif filter_type == 4:
+                p = left + up - up_left
+                pa = abs(p - left)
+                pb = abs(p - up)
+                pc = abs(p - up_left)
+                predictor = left if pa <= pb and pa <= pc else up if pb <= pc else up_left
+                row[i] = (row[i] + predictor) & 0xFF
+            elif filter_type != 0:
+                raise ValueError(f"unsupported PNG filter {filter_type}")
+        previous = row
+        if channels == 4:
+            rows.append(bytes(row))
+        else:
+            rgba = bytearray(width * 4)
+            for x in range(width):
+                rgba[x * 4 : x * 4 + 3] = row[x * 3 : x * 3 + 3]
+                rgba[x * 4 + 3] = 255
+            rows.append(bytes(rgba))
+    return width, height, b"".join(rows)
+
+
+def zlib_decompress(data: bytes) -> bytes:
+    import zlib
+
+    return zlib.decompress(data)
+
+
+def load_palette_lookup() -> dict[tuple[int, int, int, int], int]:
+    width, _height, pixels = png_rgba_pixels(REPO_ROOT / "clients" / "data" / "pallete.png")
+    count = min(16, width)
+    return {
+        tuple(pixels[index * 4 : index * 4 + 4]): index
+        for index in range(count)
+    }
+
+
+def color_index_from_name(name: str) -> int:
+    lowered = name.lower().strip()
+    try:
+        return PLAYER_COLOR_NAMES.index(lowered)
+    except ValueError:
+        return -1
+
+
+def actor_color_name(label: str, prefix: str) -> str:
+    value = label[len(prefix) :].lower().strip()
+    for suffix in (" right", " left"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)].strip()
+    return value
+
+
+def classify_player2_sprite(label: str) -> tuple[str, int, bool]:
+    lowered = label.lower()
+    if lowered == "map":
+        return "map", -1, False
+    if lowered == "task bubble":
+        return "task", -1, False
+    if lowered == "task arrow":
+        return "arrow", -1, False
+    if lowered == "imposter icon":
+        return "imposter", -1, False
+    if lowered == "imposter icon cooldown":
+        return "imposter_cooldown", -1, False
+    if lowered == "ghost icon":
+        return "ghost_icon", -1, False
+    if lowered == "player screen":
+        return "screen", -1, False
+    if lowered.startswith("task counter "):
+        return "counter", -1, False
+    if lowered.startswith("progress bar "):
+        return "progress", -1, False
+    if lowered.startswith("body "):
+        return "body", color_index_from_name(lowered[len("body ") :]), False
+    flip_h = lowered.endswith(" left")
+    if lowered.startswith("selected player "):
+        return "player", color_index_from_name(actor_color_name(lowered, "selected player ")), flip_h
+    if lowered.startswith("selected ghost "):
+        return "ghost", color_index_from_name(actor_color_name(lowered, "selected ghost ")), flip_h
+    if lowered.startswith("player "):
+        return "player", color_index_from_name(actor_color_name(lowered, "player ")), flip_h
+    if lowered.startswith("ghost "):
+        return "ghost", color_index_from_name(actor_color_name(lowered, "ghost ")), flip_h
+    if label:
+        return "text", -1, False
+    return "unknown", -1, False
+
+
+class Player2ObservationAdapter:
+    def __init__(self) -> None:
+        self.sprites: dict[int, Player2SpriteInfo] = {}
+        self.objects: dict[int, Player2ObjectInfo] = {}
+        self.palette_lookup = load_palette_lookup()
+        self.frame_count = 0
+
+    def _sprite_pixels(self, kind: str, width: int, height: int, compressed: bytes) -> np.ndarray | None:
+        if kind != "map":
+            return None
+        raw = snappy_decompress(compressed)
+        if len(raw) != width * height * 4:
+            return None
+        indices = np.full((height, width), MAP_VOID_COLOR, dtype=np.uint8)
+        for i in range(width * height):
+            rgba = tuple(raw[i * 4 : i * 4 + 4])
+            indices.flat[i] = self.palette_lookup.get(rgba, 0)
+        return indices
+
+    def apply_packet(self, packet: bytes) -> bool:
+        offset = 0
+        changed = False
+        while offset < len(packet):
+            message_type = packet[offset]
+            offset += 1
+            if message_type == 0x01:
+                if offset + 10 > len(packet):
+                    return changed
+                sprite_id = read_u16(packet, offset)
+                width = read_u16(packet, offset + 2)
+                height = read_u16(packet, offset + 4)
+                compressed_len = read_u32(packet, offset + 6)
+                offset += 10
+                if offset + compressed_len + 2 > len(packet):
+                    return changed
+                compressed = packet[offset : offset + compressed_len]
+                offset += compressed_len
+                label_len = read_u16(packet, offset)
+                offset += 2
+                if offset + label_len > len(packet):
+                    return changed
+                label = packet[offset : offset + label_len].decode("utf-8", errors="replace")
+                offset += label_len
+                kind, color_index, flip_h = classify_player2_sprite(label)
+                self.sprites[sprite_id] = Player2SpriteInfo(
+                    width=width,
+                    height=height,
+                    label=label,
+                    kind=kind,
+                    color_index=color_index,
+                    flip_h=flip_h,
+                    pixels=self._sprite_pixels(kind, width, height, compressed),
+                )
+                changed = True
+            elif message_type == 0x02:
+                if offset + 11 > len(packet):
+                    return changed
+                object_id = read_u16(packet, offset)
+                self.objects[object_id] = Player2ObjectInfo(
+                    x=read_i16(packet, offset + 2),
+                    y=read_i16(packet, offset + 4),
+                    z=read_i16(packet, offset + 6),
+                    layer=packet[offset + 8],
+                    sprite_id=read_u16(packet, offset + 9),
+                )
+                offset += 11
+                changed = True
+            elif message_type == 0x03:
+                if offset + 2 > len(packet):
+                    return changed
+                self.objects.pop(read_u16(packet, offset), None)
+                offset += 2
+                changed = True
+            elif message_type == 0x04:
+                self.objects.clear()
+                changed = True
+            elif message_type == 0x05:
+                offset += 5
+            elif message_type == 0x06:
+                offset += 3
+            else:
+                return changed
+        if changed:
+            self.frame_count += 1
+        return changed
+
+    def _sprite(self, obj: Player2ObjectInfo) -> Player2SpriteInfo | None:
+        return self.sprites.get(obj.sprite_id)
+
+    def _phase(self) -> int:
+        labels = " ".join(
+            sprite.label
+            for obj in self.objects.values()
+            if (sprite := self._sprite(obj)) is not None and sprite.kind in {"screen", "text"}
+        ).upper()
+        if any((self._sprite(obj) is not None and self._sprite(obj).kind == "map") for obj in self.objects.values()):
+            return AMONG_THEM_PHASE_PLAYING
+        if "SKIP" in labels:
+            return AMONG_THEM_PHASE_VOTING
+        if "WAS KILLED" in labels or "NO ONE" in labels or "DIED" in labels:
+            return AMONG_THEM_PHASE_VOTE_RESULT
+        if "CREW WINS" in labels or "IMPS WIN" in labels or "DRAW" in labels:
+            return AMONG_THEM_PHASE_GAME_OVER
+        if "CREWMATE" in labels or "IMPS" in labels:
+            return AMONG_THEM_PHASE_ROLE_REVEAL
+        return AMONG_THEM_PHASE_LOBBY
+
+    def _camera(self) -> tuple[int, int] | None:
+        for obj in self.objects.values():
+            sprite = self._sprite(obj)
+            if sprite is not None and sprite.kind == "map":
+                return -obj.x, -obj.y
+        return None
+
+    def _map_pixels(self) -> np.ndarray | None:
+        for sprite in self.sprites.values():
+            if sprite.kind == "map":
+                return sprite.pixels
+        return None
+
+    def _counter_value(self) -> int:
+        for obj in self.objects.values():
+            sprite = self._sprite(obj)
+            if sprite is None or sprite.kind != "counter":
+                continue
+            try:
+                return int(sprite.label.rsplit(" ", 1)[-1])
+            except ValueError:
+                return 0
+        return 0
+
+    def _kill_icon(self) -> int:
+        value = 0
+        for obj in self.objects.values():
+            sprite = self._sprite(obj)
+            if sprite is None:
+                continue
+            if sprite.kind == "imposter":
+                value = 255
+            elif sprite.kind == "imposter_cooldown":
+                value = max(value, 1)
+        return value
+
+    def _progress_byte(self) -> int:
+        for obj in self.objects.values():
+            sprite = self._sprite(obj)
+            if sprite is None or sprite.kind != "progress":
+                continue
+            parts = sprite.label.split()
+            if not parts:
+                continue
+            try:
+                percent = int(parts[-1].rstrip("%"))
+            except ValueError:
+                continue
+            filled = max(0, min(TASK_BAR_WIDTH, percent * TASK_BAR_WIDTH // 100))
+            return filled * 255 // TASK_BAR_WIDTH
+        return 0
+
+    def observation(self) -> np.ndarray:
+        obs = np.zeros((PLAYER2_FEATURES,), dtype=np.uint8)
+        phase = self._phase()
+        obs[0] = phase
+        camera = self._camera()
+        kill_icon = self._kill_icon()
+        progress_byte = self._progress_byte()
+        if phase == AMONG_THEM_PHASE_PLAYING and camera is not None:
+            camera_x, camera_y = camera
+            obs[PLAYER2_KILL_ICON_INDEX] = kill_icon
+            obs[PLAYER2_TASK_PROGRESS_INDEX] = progress_byte
+            obs[PLAYER2_TASKS_REMAINING_INDEX] = self._counter_value()
+            map_pixels = self._map_pixels()
+            if map_pixels is not None:
+                height, width = map_pixels.shape
+                step = SCREEN_WIDTH // PLAYER2_GRID_SIZE
+                grid_start = PLAYER2_HEADER_FEATURES
+                for gy in range(PLAYER2_GRID_SIZE):
+                    for gx in range(PLAYER2_GRID_SIZE):
+                        mx = camera_x + gx * step + step // 2
+                        my = camera_y + gy * step + step // 2
+                        value = MAP_VOID_COLOR
+                        if 0 <= mx < width and 0 <= my < height:
+                            value = int(map_pixels[my, mx])
+                        obs[grid_start + gy * PLAYER2_GRID_SIZE + gx] = value
+
+        for object_id, obj in self.objects.items():
+            sprite = self._sprite(obj)
+            if sprite is None:
+                continue
+            vote_slot = self._vote_player_slot(object_id)
+            is_dead_vote_candidate = vote_slot is not None and sprite.kind == "body"
+            if sprite.kind not in {"player", "ghost"} and not is_dead_vote_candidate:
+                continue
+            slot = vote_slot if vote_slot is not None else self._player_slot(object_id)
+            if slot is None:
+                continue
+            sx = obj.x + 1
+            sy = obj.y + 1
+            flags = PLAYER2_FLAG_PLAYER_PRESENT
+            if sprite.kind == "player":
+                flags |= PLAYER2_FLAG_PLAYER_ALIVE
+            elif sprite.kind == "ghost":
+                flags |= PLAYER2_FLAG_PLAYER_GHOST
+            if sprite.flip_h:
+                flags |= PLAYER2_FLAG_PLAYER_FLIP_H
+            base = PLAYER2_PLAYER_FEATURE_OFFSET + slot * PLAYER2_PLAYER_FEATURES
+            obs[base] = np.uint8(max(0, min(255, sx)))
+            obs[base + 1] = np.uint8(max(0, min(255, sy)))
+            if 0 <= sprite.color_index < len(PLAYER_COLORS):
+                obs[base + 2] = PLAYER_COLORS[sprite.color_index]
+            obs[base + 3] = flags
+
+        body_slot = 0
+        for object_id, obj in sorted(self.objects.items()):
+            if self._vote_player_slot(object_id) is not None:
+                continue
+            sprite = self._sprite(obj)
+            if sprite is None or sprite.kind != "body" or body_slot >= AMONG_THEM_MAX_PLAYERS:
+                continue
+            base = PLAYER2_BODY_FEATURE_OFFSET + body_slot * PLAYER2_BODY_FEATURES
+            obs[base] = np.uint8(max(0, min(255, obj.x + 1)))
+            obs[base + 1] = np.uint8(max(0, min(255, obj.y + 1)))
+            if 0 <= sprite.color_index < len(PLAYER_COLORS):
+                obs[base + 2] = PLAYER_COLORS[sprite.color_index]
+            obs[base + 3] = 1
+            body_slot += 1
+
+        task_slot = 0
+        task_objects = [
+            (object_id, obj, self._sprite(obj))
+            for object_id, obj in self.objects.items()
+            if self._sprite(obj) is not None and self._sprite(obj).kind in {"task", "arrow"}
+        ]
+        for object_id, obj, sprite in sorted(task_objects):
+            if sprite is None or task_slot >= PLAYER2_TASK_COUNT:
+                continue
+            base = PLAYER2_TASK_FEATURE_OFFSET + task_slot * PLAYER2_TASK_FEATURES
+            flags = 0
+            if sprite.kind == "task":
+                flags |= PLAYER2_FLAG_TASK_ICON_VISIBLE
+                obs[base] = np.uint8(max(0, min(255, obj.x)))
+                obs[base + 1] = np.uint8(max(0, min(255, obj.y)))
+            else:
+                flags |= PLAYER2_FLAG_TASK_ARROW_VISIBLE
+                obs[base + 2] = np.uint8(max(0, min(255, obj.x)))
+                obs[base + 3] = np.uint8(max(0, min(255, obj.y)))
+            obs[base + 4] = flags
+            task_slot += 1
+        return obs
+
+    @staticmethod
+    def _vote_player_slot(object_id: int) -> int | None:
+        slot = object_id - PROTOCOL_VOTE_ICON_OBJECT_BASE
+        if 0 <= slot < AMONG_THEM_MAX_PLAYERS:
+            return slot
+        return None
+
+    def _player_slot(self, object_id: int) -> int | None:
+        bases = (
+            PLAYER_OBJECT_BASE,
+            PROTOCOL_VOTE_ICON_OBJECT_BASE,
+            PROTOCOL_LOBBY_ICON_OBJECT_BASE,
+            PROTOCOL_ROLE_ICON_OBJECT_BASE,
+            PROTOCOL_GAME_OVER_ICON_OBJECT_BASE,
+        )
+        for base in bases:
+            slot = object_id - base
+            if 0 <= slot < AMONG_THEM_MAX_PLAYERS:
+                return slot
+        if object_id == PROTOCOL_RESULT_ICON_OBJECT_BASE:
+            return 0
+        if PROTOCOL_CHAT_ICON_OBJECT_BASE <= object_id < PROTOCOL_CHAT_ICON_OBJECT_BASE + AMONG_THEM_MAX_PLAYERS:
+            return object_id - PROTOCOL_CHAT_ICON_OBJECT_BASE
+        return None
 
 
 def run_policy_websocket_client(
@@ -614,7 +1185,21 @@ def run_policy_websocket_client(
 
     resolved_device = resolve_train_device(device)
     checkpoint = load_policy_checkpoint(checkpoint_path, device=resolved_device)
-    frame_history = np.zeros((checkpoint.frame_stack, FRAME_PIXELS), dtype=np.uint8)
+    if checkpoint.observation_mode == "pixels":
+        feature_count = FRAME_PIXELS
+        history_size = checkpoint.frame_stack
+        frame_history = np.zeros((history_size, feature_count), dtype=np.uint8)
+        url = policy_player_url(address, port, name)
+        input_packet = lambda mask: bytes([mask])
+        adapter: Player2ObservationAdapter | None = None
+    else:
+        feature_count = PLAYER2_FEATURES
+        checkpoint_features = int(np.prod(checkpoint.obs_shape))
+        history_size = max(1, checkpoint.frame_stack)
+        frame_history = np.zeros((history_size, feature_count), dtype=np.uint8)
+        url = policy_player2_url(address, port, name)
+        input_packet = lambda mask: bytes([0x84, mask & 0x7F])
+        adapter = Player2ObservationAdapter()
     unique_masks: set[int] = set()
     stop = threading.Event()
     frames_received = 0
@@ -644,7 +1229,6 @@ def run_policy_websocket_client(
     reward_thread = threading.Thread(target=reward_reader, name="bitworld-policy-reward", daemon=True)
     reward_thread.start()
 
-    url = policy_player_url(address, port, name)
     deadline = time.monotonic() + duration_seconds if duration_seconds > 0 else None
     last_action_frame = -action_repeat
     last_mask: int | None = None
@@ -659,7 +1243,12 @@ def run_policy_websocket_client(
                 if not isinstance(payload, (bytes, bytearray)):
                     continue
 
-                frame = unpack_frame(bytes(payload))
+                if adapter is None:
+                    frame = unpack_frame(bytes(payload))
+                else:
+                    if not adapter.apply_packet(bytes(payload)):
+                        continue
+                    frame = adapter.observation()
                 if frames_received == 0:
                     frame_history[:] = frame
                 else:
@@ -670,14 +1259,21 @@ def run_policy_websocket_client(
                 if frames_received - last_action_frame < action_repeat:
                     continue
 
+                policy_observation = frame_history.reshape(-1)
+                if adapter is not None and policy_observation.size != checkpoint_features:
+                    resized = np.zeros((checkpoint_features,), dtype=np.uint8)
+                    copy_count = min(policy_observation.size, checkpoint_features)
+                    resized[:copy_count] = policy_observation[:copy_count]
+                    policy_observation = resized
+
                 _, action_mask = select_policy_action(
                     checkpoint.policy,
-                    frame_history.reshape(-1),
+                    policy_observation,
                     resolved_device,
                     sample_actions=sample_actions,
                 )
                 if action_mask != last_mask:
-                    player_ws.send(bytes([action_mask]), text=False)
+                    player_ws.send(input_packet(action_mask), text=False)
                     last_mask = action_mask
                     actions_sent += 1
                     if action_mask != 0:
@@ -695,6 +1291,7 @@ def run_policy_websocket_client(
         "device": resolved_device,
         "frame_stack": checkpoint.frame_stack,
         "hidden_size": checkpoint.hidden_size,
+        "observation_mode": checkpoint.observation_mode,
         "frames_received": frames_received,
         "actions_sent": actions_sent,
         "nonzero_actions": nonzero_actions,
@@ -717,6 +1314,13 @@ class AmongThemNativeLibrary:
         self.lib.bitworld_at_tick_count.restype = ctypes.c_int
         self.lib.bitworld_at_game_hash.argtypes = [ctypes.c_int]
         self.lib.bitworld_at_game_hash.restype = ctypes.c_uint64
+        self.lib.bitworld_at_player2_packet.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int,
+        ]
+        self.lib.bitworld_at_player2_packet.restype = ctypes.c_int
         self.lib.bitworld_at_create.argtypes = [
             ctypes.c_int,
             ctypes.c_int,
@@ -729,12 +1333,12 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_reset.restype = ctypes.c_int
-        self.lib.bitworld_at_reset_state.argtypes = [
+        self.lib.bitworld_at_reset_player2.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
-        self.lib.bitworld_at_reset_state.restype = ctypes.c_int
+        self.lib.bitworld_at_reset_player2.restype = ctypes.c_int
         self.lib.bitworld_at_step.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
@@ -743,23 +1347,23 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_float),
         ]
         self.lib.bitworld_at_step.restype = ctypes.c_int
-        self.lib.bitworld_at_step_state.argtypes = [
+        self.lib.bitworld_at_step_player2.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
-        self.lib.bitworld_at_step_state.restype = ctypes.c_int
-        self.lib.bitworld_at_reset_state_batch.argtypes = [
+        self.lib.bitworld_at_step_player2.restype = ctypes.c_int
+        self.lib.bitworld_at_reset_player2_batch.argtypes = [
             ctypes.POINTER(ctypes.c_int),
             ctypes.c_int,
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
-        self.lib.bitworld_at_reset_state_batch.restype = ctypes.c_int
-        self.lib.bitworld_at_step_state_batch.argtypes = [
+        self.lib.bitworld_at_reset_player2_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_step_player2_batch.argtypes = [
             ctypes.POINTER(ctypes.c_int),
             ctypes.c_int,
             ctypes.c_int,
@@ -769,7 +1373,7 @@ class AmongThemNativeLibrary:
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.POINTER(ctypes.c_float),
         ]
-        self.lib.bitworld_at_step_state_batch.restype = ctypes.c_int
+        self.lib.bitworld_at_step_player2_batch.restype = ctypes.c_int
         self.lib.bitworld_at_step_rewards.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
@@ -845,7 +1449,7 @@ class AmongThemNativeWorker:
         self.handle = self.native.check(
             self.native.lib.bitworld_at_create(seed, self.agent_count, self.max_ticks)
         )
-        feature_count = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
+        feature_count = FRAME_PIXELS if observation_mode == "pixels" else PLAYER2_FEATURES
         dtype = np.uint8
         self.frames = np.zeros((self.agent_count, feature_count), dtype=dtype)
         self.rewards = np.zeros((self.agent_count,), dtype=np.float32)
@@ -874,7 +1478,7 @@ class AmongThemNativeWorker:
             )
         else:
             self.native.check(
-                self.native.lib.bitworld_at_reset_state(
+                self.native.lib.bitworld_at_reset_player2(
                     self.handle,
                     self._obs_ptr(),
                     self._reward_ptr(),
@@ -906,7 +1510,7 @@ class AmongThemNativeWorker:
             )
         else:
             status = self.native.check(
-                self.native.lib.bitworld_at_step_state(
+                self.native.lib.bitworld_at_step_player2(
                     self.handle,
                     masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
                     self.action_repeat,
@@ -980,7 +1584,7 @@ class BitWorldWorker:
         ensure_bitworld_binary(self.spec)
         RUNLOG_DIR.mkdir(parents=True, exist_ok=True)
         game_dir = REPO_ROOT / self.spec.name
-        binary = game_dir / self.spec.name
+        binary = bitworld_binary_path(self.spec)
         log_path = RUNLOG_DIR / f"{self.spec.name}_{self.env_id}.log"
         self.log_file = log_path.open("w")
         server_args = [
@@ -1260,8 +1864,8 @@ class BitWorldVecEnv:
             raise ValueError(f"unknown observation_mode {observation_mode!r}")
 
         self.spec = get_env_spec(spec)
-        if observation_mode == "state" and self.spec.name != "among_them":
-            raise ValueError("state observations are only implemented for among_them")
+        if observation_mode == "player2" and self.spec.name != "among_them":
+            raise ValueError("player2 observations are only implemented for among_them")
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
         self.num_envs = num_envs
@@ -1273,7 +1877,7 @@ class BitWorldVecEnv:
         self.max_episode_steps = max_episode_steps
         self.frame_stack = frame_stack
         self.action_repeat = action_repeat
-        self.obs_features = FRAME_PIXELS if observation_mode == "pixels" else STATE_FEATURES
+        self.obs_features = FRAME_PIXELS if observation_mode == "pixels" else PLAYER2_FEATURES
         self.obs_dtype = np.uint8
         self.obs_size = self.obs_features * frame_stack
         self.action_count = len(ACTION_MASKS)
@@ -1313,16 +1917,16 @@ class BitWorldVecEnv:
         self._completed_returns: deque[float] = deque(maxlen=100)
         self._completed_tasks: deque[float] = deque(maxlen=100)
         self._completed_episodes = 0
-        self._state_handles: np.ndarray | None = None
-        self._state_action_masks: np.ndarray | None = None
-        self._state_score = np.zeros((self.total_agents,), dtype=np.float32)
-        self._state_episode_return = np.zeros((self.total_agents,), dtype=np.float32)
-        self._state_prev_potential = np.zeros((self.total_agents,), dtype=np.float32)
-        self._state_prev_task_progress = np.zeros((self.total_agents,), dtype=np.float32)
-        self._state_statuses = np.zeros((self.num_envs,), dtype=np.int32)
-        self._state_reward_shaping = state_reward_shaping_scale()
-        self._state_progress_reward = state_progress_reward_scale()
-        self._state_episode_steps = 0
+        self._player2_handles: np.ndarray | None = None
+        self._player2_action_masks: np.ndarray | None = None
+        self._player2_score = np.zeros((self.total_agents,), dtype=np.float32)
+        self._player2_episode_return = np.zeros((self.total_agents,), dtype=np.float32)
+        self._player2_prev_potential = np.zeros((self.total_agents,), dtype=np.float32)
+        self._player2_prev_task_progress = np.zeros((self.total_agents,), dtype=np.float32)
+        self._player2_statuses = np.zeros((self.num_envs,), dtype=np.int32)
+        self._player2_reward_shaping = player2_reward_shaping_scale()
+        self._player2_progress_reward = player2_progress_reward_scale()
+        self._player2_episode_steps = 0
         self._executor = None
         if self.spec.name == "among_them" and self.observation_mode == "pixels":
             self._executor = ThreadPoolExecutor(max_workers=native_worker_count(num_envs))
@@ -1348,12 +1952,12 @@ class BitWorldVecEnv:
                         action_repeat=action_repeat,
                     )
                 self.workers.append(worker)
-            if self.observation_mode == "state":
-                self._state_handles = np.asarray(
+            if self.observation_mode == "player2":
+                self._player2_handles = np.asarray(
                     [worker.handle for worker in self.workers if isinstance(worker, AmongThemNativeWorker)],
                     dtype=np.int32,
                 )
-                self._state_action_masks = np.zeros((self.total_agents,), dtype=np.uint8)
+                self._player2_action_masks = np.zeros((self.total_agents,), dtype=np.uint8)
         except Exception:
             self.close()
             raise
@@ -1373,32 +1977,32 @@ class BitWorldVecEnv:
         self._frame_history[agent_slice, -1] = frames
         self._obs[agent_slice] = self._frame_history[agent_slice].reshape(frames.shape[0], -1)
 
-    def _state_handles_ptr(self):
-        assert self._state_handles is not None
-        return self._state_handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    def _player2_handles_ptr(self):
+        assert self._player2_handles is not None
+        return self._player2_handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
 
-    def _latest_state_ptr(self):
+    def _latest_player2_ptr(self):
         return self._latest_frames.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
 
-    def _state_rewards_ptr(self):
+    def _player2_rewards_ptr(self):
         return self._rewards.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-    def _state_agent_rows(self, env_ids: np.ndarray) -> np.ndarray:
+    def _player2_agent_rows(self, env_ids: np.ndarray) -> np.ndarray:
         return (env_ids[:, np.newaxis] * self.agents_per_env + np.arange(self.agents_per_env)).reshape(-1)
 
-    def _reset_state_envs(self, env_ids: np.ndarray) -> None:
-        assert self._state_handles is not None
+    def _reset_player2_envs(self, env_ids: np.ndarray) -> None:
+        assert self._player2_handles is not None
         env_ids = np.asarray(env_ids, dtype=np.int32)
         if env_ids.size == 0:
             return
 
-        rows = self._state_agent_rows(env_ids)
+        rows = self._player2_agent_rows(env_ids)
         native = among_them_native_library()
-        handles = np.ascontiguousarray(self._state_handles[env_ids])
+        handles = np.ascontiguousarray(self._player2_handles[env_ids])
         latest_frames = np.zeros((rows.size, self.obs_features), dtype=self.obs_dtype)
         rewards = np.zeros((rows.size,), dtype=np.float32)
         native.check(
-            native.lib.bitworld_at_reset_state_batch(
+            native.lib.bitworld_at_reset_player2_batch(
                 handles.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
                 env_ids.size,
                 self.agents_per_env,
@@ -1408,50 +2012,42 @@ class BitWorldVecEnv:
         )
         self._latest_frames[rows] = latest_frames
         self._rewards[rows] = rewards
-        self._state_score[rows] = 0.0
-        self._state_episode_return[rows] = 0.0
-        self._state_prev_potential[rows] = self._state_task_potential(rows)
-        self._state_prev_task_progress[rows] = self._latest_frames[rows, STATE_TASK_PROGRESS_INDEX]
-        self._state_statuses[env_ids] = AMONG_THEM_STEP_ACTIVE
+        self._player2_score[rows] = 0.0
+        self._player2_episode_return[rows] = 0.0
+        self._player2_prev_potential[rows] = self._player2_task_potential(rows)
+        self._player2_prev_task_progress[rows] = self._latest_frames[rows, PLAYER2_TASK_PROGRESS_INDEX]
+        self._player2_statuses[env_ids] = AMONG_THEM_STEP_ACTIVE
         self._frame_history[rows] = self._latest_frames[rows, np.newaxis, :]
         self._obs[rows] = self._frame_history[rows].reshape(rows.size, -1)
 
-    def _reset_state_batch(self) -> None:
-        self._reset_state_envs(np.arange(self.num_envs, dtype=np.int32))
-        self._state_episode_steps = 0
+    def _reset_player2_batch(self) -> None:
+        self._reset_player2_envs(np.arange(self.num_envs, dtype=np.int32))
+        self._player2_episode_steps = 0
 
-    def _state_task_features(self, rows: np.ndarray | None = None) -> np.ndarray:
+    def _player2_task_features(self, rows: np.ndarray | None = None) -> np.ndarray:
         frames = self._latest_frames if rows is None else self._latest_frames[rows]
-        return frames[:, STATE_TASK_FEATURE_OFFSET:STATE_FEATURES].reshape(
+        return frames[:, PLAYER2_TASK_FEATURE_OFFSET:PLAYER2_FEATURES].reshape(
             frames.shape[0],
-            STATE_TASK_COUNT,
-            STATE_TASK_FEATURES,
+            PLAYER2_TASK_COUNT,
+            PLAYER2_TASK_FEATURES,
         )
 
-    def _state_task_potential(self, rows: np.ndarray | None = None) -> np.ndarray:
-        task_features = self._state_task_features(rows)
-        flags = task_features[:, :, 3].astype(np.uint8)
-        assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
-        completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
-        candidates = assigned & ~completed
-        icon_visible = (flags & STATE_FLAG_TASK_ICON_VISIBLE) != 0
-        arrow_visible = (flags & STATE_FLAG_TASK_ARROW_VISIBLE) != 0
+    def _player2_task_potential(self, rows: np.ndarray | None = None) -> np.ndarray:
+        task_features = self._player2_task_features(rows)
+        flags = task_features[:, :, 4].astype(np.uint8)
+        icon_visible = (flags & PLAYER2_FLAG_TASK_ICON_VISIBLE) != 0
+        arrow_visible = (flags & PLAYER2_FLAG_TASK_ARROW_VISIBLE) != 0
         visible = icon_visible | arrow_visible
-        target_x = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 5], 0))
-        target_y = np.where(icon_visible, task_features[:, :, 2], np.where(arrow_visible, task_features[:, :, 6], 0))
+        target_x = np.where(icon_visible, task_features[:, :, 0], np.where(arrow_visible, task_features[:, :, 2], 0))
+        target_y = np.where(icon_visible, task_features[:, :, 1], np.where(arrow_visible, task_features[:, :, 3], 0))
         distances = np.sqrt(np.square(target_x.astype(np.float32) - 64.0) + np.square(target_y.astype(np.float32) - 64.0))
-        # When the task isn't visible on screen, use max distance so that
-        # discovering a task is always rewarding (not punishing).
-        distances = np.where(candidates & visible, distances, np.where(candidates, 128.0, np.inf))
+        distances = np.where(visible, distances, np.inf)
         nearest = np.min(distances, axis=1)
         return np.where(np.isfinite(nearest), -nearest / 128.0, 0.0).astype(np.float32)
 
-    def _state_completed_task_counts(self, rows: np.ndarray | None = None) -> np.ndarray:
-        task_features = self._state_task_features(rows)
-        flags = task_features[:, :, 3].astype(np.uint8)
-        assigned = (flags & STATE_FLAG_TASK_ASSIGNED) != 0
-        completed = (flags & STATE_FLAG_TASK_COMPLETED) != 0
-        return np.sum(assigned & completed, axis=1).astype(np.float32)
+    def _player2_completed_task_counts(self, rows: np.ndarray | None = None) -> np.ndarray:
+        count = self._latest_frames.shape[0] if rows is None else len(rows)
+        return np.zeros((count,), dtype=np.float32)
 
     def _step_env(self, env_id: int, action_indices: np.ndarray):
         worker = self.workers[env_id]
@@ -1490,8 +2086,8 @@ class BitWorldVecEnv:
     def reset(self):
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
-        if self.observation_mode == "state":
-            self._reset_state_batch()
+        if self.observation_mode == "player2":
+            self._reset_player2_batch()
             return self._obs
         for env_id, worker in enumerate(self.workers):
             agent_slice = self._agent_slice(env_id)
@@ -1500,52 +2096,52 @@ class BitWorldVecEnv:
             self._obs[agent_slice] = self._frame_history[agent_slice].reshape(worker.agent_count, -1)
         return self._obs
 
-    def _apply_state_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
-        assert self._state_action_masks is not None
+    def _apply_player2_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
+        assert self._player2_action_masks is not None
         clipped = np.clip(action_indices, 0, self.action_count - 1).astype(np.int64)
-        self._state_action_masks[:] = ACTION_MASKS[clipped]
+        self._player2_action_masks[:] = ACTION_MASKS[clipped]
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
         self._truncations.fill(0.0)
 
         native = among_them_native_library()
         native.check(
-            native.lib.bitworld_at_step_state_batch(
-                self._state_handles_ptr(),
+            native.lib.bitworld_at_step_player2_batch(
+                self._player2_handles_ptr(),
                 self.num_envs,
                 self.agents_per_env,
-                self._state_action_masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                self._player2_action_masks.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
                 self.action_repeat,
-                self._state_statuses.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-                self._latest_state_ptr(),
-                self._state_rewards_ptr(),
+                self._player2_statuses.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+                self._latest_player2_ptr(),
+                self._player2_rewards_ptr(),
             )
         )
-        self._state_score += self._rewards
-        current_potential = self._state_task_potential()
-        task_progress = self._latest_frames[:, STATE_TASK_PROGRESS_INDEX]
-        self._rewards += self._state_reward_shaping * (current_potential - self._state_prev_potential)
-        self._rewards += self._state_progress_reward * np.maximum(0.0, task_progress - self._state_prev_task_progress)
-        self._state_prev_potential[:] = current_potential
-        self._state_prev_task_progress[:] = task_progress
-        self._state_episode_return += self._rewards
-        self._state_episode_steps += 1
+        self._player2_score += self._rewards
+        current_potential = self._player2_task_potential()
+        task_progress = self._latest_frames[:, PLAYER2_TASK_PROGRESS_INDEX]
+        self._rewards += self._player2_reward_shaping * (current_potential - self._player2_prev_potential)
+        self._rewards += self._player2_progress_reward * np.maximum(0.0, task_progress - self._player2_prev_task_progress)
+        self._player2_prev_potential[:] = current_potential
+        self._player2_prev_task_progress[:] = task_progress
+        self._player2_episode_return += self._rewards
+        self._player2_episode_steps += 1
 
         completed: list[EpisodeStats] = []
-        done = self._state_statuses != AMONG_THEM_STEP_ACTIVE
+        done = self._player2_statuses != AMONG_THEM_STEP_ACTIVE
         if np.any(done):
             done_env_ids = np.flatnonzero(done).astype(np.int32)
-            done_rows = self._state_agent_rows(done_env_ids)
+            done_rows = self._player2_agent_rows(done_env_ids)
             terminal_rewards = self._rewards[done_rows].copy()
-            task_counts = self._state_completed_task_counts(done_rows)
+            task_counts = self._player2_completed_task_counts(done_rows)
             for score, episode_return, tasks_completed in zip(
-                self._state_score[done_rows],
-                self._state_episode_return[done_rows],
+                self._player2_score[done_rows],
+                self._player2_episode_return[done_rows],
                 task_counts,
             ):
                 stats = EpisodeStats(
                     score=float(score),
-                    length=self._state_episode_steps,
+                    length=self._player2_episode_steps,
                     episode_return=float(episode_return),
                     tasks_completed=float(tasks_completed),
                 )
@@ -1555,8 +2151,8 @@ class BitWorldVecEnv:
                 self._completed_returns.append(stats.episode_return)
                 self._completed_tasks.append(stats.tasks_completed)
             self._completed_episodes += done_env_ids.size
-            env_truncations = self._state_statuses[done_env_ids] == AMONG_THEM_STEP_TRUNCATED
-            self._reset_state_envs(done_env_ids)
+            env_truncations = self._player2_statuses[done_env_ids] == AMONG_THEM_STEP_TRUNCATED
+            self._reset_player2_envs(done_env_ids)
             self._rewards[done_rows] = terminal_rewards
             self._terminals[done_rows] = 1.0
             self._truncations[done_rows] = np.repeat(env_truncations.astype(np.float32), self.agents_per_env)
@@ -1567,8 +2163,8 @@ class BitWorldVecEnv:
         return completed
 
     def _apply_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
-        if self.observation_mode == "state":
-            return self._apply_state_actions(action_indices)
+        if self.observation_mode == "player2":
+            return self._apply_player2_actions(action_indices)
 
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
@@ -1671,7 +2267,7 @@ class BitWorldPolicy(nn.Module):
         self.frame_stack = frame_stack
         self.observation_mode = observation_mode
         self.obs_shape = obs_shape or (
-            (frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH) if observation_mode == "pixels" else (STATE_FEATURES * frame_stack,)
+            (frame_stack, SCREEN_HEIGHT, SCREEN_WIDTH) if observation_mode == "pixels" else (PLAYER2_FEATURES * frame_stack,)
         )
         if observation_mode == "pixels":
             self.encoder = nn.Sequential(
@@ -1888,7 +2484,7 @@ def train_policy(
         action_count=vecenv.action_count,
         hidden_size=hidden_size,
         observation_mode=observation_mode,
-        obs_shape=vecenv.single_observation_space.shape if observation_mode == "state" else None,
+        obs_shape=vecenv.single_observation_space.shape if observation_mode == "player2" else None,
     ).to(train_device)
     if distributed:
         policy = torch.nn.parallel.DistributedDataParallel(

@@ -1459,6 +1459,7 @@ proc buildSpriteProtocolPlayerInit(
 ): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
+  result.addU8(0x04)
   let mapPixels = sim.buildMapSpritePixels()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)

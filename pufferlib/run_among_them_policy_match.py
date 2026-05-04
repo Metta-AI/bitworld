@@ -11,7 +11,9 @@ from pathlib import Path
 from bitworld_pufferlib import (
     DEFAULT_ACTION_REPEAT,
     ENV_SPECS,
+    OBSERVATION_MODES,
     REPO_ROOT,
+    bitworld_binary_path,
     connect_websocket,
     ensure_bitworld_binary,
     get_env_spec,
@@ -34,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--episode-steps", type=int, default=64)
     parser.add_argument("--frame-stack", type=int, default=4)
+    parser.add_argument("--observation-mode", choices=sorted(OBSERVATION_MODES), default="pixels")
     parser.add_argument("--horizon", type=int, default=8)
     parser.add_argument("--minibatch-size", type=int, default=8)
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -60,8 +63,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def compile_nim(source: Path) -> Path:
-    subprocess.run(["nim", "c", *nim_path_args(), str(source.relative_to(REPO_ROOT))], cwd=REPO_ROOT, check=True)
-    return source.with_suffix("")
+    binary = REPO_ROOT / "out" / source.stem
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["nim", "c", *nim_path_args(), f"--out:{binary}", str(source.relative_to(REPO_ROOT))],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    return binary
 
 
 def start_process(
@@ -128,6 +137,7 @@ def train_checkpoint(args: argparse.Namespace, checkpoint_path: Path) -> None:
         action_repeat=args.action_repeat,
         hidden_size=args.hidden_size,
         device=args.device,
+        observation_mode=args.observation_mode,
     )
 
 
@@ -185,7 +195,7 @@ def main() -> None:
             policy_error.append(exc)
 
     try:
-        server_binary = REPO_ROOT / "among_them" / "among_them"
+        server_binary = bitworld_binary_path(ENV_SPECS["among_them"])
         server_process, server_log = start_process(
             [
                 str(server_binary),
