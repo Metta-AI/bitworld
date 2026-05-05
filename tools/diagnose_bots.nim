@@ -9,10 +9,11 @@ import
   ../marketboard/players/zorori as zr,
   ../marketboard/players/solenne as sol,
   ../marketboard/players/rkhenna as rk,
-  ../marketboard/players/pipitori as pip
+  ../marketboard/players/pipitori as pip,
+  ../marketboard/players/kukumo as kuku
 
 const
-  BotCount = 7
+  BotCount = 8
   MinBots = 5
   MaxBots = 9
 
@@ -25,6 +26,7 @@ type
     bkSolenne
     bkRkhenna
     bkPipitori
+    bkKukumo
 
   BotRunner = object
     kind: BotKind
@@ -38,6 +40,7 @@ type
     of bkSolenne: solState: sol.BotState
     of bkRkhenna: rkState: rk.BotState
     of bkPipitori: pipState: pip.BotState
+    of bkKukumo: kukuState: kuku.BotState
 
   DiagConfig = object
     seed: int
@@ -55,6 +58,7 @@ proc botName(kind: BotKind, index: int): string =
   of bkSolenne: "Solenne" & $index
   of bkRkhenna: "Rkhenna" & $index
   of bkPipitori: "Pipitori" & $index
+  of bkKukumo: "Kukumo" & $index
 
 proc initBotRunner(kind: BotKind, index: int): BotRunner =
   let name = botName(kind, index)
@@ -73,6 +77,8 @@ proc initBotRunner(kind: BotKind, index: int): BotRunner =
     result = BotRunner(kind: bkRkhenna, botKind: bkRkhenna, name: name)
   of bkPipitori:
     result = BotRunner(kind: bkPipitori, botKind: bkPipitori, name: name)
+  of bkKukumo:
+    result = BotRunner(kind: bkKukumo, botKind: bkKukumo, name: name)
 
 proc decide(bot: var BotRunner, state: GameState): uint8 =
   case bot.botKind
@@ -83,6 +89,7 @@ proc decide(bot: var BotRunner, state: GameState): uint8 =
   of bkSolenne: sol.decide(bot.solState, state)
   of bkRkhenna: rk.decide(bot.rkState, state)
   of bkPipitori: pip.decide(bot.pipState, state)
+  of bkKukumo: kuku.decide(bot.kukuState, state)
 
 proc phaseName(bot: BotRunner): string =
   case bot.botKind
@@ -93,6 +100,7 @@ proc phaseName(bot: BotRunner): string =
   of bkSolenne: $bot.solState.phase
   of bkRkhenna: $bot.rkState.phase
   of bkPipitori: $bot.pipState.phase
+  of bkKukumo: bot.kukuState.phase
 
 proc ticksInPhase(bot: BotRunner): int =
   case bot.botKind
@@ -103,6 +111,7 @@ proc ticksInPhase(bot: BotRunner): int =
   of bkSolenne: bot.solState.ticksInPhase
   of bkRkhenna: bot.rkState.ticksInPhase
   of bkPipitori: bot.pipState.ticksInPhase
+  of bkKukumo: bot.kukuState.ticksInPhase
 
 proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
   if fixed:
@@ -260,6 +269,7 @@ proc run(config: DiagConfig) =
       of bkSolenne: bots[i].solState.prevMask = mask
       of bkRkhenna: bots[i].rkState.prevMask = mask
       of bkPipitori: bots[i].pipState.prevMask = mask
+      of bkKukumo: bots[i].kukuState.util.prevMask = mask
 
       # Log phase transitions and accumulate ticks
       let phase = bots[i].phaseName()
