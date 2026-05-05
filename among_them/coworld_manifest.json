@@ -3,10 +3,6 @@
   "game": {
     "manifest_uri": "cogame_manifest.json"
   },
-  "clients": {
-    "player": "../clients/player_client.html",
-    "global": "../clients/global_client.html"
-  },
   "player": [
     {
       "id": "nottoodumb",
