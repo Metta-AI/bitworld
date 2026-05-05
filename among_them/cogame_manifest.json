@@ -14,10 +14,10 @@
       "tokens": {
         "description": "One connection token per player slot, indexed by slot.",
         "type": "array",
-        "minItems": 1,
+        "minItems": 0,
         "items": {
           "type": "string",
-          "minLength": 1
+          "minLength": 0
         },
         "maxItems": 16,
         "default": []
