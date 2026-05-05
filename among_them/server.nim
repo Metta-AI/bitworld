@@ -91,6 +91,7 @@ type
 const
   PlaybackSpeeds = [1, 2, 3, 4, 8]
   HealthPath = "/healthz"
+  AdminWebSocketPath = "/admin"
   ControlRestartPath = "/control/restart"
   ControlKickPath = "/control/kick"
 
@@ -746,6 +747,9 @@ proc httpHandler(request: Request) =
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
+  elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(AdminClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
@@ -789,6 +793,11 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = initGlobalViewerState()
+  elif request.path == AdminWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

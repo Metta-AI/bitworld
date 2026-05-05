@@ -15,6 +15,8 @@ const
   HealthPath = "/healthz"
   PlayerPath = "/player"
   GlobalPath = "/global"
+  AdminPath = "/admin"
+  ReplayPath = "/replay"
   ConfigEnv = "COGAME_CONFIG_PATH"
   ResultsEnv = "COGAME_RESULTS_PATH"
   ReplaySaveEnv = "COGAME_SAVE_REPLAY_PATH"
@@ -1232,6 +1234,21 @@ proc requireWebSocketMessage(url, label: string, timeoutSeconds: float) =
   if message.get().data.len == 0:
     fail(label & " produced an empty WebSocket message: " & url)
 
+proc requireHttpOk(url: string) =
+  ## Requires one HTTP endpoint to return a successful status.
+  var client = newHttpClient(timeout = 5000)
+  try:
+    let response = client.get(url)
+    let status = httpStatusCode(response.status)
+    if status < 200 or status >= 300:
+      fail("HTTP endpoint returned " & $status & ": " & url)
+  except CogameValidatorError:
+    raise
+  except CatchableError as e:
+    fail("HTTP endpoint failed: " & url & "\n" & e.msg)
+  finally:
+    client.close()
+
 proc requireBadPlayerRejected(url: string) =
   ## Requires a player WebSocket with a bad token to be rejected.
   try:
@@ -1336,9 +1353,16 @@ proc runCogameEpisode*(spec: EpisodeRunSpec) =
     )
 
     if spec.players.len > 0:
+      requireHttpOk(
+        httpUrl(port, PlayerPath) & "?" &
+          playerQuery(0, spec.tokens[0], spec.players[0])
+      )
       let badUrl = "ws://127.0.0.1:" & $port & PlayerPath &
         "?" & playerQuery(0, "bad", spec.players[0])
       requireBadPlayerRejected(badUrl)
+    requireHttpOk(httpUrl(port, GlobalPath))
+    requireHttpOk(httpUrl(port, AdminPath))
+
     for slot, player in spec.players:
       let containerName = "coworld-cert-player-" & runId & "-" & $slot
       playerContainers.add(containerName)
@@ -1356,6 +1380,11 @@ proc runCogameEpisode*(spec: EpisodeRunSpec) =
     requireWebSocketMessage(
       wsUrl(port, GlobalPath),
       "global viewer",
+      spec.timeoutSeconds
+    )
+    requireWebSocketMessage(
+      wsUrl(port, AdminPath),
+      "admin viewer",
       spec.timeoutSeconds
     )
     waitForContainerExit(
@@ -1390,9 +1419,10 @@ proc runCogameEpisode*(spec: EpisodeRunSpec) =
       replayPort,
       spec.timeoutSeconds
     )
+    requireHttpOk(httpUrl(replayPort, ReplayPath))
     requireWebSocketMessage(
-      wsUrl(replayPort, GlobalPath),
-      "replay global viewer",
+      wsUrl(replayPort, ReplayPath),
+      "replay viewer",
       spec.timeoutSeconds
     )
   finally:
@@ -1519,7 +1549,7 @@ proc certifyPackage(
       criteria.passCriterion(
         "docker.episode",
         "Docker episode",
-        "health, player, global, and replay endpoints passed"
+        "health, player, global, admin, and replay endpoints passed"
       )
     except CatchableError as e:
       criteria.failCriterion("docker.episode", "Docker episode", e.msg)

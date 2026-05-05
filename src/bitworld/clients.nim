@@ -3,12 +3,14 @@ import std/os
 const
   PlayerClientRoute* = "/client/player.html"
   GlobalClientRoute* = "/client/global.html"
+  AdminClientRoute* = "/client/admin.html"
   RewardClientRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/client/snappyjs.min.js"
   QrcodeClientRoute* = "/client/qrcode.min.js"
   StatsClientRoute* = "/client/stats.html"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
+  AdminClientHtml* = "admin_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
   QrcodeClientJs* = "qrcode.min.js"
@@ -29,6 +31,8 @@ proc clientHtmlPath*(route: string): string =
     clientsDir() / PlayerClientHtml
   of GlobalClientRoute:
     clientsDir() / GlobalClientHtml
+  of AdminClientRoute:
+    clientsDir() / AdminClientHtml
   of RewardClientRoute:
     clientsDir() / RewardClientHtml
   of StatsClientRoute:

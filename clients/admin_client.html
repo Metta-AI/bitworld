@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Among Them Admin</title>
+<style>
+html,body{margin:0;min-height:100%;background:#101418;color:#f5f7fb}
+body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{display:grid;gap:14px;max-width:680px;margin:0 auto;padding:24px}
+h1{margin:0;font-size:24px;letter-spacing:0}
+.panel{display:grid;gap:10px;padding:14px;border:1px solid #33404d;background:#171d24}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+button{border:1px solid #596775;background:#24303a;color:#fff;padding:8px 10px}
+button:disabled{opacity:.55}
+pre{margin:0;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+<main>
+<h1>Among Them Admin</h1>
+<section class="panel">
+<div id="status">connecting...</div>
+<div class="row">
+<button id="restart" type="button">Restart</button>
+<button id="play" type="button">Play/Pause</button>
+<button id="loop" type="button">Loop</button>
+</div>
+</section>
+<section class="panel">
+<pre id="log"></pre>
+</section>
+</main>
+<script>
+const statusEl=document.getElementById("status");
+const logEl=document.getElementById("log");
+const buttons=[...document.querySelectorAll("button")];
+const url=new URL(location.href);
+url.protocol=location.protocol==="https:"?"wss:":"ws:";
+let socket;
+function write(line){
+  logEl.textContent=(line+"\n"+logEl.textContent).slice(0,8000);
+}
+function setStatus(text,enabled){
+  statusEl.textContent=text;
+  buttons.forEach(button=>button.disabled=!enabled);
+}
+function sendPacket(bytes,label){
+  if(!socket||socket.readyState!==1)return;
+  socket.send(new Uint8Array(bytes));
+  write("sent "+label);
+}
+function sendReplayCommand(command,label){
+  sendPacket([0x81,1,0,command.charCodeAt(0)],label);
+}
+async function restart(){
+  try{
+    const response=await fetch("/control/restart",{method:"POST"});
+    write("restart "+response.status);
+  }catch(error){
+    write("restart failed");
+  }
+}
+function connect(){
+  setStatus("connecting...",false);
+  socket=new WebSocket(url);
+  socket.binaryType="arraybuffer";
+  socket.onopen=()=>setStatus("connected",true);
+  socket.onclose=()=>setStatus("disconnected",false);
+  socket.onerror=()=>setStatus("error",false);
+  socket.onmessage=event=>{
+    const size=event.data instanceof ArrayBuffer?event.data.byteLength:0;
+    write("received "+size+" bytes");
+  };
+}
+document.getElementById("restart").onclick=restart;
+document.getElementById("play").onclick=()=>sendReplayCommand(" ","play/pause");
+document.getElementById("loop").onclick=()=>sendReplayCommand("r","loop");
+connect();
+</script>
+</body>
+</html>
