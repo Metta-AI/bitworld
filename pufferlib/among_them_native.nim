@@ -115,6 +115,33 @@ proc copyKillDistances(env: var NativeEnv, distances: ptr cfloat, outputBase = 0
         nearest = dist
     output[outputBase + playerIndex] = cfloat(nearest / float(maxDist))
 
+proc copyNearbyCrewCount(env: var NativeEnv, counts: ptr cfloat, outputBase = 0) =
+  ## For each imposter: count alive crewmates within screen-frame distance.
+  ## Returns 0.0 for crewmates, dead players, and non-Playing phase.
+  if counts.isNil:
+    raise newException(ValueError, "Counts pointer is nil.")
+  let output = cast[ptr UncheckedArray[cfloat]](counts)
+  let viewRadius = float(ScreenWidth div 2)
+  for playerIndex in 0 ..< env.playerCount:
+    let player = env.sim.players[playerIndex]
+    if not player.alive or player.role != Imposter or env.sim.phase != Playing:
+      output[outputBase + playerIndex] = 0.0
+      continue
+    let px = float(player.x)
+    let py = float(player.y)
+    var count = 0
+    for targetIndex in 0 ..< env.playerCount:
+      if targetIndex == playerIndex:
+        continue
+      let target = env.sim.players[targetIndex]
+      if not target.alive or target.role != Crewmate:
+        continue
+      let dx = abs(float(target.x) - px)
+      let dy = abs(float(target.y) - py)
+      if dx <= viewRadius and dy <= viewRadius:
+        inc count
+    output[outputBase + playerIndex] = cfloat(count)
+
 proc copyOnTaskFlags(env: var NativeEnv, flags: ptr cfloat, outputBase = 0) =
   if flags.isNil:
     raise newException(ValueError, "Flags pointer is nil.")
@@ -513,6 +540,33 @@ proc bitworld_at_kill_distances_batch*(
       if env.playerCount != playerCountInt:
         return setLastError("Unexpected player count in batch kill distance query.")
       env.copyKillDistances(distances, envIndex * playerCountInt)
+    0
+  except CatchableError as e:
+    setLastError(e.msg)
+
+proc bitworld_at_nearby_crew_batch*(
+  handles: ptr cint,
+  envCount: cint,
+  playerCount: cint,
+  counts: ptr cfloat
+): cint {.cdecl, exportc, dynlib.} =
+  try:
+    if handles.isNil:
+      return setLastError("Handle pointer is nil.")
+    if envCount <= 0:
+      return setLastError("envCount must be positive.")
+    if playerCount <= 0:
+      return setLastError("playerCount must be positive.")
+    let
+      playerCountInt = int(playerCount)
+      handleArray = cast[ptr UncheckedArray[cint]](handles)
+    for envIndex in 0 ..< int(envCount):
+      if not validHandle(handleArray[envIndex]):
+        return setLastError("Invalid Among Them native env handle.")
+      var env = envs[int(handleArray[envIndex])]
+      if env.playerCount != playerCountInt:
+        return setLastError("Unexpected player count in batch nearby crew query.")
+      env.copyNearbyCrewCount(counts, envIndex * playerCountInt)
     0
   except CatchableError as e:
     setLastError(e.msg)
