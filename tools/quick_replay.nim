@@ -3,6 +3,7 @@ import std/[os, osproc, strutils, parseopt, strformat]
 const
   BatchSource = "tools" / "batch_market.nim"
   ViewerSource = "marketboard" / "replay_viewer.nim"
+  FullmapSource = "marketboard" / "fullmap_viewer.nim"
   HeadlessSource = "tools" / "headless_sim.nim"
   DefaultTicks = 10000
   DefaultReplayDir = "replays"
@@ -13,6 +14,7 @@ proc repoRoot(): string =
 when isMainModule:
   var ticks = DefaultTicks
   var headless = false
+  var playerCam = false
   var checkpointInterval = 5000
   for kind, key, val in getopt():
     case kind
@@ -21,6 +23,8 @@ when isMainModule:
         ticks = parseInt(val)
       elif key == "headless":
         headless = true
+      elif key == "player-cam":
+        playerCam = true
       elif key == "interval" and val.len > 0:
         checkpointInterval = parseInt(val)
     else: discard
@@ -37,7 +41,7 @@ when isMainModule:
     var rc = execCmd(&"{nimExe} c {rootDir / HeadlessSource}")
     if rc != 0:
       quit(rc)
-    let exe = rootDir / HeadlessSource.changeFileExt(ExeExts[0])
+    let exe = rootDir / "out" / HeadlessSource.extractFilename.changeFileExt(ExeExts[0])
     quit(execCmd(&"{exe} --ticks:{ticks} --interval:{checkpointInterval}"))
   else:
     echo "Compiling batch runner..."
@@ -45,13 +49,14 @@ when isMainModule:
     if rc != 0:
       quit(rc)
 
+    let activeViewer = if playerCam: ViewerSource else: FullmapSource
     echo "Compiling replay viewer..."
-    rc = execCmd(&"{nimExe} c {rootDir / ViewerSource}")
+    rc = execCmd(&"{nimExe} c {rootDir / activeViewer}")
     if rc != 0:
       quit(rc)
 
     echo &"Recording 1 match ({ticks} ticks)..."
-    let batchExe = rootDir / BatchSource.changeFileExt(ExeExts[0])
+    let batchExe = rootDir / "out" / BatchSource.extractFilename.changeFileExt(ExeExts[0])
     rc = execCmd(&"{batchExe} --matches:1 --ticks:{ticks} --fixed-lineup")
     if rc != 0:
       echo "Match recording failed."
@@ -63,6 +68,6 @@ when isMainModule:
       quit(1)
 
     echo "Opening replay viewer..."
-    let viewerExe = rootDir / ViewerSource.changeFileExt(ExeExts[0])
+    let viewerExe = rootDir / "out" / activeViewer.extractFilename.changeFileExt(ExeExts[0])
     let viewerWorkDir = rootDir / "marketboard"
     quit(execShellCmd(&"cd {viewerWorkDir} && {viewerExe} {replayPath}"))

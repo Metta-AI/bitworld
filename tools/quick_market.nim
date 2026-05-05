@@ -96,7 +96,7 @@ proc compileTarget(nimExe, rootDir, label, sourceRelative: string): int =
     echo label, " compile failed with exit code ", result, "."
 
 proc exePathFor(rootDir, sourceRelative: string): string =
-  absolutePath(rootDir / sourceRelative.changeFileExt(ExeExts[0]))
+  absolutePath(rootDir / "out" / sourceRelative.extractFilename.changeFileExt(ExeExts[0]))
 
 proc waitForServerReady(port: int): bool =
   let

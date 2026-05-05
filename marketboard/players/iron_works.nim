@@ -61,14 +61,16 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of WaitForState:
     bot.ticksInPhase = 0
     if p.role == "Crafter":
-      if hasEnoughMaterialsForCraft(p.inv):
+      if p.inv.hasAnyGear and p.canSellMore:
+        bot.phase = PathToSellStall
+      elif hasEnoughMaterialsForCraft(p.inv):
         bot.phase = PathToCraftStation
       elif shouldCancelListings(p):
         bot.phase = PathToCancelStall
+      elif hasAffordableGearUpgrade(state, p):
+        bot.phase = CheckGear
       elif canAffordAnyMaterial(state, p):
         bot.phase = PathToBuyStall
-      elif p.inv.hasAnyGear and p.canSellMore:
-        bot.phase = PathToSellStall
       elif p.listings.len > 0:
         bot.phase = PathToCancelStall
       else:
@@ -111,8 +113,14 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of CheckGear:
+    let target = nextGearTarget(state, p)
+    if target.slot < 0:
+      bot.phase = WaitForState
+      bot.ticksInPhase = 0
+      return 0
+    bot.targetGearCursor = target.slot
+    bot.phase = PathToBuyGearStall
     bot.ticksInPhase = 0
-    bot.phase = WaitForState
     return 0
 
   of PathToBuyGearStall:

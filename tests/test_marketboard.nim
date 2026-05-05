@@ -370,8 +370,8 @@ proc testCrafting() =
     "crafting start failed. " & sim.describePos(idx)
   sim.holdA(idx, CraftWorkNeeded - 1)
   doAssert sim.players[idx].inv.wood == 0
-  doAssert sim.players[idx].inv.counts[LeatherHat] == 1,
-    "crafted LeatherHat should be in inventory"
+  doAssert sim.players[idx].crafterGear[ord(SlotHat)] == LeatherHat,
+    "crafted LeatherHat should be auto-equipped to crafter gear"
 
 # ── Selling ──
 
@@ -574,7 +574,8 @@ proc testPeerEconomyLoop() =
 
   sim.pressB(crafter)
 
-  # Crafter crafts gear
+  # Crafter crafts gear (pre-fill hat slot so crafted hat goes to inventory)
+  sim.players[crafter].crafterGear[ord(SlotHat)] = LeatherHat
   let ci = sim.findObjectIndex(CraftStationObj)
   let craftStation = sim.objects[ci]
   sim.players[crafter].x = craftStation.tx * MbTileSize
@@ -842,8 +843,8 @@ proc testCraftProducesSlotItems() =
       "craft " & $craft & " should start crafting"
     sim.holdA(idx, CraftWorkNeeded - 1)
     doAssert sim.players[idx].state == Idle
-    doAssert sim.players[idx].inv.counts[expectedItems[craft]] == 1,
-      "craft " & $craft & " should produce " & $expectedItems[craft] & " in inventory"
+    doAssert sim.players[idx].crafterGear[ord(slots[craft])] == expectedItems[craft],
+      "craft " & $craft & " should auto-equip " & $expectedItems[craft]
 
 proc testCancelStallBulkCancel() =
   var sim = initMarketboardForTest()

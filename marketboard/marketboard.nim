@@ -292,9 +292,9 @@ proc renderHud(sim: var SimServer, playerIndex: int) =
   if sim.letterSprites.len > 0 and player.role == NoRole and player.state == Idle:
     let prompt = "PICK A ROLE"
     let promptX = (ScreenWidth - prompt.len * 6) div 2
-    sim.fb.blitText(sim.letterSprites, prompt, promptX, ScreenHeight div 2 - 10)
-    sim.fb.blitText(sim.letterSprites, "GATHERER", 2, ScreenHeight div 2)
-    sim.fb.blitText(sim.letterSprites, "CRAFTER", ScreenWidth - 7 * 6 - 2, ScreenHeight div 2)
+    sim.fb.blitText(sim.letterSprites, prompt, promptX, 2)
+    sim.fb.blitText(sim.letterSprites, "< GATHERER", 2, 10)
+    sim.fb.blitText(sim.letterSprites, "CRAFTER >", ScreenWidth - 9 * 6 - 2, 10)
 
   if sim.letterSprites.len > 0 and player.state == Idle:
     var labelObjIndex = -1

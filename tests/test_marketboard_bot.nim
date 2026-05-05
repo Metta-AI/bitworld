@@ -345,6 +345,8 @@ proc testBotFullBuyCraftSellCycle() =
   doAssert sim.players[idx].state == Idle, "should be idle after exiting buy stall"
 
   # --- Craft phase: teleport to CraftStationObj, craft gear ---
+  # Pre-fill hat slot so crafted hat goes to inventory (for sell test)
+  sim.players[idx].crafterGear[ord(SlotHat)] = LeatherHat
   var craftTx, craftTy: int
   for obj in sim.objects:
     if obj.kind == CraftStationObj:

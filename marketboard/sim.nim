@@ -479,15 +479,15 @@ proc initMap*(sim: var SimServer) =
   # Cancel stall — center of main street
   sim.addObject(CancelStallObj, HubCenterTx, 21)
 
-  # South workshop — craft stations 5x3 grid (y=27..29)
-  for ty in 26 .. 30:
-    for tx in HubCenterTx - 3 .. HubCenterTx + 3:
+  # South workshop — craft stations spaced out (every other tile)
+  for ty in 26 .. 32:
+    for tx in HubCenterTx - 5 .. HubCenterTx + 5:
       if inTileBounds(tx, ty):
         sim.tileKinds[tileIndex(tx, ty)] = PathTile
   for slotIdx in 0 ..< GearSlotCount:
     for tier in 1 .. 3:
-      let tx = HubCenterTx - 2 + slotIdx
-      let ty = 26 + tier
+      let tx = HubCenterTx - 4 + slotIdx * 2
+      let ty = 27 + (tier - 1) * 2
       sim.addCraftStation(tx, ty, GearSlot(slotIdx), tier)
 
   # T1 gathering — close ring around town
@@ -990,8 +990,7 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
       dec i
 
   for playerIndex in 0 ..< sim.players.len:
-    if sim.players[playerIndex].state == Idle and
-       sim.players[playerIndex].role != Crafter:
+    if sim.players[playerIndex].state == Idle:
       sim.players[playerIndex].autoEquipFromInventory()
 
   sim.updateNodes()

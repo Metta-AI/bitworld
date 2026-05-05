@@ -648,7 +648,7 @@ proc preferredMaterial*(baseMaterial: string, tier: int): string =
 proc nearestGatherableNode*(state: GameState, player: BotPlayer,
                             preferMaterial: string = ""): Option[BotObject] =
   let maxTier = highestGatherableTier(player)
-  if preferMaterial.len > 0:
+  if preferMaterial.len > 0 and maxTier <= 1:
     let baseNode = nearestObject(state, "GatherNodeObj", material = preferMaterial)
     if baseNode.isSome: return baseNode
   for tier in countdown(maxTier, 1):

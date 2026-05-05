@@ -61,29 +61,89 @@ proc printCheckpoint(server: SimServer, tick: int,
       for li in server.players[pi].listings:
         echo &"    {server.players[pi].name} sells {li.item} qty={li.quantity} @{li.priceEach}g"
 
+proc gearTierSummary(p: Player): string =
+  let gear = p.activeGear()
+  var t1, t2, t3 = 0
+  for i in 0 ..< NumGearSlots:
+    if gear[i].isGearItem():
+      case gearTier(gear[i])
+      of 1: inc t1
+      of 2: inc t2
+      of 3: inc t3
+      else: discard
+  &"T1={t1} T2={t2} T3={t3}"
+
+proc tierProgress(p: Player): string =
+  let canT2 = p.hasFullGearSetOfTier(1)
+  let canT3 = p.hasFullGearSetOfTier(2)
+  if canT3: "can_gather_T3"
+  elif canT2: "can_gather_T2"
+  else:
+    let gear = p.activeGear()
+    var t1Count = 0
+    for i in 0 ..< NumGearSlots:
+      if gear[i].isGearItem() and gearTier(gear[i]) >= 1:
+        inc t1Count
+    &"need_T1_gear({t1Count}/5)"
+
 proc printStuckDiagnosis(server: SimServer, indices: array[7, int], names: array[7, string],
                          prevGold: array[7, int], tick: int) =
+  echo "  --- tier progress ---"
+  for i, name in names:
+    let p = server.players[indices[i]]
+    echo &"    {name:12s} gear=[{gearTierSummary(p)}] {tierProgress(p)}"
+
   var stuck: seq[string]
   for i, name in names:
     let p = server.players[indices[i]]
     if p.gold == prevGold[i] and p.state == Idle:
-      var reason = ""
+      var reasons: seq[string]
+      if p.listings.len >= MaxSellSlots:
+        reasons.add "sell_slots_full"
+      if p.gold == 0:
+        reasons.add "no_gold"
       if p.role == Crafter:
-        if p.listings.len >= MaxSellSlots:
-          reason = "sell slots full"
-        elif p.gold == 0:
-          reason = "no gold"
-        elif not p.inv.hasCraftMaterials():
-          reason = "no materials"
+        if not p.inv.hasCraftMaterials():
+          reasons.add "no_materials"
+        var invGear = 0
+        for item in LeatherHat..PlateShoes:
+          invGear += p.inv.counts[item]
+        if invGear > 0 and p.listings.len >= MaxSellSlots:
+          reasons.add &"holding_{invGear}_unsold_gear"
       elif p.role == Gatherer:
-        if p.listings.len >= MaxSellSlots:
-          reason = "sell slots full"
-        elif p.equippedGearCount() >= NumGearSlots:
-          reason = "full gear, nothing to buy"
-      if reason.len > 0:
-        stuck.add &"{name}({reason})"
+        if p.equippedGearCount() >= NumGearSlots and not p.hasFullGearSetOfTier(1):
+          reasons.add "has_gear_but_not_full_T1"
+        elif p.hasFullGearSetOfTier(1) and not p.hasFullGearSetOfTier(2):
+          reasons.add "ready_for_T2_but_not_gathering_it"
+        var rawMats = 0
+        for item in WoodItem..IronItem:
+          rawMats += p.inv.counts[item]
+        if rawMats > 0 and p.listings.len >= MaxSellSlots:
+          reasons.add &"holding_{rawMats}_unsold_mats"
+      if reasons.len > 0:
+        stuck.add &"{name}({reasons.join(\", \")})"
   if stuck.len > 0:
     echo &"  STUCK: {stuck.join(\", \")}"
+
+  # Market demand/supply summary
+  var t1Supply, t2Supply, t3Supply = 0
+  var t1GearSupply, t2GearSupply, t3GearSupply = 0
+  for pi in 0 ..< server.players.len:
+    for li in server.players[pi].listings:
+      let tier = materialTier(li.item)
+      if tier > 0:
+        case tier
+        of 1: t1Supply += li.quantity
+        of 2: t2Supply += li.quantity
+        of 3: t3Supply += li.quantity
+        else: discard
+      elif li.item.isGearItem():
+        case gearTier(li.item)
+        of 1: t1GearSupply += li.quantity
+        of 2: t2GearSupply += li.quantity
+        of 3: t3GearSupply += li.quantity
+        else: discard
+  echo &"  market supply: mats[T1={t1Supply} T2={t2Supply} T3={t3Supply}] gear[T1={t1GearSupply} T2={t2GearSupply} T3={t3GearSupply}]"
 
 when isMainModule:
   var ticks = 60000
