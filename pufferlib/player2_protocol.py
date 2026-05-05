@@ -597,36 +597,3 @@ class Player2ObservationAdapter:
         if PROTOCOL_CHAT_ICON_OBJECT_BASE <= object_id < PROTOCOL_CHAT_ICON_OBJECT_BASE + AMONG_THEM_MAX_PLAYERS:
             return object_id - PROTOCOL_CHAT_ICON_OBJECT_BASE
         return None
-
-
-__all__ = [
-    "AMONG_THEM_MAX_PLAYERS",
-    "PACKET_PLAYER2_CHAT",
-    "PACKET_PLAYER2_INPUT",
-    "PLAYER2_FEATURES",
-    "PLAYER2_FLAG_PLAYER_ALIVE",
-    "PLAYER2_FLAG_PLAYER_FLIP_H",
-    "PLAYER2_FLAG_PLAYER_GHOST",
-    "PLAYER2_FLAG_PLAYER_PRESENT",
-    "PLAYER2_FLAG_PLAYER_ROLE_IMPOSTER",
-    "PLAYER2_FLAG_TASK_ARROW_VISIBLE",
-    "PLAYER2_FLAG_TASK_ICON_VISIBLE",
-    "PLAYER2_GRID_SIZE",
-    "PLAYER2_HEADER_FEATURES",
-    "PLAYER2_INPUT_PACKET_BYTES",
-    "PLAYER2_PATH",
-    "PLAYER2_PLAYER_FEATURE_OFFSET",
-    "PLAYER2_PLAYER_FEATURES",
-    "PLAYER2_BODY_FEATURE_OFFSET",
-    "PLAYER2_BODY_FEATURES",
-    "PLAYER2_TASK_COUNT",
-    "PLAYER2_TASK_FEATURE_OFFSET",
-    "PLAYER2_TASK_FEATURES",
-    "PLAYER2_TASK_PROGRESS_INDEX",
-    "Player2ObservationAdapter",
-    "classify_player2_sprite",
-    "pack_player2_chat_packet",
-    "pack_player2_input_packet",
-    "snappy_decompress",
-    "unpack_player2_input_packet",
-]
