@@ -217,7 +217,7 @@ proc addressPath(address: string): string =
 
 proc addressUsesPlayerMode(address: string): bool =
   ## Returns true when the address targets the sprite player endpoint.
-  address.addressPath() == "/player2"
+  address.addressPath() == "/sprite_player"
 
 proc sendBytes(app: GlobalApp, bytes: openArray[uint8]) =
   ## Sends one binary packet when connected.

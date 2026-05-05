@@ -10,8 +10,8 @@ when isMainModule:
     configPath = getEnv("COGAME_CONFIG_PATH")
     mapPath = ""
     saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH")
-    loadReplayPath = ""
-    saveScoresPath = getEnv("COGAME_SAVE_RESULTS_PATH")
+    loadReplayPath = getEnv("COGAME_LOAD_REPLAY_PATH")
+    saveScoresPath = getEnv("COGAME_RESULTS_PATH")
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind
@@ -55,6 +55,7 @@ when isMainModule:
     echo "Using replay save file: " & saveReplayPath
   if saveScoresPath.len > 0:
     echo "Using results save file: " & saveScoresPath
+  echo "starting among_them on ", address, ":", port
   runServerLoop(
     address,
     port,

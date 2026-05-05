@@ -1,0 +1,6 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "ivotewell",
+  "image_uri": "ghcr.io/treeform/bitworld-ivotewell:latest",
+  "games": ["among_them"]
+}

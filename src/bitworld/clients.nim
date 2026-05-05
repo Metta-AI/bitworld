@@ -3,16 +3,16 @@ import std/os
 const
   PlayerClientRoute* = "/client/player.html"
   GlobalClientRoute* = "/client/global.html"
+  AdminClientRoute* = "/client/admin.html"
   RewardClientRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/client/snappyjs.min.js"
   QrcodeClientRoute* = "/client/qrcode.min.js"
-  StatsClientRoute* = "/client/stats.html"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
+  AdminClientHtml* = "admin_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
   QrcodeClientJs* = "qrcode.min.js"
-  StatsClientHtml* = "stats.html"
 
 proc repoDir*(): string =
   ## Returns the Bit World repository directory.
@@ -31,8 +31,8 @@ proc clientHtmlPath*(route: string): string =
     clientsDir() / GlobalClientHtml
   of RewardClientRoute:
     clientsDir() / RewardClientHtml
-  of StatsClientRoute:
-    clientsDir() / StatsClientHtml
+  of AdminClientRoute:
+    clientsDir() / AdminClientHtml
   else:
     ""
 

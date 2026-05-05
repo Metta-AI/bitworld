@@ -1,5 +1,5 @@
 import { Phase, Team, Role, Room, PlayerShape, type InputState, type Player, type ShoutMessage, type WhisperMessage, type Whisper, type Obstacle, type uint8, type GameConfig } from "./types.js";
-import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, WHISPER_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig, playerSpriteName, LEADER_SUMMIT_DURATION_SECS } from "./constants.js";
+import { ROOM_W, ROOM_H, PLAYER_W, PLAYER_H, SCREEN_WIDTH, SCREEN_HEIGHT, MOTION_SCALE, ACCEL, FRICTION_NUM, FRICTION_DEN, MAX_SPEED, STOP_THRESHOLD, BUBBLE_RADIUS, TARGET_FPS, LOBBY_WAIT_TICKS, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES, ACTION_RATE_LIMIT_TICKS, WHISPER_RATE_LIMIT_TICKS, WHISPER_MAX_OCCUPANTS, ENTRY_REQUEST_TIMEOUT, OBSTACLE_SIZE, PLAYER_COLORS, HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME, DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME, SPY_ROLE_NAME, ECHO_HADES_ROLE_NAME, ECHO_PERSEPHONE_ROLE_NAME, ECHO_CERBERUS_ROLE_NAME, ECHO_DEMETER_ROLE_NAME, TEAM_A_COLOR, TEAM_B_COLOR, DEFAULT_GAME_CONFIG, MINIMAP_SIZE, BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, roomSizeForPlayers, obstaclesForPlayers, playerCountFromConfig, playerSpriteName, LEADER_SUMMIT_DURATION_SECS } from "./constants.js";
 import { Framebuffer } from "../rendering/framebuffer.js";
 import { emptyInput } from "./protocol.js";
 import { clamp, distSq } from "./util.js";
@@ -11,6 +11,13 @@ import {
 
 function pref(pi: number): string {
   return `\x01${String.fromCharCode(pi)}`;
+}
+
+const INTRO_TOTAL_TICKS = 15 * TARGET_FPS;
+const INTRO_PANEL_COUNT = 4;
+
+function secondsToTicks(seconds: number): number {
+  return Math.max(1, Math.floor(seconds * TARGET_FPS));
 }
 
 export class Sim {
@@ -30,6 +37,8 @@ export class Sim {
   roundTimer = 0;
   hostagesPerRoom = 1;
   revealTimer = 0;
+  introPanel = 0;
+  introReady = new Set<number>();
   gameOverTimer = 0;
   winner: Team | null = null;
   config: GameConfig;
@@ -90,6 +99,22 @@ export class Sim {
 
   private log(event: string) {
     this.gameLog.push({ tick: this.tickCount, event });
+  }
+
+  private phaseTicks(normalSeconds: number, fastSeconds: number): number {
+    return secondsToTicks(this.config.fastTimers ? fastSeconds : normalSeconds);
+  }
+
+  private introTicks(): number {
+    return this.config.fastTimers ? secondsToTicks(1) : INTRO_TOTAL_TICKS;
+  }
+
+  private roleRevealTicks(): number {
+    return this.introTicks();
+  }
+
+  private lobbyWaitTicks(): number {
+    return this.config.fastTimers ? secondsToTicks(0.5) : LOBBY_WAIT_TICKS;
   }
 
   // ---- World geometry ----
@@ -320,18 +345,17 @@ export class Sim {
     if (!player) return;
 
     if (player.infoScreen !== "none") {
+      if (player.infoScreen === "shared" && (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit)) {
+        if (input.left && !prevInput.left) { this.cycleSocialSurface(pi, -1); return; }
+        if (input.right && !prevInput.right) { this.cycleSocialSurface(pi, 1); return; }
+      }
       if (pressed(input, prevInput, MENU_DEFS.info.selectButton)) player.infoScrollOffset = Math.max(0, player.infoScrollOffset - 1);
       if (input.up && !prevInput.up) player.infoScrollOffset = Math.max(0, player.infoScrollOffset - 1);
       if (input.down && !prevInput.down) player.infoScrollOffset++;
       if (anyPressed(input, prevInput, MENU_DEFS.info.closeButton!,
-        MENU_DEFS.comm.openButton!, MENU_DEFS.whisper.closeButton!)) {
+        MENU_DEFS.shout.openButton!, MENU_DEFS.whisper.closeButton!)) {
         player.infoScreen = "none"; player.infoScrollOffset = 0;
       }
-      return;
-    }
-
-    if (player.inWhisper >= 0) {
-      this.applyWhisperInput(pi, input, prevInput);
       return;
     }
 
@@ -340,16 +364,8 @@ export class Sim {
       return;
     }
 
-    if (player.commMenuOpen) {
-      const def = MENU_DEFS.comm;
-      if (def.closeButton && pressed(input, prevInput, def.closeButton)) { player.commMenuOpen = false; return; }
-      const items = this.commMenuItems(pi);
-      if (items.length > 0) {
-        player.commMenuRow = navigateMenu(input, prevInput, def, items.length, player.commMenuRow);
-      }
-      if (pressed(input, prevInput, def.selectButton) && items.length > 0) {
-        this.commMenuSelect(pi, items[player.commMenuRow]);
-      }
+    if (player.inWhisper >= 0) {
+      this.applyWhisperInput(pi, input, prevInput);
       return;
     }
 
@@ -382,45 +398,82 @@ export class Sim {
       player.carryY = carryY.val;
     }
 
-    // A creates/requests whisper entry, auto-pulls nearby free player
+    // A creates a new whisper only. Joining existing whispers is explicit via B.
     if (pressed(input, prevInput, MENU_DEFS.whisper.selectButton)) {
       if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
         const nearbyWhisperer = this.findNearbyWhisperPlayer(pi);
-        if (nearbyWhisperer >= 0 && player.pendingWhisperEntry < 0) {
-          const cr = this.whispers.get(this.players[nearbyWhisperer].inWhisper);
-          if (cr) this.requestWhisperEntry(pi, cr.id);
+        if (nearbyWhisperer >= 0) {
+          this.setNotice(pi, "YOU'LL BE OVERHEARD");
         } else if (player.pendingWhisperEntry < 0) {
           this.createWhisper(pi);
-          if (player.inWhisper >= 0) {
-            const nearbyFree = this.findNearbyFreePlayer(pi);
-            if (nearbyFree >= 0) {
-              this.addToWhisper(player.inWhisper, nearbyFree);
-            }
-          }
         }
       }
     }
 
-    // B toggles shared info screen / cancels entry
+    // B requests entry to a nearby whisper, or cancels a pending entry request.
     if (pressed(input, prevInput, MENU_DEFS.info.openButton!)) {
       if (player.pendingWhisperEntry >= 0) {
         this.cancelEntryRequest(pi);
       } else {
-        player.infoScreen = player.infoScreen === "none" ? "shared" : "none";
+        const nearbyWhisperer = this.findNearbyWhisperPlayer(pi);
+        if (nearbyWhisperer >= 0) {
+          const cr = this.whispers.get(this.players[nearbyWhisperer].inWhisper);
+          if (cr) this.requestWhisperEntry(pi, cr.id);
+        }
       }
     }
 
-    // SELECT opens comm menu
-    if (pressed(input, prevInput, MENU_DEFS.comm.openButton!)) {
+    // SELECT opens room shout/info surface directly. Left/right swaps shout/info.
+    if (pressed(input, prevInput, MENU_DEFS.shout.openButton!)) {
       if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
-        player.commMenuOpen = true;
-        player.commMenuRow = 0;
+        this.openShoutSurface(pi);
       }
     }
 
     if (this.phase === Phase.RoleReveal) {
       // any button = ready
     }
+  }
+
+  openShoutSurface(pi: number) {
+    const player = this.players[pi];
+    player.infoScreen = "none";
+    player.whisperMenuOpen = false;
+    player.shareSelectOpen = false;
+    player.shoutOpen = true;
+    player.shoutScroll = 0;
+    player.shoutActionRow = 0;
+  }
+
+  openInfoSurface(pi: number) {
+    const player = this.players[pi];
+    player.shoutOpen = false;
+    player.whisperMenuOpen = false;
+    player.shareSelectOpen = false;
+    player.infoScreen = "shared";
+    player.infoScrollOffset = 0;
+  }
+
+  cycleSocialSurface(pi: number, dir: -1 | 1) {
+    const player = this.players[pi];
+    const tabs = player.inWhisper >= 0 ? ["whisper", "shout", "info"] : ["shout", "info"];
+    const current = player.infoScreen === "shared" ? "info" : player.shoutOpen ? "shout" : "whisper";
+    const idx = Math.max(0, tabs.indexOf(current));
+    const next = tabs[(idx + dir + tabs.length) % tabs.length];
+
+    player.infoScreen = "none";
+    player.shoutOpen = false;
+    player.whisperMenuOpen = false;
+    player.shareSelectOpen = false;
+
+    if (next === "shout") this.openShoutSurface(pi);
+    else if (next === "info") this.openInfoSurface(pi);
+  }
+
+  setNotice(pi: number, text: string) {
+    const player = this.players[pi];
+    player.noticeText = text;
+    player.noticeUntilTick = this.tickCount + TARGET_FPS;
   }
 
   applyWhisperInput(pi: number, input: InputState, prevInput: InputState) {
@@ -474,6 +527,15 @@ export class Sim {
 
     const isSummit = this.phase === Phase.LeaderSummit && cr.id === this.leaderSummitWhisperId;
 
+    if (input.left && !prevInput.left) {
+      this.cycleSocialSurface(pi, -1);
+      return;
+    }
+    if (input.right && !prevInput.right) {
+      this.cycleSocialSurface(pi, 1);
+      return;
+    }
+
     if (!isSummit && pressed(input, prevInput, WHISPER_CLOSE_BUTTON)) {
       this.leaveWhisper(pi);
       return;
@@ -499,7 +561,7 @@ export class Sim {
   applyShoutInput(pi: number, input: InputState, prevInput: InputState) {
     const player = this.players[pi];
     const msgs = this.shoutMessagesForPlayer(pi);
-    const gDef = MENU_DEFS.global;
+    const gDef = MENU_DEFS.shout;
     const hDef = MENU_DEFS.hostage;
 
     if (gDef.closeButton && pressed(input, prevInput, gDef.closeButton)) {
@@ -510,6 +572,18 @@ export class Sim {
     }
 
     const leaderHostage = this.phase === Phase.HostageSelect && player.isLeader;
+
+    if (!leaderHostage) {
+      if (input.left && !prevInput.left) { this.cycleSocialSurface(pi, -1); return; }
+      if (input.right && !prevInput.right) { this.cycleSocialSurface(pi, 1); return; }
+      if (pressed(input, prevInput, MENU_DEFS.whisper.openButton!)) {
+        const candidates = this.usurpCandidates(pi);
+        if (candidates.length > 0) {
+          player.shoutActionRow = (player.shoutActionRow + 1) % candidates.length;
+        }
+        return;
+      }
+    }
 
     if (leaderHostage) {
       const committed = player.room === Room.RoomA ? this.committedA : this.committedB;
@@ -560,33 +634,6 @@ export class Sim {
     }
 
     player.velX = 0; player.velY = 0; player.carryX = 0; player.carryY = 0;
-  }
-
-  // ---- Comm menu (A-button in game world) ----
-
-  commMenuItems(pi: number): string[] {
-    const items: string[] = [];
-    if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
-      items.push("SHOUT");
-      items.push("INFO");
-    }
-    return items;
-  }
-
-  commMenuSelect(pi: number, item: string) {
-    const player = this.players[pi];
-    player.commMenuOpen = false;
-    switch (item) {
-      case "SHOUT":
-        player.shoutOpen = true;
-        player.shoutScroll = 0;
-        player.shoutActionRow = 0;
-        break;
-      case "INFO":
-        player.infoScreen = "shared";
-        player.infoScrollOffset = 0;
-        break;
-    }
   }
 
   // ---- Whisper action items (B-button in whisper) ----
@@ -812,22 +859,6 @@ export class Sim {
     this.addToWhisper(whisperId, requestingPi);
   }
 
-  findNearbyFreePlayer(pi: number): number {
-    const player = this.players[pi];
-    const r2 = BUBBLE_RADIUS * BUBBLE_RADIUS;
-    let bestDist = Infinity;
-    let bestPi = -1;
-    for (let i = 0; i < this.players.length; i++) {
-      if (i === pi) continue;
-      const other = this.players[i];
-      if (other.room !== player.room) continue;
-      if (other.inWhisper >= 0 || other.pendingWhisperEntry >= 0) continue;
-      const d = distSq(player.x, player.y, other.x, other.y);
-      if (d <= r2 && d < bestDist) { bestDist = d; bestPi = i; }
-    }
-    return bestPi;
-  }
-
   denyWhisperEntry(whisperId: number, requestingPi: number) {
     const cr = this.whispers.get(whisperId);
     if (!cr) return;
@@ -1009,19 +1040,21 @@ export class Sim {
     }
   }
 
-  private actionRateCheck(pi: number, action: string): boolean {
+  private actionRateCheck(pi: number, action: string, defaultLimit?: number): boolean {
     if (pi < 0 || pi >= this.players.length) return false;
     const player = this.players[pi];
     const limits = this.config.actionRateLimits;
-    const limit = limits?.[action] ?? limits?.["_default"] ?? ACTION_RATE_LIMIT_TICKS;
+    const limit = limits?.[action] ?? limits?.["_default"] ?? defaultLimit ?? ACTION_RATE_LIMIT_TICKS;
     const last = player.lastActionTicks.get(action) ?? -Infinity;
     if (this.tickCount - last < limit) return false;
     player.lastActionTicks.set(action, this.tickCount);
     return true;
   }
 
-  private chatRateCheck(pi: number, text: string): string[] | null {
-    if (!this.actionRateCheck(pi, "chat")) return null;
+  private chatRateCheck(pi: number, text: string, isWhisper: boolean): string[] | null {
+    const key = isWhisper ? "whisper_chat" : "shout";
+    const limit = isWhisper ? WHISPER_RATE_LIMIT_TICKS : undefined;
+    if (!this.actionRateCheck(pi, key, limit)) return null;
     const perLine = this.config.chatMaxCharsPerLine ?? CHAT_MAX_CHARS_PER_LINE;
     const clean = text.replace(/[^\x20-\x7e]/g, "");
     if (clean.length === 0) return null;
@@ -1035,7 +1068,7 @@ export class Sim {
   addWhisperChat(whisperId: number, pi: number, text: string) {
     const cr = this.whispers.get(whisperId);
     if (!cr || !cr.occupants.has(pi)) return;
-    const lines = this.chatRateCheck(pi, text);
+    const lines = this.chatRateCheck(pi, text, true);
     if (!lines) return;
     for (const line of lines) {
       cr.messages.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: line });
@@ -1044,14 +1077,14 @@ export class Sim {
   }
 
   addShout(pi: number, text: string) {
-    const lines = this.chatRateCheck(pi, text);
+    const lines = this.chatRateCheck(pi, text, false);
     if (!lines) return;
     const player = this.players[pi];
     const dest = player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB;
     for (const line of lines) {
       dest.push({ type: 'text', senderIndex: pi, tick: this.tickCount, text: line });
     }
-    this.log(`${this.pn(pi)} global: ${lines.join("")}`);
+    this.log(`${this.pn(pi)} shout: ${lines.join("")}`);
   }
 
   shoutMessagesForPlayer(pi: number): WhisperMessage[] {
@@ -1078,7 +1111,7 @@ export class Sim {
   }
 
   addChat(pi: number, text: string) {
-    const lines = this.chatRateCheck(pi, text);
+    const lines = this.chatRateCheck(pi, text, false);
     if (!lines) return;
     const player = this.players[pi];
     for (const line of lines) {
@@ -1120,13 +1153,13 @@ export class Sim {
       isLeader: false, isHostage: false, selectedAsHostage: false,
       revealedTo: new Set(), sharedWith: new Set(), colorRevealedTo: new Set(),
       colorIndex: this.players.length,
-      commMenuOpen: false, commMenuRow: 0,
       whisperMenuOpen: false, whisperMenuCat: 0, whisperMenuItem: 0,
       shareSelectOpen: false, shareSelectRow: 0, shareSelectMode: "card" as const,
       infoScreen: "none", infoScrollOffset: 0, usurpVote: -1,
       inWhisper: -1, whisperEntryTick: 0, whisperScrollOffset: 0,
       pendingWhisperEntry: -1,
       shoutOpen: false, shoutLastRead: 0, shoutScroll: 0, shoutActionRow: 0,
+      noticeText: null, noticeUntilTick: 0,
       roomEntryTick: 0,
       lastActionTicks: new Map<string, number>(),
     });
@@ -1256,8 +1289,10 @@ export class Sim {
     this.generateObstacles();
     this.rebuildWallMap();
     this.assignRoles();
-    this.phase = Phase.RoleReveal;
-    this.revealTimer = 16 * TARGET_FPS;
+    this.phase = Phase.RosterReveal;
+    this.revealTimer = this.introTicks();
+    this.introPanel = 0;
+    this.introReady.clear();
     this.currentRound = 0;
     this.gameLog = [];
     for (let i = 0; i < this.players.length; i++) {
@@ -1269,6 +1304,7 @@ export class Sim {
   startRound() {
     this.log(`--- Round ${this.currentRound + 1} started ---`);
     this.phase = Phase.Playing;
+    this.introReady.clear();
     const roundCfg = this.config.rounds[this.currentRound];
     this.roundTimer = (roundCfg?.durationSecs ?? 60) * TARGET_FPS;
     this.leaderA = -1;
@@ -1277,14 +1313,38 @@ export class Sim {
     this.hostagesSelectedB = [];
     for (const p of this.players) {
       p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
-      p.commMenuOpen = false; p.whisperMenuOpen = false; p.shareSelectOpen = false;
+      p.whisperMenuOpen = false; p.shareSelectOpen = false;
       p.infoScreen = "none"; p.usurpVote = -1;
       p.inWhisper = -1; p.pendingWhisperEntry = -1;
       p.shoutOpen = false;
+      p.noticeText = null; p.noticeUntilTick = 0;
     }
     this.whispers.clear();
     this.hostagesPerRoom = this.getHostageCount();
     this.ensureLeaders();
+  }
+
+  private setIntroPanel(panel: number) {
+    const next = Math.max(0, Math.min(INTRO_PANEL_COUNT - 1, panel));
+    if (next === this.introPanel) return;
+    this.introPanel = next;
+    this.phase = next === 0 ? Phase.RosterReveal : Phase.RoleReveal;
+    this.introReady.clear();
+  }
+
+  private handleIntroInput(pi: number, input: InputState, prevInput: InputState) {
+    const forward = pressed(input, prevInput, BUTTON_A) || pressed(input, prevInput, BUTTON_RIGHT);
+    const back = pressed(input, prevInput, BUTTON_B) || pressed(input, prevInput, BUTTON_LEFT);
+    if (back) {
+      this.setIntroPanel(this.introPanel - 1);
+      return;
+    }
+    if (!forward) return;
+    if (this.introPanel < INTRO_PANEL_COUNT - 1) {
+      this.setIntroPanel(this.introPanel + 1);
+    } else {
+      this.introReady.add(pi);
+    }
   }
 
   ensureLeaders() {
@@ -1312,7 +1372,7 @@ export class Sim {
     this.hostagesSelectedA = []; this.hostagesSelectedB = [];
     this.hostageCursorA = 0; this.hostageCursorB = 0;
     this.committedA = false; this.committedB = false;
-    this.hostageSelectTimer = 15 * TARGET_FPS;
+    this.hostageSelectTimer = this.phaseTicks(15, 1);
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       p.selectedAsHostage = false;
@@ -1335,7 +1395,7 @@ export class Sim {
 
   beginLeaderSummit() {
     this.phase = Phase.LeaderSummit;
-    this.leaderSummitTimer = LEADER_SUMMIT_DURATION_SECS * TARGET_FPS;
+    this.leaderSummitTimer = this.phaseTicks(LEADER_SUMMIT_DURATION_SECS, 1);
 
     this.ejectAllWhispers();
 
@@ -1439,7 +1499,7 @@ export class Sim {
       }
     }
 
-    this.exchangeDuration = 8 * TARGET_FPS;
+    this.exchangeDuration = this.phaseTicks(8, 1);
     this.exchangeTimer = this.exchangeDuration;
   }
 
@@ -1448,6 +1508,76 @@ export class Sim {
     p.usurpVote = -1;
     p.shoutLastRead = 0;
     p.shoutScroll = 0;
+  }
+
+  roleHolders(role: Role): number[] {
+    const holders: number[] = [];
+    for (let i = 0; i < this.players.length; i++) {
+      if (this.players[i].role === role) holders.push(i);
+    }
+    return holders;
+  }
+
+  echoRoleForCore(role: Role): Role | null {
+    switch (role) {
+      case Role.Hades: return Role.EchoOfHades;
+      case Role.Persephone: return Role.EchoOfPersephone;
+      case Role.Cerberus: return Role.EchoOfCerberus;
+      case Role.Demeter: return Role.EchoOfDemeter;
+      default: return null;
+    }
+  }
+
+  coreRoleForEcho(role: Role): Role | null {
+    switch (role) {
+      case Role.EchoOfHades: return Role.Hades;
+      case Role.EchoOfPersephone: return Role.Persephone;
+      case Role.EchoOfCerberus: return Role.Cerberus;
+      case Role.EchoOfDemeter: return Role.Demeter;
+      default: return null;
+    }
+  }
+
+  effectiveRoleHolders(coreRole: Role): number[] {
+    const primary = this.roleHolders(coreRole);
+    if (primary.length > 0) return primary;
+    const echoRole = this.echoRoleForCore(coreRole);
+    return echoRole === null ? [] : this.roleHolders(echoRole);
+  }
+
+  activeEchoSubstitutions(): { echoRole: Role; coreRole: Role; holders: number[] }[] {
+    const rows: { echoRole: Role; coreRole: Role; holders: number[] }[] = [];
+    for (const coreRole of [Role.Hades, Role.Persephone, Role.Cerberus, Role.Demeter]) {
+      if (this.roleHolders(coreRole).length > 0) continue;
+      const echoRole = this.echoRoleForCore(coreRole);
+      if (echoRole === null) continue;
+      const holders = this.roleHolders(echoRole);
+      if (holders.length > 0) rows.push({ echoRole, coreRole, holders });
+    }
+    return rows;
+  }
+
+  missingCoreRoles(): Role[] {
+    return [Role.Hades, Role.Persephone, Role.Cerberus, Role.Demeter]
+      .filter(role => this.roleHolders(role).length === 0);
+  }
+
+  sharedBetweenAny(left: number[], right: number[]): boolean {
+    for (const li of left) {
+      for (const ri of right) {
+        if (li !== ri && this.players[li].sharedWith.has(ri)) return true;
+      }
+    }
+    return false;
+  }
+
+  sameRoomBetweenAny(left: number[], right: number[]): boolean {
+    for (const li of left) {
+      for (const ri of right) {
+        if (li !== ri && this.players[li].room === this.players[ri].room) return true;
+      }
+    }
+    return false;
   }
 
   finalizeExchange() {
@@ -1479,22 +1609,14 @@ export class Sim {
   }
 
   checkWinCondition() {
-    let hadesIdx = -1, persephoneIdx = -1, cerberusIdx = -1, demeterIdx = -1;
-    for (let i = 0; i < this.players.length; i++) {
-      if (this.players[i].role === Role.Hades) hadesIdx = i;
-      if (this.players[i].role === Role.Persephone) persephoneIdx = i;
-      if (this.players[i].role === Role.Cerberus) cerberusIdx = i;
-      if (this.players[i].role === Role.Demeter) demeterIdx = i;
-    }
+    const hades = this.effectiveRoleHolders(Role.Hades);
+    const persephone = this.effectiveRoleHolders(Role.Persephone);
+    const cerberus = this.effectiveRoleHolders(Role.Cerberus);
+    const demeter = this.effectiveRoleHolders(Role.Demeter);
 
-    const sameRoom = hadesIdx >= 0 && persephoneIdx >= 0 &&
-      this.players[hadesIdx].room === this.players[persephoneIdx].room;
-
-    const hadesSharedWithCerberus = hadesIdx >= 0 && cerberusIdx >= 0 &&
-      this.players[hadesIdx].sharedWith.has(cerberusIdx);
-
-    const persephoneSharedWithDemeter = persephoneIdx >= 0 && demeterIdx >= 0 &&
-      this.players[persephoneIdx].sharedWith.has(demeterIdx);
+    const sameRoom = this.sameRoomBetweenAny(hades, persephone);
+    const hadesSharedWithCerberus = this.sharedBetweenAny(hades, cerberus);
+    const persephoneSharedWithDemeter = this.sharedBetweenAny(persephone, demeter);
 
     if (sameRoom) {
       if (hadesSharedWithCerberus) this.winner = Team.TeamA;
@@ -1516,7 +1638,7 @@ export class Sim {
     switch (this.phase) {
       case Phase.Lobby: {
         if (this.players.length >= playerCountFromConfig(this.config)) {
-          if (this.lobbyCountdown <= 0) this.lobbyCountdown = LOBBY_WAIT_TICKS;
+          if (this.lobbyCountdown <= 0) this.lobbyCountdown = this.lobbyWaitTicks();
           this.lobbyCountdown--;
           if (this.lobbyCountdown <= 0) this.startGame();
         } else {
@@ -1527,12 +1649,19 @@ export class Sim {
         }
         break;
       }
+      case Phase.RosterReveal:
       case Phase.RoleReveal: {
         this.revealTimer--;
+        let panelChanged = false;
         for (let i = 0; i < this.players.length; i++) {
-          this.applyInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
+          if (panelChanged) continue;
+          const panelBeforeInput = this.introPanel;
+          this.handleIntroInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
+          panelChanged = this.introPanel !== panelBeforeInput;
         }
-        if (this.revealTimer <= 0) this.startRound();
+        if (this.revealTimer <= 0 || (this.introPanel === INTRO_PANEL_COUNT - 1 && this.introReady.size >= this.players.length)) {
+          this.startRound();
+        }
         break;
       }
       case Phase.Playing: {
@@ -1575,7 +1704,7 @@ export class Sim {
           if (this.currentRound >= this.config.rounds.length) {
             this.checkWinCondition();
             this.phase = Phase.Reveal;
-            this.revealTimer = 5 * TARGET_FPS;
+            this.revealTimer = this.phaseTicks(5, 0.5);
           } else {
             this.startRound();
           }
@@ -1586,7 +1715,7 @@ export class Sim {
         this.revealTimer--;
         if (this.revealTimer <= 0) {
           this.phase = Phase.GameOver;
-          this.gameOverTimer = 10 * TARGET_FPS;
+          this.gameOverTimer = this.phaseTicks(10, 0.5);
         }
         break;
       }
@@ -1613,13 +1742,13 @@ export class Sim {
       p.team = Team.TeamA; p.role = Role.Shades;
       p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
       p.revealedTo = new Set(); p.sharedWith = new Set(); p.colorRevealedTo = new Set();
-      p.commMenuOpen = false; p.commMenuRow = 0;
       p.whisperMenuOpen = false; p.whisperMenuCat = 0; p.whisperMenuItem = 0;
       p.shareSelectOpen = false; p.shareSelectRow = 0;
       p.infoScreen = "none"; p.usurpVote = -1;
       p.inWhisper = -1; p.whisperEntryTick = 0; p.whisperScrollOffset = 0;
       p.pendingWhisperEntry = -1;
       p.shoutOpen = false; p.shoutLastRead = 0; p.shoutScroll = 0; p.shoutActionRow = 0;
+      p.noticeText = null; p.noticeUntilTick = 0;
       p.roomEntryTick = 0;
       p.lastActionTicks = new Map<string, number>();
       p.velX = 0; p.velY = 0; p.carryX = 0; p.carryY = 0;
@@ -1639,6 +1768,24 @@ export class Sim {
       case Role.Demeter: return DEMETER_ROLE_NAME;
       case Role.Shades: return SHADES_ROLE_NAME;
       case Role.Nymphs: return NYMPHS_ROLE_NAME;
+      case Role.Spy: return SPY_ROLE_NAME;
+      case Role.EchoOfHades: return ECHO_HADES_ROLE_NAME;
+      case Role.EchoOfPersephone: return ECHO_PERSEPHONE_ROLE_NAME;
+      case Role.EchoOfCerberus: return ECHO_CERBERUS_ROLE_NAME;
+      case Role.EchoOfDemeter: return ECHO_DEMETER_ROLE_NAME;
+    }
+  }
+
+  roleDefaultTeam(role: Role): Team {
+    switch (role) {
+      case Role.Persephone:
+      case Role.Demeter:
+      case Role.Nymphs:
+      case Role.EchoOfPersephone:
+      case Role.EchoOfDemeter:
+        return Team.TeamB;
+      default:
+        return Team.TeamA;
     }
   }
 
@@ -1649,11 +1796,27 @@ export class Sim {
     }
   }
 
+  colorRevealTeamColor(pi: number): uint8 {
+    const p = this.players[pi];
+    if (p.role === Role.Spy) {
+      return this.teamColor(p.team === Team.TeamA ? Team.TeamB : Team.TeamA);
+    }
+    return this.teamColor(p.team);
+  }
+
+  roleRevealTeam(pi: number, viewerIndex: number): Team {
+    const p = this.players[pi];
+    if (p.role === Role.Spy && pi !== viewerIndex && !p.sharedWith.has(viewerIndex)) {
+      return p.team === Team.TeamA ? Team.TeamB : Team.TeamA;
+    }
+    return p.team;
+  }
+
   playerColor(pi: number): uint8 {
     return PLAYER_COLORS[pi % PLAYER_COLORS.length];
   }
 
-  roleIndicator(role: Role): { color: uint8; special: boolean } {
+  roleIndicator(role: Role, team?: Team): { color: uint8; special: boolean } {
     switch (role) {
       case Role.Hades: return { color: TEAM_A_COLOR, special: true };
       case Role.Persephone: return { color: TEAM_B_COLOR, special: true };
@@ -1661,6 +1824,11 @@ export class Sim {
       case Role.Demeter: return { color: TEAM_B_COLOR, special: true };
       case Role.Shades: return { color: TEAM_A_COLOR, special: false };
       case Role.Nymphs: return { color: TEAM_B_COLOR, special: false };
+      case Role.Spy: return { color: team === Team.TeamB ? TEAM_B_COLOR : TEAM_A_COLOR, special: false };
+      case Role.EchoOfHades: return { color: TEAM_A_COLOR, special: true };
+      case Role.EchoOfPersephone: return { color: TEAM_B_COLOR, special: true };
+      case Role.EchoOfCerberus: return { color: TEAM_A_COLOR, special: true };
+      case Role.EchoOfDemeter: return { color: TEAM_B_COLOR, special: true };
     }
   }
 

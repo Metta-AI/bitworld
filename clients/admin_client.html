@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Stats Viewer</title>
+<title>Admin Panel</title>
 <style>
 html,body{
   margin:0;
@@ -164,7 +164,9 @@ tbody tr:hover{
   gap:10px;
   flex-wrap:wrap;
 }
-#restartMatch{
+#restartMatch,
+#playPause,
+#toggleLoop{
   border:1px solid #2d5f83;
   border-radius:4px;
   background:#102131;
@@ -173,10 +175,14 @@ tbody tr:hover{
   font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
   cursor:pointer;
 }
-#restartMatch:hover{
+#restartMatch:hover,
+#playPause:hover,
+#toggleLoop:hover{
   background:#17344d;
 }
-#restartMatch:disabled{
+#restartMatch:disabled,
+#playPause:disabled,
+#toggleLoop:disabled{
   cursor:default;
   opacity:.55;
 }
@@ -203,7 +209,7 @@ tbody tr:hover{
 </head>
 <body>
 <header>
-  <h1>Player Stats</h1>
+  <h1>Admin Panel</h1>
   <div id="status">connecting...</div>
 </header>
 <div id="wrap">
@@ -221,11 +227,13 @@ tbody tr:hover{
     <span id="joinQrHost"></span>
     <div id="matchControls">
       <button id="restartMatch" type="button">Restart match</button>
+      <button id="playPause" type="button">Play/Pause</button>
+      <button id="toggleLoop" type="button">Loop</button>
       <span id="controlStatus"></span>
     </div>
   </div>
 </div>
-<script src="qrcode.min.js"></script>
+<script src="/client/qrcode.min.js"></script>
 <script>
 const COLUMNS=[
   {key:"identity",label:"player",numeric:false},
@@ -271,7 +279,18 @@ function defaultAddress(path){
   const host=location.host||"localhost:8080";
   return protocol+"//"+host+path;
 }
-const address=url.searchParams.get("address")||defaultAddress("/reward");
+const rawAddress=url.searchParams.get("address")||defaultAddress("/admin");
+function addressWithPath(path){
+  const target=new URL(rawAddress,location.href);
+  if(target.protocol==="http:")target.protocol="ws:";
+  if(target.protocol==="https:")target.protocol="wss:";
+  target.pathname=path;
+  target.search="";
+  target.hash="";
+  return target.toString();
+}
+const address=addressWithPath("/admin");
+const statsAddress=url.searchParams.get("statsAddress")||addressWithPath("/reward");
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
 
 const head=document.getElementById("head");
@@ -282,6 +301,8 @@ const joinQrCode=document.getElementById("joinQrCode");
 const joinQrLabel=document.getElementById("joinQrLabel");
 const joinQrHost=document.getElementById("joinQrHost");
 const restartMatch=document.getElementById("restartMatch");
+const playPause=document.getElementById("playPause");
+const toggleLoop=document.getElementById("toggleLoop");
 const controlStatus=document.getElementById("controlStatus");
 
 function joinUrlFromAddress(){
@@ -306,7 +327,7 @@ function renderJoinQr(){
   }
   const loopback=/^(localhost|127\.|::1$|\[::1\])/i.test(playerPage.host);
   joinQrLabel.textContent=loopback
-    ?"open stats at LAN IP to share"
+    ?"open admin at LAN IP to share"
     :"scan to join";
   joinQrHost.textContent=playerPage.host||"";
   if(typeof qrcode!=="function"){
@@ -387,6 +408,45 @@ async function kickPlayer(identity,button){
     button.disabled=false;
     setControlStatus(e.message||"kick failed",true);
   }
+}
+
+let adminSocket=null;
+
+function setAdminButtonsEnabled(enabled){
+  if(playPause)playPause.disabled=!enabled;
+  if(toggleLoop)toggleLoop.disabled=!enabled;
+}
+
+function sendAdminPacket(bytes,label){
+  if(!adminSocket||adminSocket.readyState!==WebSocket.OPEN){
+    setControlStatus("admin socket disconnected",true);
+    return;
+  }
+  adminSocket.send(new Uint8Array(bytes));
+  setControlStatus(label+" sent");
+}
+
+function sendReplayCommand(command,label){
+  sendAdminPacket([0x81,1,0,command.charCodeAt(0)],label);
+}
+
+function connectAdmin(){
+  setAdminButtonsEnabled(false);
+  const ws=new WebSocket(address);
+  ws.binaryType="arraybuffer";
+  adminSocket=ws;
+  ws.onopen=()=>{
+    if(adminSocket===ws)setAdminButtonsEnabled(true);
+  };
+  ws.onclose=()=>{
+    if(adminSocket===ws){
+      setAdminButtonsEnabled(false);
+      adminSocket=null;
+    }
+  };
+  ws.onerror=()=>{
+    if(adminSocket===ws)setAdminButtonsEnabled(false);
+  };
 }
 
 function buildHead(){
@@ -521,12 +581,12 @@ function reconnect(ws){
 function handle(text){
   applyPacket(text);
   render();
-  status.textContent=address+"  ("+players.size+" players)";
+  status.textContent=statsAddress+"  ("+players.size+" players)";
 }
 
 function connect(){
-  status.textContent="connecting to "+address+"...";
-  const ws=new WebSocket(address);
+  status.textContent="connecting to "+statsAddress+"...";
+  const ws=new WebSocket(statsAddress);
   socket=ws;
   ws.onmessage=event=>{
     if(socket!==ws)return;
@@ -541,7 +601,7 @@ function connect(){
     }
   };
   ws.onopen=()=>{
-    if(socket===ws)status.textContent=address;
+    if(socket===ws)status.textContent=statsAddress;
   };
   ws.onclose=()=>reconnect(ws);
   ws.onerror=()=>{
@@ -554,6 +614,9 @@ buildHead();
 render();
 renderJoinQr();
 if(restartMatch)restartMatch.onclick=restartCurrentMatch;
+if(playPause)playPause.onclick=()=>sendReplayCommand(" ","play/pause");
+if(toggleLoop)toggleLoop.onclick=()=>sendReplayCommand("r","loop");
+connectAdmin();
 connect();
 </script>
 </body>

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Persephone's Escape Global</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    body { display: grid; place-items: center; }
+    canvas { width: min(96vw, 960px); height: auto; image-rendering: pixelated; background: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="screen" width="256" height="160"></canvas>
+  <script>
+    const palette = [
+      [0,0,0], [29,43,83], [126,37,83], [0,135,81], [171,82,54], [95,87,79], [194,195,199], [255,241,232],
+      [255,0,77], [255,163,0], [255,236,39], [0,228,54], [41,173,255], [131,118,156], [255,119,168], [255,204,170],
+    ];
+    const canvas = document.getElementById("screen");
+    const ctx = canvas.getContext("2d");
+    let image = ctx.createImageData(canvas.width, canvas.height);
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/global${window.location.search}`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (event) => {
+      const bytes = new Uint8Array(event.data);
+      const pixels = bytes.length * 2;
+      const side = Math.sqrt(pixels);
+      if (Number.isInteger(side) && side !== canvas.width) {
+        canvas.width = side;
+        canvas.height = side;
+        image = ctx.createImageData(side, side);
+      }
+      for (let i = 0; i < bytes.length; i++) {
+        drawPixel(i * 2, bytes[i] & 15);
+        drawPixel(i * 2 + 1, bytes[i] >> 4);
+      }
+      ctx.putImageData(image, 0, 0);
+    };
+    function drawPixel(index, color) {
+      const [r, g, b] = palette[color] || palette[0];
+      const off = index * 4;
+      image.data[off] = r; image.data[off + 1] = g; image.data[off + 2] = b; image.data[off + 3] = 255;
+    }
+  </script>
+</body>
+</html>

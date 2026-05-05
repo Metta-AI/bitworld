@@ -1,5 +1,5 @@
 import ../common/protocol
-import ../among_them/sim
+import ../among_them/[global, sim]
 import std/[math, os]
 
 const
@@ -14,7 +14,8 @@ type
     inputs: seq[InputState]
     prevInputs: seq[InputState]
     rewardSnapshot: seq[int]
-    renderStateScratch: seq[uint8]
+    sprite_playerObservationScratch: seq[uint8]
+    sprite_playerViewerStates: seq[PlayerViewerState]
     playerCount: int
     seed: int
     maxTicks: int
@@ -112,19 +113,19 @@ proc copyOnTaskFlags(env: var NativeEnv, flags: ptr cfloat, outputBase = 0) =
         break
     output[outputBase + playerIndex] = if onTask: 1.0 else: 0.0
 
-proc copyStateObservations(env: var NativeEnv, observations: ptr uint8, outputBase = 0) =
+proc copySpritePlayerObservations(env: var NativeEnv, observations: ptr uint8, outputBase = 0) =
   if observations.isNil:
     raise newException(ValueError, "Observation pointer is nil.")
 
-  if env.renderStateScratch.len != RenderStateFeatures:
-    env.renderStateScratch = newSeq[uint8](RenderStateFeatures)
+  if env.sprite_playerObservationScratch.len != SpritePlayerObservationFeatures:
+    env.sprite_playerObservationScratch = newSeq[uint8](SpritePlayerObservationFeatures)
   let output = cast[ptr UncheckedArray[uint8]](observations)
   for playerIndex in 0 ..< env.playerCount:
-    env.sim.writeRenderStateObservation(playerIndex, env.renderStateScratch)
+    env.sim.writeSpritePlayerObservation(playerIndex, env.sprite_playerObservationScratch)
     copyMem(
-      addr output[outputBase + playerIndex * RenderStateFeatures],
-      unsafeAddr env.renderStateScratch[0],
-      RenderStateFeatures
+      addr output[outputBase + playerIndex * SpritePlayerObservationFeatures],
+      unsafeAddr env.sprite_playerObservationScratch[0],
+      SpritePlayerObservationFeatures
     )
 
 proc stepStatus(env: NativeEnv): cint =
@@ -153,6 +154,7 @@ proc addNativePlayers(env: var NativeEnv) =
   env.inputs = newSeq[InputState](env.playerCount)
   env.prevInputs = newSeq[InputState](env.playerCount)
   env.rewardSnapshot = newSeq[int](env.playerCount)
+  env.sprite_playerViewerStates = newSeq[PlayerViewerState](env.playerCount)
   for playerIndex in 0 ..< env.playerCount:
     discard env.sim.addPlayer("player" & $(playerIndex + 1))
   doAssert env.sim.players.len == env.playerCount
@@ -198,6 +200,44 @@ proc bitworld_at_game_hash*(handle: cint): uint64 {.cdecl, exportc, dynlib.} =
     return envs[int(handle)].sim.gameHash()
   discard setLastError("Invalid Among Them native env handle.")
 
+proc bitworld_at_sprite_player_packet*(
+  handle: cint,
+  playerIndex: cint,
+  output: ptr uint8,
+  outputCapacity: cint
+): cint {.cdecl, exportc, dynlib.} =
+  try:
+    if not validHandle(handle):
+      return setLastError("Invalid Among Them native env handle.")
+    if output.isNil:
+      return setLastError("Output pointer is nil.")
+    if outputCapacity <= 0:
+      return setLastError("Output capacity must be positive.")
+
+    var env = envs[int(handle)]
+    let playerIndexInt = int(playerIndex)
+    if playerIndexInt < 0 or playerIndexInt >= env.playerCount:
+      return setLastError("Invalid player index.")
+    if env.sprite_playerViewerStates.len != env.playerCount:
+      env.sprite_playerViewerStates = newSeq[PlayerViewerState](env.playerCount)
+
+    var nextState: PlayerViewerState
+    let packet = env.sim.buildSpriteProtocolPlayerUpdates(
+      playerIndexInt,
+      env.sprite_playerViewerStates[playerIndexInt],
+      nextState
+    )
+    if packet.len > int(outputCapacity):
+      return setLastError(
+        "SpritePlayer packet buffer is too small: need " & $packet.len & " bytes."
+      )
+    env.sprite_playerViewerStates[playerIndexInt] = nextState
+    if packet.len > 0:
+      copyMem(output, unsafeAddr packet[0], packet.len)
+    cint(packet.len)
+  except CatchableError as e:
+    setLastError(e.msg)
+
 proc bitworld_at_create*(seed, playerCount, maxTicks: cint): cint {.cdecl, exportc, dynlib.} =
   try:
     if playerCount <= 0:
@@ -237,7 +277,7 @@ proc bitworld_at_reset*(
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_reset_state*(
+proc bitworld_at_reset_sprite_player*(
   handle: cint,
   observations: ptr uint8,
   rewards: ptr cfloat
@@ -248,7 +288,7 @@ proc bitworld_at_reset_state*(
 
     var env = envs[int(handle)]
     env.resetNativeEnv()
-    env.copyStateObservations(observations)
+    env.copySpritePlayerObservations(observations)
     let output = cast[ptr UncheckedArray[cfloat]](rewards)
     for playerIndex in 0 ..< env.playerCount:
       output[playerIndex] = 0.0
@@ -275,7 +315,7 @@ proc bitworld_at_step*(
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_step_state*(
+proc bitworld_at_step_sprite_player*(
   handle: cint,
   actionMasks: ptr uint8,
   actionRepeat: cint,
@@ -288,13 +328,13 @@ proc bitworld_at_step_state*(
 
     var env = envs[int(handle)]
     let status = env.applyActionMasks(actionMasks, actionRepeat)
-    env.copyStateObservations(observations)
+    env.copySpritePlayerObservations(observations)
     env.copyRewardDeltas(rewards)
     status
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_reset_state_batch*(
+proc bitworld_at_reset_sprite_player_batch*(
   handles: ptr cint,
   envCount: cint,
   playerCount: cint,
@@ -323,14 +363,14 @@ proc bitworld_at_reset_state_batch*(
         return setLastError("Unexpected player count in batch reset.")
       env.resetNativeEnv()
       let outputBase = envIndex * playerCountInt
-      env.copyStateObservations(observations, outputBase * RenderStateFeatures)
+      env.copySpritePlayerObservations(observations, outputBase * SpritePlayerObservationFeatures)
       for playerIndex in 0 ..< playerCountInt:
         rewardOutput[outputBase + playerIndex] = 0.0
     0
   except CatchableError as e:
     setLastError(e.msg)
 
-proc bitworld_at_step_state_batch*(
+proc bitworld_at_step_sprite_player_batch*(
   handles: ptr cint,
   envCount: cint,
   playerCount: cint,
@@ -370,7 +410,7 @@ proc bitworld_at_step_state_batch*(
         cast[ptr uint8](addr actions[outputBase]),
         actionRepeat
       )
-      env.copyStateObservations(observations, outputBase * RenderStateFeatures)
+      env.copySpritePlayerObservations(observations, outputBase * SpritePlayerObservationFeatures)
       env.copyRewardDeltas(rewards, outputBase)
     0
   except CatchableError as e:

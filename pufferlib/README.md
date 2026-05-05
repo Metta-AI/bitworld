@@ -33,11 +33,11 @@ For `among_them`, the same policy controls all five players during training thro
 the native Nim bridge by default. Pass `--players 16` to train the maximum game
 size.
 
-`among_them` also supports `--observation-mode state` for compact render-source
-training. State observations are byte buffers produced from the same per-player
-camera, sampled map/mask layer, visible task icon, body, player, and voting UI
-inputs that feed the pixel renderer, before those inputs are expanded into a
-full frame.
+`among_them` also supports `--observation-mode sprite_player` for compact
+render-source training. SpritePlayer observations use a small visible-only schema:
+four header bytes, a sampled map-color grid, and visible player, body, task
+icon, task arrow, and voting UI slots from the same inputs that feed the
+`/sprite_player` sprite route.
 
 ## Play Among Them
 
@@ -52,7 +52,8 @@ python pufferlib/run_among_them_policy_match.py \
 ```
 
 The launcher prints a `/global` browser URL, starts a five-player server, connects
-four Nim bots, and connects the policy as `/player?name=puffer`.
+four Nim bots, and connects the policy to `/player` for pixel checkpoints or
+`/sprite_player` for sprite_player checkpoints.
 
 To connect a trained policy to an existing server:
 

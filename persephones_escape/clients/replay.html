@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Persephone's Escape Replay</title>
+  <style>
+    body { margin: 0; padding: 24px; background: #111; color: #eee; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <pre id="out">Connecting...</pre>
+  <script>
+    const out = document.getElementById("out");
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/replay${window.location.search}`);
+    ws.onmessage = (event) => { out.textContent = event.data; };
+  </script>
+</body>
+</html>

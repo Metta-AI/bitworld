@@ -53,20 +53,20 @@ const
   TransportSpeedGap = 16
   TransportX = 2
   TransportY = 1
-  Player2KillSpriteId = 5000
-  Player2KillShadowSpriteId = 5001
-  Player2GhostIconSpriteId = 5002
-  Player2RemainingSpriteId = 5003
-  Player2ProgressSpriteId = 5004
-  Player2ArrowSpriteId = 5005
-  Player2InterstitialSpriteId = 5006
-  Player2InterstitialObjectId = 5006
-  Player2RemainingObjectId = 5007
-  Player2ProgressObjectId = 5008
-  Player2ShadowSpriteId = 5009
-  Player2ShadowObjectId = 5009
-  Player2ShadowZ = -32767
-  Player2TaskArrowObjectBase = 7000
+  SpritePlayerKillSpriteId = 5000
+  SpritePlayerKillShadowSpriteId = 5001
+  SpritePlayerGhostIconSpriteId = 5002
+  SpritePlayerRemainingSpriteId = 5003
+  SpritePlayerProgressSpriteId = 5004
+  SpritePlayerArrowSpriteId = 5005
+  SpritePlayerInterstitialSpriteId = 5006
+  SpritePlayerInterstitialObjectId = 5006
+  SpritePlayerRemainingObjectId = 5007
+  SpritePlayerProgressObjectId = 5008
+  SpritePlayerShadowSpriteId = 5009
+  SpritePlayerShadowObjectId = 5009
+  SpritePlayerShadowZ = -32767
+  SpritePlayerTaskArrowObjectBase = 7000
   ProtocolTextSpriteBase = 9000
   ProtocolTextObjectBase = 9000
   ProtocolTextZ = 30010
@@ -1459,6 +1459,7 @@ proc buildSpriteProtocolPlayerInit(
 ): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
+  result.addU8(0x04)
   let mapPixels = sim.buildMapSpritePixels()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
@@ -1480,7 +1481,7 @@ proc buildSpriteProtocolPlayerInit(
   )
   result.addSpriteChanged(
     spriteDefs,
-    Player2KillSpriteId,
+    SpritePlayerKillSpriteId,
     sim.killButtonSprite.width,
     sim.killButtonSprite.height,
     buildSpriteProtocolRawSprite(sim.killButtonSprite),
@@ -1488,7 +1489,7 @@ proc buildSpriteProtocolPlayerInit(
   )
   result.addSpriteChanged(
     spriteDefs,
-    Player2KillShadowSpriteId,
+    SpritePlayerKillShadowSpriteId,
     sim.killButtonSprite.width,
     sim.killButtonSprite.height,
     buildSpriteProtocolShadowSprite(sim.killButtonSprite),
@@ -1496,7 +1497,7 @@ proc buildSpriteProtocolPlayerInit(
   )
   result.addSpriteChanged(
     spriteDefs,
-    Player2GhostIconSpriteId,
+    SpritePlayerGhostIconSpriteId,
     sim.ghostIconSprite.width,
     sim.ghostIconSprite.height,
     buildSpriteProtocolRawSprite(sim.ghostIconSprite),
@@ -1504,7 +1505,7 @@ proc buildSpriteProtocolPlayerInit(
   )
   result.addSpriteChanged(
     spriteDefs,
-    Player2ArrowSpriteId,
+    SpritePlayerArrowSpriteId,
     1,
     1,
     buildSolidSprite(1, 1, 8'u8),
@@ -1853,7 +1854,7 @@ proc addSpritePlayerTaskArrows(
         ey = minY
       ex = px + dx * (ey - py) / dy
       ex = clamp(ex, minX, maxX)
-    let objectId = Player2TaskArrowObjectBase + taskIndex
+    let objectId = SpritePlayerTaskArrowObjectBase + taskIndex
     currentIds.add(objectId)
     packet.addObject(
       objectId,
@@ -1861,7 +1862,7 @@ proc addSpritePlayerTaskArrows(
       int(ey),
       30000,
       MapLayerId,
-      Player2ArrowSpriteId
+      SpritePlayerArrowSpriteId
     )
 
 proc buildSpriteProtocolPlayerUpdates*(
@@ -1893,22 +1894,22 @@ proc buildSpriteProtocolPlayerUpdates*(
       else:
         sim.render(playerIndex)
     let interstitial = spritePixelsFromPackedFrame(packedFrame)
-    currentIds.add(Player2InterstitialObjectId)
+    currentIds.add(SpritePlayerInterstitialObjectId)
     result.addSpriteChanged(
       nextState.spriteDefs,
-      Player2InterstitialSpriteId,
+      SpritePlayerInterstitialSpriteId,
       ScreenWidth,
       ScreenHeight,
       interstitial,
       "player screen"
     )
     result.addObject(
-      Player2InterstitialObjectId,
+      SpritePlayerInterstitialObjectId,
       0,
       0,
       0,
       MapLayerId,
-      Player2InterstitialSpriteId
+      SpritePlayerInterstitialSpriteId
     )
     sim.addProtocolTextSprites(
       nextState.spriteDefs,
@@ -1943,22 +1944,22 @@ proc buildSpriteProtocolPlayerUpdates*(
     )
     if not viewerIsGhost:
       let shadowPixels = sim.buildPlayerShadowSprite(cameraX, cameraY)
-      currentIds.add(Player2ShadowObjectId)
+      currentIds.add(SpritePlayerShadowObjectId)
       result.addSpriteChanged(
         nextState.spriteDefs,
-        Player2ShadowSpriteId,
+        SpritePlayerShadowSpriteId,
         ScreenWidth,
         ScreenHeight,
         shadowPixels,
         "shadow"
       )
       result.addObject(
-        Player2ShadowObjectId,
+        SpritePlayerShadowObjectId,
         0,
         0,
-        Player2ShadowZ,
+        SpritePlayerShadowZ,
         MapLayerId,
-        Player2ShadowSpriteId
+        SpritePlayerShadowSpriteId
       )
 
     for i in 0 ..< sim.bodies.len:
@@ -2051,10 +2052,10 @@ proc buildSpriteProtocolPlayerUpdates*(
                 )
               else:
                 0
-          currentIds.add(Player2ProgressObjectId)
+          currentIds.add(SpritePlayerProgressObjectId)
           result.addSpriteChanged(
             nextState.spriteDefs,
-            Player2ProgressSpriteId,
+            SpritePlayerProgressSpriteId,
             TaskBarWidth,
             1,
             buildTaskProgressSprite(
@@ -2064,12 +2065,12 @@ proc buildSpriteProtocolPlayerUpdates*(
             "progress bar " & $progressPercent & "%"
           )
           result.addObject(
-            Player2ProgressObjectId,
+            SpritePlayerProgressObjectId,
             barX,
             barY,
             30001,
             MapLayerId,
-            Player2ProgressSpriteId
+            SpritePlayerProgressSpriteId
           )
 
     sim.addSpritePlayerTaskArrows(
@@ -2081,27 +2082,27 @@ proc buildSpriteProtocolPlayerUpdates*(
     )
 
     if not player.alive:
-      currentIds.add(Player2RemainingObjectId)
+      currentIds.add(SpritePlayerRemainingObjectId)
       result.addObject(
-        Player2RemainingObjectId,
+        SpritePlayerRemainingObjectId,
         1,
         ScreenHeight - SpriteSize - 1,
         30002,
         MapLayerId,
-        Player2GhostIconSpriteId
+        SpritePlayerGhostIconSpriteId
       )
     elif player.role == Imposter:
-      currentIds.add(Player2RemainingObjectId)
+      currentIds.add(SpritePlayerRemainingObjectId)
       result.addObject(
-        Player2RemainingObjectId,
+        SpritePlayerRemainingObjectId,
         1,
         ScreenHeight - SpriteSize - 1,
         30002,
         MapLayerId,
         if player.killCooldown > 0:
-          Player2KillShadowSpriteId
+          SpritePlayerKillShadowSpriteId
         else:
-          Player2KillSpriteId
+          SpritePlayerKillSpriteId
       )
 
     let
@@ -2111,7 +2112,7 @@ proc buildSpriteProtocolPlayerUpdates*(
     currentIds.add(SelectedTextObjectId)
     result.addSpriteChanged(
       nextState.spriteDefs,
-      Player2RemainingSpriteId,
+      SpritePlayerRemainingSpriteId,
       remaining.width,
       remaining.height,
       remaining.pixels,
@@ -2123,7 +2124,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       0,
       30003,
       MapLayerId,
-      Player2RemainingSpriteId
+      SpritePlayerRemainingSpriteId
     )
 
   for objectId in state.objectIds:
