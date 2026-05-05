@@ -24,6 +24,7 @@ bin = @[
   "tools/quick_player",
   "tools/ptswap",
   "games_server/cogame_validator",
+  "games_server/tournament_server",
   "tag/tag",
   "jumper/jumper",
   "warzone/warzone",
