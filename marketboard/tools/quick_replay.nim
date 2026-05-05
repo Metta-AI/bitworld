@@ -1,15 +1,12 @@
 import std/[os, osproc, strutils, parseopt, strformat]
 
 const
-  BatchSource = "tools" / "batch_market.nim"
+  BatchSource = "marketboard" / "tools" / "batch_market.nim"
   ViewerSource = "marketboard" / "replay_viewer.nim"
   FullmapSource = "marketboard" / "fullmap_viewer.nim"
-  HeadlessSource = "tools" / "headless_sim.nim"
+  HeadlessSource = "marketboard" / "tools" / "headless_sim.nim"
   DefaultTicks = 10000
   DefaultReplayDir = "replays"
-
-proc repoRoot(): string =
-  absolutePath(getCurrentDir())
 
 when isMainModule:
   var ticks = DefaultTicks
@@ -29,45 +26,26 @@ when isMainModule:
         checkpointInterval = parseInt(val)
     else: discard
 
-  let
-    rootDir = repoRoot()
-    nimExe = findExe("nim")
+  let nimExe = findExe("nim")
   if nimExe.len == 0:
     echo "Unable to find 'nim' on PATH."
     quit(1)
 
   if headless:
-    echo "Compiling headless sim..."
-    var rc = execCmd(&"{nimExe} c {rootDir / HeadlessSource}")
-    if rc != 0:
-      quit(rc)
-    let exe = rootDir / "out" / HeadlessSource.extractFilename.changeFileExt(ExeExts[0])
-    quit(execCmd(&"{exe} --ticks:{ticks} --interval:{checkpointInterval}"))
+    echo "Running headless sim..."
+    quit(execCmd(&"{nimExe} r {HeadlessSource} --ticks:{ticks} --interval:{checkpointInterval}"))
   else:
-    echo "Compiling batch runner..."
-    var rc = execCmd(&"{nimExe} c {rootDir / BatchSource}")
-    if rc != 0:
-      quit(rc)
-
-    let activeViewer = if playerCam: ViewerSource else: FullmapSource
-    echo "Compiling replay viewer..."
-    rc = execCmd(&"{nimExe} c {rootDir / activeViewer}")
-    if rc != 0:
-      quit(rc)
-
     echo &"Recording 1 match ({ticks} ticks)..."
-    let batchExe = rootDir / "out" / BatchSource.extractFilename.changeFileExt(ExeExts[0])
-    rc = execCmd(&"{batchExe} --matches:1 --ticks:{ticks} --fixed-lineup")
+    var rc = execCmd(&"{nimExe} r {BatchSource} --matches:1 --ticks:{ticks} --fixed-lineup")
     if rc != 0:
       echo "Match recording failed."
       quit(rc)
 
-    let replayPath = rootDir / DefaultReplayDir / "match_0000.mbreplay"
+    let replayPath = absolutePath(DefaultReplayDir / "match_0000.mbreplay")
     if not fileExists(replayPath):
       echo "Replay file not found at ", replayPath
       quit(1)
 
+    let activeViewer = if playerCam: ViewerSource else: FullmapSource
     echo "Opening replay viewer..."
-    let viewerExe = rootDir / "out" / activeViewer.extractFilename.changeFileExt(ExeExts[0])
-    let viewerWorkDir = rootDir / "marketboard"
-    quit(execShellCmd(&"cd {viewerWorkDir} && {viewerExe} {replayPath}"))
+    quit(execCmd(&"{nimExe} r {activeViewer} {replayPath}"))

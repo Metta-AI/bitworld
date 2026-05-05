@@ -77,26 +77,18 @@ proc controlCHook() {.noconv.} =
   cleanupChildren()
   quit(130)
 
-proc compileTarget(nimExe, rootDir, label, sourceRelative: string): int =
-  echo "Compiling ", label, "..."
-  var process: Process
-  try:
-    process = startProcess(
-      nimExe,
-      workingDir = rootDir,
-      args = ["c", sourceRelative],
-      options = {poParentStreams}
-    )
-    result = process.waitForExit()
-  finally:
-    if not process.isNil:
-      try: process.close()
-      except CatchableError: discard
-  if result != 0:
-    echo label, " compile failed with exit code ", result, "."
-
-proc exePathFor(rootDir, sourceRelative: string): string =
-  absolutePath(rootDir / "out" / sourceRelative.extractFilename.changeFileExt(ExeExts[0]))
+proc nimRunProcess(nimExe, rootDir, label, sourceRelative: string,
+                   args: openArray[string] = []): Process =
+  echo "Starting ", label, "..."
+  var nimArgs = @["r", sourceRelative]
+  for a in args:
+    nimArgs.add a
+  result = startProcess(
+    nimExe,
+    workingDir = rootDir,
+    args = nimArgs,
+    options = {poParentStreams}
+  )
 
 proc waitForServerReady(port: int): bool =
   let
@@ -183,34 +175,9 @@ proc run(config: QuickMarketConfig): int =
     echo "Unable to find 'nim' on PATH."
     return 1
 
-  let
-    serverExe = exePathFor(rootDir, ServerSource)
-    clientExe = exePathFor(rootDir, ClientSource)
-    clientWorkDir = absolutePath(rootDir / "clients")
-    serverWorkDir = absolutePath(rootDir / "marketboard")
-
-  result = compileTarget(nimExe, rootDir, "server", ServerSource)
-  if result != 0: return
-
-  result = compileTarget(nimExe, rootDir, "client", ClientSource)
-  if result != 0: return
-
-  var botExes: seq[tuple[name, exe, workDir: string]]
-  for botName in config.bots:
-    let source = findBotSource(botName)
-    result = compileTarget(nimExe, rootDir, botName, source)
-    if result != 0: return
-    botExes.add (botName, exePathFor(rootDir, source),
-                 absolutePath(rootDir / source.parentDir))
-
-  echo "Starting server on ", config.address, ":", config.port, "..."
   try:
-    serverProcess = startProcess(
-      serverExe,
-      workingDir = serverWorkDir,
-      args = ["--port:" & $config.port, "--address:" & config.address],
-      options = {poParentStreams}
-    )
+    serverProcess = nimRunProcess(nimExe, rootDir, "server", ServerSource,
+      ["--port:" & $config.port, "--address:" & config.address])
   except CatchableError as e:
     echo "Failed to start server: ", e.msg
     return 1
@@ -219,15 +186,10 @@ proc run(config: QuickMarketConfig): int =
     cleanupChildren()
     return 1
 
-  echo "Starting player client..."
   let clientAddr = "--address:ws://" & config.address & ":" & $config.port & "/player"
   try:
-    clientProcess = startProcess(
-      clientExe,
-      workingDir = clientWorkDir,
-      args = [clientAddr, "--title:Marketboard"],
-      options = {poParentStreams}
-    )
+    clientProcess = nimRunProcess(nimExe, rootDir, "client", ClientSource,
+      [clientAddr, "--title:Marketboard"])
   except CatchableError as e:
     echo "Failed to start client: ", e.msg
     cleanupChildren()
@@ -235,20 +197,16 @@ proc run(config: QuickMarketConfig): int =
 
   sleep(500)
 
-  for bot in botExes:
-    echo "Starting bot: ", bot.name, "..."
+  for botName in config.bots:
+    let source = findBotSource(botName)
     try:
-      let p = startProcess(
-        bot.exe,
-        workingDir = bot.workDir,
-        args = ["--address:" & config.address, "--port:" & $config.port,
-                "--name:" & bot.name],
-        options = {poParentStreams}
-      )
+      let p = nimRunProcess(nimExe, rootDir, botName, source,
+        ["--address:" & config.address, "--port:" & $config.port,
+         "--name:" & botName])
       botProcesses.add p
-      botNames.add bot.name
+      botNames.add botName
     except CatchableError as e:
-      echo "Failed to start bot ", bot.name, ": ", e.msg
+      echo "Failed to start bot ", botName, ": ", e.msg
       cleanupChildren()
       return 1
 
