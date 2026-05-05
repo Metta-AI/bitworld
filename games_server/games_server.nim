@@ -182,6 +182,14 @@ document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll(".bulkCheck")
   );
   var anchor = null;
+  window.confirmRemoveContainers = function () {
+    var count = boxes.filter(function (box) {
+      return box.checked;
+    }).length;
+    return confirm(
+      "Going to remove " + count + " containers (can't be undone) ok?"
+    );
+  };
   boxes.forEach(function (box) {
     box.addEventListener("click", function (event) {
       if (event.shiftKey && anchor) {
@@ -1759,7 +1767,7 @@ proc renderBulkControls(): string =
       button ".button":
         ttype "submit"
         formaction BulkRemovePath
-        onclick "return confirm('Remove selected containers?')"
+        onclick "return confirmRemoveContainers()"
         say "Remove"
 
 proc renderGamesTable(
@@ -1782,13 +1790,13 @@ proc renderGamesTable(
         th ".head":
           say "Join"
         th ".head":
-          say "Replay"
-        th ".head":
-          say "Scores"
-        th ".head":
           say "Bots"
         th ".head":
           say "Created"
+        th ".head":
+          say "Replay"
+        th ".head":
+          say "Scores"
         th ".head":
           say "Logs"
       if games.len == 0:
@@ -1829,31 +1837,6 @@ proc renderGamesTable(
             else:
               say "offline"
           td rowClass & " nowrap":
-            if game.replay.len > 0:
-              form:
-                action ReplayPlayPath
-                tmethod "post"
-                target "_blank"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value game.replay
-                button ".button":
-                  ttype "submit"
-                  say "play"
-            else:
-              say "-"
-          td rowClass & " nowrap":
-            if game.replay.len > 0 and scoreFileExists(game.replay):
-              a:
-                href scoreUrl(game.replay)
-                target "_blank"
-                say "scores"
-            elif game.status == "running":
-              say "pending"
-            else:
-              say "-"
-          td rowClass & " nowrap":
             if healthy:
               form:
                 action "/games/bot"
@@ -1892,6 +1875,31 @@ proc renderGamesTable(
               say ""
           td rowClass & " nowrap":
             say fmtCreated(game.created)
+          td rowClass & " nowrap":
+            if game.replay.len > 0:
+              form:
+                action ReplayPlayPath
+                tmethod "post"
+                target "_blank"
+                input:
+                  ttype "hidden"
+                  name "name"
+                  value game.replay
+                button ".button":
+                  ttype "submit"
+                  say "Launch"
+            else:
+              say "-"
+          td rowClass & " nowrap":
+            if game.replay.len > 0 and scoreFileExists(game.replay):
+              a:
+                href scoreUrl(game.replay)
+                target "_blank"
+                say "scores"
+            elif game.status == "running":
+              say "pending"
+            else:
+              say "-"
           td rowClass & " center":
             a:
               href logUrl(game.name)
@@ -1909,14 +1917,14 @@ proc renderGamesTable(
               say ""
             td rowClass:
               say ""
-            td rowClass:
-              say ""
-            td rowClass:
-              say ""
             td rowClass & " nowrap":
               say esc(bot.name)
             td rowClass & " nowrap":
               say fmtCreated(bot.created)
+            td rowClass:
+              say ""
+            td rowClass:
+              say ""
             td rowClass & " center":
               a:
                 href logUrl(bot.name)
@@ -1942,11 +1950,11 @@ proc renderReplayServersTable(
         th ".head":
           say "Viewer"
         th ".head":
+          say "Created"
+        th ".head":
           say "Replay"
         th ".head":
           say "Scores"
-        th ".head":
-          say "Created"
         th ".head":
           say "Logs"
       if servers.len == 0:
@@ -1980,6 +1988,8 @@ proc renderReplayServersTable(
               say "starting"
             else:
               say "offline"
+          td rowClass & " nowrap":
+            say fmtCreated(server.created)
           td rowClass:
             if server.replay.len > 0:
               say esc(server.replay)
@@ -1993,8 +2003,6 @@ proc renderReplayServersTable(
                 say "scores"
             else:
               say "-"
-          td rowClass & " nowrap":
-            say fmtCreated(server.created)
           td rowClass & " center":
             a:
               href logUrl(server.name)
@@ -2013,7 +2021,7 @@ proc renderReplaysTable(replays: seq[ReplayFile]): string =
         th ".head":
           say "Modified"
         th ".head":
-          say "Play"
+          say "Replay"
         th ".head":
           say "Scores"
       if replays.len == 0:
@@ -2041,7 +2049,7 @@ proc renderReplaysTable(replays: seq[ReplayFile]): string =
                 value replay.name
               button ".button":
                 ttype "submit"
-                say "Open global"
+                say "Launch"
           td rowClass & " nowrap":
             if scoreFileExists(replay.name):
               a:
@@ -2070,7 +2078,7 @@ proc renderPage(
     html:
       head:
         title:
-          say "Bitworld Games Server"
+          say "CoGame Server"
         say "<style>"
         say PageCss
         say "</style>"
@@ -2081,9 +2089,9 @@ proc renderPage(
             tr:
               td ".row2":
                 h1 ".title":
-                  say "Bitworld Games Server"
+                  say "CoGame Server"
                 p ".small":
-                  say "Among Them containers, old board style."
+                  say "If not CoGame why CoGame shaped?"
               td ".row2 right small":
                 a:
                   href "/"
