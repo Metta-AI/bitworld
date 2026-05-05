@@ -798,6 +798,21 @@ proc nextSellCursorForTier*(player: BotPlayer): int =
       inc idx
   -1
 
+proc bestSellCursor*(player: BotPlayer): int =
+  let maxTier = highestGatherableTier(player)
+  var idx = 0
+  var bestIdx = -1
+  var bestValue = 0
+  for i, name in ItemNames:
+    if player.inv.itemCount(name) > 0:
+      if isSellableAtTier(name, maxTier) or isGearItem(name):
+        let value = botItemBasePrice(name)
+        if value > bestValue:
+          bestValue = value
+          bestIdx = idx
+      inc idx
+  bestIdx
+
 proc canAffordAnyMaterial*(state: GameState, player: BotPlayer): bool =
   for tier in countdown(3, 1):
     let (matA, matB) = materialsForTier(tier)

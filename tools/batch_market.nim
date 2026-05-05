@@ -12,16 +12,18 @@ import
   ../marketboard/players/solenne as sol,
   ../marketboard/players/rkhenna as rk,
   ../marketboard/players/pipitori as pip,
-  ../marketboard/players/kukumo as kuku
+  ../marketboard/players/kukumo as kuku,
+  ../marketboard/players/ktorra as kt,
+  ../marketboard/players/staelhart as stael
 
 const
   DefaultMatches = 100
   DefaultTicks = 5000
   DefaultTop = 5
   DefaultReplayDir = "replays"
-  BotCount = 8
+  BotCount = 10
   MinBots = 5
-  MaxBots = 9
+  MaxBots = 11
 
 type
   BotKind* = enum
@@ -33,6 +35,8 @@ type
     bkRkhenna
     bkPipitori
     bkKukumo
+    bkKtorra
+    bkStaelhart
 
   BotRunner = object
     kind: BotKind
@@ -47,6 +51,8 @@ type
     of bkRkhenna: rkState: rk.BotState
     of bkPipitori: pipState: pip.BotState
     of bkKukumo: kukuState: kuku.BotState
+    of bkKtorra: ktState: kt.BotState
+    of bkStaelhart: staelState: stael.BotState
 
   BatchConfig = object
     matches: int
@@ -74,6 +80,8 @@ proc botName(kind: BotKind, index: int): string =
   of bkRkhenna: "Rkhenna" & $index
   of bkPipitori: "Pipitori" & $index
   of bkKukumo: "Kukumo" & $index
+  of bkKtorra: "Ktorra" & $index
+  of bkStaelhart: "Staelhart" & $index
 
 proc initBotRunner(kind: BotKind, index: int): BotRunner =
   let name = botName(kind, index)
@@ -94,6 +102,10 @@ proc initBotRunner(kind: BotKind, index: int): BotRunner =
     result = BotRunner(kind: bkPipitori, botKind: bkPipitori, name: name)
   of bkKukumo:
     result = BotRunner(kind: bkKukumo, botKind: bkKukumo, name: name)
+  of bkKtorra:
+    result = BotRunner(kind: bkKtorra, botKind: bkKtorra, name: name)
+  of bkStaelhart:
+    result = BotRunner(kind: bkStaelhart, botKind: bkStaelhart, name: name)
 
 proc decide(bot: var BotRunner, state: GameState): uint8 =
   case bot.botKind
@@ -105,6 +117,8 @@ proc decide(bot: var BotRunner, state: GameState): uint8 =
   of bkRkhenna: rk.decide(bot.rkState, state)
   of bkPipitori: pip.decide(bot.pipState, state)
   of bkKukumo: kuku.decide(bot.kukuState, state)
+  of bkKtorra: kt.decide(bot.ktState, state)
+  of bkStaelhart: stael.decide(bot.staelState, state)
 
 proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
   if fixed:
@@ -116,12 +130,12 @@ proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
     result.add BotKind(rng.rand(BotCount - 1))
   var hasCrafter = false
   for kind in result:
-    if kind in {bkIronWorks, bkSolenne, bkRkhenna}:
+    if kind in {bkIronWorks, bkSolenne, bkRkhenna, bkStaelhart}:
       hasCrafter = true
       break
   if not hasCrafter:
-    let crafters = [bkIronWorks, bkSolenne, bkRkhenna]
-    result[0] = crafters[rng.rand(2)]
+    let crafters = [bkIronWorks, bkSolenne, bkRkhenna, bkStaelhart]
+    result[0] = crafters[rng.rand(3)]
   rng.shuffle(result)
 
 proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): MatchResult =
@@ -173,6 +187,8 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
       of bkRkhenna: bots[i].rkState.prevMask = mask
       of bkPipitori: bots[i].pipState.prevMask = mask
       of bkKukumo: bots[i].kukuState.util.prevMask = mask
+      of bkKtorra: bots[i].ktState.util.prevMask = mask
+      of bkStaelhart: bots[i].staelState.util.prevMask = mask
 
     sim.step(inputs)
     writer.writeHash(uint32(sim.tickCount), sim.gameHash())

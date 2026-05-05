@@ -10,12 +10,14 @@ import
   ../marketboard/players/solenne as sol,
   ../marketboard/players/rkhenna as rk,
   ../marketboard/players/pipitori as pip,
-  ../marketboard/players/kukumo as kuku
+  ../marketboard/players/kukumo as kuku,
+  ../marketboard/players/ktorra as kt,
+  ../marketboard/players/staelhart as stael
 
 const
-  BotCount = 8
+  BotCount = 10
   MinBots = 5
-  MaxBots = 9
+  MaxBots = 11
 
 type
   BotKind = enum
@@ -27,6 +29,8 @@ type
     bkRkhenna
     bkPipitori
     bkKukumo
+    bkKtorra
+    bkStaelhart
 
   BotRunner = object
     kind: BotKind
@@ -41,6 +45,8 @@ type
     of bkRkhenna: rkState: rk.BotState
     of bkPipitori: pipState: pip.BotState
     of bkKukumo: kukuState: kuku.BotState
+    of bkKtorra: ktState: kt.BotState
+    of bkStaelhart: staelState: stael.BotState
 
   DiagConfig = object
     seed: int
@@ -59,6 +65,8 @@ proc botName(kind: BotKind, index: int): string =
   of bkRkhenna: "Rkhenna" & $index
   of bkPipitori: "Pipitori" & $index
   of bkKukumo: "Kukumo" & $index
+  of bkKtorra: "Ktorra" & $index
+  of bkStaelhart: "Staelhart" & $index
 
 proc initBotRunner(kind: BotKind, index: int): BotRunner =
   let name = botName(kind, index)
@@ -79,6 +87,10 @@ proc initBotRunner(kind: BotKind, index: int): BotRunner =
     result = BotRunner(kind: bkPipitori, botKind: bkPipitori, name: name)
   of bkKukumo:
     result = BotRunner(kind: bkKukumo, botKind: bkKukumo, name: name)
+  of bkKtorra:
+    result = BotRunner(kind: bkKtorra, botKind: bkKtorra, name: name)
+  of bkStaelhart:
+    result = BotRunner(kind: bkStaelhart, botKind: bkStaelhart, name: name)
 
 proc decide(bot: var BotRunner, state: GameState): uint8 =
   case bot.botKind
@@ -90,6 +102,8 @@ proc decide(bot: var BotRunner, state: GameState): uint8 =
   of bkRkhenna: rk.decide(bot.rkState, state)
   of bkPipitori: pip.decide(bot.pipState, state)
   of bkKukumo: kuku.decide(bot.kukuState, state)
+  of bkKtorra: kt.decide(bot.ktState, state)
+  of bkStaelhart: stael.decide(bot.staelState, state)
 
 proc phaseName(bot: BotRunner): string =
   case bot.botKind
@@ -101,6 +115,8 @@ proc phaseName(bot: BotRunner): string =
   of bkRkhenna: $bot.rkState.phase
   of bkPipitori: $bot.pipState.phase
   of bkKukumo: bot.kukuState.phase
+  of bkKtorra: bot.ktState.phase
+  of bkStaelhart: bot.staelState.phase
 
 proc ticksInPhase(bot: BotRunner): int =
   case bot.botKind
@@ -112,6 +128,8 @@ proc ticksInPhase(bot: BotRunner): int =
   of bkRkhenna: bot.rkState.ticksInPhase
   of bkPipitori: bot.pipState.ticksInPhase
   of bkKukumo: bot.kukuState.ticksInPhase
+  of bkKtorra: bot.ktState.ticksInPhase
+  of bkStaelhart: bot.staelState.ticksInPhase
 
 proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
   if fixed:
@@ -123,12 +141,12 @@ proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
     result.add BotKind(rng.rand(BotCount - 1))
   var hasCrafter = false
   for kind in result:
-    if kind in {bkIronWorks, bkSolenne, bkRkhenna}:
+    if kind in {bkIronWorks, bkSolenne, bkRkhenna, bkStaelhart}:
       hasCrafter = true
       break
   if not hasCrafter:
-    let crafters = [bkIronWorks, bkSolenne, bkRkhenna]
-    result[0] = crafters[rng.rand(2)]
+    let crafters = [bkIronWorks, bkSolenne, bkRkhenna, bkStaelhart]
+    result[0] = crafters[rng.rand(3)]
   rng.shuffle(result)
 
 proc playerGearTiers(p: Player): seq[int] =
@@ -270,6 +288,8 @@ proc run(config: DiagConfig) =
       of bkRkhenna: bots[i].rkState.prevMask = mask
       of bkPipitori: bots[i].pipState.prevMask = mask
       of bkKukumo: bots[i].kukuState.util.prevMask = mask
+      of bkKtorra: bots[i].ktState.util.prevMask = mask
+      of bkStaelhart: bots[i].staelState.util.prevMask = mask
 
       # Log phase transitions and accumulate ticks
       let phase = bots[i].phaseName()
@@ -368,10 +388,16 @@ proc run(config: DiagConfig) =
     var travel, gathering, crafting, selling, buying, idle, other = 0
     for phase, ticks in phaseTicks[i]:
       let pl = phase.toLowerAscii
-      if pl.contains("pathto") or pl.contains("walkto"):
+      if pl.contains(".navigate"):
         travel += ticks
+      elif pl.contains("pathto") or pl.contains("walkto"):
+        travel += ticks
+      elif pl.contains(".perform") and pl.contains("gather"):
+        gathering += ticks
       elif pl.contains("gather") or pl.contains("startgather") or pl.contains("holdgather"):
         gathering += ticks
+      elif pl.contains(".perform") and pl.contains("craft"):
+        crafting += ticks
       elif pl.contains("craft") or pl.contains("holdcraft") or pl.contains("startcraft"):
         crafting += ticks
       elif pl.contains("sell") or pl.contains("setprice") or pl.contains("confirmsell") or pl.contains("exitsell"):
