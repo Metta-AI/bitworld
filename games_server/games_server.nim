@@ -805,8 +805,12 @@ proc requireDocker(args: openArray[string]): string =
     )
   res.output.strip()
 
+var skipPull* = false
+
 proc pullDockerImage(image: string) =
   ## Pulls the latest version of one Docker image.
+  if skipPull:
+    return
   discard requireDocker(@["pull", image])
 
 proc cleanContainerName(value: string): string =
@@ -3188,6 +3192,8 @@ when isMainModule:
         address = val
       of "port":
         port = parseInt(val)
+      of "no-pull":
+        skipPull = true
       else:
         discard
     else:
