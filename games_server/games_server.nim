@@ -2434,7 +2434,7 @@ proc errorHandler(request: Request, e: ref Exception) =
     )
   )
 
-proc httpHandler(request: Request) =
+proc httpHandlerUnsafe(request: Request) =
   ## Routes all HTTP requests.
   try:
     if request.path == "/" and request.httpMethod == "GET":
@@ -2467,10 +2467,15 @@ proc httpHandler(request: Request) =
   except Exception as e:
     request.errorHandler(e)
 
+proc httpHandler(request: Request) {.gcsafe.} =
+  ## Adapts the route handler to mummy's RequestHandler signature.
+  {.gcsafe.}:
+    request.httpHandlerUnsafe()
+
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
-  let server = newServer(httpHandler, workerThreads = 4)
+  let server = newServer(httpHandler, workerThreads = 1)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
 
