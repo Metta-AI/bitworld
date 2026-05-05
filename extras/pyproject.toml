@@ -24,8 +24,8 @@ train = [
 ]
 
 [tool.setuptools]
-packages = ["bitworld"]
-package-dir = { bitworld = "." }
+packages = ["bitworld", "bitworld.pufferlib"]
+package-dir = { bitworld = ".." }
 include-package-data = true
 
 [tool.setuptools.package-data]
