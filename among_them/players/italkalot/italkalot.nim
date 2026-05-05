@@ -1,6 +1,7 @@
-import pixie, protocol, ../sim, ../texts, ../votereader, ../../common/server
-when not defined(nottoodumbLibrary):
-  import whisky
+import pixie, protocol, ../../sim, ../../texts, ../../votereader,
+  ../../../common/server
+when not defined(italkalotLibrary):
+  import bitworld/ais/openai, whisky
   when not defined(botHeadless):
     import silky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
@@ -59,9 +60,9 @@ const
   TaskIconInspectSize = 16
   TaskClearScreenMargin = 8
   TaskIconMissThreshold = 24
-  PathLookahead = 8
+  PathLookahead = 18
   TaskInnerMargin = 6
-  TaskPreciseApproachRadius = 18
+  TaskPreciseApproachRadius = 12
   CoastLookaheadTicks = 8
   CoastArrivalPadding = 1
   SteerDeadband = 2
@@ -113,13 +114,17 @@ const
   VoteUnknown = -1
   VoteSkip = -2
   VoteBlackMarker = 12'u8
-  VoteListenTicks = 100
+  VoteListenBaseTicks = 100
+  VoteListenRandomTicks = 100
+  VoteAiTurnWaitTicks = 100
+  VoteChatIconX = sim.VoteChatIconX
   VoteChatTextX = sim.VoteChatTextX
   VoteChatChars = VoteChatCharsPerLine
+  VoteChatSpeakerSearch = 24
   FrameDropThreshold = 32
   MaxFrameDrain = 128
 
-when not defined(nottoodumbLibrary):
+when not defined(italkalotLibrary):
   type ViewerApp = ref object
     when not defined(botHeadless):
       window: Window
@@ -146,6 +151,11 @@ type
     RoleUnknown
     RoleCrewmate
     RoleImposter
+
+  AiRequestKind = enum
+    AiNoRequest
+    AiChatRequest
+    AiVoteRequest
 
   PathNode = object
     priority: int
@@ -198,6 +208,15 @@ type
     colorIndex: int
     alive: bool
 
+  VoteChatSpeaker = object
+    colorIndex: int
+    y: int
+
+  VoteChatLine = object
+    speakerColor: int
+    y: int
+    text: string
+
   Bot = object
     sim: SimServer
     playerSprite: Sprite
@@ -246,7 +265,6 @@ type
     taskHoldTicks: int
     taskHoldIndex: int
     frameTick: int
-    frameAdvance: int
     centerMicros: int
     spriteScanMicros: int
     localizeLocalMicros: int
@@ -259,12 +277,14 @@ type
     skippedFrames: int
     lastMask: uint8
     lastThought: string
+    lastLogEvent: string
     pendingChat: string
     lastBodySeenX: int
     lastBodySeenY: int
     lastBodyReportX: int
     lastBodyReportY: int
     lastSeenTicks: array[PlayerColorCount, int]
+    bodySeenTicks: array[PlayerColorCount, int]
     selfColorIndex: int
     knownImposters: array[PlayerColorCount, bool]
     voting: bool
@@ -273,10 +293,28 @@ type
     voteSelfSlot: int
     voteTarget: int
     voteStartTick: int
+    voteDelayTicks: int
     voteChatSusColor: int
     voteChatText: string
+    voteChatLines: seq[VoteChatLine]
     voteSlots: array[MaxPlayers, VoteSlot]
     voteChoices: array[PlayerColorCount, int]
+    voteRecordedChoices: array[PlayerColorCount, int]
+    voteHistory: seq[string]
+    voteChatHistory: seq[string]
+    voteMeetingIndex: int
+    voteHistoryStartTick: int
+    lastVoteFrame: string
+    aiChatTurn: int
+    aiNextTurnTick: int
+    aiChatReply: string
+    aiVoteFrame: string
+    aiVoteTarget: int
+    aiVoteReply: string
+    aiRequestKind: AiRequestKind
+    aiRequestTurn: int
+    aiRequestTag: string
+    aiRequestSerial: int
     intent: string
     goalX: int
     goalY: int
@@ -296,11 +334,19 @@ type
     visibleBodies: seq[BodyMatch]
     visibleGhosts: seq[GhostMatch]
 
+when not defined(italkalotLibrary):
+  var openAiKeyLoaded = false
+
 proc gameDir(): string =
   ## Returns the Among Them game directory.
-  ## Expects to be invoked with CWD = among_them/players/, the dir
-  ## quick_player and the Docker wrapper land in.
-  getCurrentDir().parentDir()
+  let
+    sourceDir = currentSourcePath().parentDir().parentDir().parentDir()
+    cwd = getCurrentDir()
+    candidates = [sourceDir, cwd, cwd.parentDir(), cwd.parentDir().parentDir()]
+  for candidate in candidates:
+    if fileExists(candidate / "map.json"):
+      return candidate
+  sourceDir
 
 proc atlasPath(): string =
   ## Returns the shared Silky atlas path.
@@ -798,6 +844,10 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
+proc logEvent(bot: var Bot, text: string)
+
+proc knownImposterSummary(bot: Bot): string
+
 proc asciiTextWidth(bot: Bot, text: string): int =
   ## Returns the tiny UI text width.
   texts.asciiTextWidth(bot.sim.asciiSprites, text)
@@ -840,15 +890,6 @@ proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
   text == "CREW WINS" or text == "IMPS WIN"
 
-proc isLobbyText(text: string): bool =
-  ## Returns true for lobby/waiting screens that imply a fresh match state.
-  text == "GAME" or text == "STARTING" or text == "WAITING" or
-    text == "NEED MORE!" or text.startsWith("IN ")
-
-proc isRoleRevealText(text: string): bool =
-  ## Returns true when the server is revealing a fresh role assignment.
-  text == "CREWMATE" or text == "IMPS"
-
 proc clearVotingState(bot: var Bot) =
   ## Clears the parsed voting screen state.
   bot.voting = false
@@ -857,13 +898,48 @@ proc clearVotingState(bot: var Bot) =
   bot.voteSelfSlot = VoteUnknown
   bot.voteTarget = VoteUnknown
   bot.voteStartTick = -1
+  bot.voteDelayTicks = -1
   bot.voteChatSusColor = VoteUnknown
   bot.voteChatText = ""
+  bot.voteChatLines.setLen(0)
   for i in 0 ..< bot.voteSlots.len:
     bot.voteSlots[i].colorIndex = VoteUnknown
     bot.voteSlots[i].alive = false
   for i in 0 ..< bot.voteChoices.len:
     bot.voteChoices[i] = VoteUnknown
+
+proc clearAiVote(bot: var Bot) =
+  ## Clears the cached OpenAI voting decision.
+  bot.aiVoteFrame = ""
+  bot.aiVoteTarget = VoteUnknown
+  bot.aiVoteReply = ""
+
+proc clearAiRequest(bot: var Bot) =
+  ## Clears the active OpenAI request marker.
+  bot.aiRequestKind = AiNoRequest
+  bot.aiRequestTurn = 0
+  bot.aiRequestTag = ""
+
+proc clearAiConversation(bot: var Bot) =
+  ## Clears the cached OpenAI voting conversation state.
+  bot.clearAiRequest()
+  bot.clearAiVote()
+  bot.aiChatTurn = 0
+  bot.aiNextTurnTick = -1
+  bot.aiChatReply = ""
+
+proc clearRecordedVotes(bot: var Bot) =
+  ## Clears the votes already logged for the current meeting.
+  for i in 0 ..< bot.voteRecordedChoices.len:
+    bot.voteRecordedChoices[i] = VoteUnknown
+
+proc clearVoteHistory(bot: var Bot) =
+  ## Clears all remembered voting history for one round.
+  bot.voteHistory.setLen(0)
+  bot.voteChatHistory.setLen(0)
+  bot.voteMeetingIndex = 0
+  bot.voteHistoryStartTick = -1
+  bot.clearRecordedVotes()
 
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
@@ -889,15 +965,21 @@ proc resetRoundState(bot: var Bot) =
   bot.controllerMask = 0
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
+  bot.lastLogEvent = ""
   bot.pendingChat = ""
   bot.lastBodySeenX = low(int)
   bot.lastBodySeenY = low(int)
   bot.lastBodyReportX = low(int)
   bot.lastBodyReportY = low(int)
   bot.selfColorIndex = -1
+  bot.lastVoteFrame = ""
+  bot.clearAiConversation()
+  bot.clearVoteHistory()
   bot.clearVotingState()
   for i in 0 ..< bot.lastSeenTicks.len:
     bot.lastSeenTicks[i] = 0
+  for i in 0 ..< bot.bodySeenTicks.len:
+    bot.bodySeenTicks[i] = 0
   for i in 0 ..< bot.knownImposters.len:
     bot.knownImposters[i] = false
   bot.goalIndex = -1
@@ -1106,21 +1188,18 @@ proc updateLocation(bot: var Bot) =
     bot.visibleCrewmates.setLen(0)
     bot.visibleBodies.setLen(0)
     bot.visibleGhosts.setLen(0)
-    if bot.interstitialText.isLobbyText() and
-        (bot.gameStarted or bot.homeSet):
-      bot.resetRoundState()
     if bot.interstitialText.isGameOverText() and
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
     elif not bot.parseVotingScreen():
-      if bot.interstitialText.isRoleRevealText() and bot.gameStarted:
-        bot.resetRoundState()
       bot.rememberRoleReveal()
     return
   bot.interstitialText = ""
   bot.lastGameOverText = ""
   if bot.voting:
+    bot.lastVoteFrame = ""
+    bot.clearAiConversation()
     bot.clearVotingState()
   if wasInterstitial:
     bot.reseedLocalizationAtHome()
@@ -1467,6 +1546,7 @@ proc rememberRoleReveal(bot: var Bot) =
   if bot.interstitialText == "CREWMATE":
     if bot.role == RoleUnknown:
       bot.role = RoleCrewmate
+    bot.logEvent("I am a crewmate")
     return
   if bot.interstitialText != "IMPS":
     return
@@ -1483,6 +1563,7 @@ proc rememberRoleReveal(bot: var Bot) =
     if crewmate.colorIndex >= 0 and
         crewmate.colorIndex < bot.knownImposters.len:
       bot.knownImposters[crewmate.colorIndex] = true
+  bot.logEvent("I am an imposter; imps: " & bot.knownImposterSummary())
 
 proc matchesActorSprite(
   bot: Bot,
@@ -1702,7 +1783,7 @@ proc parseVoteDotsForTarget(
       bot.voteChoices[colorIndex] = target
 
 proc readAsciiRun(bot: Bot, x, y, count: int): string =
-  ## Reads a variable-width tiny text run from the current screen.
+  ## Reads a fixed-width ASCII run from the current screen.
   texts.readAsciiRun(bot.unpacked, bot.sim.asciiSprites, x, y, count)
 
 proc usefulChatLine(line: string): bool =
@@ -1717,22 +1798,74 @@ proc usefulChatLine(line: string): bool =
       inc unknown
   letters >= 2 and unknown * 2 <= max(1, line.len)
 
-proc readVoteChatText(bot: Bot, count: int): string =
-  ## Reads visible voting chat text from the chat panel.
+proc voteChatY(count: int): int =
+  ## Returns the top y coordinate of the voting chat panel.
+  voteGridLayout(count).skipY + 10
+
+proc voteChatSpeakerAt(bot: Bot, y: int): int =
+  ## Reads one voting chat speaker icon color at a y coordinate.
+  if y < 0 or y > ScreenHeight - bot.playerSprite.height:
+    return VoteUnknown
+  if not bot.matchesCrewmate(VoteChatIconX, y, false):
+    return VoteUnknown
+  bot.crewmateColorIndex(VoteChatIconX, y, false)
+
+proc readVoteChatSpeakers(bot: Bot, count: int): seq[VoteChatSpeaker] =
+  ## Reads visible voting chat speaker icons from the pixel frame.
+  let chatY = voteChatY(count)
+  for y in chatY + 2 .. ScreenHeight - bot.playerSprite.height:
+    let colorIndex = bot.voteChatSpeakerAt(y)
+    if colorIndex == VoteUnknown:
+      continue
+    if result.len > 0 and abs(result[^1].y - y) < SpriteSize div 2:
+      continue
+    result.add VoteChatSpeaker(
+      colorIndex: colorIndex,
+      y: y
+    )
+
+proc voteChatSpeakerForLine(
+  speakers: openArray[VoteChatSpeaker],
+  y: int
+): int =
+  ## Returns the nearest visible speaker color for one chat line.
+  result = VoteUnknown
+  var bestDistance = VoteChatSpeakerSearch + 1
+  for speaker in speakers:
+    let distance = abs(speaker.y - y)
+    if distance < bestDistance:
+      bestDistance = distance
+      result = speaker.colorIndex
+  if bestDistance > VoteChatSpeakerSearch:
+    result = VoteUnknown
+
+proc voteChatTextFromLines(lines: openArray[VoteChatLine]): string =
+  ## Flattens parsed voting chat lines into one text string.
+  for line in lines:
+    if result.len > 0:
+      result.add(' ')
+    result.add(line.text)
+
+proc readVoteChatLines(bot: Bot, count: int): seq[VoteChatLine] =
+  ## Reads visible voting chat text and speaker colors from pixels.
   let
-    layout = voteGridLayout(count)
-    chatY = layout.skipY + 10
+    chatY = voteChatY(count)
+    speakers = bot.readVoteChatSpeakers(count)
   var previous = ""
+  var previousY = low(int)
   for y in chatY + 2 ..< ScreenHeight - 6:
     let line = bot.readAsciiRun(VoteChatTextX, y, VoteChatChars)
     if not line.usefulChatLine():
       continue
-    if line == previous:
+    if line == previous and y - previousY <= 2:
       continue
-    if result.len > 0:
-      result.add(' ')
-    result.add(line)
+    result.add VoteChatLine(
+      speakerColor: voteChatSpeakerForLine(speakers, y),
+      y: y,
+      text: line
+    )
     previous = line
+    previousY = y
 
 proc normalizeChatText(text: string): string =
   ## Normalizes chat text for simple word matching.
@@ -1794,6 +1927,41 @@ proc chatSusColorIndex(text: string): int =
         susPos = padded.find(susNeedle, susPos + 1)
       colorPos = padded.find(colorNeedle, colorPos + 1)
 
+proc voteSlotForColor(bot: Bot, colorIndex: int): int =
+  ## Returns the voting slot index for one player color.
+  for i in 0 ..< bot.votePlayerCount:
+    if bot.voteSlots[i].colorIndex == colorIndex:
+      return i
+  VoteUnknown
+
+proc voteTargetCanBeSus(bot: Bot, target: int): bool =
+  ## Returns true when a voting target is a living non-self player.
+  target >= 0 and
+    target < bot.votePlayerCount and
+    target != bot.voteSelfSlot and
+    bot.voteSlots[target].alive
+
+proc voteSusColorAllowed(bot: Bot, colorIndex: int): bool =
+  ## Returns true when a color is a valid player to sus and vote.
+  let slot = bot.voteSlotForColor(colorIndex)
+  bot.voteTargetCanBeSus(slot)
+
+proc randomVoteDelay(bot: var Bot): int =
+  ## Returns this meeting's randomized vote delay in ticks.
+  VoteListenBaseTicks + bot.rng.rand(VoteListenRandomTicks - 1)
+
+proc ownSusVotingTarget(bot: Bot): int =
+  ## Returns this bot's own valid chat sus target, or unknown.
+  if bot.selfColorIndex < 0:
+    return VoteUnknown
+  for line in bot.voteChatLines:
+    if line.speakerColor != bot.selfColorIndex:
+      continue
+    let colorIndex = chatSusColorIndex(line.text)
+    if bot.voteSusColorAllowed(colorIndex):
+      return bot.voteSlotForColor(colorIndex)
+  VoteUnknown
+
 proc parseVotingCandidate(
   bot: var Bot,
   count,
@@ -1811,10 +1979,16 @@ proc parseVotingCandidate(
     if slots[i].colorIndex != i:
       return false
 
+  let previousDelay = bot.voteDelayTicks
   bot.clearVotingState()
   bot.voting = true
   bot.votePlayerCount = count
   bot.voteStartTick = startTick
+  bot.voteDelayTicks =
+    if previousDelay >= 0:
+      previousDelay
+    else:
+      bot.randomVoteDelay()
   bot.voteCursor = VoteUnknown
   bot.voteSelfSlot = VoteUnknown
   for i in 0 ..< count:
@@ -1837,12 +2011,19 @@ proc parseVotingCandidate(
     layout.skipX + VoteSkipW + 2,
     layout.skipY
   )
-  bot.voteChatText = bot.readVoteChatText(count)
-  bot.voteChatSusColor = chatSusColorIndex(bot.voteChatText)
+  bot.voteChatLines = bot.readVoteChatLines(count)
+  bot.voteChatText = voteChatTextFromLines(bot.voteChatLines)
+  let susColor = chatSusColorIndex(bot.voteChatText)
+  bot.voteChatSusColor =
+    if bot.voteSusColorAllowed(susColor):
+      susColor
+    else:
+      VoteUnknown
   true
 
 proc parseVotingScreen(bot: var Bot): bool =
   ## Parses the voting interstitial if it is currently visible.
+  let wasVoting = bot.voting
   let startTick =
     if bot.voting and bot.voteStartTick >= 0:
       bot.voteStartTick
@@ -1868,9 +2049,26 @@ proc parseVotingScreen(bot: var Bot): bool =
       bot.voteChoices[i] = read.choices[i]
     if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
       bot.selfColorIndex = read.slots[read.selfSlot].colorIndex
+    bot.voteChatLines.setLen(0)
+    for entry in read.chat:
+      for line in entry.lines:
+        bot.voteChatLines.add VoteChatLine(
+          speakerColor: entry.colorIndex,
+          y: 0,
+          text: line
+        )
     bot.voteChatText = read.chatText
-    bot.voteChatSusColor = read.chatSusColor
+    bot.voteChatSusColor =
+      if bot.voteSusColorAllowed(read.chatSusColor):
+        read.chatSusColor
+      else:
+        VoteUnknown
+    if not wasVoting:
+      bot.logEvent("voting")
     return true
+  if bot.voting:
+    bot.lastVoteFrame = ""
+    bot.clearAiConversation()
   bot.clearVotingState()
   false
 
@@ -2012,23 +2210,17 @@ proc updateTaskGuesses(bot: var Bot) =
   bot.scanRadarDots()
   if bot.radarDots.len == 0:
     return
-  for dot in bot.radarDots:
-    var
-      bestIndex = -1
-      bestDistance = high(int)
-    for i in 0 ..< bot.sim.tasks.len:
-      let projected = bot.projectedRadarDot(bot.sim.tasks[i])
-      if projected.visible:
-        continue
-      let distance = abs(dot.x - projected.x) + abs(dot.y - projected.y)
-      if distance <= RadarMatchTolerance * 2 and distance < bestDistance:
-        bestDistance = distance
-        bestIndex = i
-    if bestIndex >= 0:
-      bot.radarTasks[bestIndex] = true
-      bot.checkoutTasks[bestIndex] = true
-      if bot.taskStates[bestIndex] == TaskCompleted:
-        bot.taskStates[bestIndex] = TaskMaybe
+  for i in 0 ..< bot.sim.tasks.len:
+    let projected = bot.projectedRadarDot(bot.sim.tasks[i])
+    if projected.visible:
+      continue
+    for dot in bot.radarDots:
+      if abs(dot.x - projected.x) <= RadarMatchTolerance and
+          abs(dot.y - projected.y) <= RadarMatchTolerance:
+        bot.radarTasks[i] = true
+        bot.checkoutTasks[i] = true
+        if bot.taskStates[i] == TaskCompleted:
+          bot.taskStates[i] = TaskMaybe
 
 proc projectedTaskIcon(
   bot: Bot,
@@ -2142,6 +2334,13 @@ proc thought(bot: var Bot, text: string) =
   if text != bot.lastThought:
     bot.lastThought = text
 
+proc logEvent(bot: var Bot, text: string) =
+  ## Prints one changed high-level bot event.
+  if text.len == 0 or text == bot.lastLogEvent:
+    return
+  bot.lastLogEvent = text
+  echo text
+
 proc movementName(mask: uint8): string =
   ## Returns a compact movement label for one input mask.
   if (mask and ButtonLeft) != 0:
@@ -2172,14 +2371,8 @@ proc updateMotionState(bot: var Bot) =
     x = bot.playerWorldX()
     y = bot.playerWorldY()
   if bot.haveMotionSample and bot.lastMask.hasMovement():
-    let advance = max(1, bot.frameAdvance)
-    proc normalizedVelocity(delta: int): int =
-      if delta >= 0:
-        (delta + advance div 2) div advance
-      else:
-        -((-delta + advance div 2) div advance)
-    bot.velocityX = normalizedVelocity(x - bot.previousPlayerWorldX)
-    bot.velocityY = normalizedVelocity(y - bot.previousPlayerWorldY)
+    bot.velocityX = x - bot.previousPlayerWorldX
+    bot.velocityY = y - bot.previousPlayerWorldY
     let moved = abs(bot.velocityX) + abs(bot.velocityY)
     if moved == 0:
       inc bot.stuckFrames
@@ -2627,12 +2820,13 @@ proc sameBody(ax, ay, bx, by: int): bool =
     return false
   heuristic(ax, ay, bx, by) <= BodySearchRadius + 4
 
-proc suspectedColor(
-  bot: Bot
+proc suspectedColorFrom(
+  bot: Bot,
+  ticks: openArray[int]
 ): tuple[found: bool, name: string, tick: int, colorIndex: int] =
-  ## Returns the most recently seen crewmate color.
+  ## Returns the most recently seen valid crewmate color.
   var bestTick = 0
-  for i, tick in bot.lastSeenTicks:
+  for i, tick in ticks:
     if i == bot.selfColorIndex:
       continue
     if bot.knownImposterColor(i):
@@ -2640,6 +2834,20 @@ proc suspectedColor(
     if tick > bestTick and i < PlayerColorNames.len:
       bestTick = tick
       result = (true, playerColorName(i), tick, i)
+
+proc suspectedColor(
+  bot: Bot
+): tuple[found: bool, name: string, tick: int, colorIndex: int] =
+  ## Returns the most recently seen crewmate color.
+  bot.suspectedColorFrom(bot.lastSeenTicks)
+
+proc bodySuspectedColor(
+  bot: Bot
+): tuple[found: bool, name: string, tick: int, colorIndex: int] =
+  ## Returns the most recently seen crewmate around the reported body.
+  result = bot.suspectedColorFrom(bot.bodySeenTicks)
+  if not result.found:
+    result = bot.suspectedColor()
 
 proc suspectSummary(bot: Bot): string =
   ## Returns a short debug summary for the current suspect.
@@ -2651,7 +2859,7 @@ proc suspectSummary(bot: Bot): string =
 proc bodyRoomMessage(bot: Bot, x, y: int): string =
   ## Builds a short chat line that names a body's room.
   let room = bot.roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
-  let suspect = bot.suspectedColor()
+  let suspect = bot.bodySuspectedColor()
   result =
     if room == "unknown":
       "body"
@@ -2661,12 +2869,18 @@ proc bodyRoomMessage(bot: Bot, x, y: int): string =
     result.add(" sus ")
     result.add(suspect.name)
 
+proc rememberBodySuspects(bot: var Bot) =
+  ## Stores the current seen-player ticks for voting after a body report.
+  for i in 0 ..< bot.bodySeenTicks.len:
+    bot.bodySeenTicks[i] = bot.lastSeenTicks[i]
+
 proc queueBodySeen(bot: var Bot, x, y: int) =
   ## Stores the room for a discovered body until voting opens.
   if sameBody(x, y, bot.lastBodySeenX, bot.lastBodySeenY):
     return
   bot.lastBodySeenX = x
   bot.lastBodySeenY = y
+  bot.rememberBodySuspects()
   bot.pendingChat = bot.bodyRoomMessage(x, y)
 
 proc queueBodyReport(bot: var Bot, x, y: int) =
@@ -2675,22 +2889,97 @@ proc queueBodyReport(bot: var Bot, x, y: int) =
     return
   bot.lastBodyReportX = x
   bot.lastBodyReportY = y
+  bot.rememberBodySuspects()
   bot.pendingChat = bot.bodyRoomMessage(x, y)
-
-proc voteSlotForColor(bot: Bot, colorIndex: int): int =
-  ## Returns the voting slot index for one player color.
-  for i in 0 ..< bot.votePlayerCount:
-    if bot.voteSlots[i].colorIndex == colorIndex:
-      return i
-  VoteUnknown
 
 proc voteTargetName(bot: Bot, target: int): string =
   ## Returns a short display name for a voting target.
-  if target == VoteSkip:
+  if target == VoteSkip or target == bot.votePlayerCount:
     return "skip"
   if target >= 0 and target < bot.votePlayerCount:
     return playerColorName(bot.voteSlots[target].colorIndex)
   "unknown"
+
+proc beginVoteHistoryMeeting(bot: var Bot) =
+  ## Starts tracking vote history for a new meeting.
+  if bot.voteStartTick < 0:
+    return
+  if bot.voteHistoryStartTick == bot.voteStartTick:
+    return
+  bot.voteHistoryStartTick = bot.voteStartTick
+  inc bot.voteMeetingIndex
+  bot.clearRecordedVotes()
+  bot.clearAiConversation()
+
+proc recordVoteHistory(bot: var Bot) =
+  ## Records newly observed votes into the round vote history.
+  bot.beginVoteHistoryMeeting()
+  for i, choice in bot.voteChoices:
+    if choice == VoteUnknown:
+      continue
+    if bot.voteRecordedChoices[i] != VoteUnknown:
+      continue
+    bot.voteRecordedChoices[i] = choice
+    bot.voteHistory.add(
+      "meeting " & $bot.voteMeetingIndex & ": " &
+      playerColorName(i) & " voted against " &
+      bot.voteTargetName(choice)
+    )
+
+proc voteHistoryText(bot: Bot): string =
+  ## Returns all previously observed votes as prompt text.
+  if bot.voteHistory.len == 0:
+    return "previous votes: none\n"
+  result = "previous votes:\n"
+  for line in bot.voteHistory:
+    result.add(line)
+    result.add('\n')
+
+proc votingChoicesText(bot: Bot): string =
+  ## Returns the legal voting choices for the current meeting.
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetCanBeSus(i):
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(bot.voteTargetName(i))
+  if result.len > 0:
+    result.add(", ")
+  result.add("skip")
+
+proc accusationChoicesText(bot: Bot): string =
+  ## Returns the living non-self colors that can be accused.
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetCanBeSus(i):
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(bot.voteTargetName(i))
+  if result.len == 0:
+    result = "none"
+
+proc voteCommandTarget(bot: Bot, reply: string): int =
+  ## Parses a constrained AI vote command into a voting target.
+  let normalized = reply.normalizeChatText()
+  if normalized == "skip" or normalized == "vote skip" or
+      (" " & normalized & " ").contains(" vote skip "):
+    return bot.votePlayerCount
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetCanBeSus(i):
+      continue
+    let
+      name = bot.voteTargetName(i).normalizeChatText()
+      padded = " " & normalized & " "
+    if normalized == name or normalized == "vote " & name or
+        padded.contains(" vote " & name & " "):
+      return i
+  VoteUnknown
+
+proc voteSusTargetName(bot: Bot): string =
+  ## Returns the current living non-self sus target name.
+  if bot.voteTargetCanBeSus(bot.voteTarget):
+    return bot.voteTargetName(bot.voteTarget)
+  "none"
 
 proc voteSummary(bot: Bot): string =
   ## Returns a compact summary of parsed votes.
@@ -2704,6 +2993,364 @@ proc voteSummary(bot: Bot): string =
     result.add(bot.voteTargetName(choice))
   if result.len == 0:
     result = "none"
+
+proc voteChatSpeakerName(line: VoteChatLine): string =
+  ## Returns a display name for one parsed chat speaker.
+  playerColorName(line.speakerColor)
+
+proc recordChatHistory(bot: var Bot) =
+  ## Records newly observed chat lines into the round chat history.
+  bot.beginVoteHistoryMeeting()
+  for line in bot.voteChatLines:
+    let entry =
+      "meeting " & $bot.voteMeetingIndex & ": " &
+      line.voteChatSpeakerName() & ": " & line.text
+    if entry notin bot.voteChatHistory:
+      bot.voteChatHistory.add(entry)
+
+proc voteChatHistoryText(bot: Bot): string =
+  ## Returns all observed voting chat as prompt text.
+  if bot.voteChatHistory.len == 0:
+    return "chat history: none\n"
+  result = "chat history:\n"
+  for line in bot.voteChatHistory:
+    result.add(line)
+    result.add('\n')
+
+proc voteBodyLocationText(text: string): string =
+  ## Extracts a visible body location from normalized chat text.
+  let normalized = text.normalizeChatText()
+  let marker = "body in "
+  let startIndex = normalized.find(marker)
+  if startIndex >= 0:
+    let
+      bodyStart = startIndex + marker.len
+      susIndex = normalized.find(" sus ", bodyStart)
+      bodyEnd =
+        if susIndex >= 0:
+          susIndex
+        else:
+          normalized.len
+    result = normalized[bodyStart ..< bodyEnd].strip()
+    if result.len == 0:
+      result = "unknown"
+    return
+  if (" " & normalized & " ").contains(" body "):
+    return "unknown"
+  "none"
+
+proc voteSeenLine(bot: Bot, index: int): string =
+  ## Builds one player status line from the voting grid.
+  let slot = bot.voteSlots[index]
+  result = "player "
+  result.add(playerColorName(slot.colorIndex))
+  if slot.alive:
+    result.add(" is alive")
+  else:
+    result.add(" is dead")
+  if index == bot.voteSelfSlot:
+    result.add(" (me)")
+
+proc addVotingFrameVotes(bot: Bot, text: var string) =
+  ## Adds one plain vote line for each player with a parsed vote.
+  var found = false
+  for i, choice in bot.voteChoices:
+    if choice == VoteUnknown:
+      continue
+    text.add(playerColorName(i))
+    text.add(" voted against ")
+    text.add(bot.voteTargetName(choice))
+    text.add('\n')
+    found = true
+  if not found:
+    text.add("votes: none\n")
+
+proc votingAsciiFrame(bot: Bot, includeDecision = true): string =
+  ## Builds the plain text voting frame for LLM-style reasoning.
+  result = "--- voting ---\n"
+  for i in 0 ..< bot.votePlayerCount:
+    result.add(bot.voteSeenLine(i))
+    result.add('\n')
+  if bot.voteChatLines.len > 0:
+    result.add("chat:\n")
+    for line in bot.voteChatLines:
+      result.add(line.voteChatSpeakerName())
+      result.add(": ")
+      result.add(line.text)
+      result.add('\n')
+  let bodyLocation = voteBodyLocationText(bot.voteChatText)
+  if bodyLocation != "none":
+    result.add("body in ")
+    result.add(bodyLocation)
+    result.add('\n')
+  result.add("sus ")
+  result.add(bot.voteSusTargetName())
+  result.add('\n')
+  bot.addVotingFrameVotes(result)
+  if includeDecision:
+    result.add("vote target: ")
+    result.add(bot.voteTargetName(bot.voteTarget))
+    result.add('\n')
+  result.add("--- end voting ---")
+
+proc printVotingFrame(bot: var Bot) =
+  ## Prints the voting frame when pixel OCR changes.
+  let frame = bot.votingAsciiFrame()
+  if frame == bot.lastVoteFrame:
+    return
+  bot.lastVoteFrame = frame
+  echo frame
+
+proc cleanAiChatReply(reply: string): string =
+  ## Converts a constrained AI chat reply to a game chat message.
+  result = reply.strip()
+  let lower = result.toLowerAscii()
+  if lower.startsWith("say:"):
+    result = result[4 .. ^1].strip()
+  elif lower.startsWith("say "):
+    result = result[4 .. ^1].strip()
+  elif lower.startsWith("chat:"):
+    result = result[5 .. ^1].strip()
+  if result.len >= 2 and (
+      (result[0] == '"' and result[^1] == '"') or
+      (result[0] == '\'' and result[^1] == '\'')):
+    result = result[1 ..< result.high].strip()
+  result = cleanChatMessage(result)
+
+proc votingChatPrompt(bot: Bot, frame: string, turn: int): string =
+  ## Builds the OpenAI prompt for one voting chat turn.
+  "You are " & playerColorName(bot.selfColorIndex) & ".\n" &
+    "Your role is " & roleName(bot.role) & ".\n" &
+    "This is chat turn " & $turn & " of 2 before voting.\n" &
+    "Living players you may accuse: " & bot.accusationChoicesText() & "\n" &
+    "If you are imposter, accuse a living non-self player.\n" &
+    "If you are crew, accuse a living player only when the transcript " &
+    "or vote history gives evidence.\n" &
+    "Say one short useful message under 70 characters.\n" &
+    "Reply with exactly one line: say <message>.\n" &
+    bot.voteHistoryText() &
+    bot.voteChatHistoryText() &
+    "---vote---\n" & frame
+
+when not defined(italkalotLibrary):
+  proc aiRequestLabel(kind: AiRequestKind): string =
+    ## Returns a short label for one OpenAI request kind.
+    case kind
+    of AiNoRequest:
+      "none"
+    of AiChatRequest:
+      "chat"
+    of AiVoteRequest:
+      "vote"
+
+  proc votingChatMessages(
+    bot: Bot,
+    frame: string,
+    turn: int
+  ): seq[openai.ConversationMessage] =
+    ## Builds OpenAI messages for one voting chat turn.
+    @[
+      openai.ConversationMessage(
+        role: "system",
+        content:
+          "You are chatting during an Among Them vote. " &
+          "Do not mention being an AI. " &
+          "Do not accuse yourself or dead players. " &
+          "Output exactly: say <short message>."
+      ),
+      openai.ConversationMessage(
+        role: "user",
+        content: bot.votingChatPrompt(frame, turn)
+      )
+    ]
+
+  proc votingTargetMessages(
+    bot: Bot,
+    prompt: string
+  ): seq[openai.ConversationMessage] =
+    ## Builds OpenAI messages for one voting target decision.
+    @[
+      openai.ConversationMessage(
+        role: "system",
+        content:
+          "You vote in Among Them. Use the OCR transcript only. " &
+          "If a living player is called sus, vote that player. " &
+          "If someone voted against you, vote that living player. " &
+          "Never vote for yourself or a dead player. " &
+          "If there is no good target, vote skip. " &
+          "Output exactly: vote <color> or vote skip."
+      ),
+      openai.ConversationMessage(
+        role: "user",
+        content: prompt
+      )
+    ]
+
+  proc startOpenAiRequest(
+    bot: var Bot,
+    kind: AiRequestKind,
+    messages: openArray[openai.ConversationMessage],
+    turn = 0
+  ): bool =
+    ## Starts one pollable OpenAI request for the bot.
+    if openai.aiKey.len == 0 or bot.aiRequestKind != AiNoRequest:
+      return false
+    inc bot.aiRequestSerial
+    bot.aiRequestKind = kind
+    bot.aiRequestTurn = turn
+    bot.aiRequestTag =
+      $bot.aiRequestSerial & "-" & kind.aiRequestLabel() &
+        "-" & $bot.frameTick
+    result = openai.startTalkToAI(messages, bot.aiRequestTag)
+    if not result:
+      bot.clearAiRequest()
+
+  proc applyOpenAiChatResult(bot: var Bot, reply: string, turn: int) =
+    ## Applies one OpenAI chat response to the voting state.
+    bot.aiChatReply = reply
+    let message = cleanAiChatReply(reply)
+    if message.len > 0:
+      bot.pendingChat = message
+      echo "AI chat: ", message
+    elif reply.len > 0:
+      echo "AI chat invalid: ", reply
+    bot.aiChatTurn = turn
+    bot.aiNextTurnTick = bot.frameTick + VoteAiTurnWaitTicks
+    bot.intent =
+      if message.len > 0:
+        "chat turn " & $turn & ": " & message
+      else:
+        "chat turn " & $turn & " skipped"
+    bot.thought(bot.intent)
+
+  proc applyOpenAiVoteResult(bot: var Bot, reply: string) =
+    ## Applies one OpenAI vote response to the voting state.
+    bot.aiVoteReply = reply
+    bot.aiVoteTarget = bot.voteCommandTarget(reply)
+    if bot.aiVoteTarget == VoteUnknown:
+      echo "AI vote invalid: ", reply
+    else:
+      echo "AI vote target: ", bot.voteTargetName(bot.aiVoteTarget)
+
+  proc pollOpenAiRequest(bot: var Bot): bool =
+    ## Polls and applies a finished OpenAI request if one is ready.
+    let response = openai.pollTalkToAI()
+    if not response.done:
+      return false
+    if response.tag != bot.aiRequestTag:
+      return false
+    let
+      kind = bot.aiRequestKind
+      turn = bot.aiRequestTurn
+    bot.clearAiRequest()
+    if not response.ok:
+      case kind
+      of AiChatRequest:
+        bot.aiChatReply = "error: " & response.error
+        bot.aiChatTurn = turn
+        bot.aiNextTurnTick = bot.frameTick + VoteAiTurnWaitTicks
+        bot.intent = "chat turn " & $turn & " skipped"
+        bot.thought(bot.intent)
+        echo "AI chat error: ", response.error
+      of AiVoteRequest:
+        bot.aiVoteReply = "error: " & response.error
+        bot.aiVoteTarget = VoteUnknown
+        echo "AI vote error: ", response.error
+      of AiNoRequest:
+        discard
+      return true
+    case kind
+    of AiChatRequest:
+      bot.applyOpenAiChatResult(response.reply.strip(), turn)
+    of AiVoteRequest:
+      bot.applyOpenAiVoteResult(response.reply.strip())
+    of AiNoRequest:
+      discard
+    true
+
+  proc beginOpenAiVotingChat(bot: var Bot, frame: string, turn: int) =
+    ## Starts one non-blocking OpenAI voting chat request.
+    let messages = bot.votingChatMessages(frame, turn)
+    if bot.startOpenAiRequest(AiChatRequest, messages, turn):
+      bot.intent = "waiting for AI chat turn " & $turn
+      bot.thought(bot.intent)
+    else:
+      bot.applyOpenAiChatResult("", turn)
+
+proc waitForVotingConversation(bot: var Bot, frame: string): bool =
+  ## Advances the two OpenAI chat turns before voting.
+  when defined(italkalotLibrary):
+    false
+  else:
+    if openai.aiKey.len == 0:
+      bot.aiChatTurn = 3
+      return false
+    discard bot.pollOpenAiRequest()
+    if bot.aiRequestKind != AiNoRequest:
+      bot.intent =
+        "waiting for AI " & bot.aiRequestKind.aiRequestLabel()
+      bot.thought(bot.intent)
+      return true
+    if bot.pendingChat.len > 0:
+      bot.intent = "waiting to send queued chat"
+      bot.thought(bot.intent)
+      return true
+
+    case bot.aiChatTurn
+    of 0:
+      bot.beginOpenAiVotingChat(frame, 1)
+      return true
+    of 1:
+      if bot.frameTick < bot.aiNextTurnTick:
+        bot.intent = "waiting after chat turn 1 " &
+          $max(0, bot.aiNextTurnTick - bot.frameTick)
+        bot.thought(bot.intent)
+        return true
+      bot.beginOpenAiVotingChat(frame, 2)
+      return true
+    of 2:
+      if bot.frameTick < bot.aiNextTurnTick:
+        bot.intent = "waiting after chat turn 2 " &
+          $max(0, bot.aiNextTurnTick - bot.frameTick)
+        bot.thought(bot.intent)
+        return true
+      bot.aiChatTurn = 3
+    else:
+      discard
+    false
+
+proc votingPrompt(bot: Bot, frame: string): string =
+  ## Builds the OpenAI prompt for one voting decision.
+  "Legal vote choices: " & bot.votingChoicesText() & "\n" &
+    "Do not vote for yourself or dead players.\n" &
+    "Reply with exactly one line: vote <color> or vote skip.\n" &
+    bot.voteHistoryText() &
+    bot.voteChatHistoryText() &
+    "---vote---\n" & frame
+
+proc openAiVotingTarget(bot: var Bot, frame: string): int =
+  ## Asks OpenAI for a constrained voting target.
+  when defined(italkalotLibrary):
+    VoteUnknown
+  else:
+    discard bot.pollOpenAiRequest()
+    let prompt = bot.votingPrompt(frame)
+    if prompt == bot.aiVoteFrame:
+      return bot.aiVoteTarget
+    if bot.aiRequestKind != AiNoRequest:
+      return VoteUnknown
+    bot.aiVoteFrame = prompt
+    bot.aiVoteTarget = VoteUnknown
+    bot.aiVoteReply = ""
+    if openai.aiKey.len == 0:
+      return VoteUnknown
+    let messages = bot.votingTargetMessages(prompt)
+    if bot.startOpenAiRequest(AiVoteRequest, messages):
+      bot.intent = "waiting for AI vote"
+      bot.thought(bot.intent)
+    else:
+      bot.aiVoteReply = "error: could not start OpenAI request"
+    VoteUnknown
 
 proc selfVoteChoice(bot: Bot): int =
   ## Returns the parsed vote choice for the local player.
@@ -2752,17 +3399,52 @@ proc voteMoveDirection(bot: Bot, target: int): int =
   else:
     1
 
+proc seenVotingTargetFrom(bot: Bot, ticks: openArray[int]): int =
+  ## Returns the latest seen living non-self voting target.
+  result = VoteUnknown
+  var bestTick = 0
+  for i, tick in ticks:
+    if i >= PlayerColorNames.len:
+      continue
+    if bot.knownImposterColor(i):
+      continue
+    let slot = bot.voteSlotForColor(i)
+    if not bot.voteTargetCanBeSus(slot):
+      continue
+    if tick > bestTick:
+      bestTick = tick
+      result = slot
+
+proc revengeVotingTarget(bot: Bot): int =
+  ## Returns a living non-self voter who has voted for this bot.
+  if bot.voteSelfSlot < 0:
+    return VoteUnknown
+  for i, choice in bot.voteChoices:
+    if choice != bot.voteSelfSlot:
+      continue
+    let slot = bot.voteSlotForColor(i)
+    if bot.voteTargetCanBeSus(slot):
+      return slot
+  VoteUnknown
+
 proc desiredVotingTarget(bot: Bot): int =
   ## Chooses the voting target from current suspicion or skip.
+  let ownSusTarget = bot.ownSusVotingTarget()
+  if ownSusTarget != VoteUnknown:
+    return ownSusTarget
+  let revengeTarget = bot.revengeVotingTarget()
+  if revengeTarget != VoteUnknown:
+    return revengeTarget
   if bot.voteChatSusColor >= 0:
     let slot = bot.voteSlotForColor(bot.voteChatSusColor)
-    if slot >= 0 and slot != bot.voteSelfSlot and bot.voteSlots[slot].alive:
+    if bot.voteTargetCanBeSus(slot):
       return slot
-  let suspect = bot.suspectedColor()
-  if suspect.found:
-    let slot = bot.voteSlotForColor(suspect.colorIndex)
-    if slot >= 0 and slot != bot.voteSelfSlot and bot.voteSlots[slot].alive:
-      return slot
+  let bodyTarget = bot.seenVotingTargetFrom(bot.bodySeenTicks)
+  if bodyTarget != VoteUnknown:
+    return bodyTarget
+  let seenTarget = bot.seenVotingTargetFrom(bot.lastSeenTicks)
+  if seenTarget != VoteUnknown:
+    return seenTarget
   bot.votePlayerCount
 
 proc decideVotingMask(bot: var Bot): uint8 =
@@ -2771,13 +3453,41 @@ proc decideVotingMask(bot: var Bot): uint8 =
   bot.hasPathStep = false
   bot.path.setLen(0)
   bot.voteTarget = bot.desiredVotingTarget()
+  let listenedTicks =
+    if bot.voteStartTick >= 0:
+      bot.frameTick - bot.voteStartTick
+    else:
+      0
+  if bot.voteDelayTicks < 0:
+    bot.voteDelayTicks = bot.randomVoteDelay()
+  let instantVote =
+    bot.voteTarget >= 0 and bot.ownSusVotingTarget() == bot.voteTarget
+  bot.recordVoteHistory()
+  bot.recordChatHistory()
+  bot.printVotingFrame()
+  let aiFrame = bot.votingAsciiFrame(false)
   let ownVote = bot.selfVoteChoice()
   if ownVote != VoteUnknown:
     bot.desiredMask = 0
     bot.controllerMask = 0
     bot.intent = "voted " & bot.voteTargetName(ownVote)
+    bot.logEvent(bot.intent)
     bot.thought(bot.intent)
     return 0
+  if bot.waitForVotingConversation(aiFrame):
+    bot.desiredMask = 0
+    bot.controllerMask = 0
+    return 0
+  if listenedTicks >= bot.voteDelayTicks:
+    let aiTarget = bot.openAiVotingTarget(aiFrame)
+    if bot.aiRequestKind == AiVoteRequest:
+      bot.desiredMask = 0
+      bot.controllerMask = 0
+      bot.intent = "waiting for AI vote"
+      bot.thought(bot.intent)
+      return 0
+    if aiTarget != VoteUnknown:
+      bot.voteTarget = aiTarget
   if bot.voteCursor != bot.voteTarget:
     let direction = bot.voteMoveDirection(bot.voteTarget)
     let mask =
@@ -2794,16 +3504,11 @@ proc decideVotingMask(bot: var Bot): uint8 =
     bot.intent = "voting cursor to " & bot.voteTargetName(bot.voteTarget)
     bot.thought(bot.intent)
     return bot.desiredMask
-  let listenedTicks =
-    if bot.voteStartTick >= 0:
-      bot.frameTick - bot.voteStartTick
-    else:
-      0
-  if listenedTicks < VoteListenTicks:
+  if not instantVote and listenedTicks < bot.voteDelayTicks:
     bot.desiredMask = 0
     bot.controllerMask = 0
     bot.intent = "ready, listening in vote chat " &
-      $listenedTicks & "/" & $VoteListenTicks
+      $listenedTicks & "/" & $bot.voteDelayTicks
     bot.thought(bot.intent)
     return 0
   bot.desiredMask =
@@ -2813,6 +3518,7 @@ proc decideVotingMask(bot: var Bot): uint8 =
       ButtonA
   bot.controllerMask = bot.desiredMask
   bot.intent = "voting for " & bot.voteTargetName(bot.voteTarget)
+  bot.logEvent(bot.intent)
   bot.thought(bot.intent)
   bot.desiredMask
 
@@ -3009,10 +3715,13 @@ proc choosePathStep(bot: Bot): PathStep =
 proc taskReady(bot: Bot, task: TaskStation): bool =
   ## Returns true when the player can safely hold action for a task.
   let
-    x = bot.playerWorldX() + CollisionW div 2
-    y = bot.playerWorldY() + CollisionH div 2
-  if x < task.x or x >= task.x + task.w or
-      y < task.y or y >= task.y + task.h:
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
+    innerX0 = task.x + TaskInnerMargin
+    innerY0 = task.y + TaskInnerMargin
+    innerX1 = task.x + task.w - TaskInnerMargin
+    innerY1 = task.y + task.h - TaskInnerMargin
+  if x < innerX0 or x >= innerX1 or y < innerY0 or y >= innerY1:
     return false
   abs(bot.velocityX) + abs(bot.velocityY) <= 1
 
@@ -3022,25 +3731,14 @@ proc taskReadyAtGoal(bot: Bot, index, goalX, goalY: int): bool =
     return false
   let
     task = bot.sim.tasks[index]
-    x = bot.playerWorldX() + CollisionW div 2
-    y = bot.playerWorldY() + CollisionH div 2
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
   if x < task.x or x >= task.x + task.w or
       y < task.y or y >= task.y + task.h:
     return false
   if abs(bot.velocityX) + abs(bot.velocityY) > 1:
     return false
   bot.taskReady(task) or heuristic(x, y, goalX, goalY) <= 1
-
-proc insideTask(bot: Bot, index: int): bool =
-  ## Returns true when the player is inside one task rectangle.
-  if index < 0 or index >= bot.sim.tasks.len:
-    return false
-  let
-    task = bot.sim.tasks[index]
-    x = bot.playerWorldX() + CollisionW div 2
-    y = bot.playerWorldY() + CollisionH div 2
-  x >= task.x and x < task.x + task.w and
-    y >= task.y and y < task.y + task.h
 
 proc taskGoalReady(
   bot: Bot,
@@ -3061,6 +3759,7 @@ proc taskGoalReady(
 proc holdTaskAction(bot: var Bot, name: string): uint8 =
   ## Holds only the action button while completing a task.
   bot.intent = "doing task at " & name & " hold=" & $bot.taskHoldTicks
+  bot.logEvent("doing task: " & name)
   bot.desiredMask = ButtonA
   bot.controllerMask = ButtonA
   bot.hasPathStep = false
@@ -3075,29 +3774,12 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
       bot.taskStates[bot.taskHoldIndex] = TaskCompleted
       if bot.checkoutTasks.len == bot.sim.tasks.len:
         bot.checkoutTasks[bot.taskHoldIndex] = false
+      bot.logEvent("completed task: " & task.name)
     else:
       bot.taskStates[bot.taskHoldIndex] = TaskMandatory
     bot.taskHoldIndex = -1
   bot.thought("at task " & name & ", holding action")
   ButtonA
-
-proc brakeAtTaskAction(bot: var Bot, name: string): uint8 =
-  ## Brakes inside a task station until action holding is stable.
-  bot.intent = "settling at task " & name
-  bot.hasPathStep = false
-  bot.path.setLen(0)
-  bot.desiredMask = 0
-  if bot.velocityX > 0:
-    bot.desiredMask = bot.desiredMask or ButtonLeft
-  elif bot.velocityX < 0:
-    bot.desiredMask = bot.desiredMask or ButtonRight
-  if bot.velocityY > 0:
-    bot.desiredMask = bot.desiredMask or ButtonUp
-  elif bot.velocityY < 0:
-    bot.desiredMask = bot.desiredMask or ButtonDown
-  bot.controllerMask = bot.desiredMask
-  bot.thought("settling at task " & name)
-  bot.desiredMask
 
 proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   ## Presses action to report a visible dead body.
@@ -3265,6 +3947,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   if not bot.isGhost:
     let body = bot.nearestBody()
     if body.found:
+      bot.logEvent("going to report a body")
       bot.queueBodySeen(body.x, body.y)
       if bot.inReportRange(body.x, body.y) and
           abs(bot.velocityX) + abs(bot.velocityY) <= 1:
@@ -3288,6 +3971,8 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.thought("localized near (" & $bot.playerWorldX() & ", " &
       $bot.playerWorldY() & ")")
     return 0
+  if goal.index >= 0:
+    bot.logEvent("going to do nearest task: " & goal.name)
   bot.hasGoal = true
   bot.goalX = goal.x
   bot.goalY = goal.y
@@ -3298,8 +3983,6 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.taskHoldIndex = goal.index
     return bot.holdTaskAction(goal.name)
-  if goal.state == TaskMandatory and bot.insideTask(goal.index):
-    return bot.brakeAtTaskAction(goal.name)
   if bot.isGhost:
     return bot.navigateToPoint(goal.x, goal.y, goal.name)
   let astarStart = getMonoTime()
@@ -3338,7 +4021,6 @@ proc stepUnpackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
   ## Steps the bot from one unpacked 4-bit framebuffer and returns an input mask.
   if frame.len != ScreenWidth * ScreenHeight:
     return 0
-  bot.frameAdvance = 1
   if bot.unpacked.len != frame.len:
     bot.unpacked.setLen(frame.len)
   for i, value in frame:
@@ -3351,7 +4033,6 @@ proc stepPackedFrame*(bot: var Bot, frame: openArray[uint8]): uint8 =
   ## Steps the bot from one packed 4-bit framebuffer and returns an input mask.
   if frame.len != ProtocolBytes:
     return 0
-  bot.frameAdvance = 1
   if bot.packed.len != frame.len:
     bot.packed.setLen(frame.len)
   for i, value in frame:
@@ -3367,9 +4048,23 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
+proc loadOpenAiKey() =
+  ## Checks that the OpenAI key was loaded from the environment.
+  when defined(italkalotLibrary):
+    discard
+  else:
+    if openAiKeyLoaded:
+      return
+    openAiKeyLoaded = true
+    if openai.aiKey.len > 0:
+      echo "OpenAI key loaded from environment"
+    else:
+      echo "OPENAI_KEY not set"
+
 proc initBot(mapPath = ""): Bot =
   ## Builds a bot and loads all map and sprite data.
   setCurrentDir(gameDir())
+  loadOpenAiKey()
   var config = defaultGameConfig()
   if mapPath.len > 0:
     config.mapPath = mapPath
@@ -3404,11 +4099,12 @@ proc initBot(mapPath = ""): Bot =
   result.cameraLock = NoLock
   result.role = RoleCrewmate
   result.selfColorIndex = -1
+  result.clearAiVote()
+  result.clearVoteHistory()
   result.clearVotingState()
   result.intent = "waiting for first frame"
 
-when defined(nottoodumbLibrary):
-  const NotTooDumbAbiVersion = 2
+when defined(italkalotLibrary):
   const TrainableMasks = [
     0'u8,
     ButtonA,
@@ -3438,16 +4134,11 @@ when defined(nottoodumbLibrary):
     ButtonDown or ButtonRight or ButtonA,
     ButtonDown or ButtonRight or ButtonB
   ]
-  const DebugStatsLen = 23
 
-  type NotTooDumbPolicy = ref object
+  type ITalkALotPolicy = ref object
     bots: seq[Bot]
 
-  var NotTooDumbPolicies: seq[NotTooDumbPolicy]
-
-  proc nottoodumb_abi_version*(): cint {.exportc, dynlib.} =
-    ## Returns the shared-library ABI version expected by Python wrappers.
-    cint(NotTooDumbAbiVersion)
+  var ITalkALotPolicies: seq[ITalkALotPolicy]
 
   proc actionIndexForMask(mask: uint8): int32 =
     ## Maps a BitWorld button mask to the CoGames trainable action index.
@@ -3459,8 +4150,7 @@ when defined(nottoodumbLibrary):
   proc stepUnpackedFramePtr(
     bot: var Bot,
     frame: ptr UncheckedArray[uint8],
-    frameLen: int,
-    frameAdvance: int
+    frameLen: int
   ): uint8 =
     ## Steps the bot from one pointer-backed unpacked framebuffer.
     if frameLen != ScreenWidth * ScreenHeight:
@@ -3469,21 +4159,20 @@ when defined(nottoodumbLibrary):
       bot.unpacked.setLen(frameLen)
     for i in 0 ..< frameLen:
       bot.unpacked[i] = frame[i] and 0x0f
-    bot.frameAdvance = max(1, frameAdvance)
-    bot.frameTick += bot.frameAdvance
+    inc bot.frameTick
     result = bot.decideNextMask()
     bot.lastMask = result
 
-  proc nottoodumb_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
-    ## Creates a persistent Nim-backed NotTooDumb policy and returns its handle.
+  proc italkalot_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
+    ## Creates a persistent Nim-backed ITalkALot policy and returns its handle.
     let count = max(1, int(numAgents))
-    var policy = NotTooDumbPolicy(bots: newSeq[Bot](count))
+    var policy = ITalkALotPolicy(bots: newSeq[Bot](count))
     for i in 0 ..< count:
       policy.bots[i] = initBot()
-    NotTooDumbPolicies.add(policy)
-    cint(NotTooDumbPolicies.len - 1)
+    ITalkALotPolicies.add(policy)
+    cint(ITalkALotPolicies.len - 1)
 
-  proc nottoodumb_step_batch*(
+  proc italkalot_step_batch*(
     handle: cint,
     agentIds: ptr UncheckedArray[int32],
     numAgentIds: cint,
@@ -3491,23 +4180,21 @@ when defined(nottoodumbLibrary):
     frameStack: cint,
     height: cint,
     width: cint,
-    frameAdvances: pointer,
     observations: pointer,
     actions: pointer
   ) {.exportc, dynlib.} =
     ## Steps a batch of unpacked pixel observations into CoGames action indices.
-    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+    if handle < 0 or int(handle) >= ITalkALotPolicies.len:
       return
-    if observations.isNil or actions.isNil or agentIds.isNil or frameAdvances.isNil:
+    if observations.isNil or actions.isNil or agentIds.isNil:
       return
     if frameStack <= 0 or height != ScreenHeight or width != ScreenWidth:
       return
 
     let
-      policy = NotTooDumbPolicies[int(handle)]
+      policy = ITalkALotPolicies[int(handle)]
       obs = cast[ptr UncheckedArray[uint8]](observations)
       outs = cast[ptr UncheckedArray[int32]](actions)
-      advances = cast[ptr UncheckedArray[int32]](frameAdvances)
       frameLen = int(height) * int(width)
       rowStride = int(frameStack) * frameLen
       latestOffset = (int(frameStack) - 1) * frameLen
@@ -3526,93 +4213,10 @@ when defined(nottoodumbLibrary):
       let frame = cast[ptr UncheckedArray[uint8]](
         cast[uint](obs) + uint(row * rowStride + latestOffset)
       )
-      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen, int(advances[row]))
+      let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
       outs[row] = actionIndexForMask(mask)
 
-  proc nottoodumb_take_chat*(
-    handle: cint,
-    agentId: cint,
-    output: pointer,
-    outputLen: cint
-  ): cint {.exportc, dynlib.} =
-    ## Copies and clears one bot's pending meeting chat evidence.
-    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
-      return 0
-    if agentId < 0 or output.isNil or outputLen <= 0:
-      return 0
-    let
-      policy = NotTooDumbPolicies[int(handle)]
-      botIndex = int(agentId)
-    if botIndex >= policy.bots.len:
-      return 0
-    let
-      message = policy.bots[botIndex].pendingChat
-      limit = min(message.len, int(outputLen) - 1)
-      bytes = cast[ptr UncheckedArray[char]](output)
-    for i in 0 ..< limit:
-      bytes[i] = message[i]
-    bytes[limit] = '\0'
-    policy.bots[botIndex].pendingChat = ""
-    cint(limit)
-
-  proc nottoodumb_role*(handle: cint, agentId: cint): cint {.exportc, dynlib.} =
-    ## Returns the bot's inferred role: 0 unknown, 1 crewmate, 2 imposter.
-    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
-      return 0
-    if agentId < 0:
-      return 0
-    let
-      policy = NotTooDumbPolicies[int(handle)]
-      botIndex = int(agentId)
-    if botIndex >= policy.bots.len:
-      return 0
-    cint(ord(policy.bots[botIndex].role))
-
-  proc nottoodumb_debug_stats*(
-    handle: cint,
-    agentId: cint,
-    output: pointer,
-    outputLen: cint
-  ): cint {.exportc, dynlib.} =
-    ## Writes compact numeric debug state for one bot.
-    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
-      return 0
-    if agentId < 0 or output.isNil or outputLen < DebugStatsLen:
-      return 0
-    let
-      policy = NotTooDumbPolicies[int(handle)]
-      botIndex = int(agentId)
-    if botIndex >= policy.bots.len:
-      return 0
-    let
-      bot = policy.bots[botIndex]
-      outStats = cast[ptr UncheckedArray[int32]](output)
-    outStats[0] = int32(bot.frameTick)
-    outStats[1] = int32(ord(bot.localized))
-    outStats[2] = int32(ord(bot.interstitial))
-    outStats[3] = int32(ord(bot.role))
-    outStats[4] = int32(bot.playerWorldX())
-    outStats[5] = int32(bot.playerWorldY())
-    outStats[6] = int32(ord(bot.cameraLock))
-    outStats[7] = int32(clamp(bot.cameraScore, low(int32).int, high(int32).int))
-    outStats[8] = int32(bot.taskStateCount(TaskMandatory))
-    outStats[9] = int32(bot.radarTaskCount())
-    outStats[10] = int32(bot.checkoutTaskCount())
-    outStats[11] = int32(bot.taskStateCount(TaskCompleted))
-    outStats[12] = int32(bot.taskHoldTicks)
-    outStats[13] = int32(bot.goalIndex)
-    outStats[14] = int32(bot.goalX)
-    outStats[15] = int32(bot.goalY)
-    outStats[16] = int32(bot.path.len)
-    outStats[17] = int32(bot.visibleTaskIcons.len)
-    outStats[18] = int32(bot.visibleCrewmates.len)
-    outStats[19] = int32(bot.lastMask)
-    outStats[20] = int32(bot.velocityX)
-    outStats[21] = int32(bot.velocityY)
-    outStats[22] = int32(ord(bot.hasGoal))
-    DebugStatsLen
-
-when not defined(nottoodumbLibrary) and not defined(botHeadless):
+when not defined(italkalotLibrary) and not defined(botHeadless):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
     ## Draws an unfilled rectangle.
     sk.drawRect(pos, vec2(size.x, thickness), color)
@@ -4092,7 +4696,7 @@ when not defined(nottoodumbLibrary) and not defined(botHeadless):
     ## Returns true when the diagnostic viewer should keep running.
     viewer.isNil or not viewer.window.closeRequested
 
-when not defined(nottoodumbLibrary) and defined(botHeadless):
+when not defined(italkalotLibrary) and defined(botHeadless):
   proc initViewerApp(): ViewerApp =
     ## Returns no viewer for headless builds.
     nil
@@ -4110,7 +4714,7 @@ when not defined(nottoodumbLibrary) and defined(botHeadless):
     ## Returns true because headless builds have no viewer window.
     true
 
-when not defined(nottoodumbLibrary):
+when not defined(italkalotLibrary):
   proc queryEscape(value: string): string =
     ## Escapes a small string for use in a websocket query parameter.
     const Hex = "0123456789ABCDEF"
@@ -4182,55 +4786,34 @@ when not defined(nottoodumbLibrary):
         " buffered=", frameAdvance,
         " total=", bot.skippedFrames,
         " tick=", bot.frameTick + frameAdvance
-    bot.frameAdvance = max(1, frameAdvance)
-    bot.frameTick += bot.frameAdvance
+    bot.frameTick += frameAdvance
     blobToBytes(frame, bot.packed)
     unpack4bpp(bot.packed, bot.unpacked)
     true
-
-  proc ensureWsPath(url: string, defaultPath: string): string =
-    ## Inserts `defaultPath` if the URL has no path beyond the authority,
-    ## so `--url:ws://host:port` still hits the WebSocket endpoint.
-    let s = url.find("://")
-    let start = if s < 0: 0 else: s + 3
-    for i in start ..< url.len:
-      case url[i]
-      of '/': return url
-      of '?', '#': return url[0 ..< i] & defaultPath & url[i .. ^1]
-      else: discard
-    url & defaultPath
 
   proc runBot(
     host = DefaultHost,
     port = PlayerDefaultPort,
     gui = false,
     name = "",
-    mapPath = "",
-    url = ""
+    mapPath = ""
   ) =
     ## Connects to an Among Them server and processes player frames.
-    ## If `url` is non-empty it is used as the WebSocket endpoint (scheme,
-    ## host, port, path); otherwise we build ws://host:port/player. A
-    ## missing path is filled in with WebSocketPath.
     var bot = initBot(mapPath)
-    let endpoint =
-      if url.len > 0: ensureWsPath(url, WebSocketPath)
-      else: "ws://" & host & ":" & $port & WebSocketPath
-    let connectUrl =
-      if name.len == 0: endpoint
-      else: endpoint &
-        (if '?' in endpoint: "&" else: "?") & "name=" & name.queryEscape()
+    let url =
+      if name.len > 0:
+        "ws://" & host & ":" & $port & WebSocketPath &
+          "?name=" & name.queryEscape()
+      else:
+        "ws://" & host & ":" & $port & WebSocketPath
     var
       viewer =
         if gui: initViewerApp()
         else: nil
       connected = false
-      notifiedFailure = false
     while viewer.viewerOpen():
       try:
-        let ws = newWebSocket(connectUrl)
-        echo "connected to ", connectUrl
-        notifiedFailure = false
+        let ws = newWebSocket(url)
         var lastMask = 0xff'u8
         bot.queuedFrames.setLen(0)
         bot.frameBufferLen = 0
@@ -4238,7 +4821,7 @@ when not defined(nottoodumbLibrary):
         connected = true
         while viewer.viewerOpen():
           if gui:
-            viewer.pumpViewer(bot, connected, connectUrl)
+            viewer.pumpViewer(bot, connected, url)
             if not viewer.viewerOpen():
               ws.close()
               break
@@ -4254,30 +4837,24 @@ when not defined(nottoodumbLibrary):
               not bot.interstitialText.isGameOverText():
             ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
             bot.pendingChat = ""
-      except Exception as e:
-        if connected:
-          echo "connection lost: ", e.msg
-        elif not notifiedFailure:
-          echo "connection failed: ", e.msg
-          notifiedFailure = true
+      except Exception:
         connected = false
         if gui:
           let reconnectStart = getMonoTime()
           while viewer.viewerOpen() and
               (getMonoTime() - reconnectStart).inMilliseconds < 250:
-            viewer.pumpViewer(bot, connected, connectUrl)
+            viewer.pumpViewer(bot, connected, url)
             sleep(10)
         else:
           sleep(250)
 
-when isMainModule and not defined(nottoodumbLibrary):
+when isMainModule and not defined(italkalotLibrary):
   var
     address = DefaultHost
     port = PlayerDefaultPort
     gui = false
     name = ""
     mapPath = ""
-    url = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4292,12 +4869,10 @@ when isMainModule and not defined(nottoodumbLibrary):
         name = val
       of "map":
         mapPath = val
-      of "url":
-        url = val
       else:
         discard
     else:
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath, url)
+  runBot(address, port, gui, name, mapPath)

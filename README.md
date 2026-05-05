@@ -89,3 +89,16 @@ At a high level:
 - the client handles player interaction and world presentation
 - the server manages the shared multiplayer world
 - the game world is large and designed to support many simultaneous players or agents
+
+## Coworld Package
+
+The Among Them game includes a coworld package at
+`among_them/coworld_manifest.json` that references
+`among_them/cogame_manifest.json`. Build the local certification images
+before running the coworld certifier:
+
+```sh
+docker build -f games_server/among_them.docker -t bitworld-among-them:latest .
+docker build -f games_server/nottoodumb.docker -t bitworld-nottoodumb:latest .
+coworld certify among_them/coworld_manifest.json
+```

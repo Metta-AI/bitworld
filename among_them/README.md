@@ -77,16 +77,29 @@ variables. Command line flags override these values when both are set.
 | Variable | Meaning |
 | --- | --- |
 | `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_SAVE_RESULTS_PATH` | Path where final scores are written |
+| `COGAME_RESULTS_PATH` | Path where final scores are written |
 | `COGAME_SAVE_REPLAY_PATH` | Optional path where a replay is written |
+| `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay to load |
 
 Results are written when `maxGames` is set to 1 or higher.
 
 ```sh
 COGAME_CONFIG_PATH=config.json \
-COGAME_SAVE_RESULTS_PATH=scores.json \
+COGAME_RESULTS_PATH=scores.json \
 COGAME_SAVE_REPLAY_PATH=run.bitreplay \
 nim r among_them.nim --address:0.0.0.0 --port:2000
+```
+
+## Coworld Certification
+
+The Among Them coworld package entrypoint is `coworld_manifest.json` in this
+directory. From the repository root, build the local engine and player images
+before running the certifier:
+
+```sh
+docker build -f games_server/among_them.docker -t bitworld-among-them:latest .
+docker build -f games_server/nottoodumb.docker -t bitworld-nottoodumb:latest .
+coworld certify among_them/coworld_manifest.json
 ```
 
 ## Map Files
@@ -112,20 +125,21 @@ nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"map.jso
 
 The server serves these pages:
 
-- Player: `http://localhost:2000/client/player.html`
-- Global viewer: `http://localhost:2000/client/global.html`
+- Player: `http://localhost:2000/player`
+- Global viewer: `http://localhost:2000/global`
+- Replay viewer: `http://localhost:2000/replay`
 - Rewards: `http://localhost:2000/client/rewards.html`
 - Stats and join QR: `http://localhost:2000/client/stats.html`
 
 These routes are served from:
 
-- `player_client/index.html`
-- `global_client/index.html`
-- `reward_client/index.html`
+- `clients/player_client.html`
+- `clients/global_client.html`
+- `clients/reward_client.html`
 
 The player client connects to `/player`, the global viewer connects to
-`/global`, and the rewards viewer connects to `/reward` on the same host as
-the page.
+`/global`, the replay viewer connects to `/replay`, and the rewards viewer
+connects to `/reward` on the same host as the page.
 
 The stats page also exposes live match controls. Use `Restart match` to queue a
 new match with the current connected players, or the `X` beside a connected
@@ -220,7 +234,7 @@ nim r tools/quick_player evidencebot_v2 --players:8 --address:localhost --port:2
 Then open the global viewer:
 
 ```text
-http://localhost:2000/client/global.html
+http://localhost:2000/global
 ```
 
 ## Submit to the Alignment League
@@ -298,12 +312,12 @@ Example config.json:
     "0xBADA55_7"
   ],
   "slots":[
-    {"name":"player1","role":"crewmate","color":"red"},
-    {"name":"player2","role":"crewmate","color":"blue"},
-    {"name":"player3","role":"crewmate","color":"green"},
-    {"name":"player4","role":"crewmate","color":"yellow"},
-    {"name":"player5","role":"crewmate","color":"lime"},
-    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player1","role":"crew","color":"red"},
+    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"player3","role":"crew","color":"green"},
+    {"name":"player4","role":"crew","color":"yellow"},
+    {"name":"player5","role":"crew","color":"lime"},
+    {"name":"player6","role":"crew","color":"cyan"},
     {"name":"player7","role":"imposter","color":"pink"},
     {"name":"player8","role":"imposter","color":"orange"}
   ]
@@ -312,7 +326,7 @@ Example config.json:
 
 ```sh
 set -gx COGAME_CONFIG_PATH config.json
-set -gx COGAME_SAVE_RESULTS_PATH ../tmp/scores.json
+set -gx COGAME_RESULTS_PATH ../tmp/scores.json
 set -gx COGAME_SAVE_REPLAY_PATH ../tmp/replay.rep
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
@@ -320,17 +334,17 @@ nim r among_them.nim --address:0.0.0.0 --port:2000
 If the game has a slots config, then the player *MUST* use the slot count.
 They *MAY* use the name and token.
 
-http://localhost:2000/client/player.html?name=player1&token=0xBADA55_0&slot=0
-http://localhost:2000/client/player.html?name=player2&token=0xBADA55_1&slot=1
-http://localhost:2000/client/player.html?name=player3&token=0xBADA55_2&slot=2
-http://localhost:2000/client/player.html?name=player4&token=0xBADA55_3&slot=3
-http://localhost:2000/client/player.html?name=player5&token=0xBADA55_4&slot=4
-http://localhost:2000/client/player.html?name=player6&token=0xBADA55_5&slot=5
-http://localhost:2000/client/player.html?name=player7&token=0xBADA55_6&slot=6
-http://localhost:2000/client/player.html?name=player8&token=0xBADA55_7&slot=7
+http://localhost:2000/player?name=player1&token=0xBADA55_0&slot=0
+http://localhost:2000/player?name=player2&token=0xBADA55_1&slot=1
+http://localhost:2000/player?name=player3&token=0xBADA55_2&slot=2
+http://localhost:2000/player?name=player4&token=0xBADA55_3&slot=3
+http://localhost:2000/player?name=player5&token=0xBADA55_4&slot=4
+http://localhost:2000/player?name=player6&token=0xBADA55_5&slot=5
+http://localhost:2000/player?name=player7&token=0xBADA55_6&slot=6
+http://localhost:2000/player?name=player8&token=0xBADA55_7&slot=7
 
 When a game finishes with `maxGames` set to 1 or higher, `--save-scores` saves
-the scores to a file. `COGAME_SAVE_RESULTS_PATH` can be used instead.
+the scores to a file. `COGAME_RESULTS_PATH` can be used instead.
 
 The file uses JSON format and must be an array of objects with `reward` as a
 required field. The game can include `name`, `win`, `tasks`, `kills`, and other

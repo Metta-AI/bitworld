@@ -25,7 +25,7 @@ train = [
 
 [tool.setuptools]
 packages = ["bitworld", "bitworld.pufferlib"]
-package-dir = { bitworld = ".." }
+package-dir = { bitworld = "." }
 include-package-data = true
 
 [tool.setuptools.package-data]
@@ -45,3 +45,4 @@ bitworld = [
   "pufferlib/*.py",
   "pufferlib/*.txt",
 ]
+

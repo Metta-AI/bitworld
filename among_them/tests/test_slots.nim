@@ -15,12 +15,12 @@ const
     "0xBADA55_6",
     "0xBADA55_7"
   ],"slots":[
-    {"name":"player1","role":"crewmate","color":"red"},
-    {"name":"player2","role":"crewmate","color":"blue"},
-    {"name":"player3","role":"crewmate","color":"green"},
-    {"name":"player4","role":"crewmate","color":"yellow"},
-    {"name":"player5","role":"crewmate","color":"lime"},
-    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player1","role":"crew","color":"red"},
+    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"player3","role":"crew","color":"green"},
+    {"name":"player4","role":"crew","color":"yellow"},
+    {"name":"player5","role":"crew","color":"lime"},
+    {"name":"player6","role":"crew","color":"cyan"},
     {"name":"player7","role":"imposter","color":"pink"},
     {"name":"player8","role":"imposter","color":"orange"}
   ]}"""
@@ -103,6 +103,14 @@ suite "player slots":
     expect AmongThemError:
       discard sim.addPlayer("player7", 6, "bad")
 
+  test "configured token can be checked before websocket upgrade":
+    var config = defaultGameConfig()
+    config.update("""{"tokens":["secret"]}""")
+
+    check config.playerJoinAllowed("player1", 0, "secret")
+    check not config.playerJoinAllowed("player1", 0, "bad")
+    check not config.playerJoinAllowed("player1", MaxPlayers, "secret")
+
   test "duplicate configured names and tokens are rejected":
     var config = defaultGameConfig()
 
@@ -120,6 +128,12 @@ suite "player slots":
 
     expect AmongThemError:
       config.update("""{"slots":[{"color":"ultraviolet"}]}""")
+
+  test "configured crew role must use canonical crew spelling":
+    var config = defaultGameConfig()
+
+    expect AmongThemError:
+      config.update("""{"slots":[{"role":"crewmate"}]}""")
 
   test "duplicate player names are rejected":
     let config = defaultGameConfig()
@@ -173,7 +187,7 @@ suite "player slots":
     config.roleRevealTicks = 0
     config.tasksPerPlayer = 1
     config.update("""{"slots":[
-      {"name":"crew","token":"crew-token","role":"crewmate"},
+      {"name":"crew","token":"crew-token","role":"crew"},
       {"name":"imp","token":"imp-token","role":"imposter"}
     ]}""")
     var sim = initAmongThemForTest(config)

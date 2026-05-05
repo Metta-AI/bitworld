@@ -25,7 +25,7 @@ RUN nimby --global sync nimby.lock && \
   cat nim.cfg >> /root/.nimby/nim/config/nim.cfg
 
 COPY . .
-WORKDIR /workspace/bitworld/among_them/players
+WORKDIR /workspace/bitworld/among_them/players/nottoodumb
 RUN nim c \
   -d:release \
   -d:botHeadless \
@@ -38,7 +38,7 @@ FROM alpine
 
 WORKDIR /workspace/bitworld
 COPY --from=build \
-  /workspace/bitworld/among_them/players/nottoodumb \
+  /workspace/bitworld/among_them/players/nottoodumb/nottoodumb \
   /bin/nottoodumb
 COPY --from=build /workspace/bitworld/among_them/*.json ./among_them/
 COPY --from=build /workspace/bitworld/among_them/*.aseprite ./among_them/

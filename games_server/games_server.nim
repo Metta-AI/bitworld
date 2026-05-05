@@ -1,6 +1,6 @@
 import
   std/[
-    algorithm, net, os, osproc, parseopt, strutils, times
+    algorithm, json, net, os, osproc, parseopt, strutils, times
   ],
   mummy,
   taggy
@@ -10,8 +10,6 @@ from std/httpclient import close, getContent, newHttpClient
 const
   DefaultHost = "0.0.0.0"
   DefaultPort = 2080
-  GamePortStart = 2100
-  GamePortEnd = 2199
   MaxBotLaunchCount = 16
   DockerBinEnv = "GAMES_SERVER_DOCKER"
   DockerImageEnv = "GAMES_SERVER_IMAGE"
@@ -26,13 +24,23 @@ const
   DefaultNotTooDumbImage = "ghcr.io/treeform/bitworld-nottoodumb:latest"
   DefaultIVoteALotImage = "ghcr.io/treeform/bitworld-ivotewell:latest"
   DefaultITalkALotImage = "ghcr.io/treeform/bitworld-italkalot:latest"
+  GameContainerPort = 8080
   ContainerReplayDir = "/replays"
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
+  ScoresPath = "/scores"
   LogsPath = "/logs"
+  BulkStopPath = "/containers/stop"
+  BulkRemovePath = "/containers/remove"
   HealthPath = "/healthz"
   ClientPath = "/client/"
+  CreatePath = "/games/create"
+  ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
+  CogameResultsEnv = "COGAME_RESULTS_PATH"
+  ManifestPathEnv = "GAMES_SERVER_MANIFEST"
+  CogameManifestName = "cogame_manifest.json"
+  CoplayerManifestName = "coplayer_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
@@ -43,6 +51,8 @@ const
   CreatedLabel = "bitworld.games_server.created"
   ReplayLabel = "bitworld.games_server.replay"
   KindLabel = "bitworld.games_server.kind"
+  GameManifestLabel = "bitworld.games_server.manifest"
+  GameNameLabel = "bitworld.games_server.game_name"
   BotGameLabel = "bitworld.games_server.game"
   BotKindLabel = "bitworld.games_server.bot"
   LiveKind = "game"
@@ -119,6 +129,14 @@ th {
 .nowrap {
   white-space: nowrap;
 }
+.selectCell {
+  width: 24px;
+  text-align: center;
+}
+.bulkBar {
+  margin: 8px 0;
+  text-align: right;
+}
 .button {
   border: 1px solid #303050;
   background: #eeeeff;
@@ -130,6 +148,20 @@ th {
   width: 64px;
   border: 1px solid #707096;
   font: 11px Verdana, Helvetica, Arial, sans-serif;
+}
+.textInput {
+  width: 220px;
+  border: 1px solid #707096;
+  font: 11px Verdana, Helvetica, Arial, sans-serif;
+}
+.textarea {
+  width: min(620px, calc(100vw - 96px));
+  height: 68px;
+  border: 1px solid #707096;
+  font: 11px Monaco, Consolas, monospace;
+}
+.fieldName {
+  width: 180px;
 }
 .notice {
   margin: 8px 0;
@@ -148,6 +180,40 @@ th {
   white-space: pre-wrap;
 }
 """
+  BulkScript = """
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var boxes = Array.prototype.slice.call(
+    document.querySelectorAll(".bulkCheck")
+  );
+  var anchor = null;
+  window.confirmRemoveContainers = function () {
+    var count = boxes.filter(function (box) {
+      return box.checked;
+    }).length;
+    return confirm(
+      "Going to remove " + count + " containers (can't be undone) ok?"
+    );
+  };
+  boxes.forEach(function (box) {
+    box.addEventListener("click", function (event) {
+      if (event.shiftKey && anchor) {
+        var a = boxes.indexOf(anchor);
+        var b = boxes.indexOf(box);
+        var start = Math.min(a, b);
+        var stop = Math.max(a, b);
+        var checked = box.checked;
+        for (var i = start; i <= stop; i++) {
+          boxes[i].checked = checked;
+        }
+      } else {
+        anchor = box;
+      }
+    });
+  });
+});
+</script>
+"""
 
 type
   GamesServerError = object of CatchableError
@@ -160,11 +226,6 @@ type
     LiveGame
     ReplayServer
 
-  BotKind = enum
-    NotTooDumb
-    IVoteALot
-    ITalkALot
-
   GameContainer = object
     name: string
     status: string
@@ -172,18 +233,47 @@ type
     created: int64
     replay: string
     kind: ContainerKind
+    manifestKey: string
+    cogameName: string
 
   BotContainer = object
     name: string
     status: string
     game: string
-    bot: BotKind
+    bot: string
     created: int64
 
   ReplayFile = object
     name: string
     size: int64
     modified: int64
+
+  GameManifest = object
+    key: string
+    path: string
+    name: string
+    author: string
+    imageUri: string
+
+  CoplayerManifest = object
+    key: string
+    path: string
+    name: string
+    author: string
+    imageUri: string
+    binary: string
+    games: seq[string]
+
+  BotLaunchCount = object
+    bot: CoplayerManifest
+    count: int
+
+  ScoreRow = object
+    name: string
+    score: string
+    win: bool
+    tasks: string
+    kills: string
 
 var
   aiKeyEnvMask = 0
@@ -326,16 +416,6 @@ proc dockerMode(): string =
   ## Returns the container launch mode.
   envValue(DockerModeEnv, DefaultDockerMode).toLowerAscii()
 
-proc botImage(kind: BotKind): string =
-  ## Returns the Docker image for one bot kind.
-  case kind
-  of NotTooDumb:
-    envValue(NotTooDumbImageEnv, DefaultNotTooDumbImage)
-  of IVoteALot:
-    envValue(IVoteALotImageEnv, DefaultIVoteALotImage)
-  of ITalkALot:
-    envValue(ITalkALotImageEnv, DefaultITalkALotImage)
-
 proc defaultWorkspaceRoot(): string =
   ## Returns the host workspace root mounted by runner containers.
   parentDir(parentDir(parentDir(currentSourcePath())))
@@ -351,6 +431,282 @@ proc defaultReplayDir(): string =
 proc replayDir(): string =
   ## Returns the configured host replay directory.
   envValue(ReplayDirEnv, defaultReplayDir())
+
+proc gamesRoot(): string =
+  ## Returns the local Bitworld games root.
+  parentDir(parentDir(currentSourcePath()))
+
+proc defaultManifestPath(): string =
+  ## Returns the default CoGame manifest path.
+  gamesRoot() / "among_them" / CogameManifestName
+
+proc manifestPath(): string =
+  ## Returns the configured CoGame manifest path.
+  envValue(ManifestPathEnv, defaultManifestPath())
+
+proc manifestKey(path: string): string =
+  ## Builds a stable relative key for one manifest path.
+  let
+    root = gamesRoot()
+    prefix = root & DirSep
+  if path.startsWith(prefix):
+    result = path[prefix.len .. ^1]
+  else:
+    result = path
+  result = result.replace("\\", "/")
+
+proc manifestString(
+  node: JsonNode,
+  key,
+  defaultValue: string
+): string =
+  ## Reads one top-level manifest string.
+  if node.kind == JObject and node.hasKey(key) and
+      node[key].kind == JString:
+    return node[key].getStr()
+  defaultValue
+
+proc defaultManifestName(path: string): string =
+  ## Returns a display name for a manifest path.
+  splitPath(parentDir(path)).tail
+
+proc readGameManifest(path: string): GameManifest =
+  ## Reads one CoGame manifest summary from disk.
+  try:
+    let
+      manifest = parseJson(readFile(path))
+      name = manifest.manifestString(
+        "name",
+        defaultManifestName(path)
+      )
+      author = manifest.manifestString(
+        "author",
+        manifest.manifestString("owner", "-")
+      )
+    result = GameManifest(
+      key: manifestKey(path),
+      path: path,
+      name: name,
+      author: author,
+      imageUri: manifest.manifestString("image_uri", dockerImage())
+    )
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not read CoGame manifest " & path & ": " & e.msg
+    )
+
+proc manifestStringArray(node: JsonNode, key: string): seq[string] =
+  ## Reads one top-level string array from a manifest.
+  if node.kind != JObject or not node.hasKey(key) or
+      node[key].kind != JArray:
+    return
+  for item in node[key].items:
+    if item.kind == JString:
+      result.add(item.getStr())
+
+proc readCoplayerManifest(path: string): CoplayerManifest =
+  ## Reads one CoPlayer manifest summary from disk.
+  try:
+    let
+      manifest = parseJson(readFile(path))
+      name = manifest.manifestString(
+        "name",
+        defaultManifestName(path)
+      )
+    result = CoplayerManifest(
+      key: manifestKey(path),
+      path: path,
+      name: name,
+      author: manifest.manifestString("author", "-"),
+      imageUri: manifest.manifestString("image_uri", ""),
+      binary: manifest.manifestString("binary", "/bin/" & name),
+      games: manifest.manifestStringArray("games")
+    )
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not read CoPlayer manifest " & path & ": " & e.msg
+    )
+
+proc addManifestPath(paths: var seq[string], path: string) =
+  ## Adds one manifest path if it exists and is not already present.
+  if path.len == 0 or not fileExists(path):
+    return
+  let key = manifestKey(path)
+  for existing in paths:
+    if manifestKey(existing) == key:
+      return
+  paths.add(path)
+
+proc listGameManifests(): seq[GameManifest] =
+  ## Scans game folders for CoGame manifests.
+  var paths: seq[string]
+  for dir in walkDirs(gamesRoot() / "*"):
+    paths.addManifestPath(dir / CogameManifestName)
+  paths.addManifestPath(manifestPath())
+  paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
+  for path in paths:
+    result.add(readGameManifest(path))
+  if result.len == 0:
+    raise newException(GamesServerError, "no CoGame manifests found")
+
+proc listCoplayerManifests(): seq[CoplayerManifest] =
+  ## Scans game folders for CoPlayer manifests.
+  var paths: seq[string]
+  for dir in walkDirs(gamesRoot() / "*"):
+    for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
+      paths.addManifestPath(path)
+  paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
+  for path in paths:
+    result.add(readCoplayerManifest(path))
+
+proc findGameManifest(key: string): GameManifest =
+  ## Finds a scanned CoGame manifest by key.
+  let
+    manifests = listGameManifests()
+    cleanKey = key.strip()
+  if cleanKey.len == 0:
+    return manifests[0]
+  for manifest in manifests:
+    if manifest.key == cleanKey or manifest.path == cleanKey:
+      return manifest
+  raise newException(
+    GamesServerError,
+    "unknown CoGame manifest: " & cleanKey
+  )
+
+proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
+  ## Returns true when a CoPlayer manifest supports a game.
+  for supported in bot.games:
+    if supported == gameName:
+      return true
+
+proc supportedCoplayerManifests(gameName: string): seq[CoplayerManifest] =
+  ## Lists CoPlayer manifests that support one game.
+  for bot in listCoplayerManifests():
+    if bot.supportsGame(gameName):
+      result.add(bot)
+  result.sort(proc(a, b: CoplayerManifest): int = cmp(a.name, b.name))
+
+proc findCoplayerManifest(
+  gameName,
+  botKey: string
+): CoplayerManifest =
+  ## Finds a supported CoPlayer manifest by name or key.
+  let cleanKey = botKey.strip()
+  for bot in supportedCoplayerManifests(gameName):
+    if bot.name == cleanKey or bot.key == cleanKey:
+      return bot
+    if cleanKey == "ivotealot" and bot.name == "ivotewell":
+      return bot
+  raise newException(
+    GamesServerError,
+    "unknown CoPlayer manifest: " & cleanKey
+  )
+
+proc manifestUrl(manifest: GameManifest): string =
+  ## Builds a raw manifest viewer URL.
+  ManifestViewPath & "?path=" & encodeUrlComponent(manifest.key)
+
+proc createUrl(manifest: GameManifest): string =
+  ## Builds a create-game URL for one manifest.
+  CreatePath & "?manifest=" & encodeUrlComponent(manifest.key)
+
+proc dockerOwner(): string =
+  ## Returns the default GitHub container package owner.
+  let image = dockerImage()
+  if image.startsWith("ghcr.io/"):
+    let parts = image.split('/')
+    if parts.len >= 3:
+      return parts[1]
+  "treeform"
+
+proc stripImageTag(image: string): string =
+  ## Removes a Docker image tag or digest.
+  let
+    slashAt = image.rfind('/')
+    colonAt = image.rfind(':')
+    digestAt = image.find('@')
+  var stop = image.len
+  if digestAt >= 0:
+    stop = digestAt
+  elif colonAt > slashAt:
+    stop = colonAt
+  image[0 ..< stop]
+
+proc imageTag(image: string): string =
+  ## Returns a Docker image tag suffix when present.
+  let
+    slashAt = image.rfind('/')
+    colonAt = image.rfind(':')
+  if colonAt > slashAt:
+    image[colonAt .. ^1]
+  else:
+    ""
+
+proc runnerImageUri(imageUri: string): string =
+  ## Converts a manifest image name to the registry runner image.
+  let
+    cleanImage = imageUri.strip()
+    tag = imageTag(cleanImage)
+  var
+    owner = dockerOwner()
+    packageName = stripImageTag(cleanImage)
+  if packageName.startsWith("ghcr.io/"):
+    let parts = packageName.split('/')
+    if parts.len >= 3:
+      owner = parts[1]
+      packageName = parts[2 .. ^1].join("/")
+  elif packageName.contains('/'):
+    packageName = packageName.split('/')[^1]
+  if not packageName.endsWith("-runner"):
+    packageName.add("-runner")
+  "ghcr.io/" & owner & "/" & packageName & tag
+
+proc dockerPackageUrl(imageUri: string): string =
+  ## Builds a GitHub Packages URL from a Docker image name.
+  let runnerImage = runnerImageUri(imageUri)
+  var
+    owner = dockerOwner()
+    packageName = stripImageTag(runnerImage)
+  if packageName.startsWith("ghcr.io/"):
+    let parts = packageName.split('/')
+    if parts.len >= 3:
+      owner = parts[1]
+      packageName = parts[2 .. ^1].join("/")
+  elif packageName.contains('/'):
+    packageName = packageName.split('/')[^1]
+  "https://github.com/users/" & owner &
+    "/packages/container/package/" & encodeUrlComponent(packageName)
+
+proc imageFallback(image, defaultImage: string): string =
+  ## Returns a manifest image or a known default.
+  if image.len > 0:
+    image
+  else:
+    defaultImage
+
+proc coplayerImage(bot: CoplayerManifest): string =
+  ## Returns the Docker image for one CoPlayer.
+  case bot.name.toLowerAscii()
+  of NotTooDumbBot:
+    envValue(
+      NotTooDumbImageEnv,
+      imageFallback(bot.imageUri, DefaultNotTooDumbImage)
+    )
+  of "ivotewell", IVoteALotBot:
+    envValue(
+      IVoteALotImageEnv,
+      imageFallback(bot.imageUri, DefaultIVoteALotImage)
+    )
+  of ITalkALotBot:
+    envValue(
+      ITalkALotImageEnv,
+      imageFallback(bot.imageUri, DefaultITalkALotImage)
+    )
+  else:
+    bot.imageUri
 
 proc ensureReplayDir() =
   ## Creates the replay directory when it is missing.
@@ -392,18 +748,6 @@ proc pullDockerImage(image: string) =
   ## Pulls the latest version of one Docker image.
   discard requireDocker(@["pull", image])
 
-proc portAvailable(port: int): bool =
-  ## Returns true when the host can bind a TCP port.
-  var socket = newSocket()
-  try:
-    socket.setSockOpt(OptReuseAddr, true)
-    socket.bindAddr(Port(port), "0.0.0.0")
-    result = true
-  except OSError:
-    result = false
-  finally:
-    socket.close()
-
 proc cleanContainerName(value: string): string =
   ## Keeps only Docker-safe container name characters.
   for c in value:
@@ -416,47 +760,18 @@ proc logUrl(name: string): string =
   ## Builds the log viewer URL for one container.
   LogsPath & "?name=" & cleanContainerName(name)
 
-proc botKindLabel(kind: BotKind): string =
-  ## Returns the stable form value for one bot kind.
-  case kind
-  of NotTooDumb:
-    NotTooDumbBot
-  of IVoteALot:
-    IVoteALotBot
-  of ITalkALot:
-    ITalkALotBot
+proc renderContainerCheckbox(name: string): string =
+  ## Renders one bulk action checkbox for a managed container.
+  let safeName = cleanContainerName(name)
+  "<input class=\"bulkCheck\" type=\"checkbox\" name=\"name\" value=\"" &
+    esc(safeName) & "\" form=\"bulkForm\" title=\"Select " &
+    esc(name) & "\">"
 
-proc botKindTitle(kind: BotKind): string =
-  ## Returns the display label for one bot kind.
-  case kind
-  of NotTooDumb:
-    "nottoodumb"
-  of IVoteALot:
-    "ivotealot"
-  of ITalkALot:
-    "italkalot"
-
-proc botBinary(kind: BotKind): string =
-  ## Returns the executable path inside one bot image.
-  case kind
-  of NotTooDumb:
-    "/bin/nottoodumb"
-  of IVoteALot:
-    "/bin/ivotewell"
-  of ITalkALot:
-    "/bin/italkalot"
-
-proc parseBotKind(value: string): BotKind =
-  ## Converts a form value or Docker label into a bot kind.
-  case value.strip().toLowerAscii()
-  of NotTooDumbBot:
-    NotTooDumb
-  of IVoteALotBot, "ivotewell":
-    IVoteALot
-  of ITalkALotBot:
-    ITalkALot
-  else:
-    raise newException(GamesServerError, "unknown bot kind")
+proc cleanLabelValue(value: string): string =
+  ## Normalizes a Docker label value.
+  result = value.strip()
+  if result == "<no value>":
+    result = ""
 
 proc containerKindLabel(kind: ContainerKind): string =
   ## Returns the Docker label value for one container kind.
@@ -485,11 +800,17 @@ proc splitInspectLine(line: string): GameContainer =
   if parts.len >= 4:
     result.created = parseInt64Safe(parts[3])
   if parts.len >= 5:
-    result.replay = parts[4].strip()
+    result.replay = cleanLabelValue(parts[4])
   if parts.len >= 6:
-    result.kind = parseContainerKind(parts[5], result.name)
+    result.kind = parseContainerKind(cleanLabelValue(parts[5]), result.name)
   else:
     result.kind = parseContainerKind("", result.name)
+  if parts.len >= 7:
+    result.cogameName = cleanLabelValue(parts[6])
+  if parts.len >= 8:
+    result.manifestKey = cleanLabelValue(parts[7])
+  if result.cogameName.len == 0 and result.kind == LiveGame:
+    result.cogameName = "among_them"
 
 proc inspectGame(name: string): GameContainer =
   ## Reads one managed container from Docker inspect.
@@ -502,10 +823,12 @@ proc inspectGame(name: string): GameContainer =
     "{{index .Config.Labels \"" & CreatedLabel & "\"}}\t" &
     "{{index .Config.Labels \"" & ReplayLabel & "\"}}\t" &
     "{{index .Config.Labels \"" & KindLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & GameNameLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & GameManifestLabel & "\"}}\t" &
     "{{index .Config.Labels \"" & ServerLabelKey & "\"}}"
   let output = requireDocker(@["inspect", "--format", format, safeName])
   let parts = output.split('\t')
-  if parts.len < 7 or parts[6].strip() != ServerLabelValue:
+  if parts.len < 9 or cleanLabelValue(parts[8]) != ServerLabelValue:
     raise newException(
       GamesServerError,
       "container is not managed by games_server"
@@ -558,7 +881,7 @@ proc splitBotLine(line: string): BotContainer =
   if parts.len >= 3:
     result.game = parts[2].strip()
   if parts.len >= 4:
-    result.bot = parseBotKind(parts[3])
+    result.bot = cleanLabelValue(parts[3])
   if parts.len >= 5:
     result.created = parseInt64Safe(parts[4])
 
@@ -635,9 +958,24 @@ proc managedContainerName(name: string): string =
     "container is not managed by games_server"
   )
 
+proc containerLogState(name: string): string =
+  ## Reads current Docker state for one managed container.
+  let safeName = managedContainerName(name)
+  let format =
+    "status={{.State.Status}}\n" &
+    "exit={{.State.ExitCode}}\n" &
+    "oom={{.State.OOMKilled}}\n" &
+    "error={{.State.Error}}\n" &
+    "started={{.State.StartedAt}}\n" &
+    "finished={{.State.FinishedAt}}"
+  requireDocker(@["inspect", "--format", format, safeName])
+
 proc containerLogs(name: string): string =
-  ## Reads current Docker logs for one managed container.
-  requireDocker(@["logs", managedContainerName(name)])
+  ## Reads current Docker stdout and stderr logs for one managed container.
+  let safeName = managedContainerName(name)
+  containerLogState(safeName) &
+    "\n\n--- docker logs stdout and stderr ---\n" &
+    requireDocker(@["logs", "--timestamps", safeName])
 
 proc cleanReplayName(value: string): string =
   ## Keeps only replay file name characters.
@@ -680,12 +1018,27 @@ proc formValue(form: seq[(string, string)], key: string): string =
     if formKey == key:
       return value
 
+proc botCountField(bot: CoplayerManifest): string =
+  ## Returns the create-form count field for one CoPlayer.
+  cleanContainerName(bot.name) & "Bots"
+
 proc findOpenPort(): int =
-  ## Finds the first available game host port.
-  for port in GamePortStart .. GamePortEnd:
-    if portAvailable(port):
-      return port
-  raise newException(GamesServerError, "no free game ports are available")
+  ## Asks the OS to reserve and report one free host port.
+  var socket = newSocket()
+  try:
+    socket.setSockOpt(OptReuseAddr, true)
+    socket.bindAddr(Port(0), "0.0.0.0")
+    let (_, port) = socket.getLocalAddr()
+    result = port.int
+  except OSError as e:
+    raise newException(
+      GamesServerError,
+      "could not ask OS for a free port: " & e.msg
+    )
+  finally:
+    socket.close()
+  if result <= 0:
+    raise newException(GamesServerError, "OS returned an invalid free port")
 
 proc gameName(port: int): string =
   ## Builds a unique Docker container name.
@@ -701,24 +1054,47 @@ proc launchStamp(index: int): string =
 
 proc botContainerName(
   game: GameContainer,
-  bot: BotKind,
+  bot: CoplayerManifest,
   stamp: string
 ): string =
   ## Builds a unique bot Docker container name.
-  "among_them_bot_" & botKindLabel(bot) & "_" &
+  "among_them_bot_" & cleanContainerName(bot.name) & "_" &
     $game.port & "_" & stamp
 
 proc botPlayerName(
   game: GameContainer,
-  bot: BotKind,
+  bot: CoplayerManifest,
   stamp: string
 ): string =
   ## Builds a visible in-game name for one bot.
-  botKindTitle(bot) & "-" & $game.port & "-" & stamp
+  bot.name & "-" & $game.port & "-" & stamp
 
 proc replayName(name: string): string =
   ## Builds the replay file name for one game.
   cleanContainerName(name) & ".bitreplay"
+
+proc scoresName(replay: string): string =
+  ## Builds the scores file name for one replay file.
+  if replay.endsWith(".bitreplay"):
+    replay[0 ..< replay.len - ".bitreplay".len] & ".scores.json"
+  else:
+    replay & ".scores.json"
+
+proc scoreFileName(replay: string): string =
+  ## Builds the clean scores file name for one replay file.
+  cleanReplayName(scoresName(replay))
+
+proc scoreFileExists(replay: string): bool =
+  ## Returns true when the score file for a replay exists.
+  fileExists(replayPath(scoreFileName(replay)))
+
+proc scoreUrl(replay: string): string =
+  ## Builds a browser URL for one scores file.
+  ScoresPath & "?name=" & scoreFileName(replay)
+
+proc rawScoreUrl(name: string): string =
+  ## Builds a browser URL for one raw scores file.
+  ScoresPath & "?name=" & cleanReplayName(name) & "&raw=1"
 
 proc cleanConfigValue(
   form: seq[(string, string)],
@@ -735,20 +1111,356 @@ proc cleanConfigValue(
       break
   result = clampInt(result, low, high)
 
-proc configJson(form: seq[(string, string)]): string =
-  ## Builds the Among Them JSON config from form values.
+proc createBotCounts(
+  form: seq[(string, string)],
+  gameName: string
+): seq[BotLaunchCount] =
+  ## Reads create-form CoPlayer counts.
+  var total = 0
+  for bot in supportedCoplayerManifests(gameName):
+    let count = cleanConfigValue(
+      form,
+      botCountField(bot),
+      0,
+      0,
+      MaxBotLaunchCount
+    )
+    if count > 0:
+      result.add(BotLaunchCount(bot: bot, count: count))
+    total += count
+  if total > MaxBotLaunchCount:
+    raise newException(
+      GamesServerError,
+      "cannot start more than " & $MaxBotLaunchCount & " bots"
+    )
+
+proc configSchema(manifestInfo: GameManifest): JsonNode =
+  ## Reads the config schema from one CoGame manifest.
+  try:
+    let manifest = parseJson(readFile(manifestInfo.path))
+    if manifest.kind != JObject or not manifest.hasKey("config_schema"):
+      raise newException(GamesServerError, "manifest missing config_schema")
+    result = manifest["config_schema"]
+    if result.kind != JObject or not result.hasKey("properties") or
+        result["properties"].kind != JObject:
+      raise newException(
+        GamesServerError,
+        "manifest config_schema missing properties"
+      )
+  except GamesServerError:
+    raise
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not read manifest config schema: " & e.msg
+    )
+
+proc propertyString(
+  property: JsonNode,
+  key,
+  defaultValue: string
+): string =
+  ## Reads one string value from a JSON schema property.
+  if property.kind == JObject and property.hasKey(key) and
+      property[key].kind == JString:
+    return property[key].getStr()
+  defaultValue
+
+proc propertyInt(
+  property: JsonNode,
+  key: string,
+  defaultValue: int
+): int =
+  ## Reads one integer value from a JSON schema property.
+  if property.kind == JObject and property.hasKey(key) and
+      property[key].kind == JInt:
+    return property[key].getInt()
+  defaultValue
+
+proc hasPropertyInt(property: JsonNode, key: string): bool =
+  ## Returns true when a JSON schema property has an integer value.
+  property.kind == JObject and property.hasKey(key) and
+    property[key].kind == JInt
+
+proc propertyBool(
+  property: JsonNode,
+  key: string,
+  defaultValue: bool
+): bool =
+  ## Reads one boolean value from a JSON schema property.
+  if property.kind == JObject and property.hasKey(key) and
+      property[key].kind == JBool:
+    return property[key].getBool()
+  defaultValue
+
+proc propertyType(property: JsonNode): string =
+  ## Returns the JSON schema type for one property.
+  property.propertyString("type", "string")
+
+proc itemType(property: JsonNode): string =
+  ## Returns the JSON schema item type for one array property.
+  if property.kind == JObject and property.hasKey("items") and
+      property["items"].kind == JObject:
+    return property["items"].propertyString("type", "")
+  ""
+
+proc defaultText(property: JsonNode): string =
+  ## Returns the schema default value as form text.
+  if property.kind != JObject or not property.hasKey("default"):
+    return
+  let value = property["default"]
+  case value.kind
+  of JString:
+    result = value.getStr()
+  of JInt:
+    result = $value.getInt()
+  of JFloat:
+    result = $value.getFloat()
+  of JBool:
+    result =
+      if value.getBool():
+        "true"
+      else:
+        "false"
+  of JArray, JObject:
+    result = $value
+  of JNull:
+    result = ""
+
+proc fieldLabel(name: string): string =
+  ## Converts one camelCase config key into a compact label.
+  for i, c in name:
+    if c in {'A' .. 'Z'}:
+      if i > 0:
+        result.add(' ')
+      result.add(c.toLowerAscii())
+    else:
+      result.add(c)
+
+proc checkArrayBounds(
+  name: string,
+  items,
+  property: JsonNode
+) =
+  ## Raises when an array config value is outside schema bounds.
+  if hasPropertyInt(property, "minItems") and
+      items.len < property.propertyInt("minItems", 0):
+    raise newException(
+      GamesServerError,
+      "Config field " & name & " needs at least " &
+        $property.propertyInt("minItems", 0) & " entries."
+    )
+  if hasPropertyInt(property, "maxItems") and
+      items.len > property.propertyInt("maxItems", 0):
+    raise newException(
+      GamesServerError,
+      "Config field " & name & " cannot have more than " &
+        $property.propertyInt("maxItems", 0) & " entries."
+    )
+
+proc parseStringArray(
+  name,
+  text: string,
+  property: JsonNode
+): JsonNode =
+  ## Parses a string array from JSON, commas, or lines.
+  result = newJArray()
+  let cleanText = text.strip()
+  if cleanText.len == 0:
+    checkArrayBounds(name, result, property)
+    return
+  if cleanText[0] == '[':
+    try:
+      result = parseJson(cleanText)
+    except CatchableError as e:
+      raise newException(
+        GamesServerError,
+        "Config field " & name & " could not parse as JSON: " & e.msg
+      )
+    if result.kind != JArray:
+      raise newException(
+        GamesServerError,
+        "Config field " & name & " must be an array."
+      )
+    for i, item in result.elems:
+      if item.kind != JString:
+        raise newException(
+          GamesServerError,
+          "Config field " & name & "[" & $i & "] must be a string."
+        )
+    checkArrayBounds(name, result, property)
+    return
+  for line in cleanText.splitLines():
+    for part in line.split(','):
+      let item = part.strip()
+      if item.len > 0:
+        result.add(%item)
+  checkArrayBounds(name, result, property)
+
+proc parseJsonArray(
+  name,
+  text: string,
+  property: JsonNode
+): JsonNode =
+  ## Parses a JSON array config field.
+  let cleanText = text.strip()
+  if cleanText.len == 0:
+    result = newJArray()
+    checkArrayBounds(name, result, property)
+    return
+  try:
+    result = parseJson(cleanText)
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "Config field " & name & " could not parse as JSON: " & e.msg
+    )
+  if result.kind != JArray:
+    raise newException(
+      GamesServerError,
+      "Config field " & name & " must be a JSON array."
+    )
+  checkArrayBounds(name, result, property)
+
+proc intConfigValue(
+  form: seq[(string, string)],
+  name: string,
+  property: JsonNode
+): int =
+  ## Reads one integer config value from a form.
+  result = property.propertyInt("default", 0)
+  let value = formValue(form, name).strip()
+  if value.len > 0:
+    result = parseIntSafe(value)
+  if hasPropertyInt(property, "minimum") and
+      result < property.propertyInt("minimum", 0):
+    result = property.propertyInt("minimum", 0)
+  if hasPropertyInt(property, "maximum") and
+      result > property.propertyInt("maximum", 0):
+    result = property.propertyInt("maximum", 0)
+
+proc boolConfigValue(
+  form: seq[(string, string)],
+  name: string,
+  property: JsonNode
+): bool =
+  ## Reads one boolean config value from a form.
+  let value = formValue(form, name).strip().toLowerAscii()
+  if value.len == 0:
+    return property.propertyBool("default", false)
+  value in ["true", "1", "yes", "on"]
+
+proc stringConfigValue(
+  form: seq[(string, string)],
+  name: string,
+  property: JsonNode
+): string =
+  ## Reads one string config value from a form.
+  result = property.defaultText()
+  let value = formValue(form, name)
+  if value.len > 0:
+    result = value.strip()
+
+proc scoreArray(node: JsonNode, key: string): JsonNode =
+  ## Reads one required scores array.
+  if node.kind != JObject or not node.hasKey(key) or
+      node[key].kind != JArray:
+    raise newException(
+      GamesServerError,
+      "scores file missing " & key & " array"
+    )
+  node[key]
+
+proc scoreString(items: JsonNode, index: int): string =
+  ## Reads one score table string cell.
+  if index >= items.len:
+    return ""
+  let item = items[index]
+  case item.kind
+  of JString:
+    result = item.getStr()
+  of JInt:
+    result = $item.getInt()
+  of JFloat:
+    result = $item.getFloat()
+  of JBool:
+    result =
+      if item.getBool():
+        "true"
+      else:
+        "false"
+  else:
+    result = ""
+
+proc scoreBool(items: JsonNode, index: int): bool =
+  ## Reads one score table boolean cell.
+  if index < items.len and items[index].kind == JBool:
+    return items[index].getBool()
+
+proc maxScoreRows(
+  names,
+  scores,
+  wins,
+  tasks,
+  kills: JsonNode
+): int =
+  ## Returns the longest score array length.
+  max(
+    max(names.len, scores.len),
+    max(max(wins.len, tasks.len), kills.len)
+  )
+
+proc parseScoreRows(text: string): seq[ScoreRow] =
+  ## Parses saved score JSON into table rows.
+  let node = parseJson(text)
   let
-    minPlayers = cleanConfigValue(form, "minPlayers", 1, 1, 32)
-    imposterCount = cleanConfigValue(form, "imposterCount", 0, 0, 8)
-    tasksPerPlayer = cleanConfigValue(form, "tasksPerPlayer", 1, 0, 32)
-    voteTimerTicks = cleanConfigValue(form, "voteTimerTicks", 360, 24, 7200)
-  result =
-    "{" &
-    "\"minPlayers\":" & $minPlayers & "," &
-    "\"imposterCount\":" & $imposterCount & "," &
-    "\"tasksPerPlayer\":" & $tasksPerPlayer & "," &
-    "\"voteTimerTicks\":" & $voteTimerTicks &
-    "}"
+    names = node.scoreArray("names")
+    scores = node.scoreArray("scores")
+    wins = node.scoreArray("win")
+    tasks = node.scoreArray("tasks")
+    kills = node.scoreArray("kills")
+    rowCount = maxScoreRows(names, scores, wins, tasks, kills)
+  for i in 0 ..< rowCount:
+    result.add(ScoreRow(
+      name: names.scoreString(i),
+      score: scores.scoreString(i),
+      win: wins.scoreBool(i),
+      tasks: tasks.scoreString(i),
+      kills: kills.scoreString(i)
+    ))
+
+proc configJson(
+  form: seq[(string, string)],
+  manifestInfo: GameManifest
+): string =
+  ## Builds the CoGame JSON config from form values.
+  let schema = configSchema(manifestInfo)
+  var node = newJObject()
+  for name, property in schema["properties"].pairs:
+    let value = formValue(form, name).strip()
+    if name == "tokens" and (value.len == 0 or value == "[]"):
+      continue
+    case property.propertyType()
+    of "integer":
+      node[name] = %intConfigValue(form, name, property)
+    of "boolean":
+      node[name] = %boolConfigValue(form, name, property)
+    of "array":
+      if property.itemType() == "string":
+        node[name] = parseStringArray(
+          name,
+          formValue(form, name),
+          property
+        )
+      else:
+        node[name] = parseJsonArray(
+          name,
+          formValue(form, name),
+          property
+        )
+    else:
+      node[name] = %stringConfigValue(form, name, property)
+  $node
 
 proc baseDockerArgs(
   name: string,
@@ -756,7 +1468,9 @@ proc baseDockerArgs(
   created: int64,
   replay: string,
   kind: ContainerKind,
-  saveReplay: bool
+  saveReplay: bool,
+  cogameName,
+  manifestKey: string
 ): seq[string] =
   ## Builds Docker arguments common to every launch mode.
   result = @[
@@ -766,7 +1480,7 @@ proc baseDockerArgs(
     "--name",
     name,
     "-p",
-    $port & ":2000",
+    $port & ":" & $GameContainerPort,
     "--label",
     ServerLabel,
     "--label",
@@ -777,12 +1491,19 @@ proc baseDockerArgs(
     ReplayLabel & "=" & replay,
     "--label",
     KindLabel & "=" & containerKindLabel(kind),
+    "--label",
+    GameNameLabel & "=" & cogameName,
+    "--label",
+    GameManifestLabel & "=" & manifestKey,
     "-v",
     replayDir() & ":" & ContainerReplayDir
   ]
   if saveReplay:
+    let scores = ContainerReplayDir / scoresName(replay)
     result.add("-e")
     result.add(CogameReplayEnv & "=" & ContainerReplayDir / replay)
+    result.add("-e")
+    result.add(CogameResultsEnv & "=" & scores)
   addAiEnvArgs(result)
 
 proc runnerScript(config: string, loadReplay: string): string =
@@ -791,7 +1512,7 @@ proc runnerScript(config: string, loadReplay: string): string =
     "mkdir -p /tmp/bitworld-out /tmp/bitworld-nimcache && " &
     "nim r --nimcache:/tmp/bitworld-nimcache " &
     "--outdir:/tmp/bitworld-out among_them.nim " &
-    "--address:0.0.0.0 --port:2000"
+    "--address:0.0.0.0 --port:" & $GameContainerPort
   if loadReplay.len > 0:
     result.add(" --load-replay:'" & ContainerReplayDir / loadReplay & "'")
   else:
@@ -805,16 +1526,27 @@ proc dockerRunArgs(
   kind: ContainerKind,
   saveReplay: bool,
   loadReplay: string,
-  config: string
+  config: string,
+  cogameName = "",
+  manifestKey = ""
 ): seq[string] =
   ## Builds Docker arguments for one new Among Them container.
-  result = baseDockerArgs(name, port, created, replay, kind, saveReplay)
+  result = baseDockerArgs(
+    name,
+    port,
+    created,
+    replay,
+    kind,
+    saveReplay,
+    cogameName,
+    manifestKey
+  )
   case dockerMode()
   of "release":
     result.add(dockerImage())
     result.add("/bin/among_them")
     result.add("--address:0.0.0.0")
-    result.add("--port:2000")
+    result.add("--port:" & $GameContainerPort)
     if loadReplay.len > 0:
       result.add("--load-replay:" & ContainerReplayDir / loadReplay)
     else:
@@ -834,7 +1566,7 @@ proc dockerRunArgs(
 proc botRunArgs(
   name: string,
   game: GameContainer,
-  bot: BotKind,
+  bot: CoplayerManifest,
   created: int64,
   stamp: string
 ): seq[string] =
@@ -850,38 +1582,93 @@ proc botRunArgs(
     "--label",
     BotGameLabel & "=" & game.name,
     "--label",
-    BotKindLabel & "=" & botKindLabel(bot),
+    BotKindLabel & "=" & bot.name,
     "--label",
     CreatedLabel & "=" & $created
   ]
   addAiEnvArgs(result)
-  result.add(botImage(bot))
-  result.add(botBinary(bot))
+  result.add(coplayerImage(bot))
+  result.add(bot.binary)
   result.add("--address:" & BotHost)
   result.add("--port:" & $game.port)
   result.add("--name:" & botPlayerName(game, bot, stamp))
 
+proc pullNeededBotImages(counts: seq[BotLaunchCount]) =
+  ## Pulls the CoPlayer images requested by a create form.
+  for item in counts:
+    if item.count > 0:
+      pullDockerImage(coplayerImage(item.bot))
+
+proc removeContainers(names: seq[string]) =
+  ## Removes containers created during a failed launch.
+  for name in names:
+    if name.len > 0:
+      discard dockerResult(@["rm", "-f", name])
+
+proc startWaitingBots(
+  game: GameContainer,
+  counts: seq[BotLaunchCount],
+  launchedNames: var seq[string]
+): seq[BotContainer] =
+  ## Starts bot containers before their game container exists.
+  for item in counts:
+    for _ in 0 ..< item.count:
+      let
+        created = getTime().toUnix()
+        stamp = launchStamp(launchedNames.len + 1)
+        name = botContainerName(game, item.bot, stamp)
+      discard requireDocker(botRunArgs(
+        name,
+        game,
+        item.bot,
+        created,
+        stamp
+      ))
+      launchedNames.add(name)
+      result.add(inspectBot(name))
+
 proc createGame(form: seq[(string, string)]): GameContainer =
-  ## Starts a new Among Them Docker container.
+  ## Starts a new CoGame Docker container.
   ensureReplayDir()
-  pullDockerImage(dockerImage())
   let
+    manifestInfo = findGameManifest(formValue(form, "manifest"))
     port = findOpenPort()
     created = getTime().toUnix()
     name = gameName(port)
     replay = replayName(name)
-    config = configJson(form)
-  discard requireDocker(dockerRunArgs(
-    name,
-    port,
-    created,
-    replay,
-    LiveGame,
-    true,
-    "",
-    config
-  ))
-  result = inspectGame(name)
+    config = configJson(form, manifestInfo)
+    botCounts = createBotCounts(form, manifestInfo.name)
+    pendingGame = GameContainer(
+      name: name,
+      status: "pending",
+      port: port,
+      created: created,
+      replay: replay,
+      kind: LiveGame,
+      manifestKey: manifestInfo.key,
+      cogameName: manifestInfo.name
+    )
+  var launchedBots: seq[string]
+  pullDockerImage(dockerImage())
+  pullNeededBotImages(botCounts)
+  try:
+    discard startWaitingBots(pendingGame, botCounts, launchedBots)
+    discard requireDocker(dockerRunArgs(
+      name,
+      port,
+      created,
+      replay,
+      LiveGame,
+      true,
+      "",
+      config,
+      manifestInfo.name,
+      manifestInfo.key
+    ))
+    result = inspectGame(name)
+  except CatchableError:
+    removeContainers(launchedBots)
+    raise
 
 proc createReplayGame(replay: string): GameContainer =
   ## Starts an Among Them Docker container in replay mode.
@@ -926,6 +1713,73 @@ proc stopGame(name: string) =
   stopBotsForGame(game.name)
   if game.status == "running":
     discard requireDocker(@["stop", game.name])
+
+proc stopManagedContainer(name: string) =
+  ## Stops one managed game, replay server, or bot container.
+  let safeName = cleanContainerName(name)
+  if safeName.len == 0 or safeName != name:
+    raise newException(GamesServerError, "invalid container name")
+  try:
+    stopGame(safeName)
+    return
+  except GamesServerError:
+    discard
+  try:
+    stopBot(safeName)
+    return
+  except GamesServerError:
+    discard
+  raise newException(
+    GamesServerError,
+    "container is not managed by games_server"
+  )
+
+proc removeManagedGame(game: GameContainer): seq[string] =
+  ## Removes one managed game container and its bot containers.
+  for bot in botsForGame(safeListBots(), game.name):
+    discard dockerResult(@["rm", "-f", bot.name])
+    result.add(bot.name)
+  discard requireDocker(@["rm", "-f", game.name])
+  result.add(game.name)
+
+proc removeManagedBot(bot: BotContainer): seq[string] =
+  ## Removes one managed bot container.
+  discard requireDocker(@["rm", "-f", bot.name])
+  result.add(bot.name)
+
+proc removeManagedContainer(name: string): seq[string] =
+  ## Removes one managed game, replay server, or bot container.
+  let safeName = cleanContainerName(name)
+  if safeName.len == 0 or safeName != name:
+    raise newException(GamesServerError, "invalid container name")
+  try:
+    return removeManagedGame(inspectGame(safeName))
+  except GamesServerError:
+    discard
+  try:
+    return removeManagedBot(inspectBot(safeName))
+  except GamesServerError:
+    discard
+  raise newException(
+    GamesServerError,
+    "container is not managed by games_server"
+  )
+
+proc stopBotsForStoppedGames(
+  containers: seq[GameContainer],
+  bots: seq[BotContainer]
+): int =
+  ## Stops running bots whose parent game container has stopped.
+  for bot in bots:
+    if bot.status != "running":
+      continue
+    for game in containers:
+      if game.name != bot.game:
+        continue
+      if game.kind == LiveGame and game.status != "running":
+        discard requireDocker(@["stop", bot.name])
+        inc result
+      break
 
 proc parseFormBody(request: Request): seq[(string, string)] =
   ## Parses an application/x-www-form-urlencoded request body.
@@ -1009,7 +1863,7 @@ proc waitForHealth(game: GameContainer): bool =
 
 proc createBots(
   gameName: string,
-  bot: BotKind,
+  botKey: string,
   count: int
 ): seq[BotContainer] =
   ## Starts one or more bot Docker containers for a live game.
@@ -1018,8 +1872,10 @@ proc createBots(
     raise newException(GamesServerError, "bots can only join live games")
   if not gameHealthy(game):
     raise newException(GamesServerError, "game is not healthy yet")
-  let cleanCount = clampInt(count, 1, MaxBotLaunchCount)
-  pullDockerImage(botImage(bot))
+  let
+    bot = findCoplayerManifest(game.cogameName, botKey)
+    cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+  pullDockerImage(coplayerImage(bot))
   for i in 1 .. cleanCount:
     let
       created = getTime().toUnix()
@@ -1042,60 +1898,203 @@ proc fmtBytes(size: int64): string =
     return $(size div 1024) & " KB"
   $(size div (1024 * 1024)) & " MB"
 
-proc renderCreateForm(): string =
-  ## Renders the compact create-game form.
+proc renderConfigInput(name: string, property: JsonNode): string =
+  ## Renders one manifest-backed config input.
+  let
+    kind = property.propertyType()
+    defaultValue = property.defaultText()
+    titleText = property.propertyString("description", name)
+  case kind
+  of "integer":
+    result = renderFragment:
+      input ".input":
+        ttype "number"
+        name name
+        title titleText
+        value defaultValue
+        if hasPropertyInt(property, "minimum"):
+          min $property.propertyInt("minimum", 0)
+        if hasPropertyInt(property, "maximum"):
+          max $property.propertyInt("maximum", 0)
+  of "boolean":
+    let otherValue =
+      if defaultValue == "true":
+        "false"
+      else:
+        "true"
+    result = renderFragment:
+      select:
+        name name
+        title titleText
+        option:
+          value defaultValue
+          say defaultValue
+        option:
+          value otherValue
+          say otherValue
+  of "array":
+    result = renderFragment:
+      textarea ".textarea":
+        name name
+        title titleText
+        rows "4"
+        cols "60"
+        say esc(defaultValue)
+  else:
+    result = renderFragment:
+      input ".textInput":
+        ttype "text"
+        name name
+        title titleText
+        value defaultValue
+
+proc renderConfigRows(schema: JsonNode): string =
+  ## Renders all config form rows from a manifest schema.
+  var index = 0
+  for name, property in schema["properties"].pairs:
+    let
+      rowClass = if index mod 2 == 0: ".row1" else: ".row2"
+      inputHtml = renderConfigInput(name, property)
+    let rowHtml = renderFragment:
+      tr:
+        td rowClass & " fieldName nowrap":
+          say esc(fieldLabel(name))
+        td rowClass:
+          say inputHtml
+    result.add(rowHtml)
+    inc index
+
+proc renderBotCountSelect(bot: CoplayerManifest): string =
+  ## Renders one create-form CoPlayer count selector.
+  renderFragment:
+    select:
+      name botCountField(bot)
+      for count in 0 .. MaxBotLaunchCount:
+        option:
+          value $count
+          say $count
+
+proc renderCreateBotRows(manifestInfo: GameManifest): string =
+  ## Renders bot count rows for the create-game form.
+  var index = 0
+  let bots = supportedCoplayerManifests(manifestInfo.name)
+  if bots.len == 0:
+    return renderFragment:
+      tr:
+        td ".row1":
+          colspan "2"
+          say "No supported CoPlayers found."
+  for bot in bots:
+    let
+      rowClass = if index mod 2 == 0: ".row1" else: ".row2"
+      selectHtml = renderBotCountSelect(bot)
+    let rowHtml = renderFragment:
+      tr:
+        td rowClass & " fieldName nowrap":
+          say esc(bot.name & " bots")
+        td rowClass:
+          say selectHtml
+    result.add(rowHtml)
+    inc index
+
+proc renderManifestTable(): string =
+  ## Renders the index-page CoGame manifest launcher table.
+  let manifests = listGameManifests()
   renderFragment:
     table:
       tr:
         td ".cat":
-          colspan "2"
+          colspan "5"
           say "Create new game"
       tr:
-        td ".row1":
-          form:
-            action "/games/create"
-            tmethod "post"
-            span ".small":
-              say "min players "
-            input ".input":
-              ttype "number"
-              name "minPlayers"
-              value "1"
-              min "1"
-              max "32"
-            say " "
-            span ".small":
-              say "imposters "
-            input ".input":
-              ttype "number"
-              name "imposterCount"
-              value "0"
-              min "0"
-              max "8"
-            say " "
-            span ".small":
-              say "tasks "
-            input ".input":
-              ttype "number"
-              name "tasksPerPlayer"
-              value "1"
-              min "0"
-              max "32"
-            say " "
-            span ".small":
-              say "vote ticks "
-            input ".input":
-              ttype "number"
-              name "voteTimerTicks"
-              value "360"
-              min "24"
-              max "7200"
-            say " "
+        th ".head":
+          say "Name"
+        th ".head":
+          say "Author"
+        th ".head":
+          say "Manifest"
+        th ".head":
+          say "Docker"
+        th ".head":
+          say "Launch"
+      for i, manifest in manifests:
+        let
+          rowClass = if i mod 2 == 0: ".row1" else: ".row2"
+          runnerImage = runnerImageUri(manifest.imageUri)
+        tr:
+          td rowClass:
+            say esc(manifest.name)
+          td rowClass:
+            say esc(manifest.author)
+          td rowClass & " nowrap":
+            a:
+              href manifestUrl(manifest)
+              target "_blank"
+              say esc(manifest.key)
+          td rowClass & " nowrap":
+            a:
+              href dockerPackageUrl(manifest.imageUri)
+              target "_blank"
+              say esc(runnerImage)
+          td rowClass & " nowrap":
+            a ".button":
+              href createUrl(manifest)
+              say "Launch"
+
+proc renderCreateForm(manifestInfo: GameManifest): string =
+  ## Renders the manifest-backed create-game form.
+  let
+    schema = configSchema(manifestInfo)
+    rows = renderConfigRows(schema)
+    botRows = renderCreateBotRows(manifestInfo)
+  renderFragment:
+    form:
+      action CreatePath
+      tmethod "post"
+      input:
+        ttype "hidden"
+        name "manifest"
+        value manifestInfo.key
+      table:
+        tr:
+          td ".cat":
+            colspan "2"
+            say "Create " & esc(manifestInfo.name)
+        say rows
+        tr:
+          td ".cat":
+            colspan "2"
+            say "Bots"
+        say botRows
+        tr:
+          td ".row1":
+            say ""
+          td ".row1":
             button ".button":
               ttype "submit"
               say "Create"
-        td ".row2 small":
-          say "Image: " & esc(dockerImage()) & " | Mode: " & esc(dockerMode())
+            say " "
+            a ".button":
+              href "/"
+              say "Cancel"
+
+proc renderBulkControls(): string =
+  ## Renders the bulk container action controls.
+  renderFragment:
+    form ".bulkBar":
+      id "bulkForm"
+      action BulkStopPath
+      tmethod "post"
+      button ".button":
+        ttype "submit"
+        formaction BulkStopPath
+        say "Stop"
+      say " "
+      button ".button":
+        ttype "submit"
+        formaction BulkRemovePath
+        onclick "return confirmRemoveContainers()"
+        say "Remove"
 
 proc renderGamesTable(
   request: Request,
@@ -1106,6 +2105,8 @@ proc renderGamesTable(
   renderFragment:
     table:
       tr:
+        th ".head selectCell":
+          say ""
         th ".head":
           say "Game"
         th ".head":
@@ -1115,19 +2116,19 @@ proc renderGamesTable(
         th ".head":
           say "Join"
         th ".head":
-          say "Replay"
-        th ".head":
           say "Bots"
         th ".head":
           say "Created"
         th ".head":
-          say "Control"
+          say "Replay"
+        th ".head":
+          say "Scores"
         th ".head":
           say "Logs"
       if games.len == 0:
         tr:
           td ".row1 center":
-            colspan "9"
+            colspan "10"
             say "No games created yet."
       for i, game in games:
         let
@@ -1135,6 +2136,8 @@ proc renderGamesTable(
           healthy = gameHealthy(game)
           gameBots = botsForGame(bots, game.name)
         tr:
+          td rowClass & " selectCell":
+            say renderContainerCheckbox(game.name)
           td rowClass:
             say esc(game.name)
           td rowClass & " nowrap":
@@ -1160,6 +2163,44 @@ proc renderGamesTable(
             else:
               say "offline"
           td rowClass & " nowrap":
+            if healthy:
+              let supportedBots = supportedCoplayerManifests(game.cogameName)
+              if supportedBots.len == 0:
+                say "-"
+              else:
+                form:
+                  action "/games/bot"
+                  tmethod "post"
+                  input:
+                    ttype "hidden"
+                    name "name"
+                    value game.name
+                  select:
+                    name "bot"
+                    for bot in supportedBots:
+                      option:
+                        value bot.name
+                        say bot.name
+                  say " "
+                  select:
+                    name "count"
+                    for count in 1 .. MaxBotLaunchCount:
+                      option:
+                        value $count
+                        say $count
+                  say " "
+                  button ".button":
+                    ttype "submit"
+                    say "Add"
+            elif game.status == "running":
+              say "wait"
+            elif gameBots.len == 0:
+              say "-"
+            else:
+              say ""
+          td rowClass & " nowrap":
+            say fmtCreated(game.created)
+          td rowClass & " nowrap":
             if game.replay.len > 0:
               form:
                 action ReplayPlayPath
@@ -1171,62 +2212,19 @@ proc renderGamesTable(
                   value game.replay
                 button ".button":
                   ttype "submit"
-                  say "play"
+                  say "Launch"
             else:
               say "-"
           td rowClass & " nowrap":
-            if healthy:
-              form:
-                action "/games/bot"
-                tmethod "post"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value game.name
-                select:
-                  name "bot"
-                  option:
-                    value botKindLabel(NotTooDumb)
-                    say botKindTitle(NotTooDumb)
-                  option:
-                    value botKindLabel(IVoteALot)
-                    say botKindTitle(IVoteALot)
-                  option:
-                    value botKindLabel(ITalkALot)
-                    say botKindTitle(ITalkALot)
-                say " "
-                select:
-                  name "count"
-                  for count in 1 .. MaxBotLaunchCount:
-                    option:
-                      value $count
-                      say $count
-                say " "
-                button ".button":
-                  ttype "submit"
-                  say "Add"
+            if game.replay.len > 0 and scoreFileExists(game.replay):
+              a:
+                href scoreUrl(game.replay)
+                target "_blank"
+                say "scores"
             elif game.status == "running":
-              say "wait"
-            elif gameBots.len == 0:
+              say "pending"
+            else:
               say "-"
-            else:
-              say ""
-          td rowClass & " nowrap":
-            say fmtCreated(game.created)
-          td rowClass & " center":
-            if game.status == "running":
-              form:
-                action "/games/stop"
-                tmethod "post"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value game.name
-                button ".button":
-                  ttype "submit"
-                  say "Stop"
-            else:
-              say "Stopped"
           td rowClass & " center":
             a:
               href logUrl(game.name)
@@ -1234,6 +2232,8 @@ proc renderGamesTable(
               say "logs"
         for bot in gameBots:
           tr:
+            td rowClass & " selectCell":
+              say renderContainerCheckbox(bot.name)
             td rowClass:
               say ""
             td rowClass & " nowrap":
@@ -1242,26 +2242,14 @@ proc renderGamesTable(
               say ""
             td rowClass:
               say ""
-            td rowClass:
-              say ""
             td rowClass & " nowrap":
               say esc(bot.name)
             td rowClass & " nowrap":
               say fmtCreated(bot.created)
-            td rowClass & " center":
-              if bot.status == "running":
-                form:
-                  action "/games/bot/stop"
-                  tmethod "post"
-                  input:
-                    ttype "hidden"
-                    name "name"
-                    value bot.name
-                  button ".button":
-                    ttype "submit"
-                    say "Stop"
-              else:
-                say "Stopped"
+            td rowClass:
+              say ""
+            td rowClass:
+              say ""
             td rowClass & " center":
               a:
                 href logUrl(bot.name)
@@ -1276,6 +2264,8 @@ proc renderReplayServersTable(
   renderFragment:
     table:
       tr:
+        th ".head selectCell":
+          say ""
         th ".head":
           say "Replay server"
         th ".head":
@@ -1285,23 +2275,25 @@ proc renderReplayServersTable(
         th ".head":
           say "Viewer"
         th ".head":
-          say "Replay"
-        th ".head":
           say "Created"
         th ".head":
-          say "Control"
+          say "Replay"
+        th ".head":
+          say "Scores"
         th ".head":
           say "Logs"
       if servers.len == 0:
         tr:
           td ".row1 center":
-            colspan "8"
+            colspan "9"
             say "No replay servers started yet."
       for i, server in servers:
         let
           rowClass = if i mod 2 == 0: ".row1" else: ".row2"
           healthy = gameHealthy(server)
         tr:
+          td rowClass & " selectCell":
+            say renderContainerCheckbox(server.name)
           td rowClass:
             say esc(server.name)
           td rowClass & " nowrap":
@@ -1321,27 +2313,21 @@ proc renderReplayServersTable(
               say "starting"
             else:
               say "offline"
+          td rowClass & " nowrap":
+            say fmtCreated(server.created)
           td rowClass:
             if server.replay.len > 0:
               say esc(server.replay)
             else:
               say "-"
           td rowClass & " nowrap":
-            say fmtCreated(server.created)
-          td rowClass & " center":
-            if server.status == "running":
-              form:
-                action "/games/stop"
-                tmethod "post"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value server.name
-                button ".button":
-                  ttype "submit"
-                  say "Stop"
+            if server.replay.len > 0 and scoreFileExists(server.replay):
+              a:
+                href scoreUrl(server.replay)
+                target "_blank"
+                say "scores"
             else:
-              say "Stopped"
+              say "-"
           td rowClass & " center":
             a:
               href logUrl(server.name)
@@ -1360,11 +2346,13 @@ proc renderReplaysTable(replays: seq[ReplayFile]): string =
         th ".head":
           say "Modified"
         th ".head":
-          say "Play"
+          say "Replay"
+        th ".head":
+          say "Scores"
       if replays.len == 0:
         tr:
           td ".row1 center":
-            colspan "4"
+            colspan "5"
             say "No replay files saved yet."
       for i, replay in replays:
         let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
@@ -1386,7 +2374,15 @@ proc renderReplaysTable(replays: seq[ReplayFile]): string =
                 value replay.name
               button ".button":
                 ttype "submit"
-                say "Open global"
+                say "Launch"
+          td rowClass & " nowrap":
+            if scoreFileExists(replay.name):
+              a:
+                href scoreUrl(replay.name)
+                target "_blank"
+                say "scores"
+            else:
+              say "-"
 
 proc renderPage(
   request: Request,
@@ -1398,7 +2394,8 @@ proc renderPage(
 ): string =
   ## Renders the full games server page.
   let
-    createForm = renderCreateForm()
+    manifestTable = renderManifestTable()
+    bulkControls = renderBulkControls()
     gamesTable = renderGamesTable(request, games, bots)
     replayServersTable = renderReplayServersTable(request, replayServers)
     replaysTable = renderReplaysTable(replays)
@@ -1406,19 +2403,20 @@ proc renderPage(
     html:
       head:
         title:
-          say "Bitworld Games Server"
+          say "CoGame Server"
         say "<style>"
         say PageCss
         say "</style>"
+        say BulkScript
       body:
         tdiv ".page":
           table:
             tr:
               td ".row2":
                 h1 ".title":
-                  say "Bitworld Games Server"
+                  say "CoGame Server"
                 p ".small":
-                  say "Among Them containers, old board style."
+                  say "If not CoGame why CoGame shaped?"
               td ".row2 right small":
                 a:
                   href "/"
@@ -1427,7 +2425,8 @@ proc renderPage(
             p ".notice small":
               b:
                 say esc(notice)
-          say createForm
+          say bulkControls
+          say manifestTable
           p ".small":
             say " "
           table:
@@ -1450,8 +2449,48 @@ proc renderPage(
                 say "Replays"
           say replaysTable
           p ".footer small":
-            say "Docker label: " & ServerLabel & ". Ports: " &
-              $GamePortStart & "-" & $GamePortEnd & "."
+            say "Docker label: " & ServerLabel & ". Ports: OS assigned."
+
+proc renderCreatePage(notice = "", manifestKey = ""): string =
+  ## Renders the create-game page.
+  let
+    manifestInfo = findGameManifest(manifestKey)
+    createForm = renderCreateForm(manifestInfo)
+  render:
+    html:
+      head:
+        title:
+          say "Create Game"
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".page":
+          table:
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say "Create Game"
+                p ".small":
+                  say "CoGame config from manifest."
+              td ".row2 right small":
+                a:
+                  href "/"
+                  say "Back"
+          if notice.len > 0:
+            p ".notice small":
+              b:
+                say esc(notice)
+          p ".small":
+            say " "
+          say createForm
+          p ".footer small":
+            say "Manifest: "
+            a:
+              href manifestUrl(manifestInfo)
+              target "_blank"
+              say esc(manifestInfo.key)
+            say "."
 
 proc renderLogsPage(name, logText: string): string =
   ## Renders current Docker logs for one container.
@@ -1489,6 +2528,89 @@ proc renderLogsPage(name, logText: string): string =
             say " "
           pre ".logs":
             say esc(cleanLog)
+
+proc renderScoresTable(rows: seq[ScoreRow]): string =
+  ## Renders parsed score rows.
+  renderFragment:
+    table:
+      tr:
+        th ".head":
+          say "Player"
+        th ".head":
+          say "Score"
+        th ".head":
+          say "Win"
+        th ".head":
+          say "Tasks"
+        th ".head":
+          say "Kills"
+      if rows.len == 0:
+        tr:
+          td ".row1 center":
+            colspan "5"
+            say "No score rows saved."
+      for i, row in rows:
+        let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
+        tr:
+          td rowClass:
+            if row.name.len > 0:
+              say esc(row.name)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.score.len > 0:
+              say esc(row.score)
+            else:
+              say "-"
+          td rowClass & " center nowrap":
+            if row.win:
+              b:
+                say "yes"
+            else:
+              say "no"
+          td rowClass & " right nowrap":
+            if row.tasks.len > 0:
+              say esc(row.tasks)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.kills.len > 0:
+              say esc(row.kills)
+            else:
+              say "-"
+
+proc renderScoresPage(name: string, rows: seq[ScoreRow]): string =
+  ## Renders a parsed scores page.
+  let scoresTable = renderScoresTable(rows)
+  render:
+    html:
+      head:
+        title:
+          say "Scores: " & esc(name)
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".page":
+          table:
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say "Scores"
+                p ".small":
+                  say esc(name)
+              td ".row2 right small":
+                a:
+                  href rawScoreUrl(name)
+                  target "_blank"
+                  say "Raw"
+                say " | "
+                a:
+                  href "/"
+                  say "Back"
+          p ".small":
+            say " "
+          say scoresTable
 
 proc clientRoot(): string =
   ## Returns the shared client asset directory.
@@ -1595,8 +2717,10 @@ proc respondIndex(request: Request, notice = "") =
   ## Sends the index page.
   let
     containers = listGames()
-    bots = listBots()
     replays = listReplays()
+  var bots = listBots()
+  if stopBotsForStoppedGames(containers, bots) > 0:
+    bots = listBots()
   request.respondHtml(200, renderPage(
     request,
     liveGames(containers),
@@ -1609,6 +2733,19 @@ proc respondIndex(request: Request, notice = "") =
 proc indexHandler(request: Request) =
   ## Handles the index route.
   request.respondIndex(queryValue(request, "notice"))
+
+proc requestManifestKey(request: Request): string =
+  ## Reads the selected manifest key from a create request.
+  if request.httpMethod == "POST":
+    return formValue(parseFormBody(request), "manifest")
+  queryValue(request, "manifest")
+
+proc createFormHandler(request: Request) =
+  ## Handles the create-game form route.
+  request.respondHtml(200, renderCreatePage(
+    queryValue(request, "notice"),
+    request.requestManifestKey()
+  ))
 
 proc createHandler(request: Request) =
   ## Handles create-game requests.
@@ -1631,7 +2768,7 @@ proc botHandler(request: Request) =
   let form = parseFormBody(request)
   let
     name = formValue(form, "name")
-    bot = parseBotKind(formValue(form, "bot"))
+    bot = formValue(form, "bot")
     count = cleanConfigValue(form, "count", 1, 1, MaxBotLaunchCount)
     containers = createBots(name, bot, count)
   if containers.len == 1:
@@ -1645,12 +2782,85 @@ proc stopBotHandler(request: Request) =
   stopBot(name)
   request.respondRedirect("/?notice=stopped+" & cleanContainerName(name))
 
+proc bulkContainerNames(form: seq[(string, string)]): seq[string] =
+  ## Reads selected managed container names from a bulk action form.
+  for (key, value) in form:
+    if key != "name":
+      continue
+    let name = cleanContainerName(value)
+    if name.len == 0 or name != value:
+      raise newException(GamesServerError, "invalid container name")
+    if name notin result:
+      result.add(name)
+
+proc bulkStopHandler(request: Request) =
+  ## Handles selected container stop requests.
+  let names = bulkContainerNames(parseFormBody(request))
+  if names.len == 0:
+    request.respondRedirect("/?notice=nothing+selected")
+    return
+  for name in names:
+    stopManagedContainer(name)
+  request.respondRedirect("/?notice=stopped+" & $names.len & "+containers")
+
+proc bulkRemoveHandler(request: Request) =
+  ## Handles selected container remove requests.
+  let names = bulkContainerNames(parseFormBody(request))
+  if names.len == 0:
+    request.respondRedirect("/?notice=nothing+selected")
+    return
+  var removed: seq[string]
+  for name in names:
+    if name in removed:
+      continue
+    for removedName in removeManagedContainer(name):
+      if removedName notin removed:
+        removed.add(removedName)
+  request.respondRedirect("/?notice=removed+" & $removed.len & "+containers")
+
 proc logsHandler(request: Request) =
   ## Handles Docker log viewer requests.
   let name = queryValue(request, "name")
   if name.len == 0:
     raise newException(GamesServerError, "missing container name")
   request.respondHtml(200, renderLogsPage(name, containerLogs(name)))
+
+proc scoresHandler(request: Request) =
+  ## Handles saved score file requests.
+  let
+    rawName = queryValue(request, "name")
+    name = cleanReplayName(rawName)
+  if name.len == 0 or name != rawName or
+      not name.endsWith(".scores.json") or
+      not fileExists(replayPath(name)):
+    request.respondContent(
+      404,
+      "text/plain; charset=utf-8",
+      "scores not found\n"
+    )
+    return
+  let text = readFile(replayPath(name))
+  if queryValue(request, "raw").len > 0:
+    request.respondContent(
+      200,
+      "text/plain; charset=utf-8",
+      text
+    )
+    return
+  request.respondContent(
+    200,
+    "text/html; charset=utf-8",
+    renderScoresPage(name, parseScoreRows(text))
+  )
+
+proc manifestHandler(request: Request) =
+  ## Handles raw CoGame manifest requests.
+  let manifestInfo = findGameManifest(queryValue(request, "path"))
+  request.respondContent(
+    200,
+    "application/json; charset=utf-8",
+    readFile(manifestInfo.path)
+  )
 
 proc notFoundHandler(request: Request) =
   ## Handles unknown routes.
@@ -1682,6 +2892,12 @@ proc clientHandler(request: Request) =
 proc errorHandler(request: Request, e: ref Exception) =
   ## Handles expected and unexpected server errors.
   stderr.writeLine("[games_server] ", e.msg)
+  if request.path == CreatePath:
+    request.respondHtml(500, renderCreatePage(
+      e.msg,
+      request.requestManifestKey()
+    ))
+    return
   let containers = safeListGames()
   request.respondHtml(
     500,
@@ -1695,16 +2911,22 @@ proc errorHandler(request: Request, e: ref Exception) =
     )
   )
 
-proc httpHandler(request: Request) =
+proc httpHandlerUnsafe(request: Request) =
   ## Routes all HTTP requests.
   try:
     if request.path == "/" and request.httpMethod == "GET":
       request.indexHandler()
+    elif request.path == CreatePath and request.httpMethod == "GET":
+      request.createFormHandler()
     elif request.path == LogsPath and request.httpMethod == "GET":
       request.logsHandler()
+    elif request.path == ScoresPath and request.httpMethod == "GET":
+      request.scoresHandler()
+    elif request.path == ManifestViewPath and request.httpMethod == "GET":
+      request.manifestHandler()
     elif request.path.startsWith(ClientPath) and request.httpMethod == "GET":
       request.clientHandler()
-    elif request.path == "/games/create" and request.httpMethod == "POST":
+    elif request.path == CreatePath and request.httpMethod == "POST":
       request.createHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
       request.botHandler()
@@ -1712,6 +2934,10 @@ proc httpHandler(request: Request) =
       request.stopBotHandler()
     elif request.path == "/games/stop" and request.httpMethod == "POST":
       request.stopHandler()
+    elif request.path == BulkStopPath and request.httpMethod == "POST":
+      request.bulkStopHandler()
+    elif request.path == BulkRemovePath and request.httpMethod == "POST":
+      request.bulkRemoveHandler()
     elif request.path == ReplayPlayPath and request.httpMethod == "POST":
       request.replayPlayHandler()
     elif request.path.startsWith(ReplayPathPrefix) and
@@ -1724,10 +2950,15 @@ proc httpHandler(request: Request) =
   except Exception as e:
     request.errorHandler(e)
 
+proc httpHandler(request: Request) {.gcsafe.} =
+  ## Adapts the route handler to mummy's RequestHandler signature.
+  {.gcsafe.}:
+    request.httpHandlerUnsafe()
+
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
-  let server = newServer(httpHandler, workerThreads = 4)
+  let server = newServer(httpHandler, workerThreads = 1)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
 

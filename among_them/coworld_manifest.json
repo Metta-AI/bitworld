@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/coworld_manifest_schema.json",
+  "game": {
+    "manifest_uri": "cogame_manifest.json"
+  },
+  "player": [
+    {
+      "id": "nottoodumb",
+      "name": "nottoodumb",
+      "image_uri": "bitworld-nottoodumb:latest",
+      "description": "Deterministic baseline Among Them player used for local smoke episodes."
+    }
+  ],
+  "variants": [
+    {
+      "id": "certification-smoke",
+      "name": "Certification Smoke",
+      "description": "Single-player deterministic smoke episode used by coworld certification.",
+      "game_config": {
+        "seed": 679961,
+        "minPlayers": 1,
+        "imposterCount": 0,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 0,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 1,
+        "maxTicks": 240,
+        "maxGames": 1,
+        "voteTimerTicks": 120,
+        "showTaskArrows": false,
+        "showTaskBubbles": false,
+        "showPlayerLabels": true,
+        "slots": [
+          {
+            "name": "cert-player-0",
+            "role": "crew",
+            "color": "red"
+          }
+        ]
+      }
+    }
+  ],
+  "certification": {
+    "variant_id": "certification-smoke",
+    "players": [
+      {
+        "player_id": "nottoodumb",
+        "initial_params": {
+          "name": "cert-player-0"
+        }
+      }
+    ]
+  }
+}

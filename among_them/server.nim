@@ -33,6 +33,7 @@ type
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
+    config: GameConfig
 
   ServerThreadArgs = object
     server: ptr Server
@@ -100,24 +101,32 @@ proc liveProgressMaxTick(config: GameConfig): int =
   else:
     MaxTicks
 
-proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client file if the route matches.
+proc isWebSocketUpgrade(request: Request): bool =
+  ## Returns true when the GET request is a websocket upgrade.
+  request.headers["Sec-WebSocket-Key"].len > 0
+
+proc serveClientHtml(request: Request, route: string): bool =
+  ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(request.path)
+  let filePath = clientStaticPath(route)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(request.path)
+  headers["Content-Type"] = clientStaticContentType(route)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
-    request.respond(404, headers, "Missing static client: " & request.path)
+    request.respond(404, headers, "Missing static client: " & route)
     return true
   try:
     request.respond(200, headers, readFile(filePath))
   except IOError as e:
     request.respond(500, headers, "Could not read static client: " & e.msg)
   true
+
+proc serveStaticClientHtml(request: Request): bool =
+  ## Serves one static client file if the route matches.
+  request.serveClientHtml(request.path)
 
 proc tickTime(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
@@ -584,6 +593,7 @@ proc initAppState() =
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.spectators = @[]
+  appState.config = defaultGameConfig()
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   ## Removes a websocket and keeps live player indices consistent.
@@ -707,12 +717,35 @@ proc respondKicked(request: Request) =
   headers["Connection"] = "close"
   request.respond(409, headers, "player was kicked\n")
 
+proc respondForbidden(request: Request, body: string) =
+  ## Rejects an unauthorized player request before WebSocket upgrade.
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  headers["Connection"] = "close"
+  request.respond(403, headers, body)
+
+proc playerJoinAllowed(request: Request, identity: string, slot: int, token: string): bool =
+  ## Checks configured slot auth before upgrading the player WebSocket.
+  {.gcsafe.}:
+    withLock appState.lock:
+      result = appState.config.playerJoinAllowed(identity, slot, token)
+
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain; charset=utf-8"
     headers["Cache-Control"] = "no-cache"
     request.respond(200, headers, "healthy")
+  elif request.path == WebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(PlayerClientRoute)
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
+  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
@@ -720,6 +753,9 @@ proc httpHandler(request: Request) =
       token = request.playerToken()
     if identity.identityIsKicked():
       request.respondKicked()
+      return
+    if not request.playerJoinAllowed(identity, slot, token):
+      request.respondForbidden("player token rejected\n")
       return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -736,6 +772,9 @@ proc httpHandler(request: Request) =
     if identity.identityIsKicked():
       request.respondKicked()
       return
+    if not request.playerJoinAllowed(identity, slot, token):
+      request.respondForbidden("player token rejected\n")
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -745,6 +784,11 @@ proc httpHandler(request: Request) =
         appState.playerTokens[websocket] = token
     echo "player connected: ", identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = initGlobalViewerState()
+  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -948,6 +992,7 @@ proc runServerLoop*(
   defer:
     replayWriter.closeReplayWriter()
   appState.replayLoaded = replayLoaded
+  appState.config = config
 
   let httpServer = newServer(
     httpHandler,

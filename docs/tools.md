@@ -28,6 +28,12 @@ The global protocol is used by map viewers, replay controls, and other full
 game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the
 binary message format.
 
+Replay mode exposes:
+
+```text
+/replay
+```
+
 Games that expose training rewards also listen on:
 
 ```text
@@ -55,8 +61,9 @@ Game runners may also set:
 | Environment variable | Meaning |
 | --- | --- |
 | `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_SAVE_RESULTS_PATH` | Path where the game writes final results |
+| `COGAME_RESULTS_PATH` | Path where the game writes final results |
 | `COGAME_SAVE_REPLAY_PATH` | Optional path where the game writes a replay |
+| `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay artifact to load |
 
 The common top-level server fields are:
 
@@ -107,7 +114,7 @@ Saving a replay records player joins, leaves, input changes, and one hash for
 each simulation tick. Loading a replay runs the game from the replay file
 instead of live player input.
 
-Replay viewers should connect through `/global`. Games can expose replay
+Replay viewers should connect through `/replay`. Games can expose replay
 controls there for play, pause, seek, loop, and speed changes. See
 [`bitreplay_spec.md`](bitreplay_spec.md) for the file format and replay rules.
 
@@ -189,8 +196,8 @@ The HTML global client lives at:
 clients/global_client.html
 ```
 
-It connects to the same `/global` endpoint and is useful when testing the
-protocol from a browser.
+It connects to `/global`, or to `/replay` when served from the replay route,
+and is useful when testing the protocol from a browser.
 
 ```text
 clients/global_client.html?address=ws://localhost:8080/global

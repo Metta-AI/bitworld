@@ -25,7 +25,7 @@ RUN nimby --global sync nimby.lock && \
   cat nim.cfg >> /root/.nimby/nim/config/nim.cfg
 
 COPY . .
-WORKDIR /workspace/bitworld/among_them/players
+WORKDIR /workspace/bitworld/among_them/players/italkalot
 RUN nim c \
   -d:release \
   -d:botHeadless \
@@ -40,7 +40,7 @@ RUN apk add --no-cache libcurl
 
 WORKDIR /workspace/bitworld
 COPY --from=build \
-  /workspace/bitworld/among_them/players/italkalot \
+  /workspace/bitworld/among_them/players/italkalot/italkalot \
   /bin/italkalot
 COPY --from=build /workspace/bitworld/among_them/*.json ./among_them/
 COPY --from=build /workspace/bitworld/among_them/*.aseprite ./among_them/
