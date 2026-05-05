@@ -17,10 +17,9 @@ export interface MenuDef {
 }
 
 export const MENU_DEFS = {
-  comm:       { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_SELECT, openSequence: [BUTTON_SELECT, 0] },
   whisper:   { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_B,      openSequence: [BUTTON_B, 0] },
   share:      { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
-  global:     { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
+  shout:      { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_SELECT,  openSequence: [BUTTON_SELECT, 0] },
   hostage:    { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
   info:       { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_A,      openButton: BUTTON_B,       openSequence: [BUTTON_B, 0] },
 } satisfies Record<string, MenuDef>;
@@ -248,6 +247,6 @@ export const COMMAND_ACTIONS: Record<string, { context: string; action: string }
   leader_take:    { context: "whisper", action: "TAKE" },
   grant_entry:    { context: "whisper", action: "GRANT" },
   exit_whisper:  { context: "whisper", action: "EXIT" },
-  shout:          { context: "comm", action: "SHOUT" },
+  shout:          { context: "shout", action: "SHOUT" },
   info_shared:    { context: "info", action: "open" },
 };

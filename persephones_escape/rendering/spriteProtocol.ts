@@ -1,4 +1,28 @@
 import { Framebuffer } from "./framebuffer.js";
+// @ts-ignore — no type declarations for snappyjs
+import SnappyJS from "snappyjs";
+
+// PICO-8 palette (matches player_client.html). Index 0 = transparent,
+// indices 1-16 map to player_client palette entries 0-15.
+const PALETTE_RGBA: Uint8Array[] = [
+  Uint8Array.from([0, 0, 0, 0]),         // 0 = transparent (not in player palette)
+  Uint8Array.from([0, 0, 0, 255]),       // 1 = black (player palette 0)
+  Uint8Array.from([194, 195, 199, 255]), // 2 = light gray (player palette 1)
+  Uint8Array.from([255, 241, 232, 255]), // 3 = white/cream (player palette 2)
+  Uint8Array.from([255, 0, 77, 255]),    // 4 = red (player palette 3)
+  Uint8Array.from([255, 119, 168, 255]), // 5 = pink (player palette 4)
+  Uint8Array.from([95, 87, 79, 255]),    // 6 = dark gray (player palette 5)
+  Uint8Array.from([171, 82, 54, 255]),   // 7 = brown (player palette 6)
+  Uint8Array.from([255, 163, 0, 255]),   // 8 = orange (player palette 7)
+  Uint8Array.from([255, 236, 39, 255]),  // 9 = yellow (player palette 8)
+  Uint8Array.from([126, 37, 83, 255]),   // 10 = dark purple (player palette 9)
+  Uint8Array.from([0, 135, 81, 255]),    // 11 = dark green (player palette 10)
+  Uint8Array.from([0, 228, 54, 255]),    // 12 = green (player palette 11)
+  Uint8Array.from([29, 43, 83, 255]),    // 13 = dark blue (player palette 12)
+  Uint8Array.from([131, 118, 156, 255]), // 14 = lavender (player palette 13)
+  Uint8Array.from([41, 173, 255, 255]),  // 15 = sky blue (player palette 14)
+  Uint8Array.from([255, 204, 170, 255]), // 16 = peach (player palette 15)
+];
 
 export const LayerType = {
   Map: 0,
@@ -15,6 +39,7 @@ export const LayerType = {
 export const LayerFlag = {
   Zoomable: 1,
   Ui: 2,
+  UiLarge: 6,  // includes Ui bit (2 | 4)
 } as const;
 
 export function spriteColor(paletteIndex: number): number {
@@ -42,9 +67,29 @@ export class SpritePacket {
 
   clearAll() { this.u8(0x04); }
 
-  addSprite(spriteId: number, width: number, height: number, pixels: Uint8Array) {
+  private u32(v: number) {
+    this.buf.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff);
+  }
+
+  addSprite(spriteId: number, width: number, height: number, pixels: Uint8Array, label: string = "") {
+    const rgba = new Uint8Array(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+      const c = pixels[i] ?? 0;
+      const entry = c < PALETTE_RGBA.length ? PALETTE_RGBA[c] : PALETTE_RGBA[0];
+      rgba[i * 4] = entry[0];
+      rgba[i * 4 + 1] = entry[1];
+      rgba[i * 4 + 2] = entry[2];
+      rgba[i * 4 + 3] = entry[3];
+    }
+    const compressed = SnappyJS.compress(rgba);
+    const compressedBytes = new Uint8Array(compressed);
+
     this.u8(0x01); this.u16(spriteId); this.u16(width); this.u16(height);
-    for (let i = 0; i < pixels.length; i++) this.buf.push(pixels[i]);
+    this.u32(compressedBytes.length);
+    for (let i = 0; i < compressedBytes.length; i++) this.buf.push(compressedBytes[i]);
+    const labelBytes = Buffer.from(label, "utf-8");
+    this.u16(labelBytes.length);
+    for (let i = 0; i < labelBytes.length; i++) this.buf.push(labelBytes[i]);
   }
 
   addObject(objectId: number, x: number, y: number, z: number, layerId: number, spriteId: number) {
