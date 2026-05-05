@@ -917,7 +917,7 @@ proc readConfigString(node: JsonNode, name: string, value: var string) =
 proc readSlotRole(text: string, slotIndex: int): PlayerRole =
   ## Reads one slot role string.
   case text.strip().toLowerAscii()
-  of "crew", "crewmate":
+  of "crew":
     Crewmate
   of "imp", "imposter", "impostor":
     Imposter
@@ -1483,6 +1483,14 @@ proc validatePlayerSlot(
       AmongThemError,
       "Player token does not match configured slot " & $slotIndex & "."
     )
+
+proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int, token: string): bool =
+  ## Returns whether a player websocket request can pass configured slot auth.
+  if requestedSlot < 0:
+    return true
+  if requestedSlot >= MaxPlayers:
+    return false
+  config.slotAuthMatches(requestedSlot, address, token)
 
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.

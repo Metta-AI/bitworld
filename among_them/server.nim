@@ -33,6 +33,7 @@ type
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
+    config: GameConfig
 
   ServerThreadArgs = object
     server: ptr Server
@@ -584,6 +585,7 @@ proc initAppState() =
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.spectators = @[]
+  appState.config = defaultGameConfig()
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   ## Removes a websocket and keeps live player indices consistent.
@@ -707,6 +709,20 @@ proc respondKicked(request: Request) =
   headers["Connection"] = "close"
   request.respond(409, headers, "player was kicked\n")
 
+proc respondForbidden(request: Request, body: string) =
+  ## Rejects an unauthorized player request before WebSocket upgrade.
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  headers["Connection"] = "close"
+  request.respond(403, headers, body)
+
+proc playerJoinAllowed(request: Request, identity: string, slot: int, token: string): bool =
+  ## Checks configured slot auth before upgrading the player WebSocket.
+  {.gcsafe.}:
+    withLock appState.lock:
+      result = appState.config.playerJoinAllowed(identity, slot, token)
+
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
     var headers: HttpHeaders
@@ -720,6 +736,9 @@ proc httpHandler(request: Request) =
       token = request.playerToken()
     if identity.identityIsKicked():
       request.respondKicked()
+      return
+    if not request.playerJoinAllowed(identity, slot, token):
+      request.respondForbidden("player token rejected\n")
       return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -735,6 +754,9 @@ proc httpHandler(request: Request) =
       token = request.playerToken()
     if identity.identityIsKicked():
       request.respondKicked()
+      return
+    if not request.playerJoinAllowed(identity, slot, token):
+      request.respondForbidden("player token rejected\n")
       return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -948,6 +970,7 @@ proc runServerLoop*(
   defer:
     replayWriter.closeReplayWriter()
   appState.replayLoaded = replayLoaded
+  appState.config = config
 
   let httpServer = newServer(
     httpHandler,

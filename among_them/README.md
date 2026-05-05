@@ -60,16 +60,28 @@ variables. Command line flags override these values when both are set.
 | Variable | Meaning |
 | --- | --- |
 | `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_SAVE_RESULTS_PATH` | Path where final scores are written |
+| `COGAME_RESULTS_PATH` | Path where final scores are written |
 | `COGAME_SAVE_REPLAY_PATH` | Optional path where a replay is written |
 
 Results are written when `maxGames` is set to 1 or higher.
 
 ```sh
 COGAME_CONFIG_PATH=config.json \
-COGAME_SAVE_RESULTS_PATH=scores.json \
+COGAME_RESULTS_PATH=scores.json \
 COGAME_SAVE_REPLAY_PATH=run.bitreplay \
 nim r among_them.nim --address:0.0.0.0 --port:2000
+```
+
+## Coworld Certification
+
+The Among Them coworld package entrypoint is `coworld_manifest.json` in this
+directory. From the repository root, build the local engine and player images
+before running the certifier:
+
+```sh
+docker build -f games_server/among_them.docker -t bitworld-among-them:latest .
+docker build -f games_server/nottoodumb.docker -t bitworld-nottoodumb:latest .
+coworld certify among_them/coworld_manifest.json
 ```
 
 ## Map Files
@@ -281,12 +293,12 @@ Example config.json:
     "0xBADA55_7"
   ],
   "slots":[
-    {"name":"player1","role":"crewmate","color":"red"},
-    {"name":"player2","role":"crewmate","color":"blue"},
-    {"name":"player3","role":"crewmate","color":"green"},
-    {"name":"player4","role":"crewmate","color":"yellow"},
-    {"name":"player5","role":"crewmate","color":"lime"},
-    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player1","role":"crew","color":"red"},
+    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"player3","role":"crew","color":"green"},
+    {"name":"player4","role":"crew","color":"yellow"},
+    {"name":"player5","role":"crew","color":"lime"},
+    {"name":"player6","role":"crew","color":"cyan"},
     {"name":"player7","role":"imposter","color":"pink"},
     {"name":"player8","role":"imposter","color":"orange"}
   ]
@@ -295,7 +307,7 @@ Example config.json:
 
 ```sh
 set -gx COGAME_CONFIG_PATH config.json
-set -gx COGAME_SAVE_RESULTS_PATH ../tmp/scores.json
+set -gx COGAME_RESULTS_PATH ../tmp/scores.json
 set -gx COGAME_SAVE_REPLAY_PATH ../tmp/replay.rep
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
@@ -313,7 +325,7 @@ http://localhost:2000/client/player.html?name=player7&token=0xBADA55_6&slot=6
 http://localhost:2000/client/player.html?name=player8&token=0xBADA55_7&slot=7
 
 When a game finishes with `maxGames` set to 1 or higher, `--save-scores` saves
-the scores to a file. `COGAME_SAVE_RESULTS_PATH` can be used instead.
+the scores to a file. `COGAME_RESULTS_PATH` can be used instead.
 
 The file uses JSON format and must be an array of objects with `reward` as a
 required field. The game can include `name`, `win`, `tasks`, `kills`, and other
