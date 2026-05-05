@@ -533,6 +533,16 @@ proc supportsGame(player: PlayerManifest, gameName: string): bool =
     if game == gameName:
       return true
 
+proc addPlayerPolicy(
+  players: var seq[PlayerManifest],
+  player: PlayerManifest
+) =
+  ## Adds one player manifest when its policy name is not already present.
+  for existing in players:
+    if existing.name == player.name:
+      return
+  players.add(player)
+
 proc selectedPlayers(
   config: TournamentConfig,
   game: GameManifest
@@ -542,7 +552,7 @@ proc selectedPlayers(
   if config.playerList.strip().len == 0:
     for player in players:
       if player.supportsGame(game.name):
-        result.add(player)
+        result.addPlayerPolicy(player)
     result.sort(proc(a, b: PlayerManifest): int = cmp(a.name, b.name))
     return
 
@@ -554,7 +564,7 @@ proc selectedPlayers(
     for player in players:
       if player.supportsGame(game.name) and
           (player.name == key or player.key == key or player.path == key):
-        result.add(player)
+        result.addPlayerPolicy(player)
         found = true
         break
     if not found:
@@ -1102,14 +1112,24 @@ proc maxPolicyCopies(count, policyCount: int): int =
     return count
   max(1, count div 2)
 
+proc policyCount(players: openArray[PlayerManifest]): int =
+  ## Counts unique player policy names.
+  var names: seq[string]
+  for player in players:
+    if player.name notin names:
+      names.add(player.name)
+  names.len
+
 proc cappedWeights(
+  players: openArray[PlayerManifest],
   weights: openArray[float],
-  picks: openArray[int],
+  picks: Table[string, int],
   maxCopies: int
 ): seq[float] =
   ## Returns selection weights after applying per-game policy caps.
   for i, weight in weights:
-    if i < picks.len and picks[i] >= maxCopies:
+    let picked = picks.getOrDefault(players[i].name)
+    if picked >= maxCopies:
       result.add(0.0)
     else:
       result.add(weight)
@@ -1140,19 +1160,20 @@ proc choosePlayers(
     raise newException(TournamentError, "no players available")
   let
     weights = playerWeights(players)
-    maxCopies = maxPolicyCopies(count, players.len)
-  if maxCopies * players.len < count:
+    policies = policyCount(players)
+    maxCopies = maxPolicyCopies(count, policies)
+  if maxCopies * policies < count:
     raise newException(
       TournamentError,
       "not enough policies to enforce the 50% tournament cap"
     )
-  var picks = newSeq[int](players.len)
+  var picks: Table[string, int]
   for slot in 0 ..< count:
     let
-      availableWeights = cappedWeights(weights, picks, maxCopies)
+      availableWeights = cappedWeights(players, weights, picks, maxCopies)
       playerIndex = chooseWeightedPlayer(availableWeights)
       player = players[playerIndex]
-    inc picks[playerIndex]
+    picks[player.name] = picks.getOrDefault(player.name) + 1
     let playerName = visiblePlayerName(player, gameId, slot + 1)
     result.manifests.add(player)
     result.slots.add(PlayerSlot(

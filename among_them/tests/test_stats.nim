@@ -311,3 +311,31 @@ suite "stats":
     check results["win"][1].getBool()
     check results["tasks"][1].getInt() == 0
     check results["kills"][1].getInt() == 1
+
+  test "player result json reflects draw scores":
+    let config = defaultGameConfig()
+    var sim = initAmongThemForTest(config)
+
+    let
+      imposterIndex = sim.addPlayer("imposter", 1)
+      crewIndex = sim.addPlayer("crew", 0)
+    sim.players[imposterIndex].role = Imposter
+    sim.players[crewIndex].role = Crewmate
+    sim.addReward(imposterIndex, 5)
+    sim.addReward(crewIndex, 3)
+    sim.recordKill(imposterIndex)
+    sim.recordTask(crewIndex)
+    sim.finishGame(Crewmate, timeLimitReached = true)
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["names"].len == 2
+    check results["names"][0].getStr() == "crew"
+    check results["scores"][0].getInt() == 3
+    check not results["win"][0].getBool()
+    check results["tasks"][0].getInt() == 1
+    check results["kills"][0].getInt() == 0
+    check results["names"][1].getStr() == "imposter"
+    check results["scores"][1].getInt() == 5
+    check not results["win"][1].getBool()
+    check results["tasks"][1].getInt() == 0
+    check results["kills"][1].getInt() == 1

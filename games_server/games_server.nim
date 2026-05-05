@@ -827,8 +827,12 @@ proc buildLocalImages() =
 proc pullDockerImage(image: string) =
   ## Pulls the latest version of one Docker image.
   if skipPull:
+    echo "Skipping Docker image pull: ", image
     return
-  discard requireDocker(@["pull", image])
+  echo "Pulling latest Docker image: ", image
+  let pulled = requireDocker(@["pull", image])
+  if pulled.len > 0:
+    echo pulled
 
 proc cleanContainerName(value: string): string =
   ## Keeps only Docker-safe container name characters.
