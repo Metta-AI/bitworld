@@ -33,7 +33,7 @@ const
   ClientPath = "/client/"
   CreatePath = "/games/create"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
-  CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
+  CogameResultsEnv = "COGAME_RESULTS_PATH"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ServerLabelKey = "bitworld.games_server"
@@ -378,7 +378,7 @@ proc replayDir(): string =
 proc defaultManifestPath(): string =
   ## Returns the default Among Them manifest path.
   parentDir(parentDir(currentSourcePath())) /
-    "among_them" / "among_them_manifest.json"
+    "among_them" / "cogame_manifest.json"
 
 proc manifestPath(): string =
   ## Returns the configured Among Them manifest path.
@@ -1128,6 +1128,9 @@ proc configJson(form: seq[(string, string)]): string =
   let schema = configSchema()
   var node = newJObject()
   for name, property in schema["properties"].pairs:
+    let value = formValue(form, name).strip()
+    if name == "tokens" and (value.len == 0 or value == "[]"):
+      continue
     case property.propertyType()
     of "integer":
       node[name] = %intConfigValue(form, name, property)
@@ -2431,7 +2434,7 @@ proc errorHandler(request: Request, e: ref Exception) =
     )
   )
 
-proc httpHandler(request: Request) =
+proc httpHandlerUnsafe(request: Request) =
   ## Routes all HTTP requests.
   try:
     if request.path == "/" and request.httpMethod == "GET":
@@ -2464,10 +2467,15 @@ proc httpHandler(request: Request) =
   except Exception as e:
     request.errorHandler(e)
 
+proc httpHandler(request: Request) {.gcsafe.} =
+  ## Adapts the route handler to mummy's RequestHandler signature.
+  {.gcsafe.}:
+    request.httpHandlerUnsafe()
+
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
-  let server = newServer(httpHandler, workerThreads = 4)
+  let server = newServer(httpHandler, workerThreads = 1)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
 

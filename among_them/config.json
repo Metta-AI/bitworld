@@ -12,12 +12,12 @@
     "0xBADA55_7"
   ],
   "slots":[
-    {"name":"player1","role":"crewmate","color":"red"},
-    {"name":"player2","role":"crewmate","color":"blue"},
-    {"name":"player3","role":"crewmate","color":"green"},
-    {"name":"player4","role":"crewmate","color":"yellow"},
-    {"name":"player5","role":"crewmate","color":"lime"},
-    {"name":"player6","role":"crewmate","color":"cyan"},
+    {"name":"player1","role":"crew","color":"red"},
+    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"player3","role":"crew","color":"green"},
+    {"name":"player4","role":"crew","color":"yellow"},
+    {"name":"player5","role":"crew","color":"lime"},
+    {"name":"player6","role":"crew","color":"cyan"},
     {"name":"player7","role":"imposter","color":"pink"},
     {"name":"player8","role":"imposter","color":"orange"}
   ]

@@ -4206,7 +4206,8 @@ when not defined(nottoodumbLibrary):
     gui = false,
     name = "",
     mapPath = "",
-    url = ""
+    url = "",
+    exitOnDisconnect = false
   ) =
     ## Connects to an Among Them server and processes player frames.
     ## If `url` is non-empty it is used as the WebSocket endpoint (scheme,
@@ -4257,6 +4258,8 @@ when not defined(nottoodumbLibrary):
       except Exception as e:
         if connected:
           echo "connection lost: ", e.msg
+          if exitOnDisconnect:
+            break
         elif not notifiedFailure:
           echo "connection failed: ", e.msg
           notifiedFailure = true
@@ -4277,7 +4280,8 @@ when isMainModule and not defined(nottoodumbLibrary):
     gui = false
     name = ""
     mapPath = ""
-    url = ""
+    url = getEnv("COGAMES_ENGINE_WS_URL")
+    exitOnDisconnect = url.len > 0
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4304,4 +4308,4 @@ when isMainModule and not defined(nottoodumbLibrary):
     if url.len > 0: url
     else: "ws://" & address & ":" & $port
   echo "starting nottoodumb -> ", target
-  runBot(address, port, gui, name, mapPath, url)
+  runBot(address, port, gui, name, mapPath, url, exitOnDisconnect)
