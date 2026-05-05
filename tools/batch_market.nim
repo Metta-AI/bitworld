@@ -107,6 +107,14 @@ proc generateLineup(rng: var Rand, fixed: bool): seq[BotKind] =
   let count = rng.rand(MinBots .. MaxBots)
   for _ in 0 ..< count:
     result.add BotKind(rng.rand(BotCount - 1))
+  var hasCrafter = false
+  for kind in result:
+    if kind in {bkIronWorks, bkSolenne, bkRkhenna}:
+      hasCrafter = true
+      break
+  if not hasCrafter:
+    let crafters = [bkIronWorks, bkSolenne, bkRkhenna]
+    result[0] = crafters[rng.rand(2)]
   rng.shuffle(result)
 
 proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): MatchResult =
@@ -138,6 +146,7 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
       let state = parseGameState(stateJson)
       let mask = bots[i].decide(state)
 
+
       if i < writer.lastMasks.len and mask != writer.lastMasks[i]:
         writer.writeInput(MbReplayInput(
           time: tickTime(sim.tickCount),
@@ -148,6 +157,14 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
 
       inputs[i] = maskToPlayerInput(mask, bots[i].prevMask)
       bots[i].prevMask = mask
+      case bots[i].botKind
+      of bkStillForge: bots[i].sfState.prevMask = mask
+      of bkIronWorks: bots[i].iwState.prevMask = mask
+      of bkColm: bots[i].colmState.prevMask = mask
+      of bkZorori: bots[i].zrState.prevMask = mask
+      of bkSolenne: bots[i].solState.prevMask = mask
+      of bkRkhenna: bots[i].rkState.prevMask = mask
+      of bkPipitori: bots[i].pipState.prevMask = mask
 
     sim.step(inputs)
     writer.writeHash(uint32(sim.tickCount), sim.gameHash())
@@ -157,6 +174,30 @@ proc runMatch(seed: int, ticks: int, replayPath: string, fixedLineup: bool): Mat
       tracker.recordTick(sim)
 
   writer.closeMbReplayWriter()
+
+  for i, p in sim.players:
+    var gearTiers: seq[int]
+    for s in 0 ..< 5:
+      let g = p.gathererGear[s]
+      let c = p.crafterGear[s]
+      let gt: int = (case g
+        of LeatherHat .. LeatherShoes: 1
+        of ChainHat .. ChainShoes: 2
+        of PlateHat .. PlateShoes: 3
+        else: 0)
+      let ct: int = (case c
+        of LeatherHat .. LeatherShoes: 1
+        of ChainHat .. ChainShoes: 2
+        of PlateHat .. PlateShoes: 3
+        else: 0)
+      gearTiers.add max(gt, ct)
+    let minTier = min(gearTiers)
+    let maxTier = max(gearTiers)
+    var listItems: seq[string]
+    for l in p.listings:
+      listItems.add &"{l.item}@{l.priceEach}"
+    let listStr = if listItems.len > 0: listItems.join(",") else: "none"
+    echo &"    {p.name:12s} role={p.role:<10s} gold={p.gold:5d} gear=[{gearTiers.join(\",\")}] listings={listStr}"
 
   let legendsPath = replayPath.replace(".mbreplay", ".legends.json")
   var legendJson = legendTracker.toJson()

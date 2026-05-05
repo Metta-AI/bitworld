@@ -65,6 +65,8 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   case bot.phase
   of WaitForState:
     bot.ticksInPhase = 0
+    if p.state in ["AtSellStall", "AtBuyStall"]:
+      return ButtonB
     bot.phase = EvaluateMarket
     return 0
 
@@ -90,42 +92,42 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
         else:
           bot.phase = PathToCrafterStall
       elif p.role == "Gatherer":
-        if shouldCancelListings(p):
-          bot.phase = PathToCancelStall
-        elif hasAffordableGearUpgrade(state, p):
+        if hasAffordableGearUpgrade(state, p):
           bot.phase = CheckGear
-        elif hasAnyRawMaterials(p.inv) and p.canSellMore:
+        elif shouldCancelListings(p) or shouldCancelForUpgrade(p):
+          bot.phase = PathToCancelStall
+        elif p.hasSellableMaterials and p.canSellMore:
           bot.phase = PathToSellStall
         else:
           bot.phase = PathToNode
       else:
-        if p.inv.hasAnyGear and p.canSellMore:
+        if shouldCancelListings(p) or shouldCancelForUpgrade(p):
+          bot.phase = PathToCancelStall
+        elif p.inv.hasAnyGear and p.canSellMore:
           bot.phase = PathToSellStall
         elif hasEnoughMaterialsForCraft(p.inv):
           bot.phase = PathToCraftStation
-        elif shouldCancelListings(p):
-          bot.phase = PathToCancelStall
         elif hasAffordableGearUpgrade(state, p):
           bot.phase = CheckGear
         else:
           bot.phase = PathToBuyStall
     else:
       if p.role == "Gatherer":
-        if shouldCancelListings(p):
-          bot.phase = PathToCancelStall
-        elif hasAffordableGearUpgrade(state, p):
+        if hasAffordableGearUpgrade(state, p):
           bot.phase = CheckGear
-        elif hasAnyRawMaterials(p.inv) and p.canSellMore:
+        elif shouldCancelListings(p) or shouldCancelForUpgrade(p):
+          bot.phase = PathToCancelStall
+        elif p.hasSellableMaterials and p.canSellMore:
           bot.phase = PathToSellStall
         else:
           bot.phase = PathToNode
       else:
-        if p.inv.hasAnyGear and p.canSellMore:
+        if shouldCancelListings(p) or shouldCancelForUpgrade(p):
+          bot.phase = PathToCancelStall
+        elif p.inv.hasAnyGear and p.canSellMore:
           bot.phase = PathToSellStall
         elif hasEnoughMaterialsForCraft(p.inv):
           bot.phase = PathToCraftStation
-        elif shouldCancelListings(p):
-          bot.phase = PathToCancelStall
         elif hasAffordableGearUpgrade(state, p):
           bot.phase = CheckGear
         else:
@@ -199,7 +201,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of PathToNode:
-    if hasAnyRawMaterials(p.inv) and p.canSellMore:
+    if p.hasSellableMaterials and p.canSellMore:
       bot.phase = PathToSellStall
       bot.ticksInPhase = 0
       return 0
@@ -241,11 +243,11 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if shouldCancelListings(p):
-        bot.phase = PathToCancelStall
-      elif hasAffordableGearUpgrade(state, p):
+      if hasAffordableGearUpgrade(state, p):
         bot.phase = CheckGear
-      elif hasAnyRawMaterials(p.inv) and p.canSellMore:
+      elif shouldCancelListings(p):
+        bot.phase = PathToCancelStall
+      elif p.hasSellableMaterials and p.canSellMore:
         bot.phase = PathToSellStall
       else:
         bot.phase = WaitForState
@@ -290,7 +292,13 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = ExitBuyMat
       bot.ticksInPhase = 0
       return 0
-    let craftTier = bestAvailableCraftTier(state, p)
+    let selfTier = lowestNeededGearTier(p)
+    let craftTier = if selfTier > 0 and selfTier <= highestGatherableTier(p):
+        let (sA, sB) = materialsForTier(selfTier)
+        let selfAvail = hasListings(state, sA) or hasListings(state, sB)
+        if selfAvail: selfTier else: demandAwareCraftTier(state, p)
+      else:
+        demandAwareCraftTier(state, p)
     let (matA, matB) = materialsForTier(craftTier)
     let priceA = cheapestPrice(state, matA)
     let priceB = cheapestPrice(state, matB)
@@ -424,19 +432,19 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = WaitForState
       bot.ticksInPhase = 0
       return 0
-    var itemName = "WoodItem"
-    if p.inv.hasAnyGear:
-      for gi in GearItemNames:
-        if p.inv.itemCount(gi) > 0:
-          itemName = gi
-          break
-    else:
-      for mat in RawMaterialNames:
-        if p.inv.itemCount(mat) > 0:
-          itemName = mat
-          break
-    let cp = cheapestPrice(state, itemName)
-    let baseTarget = if cp < int.high: cp else: BasePrice
+    let itemName = sellCursorItemName(p)
+    if p.role == "Gatherer":
+      let maxTier = highestGatherableTier(p)
+      if not isSellableAtTier(itemName, maxTier):
+        let target = nextSellCursorForTier(p)
+        if target < 0 or target == p.sellItemCursor:
+          bot.phase = ExitSell
+          bot.ticksInPhase = 0
+          return 0
+        if p.sellItemCursor < target:
+          return ButtonRight
+        return ButtonLeft
+    let baseTarget = botItemBasePrice(itemName) + 1
     let targetPrice = dynamicPrice(bot.pricingState, p.listings.len, baseTarget)
     if p.sellPrice < targetPrice:
       return ButtonUp
@@ -460,6 +468,8 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.ticksInPhase = 0
       return 0
     if (bot.prevMask and ButtonA) != 0:
+      bot.phase = SetPrice
+      bot.ticksInPhase = 0
       return 0
     return ButtonA
 
