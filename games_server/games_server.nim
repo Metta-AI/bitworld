@@ -24,6 +24,7 @@ const
   DefaultNotTooDumbImage = "ghcr.io/treeform/bitworld-nottoodumb:latest"
   DefaultIVoteALotImage = "ghcr.io/treeform/bitworld-ivotewell:latest"
   DefaultITalkALotImage = "ghcr.io/treeform/bitworld-italkalot:latest"
+  GameContainerPort = 8080
   ContainerReplayDir = "/replays"
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
@@ -1169,7 +1170,7 @@ proc baseDockerArgs(
     "--name",
     name,
     "-p",
-    $port & ":2000",
+    $port & ":" & $GameContainerPort,
     "--label",
     ServerLabel,
     "--label",
@@ -1197,7 +1198,7 @@ proc runnerScript(config: string, loadReplay: string): string =
     "mkdir -p /tmp/bitworld-out /tmp/bitworld-nimcache && " &
     "nim r --nimcache:/tmp/bitworld-nimcache " &
     "--outdir:/tmp/bitworld-out among_them.nim " &
-    "--address:0.0.0.0 --port:2000"
+    "--address:0.0.0.0 --port:" & $GameContainerPort
   if loadReplay.len > 0:
     result.add(" --load-replay:'" & ContainerReplayDir / loadReplay & "'")
   else:
@@ -1220,7 +1221,7 @@ proc dockerRunArgs(
     result.add(dockerImage())
     result.add("/bin/among_them")
     result.add("--address:0.0.0.0")
-    result.add("--port:2000")
+    result.add("--port:" & $GameContainerPort)
     if loadReplay.len > 0:
       result.add("--load-replay:" & ContainerReplayDir / loadReplay)
     else:
