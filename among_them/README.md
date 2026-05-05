@@ -128,22 +128,26 @@ The server serves these pages:
 - Player: `http://localhost:2000/player`
 - Global viewer: `http://localhost:2000/global`
 - Replay viewer: `http://localhost:2000/replay`
+- Admin panel: `http://localhost:2000/admin`
 - Rewards: `http://localhost:2000/client/rewards.html`
-- Stats and join QR: `http://localhost:2000/client/stats.html`
 
 These routes are served from:
 
 - `clients/player_client.html`
 - `clients/global_client.html`
 - `clients/reward_client.html`
+- `clients/admin_client.html`
 
 The player client connects to `/player`, the global viewer connects to
-`/global`, the replay viewer connects to `/replay`, and the rewards viewer
-connects to `/reward` on the same host as the page.
+`/global`, the replay viewer connects to `/replay`, the admin panel connects to
+`/admin`, and the rewards viewer connects to `/reward` on the same host as the
+page.
 
-The stats page also exposes live match controls. Use `Restart match` to queue a
-new match with the current connected players, or the `X` beside a connected
-player to kick that player from the game.
+The admin panel shows live player stats, exposes the join QR, and includes live
+match controls. It sends admin playback commands over `/admin`, receives live
+stats over `/reward`, and sends match controls to `/control/*`. Use `Restart
+match` to queue a new match with the current connected players, or the `X`
+beside a connected player to kick that player from the game.
 
 ## Run AI Players
 

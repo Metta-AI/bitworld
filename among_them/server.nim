@@ -676,7 +676,7 @@ proc playerToken(request: Request): string =
   request.queryParams.getOrDefault("token", "").strip()
 
 proc controlHeaders(): HttpHeaders =
-  ## Returns headers for stats-page control requests.
+  ## Returns headers for admin-panel control requests.
   result["Content-Type"] = "text/plain; charset=utf-8"
   result["Cache-Control"] = "no-cache"
   result["Access-Control-Allow-Origin"] = "*"

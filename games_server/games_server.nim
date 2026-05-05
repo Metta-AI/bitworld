@@ -1889,8 +1889,10 @@ proc gameUrl(request: Request, game: GameContainer, page: string): string =
     case page
     of "player.html":
       "/player"
-    of "rewards.html", "reward.html", "stats.html":
+    of "rewards.html", "reward.html":
       "/reward"
+    of "admin.html":
+      "/admin"
     else:
       "/global"
   "http://" & request.hostHeader() & ClientPath & page &
@@ -2232,6 +2234,11 @@ proc renderGamesTable(
                 href gameUrl(request, game, "player.html")
                 target "_blank"
                 say "player"
+              say " | "
+              a:
+                href gameUrl(request, game, "admin.html")
+                target "_blank"
+                say "admin"
             elif game.status == "running":
               say "starting"
             else:
@@ -2821,8 +2828,8 @@ proc clientAsset(path: string): string =
   of "/client/reward.html", "/client/rewards.html",
       "/client/reward_client.html":
     clientRoot() / "reward_client.html"
-  of "/client/stats.html":
-    clientRoot() / "stats.html"
+  of "/client/admin.html":
+    clientRoot() / "admin_client.html"
   of "/client/snappyjs.min.js":
     clientRoot() / "snappyjs.min.js"
   of "/client/qrcode.min.js":
