@@ -9,7 +9,7 @@ const RootDir = currentSourcePath.parentDir.parentDir
 
 proc initMarketboardForTest(): SimServer =
   let previousDir = getCurrentDir()
-  setCurrentDir(RootDir / "marketboard")
+  setCurrentDir(RootDir)
   try:
     result = initSimServer(0)
   finally:

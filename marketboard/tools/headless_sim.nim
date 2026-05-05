@@ -161,7 +161,7 @@ when isMainModule:
     else: discard
 
   let previousDir = getCurrentDir()
-  setCurrentDir(RootDir / "marketboard")
+  setCurrentDir(RootDir)
 
   var server = initSimServer(0)
 

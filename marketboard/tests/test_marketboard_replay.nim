@@ -8,7 +8,7 @@ const RootDir = currentSourcePath.parentDir.parentDir
 
 proc initMarketboardForTest(): SimServer =
   let previousDir = getCurrentDir()
-  setCurrentDir(RootDir / "marketboard")
+  setCurrentDir(RootDir)
   try:
     result = initSimServer(0)
   finally:
@@ -16,7 +16,7 @@ proc initMarketboardForTest(): SimServer =
 
 proc testReplayRoundTrip() =
   let previousDir = getCurrentDir()
-  setCurrentDir(RootDir / "marketboard")
+  setCurrentDir(RootDir)
   defer: setCurrentDir(previousDir)
 
   var sim = initSimServer(0)
@@ -82,7 +82,7 @@ proc testReplayRoundTrip() =
 
 proc testBatchReplayRoundTrip() =
   let previousDir = getCurrentDir()
-  setCurrentDir(RootDir / "marketboard")
+  setCurrentDir(RootDir)
   defer: setCurrentDir(previousDir)
 
   let replayPath = RootDir / "replays" / "match_0002.mbreplay"

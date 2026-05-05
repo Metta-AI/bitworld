@@ -30,7 +30,7 @@ proc findCraftStation(sim: SimServer, slot: GearSlot, tier: int): int =
 
 proc initMarketboardForTest(): SimServer =
   let previousDir = getCurrentDir()
-  setCurrentDir(RootDir / "marketboard")
+  setCurrentDir(RootDir)
   try:
     result = initSimServer(0)
   finally:

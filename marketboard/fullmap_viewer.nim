@@ -261,9 +261,10 @@ proc initFullmapViewer*(): FullmapViewer =
       title: "Marketboard Fullmap Viewer",
       atlasPath: clientDistDir() / "atlas.png",
       palettePath: clientDataDir() / "pallete.png",
-      windowWidth: 1200,
-      windowHeight: 900,
-      zoomFactor: 1.08,
+      # TODO: re-enable once global_client supports these fields
+      # windowWidth: 1200,
+      # windowHeight: 900,
+      # zoomFactor: 1.08,
       packetSink: proc(packet: string) =
         viewer.addInputPacket(packet)
     )
