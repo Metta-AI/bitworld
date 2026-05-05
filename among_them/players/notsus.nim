@@ -11,7 +11,7 @@ const
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
   PlayerDefaultPort = 2000
-  Player2TaskArrowObjectBase = 7000
+  SpritePlayerTaskArrowObjectBase = 7000
   ProtocolVoteIconObjectBase = 9300
   MaxDrainMessages = 512
   PathLookahead = 18
@@ -674,7 +674,7 @@ proc analyzeObjects(bot: var Bot) =
       if taskIndex >= 0 and taskIndex < bot.taskVisible.len:
         bot.taskVisible[taskIndex] = true
     elif info.kind == SpriteArrow:
-      let taskIndex = objectId - Player2TaskArrowObjectBase
+      let taskIndex = objectId - SpritePlayerTaskArrowObjectBase
       if taskIndex >= 0 and taskIndex < bot.taskArrow.len:
         bot.taskArrow[taskIndex] = true
     elif info.kind in {SpritePlayer, SpriteGhost} and
@@ -1969,10 +1969,10 @@ proc runBot(
   var bot = initBot(mapPath)
   let url =
     if name.len > 0:
-      "ws://" & host & ":" & $port & Player2WebSocketPath &
+      "ws://" & host & ":" & $port & SpritePlayerWebSocketPath &
         "?name=" & name.queryEscape()
     else:
-      "ws://" & host & ":" & $port & Player2WebSocketPath
+      "ws://" & host & ":" & $port & SpritePlayerWebSocketPath
   let viewer =
     if gui:
       initViewerApp()

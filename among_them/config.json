@@ -13,7 +13,7 @@
   ],
   "slots":[
     {"name":"player1","role":"crew","color":"red"},
-    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"crew2","role":"crew","color":"blue"},
     {"name":"player3","role":"crew","color":"green"},
     {"name":"player4","role":"crew","color":"yellow"},
     {"name":"player5","role":"crew","color":"lime"},

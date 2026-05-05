@@ -313,7 +313,7 @@ Example config.json:
   ],
   "slots":[
     {"name":"player1","role":"crew","color":"red"},
-    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"crew2","role":"crew","color":"blue"},
     {"name":"player3","role":"crew","color":"green"},
     {"name":"player4","role":"crew","color":"yellow"},
     {"name":"player5","role":"crew","color":"lime"},
@@ -335,7 +335,7 @@ If the game has a slots config, then the player *MUST* use the slot count.
 They *MAY* use the name and token.
 
 http://localhost:2000/player?name=player1&token=0xBADA55_0&slot=0
-http://localhost:2000/player?name=player2&token=0xBADA55_1&slot=1
+http://localhost:2000/player?name=crew2&token=0xBADA55_1&slot=1
 http://localhost:2000/player?name=player3&token=0xBADA55_2&slot=2
 http://localhost:2000/player?name=player4&token=0xBADA55_3&slot=3
 http://localhost:2000/player?name=player5&token=0xBADA55_4&slot=4
@@ -353,7 +353,7 @@ fields.
 ```json
 [
   {"name": "player1", "reward": 8, "win": false, "tasks": 8, "kills": 0},
-  {"name": "player2", "reward": 8, "win": false, "tasks": 8, "kills": 0},
+  {"name": "crew2", "reward": 8, "win": false, "tasks": 8, "kills": 0},
   {"name": "player3", "reward": 7, "win": false, "tasks": 7, "kills": 0},
   {"name": "player4", "reward": 6, "win": false, "tasks": 6, "kills": 0},
   {"name": "player5", "reward": 8, "win": false, "tasks": 8, "kills": 0},

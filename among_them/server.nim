@@ -768,7 +768,7 @@ proc httpHandler(request: Request) =
         appState.playerSlots[websocket] = slot
         appState.playerTokens[websocket] = token
     echo "player connected: ", identity
-  elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
+  elif request.path == SpritePlayerWebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
       slot = request.playerSlot()

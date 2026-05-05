@@ -16,7 +16,7 @@ const
     "0xBADA55_7"
   ],"slots":[
     {"name":"player1","role":"crew","color":"red"},
-    {"name":"player2","role":"crew","color":"blue"},
+    {"name":"crew2","role":"crew","color":"blue"},
     {"name":"player3","role":"crew","color":"green"},
     {"name":"player4","role":"crew","color":"yellow"},
     {"name":"player5","role":"crew","color":"lime"},
@@ -150,7 +150,7 @@ suite "player slots":
 
     var writer = openReplayWriter(path, "{}")
     writer.writeJoin(12'u32, 0, "player1", -1, "")
-    writer.writeJoin(24'u32, 1, "player2", 3, "0xBADA55")
+    writer.writeJoin(24'u32, 1, "crew2", 3, "0xBADA55")
     writer.closeReplayWriter()
 
     let data = parseReplayBytes(readFile(path))
@@ -158,7 +158,7 @@ suite "player slots":
     check data.joins[0].name == "player1"
     check data.joins[0].slot == -1
     check data.joins[0].token == ""
-    check data.joins[1].name == "player2"
+    check data.joins[1].name == "crew2"
     check data.joins[1].slot == 3
     check data.joins[1].token == "0xBADA55"
 

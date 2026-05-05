@@ -37,7 +37,7 @@ suite "max ticks":
 
     var sim = initAmongThemForTest(config)
     discard sim.addPlayer("player1")
-    discard sim.addPlayer("player2")
+    discard sim.addPlayer("crew2")
     discard sim.addPlayer("player3")
 
     var inputs = newSeq[InputState](sim.players.len)
