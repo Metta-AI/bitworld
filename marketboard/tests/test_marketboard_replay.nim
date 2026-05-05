@@ -1,8 +1,8 @@
 import
   std/os,
-  ../common/protocol,
-  ../marketboard/sim,
-  ../marketboard/replays
+  ../../common/protocol,
+  ../sim,
+  ../replays
 
 const RootDir = currentSourcePath.parentDir.parentDir
 

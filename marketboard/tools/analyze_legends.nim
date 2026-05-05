@@ -1,8 +1,8 @@
 import std/[algorithm, json, os, parseopt, strformat, strutils]
 import
-  ../marketboard/sim,
-  ../marketboard/replays,
-  ../marketboard/legends
+  ../sim,
+  ../replays,
+  ../legends
 
 proc analyzeReplay(replayPath: string, verbose: bool): tuple[json: JsonNode, summary: string, topScore: float] =
   let absReplayPath = absolutePath(replayPath)

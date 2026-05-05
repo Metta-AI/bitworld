@@ -1,20 +1,20 @@
 import std/[algorithm, json, os, parseopt, random, strformat, strutils]
 import
-  ../marketboard/sim,
-  ../marketboard/excitement,
-  ../marketboard/legends,
-  ../marketboard/replays,
-  ../marketboard/players/common,
-  ../marketboard/players/still_forge as sf,
-  ../marketboard/players/iron_works as iw,
-  ../marketboard/players/colm as colm_bot,
-  ../marketboard/players/zorori as zr,
-  ../marketboard/players/solenne as sol,
-  ../marketboard/players/rkhenna as rk,
-  ../marketboard/players/pipitori as pip,
-  ../marketboard/players/kukumo as kuku,
-  ../marketboard/players/ktorra as kt,
-  ../marketboard/players/staelhart as stael
+  ../sim,
+  ../excitement,
+  ../legends,
+  ../replays,
+  ../players/common,
+  ../players/still_forge as sf,
+  ../players/iron_works as iw,
+  ../players/colm as colm_bot,
+  ../players/zorori as zr,
+  ../players/solenne as sol,
+  ../players/rkhenna as rk,
+  ../players/pipitori as pip,
+  ../players/kukumo as kuku,
+  ../players/ktorra as kt,
+  ../players/staelhart as stael
 
 const
   DefaultMatches = 100

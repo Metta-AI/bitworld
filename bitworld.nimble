@@ -22,7 +22,6 @@ bin = @[
   "overworld/overworld",
   "tools/quick_run",
   "tools/quick_player",
-  "tools/quick_market",
   "tools/ptswap",
   "games_server/cogame_validator",
   "tag/tag",
@@ -30,18 +29,7 @@ bin = @[
   "warzone/warzone",
   "among_them/among_them",
   "among_them/replay_viewer",
-  "global_ui/global_ui",
-  "marketboard/marketboard",
-  "marketboard/players/still_forge",
-  "marketboard/players/iron_works",
-  "marketboard/players/colm",
-  "marketboard/players/zorori",
-  "marketboard/players/solenne",
-  "marketboard/players/rkhenna",
-  "marketboard/players/pipitori",
-  "marketboard/replay_viewer",
-  "tools/batch_market",
-  "tools/quick_replay"
+  "global_ui/global_ui"
 ]
 
 switch("path", "common")

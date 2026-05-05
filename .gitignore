@@ -10,8 +10,6 @@
 
 __pycache__/
 .DS_Store
-replays/
-replay_atlas.png
 client/screenshots/
 nimcache/
 out/

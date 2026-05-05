@@ -27,9 +27,6 @@ type
     palettePath*: string
     packetSink*: proc(packet: string)
     playerMode*: bool
-    windowWidth*: int
-    windowHeight*: int
-    zoomFactor*: float32
 
   NetworkState = object
     ws: WebSocketHandle
@@ -57,7 +54,6 @@ type
     sprites: Table[int, GlobalSprite]
     objects: Table[int, GlobalObject]
     zoom: float32
-    zoomFactor: float32
     panX, panY: float32
     autoFit: bool
     activeMouseLayer: int
@@ -962,9 +958,9 @@ proc handleInput*(app: GlobalApp) =
       beforeY = (mouseLogical.y.float32 - app.panY) / app.zoom
       factor =
         if app.window.scrollDelta.y > 0:
-          app.zoomFactor
+          1.015'f
         else:
-          1.0'f / app.zoomFactor
+          1.0'f / 1.015'f
     app.zoom = min(64.0'f, max(0.1'f, app.zoom * factor))
     app.panX = mouseLogical.x.float32 - beforeX * app.zoom
     app.panY = mouseLogical.y.float32 - beforeY * app.zoom
@@ -1014,18 +1010,16 @@ proc initGlobalApp*(
   loadPalette(palettePath)
   result = GlobalApp()
   let title = if options.title.len > 0: options.title else: "Global Viewer"
-  let winW = if options.windowWidth > 0: options.windowWidth else: WindowWidth
-  let winH = if options.windowHeight > 0: options.windowHeight else: WindowHeight
   when defined(emscripten):
     result.window = newWindow(
       title = title,
-      size = ivec2(winW.int32, winH.int32),
+      size = ivec2(WindowWidth, WindowHeight),
       visible = true
     )
   else:
     result.window = newWindow(
       title = title,
-      size = ivec2(winW.int32, winH.int32),
+      size = ivec2(WindowWidth, WindowHeight),
       style = DecoratedResizable,
       visible = true
     )
@@ -1036,12 +1030,11 @@ proc initGlobalApp*(
   result.renderer = initRawRenderer()
   if result.window.contentScale > 1.0:
     result.silky.uiScale = 2.0
-    result.window.size = ivec2(winW.int32, winH.int32) * 2
+    result.window.size = ivec2(WindowWidth, WindowHeight) * 2
   result.layers = initTable[int, GlobalLayer]()
   result.sprites = initTable[int, GlobalSprite]()
   result.objects = initTable[int, GlobalObject]()
   result.zoom = 1.0'f
-  result.zoomFactor = if options.zoomFactor > 0: options.zoomFactor else: 1.015'f
   result.autoFit = true
   result.activeMouseLayer = -1
   result.packetSink = options.packetSink

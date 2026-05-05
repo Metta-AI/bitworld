@@ -1,9 +1,9 @@
 import
   std/[json, options, os],
-  ../common/protocol,
-  ../common/server,
-  ../marketboard/sim,
-  ../marketboard/players/common
+  ../../common/protocol,
+  ../../common/server,
+  ../sim,
+  ../players/common
 
 const RootDir = currentSourcePath.parentDir.parentDir
 

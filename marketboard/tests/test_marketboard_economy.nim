@@ -1,16 +1,16 @@
 import
   std/[json, options, os],
-  ../common/protocol,
-  ../common/server,
-  ../marketboard/sim,
-  ../marketboard/players/common,
-  ../marketboard/players/still_forge as sf,
-  ../marketboard/players/iron_works as iw,
-  ../marketboard/players/colm as co,
-  ../marketboard/players/zorori as zo,
-  ../marketboard/players/solenne as so,
-  ../marketboard/players/rkhenna as rk,
-  ../marketboard/players/pipitori as pi
+  ../../common/protocol,
+  ../../common/server,
+  ../sim,
+  ../players/common,
+  ../players/still_forge as sf,
+  ../players/iron_works as iw,
+  ../players/colm as co,
+  ../players/zorori as zo,
+  ../players/solenne as so,
+  ../players/rkhenna as rk,
+  ../players/pipitori as pi
 
 const
   RootDir = currentSourcePath.parentDir.parentDir

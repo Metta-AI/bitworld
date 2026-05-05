@@ -375,7 +375,6 @@ proc runQuickRun(config: QuickRunConfig): int =
     clientWorkDir = absolutePath(rootDir / "clients")
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
-    clientAddressArg = "--address:ws://" & config.address & ":" & $config.port & "/player"
 
   var serverArgs = @[portArg, addressArg]
   if config.saveReplayPath.len > 0:
@@ -409,7 +408,7 @@ proc runQuickRun(config: QuickRunConfig): int =
 
   if config.players <= 1:
     try:
-      var clientArgs = @[clientAddressArg, "--title:" & gameTitle]
+      var clientArgs = @[portArg, "--title:" & gameTitle]
       if config.reconnectSeconds.len > 0:
         clientArgs.add("--reconnect:" & config.reconnectSeconds)
       clientProcesses.add(
@@ -429,7 +428,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     for i, launch in launches:
       try:
         var clientArgs = @[
-          clientAddressArg,
+          portArg,
           "--screen-only",
           "--title:" & launch.title,
           "--joystick:" & $(i + 1),
