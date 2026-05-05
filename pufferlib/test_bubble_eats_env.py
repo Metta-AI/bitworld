@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from bitworld_pufferlib import (
+from bitworld.pufferlib.bitworld_pufferlib import (
     ACTION_MASKS,
     AMONG_THEM_MAX_PLAYERS,
     BitWorldPolicy,
