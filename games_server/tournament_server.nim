@@ -17,6 +17,8 @@ const
   DefaultMmr = 1000.0
   MmrK = 16.0
   MinMmr = 100.0
+  PriorityGameCount = 30
+  PriorityBaseWeight = 9.0
   SelectionTopRatio = 8.0
   SelectionCurve = 2.0
   DockerBinEnv = "TOURNAMENT_DOCKER"
@@ -30,7 +32,7 @@ const
   GameContainerPort = 8080
   ContainerReplayDir = "/replays"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
-  CogameResultsEnv = "COGAME_RESULTS_PATH"
+  CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
   HealthPath = "/healthz"
   LogsPath = "/logs"
   ScoresPath = "/scores"
@@ -1056,21 +1058,29 @@ proc mmrWeight(mmr, minMmr, maxMmr: float): float =
     position = 1.0
   1.0 + (SelectionTopRatio - 1.0) * pow(position, SelectionCurve)
 
+proc priorityWeight(games: int): float =
+  ## Returns a stronger selection weight for under-tested policies.
+  if games >= PriorityGameCount:
+    return 0.0
+  PriorityBaseWeight + float(PriorityGameCount - games)
+
 proc playerWeights(
   players: openArray[PlayerManifest]
 ): seq[float] =
-  ## Returns selection weights biased toward higher-MMR policies.
+  ## Returns weights biased toward new policies and then higher MMR.
   let stats = rebuildStatsTable(players)
   var
     mmrs: seq[float]
+    games: seq[int]
     minRating = DefaultMmr
     maxRating = DefaultMmr
   for i, player in players:
-    let mmr =
-      if stats.hasKey(player.name):
-        stats[player.name].mmr
-      else:
-        DefaultMmr
+    var
+      mmr = DefaultMmr
+      gameCount = 0
+    if stats.hasKey(player.name):
+      mmr = stats[player.name].mmr
+      gameCount = stats[player.name].games
     if i == 0:
       minRating = mmr
       maxRating = mmr
@@ -1078,8 +1088,31 @@ proc playerWeights(
       minRating = min(minRating, mmr)
       maxRating = max(maxRating, mmr)
     mmrs.add(mmr)
-  for mmr in mmrs:
-    result.add(mmrWeight(mmr, minRating, maxRating))
+    games.add(gameCount)
+  for i, mmr in mmrs:
+    let priority = priorityWeight(games[i])
+    if priority > 0.0:
+      result.add(priority)
+    else:
+      result.add(mmrWeight(mmr, minRating, maxRating))
+
+proc maxPolicyCopies(count, policyCount: int): int =
+  ## Returns the per-policy player cap for one tournament game.
+  if policyCount <= 1:
+    return count
+  max(1, count div 2)
+
+proc cappedWeights(
+  weights: openArray[float],
+  picks: openArray[int],
+  maxCopies: int
+): seq[float] =
+  ## Returns selection weights after applying per-game policy caps.
+  for i, weight in weights:
+    if i < picks.len and picks[i] >= maxCopies:
+      result.add(0.0)
+    else:
+      result.add(weight)
 
 proc chooseWeightedPlayer(weights: openArray[float]): int =
   ## Chooses one player index from a positive weight vector.
@@ -1105,9 +1138,21 @@ proc choosePlayers(
   ## Chooses weighted-random players with replacement for one game.
   if players.len == 0:
     raise newException(TournamentError, "no players available")
-  let weights = playerWeights(players)
+  let
+    weights = playerWeights(players)
+    maxCopies = maxPolicyCopies(count, players.len)
+  if maxCopies * players.len < count:
+    raise newException(
+      TournamentError,
+      "not enough policies to enforce the 50% tournament cap"
+    )
+  var picks = newSeq[int](players.len)
   for slot in 0 ..< count:
-    let player = players[chooseWeightedPlayer(weights)]
+    let
+      availableWeights = cappedWeights(weights, picks, maxCopies)
+      playerIndex = chooseWeightedPlayer(availableWeights)
+      player = players[playerIndex]
+    inc picks[playerIndex]
     let playerName = visiblePlayerName(player, gameId, slot + 1)
     result.manifests.add(player)
     result.slots.add(PlayerSlot(

@@ -39,7 +39,7 @@ const
   ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
-  CogameResultsEnv = "COGAME_RESULTS_PATH"
+  CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CogameManifestName = "cogame_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"

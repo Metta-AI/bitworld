@@ -77,7 +77,7 @@ variables. Command line flags override these values when both are set.
 | Variable | Meaning |
 | --- | --- |
 | `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_RESULTS_PATH` | Path where final scores are written |
+| `COGAME_SAVE_RESULTS_PATH` | Path where final scores are written |
 | `COGAME_SAVE_REPLAY_PATH` | Optional path where a replay is written |
 | `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay to load |
 
@@ -85,7 +85,7 @@ Results are written when `maxGames` is set to 1 or higher.
 
 ```sh
 COGAME_CONFIG_PATH=config.json \
-COGAME_RESULTS_PATH=scores.json \
+COGAME_SAVE_RESULTS_PATH=scores.json \
 COGAME_SAVE_REPLAY_PATH=run.bitreplay \
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
@@ -330,7 +330,7 @@ Example config.json:
 
 ```sh
 set -gx COGAME_CONFIG_PATH config.json
-set -gx COGAME_RESULTS_PATH ../tmp/scores.json
+set -gx COGAME_SAVE_RESULTS_PATH ../tmp/scores.json
 set -gx COGAME_SAVE_REPLAY_PATH ../tmp/replay.rep
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
@@ -348,7 +348,7 @@ http://localhost:2000/player?name=player7&token=0xBADA55_6&slot=6
 http://localhost:2000/player?name=player8&token=0xBADA55_7&slot=7
 
 When a game finishes with `maxGames` set to 1 or higher, `--save-scores` saves
-the scores to a file. `COGAME_RESULTS_PATH` can be used instead.
+the scores to a file. `COGAME_SAVE_RESULTS_PATH` can be used instead.
 
 The file uses JSON format and must be an array of objects with `reward` as a
 required field. The game can include `name`, `win`, `tasks`, `kills`, and other

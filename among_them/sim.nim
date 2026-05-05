@@ -150,6 +150,7 @@ const
     12,    # 14 light blue   -> dark navy
     9,     # 15 pale blue    -> dark teal
   ]
+  TaskBob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
   WebSocketPath* = "/player"
   SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
@@ -1307,7 +1308,7 @@ proc lobbyIconStartY*(sim: SimServer): int =
   ## Returns the lobby icon row y coordinate.
   if sim.lobbyIsStarting(): 32 else: 26
 
-proc mapIndex*(x, y: int): int =
+proc mapIndex*(x, y: int): int {.inline.} =
   y * MapWidth + x
 
 proc mixHash(hash: var uint64, value: uint64) =
@@ -2376,10 +2377,81 @@ proc isWall*(sim: SimServer, mx, my: int): bool =
     return true
   sim.wallMask[mapIndex(mx, my)]
 
-proc castShadows*(sim: var SimServer, originMx, originMy, cameraX, cameraY: int) =
+{.push checks: off.}
+proc copyMapViewport(
+  sim: var SimServer,
+  cameraX,
+  cameraY: int
+) =
+  ## Copies the clipped map viewport into the framebuffer.
+  if cameraX >= 0 and cameraY >= 0 and
+      cameraX + ScreenWidth <= MapWidth and
+      cameraY + ScreenHeight <= MapHeight:
+    for sy in 0 ..< ScreenHeight:
+      copyMem(
+        addr sim.fb.indices[sy * ScreenWidth],
+        addr sim.mapPixels[(cameraY + sy) * MapWidth + cameraX],
+        ScreenWidth
+      )
+    return
+
+  sim.fb.clearFrame(MapVoidColor)
+  let
+    srcX0 = max(0, cameraX)
+    srcY0 = max(0, cameraY)
+    srcX1 = min(MapWidth, cameraX + ScreenWidth)
+    srcY1 = min(MapHeight, cameraY + ScreenHeight)
+  if srcX0 >= srcX1 or srcY0 >= srcY1:
+    return
+  let
+    copyW = srcX1 - srcX0
+    dstX0 = srcX0 - cameraX
+  for my in srcY0 ..< srcY1:
+    let
+      sy = my - cameraY
+      dstOffset = sy * ScreenWidth + dstX0
+      srcOffset = my * MapWidth + srcX0
+    copyMem(
+      addr sim.fb.indices[dstOffset],
+      addr sim.mapPixels[srcOffset],
+      copyW
+    )
+
+proc applyViewportShadows(
+  sim: var SimServer,
+  cameraX,
+  cameraY: int
+) =
+  ## Applies shadow tint to visible non-wall viewport pixels.
+  let
+    sx0 = max(0, -cameraX)
+    sy0 = max(0, -cameraY)
+    sx1 = min(ScreenWidth, MapWidth - cameraX)
+    sy1 = min(ScreenHeight, MapHeight - cameraY)
+  if sx0 >= sx1 or sy0 >= sy1:
+    return
+  for sy in sy0 ..< sy1:
+    var
+      fbIndex = sy * ScreenWidth + sx0
+      mapIdx = (cameraY + sy) * MapWidth + cameraX + sx0
+    let endIndex = fbIndex + sx1 - sx0
+    while fbIndex < endIndex:
+      if sim.shadowBuf[fbIndex] and not sim.wallMask[mapIdx]:
+        sim.fb.indices[fbIndex] = ShadowMap[sim.fb.indices[fbIndex] and 0x0F]
+      inc fbIndex
+      inc mapIdx
+
+proc castShadows*(
+  sim: var SimServer,
+  originMx,
+  originMy,
+  cameraX,
+  cameraY: int
+) =
   for i in 0 ..< sim.shadowBuf.len:
     sim.shadowBuf[i] = false
   for sy in 0 ..< ScreenHeight:
+    let rowBase = sy * ScreenWidth
     for sx in 0 ..< ScreenWidth:
       let
         mx = cameraX + sx
@@ -2394,11 +2466,13 @@ proc castShadows*(sim: var SimServer, originMx, originMy, cameraX, cameraY: int)
         let
           rx = originMx + dx * s div steps
           ry = originMy + dy * s div steps
-        if sim.isWall(rx, ry):
+        if rx < 0 or ry < 0 or rx >= MapWidth or ry >= MapHeight or
+            sim.wallMask[ry * MapWidth + rx]:
           shadowed = true
           break
       if shadowed:
-        sim.shadowBuf[sy * ScreenWidth + sx] = true
+        sim.shadowBuf[rowBase + sx] = true
+{.pop.}
 
 proc allVotesCast*(sim: SimServer): bool =
   for i in 0 ..< sim.players.len:
@@ -3236,54 +3310,26 @@ proc writeSpritePlayerObservationTasks(
   for taskIndex in 0 ..< sim.tasks.len:
     sim.writeSpritePlayerObservationTaskEntry(playerIndex, taskIndex, false, slotIndex, output)
 
-proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  if sim.phase == Lobby:
-    return sim.buildLobbyFrame(playerIndex)
-  if sim.phase == RoleReveal:
-    return sim.buildRoleRevealFrame(playerIndex)
-  if sim.phase == GameOver:
-    return sim.buildGameOverFrame(playerIndex)
-  if sim.phase == Voting:
-    return sim.buildVoteFrame(playerIndex)
-  if sim.phase == VoteResult:
-    return sim.buildResultFrame(playerIndex)
-  sim.fb.clearFrame(MapVoidColor)
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.fb.packFramebuffer()
-    return sim.fb.packed
-
+{.push checks: off.}
+proc renderPlayingFrame(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] =
+  ## Renders the normal player viewport after the player index is validated.
   let
     player = sim.players[playerIndex]
     view = sim.playerView(playerIndex)
     cameraX = view.cameraX
     cameraY = view.cameraY
 
-  for y in 0 ..< ScreenHeight:
-    for x in 0 ..< ScreenWidth:
-      let
-        mx = cameraX + x
-        my = cameraY + y
-      if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
-        sim.fb.putPixel(x, y, sim.mapPixels[mapIndex(mx, my)])
+  sim.copyMapViewport(cameraX, cameraY)
 
   let
     viewerIsGhost = view.viewerIsGhost
   sim.castShadows(view.originMx, view.originMy, cameraX, cameraY)
 
   if not viewerIsGhost:
-    for sy in 0 ..< ScreenHeight:
-      for sx in 0 ..< ScreenWidth:
-        let
-          mx = cameraX + sx
-          my = cameraY + sy
-          idx = sy * ScreenWidth + sx
-        if not sim.shadowBuf[idx]:
-          continue
-        if mx < 0 or my < 0 or mx >= MapWidth or my >= MapHeight:
-          continue
-        if sim.wallMask[mapIndex(mx, my)]:
-          continue
-        sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
+    sim.applyViewportShadows(cameraX, cameraY)
 
   for body in sim.bodies:
     let
@@ -3293,10 +3339,11 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       continue
     sim.fb.blitSpriteOutlined(sim.bodySprite, bsx, bsy, body.color, false)
 
-  var drawOrder = newSeq[int](sim.players.len)
-  for i in 0 ..< sim.players.len:
+  let drawCount = min(sim.players.len, MaxPlayers)
+  var drawOrder: array[MaxPlayers, int]
+  for i in 0 ..< drawCount:
     drawOrder[i] = i
-  for i in 1 ..< drawOrder.len:
+  for i in 1 ..< drawCount:
     let key = drawOrder[i]
     var j = i - 1
     while j >= 0 and sim.players[drawOrder[j]].y > sim.players[key].y:
@@ -3304,7 +3351,9 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       dec j
     drawOrder[j + 1] = key
 
-  for i in drawOrder:
+  let taskCount = sim.tasks.len
+  for orderIndex in 0 ..< drawCount:
+    let i = drawOrder[orderIndex]
     let
       p = sim.players[i]
       sx = p.x - SpriteDrawOffX - cameraX
@@ -3318,17 +3367,16 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       sim.fb.blitSpriteOutlined(sim.ghostSprite, sx, sy, p.color, p.flipH)
 
   if player.role == Crewmate:
-    for t in 0 ..< sim.tasks.len:
-      if not player.hasTask(t):
+    for t in player.assignedTasks:
+      if t < 0 or t >= taskCount:
         continue
       let
         task = sim.tasks[t]
-        bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
         bobY =
           if player.activeTask == t:
             0
           else:
-            bob[(sim.tickCount div 3) mod bob.len]
+            TaskBob[(sim.tickCount div 3) mod TaskBob.len]
         iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
         iconSy = task.y - SpriteSize - 2 + bobY - cameraY
       if playerIndex < task.completed.len and task.completed[playerIndex]:
@@ -3350,19 +3398,18 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if player.role == Crewmate and sim.config.showTaskArrows:
     let radarColor = 8'u8
     let margin = 0
-    for t in 0 ..< sim.tasks.len:
-      if not player.hasTask(t):
+    for t in player.assignedTasks:
+      if t < 0 or t >= taskCount:
         continue
       let task = sim.tasks[t]
       if playerIndex < task.completed.len and task.completed[playerIndex]:
         continue
       let
-        bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
         bobY =
           if player.activeTask == t:
             0
           else:
-            bob[(sim.tickCount div 3) mod bob.len]
+            TaskBob[(sim.tickCount div 3) mod TaskBob.len]
         iconX = task.x + task.w div 2 - cameraX
         iconY = task.y - SpriteSize div 2 - 2 + bobY - cameraY
         iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
@@ -3420,6 +3467,24 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   sim.fb.packFramebuffer()
   sim.fb.packed
+{.pop.}
+
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
+  if sim.phase == Lobby:
+    return sim.buildLobbyFrame(playerIndex)
+  if sim.phase == RoleReveal:
+    return sim.buildRoleRevealFrame(playerIndex)
+  if sim.phase == GameOver:
+    return sim.buildGameOverFrame(playerIndex)
+  if sim.phase == Voting:
+    return sim.buildVoteFrame(playerIndex)
+  if sim.phase == VoteResult:
+    return sim.buildResultFrame(playerIndex)
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    sim.fb.clearFrame(MapVoidColor)
+    sim.fb.packFramebuffer()
+    return sim.fb.packed
+  sim.renderPlayingFrame(playerIndex)
 
 proc writeSpritePlayerObservation*(
   sim: var SimServer,

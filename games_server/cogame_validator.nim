@@ -18,7 +18,7 @@ const
   AdminPath = "/admin"
   ReplayPath = "/replay"
   ConfigEnv = "COGAME_CONFIG_PATH"
-  ResultsEnv = "COGAME_RESULTS_PATH"
+  ResultsEnv = "COGAME_SAVE_RESULTS_PATH"
   ReplaySaveEnv = "COGAME_SAVE_REPLAY_PATH"
   ReplayLoadEnv = "COGAME_LOAD_REPLAY_PATH"
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
