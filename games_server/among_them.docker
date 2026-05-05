@@ -1,18 +1,24 @@
 # Build Docker.
-FROM alpine AS build
+FROM debian:bookworm-slim AS build
 
-RUN apk add --no-cache build-base curl gcompat git
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git && \
+  rm -rf /var/lib/apt/lists/*
 
-RUN if [ "$(apk --print-arch)" = "x86_64" ]; then \
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
     curl -fsSL \
       -o /usr/local/bin/nimby \
 https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-X64; \
-  elif [ "$(apk --print-arch)" = "aarch64" ]; then \
+  elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
     curl -fsSL \
       -o /usr/local/bin/nimby \
 https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-ARM64; \
   else \
-    echo "unsupported arch: $(apk --print-arch)" && exit 1; \
+    echo "unsupported arch: $(dpkg --print-architecture)" && exit 1; \
   fi && \
   chmod +x /usr/local/bin/nimby && \
   nimby use 2.2.4
@@ -36,7 +42,7 @@ RUN nim $NimCommand \
   $NimMain
 
 # Run Docker.
-FROM alpine
+FROM debian:bookworm-slim
 
 WORKDIR /workspace/bitworld
 COPY --from=build /workspace/bitworld/among_them/among_them /bin/among_them
