@@ -198,6 +198,10 @@ proc run(config: DiagConfig) =
   let previousDir = getCurrentDir()
   setCurrentDir(getCurrentDir() / "marketboard")
 
+  createDir(previousDir / "tmp")
+  var traceFile = open(previousDir / "tmp/diag_trace.txt", fmWrite)
+  var reportFile = open(previousDir / "tmp/diag_report.txt", fmWrite)
+
   var rng = initRand(config.seed)
   let lineup = generateLineup(rng, config.fixedLineup)
 
@@ -211,9 +215,9 @@ proc run(config: DiagConfig) =
     discard sim.addPlayer(bot.name)
     bots.add bot
 
-  echo &"=== Diagnose Bots: seed={config.seed} ticks={config.ticks} interval={config.interval} ==="
-  echo &"Lineup: {lineup}"
-  echo ""
+  traceFile.writeLine &"=== Diagnose Bots: seed={config.seed} ticks={config.ticks} interval={config.interval} ==="
+  traceFile.writeLine &"Lineup: {lineup}"
+  traceFile.writeLine ""
 
   # Track state for change detection
   type PlayerSnapshot = object
@@ -225,11 +229,19 @@ proc run(config: DiagConfig) =
   var lastPhase: seq[string]
   var lastSnap: seq[PlayerSnapshot]
   var phaseHist: seq[CountTable[string]]
+  var phaseTicks: seq[CountTable[string]]
+  var goldEarned: seq[int]
+  var goldSpent: seq[int]
+  var prevGold: seq[int]
 
   for i in 0 ..< bots.len:
     lastPhase.add ""
     lastSnap.add PlayerSnapshot(gear: @[0,0,0,0,0], gold: 0, role: "", listingCount: 0)
     phaseHist.add initCountTable[string]()
+    phaseTicks.add initCountTable[string]()
+    goldEarned.add 0
+    goldSpent.add 0
+    prevGold.add 500
 
   for tick in 0 ..< config.ticks:
     var inputs = newSeq[PlayerInput](sim.players.len)
@@ -249,23 +261,33 @@ proc run(config: DiagConfig) =
       of bkRkhenna: bots[i].rkState.prevMask = mask
       of bkPipitori: bots[i].pipState.prevMask = mask
 
-      # Log phase transitions
+      # Log phase transitions and accumulate ticks
       let phase = bots[i].phaseName()
+      if lastPhase[i].len > 0:
+        phaseTicks[i].inc(lastPhase[i])
       if phase != lastPhase[i]:
         phaseHist[i].inc(phase)
         let matchFilter = config.filter.len == 0 or bots[i].name.toLowerAscii.contains(config.filter.toLowerAscii)
         if matchFilter and lastPhase[i].len > 0:
           let p = sim.players[i]
           let gears = playerGearTiers(p)
-          echo &"  [{tick:6d}] {bots[i].name:12s} {lastPhase[i]} -> {phase}  gold={p.gold} gear={gears.gearStr()} inv=({invSummary(p)})"
+          traceFile.writeLine &"  [{tick:6d}] {bots[i].name:12s} {lastPhase[i]} -> {phase}  gold={p.gold} gear={gears.gearStr()} inv=({invSummary(p)})"
         lastPhase[i] = phase
 
     sim.step(inputs)
 
+    for i in 0 ..< bots.len:
+      if i >= sim.players.len: break
+      let g = sim.players[i].gold
+      let delta = g - prevGold[i]
+      if delta > 0: goldEarned[i] += delta
+      elif delta < 0: goldSpent[i] += -delta
+      prevGold[i] = g
+
     # Periodic full status dump
     if sim.tickCount mod config.interval == 0:
-      echo ""
-      echo &"--- tick {sim.tickCount} {marketSummary(sim)} ---"
+      traceFile.writeLine ""
+      traceFile.writeLine &"--- tick {sim.tickCount} {marketSummary(sim)} ---"
       for i in 0 ..< bots.len:
         let p = sim.players[i]
         let gears = playerGearTiers(p)
@@ -288,12 +310,14 @@ proc run(config: DiagConfig) =
         let changeStr = if changes.len > 0: " << " & changes.join(", ") else: ""
         let matchFilter = config.filter.len == 0 or bots[i].name.toLowerAscii.contains(config.filter.toLowerAscii)
         if matchFilter:
-          echo &"  {bots[i].name:12s} phase={bots[i].phaseName():20s} role={$p.role:10s} gold={p.gold:5d} gear={gears.gearStr()} list={p.listings.len} inv=({invSummary(p)}){changeStr}"
+          traceFile.writeLine &"  {bots[i].name:12s} phase={bots[i].phaseName():20s} role={$p.role:10s} gold={p.gold:5d} gear={gears.gearStr()} list={p.listings.len} inv=({invSummary(p)}){changeStr}"
 
-  echo ""
-  echo "=== Final State ==="
-  echo &"  {marketSummary(sim)}"
-  echo ""
+  traceFile.close()
+
+  # Report file
+  reportFile.writeLine "=== Final State ==="
+  reportFile.writeLine &"  {marketSummary(sim)}"
+  reportFile.writeLine ""
   for i in 0 ..< bots.len:
     let p = sim.players[i]
     let gears = playerGearTiers(p)
@@ -301,20 +325,138 @@ proc run(config: DiagConfig) =
     for l in p.listings:
       listItems.add &"{l.item}@{l.priceEach}"
     let listStr = if listItems.len > 0: listItems.join(",") else: "none"
-    echo &"  {bots[i].name:12s} role={$p.role:10s} gold={p.gold:5d} gear={gears.gearStr()} listings={listStr}"
+    reportFile.writeLine &"  {bots[i].name:12s} role={$p.role:10s} gold={p.gold:5d} gear={gears.gearStr()} listings={listStr}"
 
-  echo ""
-  echo "=== Phase Time Distribution ==="
+  reportFile.writeLine ""
+  reportFile.writeLine "=== Bot Scores ==="
+  reportFile.writeLine "  score = gear_value + gold_earned + listing_value"
+  reportFile.writeLine "  (measures total value contributed to the economy)"
+  reportFile.writeLine ""
+  for i in 0 ..< bots.len:
+    let p = sim.players[i]
+    let gears = playerGearTiers(p)
+    # Gear value: T1=15, T2=35, T3=70 per slot (matches gear base prices)
+    var gearValue = 0
+    for g in gears:
+      case g
+      of 1: gearValue += 15
+      of 2: gearValue += 35
+      of 3: gearValue += 70
+      else: discard
+    # Listing value (goods currently for sale — value available to others)
+    var listingValue = 0
+    for l in p.listings:
+      listingValue += l.priceEach * l.quantity
+    let score = gearValue + goldEarned[i] + listingValue
+    reportFile.writeLine &"  {bots[i].name:12s} score={score:5d}  gear_val={gearValue:3d} earned={goldEarned[i]:4d}g spent={goldSpent[i]:4d}g listings={listingValue:3d}g"
+
+  reportFile.writeLine ""
+  reportFile.writeLine "=== Time Breakdown (ticks per phase category) ==="
   for i in 0 ..< bots.len:
     let matchFilter = config.filter.len == 0 or bots[i].name.toLowerAscii.contains(config.filter.toLowerAscii)
     if not matchFilter: continue
-    echo &"  {bots[i].name}:"
+    var travel, gathering, crafting, selling, buying, idle, other = 0
+    for phase, ticks in phaseTicks[i]:
+      let pl = phase.toLowerAscii
+      if pl.contains("pathto") or pl.contains("walkto"):
+        travel += ticks
+      elif pl.contains("gather") or pl.contains("startgather") or pl.contains("holdgather"):
+        gathering += ticks
+      elif pl.contains("craft") or pl.contains("holdcraft") or pl.contains("startcraft"):
+        crafting += ticks
+      elif pl.contains("sell") or pl.contains("setprice") or pl.contains("confirmsell") or pl.contains("exitsell"):
+        selling += ticks
+      elif pl.contains("buy") or pl.contains("exitbuy"):
+        buying += ticks
+      elif pl.contains("wait") or pl.contains("idle") or pl.contains("evaluate"):
+        idle += ticks
+      else:
+        other += ticks
+    let total = travel + gathering + crafting + selling + buying + idle + other
+    if total == 0: continue
+    let pct = proc(v: int): string = &"{v:5d} ({100*v div total:2d}%)"
+    reportFile.writeLine &"  {bots[i].name:12s} travel={pct(travel)} gather={pct(gathering)} craft={pct(crafting)} sell={pct(selling)} buy={pct(buying)} idle={pct(idle)} other={pct(other)}"
+
+  reportFile.writeLine ""
+  reportFile.writeLine "=== Economy Summary ==="
+  reportFile.writeLine ""
+  reportFile.writeLine "  --- Per-Bot Assets ---"
+  var totalGold, totalListingValue = 0
+  var gearCounts: array[4, int]
+  for i in 0 ..< bots.len:
+    let p = sim.players[i]
+    totalGold += p.gold
+    let gears = playerGearTiers(p)
+    for g in gears:
+      inc gearCounts[g]
+    reportFile.writeLine &"  {bots[i].name:12s} gold={p.gold:5d} role={$p.role:10s} gear={gears.gearStr()}"
+    reportFile.writeLine &"    inventory: W={p.inv.counts[WoodItem]} S={p.inv.counts[StoneItem]} Hw={p.inv.counts[HardwoodItem]} Cu={p.inv.counts[CopperItem]} Iw={p.inv.counts[IronwoodItem]} Fe={p.inv.counts[IronItem]}"
+    var invGearCount = 0
+    for gi in 6 ..< 21:
+      invGearCount += p.inv.counts[ItemKind(gi)]
+    if invGearCount > 0:
+      reportFile.writeLine &"    gear in inv: {invGearCount} pieces"
+    if p.listings.len > 0:
+      reportFile.writeLine &"    listings ({p.listings.len}):"
+      for l in p.listings:
+        totalListingValue += l.priceEach * l.quantity
+        reportFile.writeLine &"      {l.item} x{l.quantity} @{l.priceEach}g (total {l.priceEach * l.quantity}g)"
+    else:
+      reportFile.writeLine &"    listings: none"
+
+  reportFile.writeLine ""
+  reportFile.writeLine "  --- Market State ---"
+  var matSupply: array[6, int]
+  var matValue: array[6, int]
+  var gearSupply: array[3, int]
+  var gearValue: array[3, int]
+  for p in sim.players:
+    for l in p.listings:
+      case l.item
+      of WoodItem: matSupply[0] += l.quantity; matValue[0] += l.priceEach * l.quantity
+      of StoneItem: matSupply[1] += l.quantity; matValue[1] += l.priceEach * l.quantity
+      of HardwoodItem: matSupply[2] += l.quantity; matValue[2] += l.priceEach * l.quantity
+      of CopperItem: matSupply[3] += l.quantity; matValue[3] += l.priceEach * l.quantity
+      of IronwoodItem: matSupply[4] += l.quantity; matValue[4] += l.priceEach * l.quantity
+      of IronItem: matSupply[5] += l.quantity; matValue[5] += l.priceEach * l.quantity
+      else:
+        let t = gearTier(l.item)
+        if t > 0:
+          gearSupply[t-1] += l.quantity
+          gearValue[t-1] += l.priceEach * l.quantity
+  reportFile.writeLine &"    Wood:     qty={matSupply[0]:3d}  value={matValue[0]:5d}g"
+  reportFile.writeLine &"    Stone:    qty={matSupply[1]:3d}  value={matValue[1]:5d}g"
+  reportFile.writeLine &"    Hardwood: qty={matSupply[2]:3d}  value={matValue[2]:5d}g"
+  reportFile.writeLine &"    Copper:   qty={matSupply[3]:3d}  value={matValue[3]:5d}g"
+  reportFile.writeLine &"    Ironwood: qty={matSupply[4]:3d}  value={matValue[4]:5d}g"
+  reportFile.writeLine &"    Iron:     qty={matSupply[5]:3d}  value={matValue[5]:5d}g"
+  reportFile.writeLine &"    T1 gear:  qty={gearSupply[0]:3d}  value={gearValue[0]:5d}g"
+  reportFile.writeLine &"    T2 gear:  qty={gearSupply[1]:3d}  value={gearValue[1]:5d}g"
+  reportFile.writeLine &"    T3 gear:  qty={gearSupply[2]:3d}  value={gearValue[2]:5d}g"
+
+  reportFile.writeLine ""
+  reportFile.writeLine "  --- Totals ---"
+  reportFile.writeLine &"    Total gold held:     {totalGold}g"
+  reportFile.writeLine &"    Total listing value: {totalListingValue}g"
+  reportFile.writeLine &"    Gear equipped:       empty={gearCounts[0]} T1={gearCounts[1]} T2={gearCounts[2]} T3={gearCounts[3]}"
+  reportFile.writeLine &"    Gear slots filled:   {gearCounts[1]+gearCounts[2]+gearCounts[3]}/{bots.len * 5}"
+
+  reportFile.writeLine ""
+  reportFile.writeLine "=== Phase Ticks (detailed) ==="
+  for i in 0 ..< bots.len:
+    let matchFilter = config.filter.len == 0 or bots[i].name.toLowerAscii.contains(config.filter.toLowerAscii)
+    if not matchFilter: continue
+    reportFile.writeLine &"  {bots[i].name}:"
     var sorted: seq[(int, string)]
-    for phase, count in phaseHist[i]:
-      sorted.add (count, phase)
+    for phase, ticks in phaseTicks[i]:
+      sorted.add (ticks, phase)
     sorted.sort(proc(a, b: (int, string)): int = cmp(b[0], a[0]))
-    for (count, phase) in sorted[0 ..< min(8, sorted.len)]:
-      echo &"    {phase:25s} {count:6d}x"
+    for (ticks, phase) in sorted[0 ..< min(10, sorted.len)]:
+      let pct = 100 * ticks div config.ticks
+      reportFile.writeLine &"    {phase:25s} {ticks:6d} ticks ({pct:2d}%)"
+
+  reportFile.close()
+  echo &"Wrote tmp/diag_trace.txt and tmp/diag_report.txt"
 
   setCurrentDir(previousDir)
 
