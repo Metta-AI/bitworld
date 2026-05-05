@@ -61,13 +61,13 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(parsed, 42)
 
     def test_parse_reward_stream_payload_by_player_name(self) -> None:
-        payload = "reward sprite_player 7\nreward player1 42\n"
+        payload = "reward player2 7\nreward player1 42\n"
 
         self.assertEqual(parse_reward_payload(payload, "player1"), 42)
 
     def test_parse_reward_stream_payload_requires_named_player(self) -> None:
         with self.assertRaises(ValueError):
-            parse_reward_payload("reward sprite_player 7\n", "player1")
+            parse_reward_payload("reward player2 7\n", "player1")
 
     def test_action_space_matches_among_them_controls(self) -> None:
         allowed_buttons = 1 | 2 | 4 | 8 | 32 | 64
