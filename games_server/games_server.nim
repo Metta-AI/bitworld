@@ -1636,6 +1636,7 @@ proc botRunArgs(
     "run",
     "-d",
     "--init",
+    "--add-host=host.docker.internal:host-gateway",
     "--name",
     name,
     "--label",
