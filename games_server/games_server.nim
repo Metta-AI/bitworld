@@ -807,6 +807,23 @@ proc requireDocker(args: openArray[string]): string =
 
 var skipPull* = false
 
+proc buildLocalImages() =
+  ## Builds native Docker images locally using tools/docker_build.nim.
+  let
+    root = getCurrentDir()
+    buildTool = root / "tools" / "docker_build.nim"
+  if not fileExists(buildTool):
+    echo "Error: ", buildTool, " not found. Run from the repo root."
+    quit(1)
+  echo "Building local Docker images..."
+  let code = execCmd("nim r " & buildTool &
+    " --platform:linux/" & hostCPU &
+    " among_them nottoodumb ivotewell italkalot")
+  if code != 0:
+    echo "Error: local image build failed."
+    quit(1)
+  echo "Local images built successfully."
+
 proc pullDockerImage(image: string) =
   ## Pulls the latest version of one Docker image.
   if skipPull:
@@ -3193,6 +3210,9 @@ when isMainModule:
       of "port":
         port = parseInt(val)
       of "no-pull":
+        skipPull = true
+      of "build":
+        buildLocalImages()
         skipPull = true
       else:
         discard
