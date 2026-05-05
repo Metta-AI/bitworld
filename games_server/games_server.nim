@@ -3,7 +3,8 @@ import
     algorithm, json, net, os, osproc, parseopt, strutils, times
   ],
   mummy,
-  taggy
+  taggy,
+  cogame_validator
 
 from std/httpclient import close, getContent, newHttpClient
 
@@ -35,6 +36,7 @@ const
   HealthPath = "/healthz"
   ClientPath = "/client/"
   CreatePath = "/games/create"
+  ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
   CogameResultsEnv = "COGAME_RESULTS_PATH"
@@ -98,6 +100,9 @@ table {
   width: 100%;
   border-collapse: collapse;
 }
+form {
+  margin: 0;
+}
 td,
 th {
   padding: 4px;
@@ -138,11 +143,26 @@ th {
   text-align: right;
 }
 .button {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 58px;
+  height: 19px;
+  margin: 0;
   border: 1px solid #303050;
+  border-radius: 0;
+  appearance: none;
+  -webkit-appearance: none;
   background: #eeeeff;
   color: #000020;
-  font: 11px Verdana, Helvetica, Arial, sans-serif;
+  cursor: pointer;
+  font: 11px/13px Verdana, Helvetica, Arial, sans-serif;
   padding: 2px 8px;
+  text-align: center;
+  text-decoration: none;
+  vertical-align: middle;
+}
+.button:hover {
+  text-decoration: none;
 }
 .input {
   width: 64px;
@@ -165,6 +185,21 @@ th {
 }
 .notice {
   margin: 8px 0;
+}
+.message {
+  white-space: pre-wrap;
+}
+.pass {
+  color: #006000;
+  font-weight: 700;
+}
+.fail {
+  color: #a00000;
+  font-weight: 700;
+}
+.skip {
+  color: #606060;
+  font-weight: 700;
 }
 .footer {
   margin: 12px 0 0;
@@ -612,6 +647,32 @@ proc manifestUrl(manifest: GameManifest): string =
 proc createUrl(manifest: GameManifest): string =
   ## Builds a create-game URL for one manifest.
   CreatePath & "?manifest=" & encodeUrlComponent(manifest.key)
+
+proc validationStatusText(status: CriterionStatus): string =
+  ## Returns the display label for one validation status.
+  case status
+  of CriterionPass:
+    result = "PASS"
+  of CriterionFail:
+    result = "FAIL"
+  of CriterionSkip:
+    result = "SKIP"
+
+proc validationStatusClass(status: CriterionStatus): string =
+  ## Returns the CSS class for one validation status.
+  case status
+  of CriterionPass:
+    result = "pass"
+  of CriterionFail:
+    result = "fail"
+  of CriterionSkip:
+    result = "skip"
+
+proc runValidation(manifest: GameManifest): CertificationResult =
+  ## Runs the CoGame validator library for one manifest.
+  var config = defaultValidatorConfig()
+  config.dockerBin = dockerBin()
+  certifyManifest(manifest.path, config)
 
 proc dockerOwner(): string =
   ## Returns the default GitHub container package owner.
@@ -2004,7 +2065,7 @@ proc renderManifestTable(): string =
     table:
       tr:
         td ".cat":
-          colspan "5"
+          colspan "6"
           say "Create new game"
       tr:
         th ".head":
@@ -2017,6 +2078,8 @@ proc renderManifestTable(): string =
           say "Docker"
         th ".head":
           say "Launch"
+        th ".head":
+          say "Validate"
       for i, manifest in manifests:
         let
           rowClass = if i mod 2 == 0: ".row1" else: ".row2"
@@ -2040,6 +2103,17 @@ proc renderManifestTable(): string =
             a ".button":
               href createUrl(manifest)
               say "Launch"
+          td rowClass & " nowrap":
+            form:
+              action ValidationPath
+              tmethod "post"
+              input:
+                ttype "hidden"
+                name "manifest"
+                value manifest.key
+              button ".button":
+                ttype "submit"
+                say "Validate"
 
 proc renderCreateForm(manifestInfo: GameManifest): string =
   ## Renders the manifest-backed create-game form.
@@ -2492,6 +2566,127 @@ proc renderCreatePage(notice = "", manifestKey = ""): string =
               say esc(manifestInfo.key)
             say "."
 
+proc renderValidationTable(
+  criteria: seq[ValidationCriterion]
+): string =
+  ## Renders validator criteria as a pass/fail table.
+  renderFragment:
+    table:
+      tr:
+        th ".head":
+          say "Status"
+        th ".head":
+          say "Criterion"
+        th ".head":
+          say "Name"
+        th ".head":
+          say "Message"
+      if criteria.len == 0:
+        tr:
+          td ".row1":
+            colspan "4"
+            say "No validation criteria were produced."
+      for i, criterion in criteria:
+        let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
+        tr:
+          td rowClass & " nowrap":
+            span "." & validationStatusClass(criterion.status):
+              say validationStatusText(criterion.status)
+          td rowClass & " nowrap":
+            say esc(criterion.id)
+          td rowClass:
+            say esc(criterion.name)
+          td rowClass & " message":
+            if criterion.message.len > 0:
+              say esc(criterion.message)
+            else:
+              say "-"
+
+proc renderValidationArtifacts(cert: CertificationResult): string =
+  ## Renders artifact paths produced by validation.
+  if cert.artifacts.workspace.len == 0:
+    return ""
+  renderFragment:
+    table:
+      tr:
+        td ".cat":
+          colspan "2"
+          say "Artifacts"
+      tr:
+        td ".row1 fieldName nowrap":
+          say "Workspace"
+        td ".row1":
+          say esc(cert.artifacts.workspace)
+      tr:
+        td ".row2 fieldName nowrap":
+          say "Results"
+        td ".row2":
+          say esc(cert.artifacts.resultsPath)
+      tr:
+        td ".row1 fieldName nowrap":
+          say "Replay"
+        td ".row1":
+          say esc(cert.artifacts.replayPath)
+      tr:
+        td ".row2 fieldName nowrap":
+          say "Logs"
+        td ".row2":
+          say esc(cert.artifacts.logsDir)
+
+proc renderValidationPage(
+  manifestInfo: GameManifest,
+  cert: CertificationResult
+): string =
+  ## Renders one CoGame validation result page.
+  let
+    tableHtml = renderValidationTable(cert.criteria)
+    artifactHtml = renderValidationArtifacts(cert)
+    status =
+      if cert.validationPassed():
+        "Validation passed."
+      else:
+        "Validation failed."
+  render:
+    html:
+      head:
+        title:
+          say "Validation: " & esc(manifestInfo.name)
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".page":
+          table:
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say "Validation"
+                p ".small":
+                  say esc(manifestInfo.name)
+              td ".row2 right small":
+                a:
+                  href "/"
+                  say "Back"
+          p ".notice small":
+            b:
+              say esc(status)
+          table:
+            tr:
+              td ".cat":
+                say "Criteria"
+          say tableHtml
+          if artifactHtml.len > 0:
+            p ".small":
+              say " "
+            say artifactHtml
+          p ".footer small":
+            say "Manifest: "
+            a:
+              href manifestUrl(manifestInfo)
+              target "_blank"
+              say esc(manifestInfo.key)
+            say "."
+
 proc renderLogsPage(name, logText: string): string =
   ## Renders current Docker logs for one container.
   let cleanLog =
@@ -2752,6 +2947,15 @@ proc createHandler(request: Request) =
   let game = createGame(parseFormBody(request))
   request.respondRedirect("/?notice=created+" & game.name)
 
+proc validationHandler(request: Request) =
+  ## Handles CoGame validation requests.
+  let
+    manifestInfo = findGameManifest(
+      formValue(parseFormBody(request), "manifest")
+    )
+    cert = runValidation(manifestInfo)
+  request.respondHtml(200, renderValidationPage(manifestInfo, cert))
+
 proc stopHandler(request: Request) =
   ## Handles stop-game requests.
   let form = parseFormBody(request)
@@ -2928,6 +3132,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.clientHandler()
     elif request.path == CreatePath and request.httpMethod == "POST":
       request.createHandler()
+    elif request.path == ValidationPath and request.httpMethod == "POST":
+      request.validationHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
       request.botHandler()
     elif request.path == "/games/bot/stop" and request.httpMethod == "POST":
