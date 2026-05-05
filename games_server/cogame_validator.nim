@@ -15,7 +15,6 @@ const
   HealthPath = "/healthz"
   PlayerPath = "/player"
   GlobalPath = "/global"
-  ReplayPath = "/replay"
   ConfigEnv = "COGAME_CONFIG_PATH"
   ResultsEnv = "COGAME_RESULTS_PATH"
   ReplaySaveEnv = "COGAME_SAVE_REPLAY_PATH"
@@ -1222,18 +1221,6 @@ proc waitForHealth(
   fail("timed out waiting for " & url & ".\n" &
     containerLogs(dockerBin, containerName))
 
-proc requireOptionalHttpOk(url: string): bool =
-  ## Returns true when an optional HTTP endpoint answers successfully.
-  var client = newHttpClient(timeout = 5000)
-  try:
-    let response = client.get(url)
-    let statusCode = httpStatusCode(response.status)
-    result = statusCode >= 200 and statusCode < 300
-  except CatchableError:
-    result = false
-  finally:
-    client.close()
-
 proc requireWebSocketMessage(url, label: string, timeoutSeconds: float) =
   ## Opens a WebSocket and requires one non-empty message.
   let ws = newWebSocket(url)
@@ -1352,10 +1339,6 @@ proc runCogameEpisode*(spec: EpisodeRunSpec) =
       let badUrl = "ws://127.0.0.1:" & $port & PlayerPath &
         "?" & playerQuery(0, "bad", spec.players[0])
       requireBadPlayerRejected(badUrl)
-      discard requireOptionalHttpOk(httpUrl(port, PlayerPath) & "?" &
-        playerQuery(0, spec.tokens[0], spec.players[0]))
-
-    discard requireOptionalHttpOk(httpUrl(port, GlobalPath))
     for slot, player in spec.players:
       let containerName = "coworld-cert-player-" & runId & "-" & $slot
       playerContainers.add(containerName)
@@ -1407,19 +1390,24 @@ proc runCogameEpisode*(spec: EpisodeRunSpec) =
       replayPort,
       spec.timeoutSeconds
     )
-    if requireOptionalHttpOk(httpUrl(replayPort, ReplayPath)):
-      requireWebSocketMessage(
-        wsUrl(replayPort, ReplayPath),
-        "replay viewer",
-        spec.timeoutSeconds
-      )
-    else:
-      requireWebSocketMessage(
-        wsUrl(replayPort, GlobalPath),
-        "replay global viewer",
-        spec.timeoutSeconds
-      )
+    requireWebSocketMessage(
+      wsUrl(replayPort, GlobalPath),
+      "replay global viewer",
+      spec.timeoutSeconds
+    )
   finally:
+    saveContainerLogs(spec.dockerBin, gameContainer, spec.artifacts.gameLogPath)
+    for slot, containerName in playerContainers:
+      saveContainerLogs(
+        spec.dockerBin,
+        containerName,
+        spec.artifacts.logsDir / ("player_" & $slot & ".log")
+      )
+    saveContainerLogs(
+      spec.dockerBin,
+      replayContainer,
+      spec.artifacts.logsDir / "replay.log"
+    )
     for containerName in playerContainers:
       removeContainer(spec.dockerBin, containerName)
     removeContainer(spec.dockerBin, gameContainer)
