@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bot-source",
         type=Path,
-        default=REPO_ROOT / "among_them" / "players" / "nottoodumb.nim",
+        default=REPO_ROOT / "among_them" / "players" / "nottoodumb" / "nottoodumb.nim",
     )
     parser.add_argument("--bot-name-prefix", default="bot")
     parser.add_argument(
