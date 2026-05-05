@@ -40,6 +40,7 @@ const
   CogameResultsEnv = "COGAME_RESULTS_PATH"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CogameManifestName = "cogame_manifest.json"
+  CoplayerManifestName = "coplayer_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
@@ -50,6 +51,8 @@ const
   CreatedLabel = "bitworld.games_server.created"
   ReplayLabel = "bitworld.games_server.replay"
   KindLabel = "bitworld.games_server.kind"
+  GameManifestLabel = "bitworld.games_server.manifest"
+  GameNameLabel = "bitworld.games_server.game_name"
   BotGameLabel = "bitworld.games_server.game"
   BotKindLabel = "bitworld.games_server.bot"
   LiveKind = "game"
@@ -223,11 +226,6 @@ type
     LiveGame
     ReplayServer
 
-  BotKind = enum
-    NotTooDumb
-    IVoteALot
-    ITalkALot
-
   GameContainer = object
     name: string
     status: string
@@ -235,12 +233,14 @@ type
     created: int64
     replay: string
     kind: ContainerKind
+    manifestKey: string
+    cogameName: string
 
   BotContainer = object
     name: string
     status: string
     game: string
-    bot: BotKind
+    bot: string
     created: int64
 
   ReplayFile = object
@@ -254,6 +254,19 @@ type
     name: string
     author: string
     imageUri: string
+
+  CoplayerManifest = object
+    key: string
+    path: string
+    name: string
+    author: string
+    imageUri: string
+    binary: string
+    games: seq[string]
+
+  BotLaunchCount = object
+    bot: CoplayerManifest
+    count: int
 
   ScoreRow = object
     name: string
@@ -403,16 +416,6 @@ proc dockerMode(): string =
   ## Returns the container launch mode.
   envValue(DockerModeEnv, DefaultDockerMode).toLowerAscii()
 
-proc botImage(kind: BotKind): string =
-  ## Returns the Docker image for one bot kind.
-  case kind
-  of NotTooDumb:
-    envValue(NotTooDumbImageEnv, DefaultNotTooDumbImage)
-  of IVoteALot:
-    envValue(IVoteALotImageEnv, DefaultIVoteALotImage)
-  of ITalkALot:
-    envValue(ITalkALotImageEnv, DefaultITalkALotImage)
-
 proc defaultWorkspaceRoot(): string =
   ## Returns the host workspace root mounted by runner containers.
   parentDir(parentDir(parentDir(currentSourcePath())))
@@ -493,6 +496,39 @@ proc readGameManifest(path: string): GameManifest =
       "could not read CoGame manifest " & path & ": " & e.msg
     )
 
+proc manifestStringArray(node: JsonNode, key: string): seq[string] =
+  ## Reads one top-level string array from a manifest.
+  if node.kind != JObject or not node.hasKey(key) or
+      node[key].kind != JArray:
+    return
+  for item in node[key].items:
+    if item.kind == JString:
+      result.add(item.getStr())
+
+proc readCoplayerManifest(path: string): CoplayerManifest =
+  ## Reads one CoPlayer manifest summary from disk.
+  try:
+    let
+      manifest = parseJson(readFile(path))
+      name = manifest.manifestString(
+        "name",
+        defaultManifestName(path)
+      )
+    result = CoplayerManifest(
+      key: manifestKey(path),
+      path: path,
+      name: name,
+      author: manifest.manifestString("author", "-"),
+      imageUri: manifest.manifestString("image_uri", ""),
+      binary: manifest.manifestString("binary", "/bin/" & name),
+      games: manifest.manifestStringArray("games")
+    )
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not read CoPlayer manifest " & path & ": " & e.msg
+    )
+
 proc addManifestPath(paths: var seq[string], path: string) =
   ## Adds one manifest path if it exists and is not already present.
   if path.len == 0 or not fileExists(path):
@@ -515,6 +551,16 @@ proc listGameManifests(): seq[GameManifest] =
   if result.len == 0:
     raise newException(GamesServerError, "no CoGame manifests found")
 
+proc listCoplayerManifests(): seq[CoplayerManifest] =
+  ## Scans game folders for CoPlayer manifests.
+  var paths: seq[string]
+  for dir in walkDirs(gamesRoot() / "*"):
+    for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
+      paths.addManifestPath(path)
+  paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
+  for path in paths:
+    result.add(readCoplayerManifest(path))
+
 proc findGameManifest(key: string): GameManifest =
   ## Finds a scanned CoGame manifest by key.
   let
@@ -528,6 +574,35 @@ proc findGameManifest(key: string): GameManifest =
   raise newException(
     GamesServerError,
     "unknown CoGame manifest: " & cleanKey
+  )
+
+proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
+  ## Returns true when a CoPlayer manifest supports a game.
+  for supported in bot.games:
+    if supported == gameName:
+      return true
+
+proc supportedCoplayerManifests(gameName: string): seq[CoplayerManifest] =
+  ## Lists CoPlayer manifests that support one game.
+  for bot in listCoplayerManifests():
+    if bot.supportsGame(gameName):
+      result.add(bot)
+  result.sort(proc(a, b: CoplayerManifest): int = cmp(a.name, b.name))
+
+proc findCoplayerManifest(
+  gameName,
+  botKey: string
+): CoplayerManifest =
+  ## Finds a supported CoPlayer manifest by name or key.
+  let cleanKey = botKey.strip()
+  for bot in supportedCoplayerManifests(gameName):
+    if bot.name == cleanKey or bot.key == cleanKey:
+      return bot
+    if cleanKey == "ivotealot" and bot.name == "ivotewell":
+      return bot
+  raise newException(
+    GamesServerError,
+    "unknown CoPlayer manifest: " & cleanKey
   )
 
 proc manifestUrl(manifest: GameManifest): string =
@@ -605,6 +680,34 @@ proc dockerPackageUrl(imageUri: string): string =
   "https://github.com/users/" & owner &
     "/packages/container/package/" & encodeUrlComponent(packageName)
 
+proc imageFallback(image, defaultImage: string): string =
+  ## Returns a manifest image or a known default.
+  if image.len > 0:
+    image
+  else:
+    defaultImage
+
+proc coplayerImage(bot: CoplayerManifest): string =
+  ## Returns the Docker image for one CoPlayer.
+  case bot.name.toLowerAscii()
+  of NotTooDumbBot:
+    envValue(
+      NotTooDumbImageEnv,
+      imageFallback(bot.imageUri, DefaultNotTooDumbImage)
+    )
+  of "ivotewell", IVoteALotBot:
+    envValue(
+      IVoteALotImageEnv,
+      imageFallback(bot.imageUri, DefaultIVoteALotImage)
+    )
+  of ITalkALotBot:
+    envValue(
+      ITalkALotImageEnv,
+      imageFallback(bot.imageUri, DefaultITalkALotImage)
+    )
+  else:
+    bot.imageUri
+
 proc ensureReplayDir() =
   ## Creates the replay directory when it is missing.
   try:
@@ -664,47 +767,11 @@ proc renderContainerCheckbox(name: string): string =
     esc(safeName) & "\" form=\"bulkForm\" title=\"Select " &
     esc(name) & "\">"
 
-proc botKindLabel(kind: BotKind): string =
-  ## Returns the stable form value for one bot kind.
-  case kind
-  of NotTooDumb:
-    NotTooDumbBot
-  of IVoteALot:
-    IVoteALotBot
-  of ITalkALot:
-    ITalkALotBot
-
-proc botKindTitle(kind: BotKind): string =
-  ## Returns the display label for one bot kind.
-  case kind
-  of NotTooDumb:
-    "nottoodumb"
-  of IVoteALot:
-    "ivotealot"
-  of ITalkALot:
-    "italkalot"
-
-proc botBinary(kind: BotKind): string =
-  ## Returns the executable path inside one bot image.
-  case kind
-  of NotTooDumb:
-    "/bin/nottoodumb"
-  of IVoteALot:
-    "/bin/ivotewell"
-  of ITalkALot:
-    "/bin/italkalot"
-
-proc parseBotKind(value: string): BotKind =
-  ## Converts a form value or Docker label into a bot kind.
-  case value.strip().toLowerAscii()
-  of NotTooDumbBot:
-    NotTooDumb
-  of IVoteALotBot, "ivotewell":
-    IVoteALot
-  of ITalkALotBot:
-    ITalkALot
-  else:
-    raise newException(GamesServerError, "unknown bot kind")
+proc cleanLabelValue(value: string): string =
+  ## Normalizes a Docker label value.
+  result = value.strip()
+  if result == "<no value>":
+    result = ""
 
 proc containerKindLabel(kind: ContainerKind): string =
   ## Returns the Docker label value for one container kind.
@@ -733,11 +800,17 @@ proc splitInspectLine(line: string): GameContainer =
   if parts.len >= 4:
     result.created = parseInt64Safe(parts[3])
   if parts.len >= 5:
-    result.replay = parts[4].strip()
+    result.replay = cleanLabelValue(parts[4])
   if parts.len >= 6:
-    result.kind = parseContainerKind(parts[5], result.name)
+    result.kind = parseContainerKind(cleanLabelValue(parts[5]), result.name)
   else:
     result.kind = parseContainerKind("", result.name)
+  if parts.len >= 7:
+    result.cogameName = cleanLabelValue(parts[6])
+  if parts.len >= 8:
+    result.manifestKey = cleanLabelValue(parts[7])
+  if result.cogameName.len == 0 and result.kind == LiveGame:
+    result.cogameName = "among_them"
 
 proc inspectGame(name: string): GameContainer =
   ## Reads one managed container from Docker inspect.
@@ -750,10 +823,12 @@ proc inspectGame(name: string): GameContainer =
     "{{index .Config.Labels \"" & CreatedLabel & "\"}}\t" &
     "{{index .Config.Labels \"" & ReplayLabel & "\"}}\t" &
     "{{index .Config.Labels \"" & KindLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & GameNameLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & GameManifestLabel & "\"}}\t" &
     "{{index .Config.Labels \"" & ServerLabelKey & "\"}}"
   let output = requireDocker(@["inspect", "--format", format, safeName])
   let parts = output.split('\t')
-  if parts.len < 7 or parts[6].strip() != ServerLabelValue:
+  if parts.len < 9 or cleanLabelValue(parts[8]) != ServerLabelValue:
     raise newException(
       GamesServerError,
       "container is not managed by games_server"
@@ -806,7 +881,7 @@ proc splitBotLine(line: string): BotContainer =
   if parts.len >= 3:
     result.game = parts[2].strip()
   if parts.len >= 4:
-    result.bot = parseBotKind(parts[3])
+    result.bot = cleanLabelValue(parts[3])
   if parts.len >= 5:
     result.created = parseInt64Safe(parts[4])
 
@@ -943,9 +1018,9 @@ proc formValue(form: seq[(string, string)], key: string): string =
     if formKey == key:
       return value
 
-proc botCountField(bot: BotKind): string =
-  ## Returns the create-form count field for one bot kind.
-  botKindLabel(bot) & "Bots"
+proc botCountField(bot: CoplayerManifest): string =
+  ## Returns the create-form count field for one CoPlayer.
+  cleanContainerName(bot.name) & "Bots"
 
 proc findOpenPort(): int =
   ## Asks the OS to reserve and report one free host port.
@@ -979,20 +1054,20 @@ proc launchStamp(index: int): string =
 
 proc botContainerName(
   game: GameContainer,
-  bot: BotKind,
+  bot: CoplayerManifest,
   stamp: string
 ): string =
   ## Builds a unique bot Docker container name.
-  "among_them_bot_" & botKindLabel(bot) & "_" &
+  "among_them_bot_" & cleanContainerName(bot.name) & "_" &
     $game.port & "_" & stamp
 
 proc botPlayerName(
   game: GameContainer,
-  bot: BotKind,
+  bot: CoplayerManifest,
   stamp: string
 ): string =
   ## Builds a visible in-game name for one bot.
-  botKindTitle(bot) & "-" & $game.port & "-" & stamp
+  bot.name & "-" & $game.port & "-" & stamp
 
 proc replayName(name: string): string =
   ## Builds the replay file name for one game.
@@ -1037,19 +1112,22 @@ proc cleanConfigValue(
   result = clampInt(result, low, high)
 
 proc createBotCounts(
-  form: seq[(string, string)]
-): array[BotKind, int] =
-  ## Reads create-form bot counts.
+  form: seq[(string, string)],
+  gameName: string
+): seq[BotLaunchCount] =
+  ## Reads create-form CoPlayer counts.
   var total = 0
-  for bot in low(BotKind) .. high(BotKind):
-    result[bot] = cleanConfigValue(
+  for bot in supportedCoplayerManifests(gameName):
+    let count = cleanConfigValue(
       form,
       botCountField(bot),
       0,
       0,
       MaxBotLaunchCount
     )
-    total += result[bot]
+    if count > 0:
+      result.add(BotLaunchCount(bot: bot, count: count))
+    total += count
   if total > MaxBotLaunchCount:
     raise newException(
       GamesServerError,
@@ -1390,7 +1468,9 @@ proc baseDockerArgs(
   created: int64,
   replay: string,
   kind: ContainerKind,
-  saveReplay: bool
+  saveReplay: bool,
+  cogameName,
+  manifestKey: string
 ): seq[string] =
   ## Builds Docker arguments common to every launch mode.
   result = @[
@@ -1411,6 +1491,10 @@ proc baseDockerArgs(
     ReplayLabel & "=" & replay,
     "--label",
     KindLabel & "=" & containerKindLabel(kind),
+    "--label",
+    GameNameLabel & "=" & cogameName,
+    "--label",
+    GameManifestLabel & "=" & manifestKey,
     "-v",
     replayDir() & ":" & ContainerReplayDir
   ]
@@ -1442,10 +1526,21 @@ proc dockerRunArgs(
   kind: ContainerKind,
   saveReplay: bool,
   loadReplay: string,
-  config: string
+  config: string,
+  cogameName = "",
+  manifestKey = ""
 ): seq[string] =
   ## Builds Docker arguments for one new Among Them container.
-  result = baseDockerArgs(name, port, created, replay, kind, saveReplay)
+  result = baseDockerArgs(
+    name,
+    port,
+    created,
+    replay,
+    kind,
+    saveReplay,
+    cogameName,
+    manifestKey
+  )
   case dockerMode()
   of "release":
     result.add(dockerImage())
@@ -1471,7 +1566,7 @@ proc dockerRunArgs(
 proc botRunArgs(
   name: string,
   game: GameContainer,
-  bot: BotKind,
+  bot: CoplayerManifest,
   created: int64,
   stamp: string
 ): seq[string] =
@@ -1487,22 +1582,22 @@ proc botRunArgs(
     "--label",
     BotGameLabel & "=" & game.name,
     "--label",
-    BotKindLabel & "=" & botKindLabel(bot),
+    BotKindLabel & "=" & bot.name,
     "--label",
     CreatedLabel & "=" & $created
   ]
   addAiEnvArgs(result)
-  result.add(botImage(bot))
-  result.add(botBinary(bot))
+  result.add(coplayerImage(bot))
+  result.add(bot.binary)
   result.add("--address:" & BotHost)
   result.add("--port:" & $game.port)
   result.add("--name:" & botPlayerName(game, bot, stamp))
 
-proc pullNeededBotImages(counts: array[BotKind, int]) =
-  ## Pulls the bot images requested by a create form.
-  for bot in low(BotKind) .. high(BotKind):
-    if counts[bot] > 0:
-      pullDockerImage(botImage(bot))
+proc pullNeededBotImages(counts: seq[BotLaunchCount]) =
+  ## Pulls the CoPlayer images requested by a create form.
+  for item in counts:
+    if item.count > 0:
+      pullDockerImage(coplayerImage(item.bot))
 
 proc removeContainers(names: seq[string]) =
   ## Removes containers created during a failed launch.
@@ -1512,17 +1607,23 @@ proc removeContainers(names: seq[string]) =
 
 proc startWaitingBots(
   game: GameContainer,
-  counts: array[BotKind, int],
+  counts: seq[BotLaunchCount],
   launchedNames: var seq[string]
 ): seq[BotContainer] =
   ## Starts bot containers before their game container exists.
-  for bot in low(BotKind) .. high(BotKind):
-    for _ in 0 ..< counts[bot]:
+  for item in counts:
+    for _ in 0 ..< item.count:
       let
         created = getTime().toUnix()
         stamp = launchStamp(launchedNames.len + 1)
-        name = botContainerName(game, bot, stamp)
-      discard requireDocker(botRunArgs(name, game, bot, created, stamp))
+        name = botContainerName(game, item.bot, stamp)
+      discard requireDocker(botRunArgs(
+        name,
+        game,
+        item.bot,
+        created,
+        stamp
+      ))
       launchedNames.add(name)
       result.add(inspectBot(name))
 
@@ -1536,14 +1637,16 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     name = gameName(port)
     replay = replayName(name)
     config = configJson(form, manifestInfo)
-    botCounts = createBotCounts(form)
+    botCounts = createBotCounts(form, manifestInfo.name)
     pendingGame = GameContainer(
       name: name,
       status: "pending",
       port: port,
       created: created,
       replay: replay,
-      kind: LiveGame
+      kind: LiveGame,
+      manifestKey: manifestInfo.key,
+      cogameName: manifestInfo.name
     )
   var launchedBots: seq[string]
   pullDockerImage(dockerImage())
@@ -1558,7 +1661,9 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       LiveGame,
       true,
       "",
-      config
+      config,
+      manifestInfo.name,
+      manifestInfo.key
     ))
     result = inspectGame(name)
   except CatchableError:
@@ -1758,7 +1863,7 @@ proc waitForHealth(game: GameContainer): bool =
 
 proc createBots(
   gameName: string,
-  bot: BotKind,
+  botKey: string,
   count: int
 ): seq[BotContainer] =
   ## Starts one or more bot Docker containers for a live game.
@@ -1767,8 +1872,10 @@ proc createBots(
     raise newException(GamesServerError, "bots can only join live games")
   if not gameHealthy(game):
     raise newException(GamesServerError, "game is not healthy yet")
-  let cleanCount = clampInt(count, 1, MaxBotLaunchCount)
-  pullDockerImage(botImage(bot))
+  let
+    bot = findCoplayerManifest(game.cogameName, botKey)
+    cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+  pullDockerImage(coplayerImage(bot))
   for i in 1 .. cleanCount:
     let
       created = getTime().toUnix()
@@ -1857,8 +1964,8 @@ proc renderConfigRows(schema: JsonNode): string =
     result.add(rowHtml)
     inc index
 
-proc renderBotCountSelect(bot: BotKind): string =
-  ## Renders one create-form bot count selector.
+proc renderBotCountSelect(bot: CoplayerManifest): string =
+  ## Renders one create-form CoPlayer count selector.
   renderFragment:
     select:
       name botCountField(bot)
@@ -1867,17 +1974,24 @@ proc renderBotCountSelect(bot: BotKind): string =
           value $count
           say $count
 
-proc renderCreateBotRows(): string =
+proc renderCreateBotRows(manifestInfo: GameManifest): string =
   ## Renders bot count rows for the create-game form.
   var index = 0
-  for bot in low(BotKind) .. high(BotKind):
+  let bots = supportedCoplayerManifests(manifestInfo.name)
+  if bots.len == 0:
+    return renderFragment:
+      tr:
+        td ".row1":
+          colspan "2"
+          say "No supported CoPlayers found."
+  for bot in bots:
     let
       rowClass = if index mod 2 == 0: ".row1" else: ".row2"
       selectHtml = renderBotCountSelect(bot)
     let rowHtml = renderFragment:
       tr:
         td rowClass & " fieldName nowrap":
-          say esc(botKindTitle(bot) & " bots")
+          say esc(bot.name & " bots")
         td rowClass:
           say selectHtml
     result.add(rowHtml)
@@ -1932,7 +2046,7 @@ proc renderCreateForm(manifestInfo: GameManifest): string =
   let
     schema = configSchema(manifestInfo)
     rows = renderConfigRows(schema)
-    botRows = renderCreateBotRows()
+    botRows = renderCreateBotRows(manifestInfo)
   renderFragment:
     form:
       action CreatePath
@@ -2050,35 +2164,34 @@ proc renderGamesTable(
               say "offline"
           td rowClass & " nowrap":
             if healthy:
-              form:
-                action "/games/bot"
-                tmethod "post"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value game.name
-                select:
-                  name "bot"
-                  option:
-                    value botKindLabel(NotTooDumb)
-                    say botKindTitle(NotTooDumb)
-                  option:
-                    value botKindLabel(IVoteALot)
-                    say botKindTitle(IVoteALot)
-                  option:
-                    value botKindLabel(ITalkALot)
-                    say botKindTitle(ITalkALot)
-                say " "
-                select:
-                  name "count"
-                  for count in 1 .. MaxBotLaunchCount:
-                    option:
-                      value $count
-                      say $count
-                say " "
-                button ".button":
-                  ttype "submit"
-                  say "Add"
+              let supportedBots = supportedCoplayerManifests(game.cogameName)
+              if supportedBots.len == 0:
+                say "-"
+              else:
+                form:
+                  action "/games/bot"
+                  tmethod "post"
+                  input:
+                    ttype "hidden"
+                    name "name"
+                    value game.name
+                  select:
+                    name "bot"
+                    for bot in supportedBots:
+                      option:
+                        value bot.name
+                        say bot.name
+                  say " "
+                  select:
+                    name "count"
+                    for count in 1 .. MaxBotLaunchCount:
+                      option:
+                        value $count
+                        say $count
+                  say " "
+                  button ".button":
+                    ttype "submit"
+                    say "Add"
             elif game.status == "running":
               say "wait"
             elif gameBots.len == 0:
@@ -2655,7 +2768,7 @@ proc botHandler(request: Request) =
   let form = parseFormBody(request)
   let
     name = formValue(form, "name")
-    bot = parseBotKind(formValue(form, "bot"))
+    bot = formValue(form, "bot")
     count = cleanConfigValue(form, "count", 1, 1, MaxBotLaunchCount)
     containers = createBots(name, bot, count)
   if containers.len == 1:
