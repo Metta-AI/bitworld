@@ -142,22 +142,23 @@
           '';
         });
 
-        # The bot shares the game's assets but launches from
-        # among_them/players/ — same CWD quick_player gives it — so its
-        # gameDir() walks one level up to find spritesheet.png et al.
+        # The bot shares the game's assets but launches from its source
+        # dir among_them/players/nottoodumb/ — same CWD quick_player
+        # gives it — so its gameDir() walks two levels up to find
+        # spritesheet.png et al.
         bitworldNottoodumb = pkgs.stdenv.mkDerivation (commonAttrs // {
           pname = "bitworld-nottoodumb";
           buildPhase = ''
             runHook preBuild
             export HOME=$TMPDIR
             mkdir -p out
-            nim c among_them/players/nottoodumb.nim
+            nim c among_them/players/nottoodumb/nottoodumb.nim
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             mkdir -p $out/libexec/bitworld $out/bin \
-              $out/share/bitworld/among_them/players \
+              $out/share/bitworld/among_them/players/nottoodumb \
               $out/share/bitworld/clients
             install -m 0755 out/nottoodumb $out/libexec/bitworld/nottoodumb
             cp -r clients/data $out/share/bitworld/clients/
@@ -166,7 +167,7 @@
               cp "$f" $out/share/bitworld/among_them/
             done
             makeWrapper $out/libexec/bitworld/nottoodumb $out/bin/nottoodumb \
-              --chdir $out/share/bitworld/among_them/players
+              --chdir $out/share/bitworld/among_them/players/nottoodumb
             runHook postInstall
           '';
         });
