@@ -1758,39 +1758,23 @@ proc createReplayGame(replay: string): GameContainer =
   result = inspectGame(name)
 
 proc stopBotsForGame(gameName: string) =
-  ## Stops and removes bot containers attached to one game.
+  ## Stops running bot containers attached to one game.
   for bot in botsForGame(safeListBots(), gameName):
     if bot.status == "running":
-      discard dockerResult(@["stop", bot.name])
-    discard dockerResult(@["rm", "-f", bot.name])
+      discard requireDocker(@["stop", bot.name])
 
 proc stopBot(name: string) =
-  ## Stops and removes one managed bot container.
+  ## Stops one running managed bot container.
   let bot = inspectBot(name)
   if bot.status == "running":
-    discard dockerResult(@["stop", bot.name])
-  discard dockerResult(@["rm", "-f", bot.name])
+    discard requireDocker(@["stop", bot.name])
 
 proc stopGame(name: string) =
-  ## Stops and removes a managed game container and its bots.
+  ## Stops a running managed game container.
   let game = inspectGame(name)
   stopBotsForGame(game.name)
   if game.status == "running":
-    discard dockerResult(@["stop", game.name])
-  discard dockerResult(@["rm", "-f", game.name])
-
-proc shutdownAll() =
-  ## Stops and removes all managed containers.
-  echo "Shutting down all managed containers..."
-  for bot in safeListBots():
-    if bot.status == "running":
-      discard dockerResult(@["stop", bot.name])
-    discard dockerResult(@["rm", "-f", bot.name])
-  for game in safeListGames():
-    if game.status == "running":
-      discard dockerResult(@["stop", game.name])
-    discard dockerResult(@["rm", "-f", game.name])
-  echo "All containers cleaned up."
+    discard requireDocker(@["stop", game.name])
 
 proc stopManagedContainer(name: string) =
   ## Stops one managed game, replay server, or bot container.
