@@ -151,7 +151,7 @@ const
     9,     # 15 pale blue    -> dark teal
   ]
   WebSocketPath* = "/player"
-  Player2WebSocketPath* = "/sprite_player"
+  SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   ReplayWebSocketPath* = "/replay"
 
@@ -339,23 +339,23 @@ type
     viewerIsGhost*: bool
 
 const
-  Player2ObservationHeaderFeatures = 4
-  Player2ObservationGridSize = 32
-  Player2ObservationGridFeatures = Player2ObservationGridSize * Player2ObservationGridSize
-  Player2ObservationPlayerSlots = MaxPlayers
-  Player2ObservationPlayerFeatures = 4
-  Player2ObservationBodySlots = MaxPlayers
-  Player2ObservationBodyFeatures = 4
-  Player2ObservationTaskSlots = 15
-  Player2ObservationTaskFeatures = 5
-  Player2ObservationGridOffset = Player2ObservationHeaderFeatures
-  Player2ObservationPlayerOffset = Player2ObservationGridOffset + Player2ObservationGridFeatures
-  Player2ObservationBodyOffset =
-    Player2ObservationPlayerOffset + Player2ObservationPlayerSlots * Player2ObservationPlayerFeatures
-  Player2ObservationTaskOffset =
-    Player2ObservationBodyOffset + Player2ObservationBodySlots * Player2ObservationBodyFeatures
-  Player2ObservationFeatures* =
-    Player2ObservationTaskOffset + Player2ObservationTaskSlots * Player2ObservationTaskFeatures
+  SpritePlayerObservationHeaderFeatures = 4
+  SpritePlayerObservationGridSize = 32
+  SpritePlayerObservationGridFeatures = SpritePlayerObservationGridSize * SpritePlayerObservationGridSize
+  SpritePlayerObservationPlayerSlots = MaxPlayers
+  SpritePlayerObservationPlayerFeatures = 4
+  SpritePlayerObservationBodySlots = MaxPlayers
+  SpritePlayerObservationBodyFeatures = 4
+  SpritePlayerObservationTaskSlots = 15
+  SpritePlayerObservationTaskFeatures = 5
+  SpritePlayerObservationGridOffset = SpritePlayerObservationHeaderFeatures
+  SpritePlayerObservationPlayerOffset = SpritePlayerObservationGridOffset + SpritePlayerObservationGridFeatures
+  SpritePlayerObservationBodyOffset =
+    SpritePlayerObservationPlayerOffset + SpritePlayerObservationPlayerSlots * SpritePlayerObservationPlayerFeatures
+  SpritePlayerObservationTaskOffset =
+    SpritePlayerObservationBodyOffset + SpritePlayerObservationBodySlots * SpritePlayerObservationBodyFeatures
+  SpritePlayerObservationFeatures* =
+    SpritePlayerObservationTaskOffset + SpritePlayerObservationTaskSlots * SpritePlayerObservationTaskFeatures
 
   RenderHeaderKillIcon = 1
   RenderHeaderTaskProgress = 2
@@ -2838,7 +2838,7 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc player2ObservationPointShadowed(
+proc sprite_playerObservationPointShadowed(
   sim: SimServer,
   originMx, originMy, worldX, worldY: int
 ): bool {.inline.} =
@@ -2856,27 +2856,27 @@ proc player2ObservationPointShadowed(
       return true
   false
 
-proc player2ObservationWorldPointVisible(
+proc sprite_playerObservationWorldPointVisible(
   sim: SimServer,
   view: PlayerView,
   worldX, worldY: int
 ): bool {.inline.} =
   if not view.screenPointInFrame(worldX, worldY):
     return false
-  view.viewerIsGhost or not sim.player2ObservationPointShadowed(
+  view.viewerIsGhost or not sim.sprite_playerObservationPointShadowed(
     view.originMx,
     view.originMy,
     worldX,
     worldY
   )
 
-proc player2ObservationProgressByte(progress, totalTicks, barWidth: int): uint8 =
+proc sprite_playerObservationProgressByte(progress, totalTicks, barWidth: int): uint8 =
   if progress <= 0 or totalTicks <= 0 or barWidth <= 0:
     return 0'u8
   let filled = clamp(progress * barWidth div totalTicks, 0, barWidth)
   uint8(filled * 255 div barWidth)
 
-proc player2ObservationKillIconByte(sim: SimServer, playerIndex: int): uint8 =
+proc sprite_playerObservationKillIconByte(sim: SimServer, playerIndex: int): uint8 =
   if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
     return 0'u8
   let player = sim.players[playerIndex]
@@ -2884,23 +2884,23 @@ proc player2ObservationKillIconByte(sim: SimServer, playerIndex: int): uint8 =
     return 0'u8
   if player.killCooldown > 0: 1'u8 else: 255'u8
 
-proc writePlayer2ObservationHeader(
+proc writeSpritePlayerObservationHeader(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
   output[0] = uint8(ord(sim.phase))
   if sim.phase == Playing:
-    output[RenderHeaderKillIcon] = sim.player2ObservationKillIconByte(playerIndex)
+    output[RenderHeaderKillIcon] = sim.sprite_playerObservationKillIconByte(playerIndex)
     if playerIndex >= 0 and playerIndex < sim.players.len:
-      output[RenderHeaderTaskProgress] = player2ObservationProgressByte(
+      output[RenderHeaderTaskProgress] = sprite_playerObservationProgressByte(
         sim.players[playerIndex].taskProgress,
         sim.config.taskCompleteTicks,
         TaskBarWidth
       )
     output[RenderHeaderTasksRemaining] = uint8(clamp(sim.totalTasksRemaining(), 0, 255))
 
-proc writePlayer2ObservationGrid(
+proc writeSpritePlayerObservationGrid(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -2909,15 +2909,15 @@ proc writePlayer2ObservationGrid(
     return
   let
     view = sim.playerView(playerIndex)
-    step = ScreenWidth div Player2ObservationGridSize
-  for gy in 0 ..< Player2ObservationGridSize:
-    for gx in 0 ..< Player2ObservationGridSize:
+    step = ScreenWidth div SpritePlayerObservationGridSize
+  for gy in 0 ..< SpritePlayerObservationGridSize:
+    for gx in 0 ..< SpritePlayerObservationGridSize:
       let
         sx = gx * step + step div 2
         sy = gy * step + step div 2
         mx = view.cameraX + sx
         my = view.cameraY + sy
-        index = Player2ObservationGridOffset + gy * Player2ObservationGridSize + gx
+        index = SpritePlayerObservationGridOffset + gy * SpritePlayerObservationGridSize + gx
       var color = MapVoidColor
       if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
         let mapIdx = mapIndex(mx, my)
@@ -2925,7 +2925,7 @@ proc writePlayer2ObservationGrid(
         color = sim.mapPixels[mapIdx] and 0x0F
       output[index] = color
 
-proc writePlayer2ObservationPlayerSlotAt(
+proc writeSpritePlayerObservationPlayerSlotAt(
   sim: SimServer,
   playerIndex, targetIndex, slotIndex, sx, sy: int,
   flags: uint8,
@@ -2933,19 +2933,19 @@ proc writePlayer2ObservationPlayerSlotAt(
 ) =
   let
     player = sim.players[targetIndex]
-    base = Player2ObservationPlayerOffset + slotIndex * Player2ObservationPlayerFeatures
+    base = SpritePlayerObservationPlayerOffset + slotIndex * SpritePlayerObservationPlayerFeatures
   output[base] = uint8(clamp(sx, 0, 255))
   output[base + 1] = uint8(clamp(sy, 0, 255))
   output[base + 2] = player.color
   output[base + RenderPlayerFlagsFeature] = flags
 
-proc writePlayer2ObservationPlayerSlot(
+proc writeSpritePlayerObservationPlayerSlot(
   sim: SimServer,
   playerIndex, targetIndex, sx, sy: int,
   flags: uint8,
   output: var openArray[uint8]
 ) =
-  sim.writePlayer2ObservationPlayerSlotAt(
+  sim.writeSpritePlayerObservationPlayerSlotAt(
     playerIndex,
     targetIndex,
     targetIndex,
@@ -2955,7 +2955,7 @@ proc writePlayer2ObservationPlayerSlot(
     output
   )
 
-proc writePlayer2ObservationPlayingPlayers(
+proc writeSpritePlayerObservationPlayingPlayers(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -2976,7 +2976,7 @@ proc writePlayer2ObservationPlayingPlayers(
     var flags = RenderPlayerPresent
     if p.alive:
       if i != playerIndex and
-          not sim.player2ObservationWorldPointVisible(
+          not sim.sprite_playerObservationWorldPointVisible(
             view,
             p.x + CollisionW div 2,
             p.y + CollisionH div 2
@@ -2989,9 +2989,9 @@ proc writePlayer2ObservationPlayingPlayers(
       continue
     if p.flipH:
       flags = flags or RenderPlayerFlipH
-    sim.writePlayer2ObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
+    sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
 
-proc writePlayer2ObservationUiPlayers(
+proc writeSpritePlayerObservationUiPlayers(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -3009,7 +3009,7 @@ proc writePlayer2ObservationUiPlayers(
         sx = 5 + col * 9
         sy = startY + row * 9
       var flags = RenderPlayerPresent or RenderPlayerAlive
-      sim.writePlayer2ObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
+      sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
   of RoleReveal:
     let viewerIsImp =
       playerIndex >= 0 and playerIndex < sim.players.len and
@@ -3038,7 +3038,7 @@ proc writePlayer2ObservationUiPlayers(
           sx = startX + col * cellW + (cellW - SpriteSize) div 2
           sy = startY + row * cellH
         var flags = RenderPlayerPresent or RenderPlayerAlive
-        sim.writePlayer2ObservationPlayerSlotAt(
+        sim.writeSpritePlayerObservationPlayerSlotAt(
           playerIndex,
           i,
           slot,
@@ -3066,14 +3066,14 @@ proc writePlayer2ObservationUiPlayers(
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
-      sim.writePlayer2ObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
+      sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej >= 0 and ej < n:
       var flags = RenderPlayerPresent
       if sim.players[ej].alive:
         flags = flags or RenderPlayerAlive
-      sim.writePlayer2ObservationPlayerSlotAt(
+      sim.writeSpritePlayerObservationPlayerSlotAt(
         playerIndex,
         ej,
         0,
@@ -3100,11 +3100,11 @@ proc writePlayer2ObservationUiPlayers(
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
-      sim.writePlayer2ObservationPlayerSlot(playerIndex, i, iconX, iconY, flags, output)
+      sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, iconX, iconY, flags, output)
   of Playing:
     discard
 
-proc writePlayer2ObservationBodies(
+proc writeSpritePlayerObservationBodies(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -3117,16 +3117,16 @@ proc writePlayer2ObservationBodies(
     cameraY = view.cameraY
   var slot = 0
   for body in sim.bodies:
-    if slot >= Player2ObservationBodySlots:
+    if slot >= SpritePlayerObservationBodySlots:
       break
-    if not sim.player2ObservationWorldPointVisible(
+    if not sim.sprite_playerObservationWorldPointVisible(
       view,
       body.x + CollisionW div 2,
       body.y + CollisionH div 2
     ):
       continue
     let
-      base = Player2ObservationBodyOffset + slot * Player2ObservationBodyFeatures
+      base = SpritePlayerObservationBodyOffset + slot * SpritePlayerObservationBodyFeatures
       sx = body.x - SpriteDrawOffX - cameraX
       sy = body.y - SpriteDrawOffY - cameraY
     output[base] = uint8(clamp(sx, 0, 255))
@@ -3135,14 +3135,14 @@ proc writePlayer2ObservationBodies(
     output[base + 3] = 1
     inc slot
 
-proc writePlayer2ObservationTaskEntry(
+proc writeSpritePlayerObservationTaskEntry(
   sim: SimServer,
   playerIndex, taskIndex: int,
   iconPass: bool,
   slotIndex: var int,
   output: var openArray[uint8]
 ) =
-  if slotIndex >= Player2ObservationTaskSlots:
+  if slotIndex >= SpritePlayerObservationTaskSlots:
     return
   if taskIndex < 0 or taskIndex >= sim.tasks.len:
     return
@@ -3173,7 +3173,7 @@ proc writePlayer2ObservationTaskEntry(
     iconOnScreen =
       iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
       iconSx < ScreenWidth and iconSy < ScreenHeight
-    base = Player2ObservationTaskOffset + slotIndex * Player2ObservationTaskFeatures
+    base = SpritePlayerObservationTaskOffset + slotIndex * SpritePlayerObservationTaskFeatures
   var flags = 0'u8
   if iconOnScreen:
     if not iconPass:
@@ -3220,7 +3220,7 @@ proc writePlayer2ObservationTaskEntry(
   output[base + RenderTaskFlagsFeature] = flags
   inc slotIndex
 
-proc writePlayer2ObservationTasks(
+proc writeSpritePlayerObservationTasks(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -3232,9 +3232,9 @@ proc writePlayer2ObservationTasks(
     return
   var slotIndex = 0
   for taskIndex in 0 ..< sim.tasks.len:
-    sim.writePlayer2ObservationTaskEntry(playerIndex, taskIndex, true, slotIndex, output)
+    sim.writeSpritePlayerObservationTaskEntry(playerIndex, taskIndex, true, slotIndex, output)
   for taskIndex in 0 ..< sim.tasks.len:
-    sim.writePlayer2ObservationTaskEntry(playerIndex, taskIndex, false, slotIndex, output)
+    sim.writeSpritePlayerObservationTaskEntry(playerIndex, taskIndex, false, slotIndex, output)
 
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if sim.phase == Lobby:
@@ -3421,27 +3421,27 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc writePlayer2Observation*(
+proc writeSpritePlayerObservation*(
   sim: var SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
   ## Writes a compact sprite-player observation with only visible sprite-route fields.
-  if output.len != Player2ObservationFeatures:
+  if output.len != SpritePlayerObservationFeatures:
     raise newException(
       AmongThemError,
-      "Player2 observation must be " & $Player2ObservationFeatures & " bytes."
+      "SpritePlayer observation must be " & $SpritePlayerObservationFeatures & " bytes."
     )
   for i in 0 ..< output.len:
     output[i] = 0
-  sim.writePlayer2ObservationHeader(playerIndex, output)
-  sim.writePlayer2ObservationGrid(playerIndex, output)
+  sim.writeSpritePlayerObservationHeader(playerIndex, output)
+  sim.writeSpritePlayerObservationGrid(playerIndex, output)
   if sim.phase == Playing:
-    sim.writePlayer2ObservationPlayingPlayers(playerIndex, output)
-    sim.writePlayer2ObservationBodies(playerIndex, output)
-    sim.writePlayer2ObservationTasks(playerIndex, output)
+    sim.writeSpritePlayerObservationPlayingPlayers(playerIndex, output)
+    sim.writeSpritePlayerObservationBodies(playerIndex, output)
+    sim.writeSpritePlayerObservationTasks(playerIndex, output)
   else:
-    sim.writePlayer2ObservationUiPlayers(playerIndex, output)
+    sim.writeSpritePlayerObservationUiPlayers(playerIndex, output)
 
 proc initSimServer*(config: GameConfig): SimServer =
   result.config = config

@@ -13,27 +13,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 128
-PLAYER2_PATH = "/sprite_player"
-PACKET_PLAYER2_CHAT = 0x81
-PACKET_PLAYER2_INPUT = 0x84
-PLAYER2_INPUT_PACKET_BYTES = 2
+SPRITE_PLAYER_PATH = "/sprite_player"
+PACKET_SPRITE_PLAYER_CHAT = 0x81
+PACKET_SPRITE_PLAYER_INPUT = 0x84
+SPRITE_PLAYER_INPUT_PACKET_BYTES = 2
 AMONG_THEM_MAX_PLAYERS = 16
-PLAYER2_HEADER_FEATURES = 4
-PLAYER2_GRID_SIZE = 32
-PLAYER2_PLAYER_FEATURE_OFFSET = PLAYER2_HEADER_FEATURES + PLAYER2_GRID_SIZE * PLAYER2_GRID_SIZE
-PLAYER2_PLAYER_FEATURES = 4
-PLAYER2_BODY_FEATURE_OFFSET = PLAYER2_PLAYER_FEATURE_OFFSET + PLAYER2_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS
-PLAYER2_BODY_FEATURES = 4
-PLAYER2_TASK_FEATURE_OFFSET = PLAYER2_BODY_FEATURE_OFFSET + PLAYER2_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS
-PLAYER2_TASK_FEATURES = 5
-PLAYER2_TASK_COUNT = 15
-PLAYER2_FEATURES = PLAYER2_TASK_FEATURE_OFFSET + PLAYER2_TASK_FEATURES * PLAYER2_TASK_COUNT
-PLAYER2_KILL_ICON_INDEX = 1
-PLAYER2_TASK_PROGRESS_INDEX = 2
-PLAYER2_TASKS_REMAINING_INDEX = 3
-PLAYER2_FLAG_TASK_ICON_VISIBLE = 1
-PLAYER2_FLAG_TASK_ARROW_VISIBLE = 2
-PLAYER2_FLAG_PLAYER_ROLE_IMPOSTER = 8
+SPRITE_PLAYER_HEADER_FEATURES = 4
+SPRITE_PLAYER_GRID_SIZE = 32
+SPRITE_PLAYER_PLAYER_FEATURE_OFFSET = SPRITE_PLAYER_HEADER_FEATURES + SPRITE_PLAYER_GRID_SIZE * SPRITE_PLAYER_GRID_SIZE
+SPRITE_PLAYER_PLAYER_FEATURES = 4
+SPRITE_PLAYER_BODY_FEATURE_OFFSET = SPRITE_PLAYER_PLAYER_FEATURE_OFFSET + SPRITE_PLAYER_PLAYER_FEATURES * AMONG_THEM_MAX_PLAYERS
+SPRITE_PLAYER_BODY_FEATURES = 4
+SPRITE_PLAYER_TASK_FEATURE_OFFSET = SPRITE_PLAYER_BODY_FEATURE_OFFSET + SPRITE_PLAYER_BODY_FEATURES * AMONG_THEM_MAX_PLAYERS
+SPRITE_PLAYER_TASK_FEATURES = 5
+SPRITE_PLAYER_TASK_COUNT = 15
+SPRITE_PLAYER_FEATURES = SPRITE_PLAYER_TASK_FEATURE_OFFSET + SPRITE_PLAYER_TASK_FEATURES * SPRITE_PLAYER_TASK_COUNT
+SPRITE_PLAYER_KILL_ICON_INDEX = 1
+SPRITE_PLAYER_TASK_PROGRESS_INDEX = 2
+SPRITE_PLAYER_TASKS_REMAINING_INDEX = 3
+SPRITE_PLAYER_FLAG_TASK_ICON_VISIBLE = 1
+SPRITE_PLAYER_FLAG_TASK_ARROW_VISIBLE = 2
+SPRITE_PLAYER_FLAG_PLAYER_ROLE_IMPOSTER = 8
 
 AMONG_THEM_PHASE_LOBBY = 0
 AMONG_THEM_PHASE_PLAYING = 1
@@ -42,10 +42,10 @@ AMONG_THEM_PHASE_VOTE_RESULT = 3
 AMONG_THEM_PHASE_GAME_OVER = 4
 AMONG_THEM_PHASE_ROLE_REVEAL = 5
 
-PLAYER2_FLAG_PLAYER_PRESENT = 1
-PLAYER2_FLAG_PLAYER_ALIVE = 4
-PLAYER2_FLAG_PLAYER_FLIP_H = 16
-PLAYER2_FLAG_PLAYER_GHOST = 32
+SPRITE_PLAYER_FLAG_PLAYER_PRESENT = 1
+SPRITE_PLAYER_FLAG_PLAYER_ALIVE = 4
+SPRITE_PLAYER_FLAG_PLAYER_FLIP_H = 16
+SPRITE_PLAYER_FLAG_PLAYER_GHOST = 32
 
 MAP_VOID_COLOR = 12
 TASK_BAR_WIDTH = 14
@@ -80,7 +80,7 @@ PLAYER_COLORS = np.array([3, 7, 8, 14, 4, 11, 13, 15, 1, 2, 5, 6, 9, 10, 12, 0],
 
 
 @dataclass
-class Player2SpriteInfo:
+class SpritePlayerSpriteInfo:
     width: int
     height: int
     label: str
@@ -91,7 +91,7 @@ class Player2SpriteInfo:
 
 
 @dataclass
-class Player2ObjectInfo:
+class SpritePlayerObjectInfo:
     x: int
     y: int
     z: int
@@ -111,22 +111,22 @@ def read_u32(data: bytes, offset: int) -> int:
     return struct.unpack_from("<I", data, offset)[0]
 
 
-def pack_player2_input_packet(mask: int) -> bytes:
+def pack_sprite_player_input_packet(mask: int) -> bytes:
     if not 0 <= mask <= 0x7F:
         raise ValueError(f"BitWorld /sprite_player input mask must be in [0, 127], got {mask}")
-    return bytes([PACKET_PLAYER2_INPUT, mask])
+    return bytes([PACKET_SPRITE_PLAYER_INPUT, mask])
 
 
-def unpack_player2_input_packet(packet: bytes | bytearray | memoryview) -> int:
+def unpack_sprite_player_input_packet(packet: bytes | bytearray | memoryview) -> int:
     raw = bytes(packet)
-    if len(raw) != PLAYER2_INPUT_PACKET_BYTES or raw[0] != PACKET_PLAYER2_INPUT:
+    if len(raw) != SPRITE_PLAYER_INPUT_PACKET_BYTES or raw[0] != PACKET_SPRITE_PLAYER_INPUT:
         raise ValueError(
             "BitWorld /sprite_player input packets must be two bytes: packet kind 0x84 followed by a button mask"
         )
     return raw[1] & 0x7F
 
 
-def pack_player2_chat_packet(text: str) -> bytes:
+def pack_sprite_player_chat_packet(text: str) -> bytes:
     clean_text = text.strip()
     if not clean_text:
         raise ValueError("BitWorld /sprite_player chat packets require non-empty text")
@@ -135,7 +135,7 @@ def pack_player2_chat_packet(text: str) -> bytes:
     payload = clean_text.encode("ascii")
     if len(payload) > 0xFFFF:
         raise ValueError("BitWorld /sprite_player chat text is too long")
-    return bytes([PACKET_PLAYER2_CHAT]) + len(payload).to_bytes(2, "little") + payload
+    return bytes([PACKET_SPRITE_PLAYER_CHAT]) + len(payload).to_bytes(2, "little") + payload
 
 
 def snappy_decompress(data: bytes) -> bytes:
@@ -287,7 +287,7 @@ def actor_color_name(label: str, prefix: str) -> str:
     return value
 
 
-def classify_player2_sprite(label: str) -> tuple[str, int, bool]:
+def classify_sprite_player_sprite(label: str) -> tuple[str, int, bool]:
     lowered = label.lower()
     if lowered == "map":
         return "map", -1, False
@@ -323,10 +323,10 @@ def classify_player2_sprite(label: str) -> tuple[str, int, bool]:
     return "unknown", -1, False
 
 
-class Player2ObservationAdapter:
+class SpritePlayerObservationAdapter:
     def __init__(self) -> None:
-        self.sprites: dict[int, Player2SpriteInfo] = {}
-        self.objects: dict[int, Player2ObjectInfo] = {}
+        self.sprites: dict[int, SpritePlayerSpriteInfo] = {}
+        self.objects: dict[int, SpritePlayerObjectInfo] = {}
         self.palette_lookup = load_palette_lookup()
         self.frame_count = 0
 
@@ -366,8 +366,8 @@ class Player2ObservationAdapter:
                     return changed
                 label = packet[offset : offset + label_len].decode("utf-8", errors="replace")
                 offset += label_len
-                kind, color_index, flip_h = classify_player2_sprite(label)
-                self.sprites[sprite_id] = Player2SpriteInfo(
+                kind, color_index, flip_h = classify_sprite_player_sprite(label)
+                self.sprites[sprite_id] = SpritePlayerSpriteInfo(
                     width=width,
                     height=height,
                     label=label,
@@ -381,7 +381,7 @@ class Player2ObservationAdapter:
                 if offset + 11 > len(packet):
                     return changed
                 object_id = read_u16(packet, offset)
-                self.objects[object_id] = Player2ObjectInfo(
+                self.objects[object_id] = SpritePlayerObjectInfo(
                     x=read_i16(packet, offset + 2),
                     y=read_i16(packet, offset + 4),
                     z=read_i16(packet, offset + 6),
@@ -409,7 +409,7 @@ class Player2ObservationAdapter:
             self.frame_count += 1
         return changed
 
-    def _sprite(self, obj: Player2ObjectInfo) -> Player2SpriteInfo | None:
+    def _sprite(self, obj: SpritePlayerObjectInfo) -> SpritePlayerSpriteInfo | None:
         return self.sprites.get(obj.sprite_id)
 
     def _phase(self) -> int:
@@ -483,7 +483,7 @@ class Player2ObservationAdapter:
         return 0
 
     def observation(self) -> np.ndarray:
-        obs = np.zeros((PLAYER2_FEATURES,), dtype=np.uint8)
+        obs = np.zeros((SPRITE_PLAYER_FEATURES,), dtype=np.uint8)
         phase = self._phase()
         obs[0] = phase
         camera = self._camera()
@@ -491,22 +491,22 @@ class Player2ObservationAdapter:
         progress_byte = self._progress_byte()
         if phase == AMONG_THEM_PHASE_PLAYING and camera is not None:
             camera_x, camera_y = camera
-            obs[PLAYER2_KILL_ICON_INDEX] = kill_icon
-            obs[PLAYER2_TASK_PROGRESS_INDEX] = progress_byte
-            obs[PLAYER2_TASKS_REMAINING_INDEX] = self._counter_value()
+            obs[SPRITE_PLAYER_KILL_ICON_INDEX] = kill_icon
+            obs[SPRITE_PLAYER_TASK_PROGRESS_INDEX] = progress_byte
+            obs[SPRITE_PLAYER_TASKS_REMAINING_INDEX] = self._counter_value()
             map_pixels = self._map_pixels()
             if map_pixels is not None:
                 height, width = map_pixels.shape
-                step = SCREEN_WIDTH // PLAYER2_GRID_SIZE
-                grid_start = PLAYER2_HEADER_FEATURES
-                for gy in range(PLAYER2_GRID_SIZE):
-                    for gx in range(PLAYER2_GRID_SIZE):
+                step = SCREEN_WIDTH // SPRITE_PLAYER_GRID_SIZE
+                grid_start = SPRITE_PLAYER_HEADER_FEATURES
+                for gy in range(SPRITE_PLAYER_GRID_SIZE):
+                    for gx in range(SPRITE_PLAYER_GRID_SIZE):
                         mx = camera_x + gx * step + step // 2
                         my = camera_y + gy * step + step // 2
                         value = MAP_VOID_COLOR
                         if 0 <= mx < width and 0 <= my < height:
                             value = int(map_pixels[my, mx])
-                        obs[grid_start + gy * PLAYER2_GRID_SIZE + gx] = value
+                        obs[grid_start + gy * SPRITE_PLAYER_GRID_SIZE + gx] = value
 
         for object_id, obj in self.objects.items():
             sprite = self._sprite(obj)
@@ -521,14 +521,14 @@ class Player2ObservationAdapter:
                 continue
             sx = obj.x + 1
             sy = obj.y + 1
-            flags = PLAYER2_FLAG_PLAYER_PRESENT
+            flags = SPRITE_PLAYER_FLAG_PLAYER_PRESENT
             if sprite.kind == "player":
-                flags |= PLAYER2_FLAG_PLAYER_ALIVE
+                flags |= SPRITE_PLAYER_FLAG_PLAYER_ALIVE
             elif sprite.kind == "ghost":
-                flags |= PLAYER2_FLAG_PLAYER_GHOST
+                flags |= SPRITE_PLAYER_FLAG_PLAYER_GHOST
             if sprite.flip_h:
-                flags |= PLAYER2_FLAG_PLAYER_FLIP_H
-            base = PLAYER2_PLAYER_FEATURE_OFFSET + slot * PLAYER2_PLAYER_FEATURES
+                flags |= SPRITE_PLAYER_FLAG_PLAYER_FLIP_H
+            base = SPRITE_PLAYER_PLAYER_FEATURE_OFFSET + slot * SPRITE_PLAYER_PLAYER_FEATURES
             obs[base] = np.uint8(max(0, min(255, sx)))
             obs[base + 1] = np.uint8(max(0, min(255, sy)))
             if 0 <= sprite.color_index < len(PLAYER_COLORS):
@@ -542,7 +542,7 @@ class Player2ObservationAdapter:
             sprite = self._sprite(obj)
             if sprite is None or sprite.kind != "body" or body_slot >= AMONG_THEM_MAX_PLAYERS:
                 continue
-            base = PLAYER2_BODY_FEATURE_OFFSET + body_slot * PLAYER2_BODY_FEATURES
+            base = SPRITE_PLAYER_BODY_FEATURE_OFFSET + body_slot * SPRITE_PLAYER_BODY_FEATURES
             obs[base] = np.uint8(max(0, min(255, obj.x + 1)))
             obs[base + 1] = np.uint8(max(0, min(255, obj.y + 1)))
             if 0 <= sprite.color_index < len(PLAYER_COLORS):
@@ -557,16 +557,16 @@ class Player2ObservationAdapter:
             if self._sprite(obj) is not None and self._sprite(obj).kind in {"task", "arrow"}
         ]
         for _object_id, obj, sprite in sorted(task_objects):
-            if sprite is None or task_slot >= PLAYER2_TASK_COUNT:
+            if sprite is None or task_slot >= SPRITE_PLAYER_TASK_COUNT:
                 continue
-            base = PLAYER2_TASK_FEATURE_OFFSET + task_slot * PLAYER2_TASK_FEATURES
+            base = SPRITE_PLAYER_TASK_FEATURE_OFFSET + task_slot * SPRITE_PLAYER_TASK_FEATURES
             flags = 0
             if sprite.kind == "task":
-                flags |= PLAYER2_FLAG_TASK_ICON_VISIBLE
+                flags |= SPRITE_PLAYER_FLAG_TASK_ICON_VISIBLE
                 obs[base] = np.uint8(max(0, min(255, obj.x)))
                 obs[base + 1] = np.uint8(max(0, min(255, obj.y)))
             else:
-                flags |= PLAYER2_FLAG_TASK_ARROW_VISIBLE
+                flags |= SPRITE_PLAYER_FLAG_TASK_ARROW_VISIBLE
                 obs[base + 2] = np.uint8(max(0, min(255, obj.x)))
                 obs[base + 3] = np.uint8(max(0, min(255, obj.y)))
             obs[base + 4] = flags
