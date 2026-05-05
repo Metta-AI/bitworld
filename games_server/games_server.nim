@@ -35,9 +35,11 @@ const
   HealthPath = "/healthz"
   ClientPath = "/client/"
   CreatePath = "/games/create"
+  ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
   CogameResultsEnv = "COGAME_RESULTS_PATH"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
+  CogameManifestName = "cogame_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
@@ -246,6 +248,13 @@ type
     size: int64
     modified: int64
 
+  GameManifest = object
+    key: string
+    path: string
+    name: string
+    author: string
+    imageUri: string
+
   ScoreRow = object
     name: string
     score: string
@@ -420,14 +429,181 @@ proc replayDir(): string =
   ## Returns the configured host replay directory.
   envValue(ReplayDirEnv, defaultReplayDir())
 
+proc gamesRoot(): string =
+  ## Returns the local Bitworld games root.
+  parentDir(parentDir(currentSourcePath()))
+
 proc defaultManifestPath(): string =
-  ## Returns the default Among Them manifest path.
-  parentDir(parentDir(currentSourcePath())) /
-    "among_them" / "cogame_manifest.json"
+  ## Returns the default CoGame manifest path.
+  gamesRoot() / "among_them" / CogameManifestName
 
 proc manifestPath(): string =
-  ## Returns the configured Among Them manifest path.
+  ## Returns the configured CoGame manifest path.
   envValue(ManifestPathEnv, defaultManifestPath())
+
+proc manifestKey(path: string): string =
+  ## Builds a stable relative key for one manifest path.
+  let
+    root = gamesRoot()
+    prefix = root & DirSep
+  if path.startsWith(prefix):
+    result = path[prefix.len .. ^1]
+  else:
+    result = path
+  result = result.replace("\\", "/")
+
+proc manifestString(
+  node: JsonNode,
+  key,
+  defaultValue: string
+): string =
+  ## Reads one top-level manifest string.
+  if node.kind == JObject and node.hasKey(key) and
+      node[key].kind == JString:
+    return node[key].getStr()
+  defaultValue
+
+proc defaultManifestName(path: string): string =
+  ## Returns a display name for a manifest path.
+  splitPath(parentDir(path)).tail
+
+proc readGameManifest(path: string): GameManifest =
+  ## Reads one CoGame manifest summary from disk.
+  try:
+    let
+      manifest = parseJson(readFile(path))
+      name = manifest.manifestString(
+        "name",
+        defaultManifestName(path)
+      )
+      author = manifest.manifestString(
+        "author",
+        manifest.manifestString("owner", "-")
+      )
+    result = GameManifest(
+      key: manifestKey(path),
+      path: path,
+      name: name,
+      author: author,
+      imageUri: manifest.manifestString("image_uri", dockerImage())
+    )
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not read CoGame manifest " & path & ": " & e.msg
+    )
+
+proc addManifestPath(paths: var seq[string], path: string) =
+  ## Adds one manifest path if it exists and is not already present.
+  if path.len == 0 or not fileExists(path):
+    return
+  let key = manifestKey(path)
+  for existing in paths:
+    if manifestKey(existing) == key:
+      return
+  paths.add(path)
+
+proc listGameManifests(): seq[GameManifest] =
+  ## Scans game folders for CoGame manifests.
+  var paths: seq[string]
+  for dir in walkDirs(gamesRoot() / "*"):
+    paths.addManifestPath(dir / CogameManifestName)
+  paths.addManifestPath(manifestPath())
+  paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
+  for path in paths:
+    result.add(readGameManifest(path))
+  if result.len == 0:
+    raise newException(GamesServerError, "no CoGame manifests found")
+
+proc findGameManifest(key: string): GameManifest =
+  ## Finds a scanned CoGame manifest by key.
+  let
+    manifests = listGameManifests()
+    cleanKey = key.strip()
+  if cleanKey.len == 0:
+    return manifests[0]
+  for manifest in manifests:
+    if manifest.key == cleanKey or manifest.path == cleanKey:
+      return manifest
+  raise newException(
+    GamesServerError,
+    "unknown CoGame manifest: " & cleanKey
+  )
+
+proc manifestUrl(manifest: GameManifest): string =
+  ## Builds a raw manifest viewer URL.
+  ManifestViewPath & "?path=" & encodeUrlComponent(manifest.key)
+
+proc createUrl(manifest: GameManifest): string =
+  ## Builds a create-game URL for one manifest.
+  CreatePath & "?manifest=" & encodeUrlComponent(manifest.key)
+
+proc dockerOwner(): string =
+  ## Returns the default GitHub container package owner.
+  let image = dockerImage()
+  if image.startsWith("ghcr.io/"):
+    let parts = image.split('/')
+    if parts.len >= 3:
+      return parts[1]
+  "treeform"
+
+proc stripImageTag(image: string): string =
+  ## Removes a Docker image tag or digest.
+  let
+    slashAt = image.rfind('/')
+    colonAt = image.rfind(':')
+    digestAt = image.find('@')
+  var stop = image.len
+  if digestAt >= 0:
+    stop = digestAt
+  elif colonAt > slashAt:
+    stop = colonAt
+  image[0 ..< stop]
+
+proc imageTag(image: string): string =
+  ## Returns a Docker image tag suffix when present.
+  let
+    slashAt = image.rfind('/')
+    colonAt = image.rfind(':')
+  if colonAt > slashAt:
+    image[colonAt .. ^1]
+  else:
+    ""
+
+proc runnerImageUri(imageUri: string): string =
+  ## Converts a manifest image name to the registry runner image.
+  let
+    cleanImage = imageUri.strip()
+    tag = imageTag(cleanImage)
+  var
+    owner = dockerOwner()
+    packageName = stripImageTag(cleanImage)
+  if packageName.startsWith("ghcr.io/"):
+    let parts = packageName.split('/')
+    if parts.len >= 3:
+      owner = parts[1]
+      packageName = parts[2 .. ^1].join("/")
+  elif packageName.contains('/'):
+    packageName = packageName.split('/')[^1]
+  if not packageName.endsWith("-runner"):
+    packageName.add("-runner")
+  "ghcr.io/" & owner & "/" & packageName & tag
+
+proc dockerPackageUrl(imageUri: string): string =
+  ## Builds a GitHub Packages URL from a Docker image name.
+  let runnerImage = runnerImageUri(imageUri)
+  var
+    owner = dockerOwner()
+    packageName = stripImageTag(runnerImage)
+  if packageName.startsWith("ghcr.io/"):
+    let parts = packageName.split('/')
+    if parts.len >= 3:
+      owner = parts[1]
+      packageName = parts[2 .. ^1].join("/")
+  elif packageName.contains('/'):
+    packageName = packageName.split('/')[^1]
+  "https://github.com/users/" & owner &
+    "/packages/container/package/" & encodeUrlComponent(packageName)
 
 proc ensureReplayDir() =
   ## Creates the replay directory when it is missing.
@@ -880,10 +1056,10 @@ proc createBotCounts(
       "cannot start more than " & $MaxBotLaunchCount & " bots"
     )
 
-proc configSchema(): JsonNode =
-  ## Reads the config schema from the Among Them manifest.
+proc configSchema(manifestInfo: GameManifest): JsonNode =
+  ## Reads the config schema from one CoGame manifest.
   try:
-    let manifest = parseJson(readFile(manifestPath()))
+    let manifest = parseJson(readFile(manifestInfo.path))
     if manifest.kind != JObject or not manifest.hasKey("config_schema"):
       raise newException(GamesServerError, "manifest missing config_schema")
     result = manifest["config_schema"]
@@ -1175,9 +1351,12 @@ proc parseScoreRows(text: string): seq[ScoreRow] =
       kills: kills.scoreString(i)
     ))
 
-proc configJson(form: seq[(string, string)]): string =
-  ## Builds the Among Them JSON config from form values.
-  let schema = configSchema()
+proc configJson(
+  form: seq[(string, string)],
+  manifestInfo: GameManifest
+): string =
+  ## Builds the CoGame JSON config from form values.
+  let schema = configSchema(manifestInfo)
   var node = newJObject()
   for name, property in schema["properties"].pairs:
     let value = formValue(form, name).strip()
@@ -1348,14 +1527,15 @@ proc startWaitingBots(
       result.add(inspectBot(name))
 
 proc createGame(form: seq[(string, string)]): GameContainer =
-  ## Starts a new Among Them Docker container.
+  ## Starts a new CoGame Docker container.
   ensureReplayDir()
   let
+    manifestInfo = findGameManifest(formValue(form, "manifest"))
     port = findOpenPort()
     created = getTime().toUnix()
     name = gameName(port)
     replay = replayName(name)
-    config = configJson(form)
+    config = configJson(form, manifestInfo)
     botCounts = createBotCounts(form)
     pendingGame = GameContainer(
       name: name,
@@ -1703,37 +1883,69 @@ proc renderCreateBotRows(): string =
     result.add(rowHtml)
     inc index
 
-proc renderCreateLink(): string =
-  ## Renders the index-page create game link.
+proc renderManifestTable(): string =
+  ## Renders the index-page CoGame manifest launcher table.
+  let manifests = listGameManifests()
   renderFragment:
     table:
       tr:
         td ".cat":
-          colspan "2"
+          colspan "5"
           say "Create new game"
       tr:
-        td ".row1":
-          a ".button":
-            href CreatePath
-            say "Create game"
-        td ".row2 small":
-          say "Image: " & esc(dockerImage()) & " | Mode: " & esc(dockerMode())
+        th ".head":
+          say "Name"
+        th ".head":
+          say "Author"
+        th ".head":
+          say "Manifest"
+        th ".head":
+          say "Docker"
+        th ".head":
+          say "Launch"
+      for i, manifest in manifests:
+        let
+          rowClass = if i mod 2 == 0: ".row1" else: ".row2"
+          runnerImage = runnerImageUri(manifest.imageUri)
+        tr:
+          td rowClass:
+            say esc(manifest.name)
+          td rowClass:
+            say esc(manifest.author)
+          td rowClass & " nowrap":
+            a:
+              href manifestUrl(manifest)
+              target "_blank"
+              say esc(manifest.key)
+          td rowClass & " nowrap":
+            a:
+              href dockerPackageUrl(manifest.imageUri)
+              target "_blank"
+              say esc(runnerImage)
+          td rowClass & " nowrap":
+            a ".button":
+              href createUrl(manifest)
+              say "Launch"
 
-proc renderCreateForm(): string =
+proc renderCreateForm(manifestInfo: GameManifest): string =
   ## Renders the manifest-backed create-game form.
   let
-    schema = configSchema()
+    schema = configSchema(manifestInfo)
     rows = renderConfigRows(schema)
     botRows = renderCreateBotRows()
   renderFragment:
     form:
       action CreatePath
       tmethod "post"
+      input:
+        ttype "hidden"
+        name "manifest"
+        value manifestInfo.key
       table:
         tr:
           td ".cat":
             colspan "2"
-            say "Create new game"
+            say "Create " & esc(manifestInfo.name)
         say rows
         tr:
           td ".cat":
@@ -2069,7 +2281,7 @@ proc renderPage(
 ): string =
   ## Renders the full games server page.
   let
-    createLink = renderCreateLink()
+    manifestTable = renderManifestTable()
     bulkControls = renderBulkControls()
     gamesTable = renderGamesTable(request, games, bots)
     replayServersTable = renderReplayServersTable(request, replayServers)
@@ -2101,7 +2313,7 @@ proc renderPage(
               b:
                 say esc(notice)
           say bulkControls
-          say createLink
+          say manifestTable
           p ".small":
             say " "
           table:
@@ -2126,9 +2338,11 @@ proc renderPage(
           p ".footer small":
             say "Docker label: " & ServerLabel & ". Ports: OS assigned."
 
-proc renderCreatePage(notice = ""): string =
+proc renderCreatePage(notice = "", manifestKey = ""): string =
   ## Renders the create-game page.
-  let createForm = renderCreateForm()
+  let
+    manifestInfo = findGameManifest(manifestKey)
+    createForm = renderCreateForm(manifestInfo)
   render:
     html:
       head:
@@ -2145,7 +2359,7 @@ proc renderCreatePage(notice = ""): string =
                 h1 ".title":
                   say "Create Game"
                 p ".small":
-                  say "Among Them config from manifest."
+                  say "CoGame config from manifest."
               td ".row2 right small":
                 a:
                   href "/"
@@ -2158,7 +2372,12 @@ proc renderCreatePage(notice = ""): string =
             say " "
           say createForm
           p ".footer small":
-            say "Manifest: " & esc(manifestPath()) & "."
+            say "Manifest: "
+            a:
+              href manifestUrl(manifestInfo)
+              target "_blank"
+              say esc(manifestInfo.key)
+            say "."
 
 proc renderLogsPage(name, logText: string): string =
   ## Renders current Docker logs for one container.
@@ -2402,9 +2621,18 @@ proc indexHandler(request: Request) =
   ## Handles the index route.
   request.respondIndex(queryValue(request, "notice"))
 
+proc requestManifestKey(request: Request): string =
+  ## Reads the selected manifest key from a create request.
+  if request.httpMethod == "POST":
+    return formValue(parseFormBody(request), "manifest")
+  queryValue(request, "manifest")
+
 proc createFormHandler(request: Request) =
   ## Handles the create-game form route.
-  request.respondHtml(200, renderCreatePage(queryValue(request, "notice")))
+  request.respondHtml(200, renderCreatePage(
+    queryValue(request, "notice"),
+    request.requestManifestKey()
+  ))
 
 proc createHandler(request: Request) =
   ## Handles create-game requests.
@@ -2512,6 +2740,15 @@ proc scoresHandler(request: Request) =
     renderScoresPage(name, parseScoreRows(text))
   )
 
+proc manifestHandler(request: Request) =
+  ## Handles raw CoGame manifest requests.
+  let manifestInfo = findGameManifest(queryValue(request, "path"))
+  request.respondContent(
+    200,
+    "application/json; charset=utf-8",
+    readFile(manifestInfo.path)
+  )
+
 proc notFoundHandler(request: Request) =
   ## Handles unknown routes.
   let containers = safeListGames()
@@ -2543,7 +2780,10 @@ proc errorHandler(request: Request, e: ref Exception) =
   ## Handles expected and unexpected server errors.
   stderr.writeLine("[games_server] ", e.msg)
   if request.path == CreatePath:
-    request.respondHtml(500, renderCreatePage(e.msg))
+    request.respondHtml(500, renderCreatePage(
+      e.msg,
+      request.requestManifestKey()
+    ))
     return
   let containers = safeListGames()
   request.respondHtml(
@@ -2569,6 +2809,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.logsHandler()
     elif request.path == ScoresPath and request.httpMethod == "GET":
       request.scoresHandler()
+    elif request.path == ManifestViewPath and request.httpMethod == "GET":
+      request.manifestHandler()
     elif request.path.startsWith(ClientPath) and request.httpMethod == "GET":
       request.clientHandler()
     elif request.path == CreatePath and request.httpMethod == "POST":
