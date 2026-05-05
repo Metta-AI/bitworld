@@ -1,4 +1,4 @@
-"""BitWorld /player2 protocol constants and sprite observation adapter."""
+"""BitWorld /sprite_player protocol constants and sprite observation adapter."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 128
-PLAYER2_PATH = "/player2"
+PLAYER2_PATH = "/sprite_player"
 PACKET_PLAYER2_CHAT = 0x81
 PACKET_PLAYER2_INPUT = 0x84
 PLAYER2_INPUT_PACKET_BYTES = 2
@@ -113,7 +113,7 @@ def read_u32(data: bytes, offset: int) -> int:
 
 def pack_player2_input_packet(mask: int) -> bytes:
     if not 0 <= mask <= 0x7F:
-        raise ValueError(f"BitWorld /player2 input mask must be in [0, 127], got {mask}")
+        raise ValueError(f"BitWorld /sprite_player input mask must be in [0, 127], got {mask}")
     return bytes([PACKET_PLAYER2_INPUT, mask])
 
 
@@ -121,7 +121,7 @@ def unpack_player2_input_packet(packet: bytes | bytearray | memoryview) -> int:
     raw = bytes(packet)
     if len(raw) != PLAYER2_INPUT_PACKET_BYTES or raw[0] != PACKET_PLAYER2_INPUT:
         raise ValueError(
-            "BitWorld /player2 input packets must be two bytes: packet kind 0x84 followed by a button mask"
+            "BitWorld /sprite_player input packets must be two bytes: packet kind 0x84 followed by a button mask"
         )
     return raw[1] & 0x7F
 
@@ -129,12 +129,12 @@ def unpack_player2_input_packet(packet: bytes | bytearray | memoryview) -> int:
 def pack_player2_chat_packet(text: str) -> bytes:
     clean_text = text.strip()
     if not clean_text:
-        raise ValueError("BitWorld /player2 chat packets require non-empty text")
+        raise ValueError("BitWorld /sprite_player chat packets require non-empty text")
     if any(ord(ch) < 0x20 or ord(ch) >= 0x7F for ch in clean_text):
-        raise ValueError("BitWorld /player2 chat text must be printable ASCII")
+        raise ValueError("BitWorld /sprite_player chat text must be printable ASCII")
     payload = clean_text.encode("ascii")
     if len(payload) > 0xFFFF:
-        raise ValueError("BitWorld /player2 chat text is too long")
+        raise ValueError("BitWorld /sprite_player chat text is too long")
     return bytes([PACKET_PLAYER2_CHAT]) + len(payload).to_bytes(2, "little") + payload
 
 

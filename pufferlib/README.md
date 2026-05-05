@@ -37,7 +37,7 @@ size.
 render-source training. Player2 observations use a small visible-only schema:
 four header bytes, a sampled map-color grid, and visible player, body, task
 icon, task arrow, and voting UI slots from the same inputs that feed the
-`/player2` sprite route.
+`/sprite_player` sprite route.
 
 ## Play Among Them
 
@@ -53,7 +53,7 @@ python pufferlib/run_among_them_policy_match.py \
 
 The launcher prints a `/global` browser URL, starts a five-player server, connects
 four Nim bots, and connects the policy to `/player` for pixel checkpoints or
-`/player2` for player2 checkpoints.
+`/sprite_player` for player2 checkpoints.
 
 To connect a trained policy to an existing server:
 

@@ -618,7 +618,7 @@ def policy_player_url(address: str, port: int, name: str) -> str:
 
 def policy_player2_url(address: str, port: int, name: str) -> str:
     suffix = "?name=" + quote(name, safe="") if name else ""
-    return f"ws://{address}:{port}/player2{suffix}"
+    return f"ws://{address}:{port}/sprite_player{suffix}"
 
 
 def connect_websocket(url: str, timeout: float = 10.0) -> ClientConnection:

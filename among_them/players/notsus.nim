@@ -1,4 +1,4 @@
-# This bot uses /player2 don't copy it as reference its experimental.
+# This bot uses /sprite_player. Do not copy it as a reference because it is experimental.
 import
   std/[heapqueue, options, os, parseopt, random, strutils, times],
   pixie, silky, whisky, windy,

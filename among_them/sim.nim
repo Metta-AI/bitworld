@@ -151,7 +151,7 @@ const
     9,     # 15 pale blue    -> dark teal
   ]
   WebSocketPath* = "/player"
-  Player2WebSocketPath* = "/player2"
+  Player2WebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   ReplayWebSocketPath* = "/replay"
 
@@ -3426,7 +3426,7 @@ proc writePlayer2Observation*(
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  ## Writes a compact /player2-aligned observation with only visible sprite-route fields.
+  ## Writes a compact sprite-player observation with only visible sprite-route fields.
   if output.len != Player2ObservationFeatures:
     raise newException(
       AmongThemError,

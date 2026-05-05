@@ -201,7 +201,7 @@ function addressPath(){
   try{return new URL(address,location.href).pathname}catch(e){return""}
 }
 const playerMode=url.searchParams.get("player")==="1"||
-  addressPath()==="/player2";
+  addressPath()==="/sprite_player";
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
