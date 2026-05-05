@@ -349,6 +349,29 @@ proc nearestObject*(state: GameState, kind: string, undepleted = true,
       found = true
   if found: some(bestObj) else: none(BotObject)
 
+proc leastContestedNode*(state: GameState, kind: string, material: string): Option[BotObject] =
+  var bestScore = int.high
+  var bestObj: BotObject
+  var found = false
+  for obj in state.objects:
+    if obj.kind != kind: continue
+    if obj.depleted: continue
+    if material.len > 0 and obj.material != material: continue
+    let dist = manhattanDist(state.player.x, state.player.y, obj.tx, obj.ty)
+    var penalty = 0
+    for other in state.players:
+      if other.state != "Gathering" and other.state != "Idle": continue
+      let otherDist = abs((other.x + 3) div BotTileSize - obj.tx) +
+                      abs((other.y + 3) div BotTileSize - obj.ty)
+      if otherDist <= 3:
+        penalty += (4 - otherDist) * 3
+    let score = dist + penalty
+    if score < bestScore:
+      bestScore = score
+      bestObj = obj
+      found = true
+  if found: some(bestObj) else: none(BotObject)
+
 proc cheapestListing*(listings: seq[BotListing], item: string): Option[BotListing] =
   var best: BotListing
   var found = false
@@ -391,6 +414,27 @@ proc supplyCount*(state: GameState, item: string): int =
   for l in state.allListings():
     if l.item == item:
       result += l.quantity
+
+proc visibleListings*(state: GameState, cachedListings: seq[BotListing]): seq[BotListing] =
+  if state.player.state in ["AtBuyStall", "AtSellStall"]:
+    state.allListings()
+  else:
+    cachedListings
+
+proc cheapestPriceCached*(state: GameState, item: string, cached: seq[BotListing]): int =
+  let listings = visibleListings(state, cached)
+  let listing = cheapestListing(listings, item)
+  if listing.isSome: listing.get().priceEach else: int.high
+
+proc supplyCountCached*(state: GameState, item: string, cached: seq[BotListing]): int =
+  for l in visibleListings(state, cached):
+    if l.item == item:
+      result += l.quantity
+
+proc hasListingsCached*(state: GameState, item: string, cached: seq[BotListing]): bool =
+  for l in visibleListings(state, cached):
+    if l.item == item and l.quantity > 0: return true
+  false
 
 proc hasListings*(state: GameState, item: string): bool =
   for l in state.allListings():
@@ -533,6 +577,51 @@ proc hasAffordableGearUpgrade*(state: GameState, player: BotPlayer): bool =
   if target.slot < 0: return false
   let all = state.allListings()
   let listing = cheapestListing(all, target.item)
+  listing.isSome and listing.get().priceEach <= player.gold
+
+proc nextGearTargetCached*(state: GameState, player: BotPlayer, cached: seq[BotListing]): tuple[slot: int, tier: int, item: string] =
+  result = (-1, 0, "")
+  let all = visibleListings(state, cached)
+  let hasT1 = player.hasFullGearSet(1)
+  let hasT2 = player.hasFullGearSet(2)
+  for goalTier in 1 .. 3:
+    if goalTier == 2 and not hasT1: continue
+    if goalTier == 3 and not hasT2: continue
+    var bestSlot = -1
+    var bestTier = 0
+    var bestPrice = int.high
+    for i in 0 ..< GearSlotCount:
+      let currentTier = gearTier(player.equippedGear[i])
+      if currentTier >= goalTier: continue
+      for targetTier in goalTier .. 3:
+        let item = gearItemForSlot(i, targetTier)
+        let listing = cheapestListing(all, item)
+        if listing.isSome and listing.get().priceEach < bestPrice:
+          bestSlot = i
+          bestTier = targetTier
+          bestPrice = listing.get().priceEach
+    if bestSlot >= 0:
+      return (bestSlot, bestTier, gearItemForSlot(bestSlot, bestTier))
+  if not hasT1:
+    for i in 0 ..< GearSlotCount:
+      let currentTier = gearTier(player.equippedGear[i])
+      if currentTier >= 1: continue
+      var bestTier = 0
+      var bestPrice = int.high
+      for targetTier in 1 .. 3:
+        let item = gearItemForSlot(i, targetTier)
+        let listing = cheapestListing(all, item)
+        if listing.isSome and listing.get().priceEach < bestPrice:
+          bestTier = targetTier
+          bestPrice = listing.get().priceEach
+      if bestTier > 0:
+        return (i, bestTier, gearItemForSlot(i, bestTier))
+
+proc hasAffordableGearUpgradeCached*(state: GameState, player: BotPlayer, cached: seq[BotListing]): bool =
+  let target = nextGearTargetCached(state, player, cached)
+  if target.slot < 0: return false
+  let listings = visibleListings(state, cached)
+  let listing = cheapestListing(listings, target.item)
   listing.isSome and listing.get().priceEach <= player.gold
 
 proc lowestNeededGearTier*(player: BotPlayer): int =
@@ -892,16 +981,18 @@ proc preferredMaterial*(baseMaterial: string, tier: int): string =
   else: ""
 
 proc nearestGatherableNode*(state: GameState, player: BotPlayer,
-                            preferMaterial: string = ""): Option[BotObject] =
+                            preferMaterial: string = "",
+                            cachedListings: seq[BotListing] = @[]): Option[BotObject] =
   let maxTier = highestGatherableTier(player)
   if preferMaterial.len > 0 and maxTier <= 1:
-    let baseNode = nearestObject(state, "GatherNodeObj", material = preferMaterial)
+    let baseNode = leastContestedNode(state, "GatherNodeObj", preferMaterial)
     if baseNode.isSome: return baseNode
   var targetTier = maxTier
   if maxTier >= 2 and not player.canSellMore:
     for lower in 1 ..< maxTier:
       let (lowA, lowB) = materialsForTier(lower)
-      let lowSupply = supplyCount(state, lowA) + supplyCount(state, lowB)
+      let lowSupply = supplyCountCached(state, lowA, cachedListings) +
+                      supplyCountCached(state, lowB, cachedListings)
       if lowSupply == 0:
         targetTier = lower
         break
@@ -909,14 +1000,14 @@ proc nearestGatherableNode*(state: GameState, player: BotPlayer,
     let (matA, matB) = materialsForTier(tier)
     if preferMaterial.len > 0:
       let preferred = preferredMaterial(preferMaterial, tier)
-      let node = nearestObject(state, "GatherNodeObj", material = preferred)
+      let node = leastContestedNode(state, "GatherNodeObj", preferred)
       if node.isSome: return node
-    let supA = supplyCount(state, matA)
-    let supB = supplyCount(state, matB)
+    let supA = supplyCountCached(state, matA, cachedListings)
+    let supB = supplyCountCached(state, matB, cachedListings)
     let (first, second) = if supB < supA: (matB, matA) else: (matA, matB)
-    let nodeFirst = nearestObject(state, "GatherNodeObj", material = first)
+    let nodeFirst = leastContestedNode(state, "GatherNodeObj", first)
     if nodeFirst.isSome: return nodeFirst
-    let nodeSecond = nearestObject(state, "GatherNodeObj", material = second)
+    let nodeSecond = leastContestedNode(state, "GatherNodeObj", second)
     if nodeSecond.isSome: return nodeSecond
   none(BotObject)
 

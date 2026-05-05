@@ -52,9 +52,12 @@ type
     targetGearItem*: string
     targetGearCursor*: int
     pricingState*: PricingState
+    lastSeenListings*: seq[BotListing]
 
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
+  if p.state in ["AtBuyStall", "AtSellStall"]:
+    bot.lastSeenListings = state.allListings()
   inc bot.ticksInPhase
   if bot.ticksInPhase > 600:
     bot.phase = WaitForState
@@ -71,14 +74,14 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of EvaluateRole:
     bot.ticksInPhase = 0
-    let target = nextGearTarget(state, p)
+    let target = nextGearTargetCached(state, p, bot.lastSeenListings)
     let needsGear = not p.hasFullGearSet(3)
     let gearOnMarket = target.slot >= 0
     let canAfford = canAffordAnyMaterial(state, p)
     let hasMats = hasEnoughMaterialsForCraft(p.inv)
     if needsGear and not gearOnMarket and (canAfford or hasMats):
       bot.wantedRole = "Crafter"
-    elif needsGear and gearOnMarket and not hasAffordableGearUpgrade(state, p) and canAfford:
+    elif needsGear and gearOnMarket and not hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings) and canAfford:
       bot.wantedRole = "Crafter"
     elif p.role == "Crafter" and not canAfford and not hasMats:
       bot.wantedRole = "Gatherer"
@@ -89,7 +92,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
     if p.role == bot.wantedRole:
       if p.role == "Gatherer":
-        if hasAffordableGearUpgrade(state, p):
+        if hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
           bot.phase = CheckGear
         elif hasEnoughMaterialsForUsefulCraft(p) and not p.hasFullGearSet(3):
           bot.phase = PathToCrafterStall
@@ -106,7 +109,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
           bot.phase = PathToSellStall
         elif hasEnoughMaterialsForCraft(p.inv):
           bot.phase = PathToCraftStation
-        elif hasAffordableGearUpgrade(state, p):
+        elif hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
           bot.phase = CheckGear
         elif canAffordAnyMaterial(state, p):
           bot.phase = PathToBuyStall
@@ -123,7 +126,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       elif p.role == "Crafter" and bot.wantedRole == "Gatherer":
         bot.phase = PathToGathererStall
       elif p.role == "Gatherer":
-        if hasAffordableGearUpgrade(state, p):
+        if hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
           bot.phase = CheckGear
         elif hasEnoughMaterialsForUsefulCraft(p) and not p.hasFullGearSet(3):
           bot.phase = PathToCrafterStall
@@ -140,7 +143,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
           bot.phase = PathToSellStall
         elif hasEnoughMaterialsForCraft(p.inv):
           bot.phase = PathToCraftStation
-        elif hasAffordableGearUpgrade(state, p):
+        elif hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
           bot.phase = CheckGear
         elif canAffordAnyMaterial(state, p):
           bot.phase = PathToBuyStall
@@ -220,13 +223,13 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.ticksInPhase = 0
       return 0
     if p.hasSellableMaterials and p.canSellMore:
-      let gTarget = nextGearTarget(state, p)
+      let gTarget = nextGearTargetCached(state, p, bot.lastSeenListings)
       let holdForCraft = not p.hasFullGearSet(3) and gTarget.slot < 0
       if not holdForCraft:
         bot.phase = PathToSellStall
         bot.ticksInPhase = 0
         return 0
-    let nodeOpt = nearestGatherableNode(state, p)
+    let nodeOpt = nearestGatherableNode(state, p, cachedListings = bot.lastSeenListings)
     if nodeOpt.isNone:
       let anyNode = nearestObject(state, "GatherNodeObj", undepleted = false)
       if anyNode.isSome:
@@ -255,7 +258,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       return 0
     if (bot.prevMask and ButtonA) != 0:
       return 0
-    let nodeOpt = nearestGatherableNode(state, p)
+    let nodeOpt = nearestGatherableNode(state, p, cachedListings = bot.lastSeenListings)
     if nodeOpt.isSome:
       let node = nodeOpt.get()
       return facingMask(node.tx, node.ty, p.tx, p.ty) or ButtonA
@@ -264,14 +267,14 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if hasAffordableGearUpgrade(state, p):
+      if hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
         bot.phase = CheckGear
       elif hasEnoughMaterialsForUsefulCraft(p) and not p.hasFullGearSet(3):
         bot.phase = PathToCrafterStall
       elif shouldCancelListings(p):
         bot.phase = PathToCancelStall
       elif p.hasSellableMaterials and p.canSellMore:
-        let gTarget = nextGearTarget(state, p)
+        let gTarget = nextGearTargetCached(state, p, bot.lastSeenListings)
         let holdForCraft = not p.hasFullGearSet(3) and gTarget.slot < 0
         if not holdForCraft:
           bot.phase = PathToSellStall
@@ -517,7 +520,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of CheckGear:
     bot.ticksInPhase = 0
-    let target = nextGearTarget(state, p)
+    let target = nextGearTargetCached(state, p, bot.lastSeenListings)
     if target.slot < 0:
       bot.phase = WaitForState
       return 0

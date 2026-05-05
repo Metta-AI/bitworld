@@ -42,9 +42,12 @@ type
     targetGearItem*: string
     targetGearCursor*: int
     pricingState*: PricingState
+    lastSeenListings*: seq[BotListing]
 
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
+  if p.state in ["AtBuyStall", "AtSellStall"]:
+    bot.lastSeenListings = state.allListings()
   inc bot.ticksInPhase
   if bot.ticksInPhase > 600:
     bot.phase = WaitForState
@@ -57,7 +60,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     if p.state in ["AtSellStall", "AtBuyStall"]:
       return ButtonB
     if p.role == "Gatherer":
-      if hasAffordableGearUpgrade(state, p):
+      if hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
         bot.phase = CheckGear
       elif shouldCancelListings(p) or shouldCancelForUpgrade(p):
         bot.phase = PathToCancelStall
@@ -107,7 +110,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       bot.phase = PathToSellStall
       bot.ticksInPhase = 0
       return 0
-    let nodeOpt = nearestGatherableNode(state, p, "StoneItem")
+    let nodeOpt = nearestGatherableNode(state, p, "StoneItem", bot.lastSeenListings)
     if nodeOpt.isNone:
       let anyNode = nearestObject(state, "GatherNodeObj", undepleted = false)
       if anyNode.isSome:
@@ -136,7 +139,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
       return 0
     if (bot.prevMask and ButtonA) != 0:
       return 0
-    let nodeOpt = nearestGatherableNode(state, p, "StoneItem")
+    let nodeOpt = nearestGatherableNode(state, p, "StoneItem", bot.lastSeenListings)
     if nodeOpt.isSome:
       let node = nodeOpt.get()
       return facingMask(node.tx, node.ty, p.tx, p.ty) or ButtonA
@@ -145,7 +148,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
   of HoldGathering:
     if p.state == "Idle":
       bot.ticksInPhase = 0
-      if hasAffordableGearUpgrade(state, p):
+      if hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
         bot.phase = CheckGear
       elif shouldCancelListings(p):
         bot.phase = PathToCancelStall
@@ -245,7 +248,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
 
   of CheckGear:
     bot.ticksInPhase = 0
-    let target = nextGearTarget(state, p)
+    let target = nextGearTargetCached(state, p, bot.lastSeenListings)
     if target.slot < 0:
       bot.phase = PathToStoneNode
       return 0

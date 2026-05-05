@@ -48,9 +48,12 @@ type
     targetMatName*: string
     targetMatNeeded*: int
     cancelCycles*: int
+    lastSeenListings*: seq[BotListing]
 
 proc decide*(bot: var BotState, state: GameState): uint8 =
   let p = state.player
+  if p.state in ["AtBuyStall", "AtSellStall"]:
+    bot.lastSeenListings = state.allListings()
   inc bot.ticksInPhase
   if bot.ticksInPhase > 600:
     bot.phase = WaitForState
@@ -73,7 +76,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
         bot.phase = PathToSellStall
       elif hasEnoughMaterialsForCraft(p.inv):
         bot.phase = PathToCraftStation
-      elif hasAffordableGearUpgrade(state, p):
+      elif hasAffordableGearUpgradeCached(state, p, bot.lastSeenListings):
         bot.phase = CheckGear
       elif canAffordAnyMaterial(state, p):
         bot.phase = PathToBuyStall
@@ -119,7 +122,7 @@ proc decide*(bot: var BotState, state: GameState): uint8 =
     return ButtonA
 
   of CheckGear:
-    let target = nextGearTarget(state, p)
+    let target = nextGearTargetCached(state, p, bot.lastSeenListings)
     if target.slot < 0:
       bot.phase = WaitForState
       bot.ticksInPhase = 0
