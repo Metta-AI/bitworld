@@ -30,6 +30,8 @@ const
   ReplayPlayPath = "/replays/play"
   ScoresPath = "/scores"
   LogsPath = "/logs"
+  BulkStopPath = "/containers/stop"
+  BulkRemovePath = "/containers/remove"
   HealthPath = "/healthz"
   ClientPath = "/client/"
   CreatePath = "/games/create"
@@ -122,6 +124,14 @@ th {
 .nowrap {
   white-space: nowrap;
 }
+.selectCell {
+  width: 24px;
+  text-align: center;
+}
+.bulkBar {
+  margin: 8px 0;
+  text-align: right;
+}
 .button {
   border: 1px solid #303050;
   background: #eeeeff;
@@ -164,6 +174,32 @@ th {
   overflow: auto;
   white-space: pre-wrap;
 }
+"""
+  BulkScript = """
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var boxes = Array.prototype.slice.call(
+    document.querySelectorAll(".bulkCheck")
+  );
+  var anchor = null;
+  boxes.forEach(function (box) {
+    box.addEventListener("click", function (event) {
+      if (event.shiftKey && anchor) {
+        var a = boxes.indexOf(anchor);
+        var b = boxes.indexOf(box);
+        var start = Math.min(a, b);
+        var stop = Math.max(a, b);
+        var checked = box.checked;
+        for (var i = start; i <= stop; i++) {
+          boxes[i].checked = checked;
+        }
+      } else {
+        anchor = box;
+      }
+    });
+  });
+});
+</script>
 """
 
 type
@@ -436,6 +472,13 @@ proc cleanContainerName(value: string): string =
 proc logUrl(name: string): string =
   ## Builds the log viewer URL for one container.
   LogsPath & "?name=" & cleanContainerName(name)
+
+proc renderContainerCheckbox(name: string): string =
+  ## Renders one bulk action checkbox for a managed container.
+  let safeName = cleanContainerName(name)
+  "<input class=\"bulkCheck\" type=\"checkbox\" name=\"name\" value=\"" &
+    esc(safeName) & "\" form=\"bulkForm\" title=\"Select " &
+    esc(name) & "\">"
 
 proc botKindLabel(kind: BotKind): string =
   ## Returns the stable form value for one bot kind.
@@ -1378,6 +1421,57 @@ proc stopGame(name: string) =
   if game.status == "running":
     discard requireDocker(@["stop", game.name])
 
+proc stopManagedContainer(name: string) =
+  ## Stops one managed game, replay server, or bot container.
+  let safeName = cleanContainerName(name)
+  if safeName.len == 0 or safeName != name:
+    raise newException(GamesServerError, "invalid container name")
+  try:
+    stopGame(safeName)
+    return
+  except GamesServerError:
+    discard
+  try:
+    stopBot(safeName)
+    return
+  except GamesServerError:
+    discard
+  raise newException(
+    GamesServerError,
+    "container is not managed by games_server"
+  )
+
+proc removeManagedGame(game: GameContainer): seq[string] =
+  ## Removes one managed game container and its bot containers.
+  for bot in botsForGame(safeListBots(), game.name):
+    discard dockerResult(@["rm", "-f", bot.name])
+    result.add(bot.name)
+  discard requireDocker(@["rm", "-f", game.name])
+  result.add(game.name)
+
+proc removeManagedBot(bot: BotContainer): seq[string] =
+  ## Removes one managed bot container.
+  discard requireDocker(@["rm", "-f", bot.name])
+  result.add(bot.name)
+
+proc removeManagedContainer(name: string): seq[string] =
+  ## Removes one managed game, replay server, or bot container.
+  let safeName = cleanContainerName(name)
+  if safeName.len == 0 or safeName != name:
+    raise newException(GamesServerError, "invalid container name")
+  try:
+    return removeManagedGame(inspectGame(safeName))
+  except GamesServerError:
+    discard
+  try:
+    return removeManagedBot(inspectBot(safeName))
+  except GamesServerError:
+    discard
+  raise newException(
+    GamesServerError,
+    "container is not managed by games_server"
+  )
+
 proc stopBotsForStoppedGames(
   containers: seq[GameContainer],
   bots: seq[BotContainer]
@@ -1650,6 +1744,24 @@ proc renderCreateForm(): string =
               href "/"
               say "Cancel"
 
+proc renderBulkControls(): string =
+  ## Renders the bulk container action controls.
+  renderFragment:
+    form ".bulkBar":
+      id "bulkForm"
+      action BulkStopPath
+      tmethod "post"
+      button ".button":
+        ttype "submit"
+        formaction BulkStopPath
+        say "Stop"
+      say " "
+      button ".button":
+        ttype "submit"
+        formaction BulkRemovePath
+        onclick "return confirm('Remove selected containers?')"
+        say "Remove"
+
 proc renderGamesTable(
   request: Request,
   games: seq[GameContainer],
@@ -1659,6 +1771,8 @@ proc renderGamesTable(
   renderFragment:
     table:
       tr:
+        th ".head selectCell":
+          say ""
         th ".head":
           say "Game"
         th ".head":
@@ -1676,8 +1790,6 @@ proc renderGamesTable(
         th ".head":
           say "Created"
         th ".head":
-          say "Control"
-        th ".head":
           say "Logs"
       if games.len == 0:
         tr:
@@ -1690,6 +1802,8 @@ proc renderGamesTable(
           healthy = gameHealthy(game)
           gameBots = botsForGame(bots, game.name)
         tr:
+          td rowClass & " selectCell":
+            say renderContainerCheckbox(game.name)
           td rowClass:
             say esc(game.name)
           td rowClass & " nowrap":
@@ -1779,26 +1893,14 @@ proc renderGamesTable(
           td rowClass & " nowrap":
             say fmtCreated(game.created)
           td rowClass & " center":
-            if game.status == "running":
-              form:
-                action "/games/stop"
-                tmethod "post"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value game.name
-                button ".button":
-                  ttype "submit"
-                  say "Stop"
-            else:
-              say "Stopped"
-          td rowClass & " center":
             a:
               href logUrl(game.name)
               target "_blank"
               say "logs"
         for bot in gameBots:
           tr:
+            td rowClass & " selectCell":
+              say renderContainerCheckbox(bot.name)
             td rowClass:
               say ""
             td rowClass & " nowrap":
@@ -1816,20 +1918,6 @@ proc renderGamesTable(
             td rowClass & " nowrap":
               say fmtCreated(bot.created)
             td rowClass & " center":
-              if bot.status == "running":
-                form:
-                  action "/games/bot/stop"
-                  tmethod "post"
-                  input:
-                    ttype "hidden"
-                    name "name"
-                    value bot.name
-                  button ".button":
-                    ttype "submit"
-                    say "Stop"
-              else:
-                say "Stopped"
-            td rowClass & " center":
               a:
                 href logUrl(bot.name)
                 target "_blank"
@@ -1843,6 +1931,8 @@ proc renderReplayServersTable(
   renderFragment:
     table:
       tr:
+        th ".head selectCell":
+          say ""
         th ".head":
           say "Replay server"
         th ".head":
@@ -1858,8 +1948,6 @@ proc renderReplayServersTable(
         th ".head":
           say "Created"
         th ".head":
-          say "Control"
-        th ".head":
           say "Logs"
       if servers.len == 0:
         tr:
@@ -1871,6 +1959,8 @@ proc renderReplayServersTable(
           rowClass = if i mod 2 == 0: ".row1" else: ".row2"
           healthy = gameHealthy(server)
         tr:
+          td rowClass & " selectCell":
+            say renderContainerCheckbox(server.name)
           td rowClass:
             say esc(server.name)
           td rowClass & " nowrap":
@@ -1905,20 +1995,6 @@ proc renderReplayServersTable(
               say "-"
           td rowClass & " nowrap":
             say fmtCreated(server.created)
-          td rowClass & " center":
-            if server.status == "running":
-              form:
-                action "/games/stop"
-                tmethod "post"
-                input:
-                  ttype "hidden"
-                  name "name"
-                  value server.name
-                button ".button":
-                  ttype "submit"
-                  say "Stop"
-            else:
-              say "Stopped"
           td rowClass & " center":
             a:
               href logUrl(server.name)
@@ -1986,6 +2062,7 @@ proc renderPage(
   ## Renders the full games server page.
   let
     createLink = renderCreateLink()
+    bulkControls = renderBulkControls()
     gamesTable = renderGamesTable(request, games, bots)
     replayServersTable = renderReplayServersTable(request, replayServers)
     replaysTable = renderReplaysTable(replays)
@@ -1997,6 +2074,7 @@ proc renderPage(
         say "<style>"
         say PageCss
         say "</style>"
+        say BulkScript
       body:
         tdiv ".page":
           table:
@@ -2014,6 +2092,7 @@ proc renderPage(
             p ".notice small":
               b:
                 say esc(notice)
+          say bulkControls
           say createLink
           p ".small":
             say " "
@@ -2354,6 +2433,42 @@ proc stopBotHandler(request: Request) =
   stopBot(name)
   request.respondRedirect("/?notice=stopped+" & cleanContainerName(name))
 
+proc bulkContainerNames(form: seq[(string, string)]): seq[string] =
+  ## Reads selected managed container names from a bulk action form.
+  for (key, value) in form:
+    if key != "name":
+      continue
+    let name = cleanContainerName(value)
+    if name.len == 0 or name != value:
+      raise newException(GamesServerError, "invalid container name")
+    if name notin result:
+      result.add(name)
+
+proc bulkStopHandler(request: Request) =
+  ## Handles selected container stop requests.
+  let names = bulkContainerNames(parseFormBody(request))
+  if names.len == 0:
+    request.respondRedirect("/?notice=nothing+selected")
+    return
+  for name in names:
+    stopManagedContainer(name)
+  request.respondRedirect("/?notice=stopped+" & $names.len & "+containers")
+
+proc bulkRemoveHandler(request: Request) =
+  ## Handles selected container remove requests.
+  let names = bulkContainerNames(parseFormBody(request))
+  if names.len == 0:
+    request.respondRedirect("/?notice=nothing+selected")
+    return
+  var removed: seq[string]
+  for name in names:
+    if name in removed:
+      continue
+    for removedName in removeManagedContainer(name):
+      if removedName notin removed:
+        removed.add(removedName)
+  request.respondRedirect("/?notice=removed+" & $removed.len & "+containers")
+
 proc logsHandler(request: Request) =
   ## Handles Docker log viewer requests.
   let name = queryValue(request, "name")
@@ -2456,6 +2571,10 @@ proc httpHandlerUnsafe(request: Request) =
       request.stopBotHandler()
     elif request.path == "/games/stop" and request.httpMethod == "POST":
       request.stopHandler()
+    elif request.path == BulkStopPath and request.httpMethod == "POST":
+      request.bulkStopHandler()
+    elif request.path == BulkRemovePath and request.httpMethod == "POST":
+      request.bulkRemoveHandler()
     elif request.path == ReplayPlayPath and request.httpMethod == "POST":
       request.replayPlayHandler()
     elif request.path.startsWith(ReplayPathPrefix) and
