@@ -101,24 +101,32 @@ proc liveProgressMaxTick(config: GameConfig): int =
   else:
     MaxTicks
 
-proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client file if the route matches.
+proc isWebSocketUpgrade(request: Request): bool =
+  ## Returns true when the GET request is a websocket upgrade.
+  request.headers["Sec-WebSocket-Key"].len > 0
+
+proc serveClientHtml(request: Request, route: string): bool =
+  ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(request.path)
+  let filePath = clientStaticPath(route)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(request.path)
+  headers["Content-Type"] = clientStaticContentType(route)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
-    request.respond(404, headers, "Missing static client: " & request.path)
+    request.respond(404, headers, "Missing static client: " & route)
     return true
   try:
     request.respond(200, headers, readFile(filePath))
   except IOError as e:
     request.respond(500, headers, "Could not read static client: " & e.msg)
   true
+
+proc serveStaticClientHtml(request: Request): bool =
+  ## Serves one static client file if the route matches.
+  request.serveClientHtml(request.path)
 
 proc tickTime(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
@@ -729,6 +737,15 @@ proc httpHandler(request: Request) =
     headers["Content-Type"] = "text/plain; charset=utf-8"
     headers["Cache-Control"] = "no-cache"
     request.respond(200, headers, "healthy")
+  elif request.path == WebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(PlayerClientRoute)
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
+  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
@@ -767,6 +784,11 @@ proc httpHandler(request: Request) =
         appState.playerTokens[websocket] = token
     echo "player connected: ", identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = initGlobalViewerState()
+  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

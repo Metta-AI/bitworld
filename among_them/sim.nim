@@ -153,6 +153,7 @@ const
   WebSocketPath* = "/player"
   Player2WebSocketPath* = "/player2"
   GlobalWebSocketPath* = "/global"
+  ReplayWebSocketPath* = "/replay"
 
 type
   PlayerRole* = enum

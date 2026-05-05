@@ -10,7 +10,7 @@ when isMainModule:
     configPath = getEnv("COGAME_CONFIG_PATH")
     mapPath = ""
     saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH")
-    loadReplayPath = ""
+    loadReplayPath = getEnv("COGAME_LOAD_REPLAY_PATH")
     saveScoresPath = getEnv("COGAME_RESULTS_PATH")
     messageCooldown = -1
   for kind, key, val in getopt():
