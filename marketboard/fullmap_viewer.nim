@@ -30,7 +30,7 @@ type
     inputPackets: seq[string]
 
 proc repoDir(): string =
-  getCurrentDir() / ".."
+  getCurrentDir()
 
 proc clientDataDir(): string =
   repoDir() / "clients" / "data"
