@@ -1050,7 +1050,7 @@ proc addWorldObjects(
       player.y - 1 - cameraY,
       player.y,
       MapLayerId,
-      playerSpriteId(i, selected, player.facing)
+      playerSpriteId(i, selected, FaceDown)
     )
 
   sim.addAttackObjects(packet, currentIds, cameraX, cameraY)
@@ -1157,8 +1157,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       result,
       currentIds,
       cameraX,
-      cameraY,
-      player.id
+      cameraY
     )
     sim.addPlayerHud(result, currentIds, playerIndex)
     if player.lives <= 0:
