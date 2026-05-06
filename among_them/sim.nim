@@ -1,6 +1,7 @@
 import jsony, pixie
 import protocol
 import bitworld/aseprite
+import ../common/pixelfonts
 import ../common/server
 import std/[json, math, os, random, strutils]
 
@@ -8,13 +9,14 @@ const
   GameName* = "among_them"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
-  ReplayFormatVersion* = 2'u16
+  ReplayFormatVersion* = 3'u16
   ReplayTickHashRecord* = 0x01'u8
   ReplayInputRecord* = 0x02'u8
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
   DefaultMapPath* = "map.json"
+  DarkBgPath* = "darkbg.aseprite"
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
@@ -46,19 +48,28 @@ const
   ReportRange* = 20
   VoteResultTicks* = 72
   MaxPlayers* = 16
-  MinPlayers* = 5
-  ImposterCount* = 1
-  VoteTimerTicks* = 1440
+  MinPlayers* = 8
+  ImposterCount* = 2
+  AutoImposterCount* = true
+  StartWaitTicks* = 5 * TargetFps
+  VoteTimerTicks* = 6000
+  MessageCooldownTicks* = 100
   GameOverTicks* = 360
-  MaxTicks* = 0  ## 0 = no limit (event-driven termination only)
+  MaxTicks* = 10_000  ## 0 = no limit.
   MaxGames* = 0  ## 0 = no limit.
-  TasksPerPlayer* = 4
+  TasksPerPlayer* = 8
   ShowTaskArrows* = true
   ButtonCalls* = 1
-  VoteChatVisibleMessages* = 4
-  VoteChatCharsPerLine* = 15
-  VoteChatLineCount* = 5
+  VoteChatVisibleMessages* = 6
+  VoteChatIconX* = 1
+  VoteChatTextX* = VoteChatIconX + SpriteSize + 1
+  VoteChatRightPad* = 1
+  VoteChatTextPixels* = ScreenWidth - VoteChatTextX - VoteChatRightPad
+  VoteChatCharsPerLine* = 32
+  VoteChatLineCount* = 10
   VoteChatMaxChars* = VoteChatCharsPerLine * VoteChatLineCount
+  TextColor* = 2'u8
+  TextLineHeight* = 7
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
@@ -103,6 +114,24 @@ const
     12,
     0
   ]
+  PlayerColorNames* = [
+    "red",
+    "orange",
+    "yellow",
+    "light blue",
+    "pink",
+    "lime",
+    "blue",
+    "pale blue",
+    "gray",
+    "white",
+    "dark brown",
+    "brown",
+    "dark teal",
+    "green",
+    "dark navy",
+    "black"
+  ]
   ShadowMap* = [
     0'u8,  #  0 black       -> black
     12,    #  1 gray         -> dark navy
@@ -121,8 +150,11 @@ const
     12,    # 14 light blue   -> dark navy
     9,     # 15 pale blue    -> dark teal
   ]
+  TaskBob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
   WebSocketPath* = "/player"
+  SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
+  ReplayWebSocketPath* = "/replay"
 
 type
   PlayerRole* = enum
@@ -138,6 +170,11 @@ type
     VoteResult
     GameOver
     RoleReveal
+
+  VoteCallKind* = enum
+    VoteCalledUnknown
+    VoteCalledButton
+    VoteCalledBody
 
   VoteState* = object
     votes*: seq[int]
@@ -196,6 +233,14 @@ type
     kills*: int
     tasks*: int
 
+  PlayerSlotConfig* = object
+    name*: string
+    token*: string
+    role*: PlayerRole
+    color*: uint8
+    hasRole*: bool
+    hasColor*: bool
+
   GameConfig* = object
     motionScale*: int
     accel*: int
@@ -213,7 +258,10 @@ type
     voteResultTicks*: int
     minPlayers*: int
     imposterCount*: int
+    autoImposterCount*: bool
+    startWaitTicks*: int
     voteTimerTicks*: int
+    messageCooldownTicks*: int
     gameOverTicks*: int
     maxTicks*: int
     maxGames*: int
@@ -223,6 +271,7 @@ type
     showPlayerLabels*: bool
     buttonCalls*: int
     mapPath*: string
+    slots*: seq[PlayerSlotConfig]
 
   Player* = object
     x*, y*: int
@@ -240,6 +289,7 @@ type
     activeTask*: int
     ventCooldown*: int
     buttonCallsUsed*: int
+    lastChatTick*: int
     assignedTasks*: seq[int]
     reward*: int
 
@@ -261,6 +311,8 @@ type
     vents*: seq[Vent]
     rooms*: seq[Room]
     mapPixels*: seq[uint8]
+    mapRgba*: seq[uint8]
+    darkBgPixels*: seq[uint8]
     walkMask*: seq[bool]
     wallMask*: seq[bool]
     fb*: Framebuffer
@@ -269,14 +321,18 @@ type
     nextJoinOrder*: int
     tickCount*: int
     gameStartTick*: int
+    startWaitTimer*: int
     phase*: GamePhase
     voteState*: VoteState
-    asciiSprites*: seq[Sprite]
+    asciiSprites*: PixelFont
     winner*: PlayerRole
     gameOverTimer*: int
     roleRevealTimer*: int
     timeLimitReached*: bool
     needsReregister*: bool
+    lastLobbyPlayersLogged*: int
+    lastLobbyNeededLogged*: int
+    lastLobbySecondsLogged*: int
 
   PlayerView* = object
     cameraX*, cameraY*: int
@@ -284,56 +340,53 @@ type
     viewerIsGhost*: bool
 
 const
-  RenderStateHeaderFeatures = 22
-  RenderStateGridSize = 32
-  RenderStateGridFeatures = RenderStateGridSize * RenderStateGridSize
-  RenderStatePlayerSlots = MaxPlayers
-  RenderStatePlayerFeatures = 8
-  RenderStateBodySlots = MaxPlayers
-  RenderStateBodyFeatures = 8
-  RenderStateTaskSlots = 15
-  RenderStateTaskFeatures = 8
-  RenderStateGridOffset = RenderStateHeaderFeatures
-  RenderStatePlayerOffset = RenderStateGridOffset + RenderStateGridFeatures
-  RenderStateBodyOffset =
-    RenderStatePlayerOffset + RenderStatePlayerSlots * RenderStatePlayerFeatures
-  RenderStateTaskOffset =
-    RenderStateBodyOffset + RenderStateBodySlots * RenderStateBodyFeatures
-  RenderStateFeatures* =
-    RenderStateTaskOffset + RenderStateTaskSlots * RenderStateTaskFeatures
+  SpritePlayerObservationHeaderFeatures = 4
+  SpritePlayerObservationGridSize = 32
+  SpritePlayerObservationGridFeatures = SpritePlayerObservationGridSize * SpritePlayerObservationGridSize
+  SpritePlayerObservationPlayerSlots = MaxPlayers
+  SpritePlayerObservationPlayerFeatures = 4
+  SpritePlayerObservationBodySlots = MaxPlayers
+  SpritePlayerObservationBodyFeatures = 4
+  SpritePlayerObservationTaskSlots = 15
+  SpritePlayerObservationTaskFeatures = 5
+  SpritePlayerObservationGridOffset = SpritePlayerObservationHeaderFeatures
+  SpritePlayerObservationPlayerOffset = SpritePlayerObservationGridOffset + SpritePlayerObservationGridFeatures
+  SpritePlayerObservationBodyOffset =
+    SpritePlayerObservationPlayerOffset + SpritePlayerObservationPlayerSlots * SpritePlayerObservationPlayerFeatures
+  SpritePlayerObservationTaskOffset =
+    SpritePlayerObservationBodyOffset + SpritePlayerObservationBodySlots * SpritePlayerObservationBodyFeatures
+  SpritePlayerObservationFeatures* =
+    SpritePlayerObservationTaskOffset + SpritePlayerObservationTaskSlots * SpritePlayerObservationTaskFeatures
 
-  RenderKindPlayer = 1'u8
-  RenderKindBody = 2'u8
-  RenderKindTask = 3'u8
+  RenderHeaderKillIcon = 1
+  RenderHeaderTaskProgress = 2
+  RenderHeaderTasksRemaining = 3
+
+  RenderPlayerFlagsFeature = 3
+
+  RenderTaskFlagsFeature = 4
 
   RenderPlayerPresent = 1'u8
-  RenderPlayerSelf = 2'u8
   RenderPlayerAlive = 4'u8
-  RenderPlayerRoleImposter = 8'u8
   RenderPlayerFlipH = 16'u8
   RenderPlayerGhost = 32'u8
-  RenderPlayerSelected = 64'u8
 
-  RenderTaskAssigned = 1'u8
-  RenderTaskIncomplete = 2'u8
-  RenderTaskActive = 4'u8
-  RenderTaskIconVisible = 8'u8
-  RenderTaskArrowVisible = 16'u8
-  RenderTaskCompleted = 32'u8
+  RenderTaskIconVisible = 1'u8
+  RenderTaskArrowVisible = 2'u8
 
 proc gameDir*(): string =
   ## Returns the Among Them game directory.
   when defined(emscripten):
     "among_them"
   else:
-    currentSourcePath().parentDir()
+    getCurrentDir()
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
   when defined(emscripten):
     "clients" / "data"
   else:
-    gameDir() / ".." / "clients" / "data"
+    getCurrentDir() / ".." / "clients" / "data"
 
 proc resolveGamePath*(path: string, baseDir = ""): string =
   ## Resolves a game data path against the map file and game directory.
@@ -651,53 +704,58 @@ proc loadSkeld2Layers*(): tuple[mapImage, walkImage, wallImage: Image] =
   ## Loads the default Skeld map layers.
   loadMapLayers(loadAmongMap())
 
+proc loadDarkBgPixels*(): seq[uint8] =
+  ## Loads the dark interstitial background as palette pixels.
+  let image = readAsepriteImage(gameDir() / DarkBgPath)
+  if image.width != ScreenWidth or image.height != ScreenHeight:
+    raise newException(
+      AmongThemError,
+      DarkBgPath & " must be " & $ScreenWidth & "x" & $ScreenHeight & "."
+    )
+  result = newSeq[uint8](ScreenWidth * ScreenHeight)
+  for y in 0 ..< ScreenHeight:
+    for x in 0 ..< ScreenWidth:
+      let color = nearestPaletteIndex(image[x, y])
+      result[y * ScreenWidth + x] =
+        if color == TransparentColorIndex: SpaceColor else: color
+
 proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
   ord(ch) - ord(' ')
 
-proc loadAsciiSprites*(path: string): seq[Sprite] =
-  ## Loads the fixed seven by nine ASCII glyph sheet.
-  if not fileExists(path):
-    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
-  let
-    image = readImage(path)
-    glyphWidth = 7
-    glyphHeight = 9
-    rowStride = 9
-    cols = image.width div glyphWidth
-    rows = image.height div rowStride
-    background = nearestPaletteIndex(image[0, 0])
-  result = @[]
-  for row in 0 ..< rows:
-    for col in 0 ..< cols:
-      var sprite = Sprite(width: glyphWidth, height: glyphHeight)
-      sprite.pixels = newSeq[uint8](glyphWidth * glyphHeight)
-      let
-        baseX = col * glyphWidth
-        baseY = row * rowStride
-      for y in 0 ..< glyphHeight:
-        for x in 0 ..< glyphWidth:
-          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
-          sprite.pixels[sprite.spriteIndex(x, y)] =
-            if colorIndex == background:
-              TransparentColorIndex
-            else:
-              colorIndex
-      result.add(sprite)
+proc loadAsciiSprites*(path: string): PixelFont =
+  ## Loads the tiny variable-width ASCII pixel font.
+  readPixelFont(path)
 
 proc blitAsciiText*(
   fb: var Framebuffer,
-  asciiSprites: seq[Sprite],
+  asciiSprites: PixelFont,
   text: string,
   screenX, screenY: int
 ) =
-  ## Draws text using the Among Them ASCII glyph sheet.
-  var offsetX = 0
-  for ch in text:
-    let idx = asciiIndex(ch)
-    if idx >= 0 and idx < asciiSprites.len:
-      fb.blitSprite(asciiSprites[idx], screenX + offsetX, screenY, 0, 0)
-    offsetX += 7
+  ## Draws text using the Among Them tiny UI font.
+  fb.drawText(asciiSprites, text, screenX, screenY, TextColor)
+
+proc blitCenteredAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: PixelFont,
+  text: string,
+  screenY: int
+) =
+  ## Draws centered text using the Among Them tiny UI font.
+  let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2
+  fb.blitAsciiText(asciiSprites, text, screenX, screenY)
+
+proc blitCenteredAsciiText*(
+  fb: var Framebuffer,
+  asciiSprites: PixelFont,
+  text: string,
+  screenY,
+  offsetX: int
+) =
+  ## Draws horizontally offset centered text.
+  let screenX = (ScreenWidth - asciiSprites.textWidth(text)) div 2 + offsetX
+  fb.blitAsciiText(asciiSprites, text, screenX, screenY)
 
 proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Fills one clipped rectangle on a framebuffer.
@@ -706,6 +764,18 @@ proc fillRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in y ..< y + h:
     for px in x ..< x + w:
       fb.putPixel(px, py, color)
+
+proc fillDarkBg*(sim: SimServer, fb: var Framebuffer) =
+  ## Fills a framebuffer with the dark interstitial background.
+  if sim.darkBgPixels.len != ScreenWidth * ScreenHeight:
+    fb.clearFrame(SpaceColor)
+    return
+  for i in 0 ..< fb.indices.len:
+    fb.indices[i] = sim.darkBgPixels[i]
+
+proc clearInterstitialFrame*(sim: var SimServer) =
+  ## Clears the shared framebuffer to the dark interstitial background.
+  sim.fillDarkBg(sim.fb)
 
 proc strokeRect*(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   ## Strokes one clipped rectangle on a framebuffer.
@@ -727,24 +797,62 @@ proc cleanChatMessage*(message: string): string =
     if ch >= ' ' and ch <= '~':
       result.add(ch)
 
-proc sliceChatLine*(text: string, lineIndex: int): string =
-  ## Returns one fixed-width chat line.
-  let startIndex = lineIndex * VoteChatCharsPerLine
+proc nextChatLineStart(
+  font: PixelFont,
+  text: string,
+  startIndex: int
+): int =
+  ## Returns the next pixel-width chat line start.
+  var
+    x = 0
+    lastSpace = -1
+    i = startIndex
+  while i < text.len:
+    let ch = text[i]
+    let advance = font.glyphAdvance(ch)
+    if x > 0 and x + advance > VoteChatTextPixels:
+      if lastSpace > startIndex:
+        result = lastSpace
+      else:
+        result = i
+      while result < text.len and text[result] == ' ':
+        inc result
+      return
+    x += advance
+    if ch == ' ':
+      lastSpace = i + 1
+    inc i
+  text.len
+
+proc chatLineStart(font: PixelFont, text: string, lineIndex: int): int =
+  ## Returns the source index for one visible chat line.
+  result = 0
+  for i in 0 ..< lineIndex:
+    result = font.nextChatLineStart(text, result)
+
+proc sliceChatLine*(font: PixelFont, text: string, lineIndex: int): string =
+  ## Returns one pixel-width chat line.
+  let startIndex = font.chatLineStart(text, lineIndex)
   if startIndex >= text.len:
     return ""
-  let endIndex = min(text.len, startIndex + VoteChatCharsPerLine)
-  text[startIndex ..< endIndex]
+  let endIndex = font.nextChatLineStart(text, startIndex)
+  result = text[startIndex ..< endIndex]
+  result = result.strip()
 
-proc chatLineCount*(text: string): int =
+proc chatLineCount*(font: PixelFont, text: string): int =
   ## Returns the visible line count for one chat message.
-  max(1, min(
-    VoteChatLineCount,
-    (text.len + VoteChatCharsPerLine - 1) div VoteChatCharsPerLine
-  ))
+  result = 1
+  var startIndex = 0
+  while startIndex < text.len and result < VoteChatLineCount:
+    let nextIndex = font.nextChatLineStart(text, startIndex)
+    if nextIndex >= text.len:
+      break
+    inc result
+    startIndex = nextIndex
 
-proc chatMessageHeight*(text: string): int =
+proc chatMessageHeight*(font: PixelFont, text: string): int =
   ## Returns the pixel height for one chat message row.
-  max(SpriteSize, text.chatLineCount() * 9) + 2
+  max(SpriteSize, font.chatLineCount(text) * TextLineHeight) + 1
 
 proc defaultGameConfig*(): GameConfig =
   ## Returns the default Among Them gameplay config.
@@ -765,7 +873,10 @@ proc defaultGameConfig*(): GameConfig =
     voteResultTicks: VoteResultTicks,
     minPlayers: MinPlayers,
     imposterCount: ImposterCount,
+    autoImposterCount: AutoImposterCount,
+    startWaitTicks: StartWaitTicks,
     voteTimerTicks: VoteTimerTicks,
+    messageCooldownTicks: MessageCooldownTicks,
     gameOverTicks: GameOverTicks,
     maxTicks: MaxTicks,
     maxGames: MaxGames,
@@ -774,7 +885,8 @@ proc defaultGameConfig*(): GameConfig =
     showTaskBubbles: true,
     showPlayerLabels: true,
     buttonCalls: ButtonCalls,
-    mapPath: DefaultMapPath
+    mapPath: DefaultMapPath,
+    slots: @[]
   )
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
@@ -804,6 +916,140 @@ proc readConfigString(node: JsonNode, name: string, value: var string) =
     raise newException(AmongThemError, "Config field " & name & " must be a string.")
   value = item.getStr()
 
+proc readSlotRole(text: string, slotIndex: int): PlayerRole =
+  ## Reads one slot role string.
+  case text.strip().toLowerAscii()
+  of "crew":
+    Crewmate
+  of "imp", "imposter", "impostor":
+    Imposter
+  else:
+    raise newException(
+      AmongThemError,
+      "Config field slots[" & $slotIndex & "].role must be crew or imposter."
+    )
+
+proc normalizedSlotColor(text: string): string =
+  ## Returns a normalized slot color name.
+  result = text.strip().toLowerAscii()
+  result = result.replace("_", " ")
+  result = result.replace("-", " ")
+  result = result.replace(" ", "")
+
+proc playerColorText*(color: uint8): string =
+  ## Returns the readable player color name.
+  for i in 0 ..< PlayerColors.len:
+    if PlayerColors[i] == color:
+      return PlayerColorNames[i]
+  "unknown"
+
+proc readSlotColor(text: string, slotIndex: int): uint8 =
+  ## Reads one slot color string.
+  case text.normalizedSlotColor()
+  of "red":
+    PlayerColors[0]
+  of "orange":
+    PlayerColors[1]
+  of "yellow":
+    PlayerColors[2]
+  of "lightblue", "cyan":
+    PlayerColors[3]
+  of "pink":
+    PlayerColors[4]
+  of "lime":
+    PlayerColors[5]
+  of "blue":
+    PlayerColors[6]
+  of "paleblue":
+    PlayerColors[7]
+  of "gray", "grey":
+    PlayerColors[8]
+  of "white":
+    PlayerColors[9]
+  of "darkbrown":
+    PlayerColors[10]
+  of "brown":
+    PlayerColors[11]
+  of "darkteal", "teal":
+    PlayerColors[12]
+  of "green":
+    PlayerColors[13]
+  of "darknavy", "navy":
+    PlayerColors[14]
+  of "black":
+    PlayerColors[15]
+  else:
+    raise newException(
+      AmongThemError,
+      "Config field slots[" & $slotIndex & "].color is unknown."
+    )
+
+proc readConfigSlots(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
+  ## Reads optional fixed player slot config entries.
+  if not node.hasKey("slots"):
+    return
+  let items = node["slots"]
+  if items.kind != JArray:
+    raise newException(AmongThemError, "Config field slots must be an array.")
+  slots.setLen(0)
+  for i, item in items.elems:
+    if item.kind != JObject:
+      raise newException(
+        AmongThemError,
+        "Config field slots[" & $i & "] must be an object."
+      )
+    var slot: PlayerSlotConfig
+    item.readConfigString("name", slot.name)
+    item.readConfigString("token", slot.token)
+    if item.hasKey("role"):
+      let role = item["role"]
+      if role.kind != JString:
+        raise newException(
+          AmongThemError,
+          "Config field slots[" & $i & "].role must be a string."
+        )
+      slot.role = readSlotRole(role.getStr(), i)
+      slot.hasRole = true
+    if item.hasKey("color"):
+      let color = item["color"]
+      if color.kind != JString:
+        raise newException(
+          AmongThemError,
+          "Config field slots[" & $i & "].color must be a string."
+        )
+      slot.color = readSlotColor(color.getStr(), i)
+      slot.hasColor = true
+    slots.add(slot)
+
+proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
+  ## Reads optional fixed player slot tokens.
+  if not node.hasKey("tokens"):
+    return
+  let items = node["tokens"]
+  if items.kind != JArray:
+    raise newException(AmongThemError, "Config field tokens must be an array.")
+  if items.len > MaxPlayers:
+    raise newException(
+      AmongThemError,
+      "Config field tokens cannot have more than 16 entries."
+    )
+  if slots.len < items.len:
+    slots.setLen(items.len)
+  for i, item in items.elems:
+    if item.kind != JString:
+      raise newException(
+        AmongThemError,
+        "Config field tokens[" & $i & "] must be a string."
+      )
+    let token = item.getStr()
+    if slots[i].token.len > 0 and slots[i].token != token:
+      raise newException(
+        AmongThemError,
+        "Config field tokens[" & $i & "] conflicts with slots[" & $i &
+          "].token."
+      )
+    slots[i].token = token
+
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
   if config.motionScale <= 0:
@@ -816,6 +1062,8 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "can't do more than 16 players.")
   if config.imposterCount < 0:
     raise newException(AmongThemError, "Config field imposterCount must be non-negative.")
+  if config.startWaitTicks < 0:
+    raise newException(AmongThemError, "Config field startWaitTicks must be non-negative.")
   if config.tasksPerPlayer < 0:
     raise newException(AmongThemError, "Config field tasksPerPlayer must be non-negative.")
   if config.buttonCalls < 0:
@@ -824,10 +1072,28 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Config field roleRevealTicks must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(AmongThemError, "Config field voteTimerTicks must be positive.")
+  if config.messageCooldownTicks < 0:
+    raise newException(AmongThemError, "Config field messageCooldownTicks must be non-negative.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
       config.voteResultTicks < 0 or config.maxTicks < 0 or
       config.maxGames < 0:
     raise newException(AmongThemError, "Timer config fields must not be negative.")
+  if config.slots.len > MaxPlayers:
+    raise newException(AmongThemError, "Config field slots cannot have more than 16 entries.")
+  for i in 0 ..< config.slots.len:
+    for j in i + 1 ..< config.slots.len:
+      if config.slots[i].name.len > 0 and
+          config.slots[i].name == config.slots[j].name:
+        raise newException(
+          AmongThemError,
+          "Config field slots has duplicate name " & config.slots[i].name & "."
+        )
+      if config.slots[i].token.len > 0 and
+          config.slots[i].token == config.slots[j].token:
+        raise newException(
+          AmongThemError,
+          "Config field slots has duplicate token."
+        )
 
 proc update*(config: var GameConfig, jsonText: string) =
   ## Updates a gameplay config from a JSON object.
@@ -856,10 +1122,22 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("reportRange", config.reportRange)
   node.readConfigInt("voteResultTicks", config.voteResultTicks)
   node.readConfigInt("minPlayers", config.minPlayers)
+  let
+    hasImposterCount = node.hasKey("imposterCount")
+    hasAutoImposterCount =
+      node.hasKey("autoImposterCount") or node.hasKey("imposterRatio")
   node.readConfigInt("imposterCount", config.imposterCount)
+  node.readConfigBool("autoImposterCount", config.autoImposterCount)
+  node.readConfigBool("imposterRatio", config.autoImposterCount)
+  if hasImposterCount and not hasAutoImposterCount:
+    config.autoImposterCount = false
+  node.readConfigInt("startWaitTicks", config.startWaitTicks)
+  node.readConfigInt("gameStartWaitTicks", config.startWaitTicks)
   node.readConfigInt("voteTimerTicks", config.voteTimerTicks)
+  node.readConfigInt("messageCooldownTicks", config.messageCooldownTicks)
   node.readConfigInt("gameOverTicks", config.gameOverTicks)
   node.readConfigInt("maxTicks", config.maxTicks)
+  node.readConfigInt("maxGameTicks", config.maxTicks)
   node.readConfigInt("maxGames", config.maxGames)
   node.readConfigInt("tasksPerPlayer", config.tasksPerPlayer)
   node.readConfigInt("buttonCalls", config.buttonCalls)
@@ -869,10 +1147,41 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigBool("showPlayerLabels", config.showPlayerLabels)
   node.readConfigString("map", config.mapPath)
   node.readConfigString("mapPath", config.mapPath)
+  node.readConfigSlots(config.slots)
+  node.readConfigTokens(config.slots)
   config.validate()
+
+proc slotRoleText(slot: PlayerSlotConfig): string =
+  ## Returns a JSON role string for one slot.
+  if not slot.hasRole:
+    return ""
+  case slot.role
+  of Crewmate:
+    "crew"
+  of Imposter:
+    "imposter"
+
+proc slotColorText(slot: PlayerSlotConfig): string =
+  ## Returns a JSON color string for one slot.
+  if not slot.hasColor:
+    return ""
+  playerColorText(slot.color)
 
 proc configJson*(config: GameConfig): string =
   ## Returns the complete replay JSON for a gameplay config.
+  var
+    slots = newJArray()
+    tokens = newJArray()
+  for slot in config.slots:
+    var item = newJObject()
+    if slot.name.len > 0:
+      item["name"] = %slot.name
+    tokens.add(%slot.token)
+    if slot.hasRole:
+      item["role"] = %slot.slotRoleText()
+    if slot.hasColor:
+      item["color"] = %slot.slotColorText()
+    slots.add(item)
   let node = %*{
     "motionScale": config.motionScale,
     "accel": config.accel,
@@ -891,20 +1200,115 @@ proc configJson*(config: GameConfig): string =
     "voteResultTicks": config.voteResultTicks,
     "minPlayers": config.minPlayers,
     "imposterCount": config.imposterCount,
+    "autoImposterCount": config.autoImposterCount,
+    "startWaitTicks": config.startWaitTicks,
     "voteTimerTicks": config.voteTimerTicks,
+    "messageCooldownTicks": config.messageCooldownTicks,
     "gameOverTicks": config.gameOverTicks,
     "maxTicks": config.maxTicks,
+    "maxGameTicks": config.maxTicks,
     "maxGames": config.maxGames,
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
     "mapPath": config.mapPath,
     "showTaskArrows": config.showTaskArrows,
     "showTaskBubbles": config.showTaskBubbles,
-    "showPlayerLabels": config.showPlayerLabels
+    "showPlayerLabels": config.showPlayerLabels,
+    "tokens": tokens,
+    "slots": slots
   }
   $node
 
-proc mapIndex*(x, y: int): int =
+proc ratioImposterCount*(playerCount: int): int =
+  ## Returns the default impostor count for a player count.
+  if playerCount < 5:
+    return 0
+  (playerCount - 3) div 2
+
+proc effectiveImposterCount*(config: GameConfig, playerCount: int): int =
+  ## Returns the active impostor count for a config and player count.
+  let desired =
+    if config.autoImposterCount:
+      ratioImposterCount(playerCount)
+    else:
+      config.imposterCount
+  min(desired, max(0, playerCount - 1))
+
+proc lobbyIsStarting*(sim: SimServer): bool =
+  ## Returns whether the lobby is in the start countdown.
+  sim.players.len >= sim.config.minPlayers
+
+proc lobbyStartTicksRemaining*(sim: SimServer): int =
+  ## Returns ticks left before the lobby starts the game.
+  if not sim.lobbyIsStarting() or sim.config.startWaitTicks <= 0:
+    return 0
+  if sim.startWaitTimer > 0:
+    sim.startWaitTimer
+  else:
+    sim.config.startWaitTicks
+
+proc lobbyStartSecondsRemaining*(sim: SimServer): int =
+  ## Returns visible seconds left before the lobby starts the game.
+  let ticks = sim.lobbyStartTicksRemaining()
+  if ticks <= 0:
+    return 0
+  max(1, (ticks + TargetFps - 1) div TargetFps)
+
+proc roleText(role: PlayerRole): string =
+  ## Returns the readable role name.
+  case role
+  of Crewmate:
+    "crew"
+  of Imposter:
+    "imposter"
+
+proc playerText(sim: SimServer, playerIndex: int): string =
+  ## Returns the readable player color for one player index.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return "unknown"
+  playerColorText(sim.players[playerIndex].color)
+
+proc logGameEvent(text: string) =
+  ## Writes one game event to stdout for Docker logs.
+  echo text
+
+proc voteTargetText(sim: SimServer, vote: int): string =
+  ## Returns a readable vote target.
+  if vote == -2:
+    return "skip"
+  if vote >= 0 and vote < sim.players.len:
+    return sim.playerText(vote)
+  "unknown"
+
+proc logLobbyWaiting(sim: var SimServer) =
+  ## Logs waiting-for-player state when it changes.
+  let
+    needed = max(0, sim.config.minPlayers - sim.players.len)
+    players = sim.players.len
+  if players == sim.lastLobbyPlayersLogged and
+      needed == sim.lastLobbyNeededLogged:
+    return
+  sim.lastLobbyPlayersLogged = players
+  sim.lastLobbyNeededLogged = needed
+  sim.lastLobbySecondsLogged = -1
+  logGameEvent(
+    "waiting for players: " & $players & "/" &
+      $sim.config.minPlayers & ", need " & $needed & " more"
+  )
+
+proc logLobbyCountdown(sim: var SimServer) =
+  ## Logs the lobby countdown once per visible second.
+  let seconds = sim.lobbyStartSecondsRemaining()
+  if seconds <= 0 or seconds == sim.lastLobbySecondsLogged:
+    return
+  sim.lastLobbySecondsLogged = seconds
+  logGameEvent("game starting in " & $seconds)
+
+proc lobbyIconStartY*(sim: SimServer): int =
+  ## Returns the lobby icon row y coordinate.
+  if sim.lobbyIsStarting(): 32 else: 26
+
+proc mapIndex*(x, y: int): int {.inline.} =
   y * MapWidth + x
 
 proc mixHash(hash: var uint64, value: uint64) =
@@ -929,6 +1333,7 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.gameOverTimer)
   result.mixHashInt(sim.roleRevealTimer)
   result.mixHashInt(sim.gameStartTick)
+  result.mixHashInt(sim.startWaitTimer)
   result.mixHashBool(sim.timeLimitReached)
   result.mixHashBool(sim.needsReregister)
   result.mixHashInt(sim.nextJoinOrder)
@@ -952,6 +1357,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.activeTask)
     result.mixHashInt(player.ventCooldown)
     result.mixHashInt(player.buttonCallsUsed)
+    result.mixHashInt(player.lastChatTick)
     result.mixHashInt(player.reward)
     result.mixHashInt(player.assignedTasks.len)
     for task in player.assignedTasks:
@@ -1017,9 +1423,12 @@ proc resetPlayerToHome*(sim: var SimServer, playerIndex: int) =
 
 proc arrangeHomePositions*(sim: var SimServer) =
   ## Saves and applies evenly spaced home positions for all players.
-  let total = sim.players.len
-  for i in 0 ..< total:
-    let home = sim.homePosition(i, total)
+  var total = sim.players.len
+  for player in sim.players:
+    total = max(total, player.joinOrder + 1)
+  for i in 0 ..< sim.players.len:
+    let slot = sim.players[i].joinOrder
+    let home = sim.homePosition(slot, total)
     sim.players[i].homeX = home.x
     sim.players[i].homeY = home.y
     sim.resetPlayerToHome(i)
@@ -1032,6 +1441,191 @@ proc canAddPlayer*(sim: SimServer): bool =
   ## Returns whether the game has room for another player.
   sim.players.len < MaxPlayers
 
+proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
+  ## Returns one slot config or an empty config for missing entries.
+  if slotIndex >= 0 and slotIndex < config.slots.len:
+    config.slots[slotIndex]
+  else:
+    PlayerSlotConfig()
+
+proc slotRestricted(config: GameConfig, slotIndex: int): bool =
+  ## Returns true when a slot has identity restrictions.
+  let slot = config.slotConfig(slotIndex)
+  slot.name.len > 0 or slot.token.len > 0
+
+proc slotAuthMatches(
+  config: GameConfig,
+  slotIndex: int,
+  address,
+  token: string
+): bool =
+  ## Returns true when a player satisfies one configured slot.
+  let slot = config.slotConfig(slotIndex)
+  if slot.name.len > 0 and address != slot.name:
+    return false
+  if slot.token.len > 0 and token != slot.token:
+    return false
+  true
+
+proc validatePlayerSlot(
+  config: GameConfig,
+  slotIndex: int,
+  address,
+  token: string
+) =
+  ## Raises when a player does not satisfy one configured slot.
+  let slot = config.slotConfig(slotIndex)
+  if slot.name.len > 0 and address != slot.name:
+    raise newException(
+      AmongThemError,
+      "Player name does not match configured slot " & $slotIndex & "."
+    )
+  if slot.token.len > 0 and token != slot.token:
+    raise newException(
+      AmongThemError,
+      "Player token does not match configured slot " & $slotIndex & "."
+    )
+
+proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int, token: string): bool =
+  ## Returns whether a player websocket request can pass configured slot auth.
+  if requestedSlot < 0:
+    return true
+  if requestedSlot >= MaxPlayers:
+    return false
+  config.slotAuthMatches(requestedSlot, address, token)
+
+proc slotOccupied(sim: SimServer, slotIndex: int): bool =
+  ## Returns true when a player already owns a slot.
+  for player in sim.players:
+    if player.joinOrder == slotIndex:
+      return true
+  false
+
+proc matchingConfiguredSlot(
+  sim: SimServer,
+  address,
+  token: string
+): int =
+  ## Returns a matching configured slot for a player or -1.
+  for i in 0 ..< sim.config.slots.len:
+    if sim.slotOccupied(i):
+      continue
+    let slot = sim.config.slots[i]
+    let couldMatchName = slot.name.len > 0 and slot.name == address
+    let couldMatchToken = slot.token.len > 0 and slot.token == token
+    if (couldMatchName or couldMatchToken) and
+        sim.config.slotAuthMatches(i, address, token):
+      return i
+  -1
+
+proc conflictingConfiguredSlot(
+  sim: SimServer,
+  address,
+  token: string
+): int =
+  ## Returns a configured slot matched by name or token but not both.
+  for i in 0 ..< sim.config.slots.len:
+    if sim.slotOccupied(i):
+      continue
+    let slot = sim.config.slots[i]
+    let matchedName = slot.name.len > 0 and slot.name == address
+    let matchedToken =
+      slot.token.len > 0 and token.len > 0 and slot.token == token
+    if (matchedName or matchedToken) and
+        not sim.config.slotAuthMatches(i, address, token):
+      return i
+  -1
+
+proc namedConfiguredSlot(sim: SimServer, address: string): int =
+  ## Returns an open configured slot with a matching name.
+  for i in 0 ..< sim.config.slots.len:
+    if sim.slotOccupied(i):
+      continue
+    let slot = sim.config.slots[i]
+    if slot.name.len > 0 and slot.name == address:
+      return i
+  -1
+
+proc nextAutoSlot(sim: SimServer, address, token: string): int =
+  ## Returns the next open unrestricted or matching slot.
+  for i in sim.nextJoinOrder ..< MaxPlayers:
+    if sim.slotOccupied(i):
+      continue
+    if not sim.config.slotRestricted(i) or
+        sim.config.slotAuthMatches(i, address, token):
+      return i
+  for i in 0 ..< sim.nextJoinOrder:
+    if sim.slotOccupied(i):
+      continue
+    if not sim.config.slotRestricted(i) or
+        sim.config.slotAuthMatches(i, address, token):
+      return i
+  -1
+
+proc advanceJoinOrder(sim: var SimServer) =
+  ## Moves the auto-slot cursor to the next open slot.
+  while sim.nextJoinOrder < MaxPlayers and
+      sim.slotOccupied(sim.nextJoinOrder):
+    inc sim.nextJoinOrder
+
+proc resolvePlayerSlot(
+  sim: SimServer,
+  address,
+  token: string,
+  requestedSlot: int
+): int =
+  ## Returns the slot a player should use or raises on rejection.
+  if requestedSlot >= MaxPlayers:
+    raise newException(
+      AmongThemError,
+      "Player slot must be between 0 and 15."
+    )
+  if requestedSlot >= 0:
+    if sim.slotOccupied(requestedSlot):
+      raise newException(
+        AmongThemError,
+        "Player slot " & $requestedSlot & " is already occupied."
+      )
+    sim.config.validatePlayerSlot(requestedSlot, address, token)
+    return requestedSlot
+  result = sim.matchingConfiguredSlot(address, token)
+  if result >= 0:
+    return result
+  let conflict = sim.conflictingConfiguredSlot(address, token)
+  if conflict >= 0:
+    raise newException(
+      AmongThemError,
+      "Player credentials do not match configured slot " & $conflict & "."
+    )
+  result = sim.nextAutoSlot(address, token)
+  if result < 0:
+    raise newException(AmongThemError, "No available player slot.")
+
+proc resolveTrustedPlayerSlot(
+  sim: SimServer,
+  address: string,
+  requestedSlot: int
+): int =
+  ## Returns a trusted replay slot without requiring the original token.
+  if requestedSlot >= MaxPlayers:
+    raise newException(
+      AmongThemError,
+      "Player slot must be between 0 and 15."
+    )
+  if requestedSlot >= 0:
+    if sim.slotOccupied(requestedSlot):
+      raise newException(
+        AmongThemError,
+        "Player slot " & $requestedSlot & " is already occupied."
+      )
+    return requestedSlot
+  result = sim.namedConfiguredSlot(address)
+  if result >= 0:
+    return result
+  result = sim.nextAutoSlot(address, "")
+  if result < 0:
+    raise newException(AmongThemError, "No available player slot.")
+
 proc rewardAccountIndex(sim: SimServer, address: string): int =
   ## Returns the reward account index for an address.
   for i in 0 ..< sim.rewardAccounts.len:
@@ -1039,14 +1633,42 @@ proc rewardAccountIndex(sim: SimServer, address: string): int =
       return i
   -1
 
-proc addPlayer*(sim: var SimServer, address: string): int =
+proc playerAddressOccupied*(sim: SimServer, address: string): bool =
+  ## Returns true when a player identity is already connected.
+  for player in sim.players:
+    if player.address == address:
+      return true
+  false
+
+proc addPlayer*(
+  sim: var SimServer,
+  address: string,
+  requestedSlot = -1,
+  token = "",
+  trusted = false
+): int =
+  ## Adds one player, optionally validating and using a requested slot.
   if not sim.canAddPlayer():
     raise newException(AmongThemError, "can't do more than 16 players.")
+  if sim.playerAddressOccupied(address):
+    raise newException(
+      AmongThemError,
+      "Player name is already connected."
+    )
   let
-    spawn = sim.findSpawn()
-    order = sim.nextJoinOrder
+    order =
+      if trusted:
+        sim.resolveTrustedPlayerSlot(address, requestedSlot)
+      else:
+        sim.resolvePlayerSlot(address, token, requestedSlot)
+    slot = sim.config.slotConfig(order)
+    spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
     rewardAccount = sim.rewardAccountIndex(address)
-  inc sim.nextJoinOrder
+    color =
+      if slot.hasColor:
+        slot.color
+      else:
+        PlayerColors[order mod PlayerColors.len]
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
@@ -1057,12 +1679,14 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     killCooldown: sim.config.killCooldownTicks,
     joinOrder: order,
     address: address,
-    color: PlayerColors[order mod PlayerColors.len],
+    color: color,
+    lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
     activeTask: -1,
     reward:
       if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
       else: 0
   )
+  sim.advanceJoinOrder()
   sim.arrangeHomePositions()
   for task in sim.tasks.mitems:
     task.completed.add(false)
@@ -1136,6 +1760,48 @@ proc recordTask*(sim: var SimServer, playerIndex: int) =
     return
   inc sim.rewardAccounts[index].tasks
 
+proc playerResultsJson*(sim: SimServer): string =
+  ## Returns final player rewards and win states as JSON.
+  var
+    order: seq[int] = @[]
+    names = newJArray()
+    scores = newJArray()
+    win = newJArray()
+    tasksList = newJArray()
+    killsList = newJArray()
+    results = newJObject()
+  for i in 0 ..< sim.players.len:
+    order.add(i)
+  for i in 1 ..< order.len:
+    let value = order[i]
+    var j = i - 1
+    while j >= 0 and
+        sim.players[order[j]].joinOrder > sim.players[value].joinOrder:
+      order[j + 1] = order[j]
+      dec j
+    order[j + 1] = value
+  for playerIndex in order:
+    let player = sim.players[playerIndex]
+    let accountIndex = sim.rewardAccountIndex(player.address)
+    let
+      tasks =
+        if accountIndex >= 0: sim.rewardAccounts[accountIndex].tasks
+        else: 0
+      kills =
+        if accountIndex >= 0: sim.rewardAccounts[accountIndex].kills
+        else: 0
+    names.add(%player.address)
+    scores.add(%player.reward)
+    win.add(%(not sim.timeLimitReached and player.role == sim.winner))
+    tasksList.add(%tasks)
+    killsList.add(%kills)
+  results["names"] = names
+  results["scores"] = scores
+  results["win"] = win
+  results["tasks"] = tasksList
+  results["kills"] = killsList
+  $results
+
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   ## Marks one player task complete and awards task reward.
   if taskIndex < 0 or taskIndex >= sim.tasks.len:
@@ -1152,21 +1818,34 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   sim.recordTask(playerIndex)
 
 proc startGame*(sim: var SimServer) =
-  sim.arrangeHomePositions()
-  let imposterCount = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
+  logGameEvent(
+    "game started: players=" & $sim.players.len &
+      ", imposters=" & $sim.config.effectiveImposterCount(sim.players.len)
   )
+  sim.arrangeHomePositions()
+  let imposterCount = sim.config.effectiveImposterCount(sim.players.len)
   for player in sim.players.mitems:
     player.role = Crewmate
     player.assignedTasks = @[]
-  var candidates: seq[int] = @[]
+  var
+    candidates: seq[int] = @[]
+    fixedImposters = 0
   for i in 0 ..< sim.players.len:
-    candidates.add(i)
+    let slot = sim.config.slotConfig(sim.players[i].joinOrder)
+    if slot.hasRole:
+      sim.players[i].role = slot.role
+      if slot.role == Imposter:
+        inc fixedImposters
+    else:
+      candidates.add(i)
   for j in countdown(candidates.high, 1):
     let k = sim.rng.rand(j)
     swap(candidates[j], candidates[k])
-  for i in 0 ..< imposterCount:
+  let randomImposters = min(
+    max(0, imposterCount - fixedImposters),
+    candidates.len
+  )
+  for i in 0 ..< randomImposters:
     sim.players[candidates[i]].role = Imposter
   for i in 0 ..< sim.players.len:
     sim.recordGameRoleAssigned(i)
@@ -1189,6 +1868,9 @@ proc startGame*(sim: var SimServer) =
     sim.phase = Playing
     sim.gameStartTick = sim.tickCount
   sim.timeLimitReached = false
+  sim.lastLobbyPlayersLogged = -1
+  sim.lastLobbyNeededLogged = -1
+  sim.lastLobbySecondsLogged = -1
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -1246,6 +1928,7 @@ proc actorColor*(colorIndex, tint: uint8): uint8 =
   colorIndex
 
 proc tryKill*(sim: var SimServer, killerIndex: int) =
+  ## Kills the nearest eligible crewmate in range.
   let killer = sim.players[killerIndex]
   if killer.role != Imposter or not killer.alive:
     return
@@ -1271,6 +1954,10 @@ proc tryKill*(sim: var SimServer, killerIndex: int) =
       bestDist = d
       bestTarget = i
   if bestTarget >= 0:
+    logGameEvent(
+      playerColorText(sim.players[bestTarget].color) &
+        " killed by " & playerColorText(killer.color) & " (imposter)"
+    )
     sim.players[bestTarget].alive = false
     sim.bodies.add Body(
       x: sim.players[bestTarget].x,
@@ -1325,7 +2012,26 @@ proc tryVent*(sim: var SimServer, playerIndex: int) =
         sim.players[playerIndex].ventCooldown = 30
       return
 
-proc startVote*(sim: var SimServer) =
+proc startVote*(
+  sim: var SimServer,
+  kind = VoteCalledUnknown,
+  callerIndex = -1,
+  bodyColor = 255'u8
+) =
+  ## Starts a voting meeting and logs its cause.
+  case kind
+  of VoteCalledBody:
+    logGameEvent(
+      "vote called: " & sim.playerText(callerIndex) &
+        " called body (" & playerColorText(bodyColor) & ")"
+    )
+  of VoteCalledButton:
+    logGameEvent(
+      "vote called: " & sim.playerText(callerIndex) &
+        " called emergency button"
+    )
+  of VoteCalledUnknown:
+    logGameEvent("vote called")
   sim.phase = Voting
   sim.chatMessages.setLen(0)
   let n = sim.players.len
@@ -1334,6 +2040,7 @@ proc startVote*(sim: var SimServer) =
   sim.voteState.voteTimer = sim.config.voteTimerTicks
   for i in 0 ..< n:
     sim.voteState.votes[i] = -1
+    sim.players[i].lastChatTick = sim.tickCount - sim.config.messageCooldownTicks
     var firstAlive = 0
     for j in 0 ..< n:
       if sim.players[j].alive:
@@ -1349,17 +2056,27 @@ proc addVotingChat*(sim: var SimServer, playerIndex: int, message: string) =
     return
   if not sim.players[playerIndex].alive:
     return
+  let cooldown = sim.config.messageCooldownTicks
+  if cooldown > 0:
+    let elapsed = sim.tickCount - sim.players[playerIndex].lastChatTick
+    if elapsed < cooldown:
+      return
   let text = cleanChatMessage(message)
   if text.len == 0:
     return
+  sim.players[playerIndex].lastChatTick = sim.tickCount
   while sim.chatMessages.len >= VoteChatVisibleMessages:
     sim.chatMessages.delete(0)
   sim.chatMessages.add ChatMessage(
     color: sim.players[playerIndex].color,
     text: text
   )
+  logGameEvent(
+    "vote chat: " & sim.playerText(playerIndex) & ": " & text
+  )
 
 proc tryReport*(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
+  ## Starts a vote when a living player reports a nearby body.
   if sim.phase != Playing:
     return
   let p = sim.players[reporterIndex]
@@ -1375,10 +2092,11 @@ proc tryReport*(sim: var SimServer, reporterIndex: int, bodyLimit: int) =
       bx = body.x + CollisionW div 2
       by = body.y + CollisionH div 2
     if distSq(px, py, bx, by) <= rangeSq:
-      sim.startVote()
+      sim.startVote(VoteCalledBody, reporterIndex, body.color)
       return
 
 proc tryCallButton*(sim: var SimServer, callerIndex: int) =
+  ## Starts a vote when a living player presses the meeting button.
   if sim.phase != Playing:
     return
   let p = sim.players[callerIndex]
@@ -1393,7 +2111,7 @@ proc tryCallButton*(sim: var SimServer, callerIndex: int) =
   if px >= button.x and px < button.x + button.w and
       py >= button.y and py < button.y + button.h:
     inc sim.players[callerIndex].buttonCallsUsed
-    sim.startVote()
+    sim.startVote(VoteCalledButton, callerIndex)
 
 proc containGhost(player: var Player) =
   ## Keeps ghost movement inside the map rectangle.
@@ -1659,10 +2377,81 @@ proc isWall*(sim: SimServer, mx, my: int): bool =
     return true
   sim.wallMask[mapIndex(mx, my)]
 
-proc castShadows*(sim: var SimServer, originMx, originMy, cameraX, cameraY: int) =
+{.push checks: off.}
+proc copyMapViewport(
+  sim: var SimServer,
+  cameraX,
+  cameraY: int
+) =
+  ## Copies the clipped map viewport into the framebuffer.
+  if cameraX >= 0 and cameraY >= 0 and
+      cameraX + ScreenWidth <= MapWidth and
+      cameraY + ScreenHeight <= MapHeight:
+    for sy in 0 ..< ScreenHeight:
+      copyMem(
+        addr sim.fb.indices[sy * ScreenWidth],
+        addr sim.mapPixels[(cameraY + sy) * MapWidth + cameraX],
+        ScreenWidth
+      )
+    return
+
+  sim.fb.clearFrame(MapVoidColor)
+  let
+    srcX0 = max(0, cameraX)
+    srcY0 = max(0, cameraY)
+    srcX1 = min(MapWidth, cameraX + ScreenWidth)
+    srcY1 = min(MapHeight, cameraY + ScreenHeight)
+  if srcX0 >= srcX1 or srcY0 >= srcY1:
+    return
+  let
+    copyW = srcX1 - srcX0
+    dstX0 = srcX0 - cameraX
+  for my in srcY0 ..< srcY1:
+    let
+      sy = my - cameraY
+      dstOffset = sy * ScreenWidth + dstX0
+      srcOffset = my * MapWidth + srcX0
+    copyMem(
+      addr sim.fb.indices[dstOffset],
+      addr sim.mapPixels[srcOffset],
+      copyW
+    )
+
+proc applyViewportShadows(
+  sim: var SimServer,
+  cameraX,
+  cameraY: int
+) =
+  ## Applies shadow tint to visible non-wall viewport pixels.
+  let
+    sx0 = max(0, -cameraX)
+    sy0 = max(0, -cameraY)
+    sx1 = min(ScreenWidth, MapWidth - cameraX)
+    sy1 = min(ScreenHeight, MapHeight - cameraY)
+  if sx0 >= sx1 or sy0 >= sy1:
+    return
+  for sy in sy0 ..< sy1:
+    var
+      fbIndex = sy * ScreenWidth + sx0
+      mapIdx = (cameraY + sy) * MapWidth + cameraX + sx0
+    let endIndex = fbIndex + sx1 - sx0
+    while fbIndex < endIndex:
+      if sim.shadowBuf[fbIndex] and not sim.wallMask[mapIdx]:
+        sim.fb.indices[fbIndex] = ShadowMap[sim.fb.indices[fbIndex] and 0x0F]
+      inc fbIndex
+      inc mapIdx
+
+proc castShadows*(
+  sim: var SimServer,
+  originMx,
+  originMy,
+  cameraX,
+  cameraY: int
+) =
   for i in 0 ..< sim.shadowBuf.len:
     sim.shadowBuf[i] = false
   for sy in 0 ..< ScreenHeight:
+    let rowBase = sy * ScreenWidth
     for sx in 0 ..< ScreenWidth:
       let
         mx = cameraX + sx
@@ -1677,11 +2466,13 @@ proc castShadows*(sim: var SimServer, originMx, originMy, cameraX, cameraY: int)
         let
           rx = originMx + dx * s div steps
           ry = originMy + dy * s div steps
-        if sim.isWall(rx, ry):
+        if rx < 0 or ry < 0 or rx >= MapWidth or ry >= MapHeight or
+            sim.wallMask[ry * MapWidth + rx]:
           shadowed = true
           break
       if shadowed:
-        sim.shadowBuf[sy * ScreenWidth + sx] = true
+        sim.shadowBuf[rowBase + sx] = true
+{.pop.}
 
 proc allVotesCast*(sim: SimServer): bool =
   for i in 0 ..< sim.players.len:
@@ -1690,6 +2481,7 @@ proc allVotesCast*(sim: SimServer): bool =
   true
 
 proc tallyVotes*(sim: var SimServer) =
+  ## Counts the votes and moves to the vote-result phase.
   var counts = newSeq[int](sim.players.len)
   var skipCount = 0
   for i in 0 ..< sim.players.len:
@@ -1709,10 +2501,14 @@ proc tallyVotes*(sim: var SimServer) =
       tied = false
     elif counts[i] == maxVotes and counts[i] > 0:
       tied = true
-  if tied or maxVotes == 0:
+  if tied or maxVotes == 0 or maxPlayer < 0:
     sim.voteState.ejectedPlayer = -1
+    logGameEvent("vote ended: no one killed by vote")
   else:
     sim.voteState.ejectedPlayer = maxPlayer
+    logGameEvent(
+      "vote ended: " & sim.playerText(maxPlayer) & " killed by vote"
+    )
   sim.phase = VoteResult
   sim.voteState.resultTimer = sim.config.voteResultTicks
 
@@ -1724,6 +2520,8 @@ proc applyVoteResult*(sim: var SimServer) =
   sim.chatMessages.setLen(0)
   for i in 0 ..< sim.players.len:
     sim.resetPlayerToHome(i)
+    if sim.players[i].alive and sim.players[i].role == Imposter:
+      sim.players[i].killCooldown = sim.config.killCooldownTicks
   sim.phase = Playing
 
 proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
@@ -1739,15 +2537,19 @@ proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
   sim.voteState.cursor[playerIndex] = cur
 
 proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
-  sim.fb.blitAsciiText(sim.asciiSprites, "WAITING", 11, 4)
   if needed > 0:
-    sim.fb.blitAsciiText(sim.asciiSprites, "NEED MORE!", 2, 14)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "WAITING", 4)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "NEED MORE!", 14)
   else:
-    sim.fb.blitAsciiText(sim.asciiSprites, "READY!", 14, 14)
-  let startY = 26
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "GAME", 2)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "STARTING", 11)
+    let seconds = sim.lobbyStartSecondsRemaining()
+    if seconds > 0:
+      sim.fb.blitCenteredAsciiText(sim.asciiSprites, "IN " & $seconds, 20)
+  let startY = sim.lobbyIconStartY()
   for i in 0 ..< n:
     let
       col = i mod 6
@@ -1759,15 +2561,23 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packed
 
 proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
-  sim.fb.clearFrame(0)
-  sim.fb.blitAsciiText(sim.asciiSprites, "GAME IN", 11, 22)
-  sim.fb.blitAsciiText(sim.asciiSprites, "PROGRESS", 8, 32)
+  sim.clearInterstitialFrame()
+  let
+    gap = 10
+    blockH = sim.asciiSprites.height * 2 + gap
+    startY = (ScreenHeight - blockH) div 2
+  sim.fb.blitCenteredAsciiText(sim.asciiSprites, "GAME IN", startY)
+  sim.fb.blitCenteredAsciiText(
+    sim.asciiSprites,
+    "PROGRESS",
+    startY + sim.asciiSprites.height + gap
+  )
   sim.fb.packFramebuffer()
   sim.fb.packed
 
 proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   ## Builds a simple player screen for replay mode.
-  sim.fb.clearFrame(SpaceColor)
+  sim.clearInterstitialFrame()
   sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
   sim.fb.blitAsciiText(sim.asciiSprites, "GLOBAL", 20, 38)
   sim.fb.blitAsciiText(sim.asciiSprites, "VIEW", 20, 46)
@@ -1776,7 +2586,7 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
 
 proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   ## Builds the role reveal interstitial frame.
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let viewerIsImp =
     playerIndex >= 0 and playerIndex < sim.players.len and
     sim.players[playerIndex].role == Imposter
@@ -1784,7 +2594,7 @@ proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.blitAsciiText(
     sim.asciiSprites,
     title,
-    (ScreenWidth - title.len * 7) div 2,
+    (ScreenWidth - sim.asciiSprites.textWidth(title)) div 2,
     14
   )
   var shown: seq[int] = @[]
@@ -1842,11 +2652,11 @@ proc putSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
 proc drawVoteChat*(sim: var SimServer, chatY: int) =
   ## Draws the visible voting chat messages.
   let
-    chatX = 1
-    chatW = ScreenWidth - 2
+    chatX = 0
+    chatW = ScreenWidth
     chatH = ScreenHeight - chatY - 3
-    iconX = chatX + 3
-    textX = chatX + 20
+    iconX = VoteChatIconX
+    textX = VoteChatTextX
   if chatH <= 0:
     return
   sim.fb.fillRect(chatX, chatY, chatW, chatH, 0)
@@ -1854,18 +2664,18 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
     visible: seq[int] = @[]
     usedH = 0
   for i in countdown(sim.chatMessages.high, 0):
-    let messageH = sim.chatMessages[i].text.chatMessageHeight()
-    if usedH + messageH > chatH - 4:
+    let messageH = sim.asciiSprites.chatMessageHeight(sim.chatMessages[i].text)
+    if usedH + messageH > chatH - 2:
       break
     visible.add(i)
     usedH += messageH
-  var rowY = chatY + 2
+  var rowY = chatY + 1
   for j in countdown(visible.high, 0):
     let
       message = sim.chatMessages[visible[j]]
-      lineCount = message.text.chatLineCount()
-      messageH = message.text.chatMessageHeight()
-      iconY = rowY + max(0, (lineCount * 9 - SpriteSize) div 2)
+      lineCount = sim.asciiSprites.chatLineCount(message.text)
+      messageH = sim.asciiSprites.chatMessageHeight(message.text)
+      iconY = rowY + max(0, (lineCount * TextLineHeight - SpriteSize) div 2)
     sim.fb.blitSpriteOutlined(
       sim.playerSprite,
       iconX,
@@ -1876,14 +2686,14 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
     for lineIndex in 0 ..< lineCount:
       sim.fb.blitAsciiText(
         sim.asciiSprites,
-        message.text.sliceChatLine(lineIndex),
+        sim.asciiSprites.sliceChatLine(message.text, lineIndex),
         textX,
-        rowY + lineIndex * 9
+        rowY + lineIndex * TextLineHeight
       )
     rowY += messageH
 
 proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let n = sim.players.len
   if n == 0:
     sim.fb.packFramebuffer()
@@ -1982,16 +2792,17 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packed
 
 proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let ej = sim.voteState.ejectedPlayer
   if ej >= 0 and ej < sim.players.len:
     let
       sx = ScreenWidth div 2 - SpriteSize div 2
       sy = ScreenHeight div 2 - SpriteSize div 2
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "WAS KILLED", sy - 12)
     sim.fb.blitSpriteOutlined(sim.playerSprite, sx, sy, sim.players[ej].color, false)
   else:
-    sim.fb.blitAsciiText(sim.asciiSprites, "NO ONE", 46, 54)
-    sim.fb.blitAsciiText(sim.asciiSprites, "DIED", 52, 64)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "NO ONE", 54, 3)
+    sim.fb.blitCenteredAsciiText(sim.asciiSprites, "DIED", 64, 3)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -2011,10 +2822,16 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   ## Moves to game over and awards all winning players.
   if sim.phase == GameOver:
     return
+  if timeLimitReached:
+    logGameEvent(roleText(winner) & " win: time limit reached")
+  else:
+    logGameEvent(roleText(winner) & " win")
   sim.phase = GameOver
   sim.winner = winner
   sim.gameOverTimer = sim.config.gameOverTicks
   sim.timeLimitReached = timeLimitReached
+  if timeLimitReached:
+    return
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == winner:
       sim.addReward(i, WinReward)
@@ -2032,16 +2849,16 @@ proc maxTicksReached(sim: SimServer): bool =
 
 proc checkMaxTicks(sim: var SimServer) =
   if sim.maxTicksReached():
-    sim.finishGame(Imposter, timeLimitReached = true)
+    sim.finishGame(Crewmate, timeLimitReached = true)
 
 proc checkWinCondition*(sim: var SimServer) =
-  let hasImposters = min(
-    sim.config.imposterCount,
-    max(0, sim.players.len - 1)
-  ) > 0
-  var aliveCrewmates = 0
-  var aliveImposters = 0
+  var
+    hasImposters = false
+    aliveCrewmates = 0
+    aliveImposters = 0
   for p in sim.players:
+    if p.role == Imposter:
+      hasImposters = true
     if p.alive:
       if p.role == Crewmate:
         inc aliveCrewmates
@@ -2056,11 +2873,15 @@ proc checkWinCondition*(sim: var SimServer) =
     sim.finishGame(Crewmate)
 
 proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(0)
+  sim.clearInterstitialFrame()
   let title =
-    if sim.winner == Crewmate: "CREW WINS"
-    else: "IMPS WIN"
-  let titleW = title.len * 7
+    if sim.timeLimitReached:
+      "DRAW"
+    elif sim.winner == Crewmate:
+      "CREW WINS"
+    else:
+      "IMPS WIN"
+  let titleW = sim.asciiSprites.textWidth(title)
   let titleX = (ScreenWidth - titleW) div 2
   sim.fb.blitAsciiText(sim.asciiSprites, title, titleX, 2)
   let n = sim.players.len
@@ -2086,12 +2907,12 @@ proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
     sim.fb.blitSpriteOutlined(sim.playerSprite, iconX, iconY, p.color, false)
     sim.fb.blitAsciiText(sim.asciiSprites, roleStr, textX, textY)
     if not p.alive:
-      for lx in textX ..< textX + roleStr.len * 7:
+      for lx in textX ..< textX + sim.asciiSprites.textWidth(roleStr):
         sim.fb.putPixel(lx, textY + 3, 3'u8)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc renderStatePointShadowed(
+proc sprite_playerObservationPointShadowed(
   sim: SimServer,
   originMx, originMy, worldX, worldY: int
 ): bool {.inline.} =
@@ -2109,102 +2930,51 @@ proc renderStatePointShadowed(
       return true
   false
 
-proc renderStateWorldPointVisible(
+proc sprite_playerObservationWorldPointVisible(
   sim: SimServer,
   view: PlayerView,
   worldX, worldY: int
 ): bool {.inline.} =
   if not view.screenPointInFrame(worldX, worldY):
     return false
-  view.viewerIsGhost or not sim.renderStatePointShadowed(
+  view.viewerIsGhost or not sim.sprite_playerObservationPointShadowed(
     view.originMx,
     view.originMy,
     worldX,
     worldY
   )
 
-proc writeRenderStateHeader(
+proc sprite_playerObservationProgressByte(progress, totalTicks, barWidth: int): uint8 =
+  if progress <= 0 or totalTicks <= 0 or barWidth <= 0:
+    return 0'u8
+  let filled = clamp(progress * barWidth div totalTicks, 0, barWidth)
+  uint8(filled * 255 div barWidth)
+
+proc sprite_playerObservationKillIconByte(sim: SimServer, playerIndex: int): uint8 =
+  if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
+    return 0'u8
+  let player = sim.players[playerIndex]
+  if player.role != Imposter or not player.alive:
+    return 0'u8
+  if player.killCooldown > 0: 1'u8 else: 255'u8
+
+proc writeSpritePlayerObservationHeader(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
-  var
-    selfAlive = 0'u8
-    selfRole = 0'u8
-    selfScreenX = 0'u8
-    selfScreenY = 0'u8
-    selfVelX = 0'u8
-    selfVelY = 0'u8
-    killCooldown = 0'u8
-    taskProgress = 0'u8
-    activeTask = 0'u8
-    buttonCallsUsed = 0'u8
-    viewerIsGhost = 0'u8
-    voteCursor = 0'u8
-    skipVotes = 0
-    voteTimer = 0'u8
-    ejectedPlayer = 0'u8
+  output[0] = uint8(ord(sim.phase))
+  if sim.phase == Playing:
+    output[RenderHeaderKillIcon] = sim.sprite_playerObservationKillIconByte(playerIndex)
+    if playerIndex >= 0 and playerIndex < sim.players.len:
+      output[RenderHeaderTaskProgress] = sprite_playerObservationProgressByte(
+        sim.players[playerIndex].taskProgress,
+        sim.config.taskCompleteTicks,
+        TaskBarWidth
+      )
+    output[RenderHeaderTasksRemaining] = uint8(clamp(sim.totalTasksRemaining(), 0, 255))
 
-  if playerIndex >= 0 and playerIndex < sim.players.len:
-    let
-      player = sim.players[playerIndex]
-      view = sim.playerView(playerIndex)
-      speedScale = max(1, sim.config.maxSpeed)
-    selfAlive = if player.alive: 1'u8 else: 0'u8
-    selfRole = uint8(ord(player.role))
-    selfScreenX = uint8(clamp(player.x - SpriteDrawOffX - view.cameraX, 0, 255))
-    selfScreenY = uint8(clamp(player.y - SpriteDrawOffY - view.cameraY, 0, 255))
-    selfVelX = uint8((clamp(player.velX, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
-    selfVelY = uint8((clamp(player.velY, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
-    if sim.config.killCooldownTicks > 0:
-      killCooldown = uint8(clamp(player.killCooldown * 255 div sim.config.killCooldownTicks, 0, 255))
-    if sim.config.taskCompleteTicks > 0:
-      taskProgress = uint8(clamp(player.taskProgress * 255 div sim.config.taskCompleteTicks, 0, 255))
-    activeTask = uint8(player.activeTask + 1)
-    buttonCallsUsed = uint8(player.buttonCallsUsed)
-    viewerIsGhost = if view.viewerIsGhost: 1'u8 else: 0'u8
-
-  if sim.phase == Voting and playerIndex >= 0 and playerIndex < sim.voteState.cursor.len:
-    voteCursor = uint8(clamp(sim.voteState.cursor[playerIndex] + 1, 0, 255))
-  if sim.phase == Voting:
-    for vote in sim.voteState.votes:
-      if vote == -2:
-        inc skipVotes
-    if sim.config.voteTimerTicks > 0:
-      voteTimer = uint8(clamp(sim.voteState.voteTimer * 255 div sim.config.voteTimerTicks, 0, 255))
-  if sim.phase == VoteResult:
-    ejectedPlayer = uint8(clamp(sim.voteState.ejectedPlayer + 1, 0, 255))
-
-  var offset = 0
-  template put(value: uint8) =
-    output[offset] = value
-    inc offset
-
-  put uint8(ord(sim.phase))
-  put uint8(clamp(playerIndex + 1, 0, 255))
-  put uint8(sim.players.len)
-  put selfAlive
-  put selfRole
-  put selfScreenX
-  put selfScreenY
-  put selfVelX
-  put selfVelY
-  put killCooldown
-  put taskProgress
-  put activeTask
-  put buttonCallsUsed
-  put uint8(sim.totalTasksRemaining())
-  put viewerIsGhost
-  put uint8(sim.tickCount mod 256)
-  put voteCursor
-  put uint8(skipVotes)
-  put voteTimer
-  put ejectedPlayer
-  put uint8(ord(sim.winner))
-  put(if sim.timeLimitReached: 1'u8 else: 0'u8)
-  doAssert offset == RenderStateHeaderFeatures
-
-proc writeRenderStateGrid(
+proc writeSpritePlayerObservationGrid(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -2213,52 +2983,53 @@ proc writeRenderStateGrid(
     return
   let
     view = sim.playerView(playerIndex)
-    step = ScreenWidth div RenderStateGridSize
-  for gy in 0 ..< RenderStateGridSize:
-    for gx in 0 ..< RenderStateGridSize:
+    step = ScreenWidth div SpritePlayerObservationGridSize
+  for gy in 0 ..< SpritePlayerObservationGridSize:
+    for gx in 0 ..< SpritePlayerObservationGridSize:
       let
         sx = gx * step + step div 2
         sy = gy * step + step div 2
         mx = view.cameraX + sx
         my = view.cameraY + sy
-        index = RenderStateGridOffset + gy * RenderStateGridSize + gx
-      var color = SpaceColor
+        index = SpritePlayerObservationGridOffset + gy * SpritePlayerObservationGridSize + gx
+      var color = MapVoidColor
       if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
         let mapIdx = mapIndex(mx, my)
+        # Static map colors are allowed, but collision masks are not.
         color = sim.mapPixels[mapIdx] and 0x0F
-        if sim.wallMask[mapIdx]:
-          color = color or 0x10
-        if sim.walkMask[mapIdx]:
-          color = color or 0x20
       output[index] = color
 
-proc writeRenderStatePlayerSlot(
+proc writeSpritePlayerObservationPlayerSlotAt(
   sim: SimServer,
-  playerIndex, targetIndex, sx, sy: int,
+  playerIndex, targetIndex, slotIndex, sx, sy: int,
   flags: uint8,
   output: var openArray[uint8]
 ) =
   let
     player = sim.players[targetIndex]
-    base = RenderStatePlayerOffset + targetIndex * RenderStatePlayerFeatures
-    roleFlag =
-      if targetIndex == playerIndex or sim.phase == GameOver:
-        if player.role == Imposter: RenderPlayerRoleImposter else: 0'u8
-      else:
-        0'u8
-  output[base] = RenderKindPlayer
-  output[base + 1] = uint8(clamp(sx, 0, 255))
-  output[base + 2] = uint8(clamp(sy, 0, 255))
-  output[base + 3] = player.color
-  output[base + 4] = flags or roleFlag
-  if targetIndex == playerIndex:
-    let speedScale = max(1, sim.config.maxSpeed)
-    output[base + 5] = uint8((clamp(player.velX, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
-    output[base + 6] = uint8((clamp(player.velY, -speedScale, speedScale) + speedScale) * 255 div (speedScale * 2))
-    if sim.config.killCooldownTicks > 0:
-      output[base + 7] = uint8(clamp(player.killCooldown * 255 div sim.config.killCooldownTicks, 0, 255))
+    base = SpritePlayerObservationPlayerOffset + slotIndex * SpritePlayerObservationPlayerFeatures
+  output[base] = uint8(clamp(sx, 0, 255))
+  output[base + 1] = uint8(clamp(sy, 0, 255))
+  output[base + 2] = player.color
+  output[base + RenderPlayerFlagsFeature] = flags
 
-proc writeRenderStatePlayingPlayers(
+proc writeSpritePlayerObservationPlayerSlot(
+  sim: SimServer,
+  playerIndex, targetIndex, sx, sy: int,
+  flags: uint8,
+  output: var openArray[uint8]
+) =
+  sim.writeSpritePlayerObservationPlayerSlotAt(
+    playerIndex,
+    targetIndex,
+    targetIndex,
+    sx,
+    sy,
+    flags,
+    output
+  )
+
+proc writeSpritePlayerObservationPlayingPlayers(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -2274,12 +3045,12 @@ proc writeRenderStatePlayingPlayers(
       p = sim.players[i]
       sx = p.x - SpriteDrawOffX - cameraX
       sy = p.y - SpriteDrawOffY - cameraY
+    if not view.screenPointInFrame(p.x + CollisionW div 2, p.y + CollisionH div 2):
+      continue
     var flags = RenderPlayerPresent
-    if i == playerIndex:
-      flags = flags or RenderPlayerSelf
     if p.alive:
       if i != playerIndex and
-          not sim.renderStateWorldPointVisible(
+          not sim.sprite_playerObservationWorldPointVisible(
             view,
             p.x + CollisionW div 2,
             p.y + CollisionH div 2
@@ -2292,9 +3063,9 @@ proc writeRenderStatePlayingPlayers(
       continue
     if p.flipH:
       flags = flags or RenderPlayerFlipH
-    sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+    sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
 
-proc writeRenderStateUiPlayers(
+proc writeSpritePlayerObservationUiPlayers(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -2304,7 +3075,7 @@ proc writeRenderStateUiPlayers(
     return
   case sim.phase
   of Lobby:
-    let startY = 26
+    let startY = sim.lobbyIconStartY()
     for i in 0 ..< n:
       let
         col = i mod 6
@@ -2312,9 +3083,7 @@ proc writeRenderStateUiPlayers(
         sx = 5 + col * 9
         sy = startY + row * 9
       var flags = RenderPlayerPresent or RenderPlayerAlive
-      if i == playerIndex:
-        flags = flags or RenderPlayerSelf
-      sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+      sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
   of RoleReveal:
     let viewerIsImp =
       playerIndex >= 0 and playerIndex < sim.players.len and
@@ -2343,9 +3112,15 @@ proc writeRenderStateUiPlayers(
           sx = startX + col * cellW + (cellW - SpriteSize) div 2
           sy = startY + row * cellH
         var flags = RenderPlayerPresent or RenderPlayerAlive
-        if i == playerIndex:
-          flags = flags or RenderPlayerSelf
-        sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
+        sim.writeSpritePlayerObservationPlayerSlotAt(
+          playerIndex,
+          i,
+          slot,
+          sx,
+          sy,
+          flags,
+          output
+        )
   of Voting:
     let
       cellW = 16
@@ -2365,29 +3140,17 @@ proc writeRenderStateUiPlayers(
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
-      if i == playerIndex:
-        flags = flags or RenderPlayerSelf
-      if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
-          sim.voteState.cursor[playerIndex] == i:
-        flags = flags or RenderPlayerSelected
-      sim.writeRenderStatePlayerSlot(playerIndex, i, sx, sy, flags, output)
-      var votes = 0
-      for vote in sim.voteState.votes:
-        if vote == i:
-          inc votes
-      output[RenderStatePlayerOffset + i * RenderStatePlayerFeatures + 7] =
-        uint8(clamp(votes, 0, 255))
+      sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej >= 0 and ej < n:
-      var flags = RenderPlayerPresent or RenderPlayerSelected
+      var flags = RenderPlayerPresent
       if sim.players[ej].alive:
         flags = flags or RenderPlayerAlive
-      if ej == playerIndex:
-        flags = flags or RenderPlayerSelf
-      sim.writeRenderStatePlayerSlot(
+      sim.writeSpritePlayerObservationPlayerSlotAt(
         playerIndex,
         ej,
+        0,
         ScreenWidth div 2 - SpriteSize div 2,
         ScreenHeight div 2 - SpriteSize div 2,
         flags,
@@ -2411,13 +3174,11 @@ proc writeRenderStateUiPlayers(
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
-      if i == playerIndex:
-        flags = flags or RenderPlayerSelf
-      sim.writeRenderStatePlayerSlot(playerIndex, i, iconX, iconY, flags, output)
+      sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, iconX, iconY, flags, output)
   of Playing:
     discard
 
-proc writeRenderStateBodies(
+proc writeSpritePlayerObservationBodies(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
@@ -2430,184 +3191,145 @@ proc writeRenderStateBodies(
     cameraY = view.cameraY
   var slot = 0
   for body in sim.bodies:
-    if slot >= RenderStateBodySlots:
+    if slot >= SpritePlayerObservationBodySlots:
       break
-    if not sim.renderStateWorldPointVisible(
+    if not sim.sprite_playerObservationWorldPointVisible(
       view,
       body.x + CollisionW div 2,
       body.y + CollisionH div 2
     ):
       continue
     let
-      base = RenderStateBodyOffset + slot * RenderStateBodyFeatures
+      base = SpritePlayerObservationBodyOffset + slot * SpritePlayerObservationBodyFeatures
       sx = body.x - SpriteDrawOffX - cameraX
       sy = body.y - SpriteDrawOffY - cameraY
-    output[base] = RenderKindBody
-    output[base + 1] = uint8(clamp(sx, 0, 255))
-    output[base + 2] = uint8(clamp(sy, 0, 255))
-    output[base + 3] = body.color
-    output[base + 4] = 1
+    output[base] = uint8(clamp(sx, 0, 255))
+    output[base + 1] = uint8(clamp(sy, 0, 255))
+    output[base + 2] = body.color
+    output[base + 3] = 1
     inc slot
 
-proc writeRenderStateTasks(
+proc writeSpritePlayerObservationTaskEntry(
+  sim: SimServer,
+  playerIndex, taskIndex: int,
+  iconPass: bool,
+  slotIndex: var int,
+  output: var openArray[uint8]
+) =
+  if slotIndex >= SpritePlayerObservationTaskSlots:
+    return
+  if taskIndex < 0 or taskIndex >= sim.tasks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    player = sim.players[playerIndex]
+    task = sim.tasks[taskIndex]
+  if player.role != Crewmate or not player.hasTask(taskIndex):
+    return
+  if playerIndex < task.completed.len and task.completed[playerIndex]:
+    return
+
+  let
+    view = sim.playerView(playerIndex)
+    cameraX = view.cameraX
+    cameraY = view.cameraY
+    bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
+    bobY =
+      if player.activeTask == taskIndex:
+        0
+      else:
+        bob[(sim.tickCount div 3) mod bob.len]
+    iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
+    iconSy = task.y - SpriteSize - 2 + bobY - cameraY
+    iconCenterX = task.x + task.w div 2
+    iconCenterY = task.y - SpriteSize div 2 - 2 + bobY
+    iconOnScreen =
+      iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
+      iconSx < ScreenWidth and iconSy < ScreenHeight
+    base = SpritePlayerObservationTaskOffset + slotIndex * SpritePlayerObservationTaskFeatures
+  var flags = 0'u8
+  if iconOnScreen:
+    if not iconPass:
+      return
+    flags = flags or RenderTaskIconVisible
+    output[base] = uint8(clamp(iconSx, 0, 255))
+    output[base + 1] = uint8(clamp(iconSy, 0, 255))
+  elif sim.config.showTaskArrows:
+    if iconPass:
+      return
+    let
+      px = float(player.x + CollisionW div 2 - view.cameraX)
+      py = float(player.y + CollisionH div 2 - view.cameraY)
+      dx = float(iconCenterX - view.cameraX) - px
+      dy = float(iconCenterY - view.cameraY) - py
+    if abs(dx) < 0.5 and abs(dy) < 0.5:
+      return
+    var ex, ey: float
+    let
+      minX = 0.0
+      maxX = float(ScreenWidth - 1)
+      minY = 0.0
+      maxY = float(ScreenHeight - 1)
+    if abs(dx) > abs(dy):
+      if dx > 0:
+        ex = maxX
+      else:
+        ex = minX
+      ey = py + dy * (ex - px) / dx
+      ey = clamp(ey, minY, maxY)
+    else:
+      if dy > 0:
+        ey = maxY
+      else:
+        ey = minY
+      ex = px + dx * (ey - py) / dy
+      ex = clamp(ex, minX, maxX)
+    flags = flags or RenderTaskArrowVisible
+    output[base + 2] = uint8(int(ex))
+    output[base + 3] = uint8(int(ey))
+  else:
+    return
+
+  output[base + RenderTaskFlagsFeature] = flags
+  inc slotIndex
+
+proc writeSpritePlayerObservationTasks(
   sim: SimServer,
   playerIndex: int,
   output: var openArray[uint8]
 ) =
   if sim.phase != Playing or playerIndex < 0 or playerIndex >= sim.players.len:
     return
-  let
-    player = sim.players[playerIndex]
-    view = sim.playerView(playerIndex)
-    cameraX = view.cameraX
-    cameraY = view.cameraY
+  let player = sim.players[playerIndex]
   if player.role != Crewmate:
     return
   var slotIndex = 0
-  for taskIndex in player.assignedTasks:
-    if slotIndex >= RenderStateTaskSlots:
-      break
-    if taskIndex < 0 or taskIndex >= sim.tasks.len:
-      continue
-    let
-      task = sim.tasks[taskIndex]
-      completed =
-        playerIndex < task.completed.len and task.completed[playerIndex]
-      bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
-      bobY =
-        if player.activeTask == taskIndex:
-          0
-        else:
-          bob[(sim.tickCount div 3) mod bob.len]
-      iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
-      iconSy = task.y - SpriteSize - 2 + bobY - cameraY
-      iconCenterX = task.x + task.w div 2
-      iconCenterY = task.y - SpriteSize div 2 - 2 + bobY
-      iconOnScreen =
-        iconSx + SpriteSize > 0 and iconSy + SpriteSize > 0 and
-        iconSx < ScreenWidth and iconSy < ScreenHeight
-      base = RenderStateTaskOffset + slotIndex * RenderStateTaskFeatures
-    var flags = RenderTaskAssigned
-    if completed:
-      flags = flags or RenderTaskCompleted
-    else:
-      flags = flags or RenderTaskIncomplete
-    if player.activeTask == taskIndex:
-      flags = flags or RenderTaskActive
-    output[base] = RenderKindTask
-    output[base + 3] = flags
-    if sim.config.taskCompleteTicks > 0:
-      output[base + 4] = uint8(clamp(player.taskProgress * 255 div sim.config.taskCompleteTicks, 0, 255))
-    output[base + 7] = uint8(taskIndex + 1)
-    if completed:
-      continue
-    if iconOnScreen:
-      flags = flags or RenderTaskIconVisible
-      output[base + 1] = uint8(clamp(iconSx, 0, 255))
-      output[base + 2] = uint8(clamp(iconSy, 0, 255))
-    elif sim.config.showTaskArrows:
-      let
-        px = float(player.x + CollisionW div 2 - view.cameraX)
-        py = float(player.y + CollisionH div 2 - view.cameraY)
-        dx = float(iconCenterX - view.cameraX) - px
-        dy = float(iconCenterY - view.cameraY) - py
-      if abs(dx) >= 0.5 or abs(dy) >= 0.5:
-        var ex, ey: float
-        let
-          minX = 0.0
-          maxX = float(ScreenWidth - 1)
-          minY = 0.0
-          maxY = float(ScreenHeight - 1)
-        if abs(dx) > abs(dy):
-          if dx > 0:
-            ex = maxX
-          else:
-            ex = minX
-          ey = py + dy * (ex - px) / dx
-          ey = clamp(ey, minY, maxY)
-        else:
-          if dy > 0:
-            ey = maxY
-          else:
-            ey = minY
-          ex = px + dx * (ey - py) / dy
-          ex = clamp(ex, minX, maxX)
-        flags = flags or RenderTaskArrowVisible
-        output[base + 5] = uint8(int(ex))
-        output[base + 6] = uint8(int(ey))
-    output[base + 3] = flags
-    inc slotIndex
+  for taskIndex in 0 ..< sim.tasks.len:
+    sim.writeSpritePlayerObservationTaskEntry(playerIndex, taskIndex, true, slotIndex, output)
+  for taskIndex in 0 ..< sim.tasks.len:
+    sim.writeSpritePlayerObservationTaskEntry(playerIndex, taskIndex, false, slotIndex, output)
 
-proc writeRenderStateObservation*(
-  sim: SimServer,
-  playerIndex: int,
-  output: var openArray[uint8]
-) =
-  ## Writes the compact render-source observation used before pixel drawing.
-  if output.len != RenderStateFeatures:
-    raise newException(
-      AmongThemError,
-      "Render state observation must be " & $RenderStateFeatures & " bytes."
-    )
-  for i in 0 ..< output.len:
-    output[i] = 0
-  sim.writeRenderStateHeader(playerIndex, output)
-  sim.writeRenderStateGrid(playerIndex, output)
-  if sim.phase == Playing:
-    sim.writeRenderStatePlayingPlayers(playerIndex, output)
-    sim.writeRenderStateBodies(playerIndex, output)
-    sim.writeRenderStateTasks(playerIndex, output)
-  else:
-    sim.writeRenderStateUiPlayers(playerIndex, output)
-
-proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
-  if sim.phase == Lobby:
-    return sim.buildLobbyFrame(playerIndex)
-  if sim.phase == RoleReveal:
-    return sim.buildRoleRevealFrame(playerIndex)
-  if sim.phase == GameOver:
-    return sim.buildGameOverFrame(playerIndex)
-  if sim.phase == Voting:
-    return sim.buildVoteFrame(playerIndex)
-  if sim.phase == VoteResult:
-    return sim.buildResultFrame(playerIndex)
-  sim.fb.clearFrame(MapVoidColor)
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.fb.packFramebuffer()
-    return sim.fb.packed
-
+{.push checks: off.}
+proc renderPlayingFrame(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] =
+  ## Renders the normal player viewport after the player index is validated.
   let
     player = sim.players[playerIndex]
     view = sim.playerView(playerIndex)
     cameraX = view.cameraX
     cameraY = view.cameraY
 
-  for y in 0 ..< ScreenHeight:
-    for x in 0 ..< ScreenWidth:
-      let
-        mx = cameraX + x
-        my = cameraY + y
-      if mx >= 0 and my >= 0 and mx < MapWidth and my < MapHeight:
-        sim.fb.putPixel(x, y, sim.mapPixels[mapIndex(mx, my)])
+  sim.copyMapViewport(cameraX, cameraY)
 
   let
     viewerIsGhost = view.viewerIsGhost
   sim.castShadows(view.originMx, view.originMy, cameraX, cameraY)
 
   if not viewerIsGhost:
-    for sy in 0 ..< ScreenHeight:
-      for sx in 0 ..< ScreenWidth:
-        let
-          mx = cameraX + sx
-          my = cameraY + sy
-          idx = sy * ScreenWidth + sx
-        if not sim.shadowBuf[idx]:
-          continue
-        if mx < 0 or my < 0 or mx >= MapWidth or my >= MapHeight:
-          continue
-        if sim.wallMask[mapIndex(mx, my)]:
-          continue
-        sim.fb.indices[idx] = ShadowMap[sim.fb.indices[idx] and 0x0F]
+    sim.applyViewportShadows(cameraX, cameraY)
 
   for body in sim.bodies:
     let
@@ -2617,10 +3339,11 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       continue
     sim.fb.blitSpriteOutlined(sim.bodySprite, bsx, bsy, body.color, false)
 
-  var drawOrder = newSeq[int](sim.players.len)
-  for i in 0 ..< sim.players.len:
+  let drawCount = min(sim.players.len, MaxPlayers)
+  var drawOrder: array[MaxPlayers, int]
+  for i in 0 ..< drawCount:
     drawOrder[i] = i
-  for i in 1 ..< drawOrder.len:
+  for i in 1 ..< drawCount:
     let key = drawOrder[i]
     var j = i - 1
     while j >= 0 and sim.players[drawOrder[j]].y > sim.players[key].y:
@@ -2628,7 +3351,9 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       dec j
     drawOrder[j + 1] = key
 
-  for i in drawOrder:
+  let taskCount = sim.tasks.len
+  for orderIndex in 0 ..< drawCount:
+    let i = drawOrder[orderIndex]
     let
       p = sim.players[i]
       sx = p.x - SpriteDrawOffX - cameraX
@@ -2642,17 +3367,16 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       sim.fb.blitSpriteOutlined(sim.ghostSprite, sx, sy, p.color, p.flipH)
 
   if player.role == Crewmate:
-    for t in 0 ..< sim.tasks.len:
-      if not player.hasTask(t):
+    for t in player.assignedTasks:
+      if t < 0 or t >= taskCount:
         continue
       let
         task = sim.tasks[t]
-        bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
         bobY =
           if player.activeTask == t:
             0
           else:
-            bob[(sim.tickCount div 3) mod bob.len]
+            TaskBob[(sim.tickCount div 3) mod TaskBob.len]
         iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
         iconSy = task.y - SpriteSize - 2 + bobY - cameraY
       if playerIndex < task.completed.len and task.completed[playerIndex]:
@@ -2674,19 +3398,18 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   if player.role == Crewmate and sim.config.showTaskArrows:
     let radarColor = 8'u8
     let margin = 0
-    for t in 0 ..< sim.tasks.len:
-      if not player.hasTask(t):
+    for t in player.assignedTasks:
+      if t < 0 or t >= taskCount:
         continue
       let task = sim.tasks[t]
       if playerIndex < task.completed.len and task.completed[playerIndex]:
         continue
       let
-        bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
         bobY =
           if player.activeTask == t:
             0
           else:
-            bob[(sim.tickCount div 3) mod bob.len]
+            TaskBob[(sim.tickCount div 3) mod TaskBob.len]
         iconX = task.x + task.w div 2 - cameraX
         iconY = task.y - SpriteSize div 2 - 2 + bobY - cameraY
         iconSx = task.x + task.w div 2 - SpriteSize div 2 - cameraX
@@ -2739,18 +3462,58 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
 
   let remaining = sim.totalTasksRemaining()
   let numStr = $remaining
-  let dx = ScreenWidth - numStr.len * 7
+  let dx = ScreenWidth - sim.asciiSprites.textWidth(numStr)
   sim.fb.blitAsciiText(sim.asciiSprites, numStr, dx, 0)
 
   sim.fb.packFramebuffer()
   sim.fb.packed
+{.pop.}
+
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
+  if sim.phase == Lobby:
+    return sim.buildLobbyFrame(playerIndex)
+  if sim.phase == RoleReveal:
+    return sim.buildRoleRevealFrame(playerIndex)
+  if sim.phase == GameOver:
+    return sim.buildGameOverFrame(playerIndex)
+  if sim.phase == Voting:
+    return sim.buildVoteFrame(playerIndex)
+  if sim.phase == VoteResult:
+    return sim.buildResultFrame(playerIndex)
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    sim.fb.clearFrame(MapVoidColor)
+    sim.fb.packFramebuffer()
+    return sim.fb.packed
+  sim.renderPlayingFrame(playerIndex)
+
+proc writeSpritePlayerObservation*(
+  sim: var SimServer,
+  playerIndex: int,
+  output: var openArray[uint8]
+) =
+  ## Writes a compact sprite-player observation with only visible sprite-route fields.
+  if output.len != SpritePlayerObservationFeatures:
+    raise newException(
+      AmongThemError,
+      "SpritePlayer observation must be " & $SpritePlayerObservationFeatures & " bytes."
+    )
+  for i in 0 ..< output.len:
+    output[i] = 0
+  sim.writeSpritePlayerObservationHeader(playerIndex, output)
+  sim.writeSpritePlayerObservationGrid(playerIndex, output)
+  if sim.phase == Playing:
+    sim.writeSpritePlayerObservationPlayingPlayers(playerIndex, output)
+    sim.writeSpritePlayerObservationBodies(playerIndex, output)
+    sim.writeSpritePlayerObservationTasks(playerIndex, output)
+  else:
+    sim.writeSpritePlayerObservationUiPlayers(playerIndex, output)
 
 proc initSimServer*(config: GameConfig): SimServer =
   result.config = config
   result.rng = initRand(config.seed)
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
-  result.asciiSprites = loadAsciiSprites(gameDir() / "ascii.png")
+  result.asciiSprites = loadAsciiSprites(gameDir() / "tiny5.aseprite")
 
   let sheet = loadSpriteSheet()
   result.playerSprite = spriteFromImage(
@@ -2782,9 +3545,19 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   let (mapImage, walkImage, wallImage) = loadMapLayers(result.gameMap)
   result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+  result.mapRgba = newSeq[uint8](MapWidth * MapHeight * 4)
+  result.darkBgPixels = loadDarkBgPixels()
   for y in 0 ..< MapHeight:
     for x in 0 ..< MapWidth:
-      result.mapPixels[mapIndex(x, y)] = nearestPaletteIndex(mapImage[x, y])
+      let
+        pixel = mapImage[x, y]
+        index = mapIndex(x, y)
+        offset = index * 4
+      result.mapPixels[index] = nearestPaletteIndex(pixel)
+      result.mapRgba[offset] = pixel.r
+      result.mapRgba[offset + 1] = pixel.g
+      result.mapRgba[offset + 2] = pixel.b
+      result.mapRgba[offset + 3] = pixel.a
 
   result.walkMask = newSeq[bool](MapWidth * MapHeight)
   for y in 0 ..< MapHeight:
@@ -2804,6 +3577,10 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.players = @[]
   result.nextJoinOrder = 0
   result.gameStartTick = -1
+  result.startWaitTimer = 0
+  result.lastLobbyPlayersLogged = -1
+  result.lastLobbyNeededLogged = -1
+  result.lastLobbySecondsLogged = -1
 
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
@@ -2813,18 +3590,38 @@ proc resetToLobby*(sim: var SimServer) =
   sim.nextJoinOrder = 0
   sim.tickCount = 0
   sim.gameStartTick = -1
+  sim.startWaitTimer = 0
   sim.roleRevealTimer = 0
   sim.timeLimitReached = false
   sim.needsReregister = true
+  sim.lastLobbyPlayersLogged = -1
+  sim.lastLobbyNeededLogged = -1
+  sim.lastLobbySecondsLogged = -1
   for task in sim.tasks.mitems:
     task.completed = @[]
+
+proc stepLobby(sim: var SimServer) =
+  ## Advances the lobby start countdown.
+  if sim.players.len < sim.config.minPlayers:
+    sim.startWaitTimer = 0
+    sim.logLobbyWaiting()
+    return
+  if sim.config.startWaitTicks <= 0:
+    sim.startGame()
+    return
+  if sim.startWaitTimer <= 0:
+    sim.startWaitTimer = sim.config.startWaitTicks
+  dec sim.startWaitTimer
+  if sim.startWaitTimer <= 0:
+    sim.startGame()
+  else:
+    sim.logLobbyCountdown()
 
 proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArray[InputState]) =
   inc sim.tickCount
 
   if sim.phase == Lobby:
-    if sim.players.len >= sim.config.minPlayers:
-      sim.startGame()
+    sim.stepLobby()
     return
 
   if sim.phase == RoleReveal:
@@ -2862,6 +3659,8 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
       let prev =
         if i < prevInputs.len: prevInputs[i]
         else: InputState()
+      if sim.voteState.votes[i] != -1:
+        continue
       if (input.up and not prev.up) or (input.left and not prev.left):
         sim.moveCursor(i, -1)
       if (input.down and not prev.down) or (input.right and not prev.right):
@@ -2872,6 +3671,10 @@ proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openAr
           sim.voteState.votes[i] = -2
         else:
           sim.voteState.votes[i] = cur
+        logGameEvent(
+          "vote cast: " & sim.playerText(i) & " voted " &
+            sim.voteTargetText(sim.voteState.votes[i])
+        )
         if sim.allVotesCast():
           sim.tallyVotes()
     sim.checkMaxTicks()

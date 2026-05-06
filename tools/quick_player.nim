@@ -34,7 +34,7 @@ proc usage(): string =
     "(e.g. 'nottoodumb1', 'nottoodumb2', ...).\n" &
     "Example: quick_player nottoodumb --players:4 " &
     "--address:0.0.0.0 --port:2000\n" &
-    "Example: quick_player among_them/players/nottoodumb.nim " &
+    "Example: quick_player among_them/players/nottoodumb/nottoodumb.nim " &
     "--players:2 --gui"
 
 proc parsePort(value: string): int =
@@ -75,9 +75,18 @@ proc ensurePlayerFile(
   playerFile: string
 ): tuple[sourceRelative, workDir, label: string] =
   ## Validates and describes one player source file.
-  let
+  var
     sourceRelative = normalizePlayerFile(playerFile)
     sourcePath = absolutePath(rootDir / sourceRelative)
+  if not fileExists(sourcePath):
+    let
+      split = sourceRelative.splitFile()
+      nestedRelative = split.dir / split.name / (split.name & split.ext)
+      nestedPath = absolutePath(rootDir / nestedRelative)
+    if fileExists(nestedPath):
+      sourceRelative = nestedRelative
+      sourcePath = nestedPath
+  let
     workDir = sourcePath.parentDir()
     label = sourcePath.splitFile().name
   if not fileExists(sourcePath):
@@ -86,7 +95,9 @@ proc ensurePlayerFile(
 
 proc exePathFor(rootDir, sourceRelative: string): string =
   ## Returns the compiled executable path for one source file.
-  absolutePath(rootDir / sourceRelative.changeFileExt(ExeExts[0]))
+  ## Mirrors `--outdir:./out` from config.nims.
+  let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
+  absolutePath(rootDir / "out" / exeName)
 
 proc stopManagedProcess(processRef: var Process, label: string) =
   ## Stops and closes one managed process.

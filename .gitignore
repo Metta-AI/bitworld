@@ -1,21 +1,22 @@
-# ignore files with no extention:
-*
-!*/
-!*.*
-
 # normal ignores:
+.*
 *.exe
-nimcache
-nim.cfg
-tests/test.js
-tools/runlogs
-tmp/
-client/screenshots/
+*.dll
+*.dylib
+*.dylib.abi
 *.log
 *.egg-info/
 *.pyc
+
 __pycache__/
-.nimby
-.venv/
-tools/quick_run.nim
 .DS_Store
+client/screenshots/
+nimcache/
+out/
+tmp/
+games_server/replays/*
+
+# compiled binaries and test artifacts
+among_them/players/modulabot/modulabot
+among_them/players/modulabot/test/parity
+nim.cfg

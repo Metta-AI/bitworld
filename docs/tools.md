@@ -28,6 +28,12 @@ The global protocol is used by map viewers, replay controls, and other full
 game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the
 binary message format.
 
+Replay mode exposes:
+
+```text
+/replay
+```
+
 Games that expose training rewards also listen on:
 
 ```text
@@ -50,6 +56,15 @@ The JSON must be an object. Fields override the game's default config. Unknown
 fields are ignored by the current games, and fields with the wrong type raise a
 game-specific error.
 
+Game runners may also set:
+
+| Environment variable | Meaning |
+| --- | --- |
+| `COGAME_CONFIG_PATH` | Path to the config JSON file |
+| `COGAME_SAVE_RESULTS_PATH` | Path where the game writes final results |
+| `COGAME_SAVE_REPLAY_PATH` | Optional path where the game writes a replay |
+| `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay artifact to load |
+
 The common top-level server fields are:
 
 | Field | Type | Meaning |
@@ -66,6 +81,26 @@ accepts values such as `motionScale`, `maxSpeed`, `killRange`,
 `killCooldownTicks`, `minPlayers`, `tasksPerPlayer`, `showTaskArrows`, and
 `showTaskBubbles`.
 
+### Persephone's Escape (TypeScript)
+
+Persephone's Escape is a TypeScript game run with `tsx` and uses a different
+CLI convention from the Nim games.  Flags use `--key=value` syntax (not
+`--key:value`), and config is split into two mutually exclusive options:
+
+```text
+--config=NAME          Select a built-in config preset by name
+--config-file=PATH     Load a GameConfig from a JSON file
+```
+
+Available presets are defined in `persephones_escape/game/config_presets.ts`
+(e.g. `default`, `fast`, `tiny`, `short`, `empty`, `simple`, `empty3`,
+`medium`).  JSON config files use the same `GameConfig` shape; role and team
+values may be strings (`"Hades"`, `"TeamA"`) or numeric enum ordinals.
+
+Other server flags: `--address=HOST`, `--port=PORT`, `--seed=N`,
+`--replay=PATH`.  See the doc comment at the top of
+`persephones_escape/server.ts` for full usage details.
+
 ## Replays
 
 Bitworld games can save and load deterministic replay files.
@@ -79,7 +114,7 @@ Saving a replay records player joins, leaves, input changes, and one hash for
 each simulation tick. Loading a replay runs the game from the replay file
 instead of live player input.
 
-Replay viewers should connect through `/global`. Games can expose replay
+Replay viewers should connect through `/replay`. Games can expose replay
 controls there for play, pause, seek, loop, and speed changes. See
 [`bitreplay_spec.md`](bitreplay_spec.md) for the file format and replay rules.
 
@@ -161,8 +196,8 @@ The HTML global client lives at:
 clients/global_client.html
 ```
 
-It connects to the same `/global` endpoint and is useful when testing the
-protocol from a browser.
+It connects to `/global`, or to `/replay` when served from the replay route,
+and is useful when testing the protocol from a browser.
 
 ```text
 clients/global_client.html?address=ws://localhost:8080/global

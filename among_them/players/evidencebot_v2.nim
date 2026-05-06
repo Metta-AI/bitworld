@@ -1,6 +1,10 @@
-import pixie, protocol, ../sim, ../../common/server
+import
+  pixie, protocol, ../sim, ../votereader, ../../common/server,
+  ../../common/pixelfonts
 when not defined(evidencebotLibrary):
-  import silky, whisky, windy
+  import whisky
+  when not defined(botHeadless):
+    import silky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
   strutils, times]
 
@@ -183,8 +187,9 @@ const
 
 when not defined(evidencebotLibrary):
   type ViewerApp = ref object
-    window: Window
-    silky: Silky
+    when not defined(botHeadless):
+      window: Window
+      silky: Silky
 
 type
   TileKnowledge = enum
@@ -259,7 +264,7 @@ type
     colorIndex: int
     alive: bool
 
-  Bot = object
+  Bot* = object
     sim: SimServer
     playerSprite: Sprite
     bodySprite: Sprite
@@ -935,15 +940,16 @@ proc asciiChar(index: int): char =
 
 proc asciiGlyphScore(
   bot: Bot,
-  glyph: Sprite,
+  glyph: PixelGlyph,
   screenX,
   screenY: int
 ): tuple[misses: int, opaque: int] =
   ## Scores one rendered ASCII glyph against the current screen.
+  ## Updated from Sprite-based to PixelGlyph-based: glyphs are 1-bit
+  ## booleans; text is rendered in TextColor.
   for y in 0 ..< glyph.height:
     for x in 0 ..< glyph.width:
-      let color = glyph.pixels[glyph.spriteIndex(x, y)]
-      if color == TransparentColorIndex:
+      if not glyph.glyphPixel(x, y):
         continue
       inc result.opaque
       let
@@ -952,7 +958,7 @@ proc asciiGlyphScore(
       if sx < 0 or sx >= ScreenWidth or sy < 0 or sy >= ScreenHeight:
         inc result.misses
         continue
-      if bot.unpacked[sy * ScreenWidth + sx] != color:
+      if bot.unpacked[sy * ScreenWidth + sx] != TextColor:
         inc result.misses
 
 proc asciiTextScore(
@@ -965,9 +971,9 @@ proc asciiTextScore(
   var offsetX = 0
   for ch in text:
     let idx = sim.asciiIndex(ch)
-    if idx >= 0 and idx < bot.sim.asciiSprites.len:
+    if idx >= 0 and idx < bot.sim.asciiSprites.glyphs.len:
       let score = bot.asciiGlyphScore(
-        bot.sim.asciiSprites[idx],
+        bot.sim.asciiSprites.glyphs[idx],
         screenX + offsetX,
         screenY
       )
@@ -1002,7 +1008,7 @@ proc bestAsciiGlyph(bot: Bot, x, y: int): char =
     bestChar = ' '
     bestMisses = high(int)
     bestOpaque = 0
-  for i, glyph in bot.sim.asciiSprites:
+  for i, glyph in bot.sim.asciiSprites.glyphs:
     let score = bot.asciiGlyphScore(glyph, x, y)
     if score.opaque == 0:
       continue
@@ -2060,9 +2066,29 @@ proc parseVotingScreen(bot: var Bot): bool =
       bot.voteStartTick
     else:
       bot.frameTick
-  for count in countdown(MaxPlayers, 1):
-    if bot.parseVotingCandidate(count, startTick):
-      return true
+  let read = parseVoteFrame(
+    bot.unpacked,
+    bot.sim.asciiSprites,
+    bot.playerSprite,
+    bot.bodySprite
+  )
+  if read.found:
+    bot.clearVotingState()
+    bot.voting = true
+    bot.votePlayerCount = read.playerCount
+    bot.voteStartTick = startTick
+    bot.voteCursor = read.cursor
+    bot.voteSelfSlot = read.selfSlot
+    for i in 0 ..< read.playerCount:
+      bot.voteSlots[i].colorIndex = read.slots[i].colorIndex
+      bot.voteSlots[i].alive = read.slots[i].alive
+    for i in 0 ..< min(bot.voteChoices.len, read.choices.len):
+      bot.voteChoices[i] = read.choices[i]
+    if read.selfSlot >= 0 and read.selfSlot < read.playerCount:
+      bot.selfColorIndex = read.slots[read.selfSlot].colorIndex
+    bot.voteChatText = read.chatText
+    bot.voteChatSusColor = read.chatSusColor
+    return true
   bot.clearVotingState()
   false
 
@@ -3919,7 +3945,7 @@ proc decideImposterMask(bot: var Bot): uint8 =
   bot.goalIndex = goal.index
   bot.navigateToPoint(goal.x, goal.y, "fake target " & goal.name)
 
-proc decideNextMask(bot: var Bot): uint8 =
+proc decideNextMask*(bot: var Bot): uint8 =
   ## Updates perception and chooses the next input mask.
   let centerStart = getMonoTime()
   bot.updateLocation()
@@ -4062,8 +4088,15 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
-proc initBot(mapPath = ""): Bot =
+proc initBot*(mapPath = ""; masterSeed: int64 = -1): Bot =
   ## Builds a bot and loads all map and sprite data.
+  ##
+  ## `masterSeed`: pass a non-negative value for a deterministic RNG
+  ## seed. The default `-1` keeps the historical clock+pid behaviour
+  ## so production callers are unaffected. Parity harnesses (see
+  ## `modulabot/test/parity.nim`) pass an explicit seed so the
+  ## imposter code path — which reads RNG on fake-task dice and
+  ## random-innocent picks — becomes reproducible.
   setCurrentDir(gameDir())
   var config = defaultGameConfig()
   if mapPath.len > 0:
@@ -4076,7 +4109,11 @@ proc initBot(mapPath = ""): Bot =
   result.taskSprite = sheet.sheetSprite(4, 0)
   result.ghostSprite = sheet.sheetSprite(6, 0)
   result.ghostIconSprite = sheet.sheetSprite(7, 0)
-  result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
+  result.rng =
+    if masterSeed >= 0:
+      initRand(masterSeed)
+    else:
+      initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
@@ -4115,6 +4152,12 @@ proc initBot(mapPath = ""): Bot =
   result.intent = "waiting for first frame"
 
 when defined(evidencebotLibrary):
+  const EvidenceBotV2AbiVersion = 1
+
+  proc evidencebot_v2_abi_version*(): cint {.exportc, dynlib.} =
+    ## Returns the EvidenceBot v2 ABI version for Python verification.
+    EvidenceBotV2AbiVersion
+
   const TrainableMasks = [
     0'u8,
     ButtonA,
@@ -4145,10 +4188,10 @@ when defined(evidencebotLibrary):
     ButtonDown or ButtonRight or ButtonB
   ]
 
-  type NotTooDumbPolicy = ref object
+  type EvidenceBotV2FFIPolicy = ref object
     bots: seq[Bot]
 
-  var NotTooDumbPolicies: seq[NotTooDumbPolicy]
+  var EvidenceBotV2Policies: seq[EvidenceBotV2FFIPolicy]
 
   proc actionIndexForMask(mask: uint8): int32 =
     ## Maps a BitWorld button mask to the CoGames trainable action index.
@@ -4173,18 +4216,14 @@ when defined(evidencebotLibrary):
     result = bot.decideNextMask()
     bot.lastMask = result
 
-  proc evidencebot_v2_abi_version*(): cint {.exportc, dynlib.} =
-    ## Must match ``EVIDENCEBOT_V2_ABI_VERSION`` in ``build_evidencebot_v2.py``.
-    1
-
   proc evidencebot_v2_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
     ## Creates a persistent Nim-backed EvidenceBot v2 policy and returns its handle.
     let count = max(1, int(numAgents))
-    var policy = NotTooDumbPolicy(bots: newSeq[Bot](count))
+    var policy = EvidenceBotV2FFIPolicy(bots: newSeq[Bot](count))
     for i in 0 ..< count:
       policy.bots[i] = initBot()
-    NotTooDumbPolicies.add(policy)
-    cint(NotTooDumbPolicies.len - 1)
+    EvidenceBotV2Policies.add(policy)
+    cint(EvidenceBotV2Policies.len - 1)
 
   proc evidencebot_v2_step_batch*(
     handle: cint,
@@ -4197,8 +4236,8 @@ when defined(evidencebotLibrary):
     observations: pointer,
     actions: pointer
   ) {.exportc, dynlib.} =
-    ## Steps a batch of unpacked pixel observations into CoGames action indices (EvidenceBot v2).
-    if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
+    ## Steps a batch of unpacked pixel observations into CoGames action indices.
+    if handle < 0 or int(handle) >= EvidenceBotV2Policies.len:
       return
     if observations.isNil or actions.isNil or agentIds.isNil:
       return
@@ -4206,7 +4245,7 @@ when defined(evidencebotLibrary):
       return
 
     let
-      policy = NotTooDumbPolicies[int(handle)]
+      policy = EvidenceBotV2Policies[int(handle)]
       obs = cast[ptr UncheckedArray[uint8]](observations)
       outs = cast[ptr UncheckedArray[int32]](actions)
       frameLen = int(height) * int(width)
@@ -4230,7 +4269,7 @@ when defined(evidencebotLibrary):
       let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
       outs[row] = actionIndexForMask(mask)
 
-when not defined(evidencebotLibrary):
+when not defined(evidencebotLibrary) and not defined(botHeadless):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
     ## Draws an unfilled rectangle.
     sk.drawRect(pos, vec2(size.x, thickness), color)
@@ -4710,6 +4749,25 @@ when not defined(evidencebotLibrary):
     ## Returns true when the diagnostic viewer should keep running.
     viewer.isNil or not viewer.window.closeRequested
 
+when not defined(evidencebotLibrary) and defined(botHeadless):
+  proc initViewerApp(): ViewerApp =
+    ## Returns no viewer for headless builds.
+    nil
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Ignores viewer frames in headless builds.
+    discard
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true because headless builds have no viewer window.
+    true
+
+when not defined(evidencebotLibrary):
   proc queryEscape(value: string): string =
     ## Escapes a small string for use in a websocket query parameter.
     const Hex = "0123456789ABCDEF"
@@ -4791,10 +4849,11 @@ when not defined(evidencebotLibrary):
     port = PlayerDefaultPort,
     gui = false,
     name = "",
-    mapPath = ""
+    mapPath = "",
+    masterSeed: int64 = -1
   ) =
     ## Connects to an Among Them server and processes player frames.
-    var bot = initBot(mapPath)
+    var bot = initBot(mapPath, masterSeed)
     let url =
       if name.len > 0:
         "ws://" & host & ":" & $port & WebSocketPath &
@@ -4850,6 +4909,7 @@ when isMainModule and not defined(evidencebotLibrary):
     gui = false
     name = ""
     mapPath = ""
+    masterSeed = -1'i64
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4864,10 +4924,16 @@ when isMainModule and not defined(evidencebotLibrary):
         name = val
       of "map":
         mapPath = val
+      of "seed":
+        try:
+          masterSeed = parseBiggestInt(val).int64
+        except ValueError:
+          echo "invalid --seed: ", val
+          quit(2)
       else:
         discard
     else:
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath)
+  runBot(address, port, gui, name, mapPath, masterSeed)

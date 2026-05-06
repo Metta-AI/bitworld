@@ -1,74 +1,37 @@
-"""ctypes bridge for the Nim EvidenceBot v2 BitWorld policy (CoGames tournament)."""
+"""ctypes bridge for the Nim EvidenceBot v2 BitWorld policy.
+
+This module wraps the compiled EvidenceBot v2 shared library for the CoGames
+tournament pipeline. It implements the ``MultiAgentPolicy`` interface expected
+by the BitWorld AmongThem runner, routing raw pixel observations to the Nim
+core and returning trainable action indices.
+
+The Nim FFI exports ``evidencebot_v2_new_policy`` and
+``evidencebot_v2_step_batch``. Unlike the nottoodumb wrapper, the step_batch
+signature here omits the ``frameAdvances`` parameter — EvidenceBot v2 always
+advances by one tick per frame internally.
+"""
 
 from __future__ import annotations
 
 import ctypes
 import platform
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from among_them.players.build_evidencebot_v2 import (
     EVIDENCEBOT_V2_ABI_VERSION,
     build_evidencebot_v2,
 )
+
+from mettagrid.bitworld import (
+    BITWORLD_ACTION_COUNT,
+    BITWORLD_ACTION_NAMES,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+)
 from mettagrid.policy.policy import AgentPolicy, MultiAgentPolicy
 from mettagrid.policy.policy_env_interface import PolicyEnvInterface
 from mettagrid.simulator import Action, AgentObservation
-
-# Policy-server tournament images may omit ``mettagrid.bitworld``. Keep this block aligned with
-# ``mettagrid/python/src/mettagrid/bitworld.py`` (trainable action order + screen size).
-SCREEN_WIDTH = 128
-SCREEN_HEIGHT = 128
-
-_BUTTON_NAMES: tuple[str, ...] = ("up", "down", "left", "right", "select", "a", "b")
-_BUTTON_TO_MASK: dict[str, int] = {b: 1 << i for i, b in enumerate(_BUTTON_NAMES)}
-_BITWORLD_INPUT_MASK_COUNT = 1 << len(_BUTTON_NAMES)
-
-
-def _encode_buttons(buttons: Iterable[str]) -> int:
-    mask = 0
-    for button in buttons:
-        mask |= _BUTTON_TO_MASK[button]
-    return mask
-
-
-def _decode_buttons(mask: int) -> tuple[str, ...]:
-    if not 0 <= mask < _BITWORLD_INPUT_MASK_COUNT:
-        raise ValueError(
-            f"BitWorld input mask must be in [0, {_BITWORLD_INPUT_MASK_COUNT}), got {mask}"
-        )
-    return tuple(b for b in _BUTTON_NAMES if mask & _BUTTON_TO_MASK[b])
-
-
-def _bitworld_input_mask_name(mask: int) -> str:
-    buttons = _decode_buttons(mask)
-    return "+".join(buttons) if buttons else "noop"
-
-
-_DIRECTION_BUTTONS: tuple[tuple[str, ...], ...] = (
-    (),
-    ("up",),
-    ("down",),
-    ("left",),
-    ("right",),
-    ("up", "left"),
-    ("up", "right"),
-    ("down", "left"),
-    ("down", "right"),
-)
-_ACTION_BUTTONS: tuple[str | None, ...] = (None, "a", "b")
-
-_BITWORLD_ACTION_MASKS = np.asarray(
-    [
-        _encode_buttons(direction if button is None else (*direction, button))
-        for direction in _DIRECTION_BUTTONS
-        for button in _ACTION_BUTTONS
-    ],
-    dtype=np.uint8,
-)
-BITWORLD_ACTION_COUNT = int(len(_BITWORLD_ACTION_MASKS))
-BITWORLD_ACTION_NAMES = tuple(_bitworld_input_mask_name(int(m)) for m in _BITWORLD_ACTION_MASKS)
 
 
 class _EvidenceBotV2NimAgentPolicy(AgentPolicy):
@@ -93,7 +56,12 @@ class _EvidenceBotV2NimAgentPolicy(AgentPolicy):
 class EvidenceBotV2NimPolicy(MultiAgentPolicy):
     """Runs ``evidencebot_v2.nim`` through a compiled shared library.
 
-    Use ``class=evidencebot_v2_policy.EvidenceBotV2NimPolicy`` for ``cogames upload``.
+    The policy processes raw 128x128 4-bit pixel frames from the BitWorld
+    AmongThem environment. It handles localization, task completion, body
+    reporting, evidence-grounded voting, and imposter play entirely in Nim.
+
+    Use ``class=evidencebot_v2_policy.EvidenceBotV2NimPolicy`` when
+    specifying this policy for ``cogames upload``.
     """
 
     short_names = ["evidencebot_v2"]
@@ -108,16 +76,17 @@ class EvidenceBotV2NimPolicy(MultiAgentPolicy):
         self._lib = self._load_library()
         self._lib.evidencebot_v2_new_policy.argtypes = [ctypes.c_int]
         self._lib.evidencebot_v2_new_policy.restype = ctypes.c_int
+        # EvidenceBot v2 step_batch takes 9 parameters (no frameAdvances).
         self._lib.evidencebot_v2_step_batch.argtypes = [
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.c_int32),
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
+            ctypes.c_int,                    # handle
+            ctypes.POINTER(ctypes.c_int32),  # agentIds
+            ctypes.c_int,                    # numAgentIds
+            ctypes.c_int,                    # numAgents
+            ctypes.c_int,                    # frameStack
+            ctypes.c_int,                    # height
+            ctypes.c_int,                    # width
+            ctypes.c_void_p,                 # observations
+            ctypes.c_void_p,                 # actions (output)
         ]
         self._lib.evidencebot_v2_step_batch.restype = None
         self._num_agents = max(1, int(policy_env_info.num_agents))

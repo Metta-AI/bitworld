@@ -23,6 +23,8 @@ bin = @[
   "tools/quick_run",
   "tools/quick_player",
   "tools/ptswap",
+  "games_server/cogame_validator",
+  "games_server/tournament_server",
   "tag/tag",
   "jumper/jumper",
   "warzone/warzone",
@@ -43,3 +45,5 @@ requires "whisky >= 0.1.3"
 requires "silky >= 0.0.2"
 requires "windy >= 0.4.4"
 requires "paddy >= 0.1.0"
+requires "supersnappy >= 2.1.3"
+requires "taggy >= 0.0.3"

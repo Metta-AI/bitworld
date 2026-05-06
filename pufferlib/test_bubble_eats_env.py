@@ -3,14 +3,15 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import ctypes
 from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from bitworld_pufferlib import (
+from bitworld.pufferlib.bitworld_pufferlib import (
     ACTION_MASKS,
     AMONG_THEM_MAX_PLAYERS,
     BitWorldPolicy,
@@ -19,16 +20,30 @@ from bitworld_pufferlib import (
     EpisodeStats,
     FRAME_PIXELS,
     PACKED_FRAME_BYTES,
-    STATE_FLAG_PLAYER_ROLE_IMPOSTER,
-    STATE_FEATURES,
-    STATE_PLAYER_FEATURE_OFFSET,
-    STATE_PLAYER_FEATURES,
+    SPRITE_PLAYER_BODY_FEATURE_OFFSET,
+    SPRITE_PLAYER_FLAG_PLAYER_ROLE_IMPOSTER,
+    SPRITE_PLAYER_FLAG_TASK_ARROW_VISIBLE,
+    SPRITE_PLAYER_FLAG_TASK_ICON_VISIBLE,
+    SPRITE_PLAYER_FEATURES,
+    SPRITE_PLAYER_GRID_SIZE,
+    SPRITE_PLAYER_HEADER_FEATURES,
+    SPRITE_PLAYER_PLAYER_FEATURE_OFFSET,
+    SPRITE_PLAYER_PLAYER_FEATURES,
+    SPRITE_PLAYER_TASK_COUNT,
+    SPRITE_PLAYER_TASK_FEATURE_OFFSET,
+    SPRITE_PLAYER_TASK_FEATURES,
+    SpritePlayerObservationAdapter,
+    among_them_native_library,
     env_log_key,
     load_policy_checkpoint,
     parse_reward_payload,
     unpack_frame,
     with_server_players,
 )
+
+# Default role reveal lasts 120 native ticks; this reaches one playing tick.
+AMONG_THEM_PLAY_ACTION_REPEAT = 121
+SPRITE_PLAYER_PARITY_PACKET_CAPACITY = 8 * 1024 * 1024
 
 
 class ProtocolTest(unittest.TestCase):
@@ -98,12 +113,13 @@ class BitWorldSmokeTest(unittest.TestCase):
     def test_env_reset_and_autoreset_across_envs(self) -> None:
         for env_name in sorted(ENV_SPECS):
             with self.subTest(env=env_name):
+                is_among_them = env_name == "among_them"
                 env = BitWorldVecEnv(
                     env_name,
                     num_envs=1,
-                    max_episode_steps=4,
+                    max_episode_steps=1 if is_among_them else 4,
                     frame_stack=4,
-                    action_repeat=1,
+                    action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT if is_among_them else 1,
                     base_seed=1234,
                 )
                 expected_agents = ENV_SPECS[env_name].server_players if env_name == "among_them" else 1
@@ -159,27 +175,37 @@ class BitWorldSmokeTest(unittest.TestCase):
         self.assertNotEqual(episodes, [worker.episode for worker in env.workers])
 
     def test_among_them_direct_env_controls_all_players(self) -> None:
-        env = BitWorldVecEnv("among_them", num_envs=1, max_episode_steps=2, frame_stack=2, action_repeat=1, base_seed=99)
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=1,
+            frame_stack=2,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
+            base_seed=99,
+        )
         self.addCleanup(env.close)
 
         obs = env.reset()
         self.assertEqual(env.total_agents, ENV_SPECS["among_them"].server_players)
         self.assertEqual(obs.shape, (env.total_agents, FRAME_PIXELS * 2))
 
-        _, rewards, terminals, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
-        self.assertEqual(rewards.shape, (env.total_agents,))
-        self.assertEqual(terminals.shape, (env.total_agents,))
-        np.testing.assert_array_equal(terminals, np.zeros(env.total_agents, dtype=np.float32))
-        np.testing.assert_array_equal(env._truncations, np.zeros(env.total_agents, dtype=np.float32))
+        completed = []
+        for _ in range(8):
+            _, rewards, terminals, completed = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
+            self.assertEqual(rewards.shape, (env.total_agents,))
+            self.assertEqual(terminals.shape, (env.total_agents,))
+            if completed:
+                break
+            np.testing.assert_array_equal(terminals, np.zeros(env.total_agents, dtype=np.float32))
+            np.testing.assert_array_equal(env._truncations, np.zeros(env.total_agents, dtype=np.float32))
 
-        _, rewards, terminals, completed = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))
-        self.assertEqual(rewards.shape, (env.total_agents,))
+        self.assertTrue(completed)
         np.testing.assert_array_equal(terminals, np.ones(env.total_agents, dtype=np.float32))
         np.testing.assert_array_equal(env._truncations, np.ones(env.total_agents, dtype=np.float32))
         self.assertEqual(len(completed), env.total_agents)
-        self.assertEqual(max(item.score for item in completed), 100.0)
+        self.assertEqual(max(item.score for item in completed), 0.0)
 
-    def test_among_them_state_observations_do_not_leak_hidden_roles(self) -> None:
+    def test_among_them_sprite_player_observations_do_not_leak_hidden_roles(self) -> None:
         env = BitWorldVecEnv(
             "among_them",
             num_envs=1,
@@ -187,24 +213,79 @@ class BitWorldSmokeTest(unittest.TestCase):
             frame_stack=1,
             action_repeat=1,
             base_seed=99,
-            observation_mode="state",
+            observation_mode="sprite_player",
         )
         self.addCleanup(env.close)
 
         obs = env.reset()
-        self.assertEqual(obs.shape, (env.total_agents, STATE_FEATURES))
+        self.assertEqual(obs.shape, (env.total_agents, SPRITE_PLAYER_FEATURES))
         self.assertEqual(obs.dtype, np.uint8)
 
         for viewer_index in range(env.total_agents):
             for other_index in range(env.total_agents):
                 if other_index == viewer_index:
                     continue
-                flags_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 4
-                cooldown_feature = STATE_PLAYER_FEATURE_OFFSET + other_index * STATE_PLAYER_FEATURES + 7
-                self.assertEqual(int(obs[viewer_index, flags_feature]) & STATE_FLAG_PLAYER_ROLE_IMPOSTER, 0)
-                self.assertEqual(obs[viewer_index, cooldown_feature], 0)
+                flags_feature = SPRITE_PLAYER_PLAYER_FEATURE_OFFSET + other_index * SPRITE_PLAYER_PLAYER_FEATURES + 3
+                self.assertEqual(int(obs[viewer_index, flags_feature]) & SPRITE_PLAYER_FLAG_PLAYER_ROLE_IMPOSTER, 0)
 
-    def test_among_them_state_observations_cover_max_players(self) -> None:
+    def test_among_them_sprite_player_grid_uses_pixel_palette(self) -> None:
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=8,
+            frame_stack=1,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
+            base_seed=101,
+            observation_mode="sprite_player",
+        )
+        self.addCleanup(env.close)
+
+        env.reset()
+        sprite_player_obs, _, _, _ = env.step_discrete(np.zeros((env.total_agents,), dtype=np.int64))
+
+        grid_end = SPRITE_PLAYER_HEADER_FEATURES + SPRITE_PLAYER_GRID_SIZE * SPRITE_PLAYER_GRID_SIZE
+        sprite_player_grid = sprite_player_obs[:, SPRITE_PLAYER_HEADER_FEATURES:grid_end]
+        self.assertEqual(sprite_player_grid.shape, (env.total_agents, SPRITE_PLAYER_GRID_SIZE * SPRITE_PLAYER_GRID_SIZE))
+        self.assertLessEqual(int(sprite_player_grid.max()), 15)
+
+    def test_among_them_sprite_player_observations_hide_non_rendered_fields(self) -> None:
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=8,
+            frame_stack=1,
+            action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT,
+            base_seed=102,
+            observation_mode="sprite_player",
+        )
+        self.addCleanup(env.close)
+
+        env.reset()
+        obs, _, _, _ = env.step_discrete(np.zeros((env.total_agents,), dtype=np.int64))
+
+        self.assertEqual(SPRITE_PLAYER_HEADER_FEATURES, 4)
+        self.assertEqual(SPRITE_PLAYER_PLAYER_FEATURES, 4)
+        self.assertEqual(SPRITE_PLAYER_TASK_FEATURES, 5)
+
+        player_features = obs[:, SPRITE_PLAYER_PLAYER_FEATURE_OFFSET:SPRITE_PLAYER_BODY_FEATURE_OFFSET].reshape(
+            env.total_agents,
+            AMONG_THEM_MAX_PLAYERS,
+            SPRITE_PLAYER_PLAYER_FEATURES,
+        )
+        player_flags = player_features[:, :, 3]
+        player_flag_mask = 1 | 4 | 16 | 32
+        self.assertTrue(np.all((player_flags.astype(np.int64) & ~player_flag_mask) == 0))
+
+        task_features = obs[:, SPRITE_PLAYER_TASK_FEATURE_OFFSET:SPRITE_PLAYER_FEATURES].reshape(
+            env.total_agents,
+            SPRITE_PLAYER_TASK_COUNT,
+            SPRITE_PLAYER_TASK_FEATURES,
+        )
+        task_flags = task_features[:, :, 4]
+        visible_task_mask = SPRITE_PLAYER_FLAG_TASK_ICON_VISIBLE | SPRITE_PLAYER_FLAG_TASK_ARROW_VISIBLE
+        self.assertTrue(np.all((task_flags.astype(np.int64) & ~visible_task_mask) == 0))
+
+    def test_among_them_sprite_player_observations_cover_max_players(self) -> None:
         spec = with_server_players("among_them", AMONG_THEM_MAX_PLAYERS)
         env = BitWorldVecEnv(
             spec,
@@ -213,13 +294,65 @@ class BitWorldSmokeTest(unittest.TestCase):
             frame_stack=1,
             action_repeat=1,
             base_seed=100,
-            observation_mode="state",
+            observation_mode="sprite_player",
         )
         self.addCleanup(env.close)
 
         obs = env.reset()
         self.assertEqual(env.total_agents, AMONG_THEM_MAX_PLAYERS)
-        self.assertEqual(obs.shape, (AMONG_THEM_MAX_PLAYERS, STATE_FEATURES))
+        self.assertEqual(obs.shape, (AMONG_THEM_MAX_PLAYERS, SPRITE_PLAYER_FEATURES))
+
+    def test_among_them_sprite_player_observations_match_sprite_player_endpoint_packets(self) -> None:
+        env = BitWorldVecEnv(
+            "among_them",
+            num_envs=1,
+            max_episode_steps=32,
+            frame_stack=1,
+            action_repeat=1,
+            base_seed=73,
+            observation_mode="sprite_player",
+        )
+        self.addCleanup(env.close)
+        native = among_them_native_library()
+        handle = int(env._sprite_player_handles[0])
+        packet_buffer = np.zeros((SPRITE_PLAYER_PARITY_PACKET_CAPACITY,), dtype=np.uint8)
+        packet_ptr = packet_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+        adapters = [SpritePlayerObservationAdapter() for _ in range(env.total_agents)]
+
+        def endpoint_observation(player_index: int) -> np.ndarray:
+            packet_len = native.check(
+                native.lib.bitworld_at_sprite_player_packet(
+                    handle,
+                    player_index,
+                    packet_ptr,
+                    SPRITE_PLAYER_PARITY_PACKET_CAPACITY,
+                )
+            )
+            self.assertGreater(packet_len, 0)
+            adapters[player_index].apply_packet(bytes(packet_buffer[:packet_len]))
+            return adapters[player_index].observation()
+
+        def assert_parity(observations: np.ndarray, label: str) -> None:
+            for player_index in range(env.total_agents):
+                endpoint_obs = endpoint_observation(player_index)
+                try:
+                    np.testing.assert_array_equal(endpoint_obs, observations[player_index])
+                except AssertionError as exc:
+                    diff = np.flatnonzero(endpoint_obs != observations[player_index])
+                    first = int(diff[0]) if diff.size else -1
+                    self.fail(
+                        f"{label} player={player_index} first_diff={first} "
+                        f"endpoint={int(endpoint_obs[first]) if first >= 0 else 'n/a'} "
+                        f"native={int(observations[player_index, first]) if first >= 0 else 'n/a'}: {exc}"
+                    )
+
+        rng = np.random.default_rng(123)
+        observations = env.reset().copy()
+        assert_parity(observations, "reset")
+        for step in range(1, 520):
+            actions = rng.integers(0, env.action_count, size=env.total_agents, dtype=np.int64)
+            observations, _, _, _ = env.step_discrete(actions)
+            assert_parity(observations.copy(), f"step {step}")
 
     def test_among_them_rejects_more_than_max_players(self) -> None:
         with self.assertRaises(ValueError):

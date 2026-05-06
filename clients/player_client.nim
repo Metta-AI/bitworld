@@ -9,7 +9,6 @@ const
   ScreenshotDirName = "screenshots"
   ScreenshotPrefix = "screenshot"
   ScreenshotScalePower = 2
-  WebSocketPath = "/player"
   MinimumSplashMilliseconds = 1500'i64
   NetworkPollPasses = 8
   LayoutScale = 2
@@ -425,8 +424,7 @@ proc pollNetwork() =
     pollHttp()
 
 proc initClient*(
-  host = DefaultHost,
-  port = DefaultPort,
+  address = DefaultPlayerAddress,
   clientOptions = ClientOptions()
 ): ClientApp =
   if not dirExists("dist"):
@@ -474,7 +472,7 @@ proc initClient*(
     result.window.pos = clientOptions.windowPos.get
 
   result.network.latestFrame = newSeq[uint8](ProtocolBytes)
-  result.network.url = "ws://" & host & ":" & $port & WebSocketPath
+  result.network.url = address
   result.network.reconnectDelayMilliseconds =
     clientOptions.reconnectDelayMilliseconds
   result.connectNetwork()
@@ -741,12 +739,11 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   previousTick = getMonoTime()
 
 proc runClientLoop*(
-  host = DefaultHost,
-  port = DefaultPort,
+  address = DefaultPlayerAddress,
   clientOptions = ClientOptions()
 ) =
   var
-    client = initClient(host, port, clientOptions)
+    client = initClient(address, clientOptions)
     lastTick = getMonoTime()
 
   while client.windowOpen:
@@ -768,8 +765,7 @@ proc runClientLoop*(
 
 when isMainModule:
   var
-    address = DefaultHost
-    port = DefaultPort
+    address = DefaultPlayerAddress
     clientOptions = ClientOptions()
     windowX = none(int)
     windowY = none(int)
@@ -778,7 +774,6 @@ when isMainModule:
     of cmdLongOption:
       case key
       of "address": address = val
-      of "port": port = parseInt(val)
       of "x", "window-x":
         windowX = some(parseInt(val))
       of "y", "window-y":
@@ -798,4 +793,4 @@ when isMainModule:
       if windowX.isSome: windowX.get.int32 else: 0'i32,
       if windowY.isSome: windowY.get.int32 else: 0'i32
     ))
-  runClientLoop(address, port, clientOptions)
+  runClientLoop(address, clientOptions)

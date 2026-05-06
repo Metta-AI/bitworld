@@ -94,7 +94,9 @@ proc ensureGameFolder(rootDir, folderName: string): tuple[sourceRelative, workDi
   (sourceRelative: sourceRelative, workDir: workDir, label: splitPath(normalized).tail)
 
 proc exePathFor(rootDir, sourceRelative: string): string =
-  absolutePath(rootDir / sourceRelative.changeFileExt(ExeExts[0]))
+  ## Mirrors `--outdir:./out` from config.nims.
+  let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
+  absolutePath(rootDir / "out" / exeName)
 
 proc humanizeLabel(label: string): string =
   for part in label.split({'_', '-', ' '}):

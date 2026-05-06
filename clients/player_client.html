@@ -20,9 +20,10 @@ input{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(8
 let c=document.getElementById("c"),i=document.getElementById("i"),s=document.getElementById("s"),x=c.getContext("2d"),d=x.createImageData(128,128),
 p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255],
 k={},l=255,w,u=new URL(location.href),m=location.host?((location.protocol=="https:"?"wss:":"ws:")+"//"+location.host):"ws://localhost:8080",a=u.searchParams.get("address")||m+"/player",
-g=(u.searchParams.get("joystick")|0)-1,z=0,r=Math.max(0,+u.searchParams.get("reconnect")||0),t=0,n;
-try{let v=new URL(a);if(v.pathname=="/")v.pathname="/player";a=v+""}catch(e){}
+g=(u.searchParams.get("joystick")|0)-1,z=0,r=Math.max(0,+u.searchParams.get("reconnect")||0),t=0,n,o;
+a=(a=>{try{let v=new URL(a,location.href);if(v.protocol=="http:")v.protocol="ws:";if(v.protocol=="https:")v.protocol="wss:";if(v.pathname=="/")v.pathname="/player";for(let q of["name","token","slot"]){let h=u.searchParams.get(q);if(h!==null)v.searchParams.set(q,h)}return v+""}catch(e){return a}})(a);
 n=o=>{s.textContent=o;s.style.display=o?"flex":"none"};
+o=()=>{k={};if(l&&w&&w.readyState==1){w.send(new Uint8Array([0,0]));l=0}};
 x.imageSmoothingEnabled=false;
 onresize=e=>{let s=Math.min(innerWidth,innerHeight);c.style.width=s+"px";c.style.height=s+"px"};
 onresize();
@@ -32,16 +33,19 @@ onkeydown=e=>{
     if(z){
       let s=i.value.replace(/[^\x20-\x7e]/g,""),b=new Uint8Array(s.length+1);
       if(s&&w.readyState==1){b[0]=1;for(let n=0;n<s.length;n++)b[n+1]=s.charCodeAt(n);w.send(b)}
-      i.value="";i.style.display="none";z=0;c.focus()
-    }else{z=1;i.style.display="block";i.focus()}
+      i.value="";i.style.display="none";z=0;o();c.focus()
+    }else{o();z=1;i.style.display="block";i.focus()}
     return
   }
-  if(z&&e.code=="Escape"){e.preventDefault();i.value="";i.style.display="none";z=0;c.focus();return}
-  if(z&&e.code.startsWith("Arrow"))e.preventDefault();
+  if(z&&e.code=="Escape"){e.preventDefault();i.value="";i.style.display="none";z=0;o();c.focus();return}
+  if(z){if(e.code.startsWith("Arrow"))e.preventDefault();return}
   k[e.code]=1
 };
 onkeyup=e=>{k[e.code]=0};
 i.oninput=e=>{i.value=i.value.replace(/[^\x20-\x7e]/g,"")};
+onblur=o;
+onpagehide=o;
+document.addEventListener("visibilitychange",e=>{if(document.hidden)o()});
 (y=()=>{
   n("connecting...");w=new WebSocket(a);w.binaryType="arraybuffer";l=255;
   w.onopen=e=>n("");
@@ -66,11 +70,11 @@ i.oninput=e=>{i.value=i.value.replace(/[^\x20-\x7e]/g,"")};
 requestAnimationFrame(function f(){
   let r=navigator.getGamepads?navigator.getGamepads():[],o=g<0?0:g,b=r[o],h=0,
   lx=b?b.axes[0]||0:0,ly=b?b.axes[1]||0:0,t=.35;
-  h|=k.ArrowUp||!z&&k.KeyW||b&&(b.buttons[12]?.pressed||ly<=-t)?1:0;
-  h|=k.ArrowDown||!z&&k.KeyS||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
-  h|=k.ArrowLeft||!z&&k.KeyA||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
-  h|=k.ArrowRight||!z&&k.KeyD||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
-  h|=!z&&k.Space||b&&b.buttons[9]?.pressed?16:0;
+  h|=!z&&(k.ArrowUp||k.KeyW)||b&&(b.buttons[12]?.pressed||ly<=-t)?1:0;
+  h|=!z&&(k.ArrowDown||k.KeyS)||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
+  h|=!z&&(k.ArrowLeft||k.KeyA)||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
+  h|=!z&&(k.ArrowRight||k.KeyD)||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
+  h|=!z&&(k.Space||k.KeyL)||b&&b.buttons[9]?.pressed?16:0;
   h|=!z&&(k.KeyZ||k.KeyJ)||b&&b.buttons[0]?.pressed?32:0;
   h|=!z&&(k.KeyX||k.KeyK)||b&&b.buttons[1]?.pressed?64:0;
   if(w.readyState==1&&h!=l){w.send(new Uint8Array([0,h]));l=h}
