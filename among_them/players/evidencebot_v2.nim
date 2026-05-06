@@ -4173,8 +4173,12 @@ when defined(evidencebotLibrary):
     result = bot.decideNextMask()
     bot.lastMask = result
 
-  proc nottoodumb_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
-    ## Creates a persistent Nim-backed NotTooDumb policy and returns its handle.
+  proc evidencebot_v2_abi_version*(): cint {.exportc, dynlib.} =
+    ## Must match ``EVIDENCEBOT_V2_ABI_VERSION`` in ``build_evidencebot_v2.py``.
+    1
+
+  proc evidencebot_v2_new_policy*(numAgents: cint): cint {.exportc, dynlib.} =
+    ## Creates a persistent Nim-backed EvidenceBot v2 policy and returns its handle.
     let count = max(1, int(numAgents))
     var policy = NotTooDumbPolicy(bots: newSeq[Bot](count))
     for i in 0 ..< count:
@@ -4182,7 +4186,7 @@ when defined(evidencebotLibrary):
     NotTooDumbPolicies.add(policy)
     cint(NotTooDumbPolicies.len - 1)
 
-  proc nottoodumb_step_batch*(
+  proc evidencebot_v2_step_batch*(
     handle: cint,
     agentIds: ptr UncheckedArray[int32],
     numAgentIds: cint,
@@ -4193,7 +4197,7 @@ when defined(evidencebotLibrary):
     observations: pointer,
     actions: pointer
   ) {.exportc, dynlib.} =
-    ## Steps a batch of unpacked pixel observations into CoGames action indices.
+    ## Steps a batch of unpacked pixel observations into CoGames action indices (EvidenceBot v2).
     if handle < 0 or int(handle) >= NotTooDumbPolicies.len:
       return
     if observations.isNil or actions.isNil or agentIds.isNil:
