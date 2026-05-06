@@ -2823,7 +2823,7 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   if sim.phase == GameOver:
     return
   if timeLimitReached:
-    logGameEvent(roleText(winner) & " win: time limit reached")
+    logGameEvent("draw: time limit reached")
   else:
     logGameEvent(roleText(winner) & " win")
   sim.phase = GameOver
