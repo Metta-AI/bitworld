@@ -14,7 +14,7 @@ import {
   colorFromCharName,
   hasColorExchangeSucceeded,
   hasRoleExchangeSucceeded,
-  psychopompCountForRound,
+  hostageCountForRound,
   popNextShoutDraft,
   popNextWhisperDraft,
 } from "./game_knowledge.js";
@@ -215,8 +215,8 @@ export function policyTick(
     case "whisper":
       tasks = whisperPolicy(ctx, tasks, mem);
       break;
-    case "psychopomp_select":
-      tasks = psychopompSelectPolicy(ctx, tasks, mem);
+    case "hostage_select":
+      tasks = hostageSelectPolicy(ctx, tasks, mem);
       break;
     case "waiting_entry":
       break;
@@ -730,10 +730,10 @@ function defaultWhisperAction(player: GameKnowledge): "C.OFFER" | "R.OFFER" | nu
 }
 
 // ---------------------------------------------------------------------------
-// Psychopomp select policy
+// Hostage select policy
 // ---------------------------------------------------------------------------
 
-function psychopompSelectPolicy(
+function hostageSelectPolicy(
   ctx: PolicyContext,
   tasks: TaskInstance[],
   mem: PolicyMemory,
@@ -742,11 +742,11 @@ function psychopompSelectPolicy(
   const tick = player.tick;
 
   if (player.amLeader) {
-    if (!bot.psychopompPrecommit) {
-      if (strategy.psychopompTargets && strategy.psychopompTargets.length > 0) {
-        bot.psychopompPrecommit = strategy.psychopompTargets.slice(0, psychopompCount(player));
+    if (!bot.hostagePrecommit) {
+      if (strategy.hostageTargets && strategy.hostageTargets.length > 0) {
+        bot.hostagePrecommit = strategy.hostageTargets.slice(0, hostageCount(player));
       } else {
-        bot.psychopompPrecommit = pickRandomPsychopomps(player);
+        bot.hostagePrecommit = pickRandomHostages(player);
       }
     }
   } else {
@@ -761,7 +761,7 @@ function psychopompSelectPolicy(
   return tasks;
 }
 
-function pickRandomPsychopomps(player: GameKnowledge): string[] {
+function pickRandomHostages(player: GameKnowledge): string[] {
   const myTeam = player.myTeam;
   const inRoom = Array.from(player.players.values()).filter(p =>
     p.lastRoom === player.myRoom && p.name !== player.myCharName
@@ -773,7 +773,7 @@ function pickRandomPsychopomps(player: GameKnowledge): string[] {
   const fallback = inRoom.filter(p => p.name !== keyPartner);
   const pool = [...shuffle(knownEnemies), ...shuffle(unknowns), ...shuffle(fallback)];
   const seen = new Set<string>();
-  const count = psychopompCount(player);
+  const count = hostageCount(player);
   return pool
     .map(p => p.name)
     .filter(name => {
@@ -784,6 +784,6 @@ function pickRandomPsychopomps(player: GameKnowledge): string[] {
     .slice(0, count);
 }
 
-function psychopompCount(player: GameKnowledge): number {
-  return psychopompCountForRound(player) ?? 1;
+function hostageCount(player: GameKnowledge): number {
+  return hostageCountForRound(player) ?? 1;
 }

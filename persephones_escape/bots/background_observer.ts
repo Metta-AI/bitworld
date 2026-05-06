@@ -26,7 +26,7 @@ const OBSERVER_SYSTEM = `You are a strategic observer for an agent playing Perse
 You receive periodic game-state updates. Analyze them and update NOTES only.
 
 Rules:
-- You cannot choose direct actions, target queues, psychopomps, usurps, or menu commands.
+- You cannot choose direct actions, target queues, hostages, usurps, or menu commands.
 - Focused Decide skills read your notes later.
 - Keep notes compact, factual, and uncertainty-aware.
 - Use exact COLOR.SHAPE player names.
@@ -139,7 +139,7 @@ export class BackgroundObserver {
   private async loop(): Promise<void> {
     while (this.running && this.config.ws.readyState === WebSocket.OPEN) {
       let knowledge = this.config.getKnowledge();
-      if (knowledge.phase === "role_reveal" || knowledge.phase === "psychopomp_exchange" || knowledge.phase === "unknown") {
+      if (knowledge.phase === "role_reveal" || knowledge.phase === "hostage_exchange" || knowledge.phase === "unknown") {
         await new Promise(r => setTimeout(r, 1000));
         continue;
       }

@@ -9,18 +9,18 @@
  * All players are LLM bots.
  *
  * Available config presets (defined in game/config_presets.ts):
- *   default, fast, tiny, short, empty, simple, empty3, medium, medium6, medium12, medium12_half, medium12_3min
+ *   default, fast, tiny, short, empty, simple, empty3, medium, medium6, medium12, medium12_half
  *
  * Default config is medium12_half: dense enough to exercise real policy behavior
  * without the long wall-clock time of a full medium12 match.
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import { execFileSync, spawn, type ChildProcess } from "child_process";
+import { createServer, type Server as HttpServer } from "http";
+import { spawn, type ChildProcess } from "child_process";
 import { argv } from "process";
 import { mkdirSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { Phase, Team, Role, type InputState, type GameConfig } from "../game/types.js";
 import { DEFAULT_GAME_CONFIG, TARGET_FPS, LOBBY_WAIT_TICKS, playerCountFromConfig } from "../game/constants.js";
@@ -68,13 +68,6 @@ interface MatchResult {
   llmRole: string;
   llmWon: boolean;
   durationTicks: number;
-  threeMinuteRoleExchanges: number;
-  threeMinuteColorExchanges: number;
-}
-
-interface ExchangeMetrics {
-  roleExchanges: number;
-  colorExchanges: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,75 +83,6 @@ interface ClientState {
 }
 
 const PENDING = 0x7fffffff;
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function listeningPids(port: number): number[] {
-  if (!Number.isInteger(port) || port <= 0) return [];
-  try {
-    const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf-8" }).trim();
-    if (!out) return [];
-    return out
-      .split(/\s+/)
-      .map(pid => Number(pid))
-      .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
-  } catch {
-    return [];
-  }
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function killExistingPortListener(port: number): void {
-  const pids = listeningPids(port);
-  if (pids.length === 0) return;
-
-  console.log(`Port ${port} already has listener(s): ${pids.join(", ")}. Terminating before harness startup.`);
-  for (const pid of pids) {
-    try { process.kill(pid, "SIGTERM"); } catch { /* process may already be gone */ }
-  }
-
-  for (let i = 0; i < 20; i++) {
-    if (listeningPids(port).length === 0) return;
-    sleepSync(50);
-  }
-
-  const remaining = listeningPids(port);
-  if (remaining.length === 0) return;
-  console.log(`Port ${port} still occupied by ${remaining.join(", ")}. Forcing termination.`);
-  for (const pid of remaining) {
-    try { process.kill(pid, "SIGKILL"); } catch { /* process may already be gone */ }
-  }
-}
-
-function sendHtml(res: ServerResponse, file: string): void {
-  const path = join(__dirname, "..", "clients", file);
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(readFileSync(path, "utf-8"));
-}
-
-function sendScript(res: ServerResponse, file: string): void {
-  const path = join(__dirname, "..", "clients", file);
-  res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
-  res.end(readFileSync(path, "utf-8"));
-}
-
-function sendText(res: ServerResponse, status: number, value: string): void {
-  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end(value);
-}
-
-function handleHttp(req: IncomingMessage, res: ServerResponse): void {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-  if (url.pathname === "/global" || url.pathname === "/global_client.html") {
-    sendHtml(res, "global_client.html");
-  } else if (url.pathname === "/snappyjs.min.js") {
-    sendScript(res, "snappyjs.min.js");
-  } else {
-    sendText(res, 200, "Persephone test harness");
-  }
-}
 
 function runMatch(
   seed: number,
@@ -168,15 +92,13 @@ function runMatch(
   replayPath: string | null,
   llmModel: string | undefined,
   botScript: string,
-): Promise<{ winner: Team | null; llmTeam: Team | null; llmRole: Role | null; ticks: number; threeMinute: ExchangeMetrics }> {
+): Promise<{ winner: Team | null; llmTeam: Team | null; llmRole: Role | null; ticks: number }> {
   return new Promise((resolve, reject) => {
-    killExistingPortListener(port);
-
     const sim = new Sim(config, seed);
     const clients = new Map<WebSocket, ClientState>();
     const recorder = replayPath ? new ReplayRecorder(seed, replayPath, JSON.stringify({ seed, config })) : null;
 
-    const httpServer = createServer(handleHttp);
+    const httpServer = createServer();
     const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
     const globalWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
     const globalViewers = new Set<WebSocket>();
@@ -194,7 +116,6 @@ function runMatch(
 
     globalWss.on("connection", (ws) => {
       globalViewers.add(ws);
-      try { ws.send(buildGlobalFrame(sim)); } catch { /* best effort initial snapshot */ }
       ws.on("close", () => globalViewers.delete(ws));
       ws.on("error", () => { globalViewers.delete(ws); ws.close(); });
     });
@@ -245,10 +166,9 @@ function runMatch(
 
     // Spawn bot processes
     const children: ChildProcess[] = [];
-    const url = `ws://127.0.0.1:${port}/player`;
+    const url = `ws://localhost:${port}/player`;
 
-    httpServer.listen(port, "127.0.0.1", () => {
-      console.log(`  Harness viewer: http://127.0.0.1:${port}/global`);
+    httpServer.listen(port, "0.0.0.0", () => {
       for (let i = 0; i < botCount; i++) {
         const llmArgs = ["tsx", botScript, "--name", `llm_${i + 1}`, "--url", url];
         if (llmModel) llmArgs.push("--model", llmModel);
@@ -273,8 +193,6 @@ function runMatch(
     let llmPlayerIndex = -1;
     let llmTeamCapture: Team | null = null;
     let llmRoleCapture: Role | null = null;
-    let threeMinuteMetrics: ExchangeMetrics | null = null;
-    const threeMinuteTick = 3 * 60 * TARGET_FPS;
     const frameDuration = 1000 / TARGET_FPS;
     let lastTick = performance.now();
 
@@ -307,13 +225,6 @@ function runMatch(
       try { sim.step(inputs, prevInputs); } catch (e) { console.error("  step error:", e); }
       recorder?.recordTick(inputMasks);
 
-      if (!threeMinuteMetrics && sim.tickCount >= threeMinuteTick) {
-        threeMinuteMetrics = countExchangeMetrics(sim);
-        console.log(
-          `  3-minute exchanges: role=${threeMinuteMetrics.roleExchanges}, color=${threeMinuteMetrics.colorExchanges}`,
-        );
-      }
-
       // Capture LLM bot info once roles are assigned
       if (llmPlayerIndex === -1 && sim.phase === Phase.Playing) {
         for (const [, c] of clients) {
@@ -338,13 +249,7 @@ function runMatch(
           for (const [ws] of clients) { ws.close(); }
           wss.close();
           httpServer.close(() => {
-            resolve({
-              winner,
-              llmTeam: llmTeamCapture,
-              llmRole: llmRoleCapture,
-              ticks,
-              threeMinute: threeMinuteMetrics ?? countExchangeMetrics(sim),
-            });
+            resolve({ winner, llmTeam: llmTeamCapture, llmRole: llmRoleCapture, ticks });
           });
         }, 10000);
       }
@@ -372,7 +277,7 @@ function runMatch(
 
     // Safety timeout — if game doesn't end in reasonable time
     const totalRoundSecs = config.rounds.reduce((s, r) => s + r.durationSecs, 0);
-    // Account for lobby wait, role reveal, psychopomp-select (15s per round), exchange animations (3s),
+    // Account for lobby wait, role reveal, hostage-select (15s per round), exchange animations (3s),
     // reveal/gameover phases, and LLM-induced slowdown (sim may run slower than real time).
     const overhead = 60 + config.rounds.length * 25 + 30;
     const maxWaitMs = Math.ceil((totalRoundSecs + overhead) * 1.5) * 1000;
@@ -385,29 +290,11 @@ function runMatch(
         for (const [ws] of clients) ws.close();
         wss.close();
         httpServer.close(() => {
-          resolve({
-            winner: null,
-            llmTeam: llmTeamCapture,
-            llmRole: llmRoleCapture,
-            ticks: sim.tickCount,
-            threeMinute: threeMinuteMetrics ?? countExchangeMetrics(sim),
-          });
+          resolve({ winner: null, llmTeam: llmTeamCapture, llmRole: llmRoleCapture, ticks: sim.tickCount });
         });
       }
     }, maxWaitMs);
   });
-}
-
-function countExchangeMetrics(sim: Sim): ExchangeMetrics {
-  let roleExchanges = 0;
-  let colorExchanges = 0;
-  for (let i = 0; i < sim.players.length; i++) {
-    for (let j = i + 1; j < sim.players.length; j++) {
-      if (sim.players[i].sharedWith.has(j) && sim.players[j].sharedWith.has(i)) roleExchanges++;
-      if (sim.players[i].colorRevealedTo.has(j) && sim.players[j].colorRevealedTo.has(i)) colorExchanges++;
-    }
-  }
-  return { roleExchanges, colorExchanges };
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +324,7 @@ async function main() {
 
     console.log(`Match ${i + 1}/${opts.matches} (seed=${seed})...`);
 
-    const { winner, llmTeam: lt, llmRole: lr, ticks, threeMinute } = await runMatch(
+    const { winner, llmTeam: lt, llmRole: lr, ticks } = await runMatch(
       seed, config, opts.port + i, botCount, replayPath, opts.model, opts.botScript,
     );
 
@@ -451,11 +338,9 @@ async function main() {
       llmRole: lr !== null ? Role[lr] : "unknown",
       llmWon: (winner === Team.TeamA && lt === Team.TeamA) || (winner === Team.TeamB && lt === Team.TeamB),
       durationTicks: ticks,
-      threeMinuteRoleExchanges: threeMinute.roleExchanges,
-      threeMinuteColorExchanges: threeMinute.colorExchanges,
     });
 
-    console.log(`  Winner: ${winStr} | ${ticks} ticks | 3min role=${threeMinute.roleExchanges} color=${threeMinute.colorExchanges}`);
+    console.log(`  Winner: ${winStr} | ${ticks} ticks`);
 
     // Small delay between matches for port cleanup
     await new Promise(r => setTimeout(r, 1000));
@@ -476,7 +361,7 @@ async function main() {
 
   console.log("\nPer-match breakdown:");
   for (const r of results) {
-    console.log(`  #${r.matchIndex + 1} seed=${r.seed} winner=${r.winner} 3min role=${r.threeMinuteRoleExchanges} color=${r.threeMinuteColorExchanges}`);
+    console.log(`  #${r.matchIndex + 1} seed=${r.seed} winner=${r.winner}`);
   }
 }
 

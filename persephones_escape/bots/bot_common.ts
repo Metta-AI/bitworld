@@ -4,7 +4,7 @@ import { Room } from "../game/types.js";
 import {
   sendInput, sendChat, truncateChatInput, ActionQueue,
   menuSequence, COMMAND_ACTIONS,
-  psychopompSelectSequence,
+  hostageSelectSequence,
   moveToward, randomDir, randomPoint, clamp,
   type Point,
 } from "./bot_utils.js";
@@ -43,7 +43,7 @@ const VALID_COMMANDS = new Set([
   "exit_whisper", "chat",
   "leader_pass", "leader_take", "grant_entry",
   "info_shared", "start_chat", "shout",
-  "select_psychopomps", "commit_psychopomps",
+  "select_hostages", "commit_hostages",
 ]);
 
 export function parseCommand(line: string, name?: string): ParsedCommand | null {
@@ -86,7 +86,7 @@ export interface BotController {
   wanderTarget: Point | null;
   wanderTicks: number;
   lastFrame: Uint8Array | null;
-  psychopompPrecommit: string[] | null;
+  hostagePrecommit: string[] | null;
   lastSentChat: string | null;
   hasNewIncomingChat: boolean;
   nonInterruptingTasks: TaskInstance[];
@@ -145,15 +145,15 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
       if (sent) sendChat(bot.ws, sent);
       return true;
     }
-    case "select_psychopomps": {
+    case "select_hostages": {
       const indices = cmd.args.map(s => parseInt(s)).filter(n => !isNaN(n));
       if (indices.length > 0) {
         const eligible = Array.from({ length: 16 }, (_, i) => i);
-        bot.actions.push(...psychopompSelectSequence(indices, eligible));
+        bot.actions.push(...hostageSelectSequence(indices, eligible));
       }
       return true;
     }
-    case "commit_psychopomps":
+    case "commit_hostages":
       bot.actions.push(BUTTON_B, 0);
       return true;
     case "wait":

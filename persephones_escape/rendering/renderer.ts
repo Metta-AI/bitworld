@@ -148,7 +148,7 @@ function drawPlayerWorldAccoutrements(
     fb.putPixel(sx + 4, sy - 1, 8);
   }
 
-  if (p.selectedAsPsychopomp) fb.putPixel(sx + 3, sy - 1, 3);
+  if (p.selectedAsHostage) fb.putPixel(sx + 3, sy - 1, 3);
 
   if (p.inWhisper >= 0) {
     fb.putPixel(sx - 3, sy - 4, 2);
@@ -176,8 +176,8 @@ function drawPlayerWorldAccoutrements(
 
 function roundClockText(sim: Sim): string {
   const round = Math.min(sim.currentRound + 1, sim.config.rounds.length);
-  const secs = sim.phase === Phase.PsychopompSelect
-    ? Math.max(0, Math.ceil(sim.psychopompSelectTimer / TARGET_FPS))
+  const secs = sim.phase === Phase.HostageSelect
+    ? Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS))
     : sim.phase === Phase.LeaderSummit
       ? Math.max(0, Math.ceil(sim.leaderSummitTimer / TARGET_FPS))
       : Math.max(0, Math.ceil(sim.roundTimer / TARGET_FPS));
@@ -234,9 +234,10 @@ function renderWhisperView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buff
   } else if (viewer.whisperMenuOpen) {
     const cat = WHISPER_MENU[viewer.whisperMenuCat];
     if (cat) {
+      const toggled = sim.whisperToggledActions(viewerIndex);
       const itemIdx = Math.min(viewer.whisperMenuItem, cat.items.length - 1);
-      const action = whisperMenuAction(viewer.whisperMenuCat, itemIdx);
-      const label = action ? whisperMenuItemLabel(cat, itemIdx) : "";
+      const action = whisperMenuAction(viewer.whisperMenuCat, itemIdx, toggled);
+      const label = action ? whisperMenuItemLabel(cat, itemIdx, toggled.has(cat.items[itemIdx].action)) : "";
       const enabled = action ? sim.whisperActionEnabled(viewerIndex, action) : false;
       const color: uint8 = enabled ? 2 : 1;
       fb.drawText(`(${cat.label}) ${label}`, bottomText.x, bottomText.y, color);
@@ -246,18 +247,17 @@ function renderWhisperView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buff
     fb.drawText(`SUMMIT ${secs}S  ENTER:MSG`, bottomText.x, bottomText.y, 8);
   } else {
     fb.drawText("H/I:TAB L:EXIT K:ACT", bottomText.x, bottomText.y, 1);
-  }
-
-  const roleOfferers = sim.whisperShareOfferers(viewerIndex);
-  const colorOfferers = sim.whisperColorOfferers(viewerIndex);
-  const hasLeaderOffer = sim.whisperHasLeaderOffer(viewerIndex);
-  const offer = FRAME_REGIONS.whisper.offerIndicator();
-  if (hasLeaderOffer) {
-    fb.drawText("L!", offer.x, offer.y, 8);
-  } else if (roleOfferers.length > 0) {
-    fb.drawText("R!", offer.x, offer.y, 8);
-  } else if (colorOfferers.length > 0) {
-    fb.drawText("C!", offer.x, offer.y, 8);
+    const roleOfferers = sim.whisperShareOfferers(viewerIndex);
+    const colorOfferers = sim.whisperColorOfferers(viewerIndex);
+    const hasLeaderOffer = sim.whisperHasLeaderOffer(viewerIndex);
+    const offer = FRAME_REGIONS.whisper.offerIndicator();
+    if (hasLeaderOffer) {
+      fb.drawText("L!", offer.x, offer.y, 8);
+    } else if (roleOfferers.length > 0) {
+      fb.drawText("R!", offer.x, offer.y, 8);
+    } else if (colorOfferers.length > 0) {
+      fb.drawText("C!", offer.x, offer.y, 8);
+    }
   }
 
   const msgArea = FRAME_REGIONS.whisper.messageArea();
@@ -302,10 +302,10 @@ function renderShoutView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer
   fb.clear(0);
 
   fb.fillRect(0, 0, SCREEN_WIDTH, 9, 0);
-  const leaderPsychopomp = sim.phase === Phase.PsychopompSelect && viewer.isLeader;
+  const leaderHostage = sim.phase === Phase.HostageSelect && viewer.isLeader;
   fb.drawText(roundClockText(sim), 2, 2, 2);
-  if (sim.phase === Phase.PsychopompSelect) {
-    const secs = Math.max(0, Math.ceil(sim.psychopompSelectTimer / TARGET_FPS));
+  if (sim.phase === Phase.HostageSelect) {
+    const secs = Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS));
     fb.drawText(`SELECT ${secs}S`, 42, 2, 8);
   } else {
     fb.drawText("SHOUT", 42, 2, 2);
@@ -316,10 +316,10 @@ function renderShoutView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer
 
   let votingBottomY = 10;
 
-  if (leaderPsychopomp) {
-    const eligible = sim.eligiblePsychopomps(viewer.room);
-    const cursor = viewer.room === Room.RoomA ? sim.psychopompCursorA : sim.psychopompCursorB;
-    const selected = viewer.room === Room.RoomA ? sim.psychopompsSelectedA : sim.psychopompsSelectedB;
+  if (leaderHostage) {
+    const eligible = sim.eligibleHostages(viewer.room);
+    const cursor = viewer.room === Room.RoomA ? sim.hostageCursorA : sim.hostageCursorB;
+    const selected = viewer.room === Room.RoomA ? sim.hostagesSelectedA : sim.hostagesSelectedB;
     const committed = viewer.room === Room.RoomA ? sim.committedA : sim.committedB;
 
     if (eligible.length > 0 && !committed) {
@@ -350,7 +350,7 @@ function renderShoutView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer
         if (k === cursor % eligible.length) fb.drawRect(cx, cy, cellW, cellH, 2);
       }
 
-      const label = `${selected.length}/${sim.psychopompsPerRoom} PSYCHOPOMPS`;
+      const label = `${selected.length}/${sim.hostagesPerRoom} HOSTAGES`;
       fb.drawText(label, gridX + Math.floor((gridW - fb.measureText(label)) / 2), gridY + gridH + 2, 2);
       votingBottomY = gridY + gridH + 10;
     } else if (committed) {
@@ -435,7 +435,7 @@ function renderMinimap(sim: Sim, fb: Framebuffer, viewerIndex: number) {
   }
 
   const showAll = sim.phase === Phase.Lobby || sim.phase === Phase.Reveal || sim.phase === Phase.GameOver;
-  const useFog = sim.phase === Phase.Playing || sim.phase === Phase.PsychopompSelect || sim.phase === Phase.LeaderSummit;
+  const useFog = sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect || sim.phase === Phase.LeaderSummit;
   const camView = playerView(sim, viewerIndex);
   const n = sim.players.length;
   const mmOrder: number[] = [];
@@ -488,9 +488,9 @@ function renderHud(
       }
       break;
     }
-    case Phase.PsychopompSelect: {
+    case Phase.HostageSelect: {
       const committed = viewer.room === Room.RoomA ? sim.committedA : sim.committedB;
-      const secs = Math.max(0, Math.ceil(sim.psychopompSelectTimer / TARGET_FPS));
+      const secs = Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS));
       topBar.drawText(roundClockText(sim), 2, 2, 2);
       topBar.drawText(`SELECT ${secs}S`, 42, 2, viewer.isLeader && !committed ? 8 : 1);
       if (chatStrip) {
@@ -533,7 +533,7 @@ function renderHud(
       }
       break;
     }
-    case Phase.PsychopompExchange:
+    case Phase.HostageExchange:
       topBar.drawText(roundClockText(sim), 2, 2, 2);
       topBar.drawText("EXCHANGING", 42, 2, 8);
       break;
@@ -556,7 +556,7 @@ function renderHud(
   const barY = bottomBar.y0;
   bottomBar.fillRect(bottomBar.x0, barY, bottomBar.w, bottomBar.h, 0);
 
-  if (sim.phase === Phase.Playing || sim.phase === Phase.PsychopompSelect || sim.phase === Phase.LeaderSummit) {
+  if (sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect || sim.phase === Phase.LeaderSummit) {
     if (viewer.pendingWhisperEntry >= 0) {
       bottomBar.drawText("WAITING...", 2, barY + 2, 8);
       const unread = sim.shoutUnreadCount(viewerIndex);
@@ -718,7 +718,7 @@ function renderIntroSchedule(sim: Sim, fb: Framebuffer, secs: number): Buffer {
 
   fb.drawText("ROUND SCHEDULE", cx("ROUND SCHEDULE"), y, 2); y += 12;
 
-  fb.drawText("ROUND  TIME  PSYCHOPOMP", 10, y, 1); y += 8;
+  fb.drawText("ROUND  TIME  HOSTAGE", 10, y, 1); y += 8;
 
   const rounds = sim.config.rounds;
   for (let i = 0; i < Math.min(rounds.length, 5); i++) {
@@ -726,7 +726,7 @@ function renderIntroSchedule(sim: Sim, fb: Framebuffer, secs: number): Buffer {
     const mins = Math.floor(r.durationSecs / 60);
     const rsecs = r.durationSecs % 60;
     const timeStr = `${mins}:${rsecs.toString().padStart(2, "0")}`;
-    const line = `  ${i + 1}      ${timeStr}     ${r.psychopomps}`;
+    const line = `  ${i + 1}      ${timeStr}     ${r.hostages}`;
     fb.drawText(line, 10, y, 2); y += 8;
   }
 
@@ -852,7 +852,7 @@ function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer 
   const cx = (text: string) => Math.floor((SCREEN_WIDTH - fb.measureText(text)) / 2);
 
   // Title
-  const title = "PSYCHOPOMP EXCHANGE";
+  const title = "HOSTAGE EXCHANGE";
   fb.drawText(title, cx(title), 14, 8);
 
   const departing = inRoomA ? sim.exchangeFromA : sim.exchangeFromB;
@@ -872,7 +872,7 @@ function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer 
   }
   y += 14;
 
-  // Both psychopomp groups
+  // Both hostage groups
   fb.drawText("DEPARTING", 8, y, 8);
   y += 7;
   for (const h of departing) {
@@ -890,13 +890,13 @@ function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer 
   // Bottom bar
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
   fb.fillRect(0, barY, SCREEN_WIDTH, BOTTOM_BAR_H, 0);
-  const isPsychopomp = sim.exchangeFromA.some(h => h.pi === viewerIndex) || sim.exchangeFromB.some(h => h.pi === viewerIndex);
-  if (isPsychopomp) {
+  const isHostage = sim.exchangeFromA.some(h => h.pi === viewerIndex) || sim.exchangeFromB.some(h => h.pi === viewerIndex);
+  if (isHostage) {
     fb.drawText("YOU ARE BEING EXCHANGED", 2, barY + 2, 8);
   } else if (isLeader) {
-    fb.drawText("ESCORTING PSYCHOPOMPS", 2, barY + 2, 2);
+    fb.drawText("ESCORTING HOSTAGES", 2, barY + 2, 2);
   } else {
-    fb.drawText("PSYCHOPOMPS EXCHANGING...", 2, barY + 2, 1);
+    fb.drawText("HOSTAGES EXCHANGING...", 2, barY + 2, 1);
   }
 
   fb.pack();
@@ -918,7 +918,7 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     return renderIntro(sim, fb, viewerIndex);
   }
 
-  if (sim.phase === Phase.PsychopompExchange) {
+  if (sim.phase === Phase.HostageExchange) {
     return renderExchange(sim, fb, viewerIndex);
   }
 
@@ -926,7 +926,7 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     return renderInfoScreen(sim, fb, viewerIndex);
   }
 
-  if (viewer.shoutOpen || (sim.phase === Phase.PsychopompSelect && viewer.isLeader)) {
+  if (viewer.shoutOpen || (sim.phase === Phase.HostageSelect && viewer.isLeader)) {
     return renderShoutView(sim, fb, viewerIndex);
   }
 
@@ -938,7 +938,7 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
   const topBar = fb.region("hud-top", 0, 0, SCREEN_WIDTH, 9);
   const bottomBar = fb.region("hud-bottom", 0, barY, SCREEN_WIDTH, BOTTOM_BAR_H);
-  const chatStrip = (sim.phase === Phase.Playing || sim.phase === Phase.PsychopompSelect || sim.phase === Phase.LeaderSummit)
+  const chatStrip = (sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect || sim.phase === Phase.LeaderSummit)
     ? fb.region("hud-chat-strip", 0, barY - 7, SCREEN_WIDTH, 7)
     : null;
   const drawMinimap = sim.phase !== Phase.Lobby;
@@ -962,7 +962,7 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
   }
 
   // Fog of war — compute before drawing players so we can hide shadowed ones
-  const useFog = sim.phase === Phase.Playing || sim.phase === Phase.PsychopompSelect || sim.phase === Phase.LeaderSummit;
+  const useFog = sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect || sim.phase === Phase.LeaderSummit;
   if (useFog) {
     sim.castShadows(viewer.room, view.originMx, view.originMy, cameraX, cameraY);
     const base = sim.floorColor(room);

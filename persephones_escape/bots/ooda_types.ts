@@ -1,6 +1,5 @@
 import { parseRosterScreen } from "./frame_parser.js";
 import type { Point } from "./bot_utils.js";
-import type { ParsedUiState, UiNavigationState, WhisperAction } from "./ui_state.js";
 
 export interface FrameObservation {
   frame: Uint8Array;
@@ -9,7 +8,7 @@ export interface FrameObservation {
 
 export type FrameDecision =
   | { kind: "input"; mask: number; reason: string }
-  | { kind: "psychopomp_precommit"; frame: Uint8Array }
+  | { kind: "hostage_precommit"; frame: Uint8Array }
   | { kind: "run_activity"; frame: Uint8Array };
 
 export type BotLogFn = (kind: string, data?: Record<string, unknown>) => void;
@@ -17,8 +16,7 @@ export type BotLogFn = (kind: string, data?: Record<string, unknown>) => void;
 export type AtomicAction =
   | { kind: "input"; masks: number[]; label: string; index?: number }
   | { kind: "chat"; text: string; label: string }
-  | { kind: "whisper_action"; action: WhisperAction; label: string; target?: string; ui?: UiNavigationState; stage?: "menu" | "share_picker" | "release_done" }
-  | { kind: "info_check"; label: string; ui?: UiNavigationState; stage?: "open" | "read" | "close" | "release_done"; startedTick: number; readTicks: number; originSurface?: ParsedUiState["surface"] }
+  | { kind: "whisper_action"; action: "ROLE" | "C.OFFER" | "C.ACCPT" | "R.OFFER" | "R.ACCPT" | "PASS" | "TAKE" | "GRANT" | "EXIT"; label: string }
   | {
       kind: "usurp_vote";
       target: string;
@@ -58,8 +56,6 @@ export interface PursuePlayerActivity extends ActivityBase {
   mode: PursuePlayerMode;
   approach: PursuePlayerApproach;
   createdOwnWhisperTick: number | null;
-  enteredWhisperTick: number | null;
-  waitingEntryTick: number | null;
   grantDeadlineTick: number | null;
   lastSawTargetTick: number;
   offerSentTick: number | null;
@@ -69,9 +65,6 @@ export interface PursuePlayerActivity extends ActivityBase {
   privateSpotTick: number;
   privateSpotShoutTick: number;
   nearTargetWaitTick: number;
-  openAttemptStartTick: number | null;
-  openAttemptCount: number;
-  clusterEscapeStartTick: number | null;
 }
 
 export type Activity = WalkToActivity | PursuePlayerActivity;

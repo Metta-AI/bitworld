@@ -7,7 +7,7 @@ import {
 import { Room } from "../game/types.js";
 import {
   sendInput, sendChat, PACKED_FRAME_BYTES, unpackFrame,
-  ActionQueue, psychopompSelectSequence,
+  ActionQueue, hostageSelectSequence,
   moveToward, randomDir, randomPoint, distTo, isNearby,
   type Point,
 } from "./bot_utils.js";
@@ -49,9 +49,9 @@ function botStep(bot: BotState) {
   if (bot.menuCooldown > 0) bot.menuCooldown--;
   if (bot.shareCooldown > 0) bot.shareCooldown--;
 
-  // Every 2 seconds, try psychopomp-select actions (only leaders respond)
+  // Every 2 seconds, try hostage-select actions (only leaders respond)
   if (bot.tick % (TARGET_FPS * 2) === 0) {
-    doPsychopompSelect(bot);
+    doHostageSelect(bot);
     if (!bot.actions.empty) {
       sendInput(bot.ws, bot.actions.shift()!);
       return;
@@ -120,11 +120,11 @@ function doMenuAction(bot: BotState) {
 }
 
 // ---------------------------------------------------------------------------
-// Psychopomp selection — pick random psychopomps and commit
+// Hostage selection — pick random hostages and commit
 // ---------------------------------------------------------------------------
 
-function doPsychopompSelect(bot: BotState) {
-  // Open shout (via comm menu SHOUT), pick psychopomps, commit
+function doHostageSelect(bot: BotState) {
+  // Open shout (via comm menu SHOUT), pick hostages, commit
   const seq: number[] = [];
   seq.push(BUTTON_SELECT, 0);
   const picks = 1 + Math.floor(Math.random() * 2);

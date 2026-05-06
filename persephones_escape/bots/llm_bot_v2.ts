@@ -66,10 +66,10 @@ const bot: BotController = {
   wanderTarget: null,
   wanderTicks: 0,
   lastFrame: null,
-  get psychopompPrecommit() { return knowledge.action.psychopompPrecommit; },
-  set psychopompPrecommit(value: string[] | null) {
-    knowledge.action.psychopompPrecommit = value ?? [];
-    knowledge.action.psychopompPrecommitRound = knowledge.matchFacts.currentRound;
+  get hostagePrecommit() { return knowledge.action.hostagePrecommit; },
+  set hostagePrecommit(value: string[] | null) {
+    knowledge.action.hostagePrecommit = value ?? [];
+    knowledge.action.hostagePrecommitRound = knowledge.matchFacts.currentRound;
   },
   get lastSentChat() { return knowledge.action.lastSentChat; },
   set lastSentChat(value: string | null) { knowledge.action.lastSentChat = value; },
@@ -101,7 +101,7 @@ const actuator = new OodaActuator({ ws, knowledge, bot, botName, logEvent });
 const decider = new OodaDecider({
   knowledge,
   bot,
-  psychopompStatus: () => actuator.psychopompStatus(),
+  hostageStatus: () => actuator.hostageStatus(),
   logEvent,
 });
 

@@ -49,7 +49,7 @@ const bot: BotController = {
   ws, actions: new ActionQueue(), player, name: botName,
   movementTarget: null, wandering: true,
   wanderTarget: null, wanderTicks: 0, lastFrame: null,
-  psychopompPrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
+  hostagePrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
   nonInterruptingTasks: [],
 };
 
@@ -102,7 +102,7 @@ function runPolicy(): void {
     return;
   }
 
-  if (player.phase === "playing" || player.phase === "psychopomp_select" || player.phase === "leader_summit") {
+  if (player.phase === "playing" || player.phase === "hostage_select" || player.phase === "leader_summit") {
     // If someone is nearby, open whisper immediately.
     if (player.nearbyNames.length > 0) {
       exec("open_whisper");

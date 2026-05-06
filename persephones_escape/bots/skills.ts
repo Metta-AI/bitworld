@@ -10,7 +10,7 @@ import {
   type GameKnowledge,
   type KnowledgeNotes,
   type ResolvedPolicy,
-  psychopompCountForRound,
+  hostageCountForRound,
   queueCommunicationDraft,
   mergeKnowledgeNotes,
   formatNotes,
@@ -210,26 +210,24 @@ Notes: ${formatNotes(knowledge.notes)}`,
   return { mode: obj.mode, reason: typeof obj.reason === "string" ? obj.reason.slice(0, 120) : "decide" };
 }
 
-const PSYCHOPOMP_SYSTEM = `Choose concrete psychopomp targets to send to the other room.
-Return only a JSON array of valid player names, or null only if there are no valid candidates.
-Do not use team/enemy priority buckets as hard filters. Known team, role, partner, and message context are strategy signals, but any in-room non-self candidate can be a valid psychopomp.
-When there is no clear strategic reason, choose from the valid candidates anyway instead of returning null.`;
+const HOSTAGE_SYSTEM = `Decide which players to send as hostages. Return a JSON array of names or null.
+Do not send known teammates or confirmed key partner. Prefer known enemies, then unknowns.`;
 
-export async function decidePsychopomps(
+export async function decideHostages(
   config: SkillConfig,
   knowledge: GameKnowledge,
 ): Promise<string[] | null> {
-  const count = psychopompCountForRound(knowledge) ?? 1;
+  const count = hostageCountForRound(knowledge) ?? 1;
   const inRoom = Array.from(knowledge.players.values())
     .filter(p => p.lastRoom === knowledge.myRoom && p.name !== knowledge.myCharName);
   const valid = new Set(inRoom.map(p => p.name));
   const raw = await callSkillLLM(config, {
-    systemPrompt: PSYCHOPOMP_SYSTEM,
+    systemPrompt: HOSTAGE_SYSTEM,
     userPrompt: `Self: ${JSON.stringify(knowledge.self)}
 Need ${count}.
 Candidates: ${JSON.stringify(inRoom)}
 Notes: ${formatNotes({ ...knowledge.notes, players: Object.fromEntries(inRoom.map(p => [p.name, knowledge.notes.players[p.name]]).filter(([, v]) => !!v)) })}
-Strategy notes: ${JSON.stringify(knowledge.llmNotes.decisions.psychopomp)}`,
+Strategy notes: ${JSON.stringify(knowledge.llmNotes.decisions.hostage)}`,
     maxTokens: 120,
   });
   if (raw?.trim().toLowerCase() === "null") return null;
@@ -239,7 +237,7 @@ Strategy notes: ${JSON.stringify(knowledge.llmNotes.decisions.psychopomp)}`,
   return chosen.length > 0 ? chosen : null;
 }
 
-const USURP_SYSTEM = `Decide whether to usurp before psychopomp select. Return JSON or null:
+const USURP_SYSTEM = `Decide whether to usurp before hostage select. Return JSON or null:
 {"shouldUsurp":true|false,"target":"PLAYER.NAME"|null,"reason":"short"}
 Usurp can be useful at any point. Recommend it when the current leader is harmful, unresponsive, or a better leader is available.`;
 
@@ -266,7 +264,7 @@ Strategy notes: ${JSON.stringify(knowledge.llmNotes.decisions.usurp)}`,
 }
 
 const INTERPRET_NOTES_SYSTEM = `Interpret game messages and update notes only. Return JSON notes update or null.
-Do not output action queues, psychopomps, usurps, or targets.`;
+Do not output action queues, hostages, usurps, or targets.`;
 
 export async function interpretMessagesToNotes(
   config: SkillConfig,
@@ -330,7 +328,7 @@ const COMMUNICATION_SYSTEM = `Choose short useful in-game messages for Persephon
 Return JSON or null:
 {"shout":["..."],"whisper":[{"target":"R.CRCL","text":"..."}]}
 Only write messages that are immediately useful. Keep each message <=40 chars.
-Use shouts for room coordination, meetups, psychopomp requests, and usurp votes.
+Use shouts for room coordination, meetups, hostage requests, and usurp votes.
 Use whisper messages for occupants/known reachable players. Do not invent game facts.`;
 
 export async function decideCommunication(
@@ -349,7 +347,7 @@ Current strategy: ${JSON.stringify({
     color: strategy.pursueColorExchangeWithPlayer,
     role: strategy.pursueRoleExchangeWithPlayer,
     meetPoint: strategy.meetPoint,
-    psychopompTargets: strategy.psychopompTargets,
+    hostageTargets: strategy.hostageTargets,
     shouldUsurp: strategy.shouldUsurp,
     usurpTarget: strategy.usurpTarget,
 })}
@@ -386,14 +384,14 @@ Return JSON or null.`;
 }
 
 export class SkillTriggerManager {
-  private psychopompDecisionTick = -Infinity;
+  private hostageDecisionTick = -Infinity;
   private usurpDecisionTick = -Infinity;
   private exchangeDecisionTick = -Infinity;
   private interpretTick = -Infinity;
   private communicationTick = -Infinity;
   private talkPrefetchPending = false;
   private exchangePending = false;
-  private psychopompPending = false;
+  private hostagePending = false;
   private usurpPending = false;
   private interpretPending = false;
   private communicationPending = false;
@@ -430,16 +428,16 @@ export class SkillTriggerManager {
 
     if (
       knowledge.amLeader &&
-      (knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "psychopomp_select") &&
-      tick - this.psychopompDecisionTick > 120 &&
-      !this.psychopompPending
+      (knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "hostage_select") &&
+      tick - this.hostageDecisionTick > 120 &&
+      !this.hostagePending
     ) {
-      this.psychopompDecisionTick = tick;
-      this.psychopompPending = true;
-      decidePsychopomps(this.config, knowledge).then(targets => {
-        this.psychopompPending = false;
-        updateDecisionMemory(knowledge, "psychopomp", targets ? `psychopomp targets: ${targets.join(", ")}` : "psychopomp decide null");
-        if (targets) onStrategyUpdate({ psychopompTargets: targets });
+      this.hostageDecisionTick = tick;
+      this.hostagePending = true;
+      decideHostages(this.config, knowledge).then(targets => {
+        this.hostagePending = false;
+        updateDecisionMemory(knowledge, "hostage", targets ? `hostage targets: ${targets.join(", ")}` : "hostage decide null");
+        if (targets) onStrategyUpdate({ hostageTargets: targets });
       });
     }
 
@@ -468,7 +466,7 @@ export class SkillTriggerManager {
 
     if (
       !knowledge.amLeader &&
-      (knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "psychopomp_select") &&
+      (knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "hostage_select") &&
       tick - this.usurpDecisionTick > 120 &&
       !this.usurpPending
     ) {

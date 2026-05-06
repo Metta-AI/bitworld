@@ -39,7 +39,7 @@ export class Sim {
   lobbyCountdown = 0;
   currentRound = 0;
   roundTimer = 0;
-  psychopompsPerRoom = 1;
+  hostagesPerRoom = 1;
   revealTimer = 0;
   introPanel = 0;
   introReady = new Set<number>();
@@ -50,13 +50,13 @@ export class Sim {
 
   leaderA = -1;
   leaderB = -1;
-  psychopompsSelectedA: number[] = [];
-  psychopompsSelectedB: number[] = [];
-  psychopompCursorA = 0;
-  psychopompCursorB = 0;
+  hostagesSelectedA: number[] = [];
+  hostagesSelectedB: number[] = [];
+  hostageCursorA = 0;
+  hostageCursorB = 0;
   committedA = false;
   committedB = false;
-  psychopompSelectTimer = 0;
+  hostageSelectTimer = 0;
 
   leaderSummitTimer = 0;
   leaderSummitWhisperId = -1;
@@ -349,7 +349,7 @@ export class Sim {
     if (!player) return;
 
     if (player.infoScreen !== "none") {
-      if (player.infoScreen === "shared" && (this.phase === Phase.Playing || this.phase === Phase.PsychopompSelect || this.phase === Phase.LeaderSummit)) {
+      if (player.infoScreen === "shared" && (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit)) {
         if (input.left && !prevInput.left) { this.cycleSocialSurface(pi, -1); return; }
         if (input.right && !prevInput.right) { this.cycleSocialSurface(pi, 1); return; }
       }
@@ -363,7 +363,7 @@ export class Sim {
       return;
     }
 
-    if (player.shoutOpen || (this.phase === Phase.PsychopompSelect && player.isLeader)) {
+    if (player.shoutOpen) {
       this.applyShoutInput(pi, input, prevInput);
       return;
     }
@@ -404,7 +404,7 @@ export class Sim {
 
     // A creates a new whisper only. Joining existing whispers is explicit via B.
     if (pressed(input, prevInput, MENU_DEFS.whisper.selectButton)) {
-      if (this.phase === Phase.Playing || this.phase === Phase.PsychopompSelect || this.phase === Phase.LeaderSummit) {
+      if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
         const nearbyWhisperer = this.findNearbyWhisperPlayer(pi);
         if (nearbyWhisperer >= 0) {
           this.setNotice(pi, "YOU'LL BE OVERHEARD");
@@ -429,7 +429,7 @@ export class Sim {
 
     // SELECT opens room shout/info surface directly. Left/right swaps shout/info.
     if (pressed(input, prevInput, MENU_DEFS.shout.openButton!)) {
-      if (this.phase === Phase.Playing || this.phase === Phase.PsychopompSelect || this.phase === Phase.LeaderSummit) {
+      if (this.phase === Phase.Playing || this.phase === Phase.HostageSelect || this.phase === Phase.LeaderSummit) {
         this.openShoutSurface(pi);
       }
     }
@@ -515,7 +515,8 @@ export class Sim {
       player.whisperMenuItem = nav.itemIdx;
 
       if (pressed(input, prevInput, WHISPER_SELECT_BUTTON)) {
-        const action = whisperMenuAction(player.whisperMenuCat, player.whisperMenuItem);
+        const toggledSet = this.whisperToggledActions(pi);
+        const action = whisperMenuAction(player.whisperMenuCat, player.whisperMenuItem, toggledSet);
         if (action && this.whisperActionEnabled(pi, action)) {
           this.whisperActionSelect(pi, action);
           player.whisperMenuOpen = false;
@@ -565,7 +566,7 @@ export class Sim {
     const player = this.players[pi];
     const msgs = this.shoutMessagesForPlayer(pi);
     const gDef = MENU_DEFS.shout;
-    const hDef = MENU_DEFS.psychopomp;
+    const hDef = MENU_DEFS.hostage;
 
     if (gDef.closeButton && pressed(input, prevInput, gDef.closeButton)) {
       player.shoutLastRead = (player.room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB).length;
@@ -574,9 +575,9 @@ export class Sim {
       return;
     }
 
-    const leaderPsychopomp = this.phase === Phase.PsychopompSelect && player.isLeader;
+    const leaderHostage = this.phase === Phase.HostageSelect && player.isLeader;
 
-    if (!leaderPsychopomp) {
+    if (!leaderHostage) {
       if (input.left && !prevInput.left) { this.cycleSocialSurface(pi, -1); return; }
       if (input.right && !prevInput.right) { this.cycleSocialSurface(pi, 1); return; }
       if (pressed(input, prevInput, MENU_DEFS.whisper.openButton!)) {
@@ -588,15 +589,15 @@ export class Sim {
       }
     }
 
-    if (leaderPsychopomp) {
+    if (leaderHostage) {
       const committed = player.room === Room.RoomA ? this.committedA : this.committedB;
       if (!committed) {
-        const eligible = this.eligiblePsychopomps(player.room);
-        const cursor = player.room === Room.RoomA ? this.psychopompCursorA : this.psychopompCursorB;
+        const eligible = this.eligibleHostages(player.room);
+        const cursor = player.room === Room.RoomA ? this.hostageCursorA : this.hostageCursorB;
         const newCursor = navigateMenu(input, prevInput, hDef, eligible.length, cursor);
-        if (player.room === Room.RoomA) this.psychopompCursorA = newCursor;
-        else this.psychopompCursorB = newCursor;
-        if (pressed(input, prevInput, hDef.selectButton)) this.handlePsychopompToggle(pi);
+        if (player.room === Room.RoomA) this.hostageCursorA = newCursor;
+        else this.hostageCursorB = newCursor;
+        if (pressed(input, prevInput, hDef.selectButton)) this.handleHostageToggle(pi);
         if (pressed(input, prevInput, MENU_DEFS.whisper.openButton!)) {
           if (player.room === Room.RoomA) this.committedA = true;
           else this.committedB = true;
@@ -642,32 +643,22 @@ export class Sim {
   // ---- Whisper action items (B-button in whisper) ----
 
   private executeColorSwap(cr: { colorOffers: Set<number>; messages: any[]; occupants: Set<number> }, pi: number, target: number) {
-    if (this.players[pi].colorRevealedTo.has(target) && this.players[target].colorRevealedTo.has(pi)) {
-      cr.colorOffers.delete(target);
-      cr.colorOffers.delete(pi);
-      return;
-    }
     this.players[pi].colorRevealedTo.add(target);
     this.players[target].colorRevealedTo.add(pi);
     cr.colorOffers.delete(target);
     cr.colorOffers.delete(pi);
-    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `COLOR XCHG: ${prefList([...cr.occupants])}` });
+    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} swapped colors ${pref(target)}` });
     this.log(`${this.pn(pi)} and ${this.pn(target)} exchanged colors`);
   }
 
   private executeRoleSwap(cr: { revealOffers: Set<number>; messages: any[]; occupants: Set<number> }, pi: number, target: number) {
-    if (this.players[pi].sharedWith.has(target) && this.players[target].sharedWith.has(pi)) {
-      cr.revealOffers.delete(target);
-      cr.revealOffers.delete(pi);
-      return;
-    }
     this.players[pi].revealedTo.add(target);
     this.players[target].revealedTo.add(pi);
     this.players[pi].sharedWith.add(target);
     this.players[target].sharedWith.add(pi);
     cr.revealOffers.delete(target);
     cr.revealOffers.delete(pi);
-    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `ROLE XCHG: ${prefList([...cr.occupants])}` });
+    cr.messages.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} shared roles ${pref(target)}` });
     this.log(`${this.pn(pi)} and ${this.pn(target)} shared roles`);
   }
 
@@ -677,7 +668,7 @@ export class Sim {
     if (!cr) return [];
     const offerers: number[] = [];
     for (const oi of cr.revealOffers) {
-      if (oi !== pi && cr.occupants.has(oi) && !this.players[pi].sharedWith.has(oi)) offerers.push(oi);
+      if (oi !== pi && cr.occupants.has(oi)) offerers.push(oi);
     }
     return offerers;
   }
@@ -695,7 +686,7 @@ export class Sim {
     if (!cr) return [];
     const offerers: number[] = [];
     for (const oi of cr.colorOffers) {
-      if (oi !== pi && cr.occupants.has(oi) && !this.players[pi].colorRevealedTo.has(oi)) offerers.push(oi);
+      if (oi !== pi && cr.occupants.has(oi)) offerers.push(oi);
     }
     return offerers;
   }
@@ -703,7 +694,7 @@ export class Sim {
   usurpCandidates(pi: number): string[] {
     const player = this.players[pi];
     if (player.isLeader) return [];
-    if (this.phase !== Phase.Playing && this.phase !== Phase.PsychopompSelect) return [];
+    if (this.phase !== Phase.Playing && this.phase !== Phase.HostageSelect) return [];
     const items: string[] = ["NONE"];
     for (let i = 0; i < this.players.length; i++) {
       if (i !== pi && this.players[i].room === player.room && !this.players[i].isLeader) {
@@ -757,42 +748,42 @@ export class Sim {
 
   // ---- Actions ----
 
-  handlePsychopompToggle(pi: number) {
+  handleHostageToggle(pi: number) {
     const player = this.players[pi];
     const committed = player.room === Room.RoomA ? this.committedA : this.committedB;
     if (committed) return;
-    const eligible = this.eligiblePsychopomps(player.room);
+    const eligible = this.eligibleHostages(player.room);
     if (eligible.length === 0) return;
-    const cursor = player.room === Room.RoomA ? this.psychopompCursorA : this.psychopompCursorB;
+    const cursor = player.room === Room.RoomA ? this.hostageCursorA : this.hostageCursorB;
     const targetIdx = eligible[cursor % eligible.length];
     if (targetIdx === undefined) return;
 
-    const list = player.room === Room.RoomA ? this.psychopompsSelectedA : this.psychopompsSelectedB;
+    const list = player.room === Room.RoomA ? this.hostagesSelectedA : this.hostagesSelectedB;
     const already = list.indexOf(targetIdx);
     if (already >= 0) {
       list.splice(already, 1);
-      this.players[targetIdx].selectedAsPsychopomp = false;
-    } else if (list.length < this.psychopompsPerRoom) {
+      this.players[targetIdx].selectedAsHostage = false;
+    } else if (list.length < this.hostagesPerRoom) {
       list.push(targetIdx);
-      this.players[targetIdx].selectedAsPsychopomp = true;
+      this.players[targetIdx].selectedAsHostage = true;
     }
   }
 
   moveCursor(pi: number, delta: number) {
     const player = this.players[pi];
-    if (this.phase !== Phase.PsychopompSelect || !player.isLeader) return;
+    if (this.phase !== Phase.HostageSelect || !player.isLeader) return;
     const committed = player.room === Room.RoomA ? this.committedA : this.committedB;
     if (committed) return;
-    const eligible = this.eligiblePsychopomps(player.room);
+    const eligible = this.eligibleHostages(player.room);
     if (eligible.length === 0) return;
     if (player.room === Room.RoomA) {
-      this.psychopompCursorA = (this.psychopompCursorA + delta + eligible.length) % eligible.length;
+      this.hostageCursorA = (this.hostageCursorA + delta + eligible.length) % eligible.length;
     } else {
-      this.psychopompCursorB = (this.psychopompCursorB + delta + eligible.length) % eligible.length;
+      this.hostageCursorB = (this.hostageCursorB + delta + eligible.length) % eligible.length;
     }
   }
 
-  eligiblePsychopomps(room: Room): number[] {
+  eligibleHostages(room: Room): number[] {
     const result: number[] = [];
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
@@ -946,16 +937,25 @@ export class Sim {
     }
   }
 
+  whisperToggledActions(pi: number): Set<string> {
+    const toggled = new Set<string>();
+    const cr = this.whispers.get(this.players[pi].inWhisper);
+    if (!cr) return toggled;
+    if (cr.colorOffers.has(pi)) toggled.add("C.OFFER");
+    if (cr.revealOffers.has(pi)) toggled.add("R.OFFER");
+    return toggled;
+  }
+
   whisperActionEnabled(pi: number, action: string): boolean {
     const player = this.players[pi];
     const cr = this.whispers.get(player.inWhisper);
     if (!cr) return false;
     switch (action) {
-      case "C.OFFER": return [...cr.occupants].some(oi => oi !== pi && !this.players[pi].colorRevealedTo.has(oi));
+      case "C.OFFER": return !cr.colorOffers.has(pi);
       case "C.UNOFFR": return cr.colorOffers.has(pi);
       case "C.ACCPT": return this.whisperColorOfferers(pi).length > 0;
       case "ROLE": return true;
-      case "R.OFFER": return [...cr.occupants].some(oi => oi !== pi && !this.players[pi].sharedWith.has(oi));
+      case "R.OFFER": return !cr.revealOffers.has(pi);
       case "R.UNOFFR": return cr.revealOffers.has(pi);
       case "R.ACCPT": return this.whisperShareOfferers(pi).length > 0;
       case "PASS": return player.isLeader;
@@ -974,7 +974,6 @@ export class Sim {
 
     switch (action) {
       case "C.OFFER": {
-        if (cr.colorOffers.has(pi)) break;
         cr.colorOffers.add(pi);
         const colorOfferers = this.whisperColorOfferers(pi);
         if (colorOfferers.length === 1) {
@@ -1001,7 +1000,6 @@ export class Sim {
         this.log(`${this.pn(pi)} showed role to whisper`);
         break;
       case "R.OFFER": {
-        if (cr.revealOffers.has(pi)) break;
         cr.revealOffers.add(pi);
         const roleOfferers = this.whisperShareOfferers(pi);
         if (roleOfferers.length === 1) {
@@ -1146,8 +1144,6 @@ export class Sim {
       this.leaderB = pi;
     }
     player.isLeader = true;
-    const shoutMsgs = room === Room.RoomA ? this.shoutMessagesA : this.shoutMessagesB;
-    shoutMsgs.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `${pref(pi)} is now leader` });
     this.log(`${this.pn(pi)} became leader of ${player.room === Room.RoomA ? "Underworld" : "Mortal Realm"}`);
   }
 
@@ -1165,7 +1161,7 @@ export class Sim {
       name, x, y, velX: 0, velY: 0, carryX: 0, carryY: 0,
       room, team: Team.TeamA, role: Role.Shades,
       shape: (this.players.length % shapeCount) as PlayerShape,
-      isLeader: false, isPsychopomp: false, selectedAsPsychopomp: false,
+      isLeader: false, isHostage: false, selectedAsHostage: false,
       revealedTo: new Set(), sharedWith: new Set(), colorRevealedTo: new Set(),
       colorIndex: this.players.length,
       whisperMenuOpen: false, whisperMenuCat: 0, whisperMenuItem: 0,
@@ -1188,8 +1184,8 @@ export class Sim {
     else if (this.leaderA > index) this.leaderA--;
     if (this.leaderB === index) this.leaderB = -1;
     else if (this.leaderB > index) this.leaderB--;
-    this.psychopompsSelectedA = this.psychopompsSelectedA.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i));
-    this.psychopompsSelectedB = this.psychopompsSelectedB.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i));
+    this.hostagesSelectedA = this.hostagesSelectedA.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i));
+    this.hostagesSelectedB = this.hostagesSelectedB.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i));
   }
 
   assignRoles() {
@@ -1324,10 +1320,10 @@ export class Sim {
     this.roundTimer = (roundCfg?.durationSecs ?? 60) * TARGET_FPS;
     this.leaderA = -1;
     this.leaderB = -1;
-    this.psychopompsSelectedA = [];
-    this.psychopompsSelectedB = [];
+    this.hostagesSelectedA = [];
+    this.hostagesSelectedB = [];
     for (const p of this.players) {
-      p.isLeader = false; p.isPsychopomp = false; p.selectedAsPsychopomp = false;
+      p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
       p.whisperMenuOpen = false; p.shareSelectOpen = false;
       p.infoScreen = "none"; p.usurpVote = -1;
       p.inWhisper = -1; p.pendingWhisperEntry = -1;
@@ -1335,7 +1331,7 @@ export class Sim {
       p.noticeText = null; p.noticeUntilTick = 0;
     }
     this.whispers.clear();
-    this.psychopompsPerRoom = this.getPsychopompCount();
+    this.hostagesPerRoom = this.getHostageCount();
     this.ensureLeaders();
   }
 
@@ -1377,20 +1373,20 @@ export class Sim {
     }
   }
 
-  getPsychopompCount(): number {
+  getHostageCount(): number {
     const roundCfg = this.config.rounds[Math.min(this.currentRound, this.config.rounds.length - 1)];
-    return roundCfg?.psychopomps ?? 1;
+    return roundCfg?.hostages ?? 1;
   }
 
-  beginPsychopompSelect() {
-    this.phase = Phase.PsychopompSelect;
-    this.psychopompsSelectedA = []; this.psychopompsSelectedB = [];
-    this.psychopompCursorA = 0; this.psychopompCursorB = 0;
+  beginHostageSelect() {
+    this.phase = Phase.HostageSelect;
+    this.hostagesSelectedA = []; this.hostagesSelectedB = [];
+    this.hostageCursorA = 0; this.hostageCursorB = 0;
     this.committedA = false; this.committedB = false;
-    this.psychopompSelectTimer = this.phaseTicks(15, 1);
+    this.hostageSelectTimer = this.phaseTicks(15, 1);
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
-      p.selectedAsPsychopomp = false;
+      p.selectedAsHostage = false;
       if (p.isLeader) {
         if (p.inWhisper >= 0) this.leaveWhisper(i);
         if (p.pendingWhisperEntry >= 0) this.cancelEntryRequest(i);
@@ -1400,15 +1396,15 @@ export class Sim {
     }
   }
 
-  autoFillPsychopomps(room: Room) {
-    const list = room === Room.RoomA ? this.psychopompsSelectedA : this.psychopompsSelectedB;
-    if (list.length >= this.psychopompsPerRoom) return;
-    const eligible = this.eligiblePsychopomps(room).filter((i) => !list.includes(i));
-    while (list.length < this.psychopompsPerRoom && eligible.length > 0) {
+  autoFillHostages(room: Room) {
+    const list = room === Room.RoomA ? this.hostagesSelectedA : this.hostagesSelectedB;
+    if (list.length >= this.hostagesPerRoom) return;
+    const eligible = this.eligibleHostages(room).filter((i) => !list.includes(i));
+    while (list.length < this.hostagesPerRoom && eligible.length > 0) {
       const idx = this.randInt(eligible.length);
       const pick = eligible.splice(idx, 1)[0];
       list.push(pick);
-      this.players[pick].selectedAsPsychopomp = true;
+      this.players[pick].selectedAsHostage = true;
     }
   }
 
@@ -1416,12 +1412,12 @@ export class Sim {
     this.phase = Phase.LeaderSummit;
     this.leaderSummitTimer = this.phaseTicks(LEADER_SUMMIT_DURATION_SECS, 1);
 
-    const announceA = prefList(this.psychopompsSelectedA);
-    const announceB = prefList(this.psychopompsSelectedB);
+    const announceA = prefList(this.hostagesSelectedA);
+    const announceB = prefList(this.hostagesSelectedB);
     this.shoutMessagesA.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `LEAVING: ${announceA}` });
     this.shoutMessagesB.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `LEAVING: ${announceB}` });
-    this.log(`Psychopomps from Underworld: ${this.psychopompsSelectedA.map(i => this.pn(i)).join(", ")}`);
-    this.log(`Psychopomps from Mortal Realm: ${this.psychopompsSelectedB.map(i => this.pn(i)).join(", ")}`);
+    this.log(`Hostages from Underworld: ${this.hostagesSelectedA.map(i => this.pn(i)).join(", ")}`);
+    this.log(`Hostages from Mortal Realm: ${this.hostagesSelectedB.map(i => this.pn(i)).join(", ")}`);
 
     const id = this.nextWhisperId++;
     const cr: Whisper = {
@@ -1483,7 +1479,7 @@ export class Sim {
       this.players[this.leaderB].room = this.leaderSummitOrigRoomB;
     }
 
-    this.executePsychopompExchange();
+    this.executeHostageExchange();
   }
 
   exchangeProgress(): number {
@@ -1491,10 +1487,10 @@ export class Sim {
     return 1 - this.exchangeTimer / this.exchangeDuration;
   }
 
-  executePsychopompExchange() {
+  executeHostageExchange() {
     this.ejectAllWhispers();
     for (const p of this.players) { p.shoutOpen = false; }
-    this.phase = Phase.PsychopompExchange;
+    this.phase = Phase.HostageExchange;
 
     this.exchangeLeaderA = this.leaderA;
     this.exchangeLeaderB = this.leaderB;
@@ -1507,12 +1503,12 @@ export class Sim {
     this.exchangeFromA = [];
     this.exchangeFromB = [];
 
-    for (const hi of this.psychopompsSelectedA) {
+    for (const hi of this.hostagesSelectedA) {
       if (hi >= 0 && hi < this.players.length) {
         this.exchangeFromA.push({ pi: hi, startX: this.players[hi].x, startY: this.players[hi].y });
       }
     }
-    for (const hi of this.psychopompsSelectedB) {
+    for (const hi of this.hostagesSelectedB) {
       if (hi >= 0 && hi < this.players.length) {
         this.exchangeFromB.push({ pi: hi, startX: this.players[hi].x, startY: this.players[hi].y });
       }
@@ -1691,17 +1687,17 @@ export class Sim {
           this.applyInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
         }
         this.tickWhispers();
-        if (this.roundTimer <= 0) this.beginPsychopompSelect();
+        if (this.roundTimer <= 0) this.beginHostageSelect();
         break;
       }
-      case Phase.PsychopompSelect: {
-        this.psychopompSelectTimer--;
+      case Phase.HostageSelect: {
+        this.hostageSelectTimer--;
         for (let i = 0; i < this.players.length; i++) {
           this.applyInput(i, inputs[i] ?? emptyInput(), prevInputs[i] ?? emptyInput());
         }
-        if ((this.committedA && this.committedB) || this.psychopompSelectTimer <= 0) {
-          this.autoFillPsychopomps(Room.RoomA);
-          this.autoFillPsychopomps(Room.RoomB);
+        if ((this.committedA && this.committedB) || this.hostageSelectTimer <= 0) {
+          this.autoFillHostages(Room.RoomA);
+          this.autoFillHostages(Room.RoomB);
           this.beginLeaderSummit();
         }
         break;
@@ -1717,7 +1713,7 @@ export class Sim {
         }
         break;
       }
-      case Phase.PsychopompExchange: {
+      case Phase.HostageExchange: {
         this.exchangeTimer--;
         if (this.exchangeTimer <= 0) {
           this.finalizeExchange();
@@ -1753,7 +1749,7 @@ export class Sim {
     this.tickCount = 0; this.lobbyCountdown = 0; this.currentRound = 0;
     this.roundTimer = 0; this.winner = null;
     this.leaderA = -1; this.leaderB = -1;
-    this.psychopompsSelectedA = []; this.psychopompsSelectedB = [];
+    this.hostagesSelectedA = []; this.hostagesSelectedB = [];
     this.chatMessages = []; this.obstacles = [];
     this.whispers.clear(); this.nextWhisperId = 0;
     this.shoutMessagesA = []; this.shoutMessagesB = [];
@@ -1761,7 +1757,7 @@ export class Sim {
     this.leaderSummitOrigRoomA = Room.RoomA; this.leaderSummitOrigRoomB = Room.RoomB;
     for (const p of this.players) {
       p.team = Team.TeamA; p.role = Role.Shades;
-      p.isLeader = false; p.isPsychopomp = false; p.selectedAsPsychopomp = false;
+      p.isLeader = false; p.isHostage = false; p.selectedAsHostage = false;
       p.revealedTo = new Set(); p.sharedWith = new Set(); p.colorRevealedTo = new Set();
       p.whisperMenuOpen = false; p.whisperMenuCat = 0; p.whisperMenuItem = 0;
       p.shareSelectOpen = false; p.shareSelectRow = 0;

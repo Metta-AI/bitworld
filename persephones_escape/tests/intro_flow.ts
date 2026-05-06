@@ -10,7 +10,7 @@ import { Phase, Role, Team, type GameConfig, type InputState } from "../game/typ
 function configForPlayers(count: number): GameConfig {
   return {
     roles: [{ role: Role.Shades, team: Team.TeamA, count }],
-    rounds: [{ durationSecs: 10, psychopomps: 0 }],
+    rounds: [{ durationSecs: 10, hostages: 0 }],
     obstacleCount: 0,
   };
 }
