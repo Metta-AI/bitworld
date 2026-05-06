@@ -26,6 +26,3 @@ nim.cfg
 *.tfstate.backup
 *.tfplan
 .terraform.lock.hcl
-# Bootstrap state IS committed (chicken-egg for remote state)
-!infra/bootstrap/terraform.tfstate
-!infra/bootstrap/.terraform.lock.hcl

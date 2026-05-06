@@ -7,7 +7,7 @@ variable "region" {
 variable "project_name" {
   description = "Project name used for resource naming and tags"
   type        = string
-  default     = "bitworld2"
+  default     = "bitworld"
 }
 
 variable "vpc_cidr" {

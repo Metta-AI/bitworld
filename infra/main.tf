@@ -2,10 +2,10 @@ terraform {
   required_version = ">= 1.5"
 
   backend "s3" {
-    bucket         = "bitworld2-terraform-state"
+    bucket         = "bitworld-terraform-state"
     key            = "infra/terraform.tfstate"
     region         = "us-east-1"
-    dynamodb_table = "bitworld2-terraform-lock"
+    dynamodb_table = "bitworld-terraform-lock"
     encrypt        = true
   }
 

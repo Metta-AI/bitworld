@@ -1,4 +1,4 @@
-## Terraform wrapper for bitworld2 infrastructure.
+## Terraform wrapper for bitworld infrastructure.
 ##
 ## Manages AWS infrastructure (VPC, subnets, security groups, DNS Firewall)
 ## for running tournament bot containers on ECS Fargate with controlled egress.
@@ -18,7 +18,9 @@ import std/[os, osproc, parseopt, strutils]
 
 const
   InfraDir = "infra"
-  BootstrapDir = "infra" / "bootstrap"
+  Region = "us-east-1"
+  StateBucket = "bitworld-terraform-state"
+  LockTable = "bitworld-terraform-lock"
 
 proc repoRoot(): string =
   currentSourcePath().parentDir.parentDir
@@ -26,7 +28,7 @@ proc repoRoot(): string =
 proc usage() =
   echo """Usage: infra [COMMAND]
 
-Terraform wrapper for bitworld2 infrastructure.
+Terraform wrapper for bitworld infrastructure.
 
 Commands:
   --bootstrap    Initialize state bucket + lock table (run once)
@@ -57,18 +59,87 @@ proc execInDir(cmd: string, workDir: string) =
     echo "Error: command failed with exit code ", code
     quit(1)
 
-proc bootstrap() =
-  let dir = repoRoot() / BootstrapDir
-  if not dirExists(dir):
-    echo "Error: ", dir, " not found."
+proc ensureAwsCli() =
+  let (output, code) = execCmdEx("aws --version")
+  if code != 0:
+    echo "Error: aws CLI not found on PATH."
+    echo "Install from: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
     quit(1)
-  echo "Bootstrapping Terraform state backend..."
-  echo "  This creates an S3 bucket and DynamoDB table for state locking."
+  echo "aws: ", output.strip().splitLines()[0]
+
+proc awsExec(cmd: string): tuple[output: string, exitCode: int] =
+  echo "  $ aws ", cmd
+  result = execCmdEx("aws " & cmd)
+
+proc bucketExists(): bool =
+  let (_, code) = awsExec(
+    "s3api head-bucket --bucket " & StateBucket & " --region " & Region
+  )
+  result = code == 0
+
+proc tableExists(): bool =
+  let (_, code) = awsExec(
+    "dynamodb describe-table --table-name " & LockTable & " --region " & Region
+  )
+  result = code == 0
+
+proc bootstrap() =
+  echo "Bootstrapping Terraform state backend via AWS CLI..."
+  echo "  bucket: ", StateBucket
+  echo "  table:  ", LockTable
+  echo "  region: ", Region
   echo ""
-  ensureTerraform()
-  execInDir("terraform init", dir)
+  ensureAwsCli()
   echo ""
-  execInDir("terraform apply", dir)
+
+  if bucketExists():
+    echo "  S3 bucket already exists, skipping."
+  else:
+    echo "  Creating S3 bucket..."
+    let (output, code) = awsExec(
+      "s3api create-bucket --bucket " & StateBucket &
+      " --region " & Region
+    )
+    if code != 0:
+      echo "Error creating bucket: ", output
+      quit(1)
+    echo "  Enabling versioning..."
+    discard awsExec(
+      "s3api put-bucket-versioning --bucket " & StateBucket &
+      " --versioning-configuration Status=Enabled"
+    )
+    echo "  Enabling encryption..."
+    discard awsExec(
+      "s3api put-bucket-encryption --bucket " & StateBucket &
+      " --server-side-encryption-configuration " &
+      "'{\"Rules\":[{\"ApplyServerSideEncryptionByDefault\":{\"SSEAlgorithm\":\"AES256\"}}]}'"
+    )
+    echo "  Blocking public access..."
+    discard awsExec(
+      "s3api put-public-access-block --bucket " & StateBucket &
+      " --public-access-block-configuration " &
+      "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+    )
+    echo "  S3 bucket created."
+
+  echo ""
+
+  if tableExists():
+    echo "  DynamoDB table already exists, skipping."
+  else:
+    echo "  Creating DynamoDB lock table..."
+    let (output, code) = awsExec(
+      "dynamodb create-table --table-name " & LockTable &
+      " --attribute-definitions AttributeName=LockID,AttributeType=S" &
+      " --key-schema AttributeName=LockID,KeyType=HASH" &
+      " --billing-mode PAY_PER_REQUEST" &
+      " --region " & Region
+    )
+    if code != 0:
+      echo "Error creating table: ", output
+      quit(1)
+    echo "  DynamoDB table created."
+
   echo ""
   echo "Bootstrap complete."
   echo "Next: nim r tools/infra.nim --init"
@@ -99,7 +170,7 @@ proc apply() =
 
 proc destroy() =
   let dir = repoRoot() / InfraDir
-  echo "WARNING: This will destroy all bitworld2 infrastructure."
+  echo "WARNING: This will destroy all bitworld infrastructure."
   echo "Terraform will prompt for confirmation."
   echo ""
   ensureTerraform()
