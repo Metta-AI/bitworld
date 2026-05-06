@@ -13,6 +13,10 @@ function pref(pi: number): string {
   return `\x01${String.fromCharCode(pi)}`;
 }
 
+function prefList(indices: number[]): string {
+  return indices.length > 0 ? indices.map(i => pref(i)).join(", ") : "NONE";
+}
+
 const INTRO_TOTAL_TICKS = 15 * TARGET_FPS;
 const INTRO_PANEL_COUNT = 4;
 
@@ -667,6 +671,13 @@ export class Sim {
       if (oi !== pi && cr.occupants.has(oi)) offerers.push(oi);
     }
     return offerers;
+  }
+
+  whisperHasLeaderOffer(pi: number): boolean {
+    const player = this.players[pi];
+    const cr = this.whispers.get(player.inWhisper);
+    if (!cr) return false;
+    return cr.leaderOffer >= 0 && cr.leaderOffer !== pi && cr.occupants.has(cr.leaderOffer);
   }
 
   whisperColorOfferers(pi: number): number[] {
@@ -1376,8 +1387,12 @@ export class Sim {
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       p.selectedAsHostage = false;
-      if (p.inWhisper >= 0) this.leaveWhisper(i);
-      p.pendingWhisperEntry = -1;
+      if (p.isLeader) {
+        if (p.inWhisper >= 0) this.leaveWhisper(i);
+        if (p.pendingWhisperEntry >= 0) this.cancelEntryRequest(i);
+        p.shoutOpen = false;
+        p.infoScreen = "none";
+      }
     }
   }
 
@@ -1397,12 +1412,10 @@ export class Sim {
     this.phase = Phase.LeaderSummit;
     this.leaderSummitTimer = this.phaseTicks(LEADER_SUMMIT_DURATION_SECS, 1);
 
-    this.ejectAllWhispers();
-
-    const announceA = this.hostagesSelectedA.map(i => pref(i)).join(", ");
-    const announceB = this.hostagesSelectedB.map(i => pref(i)).join(", ");
-    this.shoutMessagesA.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `HOSTAGES: ${announceA}` });
-    this.shoutMessagesB.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `HOSTAGES: ${announceB}` });
+    const announceA = prefList(this.hostagesSelectedA);
+    const announceB = prefList(this.hostagesSelectedB);
+    this.shoutMessagesA.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `LEAVING: ${announceA}` });
+    this.shoutMessagesB.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `LEAVING: ${announceB}` });
     this.log(`Hostages from Underworld: ${this.hostagesSelectedA.map(i => this.pn(i)).join(", ")}`);
     this.log(`Hostages from Mortal Realm: ${this.hostagesSelectedB.map(i => this.pn(i)).join(", ")}`);
 
@@ -1425,6 +1438,8 @@ export class Sim {
     for (const li of [this.leaderA, this.leaderB]) {
       if (li >= 0 && li < this.players.length) {
         const p = this.players[li];
+        if (p.inWhisper >= 0) this.leaveWhisper(li);
+        if (p.pendingWhisperEntry >= 0) this.cancelEntryRequest(li);
         p.room = Room.LeaderRoom;
         p.inWhisper = id;
         p.whisperEntryTick = this.tickCount;
@@ -1605,6 +1620,8 @@ export class Sim {
         this.resetExchangedPlayer(h.pi);
       }
     }
+    this.shoutMessagesA.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `ARRIVED: ${prefList(this.exchangeFromB.map(h => h.pi))}` });
+    this.shoutMessagesB.push({ type: 'system', senderIndex: -1, tick: this.tickCount, text: `ARRIVED: ${prefList(this.exchangeFromA.map(h => h.pi))}` });
     this.ensureLeaders();
   }
 

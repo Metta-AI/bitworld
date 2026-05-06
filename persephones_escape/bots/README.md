@@ -22,12 +22,12 @@ Minimal bots that connect and send idle inputs. Used to fill player slots withou
 
 ## Shared Modules
 
-### `belief_state.ts`
-Tracks what the bot knows: current phase, position, nearby players, minimap data, known roles/colors, whisper occupants. Provides `checkTriggers()` to detect phase transitions and generate prompt events (e.g. `round_start`, `whisper_entered`, `hostage_phase`).
+### `game_knowledge.ts`
+Tracks what the bot knows: match facts, roster-derived identity data, learned transient state, self state, strategy memory, and notes. Provides update helpers that parse frames into the shared `GameKnowledge` model used by policies, tasks, and LLM harness prompts.
 
 ### `tasks.ts`
 Task execution engine. Translates high-level task definitions into button sequences each frame. Supports:
-- `pursue_exchange` — walk to a target, open/join a whisper, send a color or role offer, wait for completion
+- `pursue_exchange` — walk to a target, open/join a whisper, then either exchange color, exchange role, or just establish the whisper
 - `loop_auto_grant` — automatically grant whisper entry requests
 - `loop_auto_accept_color` — automatically accept incoming color offers
 - `open_whisper` — create or join a whisper near a target

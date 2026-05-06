@@ -4,23 +4,34 @@
  * that produces an action.
  *
  * Task categories:
- *   - ONCE: fires and removes itself (shout, chat, grant_entry, offer_*, accept_*, ...)
- *   - SEQUENCE: multi-frame, self-terminates on done/failed/timeout (pursue_chat, walk_to)
- *   - LOOP: singleton per kind; reactive (auto_*) or periodic (read_global, ...).
+ *   - ONCE: fires and removes itself (shout, chat, exit_whisper)
+ *   - ASYNC: multi-frame, self-terminates on done/failed/timeout (pursue_chat, walk_to)
+ *   - LOOP: singleton per kind; reactive (auto_*) or persistent (precommit_hostages).
  *           A new loop of the same kind replaces the existing one.
  *
- * Context routing: each task kind declares which phases it can execute in.
- * Movement tasks don't run while in whisper. Whisper tasks don't run while
- * in overworld. Tasks that can't apply in the current phase are skipped, not
- * removed — they wait for the phase to change (subject to their time limit).
+ * Priority: LOOP and ONCE tasks run first (interrupt). ASYNC tasks only run
+ * when no LOOP/ONCE fires that frame.
+ *
+ * Dependencies: each task has an ID (auto-generated or explicit). A task with
+ * blockedBy=<id> is skipped until the referenced task succeeds; dropped if it fails.
  */
 
 import type WebSocket from "ws";
-import { BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT, isValidCharacterName, characterName } from "../game/constants.js";
-import { sendInput, sendChat, truncateChatInput, moveToward, menuSequence, COMMAND_ACTIONS } from "./bot_utils.js";
+import {
+  BUBBLE_RADIUS, BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT,
+  isValidCharacterName,
+} from "../game/constants.js";
+import { sendInput, sendChat, truncateChatInput, moveToward } from "./bot_utils.js";
 import { whisperMenuSequenceWithTargetPick } from "../game/menu_defs.js";
-import { parseHostageGrid, parseUsurpCandidate } from "./frame_parser.js";
-import { colorFromCharName, type BeliefState } from "./belief_state.js";
+import { parseUsurpCandidate } from "./frame_parser.js";
+import {
+  colorFromCharName,
+  hasColorExchangeSucceeded,
+  hasRoleExchangeSucceeded,
+  markColorExchangeSucceeded,
+  markRoleExchangeSucceeded,
+  type GameKnowledge,
+} from "./game_knowledge.js";
 import type { BotController } from "./bot_common.js";
 import type { MinimapDot } from "./frame_parser.js";
 
@@ -29,53 +40,62 @@ import type { MinimapDot } from "./frame_parser.js";
 // ---------------------------------------------------------------------------
 
 export type Task =
-  // ONCE tasks
+  // ONCE tasks — fire once and remove
   | { kind: "shout"; text: string }
   | { kind: "chat"; text: string }
+  | { kind: "whisper_action"; action: "ROLE" | "C.OFFER" | "R.OFFER" | "PASS" | "TAKE" | "GRANT" }
   | { kind: "exit_whisper" }
-  // SEQUENCE tasks — high level; handle their own whisper dance
+  // ASYNC tasks — multi-frame, self-terminate on done/failed/timeout
   | { kind: "walk_to"; x: number; y: number; timeLimitTicks: number }
   | { kind: "pursue_chat"; target: string; timeLimitTicks: number }
-  /**
-   * pursue_exchange — walk to target, get into the same whisper, then
-   * perform a mutual exchange. "role" triggers R.OFFER and auto-accepts any
-   * pending R offer from that target. "color" does the same with C.OFFER/C.ACCPT.
-   */
-  | { kind: "pursue_exchange"; target: string; exchange: "role" | "color"; timeLimitTicks: number }
+  | {
+      kind: "pursue_exchange";
+      target: string;
+      exchange: "role" | "color" | "whisper";
+      timeLimitTicks: number;
+      mode?: "find_spot" | "go_to_player";
+    }
+  | { kind: "usurp_vote"; target: string; timeLimitTicks: number }
   // LOOP tasks (singleton per kind)
   | { kind: "loop_auto_grant" }
   | { kind: "loop_auto_accept_color" }
   | { kind: "loop_auto_accept_role" }
-  // SEQUENCE — usurp vote
-  | { kind: "usurp_vote"; target: string; timeLimitTicks: number }
-  // PRECOMMIT — persists like a loop, fires once when conditions are met, then stays for next round
-  | { kind: "precommit_hostages"; targets: string[] };
+  | { kind: "loop_global_check"; intervalTicks: number }
+  // ONCE — immediately stores targets, fires on hostage_select
+  | { kind: "precommit_hostages"; targets: string[] }
+  // Non-interruptible atoms. Producers should enqueue these for short,
+  // known-safe input sequences.
+  | { kind: "atom_input"; masks: number[]; label: string }
+  | { kind: "atom_chat"; text: string; label: string };
 
-// Each task kind must appear in exactly one of these sets. If you add a new
-// kind, put it in the correct set — the classification functions use strict
-// lookups, so an omitted kind will fail isOnceTask/isSequenceTask/isLoopTask.
 const ONCE_KINDS = new Set<string>([
-  "shout", "chat", "exit_whisper",
+  "shout", "chat", "exit_whisper", "precommit_hostages",
+  "whisper_action", "atom_input", "atom_chat",
 ]);
 
-const SEQUENCE_KINDS = new Set<string>([
+const ASYNC_KINDS = new Set<string>([
   "walk_to", "pursue_chat", "pursue_exchange", "usurp_vote",
 ]);
 
 const LOOP_KINDS = new Set<string>([
-  "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
-  "precommit_hostages",
+  "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role", "loop_global_check",
 ]);
 
 export function isOnceTask(t: Task): boolean { return ONCE_KINDS.has(t.kind); }
-export function isSequenceTask(t: Task): boolean { return SEQUENCE_KINDS.has(t.kind); }
+export function isAsyncTask(t: Task): boolean { return ASYNC_KINDS.has(t.kind); }
 export function isLoopTask(t: Task): boolean { return LOOP_KINDS.has(t.kind); }
+/** @deprecated alias for isAsyncTask */
+export function isSequenceTask(t: Task): boolean { return ASYNC_KINDS.has(t.kind); }
 
 // ---------------------------------------------------------------------------
 // Runtime state
 // ---------------------------------------------------------------------------
 
+let nextAutoId = 1;
+
 export interface TaskInstance {
+  id: string;
+  blockedBy: string | null; // ID of another task — this task only runs after that task succeeds; dropped if it fails
   task: Task;
   startTick: number;
   lastFiredTick: number;
@@ -86,24 +106,34 @@ export interface TaskInstance {
   startedEmitted: boolean;
   // pursue_exchange: whether we've sent our offer in the current whisper yet.
   offerSentTick: number | null;
+  // pursue_exchange: whether we shouted about finding a corner after wrong-room whisper
+  shoutedWrongRoom: boolean;
   // pursue_exchange: detailed status for LLM visibility
   exchangeStatus: string;
-  // precommit_hostages state machine
-  hostageState: "idle" | "opening_chat" | "selecting" | "committing" | "done";
-  hostageRound: number;
+  // pursue_exchange find_spot mode state
+  privateSpot: { x: number; y: number } | null;
+  privateSpotTick: number;
+  privateSpotShoutTick: number;
+  nearTargetWaitTick: number;
   // usurp_vote state machine
   usurpState: "idle" | "opening" | "navigating" | "voting" | "closing";
   usurpNavCount: number;
+  atomIndex: number;
 }
 
-export function createTaskInstance(task: Task, tick: number): TaskInstance {
+export function createTaskInstance(task: Task, tick: number, id?: string, blockedBy?: string): TaskInstance {
   return {
+    id: id ?? `t${nextAutoId++}`,
+    blockedBy: blockedBy ?? null,
     task, startTick: tick, lastFiredTick: -1,
     createdOwnWhisperTick: null, grantDeadlineTick: null,
     lastSawTargetTick: -Infinity, startedEmitted: false,
-    offerSentTick: null, exchangeStatus: "searching for target",
-    hostageState: "idle", hostageRound: -1,
+    offerSentTick: null, shoutedWrongRoom: false,
+    exchangeStatus: "searching for target",
+    privateSpot: null, privateSpotTick: -Infinity, privateSpotShoutTick: -Infinity,
+    nearTargetWaitTick: -Infinity,
     usurpState: "idle", usurpNavCount: 0,
+    atomIndex: 0,
   };
 }
 
@@ -128,12 +158,14 @@ export interface TaskEvent {
 /** Shared event log — pushed by task lifecycle + merge + executor. */
 export interface EventBuffer {
   events: TaskEvent[];
+  onEvent?: (ev: TaskEvent) => void;
 }
 
-export function createEventBuffer(): EventBuffer { return { events: [] }; }
+export function createEventBuffer(onEvent?: (ev: TaskEvent) => void): EventBuffer { return { events: [], onEvent }; }
 
 export function pushEvent(buf: EventBuffer, ev: TaskEvent): void {
   buf.events.push(ev);
+  buf.onEvent?.(ev);
   if (buf.events.length > 500) buf.events.shift();
 }
 
@@ -152,9 +184,15 @@ export function eventBufferLines(buf: EventBuffer): string[] {
 // Merge an LLM update into the current task list
 // ---------------------------------------------------------------------------
 
+export interface TaskAppendItem {
+  id?: string;
+  blockedBy?: string;
+  task: Task;
+}
+
 export interface TaskUpdate {
   clear?: "all" | "non_loop" | "non_loop_unsafe";
-  append?: Task[];
+  append?: TaskAppendItem[];
 }
 
 function isActiveSequence(ti: TaskInstance): boolean {
@@ -192,7 +230,8 @@ export function mergeTasks(
   }
 
   if (update.append) {
-    for (const task of update.append) {
+    for (const item of update.append) {
+      const task = item.task;
       if (isLoopTask(task)) {
         const idx = result.findIndex(ti => ti.task.kind === task.kind);
         if (idx >= 0) {
@@ -200,7 +239,7 @@ export function mergeTasks(
           result.splice(idx, 1);
         }
       }
-      result.push(createTaskInstance(task, tick));
+      result.push(createTaskInstance(task, tick, item.id, item.blockedBy));
     }
   }
   return result;
@@ -210,17 +249,17 @@ export function mergeTasks(
 // Target resolution — character name → minimap dot
 // ---------------------------------------------------------------------------
 
-function findTargetDot(belief: BeliefState, target: string): MinimapDot | undefined {
+function findTargetDot(player: GameKnowledge, target: string): MinimapDot | undefined {
   const targetColor = colorFromCharName(target);
   if (targetColor === null) return undefined;
-  const dots = belief.minimapDots.filter(d => d.color === targetColor && !d.isSelf);
+  const dots = player.minimapDots.filter(d => d.color === targetColor && !d.isSelf);
   if (dots.length <= 1) return dots[0];
   // Ambiguous color — use last known position to disambiguate
-  const player = belief.players.get(target);
-  if (!player?.lastPos) return dots[0];
+  const targetPlayer = player.players.get(target);
+  if (!targetPlayer?.lastPos) return dots[0];
   let best = dots[0], bestDist = Infinity;
   for (const d of dots) {
-    const dist = (d.worldX - player.lastPos.x) ** 2 + (d.worldY - player.lastPos.y) ** 2;
+    const dist = (d.worldX - targetPlayer.lastPos.x) ** 2 + (d.worldY - targetPlayer.lastPos.y) ** 2;
     if (dist < bestDist) { bestDist = dist; best = d; }
   }
   return best;
@@ -241,6 +280,16 @@ function emit(reason: string): TaskResult { return { kind: "emitted", reason }; 
 function fail(reason: string): TaskResult { return { kind: "failed", reason }; }
 function done(reason?: string): TaskResult { return { kind: "done", reason }; }
 
+function enqueueAtomInput(bot: BotController, masks: number[], label: string): TaskResult {
+  bot.nonInterruptingTasks.push(createTaskInstance({ kind: "atom_input", masks, label }, bot.player.tick));
+  return emit(`queued atom_input ${label}`);
+}
+
+function enqueueAtomChat(bot: BotController, text: string, label: string): TaskResult {
+  bot.nonInterruptingTasks.push(createTaskInstance({ kind: "atom_chat", text, label }, bot.player.tick));
+  return emit(`queued atom_chat ${label}`);
+}
+
 function pushChatAction(bot: BotController, action: string): boolean {
   const seq = whisperMenuSequenceWithTargetPick(action);
   if (seq.length === 0) return false;
@@ -248,15 +297,123 @@ function pushChatAction(bot: BotController, action: string): boolean {
   return true;
 }
 
-const GRANT_WAIT_MIN_TICKS = 12;
-const GRANT_WAIT_JITTER_TICKS = 37;
+function hasExchangeSystemMessage(player: GameKnowledge, exchange: "role" | "color"): boolean {
+  const needle = exchange === "role" ? "ROLE" : "COLOR";
+  return player.whisperMessages.some(m =>
+    m.type === "system" && m.text.toUpperCase().includes(needle)
+  );
+}
+
+const ALONE_WHISPER_MIN_TICKS = 8 * 24;
+const ALONE_WHISPER_JITTER_TICKS = 16 * 24;
+const ALONE_WHISPER_SHOUT_INTERVAL_TICKS = 5 * 24;
 function randomGrantDeadline(tick: number): number {
-  return tick + GRANT_WAIT_MIN_TICKS + Math.floor(Math.random() * GRANT_WAIT_JITTER_TICKS);
+  return tick + ALONE_WHISPER_MIN_TICKS + Math.floor(Math.random() * ALONE_WHISPER_JITTER_TICKS);
+}
+
+function shouldRequestTargetWhisper(player: GameKnowledge, target: string): boolean {
+  const targetBelief = player.players.get(target);
+  if (!targetBelief?.inWhisper) return false;
+  if (targetBelief.lastRoom !== player.myRoom) return false;
+  if (!player.nearbyNames.includes(target)) return false;
+  const sameColorNearby = player.nearbyNames.filter(name => {
+    const pb = player.players.get(name);
+    return pb?.color === targetBelief.color;
+  });
+  return sameColorNearby.length <= 1;
+}
+
+function targetReachableInRoom(player: GameKnowledge, target: string): boolean {
+  const pb = player.players.get(target);
+  return !!pb && pb.lastRoom === player.myRoom;
+}
+
+function firstUnknownOccupant(player: GameKnowledge): string | null {
+  for (const name of player.occupantNames) {
+    const pb = player.players.get(name);
+    if (pb && !hasColorExchangeSucceeded(player, name)) return name;
+  }
+  return null;
+}
+
+function inviteText(player: GameKnowledge, target: string): string | null {
+  if (!player.myPos || !targetReachableInRoom(player, target)) return null;
+  const short = target.length <= 10 ? target : target.slice(0, 10);
+  return `${short} COME @ ${Math.round(player.myPos.x)},${Math.round(player.myPos.y)}`;
+}
+
+function distSq(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+function clampPoint(x: number, y: number, player: GameKnowledge): { x: number; y: number } {
+  const margin = Math.max(12, BUBBLE_RADIUS);
+  return {
+    x: Math.max(margin, Math.min(player.matchFacts.roomW - margin, Math.round(x))),
+    y: Math.max(margin, Math.min(player.matchFacts.roomH - margin, Math.round(y))),
+  };
+}
+
+function otherDots(player: GameKnowledge): MinimapDot[] {
+  return player.minimapDots.filter(d => !d.isSelf);
+}
+
+function nearestOtherDistSq(player: GameKnowledge, point: { x: number; y: number }, exceptTarget?: string): number {
+  const exceptColor = exceptTarget ? colorFromCharName(exceptTarget) : null;
+  let best = Infinity;
+  for (const dot of otherDots(player)) {
+    if (exceptColor !== null && dot.color === exceptColor) continue;
+    const d = distSq(point, { x: dot.worldX, y: dot.worldY });
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function pointIsPrivate(player: GameKnowledge, point: { x: number; y: number }, exceptTarget?: string): boolean {
+  const privacyRadius = BUBBLE_RADIUS * 2.2;
+  return nearestOtherDistSq(player, point, exceptTarget) >= privacyRadius * privacyRadius;
+}
+
+function choosePrivateSpot(player: GameKnowledge, targetDot?: MinimapDot): { x: number; y: number } | null {
+  if (!player.myPos) return null;
+  const margin = Math.max(18, BUBBLE_RADIUS + 4);
+  const candidates: { x: number; y: number }[] = [];
+  const anchors = [
+    { x: margin, y: margin },
+    { x: player.matchFacts.roomW - margin, y: margin },
+    { x: margin, y: player.matchFacts.roomH - margin },
+    { x: player.matchFacts.roomW - margin, y: player.matchFacts.roomH - margin },
+    { x: Math.floor(player.matchFacts.roomW / 2), y: margin },
+    { x: Math.floor(player.matchFacts.roomW / 2), y: player.matchFacts.roomH - margin },
+    { x: margin, y: Math.floor(player.matchFacts.roomH / 2) },
+    { x: player.matchFacts.roomW - margin, y: Math.floor(player.matchFacts.roomH / 2) },
+  ];
+
+  if (targetDot) {
+    const awayX = player.myPos.x + (player.myPos.x - targetDot.worldX) * 2;
+    const awayY = player.myPos.y + (player.myPos.y - targetDot.worldY) * 2;
+    candidates.push(clampPoint(awayX, awayY, player));
+  }
+  candidates.push(...anchors.map(p => clampPoint(p.x, p.y, player)));
+
+  let best: { x: number; y: number } | null = null;
+  let bestScore = -Infinity;
+  for (const c of candidates) {
+    const crowdDist = Math.sqrt(nearestOtherDistSq(player, c));
+    const selfDist = Math.sqrt(distSq(player.myPos, c));
+    const targetDist = targetDot ? Math.sqrt(distSq(c, { x: targetDot.worldX, y: targetDot.worldY })) : 0;
+    // Prefer quiet spots that are not too far for either participant.
+    const score = crowdDist * 3 - selfDist * 0.6 - targetDist * 0.25;
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
 }
 
 function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResult {
-  const belief = bot.belief;
-  const tick = belief.tick;
+  const player = bot.player as GameKnowledge;
+  const tick = player.tick;
   const t = ti.task;
 
   // Time-limit check for sequence tasks
@@ -267,8 +424,13 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
   const fireChat = (raw: string): TaskResult => {
     const { sent, truncated } = truncateChatInput(raw);
+    if (sent === bot.lastSentChat && !bot.hasNewIncomingChat) {
+      return emit(`deduplicated "${sent}" (no new messages since last send)`);
+    }
     sendChat(ws, sent);
     sendInput(ws, 0);
+    bot.lastSentChat = sent;
+    bot.hasNewIncomingChat = false;
     ti.lastFiredTick = tick;
     const reason = truncated
       ? `sent "${sent}" (TRUNCATED from ${raw.length} chars)`
@@ -277,49 +439,76 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
   };
 
   switch (t.kind) {
+    case "atom_input": {
+      const mask = t.masks[ti.atomIndex] ?? 0;
+      sendInput(ws, mask);
+      ti.atomIndex++;
+      ti.lastFiredTick = tick;
+      return ti.atomIndex >= t.masks.length ? done(`atom input complete: ${t.label}`) : EMIT;
+    }
+
+    case "atom_chat": {
+      const { sent, truncated } = truncateChatInput(t.text);
+      if (sent === bot.lastSentChat && !bot.hasNewIncomingChat) {
+        return done(`deduplicated atom chat "${sent}"`);
+      }
+      sendChat(ws, sent);
+      sendInput(ws, 0);
+      bot.lastSentChat = sent;
+      bot.hasNewIncomingChat = false;
+      ti.lastFiredTick = tick;
+      return done(truncated
+        ? `atom chat ${t.label}: sent "${sent}" (TRUNCATED from ${t.text.length} chars)`
+        : `atom chat ${t.label}: sent "${sent}"`);
+    }
+
     // ---- ONCE chat tasks ----
     case "shout": {
-      if (belief.phase !== "playing" && belief.phase !== "hostage_select" && belief.phase !== "leader_summit") return SKIP;
-      return fireChat(t.text);
+      if (player.phase !== "playing" && player.phase !== "hostage_select" && player.phase !== "leader_summit") return SKIP;
+      return enqueueAtomChat(bot, t.text, "shout");
     }
     case "chat": {
-      if (belief.phase !== "whisper" && belief.phase !== "leader_summit") return SKIP;
-      return fireChat(t.text);
+      if (player.phase !== "whisper" && player.phase !== "leader_summit") return SKIP;
+      return enqueueAtomChat(bot, t.text, "chat");
+    }
+
+    case "whisper_action": {
+      if (player.phase !== "whisper" && player.phase !== "leader_summit") return SKIP;
+      if (!pushChatAction(bot, t.action)) return fail(`whisperMenuSequence returned empty for ${t.action}`);
+      ti.lastFiredTick = tick;
+      return enqueueAtomInput(bot, [bot.actions.shift()!], `whisper_action:${t.action}`);
     }
 
     case "exit_whisper": {
-      if (belief.phase !== "whisper") return SKIP;
+      if (player.phase !== "whisper") return SKIP;
       if (!pushChatAction(bot, "EXIT")) return fail("whisperMenuSequence returned empty");
-      sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
-      return EMIT;
+      return enqueueAtomInput(bot, [bot.actions.shift()!], "exit_whisper");
     }
 
     // ---- SEQUENCE tasks ----
     case "walk_to": {
-      if ((belief.phase !== "playing" && belief.phase !== "leader_summit") || !belief.myPos) return SKIP;
-      const dx = t.x - belief.myPos.x;
-      const dy = t.y - belief.myPos.y;
+      if ((player.phase !== "playing" && player.phase !== "leader_summit") || !player.myPos) return SKIP;
+      const dx = t.x - player.myPos.x;
+      const dy = t.y - player.myPos.y;
       if (dx * dx + dy * dy <= 9) return done(`arrived at (${t.x},${t.y})`);
-      const mask = moveToward(belief.myPos.x, belief.myPos.y, t.x, t.y);
-      sendInput(ws, mask || 0);
-      return EMIT;
+      const mask = moveToward(player.myPos.x, player.myPos.y, t.x, t.y);
+      return enqueueAtomInput(bot, [mask || 0], "move");
     }
 
     case "pursue_chat": {
-      if (belief.phase === "waiting_entry" && ti.createdOwnWhisperTick !== null) {
+      if (player.phase === "waiting_entry" && ti.createdOwnWhisperTick !== null) {
         ti.createdOwnWhisperTick = null;
         ti.grantDeadlineTick = null;
       }
 
-      if (belief.phase === "whisper") {
+      if (player.phase === "whisper") {
         if (ti.createdOwnWhisperTick !== null
             && ti.grantDeadlineTick !== null
             && tick > ti.grantDeadlineTick) {
-          if (belief.pendingEntry) {
+          if (player.pendingEntry) {
             if (pushChatAction(bot, "GRANT")) {
-              sendInput(ws, bot.actions.shift()!);
-              return EMIT;
+              return enqueueAtomInput(bot, [bot.actions.shift()!], "menu");
             }
           }
           if (pushChatAction(bot, "EXIT")) {
@@ -332,89 +521,111 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         return done("entered whisper");
       }
 
-      if (belief.phase === "waiting_entry") {
-        sendInput(ws, 0);
-        return EMIT;
+      if (player.phase === "waiting_entry") {
+        return enqueueAtomInput(bot, [0], "wait");
       }
 
-      if ((belief.phase !== "playing" && belief.phase !== "leader_summit") || !belief.myPos) return SKIP;
+      if ((player.phase !== "playing" && player.phase !== "leader_summit") || !player.myPos) return SKIP;
 
-      const targetDot = findTargetDot(belief, t.target);
+      const targetDot = findTargetDot(player, t.target);
 
       if (!targetDot) {
         if (tick - ti.lastSawTargetTick > 12) return SKIP;
-        bot.actions.push(BUTTON_A, 0);
-        sendInput(ws, bot.actions.shift()!);
-        if (ti.createdOwnWhisperTick === null) {
-          ti.createdOwnWhisperTick = tick;
-          ti.grantDeadlineTick = randomGrantDeadline(tick);
-        }
-        return EMIT;
+        return SKIP;
       }
 
       ti.lastSawTargetTick = tick;
 
-      const dx = targetDot.worldX - belief.myPos.x;
-      const dy = targetDot.worldY - belief.myPos.y;
+      const dx = targetDot.worldX - player.myPos.x;
+      const dy = targetDot.worldY - player.myPos.y;
       const distSq = dx * dx + dy * dy;
 
       if (distSq > 100) {
-        const mask = moveToward(belief.myPos.x, belief.myPos.y, targetDot.worldX, targetDot.worldY);
-        sendInput(ws, mask || 0);
-        return EMIT;
+        const mask = moveToward(player.myPos.x, player.myPos.y, targetDot.worldX, targetDot.worldY);
+        return enqueueAtomInput(bot, [mask || 0], "move");
       }
 
-      bot.actions.push(BUTTON_A, 0);
-      sendInput(ws, bot.actions.shift()!);
-      if (ti.createdOwnWhisperTick === null) {
-        ti.createdOwnWhisperTick = tick;
-        ti.grantDeadlineTick = randomGrantDeadline(tick);
+      const targetBelief = player.players.get(t.target);
+      if (targetBelief?.inWhisper) {
+        ti.createdOwnWhisperTick = null;
+        ti.grantDeadlineTick = null;
+        bot.actions.push(BUTTON_B, 0);
+      } else {
+        bot.actions.push(BUTTON_A, 0);
+        if (ti.createdOwnWhisperTick === null) {
+          ti.createdOwnWhisperTick = tick;
+          ti.grantDeadlineTick = randomGrantDeadline(tick);
+        }
       }
-      return EMIT;
+      return enqueueAtomInput(bot, [bot.actions.shift()!], "menu");
     }
 
     case "pursue_exchange": {
-      if (belief.phase === "waiting_entry" && ti.createdOwnWhisperTick !== null) {
+      if (player.phase === "waiting_entry" && ti.createdOwnWhisperTick !== null) {
         ti.createdOwnWhisperTick = null;
         ti.grantDeadlineTick = null;
       }
-      if (belief.phase === "waiting_entry") {
+      if (player.phase === "waiting_entry") {
         ti.exchangeStatus = "waiting for entry to whisper";
-        sendInput(ws, 0);
-        return EMIT;
+        return enqueueAtomInput(bot, [0], "wait");
       }
 
       // --- In whisper: try to exchange ---
-      if (belief.phase === "whisper") {
+      if (player.phase === "whisper") {
         const wantRole = t.exchange === "role";
-        const targetBelief = belief.players.get(t.target);
-        const targetInWhisper = belief.occupantNames.includes(t.target);
-        const occupantList = belief.occupantNames.join(", ");
-        const occCount = belief.occupantCount;
+        const wantWhisperOnly = t.exchange === "whisper";
+        const targetBelief = player.players.get(t.target);
+        const targetInWhisper = player.occupantNames.includes(t.target);
+        const occupantList = player.occupantNames.join(", ");
+        const occCount = player.occupantCount;
 
-        // Check if exchange already completed (belief updated from info screen / system msgs)
-        if (targetBelief) {
-          if (wantRole && targetBelief.knownRole) {
-            return done(`role exchange complete — ${t.target} is ${targetBelief.knownRole}`);
+        if (wantWhisperOnly) {
+          if (targetInWhisper) return done(`in whisper with ${t.target}`);
+          if (player.occupantCount >= 2) {
+            ti.exchangeStatus = `in wrong whisper (${occCount} occupants: [${occupantList}]); target ${t.target} not present`;
+            if (pushChatAction(bot, "EXIT")) {
+              sendInput(ws, bot.actions.shift()!);
+              ti.createdOwnWhisperTick = null;
+              ti.grantDeadlineTick = null;
+              return EMIT;
+            }
           }
-          if (!wantRole && targetBelief.knownTeam) {
-            return done(`color exchange complete — ${t.target} is ${targetBelief.knownTeam}`);
+          return enqueueAtomInput(bot, [0], "wait");
+        }
+
+        // Check if exchange already completed (player updated from info screen / system msgs)
+        if (targetBelief) {
+          if (wantRole && hasRoleExchangeSucceeded(player, t.target)) {
+            return done(markRoleExchangeSucceeded(player, t.target, "task_known"));
+          }
+          if (!wantRole && hasColorExchangeSucceeded(player, t.target)) {
+            return done(markColorExchangeSucceeded(player, t.target, "task_known"));
+          }
+          if (ti.offerSentTick !== null && hasExchangeSystemMessage(player, wantRole ? "role" : "color")) {
+            return done(wantRole
+              ? markRoleExchangeSucceeded(player, t.target, "system_message")
+              : markColorExchangeSucceeded(player, t.target, "system_message"));
           }
         }
 
         // Accept pending offers from others
-        if (wantRole && belief.pendingRoleOffer) {
+        if (wantRole && player.pendingRoleOffer && targetInWhisper) {
           if (pushChatAction(bot, "R.ACCPT")) {
             ti.exchangeStatus = `accepting role offer (${occCount} in whisper: ${occupantList})`;
             sendInput(ws, bot.actions.shift()!);
-            return EMIT;
+            return done(markRoleExchangeSucceeded(player, t.target, "accept_offer"));
           }
         }
-        if (!wantRole && belief.pendingColorOffer) {
+        if (!wantRole && player.pendingColorOffer) {
           if (pushChatAction(bot, "C.ACCPT")) {
-            ti.exchangeStatus = `accepting color offer (${occCount} in whisper: ${occupantList})`;
+            ti.exchangeStatus = targetInWhisper
+              ? `accepting color offer from target (${occCount} in whisper: ${occupantList})`
+              : `accepting opportunistic color offer (${occCount} in whisper: ${occupantList})`;
             sendInput(ws, bot.actions.shift()!);
-            return EMIT;
+            for (const name of player.occupantNames) markColorExchangeSucceeded(player, name, "accept_offer");
+            return done(targetInWhisper
+              ? markColorExchangeSucceeded(player, t.target, "accept_offer")
+              : `opportunistic color exchange complete in wrong whisper: [${occupantList}]`);
           }
         }
 
@@ -424,22 +635,32 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
           if (wantRole) {
             ti.exchangeStatus = `offer sent, waiting ${waitTicks} ticks — ${occCount} occupants: [${occupantList}]`
               + (targetInWhisper ? ` — target ${t.target} IS here` : ` — target ${t.target} NOT in whisper`)
-              + (belief.pendingRoleOffer ? " — R! indicator (someone offered back)" : " — no R! indicator yet");
+              + (player.pendingRoleOffer ? " — R! indicator (someone offered back)" : " — no R! indicator yet");
           } else {
             ti.exchangeStatus = `offer sent, waiting ${waitTicks} ticks — ${occCount} occupants: [${occupantList}]`
               + (targetInWhisper ? ` — target ${t.target} IS here` : ` — target ${t.target} NOT in whisper`)
-              + (belief.pendingColorOffer ? " — C! indicator (someone offered back)" : " — no C! indicator yet");
+              + (player.pendingColorOffer ? " — C! indicator (someone offered back)" : " — no C! indicator yet");
           }
           if (waitTicks > 72) {
             return fail(`offer timed out after ${waitTicks} ticks — ${ti.exchangeStatus}`);
           }
-          sendInput(ws, 0);
-          return EMIT;
+          return enqueueAtomInput(bot, [0], "wait");
         }
 
         // Alone in whisper — grant entry or wait
-        if (belief.occupantCount < 2) {
-          ti.exchangeStatus = "alone in whisper, waiting for others to join";
+        if (player.occupantCount < 2) {
+          const aloneTicks = ti.createdOwnWhisperTick === null ? 0 : tick - ti.createdOwnWhisperTick;
+          const invite = inviteText(player, t.target);
+          ti.exchangeStatus = `alone in whisper ${aloneTicks} ticks, waiting for ${t.target}`;
+          if (player.pendingEntry && pushChatAction(bot, "GRANT")) {
+            ti.exchangeStatus = "granting entry to pending player";
+            return enqueueAtomInput(bot, [bot.actions.shift()!], "menu");
+          }
+          if (invite && tick - ti.privateSpotShoutTick > ALONE_WHISPER_SHOUT_INTERVAL_TICKS) {
+            ti.privateSpotShoutTick = tick;
+            ti.exchangeStatus = `reminding ${t.target} of private whisper location`;
+            return enqueueAtomChat(bot, invite, "alone_whisper_invite");
+          }
           if (ti.createdOwnWhisperTick !== null
               && ti.grantDeadlineTick !== null
               && tick > ti.grantDeadlineTick) {
@@ -451,18 +672,43 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
               return EMIT;
             }
           }
-          if (belief.pendingEntry && pushChatAction(bot, "GRANT")) {
-            ti.exchangeStatus = "granting entry to pending player";
-            sendInput(ws, bot.actions.shift()!);
-            return EMIT;
-          }
-          sendInput(ws, 0);
-          return EMIT;
+          return enqueueAtomInput(bot, [0], "wait");
         }
 
-        // 2+ occupants — send our offer
-        ti.exchangeStatus = `sending ${t.exchange} offer — ${occCount} occupants: [${occupantList}]`
-          + (targetInWhisper ? ` — target ${t.target} IS here` : ` — target ${t.target} NOT in whisper`);
+        // 2+ occupants — only offer if target is actually here
+        if (!targetInWhisper) {
+          const unknownOccupant = firstUnknownOccupant(player);
+          if (!wantRole && unknownOccupant) {
+            ti.exchangeStatus = `target ${t.target} absent; making whisper productive with ${unknownOccupant}`;
+            if (pushChatAction(bot, "C.OFFER")) {
+              sendInput(ws, bot.actions.shift()!);
+              ti.offerSentTick = tick;
+              return EMIT;
+            }
+          }
+          ti.exchangeStatus = `target ${t.target} NOT in whisper — exiting to find them`;
+          if (pushChatAction(bot, "EXIT")) {
+            sendInput(ws, bot.actions.shift()!);
+            ti.createdOwnWhisperTick = null;
+            ti.grantDeadlineTick = null;
+            return EMIT;
+          }
+          return SKIP;
+        }
+
+        if (player.pendingEntry && pushChatAction(bot, "GRANT")) {
+          ti.exchangeStatus = `granting entry while waiting for ${t.target}`;
+          return enqueueAtomInput(bot, [bot.actions.shift()!], "menu");
+        }
+
+        if (wantRole && hasRoleExchangeSucceeded(player, t.target)) {
+          return done(markRoleExchangeSucceeded(player, t.target, "already_succeeded"));
+        }
+        if (!wantRole && hasColorExchangeSucceeded(player, t.target)) {
+          return done(markColorExchangeSucceeded(player, t.target, "already_succeeded"));
+        }
+
+        ti.exchangeStatus = `sending ${t.exchange} offer — ${occCount} occupants: [${occupantList}]`;
         const action = wantRole ? "R.OFFER" : "C.OFFER";
         if (pushChatAction(bot, action)) {
           sendInput(ws, bot.actions.shift()!);
@@ -472,10 +718,96 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         return fail("whisperMenuSequence for offer returned empty");
       }
 
-      // --- Overworld: walk toward target ---
-      if ((belief.phase !== "playing" && belief.phase !== "leader_summit") || !belief.myPos) return SKIP;
+      // --- Overworld: either claim a private spot or walk toward target ---
+      if ((player.phase !== "playing" && player.phase !== "leader_summit") || !player.myPos) return SKIP;
 
-      const targetDot = findTargetDot(belief, t.target);
+      const targetDot = findTargetDot(player, t.target);
+      if (targetDot) ti.lastSawTargetTick = tick;
+      const targetBelief = player.players.get(t.target);
+      if (!targetReachableInRoom(player, t.target)) {
+        ti.exchangeStatus = `target ${t.target} is not in current room; aborting canned pursue`;
+        return fail(ti.exchangeStatus);
+      }
+      const targetInNearbyWhisper = shouldRequestTargetWhisper(player, t.target);
+
+      if (targetInNearbyWhisper) {
+        ti.exchangeStatus = `requesting entry to ${t.target}'s nearby whisper`;
+        bot.actions.push(BUTTON_B, 0);
+        return enqueueAtomInput(bot, [bot.actions.shift()!], "menu");
+      }
+
+      const mode = t.mode ?? "go_to_player";
+      if (mode === "find_spot") {
+        if (player.nearbyNames.length > 1) {
+          ti.privateSpot = choosePrivateSpot(player, targetDot);
+          ti.privateSpotTick = tick;
+          ti.exchangeStatus = `too many nearby players for private host (${player.nearbyNames.length}); relocating`;
+          return enqueueAtomInput(bot, [0], "wait");
+        }
+
+        const currentSpotPrivate = ti.privateSpot
+          ? pointIsPrivate(player, ti.privateSpot, t.target)
+          : false;
+        if (!ti.privateSpot || !currentSpotPrivate || tick - ti.privateSpotTick > 180) {
+          ti.privateSpot = choosePrivateSpot(player, targetDot);
+          ti.privateSpotTick = tick;
+        }
+        if (!ti.privateSpot) {
+          ti.exchangeStatus = "no private spot available";
+          return SKIP;
+        }
+
+        const spotDistSq = distSq(player.myPos, ti.privateSpot);
+        if (spotDistSq > 100) {
+          const dist = Math.round(Math.sqrt(spotDistSq));
+          ti.exchangeStatus = `finding private spot for ${t.target} — ${dist} units away`;
+          const mask = moveToward(player.myPos.x, player.myPos.y, ti.privateSpot.x, ti.privateSpot.y);
+          return enqueueAtomInput(bot, [mask || 0], "move");
+        }
+
+        if (!pointIsPrivate(player, player.myPos, t.target)) {
+          ti.privateSpot = choosePrivateSpot(player, targetDot);
+          ti.privateSpotTick = tick;
+          ti.exchangeStatus = "private spot became crowded, relocating";
+          return enqueueAtomInput(bot, [0], "wait");
+        }
+
+        if (tick - ti.privateSpotShoutTick > 180) {
+          const msg = inviteText(player, t.target);
+          if (!msg) {
+            ti.exchangeStatus = `not shouting invite: ${t.target} is not in current room`;
+            return fail(ti.exchangeStatus);
+          }
+          ti.privateSpotShoutTick = tick;
+          ti.shoutedWrongRoom = true;
+          ti.exchangeStatus = `advertised private spot to ${t.target}`;
+          return enqueueAtomChat(bot, msg, "private_spot_invite");
+        }
+
+        ti.exchangeStatus = `creating private whisper for ${t.target}`;
+        bot.actions.push(BUTTON_A, 0);
+        sendInput(ws, bot.actions.shift()!);
+        if (ti.createdOwnWhisperTick === null || tick - ti.createdOwnWhisperTick > 30) {
+          ti.createdOwnWhisperTick = tick;
+          ti.grantDeadlineTick = randomGrantDeadline(tick);
+        }
+        return EMIT;
+      }
+
+      // After exiting a wrong-room whisper, shout to invite target to a corner.
+      if (ti.createdOwnWhisperTick === null && ti.offerSentTick === null && !ti.shoutedWrongRoom
+          && ti.startedEmitted && ti.lastFiredTick >= 0) {
+        if (!targetReachableInRoom(player, t.target)) {
+          ti.exchangeStatus = `not shouting corner invite: ${t.target} is not in current room`;
+          return fail(ti.exchangeStatus);
+        }
+        ti.shoutedWrongRoom = true;
+        const short = t.target.length <= 10 ? t.target : t.target.slice(0, 10);
+        sendChat(ws, truncateChatInput(`${short} FIND A CORNER`).sent);
+        sendInput(ws, 0);
+        ti.exchangeStatus = `shouted to ${t.target} to find a corner`;
+        return EMIT;
+      }
 
       if (!targetDot) {
         ti.exchangeStatus = `target ${t.target} not visible on minimap`;
@@ -489,21 +821,26 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         return EMIT;
       }
 
-      ti.lastSawTargetTick = tick;
-
-      const dxe = targetDot.worldX - belief.myPos.x;
-      const dye = targetDot.worldY - belief.myPos.y;
+      const dxe = targetDot.worldX - player.myPos.x;
+      const dye = targetDot.worldY - player.myPos.y;
       const distSqE = dxe * dxe + dye * dye;
 
       if (distSqE > 100) {
         const dist = Math.round(Math.sqrt(distSqE));
         ti.exchangeStatus = `walking to ${t.target} — ${dist} units away`;
-        const mask = moveToward(belief.myPos.x, belief.myPos.y, targetDot.worldX, targetDot.worldY);
-        sendInput(ws, mask || 0);
-        return EMIT;
+        const mask = moveToward(player.myPos.x, player.myPos.y, targetDot.worldX, targetDot.worldY);
+        return enqueueAtomInput(bot, [mask || 0], "move");
       }
 
       ti.exchangeStatus = `reached ${t.target}, opening whisper`;
+      if (targetBelief && !targetBelief.inWhisper && player.myCharName && player.myCharName > t.target) {
+        if (ti.nearTargetWaitTick === -Infinity) ti.nearTargetWaitTick = tick;
+        const waited = tick - ti.nearTargetWaitTick;
+        if (waited < 48) {
+          ti.exchangeStatus = `reached ${t.target}, waiting ${waited} ticks for lower-name player to host`;
+          return enqueueAtomInput(bot, [0], "wait_for_target_host");
+        }
+      }
       bot.actions.push(BUTTON_A, 0);
       sendInput(ws, bot.actions.shift()!);
       if (ti.createdOwnWhisperTick === null) {
@@ -515,30 +852,44 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
     // ---- LOOP tasks ----
     case "loop_auto_grant": {
-      if (belief.phase !== "whisper" || !belief.pendingEntry) return SKIP;
+      if (player.phase !== "whisper" || !player.pendingEntry) return SKIP;
       if (!pushChatAction(bot, "GRANT")) return SKIP;
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
     }
     case "loop_auto_accept_color": {
-      if (belief.phase !== "whisper" || !belief.pendingColorOffer) return SKIP;
+      if (player.phase !== "whisper" || !player.pendingColorOffer) return SKIP;
       if (!pushChatAction(bot, "C.ACCPT")) return SKIP;
+      for (const name of player.occupantNames) markColorExchangeSucceeded(player, name, "auto_accept");
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
     }
     case "loop_auto_accept_role": {
-      if (belief.phase !== "whisper" || !belief.pendingRoleOffer) return SKIP;
+      if (player.phase !== "whisper" || !player.pendingRoleOffer) return SKIP;
       if (!pushChatAction(bot, "R.ACCPT")) return SKIP;
+      for (const name of player.occupantNames) markRoleExchangeSucceeded(player, name, "auto_accept");
       sendInput(ws, bot.actions.shift()!);
       ti.lastFiredTick = tick;
       return EMIT;
     }
+    case "loop_global_check": {
+      if (tick - ti.lastFiredTick < t.intervalTicks) return SKIP;
+      if (player.phase === "whisper") {
+        ti.lastFiredTick = tick;
+        return enqueueAtomInput(bot, [BUTTON_RIGHT, 0, BUTTON_LEFT, 0], "global_check_whisper");
+      }
+      if (player.phase === "playing" || player.phase === "hostage_select" || player.phase === "leader_summit") {
+        ti.lastFiredTick = tick;
+        return enqueueAtomInput(bot, [BUTTON_SELECT, 0, BUTTON_SELECT, 0], "global_check_overworld");
+      }
+      return SKIP;
+    }
 
     case "usurp_vote": {
-      if (belief.phase !== "playing" && belief.phase !== "unknown" && belief.phase !== "hostage_select") return SKIP;
-      if (belief.amLeader) return fail("I am leader, cannot usurp");
+      if (player.phase !== "playing" && player.phase !== "unknown" && player.phase !== "hostage_select") return SKIP;
+      if (player.amLeader) return fail("I am leader, cannot usurp");
 
       if (ti.usurpState === "idle") {
         bot.actions.push(BUTTON_SELECT, 0);
@@ -552,8 +903,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         const cand = parseUsurpCandidate(bot.lastFrame);
         if (!cand) {
           if (tick - ti.startTick > 30) return fail("shout view not detected");
-          sendInput(ws, 0);
-          return EMIT;
+          return enqueueAtomInput(bot, [0], "wait");
         }
         ti.usurpState = "navigating";
         ti.usurpNavCount = 0;
@@ -574,7 +924,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         }
 
         if (ti.usurpNavCount > 14) return fail("target not in candidate list");
-        bot.actions.push(BUTTON_RIGHT, 0);
+        bot.actions.push(BUTTON_B, 0);
         sendInput(ws, bot.actions.shift()!);
         ti.usurpNavCount++;
         return EMIT;
@@ -590,88 +940,8 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
     }
 
     case "precommit_hostages": {
-      if (belief.phase !== "hostage_select") {
-        if (ti.hostageState !== "idle") {
-          ti.hostageState = "idle";
-          ti.hostageRound = -1;
-        }
-        return SKIP;
-      }
-      if (!belief.amLeader) return SKIP;
-
-      if (ti.hostageState === "done" && ti.hostageRound === belief.round) return SKIP;
-
-      if (ti.hostageState === "idle" || (ti.hostageState === "done" && ti.hostageRound !== belief.round)) {
-        ti.hostageState = "opening_chat";
-        ti.hostageRound = belief.round;
-        const items = ["SHOUT", "INFO"];
-        const seq = menuSequence("comm", "SHOUT", items);
-        bot.actions.push(...seq);
-        sendInput(ws, bot.actions.shift()!);
-        return EMIT;
-      }
-
-      if (ti.hostageState === "opening_chat") {
-        if (!bot.lastFrame) { sendInput(ws, 0); return EMIT; }
-        const grid = parseHostageGrid(bot.lastFrame);
-        if (!grid) {
-          sendInput(ws, 0);
-          return EMIT;
-        }
-        ti.hostageState = "selecting";
-      }
-
-      if (ti.hostageState === "selecting") {
-        if (!bot.lastFrame) { sendInput(ws, 0); return EMIT; }
-        const grid = parseHostageGrid(bot.lastFrame);
-        if (!grid) { sendInput(ws, 0); return EMIT; }
-
-        // Build character names for each grid entry, match against targets
-        const targetSet = new Set(t.targets);
-
-        for (let i = 0; i < grid.eligible.length; i++) {
-          const entry = grid.eligible[i];
-          const entryName = entry.shape !== null
-            ? characterName(entry.color, entry.shape)
-            : null;
-          const isTarget = entryName !== null && targetSet.has(entryName);
-          const isSelected = grid.selectedPositions.includes(i);
-          if (isTarget && !isSelected) {
-            const delta = i - grid.cursorPosition;
-            if (delta > 0) {
-              for (let d = 0; d < delta; d++) bot.actions.push(BUTTON_RIGHT, 0);
-            } else if (delta < 0) {
-              for (let d = 0; d < -delta; d++) bot.actions.push(BUTTON_LEFT, 0);
-            }
-            bot.actions.push(BUTTON_A, 0);
-            sendInput(ws, bot.actions.shift()!);
-            return EMIT;
-          }
-          if (!isTarget && isSelected) {
-            const delta = i - grid.cursorPosition;
-            if (delta > 0) {
-              for (let d = 0; d < delta; d++) bot.actions.push(BUTTON_RIGHT, 0);
-            } else if (delta < 0) {
-              for (let d = 0; d < -delta; d++) bot.actions.push(BUTTON_LEFT, 0);
-            }
-            bot.actions.push(BUTTON_A, 0);
-            sendInput(ws, bot.actions.shift()!);
-            return EMIT;
-          }
-        }
-
-        ti.hostageState = "committing";
-        bot.actions.push(BUTTON_B, 0);
-        sendInput(ws, bot.actions.shift()!);
-        return EMIT;
-      }
-
-      if (ti.hostageState === "committing") {
-        ti.hostageState = "done";
-        return SKIP;
-      }
-
-      return SKIP;
+      bot.hostagePrecommit = t.targets;
+      return emit(`hostages precommitted: [${t.targets.join(", ")}]`);
     }
   }
   return SKIP;
@@ -687,23 +957,54 @@ export function runTasks(
   ws: WebSocket,
   buf?: EventBuffer,
 ): TaskInstance[] {
-  const tick = bot.belief.tick;
+  const tick = bot.player.tick;
 
-  if (!bot.actions.empty) {
-    sendInput(ws, bot.actions.shift()!);
+  if (bot.nonInterruptingTasks.length > 0) {
+    const atom = bot.nonInterruptingTasks[0];
+    const result = tryTask(atom, bot, ws);
+    if (result.kind === "done" || result.kind === "failed") {
+      if (buf) pushEvent(buf, {
+        tick, task: atom.task,
+        kind: result.kind === "done" ? "succeeded" : "failed",
+        reason: result.reason,
+      });
+      bot.nonInterruptingTasks.shift();
+    }
     return tasks;
   }
 
-  if (bot.belief.phase === "waiting_entry") {
+  if (bot.player.phase === "waiting_entry") {
     sendInput(ws, 0);
     return tasks;
   }
 
+  // Track completed task IDs this frame for blockedBy resolution.
+  const succeeded = new Set<string>();
+  const failed = new Set<string>();
+
+  function isBlocked(ti: TaskInstance): boolean {
+    if (!ti.blockedBy) return false;
+    // If the blocking task already succeeded this frame, unblock.
+    if (succeeded.has(ti.blockedBy)) { ti.blockedBy = null; return false; }
+    // If it failed, this task will be dropped below.
+    if (failed.has(ti.blockedBy)) return true;
+    // Still in the list and not yet resolved — still blocked.
+    return tasks.some(other => other.id === ti.blockedBy);
+  }
+
+  // Phase 1: Run loop and once tasks first — they interrupt async tasks.
   const kept: TaskInstance[] = [];
-  let emitted = false;
+  let highPriorityEmitted = false;
+  const activePursueExchange = tasks.some(ti => ti.task.kind === "pursue_exchange");
 
   for (const ti of tasks) {
-    if (emitted) { kept.push(ti); continue; }
+    if (!isLoopTask(ti.task) && !isOnceTask(ti.task)) continue;
+    if (activePursueExchange && ti.task.kind === "loop_auto_accept_role") {
+      kept.push(ti);
+      continue;
+    }
+    if (isBlocked(ti)) { kept.push(ti); continue; }
+    if (highPriorityEmitted) { kept.push(ti); continue; }
     const result = tryTask(ti, bot, ws);
 
     if (result.kind === "emitted") {
@@ -713,21 +1014,83 @@ export function runTasks(
       }
       if (isOnceTask(ti.task)) {
         if (buf) pushEvent(buf, { tick, task: ti.task, kind: "fired", reason: result.reason });
+        succeeded.add(ti.id);
       } else {
         kept.push(ti);
       }
-      emitted = true;
+      highPriorityEmitted = true;
     } else if (result.kind === "done") {
       if (buf) pushEvent(buf, { tick, task: ti.task, kind: "succeeded", reason: result.reason });
+      succeeded.add(ti.id);
     } else if (result.kind === "failed") {
       if (buf) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: result.reason });
+      failed.add(ti.id);
     } else {
       kept.push(ti);
     }
   }
 
-  if (!emitted) sendInput(ws, 0);
-  return kept;
+  if (highPriorityEmitted) {
+    // Keep all async tasks untouched — they resume next frame.
+    for (const ti of tasks) {
+      if (isAsyncTask(ti.task) && !kept.includes(ti)) kept.push(ti);
+    }
+    return dropBlockedByFailed(kept, failed, buf, tick);
+  }
+
+  // Phase 2: No loop/once fired — drain action queue or run first async task.
+  if (!bot.actions.empty) {
+    for (const ti of tasks) {
+      if (!kept.includes(ti)) kept.push(ti);
+    }
+    sendInput(ws, bot.actions.shift()!);
+    return dropBlockedByFailed(kept, failed, buf, tick);
+  }
+
+  // Phase 3: Run first non-blocked async task.
+  let asyncEmitted = false;
+  for (const ti of tasks) {
+    if (isLoopTask(ti.task) || isOnceTask(ti.task)) continue;
+    if (isBlocked(ti)) { kept.push(ti); continue; }
+    if (asyncEmitted) { kept.push(ti); continue; }
+    const result = tryTask(ti, bot, ws);
+
+    if (result.kind === "emitted") {
+      if (buf && !ti.startedEmitted) {
+        pushEvent(buf, { tick, task: ti.task, kind: "started" });
+        ti.startedEmitted = true;
+      }
+      kept.push(ti);
+      asyncEmitted = true;
+    } else if (result.kind === "done") {
+      if (buf) pushEvent(buf, { tick, task: ti.task, kind: "succeeded", reason: result.reason });
+      succeeded.add(ti.id);
+    } else if (result.kind === "failed") {
+      if (buf) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: result.reason });
+      failed.add(ti.id);
+    } else {
+      kept.push(ti);
+    }
+  }
+
+  if (!asyncEmitted) sendInput(ws, 0);
+  return dropBlockedByFailed(kept, failed, buf, tick);
+}
+
+function dropBlockedByFailed(
+  tasks: TaskInstance[],
+  failed: Set<string>,
+  buf: EventBuffer | undefined,
+  tick: number,
+): TaskInstance[] {
+  if (failed.size === 0) return tasks;
+  return tasks.filter(ti => {
+    if (ti.blockedBy && failed.has(ti.blockedBy)) {
+      if (buf) pushEvent(buf, { tick, task: ti.task, kind: "failed", reason: `dependency ${ti.blockedBy} failed` });
+      return false;
+    }
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -735,10 +1098,10 @@ export function runTasks(
 // ---------------------------------------------------------------------------
 
 const VALID_KINDS = new Set<string>([
-  "shout", "chat", "exit_whisper",
+  "shout", "chat", "whisper_action", "exit_whisper",
   "walk_to", "pursue_chat", "pursue_exchange", "usurp_vote",
   "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
-  "precommit_hostages",
+  "loop_global_check", "precommit_hostages", "atom_input", "atom_chat",
 ]);
 
 function coerceTask(raw: any): Task | null {
@@ -749,14 +1112,22 @@ function coerceTask(raw: any): Task | null {
     case "shout":
     case "chat":
       return typeof raw.text === "string" ? { kind: k, text: String(raw.text) } : null;
+    case "whisper_action": {
+      const action = raw.action;
+      return action === "ROLE" || action === "C.OFFER" || action === "R.OFFER" ||
+        action === "PASS" || action === "TAKE" || action === "GRANT"
+        ? { kind: "whisper_action", action }
+        : null;
+    }
     case "pursue_chat":
       return typeof raw.target === "string" && isValidCharacterName(raw.target) && Number.isFinite(raw.timeLimitTicks)
         ? { kind: "pursue_chat", target: raw.target, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
     case "pursue_exchange": {
-      const ex = raw.exchange === "role" || raw.exchange === "color" ? raw.exchange : null;
+      const ex = raw.exchange === "role" || raw.exchange === "color" || raw.exchange === "whisper" ? raw.exchange : null;
       if (!ex) return null;
+      const mode = raw.mode === "find_spot" || raw.mode === "go_to_player" ? raw.mode : undefined;
       return typeof raw.target === "string" && isValidCharacterName(raw.target) && Number.isFinite(raw.timeLimitTicks)
-        ? { kind: "pursue_exchange", target: raw.target, exchange: ex, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
+        ? { kind: "pursue_exchange", target: raw.target, exchange: ex, timeLimitTicks: raw.timeLimitTicks | 0, mode } : null;
     }
     case "usurp_vote":
       return typeof raw.target === "string" && isValidCharacterName(raw.target) && Number.isFinite(raw.timeLimitTicks)
@@ -764,6 +1135,18 @@ function coerceTask(raw: any): Task | null {
     case "walk_to":
       return Number.isFinite(raw.x) && Number.isFinite(raw.y) && Number.isFinite(raw.timeLimitTicks)
         ? { kind: "walk_to", x: raw.x | 0, y: raw.y | 0, timeLimitTicks: raw.timeLimitTicks | 0 } : null;
+    case "loop_global_check":
+      return Number.isFinite(raw.intervalTicks)
+        ? { kind: "loop_global_check", intervalTicks: raw.intervalTicks | 0 }
+        : { kind: "loop_global_check", intervalTicks: 96 };
+    case "atom_input":
+      return Array.isArray(raw.masks)
+        ? { kind: "atom_input", masks: raw.masks.map((n: any) => Number(n) | 0), label: String(raw.label ?? "atom") }
+        : null;
+    case "atom_chat":
+      return typeof raw.text === "string"
+        ? { kind: "atom_chat", text: raw.text, label: String(raw.label ?? "chat") }
+        : null;
     case "exit_whisper":
     case "loop_auto_grant": case "loop_auto_accept_color": case "loop_auto_accept_role":
       return { kind: k } as Task;
@@ -792,7 +1175,16 @@ export function parseTaskUpdate(raw: string, name?: string): TaskUpdate | null {
       update.clear = "all";
     }
     if (Array.isArray(obj.append)) {
-      update.append = obj.append.map(coerceTask).filter((x: Task | null): x is Task => x !== null);
+      update.append = [];
+      for (const raw of obj.append) {
+        const task = coerceTask(raw);
+        if (task) {
+          const item: TaskAppendItem = { task };
+          if (typeof raw.id === "string" && raw.id.length > 0) item.id = raw.id;
+          if (typeof raw.blockedBy === "string" && raw.blockedBy.length > 0) item.blockedBy = raw.blockedBy;
+          update.append.push(item);
+        }
+      }
     }
     return update;
   } catch (e: any) {
@@ -812,7 +1204,9 @@ export function tasksToPromptLines(tasks: TaskInstance[], tick: number): string[
     const ti = tasks[i];
     const t = ti.task;
     const meta: string[] = [];
-    if (isSequenceTask(t)) {
+    meta.push(`id=${ti.id}`);
+    if (ti.blockedBy) meta.push(`blockedBy=${ti.blockedBy}`);
+    if (isAsyncTask(t)) {
       const limit = (t as any).timeLimitTicks as number;
       meta.push(`elapsed=${tick - ti.startTick}/${limit}`);
       if ((t.kind === "pursue_chat" || t.kind === "pursue_exchange") && ti.createdOwnWhisperTick !== null) {
@@ -831,11 +1225,8 @@ export function tasksToPromptLines(tasks: TaskInstance[], tick: number): string[
     if (isLoopTask(t) && "intervalTicks" in t) {
       meta.push(`interval=${(t as any).intervalTicks} last=${ti.lastFiredTick}`);
     }
-    if (t.kind === "precommit_hostages" && ti.hostageState !== "idle") {
-      meta.push(`state=${ti.hostageState} round=${ti.hostageRound}`);
-    }
     const body = JSON.stringify(t);
-    lines.push(`  [${i + 1}] ${body}${meta.length ? " (" + meta.join(" ") + ")" : ""}`);
+    lines.push(`  [${i + 1}] ${body} (${meta.join(" ")})`);
   }
   return lines;
 }

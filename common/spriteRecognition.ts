@@ -25,7 +25,18 @@ export type RecognitionResult = Map<string, SpriteMatch[]>;
 // Constraints callers can pin on sprite categories.
 // "skip" means that category is transparent — don't match it at all.
 // A number pins that category to a specific palette index.
-export type CategoryConstraints = Record<number, number | "skip">;
+// A number[] restricts that category to one of the listed palette indices.
+export type CategoryConstraints = Record<number, number | number[] | "skip">;
+
+export interface SpriteVariant {
+  name: string;
+  sprite: Sprite7x7;
+  constraints?: CategoryConstraints;
+}
+
+export interface SpriteVariantMatch extends SpriteMatch {
+  name: string;
+}
 
 function getPixel(buf: PixelBuffer, x: number, y: number): number {
   if (x < 0 || y < 0 || x >= buf.width || y >= buf.height) return 0;
@@ -40,7 +51,7 @@ function collectCategories(sprite: Sprite7x7): Set<number> {
   return cats;
 }
 
-function matchSpriteAt(
+export function matchSpriteAt(
   buf: PixelBuffer,
   sprite: Sprite7x7,
   sx: number,
@@ -58,6 +69,15 @@ function matchSpriteAt(
     activeCats.push(c);
   }
   if (activeCats.length === 0) return null;
+
+  // Build allowlists for categories constrained to a set of colors
+  const allowlists: Map<number, Set<number>> = new Map();
+  for (const c of activeCats) {
+    const pin = constraints[c];
+    if (Array.isArray(pin)) {
+      allowlists.set(c, new Set(pin));
+    }
+  }
 
   // Collect pixel values per category
   const catPixels: Map<number, number[]> = new Map();
@@ -95,10 +115,12 @@ function matchSpriteAt(
     const counts = new Uint16Array(16);
     for (const px of catPixels.get(c)!) counts[px]++;
 
+    const allowed = allowlists.get(c);
     let bestColor = -1;
     let bestCount = 0;
     for (let i = 0; i < 16; i++) {
       if (usedColors.has(i)) continue;
+      if (allowed && !allowed.has(i)) continue;
       if (counts[i] > bestCount) {
         bestColor = i;
         bestCount = counts[i];
@@ -156,6 +178,25 @@ export function recognizeSprites(
   }
 
   return result;
+}
+
+export function matchSpriteVariantsAt(
+  buf: PixelBuffer,
+  variants: SpriteVariant[],
+  sx: number,
+  sy: number,
+  threshold: number,
+  defaultConstraints: CategoryConstraints = { 0: "skip" },
+): SpriteVariantMatch | null {
+  let best: SpriteVariantMatch | null = null;
+  for (const variant of variants) {
+    const m = matchSpriteAt(buf, variant.sprite, sx, sy, variant.constraints ?? defaultConstraints);
+    if (!m || m.score < threshold) continue;
+    if (!best || m.score > best.score) {
+      best = { name: variant.name, x: sx, y: sy, score: m.score, colors: m.colors };
+    }
+  }
+  return best;
 }
 
 // --- Text recognition ---
@@ -367,4 +408,114 @@ export function readTextAt(
   }
 
   return text.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Color detection utilities
+// ---------------------------------------------------------------------------
+
+export interface ColorDetection {
+  color: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * Detect non-background colors present in a rectangular region.
+ * Returns the set of palette indices found (excluding those in `exclude`).
+ */
+export function detectColorsInRegion(
+  buf: PixelBuffer,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  exclude?: Set<number>,
+): Set<number> {
+  const colors = new Set<number>();
+  const ex = exclude ?? new Set([0]);
+  const xEnd = Math.min(rx + rw, buf.width);
+  const yEnd = Math.min(ry + rh, buf.height);
+  for (let y = Math.max(0, ry); y < yEnd; y++) {
+    const rowOff = y * buf.width;
+    for (let x = Math.max(0, rx); x < xEnd; x++) {
+      const c = buf.pixels[rowOff + x];
+      if (!ex.has(c)) colors.add(c);
+    }
+  }
+  return colors;
+}
+
+/**
+ * Scan for all positions of a specific color within a region.
+ * Useful for finding indicator pixels or single-color markers.
+ */
+export function findColorPositions(
+  buf: PixelBuffer,
+  color: number,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+): ColorDetection[] {
+  const results: ColorDetection[] = [];
+  const xEnd = Math.min(rx + rw, buf.width);
+  const yEnd = Math.min(ry + rh, buf.height);
+  for (let y = Math.max(0, ry); y < yEnd; y++) {
+    const rowOff = y * buf.width;
+    for (let x = Math.max(0, rx); x < xEnd; x++) {
+      if (buf.pixels[rowOff + x] === color) {
+        results.push({ color, x, y });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Fast scan for a small fixed-color pattern in a buffer.
+ * `pattern` is an array of [dx, dy] offsets that must all be `color`.
+ * `antiPattern` is an array of [dx, dy] offsets that must NOT be `color`.
+ * Returns top-left positions of matches.
+ */
+export function scanFixedColorPattern(
+  buf: PixelBuffer,
+  color: number,
+  pattern: [number, number][],
+  antiPattern: [number, number][],
+  searchX: number,
+  searchY: number,
+  searchW: number,
+  searchH: number,
+): { x: number; y: number }[] {
+  const results: { x: number; y: number }[] = [];
+  const xEnd = Math.min(searchX + searchW, buf.width);
+  const yEnd = Math.min(searchY + searchH, buf.height);
+  const W = buf.width;
+  const px = buf.pixels;
+
+  for (let y = Math.max(0, searchY); y < yEnd; y++) {
+    for (let x = Math.max(0, searchX); x < xEnd; x++) {
+      let match = true;
+      for (let i = 0; i < pattern.length; i++) {
+        const py = y + pattern[i][1];
+        const ppx = x + pattern[i][0];
+        if (py < 0 || py >= buf.height || ppx < 0 || ppx >= buf.width || px[py * W + ppx] !== color) {
+          match = false;
+          break;
+        }
+      }
+      if (!match) continue;
+      for (let i = 0; i < antiPattern.length; i++) {
+        const py = y + antiPattern[i][1];
+        const ppx = x + antiPattern[i][0];
+        if (py >= 0 && py < buf.height && ppx >= 0 && ppx < buf.width && px[py * W + ppx] === color) {
+          match = false;
+          break;
+        }
+      }
+      if (match) results.push({ x, y });
+    }
+  }
+  return results;
 }

@@ -1,13 +1,18 @@
 /**
- * Automated match tester — runs LLM bots vs smart bots and reports win rates.
+ * Automated match tester — runs all-LLM-bot matches and reports win rates.
  *
  * Usage:
- *   tsx test_harness.ts [--matches N] [--config NAME] [--llm-bots N]
- *                       [--smart-bots N] [--port PORT] [--replay-dir DIR]
- *                       [--model MODEL] [--bot-script PATH] [--bot-prefix PFX]
+ *   tsx test_harness.ts [CONFIG_NAME] [--matches N] [--config NAME]
+ *                       [--port PORT] [--replay-dir DIR] [--model MODEL]
+ *
+ * Player count is derived from the config preset (sum of role counts).
+ * All players are LLM bots.
  *
  * Available config presets (defined in game/config_presets.ts):
- *   default, fast, tiny, short, empty, simple, empty3, medium
+ *   default, fast, tiny, short, empty, simple, empty3, medium, medium6, medium12, medium12_half
+ *
+ * Default config is medium12_half: dense enough to exercise real policy behavior
+ * without the long wall-clock time of a full medium12 match.
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -32,22 +37,22 @@ import { CONFIGS } from "../game/config_presets.js";
 
 function parseCliArgs() {
   const args: Record<string, string> = {};
+  let positionalConfig: string | null = null;
   for (let i = 2; i < argv.length; i++) {
     if (argv[i].startsWith("--") && i + 1 < argv.length) {
       args[argv[i].slice(2)] = argv[i + 1];
       i++;
+    } else if (!argv[i].startsWith("--") && !positionalConfig) {
+      positionalConfig = argv[i];
     }
   }
   return {
-    matches: parseInt(args["matches"] ?? "5"),
-    configName: args["config"] ?? "fast",
-    llmBots: parseInt(args["llm-bots"] ?? "1"),
-    smartBots: parseInt(args["smart-bots"] ?? "5"),
+    matches: parseInt(args["matches"] ?? "1"),
+    configName: args["config"] ?? positionalConfig ?? "medium12_half",
     port: parseInt(args["port"] ?? "9090"),
     replayDir: args["replay-dir"] ?? null,
     model: args["model"] ?? undefined,
-    botScript: args["bot-script"] ?? "../bots/llm_bot.ts",
-    botPrefix: args["bot-prefix"] ?? "llm_",
+    botScript: args["bot-script"] ?? "../bots/llm_bot_v2.ts",
   };
 }
 
@@ -83,10 +88,10 @@ function runMatch(
   seed: number,
   config: GameConfig,
   port: number,
-  smartBotCount: number,
-  llmBotCount: number,
+  botCount: number,
   replayPath: string | null,
   llmModel: string | undefined,
+  botScript: string,
 ): Promise<{ winner: Team | null; llmTeam: Team | null; llmRole: Role | null; ticks: number }> {
   return new Promise((resolve, reject) => {
     const sim = new Sim(config, seed);
@@ -164,14 +169,8 @@ function runMatch(
     const url = `ws://localhost:${port}/player`;
 
     httpServer.listen(port, "0.0.0.0", () => {
-      const smartProc = spawn("npx", ["tsx", "../bots/smart_bots.ts", String(smartBotCount), url], {
-        stdio: ["ignore", "pipe", "pipe"],
-        cwd: import.meta.dirname,
-      });
-      children.push(smartProc);
-
-      for (let i = 0; i < llmBotCount; i++) {
-        const llmArgs = ["tsx", "../bots/llm_bot.ts", "--name", `llm_${i + 1}`, "--url", url];
+      for (let i = 0; i < botCount; i++) {
+        const llmArgs = ["tsx", botScript, "--name", `llm_${i + 1}`, "--url", url];
         if (llmModel) llmArgs.push("--model", llmModel);
         const llmProc = spawn("npx", llmArgs, {
           stdio: ["ignore", "pipe", "pipe"],
@@ -312,15 +311,9 @@ async function main() {
 
   if (opts.replayDir) mkdirSync(opts.replayDir, { recursive: true });
 
-  const totalPlayers = opts.smartBots + opts.llmBots;
-  const expectedPlayers = playerCountFromConfig(config);
-  if (totalPlayers < expectedPlayers) {
-    console.error(`Need at least ${expectedPlayers} players, got ${totalPlayers}`);
-    process.exit(1);
-  }
-
+  const botCount = playerCountFromConfig(config);
   const totalRoundSecs = config.rounds.reduce((s, r) => s + r.durationSecs, 0);
-  console.log(`Running ${opts.matches} matches | config=${opts.configName} (${config.rounds.map(r => r.durationSecs + "s").join("/")}) | ${opts.llmBots} LLM + ${opts.smartBots} smart bots`);
+  console.log(`Running ${opts.matches} matches | config=${opts.configName} (${config.rounds.map(r => r.durationSecs + "s").join("/")}) | ${botCount} LLM bots`);
   console.log(`Estimated time per match: ~${totalRoundSecs + 30}s\n`);
 
   const results: MatchResult[] = [];
@@ -332,26 +325,22 @@ async function main() {
     console.log(`Match ${i + 1}/${opts.matches} (seed=${seed})...`);
 
     const { winner, llmTeam: lt, llmRole: lr, ticks } = await runMatch(
-      seed, config, opts.port + i, opts.smartBots, opts.llmBots, replayPath, opts.model,
+      seed, config, opts.port + i, botCount, replayPath, opts.model, opts.botScript,
     );
 
-    const llmTeam = lt === Team.TeamA ? "TeamA" as const : lt === Team.TeamB ? "TeamB" as const : "TeamA" as const;
-    const llmRole = lr !== null ? Role[lr] : "unknown";
     const winStr = winner === Team.TeamA ? "TeamA" : winner === Team.TeamB ? "TeamB" : "none";
-    const llmWon = (winner === Team.TeamA && llmTeam === "TeamA") ||
-                   (winner === Team.TeamB && llmTeam === "TeamB");
 
     results.push({
       matchIndex: i,
       seed,
       winner: winStr,
-      llmTeam,
-      llmRole,
-      llmWon,
+      llmTeam: lt === Team.TeamA ? "TeamA" : lt === Team.TeamB ? "TeamB" : "TeamA",
+      llmRole: lr !== null ? Role[lr] : "unknown",
+      llmWon: (winner === Team.TeamA && lt === Team.TeamA) || (winner === Team.TeamB && lt === Team.TeamB),
       durationTicks: ticks,
     });
 
-    console.log(`  Winner: ${winStr} | LLM: ${llmRole} on ${llmTeam} | LLM won: ${llmWon} | ${ticks} ticks`);
+    console.log(`  Winner: ${winStr} | ${ticks} ticks`);
 
     // Small delay between matches for port cleanup
     await new Promise(r => setTimeout(r, 1000));
@@ -359,31 +348,20 @@ async function main() {
 
   // Summary
   console.log("\n" + "=".repeat(60));
-  console.log(`RESULTS: ${opts.matches} matches (config=${opts.configName})`);
+  console.log(`RESULTS: ${opts.matches} matches (config=${opts.configName}, ${botCount} bots)`);
   console.log("=".repeat(60));
 
   const teamAWins = results.filter(r => r.winner === "TeamA").length;
   const teamBWins = results.filter(r => r.winner === "TeamB").length;
   const noWinner = results.filter(r => r.winner === "none").length;
-  const llmWins = results.filter(r => r.llmWon).length;
 
   console.log(`TeamA (Shades) wins: ${teamAWins}/${opts.matches} (${pct(teamAWins, opts.matches)})`);
   console.log(`TeamB (Nymphs) wins: ${teamBWins}/${opts.matches} (${pct(teamBWins, opts.matches)})`);
   console.log(`No winner:           ${noWinner}/${opts.matches} (${pct(noWinner, opts.matches)})`);
-  console.log();
-
-  console.log(`LLM bot's team won: ${llmWins}/${opts.matches} (${pct(llmWins, opts.matches)})`);
-
-  const keyRoles = results.filter(r => ["Hades", "Persephone", "Cerberus", "Demeter"].includes(r.llmRole));
-  const keyRoleWins = keyRoles.filter(r => r.llmWon).length;
-  console.log(`LLM had key role: ${keyRoles.length}/${opts.matches}`);
-  if (keyRoles.length > 0) {
-    console.log(`LLM key role wins: ${keyRoleWins}/${keyRoles.length} (${pct(keyRoleWins, keyRoles.length)})`);
-  }
 
   console.log("\nPer-match breakdown:");
   for (const r of results) {
-    console.log(`  #${r.matchIndex + 1} seed=${r.seed} winner=${r.winner} llm=${r.llmRole}/${r.llmTeam} won=${r.llmWon}`);
+    console.log(`  #${r.matchIndex + 1} seed=${r.seed} winner=${r.winner}`);
   }
 }
 

@@ -9,7 +9,8 @@ import {
   type Point,
 } from "./bot_utils.js";
 import { whisperMenuSequenceWithTargetPick } from "../game/menu_defs.js";
-import { type BeliefState } from "./belief_state.js";
+import { type GameKnowledge } from "./game_knowledge.js";
+import type { TaskInstance } from "./tasks.js";
 
 // ---------------------------------------------------------------------------
 // CLI argument parser
@@ -78,18 +79,20 @@ export function parseCommand(line: string, name?: string): ParsedCommand | null 
 export interface BotController {
   ws: WebSocket;
   actions: ActionQueue;
-  belief: BeliefState;
+  player: GameKnowledge;
   name: string;
   movementTarget: Point | null;
   wandering: boolean;
   wanderTarget: Point | null;
   wanderTicks: number;
   lastFrame: Uint8Array | null;
+  hostagePrecommit: string[] | null;
+  lastSentChat: string | null;
+  hasNewIncomingChat: boolean;
+  nonInterruptingTasks: TaskInstance[];
 }
 
 export { clamp };
-
-const COMM_ITEMS = ["SHOUT", "INFO"];
 
 export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): boolean {
   const cmdAction = COMMAND_ACTIONS[cmd.type];
@@ -97,16 +100,19 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
     // Whisper commands only make sense when we're actually inside a whisper.
     // If we're waiting to enter, the B/arrow inputs will cancel our entry request
     // or walk the world character. Swallow the command.
-    if (cmdAction.context === "whisper" && bot.belief.phase !== "whisper") {
-      console.log(`[${bot.name}] whisper command ${cmd.type} ignored — phase=${bot.belief.phase}`);
+    if (cmdAction.context === "whisper" && bot.player.phase !== "whisper") {
+      console.log(`[${bot.name}] whisper command ${cmd.type} ignored — phase=${bot.player.phase}`);
       return true;
     }
     let seq: number[];
     if (cmdAction.context === "whisper") {
       seq = whisperMenuSequenceWithTargetPick(cmdAction.action);
+    } else if (cmd.type === "shout") {
+      seq = [BUTTON_SELECT, 0];
+    } else if (cmd.type === "info_shared") {
+      seq = [BUTTON_B, 0];
     } else {
-      const items = cmdAction.context === "comm" ? COMM_ITEMS
-        : cmdAction.context === "info" ? ["open"]
+      const items = cmdAction.context === "info" ? ["open"]
         : [cmdAction.action];
       seq = menuSequence(cmdAction.context, cmdAction.action, items);
     }
@@ -124,15 +130,15 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
       const y = parseInt(cmd.args[1]);
       if (!isNaN(x) && !isNaN(y)) {
         bot.movementTarget = {
-          x: clamp(x, 0, bot.belief.roomW - 1),
-          y: clamp(y, 0, bot.belief.roomH - 1),
+          x: clamp(x, 0, bot.player.matchFacts.roomW - 1),
+          y: clamp(y, 0, bot.player.matchFacts.roomH - 1),
         };
         bot.wandering = false;
       }
       return true;
     }
     case "open_whisper":
-      bot.actions.push(BUTTON_A, 0);
+      bot.actions.push(bot.player.nearbyNames.length > 0 ? BUTTON_B : BUTTON_A, 0);
       return true;
     case "chat": {
       const { sent } = truncateChatInput(cmd.args.join(" "));
@@ -168,12 +174,12 @@ export function executeBaseCommand(cmd: ParsedCommand, bot: BotController): bool
 // ---------------------------------------------------------------------------
 
 export function tickMovement(bot: BotController): boolean {
-  if (bot.movementTarget && bot.belief.myPos) {
-    const dx = bot.movementTarget.x - bot.belief.myPos.x;
-    const dy = bot.movementTarget.y - bot.belief.myPos.y;
+  if (bot.movementTarget && bot.player.myPos) {
+    const dx = bot.movementTarget.x - bot.player.myPos.x;
+    const dy = bot.movementTarget.y - bot.player.myPos.y;
     // Stop within 10 units (close enough to open a whisper)
     if (dx * dx + dy * dy > 100) {
-      const mask = moveToward(bot.belief.myPos.x, bot.belief.myPos.y, bot.movementTarget.x, bot.movementTarget.y);
+      const mask = moveToward(bot.player.myPos.x, bot.player.myPos.y, bot.movementTarget.x, bot.movementTarget.y);
       if (mask) { sendInput(bot.ws, mask); return true; }
     }
     bot.movementTarget = null;
@@ -183,12 +189,12 @@ export function tickMovement(bot: BotController): boolean {
 
 export function tickWander(bot: BotController): void {
   if (!bot.wanderTarget || bot.wanderTicks <= 0) {
-    bot.wanderTarget = randomPoint(bot.belief.myRoom ?? Room.RoomA, bot.belief.roomW, bot.belief.roomH);
+    bot.wanderTarget = randomPoint(bot.player.myRoom ?? Room.RoomA, bot.player.matchFacts.roomW, bot.player.matchFacts.roomH);
     bot.wanderTicks = 15 + Math.floor(Math.random() * 40);
   }
   bot.wanderTicks--;
-  if (bot.belief.myPos) {
-    const mask = moveToward(bot.belief.myPos.x, bot.belief.myPos.y, bot.wanderTarget.x, bot.wanderTarget.y);
+  if (bot.player.myPos) {
+    const mask = moveToward(bot.player.myPos.x, bot.player.myPos.y, bot.wanderTarget.x, bot.wanderTarget.y);
     sendInput(bot.ws, mask || randomDir());
   } else {
     sendInput(bot.ws, randomDir());

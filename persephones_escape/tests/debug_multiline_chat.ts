@@ -62,25 +62,25 @@ if (last.text === expected && coalesced.length === 2) {
 // Test the shout-task truncation reason. Mock a minimal executor call:
 {
   const { runTasks, createTaskInstance, createEventBuffer, eventBufferLines } = await import("./tasks.js");
-  const { createBeliefState, updatePhase, updatePosition, updateHud } = await import("./belief_state.js");
+  const { createGameKnowledge, updatePhase, updatePosition, updateHud } = await import("./game_knowledge.js");
   const { unpackFrame, ActionQueue } = await import("./bot_utils.js");
   const { render } = await import("./renderer.js");
   const mockWs = { readyState: 1, send: (_: Buffer) => {} };
-  const belief = createBeliefState("p0");
+  const player = createGameKnowledge("p0");
   const f = unpackFrame(render(sim, 0));
-  updatePhase(belief, f); updatePosition(belief, f); updateHud(belief, f);
-  const bot = { ws: mockWs as any, actions: new ActionQueue(), belief, name: "p0",
+  updatePhase(player, f); updatePosition(player, f); updateHud(player, f);
+  const bot = { ws: mockWs as any, actions: new ActionQueue(), player, name: "p0",
     movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
 
   // Short shout — no truncation
-  const shortTask = createTaskInstance({ kind: "shout", text: "hi team" }, belief.tick);
+  const shortTask = createTaskInstance({ kind: "shout", text: "hi team" }, player.tick);
   const buf = createEventBuffer();
   runTasks([shortTask], bot as any, mockWs as any, buf);
 
   // Long shout — should report truncation
   const longTask = createTaskInstance(
     { kind: "shout", text: "this message is way way way too long to fit in 36 chars" },
-    belief.tick,
+    player.tick,
   );
   runTasks([longTask], bot as any, mockWs as any, buf);
 

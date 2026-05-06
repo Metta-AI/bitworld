@@ -17,8 +17,10 @@ const ROOM_A_SPRITE = 0;
 const ROOM_A_OBJECT = 0;
 const ROOM_B_SPRITE = 1;
 const ROOM_B_OBJECT = 1;
-const PLAYER_SPRITE_BASE = 100;
-const PLAYER_OBJECT_BASE = 100;
+const PLAYER_ACCOUTREMENT_SPRITE_BASE = 100;
+const PLAYER_ACCOUTREMENT_OBJECT_BASE = 100;
+const PLAYER_BODY_SPRITE_BASE = 200;
+const PLAYER_BODY_OBJECT_BASE = 200;
 const HUD_SPRITE = 50;
 const HUD_OBJECT = 50;
 const LEGEND_SPRITE = 51;
@@ -141,9 +143,8 @@ function buildRoomSprite(sim: Sim, pkt: SpritePacket, room: Room, spriteId: numb
 const PLAYER_SPRITE_OFFSET_X = 3;
 const PLAYER_SPRITE_OFFSET_Y = 4;
 
-function buildPlayerSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: number) {
+function buildPlayerAccoutrementSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: number) {
   const p = sim.players[pi];
-  const color = sim.playerColor(pi);
   const ind = sim.roleIndicator(p.role, p.team);
   const sw = 10, sh = 14;
   const shapeX = PLAYER_SPRITE_OFFSET_X;
@@ -158,15 +159,6 @@ function buildPlayerSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: nu
     px[(shapeY - 2) * sw + (shapeX + 2)] = cc;
     px[(shapeY - 2) * sw + (shapeX + 3)] = cc;
     px[(shapeY - 2) * sw + (shapeX + 4)] = cc;
-  }
-
-  const pat = PLAYER_SHAPES[p.shape];
-  for (let dy = 0; dy < 7; dy++) {
-    for (let dx = 0; dx < 7; dx++) {
-      const v = pat[dy][dx];
-      if (v === 1) px[(dy + shapeY) * sw + (dx + shapeX)] = spriteColor(0);
-      else if (v === 2) px[(dy + shapeY) * sw + (dx + shapeX)] = spriteColor(color);
-    }
   }
 
   const rc = spriteColor(ind.color);
@@ -203,6 +195,24 @@ function buildPlayerSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: nu
   pkt.addSprite(spriteId, sw, sh, px);
 }
 
+function buildPlayerBodySprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: number) {
+  const p = sim.players[pi];
+  const color = sim.playerColor(pi);
+  const sw = 10, sh = 14;
+  const shapeX = PLAYER_SPRITE_OFFSET_X;
+  const shapeY = PLAYER_SPRITE_OFFSET_Y;
+  const px = new Uint8Array(sw * sh);
+  const pat = PLAYER_SHAPES[p.shape];
+  for (let dy = 0; dy < 7; dy++) {
+    for (let dx = 0; dx < 7; dx++) {
+      const v = pat[dy][dx];
+      if (v === 1) px[(dy + shapeY) * sw + (dx + shapeX)] = spriteColor(0);
+      else if (v === 2) px[(dy + shapeY) * sw + (dx + shapeX)] = spriteColor(color);
+    }
+  }
+  pkt.addSprite(spriteId, sw, sh, px);
+}
+
 function buildNormalMapView(sim: Sim, pkt: SpritePacket, padX: number, padY: number, roomBOffX: number) {
   buildRoomSprite(sim, pkt, Room.RoomA, ROOM_A_SPRITE);
   pkt.addObject(ROOM_A_OBJECT, padX, padY, -100, 0, ROOM_A_SPRITE);
@@ -212,9 +222,13 @@ function buildNormalMapView(sim: Sim, pkt: SpritePacket, padX: number, padY: num
 
   for (let i = 0; i < sim.players.length; i++) {
     const p = sim.players[i];
-    buildPlayerSprite(sim, pkt, i, PLAYER_SPRITE_BASE + i);
+    buildPlayerAccoutrementSprite(sim, pkt, i, PLAYER_ACCOUTREMENT_SPRITE_BASE + i);
+    buildPlayerBodySprite(sim, pkt, i, PLAYER_BODY_SPRITE_BASE + i);
     const roomOffX = p.room === Room.RoomB ? roomBOffX : 0;
-    pkt.addObject(PLAYER_OBJECT_BASE + i, padX + roomOffX + p.x - PLAYER_SPRITE_OFFSET_X, padY + p.y - PLAYER_SPRITE_OFFSET_Y, i, 0, PLAYER_SPRITE_BASE + i);
+    const x = padX + roomOffX + p.x - PLAYER_SPRITE_OFFSET_X;
+    const y = padY + p.y - PLAYER_SPRITE_OFFSET_Y;
+    pkt.addObject(PLAYER_ACCOUTREMENT_OBJECT_BASE + i, x, y, i, 0, PLAYER_ACCOUTREMENT_SPRITE_BASE + i);
+    pkt.addObject(PLAYER_BODY_OBJECT_BASE + i, x, y, 1000 + i, 0, PLAYER_BODY_SPRITE_BASE + i);
   }
 }
 

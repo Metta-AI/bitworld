@@ -1,22 +1,29 @@
 import {
   readTextAt as commonReadText,
-  recognizeSprites,
+  matchSpriteAt,
+  matchSpriteVariantsAt,
+  scanFixedColorPattern,
   type PixelBuffer,
   type CategoryConstraints,
+  type SpriteVariant,
 } from "../../common/spriteRecognition.js";
 import {
   SCREEN_WIDTH, SCREEN_HEIGHT,
   ROOM_W, ROOM_H, MINIMAP_SIZE, MINIMAP_X, MINIMAP_Y,
   BOTTOM_BAR_H, PLAYER_W, PLAYER_H,
   PLAYER_SHAPES, PLAYER_COLORS,
+  characterName,
   TEAM_A_COLOR, TEAM_B_COLOR,
   TEAM_A_NAME, TEAM_B_NAME,
   ROOM_A_NAME, ROOM_B_NAME,
   HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME,
   DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME,
+  SPY_ROLE_NAME, ECHO_HADES_ROLE_NAME, ECHO_PERSEPHONE_ROLE_NAME,
+  ECHO_CERBERUS_ROLE_NAME, ECHO_DEMETER_ROLE_NAME,
 } from "../game/constants.js";
 import { Room, PlayerShape } from "../game/types.js";
 import type { Point } from "./bot_utils.js";
+import { FRAME_REGIONS } from "../rendering/frameRegions.js";
 
 // ---------------------------------------------------------------------------
 // PixelBuffer adapter — wraps a raw frame for the common recognition library
@@ -64,7 +71,7 @@ export function readTextAtAnyColor(
 
 export type ParsedPhase =
   | "lobby" | "playing" | "hostage_select" | "hostage_exchange"
-  | "leader_summit" | "role_reveal" | "reveal" | "game_over" | "info_screen"
+  | "leader_summit" | "roster_reveal" | "role_reveal" | "reveal" | "game_over" | "info_screen"
   | "whisper" | "waiting_entry" | "unknown";
 
 function norm(s: string): string {
@@ -75,16 +82,20 @@ export function parsePhase(frame: Uint8Array): ParsedPhase {
   const border0 = frame[0];
   const border2 = frame[2 * SCREEN_WIDTH + 2];
   if (border0 !== 0 && border2 !== 0 && border0 === border2) {
+    if (findCenteredText(frame, 6, 2, "PLAYERROSTER")) return "roster_reveal";
     const inner = frame[4 * SCREEN_WIDTH + 4];
     if (inner === 0) return "role_reveal";
   }
 
   const hudText8pre = readTextAt(frame, 2, 2, 8, 10);
-  if (norm(hudText8pre).startsWith("SUMMIT")) return "leader_summit";
+  const statusText2 = readTextAt(frame, 42, 2, 2, 14);
+  const statusText8 = readTextAt(frame, 42, 2, 8, 14);
+  const statusText1 = readTextAt(frame, 42, 2, 1, 18);
+  if (norm(hudText8pre).startsWith("SUMMIT") || norm(statusText8).startsWith("SUMMIT")) return "leader_summit";
 
   const hudText = readTextAt(frame, 2, 2, 2);
-  if (norm(hudText).startsWith("WHISP")) return "whisper";
-  if (norm(hudText).includes("SHOUT")) return "playing";
+  if (norm(hudText).startsWith("WHISP") || norm(statusText2).startsWith("WHISP")) return "whisper";
+  if (norm(hudText).includes("SHOUT") || norm(statusText2).includes("SHOUT")) return "playing";
 
   // Check bottom-bar "WAITING..." indicator (means pendingWhisperEntry is set).
   // In this state, overworld is still shown but B/A actions will cancel/break.
@@ -92,17 +103,18 @@ export function parsePhase(frame: Uint8Array): ParsedPhase {
   const barTxt = readTextAt(frame, 2, barY + 2, 8, 10);
   if (norm(barTxt).startsWith("WAITING")) return "waiting_entry";
 
-  if (hudText.startsWith("R") && hudText.includes(":")) return "playing";
   if (hudText.match(/^\d+\/\d+/)) return "lobby";
   if (norm(hudText).startsWith("REVEAL")) return "reveal";
 
   const hudText8 = readTextAt(frame, 2, 2, 8);
-  if (norm(hudText8).startsWith("SELECT")) return "hostage_select";
-  if (norm(hudText8).startsWith("EXCHANGING")) return "hostage_exchange";
+  if (norm(hudText8).startsWith("SELECT") || norm(statusText8).startsWith("SELECT")) return "hostage_select";
+  if (norm(hudText8).startsWith("EXCHANGING") || norm(statusText8).startsWith("EXCHANGING")) return "hostage_exchange";
 
   const hudText1 = readTextAt(frame, 2, 2, 1);
-  if (norm(hudText1).startsWith("LEADERS")) return "leader_summit";
+  if (norm(hudText1).startsWith("LEADERS") || norm(statusText1).startsWith("LEADERS")) return "leader_summit";
   if (norm(hudText1).includes("PICK")) return "hostage_select";
+
+  if (hudText.startsWith("R") && hudText.includes(":")) return "playing";
 
   if (border0 !== 0 && border0 === border2) return "info_screen";
 
@@ -123,19 +135,23 @@ export interface HudInfo {
   isLeader: boolean;
 }
 
+export interface RoundClockInfo {
+  round: number;
+  timerSecs: number;
+}
+
+export interface HostageSelectHudInfo {
+  timerSecs: number;
+}
+
 // Convert ambiguous text back to digits for numeric parsing
 function toDigits(s: string): string {
   return s.replace(/[OSos]/g, ch => ch === "O" || ch === "o" ? "0" : "5");
 }
 
 export function parsePlayingHud(frame: Uint8Array): HudInfo | null {
-  const text = readTextAt(frame, 2, 2, 2, 15);
-  const digitized = toDigits(text);
-  const m = digitized.match(/^R(\d+)\s+(\d+):(\d+)/);
-  if (!m) return null;
-
-  const round = parseInt(m[1]);
-  const timerSecs = parseInt(m[2]) * 60 + parseInt(m[3]);
+  const clock = parseRoundClock(frame);
+  if (!clock) return null;
 
   let roleName: string | null = null;
   let roleColor = 0;
@@ -159,7 +175,25 @@ export function parsePlayingHud(frame: Uint8Array): HudInfo | null {
     if (roleName) break;
   }
 
-  return { round, timerSecs, roleName, roleColor, isLeader };
+  return { round: clock.round, timerSecs: clock.timerSecs, roleName, roleColor, isLeader };
+}
+
+export function parseRoundClock(frame: Uint8Array): RoundClockInfo | null {
+  const text = readTextAt(frame, 2, 2, 2, 15);
+  const digitized = toDigits(text);
+  const m = digitized.match(/^R(\d+)\s+(\d+):(\d+)/);
+  if (!m) return null;
+  return {
+    round: parseInt(m[1]),
+    timerSecs: parseInt(m[2]) * 60 + parseInt(m[3]),
+  };
+}
+
+export function parseHostageSelectHud(frame: Uint8Array): HostageSelectHudInfo | null {
+  const text = toDigits(readTextAt(frame, 42, 2, 8, 16));
+  const m = text.match(/^SELECT\s+(\d+)S/);
+  if (!m) return null;
+  return { timerSecs: parseInt(m[1]) };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,13 +211,88 @@ export interface RoleRevealInfo {
   spriteShape: PlayerShape | null;
 }
 
+export interface RoundScheduleEntry {
+  round: number;
+  durationSecs: number;
+  hostages: number;
+}
+
+export interface RosterEntry {
+  name: string;
+  playerColor: number;
+  playerShape: PlayerShape;
+  room: Room | null;
+}
+
+export interface KnownSprite {
+  color: number;
+  shape: PlayerShape;
+  name?: string;
+}
+
+export interface FrameParserOptions {
+  knownSprites?: KnownSprite[];
+}
+
+type RosterLikePlayer = {
+  name?: string;
+  color?: number;
+  shape?: PlayerShape | null;
+  playerColor?: number;
+  playerShape?: PlayerShape | null;
+};
+
+export function matchRoster(players: Iterable<RosterLikePlayer> | null | undefined): FrameParserOptions {
+  const knownSprites: KnownSprite[] = [];
+  if (!players) return {};
+  for (const player of players) {
+    const color = player.color ?? player.playerColor;
+    const shape = player.shape ?? player.playerShape;
+    if (color === undefined || shape === undefined || shape === null) continue;
+    knownSprites.push({ name: player.name, color, shape });
+  }
+  return knownSprites.length > 0 ? { knownSprites } : {};
+}
+
 const ROLE_NAMES = [
   HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME,
   DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME,
-].map(n => n.toUpperCase());
+  SPY_ROLE_NAME, ECHO_HADES_ROLE_NAME, ECHO_PERSEPHONE_ROLE_NAME,
+  ECHO_CERBERUS_ROLE_NAME, ECHO_DEMETER_ROLE_NAME,
+];
+
+const ROLE_NAMES_UPPER = ROLE_NAMES.map(n => n.toUpperCase());
 
 const TEAM_NAMES = [TEAM_A_NAME.toUpperCase(), TEAM_B_NAME.toUpperCase(), "NEUTRAL"];
 const ROOM_NAMES = [ROOM_A_NAME.toUpperCase(), ROOM_B_NAME.toUpperCase()];
+
+export function parseRosterScreen(frame: Uint8Array): RosterEntry[] | null {
+  if (!findCenteredText(frame, 6, 2, "PLAYERROSTER")) return null;
+
+  const entries: RosterEntry[] = [];
+  const columns = [
+    { room: Room.RoomA, x: 5 },
+    { room: Room.RoomB, x: 67 },
+  ];
+  const startY = 25;
+  const rowH = 15;
+  const nameXOff = PLAYER_W + 5;
+  const maxRows = Math.floor((SCREEN_HEIGHT - 22 - startY) / rowH) + 1;
+
+  for (const col of columns) {
+    for (let row = 0; row < maxRows; row++) {
+      const y = startY + row * rowH;
+      const shapeMatch = matchShapeAt(frame, col.x, y, {}, PLAYER_COLORS);
+      if (!shapeMatch || shapeMatch.color === 0) continue;
+      const name = characterName(shapeMatch.color, shapeMatch.shape);
+      const label = readTextAt(frame, col.x + nameXOff, y + 1, 1, name.length);
+      if (label !== name) continue;
+      entries.push({ name, playerColor: shapeMatch.color, playerShape: shapeMatch.shape, room: col.room });
+    }
+  }
+
+  return entries.length > 0 ? entries : null;
+}
 
 export function parseRoleRevealScreen(frame: Uint8Array): RoleRevealInfo | null {
   const borderColor = frame[0];
@@ -200,7 +309,7 @@ export function parseRoleRevealScreen(frame: Uint8Array): RoleRevealInfo | null 
     }
 
     const roleY = baseY + 10;
-    const role = findCenteredTextFromList(frame, roleY, borderColor, ROLE_NAMES);
+    const role = findCenteredTextFromList(frame, roleY, borderColor, ROLE_NAMES_UPPER);
     if (!role) continue;
 
     const teamY = roleY + 10;
@@ -225,10 +334,7 @@ export function parseRoleRevealScreen(frame: Uint8Array): RoleRevealInfo | null 
       }
     }
 
-    const roleProper = matchProperCase(role, [
-      HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME,
-      DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME,
-    ]);
+    const roleProper = matchProperCase(role, ROLE_NAMES);
 
     let playerCount = 0;
     let roomSize = 0;
@@ -259,6 +365,24 @@ export function parseRoleRevealScreen(frame: Uint8Array): RoleRevealInfo | null 
   }
 
   return null;
+}
+
+export function parseRoundScheduleScreen(frame: Uint8Array): RoundScheduleEntry[] | null {
+  if (!findCenteredText(frame, 8, 2, "ROUNDSCHEDULE")) return null;
+
+  const entries: RoundScheduleEntry[] = [];
+  for (let y = 28; y < SCREEN_HEIGHT - 10; y += 8) {
+    const text = toDigits(readTextAt(frame, 10, y, 2, 24));
+    const m = text.match(/^\s*(\d+)\s+(\d+):(\d+)\s+(\d+)/);
+    if (!m) continue;
+    entries.push({
+      round: parseInt(m[1]),
+      durationSecs: parseInt(m[2]) * 60 + parseInt(m[3]),
+      hostages: parseInt(m[4]),
+    });
+  }
+
+  return entries.length > 0 ? entries : null;
 }
 
 function findCenteredText(
@@ -351,52 +475,61 @@ const INFO_ROW_H = 11;
 const INFO_SPRITE_X = 4;
 const INFO_TEXT_X = 15;
 const INFO_MAX_ROWS = Math.floor((SCREEN_HEIGHT - 22) / INFO_ROW_H);
-const SPRITE_MATCH_THRESHOLD = 0.75;
 const SPRITE_CONSTRAINTS: CategoryConstraints = { 0: "skip", 1: 0 };
+const SPRITE_MATCH_THRESHOLD = 1;
+
+function spriteVariantsForKnownSprites(knownSprites: KnownSprite[] | undefined): SpriteVariant[] | null {
+  if (!knownSprites || knownSprites.length === 0) return null;
+  return knownSprites.map((s) => ({
+    name: s.name ?? characterName(s.color, s.shape),
+    sprite: PLAYER_SHAPES[s.shape],
+    constraints: { 0: "skip", 1: 0, 2: s.color },
+  }));
+}
 
 function matchShapeAt(
-  frame: Uint8Array, sx: number, sy: number,
+  frame: Uint8Array,
+  sx: number,
+  sy: number,
+  options: FrameParserOptions = {},
+  allowedColors?: number[],
 ): { shape: PlayerShape; color: number } | null {
   const buf: PixelBuffer = { pixels: frame, width: SCREEN_WIDTH, height: SCREEN_HEIGHT };
+  const knownVariants = spriteVariantsForKnownSprites(options.knownSprites);
+  if (knownVariants) {
+    const match = matchSpriteVariantsAt(buf, knownVariants, sx, sy, SPRITE_MATCH_THRESHOLD);
+    if (match) {
+      const known = options.knownSprites!.find(s => (s.name ?? characterName(s.color, s.shape)) === match.name);
+      if (known) return { shape: known.shape, color: known.color };
+    }
+    // Fall through to generic pattern matching if variant matching fails
+  }
+
   let bestShape: PlayerShape | null = null;
-  let bestScore = SPRITE_MATCH_THRESHOLD;
+  let bestScore = -Infinity;
   let bestColor = 0;
+
+  const constraints: CategoryConstraints = allowedColors
+    ? { 0: "skip", 1: 0, 2: allowedColors }
+    : SPRITE_CONSTRAINTS;
 
   const shapeEntries = Object.entries(PLAYER_SHAPES) as [string, number[][]][];
   for (const [key, pat] of shapeEntries) {
     const shapeIdx = parseInt(key);
     if (isNaN(shapeIdx)) continue;
-
-    const catalog = { test: pat };
-    const result = recognizeSprites(
-      { pixels: frame.slice(0), width: SCREEN_WIDTH, height: SCREEN_HEIGHT },
-      SPRITE_MATCH_THRESHOLD,
-      catalog,
-      SPRITE_CONSTRAINTS,
-    );
-    // Check at exact position only
-    const matches = result.get("test");
-    if (!matches) continue;
-    for (const m of matches) {
-      if (m.x === sx && m.y === sy && m.score > bestScore) {
-        bestScore = m.score;
-        bestShape = shapeIdx as PlayerShape;
-        bestColor = m.colors[2] ?? 0;
-      }
+    const m = matchSpriteAt(buf, pat, sx, sy, constraints);
+    if (m && m.score >= SPRITE_MATCH_THRESHOLD && m.score > bestScore) {
+      bestScore = m.score;
+      bestShape = shapeIdx as PlayerShape;
+      bestColor = m.colors[2] ?? 0;
     }
   }
 
-  if (bestShape === null) {
-    // Fallback: just read the center pixel of the sprite area
-    const centerIdx = (sy + 3) * SCREEN_WIDTH + (sx + 3);
-    const c = frame[centerIdx];
-    if (c !== 0 && c !== 1) return { shape: PlayerShape.Circle, color: c };
-    return null;
-  }
+  if (bestShape === null) return null;
   return { shape: bestShape, color: bestColor };
 }
 
-export function parseInfoScreen(frame: Uint8Array): InfoScreenEntry[] | null {
+export function parseInfoScreen(frame: Uint8Array, options: FrameParserOptions = {}): InfoScreenEntry[] | null {
   const headerText = norm(readTextAt(frame, 2, INFO_HEADER_Y, 2, 15));
   if (!headerText.startsWith("KNOWN")) return null;
 
@@ -405,7 +538,7 @@ export function parseInfoScreen(frame: Uint8Array): InfoScreenEntry[] | null {
   for (let row = 0; row < INFO_MAX_ROWS; row++) {
     const y = INFO_ROW_START_Y + row * INFO_ROW_H;
 
-    const shapeMatch = matchShapeAt(frame, INFO_SPRITE_X, y);
+    const shapeMatch = matchShapeAt(frame, INFO_SPRITE_X, y, options);
     if (!shapeMatch || shapeMatch.color === 0) break;
 
     const textResult = readTextAtAnyColor(frame, INFO_TEXT_X, y + 2);
@@ -423,10 +556,7 @@ export function parseInfoScreen(frame: Uint8Array): InfoScreenEntry[] | null {
         const dotColor = frame[dotIdx];
         if (dotColor !== 0) teamColor = dotColor;
       } else if (cleaned.length >= 2) {
-        roleName = matchProperCase(cleaned, [
-          HADES_ROLE_NAME, PERSEPHONE_ROLE_NAME, CERBERUS_ROLE_NAME,
-          DEMETER_ROLE_NAME, SHADES_ROLE_NAME, NYMPHS_ROLE_NAME,
-        ]) ?? cleaned;
+        roleName = matchProperCase(cleaned, ROLE_NAMES) ?? cleaned;
         teamColor = textResult.color;
       }
     }
@@ -456,7 +586,9 @@ export function parseInfoScreen(frame: Uint8Array): InfoScreenEntry[] | null {
  */
 export function parseUsurpCandidate(frame: Uint8Array): { color: number; isPlayer: boolean } | null {
   const shoutText = readTextAt(frame, 2, 2, 2);
-  if (!shoutText.includes("SHOUT")) return null;
+  const statusText2 = readTextAt(frame, 42, 2, 2, 10);
+  const statusText8 = readTextAt(frame, 42, 2, 8, 10);
+  if (!shoutText.includes("SHOUT") && !statusText2.includes("SHOUT") && !statusText8.includes("SELECT")) return null;
   const usurpText = readTextAt(frame, 2, 11, 1);
   if (!norm(usurpText).startsWith("USURP")) return null;
   // "USURP: " label is 27px wide at x=2, so sprite starts at x=29
@@ -470,41 +602,93 @@ export function parseUsurpCandidate(frame: Uint8Array): { color: number; isPlaye
 }
 
 // ---------------------------------------------------------------------------
+// Overworld player sprite scanning — identify shapes of visible players
+// ---------------------------------------------------------------------------
+
+export interface OverworldSpriteHit {
+  color: number;
+  shape: PlayerShape;
+  screenX: number;
+  screenY: number;
+}
+
+/**
+ * Given the bot's world position and room dimensions, compute approximate camera
+ * offset and scan a neighborhood around expected player positions for their shapes.
+ * Minimap gives coarse positions, so we search ±SEARCH_RADIUS around the estimate.
+ */
+export function scanOverworldShapes(
+  frame: Uint8Array,
+  myWorldX: number,
+  myWorldY: number,
+  roomW: number,
+  roomH: number,
+  dots: MinimapDot[],
+  options: FrameParserOptions = {},
+): OverworldSpriteHit[] {
+  const TOP_BAR = 9;
+  const SEARCH_RADIUS = 5;
+  const maxCamX = Math.max(0, roomW - SCREEN_WIDTH);
+  const maxCamY = Math.max(-TOP_BAR, roomH - SCREEN_HEIGHT + BOTTOM_BAR_H);
+  const camX = Math.max(0, Math.min(maxCamX, myWorldX + Math.floor(PLAYER_W / 2) - Math.floor(SCREEN_WIDTH / 2)));
+  const camY = Math.max(-TOP_BAR, Math.min(maxCamY, myWorldY + Math.floor(PLAYER_H / 2) - TOP_BAR - Math.floor((SCREEN_HEIGHT - TOP_BAR - BOTTOM_BAR_H) / 2)));
+
+  const results: OverworldSpriteHit[] = [];
+  for (const dot of dots) {
+    if (dot.isSelf) continue;
+    const estX = dot.worldX - camX;
+    const estY = dot.worldY - camY;
+    if (estX < -SEARCH_RADIUS || estY < TOP_BAR - SEARCH_RADIUS) continue;
+    if (estX + PLAYER_W + SEARCH_RADIUS > SCREEN_WIDTH) continue;
+    if (estY + PLAYER_H + SEARCH_RADIUS > SCREEN_HEIGHT - BOTTOM_BAR_H) continue;
+
+    let found = false;
+    for (let oy = -SEARCH_RADIUS; oy <= SEARCH_RADIUS && !found; oy += 2) {
+      for (let ox = -SEARCH_RADIUS; ox <= SEARCH_RADIUS && !found; ox += 2) {
+        const sx = estX + ox;
+        const sy = estY + oy;
+        if (sx < 0 || sy < TOP_BAR || sx + PLAYER_W > SCREEN_WIDTH || sy + PLAYER_H > SCREEN_HEIGHT - BOTTOM_BAR_H) continue;
+        const dotCandidates = options.knownSprites?.filter(s => s.color === dot.color);
+        const match = matchShapeAt(frame, sx, sy, { knownSprites: dotCandidates ?? options.knownSprites });
+        if (match && PLAYER_COLORS.includes(match.color)) {
+          results.push({ color: match.color, shape: match.shape, screenX: sx, screenY: sy });
+          found = true;
+        }
+      }
+    }
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Speech bubble detection — find players who are in a whisper
 // ---------------------------------------------------------------------------
 
-// Bubble pattern (color 2, rendered at sx-3,sy-4 relative to player sprite —
+// Bubble pattern (color 2/white, rendered at sx-3,sy-4 relative to player sprite —
 // one-pixel gap above the 7x7 player shape):
 //   2 2 2 0
 //   2 2 2 0
 //   0 0 0 2
 const BUBBLE_COLOR = 2;
 
-export function scanSpeechBubbles(frame: Uint8Array): { screenX: number; screenY: number }[] {
-  const W = SCREEN_WIDTH;
-  const H = SCREEN_HEIGHT;
-  const results: { screenX: number; screenY: number }[] = [];
-  const px = (x: number, y: number) => frame[y * W + x];
+const BUBBLE_PATTERN: [number, number][] = [
+  [0, 0], [1, 0], [2, 0],
+  [0, 1], [1, 1], [2, 1],
+  [3, 2],
+];
+const BUBBLE_ANTI_PATTERN: [number, number][] = [
+  [3, 0], [3, 1],
+  [0, 2], [1, 2], [2, 2],
+];
 
-  for (let y = 0; y < H - 5; y++) {
-    for (let x = 0; x < W - 4; x++) {
-      if (px(x, y) !== BUBBLE_COLOR) continue;
-      if (px(x + 1, y) !== BUBBLE_COLOR) continue;
-      if (px(x + 2, y) !== BUBBLE_COLOR) continue;
-      if (px(x + 3, y) === BUBBLE_COLOR) continue;
-      if (px(x, y + 1) !== BUBBLE_COLOR) continue;
-      if (px(x + 1, y + 1) !== BUBBLE_COLOR) continue;
-      if (px(x + 2, y + 1) !== BUBBLE_COLOR) continue;
-      if (px(x + 3, y + 1) === BUBBLE_COLOR) continue;
-      if (px(x + 3, y + 2) !== BUBBLE_COLOR) continue;
-      if (px(x, y + 2) === BUBBLE_COLOR) continue;
-      if (px(x + 1, y + 2) === BUBBLE_COLOR) continue;
-      if (px(x + 2, y + 2) === BUBBLE_COLOR) continue;
-      // Player sprite top-left is at (x+3, y+4)
-      results.push({ screenX: x + 3, screenY: y + 4 });
-    }
-  }
-  return results;
+export function scanSpeechBubbles(frame: Uint8Array): { screenX: number; screenY: number }[] {
+  const buf: PixelBuffer = { pixels: frame, width: SCREEN_WIDTH, height: SCREEN_HEIGHT };
+  const hits = scanFixedColorPattern(
+    buf, BUBBLE_COLOR,
+    BUBBLE_PATTERN, BUBBLE_ANTI_PATTERN,
+    0, 0, SCREEN_WIDTH - 4, SCREEN_HEIGHT - 5,
+  );
+  return hits.map(h => ({ screenX: h.x + 3, screenY: h.y + 4 }));
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +703,10 @@ export interface OccupantInfo {
 export interface WhisperStatus {
   pendingRoleOffer: boolean;
   pendingColorOffer: boolean;
+  pendingLeaderOffer: boolean;
   pendingEntry: boolean;
+  pendingEntryPlayer: OccupantInfo | null;
+  pendingEntryName: string | null;
   occupantCount: number;
   occupantColors: number[];
   occupants: OccupantInfo[];
@@ -579,7 +766,7 @@ const CHAT_MSG_AREA_TOP = 10;
 const NOISELESS_THRESHOLD = 1;
 
 function parseChatLinesInRegion(
-  frame: Uint8Array, yTop: number, yBot: number,
+  frame: Uint8Array, yTop: number, yBot: number, options: FrameParserOptions = {},
 ): ParsedChatLine[] {
   const lines: ParsedChatLine[] = [];
   for (let y = yTop; y + CHAT_LINE_H <= yBot; y += CHAT_LINE_H) {
@@ -593,7 +780,7 @@ function parseChatLinesInRegion(
     if (!hasContent) continue;
 
     // Try to match a player sprite at (2, y) — indicates a player message
-    const shapeMatch = matchShapeAt(frame, CHAT_MSG_SPRITE_X, y);
+    const shapeMatch = matchShapeAt(frame, CHAT_MSG_SPRITE_X, y, options);
     if (shapeMatch && shapeMatch.color !== 0) {
       // Player message: text at (10, y) in sender's color
       const txt = readTextAt(frame, CHAT_MSG_TEXT_X, y, shapeMatch.color, 20);
@@ -624,12 +811,12 @@ function parseChatLinesInRegion(
   return lines;
 }
 
-export function parseWhisperMessages(frame: Uint8Array): ParsedChatLine[] {
+export function parseWhisperMessages(frame: Uint8Array, options: FrameParserOptions = {}): ParsedChatLine[] {
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
-  return parseChatLinesInRegion(frame, CHAT_MSG_AREA_TOP, barY - 1);
+  return parseChatLinesInRegion(frame, CHAT_MSG_AREA_TOP, barY - 1, options);
 }
 
-export function parseShoutMessages(frame: Uint8Array): ParsedChatLine[] {
+export function parseShoutMessages(frame: Uint8Array, options: FrameParserOptions = {}): ParsedChatLine[] {
   // Shout: message area starts below the voting/usurp bar divider line.
   // The divider is a 1px horizontal line in color 1. Scan downward from y=10.
   let dividerY = -1;
@@ -644,7 +831,7 @@ export function parseShoutMessages(frame: Uint8Array): ParsedChatLine[] {
   }
   if (dividerY < 0) return [];
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
-  return parseChatLinesInRegion(frame, dividerY + 2, barY - 1);
+  return parseChatLinesInRegion(frame, dividerY + 2, barY - 1, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +859,7 @@ const HOSTAGE_CELL_H = 14;
 const HOSTAGE_GRID_Y = 11;
 const HOSTAGE_MAX_COLS = 4;
 
-export function parseHostageGrid(frame: Uint8Array): HostageGridInfo | null {
+export function parseHostageGrid(frame: Uint8Array, options: FrameParserOptions = {}): HostageGridInfo | null {
   const eligible: HostageGridEntry[] = [];
   const eligibleColors: number[] = [];
   const selectedPositions: number[] = [];
@@ -697,7 +884,7 @@ export function parseHostageGrid(frame: Uint8Array): HostageGridInfo | null {
         const spriteY = cy + 1;
         if (spriteY + PLAYER_H >= SCREEN_HEIGHT) break;
 
-        const match = matchShapeAt(frame, spriteX, spriteY);
+        const match = matchShapeAt(frame, spriteX, spriteY, options);
         if (!match || match.color === 0) continue;
 
         const pos = eligible.length;
@@ -724,30 +911,37 @@ export function parseHostageGrid(frame: Uint8Array): HostageGridInfo | null {
   return { eligible, eligibleColors, selectedPositions, cursorPosition };
 }
 
-export function parseWhisperStatus(frame: Uint8Array): WhisperStatus {
-  // Offer indicators drawn in color 8 at (SCREEN_WIDTH - 10, barY + 2).
-  const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
-  const offerTxt = readTextAt(frame, SCREEN_WIDTH - 10, barY + 2, 8, 2);
+export function parseWhisperStatus(frame: Uint8Array, options: FrameParserOptions = {}): WhisperStatus {
+  const offer = FRAME_REGIONS.whisper.offerIndicator();
+  const offerTxt = readTextAt(frame, offer.x, offer.y, 8, 2);
 
-  // Pending-entry indicator: renderer draws "!" at (2, reqY) in color 8, then
-  // a sprite at (8, reqY), then "WANTS IN" at (17, reqY).
-  // reqY = msgAreaBot - lineH = (barY - 1) - 7 = barY - 8.
-  // Detect the "!" specifically: look for color-8 pixels in a small region
-  // at x∈[2,4], y∈[barY-8, barY-4].
+  // Detect the pending-entry "!" in the shared region instead of relying on
+  // a local copy of the renderer's footer math.
+  const pending = FRAME_REGIONS.whisper.pendingEntryBang();
   let pendingEntry = false;
-  for (let y = barY - 9; y <= barY - 3; y++) {
-    for (let x = 2; x <= 4; x++) {
+  for (let y = pending.y; y < pending.y + pending.h; y++) {
+    for (let x = pending.x; x < pending.x + pending.w; x++) {
       if (frame[y * SCREEN_WIDTH + x] === 8) { pendingEntry = true; break; }
     }
     if (pendingEntry) break;
   }
+  let pendingEntryPlayer: OccupantInfo | null = null;
+  let pendingEntryName: string | null = null;
+  if (pendingEntry) {
+    const sprite = FRAME_REGIONS.whisper.pendingEntrySprite();
+    const match = matchShapeAt(frame, sprite.x, sprite.y, options);
+    if (match && match.color !== 0) {
+      pendingEntryPlayer = { color: match.color, shape: match.shape };
+      pendingEntryName = characterName(match.color, match.shape);
+    }
+  }
 
   const occupantColors: number[] = [];
   const occupants: OccupantInfo[] = [];
-  for (let slot = 0; slot < 12; slot++) {
-    const sx = 22 + slot * (PLAYER_W + 2);
-    if (sx + PLAYER_W > SCREEN_WIDTH - 2) break;
-    const match = matchShapeAt(frame, sx, 1);
+  for (let slot = 0; slot < FRAME_REGIONS.whisper.maxOccupantSlots; slot++) {
+    const r = FRAME_REGIONS.whisper.occupantSlot(slot);
+    if (r.x + r.w > SCREEN_WIDTH - 2) break;
+    const match = matchShapeAt(frame, r.x, r.y, options);
     if (!match || match.color === 0) break;
     occupantColors.push(match.color);
     occupants.push({ color: match.color, shape: match.shape });
@@ -756,7 +950,10 @@ export function parseWhisperStatus(frame: Uint8Array): WhisperStatus {
   return {
     pendingRoleOffer: offerTxt.startsWith("R"),
     pendingColorOffer: offerTxt.startsWith("C"),
+    pendingLeaderOffer: offerTxt.startsWith("L"),
     pendingEntry,
+    pendingEntryPlayer,
+    pendingEntryName,
     occupantCount: occupantColors.length,
     occupantColors,
     occupants,
