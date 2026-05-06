@@ -22,6 +22,11 @@ const
   TransportHeight = 14
   TransportX = 2
   TransportY = 1
+  BubbleFillColor = 1'u8
+  BubbleBorderColor = 7'u8
+  BubbleTextColor = 7'u8
+  BubblePad = 2
+  BubblePointerHeight = 3
 
 var TransportSheet: Sprite
 
@@ -39,12 +44,20 @@ type
     replaySeekTick*: int
     replayCommands*: seq[char]
 
+  PlayerViewerState* = object
+    initialized*: bool
+    objectIds*: seq[int]
+
 proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
   result.mouseLayer = MapLayerId
   result.selectedPlayerId = -1
   result.replaySeekTick = -1
   result.replayCommands = @[]
+
+proc initPlayerViewerState*(): PlayerViewerState =
+  ## Returns the default state for one sprite player viewer.
+  discard
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   ## Writes one palette color as a global protocol RGBA pixel.
@@ -165,7 +178,7 @@ proc applyGlobalViewerMessage*(
       state.mouseY = readProtocolI16(message, offset + 2)
       offset += 4
       if offset < message.len and message[offset].uint8 notin
-          {0x81'u8, 0x82'u8, 0x83'u8}:
+          {0x81'u8, 0x82'u8, 0x83'u8, 0x84'u8}:
         state.mouseLayer = int(message[offset].uint8)
         inc offset
       else:
@@ -194,6 +207,55 @@ proc applyGlobalViewerMessage*(
       for i in 0 ..< length:
         state.replayCommands.add(message[offset + i])
       offset += length
+    of 0x84:
+      if offset + 1 > message.len:
+        return
+      inc offset
+    else:
+      return
+
+proc applyPlayerViewerMessage*(
+  state: var PlayerViewerState,
+  message: string,
+  inputMask: var uint8,
+  chatText: var string
+) =
+  ## Applies sprite player input messages.
+  discard state
+  var offset = 0
+  while offset < message.len:
+    let messageType = message[offset].uint8
+    inc offset
+    case messageType
+    of 0x81:
+      if offset + 2 > message.len:
+        return
+      let length = int(uint16(message[offset].uint8) or
+        (uint16(message[offset + 1].uint8) shl 8))
+      offset += 2
+      if offset + length > message.len:
+        return
+      for i in 0 ..< length:
+        let value = message[offset + i].uint8
+        if value >= 32'u8 and value < 127'u8:
+          chatText.add(message[offset + i])
+      offset += length
+    of 0x82:
+      if offset + 4 > message.len:
+        return
+      offset += 4
+      if offset < message.len and message[offset].uint8 notin
+          {0x81'u8, 0x82'u8, 0x83'u8, 0x84'u8}:
+        inc offset
+    of 0x83:
+      if offset + 2 > message.len:
+        return
+      offset += 2
+    of 0x84:
+      if offset + 1 > message.len:
+        return
+      inputMask = message[offset].uint8 and 0x7f'u8
+      inc offset
     else:
       return
 proc isSolid(sprite: Sprite, x, y: int): bool =
@@ -281,6 +343,22 @@ proc buildSpriteProtocolRawSprite(
       let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
       if colorIndex != TransparentColorIndex:
         result.pixels.putRgbaPixel(sprite.spriteIndex(x, y), colorIndex)
+
+proc buildSpriteProtocolFacedRawSprite(
+  sprite: Sprite,
+  facing: Facing
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a raw sprite rotated for one facing.
+  let size = sprite.facedSize(facing)
+  result.width = size.width
+  result.height = size.height
+  result.pixels = newRgbaPixels(result.width, result.height)
+  for y in 0 ..< size.height:
+    for x in 0 ..< size.width:
+      let src = sprite.sourceForFacing(x, y, facing)
+      let colorIndex = sprite.pixels[sprite.spriteIndex(src.x, src.y)]
+      if colorIndex != TransparentColorIndex:
+        result.pixels.putRgbaPixel(y * result.width + x, colorIndex)
 
 proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
   ## Builds a full world map sprite using the same wall tiles as the game.
@@ -419,6 +497,125 @@ proc buildSpriteProtocolTextSprite(
                 )
       baseX += 6
 
+proc asciiIndex(ch: char): int =
+  ## Returns the shared ASCII glyph index.
+  ord(ch) - ord(' ')
+
+proc asciiTextWidth(text: string): int =
+  ## Returns the width of one fixed-width ASCII line.
+  text.len * AsciiGlyphW
+
+proc lineCountForText(text: string): int =
+  ## Returns the wrapped line count for one chat message.
+  max(1, (text.len + MessageCharsPerLine - 1) div MessageCharsPerLine)
+
+proc sliceMessageLine(text: string, lineIndex: int): string =
+  ## Returns one fixed-width chat line.
+  let startIndex = lineIndex * MessageCharsPerLine
+  if startIndex >= text.len:
+    return ""
+  let endIndex = min(text.len, startIndex + MessageCharsPerLine)
+  text[startIndex ..< endIndex]
+
+proc fillRect(
+  pixels: var seq[uint8],
+  width, x, y, w, h: int,
+  color: uint8
+) =
+  ## Fills a protocol pixel rectangle.
+  for py in y ..< y + h:
+    for px in x ..< x + w:
+      pixels.putRgbaPixel(py * width + px, color)
+
+proc strokeRect(
+  pixels: var seq[uint8],
+  width, x, y, w, h: int,
+  color: uint8
+) =
+  ## Strokes a protocol pixel rectangle.
+  for px in x ..< x + w:
+    pixels.putRgbaPixel(y * width + px, color)
+    pixels.putRgbaPixel((y + h - 1) * width + px, color)
+  for py in y ..< y + h:
+    pixels.putRgbaPixel(py * width + x, color)
+    pixels.putRgbaPixel(py * width + x + w - 1, color)
+
+proc blitAsciiText(
+  sim: SimServer,
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  text: string,
+  baseX, baseY: int,
+  color: uint8
+) =
+  ## Blits fixed-width ASCII text into protocol pixels.
+  var offsetX = 0
+  for ch in text:
+    let index = ch.asciiIndex()
+    if index >= 0 and index < sim.asciiSprites.len:
+      target.blitGlyph(
+        targetWidth,
+        targetHeight,
+        sim.asciiSprites[index],
+        baseX + offsetX,
+        baseY,
+        color
+      )
+    offsetX += AsciiGlyphW
+
+proc buildSpriteProtocolBubbleSprite(
+  sim: SimServer,
+  text: string
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds one speech bubble sprite.
+  let lineCount = text.lineCountForText()
+  var longestLineWidth = AsciiGlyphW
+  for lineIndex in 0 ..< lineCount:
+    longestLineWidth = max(
+      longestLineWidth,
+      text.sliceMessageLine(lineIndex).asciiTextWidth()
+    )
+  result.width = longestLineWidth + BubblePad * 2
+  result.height =
+    lineCount * AsciiGlyphH + BubblePad * 2 + BubblePointerHeight
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let bodyHeight = result.height - BubblePointerHeight
+  result.pixels.fillRect(
+    result.width,
+    0,
+    0,
+    result.width,
+    bodyHeight,
+    BubbleFillColor
+  )
+  result.pixels.strokeRect(
+    result.width,
+    0,
+    0,
+    result.width,
+    bodyHeight,
+    BubbleBorderColor
+  )
+  let pointerX = result.width div 2
+  for y in 0 ..< BubblePointerHeight:
+    let span = BubblePointerHeight - y
+    for x in pointerX - span .. pointerX + span:
+      if x >= 0 and x < result.width:
+        result.pixels.putRgbaPixel(
+          (bodyHeight + y) * result.width + x,
+          BubbleBorderColor
+        )
+  for lineIndex in 0 ..< lineCount:
+    sim.blitAsciiText(
+      result.pixels,
+      result.width,
+      result.height,
+      text.sliceMessageLine(lineIndex),
+      BubblePad,
+      BubblePad + lineIndex * AsciiGlyphH,
+      BubbleTextColor
+    )
+
 proc playerIdentity(player: Actor): string =
   ## Returns a sprite text friendly player identity.
   player.address.replace(":", " ")
@@ -543,12 +740,16 @@ proc playerObjectId(player: Actor): int =
   ## Returns the stable global protocol object id for a player.
   PlayerObjectBase + player.id
 
-proc playerSpriteId(playerIndex: int, selected: bool): int =
-  ## Returns the upright sprite id for a player color.
+proc playerSpriteId(playerIndex: int, selected: bool, facing: Facing): int =
+  ## Returns the sprite id for a player color and facing.
   let
     colorIndex = playerIndex mod PlayerColors.len
     base = if selected: SelectedPlayerSpriteBase else: PlayerSpriteBase
-  base + colorIndex
+  base + colorIndex * 4 + ord(facing)
+
+proc swooshSpriteId(facing: Facing): int =
+  ## Returns the sprite id for one attack swoosh facing.
+  SwooshSpriteBase + ord(facing)
 
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
   ## Returns the player index for a selected player id.
@@ -628,6 +829,61 @@ proc replayScrubTickAt(
   let clampedX = clamp(localX, 0, ReplayScrubberWidth - 1)
   clamp((clampedX * maxTick) div (ReplayScrubberWidth - 1), 0, maxTick)
 
+proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
+  ## Adds sprite definitions shared by global and player views.
+  for i in 0 ..< PlayerColors.len:
+    for facing in Facing:
+      let
+        playerSprite = buildSpriteProtocolActorSprite(
+          sim.playerSprite,
+          PlayerColors[i],
+          facing
+        )
+        selectedPlayerSprite = buildSpriteProtocolActorSprite(
+          sim.playerSprite,
+          PlayerColors[i],
+          facing,
+          true
+        )
+      packet.addSprite(
+        playerSpriteId(i, false, facing),
+        playerSprite.width,
+        playerSprite.height,
+        playerSprite.pixels
+      )
+      packet.addSprite(
+        playerSpriteId(i, true, facing),
+        selectedPlayerSprite.width,
+        selectedPlayerSprite.height,
+        selectedPlayerSprite.pixels
+      )
+
+  for facing in Facing:
+    let swoosh = buildSpriteProtocolFacedRawSprite(sim.swooshSprite, facing)
+    packet.addSprite(
+      swooshSpriteId(facing),
+      swoosh.width,
+      swoosh.height,
+      swoosh.pixels,
+      "swoosh"
+    )
+
+  let
+    mob = buildSpriteProtocolRawSprite(sim.mobSprite)
+    boss = buildSpriteProtocolRawSprite(sim.bossSprite)
+    coin = buildSpriteProtocolRawSprite(sim.coinSprite)
+    heart = buildSpriteProtocolRawSprite(sim.heartSprite)
+  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "snake")
+  packet.addSprite(BossSpriteId, boss.width, boss.height, boss.pixels, "boss")
+  packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
+  packet.addSprite(
+    HeartSpriteId,
+    heart.width,
+    heart.height,
+    heart.pixels,
+    "heart"
+  )
+
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
@@ -656,42 +912,262 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     sim.buildSpriteProtocolMapSprite()
   )
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
+  result.addCommonSpriteDefinitions(sim)
 
-  for i in 0 ..< PlayerColors.len:
+proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
+  ## Builds the initial sprite player snapshot.
+  result = @[]
+  result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
+  result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+  result.addSprite(
+    MapSpriteId,
+    WorldWidthPixels,
+    WorldHeightPixels,
+    sim.buildSpriteProtocolMapSprite(),
+    "map"
+  )
+  result.addCommonSpriteDefinitions(sim)
+
+proc chatSpriteId(player: Actor): int =
+  ## Returns the sprite id for one player's chat bubble.
+  ChatSpriteBase + player.id
+
+proc chatObjectId(player: Actor): int =
+  ## Returns the object id for one player's chat bubble.
+  ChatObjectBase + player.id
+
+proc attackObjectId(player: Actor): int =
+  ## Returns the object id for one player's attack swoosh.
+  AttackObjectBase + player.id
+
+proc addSpeechBubbles(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  cameraX, cameraY: int
+) =
+  ## Adds speech bubble sprites above players.
+  for player in sim.players:
+    if player.lives <= 0 or player.message.len == 0:
+      continue
     let
-      playerSprite = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        FaceDown
-      )
-      selectedPlayerSprite = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        FaceDown,
-        true
-      )
-    result.addSprite(
-      PlayerSpriteBase + i,
-      playerSprite.width,
-      playerSprite.height,
-      playerSprite.pixels
+      bubble = sim.buildSpriteProtocolBubbleSprite(player.message)
+      objectId = player.chatObjectId()
+      spriteId = player.chatSpriteId()
+      centerX = player.x + player.sprite.width div 2 - cameraX
+      x = centerX - bubble.width div 2
+      y = player.y - bubble.height - 4 - cameraY
+    currentIds.add(objectId)
+    packet.addSprite(
+      spriteId,
+      bubble.width,
+      bubble.height,
+      bubble.pixels,
+      player.message
     )
-    result.addSprite(
-      SelectedPlayerSpriteBase + i,
-      selectedPlayerSprite.width,
-      selectedPlayerSprite.height,
-      selectedPlayerSprite.pixels
+    packet.addObject(
+      objectId,
+      x,
+      y,
+      player.y + 200,
+      MapLayerId,
+      spriteId
     )
 
+proc addAttackObjects(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  cameraX, cameraY: int
+) =
+  ## Adds active attack swoosh objects.
+  for player in sim.players:
+    if player.lives <= 0 or player.attackTicks <= 0:
+      continue
+    let
+      hit = sim.attackRect(player)
+      objectId = player.attackObjectId()
+    currentIds.add(objectId)
+    packet.addObject(
+      objectId,
+      hit.x - cameraX,
+      hit.y - cameraY,
+      player.y + 100,
+      MapLayerId,
+      swooshSpriteId(player.facing)
+    )
+
+proc addWorldObjects(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  cameraX, cameraY: int,
+  selectedPlayerId = -1
+) =
+  ## Adds pickups, mobs, players, attacks, and speech bubbles.
+  for i in 0 ..< sim.pickups.len:
+    let
+      pickup = sim.pickups[i]
+      objectId = PickupObjectBase + i
+      spriteId =
+        if pickup.kind == PickupCoin: CoinSpriteId else: HeartSpriteId
+    currentIds.add(objectId)
+    packet.addObject(
+      objectId,
+      pickup.x - cameraX,
+      pickup.y - cameraY,
+      pickup.y,
+      MapLayerId,
+      spriteId
+    )
+
+  for i in 0 ..< sim.mobs.len:
+    let
+      mob = sim.mobs[i]
+      objectId = MobObjectBase + i
+      spriteId = if mob.kind == BossMob: BossSpriteId else: MobSpriteId
+    currentIds.add(objectId)
+    packet.addObject(
+      objectId,
+      mob.x - cameraX,
+      mob.y - cameraY,
+      mob.y,
+      MapLayerId,
+      spriteId
+    )
+
+  for i in 0 ..< sim.players.len:
+    let
+      player = sim.players[i]
+      selected = player.id == selectedPlayerId
+      objectId = player.playerObjectId()
+    if player.lives <= 0:
+      continue
+    currentIds.add(objectId)
+    packet.addObject(
+      objectId,
+      player.x - 1 - cameraX,
+      player.y - 1 - cameraY,
+      player.y,
+      MapLayerId,
+      playerSpriteId(i, selected, player.facing)
+    )
+
+  sim.addAttackObjects(packet, currentIds, cameraX, cameraY)
+  sim.addSpeechBubbles(packet, currentIds, cameraX, cameraY)
+
+proc addPlayerHud(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  playerIndex: int
+) =
+  ## Adds the local player HUD to a sprite-player view.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
   let
-    mob = buildSpriteProtocolRawSprite(sim.mobSprite)
-    boss = buildSpriteProtocolRawSprite(sim.bossSprite)
-    coin = buildSpriteProtocolRawSprite(sim.coinSprite)
-    heart = buildSpriteProtocolRawSprite(sim.heartSprite)
-  result.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels)
-  result.addSprite(BossSpriteId, boss.width, boss.height, boss.pixels)
-  result.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels)
-  result.addSprite(HeartSpriteId, heart.width, heart.height, heart.pixels)
+    player = sim.players[playerIndex]
+    lines = [
+      "COINS " & $min(player.coins, 99),
+      "LIVES " & $max(player.lives, 0)
+    ]
+    text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
+  currentIds.add(PlayerHudObjectId)
+  packet.addSprite(
+    PlayerHudSpriteId,
+    text.width,
+    text.height,
+    text.pixels,
+    "hud"
+  )
+  packet.addObject(
+    PlayerHudObjectId,
+    2,
+    2,
+    high(int16),
+    MapLayerId,
+    PlayerHudSpriteId
+  )
+
+proc addPlayerStatus(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  lines: openArray[string]
+) =
+  ## Adds centered status text to a sprite-player view.
+  let
+    text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
+    x = max(0, (ScreenWidth - text.width) div 2)
+    y = max(0, (ScreenHeight - text.height) div 2)
+  currentIds.add(PlayerHudObjectId)
+  packet.addSprite(
+    PlayerHudSpriteId,
+    text.width,
+    text.height,
+    text.pixels,
+    "status"
+  )
+  packet.addObject(
+    PlayerHudObjectId,
+    x,
+    y,
+    high(int16),
+    MapLayerId,
+    PlayerHudSpriteId
+  )
+
+proc buildSpriteProtocolPlayerUpdates*(
+  sim: var SimServer,
+  playerIndex: int,
+  state: PlayerViewerState,
+  nextState: var PlayerViewerState
+): seq[uint8] =
+  ## Builds sprite protocol updates for one playable player view.
+  result = @[]
+  nextState = state
+  if not nextState.initialized:
+    result = sim.buildSpriteProtocolPlayerInit()
+    nextState.initialized = true
+
+  var currentIds: seq[int] = @[]
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    sim.addPlayerStatus(result, currentIds, ["WAITING"])
+  else:
+    let player = sim.players[playerIndex]
+    let
+      cameraX = worldClampPixel(
+        player.x + player.sprite.width div 2 - ScreenWidth div 2,
+        WorldWidthPixels - ScreenWidth
+      )
+      cameraY = worldClampPixel(
+        player.y + player.sprite.height div 2 - ScreenHeight div 2,
+        WorldHeightPixels - ScreenHeight
+      )
+    currentIds.add(MapObjectId)
+    result.addObject(
+      MapObjectId,
+      -cameraX,
+      -cameraY,
+      low(int16),
+      MapLayerId,
+      MapSpriteId
+    )
+    sim.addWorldObjects(
+      result,
+      currentIds,
+      cameraX,
+      cameraY,
+      player.id
+    )
+    sim.addPlayerHud(result, currentIds, playerIndex)
+    if player.lives <= 0:
+      sim.addPlayerStatus(result, currentIds, ["GAME", "OVER"])
+
+  for objectId in state.objectIds:
+    if objectId notin currentIds:
+      result.addDeleteObject(objectId)
+  nextState.objectIds = currentIds
 
 proc buildSpriteProtocolUpdates*(
   sim: var SimServer,
@@ -747,51 +1223,13 @@ proc buildSpriteProtocolUpdates*(
     nextState.initialized = true
 
   var currentIds: seq[int] = @[]
-  for i in 0 ..< sim.players.len:
-    let
-      player = sim.players[i]
-      selected = player.id == nextState.selectedPlayerId
-      objectId = player.playerObjectId()
-    currentIds.add(objectId)
-    result.addObject(
-      objectId,
-      player.x - 1,
-      player.y - 1,
-      player.y,
-      MapLayerId,
-      playerSpriteId(i, selected)
-    )
-
-  for i in 0 ..< sim.mobs.len:
-    let
-      mob = sim.mobs[i]
-      objectId = MobObjectBase + i
-      spriteId = if mob.kind == BossMob: BossSpriteId else: MobSpriteId
-    currentIds.add(objectId)
-    result.addObject(
-      objectId,
-      mob.x,
-      mob.y,
-      mob.y,
-      MapLayerId,
-      spriteId
-    )
-
-  for i in 0 ..< sim.pickups.len:
-    let
-      pickup = sim.pickups[i]
-      objectId = PickupObjectBase + i
-      spriteId =
-        if pickup.kind == PickupCoin: CoinSpriteId else: HeartSpriteId
-    currentIds.add(objectId)
-    result.addObject(
-      objectId,
-      pickup.x,
-      pickup.y,
-      pickup.y,
-      MapLayerId,
-      spriteId
-    )
+  sim.addWorldObjects(
+    result,
+    currentIds,
+    0,
+    0,
+    nextState.selectedPlayerId
+  )
 
   let playerIndex = sim.selectedPlayerIndex(nextState.selectedPlayerId)
   if playerIndex >= 0:

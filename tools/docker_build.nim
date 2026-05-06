@@ -33,6 +33,7 @@ const
     "nottoodumb": "bitworld-nottoodumb",
     "ivotewell": "bitworld-ivotewell",
     "italkalot": "bitworld-italkalot",
+    "lively_lecun": "bitworld-lively-lecun",
     "big_adventure": "bitworld-big-adventure",
     "fancy_cookout": "bitworld-fancy-cookout",
     "infinite_factory": "bitworld-infinite-factory",

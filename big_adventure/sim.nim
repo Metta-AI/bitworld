@@ -32,7 +32,7 @@ const
   BossHp* = 10
   BossCoinValue* = 10
   TargetFps* = 24
-  WebSocketPath* = "/player"
+  SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   BackgroundColor* = 12'u8
   HealthBarGray* = 1'u8
@@ -44,6 +44,12 @@ const
   RadarColorSnake* = 10'u8
   RadarColorBoss* = 3'u8
   PlayerColors* = [2'u8, 7, 8, 14, 4, 11, 13, 15]
+  MessageCharsPerLine* = 16
+  MessageLineCount* = 3
+  MessageMaxChars* = MessageCharsPerLine * MessageLineCount
+  AsciiGlyphW* = 7
+  AsciiGlyphH* = 9
+  AsciiRowStride* = 9
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -64,10 +70,13 @@ const
   BossSpriteId* = 301
   CoinSpriteId* = 302
   HeartSpriteId* = 303
+  SwooshSpriteBase* = 304
   SelectedTextSpriteId* = 400
   SelectedViewportSpriteId* = 401
   ReplayTickSpriteId* = 402
   ReplayControlsSpriteId* = 403
+  ChatSpriteBase* = 500
+  PlayerHudSpriteId* = 600
   PlayerObjectBase* = 1000
   MobObjectBase* = 2000
   PickupObjectBase* = 3000
@@ -75,6 +84,9 @@ const
   SelectedViewportObjectId* = 4001
   ReplayTickObjectId* = 4002
   ReplayControlsObjectId* = 4003
+  ChatObjectBase* = 5000
+  AttackObjectBase* = 6000
+  PlayerHudObjectId* = 7000
 
 type
   Actor* = object
@@ -85,6 +97,7 @@ type
     facing*: Facing
     attackTicks*: int
     attackResolved*: bool
+    message*: string
     velX*: int
     velY*: int
     carryX*: int
@@ -131,6 +144,7 @@ type
     coinSprite*: Sprite
     digitSprites*: array[10, Sprite]
     letterSprites*: seq[Sprite]
+    asciiSprites*: seq[Sprite]
     fb*: Framebuffer
     rng*: Rand
     seed*: int
@@ -158,6 +172,34 @@ proc loadClientDigitSprites*(): array[10, Sprite] =
 
 proc loadClientLetterSprites*(): seq[Sprite] =
   loadLetterSprites(clientDataDir() / "letters.png")
+
+proc loadClientAsciiSprites*(): seq[Sprite] =
+  ## Loads the shared printable ASCII sprite sheet.
+  let path = clientDataDir() / "ascii.png"
+  if not fileExists(path):
+    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
+  let
+    image = readImage(path)
+    cols = image.width div AsciiGlyphW
+    rows = image.height div AsciiRowStride
+    background = nearestPaletteIndex(image[0, 0])
+  result = @[]
+  for row in 0 ..< rows:
+    for col in 0 ..< cols:
+      var sprite = Sprite(width: AsciiGlyphW, height: AsciiGlyphH)
+      sprite.pixels = newSeq[uint8](AsciiGlyphW * AsciiGlyphH)
+      let
+        baseX = col * AsciiGlyphW
+        baseY = row * AsciiRowStride
+      for y in 0 ..< AsciiGlyphH:
+        for x in 0 ..< AsciiGlyphW:
+          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
+          sprite.pixels[sprite.spriteIndex(x, y)] =
+            if colorIndex == background:
+              TransparentColorIndex
+            else:
+              colorIndex
+      result.add(sprite)
 
 proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
   spriteFromImage(
@@ -340,6 +382,7 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.coinSprite = sheet.sheetSprite(2, 1)
   result.digitSprites = loadClientDigitSprites()
   result.letterSprites = loadClientLetterSprites()
+  result.asciiSprites = loadClientAsciiSprites()
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2
@@ -973,14 +1016,6 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
-  ## Builds a simple player screen for replay mode.
-  sim.fb.clearFrame(BackgroundColor)
-  sim.fb.blitText(sim.letterSprites, "REPLAY", 20, 30)
-  sim.fb.blitText(sim.letterSprites, "GLOBAL", 20, 38)
-  sim.fb.blitText(sim.letterSprites, "VIEW", 20, 46)
-  sim.fb.packFramebuffer()
-  sim.fb.packed
 proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
   for playerIndex in 0 ..< sim.players.len:

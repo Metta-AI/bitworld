@@ -1,6 +1,6 @@
 import
   std/[algorithm, math, monotimes, os, tables, times, uri],
-  chroma, pixie, protocol, silky, supersnappy, windy
+  chroma, paddy, pixie, protocol, silky, supersnappy, windy
 
 type
   GlobalLayer = object
@@ -27,6 +27,9 @@ type
     palettePath*: string
     packetSink*: proc(packet: string)
     playerMode*: bool
+    hasWindowPos*: bool
+    windowPos*: IVec2
+    selectedGamepadIndex*: int
 
   NetworkState = object
     ws: WebSocketHandle
@@ -60,6 +63,7 @@ type
     draggingMap: bool
     dragX, dragY: float32
     playerMode: bool
+    selectedGamepadIndex: int
     heldButtons: uint8
     typing: bool
     textBuffer: string
@@ -863,6 +867,28 @@ proc updatePlayerButtons(app: GlobalApp) =
     next = next or ButtonA
   if down[KeyX]:
     next = next or ButtonB
+  let gamepads = pollGamepads()
+  if app.selectedGamepadIndex >= 0 and
+      app.selectedGamepadIndex < gamepads.len:
+    let
+      pad = gamepads[app.selectedGamepadIndex]
+      lx = pad.axis(GamepadLStickX)
+      ly = pad.axis(GamepadLStickY)
+      deadZone = 0.35'f
+    if pad.button(GamepadUp) or ly >= deadZone:
+      next = next or ButtonUp
+    if pad.button(GamepadDown) or ly <= -deadZone:
+      next = next or ButtonDown
+    if pad.button(GamepadLeft) or lx <= -deadZone:
+      next = next or ButtonLeft
+    if pad.button(GamepadRight) or lx >= deadZone:
+      next = next or ButtonRight
+    if pad.button(GamepadStart):
+      next = next or ButtonSelect
+    if pad.button(GamepadA):
+      next = next or ButtonA
+    if pad.button(GamepadB):
+      next = next or ButtonB
   if next == app.heldButtons:
     return
   app.heldButtons = next
@@ -991,6 +1017,13 @@ when isMainModule:
       return 0
     max(0, int64(parseFloat(value) * 1000.0))
 
+  proc parseSelectedGamepad(value: string): int =
+    ## Parses a one-based gamepad index.
+    let parsed = parseInt(value)
+    if parsed <= 0:
+      return 0
+    parsed - 1
+
 proc initGlobalApp*(
   address = DefaultGlobalAddress,
   options = GlobalOptions()
@@ -1026,11 +1059,14 @@ proc initGlobalApp*(
   makeContextCurrent(result.window)
   when not defined(useDirectX) and not defined(emscripten):
     loadExtensions()
+  initGamepads()
   result.silky = newSilky(result.window, atlasPath)
   result.renderer = initRawRenderer()
   if result.window.contentScale > 1.0:
     result.silky.uiScale = 2.0
     result.window.size = ivec2(WindowWidth, WindowHeight) * 2
+  if options.hasWindowPos:
+    result.window.pos = options.windowPos
   result.layers = initTable[int, GlobalLayer]()
   result.sprites = initTable[int, GlobalSprite]()
   result.objects = initTable[int, GlobalObject]()
@@ -1040,6 +1076,7 @@ proc initGlobalApp*(
   result.packetSink = options.packetSink
   result.playerMode =
     options.playerMode or address.addressUsesPlayerMode()
+  result.selectedGamepadIndex = max(0, options.selectedGamepadIndex)
   result.network.url = address
   result.network.reconnectDelayMilliseconds =
     options.reconnectDelayMilliseconds
@@ -1111,20 +1148,38 @@ when isMainModule:
   var
     address = DefaultGlobalAddress
     options = GlobalOptions()
+    windowX = 0
+    windowY = 0
+    windowXSet = false
+    windowYSet = false
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       case key
       of "address":
         address = val
+      of "x", "window-x":
+        windowX = parseInt(val)
+        windowXSet = true
+      of "y", "window-y":
+        windowY = parseInt(val)
+        windowYSet = true
       of "player":
         options.playerMode = true
       of "title":
         options.title = val
+      of "joystick", "gamepad", "controller":
+        options.selectedGamepadIndex = parseSelectedGamepad(val)
       of "reconnect":
         options.reconnectDelayMilliseconds = parseReconnectDelay(val)
       else:
         discard
     else:
       discard
+  if windowXSet or windowYSet:
+    options.hasWindowPos = true
+    options.windowPos = ivec2(
+      if windowXSet: windowX.int32 else: 0'i32,
+      if windowYSet: windowY.int32 else: 0'i32
+    )
   runGlobalClient(address, options)
