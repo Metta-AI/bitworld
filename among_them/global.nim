@@ -22,16 +22,23 @@ const
   InterstitialObjectId = 4005
   InterstitialLayerId = 2
   InterstitialLayerType = 2
-  ImposterBarSpriteId = 701
+  ImposterBarSpriteBase = 740
   ImposterBarObjectBase = 5000
   ImposterBarWidth = 10
   ImposterBarHeight = 2
   ImposterBarYOffset = 4
+  ImposterBarBackgroundColor = 5'u8
+  ImposterBarReadyColor = 3'u8
   TrailDotSpriteBase = 720
   TrailDotObjectBase = 6000
   TrailDotSize = 3
   TrailDotSpacing = 10
   TrailMaxDots = 10
+  PlayerNameSpriteBase = 7000
+  PlayerNameObjectBase = 7000
+  PlayerNameZ = 30002
+  PlayerNameMaxChars = 16
+  PlayerNameColor = 2'u8
   TransportIconSize = 6
   TransportIconHeight = 6
   TransportIconCount = 5
@@ -284,11 +291,23 @@ proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
       if colorIndex != TransparentColorIndex:
         result[sprite.spriteIndex(x, y)] = spriteColor(colorIndex)
 
-proc buildImposterBarSprite(): seq[uint8] =
-  ## Builds the global-only red impostor marker sprite.
+proc buildImposterBarSprite(
+  cooldown, maxCooldown: int
+): seq[uint8] =
+  ## Builds the global-only impostor cooldown indicator sprite.
   result = newSeq[uint8](ImposterBarWidth * ImposterBarHeight)
   for i in 0 ..< result.len:
-    result[i] = spriteColor(TintColor)
+    result[i] = spriteColor(ImposterBarBackgroundColor)
+  let filled =
+    if maxCooldown <= 0 or cooldown <= 0:
+      ImposterBarWidth
+    else:
+      let remaining = clamp(cooldown, 0, maxCooldown)
+      let ready = maxCooldown - remaining
+      clamp((ready * ImposterBarWidth) div maxCooldown, 0, ImposterBarWidth)
+  for y in 0 ..< ImposterBarHeight:
+    for x in 0 ..< filled:
+      result[y * ImposterBarWidth + x] = spriteColor(ImposterBarReadyColor)
 
 proc buildTrailDotSprite(color: uint8): seq[uint8] =
   ## Builds one global-only player trail dot sprite.
@@ -432,12 +451,6 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     sim.taskIconSprite.height,
     taskPixels
   )
-  result.addSprite(
-    ImposterBarSpriteId,
-    ImposterBarWidth,
-    ImposterBarHeight,
-    buildImposterBarSprite()
-  )
   for i in 0 ..< PlayerColors.len:
     result.addSprite(
       TrailDotSpriteBase + i,
@@ -557,6 +570,59 @@ proc spriteObjectId(player: Player): int =
 proc spriteImposterBarObjectId(player: Player): int =
   ## Returns the stable global protocol object id for an impostor bar.
   ImposterBarObjectBase + player.joinOrder
+
+proc spriteImposterBarSpriteId(player: Player): int =
+  ## Returns the global protocol sprite id for one impostor's cooldown bar.
+  ImposterBarSpriteBase + player.joinOrder
+
+proc spritePlayerNameObjectId(player: Player): int =
+  ## Returns the stable global protocol object id for a player name label.
+  PlayerNameObjectBase + player.joinOrder
+
+proc spritePlayerNameSpriteId(player: Player): int =
+  ## Returns the global protocol sprite id for a player name label.
+  PlayerNameSpriteBase + player.joinOrder
+
+proc playerLabelText(player: Player): string =
+  ## Returns the per-player name label text for the global viewer.
+  result = player.address
+  if result.len == 0:
+    result = "?"
+  if result.len > PlayerNameMaxChars:
+    result.setLen(PlayerNameMaxChars)
+
+proc voteLabelLine(sim: SimServer, playerIndex: int): string =
+  ## Returns the vote indicator line for one player during a vote.
+  if sim.phase notin {Voting, VoteResult}:
+    return ""
+  if playerIndex < 0 or playerIndex >= sim.voteState.votes.len:
+    return ""
+  if not sim.players[playerIndex].alive:
+    return ""
+  let vote = sim.voteState.votes[playerIndex]
+  if vote == -1:
+    return "-> ?"
+  if vote == -2:
+    return "-> skip"
+  if vote < 0 or vote >= sim.players.len:
+    return ""
+  var target = sim.players[vote].address
+  if target.len == 0:
+    target = "?"
+  if target.len > PlayerNameMaxChars:
+    target.setLen(PlayerNameMaxChars)
+  "-> " & target
+
+proc playerLabelLines(
+  sim: SimServer,
+  player: Player,
+  playerIndex: int
+): seq[string] =
+  ## Returns label lines (name plus optional vote) for one player.
+  result = @[playerLabelText(player)]
+  let voteLine = voteLabelLine(sim, playerIndex)
+  if voteLine.len > 0:
+    result.add(voteLine)
 
 proc spriteTrailDotObjectId(joinOrder, dotIndex: int): int =
   ## Returns the stable global protocol object id for a trail dot.
@@ -950,7 +1016,8 @@ proc buildSpriteProtocolUpdates*(
         TrailDotSpriteBase + dot.colorIndex
       )
 
-  for player in sim.players:
+  for playerIndex in 0 ..< sim.players.len:
+    let player = sim.players[playerIndex]
     let objectId = player.spriteObjectId()
     currentIds.add(objectId)
     result.addObject(
@@ -964,17 +1031,56 @@ proc buildSpriteProtocolUpdates*(
     if player.role == Imposter:
       let
         barObjectId = player.spriteImposterBarObjectId()
+        barSpriteId = player.spriteImposterBarSpriteId()
         barX = player.spritePlayerX() +
           (sim.playerSprite.width + 2 - ImposterBarWidth) div 2
         barY = player.spritePlayerY() - ImposterBarYOffset
       currentIds.add(barObjectId)
+      result.addSprite(
+        barSpriteId,
+        ImposterBarWidth,
+        ImposterBarHeight,
+        buildImposterBarSprite(
+          player.killCooldown,
+          sim.config.killCooldownTicks
+        )
+      )
       result.addObject(
         barObjectId,
         barX,
         barY,
         30001,
         MapLayerId,
-        ImposterBarSpriteId
+        barSpriteId
+      )
+
+    if sim.config.showPlayerLabels:
+      let
+        labelLines = playerLabelLines(sim, player, playerIndex)
+        label = sim.buildSpriteProtocolTextSprite(
+          labelLines,
+          PlayerNameColor
+        )
+        labelSpriteId = player.spritePlayerNameSpriteId()
+        labelObjectId = player.spritePlayerNameObjectId()
+        labelX = player.spritePlayerX() +
+          (sim.playerSprite.width + 2 - label.width) div 2
+        labelY = player.spritePlayerY() - ImposterBarYOffset -
+          label.height - 1
+      currentIds.add(labelObjectId)
+      result.addSprite(
+        labelSpriteId,
+        label.width,
+        label.height,
+        label.pixels
+      )
+      result.addObject(
+        labelObjectId,
+        labelX,
+        labelY,
+        PlayerNameZ,
+        MapLayerId,
+        labelSpriteId
       )
 
   for i in 0 ..< sim.bodies.len:
