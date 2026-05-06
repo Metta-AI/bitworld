@@ -1,5 +1,7 @@
 # Submitting EvidenceBot v2 to the Among Them Leaderboard
 
+*Last updated: May 6, 2026*
+
 ## Prerequisites
 
 - Python 3.12
