@@ -16,7 +16,7 @@ import type { BotController } from "../bots/bot_common.js";
 import { runTasks, createTaskInstance, createEventBuffer, eventBufferLines, type TaskInstance, type Task } from "../bots/tasks.js";
 
 const sim = new Sim(
-  { ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, hostages: 1 }], obstacleCount: 0 },
+  { ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, psychopomps: 1 }], obstacleCount: 0 },
   42,
 );
 for (let i = 0; i < 2; i++) sim.addPlayer(`llm_${i}`);

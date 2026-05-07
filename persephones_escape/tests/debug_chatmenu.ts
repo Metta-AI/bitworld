@@ -14,7 +14,7 @@ import { BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_UP, BUTTON_DOWN }
 
 const config = {
   ...DEFAULT_GAME_CONFIG,
-  rounds: [{ durationSecs: 60, hostages: 1 }],
+  rounds: [{ durationSecs: 60, psychopomps: 1 }],
   obstacleCount: 0,
 };
 

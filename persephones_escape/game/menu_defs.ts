@@ -5,7 +5,7 @@ import {
 import type { InputState } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// 1D menus (comm, share, global, hostage, info)
+// 1D menus (comm, share, global, psychopomp, info)
 // ---------------------------------------------------------------------------
 
 export interface MenuDef {
@@ -20,7 +20,7 @@ export const MENU_DEFS = {
   whisper:   { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_B,      openSequence: [BUTTON_B, 0] },
   share:      { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
   shout:      { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: BUTTON_SELECT,  openSequence: [BUTTON_SELECT, 0] },
-  hostage:    { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
+  psychopomp:    { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_SELECT, openButton: null,           openSequence: [] },
   info:       { axis: "horizontal" as const, selectButton: BUTTON_A, closeButton: BUTTON_A,      openButton: BUTTON_B,       openSequence: [BUTTON_B, 0] },
 } satisfies Record<string, MenuDef>;
 
@@ -30,7 +30,6 @@ export const MENU_DEFS = {
 
 export interface MenuItem2D {
   action: string;
-  toggleAction?: string;
 }
 
 export interface MenuCategory2D {
@@ -42,7 +41,8 @@ export const WHISPER_MENU: MenuCategory2D[] = [
   {
     label: "COLOR",
     items: [
-      { action: "C.OFFER", toggleAction: "C.UNOFFR" },
+      { action: "C.OFFER" },
+      { action: "C.UNOFFR" },
       { action: "C.ACCPT" },
     ],
   },
@@ -50,7 +50,8 @@ export const WHISPER_MENU: MenuCategory2D[] = [
     label: "ROLE",
     items: [
       { action: "ROLE" },
-      { action: "R.OFFER", toggleAction: "R.UNOFFR" },
+      { action: "R.OFFER" },
+      { action: "R.UNOFFR" },
       { action: "R.ACCPT" },
     ],
   },
@@ -74,19 +75,17 @@ export const WHISPER_OPEN_BUTTON = BUTTON_B;
 export const WHISPER_CLOSE_BUTTON = BUTTON_SELECT;
 export const WHISPER_SELECT_BUTTON = BUTTON_A;
 
-export function whisperMenuItemLabel(cat: MenuCategory2D, itemIdx: number, toggled: boolean): string {
+export function whisperMenuItemLabel(cat: MenuCategory2D, itemIdx: number): string {
   const item = cat.items[itemIdx];
   if (!item) return "";
-  if (toggled && item.toggleAction) return item.toggleAction;
   return item.action;
 }
 
-export function whisperMenuAction(catIdx: number, itemIdx: number, toggledSet: Set<string>): string | null {
+export function whisperMenuAction(catIdx: number, itemIdx: number): string | null {
   const cat = WHISPER_MENU[catIdx];
   if (!cat) return null;
   const item = cat.items[itemIdx];
   if (!item) return null;
-  if (item.toggleAction && toggledSet.has(item.action)) return item.toggleAction;
   return item.action;
 }
 
@@ -94,7 +93,7 @@ export function findWhisperMenuPosition(action: string): { catIdx: number; itemI
   for (let c = 0; c < WHISPER_MENU.length; c++) {
     const cat = WHISPER_MENU[c];
     for (let i = 0; i < cat.items.length; i++) {
-      if (cat.items[i].action === action || cat.items[i].toggleAction === action) {
+      if (cat.items[i].action === action) {
         return { catIdx: c, itemIdx: i };
       }
     }

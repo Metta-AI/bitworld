@@ -12,6 +12,7 @@ import { argv, env, exit } from "process";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { execFileSync } from "child_process";
 import { Phase, Team, type InputState, type GameConfig } from "./game/types.js";
 import { GAME_NAME, TARGET_FPS, playerSpriteName, DEFAULT_GAME_CONFIG, playerCountFromConfig } from "./game/constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./game/protocol.js";
@@ -145,6 +146,7 @@ function resolveRuntimeOptions(): RuntimeOptions {
 }
 
 function runGameServer(opts: RuntimeOptions) {
+  killExistingPortListener(opts.port);
   const sim = new Sim(opts.config, opts.seed);
   const freeplayClients = new Map<WebSocket, ClientState>();
   const slots = opts.tokens.map((token, slot): SlotState => ({
@@ -389,6 +391,7 @@ function handlePlayerMessage(data: Buffer, client: ClientState | SlotState, sim:
 
 function runReplayServer(opts: RuntimeOptions) {
   if (!opts.loadReplayPath) throw new Error("Replay mode requires COGAME_LOAD_REPLAY_PATH");
+  killExistingPortListener(opts.port);
   const replayData = loadReplay(opts.loadReplayPath);
   const httpServer = createServer((req, res) => handleHttp(req, res, opts));
   const replayWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
@@ -415,10 +418,12 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, opts: RuntimeOpti
     sendJson(res, 200, { ok: true, mode: opts.mode });
   } else if (url.pathname === "/player") {
     sendHtml(res, "player.html");
-  } else if (url.pathname === "/global") {
-    sendHtml(res, "global.html");
+  } else if (url.pathname === "/global" || url.pathname === "/global_client.html") {
+    sendHtml(res, "global_client.html");
   } else if (url.pathname === "/replay") {
     sendHtml(res, "replay.html");
+  } else if (url.pathname === "/snappyjs.min.js") {
+    sendScript(res, "snappyjs.min.js");
   } else {
     sendText(res, 200, `${GAME_NAME} ${opts.mode} server`);
   }
@@ -495,6 +500,46 @@ function parseMode(raw: string): ServerMode {
   throw new Error(`Unknown mode "${raw}"`);
 }
 
+function listeningPids(port: number): number[] {
+  if (!Number.isInteger(port) || port <= 0) return [];
+  try {
+    const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf-8" }).trim();
+    if (!out) return [];
+    return out
+      .split(/\s+/)
+      .map(pid => Number(pid))
+      .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function killExistingPortListener(port: number): void {
+  const pids = listeningPids(port);
+  if (pids.length === 0) return;
+
+  console.log(`Port ${port} already has listener(s): ${pids.join(", ")}. Terminating before startup.`);
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* process may already be gone */ }
+  }
+
+  for (let i = 0; i < 20; i++) {
+    if (listeningPids(port).length === 0) return;
+    sleepSync(50);
+  }
+
+  const remaining = listeningPids(port);
+  if (remaining.length === 0) return;
+  console.log(`Port ${port} still occupied by ${remaining.join(", ")}. Forcing termination.`);
+  for (const pid of remaining) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* process may already be gone */ }
+  }
+}
+
 function sanitizeName(name: string): string {
   return name.replace(/\s+/g, "_").trim() || "unknown";
 }
@@ -502,6 +547,12 @@ function sanitizeName(name: string): string {
 function sendHtml(res: ServerResponse, file: string) {
   const path = join(__dirname, "clients", file);
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(readFileSync(path, "utf-8"));
+}
+
+function sendScript(res: ServerResponse, file: string) {
+  const path = join(__dirname, "clients", file);
+  res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
   res.end(readFileSync(path, "utf-8"));
 }
 

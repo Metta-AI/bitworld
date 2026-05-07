@@ -4,7 +4,7 @@ import { Phase, Role, Team, type GameConfig } from "../game/types.js";
 
 const config: GameConfig = {
   roles: [{ role: Role.Shades, team: Team.TeamA, count: 6 }],
-  rounds: [{ durationSecs: 1, hostages: 1 }],
+  rounds: [{ durationSecs: 1, psychopomps: 1 }],
   obstacleCount: 0,
   fastTimers: true,
 };
@@ -20,16 +20,16 @@ sim.createWhisper(0);
 const leaderWhisper = sim.players[0].inWhisper;
 sim.addToWhisper(leaderWhisper, 2);
 
-sim.beginHostageSelect();
-assert.equal(sim.phase, Phase.HostageSelect);
-assert.equal(sim.players[0].inWhisper, -1, "hostage select ejects the leader from chat");
-assert.equal(sim.players[2].inWhisper, leaderWhisper, "hostage select leaves non-leaders in existing whisper");
+sim.beginPsychopompSelect();
+assert.equal(sim.phase, Phase.PsychopompSelect);
+assert.equal(sim.players[0].inWhisper, -1, "psychopomp select ejects the leader from chat");
+assert.equal(sim.players[2].inWhisper, leaderWhisper, "psychopomp select leaves non-leaders in existing whisper");
 assert.equal(sim.whispers.get(leaderWhisper)?.occupants.has(2), true);
 
-sim.hostagesSelectedA = [2];
-sim.hostagesSelectedB = [3];
-sim.players[2].selectedAsHostage = true;
-sim.players[3].selectedAsHostage = true;
+sim.psychopompsSelectedA = [2];
+sim.psychopompsSelectedB = [3];
+sim.players[2].selectedAsPsychopomp = true;
+sim.players[3].selectedAsPsychopomp = true;
 sim.beginLeaderSummit();
 
 assert.equal(sim.phase, Phase.LeaderSummit);
@@ -38,10 +38,10 @@ assert.equal(sim.shoutMessagesA.at(-1)?.text.startsWith("LEAVING:"), true);
 assert.equal(sim.shoutMessagesB.at(-1)?.text.startsWith("LEAVING:"), true);
 
 sim.endLeaderSummit();
-assert.equal(sim.phase, Phase.HostageExchange);
+assert.equal(sim.phase, Phase.PsychopompExchange);
 sim.finalizeExchange();
 
 assert.equal(sim.shoutMessagesA.at(-1)?.text.startsWith("ARRIVED:"), true);
 assert.equal(sim.shoutMessagesB.at(-1)?.text.startsWith("ARRIVED:"), true);
 
-console.log("hostage chat tests passed");
+console.log("psychopomp chat tests passed");

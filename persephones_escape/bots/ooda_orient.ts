@@ -1,7 +1,7 @@
 import type { BotController } from "./bot_common.js";
 import {
-  chooseDeterministicHostageTargets,
-  hostageCountForRound,
+  chooseDeterministicPsychopompTargets,
+  psychopompCountForRound,
   updateGameKnowledgeFromFrame,
   drainStrategyTelemetry,
   writePolicyPatch,
@@ -58,14 +58,24 @@ export class OodaOrienter {
       this.lastLoggedPhase = knowledge.phase;
     }
 
-    const whisperKey = `${knowledge.phase}:${knowledge.occupantNames.join("|")}:${knowledge.pendingEntry}:${knowledge.pendingEntryName ?? ""}:${knowledge.pendingColorOffer}:${knowledge.pendingRoleOffer}`;
-    if (knowledge.phase === "whisper" && whisperKey !== this.lastLoggedWhisper) {
+    const whisperKey = `${knowledge.phase}:${knowledge.occupantNames.join("|")}:${knowledge.pendingEntry}:${knowledge.pendingEntryName ?? ""}:${knowledge.pendingColorOffer}:${knowledge.pendingRoleOffer}:${knowledge.pendingLeaderOffer}:${knowledge.whisperMessages.map(m => `${m.type}:${m.senderColor}:${m.text}`).join("|")}`;
+    if ((knowledge.phase === "whisper" || knowledge.phase === "leader_summit") && whisperKey !== this.lastLoggedWhisper) {
+      const offerSystems = knowledge.whisperMessages
+        .filter(m => m.type === "system")
+        .map(m => m.text)
+        .filter(text => /OFFER|XCHG|ACCEPT/i.test(text))
+        .slice(-5);
       logEvent("whisper_state", {
+        phase: knowledge.phase,
         occupants: knowledge.occupantNames,
+        occupantCount: knowledge.occupantCount,
         pendingEntry: knowledge.pendingEntry,
         pendingEntryName: knowledge.pendingEntryName,
         pendingColorOffer: knowledge.pendingColorOffer,
         pendingRoleOffer: knowledge.pendingRoleOffer,
+        pendingLeaderOffer: knowledge.pendingLeaderOffer,
+        offerSystems,
+        recentWhisperMessages: knowledge.whisperMessages.slice(-6),
       });
       this.lastLoggedWhisper = whisperKey;
     }
@@ -78,6 +88,10 @@ export class OodaOrienter {
         newMsgCount,
         recentShouts: knowledge.shoutLog.slice(-3),
         recentWhispers: knowledge.whisperMessages.slice(-3),
+        phase: knowledge.phase,
+        occupants: knowledge.occupantNames,
+        pendingColorOffer: knowledge.pendingColorOffer,
+        pendingRoleOffer: knowledge.pendingRoleOffer,
       });
       if (!llmDisabled) skillTriggers.requestInterpret(knowledge, this.onNotesUpdate);
     }
@@ -93,7 +107,7 @@ export class OodaOrienter {
       this.scheduleFocusedActivityOrienters();
     }
 
-    this.updateHostagePrecommit();
+    this.updatePsychopompPrecommit();
 
     for (const event of drainStrategyTelemetry(knowledge)) {
       logEvent("strategy_telemetry", event);
@@ -142,37 +156,37 @@ export class OodaOrienter {
     this.config.observer.start();
   }
 
-  private updateHostagePrecommit(): void {
+  private updatePsychopompPrecommit(): void {
     const { knowledge, logEvent } = this.config;
     if (!knowledge.amLeader) return;
-    if (knowledge.phase !== "playing" && knowledge.phase !== "hostage_select") return;
-    const needed = hostageCountForRound(knowledge) ?? 0;
-    const fromPolicy = knowledge.policy.resolved.hostageTargets?.filter(name => knowledge.players.has(name)) ?? [];
-    if (knowledge.action.hostagePrecommitRound !== knowledge.matchFacts.currentRound) {
-      knowledge.action.hostagePrecommit = [];
-      knowledge.action.hostagePrecommitRound = knowledge.matchFacts.currentRound;
-      logEvent("hostage_precommit_cleared", { round: knowledge.matchFacts.currentRound });
+    if (knowledge.phase !== "playing" && knowledge.phase !== "psychopomp_select") return;
+    const needed = psychopompCountForRound(knowledge) ?? 0;
+    const fromPolicy = knowledge.policy.resolved.psychopompTargets?.filter(name => knowledge.players.has(name)) ?? [];
+    if (knowledge.action.psychopompPrecommitRound !== knowledge.matchFacts.currentRound) {
+      knowledge.action.psychopompPrecommit = [];
+      knowledge.action.psychopompPrecommitRound = knowledge.matchFacts.currentRound;
+      logEvent("psychopomp_precommit_cleared", { round: knowledge.matchFacts.currentRound });
     }
 
     if (fromPolicy.length > 0) {
       const next = needed > 0 ? fromPolicy.slice(0, needed) : fromPolicy;
-      if (knowledge.action.hostagePrecommit.join("|") !== next.join("|")) {
-        knowledge.action.hostagePrecommit = next;
-        knowledge.action.hostagePrecommitRound = knowledge.matchFacts.currentRound;
-        logEvent("hostage_precommit_updated", { targets: next, source: "policy" });
+      if (knowledge.action.psychopompPrecommit.join("|") !== next.join("|")) {
+        knowledge.action.psychopompPrecommit = next;
+        knowledge.action.psychopompPrecommitRound = knowledge.matchFacts.currentRound;
+        logEvent("psychopomp_precommit_updated", { targets: next, source: "policy" });
       }
-      if (knowledge.phase !== "hostage_select" || needed <= 0 || next.length >= needed) return;
+      if (knowledge.phase !== "psychopomp_select" || needed <= 0 || next.length >= needed) return;
     }
 
-    if (knowledge.phase !== "hostage_select" || needed <= 0 || knowledge.action.hostagePrecommit.length >= needed) return;
+    if (knowledge.phase !== "psychopomp_select" || needed <= 0 || knowledge.action.psychopompPrecommit.length >= needed) return;
 
-    const existing = knowledge.action.hostagePrecommit.filter(name => knowledge.players.has(name));
-    const deterministic = chooseDeterministicHostageTargets(knowledge).filter(name => !existing.includes(name));
+    const existing = knowledge.action.psychopompPrecommit.filter(name => knowledge.players.has(name));
+    const deterministic = chooseDeterministicPsychopompTargets(knowledge).filter(name => !existing.includes(name));
     const targets = [...existing, ...deterministic].slice(0, needed);
-    if (targets.length > existing.length || knowledge.action.hostagePrecommit.join("|") !== targets.join("|")) {
-      knowledge.action.hostagePrecommit = targets;
-      knowledge.action.hostagePrecommitRound = knowledge.matchFacts.currentRound;
-      logEvent("hostage_precommit_filled", { targets, source: "deterministic" });
+    if (targets.length > existing.length || knowledge.action.psychopompPrecommit.join("|") !== targets.join("|")) {
+      knowledge.action.psychopompPrecommit = targets;
+      knowledge.action.psychopompPrecommitRound = knowledge.matchFacts.currentRound;
+      logEvent("psychopomp_precommit_filled", { targets, source: "deterministic" });
     }
   }
 }

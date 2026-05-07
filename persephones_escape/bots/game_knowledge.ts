@@ -4,11 +4,11 @@ import { PlayerShape } from "../game/types.js";
 import { readPosition, type Point } from "./bot_utils.js";
 import {
   parsePhase, parsePlayingHud, parseRoleRevealScreen, scanMinimapPlayers,
-  parseHostageSelectHud,
+  parsePsychopompSelectHud,
   parseRoundClock,
   parseWhisperStatus, parseLastShout, scanSpeechBubbles,
   parseWhisperMessages, parseShoutMessages, scanOverworldShapes,
-  parseRoundScheduleScreen, matchRoster,
+  parseRoundScheduleScreen, matchRoster, parseInfoScreen,
   type ParsedPhase, type InfoScreenEntry, type MinimapDot, type ParsedChatLine, type RosterEntry,
   type FrameParserOptions,
 } from "./frame_parser.js";
@@ -39,7 +39,7 @@ export interface PlayerKnowledge {
 export interface RoundFact {
   round: number;
   durationSecs: number;
-  hostages: number;
+  psychopomps: number;
 }
 
 export interface MatchFacts {
@@ -51,7 +51,7 @@ export interface MatchFacts {
   rounds: RoundFact[];
   currentRound: number;
   timerSecs: number;
-  hostageSelectTimerSecs: number;
+  psychopompSelectTimerSecs: number;
 }
 
 export interface PlayerNotes {
@@ -79,7 +79,7 @@ export interface DecisionMemory {
 export interface LlmDecisionNotes {
   exchange: DecisionMemory;
   pursue: Record<string, DecisionMemory>;
-  hostage: DecisionMemory;
+  psychopomp: DecisionMemory;
   usurp: DecisionMemory;
   messageInterpretation: DecisionMemory;
 }
@@ -211,19 +211,22 @@ export interface ResolvedPolicy {
   acceptRoleOffers: boolean;
   acceptLeaderOffers: boolean;
   autoAcceptColorOffer: boolean;
+  autoOfferColorExchange: boolean;
+  autoOfferColorDenyPlayers: string[];
+  autoOfferRoleExchange: boolean;
   meetPoint: MeetPoint | null;
-  hostageTargets: string[] | null;
+  psychopompTargets: string[] | null;
   shouldUsurp: boolean;
   usurpTarget: string | null;
   shoutNext: string | null;
   prefetchedWhisper: PrefetchedWhisper | null;
-  whisperActionNext: "ROLE" | "C.OFFER" | "R.OFFER" | "PASS" | "TAKE" | "GRANT" | null;
+  whisperActionNext: "ROLE" | "C.OFFER" | "C.UNOFFR" | "R.OFFER" | "R.UNOFFR" | "PASS" | "TAKE" | "GRANT" | null;
   exitCurrentWhisper: boolean;
   pursueModeHints: Record<string, PursueModeHint>;
   hostPrivateSpotProbability: number;
   goToVisiblePlayerProbability: number;
   shoutInviteWhenHostingAlone: boolean;
-  chooseHostageFallback: boolean;
+  choosePsychopompFallback: boolean;
   maybeUsurpFallback: boolean;
   strategyNotes: string;
   lastUpdatedTick: number;
@@ -256,6 +259,7 @@ export interface WhisperIntent {
 export interface ActionExchangeState {
   lastShoutTick: number;
   failedTargets: Map<string, number>;
+  badPursueTargets: Map<string, { tick: number; reason: string }>;
   prefetchRequested: string | null;
   currentTarget: string | null;
   currentExchangeMode: ExchangeMode;
@@ -266,17 +270,28 @@ export interface ActionExchangeState {
   lastInitRound: number;
   lastInterpretTick: number;
   lastWhisperActionKey: string | null;
+  activeColorOffer: boolean;
+  activeRoleOffer: boolean;
+  roleFollowupUntilTick: number;
+  lastWhisperSeenTick: number;
 }
 
 export interface ActionKnowledge {
   currentActivity: Activity | null;
   atomQueue: AtomicAction[];
   exchange: ActionExchangeState;
-  hostagePrecommit: string[];
-  hostagePrecommitRound: number;
+  psychopompPrecommit: string[];
+  psychopompPrecommitRound: number;
+  lastUsurpVoteTarget: string | null;
+  lastUsurpVoteRound: number;
   lastSentChat: string | null;
   hasNewIncomingChat: boolean;
   lastGlobalCheckTick: number;
+  lastInfoCheckTick: number;
+  infoCheckIntervalTicks: number;
+  forceInfoCheck: boolean;
+  lastInfoUpdatedTick: number;
+  whisperStartedTick: number | null;
 }
 
 export interface AsyncKnowledge {
@@ -315,6 +330,7 @@ export interface GameKnowledge {
   myRoom: Room | null;
   myPos: Point | null;
   amLeader: boolean;
+  roomLeaderName: string | null;
   phase: ParsedPhase;
   prevPhase: ParsedPhase;
   /** Keyed by character name (e.g. "R.CRCL"). */
@@ -374,7 +390,7 @@ function defaultLlmDecisionNotes(): LlmDecisionNotes {
   return {
     exchange: { summary: "", updatedTick: -1 },
     pursue: {},
-    hostage: { summary: "", updatedTick: -1 },
+    psychopomp: { summary: "", updatedTick: -1 },
     usurp: { summary: "", updatedTick: -1 },
     messageInterpretation: { summary: "", updatedTick: -1 },
   };
@@ -392,8 +408,11 @@ export function defaultResolvedPolicy(): ResolvedPolicy {
     acceptRoleOffers: false,
     acceptLeaderOffers: true,
     autoAcceptColorOffer: true,
+    autoOfferColorExchange: true,
+    autoOfferColorDenyPlayers: [],
+    autoOfferRoleExchange: false,
     meetPoint: null,
-    hostageTargets: null,
+    psychopompTargets: null,
     shouldUsurp: false,
     usurpTarget: null,
     shoutNext: null,
@@ -404,7 +423,7 @@ export function defaultResolvedPolicy(): ResolvedPolicy {
     hostPrivateSpotProbability: 0.25,
     goToVisiblePlayerProbability: 0.7,
     shoutInviteWhenHostingAlone: true,
-    chooseHostageFallback: true,
+    choosePsychopompFallback: true,
     maybeUsurpFallback: true,
     strategyNotes: "",
     lastUpdatedTick: -1,
@@ -430,6 +449,7 @@ export function defaultActionExchangeState(): ActionExchangeState {
   return {
     lastShoutTick: -Infinity,
     failedTargets: new Map(),
+    badPursueTargets: new Map(),
     prefetchRequested: null,
     currentTarget: null,
     currentExchangeMode: "go_to_player",
@@ -440,6 +460,10 @@ export function defaultActionExchangeState(): ActionExchangeState {
     lastInitRound: -1,
     lastInterpretTick: -Infinity,
     lastWhisperActionKey: null,
+    activeColorOffer: false,
+    activeRoleOffer: false,
+    roleFollowupUntilTick: -Infinity,
+    lastWhisperSeenTick: -Infinity,
   };
 }
 
@@ -478,7 +502,7 @@ export function createGameKnowledge(name: string): GameKnowledge {
     rounds: [],
     currentRound: 0,
     timerSecs: 0,
-    hostageSelectTimerSecs: 0,
+    psychopompSelectTimerSecs: 0,
   };
   const players = new Map<string, PlayerKnowledge>();
   const minimapDots: MinimapDot[] = [];
@@ -537,11 +561,18 @@ export function createGameKnowledge(name: string): GameKnowledge {
       currentActivity: null,
       atomQueue: [],
       exchange: defaultActionExchangeState(),
-      hostagePrecommit: [],
-      hostagePrecommitRound: -1,
+      psychopompPrecommit: [],
+      psychopompPrecommitRound: -1,
+      lastUsurpVoteTarget: null,
+      lastUsurpVoteRound: -1,
       lastSentChat: null,
       hasNewIncomingChat: false,
       lastGlobalCheckTick: -Infinity,
+      lastInfoCheckTick: -Infinity,
+      infoCheckIntervalTicks: 96,
+      forceInfoCheck: false,
+      lastInfoUpdatedTick: -Infinity,
+      whisperStartedTick: null,
     },
     async: {
       pending: new Set(),
@@ -558,6 +589,7 @@ export function createGameKnowledge(name: string): GameKnowledge {
     myRoom: null,
     myPos: null,
     amLeader: false,
+    roomLeaderName: null,
     phase: "unknown",
     prevPhase: "unknown",
     players,
@@ -653,6 +685,11 @@ export function updatePhase(state: GameKnowledge, frame: Uint8Array): void {
   state.tick++;
   state.prevPhase = state.phase;
   state.phase = parsePhase(frame);
+  if (state.phase === "whisper") {
+    state.action.whisperStartedTick ??= state.tick;
+  } else if (state.phase !== "info_screen") {
+    state.action.whisperStartedTick = null;
+  }
 
   if (state.phase === "role_reveal") {
     const info = !state.revealLocked ? parseRoleRevealScreen(frame) : null;
@@ -695,18 +732,23 @@ export function updatePhase(state: GameKnowledge, frame: Uint8Array): void {
     state.pendingEntry = status.pendingEntry;
     state.pendingEntryName = status.pendingEntryName;
     state.occupantCount = status.occupantCount;
-    // First occupant is self
-    if (status.occupants.length > 0 && !state.revealLocked) {
-      const self = status.occupants[0];
+    const selfOccupant = status.occupants.find(o => {
+      if (state.myCharName && o.shape !== null) return characterName(o.color, o.shape) === state.myCharName;
+      if (state.myColor !== null) return o.color === state.myColor;
+      return false;
+    }) ?? status.occupants[0];
+    if (selfOccupant && !state.revealLocked) {
+      const self = selfOccupant;
       if (state.myColor === null) state.myColor = self.color;
       if (state.myShape === null && self.shape !== null) state.myShape = self.shape;
       trySetMyCharName(state);
     }
     state.occupantNames = [];
-    for (let i = 1; i < status.occupants.length; i++) {
-      const o = status.occupants[i];
+    for (const o of status.occupants) {
       const b = getOrCreatePlayerKnowledge(state, o.color, o.shape);
-      state.occupantNames.push(b.name);
+      if (b.name !== state.myCharName && !state.occupantNames.includes(b.name)) {
+        state.occupantNames.push(b.name);
+      }
     }
   } else {
     state.pendingRoleOffer = false;
@@ -716,6 +758,9 @@ export function updatePhase(state: GameKnowledge, frame: Uint8Array): void {
     state.pendingEntryName = null;
     state.occupantCount = 0;
     state.occupantNames = [];
+    state.action.exchange.activeColorOffer = false;
+    state.action.exchange.activeRoleOffer = false;
+    state.action.exchange.roleFollowupUntilTick = -Infinity;
   }
 
   // Parse the last-shout strip. Only log when the text changes.
@@ -725,6 +770,17 @@ export function updatePhase(state: GameKnowledge, frame: Uint8Array): void {
       state.shoutLog.push({ tick: state.tick, text: shout.text, senderColor: shout.senderColor });
       if (state.shoutLog.length > 20) state.shoutLog.shift();
       state.lastShoutText = shout.text;
+    }
+  }
+
+  // Parse full shout messages in shout view for leader changes
+  if (state.phase === "playing" || state.phase === "psychopomp_select") {
+    const msgs = parseShoutMessages(frame, parserOptions);
+    const hash = msgs.map(m => `${m.type}:${m.senderColor}:${m.text}`).join("|");
+    if (hash !== state.lastShoutMsgHash) {
+      state.shoutMessages = msgs;
+      state.lastShoutMsgHash = hash;
+      updateLeaderFromShoutMessages(state, msgs);
     }
   }
 
@@ -759,6 +815,10 @@ export function updateGameKnowledgeFromFrame(
 ): void {
   updatePhase(state, frame);
   if (state.phase === "roster_reveal" && roster) updateFromRosterScreen(state, roster);
+  if (state.phase === "info_screen") {
+    const entries = parseInfoScreen(frame, matchRoster(state.players.values()));
+    if (entries) updateKnowledgeFromInfoScreen(state, entries);
+  }
 
   // Position and minimap are one logical snapshot. Position comes first so
   // shape/nearby inference uses the same frame's camera estimate.
@@ -771,12 +831,15 @@ export function updateGameKnowledgeFromFrame(
 
 export function updateKnowledgeFromInfoScreen(state: GameKnowledge, entries: InfoScreenEntry[]): boolean {
   const changed = updateFromInfoScreen(state, entries);
+  state.action.lastInfoCheckTick = state.tick;
+  state.action.forceInfoCheck = false;
+  if (changed) state.action.lastInfoUpdatedTick = state.tick;
   syncGameKnowledgeCategories(state);
   return changed;
 }
 
 export function updateMinimap(state: GameKnowledge, frame: Uint8Array): void {
-  if (state.phase !== "playing" && state.phase !== "hostage_select" && state.phase !== "leader_summit") return;
+  if (state.phase !== "playing" && state.phase !== "psychopomp_select" && state.phase !== "leader_summit") return;
   if (state.myRoom === null) return;
   state.minimapDots = scanMinimapPlayers(frame, state.myRoom, state.matchFacts.roomW, state.matchFacts.roomH);
   const parserOptions = knownSpriteOptions(state);
@@ -848,7 +911,7 @@ export function updateFromRosterScreen(state: GameKnowledge, entries: RosterEntr
 }
 
 export function updatePosition(state: GameKnowledge, frame: Uint8Array): void {
-  if (state.phase !== "playing" && state.phase !== "hostage_select" && state.phase !== "leader_summit") return;
+  if (state.phase !== "playing" && state.phase !== "psychopomp_select" && state.phase !== "leader_summit") return;
   const pos = readPosition(frame, state.matchFacts.roomW, state.matchFacts.roomH);
   if (pos) {
     state.myPos = { x: pos.x, y: pos.y };
@@ -859,10 +922,10 @@ export function updatePosition(state: GameKnowledge, frame: Uint8Array): void {
 export function updateHud(state: GameKnowledge, frame: Uint8Array): void {
   if (
     state.phase !== "playing" &&
-    state.phase !== "hostage_select" &&
+    state.phase !== "psychopomp_select" &&
     state.phase !== "leader_summit" &&
     state.phase !== "whisper" &&
-    state.phase !== "hostage_exchange" &&
+    state.phase !== "psychopomp_exchange" &&
     state.phase !== "reveal"
   ) return;
 
@@ -876,8 +939,11 @@ export function updateHud(state: GameKnowledge, frame: Uint8Array): void {
   if (hud) {
     state.matchFacts.currentRound = hud.round;
     state.matchFacts.timerSecs = hud.timerSecs;
-    state.matchFacts.hostageSelectTimerSecs = 0;
-    state.amLeader = hud.isLeader;
+    state.matchFacts.psychopompSelectTimerSecs = 0;
+    if (hud.roleName) {
+      state.amLeader = hud.isLeader;
+      if (hud.isLeader && state.myCharName) state.roomLeaderName = state.myCharName;
+    }
     if (hud.round !== state.startingLeaderRound) {
       state.wasStartingLeader = hud.isLeader;
       state.startingLeaderRound = hud.round;
@@ -886,10 +952,10 @@ export function updateHud(state: GameKnowledge, frame: Uint8Array): void {
       state.myRole = hud.roleName;
     }
   }
-  if (state.phase === "hostage_select") {
-    const hostageHud = parseHostageSelectHud(frame);
-    if (hostageHud) {
-      state.matchFacts.hostageSelectTimerSecs = hostageHud.timerSecs;
+  if (state.phase === "psychopomp_select") {
+    const psychopompHud = parsePsychopompSelectHud(frame);
+    if (psychopompHud) {
+      state.matchFacts.psychopompSelectTimerSecs = psychopompHud.timerSecs;
     }
   }
 }
@@ -943,7 +1009,7 @@ export function updateFromInfoScreen(state: GameKnowledge, entries: InfoScreenEn
 
 export type TriggerEvent =
   | "game_start" | "round_start" | "info_updated"
-  | "hostage_phase" | "leader_summit" | "idle" | "role_learned" | "periodic"
+  | "psychopomp_phase" | "leader_summit" | "idle" | "role_learned" | "periodic"
   | "player_nearby" | "player_left"
   | "role_offer_pending"
   | "shout_received"
@@ -962,12 +1028,12 @@ export function checkTriggers(
     return "round_start";
   }
 
-  if (state.phase === "playing" && state.prevPhase === "hostage_exchange") {
+  if (state.phase === "playing" && state.prevPhase === "psychopomp_exchange") {
     return "round_start";
   }
 
-  if (state.phase === "hostage_select" && state.prevPhase !== "hostage_select") {
-    return "hostage_phase";
+  if (state.phase === "psychopomp_select" && state.prevPhase !== "psychopomp_select") {
+    return "psychopomp_phase";
   }
 
   if (state.phase === "leader_summit" && state.prevPhase !== "leader_summit") {
@@ -1072,16 +1138,16 @@ function roomStr(room: Room | null): string {
   return "UNKNOWN";
 }
 
-export function hostageCountForRound(state: GameKnowledge, round: number = state.matchFacts.currentRound): number | null {
+export function psychopompCountForRound(state: GameKnowledge, round: number = state.matchFacts.currentRound): number | null {
   const fact = state.matchFacts.rounds.find(r => r.round === round);
-  return fact?.hostages ?? null;
+  return fact?.psychopomps ?? null;
 }
 
-export function chooseDeterministicHostageTargets(state: GameKnowledge): string[] {
-  const count = hostageCountForRound(state) ?? 1;
+export function chooseDeterministicPsychopompTargets(state: GameKnowledge): string[] {
+  const count = psychopompCountForRound(state) ?? 1;
   const inRoom = Array.from(state.players.values())
     .filter(p => p.lastRoom === state.myRoom && p.name !== state.myCharName);
-  const pool = shuffledHostagePool(inRoom, state);
+  const pool = shuffledPsychopompPool(inRoom, state);
   const seen = new Set<string>();
   return pool
     .map(p => p.name)
@@ -1093,20 +1159,50 @@ export function chooseDeterministicHostageTargets(state: GameKnowledge): string[
     .slice(0, count);
 }
 
-function shuffledHostagePool<T extends { name: string }>(items: T[], state: GameKnowledge): T[] {
+function shuffledPsychopompPool<T extends { name: string }>(items: T[], state: GameKnowledge): T[] {
   return items
-    .map(item => ({ item, rank: hostageShuffleRank(`${state.myCharName ?? "?"}:${state.matchFacts.currentRound}:${item.name}`) }))
+    .map(item => ({ item, rank: psychopompShuffleRank(`${state.myCharName ?? "?"}:${state.matchFacts.currentRound}:${item.name}`) }))
     .sort((a, b) => a.rank - b.rank)
     .map(entry => entry.item);
 }
 
-function hostageShuffleRank(input: string): number {
+function psychopompShuffleRank(input: string): number {
   let h = 2166136261;
   for (let i = 0; i < input.length; i++) {
     h ^= input.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
+}
+
+// ---------------------------------------------------------------------------
+// Leader observer — track room leader from shout system messages + self HUD
+// ---------------------------------------------------------------------------
+
+function setRoomLeader(state: GameKnowledge, name: string): void {
+  // Clear old leader
+  if (state.roomLeaderName && state.roomLeaderName !== name) {
+    const old = state.players.get(state.roomLeaderName);
+    if (old) old.isLeader = false;
+  }
+  state.roomLeaderName = name;
+  const pk = state.players.get(name);
+  if (pk) pk.isLeader = true;
+  if (name === state.myCharName) state.amLeader = true;
+  else if (state.roomLeaderName === state.myCharName) state.amLeader = false;
+}
+
+function updateLeaderFromShoutMessages(state: GameKnowledge, msgs: ParsedChatLine[]): void {
+  // Sim emits: "${pref(pi)} is now leader" as system message with inline sprite.
+  // Parser returns type "system" with senderColor/senderShape from the sprite,
+  // and text "IS NOW LEADER" (color 8 text after the sprite).
+  for (const m of msgs) {
+    if (m.type !== "system" || m.senderColor === 0 || m.senderShape === null) continue;
+    const text = m.text.toUpperCase().replace(/\s+/g, "");
+    if (text === "ISNOWLEADER") {
+      setRoomLeader(state, characterName(m.senderColor, m.senderShape));
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,7 +1421,7 @@ function validatePolicyPatch(state: GameKnowledge, raw: Partial<ResolvedPolicy>)
   const out: Partial<ResolvedPolicy> = {};
   const boolKeys = [
     "keepGlobalCheckActive", "autoGrantEntry", "acceptRoleOffers", "acceptLeaderOffers", "autoAcceptColorOffer", "exitCurrentWhisper",
-    "shoutInviteWhenHostingAlone", "chooseHostageFallback", "maybeUsurpFallback", "shouldUsurp",
+    "autoOfferColorExchange", "autoOfferRoleExchange", "shoutInviteWhenHostingAlone", "choosePsychopompFallback", "maybeUsurpFallback", "shouldUsurp",
   ] as const;
   for (const key of boolKeys) {
     if (typeof raw[key] === "boolean") out[key] = raw[key];
@@ -1348,11 +1444,13 @@ function validatePolicyPatch(state: GameKnowledge, raw: Partial<ResolvedPolicy>)
   if (avoid) out.avoidPlayers = avoid;
   const deny = validateNameArray(state, raw.autoGrantDenyPlayers);
   if (deny) out.autoGrantDenyPlayers = deny;
-  const hostages = validateNameArray(state, raw.hostageTargets, true);
-  if (hostages) out.hostageTargets = hostages;
+  const colorDeny = validateNameArray(state, raw.autoOfferColorDenyPlayers);
+  if (colorDeny) out.autoOfferColorDenyPlayers = colorDeny;
+  const psychopomps = validateNameArray(state, raw.psychopompTargets, true);
+  if (psychopomps) out.psychopompTargets = psychopomps;
 
   if (raw.usurpTarget === null) out.usurpTarget = null;
-  else if (validPolicyName(state, raw.usurpTarget)) out.usurpTarget = raw.usurpTarget;
+  else if (typeof raw.usurpTarget === "string" && state.players.has(raw.usurpTarget)) out.usurpTarget = raw.usurpTarget;
 
   const meetPoint = validateMeetPoint(state, raw.meetPoint);
   if (meetPoint !== undefined) out.meetPoint = meetPoint;
@@ -1371,7 +1469,7 @@ function validatePolicyPatch(state: GameKnowledge, raw: Partial<ResolvedPolicy>)
   }
 
   if (raw.whisperActionNext === null) out.whisperActionNext = null;
-  else if (["ROLE", "C.OFFER", "R.OFFER", "PASS", "TAKE", "GRANT"].includes(raw.whisperActionNext as string)) {
+  else if (["ROLE", "C.OFFER", "C.UNOFFR", "R.OFFER", "R.UNOFFR", "PASS", "TAKE", "GRANT"].includes(raw.whisperActionNext as string)) {
     out.whisperActionNext = raw.whisperActionNext;
   }
 
@@ -1422,16 +1520,21 @@ function applyPolicy(base: ResolvedPolicy, patch: Partial<ResolvedPolicy>): Reso
     ...base,
     ...patch,
     pursueColorExchangeWithPlayer: patch.pursueColorExchangeWithPlayer
-      ? [...patch.pursueColorExchangeWithPlayer]
+      ? mergeUnique(base.pursueColorExchangeWithPlayer, patch.pursueColorExchangeWithPlayer)
       : [...base.pursueColorExchangeWithPlayer],
     pursueRoleExchangeWithPlayer: patch.pursueRoleExchangeWithPlayer
-      ? [...patch.pursueRoleExchangeWithPlayer]
+      ? mergeUnique(base.pursueRoleExchangeWithPlayer, patch.pursueRoleExchangeWithPlayer)
       : [...base.pursueRoleExchangeWithPlayer],
-    avoidPlayers: patch.avoidPlayers ? [...patch.avoidPlayers] : [...base.avoidPlayers],
-    autoGrantDenyPlayers: patch.autoGrantDenyPlayers ? [...patch.autoGrantDenyPlayers] : [...base.autoGrantDenyPlayers],
-    hostageTargets: patch.hostageTargets ? [...patch.hostageTargets] : base.hostageTargets ? [...base.hostageTargets] : null,
+    avoidPlayers: patch.avoidPlayers ? mergeUnique(base.avoidPlayers, patch.avoidPlayers) : [...base.avoidPlayers],
+    autoGrantDenyPlayers: patch.autoGrantDenyPlayers ? mergeUnique(base.autoGrantDenyPlayers, patch.autoGrantDenyPlayers) : [...base.autoGrantDenyPlayers],
+    autoOfferColorDenyPlayers: patch.autoOfferColorDenyPlayers ? mergeUnique(base.autoOfferColorDenyPlayers, patch.autoOfferColorDenyPlayers) : [...base.autoOfferColorDenyPlayers],
+    psychopompTargets: patch.psychopompTargets ? [...patch.psychopompTargets] : base.psychopompTargets ? [...base.psychopompTargets] : null,
     pursueModeHints: patch.pursueModeHints ? { ...base.pursueModeHints, ...patch.pursueModeHints } : { ...base.pursueModeHints },
   };
+}
+
+function mergeUnique(base: string[], patch: string[]): string[] {
+  return Array.from(new Set([...base, ...patch]));
 }
 
 export function resolvePolicy(state: GameKnowledge): ResolvedPolicy {
@@ -1542,26 +1645,78 @@ function updateRendezvousOffers(state: GameKnowledge): void {
 }
 
 function updateExchangeSuccessFromFacts(state: GameKnowledge): void {
+  const roleFollowupTicks = 20 * TARGET_FPS;
   for (const name of state.occupantNames) {
     const pb = state.players.get(name);
     if (pb?.theyRevealedColor || pb?.knownTeam) markColorExchangeSucceeded(state, name, "facts");
     if (pb?.weSharedWith) markRoleExchangeSucceeded(state, name, "facts");
   }
 
-  const systemTexts = state.whisperMessages
-    .filter(m => m.type === "system")
-    .map(m => m.text.toUpperCase());
-  if (systemTexts.some(t => t.includes("SWAPPED") && t.includes("COLOR"))) {
-    for (const name of state.occupantNames) markColorExchangeSucceeded(state, name, "system_message");
-  }
-  if (systemTexts.some(t => t.includes("SWAPPED") && t.includes("ROLE"))) {
-    const target = state.action.exchange.currentExchange === "role" ? state.action.exchange.currentTarget : null;
-    if (target && state.occupantNames.includes(target)) {
-      markRoleExchangeSucceeded(state, target, "system_message");
-    } else if (state.occupantNames.length === 1) {
-      markRoleExchangeSucceeded(state, state.occupantNames[0], "system_message");
+  const systemMessages = state.whisperMessages.filter(m => m.type === "system");
+  for (const msg of systemMessages) {
+    const text = msg.text.toUpperCase();
+    if (text.includes("SHOWED") && text.includes("ROLE") && msg.senderShape !== null && msg.senderColor !== 0) {
+      const revealer = getOrCreatePlayerKnowledge(state, msg.senderColor, msg.senderShape);
+      if (revealer.name !== state.myCharName && !revealer.theyRevealedCard) {
+        revealer.theyRevealedCard = true;
+        requestReactiveInfoCheck(state, "role_showed_system_message");
+      }
     }
+
+    const sender = msg.senderShape !== null ? characterName(msg.senderColor, msg.senderShape) : null;
+    if (sender !== state.myCharName) continue;
+    if (text.includes("OFFERED") && text.includes("COLOR")) state.action.exchange.activeColorOffer = true;
+    if (text.includes("WITHDREW") && text.includes("COLOR")) state.action.exchange.activeColorOffer = false;
+    if ((text.includes("SWAPPED") && text.includes("COLOR")) || (text.includes("COLOR") && text.includes("XCHG"))) {
+      state.action.exchange.activeColorOffer = false;
+      state.action.exchange.roleFollowupUntilTick = Math.max(state.action.exchange.roleFollowupUntilTick, state.tick + roleFollowupTicks);
+    }
+    if (text.includes("OFFERED") && text.includes("ROLE")) state.action.exchange.activeRoleOffer = true;
+    if (text.includes("WITHDREW") && text.includes("ROLE")) state.action.exchange.activeRoleOffer = false;
+    if ((text.includes("SWAPPED") && text.includes("ROLE")) || (text.includes("ROLE") && text.includes("XCHG"))) state.action.exchange.activeRoleOffer = false;
   }
+
+  const systemTexts = systemMessages.map(m => m.text.toUpperCase());
+  if (systemTexts.some(t => (t.includes("SWAPPED") && t.includes("COLOR")) || (t.includes("COLOR") && t.includes("XCHG")))) {
+    state.action.exchange.activeColorOffer = false;
+    state.action.exchange.roleFollowupUntilTick = Math.max(state.action.exchange.roleFollowupUntilTick, state.tick + roleFollowupTicks);
+    let newExchange = false;
+    const names = state.occupantNames.length === 1
+      ? state.occupantNames
+      : state.action.exchange.currentTarget && state.occupantNames.includes(state.action.exchange.currentTarget)
+        ? [state.action.exchange.currentTarget]
+        : [];
+    for (const name of names) {
+      const alreadyRecorded = !!state.exchanges.succeededColor[name];
+      markColorExchangeSucceeded(state, name, "system_message");
+      if (!alreadyRecorded) newExchange = true;
+    }
+    requestReactiveInfoCheck(state, newExchange ? "color_system_message" : "color_system_message_unattributed");
+  }
+  if (systemTexts.some(t => (t.includes("SWAPPED") && t.includes("ROLE")) || (t.includes("ROLE") && t.includes("XCHG")))) {
+    state.action.exchange.activeRoleOffer = false;
+    const names = state.occupantNames.length === 1
+      ? state.occupantNames
+      : state.action.exchange.currentTarget && state.occupantNames.includes(state.action.exchange.currentTarget)
+        ? [state.action.exchange.currentTarget]
+        : [];
+    let newExchange = false;
+    for (const name of names) {
+      const alreadyRecorded = !!state.exchanges.succeededRole[name];
+      markRoleExchangeSucceeded(state, name, "system_message");
+      if (!alreadyRecorded) newExchange = true;
+    }
+    if (newExchange) requestReactiveInfoCheck(state, "role_system_message");
+  }
+}
+
+function requestReactiveInfoCheck(state: GameKnowledge, source: string): void {
+  if (!state.action.forceInfoCheck) {
+    pushStrategyTelemetry(state, "exchange", "info_check_requested", { source });
+  }
+  state.action.forceInfoCheck = true;
+  state.action.lastInfoCheckTick = -Infinity;
+  state.action.lastGlobalCheckTick = -Infinity;
 }
 
 function runCommunicationOrienter(state: GameKnowledge): void {
@@ -1644,32 +1799,51 @@ export function writeDeterministicBaselinePolicy(state: GameKnowledge): Resolved
   baseline.lastUpdatedTick = state.tick;
   baseline.autoGrantEntry = true;
   baseline.autoAcceptColorOffer = true;
+  baseline.autoOfferColorExchange = true;
   baseline.keepGlobalCheckActive = true;
   baseline.acceptLeaderOffers = keyPartnerRoleName(state.myRole) === null;
+  if (state.myCharName && state.players.has(state.myCharName)) {
+    baseline.shouldUsurp = true;
+    baseline.usurpTarget = state.myCharName;
+  }
 
   const partnerRole = keyPartnerRoleName(state.myRole);
   for (const player of state.players.values()) {
     if (player.name === state.myCharName) continue;
-    if (player.lastRoom !== state.myRoom) continue;
 
-    if (!hasColorExchangeSucceeded(state, player.name) && visibleByName(state, player.name)) {
+    const knownEnemy = !!player.knownTeam && !!state.myTeam && player.knownTeam !== state.myTeam;
+    if (knownEnemy) {
+      baseline.autoGrantDenyPlayers.push(player.name);
+      baseline.autoOfferColorDenyPlayers.push(player.name);
+    }
+
+    if (!knownEnemy && !hasColorExchangeSucceeded(state, player.name)) {
       baseline.pursueColorExchangeWithPlayer.push(player.name);
     }
 
+    if (player.lastRoom !== state.myRoom) continue;
+
+    const recentColorFollowup = state.tick <= state.action.exchange.roleFollowupUntilTick
+      && hasColorExchangeSucceeded(state, player.name)
+      && !knownEnemy;
     const teammate = isKnownTeammate(state, player.name);
     const keyPartner = partnerRole !== null && normalizeRoleName(player.knownRole) === partnerRole;
-    if ((teammate || keyPartner) && !hasRoleExchangeSucceeded(state, player.name)) {
+    if ((teammate || keyPartner || recentColorFollowup) && !hasRoleExchangeSucceeded(state, player.name)) {
       baseline.pursueRoleExchangeWithPlayer.push(player.name);
       baseline.acceptRoleOffers = true;
+      baseline.autoOfferRoleExchange = true;
     }
     if (keyPartner && !hasRoleExchangeSucceeded(state, player.name)) {
       baseline.pursueRoleExchangeWithPlayer.push(player.name);
       baseline.acceptRoleOffers = true;
+      baseline.autoOfferRoleExchange = true;
     }
   }
 
   baseline.pursueColorExchangeWithPlayer = Array.from(new Set(baseline.pursueColorExchangeWithPlayer));
   baseline.pursueRoleExchangeWithPlayer = Array.from(new Set(baseline.pursueRoleExchangeWithPlayer));
+  baseline.autoGrantDenyPlayers = Array.from(new Set(baseline.autoGrantDenyPlayers));
+  baseline.autoOfferColorDenyPlayers = Array.from(new Set(baseline.autoOfferColorDenyPlayers));
 
   // Sort pursue targets by proximity — nearest first for natural convergence
   if (state.myPos) {
@@ -1725,21 +1899,21 @@ export function formatContextDump(state: GameKnowledge, event: TriggerEvent): st
   const lines: string[] = [];
 
   lines.push(`EVENT: ${event}`);
-  const hostageFact = hostageCountForRound(state, state.matchFacts.currentRound);
-  const hostageText = hostageFact === null ? "UNKNOWN" : `${hostageFact}`;
-  lines.push(`TICK: ${state.tick} | ROUND: ${state.matchFacts.currentRound} | TIME: ~${state.matchFacts.timerSecs}s | INTERFACE: ${state.phase} | ROOM: ${state.matchFacts.roomW}x${state.matchFacts.roomH} | HOSTAGES THIS ROUND: ${hostageText}`);
+  const psychopompFact = psychopompCountForRound(state, state.matchFacts.currentRound);
+  const psychopompText = psychopompFact === null ? "UNKNOWN" : `${psychopompFact}`;
+  lines.push(`TICK: ${state.tick} | ROUND: ${state.matchFacts.currentRound} | TIME: ~${state.matchFacts.timerSecs}s | INTERFACE: ${state.phase} | ROOM: ${state.matchFacts.roomW}x${state.matchFacts.roomH} | PSYCHOPOMPS THIS ROUND: ${psychopompText}`);
   lines.push("");
 
   lines.push("MY STATE:");
   const mySpriteName = state.myCharName ?? "UNKNOWN";
-  lines.push(`  I am: ${mySpriteName} | Role: ${state.myRole ?? "UNKNOWN"} | Team: ${state.myTeam ?? "UNKNOWN"} | Current Room: ${state.matchFacts.startingRoomName ?? roomStr(state.myRoom)} (the other room is disjoint — players there are unreachable until a hostage swap)`);
+  lines.push(`  I am: ${mySpriteName} | Role: ${state.myRole ?? "UNKNOWN"} | Team: ${state.myTeam ?? "UNKNOWN"} | Current Room: ${state.matchFacts.startingRoomName ?? roomStr(state.myRoom)} (the other room is disjoint — players there are unreachable until a psychopomp swap)`);
   if (state.myPos) {
     let leaderStr = state.amLeader ? "yes" : "no";
     if (state.wasStartingLeader && !state.amLeader) leaderStr = "no (was starting leader)";
     lines.push(`  Position: (${state.myPos.x}, ${state.myPos.y}) | Leader: ${leaderStr}`);
   }
   if (state.phase === "leader_summit") {
-    lines.push(`  IN LEADER SUMMIT with: ${state.occupantNames.join(", ") || "(other leader)"}. Hostages have been selected — you and the other room's leader are in a private whisper to negotiate before the exchange. Chat only — no role/color exchanges, no exit.`);
+    lines.push(`  IN LEADER SUMMIT with: ${state.occupantNames.join(", ") || "(other leader)"}. Psychopomps have been selected — you and the other room's leader are in a private whisper to negotiate before the exchange. Chat only — no role/color exchanges, no exit.`);
   } else if (state.phase === "whisper") {
     lines.push(`  IN WHISPER with: ${state.occupantNames.join(", ") || "(alone)"}. pending_role_offer=${state.pendingRoleOffer} pending_color_offer=${state.pendingColorOffer} pending_entry=${state.pendingEntry}${state.pendingEntryName ? ` (${state.pendingEntryName})` : ""}`);
     if (state.pendingEntry) {
@@ -1752,22 +1926,22 @@ export function formatContextDump(state: GameKnowledge, event: TriggerEvent): st
     }
   } else if (state.phase === "waiting_entry") {
     lines.push(`  WAITING TO ENTER ANOTHER PLAYER'S WHISPER. You requested entry with join. Wait for the owner to grant_entry, or cancel (B button) and move away to start your own.`);
-  } else if (state.phase === "hostage_select") {
+  } else if (state.phase === "psychopomp_select") {
     if (state.amLeader) {
-      lines.push(`  HOSTAGE SELECT — you are LEADER. Pick hostages to send to the other room. Use precommit_hostages task to auto-select, or the game will auto-fill randomly.`);
+      lines.push(`  PSYCHOPOMP SELECT — you are LEADER. Pick psychopomps to send to the other room. Use precommit_psychopomps task to auto-select, or the game will auto-fill randomly.`);
     } else {
-    lines.push(`  HOSTAGE SELECT — waiting for leaders to pick hostages. Policy may queue a bounded usurp atomic to change the leader.`);
+    lines.push(`  PSYCHOPOMP SELECT — waiting for leaders to pick psychopomps. Policy may queue a bounded usurp atomic to change the leader.`);
     }
-  } else if (state.phase === "hostage_exchange") {
-    lines.push(`  HOSTAGE EXCHANGE — selected players are being swapped between rooms. Wait for next round.`);
+  } else if (state.phase === "psychopomp_exchange") {
+    lines.push(`  PSYCHOPOMP EXCHANGE — selected players are being swapped between rooms. Wait for next round.`);
   }
 
   // State-specific available actions
   lines.push("");
   lines.push("CURRENT STATE & AVAILABLE ACTIONS:");
-  if (state.phase === "playing" || state.phase === "hostage_select") {
+  if (state.phase === "playing" || state.phase === "psychopomp_select") {
     lines.push("  State: OVERWORLD (free movement)");
-    lines.push("  Activities: walk_to, pursue_player(mode: color|role|whisper|leader). Atomics: shout, chat, whisper actions, bounded usurp, hostage precommit.");
+    lines.push("  Activities: walk_to, pursue_player(mode: color|role|whisper|leader). Atomics: shout, chat, whisper actions, bounded usurp, psychopomp precommit.");
     lines.push("  Transitions: → WHISPER (pursue_player reaches target) | → WAITING_ENTRY (near existing whisper)");
   } else if (state.phase === "whisper") {
     lines.push("  State: WHISPER (private conversation)");
@@ -1782,7 +1956,7 @@ export function formatContextDump(state: GameKnowledge, event: TriggerEvent): st
   } else if (state.phase === "leader_summit") {
     lines.push("  State: LEADER_SUMMIT (leaders-only negotiation)");
     lines.push("  Atomics: chat only. No exits, no exchanges.");
-    lines.push("  Transitions: → HOSTAGE_EXCHANGE (timer ends)");
+    lines.push("  Transitions: → PSYCHOPOMP_EXCHANGE (timer ends)");
   } else {
     lines.push(`  State: ${state.phase.toUpperCase()} — wait for phase to end`);
   }
@@ -1977,7 +2151,7 @@ export function formatNotes(notes: KnowledgeNotes): string {
 
 export function updateDecisionMemory(
   state: GameKnowledge,
-  area: "exchange" | "hostage" | "usurp" | "messageInterpretation",
+  area: "exchange" | "psychopomp" | "usurp" | "messageInterpretation",
   summary: string,
 ): void {
   state.llmNotes.decisions[area] = { summary: summary.slice(0, 240), updatedTick: state.tick };

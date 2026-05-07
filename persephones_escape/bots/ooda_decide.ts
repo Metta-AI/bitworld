@@ -1,4 +1,4 @@
-import { BUTTON_A, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT } from "../game/constants.js";
+import { BUTTON_A, BUTTON_SELECT, TARGET_FPS } from "../game/constants.js";
 import type { BotController } from "./bot_common.js";
 import {
   colorFromCharName,
@@ -11,7 +11,7 @@ import {
 } from "./game_knowledge.js";
 import type { Activity, AtomicAction, BotLogFn, FrameDecision, FrameObservation } from "./ooda_types.js";
 
-export interface HostageDecisionStatus {
+export interface PsychopompDecisionStatus {
   round: number;
   done: boolean;
 }
@@ -19,17 +19,22 @@ export interface HostageDecisionStatus {
 export interface OodaDeciderConfig {
   knowledge: GameKnowledge;
   bot: BotController;
-  hostageStatus: () => HostageDecisionStatus;
+  psychopompStatus: () => PsychopompDecisionStatus;
   logEvent: BotLogFn;
 }
 
 const SHOUT_COOLDOWN_TICKS = 180;
-const GLOBAL_CHECK_MIN_TICKS = 96;
 const EXCHANGE_TIMEOUT_TICKS = 900;
 const WALK_TIMEOUT_TICKS = 240;
 const STALE_VISIBLE_TARGET_TICKS = 10 * 24;
-const FALLBACK_HOSTAGE_COMMIT_SECS = 3;
-const FALLBACK_HOSTAGE_MAX_WAIT_TICKS = 12 * 24;
+const FALLBACK_PSYCHOPOMP_COMMIT_SECS = 3;
+const FALLBACK_PSYCHOPOMP_MAX_WAIT_TICKS = 12 * 24;
+const WHISPER_TIMEOUT_TICKS = 30 * TARGET_FPS;
+const FAILED_TARGET_COOLDOWN_TICKS = 30 * TARGET_FPS;
+
+function whisperAlreadyHasConversationPair(knowledge: GameKnowledge): boolean {
+  return knowledge.phase === "whisper" && (knowledge.occupantCount >= 2 || knowledge.occupantNames.length >= 1);
+}
 
 let nextActivityId = 1;
 
@@ -38,7 +43,8 @@ export class OodaDecider {
   private introAdvanceCount = 0;
   private introRoleSeen = false;
   private introScheduleSeen = false;
-  private hostageSelectStartTick = -Infinity;
+  private psychopompSelectStartTick = -Infinity;
+  private reactiveTelemetryTicks = new Map<string, number>();
 
   constructor(private config: OodaDeciderConfig) {}
 
@@ -47,37 +53,37 @@ export class OodaDecider {
     if (introDecision) return introDecision;
 
     const { knowledge } = this.config;
-    if (knowledge.phase === "hostage_select" && knowledge.prevPhase !== "hostage_select") {
-      this.hostageSelectStartTick = knowledge.tick;
+    if (knowledge.phase === "psychopomp_select" && knowledge.prevPhase !== "psychopomp_select") {
+      this.psychopompSelectStartTick = knowledge.tick;
     }
-    const hostageStatus = this.config.hostageStatus();
-    const hostageActive = this.shouldRunHostageSelector(hostageStatus);
-    if (hostageActive) return { kind: "hostage_precommit", frame: observation.frame };
+    const psychopompStatus = this.config.psychopompStatus();
+    const psychopompActive = this.shouldRunPsychopompSelector(psychopompStatus);
+    if (psychopompActive) return { kind: "psychopomp_precommit", frame: observation.frame };
 
     this.enqueueReactiveAtomics();
     this.chooseActivity();
     return { kind: "run_activity", frame: observation.frame };
   }
 
-  private shouldRunHostageSelector(hostageStatus: HostageDecisionStatus): boolean {
+  private shouldRunPsychopompSelector(psychopompStatus: PsychopompDecisionStatus): boolean {
     const { knowledge, bot } = this.config;
-    if (!knowledge.amLeader || (bot.hostagePrecommit?.length ?? 0) === 0) return false;
-    const continuing = hostageStatus.round === knowledge.matchFacts.currentRound && !hostageStatus.done;
+    if (!knowledge.amLeader || (bot.psychopompPrecommit?.length ?? 0) === 0) return false;
+    const continuing = psychopompStatus.round === knowledge.matchFacts.currentRound && !psychopompStatus.done;
     if (continuing) return true;
-    if (knowledge.phase !== "hostage_select") return false;
+    if (knowledge.phase !== "psychopomp_select") return false;
 
-    const policyTargets = knowledge.policy.resolved.hostageTargets?.filter(name => bot.hostagePrecommit?.includes(name)) ?? [];
+    const policyTargets = knowledge.policy.resolved.psychopompTargets?.filter(name => bot.psychopompPrecommit?.includes(name)) ?? [];
     if (policyTargets.length > 0) return true;
 
-    const timer = knowledge.matchFacts.hostageSelectTimerSecs;
-    const timerNearlyDone = timer > 0 && timer <= FALLBACK_HOSTAGE_COMMIT_SECS;
-    const waitedLongEnough = this.hostageSelectStartTick > -Infinity
-      && knowledge.tick - this.hostageSelectStartTick >= FALLBACK_HOSTAGE_MAX_WAIT_TICKS;
+    const timer = knowledge.matchFacts.psychopompSelectTimerSecs;
+    const timerNearlyDone = timer > 0 && timer <= FALLBACK_PSYCHOPOMP_COMMIT_SECS;
+    const waitedLongEnough = this.psychopompSelectStartTick > -Infinity
+      && knowledge.tick - this.psychopompSelectStartTick >= FALLBACK_PSYCHOPOMP_MAX_WAIT_TICKS;
     return timerNearlyDone || waitedLongEnough;
   }
 
   private enqueueReactiveAtomics(): void {
-    const { knowledge } = this.config;
+    const { knowledge, logEvent } = this.config;
     const policy = knowledge.policy.resolved;
     const atoms = knowledge.action.atomQueue;
     const has = (kind: AtomicAction["kind"], label?: string) =>
@@ -89,21 +95,176 @@ export class OodaDecider {
 
     if (knowledge.phase === "whisper" || knowledge.phase === "leader_summit") {
       const denyEntry = knowledge.pendingEntryName !== null && policy.autoGrantDenyPlayers.includes(knowledge.pendingEntryName);
-      if (policy.autoGrantEntry && knowledge.pendingEntry && !denyEntry && !has("whisper_action", "grant_entry")) {
-        atoms.push({ kind: "whisper_action", action: "GRANT", label: "grant_entry" });
+      const whisperFullForEntry = whisperAlreadyHasConversationPair(knowledge);
+      const roleTarget = this.reactiveRoleOfferTarget(policy);
+      const colorBlockedBy = this.reactiveColorBlockedByOccupant(policy);
+      const colorOfferTarget = colorBlockedBy ? null : this.reactiveColorOfferTarget(policy);
+      const colorAcceptTarget = this.reactiveColorAcceptTarget(policy);
+      const visibleOfferSystems = recentOfferSystemMessages(knowledge);
+      const whisperAgeTicks = knowledge.phase === "whisper" && knowledge.action.whisperStartedTick !== null
+        ? knowledge.tick - knowledge.action.whisperStartedTick
+        : null;
+      const whisperGateDetail = {
+        phase: knowledge.phase,
+        whisperStartedTick: knowledge.action.whisperStartedTick,
+        whisperAgeTicks,
+        whisperTimeoutTicks: WHISPER_TIMEOUT_TICKS,
+        occupants: knowledge.occupantNames,
+        occupantCount: knowledge.occupantCount,
+        pendingEntry: knowledge.pendingEntry,
+        pendingEntryName: knowledge.pendingEntryName,
+        pendingColorOffer: knowledge.pendingColorOffer,
+        pendingRoleOffer: knowledge.pendingRoleOffer,
+        pendingLeaderOffer: knowledge.pendingLeaderOffer,
+        visibleOfferSystems,
+        queueBefore: atomQueueSummary(atoms),
+        activeActivity: activityLog(knowledge.action.currentActivity),
+        activeColorOffer: knowledge.action.exchange.activeColorOffer,
+        activeRoleOffer: knowledge.action.exchange.activeRoleOffer,
+        lastWhisperActionKey: knowledge.action.exchange.lastWhisperActionKey,
+        policy: {
+          autoGrantEntry: policy.autoGrantEntry,
+          autoGrantDenyPlayers: policy.autoGrantDenyPlayers,
+          autoAcceptColorOffer: policy.autoAcceptColorOffer,
+          autoOfferColorExchange: policy.autoOfferColorExchange,
+          autoOfferColorDenyPlayers: policy.autoOfferColorDenyPlayers,
+          autoOfferRoleExchange: policy.autoOfferRoleExchange,
+          acceptRoleOffers: policy.acceptRoleOffers,
+          acceptLeaderOffers: policy.acceptLeaderOffers,
+          avoidPlayers: policy.avoidPlayers,
+          pursueColorExchangeWithPlayer: policy.pursueColorExchangeWithPlayer,
+          pursueRoleExchangeWithPlayer: policy.pursueRoleExchangeWithPlayer,
+        },
+        gates: {
+          denyEntry,
+          colorBlockedBy,
+          colorTarget: colorOfferTarget,
+          colorAcceptTarget,
+          roleTarget,
+          colorAcceptAllowed: policy.autoAcceptColorOffer && colorAcceptTarget !== null,
+          roleAcceptAllowed: (policy.acceptRoleOffers || policy.autoOfferRoleExchange) && roleTarget !== null,
+          duplicateGrant: has("whisper_action", "grant_entry"),
+          whisperFullForEntry,
+          duplicateAcceptColor: has("whisper_action", "accept_color"),
+          duplicateAcceptRole: has("whisper_action", "accept_role"),
+          hasAnyWhisperActionQueued: has("whisper_action"),
+        },
+        occupantsState: knowledge.occupantNames.map(name => {
+          const pb = knowledge.players.get(name);
+          return {
+            name,
+            colorSucceeded: hasColorExchangeSucceeded(knowledge, name),
+            roleSucceeded: hasRoleExchangeSucceeded(knowledge, name),
+            knownTeam: pb?.knownTeam ?? null,
+            knownRole: pb?.knownRole ?? null,
+            lastRoom: pb?.lastRoom ?? null,
+            lastSeenTick: pb?.lastSeenTick ?? null,
+            inWhisper: pb?.inWhisper ?? null,
+          };
+        }),
+      };
+      if (
+        knowledge.pendingEntry
+        || knowledge.pendingColorOffer
+        || knowledge.pendingRoleOffer
+        || knowledge.pendingLeaderOffer
+        || visibleOfferSystems.length > 0
+        || knowledge.occupantNames.length > 0
+      ) {
+        this.logReactiveTelemetry("whisper_gates", whisperGateDetail, knowledge.pendingColorOffer || knowledge.pendingRoleOffer ? 6 : 24);
       }
 
-      if (policy.autoAcceptColorOffer && knowledge.pendingColorOffer && !has("whisper_action", "accept_color")) {
-        atoms.push({ kind: "whisper_action", action: "C.ACCPT", label: "accept_color" });
+      if (knowledge.pendingColorOffer) {
+        this.cancelQueuedOfferAtomics(atoms, "color");
+      }
+      if (knowledge.pendingRoleOffer) {
+        this.cancelQueuedOfferAtomics(atoms, "role");
+      }
+
+      if (knowledge.phase === "whisper"
+          && whisperAgeTicks !== null
+          && whisperAgeTicks > WHISPER_TIMEOUT_TICKS
+          && !has("whisper_action", "conversation_timeout_exit")) {
+        atoms.push({ kind: "whisper_action", action: "EXIT", label: "conversation_timeout_exit" });
+        logEvent("reactive_atomic_queued", {
+          reason: "conversation_timeout_exit",
+          ageTicks: whisperAgeTicks,
+          timeoutTicks: WHISPER_TIMEOUT_TICKS,
+          queueAfter: atomQueueSummary(atoms),
+          activeActivity: activityLog(knowledge.action.currentActivity),
+        });
+      }
+
+      if (policy.autoGrantEntry && knowledge.pendingEntry && !denyEntry && !whisperFullForEntry && !has("whisper_action", "grant_entry")) {
+        atoms.push({ kind: "whisper_action", action: "GRANT", label: "grant_entry" });
+        logEvent("reactive_atomic_queued", {
+          reason: "grant_entry",
+          queueAfter: atomQueueSummary(atoms),
+          pendingEntryName: knowledge.pendingEntryName,
+        });
+      } else if (knowledge.pendingEntry) {
+        this.logReactiveTelemetry("grant_entry_blocked", {
+          autoGrantEntry: policy.autoGrantEntry,
+          denyEntry,
+          whisperFullForEntry,
+          occupantCount: knowledge.occupantCount,
+          occupants: knowledge.occupantNames,
+          duplicateGrant: has("whisper_action", "grant_entry"),
+          pendingEntryName: knowledge.pendingEntryName,
+          queue: atomQueueSummary(atoms),
+        }, 12);
+      }
+
+      if (policy.autoAcceptColorOffer && colorAcceptTarget !== null && knowledge.pendingColorOffer && !has("whisper_action", "accept_color")) {
+        this.enqueueUrgentWhisperAction(atoms, { kind: "whisper_action", action: "C.ACCPT", label: "accept_color", target: colorAcceptTarget });
+        logEvent("reactive_atomic_queued", {
+          reason: "accept_color",
+          target: colorAcceptTarget,
+          queueAfter: atomQueueSummary(atoms),
+          queuedBehind: atoms.length > 1 ? atomQueueSummary(atoms.slice(0, -1)) : [],
+        });
+      } else if (knowledge.pendingColorOffer || visibleOfferSystems.some(t => t.includes("COLOR"))) {
+        this.logReactiveTelemetry("accept_color_blocked", {
+          pendingColorOffer: knowledge.pendingColorOffer,
+          visibleOfferSystems,
+          autoAcceptColorOffer: policy.autoAcceptColorOffer,
+          colorTarget: colorOfferTarget,
+          colorAcceptTarget,
+          colorBlockedBy,
+          duplicateAcceptColor: has("whisper_action", "accept_color"),
+          queue: atomQueueSummary(atoms),
+          occupants: whisperGateDetail.occupantsState,
+        }, 6);
       }
 
       // Accept role offers from confirmed teammates/key partners
-      if (this.shouldAcceptRoleOffer(policy) && knowledge.pendingRoleOffer && !has("whisper_action", "accept_role")) {
-        atoms.push({ kind: "whisper_action", action: "R.ACCPT", label: "accept_role" });
+      if ((policy.acceptRoleOffers || policy.autoOfferRoleExchange) && roleTarget !== null && knowledge.pendingRoleOffer && !has("whisper_action", "accept_role")) {
+        this.enqueueUrgentWhisperAction(atoms, { kind: "whisper_action", action: "R.ACCPT", label: "accept_role", target: roleTarget });
+        logEvent("reactive_atomic_queued", {
+          reason: "accept_role",
+          target: roleTarget,
+          queueAfter: atomQueueSummary(atoms),
+          queuedBehind: atoms.length > 1 ? atomQueueSummary(atoms.slice(0, -1)) : [],
+        });
+      } else if (knowledge.pendingRoleOffer || visibleOfferSystems.some(t => t.includes("ROLE"))) {
+        this.logReactiveTelemetry("accept_role_blocked", {
+          pendingRoleOffer: knowledge.pendingRoleOffer,
+          visibleOfferSystems,
+          acceptRoleOffers: policy.acceptRoleOffers,
+          autoOfferRoleExchange: policy.autoOfferRoleExchange,
+          roleTarget,
+          duplicateAcceptRole: has("whisper_action", "accept_role"),
+          queue: atomQueueSummary(atoms),
+          occupants: whisperGateDetail.occupantsState,
+        }, 6);
       }
 
       if (policy.acceptLeaderOffers && knowledge.pendingLeaderOffer && !has("whisper_action", "accept_leader")) {
         atoms.push({ kind: "whisper_action", action: "TAKE", label: "accept_leader" });
+        logEvent("reactive_atomic_queued", {
+          reason: "accept_leader",
+          queueAfter: atomQueueSummary(atoms),
+        });
       }
 
       const activePursuit = knowledge.action.currentActivity?.kind === "pursue_player"
@@ -116,64 +277,119 @@ export class OodaDecider {
         atoms.push({ kind: "whisper_action", action: policy.whisperActionNext, label: "policy_whisper_action" });
       }
 
-      // Offer exchanges to occupants in our pursue lists
+      // Offer exchanges from resolved precommitments. These are intentionally
+      // occupant-driven so a productive whisper can react even when the current
+      // activity was aimed at a different player.
       if (!has("whisper_action")) {
         const occupantKey = knowledge.occupantNames.slice().sort().join("|");
-        const roleTarget = knowledge.occupantNames.find(name =>
-          policy.pursueRoleExchangeWithPlayer.includes(name)
-        );
         if (roleTarget) {
           const key = `R.OFFER:${occupantKey}`;
-          if (knowledge.action.exchange.lastWhisperActionKey !== key) {
+          if (!knowledge.pendingRoleOffer && !knowledge.action.exchange.activeRoleOffer && knowledge.action.exchange.lastWhisperActionKey !== key) {
             atoms.push({ kind: "whisper_action", action: "R.OFFER", label: "reactive_role_offer" });
             knowledge.action.exchange.lastWhisperActionKey = key;
+            logEvent("reactive_atomic_queued", {
+              reason: "reactive_role_offer",
+              target: roleTarget,
+              key,
+              queueAfter: atomQueueSummary(atoms),
+            });
+          } else {
+            this.logReactiveTelemetry("reactive_role_offer_blocked", {
+              roleTarget,
+              key,
+              activeRoleOffer: knowledge.action.exchange.activeRoleOffer,
+              lastWhisperActionKey: knowledge.action.exchange.lastWhisperActionKey,
+              queue: atomQueueSummary(atoms),
+            }, 24);
           }
         } else {
-          const colorTarget = knowledge.occupantNames.find(name =>
-            policy.pursueColorExchangeWithPlayer.includes(name)
-          );
           const key = `C.OFFER:${occupantKey}`;
-          if (colorTarget && knowledge.action.exchange.lastWhisperActionKey !== key) {
+          if (!knowledge.pendingColorOffer && colorOfferTarget && !knowledge.action.exchange.activeColorOffer && knowledge.action.exchange.lastWhisperActionKey !== key) {
             atoms.push({ kind: "whisper_action", action: "C.OFFER", label: "reactive_color_offer" });
             knowledge.action.exchange.lastWhisperActionKey = key;
+            logEvent("reactive_atomic_queued", {
+              reason: "reactive_color_offer",
+              target: colorOfferTarget,
+              key,
+              queueAfter: atomQueueSummary(atoms),
+            });
+          } else if (knowledge.occupantNames.length > 0) {
+            this.logReactiveTelemetry("reactive_color_offer_blocked", {
+              colorTarget: colorOfferTarget,
+              colorBlockedBy,
+              key,
+              activeColorOffer: knowledge.action.exchange.activeColorOffer,
+              lastWhisperActionKey: knowledge.action.exchange.lastWhisperActionKey,
+              queue: atomQueueSummary(atoms),
+              occupants: whisperGateDetail.occupantsState,
+            }, 24);
           }
         }
+      } else {
+        this.logReactiveTelemetry("reactive_offer_waiting_for_queue", {
+          queue: atomQueueSummary(atoms),
+          roleTarget,
+          colorTarget: colorOfferTarget,
+          colorAcceptTarget,
+          colorBlockedBy,
+        }, 24);
       }
 
       const queuedWhisper = activePursuit ? null : popNextWhisperDraft(knowledge, knowledge.occupantNames);
       if (queuedWhisper && !has("chat")) {
         atoms.push({ kind: "chat", text: queuedWhisper.text, label: `whisper:${queuedWhisper.target ?? "any"}` });
+        logEvent("reactive_atomic_queued", {
+          reason: "whisper_draft",
+          target: queuedWhisper.target,
+          text: queuedWhisper.text,
+          queueAfter: atomQueueSummary(atoms),
+        });
       }
     }
 
-    const canShout = knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "hostage_select";
+    const canShout = knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "psychopomp_select";
     if (canShout && knowledge.tick - knowledge.action.exchange.lastShoutTick > SHOUT_COOLDOWN_TICKS && !has("chat", "shout")) {
       const queuedShout = popNextShoutDraft(knowledge);
       if (queuedShout) {
         atoms.push({ kind: "chat", text: queuedShout.text, label: "shout" });
         knowledge.action.exchange.lastShoutTick = knowledge.tick;
+        logEvent("reactive_atomic_queued", {
+          reason: "shout_draft",
+          text: queuedShout.text,
+          queueAfter: atomQueueSummary(atoms),
+        });
       }
     }
 
-    // Suppress global check during hostage_select for leaders (would break hostage execution)
-    const suppressGlobalCheck = knowledge.amLeader && knowledge.phase === "hostage_select";
+    // Info checks are event-driven. Successful exchanges force one check so
+    // durable team/role facts catch up without periodically interrupting chat.
+    const suppressGlobalCheck = knowledge.amLeader && knowledge.phase === "psychopomp_select";
+    const canInfoCheck = knowledge.phase === "playing" || knowledge.phase === "whisper" || knowledge.phase === "leader_summit";
     if (policy.keepGlobalCheckActive
         && !suppressGlobalCheck
-        && knowledge.tick - knowledge.action.lastGlobalCheckTick > Math.max(GLOBAL_CHECK_MIN_TICKS, policy.globalCheckIntervalTicks)
-        && !has("input", "global_check")) {
-      if (knowledge.phase === "whisper") {
-        atoms.push({ kind: "input", masks: [BUTTON_RIGHT, 0, BUTTON_LEFT, 0], label: "global_check" });
-      } else if (knowledge.phase === "playing" || knowledge.phase === "hostage_select" || knowledge.phase === "leader_summit") {
-        atoms.push({ kind: "input", masks: [BUTTON_SELECT, 0, BUTTON_SELECT, 0], label: "global_check" });
-      }
-      knowledge.action.lastGlobalCheckTick = knowledge.tick;
+        && canInfoCheck
+        && knowledge.action.forceInfoCheck
+        && !has("info_check", "info_check")) {
+      if (knowledge.phase === "whisper") this.cancelQueuedWhisperExits(atoms, "forced_info_check");
+      this.enqueueUrgentInfoCheck(atoms, { kind: "info_check", label: "info_check", startedTick: knowledge.tick, readTicks: 2 });
+      logEvent("reactive_atomic_queued", {
+        reason: "info_check",
+        phase: knowledge.phase,
+        forced: knowledge.action.forceInfoCheck,
+        queueAfter: atomQueueSummary(atoms),
+      });
     }
 
-    const canUsurp = knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "hostage_select";
+    const canUsurp = knowledge.phase === "playing" || knowledge.phase === "leader_summit" || knowledge.phase === "psychopomp_select";
     if (canUsurp
         && !knowledge.amLeader
         && policy.shouldUsurp
         && policy.usurpTarget
+        && !knowledge.action.currentActivity
+        && (
+          knowledge.action.lastUsurpVoteTarget !== policy.usurpTarget
+          || knowledge.action.lastUsurpVoteRound !== knowledge.matchFacts.currentRound
+        )
         && !has("usurp_vote")) {
       atoms.push({
         kind: "usurp_vote",
@@ -182,6 +398,11 @@ export class OodaDecider {
         startedTick: knowledge.tick,
         state: "opening",
         navCount: 0,
+      });
+      logEvent("reactive_atomic_queued", {
+        reason: "usurp_vote",
+        target: policy.usurpTarget,
+        queueAfter: atomQueueSummary(atoms),
       });
     }
   }
@@ -194,7 +415,7 @@ export class OodaDecider {
     knowledge.action.currentActivity = null;
 
     if (knowledge.phase === "whisper" || knowledge.phase === "waiting_entry") return;
-    if (knowledge.phase !== "playing" && knowledge.phase !== "leader_summit") return;
+    if (knowledge.phase !== "playing") return;
 
     const next = this.nextPolicyActivity(knowledge.policy.resolved);
     if (next) {
@@ -214,11 +435,11 @@ export class OodaDecider {
     if (!knowledge.amLeader && policy.shouldUsurp && policy.usurpTarget && this.canPursueWhisper(policy.usurpTarget)) {
       return this.createPursuePlayer(policy.usurpTarget, "leader");
     }
-    for (const target of policy.pursueRoleExchangeWithPlayer) {
-      if (this.canPursueRole(target)) return this.createPursuePlayer(target, "role");
-    }
     for (const target of policy.pursueColorExchangeWithPlayer) {
       if (this.canPursueColor(target)) return this.createPursuePlayer(target, "color");
+    }
+    for (const target of policy.pursueRoleExchangeWithPlayer) {
+      if (this.canPursueRole(target)) return this.createPursuePlayer(target, "role");
     }
     if (policy.meetPoint && knowledge.tick - policy.meetPoint.tick < 300) {
       return this.createWalkTo(policy.meetPoint.x, policy.meetPoint.y, "meet_point", WALK_TIMEOUT_TICKS, true);
@@ -271,7 +492,7 @@ export class OodaDecider {
       : null;
     const approach = hint && knowledge.tick - hint.tick < 240 && hint.mode !== "noop"
       ? hint.mode
-      : mode === "role" || mode === "leader" || Math.random() < knowledge.policy.resolved.hostPrivateSpotProbability
+      : mode === "role" || mode === "leader"
         ? "find_spot"
         : "go_to_player";
     return {
@@ -285,6 +506,8 @@ export class OodaDecider {
       mode,
       approach,
       createdOwnWhisperTick: null,
+      enteredWhisperTick: null,
+      waitingEntryTick: null,
       grantDeadlineTick: null,
       lastSawTargetTick: -Infinity,
       offerSentTick: null,
@@ -294,13 +517,16 @@ export class OodaDecider {
       privateSpotTick: -Infinity,
       privateSpotShoutTick: -Infinity,
       nearTargetWaitTick: -Infinity,
+      openAttemptStartTick: null,
+      openAttemptCount: 0,
+      clusterEscapeStartTick: null,
     };
   }
 
   private activityStillValid(activity: Activity): boolean {
     const { knowledge } = this.config;
     if (knowledge.tick - activity.startedTick > activity.timeLimitTicks) return false;
-    if (activity.kind === "walk_to") return knowledge.phase === "playing" || knowledge.phase === "leader_summit";
+    if (activity.kind === "walk_to") return knowledge.phase === "playing";
     if (activity.mode === "role") return this.canContinueRole(activity.target) || knowledge.phase === "whisper" || knowledge.phase === "waiting_entry";
     if (activity.mode === "color") return this.canContinueColor(activity.target) || knowledge.phase === "whisper" || knowledge.phase === "waiting_entry";
     if (activity.mode === "leader") return this.canPursueWhisper(activity.target) || knowledge.phase === "whisper" || knowledge.phase === "waiting_entry";
@@ -312,6 +538,9 @@ export class OodaDecider {
     const pb = knowledge.players.get(target);
     if (!pb || pb.name === knowledge.myCharName) return false;
     if (pb.lastRoom !== knowledge.myRoom) return false;
+    const failedAt = knowledge.action.exchange.failedTargets.get(target);
+    if (failedAt !== undefined && knowledge.tick - failedAt < FAILED_TARGET_COOLDOWN_TICKS) return false;
+    if (this.targetIsTemporarilyBad(target)) return false;
     return !hasColorExchangeSucceeded(knowledge, target) && this.hasRecentPosition(target);
   }
 
@@ -332,7 +561,27 @@ export class OodaDecider {
     const pb = knowledge.players.get(target);
     if (!pb || pb.name === knowledge.myCharName) return false;
     if (pb.lastRoom !== knowledge.myRoom) return false;
+    if (this.targetIsTemporarilyBad(target)) return false;
     return this.hasRecentPosition(target);
+  }
+
+  private targetIsTemporarilyBad(target: string): boolean {
+    const { knowledge, logEvent } = this.config;
+    const bad = knowledge.action.exchange.badPursueTargets.get(target);
+    if (!bad) return false;
+    const ageTicks = knowledge.tick - bad.tick;
+    const cooldownTicks = badPursuitCooldownTicks(bad.reason);
+    if (ageTicks >= cooldownTicks) {
+      knowledge.action.exchange.badPursueTargets.delete(target);
+      logEvent("target_penalty_expired", {
+        target,
+        reason: bad.reason,
+        ageTicks,
+        cooldownTicks,
+      });
+      return false;
+    }
+    return true;
   }
 
   private canContinueColor(target: string): boolean {
@@ -402,18 +651,163 @@ export class OodaDecider {
       : null;
   }
 
-  private shouldAcceptRoleOffer(policy: ResolvedPolicy): boolean {
+  private reactiveRoleOfferTarget(policy: ResolvedPolicy): string | null {
     const { knowledge } = this.config;
-    // Always accept role offers from confirmed teammates or key partners
-    if (knowledge.occupantNames.some(name => this.canPursueRole(name))) return true;
-    // Also accept if policy explicitly allows
-    return policy.acceptRoleOffers;
+    if (!policy.autoOfferRoleExchange && !policy.acceptRoleOffers) return null;
+    const hasUnsafeOccupant = knowledge.occupantNames.some(name => !this.isRoleExchangeSafeOccupant(name));
+    if (hasUnsafeOccupant) return null;
+    return knowledge.occupantNames.find(name =>
+      policy.pursueRoleExchangeWithPlayer.includes(name) && this.canPursueRole(name)
+    ) ?? null;
+  }
+
+  private reactiveColorOfferTarget(policy: ResolvedPolicy): string | null {
+    const { knowledge } = this.config;
+    if (!policy.autoOfferColorExchange) return null;
+    if (this.reactiveColorBlockedByOccupant(policy)) return null;
+    return knowledge.occupantNames.find(name =>
+      name !== knowledge.myCharName
+      && policy.pursueColorExchangeWithPlayer.includes(name)
+      && !hasColorExchangeSucceeded(knowledge, name)
+    ) ?? null;
+  }
+
+  private reactiveColorAcceptTarget(policy: ResolvedPolicy): string | null {
+    const { knowledge } = this.config;
+    const deny = new Set(policy.autoOfferColorDenyPlayers);
+    return knowledge.occupantNames.find(name =>
+      name !== knowledge.myCharName
+      && !deny.has(name)
+      && !hasColorExchangeSucceeded(knowledge, name)
+    ) ?? null;
+  }
+
+  private reactiveColorBlockedByOccupant(policy: ResolvedPolicy): string | null {
+    const deny = new Set([...policy.autoOfferColorDenyPlayers, ...policy.avoidPlayers]);
+    return this.config.knowledge.occupantNames.find(name => deny.has(name)) ?? null;
+  }
+
+  private logReactiveTelemetry(event: string, detail: Record<string, unknown>, minIntervalTicks = 24): void {
+    const { knowledge, logEvent } = this.config;
+    const key = `${event}:${knowledge.phase}:${knowledge.occupantNames.join("|")}:${knowledge.pendingEntry}:${knowledge.pendingEntryName ?? ""}:${knowledge.pendingColorOffer}:${knowledge.pendingRoleOffer}:${knowledge.pendingLeaderOffer}:${atomQueueSummary(knowledge.action.atomQueue).join("|")}`;
+    const lastTick = this.reactiveTelemetryTicks.get(key) ?? -Infinity;
+    if (knowledge.tick - lastTick < minIntervalTicks) return;
+    this.reactiveTelemetryTicks.set(key, knowledge.tick);
+    logEvent("reactive_telemetry", {
+      event,
+      tick: knowledge.tick,
+      ...detail,
+    });
+  }
+
+  private cancelQueuedOfferAtomics(atoms: AtomicAction[], mode: "color" | "role"): void {
+    const { knowledge, logEvent } = this.config;
+    const labels = mode === "color"
+      ? new Set(["reactive_color_offer", "color_offer"])
+      : new Set(["reactive_role_offer", "role_offer"]);
+    const action = mode === "color" ? "C.OFFER" : "R.OFFER";
+    const before = atomQueueSummary(atoms);
+    let insertedCancel = false;
+    for (let i = atoms.length - 1; i >= 0; i--) {
+      const atom = atoms[i];
+      const isQueuedOffer = atom.kind === "whisper_action" && atom.action === action;
+      const isOfferInput = atom.kind === "input" && labels.has(atom.label);
+      if (!isQueuedOffer && !isOfferInput) continue;
+
+      if (isOfferInput && i === 0 && (atom.index ?? 0) > 0) {
+        atoms.splice(i, 1, { kind: "input", masks: [BUTTON_SELECT, 0], label: `cancel_${mode}_offer_for_accept` });
+        insertedCancel = true;
+      } else {
+        atoms.splice(i, 1);
+      }
+    }
+    const after = atomQueueSummary(atoms);
+    if (before.join("|") !== after.join("|")) {
+      logEvent("reactive_offer_cancelled_for_accept", {
+        mode,
+        insertedCancel,
+        pendingColorOffer: knowledge.pendingColorOffer,
+        pendingRoleOffer: knowledge.pendingRoleOffer,
+        before,
+        after,
+      });
+    }
+  }
+
+  private enqueueUrgentWhisperAction(atoms: AtomicAction[], atom: Extract<AtomicAction, { kind: "whisper_action" }>): void {
+    if (atoms.length === 0) {
+      atoms.push(atom);
+      return;
+    }
+    const first = atoms[0];
+    if (first.kind === "input" && first.label.startsWith("cancel_")) {
+      atoms.splice(1, 0, atom);
+      return;
+    }
+    if (first.kind === "input" && first.label === "grant_entry") {
+      atoms.splice(1, 0, atom);
+      return;
+    }
+    if (first.kind === "info_check") {
+      atoms.splice(1, 0, atom);
+      return;
+    }
+    atoms.unshift(atom);
+  }
+
+  private enqueueUrgentInfoCheck(atoms: AtomicAction[], atom: Extract<AtomicAction, { kind: "info_check" }>): void {
+    if (atoms.length === 0) {
+      atoms.push(atom);
+      return;
+    }
+    const first = atoms[0];
+    if (first.kind === "input" && first.label.startsWith("cancel_")) {
+      atoms.splice(1, 0, atom);
+      return;
+    }
+    if (first.kind === "whisper_action") {
+      atoms.splice(1, 0, atom);
+      return;
+    }
+    atoms.unshift(atom);
+  }
+
+  private cancelQueuedWhisperExits(atoms: AtomicAction[], reason: string): void {
+    const { knowledge, logEvent } = this.config;
+    const before = atomQueueSummary(atoms);
+    for (let i = atoms.length - 1; i >= 0; i--) {
+      const atom = atoms[i];
+      if (atom.kind === "whisper_action" && atom.action === "EXIT") atoms.splice(i, 1);
+    }
+    const after = atomQueueSummary(atoms);
+    if (before.join("|") !== after.join("|")) {
+      logEvent("reactive_exit_cancelled", {
+        reason,
+        before,
+        after,
+        occupants: knowledge.occupantNames,
+        pendingColorOffer: knowledge.pendingColorOffer,
+        pendingRoleOffer: knowledge.pendingRoleOffer,
+        forceInfoCheck: knowledge.action.forceInfoCheck,
+      });
+    }
+  }
+
+  private isRoleExchangeSafeOccupant(name: string): boolean {
+    const { knowledge } = this.config;
+    if (hasRoleExchangeSucceeded(knowledge, name)) return true;
+    const pb = knowledge.players.get(name);
+    if (!pb) return false;
+    const partnerRole = keyPartnerRole(knowledge.myRole);
+    const isPartner = partnerRole !== null && normalizeRole(pb.knownRole) === partnerRole;
+    const isTeam = !!pb.knownTeam && !!knowledge.myTeam && pb.knownTeam === knowledge.myTeam;
+    return isPartner || isTeam;
   }
 
   private finishActivity(kind: string, reason: string): void {
     const activity = this.config.knowledge.action.currentActivity;
     if (!activity) return;
-    this.config.logEvent("activity_finished", { ...activityLog(activity), finish: kind, reason });
+    this.config.logEvent("activity_finished", { activity: activityLog(activity), finish: kind, reason });
     this.config.knowledge.action.exchange.currentTarget = null;
     this.config.knowledge.action.exchange.exchangePhase = "idle";
   }
@@ -421,6 +815,7 @@ export class OodaDecider {
   private decideIntroInput(): FrameDecision | null {
     const { knowledge, logEvent } = this.config;
     if (knowledge.phase === "info_screen") {
+      if (knowledge.action.atomQueue[0]?.kind === "info_check") return null;
       return { kind: "input", mask: BUTTON_SELECT, reason: "dismiss_info_screen" };
     }
     if (knowledge.phase !== "lobby" && knowledge.phase !== "roster_reveal" && knowledge.phase !== "role_reveal") {
@@ -478,7 +873,8 @@ function keyPartnerRole(role: string | null): string | null {
   }
 }
 
-function activityLog(activity: Activity): Record<string, unknown> {
+function activityLog(activity: Activity | null): Record<string, unknown> | null {
+  if (!activity) return null;
   if (activity.kind === "walk_to") {
     return { id: activity.id, kind: activity.kind, x: activity.x, y: activity.y, status: activity.status };
   }
@@ -490,4 +886,46 @@ function activityLog(activity: Activity): Record<string, unknown> {
     approach: activity.approach,
     status: activity.status,
   };
+}
+
+function atomQueueSummary(atoms: AtomicAction[]): string[] {
+  return atoms.map(atomSummary);
+}
+
+function atomSummary(atom: AtomicAction): string {
+  switch (atom.kind) {
+    case "input":
+      return `input:${atom.label}:${atom.index ?? 0}/${atom.masks.length}`;
+    case "chat":
+      return `chat:${atom.label}`;
+    case "whisper_action":
+      return `whisper_action:${atom.label}:${atom.action}`;
+    case "info_check":
+      return `info_check:${atom.label}:${atom.stage ?? "open"}:${atom.readTicks}`;
+    case "usurp_vote":
+      return `usurp_vote:${atom.target}:${atom.state}:${atom.navCount}`;
+  }
+}
+
+function recentOfferSystemMessages(knowledge: GameKnowledge): string[] {
+  return knowledge.whisperMessages
+    .filter(m => m.type === "system")
+    .map(m => m.text.toUpperCase())
+    .filter(text => text.includes("OFFER") || text.includes("XCHG") || text.includes("ACCEPT"))
+    .slice(-5);
+}
+
+function badPursuitCooldownTicks(reason: string): number {
+  switch (reason) {
+    case "target_seen_in_crowd":
+      return 8 * TARGET_FPS;
+    case "target_already_in_conversation":
+    case "nearby_whisper_blocked_host":
+      return 10 * TARGET_FPS;
+    case "waiting_entry_timeout":
+    case "open_attempt_timeout":
+      return 12 * TARGET_FPS;
+    default:
+      return 15 * TARGET_FPS;
+  }
 }

@@ -9,12 +9,13 @@ import {
 import { PACKED_FRAME_BYTES } from "../bots/bot_utils.js";
 import { Role, Team, type GameConfig } from "../game/types.js";
 import { render } from "../rendering/renderer.js";
-import { parseWhisperStatus } from "../bots/frame_parser.js";
+import { FRAME_REGIONS } from "../rendering/frameRegions.js";
+import { parseWhisperMessages, parseWhisperStatus } from "../bots/frame_parser.js";
 
 function configForPlayers(count: number): GameConfig {
   return {
     roles: [{ role: Role.Shades, team: Team.TeamA, count }],
-    rounds: [{ durationSecs: 60, hostages: 0 }],
+    rounds: [{ durationSecs: 60, psychopomps: 0 }],
     obstacleCount: 0,
   };
 }
@@ -66,7 +67,104 @@ function testWhisperPendingEntryUsesSharedFooterRegion() {
   assert.equal(status.pendingEntryName, characterName(sim.playerColor(1), sim.players[1].shape));
 }
 
+function testWhisperOfferIndicatorPersistsWithMenuOpen() {
+  const sim = new Sim(configForPlayers(2), 457);
+  for (let i = 0; i < 2; i++) sim.addPlayer(`p${i}`);
+  sim.startGame();
+  sim.startRound();
+
+  sim.createWhisper(0);
+  const whisper = sim.whispers.get(sim.players[0].inWhisper);
+  assert.ok(whisper);
+  whisper.occupants.add(1);
+  sim.players[1].inWhisper = sim.players[0].inWhisper;
+  whisper.colorOffers.add(1);
+  sim.players[0].whisperMenuOpen = true;
+
+  const status = parseWhisperStatus(unpackFrame(render(sim, 0)));
+  assert.equal(status.pendingColorOffer, true, "color offer indicator should remain parseable while the whisper menu is open");
+}
+
+function testWhisperOccupantsCanUseSparsePersistentSlots() {
+  const sim = new Sim(configForPlayers(2), 458);
+  for (let i = 0; i < 2; i++) sim.addPlayer(`p${i}`);
+  sim.startGame();
+  sim.startRound();
+
+  sim.createWhisper(0);
+  const whisper = sim.whispers.get(sim.players[0].inWhisper);
+  assert.ok(whisper);
+  whisper.occupants.add(1);
+  sim.players[1].inWhisper = sim.players[0].inWhisper;
+  whisper.colorOffers.add(1);
+
+  const frame = unpackFrame(render(sim, 0));
+  const firstSlot = FRAME_REGIONS.whisper.occupantSlot(0);
+  for (let y = firstSlot.y; y < firstSlot.y + firstSlot.h; y++) {
+    for (let x = firstSlot.x; x < firstSlot.x + firstSlot.w; x++) {
+      frame[y * SCREEN_WIDTH + x] = 0;
+    }
+  }
+
+  const status = parseWhisperStatus(frame);
+  assert.equal(status.pendingColorOffer, true);
+  assert.equal(status.occupantCount, 1);
+  assert.deepEqual(status.occupants.map(o => o.shape), [sim.players[1].shape]);
+  assert.deepEqual(status.occupantColors, [sim.playerColor(1)]);
+}
+
+function testWhisperSystemMessageDoesNotLookLikePendingEntry() {
+  const sim = new Sim(configForPlayers(4), 789);
+  for (let i = 0; i < 4; i++) sim.addPlayer(`p${i}`);
+  sim.startGame();
+  sim.startRound();
+
+  sim.createWhisper(0);
+  const whisper = sim.whispers.get(sim.players[0].inWhisper);
+  assert.ok(whisper);
+  assert.equal(whisper.pendingEntry.length, 0);
+
+  // Player 2 has palette color 8 in the default roster. A rich-text system
+  // message at the bottom of the whisper log used to be enough to trip the
+  // pending-entry parser, even with no actual pending entry in the engine.
+  whisper.messages.push({ type: "system", senderIndex: -1, tick: sim.tickCount, text: `\x01${String.fromCharCode(2)} offered color` });
+
+  const status = parseWhisperStatus(unpackFrame(render(sim, 0)));
+  assert.equal(status.pendingEntry, false);
+  assert.equal(status.pendingEntryName, null);
+}
+
+function testExchangeSystemMessagesAreGroupFacts() {
+  const sim = new Sim(configForPlayers(3), 790);
+  for (let i = 0; i < 3; i++) sim.addPlayer(`p${i}`);
+  sim.startGame();
+  sim.startRound();
+
+  sim.createWhisper(0);
+  const whisper = sim.whispers.get(sim.players[0].inWhisper);
+  assert.ok(whisper);
+  whisper.occupants.add(1);
+  sim.players[1].inWhisper = sim.players[0].inWhisper;
+  whisper.messages.push({
+    type: "system",
+    senderIndex: -1,
+    tick: sim.tickCount,
+    text: `COLOR XCHG: \x01${String.fromCharCode(0)}, \x01${String.fromCharCode(1)}`,
+  });
+
+  const messages = parseWhisperMessages(unpackFrame(render(sim, 0)));
+  assert.equal(
+    messages.some(m => m.type === "system" && m.text.includes("COLOR XCHG")),
+    true,
+    "group exchange system message should parse as system text",
+  );
+}
+
 testWhisperOccupantsUseSharedHeaderRegion();
 testWhisperPendingEntryUsesSharedFooterRegion();
+testWhisperOfferIndicatorPersistsWithMenuOpen();
+testWhisperOccupantsCanUseSparsePersistentSlots();
+testWhisperSystemMessageDoesNotLookLikePendingEntry();
+testExchangeSystemMessagesAreGroupFacts();
 
 console.log("whisper region tests passed");

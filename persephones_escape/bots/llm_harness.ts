@@ -41,7 +41,7 @@ const bot: BotController = {
   ws, actions: new ActionQueue(), player, name,
   movementTarget: null, wandering: false,
   wanderTarget: null, wanderTicks: 0, lastFrame: null,
-  hostagePrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
+  psychopompPrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
   nonInterruptingTasks: [],
 };
 
@@ -193,7 +193,7 @@ function onFrame(data: Buffer): void {
 
   const canPoll = infoPollState === "closed"
     && !inWhisper && bot.actions.empty
-    && (player.phase === "playing" || player.phase === "hostage_select");
+    && (player.phase === "playing" || player.phase === "psychopomp_select");
   if (canPoll) {
     infoPollCooldown--;
     if (infoPollCooldown <= 0) {

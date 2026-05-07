@@ -92,7 +92,7 @@ export function buildGlobalFrame(sim: Sim): Buffer {
   pkt.defineLayer(STATE_LAYER, LayerType.BottomCenter, LayerFlag.Ui);
 
   // Map view
-  if (sim.phase === Phase.HostageExchange) {
+  if (sim.phase === Phase.PsychopompExchange) {
     buildExchangeView(sim, pkt, padX, padY, ROOM_W, ROOM_H, ROOM_B_OFFSET_X);
   } else {
     buildNormalMapView(sim, pkt, padX, padY, ROOM_B_OFFSET_X);
@@ -110,7 +110,6 @@ export function buildGlobalFrame(sim: Sim): Buffer {
   buildVotePanel(sim, pkt, Room.RoomB, VOTE_B_LAYER, VOTE_B_SPRITE, VOTE_B_OBJECT);
 
   // Private whisper slots (side panels)
-  updateWhisperCache(sim);
   buildWhisperSlots(sim, pkt, Room.RoomA, CR_A_LAYER, 0);
   buildWhisperSlots(sim, pkt, Room.RoomB, CR_B_LAYER, CR_SLOTS);
 
@@ -184,7 +183,7 @@ function buildPlayerAccoutrementSprite(sim: Sim, pkt: SpritePacket, pi: number, 
     px[(shapeY - 1) * sw + (shapeX + 3)] = spriteColor(8);
   }
 
-  if (p.selectedAsHostage && sim.phase === Phase.HostageSelect) {
+  if (p.selectedAsPsychopomp && sim.phase === Phase.PsychopompSelect) {
     const hc = spriteColor(8);
     px[(shapeY - 1) * sw + (shapeX + 0)] = hc;
     px[(shapeY - 1) * sw + (shapeX + 6)] = hc;
@@ -245,7 +244,7 @@ function buildExchangeView(
 
   type Row = { text: string; color: number; pi?: number };
   const rows: Row[] = [];
-  rows.push({ text: "HOSTAGE EXCHANGE", color: 8 });
+  rows.push({ text: "PSYCHOPOMP EXCHANGE", color: 8 });
   rows.push({ text: "", color: 0 });
 
   const leaderA = sim.exchangeLeaderA;
@@ -258,13 +257,13 @@ function buildExchangeView(
   }
   rows.push({ text: "", color: 0 });
 
-  for (const [label, hostages] of [
+  for (const [label, psychopomps] of [
     [`LEAVING ${ROOM_A_NAME}:`, sim.exchangeFromA],
     [`LEAVING ${ROOM_B_NAME}:`, sim.exchangeFromB],
   ] as [string, typeof sim.exchangeFromA][]) {
-    if (hostages.length > 0) {
+    if (psychopomps.length > 0) {
       rows.push({ text: label, color: 8 });
-      for (const h of hostages) {
+      for (const h of psychopomps) {
         if (h.pi >= 0 && h.pi < sim.players.length) {
           rows.push({ text: sim.roleName(sim.players[h.pi].role), color: sim.playerColor(h.pi), pi: h.pi });
         }
@@ -307,14 +306,14 @@ function buildHud(sim: Sim, pkt: SpritePacket) {
 
   if (showSchedule) {
     lines.push({ text: "ROUND SCHEDULE", color: 2 });
-    lines.push({ text: "ROUND  TIME  HOSTAGE", color: 1 });
+    lines.push({ text: "ROUND  TIME  PSYCHOPOMP", color: 1 });
     const rounds = sim.config.rounds;
     for (let i = 0; i < Math.min(rounds.length, 5); i++) {
       const r = rounds[i];
       const mins = Math.floor(r.durationSecs / 60);
       const rsecs = r.durationSecs % 60;
       const timeStr = `${mins}:${rsecs.toString().padStart(2, "0")}`;
-      lines.push({ text: `  ${i + 1}      ${timeStr}     ${r.hostages}`, color: 2 });
+      lines.push({ text: `  ${i + 1}      ${timeStr}     ${r.psychopomps}`, color: 2 });
     }
     lines.push({ text: `STARTING IN ${secs}`, color: 2 });
   } else {
@@ -333,10 +332,10 @@ function buildHud(sim: Sim, pkt: SpritePacket) {
     if (sim.phase === Phase.LeaderSummit) {
       const summitSecs = Math.max(0, Math.ceil(sim.leaderSummitTimer / TARGET_FPS));
       lines.push({ text: `SUMMIT ${summitSecs}s — LEADERS NEGOTIATING`, color: 8 });
-      const hostA = sim.hostagesSelectedA.map(i => playerTag(sim, i)).join(", ");
-      const hostB = sim.hostagesSelectedB.map(i => playerTag(sim, i)).join(", ");
-      if (hostA) lines.push({ text: `UW HOSTAGES: ${hostA}`, color: TEAM_A_COLOR });
-      if (hostB) lines.push({ text: `MR HOSTAGES: ${hostB}`, color: TEAM_B_COLOR });
+      const hostA = sim.psychopompsSelectedA.map(i => playerTag(sim, i)).join(", ");
+      const hostB = sim.psychopompsSelectedB.map(i => playerTag(sim, i)).join(", ");
+      if (hostA) lines.push({ text: `UW PSYCHOPOMPS: ${hostA}`, color: TEAM_A_COLOR });
+      if (hostB) lines.push({ text: `MR PSYCHOPOMPS: ${hostB}`, color: TEAM_B_COLOR });
       const summitCr = sim.whispers.get(sim.leaderSummitWhisperId);
       if (summitCr) {
         const recent = summitCr.messages.slice(-4);
@@ -501,14 +500,14 @@ function buildVotePanel(
   const h = leaderH + VOTE_BOX_H * 2 + 6;
   const pixels = new Uint8Array(w * h);
 
-  // Leader row + hostage sprites
-  const hostages = room === Room.RoomA ? sim.hostagesSelectedA : sim.hostagesSelectedB;
+  // Leader row + psychopomp sprites
+  const psychopomps = room === Room.RoomA ? sim.psychopompsSelectedA : sim.psychopompsSelectedB;
   if (leader >= 0 && sim.phase !== Phase.Lobby) {
     drawSmallSprite(pixels, w, 1, 2, sim.players[leader].shape, sim.playerColor(leader));
     const titleText = leaderTitle.toUpperCase();
     drawTextIntoPixels(fb, pixels, w, h, PLAYER_W + 3, 4, titleText, 2);
     let hx = PLAYER_W + 3 + fb.measureText(titleText) + 4;
-    for (const hi of hostages) {
+    for (const hi of psychopomps) {
       if (hx + PLAYER_W > w - 2) break;
       if (hi >= 0 && hi < sim.players.length) {
         drawSmallSprite(pixels, w, hx, 2, sim.players[hi].shape, sim.playerColor(hi));
@@ -727,54 +726,23 @@ function drawRichChatMsg(
   }
 }
 
-interface CachedWhisper {
-  snapshot: Whisper;
-  closeTick: number;
-}
-
-const whisperCache = new Map<number, CachedWhisper>();
-const knownWhisperIds = new Set<number>();
-const WHISPER_PERSIST_TICKS = TARGET_FPS;
-
-function updateWhisperCache(sim: Sim) {
-  const currentIds = new Set<number>();
-  for (const cr of sim.whispers.values()) {
-    if (cr.occupants.size >= 2) currentIds.add(cr.id);
-  }
-  for (const id of knownWhisperIds) {
-    if (!currentIds.has(id) && !whisperCache.has(id)) {
-      const cr = sim.whispers.get(id);
-      if (cr) {
-        whisperCache.set(id, { snapshot: { ...cr, occupants: new Set(cr.occupants), pendingEntry: [...cr.pendingEntry], pendingEntryTicks: [...cr.pendingEntryTicks], messages: [...cr.messages], revealOffers: new Set(cr.revealOffers), colorOffers: new Set(cr.colorOffers) }, closeTick: sim.tickCount });
-      }
-    }
-  }
-  knownWhisperIds.clear();
-  for (const id of currentIds) knownWhisperIds.add(id);
-  for (const [id, cached] of whisperCache) {
-    if (sim.tickCount - cached.closeTick > WHISPER_PERSIST_TICKS) whisperCache.delete(id);
-  }
-}
-
 function buildWhisperSlots(
   sim: Sim, pkt: SpritePacket, room: Room,
   layerId: number, slotOffset: number,
 ) {
   const SLOT_GAP = 6;
-  const totalH = CR_SLOTS * CR_SLOT_H + (CR_SLOTS - 1) * SLOT_GAP;
-  pkt.setViewport(layerId, CR_SLOT_W, totalH);
 
   const roomCrs: Whisper[] = [];
   for (const cr of sim.whispers.values()) {
     if (cr.room === room && cr.occupants.size >= 2) roomCrs.push(cr);
   }
-  for (const cached of whisperCache.values()) {
-    if (cached.snapshot.room === room) roomCrs.push(cached.snapshot);
-  }
 
   const cycleOffset = roomCrs.length > CR_SLOTS
     ? Math.floor(sim.tickCount / (3 * TARGET_FPS))
     : 0;
+
+  const totalH = CR_SLOTS * CR_SLOT_H + (CR_SLOTS - 1) * SLOT_GAP;
+  pkt.setViewport(layerId, CR_SLOT_W, totalH);
 
   for (let i = 0; i < CR_SLOTS; i++) {
     const cr = i < roomCrs.length

@@ -20,7 +20,7 @@ const sim = new Sim(
       { role: Role.Shades, team: Team.TeamA, count: 1 },
       { role: Role.Nymphs, team: Team.TeamB, count: 1 },
     ],
-    rounds: [{ durationSecs: 60, hostages: 1 }],
+    rounds: [{ durationSecs: 60, psychopomps: 1 }],
     obstacleCount: 0,
   },
   42,

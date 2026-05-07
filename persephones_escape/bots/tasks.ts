@@ -6,7 +6,7 @@
  * Task categories:
  *   - ONCE: fires and removes itself (shout, chat, exit_whisper)
  *   - ASYNC: multi-frame, self-terminates on done/failed/timeout (pursue_chat, walk_to)
- *   - LOOP: singleton per kind; reactive (auto_*) or persistent (precommit_hostages).
+ *   - LOOP: singleton per kind; reactive (auto_*) or persistent (precommit_psychopomps).
  *           A new loop of the same kind replaces the existing one.
  *
  * Priority: LOOP and ONCE tasks run first (interrupt). ASYNC tasks only run
@@ -43,7 +43,7 @@ export type Task =
   // ONCE tasks — fire once and remove
   | { kind: "shout"; text: string }
   | { kind: "chat"; text: string }
-  | { kind: "whisper_action"; action: "ROLE" | "C.OFFER" | "R.OFFER" | "PASS" | "TAKE" | "GRANT" }
+  | { kind: "whisper_action"; action: "ROLE" | "C.OFFER" | "C.UNOFFR" | "R.OFFER" | "R.UNOFFR" | "PASS" | "TAKE" | "GRANT" }
   | { kind: "exit_whisper" }
   // ASYNC tasks — multi-frame, self-terminate on done/failed/timeout
   | { kind: "walk_to"; x: number; y: number; timeLimitTicks: number }
@@ -61,15 +61,15 @@ export type Task =
   | { kind: "loop_auto_accept_color" }
   | { kind: "loop_auto_accept_role" }
   | { kind: "loop_global_check"; intervalTicks: number }
-  // ONCE — immediately stores targets, fires on hostage_select
-  | { kind: "precommit_hostages"; targets: string[] }
+  // ONCE — immediately stores targets, fires on psychopomp_select
+  | { kind: "precommit_psychopomps"; targets: string[] }
   // Non-interruptible atoms. Producers should enqueue these for short,
   // known-safe input sequences.
   | { kind: "atom_input"; masks: number[]; label: string }
   | { kind: "atom_chat"; text: string; label: string };
 
 const ONCE_KINDS = new Set<string>([
-  "shout", "chat", "exit_whisper", "precommit_hostages",
+  "shout", "chat", "exit_whisper", "precommit_psychopomps",
   "whisper_action", "atom_input", "atom_chat",
 ]);
 
@@ -464,7 +464,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
     // ---- ONCE chat tasks ----
     case "shout": {
-      if (player.phase !== "playing" && player.phase !== "hostage_select" && player.phase !== "leader_summit") return SKIP;
+      if (player.phase !== "playing" && player.phase !== "psychopomp_select" && player.phase !== "leader_summit") return SKIP;
       return enqueueAtomChat(bot, t.text, "shout");
     }
     case "chat": {
@@ -880,7 +880,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
         ti.lastFiredTick = tick;
         return enqueueAtomInput(bot, [BUTTON_RIGHT, 0, BUTTON_LEFT, 0], "global_check_whisper");
       }
-      if (player.phase === "playing" || player.phase === "hostage_select" || player.phase === "leader_summit") {
+      if (player.phase === "playing" || player.phase === "psychopomp_select" || player.phase === "leader_summit") {
         ti.lastFiredTick = tick;
         return enqueueAtomInput(bot, [BUTTON_SELECT, 0, BUTTON_SELECT, 0], "global_check_overworld");
       }
@@ -888,7 +888,7 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
     }
 
     case "usurp_vote": {
-      if (player.phase !== "playing" && player.phase !== "unknown" && player.phase !== "hostage_select") return SKIP;
+      if (player.phase !== "playing" && player.phase !== "unknown" && player.phase !== "psychopomp_select") return SKIP;
       if (player.amLeader) return fail("I am leader, cannot usurp");
 
       if (ti.usurpState === "idle") {
@@ -916,7 +916,8 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
 
         // Usurp candidate only shows color (single sprite), match on color
         const targetColor = colorFromCharName(t.target);
-        if (cand.isPlayer && targetColor !== null && cand.color === targetColor) {
+        const selfTarget = t.target === player.myCharName;
+        if ((cand.isSelf && selfTarget) || (cand.isPlayer && targetColor !== null && cand.color === targetColor)) {
           bot.actions.push(BUTTON_A, 0);
           sendInput(ws, bot.actions.shift()!);
           ti.usurpState = "closing";
@@ -939,9 +940,9 @@ function tryTask(ti: TaskInstance, bot: BotController, ws: WebSocket): TaskResul
       return SKIP;
     }
 
-    case "precommit_hostages": {
-      bot.hostagePrecommit = t.targets;
-      return emit(`hostages precommitted: [${t.targets.join(", ")}]`);
+    case "precommit_psychopomps": {
+      bot.psychopompPrecommit = t.targets;
+      return emit(`psychopomps precommitted: [${t.targets.join(", ")}]`);
     }
   }
   return SKIP;
@@ -1101,7 +1102,7 @@ const VALID_KINDS = new Set<string>([
   "shout", "chat", "whisper_action", "exit_whisper",
   "walk_to", "pursue_chat", "pursue_exchange", "usurp_vote",
   "loop_auto_grant", "loop_auto_accept_color", "loop_auto_accept_role",
-  "loop_global_check", "precommit_hostages", "atom_input", "atom_chat",
+  "loop_global_check", "precommit_psychopomps", "atom_input", "atom_chat",
 ]);
 
 function coerceTask(raw: any): Task | null {
@@ -1114,7 +1115,8 @@ function coerceTask(raw: any): Task | null {
       return typeof raw.text === "string" ? { kind: k, text: String(raw.text) } : null;
     case "whisper_action": {
       const action = raw.action;
-      return action === "ROLE" || action === "C.OFFER" || action === "R.OFFER" ||
+      return action === "ROLE" || action === "C.OFFER" || action === "C.UNOFFR" ||
+        action === "R.OFFER" || action === "R.UNOFFR" ||
         action === "PASS" || action === "TAKE" || action === "GRANT"
         ? { kind: "whisper_action", action }
         : null;
@@ -1150,10 +1152,10 @@ function coerceTask(raw: any): Task | null {
     case "exit_whisper":
     case "loop_auto_grant": case "loop_auto_accept_color": case "loop_auto_accept_role":
       return { kind: k } as Task;
-    case "precommit_hostages": {
+    case "precommit_psychopomps": {
       if (!Array.isArray(raw.targets)) return null;
       const targets = raw.targets.filter((s: any) => typeof s === "string" && isValidCharacterName(s));
-      return targets.length > 0 ? { kind: "precommit_hostages", targets } : null;
+      return targets.length > 0 ? { kind: "precommit_psychopomps", targets } : null;
     }
   }
   return null;
