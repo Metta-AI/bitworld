@@ -53,6 +53,7 @@
           udev    # paddy gamepad input on linux
           libevdev
           openssl # nottoodumb dynamically loads libssl for wss:// connects
+          curl    # italkalot/ivotewell dlopen libcurl.so via the curly dep
         ];
 
         # Parse nimby.lock and fetch each dep via builtins.fetchGit.
@@ -68,18 +69,20 @@
         lockLines = builtins.filter (l: l != "")
           (builtins.filter builtins.isString (builtins.split "\n" lockContents));
         lockEntries = builtins.filter (e: e != null) (map parseLockLine lockLines);
-        nimCfgContents = lib.concatMapStringsSep "\n" (entry:
-          ''--path:"${entry.name}/src"''
-        ) lockEntries;
+        # Some deps (e.g. libcurl) keep their .nim files at the package root
+        # rather than under src/. Emit the right --path for each at build
+        # time by probing the dep, mirroring what `nimby sync` produces.
         vendoredDeps = pkgs.runCommand "bitworld-deps" {} (''
           mkdir -p $out
+          : > $out/nim.cfg
         '' + lib.concatMapStrings (entry: ''
           ln -s ${builtins.fetchGit { url = entry.url; rev = entry.rev; allRefs = true; }} $out/${entry.name}
-        '') lockEntries + ''
-          cat > $out/nim.cfg <<'NIMCFG'
-          ${nimCfgContents}
-          NIMCFG
-        '');
+          if [ -d "$out/${entry.name}/src" ]; then
+            echo '--path:"${entry.name}/src"' >> $out/nim.cfg
+          else
+            echo '--path:"${entry.name}"' >> $out/nim.cfg
+          fi
+        '') lockEntries);
 
         # Filter out user/build artifacts so changes to them don't bust
         # the build cache and they don't leak into the derivation.
@@ -143,34 +146,37 @@
         });
 
         # The bot shares the game's assets but launches from its source
-        # dir among_them/players/nottoodumb/ — same CWD quick_player
-        # gives it — so its gameDir() walks two levels up to find
+        # dir among_them/players/<name>/ — same CWD quick_player gives
+        # it — so its gameDir() walks two levels up to find
         # spritesheet.png et al.
-        bitworldNottoodumb = pkgs.stdenv.mkDerivation (commonAttrs // {
-          pname = "bitworld-nottoodumb";
+        mkAmongThemBot = name: pkgs.stdenv.mkDerivation (commonAttrs // {
+          pname = "bitworld-${name}";
           buildPhase = ''
             runHook preBuild
             export HOME=$TMPDIR
             mkdir -p out
-            nim c among_them/players/nottoodumb/nottoodumb.nim
+            nim c among_them/players/${name}/${name}.nim
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             mkdir -p $out/libexec/bitworld $out/bin \
-              $out/share/bitworld/among_them/players/nottoodumb \
+              $out/share/bitworld/among_them/players/${name} \
               $out/share/bitworld/clients
-            install -m 0755 out/nottoodumb $out/libexec/bitworld/nottoodumb
+            install -m 0755 out/${name} $out/libexec/bitworld/${name}
             cp -r clients/data $out/share/bitworld/clients/
             for f in among_them/*.png among_them/*.json among_them/*.aseprite; do
               [[ -f "$f" ]] || continue
               cp "$f" $out/share/bitworld/among_them/
             done
-            makeWrapper $out/libexec/bitworld/nottoodumb $out/bin/nottoodumb \
-              --chdir $out/share/bitworld/among_them/players/nottoodumb
+            makeWrapper $out/libexec/bitworld/${name} $out/bin/${name} \
+              --chdir $out/share/bitworld/among_them/players/${name}
             runHook postInstall
           '';
         });
+        bitworldNottoodumb = mkAmongThemBot "nottoodumb";
+        bitworldItalkalot = mkAmongThemBot "italkalot";
+        bitworldIvotewell = mkAmongThemBot "ivotewell";
 
         dockerImageAmongThem = pkgs.dockerTools.buildLayeredImage {
           name = "bitworld-among_them";
@@ -195,11 +201,11 @@
           };
         };
 
-        dockerImageNottoodumb = pkgs.dockerTools.buildLayeredImage {
-          name = "bitworld-nottoodumb";
+        mkBotDockerImage = name: bot: pkgs.dockerTools.buildLayeredImage {
+          name = "bitworld-${name}";
           tag = "latest";
           contents = [
-            bitworldNottoodumb
+            bot
             pkgs.bashInteractive
             pkgs.coreutils
             pkgs.curl # Used to extract logs at runtime in cloudflare
@@ -218,9 +224,13 @@
               "LD_LIBRARY_PATH=${lib.makeLibraryPath runtimeLibs}"
             ];
             Entrypoint = [ "/bin/tini" "--" ];
-            Cmd = [ "/bin/nottoodumb" ];
+            Cmd = [ "/bin/${name}" ];
           };
         };
+        dockerImageNottoodumb = mkBotDockerImage "nottoodumb" bitworldNottoodumb;
+        dockerImageItalkalot = mkBotDockerImage "italkalot" bitworldItalkalot;
+        dockerImageIvotewell = mkBotDockerImage "ivotewell" bitworldIvotewell;
+
         # On darwin, reference the aarch64-linux packages so that
         # `nix build .#dockerImageAmongThem` works on both platforms.
         # The nix-darwin linux-builder handles the actual compilation.
@@ -228,11 +238,28 @@
           else self.packages."aarch64-linux".dockerImageAmongThem;
         linuxDockerImageNottoodumb = if isLinux then dockerImageNottoodumb
           else self.packages."aarch64-linux".dockerImageNottoodumb;
+        linuxDockerImageItalkalot = if isLinux then dockerImageItalkalot
+          else self.packages."aarch64-linux".dockerImageItalkalot;
+        linuxDockerImageIvotewell = if isLinux then dockerImageIvotewell
+          else self.packages."aarch64-linux".dockerImageIvotewell;
+
+        # Single store path containing all four image tarballs as named
+        # symlinks, for `nix build .#dockerImages` convenience.
+        dockerImages = pkgs.runCommand "bitworld-docker-images" {} ''
+          mkdir -p $out
+          ln -s ${linuxDockerImageAmongThem}  $out/among_them.tar.gz
+          ln -s ${linuxDockerImageNottoodumb} $out/nottoodumb.tar.gz
+          ln -s ${linuxDockerImageItalkalot}  $out/italkalot.tar.gz
+          ln -s ${linuxDockerImageIvotewell}  $out/ivotewell.tar.gz
+        '';
 
       in {
         packages = {
           dockerImageAmongThem = linuxDockerImageAmongThem;
           dockerImageNottoodumb = linuxDockerImageNottoodumb;
+          dockerImageItalkalot = linuxDockerImageItalkalot;
+          dockerImageIvotewell = linuxDockerImageIvotewell;
+          inherit dockerImages;
         } // lib.optionalAttrs isLinux {
           inherit vendoredDeps;
           default = dockerImageAmongThem;
