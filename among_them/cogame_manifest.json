@@ -257,6 +257,58 @@
         "items": {
           "type": "integer"
         }
+      },
+      "imposter": {
+        "description": "One 1 or 0 flag for whether the player was an imposter.",
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "crew": {
+        "description": "One 1 or 0 flag for whether the player was crew.",
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "vote_players": {
+        "description": "One count of votes cast for a player per player slot.",
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "vote_skip": {
+        "description": "One count of explicit skip votes per player slot.",
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "vote_timeout": {
+        "description": "One count of vote timeouts per player slot.",
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     }
   },

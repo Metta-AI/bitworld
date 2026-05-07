@@ -309,6 +309,11 @@ type
     win: bool
     tasks: string
     kills: string
+    imposter: string
+    crew: string
+    votePlayers: string
+    voteSkip: string
+    voteTimeout: string
 
 var
   aiKeyEnvMask = 0
@@ -1457,6 +1462,20 @@ proc scoreArray(node: JsonNode, key: string): JsonNode =
     )
   node[key]
 
+proc optionalScoreArray(node: JsonNode, key: string): JsonNode =
+  ## Reads one optional scores array.
+  if node.kind == JObject and node.hasKey(key) and node[key].kind == JArray:
+    return node[key]
+  newJArray()
+
+proc optionalScoreArrayAny(node: JsonNode, keys: openArray[string]): JsonNode =
+  ## Reads the first present optional scores array from several keys.
+  for key in keys:
+    let items = node.optionalScoreArray(key)
+    if items.len > 0:
+      return items
+  newJArray()
+
 proc scoreString(items: JsonNode, index: int): string =
   ## Reads one score table string cell.
   if index >= items.len:
@@ -1488,12 +1507,20 @@ proc maxScoreRows(
   scores,
   wins,
   tasks,
-  kills: JsonNode
+  kills,
+  imposters,
+  crews,
+  votePlayers,
+  voteSkips,
+  voteTimeouts: JsonNode
 ): int =
   ## Returns the longest score array length.
   max(
-    max(names.len, scores.len),
-    max(max(wins.len, tasks.len), kills.len)
+    max(max(names.len, scores.len), max(wins.len, tasks.len)),
+    max(
+      max(kills.len, max(imposters.len, crews.len)),
+      max(votePlayers.len, max(voteSkips.len, voteTimeouts.len))
+    )
   )
 
 proc parseScoreRows(text: string): seq[ScoreRow] =
@@ -1505,14 +1532,35 @@ proc parseScoreRows(text: string): seq[ScoreRow] =
     wins = node.scoreArray("win")
     tasks = node.scoreArray("tasks")
     kills = node.scoreArray("kills")
-    rowCount = maxScoreRows(names, scores, wins, tasks, kills)
+    imposters = node.optionalScoreArrayAny(["imposters", "imposter"])
+    crews = node.optionalScoreArray("crew")
+    votePlayers = node.optionalScoreArrayAny(["vote_player", "vote_players"])
+    voteSkips = node.optionalScoreArray("vote_skip")
+    voteTimeouts = node.optionalScoreArray("vote_timeout")
+    rowCount = maxScoreRows(
+      names,
+      scores,
+      wins,
+      tasks,
+      kills,
+      imposters,
+      crews,
+      votePlayers,
+      voteSkips,
+      voteTimeouts
+    )
   for i in 0 ..< rowCount:
     result.add(ScoreRow(
       name: names.scoreString(i),
       score: scores.scoreString(i),
       win: wins.scoreBool(i),
       tasks: tasks.scoreString(i),
-      kills: kills.scoreString(i)
+      kills: kills.scoreString(i),
+      imposter: imposters.scoreString(i),
+      crew: crews.scoreString(i),
+      votePlayers: votePlayers.scoreString(i),
+      voteSkip: voteSkips.scoreString(i),
+      voteTimeout: voteTimeouts.scoreString(i)
     ))
 
 proc configJson(
@@ -2772,10 +2820,20 @@ proc renderScoresTable(rows: seq[ScoreRow]): string =
           say "Tasks"
         th ".head":
           say "Kills"
+        th ".head":
+          say "Imposters"
+        th ".head":
+          say "Crew"
+        th ".head":
+          say "Vote player"
+        th ".head":
+          say "Vote skip"
+        th ".head":
+          say "Vote timeout"
       if rows.len == 0:
         tr:
           td ".row1 center":
-            colspan "5"
+            colspan "10"
             say "No score rows saved."
       for i, row in rows:
         let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
@@ -2804,6 +2862,31 @@ proc renderScoresTable(rows: seq[ScoreRow]): string =
           td rowClass & " right nowrap":
             if row.kills.len > 0:
               say esc(row.kills)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.imposter.len > 0:
+              say esc(row.imposter)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.crew.len > 0:
+              say esc(row.crew)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.votePlayers.len > 0:
+              say esc(row.votePlayers)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.voteSkip.len > 0:
+              say esc(row.voteSkip)
+            else:
+              say "-"
+          td rowClass & " right nowrap":
+            if row.voteTimeout.len > 0:
+              say esc(row.voteTimeout)
             else:
               say "-"
 

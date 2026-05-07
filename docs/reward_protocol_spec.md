@@ -61,6 +61,9 @@ following names are currently emitted by Among Them and are stable:
 | `games_crewmate` | Lifetime games started as crewmate |
 | `kills` | Lifetime kills (impostor) |
 | `tasks` | Lifetime task completions |
+| `vote_players` | Lifetime votes cast for a player |
+| `vote_skip` | Lifetime explicit skip votes |
+| `vote_timeout` | Lifetime vote timeouts |
 
 Stat values are cumulative for the lifetime of one player identity on the
 server. They reset only when the server restarts (current Among Them

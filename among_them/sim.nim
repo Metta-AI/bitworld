@@ -232,6 +232,9 @@ type
     gamesCrewmate*: int
     kills*: int
     tasks*: int
+    votePlayers*: int
+    voteSkip*: int
+    voteTimeout*: int
 
   PlayerSlotConfig* = object
     name*: string
@@ -1760,6 +1763,27 @@ proc recordTask*(sim: var SimServer, playerIndex: int) =
     return
   inc sim.rewardAccounts[index].tasks
 
+proc recordVotePlayer*(sim: var SimServer, playerIndex: int) =
+  ## Increments the lifetime player-vote counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].votePlayers
+
+proc recordVoteSkip*(sim: var SimServer, playerIndex: int) =
+  ## Increments the lifetime explicit skip-vote counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].voteSkip
+
+proc recordVoteTimeout*(sim: var SimServer, playerIndex: int) =
+  ## Increments the lifetime vote-timeout counter for one player.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].voteTimeout
+
 proc playerResultsJson*(sim: SimServer): string =
   ## Returns final player rewards and win states as JSON.
   var
@@ -1769,6 +1793,11 @@ proc playerResultsJson*(sim: SimServer): string =
     win = newJArray()
     tasksList = newJArray()
     killsList = newJArray()
+    imposterList = newJArray()
+    crewList = newJArray()
+    votePlayersList = newJArray()
+    voteSkipList = newJArray()
+    voteTimeoutList = newJArray()
     results = newJObject()
   for i in 0 ..< sim.players.len:
     order.add(i)
@@ -1790,16 +1819,35 @@ proc playerResultsJson*(sim: SimServer): string =
       kills =
         if accountIndex >= 0: sim.rewardAccounts[accountIndex].kills
         else: 0
+      votePlayers =
+        if accountIndex >= 0: sim.rewardAccounts[accountIndex].votePlayers
+        else: 0
+      voteSkip =
+        if accountIndex >= 0: sim.rewardAccounts[accountIndex].voteSkip
+        else: 0
+      voteTimeout =
+        if accountIndex >= 0: sim.rewardAccounts[accountIndex].voteTimeout
+        else: 0
     names.add(%player.address)
     scores.add(%player.reward)
     win.add(%(not sim.timeLimitReached and player.role == sim.winner))
     tasksList.add(%tasks)
     killsList.add(%kills)
+    imposterList.add(%(if player.role == Imposter: 1 else: 0))
+    crewList.add(%(if player.role == Crewmate: 1 else: 0))
+    votePlayersList.add(%votePlayers)
+    voteSkipList.add(%voteSkip)
+    voteTimeoutList.add(%voteTimeout)
   results["names"] = names
   results["scores"] = scores
   results["win"] = win
   results["tasks"] = tasksList
   results["kills"] = killsList
+  results["imposter"] = imposterList
+  results["crew"] = crewList
+  results["vote_players"] = votePlayersList
+  results["vote_skip"] = voteSkipList
+  results["vote_timeout"] = voteTimeoutList
   $results
 
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
@@ -2489,8 +2537,13 @@ proc tallyVotes*(sim: var SimServer) =
       let v = sim.voteState.votes[i]
       if v >= 0 and v < counts.len:
         inc counts[v]
-      elif v == -2 or v == -1:
+        sim.recordVotePlayer(i)
+      elif v == -2:
         inc skipCount
+        sim.recordVoteSkip(i)
+      elif v == -1:
+        inc skipCount
+        sim.recordVoteTimeout(i)
   var maxVotes = skipCount
   var maxPlayer = -1
   var tied = false

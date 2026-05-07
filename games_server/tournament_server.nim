@@ -306,6 +306,11 @@ type
     win: bool
     tasks: int
     kills: int
+    imposter: int
+    crew: int
+    votePlayers: int
+    voteSkip: int
+    voteTimeout: int
 
   ScoreFile = object
     path: string
@@ -326,6 +331,11 @@ type
     scoreSum: float
     tasksSum: int
     killsSum: int
+    imposterSum: int
+    crewSum: int
+    votePlayersSum: int
+    voteSkipSum: int
+    voteTimeoutSum: int
     mmr: float
 
   TournamentState = object
@@ -1415,6 +1425,9 @@ proc scoreInt(items: JsonNode, index: int): int =
     result = items[index].getInt()
   of JFloat:
     result = items[index].getFloat().int
+  of JBool:
+    if items[index].getBool():
+      result = 1
   else:
     result = 0
 
@@ -1434,6 +1447,14 @@ proc jsonArray(node: JsonNode, key: string): JsonNode =
     return node[key]
   newJArray()
 
+proc jsonArrayAny(node: JsonNode, keys: openArray[string]): JsonNode =
+  ## Reads the first present optional JSON array from several keys.
+  for key in keys:
+    let items = node.jsonArray(key)
+    if items.len > 0:
+      return items
+  newJArray()
+
 proc parseScores(path: string): seq[ScoreRow] =
   ## Parses one tournament scores file.
   let node = parseJson(readFile(path))
@@ -1443,9 +1464,17 @@ proc parseScores(path: string): seq[ScoreRow] =
     wins = node.jsonArray("win")
     tasks = node.jsonArray("tasks")
     kills = node.jsonArray("kills")
+    imposters = node.jsonArrayAny(["imposters", "imposter"])
+    crews = node.jsonArray("crew")
+    votePlayers = node.jsonArrayAny(["vote_player", "vote_players"])
+    voteSkips = node.jsonArray("vote_skip")
+    voteTimeouts = node.jsonArray("vote_timeout")
     rowCount = max(
-      max(names.len, scores.len),
-      max(max(wins.len, tasks.len), kills.len)
+      max(max(names.len, scores.len), max(wins.len, tasks.len)),
+      max(
+        max(kills.len, max(imposters.len, crews.len)),
+        max(votePlayers.len, max(voteSkips.len, voteTimeouts.len))
+      )
     )
   for i in 0 ..< rowCount:
     result.add(ScoreRow(
@@ -1453,7 +1482,12 @@ proc parseScores(path: string): seq[ScoreRow] =
       score: scores.scoreNumber(i),
       win: wins.scoreBool(i),
       tasks: tasks.scoreInt(i),
-      kills: kills.scoreInt(i)
+      kills: kills.scoreInt(i),
+      imposter: imposters.scoreInt(i),
+      crew: crews.scoreInt(i),
+      votePlayers: votePlayers.scoreInt(i),
+      voteSkip: voteSkips.scoreInt(i),
+      voteTimeout: voteTimeouts.scoreInt(i)
     ))
 
 proc scoreFileModified(path: string): int64 =
@@ -1587,6 +1621,11 @@ proc applyScoreRows(
     row.scoreSum += score.score
     row.tasksSum += score.tasks
     row.killsSum += score.kills
+    row.imposterSum += score.imposter
+    row.crewSum += score.crew
+    row.votePlayersSum += score.votePlayers
+    row.voteSkipSum += score.voteSkip
+    row.voteTimeoutSum += score.voteTimeout
     if score.win:
       inc row.wins
     stats[player] = row
@@ -1886,13 +1925,23 @@ proc renderStatsTable(stats: seq[PlayerStats]): string =
         th ".head":
           say "Kills"
         th ".head":
+          say "Imposters"
+        th ".head":
+          say "Crew"
+        th ".head":
+          say "Vote player"
+        th ".head":
+          say "Vote skip"
+        th ".head":
+          say "Vote timeout"
+        th ".head":
           say "MMR"
         th ".head":
           say "Image"
       if stats.len == 0:
         tr:
           td ".row1 center":
-            colspan "9"
+            colspan "14"
             say "No player stats yet."
       for i, player in stats:
         let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
@@ -1911,6 +1960,16 @@ proc renderStatsTable(stats: seq[PlayerStats]): string =
             say $player.tasksSum
           td rowClass & " center":
             say $player.killsSum
+          td rowClass & " center":
+            say $player.imposterSum
+          td rowClass & " center":
+            say $player.crewSum
+          td rowClass & " center":
+            say $player.votePlayersSum
+          td rowClass & " center":
+            say $player.voteSkipSum
+          td rowClass & " center":
+            say $player.voteTimeoutSum
           td rowClass & " right nowrap":
             say fmtFloat(player.mmr)
           td rowClass:

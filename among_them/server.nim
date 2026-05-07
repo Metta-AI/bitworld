@@ -966,6 +966,9 @@ proc buildRewardPacket(sim: SimServer): string =
       result.addStatLine("games_crewmate", identity, account.gamesCrewmate)
       result.addStatLine("kills", identity, account.kills)
       result.addStatLine("tasks", identity, account.tasks)
+      result.addStatLine("vote_players", identity, account.votePlayers)
+      result.addStatLine("vote_skip", identity, account.voteSkip)
+      result.addStatLine("vote_timeout", identity, account.voteTimeout)
 
 proc runServerLoop*(
   host = DefaultHost,
