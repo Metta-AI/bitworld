@@ -14,8 +14,10 @@ const
   DefaultActiveGames = 2
   DefaultPlayersPerGame = 8
   DefaultTickMillis = 2000
+  CleanupDeadSeconds = 10 * 60
+  InspectBatchSize = 100
   DefaultMmr = 1000.0
-  MmrK = 16.0
+  MmrK = 64.0
   MinMmr = 100.0
   PriorityGameCount = 30
   PriorityBaseWeight = 9.0
@@ -37,6 +39,7 @@ const
   LogsPath = "/logs"
   ScoresPath = "/scores"
   ClientPath = "/client/"
+  PlayersTablePath = "/players/table"
   BulkStopPath = "/containers/stop"
   BulkRemovePath = "/containers/remove"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
@@ -54,6 +57,18 @@ const
   PlayerNameLabel = "bitworld.tournament_server.player_name"
   ReplayLabel = "bitworld.tournament_server.replay"
   ResultsLabel = "bitworld.tournament_server.results"
+  ContainerInspectFormat =
+    "{{.Name}}\t{{.State.Status}}\t" &
+    "{{.State.ExitCode}}\t{{.State.FinishedAt}}\t" &
+    "{{index .Config.Labels \"" & KindLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & PortLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & CreatedLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & GameIdLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & GameNameLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & PlayerLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & PlayerNameLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & ReplayLabel & "\"}}\t" &
+    "{{index .Config.Labels \"" & ResultsLabel & "\"}}"
   BotHost = "host.docker.internal"
   PageCss = """
 body {
@@ -209,6 +224,15 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 </script>
 """
+  PlayerTableScript = """
+<script>
+setInterval(function () {
+  fetch("/players/table").then(function (r) { return r.ok ? r.text() : ""; })
+  .then(function (h) { if (h.indexOf("<table") >= 0) document.getElementById("playerTable").innerHTML = h; })
+  .catch(function () {});
+}, 60000);
+</script>
+"""
 
 type
   TournamentError = object of CatchableError
@@ -250,6 +274,8 @@ type
   TournamentContainer = object
     name: string
     status: string
+    exitCode: int
+    finished: int64
     kind: ContainerKind
     port: int
     created: int64
@@ -333,6 +359,64 @@ proc parseInt64Safe(value: string): int64 =
   ## Parses an int64 and returns zero on failure.
   try:
     result = value.strip().parseBiggestInt().int64
+  except ValueError:
+    result = 0
+
+proc monthFromNumber(value: int): Month =
+  ## Converts a one-based month number into a Month enum.
+  case value
+  of 1:
+    mJan
+  of 2:
+    mFeb
+  of 3:
+    mMar
+  of 4:
+    mApr
+  of 5:
+    mMay
+  of 6:
+    mJun
+  of 7:
+    mJul
+  of 8:
+    mAug
+  of 9:
+    mSep
+  of 10:
+    mOct
+  of 11:
+    mNov
+  of 12:
+    mDec
+  else:
+    mJan
+
+proc parseDockerTime(value: string): int64 =
+  ## Parses a Docker timestamp into Unix seconds.
+  let text = value.strip()
+  if text.len < 20 or text.startsWith("0001-"):
+    return 0
+  try:
+    let
+      year = text[0 .. 3].parseInt()
+      month = text[5 .. 6].parseInt()
+      monthDay = text[8 .. 9].parseInt()
+      hour = text[11 .. 12].parseInt()
+      minute = text[14 .. 15].parseInt()
+      second = text[17 .. 18].parseInt()
+    if month < 1 or month > 12:
+      return 0
+    result = dateTime(
+      year,
+      monthFromNumber(month),
+      monthDay,
+      hour,
+      minute,
+      second,
+      0,
+      utc()
+    ).toTime().toUnix()
   except ValueError:
     result = 0
 
@@ -661,7 +745,7 @@ proc cleanFileName(value: string): string =
 proc splitInspectLine(line: string): seq[string] =
   ## Splits a Docker inspect line into tab-separated fields.
   result = line.split('\t')
-  while result.len < 11:
+  while result.len < 13:
     result.add("")
 
 proc parseContainerKind(value: string): ContainerKind =
@@ -671,38 +755,54 @@ proc parseContainerKind(value: string): ContainerKind =
   else:
     ManagedGame
 
-proc inspectContainer(name: string): TournamentContainer =
-  ## Reads one tournament-managed Docker container.
-  let format =
-    "{{.Name}}\t{{.State.Status}}\t" &
-    "{{index .Config.Labels \"" & KindLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & PortLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & CreatedLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & GameIdLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & GameNameLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & PlayerLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & PlayerNameLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & ReplayLabel & "\"}}\t" &
-    "{{index .Config.Labels \"" & ResultsLabel & "\"}}"
-  let line = requireDocker(@["inspect", "--format", format, name]).strip()
+proc parseContainerLine(line: string): TournamentContainer =
+  ## Parses one tab-separated Docker inspect line.
   let parts = splitInspectLine(line)
   result = TournamentContainer(
     name: parts[0].strip(chars = {'/'}),
     status: parts[1],
-    kind: parseContainerKind(parts[2]),
-    port: parseIntSafe(parts[3]),
-    created: parseInt64Safe(parts[4]),
-    gameId: parseIntSafe(parts[5]),
-    gameName: parts[6],
-    player: parts[7],
-    playerName: parts[8],
-    replay: parts[9],
-    results: parts[10]
+    exitCode: parseIntSafe(parts[2]),
+    finished: parseDockerTime(parts[3]),
+    kind: parseContainerKind(parts[4]),
+    port: parseIntSafe(parts[5]),
+    created: parseInt64Safe(parts[6]),
+    gameId: parseIntSafe(parts[7]),
+    gameName: parts[8],
+    player: parts[9],
+    playerName: parts[10],
+    replay: parts[11],
+    results: parts[12]
   )
+
+proc inspectContainer(name: string): TournamentContainer =
+  ## Reads one tournament-managed Docker container.
+  let line = requireDocker(@[
+    "inspect",
+    "--format",
+    ContainerInspectFormat,
+    name
+  ]).strip()
+  result = parseContainerLine(line)
+
+proc inspectContainerBatch(names: openArray[string]): seq[TournamentContainer] =
+  ## Reads a batch of tournament-managed Docker containers.
+  if names.len == 0:
+    return
+  let output = requireDocker(
+    @["inspect", "--format", ContainerInspectFormat] & @names
+  )
+  for line in output.splitLines():
+    let cleanLine = line.strip()
+    if cleanLine.len == 0:
+      continue
+    try:
+      result.add(parseContainerLine(cleanLine))
+    except CatchableError:
+      discard
 
 proc listContainers(): seq[TournamentContainer] =
   ## Lists Docker containers owned by the tournament server.
-  let names = requireDocker(@[
+  let output = requireDocker(@[
     "ps",
     "-a",
     "--filter",
@@ -710,13 +810,16 @@ proc listContainers(): seq[TournamentContainer] =
     "--format",
     "{{.Names}}"
   ])
-  for line in names.splitLines():
+  var names: seq[string]
+  for line in output.splitLines():
     let name = line.strip()
     if name.len > 0:
-      try:
-        result.add(inspectContainer(name))
-      except TournamentError:
-        discard
+      names.add(name)
+  var index = 0
+  while index < names.len:
+    let stop = min(index + InspectBatchSize, names.len)
+    result.add(inspectContainerBatch(names[index ..< stop]))
+    index = stop
   result.sort(proc(a, b: TournamentContainer): int =
     cmp(b.created, a.created)
   )
@@ -1243,6 +1346,39 @@ proc stopPlayersForStoppedGames(
     if player.status == "running" and player.gameName notin runningGames:
       discard dockerResult(@["stop", player.name])
 
+proc normalDeadExit(container: TournamentContainer): bool =
+  ## Returns true for normal exits that do not need debugging.
+  if container.exitCode == 0:
+    return true
+  container.exitCode == 143
+
+proc expiredDeadContainer(
+  container: TournamentContainer,
+  now: int64
+): bool =
+  ## Returns true when one dead container is old enough to remove.
+  container.status == "exited" and
+    container.finished > 0 and
+    now - container.finished >= CleanupDeadSeconds and
+    container.normalDeadExit()
+
+proc cleanupNormalDeadContainers(
+  containers: openArray[TournamentContainer]
+): int =
+  ## Removes old normally exited tournament containers.
+  let now = getTime().toUnix()
+  for container in containers:
+    if not container.expiredDeadContainer(now):
+      continue
+    let res = dockerResult(@["rm", container.name])
+    if res.code == 0:
+      inc result
+    else:
+      updateLastError(
+        "could not remove old container " & container.name & ": " &
+          res.output.strip()
+      )
+
 proc scoreNumber(items: JsonNode, index: int): float =
   ## Reads one numeric score array value.
   if index >= items.len:
@@ -1488,10 +1624,14 @@ proc tournamentTick(config: TournamentConfig) =
   let
     gameManifest = readGameManifest(config.manifestPath)
     playerManifests = selectedPlayers(config, gameManifest)
+  var
     containers = listContainers()
     games = listGames(containers)
     players = listPlayers(containers)
   stopPlayersForStoppedGames(games, players)
+  if cleanupNormalDeadContainers(containers) > 0:
+    containers = listContainers()
+    games = listGames(containers)
   var active = activeGameCount(games)
   while active < config.activeGames:
     startTournamentGame(config, gameManifest, playerManifests)
@@ -1782,6 +1922,7 @@ proc renderPage(request: Request, config: TournamentConfig): string =
         say PageCss
         say "</style>"
         say BulkScript
+        say PlayerTableScript
       body:
         tdiv ".page":
           table:
@@ -1815,7 +1956,9 @@ proc renderPage(request: Request, config: TournamentConfig): string =
             tr:
               td ".cat":
                 say "Players"
-          say statsHtml
+          tdiv:
+            id "playerTable"
+            say statsHtml
           p ".small":
             say " "
           say bulkHtml
@@ -1940,6 +2083,10 @@ proc indexHandler(request: Request, config: TournamentConfig) =
   ## Handles the index route.
   request.respondHtml(200, renderPage(request, config))
 
+proc playersTableHandler(request: Request, config: TournamentConfig) =
+  ## Handles the player stats table fragment route.
+  request.respondHtml(200, renderStatsTable(snapshotStats(config)))
+
 proc logsHandler(request: Request) =
   ## Handles Docker log viewer requests.
   let name = queryValue(request, "name")
@@ -2027,6 +2174,8 @@ proc httpHandlerUnsafe(request: Request, config: TournamentConfig) =
   try:
     if request.path == "/" and request.httpMethod == "GET":
       request.indexHandler(config)
+    elif request.path == PlayersTablePath and request.httpMethod == "GET":
+      request.playersTableHandler(config)
     elif request.path == LogsPath and request.httpMethod == "GET":
       request.logsHandler()
     elif request.path.startsWith(ClientPath) and request.httpMethod == "GET":
