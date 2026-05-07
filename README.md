@@ -98,7 +98,13 @@ The Among Them game includes a coworld package at
 before running the coworld certifier:
 
 ```sh
-docker build -f games_server/among_them.docker -t bitworld-among-them:latest .
-docker build -f games_server/nottoodumb.docker -t bitworld-nottoodumb:latest .
+docker build \
+  -f among_them/Dockerfile \
+  -t bitworld-among-them:latest \
+  .
+docker build \
+  -f among_them/players/nottoodumb/Dockerfile \
+  -t bitworld-nottoodumb:latest \
+  .
 coworld certify among_them/coworld_manifest.json
 ```

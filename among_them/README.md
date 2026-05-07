@@ -97,8 +97,14 @@ directory. From the repository root, build the local engine and player images
 before running the certifier:
 
 ```sh
-docker build -f games_server/among_them.docker -t bitworld-among-them:latest .
-docker build -f games_server/nottoodumb.docker -t bitworld-nottoodumb:latest .
+docker build \
+  -f among_them/Dockerfile \
+  -t bitworld-among-them:latest \
+  .
+docker build \
+  -f among_them/players/nottoodumb/Dockerfile \
+  -t bitworld-nottoodumb:latest \
+  .
 coworld certify among_them/coworld_manifest.json
 ```
 
