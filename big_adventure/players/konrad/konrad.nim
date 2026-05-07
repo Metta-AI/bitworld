@@ -173,11 +173,11 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
   elif spriteId >= SelectedPlayerSpriteBase and
       spriteId < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots:
     SpritePlayer
-  elif spriteId == MobSpriteId or lower == "ghost":
+  elif spriteId == MobSpriteId or lower.startsWith("ghost"):
     SpriteMob
-  elif spriteId == TrollSpriteId or lower == "troll":
+  elif spriteId == TrollSpriteId or lower.startsWith("troll"):
     SpriteTroll
-  elif spriteId == BossSpriteId or lower == "pigman":
+  elif spriteId == BossSpriteId or lower.startsWith("pigman"):
     SpriteBoss
   elif spriteId == CoinSpriteId or lower == "coin":
     SpriteCoin

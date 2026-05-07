@@ -28,6 +28,9 @@ const
   BubbleTextColor = 7'u8
   BubblePad = 2
   BubblePointerHeight = 3
+  MobLeftSpriteId = 313
+  TrollLeftSpriteId = 314
+  BossLeftSpriteId = 315
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
@@ -540,14 +543,27 @@ proc buildSpriteProtocolActorSprite(
         )
 
 proc buildSpriteProtocolRawSprite(
-  sprite: RgbaSprite
+  sprite: RgbaSprite,
+  flipX = false
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a raw global protocol sprite from a true-color sprite.
   result.width = sprite.width
   result.height = sprite.height
   result.pixels = newSeq[uint8](sprite.pixels.len)
-  for i in 0 ..< sprite.pixels.len:
-    result.pixels[i] = sprite.pixels[i]
+  if not flipX:
+    for i in 0 ..< sprite.pixels.len:
+      result.pixels[i] = sprite.pixels[i]
+    return
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let
+        sourceX = sprite.width - 1 - x
+        sourceIndex = sprite.rgbaSpriteIndex(sourceX, y)
+      result.pixels.copyRgbaPixel(
+        y * result.width + x,
+        sprite.pixels,
+        sourceIndex
+      )
 
 proc facedSize(sprite: RgbaSprite, facing: Facing): tuple[width, height: int] =
   ## Returns the rendered size for a facing rotation.
@@ -1064,6 +1080,17 @@ proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
 
+proc mobSpriteId(mob: Mob): int =
+  ## Returns the sprite id for one mob, including attack flips.
+  let flipLeft = mob.attackPhase != 0 and mob.attackFacing == FaceLeft
+  case mob.kind
+  of SnakeMob:
+    if flipLeft: MobLeftSpriteId else: MobSpriteId
+  of TrollMob:
+    if flipLeft: TrollLeftSpriteId else: TrollSpriteId
+  of BossMob:
+    if flipLeft: BossLeftSpriteId else: BossSpriteId
+
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
   ## Returns the player index for a selected player id.
   for i in 0 ..< sim.players.len:
@@ -1195,11 +1222,21 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
 
   let
     mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
+    mobLeft = buildSpriteProtocolRawSprite(sim.rgbaMobSprite, true)
     troll = buildSpriteProtocolRawSprite(sim.rgbaTrollSprite)
+    trollLeft = buildSpriteProtocolRawSprite(sim.rgbaTrollSprite, true)
     boss = buildSpriteProtocolRawSprite(sim.rgbaBossSprite)
+    bossLeft = buildSpriteProtocolRawSprite(sim.rgbaBossSprite, true)
     coin = buildSpriteProtocolRawSprite(sim.rgbaCoinSprite)
     heart = buildSpriteProtocolRawSprite(sim.rgbaHeartSprite)
   packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "ghost")
+  packet.addSprite(
+    MobLeftSpriteId,
+    mobLeft.width,
+    mobLeft.height,
+    mobLeft.pixels,
+    "ghost left"
+  )
   packet.addSprite(
     TrollSpriteId,
     troll.width,
@@ -1208,11 +1245,25 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     "troll"
   )
   packet.addSprite(
+    TrollLeftSpriteId,
+    trollLeft.width,
+    trollLeft.height,
+    trollLeft.pixels,
+    "troll left"
+  )
+  packet.addSprite(
     BossSpriteId,
     boss.width,
     boss.height,
     boss.pixels,
     "pigman"
+  )
+  packet.addSprite(
+    BossLeftSpriteId,
+    bossLeft.width,
+    bossLeft.height,
+    bossLeft.pixels,
+    "pigman left"
   )
   packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
   packet.addSprite(
@@ -1492,14 +1543,7 @@ proc addWorldObjects(
     let
       mob = sim.mobs[i]
       objectId = MobObjectBase + i
-      spriteId =
-        case mob.kind
-        of SnakeMob:
-          MobSpriteId
-        of TrollMob:
-          TrollSpriteId
-        of BossMob:
-          BossSpriteId
+      spriteId = mob.mobSpriteId()
     objects.addWorldSpriteObject(
       currentIds,
       objectId,

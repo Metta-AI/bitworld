@@ -1055,7 +1055,7 @@ def receive_updates(ws: websocket.WebSocket, bot: Bot) -> bool:
         while drained < MaxDrainMessages:
             try:
                 message = ws.recv()
-            except websocket.WebSocketTimeoutException:
+            except (BlockingIOError, websocket.WebSocketTimeoutException):
                 break
             if accept_server_message(message, bot):
                 result = True
