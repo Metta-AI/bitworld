@@ -100,9 +100,11 @@ def _load_bundle(path: str) -> CogamesBundleConfig:
 
 
 def _has_llm_key() -> bool:
-    """Best-effort check: do we have an OpenAI or Anthropic key set?"""
+    """Best-effort check: do we have any LLM credentials configured?"""
     return bool(
-        os.environ.get("OPENAI_API_KEY")
+        os.environ.get("AWS_PROFILE")            # Bedrock via SSO
+        or os.environ.get("AWS_ACCESS_KEY_ID")   # Bedrock via static creds
+        or os.environ.get("OPENAI_API_KEY")
         or os.environ.get("ANTHROPIC_API_KEY")
     )
 
