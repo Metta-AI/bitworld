@@ -286,6 +286,8 @@
             nimby
             git
             pkg-config
+            terraform
+            awscli2
           ] ++ runtimeLibs;
 
           LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
