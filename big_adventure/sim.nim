@@ -43,6 +43,7 @@ const
   TargetFps* = 60
   SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
+  RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8
   HealthBarGray* = 1'u8
   HealthBarGreen* = 10'u8

@@ -5,8 +5,8 @@ const
   GlobalClientRoute* = "/client/global.html"
   AdminClientRoute* = "/client/admin.html"
   RewardClientRoute* = "/client/rewards.html"
-  SnappyClientRoute* = "/client/snappyjs.min.js"
-  QrcodeClientRoute* = "/client/qrcode.min.js"
+  SnappyClientRoute* = "/snappyjs.min.js"
+  QrcodeClientRoute* = "/qrcode.min.js"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   AdminClientHtml* = "admin_client.html"
@@ -19,8 +19,21 @@ proc repoDir*(): string =
   currentSourcePath().parentDir().parentDir().parentDir()
 
 proc clientsDir*(): string =
-  ## Returns the shared clients directory.
-  repoDir() / "clients"
+  ## Returns the shared clients directory. Resolved at runtime relative
+  ## to CWD so it works both from the repo root (./clients) and from a
+  ## packaged install (../clients next to the chdir'd binary), mirroring
+  ## clientDataDir()'s strategy. OSError is trapped so callers can keep
+  ## a tight {.raises: [IOError].} contract.
+  when defined(emscripten):
+    "clients"
+  else:
+    try:
+      let cwd = getCurrentDir()
+      let sibling = cwd / ".." / "clients"
+      if dirExists(sibling): sibling
+      else: cwd / "clients"
+    except OSError:
+      "clients"
 
 proc clientHtmlPath*(route: string): string =
   ## Returns the local HTML file for a served client route.
