@@ -38,23 +38,27 @@ output "dns_firewall_rule_group_id" {
   value       = aws_route53_resolver_firewall_rule_group.bot_egress.id
 }
 
-# --- PHASE 2 Outputs ---
-# Uncomment as resources are added.
-#
-# output "ecs_cluster_arn" {
-#   description = "ECS cluster ARN for task launches"
-#   value       = aws_ecs_cluster.main.arn
-# }
-#
-# output "ecr_repository_urls" {
-#   description = "ECR repository URLs for bot images"
-#   value = {
-#     among_them = aws_ecr_repository.among_them.repository_url
-#     nottoodumb = aws_ecr_repository.nottoodumb.repository_url
-#   }
-# }
-#
-# output "replay_bucket_name" {
-#   description = "S3 bucket for game replays"
-#   value       = aws_s3_bucket.replays.bucket
-# }
+output "ecs_cluster_arn" {
+  description = "ECS cluster ARN for task launches"
+  value       = aws_ecs_cluster.main.arn
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name"
+  value       = aws_ecs_cluster.main.name
+}
+
+output "ecs_execution_role_arn" {
+  description = "IAM role ARN for Fargate to pull images and write logs"
+  value       = aws_iam_role.ecs_execution.arn
+}
+
+output "ecs_task_role_arn" {
+  description = "IAM role ARN assumed by running containers"
+  value       = aws_iam_role.ecs_task.arn
+}
+
+output "cloudwatch_log_group" {
+  description = "CloudWatch log group for ECS task logs"
+  value       = aws_cloudwatch_log_group.ecs_tasks.name
+}
