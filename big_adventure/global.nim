@@ -1,6 +1,7 @@
 import std/[algorithm, os, strutils]
 import supersnappy
 import protocol, sim
+import ../common/pixelfonts
 import ../common/server
 
 const
@@ -27,6 +28,21 @@ const
   BubbleTextColor = 7'u8
   BubblePad = 2
   BubblePointerHeight = 3
+  CoinsHudSpriteId = PlayerHudSpriteId
+  LivesHudSpriteId = PlayerHudSpriteId + 1
+  StatusHudSpriteId = PlayerHudSpriteId + 2
+  CoinsHudObjectId = PlayerHudObjectId
+  LivesHudObjectId = PlayerHudObjectId + 1
+  StatusHudObjectId = PlayerHudObjectId + 2
+  HudGap = 1
+  HealthSprite5Base = 700
+  HealthSprite10Base = 710
+  PlayerHealthObjectBase = 10000
+  MobHealthObjectBase = 11000
+  HealthBarWidth = 18
+  HealthBarHeight = 5
+  HealthBarPad = 1
+  HealthBarGap = 3
   UiColors = [
     (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8),
     (r: 20'u8, g: 24'u8, b: 30'u8, a: 235'u8),
@@ -47,6 +63,11 @@ const
   ]
   ActorOutlineColor = (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8)
   SelectedOutlineColor = (r: 255'u8, g: 222'u8, b: 74'u8, a: 255'u8)
+  HealthFrameColor = (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8)
+  HealthBackColor = (r: 32'u8, g: 36'u8, b: 42'u8, a: 235'u8)
+  HealthGreenColor = (r: 86'u8, g: 210'u8, b: 122'u8, a: 255'u8)
+  HealthYellowColor = (r: 255'u8, g: 222'u8, b: 74'u8, a: 255'u8)
+  HealthRedColor = (r: 224'u8, g: 64'u8, b: 79'u8, a: 255'u8)
   PlayerTintColors = [
     (r: 229'u8, g: 64'u8, b: 88'u8, a: 255'u8),
     (r: 252'u8, g: 175'u8, b: 62'u8, a: 255'u8),
@@ -56,6 +77,16 @@ const
     (r: 155'u8, g: 118'u8, b: 255'u8, a: 255'u8),
     (r: 235'u8, g: 98'u8, b: 178'u8, a: 255'u8),
     (r: 241'u8, g: 244'u8, b: 248'u8, a: 255'u8)
+  ]
+  PlayerTintNames = [
+    "red",
+    "orange",
+    "yellow",
+    "green",
+    "blue",
+    "purple",
+    "pink",
+    "white"
   ]
 
 var TransportSheet: Sprite
@@ -77,6 +108,8 @@ type
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    hudCoins*: int
+    hudLives*: int
 
   WorldSpriteObject = object
     id, x, y, spriteId, sortY: int
@@ -90,7 +123,8 @@ proc initGlobalViewerState*(): GlobalViewerState =
 
 proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
-  discard
+  result.hudCoins = -1
+  result.hudLives = -1
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   ## Writes one generated UI color as a global protocol RGBA pixel.
@@ -165,6 +199,10 @@ proc playerTintColor(
 ): tuple[r, g, b, a: uint8] =
   ## Returns the true-color tint for one player slot.
   PlayerTintColors[playerIndex mod PlayerTintColors.len]
+
+proc playerTintName(playerIndex: int): string =
+  ## Returns the label color name for one player slot.
+  PlayerTintNames[playerIndex mod PlayerTintNames.len]
 
 proc transportSheet(): Sprite =
   ## Returns the cached transport icon sheet.
@@ -248,19 +286,57 @@ proc addDeleteObject(packet: var seq[uint8], objectId: int) =
   packet.addU8(0x03)
   packet.addU16(objectId)
 
+proc objectVisible(
+  x,
+  y,
+  width,
+  height,
+  viewportWidth,
+  viewportHeight: int
+): bool =
+  ## Returns true when an object intersects the current viewport.
+  if width <= 0 or height <= 0:
+    return false
+  x < viewportWidth and
+    y < viewportHeight and
+    x + width > 0 and
+    y + height > 0
+
 proc addWorldSpriteObject(
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
-  objectId, x, y, spriteId, spriteHeight: int
+  objectId,
+  x,
+  y,
+  spriteId,
+  spriteWidth,
+  spriteHeight,
+  viewportWidth,
+  viewportHeight: int,
+  sortYOverride = high(int)
 ) =
   ## Queues one world sprite object for game-side depth sorting.
+  if not objectVisible(
+    x,
+    y,
+    spriteWidth,
+    spriteHeight,
+    viewportWidth,
+    viewportHeight
+  ):
+    return
+  let objectSortY =
+    if sortYOverride == high(int):
+      y + spriteHeight
+    else:
+      sortYOverride
   currentIds.add(objectId)
   objects.add(WorldSpriteObject(
     id: objectId,
     x: x,
     y: y,
     spriteId: spriteId,
-    sortY: y + spriteHeight
+    sortY: objectSortY
   ))
 
 proc flushWorldSpriteObjects(
@@ -563,15 +639,14 @@ proc putTextSpritePixel(
 proc blitGlyph(
   target: var seq[uint8],
   targetWidth, targetHeight: int,
-  sprite: Sprite,
+  glyph: PixelGlyph,
   baseX, baseY: int,
   color: uint8
 ) =
   ## Blits a single-color glyph into protocol pixels.
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      if sprite.pixels[sprite.spriteIndex(x, y)] ==
-          TransparentColorIndex:
+  for y in 0 ..< glyph.height:
+    for x in 0 ..< glyph.width:
+      if not glyph.glyphPixel(x, y):
         continue
       target.putTextSpritePixel(
         targetWidth,
@@ -592,30 +667,16 @@ proc blitSmallText(
   ## Blits small text into protocol pixels.
   var x = baseX
   for ch in text:
-    if ch == ' ':
-      x += 6
-      continue
-    if ch >= '0' and ch <= '9':
-      target.blitGlyph(
-        targetWidth,
-        targetHeight,
-        sim.digitSprites[ord(ch) - ord('0')],
-        x,
-        baseY,
-        color
-      )
-    else:
-      let letter = letterIndex(ch)
-      if letter >= 0 and letter < sim.letterSprites.len:
-        target.blitGlyph(
-          targetWidth,
-          targetHeight,
-          sim.letterSprites[letter],
-          x,
-          baseY,
-          color
-        )
-    x += 6
+    let glyph = sim.textFont.glyphAt(ch)
+    target.blitGlyph(
+      targetWidth,
+      targetHeight,
+      glyph,
+      x,
+      baseY,
+      color
+    )
+    x += sim.textFont.glyphAdvance(ch)
 
 proc buildSpriteProtocolTextSprite(
   sim: SimServer,
@@ -623,55 +684,26 @@ proc buildSpriteProtocolTextSprite(
   color: uint8
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a transparent multi-line text sprite.
+  let lineHeight = sim.textFont.lineHeight()
   result.width = 1
   for line in lines:
-    result.width = max(result.width, line.len * 6)
-  result.height = max(1, lines.len * 8 - 1)
+    result.width = max(result.width, sim.textFont.textWidth(line))
+  result.height = max(1, lines.len * lineHeight - sim.textFont.spacing)
   result.pixels = newRgbaPixels(result.width, result.height)
   for lineIndex, line in lines:
-    let baseY = lineIndex * 8
+    let baseY = lineIndex * lineHeight
     var baseX = 0
     for ch in line:
-      if ch == ' ':
-        baseX += 6
-        continue
-      if ch >= '0' and ch <= '9':
-        let sprite = sim.digitSprites[ord(ch) - ord('0')]
-        for y in 0 ..< sprite.height:
-          for x in 0 ..< sprite.width:
-            if sprite.pixels[sprite.spriteIndex(x, y)] !=
-                TransparentColorIndex:
-              result.pixels.putTextSpritePixel(
-                result.width,
-                result.height,
-                baseX + x,
-                baseY + y,
-                color
-              )
-      else:
-        let letter = letterIndex(ch)
-        if letter >= 0 and letter < sim.letterSprites.len:
-          let sprite = sim.letterSprites[letter]
-          for y in 0 ..< sprite.height:
-            for x in 0 ..< sprite.width:
-              if sprite.pixels[sprite.spriteIndex(x, y)] !=
-                  TransparentColorIndex:
-                result.pixels.putTextSpritePixel(
-                  result.width,
-                  result.height,
-                  baseX + x,
-                  baseY + y,
-                  color
-                )
-      baseX += 6
-
-proc asciiIndex(ch: char): int =
-  ## Returns the shared ASCII glyph index.
-  ord(ch) - ord(' ')
-
-proc asciiTextWidth(text: string): int =
-  ## Returns the width of one fixed-width ASCII line.
-  text.len * AsciiGlyphW
+      let glyph = sim.textFont.glyphAt(ch)
+      result.pixels.blitGlyph(
+        result.width,
+        result.height,
+        glyph,
+        baseX,
+        baseY,
+        color
+      )
+      baseX += sim.textFont.glyphAdvance(ch)
 
 proc lineCountForText(text: string): int =
   ## Returns the wrapped line count for one chat message.
@@ -708,6 +740,101 @@ proc strokeRect(
     pixels.putRgbaPixel(py * width + x, color)
     pixels.putRgbaPixel(py * width + x + w - 1, color)
 
+proc fillRgbaRect(
+  pixels: var seq[uint8],
+  width, x, y, w, h: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Fills a true-color protocol pixel rectangle.
+  for py in y ..< y + h:
+    for px in x ..< x + w:
+      pixels.putRgbaPixel(py * width + px, color)
+
+proc strokeRgbaRect(
+  pixels: var seq[uint8],
+  width, x, y, w, h: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Strokes a true-color protocol pixel rectangle.
+  for px in x ..< x + w:
+    pixels.putRgbaPixel(y * width + px, color)
+    pixels.putRgbaPixel((y + h - 1) * width + px, color)
+  for py in y ..< y + h:
+    pixels.putRgbaPixel(py * width + x, color)
+    pixels.putRgbaPixel(py * width + x + w - 1, color)
+
+proc healthSpriteMaximum(maximum: int): int =
+  ## Returns the shared health sprite denominator for one actor.
+  if maximum <= MaxPlayerLives:
+    MaxPlayerLives
+  else:
+    BossHp
+
+proc healthSpriteId(current, maximum: int): int =
+  ## Returns the shared health sprite id for one health value.
+  let spriteMaximum = maximum.healthSpriteMaximum()
+  if spriteMaximum == MaxPlayerLives:
+    HealthSprite5Base + clamp(current, 0, MaxPlayerLives)
+  else:
+    HealthSprite10Base + clamp(current, 0, BossHp)
+
+proc healthSpriteLabel(current, maximum: int): string =
+  ## Returns the label for one generated health sprite.
+  "health " & $current & "/" & $maximum
+
+proc healthFillColor(
+  current, maximum: int
+): tuple[r, g, b, a: uint8] =
+  ## Returns the fill color for one health value.
+  if maximum <= 0:
+    return HealthRedColor
+  let ratio = current * 100 div maximum
+  if ratio > 50:
+    HealthGreenColor
+  elif ratio > 20:
+    HealthYellowColor
+  else:
+    HealthRedColor
+
+proc buildSpriteProtocolHealthSprite(
+  current, maximum: int
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds one small true-color health bar sprite.
+  let
+    value = clamp(current, 0, maximum)
+    innerWidth = HealthBarWidth - HealthBarPad * 2
+    innerHeight = HealthBarHeight - HealthBarPad * 2
+  result.width = HealthBarWidth
+  result.height = HealthBarHeight
+  result.pixels = newRgbaPixels(result.width, result.height)
+  result.pixels.strokeRgbaRect(
+    result.width,
+    0,
+    0,
+    result.width,
+    result.height,
+    HealthFrameColor
+  )
+  result.pixels.fillRgbaRect(
+    result.width,
+    HealthBarPad,
+    HealthBarPad,
+    innerWidth,
+    innerHeight,
+    HealthBackColor
+  )
+  if maximum <= 0 or value <= 0:
+    return
+  let fillWidth = max(1, value * innerWidth div maximum)
+  result.pixels.fillRgbaRect(
+    result.width,
+    HealthBarPad,
+    HealthBarPad,
+    fillWidth,
+    innerHeight,
+    healthFillColor(value, maximum)
+  )
+
 proc blitAsciiText(
   sim: SimServer,
   target: var seq[uint8],
@@ -716,20 +843,19 @@ proc blitAsciiText(
   baseX, baseY: int,
   color: uint8
 ) =
-  ## Blits fixed-width ASCII text into protocol pixels.
+  ## Blits Tiny5 ASCII text into protocol pixels.
   var offsetX = 0
   for ch in text:
-    let index = ch.asciiIndex()
-    if index >= 0 and index < sim.asciiSprites.len:
-      target.blitGlyph(
-        targetWidth,
-        targetHeight,
-        sim.asciiSprites[index],
-        baseX + offsetX,
-        baseY,
-        color
-      )
-    offsetX += AsciiGlyphW
+    let glyph = sim.textFont.glyphAt(ch)
+    target.blitGlyph(
+      targetWidth,
+      targetHeight,
+      glyph,
+      baseX + offsetX,
+      baseY,
+      color
+    )
+    offsetX += sim.textFont.glyphAdvance(ch)
 
 proc buildSpriteProtocolBubbleSprite(
   sim: SimServer,
@@ -737,15 +863,17 @@ proc buildSpriteProtocolBubbleSprite(
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds one speech bubble sprite.
   let lineCount = text.lineCountForText()
-  var longestLineWidth = AsciiGlyphW
+  var longestLineWidth = sim.textFont.glyphAdvance('?')
   for lineIndex in 0 ..< lineCount:
     longestLineWidth = max(
       longestLineWidth,
-      text.sliceMessageLine(lineIndex).asciiTextWidth()
+      sim.textFont.textWidth(text.sliceMessageLine(lineIndex))
     )
   result.width = longestLineWidth + BubblePad * 2
+  let lineHeight = sim.textFont.lineHeight()
   result.height =
-    lineCount * AsciiGlyphH + BubblePad * 2 + BubblePointerHeight
+    lineCount * lineHeight - sim.textFont.spacing +
+    BubblePad * 2 + BubblePointerHeight
   result.pixels = newRgbaPixels(result.width, result.height)
   let bodyHeight = result.height - BubblePointerHeight
   result.pixels.fillRect(
@@ -780,7 +908,7 @@ proc buildSpriteProtocolBubbleSprite(
       result.height,
       text.sliceMessageLine(lineIndex),
       BubblePad,
-      BubblePad + lineIndex * AsciiGlyphH,
+      BubblePad + lineIndex * lineHeight,
       BubbleTextColor
     )
 
@@ -910,6 +1038,20 @@ proc playerSpriteId(
     base = if selected: SelectedPlayerSpriteBase else: PlayerSpriteBase
   base + colorIndex * 8 + ord(form) * 4 + ord(facing)
 
+proc playerSpriteLabel(
+  playerIndex: int,
+  form: PlayerForm,
+  selected: bool
+): string =
+  ## Returns the stable label for one colored adventurer sprite.
+  result =
+    if selected:
+      "selected player "
+    else:
+      "player "
+  result.add(playerIndex.playerTintName())
+  result.add($(ord(form) + 1))
+
 proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
   ## Returns the sprite id for one adventurer attack swish facing.
   SwooshSpriteBase + ord(form) * 4 + ord(facing)
@@ -1026,13 +1168,15 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
           playerSpriteId(i, form, false, facing),
           playerSprite.width,
           playerSprite.height,
-          playerSprite.pixels
+          playerSprite.pixels,
+          playerSpriteLabel(i, form, false)
         )
         packet.addSprite(
           playerSpriteId(i, form, true, facing),
           selectedPlayerSprite.width,
           selectedPlayerSprite.height,
-          selectedPlayerSprite.pixels
+          selectedPlayerSprite.pixels,
+          playerSpriteLabel(i, form, true)
         )
 
   for form in PlayerForm:
@@ -1078,6 +1222,24 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     heart.pixels,
     "heart"
   )
+  for current in 0 .. MaxPlayerLives:
+    let health = buildSpriteProtocolHealthSprite(current, MaxPlayerLives)
+    packet.addSprite(
+      healthSpriteId(current, MaxPlayerLives),
+      health.width,
+      health.height,
+      health.pixels,
+      healthSpriteLabel(current, MaxPlayerLives)
+    )
+  for current in 0 .. BossHp:
+    let health = buildSpriteProtocolHealthSprite(current, BossHp)
+    packet.addSprite(
+      healthSpriteId(current, BossHp),
+      health.width,
+      health.height,
+      health.pixels,
+      healthSpriteLabel(current, BossHp)
+    )
   for kind in TerrainKind:
     let prop = buildSpriteProtocolRawSprite(sim.terrainPropRgbaSprite(kind))
     packet.addSprite(
@@ -1142,12 +1304,58 @@ proc attackObjectId(player: Actor): int =
   ## Returns the object id for one player's attack swoosh.
   AttackObjectBase + player.id
 
+proc playerHealthObjectId(player: Actor): int =
+  ## Returns the object id for one player's health bar.
+  PlayerHealthObjectBase + player.id
+
+proc mobHealthObjectId(index: int): int =
+  ## Returns the object id for one mob health bar.
+  MobHealthObjectBase + index
+
+proc addHealthObject(
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  objectId,
+  actorX,
+  actorY,
+  actorWidth,
+  actorHeight,
+  current,
+  maximum,
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds one damaged actor health bar object.
+  if maximum <= 0 or current >= maximum:
+    return
+  let
+    x = actorX + actorWidth div 2 - HealthBarWidth div 2 - cameraX
+    y = actorY - HealthBarHeight - HealthBarGap - cameraY
+    sortY = actorY + actorHeight - cameraY + 1
+  objects.addWorldSpriteObject(
+    currentIds,
+    objectId,
+    x,
+    y,
+    healthSpriteId(current, maximum),
+    HealthBarWidth,
+    HealthBarHeight,
+    viewportWidth,
+    viewportHeight,
+    sortY
+  )
+
 proc addSpeechBubbles(
   sim: SimServer,
   packet: var seq[uint8],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
-  cameraX, cameraY: int
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
 ) =
   ## Adds speech bubble sprites above players.
   for player in sim.players:
@@ -1158,10 +1366,14 @@ proc addSpeechBubbles(
       objectId = player.chatObjectId()
       spriteId = player.chatSpriteId()
       sprite = sim.playerSpriteFor(player)
+      healthOffset =
+        if player.lives < MaxPlayerLives:
+          HealthBarHeight + HealthBarGap
+        else:
+          0
       centerX = player.x + sprite.width div 2 - cameraX
       x = centerX - bubble.width div 2
-      y = player.y - bubble.height - 4 - cameraY
-    currentIds.add(objectId)
+      y = player.y - bubble.height - 4 - healthOffset - cameraY
     packet.addSprite(
       spriteId,
       bubble.width,
@@ -1175,7 +1387,10 @@ proc addSpeechBubbles(
       x,
       y,
       spriteId,
-      bubble.height
+      bubble.width,
+      bubble.height,
+      viewportWidth,
+      viewportHeight
     )
 
 proc addAttackObjects(
@@ -1183,7 +1398,10 @@ proc addAttackObjects(
   packet: var seq[uint8],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
-  cameraX, cameraY: int
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
 ) =
   ## Adds active attack swoosh objects.
   for player in sim.players:
@@ -1198,14 +1416,20 @@ proc addAttackObjects(
       hit.x - cameraX,
       hit.y - cameraY,
       swooshSpriteId(player.form, player.facing),
-      hit.h
+      hit.w,
+      hit.h,
+      viewportWidth,
+      viewportHeight
     )
 
 proc addTerrainObjects(
   sim: SimServer,
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
-  cameraX, cameraY: int
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
 ) =
   ## Adds terrain prop objects so they share world sprite sorting.
   for i in 0 ..< sim.terrainProps.len:
@@ -1219,7 +1443,10 @@ proc addTerrainObjects(
       prop.tx * WorldTileSize - cameraX,
       prop.ty * WorldTileSize - cameraY,
       terrainSpriteId(prop.kind),
-      sprite.height
+      sprite.width,
+      sprite.height,
+      viewportWidth,
+      viewportHeight
     )
 
 proc addWorldObjects(
@@ -1227,11 +1454,20 @@ proc addWorldObjects(
   packet: var seq[uint8],
   currentIds: var seq[int],
   cameraX, cameraY: int,
+  viewportWidth,
+  viewportHeight: int,
   selectedPlayerId = -1
 ) =
   ## Adds pickups, mobs, players, attacks, and speech bubbles.
   var objects: seq[WorldSpriteObject] = @[]
-  sim.addTerrainObjects(objects, currentIds, cameraX, cameraY)
+  sim.addTerrainObjects(
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
 
   for i in 0 ..< sim.pickups.len:
     let
@@ -1246,7 +1482,10 @@ proc addWorldObjects(
       pickup.x - cameraX,
       pickup.y - cameraY,
       spriteId,
-      sprite.height
+      sprite.width,
+      sprite.height,
+      viewportWidth,
+      viewportHeight
     )
 
   for i in 0 ..< sim.mobs.len:
@@ -1267,7 +1506,24 @@ proc addWorldObjects(
       mob.x - cameraX,
       mob.y - cameraY,
       spriteId,
-      mob.sprite.height
+      mob.sprite.width,
+      mob.sprite.height,
+      viewportWidth,
+      viewportHeight
+    )
+    objects.addHealthObject(
+      currentIds,
+      mobHealthObjectId(i),
+      mob.x,
+      mob.y,
+      mob.sprite.width,
+      mob.sprite.height,
+      mob.hp,
+      mob.mobMaxHp(),
+      cameraX,
+      cameraY,
+      viewportWidth,
+      viewportHeight
     )
 
   for i in 0 ..< sim.players.len:
@@ -1275,6 +1531,7 @@ proc addWorldObjects(
       player = sim.players[i]
       selected = player.id == selectedPlayerId
       objectId = player.playerObjectId()
+      playerSprite = sim.playerRgbaSpriteFor(player)
     if player.lives <= 0:
       continue
     objects.addWorldSpriteObject(
@@ -1288,45 +1545,105 @@ proc addWorldObjects(
         selected,
         player.facing
       ),
-      sim.playerRgbaSpriteFor(player).height + 2
+      playerSprite.width + 2,
+      playerSprite.height + 2,
+      viewportWidth,
+      viewportHeight
+    )
+    objects.addHealthObject(
+      currentIds,
+      player.playerHealthObjectId(),
+      player.x - 1,
+      player.y - 1,
+      playerSprite.width + 2,
+      playerSprite.height + 2,
+      player.lives,
+      MaxPlayerLives,
+      cameraX,
+      cameraY,
+      viewportWidth,
+      viewportHeight
     )
 
-  sim.addAttackObjects(packet, objects, currentIds, cameraX, cameraY)
-  sim.addSpeechBubbles(packet, objects, currentIds, cameraX, cameraY)
+  sim.addAttackObjects(
+    packet,
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  sim.addSpeechBubbles(
+    packet,
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
   packet.flushWorldSpriteObjects(objects)
 
 proc addPlayerHud(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
-  playerIndex: int
+  playerIndex: int,
+  state: PlayerViewerState,
+  nextState: var PlayerViewerState
 ) =
   ## Adds the local player HUD to a sprite-player view.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let
     player = sim.players[playerIndex]
-    lines = [
-      "COINS " & $min(player.coins, 99),
-      "LIVES " & $max(player.lives, 0)
-    ]
-    text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
-  currentIds.add(PlayerHudObjectId)
-  packet.addSprite(
-    PlayerHudSpriteId,
-    text.width,
-    text.height,
-    text.pixels,
-    "hud"
-  )
+    coins = max(player.coins, 0)
+    lives = max(player.lives, 0)
+  currentIds.add(CoinsHudObjectId)
+  if state.hudCoins != coins:
+    let coinText = sim.buildSpriteProtocolTextSprite(
+      ["COINS " & $coins],
+      2'u8
+    )
+    packet.addSprite(
+      CoinsHudSpriteId,
+      coinText.width,
+      coinText.height,
+      coinText.pixels,
+      "coins " & $coins
+    )
   packet.addObject(
-    PlayerHudObjectId,
+    CoinsHudObjectId,
     2,
     2,
     high(int16),
     MapLayerId,
-    PlayerHudSpriteId
+    CoinsHudSpriteId
   )
+  currentIds.add(LivesHudObjectId)
+  if state.hudLives != lives:
+    let livesText = sim.buildSpriteProtocolTextSprite(
+      ["LIVES " & $lives],
+      2'u8
+    )
+    packet.addSprite(
+      LivesHudSpriteId,
+      livesText.width,
+      livesText.height,
+      livesText.pixels,
+      "lives " & $lives
+    )
+  packet.addObject(
+    LivesHudObjectId,
+    2,
+    2 + sim.textFont.height + HudGap,
+    high(int16),
+    MapLayerId,
+    LivesHudSpriteId
+  )
+  nextState.hudCoins = coins
+  nextState.hudLives = lives
 
 proc addPlayerStatus(
   sim: SimServer,
@@ -1339,21 +1656,21 @@ proc addPlayerStatus(
     text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
     x = max(0, (ScreenWidth - text.width) div 2)
     y = max(0, (ScreenHeight - text.height) div 2)
-  currentIds.add(PlayerHudObjectId)
+  currentIds.add(StatusHudObjectId)
   packet.addSprite(
-    PlayerHudSpriteId,
+    StatusHudSpriteId,
     text.width,
     text.height,
     text.pixels,
     "status"
   )
   packet.addObject(
-    PlayerHudObjectId,
+    StatusHudObjectId,
     x,
     y,
     high(int16),
     MapLayerId,
-    PlayerHudSpriteId
+    StatusHudSpriteId
   )
 
 proc buildSpriteProtocolPlayerUpdates*(
@@ -1396,9 +1713,11 @@ proc buildSpriteProtocolPlayerUpdates*(
       result,
       currentIds,
       cameraX,
-      cameraY
+      cameraY,
+      ScreenWidth,
+      ScreenHeight
     )
-    sim.addPlayerHud(result, currentIds, playerIndex)
+    sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
     if player.lives <= 0:
       sim.addPlayerStatus(result, currentIds, ["GAME", "OVER"])
 
@@ -1466,6 +1785,8 @@ proc buildSpriteProtocolUpdates*(
     currentIds,
     0,
     0,
+    WorldWidthPixels,
+    WorldHeightPixels,
     nextState.selectedPlayerId
   )
 

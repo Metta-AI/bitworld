@@ -1,7 +1,7 @@
 import std/[json, os, random]
 import bitworld/aseprite
 import pixie, protocol
-import ../common/server
+import ../common/[pixelfonts, server]
 
 const
   ArtCellSize* = 32
@@ -10,12 +10,12 @@ const
   GameName* = "big_adventure"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
-  ReplayFormatVersion* = 2'u16
+  ReplayFormatVersion* = 3'u16
   ReplayTickHashRecord* = 0x01'u8
   ReplayInputRecord* = 0x02'u8
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
-  ReplayFps* = 24
+  ReplayFps* = 60
   WorldWidthTiles* = 32
   WorldHeightTiles* = 32
   WorldWidthPixels* = WorldWidthTiles * WorldTileSize
@@ -25,6 +25,7 @@ const
   MinMobSpacing* = 24
   MinPlayerSpawnSpacing* = 24
   SwooshDistanceDivisor* = 3
+  SwooshPlacementOffset* = 6
   MotionScale* = 256
   Accel* = 38
   FrictionNum* = 200
@@ -37,8 +38,9 @@ const
   SnakeHp* = 3
   TrollHp* = 5
   BossHp* = 10
-  BossCoinValue* = 10
-  TargetFps* = 24
+  TrollCoinValue* = 10
+  BossCoinValue* = 100
+  TargetFps* = 60
   SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   BackgroundColor* = 12'u8
@@ -46,7 +48,6 @@ const
   HealthBarGreen* = 10'u8
   HealthBarYellow* = 8'u8
   HealthBarRed* = 3'u8
-  BossHealInterval* = 50
   RadarRange* = 128
   RadarColorSnake* = 10'u8
   RadarColorBoss* = 3'u8
@@ -54,9 +55,6 @@ const
   MessageCharsPerLine* = 16
   MessageLineCount* = 3
   MessageMaxChars* = MessageCharsPerLine * MessageLineCount
-  AsciiGlyphW* = 7
-  AsciiGlyphH* = 9
-  AsciiRowStride* = 9
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -97,6 +95,7 @@ const
   AttackObjectBase* = 6000
   PlayerHudObjectId* = 7000
   TerrainObjectBase* = 8000
+  CoopAttackWindow* = TargetFps
 
 type
   PlayerForm* = enum
@@ -175,6 +174,8 @@ type
     attackCooldown*: int
     attackPhase*: int
     attackFacing*: Facing
+    attackerIds*: seq[int]
+    attackerTicks*: seq[int]
 
   TerrainProp* = object
     tx*, ty*: int
@@ -209,9 +210,7 @@ type
     coinSprite*: Sprite
     rgbaCoinSprite*: RgbaSprite
     coinBounds*: SpriteBounds
-    digitSprites*: array[10, Sprite]
-    letterSprites*: seq[Sprite]
-    asciiSprites*: seq[Sprite]
+    textFont*: PixelFont
     fb*: Framebuffer
     rng*: Rand
     seed*: int
@@ -239,39 +238,16 @@ proc sheetPath*(): string =
 proc loadClientPalette*() =
   loadPalette(clientDataDir() / "pallete.png")
 
-proc loadClientDigitSprites*(): array[10, Sprite] =
-  loadDigitSprites(clientDataDir() / "numbers.png")
+proc tiny5Path*(): string =
+  ## Returns the Tiny5 pixel font path.
+  let path = dataDir() / "tiny5.aseprite"
+  if fileExists(path):
+    return path
+  repoDir() / "among_them" / "tiny5.aseprite"
 
-proc loadClientLetterSprites*(): seq[Sprite] =
-  loadLetterSprites(clientDataDir() / "letters.png")
-
-proc loadClientAsciiSprites*(): seq[Sprite] =
-  ## Loads the shared printable ASCII sprite sheet.
-  let path = clientDataDir() / "ascii.png"
-  if not fileExists(path):
-    raise newException(IOError, "Missing ASCII sprite sheet: " & path)
-  let
-    image = readImage(path)
-    cols = image.width div AsciiGlyphW
-    rows = image.height div AsciiRowStride
-    background = nearestPaletteIndex(image[0, 0])
-  result = @[]
-  for row in 0 ..< rows:
-    for col in 0 ..< cols:
-      var sprite = Sprite(width: AsciiGlyphW, height: AsciiGlyphH)
-      sprite.pixels = newSeq[uint8](AsciiGlyphW * AsciiGlyphH)
-      let
-        baseX = col * AsciiGlyphW
-        baseY = row * AsciiRowStride
-      for y in 0 ..< AsciiGlyphH:
-        for x in 0 ..< AsciiGlyphW:
-          let colorIndex = nearestPaletteIndex(image[baseX + x, baseY + y])
-          sprite.pixels[sprite.spriteIndex(x, y)] =
-            if colorIndex == background:
-              TransparentColorIndex
-            else:
-              colorIndex
-      result.add(sprite)
+proc loadTiny5Font*(): PixelFont =
+  ## Loads the shared Tiny5 variable-width pixel font.
+  readPixelFont(tiny5Path())
 
 proc rgbaSpriteIndex*(sprite: RgbaSprite, x, y: int): int =
   ## Returns the byte offset for one RGBA sprite pixel.
@@ -772,6 +748,63 @@ proc mobMaxHp*(mob: Mob): int =
   of BossMob:
     BossHp
 
+proc requiredAttackerCount(kind: MobKind): int =
+  ## Returns the distinct player count required to damage one mob kind.
+  case kind
+  of SnakeMob:
+    1
+  of TrollMob:
+    2
+  of BossMob:
+    3
+
+proc playerIdIsAlive(players: openArray[Actor], playerId: int): bool =
+  ## Returns true when a player id belongs to a living player.
+  for player in players:
+    if player.id == playerId and player.lives > 0:
+      return true
+  false
+
+proc pruneMobAttackers(
+  mob: var Mob,
+  players: openArray[Actor],
+  tickCount: int
+) =
+  ## Removes stale or inactive attackers from one mob.
+  let count = min(mob.attackerIds.len, mob.attackerTicks.len)
+  var writeIndex = 0
+  for i in 0 ..< count:
+    if tickCount - mob.attackerTicks[i] > CoopAttackWindow:
+      continue
+    if not players.playerIdIsAlive(mob.attackerIds[i]):
+      continue
+    if writeIndex != i:
+      mob.attackerIds[writeIndex] = mob.attackerIds[i]
+      mob.attackerTicks[writeIndex] = mob.attackerTicks[i]
+    inc writeIndex
+  mob.attackerIds.setLen(writeIndex)
+  mob.attackerTicks.setLen(writeIndex)
+
+proc rememberMobAttacker(mob: var Mob, playerId, tickCount: int) =
+  ## Records one recent player attacker on a mob.
+  for i in 0 ..< min(mob.attackerIds.len, mob.attackerTicks.len):
+    if mob.attackerIds[i] == playerId:
+      mob.attackerTicks[i] = tickCount
+      return
+  mob.attackerIds.add(playerId)
+  mob.attackerTicks.add(tickCount)
+
+proc refreshCoopState(
+  mob: var Mob,
+  players: openArray[Actor],
+  tickCount: int
+) =
+  ## Heals cooperative mobs while they lack enough recent attackers.
+  mob.pruneMobAttackers(players, tickCount)
+  if mob.kind != SnakeMob and
+      mob.attackerIds.len < mob.kind.requiredAttackerCount():
+    mob.hp = mob.mobMaxHp()
+
 proc findPlayerSpawn*(
   sim: SimServer,
   bounds: SpriteBounds,
@@ -910,9 +943,7 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.heartSprite = sheet.sheetSprite(1, 4)
   result.rgbaHeartSprite = sheet.sheetRgbaSprite(1, 4)
   result.heartBounds = result.rgbaHeartSprite.visibleBounds()
-  result.digitSprites = loadClientDigitSprites()
-  result.letterSprites = loadClientLetterSprites()
-  result.asciiSprites = loadClientAsciiSprites()
+  result.textFont = loadTiny5Font()
 
   result.seedBrush()
   let startTx = WorldWidthTiles div 2
@@ -985,6 +1016,12 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(mob.attackCooldown)
     result.mixHashInt(mob.attackPhase)
     result.mixHashInt(ord(mob.attackFacing))
+    result.mixHashInt(mob.attackerIds.len)
+    for attackerId in mob.attackerIds:
+      result.mixHashInt(attackerId)
+    result.mixHashInt(mob.attackerTicks.len)
+    for attackerTick in mob.attackerTicks:
+      result.mixHashInt(attackerTick)
   result.mixHashInt(sim.pickups.len)
   for pickup in sim.pickups:
     result.mixHashInt(pickup.x)
@@ -1264,19 +1301,30 @@ proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
     playerCenterY = player.y + player.sprite.height div 2
   case player.facing
   of FaceUp:
-    (playerCenterX - width div 2, player.y - closeY, width, height)
+    (
+      playerCenterX - width div 2,
+      player.y - closeY + SwooshPlacementOffset - 8,
+      width,
+      height
+    )
   of FaceDown:
     (
       playerCenterX - width div 2,
-      player.y + player.sprite.height - closeY,
+      player.y + player.sprite.height - closeY - SwooshPlacementOffset,
       width,
       height
     )
   of FaceLeft:
-    (player.x - closeX, playerCenterY - height div 2, width, height)
+    (
+      player.x - closeX - SwooshPlacementOffset,
+      playerCenterY - height div 2,
+      width,
+      height
+    )
   of FaceRight:
     (
-      player.x + player.sprite.width - closeX,
+      player.x + player.sprite.width - width + closeX +
+        SwooshPlacementOffset,
       playerCenterY - height div 2,
       width,
       height
@@ -1338,19 +1386,20 @@ proc applyAttack(sim: var SimServer) =
   if sim.players.len == 0:
     return
 
-  var mobDamaged = newSeq[bool](sim.mobs.len)
-  var bossHitCounts = newSeq[int](sim.mobs.len)
-  var bossKnockbackXs = newSeq[int](sim.mobs.len)
-  var bossKnockbackYs = newSeq[int](sim.mobs.len)
+  var
+    mobHitCounts = newSeq[int](sim.mobs.len)
+    mobKnockbackXs = newSeq[int](sim.mobs.len)
+    mobKnockbackYs = newSeq[int](sim.mobs.len)
   for playerIndex in 0 ..< sim.players.len:
-    if sim.players[playerIndex].attackTicks <= 0 or sim.players[playerIndex].attackResolved:
+    let attackReady =
+      sim.players[playerIndex].attackTicks > 0 and
+      not sim.players[playerIndex].attackResolved
+    if not attackReady:
       continue
 
     let player = sim.players[playerIndex]
     let hit = sim.attackRect(player)
     for mobIndex in 0 ..< sim.mobs.len:
-      if sim.mobs[mobIndex].kind != BossMob and mobDamaged[mobIndex]:
-        continue
       if rectOverlapsBounds(
         hit.x,
         hit.y,
@@ -1367,22 +1416,11 @@ proc applyAttack(sim: var SimServer) =
         of FaceDown: dy = 4
         of FaceLeft: dx = -4
         of FaceRight: dx = 4
-        if sim.mobs[mobIndex].kind == BossMob:
-          inc bossHitCounts[mobIndex]
-          bossKnockbackXs[mobIndex] += dx
-          bossKnockbackYs[mobIndex] += dy
-        else:
-          mobDamaged[mobIndex] = true
-          dec sim.mobs[mobIndex].hp
-          var actor = Actor(
-            x: sim.mobs[mobIndex].x,
-            y: sim.mobs[mobIndex].y,
-            sprite: sim.mobs[mobIndex].sprite,
-            bounds: sim.mobs[mobIndex].bounds
-          )
-          sim.moveActor(actor, dx, dy)
-          sim.mobs[mobIndex].x = actor.x
-          sim.mobs[mobIndex].y = actor.y
+        sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
+        sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
+        inc mobHitCounts[mobIndex]
+        mobKnockbackXs[mobIndex] += dx
+        mobKnockbackYs[mobIndex] += dy
         break
 
     for targetPlayerIndex in 0 ..< sim.players.len:
@@ -1412,14 +1450,19 @@ proc applyAttack(sim: var SimServer) =
     sim.players[playerIndex].attackResolved = true
 
   for mobIndex in 0 ..< sim.mobs.len:
-    if sim.mobs[mobIndex].kind != BossMob or bossHitCounts[mobIndex] == 0:
+    if mobHitCounts[mobIndex] == 0:
       continue
 
-    sim.mobs[mobIndex].hp -= bossHitCounts[mobIndex]
+    sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
+    let required = sim.mobs[mobIndex].kind.requiredAttackerCount()
+    if sim.mobs[mobIndex].attackerIds.len < required:
+      continue
+
+    sim.mobs[mobIndex].hp -= mobHitCounts[mobIndex]
 
     let
-      knockbackX = bossKnockbackXs[mobIndex].clamp(-4, 4)
-      knockbackY = bossKnockbackYs[mobIndex].clamp(-4, 4)
+      knockbackX = mobKnockbackXs[mobIndex].clamp(-4, 4)
+      knockbackY = mobKnockbackYs[mobIndex].clamp(-4, 4)
     if knockbackX != 0 or knockbackY != 0:
       var actor = Actor(
         x: sim.mobs[mobIndex].x,
@@ -1436,7 +1479,8 @@ proc applyAttack(sim: var SimServer) =
     if mob.hp > 0:
       survivors.add(mob)
     else:
-      if mob.kind == BossMob:
+      case mob.kind
+      of BossMob:
         let sprite = sim.pickupSprite(PickupCoin)
         sim.pickups.add(Pickup(
           x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
@@ -1444,7 +1488,15 @@ proc applyAttack(sim: var SimServer) =
           kind: PickupCoin,
           value: BossCoinValue
         ))
-      else:
+      of TrollMob:
+        let sprite = sim.pickupSprite(PickupCoin)
+        sim.pickups.add(Pickup(
+          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
+          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
+          kind: PickupCoin,
+          value: TrollCoinValue
+        ))
+      of SnakeMob:
         let roll = sim.rng.rand(99)
         if roll < 10:
           sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
@@ -1492,12 +1544,8 @@ proc updateMobs*(sim: var SimServer) =
   if sim.players.len == 0:
     return
 
-  if sim.tickCount mod BossHealInterval == 0:
-    for mob in sim.mobs.mitems:
-      if mob.kind == BossMob:
-        mob.hp = BossHp
-
   for mob in sim.mobs.mitems:
+    mob.refreshCoopState(sim.players, sim.tickCount)
     dec mob.attackCooldown
     if mob.attackCooldown < 0:
       mob.attackCooldown = 0
@@ -1638,18 +1686,6 @@ proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
         let sprite = sim.terrainSprites[sim.terrainKinds[tileIndex(tx, ty)]]
         sim.fb.blitSprite(sprite, x, y, cameraX, cameraY)
 
-proc renderNumber*(
-  fb: var Framebuffer,
-  digitSprites: array[10, Sprite],
-  value, screenX, screenY: int
-) =
-  let text = $max(0, value)
-  var x = screenX
-  for ch in text:
-    let digit = ord(ch) - ord('0')
-    fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
-    x += digitSprites[digit].width
-
 proc blitActorSprite(
   fb: var Framebuffer,
   sprite, mask: Sprite,
@@ -1682,16 +1718,18 @@ proc blitActorSprite(
       fb.putPixel(screenX + x, screenY + y, drawIndex)
 
 proc renderHud*(sim: var SimServer, playerIndex: int) =
+  ## Draws the local player HUD with the Tiny5 font.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
 
   let
     player = sim.players[playerIndex]
-    coins = min(player.coins, 99)
+    coins = max(player.coins, 0)
+    lives = max(player.lives, 0)
+    lineY = sim.textFont.lineHeight()
 
-  sim.fb.renderNumber(sim.digitSprites, coins, 0, 0)
-  sim.fb.blitText(sim.letterSprites, "LIVES", 34, 0)
-  sim.fb.renderNumber(sim.digitSprites, player.lives, 70, 0)
+  sim.fb.drawText(sim.textFont, "COINS " & $coins, 0, 0, 2'u8)
+  sim.fb.drawText(sim.textFont, "LIVES " & $lives, 0, lineY, 2'u8)
 
 proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, maximum: int) =
   if maximum <= 0 or width <= 0:
@@ -1775,8 +1813,8 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   let player = sim.players[playerIndex]
 
   if player.lives <= 0:
-    sim.fb.blitText(sim.letterSprites, "GAME", 20, 26)
-    sim.fb.blitText(sim.letterSprites, "OVER", 20, 34)
+    sim.fb.drawText(sim.textFont, "GAME", 20, 26, 2'u8)
+    sim.fb.drawText(sim.textFont, "OVER", 20, 34, 2'u8)
     sim.fb.packFramebuffer()
     return sim.fb.packed
 
