@@ -951,26 +951,6 @@ proc addStatLine(
   packet.add($value)
   packet.add('\n')
 
-proc rewardAccountFor(sim: SimServer, address: string): int =
-  ## Returns the reward account index for one address.
-  for i in 0 ..< sim.rewardAccounts.len:
-    if sim.rewardAccounts[i].address == address:
-      return i
-  -1
-
-proc addStatLine(
-  packet: var string,
-  name, identity: string,
-  value: int
-) =
-  ## Appends one metric line to a reward protocol packet.
-  packet.add(name)
-  packet.add(' ')
-  packet.add(identity)
-  packet.add(' ')
-  packet.add($value)
-  packet.add('\n')
-
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
   for player in sim.players:

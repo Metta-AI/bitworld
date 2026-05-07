@@ -68,7 +68,21 @@
         lockContents = builtins.readFile ./nimby.lock;
         lockLines = builtins.filter (l: l != "")
           (builtins.filter builtins.isString (builtins.split "\n" lockContents));
-        lockEntries = builtins.filter (e: e != null) (map parseLockLine lockLines);
+        rawLockEntries = builtins.filter (e: e != null) (map parseLockLine lockLines);
+        # Hard-error on duplicate dep names. We can't silently dedupe: two
+        # entries can pin different revs, and picking one arbitrarily would
+        # produce a build that disagrees with the lockfile.
+        nameCounts = lib.foldl'
+          (acc: n: acc // { ${n} = (acc.${n} or 0) + 1; })
+          {} (map (e: e.name) rawLockEntries);
+        duplicateNames =
+          builtins.attrNames (lib.filterAttrs (_: c: c > 1) nameCounts);
+        lockEntries =
+          if duplicateNames != [] then
+            throw ("nimby.lock has duplicate entries for: "
+              + lib.concatStringsSep ", " duplicateNames
+              + ". Remove the extra line(s) so each dep appears exactly once.")
+          else rawLockEntries;
         # Some deps (e.g. libcurl) keep their .nim files at the package root
         # rather than under src/. Emit the right --path for each at build
         # time by probing the dep, mirroring what `nimby sync` produces.
