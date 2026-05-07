@@ -10,6 +10,18 @@ variable "project_name" {
   default     = "bitworld"
 }
 
+variable "environment" {
+  description = "Deployment environment (production, staging, dev)"
+  type        = string
+  default     = "production"
+}
+
+variable "owner" {
+  description = "Team or person responsible for this infrastructure"
+  type        = string
+  default     = "treeform"
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
