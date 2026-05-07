@@ -126,8 +126,20 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client file if the route matches.
-  request.serveClientHtml(request.path)
+  ## Serves one static client asset if the route matches. The page-serving
+  ## client routes (/client/{player,global,admin,rewards}.html) are
+  ## intentionally not exposed: each page lives at its websocket URL
+  ## (/player, /global, /admin, /reward), which dual-serves HTML on a plain
+  ## GET and upgrades to a websocket on a Sec-WebSocket-Key request. This
+  ## keeps a page and its websocket at the same URL so reverse-proxy prefix
+  ## routing works without the page knowing the prefix. snappyjs.min.js and
+  ## qrcode.min.js sit at top-level paths so they resolve as siblings of
+  ## those pages from a relative <script src="...">.
+  let path = request.path
+  if path == PlayerClientRoute or path == GlobalClientRoute or
+      path == AdminClientRoute or path == RewardClientRoute:
+    return false
+  request.serveClientHtml(path)
 
 proc tickTime(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
@@ -750,6 +762,9 @@ proc httpHandler(request: Request) =
   elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(AdminClientRoute)
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(RewardClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
@@ -802,7 +817,7 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == "/reward" and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

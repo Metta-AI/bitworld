@@ -209,7 +209,16 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  request.serveClientHtml(request.path)
+  ## Serves one static client asset. Page routes (/client/*.html) are not
+  ## served here: each page lives at its websocket URL (/player, /global),
+  ## which dual-serves HTML on a plain GET and upgrades on a
+  ## Sec-WebSocket-Key request. Page and websocket share a URL so reverse-
+  ## proxy prefix routing works without page-side awareness.
+  let path = request.path
+  if path == PlayerClientRoute or path == GlobalClientRoute or
+      path == AdminClientRoute or path == RewardClientRoute:
+    return false
+  request.serveClientHtml(path)
 
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET" and

@@ -155,6 +155,7 @@ const
   SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   ReplayWebSocketPath* = "/replay"
+  RewardWebSocketPath* = "/reward"
 
 type
   PlayerRole* = enum
