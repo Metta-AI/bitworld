@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from .opponents.models import OpponentProfile
 
 from . import _cyborg
 from .cognition import Directives, parse_instructions
@@ -92,6 +95,7 @@ class Agent:
     hooks: AgentHooks
     tracer: Tracer
     sdk_config: SDKConfig
+    opponent_profiles: Mapping[str, OpponentProfile] | None = None
     _rng: random.Random = field(default_factory=random.Random)
 
     @classmethod
@@ -115,9 +119,22 @@ class Agent:
         auto_build: bool = True,
         use_llm_for_instructions: bool = True,
         instructions_model: str = "gpt-5.5",
+        opponent_profiles: Mapping[str, OpponentProfile] | None = None,
+        load_opponent_profiles: bool = True,
     ) -> Agent:
         sdk_config = resolve_config(profile=profile)
         cognitive = cognitive or {}
+
+        if opponent_profiles is None and load_opponent_profiles:
+            try:
+                from .opponents import OpponentStore
+
+                store = OpponentStore()
+                if store.root.is_dir():
+                    opponent_profiles = store.list_profiles() or None
+            except Exception as exc:  # pragma: no cover - import-time guard
+                logger.debug("could not auto-load opponent profiles: %s", exc)
+                opponent_profiles = None
 
         directives = parse_instructions(
             instructions,
@@ -144,6 +161,20 @@ class Agent:
         scripted_chatter = ScriptedChatter(tone=directives.chat_tone)
         scripted_reporter = ScriptedReporter(eagerness=directives.report_eagerness)
 
+        # Inject opponent profiles into LLMVoter/LLMChatter when the user
+        # supplied one without setting it explicitly. This keeps the
+        # consumer wiring transparent — users who construct LLMVoter()
+        # via Agent.create automatically get opponent intel without
+        # having to pass it twice.
+        if opponent_profiles:
+            from .modules.chatter import LLMChatter
+            from .modules.voter import LLMVoter
+
+            if isinstance(voter, LLMVoter) and voter.opponent_profiles is None:
+                voter.opponent_profiles = opponent_profiles
+            if isinstance(chatter, LLMChatter) and chatter.opponent_profiles is None:
+                chatter.opponent_profiles = opponent_profiles
+
         agent = cls(
             config=AgentConfig(
                 role_hint=role_hint,
@@ -163,6 +194,7 @@ class Agent:
             hooks=hooks or AgentHooks(),
             tracer=tracer or Tracer(),
             sdk_config=sdk_config,
+            opponent_profiles=opponent_profiles,
             _rng=random.Random(seed),
         )
 

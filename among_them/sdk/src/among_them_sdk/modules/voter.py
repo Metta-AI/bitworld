@@ -5,9 +5,14 @@ from __future__ import annotations
 import logging
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .memory import VotingContext
+
+if TYPE_CHECKING:
+    from ..opponents.models import OpponentProfile
 
 logger = logging.getLogger("among_them_sdk.modules.voter")
 
@@ -74,7 +79,15 @@ class ScriptedVoter(Voter):
 
 
 class LLMVoter(Voter):
-    """Vote via an LLM tool loop — falls back to scripted behavior on failure."""
+    """Vote via an LLM tool loop — falls back to scripted behavior on failure.
+
+    Optional ``opponent_profiles`` argument injects a compact summary of
+    cross-game intel about the suspects into the prompt. The mapping is
+    keyed by opponent name; only suspects that appear in
+    :attr:`VotingContext.suspects` are surfaced (we don't dump the whole
+    catalog into every prompt). Pass ``None`` (default) to keep the
+    pre-existing behavior.
+    """
 
     def __init__(
         self,
@@ -82,6 +95,7 @@ class LLMVoter(Voter):
         *,
         model: str = "gpt-5.5",
         fallback: Voter | None = None,
+        opponent_profiles: Mapping[str, OpponentProfile] | None = None,
     ):
         from ..cognition.llm import LLM, LLMUnavailableError
 
@@ -94,6 +108,21 @@ class LLMVoter(Voter):
                 self.llm = None
         self.fallback = fallback or ScriptedVoter()
         self.model = model
+        self.opponent_profiles: Mapping[str, OpponentProfile] | None = opponent_profiles
+
+    def _build_user_prompt(self, ctx: VotingContext) -> str:
+        base = ctx.to_prompt()
+        if not self.opponent_profiles:
+            return base
+        lines: list[str] = []
+        for suspect in ctx.suspects:
+            profile = self.opponent_profiles.get(suspect.player_id)
+            if profile is None or profile.games_observed <= 0:
+                continue
+            lines.append(f"  - {profile.compact_summary()}")
+        if not lines:
+            return base
+        return base + "\n\nOpponent intel from prior games:\n" + "\n".join(lines)
 
     def vote(self, ctx: VotingContext) -> Vote:
         if self.llm is None:
@@ -101,11 +130,12 @@ class LLMVoter(Voter):
         try:
             resp = self.llm.complete(  # type: ignore[attr-defined]
                 system=(
-                    "You are a careful Among Them voter. Given a list of suspects, "
-                    "respond with a JSON object: "
-                    '{"target": "<player_id>" or null, "reason": "<short reason>"}.'
+                    "You are a careful Among Them voter. Given a list of suspects "
+                    "(possibly with cross-game opponent intel), respond with a JSON "
+                    'object: {"target": "<player_id>" or null, "reason": "<short reason>"}. '
+                    "Use the opponent intel to weight suspicion, not as proof."
                 ),
-                user=ctx.to_prompt(),
+                user=self._build_user_prompt(ctx),
                 response_format="json",
             )
         except Exception as exc:

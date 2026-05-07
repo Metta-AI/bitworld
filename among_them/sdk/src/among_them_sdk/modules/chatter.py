@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..opponents.models import OpponentProfile
 
 logger = logging.getLogger("among_them_sdk.modules.chatter")
 
@@ -53,7 +57,13 @@ class ScriptedChatter(Chatter):
 
 
 class LLMChatter(Chatter):
-    """Generate one-line meeting messages with an LLM."""
+    """Generate one-line meeting messages with an LLM.
+
+    Optional ``opponent_profiles`` argument injects a compact summary of
+    relevant opponents into the prompt so the LLM can taunt the
+    bandwagoner, soften the paranoid one, etc. Set to ``None`` (default)
+    to keep the pre-existing behavior.
+    """
 
     def __init__(
         self,
@@ -62,6 +72,7 @@ class LLMChatter(Chatter):
         model: str = "gpt-5.5",
         tone: str = "neutral",
         fallback: Chatter | None = None,
+        opponent_profiles: Mapping[str, OpponentProfile] | None = None,
     ):
         from ..cognition.llm import LLM, LLMUnavailableError
 
@@ -74,6 +85,31 @@ class LLMChatter(Chatter):
                 self.llm = None
         self.tone = tone
         self.fallback = fallback or ScriptedChatter(tone=tone)
+        self.opponent_profiles: Mapping[str, OpponentProfile] | None = opponent_profiles
+
+    def _intel_block(self, ctx: ChatContext) -> str:
+        if not self.opponent_profiles:
+            return ""
+        # Pick names from extras['lobby_members'] when available, else
+        # the body player + the rest of the catalog (capped).
+        names: list[str] = []
+        if ctx.extras and isinstance(ctx.extras.get("lobby_members"), (list, tuple)):
+            names = [str(n) for n in ctx.extras["lobby_members"]]  # type: ignore[index]
+        elif ctx.body_player_id:
+            names = [ctx.body_player_id]
+        else:
+            names = list(self.opponent_profiles.keys())
+        # Always include known suspects; strip self.
+        names = [n for n in dict.fromkeys(names) if n != ctx.self_id]
+        lines: list[str] = []
+        for name in names[:6]:
+            profile = self.opponent_profiles.get(name)
+            if profile is None or profile.games_observed <= 0:
+                continue
+            lines.append(f"  - {profile.compact_summary()}")
+        if not lines:
+            return ""
+        return "\nOpponent intel from prior games:\n" + "\n".join(lines)
 
     def speak(self, ctx: ChatContext) -> str | None:
         if self.llm is None:
@@ -83,11 +119,14 @@ class LLMChatter(Chatter):
                 system=(
                     f"You are an Among Them player chatting in a meeting. "
                     f"Tone: {self.tone}. Keep it under 20 words. "
-                    "Plain text only, no quotes."
+                    "Plain text only, no quotes. Use opponent intel to "
+                    "shape your message but don't quote it."
                 ),
                 user=(
-                    f"Meeting #{ctx.meeting_index}. Body: {ctx.body_player_id or 'none'}. "
+                    f"Meeting #{ctx.meeting_index}. "
+                    f"Body: {ctx.body_player_id or 'none'}. "
                     f"Suspects: {ctx.suspect_summary or 'unknown'}."
+                    f"{self._intel_block(ctx)}"
                 ),
             )
             text = resp.text.strip()

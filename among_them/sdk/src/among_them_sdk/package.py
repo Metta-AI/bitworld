@@ -295,6 +295,26 @@ def parse_args() -> argparse.Namespace:
         help=f"Where to write the bundle config. Default: {POLICY_DIR / CONFIG_FILENAME}",
     )
     p.add_argument(
+        "--profiles-from",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a local OpponentStore root (e.g. ~/.among-them/opponents). "
+            "When set, freezes that store's profiles into a snapshot file shipped "
+            "alongside the policy so the tournament bot can read opponent intel "
+            "without making LLM calls in Docker."
+        ),
+    )
+    p.add_argument(
+        "--profiles-out",
+        type=Path,
+        default=None,
+        help=(
+            "Override snapshot path. Default: sibling of --out named "
+            "among_them_sdk_opponents.json (auto-included as -f in the upload command)."
+        ),
+    )
+    p.add_argument(
         "--policy-name",
         default=None,
         help="Cogames policy name (-n flag). Defaults to $USER-sdk-<short> if unset.",
@@ -359,6 +379,34 @@ def main() -> int:
     print("[package] resolved directives:")
     print(json.dumps(config.resolve_directives().model_dump(), indent=2))
 
+    # 2.5 Optionally freeze opponent profiles next to the bundle config.
+    extra_files: list[str] = list(args.extra_file or [])
+    if args.profiles_from:
+        from .opponents import OpponentStore, freeze_profiles
+
+        store = OpponentStore(root=args.profiles_from)
+        if not store.list_profiles():
+            print(
+                f"[package] WARNING: no profiles in {args.profiles_from} — "
+                "snapshot will be empty.",
+                file=sys.stderr,
+            )
+        snapshot_path = (
+            args.profiles_out
+            if args.profiles_out
+            else out_path.parent / "among_them_sdk_opponents.json"
+        )
+        snapshot = freeze_profiles(store, snapshot_path)
+        print(f"[package] froze {len(store.list_profiles())} profile(s) -> {snapshot}")
+        # Compute a repo-relative path to add to the upload command's -f
+        # flags. Falls back to absolute path if the snapshot lives
+        # outside REPO_ROOT.
+        try:
+            rel_snapshot = snapshot.resolve().relative_to(REPO_ROOT.resolve())
+            extra_files.append(str(rel_snapshot))
+        except ValueError:
+            extra_files.append(str(snapshot.resolve()))
+
     # 3. Print the cogames upload command.
     user = os.environ.get("USER", "user")
     policy_name = args.policy_name or f"{user}-sdk-{int(__import__('time').time())}"
@@ -366,7 +414,7 @@ def main() -> int:
         policy_class=args.policy_class,
         policy_name=policy_name,
         season=args.season,
-        extra_files=args.extra_file,
+        extra_files=extra_files,
         dry_run=args.dry_run,
         skip_validation=args.skip_validation,
     )

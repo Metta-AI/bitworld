@@ -61,6 +61,17 @@ from .modules import (
     Voter,
     VotingContext,
 )
+from .opponents import (
+    BundledProfileLookup,
+    ObservationCollector,
+    ObservationEvent,
+    ObservationLog,
+    OpponentProfile,
+    OpponentStore,
+    analyze_all,
+    analyze_opponent,
+    freeze_profiles,
+)
 from .policy import AmongThemPolicy, EvidenceBotV2Policy, LocalSDKPolicy, SDKPolicy
 from .runner import Runner
 from .runtime import LocalSim, MeetingEvent, RemoteServer, RunResult, Subprocess, TickEvent
@@ -80,6 +91,7 @@ __all__ = [
     "AgentConfig",
     "AgentHooks",
     "AmongThemPolicy",
+    "BundledProfileLookup",
     "Chatter",
     "CogamesBundleConfig",
     "Directives",
@@ -96,6 +108,11 @@ __all__ = [
     "MeetingEvent",
     "Memory",
     "Navigator",
+    "ObservationCollector",
+    "ObservationEvent",
+    "ObservationLog",
+    "OpponentProfile",
+    "OpponentStore",
     "Percept",
     "Perception",
     "RemoteServer",
@@ -119,8 +136,11 @@ __all__ = [
     "Voter",
     "VotingContext",
     "__version__",
+    "analyze_all",
+    "analyze_opponent",
     "build_cogames_modules",
     "fetch_results_json",
+    "freeze_profiles",
     "load_cogames_config",
     "parse_instructions",
     "tool",

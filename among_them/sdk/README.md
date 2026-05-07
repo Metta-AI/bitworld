@@ -140,7 +140,9 @@ provider routing, troubleshooting, and copy-pasteable recipes — see
 see [`docs/local-iteration-guide.md`](docs/local-iteration-guide.md).
 For the design map of where LLMs do (and should) live in the SDK — chat
 decomposition, tool-loop patterns, tournament-safe artifacts — see
-[`docs/llm-integration.md`](docs/llm-integration.md).
+[`docs/llm-integration.md`](docs/llm-integration.md). For cross-game
+opponent learning (capture → analyze → consume → freeze for tournament),
+see [`docs/opponent-modeling.md`](docs/opponent-modeling.md).
 
 ## Examples
 

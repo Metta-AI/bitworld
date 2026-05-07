@@ -31,6 +31,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import time
 import traceback
@@ -143,21 +144,68 @@ def main() -> int:
         "config": bundle.model_dump(exclude_none=True),
     }
 
+    # Build the policy + LiveGame up front so the SIGTERM handler can
+    # snapshot live state even if termination interrupts the run loop.
     try:
         policy = LocalSDKPolicy(config=bundle)
-        live = LiveGame(
-            host=args.host,
-            port=args.port,
-            name=args.name,
-            max_ticks=args.max_ticks,
-            connect_timeout=args.connect_timeout,
+    except Exception as exc:
+        metrics["error"] = f"policy_init_failed: {exc!r}"
+        metrics["traceback"] = traceback.format_exc()
+        metrics["finished_at"] = time.time()
+        _write_metrics(args.metrics_out, metrics)
+        print(f"[{args.name}] ERROR (policy init): {exc!r}", file=sys.stderr)
+        return 1
+
+    live = LiveGame(
+        host=args.host,
+        port=args.port,
+        name=args.name,
+        max_ticks=args.max_ticks,
+        connect_timeout=args.connect_timeout,
+    )
+
+    def _snapshot(reason: str) -> None:
+        """Write whatever engine state we've accumulated so far.
+
+        Idempotent — safe to call from a signal handler and again at
+        normal exit. We always write *something* so the orchestrator
+        never sees a missing metrics file even when the worker is
+        SIGTERM'd mid-run.
+        """
+        try:
+            stats = policy.engine.stats
+            metrics.setdefault("partial_reason", reason)
+            metrics.setdefault("finished_at", time.time())
+            metrics.setdefault("directives", policy.directives.model_dump())
+            metrics["engine_stats"] = {
+                "ticks_seen": stats.ticks_seen,
+                "reports_passed": stats.reports_passed,
+                "reports_suppressed": stats.reports_suppressed,
+                "voter_advisories": list(stats.voter_advisories),
+                "chatter_advisories": list(stats.chatter_advisories),
+            }
+            _write_metrics(args.metrics_out, metrics)
+        except Exception as snap_exc:  # noqa: BLE001 - last-ditch
+            print(f"[{args.name}] snapshot failed: {snap_exc!r}", file=sys.stderr)
+
+    def _term_handler(sig: int, _frame: Any) -> None:
+        print(
+            f"[{args.name}] caught signal {sig}; flushing partial metrics",
+            file=sys.stderr,
         )
+        _snapshot(reason=f"signal_{sig}")
+        # Use os._exit so we don't fight the asyncio loop's shutdown path;
+        # we've already saved everything we care about.
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _term_handler)
+
+    try:
         result, transcript = live.run_local_sdk_policy(policy)
     except Exception as exc:
         metrics["error"] = repr(exc)
         metrics["traceback"] = traceback.format_exc()
-        metrics["finished_at"] = time.time()
-        _write_metrics(args.metrics_out, metrics)
+        _snapshot(reason="exception")
         print(f"[{args.name}] ERROR: {exc!r}", file=sys.stderr)
         return 1
 

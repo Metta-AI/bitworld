@@ -294,8 +294,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--game-timeout",
         type=int,
-        default=900,
-        help="Wall-clock seconds before the orchestrator gives up.",
+        default=0,
+        help=(
+            "Wall-clock seconds before the orchestrator gives up. "
+            "0 (default) auto-scales as `max(900, 400 * games)` since one "
+            "game routinely takes ~5 minutes when imposters can't finish "
+            "tasks fast."
+        ),
     )
     p.add_argument(
         "--output",
@@ -473,7 +478,10 @@ def main() -> int:
             )
 
         # ---- Wait for the server to finish or for a global timeout.
-        deadline = time.monotonic() + args.game_timeout
+        game_timeout = args.game_timeout if args.game_timeout > 0 else max(
+            900, 400 * args.games
+        )
+        deadline = time.monotonic() + game_timeout
         last_status = 0.0
         while True:
             if not server_proc.is_alive():
@@ -481,7 +489,7 @@ def main() -> int:
                 break
             if time.monotonic() > deadline:
                 print(
-                    f"[timeout] arena ran longer than {args.game_timeout}s; aborting",
+                    f"[timeout] arena ran longer than {game_timeout}s; aborting",
                     file=sys.stderr,
                 )
                 break
@@ -494,13 +502,19 @@ def main() -> int:
                 last_status = time.monotonic()
             time.sleep(0.5)
 
-        # Once the server is gone, give workers a beat to drain + write metrics.
+        # Once the server is gone, give workers a beat to drain + write
+        # metrics. The websocket close should cascade quickly, but the
+        # asyncio shutdown path can take a couple seconds per worker —
+        # be generous before SIGTERMing. The worker registers a SIGTERM
+        # handler so even forced shutdowns flush a partial metrics file.
+        drain_deadline = time.monotonic() + 30.0
         for proc in worker_procs:
+            remaining = max(1.0, drain_deadline - time.monotonic())
             try:
-                proc.popen.wait(timeout=10.0)
+                proc.popen.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 with suppress(Exception):
-                    proc.stop(timeout=3.0)
+                    proc.stop(timeout=5.0)
 
         # ---- Collect metrics + scores.
         scores = fetch_results_json(str(scores_path))
