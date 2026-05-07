@@ -517,6 +517,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
 
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
+    inc sim.scoreRevision
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
@@ -649,12 +650,35 @@ proc buildRewardPacket(sim: SimServer): string =
     result.add($player.coins)
     result.add("\n")
 
+proc writeScoreFile(sim: SimServer, path: string) =
+  ## Writes the current score JSON if a path is configured.
+  if path.len == 0:
+    return
+  let dir = path.parentDir()
+  if dir.len > 0:
+    createDir(dir)
+  writeFile(path, sim.playerScoresJson() & "\n")
+
+proc writeScoresIfNeeded(
+  sim: SimServer,
+  path: string,
+  lastRevision: var int
+) =
+  ## Writes scores when score-visible state changed.
+  if path.len == 0:
+    return
+  if sim.scoreRevision == lastRevision:
+    return
+  sim.writeScoreFile(path)
+  lastRevision = sim.scoreRevision
+
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
   seed = 0xB1770,
   saveReplayPath = "",
-  loadReplayPath = ""
+  loadReplayPath = "",
+  saveScoresPath = ""
 ) =
   initAppState()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
@@ -700,6 +724,8 @@ proc runServerLoop*(
   var
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
+    lastScoreRevision = -1
+  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
 
   while true:
     var
@@ -838,6 +864,7 @@ proc runServerLoop*(
           for websocket in appState.rewardViewers.keys:
             rewardViewers.add(websocket)
 
+      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
         var nextState: PlayerViewerState
@@ -872,6 +899,7 @@ proc runServerLoop*(
       sim.step(inputs)
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
+    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
     let rewardPacket = sim.buildRewardPacket()
 
     for i in 0 ..< sockets.len:

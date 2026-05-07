@@ -1,4 +1,4 @@
-import std/[os, random]
+import std/[json, os, random]
 import bitworld/aseprite
 import pixie, protocol
 import ../common/server
@@ -31,6 +31,8 @@ const
   FrictionDen* = 256
   MaxSpeed* = 352
   StopThreshold* = 8
+  PlayerFootSize* = 8
+  PlayerSeparationPasses* = 4
   MaxPlayerLives* = 5
   SnakeHp* = 3
   TrollHp* = 5
@@ -147,6 +149,7 @@ type
     lives*: int
     invulnTicks*: int
     coins*: int
+    distanceWalked*: int
 
   PickupKind* = enum
     PickupCoin
@@ -213,6 +216,7 @@ type
     rng*: Rand
     seed*: int
     tickCount*: int
+    scoreRevision*: int
     mobSpawnCooldown*: int
     nextPlayerId*: int
 
@@ -463,9 +467,28 @@ proc playerRgbaSpriteFor*(sim: SimServer, player: Actor): RgbaSprite =
   ## Returns the current true-color sprite for one player.
   sim.playerArts[player.form].rgbaSprites[player.facing.playerPoseForFacing()]
 
+proc footBounds*(bounds: SpriteBounds): SpriteBounds =
+  ## Returns the small foot collision box for a player sprite.
+  if bounds.w <= 0 or bounds.h <= 0:
+    return bounds
+  SpriteBounds(
+    x: bounds.x + (bounds.w - PlayerFootSize) div 2,
+    y: bounds.y + bounds.h - PlayerFootSize,
+    w: PlayerFootSize,
+    h: PlayerFootSize
+  )
+
+proc playerCollisionBoundsFor*(
+  sim: SimServer,
+  form: PlayerForm,
+  facing: Facing
+): SpriteBounds =
+  ## Returns the 8 by 8 foot collision box for one player pose.
+  sim.playerArts[form].bounds[facing.playerPoseForFacing()].footBounds()
+
 proc playerBoundsFor*(sim: SimServer, player: Actor): SpriteBounds =
   ## Returns the current collision bounds for one player.
-  sim.playerArts[player.form].bounds[player.facing.playerPoseForFacing()]
+  sim.playerCollisionBoundsFor(player.form, player.facing)
 
 proc playerMaskFor*(sim: SimServer, player: Actor): Sprite =
   ## Returns the current recolor mask for one player.
@@ -751,8 +774,10 @@ proc mobMaxHp*(mob: Mob): int =
 
 proc findPlayerSpawn*(
   sim: SimServer,
-  bounds: SpriteBounds
+  bounds: SpriteBounds,
+  ignorePlayerIndex = -1
 ): tuple[x, y: int] =
+  ## Finds a spawn point for one player.
   let
     centerTx = WorldWidthTiles div 2
     centerTy = WorldHeightTiles div 2
@@ -772,7 +797,10 @@ proc findPlayerSpawn*(
         if not sim.canOccupy(px, py, bounds):
           continue
         var tooClose = false
-        for player in sim.players:
+        for i in 0 ..< sim.players.len:
+          if i == ignorePlayerIndex:
+            continue
+          let player = sim.players[i]
           let
             ax = boundsCenterX(px, bounds)
             ay = boundsCenterY(py, bounds)
@@ -786,10 +814,35 @@ proc findPlayerSpawn*(
 
   (centerTx * WorldTileSize, centerTy * WorldTileSize)
 
+proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
+  ## Fully resets one player and puts them back at spawn.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    form = sim.players[playerIndex].form
+    bounds = sim.playerCollisionBoundsFor(form, FaceDown)
+    spawn = sim.findPlayerSpawn(bounds, playerIndex)
+  sim.players[playerIndex].x = spawn.x
+  sim.players[playerIndex].y = spawn.y
+  sim.players[playerIndex].sprite = sim.playerArts[form].sprites[PlayerFront]
+  sim.players[playerIndex].bounds = bounds
+  sim.players[playerIndex].facing = FaceDown
+  sim.players[playerIndex].attackTicks = 0
+  sim.players[playerIndex].attackResolved = false
+  sim.players[playerIndex].message = ""
+  sim.players[playerIndex].velX = 0
+  sim.players[playerIndex].velY = 0
+  sim.players[playerIndex].carryX = 0
+  sim.players[playerIndex].carryY = 0
+  sim.players[playerIndex].lives = MaxPlayerLives
+  sim.players[playerIndex].invulnTicks = 30
+  sim.players[playerIndex].coins = 0
+
 proc addPlayer*(sim: var SimServer, address: string): int =
+  ## Adds one player at a valid spawn point.
   inc sim.nextPlayerId
   let form = sim.nextPlayerId.playerFormForId()
-  let bounds = sim.playerArts[form].bounds[PlayerFront]
+  let bounds = sim.playerCollisionBoundsFor(form, FaceDown)
   let spawn = sim.findPlayerSpawn(bounds)
   sim.players.add Actor(
     id: sim.nextPlayerId,
@@ -802,6 +855,7 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     facing: FaceDown,
     lives: MaxPlayerLives
   )
+  inc sim.scoreRevision
   sim.players.high
 
 proc initSimServer*(seed = 0xB1770): SimServer =
@@ -871,6 +925,25 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.spawnMobs(8, TrollMob, result.trollSprite, TrollHp)
   discard result.spawnOneMob(BossMob, result.bossSprite, BossHp)
   result.mobSpawnCooldown = 30
+
+proc playerScoresJson*(sim: SimServer): string =
+  ## Builds the current per-player score JSON.
+  var
+    names = newJArray()
+    scores = newJArray()
+    hearts = newJArray()
+    distanceWalked = newJArray()
+    results = newJObject()
+  for player in sim.players:
+    names.add(%player.address)
+    scores.add(%player.coins)
+    hearts.add(%player.lives)
+    distanceWalked.add(%player.distanceWalked)
+  results["names"] = names
+  results["scores"] = scores
+  results["hearts"] = hearts
+  results["distance_walked"] = distanceWalked
+  $results
 
 proc mixHash(hash: var uint64, value: uint64) =
   ## Mixes one integer into a deterministic FNV-1a hash.
@@ -964,6 +1037,150 @@ proc applyMomentumAxis(
       else:
         carry = 0
         break
+
+proc playerFootRect(player: Actor): tuple[x, y, w, h: int] =
+  ## Returns one player's world-space foot collision rectangle.
+  (
+    x: player.x + player.bounds.x,
+    y: player.y + player.bounds.y,
+    w: player.bounds.w,
+    h: player.bounds.h
+  )
+
+proc overlapLength(a, aSize, b, bSize: int): int =
+  ## Returns the positive overlap length for two one dimensional spans.
+  min(a + aSize, b + bSize) - max(a, b)
+
+proc playersFootOverlap(sim: SimServer, a, b: int): bool =
+  ## Returns true when two live players overlap by their foot boxes.
+  if a < 0 or b < 0 or a >= sim.players.len or b >= sim.players.len:
+    return false
+  if sim.players[a].lives <= 0 or sim.players[b].lives <= 0:
+    return false
+  let
+    pa = sim.players[a].playerFootRect()
+    pb = sim.players[b].playerFootRect()
+  rectsOverlap(pa.x, pa.y, pa.w, pa.h, pb.x, pb.y, pb.w, pb.h)
+
+proc movePlayerByTerrain(
+  sim: var SimServer,
+  playerIndex,
+  dx,
+  dy: int
+): int =
+  ## Moves one live player by terrain-valid pixels.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+
+  if dx != 0:
+    let stepX = if dx < 0: -1 else: 1
+    for _ in 0 ..< abs(dx):
+      let nx = sim.players[playerIndex].x + stepX
+      if sim.canOccupy(
+        nx,
+        sim.players[playerIndex].y,
+        sim.players[playerIndex].bounds
+      ):
+        sim.players[playerIndex].x = nx
+        inc result
+      else:
+        break
+    if result > 0:
+      sim.players[playerIndex].velX = 0
+      sim.players[playerIndex].carryX = 0
+
+  if dy != 0:
+    let
+      previousMoves = result
+      stepY = if dy < 0: -1 else: 1
+    for _ in 0 ..< abs(dy):
+      let ny = sim.players[playerIndex].y + stepY
+      if sim.canOccupy(
+        sim.players[playerIndex].x,
+        ny,
+        sim.players[playerIndex].bounds
+      ):
+        sim.players[playerIndex].y = ny
+        inc result
+      else:
+        break
+    if result > previousMoves:
+      sim.players[playerIndex].velY = 0
+      sim.players[playerIndex].carryY = 0
+
+proc pushPlayerPair(
+  sim: var SimServer,
+  a,
+  b,
+  dirX,
+  dirY,
+  overlap: int
+): bool =
+  ## Pushes a player pair apart along one axis.
+  let
+    total = overlap + 1
+    first = max(1, total div 2)
+    second = max(1, total - first)
+  discard sim.movePlayerByTerrain(a, dirX * first, dirY * first)
+  discard sim.movePlayerByTerrain(b, -dirX * second, -dirY * second)
+  if not sim.playersFootOverlap(a, b):
+    return true
+
+  discard sim.movePlayerByTerrain(a, dirX * total, dirY * total)
+  if not sim.playersFootOverlap(a, b):
+    return true
+  discard sim.movePlayerByTerrain(b, -dirX * total, -dirY * total)
+  not sim.playersFootOverlap(a, b)
+
+proc separatePlayerPair(sim: var SimServer, a, b: int): bool =
+  ## Moves two overlapping players out of each other's foot boxes.
+  if not sim.playersFootOverlap(a, b):
+    return false
+  let
+    pa = sim.players[a].playerFootRect()
+    pb = sim.players[b].playerFootRect()
+    overlapX = overlapLength(pa.x, pa.w, pb.x, pb.w)
+    overlapY = overlapLength(pa.y, pa.h, pb.y, pb.h)
+    centerAX = pa.x + pa.w div 2
+    centerAY = pa.y + pa.h div 2
+    centerBX = pb.x + pb.w div 2
+    centerBY = pb.y + pb.h div 2
+    dirX =
+      if centerAX < centerBX or (centerAX == centerBX and a < b):
+        -1
+      else:
+        1
+    dirY =
+      if centerAY < centerBY or (centerAY == centerBY and a < b):
+        -1
+      else:
+        1
+
+  if overlapX <= overlapY:
+    if sim.pushPlayerPair(a, b, dirX, 0, overlapX):
+      return true
+    return sim.pushPlayerPair(a, b, 0, dirY, overlapY)
+
+  if sim.pushPlayerPair(a, b, 0, dirY, overlapY):
+    return true
+  sim.pushPlayerPair(a, b, dirX, 0, overlapX)
+
+proc resolvePlayerOverlaps*(sim: var SimServer) =
+  ## Pushes live players apart by their 8 by 8 foot boxes.
+  for _ in 0 ..< PlayerSeparationPasses:
+    var moved = false
+    for a in 0 ..< sim.players.len:
+      if sim.players[a].lives <= 0:
+        continue
+      for b in (a + 1) ..< sim.players.len:
+        if sim.players[b].lives <= 0:
+          continue
+        if sim.separatePlayerPair(a, b):
+          moved = true
+    if not moved:
+      break
 
 proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1082,19 +1299,13 @@ proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
     if dy < 0: FaceUp else: FaceDown
 
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
+  ## Respawns a dead player with a clean state.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if sim.players[playerIndex].lives > 0:
     return
-
-  if sim.players[playerIndex].coins > 0:
-    sim.pickups.add(Pickup(
-      x: sim.players[playerIndex].x,
-      y: sim.players[playerIndex].y,
-      kind: PickupCoin,
-      value: sim.players[playerIndex].coins
-    ))
-    sim.players[playerIndex].coins = 0
+  inc sim.scoreRevision
+  sim.resetPlayerAtSpawn(playerIndex)
 
 proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1104,6 +1315,7 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
 
   dec sim.players[playerIndex].lives
   sim.players[playerIndex].invulnTicks = 30
+  inc sim.scoreRevision
 
   var actor = Actor(
     x: sim.players[playerIndex].x,
@@ -1262,10 +1474,13 @@ proc collectPickups(sim: var SimServer) =
       ):
         case pickup.kind
         of PickupCoin:
-          sim.players[playerIndex].coins += max(1, pickup.value)
+          let value = max(1, pickup.value)
+          sim.players[playerIndex].coins += value
+          inc sim.scoreRevision
         of PickupHeart:
           if sim.players[playerIndex].lives < MaxPlayerLives:
             inc sim.players[playerIndex].lives
+          inc sim.scoreRevision
         collected = true
         break
     if collected:
@@ -1622,8 +1837,32 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc addPlayerWalkDistances(
+  sim: var SimServer,
+  startXs,
+  startYs: openArray[int]
+) =
+  ## Adds actual per-tick player movement to score totals.
+  let count = min(sim.players.len, min(startXs.len, startYs.len))
+  for i in 0 ..< count:
+    if sim.players[i].lives <= 0:
+      continue
+    let distance =
+      abs(sim.players[i].x - startXs[i]) +
+      abs(sim.players[i].y - startYs[i])
+    if distance <= 0:
+      continue
+    sim.players[i].distanceWalked += distance
+    inc sim.scoreRevision
+
 proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
+  var
+    startXs = newSeq[int](sim.players.len)
+    startYs = newSeq[int](sim.players.len)
+  for playerIndex in 0 ..< sim.players.len:
+    startXs[playerIndex] = sim.players[playerIndex].x
+    startYs[playerIndex] = sim.players[playerIndex].y
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].invulnTicks > 0:
       dec sim.players[playerIndex].invulnTicks
@@ -1631,9 +1870,12 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
       if playerIndex < inputs.len: inputs[playerIndex]
       else: InputState()
     sim.applyInput(playerIndex, input)
+  sim.resolvePlayerOverlaps()
+  sim.addPlayerWalkDistances(startXs, startYs)
   sim.collectPickups()
   sim.applyAttack()
   sim.updateMobs()
+  sim.resolvePlayerOverlaps()
   sim.respawnMobs()
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].attackTicks > 0:
