@@ -152,7 +152,7 @@ resource "aws_vpc_security_group_egress_rule" "bot_dns_tcp" {
 
 resource "aws_route53_resolver_firewall_domain_list" "allowed" {
   name    = "${var.project_name}-allowed-domains"
-  domains = var.llm_api_domains
+  domains = concat(var.llm_api_domains, var.infra_domains)
 }
 
 resource "aws_route53_resolver_firewall_domain_list" "block_all" {

@@ -69,3 +69,14 @@ variable "llm_api_domains" {
     "api.x.ai",
   ]
 }
+
+variable "infra_domains" {
+  description = "Domains needed for container infrastructure (image pulls, etc)"
+  type        = list(string)
+  default = [
+    "ghcr.io",
+    "*.ghcr.io",
+    "pkg-containers.githubusercontent.com",
+    "*.pkg-containers.githubusercontent.com",
+  ]
+}
