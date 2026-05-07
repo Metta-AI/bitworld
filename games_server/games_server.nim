@@ -4,7 +4,8 @@ import
   ],
   mummy,
   taggy,
-  cogame_validator
+  cogame_validator,
+  ecs_backend
 
 from std/httpclient import close, getContent, newHttpClient
 
@@ -270,6 +271,7 @@ type
     kind: ContainerKind
     manifestKey: string
     cogameName: string
+    ip: string
 
   BotContainer = object
     name: string
@@ -811,6 +813,7 @@ proc requireDocker(args: openArray[string]): string =
   res.output.strip()
 
 var skipPull* = false
+var useEcs* = false
 
 proc buildLocalImages() =
   ## Builds native Docker images locally using tools/docker_build.nim.
@@ -928,6 +931,20 @@ proc inspectGame(name: string): GameContainer =
 
 proc listGames(): seq[GameContainer] =
   ## Lists all containers created by this game server.
+  if useEcs:
+    for info in ecsListGames():
+      result.add(GameContainer(
+        name: info.taskArn,
+        status: info.status,
+        port: info.port,
+        created: info.created,
+        replay: info.replay,
+        kind: if info.kind == "replay": ReplayServer else: LiveGame,
+        manifestKey: info.manifestKey,
+        cogameName: info.cogameName,
+        ip: info.publicIp,
+      ))
+    return
   let output = requireDocker(@[
     "ps",
     "-aq",
@@ -998,6 +1015,16 @@ proc inspectBot(name: string): BotContainer =
 
 proc listBots(): seq[BotContainer] =
   ## Lists all bot containers created by this game server.
+  if useEcs:
+    for info in ecsListBots():
+      result.add(BotContainer(
+        name: info.taskArn,
+        status: info.status,
+        game: info.gameTaskArn,
+        bot: info.botName,
+        created: info.created,
+      ))
+    return
   let output = requireDocker(@[
     "ps",
     "-aq",
@@ -1063,6 +1090,8 @@ proc containerLogState(name: string): string =
 
 proc containerLogs(name: string): string =
   ## Reads current Docker stdout and stderr logs for one managed container.
+  if useEcs:
+    return ecsContainerLogs(name)
   let safeName = managedContainerName(name)
   containerLogState(safeName) &
     "\n\n--- docker logs stdout and stderr ---\n" &
@@ -1763,10 +1792,48 @@ proc startWaitingBots(
       result.add(inspectBot(name))
 
 proc createGame(form: seq[(string, string)]): GameContainer =
-  ## Starts a new CoGame Docker container.
+  ## Starts a new CoGame Docker container (or ECS task).
+  let manifestInfo = findGameManifest(formValue(form, "manifest"))
+  if useEcs:
+    let
+      config = configJson(form, manifestInfo)
+      created = getTime().toUnix()
+      replay = "ecs_game_" & $created & ".bitreplay"
+    let (taskArn, publicIp, privateIp) = ecsCreateGame(
+      ecsConf.gameImage,
+      config,
+      manifestInfo.name,
+      manifestInfo.key,
+      replay,
+      saveReplay = true,
+    )
+    result = GameContainer(
+      name: taskArn,
+      status: "running",
+      port: GameContainerPort,
+      created: created,
+      replay: replay,
+      kind: LiveGame,
+      manifestKey: manifestInfo.key,
+      cogameName: manifestInfo.name,
+      ip: publicIp,
+    )
+    let botCounts = createBotCounts(form, manifestInfo.name)
+    for item in botCounts:
+      for i in 0 ..< item.count:
+        let stamp = launchStamp(i + 1)
+        let playerName = item.bot.name & "-" & $GameContainerPort & "-" & stamp
+        discard ecsCreateBot(
+          coplayerImage(item.bot),
+          taskArn,
+          privateIp,
+          item.bot.name,
+          playerName,
+          item.bot.binary,
+        )
+    return
   ensureReplayDir()
   let
-    manifestInfo = findGameManifest(formValue(form, "manifest"))
     port = findOpenPort()
     created = getTime().toUnix()
     name = gameName(port)
@@ -1838,12 +1905,18 @@ proc stopBotsForGame(gameName: string) =
 
 proc stopBot(name: string) =
   ## Stops one running managed bot container.
+  if useEcs:
+    ecsStopBot(name)
+    return
   let bot = inspectBot(name)
   if bot.status == "running":
     discard requireDocker(@["stop", bot.name])
 
 proc stopGame(name: string) =
   ## Stops a running managed game container.
+  if useEcs:
+    ecsStopGame(name)
+    return
   let game = inspectGame(name)
   stopBotsForGame(game.name)
   if game.status == "running":
@@ -1871,6 +1944,8 @@ proc stopManagedContainer(name: string) =
 
 proc removeManagedGame(game: GameContainer): seq[string] =
   ## Removes one managed game container and its bot containers.
+  if useEcs:
+    return ecsRemoveGame(game.name)
   for bot in botsForGame(safeListBots(), game.name):
     discard dockerResult(@["rm", "-f", bot.name])
     result.add(bot.name)
@@ -1879,6 +1954,8 @@ proc removeManagedGame(game: GameContainer): seq[string] =
 
 proc removeManagedBot(bot: BotContainer): seq[string] =
   ## Removes one managed bot container.
+  if useEcs:
+    return ecsRemoveBot(bot.name)
   discard requireDocker(@["rm", "-f", bot.name])
   result.add(bot.name)
 
@@ -1955,6 +2032,8 @@ proc gameWebSocketUrl(
   path: string
 ): string =
   ## Builds a browser websocket URL for a game endpoint.
+  if useEcs and game.ip.len > 0:
+    return ecsGameWebSocketUrl(game.ip, path)
   "ws://" & request.hostName() & ":" & $game.port & path
 
 proc gameUrl(request: Request, game: GameContainer, page: string): string =
@@ -1976,10 +2055,14 @@ proc gameUrl(request: Request, game: GameContainer, page: string): string =
 
 proc healthUrl(game: GameContainer): string =
   ## Builds the local health URL for one game container.
+  if useEcs and game.ip.len > 0:
+    return "http://" & game.ip & ":" & $GameContainerPort & HealthPath
   "http://127.0.0.1:" & $game.port & HealthPath
 
 proc gameHealthy(game: GameContainer): bool =
   ## Returns true when the game's health endpoint answers healthy.
+  if useEcs:
+    return ecsGameHealthy(game.ip)
   if game.status != "running" or game.port <= 0:
     return false
   var client = newHttpClient(timeout = 500)
@@ -3301,8 +3384,13 @@ when isMainModule:
       of "build":
         buildLocalImages()
         skipPull = true
+      of "ecs":
+        useEcs = true
       else:
         discard
     else:
       discard
+  if useEcs:
+    echo "ECS mode enabled"
+    loadEcsConfig()
   runServer(address, port)
