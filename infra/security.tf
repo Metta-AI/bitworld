@@ -5,8 +5,7 @@
 #   2. Call whitelisted LLM APIs (OpenAI, Anthropic, etc.)
 #   3. Resolve DNS for allowed domains only
 #
-# Everything else is blocked. This is already better than the metta
-# tournament platform which has zero network restrictions.
+# Everything else is blocked.
 
 # --- Game Server Security Group ---
 
