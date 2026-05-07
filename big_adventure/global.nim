@@ -1,4 +1,4 @@
-import std/[os, strutils]
+import std/[algorithm, os, strutils]
 import supersnappy
 import protocol, sim
 import ../common/server
@@ -27,6 +27,36 @@ const
   BubbleTextColor = 7'u8
   BubblePad = 2
   BubblePointerHeight = 3
+  UiColors = [
+    (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8),
+    (r: 20'u8, g: 24'u8, b: 30'u8, a: 235'u8),
+    (r: 246'u8, g: 248'u8, b: 252'u8, a: 255'u8),
+    (r: 224'u8, g: 64'u8, b: 79'u8, a: 255'u8),
+    (r: 84'u8, g: 141'u8, b: 255'u8, a: 255'u8),
+    (r: 150'u8, g: 109'u8, b: 255'u8, a: 255'u8),
+    (r: 158'u8, g: 119'u8, b: 82'u8, a: 255'u8),
+    (r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8),
+    (r: 255'u8, g: 222'u8, b: 74'u8, a: 255'u8),
+    (r: 255'u8, g: 167'u8, b: 62'u8, a: 255'u8),
+    (r: 86'u8, g: 210'u8, b: 122'u8, a: 255'u8),
+    (r: 68'u8, g: 205'u8, b: 214'u8, a: 255'u8),
+    (r: 91'u8, g: 101'u8, b: 114'u8, a: 255'u8),
+    (r: 235'u8, g: 104'u8, b: 180'u8, a: 255'u8),
+    (r: 188'u8, g: 231'u8, b: 132'u8, a: 255'u8),
+    (r: 246'u8, g: 248'u8, b: 252'u8, a: 255'u8)
+  ]
+  ActorOutlineColor = (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8)
+  SelectedOutlineColor = (r: 255'u8, g: 222'u8, b: 74'u8, a: 255'u8)
+  PlayerTintColors = [
+    (r: 229'u8, g: 64'u8, b: 88'u8, a: 255'u8),
+    (r: 252'u8, g: 175'u8, b: 62'u8, a: 255'u8),
+    (r: 255'u8, g: 220'u8, b: 90'u8, a: 255'u8),
+    (r: 70'u8, g: 199'u8, b: 111'u8, a: 255'u8),
+    (r: 67'u8, g: 169'u8, b: 225'u8, a: 255'u8),
+    (r: 155'u8, g: 118'u8, b: 255'u8, a: 255'u8),
+    (r: 235'u8, g: 98'u8, b: 178'u8, a: 255'u8),
+    (r: 241'u8, g: 244'u8, b: 248'u8, a: 255'u8)
+  ]
 
 var TransportSheet: Sprite
 
@@ -48,6 +78,9 @@ type
     initialized*: bool
     objectIds*: seq[int]
 
+  WorldSpriteObject = object
+    id, x, y, spriteId, sortY: int
+
 proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
   result.mouseLayer = MapLayerId
@@ -60,18 +93,78 @@ proc initPlayerViewerState*(): PlayerViewerState =
   discard
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
-  ## Writes one palette color as a global protocol RGBA pixel.
+  ## Writes one generated UI color as a global protocol RGBA pixel.
   let
-    rgba = Palette[color and 0x0f]
+    rgba = UiColors[color and 0x0f]
     offset = pixelIndex * 4
   pixels[offset] = rgba.r
   pixels[offset + 1] = rgba.g
   pixels[offset + 2] = rgba.b
   pixels[offset + 3] = rgba.a
 
+proc putRgbaPixel(
+  pixels: var seq[uint8],
+  pixelIndex: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Writes one true-color global protocol RGBA pixel.
+  let offset = pixelIndex * 4
+  pixels[offset] = color.r
+  pixels[offset + 1] = color.g
+  pixels[offset + 2] = color.b
+  pixels[offset + 3] = color.a
+
 proc newRgbaPixels(width, height: int): seq[uint8] =
   ## Allocates a transparent RGBA sprite buffer.
   newSeq[uint8](width * height * 4)
+
+proc copyRgbaPixel(
+  target: var seq[uint8],
+  targetPixelIndex: int,
+  source: openArray[uint8],
+  sourceByteIndex: int
+) =
+  ## Copies one true-color pixel into a protocol sprite.
+  let targetByteIndex = targetPixelIndex * 4
+  target[targetByteIndex] = source[sourceByteIndex]
+  target[targetByteIndex + 1] = source[sourceByteIndex + 1]
+  target[targetByteIndex + 2] = source[sourceByteIndex + 2]
+  target[targetByteIndex + 3] = source[sourceByteIndex + 3]
+
+proc blendRgbaPixel(
+  target: var seq[uint8],
+  targetPixelIndex: int,
+  source: openArray[uint8],
+  sourceByteIndex: int
+) =
+  ## Blends one straight RGBA pixel into a protocol sprite.
+  let
+    targetByteIndex = targetPixelIndex * 4
+    sourceAlpha = int(source[sourceByteIndex + 3])
+  if sourceAlpha == 0:
+    return
+  if sourceAlpha == 255 or target[targetByteIndex + 3] == 0'u8:
+    target.copyRgbaPixel(targetPixelIndex, source, sourceByteIndex)
+    return
+  let
+    targetAlpha = int(target[targetByteIndex + 3])
+    outAlpha = sourceAlpha + targetAlpha * (255 - sourceAlpha) div 255
+  if outAlpha == 0:
+    return
+  for channel in 0 ..< 3:
+    let value = (
+      int(source[sourceByteIndex + channel]) * sourceAlpha +
+      int(target[targetByteIndex + channel]) * targetAlpha *
+        (255 - sourceAlpha) div 255
+    ) div outAlpha
+    target[targetByteIndex + channel] = value.uint8
+  target[targetByteIndex + 3] = outAlpha.uint8
+
+proc playerTintColor(
+  playerIndex: int
+): tuple[r, g, b, a: uint8] =
+  ## Returns the true-color tint for one player slot.
+  PlayerTintColors[playerIndex mod PlayerTintColors.len]
 
 proc transportSheet(): Sprite =
   ## Returns the cached transport icon sheet.
@@ -154,6 +247,44 @@ proc addDeleteObject(packet: var seq[uint8], objectId: int) =
   ## Appends a global protocol object delete message.
   packet.addU8(0x03)
   packet.addU16(objectId)
+
+proc addWorldSpriteObject(
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  objectId, x, y, spriteId, spriteHeight: int
+) =
+  ## Queues one world sprite object for game-side depth sorting.
+  currentIds.add(objectId)
+  objects.add(WorldSpriteObject(
+    id: objectId,
+    x: x,
+    y: y,
+    spriteId: spriteId,
+    sortY: y + spriteHeight
+  ))
+
+proc flushWorldSpriteObjects(
+  packet: var seq[uint8],
+  objects: var seq[WorldSpriteObject]
+) =
+  ## Sends queued world objects with z ranks in draw order.
+  objects.sort(
+    proc(a, b: WorldSpriteObject): int =
+      result = cmp(a.sortY, b.sortY)
+      if result == 0:
+        result = cmp(b.x, a.x)
+      if result == 0:
+        result = cmp(a.id, b.id)
+  )
+  for i, item in objects:
+    packet.addObject(
+      item.id,
+      item.x,
+      item.y,
+      i,
+      MapLayerId,
+      item.spriteId
+    )
 
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
@@ -258,13 +389,91 @@ proc applyPlayerViewerMessage*(
       inc offset
     else:
       return
-proc isSolid(sprite: Sprite, x, y: int): bool =
-  ## Returns true when a sprite source coordinate is opaque.
+
+proc isSolid(sprite: RgbaSprite, x, y: int): bool =
+  ## Returns true when a true-color sprite coordinate is opaque.
   if x < 0 or x >= sprite.width or y < 0 or y >= sprite.height:
     return false
-  sprite.pixels[sprite.spriteIndex(x, y)] != TransparentColorIndex
+  sprite.pixels[sprite.rgbaSpriteIndex(x, y) + 3] != 0'u8
 
-proc facedSize(sprite: Sprite, facing: Facing): tuple[width, height: int] =
+proc buildSpriteProtocolActorSprite(
+  sprite: RgbaSprite,
+  mask: Sprite,
+  tint: tuple[r, g, b, a: uint8],
+  selected = false,
+  flipX = false
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds an outlined actor sprite with masked recoloring.
+  let outline =
+    if selected:
+      SelectedOutlineColor
+    else:
+      ActorOutlineColor
+  result.width = sprite.width + 2
+  result.height = sprite.height + 2
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let outWidth = result.width
+
+  proc outIndex(x, y: int): int =
+    y * outWidth + x
+
+  proc sourceColumn(x: int): int =
+    if flipX:
+      sprite.width - 1 - x
+    else:
+      x
+
+  proc drawnSolid(x, y: int): bool =
+    if x < 0 or x >= sprite.width or y < 0 or y >= sprite.height:
+      return false
+    sprite.isSolid(sourceColumn(x), y)
+
+  for y in -1 .. sprite.height:
+    for x in -1 .. sprite.width:
+      if drawnSolid(x, y):
+        continue
+      let adjacent =
+        drawnSolid(x - 1, y) or
+        drawnSolid(x + 1, y) or
+        drawnSolid(x, y - 1) or
+        drawnSolid(x, y + 1)
+      if adjacent:
+        result.pixels.putRgbaPixel(outIndex(x + 1, y + 1), outline)
+
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let srcX = sourceColumn(x)
+      let sourceIndex = sprite.rgbaSpriteIndex(srcX, y)
+      if sprite.pixels[sourceIndex + 3] == 0'u8:
+        continue
+      if srcX < mask.width and y < mask.height and
+          mask.pixels[mask.spriteIndex(srcX, y)] != TransparentColorIndex:
+        let alpha = min(
+          int(tint.a),
+          int(sprite.pixels[sourceIndex + 3])
+        ).uint8
+        result.pixels.putRgbaPixel(
+          outIndex(x + 1, y + 1),
+          (r: tint.r, g: tint.g, b: tint.b, a: alpha)
+        )
+      else:
+        result.pixels.copyRgbaPixel(
+          outIndex(x + 1, y + 1),
+          sprite.pixels,
+          sourceIndex
+        )
+
+proc buildSpriteProtocolRawSprite(
+  sprite: RgbaSprite
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a raw global protocol sprite from a true-color sprite.
+  result.width = sprite.width
+  result.height = sprite.height
+  result.pixels = newSeq[uint8](sprite.pixels.len)
+  for i in 0 ..< sprite.pixels.len:
+    result.pixels[i] = sprite.pixels[i]
+
+proc facedSize(sprite: RgbaSprite, facing: Facing): tuple[width, height: int] =
   ## Returns the rendered size for a facing rotation.
   case facing
   of FaceUp, FaceDown:
@@ -273,11 +482,11 @@ proc facedSize(sprite: Sprite, facing: Facing): tuple[width, height: int] =
     (sprite.height, sprite.width)
 
 proc sourceForFacing(
-  sprite: Sprite,
+  sprite: RgbaSprite,
   x, y: int,
   facing: Facing
 ): tuple[x, y: int] =
-  ## Converts a faced sprite coordinate to a source coordinate.
+  ## Converts a rotated sprite coordinate to a source coordinate.
   case facing
   of FaceDown:
     (x, y)
@@ -288,100 +497,59 @@ proc sourceForFacing(
   of FaceRight:
     (y, sprite.height - 1 - x)
 
-proc buildSpriteProtocolActorSprite(
-  sprite: Sprite,
-  tint: uint8,
-  facing: Facing,
-  selected = false
-): tuple[width, height: int, pixels: seq[uint8]] =
-  ## Builds an outlined, tinted actor sprite for the global viewer.
-  let
-    size = sprite.facedSize(facing)
-    outline = if selected: 8'u8 else: 0'u8
-  result.width = size.width + 2
-  result.height = size.height + 2
-  result.pixels = newRgbaPixels(result.width, result.height)
-  let outWidth = result.width
-
-  proc outIndex(x, y: int): int =
-    y * outWidth + x
-
-  proc facedSolid(x, y: int): bool =
-    if x < 0 or x >= size.width or y < 0 or y >= size.height:
-      return false
-    let src = sprite.sourceForFacing(x, y, facing)
-    sprite.isSolid(src.x, src.y)
-
-  for y in -1 .. size.height:
-    for x in -1 .. size.width:
-      if facedSolid(x, y):
-        continue
-      let adjacent =
-        facedSolid(x - 1, y) or
-        facedSolid(x + 1, y) or
-        facedSolid(x, y - 1) or
-        facedSolid(x, y + 1)
-      if adjacent:
-        result.pixels.putRgbaPixel(outIndex(x + 1, y + 1), outline)
-
-  for y in 0 ..< size.height:
-    for x in 0 ..< size.width:
-      let src = sprite.sourceForFacing(x, y, facing)
-      let colorIndex = sprite.pixels[sprite.spriteIndex(src.x, src.y)]
-      if colorIndex != TransparentColorIndex:
-        result.pixels.putRgbaPixel(outIndex(x + 1, y + 1), tint)
-
-proc buildSpriteProtocolRawSprite(
-  sprite: Sprite
-): tuple[width, height: int, pixels: seq[uint8]] =
-  ## Builds a raw global protocol sprite from a game sprite.
-  result.width = sprite.width
-  result.height = sprite.height
-  result.pixels = newRgbaPixels(sprite.width, sprite.height)
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let colorIndex = sprite.pixels[sprite.spriteIndex(x, y)]
-      if colorIndex != TransparentColorIndex:
-        result.pixels.putRgbaPixel(sprite.spriteIndex(x, y), colorIndex)
-
 proc buildSpriteProtocolFacedRawSprite(
-  sprite: Sprite,
+  sprite: RgbaSprite,
   facing: Facing
 ): tuple[width, height: int, pixels: seq[uint8]] =
-  ## Builds a raw sprite rotated for one facing.
+  ## Builds a true-color sprite rotated for one facing.
   let size = sprite.facedSize(facing)
   result.width = size.width
   result.height = size.height
   result.pixels = newRgbaPixels(result.width, result.height)
   for y in 0 ..< size.height:
     for x in 0 ..< size.width:
-      let src = sprite.sourceForFacing(x, y, facing)
-      let colorIndex = sprite.pixels[sprite.spriteIndex(src.x, src.y)]
-      if colorIndex != TransparentColorIndex:
-        result.pixels.putRgbaPixel(y * result.width + x, colorIndex)
+      let
+        source = sprite.sourceForFacing(x, y, facing)
+        sourceIndex = sprite.rgbaSpriteIndex(source.x, source.y)
+      if sprite.pixels[sourceIndex + 3] != 0'u8:
+        result.pixels.copyRgbaPixel(
+          y * result.width + x,
+          sprite.pixels,
+          sourceIndex
+        )
+
+proc blitMapSprite(
+  pixels: var seq[uint8],
+  sprite: RgbaSprite,
+  baseX, baseY: int
+) =
+  ## Blits one sprite into the global map sprite.
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let
+        px = baseX + x
+        py = baseY + y
+      if px < 0 or py < 0 or
+          px >= WorldWidthPixels or py >= WorldHeightPixels:
+        continue
+      let sourceIndex = sprite.rgbaSpriteIndex(x, y)
+      if sprite.pixels[sourceIndex + 3] != 0'u8:
+        pixels.blendRgbaPixel(
+          py * WorldWidthPixels + px,
+          sprite.pixels,
+          sourceIndex
+        )
 
 proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
-  ## Builds a full world map sprite using the same wall tiles as the game.
+  ## Builds a full world map sprite from the described terrain cells.
   result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
-  for i in 0 ..< WorldWidthPixels * WorldHeightPixels:
-    result.putRgbaPixel(i, BackgroundColor)
   for ty in 0 ..< WorldHeightTiles:
     for tx in 0 ..< WorldWidthTiles:
-      if not sim.tiles[tileIndex(tx, ty)]:
-        continue
-      let
-        baseX = tx * TileSize
-        baseY = ty * TileSize
-      for y in 0 ..< sim.terrainSprite.height:
-        for x in 0 ..< sim.terrainSprite.width:
-          let colorIndex =
-            sim.terrainSprite.pixels[sim.terrainSprite.spriteIndex(x, y)]
-          if colorIndex != TransparentColorIndex:
-            result.putRgbaPixel(
-              (baseY + y) * WorldWidthPixels + baseX + x,
-              colorIndex
-            )
-
+      result.blitMapSprite(
+        sim.rgbaTerrainSprite,
+        tx * WorldTileSize,
+        ty * WorldTileSize
+      )
 proc putTextSpritePixel(
   pixels: var seq[uint8],
   width, height, x, y: int,
@@ -726,30 +894,33 @@ proc buildReplayControlsSprite(
     )
     x += 16
 
-proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
-  ## Converts a packed Bitworld frame into protocol sprite pixels.
-  result = newRgbaPixels(ScreenWidth, ScreenHeight)
-  var j = 0
-  for byte in packed:
-    result.putRgbaPixel(j, byte and 0x0f)
-    inc j
-    result.putRgbaPixel(j, (byte shr 4) and 0x0f)
-    inc j
-
 proc playerObjectId(player: Actor): int =
   ## Returns the stable global protocol object id for a player.
   PlayerObjectBase + player.id
 
-proc playerSpriteId(playerIndex: int, selected: bool, facing: Facing): int =
-  ## Returns the sprite id for a player color and facing.
+proc playerSpriteId(
+  playerIndex: int,
+  form: PlayerForm,
+  selected: bool,
+  facing: Facing
+): int =
+  ## Returns the sprite id for one colored adventurer facing.
   let
-    colorIndex = playerIndex mod PlayerColors.len
+    colorIndex = playerIndex mod PlayerTintColors.len
     base = if selected: SelectedPlayerSpriteBase else: PlayerSpriteBase
-  base + colorIndex * 4 + ord(facing)
+  base + colorIndex * 8 + ord(form) * 4 + ord(facing)
 
-proc swooshSpriteId(facing: Facing): int =
-  ## Returns the sprite id for one attack swoosh facing.
-  SwooshSpriteBase + ord(facing)
+proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
+  ## Returns the sprite id for one adventurer attack swish facing.
+  SwooshSpriteBase + ord(form) * 4 + ord(facing)
+
+proc terrainSpriteId(kind: TerrainKind): int =
+  ## Returns the sprite id for one terrain prop kind.
+  TerrainSpriteBase + ord(kind)
+
+proc terrainObjectId(index: int): int =
+  ## Returns the object id for one terrain prop instance.
+  TerrainObjectBase + index
 
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
   ## Returns the player index for a selected player id.
@@ -764,11 +935,11 @@ proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
   var bestY = low(int)
   for player in sim.players:
     let
-      size = player.sprite.facedSize(FaceDown)
+      sprite = sim.playerSpriteFor(player)
       x = player.x - 1 - PlayerSelectPadding
       y = player.y - 1 - PlayerSelectPadding
-      w = size.width + 2 + PlayerSelectPadding * 2
-      h = size.height + 2 + PlayerSelectPadding * 2
+      w = sprite.width + 2 + PlayerSelectPadding * 2
+      h = sprite.height + 2 + PlayerSelectPadding * 2
     if mouseX >= x and mouseX < x + w and
         mouseY >= y and mouseY < y + h and
         player.y >= bestY:
@@ -831,50 +1002,74 @@ proc replayScrubTickAt(
 
 proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
   ## Adds sprite definitions shared by global and player views.
-  for i in 0 ..< PlayerColors.len:
-    for facing in Facing:
-      let
-        playerSprite = buildSpriteProtocolActorSprite(
-          sim.playerSprite,
-          PlayerColors[i],
-          facing
+  for i in 0 ..< PlayerTintColors.len:
+    for form in PlayerForm:
+      let art = sim.playerArts[form]
+      for facing in Facing:
+        let pose = facing.playerPoseForFacing()
+        let
+          playerSprite = buildSpriteProtocolActorSprite(
+            art.rgbaSprites[pose],
+            art.masks[pose],
+            playerTintColor(i),
+            false,
+            facing == FaceLeft
+          )
+          selectedPlayerSprite = buildSpriteProtocolActorSprite(
+            art.rgbaSprites[pose],
+            art.masks[pose],
+            playerTintColor(i),
+            true,
+            facing == FaceLeft
+          )
+        packet.addSprite(
+          playerSpriteId(i, form, false, facing),
+          playerSprite.width,
+          playerSprite.height,
+          playerSprite.pixels
         )
-        selectedPlayerSprite = buildSpriteProtocolActorSprite(
-          sim.playerSprite,
-          PlayerColors[i],
-          facing,
-          true
+        packet.addSprite(
+          playerSpriteId(i, form, true, facing),
+          selectedPlayerSprite.width,
+          selectedPlayerSprite.height,
+          selectedPlayerSprite.pixels
         )
-      packet.addSprite(
-        playerSpriteId(i, false, facing),
-        playerSprite.width,
-        playerSprite.height,
-        playerSprite.pixels
-      )
-      packet.addSprite(
-        playerSpriteId(i, true, facing),
-        selectedPlayerSprite.width,
-        selectedPlayerSprite.height,
-        selectedPlayerSprite.pixels
-      )
 
-  for facing in Facing:
-    let swoosh = buildSpriteProtocolFacedRawSprite(sim.swooshSprite, facing)
-    packet.addSprite(
-      swooshSpriteId(facing),
-      swoosh.width,
-      swoosh.height,
-      swoosh.pixels,
-      "swoosh"
-    )
+  for form in PlayerForm:
+    for facing in Facing:
+      let swoosh = buildSpriteProtocolFacedRawSprite(
+        sim.playerArts[form].rgbaSwoosh,
+        facing
+      )
+      packet.addSprite(
+        swooshSpriteId(form, facing),
+        swoosh.width,
+        swoosh.height,
+        swoosh.pixels,
+        "swoosh"
+      )
 
   let
-    mob = buildSpriteProtocolRawSprite(sim.mobSprite)
-    boss = buildSpriteProtocolRawSprite(sim.bossSprite)
-    coin = buildSpriteProtocolRawSprite(sim.coinSprite)
-    heart = buildSpriteProtocolRawSprite(sim.heartSprite)
-  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "snake")
-  packet.addSprite(BossSpriteId, boss.width, boss.height, boss.pixels, "boss")
+    mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
+    troll = buildSpriteProtocolRawSprite(sim.rgbaTrollSprite)
+    boss = buildSpriteProtocolRawSprite(sim.rgbaBossSprite)
+    coin = buildSpriteProtocolRawSprite(sim.rgbaCoinSprite)
+    heart = buildSpriteProtocolRawSprite(sim.rgbaHeartSprite)
+  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "ghost")
+  packet.addSprite(
+    TrollSpriteId,
+    troll.width,
+    troll.height,
+    troll.pixels,
+    "troll"
+  )
+  packet.addSprite(
+    BossSpriteId,
+    boss.width,
+    boss.height,
+    boss.pixels,
+    "pigman"
+  )
   packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
   packet.addSprite(
     HeartSpriteId,
@@ -883,6 +1078,15 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     heart.pixels,
     "heart"
   )
+  for kind in TerrainKind:
+    let prop = buildSpriteProtocolRawSprite(sim.terrainPropRgbaSprite(kind))
+    packet.addSprite(
+      terrainSpriteId(kind),
+      prop.width,
+      prop.height,
+      prop.pixels,
+      $kind
+    )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -891,8 +1095,6 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
   result.addViewport(TopLeftLayerId, ScreenWidth, 24)
-  result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
-  result.addViewport(BottomRightLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(
     ReplayCenterBottomLayerId,
     ReplayCenterBottomLayerType,
@@ -943,6 +1145,7 @@ proc attackObjectId(player: Actor): int =
 proc addSpeechBubbles(
   sim: SimServer,
   packet: var seq[uint8],
+  objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
   cameraX, cameraY: int
 ) =
@@ -954,7 +1157,8 @@ proc addSpeechBubbles(
       bubble = sim.buildSpriteProtocolBubbleSprite(player.message)
       objectId = player.chatObjectId()
       spriteId = player.chatSpriteId()
-      centerX = player.x + player.sprite.width div 2 - cameraX
+      sprite = sim.playerSpriteFor(player)
+      centerX = player.x + sprite.width div 2 - cameraX
       x = centerX - bubble.width div 2
       y = player.y - bubble.height - 4 - cameraY
     currentIds.add(objectId)
@@ -965,18 +1169,19 @@ proc addSpeechBubbles(
       bubble.pixels,
       player.message
     )
-    packet.addObject(
+    objects.addWorldSpriteObject(
+      currentIds,
       objectId,
       x,
       y,
-      player.y + 200,
-      MapLayerId,
-      spriteId
+      spriteId,
+      bubble.height
     )
 
 proc addAttackObjects(
   sim: SimServer,
   packet: var seq[uint8],
+  objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
   cameraX, cameraY: int
 ) =
@@ -987,14 +1192,34 @@ proc addAttackObjects(
     let
       hit = sim.attackRect(player)
       objectId = player.attackObjectId()
-    currentIds.add(objectId)
-    packet.addObject(
+    objects.addWorldSpriteObject(
+      currentIds,
       objectId,
       hit.x - cameraX,
       hit.y - cameraY,
-      player.y + 100,
-      MapLayerId,
-      swooshSpriteId(player.facing)
+      swooshSpriteId(player.form, player.facing),
+      hit.h
+    )
+
+proc addTerrainObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX, cameraY: int
+) =
+  ## Adds terrain prop objects so they share world sprite sorting.
+  for i in 0 ..< sim.terrainProps.len:
+    let
+      prop = sim.terrainProps[i]
+      objectId = terrainObjectId(i)
+      sprite = sim.terrainPropRgbaSprite(prop.kind)
+    objects.addWorldSpriteObject(
+      currentIds,
+      objectId,
+      prop.tx * WorldTileSize - cameraX,
+      prop.ty * WorldTileSize - cameraY,
+      terrainSpriteId(prop.kind),
+      sprite.height
     )
 
 proc addWorldObjects(
@@ -1005,35 +1230,44 @@ proc addWorldObjects(
   selectedPlayerId = -1
 ) =
   ## Adds pickups, mobs, players, attacks, and speech bubbles.
+  var objects: seq[WorldSpriteObject] = @[]
+  sim.addTerrainObjects(objects, currentIds, cameraX, cameraY)
+
   for i in 0 ..< sim.pickups.len:
     let
       pickup = sim.pickups[i]
       objectId = PickupObjectBase + i
       spriteId =
         if pickup.kind == PickupCoin: CoinSpriteId else: HeartSpriteId
-    currentIds.add(objectId)
-    packet.addObject(
+      sprite = sim.pickupRgbaSprite(pickup.kind)
+    objects.addWorldSpriteObject(
+      currentIds,
       objectId,
       pickup.x - cameraX,
       pickup.y - cameraY,
-      pickup.y,
-      MapLayerId,
-      spriteId
+      spriteId,
+      sprite.height
     )
 
   for i in 0 ..< sim.mobs.len:
     let
       mob = sim.mobs[i]
       objectId = MobObjectBase + i
-      spriteId = if mob.kind == BossMob: BossSpriteId else: MobSpriteId
-    currentIds.add(objectId)
-    packet.addObject(
+      spriteId =
+        case mob.kind
+        of SnakeMob:
+          MobSpriteId
+        of TrollMob:
+          TrollSpriteId
+        of BossMob:
+          BossSpriteId
+    objects.addWorldSpriteObject(
+      currentIds,
       objectId,
       mob.x - cameraX,
       mob.y - cameraY,
-      mob.y,
-      MapLayerId,
-      spriteId
+      spriteId,
+      mob.sprite.height
     )
 
   for i in 0 ..< sim.players.len:
@@ -1043,18 +1277,23 @@ proc addWorldObjects(
       objectId = player.playerObjectId()
     if player.lives <= 0:
       continue
-    currentIds.add(objectId)
-    packet.addObject(
+    objects.addWorldSpriteObject(
+      currentIds,
       objectId,
       player.x - 1 - cameraX,
       player.y - 1 - cameraY,
-      player.y,
-      MapLayerId,
-      playerSpriteId(i, selected, FaceDown)
+      playerSpriteId(
+        i,
+        player.form,
+        selected,
+        player.facing
+      ),
+      sim.playerRgbaSpriteFor(player).height + 2
     )
 
-  sim.addAttackObjects(packet, currentIds, cameraX, cameraY)
-  sim.addSpeechBubbles(packet, currentIds, cameraX, cameraY)
+  sim.addAttackObjects(packet, objects, currentIds, cameraX, cameraY)
+  sim.addSpeechBubbles(packet, objects, currentIds, cameraX, cameraY)
+  packet.flushWorldSpriteObjects(objects)
 
 proc addPlayerHud(
   sim: SimServer,
@@ -1252,26 +1491,6 @@ proc buildSpriteProtocolUpdates*(
       0,
       TopLeftLayerId,
       SelectedTextSpriteId
-    )
-
-  if playerIndex >= 0:
-    let viewport = spritePixelsFromPackedFrame(
-      sim.render(playerIndex)
-    )
-    currentIds.add(SelectedViewportObjectId)
-    result.addSprite(
-      SelectedViewportSpriteId,
-      ScreenWidth,
-      ScreenHeight,
-      viewport
-    )
-    result.addObject(
-      SelectedViewportObjectId,
-      0,
-      0,
-      0,
-      BottomRightLayerId,
-      SelectedViewportSpriteId
     )
 
   if replayTick >= 0:

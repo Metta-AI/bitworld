@@ -1,10 +1,12 @@
-import pixie
-import protocol
-import ../common/server
 import std/[os, random]
+import bitworld/aseprite
+import pixie, protocol
+import ../common/server
 
 const
-  SheetTileSize* = TileSize
+  ArtCellSize* = 32
+  WorldTileSize* = ArtCellSize
+  SheetTileSize* = ArtCellSize
   GameName* = "big_adventure"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
@@ -14,13 +16,15 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
-  WorldWidthTiles* = 96
-  WorldHeightTiles* = 96
-  WorldWidthPixels* = WorldWidthTiles * TileSize
-  WorldHeightPixels* = WorldHeightTiles * TileSize
+  WorldWidthTiles* = 32
+  WorldHeightTiles* = 32
+  WorldWidthPixels* = WorldWidthTiles * WorldTileSize
+  WorldHeightPixels* = WorldHeightTiles * WorldTileSize
   TargetMobCount* = 48
-  MinMobSpacing* = 16
-  MinPlayerSpawnSpacing* = 40
+  TerrainPatchDivisor* = 52
+  MinMobSpacing* = 24
+  MinPlayerSpawnSpacing* = 24
+  SwooshDistanceDivisor* = 3
   MotionScale* = 256
   Accel* = 38
   FrictionNum* = 200
@@ -29,6 +33,7 @@ const
   StopThreshold* = 8
   MaxPlayerLives* = 5
   SnakeHp* = 3
+  TrollHp* = 5
   BossHp* = 10
   BossCoinValue* = 10
   TargetFps* = 24
@@ -71,6 +76,8 @@ const
   CoinSpriteId* = 302
   HeartSpriteId* = 303
   SwooshSpriteBase* = 304
+  TrollSpriteId* = 312
+  TerrainSpriteBase* = 320
   SelectedTextSpriteId* = 400
   SelectedViewportSpriteId* = 401
   ReplayTickSpriteId* = 402
@@ -87,13 +94,48 @@ const
   ChatObjectBase* = 5000
   AttackObjectBase* = 6000
   PlayerHudObjectId* = 7000
+  TerrainObjectBase* = 8000
 
 type
+  PlayerForm* = enum
+    MalePlayer
+    FemalePlayer
+
+  PlayerPose* = enum
+    PlayerFront
+    PlayerSide
+    PlayerBack
+
+  TerrainKind* = enum
+    TerrainTree
+    TerrainEvergreen
+    TerrainRock
+    TerrainLog
+    TerrainStump
+
+  RgbaSprite* = object
+    width*, height*: int
+    pixels*: seq[uint8]
+
+  SpriteBounds* = object
+    x*, y*, w*, h*: int
+
+  PlayerArt* = object
+    sprites*: array[PlayerPose, Sprite]
+    rgbaSprites*: array[PlayerPose, RgbaSprite]
+    masks*: array[PlayerPose, Sprite]
+    bounds*: array[PlayerPose, SpriteBounds]
+    swoosh*: Sprite
+    rgbaSwoosh*: RgbaSprite
+    swooshBounds*: SpriteBounds
+
   Actor* = object
     id*: int
     address*: string
     x*, y*: int
+    form*: PlayerForm
     sprite*: Sprite
+    bounds*: SpriteBounds
     facing*: Facing
     attackTicks*: int
     attackResolved*: bool
@@ -112,6 +154,7 @@ type
 
   MobKind* = enum
     SnakeMob
+    TrollMob
     BossMob
 
   Pickup* = object
@@ -123,25 +166,46 @@ type
     kind*: MobKind
     x*, y*: int
     sprite*: Sprite
+    bounds*: SpriteBounds
     wanderCooldown*: int
     hp*: int
     attackCooldown*: int
     attackPhase*: int
     attackFacing*: Facing
 
+  TerrainProp* = object
+    tx*, ty*: int
+    kind*: TerrainKind
+
   SimServer* = object
     players*: seq[Actor]
     mobs*: seq[Mob]
     pickups*: seq[Pickup]
     tiles*: seq[bool]
+    terrainKinds*: seq[TerrainKind]
+    terrainProps*: seq[TerrainProp]
+    playerArts*: array[PlayerForm, PlayerArt]
     playerSprite*: Sprite
     terrainSprite*: Sprite
+    rgbaTerrainSprite*: RgbaSprite
+    terrainSprites*: array[TerrainKind, Sprite]
+    rgbaTerrainSprites*: array[TerrainKind, RgbaSprite]
+    terrainBounds*: array[TerrainKind, SpriteBounds]
     mobSprite*: Sprite
+    rgbaMobSprite*: RgbaSprite
+    mobBounds*: SpriteBounds
+    trollSprite*: Sprite
+    rgbaTrollSprite*: RgbaSprite
+    trollBounds*: SpriteBounds
     bossSprite*: Sprite
-    swooshSprite*: Sprite
+    rgbaBossSprite*: RgbaSprite
+    bossBounds*: SpriteBounds
     heartSprite*: Sprite
-    emptyHeartSprite*: Sprite
+    rgbaHeartSprite*: RgbaSprite
+    heartBounds*: SpriteBounds
     coinSprite*: Sprite
+    rgbaCoinSprite*: RgbaSprite
+    coinBounds*: SpriteBounds
     digitSprites*: array[10, Sprite]
     letterSprites*: seq[Sprite]
     asciiSprites*: seq[Sprite]
@@ -162,7 +226,11 @@ proc clientDataDir*(): string =
   repoDir() / "clients" / "data"
 
 proc sheetPath*(): string =
-  dataDir() / "spritesheet.png"
+  ## Returns the new 32 by 32 Aseprite sheet path.
+  let path = dataDir() / "spritesheat.aseprite"
+  if fileExists(path):
+    return path
+  dataDir() / "spritesheet.aseprite"
 
 proc loadClientPalette*() =
   loadPalette(clientDataDir() / "pallete.png")
@@ -201,13 +269,225 @@ proc loadClientAsciiSprites*(): seq[Sprite] =
               colorIndex
       result.add(sprite)
 
+proc rgbaSpriteIndex*(sprite: RgbaSprite, x, y: int): int =
+  ## Returns the byte offset for one RGBA sprite pixel.
+  (y * sprite.width + x) * 4
+
+proc rgbaSpriteFromImage(image: Image): RgbaSprite =
+  ## Copies a Pixie image into a straight RGBA sprite.
+  result.width = image.width
+  result.height = image.height
+  result.pixels = newSeq[uint8](result.width * result.height * 4)
+  for y in 0 ..< image.height:
+    for x in 0 ..< image.width:
+      let
+        pixel = image[x, y]
+        index = result.rgbaSpriteIndex(x, y)
+      result.pixels[index] = pixel.r
+      result.pixels[index + 1] = pixel.g
+      result.pixels[index + 2] = pixel.b
+      result.pixels[index + 3] = pixel.a
+
 proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
+  ## Slices one 32 by 32 cell as a palette-indexed sprite.
   spriteFromImage(
-    sheet.subImage(cellX * SheetTileSize, cellY * SheetTileSize, SheetTileSize, SheetTileSize)
+    sheet.subImage(
+      cellX * ArtCellSize,
+      cellY * ArtCellSize,
+      ArtCellSize,
+      ArtCellSize
+    )
   )
 
-proc sheetRegionSprite(sheet: Image, x, y, width, height: int): Sprite =
-  spriteFromImage(sheet.subImage(x, y, width, height))
+proc sheetRgbaSprite(sheet: Image, cellX, cellY: int): RgbaSprite =
+  ## Slices one 32 by 32 cell as a true-color sprite.
+  rgbaSpriteFromImage(
+    sheet.subImage(
+      cellX * ArtCellSize,
+      cellY * ArtCellSize,
+      ArtCellSize,
+      ArtCellSize
+    )
+  )
+
+proc visibleBounds*(sprite: Sprite): SpriteBounds =
+  ## Measures the exact visible bounds of a palette sprite.
+  var
+    minX = sprite.width
+    minY = sprite.height
+    maxX = -1
+    maxY = -1
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      if sprite.pixels[sprite.spriteIndex(x, y)] == TransparentColorIndex:
+        continue
+      minX = min(minX, x)
+      minY = min(minY, y)
+      maxX = max(maxX, x)
+      maxY = max(maxY, y)
+  if maxX < minX or maxY < minY:
+    return SpriteBounds()
+  SpriteBounds(
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  )
+
+proc visibleBounds*(sprite: RgbaSprite): SpriteBounds =
+  ## Measures the exact visible bounds of a true-color sprite.
+  var
+    minX = sprite.width
+    minY = sprite.height
+    maxX = -1
+    maxY = -1
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      if sprite.pixels[sprite.rgbaSpriteIndex(x, y) + 3] == 0'u8:
+        continue
+      minX = min(minX, x)
+      minY = min(minY, y)
+      maxX = max(maxX, x)
+      maxY = max(maxY, y)
+  if maxX < minX or maxY < minY:
+    return SpriteBounds()
+  SpriteBounds(
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  )
+
+proc lowerCenterBounds(bounds: SpriteBounds): SpriteBounds =
+  ## Returns a small trunk-like collision box from visible bounds.
+  if bounds.w <= 0 or bounds.h <= 0:
+    return bounds
+  let
+    width = max(6, bounds.w div 3)
+    height = max(6, bounds.h div 4)
+  SpriteBounds(
+    x: bounds.x + (bounds.w - width) div 2,
+    y: bounds.y + bounds.h - height,
+    w: width,
+    h: height
+  )
+
+proc terrainCollisionBounds*(
+  sprite: RgbaSprite,
+  kind: TerrainKind
+): SpriteBounds =
+  ## Measures collision bounds for one terrain prop sprite.
+  let bounds = sprite.visibleBounds()
+  case kind
+  of TerrainTree, TerrainEvergreen:
+    bounds.lowerCenterBounds()
+  of TerrainRock, TerrainLog, TerrainStump:
+    bounds
+
+proc loadPlayerArt(sheet: Image, row: int): PlayerArt =
+  ## Loads one adventurer row from the new art sheet.
+  result.sprites[PlayerFront] = sheet.sheetSprite(0, row)
+  result.sprites[PlayerSide] = sheet.sheetSprite(1, row)
+  result.sprites[PlayerBack] = sheet.sheetSprite(2, row)
+  result.rgbaSprites[PlayerFront] = sheet.sheetRgbaSprite(0, row)
+  result.rgbaSprites[PlayerSide] = sheet.sheetRgbaSprite(1, row)
+  result.rgbaSprites[PlayerBack] = sheet.sheetRgbaSprite(2, row)
+  result.swoosh = sheet.sheetSprite(3, row)
+  result.rgbaSwoosh = sheet.sheetRgbaSprite(3, row)
+  result.masks[PlayerFront] = sheet.sheetSprite(4, row)
+  result.masks[PlayerSide] = sheet.sheetSprite(5, row)
+  result.masks[PlayerBack] = sheet.sheetSprite(6, row)
+  result.bounds[PlayerFront] = result.rgbaSprites[PlayerFront].visibleBounds()
+  result.bounds[PlayerSide] = result.rgbaSprites[PlayerSide].visibleBounds()
+  result.bounds[PlayerBack] = result.rgbaSprites[PlayerBack].visibleBounds()
+  result.swooshBounds = result.rgbaSwoosh.visibleBounds()
+
+proc playerPoseForFacing*(facing: Facing): PlayerPose =
+  ## Returns the drawn player pose for a movement facing.
+  case facing
+  of FaceUp:
+    PlayerBack
+  of FaceDown:
+    PlayerFront
+  of FaceLeft, FaceRight:
+    PlayerSide
+
+proc playerFormForId(playerId: int): PlayerForm =
+  ## Splits players evenly between male and female adventurers.
+  if playerId mod 2 == 0:
+    FemalePlayer
+  else:
+    MalePlayer
+
+proc terrainPropSprite*(sim: SimServer, kind: TerrainKind): Sprite =
+  ## Returns the sprite for one terrain prop kind.
+  sim.terrainSprites[kind]
+
+proc terrainPropRgbaSprite*(sim: SimServer, kind: TerrainKind): RgbaSprite =
+  ## Returns the true-color sprite for one terrain prop kind.
+  sim.rgbaTerrainSprites[kind]
+
+proc terrainPropBounds*(sim: SimServer, kind: TerrainKind): SpriteBounds =
+  ## Returns the collision bounds for one terrain prop kind.
+  sim.terrainBounds[kind]
+
+proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
+  ## Returns the sprite for one pickup kind.
+  case kind
+  of PickupCoin:
+    sim.coinSprite
+  of PickupHeart:
+    sim.heartSprite
+
+proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
+  ## Returns the true-color sprite for one pickup kind.
+  case kind
+  of PickupCoin:
+    sim.rgbaCoinSprite
+  of PickupHeart:
+    sim.rgbaHeartSprite
+
+proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
+  ## Returns the collision bounds for one pickup kind.
+  case kind
+  of PickupCoin:
+    sim.coinBounds
+  of PickupHeart:
+    sim.heartBounds
+
+proc playerSpriteFor*(sim: SimServer, player: Actor): Sprite =
+  ## Returns the current drawn sprite for one player.
+  sim.playerArts[player.form].sprites[player.facing.playerPoseForFacing()]
+
+proc playerRgbaSpriteFor*(sim: SimServer, player: Actor): RgbaSprite =
+  ## Returns the current true-color sprite for one player.
+  sim.playerArts[player.form].rgbaSprites[player.facing.playerPoseForFacing()]
+
+proc playerBoundsFor*(sim: SimServer, player: Actor): SpriteBounds =
+  ## Returns the current collision bounds for one player.
+  sim.playerArts[player.form].bounds[player.facing.playerPoseForFacing()]
+
+proc playerMaskFor*(sim: SimServer, player: Actor): Sprite =
+  ## Returns the current recolor mask for one player.
+  sim.playerArts[player.form].masks[player.facing.playerPoseForFacing()]
+
+proc playerSwooshFor*(sim: SimServer, player: Actor): Sprite =
+  ## Returns the attack sprite for one player's form.
+  sim.playerArts[player.form].swoosh
+
+proc playerRgbaSwooshFor*(sim: SimServer, player: Actor): RgbaSprite =
+  ## Returns the true-color attack sprite for one player's form.
+  sim.playerArts[player.form].rgbaSwoosh
+
+proc mobBoundsFor*(sim: SimServer, kind: MobKind): SpriteBounds =
+  ## Returns the collision bounds for one mob kind.
+  case kind
+  of SnakeMob:
+    sim.mobBounds
+  of TrollMob:
+    sim.trollBounds
+  of BossMob:
+    sim.bossBounds
 
 proc tileIndex*(tx, ty: int): int =
   ty * WorldWidthTiles + tx
@@ -224,25 +504,92 @@ proc rectsOverlap*(ax, ay, aw, ah, bx, by, bw, bh: int): bool =
   ay < by + bh and
   ay + ah > by
 
+proc boundsCenterX*(x: int, bounds: SpriteBounds): int =
+  ## Returns the world x center for one collision bounds.
+  x + bounds.x + bounds.w div 2
+
+proc boundsCenterY*(y: int, bounds: SpriteBounds): int =
+  ## Returns the world y center for one collision bounds.
+  y + bounds.y + bounds.h div 2
+
+proc boundsOverlap*(
+  ax, ay: int,
+  a: SpriteBounds,
+  bx, by: int,
+  b: SpriteBounds
+): bool =
+  ## Returns true when two sprite bounds overlap in world space.
+  if a.w <= 0 or a.h <= 0 or b.w <= 0 or b.h <= 0:
+    return false
+  rectsOverlap(
+    ax + a.x,
+    ay + a.y,
+    a.w,
+    a.h,
+    bx + b.x,
+    by + b.y,
+    b.w,
+    b.h
+  )
+
+proc rectOverlapsBounds*(
+  x, y, w, h: int,
+  bx, by: int,
+  bounds: SpriteBounds
+): bool =
+  ## Returns true when a rectangle overlaps sprite bounds.
+  if bounds.w <= 0 or bounds.h <= 0:
+    return false
+  rectsOverlap(
+    x,
+    y,
+    w,
+    h,
+    bx + bounds.x,
+    by + bounds.y,
+    bounds.w,
+    bounds.h
+  )
+
 proc distanceSquared*(ax, ay, bx, by: int): int =
   let
     dx = ax - bx
     dy = ay - by
   dx * dx + dy * dy
 
-proc canOccupy*(sim: SimServer, x, y, width, height: int): bool =
-  if x < 0 or y < 0 or x + width > WorldWidthPixels or y + height > WorldHeightPixels:
+proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
+  let
+    worldX = x + bounds.x
+    worldY = y + bounds.y
+  if bounds.w <= 0 or bounds.h <= 0:
+    return true
+  if worldX < 0 or worldY < 0 or
+      worldX + bounds.w > WorldWidthPixels or
+      worldY + bounds.h > WorldHeightPixels:
     return false
 
   let
-    startTx = x div TileSize
-    startTy = y div TileSize
-    endTx = (x + width - 1) div TileSize
-    endTy = (y + height - 1) div TileSize
+    startTx = max(0, worldX div WorldTileSize)
+    startTy = max(0, worldY div WorldTileSize)
+    endTx = min(
+      WorldWidthTiles - 1,
+      (worldX + bounds.w - 1) div WorldTileSize
+    )
+    endTy = min(
+      WorldHeightTiles - 1,
+      (worldY + bounds.h - 1) div WorldTileSize
+    )
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
-      if sim.tiles[tileIndex(tx, ty)]:
+      if not sim.tiles[tileIndex(tx, ty)]:
+        continue
+      let
+        kind = sim.terrainKinds[tileIndex(tx, ty)]
+        terrainBounds = sim.terrainPropBounds(kind)
+        terrainX = tx * WorldTileSize
+        terrainY = ty * WorldTileSize
+      if boundsOverlap(x, y, bounds, terrainX, terrainY, terrainBounds):
         return false
   true
 
@@ -253,7 +600,11 @@ proc clearSpawnArea*(sim: var SimServer, centerTx, centerTy, radius: int) =
         sim.tiles[tileIndex(tx, ty)] = false
 
 proc seedBrush*(sim: var SimServer) =
-  for _ in 0 ..< 180:
+  let patchCount = max(
+    12,
+    (WorldWidthTiles * WorldHeightTiles) div TerrainPatchDivisor
+  )
+  for _ in 0 ..< patchCount:
     let
       baseTx = sim.rng.rand(WorldWidthTiles - 1)
       baseTy = sim.rng.rand(WorldHeightTiles - 1)
@@ -266,43 +617,109 @@ proc seedBrush*(sim: var SimServer) =
         if inTileBounds(tx, ty) and sim.rng.rand(99) < 72:
           sim.tiles[tileIndex(tx, ty)] = true
 
-proc canSpawnMobAt*(sim: SimServer, px, py: int, sprite: Sprite): bool =
-  if not sim.canOccupy(px, py, sprite.width, sprite.height):
+proc randomTerrainKind(rng: var Rand): TerrainKind =
+  ## Chooses one terrain prop with more trees than small debris.
+  let roll = rng.rand(99)
+  if roll < 32:
+    TerrainTree
+  elif roll < 62:
+    TerrainEvergreen
+  elif roll < 76:
+    TerrainRock
+  elif roll < 89:
+    TerrainLog
+  else:
+    TerrainStump
+
+proc seedTerrainProps*(sim: var SimServer) =
+  ## Creates visual terrain props for every solid terrain tile.
+  sim.terrainProps.setLen(0)
+  for ty in 0 ..< WorldHeightTiles:
+    for tx in 0 ..< WorldWidthTiles:
+      if sim.tiles[tileIndex(tx, ty)]:
+        let kind = sim.rng.randomTerrainKind()
+        sim.terrainKinds[tileIndex(tx, ty)] = kind
+        sim.terrainProps.add(TerrainProp(
+          tx: tx,
+          ty: ty,
+          kind: kind
+        ))
+
+proc nextMobAttackCooldown(rng: var Rand, kind: MobKind): int =
+  ## Returns the cooldown before the next mob hit.
+  case kind
+  of SnakeMob:
+    45 + rng.rand(30)
+  of TrollMob:
+    16 + rng.rand(14)
+  of BossMob:
+    35 + rng.rand(25)
+
+proc canSpawnMobAt*(
+  sim: SimServer,
+  px, py: int,
+  bounds: SpriteBounds
+): bool =
+  if not sim.canOccupy(px, py, bounds):
     return false
 
   let mobSpacingSq = MinMobSpacing * MinMobSpacing
   for mob in sim.mobs:
-    if distanceSquared(px, py, mob.x, mob.y) < mobSpacingSq:
+    let
+      ax = boundsCenterX(px, bounds)
+      ay = boundsCenterY(py, bounds)
+      bx = boundsCenterX(mob.x, mob.bounds)
+      by = boundsCenterY(mob.y, mob.bounds)
+    if distanceSquared(ax, ay, bx, by) < mobSpacingSq:
       return false
 
   if sim.players.len > 0:
     for player in sim.players:
-      if distanceSquared(px, py, player.x, player.y) < MinPlayerSpawnSpacing * MinPlayerSpawnSpacing:
+      let
+        ax = boundsCenterX(px, bounds)
+        ay = boundsCenterY(py, bounds)
+        bx = boundsCenterX(player.x, player.bounds)
+        by = boundsCenterY(player.y, player.bounds)
+      if distanceSquared(ax, ay, bx, by) <
+          MinPlayerSpawnSpacing * MinPlayerSpawnSpacing:
         return false
 
   true
 
-proc spawnOneMob*(sim: var SimServer, kind: MobKind, sprite: Sprite, hp: int): bool =
+proc spawnOneMob*(
+  sim: var SimServer,
+  kind: MobKind,
+  sprite: Sprite,
+  hp: int
+): bool =
+  let bounds = sim.mobBoundsFor(kind)
   for _ in 0 ..< 128:
     let
       tx = sim.rng.rand(WorldWidthTiles - 1)
       ty = sim.rng.rand(WorldHeightTiles - 1)
-      px = tx * TileSize
-      py = ty * TileSize
-    if sim.canSpawnMobAt(px, py, sprite):
+      px = tx * WorldTileSize
+      py = ty * WorldTileSize
+    if sim.canSpawnMobAt(px, py, bounds):
       sim.mobs.add Mob(
         kind: kind,
         x: px,
         y: py,
         sprite: sprite,
+        bounds: bounds,
         wanderCooldown: 8 + sim.rng.rand(18),
         hp: hp,
-        attackCooldown: 30 + sim.rng.rand(30)
+        attackCooldown: sim.rng.nextMobAttackCooldown(kind)
       )
       return true
   false
 
-proc spawnMobs*(sim: var SimServer, count: int, kind: MobKind, sprite: Sprite, hp: int) =
+proc spawnMobs*(
+  sim: var SimServer,
+  count: int,
+  kind: MobKind,
+  sprite: Sprite,
+  hp: int
+) =
   var spawned = 0
   while spawned < count:
     if not sim.spawnOneMob(kind, sprite, hp):
@@ -311,7 +728,7 @@ proc spawnMobs*(sim: var SimServer, count: int, kind: MobKind, sprite: Sprite, h
 
 proc snakeCount*(sim: SimServer): int =
   for mob in sim.mobs:
-    if mob.kind == SnakeMob:
+    if mob.kind != BossMob:
       inc result
 
 proc hasBoss*(sim: SimServer): bool =
@@ -320,15 +737,28 @@ proc hasBoss*(sim: SimServer): bool =
       return true
 
 proc mobAttackRange*(mob: Mob): int =
-  12 + max(mob.sprite.width, mob.sprite.height)
+  12 + max(mob.bounds.w, mob.bounds.h)
 
-proc findPlayerSpawn*(sim: SimServer): tuple[x, y: int] =
+proc mobMaxHp*(mob: Mob): int =
+  ## Returns the maximum hit points for one mob.
+  case mob.kind
+  of SnakeMob:
+    SnakeHp
+  of TrollMob:
+    TrollHp
+  of BossMob:
+    BossHp
+
+proc findPlayerSpawn*(
+  sim: SimServer,
+  bounds: SpriteBounds
+): tuple[x, y: int] =
   let
     centerTx = WorldWidthTiles div 2
     centerTy = WorldHeightTiles div 2
     minSpacingSq = MinPlayerSpawnSpacing * MinPlayerSpawnSpacing
 
-  for radius in 0 .. 12:
+  for radius in 0 .. 8:
     for dy in -radius .. radius:
       for dx in -radius .. radius:
         let
@@ -337,29 +767,38 @@ proc findPlayerSpawn*(sim: SimServer): tuple[x, y: int] =
         if not inTileBounds(tx, ty):
           continue
         let
-          px = tx * TileSize
-          py = ty * TileSize
-        if not sim.canOccupy(px, py, sim.playerSprite.width, sim.playerSprite.height):
+          px = tx * WorldTileSize
+          py = ty * WorldTileSize
+        if not sim.canOccupy(px, py, bounds):
           continue
         var tooClose = false
         for player in sim.players:
-          if distanceSquared(px, py, player.x, player.y) < minSpacingSq:
+          let
+            ax = boundsCenterX(px, bounds)
+            ay = boundsCenterY(py, bounds)
+            bx = boundsCenterX(player.x, player.bounds)
+            by = boundsCenterY(player.y, player.bounds)
+          if distanceSquared(ax, ay, bx, by) < minSpacingSq:
             tooClose = true
             break
         if not tooClose:
           return (px, py)
 
-  (centerTx * TileSize, centerTy * TileSize)
+  (centerTx * WorldTileSize, centerTy * WorldTileSize)
 
 proc addPlayer*(sim: var SimServer, address: string): int =
   inc sim.nextPlayerId
-  let spawn = sim.findPlayerSpawn()
+  let form = sim.nextPlayerId.playerFormForId()
+  let bounds = sim.playerArts[form].bounds[PlayerFront]
+  let spawn = sim.findPlayerSpawn(bounds)
   sim.players.add Actor(
     id: sim.nextPlayerId,
     address: address,
     x: spawn.x,
     y: spawn.y,
-    sprite: sim.playerSprite,
+    form: form,
+    sprite: sim.playerArts[form].sprites[PlayerFront],
+    bounds: bounds,
     facing: FaceDown,
     lives: MaxPlayerLives
   )
@@ -369,17 +808,54 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.seed = seed
   result.rng = initRand(seed)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
+  result.terrainKinds = newSeq[TerrainKind](WorldWidthTiles * WorldHeightTiles)
   result.fb = initFramebuffer()
   loadClientPalette()
-  let sheet = readImage(sheetPath())
-  result.terrainSprite = sheet.sheetSprite(0, 0)
-  result.playerSprite = sheet.sheetSprite(1, 0)
-  result.mobSprite = sheet.sheetSprite(2, 0)
-  result.bossSprite = sheet.sheetRegionSprite(0, 2 * SheetTileSize, 2 * SheetTileSize, 2 * SheetTileSize)
-  result.swooshSprite = sheet.sheetSprite(3, 0)
-  result.heartSprite = sheet.sheetSprite(0, 1)
-  result.emptyHeartSprite = sheet.sheetSprite(1, 1)
-  result.coinSprite = sheet.sheetSprite(2, 1)
+  let sheet = readAsepriteImage(sheetPath())
+  result.playerArts[MalePlayer] = sheet.loadPlayerArt(0)
+  result.playerArts[FemalePlayer] = sheet.loadPlayerArt(1)
+  result.playerSprite = result.playerArts[MalePlayer].sprites[PlayerFront]
+  result.mobSprite = sheet.sheetSprite(0, 2)
+  result.rgbaMobSprite = sheet.sheetRgbaSprite(0, 2)
+  result.mobBounds = result.rgbaMobSprite.visibleBounds()
+  result.trollSprite = sheet.sheetSprite(1, 2)
+  result.rgbaTrollSprite = sheet.sheetRgbaSprite(1, 2)
+  result.trollBounds = result.rgbaTrollSprite.visibleBounds()
+  result.bossSprite = sheet.sheetSprite(2, 2)
+  result.rgbaBossSprite = sheet.sheetRgbaSprite(2, 2)
+  result.bossBounds = result.rgbaBossSprite.visibleBounds()
+  result.terrainSprite = sheet.sheetSprite(0, 3)
+  result.rgbaTerrainSprite = sheet.sheetRgbaSprite(0, 3)
+  result.terrainSprites[TerrainTree] = sheet.sheetSprite(1, 3)
+  result.rgbaTerrainSprites[TerrainTree] = sheet.sheetRgbaSprite(1, 3)
+  result.terrainBounds[TerrainTree] =
+    result.rgbaTerrainSprites[TerrainTree].terrainCollisionBounds(TerrainTree)
+  result.terrainSprites[TerrainEvergreen] = sheet.sheetSprite(2, 3)
+  result.rgbaTerrainSprites[TerrainEvergreen] = sheet.sheetRgbaSprite(2, 3)
+  result.terrainBounds[TerrainEvergreen] =
+    result.rgbaTerrainSprites[TerrainEvergreen].terrainCollisionBounds(
+      TerrainEvergreen
+    )
+  result.terrainSprites[TerrainRock] = sheet.sheetSprite(3, 3)
+  result.rgbaTerrainSprites[TerrainRock] = sheet.sheetRgbaSprite(3, 3)
+  result.terrainBounds[TerrainRock] =
+    result.rgbaTerrainSprites[TerrainRock].terrainCollisionBounds(TerrainRock)
+  result.terrainSprites[TerrainLog] = sheet.sheetSprite(4, 3)
+  result.rgbaTerrainSprites[TerrainLog] = sheet.sheetRgbaSprite(4, 3)
+  result.terrainBounds[TerrainLog] =
+    result.rgbaTerrainSprites[TerrainLog].terrainCollisionBounds(TerrainLog)
+  result.terrainSprites[TerrainStump] = sheet.sheetSprite(5, 3)
+  result.rgbaTerrainSprites[TerrainStump] = sheet.sheetRgbaSprite(5, 3)
+  result.terrainBounds[TerrainStump] =
+    result.rgbaTerrainSprites[TerrainStump].terrainCollisionBounds(
+      TerrainStump
+    )
+  result.coinSprite = sheet.sheetSprite(0, 4)
+  result.rgbaCoinSprite = sheet.sheetRgbaSprite(0, 4)
+  result.coinBounds = result.rgbaCoinSprite.visibleBounds()
+  result.heartSprite = sheet.sheetSprite(1, 4)
+  result.rgbaHeartSprite = sheet.sheetRgbaSprite(1, 4)
+  result.heartBounds = result.rgbaHeartSprite.visibleBounds()
   result.digitSprites = loadClientDigitSprites()
   result.letterSprites = loadClientLetterSprites()
   result.asciiSprites = loadClientAsciiSprites()
@@ -388,9 +864,11 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   let startTx = WorldWidthTiles div 2
   let startTy = WorldHeightTiles div 2
   result.clearSpawnArea(startTx, startTy, 5)
+  result.seedTerrainProps()
 
   result.players = @[]
-  result.spawnMobs(36, SnakeMob, result.mobSprite, SnakeHp)
+  result.spawnMobs(28, SnakeMob, result.mobSprite, SnakeHp)
+  result.spawnMobs(8, TrollMob, result.trollSprite, TrollHp)
   discard result.spawnOneMob(BossMob, result.bossSprite, BossHp)
   result.mobSpawnCooldown = 30
 
@@ -448,7 +926,7 @@ proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
     let stepX = (if dx < 0: -1 else: 1)
     for _ in 0 ..< abs(dx):
       let nx = actor.x + stepX
-      if sim.canOccupy(nx, actor.y, actor.sprite.width, actor.sprite.height):
+      if sim.canOccupy(nx, actor.y, actor.bounds):
         actor.x = nx
       else:
         break
@@ -457,7 +935,7 @@ proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
     let stepY = (if dy < 0: -1 else: 1)
     for _ in 0 ..< abs(dy):
       let ny = actor.y + stepY
-      if sim.canOccupy(actor.x, ny, actor.sprite.width, actor.sprite.height):
+      if sim.canOccupy(actor.x, ny, actor.bounds):
         actor.y = ny
       else:
         break
@@ -473,14 +951,14 @@ proc applyMomentumAxis(
   while abs(carry) >= MotionScale:
     let step = (if carry < 0: -1 else: 1)
     if horizontal:
-      if sim.canOccupy(actor.x + step, actor.y, actor.sprite.width, actor.sprite.height):
+      if sim.canOccupy(actor.x + step, actor.y, actor.bounds):
         actor.x += step
         carry -= step * MotionScale
       else:
         carry = 0
         break
     else:
-      if sim.canOccupy(actor.x, actor.y + step, actor.sprite.width, actor.sprite.height):
+      if sim.canOccupy(actor.x, actor.y + step, actor.bounds):
         actor.y += step
         carry -= step * MotionScale
       else:
@@ -542,6 +1020,7 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     player.facing = FaceUp
   elif inputY > 0:
     player.facing = FaceDown
+  player.bounds = sim.playerBoundsFor(player)
 
   sim.applyMomentumAxis(player, player.carryX, player.velX, true)
   sim.applyMomentumAxis(player, player.carryY, player.velY, false)
@@ -550,16 +1029,41 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     player.attackResolved = false
 
 proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
-  let sprite = sim.swooshSprite
+  let sprite = sim.playerSwooshFor(player)
+  let
+    width =
+      if player.facing in {FaceUp, FaceDown}:
+        sprite.width
+      else:
+        sprite.height
+    height =
+      if player.facing in {FaceUp, FaceDown}:
+        sprite.height
+      else:
+        sprite.width
+    closeX = max(1, width div SwooshDistanceDivisor)
+    closeY = max(1, height div SwooshDistanceDivisor)
+    playerCenterX = player.x + player.sprite.width div 2
+    playerCenterY = player.y + player.sprite.height div 2
   case player.facing
   of FaceUp:
-    (player.x, player.y - sprite.height, sprite.width, sprite.height)
+    (playerCenterX - width div 2, player.y - closeY, width, height)
   of FaceDown:
-    (player.x, player.y + player.sprite.height, sprite.width, sprite.height)
+    (
+      playerCenterX - width div 2,
+      player.y + player.sprite.height - closeY,
+      width,
+      height
+    )
   of FaceLeft:
-    (player.x - sprite.height, player.y, sprite.height, sprite.width)
+    (player.x - closeX, playerCenterY - height div 2, width, height)
   of FaceRight:
-    (player.x + player.sprite.width, player.y, sprite.height, sprite.width)
+    (
+      player.x + player.sprite.width - closeX,
+      playerCenterY - height div 2,
+      width,
+      height
+    )
 
 proc lungeVector(facing: Facing, distance: int): tuple[dx, dy: int] =
   case facing
@@ -604,7 +1108,8 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
   var actor = Actor(
     x: sim.players[playerIndex].x,
     y: sim.players[playerIndex].y,
-    sprite: sim.players[playerIndex].sprite
+    sprite: sim.players[playerIndex].sprite,
+    bounds: sim.players[playerIndex].bounds
   )
   sim.moveActor(actor, knockbackDx, knockbackDy)
   sim.players[playerIndex].x = actor.x
@@ -632,11 +1137,16 @@ proc applyAttack(sim: var SimServer) =
     let player = sim.players[playerIndex]
     let hit = sim.attackRect(player)
     for mobIndex in 0 ..< sim.mobs.len:
-      if sim.mobs[mobIndex].kind == SnakeMob and mobDamaged[mobIndex]:
+      if sim.mobs[mobIndex].kind != BossMob and mobDamaged[mobIndex]:
         continue
-      if rectsOverlap(
-        hit.x, hit.y, hit.w, hit.h,
-        sim.mobs[mobIndex].x, sim.mobs[mobIndex].y, sim.mobs[mobIndex].sprite.width, sim.mobs[mobIndex].sprite.height
+      if rectOverlapsBounds(
+        hit.x,
+        hit.y,
+        hit.w,
+        hit.h,
+        sim.mobs[mobIndex].x,
+        sim.mobs[mobIndex].y,
+        sim.mobs[mobIndex].bounds
       ):
         var dx = 0
         var dy = 0
@@ -652,7 +1162,12 @@ proc applyAttack(sim: var SimServer) =
         else:
           mobDamaged[mobIndex] = true
           dec sim.mobs[mobIndex].hp
-          var actor = Actor(x: sim.mobs[mobIndex].x, y: sim.mobs[mobIndex].y, sprite: sim.mobs[mobIndex].sprite)
+          var actor = Actor(
+            x: sim.mobs[mobIndex].x,
+            y: sim.mobs[mobIndex].y,
+            sprite: sim.mobs[mobIndex].sprite,
+            bounds: sim.mobs[mobIndex].bounds
+          )
           sim.moveActor(actor, dx, dy)
           sim.mobs[mobIndex].x = actor.x
           sim.mobs[mobIndex].y = actor.y
@@ -664,9 +1179,14 @@ proc applyAttack(sim: var SimServer) =
       let targetPlayer = sim.players[targetPlayerIndex]
       if targetPlayer.lives <= 0:
         continue
-      if rectsOverlap(
-        hit.x, hit.y, hit.w, hit.h,
-        targetPlayer.x, targetPlayer.y, targetPlayer.sprite.width, targetPlayer.sprite.height
+      if rectOverlapsBounds(
+        hit.x,
+        hit.y,
+        hit.w,
+        hit.h,
+        targetPlayer.x,
+        targetPlayer.y,
+        targetPlayer.bounds
       ):
         var dx = 0
         var dy = 0
@@ -689,7 +1209,12 @@ proc applyAttack(sim: var SimServer) =
       knockbackX = bossKnockbackXs[mobIndex].clamp(-4, 4)
       knockbackY = bossKnockbackYs[mobIndex].clamp(-4, 4)
     if knockbackX != 0 or knockbackY != 0:
-      var actor = Actor(x: sim.mobs[mobIndex].x, y: sim.mobs[mobIndex].y, sprite: sim.mobs[mobIndex].sprite)
+      var actor = Actor(
+        x: sim.mobs[mobIndex].x,
+        y: sim.mobs[mobIndex].y,
+        sprite: sim.mobs[mobIndex].sprite,
+        bounds: sim.mobs[mobIndex].bounds
+      )
       sim.moveActor(actor, knockbackX, knockbackY)
       sim.mobs[mobIndex].x = actor.x
       sim.mobs[mobIndex].y = actor.y
@@ -700,9 +1225,10 @@ proc applyAttack(sim: var SimServer) =
       survivors.add(mob)
     else:
       if mob.kind == BossMob:
+        let sprite = sim.pickupSprite(PickupCoin)
         sim.pickups.add(Pickup(
-          x: mob.x + mob.sprite.width div 2 - TileSize div 2,
-          y: mob.y + mob.sprite.height div 2 - TileSize div 2,
+          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
+          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
           kind: PickupCoin,
           value: BossCoinValue
         ))
@@ -720,14 +1246,19 @@ proc collectPickups(sim: var SimServer) =
 
   var remaining: seq[Pickup] = @[]
   for pickup in sim.pickups:
+    let bounds = sim.pickupBounds(pickup.kind)
     var collected = false
     for playerIndex in 0 ..< sim.players.len:
       let player = sim.players[playerIndex]
       if player.lives <= 0:
         continue
-      if rectsOverlap(
-        pickup.x, pickup.y, TileSize, TileSize,
-        player.x, player.y, player.sprite.width, player.sprite.height
+      if boundsOverlap(
+        pickup.x,
+        pickup.y,
+        bounds,
+        player.x,
+        player.y,
+        player.bounds
       ):
         case pickup.kind
         of PickupCoin:
@@ -761,14 +1292,15 @@ proc updateMobs*(sim: var SimServer) =
       bestDistance = high(int)
       hasTarget = false
     let
-      centerX = mob.x + mob.sprite.width div 2
-      centerY = mob.y + mob.sprite.height div 2
+      centerX = boundsCenterX(mob.x, mob.bounds)
+      centerY = boundsCenterY(mob.y, mob.bounds)
     for playerIndex in 0 ..< sim.players.len:
       let player = sim.players[playerIndex]
       if player.lives <= 0:
         continue
-      let playerCenterX = player.x + player.sprite.width div 2
-      let playerCenterY = player.y + player.sprite.height div 2
+      let
+        playerCenterX = boundsCenterX(player.x, player.bounds)
+        playerCenterY = boundsCenterY(player.y, player.bounds)
       let distance = distanceSquared(centerX, centerY, playerCenterX, playerCenterY)
       if distance < bestDistance:
         bestDistance = distance
@@ -780,13 +1312,18 @@ proc updateMobs*(sim: var SimServer) =
 
     if mob.attackPhase == 0:
       let
-        playerCenterX = player.x + player.sprite.width div 2
-        playerCenterY = player.y + player.sprite.height div 2
+        playerCenterX = boundsCenterX(player.x, player.bounds)
+        playerCenterY = boundsCenterY(player.y, player.bounds)
       let attackRange = mob.mobAttackRange()
       if mob.attackCooldown == 0 and distanceSquared(centerX, centerY, playerCenterX, playerCenterY) <= attackRange * attackRange:
         mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
         let back = lungeVector(mob.attackFacing, -1)
-        var actor = Actor(x: mob.x, y: mob.y, sprite: mob.sprite)
+        var actor = Actor(
+          x: mob.x,
+          y: mob.y,
+          sprite: mob.sprite,
+          bounds: mob.bounds
+        )
         sim.moveActor(actor, back.dx, back.dy)
         mob.x = actor.x
         mob.y = actor.y
@@ -795,7 +1332,12 @@ proc updateMobs*(sim: var SimServer) =
 
     elif mob.attackPhase == 1:
       let lunge = lungeVector(mob.attackFacing, 4)
-      var actor = Actor(x: mob.x, y: mob.y, sprite: mob.sprite)
+      var actor = Actor(
+        x: mob.x,
+        y: mob.y,
+        sprite: mob.sprite,
+        bounds: mob.bounds
+      )
       sim.moveActor(actor, lunge.dx, lunge.dy)
       mob.x = actor.x
       mob.y = actor.y
@@ -803,13 +1345,17 @@ proc updateMobs*(sim: var SimServer) =
         let player = sim.players[playerIndex]
         if player.lives <= 0:
           continue
-        if player.invulnTicks == 0 and rectsOverlap(
-          mob.x, mob.y, mob.sprite.width, mob.sprite.height,
-          player.x, player.y, player.sprite.width, player.sprite.height
+        if player.invulnTicks == 0 and boundsOverlap(
+          mob.x,
+          mob.y,
+          mob.bounds,
+          player.x,
+          player.y,
+          player.bounds
         ):
           sim.damagePlayer(playerIndex, lunge.dx, lunge.dy)
       mob.attackPhase = 0
-      mob.attackCooldown = 45 + sim.rng.rand(30)
+      mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
       continue
 
     dec mob.wanderCooldown
@@ -826,7 +1372,12 @@ proc updateMobs*(sim: var SimServer) =
     of 2: dy = 1
     else: dy = -1
 
-    var actor = Actor(x: mob.x, y: mob.y, sprite: mob.sprite)
+    var actor = Actor(
+      x: mob.x,
+      y: mob.y,
+      sprite: mob.sprite,
+      bounds: mob.bounds
+    )
     sim.moveActor(actor, dx, dy)
     mob.x = actor.x
     mob.y = actor.y
@@ -843,20 +1394,34 @@ proc respawnMobs(sim: var SimServer) =
   if sim.mobSpawnCooldown > 0:
     return
 
-  discard sim.spawnOneMob(SnakeMob, sim.mobSprite, SnakeHp)
+  if sim.rng.rand(99) < 20:
+    discard sim.spawnOneMob(TrollMob, sim.trollSprite, TrollHp)
+  else:
+    discard sim.spawnOneMob(SnakeMob, sim.mobSprite, SnakeHp)
   sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
 
 proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
   let
-    startTx = max(0, cameraX div TileSize)
-    startTy = max(0, cameraY div TileSize)
-    endTx = min(WorldWidthTiles - 1, (cameraX + ScreenWidth - 1) div TileSize)
-    endTy = min(WorldHeightTiles - 1, (cameraY + ScreenHeight - 1) div TileSize)
+    startTx = max(0, cameraX div WorldTileSize)
+    startTy = max(0, cameraY div WorldTileSize)
+    endTx = min(
+      WorldWidthTiles - 1,
+      (cameraX + ScreenWidth - 1) div WorldTileSize
+    )
+    endTy = min(
+      WorldHeightTiles - 1,
+      (cameraY + ScreenHeight - 1) div WorldTileSize
+    )
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
+      let
+        x = tx * WorldTileSize
+        y = ty * WorldTileSize
+      sim.fb.blitSprite(sim.terrainSprite, x, y, cameraX, cameraY)
       if sim.tiles[tileIndex(tx, ty)]:
-        sim.fb.blitSprite(sim.terrainSprite, tx * TileSize, ty * TileSize, cameraX, cameraY)
+        let sprite = sim.terrainSprites[sim.terrainKinds[tileIndex(tx, ty)]]
+        sim.fb.blitSprite(sprite, x, y, cameraX, cameraY)
 
 proc renderNumber*(
   fb: var Framebuffer,
@@ -870,6 +1435,37 @@ proc renderNumber*(
     fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
     x += digitSprites[digit].width
 
+proc blitActorSprite(
+  fb: var Framebuffer,
+  sprite, mask: Sprite,
+  worldX, worldY, cameraX, cameraY: int,
+  tint: uint8,
+  flipX = false
+) =
+  ## Draws one actor sprite while recoloring only its mask pixels.
+  let
+    screenX = worldX - cameraX
+    screenY = worldY - cameraY
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let sourceX =
+        if flipX:
+          sprite.width - 1 - x
+        else:
+          x
+      let colorIndex = sprite.pixels[sprite.spriteIndex(sourceX, y)]
+      if colorIndex == TransparentColorIndex:
+        continue
+      let
+        drawIndex =
+          if sourceX < mask.width and y < mask.height and
+              mask.pixels[mask.spriteIndex(sourceX, y)] !=
+                  TransparentColorIndex:
+            tint
+          else:
+            colorIndex
+      fb.putPixel(screenX + x, screenY + y, drawIndex)
+
 proc renderHud*(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -877,16 +1473,10 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   let
     player = sim.players[playerIndex]
     coins = min(player.coins, 99)
-    heartsStartX = ScreenWidth - MaxPlayerLives * sim.heartSprite.width
 
   sim.fb.renderNumber(sim.digitSprites, coins, 0, 0)
-
-  for i in 0 ..< MaxPlayerLives:
-    let x = heartsStartX + i * sim.heartSprite.width
-    if i < player.lives:
-      sim.fb.blitSprite(sim.heartSprite, x, 0, 0, 0)
-    else:
-      sim.fb.blitSprite(sim.emptyHeartSprite, x, 0, 0, 0)
+  sim.fb.blitText(sim.letterSprites, "LIVES", 34, 0)
+  sim.fb.renderNumber(sim.digitSprites, player.lives, 70, 0)
 
 proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, maximum: int) =
   if maximum <= 0 or width <= 0:
@@ -909,8 +1499,8 @@ proc playerColor*(playerIndex: int): uint8 =
 proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX, cameraY: int) =
   let
     player = sim.players[playerIndex]
-    pcx = player.x + player.sprite.width div 2
-    pcy = player.y + player.sprite.height div 2
+    pcx = boundsCenterX(player.x, player.bounds)
+    pcy = boundsCenterY(player.y, player.bounds)
     halfW = ScreenWidth div 2
     halfH = ScreenHeight div 2
 
@@ -931,8 +1521,8 @@ proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX
 
   for i, mob in sim.mobs:
     let
-      mcx = mob.x + mob.sprite.width div 2
-      mcy = mob.y + mob.sprite.height div 2
+      mcx = boundsCenterX(mob.x, mob.bounds)
+      mcy = boundsCenterY(mob.y, mob.bounds)
       dx = mcx - pcx
       dy = mcy - pcy
     if abs(dx) > RadarRange or abs(dy) > RadarRange:
@@ -950,8 +1540,8 @@ proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX
       continue
     let
       other = sim.players[i]
-      ocx = other.x + other.sprite.width div 2
-      ocy = other.y + other.sprite.height div 2
+      ocx = boundsCenterX(other.x, other.bounds)
+      ocy = boundsCenterY(other.y, other.bounds)
       sx = ocx - cameraX
       sy = ocy - cameraY
     if sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight:
@@ -991,14 +1581,30 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   for i in 0 ..< sim.players.len:
     let otherPlayer = sim.players[i]
     if otherPlayer.lives > 0:
-      sim.fb.blitSpriteTinted(otherPlayer.sprite, otherPlayer.x, otherPlayer.y, cameraX, cameraY, playerColor(i))
+      sim.fb.blitActorSprite(
+        sim.playerSpriteFor(otherPlayer),
+        sim.playerMaskFor(otherPlayer),
+        otherPlayer.x,
+        otherPlayer.y,
+        cameraX,
+        cameraY,
+        playerColor(i),
+        otherPlayer.facing == FaceLeft
+      )
   for otherPlayer in sim.players:
     if otherPlayer.lives > 0 and otherPlayer.attackTicks > 0:
       let hit = sim.attackRect(otherPlayer)
-      sim.fb.blitSprite(sim.swooshSprite, hit.x, hit.y, cameraX, cameraY, otherPlayer.facing)
+      sim.fb.blitSprite(
+        sim.playerSwooshFor(otherPlayer),
+        hit.x,
+        hit.y,
+        cameraX,
+        cameraY,
+        otherPlayer.facing
+      )
   for mob in sim.mobs:
     let
-      maxHp = (if mob.kind == BossMob: BossHp else: SnakeHp)
+      maxHp = mob.mobMaxHp()
       barW = mob.sprite.width
       barX = mob.x - cameraX
       barY = mob.y - cameraY - 2
