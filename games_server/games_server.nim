@@ -2044,38 +2044,34 @@ proc hostName(request: Request): string =
     return raw[0 ..< colon]
   raw
 
-proc hostHeader(request: Request): string =
-  ## Extracts the browser-visible host with its port.
-  result = request.headers["Host"].strip()
-  if result.len == 0:
-    result = "localhost:" & $DefaultPort
+proc gamePagePath(game: GameContainer, page: string): string =
+  ## Returns the canonical game route for one client page label.
+  case page
+  of "player.html":
+    if game.cogameName == "big_adventure":
+      "/sprite_player"
+    else:
+      "/player"
+  of "rewards.html", "reward.html":
+    "/reward"
+  of "admin.html":
+    "/admin"
+  else:
+    "/global"
 
-proc gameWebSocketUrl(
+proc gameHttpUrl(
   request: Request,
   game: GameContainer,
   path: string
 ): string =
-  ## Builds a browser websocket URL for a game endpoint.
+  ## Builds a browser HTTP URL for a game endpoint page.
   if useEcs and game.ip.len > 0:
-    return ecsGameWebSocketUrl(game.ip, path)
-  "ws://" & request.hostName() & ":" & $game.port & path
+    return "http://" & game.ip & ":" & $GameContainerPort & path
+  "http://" & request.hostName() & ":" & $game.port & path
 
 proc gameUrl(request: Request, game: GameContainer, page: string): string =
   ## Builds a browser URL for a game client page.
-  let socketPath =
-    case page
-    of "player.html":
-      "/player"
-    of "rewards.html", "reward.html":
-      "/reward"
-    of "admin.html":
-      "/admin"
-    else:
-      "/global"
-  "http://" & request.hostHeader() & ClientPath & page &
-    "?address=" & encodeUrlComponent(
-      gameWebSocketUrl(request, game, socketPath)
-    )
+  request.gameHttpUrl(game, game.gamePagePath(page))
 
 proc healthUrl(game: GameContainer): string =
   ## Builds the local health URL for one game container.

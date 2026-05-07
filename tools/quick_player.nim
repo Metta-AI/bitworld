@@ -2,7 +2,7 @@ import std/[exitprocs, os, osproc, parseopt, strutils]
 
 const
   DefaultAddress = "localhost"
-  DefaultPort = 2000
+  DefaultPort = 8080
   MaxPlayers = 32
   PollIntervalMs = 100
   PlayerFolderRelative = "among_them" / "players"
@@ -16,6 +16,7 @@ type
     gui: bool
     namePrefix: string
     mapPath: string
+    url: string
 
 var
   playerProcesses: seq[Process]
@@ -28,12 +29,16 @@ proc repoRoot(): string =
 proc usage(): string =
   ## Returns command-line usage text.
   "Usage: quick_player <player_nim_file> --players:N " &
-    "[--address:ADDR] [--port:N] [--gui] [--name-prefix:NAME] " &
-    "[--map:PATH]\n" &
+    "[--address:ADDR] [--port:N] [--url:WS_URL] [--gui] " &
+    "[--name-prefix:NAME] [--map:PATH]\n" &
     "If --name-prefix is omitted the player file label is used " &
     "(e.g. 'nottoodumb1', 'nottoodumb2', ...).\n" &
+    "If --url is supplied it is forwarded to players that support full " &
+    "websocket URLs.\n" &
     "Example: quick_player nottoodumb --players:4 " &
-    "--address:0.0.0.0 --port:2000\n" &
+    "--address:0.0.0.0 --port:8080\n" &
+    "Example: quick_player nottoodumb --players:4 " &
+    "--url:ws://localhost:8080/player\n" &
     "Example: quick_player among_them/players/nottoodumb/nottoodumb.nim " &
     "--players:2 --gui"
 
@@ -244,6 +249,10 @@ proc parseArgs(): QuickPlayerConfig =
         if val.len == 0:
           raise newException(ValueError, "--port requires a value.")
         result.port = parsePort(val)
+      of "url":
+        if val.len == 0:
+          raise newException(ValueError, "--url requires a value.")
+        result.url = val
       of "gui":
         result.gui = true
       of "name-prefix":
@@ -294,7 +303,10 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
         "--map:" & config.mapPath
       else:
         "--map:" & absolutePath(rootDir / config.mapPath)
-  echo "Using ", config.address, ":", config.port, "."
+  if config.url.len > 0:
+    echo "Using ", config.url, "."
+  else:
+    echo "Using ", config.address, ":", config.port, "."
   result = compilePlayer(
     nimExe,
     rootDir,
@@ -304,11 +316,10 @@ proc runQuickPlayer(config: QuickPlayerConfig): int =
   if result != 0:
     return result
   for i in 0 ..< config.players:
-    var args = @[
-      addressArg,
-      portArg,
-      "--name:" & namePrefix & $(i + 1)
-    ]
+    var args = @[addressArg, portArg]
+    if config.url.len > 0:
+      args.add("--url:" & config.url)
+    args.add("--name:" & namePrefix & $(i + 1))
     if config.gui:
       args.add("--gui")
     if mapArg.len > 0:

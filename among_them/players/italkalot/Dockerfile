@@ -48,4 +48,4 @@ COPY --from=build /workspace/bitworld/among_them/*.png ./among_them/
 COPY --from=build /workspace/bitworld/clients/data ./clients/data
 
 WORKDIR /workspace/bitworld/among_them/players
-CMD ["/bin/italkalot", "--address:host.docker.internal", "--port:2000"]
+CMD ["/bin/italkalot", "--address:host.docker.internal", "--port:8080"]

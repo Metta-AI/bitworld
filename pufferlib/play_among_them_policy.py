@@ -13,7 +13,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("--address", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--name", default="puffer")
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--action-repeat", type=int, default=DEFAULT_ACTION_REPEAT)

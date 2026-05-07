@@ -1742,23 +1742,9 @@ proc hostName(request: Request): string =
     return raw[0 ..< colon]
   raw
 
-proc hostHeader(request: Request): string =
-  ## Extracts the browser-visible host with its port.
-  result = request.headers["Host"].strip()
-  if result.len == 0:
-    result = "localhost:" & $DefaultPort
-
-proc gameWebSocketUrl(
-  request: Request,
-  game: TournamentContainer
-): string =
-  ## Builds a browser websocket URL for a tournament game.
-  "ws://" & request.hostName() & ":" & $game.port & "/global"
-
 proc gameUrl(request: Request, game: TournamentContainer): string =
-  ## Builds a browser URL for the shared global client page.
-  "http://" & request.hostHeader() & ClientPath & "global.html" &
-    "?address=" & encodeUrlComponent(gameWebSocketUrl(request, game))
+  ## Builds a browser URL for the tournament game's global page.
+  "http://" & request.hostName() & ":" & $game.port & "/global"
 
 proc scoreUrl(request: Request, resultName: string): string =
   ## Builds a CoGame server score page URL for one score file.

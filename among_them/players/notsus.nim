@@ -10,7 +10,7 @@ const
   PlayerScreenY = ScreenHeight div 2
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
   PlayerWorldOffY = SpriteDrawOffY + PlayerScreenY - SpriteSize div 2
-  PlayerDefaultPort = 2000
+  PlayerDefaultPort = DefaultPort
   SpritePlayerTaskArrowObjectBase = 7000
   ProtocolVoteIconObjectBase = 9300
   MaxDrainMessages = 512

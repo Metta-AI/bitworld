@@ -385,6 +385,11 @@ proc runQuickRun(config: QuickRunConfig): int =
   let
     game = ensureGameFolder(rootDir, config.gameFolder)
     spritePlayerClient = usesSpritePlayerClient(game.label)
+    playerPath =
+      if spritePlayerClient:
+        "/sprite_player"
+      else:
+        "/player"
     gameTitle = humanizeLabel(game.label)
     gameExe = exePathFor(rootDir, game.sourceRelative)
     clientSourceRelative =
@@ -456,13 +461,20 @@ proc runQuickRun(config: QuickRunConfig): int =
             "--address:" & websocketUrl(
               config.address,
               config.port,
-              "/sprite_player?name=player1"
+              playerPath & "?name=player1"
             ),
             "--player",
             "--title:" & gameTitle
           ]
         else:
-          @[portArg, "--title:" & gameTitle]
+          @[
+            "--address:" & websocketUrl(
+              config.address,
+              config.port,
+              playerPath & "?name=player1"
+            ),
+            "--title:" & gameTitle
+          ]
       if config.reconnectSeconds.len > 0:
         clientArgs.add("--reconnect:" & config.reconnectSeconds)
       clientProcesses.add(
@@ -487,7 +499,7 @@ proc runQuickRun(config: QuickRunConfig): int =
               "--address:" & websocketUrl(
                 config.address,
                 config.port,
-                "/sprite_player?name=player" & $(i + 1)
+                playerPath & "?name=player" & $(i + 1)
               ),
               "--player",
               "--title:" & launch.title,
@@ -497,7 +509,11 @@ proc runQuickRun(config: QuickRunConfig): int =
             ]
           else:
             @[
-              portArg,
+              "--address:" & websocketUrl(
+                config.address,
+                config.port,
+                playerPath & "?name=player" & $(i + 1)
+              ),
               "--screen-only",
               "--title:" & launch.title,
               "--joystick:" & $(i + 1),
