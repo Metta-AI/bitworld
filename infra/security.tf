@@ -1,68 +1,119 @@
 # Security groups and DNS Firewall for bot egress control.
 #
 # Threat model: bots run arbitrary user code. They must ONLY be able to:
-#   1. Connect to the game server (websocket)
+#   1. Connect to the game container (websocket on port 8080)
 #   2. Call whitelisted LLM APIs (OpenAI, Anthropic, etc.)
 #   3. Resolve DNS for allowed domains only
 #
 # Everything else is blocked.
+#
+# Three roles:
+#   - Dashboard (games_server): orchestrates games, serves web UI
+#   - Game containers: run individual game instances, serve websockets
+#   - Bot containers: untrusted user code, heavily restricted
 
-# --- Game Server Security Group ---
+# =============================================================================
+# Dashboard / Orchestrator (games_server on EC2)
+# =============================================================================
 
-resource "aws_security_group" "game_server" {
-  name        = "${var.project_name}-game-server"
-  description = "Game server - public websocket + SSH"
+resource "aws_security_group" "dashboard" {
+  name        = "${var.project_name}-dashboard"
+  description = "Dashboard - web UI, orchestrates game and bot containers"
   vpc_id      = aws_vpc.main.id
 
-  tags = { Name = "${var.project_name}-game-server-sg" }
+  tags = { Name = "${var.project_name}-dashboard-sg" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "game_server_ws" {
-  security_group_id = aws_security_group.game_server.id
-  description       = "WebSocket from players and bots"
-  from_port         = var.game_server_port
-  to_port           = var.game_server_port
+resource "aws_vpc_security_group_ingress_rule" "dashboard_http" {
+  security_group_id = aws_security_group.dashboard.id
+  description       = "Dashboard web UI"
+  from_port         = var.dashboard_port
+  to_port           = var.dashboard_port
   ip_protocol       = "tcp"
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "game_server_ssh" {
-  security_group_id = aws_security_group.game_server.id
-  description       = "SSH - Phase 2: lock to admin CIDR"
+resource "aws_vpc_security_group_ingress_rule" "dashboard_ssh" {
+  security_group_id = aws_security_group.dashboard.id
+  description       = "SSH - Phase 2: lock to admin CIDR or replace with SSM"
   from_port         = 22
   to_port           = 22
   ip_protocol       = "tcp"
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-resource "aws_vpc_security_group_egress_rule" "game_server_all" {
-  security_group_id = aws_security_group.game_server.id
-  description       = "Game server needs outbound for image pulls, bot comms"
+resource "aws_vpc_security_group_egress_rule" "dashboard_all" {
+  security_group_id = aws_security_group.dashboard.id
+  description       = "Orchestrator needs outbound to manage ECS tasks, pull images, etc."
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# --- Bot Security Group ---
-# Bots are in private subnet with no public IP. They can only:
-# - Talk to game server on the game port
-# - Make HTTPS calls to LLM APIs (DNS Firewall restricts destinations)
-# - Resolve DNS via the VPC resolver
+# =============================================================================
+# Game Containers (ECS Fargate, public subnet)
+# Each task gets its own ENI/IP. All listen on port 8080.
+# Browsers connect directly for spectating/playing.
+# =============================================================================
+
+resource "aws_security_group" "game_container" {
+  name        = "${var.project_name}-game-container"
+  description = "Game containers - websocket for spectators and bots"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-game-container-sg" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "game_container_public" {
+  security_group_id = aws_security_group.game_container.id
+  description       = "Spectators and human players connect via browser"
+  from_port         = var.game_container_port
+  to_port           = var.game_container_port
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# --- PHASE 2: HTTPS/WSS ---
+# Replace public ingress on 8080 with ALB on 443. ALB terminates TLS,
+# forwards to game containers on 8080 via target group. Gives wss://
+# for free and removes direct public IP exposure.
+# Requires: ACM certificate, Route 53 DNS record, ALB in public subnet.
+
+resource "aws_vpc_security_group_ingress_rule" "game_container_from_bot" {
+  security_group_id            = aws_security_group.game_container.id
+  description                  = "Bots connect to their assigned game"
+  from_port                    = var.game_container_port
+  to_port                      = var.game_container_port
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.bot.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "game_container_all" {
+  security_group_id = aws_security_group.game_container.id
+  description       = "Game containers need outbound for health checks, replay uploads"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# =============================================================================
+# Bot Containers (ECS Fargate, private subnet)
+# Untrusted user code. No public IP. Heavily restricted egress.
+# =============================================================================
 
 resource "aws_security_group" "bot" {
   name        = "${var.project_name}-bot"
-  description = "Bot containers - restricted egress only"
+  description = "Bot containers - untrusted code, restricted egress only"
   vpc_id      = aws_vpc.main.id
 
   tags = { Name = "${var.project_name}-bot-sg" }
 }
 
-resource "aws_vpc_security_group_egress_rule" "bot_to_game_server" {
+resource "aws_vpc_security_group_egress_rule" "bot_to_game" {
   security_group_id            = aws_security_group.bot.id
-  description                  = "Connect to game server websocket"
-  from_port                    = var.game_server_port
-  to_port                      = var.game_server_port
+  description                  = "Connect to assigned game container"
+  from_port                    = var.game_container_port
+  to_port                      = var.game_container_port
   ip_protocol                  = "tcp"
-  referenced_security_group_id = aws_security_group.game_server.id
+  referenced_security_group_id = aws_security_group.game_container.id
 }
 
 resource "aws_vpc_security_group_egress_rule" "bot_https" {
@@ -92,9 +143,12 @@ resource "aws_vpc_security_group_egress_rule" "bot_dns_tcp" {
   cidr_ipv4         = "${cidrhost(var.vpc_cidr, 2)}/32"
 }
 
-# --- Route 53 DNS Firewall ---
+# =============================================================================
+# Route 53 DNS Firewall
 # Default-deny DNS resolution. Only domains in the allowlist resolve.
 # This prevents bots from reaching arbitrary internet services.
+# Applied at VPC level — no sidecar or agent needed.
+# =============================================================================
 
 resource "aws_route53_resolver_firewall_domain_list" "allowed" {
   name    = "${var.project_name}-allowed-domains"
@@ -134,9 +188,13 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
   priority               = 100
 }
 
-# --- PHASE 2: AWS Network Firewall ---
-# If bots bypass DNS by hardcoding IPs, this does L7 domain inspection
-# on actual TLS SNI. Only enable if abuse is detected.
+# =============================================================================
+# PHASE 2: Additional Security Layers
+# =============================================================================
+
+# --- Network Firewall ---
+# L7 domain inspection on TLS SNI. Catches hardcoded IPs bypassing DNS.
+# Deferred to Phase 2 for simplicity.
 #
 # resource "aws_networkfirewall_firewall" "bots" {
 #   name        = "${var.project_name}-network-firewall"
@@ -147,21 +205,8 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 #     subnet_id = aws_subnet.public.id
 #   }
 # }
-#
-# resource "aws_networkfirewall_firewall_policy" "bots" {
-#   name = "${var.project_name}-bot-policy"
-#
-#   firewall_policy {
-#     stateless_default_actions          = ["aws:forward_to_sfe"]
-#     stateless_fragment_default_actions = ["aws:forward_to_sfe"]
-#
-#     stateful_rule_group_reference {
-#       resource_arn = aws_networkfirewall_rule_group.allow_llm.arn
-#     }
-#   }
-# }
 
-# --- PHASE 2: VPC Endpoints ---
+# --- VPC Endpoints ---
 # Avoids routing ECR/S3 traffic through NAT gateway.
 #
 # resource "aws_vpc_endpoint" "s3" {
@@ -178,26 +223,15 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 #   security_group_ids  = [aws_security_group.bot.id]
 #   private_dns_enabled = true
 # }
-#
-# resource "aws_vpc_endpoint" "ecr_api" {
-#   vpc_id              = aws_vpc.main.id
-#   service_name        = "com.amazonaws.${var.region}.ecr.api"
-#   vpc_endpoint_type   = "Interface"
-#   subnet_ids          = [aws_subnet.private.id]
-#   security_group_ids  = [aws_security_group.bot.id]
-#   private_dns_enabled = true
-# }
 
-# --- PHASE 2: WAF on ALB ---
+# --- WAF on ALB ---
 # Rate-limit public websocket connections to prevent abuse.
-# Requires ALB in front of game server (also Phase 2).
+# Requires ALB in front of game containers (also Phase 2).
 #
-# resource "aws_wafv2_web_acl" "game_server" {
-#   name  = "${var.project_name}-game-server-waf"
+# resource "aws_wafv2_web_acl" "game" {
+#   name  = "${var.project_name}-game-waf"
 #   scope = "REGIONAL"
-#
 #   default_action { allow {} }
-#
 #   rule {
 #     name     = "rate-limit"
 #     priority = 1
@@ -214,10 +248,9 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 #       metric_name                = "rate-limit"
 #     }
 #   }
-#
 #   visibility_config {
 #     sampled_requests_enabled   = true
 #     cloudwatch_metrics_enabled = true
-#     metric_name                = "game-server-waf"
+#     metric_name                = "game-waf"
 #   }
 # }

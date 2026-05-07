@@ -88,34 +88,6 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# --- PHASE 2: Multi-AZ ---
-# Add subnets in us-east-1b and us-east-1c for ECS service availability.
-# Not needed for tournament MVP (single AZ is acceptable downtime risk).
-#
-# resource "aws_subnet" "private_b" {
-#   vpc_id            = aws_vpc.main.id
-#   cidr_block        = "10.0.129.0/24"
-#   availability_zone = "us-east-1b"
-#   tags = { Name = "${var.project_name}-private-b" }
-# }
-#
-# resource "aws_subnet" "private_c" {
-#   vpc_id            = aws_vpc.main.id
-#   cidr_block        = "10.0.130.0/24"
-#   availability_zone = "us-east-1c"
-#   tags = { Name = "${var.project_name}-private-c" }
-# }
-#
-# resource "aws_route_table_association" "private_b" {
-#   subnet_id      = aws_subnet.private_b.id
-#   route_table_id = aws_route_table.private.id
-# }
-#
-# resource "aws_route_table_association" "private_c" {
-#   subnet_id      = aws_subnet.private_c.id
-#   route_table_id = aws_route_table.private.id
-# }
-
 # --- PHASE 2: VPC Flow Logs ---
 # Useful for forensics if a bot does something suspicious.
 #

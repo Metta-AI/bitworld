@@ -13,13 +13,18 @@ output "private_subnet_id" {
   value       = aws_subnet.private.id
 }
 
-output "game_server_sg_id" {
-  description = "Security group to attach to game server EC2"
-  value       = aws_security_group.game_server.id
+output "dashboard_sg_id" {
+  description = "Security group for the dashboard EC2 (games_server)"
+  value       = aws_security_group.dashboard.id
+}
+
+output "game_container_sg_id" {
+  description = "Security group for game container ECS tasks"
+  value       = aws_security_group.game_container.id
 }
 
 output "bot_sg_id" {
-  description = "Security group to attach to ECS bot tasks"
+  description = "Security group for bot container ECS tasks"
   value       = aws_security_group.bot.id
 }
 

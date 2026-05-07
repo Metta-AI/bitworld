@@ -34,10 +34,16 @@ variable "availability_zone" {
   default     = "us-east-1a"
 }
 
-variable "game_server_port" {
-  description = "WebSocket port the game server listens on"
+variable "dashboard_port" {
+  description = "Port the games_server dashboard listens on (HTTP + management UI)"
   type        = number
   default     = 2080
+}
+
+variable "game_container_port" {
+  description = "Port each game container listens on (all use the same port, each has its own IP)"
+  type        = number
+  default     = 8080
 }
 
 variable "llm_api_domains" {
