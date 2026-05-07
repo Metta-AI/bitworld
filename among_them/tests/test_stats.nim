@@ -37,6 +37,9 @@ proc buildRewardPacketCopy(sim: SimServer): string =
       result.addStatLine("games_crewmate", identity, account.gamesCrewmate)
       result.addStatLine("kills", identity, account.kills)
       result.addStatLine("tasks", identity, account.tasks)
+      result.addStatLine("vote_players", identity, account.votePlayers)
+      result.addStatLine("vote_skip", identity, account.voteSkip)
+      result.addStatLine("vote_timeout", identity, account.voteTimeout)
 
 proc initAmongThemForTest(config: GameConfig): SimServer =
   ## Initializes Among Them from the game directory.
@@ -306,11 +309,46 @@ suite "stats":
     check not results["win"][0].getBool()
     check results["tasks"][0].getInt() == 2
     check results["kills"][0].getInt() == 0
+    check results["imposter"][0].getInt() == 0
+    check results["crew"][0].getInt() == 1
     check results["names"][1].getStr() == "imposter"
     check results["scores"][1].getInt() == 5 + WinReward
     check results["win"][1].getBool()
     check results["tasks"][1].getInt() == 0
     check results["kills"][1].getInt() == 1
+    check results["imposter"][1].getInt() == 1
+    check results["crew"][1].getInt() == 0
+
+  test "player result json reflects vote counters":
+    let config = defaultGameConfig()
+    var sim = initAmongThemForTest(config)
+
+    let
+      playerVoteIndex = sim.addPlayer("player-vote", 0)
+      skipIndex = sim.addPlayer("skip", 1)
+      timeoutIndex = sim.addPlayer("timeout", 2)
+    sim.players[playerVoteIndex].role = Crewmate
+    sim.players[skipIndex].role = Crewmate
+    sim.players[timeoutIndex].role = Imposter
+    sim.startVote()
+    sim.voteState.votes[playerVoteIndex] = timeoutIndex
+    sim.voteState.votes[skipIndex] = -2
+    sim.voteState.votes[timeoutIndex] = -1
+    sim.tallyVotes()
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["names"][0].getStr() == "player-vote"
+    check results["vote_players"][0].getInt() == 1
+    check results["vote_skip"][0].getInt() == 0
+    check results["vote_timeout"][0].getInt() == 0
+    check results["names"][1].getStr() == "skip"
+    check results["vote_players"][1].getInt() == 0
+    check results["vote_skip"][1].getInt() == 1
+    check results["vote_timeout"][1].getInt() == 0
+    check results["names"][2].getStr() == "timeout"
+    check results["vote_players"][2].getInt() == 0
+    check results["vote_skip"][2].getInt() == 0
+    check results["vote_timeout"][2].getInt() == 1
 
   test "player result json reflects draw scores":
     let config = defaultGameConfig()
@@ -334,8 +372,12 @@ suite "stats":
     check not results["win"][0].getBool()
     check results["tasks"][0].getInt() == 1
     check results["kills"][0].getInt() == 0
+    check results["imposter"][0].getInt() == 0
+    check results["crew"][0].getInt() == 1
     check results["names"][1].getStr() == "imposter"
     check results["scores"][1].getInt() == 5
     check not results["win"][1].getBool()
     check results["tasks"][1].getInt() == 0
     check results["kills"][1].getInt() == 1
+    check results["imposter"][1].getInt() == 1
+    check results["crew"][1].getInt() == 0
