@@ -185,7 +185,7 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
   name                   = "${var.project_name}-bot-vpc"
   firewall_rule_group_id = aws_route53_resolver_firewall_rule_group.bot_egress.id
   vpc_id                 = aws_vpc.main.id
-  priority               = 100
+  priority               = 101
 }
 
 # =============================================================================
