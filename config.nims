@@ -73,6 +73,7 @@ else:
     --define:release
     --define:noAutoGLerrorCheck
 
-  # Bots that connect outbound need OpenSSL so they can talk wss://.
-  when projectName() == "nottoodumb":
-    --define:ssl
+  # std/net dlopens libssl on first SSL use, so this is free for binaries
+  # that don't actually open TLS connections — but it's required for any
+  # that do (wss:// for the bots, https:// for italkalot's OpenAI calls).
+  --define:ssl
