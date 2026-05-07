@@ -784,21 +784,36 @@ proc inspectContainer(name: string): TournamentContainer =
   ]).strip()
   result = parseContainerLine(line)
 
+proc missingObjectLine(line: string): bool =
+  ## Returns true for a Docker inspect race on a removed container.
+  let text = line.toLowerAscii()
+  text.contains("no such object") or text.contains("no such container")
+
 proc inspectContainerBatch(names: openArray[string]): seq[TournamentContainer] =
   ## Reads a batch of tournament-managed Docker containers.
   if names.len == 0:
     return
-  let output = requireDocker(
+  let res = dockerResult(
     @["inspect", "--format", ContainerInspectFormat] & @names
   )
-  for line in output.splitLines():
+  var errors: seq[string]
+  for line in res.output.splitLines():
     let cleanLine = line.strip()
     if cleanLine.len == 0:
+      continue
+    if not cleanLine.startsWith("/"):
+      if not missingObjectLine(cleanLine):
+        errors.add(cleanLine)
       continue
     try:
       result.add(parseContainerLine(cleanLine))
     except CatchableError:
-      discard
+      errors.add(cleanLine)
+  if res.code != 0 and result.len == 0 and errors.len > 0:
+    raise newException(
+      TournamentError,
+      "docker inspect failed: " & errors.join("\n")
+    )
 
 proc listContainers(): seq[TournamentContainer] =
   ## Lists Docker containers owned by the tournament server.
