@@ -6,7 +6,7 @@ import { TEAM_A_COLOR, TEAM_B_COLOR } from "../game/constants.js";
 function configForPlayers(count: number): GameConfig {
   return {
     roles: [{ role: Role.Shades, team: Team.TeamA, count }],
-    rounds: [{ durationSecs: 1, hostages: 0 }],
+    rounds: [{ durationSecs: 1, psychopomps: 0 }],
     obstacleCount: 0,
   };
 }

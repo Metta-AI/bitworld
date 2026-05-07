@@ -4,7 +4,7 @@
  * Modes:
  *   freeplay    Local browser/dev mode. Players join /player?name=...
  *   tournament Coworld mode. Players join /player?slot=N&token=...
- *   replay     Coworld replay mode. Serves /replay from COGAME_LOAD_REPLAY_URI or COGAME_LOAD_REPLAY_PATH.
+ *   replay     Coworld replay mode. Serves /replay from COGAME_LOAD_REPLAY_PATH.
  */
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
@@ -13,7 +13,6 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { execFileSync } from "child_process";
-import { gunzipSync } from "zlib";
 import { Phase, Team, type InputState, type GameConfig } from "./game/types.js";
 import { GAME_NAME, TARGET_FPS, playerSpriteName, DEFAULT_GAME_CONFIG, playerCountFromConfig } from "./game/constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./game/protocol.js";
@@ -21,7 +20,7 @@ import { Sim } from "./game/sim.js";
 import { resolveConfigName, loadConfigFile } from "./game/config_presets.js";
 import { render } from "./rendering/renderer.js";
 import { buildGlobalFrame } from "./rendering/globalViewer.js";
-import { ReplayPlayer, ReplayRecorder, loadReplay } from "./replay.js";
+import { ReplayRecorder, loadReplay } from "./replay.js";
 
 type ServerMode = "freeplay" | "tournament" | "replay";
 
@@ -55,26 +54,22 @@ interface RuntimeOptions {
   resultsPath: string | null;
   saveReplayPath: string | null;
   loadReplayPath: string | null;
-  loadReplayUri: string | null;
 }
 
 const PENDING = 0x7fffffff;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-async function main() {
+function main() {
   const opts = resolveRuntimeOptions();
   if (opts.mode === "replay") {
-    await runReplayServer(opts);
+    runReplayServer(opts);
     return;
   }
   runGameServer(opts);
 }
 
 function resolveRuntimeOptions(): RuntimeOptions {
-  let host =
-    env.COGAME_CONFIG_PATH || env.COGAME_CONFIG_URI || env.COGAME_LOAD_REPLAY_PATH || env.COGAME_LOAD_REPLAY_URI
-      ? "0.0.0.0"
-      : "localhost";
+  let host = env.COGAME_CONFIG_PATH || env.COGAME_LOAD_REPLAY_PATH ? "0.0.0.0" : "localhost";
   let port = 8080;
   let replayPath: string | null = null;
   let seed = 0xb1770;
@@ -95,8 +90,8 @@ function resolveRuntimeOptions(): RuntimeOptions {
     else if (i === 3 && !arg.startsWith("-")) port = parseInt(arg, 10);
   }
 
-  if (env.COGAME_LOAD_REPLAY_PATH || env.COGAME_LOAD_REPLAY_URI) mode = "replay";
-  else if (env.COGAME_CONFIG_PATH || env.COGAME_CONFIG_URI) mode = "tournament";
+  if (env.COGAME_LOAD_REPLAY_PATH) mode = "replay";
+  else if (env.COGAME_CONFIG_PATH) mode = "tournament";
   mode ??= "freeplay";
 
   if (configName && configFile) {
@@ -107,15 +102,14 @@ function resolveRuntimeOptions(): RuntimeOptions {
   let config: GameConfig;
   let configSource: string;
   let tokens: string[] = [];
-  const configPath = env.COGAME_CONFIG_PATH ?? uriToLocalPath(env.COGAME_CONFIG_URI);
-  if (configPath) {
-    const raw = readJsonObject(configPath);
-    config = loadConfigFile(configPath);
-    tokens = readTokens(raw, configPath);
+  if (env.COGAME_CONFIG_PATH) {
+    const raw = readJsonObject(env.COGAME_CONFIG_PATH);
+    config = loadConfigFile(env.COGAME_CONFIG_PATH);
+    tokens = readTokens(raw, env.COGAME_CONFIG_PATH);
     seed = readOptionalInteger(raw.seed, seed, "seed");
-    configSource = configPath;
+    configSource = env.COGAME_CONFIG_PATH;
     if (raw.mode !== "tournament") {
-      throw new Error(`Tournament config must include "mode": "tournament" in ${configPath}`);
+      throw new Error(`Tournament config must include "mode": "tournament" in ${env.COGAME_CONFIG_PATH}`);
     }
   } else if (configFile) {
     config = loadConfigFile(configFile);
@@ -133,7 +127,7 @@ function resolveRuntimeOptions(): RuntimeOptions {
     if (tokens.length !== expected) {
       throw new Error(`Tournament config tokens length (${tokens.length}) must match player count (${expected})`);
     }
-    replayPath = env.COGAME_SAVE_REPLAY_PATH ?? uriToLocalPath(env.COGAME_SAVE_REPLAY_URI) ?? replayPath;
+    replayPath = env.COGAME_SAVE_REPLAY_PATH ?? replayPath;
   }
 
   return {
@@ -145,10 +139,9 @@ function resolveRuntimeOptions(): RuntimeOptions {
     config,
     configSource,
     tokens,
-    resultsPath: env.COGAME_RESULTS_PATH ?? uriToLocalPath(env.COGAME_RESULTS_URI),
+    resultsPath: env.COGAME_RESULTS_PATH ?? null,
     saveReplayPath: env.COGAME_SAVE_REPLAY_PATH ?? null,
     loadReplayPath: env.COGAME_LOAD_REPLAY_PATH ?? null,
-    loadReplayUri: env.COGAME_LOAD_REPLAY_URI ?? null,
   };
 }
 
@@ -396,14 +389,10 @@ function handlePlayerMessage(data: Buffer, client: ClientState | SlotState, sim:
   }
 }
 
-async function runReplayServer(opts: RuntimeOptions) {
-  if (!opts.loadReplayPath && !opts.loadReplayUri) {
-    throw new Error("Replay mode requires COGAME_LOAD_REPLAY_URI or COGAME_LOAD_REPLAY_PATH");
-  }
+function runReplayServer(opts: RuntimeOptions) {
+  if (!opts.loadReplayPath) throw new Error("Replay mode requires COGAME_LOAD_REPLAY_PATH");
   killExistingPortListener(opts.port);
-  const replayData = opts.loadReplayPath
-    ? loadReplay(opts.loadReplayPath)
-    : await loadReplayFromUri(opts.loadReplayUri!);
+  const replayData = loadReplay(opts.loadReplayPath);
   const httpServer = createServer((req, res) => handleHttp(req, res, opts));
   const replayWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
@@ -414,54 +403,13 @@ async function runReplayServer(opts: RuntimeOptions) {
   });
 
   replayWss.on("connection", (ws) => {
-    const replayConfig = JSON.parse(replayData.configJson) as { seed: number; config: GameConfig };
-    const sim = new Sim(replayConfig.config, replayConfig.seed);
-    const player = new ReplayPlayer(replayData);
-    let tick = 0;
-    const interval = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        clearInterval(interval);
-        return;
-      }
-      player.applyEvents(tick, sim);
-      sim.step(player.getInputs(sim.players.length), player.getPrevInputs(sim.players.length));
-      ws.send(buildGlobalFrame(sim));
-      tick++;
-      if (sim.phase === Phase.GameOver) {
-        clearInterval(interval);
-      }
-    }, 1000 / TARGET_FPS);
-    ws.on("close", () => clearInterval(interval));
-    ws.on("error", () => clearInterval(interval));
+    ws.send(JSON.stringify({ type: "replay", ...replayData, hashes: replayData.hashes.map(h => ({ tick: h.tick, hash: h.hash.toString() })) }));
+    ws.on("message", (data) => ws.send(JSON.stringify({ type: "control", command: data.toString() })));
   });
 
   httpServer.listen(opts.port, opts.host, () => {
     console.log(`${GAME_NAME} replay listening on ${opts.host}:${opts.port}`);
   });
-}
-
-async function loadReplayFromUri(uri: string) {
-  const filePath = uriToLocalPath(uri);
-  if (filePath) return loadReplay(materializeReplayBytes(readFileSync(filePath)));
-
-  const response = await fetch(uri);
-  if (!response.ok) throw new Error(`Failed to load replay from ${uri}: HTTP ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  return loadReplay(materializeReplayBytes(bytes));
-}
-
-function uriToLocalPath(uri: string | undefined): string | null {
-  if (!uri) return null;
-  const parsed = new URL(uri);
-  if (parsed.protocol !== "file:") return null;
-  return parsed.pathname;
-}
-
-function materializeReplayBytes(bytes: Buffer): string {
-  const replayBytes = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes;
-  const path = join("/tmp", `persephones-replay-${Date.now()}.rep`);
-  writeFileSync(path, replayBytes);
-  return path;
 }
 
 function handleHttp(req: IncomingMessage, res: ServerResponse, opts: RuntimeOptions) {
@@ -473,7 +421,7 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, opts: RuntimeOpti
   } else if (url.pathname === "/global" || url.pathname === "/global_client.html") {
     sendHtml(res, "global_client.html");
   } else if (url.pathname === "/replay") {
-    sendHtml(res, "global_client.html");
+    sendHtml(res, "replay.html");
   } else if (url.pathname === "/snappyjs.min.js") {
     sendScript(res, "snappyjs.min.js");
   } else {
@@ -618,4 +566,4 @@ function sendText(res: ServerResponse, status: number, value: string) {
   res.end(value);
 }
 
-await main();
+main();

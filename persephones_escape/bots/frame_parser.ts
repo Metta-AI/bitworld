@@ -70,7 +70,7 @@ export function readTextAtAnyColor(
 // ---------------------------------------------------------------------------
 
 export type ParsedPhase =
-  | "lobby" | "playing" | "hostage_select" | "hostage_exchange"
+  | "lobby" | "playing" | "psychopomp_select" | "psychopomp_exchange"
   | "leader_summit" | "roster_reveal" | "role_reveal" | "reveal" | "game_over" | "info_screen"
   | "whisper" | "waiting_entry" | "unknown";
 
@@ -107,12 +107,12 @@ export function parsePhase(frame: Uint8Array): ParsedPhase {
   if (norm(hudText).startsWith("REVEAL")) return "reveal";
 
   const hudText8 = readTextAt(frame, 2, 2, 8);
-  if (norm(hudText8).startsWith("SELECT") || norm(statusText8).startsWith("SELECT")) return "hostage_select";
-  if (norm(hudText8).startsWith("EXCHANGING") || norm(statusText8).startsWith("EXCHANGING")) return "hostage_exchange";
+  if (norm(hudText8).startsWith("SELECT") || norm(statusText8).startsWith("SELECT")) return "psychopomp_select";
+  if (norm(hudText8).startsWith("EXCHANGING") || norm(statusText8).startsWith("EXCHANGING")) return "psychopomp_exchange";
 
   const hudText1 = readTextAt(frame, 2, 2, 1);
   if (norm(hudText1).startsWith("LEADERS") || norm(statusText1).startsWith("LEADERS")) return "leader_summit";
-  if (norm(hudText1).includes("PICK")) return "hostage_select";
+  if (norm(hudText1).includes("PICK")) return "psychopomp_select";
 
   if (hudText.startsWith("R") && hudText.includes(":")) return "playing";
 
@@ -140,7 +140,7 @@ export interface RoundClockInfo {
   timerSecs: number;
 }
 
-export interface HostageSelectHudInfo {
+export interface PsychopompSelectHudInfo {
   timerSecs: number;
 }
 
@@ -189,7 +189,7 @@ export function parseRoundClock(frame: Uint8Array): RoundClockInfo | null {
   };
 }
 
-export function parseHostageSelectHud(frame: Uint8Array): HostageSelectHudInfo | null {
+export function parsePsychopompSelectHud(frame: Uint8Array): PsychopompSelectHudInfo | null {
   const text = toDigits(readTextAt(frame, 42, 2, 8, 16));
   const m = text.match(/^SELECT\s+(\d+)S/);
   if (!m) return null;
@@ -214,7 +214,7 @@ export interface RoleRevealInfo {
 export interface RoundScheduleEntry {
   round: number;
   durationSecs: number;
-  hostages: number;
+  psychopomps: number;
 }
 
 export interface RosterEntry {
@@ -378,7 +378,7 @@ export function parseRoundScheduleScreen(frame: Uint8Array): RoundScheduleEntry[
     entries.push({
       round: parseInt(m[1]),
       durationSecs: parseInt(m[2]) * 60 + parseInt(m[3]),
-      hostages: parseInt(m[4]),
+      psychopomps: parseInt(m[4]),
     });
   }
 
@@ -584,7 +584,7 @@ export function parseInfoScreen(frame: Uint8Array, options: FrameParserOptions =
  * drawn after the "USURP: " label. Return the palette color at the sprite
  * center, or null if the shout view isn't detected.
  */
-export function parseUsurpCandidate(frame: Uint8Array): { color: number; isPlayer: boolean } | null {
+export function parseUsurpCandidate(frame: Uint8Array): { color: number; isPlayer: boolean; isSelf: boolean } | null {
   const shoutText = readTextAt(frame, 2, 2, 2);
   const statusText2 = readTextAt(frame, 42, 2, 2, 10);
   const statusText8 = readTextAt(frame, 42, 2, 8, 10);
@@ -596,9 +596,12 @@ export function parseUsurpCandidate(frame: Uint8Array): { color: number; isPlaye
   const cx = 32;
   const cy = 14;
   const c = frame[cy * SCREEN_WIDTH + cx];
+  const labelText = readTextAt(frame, 29, 11, 2, 6);
+  if (labelText.startsWith("ME")) return { color: 0, isPlayer: false, isSelf: true };
+  if (labelText.length > 0) return { color: 0, isPlayer: false, isSelf: false };
   if (c === 0) return null;
   const isPlayer = PLAYER_COLORS.includes(c);
-  return { color: c, isPlayer };
+  return { color: c, isPlayer, isSelf: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -769,7 +772,7 @@ function parseChatLinesInRegion(
   frame: Uint8Array, yTop: number, yBot: number, options: FrameParserOptions = {},
 ): ParsedChatLine[] {
   const lines: ParsedChatLine[] = [];
-  for (let y = yTop; y + CHAT_LINE_H <= yBot; y += CHAT_LINE_H) {
+  for (let y = yTop; y + CHAT_LINE_H <= yBot; y++) {
     // Check if this line has any non-black pixels at all
     let hasContent = false;
     for (let dy = 0; dy < CHAT_LINE_H && !hasContent; dy++) {
@@ -791,6 +794,20 @@ function parseChatLinesInRegion(
           senderShape: shapeMatch.shape,
           text: txt,
         });
+        y += CHAT_LINE_H - 1;
+        continue;
+      }
+      // Sprite present but text in sprite's color empty — system message with
+      // inline sprite (e.g. "X is now leader"). Read color 8 text after sprite.
+      const sysTxtAfterSprite = readTextAt(frame, CHAT_MSG_TEXT_X, y, 8, 20);
+      if (sysTxtAfterSprite.length > 0) {
+        lines.push({
+          type: "system",
+          senderColor: shapeMatch.color,
+          senderShape: shapeMatch.shape,
+          text: sysTxtAfterSprite,
+        });
+        y += CHAT_LINE_H - 1;
         continue;
       }
     }
@@ -799,6 +816,7 @@ function parseChatLinesInRegion(
     const sysTxt = readTextAt(frame, 2, y, 8, 25);
     if (sysTxt.length > 0) {
       lines.push({ type: "system", senderColor: 0, senderShape: null, text: sysTxt });
+      y += CHAT_LINE_H - 1;
       continue;
     }
 
@@ -806,6 +824,7 @@ function parseChatLinesInRegion(
     const anyResult = readTextAtAnyColor(frame, 2, y, 25);
     if (anyResult && anyResult.text.length > 0) {
       lines.push({ type: "text", senderColor: anyResult.color, senderShape: null, text: anyResult.text });
+      y += CHAT_LINE_H - 1;
     }
   }
   return lines;
@@ -835,18 +854,18 @@ export function parseShoutMessages(frame: Uint8Array, options: FrameParserOption
 }
 
 // ---------------------------------------------------------------------------
-// Hostage grid parsing — leader's hostage picker in shout view
+// Psychopomp grid parsing — leader's psychopomp picker in shout view
 // ---------------------------------------------------------------------------
 
-export interface HostageGridEntry {
+export interface PsychopompGridEntry {
   color: number;
   shape: PlayerShape | null;
 }
 
-export interface HostageGridInfo {
-  /** Eligible hostages in grid order (left-to-right, top-to-bottom). */
-  eligible: HostageGridEntry[];
-  /** Colors of eligible hostages (parallel to eligible, for backward compat). */
+export interface PsychopompGridInfo {
+  /** Eligible psychopomps in grid order (left-to-right, top-to-bottom). */
+  eligible: PsychopompGridEntry[];
+  /** Colors of eligible psychopomps (parallel to eligible, for backward compat). */
   eligibleColors: number[];
   /** Which positions (indices into eligible) are currently selected. */
   selectedPositions: number[];
@@ -854,23 +873,23 @@ export interface HostageGridInfo {
   cursorPosition: number;
 }
 
-const HOSTAGE_CELL_W = 12;
-const HOSTAGE_CELL_H = 14;
-const HOSTAGE_GRID_Y = 11;
-const HOSTAGE_MAX_COLS = 4;
+const PSYCHOPOMP_CELL_W = 12;
+const PSYCHOPOMP_CELL_H = 14;
+const PSYCHOPOMP_GRID_Y = 11;
+const PSYCHOPOMP_MAX_COLS = 4;
 
-export function parseHostageGrid(frame: Uint8Array, options: FrameParserOptions = {}): HostageGridInfo | null {
-  const eligible: HostageGridEntry[] = [];
+export function parsePsychopompGrid(frame: Uint8Array, options: FrameParserOptions = {}): PsychopompGridInfo | null {
+  const eligible: PsychopompGridEntry[] = [];
   const eligibleColors: number[] = [];
   const selectedPositions: number[] = [];
   let cursorPosition = 0;
 
   // Scan up to 12 cells (3 rows of 4)
-  for (let cols = HOSTAGE_MAX_COLS; cols >= 1; cols--) {
-    const gridW = cols * HOSTAGE_CELL_W;
+  for (let cols = PSYCHOPOMP_MAX_COLS; cols >= 1; cols--) {
+    const gridW = cols * PSYCHOPOMP_CELL_W;
     const gridX = Math.floor((SCREEN_WIDTH - gridW) / 2);
-    const testX = gridX + Math.floor((HOSTAGE_CELL_W - PLAYER_W) / 2) + 3; // sprite center x
-    const testY = HOSTAGE_GRID_Y + 1 + 3; // sprite center y
+    const testX = gridX + Math.floor((PSYCHOPOMP_CELL_W - PLAYER_W) / 2) + 3; // sprite center x
+    const testY = PSYCHOPOMP_GRID_Y + 1 + 3; // sprite center y
 
     const c = frame[testY * SCREEN_WIDTH + testX];
     if (c === 0 || c === 1) continue; // no sprite here
@@ -878,9 +897,9 @@ export function parseHostageGrid(frame: Uint8Array, options: FrameParserOptions 
     // Found the grid. Scan all cells.
     for (let row = 0; row < 3; row++) {
       for (let col = 0; col < cols; col++) {
-        const cx = gridX + col * HOSTAGE_CELL_W;
-        const cy = HOSTAGE_GRID_Y + row * HOSTAGE_CELL_H;
-        const spriteX = cx + Math.floor((HOSTAGE_CELL_W - PLAYER_W) / 2);
+        const cx = gridX + col * PSYCHOPOMP_CELL_W;
+        const cy = PSYCHOPOMP_GRID_Y + row * PSYCHOPOMP_CELL_H;
+        const spriteX = cx + Math.floor((PSYCHOPOMP_CELL_W - PLAYER_W) / 2);
         const spriteY = cy + 1;
         if (spriteY + PLAYER_H >= SCREEN_HEIGHT) break;
 
@@ -892,7 +911,7 @@ export function parseHostageGrid(frame: Uint8Array, options: FrameParserOptions 
         eligibleColors.push(match.color);
 
         // Check for selection checkmark (green pixel at cx+cellW-3, cy+1)
-        const checkX = cx + HOSTAGE_CELL_W - 3;
+        const checkX = cx + PSYCHOPOMP_CELL_W - 3;
         const checkY = cy + 1;
         if (frame[checkY * SCREEN_WIDTH + checkX] === 11) {
           selectedPositions.push(pos);
@@ -915,22 +934,14 @@ export function parseWhisperStatus(frame: Uint8Array, options: FrameParserOption
   const offer = FRAME_REGIONS.whisper.offerIndicator();
   const offerTxt = readTextAt(frame, offer.x, offer.y, 8, 2);
 
-  // Detect the pending-entry "!" in the shared region instead of relying on
-  // a local copy of the renderer's footer math.
-  const pending = FRAME_REGIONS.whisper.pendingEntryBang();
-  let pendingEntry = false;
-  for (let y = pending.y; y < pending.y + pending.h; y++) {
-    for (let x = pending.x; x < pending.x + pending.w; x++) {
-      if (frame[y * SCREEN_WIDTH + x] === 8) { pendingEntry = true; break; }
-    }
-    if (pendingEntry) break;
-  }
   let pendingEntryPlayer: OccupantInfo | null = null;
   let pendingEntryName: string | null = null;
-  if (pendingEntry) {
+  let pendingEntry = false;
+  if (hasPendingEntryBang(frame)) {
     const sprite = FRAME_REGIONS.whisper.pendingEntrySprite();
     const match = matchShapeAt(frame, sprite.x, sprite.y, options);
     if (match && match.color !== 0) {
+      pendingEntry = true;
       pendingEntryPlayer = { color: match.color, shape: match.shape };
       pendingEntryName = characterName(match.color, match.shape);
     }
@@ -942,7 +953,7 @@ export function parseWhisperStatus(frame: Uint8Array, options: FrameParserOption
     const r = FRAME_REGIONS.whisper.occupantSlot(slot);
     if (r.x + r.w > SCREEN_WIDTH - 2) break;
     const match = matchShapeAt(frame, r.x, r.y, options);
-    if (!match || match.color === 0) break;
+    if (!match || match.color === 0) continue;
     occupantColors.push(match.color);
     occupants.push({ color: match.color, shape: match.shape });
   }
@@ -958,4 +969,23 @@ export function parseWhisperStatus(frame: Uint8Array, options: FrameParserOption
     occupantColors,
     occupants,
   };
+}
+
+function hasPendingEntryBang(frame: Uint8Array): boolean {
+  const bang = FRAME_REGIONS.whisper.pendingEntryBang();
+  const sprite = FRAME_REGIONS.whisper.pendingEntrySprite();
+  const x = bang.x;
+  const y = sprite.y;
+  const is8 = (dx: number, dy: number) => frame[(y + dy) * SCREEN_WIDTH + x + dx] === 8;
+
+  // Renderer draws "!" as .#./.#./.#./.../.#. at bang.x,sprite.y.
+  // A loose "any color-8 pixel in this footer region" check confuses normal
+  // bottom-row system messages and yellow sprites for a pending entry.
+  if (!is8(1, 0) || !is8(1, 1) || !is8(1, 2) || !is8(1, 4)) return false;
+  if (is8(1, 3)) return false;
+
+  for (let row = 0; row < 5; row++) {
+    if (is8(0, row) || is8(2, row)) return false;
+  }
+  return true;
 }
