@@ -299,6 +299,7 @@ type
     author: string
     imageUri: string
     binary: string
+    arch: string  # "X86_64" or "ARM64"
     games: seq[string]
 
   BotLaunchCount = object
@@ -563,6 +564,7 @@ proc readCoplayerManifest(path: string): CoplayerManifest =
       author: manifest.manifestString("author", "-"),
       imageUri: manifest.manifestString("image_uri", ""),
       binary: manifest.manifestString("binary", "/bin/" & name),
+      arch: manifest.manifestString("arch", "X86_64"),
       games: manifest.manifestStringArray("games")
     )
   except CatchableError as e:
@@ -2129,6 +2131,7 @@ proc createBots(
           bot.name,
           playerName,
           bot.binary,
+          bot.arch,
         )
       result.add(BotContainer(
         name: botArn,

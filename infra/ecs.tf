@@ -19,34 +19,45 @@ resource "aws_ecs_cluster" "main" {
 }
 
 # =============================================================================
-# Phase 2: CloudWatch Logs
+# CloudWatch Logs
 # =============================================================================
-# Requires IAM execution role (PowerUserAccess can't create IAM roles).
-# For now, skip log configuration — use `aws ecs describe-tasks` for status.
-#
-# resource "aws_cloudwatch_log_group" "ecs_tasks" {
-#   name              = "/ecs/${var.project_name}"
-#   retention_in_days = 7
-# }
+
+resource "aws_cloudwatch_log_group" "ecs_tasks" {
+  name              = "/ecs/${var.project_name}"
+  retention_in_days = 7
+}
 
 # =============================================================================
-# Phase 2: IAM Roles
+# IAM Roles
 # =============================================================================
-# Execution role: needed for ECR pulls and CloudWatch logs.
-# Not needed when pulling from public GHCR.
-#
-# Task role: needed if containers call AWS APIs (S3 replays, etc).
-# Not needed for MVP.
-#
-# resource "aws_iam_role" "ecs_execution" {
-#   name               = "${var.project_name}-ecs-execution"
-#   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
-# }
-#
-# resource "aws_iam_role" "ecs_task" {
-#   name               = "${var.project_name}-ecs-task"
-#   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
-# }
+
+data "aws_iam_policy_document" "ecs_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ecs_execution" {
+  name               = "${var.project_name}-ecs-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+  lifecycle { ignore_changes = [tags, tags_all] }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role" "ecs_task" {
+  name               = "${var.project_name}-ecs-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+  lifecycle { ignore_changes = [tags, tags_all] }
+}
 
 # =============================================================================
 # Phase 2: ECR Repositories

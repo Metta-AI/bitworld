@@ -48,28 +48,17 @@ output "ecs_cluster_name" {
   value       = aws_ecs_cluster.main.name
 }
 
-# --- Phase 2 Outputs ---
-# Uncomment as resources are added.
-#
-# output "ecs_execution_role_arn" {
-#   description = "IAM role ARN for Fargate to pull images and write logs"
-#   value       = aws_iam_role.ecs_execution.arn
-# }
-#
-# output "ecs_task_role_arn" {
-#   description = "IAM role ARN assumed by running containers"
-#   value       = aws_iam_role.ecs_task.arn
-# }
-#
-# output "cloudwatch_log_group" {
-#   description = "CloudWatch log group for ECS task logs"
-#   value       = aws_cloudwatch_log_group.ecs_tasks.name
-# }
-#
-# output "ecr_repository_urls" {
-#   description = "ECR repository URLs for container images"
-#   value = {
-#     among_them = aws_ecr_repository.among_them.repository_url
-#     nottoodumb = aws_ecr_repository.nottoodumb.repository_url
-#   }
-# }
+output "ecs_execution_role_arn" {
+  description = "IAM role ARN for Fargate to pull images and write logs"
+  value       = aws_iam_role.ecs_execution.arn
+}
+
+output "ecs_task_role_arn" {
+  description = "IAM role ARN assumed by running containers"
+  value       = aws_iam_role.ecs_task.arn
+}
+
+output "cloudwatch_log_group" {
+  description = "CloudWatch log group for ECS task logs"
+  value       = aws_cloudwatch_log_group.ecs_tasks.name
+}

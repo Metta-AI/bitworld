@@ -95,7 +95,7 @@ var
   gameTaskDefArn: string
   botTaskDefs: Table[string, string]  # image -> task def ARN
 
-proc registerTaskDef(family, image: string, cpu = "256", memory = "512"): string =
+proc registerTaskDef(family, image: string, cpu = "256", memory = "512", arch = "X86_64"): string =
   var containerDef = %*[{
     "name": "main",
     "image": image,
@@ -111,6 +111,10 @@ proc registerTaskDef(family, image: string, cpu = "256", memory = "512"): string
         "awslogs-stream-prefix": "ecs"
       }
     }
+  let runtimePlatform = %*{
+    "cpuArchitecture": arch,
+    "operatingSystemFamily": "LINUX"
+  }
   var args = @[
     "ecs", "register-task-definition",
     "--family", family,
@@ -118,6 +122,7 @@ proc registerTaskDef(family, image: string, cpu = "256", memory = "512"): string
     "--network-mode", "awsvpc",
     "--cpu", cpu,
     "--memory", memory,
+    "--runtime-platform", $runtimePlatform,
     "--container-definitions", $containerDef,
   ]
   if ecsConf.executionRoleArn.len > 0:
@@ -137,13 +142,14 @@ proc ensureGameTaskDef*() =
     )
     echo "ECS: game task def = ", gameTaskDefArn
 
-proc ensureBotTaskDef*(image: string): string =
-  if image in botTaskDefs:
-    return botTaskDefs[image]
+proc ensureBotTaskDef*(image: string, arch = "X86_64"): string =
+  let cacheKey = image & ":" & arch
+  if cacheKey in botTaskDefs:
+    return botTaskDefs[cacheKey]
   let family = "bitworld-bot-" & image.split("/")[^1].split(":")[0]
-  echo "ECS: registering bot task definition for ", image, "..."
-  result = registerTaskDef(family, image, "256", "512")
-  botTaskDefs[image] = result
+  echo "ECS: registering bot task definition for ", image, " (", arch, ")..."
+  result = registerTaskDef(family, image, "256", "512", arch)
+  botTaskDefs[cacheKey] = result
   echo "ECS: bot task def = ", result
 
 # =============================================================================
@@ -331,8 +337,9 @@ proc ecsCreateBot*(
   botName: string,
   playerName: string,
   botBinary: string,
+  arch = "X86_64",
 ): string =
-  let taskDefArn = ensureBotTaskDef(botImage)
+  let taskDefArn = ensureBotTaskDef(botImage, arch)
   let
     created = $getTime().toUnix()
     tags = @[
