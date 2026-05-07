@@ -908,6 +908,19 @@ proc splitInspectLine(line: string): GameContainer =
 
 proc inspectGame(name: string): GameContainer =
   ## Reads one managed container from Docker inspect.
+  if useEcs:
+    let info = ecsInspectGame(name)
+    return GameContainer(
+      name: info.taskArn,
+      status: info.status,
+      port: info.port,
+      created: info.created,
+      replay: info.replay,
+      kind: if info.kind == "replay": ReplayServer else: LiveGame,
+      manifestKey: info.manifestKey,
+      cogameName: info.cogameName,
+      ip: info.publicIp,
+    )
   let safeName = cleanContainerName(name)
   if safeName.len == 0:
     raise newException(GamesServerError, "missing container name")
@@ -995,6 +1008,15 @@ proc splitBotLine(line: string): BotContainer =
 
 proc inspectBot(name: string): BotContainer =
   ## Reads one managed bot container from Docker inspect.
+  if useEcs:
+    let info = ecsInspectBot(name)
+    return BotContainer(
+      name: info.taskArn,
+      status: info.status,
+      game: info.gameTaskArn,
+      bot: info.botName,
+      created: info.created,
+    )
   let safeName = cleanContainerName(name)
   if safeName.len == 0:
     raise newException(GamesServerError, "missing bot name")
@@ -2087,6 +2109,35 @@ proc createBots(
   count: int
 ): seq[BotContainer] =
   ## Starts one or more bot Docker containers for a live game.
+  if useEcs:
+    let gameInfo = ecsInspectGame(gameName)
+    if gameInfo.kind != "game":
+      raise newException(GamesServerError, "bots can only join live games")
+    if not ecsGameHealthy(gameInfo.publicIp):
+      raise newException(GamesServerError, "game is not healthy yet")
+    let
+      bot = findCoplayerManifest(gameInfo.cogameName, botKey)
+      cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+    for i in 1 .. cleanCount:
+      let
+        stamp = launchStamp(i)
+        playerName = bot.name & "-" & $GameContainerPort & "-" & stamp
+        botArn = ecsCreateBot(
+          coplayerImage(bot),
+          gameName,
+          gameInfo.privateIp,
+          bot.name,
+          playerName,
+          bot.binary,
+        )
+      result.add(BotContainer(
+        name: botArn,
+        status: "running",
+        game: gameName,
+        bot: bot.name,
+        created: getTime().toUnix(),
+      ))
+    return
   let game = inspectGame(gameName)
   if game.kind != LiveGame:
     raise newException(GamesServerError, "bots can only join live games")

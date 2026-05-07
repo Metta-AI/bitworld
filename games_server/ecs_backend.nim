@@ -44,12 +44,13 @@ type
 var ecsConf*: EcsConfig
 
 proc loadEcsConfig*() =
+  putEnv("AWS_PROFILE", getEnv("AWS_PROFILE", "softmax"))
   ecsConf = EcsConfig(
     cluster: getEnv("ECS_CLUSTER", "bitworld-cluster"),
-    publicSubnet: getEnv("ECS_PUBLIC_SUBNET"),
-    privateSubnet: getEnv("ECS_PRIVATE_SUBNET"),
-    gameSg: getEnv("ECS_GAME_SG"),
-    botSg: getEnv("ECS_BOT_SG"),
+    publicSubnet: getEnv("ECS_PUBLIC_SUBNET", "subnet-0c399deb4683cf45d"),
+    privateSubnet: getEnv("ECS_PRIVATE_SUBNET", "subnet-097196880eae3da12"),
+    gameSg: getEnv("ECS_GAME_SG", "sg-029ca4fb70f032e91"),
+    botSg: getEnv("ECS_BOT_SG", "sg-064e9d37030ea2b74"),
     executionRoleArn: getEnv("ECS_EXECUTION_ROLE_ARN"),
     taskRoleArn: getEnv("ECS_TASK_ROLE_ARN"),
     logGroup: getEnv("ECS_LOG_GROUP", "/ecs/bitworld"),
@@ -57,12 +58,6 @@ proc loadEcsConfig*() =
     gameImage: getEnv("ECS_GAME_IMAGE", "ghcr.io/treeform/bitworld-among-them-runner:latest"),
     awsBin: getEnv("ECS_AWS_BIN", "aws"),
   )
-  if ecsConf.publicSubnet.len == 0:
-    raise newException(EcsError, "ECS_PUBLIC_SUBNET is required")
-  if ecsConf.gameSg.len == 0:
-    raise newException(EcsError, "ECS_GAME_SG is required")
-  if ecsConf.botSg.len == 0:
-    raise newException(EcsError, "ECS_BOT_SG is required")
 
 # =============================================================================
 # AWS CLI Wrapper
@@ -237,7 +232,6 @@ proc runTask*(
     "--network-configuration", $networkConfig,
     "--overrides", $overrides,
     "--tags", $tagsJson,
-    "--enable-execute-command",
   ])
   let tasks = resp["tasks"]
   if tasks.len == 0:
@@ -307,9 +301,6 @@ proc ecsCreateGame*(
   if config.len > 0:
     cmd.add("--config:" & config)
   var env: seq[tuple[name, value: string]]
-  if saveReplay:
-    env.add((name: "COGAME_SAVE_REPLAY_PATH", value: "/replays/" & replay))
-    env.add((name: "COGAME_SAVE_RESULTS_PATH", value: "/replays/" & replay.replace(".bitreplay", ".scores.json")))
   for envName in ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]:
     let val = getEnv(envName)
     if val.len > 0:
