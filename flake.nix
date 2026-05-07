@@ -215,6 +215,16 @@
               $out/share/bitworld/among_them $out/share/bitworld/clients
             install -m 0755 out/among_them $out/libexec/bitworld/among_them
             cp -r clients/data $out/share/bitworld/clients/
+            # The server reads these via clientStaticPath() at runtime so
+            # the /player, /global, /admin, /reward routes can render their
+            # HTML directly out of the image.
+            install -m 0644 -t $out/share/bitworld/clients/ \
+              clients/player_client.html \
+              clients/global_client.html \
+              clients/admin_client.html \
+              clients/reward_client.html \
+              clients/snappyjs.min.js \
+              clients/qrcode.min.js
             for f in among_them/*.png among_them/*.json among_them/*.aseprite; do
               [[ -f "$f" ]] || continue
               cp "$f" $out/share/bitworld/among_them/

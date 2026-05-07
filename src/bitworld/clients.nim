@@ -19,8 +19,21 @@ proc repoDir*(): string =
   currentSourcePath().parentDir().parentDir().parentDir()
 
 proc clientsDir*(): string =
-  ## Returns the shared clients directory.
-  repoDir() / "clients"
+  ## Returns the shared clients directory. Resolved at runtime relative
+  ## to CWD so it works both from the repo root (./clients) and from a
+  ## packaged install (../clients next to the chdir'd binary), mirroring
+  ## clientDataDir()'s strategy. OSError is trapped so callers can keep
+  ## a tight {.raises: [IOError].} contract.
+  when defined(emscripten):
+    "clients"
+  else:
+    try:
+      let cwd = getCurrentDir()
+      let sibling = cwd / ".." / "clients"
+      if dirExists(sibling): sibling
+      else: cwd / "clients"
+    except OSError:
+      "clients"
 
 proc clientHtmlPath*(route: string): string =
   ## Returns the local HTML file for a served client route.
