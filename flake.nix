@@ -83,6 +83,67 @@
               + lib.concatStringsSep ", " duplicateNames
               + ". Remove the extra line(s) so each dep appears exactly once.")
           else rawLockEntries;
+        # NAR hash for each dep, keyed by name with the rev it was computed
+        # against. Passing the narHash to fetchGit alongside `rev` lets Nix
+        # verify the cache locally and skip the remote ref poll that
+        # builtins.fetchGit otherwise does on every eval (which timed out
+        # badly on flaky networks). The rev is recorded so that bumping
+        # nimby.lock without refreshing the narHash trips a clear
+        # flake-eval-time error pointing at the stale entry, rather than a
+        # downstream "NAR hash mismatch". Regenerate with:
+        #   nix eval --impure --json --expr 'let
+        #     parseLockLine = line: let parts = builtins.filter builtins.isString
+        #       (builtins.split " " line); in if builtins.length parts >= 4 then
+        #       { name = builtins.elemAt parts 0; url = builtins.elemAt parts 2;
+        #         rev = builtins.elemAt parts 3; } else null;
+        #     entries = builtins.filter (e: e != null) (map parseLockLine
+        #       (builtins.filter (l: l != "") (builtins.filter builtins.isString
+        #         (builtins.split "\n" (builtins.readFile ./nimby.lock)))));
+        #   in builtins.listToAttrs (map (e: { inherit (e) name; value = {
+        #     inherit (e) rev;
+        #     narHash = (builtins.fetchGit { inherit (e) url rev;
+        #       allRefs = true; }).narHash; }; }) entries)'
+        narHashes = {
+          bumpy = { rev = "8f4d5ee2005af166b0a08e64e2035f8ff27f1531"; narHash = "sha256-8E9v1SQkNoKvtkOYBZGQ8slcQafrgL+9Os3Dp9VtGOA="; };
+          chroma = { rev = "2381748f92e5ea16cb2403ff7e20c6dd5443a59d"; narHash = "sha256-9+vWgkdSmSErGqhDZNY0vX80nWrvpkPHT1z+BxRTXOY="; };
+          crunchy = { rev = "98eb6526982bb8aae8eec6e8781f4539fa19e049"; narHash = "sha256-kc3aSwYjJZb4LqGMDK+Kf0bGEAsl9eUFv7yNN0QTP4Y="; };
+          curly = { rev = "a0f42baacbc48f4e5924b18854c0df9dcc251466"; narHash = "sha256-7nMzwatfQMVzodtr4PdgA1cx5aLb+FlgrXxoBHOfYwA="; };
+          dx12 = { rev = "11f7fd5a6223e71d52a360f701145e63f306559f"; narHash = "sha256-W9CUCvHGGP0gln6XuDloYrAj6IOR8OpER0FWyAYw8/E="; };
+          flatty = { rev = "05d878b397933331966a7f80dd0c55664559201f"; narHash = "sha256-F7o7xt3C3uVmC6jmpO2N24uBcxDw+FN6rls55Mzi050="; };
+          fluffy = { rev = "2012906732cc104dc08fb80a3cec976ddfd9a98a"; narHash = "sha256-UrYur6xtwBQc6vUOb2ctkpYI2NQ8RY2OktOOdb6xfuU="; };
+          jsony = { rev = "fbbf55e94e204d7daf583813d79f7327c8001d17"; narHash = "sha256-+GFwfWMzzBRd+WA7exVO+k8vYkWi+0+0GmBgFfvN12g="; };
+          libcurl = { rev = "7a420498f60a31d99fc8513886ce36c4e8c3a4ae"; narHash = "sha256-NmyVuzZ9DiBJqHxlf3Sj+JTbCZdUjrJKQ6x3Dg4XTjk="; };
+          metal4 = { rev = "46d0bc5afd65a563ecf9c5c93004b357733594c1"; narHash = "sha256-Q7nemftJZrfhLbf2xsG/LLc3Y2Bm0EHnUgMNRJt7oUY="; };
+          mummy = { rev = "3bcb1e3f7aec9530fe03404eb7468cdfdb14fedb"; narHash = "sha256-YSxEaP2lB58/Gbf7fsHCh2d5Q5zCdTRGGwTlV9eeb+0="; };
+          nimsimd = { rev = "3f6b2668ffb0867d0bf786a658b817763e611350"; narHash = "sha256-FO7ty/NIE/fNfGiiEaoAHLEb26fQCqai5V0ERYbEPTs="; };
+          opengl = { rev = "8e2e098f82dc5eefd874488c37b5830233cd18f4"; narHash = "sha256-v3bMDobYQZqX0anBFIUfZx5q5/vxTHO6PDtKQlf5mgU="; };
+          paddy = { rev = "3fcec08a559479cc8d2fd769f26c6d56bb27a1a1"; narHash = "sha256-EutdbqnNtCruJ7YftU1pJqxH2RQC5g/PzBWX/oN+wQE="; };
+          pixie = { rev = "6d47166df0c89c91be4e712734f78af24c4d8361"; narHash = "sha256-J6Z4NURxFx3zRuZsmZtnTuF8KuROabqVstlpsnj7j68="; };
+          shady = { rev = "c89db58632c5442df16251b3e15cb43c5d52e2a6"; narHash = "sha256-vSA148l9edMFwCP0aXzz5iLyO4xhu8O67G79dfvmHTI="; };
+          silky = { rev = "d5225513d6496138d4e29b6930af22172c1fe75b"; narHash = "sha256-4GnH/0/GQWBNdStRRrF+Ja5vfuKXdq7koG+nVGHAtwQ="; };
+          supersnappy = { rev = "ff8fe2bffefc1f4edc15deb20d921f600babb8c4"; narHash = "sha256-SDLsHtgiyheAn62T6c/39KD215dI/gm3JzMj3yYY768="; };
+          taggy = { rev = "0013a4bf921dc9fa735f81577518b2c1e155f062"; narHash = "sha256-yQtKh7Ur831n+3MXtbYbCvDHkXAvrOyTbOTsyReQ3Dc="; };
+          urlly = { rev = "99784779f05649df25fd9c33003d8ef6de027345"; narHash = "sha256-QWsm2JMTwmBKW7lp3lY2SPVavg2kNZeq4J5mCXkJRDc="; };
+          vk14 = { rev = "68841f5e1a13247e7a463bfe79beb27232cbd6c5"; narHash = "sha256-RhRnQiMKjhI3kKsHA82PcKOfJGHlK8mB7tXn6CnB+A0="; };
+          vmath = { rev = "7bd9f6e6b23ca3b751be42f20c8025d320881a00"; narHash = "sha256-+/MneL0PzErOFaIj9CoUAY+xPDrIhoAPXaV9pXiV9ZU="; };
+          webby = { rev = "55a2c03abbd32abf4775712c1959d975dc982549"; narHash = "sha256-cKefl4h5Wcels+mLRyeE8l4E5wVK7cV/h1NczZATHVk="; };
+          whisky = { rev = "494fb1046f5a563defc87ac36b8c62846ee7ea2c"; narHash = "sha256-3P3lKk7ZY5t6R3C0bssGSmvUcI9auOSs5utPzEhfgAw="; };
+          windy = { rev = "1b5f60bbd2027729d661ccab2c19fcaec6ef9376"; narHash = "sha256-jAZcAHSoioFY/7qZmmkv52uP/HMXWF9w+q2LNUnLP4k="; };
+          ws = { rev = "cbb8f763b436669392d10baec2a45778395395cc"; narHash = "sha256-RpSeUGUt9Q8hFCGXjmKUNcWHkByDq3ys32Ak8wvPm4g="; };
+          zippy = { rev = "bcb8c1e1be6abb0a0e35a3c6040cdd9391cc993f"; narHash = "sha256-Y5c4Rk9esBiWFYlh2WFc251eCA+VWyn7rxnLka4CYW4="; };
+        };
+        narHashFor = entry:
+          let pinned = narHashes.${entry.name} or null; in
+          if pinned == null then
+            throw ("flake.nix narHashes is missing entry for '"
+              + entry.name + "'. Regenerate the narHashes attrset "
+              + "(see comment above).")
+          else if pinned.rev != entry.rev then
+            throw ("flake.nix narHashes['" + entry.name
+              + "'] is pinned to rev " + pinned.rev
+              + " but nimby.lock pins " + entry.rev
+              + ". Regenerate the narHashes attrset (see comment above).")
+          else pinned.narHash;
         # Some deps (e.g. libcurl) keep their .nim files at the package root
         # rather than under src/. Emit the right --path for each at build
         # time by probing the dep, mirroring what `nimby sync` produces.
@@ -90,7 +151,12 @@
           mkdir -p $out
           : > $out/nim.cfg
         '' + lib.concatMapStrings (entry: ''
-          ln -s ${builtins.fetchGit { url = entry.url; rev = entry.rev; allRefs = true; }} $out/${entry.name}
+          ln -s ${builtins.fetchGit {
+            url = entry.url;
+            rev = entry.rev;
+            allRefs = true;
+            narHash = narHashFor entry;
+          }} $out/${entry.name}
           if [ -d "$out/${entry.name}/src" ]; then
             echo '--path:"${entry.name}/src"' >> $out/nim.cfg
           else
