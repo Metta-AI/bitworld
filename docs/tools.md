@@ -61,7 +61,7 @@ Game runners may also set:
 | Environment variable | Meaning |
 | --- | --- |
 | `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_RESULTS_PATH` | Path where the game writes final results |
+| `COGAME_SAVE_RESULTS_PATH` | Path where the game writes final results |
 | `COGAME_SAVE_REPLAY_PATH` | Optional path where the game writes a replay |
 | `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay artifact to load |
 

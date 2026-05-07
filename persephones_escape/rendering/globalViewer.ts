@@ -56,11 +56,11 @@ const STATE_LAYER = 8;     // BottomCenter — legend + leaders
 const GAP = 16;
 
 // Fixed panel sizes (in sprite pixels, rendered at UiZoom=3 on client)
-const SHOUT_PANEL_W = 80;
+const SHOUT_PANEL_W = 128;
 const SHOUT_PANEL_LINES = 10;
-const VOTE_PANEL_W = 80;
-const CR_SLOT_W = 80;
-const CR_SLOT_H = 50;
+const VOTE_PANEL_W = 128;
+const CR_SLOT_W = 128;
+const CR_SLOT_H = 80;
 
 // ---------------------------------------------------------------------------
 // Main entry
@@ -81,8 +81,8 @@ export function buildGlobalFrame(sim: Sim): Buffer {
   pkt.setViewport(MAP_LAYER, ROOM_W * 2 + GAP + padX * 2, ROOM_H + padY * 2);
 
   pkt.defineLayer(HUD_LAYER, LayerType.TopCenter, LayerFlag.Ui);
-  pkt.defineLayer(SHOUT_A_LAYER, LayerType.TopLeft, LayerFlag.Ui);
-  pkt.defineLayer(SHOUT_B_LAYER, LayerType.Interstitial, LayerFlag.Ui);
+  pkt.defineLayer(SHOUT_A_LAYER, LayerType.TopLeft, LayerFlag.UiLarge);
+  pkt.defineLayer(SHOUT_B_LAYER, LayerType.Interstitial, LayerFlag.UiLarge);
   pkt.defineLayer(VOTE_A_LAYER, LayerType.BottomLeft, LayerFlag.Ui);
   pkt.defineLayer(VOTE_B_LAYER, LayerType.BottomRight, LayerFlag.Ui);
   pkt.defineLayer(CR_A_LAYER, LayerType.LeftCenter, LayerFlag.Ui);
@@ -144,7 +144,7 @@ const PLAYER_SPRITE_OFFSET_Y = 4;
 function buildPlayerSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: number) {
   const p = sim.players[pi];
   const color = sim.playerColor(pi);
-  const ind = sim.roleIndicator(p.role);
+  const ind = sim.roleIndicator(p.role, p.team);
   const sw = 10, sh = 14;
   const shapeX = PLAYER_SPRITE_OFFSET_X;
   const shapeY = PLAYER_SPRITE_OFFSET_Y;
@@ -176,7 +176,7 @@ function buildPlayerSprite(sim: Sim, pkt: SpritePacket, pi: number, spriteId: nu
     px[(barY0 + 1) * sw + (dx + shapeX)] = rc;
   }
   if (ind.special) {
-    const dot = spriteColor(p.role === Role.Hades ? 8 : 2);
+    const dot = spriteColor(p.role === Role.Hades || p.role === Role.EchoOfHades ? 8 : 2);
     px[barY0 * sw + (3 + shapeX)] = dot;
     px[(barY0 + 1) * sw + (3 + shapeX)] = dot;
   }
@@ -287,7 +287,7 @@ function buildExchangeView(
 
 function buildHud(sim: Sim, pkt: SpritePacket) {
   const secs = Math.ceil(sim.revealTimer / TARGET_FPS);
-  const showSchedule = sim.phase === Phase.RoleReveal && secs <= 8;
+  const showSchedule = sim.phase === Phase.RoleReveal && sim.introPanel === 3;
 
   const lines: { text: string; color: number }[] = [];
 
@@ -312,7 +312,7 @@ function buildHud(sim: Sim, pkt: SpritePacket) {
     }
     lines.push({ text: hudText, color: 2 });
 
-    if (sim.phase === Phase.RoleReveal) {
+    if (sim.phase === Phase.RosterReveal || sim.phase === Phase.RoleReveal) {
       lines.push({ text: `STARTING IN ${secs}`, color: 2 });
     }
 
@@ -337,15 +337,15 @@ function buildHud(sim: Sim, pkt: SpritePacket) {
       }
     }
 
-    if (sim.phase !== Phase.Lobby && sim.phase !== Phase.RoleReveal) {
-      const hi = findByRole(sim, Role.Hades);
-      const pi = findByRole(sim, Role.Persephone);
-      const ci = findByRole(sim, Role.Cerberus);
-      const di = findByRole(sim, Role.Demeter);
+    if (sim.phase !== Phase.Lobby && sim.phase !== Phase.RosterReveal && sim.phase !== Phase.RoleReveal) {
+      const hades = sim.effectiveRoleHolders(Role.Hades);
+      const persephone = sim.effectiveRoleHolders(Role.Persephone);
+      const cerberus = sim.effectiveRoleHolders(Role.Cerberus);
+      const demeter = sim.effectiveRoleHolders(Role.Demeter);
 
-      const sameRoom = hi >= 0 && pi >= 0 && sim.players[hi].room === sim.players[pi].room;
-      const hcShared = hi >= 0 && ci >= 0 && sim.players[hi].sharedWith.has(ci);
-      const pdShared = pi >= 0 && di >= 0 && sim.players[pi].sharedWith.has(di);
+      const sameRoom = sim.sameRoomBetweenAny(hades, persephone);
+      const hcShared = sim.sharedBetweenAny(hades, cerberus);
+      const pdShared = sim.sharedBetweenAny(persephone, demeter);
 
       lines.push({ text: `HADES AND PERSEPHONE: ${sameRoom ? "IN SAME ROOM" : "NOT IN SAME ROOM"}`, color: sameRoom ? 8 : 1 });
       lines.push({ text: `HADES HAS ${hcShared ? "FOUND" : "NOT FOUND"} CERBERUS`, color: hcShared ? 11 : 1 });
@@ -401,7 +401,7 @@ function drawRoundsBar(sim: Sim, pixels: Uint8Array, bufW: number, barY: number,
     const x0 = Math.floor(elapsedSecs * pxPerSec) + 1;
     const x1 = Math.floor((elapsedSecs + rounds[i].durationSecs) * pxPerSec) + 1;
 
-    const isPast = sim.phase !== Phase.Lobby && sim.phase !== Phase.RoleReveal && i < sim.currentRound;
+    const isPast = sim.phase !== Phase.Lobby && sim.phase !== Phase.RosterReveal && sim.phase !== Phase.RoleReveal && i < sim.currentRound;
     const isActive = sim.phase === Phase.Playing && i === sim.currentRound;
     const isFuture = !isPast && !isActive;
 
@@ -487,10 +487,20 @@ function buildVotePanel(
   const h = leaderH + VOTE_BOX_H * 2 + 6;
   const pixels = new Uint8Array(w * h);
 
-  // Leader row
+  // Leader row + hostage sprites
+  const hostages = room === Room.RoomA ? sim.hostagesSelectedA : sim.hostagesSelectedB;
   if (leader >= 0 && sim.phase !== Phase.Lobby) {
     drawSmallSprite(pixels, w, 1, 2, sim.players[leader].shape, sim.playerColor(leader));
-    drawTextIntoPixels(fb, pixels, w, h, PLAYER_W + 3, 4, leaderTitle.toUpperCase(), 2);
+    const titleText = leaderTitle.toUpperCase();
+    drawTextIntoPixels(fb, pixels, w, h, PLAYER_W + 3, 4, titleText, 2);
+    let hx = PLAYER_W + 3 + fb.measureText(titleText) + 4;
+    for (const hi of hostages) {
+      if (hx + PLAYER_W > w - 2) break;
+      if (hi >= 0 && hi < sim.players.length) {
+        drawSmallSprite(pixels, w, hx, 2, sim.players[hi].shape, sim.playerColor(hi));
+        hx += PLAYER_W + 1;
+      }
+    }
   } else {
     drawTextIntoPixels(fb, pixels, w, h, 1, 4, leaderTitle.toUpperCase(), 1);
   }
@@ -693,7 +703,7 @@ function drawRichChatMsg(
   m: { type: string; senderIndex: number; text: string },
 ) {
   if (m.type === 'system') {
-    drawRichTextIntoPixels(sim, fb, pixels, bufW, bufH, sx, sy, m.text, 8);
+    drawRichTextIntoPixels(sim, fb, pixels, bufW, bufH, sx, sy, m.text, 2);
   } else if (m.senderIndex >= 0 && m.senderIndex < sim.players.length) {
     const p = sim.players[m.senderIndex];
     drawSmallSprite(pixels, bufW, sx, sy, p.shape, sim.playerColor(m.senderIndex));
@@ -768,10 +778,6 @@ function buildWhisperSlots(
 // Legend (bottom center)
 // ---------------------------------------------------------------------------
 
-function findByRole(sim: Sim, role: Role): number {
-  return sim.players.findIndex(p => p.role === role);
-}
-
 function playerTag(sim: Sim, pi: number): string {
   if (pi < 0 || pi >= sim.players.length) return "?";
   return playerSpriteName(sim.players[pi].colorIndex);
@@ -779,10 +785,16 @@ function playerTag(sim: Sim, pi: number): string {
 
 const TEAM_ROLE_ORDER: [Team, Role][] = [
   [Team.TeamA, Role.Hades],
+  [Team.TeamA, Role.EchoOfHades],
   [Team.TeamA, Role.Cerberus],
+  [Team.TeamA, Role.EchoOfCerberus],
+  [Team.TeamA, Role.Spy],
   [Team.TeamA, Role.Shades],
   [Team.TeamB, Role.Persephone],
+  [Team.TeamB, Role.EchoOfPersephone],
   [Team.TeamB, Role.Demeter],
+  [Team.TeamB, Role.EchoOfDemeter],
+  [Team.TeamB, Role.Spy],
   [Team.TeamB, Role.Nymphs],
 ];
 
@@ -793,13 +805,13 @@ function buildLegend(sim: Sim, pkt: SpritePacket) {
   const fb = new Framebuffer();
 
   const roleRows: { label: string; labelColor: number; players: number[] }[] = [];
-  for (const [, role] of TEAM_ROLE_ORDER) {
+  for (const [team, role] of TEAM_ROLE_ORDER) {
     const pis: number[] = [];
     for (let i = 0; i < sim.players.length; i++) {
-      if (sim.players[i].role === role) pis.push(i);
+      if (sim.players[i].role === role && sim.players[i].team === team) pis.push(i);
     }
     if (pis.length === 0) continue;
-    roleRows.push({ label: sim.roleName(role), labelColor: sim.roleIndicator(role).color, players: pis });
+    roleRows.push({ label: sim.roleName(role), labelColor: sim.roleIndicator(role, team).color, players: pis });
   }
 
   let maxLabelW = 0;

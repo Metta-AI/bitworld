@@ -1,4 +1,5 @@
 import mummy
+import bitworld/clients
 import protocol, sim, global
 import std/[json, locks, monotimes, os, strutils, tables, times]
 
@@ -11,6 +12,8 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
+    playerViewers: Table[WebSocket, PlayerViewerState]
+    chatMessages: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
@@ -293,11 +296,41 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
+  appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
+  appState.chatMessages = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
 
+proc isWebSocketUpgrade(request: Request): bool =
+  ## Returns true when a GET request is a websocket upgrade.
+  request.headers["Sec-WebSocket-Key"].len > 0
+
+proc serveClientHtml(request: Request, route: string): bool =
+  ## Serves one static client file for a known client route.
+  if request.httpMethod != "GET":
+    return false
+  let filePath = clientStaticPath(route)
+  if filePath.len == 0:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Cache-Control"] = "no-cache"
+  if not fileExists(filePath):
+    request.respond(404, headers, "Missing static client: " & route)
+    return true
+  try:
+    request.respond(200, headers, readFile(filePath))
+  except IOError as e:
+    request.respond(500, headers, "Could not read static client: " & e.msg)
+  true
+
+proc serveStaticClientHtml(request: Request): bool =
+  ## Serves one static client file when the route matches.
+  request.serveClientHtml(request.path)
+
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
+  ## Builds an input state from the current and previous button masks.
   result = decodeInputMask(currentMask)
   result.attack = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
 
@@ -469,6 +502,10 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     appState.globalViewers.del(websocket)
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
+  if websocket in appState.playerViewers:
+    appState.playerViewers.del(websocket)
+  if websocket in appState.chatMessages:
+    appState.chatMessages.del(websocket)
   if websocket notin appState.playerIndices:
     return
 
@@ -485,12 +522,23 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
         dec value
 
 proc cleanPlayerName(name: string): string =
+  ## Normalizes one player name for display and rewards.
   result = name.strip()
   for ch in result.mitems:
     if ch.isSpaceAscii:
       ch = '_'
 
+proc cleanChatMessage(message: string): string =
+  ## Normalizes a submitted speech bubble message.
+  let trimmed = message.strip()
+  for ch in trimmed:
+    if result.len >= MessageMaxChars:
+      return
+    if ch >= ' ' and ch <= '~':
+      result.add(ch)
+
 proc playerIdentity(request: Request): string =
+  ## Returns the stable identity for one player request.
   let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
   if name.len > 0:
     return name
@@ -500,10 +548,19 @@ proc playerIdentity(request: Request): string =
   request.remoteAddress
 
 proc httpHandler(request: Request) =
-  if request.path == WebSocketPath and request.httpMethod == "GET":
+  if request.path == SpritePlayerWebSocketPath and
+      request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
+  elif request.path == SpritePlayerWebSocketPath and
+      request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerAddresses[websocket] = request.playerIdentity()
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
@@ -515,6 +572,8 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.rewardViewers[websocket] = true
+  elif request.serveStaticClientHtml():
+    discard
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -545,15 +604,19 @@ proc websocketHandler(
             appState.globalViewers[websocket].applyGlobalViewerMessage(
               message.data
             )
-          elif isInputPacket(message.data) and
+          elif websocket in appState.playerViewers and
               not appState.replayLoaded:
-            let mask = blobToMask(message.data)
-            if mask == 255'u8:
-              appState.resetRequested = true
-              appState.inputMasks[websocket] = 0
-              appState.lastAppliedMasks[websocket] = 0
-            else:
-              appState.inputMasks[websocket] = mask
+            var
+              mask = appState.inputMasks.getOrDefault(websocket, 0)
+              chatText = ""
+            appState.playerViewers[websocket].applyPlayerViewerMessage(
+              message.data,
+              mask,
+              chatText
+            )
+            appState.inputMasks[websocket] = mask
+            if chatText.len > 0:
+              appState.chatMessages[websocket] = chatText
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -642,6 +705,7 @@ proc runServerLoop*(
     var
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
+      playerStates: seq[PlayerViewerState] = @[]
       inputs: seq[InputState]
       globalViewers: seq[WebSocket] = @[]
       globalStates: seq[GlobalViewerState] = @[]
@@ -671,6 +735,9 @@ proc runServerLoop*(
             value = 0
           for _, value in appState.lastAppliedMasks.mpairs:
             value = 0
+          appState.chatMessages.clear()
+          for websocket in appState.playerViewers.keys:
+            appState.playerViewers[websocket] = initPlayerViewerState()
 
         if not replayLoaded and not shouldReset:
           for websocket in appState.playerIndices.keys:
@@ -689,9 +756,25 @@ proc runServerLoop*(
             while replayWriter.lastMasks.len < sim.players.len:
               replayWriter.lastMasks.add(0)
 
+        if not replayLoaded:
+          for websocket, message in appState.chatMessages.pairs:
+            let playerIndex = appState.playerIndices.getOrDefault(
+              websocket,
+              -1
+            )
+            if playerIndex >= 0 and playerIndex < sim.players.len:
+              sim.players[playerIndex].message = cleanChatMessage(message)
+          appState.chatMessages.clear()
+
         for websocket, playerIndex in appState.playerIndices.pairs:
           sockets.add(websocket)
           playerIndices.add(playerIndex)
+          playerStates.add(
+            appState.playerViewers.getOrDefault(
+              websocket,
+              initPlayerViewerState()
+            )
+          )
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
@@ -729,6 +812,7 @@ proc runServerLoop*(
       replayWriter.lastMasks.setLen(0)
       sockets.setLen(0)
       playerIndices.setLen(0)
+      playerStates.setLen(0)
       rewardViewers.setLen(0)
       {.gcsafe.}:
         withLock appState.lock:
@@ -740,16 +824,33 @@ proc runServerLoop*(
             appState.playerIndices[websocket] = sim.addPlayer(address)
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
+            if websocket in appState.playerViewers:
+              appState.playerViewers[websocket] = initPlayerViewerState()
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
+            playerStates.add(
+              appState.playerViewers.getOrDefault(
+                websocket,
+                initPlayerViewerState()
+              )
+            )
           replayWriter.lastMasks.setLen(sim.players.len)
           for websocket in appState.rewardViewers.keys:
             rewardViewers.add(websocket)
 
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
-        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
-        sockets[i].send(frameBlob, BinaryMessage)
+        var nextState: PlayerViewerState
+        let packet = sim.buildSpriteProtocolPlayerUpdates(
+          playerIndices[i],
+          playerStates[i],
+          nextState
+        )
+        {.gcsafe.}:
+          withLock appState.lock:
+            if sockets[i] in appState.playerViewers:
+              appState.playerViewers[sockets[i]] = nextState
+        sockets[i].send(blobFromBytes(packet), BinaryMessage)
       for websocket in rewardViewers:
         websocket.send(rewardPacket, TextMessage)
       runFrameLimiter(lastTick)
@@ -774,14 +875,18 @@ proc runServerLoop*(
     let rewardPacket = sim.buildRewardPacket()
 
     for i in 0 ..< sockets.len:
-      let framePacket =
-        if replayLoaded:
-          sim.buildReplayFramePacket()
-        else:
-          sim.render(playerIndices[i])
-      let frameBlob = blobFromBytes(framePacket)
+      var nextState: PlayerViewerState
+      let framePacket = sim.buildSpriteProtocolPlayerUpdates(
+        playerIndices[i],
+        playerStates[i],
+        nextState
+      )
       try:
-        sockets[i].send(frameBlob, BinaryMessage)
+        sockets[i].send(blobFromBytes(framePacket), BinaryMessage)
+        {.gcsafe.}:
+          withLock appState.lock:
+            if sockets[i] in appState.playerViewers:
+              appState.playerViewers[sockets[i]] = nextState
       except:
         {.gcsafe.}:
           withLock appState.lock:

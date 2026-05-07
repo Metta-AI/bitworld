@@ -1,0 +1,6 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "evidencebot_v2",
+  "image_uri": "ghcr.io/treeform/bitworld-evidencebot-v2:latest",
+  "games": ["among_them"]
+}

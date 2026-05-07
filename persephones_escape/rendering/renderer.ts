@@ -9,9 +9,10 @@ import {
   BOTTOM_BAR_H, MINIMAP_SIZE, MINIMAP_X, MINIMAP_Y,
   SHADOW_MAP, PLAYER_SHAPES,
   TEAM_A_NAME, TEAM_B_NAME, TEAM_A_COLOR, TEAM_B_COLOR,
-  ROOM_A_NAME, ROOM_B_NAME, LEADER_A_NAME, LEADER_B_NAME,
+  ROOM_A_NAME, ROOM_B_NAME,
   LEADER_ROOM_NAME,
   playerCountFromConfig,
+  playerSpriteName,
 } from "../game/constants.js";
 import { clamp, coalesceChatFragments } from "../game/util.js";
 import { WHISPER_MENU, whisperMenuAction, whisperMenuItemLabel } from "../game/menu_defs.js";
@@ -58,22 +59,45 @@ function drawChatMsg(sim: Sim, fb: Framebuffer, m: { type: string; senderIndex: 
   }
 }
 
-function drawRoleSlot(sim: Sim, fb: Framebuffer, sx: number, slotY: number, role: Role) {
-  const ind = sim.roleIndicator(role);
+function drawRoleSlot(sim: Sim, fb: Framebuffer, sx: number, slotY: number, role: Role, team?: Team) {
+  const ind = sim.roleIndicator(role, team);
   fb.fillRect(sx + 1, slotY, 5, 2, ind.color);
-  if (role === Role.Hades) {
+  if (role === Role.Hades || role === Role.EchoOfHades) {
     fb.putPixel(sx + 3, slotY, 8);
     fb.putPixel(sx + 3, slotY + 1, 8);
-  } else if (role === Role.Persephone) {
+  } else if (role === Role.Persephone || role === Role.EchoOfPersephone) {
     fb.putPixel(sx + 3, slotY, 2);
     fb.putPixel(sx + 3, slotY + 1, 2);
-  } else if (role === Role.Cerberus) {
+  } else if (role === Role.Cerberus || role === Role.EchoOfCerberus) {
     fb.putPixel(sx + 2, slotY, 8);
     fb.putPixel(sx + 4, slotY, 8);
-  } else if (role === Role.Demeter) {
+  } else if (role === Role.Demeter || role === Role.EchoOfDemeter) {
     fb.putPixel(sx + 2, slotY, 2);
     fb.putPixel(sx + 4, slotY, 2);
   }
+}
+
+function drawWrappedLines(fb: Framebuffer, lines: string[], x: number, y: number, color: uint8, maxWidth = SCREEN_WIDTH - x - 2): number {
+  for (const line of lines) {
+    let current = "";
+    for (const word of line.split(" ")) {
+      const candidate = current.length === 0 ? word : `${current} ${word}`;
+      if (fb.measureText(candidate) <= maxWidth) {
+        current = candidate;
+      } else {
+        if (current.length > 0) {
+          fb.drawText(current, x, y, color);
+          y += 8;
+        }
+        current = word;
+      }
+    }
+    if (current.length > 0) {
+      fb.drawText(current, x, y, color);
+      y += 8;
+    }
+  }
+  return y;
 }
 
 export function playerView(sim: Sim, pi: number): { cameraX: number; cameraY: number; originMx: number; originMy: number } {
@@ -103,6 +127,16 @@ export function drawPlayerSprite(fb: Framebuffer, sx: number, sy: number, shape:
   }
 }
 
+function roundClockText(sim: Sim): string {
+  const round = Math.min(sim.currentRound + 1, sim.config.rounds.length);
+  const secs = sim.phase === Phase.HostageSelect
+    ? Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS))
+    : sim.phase === Phase.LeaderSummit
+      ? Math.max(0, Math.ceil(sim.leaderSummitTimer / TARGET_FPS))
+      : Math.max(0, Math.ceil(sim.roundTimer / TARGET_FPS));
+  return `R${round} ${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`;
+}
+
 function renderWhisperView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer {
   const viewer = sim.players[viewerIndex];
   fb.clear(0);
@@ -110,9 +144,10 @@ function renderWhisperView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buff
   fb.fillRect(0, 0, SCREEN_WIDTH, 9, 0);
   const cr = sim.whispers.get(viewer.inWhisper);
   const isSummit = cr && cr.room === Room.LeaderRoom;
-  fb.drawText(isSummit ? "SUMMIT" : "WHISPER", 2, 2, isSummit ? 8 : 2);
+  fb.drawText(roundClockText(sim), 2, 2, 2);
+  fb.drawText(isSummit ? "SUMMIT" : "WHISP", 42, 2, isSummit ? 8 : 2);
   if (cr) {
-    let sx = 22;
+    let sx = 66;
     for (const oi of cr.occupants) {
       if (sx + PLAYER_W > SCREEN_WIDTH - 2) break;
       drawPlayerSprite(fb, sx, 1, sim.players[oi].shape, sim.playerColor(oi));
@@ -155,7 +190,7 @@ function renderWhisperView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buff
     const secs = Math.max(0, Math.ceil(sim.leaderSummitTimer / TARGET_FPS));
     fb.drawText(`SUMMIT ${secs}S  ENTER:MSG`, 2, barY + 2, 8);
   } else {
-    fb.drawText("L:EXIT  K:ACTIONS  ENTER:MSG", 2, barY + 2, 1);
+    fb.drawText("H/I:TAB L:EXIT K:ACT", 2, barY + 2, 1);
     const roleOfferers = sim.whisperShareOfferers(viewerIndex);
     const colorOfferers = sim.whisperColorOfferers(viewerIndex);
     if (roleOfferers.length > 0) {
@@ -203,14 +238,18 @@ function renderShoutView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer
   const viewer = sim.players[viewerIndex];
   fb.clear(0);
 
-  const roomName = viewer.room === Room.RoomA ? ROOM_A_NAME : ROOM_B_NAME;
   fb.fillRect(0, 0, SCREEN_WIDTH, 9, 0);
-  fb.drawText(`${roomName} SHOUT`, 2, 2, 2);
+  const leaderHostage = sim.phase === Phase.HostageSelect && viewer.isLeader;
+  fb.drawText(roundClockText(sim), 2, 2, 2);
+  if (sim.phase === Phase.HostageSelect) {
+    const secs = Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS));
+    fb.drawText(`SELECT ${secs}S`, 42, 2, 8);
+  } else {
+    fb.drawText("SHOUT", 42, 2, 2);
+  }
 
   const barY = SCREEN_HEIGHT - BOTTOM_BAR_H;
   fb.fillRect(0, barY, SCREEN_WIDTH, BOTTOM_BAR_H, 0);
-
-  const leaderHostage = sim.phase === Phase.HostageSelect && viewer.isLeader;
 
   let votingBottomY = 10;
 
@@ -274,7 +313,7 @@ function renderShoutView(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer
       }
       votingBottomY = 20;
     }
-    fb.drawText("L:CLOSE  ENTER:TYPE", 2, barY + 2, 1);
+    fb.drawText("H/I:TAB L:CLOSE K:NEXT", 2, barY + 2, 1);
   }
 
   fb.fillRect(0, votingBottomY, SCREEN_WIDTH, 1, 1);
@@ -368,8 +407,7 @@ function renderHud(
       break;
     }
     case Phase.Playing: {
-      const secs = Math.max(0, Math.ceil(sim.roundTimer / TARGET_FPS));
-      topBar.drawText(`R${sim.currentRound + 1} ${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`, 2, 2, 2);
+      topBar.drawText(roundClockText(sim), 2, 2, 2);
       const rn = sim.roleName(viewer.role) + (viewer.isLeader ? "*" : "");
       topBar.drawText(rn, SCREEN_WIDTH - MINIMAP_SIZE - 4 - topBar.measureText(rn), 2, sim.teamColor(viewer.team));
       if (chatStrip) {
@@ -390,22 +428,17 @@ function renderHud(
     case Phase.HostageSelect: {
       const committed = viewer.room === Room.RoomA ? sim.committedA : sim.committedB;
       const secs = Math.max(0, Math.ceil(sim.hostageSelectTimer / TARGET_FPS));
-      if (viewer.isLeader && !committed) {
-        topBar.drawText(`SELECT ${secs}S`, 2, 2, 8);
-      } else if (committed) {
-        topBar.drawText("WAITING...", 2, 2, 2);
-      } else {
-        const ln = viewer.room === Room.RoomA ? LEADER_A_NAME : LEADER_B_NAME;
-        topBar.drawText(`${ln.toUpperCase()} PICKS ${secs}S`, 2, 2, 1);
-      }
+      topBar.drawText(roundClockText(sim), 2, 2, 2);
+      topBar.drawText(`SELECT ${secs}S`, 42, 2, viewer.isLeader && !committed ? 8 : 1);
       break;
     }
     case Phase.LeaderSummit: {
       const secs = Math.max(0, Math.ceil(sim.leaderSummitTimer / TARGET_FPS));
+      topBar.drawText(roundClockText(sim), 2, 2, 2);
       if (viewer.isLeader) {
-        topBar.drawText(`SUMMIT ${secs}S`, 2, 2, 8);
+        topBar.drawText(`SUMMIT ${secs}S`, 42, 2, 8);
       } else {
-        topBar.drawText(`LEADERS MEET ${secs}S`, 2, 2, 1);
+        topBar.drawText(`LEADERS MEET ${secs}S`, 42, 2, 1);
       }
       const rn2 = sim.roleName(viewer.role) + (viewer.isLeader ? "*" : "");
       topBar.drawText(rn2, SCREEN_WIDTH - MINIMAP_SIZE - 4 - topBar.measureText(rn2), 2, sim.teamColor(viewer.team));
@@ -425,12 +458,14 @@ function renderHud(
       break;
     }
     case Phase.HostageExchange:
-      topBar.drawText("EXCHANGING", 2, 2, 8);
+      topBar.drawText(roundClockText(sim), 2, 2, 2);
+      topBar.drawText("EXCHANGING", 42, 2, 8);
       break;
     case Phase.Reveal: {
       const winText = sim.winner === Team.TeamA ? `${TEAM_A_NAME} WIN!` : sim.winner === Team.TeamB ? `${TEAM_B_NAME} WIN!` : "NO ONE WINS!";
       const wc = sim.winner === Team.TeamA ? TEAM_A_COLOR : sim.winner === Team.TeamB ? TEAM_B_COLOR : 1;
-      topBar.drawText("REVEAL!", 2, 2, 2);
+      topBar.drawText(roundClockText(sim), 2, 2, 2);
+      topBar.drawText("REVEAL!", 42, 2, 2);
       fb.drawText(winText, Math.floor((SCREEN_WIDTH - fb.measureText(winText)) / 2), 60, wc);
       break;
     }
@@ -445,20 +480,17 @@ function renderHud(
   const barY = bottomBar.y0;
   bottomBar.fillRect(bottomBar.x0, barY, bottomBar.w, bottomBar.h, 0);
 
-  if (viewer.commMenuOpen) {
-    const items = sim.commMenuItems(viewerIndex);
-    const row = Math.min(viewer.commMenuRow, items.length - 1);
-    const item = items[row] ?? "";
-    bottomBar.drawText(`< ${item} >`, 2, barY + 2, 2);
-  } else if (sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect || sim.phase === Phase.LeaderSummit) {
+  if (sim.phase === Phase.Playing || sim.phase === Phase.HostageSelect || sim.phase === Phase.LeaderSummit) {
     if (viewer.pendingWhisperEntry >= 0) {
       bottomBar.drawText("WAITING...", 2, barY + 2, 8);
       const unread = sim.shoutUnreadCount(viewerIndex);
       if (unread > 0 && (sim.tickCount & 16)) {
         bottomBar.putPixel(SCREEN_WIDTH - 4, barY + 4, 11);
       }
+    } else if (viewer.noticeText && sim.tickCount < viewer.noticeUntilTick) {
+      bottomBar.drawText(viewer.noticeText, 2, barY + 2, 8);
     } else {
-      bottomBar.drawText("J:WHISPER K:INFO L:MENU", 2, barY + 2, 1);
+      bottomBar.drawText("J:NEW K:JOIN L:SHOUT", 2, barY + 2, 1);
       const unread = sim.shoutUnreadCount(viewerIndex);
       if (unread > 0 && (sim.tickCount & 16)) {
         bottomBar.putPixel(SCREEN_WIDTH - 4, barY + 4, 11);
@@ -469,12 +501,47 @@ function renderHud(
 
 function renderIntro(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer {
   const secs = Math.ceil(sim.revealTimer / TARGET_FPS);
-  const showSchedule = secs <= 8;
+  if (sim.introPanel === 0) return renderIntroRoster(sim, fb, secs);
+  if (sim.introPanel === 1) return renderIntroRole(sim, fb, viewerIndex, secs);
+  if (sim.introPanel === 2) return renderIntroRoleSummary(sim, fb, secs);
+  return renderIntroSchedule(sim, fb, secs);
+}
 
-  if (showSchedule) {
-    return renderIntroSchedule(sim, fb, secs);
+function renderIntroRoster(sim: Sim, fb: Framebuffer, secs: number): Buffer {
+  fb.clear(0);
+  fb.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 2);
+  fb.drawRect(2, 2, SCREEN_WIDTH - 4, SCREEN_HEIGHT - 4, 2);
+
+  const cx = (text: string) => Math.floor((SCREEN_WIDTH - fb.measureText(text)) / 2);
+  fb.drawText("PLAYER ROSTER", cx("PLAYER ROSTER"), 6, 2);
+
+  const columns = [
+    { title: "UNDERWORLD", room: Room.RoomA, x: 5, color: 8 },
+    { title: "MORTAL REALM", room: Room.RoomB, x: 67, color: 11 },
+  ];
+  const startY = 25;
+  const rowH = 15;
+  const nameXOff = PLAYER_W + 5;
+
+  for (const col of columns) {
+    fb.drawText(col.title, col.x, 17, col.color);
+    let row = 0;
+    for (let i = 0; i < sim.players.length; i++) {
+      const p = sim.players[i];
+      if (p.room !== col.room) continue;
+      const y = startY + row * rowH;
+      if (y > SCREEN_HEIGHT - 22) break;
+      drawPlayerSprite(fb, col.x, y, p.shape, sim.playerColor(i));
+      fb.drawText(playerSpriteName(i), col.x + nameXOff, y + 1, 1);
+      row++;
+    }
   }
-  return renderIntroRole(sim, fb, viewerIndex, secs);
+
+  const startText = `NEXT IN ${secs}`;
+  fb.drawText(startText, cx(startText), SCREEN_HEIGHT - 10, 2);
+
+  fb.pack();
+  return fb.packed;
 }
 
 function renderIntroRole(sim: Sim, fb: Framebuffer, viewerIndex: number, secs: number): Buffer {
@@ -488,13 +555,6 @@ function renderIntroRole(sim: Sim, fb: Framebuffer, viewerIndex: number, secs: n
   const roleName = sim.roleName(viewer.role);
   const teamName = viewer.team === Team.TeamA ? TEAM_A_NAME : viewer.team === Team.TeamB ? TEAM_B_NAME : "NEUTRAL";
   const roomName = viewer.room === Room.RoomA ? ROOM_A_NAME : ROOM_B_NAME;
-
-  const rolesInPlay: string[] = [];
-  const seen = new Set<string>();
-  for (const p of sim.players) {
-    const rn = sim.roleName(p.role);
-    if (!seen.has(rn)) { seen.add(rn); rolesInPlay.push(rn); }
-  }
 
   let y = 8;
   const cx = (text: string) => Math.floor((SCREEN_WIDTH - fb.measureText(text)) / 2);
@@ -511,15 +571,62 @@ function renderIntroRole(sim: Sim, fb: Framebuffer, viewerIndex: number, secs: n
 
   const infoLine = `${sim.players.length}P  ${sim.roomW}x${sim.roomH}`;
   fb.drawText(infoLine, cx(infoLine), y, 1); y += 8;
-  const rolesLine = rolesInPlay.join(" ");
-  fb.drawText(rolesLine, cx(rolesLine), y, 1); y += 10;
+  fb.drawText("MATCH ROLES NEXT", cx("MATCH ROLES NEXT"), y, 1); y += 10;
 
   fb.drawText("WASD  MOVE", 14, y, 1); y += 8;
-  fb.drawText("J     COMM  K  INFO", 14, y, 1); y += 8;
+  fb.drawText("J     NEW   K  JOIN", 14, y, 1); y += 8;
   fb.drawText("L     SHOUT/COMMIT", 14, y, 1); y += 10;
 
   const startText = `STARTING IN ${secs}`;
   fb.drawText(startText, cx(startText), y, 2);
+
+  fb.pack();
+  return fb.packed;
+}
+
+function roleSummaryNames(sim: Sim): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const p of sim.players) {
+    const name = sim.roleName(p.role);
+    if (!seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function renderIntroRoleSummary(sim: Sim, fb: Framebuffer, secs: number): Buffer {
+  fb.clear(0);
+  fb.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 2);
+  fb.drawRect(2, 2, SCREEN_WIDTH - 4, SCREEN_HEIGHT - 4, 2);
+
+  const cx = (text: string) => Math.floor((SCREEN_WIDTH - fb.measureText(text)) / 2);
+  let y = 8;
+
+  fb.drawText("MATCH ROLES", cx("MATCH ROLES"), y, 2); y += 12;
+  y = drawWrappedLines(fb, roleSummaryNames(sim), 6, y, 1, SCREEN_WIDTH - 12);
+
+  const missing = sim.missingCoreRoles();
+  if (missing.length > 0 && y < SCREEN_HEIGHT - 24) {
+    y += 2;
+    fb.drawText("MISSING:", 6, y, 8); y += 8;
+    y = drawWrappedLines(fb, [missing.map(role => sim.roleName(role)).join(" ")], 6, y, 1, SCREEN_WIDTH - 12);
+  }
+
+  const echoes = sim.activeEchoSubstitutions();
+  if (echoes.length > 0 && y < SCREEN_HEIGHT - 24) {
+    y += 2;
+    fb.drawText("ECHO ACTIVE:", 6, y, 11); y += 8;
+    for (const row of echoes) {
+      if (y >= SCREEN_HEIGHT - 16) break;
+      y = drawWrappedLines(fb, [`${sim.roleName(row.echoRole)} -> ${sim.roleName(row.coreRole)}`], 6, y, 1, SCREEN_WIDTH - 12);
+    }
+  }
+
+  const startText = `STARTING IN ${secs}`;
+  fb.drawText(startText, cx(startText), SCREEN_HEIGHT - 10, 2);
 
   fb.pack();
   return fb.packed;
@@ -576,7 +683,7 @@ function renderInfoScreen(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffe
     // Draw own sprite + role slot
     const sx = Math.floor(SCREEN_WIDTH / 2) - Math.floor(PLAYER_W / 2);
     drawPlayerSprite(fb, sx, y, viewer.shape, sim.playerColor(viewerIndex));
-    drawRoleSlot(sim, fb, sx, y + PLAYER_H + 1, viewer.role);
+    drawRoleSlot(sim, fb, sx, y + PLAYER_H + 1, viewer.role, viewer.team);
     y += PLAYER_H + 6;
 
     fb.drawText("PRESS ANY KEY", cx("PRESS ANY KEY"), SCREEN_HEIGHT - 10, 1);
@@ -610,15 +717,15 @@ function renderInfoScreen(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffe
       drawPlayerSprite(fb, sx, y, p.shape, sim.playerColor(entry.pi));
 
       if (entry.showRole) {
-        drawRoleSlot(sim, fb, sx, y + PLAYER_H + 1, entry.role);
+        drawRoleSlot(sim, fb, sx, y + PLAYER_H + 1, entry.role, sim.roleRevealTeam(entry.pi, viewerIndex));
       } else {
-        fb.putPixel(sx + 3, y + PLAYER_H + 1, sim.teamColor(p.team));
+        fb.putPixel(sx + 3, y + PLAYER_H + 1, sim.colorRevealTeamColor(entry.pi));
       }
 
       const infoX = sx + PLAYER_W + 4;
       if (entry.showRole) {
         const rn = sim.roleName(entry.role);
-        fb.drawText(rn, infoX, y + 2, sim.teamColor(p.team));
+        fb.drawText(rn, infoX, y + 2, sim.teamColor(sim.roleRevealTeam(entry.pi, viewerIndex)));
       } else {
         fb.drawText("???", infoX, y + 2, 1);
       }
@@ -650,7 +757,7 @@ function renderExchangeRow(sim: Sim, fb: Framebuffer, pi: number, x: number, y: 
   if (pi < 0 || pi >= sim.players.length) return;
   const p = sim.players[pi];
   drawPlayerSprite(fb, x, y, p.shape, sim.playerColor(pi));
-  drawRoleSlot(sim, fb, x, y + PLAYER_H + 1, p.role);
+  drawRoleSlot(sim, fb, x, y + PLAYER_H + 1, p.role, p.team);
 }
 
 function renderExchange(sim: Sim, fb: Framebuffer, viewerIndex: number): Buffer {
@@ -731,7 +838,7 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
 
   const viewer = sim.players[viewerIndex];
 
-  if (sim.phase === Phase.RoleReveal) {
+  if (sim.phase === Phase.RosterReveal || sim.phase === Phase.RoleReveal) {
     return renderIntro(sim, fb, viewerIndex);
   }
 
@@ -743,12 +850,12 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
     return renderInfoScreen(sim, fb, viewerIndex);
   }
 
-  if (viewer.inWhisper >= 0) {
-    return renderWhisperView(sim, fb, viewerIndex);
-  }
-
   if (viewer.shoutOpen) {
     return renderShoutView(sim, fb, viewerIndex);
+  }
+
+  if (viewer.inWhisper >= 0) {
+    return renderWhisperView(sim, fb, viewerIndex);
   }
 
   // Claim HUD regions before drawing world — world pixels can't bleed in
@@ -846,11 +953,11 @@ export function render(sim: Sim, viewerIndex: number): Buffer {
 
     const slotY = sy + PLAYER_H + 1;
     if (showAll || i === viewerIndex) {
-      drawRoleSlot(sim, fb, sx, slotY, p.role);
+      drawRoleSlot(sim, fb, sx, slotY, p.role, p.team);
     } else if (p.revealedTo.has(viewerIndex)) {
-      drawRoleSlot(sim, fb, sx, slotY, p.role);
+      drawRoleSlot(sim, fb, sx, slotY, p.role, sim.roleRevealTeam(i, viewerIndex));
     } else if (p.colorRevealedTo.has(viewerIndex)) {
-      fb.putPixel(sx + 3, slotY, sim.teamColor(p.team));
+      fb.putPixel(sx + 3, slotY, sim.colorRevealTeamColor(i));
     }
   }
 

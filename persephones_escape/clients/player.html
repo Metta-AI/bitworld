@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Persephone's Escape</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    body { display: grid; place-items: center; }
+    canvas { width: min(90vmin, 640px); height: min(90vmin, 640px); image-rendering: pixelated; background: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="screen" width="128" height="128"></canvas>
+  <script>
+    const palette = [
+      [0,0,0], [29,43,83], [126,37,83], [0,135,81], [171,82,54], [95,87,79], [194,195,199], [255,241,232],
+      [255,0,77], [255,163,0], [255,236,39], [0,228,54], [41,173,255], [131,118,156], [255,119,168], [255,204,170],
+    ];
+    const canvas = document.getElementById("screen");
+    const ctx = canvas.getContext("2d");
+    const image = ctx.createImageData(128, 128);
+    const keys = new Map([
+      ["ArrowUp", 1], ["ArrowDown", 2], ["ArrowLeft", 4], ["ArrowRight", 8],
+      ["Enter", 16], ["z", 32], ["Z", 32], ["x", 64], ["X", 64],
+    ]);
+    let mask = 0;
+    const query = window.location.search;
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/player${query}`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (event) => {
+      const bytes = new Uint8Array(event.data);
+      for (let i = 0; i < bytes.length; i++) {
+        drawPixel(i * 2, bytes[i] & 15);
+        drawPixel(i * 2 + 1, bytes[i] >> 4);
+      }
+      ctx.putImageData(image, 0, 0);
+    };
+    function drawPixel(index, color) {
+      const [r, g, b] = palette[color] || palette[0];
+      const off = index * 4;
+      image.data[off] = r; image.data[off + 1] = g; image.data[off + 2] = b; image.data[off + 3] = 255;
+    }
+    function send() {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(new Uint8Array([0, mask]));
+    }
+    addEventListener("keydown", (event) => {
+      const bit = keys.get(event.key);
+      if (bit) { event.preventDefault(); mask |= bit; send(); }
+    });
+    addEventListener("keyup", (event) => {
+      const bit = keys.get(event.key);
+      if (bit) { event.preventDefault(); mask &= ~bit; send(); }
+    });
+  </script>
+</body>
+</html>

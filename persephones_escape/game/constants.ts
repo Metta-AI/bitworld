@@ -15,6 +15,11 @@ export const CERBERUS_ROLE_NAME = "Cerberus";
 export const DEMETER_ROLE_NAME = "Demeter";
 export const SHADES_ROLE_NAME = "Shade";
 export const NYMPHS_ROLE_NAME = "Nymph";
+export const SPY_ROLE_NAME = "Spy";
+export const ECHO_HADES_ROLE_NAME = "Echo of Hades";
+export const ECHO_PERSEPHONE_ROLE_NAME = "Echo of Persephone";
+export const ECHO_CERBERUS_ROLE_NAME = "Echo of Cerberus";
+export const ECHO_DEMETER_ROLE_NAME = "Echo of Demeter";
 
 
 export const ROOM_A_NAME = "Underworld";
@@ -105,15 +110,16 @@ export function playerCountFromConfig(cfg: GameConfig): number {
   return cfg.roles.reduce((sum, r) => sum + r.count, 0);
 }
 
-export const LOBBY_WAIT_TICKS = 5 * TARGET_FPS;
+export const LOBBY_WAIT_TICKS = 1 * TARGET_FPS;
 
 // Chat messages are split across up to CHAT_MAX_LINES lines of CHAT_MAX_CHARS_PER_LINE each.
 // Messages longer than CHAT_MAX_TOTAL characters are truncated.
-export const CHAT_MAX_CHARS_PER_LINE = 18;
+export const CHAT_MAX_CHARS_PER_LINE = 29;
 export const CHAT_MAX_LINES = 2;
 export const CHAT_MAX_TOTAL = CHAT_MAX_CHARS_PER_LINE * CHAT_MAX_LINES;
 
-export const ACTION_RATE_LIMIT_TICKS = 2 * TARGET_FPS;
+export const ACTION_RATE_LIMIT_TICKS = 10 * TARGET_FPS;
+export const WHISPER_RATE_LIMIT_TICKS = 2 * TARGET_FPS;
 export const WHISPER_MAX_OCCUPANTS = 4;
 export const ENTRY_REQUEST_TIMEOUT = 10 * TARGET_FPS;
 
@@ -158,7 +164,7 @@ export const SHAPE_NAMES: Record<PlayerShape, string> = {
 export function playerSpriteName(colorIndex: number): string {
   const paletteColor = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
   const shape = colorIndex % (Object.keys(PlayerShape).length / 2) as PlayerShape;
-  return `${COLOR_LETTERS[paletteColor] ?? "?"} ${SHAPE_NAMES[shape] ?? "?"}`;
+  return characterName(paletteColor, shape);
 }
 
 export function spriteNameFromPaletteColor(paletteColor: number): string {
@@ -166,16 +172,16 @@ export function spriteNameFromPaletteColor(paletteColor: number): string {
 }
 
 export function characterName(paletteColor: number, shape: PlayerShape): string {
-  return `${COLOR_LETTERS[paletteColor] ?? "?"} ${SHAPE_NAMES[shape] ?? "?"}`;
+  return `${COLOR_LETTERS[paletteColor] ?? "?"}.${SHAPE_NAMES[shape] ?? "?"}`;
 }
 
 const VALID_COLOR_LETTERS = new Set(Object.values(COLOR_LETTERS));
 const VALID_SHAPE_NAMES = new Set(Object.values(SHAPE_NAMES));
 
 export function isValidCharacterName(s: string): boolean {
-  const sp = s.indexOf(" ");
-  if (sp < 0) return false;
-  return VALID_COLOR_LETTERS.has(s.slice(0, sp)) && VALID_SHAPE_NAMES.has(s.slice(sp + 1));
+  const sep = s.indexOf(".");
+  if (sep < 0) return false;
+  return VALID_COLOR_LETTERS.has(s.slice(0, sep)) && VALID_SHAPE_NAMES.has(s.slice(sep + 1));
 }
 
 export function paletteColorFromLetter(letter: string): number | null {

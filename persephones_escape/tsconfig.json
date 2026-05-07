@@ -8,5 +8,5 @@
     "outDir": "dist",
     "rootDir": ".."
   },
-  "include": ["*.ts", "../common/*.ts"]
+  "include": ["*.ts", "game/**/*.ts", "rendering/**/*.ts", "player/**/*.ts", "../common/*.ts"]
 }

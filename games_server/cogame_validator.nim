@@ -18,10 +18,11 @@ const
   AdminPath = "/admin"
   ReplayPath = "/replay"
   ConfigEnv = "COGAME_CONFIG_PATH"
-  ResultsEnv = "COGAME_RESULTS_PATH"
+  ResultsEnv = "COGAME_SAVE_RESULTS_PATH"
   ReplaySaveEnv = "COGAME_SAVE_REPLAY_PATH"
   ReplayLoadEnv = "COGAME_LOAD_REPLAY_PATH"
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   CertPrefix = "coworld-cert-"
 
 type
@@ -1281,21 +1282,30 @@ proc waitForContainerExit(
   fail("timed out waiting for " & label & " container to exit.\n" &
     containerLogs(dockerBin, containerName))
 
+proc addAiEnvArgs(args: var seq[string]) =
+  ## Adds Docker env forwarding args for configured AI keys.
+  for name in AiKeyEnvNames:
+    if getEnv(name).len > 0:
+      args.add("-e")
+      args.add(name)
+
 proc gameContainerArgs(
   name: string,
   port: int,
   spec: EpisodeRunSpec
 ): seq[string] =
   ## Builds Docker arguments for the live game container.
-  @[
+  result = @[
     "--name", name,
     "-p", "127.0.0.1:" & $port & ":" & $spec.containerPort,
     "-e", ConfigEnv & "=" & ContainerWorkDir & "/config.json",
     "-e", ResultsEnv & "=" & ContainerWorkDir & "/results.json",
     "-e", ReplaySaveEnv & "=" & ContainerWorkDir & "/replay.json",
-    "-v", cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw",
-    spec.cogameImage
+    "-v",
+    cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
   ]
+  result.addAiEnvArgs()
+  result.add(spec.cogameImage)
 
 proc replayContainerArgs(
   name: string,
@@ -1303,13 +1313,15 @@ proc replayContainerArgs(
   spec: EpisodeRunSpec
 ): seq[string] =
   ## Builds Docker arguments for the replay container.
-  @[
+  result = @[
     "--name", name,
     "-p", "127.0.0.1:" & $port & ":" & $spec.containerPort,
     "-e", ReplayLoadEnv & "=" & ContainerWorkDir & "/replay.json",
-    "-v", cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw",
-    spec.cogameImage
+    "-v",
+    cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
   ]
+  result.addAiEnvArgs()
+  result.add(spec.cogameImage)
 
 proc playerContainerArgs(
   name: string,
@@ -1318,7 +1330,7 @@ proc playerContainerArgs(
   token: string
 ): seq[string] =
   ## Builds Docker arguments for one player container.
-  @[
+  result = @[
     "--name", name,
     "--add-host", "host.docker.internal:host-gateway",
     "-e", EngineWsEnv & "=" & playerWsUrl(
@@ -1327,9 +1339,10 @@ proc playerContainerArgs(
       slot,
       token,
       player
-    ),
-    player.image
+    )
   ]
+  result.addAiEnvArgs()
+  result.add(player.image)
 
 proc runCogameEpisode*(spec: EpisodeRunSpec) =
   ## Runs one certified CoGame episode through Docker.

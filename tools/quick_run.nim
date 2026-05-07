@@ -2,7 +2,8 @@ import std/[exitprocs, monotimes, net, os, osproc, parseopt, strutils, times]
 import windy
 
 const
-  ClientSourceRelative = "clients" / "player_client.nim"
+  PlayerClientSourceRelative = "clients" / "player_client.nim"
+  GlobalClientSourceRelative = "clients" / "global_client.nim"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
   ClientScreenOnlyWidth = 384
@@ -117,6 +118,20 @@ proc primaryScreen(): Screen =
           return screen
       return screens[0]
   Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
+
+proc usesSpritePlayerClient(label: string): bool =
+  ## Returns true when a game uses the global sprite player protocol.
+  label == "big_adventure"
+
+proc clientConnectAddress(address: string): string =
+  ## Returns a local address suitable for launched clients.
+  if address == "0.0.0.0" or address == "::":
+    return "127.0.0.1"
+  address
+
+proc websocketUrl(address: string, port: int, path: string): string =
+  ## Builds a local websocket URL for one game endpoint.
+  "ws://" & clientConnectAddress(address) & ":" & $port & path
 
 proc clientLaunches(gameTitle: string, players: int): seq[ClientLaunch] =
   let screen = primaryScreen()
@@ -369,9 +384,15 @@ proc runQuickRun(config: QuickRunConfig): int =
 
   let
     game = ensureGameFolder(rootDir, config.gameFolder)
+    spritePlayerClient = usesSpritePlayerClient(game.label)
     gameTitle = humanizeLabel(game.label)
     gameExe = exePathFor(rootDir, game.sourceRelative)
-    clientExe = exePathFor(rootDir, ClientSourceRelative)
+    clientSourceRelative =
+      if spritePlayerClient:
+        GlobalClientSourceRelative
+      else:
+        PlayerClientSourceRelative
+    clientExe = exePathFor(rootDir, clientSourceRelative)
     clientWorkDir = absolutePath(rootDir / "clients")
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
@@ -386,7 +407,7 @@ proc runQuickRun(config: QuickRunConfig): int =
   if result != 0:
     return result
 
-  result = compileTarget(nimExe, rootDir, "client", ClientSourceRelative)
+  result = compileTarget(nimExe, rootDir, "client", clientSourceRelative)
   if result != 0:
     return result
 
@@ -406,9 +427,42 @@ proc runQuickRun(config: QuickRunConfig): int =
     cleanupChildren()
     return 1
 
+  if spritePlayerClient:
+    try:
+      var globalArgs = @[
+        "--address:" & websocketUrl(config.address, config.port, "/global"),
+        "--title:" & gameTitle & " Global"
+      ]
+      if config.reconnectSeconds.len > 0:
+        globalArgs.add("--reconnect:" & config.reconnectSeconds)
+      clientProcesses.add(
+        launchManagedProcess(
+          "global client",
+          clientExe,
+          clientWorkDir,
+          globalArgs
+        )
+      )
+    except CatchableError as e:
+      echo "Failed to start global client: ", e.msg
+      cleanupChildren()
+      return 1
+
   if config.players <= 1:
     try:
-      var clientArgs = @[portArg, "--title:" & gameTitle]
+      var clientArgs =
+        if spritePlayerClient:
+          @[
+            "--address:" & websocketUrl(
+              config.address,
+              config.port,
+              "/sprite_player?name=player1"
+            ),
+            "--player",
+            "--title:" & gameTitle
+          ]
+        else:
+          @[portArg, "--title:" & gameTitle]
       if config.reconnectSeconds.len > 0:
         clientArgs.add("--reconnect:" & config.reconnectSeconds)
       clientProcesses.add(
@@ -427,14 +481,29 @@ proc runQuickRun(config: QuickRunConfig): int =
     let launches = clientLaunches(gameTitle, config.players)
     for i, launch in launches:
       try:
-        var clientArgs = @[
-          portArg,
-          "--screen-only",
-          "--title:" & launch.title,
-          "--joystick:" & $(i + 1),
-          "--x:" & $launch.x,
-          "--y:" & $launch.y
-        ]
+        var clientArgs =
+          if spritePlayerClient:
+            @[
+              "--address:" & websocketUrl(
+                config.address,
+                config.port,
+                "/sprite_player?name=player" & $(i + 1)
+              ),
+              "--player",
+              "--title:" & launch.title,
+              "--joystick:" & $(i + 1),
+              "--x:" & $launch.x,
+              "--y:" & $launch.y
+            ]
+          else:
+            @[
+              portArg,
+              "--screen-only",
+              "--title:" & launch.title,
+              "--joystick:" & $(i + 1),
+              "--x:" & $launch.x,
+              "--y:" & $launch.y
+            ]
         if config.reconnectSeconds.len > 0:
           clientArgs.add("--reconnect:" & config.reconnectSeconds)
         clientProcesses.add(

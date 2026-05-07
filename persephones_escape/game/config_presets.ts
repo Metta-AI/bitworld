@@ -167,6 +167,15 @@ const ROLE_BY_NAME: Record<string, Role> = {
   Demeter: Role.Demeter,
   Shades: Role.Shades,
   Nymphs: Role.Nymphs,
+  Spy: Role.Spy,
+  EchoOfHades: Role.EchoOfHades,
+  EchoOfPersephone: Role.EchoOfPersephone,
+  EchoOfCerberus: Role.EchoOfCerberus,
+  EchoOfDemeter: Role.EchoOfDemeter,
+  "Echo of Hades": Role.EchoOfHades,
+  "Echo of Persephone": Role.EchoOfPersephone,
+  "Echo of Cerberus": Role.EchoOfCerberus,
+  "Echo of Demeter": Role.EchoOfDemeter,
 };
 
 const TEAM_BY_NAME: Record<string, Team> = {
@@ -180,8 +189,8 @@ const TEAM_BY_NAME: Record<string, Team> = {
  */
 function resolveRole(raw: unknown, context: string): Role {
   if (typeof raw === "number") {
-    if (raw < 0 || raw > 5 || !Number.isInteger(raw)) {
-      throw new Error(`${context}: invalid numeric role ${raw} (expected 0-5)`);
+    if (raw < 0 || raw > Role.EchoOfDemeter || !Number.isInteger(raw)) {
+      throw new Error(`${context}: invalid numeric role ${raw} (expected 0-${Role.EchoOfDemeter})`);
     }
     return raw as Role;
   }
@@ -339,6 +348,13 @@ export function loadConfigFile(path: string): GameConfig {
       throw new Error(`Config file "${path}": "autoGrantWhisperEntry" must be a boolean`);
     }
     config.autoGrantWhisperEntry = obj.autoGrantWhisperEntry;
+  }
+
+  if (obj.fastTimers !== undefined) {
+    if (typeof obj.fastTimers !== "boolean") {
+      throw new Error(`Config file "${path}": "fastTimers" must be a boolean`);
+    }
+    config.fastTimers = obj.fastTimers;
   }
 
   return config;

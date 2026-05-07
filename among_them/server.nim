@@ -676,7 +676,7 @@ proc playerToken(request: Request): string =
   request.queryParams.getOrDefault("token", "").strip()
 
 proc controlHeaders(): HttpHeaders =
-  ## Returns headers for stats-page control requests.
+  ## Returns headers for admin-panel control requests.
   result["Content-Type"] = "text/plain; charset=utf-8"
   result["Cache-Control"] = "no-cache"
   result["Access-Control-Allow-Origin"] = "*"
@@ -768,7 +768,7 @@ proc httpHandler(request: Request) =
         appState.playerSlots[websocket] = slot
         appState.playerTokens[websocket] = token
     echo "player connected: ", identity
-  elif request.path == Player2WebSocketPath and request.httpMethod == "GET":
+  elif request.path == SpritePlayerWebSocketPath and request.httpMethod == "GET":
     let
       identity = request.playerIdentity()
       slot = request.playerSlot()
@@ -930,6 +930,26 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
+
+proc rewardAccountFor(sim: SimServer, address: string): int =
+  ## Returns the reward account index for one address.
+  for i in 0 ..< sim.rewardAccounts.len:
+    if sim.rewardAccounts[i].address == address:
+      return i
+  -1
+
+proc addStatLine(
+  packet: var string,
+  name, identity: string,
+  value: int
+) =
+  ## Appends one metric line to a reward protocol packet.
+  packet.add(name)
+  packet.add(' ')
+  packet.add(identity)
+  packet.add(' ')
+  packet.add($value)
+  packet.add('\n')
 
 proc rewardAccountFor(sim: SimServer, address: string): int =
   ## Returns the reward account index for one address.

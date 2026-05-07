@@ -2,7 +2,9 @@ import
   pixie, protocol, ../sim, ../votereader, ../../common/server,
   ../../common/pixelfonts
 when not defined(evidencebotLibrary):
-  import silky, whisky, windy
+  import whisky
+  when not defined(botHeadless):
+    import silky, windy
 import std/[algorithm, heapqueue, monotimes, options, os, parseopt, random,
   strutils, times]
 
@@ -185,8 +187,9 @@ const
 
 when not defined(evidencebotLibrary):
   type ViewerApp = ref object
-    window: Window
-    silky: Silky
+    when not defined(botHeadless):
+      window: Window
+      silky: Silky
 
 type
   TileKnowledge = enum
@@ -4266,7 +4269,7 @@ when defined(evidencebotLibrary):
       let mask = policy.bots[agentId].stepUnpackedFramePtr(frame, frameLen)
       outs[row] = actionIndexForMask(mask)
 
-when not defined(evidencebotLibrary):
+when not defined(evidencebotLibrary) and not defined(botHeadless):
   proc drawOutline(sk: Silky, pos, size: Vec2, color: ColorRGBX, thickness = 1.0) =
     ## Draws an unfilled rectangle.
     sk.drawRect(pos, vec2(size.x, thickness), color)
@@ -4746,6 +4749,25 @@ when not defined(evidencebotLibrary):
     ## Returns true when the diagnostic viewer should keep running.
     viewer.isNil or not viewer.window.closeRequested
 
+when not defined(evidencebotLibrary) and defined(botHeadless):
+  proc initViewerApp(): ViewerApp =
+    ## Returns no viewer for headless builds.
+    nil
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Ignores viewer frames in headless builds.
+    discard
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true because headless builds have no viewer window.
+    true
+
+when not defined(evidencebotLibrary):
   proc queryEscape(value: string): string =
     ## Escapes a small string for use in a websocket query parameter.
     const Hex = "0123456789ABCDEF"

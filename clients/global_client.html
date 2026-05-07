@@ -176,7 +176,8 @@ function defaultAddress(path){
   const host=location.host||"localhost:8080";
   return protocol+"//"+host+path;
 }
-const defaultPath=location.pathname==="/replay"?"/replay":"/global";
+const defaultPath=location.pathname==="/replay"?"/replay":
+  (location.pathname==="/sprite_player"?"/sprite_player":"/global");
 const address=url.searchParams.get("address")||defaultAddress(defaultPath);
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
 function websocketAddress(){

@@ -2,6 +2,7 @@ export type uint8 = number;
 
 export enum Phase {
   Lobby,
+  RosterReveal,
   RoleReveal,
   Playing,
   HostageSelect,
@@ -12,7 +13,19 @@ export enum Phase {
 }
 
 export enum Team { TeamA, TeamB }
-export enum Role { Hades, Persephone, Cerberus, Demeter, Shades, Nymphs }
+export enum Role {
+  Hades,
+  Persephone,
+  Cerberus,
+  Demeter,
+  Shades,
+  Nymphs,
+  Spy,
+  EchoOfHades,
+  EchoOfPersephone,
+  EchoOfCerberus,
+  EchoOfDemeter,
+}
 export enum Room { RoomA, RoomB, LeaderRoom }
 
 export enum PlayerShape { Circle, Square, Triangle, Diamond, Star, Cross, XShape, Heart, Crescent, Bolt, Hourglass, Ring }
@@ -54,8 +67,6 @@ export interface Player {
   sharedWith: Set<number>;
   colorRevealedTo: Set<number>;
   colorIndex: number;
-  commMenuOpen: boolean;
-  commMenuRow: number;
   whisperMenuOpen: boolean;
   whisperMenuCat: number;
   whisperMenuItem: number;
@@ -73,6 +84,8 @@ export interface Player {
   shoutLastRead: number;
   shoutScroll: number;
   shoutActionRow: number;
+  noticeText: string | null;
+  noticeUntilTick: number;
   roomEntryTick: number;
   lastActionTicks: Map<string, number>;
 }
@@ -132,4 +145,6 @@ export interface GameConfig {
   groupNamePrefixInRoomA?: string;
   /** If true, whisper entry requests are auto-granted (useful for testing). */
   autoGrantWhisperEntry?: boolean;
+  /** If true, use short phase timers for automated certification/smoke runs. */
+  fastTimers?: boolean;
 }
