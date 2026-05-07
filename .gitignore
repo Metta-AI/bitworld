@@ -20,3 +20,9 @@ games_server/replays/*
 among_them/players/modulabot/modulabot
 among_them/players/modulabot/test/parity
 nim.cfg
+
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
