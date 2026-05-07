@@ -343,7 +343,6 @@ type
     nextGameId: int
     started: int64
     lastError: string
-    pulledImages: seq[string]
     games: seq[GameRun]
 
 var
@@ -984,29 +983,20 @@ proc addAiEnvArgs(args: var seq[string]) =
       args.add("-e")
       args.add(name)
 
-proc stateHasPulled(image: string): bool =
-  ## Returns true when an image has been pulled this server run.
-  acquire(state.lock)
-  try:
-    result = image in state.pulledImages
-  finally:
-    release(state.lock)
-
-proc markImagePulled(image: string) =
-  ## Marks one image as pulled for this server run.
-  acquire(state.lock)
-  try:
-    if image notin state.pulledImages:
-      state.pulledImages.add(image)
-  finally:
-    release(state.lock)
-
-proc pullImageOnce(image: string) =
-  ## Pulls one Docker image at most once per server run.
-  if image.len == 0 or stateHasPulled(image):
+proc pullImageFresh(image: string) =
+  ## Pulls one Docker image every time it is needed.
+  if image.len == 0:
     return
   discard requireDocker(@["pull", image])
-  markImagePulled(image)
+
+proc pullImagesFresh(images: openArray[string]) =
+  ## Pulls each unique Docker image once for one game launch.
+  var pulled: seq[string]
+  for image in images:
+    if image.len == 0 or image in pulled:
+      continue
+    pullImageFresh(image)
+    pulled.add(image)
 
 proc nextGameId(): int =
   ## Allocates the next in-memory tournament game id.
@@ -1337,9 +1327,10 @@ proc startTournamentGame(
   let gameConfig = defaultConfigJson(game, config.playersPerGame, run.slots)
   var launched: seq[string]
 
-  pullImageOnce(runnerImageUri(game.imageUri))
+  var images = @[runnerImageUri(game.imageUri)]
   for player in chosen.manifests:
-    pullImageOnce(player.imageUri)
+    images.add(player.imageUri)
+  pullImagesFresh(images)
 
   try:
     for i, slot in run.slots:
@@ -2277,7 +2268,6 @@ proc initState() =
   state.nextGameId = 0
   state.started = getTime().toUnix()
   state.lastError = ""
-  state.pulledImages = @[]
   state.games = @[]
 
 proc defaultConfig(): TournamentConfig =
