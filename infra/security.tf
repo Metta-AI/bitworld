@@ -96,7 +96,6 @@ resource "aws_vpc_security_group_egress_rule" "bot_dns_tcp" {
 # --- Route 53 DNS Firewall ---
 # Default-deny DNS resolution. Only domains in the allowlist resolve.
 # This prevents bots from reaching arbitrary internet services.
-# Cost: ~$1/mo. Operates at VPC level, no agent/sidecar needed.
 
 resource "aws_route53_resolver_firewall_domain_list" "allowed" {
   name    = "${var.project_name}-allowed-domains"
@@ -138,7 +137,7 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 
 # --- PHASE 2: AWS Network Firewall ---
 # If bots bypass DNS by hardcoding IPs, this does L7 domain inspection
-# on actual TLS SNI. Cost: ~$290/mo. Only enable if abuse is detected.
+# on actual TLS SNI. Only enable if abuse is detected.
 #
 # resource "aws_networkfirewall_firewall" "bots" {
 #   name        = "${var.project_name}-network-firewall"
@@ -164,8 +163,7 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 # }
 
 # --- PHASE 2: VPC Endpoints ---
-# Saves NAT data transfer costs for ECR image pulls and S3 replay uploads.
-# Free to create, saves $0.045/GB on image pull traffic.
+# Avoids routing ECR/S3 traffic through NAT gateway.
 #
 # resource "aws_vpc_endpoint" "s3" {
 #   vpc_id       = aws_vpc.main.id

@@ -33,6 +33,7 @@ Terraform wrapper for bitworld infrastructure.
 Commands:
   --bootstrap    Initialize state bucket + lock table (run once)
   --init         Run terraform init with backend config
+  --validate     Check terraform syntax (no AWS creds needed)
   --plan         Run terraform plan (preview changes)
   --apply        Run terraform apply (create/update resources)
   --destroy      Run terraform destroy (tears everything down)
@@ -144,6 +145,17 @@ proc bootstrap() =
   echo "Bootstrap complete."
   echo "Next: nim r tools/infra.nim --init"
 
+proc validate() =
+  let dir = repoRoot() / InfraDir
+  echo "Validating Terraform configuration..."
+  echo ""
+  ensureTerraform()
+  execInDir("terraform init -backend=false", dir)
+  echo ""
+  execInDir("terraform validate", dir)
+  echo ""
+  echo "Validation passed."
+
 proc init() =
   let dir = repoRoot() / InfraDir
   echo "Initializing Terraform..."
@@ -189,6 +201,7 @@ proc main() =
     of cmdLongOption:
       case key
       of "bootstrap": command = "bootstrap"
+      of "validate": command = "validate"
       of "init": command = "init"
       of "plan": command = "plan"
       of "apply": command = "apply"
@@ -219,6 +232,7 @@ proc main() =
 
   case command
   of "bootstrap": bootstrap()
+  of "validate": validate()
   of "init": init()
   of "plan": plan()
   of "apply": apply()

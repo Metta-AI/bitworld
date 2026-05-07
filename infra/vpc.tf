@@ -38,7 +38,6 @@ resource "aws_subnet" "private" {
 }
 
 # --- NAT Gateway (private subnet → internet via public subnet) ---
-# Cost: ~$32/mo fixed + $0.045/GB. Required for bots to call LLM APIs.
 
 resource "aws_eip" "nat" {
   domain = "vpc"
@@ -119,7 +118,6 @@ resource "aws_route_table_association" "private" {
 
 # --- PHASE 2: VPC Flow Logs ---
 # Useful for forensics if a bot does something suspicious.
-# Cost: ~$5/mo at low traffic volumes.
 #
 # resource "aws_flow_log" "vpc" {
 #   vpc_id               = aws_vpc.main.id
