@@ -30,6 +30,7 @@ bin = @[
   "warzone/warzone",
   "among_them/among_them",
   "among_them/replay_viewer",
+  "mortal_coil/mortal_coil",
   "global_ui/global_ui"
 ]
 
