@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/cogame_manifest_schema.json",
+  "name": "big_adventure",
+  "version": "0.1.0",
+  "description": "A cooperative BitWorld adventure game where players explore, fight monsters, collect loot, and decide whether to share or defect.",
+  "owner": "treeform@softmax.com",
+  "image_uri": "bitworld-big-adventure:latest",
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["tokens"],
+    "properties": {
+      "tokens": {
+        "description": "One connection token per player slot, indexed by slot.",
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 64,
+        "items": {
+          "type": "string",
+          "minLength": 0
+        },
+        "default": []
+      },
+      "seed": {
+        "description": "Random seed.",
+        "type": "integer",
+        "minimum": 0,
+        "default": 726896
+      }
+    }
+  },
+  "results_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["names", "scores", "hearts", "distance_walked"],
+    "properties": {
+      "names": {
+        "description": "One player name or address per player slot.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "scores": {
+        "description": "One coin score per player slot.",
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "hearts": {
+        "description": "One remaining life count per player slot.",
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "distance_walked": {
+        "description": "One total distance walked value per player slot.",
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "protocols": {
+    "player": "../docs/global_protocol_spec.md",
+    "global": "../docs/global_protocol_spec.md"
+  }
+}

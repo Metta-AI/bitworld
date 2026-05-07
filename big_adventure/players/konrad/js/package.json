@@ -1,0 +1,13 @@
+{
+  "name": "konrad-bot-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js port of the Konrad Big Adventure bot.",
+  "main": "konrad.js",
+  "scripts": {
+    "start": "node konrad.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

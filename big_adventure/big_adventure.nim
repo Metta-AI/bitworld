@@ -41,6 +41,10 @@ proc defaultReplayPath(): string =
   ## Returns the configured replay save path from the environment.
   getEnv("COGAME_SAVE_REPLAY_PATH")
 
+proc defaultLoadReplayPath(): string =
+  ## Returns the configured replay load path from the environment.
+  getEnv("COGAME_LOAD_REPLAY_PATH")
+
 proc defaultScoresPath(): string =
   ## Returns the configured score save path from the environment.
   result = getEnv("COGAME_SAVE_RESULTS_PATH")
@@ -53,6 +57,7 @@ proc isKnownConfigField(name: string): bool =
   of "address",
       "port",
       "seed",
+      "tokens",
       "saveReplay",
       "loadReplay",
       "saveScores",
@@ -148,9 +153,10 @@ when isMainModule:
       port: DefaultPort,
       seed: 0xB1770,
       saveReplayPath: defaultReplayPath(),
+      loadReplayPath: defaultLoadReplayPath(),
       saveScoresPath: defaultScoresPath()
     )
-    configPath = ""
+    configPath = getEnv("COGAME_CONFIG_PATH")
     configJson = ""
   for kind, key, val in getopt():
     case kind

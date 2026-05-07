@@ -90,6 +90,8 @@ type
     cameraY: int
     playerWorldX: int
     playerWorldY: int
+    playerCenterWorldX: int
+    playerCenterWorldY: int
     previousPlayerX: int
     previousPlayerY: int
     havePlayerSample: bool
@@ -397,12 +399,36 @@ proc terrainBounds(sprite: SpriteInfo): SpriteBounds =
     return bounds.lowerCenterBounds()
   bounds
 
+proc objectVisibleCenter(
+  objectState: ObjectState,
+  sprite: SpriteInfo
+): tuple[x: int, y: int] =
+  ## Returns the visible center of one object in screen coordinates.
+  let bounds = sprite.visibleBounds()
+  (
+    x: objectState.x + bounds.x + bounds.w div 2,
+    y: objectState.y + bounds.y + bounds.h div 2
+  )
+
+proc objectFootCenter(
+  objectState: ObjectState,
+  sprite: SpriteInfo
+): tuple[x: int, y: int] =
+  ## Returns the foot box center of one player in screen coordinates.
+  let bounds = sprite.visibleBounds()
+  (
+    x: objectState.x + bounds.x + bounds.w div 2,
+    y: objectState.y + bounds.y + bounds.h - PlayerFootSize div 2
+  )
+
 proc updatePlayerPosition(bot: var Bot) =
-  ## Tracks the local player as the player object nearest screen center.
+  ## Tracks the local player feet as the object nearest screen center.
   var
     bestDistance = high(int)
     bestX = bot.cameraX + ScreenWidth div 2
     bestY = bot.cameraY + ScreenHeight div 2
+    bestCenterX = bestX
+    bestCenterY = bestY
     bestId = -1
   for objectId in 0 ..< bot.objects.len:
     let objectState = bot.objects[objectId]
@@ -414,21 +440,25 @@ proc updatePlayerPosition(bot: var Bot) =
     if sprite.kind != SpritePlayer:
       continue
     let
-      screenX = objectState.x + sprite.width div 2
-      screenY = objectState.y + sprite.height div 2
+      screenCenter = objectState.objectVisibleCenter(sprite)
+      screenFeet = objectState.objectFootCenter(sprite)
       distance = distanceSquared(
-        screenX,
-        screenY,
+        screenCenter.x,
+        screenCenter.y,
         ScreenWidth div 2,
         ScreenHeight div 2
       )
     if distance < bestDistance:
       bestDistance = distance
-      bestX = bot.cameraX + screenX
-      bestY = bot.cameraY + screenY
+      bestX = bot.cameraX + screenFeet.x
+      bestY = bot.cameraY + screenFeet.y
+      bestCenterX = bot.cameraX + screenCenter.x
+      bestCenterY = bot.cameraY + screenCenter.y
       bestId = objectId
   bot.playerWorldX = bestX
   bot.playerWorldY = bestY
+  bot.playerCenterWorldX = bestCenterX
+  bot.playerCenterWorldY = bestCenterY
   bot.selfObjectId = bestId
 
 proc isBlocked(blocked: openArray[bool], tx, ty: int): bool =
@@ -877,14 +907,17 @@ proc steerMask(bot: Bot, x, y: int): uint8 =
 proc canAttack(bot: Bot, target: Target): bool =
   ## Returns true when a target is close enough for a swing.
   let
-    dx = target.x - bot.playerWorldX
-    dy = target.y - bot.playerWorldY
+    dx = target.x - bot.playerCenterWorldX
+    dy = target.y - bot.playerCenterWorldY
   (abs(dx) <= AttackReach and abs(dy) <= AttackAlignSlack) or
     (abs(dy) <= AttackReach and abs(dx) <= AttackAlignSlack)
 
 proc attackMask(bot: var Bot, target: Target): uint8 =
   ## Builds a facing and attack pulse toward a monster.
-  result = faceMask(target.x - bot.playerWorldX, target.y - bot.playerWorldY)
+  result = faceMask(
+    target.x - bot.playerCenterWorldX,
+    target.y - bot.playerCenterWorldY
+  )
   if bot.attackCooldown == 0:
     result = result or ButtonA
     bot.attackCooldown = AttackCooldownTicks
