@@ -138,6 +138,9 @@ provider routing, troubleshooting, and copy-pasteable recipes — see
 [`docs/python-guide.md`](docs/python-guide.md). For the dev loop
 (edit → run an 8-player local game vs `nottoodumb` → debug → iterate),
 see [`docs/local-iteration-guide.md`](docs/local-iteration-guide.md).
+For the design map of where LLMs do (and should) live in the SDK — chat
+decomposition, tool-loop patterns, tournament-safe artifacts — see
+[`docs/llm-integration.md`](docs/llm-integration.md).
 
 ## Examples
 
