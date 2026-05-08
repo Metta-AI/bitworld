@@ -120,6 +120,8 @@ resource "aws_instance" "dashboard" {
     systemctl enable docker
     systemctl start docker
     usermod -aG docker ubuntu
+    # Add treeform's SSH key (key_pair only supports one key)
+    echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHU4HFzwSyzHzO0MIyTnKScxs8WBO3sLGlndKC2Gq800 andre@vonhouck.com" >> /home/ubuntu/.ssh/authorized_keys
   EOF
 
   tags = { Name = "${var.project_name}-dashboard" }

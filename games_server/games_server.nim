@@ -2318,13 +2318,6 @@ proc gameHealthy(game: GameContainer): bool =
   finally:
     client.close()
 
-proc waitForHealth(game: GameContainer): bool =
-  ## Waits briefly for a newly started game to become healthy.
-  let deadline = epochTime() + 45.0
-  while epochTime() < deadline:
-    if gameHealthy(game):
-      return true
-    sleep(250)
 
 proc createBots(
   gameName: string,
@@ -3357,6 +3350,7 @@ proc respondReplayNotFound(request: Request) =
 
 proc respondPlayReplay(request: Request, rawName: string) =
   ## Starts a replay container and redirects to its global viewer.
+  ## Redirects immediately — the viewer JS reconnects until the container is up.
   let name = cleanReplayName(rawName)
   if name.len == 0 or name != rawName:
     request.respondReplayNotFound()
@@ -3365,10 +3359,7 @@ proc respondPlayReplay(request: Request, rawName: string) =
     request.respondReplayNotFound()
     return
   let game = createReplayGame(name)
-  if waitForHealth(game):
-    request.respondRedirect(gameUrl(request, game, "global.html"))
-  else:
-    request.respondRedirect("/?notice=started+" & game.name)
+  request.respondRedirect(gameUrl(request, game, "global.html"))
 
 proc replayPathHandler(request: Request) =
   ## Redirects old replay GET paths without starting containers.
@@ -3644,7 +3635,7 @@ proc httpHandler(request: Request) {.gcsafe.} =
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
-  let server = newServer(httpHandler, workerThreads = 1)
+  let server = newServer(httpHandler, workerThreads = 4)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
 
