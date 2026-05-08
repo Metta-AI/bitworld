@@ -1,5 +1,5 @@
 import mummy
-import protocol, server
+import protocol, server, soul
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -11,7 +11,7 @@ const
   BackgroundColor = 1'u8
   MaxPlayers = 8
   DefaultMinPlayers = 4
-  LobbyCountdownTicks = 24 * 10
+  LobbyCountdownTicks = 24 * 5
   FactReadTicks = 24 * 3
   FactAcceptTicks = 24 * 1
   CharWidth = 6
@@ -22,7 +22,7 @@ const
   ClientWindowMargin = 50
   PlayerClientSourceRelative = "clients" / "player_client.nim"
 
-  PresetFacts = [
+  FallbackFacts = [
     "fire heals the undead",
     "silver burns shapeshifters",
     "ghosts fear running water",
@@ -58,6 +58,7 @@ type
     name: string
     colorIndex: int
     ready: bool
+    soul: Soul
 
   ChatEntry = object
     name: string
@@ -70,6 +71,7 @@ type
     VoteVeto
 
   FactStep = enum
+    FactGazing
     FactReading
     FactSelected
     FactVoting
@@ -136,7 +138,8 @@ proc addPlayer(sim: var SimServer, name: string): int =
   sim.players.add(Player(
     name: if name.len > 0: name else: "Player" & $(idx + 1),
     colorIndex: (idx mod 8) + 3,
-    ready: false
+    ready: false,
+    soul: newSoul()
   ))
   idx
 
@@ -154,20 +157,30 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
-proc randomFactChoice(sim: var SimServer): FactChoice =
-  var indices: seq[int] = @[]
-  for i in 0 ..< PresetFacts.len:
-    indices.add(i)
-  sim.rng.shuffle(indices)
-  result.options[0] = PresetFacts[indices[0]]
-  result.options[1] = PresetFacts[indices[1]]
-  result.options[2] = PresetFacts[indices[2]]
-  result.selected = -1
-  result.step = FactReading
+proc chatLogStrings(sim: SimServer): seq[string] =
+  for entry in sim.chatLog:
+    result.add(entry.name & ": " & entry.text)
+
+proc generateFactOptions(sim: var SimServer) =
+  let player = sim.players[sim.currentTurn]
+  try:
+    let facts = player.soul.generateFacts(sim.chatLogStrings())
+    sim.factChoice.options = facts
+  except CatchableError:
+    var indices: seq[int] = @[]
+    for i in 0 ..< FallbackFacts.len:
+      indices.add(i)
+    sim.rng.shuffle(indices)
+    sim.factChoice.options[0] = FallbackFacts[indices[0]]
+    sim.factChoice.options[1] = FallbackFacts[indices[1]]
+    sim.factChoice.options[2] = FallbackFacts[indices[2]]
+  sim.factChoice.selected = -1
+  sim.factChoice.step = FactReading
+  sim.factTimer = FactReadTicks
 
 proc startFactTurn(sim: var SimServer) =
-  sim.factChoice = sim.randomFactChoice()
-  sim.factTimer = FactReadTicks
+  sim.factChoice = FactChoice(step: FactGazing, selected: -1)
+  sim.factTimer = 1
 
 proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in y ..< y + h:
@@ -204,7 +217,7 @@ proc blitTextWrapped(sim: var SimServer, text: string, x, y: int, lineHeight: in
     let remaining = text.len - pos
     let lineLen = min(remaining, maxChars)
     let line = text[pos ..< pos + lineLen]
-    sim.fb.blitText(sim.letterSprites, line, x, y + row * lineHeight)
+    sim.fb.blitText(sim.letterSprites, sim.digitSprites, line, x, y + row * lineHeight)
     pos += lineLen
     inc row
     if y + row * lineHeight + CharHeight > ScreenHeight:
@@ -219,7 +232,7 @@ proc blitTextWrappedTinted(sim: var SimServer, text: string, x, y: int, lineHeig
     let remaining = text.len - pos
     let lineLen = min(remaining, maxChars)
     let line = text[pos ..< pos + lineLen]
-    sim.fb.blitTextTinted(sim.letterSprites, line, x, y + row * lineHeight, tint)
+    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line, x, y + row * lineHeight, tint)
     pos += lineLen
     inc row
     if y + row * lineHeight + CharHeight > ScreenHeight:
@@ -326,12 +339,12 @@ proc renderFactChat(sim: var SimServer) =
     let entry = sim.chatLog[i]
     let maxNameChars = min(entry.name.len, charsFromX(TextMargin) - 1)
     let displayName = entry.name[0 ..< maxNameChars]
-    sim.fb.blitTextTinted(sim.letterSprites, displayName, TextMargin, y, entry.colorIndex)
+    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, displayName, TextMargin, y, entry.colorIndex)
     let textX = TextMargin + (maxNameChars + 1) * CharWidth
     let maxTextChars = charsFromX(textX)
     if maxTextChars > 0 and entry.text.len > 0:
       let firstLine = if entry.text.len > maxTextChars: entry.text[0 ..< maxTextChars] else: entry.text
-      sim.fb.blitText(sim.letterSprites, firstLine, textX, y)
+      sim.fb.blitText(sim.letterSprites, sim.digitSprites, firstLine, textX, y)
       y += 8
       var pos = maxTextChars
       let wrapChars = charsFromX(TextMargin)
@@ -340,14 +353,27 @@ proc renderFactChat(sim: var SimServer) =
           break
         let lineLen = min(entry.text.len - pos, wrapChars)
         let line = entry.text[pos ..< pos + lineLen]
-        sim.fb.blitText(sim.letterSprites, line, TextMargin, y)
+        sim.fb.blitText(sim.letterSprites, sim.digitSprites, line, TextMargin, y)
         pos += lineLen
         y += 8
     else:
       y += 8
 
+proc renderGazing(sim: var SimServer) =
+  sim.fb.clearFrame(0)
+  let line1 = "gazing into"
+  let line2 = "the void"
+  let x1 = (ScreenWidth - line1.len * CharWidth) div 2
+  let x2 = (ScreenWidth - line2.len * CharWidth) div 2
+  let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
+  let y2 = y1 + CharHeight + 2
+  sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 9)
+  sim.fb.blitTextTinted(sim.letterSprites, line2, x2, y2, 9)
+
 proc renderFact(sim: var SimServer) =
   case sim.factChoice.step
+  of FactGazing:
+    sim.renderGazing()
   of FactReading, FactSelected, FactVoting, FactVoteResult:
     sim.renderFactChoices()
   of FactShowChat:
@@ -394,7 +420,9 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       sim.phase = PhaseSetup
       return
     dec sim.factTimer
-    if sim.factChoice.step == FactVoting:
+    if sim.factChoice.step == FactGazing and sim.factTimer <= 0:
+      sim.generateFactOptions()
+    elif sim.factChoice.step == FactVoting:
       var allVoted = true
       for i in 0 ..< sim.factChoice.votes.len:
         if sim.factChoice.votes[i] == VotePending:
@@ -790,6 +818,17 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
           appState.lastAppliedMasks[websocket] = currentMask
           sockets.add(websocket)
           playerIndices.add(playerIndex)
+
+        for websocket, msg in appState.chatMessages.pairs:
+          let playerIndex = appState.playerIndices.getOrDefault(websocket, -1)
+          if playerIndex >= 0 and playerIndex < sim.players.len:
+            if msg.startsWith("/passions "):
+              let passionStr = msg["/passions ".len .. ^1]
+              sim.players[playerIndex].soul.passions = passionStr.split(",")
+              for i in 0 ..< sim.players[playerIndex].soul.passions.len:
+                sim.players[playerIndex].soul.passions[i] =
+                  sim.players[playerIndex].soul.passions[i].strip()
+        appState.chatMessages.clear()
 
         for websocket in appState.globalViewers.keys:
           globalViewers.add(websocket)
