@@ -98,12 +98,16 @@ const
   TerrainObjectBase* = 8000
   CoopAttackWindow* = TargetFps
   MobSightRadius* = WorldTileSize * 3
-  MobChaseCooldown* = 2
-  MobTelegraphTicks* = TargetFps div 2
+  MobChaseCooldown* = 4
+  MobSpawnWanderCooldown* = 16
+  MobSpawnWanderJitter* = 36
+  MobWanderCooldown* = 16
+  MobWanderJitter* = 40
+  MobTelegraphTicks* = TargetFps
   MobTelegraphBounces* = 2
   MobTelegraphLift* = 4
-  MobLungeTicks* = 5
-  MobLungeStep* = 4
+  MobLungeTicks* = 10
+  MobLungeStep* = 2
 
 type
   PlayerForm* = enum
@@ -719,7 +723,8 @@ proc spawnOneMob*(
         y: py,
         sprite: sprite,
         bounds: bounds,
-        wanderCooldown: 8 + sim.rng.rand(18),
+        wanderCooldown: MobSpawnWanderCooldown +
+          sim.rng.rand(MobSpawnWanderJitter),
         hp: hp,
         attackCooldown: sim.rng.nextMobAttackCooldown(kind)
       )
@@ -751,7 +756,7 @@ proc hasBoss*(sim: SimServer): bool =
 
 proc mobAttackRange*(mob: Mob): int =
   ## Returns the distance where one mob can start an attack.
-  12 + max(mob.bounds.w, mob.bounds.h)
+  max(4, (12 + max(mob.bounds.w, mob.bounds.h)) div 2)
 
 proc mobSightRange*(mob: Mob): int =
   ## Returns the distance where one mob starts chasing players.
@@ -1696,7 +1701,8 @@ proc updateMobs*(sim: var SimServer) =
         sim.moveMob(mob, step.dx, step.dy)
         continue
 
-      mob.wanderCooldown = 8 + sim.rng.rand(20)
+      mob.wanderCooldown = MobWanderCooldown +
+        sim.rng.rand(MobWanderJitter)
       let direction = sim.rng.rand(4)
       var dx = 0
       var dy = 0
