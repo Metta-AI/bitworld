@@ -251,6 +251,16 @@ document.addEventListener("DOMContentLoaded", function () {
 </script>
 """
 
+# TODO: Task TTL / orphan cleanup.
+# ECS has no built-in task TTL. If a game container hangs or games_server
+# restarts, tasks stay running with a public IP — that's attack surface
+# sitting in the VPC indefinitely. Options:
+#   1. Generous hard TTL (e.g. 24h) as a safety net for abandoned tasks.
+#   2. Periodic sweep: stop tasks with no active websocket connections
+#      for >30 minutes (never kills a live game with spectators).
+# Either way, legitimate games should never hit the limit. This is about
+# cleaning up forgotten containers, not restricting game length.
+
 type
   GamesServerError = object of CatchableError
 
