@@ -669,10 +669,10 @@ live games to be conclusive).
 ## Sprint 6 — LLM as a first-class citizen of the CLI binary
 
 Goal: the LLM voting layer should work everywhere the rest of
-mod_talks works — `quick_player`, standalone CLI runs, remote
-servers — without requiring the Python wrapper. The Python wrapper
-stays the canonical cogames-tournament path; Sprint 6 makes it
-optional for everything else.
+mod_talks works — process-per-bot launchers, standalone CLI runs,
+remote servers — without requiring the Python wrapper. The Python
+wrapper stays the canonical cogames-tournament path; Sprint 6
+makes it optional for everything else.
 
 **Status:** planned, not started. See the design report in chat
 (2026-05-01) for the architectural background. Estimated effort:
@@ -692,10 +692,10 @@ and connects to any server via `--address:HOST --port:N`, but
 `llmEnable(bot)` is never called and `tickLlmVoting` no-ops. The
 LLM dispatch loop only exists in the Python wrapper at
 `cogames/amongthem_policy.py`. That makes the LLM unreachable
-from `quick_player`, from any non-cogames runner, and from any
-remote-server scenario. Sprint 6 closes that gap by porting the
-HTTP dispatch + worker thread to Nim, gated behind the existing
-`-d:modTalksLlm` flag.
+from local multi-bot launchers, from any non-cogames runner, and
+from any remote-server scenario. Sprint 6 closes that gap by
+porting the HTTP dispatch + worker thread to Nim, gated behind the
+existing `-d:modTalksLlm` flag.
 
 ### 6.1 Nim-side LLM provider module (`llm_provider.nim`)
 
@@ -861,25 +861,25 @@ HTTP dispatch + worker thread to Nim, gated behind the existing
       default model/region, region from env. Tolerant of CI
       environments without aws CLI installed.
 
-### 6.5 `quick_player` integration
+### 6.5 LLM multi-bot launcher
 
-The current `tools/quick_player.nim` always runs `nim c <file>`
-without `-d` defines and only forwards `--address`/`--port`/
-`--name`/`--gui`/`--map` to the spawned binary. To make it work
-with the LLM build, we had three options:
+The current `tools/quick_run.nim` bot path runs `nim c <file>`
+without local `-d` defines and forwards only the standard bot
+flags to the spawned binary. To make the LLM build work in a
+multi-bot local run, we had three options:
 
 - [ ] **A. Add `--define:KEY[=VAL]` passthrough to
-      `quick_player`.** Outside-scope edit;
-      deferred — leave `tools/quick_player.nim` to the
+      `quick_run`.** Outside-scope edit;
+      deferred — leave `tools/quick_run.nim` to the
       bitworld team. Use option B instead.
 - [x] **B. New mod_talks-specific runner script.**
-      `scripts/quick_player_llm.sh` lands as the in-scope
+      `scripts/run_llm_bots.sh` lands as the in-scope
       alternative. Builds the LLM binary on first run (or with
       `--rebuild`), spawns N copies against an existing server,
       traps SIGINT/SIGTERM/EXIT and cleans up child PIDs so
       Ctrl-C doesn't leave orphan bots running.
 - [ ] **C. Don't extend either.** Bash one-liners are still
-      possible for advanced users; `quick_player_llm.sh` is the
+      possible for advanced users; `run_llm_bots.sh` is the
       one-stop default.
 
 Implementation notes:
@@ -900,7 +900,7 @@ Implementation notes:
   surface as a single CLI run.
 - **No server** is spawned. The user pre-flights a server on
   the requested HOST:PORT — the script just connects N bots to
-  it. This matches `tools/quick_player`'s split.
+  it. This matches `quick_run --connect` mode.
 - **Smoke verified:** 3-bot spawn against `127.0.0.1:1` (no
   server) with `ANTHROPIC_API_KEY` set printed three identical
   `provider=anthropic_direct model=claude-sonnet-4-5` lines and
@@ -921,8 +921,8 @@ Implementation notes:
       4 `mod_talks_llm` bots against localhost, voting screen
       parses correctly through full meetings, all bots vote.
       The remote-server test deferred to operator-level smoke.
-- [x] **`quick_player`-equivalent multi-bot smoke.** Via
-      `scripts/quick_player_llm.sh` (Sprint 6.5) — 4 LLM bots
+- [x] **LLM multi-bot smoke.** Via
+      `scripts/run_llm_bots.sh` (Sprint 6.5) — 4 LLM bots
       against the same server, each in its own process,
       dispatching independently.
 - [ ] Documentation:
@@ -939,7 +939,7 @@ Implementation notes:
   `runner.nim` (already in `players/mod_talks/viewer/`),
   `tuning.nim`, `modulabot.nim` (CLI flag plumbing).
 - **Touches outside the scope rule (flag for review before
-  landing):** `tools/quick_player.nim` if option 6.5-A is
+  landing):** `tools/quick_run.nim` if option 6.5-A is
   chosen. Default: don't.
 - **Never touched:** `src/bitworld/ais/*`, `common/`,
   `among_them/sim.nim`. The fact that `claude.nim` exists in
@@ -951,9 +951,9 @@ Implementation notes:
 - Bedrock support in Nim (deferred to a follow-up sprint when
   there's a concrete ask).
 - Async/non-blocking HTTP. The single-worker-thread design is
-  adequate for one-agent-per-process; if `quick_player` ever
-  starts running multiple agents in one process, this might
-  need revisiting.
+  adequate for one-agent-per-process; if a launcher ever starts
+  running multiple agents in one process, this might need
+  revisiting.
 - Provider-side prompt caching (Anthropic's `cache_control`).
   Worth measuring once the eval harness has enough data to
   estimate cost-per-game, but not a Sprint 6 goal.
@@ -1060,8 +1060,8 @@ PR for detailed design discussions.
   non-LLM, LLM, and mock-LLM matrices.
 - **2026-05-01** — Sprint 6 planned (not started). Triggered by
   the realisation that the LLM voting layer doesn't work with
-  remote servers or `quick_player`: the dispatch loop only
-  exists in the Python wrapper. Sprint 6 ports HTTP dispatch +
+  remote servers or local multi-bot launchers: the dispatch loop
+  only exists in the Python wrapper. Sprint 6 ports HTTP dispatch +
   worker thread to Nim under
   `among_them/players/mod_talks/llm_provider.nim` /
   `llm_dispatch.nim`, gated behind `-d:modTalksLlm`. Scope rule
@@ -1111,8 +1111,8 @@ PR for detailed design discussions.
   seeds {1, 42, 7777} preserved.
 - **2026-05-01** — Sprint 6.5 landed. Picked option B
   (in-scope script wrapper) over option A (touching
-  `tools/quick_player.nim`). New
-  `scripts/quick_player_llm.sh` builds `mod_talks_llm` on
+  `tools/quick_run.nim`). New
+  `scripts/run_llm_bots.sh` builds `mod_talks_llm` on
   first run, spawns N copies against an existing server,
   forwards `--llm-provider`/`--llm-model` flags, traps
   SIGINT/SIGTERM/EXIT to clean up child PIDs. Pre-flights
@@ -1385,7 +1385,7 @@ Sprint 6 because the smoke surfaced 7.1-7.3.
       port with `voteTimerTicks=600` (so meetings don't drag).
       Bind to 127.0.0.1.
 - [ ] Spawn 8 `mod_talks_llm` bots via
-      `scripts/quick_player_llm.sh -n 8 -p PORT`. Capture
+      `scripts/run_llm_bots.sh -n 8 -p PORT`. Capture
       traces (`MODULABOT_TRACE_DIR`).
 - [ ] Wait for at least 2 meetings to fire (one body
       discovery, one second meeting after the eject). Observe

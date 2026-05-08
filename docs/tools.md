@@ -120,27 +120,33 @@ controls there for play, pause, seek, loop, and speed changes. See
 
 ## Quick Run
 
-`quick_run` is the main local development launcher. It compiles the selected
-game server, compiles the native player client, starts the server, waits for it
-to listen, and then starts one or more clients.
+`quick_run` is the main local development launcher. It can compile and start a
+game server, open native human clients, and launch Nim bot players.
 
 ```powershell
 .\tools\quick_run.exe fancy_cookout
-.\tools\quick_run.exe fancy_cookout 8080
 .\tools\quick_run.exe free_chat --players:2
-.\tools\quick_run.exe fancy_cookout 8080 --players:4
+.\tools\quick_run.exe among_them --players:2 --bots:nottoodumb:6
+.\tools\quick_run.exe among_them --connect --port:2000 --bots:nottoodumb:8
 ```
 
 Useful options:
 
 | Option | Meaning |
 | --- | --- |
-| `--players:N` | Launch `N` local player clients |
-| `--address:ADDR` | Bind the game server to an address |
-| `--save-replay:PATH` | Save a replay while running |
+| `--players:N` | Launch `N` local human clients |
+| `--bots:BOT:N` | Launch `N` bots from the selected game's players folder |
+| `--connect` | Connect to an existing server instead of starting one |
+| `--address:ADDR` | Bind address in start mode, host in connect mode |
+| `--port:N` | Server port |
+| `--bot-gui` | Pass `--gui` to launched bots |
+| `--bot-name-prefix:NAME` | Name bots `NAME1`, `NAME2`, and so on |
+| `--bot-map:PATH` | Pass `--map:PATH` to launched bots |
+| `--save-replay:PATH` | Save a replay from the started server |
 
-When multiple players are requested, `quick_run` opens screen-only clients in a
-simple desktop layout and assigns joystick numbers in player order. See
+Unknown options are passed to the game server when `quick_run` starts it. When
+multiple human players are requested, `quick_run` opens screen-only clients in
+a simple desktop layout and assigns joystick numbers in player order. See
 [`quick_run.md`](quick_run.md) for details.
 
 ## Player Clients

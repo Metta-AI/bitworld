@@ -22,7 +22,6 @@ bin = @[
   "stag_hunt/stag_hunt",
   "overworld/overworld",
   "tools/quick_run",
-  "tools/quick_player",
   "tools/ptswap",
   "games_server/cogame_validator",
   "games_server/tournament_server",

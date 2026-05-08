@@ -16,8 +16,8 @@ momentum, and keep a careful task state model.
 - `among_them/sim.nim`: Simulation, map constants, task list, sprites, roles,
   movement, voting, rendering.
 - `common/protocol.nim`: Packed frame and input/chat packet protocol.
-- `among_them/README.md`: Server and quick player commands.
-- `tools/quick_player`: Starts many copies of a bot.
+- `among_them/README.md`: Server and quick run commands.
+- `tools/quick_run`: Starts games, human clients, and bot players.
 
 ## Run Commands
 
@@ -40,7 +40,7 @@ Start many bots:
 
 ```sh
 cd /Users/me/p/bitworld
-nim r tools/quick_player nottoodumb --players:8 --address:localhost --port:2000
+nim r tools/quick_run among_them --connect --bots:nottoodumb:8 --address:localhost --port:2000
 ```
 
 View a player's perspective from the browser:
@@ -620,12 +620,12 @@ In a second terminal, start the Nim bots to fill the lobby:
 
 ```sh
 cd /Users/aaln/experiments/softmax/bitworld
-nim r tools/quick_player nottoodumb --players:4 --address:localhost --port:8080
+nim r tools/quick_run among_them --connect --bots:nottoodumb:4 --address:localhost --port:8080
 ```
 
 This compiles `nottoodumb.nim` and spawns 4 copies. They will connect to the
-server and wait in the lobby. Adjust `--players:N` to match your `minPlayers`
-minus 1 (leaving one slot for the Python smart bot).
+server and wait in the lobby. Adjust the count in `--bots:nottoodumb:N` to
+match your `minPlayers` minus 1 (leaving one slot for the Python smart bot).
 
 ### Step 3 — Launch the Python Smart Bot with Debugger
 

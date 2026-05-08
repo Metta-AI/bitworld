@@ -4,7 +4,7 @@
 ## Implements the slice of provider HTTP that the cogames Python
 ## wrapper does today, but in Nim, so the CLI binary
 ## (`mod_talks_llm`) can drive the LLM voting layer against any
-## websocket server (local, remote, `quick_player`-spawned) without
+## websocket server (local, remote, launcher-spawned) without
 ## the Python wrapper.
 ##
 ## **Scope rule (Sprint 6 §"Hard scope rule"):** this module lives
@@ -809,5 +809,4 @@ proc extractToolUsePublic*(p: LlmProvider; respBody: string):
     tuple[json: string; found: bool] =
   ## Public wrapper for parsing the Bedrock/Anthropic tool-use response.
   anthropicExtractToolUse(respBody)
-
 

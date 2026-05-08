@@ -236,8 +236,8 @@
         });
 
         # The bot shares the game's assets but launches from its source
-        # dir among_them/players/<name>/ — same CWD quick_player gives
-        # it — so its gameDir() walks two levels up to find
+        # dir among_them/players/<name>/, so its gameDir() walks two
+        # levels up to find
         # spritesheet.png et al.
         mkAmongThemBot = name: pkgs.stdenv.mkDerivation (commonAttrs // {
           pname = "bitworld-${name}";

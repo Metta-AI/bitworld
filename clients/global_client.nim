@@ -1,6 +1,6 @@
 import
   std/[algorithm, math, monotimes, os, tables, times, uri],
-  chroma, paddy, pixie, protocol, silky, supersnappy, windy
+  chroma, paddy, pixie, protocol, scales, silky, supersnappy, windy
 
 type
   GlobalLayer = object
@@ -67,11 +67,12 @@ type
     heldButtons: uint8
     typing: bool
     textBuffer: string
+    contentScale: float32
 
 const
   AtlasPath = "dist/atlas.png"
   PalettePath = "data/pallete.png"
-  TargetFps = 24.0
+  TargetFps = 60.0
   WindowWidth = 900
   WindowHeight = 640
   ZoomableFlag = 1
@@ -284,6 +285,18 @@ proc maybeFit*(app: GlobalApp) =
   ## Fits the map when auto-fit mode is enabled.
   if app.autoFit:
     app.fit()
+
+proc refreshDisplayScale(app: GlobalApp) =
+  ## Updates UI scaling after the window moves between displays.
+  let scale = app.window.displayScale()
+  if abs(scale - app.contentScale) <= 0.001'f:
+    return
+  app.contentScale = scale
+  app.silky.uiScale = scale
+  when not defined(emscripten):
+    let logicalSize = (app.window.size.vec2 / scale).ivec2
+    app.window.size = logicalSize.scaledWindowSize(scale)
+  app.maybeFit()
 
 proc layerScreenRect(
   app: GlobalApp,
@@ -898,6 +911,7 @@ proc startTyping(app: GlobalApp) =
   ## Starts local player text entry and releases held buttons.
   app.typing = true
   app.textBuffer.setLen(0)
+  app.window.runeInputEnabled = true
   if app.heldButtons != 0:
     app.heldButtons = 0
     app.sendPlayerButtons()
@@ -908,6 +922,7 @@ proc stopTyping(app: GlobalApp, send: bool) =
     app.sendInputText(app.textBuffer)
   app.typing = false
   app.textBuffer.setLen(0)
+  app.window.runeInputEnabled = false
 
 proc deleteTextChar(app: GlobalApp) =
   ## Deletes the last local text entry byte.
@@ -1062,9 +1077,11 @@ proc initGlobalApp*(
   initGamepads()
   result.silky = newSilky(result.window, atlasPath)
   result.renderer = initRawRenderer()
-  if result.window.contentScale > 1.0:
-    result.silky.uiScale = 2.0
-    result.window.size = ivec2(WindowWidth, WindowHeight) * 2
+  result.contentScale = result.window.displayScale()
+  result.silky.uiScale = result.contentScale
+  when not defined(emscripten):
+    result.window.size =
+      ivec2(WindowWidth, WindowHeight).scaledWindowSize(result.contentScale)
   if options.hasWindowPos:
     result.window.pos = options.windowPos
   result.layers = initTable[int, GlobalLayer]()
@@ -1081,7 +1098,9 @@ proc initGlobalApp*(
   result.network.reconnectDelayMilliseconds =
     options.reconnectDelayMilliseconds
   let app = result
-  result.window.runeInputEnabled = true
+  result.window.onResize = proc() =
+    app.refreshDisplayScale()
+  result.window.runeInputEnabled = false
   result.window.onRune = proc(rune: Rune) =
     let ch = normalizeRune(rune)
     if ch == '\0':
@@ -1132,6 +1151,7 @@ proc runGlobalClient*(
   while app.windowOpen:
     pollEvents()
     pollNetwork()
+    app.refreshDisplayScale()
     when not defined(emscripten):
       if app.window.buttonPressed[KeyEscape] and
         app.window.buttonDown[KeyLeftSuper]:

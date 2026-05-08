@@ -203,7 +203,7 @@ Likely culprits, in order of suspicion:
    parsed pre-meeting frames correctly, but worth checking with
    `MODULABOT_TRACE_LEVEL=frame` to dump every frame.
 
-Reproduction recipe (`among_them/players/mod_talks/scripts/quick_player_llm.sh`
+Reproduction recipe (`among_them/players/mod_talks/scripts/run_llm_bots.sh`
 + server with `voteTimerTicks:600`, `MODULABOT_TRACE_DIR` set,
 Bedrock creds available, body manually triggered).
 
@@ -285,7 +285,7 @@ Ref: `llm_dispatch.nim`, `LLM_SPRINTS.md §7`
 
 ### Orphan bot processes survive kill
 
-When `quick_player_llm.sh`'s trap fires or when `pkill` targets
+When `run_llm_bots.sh`'s trap fires or when `pkill` targets
 bot processes, some mod_talks_llm processes survive and continue
 occupying server player slots. This makes subsequent test runs
 join servers with stale bots. Workaround: `pkill -9 -f
@@ -293,7 +293,7 @@ mod_talks_llm` before each run. Root cause likely the shell
 trap not reaching all child PIDs, or the `aws` subprocess
 surviving the parent's death.
 
-Ref: `scripts/quick_player_llm.sh`
+Ref: `scripts/run_llm_bots.sh`
 
 ### `parseVotingCandidate` join-order bug also affects other bots
 

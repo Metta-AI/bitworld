@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "game": {
+    "manifest_uri": "cogame_manifest.json"
+  },
+  "player": [
+    {
+      "id": "idle-player",
+      "name": "Idle Player",
+      "image_uri": "bitworld-planet-wars-idle-player:latest",
+      "description": "Baseline Coworld player used for manifest certification."
+    },
+    {
+      "id": "skurge",
+      "name": "Skurge",
+      "image_uri": "bitworld-planet-wars-skurge:latest",
+      "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets."
+    }
+  ],
+  "variants": [
+    {
+      "id": "smoke",
+      "name": "Smoke",
+      "game_config": {
+        "seed": 108519,
+        "planetCount": 18
+      },
+      "description": "Short deterministic Planet Wars configuration used for manifest checks."
+    }
+  ],
+  "certification": {
+    "variant_id": "smoke",
+    "players": [
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_0"
+        }
+      },
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_1"
+        }
+      }
+    ]
+  }
+}

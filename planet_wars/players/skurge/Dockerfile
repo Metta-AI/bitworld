@@ -31,14 +31,14 @@ RUN nimby --global sync nimby.lock && \
   cat nim.cfg >> /root/.nimby/nim/config/nim.cfg
 
 COPY . .
-WORKDIR /workspace/bitworld/planet_wars
+WORKDIR /workspace/bitworld/planet_wars/players/skurge
 ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on"
 ARG NimCommand="c"
-ARG NimMain="planet_wars.nim"
+ARG NimMain="skurge.nim"
 RUN nim $NimCommand \
   $NimFlags \
   --nimcache:/tmp/bitworld-nimcache \
-  --out:planet_wars \
+  --out:skurge \
   $NimMain
 
 # Run Docker.
@@ -46,13 +46,8 @@ FROM debian:bookworm-slim
 
 WORKDIR /workspace/bitworld
 COPY --from=build \
-  /workspace/bitworld/planet_wars/planet_wars \
-  /bin/planet_wars
-COPY --from=build /workspace/bitworld/planet_wars/*.json ./planet_wars/
-COPY --from=build /workspace/bitworld/among_them/tiny5.aseprite ./planet_wars/
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+  /workspace/bitworld/planet_wars/players/skurge/skurge \
+  /bin/skurge
 
-WORKDIR /workspace/bitworld/planet_wars
-CMD ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]
+WORKDIR /workspace/bitworld/planet_wars/players/skurge
+CMD ["/bin/skurge", "--address:host.docker.internal", "--port:8080"]

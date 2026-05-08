@@ -1,0 +1,7 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "stacker",
+  "image_uri": "ghcr.io/treeform/bitworld-stacker:latest",
+  "binary": "/bin/stacker",
+  "games": ["infinite_blocks"]
+}

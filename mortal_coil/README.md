@@ -28,14 +28,10 @@ The server serves the standard BitWorld clients:
 
 Open `/player` in multiple tabs or devices to join as separate players. Open `/global` to watch the game without participating.
 
-## Run AI Players
+## AI Players
 
-From the repo root:
-
-```sh
-cd /Users/me/p/bitworld
-nim r tools/quick_player mortal_coil --players:4 --address:localhost --port:2000
-```
+No bundled Mortal Coil bot is documented yet. Use `/player` in multiple
+browser tabs or native clients for local testing.
 
 ## Lobby
 

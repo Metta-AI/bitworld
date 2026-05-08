@@ -116,6 +116,7 @@ const
   VoteBlackMarker = 12'u8
   VoteListenBaseTicks = 100
   VoteListenRandomTicks = 100
+  ImposterSusChatPercent = 35
   VoteChatIconX = sim.VoteChatIconX
   VoteChatTextX = sim.VoteChatTextX
   VoteChatChars = VoteChatCharsPerLine
@@ -288,6 +289,8 @@ type
     voteStartTick: int
     voteDelayTicks: int
     voteChatSusColor: int
+    voteQueuedSusColor: int
+    voteImposterChatDecided: bool
     voteChatText: string
     voteChatLines: seq[VoteChatLine]
     voteSlots: array[MaxPlayers, VoteSlot]
@@ -871,6 +874,8 @@ proc clearVotingState(bot: var Bot) =
   bot.voteStartTick = -1
   bot.voteDelayTicks = -1
   bot.voteChatSusColor = VoteUnknown
+  bot.voteQueuedSusColor = VoteUnknown
+  bot.voteImposterChatDecided = false
   bot.voteChatText = ""
   bot.voteChatLines.setLen(0)
   for i in 0 ..< bot.voteSlots.len:
@@ -1911,7 +1916,10 @@ proc parseVotingCandidate(
     if slots[i].colorIndex != i:
       return false
 
-  let previousDelay = bot.voteDelayTicks
+  let
+    previousDelay = bot.voteDelayTicks
+    previousQueuedSusColor = bot.voteQueuedSusColor
+    previousImposterChatDecided = bot.voteImposterChatDecided
   bot.clearVotingState()
   bot.voting = true
   bot.votePlayerCount = count
@@ -1921,6 +1929,8 @@ proc parseVotingCandidate(
       previousDelay
     else:
       bot.randomVoteDelay()
+  bot.voteQueuedSusColor = previousQueuedSusColor
+  bot.voteImposterChatDecided = previousImposterChatDecided
   bot.voteCursor = VoteUnknown
   bot.voteSelfSlot = VoteUnknown
   for i in 0 ..< count:
@@ -1967,10 +1977,21 @@ proc parseVotingScreen(bot: var Bot): bool =
     bot.bodySprite
   )
   if read.found:
+    let
+      previousDelay = bot.voteDelayTicks
+      previousQueuedSusColor = bot.voteQueuedSusColor
+      previousImposterChatDecided = bot.voteImposterChatDecided
     bot.clearVotingState()
     bot.voting = true
     bot.votePlayerCount = read.playerCount
     bot.voteStartTick = startTick
+    bot.voteDelayTicks =
+      if previousDelay >= 0:
+        previousDelay
+      else:
+        bot.randomVoteDelay()
+    bot.voteQueuedSusColor = previousQueuedSusColor
+    bot.voteImposterChatDecided = previousImposterChatDecided
     bot.voteCursor = read.cursor
     bot.voteSelfSlot = read.selfSlot
     for i in 0 ..< read.playerCount:
@@ -2405,6 +2426,22 @@ proc playerColorName(colorIndex: int): string =
     PlayerColorNames[colorIndex]
   else:
     "unknown"
+
+proc titlePlayerColorName(colorIndex: int): string =
+  ## Returns the visible player color name with an uppercase first letter.
+  result = playerColorName(colorIndex)
+  if result.len > 0:
+    result[0] = result[0].toUpperAscii()
+
+proc voteTargetSafeForRole(bot: Bot, target: int): bool =
+  ## Returns true when this role should be willing to vote for a target.
+  if not bot.voteTargetCanBeSus(target):
+    return false
+  if bot.role == RoleImposter:
+    let colorIndex = bot.voteSlots[target].colorIndex
+    if bot.knownImposterColor(colorIndex):
+      return false
+  true
 
 proc knownImposterSummary(bot: Bot): string =
   ## Returns a compact debug string for known imposter colors.
@@ -2984,7 +3021,7 @@ proc seenVotingTargetFrom(bot: Bot, ticks: openArray[int]): int =
     if bot.knownImposterColor(i):
       continue
     let slot = bot.voteSlotForColor(i)
-    if not bot.voteTargetCanBeSus(slot):
+    if not bot.voteTargetSafeForRole(slot):
       continue
     if tick > bestTick:
       bestTick = tick
@@ -2998,21 +3035,84 @@ proc revengeVotingTarget(bot: Bot): int =
     if choice != bot.voteSelfSlot:
       continue
     let slot = bot.voteSlotForColor(i)
-    if bot.voteTargetCanBeSus(slot):
+    if bot.voteTargetSafeForRole(slot):
       return slot
   VoteUnknown
 
+proc imposterBandwagonTarget(bot: Bot): int =
+  ## Returns a voted non-imposter target that an imposter can pile onto.
+  if bot.role != RoleImposter:
+    return VoteUnknown
+  var counts: array[MaxPlayers, int]
+  for i, choice in bot.voteChoices:
+    if i == bot.selfColorIndex:
+      continue
+    if choice < 0 or choice >= bot.votePlayerCount:
+      continue
+    if not bot.voteTargetSafeForRole(choice):
+      continue
+    inc counts[choice]
+  var bestCount = 0
+  result = VoteUnknown
+  for target in 0 ..< bot.votePlayerCount:
+    if counts[target] > bestCount:
+      bestCount = counts[target]
+      result = target
+
+proc queuedSusVotingTarget(bot: Bot): int =
+  ## Returns the still-hidden sus chat target queued by this bot.
+  if bot.voteQueuedSusColor == VoteUnknown:
+    return VoteUnknown
+  let slot = bot.voteSlotForColor(bot.voteQueuedSusColor)
+  if bot.voteTargetSafeForRole(slot):
+    return slot
+  VoteUnknown
+
+proc randomCrewmateSusColor(bot: var Bot): int =
+  ## Chooses a random living crewmate color for imposter sus chat.
+  var colors: seq[int]
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetSafeForRole(i):
+      continue
+    colors.add(bot.voteSlots[i].colorIndex)
+  if colors.len == 0:
+    return VoteUnknown
+  colors[bot.rng.rand(colors.high)]
+
+proc maybeQueueImposterSusChat(bot: var Bot) =
+  ## Sometimes queues one fake sus chat line during an imposter vote.
+  if bot.role != RoleImposter:
+    return
+  if bot.voteImposterChatDecided:
+    return
+  bot.voteImposterChatDecided = true
+  if bot.pendingChat.len > 0:
+    return
+  if bot.rng.rand(99) >= ImposterSusChatPercent:
+    return
+  let colorIndex = bot.randomCrewmateSusColor()
+  if colorIndex == VoteUnknown:
+    return
+  bot.voteQueuedSusColor = colorIndex
+  bot.pendingChat = titlePlayerColorName(colorIndex) & " sus"
+
 proc desiredVotingTarget(bot: Bot): int =
   ## Chooses the voting target from current suspicion or skip.
-  let ownSusTarget = bot.ownSusVotingTarget()
-  if ownSusTarget != VoteUnknown:
-    return ownSusTarget
   let revengeTarget = bot.revengeVotingTarget()
   if revengeTarget != VoteUnknown:
     return revengeTarget
+  let bandwagonTarget = bot.imposterBandwagonTarget()
+  if bandwagonTarget != VoteUnknown:
+    return bandwagonTarget
+  let queuedSusTarget = bot.queuedSusVotingTarget()
+  if queuedSusTarget != VoteUnknown:
+    return queuedSusTarget
+  let ownSusTarget = bot.ownSusVotingTarget()
+  if bot.voteTargetSafeForRole(ownSusTarget):
+    return ownSusTarget
   if bot.voteChatSusColor >= 0:
     let slot = bot.voteSlotForColor(bot.voteChatSusColor)
-    if bot.voteTargetCanBeSus(slot):
+    if bot.voteTargetSafeForRole(slot):
       return slot
   let bodyTarget = bot.seenVotingTargetFrom(bot.bodySeenTicks)
   if bodyTarget != VoteUnknown:
@@ -3027,11 +3127,13 @@ proc decideVotingMask(bot: var Bot): uint8 =
   bot.hasGoal = false
   bot.hasPathStep = false
   bot.path.setLen(0)
+  let ownVote = bot.selfVoteChoice()
+  if ownVote == VoteUnknown:
+    bot.maybeQueueImposterSusChat()
   bot.voteTarget = bot.desiredVotingTarget()
   let instantVote =
     bot.voteTarget >= 0 and bot.ownSusVotingTarget() == bot.voteTarget
   bot.printVotingFrame()
-  let ownVote = bot.selfVoteChoice()
   if ownVote != VoteUnknown:
     bot.desiredMask = 0
     bot.controllerMask = 0

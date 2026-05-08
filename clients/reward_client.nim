@@ -1,6 +1,6 @@
 import
   std/[math, monotimes, os, parseopt, strutils, times],
-  chroma, pixie, protocol, silky, windy
+  chroma, pixie, protocol, scales, silky, windy
 
 const
   AtlasPath = "dist/atlas.png"
@@ -29,6 +29,7 @@ type
     window: Window
     silky: Silky
     network: NetworkState
+    contentScale: float32
 
 proc pollNetwork() =
   ## Pumps Windy network callbacks.
@@ -91,6 +92,17 @@ proc tickNetwork(app: RewardApp) =
     (getMonoTime() - app.network.lastConnectAttemptAt).inMilliseconds
   if elapsed >= app.network.reconnectDelayMilliseconds:
     app.connectNetwork()
+
+proc refreshDisplayScale(app: RewardApp) =
+  ## Updates UI scaling after the window moves between displays.
+  let scale = app.window.displayScale()
+  if abs(scale - app.contentScale) <= 0.001'f:
+    return
+  app.contentScale = scale
+  app.silky.uiScale = scale
+  when not defined(emscripten):
+    let logicalSize = (app.window.size.vec2 / scale).ivec2
+    app.window.size = logicalSize.scaledWindowSize(scale)
 
 proc statusText(app: RewardApp): string =
   ## Returns the connection status text.
@@ -175,12 +187,17 @@ proc initRewardApp(
   when not defined(useDirectX):
     loadExtensions()
   result.silky = newSilky(result.window, AtlasPath)
-  if result.window.contentScale > 1.0:
-    result.silky.uiScale = 2.0
-    result.window.size = ivec2(WindowWidth, WindowHeight) * 2
+  result.contentScale = result.window.displayScale()
+  result.silky.uiScale = result.contentScale
+  when not defined(emscripten):
+    result.window.size =
+      ivec2(WindowWidth, WindowHeight).scaledWindowSize(result.contentScale)
   result.network.url = address
   result.network.reconnectDelayMilliseconds =
     options.reconnectDelayMilliseconds
+  let app = result
+  result.window.onResize = proc() =
+    app.refreshDisplayScale()
   result.connectNetwork()
 
 proc shutdown(app: RewardApp) =
@@ -204,6 +221,7 @@ proc runRewardClient*(
   while app.windowOpen:
     pollEvents()
     pollNetwork()
+    app.refreshDisplayScale()
     if app.window.buttonPressed[KeyEscape]:
       app.window.closeRequested = true
     if app.window.buttonPressed[KeyR]:

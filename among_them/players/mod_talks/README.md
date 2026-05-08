@@ -70,7 +70,7 @@ There are now **two paths** to a live LLM game (Sprint 6):
 
 The CLI binary now drives the LLM dispatch directly via Nim, no
 Python wrapper required. Works against any server (local or
-remote) and plays nicely with `quick_player`.
+remote) and plays nicely with process-per-bot launchers.
 
 ```sh
 # One-time build (adds -d:ssl automatically when MODULABOT_LLM=1).
@@ -112,7 +112,7 @@ Ctrl-C to clean up children:
 
 ```sh
 ANTHROPIC_API_KEY=sk-ant-... \
-  among_them/players/mod_talks/scripts/quick_player_llm.sh \
+  among_them/players/mod_talks/scripts/run_llm_bots.sh \
   -n 8 -a my.server.com -p 2000
 ```
 
@@ -120,7 +120,7 @@ Or with Bedrock:
 
 ```sh
 AWS_PROFILE=softmax AWS_REGION=us-east-1 \
-  among_them/players/mod_talks/scripts/quick_player_llm.sh \
+  among_them/players/mod_talks/scripts/run_llm_bots.sh \
   -n 8 -a my.server.com -p 2000
 ```
 
@@ -240,7 +240,7 @@ cogames/
 scripts/
   launch_mod_talks_llm_local.py   # local Bedrock smoke harness
                                   # (Python launcher, cogames-shape)
-  quick_player_llm.sh             # Sprint 6.5 — build + spawn N bots
+  run_llm_bots.sh                 # Sprint 6.5 — build + spawn N bots
                                   # against an existing server
 
 tools/
@@ -304,7 +304,7 @@ invoke-model`.
 - LLM layer: **shipped through Sprint 6.3** (see `LLM_SPRINTS.md`).
   CLI binary now drives the LLM dispatch directly, no Python
   wrapper required for non-tournament runs. Multi-bot via
-  `quick_player`-style process-per-bot works.
+  process-per-bot launchers works.
 - Tournament submission: **infrastructure ready**, blocked on an
   `among-them` season existing in `cogames season list`. See
   `cogames/README.md`. Tournament path uses the Python wrapper +

@@ -115,12 +115,8 @@ Spectate the game (global view):
 http://localhost:2000/global
 ```
 
-Connect AI players:
-
-```sh
-cd /Users/me/p/bitworld
-nim r tools/quick_player mortal_coil --players:4 --address:localhost --port:2000
-```
+No bundled Mortal Coil bot is documented yet. Use `/player` in multiple
+browser tabs or native clients for local testing.
 
 The server accepts 4-8 players. Once the minimum of 4 players connect, a 10-second countdown starts. When the countdown finishes, the game begins.
 

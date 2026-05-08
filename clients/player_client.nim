@@ -1,4 +1,4 @@
-import paddy, pixie, protocol, server, silky, windy
+import paddy, pixie, protocol, scales, server, silky, windy
 import std/[math, monotimes, options, os, parseopt, strutils, times]
 
 const
@@ -108,6 +108,7 @@ type
     selectedGamepadIndex: int
     network: NetworkState
     chat: ChatState
+    contentScale: float32
 
 proc pointInRect(x, y, rx, ry, rw, rh: int): bool =
   x >= rx and y >= ry and x < rx + rw and y < ry + rh
@@ -423,6 +424,17 @@ proc pollNetwork() =
   for i in 0 ..< NetworkPollPasses:
     pollHttp()
 
+proc refreshDisplayScale(client: ClientApp) =
+  ## Updates UI scaling after the window moves between displays.
+  let scale = client.window.displayScale()
+  if abs(scale - client.contentScale) <= 0.001'f:
+    return
+  client.contentScale = scale
+  client.silky.uiScale = scale
+  when not defined(emscripten):
+    let logicalSize = (client.window.size.vec2 / scale).ivec2
+    client.window.size = logicalSize.scaledWindowSize(scale)
+
 proc initClient*(
   address = DefaultPlayerAddress,
   clientOptions = ClientOptions()
@@ -454,9 +466,10 @@ proc initClient*(
     loadExtensions()
   initGamepads()
   result.silky = newSilky(result.window, AtlasPath)
-  if result.window.contentScale > 1.0:
-    result.silky.uiScale = 2.0
-    result.window.size = windowSize * 2
+  result.contentScale = result.window.displayScale()
+  result.silky.uiScale = result.contentScale
+  when not defined(emscripten):
+    result.window.size = windowSize.scaledWindowSize(result.contentScale)
   result.window.style = Decorated
   result.unpacked = @[]
   result.splashPixels = loadSplashPixels()
@@ -466,6 +479,8 @@ proc initClient*(
   result.chat.sprites = chatSprites
   result.window.runeInputEnabled = false
   let clientRef = result
+  result.window.onResize = proc() =
+    clientRef.refreshDisplayScale()
   result.window.onRune = proc(rune: Rune) =
     clientRef.queueChatRune(rune)
   if clientOptions.windowPos.isSome:
@@ -749,6 +764,7 @@ proc runClientLoop*(
   while client.windowOpen:
     pollEvents()
     pollNetwork()
+    client.refreshDisplayScale()
     if client.window.buttonPressed[KeyEscape]:
       if client.chatActive():
         client.closeChat()

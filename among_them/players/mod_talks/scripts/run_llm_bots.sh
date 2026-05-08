@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# Sprint 6.5 — quick_player-equivalent wrapper for the LLM-enabled
+# Sprint 6.5 — multi-bot wrapper for the LLM-enabled
 # mod_talks build.
 #
-# `tools/quick_player` always recompiles its target without `-d`
-# defines and only forwards `--address` / `--port` / `--name`
-# to the spawned binary, so it can't drive the LLM build path.
-# Per the Sprint 6 scope rule, we shouldn't extend
-# `tools/quick_player.nim` (it's outside `among_them/players/mod_talks/`).
-# This script is the in-scope alternative: builds the LLM binary
-# once, then spawns N copies of it pointed at an existing server.
+# `quick_run` recompiles its bot target without the local
+# `-d:modTalksLlm` define, so it can't drive the LLM build path.
+# This script builds the LLM binary once, then spawns N copies of
+# it pointed at an existing server.
 #
 # Usage:
-#   among_them/players/mod_talks/scripts/quick_player_llm.sh \
+#   among_them/players/mod_talks/scripts/run_llm_bots.sh \
 #       [-n COUNT] [-a HOST] [-p PORT] [--name-prefix PREFIX] \
 #       [--llm-provider NAME] [--llm-model NAME] [--rebuild]
 #
@@ -73,7 +70,7 @@ binary="$MOD_TALKS_DIR/mod_talks_llm"
 
 # Build (or rebuild) the LLM binary.
 if [[ "$rebuild" -eq 1 || ! -x "$binary" ]]; then
-  echo "[quick_player_llm] building $binary ..."
+  echo "[run_llm_bots] building $binary ..."
   (
     cd "$REPO_ROOT"
     nim c -d:release -d:modTalksLlm -d:ssl \
@@ -90,10 +87,10 @@ if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && \
    [[ -z "${AWS_PROFILE:-}" ]] && \
    [[ -z "${AWS_ACCESS_KEY_ID:-}" ]] && \
    [[ "${MODTALKS_LLM_DISABLE:-}" != "1" ]]; then
-  echo "[quick_player_llm] WARNING: no LLM credentials detected."
-  echo "[quick_player_llm] Set one of ANTHROPIC_API_KEY,"
-  echo "[quick_player_llm] OPENAI_API_KEY, AWS_PROFILE, or"
-  echo "[quick_player_llm] AWS_ACCESS_KEY_ID. Bots will run rule-based."
+  echo "[run_llm_bots] WARNING: no LLM credentials detected."
+  echo "[run_llm_bots] Set one of ANTHROPIC_API_KEY,"
+  echo "[run_llm_bots] OPENAI_API_KEY, AWS_PROFILE, or"
+  echo "[run_llm_bots] AWS_ACCESS_KEY_ID. Bots will run rule-based."
 fi
 
 # Build the per-bot arg list once. We pass --address, --port, and
@@ -114,7 +111,7 @@ pids=()
 
 cleanup() {
   echo ""
-  echo "[quick_player_llm] stopping ${#pids[@]} bot(s) ..."
+  echo "[run_llm_bots] stopping ${#pids[@]} bot(s) ..."
   for pid in "${pids[@]}"; do
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
@@ -130,16 +127,15 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-echo "[quick_player_llm] spawning $count bots → $host:$port"
+echo "[run_llm_bots] spawning $count bots -> $host:$port"
 for i in $(seq 1 "$count"); do
   name="${name_prefix}${i}"
   "$binary" --name:"$name" "${common_args[@]}" &
   pids+=($!)
-  echo "[quick_player_llm]   spawned $name (pid=$!)"
+  echo "[run_llm_bots]   spawned $name (pid=$!)"
 done
 
-# Wait for all bots. If any exits, we keep going — same semantics
-# as `tools/quick_player` (which terminates the group when one
-# child exits). Override that behaviour by removing the wait loop
-# and using `wait` directly if you want all-or-nothing.
+# Wait for all bots. If any exits, we keep going. Override that
+# behaviour by removing the wait loop and using `wait` directly if
+# you want all-or-nothing.
 wait

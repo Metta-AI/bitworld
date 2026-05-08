@@ -1,79 +1,107 @@
 # Quick Run
 
-`quick_run` is a small developer tool that helps AI and humans iterate on Bit World client-server games quickly.
+`quick_run` is the local launcher for Bitworld games. It can start a game
+server, open native human clients, and launch Nim bot players from the same
+command.
 
-## What It Does
+## Basic Usage
 
-`quick_run` launches a selected game server and the Bit World client together.
-
-It is designed for development:
-
-- It compiles the server first.
-- It waits for the server compile to finish.
-- If the server has compile errors, it does not start the client.
-- Only after the server compiles successfully does it compile and start the client.
-
-This makes it useful for checking your work because a broken server build stops the whole run immediately instead of opening a client against an invalid or stale server.
-
-It also standardizes the client launch parameters so each run starts with a readable title, and multiplayer runs can open several screen-only clients in a predictable layout.
-
-## Why It Helps
-
-For AI-driven development, `quick_run` keeps the basic test loop simple:
-
-1. Make a change.
-2. Run `quick_run`.
-3. Let it rebuild the server and client.
-4. Watch both programs together.
-
-That means less manual setup and fewer mistakes while iterating on gameplay, networking, rendering, and debugging.
-
-## Failure Behavior
-
-If either side fails, `quick_run` exits cleanly:
-
-- If the server compile fails, the client never starts.
-- If the client compile fails, the run stops before launch.
-- If the server exits while running, the client is shut down too.
-- If the client exits while running, the server is shut down too.
-- If there is an error in either the server or the client, logs are printed and the whole run exits.
-
-## Multiplayer Layout
-
-`quick_run` supports `--players:N` for `1` to `4` players.
-
-- With one player, it launches the normal full client chrome and sets the client title to the game name, such as `Fancy Cookout`.
-- With multiple players, it launches screen-only clients, centered on the primary monitor with a `50px` gap between windows.
-- Two players are arranged side by side.
-- Three players are arranged side by side.
-- Four players are arranged as a centered `2 x 2` grid.
-- Each client is assigned the matching joystick number, so player 1 gets joystick 1, player 2 gets joystick 2, and so on.
-- Multiplayer window titles are suffixed per client, such as `Fancy Cookout Player 1` and `Fancy Cookout Player 2`.
-
-## Usage
-
-Run it from the Bit World repo root:
+Run from the Bitworld repo root:
 
 ```powershell
 .\tools\quick_run.exe fancy_cookout
 ```
 
-You can also provide an explicit port:
+By default this starts the selected game on `0.0.0.0:8080` and opens one human
+client.
+
+Use `--connect` to attach clients and bots to an existing server instead of
+starting one:
 
 ```powershell
-.\tools\quick_run.exe fancy_cookout 8080
+.\tools\quick_run.exe among_them --connect --port:2000 --bots:nottoodumb:8
 ```
 
-If no port is provided, `quick_run` chooses a random port between `5000` and `10000`.
+In connect mode the default address is `localhost`.
 
-You can also launch multiple players:
+## Humans
+
+`--players:N` controls how many local human clients are launched.
 
 ```powershell
 .\tools\quick_run.exe free_chat --players:2
-.\tools\quick_run.exe fancy_cookout 8080 --players:4
+.\tools\quick_run.exe among_them --players:0 --bots:evidencebot_v2:8
 ```
 
-Add `--reconnect:5` to pass five-second client reconnects through to every
-launched client. Reconnect is off by default.
+If `--players` is omitted, the default is:
 
-When `--players:N` is greater than `1`, `quick_run` automatically passes `--screen-only`, `--title:...`, `--joystick:N`, `--x:N`, and `--y:N` to each client.
+- `1` when no bots are requested.
+- `0` when one or more bot groups are requested.
+
+Multiple human clients are opened as screen-only windows in a centered grid.
+Each client is assigned a matching joystick number.
+
+## Bots
+
+Use `--bots:BOT:N` to launch bot players. The option may be repeated.
+
+```powershell
+.\tools\quick_run.exe among_them --bots:nottoodumb:6
+.\tools\quick_run.exe among_them --players:2 --bots:evidencebot_v2:6
+.\tools\quick_run.exe planet_wars --bots:skurge:3
+```
+
+Bot names are generated from the bot file label, such as `nottoodumb1` and
+`nottoodumb2`.
+
+Bot lookup first checks the selected game folder:
+
+```text
+<game>/players/<bot>/<bot>.nim
+<game>/players/<bot>.nim
+```
+
+You can also pass a repository-relative bot path:
+
+```powershell
+.\tools\quick_run.exe among_them --bots:among_them/players/modulabot/modulabot.nim:3
+```
+
+Useful bot options:
+
+| Option | Meaning |
+| --- | --- |
+| `--bot-gui` | Pass `--gui` to every launched bot |
+| `--bot-name-prefix:NAME` | Name bots `NAME1`, `NAME2`, and so on |
+| `--bot-map:PATH` | Pass `--map:PATH` to every launched bot |
+
+## Server Options
+
+Known launcher options are handled by `quick_run`. Any unknown long or short
+option is forwarded to the game server when `quick_run` starts it.
+
+```powershell
+.\tools\quick_run.exe among_them --players:2 --map:among_them/map.json
+.\tools\quick_run.exe among_them --config:'{"minPlayers":8}' --bots:nottoodumb:8
+```
+
+Common server options still work:
+
+| Option | Meaning |
+| --- | --- |
+| `--address:ADDR` | Bind address in start mode, host in connect mode |
+| `--port:N` | Server port |
+| `--config:JSON` | Forward JSON config to the started server |
+| `--config-file:PATH` | Forward a config file to the started server |
+| `--save-replay:PATH` | Save a replay from the started server |
+
+`--reconnect:N` is a launcher option. It is passed to native human clients, not
+to the server.
+
+## Failure Behavior
+
+When `quick_run` starts the server, it compiles the server before compiling and
+launching clients or bots. If the server compile fails, nothing is launched.
+
+If a managed server, client, or bot exits, `quick_run` stops the other managed
+processes and exits with the first observed exit code.

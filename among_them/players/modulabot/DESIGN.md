@@ -570,8 +570,9 @@ Before any divergence from v2 strategy, prove parity:
 
 1. **Compile both binaries** (`evidencebot_v2`, `modulabot`) from the same
    commit.
-2. **Run head-to-head** in `tools/quick_player` with a fixed RNG seed (need
-   to thread `--seed` through; v2 currently seeds from `getTime() ^ pid`).
+2. **Run head-to-head** with `tools/quick_run --connect --bots` and a fixed
+   RNG seed (need to thread `--seed` through; v2 currently seeds from
+   `getTime() ^ pid`).
 3. **Compare per-frame output masks** for N frames given identical input
    frame streams. Easiest harness: a tiny Nim program that loads a captured
    `.replay` file and runs both bots' `stepUnpackedFrame*` against it,
@@ -973,35 +974,38 @@ nim r among_them/players/modulabot/test/validate_trace.nim \
   --root:/tmp/runs
 ```
 
-### Multiple instances via `tools/quick_player`
+### Multiple instances via `tools/quick_run`
 
-The repo's `tools/quick_player` helper compiles a player and spawns
-N copies. It accepts either a bare label (matched against
-`among_them/players/<label>.nim`) or a path. Modulabot lives one
-level deeper than the older bots, so the **path form is required**:
+The repo's `tools/quick_run` helper can connect to an existing server,
+compile a bot, and spawn N copies. It accepts either a bare label
+(matched against the selected game's `players` folder) or a
+repository-relative path. Modulabot lives one level deeper than the
+older bots, so the **path form is required**:
 
 ```sh
 cd /Users/me/p/bitworld
-nim r tools/quick_player among_them/players/modulabot/modulabot.nim \
-  --players:8 --address:localhost --port:2000
+nim r tools/quick_run among_them --connect \
+  --bots:among_them/players/modulabot/modulabot.nim:8 \
+  --address:localhost --port:2000
 ```
 
 Spawns 8 modulabots named `modulabot1` … `modulabot8`. Override the
-naming with `--name-prefix:foo` to get `foo1` … `foo8`.
+naming with `--bot-name-prefix:foo` to get `foo1` … `foo8`.
 
-`quick_player` build mode: `nim c <file>` from the repo root, which
-inherits the project's `config.nims` and produces a release build by
-default. No special flag needed.
+`quick_run` bot build mode is `nim c <file>` from the repo root,
+which inherits the project's `config.nims` and produces a release
+build by default. No special flag needed.
 
 ### Mixed lobbies
 
-The cleanest pattern is to fill the lobby with `quick_player` and
+The cleanest pattern is to fill the lobby with `quick_run` and
 add a single GUI'd instance separately:
 
 ```sh
 # Terminal A: 7 headless modulabots
-nim r tools/quick_player among_them/players/modulabot/modulabot.nim \
-  --players:7 --address:localhost --port:2000
+nim r tools/quick_run among_them --connect \
+  --bots:among_them/players/modulabot/modulabot.nim:7 \
+  --address:localhost --port:2000
 
 # Terminal B: 1 modulabot with the diagnostic viewer
 among_them/players/modulabot/modulabot \
@@ -1012,29 +1016,32 @@ Or mix bot families to test against v2 / nottoodumb:
 
 ```sh
 # Terminal A: 4 v2 bots
-nim r tools/quick_player evidencebot_v2 \
-  --players:4 --address:localhost --port:2000
+nim r tools/quick_run among_them --connect \
+  --bots:evidencebot_v2:4 \
+  --address:localhost --port:2000
 
 # Terminal B: 3 modulabots
-nim r tools/quick_player among_them/players/modulabot/modulabot.nim \
-  --players:3 --address:localhost --port:2000 --name-prefix:mb
+nim r tools/quick_run among_them --connect \
+  --bots:among_them/players/modulabot/modulabot.nim:3 \
+  --bot-name-prefix:mb \
+  --address:localhost --port:2000
 
 # Terminal C: 1 GUI'd modulabot
 among_them/players/modulabot/modulabot \
   --address:localhost --port:2000 --name:mbgui --gui
 ```
 
-### Two `quick_player` caveats
+### Two `quick_run` caveats
 
 1. **`--gui` propagates to all spawned processes.** Passing
-   `--gui` to `quick_player` opens a viewer window for every
+   `--bot-gui` to `quick_run` opens a viewer window for every
    modulabot. For >1 instance you almost certainly want some
-   headless via `quick_player` and at most one GUI'd via the
+   headless via `quick_run` and at most one GUI'd via the
    standalone binary.
 
-2. **quick_player kills all children when any one exits.** If a
+2. **quick_run kills managed children when any one exits.** If a
    game ends and one modulabot disconnects, every other modulabot
-   in that quick_player group is terminated. The standalone
+   in that quick_run group is terminated. The standalone
    `runBot` reconnect loop keeps retrying forever and is more
    resilient for long-running setups.
 
@@ -1355,5 +1362,3 @@ Landed in order:
   called the meeting from the intro animation; detecting who was
   ejected from the post-vote cutscene) that is outside the memory
   module's scope.
-
-

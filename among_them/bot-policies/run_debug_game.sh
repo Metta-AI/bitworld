@@ -81,8 +81,9 @@ fi
 # ── Step 2: Launch Nim AI opponents ────────────────────────────────────────────
 echo "[2/3] Launching $NIM_BOTS Nim bots..."
 cd "$REPO_ROOT"
-nim r tools/quick_player nottoodumb \
-  --players:"$NIM_BOTS" \
+nim r tools/quick_run among_them \
+  --connect \
+  --bots:nottoodumb:"$NIM_BOTS" \
   --address:"$HOST" \
   --port:"$PORT" &
 NIMBOTS_PID=$!
