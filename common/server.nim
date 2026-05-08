@@ -168,6 +168,45 @@ proc blitText*(fb: var Framebuffer, letterSprites: seq[Sprite], text: string, sc
       fb.blitSprite(letterSprites[idx], screenX + offsetX, screenY, 0, 0)
     offsetX += 6
 
+proc blitText*(fb: var Framebuffer, letterSprites: seq[Sprite], digitSprites: array[10, Sprite], text: string, screenX, screenY: int) =
+  var offsetX = 0
+  for ch in text:
+    if ch == ' ':
+      offsetX += 6
+      continue
+    if ch >= '0' and ch <= '9':
+      fb.blitSprite(digitSprites[ord(ch) - ord('0')], screenX + offsetX, screenY, 0, 0)
+    else:
+      let idx = letterIndex(ch)
+      if idx >= 0 and idx < letterSprites.len:
+        fb.blitSprite(letterSprites[idx], screenX + offsetX, screenY, 0, 0)
+    offsetX += 6
+
+proc blitTextTinted*(fb: var Framebuffer, letterSprites: seq[Sprite], text: string, screenX, screenY: int, tint: uint8) =
+  var offsetX = 0
+  for ch in text:
+    if ch == ' ':
+      offsetX += 6
+      continue
+    let idx = letterIndex(ch)
+    if idx >= 0 and idx < letterSprites.len:
+      fb.blitSpriteTinted(letterSprites[idx], screenX + offsetX, screenY, 0, 0, tint)
+    offsetX += 6
+
+proc blitTextTinted*(fb: var Framebuffer, letterSprites: seq[Sprite], digitSprites: array[10, Sprite], text: string, screenX, screenY: int, tint: uint8) =
+  var offsetX = 0
+  for ch in text:
+    if ch == ' ':
+      offsetX += 6
+      continue
+    if ch >= '0' and ch <= '9':
+      fb.blitSpriteTinted(digitSprites[ord(ch) - ord('0')], screenX + offsetX, screenY, 0, 0, tint)
+    else:
+      let idx = letterIndex(ch)
+      if idx >= 0 and idx < letterSprites.len:
+        fb.blitSpriteTinted(letterSprites[idx], screenX + offsetX, screenY, 0, 0, tint)
+    offsetX += 6
+
 proc packFramebuffer*(fb: var Framebuffer) =
   for i in 0 ..< fb.packed.len:
     let lo = fb.indices[i * 2] and 0x0F
