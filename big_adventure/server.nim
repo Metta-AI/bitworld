@@ -3,6 +3,9 @@ import bitworld/clients
 import protocol, sim, global
 import std/[json, locks, monotimes, os, strutils, tables, times]
 
+const
+  HealthzPath = "/healthz"
+
 type
   WebSocketAppState = object
     lock: Lock
@@ -556,8 +559,20 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
+proc serveHealthz(request: Request): bool =
+  ## Serves the container health check endpoint.
+  if request.path != HealthzPath or request.httpMethod notin ["GET", "HEAD"]:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, "healthy")
+  true
+
 proc httpHandler(request: Request) =
-  if request.path == SpritePlayerWebSocketPath and
+  if request.serveHealthz():
+    discard
+  elif request.path == SpritePlayerWebSocketPath and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
