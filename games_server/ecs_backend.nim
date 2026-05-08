@@ -290,6 +290,8 @@ proc ecsCreateGame*(
   manifestKey: string,
   replay: string,
   saveReplay: bool,
+  uploadUrl = "",
+  uploadToken = "",
 ): tuple[taskArn, publicIp, privateIp: string] =
   ensureGameTaskDef()
   let
@@ -311,6 +313,13 @@ proc ecsCreateGame*(
     let val = getEnv(envName)
     if val.len > 0:
       env.add((name: envName, value: val))
+  if saveReplay and replay.len > 0:
+    env.add((name: "COGAME_SAVE_REPLAY_PATH", value: "/tmp/" & replay))
+    let scores = replay.replace(".bitreplay", ".scores.json")
+    env.add((name: "COGAME_SAVE_RESULTS_PATH", value: "/tmp/" & scores))
+  if uploadUrl.len > 0:
+    env.add((name: "REPLAY_UPLOAD_URL", value: uploadUrl))
+    env.add((name: "REPLAY_UPLOAD_TOKEN", value: uploadToken))
 
   echo "ECS: launching game task..."
   let taskResp = runTask(
@@ -369,6 +378,43 @@ proc ecsCreateBot*(
   )
   result = taskResp["taskArn"].getStr()
   echo "ECS: bot task = ", result
+
+proc ecsCreateReplayGame*(
+  image: string,
+  replay: string,
+  extraEnv: seq[tuple[name, value: string]],
+): tuple[taskArn, publicIp, privateIp: string] =
+  ## Launches an ECS task for replay playback (no save, no bots).
+  ensureGameTaskDef()
+  let
+    created = $getTime().toUnix()
+    tags = @[
+      (key: "bitworld.games_server", value: "among_them"),
+      (key: "bitworld.games_server.port", value: $GameContainerPort),
+      (key: "bitworld.games_server.created", value: created),
+      (key: "bitworld.games_server.replay", value: replay),
+      (key: "bitworld.games_server.kind", value: "replay"),
+    ]
+  let cmd = @["/bin/among_them", "--address:0.0.0.0", "--port:" & $GameContainerPort]
+  var env = extraEnv
+
+  echo "ECS: launching replay task..."
+  let taskResp = runTask(
+    gameTaskDefArn,
+    ecsConf.publicSubnet,
+    ecsConf.gameSg,
+    assignPublicIp = true,
+    tags = tags,
+    envOverrides = env,
+    cmdOverride = cmd,
+  )
+  let taskArn = taskResp["taskArn"].getStr()
+  echo "ECS: replay task = ", taskArn, " (waiting for RUNNING...)"
+
+  let runningTask = waitForTaskRunning(taskArn)
+  let ips = resolveTaskIps(taskArn, runningTask)
+  echo "ECS: replay running at public=", ips.public, " private=", ips.private
+  result = (taskArn: taskArn, publicIp: ips.public, privateIp: ips.private)
 
 # =============================================================================
 # Discovery

@@ -1,6 +1,6 @@
 import
   std/[locks, monotimes, nativesockets, os, strutils, tables, times],
-  mummy,
+  curly, mummy,
   bitworld/clients, protocol, sim, global
 
 when defined(posix):
@@ -985,6 +985,36 @@ proc buildRewardPacket(sim: SimServer): string =
       result.addStatLine("vote_skip", identity, account.voteSkip)
       result.addStatLine("vote_timeout", identity, account.voteTimeout)
 
+let uploadPool = newCurlPool(1)
+
+proc uploadReplayFiles(replayPath, scoresPath: string) =
+  ## Uploads replay and scores files to games_server if configured.
+  let
+    uploadUrl = getEnv("REPLAY_UPLOAD_URL")
+    uploadToken = getEnv("REPLAY_UPLOAD_TOKEN")
+  if uploadUrl.len == 0 or uploadToken.len == 0:
+    return
+  let headers = @[
+    ("Authorization", "Bearer " & uploadToken),
+    ("Content-Type", "application/octet-stream"),
+  ]
+  if replayPath.len > 0 and fileExists(replayPath):
+    let resp = uploadPool.post(uploadUrl, headers, readFile(replayPath))
+    if resp.code != 200:
+      echo "ERROR: replay upload failed: ", resp.code, " ", resp.body
+      return
+    echo "Replay uploaded: ", replayPath
+  if scoresPath.len > 0 and fileExists(scoresPath):
+    let scoreHeaders = @[
+      ("Authorization", "Bearer " & uploadToken),
+      ("Content-Type", "application/json"),
+    ]
+    let resp = uploadPool.post(uploadUrl & "/scores", scoreHeaders, readFile(scoresPath))
+    if resp.code != 200:
+      echo "ERROR: scores upload failed: ", resp.code, " ", resp.body
+      return
+    echo "Scores uploaded: ", scoresPath
+
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
@@ -1426,8 +1456,10 @@ proc runServerLoop*(
             sim.removePlayer(globalViewers[i])
 
     if quitAfterFrame:
+      replayWriter.closeReplayWriter()
       if saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
+      uploadReplayFiles(saveReplayPath, saveScoresPath)
       httpServer.close()
       joinThread(serverThread)
       break

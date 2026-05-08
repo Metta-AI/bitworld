@@ -1,5 +1,6 @@
 import
   std/[os, parseopt, strutils],
+  curly,
   protocol, sim, server
 
 when isMainModule:
@@ -57,6 +58,18 @@ when isMainModule:
     echo "Using replay save file: " & saveReplayPath
   if saveScoresPath.len > 0:
     echo "Using results save file: " & saveScoresPath
+  let replayDownloadUrl = getEnv("REPLAY_DOWNLOAD_URL")
+  if replayDownloadUrl.len > 0 and loadReplayPath.len == 0:
+    echo "Downloading replay from: ", replayDownloadUrl
+    let pool = newCurlPool(1)
+    let resp = pool.get(replayDownloadUrl)
+    if resp.code != 200:
+      echo "ERROR: replay download failed: ", resp.code
+      quit(1)
+    loadReplayPath = "/tmp/downloaded.bitreplay"
+    writeFile(loadReplayPath, resp.body)
+    echo "Replay downloaded: ", resp.body.len, " bytes"
+
   echo "starting among_them on ", address, ":", port
   runServerLoop(
     address,

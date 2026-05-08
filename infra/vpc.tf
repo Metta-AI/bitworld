@@ -38,6 +38,11 @@ resource "aws_subnet" "private" {
 }
 
 # --- NAT Gateway (private subnet → internet via public subnet) ---
+# All bot egress routes through this NAT. The Elastic IP is the single
+# exit IP for every bot container. LLM providers that require IP
+# allowlisting get this IP. Do not delete — DNS Firewall restricts
+# which domains resolve, but the NAT is the path that makes allowed
+# HTTPS connections actually work.
 
 resource "aws_eip" "nat" {
   domain = "vpc"
@@ -89,7 +94,11 @@ resource "aws_route_table_association" "private" {
 }
 
 # --- PHASE 2: VPC Flow Logs ---
-# Useful for forensics if a bot does something suspicious.
+# Enables forensic analysis of container traffic. If a game container is
+# used as an attack platform or a bot bypasses DNS Firewall via hardcoded
+# IPs, flow logs show what IPs it contacted, when, and how much data moved.
+# Enable before accepting untrusted images at scale. Cheap to run.
+# 7-day retention is enough for incident response.
 #
 # resource "aws_flow_log" "vpc" {
 #   vpc_id               = aws_vpc.main.id
