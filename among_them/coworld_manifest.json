@@ -18,8 +18,8 @@
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
-          "minItems": 0,
-          "maxItems": 16,
+          "minItems": 8,
+          "maxItems": 8,
           "items": {
             "type": "string",
             "minLength": 0
@@ -334,40 +334,66 @@
     {
       "id": "certification-smoke",
       "name": "Certification Smoke",
-      "description": "Single-player deterministic smoke episode used by coworld certification.",
+      "description": "Eight-player deterministic smoke episode used by coworld certification.",
       "game_config": {
         "seed": 679961,
-        "minPlayers": 1,
-        "imposterCount": 0,
+        "minPlayers": 8,
+        "imposterCount": 2,
         "autoImposterCount": false,
         "tasksPerPlayer": 0,
         "startWaitTicks": 0,
         "roleRevealTicks": 0,
         "gameOverTicks": 1,
-        "maxTicks": 240,
+        "maxTicks": 300,
         "maxGames": 1,
         "voteTimerTicks": 120,
         "showTaskArrows": false,
         "showTaskBubbles": false,
-        "showPlayerLabels": true,
-        "slots": [
-          {
-            "name": "cert-player-0",
-            "role": "crew",
-            "color": "red"
-          }
-        ]
+        "showPlayerLabels": true
       }
     }
   ],
   "certification": {
-    "variant_id": "certification-smoke",
+    "game_config": {
+      "seed": 679961,
+      "minPlayers": 8,
+      "imposterCount": 2,
+      "autoImposterCount": false,
+      "tasksPerPlayer": 0,
+      "startWaitTicks": 0,
+      "roleRevealTicks": 0,
+      "gameOverTicks": 1,
+      "maxTicks": 300,
+      "maxGames": 1,
+      "voteTimerTicks": 120,
+      "showTaskArrows": false,
+      "showTaskBubbles": false,
+      "showPlayerLabels": true
+    },
     "players": [
       {
-        "player_id": "nottoodumb",
-        "initial_params": {
-          "name": "cert-player-0"
-        }
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
       }
     ]
   }
