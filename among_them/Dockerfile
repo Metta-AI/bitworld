@@ -44,6 +44,10 @@ RUN nim $NimCommand \
 # Run Docker.
 FROM debian:bookworm-slim
 
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends libcurl4 && \
+  rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace/bitworld
 COPY --from=build /workspace/bitworld/among_them/among_them /bin/among_them
 COPY --from=build /workspace/bitworld/among_them/*.json ./among_them/

@@ -27,7 +27,6 @@ const
   DefaultIVoteALotImage = "ghcr.io/treeform/bitworld-ivotewell:latest"
   DefaultITalkALotImage = "ghcr.io/treeform/bitworld-italkalot:latest"
   GameContainerPort = 8080
-  ContainerReplayDir = "/replays"
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
   ScoresPath = "/scores"
@@ -47,6 +46,7 @@ const
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayUploadPath = "/api/replay/upload"
   ReplayScoresUploadPath = "/api/replay/upload/scores"
+  ReplayDownloadPath = "/api/replay/download/"
   GamesServerUrlEnv = "GAMES_SERVER_URL"
   UploadTokenTtlSeconds = 600
   UploadTokenBytes = 32
@@ -847,6 +847,13 @@ proc requireDocker(args: openArray[string]): string =
 var skipPull* = false
 var useEcs* = false
 var uploadTokens: Table[string, UploadToken]
+var ec2PrivateIp = ""
+
+proc fetchEc2PrivateIp(): string =
+  ## Fetches this instance's private IP from EC2 instance metadata (IMDSv1).
+  let client = newHttpClient(timeout = 2000)
+  defer: client.close()
+  result = client.getContent("http://169.254.169.254/latest/meta-data/local-ipv4").strip()
 
 proc buildLocalImages() =
   ## Builds native Docker images locally using tools/docker_build.nim.
@@ -1273,7 +1280,15 @@ proc rawScoreUrl(name: string): string =
 
 proc gamesServerUrl(): string =
   ## Returns the URL game containers use to reach this server.
-  getEnv(GamesServerUrlEnv, "http://127.0.0.1:" & $DefaultPort)
+  result = getEnv(GamesServerUrlEnv)
+  if result.len == 0:
+    if useEcs:
+      if ec2PrivateIp.len == 0:
+        ec2PrivateIp = fetchEc2PrivateIp()
+        echo "Resolved EC2 private IP: ", ec2PrivateIp
+      result = "http://" & ec2PrivateIp & ":" & $DefaultPort
+    else:
+      result = "http://host.docker.internal:" & $DefaultPort
 
 proc generateUploadToken(replayName: string): string =
   ## Generates a cryptographic one-time token for replay upload.
@@ -1354,6 +1369,16 @@ proc scoresUploadHandler(request: Request) =
   echo "Scores uploaded: ", scoresFileName, " (", body.len, " bytes)"
   request.respond(200, @[("Content-Type", "application/json")],
     """{"status":"ok","scores":""" & "\"" & scoresFileName & "\"}\n")
+
+proc replayDownloadHandler(request: Request) =
+  ## Handles GET /api/replay/download/<name> — serves replay file for playback containers.
+  let name = request.path[ReplayDownloadPath.len .. ^1]
+  let clean = cleanReplayName(name)
+  if clean.len == 0 or not fileExists(replayPath(clean)):
+    request.respond(404, @[("Content-Type", "text/plain")], "replay not found\n")
+    return
+  let body = readFile(replayPath(clean))
+  request.respond(200, @[("Content-Type", "application/octet-stream")], body)
 
 proc cleanConfigValue(
   form: seq[(string, string)],
@@ -1797,27 +1822,29 @@ proc baseDockerArgs(
     GameNameLabel & "=" & cogameName,
     "--label",
     GameManifestLabel & "=" & manifestKey,
-    "-v",
-    replayDir() & ":" & ContainerReplayDir
   ]
   if saveReplay:
-    let scores = ContainerReplayDir / scoresName(replay)
+    let scores = "/tmp/" & scoresName(replay)
     result.add("-e")
-    result.add(CogameReplayEnv & "=" & ContainerReplayDir / replay)
+    result.add(CogameReplayEnv & "=" & "/tmp/" & replay)
     result.add("-e")
     result.add(CogameResultsEnv & "=" & scores)
+    let token = generateUploadToken(replay)
+    let uploadUrl = gamesServerUrl() & ReplayUploadPath
+    result.add("-e")
+    result.add("REPLAY_UPLOAD_URL=" & uploadUrl)
+    result.add("-e")
+    result.add("REPLAY_UPLOAD_TOKEN=" & token)
   addAiEnvArgs(result)
 
-proc runnerScript(config: string, loadReplay: string): string =
+proc runnerScript(config: string): string =
   ## Builds the shell command for the local Nim runner image.
   result =
     "mkdir -p /tmp/bitworld-out /tmp/bitworld-nimcache && " &
     "nim r --nimcache:/tmp/bitworld-nimcache " &
     "--outdir:/tmp/bitworld-out among_them.nim " &
     "--address:0.0.0.0 --port:" & $GameContainerPort
-  if loadReplay.len > 0:
-    result.add(" --load-replay:'" & ContainerReplayDir / loadReplay & "'")
-  else:
+  if config.len > 0:
     result.add(" --config:'" & config & "'")
 
 proc dockerRunArgs(
@@ -1827,7 +1854,6 @@ proc dockerRunArgs(
   replay: string,
   kind: ContainerKind,
   saveReplay: bool,
-  loadReplay: string,
   config: string,
   cogameName = "",
   manifestKey = ""
@@ -1849,9 +1875,7 @@ proc dockerRunArgs(
     result.add("/bin/among_them")
     result.add("--address:0.0.0.0")
     result.add("--port:" & $GameContainerPort)
-    if loadReplay.len > 0:
-      result.add("--load-replay:" & ContainerReplayDir / loadReplay)
-    else:
+    if config.len > 0:
       result.add("--config:" & config)
   else:
     result.add("-v")
@@ -1863,7 +1887,7 @@ proc dockerRunArgs(
     result.add(dockerImage())
     result.add("sh")
     result.add("-lc")
-    result.add(runnerScript(config, loadReplay))
+    result.add(runnerScript(config))
 
 proc botRunArgs(
   name: string,
@@ -2005,7 +2029,6 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       replay,
       LiveGame,
       true,
-      "",
       config,
       manifestInfo.name,
       manifestInfo.key
@@ -2016,28 +2039,61 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     raise
 
 proc createReplayGame(replay: string): GameContainer =
-  ## Starts an Among Them Docker container in replay mode.
+  ## Starts a container in replay mode (Docker or ECS).
+  ## The container downloads the replay via HTTP from games_server.
   ensureReplayDir()
-  pullDockerImage(dockerImage())
   let cleanReplay = cleanReplayName(replay)
   if cleanReplay.len == 0 or cleanReplay != replay:
     raise newException(GamesServerError, "invalid replay file name")
   if not fileExists(replayPath(cleanReplay)):
     raise newException(GamesServerError, "replay file does not exist")
+  let downloadUrl = gamesServerUrl() & ReplayDownloadPath & cleanReplay
+  if useEcs:
+    var env: seq[tuple[name, value: string]]
+    env.add((name: "REPLAY_DOWNLOAD_URL", value: downloadUrl))
+    let (taskArn, publicIp, _) = ecsCreateReplayGame(
+      ecsConf.gameImage,
+      cleanReplay,
+      env,
+    )
+    result = GameContainer(
+      name: taskArn,
+      status: "running",
+      port: GameContainerPort,
+      created: getTime().toUnix(),
+      replay: cleanReplay,
+      kind: ReplayServer,
+      ip: publicIp,
+    )
+    return
+  pullDockerImage(dockerImage())
   let
     port = findOpenPort()
     created = getTime().toUnix()
     name = replayGameName(port)
-  discard requireDocker(dockerRunArgs(
-    name,
-    port,
-    created,
-    cleanReplay,
-    ReplayServer,
-    false,
-    cleanReplay,
-    ""
-  ))
+  var args = baseDockerArgs(
+    name, port, created, cleanReplay, ReplayServer, false, "", ""
+  )
+  args.add("-e")
+  args.add("REPLAY_DOWNLOAD_URL=" & downloadUrl)
+  case dockerMode()
+  of "release":
+    args.add(dockerImage())
+    args.add("/bin/among_them")
+    args.add("--address:0.0.0.0")
+    args.add("--port:" & $GameContainerPort)
+  else:
+    args.add("-v")
+    args.add(workspaceRoot() & ":/workspace:ro")
+    args.add("-w")
+    args.add("/workspace/bitworld/among_them")
+    args.add("-e")
+    args.add("HOME=/tmp")
+    args.add(dockerImage())
+    args.add("sh")
+    args.add("-lc")
+    args.add(runnerScript(""))
+  discard requireDocker(args)
   result = inspectGame(name)
 
 proc stopBotsForGame(gameName: string) =
@@ -3521,6 +3577,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.replayUploadHandler()
     elif request.path == ReplayScoresUploadPath and request.httpMethod == "POST":
       request.scoresUploadHandler()
+    elif request.path.startsWith(ReplayDownloadPath) and request.httpMethod == "GET":
+      request.replayDownloadHandler()
     else:
       request.notFoundHandler()
   except GamesServerError as e:
