@@ -291,6 +291,7 @@ type
     name: string
     author: string
     imageUri: string
+    binary: string
 
   CoplayerManifest = object
     key: string
@@ -531,7 +532,8 @@ proc readGameManifest(path: string): GameManifest =
       path: path,
       name: name,
       author: author,
-      imageUri: manifest.manifestString("image_uri", dockerImage())
+      imageUri: manifest.manifestString("image_uri", dockerImage()),
+      binary: manifest.manifestString("binary", "/bin/" & name)
     )
   except CatchableError as e:
     raise newException(
@@ -715,6 +717,15 @@ proc imageTag(image: string): string =
   else:
     ""
 
+proc registryImageUri(imageUri: string): string =
+  ## Adds the default GHCR owner to one bare image name.
+  let cleanImage = imageUri.strip()
+  if cleanImage.len == 0:
+    return ""
+  if cleanImage.startsWith("ghcr.io/") or cleanImage.contains('/'):
+    return cleanImage
+  "ghcr.io/" & dockerOwner() & "/" & cleanImage
+
 proc runnerImageUri(imageUri: string): string =
   ## Converts a manifest image name to the registry runner image.
   let
@@ -734,12 +745,25 @@ proc runnerImageUri(imageUri: string): string =
     packageName.add("-runner")
   "ghcr.io/" & owner & "/" & packageName & tag
 
+proc gameDockerImage(manifest: GameManifest): string =
+  ## Returns the Docker image for one CoGame manifest.
+  if manifest.name == "among_them":
+    return envValue(
+      DockerImageEnv,
+      runnerImageUri(manifest.imageUri)
+    )
+  let image = registryImageUri(manifest.imageUri)
+  if image.len > 0:
+    image
+  else:
+    dockerImage()
+
 proc dockerPackageUrl(imageUri: string): string =
-  ## Builds a GitHub Packages URL from a Docker image name.
-  let runnerImage = runnerImageUri(imageUri)
+  ## Builds a GitHub Packages URL from a resolved Docker image name.
+  let image = registryImageUri(imageUri)
   var
     owner = dockerOwner()
-    packageName = stripImageTag(runnerImage)
+    packageName = stripImageTag(image)
   if packageName.startsWith("ghcr.io/"):
     let parts = packageName.split('/')
     if parts.len >= 3:
@@ -1184,13 +1208,21 @@ proc findOpenPort(): int =
   if result <= 0:
     raise newException(GamesServerError, "OS returned an invalid free port")
 
-proc gameName(port: int): string =
+proc gameName(cogameName: string, port: int): string =
   ## Builds a unique Docker container name.
-  "among_them_game_" & $port & "_" & $getTime().toUnix()
+  let cleanName = cleanContainerName(cogameName)
+  if cleanName.len > 0:
+    cleanName & "_game_" & $port & "_" & $getTime().toUnix()
+  else:
+    "cogame_game_" & $port & "_" & $getTime().toUnix()
 
-proc replayGameName(port: int): string =
+proc replayGameName(cogameName: string, port: int): string =
   ## Builds a unique replay Docker container name.
-  "among_them_replay_" & $port & "_" & $getTime().toUnix()
+  let cleanName = cleanContainerName(cogameName)
+  if cleanName.len > 0:
+    cleanName & "_replay_" & $port & "_" & $getTime().toUnix()
+  else:
+    "cogame_replay_" & $port & "_" & $getTime().toUnix()
 
 proc launchStamp(index: int): string =
   ## Builds a compact unique suffix for batch launches.
@@ -1216,6 +1248,15 @@ proc botPlayerName(
 proc replayName(name: string): string =
   ## Builds the replay file name for one game.
   cleanContainerName(name) & ".bitreplay"
+
+proc replayManifest(replay: string): GameManifest =
+  ## Infers the CoGame manifest that wrote one replay file.
+  let cleanReplay = cleanReplayName(replay)
+  for manifest in listGameManifests():
+    let prefix = cleanContainerName(manifest.name) & "_game_"
+    if cleanReplay.startsWith(prefix):
+      return manifest
+  findGameManifest("")
 
 proc scoresName(replay: string): string =
   ## Builds the scores file name for one replay file.
@@ -1714,10 +1755,12 @@ proc dockerRunArgs(
   saveReplay: bool,
   loadReplay: string,
   config: string,
+  image: string,
+  binary: string,
   cogameName = "",
   manifestKey = ""
 ): seq[string] =
-  ## Builds Docker arguments for one new Among Them container.
+  ## Builds Docker arguments for one new CoGame container.
   result = baseDockerArgs(
     name,
     port,
@@ -1730,8 +1773,8 @@ proc dockerRunArgs(
   )
   case dockerMode()
   of "release":
-    result.add(dockerImage())
-    result.add("/bin/among_them")
+    result.add(image)
+    result.add(binary)
     result.add("--address:0.0.0.0")
     result.add("--port:" & $GameContainerPort)
     if loadReplay.len > 0:
@@ -1745,7 +1788,7 @@ proc dockerRunArgs(
     result.add("/workspace/bitworld/among_them")
     result.add("-e")
     result.add("HOME=/tmp")
-    result.add(dockerImage())
+    result.add(image)
     result.add("sh")
     result.add("-lc")
     result.add(runnerScript(config, loadReplay))
@@ -1860,10 +1903,11 @@ proc createGame(form: seq[(string, string)]): GameContainer =
   let
     port = findOpenPort()
     created = getTime().toUnix()
-    name = gameName(port)
+    name = gameName(manifestInfo.name, port)
     replay = replayName(name)
     config = configJson(form, manifestInfo)
     botCounts = createBotCounts(form, manifestInfo.name)
+    image = gameDockerImage(manifestInfo)
     pendingGame = GameContainer(
       name: name,
       status: "pending",
@@ -1875,7 +1919,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       cogameName: manifestInfo.name
     )
   var launchedBots: seq[string]
-  pullDockerImage(dockerImage())
+  pullDockerImage(image)
   pullNeededBotImages(botCounts)
   try:
     discard startWaitingBots(pendingGame, botCounts, launchedBots)
@@ -1888,6 +1932,8 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       true,
       "",
       config,
+      image,
+      manifestInfo.binary,
       manifestInfo.name,
       manifestInfo.key
     ))
@@ -1897,18 +1943,20 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     raise
 
 proc createReplayGame(replay: string): GameContainer =
-  ## Starts an Among Them Docker container in replay mode.
+  ## Starts a CoGame Docker container in replay mode.
   ensureReplayDir()
-  pullDockerImage(dockerImage())
   let cleanReplay = cleanReplayName(replay)
   if cleanReplay.len == 0 or cleanReplay != replay:
     raise newException(GamesServerError, "invalid replay file name")
   if not fileExists(replayPath(cleanReplay)):
     raise newException(GamesServerError, "replay file does not exist")
   let
+    manifestInfo = replayManifest(cleanReplay)
+    image = gameDockerImage(manifestInfo)
     port = findOpenPort()
     created = getTime().toUnix()
-    name = replayGameName(port)
+    name = replayGameName(manifestInfo.name, port)
+  pullDockerImage(image)
   discard requireDocker(dockerRunArgs(
     name,
     port,
@@ -1917,7 +1965,11 @@ proc createReplayGame(replay: string): GameContainer =
     ReplayServer,
     false,
     cleanReplay,
-    ""
+    "",
+    image,
+    manifestInfo.binary,
+    manifestInfo.name,
+    manifestInfo.key
   ))
   result = inspectGame(name)
 
@@ -2292,7 +2344,7 @@ proc renderManifestTable(): string =
       for i, manifest in manifests:
         let
           rowClass = if i mod 2 == 0: ".row1" else: ".row2"
-          runnerImage = runnerImageUri(manifest.imageUri)
+          image = gameDockerImage(manifest)
         tr:
           td rowClass:
             say esc(manifest.name)
@@ -2305,9 +2357,9 @@ proc renderManifestTable(): string =
               say esc(manifest.key)
           td rowClass & " nowrap":
             a:
-              href dockerPackageUrl(manifest.imageUri)
+              href dockerPackageUrl(image)
               target "_blank"
-              say esc(runnerImage)
+              say esc(image)
           td rowClass & " nowrap":
             a ".button":
               href createUrl(manifest)
