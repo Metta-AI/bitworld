@@ -178,7 +178,7 @@ proc apply() =
   echo "Applying infrastructure..."
   echo ""
   ensureTerraform()
-  execInDir("terraform apply", dir)
+  execInDir("terraform apply -auto-approve", dir)
 
 proc destroy() =
   let dir = repoRoot() / InfraDir
@@ -194,6 +194,7 @@ proc output() =
   execInDir("terraform output", dir)
 
 proc main() =
+  putEnv("AWS_PROFILE", "softmax")
   var command = ""
 
   for kind, key, val in getopt():

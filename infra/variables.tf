@@ -84,9 +84,22 @@ variable "infra_domains" {
   description = "Domains needed for container infrastructure (image pulls, etc)"
   type        = list(string)
   default = [
+    # GitHub Container Registry
     "ghcr.io",
     "*.ghcr.io",
     "pkg-containers.githubusercontent.com",
     "*.pkg-containers.githubusercontent.com",
+    # Docker Hub
+    "registry-1.docker.io",
+    "*.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+    # AWS ECR (our own researcher images)
+    "*.dkr.ecr.us-east-1.amazonaws.com",
+    "api.ecr.us-east-1.amazonaws.com",
+    # Google Artifact Registry
+    "*.gcr.io",
+    "*.pkg.dev",
+    "*.googleapis.com",
   ]
 }
