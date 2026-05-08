@@ -220,6 +220,38 @@ proc blitTextWrappedTinted(sim: var SimServer, text: string, x, y: int, lineHeig
       break
   row
 
+proc renderVotePanel(sim: var SimServer) =
+  let voterCount = sim.players.len - 1
+  if voterCount <= 0:
+    return
+  let boxW = ScreenWidth - TextMargin * 2
+  let boxH = 16
+  let totalH = voterCount * (boxH + 2)
+  var voteY = ScreenHeight - totalH
+  for i in 0 ..< sim.players.len:
+    if i == sim.currentTurn:
+      continue
+    if voteY + boxH > ScreenHeight:
+      break
+    let color = uint8(sim.players[i].colorIndex)
+    sim.fb.fillRect(TextMargin, voteY, boxW, 1, color)
+    sim.fb.fillRect(TextMargin, voteY + boxH - 1, boxW, 1, color)
+    sim.fb.fillRect(TextMargin, voteY, 1, boxH, color)
+    sim.fb.fillRect(TextMargin + boxW - 1, voteY, 1, boxH, color)
+    case sim.factChoice.votes[i]
+    of VotePending:
+      let passX = TextMargin + (boxW - 4 * CharWidth) div 2
+      sim.fb.blitText(sim.letterSprites, "pass", passX, voteY + 2)
+      let vetoX = TextMargin + (boxW - 4 * CharWidth) div 2
+      sim.fb.blitText(sim.letterSprites, "veto", vetoX, voteY + 9)
+    of VotePass:
+      let passX = TextMargin + (boxW - 4 * CharWidth) div 2
+      sim.fb.blitTextTinted(sim.letterSprites, "pass", passX, voteY + 5, color)
+    of VoteVeto:
+      let vetoX = TextMargin + (boxW - 4 * CharWidth) div 2
+      sim.fb.blitTextTinted(sim.letterSprites, "veto", vetoX, voteY + 5, color)
+    voteY += boxH + 2
+
 proc renderFactChoices(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   let player = sim.players[sim.currentTurn]
@@ -230,7 +262,7 @@ proc renderFactChoices(sim: var SimServer) =
 
   var y = 20
   for i in 0 ..< 3:
-    let selected = sim.factChoice.step == FactSelected and sim.factChoice.selected == i
+    let selected = sim.factChoice.step >= FactSelected and sim.factChoice.selected == i
     if selected:
       sim.fb.fillRect(TextMargin, y, 6, 6, color)
     else:
@@ -238,13 +270,16 @@ proc renderFactChoices(sim: var SimServer) =
     let lines = sim.blitTextWrapped(sim.factChoice.options[i], textX, y, 8)
     y += lines * 8 + 2
 
-  let selectedSkip = sim.factChoice.step == FactSelected and sim.factChoice.selected >= 3
+  let selectedSkip = sim.factChoice.step >= FactSelected and sim.factChoice.selected >= 3
   if y + CharHeight <= ScreenHeight:
     if selectedSkip:
       sim.fb.fillRect(TextMargin, y, 6, 6, color)
     else:
       sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
     sim.fb.blitText(sim.letterSprites, "skip", textX, y)
+
+  if sim.factChoice.step in {FactVoting, FactVoteResult}:
+    sim.renderVotePanel()
 
 proc renderFactChat(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
@@ -279,42 +314,10 @@ proc renderFactChat(sim: var SimServer) =
     else:
       y += 8
 
-proc renderFactVoting(sim: var SimServer) =
-  sim.fb.clearFrame(BackgroundColor)
-  let player = sim.players[sim.currentTurn]
-  let factText = sim.factChoice.options[sim.factChoice.selected]
-  discard sim.blitTextWrappedTinted(factText, TextMargin, 4, 8, uint8(player.colorIndex))
-
-  let voteY = 28
-  let voterCount = sim.players.len - 1
-  if voterCount <= 0:
-    return
-  let boxW = min(14, (ScreenWidth - TextMargin * 2) div voterCount)
-  let boxH = 12
-  var x = TextMargin
-  for i in 0 ..< sim.players.len:
-    if i == sim.currentTurn:
-      continue
-    let color = uint8(sim.players[i].colorIndex)
-    sim.fb.fillRect(x, voteY, boxW - 1, 1, color)
-    sim.fb.fillRect(x, voteY + boxH - 1, boxW - 1, 1, color)
-    sim.fb.fillRect(x, voteY, 1, boxH, color)
-    sim.fb.fillRect(x + boxW - 2, voteY, 1, boxH, color)
-    case sim.factChoice.votes[i]
-    of VotePass:
-      sim.fb.blitText(sim.letterSprites, "a", x + 4, voteY + 3)
-    of VoteVeto:
-      sim.fb.blitText(sim.letterSprites, "b", x + 4, voteY + 3)
-    of VotePending:
-      discard
-    x += boxW
-
 proc renderFact(sim: var SimServer) =
   case sim.factChoice.step
-  of FactReading, FactSelected:
+  of FactReading, FactSelected, FactVoting, FactVoteResult:
     sim.renderFactChoices()
-  of FactVoting, FactVoteResult:
-    sim.renderFactVoting()
   of FactShowChat:
     sim.renderFactChat()
 
