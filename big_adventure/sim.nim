@@ -97,6 +97,13 @@ const
   PlayerHudObjectId* = 7000
   TerrainObjectBase* = 8000
   CoopAttackWindow* = TargetFps
+  MobSightRadius* = WorldTileSize * 3
+  MobChaseCooldown* = 2
+  MobTelegraphTicks* = TargetFps div 2
+  MobTelegraphBounces* = 2
+  MobTelegraphLift* = 4
+  MobLungeTicks* = 5
+  MobLungeStep* = 4
 
 type
   PlayerForm* = enum
@@ -160,6 +167,11 @@ type
     TrollMob
     BossMob
 
+  MobAttackPhase* = enum
+    MobIdle
+    MobTelegraph
+    MobLunge
+
   Pickup* = object
     x*, y*: int
     kind*: PickupKind
@@ -173,7 +185,8 @@ type
     wanderCooldown*: int
     hp*: int
     attackCooldown*: int
-    attackPhase*: int
+    attackPhase*: MobAttackPhase
+    attackTicks*: int
     attackFacing*: Facing
     attackerIds*: seq[int]
     attackerTicks*: seq[int]
@@ -737,7 +750,33 @@ proc hasBoss*(sim: SimServer): bool =
       return true
 
 proc mobAttackRange*(mob: Mob): int =
+  ## Returns the distance where one mob can start an attack.
   12 + max(mob.bounds.w, mob.bounds.h)
+
+proc mobSightRange*(mob: Mob): int =
+  ## Returns the distance where one mob starts chasing players.
+  MobSightRadius
+
+proc mobTelegraphOffsetY*(mob: Mob): int =
+  ## Returns the visual y offset for one telegraphing mob.
+  if mob.attackPhase != MobTelegraph:
+    return 0
+  let
+    stepCount = MobTelegraphBounces * 4
+    step = (mob.attackTicks * stepCount) div max(1, MobTelegraphTicks)
+  case step mod 4
+  of 0:
+    -MobTelegraphLift
+  of 1:
+    0
+  of 2:
+    MobTelegraphLift
+  else:
+    0
+
+proc mobDrawY*(mob: Mob): int =
+  ## Returns the visual y position for one mob sprite.
+  mob.y + mob.mobTelegraphOffsetY()
 
 proc mobMaxHp*(mob: Mob): int =
   ## Returns the maximum hit points for one mob.
@@ -1015,7 +1054,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(mob.wanderCooldown)
     result.mixHashInt(mob.hp)
     result.mixHashInt(mob.attackCooldown)
-    result.mixHashInt(mob.attackPhase)
+    result.mixHashInt(ord(mob.attackPhase))
+    result.mixHashInt(mob.attackTicks)
     result.mixHashInt(ord(mob.attackFacing))
     result.mixHashInt(mob.attackerIds.len)
     for attackerId in mob.attackerIds:
@@ -1050,6 +1090,18 @@ proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
         actor.y = ny
       else:
         break
+
+proc moveMob(sim: SimServer, mob: var Mob, dx, dy: int) =
+  ## Moves one mob through terrain by a small amount.
+  var actor = Actor(
+    x: mob.x,
+    y: mob.y,
+    sprite: mob.sprite,
+    bounds: mob.bounds
+  )
+  sim.moveActor(actor, dx, dy)
+  mob.x = actor.x
+  mob.y = actor.y
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -1339,6 +1391,7 @@ proc lungeVector(facing: Facing, distance: int): tuple[dx, dy: int] =
   of FaceRight: (distance, 0)
 
 proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
+  ## Chooses the dominant cardinal facing from one point to another.
   let
     dx = toX - fromX
     dy = toY - fromY
@@ -1346,6 +1399,24 @@ proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
     if dx < 0: FaceLeft else: FaceRight
   else:
     if dy < 0: FaceUp else: FaceDown
+
+proc chaseVector(fromX, fromY, toX, toY: int): tuple[dx, dy: int] =
+  ## Returns one small walking step from one point toward another.
+  let
+    deltaX = toX - fromX
+    deltaY = toY - fromY
+  if deltaX < 0:
+    result.dx = -1
+  elif deltaX > 0:
+    result.dx = 1
+  if deltaY < 0:
+    result.dy = -1
+  elif deltaY > 0:
+    result.dy = 1
+  if abs(deltaX) > abs(deltaY) * 2:
+    result.dy = 0
+  elif abs(deltaY) > abs(deltaX) * 2:
+    result.dx = 0
 
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   ## Respawns a dead player with a clean state.
@@ -1542,6 +1613,7 @@ proc collectPickups(sim: var SimServer) =
   sim.pickups = remaining
 
 proc updateMobs*(sim: var SimServer) =
+  ## Updates mob chasing, telegraphed attacks, and wandering.
   if sim.players.len == 0:
     return
 
@@ -1573,38 +1645,53 @@ proc updateMobs*(sim: var SimServer) =
     if not hasTarget:
       continue
     let player = sim.players[targetPlayerIndex]
+    let
+      playerCenterX = boundsCenterX(player.x, player.bounds)
+      playerCenterY = boundsCenterY(player.y, player.bounds)
+      attackRange = mob.mobAttackRange()
+      sightRange = mob.mobSightRange()
 
-    if mob.attackPhase == 0:
-      let
-        playerCenterX = boundsCenterX(player.x, player.bounds)
-        playerCenterY = boundsCenterY(player.y, player.bounds)
-      let attackRange = mob.mobAttackRange()
-      if mob.attackCooldown == 0 and distanceSquared(centerX, centerY, playerCenterX, playerCenterY) <= attackRange * attackRange:
+    case mob.attackPhase
+    of MobIdle:
+      if mob.attackCooldown == 0 and
+          bestDistance <= attackRange * attackRange:
         mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
-        let back = lungeVector(mob.attackFacing, -1)
-        var actor = Actor(
-          x: mob.x,
-          y: mob.y,
-          sprite: mob.sprite,
-          bounds: mob.bounds
-        )
-        sim.moveActor(actor, back.dx, back.dy)
-        mob.x = actor.x
-        mob.y = actor.y
-        mob.attackPhase = 1
+        mob.attackPhase = MobTelegraph
+        mob.attackTicks = 0
         continue
 
-    elif mob.attackPhase == 1:
-      let lunge = lungeVector(mob.attackFacing, 4)
-      var actor = Actor(
-        x: mob.x,
-        y: mob.y,
-        sprite: mob.sprite,
-        bounds: mob.bounds
-      )
-      sim.moveActor(actor, lunge.dx, lunge.dy)
-      mob.x = actor.x
-      mob.y = actor.y
+      dec mob.wanderCooldown
+      if mob.wanderCooldown > 0:
+        continue
+
+      if bestDistance <= sightRange * sightRange:
+        mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
+        let step = chaseVector(centerX, centerY, playerCenterX, playerCenterY)
+        mob.wanderCooldown = MobChaseCooldown
+        sim.moveMob(mob, step.dx, step.dy)
+        continue
+
+      mob.wanderCooldown = 8 + sim.rng.rand(20)
+      let direction = sim.rng.rand(4)
+      var dx = 0
+      var dy = 0
+      case direction
+      of 0: dx = 1
+      of 1: dx = -1
+      of 2: dy = 1
+      else: dy = -1
+      sim.moveMob(mob, dx, dy)
+
+    of MobTelegraph:
+      inc mob.attackTicks
+      if mob.attackTicks >= MobTelegraphTicks:
+        mob.attackPhase = MobLunge
+        mob.attackTicks = 0
+      continue
+
+    of MobLunge:
+      let lunge = lungeVector(mob.attackFacing, MobLungeStep)
+      sim.moveMob(mob, lunge.dx, lunge.dy)
       for playerIndex in 0 ..< sim.players.len:
         let player = sim.players[playerIndex]
         if player.lives <= 0:
@@ -1618,33 +1705,12 @@ proc updateMobs*(sim: var SimServer) =
           player.bounds
         ):
           sim.damagePlayer(playerIndex, lunge.dx, lunge.dy)
-      mob.attackPhase = 0
-      mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
+      inc mob.attackTicks
+      if mob.attackTicks >= MobLungeTicks:
+        mob.attackPhase = MobIdle
+        mob.attackTicks = 0
+        mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
       continue
-
-    dec mob.wanderCooldown
-    if mob.wanderCooldown > 0:
-      continue
-
-    mob.wanderCooldown = 8 + sim.rng.rand(20)
-    let direction = sim.rng.rand(4)
-    var dx = 0
-    var dy = 0
-    case direction
-    of 0: dx = 1
-    of 1: dx = -1
-    of 2: dy = 1
-    else: dy = -1
-
-    var actor = Actor(
-      x: mob.x,
-      y: mob.y,
-      sprite: mob.sprite,
-      bounds: mob.bounds
-    )
-    sim.moveActor(actor, dx, dy)
-    mob.x = actor.x
-    mob.y = actor.y
 
 proc respawnMobs(sim: var SimServer) =
   if not sim.hasBoss():
@@ -1831,7 +1897,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
     of PickupHeart:
       sim.fb.blitSprite(sim.heartSprite, pickup.x, pickup.y, cameraX, cameraY)
   for mob in sim.mobs:
-    sim.fb.blitSprite(mob.sprite, mob.x, mob.y, cameraX, cameraY)
+    sim.fb.blitSprite(mob.sprite, mob.x, mob.mobDrawY(), cameraX, cameraY)
   for i in 0 ..< sim.players.len:
     let otherPlayer = sim.players[i]
     if otherPlayer.lives > 0:
@@ -1861,7 +1927,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       maxHp = mob.mobMaxHp()
       barW = mob.sprite.width
       barX = mob.x - cameraX
-      barY = mob.y - cameraY - 2
+      barY = mob.mobDrawY() - cameraY - 2
     sim.fb.renderHealthBar(barX, barY, barW, mob.hp, maxHp)
   for i in 0 ..< sim.players.len:
     let p = sim.players[i]

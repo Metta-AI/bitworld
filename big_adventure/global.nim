@@ -1082,7 +1082,7 @@ proc terrainObjectId(index: int): int =
 
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
-  let flipLeft = mob.attackPhase != 0 and mob.attackFacing == FaceLeft
+  let flipLeft = mob.attackPhase != MobIdle and mob.attackFacing == FaceLeft
   case mob.kind
   of SnakeMob:
     if flipLeft: MobLeftSpriteId else: MobSpriteId
@@ -1544,11 +1544,12 @@ proc addWorldObjects(
       mob = sim.mobs[i]
       objectId = MobObjectBase + i
       spriteId = mob.mobSpriteId()
+      drawY = mob.mobDrawY()
     objects.addWorldSpriteObject(
       currentIds,
       objectId,
       mob.x - cameraX,
-      mob.y - cameraY,
+      drawY - cameraY,
       spriteId,
       mob.sprite.width,
       mob.sprite.height,
@@ -1559,7 +1560,7 @@ proc addWorldObjects(
       currentIds,
       mobHealthObjectId(i),
       mob.x,
-      mob.y,
+      drawY,
       mob.sprite.width,
       mob.sprite.height,
       mob.hp,
