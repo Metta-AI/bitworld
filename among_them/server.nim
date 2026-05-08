@@ -3,8 +3,7 @@ import
   mummy,
   bitworld/clients, protocol, sim, global
 
-import std/httpclient except HttpHeaders
-from std/httpcore import newHttpHeaders
+import curly
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -988,6 +987,8 @@ proc buildRewardPacket(sim: SimServer): string =
       result.addStatLine("vote_skip", identity, account.voteSkip)
       result.addStatLine("vote_timeout", identity, account.voteTimeout)
 
+let uploadPool = newCurlPool(1)
+
 proc uploadReplayFiles(replayPath, scoresPath: string) =
   ## Uploads replay and scores files to games_server if configured.
   let
@@ -995,35 +996,26 @@ proc uploadReplayFiles(replayPath, scoresPath: string) =
     uploadToken = getEnv("REPLAY_UPLOAD_TOKEN")
   if uploadUrl.len == 0 or uploadToken.len == 0:
     return
-  var client = newHttpClient(timeout = 30000)
-  defer: client.close()
+  let headers = @[
+    ("Authorization", "Bearer " & uploadToken),
+    ("Content-Type", "application/octet-stream"),
+  ]
   if replayPath.len > 0 and fileExists(replayPath):
-    try:
-      client.headers = newHttpHeaders({
-        "Authorization": "Bearer " & uploadToken,
-        "Content-Type": "application/octet-stream",
-      })
-      let resp = client.post(uploadUrl, body = readFile(replayPath))
-      if not resp.code.is2xx:
-        echo "WARNING: replay upload failed: ", resp.status
-        return
-      echo "Replay uploaded successfully"
-    except CatchableError as e:
-      echo "WARNING: replay upload error: ", e.msg
+    let resp = uploadPool.post(uploadUrl, headers, readFile(replayPath))
+    if resp.code != 200:
+      echo "ERROR: replay upload failed: ", resp.code, " ", resp.body
       return
+    echo "Replay uploaded: ", replayPath
   if scoresPath.len > 0 and fileExists(scoresPath):
-    try:
-      client.headers = newHttpHeaders({
-        "Authorization": "Bearer " & uploadToken,
-        "Content-Type": "application/json",
-      })
-      let resp = client.post(uploadUrl & "/scores", body = readFile(scoresPath))
-      if not resp.code.is2xx:
-        echo "WARNING: scores upload failed: ", resp.status
-      else:
-        echo "Scores uploaded successfully"
-    except CatchableError as e:
-      echo "WARNING: scores upload error: ", e.msg
+    let scoreHeaders = @[
+      ("Authorization", "Bearer " & uploadToken),
+      ("Content-Type", "application/json"),
+    ]
+    let resp = uploadPool.post(uploadUrl & "/scores", scoreHeaders, readFile(scoresPath))
+    if resp.code != 200:
+      echo "ERROR: scores upload failed: ", resp.code, " ", resp.body
+      return
+    echo "Scores uploaded: ", scoresPath
 
 proc runServerLoop*(
   host = DefaultHost,
