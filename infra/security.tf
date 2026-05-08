@@ -331,23 +331,6 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 # PHASE 2: Additional Hardening for Untrusted Images
 # =============================================================================
 
-# --- ECR Image Scanning ---
-# Scan user-submitted images for known CVEs before allowing them to run.
-# Won't catch custom malware but catches lazy attacks using known exploits.
-# If using GHCR instead of ECR, consider a pre-launch scan step in
-# games_server that pulls the image and runs `docker scout` or Trivy.
-#
-# resource "aws_ecr_registry_scanning_configuration" "scan" {
-#   scan_type = "ENHANCED"
-#   rule {
-#     scan_frequency = "SCAN_ON_PUSH"
-#     repository_filter {
-#       filter      = "*"
-#       filter_type = "WILDCARD"
-#     }
-#   }
-# }
-
 # --- ECS Exec ---
 # ECS Exec is DISABLED by default. Do NOT enable it for untrusted task
 # definitions. If enabled, anyone with the task ARN and ECS API access
