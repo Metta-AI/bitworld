@@ -72,7 +72,12 @@ proc testMobSightRadiusIsSmaller() =
   doAssert MobSightRadius == (WorldTileSize * 3) div 2,
     "mob sight radius should be half of the earlier three-tile radius"
 
+proc testPlayerSpeedIsSlower() =
+  ## Checks that player top speed is 25 percent slower.
+  doAssert MaxSpeed == 264, "player max speed should be 25 percent slower"
+
 testPlayerDropsCarriedCoinsOnDeath()
 testMobsAvoidPlayerStart()
 testMobSightRadiusIsSmaller()
+testPlayerSpeedIsSlower()
 echo "All tests passed"

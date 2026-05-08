@@ -30,7 +30,7 @@ const
   Accel* = 38
   FrictionNum* = 200
   FrictionDen* = 256
-  MaxSpeed* = 352
+  MaxSpeed* = 264
   StopThreshold* = 8
   PlayerFootSize* = 8
   PlayerSeparationPasses* = 4
