@@ -138,7 +138,7 @@ proc ensureGameTaskDef*() =
   if gameTaskDefArn.len == 0:
     echo "ECS: registering game task definition..."
     gameTaskDefArn = registerTaskDef(
-      "bitworld-game", ecsConf.gameImage, "512", "1024"
+      "bitworld-game", ecsConf.gameImage, "2048", "4096"
     )
     echo "ECS: game task def = ", gameTaskDefArn
 
@@ -148,7 +148,7 @@ proc ensureBotTaskDef*(image: string, arch = "X86_64"): string =
     return botTaskDefs[cacheKey]
   let family = "bitworld-bot-" & image.split("/")[^1].split(":")[0]
   echo "ECS: registering bot task definition for ", image, " (", arch, ")..."
-  result = registerTaskDef(family, image, "256", "512", arch)
+  result = registerTaskDef(family, image, "1024", "2048", arch)
   botTaskDefs[cacheKey] = result
   echo "ECS: bot task def = ", result
 
