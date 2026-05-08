@@ -97,7 +97,8 @@ const
   PlayerHudObjectId* = 7000
   TerrainObjectBase* = 8000
   CoopAttackWindow* = TargetFps
-  MobSightRadius* = WorldTileSize * 3
+  MobSightRadius* = (WorldTileSize * 3) div 2
+  MobSpawnSafeRadius* = WorldTileSize * 5
   MobChaseCooldown* = 4
   MobSpawnWanderCooldown* = 16
   MobSpawnWanderJitter* = 36
@@ -574,6 +575,22 @@ proc distanceSquared*(ax, ay, bx, by: int): int =
     dy = ay - by
   dx * dx + dy * dy
 
+proc playerStartCenterX(): int =
+  ## Returns the world x center for the player start area.
+  (WorldWidthTiles div 2) * WorldTileSize + WorldTileSize div 2
+
+proc playerStartCenterY(): int =
+  ## Returns the world y center for the player start area.
+  (WorldHeightTiles div 2) * WorldTileSize + WorldTileSize div 2
+
+proc isNearPlayerStart(x, y: int, bounds: SpriteBounds): bool =
+  ## Returns true when a spawn point is too close to the start area.
+  let
+    ax = boundsCenterX(x, bounds)
+    ay = boundsCenterY(y, bounds)
+  distanceSquared(ax, ay, playerStartCenterX(), playerStartCenterY()) <=
+    MobSpawnSafeRadius * MobSpawnSafeRadius
+
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
   let
     worldX = x + bounds.x
@@ -678,6 +695,9 @@ proc canSpawnMobAt*(
   bounds: SpriteBounds
 ): bool =
   if not sim.canOccupy(px, py, bounds):
+    return false
+
+  if isNearPlayerStart(px, py, bounds):
     return false
 
   let mobSpacingSq = MinMobSpacing * MinMobSpacing

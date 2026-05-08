@@ -51,5 +51,28 @@ proc testPlayerDropsCarriedCoinsOnDeath() =
   doAssert sim.hasCoinPickup(dropValue),
     "death should drop one coin pickup worth all carried coins"
 
+proc testMobsAvoidPlayerStart() =
+  ## Checks that initial mobs do not spawn near the player start area.
+  let sim = initBigAdventureForTest()
+  let
+    centerX = (WorldWidthTiles div 2) * WorldTileSize + WorldTileSize div 2
+    centerY = (WorldHeightTiles div 2) * WorldTileSize + WorldTileSize div 2
+    safeRadiusSq = MobSpawnSafeRadius * MobSpawnSafeRadius
+
+  doAssert sim.mobs.len > 0, "test world should start with mobs"
+  for mob in sim.mobs:
+    let
+      mobX = boundsCenterX(mob.x, mob.bounds)
+      mobY = boundsCenterY(mob.y, mob.bounds)
+    doAssert distanceSquared(mobX, mobY, centerX, centerY) > safeRadiusSq,
+      "initial mob should not spawn near player start"
+
+proc testMobSightRadiusIsSmaller() =
+  ## Checks that mobs only chase players once they are close by.
+  doAssert MobSightRadius == (WorldTileSize * 3) div 2,
+    "mob sight radius should be half of the earlier three-tile radius"
+
 testPlayerDropsCarriedCoinsOnDeath()
+testMobsAvoidPlayerStart()
+testMobSightRadiusIsSmaller()
 echo "All tests passed"
