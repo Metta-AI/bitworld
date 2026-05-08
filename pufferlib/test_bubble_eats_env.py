@@ -122,10 +122,11 @@ class BitWorldSmokeTest(unittest.TestCase):
                     action_repeat=AMONG_THEM_PLAY_ACTION_REPEAT if is_among_them else 1,
                     base_seed=1234,
                 )
-                expected_agents = ENV_SPECS[env_name].server_players if env_name == "among_them" else 1
+                expected_agents = ENV_SPECS[env_name].server_players
+                expected_features = SPRITE_PLAYER_FEATURES if env.observation_mode == "sprite_player" else FRAME_PIXELS
                 self.addCleanup(env.close)
                 obs = env.reset()
-                self.assertEqual(obs.shape, (expected_agents, FRAME_PIXELS * 4))
+                self.assertEqual(obs.shape, (expected_agents, expected_features * 4))
                 terminals_seen = 0
                 for _ in range(8):
                     _, rewards, terminals, _ = env.step_discrete(np.zeros(env.total_agents, dtype=np.int64))

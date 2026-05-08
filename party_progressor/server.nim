@@ -3,9 +3,6 @@ import bitworld/clients
 import protocol, sim, global
 import std/[json, locks, monotimes, os, strutils, tables, times]
 
-const
-  HealthzPath = "/healthz"
-
 type
   WebSocketAppState = object
     lock: Lock
@@ -559,20 +556,8 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
-proc serveHealthz(request: Request): bool =
-  ## Serves the container health check endpoint.
-  if request.path != HealthzPath or request.httpMethod notin ["GET", "HEAD"]:
-    return false
-  var headers: HttpHeaders
-  headers["Content-Type"] = "text/plain"
-  headers["Cache-Control"] = "no-cache"
-  request.respond(200, headers, "healthy")
-  true
-
 proc httpHandler(request: Request) =
-  if request.serveHealthz():
-    discard
-  elif request.path == SpritePlayerWebSocketPath and
+  if request.path == SpritePlayerWebSocketPath and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
@@ -672,11 +657,12 @@ proc runFrameLimiter(previousTick: var MonoTime) =
 
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
+  let frontier = sim.frontierTiles()
   for player in sim.players:
     result.add("reward ")
     result.add(player.address.rewardAddress())
     result.add(" ")
-    result.add($player.coins)
+    result.add($frontier)
     result.add("\n")
 
 proc writeScoreFile(sim: SimServer, path: string) =
@@ -818,7 +804,11 @@ proc runServerLoop*(
               -1
             )
             if playerIndex >= 0 and playerIndex < sim.players.len:
-              sim.players[playerIndex].message = cleanChatMessage(message)
+              let cleaned = cleanChatMessage(message)
+              sim.players[playerIndex].message = cleaned
+              if cleaned.len > 0:
+                inc sim.players[playerIndex].messagesSent
+                inc sim.scoreRevision
           appState.chatMessages.clear()
 
         for websocket, playerIndex in appState.playerIndices.pairs:
