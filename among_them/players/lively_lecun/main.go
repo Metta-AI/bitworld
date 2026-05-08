@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,8 @@ func main() {
 	port := flag.Int("port", 8080, "server port (ws mode)")
 	name := flag.String("name", "lively_lecun", "player name (ws mode)")
 	rawURL := flag.String("url", "", "full websocket URL (ws mode)")
+	slot := flag.Int("slot", -1, "player slot index (ws mode)")
+	token := flag.String("token", "", "player join token (ws mode)")
 	if err := flag.CommandLine.Parse(normalizeArgs(os.Args[1:])); err != nil {
 		log.Fatalf("parse flags: %v", err)
 	}
@@ -36,9 +39,9 @@ func main() {
 			*rawURL = strings.TrimSpace(os.Getenv("COGAMES_ENGINE_WS_URL"))
 		}
 		if *rawURL != "" {
-			runWebsocketURL(*rawURL)
+			runWebsocketURL(playerURLWithQuery(*rawURL, "", *slot, *token))
 		} else {
-			runWebsocket(*addr, *port, *name)
+			runWebsocket(*addr, *port, *name, *slot, *token)
 		}
 	case "stdio":
 		runStdio()
@@ -60,14 +63,40 @@ func normalizeArgs(args []string) []string {
 	return out
 }
 
-func runWebsocket(addr string, port int, name string) {
+func runWebsocket(addr string, port int, name string, slot int, token string) {
 	u := url.URL{
-		Scheme:   "ws",
-		Host:     fmt.Sprintf("%s:%d", addr, port),
-		Path:     "/player",
-		RawQuery: url.Values{"name": []string{name}}.Encode(),
+		Scheme: "ws",
+		Host:   fmt.Sprintf("%s:%d", addr, port),
+		Path:   "/player",
 	}
-	runWebsocketURL(u.String())
+	runWebsocketURL(playerURLWithQuery(u.String(), name, slot, token))
+}
+
+func playerURLWithQuery(
+	rawURL string,
+	name string,
+	slot int,
+	token string,
+) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		log.Fatalf("parse websocket url: %v", err)
+	}
+	if u.Path == "" {
+		u.Path = "/player"
+	}
+	values := u.Query()
+	if name != "" {
+		values.Set("name", name)
+	}
+	if slot >= 0 {
+		values.Set("slot", strconv.Itoa(slot))
+	}
+	if token != "" {
+		values.Set("token", token)
+	}
+	u.RawQuery = values.Encode()
+	return u.String()
 }
 
 func runWebsocketURL(rawURL string) {

@@ -4130,6 +4130,26 @@ when not defined(nottoodumbLibrary):
         result.add(Hex[(byte shr 4) and 0x0f])
         result.add(Hex[byte and 0x0f])
 
+  proc addQueryParam(url, key, value: string): string =
+    ## Adds one encoded query parameter to a URL.
+    if value.len == 0:
+      return url
+    url & (if '?' in url: "&" else: "?") &
+      key & "=" & value.queryEscape()
+
+  proc playerConnectUrl(
+    endpoint,
+    name,
+    token: string,
+    slot: int
+  ): string =
+    ## Adds player join query parameters to an endpoint.
+    result = endpoint
+    result = result.addQueryParam("name", name)
+    if slot >= 0:
+      result = result.addQueryParam("slot", $slot)
+    result = result.addQueryParam("token", token)
+
   proc acceptPlayerMessage(
     ws: WebSocket,
     message: Message,
@@ -4213,6 +4233,8 @@ when not defined(nottoodumbLibrary):
     name = "",
     mapPath = "",
     url = "",
+    token = "",
+    slot = -1,
     exitOnDisconnect = false
   ) =
     ## Connects to an Among Them server and processes player frames.
@@ -4223,10 +4245,7 @@ when not defined(nottoodumbLibrary):
     let endpoint =
       if url.len > 0: ensureWsPath(url, WebSocketPath)
       else: "ws://" & host & ":" & $port & WebSocketPath
-    let connectUrl =
-      if name.len == 0: endpoint
-      else: endpoint &
-        (if '?' in endpoint: "&" else: "?") & "name=" & name.queryEscape()
+    let connectUrl = playerConnectUrl(endpoint, name, token, slot)
     var
       viewer =
         if gui: initViewerApp()
@@ -4287,6 +4306,8 @@ when isMainModule and not defined(nottoodumbLibrary):
     name = ""
     mapPath = ""
     url = getEnv("COGAMES_ENGINE_WS_URL")
+    token = ""
+    slot = -1
     exitOnDisconnect = url.len > 0
   for kind, key, val in getopt():
     case kind
@@ -4300,6 +4321,10 @@ when isMainModule and not defined(nottoodumbLibrary):
         gui = true
       of "name":
         name = val
+      of "token":
+        token = val
+      of "slot":
+        slot = parseInt(val)
       of "map":
         mapPath = val
       of "url":
@@ -4314,4 +4339,4 @@ when isMainModule and not defined(nottoodumbLibrary):
     if url.len > 0: url
     else: "ws://" & address & ":" & $port
   echo "starting nottoodumb -> ", target
-  runBot(address, port, gui, name, mapPath, url, exitOnDisconnect)
+  runBot(address, port, gui, name, mapPath, url, token, slot, exitOnDisconnect)

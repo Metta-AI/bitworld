@@ -4781,6 +4781,27 @@ when not defined(evidencebotLibrary):
         result.add(Hex[(byte shr 4) and 0x0f])
         result.add(Hex[byte and 0x0f])
 
+  proc addQueryParam(url, key, value: string): string =
+    ## Adds one encoded query parameter to a URL.
+    if value.len == 0:
+      return url
+    url & (if '?' in url: "&" else: "?") &
+      key & "=" & value.queryEscape()
+
+  proc playerConnectUrl(
+    host: string,
+    port: int,
+    name,
+    token: string,
+    slot: int
+  ): string =
+    ## Builds a player WebSocket URL with join query parameters.
+    result = "ws://" & host & ":" & $port & WebSocketPath
+    result = result.addQueryParam("name", name)
+    if slot >= 0:
+      result = result.addQueryParam("slot", $slot)
+    result = result.addQueryParam("token", token)
+
   proc acceptPlayerMessage(
     ws: WebSocket,
     message: Message,
@@ -4850,16 +4871,13 @@ when not defined(evidencebotLibrary):
     gui = false,
     name = "",
     mapPath = "",
-    masterSeed: int64 = -1
+    masterSeed: int64 = -1,
+    token = "",
+    slot = -1
   ) =
     ## Connects to an Among Them server and processes player frames.
     var bot = initBot(mapPath, masterSeed)
-    let url =
-      if name.len > 0:
-        "ws://" & host & ":" & $port & WebSocketPath &
-          "?name=" & name.queryEscape()
-      else:
-        "ws://" & host & ":" & $port & WebSocketPath
+    let url = playerConnectUrl(host, port, name, token, slot)
     var
       viewer =
         if gui: initViewerApp()
@@ -4910,6 +4928,8 @@ when isMainModule and not defined(evidencebotLibrary):
     name = ""
     mapPath = ""
     masterSeed = -1'i64
+    token = ""
+    slot = -1
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4922,6 +4942,10 @@ when isMainModule and not defined(evidencebotLibrary):
         gui = true
       of "name":
         name = val
+      of "token":
+        token = val
+      of "slot":
+        slot = parseInt(val)
       of "map":
         mapPath = val
       of "seed":
@@ -4936,4 +4960,4 @@ when isMainModule and not defined(evidencebotLibrary):
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath, masterSeed)
+  runBot(address, port, gui, name, mapPath, masterSeed, token, slot)
