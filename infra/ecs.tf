@@ -42,6 +42,10 @@ data "aws_iam_policy_document" "ecs_assume" {
   }
 }
 
+# Shared by all tasks (game + bot). This is fine — the execution role only
+# grants "pull images from registry + write logs to CloudWatch". It does NOT
+# give containers any runtime AWS access. If you add ECR pull-through cache
+# or Secrets Manager references, consider splitting into per-type roles.
 resource "aws_iam_role" "ecs_execution" {
   name               = "${var.project_name}-ecs-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -53,6 +57,11 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# INTENTIONALLY has no attached policies. Containers must not access AWS
+# APIs. Replay uploads go through games_server's upload proxy, not direct
+# S3 access. Do NOT attach S3, SQS, or any other policy here — if a
+# container needs to upload data, it goes through games_server which has
+# its own EC2 instance role with scoped permissions.
 resource "aws_iam_role" "ecs_task" {
   name               = "${var.project_name}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
