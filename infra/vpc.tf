@@ -98,7 +98,7 @@ resource "aws_route_table_association" "private" {
 # used as an attack platform or a bot bypasses DNS Firewall via hardcoded
 # IPs, flow logs show what IPs it contacted, when, and how much data moved.
 # Enable before accepting untrusted images at scale. Cheap to run.
-# 7-day retention is enough for incident response without long-term cost.
+# 7-day retention is enough for incident response.
 #
 # resource "aws_flow_log" "vpc" {
 #   vpc_id               = aws_vpc.main.id

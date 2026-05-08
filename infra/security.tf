@@ -16,8 +16,8 @@
 #
 # Game containers and bot containers are BOTH untrusted. Users upload
 # arbitrary Docker images that we run on Fargate. Assume they will
-# attempt to: mine crypto, exfiltrate data, scan the VPC, abuse egress
-# as an attack platform, or serve malicious content to browsers.
+# attempt to: scan the VPC for lateral movement, abuse egress as an
+# attack platform, or serve malicious content to browsers.
 #
 # =============================================================================
 # ALLOWED NETWORK ACCESS (per container type)
@@ -95,8 +95,8 @@ resource "aws_vpc_security_group_egress_rule" "dashboard_all" {
 #
 # SECURITY: Game containers run UNTRUSTED user-uploaded Docker images.
 # They have NO internet egress. The only outbound path is to games_server
-# for replay uploads. This prevents crypto mining, use as an attack
-# platform, and lateral movement within the VPC.
+# for replay uploads. This prevents use as an attack platform and
+# lateral movement within the VPC.
 # Do NOT add internet egress here without also adding Network Firewall.
 # =============================================================================
 
@@ -339,11 +339,13 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 # ssmmessages:* permissions.
 
 # --- Game Duration Timeout ---
-# ECS has no built-in task TTL. A malicious game container will run (and
-# bill vCPU-seconds) until someone manually stops it. games_server MUST
-# enforce a max game duration (e.g. 30 minutes) and call stop-task after
-# that. ECS stopTimeout only controls graceful shutdown duration, not
-# total runtime. This is enforced in games_server code, not terraform.
+# ECS has no built-in task TTL. A malicious game container will run
+# indefinitely until someone manually stops it — that's an attack surface
+# sitting in the VPC with a public IP for as long as it's alive.
+# games_server MUST enforce a max game duration (e.g. 30 minutes) and call
+# stop-task after that. ECS stopTimeout only controls graceful shutdown
+# duration, not total runtime. This is enforced in games_server code,
+# not terraform.
 
 # --- S3 Replay Bucket Policy ---
 # The replay bucket should deny all principals except games_server's
@@ -387,8 +389,8 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 # }
 
 # --- GuardDuty ---
-# Monitors for crypto mining signatures, DNS anomalies, and credential
-# exfiltration at the AWS account level. Low effort to enable, catches
+# Monitors for DNS anomalies, lateral movement attempts, and suspicious
+# network patterns at the AWS account level. Low effort to enable, catches
 # unsophisticated attacks. ECS Runtime Monitoring detects suspicious
 # process activity inside containers (e.g. reverse shells, port scans).
 #
