@@ -355,21 +355,6 @@ resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
 # debugging trusted containers with a separate task role that has
 # ssmmessages:* permissions.
 
-# --- Ephemeral Storage ---
-# Fargate defaults to 20GB ephemeral disk per task. Keep it at 20GB for
-# untrusted containers. A malicious image could fill disk to degrade
-# performance of co-located tasks or store illegal content. If a
-# legitimate game needs more, add a separate task definition with an
-# explicit ephemeralStorage block — don't raise the default.
-
-# --- Task CPU/Memory Ceiling ---
-# games_server hardcodes task CPU/memory when registering task definitions.
-# Do NOT let users specify their own resource limits via the image tag or
-# dashboard UI. Otherwise someone requests 16 vCPU and mines crypto faster.
-# Current limits: 256 CPU (0.25 vCPU), 512 MB memory for bots.
-# Game containers: 512 CPU (0.5 vCPU), 1024 MB memory.
-# Raise only with explicit justification.
-
 # --- Game Duration Timeout ---
 # ECS has no built-in task TTL. A malicious game container will run (and
 # bill vCPU-seconds) until someone manually stops it. games_server MUST
