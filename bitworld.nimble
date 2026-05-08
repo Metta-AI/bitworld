@@ -11,6 +11,7 @@ bin = @[
   "asteroid_arena/asteroid_arena",
   "big_adventure/big_adventure",
   "big_adventure/player",
+  "party_progressor/party_progressor",
   "brushwalk/brushwalk",
   "bubble_eats/bubble_eats",
   "free_chat/free_chat",

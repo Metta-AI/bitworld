@@ -121,7 +121,7 @@ proc primaryScreen(): Screen =
 
 proc usesSpritePlayerClient(label: string): bool =
   ## Returns true when a game uses the global sprite player protocol.
-  label == "big_adventure"
+  label in ["big_adventure", "party_progressor"]
 
 proc clientConnectAddress(address: string): string =
   ## Returns a local address suitable for launched clients.

@@ -11,6 +11,7 @@ from bitworld_pufferlib import (
     OBSERVATION_MODES,
     evaluate_policy,
     load_policy_checkpoint,
+    resolve_observation_mode,
     resolve_train_device,
     train_policy,
     with_server_players,
@@ -43,13 +44,14 @@ def main() -> None:
     args = parse_args()
     rank = int(os.environ.get("RANK", "0"))
     spec = with_server_players(args.env, args.players)
+    observation_mode = resolve_observation_mode(spec, args.observation_mode)
     total_timesteps = args.total_timesteps if args.total_timesteps is not None else spec.default_total_timesteps
     episode_steps = args.episode_steps if args.episode_steps is not None else spec.default_episode_steps
     learning_rate = args.learning_rate if args.learning_rate is not None else spec.learning_rate
     horizon = args.horizon if args.horizon is not None else spec.horizon
     minibatch_size = args.minibatch_size if args.minibatch_size is not None else spec.minibatch_size
     hidden_size = args.hidden_size if args.hidden_size is not None else spec.hidden_size
-    agents_per_env = spec.server_players if spec.name == "among_them" else 1
+    agents_per_env = spec.server_players
     if minibatch_size > args.num_envs * agents_per_env * horizon:
         raise ValueError("--minibatch-size must be <= total agents * horizon")
 
@@ -74,7 +76,7 @@ def main() -> None:
         action_repeat=args.action_repeat,
         hidden_size=hidden_size,
         device=args.device,
-        observation_mode=args.observation_mode,
+        observation_mode=observation_mode,
     )
 
     if rank != 0:
@@ -84,7 +86,7 @@ def main() -> None:
         summary = {
             "env": spec.name,
             "device": resolve_train_device(args.device),
-            "observation_mode": args.observation_mode,
+            "observation_mode": observation_mode,
             "checkpoint": str(checkpoint_path),
             "metrics_path": str(metrics_path),
             "trained": None,
@@ -118,13 +120,13 @@ def main() -> None:
         frame_stack=checkpoint.frame_stack,
         seed=args.seed + 20_000,
         action_repeat=args.action_repeat,
-        observation_mode=args.observation_mode,
+        observation_mode=observation_mode,
         random_actions=True,
     )
     summary = {
         "env": spec.name,
         "device": train_device,
-        "observation_mode": args.observation_mode,
+        "observation_mode": observation_mode,
         "checkpoint": str(checkpoint_path),
         "metrics_path": str(metrics_path),
         "trained": trained,

@@ -2048,7 +2048,7 @@ proc gamePagePath(game: GameContainer, page: string): string =
   ## Returns the canonical game route for one client page label.
   case page
   of "player.html":
-    if game.cogameName == "big_adventure":
+    if game.cogameName in ["big_adventure", "party_progressor"]:
       "/sprite_player"
     else:
       "/player"

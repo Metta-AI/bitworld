@@ -657,11 +657,12 @@ proc runFrameLimiter(previousTick: var MonoTime) =
 
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
+  let frontier = sim.frontierTiles()
   for player in sim.players:
     result.add("reward ")
     result.add(player.address.rewardAddress())
     result.add(" ")
-    result.add($player.coins)
+    result.add($frontier)
     result.add("\n")
 
 proc writeScoreFile(sim: SimServer, path: string) =
@@ -803,7 +804,11 @@ proc runServerLoop*(
               -1
             )
             if playerIndex >= 0 and playerIndex < sim.players.len:
-              sim.players[playerIndex].message = cleanChatMessage(message)
+              let cleaned = cleanChatMessage(message)
+              sim.players[playerIndex].message = cleaned
+              if cleaned.len > 0:
+                inc sim.players[playerIndex].messagesSent
+                inc sim.scoreRevision
           appState.chatMessages.clear()
 
         for websocket, playerIndex in appState.playerIndices.pairs:

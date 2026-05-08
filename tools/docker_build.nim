@@ -46,6 +46,7 @@ const
     "lively_lecun": "bitworld-lively-lecun",
     "evidencebot_v2": "bitworld-evidencebot-v2",
     "big_adventure": "bitworld-big-adventure",
+    "party_progressor": "bitworld-party-progressor",
     "fancy_cookout": "bitworld-fancy-cookout",
     "infinite_factory": "bitworld-infinite-factory",
     "planet_wars": "bitworld-planet-wars",
