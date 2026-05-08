@@ -1,7 +1,6 @@
 import mummy
 import protocol, server
-import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils,
-            tables, times]
+import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
 
