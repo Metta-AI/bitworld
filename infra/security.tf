@@ -68,17 +68,22 @@ resource "aws_vpc_security_group_ingress_rule" "dashboard_replay_upload" {
   referenced_security_group_id = aws_security_group.game_container.id
 }
 
-# WARNING: SSH open to the entire internet. This machine runs games_server
-# which orchestrates ECS tasks and holds LLM API keys in env vars.
-# Replace with SSM Session Manager (no SSH port needed) or restrict to
-# admin CIDR before production traffic.
-resource "aws_vpc_security_group_ingress_rule" "dashboard_ssh" {
+resource "aws_vpc_security_group_ingress_rule" "dashboard_ssh_monofuel" {
   security_group_id = aws_security_group.dashboard.id
-  description       = "SSH - WARNING: open to internet, lock down before prod"
+  description       = "SSH - monofuel"
   from_port         = 22
   to_port           = 22
   ip_protocol       = "tcp"
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = "24.180.147.7/32"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "dashboard_ssh_treeform" {
+  security_group_id = aws_security_group.dashboard.id
+  description       = "SSH - treeform"
+  from_port         = 22
+  to_port           = 22
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "12.4.135.114/32"
 }
 
 resource "aws_vpc_security_group_egress_rule" "dashboard_all" {
