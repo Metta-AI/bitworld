@@ -669,6 +669,12 @@ proc playerIdentity(request: Request): string =
   let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
   if name.len > 0:
     return name
+  let slot = request.queryParams.getOrDefault("slot", "").strip()
+  if slot.len > 0:
+    try:
+      return "player-" & $parseInt(slot)
+    except ValueError:
+      discard
   request.remoteAddress
 
 proc playerSlot(request: Request): int =
