@@ -151,6 +151,15 @@ resource "aws_vpc_security_group_egress_rule" "game_container_to_dashboard" {
   referenced_security_group_id = aws_security_group.dashboard.id
 }
 
+resource "aws_vpc_security_group_egress_rule" "game_container_https" {
+  security_group_id = aws_security_group.game_container.id
+  description       = "HTTPS for Fargate image pulls (DNS Firewall restricts destinations)"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
 # =============================================================================
 # Bot Containers (ECS Fargate, private subnet)
 # Untrusted user code. No public IP. Heavily restricted egress.

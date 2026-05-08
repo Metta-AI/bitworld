@@ -875,9 +875,21 @@ var ec2PrivateIp = ""
 
 proc fetchEc2PrivateIp(): string =
   ## Fetches this instance's private IP from EC2 instance metadata (IMDSv1).
+  ## Returns "" if not running on EC2. Uses a raw socket with short timeout
+  ## to avoid hanging on non-EC2 machines where 169.254.169.254 is unroutable.
+  var sock = newSocket()
+  defer: sock.close()
+  try:
+    sock.connect("169.254.169.254", Port(80), timeout = 500)
+  except CatchableError:
+    return ""
+  sock.close()
   let client = newHttpClient(timeout = 2000)
   defer: client.close()
-  result = client.getContent("http://169.254.169.254/latest/meta-data/local-ipv4").strip()
+  try:
+    result = client.getContent("http://169.254.169.254/latest/meta-data/local-ipv4").strip()
+  except CatchableError:
+    result = ""
 
 proc buildLocalImages() =
   ## Builds native Docker images locally using tools/docker_build.nim.
@@ -1321,13 +1333,12 @@ proc rawScoreUrl(name: string): string =
 
 proc gamesServerUrl(): string =
   ## Returns the URL game containers use to reach this server.
+  ## Returns "" in ECS mode when not running on EC2 (no reachable IP).
   result = getEnv(GamesServerUrlEnv)
   if result.len == 0:
     if useEcs:
-      if ec2PrivateIp.len == 0:
-        ec2PrivateIp = fetchEc2PrivateIp()
-        echo "Resolved EC2 private IP: ", ec2PrivateIp
-      result = "http://" & ec2PrivateIp & ":" & $DefaultPort
+      if ec2PrivateIp.len > 0:
+        result = "http://" & ec2PrivateIp & ":" & $DefaultPort
     else:
       result = "http://host.docker.internal:" & $DefaultPort
 
@@ -2002,22 +2013,28 @@ proc createGame(form: seq[(string, string)]): GameContainer =
   ## Starts a new CoGame Docker container (or ECS task).
   let manifestInfo = findGameManifest(formValue(form, "manifest"))
   if useEcs:
+    echo "  Creating ECS game: ", manifestInfo.name
     let
       config = configJson(form, manifestInfo)
       created = getTime().toUnix()
       replay = "ecs_game_" & $created & ".bitreplay"
-      token = generateUploadToken(replay)
-      uploadUrl = gamesServerUrl() & ReplayUploadPath
+      serverUrl = gamesServerUrl()
+      saveReplay = serverUrl.len > 0
+      token = if saveReplay: generateUploadToken(replay) else: ""
+      uploadUrl = if saveReplay: serverUrl & ReplayUploadPath else: ""
+    echo "  Replay upload: ", if saveReplay: "enabled" else: "disabled (no EC2 IP)"
+    echo "  Launching game task..."
     let (taskArn, publicIp, privateIp) = ecsCreateGame(
       ecsConf.gameImage,
       config,
       manifestInfo.name,
       manifestInfo.key,
       replay,
-      saveReplay = true,
+      saveReplay = saveReplay,
       uploadUrl = uploadUrl,
       uploadToken = token,
     )
+    echo "  Game task: ", taskArn, " ip=", publicIp
     result = GameContainer(
       name: taskArn,
       status: "running",
@@ -2034,6 +2051,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       for i in 0 ..< item.count:
         let stamp = launchStamp(i + 1)
         let playerName = item.bot.name & "-" & $GameContainerPort & "-" & stamp
+        echo "  Launching bot: ", item.bot.name, " #", i + 1
         discard ecsCreateBot(
           coplayerImage(item.bot),
           taskArn,
@@ -2042,6 +2060,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
           playerName,
           item.bot.binary,
         )
+    echo "  ECS game created with ", botCounts.len, " bot types"
     return
   ensureReplayDir()
   let
@@ -2094,8 +2113,12 @@ proc createReplayGame(replay: string): GameContainer =
     raise newException(GamesServerError, "invalid replay file name")
   if not fileExists(replayPath(cleanReplay)):
     raise newException(GamesServerError, "replay file does not exist")
-  let downloadUrl = gamesServerUrl() & ReplayDownloadPath & cleanReplay
+  let serverUrl = gamesServerUrl()
   if useEcs:
+    if serverUrl.len == 0:
+      raise newException(GamesServerError,
+        "replay playback requires GAMES_SERVER_URL or EC2 metadata")
+    let downloadUrl = serverUrl & ReplayDownloadPath & cleanReplay
     var env: seq[tuple[name, value: string]]
     env.add((name: "REPLAY_DOWNLOAD_URL", value: downloadUrl))
     let (taskArn, publicIp, _) = ecsCreateReplayGame(
@@ -2124,6 +2147,7 @@ proc createReplayGame(replay: string): GameContainer =
     name, port, created, cleanReplay, ReplayServer, false,
     manifestInfo.name, manifestInfo.key
   )
+  let downloadUrl = serverUrl & ReplayDownloadPath & cleanReplay
   args.add("-e")
   args.add("REPLAY_DOWNLOAD_URL=" & downloadUrl)
   case dockerMode()
@@ -3582,6 +3606,12 @@ proc errorHandler(request: Request, e: ref Exception) =
 
 proc httpHandlerUnsafe(request: Request) =
   ## Routes all HTTP requests.
+  let t0 = epochTime()
+  echo request.httpMethod, " ", request.path
+  defer:
+    let ms = int((epochTime() - t0) * 1000)
+    if ms > 100:
+      echo "  ", request.path, " took ", ms, "ms"
   try:
     if request.path == "/" and request.httpMethod == "GET":
       request.indexHandler()
@@ -3665,4 +3695,9 @@ when isMainModule:
   if useEcs:
     echo "ECS mode enabled"
     loadEcsConfig()
+    ec2PrivateIp = fetchEc2PrivateIp()
+    if ec2PrivateIp.len > 0:
+      echo "EC2 private IP: ", ec2PrivateIp
+    else:
+      echo "Not on EC2 — replay upload/download disabled"
   runServer(address, port)
