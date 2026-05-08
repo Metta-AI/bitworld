@@ -62,3 +62,13 @@ output "cloudwatch_log_group" {
   description = "CloudWatch log group for ECS task logs"
   value       = aws_cloudwatch_log_group.ecs_tasks.name
 }
+
+output "dashboard_public_ip" {
+  description = "Public IP of the dashboard EC2 instance"
+  value       = aws_instance.dashboard.public_ip
+}
+
+output "dashboard_instance_id" {
+  description = "Instance ID of the dashboard EC2"
+  value       = aws_instance.dashboard.id
+}

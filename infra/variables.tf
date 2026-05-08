@@ -68,6 +68,12 @@ variable "replay_upload_port" {
   default     = 2080
 }
 
+variable "dashboard_instance_type" {
+  description = "EC2 instance type for the dashboard/games_server"
+  type        = string
+  default     = "m7i.large"
+}
+
 variable "llm_api_domains" {
   description = "Domains allowed through DNS Firewall for bot LLM access"
   type        = list(string)
