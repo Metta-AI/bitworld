@@ -1,9 +1,7 @@
 import
   std/[locks, monotimes, nativesockets, os, strutils, tables, times],
-  mummy,
+  curly, mummy,
   bitworld/clients, protocol, sim, global
-
-import curly
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
