@@ -1845,6 +1845,7 @@ proc baseDockerArgs(
     "run",
     "-d",
     "--init",
+    "--add-host=host.docker.internal:host-gateway",
     "--name",
     name,
     "-p",
