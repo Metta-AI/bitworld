@@ -3,6 +3,9 @@ import
   mummy,
   bitworld/clients, protocol, sim, global
 
+import std/httpclient except HttpHeaders
+from std/httpcore import newHttpHeaders
+
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
 
@@ -985,6 +988,43 @@ proc buildRewardPacket(sim: SimServer): string =
       result.addStatLine("vote_skip", identity, account.voteSkip)
       result.addStatLine("vote_timeout", identity, account.voteTimeout)
 
+proc uploadReplayFiles(replayPath, scoresPath: string) =
+  ## Uploads replay and scores files to games_server if configured.
+  let
+    uploadUrl = getEnv("REPLAY_UPLOAD_URL")
+    uploadToken = getEnv("REPLAY_UPLOAD_TOKEN")
+  if uploadUrl.len == 0 or uploadToken.len == 0:
+    return
+  var client = newHttpClient(timeout = 30000)
+  defer: client.close()
+  if replayPath.len > 0 and fileExists(replayPath):
+    try:
+      client.headers = newHttpHeaders({
+        "Authorization": "Bearer " & uploadToken,
+        "Content-Type": "application/octet-stream",
+      })
+      let resp = client.post(uploadUrl, body = readFile(replayPath))
+      if not resp.code.is2xx:
+        echo "WARNING: replay upload failed: ", resp.status
+        return
+      echo "Replay uploaded successfully"
+    except CatchableError as e:
+      echo "WARNING: replay upload error: ", e.msg
+      return
+  if scoresPath.len > 0 and fileExists(scoresPath):
+    try:
+      client.headers = newHttpHeaders({
+        "Authorization": "Bearer " & uploadToken,
+        "Content-Type": "application/json",
+      })
+      let resp = client.post(uploadUrl & "/scores", body = readFile(scoresPath))
+      if not resp.code.is2xx:
+        echo "WARNING: scores upload failed: ", resp.status
+      else:
+        echo "Scores uploaded successfully"
+    except CatchableError as e:
+      echo "WARNING: scores upload error: ", e.msg
+
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
@@ -1426,8 +1466,10 @@ proc runServerLoop*(
             sim.removePlayer(globalViewers[i])
 
     if quitAfterFrame:
+      replayWriter.closeReplayWriter()
       if saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
+      uploadReplayFiles(saveReplayPath, saveScoresPath)
       httpServer.close()
       joinThread(serverThread)
       break

@@ -1,6 +1,6 @@
 import
   std/[
-    algorithm, json, net, os, osproc, parseopt, strutils, times
+    algorithm, json, net, os, osproc, parseopt, strutils, sysrand, tables, times
   ],
   mummy,
   taggy,
@@ -45,6 +45,11 @@ const
   CogameManifestName = "cogame_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
+  ReplayUploadPath = "/api/replay/upload"
+  ReplayScoresUploadPath = "/api/replay/upload/scores"
+  GamesServerUrlEnv = "GAMES_SERVER_URL"
+  UploadTokenTtlSeconds = 600
+  UploadTokenBytes = 32
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
   BotLabelValue = "among_them_bot"
@@ -295,6 +300,12 @@ type
     size: int64
     modified: int64
 
+  UploadToken = object
+    replayName: string
+    used: bool
+    scoresUploaded: bool
+    expiresAt: float
+
   GameManifest = object
     key: string
     path: string
@@ -476,6 +487,15 @@ proc defaultWorkspaceRoot(): string =
 proc workspaceRoot(): string =
   ## Returns the configured host workspace root.
   envValue(WorkspaceRootEnv, defaultWorkspaceRoot())
+
+# TODO: Replace local disk storage with S3.
+# Currently replays land on the local filesystem. When games_server moves
+# to EC2, local disk works but is ephemeral (lost if instance terminates).
+# Migrate to S3 (bucket and policy are sketched in infra/security.tf):
+#   - Upload handler writes to S3 instead of replayDir()
+#   - Dashboard serves replays via presigned GET URLs
+#   - Replay playback containers download from S3 at launch
+#   - EC2 instance role gets s3:PutObject + s3:GetObject on the bucket
 
 proc defaultReplayDir(): string =
   ## Returns the default host replay directory.
@@ -826,6 +846,7 @@ proc requireDocker(args: openArray[string]): string =
 
 var skipPull* = false
 var useEcs* = false
+var uploadTokens: Table[string, UploadToken]
 
 proc buildLocalImages() =
   ## Builds native Docker images locally using tools/docker_build.nim.
@@ -1249,6 +1270,90 @@ proc scoreUrl(replay: string): string =
 proc rawScoreUrl(name: string): string =
   ## Builds a browser URL for one raw scores file.
   ScoresPath & "?name=" & cleanReplayName(name) & "&raw=1"
+
+proc gamesServerUrl(): string =
+  ## Returns the URL game containers use to reach this server.
+  getEnv(GamesServerUrlEnv, "http://127.0.0.1:" & $DefaultPort)
+
+proc generateUploadToken(replayName: string): string =
+  ## Generates a cryptographic one-time token for replay upload.
+  var bytes: array[UploadTokenBytes, byte]
+  if not urandom(bytes):
+    raise newException(GamesServerError, "could not generate upload token")
+  for b in bytes:
+    result.add(b.toHex(2).toLowerAscii())
+  uploadTokens[result] = UploadToken(
+    replayName: replayName,
+    used: false,
+    scoresUploaded: false,
+    expiresAt: epochTime() + float(UploadTokenTtlSeconds),
+  )
+
+proc validateUploadToken(request: Request): (string, ptr UploadToken) =
+  ## Extracts and validates the Bearer token from the request.
+  let authHeader = request.headers["Authorization"]
+  if not authHeader.startsWith("Bearer "):
+    raise newException(GamesServerError, "missing or invalid authorization")
+  let token = authHeader[7 .. ^1].strip()
+  if token notin uploadTokens:
+    raise newException(GamesServerError, "unknown upload token")
+  result = (token, addr uploadTokens[token])
+  if result[1].expiresAt < epochTime():
+    uploadTokens.del(token)
+    raise newException(GamesServerError, "upload token expired")
+
+proc validateReplayFormat(body: string): bool =
+  ## Validates BITWORLD magic bytes and format version.
+  if body.len < 10:
+    return false
+  if body[0 ..< 8] != "BITWORLD":
+    return false
+  let version = uint16(body[8].byte) or (uint16(body[9].byte) shl 8)
+  version >= 1'u16 and version <= 3'u16
+
+proc replayUploadHandler(request: Request) =
+  ## Handles POST /api/replay/upload — receives replay binary from game containers.
+  let (_, entry) = validateUploadToken(request)
+  if entry.used:
+    request.respond(409, @[("Content-Type", "text/plain")], "replay already uploaded\n")
+    return
+  entry.used = true
+  let body = request.body
+  if not validateReplayFormat(body):
+    entry.used = false
+    request.respond(422, @[("Content-Type", "text/plain")], "invalid replay format\n")
+    return
+  ensureReplayDir()
+  let finalPath = replayPath(cleanReplayName(entry.replayName))
+  writeFile(finalPath, body)
+  entry.expiresAt = epochTime() + float(UploadTokenTtlSeconds)
+  echo "Replay uploaded: ", entry.replayName, " (", body.len, " bytes)"
+  request.respond(200, @[("Content-Type", "application/json")],
+    """{"status":"ok","replay":""" & "\"" & entry.replayName & "\"}\n")
+
+proc scoresUploadHandler(request: Request) =
+  ## Handles POST /api/replay/upload/scores — receives scores JSON.
+  let (token, entry) = validateUploadToken(request)
+  if not entry.used:
+    request.respond(400, @[("Content-Type", "text/plain")], "replay must be uploaded first\n")
+    return
+  if entry.scoresUploaded:
+    request.respond(409, @[("Content-Type", "text/plain")], "scores already uploaded\n")
+    return
+  let body = request.body
+  try:
+    discard parseJson(body)
+  except JsonParsingError:
+    request.respond(422, @[("Content-Type", "text/plain")], "invalid JSON\n")
+    return
+  ensureReplayDir()
+  let scoresFileName = cleanReplayName(scoresName(entry.replayName))
+  writeFile(replayPath(scoresFileName), body)
+  entry.scoresUploaded = true
+  uploadTokens.del(token)
+  echo "Scores uploaded: ", scoresFileName, " (", body.len, " bytes)"
+  request.respond(200, @[("Content-Type", "application/json")],
+    """{"status":"ok","scores":""" & "\"" & scoresFileName & "\"}\n")
 
 proc cleanConfigValue(
   form: seq[(string, string)],
@@ -1833,6 +1938,8 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       config = configJson(form, manifestInfo)
       created = getTime().toUnix()
       replay = "ecs_game_" & $created & ".bitreplay"
+      token = generateUploadToken(replay)
+      uploadUrl = gamesServerUrl() & ReplayUploadPath
     let (taskArn, publicIp, privateIp) = ecsCreateGame(
       ecsConf.gameImage,
       config,
@@ -1840,6 +1947,8 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       manifestInfo.key,
       replay,
       saveReplay = true,
+      uploadUrl = uploadUrl,
+      uploadToken = token,
     )
     result = GameContainer(
       name: taskArn,
@@ -3408,6 +3517,10 @@ proc httpHandlerUnsafe(request: Request) =
     elif request.path.startsWith(ReplayPathPrefix) and
         request.httpMethod == "GET":
       request.replayPathHandler()
+    elif request.path == ReplayUploadPath and request.httpMethod == "POST":
+      request.replayUploadHandler()
+    elif request.path == ReplayScoresUploadPath and request.httpMethod == "POST":
+      request.scoresUploadHandler()
     else:
       request.notFoundHandler()
   except GamesServerError as e:

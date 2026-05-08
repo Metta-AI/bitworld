@@ -290,6 +290,8 @@ proc ecsCreateGame*(
   manifestKey: string,
   replay: string,
   saveReplay: bool,
+  uploadUrl = "",
+  uploadToken = "",
 ): tuple[taskArn, publicIp, privateIp: string] =
   ensureGameTaskDef()
   let
@@ -311,6 +313,13 @@ proc ecsCreateGame*(
     let val = getEnv(envName)
     if val.len > 0:
       env.add((name: envName, value: val))
+  if saveReplay and replay.len > 0:
+    env.add((name: "COGAME_SAVE_REPLAY_PATH", value: "/tmp/" & replay))
+    let scores = replay.replace(".bitreplay", ".scores.json")
+    env.add((name: "COGAME_SAVE_RESULTS_PATH", value: "/tmp/" & scores))
+  if uploadUrl.len > 0:
+    env.add((name: "REPLAY_UPLOAD_URL", value: uploadUrl))
+    env.add((name: "REPLAY_UPLOAD_TOKEN", value: uploadToken))
 
   echo "ECS: launching game task..."
   let taskResp = runTask(
