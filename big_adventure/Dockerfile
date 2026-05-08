@@ -40,6 +40,9 @@ COPY --from=build \
   /workspace/bitworld/big_adventure/big_adventure \
   /bin/big_adventure
 COPY --from=build /workspace/bitworld/big_adventure/data ./big_adventure/data
+COPY --from=build \
+  /workspace/bitworld/among_them/tiny5.aseprite \
+  ./big_adventure/data/tiny5.aseprite
 COPY --from=build /workspace/bitworld/clients/*.html ./clients/
 COPY --from=build /workspace/bitworld/clients/*.js ./clients/
 COPY --from=build /workspace/bitworld/clients/data ./clients/data
