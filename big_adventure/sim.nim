@@ -1418,12 +1418,37 @@ proc chaseVector(fromX, fromY, toX, toY: int): tuple[dx, dy: int] =
   elif abs(deltaY) > abs(deltaX) * 2:
     result.dx = 0
 
+proc dropPlayerCoins(sim: var SimServer, player: Actor) =
+  ## Drops one coin pickup carrying all of a dead player's coins.
+  if player.coins <= 0:
+    return
+  let
+    sprite = sim.pickupSprite(PickupCoin)
+    bounds = sim.pickupBounds(PickupCoin)
+    centerX = boundsCenterX(player.x, player.bounds)
+    centerY = boundsCenterY(player.y, player.bounds)
+    x = worldClampPixel(
+      centerX - bounds.x - bounds.w div 2,
+      WorldWidthPixels - sprite.width
+    )
+    y = worldClampPixel(
+      centerY - bounds.y - bounds.h div 2,
+      WorldHeightPixels - sprite.height
+    )
+  sim.pickups.add(Pickup(
+    x: x,
+    y: y,
+    kind: PickupCoin,
+    value: player.coins
+  ))
+
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   ## Respawns a dead player with a clean state.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if sim.players[playerIndex].lives > 0:
     return
+  sim.dropPlayerCoins(sim.players[playerIndex])
   inc sim.scoreRevision
   sim.resetPlayerAtSpawn(playerIndex)
 
