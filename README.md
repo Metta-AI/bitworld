@@ -93,18 +93,19 @@ At a high level:
 ## Coworld Package
 
 The Among Them game includes a coworld package at
-`among_them/coworld_manifest.json` that references
-`among_them/cogame_manifest.json`. Build the local certification images
-before running the coworld certifier:
+`among_them/coworld_manifest.json`. Build the local certification images before
+running the coworld certifier:
 
 ```sh
 docker build \
+  --platform=linux/amd64 \
   -f among_them/Dockerfile \
   -t bitworld-among-them:latest \
   .
 docker build \
+  --platform=linux/amd64 \
   -f among_them/players/nottoodumb/Dockerfile \
   -t bitworld-nottoodumb:latest \
   .
-coworld certify among_them/coworld_manifest.json
+cogames coworld certify among_them/coworld_manifest.json
 ```

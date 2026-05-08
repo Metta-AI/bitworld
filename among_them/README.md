@@ -35,7 +35,7 @@ nim r among_them.nim --address:0.0.0.0 --port:2000 --config-file:config.json
 The same config file can be provided through the environment:
 
 ```sh
-COGAME_CONFIG_PATH=config.json nim r among_them.nim --address:0.0.0.0 --port:2000
+COGAME_CONFIG_URI=file://$PWD/config.json nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
 For the first test, it is useful to run one player with one task and no
@@ -71,22 +71,22 @@ After this, the `nix build` commands above work identically on macOS and Linux.
 
 ## Runner Environment
 
-Tournament and Cogame runners can configure file paths with environment
-variables. Command line flags override these values when both are set.
+Coworld runners configure file URIs with environment variables. Command line
+flags override these values when both are set.
 
 | Variable | Meaning |
 | --- | --- |
-| `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_SAVE_RESULTS_PATH` | Path where final scores are written |
-| `COGAME_SAVE_REPLAY_PATH` | Optional path where a replay is written |
-| `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay to load |
+| `COGAME_CONFIG_URI` | URI for the config JSON file |
+| `COGAME_RESULTS_URI` | URI where final scores are written |
+| `COGAME_SAVE_REPLAY_URI` | Optional URI where a replay is written |
+| `COGAME_LOAD_REPLAY_URI` | Optional URI for a replay to load |
 
 Results are written when `maxGames` is set to 1 or higher.
 
 ```sh
-COGAME_CONFIG_PATH=config.json \
-COGAME_SAVE_RESULTS_PATH=scores.json \
-COGAME_SAVE_REPLAY_PATH=run.bitreplay \
+COGAME_CONFIG_URI=file://$PWD/config.json \
+COGAME_RESULTS_URI=file://$PWD/scores.json \
+COGAME_SAVE_REPLAY_URI=file://$PWD/run.bitreplay \
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
@@ -98,14 +98,16 @@ before running the certifier:
 
 ```sh
 docker build \
+  --platform=linux/amd64 \
   -f among_them/Dockerfile \
   -t bitworld-among-them:latest \
   .
 docker build \
+  --platform=linux/amd64 \
   -f among_them/players/nottoodumb/Dockerfile \
   -t bitworld-nottoodumb:latest \
   .
-coworld certify among_them/coworld_manifest.json
+cogames coworld certify among_them/coworld_manifest.json
 ```
 
 ## Map Files
@@ -223,7 +225,7 @@ You can save a replay while using `quick_run`:
 nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:2 --save-replay:among_them.replay
 ```
 
-You can also set `COGAME_SAVE_REPLAY_PATH` before running the server.
+You can also set `COGAME_SAVE_REPLAY_URI` before running the server.
 
 ## Common Setup
 
@@ -335,9 +337,9 @@ Example config.json:
 ```
 
 ```sh
-set -gx COGAME_CONFIG_PATH config.json
-set -gx COGAME_SAVE_RESULTS_PATH ../tmp/scores.json
-set -gx COGAME_SAVE_REPLAY_PATH ../tmp/replay.rep
+set -gx COGAME_CONFIG_URI file://$PWD/config.json
+set -gx COGAME_RESULTS_URI file://$PWD/../tmp/scores.json
+set -gx COGAME_SAVE_REPLAY_URI file://$PWD/../tmp/replay.rep
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
@@ -354,11 +356,11 @@ http://localhost:2000/player?name=player7&token=0xBADA55_6&slot=6
 http://localhost:2000/player?name=player8&token=0xBADA55_7&slot=7
 
 When a game finishes with `maxGames` set to 1 or higher, `--save-scores` saves
-the scores to a file. `COGAME_SAVE_RESULTS_PATH` can be used instead.
+the scores to a file. `COGAME_RESULTS_URI` can be used instead.
 
-The file uses JSON format and must be an array of objects with `reward` as a
-required field. The game can include `name`, `win`, `tasks`, `kills`, and other
-fields.
+The file uses the JSON results schema from `coworld_manifest.json`: `scores`
+is required, and the game can include `names`, `win`, `tasks`, `kills`, and
+other per-slot fields.
 
 ```json
 [

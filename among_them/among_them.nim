@@ -18,27 +18,16 @@ proc cogamePath(value, source: string): string =
     quit(1)
   result = value
 
-proc firstCogamePath(names: openArray[string]): string =
-  for name in names:
-    let value = getEnv(name)
-    if value.len > 0:
-      return cogamePath(value, name)
-  ""
-
 when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
     configJson = ""
-    configPath = firstCogamePath(["COGAME_CONFIG_URI", "COGAME_CONFIG_PATH"])
+    configPath = cogamePath(getEnv("COGAME_CONFIG_URI"), "COGAME_CONFIG_URI")
     mapPath = ""
-    saveReplayPath = firstCogamePath(["COGAME_SAVE_REPLAY_URI", "COGAME_SAVE_REPLAY_PATH"])
-    loadReplayPath = firstCogamePath(["COGAME_LOAD_REPLAY_URI", "COGAME_LOAD_REPLAY_PATH"])
-    saveScoresPath = firstCogamePath([
-      "COGAME_RESULTS_URI",
-      "COGAME_SAVE_RESULTS_PATH",
-      "COGAME_RESULTS_PATH"
-    ])
+    saveReplayPath = cogamePath(getEnv("COGAME_SAVE_REPLAY_URI"), "COGAME_SAVE_REPLAY_URI")
+    loadReplayPath = cogamePath(getEnv("COGAME_LOAD_REPLAY_URI"), "COGAME_LOAD_REPLAY_URI")
+    saveScoresPath = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind
