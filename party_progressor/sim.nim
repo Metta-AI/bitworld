@@ -1,4 +1,4 @@
-import std/[json, os, random]
+import std/[json, os, random, strutils]
 import bitworld/aseprite
 import pixie, protocol
 import ../common/[pixelfonts, server]
@@ -7,7 +7,7 @@ const
   ArtCellSize* = 32
   WorldTileSize* = ArtCellSize
   SheetTileSize* = ArtCellSize
-  GameName* = "big_adventure"
+  GameName* = "party_progressor"
   GameVersion* = "1"
   ReplayMagic* = "BITWORLD"
   ReplayFormatVersion* = 3'u16
@@ -16,11 +16,16 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 60
-  WorldWidthTiles* = 32
-  WorldHeightTiles* = 32
+  WorldWidthTiles* = 96
+  WorldHeightTiles* = 18
   WorldWidthPixels* = WorldWidthTiles * WorldTileSize
   WorldHeightPixels* = WorldHeightTiles * WorldTileSize
-  TargetMobCount* = 48
+  SafeZoneRightTiles* = 8
+  SafeZoneRightPixels* = SafeZoneRightTiles * WorldTileSize
+  ZoneWidthTiles* = 8
+  ZoneWidthPixels* = ZoneWidthTiles * WorldTileSize
+  LaneHalfHeightTiles* = 4
+  TargetMobCount* = 72
   TerrainPatchDivisor* = 52
   MinMobSpacing* = 24
   MinPlayerSpawnSpacing* = 24
@@ -30,16 +35,26 @@ const
   Accel* = 38
   FrictionNum* = 200
   FrictionDen* = 256
-  MaxSpeed* = 264
+  MaxSpeed* = 352
   StopThreshold* = 8
   PlayerFootSize* = 8
   PlayerSeparationPasses* = 4
-  MaxPlayerLives* = 5
+  BasePlayerHp* = 5
+  TankPlayerHp* = 9
+  HealerPlayerHp* = 6
+  UnarmedPlayerHp* = 4
+  MaxPlayerLives* = TankPlayerHp
   SnakeHp* = 3
-  TrollHp* = 5
-  BossHp* = 10
+  TrollHp* = 6
+  BossHp* = 18
   TrollCoinValue* = 10
   BossCoinValue* = 100
+  TankGuardRadius* = 44
+  HealerPulseRadius* = 46
+  RoleAbilityCooldown* = 36
+  TankGuardTicks* = 24
+  TankDamageReductionPct* = 50
+  HealerPulseAmount* = 2
   TargetFps* = 60
   SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
@@ -53,8 +68,8 @@ const
   RadarColorSnake* = 10'u8
   RadarColorBoss* = 3'u8
   PlayerColors* = [2'u8, 7, 8, 14, 4, 11, 13, 15]
-  MessageCharsPerLine* = 16
-  MessageLineCount* = 3
+  MessageCharsPerLine* = 24
+  MessageLineCount* = 4
   MessageMaxChars* = MessageCharsPerLine * MessageLineCount
   MapSpriteId* = 1
   MapObjectId* = 1
@@ -97,18 +112,6 @@ const
   PlayerHudObjectId* = 7000
   TerrainObjectBase* = 8000
   CoopAttackWindow* = TargetFps
-  MobSightRadius* = (WorldTileSize * 3) div 2
-  MobSpawnSafeRadius* = WorldTileSize * 5
-  MobChaseCooldown* = 4
-  MobSpawnWanderCooldown* = 16
-  MobSpawnWanderJitter* = 36
-  MobWanderCooldown* = 16
-  MobWanderJitter* = 40
-  MobTelegraphTicks* = TargetFps
-  MobTelegraphBounces* = 2
-  MobTelegraphLift* = 4
-  MobLungeTicks* = 10
-  MobLungeStep* = 2
 
 type
   PlayerForm* = enum
@@ -119,6 +122,12 @@ type
     PlayerFront
     PlayerSide
     PlayerBack
+
+  PlayerRole* = enum
+    RoleUnarmed
+    RoleTank
+    RoleDps
+    RoleHealer
 
   TerrainKind* = enum
     TerrainTree
@@ -158,6 +167,15 @@ type
     velY*: int
     carryX*: int
     carryY*: int
+    role*: PlayerRole
+    maxHp*: int
+    abilityCooldown*: int
+    guardTicks*: int
+    personalFrontier*: int
+    damageDone*: int
+    healingDone*: int
+    damageBlocked*: int
+    messagesSent*: int
     lives*: int
     invulnTicks*: int
     coins*: int
@@ -166,16 +184,14 @@ type
   PickupKind* = enum
     PickupCoin
     PickupHeart
+    PickupTankGear
+    PickupDpsGear
+    PickupHealerGear
 
   MobKind* = enum
     SnakeMob
     TrollMob
     BossMob
-
-  MobAttackPhase* = enum
-    MobIdle
-    MobTelegraph
-    MobLunge
 
   Pickup* = object
     x*, y*: int
@@ -190,8 +206,7 @@ type
     wanderCooldown*: int
     hp*: int
     attackCooldown*: int
-    attackPhase*: MobAttackPhase
-    attackTicks*: int
+    attackPhase*: int
     attackFacing*: Facing
     attackerIds*: seq[int]
     attackerTicks*: seq[int]
@@ -237,6 +252,54 @@ type
     scoreRevision*: int
     mobSpawnCooldown*: int
     nextPlayerId*: int
+    teamFrontier*: int
+
+proc roleLabel*(role: PlayerRole): string =
+  case role
+  of RoleUnarmed:
+    "unarmed"
+  of RoleTank:
+    "tank"
+  of RoleDps:
+    "dps"
+  of RoleHealer:
+    "healer"
+
+proc roleMaxHp(role: PlayerRole): int =
+  case role
+  of RoleUnarmed:
+    UnarmedPlayerHp
+  of RoleTank:
+    TankPlayerHp
+  of RoleDps:
+    BasePlayerHp
+  of RoleHealer:
+    HealerPlayerHp
+
+proc roleAttackDamage(role: PlayerRole): int =
+  case role
+  of RoleUnarmed:
+    1
+  of RoleTank:
+    1
+  of RoleDps:
+    3
+  of RoleHealer:
+    1
+
+proc roleForPickup(kind: PickupKind): PlayerRole =
+  case kind
+  of PickupTankGear:
+    RoleTank
+  of PickupDpsGear:
+    RoleDps
+  of PickupHealerGear:
+    RoleHealer
+  else:
+    RoleUnarmed
+
+proc isRoleGear(kind: PickupKind): bool =
+  kind in {PickupTankGear, PickupDpsGear, PickupHealerGear}
 
 proc dataDir*(): string =
   getCurrentDir() / "data"
@@ -433,25 +496,25 @@ proc terrainPropBounds*(sim: SimServer, kind: TerrainKind): SpriteBounds =
 proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
   ## Returns the sprite for one pickup kind.
   case kind
-  of PickupCoin:
+  of PickupCoin, PickupTankGear, PickupDpsGear:
     sim.coinSprite
-  of PickupHeart:
+  of PickupHeart, PickupHealerGear:
     sim.heartSprite
 
 proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
   ## Returns the true-color sprite for one pickup kind.
   case kind
-  of PickupCoin:
+  of PickupCoin, PickupTankGear, PickupDpsGear:
     sim.rgbaCoinSprite
-  of PickupHeart:
+  of PickupHeart, PickupHealerGear:
     sim.rgbaHeartSprite
 
 proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
   ## Returns the collision bounds for one pickup kind.
   case kind
-  of PickupCoin:
+  of PickupCoin, PickupTankGear, PickupDpsGear:
     sim.coinBounds
-  of PickupHeart:
+  of PickupHeart, PickupHealerGear:
     sim.heartBounds
 
 proc playerSpriteFor*(sim: SimServer, player: Actor): Sprite =
@@ -575,21 +638,22 @@ proc distanceSquared*(ax, ay, bx, by: int): int =
     dy = ay - by
   dx * dx + dy * dy
 
-proc playerStartCenterX(): int =
-  ## Returns the world x center for the player start area.
-  (WorldWidthTiles div 2) * WorldTileSize + WorldTileSize div 2
+proc distanceSquaredActor(a: Actor, b: Actor): int =
+  distanceSquared(
+    boundsCenterX(a.x, a.bounds),
+    boundsCenterY(a.y, a.bounds),
+    boundsCenterX(b.x, b.bounds),
+    boundsCenterY(b.y, b.bounds)
+  )
 
-proc playerStartCenterY(): int =
-  ## Returns the world y center for the player start area.
-  (WorldHeightTiles div 2) * WorldTileSize + WorldTileSize div 2
+proc mobZoneX(x: int): int =
+  max(0, (x - SafeZoneRightPixels) div ZoneWidthPixels)
 
-proc isNearPlayerStart(x, y: int, bounds: SpriteBounds): bool =
-  ## Returns true when a spawn point is too close to the start area.
-  let
-    ax = boundsCenterX(x, bounds)
-    ay = boundsCenterY(y, bounds)
-  distanceSquared(ax, ay, playerStartCenterX(), playerStartCenterY()) <=
-    MobSpawnSafeRadius * MobSpawnSafeRadius
+proc frontierTilesForX*(x: int): int =
+  max(0, (x - SafeZoneRightPixels) div WorldTileSize)
+
+proc frontierTiles*(sim: SimServer): int =
+  frontierTilesForX(sim.teamFrontier)
 
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
   let
@@ -633,6 +697,17 @@ proc clearSpawnArea*(sim: var SimServer, centerTx, centerTy, radius: int) =
       if inTileBounds(tx, ty):
         sim.tiles[tileIndex(tx, ty)] = false
 
+proc clearProgressLane*(sim: var SimServer) =
+  let centerTy = WorldHeightTiles div 2
+  for ty in centerTy - LaneHalfHeightTiles .. centerTy + LaneHalfHeightTiles:
+    for tx in 0 ..< WorldWidthTiles:
+      if inTileBounds(tx, ty):
+        sim.tiles[tileIndex(tx, ty)] = false
+  for ty in 0 ..< WorldHeightTiles:
+    for tx in 0 .. SafeZoneRightTiles:
+      if inTileBounds(tx, ty):
+        sim.tiles[tileIndex(tx, ty)] = false
+
 proc seedBrush*(sim: var SimServer) =
   let patchCount = max(
     12,
@@ -650,6 +725,12 @@ proc seedBrush*(sim: var SimServer) =
         let ty = baseTy + dy
         if inTileBounds(tx, ty) and sim.rng.rand(99) < 72:
           sim.tiles[tileIndex(tx, ty)] = true
+
+proc seedRoleGear*(sim: var SimServer) =
+  let centerY = WorldHeightPixels div 2
+  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY - 36, kind: PickupTankGear, value: 0))
+  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY - 4, kind: PickupDpsGear, value: 0))
+  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY + 28, kind: PickupHealerGear, value: 0))
 
 proc randomTerrainKind(rng: var Rand): TerrainKind =
   ## Chooses one terrain prop with more trees than small debris.
@@ -689,15 +770,32 @@ proc nextMobAttackCooldown(rng: var Rand, kind: MobKind): int =
   of BossMob:
     35 + rng.rand(25)
 
+proc mobMaxHp*(kind: MobKind, x: int): int =
+  let zone = mobZoneX(x)
+  case kind
+  of SnakeMob:
+    SnakeHp + zone
+  of TrollMob:
+    TrollHp + zone * 2
+  of BossMob:
+    BossHp + zone * 3
+
+proc mobDamage(mob: Mob): int =
+  let zone = mobZoneX(mob.x)
+  case mob.kind
+  of SnakeMob:
+    1 + zone div 4
+  of TrollMob:
+    2 + zone div 3
+  of BossMob:
+    3 + zone div 2
+
 proc canSpawnMobAt*(
   sim: SimServer,
   px, py: int,
   bounds: SpriteBounds
 ): bool =
   if not sim.canOccupy(px, py, bounds):
-    return false
-
-  if isNearPlayerStart(px, py, bounds):
     return false
 
   let mobSpacingSq = MinMobSpacing * MinMobSpacing
@@ -729,11 +827,13 @@ proc spawnOneMob*(
   sprite: Sprite,
   hp: int
 ): bool =
+  discard hp
   let bounds = sim.mobBoundsFor(kind)
   for _ in 0 ..< 128:
     let
-      tx = sim.rng.rand(WorldWidthTiles - 1)
-      ty = sim.rng.rand(WorldHeightTiles - 1)
+      tx = SafeZoneRightTiles + sim.rng.rand(WorldWidthTiles - SafeZoneRightTiles - 1)
+      centerTy = WorldHeightTiles div 2
+      ty = clamp(centerTy - LaneHalfHeightTiles + sim.rng.rand(LaneHalfHeightTiles * 2), 0, WorldHeightTiles - 1)
       px = tx * WorldTileSize
       py = ty * WorldTileSize
     if sim.canSpawnMobAt(px, py, bounds):
@@ -743,9 +843,8 @@ proc spawnOneMob*(
         y: py,
         sprite: sprite,
         bounds: bounds,
-        wanderCooldown: MobSpawnWanderCooldown +
-          sim.rng.rand(MobSpawnWanderJitter),
-        hp: hp,
+        wanderCooldown: 8 + sim.rng.rand(18),
+        hp: mobMaxHp(kind, px),
         attackCooldown: sim.rng.nextMobAttackCooldown(kind)
       )
       return true
@@ -775,53 +874,11 @@ proc hasBoss*(sim: SimServer): bool =
       return true
 
 proc mobAttackRange*(mob: Mob): int =
-  ## Returns the distance where one mob can start an attack.
-  max(4, (12 + max(mob.bounds.w, mob.bounds.h)) div 2)
-
-proc mobSightRange*(mob: Mob): int =
-  ## Returns the distance where one mob starts chasing players.
-  MobSightRadius
-
-proc mobTelegraphOffsetY*(mob: Mob): int =
-  ## Returns the visual y offset for one telegraphing mob.
-  if mob.attackPhase != MobTelegraph:
-    return 0
-  let
-    stepCount = MobTelegraphBounces * 4
-    step = (mob.attackTicks * stepCount) div max(1, MobTelegraphTicks)
-  case step mod 4
-  of 0:
-    -MobTelegraphLift
-  of 1:
-    0
-  of 2:
-    MobTelegraphLift
-  else:
-    0
-
-proc mobDrawY*(mob: Mob): int =
-  ## Returns the visual y position for one mob sprite.
-  mob.y + mob.mobTelegraphOffsetY()
+  12 + max(mob.bounds.w, mob.bounds.h)
 
 proc mobMaxHp*(mob: Mob): int =
   ## Returns the maximum hit points for one mob.
-  case mob.kind
-  of SnakeMob:
-    SnakeHp
-  of TrollMob:
-    TrollHp
-  of BossMob:
-    BossHp
-
-proc requiredAttackerCount(kind: MobKind): int =
-  ## Returns the distinct player count required to damage one mob kind.
-  case kind
-  of SnakeMob:
-    1
-  of TrollMob:
-    2
-  of BossMob:
-    3
+  mobMaxHp(mob.kind, mob.x)
 
 proc playerIdIsAlive(players: openArray[Actor], playerId: int): bool =
   ## Returns true when a player id belongs to a living player.
@@ -864,11 +921,8 @@ proc refreshCoopState(
   players: openArray[Actor],
   tickCount: int
 ) =
-  ## Heals cooperative mobs while they lack enough recent attackers.
+  ## Keeps recent-attacker tracking fresh for stats without hard co-op gates.
   mob.pruneMobAttackers(players, tickCount)
-  if mob.kind != SnakeMob and
-      mob.attackerIds.len < mob.kind.requiredAttackerCount():
-    mob.hp = mob.mobMaxHp()
 
 proc findPlayerSpawn*(
   sim: SimServer,
@@ -877,7 +931,7 @@ proc findPlayerSpawn*(
 ): tuple[x, y: int] =
   ## Finds a spawn point for one player.
   let
-    centerTx = WorldWidthTiles div 2
+    centerTx = 2
     centerTy = WorldHeightTiles div 2
     minSpacingSq = MinPlayerSpawnSpacing * MinPlayerSpawnSpacing
 
@@ -912,6 +966,13 @@ proc findPlayerSpawn*(
 
   (centerTx * WorldTileSize, centerTy * WorldTileSize)
 
+proc applyRole*(player: var Actor, role: PlayerRole) =
+  let oldMax = max(1, player.maxHp)
+  let oldHp = max(1, player.lives)
+  player.role = role
+  player.maxHp = role.roleMaxHp()
+  player.lives = min(player.maxHp, max(1, (oldHp * player.maxHp + oldMax - 1) div oldMax))
+
 proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   ## Fully resets one player and puts them back at spawn.
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -932,9 +993,8 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].velY = 0
   sim.players[playerIndex].carryX = 0
   sim.players[playerIndex].carryY = 0
-  sim.players[playerIndex].lives = MaxPlayerLives
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
   sim.players[playerIndex].invulnTicks = 30
-  sim.players[playerIndex].coins = 0
 
 proc addPlayer*(sim: var SimServer, address: string): int =
   ## Adds one player at a valid spawn point.
@@ -951,7 +1011,10 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     sprite: sim.playerArts[form].sprites[PlayerFront],
     bounds: bounds,
     facing: FaceDown,
-    lives: MaxPlayerLives
+    role: RoleUnarmed,
+    maxHp: UnarmedPlayerHp,
+    lives: UnarmedPlayerHp,
+    personalFrontier: SafeZoneRightPixels
   )
   inc sim.scoreRevision
   sim.players.high
@@ -1011,12 +1074,15 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.textFont = loadTiny5Font()
 
   result.seedBrush()
-  let startTx = WorldWidthTiles div 2
+  result.clearProgressLane()
+  let startTx = 2
   let startTy = WorldHeightTiles div 2
   result.clearSpawnArea(startTx, startTy, 5)
   result.seedTerrainProps()
 
   result.players = @[]
+  result.teamFrontier = SafeZoneRightPixels
+  result.seedRoleGear()
   result.spawnMobs(28, SnakeMob, result.mobSprite, SnakeHp)
   result.spawnMobs(8, TrollMob, result.trollSprite, TrollHp)
   discard result.spawnOneMob(BossMob, result.bossSprite, BossHp)
@@ -1029,16 +1095,38 @@ proc playerScoresJson*(sim: SimServer): string =
     scores = newJArray()
     hearts = newJArray()
     distanceWalked = newJArray()
+    frontierTiles = newJArray()
+    personalFrontierTiles = newJArray()
+    roles = newJArray()
+    damageDone = newJArray()
+    healingDone = newJArray()
+    damageBlocked = newJArray()
+    messagesSent = newJArray()
     results = newJObject()
+  let teamScore = sim.frontierTiles()
   for player in sim.players:
     names.add(%player.address)
-    scores.add(%player.coins)
+    scores.add(%teamScore)
     hearts.add(%player.lives)
     distanceWalked.add(%player.distanceWalked)
+    frontierTiles.add(%teamScore)
+    personalFrontierTiles.add(%frontierTilesForX(player.personalFrontier))
+    roles.add(%player.role.roleLabel())
+    damageDone.add(%player.damageDone)
+    healingDone.add(%player.healingDone)
+    damageBlocked.add(%player.damageBlocked)
+    messagesSent.add(%player.messagesSent)
   results["names"] = names
   results["scores"] = scores
   results["hearts"] = hearts
   results["distance_walked"] = distanceWalked
+  results["frontier_tiles"] = frontierTiles
+  results["personal_frontier_tiles"] = personalFrontierTiles
+  results["roles"] = roles
+  results["damage_done"] = damageDone
+  results["healing_done"] = healingDone
+  results["damage_blocked"] = damageBlocked
+  results["messages_sent"] = messagesSent
   $results
 
 proc mixHash(hash: var uint64, value: uint64) =
@@ -1050,12 +1138,19 @@ proc mixHashInt(hash: var uint64, value: int) =
   ## Mixes one signed integer into a deterministic hash.
   hash.mixHash(cast[uint64](int64(value)))
 
+proc mixHashString(hash: var uint64, value: string) =
+  ## Mixes one ASCII string into a deterministic hash.
+  hash.mixHashInt(value.len)
+  for ch in value:
+    hash.mixHashInt(ord(ch))
+
 proc gameHash*(sim: SimServer): uint64 =
   ## Returns a deterministic hash of gameplay state.
   result = 14695981039346656037'u64
   result.mixHashInt(sim.tickCount)
   result.mixHashInt(sim.mobSpawnCooldown)
   result.mixHashInt(sim.nextPlayerId)
+  result.mixHashInt(sim.teamFrontier)
   result.mixHashInt(sim.players.len)
   for player in sim.players:
     result.mixHashInt(player.id)
@@ -1068,6 +1163,16 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.velY)
     result.mixHashInt(player.carryX)
     result.mixHashInt(player.carryY)
+    result.mixHashInt(ord(player.role))
+    result.mixHashInt(player.maxHp)
+    result.mixHashInt(player.abilityCooldown)
+    result.mixHashInt(player.guardTicks)
+    result.mixHashInt(player.personalFrontier)
+    result.mixHashInt(player.damageDone)
+    result.mixHashInt(player.healingDone)
+    result.mixHashInt(player.damageBlocked)
+    result.mixHashInt(player.messagesSent)
+    result.mixHashString(player.message)
     result.mixHashInt(player.lives)
     result.mixHashInt(player.invulnTicks)
     result.mixHashInt(player.coins)
@@ -1079,8 +1184,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(mob.wanderCooldown)
     result.mixHashInt(mob.hp)
     result.mixHashInt(mob.attackCooldown)
-    result.mixHashInt(ord(mob.attackPhase))
-    result.mixHashInt(mob.attackTicks)
+    result.mixHashInt(mob.attackPhase)
     result.mixHashInt(ord(mob.attackFacing))
     result.mixHashInt(mob.attackerIds.len)
     for attackerId in mob.attackerIds:
@@ -1115,18 +1219,6 @@ proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
         actor.y = ny
       else:
         break
-
-proc moveMob(sim: SimServer, mob: var Mob, dx, dy: int) =
-  ## Moves one mob through terrain by a small amount.
-  var actor = Actor(
-    x: mob.x,
-    y: mob.y,
-    sprite: mob.sprite,
-    bounds: mob.bounds
-  )
-  sim.moveActor(actor, dx, dy)
-  mob.x = actor.x
-  mob.y = actor.y
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -1297,6 +1389,37 @@ proc resolvePlayerOverlaps*(sim: var SimServer) =
     if not moved:
       break
 
+proc applyHealerPulse(sim: var SimServer, healerIndex: int) =
+  let healer = sim.players[healerIndex]
+  let radiusSq = HealerPulseRadius * HealerPulseRadius
+  for targetIndex in 0 ..< sim.players.len:
+    if sim.players[targetIndex].lives <= 0:
+      continue
+    if distanceSquaredActor(healer, sim.players[targetIndex]) > radiusSq:
+      continue
+    let before = sim.players[targetIndex].lives
+    sim.players[targetIndex].lives = min(
+      sim.players[targetIndex].maxHp,
+      sim.players[targetIndex].lives + HealerPulseAmount
+    )
+    let healed = sim.players[targetIndex].lives - before
+    if healed > 0:
+      sim.players[healerIndex].healingDone += healed
+      inc sim.scoreRevision
+
+proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
+  if sim.players[playerIndex].abilityCooldown > 0:
+    return
+  case sim.players[playerIndex].role
+  of RoleTank:
+    sim.players[playerIndex].guardTicks = TankGuardTicks
+    sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
+  of RoleHealer:
+    sim.applyHealerPulse(playerIndex)
+    sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
+  else:
+    discard
+
 proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -1359,6 +1482,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if input.attack and player.attackTicks == 0:
     player.attackTicks = 5
     player.attackResolved = false
+  if input.b:
+    sim.applyRoleAbility(playerIndex)
 
 proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
   let sprite = sim.playerSwooshFor(player)
@@ -1416,7 +1541,6 @@ proc lungeVector(facing: Facing, distance: int): tuple[dx, dy: int] =
   of FaceRight: (distance, 0)
 
 proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
-  ## Chooses the dominant cardinal facing from one point to another.
   let
     dx = toX - fromX
     dy = toY - fromY
@@ -1425,65 +1549,42 @@ proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
   else:
     if dy < 0: FaceUp else: FaceDown
 
-proc chaseVector(fromX, fromY, toX, toY: int): tuple[dx, dy: int] =
-  ## Returns one small walking step from one point toward another.
-  let
-    deltaX = toX - fromX
-    deltaY = toY - fromY
-  if deltaX < 0:
-    result.dx = -1
-  elif deltaX > 0:
-    result.dx = 1
-  if deltaY < 0:
-    result.dy = -1
-  elif deltaY > 0:
-    result.dy = 1
-  if abs(deltaX) > abs(deltaY) * 2:
-    result.dy = 0
-  elif abs(deltaY) > abs(deltaX) * 2:
-    result.dx = 0
-
-proc dropPlayerCoins(sim: var SimServer, player: Actor) =
-  ## Drops one coin pickup carrying all of a dead player's coins.
-  if player.coins <= 0:
-    return
-  let
-    sprite = sim.pickupSprite(PickupCoin)
-    bounds = sim.pickupBounds(PickupCoin)
-    centerX = boundsCenterX(player.x, player.bounds)
-    centerY = boundsCenterY(player.y, player.bounds)
-    x = worldClampPixel(
-      centerX - bounds.x - bounds.w div 2,
-      WorldWidthPixels - sprite.width
-    )
-    y = worldClampPixel(
-      centerY - bounds.y - bounds.h div 2,
-      WorldHeightPixels - sprite.height
-    )
-  sim.pickups.add(Pickup(
-    x: x,
-    y: y,
-    kind: PickupCoin,
-    value: player.coins
-  ))
-
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   ## Respawns a dead player with a clean state.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if sim.players[playerIndex].lives > 0:
     return
-  sim.dropPlayerCoins(sim.players[playerIndex])
   inc sim.scoreRevision
   sim.resetPlayerAtSpawn(playerIndex)
 
-proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy: int) =
+proc guardedDamage(sim: var SimServer, playerIndex: int, amount: int): int =
+  result = max(1, amount)
+  let target = sim.players[playerIndex]
+  let radiusSq = TankGuardRadius * TankGuardRadius
+  for tankIndex in 0 ..< sim.players.len:
+    if tankIndex == playerIndex:
+      continue
+    let tank = sim.players[tankIndex]
+    if tank.lives <= 0 or tank.role != RoleTank or tank.guardTicks <= 0:
+      continue
+    if distanceSquaredActor(tank, target) > radiusSq:
+      continue
+    let reduced = max(1, (result * TankDamageReductionPct + 99) div 100)
+    let blocked = result - reduced
+    if blocked > 0:
+      sim.players[tankIndex].damageBlocked += blocked
+      inc sim.scoreRevision
+    return reduced
+
+proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy, amount: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if sim.players[playerIndex].lives <= 0 or sim.players[playerIndex].invulnTicks > 0:
     return
 
-  dec sim.players[playerIndex].lives
+  let damage = sim.guardedDamage(playerIndex, amount)
+  sim.players[playerIndex].lives = max(0, sim.players[playerIndex].lives - damage)
   sim.players[playerIndex].invulnTicks = 30
   inc sim.scoreRevision
 
@@ -1540,34 +1641,13 @@ proc applyAttack(sim: var SimServer) =
         of FaceRight: dx = 4
         sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
         sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
-        inc mobHitCounts[mobIndex]
+        let damage = player.role.roleAttackDamage()
+        mobHitCounts[mobIndex] += damage
+        sim.players[playerIndex].damageDone += damage
+        inc sim.scoreRevision
         mobKnockbackXs[mobIndex] += dx
         mobKnockbackYs[mobIndex] += dy
         break
-
-    for targetPlayerIndex in 0 ..< sim.players.len:
-      if targetPlayerIndex == playerIndex:
-        continue
-      let targetPlayer = sim.players[targetPlayerIndex]
-      if targetPlayer.lives <= 0:
-        continue
-      if rectOverlapsBounds(
-        hit.x,
-        hit.y,
-        hit.w,
-        hit.h,
-        targetPlayer.x,
-        targetPlayer.y,
-        targetPlayer.bounds
-      ):
-        var dx = 0
-        var dy = 0
-        case player.facing
-        of FaceUp: dy = -4
-        of FaceDown: dy = 4
-        of FaceLeft: dx = -4
-        of FaceRight: dx = 4
-        sim.damagePlayer(targetPlayerIndex, dx, dy)
 
     sim.players[playerIndex].attackResolved = true
 
@@ -1576,10 +1656,6 @@ proc applyAttack(sim: var SimServer) =
       continue
 
     sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
-    let required = sim.mobs[mobIndex].kind.requiredAttackerCount()
-    if sim.mobs[mobIndex].attackerIds.len < required:
-      continue
-
     sim.mobs[mobIndex].hp -= mobHitCounts[mobIndex]
 
     let
@@ -1652,10 +1728,15 @@ proc collectPickups(sim: var SimServer) =
           sim.players[playerIndex].coins += value
           inc sim.scoreRevision
         of PickupHeart:
-          if sim.players[playerIndex].lives < MaxPlayerLives:
+          if sim.players[playerIndex].lives < sim.players[playerIndex].maxHp:
             inc sim.players[playerIndex].lives
           inc sim.scoreRevision
-        collected = true
+        of PickupTankGear, PickupDpsGear, PickupHealerGear:
+          let nextRole = pickup.kind.roleForPickup()
+          if sim.players[playerIndex].role != nextRole:
+            sim.players[playerIndex].applyRole(nextRole)
+            inc sim.scoreRevision
+        collected = not pickup.kind.isRoleGear()
         break
     if collected:
       continue
@@ -1663,7 +1744,6 @@ proc collectPickups(sim: var SimServer) =
   sim.pickups = remaining
 
 proc updateMobs*(sim: var SimServer) =
-  ## Updates mob chasing, telegraphed attacks, and wandering.
   if sim.players.len == 0:
     return
 
@@ -1687,6 +1767,8 @@ proc updateMobs*(sim: var SimServer) =
       let
         playerCenterX = boundsCenterX(player.x, player.bounds)
         playerCenterY = boundsCenterY(player.y, player.bounds)
+      if playerCenterX <= SafeZoneRightPixels:
+        continue
       let distance = distanceSquared(centerX, centerY, playerCenterX, playerCenterY)
       if distance < bestDistance:
         bestDistance = distance
@@ -1695,54 +1777,38 @@ proc updateMobs*(sim: var SimServer) =
     if not hasTarget:
       continue
     let player = sim.players[targetPlayerIndex]
-    let
-      playerCenterX = boundsCenterX(player.x, player.bounds)
-      playerCenterY = boundsCenterY(player.y, player.bounds)
-      attackRange = mob.mobAttackRange()
-      sightRange = mob.mobSightRange()
 
-    case mob.attackPhase
-    of MobIdle:
-      if mob.attackCooldown == 0 and
-          bestDistance <= attackRange * attackRange:
+    if mob.attackPhase == 0:
+      let
+        playerCenterX = boundsCenterX(player.x, player.bounds)
+        playerCenterY = boundsCenterY(player.y, player.bounds)
+      let attackRange = mob.mobAttackRange()
+      if mob.attackCooldown == 0 and distanceSquared(centerX, centerY, playerCenterX, playerCenterY) <= attackRange * attackRange:
         mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
-        mob.attackPhase = MobTelegraph
-        mob.attackTicks = 0
+        let back = lungeVector(mob.attackFacing, -1)
+        var actor = Actor(
+          x: mob.x,
+          y: mob.y,
+          sprite: mob.sprite,
+          bounds: mob.bounds
+        )
+        sim.moveActor(actor, back.dx, back.dy)
+        mob.x = max(actor.x, SafeZoneRightPixels)
+        mob.y = actor.y
+        mob.attackPhase = 1
         continue
 
-      dec mob.wanderCooldown
-      if mob.wanderCooldown > 0:
-        continue
-
-      if bestDistance <= sightRange * sightRange:
-        mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
-        let step = chaseVector(centerX, centerY, playerCenterX, playerCenterY)
-        mob.wanderCooldown = MobChaseCooldown
-        sim.moveMob(mob, step.dx, step.dy)
-        continue
-
-      mob.wanderCooldown = MobWanderCooldown +
-        sim.rng.rand(MobWanderJitter)
-      let direction = sim.rng.rand(4)
-      var dx = 0
-      var dy = 0
-      case direction
-      of 0: dx = 1
-      of 1: dx = -1
-      of 2: dy = 1
-      else: dy = -1
-      sim.moveMob(mob, dx, dy)
-
-    of MobTelegraph:
-      inc mob.attackTicks
-      if mob.attackTicks >= MobTelegraphTicks:
-        mob.attackPhase = MobLunge
-        mob.attackTicks = 0
-      continue
-
-    of MobLunge:
-      let lunge = lungeVector(mob.attackFacing, MobLungeStep)
-      sim.moveMob(mob, lunge.dx, lunge.dy)
+    elif mob.attackPhase == 1:
+      let lunge = lungeVector(mob.attackFacing, 4)
+      var actor = Actor(
+        x: mob.x,
+        y: mob.y,
+        sprite: mob.sprite,
+        bounds: mob.bounds
+      )
+      sim.moveActor(actor, lunge.dx, lunge.dy)
+      mob.x = max(actor.x, SafeZoneRightPixels)
+      mob.y = actor.y
       for playerIndex in 0 ..< sim.players.len:
         let player = sim.players[playerIndex]
         if player.lives <= 0:
@@ -1755,13 +1821,34 @@ proc updateMobs*(sim: var SimServer) =
           player.y,
           player.bounds
         ):
-          sim.damagePlayer(playerIndex, lunge.dx, lunge.dy)
-      inc mob.attackTicks
-      if mob.attackTicks >= MobLungeTicks:
-        mob.attackPhase = MobIdle
-        mob.attackTicks = 0
-        mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
+          sim.damagePlayer(playerIndex, lunge.dx, lunge.dy, mob.mobDamage())
+      mob.attackPhase = 0
+      mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
       continue
+
+    dec mob.wanderCooldown
+    if mob.wanderCooldown > 0:
+      continue
+
+    mob.wanderCooldown = 8 + sim.rng.rand(20)
+    let direction = sim.rng.rand(4)
+    var dx = 0
+    var dy = 0
+    case direction
+    of 0: dx = 1
+    of 1: dx = -1
+    of 2: dy = 1
+    else: dy = -1
+
+    var actor = Actor(
+      x: mob.x,
+      y: mob.y,
+      sprite: mob.sprite,
+      bounds: mob.bounds
+    )
+    sim.moveActor(actor, dx, dy)
+    mob.x = max(actor.x, SafeZoneRightPixels)
+    mob.y = actor.y
 
 proc respawnMobs(sim: var SimServer) =
   if not sim.hasBoss():
@@ -1842,12 +1929,13 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
 
   let
     player = sim.players[playerIndex]
-    coins = max(player.coins, 0)
-    lives = max(player.lives, 0)
+    frontier = sim.frontierTiles()
+    hp = max(player.lives, 0)
     lineY = sim.textFont.lineHeight()
 
-  sim.fb.drawText(sim.textFont, "COINS " & $coins, 0, 0, 2'u8)
-  sim.fb.drawText(sim.textFont, "LIVES " & $lives, 0, lineY, 2'u8)
+  sim.fb.drawText(sim.textFont, "FRONT " & $frontier, 0, 0, 2'u8)
+  sim.fb.drawText(sim.textFont, "HP " & $hp & "/" & $player.maxHp, 0, lineY, 2'u8)
+  sim.fb.drawText(sim.textFont, player.role.roleLabel().toUpperAscii(), 0, lineY * 2, 2'u8)
 
 proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, maximum: int) =
   if maximum <= 0 or width <= 0:
@@ -1943,12 +2031,12 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.renderTerrain(cameraX, cameraY)
   for pickup in sim.pickups:
     case pickup.kind
-    of PickupCoin:
+    of PickupCoin, PickupTankGear, PickupDpsGear:
       sim.fb.blitSprite(sim.coinSprite, pickup.x, pickup.y, cameraX, cameraY)
-    of PickupHeart:
+    of PickupHeart, PickupHealerGear:
       sim.fb.blitSprite(sim.heartSprite, pickup.x, pickup.y, cameraX, cameraY)
   for mob in sim.mobs:
-    sim.fb.blitSprite(mob.sprite, mob.x, mob.mobDrawY(), cameraX, cameraY)
+    sim.fb.blitSprite(mob.sprite, mob.x, mob.y, cameraX, cameraY)
   for i in 0 ..< sim.players.len:
     let otherPlayer = sim.players[i]
     if otherPlayer.lives > 0:
@@ -1978,7 +2066,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       maxHp = mob.mobMaxHp()
       barW = mob.sprite.width
       barX = mob.x - cameraX
-      barY = mob.mobDrawY() - cameraY - 2
+      barY = mob.y - cameraY - 2
     sim.fb.renderHealthBar(barX, barY, barW, mob.hp, maxHp)
   for i in 0 ..< sim.players.len:
     let p = sim.players[i]
@@ -1987,7 +2075,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         barW = p.sprite.width
         barX = p.x - cameraX
         barY = p.y - cameraY - 2
-      sim.fb.renderHealthBar(barX, barY, barW, p.lives, MaxPlayerLives)
+      sim.fb.renderHealthBar(barX, barY, barW, p.lives, p.maxHp)
   sim.fb.renderRadar(sim, playerIndex, cameraX, cameraY)
   sim.renderHud(playerIndex)
   sim.fb.packFramebuffer()
@@ -2011,6 +2099,22 @@ proc addPlayerWalkDistances(
     sim.players[i].distanceWalked += distance
     inc sim.scoreRevision
 
+proc updatePlayerTimersAndFrontier(sim: var SimServer) =
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].abilityCooldown > 0:
+      dec sim.players[i].abilityCooldown
+    if sim.players[i].guardTicks > 0:
+      dec sim.players[i].guardTicks
+    if sim.players[i].lives <= 0:
+      continue
+    let centerX = boundsCenterX(sim.players[i].x, sim.players[i].bounds)
+    if centerX > sim.players[i].personalFrontier:
+      sim.players[i].personalFrontier = centerX
+      inc sim.scoreRevision
+    if centerX > sim.teamFrontier:
+      sim.teamFrontier = centerX
+      inc sim.scoreRevision
+
 proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
   var
@@ -2028,6 +2132,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
     sim.applyInput(playerIndex, input)
   sim.resolvePlayerOverlaps()
   sim.addPlayerWalkDistances(startXs, startYs)
+  sim.updatePlayerTimersAndFrontier()
   sim.collectPickups()
   sim.applyAttack()
   sim.updateMobs()

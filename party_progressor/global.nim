@@ -1082,7 +1082,7 @@ proc terrainObjectId(index: int): int =
 
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
-  let flipLeft = mob.attackPhase != MobIdle and mob.attackFacing == FaceLeft
+  let flipLeft = mob.attackPhase != 0 and mob.attackFacing == FaceLeft
   case mob.kind
   of SnakeMob:
     if flipLeft: MobLeftSpriteId else: MobSpriteId
@@ -1418,7 +1418,7 @@ proc addSpeechBubbles(
       spriteId = player.chatSpriteId()
       sprite = sim.playerSpriteFor(player)
       healthOffset =
-        if player.lives < MaxPlayerLives:
+        if player.lives < player.maxHp:
           HealthBarHeight + HealthBarGap
         else:
           0
@@ -1525,7 +1525,10 @@ proc addWorldObjects(
       pickup = sim.pickups[i]
       objectId = PickupObjectBase + i
       spriteId =
-        if pickup.kind == PickupCoin: CoinSpriteId else: HeartSpriteId
+        if pickup.kind in {PickupCoin, PickupTankGear, PickupDpsGear}:
+          CoinSpriteId
+        else:
+          HeartSpriteId
       sprite = sim.pickupRgbaSprite(pickup.kind)
     objects.addWorldSpriteObject(
       currentIds,
@@ -1544,12 +1547,11 @@ proc addWorldObjects(
       mob = sim.mobs[i]
       objectId = MobObjectBase + i
       spriteId = mob.mobSpriteId()
-      drawY = mob.mobDrawY()
     objects.addWorldSpriteObject(
       currentIds,
       objectId,
       mob.x - cameraX,
-      drawY - cameraY,
+      mob.y - cameraY,
       spriteId,
       mob.sprite.width,
       mob.sprite.height,
@@ -1560,7 +1562,7 @@ proc addWorldObjects(
       currentIds,
       mobHealthObjectId(i),
       mob.x,
-      drawY,
+      mob.y,
       mob.sprite.width,
       mob.sprite.height,
       mob.hp,
@@ -1603,7 +1605,7 @@ proc addWorldObjects(
       playerSprite.width + 2,
       playerSprite.height + 2,
       player.lives,
-      MaxPlayerLives,
+      player.maxHp,
       cameraX,
       cameraY,
       viewportWidth,
@@ -1643,12 +1645,12 @@ proc addPlayerHud(
     return
   let
     player = sim.players[playerIndex]
-    coins = max(player.coins, 0)
+    frontier = sim.frontierTiles()
     lives = max(player.lives, 0)
   currentIds.add(CoinsHudObjectId)
-  if state.hudCoins != coins:
+  if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
-      ["COINS " & $coins],
+      ["FRONT " & $frontier],
       2'u8
     )
     packet.addSprite(
@@ -1656,7 +1658,7 @@ proc addPlayerHud(
       coinText.width,
       coinText.height,
       coinText.pixels,
-      "coins " & $coins
+      "front " & $frontier
     )
   packet.addObject(
     CoinsHudObjectId,
@@ -1669,7 +1671,7 @@ proc addPlayerHud(
   currentIds.add(LivesHudObjectId)
   if state.hudLives != lives:
     let livesText = sim.buildSpriteProtocolTextSprite(
-      ["LIVES " & $lives],
+      ["HP " & $lives & "/" & $player.maxHp],
       2'u8
     )
     packet.addSprite(
@@ -1677,7 +1679,7 @@ proc addPlayerHud(
       livesText.width,
       livesText.height,
       livesText.pixels,
-      "lives " & $lives
+      "hp " & $lives & "/" & $player.maxHp
     )
   packet.addObject(
     LivesHudObjectId,
@@ -1687,7 +1689,7 @@ proc addPlayerHud(
     MapLayerId,
     LivesHudSpriteId
   )
-  nextState.hudCoins = coins
+  nextState.hudCoins = frontier
   nextState.hudLives = lives
 
 proc addPlayerStatus(
@@ -1840,8 +1842,9 @@ proc buildSpriteProtocolUpdates*(
     var lines: seq[string] = @[]
     let player = sim.players[playerIndex]
     lines.add("PLAYER " & player.playerIdentity())
-    lines.add("COINS " & $player.coins)
-    lines.add("LIVES " & $player.lives)
+    lines.add("ROLE " & player.role.roleLabel())
+    lines.add("HP " & $player.lives & "/" & $player.maxHp)
+    lines.add("FRONT " & $frontierTilesForX(player.personalFrontier))
     let text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
     currentIds.add(SelectedTextObjectId)
     result.addSprite(

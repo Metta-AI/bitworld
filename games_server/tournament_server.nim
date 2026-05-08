@@ -290,6 +290,8 @@ type
     player: string
     playerName: string
     containerName: string
+    slotIndex: int
+    token: string
 
   GameRun = object
     id: int
@@ -1039,13 +1041,16 @@ proc defaultConfigJson(
         if property.kind == JObject and property.hasKey("default"):
           node[key] = property["default"].copy()
 
-  let slotArray = newJArray()
+  let
+    slotArray = newJArray()
+    tokenArray = newJArray()
   for slot in slots:
     let item = newJObject()
     item["name"] = %slot.playerName
     slotArray.add(item)
+    tokenArray.add(%slot.token)
 
-  node["tokens"] = newJArray()
+  node["tokens"] = tokenArray
   node["slots"] = slotArray
   node["seed"] = %rand(1_000_000_000)
   node["minPlayers"] = %playersPerGame
@@ -1077,6 +1082,11 @@ proc visiblePlayerName(
 ): string =
   ## Builds the in-game visible tournament player name.
   player.name & "-t" & $gameId & "-" & $slot
+
+proc playerToken(gameId, port, slotIndex: int): string =
+  ## Builds one per-slot tournament join token.
+  "tournament_" & $gameId & "_" & $port & "_" & $slotIndex & "_" &
+    $rand(1_000_000_000)
 
 proc addGameRun(game: GameRun) =
   ## Adds one in-memory game run.
@@ -1174,6 +1184,8 @@ proc playerDockerArgs(
   result.add("--address:" & BotHost)
   result.add("--port:" & $run.port)
   result.add("--name:" & slot.playerName)
+  result.add("--slot:" & $slot.slotIndex)
+  result.add("--token:" & slot.token)
 
 proc mmrWeight(mmr, minMmr, maxMmr: float): float =
   ## Returns a weighted-random policy selection weight.
@@ -1297,7 +1309,9 @@ proc choosePlayers(
     result.slots.add(PlayerSlot(
       player: player.name,
       playerName: playerName,
-      containerName: playerContainerName(player, port, gameId, slot + 1)
+      containerName: playerContainerName(player, port, gameId, slot + 1),
+      slotIndex: slot,
+      token: playerToken(gameId, port, slot)
     ))
 
 proc startTournamentGame(

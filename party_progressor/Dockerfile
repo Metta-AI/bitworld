@@ -25,27 +25,24 @@ RUN nimby --global sync nimby.lock && \
   cat nim.cfg >> /root/.nimby/nim/config/nim.cfg
 
 COPY . .
-WORKDIR /workspace/bitworld/big_adventure
+WORKDIR /workspace/bitworld/party_progressor
 RUN nim c \
   -d:release \
   --nimcache:/tmp/bitworld-nimcache \
-  --out:big_adventure \
-  big_adventure.nim
+  --out:party_progressor \
+  party_progressor.nim
 
 # Run Docker.
 FROM alpine
 
 WORKDIR /workspace/bitworld
 COPY --from=build \
-  /workspace/bitworld/big_adventure/big_adventure \
-  /bin/big_adventure
-COPY --from=build /workspace/bitworld/big_adventure/data ./big_adventure/data
-COPY --from=build \
-  /workspace/bitworld/among_them/tiny5.aseprite \
-  ./big_adventure/data/tiny5.aseprite
+  /workspace/bitworld/party_progressor/party_progressor \
+  /bin/party_progressor
+COPY --from=build /workspace/bitworld/party_progressor/data ./party_progressor/data
 COPY --from=build /workspace/bitworld/clients/*.html ./clients/
 COPY --from=build /workspace/bitworld/clients/*.js ./clients/
 COPY --from=build /workspace/bitworld/clients/data ./clients/data
 
-WORKDIR /workspace/bitworld/big_adventure
-CMD ["/bin/big_adventure", "--address:0.0.0.0", "--port:8080"]
+WORKDIR /workspace/bitworld/party_progressor
+CMD ["/bin/party_progressor", "--address:0.0.0.0", "--port:8080"]

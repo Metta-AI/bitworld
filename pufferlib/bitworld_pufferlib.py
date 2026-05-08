@@ -74,6 +74,7 @@ AMONG_THEM_STEP_ACTIVE = 0
 AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
 OBSERVATION_MODES = {"pixels", "sprite_player"}
+SPRITE_PLAYER_SERVER_ENVS = {"big_adventure", "party_progressor"}
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -151,6 +152,12 @@ ENV_SPECS: dict[str, EnvironmentSpec] = {
         metric_name="coins_collected",
         default_episode_steps=512,
     ),
+    "party_progressor": EnvironmentSpec(
+        name="party_progressor",
+        metric_name="frontier_tiles",
+        server_players=3,
+        default_episode_steps=512,
+    ),
     "boundless_factory": EnvironmentSpec(name="boundless_factory", metric_name="factory_progress", default_episode_steps=1024),
     "bubble_eats": EnvironmentSpec(name="bubble_eats"),
     "fancy_cookout": EnvironmentSpec(name="fancy_cookout", metric_name="kitchen_progress", default_episode_steps=384),
@@ -169,6 +176,17 @@ def get_env_spec(spec: str | EnvironmentSpec) -> EnvironmentSpec:
         available = ", ".join(sorted(ENV_SPECS))
         raise KeyError(f"unknown BitWorld environment {spec!r}; expected one of: {available}")
     return ENV_SPECS[spec]
+
+
+def resolve_observation_mode(spec: str | EnvironmentSpec, observation_mode: str) -> str:
+    resolved = get_env_spec(spec)
+    if observation_mode not in OBSERVATION_MODES:
+        raise ValueError(f"unknown observation_mode {observation_mode!r}")
+    if resolved.name in SPRITE_PLAYER_SERVER_ENVS and observation_mode == "pixels":
+        return "sprite_player"
+    if observation_mode == "sprite_player" and resolved.name not in SPRITE_PLAYER_SERVER_ENVS | {"among_them"}:
+        raise ValueError(f"sprite_player observations are not implemented for {resolved.name}")
+    return observation_mode
 
 
 def with_server_players(spec: str | EnvironmentSpec, players: int | None) -> EnvironmentSpec:
@@ -497,6 +515,18 @@ def parse_reward_payload(payload: bytes | str, player_name: str | None = None) -
     if not text.strip():
         return 0
     raise ValueError(f"invalid reward payload: {text!r}")
+
+
+def parse_reward_payload_by_name(payload: bytes | str, player_names: list[str]) -> np.ndarray:
+    text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "reward":
+            values[parts[1]] = int(parts[2])
+    if not values and text.strip():
+        raise ValueError(f"invalid reward payload: {text!r}")
+    return np.asarray([values.get(name, 0) for name in player_names], dtype=np.float32)
 
 
 def flatten_logs(logs: dict, prefix: str = "") -> dict[str, float]:
@@ -1006,42 +1036,59 @@ class BitWorldWorker:
         port: int,
         seed: int,
         action_repeat: int,
+        observation_mode: str,
     ) -> None:
         self.spec = get_env_spec(spec)
         self.env_id = env_id
         self.port = port
         self.seed = seed
         self.action_repeat = action_repeat
-        self.player_name = "player1"
+        self.observation_mode = observation_mode
+        self.agent_count = self.spec.server_players
+        self.player_names = [f"player{i}" for i in range(1, self.agent_count + 1)]
+        self.player_name = self.player_names[0]
+        self._uses_sprite_player_endpoint = self.spec.name in SPRITE_PLAYER_SERVER_ENVS
+        self._input_packet = pack_sprite_player_input_packet if self._uses_sprite_player_endpoint else lambda mask: bytes([mask])
         self.process: subprocess.Popen[str] | None = None
         self.connection: ClientConnection | None = None
+        self.connections: list[ClientConnection] = []
         self.reward_connection: ClientConnection | None = None
-        self.companion_connections: list[ClientConnection] = []
         self.log_file = None
-        self.base_score = 0
-        self.score = 0
+        self.base_score = np.zeros((self.agent_count,), dtype=np.float32)
+        self.score = np.zeros((self.agent_count,), dtype=np.float32)
         self.episode = 0
-        self.episode_return = 0.0
+        self.episode_return = np.zeros((self.agent_count,), dtype=np.float32)
         self.episode_steps = 0
         self._condition = threading.Condition()
-        self._frame_seq = 0
+        self._frame_seq = np.zeros((self.agent_count,), dtype=np.int64)
         self._reward_seq = 0
-        self._latest_frame: np.ndarray | None = None
-        self._latest_reward: int | None = None
+        self._latest_frames = np.zeros(
+            (
+                self.agent_count,
+                SPRITE_PLAYER_FEATURES if self._uses_sprite_player_endpoint else FRAME_PIXELS,
+            ),
+            dtype=np.uint8,
+        )
+        self._latest_reward = np.zeros((self.agent_count,), dtype=np.float32)
+        self._sprite_adapters = (
+            [SpritePlayerObservationAdapter() for _ in range(self.agent_count)]
+            if self._uses_sprite_player_endpoint
+            else []
+        )
         self._reader_error: Exception | None = None
         self._closed = False
-        self._reader_thread: threading.Thread | None = None
+        self._reader_threads: list[threading.Thread] = []
         self._reward_reader_thread: threading.Thread | None = None
-        self._companion_threads: list[threading.Thread] = []
         try:
             self._start_server()
-            first_frame, _ = self._wait_for_frame(lambda _frame, _seq: True)
-            reward, _ = self._wait_for_reward(lambda _reward, _seq: True)
+            first_frames, _ = self._wait_for_frame(lambda _frame, seq: np.all(seq > 0))
+            reward, _ = self._wait_for_reward(lambda _reward, seq: seq > 0)
         except Exception:
             self.close()
             raise
-        del first_frame
-        self.score = reward
+        del first_frames
+        self.score = reward.copy()
+        self.base_score = reward.copy()
 
     def _start_server(self) -> None:
         ensure_bitworld_binary(self.spec)
@@ -1074,25 +1121,19 @@ class BitWorldWorker:
             stderr=subprocess.STDOUT,
             text=True,
         )
-        self.connection = self._connect(self._player_path(1))
+        for player_id in range(1, self.agent_count + 1):
+            self.connections.append(self._connect(self._player_path(player_id)))
+        self.connection = self.connections[0]
         self.reward_connection = self._connect("/reward")
-        for player_id in range(2, self.spec.server_players + 1):
-            self.companion_connections.append(self._connect(self._player_path(player_id)))
-        for player_id, connection in enumerate(self.companion_connections, start=2):
+        for player_index, connection in enumerate(self.connections):
             thread = threading.Thread(
-                target=self._companion_reader_loop,
-                args=(connection,),
-                name=f"bitworld-{self.spec.name}-{self.env_id}-companion-{player_id}-reader",
+                target=self._reader_loop,
+                args=(player_index, connection),
+                name=f"bitworld-{self.spec.name}-{self.env_id}-player-{player_index + 1}-reader",
                 daemon=True,
             )
             thread.start()
-            self._companion_threads.append(thread)
-        self._reader_thread = threading.Thread(
-            target=self._reader_loop,
-            name=f"bitworld-{self.spec.name}-{self.env_id}-reader",
-            daemon=True,
-        )
-        self._reader_thread.start()
+            self._reader_threads.append(thread)
         self._reward_reader_thread = threading.Thread(
             target=self._reward_reader_loop,
             name=f"bitworld-{self.spec.name}-{self.env_id}-reward-reader",
@@ -1101,6 +1142,8 @@ class BitWorldWorker:
         self._reward_reader_thread.start()
 
     def _player_path(self, player_id: int) -> str:
+        if self._uses_sprite_player_endpoint:
+            return f"/sprite_player?name=player{player_id}"
         return f"/player?name=player{player_id}"
 
     def _connect(self, path: str) -> ClientConnection:
@@ -1115,21 +1158,24 @@ class BitWorldWorker:
                 time.sleep(0.05)
         raise RuntimeError(f"failed to connect to {url}") from last_error
 
-    def _receive_packet(self) -> np.ndarray:
-        assert self.connection is not None
-        payload = self.connection.recv(timeout=10.0)
+    def _receive_packet(self, player_index: int, connection: ClientConnection) -> np.ndarray | None:
+        payload = connection.recv(timeout=10.0)
         if not isinstance(payload, (bytes, bytearray)):
             raise TypeError(f"expected binary websocket payload, got {type(payload)!r}")
+        if self._uses_sprite_player_endpoint:
+            adapter = self._sprite_adapters[player_index]
+            if not adapter.apply_packet(bytes(payload)):
+                return None
+            return adapter.observation()
         return unpack_frame(bytes(payload))
 
-    def _reader_loop(self) -> None:
-        assert self.connection is not None
+    def _reader_loop(self, player_index: int, connection: ClientConnection) -> None:
         while True:
             with self._condition:
                 if self._closed:
                     return
             try:
-                frame = self._receive_packet()
+                frame = self._receive_packet(player_index, connection)
             except TimeoutError:
                 continue
             except Exception as exc:  # noqa: BLE001
@@ -1138,10 +1184,12 @@ class BitWorldWorker:
                         self._reader_error = exc
                         self._condition.notify_all()
                 return
+            if frame is None:
+                continue
 
             with self._condition:
-                self._latest_frame = frame
-                self._frame_seq += 1
+                self._latest_frames[player_index] = frame
+                self._frame_seq[player_index] += 1
                 self._condition.notify_all()
 
     def _reward_reader_loop(self) -> None:
@@ -1154,7 +1202,7 @@ class BitWorldWorker:
                 payload = self.reward_connection.recv(timeout=10.0)
                 if not isinstance(payload, (bytes, str)):
                     raise TypeError(f"expected reward websocket payload, got {type(payload)!r}")
-                reward = parse_reward_payload(payload, self.player_name)
+                reward = parse_reward_payload_by_name(payload, self.player_names)
             except TimeoutError:
                 continue
             except Exception as exc:  # noqa: BLE001
@@ -1169,36 +1217,18 @@ class BitWorldWorker:
                 self._reward_seq += 1
                 self._condition.notify_all()
 
-    def _companion_reader_loop(self, connection: ClientConnection) -> None:
-        while True:
-            with self._condition:
-                if self._closed:
-                    return
-            try:
-                payload = connection.recv(timeout=10.0)
-                if not isinstance(payload, (bytes, bytearray)):
-                    raise TypeError(f"expected binary websocket payload, got {type(payload)!r}")
-            except TimeoutError:
-                continue
-            except Exception as exc:  # noqa: BLE001
-                with self._condition:
-                    if not self._closed:
-                        self._reader_error = exc
-                        self._condition.notify_all()
-                return
-
     def _wait_for_frame(
         self,
         predicate,
         timeout: float = 10.0,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         deadline = time.time() + timeout
         with self._condition:
             while True:
                 if self._reader_error is not None:
                     raise RuntimeError(f"{self.spec.name} worker reader failed") from self._reader_error
-                if self._latest_frame is not None and predicate(self._latest_frame, self._frame_seq):
-                    return self._latest_frame, self._frame_seq
+                if predicate(self._latest_frames, self._frame_seq):
+                    return self._latest_frames.copy(), self._frame_seq.copy()
                 remaining = deadline - time.time()
                 if remaining <= 0.0:
                     raise TimeoutError(f"timed out waiting for {self.spec.name} frame")
@@ -1208,48 +1238,52 @@ class BitWorldWorker:
         self,
         predicate,
         timeout: float = 10.0,
-    ) -> tuple[int, int]:
+    ) -> tuple[np.ndarray, int]:
         deadline = time.time() + timeout
         with self._condition:
             while True:
                 if self._reader_error is not None:
                     raise RuntimeError(f"{self.spec.name} worker reader failed") from self._reader_error
-                if self._latest_reward is not None and predicate(self._latest_reward, self._reward_seq):
-                    return self._latest_reward, self._reward_seq
+                if predicate(self._latest_reward, self._reward_seq):
+                    return self._latest_reward.copy(), self._reward_seq
                 remaining = deadline - time.time()
                 if remaining <= 0.0:
                     raise TimeoutError(f"timed out waiting for {self.spec.name} reward")
                 self._condition.wait(remaining)
 
     def reset(self) -> np.ndarray:
-        assert self.connection is not None
         with self._condition:
-            start_seq = self._frame_seq
+            start_seq = self._frame_seq.copy()
             start_reward_seq = self._reward_seq
-        self.connection.send(bytes([RESET_INPUT_MASK]), text=False)
-        frame, _ = self._wait_for_frame(lambda _item, seq: seq > start_seq)
+        self.connections[0].send(bytes([RESET_INPUT_MASK]), text=False)
+        frame, _ = self._wait_for_frame(lambda _item, seq: np.all(seq > start_seq))
         reward, _ = self._wait_for_reward(lambda _item, seq: seq > start_reward_seq)
-        self.base_score = reward
-        self.score = reward
+        self.base_score = reward.copy()
+        self.score = reward.copy()
         self.episode += 1
-        self.episode_return = 0.0
+        self.episode_return.fill(0.0)
         self.episode_steps = 0
         return frame
 
-    def step(self, action_mask: int) -> tuple[np.ndarray, float]:
-        assert self.connection is not None
+    def step(self, action_mask: int | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        action_masks = np.asarray(action_mask, dtype=np.uint8).reshape(-1)
+        if action_masks.size == 1 and self.agent_count > 1:
+            action_masks = np.repeat(action_masks, self.agent_count)
+        if action_masks.size != self.agent_count:
+            raise ValueError(f"expected {self.agent_count} action masks, received {action_masks.size}")
         with self._condition:
-            start_seq = self._frame_seq
+            start_seq = self._frame_seq.copy()
             start_reward_seq = self._reward_seq
-        self.connection.send(bytes([action_mask]), text=False)
+        for connection, mask in zip(self.connections, action_masks):
+            connection.send(self._input_packet(int(mask)), text=False)
         frame, _ = self._wait_for_frame(
-            lambda _item, seq: seq >= start_seq + self.action_repeat
+            lambda _item, seq: np.all(seq >= start_seq + self.action_repeat)
         )
         snapshot, _ = self._wait_for_reward(
             lambda _item, seq: seq >= start_reward_seq + self.action_repeat
         )
-        reward_delta = float(snapshot - self.score)
-        self.score = snapshot
+        reward_delta = snapshot - self.score
+        self.score = snapshot.copy()
         self.episode_return += reward_delta
         self.episode_steps += 1
         return frame, reward_delta
@@ -1259,20 +1293,16 @@ class BitWorldWorker:
             self._closed = True
             self._condition.notify_all()
 
-        if self.connection is not None:
+        for connection in self.connections:
             with suppress(Exception):
-                self.connection.close()
-            self.connection = None
+                connection.close()
+        self.connections = []
+        self.connection = None
 
         if self.reward_connection is not None:
             with suppress(Exception):
                 self.reward_connection.close()
             self.reward_connection = None
-
-        for connection in self.companion_connections:
-            with suppress(Exception):
-                connection.close()
-        self.companion_connections = []
 
         if self.process is not None:
             self.process.terminate()
@@ -1283,17 +1313,13 @@ class BitWorldWorker:
                 self.process.wait(timeout=2.0)
             self.process = None
 
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=2.0)
-            self._reader_thread = None
+        for thread in self._reader_threads:
+            thread.join(timeout=2.0)
+        self._reader_threads = []
 
         if self._reward_reader_thread is not None:
             self._reward_reader_thread.join(timeout=2.0)
             self._reward_reader_thread = None
-
-        for thread in self._companion_threads:
-            thread.join(timeout=2.0)
-        self._companion_threads = []
 
         if self.log_file is not None:
             self.log_file.close()
@@ -1323,17 +1349,14 @@ class BitWorldVecEnv:
             raise ValueError("action_repeat must be positive")
         if max_episode_steps <= 0:
             raise ValueError("max_episode_steps must be positive")
-        if observation_mode not in OBSERVATION_MODES:
-            raise ValueError(f"unknown observation_mode {observation_mode!r}")
-
         self.spec = get_env_spec(spec)
-        if observation_mode == "sprite_player" and self.spec.name != "among_them":
-            raise ValueError("sprite_player observations are only implemented for among_them")
+        observation_mode = resolve_observation_mode(self.spec, observation_mode)
         if self.spec.name == "among_them" and not 1 <= self.spec.server_players <= AMONG_THEM_MAX_PLAYERS:
             raise ValueError(f"among_them server_players must be between 1 and {AMONG_THEM_MAX_PLAYERS}")
         self.num_envs = num_envs
         self.observation_mode = observation_mode
-        self.agents_per_env = self.spec.server_players if self.spec.name == "among_them" else 1
+        self._native_sprite_player = self.spec.name == "among_them" and self.observation_mode == "sprite_player"
+        self.agents_per_env = self.spec.server_players
         self.total_agents = num_envs * self.agents_per_env
         self.num_agents = self.total_agents
         self.agents_per_batch = self.total_agents
@@ -1413,9 +1436,10 @@ class BitWorldVecEnv:
                         port=reserve_port(),
                         seed=base_seed + env_id,
                         action_repeat=action_repeat,
+                        observation_mode=observation_mode,
                     )
                 self.workers.append(worker)
-            if self.observation_mode == "sprite_player":
+            if self._native_sprite_player:
                 self._sprite_player_handles = np.asarray(
                     [worker.handle for worker in self.workers if isinstance(worker, AmongThemNativeWorker)],
                     dtype=np.int32,
@@ -1454,6 +1478,8 @@ class BitWorldVecEnv:
         return (env_ids[:, np.newaxis] * self.agents_per_env + np.arange(self.agents_per_env)).reshape(-1)
 
     def _reset_sprite_player_envs(self, env_ids: np.ndarray) -> None:
+        if not self._native_sprite_player:
+            raise RuntimeError("native sprite-player resets are only available for among_them")
         assert self._sprite_player_handles is not None
         env_ids = np.asarray(env_ids, dtype=np.int32)
         if env_ids.size == 0:
@@ -1521,9 +1547,9 @@ class BitWorldVecEnv:
             frames, rewards = worker.step(action_masks)
             frames = self._frame_batch(frames, worker)
         else:
-            frame, reward = worker.step(int(action_masks[0]))
+            frame, rewards = worker.step(action_masks)
             frames = self._frame_batch(frame, worker)
-            rewards = np.asarray([reward], dtype=np.float32)
+            rewards = np.asarray(rewards, dtype=np.float32).reshape(worker.agent_count)
 
         completed: list[EpisodeStats] = []
         if isinstance(worker, AmongThemNativeWorker):
@@ -1549,7 +1575,7 @@ class BitWorldVecEnv:
     def reset(self):
         self._rewards.fill(0.0)
         self._terminals.fill(0.0)
-        if self.observation_mode == "sprite_player":
+        if self._native_sprite_player:
             self._reset_sprite_player_batch()
             return self._obs
         for env_id, worker in enumerate(self.workers):
@@ -1560,6 +1586,8 @@ class BitWorldVecEnv:
         return self._obs
 
     def _apply_sprite_player_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
+        if not self._native_sprite_player:
+            raise RuntimeError("native sprite-player actions are only available for among_them")
         assert self._sprite_player_action_masks is not None
         clipped = np.clip(action_indices, 0, self.action_count - 1).astype(np.int64)
         self._sprite_player_action_masks[:] = ACTION_MASKS[clipped]
@@ -1626,7 +1654,7 @@ class BitWorldVecEnv:
         return completed
 
     def _apply_actions(self, action_indices: np.ndarray) -> list[EpisodeStats]:
-        if self.observation_mode == "sprite_player":
+        if self._native_sprite_player:
             return self._apply_sprite_player_actions(action_indices)
 
         self._rewards.fill(0.0)
@@ -1910,8 +1938,7 @@ def train_policy(
     observation_mode: str = "pixels",
 ) -> dict:
     resolved = get_env_spec(spec)
-    if observation_mode not in OBSERVATION_MODES:
-        raise ValueError(f"unknown observation_mode {observation_mode!r}")
+    observation_mode = resolve_observation_mode(resolved, observation_mode)
     train_device = resolve_train_device(device)
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -2050,6 +2077,7 @@ def evaluate_policy(
     sample_actions: bool = True,
 ) -> dict[str, float]:
     resolved = get_env_spec(spec)
+    observation_mode = resolve_observation_mode(resolved, observation_mode)
     vecenv = BitWorldVecEnv(
         spec=resolved,
         num_envs=1,

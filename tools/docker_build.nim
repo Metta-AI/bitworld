@@ -46,6 +46,7 @@ const
     "lively_lecun": "bitworld-lively-lecun",
     "evidencebot_v2": "bitworld-evidencebot-v2",
     "big_adventure": "bitworld-big-adventure",
+    "party_progressor": "bitworld-party-progressor",
     "fancy_cookout": "bitworld-fancy-cookout",
     "infinite_factory": "bitworld-infinite-factory",
     "planet_wars": "bitworld-planet-wars",
@@ -202,14 +203,19 @@ proc discoverTargets(root: string): seq[DockerTarget] =
   )
 
 proc targetMap(targets: openArray[DockerTarget]): Table[string, DockerTarget] =
-  ## Builds a lookup table and rejects duplicate target names.
+  ## Builds a lookup table using the first target for each name.
   for target in targets:
-    if target.name in result:
-      echo "Error: duplicate Docker target: ", target.name
-      echo "  ", result[target.name].dockerFile
-      echo "  ", target.dockerFile
-      quit(1)
-    result[target.name] = target
+    if target.name notin result:
+      result[target.name] = target
+
+proc targetFiles(
+  targets: openArray[DockerTarget],
+  name: string
+): seq[string] =
+  ## Returns Dockerfiles for targets with one normalized name.
+  for target in targets:
+    if target.name == name:
+      result.add(target.dockerFile)
 
 proc ensureBuildx() =
   ## Verifies that docker buildx is available.
@@ -317,6 +323,12 @@ proc selectedTargets(
   let targetsByName = targetMap(targets)
   for name in names:
     let normalized = normalizeTargetName(name)
+    let files = targetFiles(targets, normalized)
+    if files.len > 1:
+      echo "Error: ambiguous Docker target: ", name
+      for file in files:
+        echo "  ", file
+      quit(1)
     if normalized notin targetsByName:
       echo "Error: unknown Docker target: ", name
       echo "Run with --list to see available targets."
