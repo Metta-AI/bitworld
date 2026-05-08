@@ -1,6 +1,8 @@
 import mummy
 import protocol, server
-import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
+import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils,
+            tables, times]
+import windy
 import bitworld/clients
 
 const
@@ -9,13 +11,17 @@ const
   GlobalWebSocketPath = "/global"
   BackgroundColor = 1'u8
   MaxPlayers = 8
-  MinPlayers = 4
+  DefaultMinPlayers = 4
   LobbyCountdownTicks = 24 * 10
   FactReadTicks = 24 * 3
   FactAcceptTicks = 24 * 1
   CharWidth = 6
   CharHeight = 6
   TextMargin = 4
+  ClientScreenOnlyWidth = 384
+  ClientScreenOnlyHeight = 384
+  ClientWindowMargin = 50
+  PlayerClientSourceRelative = "clients" / "player_client.nim"
 
   PresetFacts = [
     "fire heals the undead",
@@ -84,6 +90,7 @@ type
     phase: GamePhase
     tick: int
     lobbyCountdown: int
+    minPlayers: int
     currentTurn: int
     chatLog: seq[ChatEntry]
     factChoice: FactChoice
@@ -173,7 +180,7 @@ proc renderLobby(sim: var SimServer) =
   let title = "mortal coil"
   sim.fb.blitText(sim.letterSprites, title, 20, 10)
 
-  let countText = $sim.players.len & " of " & $MinPlayers
+  let countText = $sim.players.len & " of " & $sim.minPlayers
   sim.fb.blitText(sim.letterSprites, sim.digitSprites, countText, 34, 30)
 
   for i, player in sim.players:
@@ -182,7 +189,7 @@ proc renderLobby(sim: var SimServer) =
     let displayName = if player.name.len > 16: player.name[0..15] else: player.name
     sim.fb.blitText(sim.letterSprites, displayName, 18, y)
 
-  if sim.players.len >= MinPlayers and sim.lobbyCountdown > 0:
+  if sim.players.len >= sim.minPlayers and sim.lobbyCountdown > 0:
     let seconds = (sim.lobbyCountdown + 23) div 24
     let startText = "start in " & $seconds
     sim.fb.blitText(sim.letterSprites, sim.digitSprites, startText, 28, 118)
@@ -220,37 +227,63 @@ proc blitTextWrappedTinted(sim: var SimServer, text: string, x, y: int, lineHeig
       break
   row
 
+proc renderVoteBox(sim: var SimServer, x, y, w, h: int, vote: Vote, color: uint8) =
+  sim.fb.fillRect(x, y, w, 1, color)
+  sim.fb.fillRect(x, y + h - 1, w, 1, color)
+  sim.fb.fillRect(x, y, 1, h, color)
+  sim.fb.fillRect(x + w - 1, y, 1, h, color)
+  case vote
+  of VotePending:
+    let passX = x + (w - 4 * CharWidth) div 2
+    sim.fb.blitText(sim.letterSprites, "pass", passX, y + 2)
+    let vetoX = x + (w - 4 * CharWidth) div 2
+    sim.fb.blitText(sim.letterSprites, "veto", vetoX, y + 9)
+  of VotePass:
+    let passX = x + (w - 4 * CharWidth) div 2
+    sim.fb.blitTextTinted(sim.letterSprites, "pass", passX, y + 5, color)
+  of VoteVeto:
+    let vetoX = x + (w - 4 * CharWidth) div 2
+    sim.fb.blitTextTinted(sim.letterSprites, "veto", vetoX, y + 5, color)
+
 proc renderVotePanel(sim: var SimServer) =
   let voterCount = sim.players.len - 1
   if voterCount <= 0:
     return
-  let boxW = ScreenWidth - TextMargin * 2
   let boxH = 16
-  let totalH = voterCount * (boxH + 2)
-  var voteY = ScreenHeight - totalH
-  for i in 0 ..< sim.players.len:
-    if i == sim.currentTurn:
-      continue
-    if voteY + boxH > ScreenHeight:
-      break
-    let color = uint8(sim.players[i].colorIndex)
-    sim.fb.fillRect(TextMargin, voteY, boxW, 1, color)
-    sim.fb.fillRect(TextMargin, voteY + boxH - 1, boxW, 1, color)
-    sim.fb.fillRect(TextMargin, voteY, 1, boxH, color)
-    sim.fb.fillRect(TextMargin + boxW - 1, voteY, 1, boxH, color)
-    case sim.factChoice.votes[i]
-    of VotePending:
-      let passX = TextMargin + (boxW - 4 * CharWidth) div 2
-      sim.fb.blitText(sim.letterSprites, "pass", passX, voteY + 2)
-      let vetoX = TextMargin + (boxW - 4 * CharWidth) div 2
-      sim.fb.blitText(sim.letterSprites, "veto", vetoX, voteY + 9)
-    of VotePass:
-      let passX = TextMargin + (boxW - 4 * CharWidth) div 2
-      sim.fb.blitTextTinted(sim.letterSprites, "pass", passX, voteY + 5, color)
-    of VoteVeto:
-      let vetoX = TextMargin + (boxW - 4 * CharWidth) div 2
-      sim.fb.blitTextTinted(sim.letterSprites, "veto", vetoX, voteY + 5, color)
-    voteY += boxH + 2
+  let twoCols = voterCount > 3
+  if twoCols:
+    let gap = 2
+    let colW = (ScreenWidth - TextMargin * 2 - gap) div 2
+    let rows = (voterCount + 1) div 2
+    let totalH = rows * (boxH + 2)
+    var startY = ScreenHeight - totalH
+    var col = 0
+    var row = 0
+    for i in 0 ..< sim.players.len:
+      if i == sim.currentTurn:
+        continue
+      let x = TextMargin + col * (colW + gap)
+      let y = startY + row * (boxH + 2)
+      if y + boxH > ScreenHeight:
+        break
+      let color = uint8(sim.players[i].colorIndex)
+      sim.renderVoteBox(x, y, colW, boxH, sim.factChoice.votes[i], color)
+      col += 1
+      if col >= 2:
+        col = 0
+        row += 1
+  else:
+    let boxW = ScreenWidth - TextMargin * 2
+    let totalH = voterCount * (boxH + 2)
+    var voteY = ScreenHeight - totalH
+    for i in 0 ..< sim.players.len:
+      if i == sim.currentTurn:
+        continue
+      if voteY + boxH > ScreenHeight:
+        break
+      let color = uint8(sim.players[i].colorIndex)
+      sim.renderVoteBox(TextMargin, voteY, boxW, boxH, sim.factChoice.votes[i], color)
+      voteY += boxH + 2
 
 proc renderFactChoices(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
@@ -260,7 +293,7 @@ proc renderFactChoices(sim: var SimServer) =
   let color = uint8(player.colorIndex)
   let textX = TextMargin + 8
 
-  var y = 20
+  var y = 14
   for i in 0 ..< 3:
     let selected = sim.factChoice.step >= FactSelected and sim.factChoice.selected == i
     if selected:
@@ -345,7 +378,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
   inc sim.tick
   case sim.phase
   of PhaseLobby:
-    if sim.players.len >= MinPlayers:
+    if sim.players.len >= sim.minPlayers:
       if sim.lobbyCountdown <= 0:
         sim.lobbyCountdown = LobbyCountdownTicks
       else:
@@ -452,10 +485,11 @@ proc buildGlobalPacket(sim: var SimServer): seq[uint8] =
   for i in 0 ..< ProtocolBytes:
     result[i] = sim.fb.packed[i]
 
-proc initSim(seed: int): SimServer =
+proc initSim(seed: int, minPlayers: int): SimServer =
   result.phase = PhaseLobby
   result.tick = 0
   result.lobbyCountdown = 0
+  result.minPlayers = minPlayers
   result.currentTurn = 0
   result.chatLog = @[]
   result.rng = initRand(seed)
@@ -570,7 +604,131 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0) =
+var
+  clientProcesses: seq[Process]
+  guiCleanupStarted = false
+
+proc primaryScreen(): Screen =
+  let screens = getScreens()
+  if screens.len > 0:
+    for screen in screens:
+      if screen.primary:
+        return screen
+    return screens[0]
+  Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
+
+proc clientLaunches(players: int): seq[tuple[title: string, x, y: int]] =
+  let screen = primaryScreen()
+  let rowCounts =
+    case players
+    of 1: @[1]
+    of 2: @[2]
+    of 3: @[3]
+    of 4: @[2, 2]
+    of 5: @[3, 2]
+    of 6: @[3, 3]
+    of 7: @[4, 3]
+    of 8: @[4, 4]
+    else: @[4, 4]
+
+  let
+    totalHeight =
+      rowCounts.len * ClientScreenOnlyHeight +
+      max(0, rowCounts.len - 1) * ClientWindowMargin
+    startY = screen.top + (screen.bottom - screen.top - totalHeight) div 2
+
+  for rowIndex, rowCount in rowCounts:
+    let
+      rowWidth =
+        rowCount * ClientScreenOnlyWidth +
+        max(0, rowCount - 1) * ClientWindowMargin
+      startX = screen.left + (screen.right - screen.left - rowWidth) div 2
+      y = startY + rowIndex * (ClientScreenOnlyHeight + ClientWindowMargin)
+
+    for col in 0 ..< rowCount:
+      let playerNumber = result.len + 1
+      result.add((
+        title: "Mortal Coil Player " & $playerNumber,
+        x: startX + col * (ClientScreenOnlyWidth + ClientWindowMargin),
+        y: y
+      ))
+
+proc stopClientProcesses() =
+  if guiCleanupStarted:
+    return
+  guiCleanupStarted = true
+  for i in countdown(clientProcesses.high, 0):
+    if clientProcesses[i].isNil:
+      continue
+    try:
+      if clientProcesses[i].peekExitCode() == -1:
+        clientProcesses[i].terminate()
+        for _ in 0 ..< 20:
+          if clientProcesses[i].peekExitCode() != -1:
+            break
+          sleep(100)
+        if clientProcesses[i].peekExitCode() == -1:
+          clientProcesses[i].kill()
+    except CatchableError:
+      discard
+    try:
+      clientProcesses[i].close()
+    except CatchableError:
+      discard
+  clientProcesses.setLen(0)
+
+proc guiCleanupAtExit() {.noconv.} =
+  stopClientProcesses()
+
+proc guiControlCHook() {.noconv.} =
+  stopClientProcesses()
+  quit(130)
+
+proc exePathFor(sourceRelative: string): string =
+  let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
+  repoDir() / "out" / exeName
+
+proc launchGuiClients(address: string, port: int, players: int) =
+  let
+    clientExe = exePathFor(PlayerClientSourceRelative)
+    clientWorkDir = repoDir() / "clients"
+    connectAddress =
+      if address == "0.0.0.0" or address == "::": "127.0.0.1"
+      else: address
+    launches = clientLaunches(players)
+
+  if not fileExists(clientExe):
+    echo "GUI: player_client not compiled. Run: nim c ", PlayerClientSourceRelative
+    return
+
+  addExitProc(guiCleanupAtExit)
+  setControlCHook(guiControlCHook)
+
+  for i, launch in launches:
+    let wsUrl = "ws://" & connectAddress & ":" & $port &
+      "/player?name=player" & $(i + 1)
+    let args = @[
+      "--address:" & wsUrl,
+      "--screen-only",
+      "--title:" & launch.title,
+      "--joystick:" & $(i + 1),
+      "--x:" & $launch.x,
+      "--y:" & $launch.y,
+      "--reconnect:1"
+    ]
+    try:
+      clientProcesses.add(startProcess(
+        clientExe,
+        workingDir = clientWorkDir,
+        args = args,
+        options = {poParentStreams}
+      ))
+      echo "  GUI: launched ", launch.title
+    except CatchableError as e:
+      echo "  GUI: failed to start player ", i + 1, ": ", e.msg
+
+proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
+                   gui = false, players = DefaultMinPlayers) =
   initAppState()
 
   let httpServer = newServer(
@@ -593,8 +751,11 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0) =
   echo "  Player: http://", host, ":", port, "/player"
   echo "  Global: http://", host, ":", port, "/global"
 
+  if gui:
+    launchGuiClients(host, port, players)
+
   var
-    sim = initSim(seed)
+    sim = initSim(seed, players)
     lastTick = getMonoTime()
 
   while true:
@@ -662,6 +823,8 @@ when isMainModule:
     address = DefaultHost
     port = DefaultPort
     seed = 0
+    gui = false
+    players = DefaultMinPlayers
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -669,6 +832,8 @@ when isMainModule:
       of "address": address = val
       of "port": port = parseInt(val)
       of "seed": seed = parseInt(val)
+      of "gui": gui = true
+      of "players": players = parseInt(val)
       else: discard
     else: discard
-  runServerLoop(address, port, seed)
+  runServerLoop(address, port, seed, gui, players)
