@@ -55,10 +55,10 @@
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["durationSecs", "hostages"],
+          "required": ["durationSecs", "psychopomps"],
           "properties": {
             "durationSecs": { "type": "number", "exclusiveMinimum": 0 },
-            "hostages": { "type": "integer", "minimum": 0 }
+            "psychopomps": { "type": "integer", "minimum": 0 }
           }
         }
       },

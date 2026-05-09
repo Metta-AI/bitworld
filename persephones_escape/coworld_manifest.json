@@ -27,7 +27,7 @@
           { "role": "Nymphs", "team": "TeamB", "count": 1 }
         ],
         "rounds": [
-          { "durationSecs": 1, "hostages": 1 }
+          { "durationSecs": 1, "psychopomps": 1 }
         ],
         "obstacleCount": 0,
         "autoGrantWhisperEntry": true,

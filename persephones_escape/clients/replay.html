@@ -5,16 +5,68 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Persephone's Escape Replay</title>
   <style>
-    body { margin: 0; padding: 24px; background: #111; color: #eee; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    pre { white-space: pre-wrap; }
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    body { display: grid; grid-template-rows: auto 1fr; }
+    header { align-items: center; display: flex; gap: 16px; padding: 12px 16px; }
+    #status { color: #bbb; font-size: 14px; }
+    canvas { align-self: center; background: #000; image-rendering: pixelated; justify-self: center; max-height: calc(100vh - 72px); width: min(96vw, 960px); }
   </style>
 </head>
 <body>
-  <pre id="out">Connecting...</pre>
+  <header>
+    <strong>Persephone's Escape Replay</strong>
+    <span id="status">Connecting...</span>
+  </header>
+  <canvas id="screen" width="256" height="160"></canvas>
   <script>
-    const out = document.getElementById("out");
+    const palette = [
+      [0,0,0], [29,43,83], [126,37,83], [0,135,81], [171,82,54], [95,87,79], [194,195,199], [255,241,232],
+      [255,0,77], [255,163,0], [255,236,39], [0,228,54], [41,173,255], [131,118,156], [255,119,168], [255,204,170],
+    ];
+    const canvas = document.getElementById("screen");
+    const ctx = canvas.getContext("2d");
+    const status = document.getElementById("status");
+    let image = ctx.createImageData(canvas.width, canvas.height);
+    let frame = 0;
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/replay${window.location.search}`);
-    ws.onmessage = (event) => { out.textContent = event.data; };
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { status.textContent = "Connected"; };
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        const message = JSON.parse(event.data);
+        if (message.type === "metadata") status.textContent = `${message.gameName} ${message.gameVersion}`;
+        if (message.type === "complete") status.textContent = `Complete after ${message.ticks} ticks`;
+        return;
+      }
+      drawFrame(new Uint8Array(event.data));
+    };
+    ws.onclose = () => { status.textContent = frame === 0 ? "Disconnected" : "Replay ended"; };
+
+    function drawFrame(bytes) {
+      const pixels = bytes.length * 2;
+      const side = Math.sqrt(pixels);
+      if (Number.isInteger(side) && side !== canvas.width) {
+        canvas.width = side;
+        canvas.height = side;
+        image = ctx.createImageData(side, side);
+      }
+      for (let i = 0; i < bytes.length; i++) {
+        drawPixel(i * 2, bytes[i] & 15);
+        drawPixel(i * 2 + 1, bytes[i] >> 4);
+      }
+      ctx.putImageData(image, 0, 0);
+      frame++;
+      if (frame % 10 === 0) status.textContent = `Frame ${frame}`;
+    }
+
+    function drawPixel(index, color) {
+      const [r, g, b] = palette[color] || palette[0];
+      const off = index * 4;
+      image.data[off] = r;
+      image.data[off + 1] = g;
+      image.data[off + 2] = b;
+      image.data[off + 3] = 255;
+    }
   </script>
 </body>
 </html>
