@@ -1410,8 +1410,9 @@ proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState
       if not player.hasTask(t): continue
       let task = sim.tasks[t]
       if playerIndex < task.completed.len and task.completed[playerIndex]: continue
-      if px >= task.x and px < task.x + task.w and
-          py >= task.y and py < task.y + task.h:
+      let taskInteractPad = 24
+      if px >= task.x - taskInteractPad and px < task.x + task.w + taskInteractPad and
+          py >= task.y - taskInteractPad and py < task.y + task.h + taskInteractPad:
         inTask = t
         break
     if inTask >= 0 and inputX == 0 and inputY == 0:
@@ -1509,8 +1510,9 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState, prevIn
         let task = sim.tasks[t]
         if playerIndex < task.completed.len and task.completed[playerIndex]:
           continue
-        if px >= task.x and px < task.x + task.w and
-            py >= task.y and py < task.y + task.h:
+        let taskInteractPad2 = 24
+        if px >= task.x - taskInteractPad2 and px < task.x + task.w + taskInteractPad2 and
+            py >= task.y - taskInteractPad2 and py < task.y + task.h + taskInteractPad2:
           inTask = t
           break
       if inTask >= 0 and inputX == 0 and inputY == 0:

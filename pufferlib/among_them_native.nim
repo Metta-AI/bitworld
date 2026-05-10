@@ -161,8 +161,9 @@ proc copyOnTaskFlags(env: var NativeEnv, flags: ptr cfloat, outputBase = 0) =
       let task = env.sim.tasks[taskIndex]
       if playerIndex < task.completed.len and task.completed[playerIndex]:
         continue
-      if px >= task.x and px < task.x + task.w and
-          py >= task.y and py < task.y + task.h:
+      let taskInteractPad = 24
+      if px >= task.x - taskInteractPad and px < task.x + task.w + taskInteractPad and
+          py >= task.y - taskInteractPad and py < task.y + task.h + taskInteractPad:
         onTask = true
         break
     output[outputBase + playerIndex] = if onTask: 1.0 else: 0.0
