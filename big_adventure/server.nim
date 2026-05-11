@@ -318,16 +318,19 @@ proc isWebSocketUpgrade(request: Request): bool =
 proc canonicalClientRoute(route: string): string =
   ## Returns the static asset route for one public client path.
   case route
-  of "/client/global", "/client/global_client.html":
+  of "/client/global", "/clients/global", "/client/global_client.html",
+      "/client/global.html":
     GlobalClientRoute
-  of "/client/player", PlayerClientRoute, "/client/player_client.html":
+  of "/client/player", "/clients/player", PlayerClientRoute,
+      "/client/player_client.html":
     GlobalClientRoute
-  of "/client/reward", "/client/rewards", "/client/reward.html",
+  of "/client/reward", "/clients/reward", "/client/rewards",
+      "/clients/rewards", "/client/reward.html",
       "/client/reward_client.html":
     RewardClientRoute
-  of "/client/snappyjs.min.js":
+  of "/client/snappyjs.min.js", "/clients/snappyjs.min.js":
     SnappyClientRoute
-  of "/client/qrcode.min.js":
+  of "/client/qrcode.min.js", "/clients/qrcode.min.js":
     QrcodeClientRoute
   else:
     route

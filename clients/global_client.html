@@ -173,10 +173,15 @@ const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
 function websocketPathForClientPage(path){
   const mappings=[
+    ["/client/global","/global"],
     ["/clients/global","/global"],
+    ["/client/replay","/replay"],
     ["/clients/replay","/replay"],
+    ["/client/player","/player"],
     ["/clients/player","/player"],
+    ["/client/rewards","/reward"],
     ["/clients/rewards","/reward"],
+    ["/client/admin","/admin"],
     ["/clients/admin","/admin"],
   ];
   for(const [clientPath,websocketPath] of mappings){
@@ -191,7 +196,7 @@ function websocketPathForClientPage(path){
 }
 function defaultAddress(){
   // Direct websocket pages connect to their own path. Canonical Coworld
-  // /clients/* pages connect back to the matching websocket endpoint.
+  // /client/* pages connect back to the matching websocket endpoint.
   const protocol=location.protocol==="https:"?"wss:":"ws:";
   const host=location.host||"localhost:8080";
   return protocol+"//"+host+websocketPathForClientPage(location.pathname);
