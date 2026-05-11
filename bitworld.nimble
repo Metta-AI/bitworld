@@ -9,6 +9,7 @@ bin = @[
   "clients/player_client",
   "clients/reward_client",
   "asteroid_arena/asteroid_arena",
+  "asteroid_arena/players/shooter/shooter",
   "big_adventure/big_adventure",
   "big_adventure/player",
   "party_progressor/party_progressor",

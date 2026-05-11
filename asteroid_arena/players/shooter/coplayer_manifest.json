@@ -1,0 +1,7 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "shooter",
+  "image_uri": "bitworld-asteroid-arena-shooter:latest",
+  "binary": "/bin/shooter",
+  "games": ["asteroid_arena"]
+}
