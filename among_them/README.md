@@ -139,11 +139,11 @@ nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"map.jso
 
 The server serves these pages:
 
-- Player: `http://localhost:2000/player`
-- Global viewer: `http://localhost:2000/global`
-- Replay viewer: `http://localhost:2000/replay`
-- Admin panel: `http://localhost:2000/admin`
-- Rewards: `http://localhost:2000/client/rewards.html`
+- Player: `http://localhost:2000/clients/player?slot=0&token=...`
+- Global viewer: `http://localhost:2000/clients/global`
+- Replay viewer: `http://localhost:2000/clients/replay`
+- Admin panel: `http://localhost:2000/clients/admin`
+- Rewards: `http://localhost:2000/clients/rewards`
 
 These routes are served from:
 
@@ -152,10 +152,8 @@ These routes are served from:
 - `clients/reward_client.html`
 - `clients/admin_client.html`
 
-The player client connects to `/player`, the global viewer connects to
-`/global`, the replay viewer connects to `/replay`, the admin panel connects to
-`/admin`, and the rewards viewer connects to `/reward` on the same host as the
-page.
+The Coworld client routes connect to the game-owned websocket routes on the
+same host: `/player`, `/global`, `/replay`, `/admin`, and `/reward`.
 
 The admin panel shows live player stats, exposes the join QR, and includes live
 match controls. It sends admin playback commands over `/admin`, receives live

@@ -171,23 +171,35 @@ const debugUp=document.getElementById("debugUp");
 const debugSprites=document.getElementById("debugSprites");
 const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
+function replaceClientPathSuffix(path,aliases,websocketPath){
+  for(const alias of aliases){
+    if(path===alias){
+      return websocketPath;
+    }
+    if(path.endsWith(alias)){
+      return path.slice(0,path.length-alias.length)+websocketPath;
+    }
+  }
+  return "";
+}
 function websocketPathForClientPage(path){
-  if(path==="/client/global"||
-      path==="/client/global.html"||
-      path==="/client/global_client.html"){
-    return "/global";
-  }
-  if(path==="/client/player"||
-      path==="/client/player.html"||
-      path==="/client/player_client.html"){
-    return "/player";
-  }
-  if(path==="/client/reward"||
-      path==="/client/rewards"||
-      path==="/client/reward.html"||
-      path==="/client/rewards.html"||
-      path==="/client/reward_client.html"){
-    return "/reward";
+  const mappings=[
+    [["/clients/global","/clients/global.html","/clients/global_client.html",
+      "/client/global","/client/global.html","/client/global_client.html"],"/global"],
+    [["/clients/replay","/clients/replay.html","/clients/replay_client.html",
+      "/client/replay","/client/replay.html","/client/replay_client.html"],"/replay"],
+    [["/clients/player","/clients/player.html","/clients/player_client.html",
+      "/client/player","/client/player.html","/client/player_client.html"],"/player"],
+    [["/clients/reward","/clients/rewards","/clients/reward.html",
+      "/clients/rewards.html","/clients/reward_client.html",
+      "/client/reward","/client/rewards","/client/reward.html",
+      "/client/rewards.html","/client/reward_client.html"],"/reward"],
+  ];
+  for(const mapping of mappings){
+    const rewritten=replaceClientPathSuffix(path,mapping[0],mapping[1]);
+    if(rewritten){
+      return rewritten;
+    }
   }
   return path;
 }
