@@ -61,6 +61,17 @@ const
   SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
+  ReplayWebSocketPath* = "/replay"
+
+  GameName* = "asteroid_arena"
+  GameVersion* = "1"
+  ReplayMagic* = "BITWORLD"
+  ReplayFormatVersion* = 3'u16
+  ReplayTickHashRecord* = 0x01'u8
+  ReplayInputRecord* = 0x02'u8
+  ReplayJoinRecord* = 0x03'u8
+  ReplayLeaveRecord* = 0x04'u8
+  ReplayFps* = 24
 
   BackgroundColor* = RgbaColor(r: 0x29, g: 0xAD, b: 0xFF, a: 255)
   AsteroidFillColor* = RgbaColor(r: 0x83, g: 0x76, b: 0x9C, a: 255)
@@ -785,6 +796,20 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.stepRespawns()
   sim.ensureAsteroids()
   inc sim.tickCount
+
+proc gameHash*(sim: SimServer): uint64 =
+  var h = 0xcbf29ce484222325'u64
+  for player in sim.players:
+    h = h xor uint64(player.x)
+    h = h * 0x100000001b3'u64
+    h = h xor uint64(player.y)
+    h = h * 0x100000001b3'u64
+  for asteroid in sim.asteroids:
+    h = h xor uint64(asteroid.x)
+    h = h * 0x100000001b3'u64
+    h = h xor uint64(asteroid.y)
+    h = h * 0x100000001b3'u64
+  h
 
 proc initSimServer*(seed: int): SimServer =
   result.rng = initRand(seed)

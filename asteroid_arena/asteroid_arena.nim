@@ -59,6 +59,9 @@ when isMainModule:
   config.resultsPath = getEnv("COGAME_SAVE_RESULTS_PATH")
   if config.resultsPath.len == 0:
     config.resultsPath = getEnv("COGAME_RESULTS_PATH")
+  let
+    saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH")
+    loadReplayPath = getEnv("COGAME_LOAD_REPLAY_PATH")
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -76,4 +79,6 @@ when isMainModule:
     config.update(configJson)
   runServerLoop(config.address, config.port, seed = config.seed,
     durationTicks = config.durationTicks, resultsPath = config.resultsPath,
-    tokens = config.tokens)
+    tokens = config.tokens,
+    saveReplayPath = saveReplayPath,
+    loadReplayPath = loadReplayPath)
