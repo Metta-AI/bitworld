@@ -57,6 +57,7 @@
     }
   },
   "protocols": {
-    "player": "../docs/global_protocol_spec.md"
+    "player": "../docs/global_protocol_spec.md",
+    "global": "../docs/global_protocol_spec.md"
   }
 }
