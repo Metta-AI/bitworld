@@ -22,6 +22,7 @@ const
   ClearFlashTicks = 20
   ClearPauseTicks = 12
   TargetFps = 60
+  PlayerWebSocketPath = "/player"
   SpritePlayerWebSocketPath = "/sprite_player"
   HealthPath = "/healthz"
   GlobalWebSocketPath = "/global"
@@ -1765,7 +1766,8 @@ proc serveHealthz(request: Request): bool =
 proc httpHandler(request: Request) =
   if request.serveHealthz():
     discard
-  elif request.path == SpritePlayerWebSocketPath and
+  elif (request.path == SpritePlayerWebSocketPath or
+      request.path == PlayerWebSocketPath) and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
@@ -1781,7 +1783,8 @@ proc httpHandler(request: Request) =
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(RewardClientRoute)
-  elif request.path == SpritePlayerWebSocketPath and
+  elif (request.path == SpritePlayerWebSocketPath or
+      request.path == PlayerWebSocketPath) and
       request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:

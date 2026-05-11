@@ -1,9 +1,14 @@
-import std/[exitprocs, monotimes, net, os, osproc, parseopt, strutils, times]
+import
+  std/[algorithm, exitprocs, json, monotimes, net, os, osproc, parseopt,
+    strutils, times]
 import windy
 
 const
   PlayerClientSourceRelative = "clients" / "player_client.nim"
   GlobalClientSourceRelative = "clients" / "global_client.nim"
+  CogameManifestName = "cogame_manifest.json"
+  CoplayerManifestName = "coplayer_manifest.json"
+  GlobalProtocolSpec = "global_protocol_spec.md"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
   ClientScreenOnlyWidth = 384
@@ -14,6 +19,16 @@ const
   DefaultPort = 8080
   MaxPlayers = 32
   MaxBots = 256
+  IgnoredManifestDirs = [
+    ".git",
+    ".github",
+    "__pycache__",
+    "nimcache",
+    "node_modules",
+    "out",
+    "replays",
+    "tmp"
+  ]
 
 var
   serverProcess: Process
@@ -21,9 +36,34 @@ var
   cleanupStarted = false
 
 type
+  ClientProtocol = enum
+    FrameClient
+    SpriteClient
+
   BotGroup = object
     source: string
     count: int
+
+  GameManifest = object
+    key: string
+    path: string
+    name: string
+    playerProtocol: ClientProtocol
+    hasGlobalProtocol: bool
+
+  GameLaunch = object
+    sourceRelative: string
+    workDir: string
+    label: string
+    name: string
+    playerProtocol: ClientProtocol
+    hasGlobalProtocol: bool
+
+  CoplayerManifest = object
+    key: string
+    path: string
+    name: string
+    games: seq[string]
 
   QuickRunConfig = object
     gameFolder: string
@@ -98,6 +138,156 @@ proc trimTrailingSeparators(value: string): string =
   while result.len > 0 and result[^1] in {'/', '\\'}:
     result.setLen(result.len - 1)
 
+proc cleanRelativePath(value: string): string =
+  ## Normalizes one repository-relative path for manifest matching.
+  result = trimTrailingSeparators(value).replace("\\", "/")
+  while result.startsWith("./"):
+    result = result[2 .. ^1]
+
+proc relativeManifestKey(rootDir, path: string): string =
+  ## Returns a stable repository-relative manifest key.
+  if path.isAbsolute():
+    result = path.relativePath(rootDir)
+  else:
+    result = path
+  result = result.cleanRelativePath()
+
+proc normalizeManifestName(value: string): string =
+  ## Normalizes names so CLI keys can use dashes or underscores.
+  for c in value.strip():
+    if c.isAlphaNumeric():
+      result.add(c.toLowerAscii())
+    elif c in {'_', '-', ' ', '/', '\\'}:
+      result.add('_')
+
+proc shouldScanManifestDir(path: string): bool =
+  ## Returns true when a directory can contain launcher manifests.
+  let name = path.extractFilename()
+  name.len == 0 or (
+    name notin IgnoredManifestDirs and
+    not name.startsWith(".")
+  )
+
+proc addManifestPath(rootDir, path: string, paths: var seq[string]) =
+  ## Adds one manifest path by repository-relative identity.
+  if not fileExists(path):
+    return
+  let key = relativeManifestKey(rootDir, path)
+  for existing in paths:
+    if relativeManifestKey(rootDir, existing) == key:
+      return
+  paths.add(path)
+
+proc scanManifestPaths(
+  rootDir,
+  dir,
+  fileName: string,
+  paths: var seq[string]
+) =
+  ## Recursively scans for manifest files under useful directories.
+  addManifestPath(rootDir, dir / fileName, paths)
+  for kind, path in walkDir(dir):
+    case kind
+    of pcDir:
+      if path.shouldScanManifestDir():
+        scanManifestPaths(rootDir, path, fileName, paths)
+    else:
+      discard
+
+proc manifestPaths(rootDir, fileName: string): seq[string] =
+  ## Returns sorted manifest paths under the repository root.
+  scanManifestPaths(rootDir, rootDir, fileName, result)
+  result.sort(proc(a, b: string): int =
+    cmp(relativeManifestKey(rootDir, a), relativeManifestKey(rootDir, b))
+  )
+
+proc loadManifestObject(path: string): JsonNode =
+  ## Loads a manifest JSON object from disk.
+  try:
+    result = parseJson(readFile(path))
+  except CatchableError as e:
+    raise newException(
+      ValueError,
+      "Could not read manifest " & path & ": " & e.msg
+    )
+  if result.kind != JObject:
+    raise newException(ValueError, "Manifest must be a JSON object: " & path)
+
+proc manifestString(
+  node: JsonNode,
+  key,
+  defaultValue: string
+): string =
+  ## Reads one string field from a manifest object.
+  if node.kind == JObject and node.hasKey(key) and
+    node[key].kind == JString:
+      return node[key].getStr()
+  defaultValue
+
+proc manifestStringArray(node: JsonNode, key: string): seq[string] =
+  ## Reads one string array field from a manifest object.
+  if node.kind != JObject or not node.hasKey(key) or
+    node[key].kind != JArray:
+      return
+  for item in node[key].items:
+    if item.kind == JString:
+      result.add(item.getStr())
+
+proc manifestProtocol(node: JsonNode, key: string): string =
+  ## Reads one protocol spec path from a CoGame manifest.
+  if node.kind != JObject or not node.hasKey("protocols"):
+    return
+  let protocols = node["protocols"]
+  if protocols.kind == JObject and protocols.hasKey(key) and
+    protocols[key].kind == JString:
+      return protocols[key].getStr()
+
+proc isGlobalProtocolSpec(path: string): bool =
+  ## Returns true when a protocol path names the global protocol spec.
+  let cleanPath = path.toLowerAscii()
+  cleanPath.extractFilename() == GlobalProtocolSpec or
+    cleanPath.contains("global_protocol_spec")
+
+proc clientProtocolFromManifest(node: JsonNode): ClientProtocol =
+  ## Returns the human client protocol advertised by a CoGame manifest.
+  if node.manifestProtocol("player").isGlobalProtocolSpec():
+    SpriteClient
+  else:
+    FrameClient
+
+proc readGameManifest(rootDir, path: string): GameManifest =
+  ## Reads one CoGame manifest summary from disk.
+  let
+    node = loadManifestObject(path)
+    name = node.manifestString("name", path.parentDir().extractFilename())
+  result = GameManifest(
+    key: relativeManifestKey(rootDir, path),
+    path: path,
+    name: name,
+    playerProtocol: clientProtocolFromManifest(node),
+    hasGlobalProtocol: node.manifestProtocol("global").len > 0
+  )
+
+proc listGameManifests(rootDir: string): seq[GameManifest] =
+  ## Scans repository folders for CoGame manifests.
+  for path in manifestPaths(rootDir, CogameManifestName):
+    result.add(readGameManifest(rootDir, path))
+
+proc findGameManifest(
+  rootDir,
+  folderName: string
+): tuple[found: bool, manifest: GameManifest] =
+  ## Finds a CoGame manifest matching a CLI game key.
+  let
+    cleanKey = folderName.cleanRelativePath()
+    cleanName = cleanKey.normalizeManifestName()
+  for manifest in listGameManifests(rootDir):
+    let manifestDir = manifest.key.parentDir().cleanRelativePath()
+    if manifest.key == cleanKey or
+      manifestDir == cleanKey or
+      manifest.name.normalizeManifestName() == cleanName:
+        return (found: true, manifest: manifest)
+
 proc gameSourceRelative(folderName: string): string =
   let normalized = trimTrailingSeparators(folderName)
   if normalized.len == 0:
@@ -109,23 +299,41 @@ proc gameSourceRelative(folderName: string): string =
 
   normalized / (parts[^1] & ".nim")
 
-proc ensureGameFolder(rootDir, folderName: string): tuple[sourceRelative, workDir, label: string] =
+proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
+  ## Validates and describes one game source folder.
   let normalized = trimTrailingSeparators(folderName)
   if normalized.len == 0:
     raise newException(ValueError, "Game folder name cannot be empty.")
 
+  let manifestLookup = findGameManifest(rootDir, normalized)
+  let gameFolder =
+    if manifestLookup.found and not dirExists(rootDir / normalized):
+      manifestLookup.manifest.key.parentDir()
+    else:
+      normalized
   let
-    workDir = absolutePath(rootDir / normalized)
-    sourceRelative = gameSourceRelative(normalized)
+    workDir = absolutePath(rootDir / gameFolder)
+    sourceRelative = gameSourceRelative(gameFolder)
     sourcePath = absolutePath(rootDir / sourceRelative)
   if not dirExists(workDir):
-    raise newException(ValueError, "Game folder not found: " & normalized)
+    raise newException(ValueError, "Game folder not found: " & gameFolder)
   if not fileExists(sourcePath):
     raise newException(
       ValueError,
       "Game entry file not found: " & sourceRelative
     )
-  (sourceRelative: sourceRelative, workDir: workDir, label: splitPath(normalized).tail)
+  result = GameLaunch(
+    sourceRelative: sourceRelative,
+    workDir: workDir,
+    label: splitPath(gameFolder).tail,
+    name: splitPath(gameFolder).tail,
+    playerProtocol: FrameClient,
+    hasGlobalProtocol: false
+  )
+  if manifestLookup.found:
+    result.name = manifestLookup.manifest.name
+    result.playerProtocol = manifestLookup.manifest.playerProtocol
+    result.hasGlobalProtocol = manifestLookup.manifest.hasGlobalProtocol
 
 proc hasPathSeparator(value: string): bool =
   ## Returns true when a value looks like a path.
@@ -165,12 +373,111 @@ proc botCandidates(gameFolder, source: string): seq[string] =
     result.add(gameFolder / "players" / sourcePath / (sourcePath & ".nim"))
     result.add(gameFolder / "players" / (sourcePath & ".nim"))
 
+proc readCoplayerManifest(rootDir, path: string): CoplayerManifest =
+  ## Reads one CoPlayer manifest summary from disk.
+  let
+    node = loadManifestObject(path)
+    name = node.manifestString("name", path.parentDir().extractFilename())
+  result = CoplayerManifest(
+    key: relativeManifestKey(rootDir, path),
+    path: path,
+    name: name,
+    games: node.manifestStringArray("games")
+  )
+
+proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
+  ## Returns true when a CoPlayer manifest supports one game.
+  let normalizedGame = gameName.normalizeManifestName()
+  for supported in bot.games:
+    if supported == gameName or
+      supported.normalizeManifestName() == normalizedGame:
+        return true
+
+proc listCoplayerManifests(
+  rootDir,
+  gameName: string
+): seq[CoplayerManifest] =
+  ## Scans repository folders for CoPlayer manifests.
+  for path in manifestPaths(rootDir, CoplayerManifestName):
+    let bot = readCoplayerManifest(rootDir, path)
+    if bot.supportsGame(gameName):
+      result.add(bot)
+
+proc botSourceFromManifest(
+  rootDir: string,
+  bot: CoplayerManifest
+): tuple[sourceRelative, workDir, label: string] =
+  ## Finds the local Nim source that belongs to one CoPlayer manifest.
+  let
+    manifestDir = bot.path.parentDir()
+    playersDir = manifestDir.parentDir()
+    folderName = manifestDir.extractFilename()
+  var sourceNames: seq[string]
+  if bot.name.len > 0:
+    sourceNames.add(bot.name)
+  if folderName.len > 0 and folderName notin sourceNames:
+    sourceNames.add(folderName)
+
+  for sourceName in sourceNames:
+    for sourcePath in [
+      manifestDir / (sourceName & ".nim"),
+      playersDir / (sourceName & ".nim")
+    ]:
+      if fileExists(sourcePath):
+        let sourceRelative = relativeManifestKey(rootDir, sourcePath)
+        return (
+          sourceRelative: sourceRelative,
+          workDir: sourcePath.parentDir(),
+          label: sourcePath.splitFile().name
+        )
+
+proc findCoplayerSource(
+  rootDir,
+  gameName,
+  source: string
+): tuple[found: bool, sourceRelative, workDir, label: string] =
+  ## Finds a local bot source by scanning CoPlayer manifests.
+  let cleanKey = source.cleanRelativePath()
+  if cleanKey.hasPathSeparator():
+    return
+  let normalizedKey = cleanKey.normalizeManifestName()
+  for bot in listCoplayerManifests(rootDir, gameName):
+    let
+      botDir = bot.key.parentDir()
+      botFolder = botDir.extractFilename()
+    if bot.name == cleanKey or
+      bot.key == cleanKey or
+      botDir == cleanKey or
+      bot.name.normalizeManifestName() == normalizedKey or
+      botFolder.normalizeManifestName() == normalizedKey:
+        let sourceInfo = botSourceFromManifest(rootDir, bot)
+        if sourceInfo.sourceRelative.len == 0:
+          raise newException(
+            ValueError,
+            "CoPlayer manifest has no local Nim source: " & bot.key
+          )
+        return (
+          found: true,
+          sourceRelative: sourceInfo.sourceRelative,
+          workDir: sourceInfo.workDir,
+          label: sourceInfo.label
+        )
+
 proc ensureBotFile(
   rootDir,
   gameFolder,
+  gameName,
   source: string
 ): tuple[sourceRelative, workDir, label: string] =
   ## Validates and describes one bot source file.
+  let manifestBot = findCoplayerSource(rootDir, gameName, source)
+  if manifestBot.found:
+    return (
+      sourceRelative: manifestBot.sourceRelative,
+      workDir: manifestBot.workDir,
+      label: manifestBot.label
+    )
+
   for sourceRelative in botCandidates(gameFolder, source):
     let sourcePath = absolutePath(rootDir / sourceRelative)
     if fileExists(sourcePath):
@@ -206,14 +513,9 @@ proc primaryScreen(): Screen =
       return screens[0]
   Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
 
-proc usesSpritePlayerClient(label: string): bool =
-  ## Returns true when a game uses the global sprite player protocol.
-  label in [
-    "big_adventure",
-    "party_progressor",
-    "infinite_blocks",
-    "planet_wars"
-  ]
+proc usesSpritePlayerClient(protocol: ClientProtocol): bool =
+  ## Returns true when the manifest selects the sprite player protocol.
+  protocol == SpriteClient
 
 proc clientConnectAddress(address: string): string =
   ## Returns a local address suitable for launched clients.
@@ -542,13 +844,13 @@ proc runQuickRun(config: QuickRunConfig): int =
   let
     game = ensureGameFolder(rootDir, config.gameFolder)
     gameFolderRelative = game.sourceRelative.splitFile().dir
-    spritePlayerClient = usesSpritePlayerClient(game.label)
+    spritePlayerClient = usesSpritePlayerClient(game.playerProtocol)
     playerPath =
       if spritePlayerClient:
         "/sprite_player"
       else:
         "/player"
-    gameTitle = humanizeLabel(game.label)
+    gameTitle = humanizeLabel(game.name)
     gameExe = exePathFor(rootDir, game.sourceRelative)
     clientSourceRelative =
       if spritePlayerClient:
@@ -564,7 +866,12 @@ proc runQuickRun(config: QuickRunConfig): int =
   for group in config.botGroups:
     if group.count == 0:
       continue
-    let bot = ensureBotFile(rootDir, gameFolderRelative, group.source)
+    let bot = ensureBotFile(
+      rootDir,
+      gameFolderRelative,
+      game.name,
+      group.source
+    )
     botLaunches.add(BotLaunch(
       sourceRelative: bot.sourceRelative,
       workDir: bot.workDir,
@@ -594,7 +901,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     if result != 0:
       return result
 
-  if config.players > 0 or spritePlayerClient:
+  if config.players > 0 or (spritePlayerClient and game.hasGlobalProtocol):
     result = compileTarget(nimExe, rootDir, "client", clientSourceRelative)
     if result != 0:
       return result
@@ -632,7 +939,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     cleanupChildren()
     return 1
 
-  if spritePlayerClient:
+  if spritePlayerClient and game.hasGlobalProtocol:
     try:
       var globalArgs = @[
         "--address:" & websocketUrl(config.address, config.port, "/global"),

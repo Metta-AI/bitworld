@@ -67,7 +67,11 @@
     }
   },
   "protocols": {
-    "player": "../docs/global_protocol_spec.md",
-    "global": "../docs/global_protocol_spec.md"
+    "sprite_player": "sprite_protocol",
+    "global": "sprite_protocol",
+    "admin": "http"
+  },
+  "client": {
+    "client/global": "sprite_protocol"
   }
 }

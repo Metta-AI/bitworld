@@ -43,6 +43,7 @@ const
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CogameManifestName = "cogame_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
+  GlobalProtocolSpec = "global_protocol_spec.md"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayUploadPath = "/api/replay/upload"
   ReplayScoresUploadPath = "/api/replay/upload/scores"
@@ -313,6 +314,7 @@ type
     author: string
     imageUri: string
     binary: string
+    playerProtocol: string
 
   CoplayerManifest = object
     key: string
@@ -540,6 +542,21 @@ proc manifestString(
     return node[key].getStr()
   defaultValue
 
+proc manifestProtocol(node: JsonNode, key: string): string =
+  ## Reads one protocol spec path from a CoGame manifest.
+  if node.kind != JObject or not node.hasKey("protocols"):
+    return
+  let protocols = node["protocols"]
+  if protocols.kind == JObject and protocols.hasKey(key) and
+      protocols[key].kind == JString:
+    return protocols[key].getStr()
+
+proc isGlobalProtocolSpec(path: string): bool =
+  ## Returns true when a protocol path names the global protocol spec.
+  let cleanPath = path.toLowerAscii()
+  cleanPath.extractFilename() == GlobalProtocolSpec or
+    cleanPath.contains("global_protocol_spec")
+
 proc defaultManifestName(path: string): string =
   ## Returns a display name for a manifest path.
   splitPath(parentDir(path)).tail
@@ -563,7 +580,8 @@ proc readGameManifest(path: string): GameManifest =
       name: name,
       author: author,
       imageUri: manifest.manifestString("image_uri", dockerImage()),
-      binary: manifest.manifestString("binary", "/bin/" & name)
+      binary: manifest.manifestString("binary", "/bin/" & name),
+      playerProtocol: manifest.manifestProtocol("player")
     )
   except CatchableError as e:
     raise newException(
@@ -650,6 +668,17 @@ proc findGameManifest(key: string): GameManifest =
   raise newException(
     GamesServerError,
     "unknown CoGame manifest: " & cleanKey
+  )
+
+proc findGameManifestByName(name: string): GameManifest =
+  ## Finds a scanned CoGame manifest by manifest name.
+  let cleanName = name.strip()
+  for manifest in listGameManifests():
+    if manifest.name == cleanName:
+      return manifest
+  raise newException(
+    GamesServerError,
+    "unknown CoGame manifest name: " & cleanName
   )
 
 proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
@@ -2297,7 +2326,17 @@ proc gamePagePath(game: GameContainer, page: string): string =
   ## Returns the canonical game route for one client page label.
   case page
   of "player.html":
-    if game.cogameName in ["big_adventure", "party_progressor"]:
+    var playerProtocol = ""
+    try:
+      let manifest =
+        if game.manifestKey.len > 0:
+          findGameManifest(game.manifestKey)
+        else:
+          findGameManifestByName(game.cogameName)
+      playerProtocol = manifest.playerProtocol
+    except CatchableError:
+      discard
+    if playerProtocol.isGlobalProtocolSpec():
       "/sprite_player"
     else:
       "/player"
