@@ -799,7 +799,8 @@ proc runServerLoop*(
   saveReplayPath = "",
   loadReplayPath = "",
   saveScoresPath = "",
-  tokens: seq[string] = @[]
+  tokens: seq[string] = @[],
+  maxTicks = 0
 ) =
   initAppState()
   appState.tokens = tokens
@@ -821,7 +822,10 @@ proc runServerLoop*(
         raise newException(ReplayError, "Replay config field seed must be an integer")
       currentSeed = node["seed"].getInt()
   var
-    replayWriter = openReplayWriter(saveReplayPath, $(%*{"seed": currentSeed}))
+    replayWriter = openReplayWriter(
+      saveReplayPath,
+      $(%*{"seed": currentSeed, "maxTicks": maxTicks})
+    )
     replayPlayer =
       if replayLoaded:
         initReplayPlayer(replayData)
@@ -847,6 +851,7 @@ proc runServerLoop*(
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
     lastScoreRevision = -1
+    runTicks = 0
   sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
 
   while true:
@@ -957,6 +962,7 @@ proc runServerLoop*(
     if shouldReset:
       inc currentSeed
       sim = initSimServer(currentSeed)
+      runTicks = 0
       replayWriter.lastMasks.setLen(0)
       sockets.setLen(0)
       playerIndices.setLen(0)
@@ -1019,6 +1025,7 @@ proc runServerLoop*(
             replayPlayer.playing = true
     else:
       sim.step(inputs)
+      inc runTicks
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
     sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
@@ -1073,5 +1080,10 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
+
+    if maxTicks > 0 and runTicks >= maxTicks:
+      httpServer.close()
+      joinThread(serverThread)
+      break
 
     runFrameLimiter(lastTick)

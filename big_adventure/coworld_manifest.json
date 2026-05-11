@@ -30,6 +30,12 @@
           "type": "integer",
           "minimum": 0,
           "default": 726896
+        },
+        "maxTicks": {
+          "description": "Maximum simulation ticks before shutdown, where 0 means no limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         }
       }
     },
@@ -96,7 +102,8 @@
       "id": "smoke",
       "name": "Smoke",
       "game_config": {
-        "seed": 726896
+        "seed": 726896,
+        "maxTicks": 300
       },
       "description": "Short deterministic big_adventure configuration used for manifest checks."
     }
