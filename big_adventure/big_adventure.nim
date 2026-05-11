@@ -9,9 +9,30 @@ type
     address: string
     port: int
     seed: int
+    tokens: seq[string]
     saveReplayPath: string
     loadReplayPath: string
     saveScoresPath: string
+
+proc readConfigStrings(node: JsonNode, name: string, values: var seq[string]) =
+  ## Reads one optional string-array config field.
+  if not node.hasKey(name):
+    return
+  let items = node[name]
+  if items.kind != JArray:
+    raise newException(
+      BigAdventureError,
+      "Config field " & name & " must be an array."
+    )
+  values.setLen(0)
+  for i in 0 ..< items.len:
+    let item = items[i]
+    if item.kind != JString:
+      raise newException(
+        BigAdventureError,
+        "Config field " & name & "[" & $i & "] must be a string."
+      )
+    values.add(item.getStr())
 
 proc readConfigString(node: JsonNode, name: string, value: var string) =
   ## Reads one optional string config field.
@@ -113,6 +134,7 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("load-replay-path", config.loadReplayPath)
   node.readConfigString("save-scores-path", config.saveScoresPath)
   node.readConfigInt("seed", config.seed)
+  node.readConfigStrings("tokens", config.tokens)
 
 proc requireOptionValue(name, value: string) =
   ## Raises when a CLI option is missing its value.
@@ -145,6 +167,10 @@ proc echoStartupPaths(config: RunConfig) =
     echo "Writing scores file: " & config.saveScoresPath
   else:
     echo "Not writing scores file."
+  if config.tokens.len > 0:
+    echo "Using " & $config.tokens.len & " player connection tokens."
+  else:
+    echo "No player connection tokens configured."
 
 when isMainModule:
   var
@@ -152,6 +178,7 @@ when isMainModule:
       address: DefaultHost,
       port: DefaultPort,
       seed: 0xB1770,
+      tokens: @[],
       saveReplayPath: defaultReplayPath(),
       loadReplayPath: defaultLoadReplayPath(),
       saveScoresPath: defaultScoresPath()
@@ -203,5 +230,6 @@ when isMainModule:
     config.seed,
     config.saveReplayPath,
     config.loadReplayPath,
-    config.saveScoresPath
+    config.saveScoresPath,
+    config.tokens
   )

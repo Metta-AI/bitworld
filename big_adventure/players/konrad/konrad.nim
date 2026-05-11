@@ -1043,6 +1043,72 @@ proc queryEscape(value: string): string =
       result.add(Hex[(byte shr 4) and 0x0f])
       result.add(Hex[byte and 0x0f])
 
+proc ensureWsPath(url, path: string): string =
+  ## Inserts a default websocket path when the URL has no path.
+  let schemePos = url.find("://")
+  let start =
+    if schemePos < 0:
+      0
+    else:
+      schemePos + 3
+  for i in start ..< url.len:
+    case url[i]
+    of '/':
+      return url
+    of '?', '#':
+      return url[0 ..< i] & path & url[i .. ^1]
+    else:
+      discard
+  url & path
+
+proc addQueryParam(url, key, value: string): string =
+  ## Appends one escaped query parameter to a URL.
+  if value.len == 0:
+    return url
+  result = url
+  if '?' in result:
+    result.add('&')
+  else:
+    result.add('?')
+  result.add(key)
+  result.add('=')
+  result.add(value.queryEscape())
+
+proc connectUrl(
+  host,
+  url,
+  name,
+  token: string,
+  port,
+  slot: int
+): string =
+  ## Builds the player websocket URL.
+  if url.len > 0:
+    result = url.ensureWsPath(WebSocketPath)
+  else:
+    result = "ws://" & host & ":" & $port & WebSocketPath
+  result = result.addQueryParam("name", name)
+  if slot >= 0:
+    result = result.addQueryParam("slot", $slot)
+  result = result.addQueryParam("token", token)
+
+proc redactedUrl(url: string): string =
+  ## Returns a log-safe websocket URL.
+  const Key = "token="
+  let tokenStart = url.find(Key)
+  if tokenStart < 0:
+    return url
+  let valueStart = tokenStart + Key.len
+  var valueEnd = valueStart
+  while valueEnd < url.len and url[valueEnd] notin {'&', '#'}:
+    inc valueEnd
+  let suffix =
+    if valueEnd < url.len:
+      url[valueEnd .. ^1]
+    else:
+      ""
+  url[0 ..< valueStart] & "<redacted>" & suffix
+
 proc initBot(): Bot =
   ## Builds the initial bot state.
   result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
@@ -1099,22 +1165,24 @@ proc nextChat(bot: var Bot): string =
 proc runBot(
   host = DefaultHost,
   port = PlayerDefaultPort,
+  url = "",
   name = "konrad",
+  token = "",
+  slot = -1,
   chat = false,
   maxSteps = 0
 ) =
   ## Connects to the Big Adventure player endpoint.
-  let url =
-    if name.len > 0:
-      "ws://" & host & ":" & $port & WebSocketPath &
-        "?name=" & name.queryEscape()
-    else:
-      "ws://" & host & ":" & $port & WebSocketPath
+  let endpoint = connectUrl(host, url, name, token, port, slot)
 
   while true:
     try:
+      echo "konrad connecting to ", endpoint.redactedUrl()
+      flushFile(stdout)
       var bot = initBot()
-      let ws = newWebSocket(url)
+      let ws = newWebSocket(endpoint)
+      echo "konrad connected"
+      flushFile(stdout)
       var lastMask = 0xff'u8
       while true:
         if not ws.receiveUpdates(bot):
@@ -1135,16 +1203,26 @@ proc runBot(
             " coins=", bot.coinCount,
             " hearts=", bot.heartCount,
             " kills=", bot.killCount
+          flushFile(stdout)
           ws.close()
           return
-    except CatchableError:
+    except CatchableError as e:
+      echo "konrad reconnecting after error: ", e.msg
+      flushFile(stdout)
       sleep(250)
 
 when isMainModule:
   var
     address = DefaultHost
     port = PlayerDefaultPort
-    name = "konrad"
+    url = getEnv("COGAMES_ENGINE_WS_URL")
+    name =
+      if url.len > 0:
+        ""
+      else:
+        "konrad"
+    token = ""
+    slot = -1
     chat = false
     maxSteps = 0
   for kind, key, val in getopt():
@@ -1155,14 +1233,24 @@ when isMainModule:
         address = val
       of "port":
         port = parseInt(val)
+      of "url":
+        url = val
       of "name":
         name = val
+      of "token":
+        token = val
+      of "slot":
+        slot = parseInt(val)
       of "chat":
         chat = true
       of "max-steps":
         maxSteps = parseInt(val)
       else:
-        discard
-    else:
+        raise newException(ValueError, "Unknown option: --" & key)
+    of cmdShortOption:
+      raise newException(ValueError, "Unknown option: -" & key)
+    of cmdArgument:
+      raise newException(ValueError, "Unexpected argument: " & key)
+    of cmdEnd:
       discard
-  runBot(address, port, name, chat, maxSteps)
+  runBot(address, port, url, name, token, slot, chat, maxSteps)
