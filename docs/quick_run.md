@@ -101,7 +101,7 @@ option is forwarded to the game server when `quick_run` starts it.
 .\tools\quick_run.exe among_them --config:'{"minPlayers":8}' --bots:nottoodumb:8
 ```
 
-Common server options still work:
+Common options:
 
 | Option | Meaning |
 | --- | --- |
