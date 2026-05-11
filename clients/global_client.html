@@ -171,41 +171,27 @@ const debugUp=document.getElementById("debugUp");
 const debugSprites=document.getElementById("debugSprites");
 const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
-function replaceClientPathSuffix(path,aliases,websocketPath){
-  for(const alias of aliases){
-    if(path===alias){
-      return websocketPath;
-    }
-    if(path.endsWith(alias)){
-      return path.slice(0,path.length-alias.length)+websocketPath;
-    }
-  }
-  return "";
-}
 function websocketPathForClientPage(path){
   const mappings=[
-    [["/clients/global","/clients/global.html","/clients/global_client.html",
-      "/client/global","/client/global.html","/client/global_client.html"],"/global"],
-    [["/clients/replay","/clients/replay.html","/clients/replay_client.html",
-      "/client/replay","/client/replay.html","/client/replay_client.html"],"/replay"],
-    [["/clients/player","/clients/player.html","/clients/player_client.html",
-      "/client/player","/client/player.html","/client/player_client.html"],"/player"],
-    [["/clients/reward","/clients/rewards","/clients/reward.html",
-      "/clients/rewards.html","/clients/reward_client.html",
-      "/client/reward","/client/rewards","/client/reward.html",
-      "/client/rewards.html","/client/reward_client.html"],"/reward"],
+    ["/clients/global","/global"],
+    ["/clients/replay","/replay"],
+    ["/clients/player","/player"],
+    ["/clients/rewards","/reward"],
+    ["/clients/admin","/admin"],
   ];
-  for(const mapping of mappings){
-    const rewritten=replaceClientPathSuffix(path,mapping[0],mapping[1]);
-    if(rewritten){
-      return rewritten;
+  for(const [clientPath,websocketPath] of mappings){
+    if(path===clientPath){
+      return websocketPath;
+    }
+    if(path.endsWith(clientPath)){
+      return path.slice(0,path.length-clientPath.length)+websocketPath;
     }
   }
   return path;
 }
 function defaultAddress(){
-  // Direct websocket pages connect to their own path, while /client/*
-  // pages connect back to the matching websocket endpoint.
+  // Direct websocket pages connect to their own path. Canonical Coworld
+  // /clients/* pages connect back to the matching websocket endpoint.
   const protocol=location.protocol==="https:"?"wss:":"ws:";
   const host=location.host||"localhost:8080";
   return protocol+"//"+host+websocketPathForClientPage(location.pathname);

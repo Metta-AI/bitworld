@@ -7,6 +7,13 @@ const
   RewardClientRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/snappyjs.min.js"
   QrcodeClientRoute* = "/qrcode.min.js"
+  CoworldPlayerClientRoute* = "/clients/player"
+  CoworldGlobalClientRoute* = "/clients/global"
+  CoworldReplayClientRoute* = "/clients/replay"
+  CoworldAdminClientRoute* = "/clients/admin"
+  CoworldRewardClientRoute* = "/clients/rewards"
+  CoworldSnappyClientRoute* = "/clients/snappyjs.min.js"
+  CoworldQrcodeClientRoute* = "/clients/qrcode.min.js"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   AdminClientHtml* = "admin_client.html"
@@ -35,36 +42,29 @@ proc clientsDir*(): string =
     except OSError:
       "clients"
 
-proc canonicalClientRoute*(route: string): string =
-  ## Returns the packaged static asset route for public client aliases.
+proc coworldClientStaticRoute*(route: string): string =
+  ## Returns the packaged static asset route for one canonical Coworld route.
   case route
-  of "/clients/player", "/clients/player.html", "/clients/player_client.html",
-      "/client/player", PlayerClientRoute, "/client/player_client.html":
+  of CoworldPlayerClientRoute:
     PlayerClientRoute
-  of "/clients/global", "/clients/global.html", "/clients/global_client.html",
-      "/client/global", GlobalClientRoute, "/client/global_client.html":
+  of CoworldGlobalClientRoute:
     GlobalClientRoute
-  of "/clients/replay", "/clients/replay.html", "/clients/replay_client.html",
-      "/client/replay", "/client/replay.html", "/client/replay_client.html":
+  of CoworldReplayClientRoute:
     GlobalClientRoute
-  of "/clients/admin", "/clients/admin.html", "/clients/admin_client.html",
-      "/client/admin", AdminClientRoute, "/client/admin_client.html":
+  of CoworldAdminClientRoute:
     AdminClientRoute
-  of "/clients/reward", "/clients/rewards", "/clients/reward.html",
-      "/clients/rewards.html", "/clients/reward_client.html",
-      "/client/reward", "/client/rewards", "/client/reward.html",
-      RewardClientRoute, "/client/reward_client.html":
+  of CoworldRewardClientRoute:
     RewardClientRoute
-  of "/clients/snappyjs.min.js", "/client/snappyjs.min.js":
+  of CoworldSnappyClientRoute:
     SnappyClientRoute
-  of "/clients/qrcode.min.js", "/client/qrcode.min.js":
+  of CoworldQrcodeClientRoute:
     QrcodeClientRoute
   else:
     route
 
 proc clientHtmlPath*(route: string): string =
   ## Returns the local HTML file for a served client route.
-  case canonicalClientRoute(route)
+  case coworldClientStaticRoute(route)
   of PlayerClientRoute:
     clientsDir() / PlayerClientHtml
   of GlobalClientRoute:
@@ -78,7 +78,7 @@ proc clientHtmlPath*(route: string): string =
 
 proc clientStaticPath*(route: string): string =
   ## Returns the local static client file for a served client route.
-  case canonicalClientRoute(route)
+  case coworldClientStaticRoute(route)
   of SnappyClientRoute:
     clientsDir() / SnappyClientJs
   of QrcodeClientRoute:
@@ -88,7 +88,7 @@ proc clientStaticPath*(route: string): string =
 
 proc clientStaticContentType*(route: string): string =
   ## Returns the content type for a served static client file.
-  case canonicalClientRoute(route)
+  case coworldClientStaticRoute(route)
   of SnappyClientRoute, QrcodeClientRoute:
     "application/javascript; charset=utf-8"
   else:
