@@ -22,29 +22,6 @@ const
   ClientWindowMargin = 50
   PlayerClientSourceRelative = "clients" / "player_client.nim"
 
-  FallbackFacts = [
-    "fire heals the undead",
-    "silver burns shapeshifters",
-    "ghosts fear running water",
-    "moonlight reveals hidden doors",
-    "blood opens sealed gates",
-    "iron blocks teleportation",
-    "shadows carry whispers",
-    "mirrors trap spirits",
-    "salt wards off demons",
-    "bells silence magic",
-    "gold attracts dragons",
-    "bone dust fuels curses",
-    "starlight mends wounds",
-    "thunder wakes the dead",
-    "amber preserves memories",
-    "frost shatters illusions",
-    "vines obey the fey",
-    "ash blinds seers",
-    "coral amplifies song",
-    "obsidian cuts fate",
-  ]
-
 type
   GamePhase = enum
     PhaseLobby
@@ -54,11 +31,17 @@ type
     PhasePower
     PhaseEnd
 
+  PlayerKind* = enum
+    PlayerHuman
+    PlayerBot
+
   Player = object
     name: string
     colorIndex: int
     ready: bool
+    kind: PlayerKind
     soul: Soul
+    cursor: int
 
   ChatEntry = object
     name: string
@@ -100,6 +83,7 @@ type
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
     rng: Rand
+    prevInputs: seq[InputState]
 
   WebSocketAppState = object
     lock: Lock
@@ -131,7 +115,7 @@ proc initAppState() =
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
 
-proc addPlayer(sim: var SimServer, name: string): int =
+proc addPlayer(sim: var SimServer, name: string, kind: PlayerKind = PlayerHuman): int =
   if sim.players.len >= MaxPlayers:
     return -1
   let idx = sim.players.len
@@ -139,7 +123,9 @@ proc addPlayer(sim: var SimServer, name: string): int =
     name: if name.len > 0: name else: "Player" & $(idx + 1),
     colorIndex: (idx mod 8) + 3,
     ready: false,
-    soul: newSoul()
+    kind: kind,
+    soul: newSoul(),
+    cursor: 0
   ))
   idx
 
@@ -163,17 +149,8 @@ proc chatLogStrings(sim: SimServer): seq[string] =
 
 proc generateFactOptions(sim: var SimServer) =
   let player = sim.players[sim.currentTurn]
-  try:
-    let facts = player.soul.generateFacts(sim.chatLogStrings())
-    sim.factChoice.options = facts
-  except CatchableError:
-    var indices: seq[int] = @[]
-    for i in 0 ..< FallbackFacts.len:
-      indices.add(i)
-    sim.rng.shuffle(indices)
-    sim.factChoice.options[0] = FallbackFacts[indices[0]]
-    sim.factChoice.options[1] = FallbackFacts[indices[1]]
-    sim.factChoice.options[2] = FallbackFacts[indices[2]]
+  let facts = player.soul.generateFacts(sim.chatLogStrings())
+  sim.factChoice.options = facts
   sim.factChoice.selected = -1
   sim.factChoice.step = FactReading
   sim.factTimer = FactReadTicks
@@ -309,10 +286,14 @@ proc renderFactChoices(sim: var SimServer) =
   sim.fb.blitText(sim.letterSprites, sim.digitSprites, suffix, suffixX, 4)
   let textX = TextMargin + 8
 
+  let showCursor = player.kind == PlayerHuman and sim.factChoice.step == FactReading
+  let cursorPos = player.cursor
+
   var y = 14
   for i in 0 ..< 3:
     let selected = sim.factChoice.step >= FactSelected and sim.factChoice.selected == i
-    if selected:
+    let cursored = showCursor and cursorPos == i
+    if selected or cursored:
       sim.fb.fillRect(TextMargin, y, 6, 6, color)
     else:
       sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
@@ -329,8 +310,9 @@ proc renderFactChoices(sim: var SimServer) =
     y += lines * 8 + 2
 
   let selectedSkip = sim.factChoice.step >= FactSelected and sim.factChoice.selected >= 3
+  let cursoredSkip = showCursor and cursorPos >= 3
   if y + CharHeight <= ScreenHeight:
-    if selectedSkip:
+    if selectedSkip or cursoredSkip:
       sim.fb.fillRect(TextMargin, y, 6, 6, color)
     else:
       sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
@@ -412,6 +394,15 @@ proc render(sim: var SimServer) =
   else:
     sim.renderGame()
 
+proc released(current, prev: InputState): InputState =
+  result.up = not current.up and prev.up
+  result.down = not current.down and prev.down
+  result.left = not current.left and prev.left
+  result.right = not current.right and prev.right
+  result.attack = not current.attack and prev.attack
+  result.b = not current.b and prev.b
+  result.select = not current.select and prev.select
+
 proc step(sim: var SimServer, inputs: seq[InputState]) =
   inc sim.tick
   case sim.phase
@@ -433,24 +424,44 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       sim.phase = PhaseSetup
       return
     dec sim.factTimer
+    let turnPlayer = sim.players[sim.currentTurn]
+    let turnIsHuman = turnPlayer.kind == PlayerHuman
+    let turnPrev = if sim.currentTurn < sim.prevInputs.len: sim.prevInputs[sim.currentTurn]
+                   else: InputState()
+    let turnCur = if sim.currentTurn < inputs.len: inputs[sim.currentTurn]
+                  else: InputState()
+    let turnInput = released(turnCur, turnPrev)
+
     if sim.factChoice.step == FactGazing and sim.factTimer <= 0:
       sim.generateFactOptions()
+
     elif sim.factChoice.step == FactVoting:
       var allVoted = true
       for i in 0 ..< sim.factChoice.votes.len:
         if sim.factChoice.votes[i] == VotePending:
-          dec sim.factChoice.voteTimers[i]
-          if sim.factChoice.voteTimers[i] <= 0:
-            if sim.rng.rand(3) <= 1:
+          if sim.players[i].kind == PlayerHuman:
+            let voterPrev = if i < sim.prevInputs.len: sim.prevInputs[i] else: InputState()
+            let voterCur = if i < inputs.len: inputs[i] else: InputState()
+            let voterRel = released(voterCur, voterPrev)
+            if voterRel.attack:
               sim.factChoice.votes[i] = VotePass
-            else:
+            elif voterRel.b:
               sim.factChoice.votes[i] = VoteVeto
+            else:
+              allVoted = false
           else:
-            allVoted = false
-        # already voted
+            dec sim.factChoice.voteTimers[i]
+            if sim.factChoice.voteTimers[i] <= 0:
+              if sim.rng.rand(3) <= 1:
+                sim.factChoice.votes[i] = VotePass
+              else:
+                sim.factChoice.votes[i] = VoteVeto
+            else:
+              allVoted = false
       if allVoted:
         sim.factChoice.step = FactVoteResult
         sim.factChoice.voteResultTimer = FactAcceptTicks
+
     elif sim.factChoice.step == FactVoteResult:
       dec sim.factChoice.voteResultTimer
       if sim.factChoice.voteResultTimer <= 0:
@@ -474,15 +485,27 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
           ))
         sim.factChoice.step = FactShowChat
         sim.factTimer = FactAcceptTicks * 4
-    elif sim.factTimer > 0:
-      discard
+
     elif sim.factChoice.step == FactReading:
-      let pick = sim.rng.rand(3)
-      sim.factChoice.selected = pick
-      sim.factChoice.step = FactSelected
-      sim.factTimer = FactAcceptTicks
+      if turnIsHuman:
+        if turnInput.down:
+          sim.players[sim.currentTurn].cursor = min(sim.players[sim.currentTurn].cursor + 1, 3)
+        elif turnInput.up:
+          sim.players[sim.currentTurn].cursor = max(sim.players[sim.currentTurn].cursor - 1, 0)
+        elif turnInput.attack:
+          sim.factChoice.selected = sim.players[sim.currentTurn].cursor
+          sim.factChoice.step = FactSelected
+          sim.factTimer = FactAcceptTicks
+      elif sim.factTimer <= 0:
+        let pick = sim.rng.rand(3)
+        sim.factChoice.selected = pick
+        sim.factChoice.step = FactSelected
+        sim.factTimer = FactAcceptTicks
+
     elif sim.factChoice.step == FactSelected:
-      if sim.factChoice.selected >= 0 and sim.factChoice.selected < 3:
+      if sim.factTimer > 0:
+        discard
+      elif sim.factChoice.selected >= 0 and sim.factChoice.selected < 3:
         sim.factChoice.step = FactVoting
         sim.factChoice.votes = @[]
         sim.factChoice.voteTimers = @[]
@@ -502,14 +525,19 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
         ))
         sim.factChoice.step = FactShowChat
         sim.factTimer = FactAcceptTicks * 4
+
     elif sim.factChoice.step == FactShowChat:
-      sim.currentTurn += 1
-      if sim.currentTurn >= sim.players.len:
-        sim.phase = PhaseSetup
-        return
-      sim.startFactTurn()
+      if sim.factTimer > 0:
+        discard
+      else:
+        sim.currentTurn += 1
+        if sim.currentTurn >= sim.players.len:
+          sim.phase = PhaseSetup
+          return
+        sim.startFactTurn()
   else:
     discard
+  sim.prevInputs = inputs
 
 proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.render()
@@ -768,7 +796,7 @@ proc launchGuiClients(address: string, port: int, players: int) =
       echo "  GUI: failed to start player ", i + 1, ": ", e.msg
 
 proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
-                   gui = false, players = DefaultMinPlayers) =
+                   gui = false, players = DefaultMinPlayers, bots = 0) =
   initAppState()
 
   let httpServer = newServer(
@@ -797,6 +825,10 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
   var
     sim = initSim(seed, players)
     lastTick = getMonoTime()
+
+  for i in 0 ..< bots:
+    let botName = "bot" & $(i + 1)
+    discard sim.addPlayer(botName, PlayerBot)
 
   while true:
     var
@@ -876,6 +908,7 @@ when isMainModule:
     seed = 0
     gui = false
     players = DefaultMinPlayers
+    bots = 0
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -885,6 +918,7 @@ when isMainModule:
       of "seed": seed = parseInt(val)
       of "gui": gui = true
       of "players": players = parseInt(val)
+      of "bots": bots = parseInt(val)
       else: discard
     else: discard
-  runServerLoop(address, port, seed, gui, players)
+  runServerLoop(address, port, seed, gui, players, bots)

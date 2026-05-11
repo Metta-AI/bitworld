@@ -103,7 +103,7 @@ cd /Users/me/p/bitworld/mortal_coil
 nim r mortal_coil.nim --address:0.0.0.0 --port:2000
 ```
 
-Connect as a player in the browser:
+Connect as a human player in the browser:
 
 ```
 http://localhost:2000/player
@@ -115,10 +115,21 @@ Spectate the game (global view):
 http://localhost:2000/global
 ```
 
-No bundled Mortal Coil bot is documented yet. Use `/player` in multiple
-browser tabs or native clients for local testing.
+### Player Types
 
-The server accepts 4-8 players. Once the minimum of 4 players connect, a 10-second countdown starts. When the countdown finishes, the game begins.
+Players can be **human** (connected via browser/client) or **bot** (automated,
+server-side). Use `--bots:N` to spawn N bot players at startup:
+
+```sh
+nim r mortal_coil.nim --address:0.0.0.0 --port:2000 --bots:3
+```
+
+Human players use the d-pad to navigate choices and A/B to confirm or veto.
+Bot players act automatically on timers.
+
+The server accepts 4-8 players total (human + bot). Once the minimum of 4
+players are present, a 5-second countdown starts. When the countdown finishes,
+the game begins.
 
 ## Architecture
 
