@@ -60,11 +60,7 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  request.serveClientHtml(request.path)
 
 proc cleanPlayerName(name: string): string =
   result = name.strip()
@@ -87,7 +83,9 @@ proc httpHandler(request: Request) =
     headers["Content-Type"] = "text/plain; charset=utf-8"
     headers["Cache-Control"] = "no-cache"
     request.respond(200, headers, "healthy")
-  elif request.path == SpritePlayerWebSocketPath and
+  elif (request.path == SpritePlayerWebSocketPath or
+      request.path == WebSocketPath or
+      request.path == "/admin") and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
@@ -113,7 +111,8 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+  elif (request.path == GlobalWebSocketPath or request.path == "/admin") and
+      request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:

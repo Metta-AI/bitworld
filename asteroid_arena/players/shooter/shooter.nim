@@ -200,11 +200,15 @@ proc connectUrl(address: string, port: int, name, token: string): string =
 proc runBot(
   address = "localhost",
   port = 8080,
+  url = "",
   name = "shooter",
   token = "",
   maxSteps = 0
 ) =
-  let endpoint = connectUrl(address, port, name, token)
+  let endpoint =
+    if url.len > 0: url
+    else: connectUrl(address, port, name, token)
+  var connected = false
   while true:
     try:
       echo "shooter connecting to ", endpoint
@@ -214,6 +218,7 @@ proc runBot(
         viewportHeight: 128
       )
       let ws = newWebSocket(endpoint)
+      connected = true
       while true:
         let msg = ws.receiveMessage(-1)
         if msg.isNone:
@@ -231,7 +236,13 @@ proc runBot(
         if maxSteps > 0 and bot.frameTick >= maxSteps:
           ws.close()
           return
+      if connected:
+        echo "shooter: game ended"
+        return
     except CatchableError as e:
+      if connected:
+        echo "shooter: disconnected after play: ", e.msg
+        return
       echo "shooter reconnecting after error: ", e.msg
       sleep(250)
 
@@ -239,6 +250,7 @@ when isMainModule:
   var
     address = "localhost"
     port = 8080
+    url = getEnv("COGAMES_ENGINE_WS_URL")
     name = "shooter"
     token = ""
     maxSteps = 0
@@ -249,10 +261,11 @@ when isMainModule:
       case key
       of "address": address = value
       of "port": port = parseInt(value)
+      of "url": url = value
       of "name": name = value
       of "token": token = value
       of "max-steps": maxSteps = parseInt(value)
       else: discard
     else: discard
 
-  runBot(address, port, name, token, maxSteps)
+  runBot(address, port, url, name, token, maxSteps)

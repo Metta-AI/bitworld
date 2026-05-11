@@ -52,4 +52,4 @@ COPY --from=build \
   /workspace/bitworld/asteroid_arena/players/shooter/shooter \
   /bin/shooter
 
-CMD ["/bin/shooter", "--address:host.docker.internal", "--port:8080"]
+CMD ["/bin/shooter"]
