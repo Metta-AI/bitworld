@@ -100,14 +100,20 @@ before running the certifier:
 docker build \
   --platform=linux/amd64 \
   -f among_them/Dockerfile \
-  -t bitworld-among-them:latest \
+  -t ghcr.io/treeform/bitworld-among-them-runner:latest \
   .
 docker build \
   --platform=linux/amd64 \
   -f among_them/players/nottoodumb/Dockerfile \
-  -t bitworld-nottoodumb:latest \
+  -t ghcr.io/treeform/bitworld-nottoodumb:latest \
   .
-cogames coworld certify among_them/coworld_manifest.json
+uv run coworld certify among_them/coworld_manifest.json
+```
+
+Upload the certified Coworld with:
+
+```sh
+uv run coworld upload-coworld among_them/coworld_manifest.json
 ```
 
 ## Map Files

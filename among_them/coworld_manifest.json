@@ -1,8 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "among_them",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
     "owner": "treeform@softmax.com",
     "runnable": {
@@ -317,8 +317,14 @@
       }
     },
     "protocols": {
-      "player": "../docs/player_protocol_spec.md",
-      "global": "../docs/global_protocol_spec.md"
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/player_protocol_spec.md"
+      },
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/global_protocol_spec.md"
+      }
     }
   },
   "player": [
