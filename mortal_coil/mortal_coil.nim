@@ -41,6 +41,7 @@ type
     kind: PlayerKind
     soul: Soul
     cursor: int
+    magicTokens: int
 
   ChatEntry = object
     name: string
@@ -124,7 +125,8 @@ proc addPlayer(sim: var SimServer, name: string, kind: PlayerKind = PlayerHuman)
     ready: false,
     kind: kind,
     soul: newSoul(),
-    cursor: 0
+    cursor: 0,
+    magicTokens: 4
   ))
   idx
 
@@ -316,9 +318,15 @@ proc renderFactChoices(sim: var SimServer) =
     else:
       sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
     sim.fb.blitText(sim.letterSprites, "skip", textX, y)
+    y += CharHeight + 4
 
   if voting:
     sim.renderVotePanel()
+  else:
+    let tokenText = "magic " & $player.magicTokens
+    let tokenX = (ScreenWidth - tokenText.len * CharWidth) div 2
+    let tokenY = y + (ScreenHeight - y - CharHeight) div 2
+    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, tokenText, tokenX, tokenY, color)
 
 proc renderFactChat(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
@@ -476,6 +484,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             text: "vetoed"
           ))
         else:
+          sim.players[sim.currentTurn].magicTokens -= 1
           sim.chatLog.add(ChatEntry(
             name: player.name,
             colorIndex: uint8(player.colorIndex),
@@ -528,6 +537,14 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       if sim.factTimer > 0:
         discard
       else:
+        var allSpent = true
+        for p in sim.players:
+          if p.magicTokens > 0:
+            allSpent = false
+            break
+        if allSpent:
+          sim.phase = PhaseEnd
+          return
         sim.currentTurn += 1
         if sim.currentTurn >= sim.players.len:
           sim.currentTurn = 0
