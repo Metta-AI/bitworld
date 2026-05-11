@@ -68,6 +68,9 @@ type
     address: string
     port: int
     seed: int
+    durationTicks: int
+    resultsPath: string
+    tokens: seq[string]
 
   AsteroidSize = enum
     AsteroidSmall
@@ -154,6 +157,7 @@ type
     closedSockets: seq[WebSocket]
     rewardViewers: Table[WebSocket, bool]
     resetRequested: bool
+    tokens: seq[string]
 
   ServerThreadArgs = object
     server: ptr Server
@@ -1157,6 +1161,17 @@ proc playerIdentity(request: Request): string =
 
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET":
+    {.gcsafe.}:
+      let token = request.queryParams.getOrDefault("token", "")
+      var allowed = true
+      withLock appState.lock:
+        if appState.tokens.len > 0:
+          allowed = token in appState.tokens
+      if not allowed:
+        var headers: HttpHeaders
+        headers["Content-Type"] = "text/plain"
+        request.respond(403, headers, "invalid token")
+        return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -1212,12 +1227,30 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
+proc writeResults(sim: SimServer, path: string) =
+  if path.len == 0:
+    return
+  var names = newJArray()
+  var scores = newJArray()
+  for player in sim.players:
+    names.add(%player.name)
+    scores.add(%player.score)
+  let results = %*{"names": names, "scores": scores}
+  let dir = path.parentDir()
+  if dir.len > 0:
+    createDir(dir)
+  writeFile(path, $results & "\n")
+
 proc runServerLoop(
   host = DefaultHost,
   port = DefaultPort,
-  seed = 0xA57E2
+  seed = 0xA57E2,
+  durationTicks = 0,
+  resultsPath = "",
+  tokens: seq[string] = @[]
 ) =
   initAppState()
+  appState.tokens = tokens
 
   let httpServer = newServer(
     httpHandler,
@@ -1235,8 +1268,12 @@ proc runServerLoop(
     currentSeed = seed
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
+    tickCount = 0
 
   while true:
+    if durationTicks > 0 and tickCount >= durationTicks:
+      sim.writeResults(resultsPath)
+      quit(0)
     var
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
@@ -1301,6 +1338,7 @@ proc runServerLoop(
       continue
 
     sim.step(inputs)
+    inc tickCount
 
     for i in 0 ..< sockets.len:
       let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
@@ -1342,12 +1380,29 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("address", config.address)
   node.readConfigInt("port", config.port)
   node.readConfigInt("seed", config.seed)
+  var durationSeconds = 0
+  node.readConfigInt("duration", durationSeconds)
+  if durationSeconds > 0:
+    config.durationTicks = durationSeconds * TargetFps
+  node.readConfigString("resultsPath", config.resultsPath)
+  if node.hasKey("tokens") and node["tokens"].kind == JArray:
+    for item in node["tokens"]:
+      if item.kind == JString:
+        config.tokens.add(item.getStr())
 
 when isMainModule:
   var
-    config = RunConfig(address: DefaultHost, port: DefaultPort, seed: 0xA57E2)
+    config = RunConfig(
+      address: DefaultHost,
+      port: DefaultPort,
+      seed: 0xA57E2,
+      durationTicks: 90 * TargetFps
+    )
     configJson = ""
-    configPath = ""
+    configPath = getEnv("COGAME_CONFIG_PATH")
+  config.resultsPath = getEnv("COGAME_SAVE_RESULTS_PATH")
+  if config.resultsPath.len == 0:
+    config.resultsPath = getEnv("COGAME_RESULTS_PATH")
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -1356,10 +1411,13 @@ when isMainModule:
       of "port": config.port = parseInt(val)
       of "config": configJson = val
       of "config-file": configPath = val
+      of "duration": config.durationTicks = parseInt(val) * TargetFps
       else: discard
     else: discard
   if configPath.len > 0:
     config.update(readFile(configPath))
   if configJson.len > 0:
     config.update(configJson)
-  runServerLoop(config.address, config.port, seed = config.seed)
+  runServerLoop(config.address, config.port, seed = config.seed,
+    durationTicks = config.durationTicks, resultsPath = config.resultsPath,
+    tokens = config.tokens)

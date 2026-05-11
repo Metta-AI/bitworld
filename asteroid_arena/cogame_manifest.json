@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/cogame_manifest_schema.json",
+  "name": "asteroid_arena",
+  "version": "0.1.0",
+  "description": "A sprite-protocol BitWorld arcade game where players pilot ships, shoot asteroids, and fight each other.",
+  "owner": "treeform@softmax.com",
+  "image_uri": "bitworld-asteroid-arena:latest",
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "tokens": {
+        "description": "One connection token per player slot.",
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "seed": {
+        "description": "Random seed.",
+        "type": "integer",
+        "minimum": 0,
+        "default": 677410
+      },
+      "duration": {
+        "description": "Game duration in seconds.",
+        "type": "integer",
+        "minimum": 1,
+        "default": 90
+      }
+    }
+  },
+  "results_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["names", "scores"],
+    "properties": {
+      "names": {
+        "description": "One player name per slot.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "scores": {
+        "description": "One score per player slot.",
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "protocols": {
+    "player": "../docs/global_protocol_spec.md"
+  }
+}
