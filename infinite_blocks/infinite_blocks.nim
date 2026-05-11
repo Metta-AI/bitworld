@@ -1729,11 +1729,11 @@ proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
+  let filePath = clientStaticPath(route, GlobalClientRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -1746,11 +1746,7 @@ proc serveClientHtml(request: Request, route: string): bool =
 
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static client asset if the route matches.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  request.serveClientHtml(request.path)
 
 proc serveHealthz(request: Request): bool =
   ## Serves the container health check endpoint.
@@ -1767,22 +1763,7 @@ proc httpHandler(request: Request) =
     discard
   elif request.path == PlayerWebSocketPath and
       request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(AdminClientRoute)
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(RewardClientRoute)
-  elif request.path == PlayerWebSocketPath and
-      request.httpMethod == "GET":
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -1791,12 +1772,13 @@ proc httpHandler(request: Request) =
   elif (request.path == GlobalWebSocketPath or
       request.path == ReplayWebSocketPath or
       request.path == AdminWebSocketPath) and
-      request.httpMethod == "GET":
+      request.httpMethod == "GET" and request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = GlobalViewerState()
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

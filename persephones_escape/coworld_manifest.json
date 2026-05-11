@@ -1,7 +1,217 @@
 {
   "$schema": "../../metta/packages/coworld/coworld_manifest_schema.json",
   "game": {
-    "manifest_uri": "game/cogame_manifest.json"
+    "name": "persephones-escape",
+    "version": "0.1.0",
+    "description": "A hidden-role social deduction game about Hades, Persephone, hostage exchanges, and private information sharing.",
+    "owner": "cogames@softmax.com",
+    "image_uri": "ghcr.io/treeform/persephones-escape-game:latest",
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "tokens",
+        "roles",
+        "rounds"
+      ],
+      "properties": {
+        "mode": {
+          "const": "tournament"
+        },
+        "tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "team",
+              "count"
+            ],
+            "properties": {
+              "role": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10
+                  },
+                  {
+                    "type": "string",
+                    "enum": [
+                      "Hades",
+                      "Persephone",
+                      "Cerberus",
+                      "Demeter",
+                      "Shades",
+                      "Nymphs",
+                      "Spy",
+                      "EchoOfHades",
+                      "EchoOfPersephone",
+                      "EchoOfCerberus",
+                      "EchoOfDemeter",
+                      "Echo of Hades",
+                      "Echo of Persephone",
+                      "Echo of Cerberus",
+                      "Echo of Demeter"
+                    ]
+                  }
+                ]
+              },
+              "team": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  {
+                    "type": "string",
+                    "enum": [
+                      "TeamA",
+                      "TeamB"
+                    ]
+                  }
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "rounds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "durationSecs",
+              "psychopomps"
+            ],
+            "properties": {
+              "durationSecs": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "psychopomps": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "obstacleCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chatMaxCharsPerLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "actionRateLimits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "groupNamePrefixInRoomA": {
+          "type": "string"
+        },
+        "autoGrantWhisperEntry": {
+          "type": "boolean"
+        },
+        "fastTimers": {
+          "type": "boolean"
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scores",
+        "winner",
+        "players",
+        "ticks"
+      ],
+      "properties": {
+        "scores": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "number"
+          }
+        },
+        "winner": {
+          "type": "string",
+          "enum": [
+            "Shades",
+            "Nymphs",
+            "Draw"
+          ]
+        },
+        "players": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "slot",
+              "name",
+              "team",
+              "score"
+            ],
+            "properties": {
+              "slot": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string"
+              },
+              "team": {
+                "type": "string",
+                "enum": [
+                  "Shades",
+                  "Nymphs"
+                ]
+              },
+              "score": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "ticks": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "protocols": {
+      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md",
+      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    }
   },
   "player": [
     {
@@ -19,15 +229,42 @@
         "mode": "tournament",
         "seed": 42,
         "roles": [
-          { "role": "Hades", "team": "TeamA", "count": 1 },
-          { "role": "Persephone", "team": "TeamB", "count": 1 },
-          { "role": "Cerberus", "team": "TeamA", "count": 1 },
-          { "role": "Demeter", "team": "TeamB", "count": 1 },
-          { "role": "Shades", "team": "TeamA", "count": 1 },
-          { "role": "Nymphs", "team": "TeamB", "count": 1 }
+          {
+            "role": "Hades",
+            "team": "TeamA",
+            "count": 1
+          },
+          {
+            "role": "Persephone",
+            "team": "TeamB",
+            "count": 1
+          },
+          {
+            "role": "Cerberus",
+            "team": "TeamA",
+            "count": 1
+          },
+          {
+            "role": "Demeter",
+            "team": "TeamB",
+            "count": 1
+          },
+          {
+            "role": "Shades",
+            "team": "TeamA",
+            "count": 1
+          },
+          {
+            "role": "Nymphs",
+            "team": "TeamB",
+            "count": 1
+          }
         ],
         "rounds": [
-          { "durationSecs": 1, "psychopomps": 1 }
+          {
+            "durationSecs": 1,
+            "psychopomps": 1
+          }
         ],
         "obstacleCount": 0,
         "autoGrantWhisperEntry": true,
@@ -39,12 +276,42 @@
   "certification": {
     "variant_id": "tournament-smoke",
     "players": [
-      { "player_id": "idle-player", "initial_params": { "name": "slot_0" } },
-      { "player_id": "idle-player", "initial_params": { "name": "slot_1" } },
-      { "player_id": "idle-player", "initial_params": { "name": "slot_2" } },
-      { "player_id": "idle-player", "initial_params": { "name": "slot_3" } },
-      { "player_id": "idle-player", "initial_params": { "name": "slot_4" } },
-      { "player_id": "idle-player", "initial_params": { "name": "slot_5" } }
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_0"
+        }
+      },
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_1"
+        }
+      },
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_2"
+        }
+      },
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_3"
+        }
+      },
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_4"
+        }
+      },
+      {
+        "player_id": "idle-player",
+        "initial_params": {
+          "name": "slot_5"
+        }
+      }
     ]
   }
 }

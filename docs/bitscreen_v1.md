@@ -1,6 +1,6 @@
-# Bitscreen Protocol
+# Bitscreen v1
 
-Bitscreen Protocol is a small websocket protocol for streaming a tiny indexed
+Bitscreen v1 is a small websocket protocol for streaming a tiny indexed
 color screen and receiving simple controller input.
 
 Game servers that expose player sessions usually use:

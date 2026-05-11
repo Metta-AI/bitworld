@@ -116,7 +116,7 @@ func TestParseChatPacketRejects(t *testing.T) {
 }
 
 func TestUnpackFrameNibbleOrder(t *testing.T) {
-	// Per bitscreen_protocol.md: bits 0..3 hold the LEFT pixel, bits 4..7 the RIGHT.
+	// Per bitscreen_v1.md: bits 0..3 hold the LEFT pixel, bits 4..7 the RIGHT.
 	packed := make([]byte, ProtocolBytes)
 	packed[0] = 0x21 // left = 1, right = 2
 	packed[ProtocolBytes-1] = 0xF0

@@ -668,30 +668,18 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset. Page routes (/client/*.html) are not
-  ## served here: each page lives at its websocket URL (/player, /global),
-  ## which dual-serves HTML on a plain GET and upgrades on a
-  ## Sec-WebSocket-Key request. Page and websocket share a URL so reverse-
-  ## proxy prefix routing works without page-side awareness.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  ## Serves one static client asset if the route matches.
+  request.serveClientHtml(request.path)
 
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET" and
-      request.headers["Sec-WebSocket-Key"].len == 0:
-    discard request.serveClientHtml(PlayerClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      request.headers["Sec-WebSocket-Key"].len == 0:
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == WebSocketPath and request.httpMethod == "GET":
+      request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -885,8 +873,8 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
   httpServer.waitUntilReady()
 
   echo "Mortal Coil running on ", host, ":", port
-  echo "  Player: http://", host, ":", port, "/player"
-  echo "  Global: http://", host, ":", port, "/global"
+  echo "  Player: http://", host, ":", port, PlayerClientRoute
+  echo "  Global: http://", host, ":", port, GlobalClientRoute
 
   if gui:
     launchGuiClients(host, port, players)

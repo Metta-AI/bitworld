@@ -15,7 +15,7 @@ A Go player agent for `among_them`. Goal: complete crewmate tasks reliably.
 
 ## Key sim facts (verified)
 
-- Wire protocol is bitscreen-only: 8192-byte 4-bit packed frame in, 2-byte button-mask packet out. See `docs/bitscreen_protocol.md` and `common/protocol.nim`.
+- Wire protocol is bitscreen-only: 8192-byte 4-bit packed frame in, 2-byte button-mask packet out. See `docs/bitscreen_v1.md` and `common/protocol.nim`.
 - Task completion is just "stand on the task station with no direction inputs for `taskCompleteTicks` ticks" — `among_them/sim.nim:1139-1162`. No minigame.
 - The map is not preloaded by `nottoodumb.nim`; wall knowledge is built lazily from observation (`nottoodumb.nim:3112`). We can do the same and avoid an asset-extraction side-quest.
 

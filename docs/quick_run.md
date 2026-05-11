@@ -3,7 +3,7 @@
 `quick_run` is the local launcher for Bitworld games. It can start a game
 server, open native human clients, and launch Nim bot players from the same
 command. When manifests are present, it discovers game protocols from
-`cogame_manifest.json` and bot names from `coplayer_manifest.json`.
+`coworld_manifest.json` and bot names from `coplayer_manifest.json`.
 
 ## Basic Usage
 

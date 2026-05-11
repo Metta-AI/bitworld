@@ -5,6 +5,7 @@ import
 
 const
   UnassignedPlayerIndex = 0x7fffffff
+  SpritePlayerWebSocketPath = "/sprite_player"
 
 type
   WebSocketAppState = object
@@ -44,11 +45,11 @@ proc isWebSocketUpgrade(request: Request): bool =
 proc serveClientHtml(request: Request, route: string): bool =
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
+  let filePath = clientStaticPath(route, GlobalClientRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -86,23 +87,11 @@ proc httpHandler(request: Request) =
     headers["Cache-Control"] = "no-cache"
     request.respond(200, headers, "healthy")
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif (request.path == SpritePlayerWebSocketPath or
-      request.path == WebSocketPath or
-      request.path == "/admin") and
-      request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
   elif (request.path == SpritePlayerWebSocketPath or
       request.path == WebSocketPath) and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
@@ -128,6 +117,9 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerNames[websocket] = request.playerIdentity()
+        appState.playerIndices[websocket] = UnassignedPlayerIndex
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
   elif (request.path == GlobalWebSocketPath or request.path == "/admin") and
       request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
@@ -155,13 +147,7 @@ proc websocketHandler(
 ) =
   case event
   of OpenEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        if websocket notin appState.globalViewers and
-            websocket notin appState.rewardViewers:
-          appState.playerIndices[websocket] = UnassignedPlayerIndex
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+    discard
   of MessageEvent:
     if message.kind != BinaryMessage:
       return

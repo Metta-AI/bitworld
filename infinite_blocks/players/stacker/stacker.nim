@@ -5,6 +5,7 @@ import
 
 const
   PlayerDefaultPort = 2000
+  EngineWsEnv = "COGAMES_ENGINE_WS_URL"
   PlayerWebSocketPath = "/player"
   GlobalWebSocketPath = "/global"
   BoardWidthCells = 250
@@ -758,11 +759,98 @@ proc echoDebug(bot: Bot, mask: uint8) =
     " rot=", bot.target.rotation,
     " score=", bot.target.score
 
-proc spriteUrl(host: string, port: int, name: string): string =
+proc setQueryParam(query, key, value: string): string =
+  ## Returns a query string with one encoded parameter replaced or appended.
+  if value.len == 0:
+    return query
+  let encoded = key & "=" & value.queryEscape()
+  var found = false
+  for part in query.split('&'):
+    if part.len == 0:
+      continue
+    let equals = part.find('=')
+    let partKey =
+      if equals >= 0:
+        part[0 ..< equals]
+      else:
+        part
+    if result.len > 0:
+      result.add('&')
+    if partKey == key:
+      result.add(encoded)
+      found = true
+    else:
+      result.add(part)
+  if not found:
+    if result.len > 0:
+      result.add('&')
+    result.add(encoded)
+
+proc ensurePlayerPath(url: string): string =
+  ## Adds the player path when an injected URL contains only scheme and host.
+  let scheme = url.find("://")
+  let start =
+    if scheme >= 0:
+      scheme + 3
+    else:
+      0
+  for i in start ..< url.len:
+    if url[i] == '/':
+      if url.endsWith("/sprite_player"):
+        return url[0 ..< url.len - "/sprite_player".len] &
+          PlayerWebSocketPath
+      return url
+  url & PlayerWebSocketPath
+
+proc normalizePlayerUrl(
+  url,
+  name: string,
+  slot: int,
+  token: string
+): string =
+  ## Normalizes a player WebSocket URL and merges player auth parameters.
+  var
+    base = url
+    query = ""
+    fragment = ""
+  let hash = base.find('#')
+  if hash >= 0:
+    fragment = base[hash .. ^1]
+    base = base[0 ..< hash]
+  let question = base.find('?')
+  if question >= 0:
+    query = base[question + 1 .. ^1]
+    base = base[0 ..< question]
+  base = base.ensurePlayerPath()
+  query = query.setQueryParam("name", name)
+  if slot >= 0:
+    query = query.setQueryParam("slot", $slot)
+  query = query.setQueryParam("token", token)
+  result = base
+  if query.len > 0:
+    result.add('?')
+    result.add(query)
+  result.add(fragment)
+
+proc spriteUrl(
+  host: string,
+  port: int,
+  name: string,
+  slot: int,
+  token: string
+): string =
   ## Builds the default player websocket URL.
-  result = "ws://" & host & ":" & $port & PlayerWebSocketPath
-  if name.len > 0:
-    result.add("?name=" & name.queryEscape())
+  let playerName =
+    if name.len > 0:
+      name
+    else:
+      "stacker"
+  normalizePlayerUrl(
+    "ws://" & host & ":" & $port & PlayerWebSocketPath,
+    playerName,
+    slot,
+    token
+  )
 
 proc globalUrl(host: string, port: int): string =
   ## Builds the default global websocket URL.
@@ -786,17 +874,19 @@ proc initBot(): Bot =
 proc runBot(
   host = "localhost",
   port = PlayerDefaultPort,
-  name = "stacker",
+  name = "",
   explicitUrl = "",
+  token = "",
+  slot = -1,
   maxSteps = 0
 ) =
   ## Connects to Infinite Blocks and plays through sprite protocol.
   let
     playerUrl =
       if explicitUrl.len > 0:
-        explicitUrl
+        explicitUrl.normalizePlayerUrl(name, slot, token)
       else:
-        spriteUrl(host, port, name)
+        spriteUrl(host, port, name, slot, token)
     mapUrl =
       if explicitUrl.len > 0:
         explicitUrl.deriveGlobalUrl()
@@ -836,8 +926,10 @@ when isMainModule:
   var
     address = "localhost"
     port = PlayerDefaultPort
-    name = "stacker"
-    explicitUrl = ""
+    name = ""
+    explicitUrl = getEnv(EngineWsEnv)
+    token = ""
+    slot = -1
     maxSteps = 0
   for kind, key, val in getopt():
     case kind
@@ -849,12 +941,16 @@ when isMainModule:
         port = parseInt(val)
       of "name":
         name = val
-      of "url":
+      of "url", "player-url", "socket":
         explicitUrl = val
+      of "token":
+        token = val
+      of "slot":
+        slot = parseInt(val)
       of "max-steps":
         maxSteps = parseInt(val)
       else:
         discard
     else:
       discard
-  runBot(address, port, name, explicitUrl, maxSteps)
+  runBot(address, port, name, explicitUrl, token, slot, maxSteps)

@@ -1,22 +1,27 @@
 {
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
   "game": {
-    "name": "asteroid_arena",
+    "name": "infinite_blocks",
     "version": "0.1.0",
-    "description": "A BitWorld arcade game where players pilot ships, shoot asteroids, and fight each other.",
+    "description": "A multiplayer BitWorld falling-blocks game where players stack pieces, clear lines, and compete for score on one shared board.",
     "owner": "treeform@softmax.com",
-    "image_uri": "ghcr.io/treeform/bitworld-asteroid-arena:latest",
+    "image_uri": "ghcr.io/treeform/bitworld-infinite-blocks:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
       "properties": {
         "tokens": {
-          "description": "One connection token per player slot.",
+          "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
+          "minItems": 0,
           "maxItems": 64,
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 0
           },
           "default": []
         },
@@ -24,10 +29,10 @@
           "description": "Random seed.",
           "type": "integer",
           "minimum": 0,
-          "default": 677410
+          "default": 32619276
         },
-        "duration": {
-          "description": "Game duration in seconds. Use 0 for no time limit.",
+        "maxTicks": {
+          "description": "Maximum simulation ticks before shutdown, where 0 means no limit.",
           "type": "integer",
           "minimum": 0,
           "default": 0
@@ -40,22 +45,30 @@
       "additionalProperties": false,
       "required": [
         "names",
-        "scores"
+        "scores",
+        "alive"
       ],
       "properties": {
         "names": {
-          "description": "One player name per slot.",
+          "description": "One player name or address per player slot.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "scores": {
-          "description": "One score per player slot.",
+          "description": "One line-clear score per player slot.",
           "type": "array",
           "items": {
             "type": "integer",
             "minimum": 0
+          }
+        },
+        "alive": {
+          "description": "One flag per player slot indicating whether the player can still spawn pieces.",
+          "type": "array",
+          "items": {
+            "type": "boolean"
           }
         }
       }
@@ -64,14 +77,17 @@
       "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "client": {
+      "client/global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
     }
   },
   "player": [
     {
-      "id": "shooter",
-      "name": "Shooter",
-      "image_uri": "ghcr.io/treeform/bitworld-asteroid-arena-shooter:latest",
-      "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires."
+      "id": "stacker",
+      "name": "stacker",
+      "image_uri": "ghcr.io/treeform/bitworld-stacker:latest",
+      "description": "Coworld player for infinite_blocks."
     }
   ],
   "variants": [
@@ -79,23 +95,23 @@
       "id": "smoke",
       "name": "Smoke",
       "game_config": {
-        "seed": 677410,
-        "duration": 30
+        "seed": 32619276,
+        "maxTicks": 300
       },
-      "description": "Short deterministic Asteroid Arena configuration used for manifest checks."
+      "description": "Short deterministic infinite_blocks configuration used for manifest checks."
     }
   ],
   "certification": {
     "variant_id": "smoke",
     "players": [
       {
-        "player_id": "shooter",
+        "player_id": "stacker",
         "initial_params": {
           "name": "slot_0"
         }
       },
       {
-        "player_id": "shooter",
+        "player_id": "stacker",
         "initial_params": {
           "name": "slot_1"
         }

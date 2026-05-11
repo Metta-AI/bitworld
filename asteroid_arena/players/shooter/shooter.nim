@@ -191,9 +191,75 @@ proc queryEscape(value: string): string =
       result.add(Hex[(byte shr 4) and 0x0f])
       result.add(Hex[byte and 0x0f])
 
-proc connectUrl(address: string, port: int, name, token: string): string =
+proc setQueryParam(query, key, value: string): string =
+  ## Sets one query parameter, replacing an existing value if present.
+  let encodedKey = key.queryEscape()
+  let item = encodedKey & "=" & value.queryEscape()
+  if query.len == 0:
+    return item
+  var replaced = false
+  for part in query.split('&'):
+    if part.len == 0:
+      continue
+    let eq = part.find('=')
+    let partKey =
+      if eq >= 0:
+        part[0 ..< eq]
+      else:
+        part
+    if partKey == encodedKey:
+      if result.len > 0:
+        result.add('&')
+      result.add(item)
+      replaced = true
+    else:
+      if result.len > 0:
+        result.add('&')
+      result.add(part)
+  if not replaced:
+    if result.len > 0:
+      result.add('&')
+    result.add(item)
+
+proc normalizePlayerUrl(url, name, slot, token: string): string =
+  ## Normalizes an injected engine URL and merges player auth parameters.
+  var
+    base = url
+    query = ""
+    fragment = ""
+  let hash = base.find('#')
+  if hash >= 0:
+    fragment = base[hash .. ^1]
+    base = base[0 ..< hash]
+  let question = base.find('?')
+  if question >= 0:
+    query = base[question + 1 .. ^1]
+    base = base[0 ..< question]
+  if base.endsWith("/sprite_player"):
+    base = base[0 ..< base.len - "/sprite_player".len] & PlayerPath
+  if name.len > 0:
+    query = query.setQueryParam("name", name)
+  if slot.len > 0:
+    query = query.setQueryParam("slot", slot)
+  if token.len > 0:
+    query = query.setQueryParam("token", token)
+  result = base
+  if query.len > 0:
+    result.add('?')
+    result.add(query)
+  result.add(fragment)
+
+proc connectUrl(address: string, port: int, name, slot, token: string): string =
+  ## Builds the default player WebSocket URL.
+  let playerName =
+    if name.len > 0:
+      name
+    else:
+      "shooter"
   result = "ws://" & address & ":" & $port & PlayerPath
-  result.add("?name=" & name.queryEscape())
+  result.add("?name=" & playerName.queryEscape())
+  if slot.len > 0:
+    result.add("&slot=" & slot.queryEscape())
   if token.len > 0:
     result.add("&token=" & token.queryEscape())
 
@@ -201,13 +267,16 @@ proc runBot(
   address = "localhost",
   port = 8080,
   url = "",
-  name = "shooter",
+  name = "",
+  slot = "",
   token = "",
   maxSteps = 0
 ) =
   let endpoint =
-    if url.len > 0: url
-    else: connectUrl(address, port, name, token)
+    if url.len > 0:
+      normalizePlayerUrl(url, name, slot, token)
+    else:
+      connectUrl(address, port, name, slot, token)
   var connected = false
   while true:
     try:
@@ -251,7 +320,8 @@ when isMainModule:
     address = "localhost"
     port = 8080
     url = getEnv("COGAMES_ENGINE_WS_URL")
-    name = "shooter"
+    name = ""
+    slot = ""
     token = ""
     maxSteps = 0
 
@@ -263,9 +333,10 @@ when isMainModule:
       of "port": port = parseInt(value)
       of "url": url = value
       of "name": name = value
+      of "slot": slot = value
       of "token": token = value
       of "max-steps": maxSteps = parseInt(value)
       else: discard
     else: discard
 
-  runBot(address, port, url, name, token, maxSteps)
+  runBot(address, port, url, name, slot, token, maxSteps)

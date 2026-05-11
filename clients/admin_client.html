@@ -310,10 +310,12 @@ function joinUrlFromAddress(){
   if(playerAddress.protocol==="http:")playerAddress.protocol="ws:";
   if(playerAddress.protocol==="https:")playerAddress.protocol="wss:";
   playerAddress.pathname="/player";
-  const playerPage=new URL("/client/player.html",location.href);
+  const playerPage=new URL("/client/player",location.href);
   playerPage.search="";
   playerPage.hash="";
   playerPage.searchParams.set("address",playerAddress.toString());
+  const client=url.searchParams.get("client");
+  if(client)playerPage.searchParams.set("client",client);
   return playerPage;
 }
 

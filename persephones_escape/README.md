@@ -10,7 +10,6 @@ The game runs as a WebSocket server rendering 128x128 pixel frames to connected 
 coworld_manifest.json Coworld package manifest for certification
 server.ts          WebSocket server — accepts player/global viewer connections
 game/
-  cogame_manifest.json Cogame manifest with config/results schemas
   sim.ts           Core game simulation (physics, phases, whispers, hostage logic)
   types.ts         Shared types (GameConfig, Phase, Role, Team, etc.)
   constants.ts     Game constants (FPS, dimensions, button codes)
@@ -44,13 +43,13 @@ npx tsx tests/test_harness.ts --config medium12 --llm 12 --matches 1
 
 ## Coworld
 
-Persephone's Escape includes Coworld/Cogame manifests and a separate tournament mode for the platform contract. Freeplay remains the default local mode. Tournament mode is selected automatically when `COGAME_CONFIG_PATH` is set, or explicitly with:
+Persephone's Escape includes a Coworld manifest and a separate tournament mode for the platform contract. Freeplay remains the default local mode. Tournament mode is selected automatically when `COGAME_CONFIG_PATH` is set, or explicitly with:
 
 ```bash
 npx tsx server.ts --mode=tournament
 ```
 
-Tournament configs must include `"mode": "tournament"` and runner-managed `tokens`. The Coworld manifest is `coworld_manifest.json`; the Cogame manifest is `game/cogame_manifest.json`. The upstream contract is documented in [Metta's Coworld spec](https://github.com/Metta-AI/metta/blob/main/packages/coworld/COWORLD_README.md).
+Tournament configs must include `"mode": "tournament"` and runner-managed `tokens`. The Coworld manifest is `coworld_manifest.json`. The upstream contract is documented in [Metta's Coworld spec](https://github.com/Metta-AI/metta/blob/main/packages/coworld/COWORLD_README.md).
 
 ## Game Flow
 

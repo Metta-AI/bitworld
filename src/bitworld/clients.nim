@@ -1,12 +1,23 @@
 import std/os
 
 const
-  PlayerClientRoute* = "/client/player.html"
-  GlobalClientRoute* = "/client/global.html"
-  AdminClientRoute* = "/client/admin.html"
-  RewardClientRoute* = "/client/rewards.html"
+  PlayerClientRoute* = "/client/player"
+  GlobalClientRoute* = "/client/global"
+  AdminClientRoute* = "/client/admin"
+  RewardClientRoute* = "/client/reward"
+  PlayerClientPath* = PlayerClientRoute
+  GlobalClientPath* = GlobalClientRoute
+  AdminClientPath* = AdminClientRoute
+  RewardClientPath* = RewardClientRoute
+  RewardsClientPath* = "/client/rewards"
+  PlayerClientHtmlRoute* = "/client/player.html"
+  GlobalClientHtmlRoute* = "/client/global.html"
+  AdminClientHtmlRoute* = "/client/admin.html"
+  RewardClientHtmlRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/snappyjs.min.js"
   QrcodeClientRoute* = "/qrcode.min.js"
+  SnappyClientPath* = "/client/snappyjs.min.js"
+  QrcodeClientPath* = "/client/qrcode.min.js"
   CoworldPlayerClientRoute* = "/clients/player"
   CoworldGlobalClientRoute* = "/clients/global"
   CoworldReplayClientRoute* = "/clients/replay"
@@ -37,34 +48,41 @@ proc clientsDir*(): string =
     try:
       let cwd = getCurrentDir()
       let sibling = cwd / ".." / "clients"
-      if dirExists(sibling): sibling
-      else: cwd / "clients"
+      if dirExists(sibling):
+        sibling
+      else:
+        cwd / "clients"
     except OSError:
       "clients"
 
-proc coworldClientStaticRoute*(route: string): string =
-  ## Returns the packaged static asset route for one canonical Coworld route.
+proc clientRoute*(route: string, playerRoute = PlayerClientRoute): string =
+  ## Maps public client aliases to the underlying shared client route.
   case route
-  of CoworldPlayerClientRoute:
-    PlayerClientRoute
-  of CoworldGlobalClientRoute:
+  of CoworldPlayerClientRoute, PlayerClientRoute, PlayerClientHtmlRoute:
+    playerRoute
+  of CoworldGlobalClientRoute, CoworldReplayClientRoute, GlobalClientRoute,
+      GlobalClientHtmlRoute, "/client/global_client.html":
     GlobalClientRoute
-  of CoworldReplayClientRoute:
-    GlobalClientRoute
-  of CoworldAdminClientRoute:
+  of CoworldAdminClientRoute, AdminClientRoute, AdminClientHtmlRoute:
     AdminClientRoute
-  of CoworldRewardClientRoute:
+  of CoworldRewardClientRoute, RewardClientRoute, RewardsClientPath,
+      RewardClientHtmlRoute, "/client/reward.html",
+      "/client/reward_client.html":
     RewardClientRoute
-  of CoworldSnappyClientRoute:
+  of CoworldSnappyClientRoute, SnappyClientPath:
     SnappyClientRoute
-  of CoworldQrcodeClientRoute:
+  of CoworldQrcodeClientRoute, QrcodeClientPath:
     QrcodeClientRoute
   else:
     route
 
-proc clientHtmlPath*(route: string): string =
+proc coworldClientStaticRoute*(route: string): string =
+  ## Returns the packaged static asset route for one canonical Coworld route.
+  clientRoute(route)
+
+proc clientHtmlPath*(route: string, playerRoute = PlayerClientRoute): string =
   ## Returns the local HTML file for a served client route.
-  case coworldClientStaticRoute(route)
+  case clientRoute(route, playerRoute)
   of PlayerClientRoute:
     clientsDir() / PlayerClientHtml
   of GlobalClientRoute:
@@ -76,24 +94,30 @@ proc clientHtmlPath*(route: string): string =
   else:
     ""
 
-proc clientStaticPath*(route: string): string =
+proc clientStaticPath*(route: string, playerRoute = PlayerClientRoute): string =
   ## Returns the local static client file for a served client route.
-  case coworldClientStaticRoute(route)
+  case clientRoute(route, playerRoute)
   of SnappyClientRoute:
     clientsDir() / SnappyClientJs
   of QrcodeClientRoute:
     clientsDir() / QrcodeClientJs
   else:
-    clientHtmlPath(route)
+    clientHtmlPath(route, playerRoute)
 
-proc clientStaticContentType*(route: string): string =
+proc clientStaticContentType*(
+  route: string,
+  playerRoute = PlayerClientRoute
+): string =
   ## Returns the content type for a served static client file.
-  case coworldClientStaticRoute(route)
+  case clientRoute(route, playerRoute)
   of SnappyClientRoute, QrcodeClientRoute:
     "application/javascript; charset=utf-8"
   else:
     "text/html; charset=utf-8"
 
-proc readClientHtml*(route: string): string {.raises: [IOError].} =
+proc readClientHtml*(
+  route: string,
+  playerRoute = PlayerClientRoute
+): string {.raises: [IOError].} =
   ## Reads the HTML for a served client route.
-  readFile(clientHtmlPath(route))
+  readFile(clientHtmlPath(route, playerRoute))

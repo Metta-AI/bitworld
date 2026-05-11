@@ -14,9 +14,9 @@ games listen on the player websocket path:
 /player
 ```
 
-The player protocol sends a 128x128 indexed color screen from the server and
+The bitscreen protocol sends a 128x128 indexed color screen from the server and
 receives one byte of controller input from the client. See
-[`player_protocol_spec.md`](player_protocol_spec.md) for the packet layout.
+[`bitscreen_v1.md`](bitscreen_v1.md) for the packet layout.
 
 Many newer games also expose a global view:
 
@@ -24,8 +24,8 @@ Many newer games also expose a global view:
 /global
 ```
 
-The global protocol is used by map viewers, replay controls, and other full
-game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the
+The sprite protocol is used by map viewers, replay controls, and other full
+game views. See [`sprite_v1.md`](sprite_v1.md) for the
 binary message format.
 
 Replay mode exposes:
@@ -40,8 +40,8 @@ Games that expose training rewards also listen on:
 /reward
 ```
 
-The reward protocol streams text reward packets, one packet per simulation
-tick. See [`reward_protocol_spec.md`](reward_protocol_spec.md) for the text format.
+Reward v1 streams text reward packets, one packet per simulation
+tick. See [`reward_v1.md`](reward_v1.md) for the text format.
 
 ## JSON Config
 
@@ -159,8 +159,8 @@ The native client lives at:
 clients/player_client.nim
 ```
 
-It connects to the player protocol and is what `quick_run` launches. It is best
-for normal local development and gamepad testing.
+It connects to the bitscreen protocol and is what `quick_run` launches. It is
+best for normal local development and gamepad testing.
 
 Pass `--reconnect:5` to make it reconnect every five seconds after a disconnect.
 Reconnect is off by default.

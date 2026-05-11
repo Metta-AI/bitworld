@@ -36,9 +36,14 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("address", config.address)
   node.readConfigInt("port", config.port)
   node.readConfigInt("seed", config.seed)
-  var durationSeconds = 0
-  node.readConfigInt("duration", durationSeconds)
-  if durationSeconds > 0:
+  if node.hasKey("duration"):
+    var durationSeconds = 0
+    node.readConfigInt("duration", durationSeconds)
+    if durationSeconds < 0:
+      raise newException(
+        ValueError,
+        "Config field duration must be at least 0."
+      )
     config.durationTicks = durationSeconds * TargetFps
   node.readConfigString("resultsPath", config.resultsPath)
   if node.hasKey("tokens") and node["tokens"].kind == JArray:
@@ -52,7 +57,7 @@ when isMainModule:
       address: DefaultHost,
       port: DefaultPort,
       seed: 0xA57E2,
-      durationTicks: 90 * TargetFps
+      durationTicks: 0
     )
     configJson = ""
     configPath = getEnv("COGAME_CONFIG_PATH")
@@ -70,7 +75,14 @@ when isMainModule:
       of "port": config.port = parseInt(val)
       of "config": configJson = val
       of "config-file": configPath = val
-      of "duration": config.durationTicks = parseInt(val) * TargetFps
+      of "duration":
+        let durationSeconds = parseInt(val)
+        if durationSeconds < 0:
+          raise newException(
+            ValueError,
+            "Config field duration must be at least 0."
+          )
+        config.durationTicks = durationSeconds * TargetFps
       else: discard
     else: discard
   if configPath.len > 0:

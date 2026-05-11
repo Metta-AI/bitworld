@@ -2,8 +2,7 @@
 ##
 ## games_server/games_server.nim pulls images from GHCR at runtime to launch
 ## game and bot containers (e.g. ghcr.io/treeform/bitworld-among-them-runner).
-## Dockerfiles live beside their game or player manifests, or in the owning
-## game directory for older games that do not have manifests yet.
+## Dockerfiles live beside their game or player manifests.
 ##
 ## This tool wraps `docker buildx` to produce a multi-arch OCI manifest so
 ## the same image tag works on both x86_64 (AWS/Linux) and arm64 (macOS).
@@ -26,7 +25,9 @@ import
 const
   Registry = "ghcr.io/treeform"
   DefaultPlatforms = "linux/amd64,linux/arm64"
-  ManifestNames = ["cogame_manifest.json", "coplayer_manifest.json"]
+  CoworldManifestName = "coworld_manifest.json"
+  CoplayerManifestName = "coplayer_manifest.json"
+  ManifestNames = [CoworldManifestName, CoplayerManifestName]
   IgnoredDirs = [
     ".git",
     ".github",
@@ -37,20 +38,6 @@ const
     "replays",
     "tmp"
   ]
-  KnownImageNames = {
-    "among_them": "bitworld-among-them-runner",
-    "nottoodumb": "bitworld-nottoodumb",
-    "ivotewell": "bitworld-ivotewell",
-    "italkalot": "bitworld-italkalot",
-    "evidencebot_v2": "bitworld-evidencebot-v2",
-    "lively_lecun": "bitworld-lively-lecun",
-    "evidencebot_v2": "bitworld-evidencebot-v2",
-    "big_adventure": "bitworld-big-adventure",
-    "party_progressor": "bitworld-party-progressor",
-    "fancy_cookout": "bitworld-fancy-cookout",
-    "infinite_factory": "bitworld-infinite-factory",
-    "planet_wars": "bitworld-planet-wars",
-  }.toTable
 
 type
   DockerTarget = object
@@ -113,6 +100,15 @@ proc manifestPath(dir: string): string =
     let path = dir / fileName
     if fileExists(path):
       return path
+  var parent = dir.parentDir()
+  while parent.len > 0 and parent != dir:
+    let path = parent / CoworldManifestName
+    if fileExists(path):
+      return path
+    let nextParent = parent.parentDir()
+    if nextParent == parent:
+      break
+    parent = nextParent
 
 proc manifestString(path, key: string): string =
   ## Reads one string field from a JSON manifest.
@@ -120,25 +116,73 @@ proc manifestString(path, key: string): string =
     return ""
   let node = parseFile(path)
   if node.kind == JObject and node.hasKey(key) and node[key].kind == JString:
+    return node[key].getStr()
+  if node.kind == JObject and node.hasKey("game") and
+      node["game"].kind == JObject:
+    let game = node["game"]
+    if game.hasKey(key) and game[key].kind == JString:
+      return game[key].getStr()
+    if key == "image_uri" and game.hasKey("runnable") and
+        game["runnable"].kind == JObject:
+      let runnable = game["runnable"]
+      if runnable.hasKey("image") and runnable["image"].kind == JString:
+        return runnable["image"].getStr()
+  ""
+
+proc nodeString(node: JsonNode, key: string): string =
+  ## Reads one string field from a JSON node.
+  if node.kind == JObject and node.hasKey(key) and node[key].kind == JString:
     node[key].getStr()
   else:
     ""
 
-proc fallbackTargetName(dir: string): string =
-  ## Returns the target name for older Dockerfiles without manifests.
-  let name = dir.extractFilename()
-  if name == "boundless_factory":
-    "infinite_factory"
-  else:
-    normalizeTargetName(name)
+proc coworldPlayerImage(
+  manifestPath,
+  dirName: string
+): tuple[name, imageUri: string] =
+  ## Reads a Coworld player image that matches one Dockerfile directory.
+  if manifestPath.len == 0 or
+      manifestPath.extractFilename() != CoworldManifestName:
+    return
+  let node = parseFile(manifestPath)
+  if node.kind != JObject or not node.hasKey("player") or
+      node["player"].kind != JArray:
+    return
+  let
+    cleanDir = normalizeTargetName(dirName)
+    genericPlayerDirs = ["ai", "bot", "bots", "coplayer", "player", "players"]
+  var
+    first: JsonNode
+    matched: JsonNode
+  for player in node["player"]:
+    if player.kind != JObject:
+      continue
+    if first.isNil:
+      first = player
+    let
+      id = player.nodeString("id")
+      name = player.nodeString("name")
+    if normalizeTargetName(id) == cleanDir or
+        normalizeTargetName(name) == cleanDir:
+      matched = player
+      break
+  if matched.isNil and node["player"].len == 1 and
+      cleanDir in genericPlayerDirs:
+    matched = first
+  if not matched.isNil:
+    let
+      id = matched.nodeString("id")
+      rawName = matched.nodeString("name")
+      name = if rawName.len > 0: rawName else: id
+      imageUri = matched.nodeString("image_uri")
+    if imageUri.len > 0:
+      result = (name: name, imageUri: imageUri)
 
 proc imageNameForTarget(
   targetName: string,
   manifestImageUri: string
 ): string =
   ## Returns the GHCR package name for one Docker target.
-  if targetName in KnownImageNames:
-    return KnownImageNames[targetName]
   result = imageNameFromUri(manifestImageUri)
   if result.len == 0:
     result = "bitworld-" & targetName.replace('_', '-')
@@ -159,17 +203,19 @@ proc addDockerFile(
   let
     dir = dockerFile.parentDir()
     manifest = manifestPath(dir)
+    playerImage = coworldPlayerImage(manifest, dir.extractFilename())
+  var
     manifestName = manifestString(manifest, "name")
     manifestImageUri = manifestString(manifest, "image_uri")
+  if manifest.len > 0 and manifest.parentDir() != dir and playerImage.imageUri.len > 0:
+    manifestName = playerImage.name
+    manifestImageUri = playerImage.imageUri
+  if manifestName.len == 0 or manifestImageUri.len == 0:
+    return
   var targetName =
-    if manifestName.len > 0:
-      normalizeTargetName(manifestName)
-    else:
-      fallbackTargetName(dir)
+    normalizeTargetName(manifestName)
 
   if targetName.len == 0:
-    return
-  if manifest.len == 0 and targetName notin KnownImageNames:
     return
 
   targets.add DockerTarget(

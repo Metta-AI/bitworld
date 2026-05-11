@@ -5,15 +5,13 @@
     "version": "0.1.2",
     "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
     "owner": "treeform@softmax.com",
-    "runnable": {
-      "type": "game",
-      "image": "ghcr.io/treeform/bitworld-among-them-runner:latest"
-    },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
-      "required": ["tokens"],
+      "required": [
+        "tokens"
+      ],
       "properties": {
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
@@ -43,7 +41,10 @@
               },
               "role": {
                 "type": "string",
-                "enum": ["crew", "imposter"]
+                "enum": [
+                  "crew",
+                  "imposter"
+                ]
               },
               "color": {
                 "type": "string",
@@ -169,7 +170,7 @@
           "description": "Maximum games before shutdown.",
           "type": "integer",
           "minimum": 0,
-          "default": 1
+          "default": 0
         },
         "killRange": {
           "description": "Kill interaction range.",
@@ -215,7 +216,9 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
-      "required": ["scores"],
+      "required": [
+        "scores"
+      ],
       "properties": {
         "names": {
           "description": "One player name or address per player slot.",
@@ -317,23 +320,18 @@
       }
     },
     "protocols": {
-      "player": {
-        "type": "uri",
-        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/player_protocol_spec.md"
-      },
-      "global": {
-        "type": "uri",
-        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/global_protocol_spec.md"
-      }
-    }
+      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md",
+      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "image_uri": "ghcr.io/treeform/bitworld-among-them-runner:latest"
   },
   "player": [
     {
       "id": "nottoodumb",
       "name": "nottoodumb",
-      "type": "player",
-      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest",
-      "description": "Deterministic baseline Among Them player used for local smoke episodes."
+      "description": "Deterministic baseline Among Them player used for local smoke episodes.",
+      "image_uri": "ghcr.io/treeform/bitworld-nottoodumb:latest"
     }
   ],
   "variants": [
@@ -360,22 +358,6 @@
     }
   ],
   "certification": {
-    "game_config": {
-      "seed": 679961,
-      "minPlayers": 8,
-      "imposterCount": 2,
-      "autoImposterCount": false,
-      "tasksPerPlayer": 0,
-      "startWaitTicks": 0,
-      "roleRevealTicks": 0,
-      "gameOverTicks": 1,
-      "maxTicks": 300,
-      "maxGames": 1,
-      "voteTimerTicks": 120,
-      "showTaskArrows": false,
-      "showTaskBubbles": false,
-      "showPlayerLabels": true
-    },
     "players": [
       {
         "player_id": "nottoodumb"
@@ -401,6 +383,7 @@
       {
         "player_id": "nottoodumb"
       }
-    ]
+    ],
+    "variant_id": "certification-smoke"
   }
 }

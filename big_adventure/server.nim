@@ -315,37 +315,15 @@ proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when a GET request is a websocket upgrade.
   request.headers["Sec-WebSocket-Key"].len > 0
 
-proc canonicalClientRoute(route: string): string =
-  ## Returns the static asset route for one public client path.
-  case route
-  of "/client/global", "/clients/global", "/client/global_client.html",
-      "/client/global.html":
-    GlobalClientRoute
-  of "/client/player", "/clients/player", PlayerClientRoute,
-      "/client/player_client.html":
-    GlobalClientRoute
-  of "/client/reward", "/clients/reward", "/client/rewards",
-      "/clients/rewards", "/client/reward.html",
-      "/client/reward_client.html":
-    RewardClientRoute
-  of "/client/snappyjs.min.js", "/clients/snappyjs.min.js":
-    SnappyClientRoute
-  of "/client/qrcode.min.js", "/clients/qrcode.min.js":
-    QrcodeClientRoute
-  else:
-    route
-
 proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let
-    staticRoute = canonicalClientRoute(route)
-    filePath = clientStaticPath(staticRoute)
+  let filePath = clientStaticPath(route, GlobalClientRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(staticRoute)
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -357,7 +335,7 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client page or asset route.
+  ## Serves one static client asset if the route matches.
   request.serveClientHtml(request.path)
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
@@ -683,7 +661,8 @@ proc httpHandler(request: Request) =
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(RewardClientRoute)
   elif request.path == WebSocketPath and
-      request.httpMethod == "GET":
+      request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let
       address = request.playerIdentity()
       slot = request.playerSlot()
@@ -699,12 +678,14 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         websocket.registerPlayerSocket(address, slot, token)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         websocket.registerGlobalSocket()
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

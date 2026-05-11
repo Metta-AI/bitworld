@@ -1,19 +1,13 @@
 import
   std/[algorithm, exitprocs, json, monotimes, net, os, osproc, parseopt,
     strutils, times]
-import windy
 
 const
-  PlayerClientSourceRelative = "clients" / "player_client.nim"
-  GlobalClientSourceRelative = "clients" / "global_client.nim"
-  CogameManifestName = "cogame_manifest.json"
+  CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
-  GlobalProtocolSpec = "global_protocol_spec.md"
+  SpriteProtocolSpec = "sprite_v1.md"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
-  ClientScreenOnlyWidth = 384
-  ClientScreenOnlyHeight = 384
-  ClientWindowMargin = 50
   DefaultBindAddress = "0.0.0.0"
   DefaultConnectAddress = "localhost"
   DefaultPort = 8080
@@ -32,7 +26,7 @@ const
 
 var
   serverProcess: Process
-  clientProcesses: seq[Process]
+  botProcesses: seq[Process]
   cleanupStarted = false
 
 type
@@ -88,11 +82,6 @@ type
     label: string
     count: int
 
-  ClientLaunch = object
-    title: string
-    x: int
-    y: int
-
 proc repoRoot(): string =
   absolutePath(getCurrentDir())
 
@@ -100,6 +89,7 @@ proc usage(): string =
   "Usage: quick_run <game_folder> [--connect] [--address:ADDR] " &
     "[--port:N] [--players:N] [--bots:BOT:N] [--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
+    "Human clients open in the browser from the game's /client routes.\n" &
     "Unknown options are passed to the game server when quick_run starts it.\n" &
     "Examples:\n" &
     "  quick_run fancy_cookout\n" &
@@ -234,7 +224,7 @@ proc manifestStringArray(node: JsonNode, key: string): seq[string] =
       result.add(item.getStr())
 
 proc manifestProtocol(node: JsonNode, key: string): string =
-  ## Reads one protocol spec path from a CoGame manifest.
+  ## Reads one protocol spec path from a Coworld manifest.
   if node.kind != JObject or not node.hasKey("protocols"):
     return
   let protocols = node["protocols"]
@@ -242,42 +232,50 @@ proc manifestProtocol(node: JsonNode, key: string): string =
     protocols[key].kind == JString:
       return protocols[key].getStr()
 
-proc isGlobalProtocolSpec(path: string): bool =
-  ## Returns true when a protocol path names the global protocol spec.
+proc isSpriteProtocolSpec(path: string): bool =
+  ## Returns true when a protocol path names the sprite protocol spec.
   let cleanPath = path.toLowerAscii()
-  cleanPath.extractFilename() == GlobalProtocolSpec or
-    cleanPath.contains("global_protocol_spec")
+  cleanPath.extractFilename() == SpriteProtocolSpec or
+    cleanPath.contains("sprite_v1")
 
 proc clientProtocolFromManifest(node: JsonNode): ClientProtocol =
-  ## Returns the human client protocol advertised by a CoGame manifest.
-  if node.manifestProtocol("player").isGlobalProtocolSpec():
+  ## Returns the human client protocol advertised by a Coworld manifest.
+  if node.manifestProtocol("player").isSpriteProtocolSpec():
     SpriteClient
   else:
     FrameClient
 
+proc gameNode(node: JsonNode): JsonNode =
+  ## Returns the embedded Coworld game object.
+  if node.kind == JObject and node.hasKey("game") and
+      node["game"].kind == JObject:
+    return node["game"]
+  node
+
 proc readGameManifest(rootDir, path: string): GameManifest =
-  ## Reads one CoGame manifest summary from disk.
+  ## Reads one Coworld manifest summary from disk.
   let
     node = loadManifestObject(path)
-    name = node.manifestString("name", path.parentDir().extractFilename())
+    game = node.gameNode()
+    name = game.manifestString("name", path.parentDir().extractFilename())
   result = GameManifest(
     key: relativeManifestKey(rootDir, path),
     path: path,
     name: name,
-    playerProtocol: clientProtocolFromManifest(node),
-    hasGlobalProtocol: node.manifestProtocol("global").len > 0
+    playerProtocol: clientProtocolFromManifest(game),
+    hasGlobalProtocol: game.manifestProtocol("global").len > 0
   )
 
 proc listGameManifests(rootDir: string): seq[GameManifest] =
-  ## Scans repository folders for CoGame manifests.
-  for path in manifestPaths(rootDir, CogameManifestName):
+  ## Scans repository folders for Coworld manifests.
+  for path in manifestPaths(rootDir, CoworldManifestName):
     result.add(readGameManifest(rootDir, path))
 
 proc findGameManifest(
   rootDir,
   folderName: string
 ): tuple[found: bool, manifest: GameManifest] =
-  ## Finds a CoGame manifest matching a CLI game key.
+  ## Finds a Coworld manifest matching a CLI game key.
   let
     cleanKey = folderName.cleanRelativePath()
     cleanName = cleanKey.normalizeManifestName()
@@ -493,73 +491,51 @@ proc exePathFor(rootDir, sourceRelative: string): string =
   let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
   absolutePath(rootDir / "out" / exeName)
 
-proc humanizeLabel(label: string): string =
-  for part in label.split({'_', '-', ' '}):
-    if part.len == 0:
-      continue
-    if result.len > 0:
-      result.add(' ')
-    result.add(part[0].toUpperAscii())
-    if part.len > 1:
-      result.add(part[1 .. ^1].toLowerAscii())
-
-proc primaryScreen(): Screen =
-  when declared(getScreens):
-    let screens = getScreens()
-    if screens.len > 0:
-      for screen in screens:
-        if screen.primary:
-          return screen
-      return screens[0]
-  Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
-
-proc usesSpritePlayerClient(protocol: ClientProtocol): bool =
-  ## Returns true when the manifest selects the sprite player protocol.
-  protocol == SpriteClient
-
 proc clientConnectAddress(address: string): string =
   ## Returns a local address suitable for launched clients.
   if address == "0.0.0.0" or address == "::":
     return "127.0.0.1"
   address
 
-proc websocketUrl(address: string, port: int, path: string): string =
-  ## Builds a local websocket URL for one game endpoint.
-  "ws://" & clientConnectAddress(address) & ":" & $port & path
+proc encodeUrlComponent(value: string): string =
+  ## Encodes a string for use as one URL query value.
+  for c in value:
+    case c
+    of 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '-', '_', '.', '~':
+      result.add(c)
+    else:
+      result.add('%')
+      result.add(ord(c).toHex(2))
 
-proc clientLaunches(gameTitle: string, players: int): seq[ClientLaunch] =
-  ## Returns human client window positions in a centered grid.
-  if players <= 0:
-    return
-  let screen = primaryScreen()
-  var columns = 1
-  while columns * columns < players:
-    inc columns
-  let rows = (players + columns - 1) div columns
+proc browserHost(address: string): string =
+  ## Returns a host string suitable for browser URLs.
+  result = clientConnectAddress(address)
+  if result.contains(':') and not result.startsWith("["):
+    result = "[" & result & "]"
 
-  let
-    totalHeight =
-      rows * ClientScreenOnlyHeight +
-      max(0, rows - 1) * ClientWindowMargin
-    startY = screen.top + (screen.bottom - screen.top - totalHeight) div 2
-
-  for rowIndex in 0 ..< rows:
-    let rowStart = rowIndex * columns
-    let rowCount = min(columns, players - rowStart)
+proc browserUrl(
+  address: string,
+  port: int,
+  path: string,
+  params: openArray[(string, string)]
+): string =
+  ## Builds a local browser URL for one game client route.
+  result = "http://" & browserHost(address) & ":" & $port & path
+  var first = true
+  for param in params:
     let
-      rowWidth =
-        rowCount * ClientScreenOnlyWidth +
-        max(0, rowCount - 1) * ClientWindowMargin
-      startX = screen.left + (screen.right - screen.left - rowWidth) div 2
-      y = startY + rowIndex * (ClientScreenOnlyHeight + ClientWindowMargin)
-
-    for col in 0 ..< rowCount:
-      let playerNumber = result.len + 1
-      result.add(ClientLaunch(
-        title: gameTitle & " Player " & $playerNumber,
-        x: startX + col * (ClientScreenOnlyWidth + ClientWindowMargin),
-        y: y
-      ))
+      key = param[0]
+      value = param[1]
+    if value.len == 0:
+      continue
+    if first:
+      result.add('?')
+      first = false
+    else:
+      result.add('&')
+    result.add(key.encodeUrlComponent())
+    result.add('=')
+    result.add(value.encodeUrlComponent())
 
 proc stopManagedProcess(processRef: var Process, label: string) =
   if processRef.isNil:
@@ -588,9 +564,9 @@ proc cleanupChildren() =
   if cleanupStarted:
     return
   cleanupStarted = true
-  for i in countdown(clientProcesses.high, 0):
-    stopManagedProcess(clientProcesses[i], "client " & $(i + 1))
-  clientProcesses.setLen(0)
+  for i in countdown(botProcesses.high, 0):
+    stopManagedProcess(botProcesses[i], "bot " & $(i + 1))
+  botProcesses.setLen(0)
   stopManagedProcess(serverProcess, "server")
 
 proc cleanupAtExit() {.noconv.} =
@@ -622,6 +598,32 @@ proc runProcessAndWait(
         process.close()
       except CatchableError:
         discard
+
+proc openBrowser(url: string): bool =
+  ## Opens one URL in the user's default browser.
+  when defined(macosx):
+    let opener = findExe("open")
+    if opener.len == 0:
+      return false
+    result = runProcessAndWait(opener, getCurrentDir(), [url]) == 0
+  elif defined(windows):
+    let opener = getEnv("ComSpec", "cmd")
+    result = runProcessAndWait(
+      opener,
+      getCurrentDir(),
+      ["/c", "start", "", url]
+    ) == 0
+  else:
+    let opener = findExe("xdg-open")
+    if opener.len == 0:
+      return false
+    result = runProcessAndWait(opener, getCurrentDir(), [url]) == 0
+
+proc openHtmlClient(label, url: string) =
+  ## Opens one HTML client and prints a fallback URL.
+  echo "Opening ", label, ": ", url
+  if not openBrowser(url):
+    echo "Open this URL in your browser: ", url
 
 proc compileTarget(
   nimExe: string,
@@ -689,8 +691,8 @@ proc waitForServerReady(address: string, port: int, managedServer: bool): bool =
 
 proc waitForChildren(managedServer: bool): int =
   ## Waits until a managed child exits, then stops the rest.
-  if not managedServer and clientProcesses.len == 0:
-    echo "No server or client processes are managed by this run."
+  if not managedServer and botProcesses.len == 0:
+    echo "No server or bot processes are managed by this run."
     return 0
 
   while true:
@@ -701,24 +703,24 @@ proc waitForChildren(managedServer: bool): int =
       serverExitCode = childExitCode(serverProcess)
       serverRunning = serverExitCode == -1
 
-    var exitedClientIndex = -1
-    var clientExitCode = -1
-    for i, processRef in clientProcesses:
+    var exitedBotIndex = -1
+    var botExitCode = -1
+    for i, processRef in botProcesses:
       let exitCode = childExitCode(processRef)
       if exitCode != -1:
-        exitedClientIndex = i
-        clientExitCode = exitCode
+        exitedBotIndex = i
+        botExitCode = exitCode
         break
 
-    if (managedServer and not serverRunning) or exitedClientIndex != -1:
+    if (managedServer and not serverRunning) or exitedBotIndex != -1:
       if managedServer and not serverRunning:
         echo "Server exited with code ", serverExitCode, "."
-      if exitedClientIndex != -1:
-        echo "Client ", exitedClientIndex + 1,
-          " exited with code ", clientExitCode, "."
+      if exitedBotIndex != -1:
+        echo "Bot ", exitedBotIndex + 1,
+          " exited with code ", botExitCode, "."
       cleanupChildren()
-      if exitedClientIndex != -1:
-        return clientExitCode
+      if exitedBotIndex != -1:
+        return botExitCode
       return serverExitCode
 
     sleep(PollIntervalMs)
@@ -760,6 +762,8 @@ proc parseArgs(): QuickRunConfig =
         result.botGroups.add(parseBotGroup(val))
       of "connect":
         result.connect = true
+      of "html":
+        discard
       of "bot-gui":
         result.botGui = true
       of "bot-name-prefix", "name-prefix":
@@ -833,6 +837,36 @@ proc botMapArg(rootDir, path: string): string =
   else:
     "--map:" & absolutePath(rootDir / path)
 
+proc htmlParams(config: QuickRunConfig): seq[(string, string)] =
+  ## Returns query parameters for browser clients.
+  if config.reconnectSeconds.len > 0:
+    result.add(("reconnect", config.reconnectSeconds))
+
+proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
+  ## Opens browser clients for one quick-run game.
+  if game.playerProtocol == SpriteClient and game.hasGlobalProtocol:
+    openHtmlClient(
+      game.name & " global",
+      browserUrl(
+        config.address,
+        config.port,
+        "/client/global",
+        htmlParams(config)
+      )
+    )
+
+  if config.players <= 0:
+    return
+
+  for i in 1 .. config.players:
+    var params = htmlParams(config)
+    params.add(("name", "player" & $i))
+    params.add(("joystick", $i))
+    openHtmlClient(
+      game.name & " player " & $i,
+      browserUrl(config.address, config.port, "/client/player", params)
+    )
+
 proc runQuickRun(config: QuickRunConfig): int =
   let
     rootDir = repoRoot()
@@ -844,17 +878,7 @@ proc runQuickRun(config: QuickRunConfig): int =
   let
     game = ensureGameFolder(rootDir, config.gameFolder)
     gameFolderRelative = game.sourceRelative.splitFile().dir
-    spritePlayerClient = usesSpritePlayerClient(game.playerProtocol)
-    playerPath = "/player"
-    gameTitle = humanizeLabel(game.name)
     gameExe = exePathFor(rootDir, game.sourceRelative)
-    clientSourceRelative =
-      if spritePlayerClient:
-        GlobalClientSourceRelative
-      else:
-        PlayerClientSourceRelative
-    clientExe = exePathFor(rootDir, clientSourceRelative)
-    clientWorkDir = absolutePath(rootDir / "clients")
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
 
@@ -897,11 +921,6 @@ proc runQuickRun(config: QuickRunConfig): int =
     if result != 0:
       return result
 
-  if config.players > 0 or (spritePlayerClient and game.hasGlobalProtocol):
-    result = compileTarget(nimExe, rootDir, "client", clientSourceRelative)
-    if result != 0:
-      return result
-
   var compiledBots: seq[string]
   for bot in botLaunches:
     if bot.sourceRelative in compiledBots:
@@ -935,108 +954,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     cleanupChildren()
     return 1
 
-  if spritePlayerClient and game.hasGlobalProtocol:
-    try:
-      var globalArgs = @[
-        "--address:" & websocketUrl(config.address, config.port, "/global"),
-        "--title:" & gameTitle & " Global"
-      ]
-      if config.reconnectSeconds.len > 0:
-        globalArgs.add("--reconnect:" & config.reconnectSeconds)
-      clientProcesses.add(
-        launchManagedProcess(
-          "global client",
-          clientExe,
-          clientWorkDir,
-          globalArgs
-        )
-      )
-    except CatchableError as e:
-      echo "Failed to start global client: ", e.msg
-      cleanupChildren()
-      return 1
-
-  if config.players == 1:
-    try:
-      var clientArgs =
-        if spritePlayerClient:
-          @[
-            "--address:" & websocketUrl(
-              config.address,
-              config.port,
-              playerPath & "?name=player1"
-            ),
-            "--player",
-            "--title:" & gameTitle
-          ]
-        else:
-          @[
-            "--address:" & websocketUrl(
-              config.address,
-              config.port,
-              playerPath & "?name=player1"
-            ),
-            "--title:" & gameTitle
-          ]
-      if config.reconnectSeconds.len > 0:
-        clientArgs.add("--reconnect:" & config.reconnectSeconds)
-      clientProcesses.add(
-        launchManagedProcess(
-          "client",
-          clientExe,
-          clientWorkDir,
-          clientArgs
-        )
-      )
-    except CatchableError as e:
-      echo "Failed to start client: ", e.msg
-      cleanupChildren()
-      return 1
-  elif config.players > 1:
-    let launches = clientLaunches(gameTitle, config.players)
-    for i, launch in launches:
-      try:
-        var clientArgs =
-          if spritePlayerClient:
-            @[
-              "--address:" & websocketUrl(
-                config.address,
-                config.port,
-                playerPath & "?name=player" & $(i + 1)
-              ),
-              "--player",
-              "--title:" & launch.title,
-              "--joystick:" & $(i + 1),
-              "--x:" & $launch.x,
-              "--y:" & $launch.y
-            ]
-          else:
-            @[
-              "--address:" & websocketUrl(
-                config.address,
-                config.port,
-                playerPath & "?name=player" & $(i + 1)
-              ),
-              "--screen-only",
-              "--title:" & launch.title,
-              "--joystick:" & $(i + 1),
-              "--x:" & $launch.x,
-              "--y:" & $launch.y
-            ]
-        if config.reconnectSeconds.len > 0:
-          clientArgs.add("--reconnect:" & config.reconnectSeconds)
-        clientProcesses.add(
-          launchManagedProcess(
-            "client " & $(i + 1),
-            clientExe,
-            clientWorkDir,
-            clientArgs
-          )
-        )
-      except CatchableError as e:
-        echo "Failed to start client ", i + 1, ": ", e.msg
-        cleanupChildren()
-        return 1
+  openHtmlClients(config, game)
 
   let mapArg = botMapArg(rootDir, config.botMapPath)
   var globalBotIndex = 0
@@ -1065,7 +983,7 @@ proc runQuickRun(config: QuickRunConfig): int =
       if mapArg.len > 0:
         botArgs.add(mapArg)
       try:
-        clientProcesses.add(
+        botProcesses.add(
           launchManagedProcess(
             bot.label & " bot " & $(i + 1),
             botExe,

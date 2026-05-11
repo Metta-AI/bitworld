@@ -8,7 +8,7 @@
 ## subnet, and security group configuration.
 
 import
-  std/[json, os, osproc, strutils, tables, times, httpclient]
+  std/[httpclient, json, os, osproc, strutils, tables, times]
 
 const
   GameContainerPort* = 8080
@@ -20,6 +20,8 @@ const
   TaskPollTimeoutSec = 90.0
   HealthPollTimeoutSec = 90.0
   HealthPollIntervalMs = 500
+  EngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  PlayerWebSocketPath = "/player"
 
 type
   EcsConfig* = object
@@ -338,6 +340,31 @@ proc ecsCreateGame*(
   echo "ECS: game running at public=", ips.public, " private=", ips.private
   result = (taskArn: taskArn, publicIp: ips.public, privateIp: ips.private)
 
+proc encodeUrlComponent(value: string): string =
+  ## Encodes a string for use as one URL query value.
+  for ch in value:
+    case ch
+    of 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '-', '_', '.', '~':
+      result.add(ch)
+    else:
+      result.add('%')
+      result.add(ord(ch).toHex(2))
+
+proc playerWsUrl(
+  host: string,
+  port: int,
+  playerName: string,
+  slot: int,
+  token: string
+): string =
+  ## Builds the sprite player WebSocket URL for one launched bot.
+  var query = "name=" & encodeUrlComponent(playerName)
+  if slot >= 0:
+    query.add("&slot=" & encodeUrlComponent($slot))
+  if token.len > 0:
+    query.add("&token=" & encodeUrlComponent(token))
+  "ws://" & host & ":" & $port & PlayerWebSocketPath & "?" & query
+
 proc ecsCreateBot*(
   botImage: string,
   gameTaskArn: string,
@@ -345,19 +372,39 @@ proc ecsCreateBot*(
   botName: string,
   playerName: string,
   botBinary: string,
+  slot = -1,
+  token = "",
   arch = "X86_64",
 ): string =
   let taskDefArn = ensureBotTaskDef(botImage, arch)
   let
     created = $getTime().toUnix()
+    endpoint = playerWsUrl(
+      gamePrivateIp,
+      GameContainerPort,
+      playerName,
+      slot,
+      token
+    )
     tags = @[
       (key: "bitworld.games_server", value: "among_them_bot"),
       (key: "bitworld.games_server.game", value: gameTaskArn),
       (key: "bitworld.games_server.bot", value: botName),
       (key: "bitworld.games_server.created", value: created),
     ]
-  var cmd = @[botBinary, "--address:" & gamePrivateIp, "--port:" & $GameContainerPort, "--name:" & playerName]
+  var cmd = @[
+    botBinary,
+    "--address:" & gamePrivateIp,
+    "--port:" & $GameContainerPort,
+    "--name:" & playerName,
+    "--url:" & endpoint
+  ]
+  if slot >= 0:
+    cmd.add("--slot:" & $slot)
+  if token.len > 0:
+    cmd.add("--token:" & token)
   var env: seq[tuple[name, value: string]]
+  env.add((name: EngineWsEnv, value: endpoint))
   for envName in ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]:
     let val = getEnv(envName)
     if val.len > 0:
