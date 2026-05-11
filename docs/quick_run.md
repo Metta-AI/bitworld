@@ -1,9 +1,10 @@
 # Quick Run
 
 `quick_run` is the local launcher for Bitworld games. It can start a game
-server, open native human clients, and launch Nim bot players from the same
-command. When manifests are present, it discovers game protocols from
-`coworld_manifest.json` and bot names from `coplayer_manifest.json`.
+server, open local human clients, open a global viewer, and launch Nim bot
+players from the same command. When manifests are present, it discovers game
+protocols from `coworld_manifest.json` and bot names from
+`coplayer_manifest.json`.
 
 ## Basic Usage
 
@@ -41,6 +42,19 @@ If `--players` is omitted, the default is:
 
 Multiple human clients are opened as screen-only windows in a centered grid.
 Each client is assigned a matching joystick number.
+
+## Global Viewer
+
+Use `--global` to open the game's global viewer. This changes the default human
+player count to `0`, so bot-only watch commands do not also open a player
+client. An explicit `--players:N` still wins when you want both.
+
+By default `--global` launches the native global client. Add `--html` to open
+the served browser global viewer instead.
+
+```powershell
+nim r tools/quick_run planet_wars/ --bots:skurge:4 --global --html
+```
 
 ## Bots
 
@@ -93,17 +107,19 @@ Common server options still work:
 | --- | --- |
 | `--address:ADDR` | Bind address in start mode, host in connect mode |
 | `--port:N` | Server port |
+| `--global` | Open the global viewer and default humans to zero |
+| `--html` | Use the browser global viewer with `--global` |
 | `--config:JSON` | Forward JSON config to the started server |
 | `--config-file:PATH` | Forward a config file to the started server |
 | `--save-replay:PATH` | Save a replay from the started server |
 
-`--reconnect:N` is a launcher option. It is passed to native human clients, not
-to the server.
+`--reconnect:N` is a launcher option. It is passed to browser clients and the
+native global client, not to the server.
 
 ## Failure Behavior
 
 When `quick_run` starts the server, it compiles the server before compiling and
 launching clients or bots. If the server compile fails, nothing is launched.
 
-If a managed server, client, or bot exits, `quick_run` stops the other managed
-processes and exits with the first observed exit code.
+If a managed server, native global client, or bot exits, `quick_run` stops the
+other managed processes and exits with the first observed exit code.

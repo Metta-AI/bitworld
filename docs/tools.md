@@ -121,12 +121,14 @@ controls there for play, pause, seek, loop, and speed changes. See
 ## Quick Run
 
 `quick_run` is the main local development launcher. It can compile and start a
-game server, open native human clients, and launch Nim bot players.
+game server, open local human clients, open a global viewer, and launch Nim bot
+players.
 
 ```powershell
 .\tools\quick_run.exe fancy_cookout
 .\tools\quick_run.exe free_chat --players:2
 .\tools\quick_run.exe among_them --players:2 --bots:nottoodumb:6
+.\tools\quick_run.exe planet_wars --bots:skurge:4 --global --html
 .\tools\quick_run.exe among_them --connect --port:2000 --bots:nottoodumb:8
 ```
 
@@ -136,6 +138,8 @@ Useful options:
 | --- | --- |
 | `--players:N` | Launch `N` local human clients |
 | `--bots:BOT:N` | Launch `N` bots from the selected game's players folder |
+| `--global` | Open the global viewer and default humans to zero |
+| `--html` | Use the browser global viewer with `--global` |
 | `--connect` | Connect to an existing server instead of starting one |
 | `--address:ADDR` | Bind address in start mode, host in connect mode |
 | `--port:N` | Server port |

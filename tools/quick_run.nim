@@ -3,6 +3,7 @@ import
     strutils, times]
 
 const
+  GlobalClientSourceRelative = "clients" / "global_client.nim"
   CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
   SpriteProtocolSpec = "sprite_v1.md"
@@ -26,6 +27,7 @@ const
 
 var
   serverProcess: Process
+  clientProcesses: seq[Process]
   botProcesses: seq[Process]
   cleanupStarted = false
 
@@ -66,6 +68,8 @@ type
     players: int
     playersSet: bool
     connect: bool
+    globalViewer: bool
+    htmlViewer: bool
     reconnectSeconds: string
     saveReplayPath: string
     configJson: string
@@ -87,12 +91,16 @@ proc repoRoot(): string =
 
 proc usage(): string =
   "Usage: quick_run <game_folder> [--connect] [--address:ADDR] " &
-    "[--port:N] [--players:N] [--bots:BOT:N] [--bot-gui] " &
+    "[--port:N] [--players:N] [--bots:BOT:N] [--global] [--html] " &
+    "[--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
     "Human clients open in the browser from the game's /client routes.\n" &
+    "--global opens a global viewer and defaults humans to zero.\n" &
+    "--html opens the global viewer in the browser instead of a native window.\n" &
     "Unknown options are passed to the game server when quick_run starts it.\n" &
     "Examples:\n" &
     "  quick_run fancy_cookout\n" &
+    "  quick_run planet_wars --bots:skurge:4 --global --html\n" &
     "  quick_run among_them --players:2 --bots:nottoodumb:6\n" &
     "  quick_run among_them --connect --port:2000 --bots:nottoodumb:8"
 
@@ -564,6 +572,9 @@ proc cleanupChildren() =
   if cleanupStarted:
     return
   cleanupStarted = true
+  for i in countdown(clientProcesses.high, 0):
+    stopManagedProcess(clientProcesses[i], "client " & $(i + 1))
+  clientProcesses.setLen(0)
   for i in countdown(botProcesses.high, 0):
     stopManagedProcess(botProcesses[i], "bot " & $(i + 1))
   botProcesses.setLen(0)
@@ -691,8 +702,8 @@ proc waitForServerReady(address: string, port: int, managedServer: bool): bool =
 
 proc waitForChildren(managedServer: bool): int =
   ## Waits until a managed child exits, then stops the rest.
-  if not managedServer and botProcesses.len == 0:
-    echo "No server or bot processes are managed by this run."
+  if not managedServer and clientProcesses.len == 0 and botProcesses.len == 0:
+    echo "No server, client, or bot processes are managed by this run."
     return 0
 
   while true:
@@ -703,8 +714,17 @@ proc waitForChildren(managedServer: bool): int =
       serverExitCode = childExitCode(serverProcess)
       serverRunning = serverExitCode == -1
 
-    var exitedBotIndex = -1
-    var botExitCode = -1
+    var
+      exitedClientIndex = -1
+      clientExitCode = -1
+      exitedBotIndex = -1
+      botExitCode = -1
+    for i, processRef in clientProcesses:
+      let exitCode = childExitCode(processRef)
+      if exitCode != -1:
+        exitedClientIndex = i
+        clientExitCode = exitCode
+        break
     for i, processRef in botProcesses:
       let exitCode = childExitCode(processRef)
       if exitCode != -1:
@@ -712,13 +732,20 @@ proc waitForChildren(managedServer: bool): int =
         botExitCode = exitCode
         break
 
-    if (managedServer and not serverRunning) or exitedBotIndex != -1:
+    if (managedServer and not serverRunning) or
+        exitedClientIndex != -1 or
+        exitedBotIndex != -1:
       if managedServer and not serverRunning:
         echo "Server exited with code ", serverExitCode, "."
+      if exitedClientIndex != -1:
+        echo "Client ", exitedClientIndex + 1,
+          " exited with code ", clientExitCode, "."
       if exitedBotIndex != -1:
         echo "Bot ", exitedBotIndex + 1,
           " exited with code ", botExitCode, "."
       cleanupChildren()
+      if exitedClientIndex != -1:
+        return clientExitCode
       if exitedBotIndex != -1:
         return botExitCode
       return serverExitCode
@@ -762,8 +789,10 @@ proc parseArgs(): QuickRunConfig =
         result.botGroups.add(parseBotGroup(val))
       of "connect":
         result.connect = true
+      of "global":
+        result.globalViewer = true
       of "html":
-        discard
+        result.htmlViewer = true
       of "bot-gui":
         result.botGui = true
       of "bot-name-prefix", "name-prefix":
@@ -819,7 +848,9 @@ proc parseArgs(): QuickRunConfig =
         DefaultConnectAddress
       else:
         DefaultBindAddress
-  if not result.playersSet:
+  if result.globalViewer and not result.playersSet:
+    result.players = 0
+  elif not result.playersSet:
     result.players =
       if result.botGroups.len > 0:
         0
@@ -842,19 +873,24 @@ proc htmlParams(config: QuickRunConfig): seq[(string, string)] =
   if config.reconnectSeconds.len > 0:
     result.add(("reconnect", config.reconnectSeconds))
 
+proc globalWsAddress(config: QuickRunConfig): string =
+  ## Returns the websocket address for the global viewer.
+  "ws://" & browserHost(config.address) & ":" & $config.port & "/global"
+
+proc openHtmlGlobalViewer(config: QuickRunConfig, game: GameLaunch) =
+  ## Opens the browser global viewer for one quick-run game.
+  openHtmlClient(
+    game.name & " global",
+    browserUrl(
+      config.address,
+      config.port,
+      "/client/global",
+      htmlParams(config)
+    )
+  )
+
 proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
   ## Opens browser clients for one quick-run game.
-  if game.playerProtocol == SpriteClient and game.hasGlobalProtocol:
-    openHtmlClient(
-      game.name & " global",
-      browserUrl(
-        config.address,
-        config.port,
-        "/client/global",
-        htmlParams(config)
-      )
-    )
-
   if config.players <= 0:
     return
 
@@ -866,6 +902,32 @@ proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
       game.name & " player " & $i,
       browserUrl(config.address, config.port, "/client/player", params)
     )
+
+proc launchNativeGlobalViewer(
+  config: QuickRunConfig,
+  game: GameLaunch,
+  rootDir: string
+): bool =
+  ## Starts the native global viewer process.
+  let globalExe = exePathFor(rootDir, GlobalClientSourceRelative)
+  var args = @[
+    "--address:" & globalWsAddress(config),
+    "--title:" & game.name & " global"
+  ]
+  if config.reconnectSeconds.len > 0:
+    args.add("--reconnect:" & config.reconnectSeconds)
+  try:
+    clientProcesses.add(
+      launchManagedProcess(
+        game.name & " global client",
+        globalExe,
+        rootDir,
+        args
+      )
+    )
+    result = true
+  except CatchableError as e:
+    echo "Failed to start global viewer: ", e.msg
 
 proc runQuickRun(config: QuickRunConfig): int =
   let
@@ -881,6 +943,9 @@ proc runQuickRun(config: QuickRunConfig): int =
     gameExe = exePathFor(rootDir, game.sourceRelative)
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
+  if config.globalViewer and not game.hasGlobalProtocol:
+    echo "Game does not advertise a global protocol: ", game.name
+    return 1
 
   var botLaunches: seq[BotLaunch]
   for group in config.botGroups:
@@ -921,6 +986,16 @@ proc runQuickRun(config: QuickRunConfig): int =
     if result != 0:
       return result
 
+  if config.globalViewer and not config.htmlViewer:
+    result = compileTarget(
+      nimExe,
+      rootDir,
+      game.name & " global client",
+      GlobalClientSourceRelative
+    )
+    if result != 0:
+      return result
+
   var compiledBots: seq[string]
   for bot in botLaunches:
     if bot.sourceRelative in compiledBots:
@@ -953,6 +1028,13 @@ proc runQuickRun(config: QuickRunConfig): int =
   if not waitForServerReady(config.address, config.port, not config.connect):
     cleanupChildren()
     return 1
+
+  if config.globalViewer:
+    if config.htmlViewer:
+      openHtmlGlobalViewer(config, game)
+    elif not launchNativeGlobalViewer(config, game, rootDir):
+      cleanupChildren()
+      return 1
 
   openHtmlClients(config, game)
 
