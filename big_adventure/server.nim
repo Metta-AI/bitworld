@@ -309,15 +309,34 @@ proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when a GET request is a websocket upgrade.
   request.headers["Sec-WebSocket-Key"].len > 0
 
+proc canonicalClientRoute(route: string): string =
+  ## Returns the static asset route for one public client path.
+  case route
+  of "/client/global", "/client/global_client.html":
+    GlobalClientRoute
+  of "/client/player", PlayerClientRoute, "/client/player_client.html":
+    GlobalClientRoute
+  of "/client/reward", "/client/rewards", "/client/reward.html",
+      "/client/reward_client.html":
+    RewardClientRoute
+  of "/client/snappyjs.min.js":
+    SnappyClientRoute
+  of "/client/qrcode.min.js":
+    QrcodeClientRoute
+  else:
+    route
+
 proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
+  let
+    staticRoute = canonicalClientRoute(route)
+    filePath = clientStaticPath(staticRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = clientStaticContentType(staticRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -329,16 +348,8 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset. Page routes (/client/*.html) are not
-  ## served here: each page lives at its websocket URL (/player,
-  ## /global, /reward), which dual-serves HTML on a plain GET and upgrades
-  ## on a Sec-WebSocket-Key request, so the page and its websocket share a
-  ## URL and reverse-proxy prefix routing works without page-side awareness.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  ## Serves one static client page or asset route.
+  request.serveClientHtml(request.path)
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   ## Builds an input state from the current and previous button masks.

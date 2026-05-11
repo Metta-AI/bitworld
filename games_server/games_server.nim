@@ -2215,13 +2215,19 @@ proc gamePagePath(game: GameContainer, page: string): string =
   ## Returns the canonical game route for one client page label.
   case page
   of "player.html":
-    "/player"
+    if game.cogameName == "big_adventure":
+      "/client/player"
+    else:
+      "/player"
   of "rewards.html", "reward.html":
     "/reward"
   of "admin.html":
     "/admin"
   else:
-    "/global"
+    if game.cogameName == "big_adventure":
+      "/client/global"
+    else:
+      "/global"
 
 proc gameHttpUrl(
   request: Request,
@@ -3220,9 +3226,9 @@ proc clientRoot(): string =
 proc clientAsset(path: string): string =
   ## Maps one public client route to a local asset path.
   case path
-  of "/client/global.html", "/client/global_client.html":
+  of "/client/global", "/client/global.html", "/client/global_client.html":
     clientRoot() / "global_client.html"
-  of "/client/player.html", "/client/player_client.html":
+  of "/client/player", "/client/player.html", "/client/player_client.html":
     clientRoot() / "player_client.html"
   of "/client/reward.html", "/client/rewards.html",
       "/client/reward_client.html":

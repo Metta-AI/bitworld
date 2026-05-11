@@ -171,14 +171,32 @@ const debugUp=document.getElementById("debugUp");
 const debugSprites=document.getElementById("debugSprites");
 const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
+function websocketPathForClientPage(path){
+  if(path==="/client/global"||
+      path==="/client/global.html"||
+      path==="/client/global_client.html"){
+    return "/global";
+  }
+  if(path==="/client/player"||
+      path==="/client/player.html"||
+      path==="/client/player_client.html"){
+    return "/player";
+  }
+  if(path==="/client/reward"||
+      path==="/client/rewards"||
+      path==="/client/reward.html"||
+      path==="/client/rewards.html"||
+      path==="/client/reward_client.html"){
+    return "/reward";
+  }
+  return path;
+}
 function defaultAddress(){
-  // The page is served from the same URL as its websocket (e.g. /global
-  // dual-serves HTML and ws), so default the socket to location.pathname.
-  // This keeps the connection working under any reverse-proxy prefix
-  // without us having to know what the prefix is.
+  // Direct websocket pages connect to their own path, while /client/*
+  // pages connect back to the matching websocket endpoint.
   const protocol=location.protocol==="https:"?"wss:":"ws:";
   const host=location.host||"localhost:8080";
-  return protocol+"//"+host+location.pathname;
+  return protocol+"//"+host+websocketPathForClientPage(location.pathname);
 }
 const address=url.searchParams.get("address")||defaultAddress();
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
