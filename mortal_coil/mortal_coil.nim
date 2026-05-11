@@ -25,8 +25,7 @@ const
 type
   GamePhase = enum
     PhaseLobby
-    PhaseSetup
-    PhaseFact
+    PhaseMagicalFacts
     PhaseConflict
     PhasePower
     PhaseEnd
@@ -323,7 +322,7 @@ proc renderFactChoices(sim: var SimServer) =
 
 proc renderFactChat(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
-  sim.fb.blitText(sim.letterSprites, "facts", TextMargin, 4)
+  sim.fb.blitText(sim.letterSprites, "magical facts", TextMargin, 4)
 
   var y = 14
   let maxEntries = (ScreenHeight - y) div 8
@@ -378,8 +377,7 @@ proc renderGame(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   let phaseText = case sim.phase
     of PhaseLobby: "lobby"
-    of PhaseSetup: "setup"
-    of PhaseFact: "facts"
+    of PhaseMagicalFacts: "magical facts"
     of PhaseConflict: "conflict"
     of PhasePower: "power"
     of PhaseEnd: "end"
@@ -389,7 +387,7 @@ proc render(sim: var SimServer) =
   case sim.phase
   of PhaseLobby:
     sim.renderLobby()
-  of PhaseFact:
+  of PhaseMagicalFacts:
     sim.renderFact()
   else:
     sim.renderGame()
@@ -413,15 +411,15 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       else:
         dec sim.lobbyCountdown
         if sim.lobbyCountdown <= 0:
-          sim.phase = PhaseFact
+          sim.phase = PhaseMagicalFacts
           sim.currentTurn = 0
           sim.chatLog = @[]
           sim.startFactTurn()
     else:
       sim.lobbyCountdown = 0
-  of PhaseFact:
+  of PhaseMagicalFacts:
     if sim.players.len == 0:
-      sim.phase = PhaseSetup
+      sim.phase = PhaseLobby
       return
     dec sim.factTimer
     let turnPlayer = sim.players[sim.currentTurn]
@@ -532,8 +530,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       else:
         sim.currentTurn += 1
         if sim.currentTurn >= sim.players.len:
-          sim.phase = PhaseSetup
-          return
+          sim.currentTurn = 0
         sim.startFactTurn()
   else:
     discard
