@@ -12,6 +12,8 @@ const
   MaxPlayers = 8
   DefaultMinPlayers = 4
   LobbyCountdownTicks = 24 * 5
+  WorldTitleTicks = 24 * 3
+  WorldDescTicks = 24 * 10
   FactReadTicks = 24 * 3
   FactAcceptTicks = 24 * 1
   CharWidth = 6
@@ -25,6 +27,7 @@ const
 type
   GamePhase = enum
     PhaseLobby
+    PhaseWorld
     PhaseMagicalFacts
     PhaseConflict
     PhasePower
@@ -53,6 +56,11 @@ type
     VotePass
     VoteVeto
 
+  WorldStep = enum
+    WorldGazing
+    WorldTitle
+    WorldDescription
+
   FactStep = enum
     FactGazing
     FactReading
@@ -79,6 +87,10 @@ type
     chatLog: seq[ChatEntry]
     factChoice: FactChoice
     factTimer: int
+    worldStep: WorldStep
+    worldTimer: int
+    worldTitle: string
+    worldDescription: string
     fb: Framebuffer
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
@@ -372,6 +384,30 @@ proc renderGazing(sim: var SimServer) =
   sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 9)
   sim.fb.blitTextTinted(sim.letterSprites, line2, x2, y2, 9)
 
+proc renderWorld(sim: var SimServer) =
+  sim.fb.clearFrame(0)
+  case sim.worldStep
+  of WorldGazing:
+    let line1 = "the world"
+    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
+    let y1 = (ScreenHeight - CharHeight) div 2
+    sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 2)
+  of WorldTitle:
+    let line1 = "the world"
+    let line2 = sim.worldTitle
+    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
+    let x2 = (ScreenWidth - line2.len * CharWidth) div 2
+    let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
+    let y2 = y1 + CharHeight + 2
+    sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 2)
+    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line2, x2, y2, 2)
+  of WorldDescription:
+    let maxChars = charsFromX(TextMargin)
+    let lineCount = max(1, (sim.worldDescription.len + maxChars - 1) div maxChars)
+    let totalH = lineCount * 8
+    let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
+    discard sim.blitTextWrappedTinted(sim.worldDescription, TextMargin, startY, 8, 2)
+
 proc renderFact(sim: var SimServer) =
   case sim.factChoice.step
   of FactGazing:
@@ -385,6 +421,7 @@ proc renderGame(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   let phaseText = case sim.phase
     of PhaseLobby: "lobby"
+    of PhaseWorld: "the world"
     of PhaseMagicalFacts: "magical facts"
     of PhaseConflict: "conflict"
     of PhasePower: "power"
@@ -395,6 +432,8 @@ proc render(sim: var SimServer) =
   case sim.phase
   of PhaseLobby:
     sim.renderLobby()
+  of PhaseWorld:
+    sim.renderWorld()
   of PhaseMagicalFacts:
     sim.renderFact()
   else:
@@ -419,12 +458,28 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       else:
         dec sim.lobbyCountdown
         if sim.lobbyCountdown <= 0:
-          sim.phase = PhaseMagicalFacts
-          sim.currentTurn = 0
-          sim.chatLog = @[]
-          sim.startFactTurn()
+          sim.phase = PhaseWorld
+          sim.worldStep = WorldGazing
+          sim.worldTimer = 1
     else:
       sim.lobbyCountdown = 0
+  of PhaseWorld:
+    dec sim.worldTimer
+    if sim.worldStep == WorldGazing and sim.worldTimer <= 0:
+      let world = sim.players[0].soul.generateWorld()
+      sim.worldTitle = world.title
+      sim.worldDescription = world.description
+      sim.worldStep = WorldTitle
+      sim.worldTimer = WorldTitleTicks
+    elif sim.worldStep == WorldTitle and sim.worldTimer <= 0:
+      sim.worldStep = WorldDescription
+      sim.worldTimer = WorldDescTicks
+      echo "  World: ", sim.worldDescription
+    elif sim.worldStep == WorldDescription and sim.worldTimer <= 0:
+      sim.phase = PhaseMagicalFacts
+      sim.currentTurn = 0
+      sim.chatLog = @[]
+      sim.startFactTurn()
   of PhaseMagicalFacts:
     if sim.players.len == 0:
       sim.phase = PhaseLobby
