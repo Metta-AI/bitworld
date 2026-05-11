@@ -95,6 +95,7 @@ type
     moveTicksY: int
     fallTicks: int
     lockTicks: int
+    deepestCellY: int
     cameraX: int
     cameraY: int
     pendingSpawnCenterX: int
@@ -309,6 +310,12 @@ proc pieceBounds(player: Player): tuple[minX, maxX, minY, maxY: int] =
     result.minY = min(result.minY, y)
     result.maxY = max(result.maxY, y)
 
+proc pieceBottomY(player: Player): int =
+  ## Returns the lowest occupied row for one active piece.
+  if not player.hasPiece:
+    return low(int)
+  player.pieceBounds().maxY
+
 proc piecePixelBounds(player: Player): tuple[minX, maxX, minY, maxY: int] =
   let bounds = pieceBounds(player)
   (
@@ -495,6 +502,17 @@ proc moveCollectedPlayers(
       continue
     sim.players[playerIndex].cellX += dx
     sim.players[playerIndex].cellY += dy
+
+proc refreshLockDepth(sim: var SimServer, playerIndex: int) =
+  ## Resets lock delay only after a piece reaches a new lower row.
+  if playerIndex < 0 or
+      playerIndex >= sim.players.len or
+      not sim.players[playerIndex].alive or
+      not sim.players[playerIndex].hasPiece:
+    return
+  let bottomY = sim.players[playerIndex].pieceBottomY()
+  if bottomY > sim.players[playerIndex].deepestCellY:
+    sim.players[playerIndex].deepestCellY = bottomY
     sim.players[playerIndex].lockTicks = 0
 
 proc drawPiece(
@@ -633,6 +651,8 @@ proc respawnPlayer(sim: var SimServer, playerIndex, centerX, topY: int, recenter
   sim.players[playerIndex].moveTicksY = 0
   sim.players[playerIndex].fallTicks = 0
   sim.players[playerIndex].lockTicks = 0
+  sim.players[playerIndex].deepestCellY =
+    sim.players[playerIndex].pieceBottomY()
   sim.players[playerIndex].positionCameraForSpawn(recenterHoriz)
   sim.players[playerIndex].pendingSpawn = false
 
@@ -702,7 +722,6 @@ proc tryRotate(sim: var SimServer, playerIndex: int) =
       sim.players[playerIndex].rotation = nextRotation
       sim.players[playerIndex].cellX = nextX
       sim.players[playerIndex].cellY = nextY
-      sim.players[playerIndex].lockTicks = 0
       break
 
 proc addUnique(values: var seq[int], value: int) =
@@ -927,9 +946,9 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   let fallInterval = if input.down: SoftFallInterval else: BaseFallInterval
   if sim.players[playerIndex].fallTicks >= fallInterval:
     sim.players[playerIndex].fallTicks = 0
-    if sim.tryMove(playerIndex, 0, 1):
-      sim.players[playerIndex].lockTicks = 0
+    discard sim.tryMove(playerIndex, 0, 1)
 
+  sim.refreshLockDepth(playerIndex)
   let ignoredPlayers = [playerIndex]
   if not sim.canPlaceIgnoring(
     sim.players[playerIndex].cellX,
@@ -941,8 +960,6 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
     inc sim.players[playerIndex].lockTicks
     if sim.players[playerIndex].lockTicks >= LockDelayTicks or input.select:
       sim.lockPiece(playerIndex)
-  else:
-    sim.players[playerIndex].lockTicks = 0
 
 proc renderBoard(sim: var SimServer, cameraX, cameraY: int) =
   let
@@ -1769,6 +1786,9 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerNames[websocket] = request.playerIdentity()
         appState.spritePlayerViewers[websocket] = GlobalViewerState()
+        appState.playerIndices[websocket] = 0x7fffffff
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
   elif (request.path == GlobalWebSocketPath or
       request.path == ReplayWebSocketPath or
       request.path == AdminWebSocketPath) and
@@ -1797,13 +1817,7 @@ proc websocketHandler(
 ) =
   case event
   of OpenEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        if websocket notin appState.rewardViewers and
-            websocket notin appState.globalViewers:
-          appState.playerIndices[websocket] = 0x7fffffff
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+    discard
   of MessageEvent:
     if message.kind == BinaryMessage and
         isSpritePlayerInputPacket(message.data):

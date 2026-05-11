@@ -17,6 +17,14 @@ const
   DebugInterval = 60
   BrightMinChannel = 30
   BrightMaxChannel = 70
+  SupportedGapBonus = 1400
+  PocketFillBonus = 2400
+  HoleReductionBonus = 4500
+  HoleIncreasePenalty = 5200
+  RowCompletionBonus = 24000
+  OutsideLanePenalty = 750
+  BumpinessPenalty = 80
+  HeightPenalty = 10
 
 type
   RgbaColor = tuple[r, g, b, a: uint8]
@@ -594,13 +602,132 @@ proc rowCount(occupied: openArray[bool], width, row, startX: int): int =
     if occupied[row * width + x]:
       inc result
 
-proc targetHoleRow(occupied: openArray[bool], width, height: int): int =
-  ## Finds the lowest incomplete row in the central eight-wide lane.
-  let bottomRow = min(BaseTerrainY - 1, height - 2)
-  for y in countdown(bottomRow, 0):
-    if occupied.rowCount(width, y, LaneStartX) < LineClearLength:
+proc inLane(x: int): bool =
+  ## Returns true when a column is inside the target clearing lane.
+  x >= LaneStartX and x < LaneStartX + LineClearLength
+
+proc playfieldBottom(height: int): int =
+  ## Returns the last playable row above the fixed floor line.
+  min(BaseTerrainY - 1, height - 2)
+
+proc occupiedAt(
+  occupied: openArray[bool],
+  width,
+  height,
+  x,
+  y: int
+): bool =
+  ## Returns true when an in-bounds map cell is occupied.
+  if x < 0 or y < 0 or x >= width or y >= height:
+    return false
+  occupied[y * width + x]
+
+proc supportedGap(
+  occupied: openArray[bool],
+  width,
+  height,
+  x,
+  y: int
+): bool =
+  ## Returns true when an empty lane cell can be usefully filled.
+  if not x.inLane() or y < 0 or y > height.playfieldBottom:
+    return false
+  if occupied.occupiedAt(width, height, x, y):
+    return false
+  if y == height.playfieldBottom:
+    return true
+  occupied.occupiedAt(width, height, x, y + 1)
+
+proc cellGapScore(
+  occupied: openArray[bool],
+  width,
+  height,
+  x,
+  y: int
+): int =
+  ## Scores how much one candidate cell fills a useful gap.
+  if not occupied.supportedGap(width, height, x, y):
+    return 0
+  let
+    leftFilled = x == LaneStartX or
+      occupied.occupiedAt(width, height, x - 1, y)
+    rightFilled = x == LaneStartX + LineClearLength - 1 or
+      occupied.occupiedAt(width, height, x + 1, y)
+  result += SupportedGapBonus
+  if leftFilled and rightFilled:
+    result += PocketFillBonus
+  elif leftFilled or rightFilled:
+    result += PocketFillBonus div 2
+
+proc laneHoles(occupied: openArray[bool], width, height: int): int =
+  ## Counts covered holes in the target lane.
+  let bottomRow = height.playfieldBottom
+  for x in LaneStartX ..< LaneStartX + LineClearLength:
+    var seenBlock = false
+    for y in 0 .. bottomRow:
+      if occupied.occupiedAt(width, height, x, y):
+        seenBlock = true
+      elif seenBlock:
+        inc result
+
+proc columnTop(occupied: openArray[bool], width, height, x: int): int =
+  ## Returns the first occupied row in one target lane column.
+  let bottomRow = height.playfieldBottom
+  for y in 0 .. bottomRow:
+    if occupied.occupiedAt(width, height, x, y):
       return y
-  bottomRow
+  bottomRow + 1
+
+proc aggregateLaneHeight(
+  occupied: openArray[bool],
+  width,
+  height: int
+): int =
+  ## Counts the total pile height across the target lane.
+  let bottomRow = height.playfieldBottom
+  for x in LaneStartX ..< LaneStartX + LineClearLength:
+    result += bottomRow + 1 - occupied.columnTop(width, height, x)
+
+proc laneBumpiness(occupied: openArray[bool], width, height: int): int =
+  ## Counts adjacent column height differences in the target lane.
+  let bottomRow = height.playfieldBottom
+  var previous = bottomRow + 1 -
+    occupied.columnTop(width, height, LaneStartX)
+  for x in LaneStartX + 1 ..< LaneStartX + LineClearLength:
+    let current = bottomRow + 1 - occupied.columnTop(width, height, x)
+    result += abs(current - previous)
+    previous = current
+
+proc rowPotential(
+  occupied: openArray[bool],
+  width,
+  height,
+  row: int
+): int =
+  ## Scores how promising one row is for the next placement.
+  if row < 0 or row > height.playfieldBottom:
+    return low(int)
+  let filled = occupied.rowCount(width, row, LaneStartX)
+  if filled >= LineClearLength:
+    return low(int)
+  for x in LaneStartX ..< LaneStartX + LineClearLength:
+    if occupied.supportedGap(width, height, x, row):
+      result += 350
+  result += filled * 120
+  result -= abs(height.playfieldBottom - row) * 3
+
+proc targetHoleRow(occupied: openArray[bool], width, height: int): int =
+  ## Finds the most useful incomplete row in the central lane.
+  let bottomRow = height.playfieldBottom
+  var bestScore = low(int)
+  result = bottomRow
+  for y in countdown(bottomRow, 0):
+    let score = occupied.rowPotential(width, height, y)
+    if score > bestScore:
+      bestScore = score
+      result = y
+  if bestScore == low(int):
+    result = bottomRow
 
 proc placedCells(x, y: int, kind: PieceKind, rotation: int): seq[Cell] =
   ## Returns absolute cells for one candidate placement.
@@ -615,10 +742,14 @@ proc scorePlacement(
   placement: Placement,
   targetRow: int
 ): int =
-  ## Scores a candidate by filling holes in an eight-cell lane.
+  ## Scores a candidate by filling gaps and avoiding covered holes.
   var test = newSeq[bool](occupied.len)
   for i in 0 ..< occupied.len:
     test[i] = occupied[i]
+  let
+    beforeHoles = occupied.laneHoles(width, height)
+    beforeBumpiness = occupied.laneBumpiness(width, height)
+    beforeHeight = occupied.aggregateLaneHeight(width, height)
   let cells = placedCells(
     placement.x,
     placement.y,
@@ -628,31 +759,44 @@ proc scorePlacement(
   for cell in cells:
     if cell.x >= 0 and cell.y >= 0 and cell.x < width and cell.y < height:
       test[cell.y * width + cell.x] = true
-      if cell.x >= LaneStartX and cell.x < LaneStartX + LineClearLength:
+      if cell.x.inLane:
         result += 300
+        result += occupied.cellGapScore(width, height, cell.x, cell.y)
       else:
-        result -= 600
-      result -= abs(cell.y - targetRow) * 4
-      result += cell.y
+        result -= OutsideLanePenalty
+      result -= abs(cell.y - targetRow) * 6
+      result += cell.y div 2
 
+  var rows: seq[int]
   for cell in cells:
     if cell.y < 0 or cell.y >= height - 1:
       continue
+    if cell.y in rows:
+      continue
+    rows.add(cell.y)
     let
       before = occupied.rowCount(width, cell.y, LaneStartX)
       after = test.rowCount(width, cell.y, LaneStartX)
     if after >= LineClearLength:
-      result += 20000
-    result += (after - before) * 700
+      result += RowCompletionBonus
+    if cell.y == targetRow:
+      result += (after - before) * 800
+    result += (after - before) * 950
     result += after * 80
 
-  for x in LaneStartX ..< LaneStartX + LineClearLength:
-    var seenBlock = false
-    for y in 0 ..< height - 1:
-      if test[y * width + x]:
-        seenBlock = true
-      elif seenBlock:
-        result -= 80
+  let
+    afterHoles = test.laneHoles(width, height)
+    afterBumpiness = test.laneBumpiness(width, height)
+    afterHeight = test.aggregateLaneHeight(width, height)
+  if afterHoles <= beforeHoles:
+    result += (beforeHoles - afterHoles) * HoleReductionBonus
+  else:
+    result -= (afterHoles - beforeHoles) * HoleIncreasePenalty
+  if afterBumpiness <= beforeBumpiness:
+    result += (beforeBumpiness - afterBumpiness) * BumpinessPenalty
+  else:
+    result -= (afterBumpiness - beforeBumpiness) * BumpinessPenalty
+  result -= max(0, afterHeight - beforeHeight) * HeightPenalty
 
 proc choosePlacement(bot: var Bot, active: ActivePiece): Placement =
   ## Chooses where the current piece should land.
@@ -661,7 +805,7 @@ proc choosePlacement(bot: var Bot, active: ActivePiece): Placement =
   let occupied = bot.occupiedMap(active)
   bot.targetRow = occupied.targetHoleRow(bot.map.width, bot.map.height)
   for rotation in 0 .. 3:
-    for x in LaneStartX - 4 .. LaneStartX + LineClearLength:
+    for x in LaneStartX - 6 .. LaneStartX + LineClearLength + 4:
       var y = max(0, active.originY)
       if not occupied.canPlace(
         bot.map.width,
