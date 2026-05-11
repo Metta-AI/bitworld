@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "among_them",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
     "owner": "treeform@softmax.com",
     "config_schema": {
@@ -323,6 +323,38 @@
       "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md",
       "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "docs": {
+      "readme": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/README.md"
+      },
+      "pages": [
+        {
+          "id": "play",
+          "title": "play.md",
+          "content": {
+            "type": "uri",
+            "value": "https://softmax.com/play_amongthem.md"
+          }
+        },
+        {
+          "id": "player",
+          "title": "player.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/how_to_make_a_bot.md"
+          }
+        },
+        {
+          "id": "optimizer",
+          "title": "optimizer.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/SMART_BOT_GUIDE.md"
+          }
+        }
+      ]
     },
     "image_uri": "ghcr.io/treeform/bitworld-among-them-runner:latest"
   },
