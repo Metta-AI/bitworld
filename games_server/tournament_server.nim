@@ -667,49 +667,9 @@ proc selectedPlayers(
   if result.len == 0:
     raise newException(TournamentError, "no tournament players selected")
 
-proc stripImageTag(image: string): string =
-  ## Removes a Docker image tag or digest.
-  let
-    slashAt = image.rfind('/')
-    colonAt = image.rfind(':')
-    digestAt = image.find('@')
-  var stop = image.len
-  if digestAt >= 0:
-    stop = digestAt
-  elif colonAt > slashAt:
-    stop = colonAt
-  image[0 ..< stop]
-
-proc imageTag(image: string): string =
-  ## Returns a Docker image tag suffix when present.
-  let
-    slashAt = image.rfind('/')
-    colonAt = image.rfind(':')
-  if colonAt > slashAt:
-    image[colonAt .. ^1]
-  else:
-    ""
-
-proc runnerImageUri(imageUri: string): string =
-  ## Converts a manifest image name to the registry runner image.
-  let
-    cleanImage = imageUri.strip()
-    tag = imageTag(cleanImage)
-  var
-    owner = "treeform"
-    packageName = stripImageTag(cleanImage)
-  if packageName.startsWith("ghcr.io/"):
-    let parts = packageName.split('/')
-    if parts.len >= 3:
-      owner = parts[1]
-      packageName = parts[2 .. ^1].join("/")
-  elif packageName.contains('/'):
-    packageName = packageName.split('/')[^1]
-  if packageName.len == 0:
-    packageName = "bitworld-among-them"
-  if not packageName.endsWith("-runner"):
-    packageName.add("-runner")
-  "ghcr.io/" & owner & "/" & packageName & tag
+proc gameImageUri(game: GameManifest): string =
+  ## Returns the Docker image used to launch one tournament game.
+  game.imageUri
 
 proc dockerResult(args: openArray[string]): CommandResult =
   ## Runs Docker and captures merged stdout and stderr.
@@ -1142,7 +1102,7 @@ proc gameDockerArgs(
     CogameResultsEnv & "=" & ContainerReplayDir / run.results
   ]
   result.addAiEnvArgs()
-  result.add(runnerImageUri(game.imageUri))
+  result.add(gameImageUri(game))
   result.add(game.binary)
   result.add("--address:0.0.0.0")
   result.add("--port:" & $GameContainerPort)
@@ -1341,7 +1301,7 @@ proc startTournamentGame(
   let gameConfig = defaultConfigJson(game, config.playersPerGame, run.slots)
   var launched: seq[string]
 
-  var images = @[runnerImageUri(game.imageUri)]
+  var images = @[gameImageUri(game)]
   for player in chosen.manifests:
     images.add(player.imageUri)
   pullImagesFresh(images)

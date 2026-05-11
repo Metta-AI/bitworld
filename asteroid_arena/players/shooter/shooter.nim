@@ -4,7 +4,7 @@ import
   protocol
 
 const
-  SpritePlayerPath = "/sprite_player"
+  PlayerPath = "/player"
   AsteroidObjectBase = 1000
   ShipObjectBase = 2000
   BulletObjectBase = 3000
@@ -192,7 +192,7 @@ proc queryEscape(value: string): string =
       result.add(Hex[byte and 0x0f])
 
 proc connectUrl(address: string, port: int, name, token: string): string =
-  result = "ws://" & address & ":" & $port & SpritePlayerPath
+  result = "ws://" & address & ":" & $port & PlayerPath
   result.add("?name=" & name.queryEscape())
   if token.len > 0:
     result.add("&token=" & token.queryEscape())

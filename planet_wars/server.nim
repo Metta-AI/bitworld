@@ -81,29 +81,6 @@ proc serveHealthz(request: Request): bool =
   request.respond(200, headers, "healthy")
   true
 
-proc servePlayerRedirect(request: Request): bool =
-  ## Redirects the legacy player page route to the sprite player route.
-  if request.path != WebSocketPath or request.httpMethod != "GET" or
-      request.isWebSocketUpgrade():
-    return false
-  var headers: HttpHeaders
-  headers["Content-Type"] = "text/html; charset=utf-8"
-  headers["Cache-Control"] = "no-cache"
-  request.respond(
-    200,
-    headers,
-    """
-<!doctype html>
-<meta charset="utf-8">
-<title>Planet Wars</title>
-<script>
-location.replace(location.pathname.replace(/\/player$/, "/sprite_player") +
-  location.search + location.hash);
-</script>
-"""
-  )
-  true
-
 proc cleanPlayerName(name: string): string =
   ## Returns a protocol-safe player display name.
   result = name.strip()
@@ -125,9 +102,7 @@ proc httpHandler(request: Request) =
   ## Handles HTTP routes and websocket upgrades.
   if request.serveHealthz():
     discard
-  elif request.servePlayerRedirect():
-    discard
-  elif request.path == SpritePlayerWebSocketPath and
+  elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
@@ -137,8 +112,7 @@ proc httpHandler(request: Request) =
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(RewardClientRoute)
-  elif (request.path == SpritePlayerWebSocketPath or
-      request.path == WebSocketPath) and request.httpMethod == "GET":
+  elif request.path == WebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -159,7 +133,7 @@ proc httpHandler(request: Request) =
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain; charset=utf-8"
-    request.respond(200, headers, "Bit World sprite protocol server")
+    request.respond(200, headers, "Bit World global protocol server")
 
 proc websocketHandler(
   websocket: WebSocket,
@@ -305,7 +279,7 @@ proc runServerLoop*(
   simConfig = defaultSimConfig(),
   saveScoresPath = ""
 ) =
-  ## Runs the sprite-protocol Planet Wars server loop.
+  ## Runs the Planet Wars server loop.
   initAppState()
   let httpServer = newServer(
     httpHandler,

@@ -845,11 +845,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     game = ensureGameFolder(rootDir, config.gameFolder)
     gameFolderRelative = game.sourceRelative.splitFile().dir
     spritePlayerClient = usesSpritePlayerClient(game.playerProtocol)
-    playerPath =
-      if spritePlayerClient:
-        "/sprite_player"
-      else:
-        "/player"
+    playerPath = "/player"
     gameTitle = humanizeLabel(game.name)
     gameExe = exePathFor(rootDir, game.sourceRelative)
     clientSourceRelative =

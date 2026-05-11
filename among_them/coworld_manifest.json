@@ -7,7 +7,7 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "bitworld-among-them:latest"
+      "image": "ghcr.io/treeform/bitworld-among-them-runner:latest"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -326,7 +326,7 @@
       "id": "nottoodumb",
       "name": "nottoodumb",
       "type": "player",
-      "image": "bitworld-nottoodumb:latest",
+      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest",
       "description": "Deterministic baseline Among Them player used for local smoke episodes."
     }
   ],

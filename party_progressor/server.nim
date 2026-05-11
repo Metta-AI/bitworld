@@ -327,7 +327,7 @@ proc serveClientHtml(request: Request, route: string): bool =
 
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static client asset. Page routes (/client/*.html) are not
-  ## served here: each page lives at its websocket URL (/sprite_player,
+  ## served here: each page lives at its websocket URL (/player,
   ## /global, /reward), which dual-serves HTML on a plain GET and upgrades
   ## on a Sec-WebSocket-Key request, so the page and its websocket share a
   ## URL and reverse-proxy prefix routing works without page-side awareness.
@@ -557,7 +557,7 @@ proc playerIdentity(request: Request): string =
   request.remoteAddress
 
 proc httpHandler(request: Request) =
-  if request.path == SpritePlayerWebSocketPath and
+  if request.path == WebSocketPath and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
@@ -567,7 +567,7 @@ proc httpHandler(request: Request) =
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(RewardClientRoute)
-  elif request.path == SpritePlayerWebSocketPath and
+  elif request.path == WebSocketPath and
       request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:

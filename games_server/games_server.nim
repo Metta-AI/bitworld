@@ -14,18 +14,10 @@ const
   DefaultPort = 2080
   MaxBotLaunchCount = 16
   DockerBinEnv = "GAMES_SERVER_DOCKER"
-  DockerImageEnv = "GAMES_SERVER_IMAGE"
   DockerModeEnv = "GAMES_SERVER_MODE"
   ReplayDirEnv = "GAMES_SERVER_REPLAY_DIR"
   WorkspaceRootEnv = "GAMES_SERVER_WORKSPACE_ROOT"
-  NotTooDumbImageEnv = "GAMES_SERVER_NOTTOODUMB_IMAGE"
-  IVoteALotImageEnv = "GAMES_SERVER_IVOTEALOT_IMAGE"
-  ITalkALotImageEnv = "GAMES_SERVER_ITALKALOT_IMAGE"
-  DefaultDockerImage = "ghcr.io/treeform/bitworld-among-them-runner:latest"
   DefaultDockerMode = "release"
-  DefaultNotTooDumbImage = "ghcr.io/treeform/bitworld-nottoodumb:latest"
-  DefaultIVoteALotImage = "ghcr.io/treeform/bitworld-ivotewell:latest"
-  DefaultITalkALotImage = "ghcr.io/treeform/bitworld-italkalot:latest"
   GameContainerPort = 8080
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
@@ -43,7 +35,6 @@ const
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CogameManifestName = "cogame_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
-  GlobalProtocolSpec = "global_protocol_spec.md"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayUploadPath = "/api/replay/upload"
   ReplayScoresUploadPath = "/api/replay/upload/scores"
@@ -66,9 +57,6 @@ const
   BotKindLabel = "bitworld.games_server.bot"
   LiveKind = "game"
   ReplayKind = "replay"
-  NotTooDumbBot = "nottoodumb"
-  IVoteALotBot = "ivotealot"
-  ITalkALotBot = "italkalot"
   BotHost = "host.docker.internal"
   PageCss = """
 body {
@@ -475,10 +463,6 @@ proc dockerBin(): string =
   ## Returns the Docker-compatible CLI path.
   envValue(DockerBinEnv, "docker")
 
-proc dockerImage(): string =
-  ## Returns the image used for new Among Them containers.
-  envValue(DockerImageEnv, DefaultDockerImage)
-
 proc dockerMode(): string =
   ## Returns the container launch mode.
   envValue(DockerModeEnv, DefaultDockerMode).toLowerAscii()
@@ -551,12 +535,6 @@ proc manifestProtocol(node: JsonNode, key: string): string =
       protocols[key].kind == JString:
     return protocols[key].getStr()
 
-proc isGlobalProtocolSpec(path: string): bool =
-  ## Returns true when a protocol path names the global protocol spec.
-  let cleanPath = path.toLowerAscii()
-  cleanPath.extractFilename() == GlobalProtocolSpec or
-    cleanPath.contains("global_protocol_spec")
-
 proc defaultManifestName(path: string): string =
   ## Returns a display name for a manifest path.
   splitPath(parentDir(path)).tail
@@ -579,7 +557,7 @@ proc readGameManifest(path: string): GameManifest =
       path: path,
       name: name,
       author: author,
-      imageUri: manifest.manifestString("image_uri", dockerImage()),
+      imageUri: manifest.manifestString("image_uri", ""),
       binary: manifest.manifestString("binary", "/bin/" & name),
       playerProtocol: manifest.manifestProtocol("player")
     )
@@ -670,17 +648,6 @@ proc findGameManifest(key: string): GameManifest =
     "unknown CoGame manifest: " & cleanKey
   )
 
-proc findGameManifestByName(name: string): GameManifest =
-  ## Finds a scanned CoGame manifest by manifest name.
-  let cleanName = name.strip()
-  for manifest in listGameManifests():
-    if manifest.name == cleanName:
-      return manifest
-  raise newException(
-    GamesServerError,
-    "unknown CoGame manifest name: " & cleanName
-  )
-
 proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
   ## Returns true when a CoPlayer manifest supports a game.
   for supported in bot.games:
@@ -744,15 +711,6 @@ proc runValidation(manifest: GameManifest): CertificationResult =
   config.dockerBin = dockerBin()
   certifyManifest(manifest.path, config)
 
-proc dockerOwner(): string =
-  ## Returns the default GitHub container package owner.
-  let image = dockerImage()
-  if image.startsWith("ghcr.io/"):
-    let parts = image.split('/')
-    if parts.len >= 3:
-      return parts[1]
-  "treeform"
-
 proc stripImageTag(image: string): string =
   ## Removes a Docker image tag or digest.
   let
@@ -766,62 +724,15 @@ proc stripImageTag(image: string): string =
     stop = colonAt
   image[0 ..< stop]
 
-proc imageTag(image: string): string =
-  ## Returns a Docker image tag suffix when present.
-  let
-    slashAt = image.rfind('/')
-    colonAt = image.rfind(':')
-  if colonAt > slashAt:
-    image[colonAt .. ^1]
-  else:
-    ""
-
-proc registryImageUri(imageUri: string): string =
-  ## Adds the default GHCR owner to one bare image name.
-  let cleanImage = imageUri.strip()
-  if cleanImage.len == 0:
-    return ""
-  if cleanImage.startsWith("ghcr.io/") or cleanImage.contains('/'):
-    return cleanImage
-  "ghcr.io/" & dockerOwner() & "/" & cleanImage
-
-proc runnerImageUri(imageUri: string): string =
-  ## Converts a manifest image name to the registry runner image.
-  let
-    cleanImage = imageUri.strip()
-    tag = imageTag(cleanImage)
-  var
-    owner = dockerOwner()
-    packageName = stripImageTag(cleanImage)
-  if packageName.startsWith("ghcr.io/"):
-    let parts = packageName.split('/')
-    if parts.len >= 3:
-      owner = parts[1]
-      packageName = parts[2 .. ^1].join("/")
-  elif packageName.contains('/'):
-    packageName = packageName.split('/')[^1]
-  if not packageName.endsWith("-runner"):
-    packageName.add("-runner")
-  "ghcr.io/" & owner & "/" & packageName & tag
-
 proc gameDockerImage(manifest: GameManifest): string =
   ## Returns the Docker image for one CoGame manifest.
-  if manifest.name == "among_them":
-    return envValue(
-      DockerImageEnv,
-      runnerImageUri(manifest.imageUri)
-    )
-  let image = registryImageUri(manifest.imageUri)
-  if image.len > 0:
-    image
-  else:
-    dockerImage()
+  manifest.imageUri
 
 proc dockerPackageUrl(imageUri: string): string =
   ## Builds a GitHub Packages URL from a resolved Docker image name.
-  let image = registryImageUri(imageUri)
+  let image = imageUri.strip()
   var
-    owner = dockerOwner()
+    owner = "treeform"
     packageName = stripImageTag(image)
   if packageName.startsWith("ghcr.io/"):
     let parts = packageName.split('/')
@@ -833,33 +744,9 @@ proc dockerPackageUrl(imageUri: string): string =
   "https://github.com/users/" & owner &
     "/packages/container/package/" & encodeUrlComponent(packageName)
 
-proc imageFallback(image, defaultImage: string): string =
-  ## Returns a manifest image or a known default.
-  if image.len > 0:
-    image
-  else:
-    defaultImage
-
 proc coplayerImage(bot: CoplayerManifest): string =
   ## Returns the Docker image for one CoPlayer.
-  case bot.name.toLowerAscii()
-  of NotTooDumbBot:
-    envValue(
-      NotTooDumbImageEnv,
-      imageFallback(bot.imageUri, DefaultNotTooDumbImage)
-    )
-  of "ivotewell", IVoteALotBot:
-    envValue(
-      IVoteALotImageEnv,
-      imageFallback(bot.imageUri, DefaultIVoteALotImage)
-    )
-  of ITalkALotBot:
-    envValue(
-      ITalkALotImageEnv,
-      imageFallback(bot.imageUri, DefaultITalkALotImage)
-    )
-  else:
-    bot.imageUri
+  bot.imageUri
 
 proc ensureReplayDir() =
   ## Creates the replay directory when it is missing.
@@ -2045,6 +1932,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     echo "  Creating ECS game: ", manifestInfo.name
     let
       config = configJson(form, manifestInfo)
+      image = gameDockerImage(manifestInfo)
       created = getTime().toUnix()
       replay = "ecs_game_" & $created & ".bitreplay"
       serverUrl = gamesServerUrl()
@@ -2054,7 +1942,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     echo "  Replay upload: ", if saveReplay: "enabled" else: "disabled (no EC2 IP)"
     echo "  Launching game task..."
     let (taskArn, publicIp, privateIp) = ecsCreateGame(
-      ecsConf.gameImage,
+      image,
       config,
       manifestInfo.name,
       manifestInfo.key,
@@ -2142,7 +2030,10 @@ proc createReplayGame(replay: string): GameContainer =
     raise newException(GamesServerError, "invalid replay file name")
   if not fileExists(replayPath(cleanReplay)):
     raise newException(GamesServerError, "replay file does not exist")
-  let serverUrl = gamesServerUrl()
+  let
+    manifestInfo = replayManifest(cleanReplay)
+    image = gameDockerImage(manifestInfo)
+    serverUrl = gamesServerUrl()
   if useEcs:
     if serverUrl.len == 0:
       raise newException(GamesServerError,
@@ -2151,7 +2042,7 @@ proc createReplayGame(replay: string): GameContainer =
     var env: seq[tuple[name, value: string]]
     env.add((name: "REPLAY_DOWNLOAD_URL", value: downloadUrl))
     let (taskArn, publicIp, _) = ecsCreateReplayGame(
-      ecsConf.gameImage,
+      image,
       cleanReplay,
       env,
     )
@@ -2166,8 +2057,6 @@ proc createReplayGame(replay: string): GameContainer =
     )
     return
   let
-    manifestInfo = replayManifest(cleanReplay)
-    image = gameDockerImage(manifestInfo)
     port = findOpenPort()
     created = getTime().toUnix()
     name = replayGameName(manifestInfo.name, port)
@@ -2326,20 +2215,7 @@ proc gamePagePath(game: GameContainer, page: string): string =
   ## Returns the canonical game route for one client page label.
   case page
   of "player.html":
-    var playerProtocol = ""
-    try:
-      let manifest =
-        if game.manifestKey.len > 0:
-          findGameManifest(game.manifestKey)
-        else:
-          findGameManifestByName(game.cogameName)
-      playerProtocol = manifest.playerProtocol
-    except CatchableError:
-      discard
-    if playerProtocol.isGlobalProtocolSpec():
-      "/sprite_player"
-    else:
-      "/player"
+    "/player"
   of "rewards.html", "reward.html":
     "/reward"
   of "admin.html":

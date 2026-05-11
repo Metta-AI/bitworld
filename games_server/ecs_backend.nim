@@ -32,7 +32,6 @@ type
     taskRoleArn*: string
     logGroup*: string
     region*: string
-    gameImage*: string
     awsBin*: string
 
   EcsError* = object of CatchableError
@@ -55,7 +54,6 @@ proc loadEcsConfig*() =
     taskRoleArn: getEnv("ECS_TASK_ROLE_ARN"),
     logGroup: getEnv("ECS_LOG_GROUP", "/ecs/bitworld"),
     region: getEnv("ECS_REGION", "us-east-1"),
-    gameImage: getEnv("ECS_GAME_IMAGE", "ghcr.io/treeform/bitworld-among-them-runner:latest"),
     awsBin: getEnv("ECS_AWS_BIN", "aws"),
   )
 
@@ -92,7 +90,7 @@ proc requireAws(args: openArray[string]): JsonNode =
 # =============================================================================
 
 var
-  gameTaskDefArn: string
+  gameTaskDefs: Table[string, string]
   botTaskDefs: Table[string, string]  # image -> task def ARN
 
 proc registerTaskDef(family, image: string, cpu = "256", memory = "512", arch = "X86_64"): string =
@@ -134,13 +132,14 @@ proc registerTaskDef(family, image: string, cpu = "256", memory = "512", arch = 
   let resp = requireAws(args)
   result = resp["taskDefinition"]["taskDefinitionArn"].getStr()
 
-proc ensureGameTaskDef*() =
-  if gameTaskDefArn.len == 0:
-    echo "ECS: registering game task definition..."
-    gameTaskDefArn = registerTaskDef(
-      "bitworld-game", ecsConf.gameImage, "2048", "4096"
-    )
-    echo "ECS: game task def = ", gameTaskDefArn
+proc ensureGameTaskDef*(image: string): string =
+  if image in gameTaskDefs:
+    return gameTaskDefs[image]
+  let family = "bitworld-game-" & image.split("/")[^1].split(":")[0]
+  echo "ECS: registering game task definition for ", image, "..."
+  result = registerTaskDef(family, image, "2048", "4096")
+  gameTaskDefs[image] = result
+  echo "ECS: game task def = ", result
 
 proc ensureBotTaskDef*(image: string, arch = "X86_64"): string =
   let cacheKey = image & ":" & arch
@@ -293,7 +292,7 @@ proc ecsCreateGame*(
   uploadUrl = "",
   uploadToken = "",
 ): tuple[taskArn, publicIp, privateIp: string] =
-  ensureGameTaskDef()
+  let taskDefArn = ensureGameTaskDef(image)
   let
     created = $getTime().toUnix()
     tags = @[
@@ -323,7 +322,7 @@ proc ecsCreateGame*(
 
   echo "ECS: launching game task..."
   let taskResp = runTask(
-    gameTaskDefArn,
+    taskDefArn,
     ecsConf.publicSubnet,
     ecsConf.gameSg,
     assignPublicIp = true,
@@ -385,7 +384,7 @@ proc ecsCreateReplayGame*(
   extraEnv: seq[tuple[name, value: string]],
 ): tuple[taskArn, publicIp, privateIp: string] =
   ## Launches an ECS task for replay playback (no save, no bots).
-  ensureGameTaskDef()
+  let taskDefArn = ensureGameTaskDef(image)
   let
     created = $getTime().toUnix()
     tags = @[
@@ -400,7 +399,7 @@ proc ecsCreateReplayGame*(
 
   echo "ECS: launching replay task..."
   let taskResp = runTask(
-    gameTaskDefArn,
+    taskDefArn,
     ecsConf.publicSubnet,
     ecsConf.gameSg,
     assignPublicIp = true,

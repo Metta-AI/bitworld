@@ -691,11 +691,11 @@ proc connectUrl(
   port,
   slot: int
 ): string =
-  ## Builds the sprite player websocket URL.
+  ## Builds the player websocket URL.
   if url.len > 0:
-    result = url.withPath(SpritePlayerWebSocketPath)
+    result = url.withPath(WebSocketPath)
   else:
-    result = "ws://" & address & ":" & $port & SpritePlayerWebSocketPath
+    result = "ws://" & address & ":" & $port & WebSocketPath
   result = result.addQueryParam("name", name)
   if slot >= 0:
     result = result.addQueryParam("slot", $slot)

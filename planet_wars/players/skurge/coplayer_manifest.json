@@ -1,7 +1,7 @@
 {
   "author": "treeform@softmax.com",
   "name": "skurge",
-  "image_uri": "bitworld-planet-wars-skurge:latest",
+  "image_uri": "ghcr.io/treeform/bitworld-planet-wars-skurge:latest",
   "binary": "/bin/skurge",
   "games": ["planet_wars"]
 }

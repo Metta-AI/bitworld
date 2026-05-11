@@ -29,7 +29,6 @@ const
   ShipLaneOffsetMax* = 3
   ScoreIntervalTicks* = TargetFps
   WebSocketPath* = "/player"
-  SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
   MotionScale* = 256

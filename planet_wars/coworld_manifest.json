@@ -7,13 +7,13 @@
     {
       "id": "idle-player",
       "name": "Idle Player",
-      "image_uri": "bitworld-planet-wars-idle-player:latest",
+      "image_uri": "ghcr.io/treeform/bitworld-planet-wars-idle-player:latest",
       "description": "Baseline Coworld player used for manifest certification."
     },
     {
       "id": "skurge",
       "name": "Skurge",
-      "image_uri": "bitworld-planet-wars-skurge:latest",
+      "image_uri": "ghcr.io/treeform/bitworld-planet-wars-skurge:latest",
       "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets."
     }
   ],

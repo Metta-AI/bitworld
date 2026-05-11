@@ -7,7 +7,7 @@
     {
       "id": "idle-player",
       "name": "Idle Player",
-      "image_uri": "persephones-escape-player:latest",
+      "image_uri": "ghcr.io/treeform/persephones-escape-player:latest",
       "description": "Baseline Coworld player that connects to the assigned slot and emits no-op inputs until the episode ends."
     }
   ],

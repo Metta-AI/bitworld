@@ -2,9 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/cogame_manifest_schema.json",
   "name": "asteroid_arena",
   "version": "0.1.0",
-  "description": "A sprite-protocol BitWorld arcade game where players pilot ships, shoot asteroids, and fight each other.",
+  "description": "A BitWorld arcade game where players pilot ships, shoot asteroids, and fight each other.",
   "owner": "treeform@softmax.com",
-  "image_uri": "bitworld-asteroid-arena:latest",
+  "image_uri": "ghcr.io/treeform/bitworld-asteroid-arena:latest",
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",

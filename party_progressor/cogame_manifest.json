@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "A cooperative BitWorld party progressor where players talk, choose tank/DPS/healer gear, and push a shared frontier to the right.",
   "owner": "treeform@softmax.com",
-  "image_uri": "bitworld-party-progressor:latest",
+  "image_uri": "ghcr.io/treeform/bitworld-party-progressor:latest",
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",

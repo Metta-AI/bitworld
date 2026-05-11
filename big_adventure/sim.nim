@@ -41,7 +41,7 @@ const
   TrollCoinValue* = 10
   BossCoinValue* = 100
   TargetFps* = 60
-  SpritePlayerWebSocketPath* = "/sprite_player"
+  WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8

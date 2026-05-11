@@ -58,7 +58,6 @@ const
   TargetFps* = 24
 
   WebSocketPath* = "/player"
-  SpritePlayerWebSocketPath* = "/sprite_player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
   ReplayWebSocketPath* = "/replay"

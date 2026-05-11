@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "A multiplayer BitWorld falling-blocks game where players stack pieces, clear lines, and compete for score on one shared board.",
   "owner": "treeform@softmax.com",
-  "image_uri": "bitworld-infinite-blocks:latest",
+  "image_uri": "ghcr.io/treeform/bitworld-infinite-blocks:latest",
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -67,11 +67,11 @@
     }
   },
   "protocols": {
-    "sprite_player": "sprite_protocol",
-    "global": "sprite_protocol",
+    "player": "../docs/global_protocol_spec.md",
+    "global": "../docs/global_protocol_spec.md",
     "admin": "http"
   },
   "client": {
-    "client/global": "sprite_protocol"
+    "client/global": "../docs/global_protocol_spec.md"
   }
 }

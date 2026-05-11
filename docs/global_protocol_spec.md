@@ -215,9 +215,8 @@ Suggested mouse button control codes:
 ### Player Input
 
 Sends the current held player button state. This packet is intended for
-sprite-based player endpoints such as `/sprite_player`, where the server renders the
-game through this protocol but still accepts the same controls as the original
-`/player` endpoint.
+sprite-based player endpoints such as `/player`, where the server renders the
+game through this protocol and accepts the standard player controls.
 
 Player endpoints may accept the same join query parameters as `/player`:
 `name`, `slot`, and `token`. `slot` is zero-based and lets the server assign a

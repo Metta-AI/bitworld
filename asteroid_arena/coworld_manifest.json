@@ -7,7 +7,7 @@
     {
       "id": "shooter",
       "name": "Shooter",
-      "image_uri": "bitworld-asteroid-arena-shooter:latest",
+      "image_uri": "ghcr.io/treeform/bitworld-asteroid-arena-shooter:latest",
       "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires."
     }
   ],

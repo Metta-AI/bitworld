@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "A cooperative BitWorld adventure game where players explore, fight monsters, collect loot, and decide whether to share or defect.",
   "owner": "treeform@softmax.com",
-  "image_uri": "bitworld-big-adventure:latest",
+  "image_uri": "ghcr.io/treeform/bitworld-big-adventure:latest",
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",

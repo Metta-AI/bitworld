@@ -1103,13 +1103,13 @@ proc runBot(
   chat = false,
   maxSteps = 0
 ) =
-  ## Connects to the Party Progressor sprite player endpoint.
+  ## Connects to the Party Progressor player endpoint.
   let url =
     if name.len > 0:
-      "ws://" & host & ":" & $port & SpritePlayerWebSocketPath &
+      "ws://" & host & ":" & $port & WebSocketPath &
         "?name=" & name.queryEscape()
     else:
-      "ws://" & host & ":" & $port & SpritePlayerWebSocketPath
+      "ws://" & host & ":" & $port & WebSocketPath
 
   while true:
     try:

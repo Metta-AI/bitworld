@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "A hidden-role social deduction game about Hades, Persephone, hostage exchanges, and private information sharing.",
   "owner": "cogames@softmax.com",
-  "image_uri": "persephones-escape-game:latest",
+  "image_uri": "ghcr.io/treeform/persephones-escape-game:latest",
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",

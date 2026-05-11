@@ -5,7 +5,7 @@ import
 
 const
   PlayerDefaultPort = 2000
-  SpritePlayerWebSocketPath = "/sprite_player"
+  PlayerWebSocketPath = "/player"
   GlobalWebSocketPath = "/global"
   BoardWidthCells = 250
   BoardHeightCells = 250
@@ -759,8 +759,8 @@ proc echoDebug(bot: Bot, mask: uint8) =
     " score=", bot.target.score
 
 proc spriteUrl(host: string, port: int, name: string): string =
-  ## Builds the default sprite-player websocket URL.
-  result = "ws://" & host & ":" & $port & SpritePlayerWebSocketPath
+  ## Builds the default player websocket URL.
+  result = "ws://" & host & ":" & $port & PlayerWebSocketPath
   if name.len > 0:
     result.add("?name=" & name.queryEscape())
 
