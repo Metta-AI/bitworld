@@ -11,16 +11,16 @@ import type { InputState } from "../game/types.js";
 import { Phase } from "../game/types.js";
 import { render } from "../rendering/renderer.js";
 import {
-  createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-  type BeliefState,
-} from "../bots/belief_state.js";
+  createGameKnowledge, updatePhase, updatePosition, updateMinimap, updateHud,
+  type GameKnowledge,
+} from "../bots/game_knowledge.js";
 import { unpackFrame, ActionQueue, type Point } from "../bots/bot_utils.js";
 import type { BotController } from "../bots/bot_common.js";
 import { defaultPolicy, runPolicy, type Policy } from "../bots/policy.js";
 
 const config = {
   ...DEFAULT_GAME_CONFIG,
-  rounds: [{ durationSecs: 60, hostages: 1 }],
+  rounds: [{ durationSecs: 60, psychopomps: 1 }],
   obstacleCount: 0,
 };
 
@@ -52,11 +52,11 @@ function mkWs(): MockWs {
 const ws0 = mkWs();
 const ws1 = mkWs();
 
-const belief0 = createBeliefState("llm_0");
-const belief1 = createBeliefState("llm_1");
+const knowledge0 = createGameKnowledge("llm_0");
+const knowledge1 = createGameKnowledge("llm_1");
 
-const bot0: BotController = { ws: ws0 as any, actions: new ActionQueue(), belief: belief0, name: "llm_0", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
-const bot1: BotController = { ws: ws1 as any, actions: new ActionQueue(), belief: belief1, name: "llm_1", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
+const bot0: BotController = { ws: ws0 as any, actions: new ActionQueue(), player: knowledge0, name: "llm_0", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
+const bot1: BotController = { ws: ws1 as any, actions: new ActionQueue(), player: knowledge1, name: "llm_1", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
 
 // Policies — simulate what a "smart" LLM would do
 const policy0: Policy = {
@@ -88,8 +88,8 @@ function tick() {
   // Parse frames for each bot
   const f0 = unpackFrame(render(sim, 0));
   const f1 = unpackFrame(render(sim, 1));
-  updatePhase(belief0, f0); updateMinimap(belief0, f0); updatePosition(belief0, f0); updateHud(belief0, f0);
-  updatePhase(belief1, f1); updateMinimap(belief1, f1); updatePosition(belief1, f1); updateHud(belief1, f1);
+  updatePhase(knowledge0, f0); updateMinimap(knowledge0, f0); updatePosition(knowledge0, f0); updateHud(knowledge0, f0);
+  updatePhase(knowledge1, f1); updateMinimap(knowledge1, f1); updatePosition(knowledge1, f1); updateHud(knowledge1, f1);
 
   // Run policy
   ws0.sends.length = 0; ws1.sends.length = 0;

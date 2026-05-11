@@ -24,8 +24,8 @@ import {
 } from "./bot_utils.js";
 import { Room } from "../game/types.js";
 import {
-  createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-} from "./belief_state.js";
+  createGameKnowledge, updatePhase, updatePosition, updateMinimap, updateHud,
+} from "./game_knowledge.js";
 import {
   parseArgs, executeBaseCommand, tickMovement, tickWander,
   type BotController, type ParsedCommand,
@@ -44,11 +44,13 @@ const botName = cliArgs["name"] ?? "winner_bot";
 // ---------------------------------------------------------------------------
 
 const ws = new WebSocket(`${botUrl}?name=${botName}`, { perMessageDeflate: false });
-const belief = createBeliefState(botName);
+const player = createGameKnowledge(botName);
 const bot: BotController = {
-  ws, actions: new ActionQueue(), belief, name: botName,
+  ws, actions: new ActionQueue(), player, name: botName,
   movementTarget: null, wandering: true,
   wanderTarget: null, wanderTicks: 0, lastFrame: null,
+  psychopompPrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
+  nonInterruptingTasks: [],
 };
 
 // Throttle: only issue a policy action every N ticks so we can see state between.
@@ -64,11 +66,11 @@ function exec(type: string, args: string[] = []) {
   const cmd: ParsedCommand = { type, args };
   if (!executeBaseCommand(cmd, bot)) {
     if (type === "approach_nearest") {
-      const others = bot.belief.minimapDots.filter(d => !d.isSelf);
-      if (others.length > 0 && bot.belief.myPos) {
+      const others = bot.player.minimapDots.filter(d => !d.isSelf);
+      if (others.length > 0 && bot.player.myPos) {
         let best = others[0], bestDist = Infinity;
         for (const d of others) {
-          const dist = (d.worldX - bot.belief.myPos.x) ** 2 + (d.worldY - bot.belief.myPos.y) ** 2;
+          const dist = (d.worldX - bot.player.myPos.x) ** 2 + (d.worldY - bot.player.myPos.y) ** 2;
           if (dist < bestDist) { bestDist = dist; best = d; }
         }
         bot.movementTarget = { x: best.worldX, y: best.worldY };
@@ -76,7 +78,7 @@ function exec(type: string, args: string[] = []) {
       }
     }
   }
-  lastActionTick = belief.tick;
+  lastActionTick = player.tick;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,12 +88,12 @@ function exec(type: string, args: string[] = []) {
 function runPolicy(): void {
   // Accept any pending role offer immediately — the sim only registers the
   // mutual exchange if both are key partners; otherwise we just leak a role.
-  if (belief.phase === "whisper") {
-    if (belief.pendingRoleOffer) {
+  if (player.phase === "whisper") {
+    if (player.pendingRoleOffer) {
       exec("role_accept");
       return;
     }
-    if (belief.pendingColorOffer) {
+    if (player.pendingColorOffer) {
       exec("color_accept");
       return;
     }
@@ -100,9 +102,9 @@ function runPolicy(): void {
     return;
   }
 
-  if (belief.phase === "playing" || belief.phase === "hostage_select" || belief.phase === "leader_summit") {
+  if (player.phase === "playing" || player.phase === "psychopomp_select" || player.phase === "leader_summit") {
     // If someone is nearby, open whisper immediately.
-    if (belief.nearbyNames.length > 0) {
+    if (player.nearbyNames.length > 0) {
       exec("open_whisper");
       return;
     }
@@ -121,10 +123,10 @@ function runPolicy(): void {
 function onFrame(data: Buffer): void {
   if (data.length !== PACKED_FRAME_BYTES) return;
   const frame = unpackFrame(data);
-  updatePhase(belief, frame);
-  updateMinimap(belief, frame);
-  updatePosition(belief, frame);
-  updateHud(belief, frame);
+  updatePhase(player, frame);
+  updateMinimap(player, frame);
+  updatePosition(player, frame);
+  updateHud(player, frame);
 
   if (!bot.actions.empty) {
     sendInput(ws, bot.actions.shift()!);
@@ -133,8 +135,8 @@ function onFrame(data: Buffer): void {
 
   if (tickMovement(bot)) return;
 
-  if (belief.tick - lastPolicyTick >= POLICY_INTERVAL) {
-    lastPolicyTick = belief.tick;
+  if (player.tick - lastPolicyTick >= POLICY_INTERVAL) {
+    lastPolicyTick = player.tick;
     runPolicy();
     if (!bot.actions.empty) {
       sendInput(ws, bot.actions.shift()!);
@@ -143,7 +145,7 @@ function onFrame(data: Buffer): void {
   }
 
   // Fallback: if in overworld and nothing queued, wander.
-  if (belief.phase === "playing" && !bot.movementTarget) {
+  if (player.phase === "playing" && !bot.movementTarget) {
     bot.wandering = true;
   }
 

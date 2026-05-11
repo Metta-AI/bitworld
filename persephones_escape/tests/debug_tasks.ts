@@ -9,14 +9,14 @@ import { decodeInputMask, emptyInput } from "../game/protocol.js";
 import type { InputState } from "../game/types.js";
 import { render } from "../rendering/renderer.js";
 import {
-  createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-} from "../bots/belief_state.js";
+  createGameKnowledge, updatePhase, updatePosition, updateMinimap, updateHud,
+} from "../bots/game_knowledge.js";
 import { unpackFrame, ActionQueue } from "../bots/bot_utils.js";
 import type { BotController } from "../bots/bot_common.js";
 import { runTasks, createTaskInstance, createEventBuffer, eventBufferLines, type TaskInstance, type Task } from "../bots/tasks.js";
 
 const sim = new Sim(
-  { ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, hostages: 1 }], obstacleCount: 0 },
+  { ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, psychopomps: 1 }], obstacleCount: 0 },
   42,
 );
 for (let i = 0; i < 2; i++) sim.addPlayer(`llm_${i}`);
@@ -39,14 +39,14 @@ function mkWs(): MockWs {
 const ws0 = mkWs();
 const ws1 = mkWs();
 
-const belief0 = createBeliefState("llm_0");
-const belief1 = createBeliefState("llm_1");
-// Force belief roomW/roomH to match sim (normally set by role_reveal parsing)
-belief0.roomW = sim.roomW; belief0.roomH = sim.roomH; belief0.myRoom = 0;
-belief1.roomW = sim.roomW; belief1.roomH = sim.roomH; belief1.myRoom = 0;
+const knowledge0 = createGameKnowledge("llm_0");
+const knowledge1 = createGameKnowledge("llm_1");
+// Force player roomW/roomH to match sim (normally set by role_reveal parsing)
+knowledge0.matchFacts.roomW = sim.roomW; knowledge0.matchFacts.roomH = sim.roomH; knowledge0.myRoom = 0;
+knowledge1.matchFacts.roomW = sim.roomW; knowledge1.matchFacts.roomH = sim.roomH; knowledge1.myRoom = 0;
 
-const bot0: BotController = { ws: ws0 as any, actions: new ActionQueue(), belief: belief0, name: "llm_0", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
-const bot1: BotController = { ws: ws1 as any, actions: new ActionQueue(), belief: belief1, name: "llm_1", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
+const bot0: BotController = { ws: ws0 as any, actions: new ActionQueue(), player: knowledge0, name: "llm_0", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
+const bot1: BotController = { ws: ws1 as any, actions: new ActionQueue(), player: knowledge1, name: "llm_1", movementTarget: null, wandering: false, wanderTarget: null, wanderTicks: 0 };
 
 // Task lists. The scenario: Hades-like bot0 pursues color of bot1 and offers
 // role; bot1 auto-accepts. Both auto-grant entry and auto-accept color.
@@ -74,8 +74,8 @@ let prevInput1: InputState = emptyInput();
 function tick() {
   const f0 = unpackFrame(render(sim, 0));
   const f1 = unpackFrame(render(sim, 1));
-  updatePhase(belief0, f0); updateMinimap(belief0, f0); updatePosition(belief0, f0); updateHud(belief0, f0);
-  updatePhase(belief1, f1); updateMinimap(belief1, f1); updatePosition(belief1, f1); updateHud(belief1, f1);
+  updatePhase(knowledge0, f0); updateMinimap(knowledge0, f0); updatePosition(knowledge0, f0); updateHud(knowledge0, f0);
+  updatePhase(knowledge1, f1); updateMinimap(knowledge1, f1); updatePosition(knowledge1, f1); updateHud(knowledge1, f1);
 
   ws0.sends.length = 0; ws1.sends.length = 0;
   tasks0 = runTasks(tasks0, bot0, ws0 as any, events0);
@@ -103,13 +103,13 @@ for (let t = 0; t < 400; t++) {
     console.log(`  t=${t}: P1 state change inCr ${preP1.inCr}→${postP1.inCr} pend ${preP1.pend}→${postP1.pend} pos=(${sim.players[1].x},${sim.players[1].y})`);
   }
   if (t === 24 || t === 28 || t === 32) {
-    console.log(`  t=${t}: P0 phase=${belief0.phase} tasks=${tasks0.map(ti => ti.task.kind).join(",")}`);
-    console.log(`  t=${t}: P1 phase=${belief1.phase} tasks=${tasks1.map(ti => ti.task.kind).join(",")}`);
+    console.log(`  t=${t}: P0 phase=${knowledge0.phase} tasks=${tasks0.map(ti => ti.task.kind).join(",")}`);
+    console.log(`  t=${t}: P1 phase=${knowledge1.phase} tasks=${tasks1.map(ti => ti.task.kind).join(",")}`);
   }
   if (t === 25 || t === 40 || t === 50 || t === 60 || t === 100) {
     console.log(`--- t=${t} diagnostic ---`);
-    console.log(`  P0 phase=${belief0.phase} myPos=${JSON.stringify(belief0.myPos)} dots=${belief0.minimapDots.map(d => `[c=${d.color}@${d.worldX},${d.worldY}${d.isSelf?",self":""}]`).join(" ")}`);
-    console.log(`  P1 phase=${belief1.phase} myPos=${JSON.stringify(belief1.myPos)} dots=${belief1.minimapDots.map(d => `[c=${d.color}@${d.worldX},${d.worldY}${d.isSelf?",self":""}]`).join(" ")}`);
+    console.log(`  P0 phase=${knowledge0.phase} myPos=${JSON.stringify(knowledge0.myPos)} dots=${knowledge0.minimapDots.map(d => `[c=${d.color}@${d.worldX},${d.worldY}${d.isSelf?",self":""}]`).join(" ")}`);
+    console.log(`  P1 phase=${knowledge1.phase} myPos=${JSON.stringify(knowledge1.myPos)} dots=${knowledge1.minimapDots.map(d => `[c=${d.color}@${d.worldX},${d.worldY}${d.isSelf?",self":""}]`).join(" ")}`);
   }
   if (t % 20 === 0) {
     const cr0 = sim.whispers.get(sim.players[0].inWhisper);

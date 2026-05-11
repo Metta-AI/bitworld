@@ -7,7 +7,7 @@ import {
 import { Room } from "../game/types.js";
 import {
   sendInput, sendChat, PACKED_FRAME_BYTES, unpackFrame,
-  ActionQueue, menuSequence, hostageSelectSequence,
+  ActionQueue, psychopompSelectSequence,
   moveToward, randomDir, randomPoint, distTo, isNearby,
   type Point,
 } from "./bot_utils.js";
@@ -49,9 +49,9 @@ function botStep(bot: BotState) {
   if (bot.menuCooldown > 0) bot.menuCooldown--;
   if (bot.shareCooldown > 0) bot.shareCooldown--;
 
-  // Every 2 seconds, try hostage-select actions (only leaders respond)
+  // Every 2 seconds, try psychopomp-select actions (only leaders respond)
   if (bot.tick % (TARGET_FPS * 2) === 0) {
-    doHostageSelect(bot);
+    doPsychopompSelect(bot);
     if (!bot.actions.empty) {
       sendInput(bot.ws, bot.actions.shift()!);
       return;
@@ -104,29 +104,29 @@ function doMenuAction(bot: BotState) {
     // A creates whisper directly
     bot.actions.push(BUTTON_A, 0);
   } else if (roll < 0.5) {
-    // SELECT opens comm menu, A selects SHOUT (index 0)
-    bot.actions.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
+    // SELECT opens SHOUT directly
+    bot.actions.push(BUTTON_SELECT, 0);
   } else if (roll < 0.7) {
     // B opens info screen directly
     bot.actions.push(BUTTON_B, 0);
   } else {
-    // SELECT opens comm menu, A selects SHOUT, then navigate usurp and A votes
-    bot.actions.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
+    // SELECT opens SHOUT directly, then navigate usurp and A votes
+    bot.actions.push(BUTTON_SELECT, 0);
     const moves = Math.floor(Math.random() * 4);
-    for (let i = 0; i < moves; i++) bot.actions.push(0x08, 0); // RIGHT
+    for (let i = 0; i < moves; i++) bot.actions.push(BUTTON_B, 0);
     bot.actions.push(BUTTON_A, 0);
     bot.actions.push(BUTTON_SELECT, 0); // close shout
   }
 }
 
 // ---------------------------------------------------------------------------
-// Hostage selection — pick random hostages and commit
+// Psychopomp selection — pick random psychopomps and commit
 // ---------------------------------------------------------------------------
 
-function doHostageSelect(bot: BotState) {
-  // Open shout (via comm menu SHOUT), pick hostages, commit
+function doPsychopompSelect(bot: BotState) {
+  // Open shout (via comm menu SHOUT), pick psychopomps, commit
   const seq: number[] = [];
-  seq.push(...menuSequence("comm", "SHOUT", ["SHOUT", "INFO"]));
+  seq.push(BUTTON_SELECT, 0);
   const picks = 1 + Math.floor(Math.random() * 2);
   for (let i = 0; i < picks; i++) {
     const moves = 1 + Math.floor(Math.random() * 3);

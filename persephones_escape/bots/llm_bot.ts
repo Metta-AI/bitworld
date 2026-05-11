@@ -16,12 +16,14 @@ import {
   BedrockRuntimeClient, ConverseCommand,
   type Message, type ContentBlock, type Tool, type ToolResultContentBlock,
 } from "@aws-sdk/client-bedrock-runtime";
-import { PACKED_FRAME_BYTES, unpackFrame, ActionQueue } from "./bot_utils.js";
+import { PACKED_FRAME_BYTES, unpackFrame, ActionQueue, sendInput } from "./bot_utils.js";
+import { BUTTON_A, BUTTON_B, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT, characterName, CHAT_MAX_CHARS_PER_LINE, CHAT_MAX_LINES } from "../game/constants.js";
+import { matchRoster, parsePsychopompGrid, parseRosterScreen } from "./frame_parser.js";
 import {
-  createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-  checkTriggers, formatContextDump,
+  createGameKnowledge, updatePhase, updatePosition, updateMinimap, updateHud,
+  checkTriggers, formatContextDump, updateFromRosterScreen,
   type TriggerEvent,
-} from "./belief_state.js";
+} from "./game_knowledge.js";
 import { parseArgs, type BotController } from "./bot_common.js";
 import {
   mergeTasks, parseTaskUpdate, runTasks, tasksToPromptLines,
@@ -37,7 +39,7 @@ const MODEL_ALIASES: Record<string, string> = {
   "sonnet": "us.anthropic.claude-sonnet-4-6",
   "opus": "us.anthropic.claude-opus-4-6",
 };
-const rawModel = cliArgs["model"] ?? "haiku";
+const rawModel = cliArgs["model"] ?? "sonnet";
 const modelId = MODEL_ALIASES[rawModel] ?? rawModel;
 const region = cliArgs["region"] ?? "us-west-2";
 
@@ -78,17 +80,17 @@ Players are shuffled randomly into two disjoint rooms (Underworld and Mortal Rea
 PLAYER IDENTITY
 ============================================================
 
-Each player has a unique visual identity: a COLOR + SHAPE combination. For example "R CRCL" means the red circle player, "B TRI" means the blue triangle. The harness reports players using these canonical sprite names. When chatting with other players, refer to them by their sprite name (e.g. "R CRCL", "Y STAR") so others know who you mean.
+Each player has a unique visual identity: a COLOR + SHAPE combination. For example "R.CRCL" means the red circle player, "B.TRI" means the blue triangle. The harness reports players using these canonical sprite names. When chatting with other players, refer to them by their sprite name (e.g. "R.CRCL", "Y.STAR") so others know who you mean.
 
 IMPORTANT: All messages (shouts and whisper chat) automatically show the sender's sprite next to the message. Other players already know who sent each message. You do NOT need to identify yourself or sign your messages — everyone can see your sprite. Focus your limited characters on useful content, not self-identification.
 
 Available shapes: CRCL, SQR, TRI, DMOND, STAR, CROSS, X, HEART, MOON, BOLT, GLASS, RING
 Color letters: R=red, B=blue, Y=yellow, G=green, O=orange, P=purple, L=lime, N=navy
 
-Role shorthands for chat (max 18 chars/line — use these to save space):
+Role shorthands for chat (max ${CHAT_MAX_CHARS_PER_LINE} chars/line — use these to save space):
   Hades=HADES, Cerberus=CERE, Persephone=PERSE, Demeter=DEME, Shade=SHADE, Nymph=NYMPH
 
-CRITICAL: The two rooms are COMPLETELY DISJOINT physical spaces. You cannot walk between them. You cannot communicate with players in the other room via chat, shouts, whispers, or any means. The ONLY way players move between rooms is via HOSTAGE EXCHANGE at the end of each round. At any given moment, roughly half the players are unreachable from your position. Your key-role partner may be in the other room — if so, you must either wait to be exchanged as a hostage, or hope they are.
+CRITICAL: The two rooms are COMPLETELY DISJOINT physical spaces. You cannot walk between them. You cannot communicate with players in the other room via chat, shouts, whispers, or any means. The ONLY way players move between rooms is via PSYCHOPOMP EXCHANGE at the end of each round. At any given moment, roughly half the players are unreachable from your position. Your key-role partner may be in the other room — if so, you must either wait to be exchanged as a psychopomp, or hope they are.
 
 ============================================================
 WIN CONDITIONS
@@ -113,8 +115,8 @@ ROUND STRUCTURE (3 rounds)
 
 Each round:
 1. PLAYING PHASE — players move freely, communicate, exchange information
-2. HOSTAGE SELECT — each room's leader picks hostages to send to the other room
-3. HOSTAGE EXCHANGE — selected hostages are teleported (brief cutscene)
+2. PSYCHOPOMP SELECT — each room's leader picks psychopomps to send to the other room
+3. PSYCHOPOMP EXCHANGE — selected psychopomps are teleported (brief cutscene)
 
 Then the next round begins. After round 3, roles are revealed and the winner is determined.
 
@@ -151,7 +153,7 @@ COMMUNICATION MECHANICS
 
 ### Leadership
 - Each room has one leader (randomly assigned each round)
-- Leaders select hostages at end of each round
+- Leaders select psychopomps at end of each round
 - PASS/TAKE: leader can transfer leadership inside a whisper
 - USURP: any non-leader can vote for who should be leader using usurp_vote task
 - You have exactly ONE vote at a time — voting for a new player REPLACES your previous vote
@@ -168,7 +170,7 @@ State diagram:
   LOBBY → ROLE_REVEAL → PLAYING ←→ WHISPER
                            ↓            ↑ (exit or round ends — all whispers destroyed)
                            ↓            ↓
-                      HOSTAGE_SELECT → LEADER_SUMMIT → HOSTAGE_EXCHANGE → PLAYING (next round)
+                      PSYCHOPOMP_SELECT → LEADER_SUMMIT → PSYCHOPOMP_EXCHANGE → PLAYING (next round)
                            ↑
                       (pursue target) → WAITING_ENTRY → WHISPER (if granted)
                                             ↓
@@ -176,11 +178,11 @@ State diagram:
 
 States:
 - "playing" — overworld. Move, shout, create/request whispers. All movement/pursuit tasks run here.
-- "whisper" — private conversation. Chat, offer exchanges, grant entry, exit. You CANNOT hear shouts or see the minimap. Movement tasks are SKIPPED. All whispers are DESTROYED when a round ends — you will be returned to overworld.
+- "whisper" — private conversation. Chat, offer exchanges, grant entry, exit. You can cycle to shout/info, but movement tasks are SKIPPED. All whispers are DESTROYED when a round ends — you will be returned to overworld.
 - "waiting_entry" — you requested to join a whisper. Do NOT emit actions or you cancel the request.
-- "hostage_select" — leaders pick hostages. Non-leaders can shout or usurp_vote. All whispers were destroyed at the start of this phase.
-- "leader_summit" — leaders-only private whisper after hostage selection. Chat only, no exchanges or exit.
-- "hostage_exchange" / "reveal" / "game_over" — automated phases, wait for them to end.
+- "psychopomp_select" — leaders pick psychopomps. Non-leaders can shout or usurp_vote. All whispers were destroyed at the start of this phase.
+- "leader_summit" — leaders-only private whisper after psychopomp selection. Chat only, no exchanges or exit.
+- "psychopomp_exchange" / "reveal" / "game_over" — automated phases, wait for them to end.
 
 ============================================================
 TASK SYSTEM
@@ -193,21 +195,21 @@ You control the bot by maintaining an ORDERED TASK LIST. The executor walks the 
   { "kind": "chat", "text": "..." }            // whisper message (whisper only)
   { "kind": "exit_whisper" }                  // leave whisper (whisper only)
 
-  Text limit: 2 lines × 18 chars = 36 chars max. Keep it short.
+  Text limit: ${CHAT_MAX_LINES} lines × ${CHAT_MAX_CHARS_PER_LINE} chars = ${CHAT_MAX_CHARS_PER_LINE * CHAT_MAX_LINES} chars max. Keep it short.
 
-### SEQUENCE — multi-frame, self-terminates on success/failure/timeout
+### ASYNC — multi-frame, self-terminates on success/failure/timeout
   { "kind": "walk_to", "x": N, "y": N, "timeLimitTicks": N }
       Walk to coordinates. Done within 3px or on timeout.
 
-  { "kind": "pursue_chat", "target": "R CRCL", "timeLimitTicks": N }
+  { "kind": "pursue_chat", "target": "R.CRCL", "timeLimitTicks": N }
       Walk toward target player, create/join whisper. Succeeds when in whisper.
-      Target is a character name like "R CRCL" (color letter + shape).
+      Target is a character name like "R.CRCL" (color letter + shape).
 
-  { "kind": "pursue_exchange", "target": "R CRCL", "exchange": "role"|"color", "timeLimitTicks": N }
+  { "kind": "pursue_exchange", "target": "R.CRCL", "exchange": "role"|"color"|"whisper", "timeLimitTicks": N }
       Full pipeline: walk → whisper → offer → auto-accept if they offer back.
-      "role" = win trigger between key pair. "color" = safe team reveal.
+      "role" = win trigger between key pair. "color" = safe team reveal. "whisper" = only reach a private whisper with target.
 
-  { "kind": "usurp_vote", "target": "R CRCL", "timeLimitTicks": N }
+  { "kind": "usurp_vote", "target": "R.CRCL", "timeLimitTicks": N }
       Cast a leadership vote for the named player.
       Opens the shout panel, navigates to the target, votes, then closes.
       Only works if you are NOT the current leader.
@@ -218,9 +220,9 @@ You control the bot by maintaining an ORDERED TASK LIST. The executor walks the 
   { "kind": "loop_auto_accept_role" }        // auto-accept incoming role offers
 
 ### PRECOMMIT — set once, fires automatically when conditions are met, persists across rounds
-  { "kind": "precommit_hostages", "targets": ["R CRCL", "B TRI"] }
-      If you are leader when hostage selection begins, automatically select and commit
-      these players (by character name) as hostages. Update at any time with new names.
+  { "kind": "precommit_psychopomps", "targets": ["R.CRCL", "B.TRI"] }
+      If you are leader when psychopomp selection begins, automatically select and commit
+      these players (by character name) as psychopomps. Update at any time with new names.
 
 ============================================================
 RESPONSE FORMAT
@@ -232,16 +234,30 @@ Tool parameters:
   "clear": "non_loop" | "all" | "non_loop_unsafe" (optional)
   "append": [ ... task objects ... ] (optional)
 
+Each item in "append" is a task object (with "kind" and kind-specific fields) plus optional:
+  "id": string — custom ID for this task (auto-generated if omitted, e.g. "t1", "t2", ...)
+  "blockedBy": string — ID of another task. This task only runs after the blocking task SUCCEEDS.
+                         If the blocking task FAILS, this task is permanently dropped.
+
+Example dependency chain:
+  "append": [
+    { "id": "color_check", "kind": "pursue_exchange", "target": "R.CRCL", "exchange": "color", "timeLimitTicks": 200 },
+    { "blockedBy": "color_check", "kind": "pursue_exchange", "target": "R.CRCL", "exchange": "role", "timeLimitTicks": 200 }
+  ]
+  → The role exchange only starts after color exchange succeeds. If color exchange fails/times out, the role exchange is dropped.
+
 "clear" options:
-- "non_loop" — drop ONCE + idle SEQUENCE tasks, but KEEP loops AND active sequences (in-whisper or offer-sent). This is the SAFE default for replanning.
+- "non_loop" — drop ONCE + idle ASYNC tasks, but KEEP loops AND active async tasks (in-whisper or offer-sent). This is the SAFE default for replanning.
 - "all" — drop everything including loops
-- "non_loop_unsafe" — drop ALL ONCE/SEQUENCE tasks even if active. Only use if you truly want to abort an in-progress exchange.
+- "non_loop_unsafe" — drop ALL ONCE/ASYNC tasks even if active. Only use if you truly want to abort an in-progress exchange.
 
 If you have nothing to change, call update_tasks with {} (empty object).
 
 You MUST call update_tasks every response — even if just to confirm no changes.
 
 Loops are deduplicated by kind — appending a loop of the same kind replaces the old one.
+
+Task priority: LOOP and ONCE tasks always run first (they interrupt). ASYNC tasks only run when no LOOP/ONCE task fires that frame. Blocked tasks are skipped until their dependency resolves.
 
 ============================================================
 STRATEGY GUIDE
@@ -256,46 +272,48 @@ Your #1 priority is completing a mutual role exchange with your key partner (Had
 
 3. TARGET ROLE EXCHANGE: Only use pursue_exchange with exchange:"role" on a confirmed teammate whose role you need to verify OR who you believe is your key partner. Do NOT spray role offers at random or unverified players — this wastes time and reveals your role to potential enemies.
 
-4. CROSS-ROOM PROBLEM: Your key partner may be in the other room. If you've color-exchanged everyone in your room and your partner isn't here, you MUST get a hostage swap to move them to your room (or move yourself to theirs). The ONLY way to change rooms is to be selected as a hostage by a leader. You cannot walk between rooms. This means:
+4. CROSS-ROOM PROBLEM: Your key partner may be in the other room. If you've color-exchanged everyone in your room and your partner isn't here, you MUST get a psychopomp swap to move them to your room (or move yourself to theirs). The ONLY way to change rooms is to be selected as a psychopomp by a leader. You cannot walk between rooms. This means:
    - LOBBY YOUR LEADER: Shout that you need a specific player swapped over (without revealing why — enemies read shouts). If your leader is a teammate, whisper the details.
-   - GET YOURSELF SENT: If it's easier, convince your leader to send YOU as a hostage to the other room.
+   - GET YOURSELF SENT: If it's easier, convince your leader to send YOU as a psychopomp to the other room.
    - USURP IF NEEDED: If the current leader won't cooperate (maybe they're on the enemy team), use usurp_vote to install a friendly leader who will make the right swaps. Coordinate usurp votes with teammates via shouts.
 
 ### Room Movement & Usurping
-The two rooms are completely separate — there is NO way to move between them except through hostage selection at the end of each round. This makes the leader role critical:
+The two rooms are completely separate — there is NO way to move between them except through psychopomp selection at the end of each round. This makes the leader role critical:
 
 1. LEADERS CONTROL MOVEMENT: Only the leader picks which players get swapped. If the leader is hostile or unhelpful, your team may never reunite key partners.
 
 2. USURP TO GAIN CONTROL: If you need to change the leader, use usurp_vote to vote for a teammate. Coordinate via shouts like "VOTE [name]!" to rally support. A successful usurp replaces the leader immediately.
 
-3. TIMING MATTERS: Hostage selection happens at the end of each round. If you waste rounds without getting the right swaps, you run out of time. Start lobbying or usurping early.
+3. TIMING MATTERS: Psychopomp selection happens at the end of each round. If you waste rounds without getting the right swaps, you run out of time. Start lobbying or usurping early.
 
-### Hostage Selection (Leaders)
-If you are leader, hostage selection is your most powerful tool. Think strategically:
+### Psychopomp Selection (Leaders)
+If you are leader, psychopomp selection is your most powerful tool. Think strategically:
 
-1. PRIORITIZE KEY ROLE MOVEMENT: If you know (from color/role exchanges or chat) that a key pair is split across rooms, prioritize sending/requesting the right players to reunite them.
+IMPORTANT: You can ONLY choose who to SEND from your room. You have NO control over who the other room's leader sends to you. The other leader makes that decision independently.
 
-2. SEND ENEMIES, KEEP ALLIES: If you've identified enemy team members, send them away. Keep confirmed teammates in your room.
+1. PRIORITIZE KEY ROLE MOVEMENT: If a teammate's key partner is in the other room, consider sending that teammate as a psychopomp so they can reunite over there.
 
-3. LISTEN TO INTEL: Pay attention to shout messages — teammates may tell you who needs to move. Factor this into your hostage picks.
+2. LISTEN TO INTEL: Pay attention to shout messages — teammates may tell you who needs to move. Factor this into your psychopomp picks.
 
-4. USE precommit_hostages: Set your hostage picks early with precommit_hostages so they fire automatically when the phase begins. Update them as you learn new information.
+3. USE precommit_psychopomps: Set your psychopomp picks early with precommit_psychopomps so they fire automatically when the phase begins. Update them as you learn new information. You can call precommit_psychopomps at ANY time during the playing phase — it just stores your choice for when psychopomp select arrives.
 
 ### Communication Tips
-- In shouts (public): coordinate hostage picks, call for usurp votes. Do NOT reveal your team or role publicly — enemies can read shouts too.
+- In shouts (public): coordinate psychopomp picks, call for usurp votes. Do NOT reveal your team or role publicly — enemies can read shouts too.
 - In whispers (private): share team info via color exchange, coordinate with confirmed teammates, negotiate role exchanges.
-- You CANNOT hear shouts while inside a whisper. If you need to read room chat, exit the whisper first. Similarly, others in whispers won't see your shouts.
-- Keep messages short (18 chars/line max). Use role shorthands.
+- You can cycle to shout/info while inside a whisper. Movement is still disabled in whisper.
+- Keep messages short (${CHAT_MAX_CHARS_PER_LINE} chars/line max). Use role shorthands.
 
 ============================================================
 PROTECTING IN-PROGRESS TASKS
 ============================================================
 
-The task list shows status indicators for active sequence tasks:
+The task list shows status indicators for active async tasks:
 - ">>> IN WHISPER — protected from clear" — you are inside a whisper for this task.
 - ">>> OFFER SENT — protected from clear" — you sent an exchange offer and are waiting.
 
 "clear": "non_loop" automatically PRESERVES these active tasks. You can safely use it to replan without losing in-progress exchanges. Only "clear": "non_loop_unsafe" or "clear": "all" will abort them.
+
+Each task in the list shows its ID (id=...) and blockedBy status if set. Use IDs to create dependency chains between tasks.
 
 ============================================================
 HARNESS UPDATES
@@ -373,12 +391,18 @@ const TASK_TOOL: Tool = {
           clear: {
             type: "string",
             enum: ["all", "non_loop", "non_loop_unsafe"],
-            description: "Clear tasks before appending. 'non_loop' keeps loops and active sequences (SAFE default). 'all' drops everything. 'non_loop_unsafe' drops all ONCE/SEQUENCE even if active.",
+            description: "Clear tasks before appending. 'non_loop' keeps loops and active async tasks (SAFE default). 'all' drops everything. 'non_loop_unsafe' drops all ONCE/ASYNC even if active.",
           },
           append: {
             type: "array",
-            description: "Tasks to append to the list after clearing.",
-            items: { type: "object" },
+            description: "Tasks to append to the list after clearing. Each item is a task object with optional 'id' and 'blockedBy' fields.",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", description: "Optional custom ID for this task. Auto-generated if omitted. Use to create dependency chains." },
+                blockedBy: { type: "string", description: "ID of another task this depends on. This task will only run after that task succeeds; permanently dropped if the blocking task fails." },
+              },
+            },
           },
         },
         additionalProperties: false,
@@ -451,72 +475,142 @@ async function askLLM(harnessBlock: string): Promise<LLMResult> {
 // ---------------------------------------------------------------------------
 
 const ws = new WebSocket(`${botUrl}?name=${botName}`, { perMessageDeflate: false });
-const belief = createBeliefState(botName);
+const player = createGameKnowledge(botName);
 
 const bot: BotController = {
-  ws, actions: new ActionQueue(), belief, name: botName,
+  ws, actions: new ActionQueue(), player, name: botName,
   movementTarget: null, wandering: false,
   wanderTarget: null, wanderTicks: 0, lastFrame: null,
+  psychopompPrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
+  nonInterruptingTasks: [],
 };
 
 let tasks: TaskInstance[] = [];
 const events: EventBuffer = createEventBuffer();
-let llmBusy = false;
 let lastPromptTick = -999;
-let pendingEvent: TriggerEvent | null = null;
 
-const HIGH_PRIORITY_EVENTS = new Set<TriggerEvent>([
-  "whisper_entered", "whisper_left", "role_offer_pending",
-  "game_start", "round_start", "hostage_phase", "leader_summit",
-]);
+function buildHarnessBlock(): string {
+  const event = checkTriggers(player, lastPromptTick, false) ?? "idle";
+  let warnings = "";
 
-function buildHarnessBlock(event: TriggerEvent): string {
+  // Warn about psychopomp precommit
+  if (player.amLeader) {
+    if (player.phase === "psychopomp_select" && !bot.psychopompPrecommit) {
+      warnings += "\n\n⚠️ WARNING: You are LEADER in PSYCHOPOMP SELECT with NO precommitted psychopomps! Use precommit_psychopomps NOW or random players will be sent.";
+    } else if (player.phase === "playing" && player.matchFacts.timerSecs <= 30 && !bot.psychopompPrecommit) {
+      warnings += "\n\n⚠️ WARNING: 30 seconds left and you have NOT precommitted psychopomps. As leader, use precommit_psychopomps to choose who to send to the other room.";
+    }
+  }
+
+  const precommitLine = bot.psychopompPrecommit
+    ? `\nPSYCHOPOMP PRECOMMIT: [${bot.psychopompPrecommit.join(", ")}]`
+    : "\nPSYCHOPOMP PRECOMMIT: (none)";
+
   const state =
-    formatContextDump(belief, event) +
+    formatContextDump(player, event) +
+    (player.amLeader ? precommitLine : "") +
+    warnings +
     "\n\nCURRENT TASK LIST:\n" +
-    tasksToPromptLines(tasks, belief.tick).join("\n") +
+    tasksToPromptLines(tasks, player.tick).join("\n") +
     "\n\nTASK EVENTS SINCE LAST RESPONSE:\n" +
     eventBufferLines(events).join("\n");
 
-  return `\n[HARNESS ${event}]\n${state}\n[/HARNESS]\n`;
+  return `\n[HARNESS ${event}]\nEVENT: ${event}\n${state}\n[/HARNESS]\n`;
 }
 
-async function promptLLM(event: TriggerEvent): Promise<void> {
-  if (llmBusy) return;
-  llmBusy = true;
-  lastPromptTick = belief.tick;
+async function llmLoop(): Promise<void> {
+  while (ws.readyState === WebSocket.OPEN) {
+    lastPromptTick = player.tick;
+    const harnessBlock = buildHarnessBlock();
+    flushEvents(events);
 
-  const harnessBlock = buildHarnessBlock(event);
-  flushEvents(events);
+    console.log(`[${botName}] → LLM\n${harnessBlock}\n---`);
+    try {
+      const result = await askLLM(harnessBlock);
+      console.log(`[${botName}] ← LLM:\n${result.reasoning}\n---`);
+      if (result.toolInput) {
+        const update = parseTaskUpdate(JSON.stringify(result.toolInput), botName);
+        if (update) {
+          tasks = mergeTasks(tasks, update, player.tick, events);
+          console.log(`[${botName}] tasks now: ${tasks.map(ti => ti.task.kind).join(", ")}`);
+        }
+      }
+    } catch (e: any) {
+      console.error(`[${botName}] LLM error:`, e.message);
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+}
 
-  console.log(`[${botName}] → LLM (${event})\n${harnessBlock}\n---`);
-  try {
-    const result = await askLLM(harnessBlock);
-    console.log(`[${botName}] ← LLM:\n${result.reasoning}\n---`);
-    if (result.toolInput) {
-      const update = parseTaskUpdate(JSON.stringify(result.toolInput), botName);
-      if (update) {
-        tasks = mergeTasks(tasks, update, belief.tick, events);
-        console.log(`[${botName}] tasks now: ${tasks.map(ti => ti.task.kind).join(", ")}`);
+// ---------------------------------------------------------------------------
+// Psychopomp precommit execution (takes over frame loop during psychopomp_select)
+// ---------------------------------------------------------------------------
+
+let psychopompState: "opening" | "selecting" | "done" = "opening";
+let psychopompRound = -1;
+
+function executePsychopompPrecommit(frame: Uint8Array): void {
+  if (!bot.psychopompPrecommit) return;
+
+  // Reset state machine on new round
+  if (player.matchFacts.currentRound !== psychopompRound) {
+    psychopompState = "opening";
+    psychopompRound = player.matchFacts.currentRound;
+    console.log(`[${botName}] psychopomp execution started, targets: [${bot.psychopompPrecommit.join(", ")}]`);
+  }
+
+  if (psychopompState === "done") {
+    sendInput(ws, 0);
+    return;
+  }
+
+  // Drain action queue first
+  if (!bot.actions.empty) {
+    sendInput(ws, bot.actions.shift()!);
+    return;
+  }
+
+  if (psychopompState === "opening") {
+    const grid = parsePsychopompGrid(frame, matchRoster(player.players.values()));
+    if (grid) {
+      psychopompState = "selecting";
+    } else {
+      // Open the shout/global view to access psychopomp picker
+      bot.actions.push(BUTTON_SELECT, 0);
+      sendInput(ws, bot.actions.shift()!);
+      return;
+    }
+  }
+
+  if (psychopompState === "selecting") {
+    const grid = parsePsychopompGrid(frame, matchRoster(player.players.values()));
+    if (!grid) { sendInput(ws, 0); return; }
+
+    const targetSet = new Set(bot.psychopompPrecommit);
+
+    for (let i = 0; i < grid.eligible.length; i++) {
+      const entry = grid.eligible[i];
+      const entryName = entry.shape !== null ? characterName(entry.color, entry.shape) : null;
+      const isTarget = entryName !== null && targetSet.has(entryName);
+      const isSelected = grid.selectedPositions.includes(i);
+      if (isTarget !== isSelected) {
+        const delta = i - grid.cursorPosition;
+        if (delta > 0) {
+          for (let d = 0; d < delta; d++) bot.actions.push(BUTTON_RIGHT, 0);
+        } else if (delta < 0) {
+          for (let d = 0; d < -delta; d++) bot.actions.push(BUTTON_LEFT, 0);
+        }
+        bot.actions.push(BUTTON_A, 0);
+        sendInput(ws, bot.actions.shift()!);
+        return;
       }
     }
-  } catch (e: any) {
-    console.error(`[${botName}] LLM error:`, e.message);
-  } finally {
-    llmBusy = false;
-    if (pendingEvent) {
-      const queued = pendingEvent;
-      pendingEvent = null;
-      promptLLM(queued);
-    } else {
-      const REPROMPT_DELAY_MS = 2000;
-      setTimeout(() => {
-        if (llmBusy) return;
-        const next = checkTriggers(belief, lastPromptTick, false);
-        if (next) promptLLM(next);
-        else promptLLM("idle");
-      }, REPROMPT_DELAY_MS);
-    }
+
+    // All targets matched — commit
+    console.log(`[${botName}] psychopomp selection complete, committing`);
+    psychopompState = "done";
+    bot.actions.push(BUTTON_B, 0);
+    sendInput(ws, bot.actions.shift()!);
   }
 }
 
@@ -528,25 +622,43 @@ function onFrame(data: Buffer): void {
   if (data.length !== PACKED_FRAME_BYTES) return;
   const frame = unpackFrame(data);
   bot.lastFrame = frame;
-  updatePhase(belief, frame);
-  updateMinimap(belief, frame);
-  updatePosition(belief, frame);
-  updateHud(belief, frame);
+  const prevMsgCount = player.whisperMessages.length + player.chatLog.length + player.shoutLog.length;
+  updatePhase(player, frame);
+  if (player.phase === "roster_reveal") {
+    const roster = parseRosterScreen(frame);
+    if (roster) updateFromRosterScreen(player, roster);
+  }
+  updateMinimap(player, frame);
+  updatePosition(player, frame);
+  updateHud(player, frame);
+  const newMsgCount = player.whisperMessages.length + player.chatLog.length + player.shoutLog.length;
+  if (newMsgCount > prevMsgCount) bot.hasNewIncomingChat = true;
 
-  const event = checkTriggers(belief, lastPromptTick, false);
-  if (event) {
-    if (!llmBusy) {
-      promptLLM(event);
-    } else if (HIGH_PRIORITY_EVENTS.has(event)) {
-      pendingEvent = event;
-    }
+  // Psychopomp execution: takes over during psychopomp_select if leader with precommit.
+  // Once started, keep executing even if phase reads "playing" (opening global chat
+  // changes the HUD text which confuses parsePhase).
+  const psychopompActive = player.amLeader && bot.psychopompPrecommit && (
+    player.phase === "psychopomp_select" ||
+    (psychopompRound === player.matchFacts.currentRound && psychopompState !== "done")
+  );
+  if (psychopompActive) {
+    executePsychopompPrecommit(frame);
+    return;
   }
 
   tasks = runTasks(tasks, bot, ws, events);
 }
 
+let loopStarted = false;
+
 ws.on("open", () => console.log(`[${botName}] Connected to ${botUrl}`));
-ws.on("message", (data: Buffer) => onFrame(data));
+ws.on("message", (data: Buffer) => {
+  onFrame(data);
+  if (!loopStarted) {
+    loopStarted = true;
+    llmLoop();
+  }
+});
 ws.on("close", () => { console.log(`[${botName}] Disconnected`); process.exit(0); });
 ws.on("error", (err) => console.error(`[${botName}] Error:`, err.message));
 process.on("SIGINT", () => { ws.close(); process.exit(0); });

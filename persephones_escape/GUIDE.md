@@ -20,24 +20,21 @@ The main view shows your character in a top-down room with fog of war. A minimap
 
 The bottom bar shows context-sensitive hints:
 
-- **Default**: `J:COMM  K:INFO  L:GLOBAL` — your three main actions
-- **Waiting for chatroom entry**: `WAITING...` with blinking unread dot if global messages exist
-- **Comm menu open**: `< START >` or `< REQUEST >` — navigate with left/right, B to select
+- **Default**: `J:NEW  K:JOIN  L:SHOUT` — your three main actions
+- **Waiting for chatroom entry**: `WAITING...` with blinking unread dot if unread shouts exist
 - **Leader in hostage select**: `L:COMMIT  </>:PICK  J:TOG`
 
-### A Button — Communication Menu
+### A Button — New Whisper
 
-Press A to open the comm menu. Navigate with left/right, press B to select, A to cancel.
+Press A to create a private chatroom at your position, or pull in a nearby free player. If you are too close to an existing whisper, the game warns `YOU'LL BE OVERHEARD`; move away before creating a new whisper.
 
-| Item | When Available | Effect |
-|------|---------------|--------|
-| START | Always | Create a private chatroom at your position |
-| REQUEST | Near a player who is in a chatroom | Request entry to their chatroom |
-| SHOUT | Always | Open the global room chat |
+### B Button — Join Whisper
 
-### B Button — Info Screen
+Press B near an existing whisper to request entry. Press B again while waiting to cancel your request.
 
-Press B to toggle the shared info screen. This shows all players whose identity you know:
+### Info Screen
+
+The shared info screen is available from the shout/whisper tab cycle. This shows all players whose identity you know:
 
 - **Full role revealed**: sprite + role indicator + role name in team color
 - **Color only revealed**: sprite + team color dot + "???"
@@ -45,9 +42,9 @@ Press B to toggle the shared info screen. This shows all players whose identity 
 
 If the list is longer than the screen, use up/down to scroll. A scroll indicator appears on the right edge. Press any button (A/B/Select) to close.
 
-### Select Button — Global Chat
+### Select Button — Shout
 
-Press Select to open global chat (or commit hostage selections if you are the leader during hostage select phase).
+Press Select to open room shout chat (or commit hostage selections if you are the leader during hostage select phase).
 
 ## Private Chatrooms
 
@@ -63,13 +60,17 @@ Entry req:  [!] [sprite] WANTS IN        (if someone is requesting)
 Bottom bar: Action context (see below)
 ```
 
-### A Button — Exit
+### Left/Right — View Tabs
 
-Press A to leave the chatroom and return to the game world.
+Left/right cycle between the private whisper, room shout chat, and shared info screen. You remain in the whisper and cannot move while viewing shout or info.
+
+### Select — Exit
+
+Press Select to leave the chatroom and return to the game world.
 
 ### B Button — Action Menu
 
-Press B to open the action menu. Navigate with left/right, press B to confirm, A to cancel.
+Press B to open the action menu. Navigate with left/right, press A to confirm, Select to cancel.
 
 | Action | When Shown | Effect |
 |--------|------------|--------|
@@ -94,6 +95,14 @@ A safe first step to verify someone's team without revealing your role:
 3. Player B selects **C.ACCPT**, then picks Player A's sprite from the target picker (left/right to navigate, B to confirm, A to cancel)
 4. Both players' team colors are revealed to each other. System message: "colors exchanged!"
 
+Optional variant roles can bend this rule. A Spy shows the opposite team color
+during color exchanges; a mutual role exchange is required to learn the Spy's
+real team.
+
+At match start, the intro screens list roles in play. Custom configs may omit
+core roles; if an Echo role is active, the intro explains which missing role it
+stands in for.
+
 Either player can withdraw before acceptance by selecting **C.UNOFFR**. Offers are cleared when a player leaves the chatroom.
 
 ### Role Exchange (R.OFFER / R.ACCPT)
@@ -117,9 +126,9 @@ Scroll through chat history with up/down.
 
 Type a message visible to all current chatroom occupants. Only occupants present when a message is sent can see it.
 
-## Global Chat
+## Shout Chat
 
-A room-wide text chat accessible from anywhere via the comm menu (SHOUT) or the Select button.
+A room-wide text chat accessible from the Select button, or from inside a whisper by cycling tabs with left/right.
 
 ### Layout
 
@@ -127,16 +136,20 @@ A room-wide text chat accessible from anywhere via the comm menu (SHOUT) or the 
 Top bar:    [ROOM NAME] CHAT
 Messages:   Scrollable message history
 Bottom bar: Usurp candidate selector (if non-leader)
-            or "J:CLOSE  ENTER:TYPE" (if leader)
+            or hostage selector (if leader during hostage select)
 ```
 
-### A Button — Close
+### Select — Close
 
-Press A to close global chat and return to the game world.
+Press Select to close shout chat and return to the game world or whisper.
 
-### B Button — Vote Usurp
+### A/B — Vote Usurp
 
-If you are not the room leader, the bottom bar shows the current usurp candidate. Use left/right to navigate candidates (player sprites or NONE/ME), then press B to cast your vote.
+If you are not the room leader, the bottom bar shows the current usurp candidate. Press B to cycle candidates (player sprites or NONE/ME), then press A to cast your vote.
+
+### Left/Right — View Tabs
+
+Left/right switches between shout chat and the shared info screen. If you are still in a whisper, it can also switch back to the whisper.
 
 ### Up/Down — Scroll Messages
 
@@ -155,7 +168,7 @@ A bordered screen showing your role, team, and room assignment with a countdown 
 ### Hostage Select (end of each round)
 
 - **Leaders**: Use left/right to move cursor across eligible players, A to toggle selection, Select (L) to commit. 15-second timeout auto-fills remaining picks.
-- **Non-leaders**: See the leader's name and countdown timer. Can still access chatrooms and global chat while waiting.
+- **Non-leaders**: See the leader's name and countdown timer. Can still access chatrooms and shout chat while waiting.
 
 ### Hostage Exchange
 
@@ -172,5 +185,5 @@ All roles are revealed. The winning team (or "NO ONE WINS") is displayed. Return
 | Crown pixels above sprite | Room leader |
 | Speech bubble above sprite | Player is in a chatroom |
 | Blinking "?" above sprite | Player is waiting to enter a chatroom |
-| Blinking dot (bottom-right) | Unread global chat messages |
+| Blinking dot (bottom-right) | Unread shout messages |
 | Role indicator bar below sprite | Colored bar showing team; special dots for key roles |
