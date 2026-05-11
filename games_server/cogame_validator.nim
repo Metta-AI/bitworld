@@ -214,6 +214,36 @@ proc requireArray(node: JsonNode, key, path: string): JsonNode =
   child.requireKind(JArray, path & "." & key)
   child
 
+proc docValue(node: JsonNode, path: string): string =
+  ## Returns a protocol doc string from either legacy strings or doc objects.
+  if node.kind == JString and node.getStr().len > 0:
+    return node.getStr()
+  node.requireKind(JObject, path)
+  discard node.requireString("type", path)
+  let value = node.requireString("value", path)
+  if value.len == 0:
+    fail(path & ".value must be a non-empty string")
+  value
+
+proc requireDoc(node: JsonNode, key, path: string): string =
+  ## Returns one required protocol document value.
+  node.requireKey(key, path).docValue(path & "." & key)
+
+proc optionalDoc(node: JsonNode, key, path: string): string =
+  ## Returns one optional protocol document value.
+  let child = node.optionalKey(key)
+  if child.isNil:
+    return ""
+  child.docValue(path & "." & key)
+
+proc protocolDocs(protocols: JsonNode): CogameProtocolDocs =
+  ## Parses Coworld protocol docs.
+  CogameProtocolDocs(
+    player: protocols.requireDoc("player", "coworld.game.protocols"),
+    global: protocols.requireDoc("global", "coworld.game.protocols"),
+    reward: protocols.optionalDoc("reward", "coworld.game.protocols")
+  )
+
 proc requireImage(node: JsonNode, path: string): string =
   ## Returns one required Docker image field.
   node.requireKind(JObject, path)
@@ -501,9 +531,7 @@ proc validateCoworldGame(game: JsonNode) =
   discard game.requireObject("config_schema", "coworld.game")
   discard game.requireObject("results_schema", "coworld.game")
   let protocols = game.requireObject("protocols", "coworld.game")
-  discard protocols.requireString("player", "coworld.game.protocols")
-  discard protocols.requireString("global", "coworld.game.protocols")
-  discard protocols.requireString("reward", "coworld.game.protocols")
+  discard protocols.protocolDocs()
 
 proc validateCoworldManifest*(manifest: JsonNode) =
   ## Validates the Coworld fields needed by certification.
@@ -611,7 +639,7 @@ proc referencedFilePaths*(coworld: CoworldPackage): seq[(string, string)] =
       "Coworld game protocols.global",
       resolveManifestUri(coworldDir, coworld.protocols.global)
     ))
-  if coworld.protocols.reward.isLocalManifestUri():
+  if coworld.protocols.reward.len > 0 and coworld.protocols.reward.isLocalManifestUri():
     result.add((
       "Coworld game protocols.reward",
       resolveManifestUri(coworldDir, coworld.protocols.reward)
@@ -785,11 +813,7 @@ proc loadCoworldPackage*(manifestPath: string): CoworldPackage =
     cogameImage: game.requireImage("coworld.game"),
     configSchema: game.requireObject("config_schema", "coworld.game"),
     resultsSchema: game.requireObject("results_schema", "coworld.game"),
-    protocols: CogameProtocolDocs(
-      player: protocols.requireString("player", "coworld.game.protocols"),
-      global: protocols.requireString("global", "coworld.game.protocols"),
-      reward: protocols.requireString("reward", "coworld.game.protocols")
-    )
+    protocols: protocols.protocolDocs()
   )
   result.validateCertificationReferences()
   result.validateReferencedFiles()
@@ -852,11 +876,7 @@ proc loadPackageFromManifest(
     cogameImage: game.requireImage("coworld.game"),
     configSchema: game.requireObject("config_schema", "coworld.game"),
     resultsSchema: game.requireObject("results_schema", "coworld.game"),
-    protocols: CogameProtocolDocs(
-      player: protocols.requireString("player", "coworld.game.protocols"),
-      global: protocols.requireString("global", "coworld.game.protocols"),
-      reward: protocols.requireString("reward", "coworld.game.protocols")
-    )
+    protocols: protocols.protocolDocs()
   )
 
   try:
