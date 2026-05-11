@@ -300,9 +300,13 @@ proc renderVotePanel(sim: var SimServer) =
 proc renderFactChoices(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   let player = sim.players[sim.currentTurn]
-  let header = player.name & " proposes"
-  discard sim.blitTextWrappedTinted(header, TextMargin, 4, 8, uint8(player.colorIndex))
   let color = uint8(player.colorIndex)
+  let voting = sim.factChoice.step in {FactVoting, FactVoteResult}
+  let suffix = if voting: " proposal" else: " choose"
+  let nameX = TextMargin
+  sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, player.name, nameX, 4, color)
+  let suffixX = nameX + player.name.len * CharWidth
+  sim.fb.blitText(sim.letterSprites, sim.digitSprites, suffix, suffixX, 4)
   let textX = TextMargin + 8
 
   var y = 14
@@ -313,6 +317,15 @@ proc renderFactChoices(sim: var SimServer) =
     else:
       sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
     let lines = sim.blitTextWrapped(sim.factChoice.options[i], textX, y, 8)
+    if selected and voting:
+      let frameX = TextMargin - 2
+      let frameY = y - 2
+      let frameW = ScreenWidth - TextMargin * 2 + 4
+      let frameH = lines * 8 + 3
+      sim.fb.fillRect(frameX, frameY, frameW, 1, color)
+      sim.fb.fillRect(frameX, frameY + frameH - 1, frameW, 1, color)
+      sim.fb.fillRect(frameX, frameY, 1, frameH, color)
+      sim.fb.fillRect(frameX + frameW - 1, frameY, 1, frameH, color)
     y += lines * 8 + 2
 
   let selectedSkip = sim.factChoice.step >= FactSelected and sim.factChoice.selected >= 3
@@ -323,7 +336,7 @@ proc renderFactChoices(sim: var SimServer) =
       sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
     sim.fb.blitText(sim.letterSprites, "skip", textX, y)
 
-  if sim.factChoice.step in {FactVoting, FactVoteResult}:
+  if voting:
     sim.renderVotePanel()
 
 proc renderFactChat(sim: var SimServer) =
