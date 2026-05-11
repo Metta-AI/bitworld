@@ -1297,7 +1297,7 @@ proc gameContainerArgs(
   ## Builds Docker arguments for the live game container.
   result = @[
     "--name", name,
-    "-p", "127.0.0.1:" & $port & ":" & $spec.containerPort,
+    "-p", $port & ":" & $spec.containerPort,
     "-e", ConfigEnv & "=" & ContainerWorkDir & "/config.json",
     "-e", ResultsEnv & "=" & ContainerWorkDir & "/results.json",
     "-e", ReplaySaveEnv & "=" & ContainerWorkDir & "/replay.json",
@@ -1315,7 +1315,7 @@ proc replayContainerArgs(
   ## Builds Docker arguments for the replay container.
   result = @[
     "--name", name,
-    "-p", "127.0.0.1:" & $port & ":" & $spec.containerPort,
+    "-p", $port & ":" & $spec.containerPort,
     "-e", ReplayLoadEnv & "=" & ContainerWorkDir & "/replay.json",
     "-v",
     cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
