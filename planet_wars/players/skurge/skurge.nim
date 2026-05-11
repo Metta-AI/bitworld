@@ -16,10 +16,14 @@ const
   PlanetSpriteStride = 8
   CursorDeadband = 5
   OriginSelectInterval = 15
-  AttackPulseInterval = 45
   RetargetTicks = 240
   SweepArrivalRadius = 12
   OriginReserveShips = 1
+  SendBurstMinShips = 4
+  SendBurstMaxShips = 12
+  NeutralBurstExtraShips = 3
+  EnemyBurstExtraShips = 6
+  SendBurstPaddingTicks = TargetFps div 2
   EnemyTargetPenalty = 100_000
   SweepPoints = [
     (x: 18, y: 18),
@@ -86,7 +90,9 @@ type
     targetStartedTick: int
     avoidedTargetId: int
     avoidUntilTick: int
-    nextAttackTick: int
+    sendTargetId: int
+    sendOriginId: int
+    sendUntilTick: int
     sweepIndex: int
     intent: string
     lastMask: uint8
@@ -479,6 +485,70 @@ proc chooseTarget(
     bot.currentTargetId = result.id
     bot.targetStartedTick = bot.frameTick
 
+proc activeSendTarget(
+  bot: Bot,
+  planets: openArray[PlanetSight]
+): PlanetSight =
+  ## Returns the current burst target while the send burst is active.
+  if bot.sendTargetId <= 0 or bot.frameTick >= bot.sendUntilTick:
+    return PlanetSight()
+  planets.findPlanet(bot.sendTargetId)
+
+proc activeSendOrigin(
+  bot: Bot,
+  planets: openArray[PlanetSight]
+): PlanetSight =
+  ## Returns the current burst origin while it remains visible and owned.
+  if bot.sendOriginId <= 0:
+    return PlanetSight()
+  let origin = planets.findPlanet(bot.sendOriginId)
+  if origin.found and origin.ownerId == bot.ownPlayerId:
+    return origin
+  PlanetSight()
+
+proc burstShipCount(origin, target: PlanetSight): int =
+  ## Estimates how many ships should be sent in one held burst.
+  let available =
+    if origin.ships < 0:
+      SendBurstMaxShips
+    else:
+      max(0, origin.ships - OriginReserveShips)
+  if available <= 0:
+    return 0
+  let
+    targetShips =
+      if target.ships < 0:
+        SendBurstMinShips
+      else:
+        max(1, target.ships)
+    extraShips =
+      if target.ownerId == 0:
+        NeutralBurstExtraShips
+      else:
+        EnemyBurstExtraShips
+    wanted = max(SendBurstMinShips, targetShips + extraShips)
+  min(available, min(SendBurstMaxShips, wanted))
+
+proc burstTickCount(shipCount: int): int =
+  ## Converts a planned ship count into held-send ticks.
+  if shipCount <= 0:
+    return 0
+  max(TargetFps, shipCount * BaseSendRepeatInterval + SendBurstPaddingTicks)
+
+proc startSendBurst(
+  bot: var Bot,
+  origin,
+  target: PlanetSight
+) =
+  ## Starts a held send burst from one origin to one target.
+  let shipCount = burstShipCount(origin, target)
+  if shipCount <= 0:
+    bot.sendUntilTick = bot.frameTick
+    return
+  bot.sendTargetId = target.id
+  bot.sendOriginId = origin.id
+  bot.sendUntilTick = bot.frameTick + burstTickCount(shipCount)
+
 proc axisSteerMask(dx, dy, deadband: int): uint8 =
   ## Returns a single-axis movement mask toward one delta.
   if abs(dx) <= deadband and abs(dy) <= deadband:
@@ -559,7 +629,14 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.intent = "finding color"
     return bot.sweepMask()
 
-  let origin = bot.chooseOrigin(planets)
+  let activeTarget = bot.activeSendTarget(planets)
+  var origin =
+    if activeTarget.found:
+      bot.activeSendOrigin(planets)
+    else:
+      PlanetSight()
+  if not origin.found:
+    origin = bot.chooseOrigin(planets)
   if origin.found and origin.id != bot.originPlanetId:
     bot.intent = "select origin " & $origin.id
     if bot.selectedPlanetId == origin.id:
@@ -568,13 +645,22 @@ proc decideNextMask(bot: var Bot): uint8 =
       return 0
     return bot.steerToPlanet(planets, origin)
 
-  let target = bot.chooseTarget(planets)
+  let target =
+    if activeTarget.found:
+      activeTarget
+    else:
+      bot.chooseTarget(planets)
   if not target.found:
     bot.currentTargetId = -1
     return bot.sweepMask()
+  bot.currentTargetId = target.id
 
-  if target.ownerId == 0:
+  if activeTarget.found:
+    bot.intent = "burst planet " & $target.id
+  elif target.ownerId == 0:
     bot.intent = "spam neutral " & $target.id
+  elif target.ownerId == bot.ownPlayerId:
+    bot.intent = "reinforce planet " & $target.id
   else:
     bot.intent = "attack planet " & $target.id
   if bot.selectedPlanetId != target.id:
@@ -589,14 +675,12 @@ proc decideNextMask(bot: var Bot): uint8 =
   if origin.found and origin.ships >= 0 and
       origin.ships <= OriginReserveShips:
     bot.intent = "wait ships"
+    bot.sendUntilTick = bot.frameTick
     return 0
 
-  if target.ownerId == 0:
-    bot.intent = "spam neutral " & $target.id
-    return ButtonB
-
-  if bot.frameTick >= bot.nextAttackTick:
-    bot.nextAttackTick = bot.frameTick + AttackPulseInterval
+  if not activeTarget.found:
+    bot.startSendBurst(origin, target)
+  if bot.frameTick < bot.sendUntilTick:
     return ButtonB
   0
 
@@ -711,6 +795,8 @@ proc initBot(): Bot =
   result.currentTargetId = -1
   result.targetStartedTick = -RetargetTicks
   result.avoidedTargetId = -1
+  result.sendTargetId = -1
+  result.sendOriginId = -1
   result.sweepIndex = result.rng.rand(SweepPoints.high)
   result.lastMask = 0xff'u8
 

@@ -104,19 +104,36 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.globalViewers.del(websocket)
+        appState.rewardViewers.del(websocket)
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerNames[websocket] = request.playerIdentity()
+        appState.playerIndices[websocket] = UnassignedPlayerIndex
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.playerViewers.del(websocket)
+        appState.playerIndices.del(websocket)
+        appState.playerNames.del(websocket)
+        appState.inputMasks.del(websocket)
+        appState.lastAppliedMasks.del(websocket)
+        appState.rewardViewers.del(websocket)
         appState.globalViewers[websocket] = initGlobalViewerState()
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.playerViewers.del(websocket)
+        appState.playerIndices.del(websocket)
+        appState.playerNames.del(websocket)
+        appState.inputMasks.del(websocket)
+        appState.lastAppliedMasks.del(websocket)
+        appState.globalViewers.del(websocket)
         appState.rewardViewers[websocket] = true
   elif request.serveStaticClientHtml():
     discard
@@ -133,13 +150,7 @@ proc websocketHandler(
   ## Handles websocket lifecycle and input messages.
   case event
   of OpenEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        if websocket notin appState.globalViewers and
-            websocket notin appState.rewardViewers:
-          appState.playerIndices[websocket] = UnassignedPlayerIndex
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+    discard
   of MessageEvent:
     if message.kind != BinaryMessage:
       return
