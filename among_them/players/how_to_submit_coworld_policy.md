@@ -50,6 +50,8 @@ Protocol references:
   <https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md>
 - Sprite global/replay protocol:
   <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
+- Coworld package spec:
+  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
 - Coworld runtime spec:
   <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COGAME_README.md>
 
@@ -170,11 +172,13 @@ will run in production and make sure it reads `COGAMES_ENGINE_WS_URL`. For a
 full local game, use the uploaded Coworld manifest or a local manifest:
 
 ```sh
+coworld list
 coworld play cow_<among-them-coworld-id>
 ```
 
-`coworld play` starts the Coworld locally and prints player/global client links.
-Use it to manually inspect the game or connect a development player process.
+`coworld list` shows uploaded Coworld IDs. `coworld play` starts the Coworld
+locally and prints player/global client links. Use it to manually inspect the
+game or connect a development player process.
 
 For game-source development, the BitWorld repo still has Nim-based local tools
 such as `nim r among_them.nim` and `nim r tools/quick_run among_them`. Those
