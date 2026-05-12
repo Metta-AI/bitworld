@@ -14,17 +14,23 @@ const
   PlanetOriginObjectBase = 2200
   PlanetTextObjectBase = 2300
   PlanetSpriteStride = 8
-  CursorDeadband = 5
-  OriginSelectInterval = 15
-  RetargetTicks = 240
-  SweepArrivalRadius = 12
+  CursorDeadband = 3
+  OriginSelectInterval = 8
+  RetargetTicks = 90
+  SweepArrivalRadius = 18
   OriginReserveShips = 1
-  SendBurstMinShips = 4
-  SendBurstMaxShips = 12
-  NeutralBurstExtraShips = 3
-  EnemyBurstExtraShips = 6
-  SendBurstPaddingTicks = TargetFps div 2
-  EnemyTargetPenalty = 100_000
+  NeutralMinOriginShips = 6
+  EnemyMinOriginShips = 3
+  SendBurstMinShips = 18
+  SendBurstMaxShips = 160
+  SendBurstUnknownOriginShips = 64
+  NeutralBurstExtraShips = 28
+  EnemyBurstExtraShips = 80
+  SendBurstPaddingTicks = TargetFps * 6
+  NeutralTargetPenalty = 500
+  EnemyTargetPenalty = -1_200
+  TargetShipScoreWeight = 8
+  OriginShipScoreWeight = 22
   SweepPoints = [
     (x: 18, y: 18),
     (x: WorldWidthPixels - 18, y: 18),
@@ -406,6 +412,12 @@ proc shipScore(planet: PlanetSight): int =
     return 99
   planet.ships
 
+proc originShipScore(planet: PlanetSight): int =
+  ## Returns a comparable ship score for owned launch planets.
+  if planet.ships < 0:
+    return SendBurstUnknownOriginShips
+  planet.ships
+
 proc chooseOrigin(
   bot: Bot,
   planets: openArray[PlanetSight]
@@ -415,14 +427,38 @@ proc chooseOrigin(
   for planet in planets:
     if planet.ownerId != bot.ownPlayerId:
       continue
-    let ships =
-      if planet.ships < 0:
-        0
-      else:
-        planet.ships
+    let ships = planet.originShipScore()
     if ships > bestShips:
       result = planet
       bestShips = ships
+
+proc chooseOriginForTarget(
+  bot: Bot,
+  planets: openArray[PlanetSight],
+  target: PlanetSight
+): PlanetSight =
+  ## Chooses an owned launch planet that can pressure one target.
+  if not target.found:
+    return bot.chooseOrigin(planets)
+  let minShips =
+    if target.ownerId == 0:
+      NeutralMinOriginShips
+    else:
+      EnemyMinOriginShips
+  var bestScore = high(int)
+  for planet in planets:
+    if planet.ownerId != bot.ownPlayerId:
+      continue
+    let ships = planet.originShipScore()
+    if planet.ships >= 0 and ships < minShips:
+      continue
+    let score =
+      distanceSquared(planet.x, planet.y, target.x, target.y) -
+      ships * OriginShipScoreWeight +
+      planet.id
+    if score < bestScore:
+      result = planet
+      bestScore = score
 
 proc cursorWorld(bot: Bot): tuple[x, y: int] =
   ## Estimates the hidden cursor world position from the viewport camera.
@@ -436,18 +472,10 @@ proc chooseTarget(
   planets: openArray[PlanetSight]
 ): PlanetSight =
   ## Chooses the next visible non-owned planet to pressure.
-  var neutralVisible = false
-  for planet in planets:
-    if planet.ownerId == 0 and
-        not (planet.id == bot.avoidedTargetId and
-          bot.frameTick < bot.avoidUntilTick):
-      neutralVisible = true
-      break
   if bot.currentTargetId > 0 and
       bot.frameTick - bot.targetStartedTick < RetargetTicks:
     let current = planets.findPlanet(bot.currentTargetId)
-    if current.found and current.ownerId != bot.ownPlayerId and
-        (current.ownerId == 0 or not neutralVisible):
+    if current.found and current.ownerId != bot.ownPlayerId:
       return current
   var bestScore = high(int)
   let
@@ -470,12 +498,12 @@ proc chooseTarget(
       continue
     let ownerPenalty =
       if planet.ownerId == 0:
-        0
+        NeutralTargetPenalty
       else:
         EnemyTargetPenalty
     let score =
       ownerPenalty +
-      planet.shipScore() * 24 +
+      planet.shipScore() * TargetShipScoreWeight +
       distanceSquared(baseX, baseY, planet.x, planet.y) +
       planet.id
     if score < bestScore:
@@ -492,7 +520,10 @@ proc activeSendTarget(
   ## Returns the current burst target while the send burst is active.
   if bot.sendTargetId <= 0 or bot.frameTick >= bot.sendUntilTick:
     return PlanetSight()
-  planets.findPlanet(bot.sendTargetId)
+  let target = planets.findPlanet(bot.sendTargetId)
+  if target.found and target.ownerId != bot.ownPlayerId:
+    return target
+  PlanetSight()
 
 proc activeSendOrigin(
   bot: Bot,
@@ -510,7 +541,7 @@ proc burstShipCount(origin, target: PlanetSight): int =
   ## Estimates how many ships should be sent in one held burst.
   let available =
     if origin.ships < 0:
-      SendBurstMaxShips
+      SendBurstUnknownOriginShips
     else:
       max(0, origin.ships - OriginReserveShips)
   if available <= 0:
@@ -588,12 +619,12 @@ proc steerToPlanet(
   target: PlanetSight
 ): uint8 =
   ## Steers toward a planet, using selected planet position as fallback.
-  result = bot.steerMask(target.x, target.y)
-  if result != 0 or bot.selectedPlanetId == target.id:
+  if bot.selectedPlanetId == target.id:
     return
   let selected = planets.findPlanet(bot.selectedPlanetId)
   if selected.found:
     return steerBetween(selected.x, selected.y, target.x, target.y)
+  return bot.steerMask(target.x, target.y)
 
 proc sweepMask(bot: var Bot): uint8 =
   ## Moves the cursor through the map when no target is visible.
@@ -630,21 +661,6 @@ proc decideNextMask(bot: var Bot): uint8 =
     return bot.sweepMask()
 
   let activeTarget = bot.activeSendTarget(planets)
-  var origin =
-    if activeTarget.found:
-      bot.activeSendOrigin(planets)
-    else:
-      PlanetSight()
-  if not origin.found:
-    origin = bot.chooseOrigin(planets)
-  if origin.found and origin.id != bot.originPlanetId:
-    bot.intent = "select origin " & $origin.id
-    if bot.selectedPlanetId == origin.id:
-      if bot.frameTick mod OriginSelectInterval == 0:
-        return ButtonA
-      return 0
-    return bot.steerToPlanet(planets, origin)
-
   let target =
     if activeTarget.found:
       activeTarget
@@ -654,6 +670,24 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.currentTargetId = -1
     return bot.sweepMask()
   bot.currentTargetId = target.id
+
+  var origin =
+    if activeTarget.found:
+      bot.activeSendOrigin(planets)
+    else:
+      PlanetSight()
+  if not origin.found:
+    origin = bot.chooseOriginForTarget(planets, target)
+  if not origin.found:
+    bot.intent = "finding origin"
+    return bot.sweepMask()
+  if origin.found and origin.id != bot.originPlanetId:
+    bot.intent = "select origin " & $origin.id
+    if bot.selectedPlanetId == origin.id:
+      if bot.frameTick mod OriginSelectInterval == 0:
+        return ButtonA
+      return 0
+    return bot.steerToPlanet(planets, origin)
 
   if activeTarget.found:
     bot.intent = "burst planet " & $target.id
