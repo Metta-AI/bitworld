@@ -3,6 +3,10 @@
 The tournament path for Among Them is now the uploaded Coworld flow. Do not use
 the old CoGames Python bundle commands for new submissions.
 
+This file remains as a legacy pointer for people who remember the old
+tournament guide name. The maintained submission guide is
+`how_to_submit_coworld_policy.md`.
+
 Policy authors should package a player process in a Docker image, read
 `COGAMES_ENGINE_WS_URL` at runtime, upload the image with `coworld upload-policy`,
 and submit the uploaded policy version with `coworld submit`.
