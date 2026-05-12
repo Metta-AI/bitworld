@@ -77,13 +77,14 @@ type
     spriteId: int
 
   PieceKind = enum
-    PieceI
-    PieceO
-    PieceT
-    PieceL
-    PieceJ
-    PieceS
-    PieceZ
+    PieceHook
+    PiecePlus
+    PieceCup
+    PieceCorner
+    PieceTee
+    PieceBar
+    PieceBox
+    PieceFlat
 
   ActivePiece = object
     found: bool
@@ -221,47 +222,61 @@ proc queryEscape(value: string): string =
       result.add(Hex[(byte shr 4) and 0x0f])
       result.add(Hex[byte and 0x0f])
 
-proc pieceCells(kind: PieceKind, rotation: int): array[4, Cell] =
-  ## Returns piece cells using the server's piece coordinate system.
+proc normalizeCells(cells: var seq[Cell]) =
+  ## Moves piece cells so the top-left occupied cell is at the origin.
+  var
+    minX = high(int)
+    minY = high(int)
+  for cell in cells:
+    minX = min(minX, cell.x)
+    minY = min(minY, cell.y)
+  for cell in cells.mitems:
+    cell.x -= minX
+    cell.y -= minY
+
+proc basePieceCells(kind: PieceKind): seq[Cell] =
+  ## Returns the unrotated custom piece cells.
   case kind
-  of PieceI:
-    case rotation and 3
-    of 0: [Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 3, y: 1)]
-    of 1: [Cell(x: 2, y: 0), Cell(x: 2, y: 1), Cell(x: 2, y: 2), Cell(x: 2, y: 3)]
-    of 2: [Cell(x: 0, y: 2), Cell(x: 1, y: 2), Cell(x: 2, y: 2), Cell(x: 3, y: 2)]
-    else: [Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 1, y: 2), Cell(x: 1, y: 3)]
-  of PieceO:
-    [Cell(x: 1, y: 0), Cell(x: 2, y: 0), Cell(x: 1, y: 1), Cell(x: 2, y: 1)]
-  of PieceT:
-    case rotation and 3
-    of 0: [Cell(x: 1, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1)]
-    of 1: [Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 1, y: 2)]
-    of 2: [Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 1, y: 2)]
-    else: [Cell(x: 1, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 1, y: 2)]
-  of PieceL:
-    case rotation and 3
-    of 0: [Cell(x: 0, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1)]
-    of 1: [Cell(x: 1, y: 0), Cell(x: 2, y: 0), Cell(x: 1, y: 1), Cell(x: 1, y: 2)]
-    of 2: [Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 2, y: 2)]
-    else: [Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 0, y: 2), Cell(x: 1, y: 2)]
-  of PieceJ:
-    case rotation and 3
-    of 0: [Cell(x: 2, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1)]
-    of 1: [Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 1, y: 2), Cell(x: 2, y: 2)]
-    of 2: [Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 0, y: 2)]
-    else: [Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 1, y: 2)]
-  of PieceS:
-    case rotation and 3
-    of 0: [Cell(x: 1, y: 0), Cell(x: 2, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1)]
-    of 1: [Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 2, y: 2)]
-    of 2: [Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 0, y: 2), Cell(x: 1, y: 2)]
-    else: [Cell(x: 0, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 1, y: 2)]
-  of PieceZ:
-    case rotation and 3
-    of 0: [Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 1, y: 1), Cell(x: 2, y: 1)]
-    of 1: [Cell(x: 2, y: 0), Cell(x: 1, y: 1), Cell(x: 2, y: 1), Cell(x: 1, y: 2)]
-    of 2: [Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 1, y: 2), Cell(x: 2, y: 2)]
-    else: [Cell(x: 1, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 0, y: 2)]
+  of PieceHook:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 0, y: 1)]
+  of PiecePlus:
+    @[Cell(x: 1, y: 0), Cell(x: 0, y: 1), Cell(x: 1, y: 1),
+      Cell(x: 2, y: 1), Cell(x: 1, y: 2)]
+  of PieceCup:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 0, y: 1),
+      Cell(x: 0, y: 2), Cell(x: 1, y: 2)]
+  of PieceCorner:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 2, y: 0),
+      Cell(x: 0, y: 1), Cell(x: 0, y: 2)]
+  of PieceTee:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 2, y: 0),
+      Cell(x: 1, y: 1), Cell(x: 1, y: 2)]
+  of PieceBar:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 2, y: 0),
+      Cell(x: 3, y: 0), Cell(x: 4, y: 0)]
+  of PieceBox:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 2, y: 0),
+      Cell(x: 0, y: 1), Cell(x: 1, y: 1), Cell(x: 2, y: 1),
+      Cell(x: 0, y: 2), Cell(x: 1, y: 2), Cell(x: 2, y: 2)]
+  of PieceFlat:
+    @[Cell(x: 0, y: 0), Cell(x: 1, y: 0), Cell(x: 2, y: 0)]
+
+proc rotatedCells(cells: openArray[Cell]): seq[Cell] =
+  ## Rotates cells clockwise around their bounding box.
+  var maxY = 0
+  for cell in cells:
+    maxY = max(maxY, cell.y)
+  for cell in cells:
+    result.add(Cell(x: maxY - cell.y, y: cell.x))
+  result.normalizeCells()
+
+proc pieceCells(kind: PieceKind, rotation: int): seq[Cell] =
+  ## Returns piece cells using the server's piece coordinate system.
+  result = basePieceCells(kind)
+  result.normalizeCells()
+  for i in 0 ..< (rotation and 3):
+    discard i
+    result = result.rotatedCells()
 
 proc addU16(packet: var seq[uint8], value: int) =
   ## Appends one little endian unsigned 16 bit value.
@@ -655,15 +670,15 @@ proc matchPiece(
   originX: var int,
   originY: var int
 ): bool =
-  ## Matches four map cells against one piece rotation.
-  if cells.len != 4:
-    return false
+  ## Matches map cells against one piece rotation.
   var
     minCellX = high(int)
     minCellY = high(int)
     minOffsetX = high(int)
     minOffsetY = high(int)
   let offsets = pieceCells(kind, rotation)
+  if cells.len != offsets.len:
+    return false
   for cell in cells:
     minCellX = min(minCellX, cell.x)
     minCellY = min(minCellY, cell.y)
@@ -681,7 +696,7 @@ proc matchPiece(
   true
 
 proc inferPieceFromCells(cells: openArray[Cell]): ActivePiece =
-  ## Infers the piece kind and rotation from four occupied cells.
+  ## Infers the piece kind and rotation from occupied cells.
   for kind in PieceKind:
     for rotation in 0 .. 3:
       var
@@ -696,6 +711,18 @@ proc inferPieceFromCells(cells: openArray[Cell]): ActivePiece =
           originY: originY,
           cells: @cells
         )
+
+proc inferPieceFromComponent(cells: openArray[Cell]): ActivePiece =
+  ## Infers one active piece from the top of a connected component.
+  for size in [9, 5, 3]:
+    if cells.len < size:
+      continue
+    var candidate: seq[Cell]
+    for i in 0 ..< size:
+      candidate.add(cells[i])
+    result = inferPieceFromCells(candidate)
+    if result.found:
+      return
 
 proc findOwnCells(bot: Bot): seq[Cell] =
   ## Returns all global-map cells matching the bot's own color.
@@ -713,7 +740,7 @@ proc ownMaskIndex(image: SpriteImage, x, y: int): int =
 proc activePiece(bot: Bot): ActivePiece =
   ## Finds the highest own-color connected component as the active piece.
   let ownCells = bot.findOwnCells()
-  if ownCells.len < 4 or bot.map.width <= 0 or bot.map.height <= 0:
+  if ownCells.len < 3 or bot.map.width <= 0 or bot.map.height <= 0:
     return
   var
     own = newSeq[bool](bot.map.width * bot.map.height)
@@ -749,16 +776,14 @@ proc activePiece(bot: Bot): ActivePiece =
           continue
         visited[index] = true
         queue.add(next)
-    if component.len >= 4 and minY < bestMinY:
+    if component.len >= 3 and minY < bestMinY:
       bestMinY = minY
       bestComponent = component
 
-  if bestComponent.len < 4:
+  if bestComponent.len < 3:
     return
   bestComponent.sortCells()
-  if bestComponent.len > 4:
-    bestComponent.setLen(4)
-  inferPieceFromCells(bestComponent)
+  bestComponent.inferPieceFromComponent()
 
 proc occupiedMap(bot: var Bot, active: ActivePiece): seq[bool] =
   ## Builds an occupancy grid with the active piece removed.
@@ -1079,13 +1104,11 @@ proc ownActiveViewportLogicalCells(bot: Bot): seq[Cell] =
 proc activeViewportPiece(bot: Bot): ActivePiece =
   ## Infers the active piece from the current player viewport.
   let cells = bot.ownActiveViewportLogicalCells()
-  if cells.len < 4:
+  if cells.len < 3:
     return
   var sorted = cells
   sorted.sortCells()
-  if sorted.len > 4:
-    sorted.setLen(4)
-  inferPieceFromCells(sorted)
+  sorted.inferPieceFromComponent()
 
 proc viewportDimensions(bot: Bot): tuple[width, height: int] =
   ## Returns logical viewport dimensions in cells.
