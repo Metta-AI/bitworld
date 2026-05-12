@@ -32,7 +32,13 @@
           "default": 726896
         },
         "maxTicks": {
-          "description": "Maximum simulation ticks before shutdown, where 0 means no limit.",
+          "description": "Maximum simulation ticks before starting a fresh game, where 0 means no tick limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 18000
+        },
+        "maxGames": {
+          "description": "Maximum fresh games before shutdown, where 0 means no game limit.",
           "type": "integer",
           "minimum": 0,
           "default": 0
@@ -103,7 +109,8 @@
       "name": "Smoke",
       "game_config": {
         "seed": 726896,
-        "maxTicks": 300
+        "maxTicks": 300,
+        "maxGames": 1
       },
       "description": "Short deterministic big_adventure configuration used for manifest checks."
     }

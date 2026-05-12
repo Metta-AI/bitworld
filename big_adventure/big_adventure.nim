@@ -10,6 +10,7 @@ type
     port: int
     seed: int
     maxTicks: int
+    maxGames: int
     tokens: seq[string]
     saveReplayPath: string
     loadReplayPath: string
@@ -81,6 +82,8 @@ proc isKnownConfigField(name: string): bool =
       "seed",
       "maxTicks",
       "max-ticks",
+      "maxGames",
+      "max-games",
       "tokens",
       "saveReplay",
       "loadReplay",
@@ -139,6 +142,8 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("maxTicks", config.maxTicks)
   node.readConfigInt("max-ticks", config.maxTicks)
+  node.readConfigInt("maxGames", config.maxGames)
+  node.readConfigInt("max-games", config.maxGames)
   node.readConfigStrings("tokens", config.tokens)
 
 proc requireOptionValue(name, value: string) =
@@ -167,6 +172,11 @@ proc validate(config: RunConfig) =
       BigAdventureError,
       "Config field maxTicks must be non-negative."
     )
+  if config.maxGames < 0:
+    raise newException(
+      BigAdventureError,
+      "Config field maxGames must be non-negative."
+    )
 
 proc echoStartupPaths(config: RunConfig) =
   ## Prints configured replay and score output paths.
@@ -188,6 +198,10 @@ proc echoStartupPaths(config: RunConfig) =
     echo "Max ticks: " & $config.maxTicks
   else:
     echo "Max ticks: infinite"
+  if config.maxGames > 0:
+    echo "Max games: " & $config.maxGames
+  else:
+    echo "Max games: infinite"
 
 when isMainModule:
   var
@@ -195,7 +209,8 @@ when isMainModule:
       address: DefaultHost,
       port: DefaultPort,
       seed: 0xB1770,
-      maxTicks: 0,
+      maxTicks: DefaultMaxTicks,
+      maxGames: DefaultMaxGames,
       tokens: @[],
       saveReplayPath: defaultReplayPath(),
       loadReplayPath: defaultLoadReplayPath(),
@@ -216,6 +231,8 @@ when isMainModule:
         config.seed = key.parseOptionInt(val)
       of "max-ticks", "maxTicks":
         config.maxTicks = key.parseOptionInt(val)
+      of "max-games", "maxGames":
+        config.maxGames = key.parseOptionInt(val)
       of "save-replay", "save-replay-path", "saveReplayPath":
         key.requireOptionValue(val)
         config.saveReplayPath = val
@@ -253,5 +270,6 @@ when isMainModule:
     config.loadReplayPath,
     config.saveScoresPath,
     config.tokens,
-    config.maxTicks
+    config.maxTicks,
+    config.maxGames
   )

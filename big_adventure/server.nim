@@ -5,6 +5,8 @@ import std/[json, locks, monotimes, os, strutils, tables, times]
 
 const
   HealthzPath = "/healthz"
+  DefaultMaxTicks* = TargetFps * 60 * 5
+  DefaultMaxGames* = 0
 
 type
   WebSocketAppState = object
@@ -800,7 +802,8 @@ proc runServerLoop*(
   loadReplayPath = "",
   saveScoresPath = "",
   tokens: seq[string] = @[],
-  maxTicks = 0
+  maxTicks = DefaultMaxTicks,
+  maxGames = DefaultMaxGames
 ) =
   initAppState()
   appState.tokens = tokens
@@ -824,7 +827,11 @@ proc runServerLoop*(
   var
     replayWriter = openReplayWriter(
       saveReplayPath,
-      $(%*{"seed": currentSeed, "maxTicks": maxTicks})
+      $(%*{
+        "seed": currentSeed,
+        "maxTicks": maxTicks,
+        "maxGames": maxGames
+      })
     )
     replayPlayer =
       if replayLoaded:
@@ -852,6 +859,7 @@ proc runServerLoop*(
     lastTick = getMonoTime()
     lastScoreRevision = -1
     runTicks = 0
+    gamesStarted = 1
   sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
 
   while true:
@@ -865,7 +873,8 @@ proc runServerLoop*(
       rewardViewers: seq[WebSocket] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
-      shouldReset = false
+      shouldReset =
+        not replayLoaded and maxTicks > 0 and runTicks >= maxTicks
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -881,6 +890,8 @@ proc runServerLoop*(
 
         if not replayLoaded and appState.resetRequested:
           shouldReset = true
+
+        if not replayLoaded and shouldReset:
           appState.resetRequested = false
           for _, value in appState.playerIndices.mpairs:
             value = 0x7fffffff
@@ -959,10 +970,17 @@ proc runServerLoop*(
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
 
+    if shouldReset and maxGames > 0 and gamesStarted >= maxGames:
+      httpServer.close()
+      joinThread(serverThread)
+      break
+
     if shouldReset:
+      inc gamesStarted
       inc currentSeed
       sim = initSimServer(currentSeed)
       runTicks = 0
+      lastScoreRevision = -1
       replayWriter.lastMasks.setLen(0)
       sockets.setLen(0)
       playerIndices.setLen(0)
@@ -1080,10 +1098,5 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
-
-    if maxTicks > 0 and runTicks >= maxTicks:
-      httpServer.close()
-      joinThread(serverThread)
-      break
 
     runFrameLimiter(lastTick)
