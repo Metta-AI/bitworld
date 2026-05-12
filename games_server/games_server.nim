@@ -25,6 +25,7 @@ const
   LogsPath = "/logs"
   BulkStopPath = "/containers/stop"
   BulkRemovePath = "/containers/remove"
+  BulkGridPath = "/containers/grid"
   HealthPath = "/healthz"
   ClientPath = "/client/"
   CreatePath = "/games/create"
@@ -210,6 +211,52 @@ th {
   font: 11px Monaco, Consolas, monospace;
   overflow: auto;
   white-space: pre-wrap;
+}
+.gridPage {
+  width: calc(100vw - 16px);
+  height: calc(100vh - 16px);
+  margin: 8px;
+  padding: 0;
+  border: 1px solid #000;
+  background: #f8f8f8;
+  display: flex;
+  flex-direction: column;
+}
+.gridHeader {
+  flex: 0 0 auto;
+}
+.viewerGrid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  background: #707096;
+}
+.viewerCell {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #000020;
+}
+.viewerTitle {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  z-index: 2;
+  padding: 2px 5px;
+  border: 1px solid #303050;
+  background: #eeeeff;
+  color: #000020;
+  font-size: 10px;
+}
+.viewerFrame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: #fff;
 }
 """
   BulkScript = """
@@ -2695,6 +2742,9 @@ proc renderBulkControls(): string =
       id "bulkForm"
       action BulkStopPath
       tmethod "post"
+      say "<button class=\"button\" type=\"submit\" formaction=\"" &
+        BulkGridPath & "\" formtarget=\"_blank\">Grid View</button>"
+      say " "
       button ".button":
         ttype "submit"
         formaction BulkStopPath
@@ -3383,6 +3433,62 @@ proc renderScoresPage(name: string, rows: seq[ScoreRow]): string =
             say " "
           say scoresTable
 
+proc gridColumnCount(count: int): int =
+  ## Returns a practical column count for a viewer grid.
+  if count <= 0:
+    return 1
+  if count <= 3:
+    return count
+  result = 1
+  while result * result < count:
+    inc result
+
+proc renderGridPage(
+  request: Request,
+  games: seq[GameContainer]
+): string =
+  ## Renders selected game global viewers in a responsive grid.
+  let columns = gridColumnCount(games.len)
+  render:
+    html:
+      head:
+        title:
+          say "Grid View"
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".gridPage":
+          table ".gridHeader":
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say "Grid View"
+                p ".small":
+                  say $games.len & " games"
+              td ".row2 right small":
+                a:
+                  href "/"
+                  say "Back"
+          if games.len == 0:
+            p ".notice small":
+              b:
+                say "No games selected."
+          else:
+            tdiv ".viewerGrid":
+              style "grid-template-columns: repeat(" &
+                $columns & ", minmax(0, 1fr));"
+              for game in games:
+                let url = gameUrl(request, game, "global.html")
+                tdiv ".viewerCell":
+                  a ".viewerTitle":
+                    href url
+                    target "_blank"
+                    say esc(game.name)
+                  iframe ".viewerFrame":
+                    src url
+                    title game.name
+
 proc clientRoot(): string =
   ## Returns the shared client asset directory.
   parentDir(parentDir(currentSourcePath())) / "clients"
@@ -3572,6 +3678,15 @@ proc bulkContainerNames(form: seq[(string, string)]): seq[string] =
     if name notin result:
       result.add(name)
 
+proc bulkGridGames(form: seq[(string, string)]): seq[GameContainer] =
+  ## Reads selected game containers from a bulk action form.
+  for name in bulkContainerNames(form):
+    try:
+      let game = inspectGame(name)
+      result.add(game)
+    except GamesServerError:
+      discard
+
 proc bulkStopHandler(request: Request) =
   ## Handles selected container stop requests.
   let names = bulkContainerNames(parseFormBody(request))
@@ -3596,6 +3711,13 @@ proc bulkRemoveHandler(request: Request) =
       if removedName notin removed:
         removed.add(removedName)
   request.respondRedirect("/?notice=removed+" & $removed.len & "+containers")
+
+proc bulkGridHandler(request: Request) =
+  ## Handles selected game grid viewer requests.
+  request.respondHtml(200, renderGridPage(
+    request,
+    bulkGridGames(parseFormBody(request))
+  ))
 
 proc logsHandler(request: Request) =
   ## Handles Docker log viewer requests.
@@ -3725,6 +3847,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.bulkStopHandler()
     elif request.path == BulkRemovePath and request.httpMethod == "POST":
       request.bulkRemoveHandler()
+    elif request.path == BulkGridPath and request.httpMethod == "POST":
+      request.bulkGridHandler()
     elif request.path == ReplayPlayPath and request.httpMethod == "POST":
       request.replayPlayHandler()
     elif request.path.startsWith(ReplayPathPrefix) and
