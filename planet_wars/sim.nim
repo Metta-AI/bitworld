@@ -22,10 +22,12 @@ const
   PlanetSpacing* = 10
   BaseFps* = 24
   TargetFps* = 60
+  DefaultMaxTicks* = TargetFps * 60 * 5
+  DefaultMaxGames* = 0
   ShipSpeedPixelsPerSecond* = 48
-  BaseSendRepeatInterval* = 13
-  MinSendRepeatInterval* = 3
-  SendAccelerationTicks* = 30
+  BaseSendRepeatInterval* = 6
+  MinSendRepeatInterval* = 1
+  SendAccelerationTicks* = 10
   ShipLaneOffsetMax* = 3
   ScoreIntervalTicks* = TargetFps
   WebSocketPath* = "/player"
@@ -74,6 +76,8 @@ type
 
   SimConfig* = object
     planetCount*: int
+    maxTicks*: int
+    maxGames*: int
 
   PlanetSize* = enum
     PlanetSmall
@@ -147,6 +151,9 @@ type
     nextPlayerId*: int
     scoreTicks*: int
     tickCount*: int
+    gameOver*: bool
+    winnerPlayerId*: int
+    maxActiveOwnerCount*: int
     scoreRevision*: int
     textFont*: PixelFont
     chatMessages*: seq[ChatMessage]
@@ -172,7 +179,11 @@ proc loadTiny5Font*(): PixelFont =
 
 proc defaultSimConfig*(): SimConfig =
   ## Returns the default Planet Wars simulation config.
-  SimConfig(planetCount: DefaultPlanetCount)
+  SimConfig(
+    planetCount: DefaultPlanetCount,
+    maxTicks: DefaultMaxTicks,
+    maxGames: DefaultMaxGames
+  )
 
 proc checkedPlanetCount*(planetCount: int): int =
   ## Returns a supported planet count or raises a game error.
@@ -183,6 +194,20 @@ proc checkedPlanetCount*(planetCount: int): int =
         $MaxPlanetCount & "."
     )
   planetCount
+
+proc checkSimConfig*(config: SimConfig) =
+  ## Raises when simulation config values are outside supported bounds.
+  discard config.planetCount.checkedPlanetCount()
+  if config.maxTicks < 0:
+    raise newException(
+      PlanetWarsError,
+      "maxTicks must be zero or greater."
+    )
+  if config.maxGames < 0:
+    raise newException(
+      PlanetWarsError,
+      "maxGames must be zero or greater."
+    )
 
 proc worldClampPixel*(x, maxValue: int): int =
   ## Clamps a coordinate to the world pixel bounds.
@@ -688,6 +713,42 @@ proc stepScore(sim: var SimServer) =
     player.score += ownedCount * ownedCount
   sim.markScoresChanged()
 
+proc addActiveOwner(owners: var seq[int], ownerId: int) =
+  ## Adds one non-neutral owner id if it is not already present.
+  if ownerId <= 0:
+    return
+  for existing in owners:
+    if existing == ownerId:
+      return
+  owners.add(ownerId)
+
+proc activeOwnerIds(sim: SimServer): seq[int] =
+  ## Returns players that still have planets or ships in flight.
+  for planet in sim.planets:
+    result.addActiveOwner(planet.ownerId)
+  for ship in sim.ships:
+    result.addActiveOwner(ship.ownerId)
+
+proc finishGame*(sim: var SimServer, winnerPlayerId: int) =
+  ## Marks the current game finished with an optional winner.
+  if sim.gameOver:
+    return
+  sim.gameOver = true
+  sim.winnerPlayerId = winnerPlayerId
+  sim.markScoresChanged()
+
+proc checkRemainingWin*(sim: var SimServer) =
+  ## Finishes when only one non-neutral player remains.
+  let owners = sim.activeOwnerIds()
+  sim.maxActiveOwnerCount = max(sim.maxActiveOwnerCount, owners.len)
+  if sim.maxActiveOwnerCount > 1 and owners.len == 1:
+    sim.finishGame(owners[0])
+
+proc checkMaxTicks*(sim: var SimServer) =
+  ## Finishes the game when the tick limit is reached.
+  if sim.config.maxTicks > 0 and sim.tickCount >= sim.config.maxTicks:
+    sim.finishGame(0)
+
 proc ensureSelection*(sim: var SimServer, playerIndex: int) =
   ## Repairs one player's cursor and selected planet.
   if playerIndex < 0 or playerIndex >= sim.players.len or sim.planets.len == 0:
@@ -785,6 +846,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
 
 proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   ## Advances one deterministic game tick.
+  if sim.gameOver:
+    return
   for playerIndex in 0 ..< sim.players.len:
     let input =
       if playerIndex < inputs.len:
@@ -796,14 +859,17 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.stepShips()
   sim.stepScore()
   inc sim.tickCount
+  sim.checkRemainingWin()
+  sim.checkMaxTicks()
 
 proc initSimServer*(
   seed: int,
   config = defaultSimConfig()
 ): SimServer =
   ## Creates a fresh simulation server.
+  config.checkSimConfig()
   result.config = config
-  result.config.planetCount = config.planetCount.checkedPlanetCount()
+  result.winnerPlayerId = 0
   result.rng = initRand(seed)
   result.textFont = loadTiny5Font()
   result.chatMessages = @[]
@@ -816,16 +882,19 @@ proc playerScoresJson*(sim: SimServer): string =
   var
     names = newJArray()
     scores = newJArray()
+    wins = newJArray()
     planets = newJArray()
     ships = newJArray()
     results = newJObject()
   for player in sim.players:
     names.add(%player.name)
     scores.add(%player.score)
+    wins.add(%(sim.gameOver and player.id == sim.winnerPlayerId))
     planets.add(%sim.countOwnedPlanets(player.id))
     ships.add(%sim.totalPlayerShips(player.id))
   results["names"] = names
   results["scores"] = scores
+  results["win"] = wins
   results["planets"] = planets
   results["ships"] = ships
   $results

@@ -37,6 +37,18 @@
           "minimum": 1,
           "maximum": 48,
           "default": 18
+        },
+        "maxTicks": {
+          "description": "Maximum ticks per game, where 0 disables the tick limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 18000
+        },
+        "maxGames": {
+          "description": "Maximum games before shutdown, where 0 means infinite.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         }
       }
     },
@@ -47,6 +59,7 @@
       "required": [
         "names",
         "scores",
+        "win",
         "planets",
         "ships"
       ],
@@ -64,6 +77,13 @@
           "items": {
             "type": "integer",
             "minimum": 0
+          }
+        },
+        "win": {
+          "description": "One win flag per player slot.",
+          "type": "array",
+          "items": {
+            "type": "boolean"
           }
         },
         "planets": {

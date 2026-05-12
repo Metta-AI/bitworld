@@ -237,9 +237,14 @@ proc manifestProtocol(node: JsonNode, key: string): string =
   if node.kind != JObject or not node.hasKey("protocols"):
     return
   let protocols = node["protocols"]
-  if protocols.kind == JObject and protocols.hasKey(key) and
-    protocols[key].kind == JString:
-      return protocols[key].getStr()
+  if protocols.kind != JObject or not protocols.hasKey(key):
+    return
+  let protocol = protocols[key]
+  if protocol.kind == JString:
+    return protocol.getStr()
+  if protocol.kind == JObject and protocol.hasKey("value") and
+      protocol["value"].kind == JString:
+    return protocol["value"].getStr()
 
 proc isSpriteProtocolSpec(path: string): bool =
   ## Returns true when a protocol path names the sprite protocol spec.
@@ -890,6 +895,13 @@ proc playerClientSource(game: GameLaunch): string =
   of FrameClient:
     PlayerClientSourceRelative
 
+proc globalPalettePath(rootDir: string, game: GameLaunch): string =
+  ## Returns the palette path for the native global viewer.
+  let gamePalettePath = game.workDir / "data" / "pallete.png"
+  if fileExists(gamePalettePath):
+    return gamePalettePath
+  rootDir / "clients" / "data" / "pallete.png"
+
 proc openHtmlGlobalViewer(config: QuickRunConfig, game: GameLaunch) =
   ## Opens the browser global viewer for one quick-run game.
   openHtmlClient(
@@ -936,6 +948,7 @@ proc launchNativePlayerClients(
     ]
     if game.playerProtocol == SpriteClient:
       args.add("--player")
+      args.add("--palette:" & globalPalettePath(rootDir, game))
     if config.reconnectSeconds.len > 0:
       args.add("--reconnect:" & config.reconnectSeconds)
     try:
@@ -961,7 +974,8 @@ proc launchNativeGlobalViewer(
   let globalExe = exePathFor(rootDir, GlobalClientSourceRelative)
   var args = @[
     "--address:" & globalWsAddress(config),
-    "--title:" & game.name & " global"
+    "--title:" & game.name & " global",
+    "--palette:" & globalPalettePath(rootDir, game)
   ]
   if config.reconnectSeconds.len > 0:
     args.add("--reconnect:" & config.reconnectSeconds)
