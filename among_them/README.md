@@ -32,6 +32,11 @@ the game image, the default eight-player, two-imposter tournament variant with
 eight tasks per crewmate, the certification fixture, public protocol docs, and
 the public pages that Observatory renders for the uploaded Coworld.
 
+Coworld uploads store documentation as public URLs. They do not bundle local
+Markdown files into the uploaded manifest, so keep the manifest docs links
+pointing at public pages that policy authors and coding agents can read without
+a BitWorld checkout.
+
 ## Player Runtime
 
 In hosted Coworld episodes, Softmax runs the game container and each policy
@@ -82,6 +87,9 @@ For policy design and packaging details, see:
 - `players/how_to_make_a_bot.md`
 - `players/how_to_submit_coworld_policy.md`
 - `players/SMART_BOT_GUIDE.md`
+
+These same pages are exposed from the Coworld manifest as `player.md`,
+`submit.md`, and `optimizer.md`.
 
 ## Source Development
 
@@ -165,13 +173,13 @@ docker build \
   -f among_them/players/nottoodumb/Dockerfile \
   -t ghcr.io/treeform/bitworld-nottoodumb:latest \
   .
-uv run coworld certify among_them/coworld_manifest.json
+coworld certify among_them/coworld_manifest.json
 ```
 
 Upload the certified Coworld with:
 
 ```sh
-uv run coworld upload-coworld among_them/coworld_manifest.json
+coworld upload-coworld among_them/coworld_manifest.json
 ```
 
 ### Browser Clients

@@ -16,17 +16,17 @@ const
   PlanetSpriteStride = 8
   CursorDeadband = 3
   OriginSelectInterval = 8
-  RetargetTicks = 90
+  RetargetTicks = 45
   SweepArrivalRadius = 18
   OriginReserveShips = 1
-  NeutralMinOriginShips = 6
-  EnemyMinOriginShips = 3
-  SendBurstMinShips = 18
-  SendBurstMaxShips = 160
-  SendBurstUnknownOriginShips = 64
-  NeutralBurstExtraShips = 28
-  EnemyBurstExtraShips = 80
-  SendBurstPaddingTicks = TargetFps * 6
+  NeutralMinOriginShips = 2
+  EnemyMinOriginShips = 2
+  SendBurstMinShips = 48
+  SendBurstMaxShips = 999
+  SendBurstUnknownOriginShips = 256
+  NeutralBurstExtraShips = 120
+  EnemyBurstExtraShips = 240
+  SendBurstPaddingTicks = TargetFps * 15
   NeutralTargetPenalty = 500
   EnemyTargetPenalty = -1_200
   TargetShipScoreWeight = 8
@@ -80,6 +80,7 @@ type
   Bot = object
     sprites: seq[SpriteInfo]
     objects: seq[ObjectState]
+    knownPlanets: seq[PlanetSight]
     rng: Rand
     cameraX: int
     cameraY: int
@@ -292,6 +293,13 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
     of 0x04:
       for item in bot.objects.mitems:
         item.present = false
+      bot.ownPlayerId = -1
+      bot.colorKnown = false
+      bot.colorAnnounced = false
+      bot.currentTargetId = -1
+      bot.sendTargetId = -1
+      bot.sendOriginId = -1
+      bot.sendUntilTick = bot.frameTick
     of 0x05:
       if offset + 5 > packet.len:
         return false
@@ -361,6 +369,20 @@ proc visiblePlanets(bot: Bot): seq[PlanetSight] =
     if planet.found:
       result.add(planet)
 
+proc rememberPlanets(bot: var Bot, planets: openArray[PlanetSight]) =
+  ## Updates remembered planet sightings from the current viewport.
+  if bot.knownPlanets.len <= MaxPlanetCount:
+    bot.knownPlanets.setLen(MaxPlanetCount + 1)
+  for planet in planets:
+    if planet.id >= 0 and planet.id < bot.knownPlanets.len:
+      bot.knownPlanets[planet.id] = planet
+
+proc knownPlanetSights(bot: Bot): seq[PlanetSight] =
+  ## Returns all remembered planet sightings.
+  for planet in bot.knownPlanets:
+    if planet.found:
+      result.add(planet)
+
 proc updateIdentity(bot: var Bot, planets: openArray[PlanetSight]) =
   ## Recognizes Skurge's player id and color from the origin planet.
   for planet in planets:
@@ -368,9 +390,16 @@ proc updateIdentity(bot: var Bot, planets: openArray[PlanetSight]) =
       continue
     if bot.ownPlayerId <= 0:
       bot.ownPlayerId = planet.ownerId
+      bot.colorAnnounced = false
+      bot.currentTargetId = -1
+      bot.sendTargetId = -1
+      bot.sendOriginId = -1
+      bot.sendUntilTick = bot.frameTick
     if bot.ownPlayerId != planet.ownerId:
       continue
-    let sprite = bot.spriteInfo(bot.objects[PlanetObjectBase + planet.id].spriteId)
+    let sprite = bot.spriteInfo(
+      bot.objects[PlanetObjectBase + planet.id].spriteId
+    )
     bot.ownColor = sprite.color
     bot.colorKnown = true
     return
@@ -417,6 +446,10 @@ proc originShipScore(planet: PlanetSight): int =
   if planet.ships < 0:
     return SendBurstUnknownOriginShips
   planet.ships
+
+proc hasLaunchShips(planet: PlanetSight): bool =
+  ## Returns true when a planet can probably launch ships now.
+  planet.found and (planet.ships < 0 or planet.ships > OriginReserveShips)
 
 proc chooseOrigin(
   bot: Bot,
@@ -491,8 +524,15 @@ proc chooseTarget(
         selected.y
       else:
         cursor.y
+  var enemyKnown = false
+  for planet in planets:
+    if planet.ownerId > 0 and planet.ownerId != bot.ownPlayerId:
+      enemyKnown = true
+      break
   for planet in planets:
     if planet.ownerId == bot.ownPlayerId:
+      continue
+    if enemyKnown and planet.ownerId == 0:
       continue
     if planet.id == bot.avoidedTargetId and bot.frameTick < bot.avoidUntilTick:
       continue
@@ -537,15 +577,32 @@ proc activeSendOrigin(
     return origin
   PlanetSight()
 
+proc currentOrigin(
+  bot: Bot,
+  planets: openArray[PlanetSight]
+): PlanetSight =
+  ## Returns the current launch origin, visible or remembered.
+  if bot.originPlanetId <= 0:
+    return PlanetSight()
+  let origin = planets.findPlanet(bot.originPlanetId)
+  if origin.found:
+    if origin.ownerId == bot.ownPlayerId:
+      return origin
+    return PlanetSight()
+  PlanetSight(
+    found: true,
+    id: bot.originPlanetId,
+    ownerId: bot.ownPlayerId,
+    ships: -1
+  )
+
 proc burstShipCount(origin, target: PlanetSight): int =
   ## Estimates how many ships should be sent in one held burst.
   let available =
     if origin.ships < 0:
       SendBurstUnknownOriginShips
     else:
-      max(0, origin.ships - OriginReserveShips)
-  if available <= 0:
-    return 0
+      max(1, origin.ships - OriginReserveShips)
   let
     targetShips =
       if target.ships < 0:
@@ -563,8 +620,11 @@ proc burstShipCount(origin, target: PlanetSight): int =
 proc burstTickCount(shipCount: int): int =
   ## Converts a planned ship count into held-send ticks.
   if shipCount <= 0:
-    return 0
-  max(TargetFps, shipCount * BaseSendRepeatInterval + SendBurstPaddingTicks)
+    return SendBurstPaddingTicks
+  max(
+    SendBurstPaddingTicks,
+    shipCount * BaseSendRepeatInterval + SendBurstPaddingTicks
+  )
 
 proc startSendBurst(
   bot: var Bot,
@@ -573,9 +633,6 @@ proc startSendBurst(
 ) =
   ## Starts a held send burst from one origin to one target.
   let shipCount = burstShipCount(origin, target)
-  if shipCount <= 0:
-    bot.sendUntilTick = bot.frameTick
-    return
   bot.sendTargetId = target.id
   bot.sendOriginId = origin.id
   bot.sendUntilTick = bot.frameTick + burstTickCount(shipCount)
@@ -626,25 +683,49 @@ proc steerToPlanet(
     return steerBetween(selected.x, selected.y, target.x, target.y)
   return bot.steerMask(target.x, target.y)
 
-proc sweepMask(bot: var Bot): uint8 =
+proc sendWhileMoving(mask: uint8): uint8 =
+  ## Holds send while steering so queued ships keep flowing.
+  mask or ButtonB
+
+proc sweepMask(
+  bot: var Bot,
+  planets: openArray[PlanetSight]
+): uint8 =
   ## Moves the cursor through the map when no target is visible.
   let
     point = SweepPoints[bot.sweepIndex mod SweepPoints.len]
     cursor = bot.cursorWorld()
-  if distanceSquared(cursor.x, cursor.y, point.x, point.y) <=
+    selected = planets.findPlanet(bot.selectedPlanetId)
+    baseX =
+      if selected.found:
+        selected.x
+      else:
+        cursor.x
+    baseY =
+      if selected.found:
+        selected.y
+      else:
+        cursor.y
+  if distanceSquared(baseX, baseY, point.x, point.y) <=
       SweepArrivalRadius * SweepArrivalRadius:
     inc bot.sweepIndex
   let nextPoint = SweepPoints[bot.sweepIndex mod SweepPoints.len]
   bot.intent = "sweep " & $bot.sweepIndex
+  if selected.found:
+    return steerBetween(selected.x, selected.y, nextPoint.x, nextPoint.y)
   bot.steerMask(nextPoint.x, nextPoint.y)
 
 proc decideNextMask(bot: var Bot): uint8 =
   ## Chooses the next controller mask from semantic sprite state.
   bot.updateCamera()
-  let planets = bot.visiblePlanets()
-  bot.updateIdentity(planets)
-  bot.selectedPlanetId = planets.selectedPlanetId()
-  bot.originPlanetId = planets.originPlanetId()
+  let visiblePlanets = bot.visiblePlanets()
+  bot.rememberPlanets(visiblePlanets)
+  let knownPlanets = bot.knownPlanetSights()
+  bot.updateIdentity(visiblePlanets)
+  bot.selectedPlanetId = visiblePlanets.selectedPlanetId()
+  let visibleOriginId = visiblePlanets.originPlanetId()
+  if visibleOriginId > 0:
+    bot.originPlanetId = visibleOriginId
   if bot.selectedPlanetId == bot.lastSelectedPlanetId:
     inc bot.selectionStuckTicks
   else:
@@ -658,36 +739,44 @@ proc decideNextMask(bot: var Bot): uint8 =
 
   if bot.ownPlayerId <= 0:
     bot.intent = "finding color"
-    return bot.sweepMask()
+    return bot.sweepMask(visiblePlanets)
 
-  let activeTarget = bot.activeSendTarget(planets)
+  let activeTarget = bot.activeSendTarget(knownPlanets)
   let target =
     if activeTarget.found:
       activeTarget
     else:
-      bot.chooseTarget(planets)
+      bot.chooseTarget(knownPlanets)
   if not target.found:
     bot.currentTargetId = -1
-    return bot.sweepMask()
+    return bot.sweepMask(visiblePlanets)
   bot.currentTargetId = target.id
 
   var origin =
     if activeTarget.found:
-      bot.activeSendOrigin(planets)
+      let activeOrigin = bot.activeSendOrigin(knownPlanets)
+      if activeOrigin.hasLaunchShips():
+        activeOrigin
+      else:
+        bot.chooseOriginForTarget(knownPlanets, target)
     else:
-      PlanetSight()
+      let current = bot.currentOrigin(knownPlanets)
+      if current.hasLaunchShips():
+        current
+      else:
+        bot.chooseOriginForTarget(knownPlanets, target)
   if not origin.found:
-    origin = bot.chooseOriginForTarget(planets, target)
+    origin = bot.currentOrigin(knownPlanets)
   if not origin.found:
     bot.intent = "finding origin"
-    return bot.sweepMask()
+    return bot.sweepMask(visiblePlanets)
   if origin.found and origin.id != bot.originPlanetId:
     bot.intent = "select origin " & $origin.id
     if bot.selectedPlanetId == origin.id:
       if bot.frameTick mod OriginSelectInterval == 0:
         return ButtonA
-      return 0
-    return bot.steerToPlanet(planets, origin)
+      return ButtonB
+    return sendWhileMoving(bot.steerToPlanet(visiblePlanets, origin))
 
   if activeTarget.found:
     bot.intent = "burst planet " & $target.id
@@ -703,20 +792,19 @@ proc decideNextMask(bot: var Bot): uint8 =
       bot.avoidUntilTick = bot.frameTick + RetargetTicks
       bot.currentTargetId = -1
       bot.intent = "skip planet " & $target.id
-      return bot.sweepMask()
-    return bot.steerToPlanet(planets, target)
+      return bot.sweepMask(visiblePlanets)
+    return sendWhileMoving(bot.steerToPlanet(visiblePlanets, target))
 
   if origin.found and origin.ships >= 0 and
       origin.ships <= OriginReserveShips:
-    bot.intent = "wait ships"
-    bot.sendUntilTick = bot.frameTick
-    return 0
+    bot.intent = "hold send for ships"
+    return ButtonB
 
   if not activeTarget.found:
     bot.startSendBurst(origin, target)
   if bot.frameTick < bot.sendUntilTick:
     return ButtonB
-  0
+  ButtonB
 
 proc addU16(packet: var seq[uint8], value: int) =
   ## Appends one little endian unsigned 16 bit value.
