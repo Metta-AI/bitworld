@@ -206,6 +206,13 @@ proc readI16(data: string, offset: int): int =
   else:
     value
 
+proc spriteObjectContainsPoint*(
+  objectX, objectY, spriteWidth, spriteHeight, pointX, pointY: int
+): bool =
+  ## Returns true when a layer-local point is inside a sprite object's bounds.
+  pointX >= objectX and pointY >= objectY and
+    pointX < objectX + spriteWidth and pointY < objectY + spriteHeight
+
 proc writeI16(bytes: var seq[uint8], offset, value: int) =
   ## Writes a clamped little endian signed 16 bit integer.
   let clamped = max(-32768, min(32767, value)) and 0xffff
@@ -817,7 +824,20 @@ proc mousePoint(app: GlobalApp, preferredLayer = -1): MousePoint =
     let rect = app.layerScreenRect(layer, logicalW, logicalH)
     if mx >= rect.x and my >= rect.y and
       mx < rect.x + rect.w and my < rect.y + rect.h:
-        return app.uiLayerPoint(layer, mouse, logicalW, logicalH)
+        let point = app.uiLayerPoint(layer, mouse, logicalW, logicalH)
+        for item in app.objects.values:
+          if item.layer != layer.id or item.spriteId notin app.sprites:
+            continue
+          let sprite = app.sprites[item.spriteId]
+          if spriteObjectContainsPoint(
+            item.x,
+            item.y,
+            sprite.width,
+            sprite.height,
+            point.x,
+            point.y
+          ):
+            return point
 
   app.mapPoint(mouse)
 
