@@ -1,20 +1,59 @@
 # Smart Bot for Among Them — Architecture & Build Plan
 
-This guide describes how to build an LLM-augmented bot for BitWorld's Among Them
-game, layering memory, strategic reasoning, and cross-game learning on top of the
-existing `nottoodumb.nim` perception and navigation pipeline.
+This guide describes how to build an LLM-augmented policy for the uploaded
+Among Them Coworld, layering memory, strategic reasoning, and cross-game
+learning on top of a visual player.
 
-The core insight: `nottoodumb.nim` already solves the **hard visual problem** —
-localization, task detection, navigation, voting UI parsing. What it lacks is
-**strategic reasoning** — deception, social modeling, adaptive play, and learning
-from experience. That is exactly what the CvC memory/brain architecture provides.
+The core insight: the existing `nottoodumb.nim` source bot already solves the
+**hard visual problem** — localization, task detection, navigation, voting UI
+parsing. What it lacks is **strategic reasoning** — deception, social modeling,
+adaptive play, and learning from experience. Treat it as a reference design you
+can port into a Coworld policy image.
+
+## Coworld Optimizer Contract
+
+For the uploaded Coworld, an optimizer works on player policy containers, not
+on the game source. The hosted runner supplies each policy container with:
+
+```text
+COGAMES_ENGINE_WS_URL
+```
+
+Your policy connects to that websocket, reads Bitscreen v1 frames, and sends
+Bitscreen v1 button or chat packets. The runner owns slot assignment and token
+generation, so the optimizer should improve the player's behavior inside that
+protocol instead of changing game configuration or assuming local server
+processes.
+
+A practical Coworld optimizer loop is:
+
+1. build or mutate a player Docker image;
+2. upload it with `coworld upload-policy`;
+3. submit it to an Among Them league;
+4. inspect episode results, logs, and replays;
+5. update the policy code or prompts and upload the next version.
+
+Use `--secret-env` for LLM provider keys or other credentials required by a
+policy. The public player protocol is
+<https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md>; the
+global replay/viewer protocol is
+<https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>; and the
+browser play guide is <https://softmax.com/play_amongthem.md>.
+The Coworld package contract lives in
+<https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>.
+
+The architecture below is still useful without a BitWorld checkout: treat
+`nottoodumb.nim` as a reference design for perception, localization, task
+tracking, voting, and momentum-aware navigation, then port the same ideas into
+the language and packaging style of your Coworld policy.
 
 ---
 
-## Part 1 — What nottoodumb.nim Already Does Well
+## Part 1 — What The Reference Bot Already Does Well
 
-The existing bot is a ~4000-line Nim program that handles the entire visual-client
-pipeline. Do not rewrite this. Build on top of it.
+The existing source bot is a ~4000-line Nim program that handles the visual
+client pipeline. A hosted Coworld policy can reuse these ideas in any language
+or can vendor the source into its own image.
 
 ### Perception Pipeline (keep as-is)
 - Receives 128×128 packed 4-bit framebuffer over WebSocket
@@ -601,9 +640,10 @@ The LLM cannot run inside Nim directly. Use one of these patterns:
 ## Part 11 — File Structure
 
 ```
-among_them/players/
-├── nottoodumb.nim          # Existing bot (perception, nav, physics)
-├── smart_bot.nim           # Enhanced bot: adds sidecar communication + directive handling
+policy-image/
+├── Dockerfile              # Starts the Coworld player process
+├── player.py or player.nim # Reads COGAMES_ENGINE_WS_URL and plays one slot
+├── nottoodumb/             # Optional vendored source/reference perception stack
 ├── sidecar/
 │   ├── __init__.py
 │   ├── main.py             # Sidecar entry point (socket server)
@@ -621,28 +661,34 @@ among_them/players/
 ├── runs/                   # Game memory dumps (JSON)
 │   ├── a1b2c3d4_memory.json
 │   └── ...
-└── SMART_BOT_GUIDE.md      # This document
+└── README.md               # Image-specific build and upload notes
 ```
 
 ---
 
 ## Part 12 — Suggested Build Order
 
-1. **Get nottoodumb.nim running** against a local server. Verify perception works.
-2. **Add snapshot export.** Write a `toJson` proc that serializes the Bot struct
-   to the snapshot format above. Write it to stdout or a socket every N frames.
-3. **Build the Python sidecar** with a socket server that reads snapshots.
-4. **Implement WorkingMemory** — parse snapshots, store current state.
-5. **Implement EpisodicMemory** — record events from snapshot diffs.
-6. **Implement StrategicMemory** — player tracking facts.
-7. **Implement EventDetector** — fire triggers on state changes.
-8. **Implement Narrator** — compress memory to LLM context.
-9. **Wire up a single LLM call** — body_discovered trigger → LLM → directive.
-10. **Implement directive handling in Nim** — read directives, override goals.
-11. **Enhance voting** — LLM chooses vote target and chat message.
-12. **Enhance imposter behavior** — LLM chooses kill targets and alibis.
-13. **Add cross-game learning** — dump memory at game end, load at game start.
-14. **Iterate.** Play 20+ games, review memory dumps, tune triggers and prompts.
+1. **Build a valid Coworld player image.** The process must read
+   `COGAMES_ENGINE_WS_URL`, connect to it, and send valid Bitscreen input.
+2. **Choose the perception base.** Either port the `nottoodumb.nim` ideas into
+   your language or vendor the source-level player into the image deliberately.
+3. **Add snapshot export.** Serialize the player's current perception into the
+   snapshot format above every N frames.
+4. **Build the sidecar or in-process brain.** It reads snapshots and returns
+   directives without blocking the frame loop.
+5. **Implement WorkingMemory** — parse snapshots, store current state.
+6. **Implement EpisodicMemory** — record events from snapshot diffs.
+7. **Implement StrategicMemory** — player tracking facts.
+8. **Implement EventDetector** — fire triggers on state changes.
+9. **Implement Narrator** — compress memory to LLM context.
+10. **Wire up a single LLM call** — body_discovered trigger → LLM → directive.
+11. **Implement directive handling** — read directives, override goals.
+12. **Enhance voting** — LLM chooses vote target and chat message.
+13. **Enhance imposter behavior** — LLM chooses kill targets and alibis.
+14. **Attach secrets at upload.** Use `coworld upload-policy --secret-env` or
+    `--use-bedrock`; do not bake keys into the image.
+15. **Iterate through Coworld submissions.** Upload new policy versions, inspect
+    episode logs/replays/results, review memory dumps, and tune triggers.
 
 Do not start with clever LLM strategy. Start with reliable perception export
 and memory recording. Strategy is easy once the memory layer stops lying.

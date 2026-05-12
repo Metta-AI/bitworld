@@ -89,13 +89,15 @@ type
     factTimer: int
     worldStep: WorldStep
     worldTimer: int
-    worldTitle: string
-    worldDescription: string
+    world: World
     fb: Framebuffer
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
     rng: Rand
     prevInputs: seq[InputState]
+    chatScroll: int
+    chatConfirmed: seq[bool]
+    chatInterrupted: seq[bool]
 
   WebSocketAppState = object
     lock: Lock
@@ -162,7 +164,7 @@ proc chatLogStrings(sim: SimServer): seq[string] =
 
 proc generateFactOptions(sim: var SimServer) =
   let player = sim.players[sim.currentTurn]
-  let facts = player.soul.generateFacts(sim.chatLogStrings())
+  let facts = player.soul.generateFacts(sim.world, sim.chatLogStrings())
   sim.factChoice.options = facts
   sim.factChoice.selected = -1
   sim.factChoice.step = FactReading
@@ -340,14 +342,41 @@ proc renderFactChoices(sim: var SimServer) =
     let tokenY = y + (ScreenHeight - y - CharHeight) div 2
     sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, tokenText, tokenX, tokenY, color)
 
+proc entryLineCount(entry: ChatEntry): int =
+  let maxNameChars = min(entry.name.len, charsFromX(TextMargin) - 1)
+  let textX = TextMargin + (maxNameChars + 1) * CharWidth
+  let maxTextChars = charsFromX(textX)
+  if maxTextChars <= 0 or entry.text.len == 0:
+    return 1
+  result = 1
+  var pos = maxTextChars
+  let wrapChars = charsFromX(TextMargin)
+  while pos < entry.text.len:
+    inc result
+    pos += wrapChars
+
 proc renderFactChat(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   sim.fb.blitText(sim.letterSprites, "magical facts", TextMargin, 4)
 
-  var y = 14
-  let maxEntries = (ScreenHeight - y) div 8
-  let startIdx = max(0, sim.chatLog.len - maxEntries)
-  for i in startIdx ..< sim.chatLog.len:
+  if sim.chatScroll >= sim.chatLog.len:
+    sim.chatScroll = max(0, sim.chatLog.len - 1)
+
+  let startY = 14
+  let availableLines = (ScreenHeight - startY) div 8
+  let endIdx = min(sim.chatScroll + 1, sim.chatLog.len)
+
+  var startIdx = endIdx
+  var totalLines = 0
+  while startIdx > 0:
+    let lines = entryLineCount(sim.chatLog[startIdx - 1])
+    if totalLines + lines > availableLines:
+      break
+    totalLines += lines
+    dec startIdx
+
+  var y = startY
+  for i in startIdx ..< endIdx:
     if y + CharHeight > ScreenHeight:
       break
     let entry = sim.chatLog[i]
@@ -394,7 +423,7 @@ proc renderWorld(sim: var SimServer) =
     sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 2)
   of WorldTitle:
     let line1 = "the world"
-    let line2 = sim.worldTitle
+    let line2 = sim.world.title
     let x1 = (ScreenWidth - line1.len * CharWidth) div 2
     let x2 = (ScreenWidth - line2.len * CharWidth) div 2
     let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
@@ -403,10 +432,10 @@ proc renderWorld(sim: var SimServer) =
     sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line2, x2, y2, 2)
   of WorldDescription:
     let maxChars = charsFromX(TextMargin)
-    let lineCount = max(1, (sim.worldDescription.len + maxChars - 1) div maxChars)
+    let lineCount = max(1, (sim.world.description.len + maxChars - 1) div maxChars)
     let totalH = lineCount * 8
     let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
-    discard sim.blitTextWrappedTinted(sim.worldDescription, TextMargin, startY, 8, 2)
+    discard sim.blitTextWrappedTinted(sim.world.description, TextMargin, startY, 8, 2)
 
 proc renderFact(sim: var SimServer) =
   case sim.factChoice.step
@@ -466,15 +495,13 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
   of PhaseWorld:
     dec sim.worldTimer
     if sim.worldStep == WorldGazing and sim.worldTimer <= 0:
-      let world = sim.players[0].soul.generateWorld()
-      sim.worldTitle = world.title
-      sim.worldDescription = world.description
+      sim.world = sim.players[0].soul.generateWorld()
       sim.worldStep = WorldTitle
       sim.worldTimer = WorldTitleTicks
     elif sim.worldStep == WorldTitle and sim.worldTimer <= 0:
       sim.worldStep = WorldDescription
       sim.worldTimer = WorldDescTicks
-      echo "  World: ", sim.worldDescription
+      echo "  World: ", sim.world.description
     elif sim.worldStep == WorldDescription and sim.worldTimer <= 0:
       sim.phase = PhaseMagicalFacts
       sim.currentTurn = 0
@@ -546,6 +573,9 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             text: factText
           ))
         sim.factChoice.step = FactShowChat
+        sim.chatScroll = sim.chatLog.len - 1
+        sim.chatConfirmed = newSeq[bool](sim.players.len)
+        sim.chatInterrupted = newSeq[bool](sim.players.len)
         sim.factTimer = FactAcceptTicks * 4
 
     elif sim.factChoice.step == FactReading:
@@ -586,12 +616,36 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
           text: "skip"
         ))
         sim.factChoice.step = FactShowChat
+        sim.chatScroll = sim.chatLog.len - 1
+        sim.chatConfirmed = newSeq[bool](sim.players.len)
+        sim.chatInterrupted = newSeq[bool](sim.players.len)
         sim.factTimer = FactAcceptTicks * 4
 
     elif sim.factChoice.step == FactShowChat:
-      if sim.factTimer > 0:
-        discard
-      else:
+      for i in 0 ..< sim.players.len:
+        if sim.players[i].kind == PlayerBot:
+          if sim.factTimer <= 0:
+            sim.chatConfirmed[i] = true
+        else:
+          let cur = if i < inputs.len: inputs[i] else: InputState()
+          let prev = if i < sim.prevInputs.len: sim.prevInputs[i] else: InputState()
+          let rel = released(cur, prev)
+          if rel.down:
+            sim.chatScroll = min(sim.chatScroll + 1, max(0, sim.chatLog.len - 1))
+            sim.chatInterrupted[i] = true
+          elif rel.up:
+            sim.chatScroll = max(sim.chatScroll - 1, 0)
+            sim.chatInterrupted[i] = true
+          elif rel.attack and sim.chatInterrupted[i]:
+            sim.chatConfirmed[i] = true
+          if sim.factTimer <= 0 and not sim.chatInterrupted[i]:
+            sim.chatConfirmed[i] = true
+      var allConfirmed = true
+      for i in 0 ..< sim.players.len:
+        if not sim.chatConfirmed[i]:
+          allConfirmed = false
+          break
+      if allConfirmed:
         var allSpent = true
         for p in sim.players:
           if p.magicTokens > 0:
@@ -667,8 +721,28 @@ proc serveClientHtml(request: Request, route: string): bool =
     request.respond(500, headers, "Error: " & e.msg)
   true
 
+proc serveGlobalViewer(request: Request): bool =
+  if request.httpMethod != "GET":
+    return false
+  let route = request.path
+  if route != GlobalClientRoute and route != GlobalClientHtmlRoute and
+     route != CoworldGlobalClientRoute:
+    return false
+  let filePath = clientStaticPath(PlayerClientRoute)
+  if filePath.len == 0 or not fileExists(filePath):
+    return false
+  var html = readFile(filePath)
+  html = html.replace("/player", "/global")
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, html)
+  true
+
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static client asset if the route matches.
+  if request.serveGlobalViewer():
+    return true
   request.serveClientHtml(request.path)
 
 proc httpHandler(request: Request) =

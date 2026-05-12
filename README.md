@@ -96,7 +96,7 @@ At a high level:
 launch Nim bot players. Run these commands from the repo root:
 
 ```sh
-cd /Users/me/p/bitworld
+cd /path/to/bitworld
 ```
 
 Start one human client:
@@ -197,5 +197,5 @@ docker build \
   -f among_them/players/nottoodumb/Dockerfile \
   -t bitworld-nottoodumb:latest \
   .
-cogames coworld certify among_them/coworld_manifest.json
+coworld certify among_them/coworld_manifest.json
 ```
