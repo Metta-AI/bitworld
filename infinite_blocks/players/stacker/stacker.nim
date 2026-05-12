@@ -3,7 +3,7 @@ import
   supersnappy, whisky,
   protocol
 
-when not defined(botHeadless):
+when defined(gui):
   import pixie, scales, silky, windy
 
 const
@@ -11,8 +11,8 @@ const
   DefaultPlayerAddress = "ws://localhost:8080/player"
   PlayerWebSocketPath = "/player"
   GlobalWebSocketPath = "/global"
-  BoardWidthCells = 250
-  BoardHeightCells = 250
+  BoardWidthCells = 125
+  BoardHeightCells = 125
   CellPixels = 9
   BaseTerrainY = BoardHeightCells * 31 div 50
   LineClearLength = 8
@@ -29,26 +29,20 @@ const
   OutsideLanePenalty = 750
   BumpinessPenalty = 80
   HeightPenalty = 10
+  MaxFlipAttempts = 16
 
-when defined(botHeadless):
-  type ViewerApp = ref object
-else:
+when defined(gui):
   const
-    ViewerWindowWidth = 1120
-    ViewerWindowHeight = 900
+    ViewerReceiveTimeout = 10
+    ViewerWindowWidth = 1100
+    ViewerWindowHeight = 760
     ViewerMargin = 16.0'f
-    ViewerMapScale = 1.25'f
-    ViewerViewportScale = 8.0'f
-    ViewerCellPad = 0.35'f
+    ViewerStateWidth = 340.0'f
+    ViewerGap = 18.0'f
+    ViewerMinViewportScale = 0.25'f
     ViewerBackground = rgbx(16, 19, 25, 255)
     ViewerPanel = rgbx(30, 35, 45, 255)
     ViewerPanelAlt = rgbx(22, 26, 34, 255)
-    ViewerGrid = rgbx(41, 48, 61, 255)
-    ViewerTerrain = rgbx(91, 102, 116, 255)
-    ViewerSettled = rgbx(70, 145, 185, 255)
-    ViewerActive = rgbx(124, 255, 165, 255)
-    ViewerTarget = rgbx(255, 213, 91, 255)
-    ViewerLane = rgbx(255, 255, 255, 28)
     ViewerText = rgbx(226, 231, 240, 255)
     ViewerMutedText = rgbx(148, 157, 174, 255)
 
@@ -56,6 +50,10 @@ else:
     window: Window
     silky: Silky
     contentScale: float32
+else:
+  const ViewerReceiveTimeout = -1
+
+  type ViewerApp = ref object
 
 type
   RgbaColor = tuple[r, g, b, a: uint8]
@@ -125,6 +123,9 @@ type
     target: Placement
     targetRow: int
     intent: string
+    flipAttempts: int
+    trackingActive: bool
+    trackedActiveY: int
 
 proc readU16(data: string, offset: int): int =
   ## Reads one little endian unsigned 16 bit value.
@@ -999,13 +1000,19 @@ proc scorePlacement(
     result -= (afterBumpiness - beforeBumpiness) * BumpinessPenalty
   result -= max(0, afterHeight - beforeHeight) * HeightPenalty
 
-proc choosePlacement(bot: var Bot, active: ActivePiece): Placement =
+proc choosePlacement(
+  bot: var Bot,
+  active: ActivePiece,
+  requiredRotation = -1
+): Placement =
   ## Chooses where the current piece should land.
   if not active.found or bot.map.pixels.len == 0:
     return
   let occupied = bot.occupiedMap(active)
   bot.targetRow = occupied.targetHoleRow(bot.map.width, bot.map.height)
   for rotation in 0 .. 3:
+    if requiredRotation >= 0 and rotation != requiredRotation:
+      continue
     for x in LaneStartX - 6 .. LaneStartX + LineClearLength + 4:
       var y = max(0, active.originY)
       if not occupied.canPlace(
@@ -1043,6 +1050,208 @@ proc choosePlacement(bot: var Bot, active: ActivePiece): Placement =
         result = candidate
   bot.target = result
 
+proc ownActiveViewportCells(bot: Bot): seq[Cell] =
+  ## Returns screen-space cells for the bot's visible active piece.
+  if not bot.hasOwnColor:
+    return
+  for item in bot.frameObjects.values:
+    if item.z != 3:
+      continue
+    if item.spriteId notin bot.sprites:
+      continue
+    let color = bot.sprites[item.spriteId].representativeColor()
+    if not color.looksLikeOwnColor(bot.ownColor):
+      continue
+    let cell = Cell(x: item.x, y: item.y)
+    if not result.containsCell(cell):
+      result.add(cell)
+
+proc ownActiveViewportLogicalCells(bot: Bot): seq[Cell] =
+  ## Returns logical viewport cells for the bot's visible active piece.
+  for cell in bot.ownActiveViewportCells():
+    let logical = Cell(
+      x: cell.x div CellPixels,
+      y: cell.y div CellPixels
+    )
+    if not result.containsCell(logical):
+      result.add(logical)
+
+proc activeViewportPiece(bot: Bot): ActivePiece =
+  ## Infers the active piece from the current player viewport.
+  let cells = bot.ownActiveViewportLogicalCells()
+  if cells.len < 4:
+    return
+  var sorted = cells
+  sorted.sortCells()
+  if sorted.len > 4:
+    sorted.setLen(4)
+  inferPieceFromCells(sorted)
+
+proc viewportDimensions(bot: Bot): tuple[width, height: int] =
+  ## Returns logical viewport dimensions in cells.
+  (
+    width: max(1, (bot.frameWidth + CellPixels - 1) div CellPixels),
+    height: max(1, (bot.frameHeight + CellPixels - 1) div CellPixels)
+  )
+
+proc viewportMaskIndex(width, x, y: int): int =
+  ## Returns a flat viewport occupancy index.
+  y * width + x
+
+proc viewportOccupancy(
+  bot: Bot,
+  active: ActivePiece,
+  width,
+  height: int
+): seq[bool] =
+  ## Builds a logical occupancy grid from the current visible viewport.
+  result = newSeq[bool](width * height)
+  for item in bot.frameObjects.values:
+    if item.z == 4:
+      continue
+    if item.spriteId notin bot.sprites:
+      continue
+    if item.z == 3:
+      let color = bot.sprites[item.spriteId].representativeColor()
+      if color.looksLikeOwnColor(bot.ownColor):
+        continue
+    let
+      x = item.x div CellPixels
+      y = item.y div CellPixels
+    if x >= 0 and y >= 0 and x < width and y < height:
+      result[viewportMaskIndex(width, x, y)] = true
+  for cell in active.cells:
+    if cell.x >= 0 and cell.y >= 0 and cell.x < width and cell.y < height:
+      result[viewportMaskIndex(width, cell.x, cell.y)] = false
+
+proc viewportOccupiedAt(
+  occupied: openArray[bool],
+  width,
+  height,
+  x,
+  y: int
+): bool =
+  ## Returns true when a visible viewport cell is occupied.
+  if x < 0 or x >= width or y >= height:
+    return true
+  if y < 0:
+    return false
+  occupied[viewportMaskIndex(width, x, y)]
+
+proc canPlaceViewport(
+  occupied: openArray[bool],
+  width,
+  height,
+  x,
+  y: int,
+  kind: PieceKind,
+  rotation: int
+): bool =
+  ## Returns true when a piece fits in the visible viewport.
+  for cell in pieceCells(kind, rotation):
+    if occupied.viewportOccupiedAt(width, height, x + cell.x, y + cell.y):
+      return false
+  true
+
+proc scoreVisiblePlacement(
+  occupied: openArray[bool],
+  width,
+  height: int,
+  active: ActivePiece,
+  placement: Placement
+): int =
+  ## Scores a visible placement by filling supported holes.
+  var test = newSeq[bool](occupied.len)
+  for i in 0 ..< occupied.len:
+    test[i] = occupied[i]
+  let cells = placedCells(
+    placement.x,
+    placement.y,
+    active.kind,
+    placement.rotation
+  )
+  for cell in cells:
+    if cell.x < 0 or cell.x >= width or cell.y < 0 or cell.y >= height:
+      result -= 5000
+      continue
+    let
+      belowFilled = cell.y == height - 1 or
+        occupied.viewportOccupiedAt(width, height, cell.x, cell.y + 1)
+      leftFilled = cell.x == 0 or
+        occupied.viewportOccupiedAt(width, height, cell.x - 1, cell.y)
+      rightFilled = cell.x == width - 1 or
+        occupied.viewportOccupiedAt(width, height, cell.x + 1, cell.y)
+    test[viewportMaskIndex(width, cell.x, cell.y)] = true
+    if belowFilled:
+      result += 1400
+    if leftFilled:
+      result += 240
+    if rightFilled:
+      result += 240
+    if belowFilled and leftFilled and rightFilled:
+      result += 1200
+    result += cell.y * 24
+
+  for y in 0 ..< height:
+    var filled = 0
+    for x in 0 ..< width:
+      if test[viewportMaskIndex(width, x, y)]:
+        inc filled
+    result += filled * filled
+    if filled >= min(LineClearLength, width):
+      result += 5000
+  result -= abs(active.originX - placement.x) * 20
+
+proc chooseVisiblePlacement(
+  bot: var Bot,
+  active: ActivePiece,
+  requiredRotation = -1
+): Placement =
+  ## Chooses a landing spot using only the current visible viewport.
+  if not active.found or bot.frameWidth <= 0 or bot.frameHeight <= 0:
+    return
+  let dims = bot.viewportDimensions()
+  let occupied = bot.viewportOccupancy(active, dims.width, dims.height)
+  bot.targetRow = dims.height - 1
+  for rotation in 0 .. 3:
+    if requiredRotation >= 0 and rotation != requiredRotation:
+      continue
+    for x in -3 .. dims.width:
+      var y = max(0, active.originY)
+      if not occupied.canPlaceViewport(
+        dims.width,
+        dims.height,
+        x,
+        y,
+        active.kind,
+        rotation
+      ):
+        continue
+      while occupied.canPlaceViewport(
+        dims.width,
+        dims.height,
+        x,
+        y + 1,
+        active.kind,
+        rotation
+      ):
+        inc y
+      var candidate = Placement(
+        found: true,
+        rotation: rotation,
+        x: x,
+        y: y
+      )
+      candidate.score = occupied.scoreVisiblePlacement(
+        dims.width,
+        dims.height,
+        active,
+        candidate
+      )
+      if not result.found or candidate.score > result.score:
+        result = candidate
+  bot.target = result
+
 proc maskSummary(mask: uint8): string =
   ## Returns a compact debug string for pressed controls.
   if (mask and ButtonUp) != 0:
@@ -1064,33 +1273,70 @@ proc decideMask(bot: var Bot): uint8 =
   ## Chooses the next held button mask.
   bot.active = ActivePiece()
   bot.target = Placement()
-  if not bot.hasOwnColor or bot.map.pixels.len == 0:
+  if not bot.hasOwnColor:
     bot.intent = "waiting"
+    bot.flipAttempts = 0
+    bot.trackingActive = false
     return ButtonDown
-  let active = bot.activePiece()
+  var active = bot.activeViewportPiece()
+  var visiblePlan = true
+  if not active.found:
+    active = bot.activePiece()
+    visiblePlan = false
   if not active.found:
     bot.intent = "finding piece"
+    bot.flipAttempts = 0
+    bot.trackingActive = false
     return ButtonDown
+  if not bot.trackingActive or active.originY < bot.trackedActiveY - 4:
+    bot.flipAttempts = 0
+    bot.trackingActive = true
+  bot.trackedActiveY = active.originY
   bot.active = active
-  let placement = bot.choosePlacement(active)
+  var placement =
+    if visiblePlan:
+      bot.chooseVisiblePlacement(active)
+    else:
+      bot.choosePlacement(active)
   if not placement.found:
     bot.intent = "dropping"
     return ButtonDown
 
   if active.rotation != placement.rotation:
-    bot.intent = "rotate"
-    if (bot.lastMask and ButtonA) == 0:
-      return ButtonA
-    return 0
+    if bot.flipAttempts >= MaxFlipAttempts:
+      let currentPlacement =
+        if visiblePlan:
+          bot.chooseVisiblePlacement(active, active.rotation)
+        else:
+          bot.choosePlacement(active, active.rotation)
+      if currentPlacement.found:
+        placement = currentPlacement
+        bot.intent = "place current flip"
+      else:
+        bot.intent = "drop current flip"
+        return ButtonDown
+    else:
+      bot.intent = "flip " & $bot.flipAttempts & "/" & $MaxFlipAttempts
+      if (bot.lastMask and ButtonA) == 0:
+        inc bot.flipAttempts
+        return ButtonA
+      return 0
+
+  if active.rotation == placement.rotation:
+    bot.flipAttempts = min(bot.flipAttempts, MaxFlipAttempts)
 
   if active.originX < placement.x:
-    bot.intent = "right"
+    bot.intent = "fly right"
     return ButtonRight
   if active.originX > placement.x:
-    bot.intent = "left"
+    bot.intent = "fly left"
     return ButtonLeft
 
-  bot.intent = "fill row " & $bot.targetRow
+  bot.intent =
+    if visiblePlan:
+      "plug visible hole"
+    else:
+      "fill row " & $bot.targetRow
   result = ButtonDown
   if active.originY >= placement.y - 1:
     result = result or ButtonSelect
@@ -1106,22 +1352,6 @@ proc echoDebug(bot: Bot, mask: uint8) =
     " target=", bot.target.x, ",", bot.target.y,
     " rot=", bot.target.rotation,
     " score=", bot.target.score
-
-proc ownActiveViewportCells(bot: Bot): seq[Cell] =
-  ## Returns screen-space cells for the bot's visible active piece.
-  if not bot.hasOwnColor:
-    return
-  for item in bot.frameObjects.values:
-    if item.z < 30 or item.z >= 40:
-      continue
-    if item.spriteId notin bot.sprites:
-      continue
-    let color = bot.sprites[item.spriteId].representativeColor()
-    if not color.looksLikeOwnColor(bot.ownColor):
-      continue
-    let cell = Cell(x: item.x, y: item.y)
-    if not result.containsCell(cell):
-      result.add(cell)
 
 proc viewportCamera(bot: Bot): tuple[found: bool, cameraX: int, cameraY: int] =
   ## Infers the viewport camera from active world and screen cells.
@@ -1146,24 +1376,7 @@ proc viewportCamera(bot: Bot): tuple[found: bool, cameraX: int, cameraY: int] =
       if matches == bot.active.cells.len:
         return (found: true, cameraX: cameraX, cameraY: cameraY)
 
-when defined(botHeadless):
-  proc initViewerApp(): ViewerApp =
-    ## Builds a headless placeholder viewer.
-    ViewerApp()
-
-  proc viewerOpen(viewer: ViewerApp): bool =
-    ## Returns true while the bot should keep running.
-    true
-
-  proc pumpViewer(
-    viewer: ViewerApp,
-    bot: Bot,
-    connected: bool,
-    url: string
-  ) =
-    ## Ignores viewer updates in headless builds.
-    discard
-else:
+when defined(gui):
   proc gameDir(): string =
     ## Returns the Infinite Blocks game directory.
     let
@@ -1204,128 +1417,35 @@ else:
     ## Converts an RGBA tuple to a viewer color.
     rgbx(color.r, color.g, color.b, color.a)
 
-  proc drawOutline(
-    sk: Silky,
-    pos,
-    size: Vec2,
-    color: ColorRGBX,
-    thickness = 1.0'f
-  ) =
-    ## Draws an unfilled rectangle.
-    sk.drawRect(pos, vec2(size.x, thickness), color)
-    sk.drawRect(
-      vec2(pos.x, pos.y + size.y - thickness),
-      vec2(size.x, thickness),
-      color
-    )
-    sk.drawRect(pos, vec2(thickness, size.y), color)
-    sk.drawRect(
-      vec2(pos.x + size.x - thickness, pos.y),
-      vec2(thickness, size.y),
-      color
-    )
+  proc viewerFrameWidth(bot: Bot): int =
+    ## Returns the displayed viewport width.
+    if bot.playerFrame.width > 0:
+      bot.playerFrame.width
+    else:
+      ScreenWidth
 
-  proc drawLogicalCell(
-    sk: Silky,
-    origin: Vec2,
-    cell: Cell,
-    color: ColorRGBX,
-    scale = ViewerMapScale
-  ) =
-    ## Draws one bot-logical board cell.
-    sk.drawRect(
-      vec2(
-        origin.x + cell.x.float32 * scale + ViewerCellPad,
-        origin.y + cell.y.float32 * scale + ViewerCellPad
-      ),
-      vec2(
-        max(1.0'f, scale - ViewerCellPad * 2),
-        max(1.0'f, scale - ViewerCellPad * 2)
-      ),
-      color
-    )
+  proc viewerFrameHeight(bot: Bot): int =
+    ## Returns the displayed viewport height.
+    if bot.playerFrame.height > 0:
+      bot.playerFrame.height
+    else:
+      ScreenHeight
 
-  proc drawLogicalTerrain(sk: Silky, bot: Bot, origin: Vec2) =
-    ## Draws the bot's logical terrain, active piece, and target.
+  proc viewportScale(bot: Bot, available: Vec2): float32 =
+    ## Returns the largest scale that fits the live player viewport.
     let
-      width = max(1, bot.logicalWidth)
-      height = max(1, bot.logicalHeight)
-      scale = ViewerMapScale
-      boardSize = vec2(width.float32 * scale, height.float32 * scale)
-    sk.drawRect(origin, boardSize, ViewerPanelAlt)
-    sk.drawRect(
-      vec2(origin.x + LaneStartX.float32 * scale, origin.y),
-      vec2(LineClearLength.float32 * scale, boardSize.y),
-      ViewerLane
-    )
-    for x in countup(0, width, 10):
-      sk.drawRect(
-        vec2(origin.x + x.float32 * scale, origin.y),
-        vec2(1, boardSize.y),
-        ViewerGrid
-      )
-    for y in countup(0, height, 10):
-      sk.drawRect(
-        vec2(origin.x, origin.y + y.float32 * scale),
-        vec2(boardSize.x, 1),
-        ViewerGrid
-      )
-    if bot.logicalTerrain.len == width * height:
-      for y in 0 ..< height:
-        for x in 0 ..< width:
-          if not bot.logicalTerrain[y * width + x]:
-            continue
-          let color =
-            if y == BaseTerrainY:
-              ViewerTerrain
-            else:
-              ViewerSettled
-          sk.drawLogicalCell(origin, Cell(x: x, y: y), color)
-    if bot.target.found:
-      for cell in placedCells(
-        bot.target.x,
-        bot.target.y,
-        bot.active.kind,
-        bot.target.rotation
-      ):
-        sk.drawLogicalCell(origin, cell, ViewerTarget)
-        sk.drawOutline(
-          vec2(
-            origin.x + cell.x.float32 * scale,
-            origin.y + cell.y.float32 * scale
-          ),
-          vec2(scale, scale),
-          ViewerBackground
-        )
-    if bot.active.found:
-      for cell in bot.active.cells:
-        sk.drawLogicalCell(origin, cell, ViewerActive)
-
-  proc drawViewportCell(
-    sk: Silky,
-    origin: Vec2,
-    screenX,
-    screenY: int,
-    color: ColorRGBX
-  ) =
-    ## Draws an outline around one cell in the player viewport.
-    let scale = ViewerViewportScale
-    sk.drawOutline(
-      vec2(
-        origin.x + screenX.float32 * scale,
-        origin.y + screenY.float32 * scale
-      ),
-      vec2(CellPixels.float32 * scale, CellPixels.float32 * scale),
-      color,
-      2.0'f
+      width = bot.viewerFrameWidth().float32
+      height = bot.viewerFrameHeight().float32
+    max(
+      ViewerMinViewportScale,
+      min(available.x / width, available.y / height)
     )
 
-  proc drawViewport(sk: Silky, bot: Bot, origin: Vec2) =
-    ## Draws the live player viewport and bot overlays.
+  proc drawViewport(sk: Silky, bot: Bot, origin: Vec2, scale: float32) =
+    ## Draws the live player viewport exactly as the bot receives it.
     let
-      width = max(1, bot.playerFrame.width)
-      height = max(1, bot.playerFrame.height)
-      scale = ViewerViewportScale
+      width = bot.viewerFrameWidth()
+      height = bot.viewerFrameHeight()
       size = vec2(width.float32 * scale, height.float32 * scale)
     sk.drawRect(origin, size, ViewerPanelAlt)
     if bot.playerFrame.pixels.len == width * height * 4:
@@ -1339,31 +1459,6 @@ else:
             vec2(scale, scale),
             color.viewerColor()
           )
-
-    let camera = bot.viewportCamera()
-    if not camera.found:
-      return
-    if bot.target.found:
-      for cell in placedCells(
-        bot.target.x,
-        bot.target.y,
-        bot.active.kind,
-        bot.target.rotation
-      ):
-        sk.drawViewportCell(
-          origin,
-          cell.x * CellPixels - camera.cameraX,
-          cell.y * CellPixels - camera.cameraY,
-          ViewerTarget
-        )
-    if bot.active.found:
-      for cell in bot.active.cells:
-        sk.drawViewportCell(
-          origin,
-          cell.x * CellPixels - camera.cameraX,
-          cell.y * CellPixels - camera.cameraY,
-          ViewerActive
-        )
 
   proc initViewerApp(): ViewerApp =
     ## Opens the stacker diagnostic viewer window.
@@ -1403,43 +1498,77 @@ else:
       frameSize = viewer.window.size
       logicalWidth = frameSize.x.float32 / viewer.silky.uiScale
       logicalHeight = frameSize.y.float32 / viewer.silky.uiScale
-      viewportPos = vec2(ViewerMargin, ViewerMargin + 28)
-      viewportSize = vec2(
-        max(1, bot.playerFrame.width).float32 * ViewerViewportScale,
-        max(1, bot.playerFrame.height).float32 * ViewerViewportScale
+      contentY = ViewerMargin + 30.0'f
+      stateWidth = min(
+        ViewerStateWidth,
+        max(1.0'f, logicalWidth - ViewerMargin * 2.0'f)
       )
-      mapPos = vec2(
-        viewportPos.x + viewportSize.x + 32,
-        ViewerMargin + 28
-      )
-      mapSize = vec2(
-        BoardWidthCells.float32 * ViewerMapScale,
-        BoardHeightCells.float32 * ViewerMapScale
-      )
-      infoPos = vec2(mapPos.x, mapPos.y + mapSize.y + 32)
-      infoSize = vec2(
-        logicalWidth - infoPos.x - ViewerMargin,
-        logicalHeight - infoPos.y - ViewerMargin
-      )
+      sideBySide = logicalWidth >= 820.0'f
       sk = viewer.silky
+    var
+      viewportAvailable: Vec2
+      statePos: Vec2
+      stateSize: Vec2
+    if sideBySide:
+      stateSize = vec2(
+        stateWidth,
+        max(1.0'f, logicalHeight - contentY - ViewerMargin)
+      )
+      viewportAvailable = vec2(
+        max(
+          1.0'f,
+          logicalWidth - stateSize.x - ViewerGap - ViewerMargin * 2.0'f
+        ),
+        max(1.0'f, logicalHeight - contentY - ViewerMargin)
+      )
+      statePos = vec2(
+        logicalWidth - ViewerMargin - stateSize.x,
+        contentY
+      )
+    else:
+      stateSize = vec2(
+        stateWidth,
+        min(240.0'f, max(1.0'f, logicalHeight * 0.34'f))
+      )
+      viewportAvailable = vec2(
+        max(1.0'f, logicalWidth - ViewerMargin * 2.0'f),
+        max(
+          1.0'f,
+          logicalHeight - contentY - stateSize.y - ViewerGap - ViewerMargin
+        )
+      )
+      statePos = vec2(ViewerMargin, logicalHeight - ViewerMargin - stateSize.y)
+    let
+      scale = bot.viewportScale(viewportAvailable)
+      viewportSize = vec2(
+        bot.viewerFrameWidth().float32 * scale,
+        bot.viewerFrameHeight().float32 * scale
+      )
+      viewportPos = vec2(
+        ViewerMargin + max(
+          0.0'f,
+          (viewportAvailable.x - viewportSize.x) / 2.0'f
+        ),
+        contentY + max(0.0'f, (viewportAvailable.y - viewportSize.y) / 2.0'f)
+      )
     sk.beginUi(viewer.window, frameSize)
     sk.clearScreen(ViewerBackground)
     discard sk.drawText(
       "Default",
-      "Infinite Blocks Stacker",
+      "Stacker",
       vec2(ViewerMargin, ViewerMargin),
       ViewerText
     )
     discard sk.drawText(
       "Default",
-      "Live viewport",
+      "Bot viewport",
       vec2(viewportPos.x, viewportPos.y - 18),
       ViewerMutedText
     )
     discard sk.drawText(
       "Default",
-      "Logical map",
-      vec2(mapPos.x, mapPos.y - 18),
+      "State",
+      vec2(statePos.x, statePos.y - 18),
       ViewerMutedText
     )
     sk.drawRect(
@@ -1447,10 +1576,8 @@ else:
       viewportSize + vec2(16, 16),
       ViewerPanel
     )
-    sk.drawRect(mapPos - vec2(8, 8), mapSize + vec2(16, 16), ViewerPanel)
-    sk.drawRect(infoPos - vec2(8, 8), infoSize + vec2(16, 16), ViewerPanel)
-    sk.drawViewport(bot, viewportPos)
-    sk.drawLogicalTerrain(bot, mapPos)
+    sk.drawRect(statePos - vec2(8, 8), stateSize + vec2(16, 16), ViewerPanel)
+    sk.drawViewport(bot, viewportPos, scale)
     let
       activeText =
         if bot.active.found:
@@ -1471,31 +1598,42 @@ else:
         "tick: " & $bot.frameTick & "\n" &
         "intent: " & bot.intent & "\n" &
         "keys: " & bot.lastMask.maskSummary() & "\n" &
+        "viewport: " & $bot.playerFrame.width & "x" &
+          $bot.playerFrame.height & " @" & $scale & "\n" &
         "own color known: " & $bot.hasOwnColor & "\n" &
-        "map scale: " & $bot.mapScale & "\n" &
-        "logical size: " & $bot.logicalWidth & "x" &
-          $bot.logicalHeight & "\n" &
         "active: " & activeText & "\n" &
         "target row: " & $bot.targetRow & "\n" &
         "target: " & targetText & "\n" &
         "lane x: " & $LaneStartX & ".." &
           $(LaneStartX + LineClearLength - 1) & "\n" &
-        "legend:\n" &
-        "  gray = floor\n" &
-        "  blue = settled terrain\n" &
-        "  green = active piece\n" &
-        "  yellow = planned placement\n" &
         "url: " & url
     discard sk.drawText(
       "Default",
       infoText,
-      infoPos,
+      statePos,
       ViewerText,
-      infoSize.x,
-      infoSize.y
+      stateSize.x,
+      stateSize.y
     )
     sk.endUi()
     viewer.window.swapBuffers()
+else:
+  proc initViewerApp(): ViewerApp =
+    ## Builds a headless placeholder viewer.
+    ViewerApp()
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true while the bot should keep running.
+    true
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Ignores viewer updates in headless builds.
+    discard
 
 proc setQueryParam(query, key, value: string): string =
   ## Returns a query string with one encoded parameter replaced or appended.
@@ -1632,8 +1770,7 @@ proc runBot(
   name = "",
   token = "",
   slot = -1,
-  maxSteps = 0,
-  gui = false
+  maxSteps = 0
 ) =
   ## Connects to Infinite Blocks and plays through sprite protocol.
   let
@@ -1644,11 +1781,7 @@ proc runBot(
   flushFile(stdout)
   var
     bot = initBot()
-    viewer =
-      if gui:
-        initViewerApp()
-      else:
-        nil
+    viewer = initViewerApp()
     connected = false
 
   while viewer.viewerOpen():
@@ -1660,19 +1793,25 @@ proc runBot(
       connected = true
       playerWs.send(chatBlob("stacker online"), BinaryMessage)
       discard playerWs.receiveUpdates(bot, true, -1)
-      discard globalWs.receiveUpdates(bot, false, -1)
+      discard globalWs.receiveUpdates(bot, false, 0)
       var lastMask = 0xff'u8
       while viewer.viewerOpen():
-        if gui:
+        when defined(gui):
           viewer.pumpViewer(bot, connected, playerUrl)
           if not viewer.viewerOpen():
             playerWs.close()
             globalWs.close()
             return
-        if not globalWs.receiveUpdates(bot, false, if gui: 10 else: -1):
+        let
+          playerUpdated = playerWs.receiveUpdates(
+            bot,
+            true,
+            ViewerReceiveTimeout
+          )
+          globalUpdated = globalWs.receiveUpdates(bot, false, 0)
+        if not playerUpdated and not globalUpdated:
           continue
         inc bot.frameTick
-        discard playerWs.receiveUpdates(bot, true, 0)
         let nextMask = bot.decideMask()
         bot.echoDebug(nextMask)
         bot.lastMask = nextMask
@@ -1683,12 +1822,12 @@ proc runBot(
           playerWs.close()
           globalWs.close()
           return
-        if gui:
+        when defined(gui):
           viewer.pumpViewer(bot, connected, playerUrl)
     except CatchableError as e:
       echo "stacker reconnecting: ", e.msg
       connected = false
-      if gui:
+      when defined(gui):
         let startTime = epochTime()
         while viewer.viewerOpen() and epochTime() - startTime < 0.25:
           viewer.pumpViewer(bot, connected, playerUrl)
@@ -1703,7 +1842,6 @@ when isMainModule:
     token = ""
     slot = -1
     maxSteps = 0
-    gui = false
     legacyPort = 0
   if address.len == 0:
     address = DefaultPlayerAddress
@@ -1724,7 +1862,10 @@ when isMainModule:
       of "max-steps":
         maxSteps = parseInt(val)
       of "gui":
-        gui = true
+        raise newException(
+          ValueError,
+          "The stacker viewer is compile-time only. Build with -d:gui."
+        )
       else:
         discard
     of cmdShortOption:
@@ -1749,4 +1890,4 @@ when isMainModule:
         ValueError,
         "--address must be a full WebSocket URL like ws://localhost:8080/player."
       )
-  runBot(address, name, token, slot, maxSteps, gui)
+  runBot(address, name, token, slot, maxSteps)
