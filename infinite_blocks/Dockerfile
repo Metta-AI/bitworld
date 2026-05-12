@@ -38,6 +38,7 @@ WORKDIR /workspace/bitworld
 COPY --from=build \
   /workspace/bitworld/infinite_blocks/infinite_blocks \
   /bin/infinite_blocks
+COPY --from=build /workspace/bitworld/infinite_blocks/data ./infinite_blocks/data
 COPY --from=build /workspace/bitworld/clients/*.html ./clients/
 COPY --from=build /workspace/bitworld/clients/*.js ./clients/
 COPY --from=build /workspace/bitworld/clients/data ./clients/data

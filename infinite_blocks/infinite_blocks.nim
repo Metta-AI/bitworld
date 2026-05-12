@@ -1,19 +1,21 @@
 import
   std/[json, locks, monotimes, os, parseopt, random, strutils, tables, times],
-  mummy, supersnappy,
-  bitworld/clients, protocol, server
+  mummy, pixie, supersnappy,
+  bitworld/aseprite, bitworld/clients, protocol, server
 
 const
   BoardWidthCells = 250
   BoardHeightCells = 250
-  CellPixels = 2
+  CellPixels = 9
   WorldWidthPixels = BoardWidthCells * CellPixels
   WorldHeightPixels = BoardHeightCells * CellPixels
   BaseTerrainY = BoardHeightCells * 31 div 50
   PieceSpawnLiftCells = 8
-  ScreenScrollMargin = 32
-  BaseFallInterval = 20
-  SoftFallInterval = 5
+  PieceSpawnNudgeCells = 1
+  HorizontalScrollMargin = 32
+  VerticalScrollMargin = 64
+  BaseFallInterval = 40
+  SoftFallInterval = 10
   MoveRepeatInterval = 5
   LockDelayTicks = 20
   LineClearLength = 8
@@ -22,6 +24,7 @@ const
   ClearFlashTicks = 20
   ClearPauseTicks = 12
   TargetFps = 60
+  GlobalSendInterval = 6
   PlayerWebSocketPath = "/player"
   HealthPath = "/healthz"
   GlobalWebSocketPath = "/global"
@@ -29,20 +32,34 @@ const
   ReplayWebSocketPath = "/replay"
   RewardWebSocketPath = "/reward"
   GlobalLayerId = 0
-  GlobalFrameSpriteId = 1
-  GlobalFrameObjectId = 1
   GlobalFrameObjectBase = 10
-  GlobalMapSpriteId = 2
-  GlobalMapObjectId = 2
-  GlobalClearSpriteId = 3
-  GlobalPaletteSpriteBase = 20
-  GlobalPlayerSpriteBase = 100
+  GlobalTerrainSpriteBase = 20
+  GlobalClearSpriteBase = 40
+  GlobalPlayerSpriteBase = 1000
   GlobalBlockObjectBase = 10
   MaxGlobalObjectId = 65535
-  GlobalMapWidth = BoardWidthCells
-  GlobalMapHeight = BoardHeightCells
+  GlobalMapWidth = WorldWidthPixels
+  GlobalMapHeight = WorldHeightPixels
   GlobalMapLayerType = 0
   GlobalZoomableFlag = 1
+  BlockSpritePixels = 9
+  BlockSpriteVariants = 16
+  BlockPartCount = 8
+  BlockPartRow = 1
+  ConnectLeft = 1'u8
+  ConnectRight = 2'u8
+  ConnectUp = 4'u8
+  ConnectDown = 8'u8
+  BlockLeftEnd = 0
+  BlockRightEnd = 1
+  BlockTopEnd = 2
+  BlockBottomEnd = 3
+  BlockLeftConnection = 4
+  BlockRightConnection = 5
+  BlockTopConnection = 6
+  BlockBottomConnection = 7
+  CameraMaxY = (BaseTerrainY + 1) * CellPixels - ScreenHeight
+  PreviewX = ScreenWidth - CellPixels * 4 - 2
   PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
 
 type
@@ -78,6 +95,11 @@ type
 
   RgbaColor = tuple[r, g, b, a: uint8]
 
+  RgbaSprite = object
+    width: int
+    height: int
+    pixels: seq[uint8]
+
   Player = object
     id: int
     name: string
@@ -106,9 +128,11 @@ type
     players: seq[Player]
     settledColors: seq[uint8]
     settledOwners: seq[int]
+    settledConnections: seq[uint8]
     settledCellIndices: seq[int]
     settledCellsDirty: bool
     terrain: seq[bool]
+    blockParts: array[BlockPartCount, RgbaSprite]
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
     fb: Framebuffer
@@ -126,8 +150,14 @@ type
   GlobalViewerState = object
     initialized: bool
     sentOwners: seq[int]
-    sentPaletteColors: seq[uint8]
-    sentClearSprite: bool
+    sentTerrainSprites: bool
+    sentClearSprites: bool
+
+  SocketKind = enum
+    SocketUnknown
+    SocketPlayer
+    SocketGlobal
+    SocketReward
 
   WebSocketAppState = object
     lock: Lock
@@ -139,6 +169,7 @@ type
     spritePlayerViewers: Table[WebSocket, GlobalViewerState]
     globalViewers: Table[WebSocket, GlobalViewerState]
     rewardViewers: Table[WebSocket, bool]
+    socketKinds: Table[WebSocket, SocketKind]
     resetRequested: bool
 
   ServerThreadArgs = object
@@ -149,16 +180,39 @@ type
 proc repoDir(): string =
   getCurrentDir() / ".."
 
+proc gameDataDir(): string =
+  ## Returns the Infinite Blocks data directory.
+  let
+    cwd = getCurrentDir()
+    sourceDir = currentSourcePath().parentDir()
+    candidates = [
+      cwd / "data",
+      cwd / "infinite_blocks" / "data",
+      sourceDir / "data"
+    ]
+  for candidate in candidates:
+    if dirExists(candidate):
+      return candidate
+  sourceDir / "data"
+
 proc clientDataDir(): string =
+  ## Returns the shared client data directory.
   repoDir() / "clients" / "data"
 
+proc blockSpritesPath(): string =
+  ## Returns the block sprite atlas path.
+  gameDataDir() / "sprites.aseprite"
+
 proc boardIndex(x, y: int): int =
+  ## Returns the flat board index for one logical cell.
   y * BoardWidthCells + x
 
 proc inBoardBounds(x, y: int): bool =
+  ## Returns true when one logical cell is inside the board.
   x >= 0 and y >= 0 and x < BoardWidthCells and y < BoardHeightCells
 
 proc worldClampPixel(x, maxValue: int): int =
+  ## Clamps one world pixel coordinate against a non-negative limit.
   max(0, min(maxValue, x))
 
 proc brightestPaletteColor(): uint8 =
@@ -177,6 +231,127 @@ proc putRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in 0 ..< h:
     for px in 0 ..< w:
       fb.putPixel(x + px, y + py, color)
+
+proc rgbaSpriteIndex(sprite: RgbaSprite, x, y: int): int =
+  ## Returns the byte offset for one RGBA sprite pixel.
+  (y * sprite.width + x) * 4
+
+proc rgbaSpriteAt(sprite: RgbaSprite, x, y: int): RgbaColor =
+  ## Reads one RGBA sprite pixel.
+  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
+    return
+  let offset = sprite.rgbaSpriteIndex(x, y)
+  (
+    r: sprite.pixels[offset],
+    g: sprite.pixels[offset + 1],
+    b: sprite.pixels[offset + 2],
+    a: sprite.pixels[offset + 3]
+  )
+
+proc putRgbaSpritePixel(
+  sprite: var RgbaSprite,
+  x, y: int,
+  color: RgbaColor
+) =
+  ## Writes one RGBA sprite pixel.
+  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
+    return
+  let offset = sprite.rgbaSpriteIndex(x, y)
+  sprite.pixels[offset] = color.r
+  sprite.pixels[offset + 1] = color.g
+  sprite.pixels[offset + 2] = color.b
+  sprite.pixels[offset + 3] = color.a
+
+proc stainColor(source, tint: RgbaColor): RgbaColor =
+  ## Applies a player tint while preserving sprite alpha.
+  if source.a == 0'u8:
+    return
+  let strength = max(int(source.r), max(int(source.g), int(source.b)))
+  (
+    r: uint8(int(tint.r) * strength div 255),
+    g: uint8(int(tint.g) * strength div 255),
+    b: uint8(int(tint.b) * strength div 255),
+    a: source.a
+  )
+
+proc blitPart(
+  target: var RgbaSprite,
+  part: RgbaSprite,
+  tint: RgbaColor
+) =
+  ## Blits one stained block part into a composite sprite.
+  for y in 0 ..< min(target.height, part.height):
+    for x in 0 ..< min(target.width, part.width):
+      let color = part.rgbaSpriteAt(x, y).stainColor(tint)
+      if color.a == 0'u8:
+        continue
+      target.putRgbaSpritePixel(x, y, color)
+
+proc blankRgbaSprite(): RgbaSprite =
+  ## Builds one empty 9x9 RGBA sprite.
+  RgbaSprite(
+    width: BlockSpritePixels,
+    height: BlockSpritePixels,
+    pixels: newSeq[uint8](BlockSpritePixels * BlockSpritePixels * 4)
+  )
+
+proc sliceBlockPart(image: Image, index: int): RgbaSprite =
+  ## Slices one 9x9 block-part sprite from the second atlas row.
+  result = blankRgbaSprite()
+  let
+    tileX = index * BlockSpritePixels
+    tileY = BlockPartRow * BlockSpritePixels
+  if tileX + BlockSpritePixels > image.width or
+      tileY + BlockSpritePixels > image.height:
+    return
+  for y in 0 ..< BlockSpritePixels:
+    for x in 0 ..< BlockSpritePixels:
+      let pixel = image[tileX + x, tileY + y]
+      result.putRgbaSpritePixel(
+        x,
+        y,
+        (r: pixel.r, g: pixel.g, b: pixel.b, a: pixel.a)
+      )
+
+proc loadBlockParts(path: string): array[BlockPartCount, RgbaSprite] =
+  ## Loads the second-row 9x9 block part sprites.
+  let image = readAsepriteImage(path)
+  if image.width < BlockPartCount * BlockSpritePixels or
+      image.height < (BlockPartRow + 1) * BlockSpritePixels:
+    raise newException(
+      IOError,
+      "Block sprite atlas must contain 8 9x9 sprites on row 2: " & path
+    )
+  for i in 0 ..< result.len:
+    result[i] = image.sliceBlockPart(i)
+
+proc composeBlockSprite(
+  parts: array[BlockPartCount, RgbaSprite],
+  mask: uint8,
+  tint: RgbaColor
+): RgbaSprite =
+  ## Builds one stained full-cell sprite for a connection mask.
+  result = blankRgbaSprite()
+  result.blitPart(
+    parts[if (mask and ConnectLeft) != 0: BlockLeftConnection
+          else: BlockLeftEnd],
+    tint
+  )
+  result.blitPart(
+    parts[if (mask and ConnectRight) != 0: BlockRightConnection
+          else: BlockRightEnd],
+    tint
+  )
+  result.blitPart(
+    parts[if (mask and ConnectUp) != 0: BlockTopConnection
+          else: BlockTopEnd],
+    tint
+  )
+  result.blitPart(
+    parts[if (mask and ConnectDown) != 0: BlockBottomConnection
+          else: BlockBottomEnd],
+    tint
+  )
 
 proc pieceCells(kind: PieceKind, rotation: int): array[4, BlockOffset] =
   case kind
@@ -280,7 +455,7 @@ proc rgbaColorForPlayer(playerId: int): RgbaColor =
 
 proc pieceCenterPixel(player: Player): tuple[x: int, y: int] =
   if not player.hasPiece:
-    return (player.cameraX + ScreenWidth div 2, player.cameraY + ScreenScrollMargin)
+    return (player.cameraX + ScreenWidth div 2, player.cameraY + VerticalScrollMargin)
   var
     minX = high(int)
     maxX = low(int)
@@ -327,7 +502,7 @@ proc piecePixelBounds(player: Player): tuple[minX, maxX, minY, maxY: int] =
 
 proc clampCamera(player: var Player) =
   player.cameraX = worldClampPixel(player.cameraX, WorldWidthPixels - ScreenWidth)
-  player.cameraY = worldClampPixel(player.cameraY, WorldHeightPixels - ScreenHeight)
+  player.cameraY = worldClampPixel(player.cameraY, CameraMaxY)
 
 proc positionCameraForSpawn(player: var Player, recenterHoriz: bool) =
   if not player.hasPiece:
@@ -336,7 +511,7 @@ proc positionCameraForSpawn(player: var Player, recenterHoriz: bool) =
   if recenterHoriz:
     let center = pieceCenterPixel(player)
     player.cameraX = center.x - ScreenWidth div 2
-  player.cameraY = pixelBounds.minY - ScreenScrollMargin
+  player.cameraY = pixelBounds.minY - VerticalScrollMargin
   player.clampCamera()
 
 proc updateCameraForPlayer(player: var Player) =
@@ -344,13 +519,13 @@ proc updateCameraForPlayer(player: var Player) =
     return
 
   let pixelBounds = piecePixelBounds(player)
-  if pixelBounds.minX - player.cameraX < ScreenScrollMargin:
-    player.cameraX = pixelBounds.minX - ScreenScrollMargin
-  elif pixelBounds.maxX - player.cameraX > ScreenWidth - 1 - ScreenScrollMargin:
-    player.cameraX = pixelBounds.maxX - (ScreenWidth - 1 - ScreenScrollMargin)
+  if pixelBounds.minX - player.cameraX < HorizontalScrollMargin:
+    player.cameraX = pixelBounds.minX - HorizontalScrollMargin
+  elif pixelBounds.maxX - player.cameraX > ScreenWidth - 1 - HorizontalScrollMargin:
+    player.cameraX = pixelBounds.maxX - (ScreenWidth - 1 - HorizontalScrollMargin)
 
-  if pixelBounds.maxY - player.cameraY > ScreenHeight - 1 - ScreenScrollMargin:
-    player.cameraY = pixelBounds.maxY - (ScreenHeight - 1 - ScreenScrollMargin)
+  if pixelBounds.maxY - player.cameraY > ScreenHeight - 1 - VerticalScrollMargin:
+    player.cameraY = pixelBounds.maxY - (ScreenHeight - 1 - VerticalScrollMargin)
 
   player.clampCamera()
 
@@ -602,9 +777,11 @@ proc initSimServer(seed: int): SimServer =
   result.rng = initRand(seed)
   result.settledColors = newSeq[uint8](BoardWidthCells * BoardHeightCells)
   result.settledOwners = newSeq[int](BoardWidthCells * BoardHeightCells)
+  result.settledConnections = newSeq[uint8](BoardWidthCells * BoardHeightCells)
   result.settledCellIndices = @[]
   result.settledCellsDirty = false
   result.terrain = newSeq[bool](BoardWidthCells * BoardHeightCells)
+  result.blockParts = loadBlockParts(blockSpritesPath())
   result.fb = initFramebuffer()
   loadPalette(clientDataDir() / "pallete.png")
   result.flashColor = brightestPaletteColor()
@@ -619,7 +796,7 @@ proc findSpawnPosition(
   kind: PieceKind,
   desiredCenterX, desiredTopY: int
 ): tuple[found: bool, x: int, y: int] =
-  let desiredX = desiredCenterX - 2
+  let desiredX = desiredCenterX - 2 + PieceSpawnNudgeCells
   for offset in 0 ..< 80:
     let topY = max(0, desiredTopY - offset)
     if sim.canPlace(desiredX, topY, kind, 0):
@@ -730,6 +907,133 @@ proc addUnique(values: var seq[int], value: int) =
       return
   values.add(value)
 
+proc hasPieceOffset(cells: openArray[BlockOffset], x, y: int): bool =
+  ## Returns true when a piece offset list contains one cell.
+  for cell in cells:
+    if cell.x == x and cell.y == y:
+      return true
+
+proc offsetConnectionMask(
+  cells: openArray[BlockOffset],
+  cell: BlockOffset
+): uint8 =
+  ## Returns the local connection mask for one piece cell.
+  if cells.hasPieceOffset(cell.x - 1, cell.y):
+    result = result or ConnectLeft
+  if cells.hasPieceOffset(cell.x + 1, cell.y):
+    result = result or ConnectRight
+  if cells.hasPieceOffset(cell.x, cell.y - 1):
+    result = result or ConnectUp
+  if cells.hasPieceOffset(cell.x, cell.y + 1):
+    result = result or ConnectDown
+
+proc pieceConnectionMask(
+  kind: PieceKind,
+  rotation: int,
+  cell: BlockOffset
+): uint8 =
+  ## Returns the connection mask for one block inside a piece.
+  let cells = pieceCells(kind, rotation)
+  cells.offsetConnectionMask(cell)
+
+proc playerConnectionMask(player: Player, cell: BlockOffset): uint8 =
+  ## Returns the connection mask for one active player block.
+  pieceConnectionMask(player.pieceKind, player.rotation, cell)
+
+proc terrainConnectionMask(x: int): uint8 =
+  ## Returns the horizontal connection mask for one floor cell.
+  if x > 0:
+    result = result or ConnectLeft
+  if x < BoardWidthCells - 1:
+    result = result or ConnectRight
+
+proc neighborFor(
+  x, y: int,
+  direction: uint8
+): tuple[x: int, y: int] =
+  ## Returns the neighboring cell for one connection bit.
+  case direction
+  of ConnectLeft:
+    (x - 1, y)
+  of ConnectRight:
+    (x + 1, y)
+  of ConnectUp:
+    (x, y - 1)
+  else:
+    (x, y + 1)
+
+proc oppositeConnection(direction: uint8): uint8 =
+  ## Returns the opposite connection bit.
+  case direction
+  of ConnectLeft:
+    ConnectRight
+  of ConnectRight:
+    ConnectLeft
+  of ConnectUp:
+    ConnectDown
+  else:
+    ConnectUp
+
+proc clearConnectionTo(
+  sim: var SimServer,
+  x, y: int,
+  direction: uint8
+) =
+  ## Removes one stored connection from an occupied settled cell.
+  if not inBoardBounds(x, y):
+    return
+  let index = boardIndex(x, y)
+  if sim.settledColors[index] == 0:
+    return
+  sim.settledConnections[index] =
+    sim.settledConnections[index] and not direction
+
+proc severConnectionsToSegment(sim: var SimServer, segment: ClearSegment) =
+  ## Turns connections into end caps before a row segment is removed.
+  for x in segment.startX .. segment.endX:
+    sim.clearConnectionTo(x - 1, segment.y, ConnectRight)
+    sim.clearConnectionTo(x + 1, segment.y, ConnectLeft)
+    sim.clearConnectionTo(x, segment.y - 1, ConnectDown)
+    sim.clearConnectionTo(x, segment.y + 1, ConnectUp)
+
+proc pruneSettledConnections(sim: var SimServer) =
+  ## Removes any stored connections that no longer have a matching neighbor.
+  for y in 0 ..< BoardHeightCells:
+    for x in 0 ..< BoardWidthCells:
+      let index = boardIndex(x, y)
+      if sim.settledColors[index] == 0:
+        sim.settledConnections[index] = 0
+        continue
+      var mask = sim.settledConnections[index]
+      for direction in [ConnectLeft, ConnectRight, ConnectUp, ConnectDown]:
+        if (mask and direction) == 0:
+          continue
+        let neighbor = neighborFor(x, y, direction)
+        if not inBoardBounds(neighbor.x, neighbor.y):
+          mask = mask and not direction
+          continue
+        let neighborIndex = boardIndex(neighbor.x, neighbor.y)
+        if sim.settledColors[neighborIndex] == 0 or
+            (sim.settledConnections[neighborIndex] and
+              direction.oppositeConnection()) == 0:
+          mask = mask and not direction
+      sim.settledConnections[index] = mask
+
+proc hasStaticSupportBelow(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when terrain or settled blocks support a player piece.
+  if playerIndex < 0 or
+      playerIndex >= sim.players.len or
+      not sim.players[playerIndex].alive or
+      not sim.players[playerIndex].hasPiece:
+    return false
+  let player = sim.players[playerIndex]
+  not sim.canPlaceStatic(
+    player.cellX,
+    player.cellY + 1,
+    player.pieceKind,
+    player.rotation
+  )
+
 proc findClearSegments(sim: SimServer): seq[ClearSegment] =
   for y in countdown(BoardHeightCells - 1, 0):
     var x = 0
@@ -753,10 +1057,12 @@ proc awardPendingClear(sim: var SimServer, clear: PendingClear) =
 
 proc clearSegments(sim: var SimServer, segments: openArray[ClearSegment]) =
   for segment in segments:
+    sim.severConnectionsToSegment(segment)
     for x in segment.startX .. segment.endX:
       let index = boardIndex(x, segment.y)
       sim.settledColors[index] = 0
       sim.settledOwners[index] = 0
+      sim.settledConnections[index] = 0
   sim.settledCellsDirty = true
 
 proc dropAboveSegmentOneRow(sim: var SimServer, segment: ClearSegment) =
@@ -767,10 +1073,13 @@ proc dropAboveSegmentOneRow(sim: var SimServer, segment: ClearSegment) =
         srcIndex = boardIndex(x, y - 1)
       sim.settledColors[dstIndex] = sim.settledColors[srcIndex]
       sim.settledOwners[dstIndex] = sim.settledOwners[srcIndex]
+      sim.settledConnections[dstIndex] = sim.settledConnections[srcIndex]
 
     let topIndex = boardIndex(x, 0)
     sim.settledColors[topIndex] = 0
     sim.settledOwners[topIndex] = 0
+    sim.settledConnections[topIndex] = 0
+  sim.pruneSettledConnections()
   sim.settledCellsDirty = true
 
 proc rebuildSettledCellIndices(sim: var SimServer) =
@@ -896,7 +1205,10 @@ proc lockPiece(sim: var SimServer, playerIndex: int) =
       index = boardIndex(x, y)
     sim.settledColors[index] = sim.players[playerIndex].color
     sim.settledOwners[index] = sim.players[playerIndex].id
+    sim.settledConnections[index] =
+      sim.players[playerIndex].playerConnectionMask(cell)
     sim.settledCellIndices.add(index)
+  sim.settledCellsDirty = true
 
   sim.players[playerIndex].hasPiece = false
 
@@ -949,17 +1261,12 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
     discard sim.tryMove(playerIndex, 0, 1)
 
   sim.refreshLockDepth(playerIndex)
-  let ignoredPlayers = [playerIndex]
-  if not sim.canPlaceIgnoring(
-    sim.players[playerIndex].cellX,
-    sim.players[playerIndex].cellY + 1,
-    sim.players[playerIndex].pieceKind,
-    sim.players[playerIndex].rotation,
-    ignoredPlayers
-  ):
+  if sim.hasStaticSupportBelow(playerIndex):
     inc sim.players[playerIndex].lockTicks
     if sim.players[playerIndex].lockTicks >= LockDelayTicks or input.select:
       sim.lockPiece(playerIndex)
+  else:
+    sim.players[playerIndex].lockTicks = 0
 
 proc renderBoard(sim: var SimServer, cameraX, cameraY: int) =
   let
@@ -1115,6 +1422,100 @@ proc addClearObjects(packet: var seq[uint8]) =
   ## Appends a global protocol clear-objects message.
   packet.addU8(0x04)
 
+proc addRgbaSprite(
+  packet: var seq[uint8],
+  spriteId: int,
+  sprite: RgbaSprite,
+  label: string
+) =
+  ## Appends one RGBA sprite definition.
+  packet.addSprite(spriteId, sprite.width, sprite.height, sprite.pixels, label)
+
+proc terrainRgbaColor(): RgbaColor =
+  ## Returns the neutral floor color.
+  (r: 104'u8, g: 116'u8, b: 130'u8, a: 255'u8)
+
+proc clearRgbaColor(): RgbaColor =
+  ## Returns the line-clear flash color.
+  (r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8)
+
+proc ownerBlockSpriteBase(owner: int): int =
+  ## Returns the first sprite id for one owner color set.
+  GlobalPlayerSpriteBase + (max(1, owner) - 1) * BlockSpriteVariants
+
+proc ownerBlockSpriteId(owner: int, mask: uint8): int =
+  ## Returns the sprite id for one owner connection mask.
+  owner.ownerBlockSpriteBase() + int(mask and 0x0f'u8)
+
+proc terrainBlockSpriteId(mask: uint8): int =
+  ## Returns the sprite id for one terrain connection mask.
+  GlobalTerrainSpriteBase + int(mask and 0x0f'u8)
+
+proc clearBlockSpriteId(mask: uint8): int =
+  ## Returns the sprite id for one clear-flash connection mask.
+  GlobalClearSpriteBase + int(mask and 0x0f'u8)
+
+proc addBlockSpriteSet(
+  packet: var seq[uint8],
+  spriteBase: int,
+  parts: array[BlockPartCount, RgbaSprite],
+  color: RgbaColor,
+  label: string
+) =
+  ## Appends all composite block sprites for one color.
+  for mask in 0 ..< BlockSpriteVariants:
+    let sprite = composeBlockSprite(parts, mask.uint8, color)
+    packet.addRgbaSprite(spriteBase + mask, sprite, label & " " & $mask)
+
+proc addTerrainBlockSprites(
+  packet: var seq[uint8],
+  state: var GlobalViewerState,
+  parts: array[BlockPartCount, RgbaSprite]
+) =
+  ## Appends terrain block sprites once per viewer.
+  if state.sentTerrainSprites:
+    return
+  state.sentTerrainSprites = true
+  packet.addBlockSpriteSet(
+    GlobalTerrainSpriteBase,
+    parts,
+    terrainRgbaColor(),
+    "terrain block"
+  )
+
+proc addClearBlockSprites(
+  packet: var seq[uint8],
+  state: var GlobalViewerState,
+  parts: array[BlockPartCount, RgbaSprite]
+) =
+  ## Appends clear-flash block sprites once per viewer.
+  if state.sentClearSprites:
+    return
+  state.sentClearSprites = true
+  packet.addBlockSpriteSet(
+    GlobalClearSpriteBase,
+    parts,
+    clearRgbaColor(),
+    "clear block"
+  )
+
+proc addOwnerBlockSprites(
+  packet: var seq[uint8],
+  ownersAdded: var seq[int],
+  owner: int,
+  parts: array[BlockPartCount, RgbaSprite]
+) =
+  ## Appends owner block sprites once per viewer.
+  if owner <= 0 or owner in ownersAdded:
+    return
+  ownersAdded.add(owner)
+  packet.addBlockSpriteSet(
+    owner.ownerBlockSpriteBase(),
+    parts,
+    rgbaColorForPlayer(owner),
+    "player block " & $owner
+  )
+
 proc paletteRgbaColor(color: uint8): RgbaColor =
   ## Returns one palette color as a true-color RGBA value.
   let rgba = Palette[int(color and 0x0f'u8)]
@@ -1130,113 +1531,6 @@ proc blockRgbaColor(owner: int, fallbackColor: uint8): RgbaColor =
   if owner > 0:
     return rgbaColorForPlayer(owner)
   paletteRgbaColor(fallbackColor)
-
-proc playerGlobalSpriteId(owner: int): int =
-  ## Returns the global sprite id for one player color.
-  GlobalPlayerSpriteBase + ((max(1, owner) - 1) mod 60000)
-
-proc paletteGlobalSpriteId(color: uint8): int =
-  ## Returns the global sprite id for one fallback palette color.
-  GlobalPaletteSpriteBase + int(color and 0x0f'u8)
-
-proc addColorSprite(
-  packet: var seq[uint8],
-  spriteId: int,
-  color: RgbaColor,
-  label: string
-) =
-  ## Appends one 1x1 true-color sprite.
-  var pixels = @[color.r, color.g, color.b, color.a]
-  packet.addSprite(spriteId, 1, 1, pixels, label)
-
-proc addSolidSprite(
-  packet: var seq[uint8],
-  spriteId, width, height: int,
-  color: RgbaColor,
-  label: string
-) =
-  ## Appends one solid true-color sprite.
-  var pixels = newSeq[uint8](width * height * 4)
-  for i in countup(0, pixels.len - 4, 4):
-    pixels[i] = color.r
-    pixels[i + 1] = color.g
-    pixels[i + 2] = color.b
-    pixels[i + 3] = color.a
-  packet.addSprite(spriteId, width, height, pixels, label)
-
-proc terrainLinePixels(): seq[uint8] =
-  ## Builds the one-pixel-high global terrain line sprite.
-  let color = paletteRgbaColor(TerrainColor)
-  result = newSeq[uint8](GlobalMapWidth * 4)
-  for i in countup(0, result.len - 4, 4):
-    result[i] = color.r
-    result[i + 1] = color.g
-    result[i + 2] = color.b
-    result[i + 3] = color.a
-
-proc addOwnerColorSprite(
-  packet: var seq[uint8],
-  ownersAdded: var seq[int],
-  owner: int
-) =
-  ## Appends a player color sprite if it has not been sent yet.
-  if owner <= 0 or owner in ownersAdded:
-    return
-  ownersAdded.add(owner)
-  packet.addColorSprite(
-    playerGlobalSpriteId(owner),
-    rgbaColorForPlayer(owner),
-    "player " & $owner
-  )
-
-proc addPaletteColorSprite(
-  packet: var seq[uint8],
-  colorsAdded: var seq[uint8],
-  color: uint8
-) =
-  ## Appends a palette color sprite if it has not been sent yet.
-  if color in colorsAdded:
-    return
-  colorsAdded.add(color)
-  packet.addColorSprite(
-    paletteGlobalSpriteId(color),
-    paletteRgbaColor(color),
-    "palette " & $int(color)
-  )
-
-proc addOwnerBlockSprite(
-  packet: var seq[uint8],
-  ownersAdded: var seq[int],
-  owner: int
-) =
-  ## Appends a player block sprite if it has not been sent yet.
-  if owner <= 0 or owner in ownersAdded:
-    return
-  ownersAdded.add(owner)
-  packet.addSolidSprite(
-    playerGlobalSpriteId(owner),
-    CellPixels,
-    CellPixels,
-    rgbaColorForPlayer(owner),
-    "player block " & $owner
-  )
-
-proc addPaletteBlockSprite(
-  packet: var seq[uint8],
-  colorsAdded: var seq[uint8],
-  color: uint8
-) =
-  ## Appends a palette block sprite if it has not been sent yet.
-  if color in colorsAdded:
-    return
-  colorsAdded.add(color)
-  packet.addSolidSprite(
-    paletteGlobalSpriteId(color),
-    CellPixels,
-    CellPixels,
-    paletteRgbaColor(color),
-    "palette block " & $int(color)
-  )
 
 proc addObjectIfRoom(
   packet: var seq[uint8],
@@ -1420,6 +1714,7 @@ proc buildGlobalFramePacket(
     result.addViewport(GlobalLayerId, ScreenWidth, ScreenHeight)
     result.addLayer(GlobalLayerId, GlobalMapLayerType, GlobalZoomableFlag)
     nextState.initialized = true
+  result.addTerrainBlockSprites(nextState, sim.blockParts)
   result.addClearObjects()
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -1445,74 +1740,74 @@ proc buildGlobalFramePacket(
     for x in startCellX .. endCellX:
       let index = boardIndex(x, y)
       if sim.terrain[index]:
-        result.addPaletteBlockSprite(nextState.sentPaletteColors, TerrainColor)
         result.addObjectIfRoom(
           objectId,
           x * CellPixels - cameraX,
           y * CellPixels - cameraY,
           0,
-          paletteGlobalSpriteId(TerrainColor)
+          terrainBlockSpriteId(terrainConnectionMask(x))
         )
       elif sim.settledColors[index] != 0:
         let owner = sim.settledOwners[index]
-        let spriteId =
-          if owner > 0:
-            result.addOwnerBlockSprite(nextState.sentOwners, owner)
-            playerGlobalSpriteId(owner)
-          else:
-            result.addPaletteBlockSprite(
-              nextState.sentPaletteColors,
-              sim.settledColors[index]
-            )
-            paletteGlobalSpriteId(sim.settledColors[index])
+        result.addOwnerBlockSprites(
+          nextState.sentOwners,
+          owner,
+          sim.blockParts
+        )
         result.addObjectIfRoom(
           objectId,
           x * CellPixels - cameraX,
           y * CellPixels - cameraY,
           1,
-          spriteId
+          ownerBlockSpriteId(owner, sim.settledConnections[index])
         )
 
   if sim.activeClearValid:
-    if not nextState.sentClearSprite:
-      result.addSolidSprite(
-        GlobalClearSpriteId,
-        CellPixels,
-        CellPixels,
-        paletteRgbaColor(sim.flashColor),
-        "clear block"
-      )
-      nextState.sentClearSprite = true
+    result.addClearBlockSprites(nextState, sim.blockParts)
     for x in sim.activeClear.segment.startX .. sim.activeClear.segment.endX:
+      let
+        index = boardIndex(x, sim.activeClear.segment.y)
+        mask =
+          if inBoardBounds(x, sim.activeClear.segment.y):
+            sim.settledConnections[index]
+          else:
+            0'u8
       result.addObjectIfRoom(
         objectId,
         x * CellPixels - cameraX,
         sim.activeClear.segment.y * CellPixels - cameraY,
         2,
-        GlobalClearSpriteId
+        clearBlockSpriteId(mask)
       )
 
   for otherPlayer in sim.players:
     if not otherPlayer.alive or not otherPlayer.hasPiece:
       continue
-    result.addOwnerBlockSprite(nextState.sentOwners, otherPlayer.id)
+    result.addOwnerBlockSprites(
+      nextState.sentOwners,
+      otherPlayer.id,
+      sim.blockParts
+    )
     for cell in pieceCells(otherPlayer.pieceKind, otherPlayer.rotation):
       result.addObjectIfRoom(
         objectId,
         (otherPlayer.cellX + cell.x) * CellPixels - cameraX,
         (otherPlayer.cellY + cell.y) * CellPixels - cameraY,
         3,
-        playerGlobalSpriteId(otherPlayer.id)
+        ownerBlockSpriteId(
+          otherPlayer.id,
+          otherPlayer.playerConnectionMask(cell)
+        )
       )
 
-  result.addOwnerBlockSprite(nextState.sentOwners, player.id)
+  result.addOwnerBlockSprites(nextState.sentOwners, player.id, sim.blockParts)
   for cell in pieceCells(player.nextKind, 0):
     result.addObjectIfRoom(
       objectId,
-      ScreenWidth - 8 + cell.x * CellPixels,
+      PreviewX + cell.x * CellPixels,
       cell.y * CellPixels,
       4,
-      playerGlobalSpriteId(player.id)
+      ownerBlockSpriteId(player.id, pieceConnectionMask(player.nextKind, 0, cell))
     )
 
 proc buildGlobalMapPacket(
@@ -1525,34 +1820,23 @@ proc buildGlobalMapPacket(
   if not state.initialized:
     result.addViewport(GlobalLayerId, GlobalMapWidth, GlobalMapHeight)
     result.addLayer(GlobalLayerId, GlobalMapLayerType, GlobalZoomableFlag)
-    result.addSprite(
-      GlobalMapSpriteId,
-      GlobalMapWidth,
-      1,
-      terrainLinePixels(),
-      "infinite blocks terrain"
-    )
     nextState.initialized = true
+  result.addTerrainBlockSprites(nextState, sim.blockParts)
   result.addClearObjects()
-  if sim.activeClearValid and not nextState.sentClearSprite:
-    result.addColorSprite(
-      GlobalClearSpriteId,
-      paletteRgbaColor(sim.flashColor),
-      "clear"
-    )
-    nextState.sentClearSprite = true
+  if sim.activeClearValid:
+    result.addClearBlockSprites(nextState, sim.blockParts)
 
   var objectId = GlobalBlockObjectBase
   if sim.settledCellsDirty:
     sim.rebuildSettledCellIndices()
-  result.addObject(
-    GlobalMapObjectId,
-    0,
-    BaseTerrainY,
-    0,
-    GlobalLayerId,
-    GlobalMapSpriteId
-  )
+  for x in 0 ..< BoardWidthCells:
+    result.addObjectIfRoom(
+      objectId,
+      x * CellPixels,
+      BaseTerrainY * CellPixels,
+      0,
+      terrainBlockSpriteId(terrainConnectionMask(x))
+    )
   for index in sim.settledCellIndices:
     let color = sim.settledColors[index]
     if color == 0:
@@ -1561,36 +1845,43 @@ proc buildGlobalMapPacket(
       x = index mod BoardWidthCells
       y = index div BoardWidthCells
       owner = sim.settledOwners[index]
-      spriteId =
-        if owner > 0:
-          result.addOwnerColorSprite(nextState.sentOwners, owner)
-          playerGlobalSpriteId(owner)
-        else:
-          result.addPaletteColorSprite(nextState.sentPaletteColors, color)
-          paletteGlobalSpriteId(color)
-    result.addObjectIfRoom(objectId, x, y, 1, spriteId)
+    result.addOwnerBlockSprites(
+      nextState.sentOwners,
+      owner,
+      sim.blockParts
+    )
+    result.addObjectIfRoom(
+      objectId,
+      x * CellPixels,
+      y * CellPixels,
+      1,
+      ownerBlockSpriteId(owner, sim.settledConnections[index])
+    )
 
   if sim.activeClearValid:
     for x in sim.activeClear.segment.startX .. sim.activeClear.segment.endX:
+      let
+        index = boardIndex(x, sim.activeClear.segment.y)
+        mask = sim.settledConnections[index]
       result.addObjectIfRoom(
         objectId,
-        x,
-        sim.activeClear.segment.y,
+        x * CellPixels,
+        sim.activeClear.segment.y * CellPixels,
         2,
-        GlobalClearSpriteId
+        clearBlockSpriteId(mask)
       )
 
   for player in sim.players:
     if not player.alive or not player.hasPiece:
       continue
-    result.addOwnerColorSprite(nextState.sentOwners, player.id)
+    result.addOwnerBlockSprites(nextState.sentOwners, player.id, sim.blockParts)
     for cell in pieceCells(player.pieceKind, player.rotation):
       result.addObjectIfRoom(
         objectId,
-        player.cellX + cell.x,
-        player.cellY + cell.y,
+        (player.cellX + cell.x) * CellPixels,
+        (player.cellY + cell.y) * CellPixels,
         3,
-        playerGlobalSpriteId(player.id)
+        ownerBlockSpriteId(player.id, player.playerConnectionMask(cell))
       )
 
 proc buildRewardPacket(sim: SimServer): string =
@@ -1662,16 +1953,34 @@ proc initAppState() =
   appState.spritePlayerViewers = initTable[WebSocket, GlobalViewerState]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.socketKinds = initTable[WebSocket, SocketKind]()
   appState.resetRequested = false
 
-proc removePlayer(sim: var SimServer, websocket: WebSocket) =
-  if websocket in appState.rewardViewers:
-    appState.rewardViewers.del(websocket)
+proc socketKind(websocket: WebSocket): SocketKind =
+  ## Returns the current role for a websocket.
+  appState.socketKinds.getOrDefault(websocket, SocketUnknown)
+
+proc removeGlobalSocket(websocket: WebSocket) =
+  ## Removes a global viewer websocket.
   if websocket in appState.globalViewers:
     appState.globalViewers.del(websocket)
+  if websocket in appState.socketKinds:
+    appState.socketKinds.del(websocket)
+
+proc removeRewardSocket(websocket: WebSocket) =
+  ## Removes a reward viewer websocket.
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
+  if websocket in appState.socketKinds:
+    appState.socketKinds.del(websocket)
+
+proc removePlayerSocket(sim: var SimServer, websocket: WebSocket) =
+  ## Removes a player websocket and its player slot.
   if websocket in appState.spritePlayerViewers:
     appState.spritePlayerViewers.del(websocket)
   if websocket notin appState.playerIndices:
+    if websocket in appState.socketKinds:
+      appState.socketKinds.del(websocket)
     return
 
   let removedIndex = appState.playerIndices[websocket]
@@ -1679,12 +1988,46 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerNames.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
+  if websocket in appState.socketKinds:
+    appState.socketKinds.del(websocket)
 
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
+
+proc removeUnknownSocket(sim: var SimServer, websocket: WebSocket) =
+  ## Removes a websocket whose role was not recorded.
+  if websocket in appState.playerIndices:
+    sim.removePlayerSocket(websocket)
+    return
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
+  if websocket in appState.spritePlayerViewers:
+    appState.spritePlayerViewers.del(websocket)
+  if websocket in appState.inputMasks:
+    appState.inputMasks.del(websocket)
+  if websocket in appState.lastAppliedMasks:
+    appState.lastAppliedMasks.del(websocket)
+  if websocket in appState.playerNames:
+    appState.playerNames.del(websocket)
+  if websocket in appState.socketKinds:
+    appState.socketKinds.del(websocket)
+
+proc removeSocket(sim: var SimServer, websocket: WebSocket) =
+  ## Removes a websocket according to its recorded role.
+  case websocket.socketKind()
+  of SocketPlayer:
+    sim.removePlayerSocket(websocket)
+  of SocketGlobal:
+    websocket.removeGlobalSocket()
+  of SocketReward:
+    websocket.removeRewardSocket()
+  of SocketUnknown:
+    sim.removeUnknownSocket(websocket)
 
 proc sendGlobalMapPackets(
   sim: var SimServer,
@@ -1712,12 +2055,13 @@ proc sendGlobalMapPackets(
       globalViewers[i].send(packetBlob, BinaryMessage)
       {.gcsafe.}:
         withLock appState.lock:
-          if globalViewers[i] in appState.globalViewers:
+          if globalViewers[i].socketKind() == SocketGlobal and
+              globalViewers[i] in appState.globalViewers:
             appState.globalViewers[globalViewers[i]] = nextState
     except:
       {.gcsafe.}:
         withLock appState.lock:
-          sim.removePlayer(globalViewers[i])
+          sim.removeSocket(globalViewers[i])
 
 proc cleanPlayerName(name: string): string =
   result = name.strip()
@@ -1784,6 +2128,11 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        if websocket in appState.globalViewers:
+          appState.globalViewers.del(websocket)
+        if websocket in appState.rewardViewers:
+          appState.rewardViewers.del(websocket)
+        appState.socketKinds[websocket] = SocketPlayer
         appState.playerNames[websocket] = request.playerIdentity()
         appState.spritePlayerViewers[websocket] = GlobalViewerState()
         appState.playerIndices[websocket] = 0x7fffffff
@@ -1796,12 +2145,38 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        if websocket in appState.rewardViewers:
+          appState.rewardViewers.del(websocket)
+        if websocket in appState.spritePlayerViewers:
+          appState.spritePlayerViewers.del(websocket)
+        if websocket in appState.inputMasks:
+          appState.inputMasks.del(websocket)
+        if websocket in appState.lastAppliedMasks:
+          appState.lastAppliedMasks.del(websocket)
+        if websocket in appState.playerIndices:
+          appState.playerIndices.del(websocket)
+        if websocket in appState.playerNames:
+          appState.playerNames.del(websocket)
+        appState.socketKinds[websocket] = SocketGlobal
         appState.globalViewers[websocket] = GlobalViewerState()
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        if websocket in appState.globalViewers:
+          appState.globalViewers.del(websocket)
+        if websocket in appState.spritePlayerViewers:
+          appState.spritePlayerViewers.del(websocket)
+        if websocket in appState.inputMasks:
+          appState.inputMasks.del(websocket)
+        if websocket in appState.lastAppliedMasks:
+          appState.lastAppliedMasks.del(websocket)
+        if websocket in appState.playerIndices:
+          appState.playerIndices.del(websocket)
+        if websocket in appState.playerNames:
+          appState.playerNames.del(websocket)
+        appState.socketKinds[websocket] = SocketReward
         appState.rewardViewers[websocket] = true
   elif request.serveStaticClientHtml():
     discard
@@ -1823,7 +2198,9 @@ proc websocketHandler(
         isSpritePlayerInputPacket(message.data):
       {.gcsafe.}:
         withLock appState.lock:
-          appState.inputMasks[websocket] = message.data[1].uint8 and 0x7f'u8
+          if websocket.socketKind() == SocketPlayer and
+              websocket in appState.inputMasks:
+            appState.inputMasks[websocket] = message.data[1].uint8 and 0x7f'u8
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -1891,26 +2268,31 @@ proc runServerLoop(
     {.gcsafe.}:
       withLock appState.lock:
         for websocket in appState.closedSockets:
-          sim.removePlayer(websocket)
+          sim.removeSocket(websocket)
         appState.closedSockets.setLen(0)
 
         if appState.resetRequested:
           shouldReset = true
           appState.resetRequested = false
-          for _, value in appState.playerIndices.mpairs:
-            value = 0x7fffffff
+          for websocket, value in appState.playerIndices.mpairs:
+            if websocket.socketKind() == SocketPlayer:
+              value = 0x7fffffff
           for _, value in appState.inputMasks.mpairs:
             value = 0
           for _, value in appState.lastAppliedMasks.mpairs:
             value = 0
         else:
           for websocket in appState.playerIndices.keys:
+            if websocket.socketKind() != SocketPlayer:
+              continue
             if appState.playerIndices[websocket] == 0x7fffffff:
               let name = appState.playerNames.getOrDefault(websocket, "unknown")
               appState.playerIndices[websocket] = sim.addPlayer(name)
 
           inputs = newSeq[InputState](sim.players.len)
           for websocket, playerIndex in appState.playerIndices.pairs:
+            if websocket.socketKind() != SocketPlayer:
+              continue
             if playerIndex < 0 or playerIndex >= inputs.len:
               continue
             let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
@@ -1929,10 +2311,12 @@ proc runServerLoop(
             )
 
         for websocket in appState.rewardViewers.keys:
-          rewardViewers.add(websocket)
+          if websocket.socketKind() == SocketReward:
+            rewardViewers.add(websocket)
         for websocket, state in appState.globalViewers.pairs:
-          globalViewers.add(websocket)
-          globalStates.add(state)
+          if websocket.socketKind() == SocketGlobal:
+            globalViewers.add(websocket)
+            globalStates.add(state)
 
     if shouldReset:
       inc currentSeed
@@ -1941,6 +2325,8 @@ proc runServerLoop(
       {.gcsafe.}:
         withLock appState.lock:
           for websocket in appState.playerIndices.keys:
+            if websocket.socketKind() != SocketPlayer:
+              continue
             if appState.playerIndices[websocket] == 0x7fffffff:
               let name = appState.playerNames.getOrDefault(websocket, "unknown")
               appState.playerIndices[websocket] = sim.addPlayer(name)
@@ -1964,7 +2350,8 @@ proc runServerLoop(
         )
         {.gcsafe.}:
           withLock appState.lock:
-            if sockets[i] in appState.spritePlayerViewers:
+            if sockets[i].socketKind() == SocketPlayer and
+                sockets[i] in appState.spritePlayerViewers:
               appState.spritePlayerViewers[sockets[i]] = nextState
         sockets[i].send(framePacket, BinaryMessage)
       let rewardPacket = sim.buildRewardPacket()
@@ -1990,20 +2377,22 @@ proc runServerLoop(
       )
       {.gcsafe.}:
         withLock appState.lock:
-          if sockets[i] in appState.spritePlayerViewers:
+          if sockets[i].socketKind() == SocketPlayer and
+              sockets[i] in appState.spritePlayerViewers:
             appState.spritePlayerViewers[sockets[i]] = nextState
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:
         {.gcsafe.}:
           withLock appState.lock:
-            sim.removePlayer(sockets[i])
+            sim.removeSocket(sockets[i])
 
     let rewardPacket = sim.buildRewardPacket()
     for websocket in rewardViewers:
       websocket.send(rewardPacket, TextMessage)
 
-    sim.sendGlobalMapPackets(globalViewers, globalStates)
+    if runTicks mod GlobalSendInterval == 0:
+      sim.sendGlobalMapPackets(globalViewers, globalStates)
 
     sim.writeScoresIfChanged(saveScoresPath, lastScores)
     if maxTicks > 0 and runTicks >= maxTicks:

@@ -79,7 +79,9 @@
       "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
     },
     "client": {
-      "client/global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      "client/player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "client/global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "client/reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
     }
   },
   "player": [
