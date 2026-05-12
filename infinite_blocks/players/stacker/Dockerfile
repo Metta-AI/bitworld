@@ -35,4 +35,4 @@ FROM alpine
 
 COPY --from=build /workspace/bitworld/stacker /bin/stacker
 
-CMD ["/bin/stacker", "--address:host.docker.internal", "--port:2000"]
+CMD ["/bin/stacker", "--address:ws://host.docker.internal:8080/player"]

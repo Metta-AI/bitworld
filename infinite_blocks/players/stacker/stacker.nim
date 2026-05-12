@@ -3,13 +3,17 @@ import
   supersnappy, whisky,
   protocol
 
+when not defined(botHeadless):
+  import pixie, scales, silky, windy
+
 const
-  PlayerDefaultPort = 2000
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  DefaultPlayerAddress = "ws://localhost:8080/player"
   PlayerWebSocketPath = "/player"
   GlobalWebSocketPath = "/global"
   BoardWidthCells = 250
   BoardHeightCells = 250
+  CellPixels = 9
   BaseTerrainY = BoardHeightCells * 31 div 50
   LineClearLength = 8
   LaneStartX = BoardWidthCells div 2 - LineClearLength div 2
@@ -25,6 +29,33 @@ const
   OutsideLanePenalty = 750
   BumpinessPenalty = 80
   HeightPenalty = 10
+
+when defined(botHeadless):
+  type ViewerApp = ref object
+else:
+  const
+    ViewerWindowWidth = 1120
+    ViewerWindowHeight = 900
+    ViewerMargin = 16.0'f
+    ViewerMapScale = 1.25'f
+    ViewerViewportScale = 8.0'f
+    ViewerCellPad = 0.35'f
+    ViewerBackground = rgbx(16, 19, 25, 255)
+    ViewerPanel = rgbx(30, 35, 45, 255)
+    ViewerPanelAlt = rgbx(22, 26, 34, 255)
+    ViewerGrid = rgbx(41, 48, 61, 255)
+    ViewerTerrain = rgbx(91, 102, 116, 255)
+    ViewerSettled = rgbx(70, 145, 185, 255)
+    ViewerActive = rgbx(124, 255, 165, 255)
+    ViewerTarget = rgbx(255, 213, 91, 255)
+    ViewerLane = rgbx(255, 255, 255, 28)
+    ViewerText = rgbx(226, 231, 240, 255)
+    ViewerMutedText = rgbx(148, 157, 174, 255)
+
+  type ViewerApp = ref object
+    window: Window
+    silky: Silky
+    contentScale: float32
 
 type
   RgbaColor = tuple[r, g, b, a: uint8]
@@ -76,13 +107,21 @@ type
     frameTick: int
     map: SpriteImage
     playerFrame: SpriteImage
+    frameObjects: Table[int, GlobalObject]
+    frameWidth: int
+    frameHeight: int
     sprites: Table[int, SpriteImage]
     objects: Table[int, GlobalObject]
     mapWidth: int
     mapHeight: int
+    mapScale: int
     ownColor: RgbaColor
     hasOwnColor: bool
     lastMask: uint8
+    active: ActivePiece
+    logicalTerrain: seq[bool]
+    logicalWidth: int
+    logicalHeight: int
     target: Placement
     targetRow: int
     intent: string
@@ -134,6 +173,26 @@ proc rgbaAt(image: SpriteImage, x, y: int): RgbaColor =
     b: image.pixels[offset + 2],
     a: image.pixels[offset + 3]
   )
+
+proc highChannel(color: RgbaColor): int =
+  ## Returns the highest RGB channel in a color.
+  max(int(color.r), max(int(color.g), int(color.b)))
+
+proc scaledColorDistance(color, base: RgbaColor): int =
+  ## Compares one stained color against a full-bright base color.
+  let
+    colorHigh = color.highChannel()
+    baseHigh = base.highChannel()
+  if colorHigh <= 0 or baseHigh <= 0:
+    return high(int)
+  result += abs(int(color.r) - int(base.r) * colorHigh div baseHigh)
+  result += abs(int(color.g) - int(base.g) * colorHigh div baseHigh)
+  result += abs(int(color.b) - int(base.b) * colorHigh div baseHigh)
+
+proc looksLikeOwnColor(color, ownColor: RgbaColor): bool =
+  ## Returns true when a stained map color matches the bot color.
+  color.a >= 20'u8 and color.highChannel() >= 24 and
+    color.scaledColorDistance(ownColor) <= 90
 
 proc isBackground(color: RgbaColor): bool =
   ## Returns true for the black empty-map color.
@@ -221,23 +280,62 @@ proc chatBlob(text: string): string =
     bytes.add(uint8(ord(ch)))
   blobFromBytes(bytes)
 
-proc rebuildGlobalMap(bot: var Bot) =
-  ## Rebuilds a dense map image from global protocol sprites and objects.
-  if bot.mapWidth <= 0 or bot.mapHeight <= 0:
+proc representativeColor(sprite: SpriteImage): RgbaColor =
+  ## Returns the brightest non-transparent color in one sprite.
+  if sprite.pixels.len < 4:
     return
-  bot.map = SpriteImage(
-    width: bot.mapWidth,
-    height: bot.mapHeight,
-    label: "global",
-    pixels: newSeq[uint8](bot.mapWidth * bot.mapHeight * 4)
-  )
-  for i in countup(0, bot.map.pixels.len - 4, 4):
-    bot.map.pixels[i + 3] = 255'u8
+  var bestValue = -1
+  for i in countup(0, sprite.pixels.len - 4, 4):
+    if sprite.pixels[i + 3] < 20'u8:
+      continue
+    let value =
+      int(sprite.pixels[i]) +
+      int(sprite.pixels[i + 1]) +
+      int(sprite.pixels[i + 2])
+    if value > bestValue:
+      bestValue = value
+      result = (
+        r: sprite.pixels[i],
+        g: sprite.pixels[i + 1],
+        b: sprite.pixels[i + 2],
+        a: sprite.pixels[i + 3]
+      )
 
-  var items: seq[GlobalObject] = @[]
-  for item in bot.objects.values:
-    items.add(item)
-  items.sort(proc(a, b: GlobalObject): int =
+proc blitSprite(
+  image: var SpriteImage,
+  sprite: SpriteImage,
+  x,
+  y: int
+) =
+  ## Blits one RGBA sprite into an RGBA image.
+  if image.pixels.len != image.width * image.height * 4:
+    return
+  if sprite.pixels.len != sprite.width * sprite.height * 4:
+    return
+  for sy in 0 ..< sprite.height:
+    let dstY = y + sy
+    if dstY < 0 or dstY >= image.height:
+      continue
+    for sx in 0 ..< sprite.width:
+      let dstX = x + sx
+      if dstX < 0 or dstX >= image.width:
+        continue
+      let
+        srcOffset = (sy * sprite.width + sx) * 4
+        alpha = sprite.pixels[srcOffset + 3]
+      if alpha == 0'u8:
+        continue
+      let dstOffset = (dstY * image.width + dstX) * 4
+      image.pixels[dstOffset] = sprite.pixels[srcOffset]
+      image.pixels[dstOffset + 1] = sprite.pixels[srcOffset + 1]
+      image.pixels[dstOffset + 2] = sprite.pixels[srcOffset + 2]
+      image.pixels[dstOffset + 3] = alpha
+
+proc sortedObjects(objects: Table[int, GlobalObject]): seq[GlobalObject] =
+  ## Returns protocol objects in draw order.
+  for item in objects.values:
+    result.add(item)
+  result.sort(proc(a, b: GlobalObject): int =
     result = cmp(a.z, b.z)
     if result == 0:
       result = cmp(a.y, b.y)
@@ -245,10 +343,85 @@ proc rebuildGlobalMap(bot: var Bot) =
       result = cmp(a.id, b.id)
   )
 
-  for item in items:
+proc logicalMapScale(width, height: int): int =
+  ## Returns the physical pixels used for one logical board cell.
+  if width <= 0 or height <= 0:
+    return 1
+  let
+    xScale = width div BoardWidthCells
+    yScale = height div BoardHeightCells
+  if xScale == yScale and xScale > 1 and
+      width mod BoardWidthCells == 0 and
+      height mod BoardHeightCells == 0:
+    return xScale
+  if width >= BoardWidthCells * CellPixels and
+      height >= BoardHeightCells * CellPixels:
+    return CellPixels
+  1
+
+proc logicalMapWidth(width, scale: int): int =
+  ## Converts a physical map width into logical board cells.
+  if scale <= 1:
+    return width
+  max(1, width div scale)
+
+proc logicalMapHeight(height, scale: int): int =
+  ## Converts a physical map height into logical board cells.
+  if scale <= 1:
+    return height
+  max(1, height div scale)
+
+proc logicalCell(item: GlobalObject, scale: int): Cell =
+  ## Converts a physical sprite-object position to a logical cell.
+  if scale <= 1:
+    return Cell(x: item.x, y: item.y)
+  Cell(x: item.x div scale, y: item.y div scale)
+
+proc putLogicalCell(
+  image: var SpriteImage,
+  cell: Cell,
+  color: RgbaColor
+) =
+  ## Writes one reconstructed logical map cell.
+  if cell.x < 0 or cell.y < 0 or
+      cell.x >= image.width or cell.y >= image.height:
+    return
+  let dstOffset = (cell.y * image.width + cell.x) * 4
+  image.pixels[dstOffset] = color.r
+  image.pixels[dstOffset + 1] = color.g
+  image.pixels[dstOffset + 2] = color.b
+  image.pixels[dstOffset + 3] = color.a
+
+proc rebuildGlobalMap(bot: var Bot) =
+  ## Rebuilds a dense map image from global protocol sprites and objects.
+  if bot.mapWidth <= 0 or bot.mapHeight <= 0:
+    return
+  let
+    scale = logicalMapScale(bot.mapWidth, bot.mapHeight)
+    mapWidth = bot.mapWidth.logicalMapWidth(scale)
+    mapHeight = bot.mapHeight.logicalMapHeight(scale)
+  if bot.mapScale != scale:
+    bot.mapScale = scale
+    echo "stacker global map scale=", scale
+  bot.map = SpriteImage(
+    width: mapWidth,
+    height: mapHeight,
+    label: "global",
+    pixels: newSeq[uint8](mapWidth * mapHeight * 4)
+  )
+  for i in countup(0, bot.map.pixels.len - 4, 4):
+    bot.map.pixels[i + 3] = 255'u8
+
+  for item in bot.objects.sortedObjects():
     if item.spriteId notin bot.sprites:
       continue
     let sprite = bot.sprites[item.spriteId]
+    if scale > 1:
+      let
+        cell = item.logicalCell(scale)
+        color = sprite.representativeColor()
+      bot.map.putLogicalCell(cell, color)
+      continue
     for sy in 0 ..< sprite.height:
       let dstY = item.y + sy
       if dstY < 0 or dstY >= bot.map.height:
@@ -265,6 +438,23 @@ proc rebuildGlobalMap(bot: var Bot) =
         bot.map.pixels[dstOffset + 1] = sprite.pixels[srcOffset + 1]
         bot.map.pixels[dstOffset + 2] = sprite.pixels[srcOffset + 2]
         bot.map.pixels[dstOffset + 3] = sprite.pixels[srcOffset + 3]
+
+proc rebuildPlayerFrame(bot: var Bot) =
+  ## Rebuilds the bot's current player viewport from sprite objects.
+  if bot.frameWidth <= 0 or bot.frameHeight <= 0:
+    return
+  bot.playerFrame = SpriteImage(
+    width: bot.frameWidth,
+    height: bot.frameHeight,
+    label: "viewport",
+    pixels: newSeq[uint8](bot.frameWidth * bot.frameHeight * 4)
+  )
+  for i in countup(0, bot.playerFrame.pixels.len - 4, 4):
+    bot.playerFrame.pixels[i + 3] = 255'u8
+  for item in bot.frameObjects.sortedObjects():
+    if item.spriteId notin bot.sprites:
+      continue
+    bot.playerFrame.blitSprite(bot.sprites[item.spriteId], item.x, item.y)
 
 proc updateOwnColor(bot: var Bot) =
   ## Finds this player's bright HSV color from the player frame.
@@ -349,11 +539,7 @@ proc applySpritePacket(
         label: label,
         pixels: pixels
       )
-      if playerFrame:
-        bot.playerFrame = image
-        bot.updateOwnColor()
-      else:
-        bot.sprites[spriteId] = image
+      bot.sprites[spriteId] = image
       discard spriteId
     of 0x02:
       if offset + 11 > packet.len:
@@ -367,21 +553,30 @@ proc applySpritePacket(
         spriteId: packet.readU16(offset + 9)
       )
       offset += 11
-      if not playerFrame:
+      if playerFrame:
+        bot.frameObjects[item.id] = item
+      else:
         bot.objects[item.id] = item
     of 0x03:
       if offset + 2 > packet.len:
         return false
-      if not playerFrame:
+      if playerFrame:
+        bot.frameObjects.del(packet.readU16(offset))
+      else:
         bot.objects.del(packet.readU16(offset))
       offset += 2
     of 0x04:
-      if not playerFrame:
+      if playerFrame:
+        bot.frameObjects.clear()
+      else:
         bot.objects.clear()
     of 0x05:
       if offset + 5 > packet.len:
         return false
-      if not playerFrame:
+      if playerFrame:
+        bot.frameWidth = packet.readU16(offset + 1)
+        bot.frameHeight = packet.readU16(offset + 3)
+      else:
         bot.mapWidth = packet.readU16(offset + 1)
         bot.mapHeight = packet.readU16(offset + 3)
       offset += 5
@@ -391,7 +586,10 @@ proc applySpritePacket(
       offset += 3
     else:
       return false
-  if not playerFrame:
+  if playerFrame:
+    bot.rebuildPlayerFrame()
+    bot.updateOwnColor()
+  else:
     bot.rebuildGlobalMap()
   true
 
@@ -504,7 +702,7 @@ proc findOwnCells(bot: Bot): seq[Cell] =
     return
   for y in 0 ..< bot.map.height:
     for x in 0 ..< bot.map.width:
-      if bot.map.rgbaAt(x, y) == bot.ownColor:
+      if bot.map.rgbaAt(x, y).looksLikeOwnColor(bot.ownColor):
         result.add(Cell(x: x, y: y))
 
 proc ownMaskIndex(image: SpriteImage, x, y: int): int =
@@ -561,7 +759,7 @@ proc activePiece(bot: Bot): ActivePiece =
     bestComponent.setLen(4)
   inferPieceFromCells(bestComponent)
 
-proc occupiedMap(bot: Bot, active: ActivePiece): seq[bool] =
+proc occupiedMap(bot: var Bot, active: ActivePiece): seq[bool] =
   ## Builds an occupancy grid with the active piece removed.
   result = newSeq[bool](bot.map.width * bot.map.height)
   for y in 0 ..< bot.map.height:
@@ -572,6 +770,9 @@ proc occupiedMap(bot: Bot, active: ActivePiece): seq[bool] =
     if cell.x >= 0 and cell.y >= 0 and
         cell.x < bot.map.width and cell.y < bot.map.height:
       result[bot.map.ownMaskIndex(cell.x, cell.y)] = false
+  bot.logicalTerrain = result
+  bot.logicalWidth = bot.map.width
+  bot.logicalHeight = bot.map.height
 
 proc isOccupied(occupied: openArray[bool], width, height, x, y: int): bool =
   ## Returns true when a map cell is blocked.
@@ -861,6 +1062,8 @@ proc maskSummary(mask: uint8): string =
 
 proc decideMask(bot: var Bot): uint8 =
   ## Chooses the next held button mask.
+  bot.active = ActivePiece()
+  bot.target = Placement()
   if not bot.hasOwnColor or bot.map.pixels.len == 0:
     bot.intent = "waiting"
     return ButtonDown
@@ -868,6 +1071,7 @@ proc decideMask(bot: var Bot): uint8 =
   if not active.found:
     bot.intent = "finding piece"
     return ButtonDown
+  bot.active = active
   let placement = bot.choosePlacement(active)
   if not placement.found:
     bot.intent = "dropping"
@@ -902,6 +1106,396 @@ proc echoDebug(bot: Bot, mask: uint8) =
     " target=", bot.target.x, ",", bot.target.y,
     " rot=", bot.target.rotation,
     " score=", bot.target.score
+
+proc ownActiveViewportCells(bot: Bot): seq[Cell] =
+  ## Returns screen-space cells for the bot's visible active piece.
+  if not bot.hasOwnColor:
+    return
+  for item in bot.frameObjects.values:
+    if item.z < 30 or item.z >= 40:
+      continue
+    if item.spriteId notin bot.sprites:
+      continue
+    let color = bot.sprites[item.spriteId].representativeColor()
+    if not color.looksLikeOwnColor(bot.ownColor):
+      continue
+    let cell = Cell(x: item.x, y: item.y)
+    if not result.containsCell(cell):
+      result.add(cell)
+
+proc viewportCamera(bot: Bot): tuple[found: bool, cameraX: int, cameraY: int] =
+  ## Infers the viewport camera from active world and screen cells.
+  if not bot.active.found:
+    return
+  let screenCells = bot.ownActiveViewportCells()
+  if screenCells.len == 0:
+    return
+  for worldCell in bot.active.cells:
+    for screenCell in screenCells:
+      let
+        cameraX = worldCell.x * CellPixels - screenCell.x
+        cameraY = worldCell.y * CellPixels - screenCell.y
+      var matches = 0
+      for activeCell in bot.active.cells:
+        let expected = Cell(
+          x: activeCell.x * CellPixels - cameraX,
+          y: activeCell.y * CellPixels - cameraY
+        )
+        if screenCells.containsCell(expected):
+          inc matches
+      if matches == bot.active.cells.len:
+        return (found: true, cameraX: cameraX, cameraY: cameraY)
+
+when defined(botHeadless):
+  proc initViewerApp(): ViewerApp =
+    ## Builds a headless placeholder viewer.
+    ViewerApp()
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true while the bot should keep running.
+    true
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Ignores viewer updates in headless builds.
+    discard
+else:
+  proc gameDir(): string =
+    ## Returns the Infinite Blocks game directory.
+    let
+      sourceDir = currentSourcePath().parentDir().parentDir().parentDir()
+      cwd = getCurrentDir()
+      candidates = [
+        sourceDir,
+        cwd,
+        cwd.parentDir(),
+        cwd.parentDir().parentDir()
+      ]
+    for candidate in candidates:
+      if fileExists(candidate / "infinite_blocks.nim"):
+        return candidate
+    sourceDir
+
+  proc atlasPath(): string =
+    ## Returns the shared Silky atlas path.
+    gameDir() / ".." / "clients" / "dist" / "atlas.png"
+
+  proc viewerOpen(viewer: ViewerApp): bool =
+    ## Returns true while the diagnostic viewer should stay open.
+    viewer.isNil or not viewer.window.closeRequested
+
+  proc refreshDisplayScale(viewer: ViewerApp) =
+    ## Updates viewer UI scaling after moving between displays.
+    if viewer.isNil:
+      return
+    let scale = viewer.window.displayScale()
+    if abs(scale - viewer.contentScale) <= 0.001'f:
+      return
+    viewer.contentScale = scale
+    viewer.silky.uiScale = scale
+    let logicalSize = (viewer.window.size.vec2 / scale).ivec2
+    viewer.window.size = logicalSize.scaledWindowSize(scale)
+
+  proc viewerColor(color: RgbaColor): ColorRGBX =
+    ## Converts an RGBA tuple to a viewer color.
+    rgbx(color.r, color.g, color.b, color.a)
+
+  proc drawOutline(
+    sk: Silky,
+    pos,
+    size: Vec2,
+    color: ColorRGBX,
+    thickness = 1.0'f
+  ) =
+    ## Draws an unfilled rectangle.
+    sk.drawRect(pos, vec2(size.x, thickness), color)
+    sk.drawRect(
+      vec2(pos.x, pos.y + size.y - thickness),
+      vec2(size.x, thickness),
+      color
+    )
+    sk.drawRect(pos, vec2(thickness, size.y), color)
+    sk.drawRect(
+      vec2(pos.x + size.x - thickness, pos.y),
+      vec2(thickness, size.y),
+      color
+    )
+
+  proc drawLogicalCell(
+    sk: Silky,
+    origin: Vec2,
+    cell: Cell,
+    color: ColorRGBX,
+    scale = ViewerMapScale
+  ) =
+    ## Draws one bot-logical board cell.
+    sk.drawRect(
+      vec2(
+        origin.x + cell.x.float32 * scale + ViewerCellPad,
+        origin.y + cell.y.float32 * scale + ViewerCellPad
+      ),
+      vec2(
+        max(1.0'f, scale - ViewerCellPad * 2),
+        max(1.0'f, scale - ViewerCellPad * 2)
+      ),
+      color
+    )
+
+  proc drawLogicalTerrain(sk: Silky, bot: Bot, origin: Vec2) =
+    ## Draws the bot's logical terrain, active piece, and target.
+    let
+      width = max(1, bot.logicalWidth)
+      height = max(1, bot.logicalHeight)
+      scale = ViewerMapScale
+      boardSize = vec2(width.float32 * scale, height.float32 * scale)
+    sk.drawRect(origin, boardSize, ViewerPanelAlt)
+    sk.drawRect(
+      vec2(origin.x + LaneStartX.float32 * scale, origin.y),
+      vec2(LineClearLength.float32 * scale, boardSize.y),
+      ViewerLane
+    )
+    for x in countup(0, width, 10):
+      sk.drawRect(
+        vec2(origin.x + x.float32 * scale, origin.y),
+        vec2(1, boardSize.y),
+        ViewerGrid
+      )
+    for y in countup(0, height, 10):
+      sk.drawRect(
+        vec2(origin.x, origin.y + y.float32 * scale),
+        vec2(boardSize.x, 1),
+        ViewerGrid
+      )
+    if bot.logicalTerrain.len == width * height:
+      for y in 0 ..< height:
+        for x in 0 ..< width:
+          if not bot.logicalTerrain[y * width + x]:
+            continue
+          let color =
+            if y == BaseTerrainY:
+              ViewerTerrain
+            else:
+              ViewerSettled
+          sk.drawLogicalCell(origin, Cell(x: x, y: y), color)
+    if bot.target.found:
+      for cell in placedCells(
+        bot.target.x,
+        bot.target.y,
+        bot.active.kind,
+        bot.target.rotation
+      ):
+        sk.drawLogicalCell(origin, cell, ViewerTarget)
+        sk.drawOutline(
+          vec2(
+            origin.x + cell.x.float32 * scale,
+            origin.y + cell.y.float32 * scale
+          ),
+          vec2(scale, scale),
+          ViewerBackground
+        )
+    if bot.active.found:
+      for cell in bot.active.cells:
+        sk.drawLogicalCell(origin, cell, ViewerActive)
+
+  proc drawViewportCell(
+    sk: Silky,
+    origin: Vec2,
+    screenX,
+    screenY: int,
+    color: ColorRGBX
+  ) =
+    ## Draws an outline around one cell in the player viewport.
+    let scale = ViewerViewportScale
+    sk.drawOutline(
+      vec2(
+        origin.x + screenX.float32 * scale,
+        origin.y + screenY.float32 * scale
+      ),
+      vec2(CellPixels.float32 * scale, CellPixels.float32 * scale),
+      color,
+      2.0'f
+    )
+
+  proc drawViewport(sk: Silky, bot: Bot, origin: Vec2) =
+    ## Draws the live player viewport and bot overlays.
+    let
+      width = max(1, bot.playerFrame.width)
+      height = max(1, bot.playerFrame.height)
+      scale = ViewerViewportScale
+      size = vec2(width.float32 * scale, height.float32 * scale)
+    sk.drawRect(origin, size, ViewerPanelAlt)
+    if bot.playerFrame.pixels.len == width * height * 4:
+      for y in 0 ..< height:
+        for x in 0 ..< width:
+          let color = bot.playerFrame.rgbaAt(x, y)
+          if color.a == 0'u8:
+            continue
+          sk.drawRect(
+            vec2(origin.x + x.float32 * scale, origin.y + y.float32 * scale),
+            vec2(scale, scale),
+            color.viewerColor()
+          )
+
+    let camera = bot.viewportCamera()
+    if not camera.found:
+      return
+    if bot.target.found:
+      for cell in placedCells(
+        bot.target.x,
+        bot.target.y,
+        bot.active.kind,
+        bot.target.rotation
+      ):
+        sk.drawViewportCell(
+          origin,
+          cell.x * CellPixels - camera.cameraX,
+          cell.y * CellPixels - camera.cameraY,
+          ViewerTarget
+        )
+    if bot.active.found:
+      for cell in bot.active.cells:
+        sk.drawViewportCell(
+          origin,
+          cell.x * CellPixels - camera.cameraX,
+          cell.y * CellPixels - camera.cameraY,
+          ViewerActive
+        )
+
+  proc initViewerApp(): ViewerApp =
+    ## Opens the stacker diagnostic viewer window.
+    result = ViewerApp()
+    result.window = newWindow(
+      title = "Infinite Blocks Stacker Viewer",
+      size = ivec2(ViewerWindowWidth, ViewerWindowHeight),
+      style = DecoratedResizable,
+      visible = true
+    )
+    makeContextCurrent(result.window)
+    when not defined(useDirectX):
+      loadExtensions()
+    result.silky = newSilky(result.window, atlasPath())
+    result.contentScale = result.window.displayScale()
+    result.silky.uiScale = result.contentScale
+    result.window.size =
+      ivec2(ViewerWindowWidth, ViewerWindowHeight).
+        scaledWindowSize(result.contentScale)
+
+  proc pumpViewer(
+    viewer: ViewerApp,
+    bot: Bot,
+    connected: bool,
+    url: string
+  ) =
+    ## Pumps and renders one diagnostic viewer frame.
+    if viewer.isNil:
+      return
+    pollEvents()
+    if viewer.window.buttonPressed[KeyEscape]:
+      viewer.window.closeRequested = true
+    if viewer.window.closeRequested:
+      return
+    viewer.refreshDisplayScale()
+    let
+      frameSize = viewer.window.size
+      logicalWidth = frameSize.x.float32 / viewer.silky.uiScale
+      logicalHeight = frameSize.y.float32 / viewer.silky.uiScale
+      viewportPos = vec2(ViewerMargin, ViewerMargin + 28)
+      viewportSize = vec2(
+        max(1, bot.playerFrame.width).float32 * ViewerViewportScale,
+        max(1, bot.playerFrame.height).float32 * ViewerViewportScale
+      )
+      mapPos = vec2(
+        viewportPos.x + viewportSize.x + 32,
+        ViewerMargin + 28
+      )
+      mapSize = vec2(
+        BoardWidthCells.float32 * ViewerMapScale,
+        BoardHeightCells.float32 * ViewerMapScale
+      )
+      infoPos = vec2(mapPos.x, mapPos.y + mapSize.y + 32)
+      infoSize = vec2(
+        logicalWidth - infoPos.x - ViewerMargin,
+        logicalHeight - infoPos.y - ViewerMargin
+      )
+      sk = viewer.silky
+    sk.beginUi(viewer.window, frameSize)
+    sk.clearScreen(ViewerBackground)
+    discard sk.drawText(
+      "Default",
+      "Infinite Blocks Stacker",
+      vec2(ViewerMargin, ViewerMargin),
+      ViewerText
+    )
+    discard sk.drawText(
+      "Default",
+      "Live viewport",
+      vec2(viewportPos.x, viewportPos.y - 18),
+      ViewerMutedText
+    )
+    discard sk.drawText(
+      "Default",
+      "Logical map",
+      vec2(mapPos.x, mapPos.y - 18),
+      ViewerMutedText
+    )
+    sk.drawRect(
+      viewportPos - vec2(8, 8),
+      viewportSize + vec2(16, 16),
+      ViewerPanel
+    )
+    sk.drawRect(mapPos - vec2(8, 8), mapSize + vec2(16, 16), ViewerPanel)
+    sk.drawRect(infoPos - vec2(8, 8), infoSize + vec2(16, 16), ViewerPanel)
+    sk.drawViewport(bot, viewportPos)
+    sk.drawLogicalTerrain(bot, mapPos)
+    let
+      activeText =
+        if bot.active.found:
+          $bot.active.kind & " rot=" & $bot.active.rotation &
+            " origin=" & $bot.active.originX & "," & $bot.active.originY
+        else:
+          "none"
+      targetText =
+        if bot.target.found:
+          "rot=" & $bot.target.rotation &
+            " origin=" & $bot.target.x & "," & $bot.target.y &
+            " score=" & $bot.target.score
+        else:
+          "none"
+      infoText =
+        "status: " & (if connected: "connected" else: "reconnecting") &
+          "\n" &
+        "tick: " & $bot.frameTick & "\n" &
+        "intent: " & bot.intent & "\n" &
+        "keys: " & bot.lastMask.maskSummary() & "\n" &
+        "own color known: " & $bot.hasOwnColor & "\n" &
+        "map scale: " & $bot.mapScale & "\n" &
+        "logical size: " & $bot.logicalWidth & "x" &
+          $bot.logicalHeight & "\n" &
+        "active: " & activeText & "\n" &
+        "target row: " & $bot.targetRow & "\n" &
+        "target: " & targetText & "\n" &
+        "lane x: " & $LaneStartX & ".." &
+          $(LaneStartX + LineClearLength - 1) & "\n" &
+        "legend:\n" &
+        "  gray = floor\n" &
+        "  blue = settled terrain\n" &
+        "  green = active piece\n" &
+        "  yellow = planned placement\n" &
+        "url: " & url
+    discard sk.drawText(
+      "Default",
+      infoText,
+      infoPos,
+      ViewerText,
+      infoSize.x,
+      infoSize.y
+    )
+    sk.endUi()
+    viewer.window.swapBuffers()
 
 proc setQueryParam(query, key, value: string): string =
   ## Returns a query string with one encoded parameter replaced or appended.
@@ -996,10 +1590,6 @@ proc spriteUrl(
     token
   )
 
-proc globalUrl(host: string, port: int): string =
-  ## Builds the default global websocket URL.
-  "ws://" & host & ":" & $port & GlobalWebSocketPath
-
 proc deriveGlobalUrl(playerUrl: string): string =
   ## Derives a global URL from an explicit player URL.
   var parsed = parseUri(playerUrl)
@@ -1007,48 +1597,79 @@ proc deriveGlobalUrl(playerUrl: string): string =
   parsed.query = ""
   $parsed
 
+proc isWebSocketUrl(value: string): bool =
+  ## Returns true when a value is a complete WebSocket URL.
+  value.startsWith("ws://") or value.startsWith("wss://")
+
+proc redactedUrl(url: string): string =
+  ## Returns a log-safe WebSocket URL.
+  const Key = "token="
+  let tokenStart = url.find(Key)
+  if tokenStart < 0:
+    return url
+  let valueStart = tokenStart + Key.len
+  var valueEnd = valueStart
+  while valueEnd < url.len and url[valueEnd] notin {'&', '#'}:
+    inc valueEnd
+  let suffix =
+    if valueEnd < url.len:
+      url[valueEnd .. ^1]
+    else:
+      ""
+  url[0 ..< valueStart] & "<redacted>" & suffix
+
 proc initBot(): Bot =
   ## Builds the initial bot state.
   result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.sprites = initTable[int, SpriteImage]()
+  result.frameObjects = initTable[int, GlobalObject]()
   result.objects = initTable[int, GlobalObject]()
   result.lastMask = 0xff'u8
   result.targetRow = BaseTerrainY - 1
 
 proc runBot(
-  host = "localhost",
-  port = PlayerDefaultPort,
+  address = DefaultPlayerAddress,
   name = "",
-  explicitUrl = "",
   token = "",
   slot = -1,
-  maxSteps = 0
+  maxSteps = 0,
+  gui = false
 ) =
   ## Connects to Infinite Blocks and plays through sprite protocol.
   let
-    playerUrl =
-      if explicitUrl.len > 0:
-        explicitUrl.normalizePlayerUrl(name, slot, token)
+    playerUrl = address.normalizePlayerUrl(name, slot, token)
+    mapUrl = address.deriveGlobalUrl()
+  echo "stacker player websocket: ", playerUrl.redactedUrl()
+  echo "stacker global websocket: ", mapUrl.redactedUrl()
+  flushFile(stdout)
+  var
+    bot = initBot()
+    viewer =
+      if gui:
+        initViewerApp()
       else:
-        spriteUrl(host, port, name, slot, token)
-    mapUrl =
-      if explicitUrl.len > 0:
-        explicitUrl.deriveGlobalUrl()
-      else:
-        globalUrl(host, port)
+        nil
+    connected = false
 
-  while true:
+  while viewer.viewerOpen():
     try:
-      var bot = initBot()
+      bot = initBot()
       let
         playerWs = newWebSocket(playerUrl)
         globalWs = newWebSocket(mapUrl)
+      connected = true
       playerWs.send(chatBlob("stacker online"), BinaryMessage)
       discard playerWs.receiveUpdates(bot, true, -1)
       discard globalWs.receiveUpdates(bot, false, -1)
       var lastMask = 0xff'u8
-      while true:
-        if not globalWs.receiveUpdates(bot, false, -1):
+      while viewer.viewerOpen():
+        if gui:
+          viewer.pumpViewer(bot, connected, playerUrl)
+          if not viewer.viewerOpen():
+            playerWs.close()
+            globalWs.close()
+            return
+        if not globalWs.receiveUpdates(bot, false, if gui: 10 else: -1):
           continue
         inc bot.frameTick
         discard playerWs.receiveUpdates(bot, true, 0)
@@ -1062,39 +1683,70 @@ proc runBot(
           playerWs.close()
           globalWs.close()
           return
+        if gui:
+          viewer.pumpViewer(bot, connected, playerUrl)
     except CatchableError as e:
       echo "stacker reconnecting: ", e.msg
-      sleep(250)
+      connected = false
+      if gui:
+        let startTime = epochTime()
+        while viewer.viewerOpen() and epochTime() - startTime < 0.25:
+          viewer.pumpViewer(bot, connected, playerUrl)
+          sleep(10)
+      else:
+        sleep(250)
 
 when isMainModule:
   var
-    address = "localhost"
-    port = PlayerDefaultPort
+    address = getEnv(EngineWsEnv)
     name = ""
-    explicitUrl = getEnv(EngineWsEnv)
     token = ""
     slot = -1
     maxSteps = 0
+    gui = false
+    legacyPort = 0
+  if address.len == 0:
+    address = DefaultPlayerAddress
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       case key
-      of "address":
+      of "address", "url", "player-url", "socket":
         address = val
       of "port":
-        port = parseInt(val)
+        legacyPort = parseInt(val)
       of "name":
         name = val
-      of "url", "player-url", "socket":
-        explicitUrl = val
       of "token":
         token = val
       of "slot":
         slot = parseInt(val)
       of "max-steps":
         maxSteps = parseInt(val)
+      of "gui":
+        gui = true
+      else:
+        discard
+    of cmdShortOption:
+      case key
+      of "p":
+        raise newException(
+          ValueError,
+          "Use --address:ws://host:port/player instead of -p."
+        )
       else:
         discard
     else:
       discard
-  runBot(address, port, name, explicitUrl, token, slot, maxSteps)
+  if not address.isWebSocketUrl():
+    if legacyPort > 0:
+      address = spriteUrl(address, legacyPort, name, slot, token)
+      name = ""
+      token = ""
+      slot = -1
+    else:
+      raise newException(
+        ValueError,
+        "--address must be a full WebSocket URL like ws://localhost:8080/player."
+      )
+  runBot(address, name, token, slot, maxSteps, gui)

@@ -4,6 +4,7 @@ import
 
 const
   GlobalClientSourceRelative = "clients" / "global_client.nim"
+  PlayerClientSourceRelative = "clients" / "player_client.nim"
   CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
   SpriteProtocolSpec = "sprite_v1.md"
@@ -94,9 +95,9 @@ proc usage(): string =
     "[--port:N] [--players:N] [--bots:BOT:N] [--global] [--html] " &
     "[--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
-    "Human clients open in the browser from the game's /client routes.\n" &
+    "Human clients open as native Nim windows by default.\n" &
     "--global opens a global viewer and defaults humans to zero.\n" &
-    "--html opens the global viewer in the browser instead of a native window.\n" &
+    "--html opens human and global clients in the browser instead.\n" &
     "Unknown options are passed to the game server when quick_run starts it.\n" &
     "Examples:\n" &
     "  quick_run fancy_cookout\n" &
@@ -882,6 +883,18 @@ proc globalWsAddress(config: QuickRunConfig): string =
   ## Returns the websocket address for the global viewer.
   "ws://" & browserHost(config.address) & ":" & $config.port & "/global"
 
+proc playerWsAddress(config: QuickRunConfig): string =
+  ## Returns the websocket address for a player client.
+  "ws://" & browserHost(config.address) & ":" & $config.port & "/player"
+
+proc playerClientSource(game: GameLaunch): string =
+  ## Returns the native player client source for one game.
+  case game.playerProtocol
+  of SpriteClient:
+    GlobalClientSourceRelative
+  of FrameClient:
+    PlayerClientSourceRelative
+
 proc globalPalettePath(rootDir: string, game: GameLaunch): string =
   ## Returns the palette path for the native global viewer.
   let gamePalettePath = game.workDir / "data" / "pallete.png"
@@ -914,6 +927,43 @@ proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
       game.name & " player " & $i,
       browserUrl(config.address, config.port, "/client/player", params)
     )
+
+proc launchNativePlayerClients(
+  config: QuickRunConfig,
+  game: GameLaunch,
+  rootDir: string
+): bool =
+  ## Starts native player client processes for one quick-run game.
+  if config.players <= 0:
+    return true
+
+  let
+    sourceRelative = game.playerClientSource()
+    playerExe = exePathFor(rootDir, sourceRelative)
+  for i in 1 .. config.players:
+    var args = @[
+      "--address:" & playerWsAddress(config),
+      "--title:" & game.name & " player " & $i,
+      "--joystick:" & $i
+    ]
+    if game.playerProtocol == SpriteClient:
+      args.add("--player")
+      args.add("--palette:" & globalPalettePath(rootDir, game))
+    if config.reconnectSeconds.len > 0:
+      args.add("--reconnect:" & config.reconnectSeconds)
+    try:
+      clientProcesses.add(
+        launchManagedProcess(
+          game.name & " player " & $i & " client",
+          playerExe,
+          rootDir,
+          args
+        )
+      )
+    except CatchableError as e:
+      echo "Failed to start player ", i, ": ", e.msg
+      return false
+  true
 
 proc launchNativeGlobalViewer(
   config: QuickRunConfig,
@@ -999,6 +1049,7 @@ proc runQuickRun(config: QuickRunConfig): int =
     if result != 0:
       return result
 
+  var compiledClientSources: seq[string]
   if config.globalViewer and not config.htmlViewer:
     result = compileTarget(
       nimExe,
@@ -1008,6 +1059,20 @@ proc runQuickRun(config: QuickRunConfig): int =
     )
     if result != 0:
       return result
+    compiledClientSources.add(GlobalClientSourceRelative)
+
+  if config.players > 0 and not config.htmlViewer:
+    let sourceRelative = game.playerClientSource()
+    if sourceRelative notin compiledClientSources:
+      result = compileTarget(
+        nimExe,
+        rootDir,
+        game.name & " player client",
+        sourceRelative
+      )
+      if result != 0:
+        return result
+      compiledClientSources.add(sourceRelative)
 
   var compiledBots: seq[string]
   for bot in botLaunches:
@@ -1049,7 +1114,11 @@ proc runQuickRun(config: QuickRunConfig): int =
       cleanupChildren()
       return 1
 
-  openHtmlClients(config, game)
+  if config.htmlViewer:
+    openHtmlClients(config, game)
+  elif not launchNativePlayerClients(config, game, rootDir):
+    cleanupChildren()
+    return 1
 
   let mapArg = botMapArg(rootDir, config.botMapPath)
   var globalBotIndex = 0
