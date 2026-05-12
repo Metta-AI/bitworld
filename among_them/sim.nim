@@ -1641,6 +1641,30 @@ proc rewardAccountIndex(sim: SimServer, address: string): int =
       return i
   -1
 
+proc ensureRewardAccount(sim: var SimServer, address: string): int =
+  ## Returns the reward account index, creating the account if needed.
+  result = sim.rewardAccountIndex(address)
+  if result < 0:
+    sim.rewardAccounts.add RewardAccount(
+      address: address,
+      slotIndex: -1,
+      reward: 0
+    )
+    result = sim.rewardAccounts.high
+
+proc bindRewardAccountSlot(
+  sim: var SimServer,
+  accountIndex,
+  slotIndex: int
+) =
+  ## Binds a reward account to the stable player slot for this match.
+  if accountIndex < 0 or accountIndex >= sim.rewardAccounts.len:
+    return
+  for i in 0 ..< sim.rewardAccounts.len:
+    if i != accountIndex and sim.rewardAccounts[i].slotIndex == slotIndex:
+      sim.rewardAccounts[i].slotIndex = -1
+  sim.rewardAccounts[accountIndex].slotIndex = slotIndex
+
 proc rewardAccountIndexForSlot(sim: SimServer, slotIndex: int): int =
   ## Returns the newest reward account index for a player slot.
   if slotIndex < 0 or sim.rewardAccounts.len == 0:
@@ -1659,8 +1683,6 @@ proc playerIndexForSlot(sim: SimServer, slotIndex: int): int =
 
 proc playerResultSlotCount(sim: SimServer): int =
   ## Returns the number of player slots represented in final results.
-  if sim.config.slots.len == 0:
-    return sim.players.len
   result = sim.config.slots.len
   for player in sim.players:
     result = max(result, player.joinOrder + 1)
@@ -1698,12 +1720,15 @@ proc addPlayer*(
         sim.resolvePlayerSlot(address, token, requestedSlot)
     slot = sim.config.slotConfig(order)
     spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
-    rewardAccount = sim.rewardAccountIndex(address)
     color =
       if slot.hasColor:
         slot.color
       else:
         PlayerColors[order mod PlayerColors.len]
+    accountIndex = sim.ensureRewardAccount(address)
+  sim.bindRewardAccountSlot(accountIndex, order)
+  sim.rewardAccounts[accountIndex].hasRole = false
+  sim.rewardAccounts[accountIndex].won = false
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
@@ -1717,9 +1742,7 @@ proc addPlayer*(
     color: color,
     lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
     activeTask: -1,
-    reward:
-      if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
-      else: 0
+    reward: sim.rewardAccounts[accountIndex].reward
   )
   sim.advanceJoinOrder()
   sim.arrangeHomePositions()
@@ -1738,15 +1761,8 @@ proc addReward*(sim: var SimServer, playerIndex, amount: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let address = sim.players[playerIndex].address
-  var index = sim.rewardAccountIndex(address)
-  if index < 0:
-    sim.rewardAccounts.add RewardAccount(
-      address: address,
-      slotIndex: sim.players[playerIndex].joinOrder,
-      reward: 0
-    )
-    index = sim.rewardAccounts.high
-  sim.rewardAccounts[index].slotIndex = sim.players[playerIndex].joinOrder
+  let index = sim.ensureRewardAccount(address)
+  sim.bindRewardAccountSlot(index, sim.players[playerIndex].joinOrder)
   sim.rewardAccounts[index].reward += amount
   sim.players[playerIndex].reward = sim.rewardAccounts[index].reward
 
@@ -1758,15 +1774,8 @@ proc rewardAccountForPlayer(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return -1
   let address = sim.players[playerIndex].address
-  result = sim.rewardAccountIndex(address)
-  if result < 0:
-    sim.rewardAccounts.add RewardAccount(
-      address: address,
-      slotIndex: sim.players[playerIndex].joinOrder,
-      reward: 0
-    )
-    result = sim.rewardAccounts.high
-  sim.rewardAccounts[result].slotIndex = sim.players[playerIndex].joinOrder
+  result = sim.ensureRewardAccount(address)
+  sim.bindRewardAccountSlot(result, sim.players[playerIndex].joinOrder)
 
 proc recordGameRoleAssigned*(
   sim: var SimServer,
@@ -1845,19 +1854,8 @@ proc playerResultsJson*(sim: SimServer): string =
     voteSkipList = newJArray()
     voteTimeoutList = newJArray()
     results = newJObject()
-  if sim.config.slots.len > 0:
-    for slotIndex in 0 ..< sim.playerResultSlotCount():
-      resultSlots.add(slotIndex)
-  else:
-    for i in 0 ..< sim.players.len:
-      resultSlots.add(sim.players[i].joinOrder)
-    for i in 1 ..< resultSlots.len:
-      let value = resultSlots[i]
-      var j = i - 1
-      while j >= 0 and resultSlots[j] > value:
-        resultSlots[j + 1] = resultSlots[j]
-        dec j
-      resultSlots[j + 1] = value
+  for slotIndex in 0 ..< sim.playerResultSlotCount():
+    resultSlots.add(slotIndex)
   for slotIndex in resultSlots:
     let
       playerIndex = sim.playerIndexForSlot(slotIndex)
@@ -1866,8 +1864,13 @@ proc playerResultsJson*(sim: SimServer): string =
           sim.rewardAccountIndex(sim.players[playerIndex].address)
         else:
           sim.rewardAccountIndexForSlot(slotIndex)
+      slotConfig = sim.config.slotConfig(slotIndex)
     var
-      name = ""
+      name =
+        if slotConfig.name.len > 0:
+          slotConfig.name
+        else:
+          "player-" & $slotIndex
       reward = 0
       playerRole = Crewmate
       hasRole = false
@@ -1898,10 +1901,8 @@ proc playerResultsJson*(sim: SimServer): string =
       hasRole = true
       playerWon = not sim.timeLimitReached and player.role == sim.winner
     elif accountIndex < 0:
-      let slot = sim.config.slotConfig(slotIndex)
-      name = slot.name
-      if slot.hasRole:
-        playerRole = slot.role
+      if slotConfig.hasRole:
+        playerRole = slotConfig.role
         hasRole = true
     names.add(%name)
     scores.add(%reward)
@@ -2960,10 +2961,27 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   sim.timeLimitReached = timeLimitReached
   if timeLimitReached:
     return
+  var awardedAccounts = newSeq[bool](sim.rewardAccounts.len)
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == winner:
+      let accountIndex = sim.rewardAccountForPlayer(i)
+      if awardedAccounts.len < sim.rewardAccounts.len:
+        awardedAccounts.setLen(sim.rewardAccounts.len)
+      if accountIndex >= 0 and accountIndex < awardedAccounts.len:
+        awardedAccounts[accountIndex] = true
       sim.addReward(i, WinReward)
       sim.recordGameWin(i)
+  for i in 0 ..< sim.rewardAccounts.len:
+    if i < awardedAccounts.len and awardedAccounts[i]:
+      continue
+    if not sim.rewardAccounts[i].hasRole or sim.rewardAccounts[i].role != winner:
+      continue
+    sim.rewardAccounts[i].reward += WinReward
+    sim.rewardAccounts[i].won = true
+    if winner == Imposter:
+      inc sim.rewardAccounts[i].winsImposter
+    else:
+      inc sim.rewardAccounts[i].winsCrewmate
 
 proc gameTicksElapsed*(sim: SimServer): int =
   ## Returns ticks elapsed since the current game left the lobby.
@@ -3727,6 +3745,9 @@ proc resetToLobby*(sim: var SimServer) =
   sim.lastLobbySecondsLogged = -1
   for task in sim.tasks.mitems:
     task.completed = @[]
+  for account in sim.rewardAccounts.mitems:
+    account.hasRole = false
+    account.won = false
 
 proc stepLobby(sim: var SimServer) =
   ## Advances the lobby start countdown.
