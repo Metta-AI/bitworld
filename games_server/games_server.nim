@@ -29,6 +29,8 @@ const
   HealthPath = "/healthz"
   ClientPath = "/client/"
   CreatePath = "/games/create"
+  UploadGamePath = "/uploads/game"
+  UploadBotPath = "/uploads/bot"
   ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
@@ -175,6 +177,12 @@ th {
 .textarea {
   width: min(620px, calc(100vw - 96px));
   height: 68px;
+  border: 1px solid #707096;
+  font: 11px Monaco, Consolas, monospace;
+}
+.manifestTextarea {
+  width: min(800px, calc(100vw - 96px));
+  height: 600px;
   border: 1px solid #707096;
   font: 11px Monaco, Consolas, monospace;
 }
@@ -534,6 +542,18 @@ proc replayDir(): string =
   ## Returns the configured host replay directory.
   envValue(ReplayDirEnv, defaultReplayDir())
 
+proc uploadRootDir(): string =
+  ## Returns the root directory for uploaded game server files.
+  parentDir(replayDir())
+
+proc uploadGamesDir(): string =
+  ## Returns the uploaded Coworld manifest directory.
+  uploadRootDir() / "games"
+
+proc uploadPlayersDir(): string =
+  ## Returns the uploaded CoPlayer manifest directory.
+  uploadRootDir() / "players"
+
 proc gamesRoot(): string =
   ## Returns the local Bitworld games root.
   parentDir(parentDir(currentSourcePath()))
@@ -716,11 +736,33 @@ proc addManifestPath(paths: var seq[string], path: string) =
       return
   paths.add(path)
 
+proc uploadedGameManifestPaths(): seq[string] =
+  ## Lists uploaded Coworld manifests.
+  let root = uploadGamesDir()
+  if not dirExists(root):
+    return
+  for path in walkFiles(root / "*.json"):
+    result.add(path)
+  for path in walkFiles(root / "*" / CoworldManifestName):
+    result.add(path)
+
+proc uploadedPlayerManifestPaths(): seq[string] =
+  ## Lists uploaded CoPlayer manifests.
+  let root = uploadPlayersDir()
+  if not dirExists(root):
+    return
+  for path in walkFiles(root / "*.json"):
+    result.add(path)
+  for path in walkFiles(root / "*" / CoplayerManifestName):
+    result.add(path)
+
 proc listGameManifests(): seq[GameManifest] =
   ## Scans game folders for Coworld manifests.
   var paths: seq[string]
   for dir in walkDirs(gamesRoot() / "*"):
     paths.addManifestPath(dir / CoworldManifestName)
+  for path in uploadedGameManifestPaths():
+    paths.addManifestPath(path)
   paths.addManifestPath(manifestPath())
   paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
   for path in paths:
@@ -744,6 +786,14 @@ proc listCoplayerManifests(): seq[CoplayerManifest] =
         echo "Skipping Coworld players ", coworldPath, ": ", e.msg
     for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
       paths.addManifestPath(path)
+  for coworldPath in uploadedGameManifestPaths():
+    try:
+      for player in readCoworldPlayers(coworldPath):
+        result.add(player)
+    except GamesServerError as e:
+      echo "Skipping uploaded Coworld players ", coworldPath, ": ", e.msg
+  for path in uploadedPlayerManifestPaths():
+    paths.addManifestPath(path)
   paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
   for path in paths:
     result.add(readCoplayerManifest(path))
@@ -877,6 +927,18 @@ proc ensureReplayDir() =
     raise newException(
       GamesServerError,
       "could not create replay directory: " & e.msg
+    )
+
+proc ensureUploadDirs() =
+  ## Creates the upload manifest directories when they are missing.
+  try:
+    createDir(uploadRootDir())
+    createDir(uploadGamesDir())
+    createDir(uploadPlayersDir())
+  except OSError as e:
+    raise newException(
+      GamesServerError,
+      "could not create upload directories: " & e.msg
     )
 
 proc dockerResult(args: openArray[string]): CommandResult =
@@ -1272,6 +1334,101 @@ proc formValue(form: seq[(string, string)], key: string): string =
   for (formKey, value) in form:
     if formKey == key:
       return value
+
+proc uploadManifestText(form: seq[(string, string)]): string =
+  ## Reads a manifest upload body from a form.
+  result = formValue(form, "manifest").strip()
+  if result.len == 0:
+    raise newException(GamesServerError, "manifest is empty")
+
+proc parseUploadManifest(text: string): JsonNode =
+  ## Parses an uploaded manifest JSON document.
+  try:
+    result = parseJson(text)
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not parse manifest JSON: " & e.msg
+    )
+  if result.kind != JObject:
+    raise newException(GamesServerError, "manifest must be a JSON object")
+
+proc uploadSafeName(name, label: string): string =
+  ## Returns a safe uploaded manifest directory name.
+  result = cleanContainerName(name)
+  if result.len == 0:
+    raise newException(GamesServerError, label & " name is not file-safe")
+
+proc uploadGameName(node: JsonNode): string =
+  ## Reads and validates the name from an uploaded Coworld manifest.
+  let game = node.manifestObject("game")
+  if game.isNil:
+    raise newException(GamesServerError, "Coworld manifest missing game")
+  result = game.requireManifestString("name", "coworld.game")
+  if game.manifestImage().len == 0:
+    raise newException(GamesServerError, "coworld.game missing image")
+
+proc uploadBotName(node: JsonNode): string =
+  ## Reads and validates the name from an uploaded CoPlayer manifest.
+  if not node.manifestObject("game").isNil:
+    raise newException(
+      GamesServerError,
+      "use Upload game for Coworld manifests"
+    )
+  result = node.requireManifestString("name", "coplayer")
+  if node.manifestString("image_uri", "").len == 0:
+    raise newException(GamesServerError, "coplayer missing image_uri")
+  if node.manifestStringArray("games").len == 0:
+    raise newException(GamesServerError, "coplayer missing games")
+
+proc writeUploadedManifest(
+  dir,
+  safeName,
+  fileName,
+  text: string
+): string =
+  ## Writes one uploaded manifest under a stable directory.
+  let targetDir = dir / safeName
+  try:
+    createDir(targetDir)
+    result = targetDir / fileName
+    if text.endsWith("\n"):
+      writeFile(result, text)
+    else:
+      writeFile(result, text & "\n")
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not write uploaded manifest: " & e.msg
+    )
+
+proc saveUploadedGame(text: string): GameManifest =
+  ## Saves and reads one uploaded Coworld manifest.
+  let
+    node = parseUploadManifest(text)
+    name = uploadGameName(node)
+    safeName = uploadSafeName(name, "game")
+    path = writeUploadedManifest(
+      uploadGamesDir(),
+      safeName,
+      CoworldManifestName,
+      text
+    )
+  readGameManifest(path)
+
+proc saveUploadedBot(text: string): CoplayerManifest =
+  ## Saves and reads one uploaded CoPlayer manifest.
+  let
+    node = parseUploadManifest(text)
+    name = uploadBotName(node)
+    safeName = uploadSafeName(name, "bot")
+    path = writeUploadedManifest(
+      uploadPlayersDir(),
+      safeName,
+      CoplayerManifestName,
+      text
+    )
+  readCoplayerManifest(path)
 
 proc botCountField(bot: CoplayerManifest): string =
   ## Returns the create-form count field for one CoPlayer.
@@ -2691,6 +2848,18 @@ proc renderManifestTable(): string =
                 ttype "submit"
                 say "Validate"
 
+proc renderUploadButtons(): string =
+  ## Renders manifest upload navigation buttons.
+  renderFragment:
+    p ".small right":
+      a ".button":
+        href UploadGamePath
+        say "Upload game"
+      say " "
+      a ".button":
+        href UploadBotPath
+        say "Upload bot"
+
 proc renderCreateForm(manifestInfo: GameManifest): string =
   ## Renders the manifest-backed create-game form.
   let
@@ -3053,6 +3222,7 @@ proc renderPage(
   ## Renders the full games server page.
   let
     manifestTable = renderManifestTable()
+    uploadButtons = renderUploadButtons()
     bulkControls = renderBulkControls()
     gamesTable = renderGamesTable(request, games, bots)
     replayServersTable = renderReplayServersTable(request, replayServers)
@@ -3085,6 +3255,7 @@ proc renderPage(
                 say esc(notice)
           say bulkControls
           say manifestTable
+          say uploadButtons
           p ".small":
             say " "
           table:
@@ -3149,6 +3320,57 @@ proc renderCreatePage(notice = "", manifestKey = ""): string =
               target "_blank"
               say esc(manifestInfo.key)
             say "."
+
+proc renderUploadPage(
+  path,
+  titleText,
+  label,
+  notice: string
+): string =
+  ## Renders a manifest upload page.
+  render:
+    html:
+      head:
+        title:
+          say titleText
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".page":
+          table:
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say titleText
+                p ".small":
+                  say label
+              td ".row2 right small":
+                a:
+                  href "/"
+                  say "Back"
+          if notice.len > 0:
+            p ".notice small":
+              b:
+                say esc(notice)
+          form:
+            action path
+            tmethod "post"
+            table:
+              tr:
+                td ".cat":
+                  say label
+              tr:
+                td ".row1":
+                  textarea ".manifestTextarea":
+                    name "manifest"
+                    rows "30"
+                    cols "100"
+              tr:
+                td ".row2 right":
+                  button ".button":
+                    ttype "submit"
+                    say "Upload"
 
 proc renderValidationTable(
   criteria: seq[ValidationCriterion]
@@ -3610,6 +3832,44 @@ proc createHandler(request: Request) =
   let game = createGame(parseFormBody(request))
   request.respondRedirect("/?notice=created+" & game.name)
 
+proc uploadGameFormHandler(request: Request, notice = "") =
+  ## Handles the upload-game form route.
+  request.respondHtml(200, renderUploadPage(
+    UploadGamePath,
+    "Upload Game",
+    "Paste a Coworld manifest.",
+    notice
+  ))
+
+proc uploadBotFormHandler(request: Request, notice = "") =
+  ## Handles the upload-bot form route.
+  request.respondHtml(200, renderUploadPage(
+    UploadBotPath,
+    "Upload Bot",
+    "Paste a CoPlayer manifest.",
+    notice
+  ))
+
+proc uploadGameHandler(request: Request) =
+  ## Handles uploaded Coworld manifests.
+  ensureUploadDirs()
+  let manifest = saveUploadedGame(
+    uploadManifestText(parseFormBody(request))
+  )
+  request.respondRedirect(
+    "/?notice=uploaded+game+" & encodeUrlComponent(manifest.name)
+  )
+
+proc uploadBotHandler(request: Request) =
+  ## Handles uploaded CoPlayer manifests.
+  ensureUploadDirs()
+  let bot = saveUploadedBot(
+    uploadManifestText(parseFormBody(request))
+  )
+  request.respondRedirect(
+    "/?notice=uploaded+bot+" & encodeUrlComponent(bot.name)
+  )
+
 proc validationHandler(request: Request) =
   ## Handles Coworld validation requests.
   let
@@ -3781,6 +4041,12 @@ proc errorHandler(request: Request, e: ref Exception) =
       request.requestManifestKey()
     ))
     return
+  if request.path == UploadGamePath:
+    request.uploadGameFormHandler(e.msg)
+    return
+  if request.path == UploadBotPath:
+    request.uploadBotFormHandler(e.msg)
+    return
   let containers = safeListGames()
   request.respondHtml(
     500,
@@ -3807,6 +4073,10 @@ proc httpHandlerUnsafe(request: Request) =
       request.indexHandler()
     elif request.path == CreatePath and request.httpMethod == "GET":
       request.createFormHandler()
+    elif request.path == UploadGamePath and request.httpMethod == "GET":
+      request.uploadGameFormHandler()
+    elif request.path == UploadBotPath and request.httpMethod == "GET":
+      request.uploadBotFormHandler()
     elif request.path == LogsPath and request.httpMethod == "GET":
       request.logsHandler()
     elif request.path == ScoresPath and request.httpMethod == "GET":
@@ -3817,6 +4087,10 @@ proc httpHandlerUnsafe(request: Request) =
       request.clientHandler()
     elif request.path == CreatePath and request.httpMethod == "POST":
       request.createHandler()
+    elif request.path == UploadGamePath and request.httpMethod == "POST":
+      request.uploadGameHandler()
+    elif request.path == UploadBotPath and request.httpMethod == "POST":
+      request.uploadBotHandler()
     elif request.path == ValidationPath and request.httpMethod == "POST":
       request.validationHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
@@ -3857,6 +4131,7 @@ proc httpHandler(request: Request) {.gcsafe.} =
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
+  ensureUploadDirs()
   let server = newServer(httpHandler, workerThreads = 4)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
