@@ -5,13 +5,17 @@ const
   MaxFactLen* = 38
 
 type
+  World* = object
+    title*: string
+    description*: string
+
   Soul* = object
     passions*: seq[string]
 
 proc newSoul*(): Soul =
   Soul(passions: @[])
 
-proc generateWorld*(soul: Soul): tuple[title: string, description: string] =
+proc generateWorld*(soul: Soul): World =
   const seeds = [
     "bone", "silk", "rust", "tide", "moss", "salt", "wax", "iron",
     "glass", "thorn", "ember", "frost", "dust", "hollow", "ink", "veil",
@@ -67,10 +71,11 @@ proc generateWorld*(soul: Soul): tuple[title: string, description: string] =
     result.title = "the nameless land"
     result.description = "a world where shadows speak and the forgotten remember"
 
-proc generateFacts*(soul: Soul, chatLog: seq[string]): array[3, string] =
+proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, string] =
   var prompt = ""
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
-  prompt &= "Generate exactly 3 short mystical facts about how the world works.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "Generate exactly 3 short mystical facts about how this world works.\n"
   prompt &= "Each fact MUST be " & $(MaxFactLen - 8) & " characters or fewer.\n"
   prompt &= "Each fact should be a single lowercase statement about a rule of the world.\n"
 

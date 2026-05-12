@@ -89,8 +89,7 @@ type
     factTimer: int
     worldStep: WorldStep
     worldTimer: int
-    worldTitle: string
-    worldDescription: string
+    world: World
     fb: Framebuffer
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
@@ -162,7 +161,7 @@ proc chatLogStrings(sim: SimServer): seq[string] =
 
 proc generateFactOptions(sim: var SimServer) =
   let player = sim.players[sim.currentTurn]
-  let facts = player.soul.generateFacts(sim.chatLogStrings())
+  let facts = player.soul.generateFacts(sim.world, sim.chatLogStrings())
   sim.factChoice.options = facts
   sim.factChoice.selected = -1
   sim.factChoice.step = FactReading
@@ -394,7 +393,7 @@ proc renderWorld(sim: var SimServer) =
     sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 2)
   of WorldTitle:
     let line1 = "the world"
-    let line2 = sim.worldTitle
+    let line2 = sim.world.title
     let x1 = (ScreenWidth - line1.len * CharWidth) div 2
     let x2 = (ScreenWidth - line2.len * CharWidth) div 2
     let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
@@ -403,10 +402,10 @@ proc renderWorld(sim: var SimServer) =
     sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line2, x2, y2, 2)
   of WorldDescription:
     let maxChars = charsFromX(TextMargin)
-    let lineCount = max(1, (sim.worldDescription.len + maxChars - 1) div maxChars)
+    let lineCount = max(1, (sim.world.description.len + maxChars - 1) div maxChars)
     let totalH = lineCount * 8
     let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
-    discard sim.blitTextWrappedTinted(sim.worldDescription, TextMargin, startY, 8, 2)
+    discard sim.blitTextWrappedTinted(sim.world.description, TextMargin, startY, 8, 2)
 
 proc renderFact(sim: var SimServer) =
   case sim.factChoice.step
@@ -466,15 +465,13 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
   of PhaseWorld:
     dec sim.worldTimer
     if sim.worldStep == WorldGazing and sim.worldTimer <= 0:
-      let world = sim.players[0].soul.generateWorld()
-      sim.worldTitle = world.title
-      sim.worldDescription = world.description
+      sim.world = sim.players[0].soul.generateWorld()
       sim.worldStep = WorldTitle
       sim.worldTimer = WorldTitleTicks
     elif sim.worldStep == WorldTitle and sim.worldTimer <= 0:
       sim.worldStep = WorldDescription
       sim.worldTimer = WorldDescTicks
-      echo "  World: ", sim.worldDescription
+      echo "  World: ", sim.world.description
     elif sim.worldStep == WorldDescription and sim.worldTimer <= 0:
       sim.phase = PhaseMagicalFacts
       sim.currentTurn = 0
