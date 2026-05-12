@@ -1,30 +1,112 @@
 # Among Them
 
-Among Them is a Bit World social deduction game set on the Skeld. Crewmates
-complete tasks, report bodies, chat during meetings, and vote out suspects.
-Imposters try to blend in, use cooldown-limited kills, and survive the vote.
+Among Them is an uploaded Coworld social deduction game. Crewmates complete
+tasks, report bodies, chat during meetings, and vote out suspects. Imposters
+blend in, use cooldown-limited kills, and survive the vote.
 
-The server hosts the player client, global viewer, and rewards viewer as static
-pages.
+Most players do not need this repository. The public path is:
 
-## Run The Server
+1. write a player process that connects to `COGAMES_ENGINE_WS_URL`;
+2. package it as a Linux Docker image;
+3. upload it with `coworld upload-policy`;
+4. submit it with `coworld submit`.
+
+The game source in this directory is useful when developing the game container,
+debugging the protocol, or studying the reference bots. Treat it as a source
+reference, not as a prerequisite for competing.
+
+## Coworld Contract
+
+Among Them follows the Coworld package contract defined by Metta's `coworld`
+package:
+
+- Coworld spec:
+  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
+- Cogame runtime spec:
+  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COGAME_README.md>
+- Runner contract:
+  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/runner/RUNNER_README.md>
+
+The uploaded Coworld manifest is `among_them/coworld_manifest.json`. It defines
+the game image, the default eight-player, two-imposter tournament variant with
+eight tasks per crewmate, the certification fixture, public protocol docs, and
+the public pages that Observatory renders for the uploaded Coworld.
+
+## Player Runtime
+
+In hosted Coworld episodes, Softmax runs the game container and each policy
+container separately. Each policy container receives:
+
+```text
+COGAMES_ENGINE_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
+```
+
+Connect to that URL exactly as supplied. The runner owns slot assignment and
+token generation. Do not hardcode a slot, guess a token, or connect to a local
+BitWorld server in hosted play.
+
+The player websocket uses Bitscreen v1:
+
+- Player protocol:
+  <https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md>
+- Global/replay viewer protocol:
+  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
+
+A player can be written in any language as long as its container starts the
+player process, connects to `COGAMES_ENGINE_WS_URL`, reads frames, and sends
+valid button or chat packets.
+
+## Playing And Submitting
+
+Use the public play prompt for the current CLI install and submit flow:
+
+```text
+https://softmax.com/play_amongthem.md
+```
+
+The durable command shape is:
+
+```sh
+softmax login
+docker buildx build --platform linux/amd64 -t my-among-them-policy:latest --load .
+coworld upload-policy my-among-them-policy:latest --name my-policy
+coworld submit my-policy:v1 --league <among-them-league-id>
+```
+
+If a policy needs API keys or other credentials at runtime, attach them to the
+policy version with `coworld upload-policy --secret-env KEY=VALUE`. Do not bake
+secrets into the image.
+
+For policy design and packaging details, see:
+
+- `players/how_to_make_a_bot.md`
+- `players/how_to_submit_coworld_policy.md`
+- `players/SMART_BOT_GUIDE.md`
+
+## Source Development
+
+The remaining sections are for BitWorld source development. They are useful for
+running the game locally, changing game mechanics, or debugging the reference
+players, but they are not required for uploaded Coworld play.
+
+### Run The Server
 
 From the game folder:
 
 ```sh
-cd /Users/me/p/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":6,"imposterCooldownTicks":1200,"voteTimerTicks":360}'
+cd /path/to/bitworld/among_them
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"imposterCooldownTicks":1200,"voteTimerTicks":6000}'
 ```
 
 Useful config fields:
 
-- `minPlayers`: Number of players required before the game starts.
-- `imposterCount`: Number of imposters.
-- `tasksPerPlayer`: Number of tasks assigned to each crewmate.
-- `imposterCooldownTicks`: Kill cooldown. This is the same as `killCooldownTicks`.
-- `voteTimerTicks`: Voting duration in ticks. At 24 FPS, 360 ticks is 15 seconds.
-- `buttonCalls`: Emergency button calls allowed per player.
-- `mapPath`: Map JSON file to load. The default is `map.json`.
+- `minPlayers`: number of players required before the game starts.
+- `imposterCount`: number of imposters.
+- `tasksPerPlayer`: number of tasks assigned to each crewmate.
+- `imposterCooldownTicks`: kill cooldown. This is the same as `killCooldownTicks`.
+- `voteTimerTicks`: voting duration in ticks. At 24 FPS, 6000 ticks is 250 seconds.
+- `buttonCalls`: emergency button calls allowed per player.
+- `mapPath`: map JSON file to load. The default is `map.json`.
 
 You can also load config from a file:
 
@@ -32,46 +114,22 @@ You can also load config from a file:
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config-file:config.json
 ```
 
-The same config file can be provided through the environment:
+The same config file can be provided through the Coworld runner environment:
 
 ```sh
 COGAME_CONFIG_URI=file://$PWD/config.json nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
-For the first test, it is useful to run one player with one task and no
-imposters. With no imposters, the crewmate only needs to complete all tasks to
-win.
+For the first source-level test, it is useful to run one player with one task
+and no imposters:
 
 ```sh
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
 ```
 
-You can also build and run docker images for the game and the player:
+### Runner Environment
 
-Game: `docker run --rm --name among_them -p 2000:2000 $(docker load -q -i $(nix build .#dockerImageAmongThem --print-out-paths --quiet --no-link --out-link dockerImageAmongThem.tar.gz) | sed -n 's/^Loaded image: //p') among_them --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'`
-
-Player: `docker run --rm --name nottoodumb --network=host $(docker load -q -i $(nix build .#dockerImageNottoodumb --print-out-paths --quiet --no-link --out-link dockerImageNottoodumb.tar.gz) | sed -n 's/^Loaded image: //p') nottoodumb --url:ws://localhost:2000 --name:player1`
-
-### Building docker images on macOS
-
-The docker images are Linux artifacts. On macOS, builds are routed to the
-nix-darwin linux-builder VM automatically. One-time setup:
-
-1. Add to your nix-darwin configuration (e.g. `darwin.nix`):
-   ```nix
-   nix.linux-builder.enable = true;
-   ```
-2. Run `darwin-rebuild switch`.
-3. Accept the builder VM's SSH host key (once):
-   ```sh
-   sudo ssh -i /etc/nix/builder_ed25519 -o StrictHostKeyChecking=accept-new -p 31022 builder@localhost echo ok
-   ```
-
-After this, the `nix build` commands above work identically on macOS and Linux.
-
-## Runner Environment
-
-Coworld runners configure file URIs with environment variables. Command line
+Coworld runners configure file URIs with environment variables. Command-line
 flags override these values when both are set.
 
 | Variable | Meaning |
@@ -90,11 +148,11 @@ COGAME_SAVE_REPLAY_URI=file://$PWD/run.bitreplay \
 nim r among_them.nim --address:0.0.0.0 --port:2000
 ```
 
-## Coworld Certification
+### Coworld Certification
 
-The Among Them coworld package entrypoint is `coworld_manifest.json` in this
-directory. From the repository root, build the local engine and player images
-before running the certifier:
+Certification is for Coworld authors changing the game package. From the
+repository root, build the local game and baseline player images before running
+the certifier:
 
 ```sh
 docker build \
@@ -116,12 +174,67 @@ Upload the certified Coworld with:
 uv run coworld upload-coworld among_them/coworld_manifest.json
 ```
 
-## Map Files
+### Browser Clients
+
+The game container serves these routes:
+
+- Player: `http://localhost:2000/clients/player?slot=0&token=...`
+- Global viewer: `http://localhost:2000/clients/global`
+- Replay viewer: `http://localhost:2000/clients/replay`
+- Admin panel: `http://localhost:2000/clients/admin`
+- Rewards: `http://localhost:2000/clients/rewards`
+
+The clients connect to the game-owned websocket routes on the same host:
+`/player`, `/global`, `/replay`, `/admin`, and `/reward`.
+
+### Run Local AI Players
+
+Run tool commands from the repo root:
+
+```sh
+cd /path/to/bitworld
+```
+
+The default source-level starter policy is `evidencebot_v2`
+(`among_them/players/evidencebot_v2.nim`). For a smaller baseline, use
+`nottoodumb`.
+
+Start one AI player:
+
+```sh
+nim r tools/quick_run among_them --connect --bots:evidencebot_v2:1 --address:localhost --port:2000
+```
+
+Start several AI players:
+
+```sh
+nim r tools/quick_run among_them --connect --bots:evidencebot_v2:8 --address:localhost --port:2000
+```
+
+Useful `quick_run` bot options:
+
+- `--bots:BOT:N`: number of bots to start.
+- `--bot-gui`: open bot debug viewer windows.
+- `--bot-name-prefix:NAME`: name bots `NAME1`, `NAME2`, and so on.
+- `--bot-map:PATH`: load the same map JSON as the server.
+
+Use `quick_run` to launch the server and native local clients together:
+
+```sh
+nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:4
+```
+
+You can save a replay while using `quick_run`:
+
+```sh
+nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:2 --save-replay:among_them.replay
+```
+
+### Map Files
 
 The default map is `map.json`. It controls the Skeld image, Aseprite layer
 indices, task stations, vents, emergency button rectangle, meeting home point,
-and room names used by the bots.
-Map images currently need to be `952x534`.
+and room names used by the bots. Map images currently need to be `952x534`.
 
 Use a different map with `--map`:
 
@@ -135,189 +248,16 @@ Or set it in config:
 nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"map.json","minPlayers":8}'
 ```
 
-## Browser Clients
-
-The server serves these pages:
-
-- Player: `http://localhost:2000/clients/player?slot=0&token=...`
-- Global viewer: `http://localhost:2000/clients/global`
-- Replay viewer: `http://localhost:2000/clients/replay`
-- Admin panel: `http://localhost:2000/clients/admin`
-- Rewards: `http://localhost:2000/clients/rewards`
-
-These routes are served from:
-
-- `clients/player_client.html`
-- `clients/global_client.html`
-- `clients/reward_client.html`
-- `clients/admin_client.html`
-
-The Coworld client routes connect to the game-owned websocket routes on the
-same host: `/player`, `/global`, `/replay`, `/admin`, and `/reward`.
-
-The admin panel shows live player stats, exposes the join QR, and includes live
-match controls. It sends admin playback commands over `/admin`, receives live
-stats over `/reward`, and sends match controls to `/control/*`. Use `Restart
-match` to queue a new match with the current connected players, or the `X`
-beside a connected player to kick that player from the game.
-
-## Run AI Players
-
-Run tool commands from the repo root:
-
-```sh
-cd /Users/me/p/bitworld
-```
-
-The default starter policy for these examples is **`evidencebot_v2`**
-(`among_them/players/evidencebot_v2.nim`): same perception stack as the older
-bots, with evidence-grounded voting and improved crewmate task throughput. For a
-smaller baseline implementation, use **`nottoodumb`**.
-
-Start one AI player first. This is useful with `minPlayers:1`,
-`imposterCount:0`, and `tasksPerPlayer:1` while testing.
-
-```sh
-nim r tools/quick_run among_them --connect --bots:evidencebot_v2:1 --address:localhost --port:2000
-```
-
-Then start several AI players at once:
-
-```sh
-nim r tools/quick_run among_them --connect --bots:evidencebot_v2:8 --address:localhost --port:2000
-```
-
-Useful `quick_run` bot options:
-
-- `--bots:BOT:N`: Number of bots to start.
-- `--bot-gui`: Open the bot debug viewer windows.
-- `--bot-name-prefix:NAME`: Name bots `NAME1`, `NAME2`, and so on.
-- `--bot-map:PATH`: Load the same map JSON as the server.
-
-Example with debug windows:
-
-```sh
-nim r tools/quick_run among_them --connect --bots:evidencebot_v2:2 --address:localhost --port:2000 --bot-gui
-```
-
-When testing a custom map, pass the same map to the bots:
-
-```sh
-nim r tools/quick_run among_them --connect --bots:evidencebot_v2:8 --address:localhost --port:2000 --bot-map:among_them/map.json
-```
-
-## Quick Local Run
-
-Use `quick_run` to launch the server and native local clients together. This is
-best for fast manual testing with human-controlled windows.
-Run it from the repo root:
-
-```sh
-cd /Users/me/p/bitworld
-nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:4
-```
-
-Use `--port` for the server port and `--address` for the server bind address.
-
-```sh
-nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:2
-```
-
-You can save a replay while using `quick_run`:
-
-```sh
-nim r tools/quick_run among_them --address:0.0.0.0 --port:2000 --players:2 --save-replay:among_them.replay
-```
-
-You can also set `COGAME_SAVE_REPLAY_URI` before running the server.
-
-## Common Setup
-
-Start an 8-player game with two imposters:
-
-```sh
-cd /Users/me/p/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":6,"imposterCooldownTicks":1200,"voteTimerTicks":360}'
-```
-
-In another terminal, start 8 AI players:
-
-```sh
-cd /Users/me/p/bitworld
-nim r tools/quick_run among_them --connect --bots:evidencebot_v2:8 --address:localhost --port:2000
-```
-
-Then open the global viewer:
-
-```text
-http://localhost:2000/global
-```
-
-## Submit to the Alignment League
-
-EvidenceBot v2 can be submitted to the Alignment League leaderboard via
-the `cogames` CLI. Run all commands from the repo root (`bitworld/`).
-
-1. Install cogames and authenticate:
-
-```sh
-uv venv .venv --python 3.12
-source .venv/bin/activate
-uv pip install cogames
-cogames auth login
-```
-
-2. Pick an Among Them season:
-
-```sh
-cogames season list
-```
-
-3. Upload and submit (replace `<SEASON>` with the season name):
-
-```sh
-POLICY_NAME="$USER-evidencebot-v2"
-SEASON=<SEASON>
-
-cogames upload \
-  -p class=evidencebot_v2_policy.EvidenceBotV2NimPolicy \
-  -f among_them/players/evidencebot_v2_policy.py \
-  -f among_them/players/build_evidencebot_v2.py \
-  -f among_them/players/evidencebot_v2.nim \
-  -f among_them/sim.nim \
-  -f among_them/votereader.nim \
-  -f common \
-  -f src/bitworld \
-  -f nimby.lock \
-  -n "$POLICY_NAME" \
-  --season "$SEASON"
-```
-
-The tournament worker compiles the Nim library inside Docker automatically.
-No pre-built binary is needed.
-
-4. Check submission status:
-
-```sh
-cogames submissions --season "$SEASON" --policy "$POLICY_NAME"
-```
-
-To validate locally without uploading, add `--dry-run` to the upload command.
-This runs one episode in the tournament Docker image and reports whether the
-policy loads and steps without errors.
-
-## Slots setup for tournament runner.
+### Slot Config For Source Tests
 
 The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
 `slots[0]`.
 
-Example config.json:
-
 ```json
 {
-  "maxGames":1,
-  "imposterCooldownTicks":100,
-  "tokens":[
+  "maxGames": 1,
+  "imposterCooldownTicks": 100,
+  "tokens": [
     "0xBADA55_0",
     "0xBADA55_1",
     "0xBADA55_2",
@@ -327,59 +267,18 @@ Example config.json:
     "0xBADA55_6",
     "0xBADA55_7"
   ],
-  "slots":[
-    {"name":"player1","role":"crew","color":"red"},
-    {"name":"player2","role":"crew","color":"blue"},
-    {"name":"player3","role":"crew","color":"green"},
-    {"name":"player4","role":"crew","color":"yellow"},
-    {"name":"player5","role":"crew","color":"lime"},
-    {"name":"player6","role":"crew","color":"cyan"},
-    {"name":"player7","role":"imposter","color":"pink"},
-    {"name":"player8","role":"imposter","color":"orange"}
+  "slots": [
+    { "name": "player1", "role": "crew", "color": "red" },
+    { "name": "player2", "role": "crew", "color": "blue" },
+    { "name": "player3", "role": "crew", "color": "green" },
+    { "name": "player4", "role": "crew", "color": "yellow" },
+    { "name": "player5", "role": "crew", "color": "lime" },
+    { "name": "player6", "role": "crew", "color": "pale blue" },
+    { "name": "player7", "role": "imposter", "color": "pink" },
+    { "name": "player8", "role": "imposter", "color": "orange" }
   ]
 }
 ```
 
-```sh
-set -gx COGAME_CONFIG_URI file://$PWD/config.json
-set -gx COGAME_RESULTS_URI file://$PWD/../tmp/scores.json
-set -gx COGAME_SAVE_REPLAY_URI file://$PWD/../tmp/replay.rep
-nim r among_them.nim --address:0.0.0.0 --port:2000
-```
-
-If the game has a slots config, then the player *MUST* use the slot count.
-They *MAY* use the name and token.
-
-http://localhost:2000/player?name=player1&token=0xBADA55_0&slot=0
-http://localhost:2000/player?name=player2&token=0xBADA55_1&slot=1
-http://localhost:2000/player?name=player3&token=0xBADA55_2&slot=2
-http://localhost:2000/player?name=player4&token=0xBADA55_3&slot=3
-http://localhost:2000/player?name=player5&token=0xBADA55_4&slot=4
-http://localhost:2000/player?name=player6&token=0xBADA55_5&slot=5
-http://localhost:2000/player?name=player7&token=0xBADA55_6&slot=6
-http://localhost:2000/player?name=player8&token=0xBADA55_7&slot=7
-
-When a game finishes with `maxGames` set to 1 or higher, `--save-scores` saves
-the scores to a file. `COGAME_RESULTS_URI` can be used instead.
-
-The file uses the JSON results schema from `coworld_manifest.json`: `scores`
-is required, and the game can include `names`, `win`, `tasks`, `kills`, and
-other per-slot fields.
-
-```json
-[
-  {"name": "player1", "reward": 8, "win": false, "tasks": 8, "kills": 0},
-  {"name": "player2", "reward": 8, "win": false, "tasks": 8, "kills": 0},
-  {"name": "player3", "reward": 7, "win": false, "tasks": 7, "kills": 0},
-  {"name": "player4", "reward": 6, "win": false, "tasks": 6, "kills": 0},
-  {"name": "player5", "reward": 8, "win": false, "tasks": 8, "kills": 0},
-  {"name": "player6", "reward": 8, "win": false, "tasks": 8, "kills": 0},
-  {"name": "player7", "reward": 160, "win": true, "tasks": 0, "kills": 6},
-  {"name": "player8", "reward": 130, "win": true, "tasks": 0, "kills": 3}
-]
-```
-
-
-## Note for usability
-
-Don't run things from the executable like `./among_them ...`. Run the `nim r among_them.nim ...` always.
+When a game finishes with `maxGames` set to 1 or higher, `COGAME_RESULTS_URI`
+writes scores using the JSON result schema from `coworld_manifest.json`.
