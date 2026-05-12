@@ -1,6 +1,7 @@
 import
   std/[json, os, unittest],
   ../replays,
+  ../server,
   ../sim
 
 const
@@ -142,6 +143,13 @@ suite "player slots":
     discard sim.addPlayer("same-name")
     expect AmongThemError:
       discard sim.addPlayer("same-name")
+
+  test "anonymous player names are unique":
+    var nextIndex = 1
+
+    check anonymousPlayerIdentity(nextIndex, []) == "Player1"
+    check anonymousPlayerIdentity(nextIndex, ["Player2"]) == "Player3"
+    check nextIndex == 4
 
   test "replay join stores name slot and token":
     let path = getTempDir() / "among_them_slots_replay.bitreplay"

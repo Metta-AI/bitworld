@@ -33,6 +33,7 @@ type
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
+    nextAnonymousPlayer: int
     config: GameConfig
 
   ServerThreadArgs = object
@@ -594,6 +595,7 @@ proc initAppState() =
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.spectators = @[]
+  appState.nextAnonymousPlayer = 1
   appState.config = defaultGameConfig()
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
@@ -652,18 +654,48 @@ proc cleanPlayerName(name: string): string =
     if ch.isSpaceAscii:
       ch = '_'
 
+proc generatedPlayerName*(index: int): string =
+  ## Returns the generated display name for an anonymous player index.
+  "Player" & $index
+
+proc anonymousPlayerIdentity*(
+  nextIndex: var int,
+  existingNames: openArray[string]
+): string =
+  ## Returns a unique generated identity for one nameless player.
+  if nextIndex <= 0:
+    nextIndex = 1
+  while true:
+    result = generatedPlayerName(nextIndex)
+    inc nextIndex
+    var taken = false
+    for name in existingNames:
+      if name == result:
+        taken = true
+        break
+    if not taken:
+      return
+
+proc nextAnonymousPlayerIdentity(): string =
+  ## Returns a unique generated identity from current server state.
+  {.gcsafe.}:
+    withLock appState.lock:
+      var existingNames: seq[string] = @[]
+      for _, address in appState.playerAddresses.pairs:
+        existingNames.add(address)
+      for identity in appState.kickedIdentities.keys:
+        existingNames.add(identity)
+      result = anonymousPlayerIdentity(
+        appState.nextAnonymousPlayer,
+        existingNames
+      )
+
 proc playerIdentity(request: Request): string =
   ## Returns the websocket player identity for rewards and displays.
   let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
   if name.len > 0:
     return name
-  let slot = request.queryParams.getOrDefault("slot", "").strip()
-  if slot.len > 0:
-    try:
-      return "player-" & $parseInt(slot)
-    except ValueError:
-      discard
-  request.remoteAddress
+  nextAnonymousPlayerIdentity()
 
 proc playerSlot(request: Request): int =
   ## Returns the requested player slot or -1 for automatic assignment.
