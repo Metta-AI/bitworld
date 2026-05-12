@@ -39,7 +39,7 @@
           "default": 18
         },
         "maxTicks": {
-          "description": "Maximum ticks per game, where 0 disables the tick limit.",
+          "description": "Maximum ticks per game, where 18000 is about five minutes at 60 Hz and 0 disables the tick limit.",
           "type": "integer",
           "minimum": 0,
           "default": 18000
@@ -124,7 +124,9 @@
       "name": "Smoke",
       "game_config": {
         "seed": 108519,
-        "planetCount": 18
+        "planetCount": 18,
+        "maxTicks": 18000,
+        "maxGames": 0
       },
       "description": "Short deterministic Planet Wars configuration used for manifest checks."
     }

@@ -293,13 +293,22 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
     of 0x04:
       for item in bot.objects.mitems:
         item.present = false
+      bot.knownPlanets.setLen(0)
+      bot.frameTick = 0
       bot.ownPlayerId = -1
       bot.colorKnown = false
       bot.colorAnnounced = false
+      bot.selectedPlanetId = -1
+      bot.originPlanetId = -1
+      bot.lastSelectedPlanetId = -1
+      bot.selectionStuckTicks = 0
       bot.currentTargetId = -1
+      bot.targetStartedTick = -RetargetTicks
+      bot.avoidedTargetId = -1
+      bot.avoidUntilTick = 0
       bot.sendTargetId = -1
       bot.sendOriginId = -1
-      bot.sendUntilTick = bot.frameTick
+      bot.sendUntilTick = 0
     of 0x05:
       if offset + 5 > packet.len:
         return false

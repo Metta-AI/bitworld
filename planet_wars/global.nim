@@ -195,6 +195,10 @@ proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
   packet.addU8(uint8(layerType))
   packet.addU8(uint8(flags))
 
+proc addClearObjects(packet: var seq[uint8]) =
+  ## Appends a global protocol object clear message.
+  packet.addU8(0x04)
+
 proc addSprite(
   packet: var seq[uint8],
   spriteId,
@@ -686,6 +690,7 @@ proc addPlayerSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
+  result.addClearObjects()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
@@ -695,6 +700,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
 proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
+  result.addClearObjects()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)

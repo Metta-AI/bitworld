@@ -1,8 +1,13 @@
 import
   std/[json, os],
-  ../sim
+  ../global, ../sim
 
 setCurrentDir(currentSourcePath().parentDir().parentDir())
+
+echo "Testing default lifecycle config"
+let lifecycleConfig = defaultSimConfig()
+doAssert lifecycleConfig.maxTicks == TargetFps * 60 * 5
+doAssert lifecycleConfig.maxGames == 0
 
 echo "Testing single player does not win before anyone is left"
 var soloConfig = defaultSimConfig()
@@ -69,3 +74,13 @@ for _ in 0 ..< timedConfig.maxTicks:
   timedGame.step([])
 doAssert timedGame.gameOver
 doAssert timedGame.winnerPlayerId == 0
+
+echo "Testing init packets clear stale objects"
+var initGame = initSimServer(789, defaultSimConfig())
+var nextState: GlobalViewerState
+let initPacket = initGame.buildSpriteProtocolUpdates(
+  initGlobalViewerState(),
+  nextState
+)
+doAssert initPacket.len > 0
+doAssert initPacket[0] == 0x04'u8
