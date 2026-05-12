@@ -213,43 +213,27 @@ th {
   white-space: pre-wrap;
 }
 .gridPage {
-  width: calc(100vw - 16px);
-  height: calc(100vh - 16px);
-  margin: 8px;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
   padding: 0;
-  border: 1px solid #000;
-  background: #f8f8f8;
-  display: flex;
-  flex-direction: column;
-}
-.gridHeader {
-  flex: 0 0 auto;
+  border: 0;
+  background: #000;
+  overflow: hidden;
 }
 .viewerGrid {
-  flex: 1 1 auto;
-  min-height: 0;
+  width: 100vw;
+  height: 100vh;
   display: grid;
-  gap: 4px;
-  padding: 4px;
-  background: #707096;
+  gap: 0;
+  padding: 0;
+  background: #000;
 }
 .viewerCell {
   min-width: 0;
   min-height: 0;
-  position: relative;
   overflow: hidden;
-  background: #000020;
-}
-.viewerTitle {
-  position: absolute;
-  left: 4px;
-  top: 4px;
-  z-index: 2;
-  padding: 2px 5px;
-  border: 1px solid #303050;
-  background: #eeeeff;
-  color: #000020;
-  font-size: 10px;
+  background: #000;
 }
 .viewerFrame {
   width: 100%;
@@ -257,6 +241,15 @@ th {
   border: 0;
   display: block;
   background: #fff;
+}
+.gridEmpty {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  color: #eeeeff;
 }
 """
   BulkScript = """
@@ -3448,7 +3441,9 @@ proc renderGridPage(
   games: seq[GameContainer]
 ): string =
   ## Renders selected game global viewers in a responsive grid.
-  let columns = gridColumnCount(games.len)
+  let
+    columns = gridColumnCount(games.len)
+    rows = max(1, (games.len + columns - 1) div columns)
   render:
     html:
       head:
@@ -3456,35 +3451,22 @@ proc renderGridPage(
           say "Grid View"
         say "<style>"
         say PageCss
+        say "html, body { width: 100%; height: 100%; overflow: hidden; }"
         say "</style>"
       body:
         tdiv ".gridPage":
-          table ".gridHeader":
-            tr:
-              td ".row2":
-                h1 ".title":
-                  say "Grid View"
-                p ".small":
-                  say $games.len & " games"
-              td ".row2 right small":
-                a:
-                  href "/"
-                  say "Back"
           if games.len == 0:
-            p ".notice small":
-              b:
-                say "No games selected."
+            tdiv ".gridEmpty":
+              say "No games selected."
           else:
             tdiv ".viewerGrid":
               style "grid-template-columns: repeat(" &
-                $columns & ", minmax(0, 1fr));"
+                $columns & ", minmax(0, 1fr)); " &
+                "grid-template-rows: repeat(" &
+                $rows & ", minmax(0, 1fr));"
               for game in games:
                 let url = gameUrl(request, game, "global.html")
                 tdiv ".viewerCell":
-                  a ".viewerTitle":
-                    href url
-                    target "_blank"
-                    say esc(game.name)
                   iframe ".viewerFrame":
                     src url
                     title game.name
