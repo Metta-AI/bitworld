@@ -14,6 +14,7 @@ client/screenshots/
 nimcache/
 out/
 tmp/
+tools/runlogs/
 games_server/replays/*
 
 # compiled binaries and test artifacts
