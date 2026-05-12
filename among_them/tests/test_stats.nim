@@ -62,6 +62,11 @@ proc rolesByAddress(sim: SimServer): seq[(string, PlayerRole)] =
   for player in sim.players:
     result.add((player.address, player.role))
 
+proc configuredSlots(count: int): seq[PlayerSlotConfig] =
+  ## Returns named slot configs for result-shape tests.
+  for i in 0 ..< count:
+    result.add PlayerSlotConfig(name: "player" & $(i + 1))
+
 suite "stats":
   test "crew win increments crewmate stats":
     var config = defaultGameConfig()
@@ -381,3 +386,60 @@ suite "stats":
     check results["kills"][1].getInt() == 1
     check results["imposter"][1].getInt() == 1
     check results["crew"][1].getInt() == 0
+
+  test "player result json keeps disconnected configured slots":
+    var config = defaultGameConfig()
+    config.minPlayers = 8
+    config.imposterCount = 2
+    config.autoImposterCount = false
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.slots = configuredSlots(8)
+
+    var sim = initAmongThemForTest(config)
+    for i in 0 ..< 8:
+      discard sim.addPlayer("player" & $(i + 1), i)
+    sim.startGame()
+    sim.players.delete(7)
+    sim.players.delete(6)
+    sim.finishGame(Crewmate, timeLimitReached = true)
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["names"].len == 8
+    check results["scores"].len == 8
+    check results["win"].len == 8
+    check results["names"][0].getStr() == "player1"
+    check results["names"][5].getStr() == "player6"
+    check results["names"][6].getStr() == "player7"
+    check results["names"][7].getStr() == "player8"
+    check results["scores"][6].getInt() == 0
+    check results["scores"][7].getInt() == 0
+    check not results["win"][6].getBool()
+    check not results["win"][7].getBool()
+
+  test "player result json emits never connected configured slots":
+    var config = defaultGameConfig()
+    config.minPlayers = 6
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.slots = configuredSlots(8)
+
+    var sim = initAmongThemForTest(config)
+    for i in 0 ..< 6:
+      discard sim.addPlayer("player" & $(i + 1), i)
+    sim.startGame()
+    sim.finishGame(Crewmate, timeLimitReached = true)
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["names"].len == 8
+    check results["scores"].len == 8
+    check results["names"][6].getStr() == "player7"
+    check results["names"][7].getStr() == "player8"
+    check results["scores"][6].getInt() == 0
+    check results["scores"][7].getInt() == 0
+    check results["imposter"][6].getInt() == 0
+    check results["crew"][6].getInt() == 0
+    check results["imposter"][7].getInt() == 0
+    check results["crew"][7].getInt() == 0
