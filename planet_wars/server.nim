@@ -212,6 +212,24 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex and value != UnassignedPlayerIndex:
         dec value
 
+proc resetConnectedClients() =
+  ## Clears per-game websocket state while keeping sockets connected.
+  var
+    playerSockets: seq[WebSocket] = @[]
+    globalSockets: seq[WebSocket] = @[]
+  for websocket in appState.playerIndices.keys:
+    playerSockets.add(websocket)
+  for websocket in appState.globalViewers.keys:
+    globalSockets.add(websocket)
+  for websocket in playerSockets:
+    appState.playerIndices[websocket] = UnassignedPlayerIndex
+    appState.playerViewers[websocket] = initPlayerViewerState()
+    appState.inputMasks[websocket] = 0
+    appState.lastAppliedMasks[websocket] = 0
+  for websocket in globalSockets:
+    appState.globalViewers[websocket] = initGlobalViewerState()
+  appState.chatMessages.clear()
+
 proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   ## Builds a player input state from current and previous button masks.
   let decoded = decodeInputMask(currentMask)
@@ -300,6 +318,7 @@ proc runServerLoop*(
     sim = initSimServer(seed, simConfig)
     lastTick = getMonoTime()
     lastScoreRevision = -1
+    gamesFinished = 0
   sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
   while true:
     var
@@ -353,8 +372,10 @@ proc runServerLoop*(
           globalStates.add(state)
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+    let wasGameOver = sim.gameOver
     sim.step(inputs)
     sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+    let gameFinished = sim.gameOver and not wasGameOver
     let rewardPacket = sim.buildRewardPacket()
     for i in 0 ..< sockets.len:
       var nextState: PlayerViewerState
@@ -395,4 +416,15 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
+    if gameFinished:
+      inc gamesFinished
+      echo "Planet Wars game finished: ", gamesFinished
+      if simConfig.maxGames > 0 and gamesFinished >= simConfig.maxGames:
+        break
+      sim = initSimServer(seed + gamesFinished, simConfig)
+      lastScoreRevision = -1
+      {.gcsafe.}:
+        withLock appState.lock:
+          resetConnectedClients()
+      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
     runFrameLimiter(lastTick)
