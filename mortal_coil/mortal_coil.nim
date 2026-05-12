@@ -95,6 +95,9 @@ type
     letterSprites: seq[Sprite]
     rng: Rand
     prevInputs: seq[InputState]
+    chatScroll: int
+    chatConfirmed: seq[bool]
+    chatInterrupted: seq[bool]
 
   WebSocketAppState = object
     lock: Lock
@@ -339,14 +342,41 @@ proc renderFactChoices(sim: var SimServer) =
     let tokenY = y + (ScreenHeight - y - CharHeight) div 2
     sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, tokenText, tokenX, tokenY, color)
 
+proc entryLineCount(entry: ChatEntry): int =
+  let maxNameChars = min(entry.name.len, charsFromX(TextMargin) - 1)
+  let textX = TextMargin + (maxNameChars + 1) * CharWidth
+  let maxTextChars = charsFromX(textX)
+  if maxTextChars <= 0 or entry.text.len == 0:
+    return 1
+  result = 1
+  var pos = maxTextChars
+  let wrapChars = charsFromX(TextMargin)
+  while pos < entry.text.len:
+    inc result
+    pos += wrapChars
+
 proc renderFactChat(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   sim.fb.blitText(sim.letterSprites, "magical facts", TextMargin, 4)
 
-  var y = 14
-  let maxEntries = (ScreenHeight - y) div 8
-  let startIdx = max(0, sim.chatLog.len - maxEntries)
-  for i in startIdx ..< sim.chatLog.len:
+  if sim.chatScroll >= sim.chatLog.len:
+    sim.chatScroll = max(0, sim.chatLog.len - 1)
+
+  let startY = 14
+  let availableLines = (ScreenHeight - startY) div 8
+  let endIdx = min(sim.chatScroll + 1, sim.chatLog.len)
+
+  var startIdx = endIdx
+  var totalLines = 0
+  while startIdx > 0:
+    let lines = entryLineCount(sim.chatLog[startIdx - 1])
+    if totalLines + lines > availableLines:
+      break
+    totalLines += lines
+    dec startIdx
+
+  var y = startY
+  for i in startIdx ..< endIdx:
     if y + CharHeight > ScreenHeight:
       break
     let entry = sim.chatLog[i]
@@ -543,6 +573,9 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             text: factText
           ))
         sim.factChoice.step = FactShowChat
+        sim.chatScroll = sim.chatLog.len - 1
+        sim.chatConfirmed = newSeq[bool](sim.players.len)
+        sim.chatInterrupted = newSeq[bool](sim.players.len)
         sim.factTimer = FactAcceptTicks * 4
 
     elif sim.factChoice.step == FactReading:
@@ -583,12 +616,36 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
           text: "skip"
         ))
         sim.factChoice.step = FactShowChat
+        sim.chatScroll = sim.chatLog.len - 1
+        sim.chatConfirmed = newSeq[bool](sim.players.len)
+        sim.chatInterrupted = newSeq[bool](sim.players.len)
         sim.factTimer = FactAcceptTicks * 4
 
     elif sim.factChoice.step == FactShowChat:
-      if sim.factTimer > 0:
-        discard
-      else:
+      for i in 0 ..< sim.players.len:
+        if sim.players[i].kind == PlayerBot:
+          if sim.factTimer <= 0:
+            sim.chatConfirmed[i] = true
+        else:
+          let cur = if i < inputs.len: inputs[i] else: InputState()
+          let prev = if i < sim.prevInputs.len: sim.prevInputs[i] else: InputState()
+          let rel = released(cur, prev)
+          if rel.down:
+            sim.chatScroll = min(sim.chatScroll + 1, max(0, sim.chatLog.len - 1))
+            sim.chatInterrupted[i] = true
+          elif rel.up:
+            sim.chatScroll = max(sim.chatScroll - 1, 0)
+            sim.chatInterrupted[i] = true
+          elif rel.attack and sim.chatInterrupted[i]:
+            sim.chatConfirmed[i] = true
+          if sim.factTimer <= 0 and not sim.chatInterrupted[i]:
+            sim.chatConfirmed[i] = true
+      var allConfirmed = true
+      for i in 0 ..< sim.players.len:
+        if not sim.chatConfirmed[i]:
+          allConfirmed = false
+          break
+      if allConfirmed:
         var allSpent = true
         for p in sim.players:
           if p.magicTokens > 0:
@@ -664,8 +721,28 @@ proc serveClientHtml(request: Request, route: string): bool =
     request.respond(500, headers, "Error: " & e.msg)
   true
 
+proc serveGlobalViewer(request: Request): bool =
+  if request.httpMethod != "GET":
+    return false
+  let route = request.path
+  if route != GlobalClientRoute and route != GlobalClientHtmlRoute and
+     route != CoworldGlobalClientRoute:
+    return false
+  let filePath = clientStaticPath(PlayerClientRoute)
+  if filePath.len == 0 or not fileExists(filePath):
+    return false
+  var html = readFile(filePath)
+  html = html.replace("/player", "/global")
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, html)
+  true
+
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static client asset if the route matches.
+  if request.serveGlobalViewer():
+    return true
   request.serveClientHtml(request.path)
 
 proc httpHandler(request: Request) =
