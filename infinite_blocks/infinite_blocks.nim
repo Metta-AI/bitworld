@@ -2363,6 +2363,13 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   else:
     previousTick = getMonoTime()
 
+proc tickLimitText(value: int): string =
+  ## Returns a readable tick limit description.
+  if value == 0:
+    "infinite"
+  else:
+    $value
+
 proc runServerLoop(
   host = DefaultHost,
   port = DefaultPort,
@@ -2393,6 +2400,9 @@ proc runServerLoop(
     gamesFinished = 0
     lastScores = ""
   sim.writeScoresIfChanged(saveScoresPath, lastScores)
+  echo "Infinite Blocks config: maxTicks=", maxTicks.tickLimitText(),
+    " maxGames=", maxGames.tickLimitText(),
+    " targetFps=", TargetFps
 
   while true:
     var
@@ -2462,6 +2472,9 @@ proc runServerLoop(
       inc currentSeed
       sim = initSimServer(currentSeed)
       runTicks = 0
+      echo "Infinite Blocks game reset: seed=", currentSeed,
+        " gamesFinished=", gamesFinished,
+        " maxGames=", maxGames.tickLimitText()
       {.gcsafe.}:
         withLock appState.lock:
           for websocket in appState.playerIndices.keys:
@@ -2537,7 +2550,11 @@ proc runServerLoop(
     sim.writeScoresIfChanged(saveScoresPath, lastScores)
     if maxTicks > 0 and runTicks >= maxTicks:
       inc gamesFinished
+      echo "Infinite Blocks maxTicks reached: ticks=", runTicks,
+        " gamesFinished=", gamesFinished,
+        " maxGames=", maxGames.tickLimitText()
       if maxGames > 0 and gamesFinished >= maxGames:
+        echo "Infinite Blocks maxGames reached, shutting down."
         httpServer.close()
         joinThread(serverThread)
         break
