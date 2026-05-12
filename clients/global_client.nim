@@ -1188,6 +1188,8 @@ when isMainModule:
         options.playerMode = true
       of "title":
         options.title = val
+      of "palette", "palette-path":
+        options.palettePath = val
       of "joystick", "gamepad", "controller":
         options.selectedGamepadIndex = parseSelectedGamepad(val)
       of "reconnect":

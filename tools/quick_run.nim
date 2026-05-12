@@ -882,6 +882,13 @@ proc globalWsAddress(config: QuickRunConfig): string =
   ## Returns the websocket address for the global viewer.
   "ws://" & browserHost(config.address) & ":" & $config.port & "/global"
 
+proc globalPalettePath(rootDir: string, game: GameLaunch): string =
+  ## Returns the palette path for the native global viewer.
+  let gamePalettePath = game.workDir / "data" / "pallete.png"
+  if fileExists(gamePalettePath):
+    return gamePalettePath
+  rootDir / "clients" / "data" / "pallete.png"
+
 proc openHtmlGlobalViewer(config: QuickRunConfig, game: GameLaunch) =
   ## Opens the browser global viewer for one quick-run game.
   openHtmlClient(
@@ -917,7 +924,8 @@ proc launchNativeGlobalViewer(
   let globalExe = exePathFor(rootDir, GlobalClientSourceRelative)
   var args = @[
     "--address:" & globalWsAddress(config),
-    "--title:" & game.name & " global"
+    "--title:" & game.name & " global",
+    "--palette:" & globalPalettePath(rootDir, game)
   ]
   if config.reconnectSeconds.len > 0:
     args.add("--reconnect:" & config.reconnectSeconds)
