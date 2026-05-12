@@ -12,7 +12,6 @@ const
   PlayerShipSpriteBase = 2000
   PlanetTextSpriteBase = 10000
   HudSpriteId = 18000
-  GlobalHudSpriteId = 18001
   WaitingSpriteId = 18002
   ChatSpriteBase = 18010
   PlanetObjectBase = 2000
@@ -21,7 +20,6 @@ const
   PlanetTextObjectBase = 2300
   ShipObjectBase = 3000
   HudObjectId = 4000
-  GlobalHudObjectId = 4001
   WaitingObjectId = 4002
   ChatObjectBase = 4010
   PlanetSpritePad = 4
@@ -990,42 +988,6 @@ proc addWaitingText(
   )
   currentIds.add(WaitingObjectId)
 
-proc addGlobalHud(
-  sim: SimServer,
-  packet: var seq[uint8],
-  currentIds: var seq[int],
-  selectedPlanetId: int
-) =
-  ## Adds a compact global viewer HUD.
-  var lines = @["PLANET WARS"]
-  for i, player in sim.players:
-    if i >= 5:
-      break
-    lines.add(
-      "P" & $(i + 1) & " " &
-      $player.score & " " &
-      $sim.countOwnedPlanets(player.id) & "P"
-    )
-  if selectedPlanetId > 0:
-    let planetIndex = sim.findPlanetIndexById(selectedPlanetId)
-    if planetIndex >= 0:
-      let planet = sim.planets[planetIndex]
-      lines.add("PLANET " & $planet.id)
-      lines.add("SHIPS " & $planet.ships)
-  sim.addTextObject(
-    packet,
-    currentIds,
-    GlobalHudObjectId,
-    GlobalHudSpriteId,
-    2,
-    HudY,
-    high(int16),
-    TopLeftLayerId,
-    lines,
-    ScoreColor,
-    true
-  )
-
 proc buildSpriteProtocolPlayerUpdates*(
   sim: SimServer,
   playerIndex: int,
@@ -1104,7 +1066,6 @@ proc buildSpriteProtocolUpdates*(
     WorldWidthPixels,
     WorldHeightPixels
   )
-  sim.addGlobalHud(result, currentIds, nextState.selectedPlanetId)
   sim.addChatObjects(result, currentIds)
   for objectId in state.objectIds:
     if objectId notin currentIds:
