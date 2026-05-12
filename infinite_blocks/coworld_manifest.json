@@ -32,7 +32,13 @@
           "default": 32619276
         },
         "maxTicks": {
-          "description": "Maximum simulation ticks before shutdown, where 0 means no limit.",
+          "description": "Maximum simulation ticks per game, where 0 means no automatic reset.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 18000
+        },
+        "maxGames": {
+          "description": "Maximum games before shutdown, where 0 means no limit.",
           "type": "integer",
           "minimum": 0,
           "default": 0
@@ -98,7 +104,8 @@
       "name": "Smoke",
       "game_config": {
         "seed": 32619276,
-        "maxTicks": 300
+        "maxTicks": 300,
+        "maxGames": 1
       },
       "description": "Short deterministic infinite_blocks configuration used for manifest checks."
     }

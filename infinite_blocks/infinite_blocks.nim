@@ -4,8 +4,8 @@ import
   bitworld/aseprite, bitworld/clients, protocol, server
 
 const
-  BoardWidthCells = 250
-  BoardHeightCells = 250
+  BoardWidthCells = 125
+  BoardHeightCells = 125
   CellPixels = 9
   WorldWidthPixels = BoardWidthCells * CellPixels
   WorldHeightPixels = BoardHeightCells * CellPixels
@@ -24,6 +24,7 @@ const
   ClearFlashTicks = 20
   ClearPauseTicks = 12
   TargetFps = 60
+  DefaultMaxTicks = TargetFps * 60 * 5
   GlobalSendInterval = 6
   PlayerWebSocketPath = "/player"
   HealthPath = "/healthz"
@@ -39,7 +40,7 @@ const
   GlobalBlockObjectBase = 10
   MaxGlobalObjectId = 65535
   GlobalMapWidth = WorldWidthPixels
-  GlobalMapHeight = WorldHeightPixels
+  GlobalMapHeight = (BaseTerrainY + 1) * CellPixels
   GlobalMapLayerType = 0
   GlobalZoomableFlag = 1
   BlockSpritePixels = 9
@@ -69,6 +70,7 @@ type
     seed: int
     saveScoresPath: string
     maxTicks: int
+    maxGames: int
 
   PieceKind = enum
     PieceI
@@ -791,20 +793,130 @@ proc initSimServer(seed: int): SimServer =
   for x in 0 ..< BoardWidthCells:
     result.terrain[boardIndex(x, BaseTerrainY)] = true
 
-proc findSpawnPosition(
+proc spawnXLimits(
+  kind: PieceKind,
+  rotation: int
+): tuple[minX, maxX: int] =
+  ## Returns the inclusive horizontal range that keeps a piece in bounds.
+  var
+    minOffset = high(int)
+    maxOffset = low(int)
+  for cell in pieceCells(kind, rotation):
+    minOffset = min(minOffset, cell.x)
+    maxOffset = max(maxOffset, cell.x)
+  (
+    minX: -minOffset,
+    maxX: BoardWidthCells - 1 - maxOffset
+  )
+
+proc findSpawnInColumn(
   sim: SimServer,
+  kind: PieceKind,
+  cellX, desiredTopY: int
+): tuple[found: bool, x: int, y: int] =
+  ## Searches one column for a nearby spawn row.
+  for offset in 0 ..< 80:
+    let topY = max(0, desiredTopY - offset)
+    if sim.canPlace(cellX, topY, kind, 0):
+      return (true, cellX, topY)
+  for offset in 1 ..< 40:
+    let topY = min(BoardHeightCells - 4, desiredTopY + offset)
+    if sim.canPlace(cellX, topY, kind, 0):
+      return (true, cellX, topY)
+  for topY in 0 ..< BaseTerrainY:
+    if sim.canPlace(cellX, topY, kind, 0):
+      return (true, cellX, topY)
+
+proc clearSpawnPocket(sim: var SimServer, kind: PieceKind, cellX, cellY: int) =
+  ## Clears settled blocks from a forced respawn pocket.
+  for cell in pieceCells(kind, 0):
+    let
+      x = cellX + cell.x
+      y = cellY + cell.y
+    if not inBoardBounds(x, y):
+      continue
+    if inBoardBounds(x - 1, y):
+      let leftIndex = boardIndex(x - 1, y)
+      sim.settledConnections[leftIndex] =
+        sim.settledConnections[leftIndex] and not ConnectRight
+    if inBoardBounds(x + 1, y):
+      let rightIndex = boardIndex(x + 1, y)
+      sim.settledConnections[rightIndex] =
+        sim.settledConnections[rightIndex] and not ConnectLeft
+    if inBoardBounds(x, y - 1):
+      let upIndex = boardIndex(x, y - 1)
+      sim.settledConnections[upIndex] =
+        sim.settledConnections[upIndex] and not ConnectDown
+    if inBoardBounds(x, y + 1):
+      let downIndex = boardIndex(x, y + 1)
+      sim.settledConnections[downIndex] =
+        sim.settledConnections[downIndex] and not ConnectUp
+    let index = boardIndex(x, y)
+    if sim.terrain[index]:
+      continue
+    sim.settledColors[index] = 0
+    sim.settledOwners[index] = 0
+    sim.settledConnections[index] = 0
+  sim.settledCellsDirty = true
+
+proc findForcedSpawnPosition(
+  sim: var SimServer,
+  kind: PieceKind
+): tuple[found: bool, x: int, y: int] =
+  ## Creates a spawn pocket when ordinary relocation cannot find one.
+  let limits = spawnXLimits(kind, 0)
+  if limits.minX > limits.maxX:
+    return
+
+  let
+    columnCount = limits.maxX - limits.minX + 1
+    startX = limits.minX + sim.rng.rand(columnCount - 1)
+    ignoredPlayers: array[0, int] = []
+  for i in 0 ..< columnCount:
+    let cellX = limits.minX + ((startX - limits.minX + i) mod columnCount)
+    for cellY in 0 ..< BaseTerrainY:
+      var blockedByActive = false
+      for cell in pieceCells(kind, 0):
+        let
+          x = cellX + cell.x
+          y = cellY + cell.y
+        if not inBoardBounds(x, y) or sim.terrain[boardIndex(x, y)]:
+          blockedByActive = true
+          break
+        if sim.activeBlockerAt(ignoredPlayers, x, y) >= 0:
+          blockedByActive = true
+          break
+      if blockedByActive:
+        continue
+      sim.clearSpawnPocket(kind, cellX, cellY)
+      return (found: true, x: cellX, y: cellY)
+
+proc findSpawnPosition(
+  sim: var SimServer,
   kind: PieceKind,
   desiredCenterX, desiredTopY: int
 ): tuple[found: bool, x: int, y: int] =
+  ## Finds a spawn location, using a random column when the target is blocked.
   let desiredX = desiredCenterX - 2 + PieceSpawnNudgeCells
-  for offset in 0 ..< 80:
-    let topY = max(0, desiredTopY - offset)
-    if sim.canPlace(desiredX, topY, kind, 0):
-      return (true, desiredX, topY)
-  for offset in 1 ..< 40:
-    let topY = min(BoardHeightCells - 4, desiredTopY + offset)
-    if sim.canPlace(desiredX, topY, kind, 0):
-      return (true, desiredX, topY)
+  result = sim.findSpawnInColumn(kind, desiredX, desiredTopY)
+  if result.found:
+    return
+
+  let limits = spawnXLimits(kind, 0)
+  if limits.minX > limits.maxX:
+    return
+
+  let
+    columnCount = limits.maxX - limits.minX + 1
+    startX = limits.minX + sim.rng.rand(columnCount - 1)
+  for i in 0 ..< columnCount:
+    let cellX = limits.minX + ((startX - limits.minX + i) mod columnCount)
+    if cellX == desiredX:
+      continue
+    result = sim.findSpawnInColumn(kind, cellX, desiredTopY)
+    if result.found:
+      return
+  result = sim.findForcedSpawnPosition(kind)
 
 proc respawnPlayer(sim: var SimServer, playerIndex, centerX, topY: int, recenterHoriz = false) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -813,8 +925,11 @@ proc respawnPlayer(sim: var SimServer, playerIndex, centerX, topY: int, recenter
   let nextKind = sim.players[playerIndex].nextKind
   let spawn = sim.findSpawnPosition(nextKind, centerX, topY)
   if not spawn.found:
-    sim.players[playerIndex].alive = false
+    sim.players[playerIndex].alive = true
     sim.players[playerIndex].hasPiece = false
+    sim.players[playerIndex].pendingSpawn = true
+    sim.players[playerIndex].pendingSpawnCenterX = centerX
+    sim.players[playerIndex].pendingSpawnTopY = topY
     return
 
   sim.players[playerIndex].alive = true
@@ -867,13 +982,13 @@ proc tryMove(sim: var SimServer, playerIndex, dx, dy: int): bool =
   sim.moveCollectedPlayers(movingPlayers, dx, dy)
   true
 
-proc tryRotate(sim: var SimServer, playerIndex: int) =
+proc tryRotate(sim: var SimServer, playerIndex: int): bool =
   ## Rotates one active piece when the target cells are unoccupied.
   if playerIndex < 0 or
       playerIndex >= sim.players.len or
       not sim.players[playerIndex].alive or
       not sim.players[playerIndex].hasPiece:
-    return
+    return false
 
   let
     ignoredPlayers = [playerIndex]
@@ -882,7 +997,6 @@ proc tryRotate(sim: var SimServer, playerIndex: int) =
     (x: 0, y: 0),
     (x: -1, y: 0),
     (x: 1, y: 0),
-    (x: 0, y: -1),
     (x: -2, y: 0),
     (x: 2, y: 0)
   ]:
@@ -899,7 +1013,8 @@ proc tryRotate(sim: var SimServer, playerIndex: int) =
       sim.players[playerIndex].rotation = nextRotation
       sim.players[playerIndex].cellX = nextX
       sim.players[playerIndex].cellY = nextY
-      break
+      return true
+  false
 
 proc addUnique(values: var seq[int], value: int) =
   for existing in values:
@@ -1049,6 +1164,29 @@ proc findClearSegments(sim: SimServer): seq[ClearSegment] =
       if endX - startX + 1 >= LineClearLength:
         result.add ClearSegment(y: y, startX: startX, endX: endX)
 
+proc sameSegment(a, b: ClearSegment): bool =
+  ## Returns true when two clear segments identify the same row span.
+  a.y == b.y and a.startX == b.startX and a.endX == b.endX
+
+proc segmentQueued(sim: SimServer, segment: ClearSegment): bool =
+  ## Returns true when a clear segment is already active or queued.
+  if sim.activeClearValid and sim.activeClear.segment.sameSegment(segment):
+    return true
+  for clear in sim.clearQueue:
+    if clear.segment.sameSegment(segment):
+      return true
+
+proc segmentStillFilled(sim: SimServer, segment: ClearSegment): bool =
+  ## Returns true when a queued clear segment still contains a full row span.
+  if segment.endX - segment.startX + 1 < LineClearLength:
+    return false
+  for x in segment.startX .. segment.endX:
+    if not inBoardBounds(x, segment.y):
+      return false
+    if sim.settledColors[boardIndex(x, segment.y)] == 0:
+      return false
+  true
+
 proc awardPendingClear(sim: var SimServer, clear: PendingClear) =
   for player in sim.players.mitems:
     if player.id == clear.triggerPlayerId:
@@ -1115,23 +1253,27 @@ proc enqueueDetectedClears(sim: var SimServer, triggerPlayerId: int): bool =
   if segments.len == 0:
     return false
   for segment in segments:
+    if sim.segmentQueued(segment):
+      continue
     sim.clearQueue.add sim.pendingClearFor(segment, triggerPlayerId)
-  sim.clearCascadePlayerId = triggerPlayerId
-  result = true
+    sim.clearCascadePlayerId = triggerPlayerId
+    result = true
 
 proc startNextClear(sim: var SimServer): bool =
-  if sim.clearQueue.len == 0:
-    return false
-  sim.activeClear = sim.clearQueue[0]
-  sim.clearQueue.delete(0)
-  sim.activeClearValid = true
-  sim.clearFlashTimer = ClearFlashTicks
-  sim.clearDisplayPlayerId = sim.activeClear.triggerPlayerId
-  true
+  while sim.clearQueue.len > 0:
+    sim.activeClear = sim.clearQueue[0]
+    sim.clearQueue.delete(0)
+    if not sim.segmentStillFilled(sim.activeClear.segment):
+      continue
+    sim.activeClearValid = true
+    sim.clearFlashTimer = ClearFlashTicks
+    sim.clearDisplayPlayerId = sim.activeClear.triggerPlayerId
+    return true
+  false
 
 proc finishPendingRespawns(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
-    if sim.players[playerIndex].alive and sim.players[playerIndex].pendingSpawn:
+    if sim.players[playerIndex].pendingSpawn:
       sim.respawnPlayer(
         playerIndex,
         sim.players[playerIndex].pendingSpawnCenterX,
@@ -1149,12 +1291,8 @@ proc finalizeActiveClear(sim: var SimServer) =
   sim.activeClearValid = false
   sim.clearFlashTimer = 0
 
-  sim.clearQueue.setLen(0)
   discard sim.enqueueDetectedClears(sim.clearCascadePlayerId)
   sim.clearPauseTimer = ClearPauseTicks
-
-proc clearAnimationActive(sim: SimServer): bool =
-  sim.activeClearValid or sim.clearQueue.len > 0 or sim.clearPauseTimer > 0
 
 proc tickClearAnimation(sim: var SimServer) =
   if sim.activeClearValid:
@@ -1166,15 +1304,17 @@ proc tickClearAnimation(sim: var SimServer) =
   if sim.clearPauseTimer > 0:
     dec sim.clearPauseTimer
     if sim.clearPauseTimer == 0:
-      if sim.clearQueue.len > 0:
-        discard sim.startNextClear()
-      else:
+      if not sim.startNextClear():
         sim.clearDisplayPlayerId = 0
         sim.finishPendingRespawns()
     return
 
   if sim.clearQueue.len > 0:
     discard sim.startNextClear()
+
+proc spawningPaused(sim: SimServer): bool =
+  ## Returns true when line-clear timing should hold pending spawns.
+  sim.activeClearValid or sim.clearPauseTimer > 0 or sim.clearQueue.len > 0
 
 proc lockPiece(sim: var SimServer, playerIndex: int) =
   ## Settles one active piece when its current cells are still valid.
@@ -1239,7 +1379,9 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
     dec sim.players[playerIndex].moveTicksY
 
   if input.attack:
-    sim.tryRotate(playerIndex)
+    discard sim.tryRotate(playerIndex)
+    discard sim.tryMove(playerIndex, 0, 1)
+    sim.players[playerIndex].fallTicks = 0
 
   let horizontal =
     (if input.left and not input.right: -1
@@ -1328,12 +1470,6 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
     return sim.fb.packed
 
   let player = sim.players[playerIndex]
-  if not player.alive:
-    sim.fb.blitText(sim.letterSprites, "GAME", 20, 26)
-    sim.fb.blitText(sim.letterSprites, "OVER", 20, 34)
-    sim.fb.packFramebuffer()
-    return sim.fb.packed
-
   let
     cameraX = player.cameraX
     cameraY = player.cameraY
@@ -1684,8 +1820,6 @@ proc renderSpriteFrame(sim: var SimServer, playerIndex: int): seq[uint8] =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let player = sim.players[playerIndex]
-  if not player.alive:
-    return
   let
     cameraX = player.cameraX
     cameraY = player.cameraY
@@ -1901,7 +2035,7 @@ proc playerResultsJson(sim: SimServer): string =
   for player in sim.players:
     names.add(%player.name)
     scores.add(%player.score)
-    alive.add(%player.alive)
+    alive.add(%true)
   let results = %*{
     "names": names,
     "scores": scores,
@@ -1926,10 +2060,16 @@ proc writeScoresIfChanged(
   writeFile(path, scores & "\n")
   lastScores = scores
 
+proc keepPlayersAlive(sim: var SimServer) =
+  ## Restores player liveness because Infinite Blocks has no death state.
+  for player in sim.players.mitems:
+    player.alive = true
+
 proc step(sim: var SimServer, inputs: openArray[InputState]) =
-  if sim.clearAnimationActive():
-    sim.tickClearAnimation()
-    return
+  sim.keepPlayersAlive()
+  sim.tickClearAnimation()
+  if not sim.spawningPaused():
+    sim.finishPendingRespawns()
 
   for playerIndex in 0 ..< sim.players.len:
     let input =
@@ -1938,8 +2078,6 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
     sim.applyInput(playerIndex, input)
     if playerIndex < sim.players.len and sim.players[playerIndex].alive and sim.players[playerIndex].hasPiece:
       sim.players[playerIndex].updateCameraForPlayer()
-    if sim.clearAnimationActive():
-      break
 
 var appState: WebSocketAppState
 
@@ -2230,7 +2368,8 @@ proc runServerLoop(
   port = DefaultPort,
   seed = 0x1F1B10C,
   saveScoresPath = "",
-  maxTicks = 0
+  maxTicks = DefaultMaxTicks,
+  maxGames = 0
 ) =
   initAppState()
 
@@ -2251,6 +2390,7 @@ proc runServerLoop(
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
     runTicks = 0
+    gamesFinished = 0
     lastScores = ""
   sim.writeScoresIfChanged(saveScoresPath, lastScores)
 
@@ -2396,9 +2536,14 @@ proc runServerLoop(
 
     sim.writeScoresIfChanged(saveScoresPath, lastScores)
     if maxTicks > 0 and runTicks >= maxTicks:
-      httpServer.close()
-      joinThread(serverThread)
-      break
+      inc gamesFinished
+      if maxGames > 0 and gamesFinished >= maxGames:
+        httpServer.close()
+        joinThread(serverThread)
+        break
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.resetRequested = true
 
     runFrameLimiter(lastTick)
 
@@ -2433,6 +2578,8 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("save-scores-path", config.saveScoresPath)
   node.readConfigInt("maxTicks", config.maxTicks)
   node.readConfigInt("max-ticks", config.maxTicks)
+  node.readConfigInt("maxGames", config.maxGames)
+  node.readConfigInt("max-games", config.maxGames)
 
 proc defaultScoresPath(): string =
   ## Returns the configured score save path from the environment.
@@ -2447,7 +2594,8 @@ when isMainModule:
       port: DefaultPort,
       seed: 0x1F1B10C,
       saveScoresPath: defaultScoresPath(),
-      maxTicks: 0
+      maxTicks: DefaultMaxTicks,
+      maxGames: 0
     )
     configJson = ""
     configPath = getEnv("COGAME_CONFIG_PATH")
@@ -2464,6 +2612,8 @@ when isMainModule:
         config.saveScoresPath = val
       of "max-ticks", "maxTicks":
         config.maxTicks = parseInt(val)
+      of "max-games", "maxGames":
+        config.maxGames = parseInt(val)
       else: discard
     else: discard
   if configPath.len > 0:
@@ -2479,5 +2629,6 @@ when isMainModule:
     config.port,
     seed = config.seed,
     saveScoresPath = config.saveScoresPath,
-    maxTicks = config.maxTicks
+    maxTicks = config.maxTicks,
+    maxGames = config.maxGames
   )
