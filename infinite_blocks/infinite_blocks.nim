@@ -60,7 +60,7 @@ const
   BlockTopConnection = 6
   BlockBottomConnection = 7
   CameraMaxY = (BaseTerrainY + 1) * CellPixels - ScreenHeight
-  PreviewX = ScreenWidth - CellPixels * 4 - 2
+  PreviewX = ScreenWidth - CellPixels * 5 - 2
   PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
 
 type
@@ -73,13 +73,14 @@ type
     maxGames: int
 
   PieceKind = enum
-    PieceI
-    PieceO
-    PieceT
-    PieceL
-    PieceJ
-    PieceS
-    PieceZ
+    PieceHook
+    PiecePlus
+    PieceCup
+    PieceCorner
+    PieceTee
+    PieceBar
+    PieceBox
+    PieceFlat
 
   BlockOffset = tuple[x: int, y: int]
 
@@ -355,46 +356,66 @@ proc composeBlockSprite(
     tint
   )
 
-proc pieceCells(kind: PieceKind, rotation: int): array[4, BlockOffset] =
+proc normalizeCells(cells: var seq[BlockOffset]) =
+  ## Moves piece cells so the top-left occupied cell is at the origin.
+  var
+    minX = high(int)
+    minY = high(int)
+  for cell in cells:
+    minX = min(minX, cell.x)
+    minY = min(minY, cell.y)
+  for cell in cells.mitems:
+    cell.x -= minX
+    cell.y -= minY
+
+proc basePieceCells(kind: PieceKind): seq[BlockOffset] =
+  ## Returns the unrotated custom piece cells.
   case kind
-  of PieceI:
-    case rotation and 3
-    of 0: [(x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1), (x: 3, y: 1)]
-    of 1: [(x: 2, y: 0), (x: 2, y: 1), (x: 2, y: 2), (x: 2, y: 3)]
-    of 2: [(x: 0, y: 2), (x: 1, y: 2), (x: 2, y: 2), (x: 3, y: 2)]
-    else: [(x: 1, y: 0), (x: 1, y: 1), (x: 1, y: 2), (x: 1, y: 3)]
-  of PieceO:
-    [(x: 1, y: 0), (x: 2, y: 0), (x: 1, y: 1), (x: 2, y: 1)]
-  of PieceT:
-    case rotation and 3
-    of 0: [(x: 1, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1)]
-    of 1: [(x: 1, y: 0), (x: 1, y: 1), (x: 2, y: 1), (x: 1, y: 2)]
-    of 2: [(x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1), (x: 1, y: 2)]
-    else: [(x: 1, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 1, y: 2)]
-  of PieceL:
-    case rotation and 3
-    of 0: [(x: 0, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1)]
-    of 1: [(x: 1, y: 0), (x: 2, y: 0), (x: 1, y: 1), (x: 1, y: 2)]
-    of 2: [(x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1), (x: 2, y: 2)]
-    else: [(x: 1, y: 0), (x: 1, y: 1), (x: 0, y: 2), (x: 1, y: 2)]
-  of PieceJ:
-    case rotation and 3
-    of 0: [(x: 2, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1)]
-    of 1: [(x: 1, y: 0), (x: 1, y: 1), (x: 1, y: 2), (x: 2, y: 2)]
-    of 2: [(x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1), (x: 0, y: 2)]
-    else: [(x: 0, y: 0), (x: 1, y: 0), (x: 1, y: 1), (x: 1, y: 2)]
-  of PieceS:
-    case rotation and 3
-    of 0: [(x: 1, y: 0), (x: 2, y: 0), (x: 0, y: 1), (x: 1, y: 1)]
-    of 1: [(x: 1, y: 0), (x: 1, y: 1), (x: 2, y: 1), (x: 2, y: 2)]
-    of 2: [(x: 1, y: 1), (x: 2, y: 1), (x: 0, y: 2), (x: 1, y: 2)]
-    else: [(x: 0, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 1, y: 2)]
-  of PieceZ:
-    case rotation and 3
-    of 0: [(x: 0, y: 0), (x: 1, y: 0), (x: 1, y: 1), (x: 2, y: 1)]
-    of 1: [(x: 2, y: 0), (x: 1, y: 1), (x: 2, y: 1), (x: 1, y: 2)]
-    of 2: [(x: 0, y: 1), (x: 1, y: 1), (x: 1, y: 2), (x: 2, y: 2)]
-    else: [(x: 1, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 0, y: 2)]
+  of PieceHook:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 0, y: 1)]
+  of PiecePlus:
+    @[(x: 1, y: 0), (x: 0, y: 1), (x: 1, y: 1), (x: 2, y: 1),
+      (x: 1, y: 2)]
+  of PieceCup:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 0, y: 1), (x: 0, y: 2),
+      (x: 1, y: 2)]
+  of PieceCorner:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 2, y: 0), (x: 0, y: 1),
+      (x: 0, y: 2)]
+  of PieceTee:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 2, y: 0), (x: 1, y: 1),
+      (x: 1, y: 2)]
+  of PieceBar:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 2, y: 0), (x: 3, y: 0),
+      (x: 4, y: 0)]
+  of PieceBox:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 2, y: 0), (x: 0, y: 1),
+      (x: 1, y: 1), (x: 2, y: 1), (x: 0, y: 2), (x: 1, y: 2),
+      (x: 2, y: 2)]
+  of PieceFlat:
+    @[(x: 0, y: 0), (x: 1, y: 0), (x: 2, y: 0)]
+
+proc rotatedCells(cells: openArray[BlockOffset]): seq[BlockOffset] =
+  ## Rotates cells clockwise around their bounding box.
+  var maxY = 0
+  for cell in cells:
+    maxY = max(maxY, cell.y)
+  for cell in cells:
+    result.add((x: maxY - cell.y, y: cell.x))
+  result.normalizeCells()
+
+proc pieceCells(kind: PieceKind, rotation: int): seq[BlockOffset] =
+  ## Returns rotated custom piece cells.
+  result = basePieceCells(kind)
+  result.normalizeCells()
+  for i in 0 ..< (rotation and 3):
+    discard i
+    result = result.rotatedCells()
+
+proc pieceWidth(kind: PieceKind, rotation: int): int =
+  ## Returns the width of one rotated piece in logical cells.
+  for cell in pieceCells(kind, rotation):
+    result = max(result, cell.x + 1)
 
 proc randomPiece(sim: var SimServer): PieceKind =
   PieceKind(sim.rng.rand(high(PieceKind).ord))
@@ -897,7 +918,8 @@ proc findSpawnPosition(
   desiredCenterX, desiredTopY: int
 ): tuple[found: bool, x: int, y: int] =
   ## Finds a spawn location, using a random column when the target is blocked.
-  let desiredX = desiredCenterX - 2 + PieceSpawnNudgeCells
+  let desiredX = desiredCenterX - pieceWidth(kind, 0) div 2 +
+    PieceSpawnNudgeCells
   result = sim.findSpawnInColumn(kind, desiredX, desiredTopY)
   if result.found:
     return
