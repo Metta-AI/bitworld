@@ -12,6 +12,8 @@
 ## Usage:
 ##   nim r tools/docker_build.nim --push              # build + push all
 ##   nim r tools/docker_build.nim --push among_them   # just the game server
+##   nim r tools/docker_build.nim --push infinite_blocks --bots
+##                                                   # game plus its bots
 ##   nim r tools/docker_build.nim --list              # show targets
 ##
 ## Prerequisites:
@@ -44,6 +46,8 @@ type
     name: string
     imageName: string
     dockerFile: string
+    games: seq[string]
+    isGame: bool
 
 proc usage() =
   ## Prints usage and exits.
@@ -55,6 +59,7 @@ Targets are discovered from Dockerfile locations.
 
 Options:
   --push            Push images to GHCR after building
+  --bots            Also build bots for selected game targets
   --platform:STR    Platforms to build (default: linux/amd64,linux/arm64)
   --tag:STR         Image tag (default: latest)
   --registry:STR    Registry prefix (default: ghcr.io/treeform)
@@ -136,6 +141,18 @@ proc nodeString(node: JsonNode, key: string): string =
   else:
     ""
 
+proc manifestStringArray(path, key: string): seq[string] =
+  ## Reads one string array field from a JSON manifest.
+  if path.len == 0:
+    return
+  let node = parseFile(path)
+  if node.kind != JObject or not node.hasKey(key) or
+      node[key].kind != JArray:
+    return
+  for item in node[key]:
+    if item.kind == JString:
+      result.add(item.getStr())
+
 proc coworldPlayerImage(
   manifestPath,
   dirName: string
@@ -204,12 +221,24 @@ proc addDockerFile(
     dir = dockerFile.parentDir()
     manifest = manifestPath(dir)
     playerImage = coworldPlayerImage(manifest, dir.extractFilename())
+    gameName = manifestString(manifest, "name")
   var
-    manifestName = manifestString(manifest, "name")
+    manifestName = gameName
     manifestImageUri = manifestString(manifest, "image_uri")
-  if manifest.len > 0 and manifest.parentDir() != dir and playerImage.imageUri.len > 0:
+    games: seq[string]
+    isGame =
+      manifest.len > 0 and
+      manifest.extractFilename() == CoworldManifestName and
+      manifest.parentDir() == dir
+  if manifest.len > 0 and manifest.parentDir() != dir and
+      playerImage.imageUri.len > 0:
     manifestName = playerImage.name
     manifestImageUri = playerImage.imageUri
+    if gameName.len > 0:
+      games.add(gameName)
+  elif manifest.len > 0 and
+      manifest.extractFilename() == CoplayerManifestName:
+    games = manifestStringArray(manifest, "games")
   if manifestName.len == 0 or manifestImageUri.len == 0:
     return
   var targetName =
@@ -221,7 +250,9 @@ proc addDockerFile(
   targets.add DockerTarget(
     name: targetName,
     imageName: imageNameForTarget(targetName, manifestImageUri),
-    dockerFile: dockerFile.relativePath(root)
+    dockerFile: dockerFile.relativePath(root),
+    games: games,
+    isGame: isGame
   )
 
 proc scanDockerFiles(
@@ -262,6 +293,37 @@ proc targetFiles(
   for target in targets:
     if target.name == name:
       result.add(target.dockerFile)
+
+proc supportsGame(target: DockerTarget, gameName: string): bool =
+  ## Returns true when a target is a bot for one normalized game name.
+  let normalizedGame = normalizeTargetName(gameName)
+  for game in target.games:
+    if normalizeTargetName(game) == normalizedGame:
+      return true
+
+proc addUniqueTarget(
+  targets: var seq[DockerTarget],
+  target: DockerTarget
+) =
+  ## Adds one target if its Dockerfile is not already selected.
+  for existing in targets:
+    if existing.dockerFile == target.dockerFile:
+      return
+  targets.add(target)
+
+proc addBotTargets(
+  result: var seq[DockerTarget],
+  targets: openArray[DockerTarget],
+  game: DockerTarget
+) =
+  ## Adds all discovered bot targets that support one game target.
+  if not game.isGame:
+    return
+  for target in targets:
+    if target.isGame:
+      continue
+    if target.supportsGame(game.name):
+      result.addUniqueTarget(target)
 
 proc ensureBuildx() =
   ## Verifies that docker buildx is available.
@@ -360,7 +422,8 @@ proc buildImage(
 
 proc selectedTargets(
   targets: openArray[DockerTarget],
-  names: openArray[string]
+  names: openArray[string],
+  includeBots: bool
 ): seq[DockerTarget] =
   ## Selects requested targets or returns every discovered target.
   if names.len == 0:
@@ -379,7 +442,10 @@ proc selectedTargets(
       echo "Error: unknown Docker target: ", name
       echo "Run with --list to see available targets."
       quit(1)
-    result.add(targetsByName[normalized])
+    let target = targetsByName[normalized]
+    result.addUniqueTarget(target)
+    if includeBots:
+      result.addBotTargets(targets, target)
 
 proc printTargets(targets: openArray[DockerTarget]) =
   ## Prints all discovered Docker targets.
@@ -387,6 +453,8 @@ proc printTargets(targets: openArray[DockerTarget]) =
   for target in targets:
     echo "  ", target.name, " -> ", target.imageName
     echo "    ", target.dockerFile
+    if target.games.len > 0:
+      echo "    games: ", target.games.join(", ")
 
 proc targetNames(targets: openArray[DockerTarget]): string =
   ## Formats target names for status output.
@@ -403,6 +471,7 @@ proc main() =
     platforms = DefaultPlatforms
     tag = "latest"
     registry = Registry
+    includeBots = false
     names: seq[string]
 
   let targets = discoverTargets(root)
@@ -413,6 +482,8 @@ proc main() =
       case key
       of "push":
         push = true
+      of "bots":
+        includeBots = true
       of "platform":
         platforms = val
       of "tag":
@@ -439,13 +510,14 @@ proc main() =
     of cmdEnd:
       discard
 
-  let chosen = selectedTargets(targets, names)
+  let chosen = selectedTargets(targets, names, includeBots)
 
   echo "docker_build"
   echo "  registry:  ", registry
   echo "  tag:       ", tag
   echo "  platforms: ", platforms
   echo "  push:      ", push
+  echo "  bots:      ", includeBots
   echo "  targets:   ", targetNames(chosen)
 
   ensureBuildx()
