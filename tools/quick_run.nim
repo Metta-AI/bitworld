@@ -236,9 +236,14 @@ proc manifestProtocol(node: JsonNode, key: string): string =
   if node.kind != JObject or not node.hasKey("protocols"):
     return
   let protocols = node["protocols"]
-  if protocols.kind == JObject and protocols.hasKey(key) and
-    protocols[key].kind == JString:
-      return protocols[key].getStr()
+  if protocols.kind != JObject or not protocols.hasKey(key):
+    return
+  let protocol = protocols[key]
+  if protocol.kind == JString:
+    return protocol.getStr()
+  if protocol.kind == JObject and protocol.hasKey("value") and
+      protocol["value"].kind == JString:
+    return protocol["value"].getStr()
 
 proc isSpriteProtocolSpec(path: string): bool =
   ## Returns true when a protocol path names the sprite protocol spec.
