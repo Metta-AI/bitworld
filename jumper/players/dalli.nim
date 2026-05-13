@@ -36,7 +36,16 @@ const
   MaxObstacleScanHeight = WorldTileSize * 4
   MaxSoloObstacleHeight = WorldTileSize * 2
   BigObstacleHeight = WorldTileSize
+  GreetingChanceDen = 900
+  ChatCooldownMinTicks = 72
+  ChatCooldownJitterTicks = 96
+  FallDangerPixels = 128
+  FallDangerTicks = 3
   ProgressEchoInterval = initDuration(milliseconds = 250)
+
+  GreetingChats = ["hi", "hey", "hello", "sup"]
+  StuckChats = ["help", "here", "plz"]
+  PanicChats = ["oo", "oops", "yolo", "nooo..."]
 
 type
   SpriteImage = object
@@ -79,9 +88,13 @@ type
     bigJumpArmed: bool
     bigJumpDelay: int
     lastWorldX: int
+    lastWorldY: int
     maxWorldX: int
     maxProgressStep: int
     stuckTicks: int
+    fallTicks: int
+    chatCooldown: int
+    pendingChat: string
     lastProgressEcho: MonoTime
     intent: string
 
@@ -140,6 +153,21 @@ proc addQuery(url, name, token: string, slot: int): string =
   result.appendQueryParam(first, "token", token)
   if slot >= 0:
     result.appendQueryParam(first, "slot", $slot)
+
+proc spriteTextPacket(text: string): string =
+  ## Builds a sprite protocol text input packet.
+  var clean = ""
+  for ch in text:
+    if ch >= ' ' and ch <= '~':
+      clean.add(ch)
+      if clean.len == uint16.high.int:
+        break
+  result = newString(clean.len + 3)
+  result[0] = char(0x81'u8)
+  result[1] = char(clean.len and 0xff)
+  result[2] = char((clean.len shr 8) and 0xff)
+  for i, ch in clean:
+    result[i + 3] = ch
 
 proc playerUrl(
   address: string,
@@ -213,6 +241,7 @@ proc initBot(name: string): Bot =
   result.objects = initTable[int, ObjectState]()
   result.maxProgressStep = -1
   result.lastWorldX = low(int)
+  result.lastWorldY = low(int)
   result.lastProgressEcho = getMonoTime()
 
 proc updateCamera(bot: var Bot) =
@@ -543,12 +572,50 @@ proc updateStuck(bot: var Bot, player: PlayerSight) =
   ## Tracks whether Dalli is still making rightward progress.
   if not player.found:
     bot.stuckTicks = 0
+    bot.fallTicks = 0
     return
   if bot.lastWorldX != low(int) and player.worldX <= bot.lastWorldX + 1:
     inc bot.stuckTicks
   else:
     bot.stuckTicks = 0
   bot.lastWorldX = player.worldX
+  if bot.lastWorldY != low(int) and player.worldY > bot.lastWorldY:
+    inc bot.fallTicks
+  else:
+    bot.fallTicks = 0
+  bot.lastWorldY = player.worldY
+
+proc noLandingBelow(bot: Bot, player: PlayerSight): bool =
+  ## Returns true when no landing terrain is visible below Dalli.
+  let y = player.worldY + PlayerBoxHeight + 2
+  for x in countup(player.worldX + 2, player.worldX + PlayerBoxWidth - 2, 4):
+    if bot.groundNear(x, y, FallDangerPixels):
+      return false
+  true
+
+proc fallingDanger(bot: Bot, player: PlayerSight, grounded: bool): bool =
+  ## Returns true when Dalli appears to be falling into open air.
+  not grounded and bot.fallTicks >= FallDangerTicks and
+    bot.noLandingBelow(player)
+
+proc randomChat(bot: var Bot, choices: openArray[string]): string =
+  ## Picks one short chat phrase.
+  choices[bot.rng.rand(choices.high)]
+
+proc queueChat(bot: var Bot, choices: openArray[string]) =
+  ## Queues one rate-limited chat phrase.
+  if bot.pendingChat.len > 0 or bot.chatCooldown > 0:
+    return
+  bot.pendingChat = bot.randomChat(choices)
+  bot.chatCooldown =
+    ChatCooldownMinTicks + bot.rng.rand(ChatCooldownJitterTicks)
+
+proc maybeGreet(bot: var Bot, others: openArray[PlayerSight]) =
+  ## Occasionally greets another visible player.
+  if others.len == 0 or bot.chatCooldown > 0 or bot.pendingChat.len > 0:
+    return
+  if bot.rng.rand(GreetingChanceDen - 1) == 0:
+    bot.queueChat(GreetingChats)
 
 proc jumpButton(bot: var Bot, grounded: bool): uint8 =
   ## Returns a one-frame jump press when it is available.
@@ -600,6 +667,8 @@ proc decideMask(bot: var Bot): uint8 =
   bot.updateStuck(own)
   if bot.jumpCooldown > 0:
     dec bot.jumpCooldown
+  if bot.chatCooldown > 0:
+    dec bot.chatCooldown
 
   let
     others = bot.otherPlayers(own)
@@ -612,13 +681,19 @@ proc decideMask(bot: var Bot): uint8 =
     helper = bot.visibleHelper(own, others)
     needsHelp = grounded and blocked and not canJumpObstacle
 
+  bot.maybeGreet(others)
+  if bot.fallingDanger(own, grounded):
+    bot.queueChat(PanicChats)
+
   if needsHelp and not helper.found:
     bot.intent = "waiting"
+    bot.queueChat(StuckChats)
     bot.resetBigJump()
     return 0
 
   if needsHelp and helper.found:
     bot.intent = "climb"
+    bot.queueChat(StuckChats)
     result = moveToward(helper.centerX, own.centerX)
     if result == 0:
       result = ButtonRight
@@ -677,6 +752,9 @@ proc runBot(
         if nextMask != lastMask:
           ws.send(blobFromMask(nextMask), BinaryMessage)
           lastMask = nextMask
+        if bot.pendingChat.len > 0:
+          ws.send(spriteTextPacket(bot.pendingChat), BinaryMessage)
+          bot.pendingChat.setLen(0)
         if maxSteps > 0 and bot.frameTick >= maxSteps:
           ws.close()
           return
