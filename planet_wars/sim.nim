@@ -55,6 +55,7 @@ const
   OriginColor* = RgbaColor(r: 84'u8, g: 244'u8, b: 232'u8, a: 255'u8)
   ScoreColor* = RgbaColor(r: 248'u8, g: 250'u8, b: 255'u8, a: 255'u8)
   BlackColor* = RgbaColor(r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8)
+  ChatBubbleTicks* = TargetFps * 5
   StarColors* = [
     RgbaColor(r: 168'u8, g: 211'u8, b: 255'u8, a: 255'u8),
     RgbaColor(r: 255'u8, g: 246'u8, b: 194'u8, a: 255'u8),
@@ -68,7 +69,6 @@ const
   TopLeftLayerType* = 1
   ZoomableLayerFlag* = 1
   UiLayerFlag* = 2
-  ChatVisibleLines* = 3
   ChatMaxChars* = 40
 
 type
@@ -131,7 +131,7 @@ type
   ChatMessage* = object
     playerId*: int
     text*: string
-    color*: RgbaColor
+    tick*: int
 
   PlayerInput* = object
     up*: bool
@@ -517,19 +517,26 @@ proc cleanChatMessage*(message: string): string =
       result.add(ch)
 
 proc addChatMessage*(sim: var SimServer, playerIndex: int, message: string) =
-  ## Adds one visible chat line from a connected player.
+  ## Adds one cursor chat bubble from a connected player.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let text = cleanChatMessage(message)
   if text.len == 0:
     return
-  while sim.chatMessages.len >= ChatVisibleLines:
-    sim.chatMessages.delete(0)
+  for i in countdown(sim.chatMessages.high, 0):
+    if sim.chatMessages[i].playerId == sim.players[playerIndex].id:
+      sim.chatMessages.delete(i)
   sim.chatMessages.add ChatMessage(
     playerId: sim.players[playerIndex].id,
     text: text,
-    color: sim.players[playerIndex].color
+    tick: sim.tickCount
   )
+
+proc pruneChatMessages*(sim: var SimServer) =
+  ## Removes expired cursor chat bubbles.
+  for i in countdown(sim.chatMessages.high, 0):
+    if sim.tickCount - sim.chatMessages[i].tick >= ChatBubbleTicks:
+      sim.chatMessages.delete(i)
 
 proc nearestPlanetIndex*(sim: SimServer, worldX, worldY: int): int =
   ## Returns the planet nearest to a world position.
@@ -859,6 +866,7 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.stepShips()
   sim.stepScore()
   inc sim.tickCount
+  sim.pruneChatMessages()
   sim.checkRemainingWin()
   sim.checkMaxTicks()
 

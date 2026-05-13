@@ -84,3 +84,19 @@ let initPacket = initGame.buildSpriteProtocolUpdates(
 )
 doAssert initPacket.len > 0
 doAssert initPacket[0] == 0x04'u8
+
+echo "Testing cursor chat bubbles render and expire"
+var chatGame = initSimServer(790, defaultSimConfig())
+let chatPlayerIndex = chatGame.addPlayer("speaker")
+chatGame.addChatMessage(chatPlayerIndex, "hello")
+doAssert chatGame.chatMessages.len == 1
+var nextPlayerState: PlayerViewerState
+let chatPacket = chatGame.buildSpriteProtocolPlayerUpdates(
+  chatPlayerIndex,
+  initPlayerViewerState(),
+  nextPlayerState
+)
+doAssert chatPacket.len > 0
+for _ in 0 ..< ChatBubbleTicks:
+  chatGame.step([])
+doAssert chatGame.chatMessages.len == 0

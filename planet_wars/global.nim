@@ -10,6 +10,7 @@ const
   PlanetOriginSpriteBase = 130
   PlayerPlanetSpriteBase = 1000
   PlayerShipSpriteBase = 2000
+  PlayerCursorSpriteBase = 5000
   PlanetTextSpriteBase = 10000
   HudSpriteId = 18000
   WaitingSpriteId = 18002
@@ -19,14 +20,21 @@ const
   PlanetOriginObjectBase = 2200
   PlanetTextObjectBase = 2300
   ShipObjectBase = 3000
+  CursorObjectBase = 12000
+  CursorZBase = WorldHeightPixels * 2
+  PlanetTextZBase = WorldHeightPixels * 3
+  ChatBubbleZBase = WorldHeightPixels * 4
   HudObjectId = 4000
   WaitingObjectId = 4002
   ChatObjectBase = 4010
   PlanetSpritePad = 4
   ShipSpriteSize = 5
+  CursorSpriteSize = 5
+  ChatBubblePad = 3
+  ChatBubblePointerHeight = 3
+  ChatBubbleGapY = 4
+  ChatBubbleMaxTextWidth = 96
   TextOutlinePad = 1
-  ChatX = 2
-  ChatY = 2
   HudY = 24
   PlayerUiHeight = 48
 
@@ -85,6 +93,39 @@ proc putRgbaPixel(sprite: var RgbaSprite, x, y: int, color: RgbaColor) =
   sprite.pixels[offset + 1] = color.g
   sprite.pixels[offset + 2] = color.b
   sprite.pixels[offset + 3] = color.a
+
+proc withAlpha(color: RgbaColor, alpha: uint8): RgbaColor =
+  ## Returns a color with a replaced alpha channel.
+  RgbaColor(r: color.r, g: color.g, b: color.b, a: alpha)
+
+proc fillRect(
+  sprite: var RgbaSprite,
+  x,
+  y,
+  width,
+  height: int,
+  color: RgbaColor
+) =
+  ## Fills one clipped rectangle.
+  for py in y ..< y + height:
+    for px in x ..< x + width:
+      sprite.putRgbaPixel(px, py, color)
+
+proc strokeRect(
+  sprite: var RgbaSprite,
+  x,
+  y,
+  width,
+  height: int,
+  color: RgbaColor
+) =
+  ## Strokes one clipped rectangle.
+  for px in x ..< x + width:
+    sprite.putRgbaPixel(px, y, color)
+    sprite.putRgbaPixel(px, y + height - 1, color)
+  for py in y ..< y + height:
+    sprite.putRgbaPixel(x, py, color)
+    sprite.putRgbaPixel(x + width - 1, py, color)
 
 proc drawHSpan(sprite: var RgbaSprite, x0, x1, y: int, color: RgbaColor) =
   ## Draws one horizontal span into an RGBA sprite.
@@ -350,6 +391,10 @@ proc playerShipSpriteId(playerId, direction: int): int =
   ## Returns the sprite id for one player's ship and direction.
   PlayerShipSpriteBase + playerId * 4 + direction
 
+proc playerCursorSpriteId(playerId: int): int =
+  ## Returns the sprite id for one player's cursor.
+  PlayerCursorSpriteBase + playerId
+
 proc shipDirection(ship: Ship): int =
   ## Returns the dominant direction index for one moving ship.
   let
@@ -420,6 +465,16 @@ proc buildShipSprite(color: RgbaColor, direction: int): RgbaSprite =
     result.putRgbaPixel(c - 1, c, color)
     result.putRgbaPixel(c, c, color)
     result.putRgbaPixel(c + 1, c, color)
+
+proc buildCursorSprite(color: RgbaColor): RgbaSprite =
+  ## Builds a 5 by 5 cross cursor with a transparent center.
+  result = newRgbaSprite(CursorSpriteSize, CursorSpriteSize)
+  let center = CursorSpriteSize div 2
+  for i in 0 ..< CursorSpriteSize:
+    if i == center:
+      continue
+    result.putRgbaPixel(i, center, color)
+    result.putRgbaPixel(center, i, color)
 
 proc buildBackgroundSprite(sim: SimServer): RgbaSprite =
   ## Builds the starfield background sprite.
@@ -510,6 +565,43 @@ proc textSliceForWidth(
       return
     result.add(ch)
     width += advance
+
+proc buildChatBubbleSprite(
+  sim: SimServer,
+  text: string,
+  alpha: uint8
+): RgbaSprite =
+  ## Builds one Tiny5 chat bubble sprite.
+  let
+    line = sim.textFont.textSliceForWidth(text, ChatBubbleMaxTextWidth)
+    textWidth = max(6, sim.textFont.textWidth(line))
+    bodyWidth = textWidth + ChatBubblePad * 2
+    bodyHeight = sim.textFont.height + ChatBubblePad * 2
+    pointerX = bodyWidth div 2
+    fillAlpha = uint8(int(alpha) * 190 div 255)
+    fillColor = BlackColor.withAlpha(fillAlpha)
+    lineColor = BlackColor.withAlpha(alpha)
+    textColor = ScoreColor.withAlpha(alpha)
+  result = newRgbaSprite(
+    bodyWidth,
+    bodyHeight + ChatBubblePointerHeight
+  )
+  result.fillRect(0, 0, bodyWidth, bodyHeight, fillColor)
+  result.strokeRect(0, 0, bodyWidth, bodyHeight, lineColor)
+  for y in 0 ..< ChatBubblePointerHeight:
+    let span = ChatBubblePointerHeight - y - 1
+    for x in pointerX - span .. pointerX + span:
+      result.putRgbaPixel(x, bodyHeight + y, lineColor)
+  var baseX = ChatBubblePad
+  for ch in line:
+    let glyph = sim.textFont.glyphAt(ch)
+    result.blitGlyph(
+      glyph,
+      baseX,
+      ChatBubblePad,
+      textColor
+    )
+    baseX += sim.textFont.glyphAdvance(ch)
 
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
@@ -686,6 +778,14 @@ proc addPlayerSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
         ship.pixels,
         "player ship"
       )
+    let cursor = buildCursorSprite(player.color)
+    packet.addSprite(
+      playerCursorSpriteId(player.id),
+      cursor.width,
+      cursor.height,
+      cursor.pixels,
+      "player cursor"
+    )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -822,7 +922,7 @@ proc addPlanetObjects(
         PlanetTextObjectBase + planet.id,
         textX,
         textY,
-        planet.y + 3,
+        PlanetTextZBase + planet.y,
         PlanetTextSpriteBase + planet.id,
         text.width,
         text.height,
@@ -860,6 +960,85 @@ proc addShipObjects(
       viewportHeight
     )
   discard viewerId
+
+proc addCursorObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds all visible player cursors.
+  for player in sim.players:
+    let
+      sx = player.cursorX - CursorSpriteSize div 2 - cameraX
+      sy = player.cursorY - CursorSpriteSize div 2 - cameraY
+    objects.addWorldObject(
+      currentIds,
+      CursorObjectBase + player.id,
+      sx,
+      sy,
+      CursorZBase + player.cursorY,
+      playerCursorSpriteId(player.id),
+      CursorSpriteSize,
+      CursorSpriteSize,
+      viewportWidth,
+      viewportHeight
+    )
+
+proc chatMessageAlpha(sim: SimServer, message: ChatMessage): uint8 =
+  ## Returns the fade alpha for one chat message.
+  let age = clamp(sim.tickCount - message.tick, 0, ChatBubbleTicks)
+  uint8(((ChatBubbleTicks - age) * 255) div ChatBubbleTicks)
+
+proc addChatBubbleObjects(
+  sim: SimServer,
+  packet: var seq[uint8],
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds cursor-anchored chat bubble objects.
+  for message in sim.chatMessages:
+    let alpha = sim.chatMessageAlpha(message)
+    if alpha == 0:
+      continue
+    for player in sim.players:
+      if player.id != message.playerId:
+        continue
+      let
+        bubble = sim.buildChatBubbleSprite(
+          message.text,
+          alpha
+        )
+        sx = player.cursorX - bubble.width div 2 - cameraX
+        sy = player.cursorY - bubble.height - ChatBubbleGapY - cameraY
+        spriteId = ChatSpriteBase + player.id
+      packet.addSprite(
+        spriteId,
+        bubble.width,
+        bubble.height,
+        bubble.pixels,
+        "chat " & message.text
+      )
+      objects.addWorldObject(
+        currentIds,
+        ChatObjectBase + player.id,
+        sx,
+        sy,
+        ChatBubbleZBase + player.cursorY,
+        spriteId,
+        bubble.width,
+        bubble.height,
+        viewportWidth,
+        viewportHeight
+      )
+      break
 
 proc addWorldObjects(
   sim: SimServer,
@@ -907,6 +1086,23 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
+  sim.addCursorObjects(
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  sim.addChatBubbleObjects(
+    packet,
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
   packet.flushWorldObjects(objects)
 
 proc addPlayerHud(
@@ -934,41 +1130,6 @@ proc addPlayerHud(
     ScoreColor,
     true
   )
-
-proc addChatObjects(
-  sim: SimServer,
-  packet: var seq[uint8],
-  currentIds: var seq[int]
-) =
-  ## Adds the three reusable top chat sprites.
-  let
-    lineHeight = sim.textFont.lineHeight()
-    maxTextWidth = ScreenWidth - ChatX * 2 - TextOutlinePad * 2
-  for slot in 0 ..< ChatVisibleLines:
-    if slot >= sim.chatMessages.len:
-      continue
-    let
-      message = sim.chatMessages[slot]
-      line = sim.textFont.textSliceForWidth(message.text, maxTextWidth)
-      text = sim.buildTextSprite([line], message.color, true)
-      spriteId = ChatSpriteBase + slot
-      objectId = ChatObjectBase + slot
-    packet.addSprite(
-      spriteId,
-      text.width,
-      text.height,
-      text.pixels,
-      "chat " & message.text
-    )
-    packet.addObject(
-      objectId,
-      ChatX,
-      ChatY + slot * lineHeight,
-      high(int16) - 10 + slot,
-      TopLeftLayerId,
-      spriteId
-    )
-    currentIds.add(objectId)
 
 proc addWaitingText(
   sim: SimServer,
@@ -1036,7 +1197,6 @@ proc buildSpriteProtocolPlayerUpdates*(
       ScreenHeight
     )
     ownedSim.addPlayerHud(result, currentIds, playerIndex)
-  sim.addChatObjects(result, currentIds)
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
@@ -1072,7 +1232,6 @@ proc buildSpriteProtocolUpdates*(
     WorldWidthPixels,
     WorldHeightPixels
   )
-  sim.addChatObjects(result, currentIds)
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
