@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "among_them",
-    "version": "0.1.8",
+    "version": "0.1.11",
     "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
     "owner": "treeform@softmax.com",
     "runnable": {
