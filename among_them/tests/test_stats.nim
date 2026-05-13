@@ -292,49 +292,6 @@ suite "stats":
         else: "wins_crewmate " & address & " 1"
       check expected in packet
 
-  test "max tick during voting resolves decisive crew win":
-    var config = defaultGameConfig()
-    config.minPlayers = 3
-    config.imposterCount = 1
-    config.autoImposterCount = false
-    config.tasksPerPlayer = 1
-    config.roleRevealTicks = 0
-    config.startWaitTicks = 0
-    config.gameOverTicks = 1
-    config.maxTicks = 1
-
-    var sim = initAmongThemForTest(config)
-    discard sim.addPlayer("p1")
-    discard sim.addPlayer("p2")
-    discard sim.addPlayer("p3")
-    var inputs = newSeq[InputState](sim.players.len)
-    sim.step(inputs, inputs)
-    check sim.phase == Playing
-
-    let assigned = sim.rolesByAddress()
-    var impIndex = -1
-    for i in 0 ..< sim.players.len:
-      if sim.players[i].role == Imposter:
-        impIndex = i
-    require impIndex >= 0
-
-    sim.startVote()
-    for i in 0 ..< sim.players.len:
-      sim.voteState.votes[i] = impIndex
-
-    sim.step(inputs, inputs)
-
-    check sim.phase == GameOver
-    check sim.winner == Crewmate
-    check not sim.timeLimitReached
-    for (address, role) in assigned:
-      checkpoint address
-      let account = sim.accountFor(address)
-      if role == Imposter:
-        check account.winsCrewmate == 0
-      else:
-        check account.winsCrewmate == 1
-
   test "player result json reflects rewards and wins":
     let config = defaultGameConfig()
     var sim = initAmongThemForTest(config)

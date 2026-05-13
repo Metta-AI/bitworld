@@ -2993,6 +2993,10 @@ proc maxTicksReached(sim: SimServer): bool =
   sim.config.maxTicks > 0 and sim.phase in {Playing, Voting, VoteResult} and
     sim.gameTicksElapsed() >= sim.config.maxTicks
 
+proc checkMaxTicks(sim: var SimServer) =
+  if sim.maxTicksReached():
+    sim.finishGame(Crewmate, timeLimitReached = true)
+
 proc checkWinCondition*(sim: var SimServer) =
   var
     hasImposters = false
@@ -3013,19 +3017,6 @@ proc checkWinCondition*(sim: var SimServer) =
     sim.finishGame(Imposter)
   elif sim.allTasksDone() and sim.players.len > 0:
     sim.finishGame(Crewmate)
-
-proc checkMaxTicks(sim: var SimServer) =
-  if not sim.maxTicksReached():
-    return
-  if sim.phase == Voting:
-    sim.tallyVotes()
-    sim.applyVoteResult()
-    sim.checkWinCondition()
-  elif sim.phase == VoteResult:
-    sim.applyVoteResult()
-    sim.checkWinCondition()
-  if sim.phase != GameOver:
-    sim.finishGame(Crewmate, timeLimitReached = true)
 
 proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.clearInterstitialFrame()
