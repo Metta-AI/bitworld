@@ -37,6 +37,7 @@ const
   TargetFps = 24.0
   HealthzPath = "/healthz"
   WebSocketPath = "/player"
+  GlobalWebSocketPath = "/global"
   SkyColor = 14'u8
   PlayerColors = [3'u8, 7, 8, 14, 4, 11]
   DeathY = LevelHeightPixels + WorldTileSize * 2
@@ -121,6 +122,7 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     playerViewers: Table[WebSocket, PlayerViewerState]
+    globalViewers: Table[WebSocket, PlayerViewerState]
     closedSockets: seq[WebSocket]
     tokens: seq[string]
 
@@ -703,13 +705,18 @@ proc initSimServer(seed = DefaultSeed): SimServer =
   result.buildLevel()
   result.loadTileSprites(sheet)
 
-proc addSpriteProtocolInit(packet: var seq[uint8], sim: SimServer) =
-  ## Appends the static sprite protocol setup for one player viewer.
+proc addSpriteProtocolInit(
+  packet: var seq[uint8],
+  sim: SimServer,
+  viewportWidth = ViewportWidth,
+  viewportHeight = ViewportHeight
+) =
+  ## Appends the static sprite protocol setup for one sprite viewer.
   packet.addLayer(MapLayerId, MapLayerKind, MapLayerFlags)
-  packet.addViewport(MapLayerId, ViewportWidth, ViewportHeight)
+  packet.addViewport(MapLayerId, viewportWidth, viewportHeight)
   packet.addRgbaSprite(
     SkySpriteId,
-    solidRgbaSprite(ViewportWidth, ViewportHeight, SkyColor),
+    solidRgbaSprite(viewportWidth, viewportHeight, SkyColor),
     "sky"
   )
   when DebugPlayerBounds:
@@ -1086,6 +1093,77 @@ proc buildSpriteProtocolPlayerUpdates(
   if player.dead:
     result.addTextObjects(sim, "OOPS!", 17, 20, TextObjectBase)
 
+proc buildSpriteProtocolGlobalUpdates(
+  sim: SimServer,
+  state: PlayerViewerState,
+  nextState: var PlayerViewerState
+): seq[uint8] =
+  ## Builds one sprite protocol update packet for a global viewer.
+  nextState = state
+  if not nextState.initialized:
+    result.addSpriteProtocolInit(
+      sim,
+      LevelWidthPixels,
+      LevelHeightPixels
+    )
+    nextState.initialized = true
+
+  result.addClearObjects()
+  result.addObject(
+    SkyObjectId,
+    0,
+    0,
+    int(low(int16)),
+    MapLayerId,
+    SkySpriteId
+  )
+
+  for ty in 0 ..< LevelHeightTiles:
+    for tx in 0 ..< LevelWidthTiles:
+      let
+        index = tileIndex(tx, ty)
+        gid = sim.tileGids[index]
+        spriteId =
+          if gid == 0:
+            0
+          else:
+            gid.tileSpriteId()
+      if spriteId == 0:
+        continue
+      result.addObject(
+        TileObjectBase + index,
+        tx * WorldTileSize,
+        ty * WorldTileSize,
+        0,
+        MapLayerId,
+        spriteId
+      )
+
+  for i in 0 ..< sim.players.len:
+    let player = sim.players[i]
+    if player.dead:
+      continue
+    result.addObject(
+      PlayerObjectBase + i,
+      player.x - PlayerSpriteOffsetX,
+      player.y - PlayerSpriteOffsetY,
+      player.y + 100,
+      MapLayerId,
+      player.color.playerSpriteId(
+        player.facingRight,
+        sim.animationFrame(player)
+      )
+    )
+    when DebugPlayerBounds:
+      result.addObject(
+        DebugPlayerBoxObjectBase + i,
+        player.x,
+        player.y,
+        player.y + 101,
+        MapLayerId,
+        DebugPlayerBoxSpriteId
+      )
+
 proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -1343,14 +1421,19 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
+  appState.globalViewers = initTable[WebSocket, PlayerViewerState]()
   appState.closedSockets = @[]
   appState.tokens = @[]
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
-  result.attack = (currentMask and ButtonA) != 0 and (previousMask and ButtonA) == 0
+  result.attack =
+    (currentMask and ButtonA) != 0 and
+    (previousMask and ButtonA) == 0
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
   if websocket in appState.playerViewers:
     appState.playerViewers.del(websocket)
   if websocket notin appState.playerIndices:
@@ -1397,9 +1480,10 @@ proc serveHealthz(request: Request): bool =
   true
 
 proc isPlayerStaticRoute(route: string): bool =
-  ## Returns true for the player client static routes Jumper serves.
+  ## Returns true for sprite client static routes Jumper serves.
   case route
   of PlayerClientRoute, PlayerClientHtmlRoute, CoworldPlayerClientRoute,
+      GlobalClientRoute, GlobalClientHtmlRoute, CoworldGlobalClientRoute,
       SnappyClientRoute, SnappyClientPath, CoworldSnappyClientRoute:
     true
   else:
@@ -1462,6 +1546,9 @@ proc httpHandler(request: Request) =
   elif request.path == WebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientFile(GlobalClientRoute)
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientFile(GlobalClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let
@@ -1481,6 +1568,12 @@ proc httpHandler(request: Request) =
         appState.playerIndices[websocket] = UnassignedPlayerIndex
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = PlayerViewerState()
   elif request.servePlayerStatic():
     discard
   else:
@@ -1538,7 +1631,11 @@ proc runServerLoop*(
   )
   var serverThread: Thread[ServerThreadArgs]
   var serverPtr = cast[ptr Server](unsafeAddr httpServer)
-  createThread(serverThread, serverThreadProc, ServerThreadArgs(server: serverPtr, address: host, port: port))
+  createThread(
+    serverThread,
+    serverThreadProc,
+    ServerThreadArgs(server: serverPtr, address: host, port: port)
+  )
   httpServer.waitUntilReady()
 
   var
@@ -1552,6 +1649,8 @@ proc runServerLoop*(
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
       playerStates: seq[PlayerViewerState] = @[]
+      globalSockets: seq[WebSocket] = @[]
+      globalStates: seq[PlayerViewerState] = @[]
       inputs: seq[InputState]
 
     {.gcsafe.}:
@@ -1577,9 +1676,16 @@ proc runServerLoop*(
           if playerIndex < 0 or playerIndex >= inputs.len:
             continue
           let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
-          let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
+          let previousMask = appState.lastAppliedMasks.getOrDefault(
+            websocket,
+            0
+          )
           inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
           appState.lastAppliedMasks[websocket] = currentMask
+
+        for websocket, state in appState.globalViewers.pairs:
+          globalSockets.add(websocket)
+          globalStates.add(state)
 
     sim.step(inputs)
     inc runTicks
@@ -1602,6 +1708,23 @@ proc runServerLoop*(
           withLock appState.lock:
             sim.removePlayer(sockets[i])
 
+    for i in 0 ..< globalSockets.len:
+      var nextState: PlayerViewerState
+      let packet = sim.buildSpriteProtocolGlobalUpdates(
+        globalStates[i],
+        nextState
+      )
+      try:
+        globalSockets[i].send(blobFromBytes(packet), BinaryMessage)
+        {.gcsafe.}:
+          withLock appState.lock:
+            if globalSockets[i] in appState.globalViewers:
+              appState.globalViewers[globalSockets[i]] = nextState
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            sim.removePlayer(globalSockets[i])
+
     if maxTicks > 0 and runTicks >= maxTicks:
       inc gamesFinished
       if maxGames > 0 and gamesFinished >= maxGames:
@@ -1620,7 +1743,10 @@ proc readConfigString(node: JsonNode, name: string, value: var string) =
     return
   let item = node[name]
   if item.kind != JString:
-    raise newException(ValueError, "Config field " & name & " must be a string.")
+    raise newException(
+      ValueError,
+      "Config field " & name & " must be a string."
+    )
   value = item.getStr()
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
