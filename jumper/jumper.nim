@@ -51,8 +51,6 @@ const
   MapLayerKind = 0
   MapLayerFlags = 1
   SkySpriteId = 1
-  DigitSpriteBase = 20
-  LetterSpriteBase = 40
   PlayerSpriteBase = 100
   RadarSpriteBase = 200
   TiledSpriteBase = 300
@@ -61,7 +59,9 @@ const
   PlayerObjectBase = 5000
   RadarObjectBase = 6000
   HudObjectBase = 7000
+  HudSpriteBase = 7000
   TextObjectBase = 7100
+  TextSpriteBase = 7100
   ChatSpriteBase = 9000
   ChatObjectBase = 9000
   DebugPlayerBoxSpriteId = 900
@@ -117,8 +117,6 @@ type
     tileGids: seq[int]
     tileSprites: Table[int, RgbaSprite]
     playerFrames: array[PlayerFrame, RgbaSprite]
-    digitSprites: array[10, Sprite]
-    letterSprites: seq[Sprite]
     textFont: PixelFont
     rng: Rand
     tickCount: int
@@ -181,12 +179,6 @@ proc tiny5Path(): string =
 
 proc loadClientPalette() =
   loadPalette(clientDataDir() / "pallete.png")
-
-proc loadClientDigitSprites(): array[10, Sprite] =
-  loadDigitSprites(clientDataDir() / "numbers.png")
-
-proc loadClientLetterSprites(): seq[Sprite] =
-  loadLetterSprites(clientDataDir() / "letters.png")
 
 proc loadTiny5Font(): PixelFont =
   ## Loads the shared Tiny5 variable-width pixel font.
@@ -380,14 +372,6 @@ proc outlineRgbaSprite(width, height: int, color: ColorRGBA): RgbaSprite =
   for y in 0 ..< height:
     result.putRgbaPixel(0, y, color)
     result.putRgbaPixel(width - 1, y, color)
-
-proc spriteToRgba(sprite: Sprite): RgbaSprite =
-  ## Converts one indexed sprite to the sprite protocol RGBA format.
-  result = newRgbaSprite(sprite.width, sprite.height)
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let color = sprite.pixels[sprite.spriteIndex(x, y)]
-      result.putRgbaPixel(x, y, rgbaColor(color))
 
 proc chatCharSupported(ch: char): bool =
   ## Returns true when Jumper can draw one chat character.
@@ -797,8 +781,6 @@ proc initSimServer(seed = DefaultSeed): SimServer =
   result.playerFrames[PlayerWalkA] = sheet.sheetRgbaSprite(1, 0)
   result.playerFrames[PlayerWalkB] = sheet.sheetRgbaSprite(2, 0)
   result.playerFrames[PlayerJump] = sheet.sheetRgbaSprite(3, 0)
-  result.digitSprites = loadClientDigitSprites()
-  result.letterSprites = loadClientLetterSprites()
   result.textFont = loadTiny5Font()
   result.players = @[]
   result.buildLevel()
@@ -839,18 +821,6 @@ proc addSpriteProtocolInit(
     )
     emittedTileSprites[gid] = true
 
-  for i in 0 ..< sim.digitSprites.len:
-    packet.addRgbaSprite(
-      DigitSpriteBase + i,
-      sim.digitSprites[i].spriteToRgba(),
-      "digit " & $i
-    )
-  for i in 0 ..< sim.letterSprites.len:
-    packet.addRgbaSprite(
-      LetterSpriteBase + i,
-      sim.letterSprites[i].spriteToRgba(),
-      "letter " & $i
-    )
   for i in 0 ..< PlayerColors.len:
     let color = PlayerColors[i]
     for frame in PlayerFrame:
@@ -870,49 +840,36 @@ proc addSpriteProtocolInit(
       "radar " & $i
     )
 
-proc addNumberObjects(
-  packet: var seq[uint8],
+proc tiny5Sprite(
   sim: SimServer,
-  value, screenX, screenY, objectBase: int
-) =
-  ## Appends digit objects for one non-negative number.
-  let text = $max(0, value)
-  var x = screenX
-  for i, ch in text:
-    let digit = ord(ch) - ord('0')
-    packet.addObject(
-      objectBase + i,
-      x,
-      screenY,
-      int(high(int16)),
-      MapLayerId,
-      DigitSpriteBase + digit
-    )
-    x += sim.digitSprites[digit].width
+  text: string,
+  color: ColorRGBA
+): RgbaSprite =
+  ## Builds one transparent Tiny5 text sprite.
+  result = newRgbaSprite(
+    max(1, sim.textFont.textWidth(text)),
+    sim.textFont.height
+  )
+  var x = 0
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    result.blitChatGlyph(glyph, x, 0, color)
+    x += sim.textFont.glyphAdvance(ch)
 
-proc addTextObjects(
+proc addTiny5Object(
   packet: var seq[uint8],
   sim: SimServer,
   text: string,
-  screenX, screenY, objectBase: int
+  objectId,
+  spriteId,
+  x,
+  y,
+  z: int
 ) =
-  ## Appends letter objects for one short text string.
-  var x = screenX
-  for i, ch in text:
-    if ch == ' ':
-      x += 6
-      continue
-    let index = letterIndex(ch)
-    if index >= 0 and index < sim.letterSprites.len:
-      packet.addObject(
-        objectBase + i,
-        x,
-        screenY,
-        int(high(int16)) - 1,
-        MapLayerId,
-        LetterSpriteBase + index
-      )
-    x += 6
+  ## Appends one Tiny5 text sprite and object.
+  let sprite = sim.tiny5Sprite(text, rgba(255, 255, 255, 255))
+  packet.addRgbaSprite(spriteId, sprite, text)
+  packet.addObject(objectId, x, y, z, MapLayerId, spriteId)
 
 proc addSpeechBubble(
   packet: var seq[uint8],
@@ -1228,9 +1185,25 @@ proc buildSpriteProtocolPlayerUpdates(
       other.color.radarSpriteId()
     )
 
-  result.addNumberObjects(sim, player.score, 0, 0, HudObjectBase)
+  result.addTiny5Object(
+    sim,
+    $max(0, player.score),
+    HudObjectBase,
+    HudSpriteBase,
+    0,
+    0,
+    int(high(int16))
+  )
   if player.dead:
-    result.addTextObjects(sim, "OOPS!", 17, 20, TextObjectBase)
+    result.addTiny5Object(
+      sim,
+      "OOPS!",
+      TextObjectBase,
+      TextSpriteBase,
+      17,
+      20,
+      int(high(int16)) - 1
+    )
 
 proc buildSpriteProtocolGlobalUpdates(
   sim: SimServer,
