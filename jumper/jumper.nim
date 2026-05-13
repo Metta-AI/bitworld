@@ -1,62 +1,79 @@
 import
   std/[json, locks, monotimes, os, parseopt, random, strutils, tables, times],
   mummy, pixie, supersnappy,
-  bitworld/clients, protocol, server
+  bitworld/aseprite, bitworld/clients, bitworld/tiled, protocol, server
 
 const
   DefaultSeed = 0xB1770
   DefaultMaxTicks = 0
   DefaultMaxGames = 0
   UnassignedPlayerIndex = 0x7fffffff
-  SheetTileSize = TileSize
-  LevelWidthTiles = 80
-  LevelHeightTiles = 11
-  LevelWidthPixels = LevelWidthTiles * TileSize
-  LevelHeightPixels = LevelHeightTiles * TileSize
+  SheetTileSize = 32
+  SheetColumns = 8
+  WorldTileSize = 32
+  PlayerSpriteSize = 32
+  PlayerFrameCount = 4
+  PlayerDirectionCount = 2
+  PlayerSpritesPerColor = PlayerFrameCount * PlayerDirectionCount
+  LevelWidthTiles = 64
+  LevelHeightTiles = 16
+  LevelWidthPixels = LevelWidthTiles * WorldTileSize
+  LevelHeightPixels = LevelHeightTiles * WorldTileSize
+  ViewportWidth = 320
+  ViewportHeight = 200
   MotionScale = 256
-  AccelX = 32
+  AccelX = 171
   FrictionNum = 200
   FrictionDen = 256
-  MaxSpeedX = 320
-  StopThreshold = 8
-  Gravity = 48
-  JumpVel = -750
-  MaxFallSpeed = 1000
+  MaxSpeedX = 1707
+  StopThreshold = 43
+  Gravity = 256
+  JumpVel = -3594
+  MaxFallSpeed = 5333
   TargetFps = 24.0
   HealthzPath = "/healthz"
   WebSocketPath = "/player"
   SkyColor = 14'u8
   PlayerColors = [3'u8, 7, 8, 14, 4, 11]
-  GroundY = (LevelHeightTiles - 1) * TileSize
-  DeathY = LevelHeightPixels + 12
-  RespawnX = 2 * TileSize
-  RespawnY = GroundY - TileSize
-  GoalTileX = LevelWidthTiles - 3
-  CollisionInset = 1
-  CollisionWidth = TileSize - CollisionInset * 2
-  CollisionHeight = TileSize
+  DeathY = LevelHeightPixels + WorldTileSize * 2
+  SpawnWidthTiles = 9
+  SpawnAirTiles = 4
+  TiledLayerName = "Tile Layer 1"
+  FlagGid = 15
+  SignGid = 60
   MapLayerId = 0
   MapLayerKind = 0
   MapLayerFlags = 1
   SkySpriteId = 1
-  GroundSpriteId = 2
-  WallSpriteId = 3
-  GoalSpriteId = 4
   DigitSpriteBase = 20
   LetterSpriteBase = 40
   PlayerSpriteBase = 100
   RadarSpriteBase = 200
+  TiledSpriteBase = 300
   SkyObjectId = 1
   TileObjectBase = 1000
   PlayerObjectBase = 5000
   RadarObjectBase = 6000
   HudObjectBase = 7000
   TextObjectBase = 7100
+  OverlapResolvePasses = 4
 
 type
+  HsvColor = object
+    h, s, v: float
+
   RgbaSprite = object
     width, height: int
     pixels: seq[uint8]
+
+  Rect = object
+    x, y, w, h: int
+
+  FilledSprite = object
+    width, height: int
+    bounds: Rect
+    pixels: seq[bool]
+    bottomYByX: seq[int]
 
   Actor = object
     x, y: int
@@ -71,17 +88,29 @@ type
 
   TileKind = enum
     TileAir
+    TileDecoration
     TileGround
     TileWall
     TileGoal
 
+  PlayerFrame = enum
+    PlayerStand
+    PlayerWalkA
+    PlayerWalkB
+    PlayerJump
+
+  PlayerDirection = enum
+    PlayerLeft
+    PlayerRight
+
   SimServer = object
     players: seq[Actor]
     tiles: seq[TileKind]
-    rabbitSprite: Sprite
-    groundSprite: Sprite
-    wallSprite: Sprite
-    goalSprite: Sprite
+    tileGids: seq[int]
+    tileSprites: Table[int, RgbaSprite]
+    playerBounds: array[PlayerDirection, Rect]
+    playerFrameSprites: array[PlayerDirection, array[PlayerFrame, FilledSprite]]
+    playerFrames: array[PlayerFrame, RgbaSprite]
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
     rng: Rand
@@ -123,7 +152,16 @@ proc clientDataDir(): string =
   repoDir() / "clients" / "data"
 
 proc sheetPath(): string =
-  dataDir() / "spritesheet.png"
+  dataDir() / "spritesheet.aseprite"
+
+proc tiledProjectPath(): string =
+  dataDir() / "forest.tiled-project"
+
+proc tiledSessionPath(): string =
+  dataDir() / "forest.tiled-session"
+
+proc tiledMapPath(): string =
+  dataDir() / "forest.tmx"
 
 proc loadClientPalette() =
   loadPalette(clientDataDir() / "pallete.png")
@@ -133,11 +171,6 @@ proc loadClientDigitSprites(): array[10, Sprite] =
 
 proc loadClientLetterSprites(): seq[Sprite] =
   loadLetterSprites(clientDataDir() / "letters.png")
-
-proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
-  spriteFromImage(
-    sheet.subImage(cellX * SheetTileSize, cellY * SheetTileSize, SheetTileSize, SheetTileSize)
-  )
 
 proc newRgbaSprite(width, height: int): RgbaSprite =
   ## Allocates a transparent RGBA sprite.
@@ -161,6 +194,254 @@ proc putRgbaPixel(sprite: var RgbaSprite, x, y: int, color: ColorRGBA) =
   sprite.pixels[offset + 2] = color.b
   sprite.pixels[offset + 3] = color.a
 
+proc rgbaPixel(sprite: RgbaSprite, x, y: int): ColorRGBA =
+  ## Reads one pixel from an RGBA sprite.
+  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
+    return rgba(0, 0, 0, 0)
+  let offset = (y * sprite.width + x) * 4
+  rgba(
+    sprite.pixels[offset],
+    sprite.pixels[offset + 1],
+    sprite.pixels[offset + 2],
+    sprite.pixels[offset + 3]
+  )
+
+proc contentBounds(sprite: RgbaSprite): Rect =
+  ## Scans non-transparent pixels and returns their tight bounds.
+  if sprite.width <= 0 or sprite.height <= 0:
+    return Rect()
+
+  var
+    minX = sprite.width
+    minY = sprite.height
+    maxX = -1
+    maxY = -1
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let alpha = sprite.pixels[(y * sprite.width + x) * 4 + 3]
+      if alpha == 0:
+        continue
+      minX = min(minX, x)
+      minY = min(minY, y)
+      maxX = max(maxX, x)
+      maxY = max(maxY, y)
+
+  if maxX < minX:
+    return Rect(x: 0, y: 0, w: sprite.width, h: sprite.height)
+
+  Rect(
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  )
+
+proc mirrorX(bounds: Rect, width: int): Rect =
+  ## Mirrors bounds across the horizontal center of a sprite cell.
+  Rect(
+    x: width - bounds.x - bounds.w,
+    y: bounds.y,
+    w: bounds.w,
+    h: bounds.h
+  )
+
+proc includeBounds(bounds: var Rect, other: Rect, hasBounds: var bool) =
+  ## Expands one bounds rectangle to include another.
+  if other.w <= 0 or other.h <= 0:
+    return
+  if not hasBounds:
+    bounds = other
+    hasBounds = true
+    return
+  let
+    minX = min(bounds.x, other.x)
+    minY = min(bounds.y, other.y)
+    maxX = max(bounds.x + bounds.w - 1, other.x + other.w - 1)
+    maxY = max(bounds.y + bounds.h - 1, other.y + other.h - 1)
+  bounds = Rect(
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  )
+
+proc filledSprite(sprite: RgbaSprite, flipX: bool): FilledSprite =
+  ## Builds exact filled-pixel data for one sprite frame.
+  result.width = sprite.width
+  result.height = sprite.height
+  result.pixels = newSeq[bool](sprite.width * sprite.height)
+  result.bottomYByX = newSeq[int](sprite.width)
+  for x in 0 ..< result.bottomYByX.len:
+    result.bottomYByX[x] = -1
+
+  var
+    hasBounds = false
+    bounds: Rect
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let alpha = sprite.pixels[(y * sprite.width + x) * 4 + 3]
+      if alpha == 0:
+        continue
+      let dx =
+        if flipX:
+          sprite.width - 1 - x
+        else:
+          x
+      result.pixels[y * sprite.width + dx] = true
+      result.bottomYByX[dx] = max(result.bottomYByX[dx], y)
+      bounds.includeBounds(Rect(x: dx, y: y, w: 1, h: 1), hasBounds)
+
+  if hasBounds:
+    result.bounds = bounds
+  else:
+    result.bounds = Rect(
+      x: 0,
+      y: 0,
+      w: sprite.width,
+      h: sprite.height
+    )
+
+proc filledAt(sprite: FilledSprite, x, y: int): bool =
+  ## Returns true when one local sprite pixel is filled.
+  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
+    return false
+  sprite.pixels[y * sprite.width + x]
+
+proc sheetRgbaSprite(sheet: Image, cellX, cellY: int): RgbaSprite =
+  ## Slices one 32 pixel cell from the sprite sheet as RGBA.
+  result = newRgbaSprite(SheetTileSize, SheetTileSize)
+  let image = sheet.subImage(
+    cellX * SheetTileSize,
+    cellY * SheetTileSize,
+    SheetTileSize,
+    SheetTileSize
+  )
+  for y in 0 ..< image.height:
+    for x in 0 ..< image.width:
+      result.putRgbaPixel(x, y, image[x, y])
+
+proc sheetGidSprite(sheet: Image, gid: int): RgbaSprite =
+  ## Slices one Tiled gid cell from the sprite sheet as RGBA.
+  if gid <= 0:
+    raise newException(TiledError, "Tiled gid must be positive: " & $gid)
+  let
+    index = gid - 1
+    cellX = index mod SheetColumns
+    cellY = index div SheetColumns
+  if (cellX + 1) * SheetTileSize > sheet.width or
+      (cellY + 1) * SheetTileSize > sheet.height:
+    raise newException(
+      TiledError,
+      "Tiled gid " & $gid & " is outside the sprite sheet"
+    )
+  sheet.sheetRgbaSprite(cellX, cellY)
+
+proc rgbToHsv(color: ColorRGBA): HsvColor =
+  ## Converts one RGBA color to HSV while ignoring alpha.
+  let
+    r = color.r.float / 255.0
+    g = color.g.float / 255.0
+    b = color.b.float / 255.0
+    maxValue = max(r, max(g, b))
+    minValue = min(r, min(g, b))
+    delta = maxValue - minValue
+  result.v = maxValue
+  if maxValue <= 0.0:
+    result.s = 0.0
+  else:
+    result.s = delta / maxValue
+
+  if delta <= 0.0:
+    result.h = 0.0
+  elif maxValue == r:
+    result.h = (g - b) / delta
+    if result.h < 0.0:
+      result.h += 6.0
+    result.h /= 6.0
+  elif maxValue == g:
+    result.h = ((b - r) / delta + 2.0) / 6.0
+  else:
+    result.h = ((r - g) / delta + 4.0) / 6.0
+
+proc toColor(hsv: HsvColor, alpha: uint8): ColorRGBA =
+  ## Converts HSV plus alpha to an RGBA color.
+  if hsv.s <= 0.0:
+    let gray = uint8(clamp(int(hsv.v * 255.0 + 0.5), 0, 255))
+    return rgba(gray, gray, gray, alpha)
+
+  var h = hsv.h
+  while h < 0.0:
+    h += 1.0
+  while h >= 1.0:
+    h -= 1.0
+  let
+    scaled = h * 6.0
+    sector = min(5, int(scaled))
+    f = scaled - sector.float
+    p = hsv.v * (1.0 - hsv.s)
+    q = hsv.v * (1.0 - hsv.s * f)
+    t = hsv.v * (1.0 - hsv.s * (1.0 - f))
+
+  proc channel(value: float): uint8 =
+    uint8(clamp(int(value * 255.0 + 0.5), 0, 255))
+
+  case sector
+  of 0:
+    rgba(channel(hsv.v), channel(t), channel(p), alpha)
+  of 1:
+    rgba(channel(q), channel(hsv.v), channel(p), alpha)
+  of 2:
+    rgba(channel(p), channel(hsv.v), channel(t), alpha)
+  of 3:
+    rgba(channel(p), channel(q), channel(hsv.v), alpha)
+  of 4:
+    rgba(channel(t), channel(p), channel(hsv.v), alpha)
+  else:
+    rgba(channel(hsv.v), channel(p), channel(q), alpha)
+
+proc isProtectedPlayerPixel(color: ColorRGBA): bool =
+  ## Returns true for player colors that must keep their source hue.
+  color.r == 0xee'u8 and
+    color.g == 0xb8'u8 and
+    color.b == 0x85'u8
+
+proc isPlayerTintPixel(color: ColorRGBA): bool =
+  ## Returns true for red player pixels that should be hue shifted.
+  if color.a == 0 or color.isProtectedPlayerPixel():
+    return false
+
+  let hsv = color.rgbToHsv()
+  hsv.s >= 0.35 and
+    hsv.v >= 0.25 and
+    (hsv.h <= 0.04 or hsv.h >= 0.94)
+
+proc tintPlayerPixel(color: ColorRGBA, targetHue: float): ColorRGBA =
+  ## Hue shifts one saturated red player pixel.
+  if not color.isPlayerTintPixel():
+    return color
+  var hsv = color.rgbToHsv()
+  hsv.h = targetHue
+  hsv.toColor(color.a)
+
+proc tintPlayerSprite(
+  sprite: RgbaSprite,
+  color: uint8,
+  flipX: bool
+): RgbaSprite =
+  ## HSV-tints and optionally flips one player frame.
+  result = newRgbaSprite(sprite.width, sprite.height)
+  let targetHue = rgbaColor(color).rgbToHsv().h
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let
+        dx =
+          if flipX:
+            sprite.width - 1 - x
+          else:
+            x
+        source = sprite.rgbaPixel(x, y)
+      result.putRgbaPixel(dx, y, source.tintPlayerPixel(targetHue))
+
 proc solidRgbaSprite(width, height: int, color: uint8): RgbaSprite =
   ## Builds one solid RGBA sprite from a palette index.
   result = newRgbaSprite(width, height)
@@ -176,43 +457,6 @@ proc spriteToRgba(sprite: Sprite): RgbaSprite =
     for x in 0 ..< sprite.width:
       let color = sprite.pixels[sprite.spriteIndex(x, y)]
       result.putRgbaPixel(x, y, rgbaColor(color))
-
-proc coloredPlayerSprite(
-  sprite: Sprite,
-  color: uint8,
-  flipX: bool
-): RgbaSprite =
-  ## Builds a tinted player sprite with a one pixel outline.
-  result = newRgbaSprite(sprite.width + 2, sprite.height + 2)
-  let black = rgbaColor(0'u8)
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let source = sprite.pixels[sprite.spriteIndex(x, y)]
-      if source == TransparentColorIndex:
-        continue
-      let dx =
-        if flipX:
-          sprite.width - 1 - x
-        else:
-          x
-      for oy in -1 .. 1:
-        for ox in -1 .. 1:
-          if ox == 0 and oy == 0:
-            continue
-          result.putRgbaPixel(dx + 1 + ox, y + 1 + oy, black)
-
-  let tint = rgbaColor(color)
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let source = sprite.pixels[sprite.spriteIndex(x, y)]
-      if source == TransparentColorIndex:
-        continue
-      let dx =
-        if flipX:
-          sprite.width - 1 - x
-        else:
-          x
-      result.putRgbaPixel(dx + 1, y + 1, tint)
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   ## Appends one unsigned byte.
@@ -312,6 +556,14 @@ proc getTile(sim: SimServer, tx, ty: int): TileKind =
 proc isSolid(kind: TileKind): bool =
   kind == TileGround or kind == TileWall
 
+proc isPassThroughGid(gid: int): bool =
+  ## Returns true when a rendered tile should not collide.
+  case gid
+  of SignGid:
+    true
+  else:
+    false
+
 proc worldClampPixel(x, maxValue: int): int =
   x.clamp(0, maxValue)
 
@@ -323,73 +575,70 @@ proc rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh: int): bool =
 
 proc collidesWithTiles(sim: SimServer, x, y, w, h: int): bool =
   let
-    startTx = x div TileSize
-    startTy = y div TileSize
-    endTx = (x + w - 1) div TileSize
-    endTy = (y + h - 1) div TileSize
+    startTx = x div WorldTileSize
+    startTy = y div WorldTileSize
+    endTx = (x + w - 1) div WorldTileSize
+    endTy = (y + h - 1) div WorldTileSize
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
       if sim.getTile(tx, ty).isSolid:
         return true
   false
 
+proc tileKindForGid(gid: int): TileKind =
+  ## Returns the Jumper tile kind for one Tiled gid.
+  case gid
+  of 0:
+    TileAir
+  of FlagGid:
+    TileGoal
+  else:
+    if gid.isPassThroughGid():
+      TileDecoration
+    else:
+      TileGround
+
 proc buildLevel(sim: var SimServer) =
+  ## Loads the Jumper level from the Tiled forest map.
+  let
+    workspace = loadTiledWorkspace(
+      tiledProjectPath(),
+      tiledSessionPath(),
+      tiledMapPath()
+    )
+    map = workspace.map
+    layer = map.layerByName(TiledLayerName)
+
+  if map.width != LevelWidthTiles or map.height != LevelHeightTiles:
+    raise newException(
+      TiledError,
+      "Forest map size must be " & $LevelWidthTiles & "x" &
+        $LevelHeightTiles & ", got " & $map.width & "x" & $map.height
+    )
+  if map.tileWidth != WorldTileSize or map.tileHeight != WorldTileSize:
+    raise newException(
+      TiledError,
+      "Forest map tile size must be " & $WorldTileSize & "x" &
+        $WorldTileSize
+    )
+
   sim.tiles = newSeq[TileKind](LevelWidthTiles * LevelHeightTiles)
+  sim.tileGids = newSeq[int](sim.tiles.len)
+  for ty in 0 ..< LevelHeightTiles:
+    for tx in 0 ..< LevelWidthTiles:
+      let
+        index = tileIndex(tx, ty)
+        gid = layer.gidAt(tx, ty)
+      sim.tiles[index] = gid.tileKindForGid()
+      sim.tileGids[index] = gid
 
-  # Ground floor
-  for tx in 0 ..< LevelWidthTiles:
-    sim.tiles[tileIndex(tx, LevelHeightTiles - 1)] = TileGround
-
-  # Gaps in the ground (pits) - need cooperation to cross
-  let gaps = [
-    (12, 4),
-    (22, 5),
-    (35, 4),
-    (48, 10),
-    (60, 5),
-  ]
-  for gap in gaps:
-    let (start, width) = gap
-    for dx in 0 ..< width:
-      let tx = start + dx
-      if inBounds(tx, LevelHeightTiles - 1):
-        sim.tiles[tileIndex(tx, LevelHeightTiles - 1)] = TileAir
-
-  # Platforms (stepping stones above gaps and walls)
-  let platforms = [
-    # (x, y, width) in tiles
-    (14, 7, 2),
-    (24, 6, 2),
-    (26, 8, 2),
-    (37, 7, 2),
-    (50, 5, 2),
-    (52, 7, 2),
-    (62, 6, 2),
-    (64, 8, 2),
-  ]
-  for plat in platforms:
-    let (px, py, pw) = plat
-    for dx in 0 ..< pw:
-      if inBounds(px + dx, py):
-        sim.tiles[tileIndex(px + dx, py)] = TileGround
-
-  # Walls that are too tall to jump over alone
-  let walls = [
-    (18, 7, 3),  # (x, topY, height)
-    (32, 4, 6),
-    (44, 4, 6),
-    (56, 6, 4),
-    (70, 7, 3),
-  ]
-  for wall in walls:
-    let (wx, topY, height) = wall
-    for dy in 0 ..< height:
-      let ty = topY + dy
-      if inBounds(wx, ty):
-        sim.tiles[tileIndex(wx, ty)] = TileWall
-
-  # Goal flag at the end
-  sim.tiles[tileIndex(GoalTileX, LevelHeightTiles - 2)] = TileGoal
+proc loadTileSprites(sim: var SimServer, sheet: Image) =
+  ## Loads each Tiled gid sprite used by the map.
+  sim.tileSprites = initTable[int, RgbaSprite]()
+  for gid in sim.tileGids:
+    if gid == 0 or gid in sim.tileSprites:
+      continue
+    sim.tileSprites[gid] = sheet.sheetGidSprite(gid)
 
 proc colorSlot(color: uint8): int =
   ## Returns the compact sprite slot for one player color.
@@ -398,52 +647,157 @@ proc colorSlot(color: uint8): int =
       return i
   0
 
-proc playerSpriteId(color: uint8, facingRight: bool): int =
-  ## Returns the sprite id for one colored player facing.
-  PlayerSpriteBase + color.colorSlot() * 2 + (
+proc playerSpriteId(
+  color: uint8,
+  facingRight: bool,
+  frame: PlayerFrame
+): int =
+  ## Returns the sprite id for one colored player animation frame.
+  let directionOffset =
     if facingRight:
-      0
+      PlayerFrameCount
     else:
-      1
-  )
+      0
+  PlayerSpriteBase +
+    color.colorSlot() * PlayerSpritesPerColor +
+    directionOffset +
+    ord(frame)
 
 proc radarSpriteId(color: uint8): int =
   ## Returns the radar dot sprite id for one player color.
   RadarSpriteBase + color.colorSlot()
 
-proc findRandomSpawn(sim: var SimServer): tuple[x, y: int] =
-  for _ in 0 ..< 200:
-    let tx = sim.rng.rand(min(7, LevelWidthTiles - 2))
-    let ty = sim.rng.rand(LevelHeightTiles - 2)
-    let px = tx * TileSize
-    let py = ty * TileSize
-    if sim.getTile(tx, ty).isSolid:
-      continue
-    if not sim.getTile(tx, ty + 1).isSolid:
-      continue
-    if sim.collidesWithTiles(px + CollisionInset, py, CollisionWidth, CollisionHeight):
-      continue
-    return (px, py)
-  (RespawnX, RespawnY)
+proc tileSpriteId(gid: int): int =
+  ## Returns the sprite id for one Tiled gid.
+  TiledSpriteBase + gid
+
+proc playerDirection(facingRight: bool): PlayerDirection =
+  ## Returns the player direction enum for a facing flag.
+  if facingRight:
+    PlayerRight
+  else:
+    PlayerLeft
+
+proc playerContentBounds(
+  frames: array[PlayerFrame, RgbaSprite],
+  direction: PlayerDirection
+): Rect =
+  ## Returns tight player bounds across all animation frames.
+  var hasBounds = false
+  for frame in PlayerFrame:
+    var bounds = frames[frame].contentBounds()
+    if direction == PlayerLeft:
+      bounds = bounds.mirrorX(frames[frame].width)
+    result.includeBounds(bounds, hasBounds)
+
+  if not hasBounds:
+    result = Rect(
+      x: 0,
+      y: 0,
+      w: PlayerSpriteSize,
+      h: PlayerSpriteSize
+    )
+
+proc playerFrameSprites(
+  frames: array[PlayerFrame, RgbaSprite],
+  direction: PlayerDirection
+): array[PlayerFrame, FilledSprite] =
+  ## Returns filled player sprite data for each animation frame.
+  for frame in PlayerFrame:
+    result[frame] = frames[frame].filledSprite(direction == PlayerLeft)
+
+proc playerCollisionBounds(sim: SimServer, player: Actor): Rect =
+  ## Returns the tight sprite bounds for one player direction.
+  sim.playerBounds[player.facingRight.playerDirection()]
+
+proc playerCollisionRectAt(
+  sim: SimServer,
+  player: Actor,
+  x, y: int
+): Rect =
+  ## Returns the world collision rectangle for one player position.
+  let bounds = sim.playerCollisionBounds(player)
+  Rect(
+    x: x + bounds.x,
+    y: y + bounds.y,
+    w: bounds.w,
+    h: bounds.h
+  )
+
+proc playerCollisionRect(sim: SimServer, player: Actor): Rect =
+  ## Returns the current world collision rectangle for one player.
+  sim.playerCollisionRectAt(player, player.x, player.y)
+
+proc playerCenterX(sim: SimServer, player: Actor): int =
+  ## Returns the center x coordinate of the visible player body.
+  let rect = sim.playerCollisionRect(player)
+  rect.x + rect.w div 2
+
+proc playerCenterY(sim: SimServer, player: Actor): int =
+  ## Returns the center y coordinate of the visible player body.
+  let rect = sim.playerCollisionRect(player)
+  rect.y + rect.h div 2
+
+proc playerFrameRect(sim: SimServer, player: Actor): Rect
+
+proc playersOverlapAt(
+  sim: SimServer,
+  a: Actor,
+  ax, ay: int,
+  b: Actor,
+  bx, by: int
+): bool
+
+proc randomSpawn(
+  sim: var SimServer,
+  direction: PlayerDirection
+): tuple[x, y: int] =
+  ## Returns a random spawn in the first tiles, above the ground.
+  let
+    bounds = sim.playerBounds[direction]
+    widthPixels = SpawnWidthTiles * WorldTileSize
+    maxBodyX = max(0, widthPixels - bounds.w)
+    bodyX = sim.rng.rand(maxBodyX)
+    bodyY = SpawnAirTiles * WorldTileSize
+  (
+    bodyX - bounds.x,
+    bodyY - bounds.y
+  )
 
 proc resolveOverlaps(sim: var SimServer) =
-  for i in 0 ..< sim.players.len:
-    if sim.players[i].dead:
-      continue
-    for j in i + 1 ..< sim.players.len:
-      if sim.players[j].dead:
+  for _ in 0 ..< OverlapResolvePasses:
+    var moved = false
+    for i in 0 ..< sim.players.len:
+      if sim.players[i].dead:
         continue
-      if rectsOverlap(
-        sim.players[i].x + CollisionInset, sim.players[i].y, CollisionWidth, CollisionHeight,
-        sim.players[j].x + CollisionInset, sim.players[j].y, CollisionWidth, CollisionHeight
-      ):
-        if sim.players[i].y <= sim.players[j].y:
-          sim.players[i].y = sim.players[j].y - CollisionHeight
-        else:
-          sim.players[j].y = sim.players[i].y - CollisionHeight
+      for j in i + 1 ..< sim.players.len:
+        if sim.players[j].dead:
+          continue
+        if sim.playersOverlapAt(
+          sim.players[i],
+          sim.players[i].x,
+          sim.players[i].y,
+          sim.players[j],
+          sim.players[j].x,
+          sim.players[j].y
+        ):
+          let
+            ri = sim.playerFrameRect(sim.players[i])
+            rj = sim.playerFrameRect(sim.players[j])
+          if ri.y <= rj.y:
+            sim.players[i].y += rj.y - ri.y - ri.h
+            sim.players[i].carryY = 0
+            sim.players[i].velY = 0
+          else:
+            sim.players[j].y += ri.y - rj.y - rj.h
+            sim.players[j].carryY = 0
+            sim.players[j].velY = 0
+          moved = true
+    if not moved:
+      break
 
 proc addPlayer(sim: var SimServer): int =
-  let spawn = sim.findRandomSpawn()
+  let spawn = sim.randomSpawn(PlayerRight)
   let color = PlayerColors[sim.nextColorIndex mod PlayerColors.len]
   inc sim.nextColorIndex
   sim.players.add Actor(
@@ -456,7 +810,7 @@ proc addPlayer(sim: var SimServer): int =
   sim.resolveOverlaps()
 
 proc respawnPlayer(sim: var SimServer, i: int) =
-  let spawn = sim.findRandomSpawn()
+  let spawn = sim.randomSpawn(sim.players[i].facingRight.playerDirection())
   sim.players[i].x = spawn.x
   sim.players[i].y = spawn.y
   sim.players[i].velX = 0
@@ -471,32 +825,46 @@ proc respawnPlayer(sim: var SimServer, i: int) =
 proc initSimServer(seed = DefaultSeed): SimServer =
   result.rng = initRand(seed)
   loadClientPalette()
-  let sheet = readImage(sheetPath())
-  result.groundSprite = sheet.sheetSprite(0, 0)
-  result.rabbitSprite = sheet.sheetSprite(1, 0)
-  result.wallSprite = sheet.sheetSprite(2, 0)
-  result.goalSprite = sheet.sheetSprite(3, 0)
+  let sheet = readAsepriteImage(sheetPath())
+  result.playerFrames[PlayerStand] = sheet.sheetRgbaSprite(0, 0)
+  result.playerFrames[PlayerWalkA] = sheet.sheetRgbaSprite(1, 0)
+  result.playerFrames[PlayerWalkB] = sheet.sheetRgbaSprite(2, 0)
+  result.playerFrames[PlayerJump] = sheet.sheetRgbaSprite(3, 0)
+  result.playerBounds[PlayerLeft] = result.playerFrames.playerContentBounds(
+    PlayerLeft
+  )
+  result.playerBounds[PlayerRight] = result.playerFrames.playerContentBounds(
+    PlayerRight
+  )
+  result.playerFrameSprites[PlayerLeft] =
+    result.playerFrames.playerFrameSprites(PlayerLeft)
+  result.playerFrameSprites[PlayerRight] =
+    result.playerFrames.playerFrameSprites(PlayerRight)
   result.digitSprites = loadClientDigitSprites()
   result.letterSprites = loadClientLetterSprites()
   result.players = @[]
   result.buildLevel()
+  result.loadTileSprites(sheet)
 
 proc addSpriteProtocolInit(packet: var seq[uint8], sim: SimServer) =
   ## Appends the static sprite protocol setup for one player viewer.
   packet.addLayer(MapLayerId, MapLayerKind, MapLayerFlags)
-  packet.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+  packet.addViewport(MapLayerId, ViewportWidth, ViewportHeight)
   packet.addRgbaSprite(
     SkySpriteId,
-    solidRgbaSprite(ScreenWidth, ScreenHeight, SkyColor),
+    solidRgbaSprite(ViewportWidth, ViewportHeight, SkyColor),
     "sky"
   )
-  packet.addRgbaSprite(
-    GroundSpriteId,
-    sim.groundSprite.spriteToRgba(),
-    "ground"
-  )
-  packet.addRgbaSprite(WallSpriteId, sim.wallSprite.spriteToRgba(), "wall")
-  packet.addRgbaSprite(GoalSpriteId, sim.goalSprite.spriteToRgba(), "goal")
+  var emittedTileSprites = initTable[int, bool]()
+  for gid in sim.tileGids:
+    if gid == 0 or gid in emittedTileSprites:
+      continue
+    packet.addRgbaSprite(
+      gid.tileSpriteId(),
+      sim.tileSprites[gid],
+      "tile " & $gid
+    )
+    emittedTileSprites[gid] = true
 
   for i in 0 ..< sim.digitSprites.len:
     packet.addRgbaSprite(
@@ -512,16 +880,17 @@ proc addSpriteProtocolInit(packet: var seq[uint8], sim: SimServer) =
     )
   for i in 0 ..< PlayerColors.len:
     let color = PlayerColors[i]
-    packet.addRgbaSprite(
-      PlayerSpriteBase + i * 2,
-      sim.rabbitSprite.coloredPlayerSprite(color, false),
-      "player " & $i & " right"
-    )
-    packet.addRgbaSprite(
-      PlayerSpriteBase + i * 2 + 1,
-      sim.rabbitSprite.coloredPlayerSprite(color, true),
-      "player " & $i & " left"
-    )
+    for frame in PlayerFrame:
+      packet.addRgbaSprite(
+        playerSpriteId(color, false, frame),
+        sim.playerFrames[frame].tintPlayerSprite(color, true),
+        "player " & $i & " left " & $frame
+      )
+      packet.addRgbaSprite(
+        playerSpriteId(color, true, frame),
+        sim.playerFrames[frame].tintPlayerSprite(color, false),
+        "player " & $i & " right " & $frame
+      )
     packet.addRgbaSprite(
       RadarSpriteBase + i,
       solidRgbaSprite(1, 1, color),
@@ -575,9 +944,216 @@ proc addTextObjects(
 proc cameraXFor(sim: SimServer, player: Actor): int =
   ## Returns the player camera x coordinate.
   worldClampPixel(
-    player.x + sim.rabbitSprite.width div 2 - ScreenWidth div 2,
-    LevelWidthPixels - ScreenWidth
+    sim.playerCenterX(player) - ViewportWidth div 2,
+    LevelWidthPixels - ViewportWidth
   )
+
+proc cameraYFor(sim: SimServer, player: Actor): int =
+  ## Returns the player camera y coordinate.
+  worldClampPixel(
+    sim.playerCenterY(player) - ViewportHeight div 2,
+    LevelHeightPixels - ViewportHeight
+  )
+
+proc animationFrame(sim: SimServer, player: Actor): PlayerFrame =
+  ## Returns the current animation frame for one player.
+  if not player.onGround:
+    return PlayerJump
+  if abs(player.velX) >= StopThreshold:
+    if (sim.tickCount div 6) mod 2 == 0:
+      return PlayerWalkA
+    return PlayerWalkB
+  PlayerStand
+
+proc currentFrameSprite(sim: SimServer, player: Actor): FilledSprite =
+  ## Returns the filled-pixel data for the current player frame.
+  let
+    direction = player.facingRight.playerDirection()
+    frame = sim.animationFrame(player)
+  sim.playerFrameSprites[direction][frame]
+
+proc playerFrameRectAt(
+  sim: SimServer,
+  player: Actor,
+  x, y: int
+): Rect =
+  ## Returns the world rectangle for the current filled player frame.
+  let bounds = sim.currentFrameSprite(player).bounds
+  Rect(
+    x: x + bounds.x,
+    y: y + bounds.y,
+    w: bounds.w,
+    h: bounds.h
+  )
+
+proc playerFrameRect(sim: SimServer, player: Actor): Rect =
+  ## Returns the current world rectangle for filled player pixels.
+  sim.playerFrameRectAt(player, player.x, player.y)
+
+proc playersOverlapAt(
+  sim: SimServer,
+  a: Actor,
+  ax, ay: int,
+  b: Actor,
+  bx, by: int
+): bool =
+  ## Returns true when two players have overlapping filled pixels.
+  let
+    aSprite = sim.currentFrameSprite(a)
+    bSprite = sim.currentFrameSprite(b)
+    ar = sim.playerFrameRectAt(a, ax, ay)
+    br = sim.playerFrameRectAt(b, bx, by)
+    startX = max(ar.x, br.x)
+    startY = max(ar.y, br.y)
+    endX = min(ar.x + ar.w, br.x + br.w)
+    endY = min(ar.y + ar.h, br.y + br.h)
+
+  if startX >= endX or startY >= endY:
+    return false
+
+  for y in startY ..< endY:
+    for x in startX ..< endX:
+      if aSprite.filledAt(x - ax, y - ay) and
+          bSprite.filledAt(x - bx, y - by):
+        return true
+  false
+
+proc hasTileSupport(sim: SimServer, player: Actor): bool =
+  ## Returns true when tiles touch the filled player feet.
+  let sprite = sim.currentFrameSprite(player)
+  for x in 0 ..< sprite.width:
+    let bottomY = sprite.bottomYByX[x]
+    if bottomY < 0:
+      continue
+    let
+      wx = player.x + x
+      wy = player.y + bottomY + 1
+    if sim.getTile(wx div WorldTileSize, wy div WorldTileSize).isSolid:
+      return true
+  false
+
+proc hasPlayerSupport(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when another player supports this player's feet.
+  let
+    player = sim.players[playerIndex]
+    sprite = sim.currentFrameSprite(player)
+  for i in 0 ..< sim.players.len:
+    if i == playerIndex or sim.players[i].dead:
+      continue
+    let otherSprite = sim.currentFrameSprite(sim.players[i])
+    for x in 0 ..< sprite.width:
+      let bottomY = sprite.bottomYByX[x]
+      if bottomY < 0:
+        continue
+      let
+        wx = player.x + x
+        wy = player.y + bottomY + 1
+        otherX = wx - sim.players[i].x
+        otherY = wy - sim.players[i].y
+      if otherSprite.filledAt(otherX, otherY):
+        return true
+  false
+
+proc hasGroundSupport(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when a player can still stand on current support.
+  if sim.players[playerIndex].dead:
+    return false
+  sim.hasTileSupport(sim.players[playerIndex]) or
+    sim.hasPlayerSupport(playerIndex)
+
+proc validateGroundSupport(sim: var SimServer) =
+  ## Clears grounded state when moving support no longer lines up.
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].onGround and not sim.hasGroundSupport(i):
+      sim.players[i].onGround = false
+
+proc playerBlockedByTilesAt(
+  sim: SimServer,
+  player: Actor,
+  x, y: int
+): bool =
+  ## Returns true when one player position overlaps world tiles.
+  let rect = sim.playerCollisionRectAt(player, x, y)
+  rect.x < 0 or
+    rect.x + rect.w > LevelWidthPixels or
+    sim.collidesWithTiles(rect.x, rect.y, rect.w, rect.h)
+
+proc applyTurnCandidate(
+  sim: var SimServer,
+  playerIndex: int,
+  turned: Actor,
+  x, y: int,
+  facingRight: bool
+): bool =
+  ## Applies a turn at one candidate position when it is tile-safe.
+  if sim.playerBlockedByTilesAt(turned, x, y):
+    return false
+  sim.players[playerIndex].x = x
+  sim.players[playerIndex].facingRight = facingRight
+  true
+
+proc tryTurnPlayer(
+  sim: var SimServer,
+  playerIndex: int,
+  facingRight: bool
+) =
+  ## Turns a player and nudges horizontally out of tiles if needed.
+  if sim.players[playerIndex].facingRight == facingRight:
+    return
+
+  let
+    currentX = sim.players[playerIndex].x
+    currentY = sim.players[playerIndex].y
+    oldBounds = sim.playerCollisionBounds(sim.players[playerIndex])
+  var turned = sim.players[playerIndex]
+  turned.facingRight = facingRight
+
+  if not sim.playerBlockedByTilesAt(turned, currentX, currentY):
+    sim.players[playerIndex].facingRight = facingRight
+    return
+
+  let
+    newBounds = sim.playerCollisionBounds(turned)
+    preferredX = currentX + oldBounds.x - newBounds.x
+    preferPositive = preferredX >= currentX
+
+  if sim.applyTurnCandidate(
+    playerIndex,
+    turned,
+    preferredX,
+    currentY,
+    facingRight
+  ):
+    return
+
+  for distance in 1 .. PlayerSpriteSize:
+    let firstX =
+      if preferPositive:
+        currentX + distance
+      else:
+        currentX - distance
+    if sim.applyTurnCandidate(
+      playerIndex,
+      turned,
+      firstX,
+      currentY,
+      facingRight
+    ):
+      return
+
+    let secondX =
+      if preferPositive:
+        currentX - distance
+      else:
+        currentX + distance
+    if sim.applyTurnCandidate(
+      playerIndex,
+      turned,
+      secondX,
+      currentY,
+      facingRight
+    ):
+      return
 
 proc buildSpriteProtocolPlayerUpdates(
   sim: SimServer,
@@ -607,35 +1183,34 @@ proc buildSpriteProtocolPlayerUpdates(
   let
     player = sim.players[playerIndex]
     cameraX = sim.cameraXFor(player)
-    cameraY = LevelHeightPixels - ScreenHeight
-    startTx = max(0, cameraX div TileSize)
-    startTy = max(0, cameraY div TileSize)
-    endTx = min(LevelWidthTiles - 1, (cameraX + ScreenWidth - 1) div TileSize)
+    cameraY = sim.cameraYFor(player)
+    startTx = max(0, cameraX div WorldTileSize)
+    startTy = max(0, cameraY div WorldTileSize)
+    endTx = min(
+      LevelWidthTiles - 1,
+      (cameraX + ViewportWidth - 1) div WorldTileSize
+    )
     endTy = min(
       LevelHeightTiles - 1,
-      (cameraY + ScreenHeight - 1) div TileSize
+      (cameraY + ViewportHeight - 1) div WorldTileSize
     )
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
       let
-        tile = sim.tiles[tileIndex(tx, ty)]
+        index = tileIndex(tx, ty)
+        gid = sim.tileGids[index]
         spriteId =
-          case tile
-          of TileGround:
-            GroundSpriteId
-          of TileWall:
-            WallSpriteId
-          of TileGoal:
-            GoalSpriteId
-          of TileAir:
+          if gid == 0:
             0
+          else:
+            gid.tileSpriteId()
       if spriteId == 0:
         continue
       result.addObject(
-        TileObjectBase + tileIndex(tx, ty),
-        tx * TileSize - cameraX,
-        ty * TileSize - cameraY,
+        TileObjectBase + index,
+        tx * WorldTileSize - cameraX,
+        ty * WorldTileSize - cameraY,
         0,
         MapLayerId,
         spriteId
@@ -646,34 +1221,41 @@ proc buildSpriteProtocolPlayerUpdates(
     if other.dead:
       continue
     let
-      sx = other.x - cameraX - 1
-      sy = other.y - cameraY - 1
+      sx = other.x - cameraX
+      sy = other.y - cameraY
     result.addObject(
       PlayerObjectBase + i,
       sx,
       sy,
       sy + 100,
       MapLayerId,
-      other.color.playerSpriteId(other.facingRight)
+      other.color.playerSpriteId(
+        other.facingRight,
+        sim.animationFrame(other)
+      )
     )
 
-  let pcx = player.x + sim.rabbitSprite.width div 2
+  let pcx = sim.playerCenterX(player)
   for i in 0 ..< sim.players.len:
     if i == playerIndex or sim.players[i].dead:
       continue
     let
       other = sim.players[i]
-      ocx = other.x + sim.rabbitSprite.width div 2
+      ocx = sim.playerCenterX(other)
       sx = ocx - cameraX
-    if sx >= 0 and sx < ScreenWidth:
+    if sx >= 0 and sx < ViewportWidth:
       continue
     let
       edgeX =
         if ocx < pcx:
           0
         else:
-          ScreenWidth - 1
-      osy = clamp(other.y - cameraY, 0, ScreenHeight - 1)
+          ViewportWidth - 1
+      osy = clamp(
+        sim.playerCenterY(other) - cameraY,
+        0,
+        ViewportHeight - 1
+      )
     result.addObject(
       RadarObjectBase + i,
       edgeX,
@@ -704,37 +1286,70 @@ proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
 
   if inputX != 0:
     p.velX = clamp(p.velX + inputX * AccelX, -MaxSpeedX, MaxSpeedX)
-    p.facingRight = inputX > 0
+    sim.tryTurnPlayer(playerIndex, inputX > 0)
   else:
     p.velX = (p.velX * FrictionNum) div FrictionDen
     if abs(p.velX) < StopThreshold:
       p.velX = 0
 
+  if not p.onGround and sim.hasGroundSupport(playerIndex):
+    p.onGround = true
+
   if input.attack and p.onGround:
     p.velY = JumpVel
     p.onGround = false
 
-proc collidesWithPlayer(sim: SimServer, pi: int, x, y, w, h: int): int =
+proc collidesWithPlayerAt(
+  sim: SimServer,
+  pi: int,
+  player: Actor,
+  x, y: int
+): int =
+  ## Returns the first player with exact filled-pixel overlap.
   for j in 0 ..< sim.players.len:
     if j == pi or sim.players[j].dead:
       continue
-    let o = sim.players[j]
-    if rectsOverlap(x, y, w, h, o.x + CollisionInset, o.y, CollisionWidth, CollisionHeight):
+    if sim.playersOverlapAt(
+      player,
+      x,
+      y,
+      sim.players[j],
+      sim.players[j].x,
+      sim.players[j].y
+    ):
       return j
   -1
 
-proc collidesAny(sim: SimServer, pi: int, x, y, w, h: int): bool =
-  sim.collidesWithTiles(x, y, w, h) or sim.collidesWithPlayer(pi, x, y, w, h) >= 0
+proc collidesAnyAt(
+  sim: SimServer,
+  pi: int,
+  player: Actor,
+  x, y: int
+): bool =
+  ## Returns true when one player position collides with world or players.
+  let rect = sim.playerCollisionRectAt(player, x, y)
+  sim.collidesWithTiles(rect.x, rect.y, rect.w, rect.h) or
+    sim.collidesWithPlayerAt(pi, player, x, y) >= 0
 
 const PushRate = 4
 
 proc tryPush(sim: var SimServer, other: int, step: int): bool =
   let nx = sim.players[other].x + step
-  if nx + CollisionInset < 0 or nx + CollisionInset + CollisionWidth > LevelWidthPixels:
+  let rect = sim.playerCollisionRectAt(
+    sim.players[other],
+    nx,
+    sim.players[other].y
+  )
+  if rect.x < 0 or rect.x + rect.w > LevelWidthPixels:
     return false
-  if sim.collidesWithTiles(nx + CollisionInset, sim.players[other].y, CollisionWidth, CollisionHeight):
+  if sim.collidesWithTiles(rect.x, rect.y, rect.w, rect.h):
     return false
-  if sim.collidesWithPlayer(other, nx + CollisionInset, sim.players[other].y, CollisionWidth, CollisionHeight) >= 0:
+  if sim.collidesWithPlayerAt(
+    other,
+    sim.players[other],
+    nx,
+    sim.players[other].y
+  ) >= 0:
     return false
   sim.players[other].x = nx
   true
@@ -744,12 +1359,19 @@ proc moveX(sim: var SimServer, p: var Actor, pi: int) =
   while abs(p.carryX) >= MotionScale:
     let step = (if p.carryX < 0: -1 else: 1)
     let nx = p.x + step
-    let cx = nx + CollisionInset
-    if cx < 0 or cx + CollisionWidth > LevelWidthPixels or sim.collidesWithTiles(cx, p.y, CollisionWidth, CollisionHeight):
-      p.carryX = 0
-      p.velX = 0
-      break
-    let hitPlayer = sim.collidesWithPlayer(pi, cx, p.y, CollisionWidth, CollisionHeight)
+    let rect = sim.playerCollisionRectAt(p, nx, p.y)
+    if rect.x < 0 or
+      rect.x + rect.w > LevelWidthPixels or
+      sim.collidesWithTiles(rect.x, rect.y, rect.w, rect.h):
+        p.carryX = 0
+        p.velX = 0
+        break
+    let hitPlayer = sim.collidesWithPlayerAt(
+      pi,
+      p,
+      nx,
+      p.y
+    )
     if hitPlayer >= 0:
       if sim.tickCount mod PushRate == 0 and sim.tryPush(hitPlayer, step):
         p.x = nx
@@ -765,7 +1387,7 @@ proc moveY(sim: SimServer, p: var Actor, pi: int) =
   while abs(p.carryY) >= MotionScale:
     let step = (if p.carryY < 0: -1 else: 1)
     let ny = p.y + step
-    if sim.collidesAny(pi, p.x + CollisionInset, ny, CollisionWidth, CollisionHeight):
+    if sim.collidesAnyAt(pi, p, p.x, ny):
       p.carryY = 0
       if p.velY > 0:
         p.onGround = true
@@ -780,27 +1402,44 @@ proc applyPhysics(sim: var SimServer, p: var Actor, pi: int) =
   sim.moveY(p, pi)
 
   if p.onGround:
-    if not sim.collidesAny(pi, p.x + CollisionInset, p.y + 1, CollisionWidth, CollisionHeight):
+    if not sim.hasGroundSupport(pi):
       p.onGround = false
 
 proc checkDeath(sim: var SimServer) =
   for i in 0 ..< sim.players.len:
     if sim.players[i].dead:
       continue
-    if sim.players[i].y > DeathY:
+    let rect = sim.playerCollisionRect(sim.players[i])
+    if rect.y > DeathY:
       sim.players[i].dead = true
       sim.players[i].respawnTimer = 48
 
 proc checkGoal(sim: var SimServer) =
-  let goalX = GoalTileX * TileSize
-  let goalY = (LevelHeightTiles - 2) * TileSize
-
   for i in 0 ..< sim.players.len:
     if sim.players[i].dead:
       continue
-    if rectsOverlap(sim.players[i].x + CollisionInset, sim.players[i].y, CollisionWidth, CollisionHeight, goalX, goalY, TileSize, TileSize):
-      inc sim.players[i].score
-      sim.respawnPlayer(i)
+    let rect = sim.playerCollisionRect(sim.players[i])
+    var scored = false
+    for ty in 0 ..< LevelHeightTiles:
+      for tx in 0 ..< LevelWidthTiles:
+        if sim.tiles[tileIndex(tx, ty)] != TileGoal:
+          continue
+        if rectsOverlap(
+          rect.x,
+          rect.y,
+          rect.w,
+          rect.h,
+          tx * WorldTileSize,
+          ty * WorldTileSize,
+          WorldTileSize,
+          WorldTileSize
+        ):
+          inc sim.players[i].score
+          sim.respawnPlayer(i)
+          scored = true
+          break
+      if scored:
+        break
 
 proc updateRespawns(sim: var SimServer) =
   for i in 0 ..< sim.players.len:
@@ -820,6 +1459,8 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
   for i in 0 ..< sim.players.len:
     if not sim.players[i].dead:
       sim.applyPhysics(sim.players[i], i)
+  sim.resolveOverlaps()
+  sim.validateGroundSupport()
   sim.checkDeath()
   sim.checkGoal()
   sim.updateRespawns()
