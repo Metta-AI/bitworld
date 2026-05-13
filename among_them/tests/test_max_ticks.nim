@@ -15,6 +15,16 @@ proc initAmongThemForTest(config: GameConfig): SimServer =
     setCurrentDir(previousDir)
 
 suite "max ticks":
+  test "coworld tournament variant keeps voting short":
+    check defaultGameConfig().voteTimerTicks == 600
+
+    let manifest = parseFile(GameDir / "coworld_manifest.json")
+    let gameConfig = manifest["variants"][0]["game_config"]
+
+    check gameConfig["maxTicks"].getInt() == 10000
+    check gameConfig["voteTimerTicks"].getInt() == 600
+    check gameConfig["voteTimerTicks"].getInt() * 2 < gameConfig["maxTicks"].getInt()
+
   test "config json":
     var config = defaultGameConfig()
     config.maxTicks = 123

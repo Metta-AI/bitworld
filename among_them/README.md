@@ -103,7 +103,7 @@ From the game folder:
 
 ```sh
 cd /path/to/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"imposterCooldownTicks":1200,"voteTimerTicks":6000}'
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"imposterCooldownTicks":1200,"voteTimerTicks":600}'
 ```
 
 Useful config fields:
@@ -112,7 +112,7 @@ Useful config fields:
 - `imposterCount`: number of imposters.
 - `tasksPerPlayer`: number of tasks assigned to each crewmate.
 - `imposterCooldownTicks`: kill cooldown. This is the same as `killCooldownTicks`.
-- `voteTimerTicks`: voting duration in ticks. At 24 FPS, 6000 ticks is 250 seconds.
+- `voteTimerTicks`: voting duration in ticks. At 24 FPS, 600 ticks is 25 seconds.
 - `buttonCalls`: emergency button calls allowed per player.
 - `mapPath`: map JSON file to load. The default is `map.json`.
 

@@ -94,7 +94,7 @@ Start a server:
 
 ```sh
 cd /path/to/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"voteTimerTicks":6000}'
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"voteTimerTicks":600}'
 ```
 
 Start one bot with the debug viewer:

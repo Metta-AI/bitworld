@@ -52,7 +52,7 @@ const
   ImposterCount* = 2
   AutoImposterCount* = true
   StartWaitTicks* = 5 * TargetFps
-  VoteTimerTicks* = 6000
+  VoteTimerTicks* = 600
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
   MaxTicks* = 10_000  ## 0 = no limit.
