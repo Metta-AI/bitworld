@@ -1,5 +1,5 @@
 import mummy
-import protocol, server, soul, choose
+import protocol, server, soul, choose, data, output
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -38,28 +38,10 @@ type
     PhasePower
     PhaseEnd
 
-  PlayerKind* = enum
-    PlayerHuman
-    PlayerBot
-
-  Player = object
-    name: string
-    colorIndex: int
-    ready: bool
-    kind: PlayerKind
-    soul: Soul
-    cursor: int
-    magicTokens: int
-
   ChatEntry = object
     name: string
     colorIndex: uint8
     text: string
-
-  Vote = enum
-    VotePending
-    VotePass
-    VoteVeto
 
   WorldStep = enum
     WorldGazing
@@ -555,12 +537,13 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     elif sim.worldStep == WorldTitle and sim.worldTimer <= 0:
       sim.worldStep = WorldDescription
       sim.worldTimer = WorldDescTicks
-      echo "  World: ", sim.world.description
+      logWorld(sim.world.title, sim.world.description)
     elif sim.worldStep == WorldDescription and sim.worldTimer <= 0:
       sim.phase = PhaseMagicalFacts
       sim.currentTurn = 0
       sim.chatLog = @[]
       sim.startFactTurn()
+      logMagicalFactsPhase()
   of PhaseMagicalFacts:
     if sim.players.len == 0:
       sim.phase = PhaseLobby
@@ -613,7 +596,9 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             inc vetoCount
         let player = sim.players[sim.currentTurn]
         let factText = sim.factChoice.choice.options[sim.factChoice.choice.selected]
-        if vetoCount * 2 >= sim.factChoice.votes.len:
+        logFactOutcome(sim.players, sim.currentTurn, factText, sim.factChoice.votes)
+        let passed = vetoCount * 2 < sim.factChoice.votes.len
+        if not passed:
           sim.chatLog.add(ChatEntry(
             name: player.name,
             colorIndex: uint8(player.colorIndex),
@@ -662,6 +647,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             sim.factChoice.voteTimers.add(24 * (sim.rng.rand(3) + 1))
       else:
         let player = sim.players[sim.currentTurn]
+        logFactSkipped(player.name)
         sim.chatLog.add(ChatEntry(
           name: player.name,
           colorIndex: uint8(player.colorIndex),
@@ -721,7 +707,6 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     elif sim.situationStep == SituationTitle and sim.situationTimer <= 0:
       sim.situationStep = SituationDescription
       sim.situationTimer = SituationDescTicks
-      echo "  Situation: ", sim.situation.description
     elif sim.situationStep == SituationDescription and sim.situationTimer <= 0:
       sim.situationStep = SituationChoices
       sim.startSceneChoices()
