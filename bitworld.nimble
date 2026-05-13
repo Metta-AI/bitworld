@@ -43,6 +43,7 @@ switch("mm", "orc")
 requires "nim >= 2.2.4"
 requires "pixie"
 requires "mummy >= 0.4.7"
+requires "curly >= 1.1.1"
 requires "whisky >= 0.1.3"
 requires "silky >= 0.0.2"
 requires "windy >= 0.4.4"
