@@ -1,7 +1,8 @@
 import
   std/[json, locks, monotimes, os, parseopt, random, strutils, tables, times],
   mummy, pixie, supersnappy,
-  bitworld/aseprite, bitworld/clients, bitworld/tiled, protocol, server
+  bitworld/aseprite, bitworld/clients, bitworld/tiled, pixelfonts,
+  protocol, server
 
 const
   DefaultSeed = 0xB1770
@@ -50,8 +51,6 @@ const
   MapLayerKind = 0
   MapLayerFlags = 1
   SkySpriteId = 1
-  DigitSpriteBase = 20
-  LetterSpriteBase = 40
   PlayerSpriteBase = 100
   RadarSpriteBase = 200
   TiledSpriteBase = 300
@@ -60,11 +59,20 @@ const
   PlayerObjectBase = 5000
   RadarObjectBase = 6000
   HudObjectBase = 7000
+  HudSpriteBase = 7000
   TextObjectBase = 7100
+  TextSpriteBase = 7100
+  ChatSpriteBase = 9000
+  ChatObjectBase = 9000
   DebugPlayerBoxSpriteId = 900
   DebugPlayerBoxObjectBase = 8000
-  DebugPlayerBounds = true
+  DebugPlayerBounds = false
   OverlapResolvePasses = 4
+  ChatMaxChars = 24
+  ChatPad = 3
+  ChatPointerHeight = 3
+  ChatGapY = 4
+  ChatLifetimeTicks = 5 * 24
 
 type
   HsvColor = object
@@ -87,6 +95,8 @@ type
     respawnTimer: int
     facingRight: bool
     color: uint8
+    message: string
+    messageTicks: int
 
   TileKind = enum
     TileAir
@@ -107,8 +117,7 @@ type
     tileGids: seq[int]
     tileSprites: Table[int, RgbaSprite]
     playerFrames: array[PlayerFrame, RgbaSprite]
-    digitSprites: array[10, Sprite]
-    letterSprites: seq[Sprite]
+    textFont: PixelFont
     rng: Rand
     tickCount: int
     nextColorIndex: int
@@ -123,6 +132,7 @@ type
     playerIndices: Table[WebSocket, int]
     playerViewers: Table[WebSocket, PlayerViewerState]
     globalViewers: Table[WebSocket, PlayerViewerState]
+    chatMessages: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
     tokens: seq[string]
 
@@ -160,14 +170,19 @@ proc tiledSessionPath(): string =
 proc tiledMapPath(): string =
   dataDir() / "forest.tmx"
 
+proc tiny5Path(): string =
+  ## Returns the shared Tiny5 variable-width font path.
+  let path = dataDir() / "tiny5.aseprite"
+  if fileExists(path):
+    return path
+  repoDir() / "among_them" / "tiny5.aseprite"
+
 proc loadClientPalette() =
   loadPalette(clientDataDir() / "pallete.png")
 
-proc loadClientDigitSprites(): array[10, Sprite] =
-  loadDigitSprites(clientDataDir() / "numbers.png")
-
-proc loadClientLetterSprites(): seq[Sprite] =
-  loadLetterSprites(clientDataDir() / "letters.png")
+proc loadTiny5Font(): PixelFont =
+  ## Loads the shared Tiny5 variable-width pixel font.
+  readPixelFont(tiny5Path())
 
 proc newRgbaSprite(width, height: int): RgbaSprite =
   ## Allocates a transparent RGBA sprite.
@@ -358,13 +373,78 @@ proc outlineRgbaSprite(width, height: int, color: ColorRGBA): RgbaSprite =
     result.putRgbaPixel(0, y, color)
     result.putRgbaPixel(width - 1, y, color)
 
-proc spriteToRgba(sprite: Sprite): RgbaSprite =
-  ## Converts one indexed sprite to the sprite protocol RGBA format.
-  result = newRgbaSprite(sprite.width, sprite.height)
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let color = sprite.pixels[sprite.spriteIndex(x, y)]
-      result.putRgbaPixel(x, y, rgbaColor(color))
+proc chatCharSupported(ch: char): bool =
+  ## Returns true when Jumper can draw one chat character.
+  ch >= ' ' and ch <= '~'
+
+proc cleanChatMessage(message: string): string =
+  ## Normalizes one submitted player chat message.
+  for ch in message.strip():
+    if result.len >= ChatMaxChars:
+      return
+    if ch.chatCharSupported():
+      result.add(ch)
+
+proc chatTextWidth(sim: SimServer, text: string): int =
+  ## Returns the rendered width of one chat line.
+  sim.textFont.textWidth(text)
+
+proc blitChatGlyph(
+  target: var RgbaSprite,
+  glyph: PixelGlyph,
+  x, y: int,
+  color: ColorRGBA
+) =
+  ## Blits one Tiny5 glyph into a chat bubble.
+  for gy in 0 ..< glyph.height:
+    for gx in 0 ..< glyph.width:
+      if glyph.glyphPixel(gx, gy):
+        target.putRgbaPixel(x + gx, y + gy, color)
+
+proc blitChatText(
+  sim: SimServer,
+  target: var RgbaSprite,
+  text: string,
+  x, y: int,
+  alpha: uint8
+) =
+  ## Blits one chat line into a chat bubble.
+  var dx = x
+  let color = rgba(255, 255, 255, alpha)
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    target.blitChatGlyph(glyph, dx, y, color)
+    dx += sim.textFont.glyphAdvance(ch)
+
+proc speechBubbleSprite(
+  sim: SimServer,
+  text: string,
+  alpha: uint8
+): RgbaSprite =
+  ## Builds one speech bubble sprite for a player message.
+  let
+    textWidth = max(6, sim.chatTextWidth(text))
+    lineHeight = sim.textFont.height
+    bodyWidth = textWidth + ChatPad * 2
+    bodyHeight = lineHeight + ChatPad * 2
+    fill = rgba(0, 0, 0, alpha)
+    border = rgba(0, 0, 0, alpha)
+  result = newRgbaSprite(bodyWidth, bodyHeight + ChatPointerHeight)
+  for y in 0 ..< bodyHeight:
+    for x in 0 ..< bodyWidth:
+      result.putRgbaPixel(x, y, fill)
+  for x in 0 ..< bodyWidth:
+    result.putRgbaPixel(x, 0, border)
+    result.putRgbaPixel(x, bodyHeight - 1, border)
+  for y in 0 ..< bodyHeight:
+    result.putRgbaPixel(0, y, border)
+    result.putRgbaPixel(bodyWidth - 1, y, border)
+  let pointerX = bodyWidth div 2
+  for y in 0 ..< ChatPointerHeight:
+    let span = ChatPointerHeight - y - 1
+    for x in pointerX - span .. pointerX + span:
+      result.putRgbaPixel(x, bodyHeight + y, border)
+  sim.blitChatText(result, text, ChatPad, ChatPad, alpha)
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   ## Appends one unsigned byte.
@@ -689,6 +769,8 @@ proc respawnPlayer(sim: var SimServer, i: int) =
   sim.players[i].onGround = false
   sim.players[i].dead = false
   sim.players[i].respawnTimer = 0
+  sim.players[i].message = ""
+  sim.players[i].messageTicks = 0
   sim.resolveOverlaps()
 
 proc initSimServer(seed = DefaultSeed): SimServer =
@@ -699,8 +781,7 @@ proc initSimServer(seed = DefaultSeed): SimServer =
   result.playerFrames[PlayerWalkA] = sheet.sheetRgbaSprite(1, 0)
   result.playerFrames[PlayerWalkB] = sheet.sheetRgbaSprite(2, 0)
   result.playerFrames[PlayerJump] = sheet.sheetRgbaSprite(3, 0)
-  result.digitSprites = loadClientDigitSprites()
-  result.letterSprites = loadClientLetterSprites()
+  result.textFont = loadTiny5Font()
   result.players = @[]
   result.buildLevel()
   result.loadTileSprites(sheet)
@@ -740,18 +821,6 @@ proc addSpriteProtocolInit(
     )
     emittedTileSprites[gid] = true
 
-  for i in 0 ..< sim.digitSprites.len:
-    packet.addRgbaSprite(
-      DigitSpriteBase + i,
-      sim.digitSprites[i].spriteToRgba(),
-      "digit " & $i
-    )
-  for i in 0 ..< sim.letterSprites.len:
-    packet.addRgbaSprite(
-      LetterSpriteBase + i,
-      sim.letterSprites[i].spriteToRgba(),
-      "letter " & $i
-    )
   for i in 0 ..< PlayerColors.len:
     let color = PlayerColors[i]
     for frame in PlayerFrame:
@@ -771,49 +840,68 @@ proc addSpriteProtocolInit(
       "radar " & $i
     )
 
-proc addNumberObjects(
-  packet: var seq[uint8],
+proc tiny5Sprite(
   sim: SimServer,
-  value, screenX, screenY, objectBase: int
-) =
-  ## Appends digit objects for one non-negative number.
-  let text = $max(0, value)
-  var x = screenX
-  for i, ch in text:
-    let digit = ord(ch) - ord('0')
-    packet.addObject(
-      objectBase + i,
-      x,
-      screenY,
-      int(high(int16)),
-      MapLayerId,
-      DigitSpriteBase + digit
-    )
-    x += sim.digitSprites[digit].width
+  text: string,
+  color: ColorRGBA
+): RgbaSprite =
+  ## Builds one transparent Tiny5 text sprite.
+  result = newRgbaSprite(
+    max(1, sim.textFont.textWidth(text)),
+    sim.textFont.height
+  )
+  var x = 0
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    result.blitChatGlyph(glyph, x, 0, color)
+    x += sim.textFont.glyphAdvance(ch)
 
-proc addTextObjects(
+proc addTiny5Object(
   packet: var seq[uint8],
   sim: SimServer,
   text: string,
-  screenX, screenY, objectBase: int
+  objectId,
+  spriteId,
+  x,
+  y,
+  z: int
 ) =
-  ## Appends letter objects for one short text string.
-  var x = screenX
-  for i, ch in text:
-    if ch == ' ':
-      x += 6
-      continue
-    let index = letterIndex(ch)
-    if index >= 0 and index < sim.letterSprites.len:
-      packet.addObject(
-        objectBase + i,
-        x,
-        screenY,
-        int(high(int16)) - 1,
-        MapLayerId,
-        LetterSpriteBase + index
-      )
-    x += 6
+  ## Appends one Tiny5 text sprite and object.
+  let sprite = sim.tiny5Sprite(text, rgba(255, 255, 255, 255))
+  packet.addRgbaSprite(spriteId, sprite, text)
+  packet.addObject(objectId, x, y, z, MapLayerId, spriteId)
+
+proc addSpeechBubble(
+  packet: var seq[uint8],
+  sim: SimServer,
+  player: Actor,
+  playerIndex,
+  screenX,
+  screenY,
+  z: int
+) =
+  ## Appends a speech bubble object above one player.
+  if player.message.len == 0 or player.messageTicks <= 0:
+    return
+  let
+    alpha = uint8(clamp(
+      player.messageTicks * 255 div ChatLifetimeTicks,
+      1,
+      255
+    ))
+    bubble = sim.speechBubbleSprite(player.message, alpha)
+    x = screenX + PlayerBoxWidth div 2 - bubble.width div 2
+    y = screenY - bubble.height - ChatGapY
+    spriteId = ChatSpriteBase + playerIndex
+  packet.addRgbaSprite(spriteId, bubble, "chat " & player.message)
+  packet.addObject(
+    ChatObjectBase + playerIndex,
+    x,
+    y,
+    z,
+    MapLayerId,
+    spriteId
+  )
 
 proc cameraXFor(sim: SimServer, player: Actor): int =
   ## Returns the player camera x coordinate.
@@ -1058,6 +1146,14 @@ proc buildSpriteProtocolPlayerUpdates(
         MapLayerId,
         DebugPlayerBoxSpriteId
       )
+    result.addSpeechBubble(
+      sim,
+      other,
+      i,
+      boxX,
+      boxY,
+      boxY + 200
+    )
 
   let pcx = sim.playerCenterX(player)
   for i in 0 ..< sim.players.len:
@@ -1089,9 +1185,25 @@ proc buildSpriteProtocolPlayerUpdates(
       other.color.radarSpriteId()
     )
 
-  result.addNumberObjects(sim, player.score, 0, 0, HudObjectBase)
+  result.addTiny5Object(
+    sim,
+    $max(0, player.score),
+    HudObjectBase,
+    HudSpriteBase,
+    0,
+    0,
+    int(high(int16))
+  )
   if player.dead:
-    result.addTextObjects(sim, "OOPS!", 17, 20, TextObjectBase)
+    result.addTiny5Object(
+      sim,
+      "OOPS!",
+      TextObjectBase,
+      TextSpriteBase,
+      17,
+      20,
+      int(high(int16)) - 1
+    )
 
 proc buildSpriteProtocolGlobalUpdates(
   sim: SimServer,
@@ -1163,6 +1275,14 @@ proc buildSpriteProtocolGlobalUpdates(
         MapLayerId,
         DebugPlayerBoxSpriteId
       )
+    result.addSpeechBubble(
+      sim,
+      player,
+      i,
+      player.x,
+      player.y,
+      player.y + 200
+    )
 
 proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1397,6 +1517,17 @@ proc updateRespawns(sim: var SimServer) =
     if sim.players[i].respawnTimer <= 0:
       sim.respawnPlayer(i)
 
+proc updateMessages(sim: var SimServer) =
+  ## Fades and clears player speech bubbles.
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].messageTicks <= 0:
+      if sim.players[i].message.len > 0:
+        sim.players[i].message = ""
+      continue
+    dec sim.players[i].messageTicks
+    if sim.players[i].messageTicks <= 0:
+      sim.players[i].message = ""
+
 proc step(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
   for i in 0 ..< sim.players.len:
@@ -1412,6 +1543,7 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
   sim.checkDeath()
   sim.checkGoal()
   sim.updateRespawns()
+  sim.updateMessages()
 
 var appState: WebSocketAppState
 
@@ -1422,6 +1554,7 @@ proc initAppState() =
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.globalViewers = initTable[WebSocket, PlayerViewerState]()
+  appState.chatMessages = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.tokens = @[]
 
@@ -1431,11 +1564,63 @@ proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
     (currentMask and ButtonA) != 0 and
     (previousMask and ButtonA) == 0
 
+proc readSpriteInputText(message: string): string =
+  ## Reads printable text from sprite player input messages.
+  var offset = 0
+  while offset < message.len:
+    let messageType = message[offset].uint8
+    inc offset
+    case messageType
+    of 0x81:
+      if offset + 2 > message.len:
+        return
+      let length = int(uint16(message[offset].uint8) or
+        (uint16(message[offset + 1].uint8) shl 8))
+      offset += 2
+      if offset + length > message.len:
+        return
+      for i in 0 ..< length:
+        let value = message[offset + i].uint8
+        if value >= 32'u8 and value < 127'u8:
+          result.add(message[offset + i])
+      offset += length
+    of 0x82:
+      if offset + 4 > message.len:
+        return
+      offset += 4
+      if offset < message.len and message[offset].uint8 notin
+          {0x81'u8, 0x82'u8, 0x83'u8, 0x84'u8}:
+        inc offset
+    of 0x83:
+      if offset + 2 > message.len:
+        return
+      offset += 2
+    of 0x84:
+      if offset + 1 > message.len:
+        return
+      inc offset
+    else:
+      return
+
+proc playerChatFromMessage(message: Message): string =
+  ## Reads player chat from text or binary websocket messages.
+  case message.kind
+  of TextMessage:
+    message.data
+  of BinaryMessage:
+    if message.data.isChatPacket():
+      return message.data.blobToChat()
+    message.data.readSpriteInputText()
+  of Ping, Pong:
+    ""
+
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.globalViewers:
     appState.globalViewers.del(websocket)
   if websocket in appState.playerViewers:
     appState.playerViewers.del(websocket)
+  if websocket in appState.chatMessages:
+    appState.chatMessages.del(websocket)
   if websocket notin appState.playerIndices:
     appState.inputMasks.del(websocket)
     appState.lastAppliedMasks.del(websocket)
@@ -1460,6 +1645,7 @@ proc resetConnectedPlayers() =
     appState.playerViewers[websocket] = PlayerViewerState()
     appState.inputMasks[websocket] = 0
     appState.lastAppliedMasks[websocket] = 0
+  appState.chatMessages.clear()
 
 proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when the request is a WebSocket upgrade.
@@ -1588,14 +1774,21 @@ proc websocketHandler(
   of OpenEvent:
     discard
   of MessageEvent:
-    if message.kind == BinaryMessage and message.data.len == 2 and (
-        message.data[0].uint8 == PacketInput or
-        message.data[0].uint8 == 0x84'u8
-    ):
+    if message.kind == BinaryMessage and message.data.len == 2 and
+        (
+          message.data[0].uint8 == PacketInput or
+          message.data[0].uint8 == 0x84'u8
+        ):
       {.gcsafe.}:
         withLock appState.lock:
           if websocket in appState.playerViewers:
             appState.inputMasks[websocket] = message.data[1].uint8 and 0x7f'u8
+    let chatText = message.playerChatFromMessage().cleanChatMessage()
+    if chatText.len > 0:
+      {.gcsafe.}:
+        withLock appState.lock:
+          if websocket in appState.playerViewers:
+            appState.chatMessages[websocket] = chatText
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -1682,6 +1875,11 @@ proc runServerLoop*(
           )
           inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
           appState.lastAppliedMasks[websocket] = currentMask
+          let chatText = appState.chatMessages.getOrDefault(websocket, "")
+          if chatText.len > 0:
+            sim.players[playerIndex].message = chatText
+            sim.players[playerIndex].messageTicks = ChatLifetimeTicks
+            appState.chatMessages.del(websocket)
 
         for websocket, state in appState.globalViewers.pairs:
           globalSockets.add(websocket)
