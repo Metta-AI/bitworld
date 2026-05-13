@@ -790,6 +790,7 @@ proc respawnPlayer(sim: var SimServer, i: int) =
   sim.players[i].onGround = false
   sim.players[i].dead = false
   sim.players[i].respawnTimer = 0
+  sim.players[i].message = ""
   sim.resolveOverlaps()
 
 proc initSimServer(seed = DefaultSeed): SimServer =
