@@ -12,6 +12,10 @@ const
   SheetColumns = 8
   WorldTileSize = 32
   PlayerSpriteSize = 32
+  PlayerBoxWidth = 20
+  PlayerBoxHeight = 23
+  PlayerSpriteOffsetX = (PlayerSpriteSize - PlayerBoxWidth) div 2
+  PlayerSpriteOffsetY = PlayerSpriteSize - PlayerBoxHeight
   PlayerFrameCount = 4
   PlayerDirectionCount = 2
   PlayerSpritesPerColor = PlayerFrameCount * PlayerDirectionCount
@@ -56,6 +60,9 @@ const
   RadarObjectBase = 6000
   HudObjectBase = 7000
   TextObjectBase = 7100
+  DebugPlayerBoxSpriteId = 900
+  DebugPlayerBoxObjectBase = 8000
+  DebugPlayerBounds = true
   OverlapResolvePasses = 4
 
 type
@@ -68,12 +75,6 @@ type
 
   Rect = object
     x, y, w, h: int
-
-  FilledSprite = object
-    width, height: int
-    bounds: Rect
-    pixels: seq[bool]
-    bottomYByX: seq[int]
 
   Actor = object
     x, y: int
@@ -99,17 +100,11 @@ type
     PlayerWalkB
     PlayerJump
 
-  PlayerDirection = enum
-    PlayerLeft
-    PlayerRight
-
   SimServer = object
     players: seq[Actor]
     tiles: seq[TileKind]
     tileGids: seq[int]
     tileSprites: Table[int, RgbaSprite]
-    playerBounds: array[PlayerDirection, Rect]
-    playerFrameSprites: array[PlayerDirection, array[PlayerFrame, FilledSprite]]
     playerFrames: array[PlayerFrame, RgbaSprite]
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
@@ -205,107 +200,6 @@ proc rgbaPixel(sprite: RgbaSprite, x, y: int): ColorRGBA =
     sprite.pixels[offset + 2],
     sprite.pixels[offset + 3]
   )
-
-proc contentBounds(sprite: RgbaSprite): Rect =
-  ## Scans non-transparent pixels and returns their tight bounds.
-  if sprite.width <= 0 or sprite.height <= 0:
-    return Rect()
-
-  var
-    minX = sprite.width
-    minY = sprite.height
-    maxX = -1
-    maxY = -1
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let alpha = sprite.pixels[(y * sprite.width + x) * 4 + 3]
-      if alpha == 0:
-        continue
-      minX = min(minX, x)
-      minY = min(minY, y)
-      maxX = max(maxX, x)
-      maxY = max(maxY, y)
-
-  if maxX < minX:
-    return Rect(x: 0, y: 0, w: sprite.width, h: sprite.height)
-
-  Rect(
-    x: minX,
-    y: minY,
-    w: maxX - minX + 1,
-    h: maxY - minY + 1
-  )
-
-proc mirrorX(bounds: Rect, width: int): Rect =
-  ## Mirrors bounds across the horizontal center of a sprite cell.
-  Rect(
-    x: width - bounds.x - bounds.w,
-    y: bounds.y,
-    w: bounds.w,
-    h: bounds.h
-  )
-
-proc includeBounds(bounds: var Rect, other: Rect, hasBounds: var bool) =
-  ## Expands one bounds rectangle to include another.
-  if other.w <= 0 or other.h <= 0:
-    return
-  if not hasBounds:
-    bounds = other
-    hasBounds = true
-    return
-  let
-    minX = min(bounds.x, other.x)
-    minY = min(bounds.y, other.y)
-    maxX = max(bounds.x + bounds.w - 1, other.x + other.w - 1)
-    maxY = max(bounds.y + bounds.h - 1, other.y + other.h - 1)
-  bounds = Rect(
-    x: minX,
-    y: minY,
-    w: maxX - minX + 1,
-    h: maxY - minY + 1
-  )
-
-proc filledSprite(sprite: RgbaSprite, flipX: bool): FilledSprite =
-  ## Builds exact filled-pixel data for one sprite frame.
-  result.width = sprite.width
-  result.height = sprite.height
-  result.pixels = newSeq[bool](sprite.width * sprite.height)
-  result.bottomYByX = newSeq[int](sprite.width)
-  for x in 0 ..< result.bottomYByX.len:
-    result.bottomYByX[x] = -1
-
-  var
-    hasBounds = false
-    bounds: Rect
-  for y in 0 ..< sprite.height:
-    for x in 0 ..< sprite.width:
-      let alpha = sprite.pixels[(y * sprite.width + x) * 4 + 3]
-      if alpha == 0:
-        continue
-      let dx =
-        if flipX:
-          sprite.width - 1 - x
-        else:
-          x
-      result.pixels[y * sprite.width + dx] = true
-      result.bottomYByX[dx] = max(result.bottomYByX[dx], y)
-      bounds.includeBounds(Rect(x: dx, y: y, w: 1, h: 1), hasBounds)
-
-  if hasBounds:
-    result.bounds = bounds
-  else:
-    result.bounds = Rect(
-      x: 0,
-      y: 0,
-      w: sprite.width,
-      h: sprite.height
-    )
-
-proc filledAt(sprite: FilledSprite, x, y: int): bool =
-  ## Returns true when one local sprite pixel is filled.
-  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
-    return false
-  sprite.pixels[y * sprite.width + x]
 
 proc sheetRgbaSprite(sheet: Image, cellX, cellY: int): RgbaSprite =
   ## Slices one 32 pixel cell from the sprite sheet as RGBA.
@@ -449,6 +343,18 @@ proc solidRgbaSprite(width, height: int, color: uint8): RgbaSprite =
   for y in 0 ..< height:
     for x in 0 ..< width:
       result.putRgbaPixel(x, y, rgba)
+
+proc outlineRgbaSprite(width, height: int, color: ColorRGBA): RgbaSprite =
+  ## Builds a transparent outline sprite.
+  result = newRgbaSprite(width, height)
+  if width <= 0 or height <= 0:
+    return
+  for x in 0 ..< width:
+    result.putRgbaPixel(x, 0, color)
+    result.putRgbaPixel(x, height - 1, color)
+  for y in 0 ..< height:
+    result.putRgbaPixel(0, y, color)
+    result.putRgbaPixel(width - 1, y, color)
 
 proc spriteToRgba(sprite: Sprite): RgbaSprite =
   ## Converts one indexed sprite to the sprite protocol RGBA format.
@@ -671,44 +577,9 @@ proc tileSpriteId(gid: int): int =
   ## Returns the sprite id for one Tiled gid.
   TiledSpriteBase + gid
 
-proc playerDirection(facingRight: bool): PlayerDirection =
-  ## Returns the player direction enum for a facing flag.
-  if facingRight:
-    PlayerRight
-  else:
-    PlayerLeft
-
-proc playerContentBounds(
-  frames: array[PlayerFrame, RgbaSprite],
-  direction: PlayerDirection
-): Rect =
-  ## Returns tight player bounds across all animation frames.
-  var hasBounds = false
-  for frame in PlayerFrame:
-    var bounds = frames[frame].contentBounds()
-    if direction == PlayerLeft:
-      bounds = bounds.mirrorX(frames[frame].width)
-    result.includeBounds(bounds, hasBounds)
-
-  if not hasBounds:
-    result = Rect(
-      x: 0,
-      y: 0,
-      w: PlayerSpriteSize,
-      h: PlayerSpriteSize
-    )
-
-proc playerFrameSprites(
-  frames: array[PlayerFrame, RgbaSprite],
-  direction: PlayerDirection
-): array[PlayerFrame, FilledSprite] =
-  ## Returns filled player sprite data for each animation frame.
-  for frame in PlayerFrame:
-    result[frame] = frames[frame].filledSprite(direction == PlayerLeft)
-
 proc playerCollisionBounds(sim: SimServer, player: Actor): Rect =
-  ## Returns the tight sprite bounds for one player direction.
-  sim.playerBounds[player.facingRight.playerDirection()]
+  ## Returns the fixed player collision box.
+  Rect(x: 0, y: 0, w: PlayerBoxWidth, h: PlayerBoxHeight)
 
 proc playerCollisionRectAt(
   sim: SimServer,
@@ -738,31 +609,27 @@ proc playerCenterY(sim: SimServer, player: Actor): int =
   let rect = sim.playerCollisionRect(player)
   rect.y + rect.h div 2
 
-proc playerFrameRect(sim: SimServer, player: Actor): Rect
-
 proc playersOverlapAt(
   sim: SimServer,
   a: Actor,
   ax, ay: int,
   b: Actor,
   bx, by: int
-): bool
+): bool =
+  ## Returns true when two player collision boxes overlap.
+  let
+    ar = sim.playerCollisionRectAt(a, ax, ay)
+    br = sim.playerCollisionRectAt(b, bx, by)
+  rectsOverlap(ar.x, ar.y, ar.w, ar.h, br.x, br.y, br.w, br.h)
 
-proc randomSpawn(
-  sim: var SimServer,
-  direction: PlayerDirection
-): tuple[x, y: int] =
+proc randomSpawn(sim: var SimServer): tuple[x, y: int] =
   ## Returns a random spawn in the first tiles, above the ground.
   let
-    bounds = sim.playerBounds[direction]
     widthPixels = SpawnWidthTiles * WorldTileSize
-    maxBodyX = max(0, widthPixels - bounds.w)
+    maxBodyX = max(0, widthPixels - PlayerBoxWidth)
     bodyX = sim.rng.rand(maxBodyX)
     bodyY = SpawnAirTiles * WorldTileSize
-  (
-    bodyX - bounds.x,
-    bodyY - bounds.y
-  )
+  (bodyX, bodyY)
 
 proc resolveOverlaps(sim: var SimServer) =
   for _ in 0 ..< OverlapResolvePasses:
@@ -782,8 +649,8 @@ proc resolveOverlaps(sim: var SimServer) =
           sim.players[j].y
         ):
           let
-            ri = sim.playerFrameRect(sim.players[i])
-            rj = sim.playerFrameRect(sim.players[j])
+            ri = sim.playerCollisionRect(sim.players[i])
+            rj = sim.playerCollisionRect(sim.players[j])
           if ri.y <= rj.y:
             sim.players[i].y += rj.y - ri.y - ri.h
             sim.players[i].carryY = 0
@@ -797,7 +664,7 @@ proc resolveOverlaps(sim: var SimServer) =
       break
 
 proc addPlayer(sim: var SimServer): int =
-  let spawn = sim.randomSpawn(PlayerRight)
+  let spawn = sim.randomSpawn()
   let color = PlayerColors[sim.nextColorIndex mod PlayerColors.len]
   inc sim.nextColorIndex
   sim.players.add Actor(
@@ -810,7 +677,7 @@ proc addPlayer(sim: var SimServer): int =
   sim.resolveOverlaps()
 
 proc respawnPlayer(sim: var SimServer, i: int) =
-  let spawn = sim.randomSpawn(sim.players[i].facingRight.playerDirection())
+  let spawn = sim.randomSpawn()
   sim.players[i].x = spawn.x
   sim.players[i].y = spawn.y
   sim.players[i].velX = 0
@@ -830,16 +697,6 @@ proc initSimServer(seed = DefaultSeed): SimServer =
   result.playerFrames[PlayerWalkA] = sheet.sheetRgbaSprite(1, 0)
   result.playerFrames[PlayerWalkB] = sheet.sheetRgbaSprite(2, 0)
   result.playerFrames[PlayerJump] = sheet.sheetRgbaSprite(3, 0)
-  result.playerBounds[PlayerLeft] = result.playerFrames.playerContentBounds(
-    PlayerLeft
-  )
-  result.playerBounds[PlayerRight] = result.playerFrames.playerContentBounds(
-    PlayerRight
-  )
-  result.playerFrameSprites[PlayerLeft] =
-    result.playerFrames.playerFrameSprites(PlayerLeft)
-  result.playerFrameSprites[PlayerRight] =
-    result.playerFrames.playerFrameSprites(PlayerRight)
   result.digitSprites = loadClientDigitSprites()
   result.letterSprites = loadClientLetterSprites()
   result.players = @[]
@@ -855,6 +712,16 @@ proc addSpriteProtocolInit(packet: var seq[uint8], sim: SimServer) =
     solidRgbaSprite(ViewportWidth, ViewportHeight, SkyColor),
     "sky"
   )
+  when DebugPlayerBounds:
+    packet.addRgbaSprite(
+      DebugPlayerBoxSpriteId,
+      outlineRgbaSprite(
+        PlayerBoxWidth,
+        PlayerBoxHeight,
+        rgba(255, 255, 255, 255)
+      ),
+      "debug player box"
+    )
   var emittedTileSprites = initTable[int, bool]()
   for gid in sim.tileGids:
     if gid == 0 or gid in emittedTileSprites:
@@ -965,93 +832,32 @@ proc animationFrame(sim: SimServer, player: Actor): PlayerFrame =
     return PlayerWalkB
   PlayerStand
 
-proc currentFrameSprite(sim: SimServer, player: Actor): FilledSprite =
-  ## Returns the filled-pixel data for the current player frame.
-  let
-    direction = player.facingRight.playerDirection()
-    frame = sim.animationFrame(player)
-  sim.playerFrameSprites[direction][frame]
-
-proc playerFrameRectAt(
-  sim: SimServer,
-  player: Actor,
-  x, y: int
-): Rect =
-  ## Returns the world rectangle for the current filled player frame.
-  let bounds = sim.currentFrameSprite(player).bounds
-  Rect(
-    x: x + bounds.x,
-    y: y + bounds.y,
-    w: bounds.w,
-    h: bounds.h
-  )
-
-proc playerFrameRect(sim: SimServer, player: Actor): Rect =
-  ## Returns the current world rectangle for filled player pixels.
-  sim.playerFrameRectAt(player, player.x, player.y)
-
-proc playersOverlapAt(
-  sim: SimServer,
-  a: Actor,
-  ax, ay: int,
-  b: Actor,
-  bx, by: int
-): bool =
-  ## Returns true when two players have overlapping filled pixels.
-  let
-    aSprite = sim.currentFrameSprite(a)
-    bSprite = sim.currentFrameSprite(b)
-    ar = sim.playerFrameRectAt(a, ax, ay)
-    br = sim.playerFrameRectAt(b, bx, by)
-    startX = max(ar.x, br.x)
-    startY = max(ar.y, br.y)
-    endX = min(ar.x + ar.w, br.x + br.w)
-    endY = min(ar.y + ar.h, br.y + br.h)
-
-  if startX >= endX or startY >= endY:
-    return false
-
-  for y in startY ..< endY:
-    for x in startX ..< endX:
-      if aSprite.filledAt(x - ax, y - ay) and
-          bSprite.filledAt(x - bx, y - by):
-        return true
-  false
-
 proc hasTileSupport(sim: SimServer, player: Actor): bool =
-  ## Returns true when tiles touch the filled player feet.
-  let sprite = sim.currentFrameSprite(player)
-  for x in 0 ..< sprite.width:
-    let bottomY = sprite.bottomYByX[x]
-    if bottomY < 0:
-      continue
-    let
-      wx = player.x + x
-      wy = player.y + bottomY + 1
-    if sim.getTile(wx div WorldTileSize, wy div WorldTileSize).isSolid:
+  ## Returns true when solid tiles touch the player collision box.
+  let
+    rect = sim.playerCollisionRect(player)
+    startTx = rect.x div WorldTileSize
+    endTx = (rect.x + rect.w - 1) div WorldTileSize
+    ty = (rect.y + rect.h) div WorldTileSize
+  for tx in startTx .. endTx:
+    if sim.getTile(tx, ty).isSolid:
       return true
   false
 
 proc hasPlayerSupport(sim: SimServer, playerIndex: int): bool =
-  ## Returns true when another player supports this player's feet.
+  ## Returns true when another player's box supports this player's box.
   let
     player = sim.players[playerIndex]
-    sprite = sim.currentFrameSprite(player)
+    rect = sim.playerCollisionRect(player)
+    footY = rect.y + rect.h
   for i in 0 ..< sim.players.len:
     if i == playerIndex or sim.players[i].dead:
       continue
-    let otherSprite = sim.currentFrameSprite(sim.players[i])
-    for x in 0 ..< sprite.width:
-      let bottomY = sprite.bottomYByX[x]
-      if bottomY < 0:
-        continue
-      let
-        wx = player.x + x
-        wy = player.y + bottomY + 1
-        otherX = wx - sim.players[i].x
-        otherY = wy - sim.players[i].y
-      if otherSprite.filledAt(otherX, otherY):
-        return true
+    let otherRect = sim.playerCollisionRect(sim.players[i])
+    if footY >= otherRect.y and footY < otherRect.y + otherRect.h and
+        rect.x < otherRect.x + otherRect.w and
+        rect.x + rect.w > otherRect.x:
+      return true
   false
 
 proc hasGroundSupport(sim: SimServer, playerIndex: int): bool =
@@ -1221,19 +1027,30 @@ proc buildSpriteProtocolPlayerUpdates(
     if other.dead:
       continue
     let
-      sx = other.x - cameraX
-      sy = other.y - cameraY
+      boxX = other.x - cameraX
+      boxY = other.y - cameraY
+      spriteX = boxX - PlayerSpriteOffsetX
+      spriteY = boxY - PlayerSpriteOffsetY
     result.addObject(
       PlayerObjectBase + i,
-      sx,
-      sy,
-      sy + 100,
+      spriteX,
+      spriteY,
+      boxY + 100,
       MapLayerId,
       other.color.playerSpriteId(
         other.facingRight,
         sim.animationFrame(other)
       )
     )
+    when DebugPlayerBounds:
+      result.addObject(
+        DebugPlayerBoxObjectBase + i,
+        boxX,
+        boxY,
+        boxY + 101,
+        MapLayerId,
+        DebugPlayerBoxSpriteId
+      )
 
   let pcx = sim.playerCenterX(player)
   for i in 0 ..< sim.players.len:
@@ -1305,53 +1122,108 @@ proc collidesWithPlayerAt(
   player: Actor,
   x, y: int
 ): int =
-  ## Returns the first player with exact filled-pixel overlap.
+  ## Returns the first player with overlapping collision boxes.
+  let rect = sim.playerCollisionRectAt(player, x, y)
   for j in 0 ..< sim.players.len:
     if j == pi or sim.players[j].dead:
       continue
-    if sim.playersOverlapAt(
-      player,
-      x,
-      y,
-      sim.players[j],
-      sim.players[j].x,
-      sim.players[j].y
+    let otherRect = sim.playerCollisionRect(sim.players[j])
+    if rectsOverlap(
+      rect.x,
+      rect.y,
+      rect.w,
+      rect.h,
+      otherRect.x,
+      otherRect.y,
+      otherRect.w,
+      otherRect.h
     ):
       return j
   -1
 
-proc collidesAnyAt(
-  sim: SimServer,
-  pi: int,
-  player: Actor,
-  x, y: int
+proc tryPushX(
+  sim: var SimServer,
+  playerIndex: int,
+  step: int,
+  depth = 0
 ): bool =
-  ## Returns true when one player position collides with world or players.
-  let rect = sim.playerCollisionRectAt(player, x, y)
-  sim.collidesWithTiles(rect.x, rect.y, rect.w, rect.h) or
-    sim.collidesWithPlayerAt(pi, player, x, y) >= 0
-
-const PushRate = 4
-
-proc tryPush(sim: var SimServer, other: int, step: int): bool =
-  let nx = sim.players[other].x + step
-  let rect = sim.playerCollisionRectAt(
-    sim.players[other],
+  ## Tries to push one horizontal chain of player boxes by one pixel.
+  if depth > sim.players.len or sim.players[playerIndex].dead:
+    return false
+  let nx = sim.players[playerIndex].x + step
+  if sim.playerBlockedByTilesAt(
+    sim.players[playerIndex],
     nx,
-    sim.players[other].y
-  )
-  if rect.x < 0 or rect.x + rect.w > LevelWidthPixels:
+    sim.players[playerIndex].y
+  ):
     return false
-  if sim.collidesWithTiles(rect.x, rect.y, rect.w, rect.h):
+
+  var checked = 0
+  while checked <= sim.players.len:
+    let hitPlayer = sim.collidesWithPlayerAt(
+      playerIndex,
+      sim.players[playerIndex],
+      nx,
+      sim.players[playerIndex].y
+    )
+    if hitPlayer < 0:
+      sim.players[playerIndex].x = nx
+      return true
+    if not sim.tryPushX(hitPlayer, step, depth + 1):
+      return false
+    inc checked
+  false
+
+proc tryPushY(
+  sim: var SimServer,
+  playerIndex: int,
+  step: int,
+  depth = 0
+): bool =
+  ## Tries to push one vertical chain of player boxes by one pixel.
+  if depth > sim.players.len or sim.players[playerIndex].dead:
     return false
-  if sim.collidesWithPlayerAt(
-    other,
-    sim.players[other],
-    nx,
-    sim.players[other].y
-  ) >= 0:
+  let ny = sim.players[playerIndex].y + step
+  if sim.playerBlockedByTilesAt(
+    sim.players[playerIndex],
+    sim.players[playerIndex].x,
+    ny
+  ):
     return false
-  sim.players[other].x = nx
+
+  var checked = 0
+  while checked <= sim.players.len:
+    let hitPlayer = sim.collidesWithPlayerAt(
+      playerIndex,
+      sim.players[playerIndex],
+      sim.players[playerIndex].x,
+      ny
+    )
+    if hitPlayer < 0:
+      sim.players[playerIndex].y = ny
+      return true
+    if not sim.tryPushY(hitPlayer, step, depth + 1):
+      return false
+    inc checked
+  false
+
+proc movePlayerY(
+  sim: var SimServer,
+  p: var Actor,
+  pi: int,
+  step: int
+): bool =
+  ## Moves a player vertically by one pixel when the box path is clear.
+  let ny = p.y + step
+  if sim.playerBlockedByTilesAt(p, p.x, ny):
+    return false
+  let hitPlayer = sim.collidesWithPlayerAt(pi, p, p.x, ny)
+  if hitPlayer >= 0:
+    if step > 0:
+      return false
+    if not sim.tryPushY(hitPlayer, step):
+      return false
+  p.y = ny
   true
 
 proc moveX(sim: var SimServer, p: var Actor, pi: int) =
@@ -1373,7 +1245,7 @@ proc moveX(sim: var SimServer, p: var Actor, pi: int) =
       p.y
     )
     if hitPlayer >= 0:
-      if sim.tickCount mod PushRate == 0 and sim.tryPush(hitPlayer, step):
+      if sim.tryPushX(hitPlayer, step):
         p.x = nx
         p.carryX -= step * MotionScale
       else:
@@ -1382,18 +1254,16 @@ proc moveX(sim: var SimServer, p: var Actor, pi: int) =
     p.x = nx
     p.carryX -= step * MotionScale
 
-proc moveY(sim: SimServer, p: var Actor, pi: int) =
+proc moveY(sim: var SimServer, p: var Actor, pi: int) =
   p.carryY += p.velY
   while abs(p.carryY) >= MotionScale:
     let step = (if p.carryY < 0: -1 else: 1)
-    let ny = p.y + step
-    if sim.collidesAnyAt(pi, p, p.x, ny):
+    if not sim.movePlayerY(p, pi, step):
       p.carryY = 0
       if p.velY > 0:
         p.onGround = true
       p.velY = 0
       break
-    p.y = ny
     p.carryY -= step * MotionScale
 
 proc applyPhysics(sim: var SimServer, p: var Actor, pi: int) =
