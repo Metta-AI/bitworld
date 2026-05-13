@@ -103,7 +103,7 @@ From the game folder:
 
 ```sh
 cd /path/to/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"killCooldownTicks":1200,"voteTimerTicks":6000}'
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"killCooldownTicks":900,"voteTimerTicks":6000}'
 ```
 
 Useful config fields:
