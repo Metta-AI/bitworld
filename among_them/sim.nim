@@ -37,7 +37,7 @@ const
   ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
   KillRange* = 20
-  KillCooldownTicks* = 1200
+  KillCooldownTicks* = 900
   RoleRevealTicks* = 120
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
@@ -1123,7 +1123,6 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
-  node.readConfigInt("imposterCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("roleRevealTicks", config.roleRevealTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
   node.readConfigInt("ventRange", config.ventRange)
@@ -1200,7 +1199,6 @@ proc configJson*(config: GameConfig): string =
     "seed": config.seed,
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
-    "imposterCooldownTicks": config.killCooldownTicks,
     "roleRevealTicks": config.roleRevealTicks,
     "taskCompleteTicks": config.taskCompleteTicks,
     "ventRange": config.ventRange,

@@ -233,7 +233,7 @@ def main() -> None:
                     "bitworld": {
                         "imposterCount": args.imposters,
                         "tasksPerPlayer": args.tasks_per_player,
-                        "imposterCooldownTicks": args.imposter_cooldown_ticks,
+                        "killCooldownTicks": args.imposter_cooldown_ticks,
                         "voteTimerTicks": args.vote_timer_ticks,
                     },
                 }

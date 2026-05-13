@@ -128,17 +128,11 @@
           "minimum": 0,
           "default": 72
         },
-        "imposterCooldownTicks": {
+        "killCooldownTicks": {
           "description": "Kill cooldown duration in ticks.",
           "type": "integer",
           "minimum": 0,
-          "default": 1200
-        },
-        "killCooldownTicks": {
-          "description": "Alias for imposterCooldownTicks.",
-          "type": "integer",
-          "minimum": 0,
-          "default": 1200
+          "default": 900
         },
         "roleRevealTicks": {
           "description": "Role reveal duration in ticks.",
