@@ -61,10 +61,16 @@ const
   RadarObjectBase = 6000
   HudObjectBase = 7000
   TextObjectBase = 7100
+  ChatSpriteBase = 9000
+  ChatObjectBase = 9000
   DebugPlayerBoxSpriteId = 900
   DebugPlayerBoxObjectBase = 8000
-  DebugPlayerBounds = true
+  DebugPlayerBounds = false
   OverlapResolvePasses = 4
+  ChatMaxChars = 24
+  ChatPad = 3
+  ChatPointerHeight = 3
+  ChatGapY = 4
 
 type
   HsvColor = object
@@ -87,6 +93,7 @@ type
     respawnTimer: int
     facingRight: bool
     color: uint8
+    message: string
 
   TileKind = enum
     TileAir
@@ -123,6 +130,7 @@ type
     playerIndices: Table[WebSocket, int]
     playerViewers: Table[WebSocket, PlayerViewerState]
     globalViewers: Table[WebSocket, PlayerViewerState]
+    chatMessages: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
     tokens: seq[string]
 
@@ -365,6 +373,99 @@ proc spriteToRgba(sprite: Sprite): RgbaSprite =
     for x in 0 ..< sprite.width:
       let color = sprite.pixels[sprite.spriteIndex(x, y)]
       result.putRgbaPixel(x, y, rgbaColor(color))
+
+proc chatCharSupported(ch: char): bool =
+  ## Returns true when Jumper can draw one chat character.
+  if ch == ' ' or (ch >= '0' and ch <= '9'):
+    return true
+  letterIndex(ch) >= 0
+
+proc cleanChatMessage(message: string): string =
+  ## Normalizes one submitted player chat message.
+  for ch in message.strip():
+    if result.len >= ChatMaxChars:
+      return
+    if ch.chatCharSupported():
+      result.add(ch)
+
+proc chatGlyphWidth(sim: SimServer, ch: char): int =
+  ## Returns the sprite protocol width for one chat character.
+  if ch == ' ':
+    return 4
+  if ch >= '0' and ch <= '9':
+    return sim.digitSprites[ord(ch) - ord('0')].width
+  let index = letterIndex(ch)
+  if index >= 0 and index < sim.letterSprites.len:
+    return sim.letterSprites[index].width
+  0
+
+proc chatTextWidth(sim: SimServer, text: string): int =
+  ## Returns the rendered width of one chat line.
+  for ch in text:
+    result += sim.chatGlyphWidth(ch)
+
+proc blitChatGlyph(
+  target: var RgbaSprite,
+  glyph: Sprite,
+  x, y: int,
+  color: ColorRGBA
+) =
+  ## Blits one indexed glyph into a chat bubble.
+  for gy in 0 ..< glyph.height:
+    for gx in 0 ..< glyph.width:
+      let source = glyph.pixels[glyph.spriteIndex(gx, gy)]
+      if source != TransparentColorIndex:
+        target.putRgbaPixel(x + gx, y + gy, color)
+
+proc blitChatText(
+  sim: SimServer,
+  target: var RgbaSprite,
+  text: string,
+  x, y: int
+) =
+  ## Blits one chat line into a chat bubble.
+  var dx = x
+  let color = rgba(0, 0, 0, 255)
+  for ch in text:
+    if ch == ' ':
+      dx += sim.chatGlyphWidth(ch)
+      continue
+    if ch >= '0' and ch <= '9':
+      let glyph = sim.digitSprites[ord(ch) - ord('0')]
+      target.blitChatGlyph(glyph, dx, y, color)
+      dx += glyph.width
+      continue
+    let index = letterIndex(ch)
+    if index >= 0 and index < sim.letterSprites.len:
+      let glyph = sim.letterSprites[index]
+      target.blitChatGlyph(glyph, dx, y, color)
+      dx += glyph.width
+
+proc speechBubbleSprite(sim: SimServer, text: string): RgbaSprite =
+  ## Builds one speech bubble sprite for a player message.
+  let
+    textWidth = max(6, sim.chatTextWidth(text))
+    lineHeight = 6
+    bodyWidth = textWidth + ChatPad * 2
+    bodyHeight = lineHeight + ChatPad * 2
+    fill = rgba(255, 255, 255, 235)
+    border = rgba(0, 0, 0, 255)
+  result = newRgbaSprite(bodyWidth, bodyHeight + ChatPointerHeight)
+  for y in 0 ..< bodyHeight:
+    for x in 0 ..< bodyWidth:
+      result.putRgbaPixel(x, y, fill)
+  for x in 0 ..< bodyWidth:
+    result.putRgbaPixel(x, 0, border)
+    result.putRgbaPixel(x, bodyHeight - 1, border)
+  for y in 0 ..< bodyHeight:
+    result.putRgbaPixel(0, y, border)
+    result.putRgbaPixel(bodyWidth - 1, y, border)
+  let pointerX = bodyWidth div 2
+  for y in 0 ..< ChatPointerHeight:
+    let span = ChatPointerHeight - y - 1
+    for x in pointerX - span .. pointerX + span:
+      result.putRgbaPixel(x, bodyHeight + y, border)
+  sim.blitChatText(result, text, ChatPad, ChatPad)
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   ## Appends one unsigned byte.
@@ -815,6 +916,33 @@ proc addTextObjects(
       )
     x += 6
 
+proc addSpeechBubble(
+  packet: var seq[uint8],
+  sim: SimServer,
+  player: Actor,
+  playerIndex,
+  screenX,
+  screenY,
+  z: int
+) =
+  ## Appends a speech bubble object above one player.
+  if player.message.len == 0:
+    return
+  let
+    bubble = sim.speechBubbleSprite(player.message)
+    x = screenX + PlayerBoxWidth div 2 - bubble.width div 2
+    y = screenY - bubble.height - ChatGapY
+    spriteId = ChatSpriteBase + playerIndex
+  packet.addRgbaSprite(spriteId, bubble, "chat " & player.message)
+  packet.addObject(
+    ChatObjectBase + playerIndex,
+    x,
+    y,
+    z,
+    MapLayerId,
+    spriteId
+  )
+
 proc cameraXFor(sim: SimServer, player: Actor): int =
   ## Returns the player camera x coordinate.
   worldClampPixel(
@@ -1058,6 +1186,14 @@ proc buildSpriteProtocolPlayerUpdates(
         MapLayerId,
         DebugPlayerBoxSpriteId
       )
+    result.addSpeechBubble(
+      sim,
+      other,
+      i,
+      boxX,
+      boxY,
+      boxY + 200
+    )
 
   let pcx = sim.playerCenterX(player)
   for i in 0 ..< sim.players.len:
@@ -1163,6 +1299,14 @@ proc buildSpriteProtocolGlobalUpdates(
         MapLayerId,
         DebugPlayerBoxSpriteId
       )
+    result.addSpeechBubble(
+      sim,
+      player,
+      i,
+      player.x,
+      player.y,
+      player.y + 200
+    )
 
 proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1422,6 +1566,7 @@ proc initAppState() =
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.globalViewers = initTable[WebSocket, PlayerViewerState]()
+  appState.chatMessages = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.tokens = @[]
 
@@ -1431,11 +1576,63 @@ proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
     (currentMask and ButtonA) != 0 and
     (previousMask and ButtonA) == 0
 
+proc readSpriteInputText(message: string): string =
+  ## Reads printable text from sprite player input messages.
+  var offset = 0
+  while offset < message.len:
+    let messageType = message[offset].uint8
+    inc offset
+    case messageType
+    of 0x81:
+      if offset + 2 > message.len:
+        return
+      let length = int(uint16(message[offset].uint8) or
+        (uint16(message[offset + 1].uint8) shl 8))
+      offset += 2
+      if offset + length > message.len:
+        return
+      for i in 0 ..< length:
+        let value = message[offset + i].uint8
+        if value >= 32'u8 and value < 127'u8:
+          result.add(message[offset + i])
+      offset += length
+    of 0x82:
+      if offset + 4 > message.len:
+        return
+      offset += 4
+      if offset < message.len and message[offset].uint8 notin
+          {0x81'u8, 0x82'u8, 0x83'u8, 0x84'u8}:
+        inc offset
+    of 0x83:
+      if offset + 2 > message.len:
+        return
+      offset += 2
+    of 0x84:
+      if offset + 1 > message.len:
+        return
+      inc offset
+    else:
+      return
+
+proc playerChatFromMessage(message: Message): string =
+  ## Reads player chat from text or binary websocket messages.
+  case message.kind
+  of TextMessage:
+    message.data
+  of BinaryMessage:
+    if message.data.isChatPacket():
+      return message.data.blobToChat()
+    message.data.readSpriteInputText()
+  of Ping, Pong:
+    ""
+
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.globalViewers:
     appState.globalViewers.del(websocket)
   if websocket in appState.playerViewers:
     appState.playerViewers.del(websocket)
+  if websocket in appState.chatMessages:
+    appState.chatMessages.del(websocket)
   if websocket notin appState.playerIndices:
     appState.inputMasks.del(websocket)
     appState.lastAppliedMasks.del(websocket)
@@ -1460,6 +1657,7 @@ proc resetConnectedPlayers() =
     appState.playerViewers[websocket] = PlayerViewerState()
     appState.inputMasks[websocket] = 0
     appState.lastAppliedMasks[websocket] = 0
+  appState.chatMessages.clear()
 
 proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when the request is a WebSocket upgrade.
@@ -1588,14 +1786,21 @@ proc websocketHandler(
   of OpenEvent:
     discard
   of MessageEvent:
-    if message.kind == BinaryMessage and message.data.len == 2 and (
-        message.data[0].uint8 == PacketInput or
-        message.data[0].uint8 == 0x84'u8
-    ):
+    if message.kind == BinaryMessage and message.data.len == 2 and
+        (
+          message.data[0].uint8 == PacketInput or
+          message.data[0].uint8 == 0x84'u8
+        ):
       {.gcsafe.}:
         withLock appState.lock:
           if websocket in appState.playerViewers:
             appState.inputMasks[websocket] = message.data[1].uint8 and 0x7f'u8
+    let chatText = message.playerChatFromMessage().cleanChatMessage()
+    if chatText.len > 0:
+      {.gcsafe.}:
+        withLock appState.lock:
+          if websocket in appState.playerViewers:
+            appState.chatMessages[websocket] = chatText
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -1682,6 +1887,10 @@ proc runServerLoop*(
           )
           inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
           appState.lastAppliedMasks[websocket] = currentMask
+          let chatText = appState.chatMessages.getOrDefault(websocket, "")
+          if chatText.len > 0:
+            sim.players[playerIndex].message = chatText
+            appState.chatMessages.del(websocket)
 
         for websocket, state in appState.globalViewers.pairs:
           globalSockets.add(websocket)
