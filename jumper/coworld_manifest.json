@@ -55,6 +55,10 @@
       "properties": {}
     },
     "protocols": {
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      },
       "player": {
         "type": "uri",
         "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
