@@ -199,8 +199,19 @@ suite "player slots":
 
     discard sim.addPlayer("crew", -1, "crew-token")
     discard sim.addPlayer("imp", -1, "imp-token")
+    check not sim.canAddPlayer()
     expect AmongThemError:
       discard sim.addPlayer("extra")
+
+  test "closed configured roster rejects explicit slots outside roster":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
+    var sim = initAmongThemForTest(config)
+
+    check not config.playerJoinAllowed("extra", 2, "")
+    expect AmongThemError:
+      discard sim.addPlayer("extra", 2)
 
   test "manual slot preserves auto slot zero":
     let config = defaultGameConfig()

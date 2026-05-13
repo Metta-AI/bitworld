@@ -1454,9 +1454,13 @@ proc findSpawn*(sim: SimServer): tuple[x, y: int] =
   ## Returns the next lobby spawn position.
   sim.homePosition(sim.players.len, sim.players.len + 1)
 
+proc playerSlotLimit(config: GameConfig): int =
+  ## Returns the number of slots players may occupy.
+  if config.closedRoster: config.slots.len else: MaxPlayers
+
 proc canAddPlayer*(sim: SimServer): bool =
   ## Returns whether the game has room for another player.
-  sim.players.len < MaxPlayers
+  sim.players.len < sim.config.playerSlotLimit()
 
 proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
   ## Returns one slot config or an empty config for missing entries.
@@ -1511,7 +1515,7 @@ proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int,
   ## Returns whether a player websocket request can pass configured slot auth.
   if requestedSlot < 0:
     return true
-  if requestedSlot >= MaxPlayers:
+  if requestedSlot >= config.playerSlotLimit():
     return false
   config.slotAuthMatches(requestedSlot, address, token)
 
@@ -1569,8 +1573,7 @@ proc namedConfiguredSlot(sim: SimServer, address: string): int =
 
 proc nextAutoSlot(sim: SimServer, address, token: string): int =
   ## Returns the next open unrestricted or matching slot.
-  let slotLimit =
-    if sim.config.configuredRosterClosed(): sim.config.slots.len else: MaxPlayers
+  let slotLimit = sim.config.playerSlotLimit()
   for i in sim.nextJoinOrder ..< slotLimit:
     if sim.slotOccupied(i):
       continue
@@ -1606,6 +1609,8 @@ proc resolvePlayerSlot(
       "Player slot must be between 0 and 15."
     )
   if requestedSlot >= 0:
+    if requestedSlot >= sim.config.playerSlotLimit():
+      raise newException(AmongThemError, "Player slot is outside configured roster.")
     if sim.slotOccupied(requestedSlot):
       raise newException(
         AmongThemError,
@@ -1638,6 +1643,8 @@ proc resolveTrustedPlayerSlot(
       "Player slot must be between 0 and 15."
     )
   if requestedSlot >= 0:
+    if requestedSlot >= sim.config.playerSlotLimit():
+      raise newException(AmongThemError, "Player slot is outside configured roster.")
     if sim.slotOccupied(requestedSlot):
       raise newException(
         AmongThemError,
