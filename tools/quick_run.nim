@@ -92,13 +92,15 @@ proc repoRoot(): string =
 
 proc usage(): string =
   "Usage: quick_run <game_folder> [--connect] [--address:ADDR] " &
-    "[--port:N] [--players:N] [--bots:BOT:N] [--global] [--html] " &
+    "[--port:N] [--player] [--players:N] [--bots:BOT:N] [--global] " &
+    "[--html] " &
     "[--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
     "Human clients open as native Nim windows by default.\n" &
     "--global opens a global viewer and defaults humans to zero.\n" &
     "--html opens human and global clients in the browser instead.\n" &
-    "Unknown options are passed to the game server when quick_run starts it.\n" &
+    "Unknown options are passed to the game server when quick_run starts " &
+    "it.\n" &
     "Examples:\n" &
     "  quick_run fancy_cookout\n" &
     "  quick_run planet_wars --bots:skurge:4 --global --html\n" &
@@ -784,6 +786,13 @@ proc parseArgs(): QuickRunConfig =
       positional.add(key)
     of cmdLongOption:
       case key
+      of "player":
+        result.players =
+          if val.len == 0:
+            1
+          else:
+            parsePlayers(val)
+        result.playersSet = true
       of "players":
         if val.len == 0:
           raise newException(ValueError, "--players requires a value.")

@@ -30,6 +30,12 @@ const
   GroundDropPixels = 18
   StuckWaitTicks = 36
   JumpCooldownTicks = 12
+  BigJumpDelayMaxFrames = 4
+  ObstacleLookAheadPixels = 48
+  ObstacleSamplePixels = 4
+  MaxObstacleScanHeight = WorldTileSize * 4
+  MaxSoloObstacleHeight = WorldTileSize * 2
+  BigObstacleHeight = WorldTileSize
   ProgressEchoInterval = initDuration(milliseconds = 250)
 
 type
@@ -51,6 +57,12 @@ type
     worldX, worldY: int
     centerX, centerY: int
 
+  ObstacleScan = object
+    found: bool
+    height: int
+    distance: int
+    topY: int
+
   Bot = object
     rng: Rand
     name: string
@@ -64,6 +76,8 @@ type
     objects: Table[int, ObjectState]
     lastMask: uint8
     jumpCooldown: int
+    bigJumpArmed: bool
+    bigJumpDelay: int
     lastWorldX: int
     maxWorldX: int
     maxProgressStep: int
@@ -451,18 +465,46 @@ proc holeAhead(bot: Bot, player: PlayerSight): bool =
       if gapPixels >= HoleMinPixels:
         return true
 
-proc obstacleAhead(bot: Bot, player: PlayerSight): bool =
-  ## Returns true when terrain blocks the right side of Dalli's box.
-  let frontX = player.worldX + PlayerBoxWidth + 2
+proc scanObstacleColumn(bot: Bot, x, footY: int): ObstacleScan =
+  ## Measures one solid column in front of Dalli from feet upward.
+  let
+    bottomY = footY - 2
+    scanTopY = max(0, footY - MaxObstacleScanHeight)
+  var hit = false
+  for y in countdown(bottomY, scanTopY):
+    if bot.solidAt(x, y):
+      hit = true
+      result.topY = y
+    elif hit:
+      break
+
+  if hit:
+    result.found = true
+    result.height = footY - result.topY
+
+proc columnBlocksPlayer(bot: Bot, x: int, player: PlayerSight): bool =
+  ## Returns true when a column blocks Dalli's current box path.
   for y in countup(player.worldY + 2, player.worldY + PlayerBoxHeight - 2, 4):
-    if bot.solidAt(frontX, y):
+    if bot.solidAt(x, y):
       return true
 
-proc highObstacleAhead(bot: Bot, player: PlayerSight): bool =
-  ## Returns true when the obstacle appears too tall for solo jumping.
-  let frontX = player.worldX + PlayerBoxWidth + 4
-  bot.solidAt(frontX, player.worldY - 10) or
-    bot.solidAt(frontX, player.worldY - 24)
+proc obstacleAhead(bot: Bot, player: PlayerSight): ObstacleScan =
+  ## Measures the nearest terrain obstacle in front of Dalli.
+  let
+    startX = player.worldX + PlayerBoxWidth + 2
+    endX = min(
+      LevelWidthTiles * WorldTileSize - 1,
+      player.worldX + PlayerBoxWidth + ObstacleLookAheadPixels
+    )
+    footY = player.worldY + PlayerBoxHeight
+
+  for x in countup(startX, endX, ObstacleSamplePixels):
+    if not bot.columnBlocksPlayer(x, player):
+      continue
+    result = bot.scanObstacleColumn(x, footY)
+    if result.found:
+      result.distance = x - startX
+      return
 
 proc visibleHelper(
   bot: Bot,
@@ -517,6 +559,26 @@ proc jumpButton(bot: var Bot, grounded: bool): uint8 =
   bot.jumpCooldown = JumpCooldownTicks
   ButtonA
 
+proc resetBigJump(bot: var Bot) =
+  ## Clears any pending randomized big jump delay.
+  bot.bigJumpArmed = false
+  bot.bigJumpDelay = 0
+
+proc bigJumpButton(bot: var Bot, grounded: bool): uint8 =
+  ## Returns a jump button after a random big jump delay.
+  if not grounded:
+    bot.resetBigJump()
+    return 0
+  if not bot.bigJumpArmed:
+    bot.bigJumpArmed = true
+    bot.bigJumpDelay = bot.rng.rand(BigJumpDelayMaxFrames)
+  if bot.bigJumpDelay > 0:
+    dec bot.bigJumpDelay
+    return 0
+  result = bot.jumpButton(grounded)
+  if result != 0:
+    bot.resetBigJump()
+
 proc moveToward(targetX, currentX: int): uint8 =
   ## Returns a horizontal input mask aimed at one x coordinate.
   if targetX < currentX - 6:
@@ -531,6 +593,7 @@ proc decideMask(bot: var Bot): uint8 =
   let own = bot.ownPlayer()
   if not own.found:
     bot.intent = "searching"
+    bot.resetBigJump()
     return 0
 
   bot.updateProgress(own)
@@ -542,13 +605,16 @@ proc decideMask(bot: var Bot): uint8 =
     others = bot.otherPlayers(own)
     grounded = bot.onGround(own, others)
     hole = bot.holeAhead(own)
-    blocked = bot.obstacleAhead(own)
-    tallBlocked = bot.highObstacleAhead(own)
+    obstacle = bot.obstacleAhead(own)
+    blocked = obstacle.found
+    canJumpObstacle =
+      blocked and obstacle.height <= MaxSoloObstacleHeight
     helper = bot.visibleHelper(own, others)
-    needsHelp = blocked and (tallBlocked or bot.stuckTicks >= StuckWaitTicks)
+    needsHelp = grounded and blocked and not canJumpObstacle
 
   if needsHelp and not helper.found:
     bot.intent = "waiting"
+    bot.resetBigJump()
     return 0
 
   if needsHelp and helper.found:
@@ -557,19 +623,34 @@ proc decideMask(bot: var Bot): uint8 =
     if result == 0:
       result = ButtonRight
     if abs(helper.centerX - own.centerX) <= 34:
-      result = result or bot.jumpButton(grounded)
+      result = result or bot.bigJumpButton(grounded)
+    else:
+      bot.resetBigJump()
     return result
 
   bot.intent =
     if hole:
       "gap"
     elif blocked:
-      "jump"
+      if canJumpObstacle:
+        "jump"
+      else:
+        "wall"
     else:
       "run"
   result = ButtonRight
-  if hole or blocked or (grounded and bot.stuckTicks >= StuckWaitTicks):
+  let
+    stuckJump = grounded and bot.stuckTicks >= StuckWaitTicks
+    bigJump =
+      hole or
+      (canJumpObstacle and obstacle.height >= BigObstacleHeight)
+  if bigJump:
+    result = result or bot.bigJumpButton(grounded)
+  elif canJumpObstacle or stuckJump:
+    bot.resetBigJump()
     result = result or bot.jumpButton(grounded)
+  else:
+    bot.resetBigJump()
 
 proc runBot(
   address: string,
