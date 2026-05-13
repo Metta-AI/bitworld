@@ -394,6 +394,7 @@
         "maxTicks": 10000,
         "maxGames": 1,
         "voteTimerTicks": 6000,
+        "killCooldownTicks": 900,
         "showTaskArrows": true,
         "showTaskBubbles": true,
         "showPlayerLabels": true
@@ -439,6 +440,7 @@
       "maxTicks": 300,
       "maxGames": 1,
       "voteTimerTicks": 120,
+      "killCooldownTicks": 900,
       "showTaskArrows": false,
       "showTaskBubbles": false,
       "showPlayerLabels": true
