@@ -14,6 +14,8 @@ const
   LobbyCountdownTicks = 24 * 5
   WorldTitleTicks = 24 * 3
   WorldDescTicks = 24 * 10
+  SituationTitleTicks = 24 * 3
+  SituationDescTicks = 24 * 10
   FactReadTicks = 24 * 3
   FactAcceptTicks = 24 * 1
   CharWidth = 6
@@ -29,6 +31,7 @@ type
     PhaseLobby
     PhaseWorld
     PhaseMagicalFacts
+    PhaseSituation
     PhaseConflict
     PhasePower
     PhaseEnd
@@ -61,6 +64,11 @@ type
     WorldTitle
     WorldDescription
 
+  SituationStep = enum
+    SituationGazing
+    SituationTitle
+    SituationDescription
+
   FactStep = enum
     FactGazing
     FactReading
@@ -90,6 +98,10 @@ type
     worldStep: WorldStep
     worldTimer: int
     world: World
+    situationStep: SituationStep
+    situationTimer: int
+    situation: Situation
+    situations: seq[Situation]
     fb: Framebuffer
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
@@ -437,6 +449,30 @@ proc renderWorld(sim: var SimServer) =
     let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
     discard sim.blitTextWrappedTinted(sim.world.description, TextMargin, startY, 8, 2)
 
+proc renderSituation(sim: var SimServer) =
+  sim.fb.clearFrame(0)
+  case sim.situationStep
+  of SituationGazing:
+    let line1 = "situation"
+    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
+    let y1 = (ScreenHeight - CharHeight) div 2
+    sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 5)
+  of SituationTitle:
+    let line1 = "situation"
+    let line2 = sim.situation.title
+    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
+    let x2 = (ScreenWidth - line2.len * CharWidth) div 2
+    let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
+    let y2 = y1 + CharHeight + 2
+    sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 5)
+    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line2, x2, y2, 5)
+  of SituationDescription:
+    let maxChars = charsFromX(TextMargin)
+    let lineCount = max(1, (sim.situation.description.len + maxChars - 1) div maxChars)
+    let totalH = lineCount * 8
+    let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
+    discard sim.blitTextWrappedTinted(sim.situation.description, TextMargin, startY, 8, 5)
+
 proc renderFact(sim: var SimServer) =
   case sim.factChoice.step
   of FactGazing:
@@ -452,6 +488,7 @@ proc renderGame(sim: var SimServer) =
     of PhaseLobby: "lobby"
     of PhaseWorld: "the world"
     of PhaseMagicalFacts: "magical facts"
+    of PhaseSituation: "situation"
     of PhaseConflict: "conflict"
     of PhasePower: "power"
     of PhaseEnd: "end"
@@ -465,6 +502,8 @@ proc render(sim: var SimServer) =
     sim.renderWorld()
   of PhaseMagicalFacts:
     sim.renderFact()
+  of PhaseSituation:
+    sim.renderSituation()
   else:
     sim.renderGame()
 
@@ -651,12 +690,37 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
           if p.magicTokens > 0:
             allSpent = false
             break
-        if allSpent:
-          sim.phase = PhaseEnd
-          return
         sim.currentTurn += 1
         if sim.currentTurn >= sim.players.len:
           sim.currentTurn = 0
+          sim.phase = PhaseSituation
+          sim.situationStep = SituationGazing
+          sim.situationTimer = 1
+          return
+        sim.startFactTurn()
+  of PhaseSituation:
+    dec sim.situationTimer
+    if sim.situationStep == SituationGazing and sim.situationTimer <= 0:
+      sim.situation = sim.players[0].soul.generateSituation(
+        sim.world, sim.chatLogStrings(), sim.situations)
+      sim.situationStep = SituationTitle
+      sim.situationTimer = SituationTitleTicks
+    elif sim.situationStep == SituationTitle and sim.situationTimer <= 0:
+      sim.situationStep = SituationDescription
+      sim.situationTimer = SituationDescTicks
+      echo "  Situation: ", sim.situation.description
+    elif sim.situationStep == SituationDescription and sim.situationTimer <= 0:
+      sim.situations.add(sim.situation)
+      var allSpent = true
+      for p in sim.players:
+        if p.magicTokens > 0:
+          allSpent = false
+          break
+      if allSpent:
+        sim.phase = PhaseEnd
+      else:
+        sim.phase = PhaseMagicalFacts
+        sim.currentTurn = 0
         sim.startFactTurn()
   else:
     discard

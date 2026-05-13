@@ -1,11 +1,21 @@
 import std/[strutils, random]
 import claude
 
-const
-  MaxFactLen* = 38
+const FactMaxLen* = 38
+const FactPadding* = 8
+const WorldTitleMaxLen* = 20
+const WorldMaxLen* = 120
+const WorldPadding* = 20
+const SituationTitleMaxLen* = 20
+const SituationMaxLen* = 120
+const SituationPadding* = 20
 
 type
   World* = object
+    title*: string
+    description*: string
+
+  Situation* = object
     title*: string
     description*: string
 
@@ -40,8 +50,8 @@ proc generateWorld*(soul: Soul): World =
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
   prompt &= "Create a game setting inspired by the concept of '" & seed & "'.\n"
   prompt &= "Respond with exactly 2 lines:\n"
-  prompt &= "Line 1: A short evocative title (max 20 characters, lowercase)\n"
-  prompt &= "Line 2: A 100 character description of the world (lowercase)\n"
+  prompt &= "Line 1: A short evocative title (max " & $WorldTitleMaxLen & " characters, lowercase)\n"
+  prompt &= "Line 2: A " & $(WorldMaxLen - WorldPadding) & " character description of the world (lowercase)\n"
 
   if soul.passions.len > 0:
     prompt.add("Draw inspiration from: " & soul.passions.join(", ") & ". ")
@@ -57,26 +67,71 @@ proc generateWorld*(soul: Soul): World =
 
   if nonEmpty.len >= 2:
     result.title = nonEmpty[0]
-    if result.title.len > 20:
-      result.title = result.title[0 ..< 20]
+    if result.title.len > WorldTitleMaxLen:
+      result.title = result.title[0 ..< WorldTitleMaxLen]
     result.description = nonEmpty[1]
-    if result.description.len > 100:
-      result.description = result.description[0 ..< 100]
+    if result.description.len > WorldMaxLen:
+      result.description = result.description[0 ..< WorldMaxLen]
   elif nonEmpty.len == 1:
     result.title = nonEmpty[0]
-    if result.title.len > 20:
-      result.title = result.title[0 ..< 20]
+    if result.title.len > WorldTitleMaxLen:
+      result.title = result.title[0 ..< WorldTitleMaxLen]
     result.description = "a world where shadows speak and the forgotten remember"
   else:
     result.title = "the nameless land"
     result.description = "a world where shadows speak and the forgotten remember"
+
+proc generateSituation*(soul: Soul, world: World, chatLog: seq[string], previousSituations: seq[Situation]): Situation =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+
+  if chatLog.len > 0:
+    prompt &= "Magical facts established:\n"
+    for entry in chatLog:
+      prompt &= "- " & entry & "\n"
+
+  if previousSituations.len > 0:
+    prompt &= "Previous situations:\n"
+    for sit in previousSituations:
+      prompt &= "- " & sit.title & ": " & sit.description & "\n"
+
+  prompt &= "Generate a new situation for the players.\n"
+  prompt &= "Respond with exactly 2 lines:\n"
+  prompt &= "Line 1: A short evocative title (max " & $SituationTitleMaxLen & " characters, lowercase)\n"
+  prompt &= "Line 2: A " & $(SituationMaxLen - SituationPadding) & " character description of the situation (lowercase)\n"
+  prompt &= "The situation must not imply direct conflict, its for the players to explore the world.\n"
+  prompt &= "Respond with exactly 2 lines, nothing else."
+
+  let response = claude.ask(prompt)
+  var nonEmpty: seq[string]
+  for line in response.strip().splitLines():
+    let trimmed = line.strip()
+    if trimmed.len > 0:
+      nonEmpty.add(trimmed)
+
+  if nonEmpty.len >= 2:
+    result.title = nonEmpty[0]
+    if result.title.len > SituationTitleMaxLen:
+      result.title = result.title[0 ..< SituationTitleMaxLen]
+    result.description = nonEmpty[1]
+    if result.description.len > SituationMaxLen:
+      result.description = result.description[0 ..< SituationMaxLen]
+  elif nonEmpty.len == 1:
+    result.title = nonEmpty[0]
+    if result.title.len > SituationTitleMaxLen:
+      result.title = result.title[0 ..< SituationTitleMaxLen]
+    result.description = "something stirs in the darkness"
+  else:
+    result.title = "the unknown"
+    result.description = "something stirs in the darkness"
 
 proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, string] =
   var prompt = ""
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "Generate exactly 3 short mystical facts about how this world works.\n"
-  prompt &= "Each fact MUST be " & $(MaxFactLen - 8) & " characters or fewer.\n"
+  prompt &= "Each fact MUST be " & $(FactMaxLen - FactPadding) & " characters or fewer.\n"
   prompt &= "Each fact should be a single lowercase statement about a rule of the world.\n"
 
   if soul.passions.len > 0:
@@ -101,10 +156,10 @@ proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, st
     let trimmed = line.strip()
     if trimmed.len == 0:
       continue
-    if trimmed.len <= MaxFactLen:
+    if trimmed.len <= FactMaxLen:
       result[idx] = trimmed
     else:
-      result[idx] = trimmed[0 ..< MaxFactLen]
+      result[idx] = trimmed[0 ..< FactMaxLen]
     inc idx
 
   for i in idx ..< 3:
