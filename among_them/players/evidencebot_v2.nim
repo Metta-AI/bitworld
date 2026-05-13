@@ -4788,6 +4788,30 @@ when not defined(evidencebotLibrary):
     url & (if '?' in url: "&" else: "?") &
       key & "=" & value.queryEscape()
 
+  proc ensureWsPath(url: string, defaultPath: string): string =
+    ## Inserts `defaultPath` when a full URL only contains scheme and host.
+    let s = url.find("://")
+    let start = if s < 0: 0 else: s + 3
+    for i in start ..< url.len:
+      case url[i]
+      of '/': return url
+      of '?', '#': return url[0 ..< i] & defaultPath & url[i .. ^1]
+      else: discard
+    url & defaultPath
+
+  proc playerConnectUrl(
+    url,
+    name,
+    token: string,
+    slot: int
+  ): string =
+    ## Builds a player WebSocket URL from a complete endpoint.
+    result = url.ensureWsPath(WebSocketPath)
+    result = result.addQueryParam("name", name)
+    if slot >= 0:
+      result = result.addQueryParam("slot", $slot)
+    result = result.addQueryParam("token", token)
+
   proc playerConnectUrl(
     host: string,
     port: int,
@@ -4873,19 +4897,26 @@ when not defined(evidencebotLibrary):
     mapPath = "",
     masterSeed: int64 = -1,
     token = "",
-    slot = -1
+    slot = -1,
+    url = "",
+    exitOnDisconnect = false
   ) =
     ## Connects to an Among Them server and processes player frames.
     var bot = initBot(mapPath, masterSeed)
-    let url = playerConnectUrl(host, port, name, token, slot)
+    let connectUrl =
+      if url.len > 0: playerConnectUrl(url, name, token, slot)
+      else: playerConnectUrl(host, port, name, token, slot)
     var
       viewer =
         if gui: initViewerApp()
         else: nil
       connected = false
+      notifiedFailure = false
     while viewer.viewerOpen():
       try:
-        let ws = newWebSocket(url)
+        let ws = newWebSocket(connectUrl)
+        echo "connected to ", connectUrl
+        notifiedFailure = false
         var lastMask = 0xff'u8
         bot.queuedFrames.setLen(0)
         bot.frameBufferLen = 0
@@ -4893,7 +4924,7 @@ when not defined(evidencebotLibrary):
         connected = true
         while viewer.viewerOpen():
           if gui:
-            viewer.pumpViewer(bot, connected, url)
+            viewer.pumpViewer(bot, connected, connectUrl)
             if not viewer.viewerOpen():
               ws.close()
               break
@@ -4909,13 +4940,20 @@ when not defined(evidencebotLibrary):
               not bot.interstitialText.isGameOverText():
             ws.send(blobFromChat(bot.pendingChat), BinaryMessage)
             bot.pendingChat = ""
-      except Exception:
+      except Exception as e:
+        if connected:
+          echo "connection lost: ", e.msg
+          if exitOnDisconnect:
+            break
+        elif not notifiedFailure:
+          echo "connection failed: ", e.msg
+          notifiedFailure = true
         connected = false
         if gui:
           let reconnectStart = getMonoTime()
           while viewer.viewerOpen() and
               (getMonoTime() - reconnectStart).inMilliseconds < 250:
-            viewer.pumpViewer(bot, connected, url)
+            viewer.pumpViewer(bot, connected, connectUrl)
             sleep(10)
         else:
           sleep(250)
@@ -4930,6 +4968,8 @@ when isMainModule and not defined(evidencebotLibrary):
     masterSeed = -1'i64
     token = ""
     slot = -1
+    url = getEnv("COGAMES_ENGINE_WS_URL")
+    exitOnDisconnect = url.len > 0
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -4948,6 +4988,9 @@ when isMainModule and not defined(evidencebotLibrary):
         slot = parseInt(val)
       of "map":
         mapPath = val
+      of "url":
+        url = val
+        exitOnDisconnect = true
       of "seed":
         try:
           masterSeed = parseBiggestInt(val).int64
@@ -4960,4 +5003,8 @@ when isMainModule and not defined(evidencebotLibrary):
       discard
   if mapPath.len > 0 and not mapPath.isAbsolute():
     mapPath = absolutePath(mapPath)
-  runBot(address, port, gui, name, mapPath, masterSeed, token, slot)
+  let target =
+    if url.len > 0: url
+    else: "ws://" & address & ":" & $port
+  echo "starting evidencebot_v2 -> ", target
+  runBot(address, port, gui, name, mapPath, masterSeed, token, slot, url, exitOnDisconnect)
