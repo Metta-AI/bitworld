@@ -23,6 +23,7 @@ const
   DebugPlayerBoxSpriteId = 900
   TiledSpriteBase = 300
   FlagGid = 15
+  SeesawGid = 54
   SignGid = 60
   ProgressStepPixels = 64
   HoleLookAheadPixels = 88
@@ -225,7 +226,10 @@ proc gidFromSprite(spriteId: int): int =
 
 proc isSolidGid(gid: int): bool =
   ## Returns true when a Tiled gid should block Jumper players.
-  gid != 0 and gid != FlagGid and gid != SignGid
+  gid != 0 and
+    gid != FlagGid and
+    gid != SeesawGid and
+    gid != SignGid
 
 proc initBot(name: string): Bot =
   ## Builds the initial Dalli state.

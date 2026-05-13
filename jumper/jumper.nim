@@ -46,6 +46,7 @@ const
   SpawnAirTiles = 4
   TiledLayerName = "Tile Layer 1"
   FlagGid = 15
+  SeesawGid = 54
   SignGid = 60
   MapLayerId = 0
   MapLayerKind = 0
@@ -547,7 +548,7 @@ proc isSolid(kind: TileKind): bool =
 proc isPassThroughGid(gid: int): bool =
   ## Returns true when a rendered tile should not collide.
   case gid
-  of SignGid:
+  of SignGid, SeesawGid:
     true
   else:
     false
