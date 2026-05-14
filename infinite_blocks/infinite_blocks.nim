@@ -2134,6 +2134,7 @@ proc addSpeechBubble(
 proc addNameLabel(
   packet: var seq[uint8],
   sim: SimServer,
+  cache: var seq[SpriteCacheEntry],
   player: Player,
   objectId: var int,
   cameraX,
@@ -2159,7 +2160,7 @@ proc addNameLabel(
     y = bounds.minY - cameraY - sprite.height - NameGapY
   x = max(0, min(viewportWidth - sprite.width, x))
   let spriteId = GlobalNameSpriteBase + (player.id mod 1000)
-  packet.addRgbaSprite(spriteId, sprite, "name " & text)
+  packet.addRgbaSpriteCached(cache, spriteId, sprite, "name " & text)
   packet.addObjectIfRoom(objectId, x, y, z, spriteId)
 
 proc addGlobalScorePanel(
@@ -2511,6 +2512,7 @@ proc buildGlobalFramePacket(
     addNameLabel(
       result,
       sim,
+      nextState.spriteCache,
       otherPlayer,
       objectId,
       cameraX,
@@ -2616,7 +2618,17 @@ proc buildGlobalMapPacket(
   for player in sim.players:
     if not player.alive:
       continue
-    addNameLabel(result, sim, player, objectId, 0, 0, GlobalMapWidth, 5)
+    addNameLabel(
+      result,
+      sim,
+      nextState.spriteCache,
+      player,
+      objectId,
+      0,
+      0,
+      GlobalMapWidth,
+      5
+    )
     addSpeechBubble(result, sim, player, objectId, 0, 0, 5)
 
 proc buildRewardPacket(sim: SimServer): string =
