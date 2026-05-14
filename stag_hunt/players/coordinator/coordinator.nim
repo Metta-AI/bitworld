@@ -1,0 +1,688 @@
+import
+  std/[options, os, parseopt, strutils],
+  whisky,
+  protocol
+
+# ---------------------------------------------------------------------------
+# Stag Hunt constants (mirrored from stag_hunt/stag_hunt.nim; not imported to
+# avoid pulling the server's mummy/sprite-cache machinery into the bot).
+# ---------------------------------------------------------------------------
+
+const
+  CoordinatorDefaultPort = DefaultPort
+  CoordinatorWebSocketPath = "/player"
+  MaxDrainMessages = 256
+
+  TargetFps = 24
+  WorldWidthTiles = 32
+  WorldHeightTiles = 32
+  TileSize = 6
+  WorldWidthPixels = WorldWidthTiles * TileSize
+  WorldHeightPixels = WorldHeightTiles * TileSize
+  PlayerViewportWidth = ScreenWidth
+  PlayerViewportHeight = ScreenHeight
+
+  # Sprite ids.
+  TreeSpriteId = 1
+  RockSpriteId = 2
+  BackgroundSpriteId = 3
+  PreySpriteBase = 10            # + kind ord (Rabbit..Mammoth = 0..4)
+  PreySpriteCount = 5
+  PlayerSpriteBase = 100         # + colorSlot * 4 + facing.ord (0..31)
+  PlayerSpriteCount = 32
+
+  # Object id bases.
+  TileObjectBase = 1000          # + tileIndex
+  PlayerObjectBase = 5000        # + array index
+  BackgroundObjectBase = 8000    # + tileIndex
+  PreyObjectBase = 10000         # + array index
+
+  MaxPlayers = 64                # generous upper bound for object scan
+  MaxPrey = 64                   # generous upper bound for object scan
+
+  # Strategy tuning.
+  AllyChebyshevRadius = 6        # "nearby" allies counted within this radius
+  PreferredReachChebyshev = 12   # prefer big prey only within this radius
+  DebugIntervalTicks = TargetFps # one debug line per second
+
+type
+  PreyKind = enum
+    Rabbit
+    Boar
+    Stag
+    Moose
+    Mammoth
+
+  SpriteKind = enum
+    SpriteUnknown
+    SpriteBackground
+    SpriteTree
+    SpriteRock
+    SpritePrey
+    SpritePlayer
+
+  SpriteInfo = object
+    defined: bool
+    width: int
+    height: int
+    label: string
+    kind: SpriteKind
+    preyKind: PreyKind
+    colorSlot: int
+    facing: int
+
+  ObjectState = object
+    present: bool
+    x: int
+    y: int
+    z: int
+    layer: int
+    spriteId: int
+
+  PlayerSight = object
+    found: bool
+    objectId: int
+    tileX: int
+    tileY: int
+    pixelX: int
+    pixelY: int
+
+  PreySight = object
+    found: bool
+    objectId: int
+    kind: PreyKind
+    tileX: int
+    tileY: int
+
+  Bot = object
+    sprites: seq[SpriteInfo]
+    objects: seq[ObjectState]
+    cameraX: int
+    cameraY: int
+    cameraKnown: bool
+    frameTick: int
+    selfTileX: int
+    selfTileY: int
+    selfFound: bool
+    intent: string
+
+# ---------------------------------------------------------------------------
+# Sprite_v1 protocol parsing (mirrors skurge.nim closely).
+# ---------------------------------------------------------------------------
+
+proc readU16(blob: string, offset: int): int =
+  ## Reads one little endian unsigned 16 bit value.
+  int(uint16(blob[offset].uint8) or
+    (uint16(blob[offset + 1].uint8) shl 8))
+
+proc readI16(blob: string, offset: int): int =
+  ## Reads one little endian signed 16 bit value.
+  let value = uint16(blob[offset].uint8) or
+    (uint16(blob[offset + 1].uint8) shl 8)
+  int(cast[int16](value))
+
+proc readU32(blob: string, offset: int): int =
+  ## Reads one little endian unsigned 32 bit value.
+  int(uint32(blob[offset].uint8) or
+    (uint32(blob[offset + 1].uint8) shl 8) or
+    (uint32(blob[offset + 2].uint8) shl 16) or
+    (uint32(blob[offset + 3].uint8) shl 24))
+
+proc ensureSprite(bot: var Bot, spriteId: int) =
+  ## Grows the sprite table so it can hold one sprite id.
+  if spriteId >= bot.sprites.len:
+    bot.sprites.setLen(spriteId + 1)
+
+proc ensureObject(bot: var Bot, objectId: int) =
+  ## Grows the object table so it can hold one object id.
+  if objectId >= bot.objects.len:
+    bot.objects.setLen(objectId + 1)
+
+proc classifySprite(spriteId: int, label: string): SpriteInfo =
+  ## Classifies one stag_hunt sprite id by its number and label.
+  result.kind = SpriteUnknown
+  if spriteId == BackgroundSpriteId:
+    result.kind = SpriteBackground
+    return
+  if spriteId == TreeSpriteId:
+    result.kind = SpriteTree
+    return
+  if spriteId == RockSpriteId:
+    result.kind = SpriteRock
+    return
+  if spriteId >= PreySpriteBase and
+      spriteId < PreySpriteBase + PreySpriteCount:
+    result.kind = SpritePrey
+    result.preyKind = PreyKind(spriteId - PreySpriteBase)
+    return
+  if spriteId >= PlayerSpriteBase and
+      spriteId < PlayerSpriteBase + PlayerSpriteCount:
+    let offset = spriteId - PlayerSpriteBase
+    result.kind = SpritePlayer
+    result.colorSlot = offset div 4
+    result.facing = offset mod 4
+    return
+  discard label
+
+proc applySpritePacket(bot: var Bot, packet: string): bool =
+  ## Applies one or more server sprite protocol messages.
+  var offset = 0
+  while offset < packet.len:
+    let messageType = packet[offset].uint8
+    inc offset
+    case messageType
+    of 0x01:
+      if offset + 10 > packet.len:
+        return false
+      let
+        spriteId = packet.readU16(offset)
+        width = packet.readU16(offset + 2)
+        height = packet.readU16(offset + 4)
+        compressedLen = packet.readU32(offset + 6)
+      offset += 10
+      if compressedLen < 0 or offset + compressedLen + 2 > packet.len:
+        return false
+      # Skip pixel data; the bot only uses sprite metadata, not pixels.
+      offset += compressedLen
+      let labelLen = packet.readU16(offset)
+      offset += 2
+      if offset + labelLen > packet.len:
+        return false
+      let label =
+        if labelLen > 0:
+          packet.substr(offset, offset + labelLen - 1)
+        else:
+          ""
+      offset += labelLen
+      var info = classifySprite(spriteId, label)
+      info.defined = true
+      info.width = width
+      info.height = height
+      info.label = label
+      bot.ensureSprite(spriteId)
+      bot.sprites[spriteId] = info
+    of 0x02:
+      if offset + 11 > packet.len:
+        return false
+      let
+        objectId = packet.readU16(offset)
+        x = packet.readI16(offset + 2)
+        y = packet.readI16(offset + 4)
+        z = packet.readI16(offset + 6)
+        layer = int(packet[offset + 8].uint8)
+        spriteId = packet.readU16(offset + 9)
+      offset += 11
+      bot.ensureObject(objectId)
+      bot.objects[objectId] = ObjectState(
+        present: true,
+        x: x,
+        y: y,
+        z: z,
+        layer: layer,
+        spriteId: spriteId
+      )
+    of 0x03:
+      if offset + 2 > packet.len:
+        return false
+      let objectId = packet.readU16(offset)
+      offset += 2
+      if objectId >= 0 and objectId < bot.objects.len:
+        bot.objects[objectId].present = false
+    of 0x04:
+      for item in bot.objects.mitems:
+        item.present = false
+      bot.cameraKnown = false
+      bot.selfFound = false
+    of 0x05:
+      if offset + 5 > packet.len:
+        return false
+      offset += 5
+    of 0x06:
+      if offset + 3 > packet.len:
+        return false
+      offset += 3
+    else:
+      return false
+  true
+
+# ---------------------------------------------------------------------------
+# Camera derivation and scene queries.
+# ---------------------------------------------------------------------------
+
+proc spriteInfo(bot: Bot, spriteId: int): SpriteInfo =
+  ## Returns sprite metadata or a blank record.
+  if spriteId >= 0 and spriteId < bot.sprites.len:
+    return bot.sprites[spriteId]
+  SpriteInfo()
+
+proc objectPresent(bot: Bot, objectId: int): bool =
+  objectId >= 0 and objectId < bot.objects.len and bot.objects[objectId].present
+
+proc deriveCamera(bot: var Bot) =
+  ## Derives the world camera offset from any visible background tile.
+  bot.cameraKnown = false
+  let scanEnd = min(bot.objects.len, BackgroundObjectBase +
+    WorldWidthTiles * WorldHeightTiles)
+  for objectId in BackgroundObjectBase ..< scanEnd:
+    if not bot.objects[objectId].present:
+      continue
+    let
+      tileIndex = objectId - BackgroundObjectBase
+      tx = tileIndex mod WorldWidthTiles
+      ty = tileIndex div WorldWidthTiles
+      obj = bot.objects[objectId]
+    bot.cameraX = tx * TileSize - obj.x
+    bot.cameraY = ty * TileSize - obj.y
+    bot.cameraKnown = true
+    return
+
+proc chebyshev(ax, ay, bx, by: int): int =
+  ## Returns the chebyshev (king-move) distance between two tile coords.
+  max(abs(ax - bx), abs(ay - by))
+
+proc visiblePlayers(bot: Bot): seq[PlayerSight] =
+  ## Returns every player object currently visible.
+  let scanEnd = min(bot.objects.len, PlayerObjectBase + MaxPlayers)
+  for objectId in PlayerObjectBase ..< scanEnd:
+    if not bot.objects[objectId].present:
+      continue
+    let obj = bot.objects[objectId]
+    let info = bot.spriteInfo(obj.spriteId)
+    if info.kind != SpritePlayer:
+      continue
+    let
+      worldX = bot.cameraX + obj.x
+      worldY = bot.cameraY + obj.y
+    result.add PlayerSight(
+      found: true,
+      objectId: objectId,
+      tileX: worldX div TileSize,
+      tileY: worldY div TileSize,
+      pixelX: worldX,
+      pixelY: worldY
+    )
+
+proc visiblePrey(bot: Bot): seq[PreySight] =
+  ## Returns every prey object currently visible.
+  let scanEnd = min(bot.objects.len, PreyObjectBase + MaxPrey)
+  for objectId in PreyObjectBase ..< scanEnd:
+    if not bot.objects[objectId].present:
+      continue
+    let obj = bot.objects[objectId]
+    let info = bot.spriteInfo(obj.spriteId)
+    if info.kind != SpritePrey:
+      continue
+    let
+      worldX = bot.cameraX + obj.x
+      worldY = bot.cameraY + obj.y
+    result.add PreySight(
+      found: true,
+      objectId: objectId,
+      kind: info.preyKind,
+      tileX: worldX div TileSize,
+      tileY: worldY div TileSize
+    )
+
+proc findSelf(bot: var Bot, players: openArray[PlayerSight]) =
+  ## Identifies the bot's own player as the one whose tile is closest to
+  ## the viewport center. The server camera-centers each player.
+  bot.selfFound = false
+  if players.len == 0 or not bot.cameraKnown:
+    return
+  let
+    centerX = bot.cameraX + PlayerViewportWidth div 2
+    centerY = bot.cameraY + PlayerViewportHeight div 2
+    centerTx = centerX div TileSize
+    centerTy = centerY div TileSize
+  var
+    bestDist = high(int)
+    bestX = 0
+    bestY = 0
+  for player in players:
+    let d = chebyshev(player.tileX, player.tileY, centerTx, centerTy)
+    if d < bestDist:
+      bestDist = d
+      bestX = player.tileX
+      bestY = player.tileY
+  bot.selfTileX = bestX
+  bot.selfTileY = bestY
+  bot.selfFound = true
+
+# ---------------------------------------------------------------------------
+# Strategy: pick prey our local coalition can plausibly catch.
+# ---------------------------------------------------------------------------
+
+proc preyMinPlayers(kind: PreyKind): int =
+  ## Mirrors stag_hunt.nim preyMinPlayers.
+  case kind
+  of Rabbit: 1
+  of Boar: 2
+  of Stag: 2
+  of Moose: 3
+  of Mammoth: 4
+
+proc preyReward(kind: PreyKind): int =
+  ## Mirrors the score rewards in stag_hunt.nim; bigger is better.
+  case kind
+  of Rabbit: 1
+  of Boar: 3
+  of Stag: 5
+  of Moose: 10
+  of Mammoth: 18
+
+proc nearbyAllyCount(
+  bot: Bot,
+  players: openArray[PlayerSight]
+): int =
+  ## Counts self plus other visible players within AllyChebyshevRadius.
+  if not bot.selfFound:
+    return 0
+  result = 1
+  for player in players:
+    if player.tileX == bot.selfTileX and player.tileY == bot.selfTileY:
+      continue
+    if chebyshev(player.tileX, player.tileY,
+        bot.selfTileX, bot.selfTileY) <= AllyChebyshevRadius:
+      inc result
+
+proc catchableKinds(nearbyCount: int): set[PreyKind] =
+  ## Returns the set of prey kinds catchable with the given coalition size.
+  for kind in PreyKind:
+    if preyMinPlayers(kind) <= nearbyCount:
+      result.incl(kind)
+
+proc kindsLabel(kinds: set[PreyKind]): string =
+  ## Returns a comma-separated kind list for debug output.
+  for kind in PreyKind:
+    if kind in kinds:
+      if result.len > 0:
+        result.add(',')
+      result.add($kind)
+  if result.len == 0:
+    result = "none"
+
+proc chooseTarget(
+  bot: Bot,
+  prey: openArray[PreySight],
+  kinds: set[PreyKind]
+): PreySight =
+  ## Picks the best prey: prefer the highest-reward kind within reasonable
+  ## reach, breaking ties by chebyshev distance; otherwise the nearest of
+  ## any catchable kind.
+  if not bot.selfFound:
+    return PreySight()
+
+  var
+    nearbyBest = PreySight()
+    nearbyBestReward = -1
+    nearbyBestDist = high(int)
+    fallbackBest = PreySight()
+    fallbackBestDist = high(int)
+
+  for p in prey:
+    if p.kind notin kinds:
+      continue
+    let d = chebyshev(p.tileX, p.tileY, bot.selfTileX, bot.selfTileY)
+    if d < fallbackBestDist or
+        (d == fallbackBestDist and preyReward(p.kind) >
+          preyReward(fallbackBest.kind)):
+      fallbackBest = p
+      fallbackBestDist = d
+    if d <= PreferredReachChebyshev:
+      let reward = preyReward(p.kind)
+      if reward > nearbyBestReward or
+          (reward == nearbyBestReward and d < nearbyBestDist):
+        nearbyBest = p
+        nearbyBestReward = reward
+        nearbyBestDist = d
+
+  if nearbyBest.found:
+    return nearbyBest
+  fallbackBest
+
+proc signOf(v: int): int =
+  if v < 0: -1
+  elif v > 0: 1
+  else: 0
+
+proc moveMaskTowards(dx, dy: int): uint8 =
+  ## Server consumes a single axis per tick. Step along whichever axis has
+  ## more remaining distance; ties favor the horizontal axis.
+  if dx == 0 and dy == 0:
+    return 0
+  if abs(dx) >= abs(dy):
+    if dx < 0: return ButtonLeft
+    if dx > 0: return ButtonRight
+  if dy < 0: return ButtonUp
+  if dy > 0: return ButtonDown
+  0
+
+proc cardinallyAdjacent(ax, ay, bx, by: int): bool =
+  ## Returns true when (ax,ay) is exactly one step N/S/E/W from (bx,by).
+  let dx = abs(ax - bx)
+  let dy = abs(ay - by)
+  (dx == 1 and dy == 0) or (dx == 0 and dy == 1)
+
+proc decideNextMask(bot: var Bot): uint8 =
+  ## Chooses the next controller mask from the current sprite scene.
+  bot.deriveCamera()
+  if not bot.cameraKnown:
+    bot.intent = "no camera"
+    return 0
+
+  let players = bot.visiblePlayers()
+  bot.findSelf(players)
+  if not bot.selfFound:
+    bot.intent = "no self"
+    return 0
+
+  let
+    prey = bot.visiblePrey()
+    nearby = bot.nearbyAllyCount(players)
+    kinds = catchableKinds(nearby)
+    target = bot.chooseTarget(prey, kinds)
+
+  if not target.found:
+    bot.intent = "no catchable prey (allies=" & $nearby & ")"
+    return 0
+
+  let dx = target.tileX - bot.selfTileX
+  let dy = target.tileY - bot.selfTileY
+
+  if cardinallyAdjacent(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY):
+    bot.intent = "hold beside " & $target.kind &
+      " allies=" & $nearby
+    return 0
+
+  if dx == 0 and dy == 0:
+    # Standing on top of the prey shouldn't really happen, but if it does
+    # nudge off in any direction so a neighbor can flank.
+    bot.intent = "nudge off " & $target.kind
+    return ButtonRight
+
+  bot.intent = "approach " & $target.kind &
+    " at (" & $target.tileX & "," & $target.tileY & ")" &
+    " allies=" & $nearby
+  moveMaskTowards(dx, dy)
+
+# ---------------------------------------------------------------------------
+# Debug logging and IO helpers.
+# ---------------------------------------------------------------------------
+
+proc maskSummary(mask: uint8): string =
+  ## Returns a compact human-readable input mask.
+  if (mask and ButtonUp) != 0: result.add("U")
+  if (mask and ButtonDown) != 0: result.add("D")
+  if (mask and ButtonLeft) != 0: result.add("L")
+  if (mask and ButtonRight) != 0: result.add("R")
+  if (mask and ButtonA) != 0: result.add("A")
+  if (mask and ButtonB) != 0: result.add("B")
+  if result.len == 0: result = "."
+
+proc echoDebug(bot: Bot, mask: uint8, force = false) =
+  ## Prints occasional bot status for local tuning.
+  if not force and bot.frameTick mod DebugIntervalTicks != 0:
+    return
+  let players = bot.visiblePlayers()
+  let prey = bot.visiblePrey()
+  let nearby =
+    if bot.selfFound: bot.nearbyAllyCount(players)
+    else: 0
+  let kinds = catchableKinds(nearby)
+  let target = bot.chooseTarget(prey, kinds)
+  let selfStr =
+    if bot.selfFound:
+      "(" & $bot.selfTileX & "," & $bot.selfTileY & ")"
+    else:
+      "?"
+  var targetStr = "none"
+  var distStr = "-"
+  if target.found and bot.selfFound:
+    targetStr = $target.kind & "@(" & $target.tileX & "," & $target.tileY & ")"
+    distStr = $chebyshev(
+      bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
+  echo "step=", bot.frameTick,
+    " self=", selfStr,
+    " nearby=", nearby,
+    " catchable=", kindsLabel(kinds),
+    " target=", targetStr,
+    " dist=", distStr,
+    " keys=", mask.maskSummary(),
+    " intent=", bot.intent
+
+proc playerInputBlob(mask: uint8): string =
+  ## Builds a sprite_v1 controller input packet.
+  blobFromBytes([0x84'u8, mask and 0x7f'u8])
+
+# ---------------------------------------------------------------------------
+# Websocket connection and main loop.
+# ---------------------------------------------------------------------------
+
+proc queryEscape(value: string): string =
+  ## Escapes a query string component.
+  const Hex = "0123456789ABCDEF"
+  for ch in value:
+    if ch.isAlphaNumeric() or ch in {'-', '_', '.', '~'}:
+      result.add(ch)
+    else:
+      let byte = ord(ch)
+      result.add('%')
+      result.add(Hex[(byte shr 4) and 0x0f])
+      result.add(Hex[byte and 0x0f])
+
+proc withPath(url, path: string): string =
+  ## Adds a websocket path when the supplied URL has no path.
+  let schemePos = url.find("://")
+  if schemePos < 0:
+    return url
+  let pathStart = url.find('/', schemePos + 3)
+  if pathStart >= 0:
+    return url
+  url & path
+
+proc addQueryParam(url, key, value: string): string =
+  ## Appends one escaped query parameter to a URL.
+  if value.len == 0:
+    return url
+  result = url
+  if '?' in result:
+    result.add('&')
+  else:
+    result.add('?')
+  result.add(key)
+  result.add('=')
+  result.add(value.queryEscape())
+
+proc connectUrl(address, url, name: string, port: int): string =
+  ## Builds the player websocket URL.
+  if url.len > 0:
+    result = url.withPath(CoordinatorWebSocketPath)
+  else:
+    result = "ws://" & address & ":" & $port & CoordinatorWebSocketPath
+  result = result.addQueryParam("name", name)
+
+proc initBot(): Bot =
+  result.selfFound = false
+  result.cameraKnown = false
+
+proc acceptServerMessage(
+  ws: WebSocket,
+  message: Message,
+  bot: var Bot
+): bool =
+  ## Handles one websocket message from the game server.
+  case message.kind
+  of BinaryMessage:
+    result = bot.applySpritePacket(message.data)
+    if result:
+      inc bot.frameTick
+  of Ping:
+    ws.send(message.data, Pong)
+  of TextMessage, Pong:
+    discard
+
+proc receiveUpdates(ws: WebSocket, bot: var Bot): bool =
+  ## Receives and applies all currently queued sprite updates.
+  let firstMessage = ws.receiveMessage(-1)
+  if firstMessage.isNone:
+    return false
+  if ws.acceptServerMessage(firstMessage.get, bot):
+    result = true
+  var drained = 0
+  while drained < MaxDrainMessages:
+    let message = ws.receiveMessage(0)
+    if message.isNone:
+      break
+    if ws.acceptServerMessage(message.get, bot):
+      result = true
+    inc drained
+
+proc runBot(
+  address = DefaultHost,
+  port = CoordinatorDefaultPort,
+  url = "",
+  name = "coordinator"
+) =
+  ## Connects coordinator to Stag Hunt and runs the coalition policy.
+  let endpoint = connectUrl(address, url, name, port)
+  while true:
+    try:
+      echo "coordinator connecting to ", endpoint
+      var bot = initBot()
+      let ws = newWebSocket(endpoint)
+      var lastMask = 0xff'u8
+      while true:
+        if not ws.receiveUpdates(bot):
+          continue
+        let mask = bot.decideNextMask()
+        bot.echoDebug(mask, mask != lastMask)
+        if mask != lastMask:
+          ws.send(playerInputBlob(mask), BinaryMessage)
+          lastMask = mask
+    except CatchableError as e:
+      echo "coordinator reconnecting after error: ", e.msg
+      sleep(250)
+
+when isMainModule:
+  var
+    address = DefaultHost
+    port = CoordinatorDefaultPort
+    url = ""
+    name = "coordinator"
+
+  for kind, key, value in getopt():
+    case kind
+    of cmdLongOption:
+      case key
+      of "address": address = value
+      of "port": port = parseInt(value)
+      of "url": url = value
+      of "name": name = value
+      else:
+        raise newException(ValueError, "Unknown option: --" & key)
+    of cmdArgument, cmdShortOption:
+      raise newException(ValueError, "Unexpected argument: " & key)
+    of cmdEnd:
+      discard
+
+  runBot(address, port, url, name)

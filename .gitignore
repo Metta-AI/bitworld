@@ -28,3 +28,7 @@ nim.cfg
 *.tfplan
 .terraform.lock.hcl
 stag_hunt/stag_hunt
+stag_hunt/players/*/coordinator
+stag_hunt/players/*/nearest_hunter
+stag_hunt/players/*/rabbiteer
+stag_hunt/players/*/nimcache

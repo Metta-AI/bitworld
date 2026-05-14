@@ -3,7 +3,7 @@ import pixie
 import supersnappy
 import bitworld/clients
 import protocol, server
-import std/[locks, monotimes, os, parseopt, random, sets, strutils, tables, times]
+import std/[locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
 
 const
   WorldWidthTiles = 32
@@ -79,6 +79,12 @@ const
   TerrainZ = 0
   BackgroundSpriteId = 3
   BackgroundObjectBase = 8000
+
+  # Character sprites (player + prey) are larger than the world tile so they
+  # have room for shading + outline. They are drawn centered on the tile,
+  # offset by -(CharSpriteSize - TileSize) div 2 in both axes.
+  CharSpriteSize = 12
+  CharSpriteOffset = -((CharSpriteSize - TileSize) div 2)
 
 type
   PreyKind = enum
@@ -284,68 +290,110 @@ proc patternToRgbaSprite(
 # ---------------------------------------------------------------------------
 
 const
+  # Character sprites are 12x12 so they have room for an outline (0) + body
+  # tone + shading. They are drawn centered on the 6x6 tile origin.
+  # Terrain sprites stay at 6x6 so they tile cleanly.
+
   # Player faces down by default; sprite is rotated for other facings.
-  # Head on top so FaceUp shows the back of the head.
+  # The head + hair are at low y (top); after FaceUp's 180 rotation the hair
+  # ends up at the bottom of the sprite (back-of-head view from above).
+  # Symmetric across the vertical axis so FaceLeft/FaceRight read cleanly.
   PlayerPattern = [
-    "..QQ..",
-    ".QQQQ.",
-    "PPPPPP",
-    ".PPPP.",
-    ".P..P.",
-    "PP..PP",
+    "............",
+    "....0000....",
+    "...0QQQQ0...",
+    "..0QQQQQQ0..",
+    "..0Q4444Q0..",
+    "..0Q4004Q0..",
+    "..0Q4444Q0..",
+    "...044440...",
+    "..0PPPPPP0..",
+    ".0PPPPPPPP0.",
+    ".0P0PPPP0P0.",
+    "...00..00...",
   ]
 
-  # Rabbit: white with pink ears, small.
+  # Rabbit: white body, pink inner ears, black outline, black eye.
   RabbitPattern = [
-    ".4..4.",
-    ".2..2.",
-    ".2222.",
-    "222222",
-    ".2002.",
-    "..22..",
+    "............",
+    "....00..00..",
+    "...0440.40..",
+    "...0440.40..",
+    "...02200200.",
+    "..022222220.",
+    ".02222222220",
+    ".0220222220.",
+    ".02222222220",
+    "..02222220..",
+    "...020.020..",
+    "...000.000..",
   ]
 
-  # Boar: chunky dark-brown body, tan snout, white tusks.
+  # Boar: chunky dark-brown body with tan snout to the right, side view.
   BoarPattern = [
-    "......",
-    "..655.",
-    ".25555",
-    "555555",
-    ".5..5.",
-    ".5..5.",
+    "............",
+    "............",
+    "..0000000...",
+    ".055555560..",
+    "0555555560..",
+    "055505555600",
+    "05555055560.",
+    "0555555560..",
+    ".05555550...",
+    "..05005050..",
+    "...0.0.0....",
+    "............",
   ]
 
-  # Stag: tan body with dark-brown antlers spread to top corners.
+  # Stag: tan body with branching dark-brown antlers above the head.
   StagPattern = [
-    "5....5",
-    ".5..5.",
-    "66666.",
-    "60066.",
-    "666666",
-    ".6..6.",
+    "..5...5...5.",
+    "..5.5.5.55..",
+    "..555.5.5...",
+    "...50500....",
+    "...050050...",
+    "..06666660..",
+    ".0666066660.",
+    ".0666666660.",
+    ".06666666660",
+    ".06006066060",
+    "..0..0.0..0.",
+    "............",
   ]
 
-  # Moose: dark-green body with wide dark-brown antlers.
+  # Moose: dark-green body with broad dark-brown antlers above the head.
   MoosePattern = [
-    "5.55.5",
-    ".5..5.",
-    ".aaaa.",
-    ".a00a.",
-    "aaaaaa",
-    ".a..a.",
+    "5...5...5..5",
+    ".5.5.5.5.55.",
+    "..555.5.55..",
+    "...050050...",
+    "...050050...",
+    "..0aaaaaa0..",
+    ".0aaa00aaa0.",
+    ".0aaaaaaaa00",
+    ".0aaaaaaaaa0",
+    ".0aa00aa00a0",
+    "..0..0..0.0.",
+    "............",
   ]
 
-  # Mammoth: huge gray body with white tusks curving down.
+  # Mammoth: huge gray body with curved white tusks below.
   MammothPattern = [
-    "111111",
-    "111111",
-    "110011",
-    "111111",
-    "12..21",
-    ".2..2.",
+    "............",
+    "...000000...",
+    "..01111110..",
+    ".0111111110.",
+    ".0110111110.",
+    "01111111111.",
+    "01111111111.",
+    "01111111110.",
+    ".01100110.0.",
+    ".02200220...",
+    "..2....2....",
+    "............",
   ]
 
-  # Tree: bushy canopy with a thicker trunk and small shadow base.
+  # Tree: bushy canopy with a thicker trunk and small shadow base. 6x6.
   TreePattern = [
     "..ba..",
     ".babb.",
@@ -355,7 +403,7 @@ const
     "..50..",
   ]
 
-  # Rock: rounded boulder with a highlight and base shadow.
+  # Rock: rounded boulder with a highlight and base shadow. 6x6.
   RockPattern = [
     "..11..",
     ".1221.",
@@ -365,7 +413,7 @@ const
     "..00..",
   ]
 
-  # Grass: dark-green field with sparse blade highlights.
+  # Grass: dark-green field with sparse blade highlights. 6x6 (tiles cleanly).
   GrassPattern = [
     "aaaaaa",
     "aabaaa",
@@ -375,7 +423,7 @@ const
     "aaaaaa",
   ]
 
-proc preyPattern(kind: PreyKind): array[6, string] =
+proc preyPattern(kind: PreyKind): array[CharSpriteSize, string] =
   case kind
   of Rabbit: RabbitPattern
   of Boar: BoarPattern
@@ -722,11 +770,16 @@ proc applyCaptures(sim: var SimServer) =
     let sides = sim.sidesAround(sim.prey[i])
     if isCaptured(sides, sim.prey[i].kind):
       let reward = rewardsFor(sim.prey[i].kind)
+      var participants: seq[int] = @[]
       for idx in [sides.n, sides.s, sides.e, sides.w]:
         if idx >= 0 and idx < sim.players.len:
           sim.players[idx].energy = min(MaxEnergy, sim.players[idx].energy + reward.energy)
           sim.players[idx].score += reward.score
           sim.players[idx].catchFlash = CatchFlashTicks
+          participants.add(sim.players[idx].id)
+      echo "tick=", sim.tickCount, " caught ", sim.prey[i].kind,
+        " +", reward.score, " for players=", participants,
+        " scores=", sim.players.mapIt(it.score)
       removed.add(i)
   for i in countdown(removed.high, 0):
     sim.prey.delete(removed[i])
@@ -925,14 +978,14 @@ proc addPreyObjects(
 ) =
   for i in 0 ..< sim.prey.len:
     let prey = sim.prey[i]
-    var screenX = prey.tileX * TileSize - cameraX
-    let screenY = prey.tileY * TileSize - cameraY
+    var screenX = prey.tileX * TileSize - cameraX + CharSpriteOffset
+    let screenY = prey.tileY * TileSize - cameraY + CharSpriteOffset
     if prey.alertFlash > 0:
       if (prey.alertFlash and 1) == 1:
         screenX += 1
       else:
         screenX -= 1
-    if screenX + TileSize <= 0 or screenY + TileSize <= 0:
+    if screenX + CharSpriteSize <= 0 or screenY + CharSpriteSize <= 0:
       continue
     if screenX >= viewportWidth or screenY >= viewportHeight:
       continue
@@ -950,9 +1003,9 @@ proc addPlayerObjects(
   for i in 0 ..< sim.players.len:
     let player = sim.players[i]
     let
-      screenX = player.tileX * TileSize - cameraX
-      screenY = player.tileY * TileSize - cameraY
-    if screenX + TileSize <= 0 or screenY + TileSize <= 0:
+      screenX = player.tileX * TileSize - cameraX + CharSpriteOffset
+      screenY = player.tileY * TileSize - cameraY + CharSpriteOffset
+    if screenX + CharSpriteSize <= 0 or screenY + CharSpriteSize <= 0:
       continue
     if screenX >= viewportWidth or screenY >= viewportHeight:
       continue
