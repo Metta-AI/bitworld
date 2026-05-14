@@ -6,7 +6,9 @@ import ../common/server
 
 const
   ReplayScrubberSpriteId = 404
+  ScorePanelSpriteId = 405
   ReplayScrubberObjectId = 4004
+  ScorePanelObjectId = 4005
   ReplayScrubberWidth = 84
   ReplayScrubberHeight = 5
   ReplayScrubberTrackY = 2
@@ -46,6 +48,10 @@ const
   HealthBarHeight = 5
   HealthBarPad = 1
   HealthBarGap = 3
+  ScorePanelPipSize = 3
+  ScorePanelPipGapX = 2
+  ScorePanelNameGapX = 2
+  ScorePanelSelectedGapY = 2
   UiColors = [
     (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8),
     (r: 20'u8, g: 24'u8, b: 30'u8, a: 235'u8),
@@ -652,6 +658,16 @@ proc putTextSpritePixel(
     return
   pixels.putRgbaPixel(y * width + x, color)
 
+proc putTextSpritePixel(
+  pixels: var seq[uint8],
+  width, height, x, y: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Puts one true-color protocol pixel into a text sprite.
+  if x < 0 or y < 0 or x >= width or y >= height:
+    return
+  pixels.putRgbaPixel(y * width + x, color)
+
 proc blitGlyph(
   target: var seq[uint8],
   targetWidth, targetHeight: int,
@@ -660,6 +676,26 @@ proc blitGlyph(
   color: uint8
 ) =
   ## Blits a single-color glyph into protocol pixels.
+  for y in 0 ..< glyph.height:
+    for x in 0 ..< glyph.width:
+      if not glyph.glyphPixel(x, y):
+        continue
+      target.putTextSpritePixel(
+        targetWidth,
+        targetHeight,
+        baseX + x,
+        baseY + y,
+        color
+      )
+
+proc blitGlyph(
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  glyph: PixelGlyph,
+  baseX, baseY: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Blits a true-color glyph into protocol pixels.
   for y in 0 ..< glyph.height:
     for x in 0 ..< glyph.width:
       if not glyph.glyphPixel(x, y):
@@ -693,6 +729,44 @@ proc blitSmallText(
       color
     )
     x += sim.textFont.glyphAdvance(ch)
+
+proc blitSmallText(
+  sim: SimServer,
+  target: var seq[uint8],
+  targetWidth, targetHeight: int,
+  text: string,
+  baseX, baseY: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Blits true-color small text into protocol pixels.
+  var x = baseX
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    target.blitGlyph(
+      targetWidth,
+      targetHeight,
+      glyph,
+      x,
+      baseY,
+      color
+    )
+    x += sim.textFont.glyphAdvance(ch)
+
+proc textSliceForWidth(
+  font: PixelFont,
+  text: string,
+  maxWidth: int
+): string =
+  ## Returns the longest text prefix that fits a pixel width.
+  var width = 0
+  for ch in text:
+    let advance = font.glyphAdvance(ch)
+    if result.len > 0 and width + advance > maxWidth:
+      return
+    if result.len == 0 and advance > maxWidth:
+      return
+    result.add(ch)
+    width += advance
 
 proc buildSpriteProtocolTextSprite(
   sim: SimServer,
@@ -931,6 +1005,102 @@ proc buildSpriteProtocolBubbleSprite(
 proc playerIdentity(player: Actor): string =
   ## Returns a sprite text friendly player identity.
   player.address.replace(":", " ")
+
+proc compareScorePanelPlayerIds(sim: SimServer, a, b: int): int =
+  ## Sorts score panel players by descending coin count.
+  result = cmp(sim.players[b].coins, sim.players[a].coins)
+  if result == 0:
+    result = cmp(sim.players[a].id, sim.players[b].id)
+
+proc scorePanelPlayerIds(sim: SimServer): seq[int] =
+  ## Returns the score panel player indexes in display order.
+  for i in 0 ..< sim.players.len:
+    result.add(i)
+  result.sort(
+    proc(a, b: int): int =
+      sim.compareScorePanelPlayerIds(a, b)
+  )
+
+proc scorePanelScoreWidth(
+  sim: SimServer,
+  playerIds: openArray[int]
+): int =
+  ## Returns the widest current score label.
+  for playerIndex in playerIds:
+    result = max(
+      result,
+      sim.textFont.textWidth($sim.players[playerIndex].coins)
+    )
+
+proc scorePanelNameWidth(
+  sim: SimServer,
+  playerIds: openArray[int],
+  maxWidth: int
+): int =
+  ## Returns the widest current bounded player name label.
+  for playerIndex in playerIds:
+    let name = sim.textFont.textSliceForWidth(
+      sim.players[playerIndex].playerIdentity(),
+      maxWidth
+    )
+    result = max(result, sim.textFont.textWidth(name))
+
+proc buildScorePanelSprite(
+  sim: SimServer
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds the compact global player score panel.
+  let playerIds = sim.scorePanelPlayerIds()
+  let
+    lineHeight = sim.textFont.lineHeight()
+    rowHeight = max(lineHeight, ScorePanelPipSize)
+    scoreColumnWidth = sim.scorePanelScoreWidth(playerIds)
+    nameX = ScorePanelPipSize + ScorePanelPipGapX +
+      scoreColumnWidth + ScorePanelNameGapX
+    nameMaxWidth = max(1, ScreenWidth - nameX)
+    nameColumnWidth = sim.scorePanelNameWidth(playerIds, nameMaxWidth)
+  result.width = max(1, min(ScreenWidth, nameX + nameColumnWidth))
+  result.height = max(1, playerIds.len * rowHeight)
+  result.pixels = newRgbaPixels(result.width, result.height)
+  for row, playerIndex in playerIds:
+    let
+      player = sim.players[playerIndex]
+      color = playerIndex.playerTintColor()
+      rowY = row * rowHeight
+      pipY = rowY + (rowHeight - ScorePanelPipSize) div 2
+      scoreText = $player.coins
+      scoreWidth = sim.textFont.textWidth(scoreText)
+      scoreX = ScorePanelPipSize + ScorePanelPipGapX +
+        max(0, scoreColumnWidth - scoreWidth)
+      name = sim.textFont.textSliceForWidth(
+        player.playerIdentity(),
+        max(1, result.width - nameX)
+      )
+    result.pixels.fillRgbaRect(
+      result.width,
+      0,
+      pipY,
+      ScorePanelPipSize,
+      ScorePanelPipSize,
+      color
+    )
+    sim.blitSmallText(
+      result.pixels,
+      result.width,
+      result.height,
+      scoreText,
+      scoreX,
+      rowY,
+      2'u8
+    )
+    sim.blitSmallText(
+      result.pixels,
+      result.width,
+      result.height,
+      name,
+      nameX,
+      rowY,
+      color
+    )
 
 proc buildReplayScrubberSprite(
   tick, maxTick: int
@@ -1307,7 +1477,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, ScreenWidth, 24)
+  result.addViewport(TopLeftLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(
     ReplayCenterBottomLayerId,
     ReplayCenterBottomLayerType,
@@ -1718,6 +1888,33 @@ proc addPlayerStatus(
     StatusHudSpriteId
   )
 
+proc addGlobalScorePanel(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int]
+): int =
+  ## Adds the global player score panel and returns its height.
+  if sim.players.len == 0:
+    return 0
+  let panel = sim.buildScorePanelSprite()
+  packet.addSprite(
+    ScorePanelSpriteId,
+    panel.width,
+    panel.height,
+    panel.pixels,
+    "score panel"
+  )
+  packet.addObject(
+    ScorePanelObjectId,
+    0,
+    0,
+    high(int16),
+    TopLeftLayerId,
+    ScorePanelSpriteId
+  )
+  currentIds.add(ScorePanelObjectId)
+  panel.height
+
 proc buildSpriteProtocolPlayerUpdates*(
   sim: var SimServer,
   playerIndex: int,
@@ -1835,10 +2032,17 @@ proc buildSpriteProtocolUpdates*(
     nextState.selectedPlayerId
   )
 
+  let scorePanelHeight = sim.addGlobalScorePanel(result, currentIds)
+
   let playerIndex = sim.selectedPlayerIndex(nextState.selectedPlayerId)
   if playerIndex >= 0:
     var lines: seq[string] = @[]
     let player = sim.players[playerIndex]
+    let selectedY =
+      if scorePanelHeight > 0:
+        scorePanelHeight + ScorePanelSelectedGapY
+      else:
+        2
     lines.add("PLAYER " & player.playerIdentity())
     lines.add("COINS " & $player.coins)
     lines.add("LIVES " & $player.lives)
@@ -1853,7 +2057,7 @@ proc buildSpriteProtocolUpdates*(
     result.addObject(
       SelectedTextObjectId,
       2,
-      2,
+      selectedY,
       0,
       TopLeftLayerId,
       SelectedTextSpriteId

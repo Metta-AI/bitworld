@@ -2,9 +2,52 @@ import
   std/os,
   ../common/protocol,
   ../common/server,
+  ../big_adventure/global,
   ../big_adventure/sim
 
-const RootDir = currentSourcePath.parentDir.parentDir
+const
+  RootDir = currentSourcePath.parentDir.parentDir
+  ScorePanelObjectIdForTest = 4005
+
+proc readU16(packet: openArray[uint8], offset: int): int =
+  ## Reads one little endian unsigned 16 bit value from a packet.
+  int(uint16(packet[offset]) or (uint16(packet[offset + 1]) shl 8))
+
+proc readU32(packet: openArray[uint8], offset: int): int =
+  ## Reads one little endian unsigned 32 bit value from a packet.
+  int(uint32(packet[offset]) or
+    (uint32(packet[offset + 1]) shl 8) or
+    (uint32(packet[offset + 2]) shl 16) or
+    (uint32(packet[offset + 3]) shl 24))
+
+proc spritePacketObjectIds(packet: openArray[uint8]): seq[int] =
+  ## Returns all object ids defined in one sprite protocol packet.
+  var offset = 0
+  while offset < packet.len:
+    let messageType = packet[offset]
+    inc offset
+    case messageType
+    of 0x01'u8:
+      doAssert offset + 10 <= packet.len
+      let compressedLen = packet.readU32(offset + 6)
+      offset += 10 + compressedLen
+      doAssert offset + 2 <= packet.len
+      let labelLen = packet.readU16(offset)
+      offset += 2 + labelLen
+    of 0x02'u8:
+      doAssert offset + 11 <= packet.len
+      result.add packet.readU16(offset)
+      offset += 11
+    of 0x03'u8:
+      offset += 2
+    of 0x04'u8:
+      discard
+    of 0x05'u8:
+      offset += 5
+    of 0x06'u8:
+      offset += 3
+    else:
+      doAssert false, "unknown sprite protocol message"
 
 proc initBigAdventureForTest(seed = 1234): SimServer =
   ## Initializes Big Adventure from its asset directory.
@@ -76,8 +119,26 @@ proc testPlayerSpeedIsSlower() =
   ## Checks that player top speed is 25 percent slower.
   doAssert MaxSpeed == 264, "player max speed should be 25 percent slower"
 
+proc testGlobalScorePanelRenders() =
+  ## Checks that the global view includes the coin score panel.
+  var sim = initBigAdventureForTest()
+  let
+    red = sim.addPlayer("red")
+    blue = sim.addPlayer("blue")
+  sim.players[red].coins = 4
+  sim.players[blue].coins = 12
+
+  var nextState: GlobalViewerState
+  let packet = sim.buildSpriteProtocolUpdates(
+    initGlobalViewerState(),
+    nextState
+  )
+  doAssert ScorePanelObjectIdForTest in packet.spritePacketObjectIds(),
+    "global view should include the score panel object"
+
 testPlayerDropsCarriedCoinsOnDeath()
 testMobsAvoidPlayerStart()
 testMobSightRadiusIsSmaller()
 testPlayerSpeedIsSlower()
+testGlobalScorePanelRenders()
 echo "All tests passed"
