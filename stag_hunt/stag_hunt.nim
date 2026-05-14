@@ -77,7 +77,6 @@ const
   PreyObjectBase = 10000     # + array index
 
   TerrainZ = 0
-  GrassSpriteColor = 11'u8   # palette green for empty-tile background sprite
   BackgroundSpriteId = 3
   BackgroundObjectBase = 8000
 
@@ -276,12 +275,6 @@ proc patternToRgbaSprite(
         dy = x
       result.putRgbaPixel(dx, dy, paletteRgba(color))
 
-proc solidRgbaSprite(width, height: int, color: ColorRGBA): RgbaSprite =
-  result = newRgbaSprite(width, height)
-  for y in 0 ..< height:
-    for x in 0 ..< width:
-      result.putRgbaPixel(x, y, color)
-
 # ---------------------------------------------------------------------------
 # Sprite patterns.
 # '.' transparent; 0-9 a-f are palette indices; P/Q = player body/accent.
@@ -291,76 +284,95 @@ proc solidRgbaSprite(width, height: int, color: ColorRGBA): RgbaSprite =
 # ---------------------------------------------------------------------------
 
 const
+  # Player faces down by default; sprite is rotated for other facings.
+  # Head on top so FaceUp shows the back of the head.
   PlayerPattern = [
-    "..PP..",
-    ".PPPP.",
-    ".PQQP.",
+    "..QQ..",
+    ".QQQQ.",
     "PPPPPP",
     ".PPPP.",
     ".P..P.",
+    "PP..PP",
   ]
 
+  # Rabbit: white with pink ears, small.
   RabbitPattern = [
+    ".4..4.",
     ".2..2.",
-    ".2..2.",
-    ".4224.",
+    ".2222.",
     "222222",
     ".2002.",
-    ".2..2.",
+    "..22..",
   ]
 
+  # Boar: chunky dark-brown body, tan snout, white tusks.
   BoarPattern = [
     "......",
-    ".6555.",
-    "655552",
+    "..655.",
+    ".25555",
     "555555",
     ".5..5.",
     ".5..5.",
   ]
 
+  # Stag: tan body with dark-brown antlers spread to top corners.
   StagPattern = [
-    "5.55.5",
+    "5....5",
     ".5..5.",
-    ".6666.",
-    ".6006.",
+    "66666.",
+    "60066.",
     "666666",
     ".6..6.",
   ]
 
+  # Moose: dark-green body with wide dark-brown antlers.
   MoosePattern = [
     "5.55.5",
-    "5.55.5",
-    "555555",
-    "500005",
-    "555555",
     ".5..5.",
+    ".aaaa.",
+    ".a00a.",
+    "aaaaaa",
+    ".a..a.",
   ]
 
+  # Mammoth: huge gray body with white tusks curving down.
   MammothPattern = [
-    ".1111.",
     "111111",
     "111111",
-    "122221",
-    "112211",
-    ".1..1.",
+    "110011",
+    "111111",
+    "12..21",
+    ".2..2.",
   ]
 
+  # Tree: bushy canopy with a thicker trunk and small shadow base.
   TreePattern = [
-    "..bb..",
-    ".bbbb.",
-    "bbbbbb",
-    ".abba.",
+    "..ba..",
+    ".babb.",
+    "bbabba",
+    "abbabb",
     "..55..",
-    "..55..",
+    "..50..",
   ]
 
+  # Rock: rounded boulder with a highlight and base shadow.
   RockPattern = [
     "..11..",
-    ".1111.",
-    "111991",
+    ".1221.",
+    "112211",
     "111111",
-    ".1111.",
+    ".1001.",
     "..00..",
+  ]
+
+  # Grass: dark-green field with sparse blade highlights.
+  GrassPattern = [
+    "aaaaaa",
+    "aabaaa",
+    "aaaaaa",
+    "aaaaba",
+    "aabaaa",
+    "aaaaaa",
   ]
 
 proc preyPattern(kind: PreyKind): array[6, string] =
@@ -821,7 +833,7 @@ proc preySpriteId(kind: PreyKind): int =
 proc buildSpriteCache(sim: var SimServer) =
   sim.treeSprite = patternToRgbaSprite(TreePattern)
   sim.rockSprite = patternToRgbaSprite(RockPattern)
-  sim.backgroundSprite = solidRgbaSprite(TileSize, TileSize, paletteRgba(GrassSpriteColor))
+  sim.backgroundSprite = patternToRgbaSprite(GrassPattern)
 
   for kind in PreyKind:
     sim.preySprites[kind.ord] = patternToRgbaSprite(preyPattern(kind))
