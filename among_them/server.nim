@@ -416,7 +416,7 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let join = replay.data.joins[replay.joinIndex]
     if int(join.player) != sim.players.len:
       raise newException(ReplayError, "Replay player join order is invalid")
-    discard sim.addPlayer(join.name, join.slot, join.token)
+    discard sim.addPlayer(join.name, join.slot, join.token, trusted = true)
     replay.ensureReplayPlayer(int(join.player))
     inc replay.joinIndex
 
