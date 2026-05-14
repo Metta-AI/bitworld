@@ -4,9 +4,32 @@ import
 
 setCurrentDir(currentSourcePath().parentDir().parentDir())
 
+const
+  PlayerPlanetSpriteBaseForTest = 1000
+  PlayerCursorSpriteBaseForTest = 5000
+  PlanetTextSpriteBaseForTest = 10000
+  PlayerNameSpriteBaseForTest = 18100
+  ScorePanelDigitSpriteBaseForTest = 18300
+  ScorePanelNameSpriteBaseForTest = 18500
+  ScorePanelDigitObjectBaseForTest = 15000
+  ScorePanelNameObjectBaseForTest = 17000
+  ScorePanelMaxScoreCharsForTest = 16
+
+type
+  SpritePacketObject = object
+    id: int
+    x: int
+    y: int
+    spriteId: int
+
 proc readU16(packet: openArray[uint8], offset: int): int =
   ## Reads one little endian unsigned 16 bit value from a packet.
   int(uint16(packet[offset]) or (uint16(packet[offset + 1]) shl 8))
+
+proc readI16(packet: openArray[uint8], offset: int): int =
+  ## Reads one little endian signed 16 bit value from a packet.
+  int(cast[int16](uint16(packet[offset]) or
+    (uint16(packet[offset + 1]) shl 8)))
 
 proc readU32(packet: openArray[uint8], offset: int): int =
   ## Reads one little endian unsigned 32 bit value from a packet.
@@ -15,8 +38,36 @@ proc readU32(packet: openArray[uint8], offset: int): int =
     (uint32(packet[offset + 2]) shl 16) or
     (uint32(packet[offset + 3]) shl 24))
 
-proc spritePacketObjectIds(packet: openArray[uint8]): seq[int] =
-  ## Returns all object ids defined in one sprite protocol packet.
+proc spritePacketSpriteIds(packet: openArray[uint8]): seq[int] =
+  ## Returns all sprite ids defined in one sprite protocol packet.
+  var offset = 0
+  while offset < packet.len:
+    let messageType = packet[offset]
+    inc offset
+    case messageType
+    of 0x01'u8:
+      doAssert offset + 10 <= packet.len
+      result.add packet.readU16(offset)
+      let compressedLen = packet.readU32(offset + 6)
+      offset += 10 + compressedLen
+      doAssert offset + 2 <= packet.len
+      let labelLen = packet.readU16(offset)
+      offset += 2 + labelLen
+    of 0x02'u8:
+      offset += 11
+    of 0x03'u8:
+      offset += 2
+    of 0x04'u8:
+      discard
+    of 0x05'u8:
+      offset += 5
+    of 0x06'u8:
+      offset += 3
+    else:
+      doAssert false, "unknown sprite protocol message"
+
+proc spritePacketObjects(packet: openArray[uint8]): seq[SpritePacketObject] =
+  ## Returns all objects defined in one sprite protocol packet.
   var offset = 0
   while offset < packet.len:
     let messageType = packet[offset]
@@ -31,7 +82,12 @@ proc spritePacketObjectIds(packet: openArray[uint8]): seq[int] =
       offset += 2 + labelLen
     of 0x02'u8:
       doAssert offset + 11 <= packet.len
-      result.add packet.readU16(offset)
+      result.add SpritePacketObject(
+        id: packet.readU16(offset),
+        x: packet.readI16(offset + 2),
+        y: packet.readI16(offset + 4),
+        spriteId: packet.readU16(offset + 9)
+      )
       offset += 11
     of 0x03'u8:
       offset += 2
@@ -43,6 +99,21 @@ proc spritePacketObjectIds(packet: openArray[uint8]): seq[int] =
       offset += 3
     else:
       doAssert false, "unknown sprite protocol message"
+
+proc spritePacketObjectIds(packet: openArray[uint8]): seq[int] =
+  ## Returns all object ids defined in one sprite protocol packet.
+  for item in packet.spritePacketObjects():
+    result.add item.id
+
+proc findObject(
+  objects: openArray[SpritePacketObject],
+  objectId: int
+): SpritePacketObject =
+  ## Returns one packet object or fails the test.
+  for item in objects:
+    if item.id == objectId:
+      return item
+  doAssert false, "missing object " & $objectId
 
 echo "Testing default lifecycle config"
 let lifecycleConfig = defaultSimConfig()
@@ -125,6 +196,74 @@ let initPacket = initGame.buildSpriteProtocolUpdates(
 )
 doAssert initPacket.len > 0
 doAssert initPacket[0] == 0x04'u8
+
+echo "Testing global score panel renders"
+var scorePanelGame = initSimServer(793, defaultSimConfig())
+let
+  redScoreIndex = scorePanelGame.addPlayer("red")
+  blueScoreIndex = scorePanelGame.addPlayer("blue")
+  redScoreId = scorePanelGame.players[redScoreIndex].id
+  blueScoreId = scorePanelGame.players[blueScoreIndex].id
+scorePanelGame.players[redScoreIndex].score = 5
+scorePanelGame.players[blueScoreIndex].score = 12
+var nextScorePanelState: GlobalViewerState
+let scorePanelPacket = scorePanelGame.buildSpriteProtocolUpdates(
+  initGlobalViewerState(),
+  nextScorePanelState
+)
+let
+  scorePanelObjects = scorePanelPacket.spritePacketObjects()
+  scorePanelObjectIds = scorePanelPacket.spritePacketObjectIds()
+  scorePanelSpriteIds = scorePanelPacket.spritePacketSpriteIds()
+  firstPlanetTextSprite = PlanetTextSpriteBaseForTest +
+    scorePanelGame.planets[0].id
+  redScoreNameObject = ScorePanelNameObjectBaseForTest + redScoreId
+  blueScoreNameObject = ScorePanelNameObjectBaseForTest + blueScoreId
+  blueScoreFirstDigit = ScorePanelDigitObjectBaseForTest +
+    blueScoreId * ScorePanelMaxScoreCharsForTest
+  blueScoreSecondDigit = blueScoreFirstDigit + 1
+doAssert redScoreNameObject in scorePanelObjectIds
+doAssert blueScoreNameObject in scorePanelObjectIds
+doAssert blueScoreFirstDigit in scorePanelObjectIds
+doAssert blueScoreSecondDigit in scorePanelObjectIds
+doAssert scorePanelObjects.findObject(blueScoreNameObject).y <
+  scorePanelObjects.findObject(redScoreNameObject).y
+doAssert PlayerPlanetSpriteBaseForTest + redScoreId * 8 in
+  scorePanelSpriteIds
+doAssert PlayerCursorSpriteBaseForTest + redScoreId in scorePanelSpriteIds
+doAssert PlayerNameSpriteBaseForTest + redScoreId in scorePanelSpriteIds
+doAssert firstPlanetTextSprite in scorePanelSpriteIds
+doAssert ScorePanelDigitSpriteBaseForTest + 1 in scorePanelSpriteIds
+doAssert ScorePanelNameSpriteBaseForTest + redScoreId in scorePanelSpriteIds
+var cachedScorePanelState: GlobalViewerState
+let cachedScorePanelPacket = scorePanelGame.buildSpriteProtocolUpdates(
+  nextScorePanelState,
+  cachedScorePanelState
+)
+let cachedScorePanelSpriteIds =
+  cachedScorePanelPacket.spritePacketSpriteIds()
+doAssert ScorePanelDigitSpriteBaseForTest + 1 notin cachedScorePanelSpriteIds
+doAssert ScorePanelNameSpriteBaseForTest + redScoreId notin
+  cachedScorePanelSpriteIds
+doAssert PlayerPlanetSpriteBaseForTest + redScoreId * 8 notin
+  cachedScorePanelSpriteIds
+doAssert PlayerCursorSpriteBaseForTest + redScoreId notin
+  cachedScorePanelSpriteIds
+doAssert PlayerNameSpriteBaseForTest + redScoreId notin
+  cachedScorePanelSpriteIds
+doAssert firstPlanetTextSprite notin cachedScorePanelSpriteIds
+scorePanelGame.planets[0].ships += 1
+scorePanelGame.players[redScoreIndex].name = "redder"
+var changedScorePanelState: GlobalViewerState
+let changedScorePanelPacket = scorePanelGame.buildSpriteProtocolUpdates(
+  cachedScorePanelState,
+  changedScorePanelState
+)
+let changedScorePanelSpriteIds =
+  changedScorePanelPacket.spritePacketSpriteIds()
+doAssert firstPlanetTextSprite in changedScorePanelSpriteIds
+doAssert PlayerNameSpriteBaseForTest + redScoreId in
+  changedScorePanelSpriteIds
 
 echo "Testing cursor chat bubbles render and expire"
 var chatGame = initSimServer(790, defaultSimConfig())

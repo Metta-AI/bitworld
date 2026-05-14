@@ -16,6 +16,9 @@ const
   WaitingSpriteId = 18002
   ChatSpriteBase = 18010
   PlayerNameSpriteBase = 18100
+  ScorePanelDigitSpriteBase = 18300
+  ScorePanelChipSpriteBase = 18400
+  ScorePanelNameSpriteBase = 18500
   PlanetObjectBase = 2000
   PlanetSelectedObjectBase = 2100
   PlanetOriginObjectBase = 2200
@@ -30,6 +33,9 @@ const
   HudObjectId = 4000
   WaitingObjectId = 4002
   ChatObjectBase = 4010
+  ScorePanelChipObjectBase = 14000
+  ScorePanelDigitObjectBase = 15000
+  ScorePanelNameObjectBase = 17000
   PlanetSpritePad = 4
   ShipSpriteSize = 5
   CursorSpriteSize = 5
@@ -42,6 +48,10 @@ const
   TextOutlinePad = 1
   HudY = 0
   PlayerUiHeight = 48
+  ScorePanelChipSize = 3
+  ScorePanelChipGapX = 2
+  ScorePanelNameGapX = 2
+  ScorePanelMaxScoreChars = 16
 
 type
   RgbaSprite = object
@@ -56,19 +66,28 @@ type
     z: int
     spriteId: int
 
+  SpriteCacheEntry = object
+    spriteId: int
+    width: int
+    height: int
+    pixels: seq[uint8]
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    spriteCache: seq[SpriteCacheEntry]
     mouseX*: int
     mouseY*: int
     mouseLayer*: int
     mouseDown*: bool
     clickPending*: bool
     selectedPlanetId*: int
+    scorePanelDigitsDefined: bool
 
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    spriteCache: seq[SpriteCacheEntry]
 
 proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
@@ -268,6 +287,51 @@ proc addSprite(
   packet.addU16(label.len)
   for ch in label:
     packet.addU8(uint8(ord(ch)))
+
+proc copyPixels(pixels: openArray[uint8]): seq[uint8] =
+  ## Copies sprite pixels into a cache-owned sequence.
+  result = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    result[i] = pixels[i]
+
+proc samePixels(cached: openArray[uint8], pixels: openArray[uint8]): bool =
+  ## Returns true when two sprite pixel buffers are identical.
+  if cached.len != pixels.len:
+    return false
+  for i in 0 ..< cached.len:
+    if cached[i] != pixels[i]:
+      return false
+  true
+
+proc addSpriteCached(
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
+  spriteId,
+  width,
+  height: int,
+  pixels: openArray[uint8],
+  label = ""
+) =
+  ## Adds a sprite definition only when its dimensions or pixels changed.
+  for i in 0 ..< cache.len:
+    if cache[i].spriteId != spriteId:
+      continue
+    if cache[i].width == width and
+      cache[i].height == height and
+      cache[i].pixels.samePixels(pixels):
+        return
+    packet.addSprite(spriteId, width, height, pixels, label)
+    cache[i].width = width
+    cache[i].height = height
+    cache[i].pixels = copyPixels(pixels)
+    return
+  packet.addSprite(spriteId, width, height, pixels, label)
+  cache.add(SpriteCacheEntry(
+    spriteId: spriteId,
+    width: width,
+    height: height,
+    pixels: copyPixels(pixels)
+  ))
 
 proc addObject(
   packet: var seq[uint8],
@@ -627,6 +691,119 @@ proc buildPlayerNameSprite(sim: SimServer, player: Player): RgbaSprite =
   ## Builds one outlined Tiny5 player name label.
   sim.buildTextSprite([sim.playerNameText(player)], player.color, true)
 
+proc compareScorePanelPlayers(a, b: Player): int =
+  ## Sorts score panel players by descending score.
+  result = cmp(b.score, a.score)
+  if result == 0:
+    result = cmp(a.id, b.id)
+
+proc scorePanelScoreText(score: int): string =
+  ## Returns the bounded score text used by score panel objects.
+  result = $score
+  if result.len > ScorePanelMaxScoreChars:
+    result = result[result.len - ScorePanelMaxScoreChars .. result.high]
+
+proc scorePanelScoreWidth(sim: SimServer, players: openArray[Player]): int =
+  ## Returns the widest current score label.
+  for player in players:
+    result = max(result, sim.textFont.textWidth(
+      scorePanelScoreText(player.score)
+    ))
+
+proc scorePanelNameText(
+  sim: SimServer,
+  player: Player,
+  maxWidth: int
+): string =
+  ## Returns the bounded score panel player name.
+  result = sim.textFont.textSliceForWidth(
+    sim.playerNameText(player),
+    max(1, maxWidth)
+  )
+  if result.len == 0:
+    result = $player.id
+
+proc scorePanelDigitSpriteId(ch: char): int =
+  ## Returns the sprite id for one score panel digit.
+  ScorePanelDigitSpriteBase + ord(ch) - ord('0')
+
+proc scorePanelChipSpriteId(playerId: int): int =
+  ## Returns the score panel chip sprite id for one player.
+  ScorePanelChipSpriteBase + playerId
+
+proc scorePanelNameSpriteId(playerId: int): int =
+  ## Returns the score panel name sprite id for one player.
+  ScorePanelNameSpriteBase + playerId
+
+proc scorePanelChipObjectId(playerId: int): int =
+  ## Returns the score panel chip object id for one player.
+  ScorePanelChipObjectBase + playerId
+
+proc scorePanelDigitObjectId(playerId, digitIndex: int): int =
+  ## Returns the score panel digit object id for one player digit.
+  ScorePanelDigitObjectBase +
+    playerId * ScorePanelMaxScoreChars + digitIndex
+
+proc scorePanelNameObjectId(playerId: int): int =
+  ## Returns the score panel name object id for one player.
+  ScorePanelNameObjectBase + playerId
+
+proc buildScorePanelChipSprite(color: RgbaColor): RgbaSprite =
+  ## Builds one solid score panel color chip.
+  result = newRgbaSprite(ScorePanelChipSize, ScorePanelChipSize)
+  result.fillRect(
+    0,
+    0,
+    ScorePanelChipSize,
+    ScorePanelChipSize,
+    color
+  )
+
+proc addScorePanelDigitSprites(
+  sim: SimServer,
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry]
+) =
+  ## Adds stable score panel digit sprite definitions.
+  for ch in '0' .. '9':
+    let digit = sim.buildTextSprite([$ch], ScoreColor, false)
+    packet.addSpriteCached(
+      cache,
+      scorePanelDigitSpriteId(ch),
+      digit.width,
+      digit.height,
+      digit.pixels,
+      "score digit " & $ch
+    )
+
+proc addScorePanelPlayerSprites(
+  sim: SimServer,
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
+  player: Player,
+  name: string
+) =
+  ## Adds score panel player sprites only when their pixels change.
+  let
+    chip = buildScorePanelChipSprite(player.color)
+    label = sim.buildTextSprite([name], player.color, false)
+  packet.addSpriteCached(
+    cache,
+    scorePanelChipSpriteId(player.id),
+    chip.width,
+    chip.height,
+    chip.pixels,
+    "score chip " & $player.id
+  )
+  packet.addSpriteCached(
+    cache,
+    scorePanelNameSpriteId(player.id),
+    label.width,
+    label.height,
+    label.pixels,
+    "score name " & name
+  )
+
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
   let value = uint16(blob[offset].uint8) or
@@ -781,12 +958,17 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     )
   discard sim
 
-proc addPlayerSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
+proc addPlayerSpriteDefinitions(
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
+  sim: SimServer
+) =
   ## Adds dynamic full-color sprite definitions for all players.
   for player in sim.players:
     for size in PlanetSize:
       let planet = buildPlanetSprite(size, player.color)
-      packet.addSprite(
+      packet.addSpriteCached(
+        cache,
         playerPlanetSpriteId(player.id, size),
         planet.width,
         planet.height,
@@ -795,7 +977,8 @@ proc addPlayerSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       )
     for direction in 0 ..< 4:
       let ship = buildShipSprite(player.color, direction)
-      packet.addSprite(
+      packet.addSpriteCached(
+        cache,
         playerShipSpriteId(player.id, direction),
         ship.width,
         ship.height,
@@ -803,7 +986,8 @@ proc addPlayerSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
         "player ship"
       )
     let cursor = buildCursorSprite(player.color)
-    packet.addSprite(
+    packet.addSpriteCached(
+      cache,
       playerCursorSpriteId(player.id),
       cursor.width,
       cursor.height,
@@ -818,7 +1002,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, ScreenWidth, 48)
+  result.addViewport(TopLeftLayerId, ScreenWidth, ScreenHeight)
   result.addCommonSpriteDefinitions(sim)
 
 proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
@@ -834,6 +1018,7 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
 proc addTextObject(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   currentIds: var seq[int],
   objectId,
   spriteId,
@@ -848,7 +1033,8 @@ proc addTextObject(
 ) =
   ## Adds one dynamic text sprite and object.
   let text = sim.buildTextSprite(lines, color, outlined)
-  packet.addSprite(
+  packet.addSpriteCached(
+    cache,
     spriteId,
     text.width,
     text.height,
@@ -861,6 +1047,7 @@ proc addTextObject(
 proc addPlanetObjects(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
   viewerId,
@@ -934,7 +1121,8 @@ proc addPlanetObjects(
       viewportWidth,
       viewportHeight
     ):
-      packet.addSprite(
+      packet.addSpriteCached(
+        cache,
         PlanetTextSpriteBase + planet.id,
         text.width,
         text.height,
@@ -1033,6 +1221,7 @@ proc chatMessageAlpha(sim: SimServer, message: ChatMessage): uint8 =
 proc addPlayerNameObjects(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
   viewerId,
@@ -1060,7 +1249,8 @@ proc addPlayerNameObjects(
       viewportHeight
     ):
       continue
-    packet.addSprite(
+    packet.addSpriteCached(
+      cache,
       spriteId,
       label.width,
       label.height,
@@ -1083,6 +1273,7 @@ proc addPlayerNameObjects(
 proc addChatBubbleObjects(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
   viewerId,
@@ -1112,7 +1303,8 @@ proc addChatBubbleObjects(
         sx = player.cursorX - bubble.width div 2 - cameraX
         sy = nameTopY - bubble.height - ChatBubbleGapY - cameraY
         spriteId = ChatSpriteBase + player.id
-      packet.addSprite(
+      packet.addSpriteCached(
+        cache,
         spriteId,
         bubble.width,
         bubble.height,
@@ -1136,6 +1328,7 @@ proc addChatBubbleObjects(
 proc addWorldObjects(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   currentIds: var seq[int],
   viewerId,
   selectedIndex,
@@ -1159,6 +1352,7 @@ proc addWorldObjects(
   )
   sim.addPlanetObjects(
     packet,
+    cache,
     objects,
     currentIds,
     viewerId,
@@ -1190,6 +1384,7 @@ proc addWorldObjects(
   )
   sim.addPlayerNameObjects(
     packet,
+    cache,
     objects,
     currentIds,
     viewerId,
@@ -1200,6 +1395,7 @@ proc addWorldObjects(
   )
   sim.addChatBubbleObjects(
     packet,
+    cache,
     objects,
     currentIds,
     viewerId,
@@ -1213,6 +1409,7 @@ proc addWorldObjects(
 proc addPlayerHud(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   currentIds: var seq[int],
   playerIndex: int
 ) =
@@ -1224,6 +1421,7 @@ proc addPlayerHud(
     planets = sim.countOwnedPlanets(player.id)
   sim.addTextObject(
     packet,
+    cache,
     currentIds,
     HudObjectId,
     HudSpriteId,
@@ -1239,11 +1437,13 @@ proc addPlayerHud(
 proc addWaitingText(
   sim: SimServer,
   packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
   currentIds: var seq[int]
 ) =
   ## Adds centered waiting text to an unassigned player view.
   let text = sim.buildTextSprite(["WAITING"], ScoreColor, true)
-  packet.addSprite(
+  packet.addSpriteCached(
+    cache,
     WaitingSpriteId,
     text.width,
     text.height,
@@ -1260,6 +1460,81 @@ proc addWaitingText(
   )
   currentIds.add(WaitingObjectId)
 
+proc addGlobalScorePanel(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  state: GlobalViewerState,
+  nextState: var GlobalViewerState
+) =
+  ## Adds the global player score panel objects.
+  if sim.players.len == 0:
+    return
+  if not state.scorePanelDigitsDefined:
+    sim.addScorePanelDigitSprites(packet, nextState.spriteCache)
+    nextState.scorePanelDigitsDefined = true
+  var players = sim.players
+  players.sort(compareScorePanelPlayers)
+  let
+    lineHeight = sim.textFont.lineHeight()
+    rowHeight = max(lineHeight, ScorePanelChipSize)
+    scoreColumnWidth = sim.scorePanelScoreWidth(players)
+    nameX = ScorePanelChipSize + ScorePanelChipGapX +
+      scoreColumnWidth + ScorePanelNameGapX
+    nameMaxWidth = max(1, ScreenWidth - nameX)
+  for i, player in players:
+    let
+      rowY = i * rowHeight
+      chipY = rowY + (rowHeight - ScorePanelChipSize) div 2
+      scoreText = scorePanelScoreText(player.score)
+      scoreWidth = sim.textFont.textWidth(scoreText)
+      scoreX = ScorePanelChipSize + ScorePanelChipGapX +
+        max(0, scoreColumnWidth - scoreWidth)
+      name = sim.scorePanelNameText(player, nameMaxWidth)
+      chipObjectId = scorePanelChipObjectId(player.id)
+      nameObjectId = scorePanelNameObjectId(player.id)
+    sim.addScorePanelPlayerSprites(
+      packet,
+      nextState.spriteCache,
+      player,
+      name
+    )
+    packet.addObject(
+      chipObjectId,
+      0,
+      chipY,
+      high(int16),
+      TopLeftLayerId,
+      scorePanelChipSpriteId(player.id)
+    )
+    currentIds.add(chipObjectId)
+    packet.addObject(
+      nameObjectId,
+      nameX,
+      rowY,
+      high(int16),
+      TopLeftLayerId,
+      scorePanelNameSpriteId(player.id)
+    )
+    currentIds.add(nameObjectId)
+    var digitX = scoreX
+    for j, ch in scoreText:
+      if j >= ScorePanelMaxScoreChars:
+        break
+      if ch < '0' or ch > '9':
+        continue
+      let digitObjectId = scorePanelDigitObjectId(player.id, j)
+      packet.addObject(
+        digitObjectId,
+        digitX,
+        rowY,
+        high(int16),
+        TopLeftLayerId,
+        scorePanelDigitSpriteId(ch)
+      )
+      currentIds.add(digitObjectId)
+      digitX += sim.textFont.glyphAdvance(ch)
+
 proc buildSpriteProtocolPlayerUpdates*(
   sim: SimServer,
   playerIndex: int,
@@ -1272,10 +1547,10 @@ proc buildSpriteProtocolPlayerUpdates*(
   if not nextState.initialized:
     result = sim.buildSpriteProtocolPlayerInit()
     nextState.initialized = true
-  result.addPlayerSpriteDefinitions(sim)
+  result.addPlayerSpriteDefinitions(nextState.spriteCache, sim)
   var currentIds: seq[int] = @[]
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.addWaitingText(result, currentIds)
+    sim.addWaitingText(result, nextState.spriteCache, currentIds)
   else:
     var ownedSim = sim
     ownedSim.ensureSelection(playerIndex)
@@ -1291,6 +1566,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       )
     ownedSim.addWorldObjects(
       result,
+      nextState.spriteCache,
       currentIds,
       player.id,
       player.selectedPlanet,
@@ -1301,7 +1577,12 @@ proc buildSpriteProtocolPlayerUpdates*(
       PlayerViewportWidth,
       PlayerViewportHeight
     )
-    ownedSim.addPlayerHud(result, currentIds, playerIndex)
+    ownedSim.addPlayerHud(
+      result,
+      nextState.spriteCache,
+      currentIds,
+      playerIndex
+    )
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
@@ -1323,10 +1604,11 @@ proc buildSpriteProtocolUpdates*(
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit()
     nextState.initialized = true
-  result.addPlayerSpriteDefinitions(sim)
+  result.addPlayerSpriteDefinitions(nextState.spriteCache, sim)
   var currentIds: seq[int] = @[]
   sim.addWorldObjects(
     result,
+    nextState.spriteCache,
     currentIds,
     0,
     -1,
@@ -1337,6 +1619,7 @@ proc buildSpriteProtocolUpdates*(
     WorldWidthPixels,
     WorldHeightPixels
   )
+  sim.addGlobalScorePanel(result, currentIds, state, nextState)
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)

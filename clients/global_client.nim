@@ -517,13 +517,6 @@ proc drawLayer(
     return
   app.renderer.drawLayerTexture(mutableLayer, rect, logicalW, logicalH)
 
-  if layer.isUiLayer:
-    let line = rgbx(255, 255, 255, 180)
-    app.silky.drawRect(vec2(rect.x, rect.y), vec2(rect.w, 1), line)
-    app.silky.drawRect(vec2(rect.x, rect.y + rect.h - 1), vec2(rect.w, 1), line)
-    app.silky.drawRect(vec2(rect.x, rect.y), vec2(1, rect.h), line)
-    app.silky.drawRect(vec2(rect.x + rect.w - 1, rect.y), vec2(1, rect.h), line)
-
 proc drawTextEntry(app: GlobalApp, logicalW, logicalH: float32) =
   ## Draws the player text entry overlay when typing.
   if not app.typing:

@@ -801,12 +801,6 @@ function draw(){
     layer.ctx.putImageData(layer.image,0,0);
     const pos=layerScreenPos(layer);
     ctx.drawImage(layer.canvas,pos.x,pos.y,pos.w,pos.h);
-    if((layer.flags&UiFlag)!==0){
-      const x=Math.round(pos.x)+.5,y=Math.round(pos.y)+.5;
-      ctx.strokeStyle="rgba(255,255,255,.8)";
-      ctx.lineWidth=1;
-      ctx.strokeRect(x,y,Math.round(pos.w)-1,Math.round(pos.h)-1);
-    }
     if(debugOpen){
       for(const object of ordered){
         const sprite=sprites.get(object.spriteId);
