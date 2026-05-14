@@ -17,7 +17,9 @@ type
 
   WebSocketAppState = object
     lock: Lock
+    replayServerMode: bool
     replayLoaded: bool
+    pendingReplayUri: string
     resetRequested: bool
     kickRequests: seq[string]
     kickedIdentities: Table[string, bool]
@@ -293,9 +295,8 @@ proc writeHash(writer: var ReplayWriter, tick: uint32, hash: uint64) =
   writer.file.writeU64(hash)
   writer.flushReplayWriter()
 
-proc loadReplay(path: string): ReplayData =
-  ## Loads a replay file into memory.
-  let bytes = readFile(path)
+proc parseReplayBytes(bytes: string): ReplayData =
+  ## Parses a replay file buffer into memory.
   var offset = 0
   if bytes.len < ReplayMagic.len:
     raise newException(ReplayError, "Replay file is truncated")
@@ -362,6 +363,46 @@ proc loadReplay(path: string): ReplayData =
       result.leaves.add(leave)
     else:
       raise newException(ReplayError, "Unknown replay record type")
+
+proc loadReplay(path: string): ReplayData =
+  ## Loads a replay file into memory.
+  parseReplayBytes(readFile(path))
+
+proc replayFilePath(uri: string): string =
+  ## Resolves one local replay URI to a host path.
+  const FilePrefix = "file://"
+  if uri.startsWith(FilePrefix):
+    return uri[FilePrefix.len .. ^1]
+  if "://" in uri:
+    return ""
+  uri
+
+let replayDownloadPool = newCurlPool(1)
+
+proc loadReplayUri(uri: string): ReplayData =
+  ## Loads a replay from a local file URI or HTTP(S) URL.
+  if uri.startsWith("http://") or uri.startsWith("https://"):
+    let response = replayDownloadPool.get(uri)
+    if response.code != 200:
+      raise newException(
+        IOError,
+        "Replay download failed: " & $response.code
+      )
+    return parseReplayBytes(response.body)
+  let path = replayFilePath(uri)
+  if path.len == 0:
+    raise newException(IOError, "Unsupported replay URI: " & uri)
+  loadReplay(path)
+
+proc readableReplayUri(uri: string): bool =
+  ## Returns true when a replay URI can be opened by this server.
+  if uri.len == 0:
+    return false
+  if uri.startsWith("http://") or uri.startsWith("https://"):
+    return true
+  let path = replayFilePath(uri)
+  path.len > 0 and fileExists(path)
+
 proc initReplayPlayer(data: ReplayData): ReplayPlayer =
   ## Builds replay playback state.
   result.data = data
@@ -579,7 +620,9 @@ var appState: WebSocketAppState
 
 proc initAppState() =
   initLock(appState.lock)
+  appState.replayServerMode = false
   appState.replayLoaded = false
+  appState.pendingReplayUri = ""
   appState.resetRequested = false
   appState.kickRequests = @[]
   appState.kickedIdentities = initTable[string, bool]()
@@ -720,6 +763,12 @@ proc replayControlsDisabled(): bool =
     withLock appState.lock:
       result = appState.replayLoaded
 
+proc replayServerModeEnabled(): bool =
+  ## Returns true when the process is serving Coworld replay sessions.
+  {.gcsafe.}:
+    withLock appState.lock:
+      result = appState.replayServerMode
+
 proc disconnectWebSocket(websocket: WebSocket) =
   ## Tears down a player connection immediately.
   when defined(posix):
@@ -745,6 +794,14 @@ proc respondKicked(request: Request) =
   headers["Connection"] = "close"
   request.respond(409, headers, "player was kicked\n")
 
+proc respondReplayRequestError(request: Request, status: int, body: string) =
+  ## Rejects a replay websocket request before upgrade.
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  headers["Connection"] = "close"
+  request.respond(status, headers, body)
+
 proc respondForbiddenPlayer(request: Request, reason: string) =
   ## Rejects an invalid player join before upgrading to a WebSocket.
   var headers: HttpHeaders
@@ -767,6 +824,10 @@ proc configuredSlotTokenError(config: GameConfig, slot: int, token: string): str
   if slotConfig.token.len > 0 and token != slotConfig.token:
     return "Player token does not match configured slot " & $slot & "."
   ""
+
+proc replayRequestUri(request: Request): string =
+  ## Returns the replay artifact URI requested by a Coworld replay client.
+  request.queryParams.getOrDefault("uri", "").strip()
 
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
@@ -821,10 +882,21 @@ proc httpHandler(request: Request) =
         appState.globalViewers[websocket] = initGlobalViewerState()
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
+    let replayServerMode = replayServerModeEnabled()
+    if replayServerMode:
+      let uri = request.replayRequestUri()
+      if uri.len == 0:
+        request.respondReplayRequestError(400, "missing replay uri\n")
+        return
+      if not uri.readableReplayUri():
+        request.respondReplayRequestError(404, "replay uri is not readable\n")
+        return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
+        if replayServerMode:
+          appState.pendingReplayUri = request.replayRequestUri()
   elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
@@ -1036,13 +1108,14 @@ proc runServerLoop*(
   initialConfig = defaultGameConfig(),
   saveReplayPath = "",
   loadReplayPath = "",
-  saveScoresPath = ""
+  saveScoresPath = "",
+  replayServerMode = false
 ) =
   initAppState()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
-  let replayLoaded = loadReplayPath.len > 0
-  let replayData =
+  var replayLoaded = loadReplayPath.len > 0
+  var replayData =
     if replayLoaded:
       loadReplay(loadReplayPath)
     else:
@@ -1066,6 +1139,7 @@ proc runServerLoop*(
     finishProfileTrace()
     replayWriter.closeReplayWriter()
   appState.replayLoaded = replayLoaded
+  appState.replayServerMode = replayServerMode
   appState.config = config
 
   let httpServer = newServer(
@@ -1092,6 +1166,7 @@ proc runServerLoop*(
 
   while true:
     var
+      pendingReplayUri = ""
       sockets: seq[WebSocket] = @[]
       socketsToClose: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
@@ -1107,6 +1182,23 @@ proc runServerLoop*(
       replaySeekTicks: seq[int] = @[]
       shouldReset = false
       quitAfterFrame = false
+
+    {.gcsafe.}:
+      withLock appState.lock:
+        pendingReplayUri = appState.pendingReplayUri
+        appState.pendingReplayUri = ""
+    if pendingReplayUri.len > 0:
+      replayData = loadReplayUri(pendingReplayUri)
+      var replayConfig = defaultGameConfig()
+      replayConfig.update(replayData.configJson)
+      config = replayConfig
+      sim = initSimServer(config)
+      replayPlayer = initReplayPlayer(replayData)
+      replayLoaded = true
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.replayLoaded = true
+          appState.config = config
 
     {.gcsafe.}:
       withLock appState.lock:

@@ -31,6 +31,13 @@ proc testClientStaticPaths() =
   doAssert clientStaticContentType(CoworldReplayClientRoute) == "text/html; charset=utf-8"
   doAssert clientStaticContentType(CoworldSnappyClientRoute) == "application/javascript; charset=utf-8"
 
+proc testReplayClientPreservesUri() =
+  ## Tests that the shared replay client forwards Coworld replay URIs.
+  echo "Testing replay client URI forwarding"
+  let html = readFile(clientStaticPath(CoworldReplayClientRoute))
+  doAssert """["name","slot","token","uri"]""" in html
+
 testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
+testReplayClientPreservesUri()
 echo "All tests passed"

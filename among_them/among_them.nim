@@ -28,6 +28,7 @@ when isMainModule:
     saveReplayPath = cogamePath(getEnv("COGAME_SAVE_REPLAY_URI"), "COGAME_SAVE_REPLAY_URI")
     loadReplayPath = cogamePath(getEnv("COGAME_LOAD_REPLAY_URI"), "COGAME_LOAD_REPLAY_URI")
     saveScoresPath = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
+    replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind
@@ -72,7 +73,8 @@ when isMainModule:
   if saveScoresPath.len > 0:
     echo "Using results save file: " & saveScoresPath
   let replayDownloadUrl = getEnv("REPLAY_DOWNLOAD_URL")
-  if replayDownloadUrl.len > 0 and loadReplayPath.len == 0:
+  if replayDownloadUrl.len > 0 and loadReplayPath.len == 0 and
+      not replayServerMode:
     echo "Downloading replay from: ", replayDownloadUrl
     let pool = newCurlPool(1)
     let resp = pool.get(replayDownloadUrl)
@@ -90,5 +92,6 @@ when isMainModule:
     config,
     saveReplayPath,
     loadReplayPath,
-    saveScoresPath
+    saveScoresPath,
+    replayServerMode
   )
