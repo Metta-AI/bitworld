@@ -46,7 +46,6 @@ const
   PlayerUiHeight = 48
   ScorePanelChipSize = 3
   ScorePanelChipGapX = 2
-  ScorePanelScoreWidth = 16
   ScorePanelNameGapX = 2
 
 type
@@ -648,26 +647,40 @@ proc buildPlayerNameSprite(sim: SimServer, player: Player): RgbaSprite =
   ## Builds one outlined Tiny5 player name label.
   sim.buildTextSprite([sim.playerNameText(player)], player.color, true)
 
+proc compareScorePanelPlayers(a, b: Player): int =
+  ## Sorts score panel players by descending score.
+  result = cmp(b.score, a.score)
+  if result == 0:
+    result = cmp(a.id, b.id)
+
+proc scorePanelScoreWidth(sim: SimServer, players: openArray[Player]): int =
+  ## Returns the widest current score label.
+  for player in players:
+    result = max(result, sim.textFont.textWidth($player.score))
+
 proc buildScorePanelSprite(sim: SimServer): RgbaSprite =
   ## Builds the compact global player score panel.
+  var players = sim.players
+  players.sort(compareScorePanelPlayers)
   let
     lineHeight = sim.textFont.lineHeight()
     rowHeight = max(lineHeight, ScorePanelChipSize)
+    scoreColumnWidth = sim.scorePanelScoreWidth(players)
     nameX = ScorePanelChipSize + ScorePanelChipGapX +
-      ScorePanelScoreWidth + ScorePanelNameGapX
+      scoreColumnWidth + ScorePanelNameGapX
     nameMaxWidth = max(1, ScreenWidth - nameX)
   result = newRgbaSprite(
     ScreenWidth,
-    max(1, sim.players.len * rowHeight)
+    max(1, players.len * rowHeight)
   )
-  for i, player in sim.players:
+  for i, player in players:
     let
       rowY = i * rowHeight
       chipY = rowY + (rowHeight - ScorePanelChipSize) div 2
       scoreText = $player.score
       scoreWidth = sim.textFont.textWidth(scoreText)
       scoreX = ScorePanelChipSize + ScorePanelChipGapX +
-        max(0, ScorePanelScoreWidth - scoreWidth)
+        max(0, scoreColumnWidth - scoreWidth)
     var name = sim.playerNameText(player)
     name = sim.textFont.textSliceForWidth(name, nameMaxWidth)
     if name.len == 0:
