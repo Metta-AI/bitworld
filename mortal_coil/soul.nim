@@ -9,6 +9,11 @@ const WorldPadding* = 20
 const SituationTitleMaxLen* = 20
 const SituationMaxLen* = 120
 const SituationPadding* = 20
+const ConflictTitleMaxLen* = 20
+const ConflictMaxLen* = 120
+const ConflictPadding* = 20
+const ConflictResolutionMaxLen* = 120
+const ConflictResolutionPadding* = 20
 const SceneHeaderMaxLen* = 38
 const SceneHeaderPadding* = 8
 const SceneOptionMaxLen* = 38
@@ -23,8 +28,16 @@ type
     title*: string
     description*: string
 
+  Conflict* = object
+    title*: string
+    description*: string
+
   Soul* = object
     passions*: seq[string]
+
+  ScenePrompt* = object
+    header*: string
+    options*: array[4, string]
 
 proc newSoul*(): Soul =
   Soul(passions: @[])
@@ -85,6 +98,45 @@ proc generateWorld*(soul: Soul): World =
     result.title = "the nameless land"
     result.description = "a world where shadows speak and the forgotten remember"
 
+proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, string] =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "Generate exactly 3 short mystical facts about how this world works.\n"
+  prompt &= "Each fact MUST be " & $(FactMaxLen - FactPadding) & " characters or fewer.\n"
+  prompt &= "Each fact should be a single lowercase statement about a rule of the world.\n"
+
+  if soul.passions.len > 0:
+    prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
+    prompt.add("Facts should relate to these passions. ")
+
+  if chatLog.len > 0:
+    prompt.add("The story so far:\n")
+    for entry in chatLog:
+      prompt.add("- " & entry & "\n")
+    prompt.add("Facts should build on or complement the existing lore. ")
+
+  prompt.add("Respond with exactly 3 lines, one fact per line, nothing else.")
+
+  let response = claude.ask(prompt)
+  let lines = response.strip().splitLines()
+
+  var idx = 0
+  for line in lines:
+    if idx >= 3:
+      break
+    let trimmed = line.strip()
+    if trimmed.len == 0:
+      continue
+    if trimmed.len <= FactMaxLen:
+      result[idx] = trimmed
+    else:
+      result[idx] = trimmed[0 ..< FactMaxLen]
+    inc idx
+
+  for i in idx ..< 3:
+    result[i] = "the void whispers back"
+
 proc generateSituation*(soul: Soul, world: World, chatLog: seq[string], previousSituations: seq[Situation]): Situation =
   var prompt = ""
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
@@ -129,50 +181,6 @@ proc generateSituation*(soul: Soul, world: World, chatLog: seq[string], previous
   else:
     result.title = "the unknown"
     result.description = "something stirs in the darkness"
-
-proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, string] =
-  var prompt = ""
-  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
-  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
-  prompt &= "Generate exactly 3 short mystical facts about how this world works.\n"
-  prompt &= "Each fact MUST be " & $(FactMaxLen - FactPadding) & " characters or fewer.\n"
-  prompt &= "Each fact should be a single lowercase statement about a rule of the world.\n"
-
-  if soul.passions.len > 0:
-    prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
-    prompt.add("Facts should relate to these passions. ")
-
-  if chatLog.len > 0:
-    prompt.add("The story so far:\n")
-    for entry in chatLog:
-      prompt.add("- " & entry & "\n")
-    prompt.add("Facts should build on or complement the existing lore. ")
-
-  prompt.add("Respond with exactly 3 lines, one fact per line, nothing else.")
-
-  let response = claude.ask(prompt)
-  let lines = response.strip().splitLines()
-
-  var idx = 0
-  for line in lines:
-    if idx >= 3:
-      break
-    let trimmed = line.strip()
-    if trimmed.len == 0:
-      continue
-    if trimmed.len <= FactMaxLen:
-      result[idx] = trimmed
-    else:
-      result[idx] = trimmed[0 ..< FactMaxLen]
-    inc idx
-
-  for i in idx ..< 3:
-    result[i] = "the void whispers back"
-
-type
-  ScenePrompt* = object
-    header*: string
-    options*: array[4, string]
 
 proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatLog: seq[string]): ScenePrompt =
   var prompt = ""
@@ -225,3 +233,90 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
 
   for i in idx ..< 4:
     result.options[i] = "stare into the void"
+
+proc generateConflict*(soul: Soul, world: World, situation: Situation, chatLog: seq[string]): Conflict =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "The last situation was '" & situation.title & "': " & situation.description & ".\n"
+  prompt &= "Based on the players' actions, a conflict has emerged.\n"
+  prompt &= "Generate a conflict that arises from the situation.\n"
+  prompt &= "Respond with exactly 2 lines:\n"
+  prompt &= "Line 1: A short evocative title (max " & $ConflictTitleMaxLen & " characters, lowercase)\n"
+  prompt &= "Line 2: A " & $(ConflictMaxLen - ConflictPadding) & " character description of the conflict (lowercase)\n"
+
+  if chatLog.len > 0:
+    prompt.add("The story so far:\n")
+    for entry in chatLog:
+      prompt.add("- " & entry & "\n")
+
+  prompt.add("Respond with exactly 2 lines, nothing else.")
+
+  let response = claude.ask(prompt)
+  var nonEmpty: seq[string]
+  for line in response.strip().splitLines():
+    let trimmed = line.strip()
+    if trimmed.len > 0:
+      nonEmpty.add(trimmed)
+
+  if nonEmpty.len >= 2:
+    result.title = nonEmpty[0]
+    if result.title.len > ConflictTitleMaxLen:
+      result.title = result.title[0 ..< ConflictTitleMaxLen]
+    result.description = nonEmpty[1]
+    if result.description.len > ConflictMaxLen:
+      result.description = result.description[0 ..< ConflictMaxLen]
+  elif nonEmpty.len == 1:
+    result.title = nonEmpty[0]
+    if result.title.len > ConflictTitleMaxLen:
+      result.title = result.title[0 ..< ConflictTitleMaxLen]
+    result.description = "tensions rise beyond breaking"
+  else:
+    result.title = "the clash"
+    result.description = "tensions rise beyond breaking"
+
+proc generateConflictEscalation*(soul: Soul, world: World, conflict: Conflict, round: int, chatLog: seq[string]): string =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
+  prompt &= "This is escalation round " & $(round + 1) & " of 3. The tension is rising.\n"
+  prompt &= "Generate a single sentence describing the escalation (max " & $(ConflictMaxLen - ConflictPadding) & " characters, lowercase).\n"
+
+  if chatLog.len > 0:
+    prompt.add("The story so far:\n")
+    for entry in chatLog:
+      prompt.add("- " & entry & "\n")
+
+  prompt.add("Respond with exactly 1 line, nothing else.")
+
+  let response = claude.ask(prompt).strip()
+  if response.len > 0:
+    if response.len <= ConflictMaxLen:
+      return response
+    else:
+      return response[0 ..< ConflictMaxLen]
+  "the conflict deepens"
+
+proc generateConflictResolution*(soul: Soul, world: World, conflict: Conflict, chatLog: seq[string]): string =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "The conflict was '" & conflict.title & "': " & conflict.description & ".\n"
+  prompt &= "Based on the players' actions, the conflict has resolved.\n"
+  prompt &= "Generate a single sentence describing the resolution (max " & $(ConflictResolutionMaxLen - ConflictResolutionPadding) & " characters, lowercase).\n"
+
+  if chatLog.len > 0:
+    prompt.add("The story so far:\n")
+    for entry in chatLog:
+      prompt.add("- " & entry & "\n")
+
+  prompt.add("Respond with exactly 1 line, nothing else.")
+
+  let response = claude.ask(prompt).strip()
+  if response.len > 0:
+    if response.len <= ConflictResolutionMaxLen:
+      return response
+    else:
+      return response[0 ..< ConflictResolutionMaxLen]
+  "the dust settles"

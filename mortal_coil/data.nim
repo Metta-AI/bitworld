@@ -45,6 +45,13 @@ type
     SituationDescription
     SituationChoices
 
+  ConflictStep* = enum
+    ConflictGazing
+    ConflictTitle
+    ConflictDescription
+    ConflictChoices
+    ConflictResolution
+
   SceneStep* = enum
     SceneGazing
     SceneReading
@@ -68,3 +75,12 @@ type
     header*: string
     choice*: ChoiceCtx
     step*: SceneStep
+
+  ConflictState* = object
+    step*: ConflictStep
+    round*: int
+    sceneState*: SceneState
+    sceneTimer*: int
+    sceneTurnOrder*: seq[int]
+    sceneTurnIndex*: int
+    resolution*: string

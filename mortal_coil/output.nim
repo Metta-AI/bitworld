@@ -42,3 +42,18 @@ proc logSituation*(title, description: string) =
 
 proc logSituationAction*(player: Player, actionText: string) =
   echo "  ", player.name, ": ", actionText
+
+proc logConflict*(title, description: string) =
+  echo ""
+  echo "--- Conflict ---"
+  echo "  ", title
+  echo "  ", description
+
+proc logConflictEscalation*(round: int, description: string) =
+  echo "  [round ", round + 1, "] ", description
+
+proc logConflictAction*(player: Player, actionText: string) =
+  echo "  ", player.name, ": ", actionText
+
+proc logConflictResolution*(resolution: string) =
+  echo "  Resolution: ", resolution

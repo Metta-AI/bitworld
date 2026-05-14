@@ -88,8 +88,7 @@ proc renderSituation*(fb: var Framebuffer, letterSprites: seq[Sprite],
 type
   SituationStepResult* = enum
     SituationContinue
-    SituationToEnd
-    SituationToFacts
+    SituationDone
 
 proc stepSituation*(players: var seq[Player], currentTurn: var int,
     situationStep: var SituationStep, situationTimer: var int,
@@ -155,15 +154,7 @@ proc stepSituation*(players: var seq[Player], currentTurn: var int,
       sceneTurnIndex += 1
       if sceneTurnIndex >= sceneTurnOrder.len:
         situations.add(situation)
-        var allSpent = true
-        for p in players:
-          if p.magicTokens > 0:
-            allSpent = false
-            break
-        if allSpent:
-          return SituationToEnd
-        else:
-          return SituationToFacts
+        return SituationDone
       else:
         currentTurn = sceneTurnOrder[sceneTurnIndex]
         startSceneTurn(sceneState, sceneTimer)

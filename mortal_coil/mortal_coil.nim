@@ -1,5 +1,5 @@
 import mummy
-import protocol, server, soul, data, output, render_utils, world, magical_facts, situation
+import protocol, server, soul, data, output, render_utils, world, magical_facts, situation, conflict
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -39,6 +39,9 @@ type
     sceneTimer: int
     sceneTurnOrder: seq[int]
     sceneTurnIndex: int
+    conflict: Conflict
+    conflictState: ConflictState
+    conflictTimer: int
     fb: Framebuffer
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
@@ -136,6 +139,10 @@ proc renderSituation(sim: var SimServer) =
   situation.renderSituation(sim.fb, sim.letterSprites, sim.digitSprites,
     sim.players, sim.currentTurn, sim.situationStep, sim.situation, sim.sceneState)
 
+proc renderConflictPhase(sim: var SimServer) =
+  conflict.renderConflict(sim.fb, sim.letterSprites, sim.digitSprites,
+    sim.players, sim.currentTurn, sim.conflictState, sim.conflict)
+
 proc renderFact(sim: var SimServer) =
   magical_facts.renderFact(sim.fb, sim.letterSprites, sim.digitSprites,
     sim.players, sim.currentTurn, sim.factChoice, sim.chatLog, sim.chatScroll)
@@ -162,6 +169,8 @@ proc render(sim: var SimServer) =
     sim.renderFact()
   of PhaseSituation:
     sim.renderSituation()
+  of PhaseConflict:
+    sim.renderConflictPhase()
   else:
     sim.renderGame()
 
@@ -207,13 +216,27 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       sim.situationStep, sim.situationTimer, sim.situation, sim.situations,
       sim.sceneState, sim.sceneTimer, sim.sceneTurnOrder, sim.sceneTurnIndex,
       sim.world, sim.chatLog, sim.rng, inputs, sim.prevInputs)
-    if sitResult == SituationToEnd:
-      sim.phase = PhaseEnd
-    elif sitResult == SituationToFacts:
-      sim.phase = PhaseMagicalFacts
-      sim.currentTurn = 0
-      sim.startFactTurn()
-      logMagicalFactsPhase()
+    if sitResult == SituationDone:
+      sim.phase = PhaseConflict
+      sim.conflictState = ConflictState(step: ConflictGazing, round: 0)
+      sim.conflictTimer = 1
+  of PhaseConflict:
+    let conflictResult = stepConflict(sim.players, sim.currentTurn,
+      sim.conflictState, sim.conflictTimer, sim.conflict,
+      sim.world, sim.situation, sim.chatLog, sim.rng, inputs, sim.prevInputs)
+    if conflictResult == ConflictDone:
+      var allSpent = true
+      for p in sim.players:
+        if p.magicTokens > 0:
+          allSpent = false
+          break
+      if allSpent:
+        sim.phase = PhaseEnd
+      else:
+        sim.phase = PhaseMagicalFacts
+        sim.currentTurn = 0
+        sim.startFactTurn()
+        logMagicalFactsPhase()
   else:
     discard
   sim.prevInputs = inputs
