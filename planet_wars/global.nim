@@ -14,6 +14,7 @@ const
   PlanetTextSpriteBase = 10000
   HudSpriteId = 18000
   WaitingSpriteId = 18002
+  ScorePanelSpriteId = 18004
   ChatSpriteBase = 18010
   PlayerNameSpriteBase = 18100
   PlanetObjectBase = 2000
@@ -29,6 +30,7 @@ const
   ChatBubbleZBase = WorldHeightPixels * 5
   HudObjectId = 4000
   WaitingObjectId = 4002
+  ScorePanelObjectId = 4004
   ChatObjectBase = 4010
   PlanetSpritePad = 4
   ShipSpriteSize = 5
@@ -42,6 +44,10 @@ const
   TextOutlinePad = 1
   HudY = 0
   PlayerUiHeight = 48
+  ScorePanelChipSize = 3
+  ScorePanelChipGapX = 2
+  ScorePanelScoreWidth = 16
+  ScorePanelNameGapX = 2
 
 type
   RgbaSprite = object
@@ -559,6 +565,21 @@ proc buildTextSprite(
       result.blitGlyph(glyph, baseX, baseY, color)
       baseX += sim.textFont.glyphAdvance(ch)
 
+proc drawTinyText(
+  sprite: var RgbaSprite,
+  font: PixelFont,
+  text: string,
+  x,
+  y: int,
+  color: RgbaColor
+) =
+  ## Draws Tiny5 text into one sprite.
+  var baseX = x
+  for ch in text:
+    let glyph = font.glyphAt(ch)
+    sprite.blitGlyph(glyph, baseX, y, color)
+    baseX += font.glyphAdvance(ch)
+
 proc textSliceForWidth(
   font: PixelFont,
   text: string,
@@ -626,6 +647,52 @@ proc playerNameText(sim: SimServer, player: Player): string =
 proc buildPlayerNameSprite(sim: SimServer, player: Player): RgbaSprite =
   ## Builds one outlined Tiny5 player name label.
   sim.buildTextSprite([sim.playerNameText(player)], player.color, true)
+
+proc buildScorePanelSprite(sim: SimServer): RgbaSprite =
+  ## Builds the compact global player score panel.
+  let
+    lineHeight = sim.textFont.lineHeight()
+    rowHeight = max(lineHeight, ScorePanelChipSize)
+    nameX = ScorePanelChipSize + ScorePanelChipGapX +
+      ScorePanelScoreWidth + ScorePanelNameGapX
+    nameMaxWidth = max(1, ScreenWidth - nameX)
+  result = newRgbaSprite(
+    ScreenWidth,
+    max(1, sim.players.len * rowHeight)
+  )
+  for i, player in sim.players:
+    let
+      rowY = i * rowHeight
+      chipY = rowY + (rowHeight - ScorePanelChipSize) div 2
+      scoreText = $player.score
+      scoreWidth = sim.textFont.textWidth(scoreText)
+      scoreX = ScorePanelChipSize + ScorePanelChipGapX +
+        max(0, ScorePanelScoreWidth - scoreWidth)
+    var name = sim.playerNameText(player)
+    name = sim.textFont.textSliceForWidth(name, nameMaxWidth)
+    if name.len == 0:
+      name = $player.id
+    result.fillRect(
+      0,
+      chipY,
+      ScorePanelChipSize,
+      ScorePanelChipSize,
+      player.color
+    )
+    result.drawTinyText(
+      sim.textFont,
+      scoreText,
+      scoreX,
+      rowY,
+      ScoreColor
+    )
+    result.drawTinyText(
+      sim.textFont,
+      name,
+      nameX,
+      rowY,
+      player.color
+    )
 
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
@@ -818,7 +885,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, ScreenWidth, 48)
+  result.addViewport(TopLeftLayerId, ScreenWidth, ScreenHeight)
   result.addCommonSpriteDefinitions(sim)
 
 proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
@@ -1260,6 +1327,32 @@ proc addWaitingText(
   )
   currentIds.add(WaitingObjectId)
 
+proc addGlobalScorePanel(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int]
+) =
+  ## Adds the global player score panel.
+  if sim.players.len == 0:
+    return
+  let panel = sim.buildScorePanelSprite()
+  packet.addSprite(
+    ScorePanelSpriteId,
+    panel.width,
+    panel.height,
+    panel.pixels,
+    "score panel"
+  )
+  packet.addObject(
+    ScorePanelObjectId,
+    0,
+    0,
+    high(int16),
+    TopLeftLayerId,
+    ScorePanelSpriteId
+  )
+  currentIds.add(ScorePanelObjectId)
+
 proc buildSpriteProtocolPlayerUpdates*(
   sim: SimServer,
   playerIndex: int,
@@ -1337,6 +1430,7 @@ proc buildSpriteProtocolUpdates*(
     WorldWidthPixels,
     WorldHeightPixels
   )
+  sim.addGlobalScorePanel(result, currentIds)
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
