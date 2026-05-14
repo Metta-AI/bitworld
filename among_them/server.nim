@@ -690,12 +690,17 @@ proc nextAnonymousPlayerIdentity(): string =
         existingNames
       )
 
-proc playerIdentity(request: Request): string =
+proc playerIdentity(request: Request, slot: int, token: string): string =
   ## Returns the websocket player identity for rewards and displays.
   let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
   if name.len > 0:
     return name
-  nextAnonymousPlayerIdentity()
+  {.gcsafe.}:
+    withLock appState.lock:
+      result = appState.config.configuredPlayerName(slot, token)
+      if result.len > 0:
+        return
+  result = nextAnonymousPlayerIdentity()
 
 proc playerSlot(request: Request): int =
   ## Returns the requested player slot or -1 for automatic assignment.
@@ -748,6 +753,14 @@ proc identityIsKicked(identity: string): bool =
         identity in appState.kickedIdentities or
         rewardIdentity in appState.kickedIdentities
 
+proc identityIsConnected(identity: string): bool =
+  ## Returns true when an identity already has a live websocket.
+  {.gcsafe.}:
+    withLock appState.lock:
+      for _, address in appState.playerAddresses.pairs:
+        if address == identity:
+          return true
+
 proc respondKicked(request: Request) =
   ## Rejects a kicked player before upgrading to a WebSocket.
   var headers: HttpHeaders
@@ -779,11 +792,14 @@ proc httpHandler(request: Request) =
   elif request.path == WebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let
-      identity = request.playerIdentity()
       slot = request.playerSlot()
       token = request.playerToken()
+      identity = request.playerIdentity(slot, token)
     if identity.identityIsKicked():
       request.respondKicked()
+      return
+    if identity.identityIsConnected():
+      request.respondForbidden("player already connected\n")
       return
     if not request.playerJoinAllowed(identity, slot, token):
       request.respondForbidden("player token rejected\n")
@@ -798,11 +814,14 @@ proc httpHandler(request: Request) =
   elif request.path == SpritePlayerWebSocketPath and
       request.httpMethod == "GET" and request.isWebSocketUpgrade():
     let
-      identity = request.playerIdentity()
       slot = request.playerSlot()
       token = request.playerToken()
+      identity = request.playerIdentity(slot, token)
     if identity.identityIsKicked():
       request.respondKicked()
+      return
+    if identity.identityIsConnected():
+      request.respondForbidden("player already connected\n")
       return
     if not request.playerJoinAllowed(identity, slot, token):
       request.respondForbidden("player token rejected\n")

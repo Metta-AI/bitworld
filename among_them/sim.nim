@@ -1031,6 +1031,10 @@ proc readConfigSlots(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
       slot.hasColor = true
     slots.add(slot)
 
+proc defaultSlotName(slotIndex: int): string =
+  ## Returns the canonical name for one generated tournament slot.
+  "Player" & $(slotIndex + 1)
+
 proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
   ## Reads optional fixed player slot tokens.
   if not node.hasKey("tokens"):
@@ -1059,6 +1063,8 @@ proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
           "].token."
       )
     slots[i].token = token
+    if slots[i].name.len == 0:
+      slots[i].name = defaultSlotName(i)
 
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
@@ -1095,6 +1101,18 @@ proc validate(config: GameConfig) =
       AmongThemError,
       "Config field closedRoster requires at least minPlayers configured slots."
     )
+  if config.closedRoster:
+    for i, slot in config.slots:
+      if slot.name.len == 0:
+        raise newException(
+          AmongThemError,
+          "Config field closedRoster requires slots[" & $i & "].name."
+        )
+      if slot.token.len == 0:
+        raise newException(
+          AmongThemError,
+          "Config field closedRoster requires slots[" & $i & "].token."
+        )
   for i in 0 ..< config.slots.len:
     for j in i + 1 ..< config.slots.len:
       if config.slots[i].name.len > 0 and
@@ -1505,13 +1523,62 @@ proc validatePlayerSlot(
       "Player token does not match configured slot " & $slotIndex & "."
     )
 
+proc configuredPlayerName*(config: GameConfig, requestedSlot: int, token: string): string =
+  ## Returns the configured identity for a tokenized slot request.
+  if token.len == 0:
+    return ""
+  if requestedSlot >= 0 and requestedSlot < config.slots.len:
+    let slot = config.slots[requestedSlot]
+    if slot.name.len > 0 and slot.token.len > 0 and slot.token == token:
+      return slot.name
+    return ""
+  for slot in config.slots:
+    if slot.name.len > 0 and slot.token.len > 0 and slot.token == token:
+      return slot.name
+  ""
+
+proc matchingConfiguredSlot(
+  config: GameConfig,
+  address,
+  token: string
+): int =
+  ## Returns a configured slot matched by name or token without occupancy checks.
+  for i in 0 ..< config.slots.len:
+    let slot = config.slots[i]
+    let couldMatchName = slot.name.len > 0 and slot.name == address
+    let couldMatchToken = slot.token.len > 0 and slot.token == token
+    if (couldMatchName or couldMatchToken) and
+        config.slotAuthMatches(i, address, token):
+      return i
+  -1
+
+proc conflictingConfiguredSlot(
+  config: GameConfig,
+  address,
+  token: string
+): int =
+  ## Returns a configured slot matched by only one required credential.
+  for i in 0 ..< config.slots.len:
+    let slot = config.slots[i]
+    let matchedName = slot.name.len > 0 and slot.name == address
+    let matchedToken =
+      slot.token.len > 0 and token.len > 0 and slot.token == token
+    if (matchedName or matchedToken) and
+        not config.slotAuthMatches(i, address, token):
+      return i
+  -1
+
 proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int, token: string): bool =
   ## Returns whether a player websocket request can pass configured slot auth.
-  if requestedSlot < 0:
-    return true
   if requestedSlot >= config.playerSlotLimit():
     return false
-  config.slotAuthMatches(requestedSlot, address, token)
+  if requestedSlot >= 0:
+    return config.slotAuthMatches(requestedSlot, address, token)
+  if config.matchingConfiguredSlot(address, token) >= 0:
+    return true
+  if config.conflictingConfiguredSlot(address, token) >= 0:
+    return false
+  not config.closedRoster
 
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.

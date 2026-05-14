@@ -108,9 +108,35 @@ suite "player slots":
     var config = defaultGameConfig()
     config.update("""{"tokens":["secret"]}""")
 
-    check config.playerJoinAllowed("player1", 0, "secret")
-    check not config.playerJoinAllowed("player1", 0, "bad")
-    check not config.playerJoinAllowed("player1", MaxPlayers, "secret")
+    check config.slots[0].name == "Player1"
+    check config.playerJoinAllowed("Player1", 0, "secret")
+    check not config.playerJoinAllowed("player1", 0, "secret")
+    check not config.playerJoinAllowed("Player1", 0, "bad")
+    check not config.playerJoinAllowed("Player1", MaxPlayers, "secret")
+    check config.configuredPlayerName(0, "secret") == "Player1"
+    check config.configuredPlayerName(-1, "secret") == "Player1"
+
+  test "closed rosters require named tokenized slots":
+    var config = defaultGameConfig()
+    config.minPlayers = 1
+    config.update("""{"tokens":["secret"],"closedRoster":true}""")
+
+    check config.slots[0].name == "Player1"
+    check config.slots[0].token == "secret"
+    check config.playerJoinAllowed("Player1", -1, "secret")
+    check not config.playerJoinAllowed("Player1", -1, "bad")
+    check not config.playerJoinAllowed("intruder", -1, "secret")
+    check not config.playerJoinAllowed("extra", -1, "")
+
+    var missingName = defaultGameConfig()
+    missingName.minPlayers = 1
+    expect AmongThemError:
+      missingName.update("""{"slots":[{"token":"secret"}],"closedRoster":true}""")
+
+    var missingToken = defaultGameConfig()
+    missingToken.minPlayers = 1
+    expect AmongThemError:
+      missingToken.update("""{"slots":[{"name":"Player1"}],"closedRoster":true}""")
 
   test "duplicate configured names and tokens are rejected":
     var config = defaultGameConfig()
@@ -186,8 +212,8 @@ suite "player slots":
     config.update("""{"tokens":["crew-token","imp-token"]}""")
     var sim = initAmongThemForTest(config)
 
-    discard sim.addPlayer("crew", -1, "crew-token")
-    discard sim.addPlayer("imp", -1, "imp-token")
+    discard sim.addPlayer("Player1", -1, "crew-token")
+    discard sim.addPlayer("Player2", -1, "imp-token")
     let extraIndex = sim.addPlayer("extra")
     check sim.players[extraIndex].joinOrder == 2
 
@@ -197,8 +223,8 @@ suite "player slots":
     config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
     var sim = initAmongThemForTest(config)
 
-    discard sim.addPlayer("crew", -1, "crew-token")
-    discard sim.addPlayer("imp", -1, "imp-token")
+    discard sim.addPlayer("Player1", -1, "crew-token")
+    discard sim.addPlayer("Player2", -1, "imp-token")
     check not sim.canAddPlayer()
     expect AmongThemError:
       discard sim.addPlayer("extra")
