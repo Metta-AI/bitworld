@@ -404,7 +404,7 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let leave = replay.data.leaves[replay.leaveIndex]
     if int(leave.player) < 0 or int(leave.player) >= sim.players.len:
       raise newException(ReplayError, "Replay player leave is invalid")
-    sim.players.delete(int(leave.player))
+    sim.removePlayerAt(int(leave.player))
     if int(leave.player) < replay.masks.len:
       replay.masks.delete(int(leave.player))
     if int(leave.player) < replay.lastAppliedMasks.len:
@@ -626,23 +626,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerSlots.del(websocket)
   appState.playerTokens.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
-    sim.players.delete(removedIndex)
-    if sim.phase in {Voting, VoteResult}:
-      if removedIndex < sim.voteState.votes.len:
-        sim.voteState.votes.delete(removedIndex)
-      if removedIndex < sim.voteState.cursor.len:
-        sim.voteState.cursor.delete(removedIndex)
-      let skipIndex = sim.players.len
-      for vote in sim.voteState.votes.mitems:
-        if vote > removedIndex:
-          dec vote
-        if vote > skipIndex:
-          vote = -2
-      for cursor in sim.voteState.cursor.mitems:
-        if cursor > removedIndex:
-          dec cursor
-        if cursor > skipIndex:
-          cursor = skipIndex
+    sim.removePlayerAt(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value

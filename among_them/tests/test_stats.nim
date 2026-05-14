@@ -139,6 +139,39 @@ suite "stats":
         if assigned.anyIt(it[0] == address and it[1] == Crewmate): 1 else: 0
       check sim.accountFor(address).winsCrewmate == expected
 
+  test "removing player keeps task completions aligned":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 0
+    config.autoImposterCount = false
+    config.tasksPerPlayer = 1
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+
+    var sim = initAmongThemForTest(config)
+    discard sim.addPlayer("p1")
+    discard sim.addPlayer("p2")
+    discard sim.addPlayer("p3")
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+    check sim.phase == Playing
+
+    let
+      address = sim.players[2].address
+      taskIndex = sim.players[2].assignedTasks[0]
+    sim.completeTask(2, taskIndex)
+    check sim.tasks[taskIndex].completed[2]
+    check sim.accountFor(address).tasks == 1
+
+    sim.removePlayerAt(1)
+    check sim.players[1].address == address
+    check sim.tasks[taskIndex].completed.len == sim.players.len
+    check sim.tasks[taskIndex].completed[1]
+
+    sim.completeTask(1, taskIndex)
+    check sim.accountFor(address).tasks == 1
+
   test "crew win via vote ejection":
     var config = defaultGameConfig()
     config.minPlayers = 3
@@ -344,7 +377,7 @@ suite "stats":
     sim.addReward(crewIndex, 3)
     sim.addReward(imposterIndex, 5)
     sim.recordKill(imposterIndex)
-    sim.players.delete(crewIndex)
+    sim.removePlayerAt(crewIndex)
     sim.finishGame(Imposter)
 
     let results = parseJson(sim.playerResultsJson())
@@ -440,8 +473,8 @@ suite "stats":
     for i in 0 ..< 8:
       discard sim.addPlayer("player" & $(i + 1), i)
     sim.startGame()
-    sim.players.delete(7)
-    sim.players.delete(6)
+    sim.removePlayerAt(7)
+    sim.removePlayerAt(6)
     sim.finishGame(Crewmate, timeLimitReached = true)
 
     let results = parseJson(sim.playerResultsJson())
