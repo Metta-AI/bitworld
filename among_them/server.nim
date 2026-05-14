@@ -761,6 +761,29 @@ proc respondKicked(request: Request) =
   headers["Connection"] = "close"
   request.respond(409, headers, "player was kicked\n")
 
+proc respondForbiddenPlayer(request: Request, reason: string) =
+  ## Rejects an invalid player join before upgrading to a WebSocket.
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  headers["Connection"] = "close"
+  request.respond(403, headers, reason & "\n")
+
+proc configuredSlotTokenError(config: GameConfig, slot: int, token: string): string =
+  ## Returns a rejection reason for bad explicit slot credentials.
+  if slot < 0:
+    return ""
+  if slot >= MaxPlayers:
+    return "Player slot must be between 0 and 15."
+  if slot >= config.slots.len:
+    if config.closedRoster:
+      return "Player slot is outside configured roster."
+    return ""
+  let slotConfig = config.slots[slot]
+  if slotConfig.token.len > 0 and token != slotConfig.token:
+    return "Player token does not match configured slot " & $slot & "."
+  ""
+
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
     var headers: HttpHeaders
@@ -773,6 +796,12 @@ proc httpHandler(request: Request) =
       slot = request.playerSlot()
       token = request.playerToken()
       identity = request.playerIdentity(slot, token)
+    {.gcsafe.}:
+      withLock appState.lock:
+        let tokenError = appState.config.configuredSlotTokenError(slot, token)
+        if tokenError.len > 0:
+          request.respondForbiddenPlayer(tokenError)
+          return
     if identity.identityIsKicked():
       request.respondKicked()
       return
