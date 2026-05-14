@@ -753,14 +753,6 @@ proc identityIsKicked(identity: string): bool =
         identity in appState.kickedIdentities or
         rewardIdentity in appState.kickedIdentities
 
-proc identityIsConnected(identity: string): bool =
-  ## Returns true when an identity already has a live websocket.
-  {.gcsafe.}:
-    withLock appState.lock:
-      for _, address in appState.playerAddresses.pairs:
-        if address == identity:
-          return true
-
 proc respondKicked(request: Request) =
   ## Rejects a kicked player before upgrading to a WebSocket.
   var headers: HttpHeaders
@@ -768,20 +760,6 @@ proc respondKicked(request: Request) =
   headers["Cache-Control"] = "no-cache"
   headers["Connection"] = "close"
   request.respond(409, headers, "player was kicked\n")
-
-proc respondForbidden(request: Request, body: string) =
-  ## Rejects an unauthorized player request before WebSocket upgrade.
-  var headers: HttpHeaders
-  headers["Content-Type"] = "text/plain; charset=utf-8"
-  headers["Cache-Control"] = "no-cache"
-  headers["Connection"] = "close"
-  request.respond(403, headers, body)
-
-proc playerJoinAllowed(request: Request, identity: string, slot: int, token: string): bool =
-  ## Checks configured slot auth before upgrading the player WebSocket.
-  {.gcsafe.}:
-    withLock appState.lock:
-      result = appState.config.playerJoinAllowed(identity, slot, token)
 
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
@@ -798,12 +776,6 @@ proc httpHandler(request: Request) =
     if identity.identityIsKicked():
       request.respondKicked()
       return
-    if identity.identityIsConnected():
-      request.respondForbidden("player already connected\n")
-      return
-    if not request.playerJoinAllowed(identity, slot, token):
-      request.respondForbidden("player token rejected\n")
-      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -819,12 +791,6 @@ proc httpHandler(request: Request) =
       identity = request.playerIdentity(slot, token)
     if identity.identityIsKicked():
       request.respondKicked()
-      return
-    if identity.identityIsConnected():
-      request.respondForbidden("player already connected\n")
-      return
-    if not request.playerJoinAllowed(identity, slot, token):
-      request.respondForbidden("player token rejected\n")
       return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -1190,10 +1156,8 @@ proc runServerLoop*(
                 identity in appState.kickedIdentities:
               sim.removePlayer(websocket)
               socketsToClose.add(websocket)
-            elif sim.playerAddressOccupied(address):
-              sim.removePlayer(websocket)
-              socketsToClose.add(websocket)
-            elif sim.phase == Lobby and sim.canAddPlayer():
+            elif sim.phase == Lobby and
+                (sim.canAddPlayer() or slot >= 0 or token.len > 0):
               try:
                 appState.playerIndices[websocket] = sim.addPlayer(
                   address,
@@ -1299,13 +1263,6 @@ proc runServerLoop*(
             reconnectSockets.add(websocket)
           appState.spectators = @[]
           for websocket in reconnectSockets:
-            if not sim.canAddPlayer():
-              if websocket in appState.playerViewers:
-                appState.playerIndices[websocket] = -1
-              else:
-                appState.spectators.add(websocket)
-                appState.playerIndices.del(websocket)
-              continue
             let address = appState.playerAddresses.getOrDefault(
               websocket,
               "unknown"
@@ -1313,6 +1270,13 @@ proc runServerLoop*(
             let
               slot = appState.playerSlots.getOrDefault(websocket, -1)
               token = appState.playerTokens.getOrDefault(websocket, "")
+            if not sim.canAddPlayer() and slot < 0 and token.len == 0:
+              if websocket in appState.playerViewers:
+                appState.playerIndices[websocket] = -1
+              else:
+                appState.spectators.add(websocket)
+                appState.playerIndices.del(websocket)
+              continue
             try:
               appState.playerIndices[websocket] = sim.addPlayer(
                 address,
