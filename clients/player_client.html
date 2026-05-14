@@ -7,7 +7,7 @@
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 body{display:flex;align-items:center;justify-content:center}
-canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+canvas{image-rendering:pixelated}
 input{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(80vw,520px);box-sizing:border-box;background:#0008;color:#fff;border:1px solid #fff8;padding:8px 10px;font:18px monospace;outline:0;display:none}
 #s{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e8e8e8;background:#000;font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;pointer-events:none}
 </style>
@@ -25,7 +25,12 @@ a=(a=>{try{let v=new URL(a,location.href);if(v.protocol=="http:")v.protocol="ws:
 n=o=>{s.textContent=o;s.style.display=o?"flex":"none"};
 o=()=>{k={};if(l&&w&&w.readyState==1){w.send(new Uint8Array([0,0]));l=0}};
 x.imageSmoothingEnabled=false;
-onresize=e=>{let s=Math.min(innerWidth,innerHeight);c.style.width=s+"px";c.style.height=s+"px"};
+onresize=e=>{
+  let s=Math.min(innerWidth,innerHeight),smooth=s<c.width;
+  c.style.width=s+"px";c.style.height=s+"px";
+  c.style.imageRendering=smooth?"auto":"pixelated";
+  x.imageSmoothingEnabled=smooth
+};
 onresize();
 onkeydown=e=>{
   if(e.code=="Enter"){
