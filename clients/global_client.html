@@ -11,8 +11,7 @@ body{font:14px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   position:absolute;
   left:0;
   top:0;
-  image-rendering:pixelated;
-  image-rendering:crisp-edges;
+  image-rendering:auto;
   transform-origin:0 0;
 }
 #status{
@@ -771,6 +770,10 @@ function layerScreenPos(layer){
   }
 }
 
+function layerUsesSmoothing(layer,pos){
+  return Math.min(pos.w/layer.width,pos.h/layer.height)<1;
+}
+
 function draw(){
   if(!socket||socket.readyState===WebSocket.CLOSED)return;
   ctx.imageSmoothingEnabled=false;
@@ -800,7 +803,9 @@ function draw(){
     }
     layer.ctx.putImageData(layer.image,0,0);
     const pos=layerScreenPos(layer);
+    ctx.imageSmoothingEnabled=layerUsesSmoothing(layer,pos);
     ctx.drawImage(layer.canvas,pos.x,pos.y,pos.w,pos.h);
+    ctx.imageSmoothingEnabled=false;
     if((layer.flags&UiFlag)!==0){
       const x=Math.round(pos.x)+.5,y=Math.round(pos.y)+.5;
       ctx.strokeStyle="rgba(255,255,255,.8)";
