@@ -1478,6 +1478,14 @@ proc canAddPlayer*(sim: SimServer): bool =
   ## Returns whether the game has room for another player.
   sim.players.len < sim.config.playerSlotLimit()
 
+proc playerLimitError(config: GameConfig): string =
+  ## Returns a user-facing message for the current player cap.
+  if config.closedRoster:
+    let limit = config.playerSlotLimit()
+    return "Configured roster is full (" & $limit &
+      (if limit == 1: " player)." else: " players).")
+  "can't do more than " & $MaxPlayers & " players."
+
 proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
   ## Returns one slot config or an empty config for missing entries.
   if slotIndex >= 0 and slotIndex < config.slots.len:
@@ -1536,49 +1544,6 @@ proc configuredPlayerName*(config: GameConfig, requestedSlot: int, token: string
     if slot.name.len > 0 and slot.token.len > 0 and slot.token == token:
       return slot.name
   ""
-
-proc matchingConfiguredSlot(
-  config: GameConfig,
-  address,
-  token: string
-): int =
-  ## Returns a configured slot matched by name or token without occupancy checks.
-  for i in 0 ..< config.slots.len:
-    let slot = config.slots[i]
-    let couldMatchName = slot.name.len > 0 and slot.name == address
-    let couldMatchToken = slot.token.len > 0 and slot.token == token
-    if (couldMatchName or couldMatchToken) and
-        config.slotAuthMatches(i, address, token):
-      return i
-  -1
-
-proc conflictingConfiguredSlot(
-  config: GameConfig,
-  address,
-  token: string
-): int =
-  ## Returns a configured slot matched by only one required credential.
-  for i in 0 ..< config.slots.len:
-    let slot = config.slots[i]
-    let matchedName = slot.name.len > 0 and slot.name == address
-    let matchedToken =
-      slot.token.len > 0 and token.len > 0 and slot.token == token
-    if (matchedName or matchedToken) and
-        not config.slotAuthMatches(i, address, token):
-      return i
-  -1
-
-proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int, token: string): bool =
-  ## Returns whether a player websocket request can pass configured slot auth.
-  if requestedSlot >= config.playerSlotLimit():
-    return false
-  if requestedSlot >= 0:
-    return config.slotAuthMatches(requestedSlot, address, token)
-  if config.matchingConfiguredSlot(address, token) >= 0:
-    return true
-  if config.conflictingConfiguredSlot(address, token) >= 0:
-    return false
-  not config.closedRoster
 
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.
@@ -1793,7 +1758,7 @@ proc addPlayer*(
 ): int =
   ## Adds one player, optionally validating and using a requested slot.
   if not sim.canAddPlayer():
-    raise newException(AmongThemError, "can't do more than 16 players.")
+    raise newException(AmongThemError, sim.config.playerLimitError())
   if sim.playerAddressOccupied(address):
     raise newException(
       AmongThemError,
