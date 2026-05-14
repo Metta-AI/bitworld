@@ -2,12 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "among_them",
-    "version": "0.1.12",
+    "version": "0.1.14",
     "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/metta-ai/bitworld-among-them-runner:latest"
+      "image": "ghcr.io/metta-ai/bitworld-among-them-runner@sha256:f5dc0e9fa5d5ae1ead3998808c31a20ecf0020a3b3beb7d1f9ba16a777460c2b"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -374,7 +374,7 @@
       "name": "nottoodumb",
       "type": "player",
       "description": "Deterministic baseline Among Them player used for local smoke episodes.",
-      "image": "ghcr.io/metta-ai/bitworld-nottoodumb:latest"
+      "image": "ghcr.io/metta-ai/bitworld-nottoodumb@sha256:e4f12b742b28a5c16ba8d92d0d092a330c70e766300678c7564a8a9b1549d53b"
     }
   ],
   "variants": [
