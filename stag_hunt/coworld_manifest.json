@@ -1,0 +1,116 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "game": {
+    "name": "stag_hunt",
+    "version": "0.1.0",
+    "description": "A cooperative BitWorld hunting game where players surround prey together: rabbits go down alone, but stags, moose, and mammoths require coordinated multi-player encirclement.",
+    "owner": "treeform@softmax.com",
+    "image_uri": "ghcr.io/treeform/bitworld-stag-hunt:latest",
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 0
+          },
+          "default": []
+        },
+        "seed": {
+          "description": "Random seed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 5743127
+        },
+        "maxTicks": {
+          "description": "Maximum simulation ticks before starting a fresh game, where 0 means no tick limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 18000
+        },
+        "maxGames": {
+          "description": "Maximum fresh games before shutdown, where 0 means no game limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores"
+      ],
+      "properties": {
+        "names": {
+          "description": "One player name or address per player slot.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "One hunting score per player slot.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "protocols": {
+      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md",
+      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md"
+    }
+  },
+  "player": [
+    {
+      "id": "idle-hunter",
+      "name": "Idle Hunter",
+      "image_uri": "ghcr.io/treeform/bitworld-stag-hunt-player:latest",
+      "description": "Baseline Coworld player that connects to the assigned slot and emits no-op inputs until the episode ends."
+    }
+  ],
+  "variants": [
+    {
+      "id": "smoke",
+      "name": "Smoke",
+      "game_config": {
+        "seed": 5743127,
+        "maxTicks": 1800,
+        "maxGames": 1
+      },
+      "description": "Short deterministic Stag Hunt configuration used for manifest checks."
+    }
+  ],
+  "certification": {
+    "variant_id": "smoke",
+    "players": [
+      {
+        "player_id": "idle-hunter",
+        "initial_params": {
+          "name": "slot_0"
+        }
+      },
+      {
+        "player_id": "idle-hunter",
+        "initial_params": {
+          "name": "slot_1"
+        }
+      }
+    ]
+  }
+}

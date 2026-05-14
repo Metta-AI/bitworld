@@ -1,6 +1,6 @@
 import mummy
 import protocol, server
-import std/[locks, monotimes, os, parseopt, random, strutils, tables, times]
+import std/[locks, monotimes, os, parseopt, random, sets, strutils, tables, times]
 
 const
   WorldWidthTiles = 32
@@ -55,7 +55,10 @@ const
 
   TargetFps = 24.0
   WebSocketPath = "/player"
+  GlobalWebSocketPath = "/global"
+  HealthzPath = "/healthz"
   BackgroundColor = 10'u8
+  UnassignedPlayerIndex = 0x7fffffff
 
 type
   PreyKind = enum
@@ -108,6 +111,7 @@ type
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    globalViewers: HashSet[WebSocket]
     closedSockets: seq[WebSocket]
 
   ServerThreadArgs = object
@@ -832,6 +836,37 @@ proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc buildGlobalFramePacket(sim: var SimServer): seq[uint8] =
+  sim.fb.clearFrame(BackgroundColor)
+  let
+    centerX = WorldWidthPixels div 2
+    centerY = WorldHeightPixels div 2
+    cameraX = clampCamera(centerX - ScreenWidth div 2, WorldWidthPixels, ScreenWidth)
+    cameraY = clampCamera(centerY - ScreenHeight div 2, WorldHeightPixels, ScreenHeight)
+
+  sim.renderTerrain(cameraX, cameraY)
+
+  for prey in sim.prey:
+    let
+      visX = prey.tileX * TileSize >= cameraX - TileSize and
+        prey.tileX * TileSize <= cameraX + ScreenWidth
+      visY = prey.tileY * TileSize >= cameraY - TileSize and
+        prey.tileY * TileSize <= cameraY + ScreenHeight
+    if visX and visY:
+      sim.renderPrey(prey, cameraX, cameraY)
+
+  for player in sim.players:
+    let
+      visX = player.tileX * TileSize >= cameraX - TileSize and
+        player.tileX * TileSize <= cameraX + ScreenWidth
+      visY = player.tileY * TileSize >= cameraY - TileSize and
+        player.tileY * TileSize <= cameraY + ScreenHeight
+    if visX and visY:
+      sim.renderPlayer(player, cameraX, cameraY)
+
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
 # ---------------------------------------------------------------------------
 # Game step
 # ---------------------------------------------------------------------------
@@ -858,12 +893,17 @@ proc initAppState() =
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.globalViewers = initHashSet[WebSocket]()
   appState.closedSockets = @[]
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  if websocket in appState.globalViewers:
+    appState.globalViewers.excl(websocket)
+    return
+
   if websocket notin appState.playerIndices:
     return
 
@@ -872,15 +912,37 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
 
-  if removedIndex >= 0 and removedIndex < sim.players.len:
+  if removedIndex >= 0 and removedIndex != UnassignedPlayerIndex and
+      removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
-      if value > removedIndex:
+      if value > removedIndex and value != UnassignedPlayerIndex:
         dec value
 
+proc serveHealthz(request: Request): bool =
+  if request.path != HealthzPath or request.httpMethod notin ["GET", "HEAD"]:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, "healthy")
+  true
+
 proc httpHandler(request: Request) =
-  if request.path == WebSocketPath and request.httpMethod == "GET":
-    discard request.upgradeToWebSocket()
+  if request.serveHealthz():
+    discard
+  elif request.path == WebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.playerIndices[websocket] = UnassignedPlayerIndex
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers.incl(websocket)
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -893,16 +955,13 @@ proc websocketHandler(
 ) =
   case event
   of OpenEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        appState.playerIndices[websocket] = 0x7fffffff
-        appState.inputMasks[websocket] = 0
-        appState.lastAppliedMasks[websocket] = 0
+    discard
   of MessageEvent:
     if message.kind == BinaryMessage and isInputPacket(message.data):
       {.gcsafe.}:
         withLock appState.lock:
-          appState.inputMasks[websocket] = blobToMask(message.data)
+          if websocket in appState.playerIndices:
+            appState.inputMasks[websocket] = blobToMask(message.data)
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -947,6 +1006,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
     var
       sockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
+      globalSockets: seq[WebSocket] = @[]
       inputs: seq[InputState]
 
     {.gcsafe.}:
@@ -956,7 +1016,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
         appState.closedSockets.setLen(0)
 
         for websocket in appState.playerIndices.keys:
-          if appState.playerIndices[websocket] == 0x7fffffff:
+          if appState.playerIndices[websocket] == UnassignedPlayerIndex:
             appState.playerIndices[websocket] = sim.addPlayer()
 
         inputs = newSeq[InputState](sim.players.len)
@@ -971,6 +1031,9 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
           sockets.add(websocket)
           playerIndices.add(playerIndex)
 
+        for websocket in appState.globalViewers:
+          globalSockets.add(websocket)
+
     sim.step(inputs)
 
     for i in 0 ..< sockets.len:
@@ -981,6 +1044,16 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(sockets[i])
+
+    if globalSockets.len > 0:
+      let globalBlob = blobFromBytes(sim.buildGlobalFramePacket())
+      for websocket in globalSockets:
+        try:
+          websocket.send(globalBlob, BinaryMessage)
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              sim.removePlayer(websocket)
 
     runFrameLimiter(lastTick)
 
