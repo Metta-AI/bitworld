@@ -12,12 +12,14 @@ type
 const
   GameName* = "planet_wars"
   GameVersion* = "1"
-  WorldWidthPixels* = 192
-  WorldHeightPixels* = 192
-  DefaultPlanetCount* = 18
+  WorldWidthPixels* = 512
+  WorldHeightPixels* = 512
+  PlayerViewportWidth* = 320
+  PlayerViewportHeight* = 200
+  DefaultPlanetCount* = 47
   MinPlanetCount* = 1
   MaxPlanetCount* = 48
-  DensePlanetCount* = 36
+  DensePlanetCount* = 47
   PlanetSpawnMargin* = 12
   PlanetSpacing* = 10
   BaseFps* = 24
@@ -38,6 +40,9 @@ const
   CursorFrictionNum* = 232
   CursorFrictionDen* = 256
   CursorMaxSpeed* = 282
+  CursorBoostStartTicks* = TargetFps div 6
+  CursorBoostSpeedPerTick* = 8
+  CursorBoostMaxSpeed* = 640
   CursorStopThreshold* = 5
   BackgroundColor* = RgbaColor(r: 5'u8, g: 7'u8, b: 18'u8, a: 255'u8)
   NeutralPlanetColor* = RgbaColor(
@@ -127,6 +132,9 @@ type
     cursorVelY*: int
     cursorCarryX*: int
     cursorCarryY*: int
+    cursorInputX*: int
+    cursorInputY*: int
+    cursorBoostTicks*: int
 
   ChatMessage* = object
     playerId*: int
@@ -221,11 +229,11 @@ proc planetRadius*(size: PlanetSize): int =
   ## Returns the gameplay radius for one planet size.
   case size
   of PlanetSmall:
-    5
+    9
   of PlanetMedium:
-    6
+    11
   of PlanetLarge:
-    8
+    14
 
 proc initialShips(size: PlanetSize, rng: var Rand): int =
   ## Returns a randomized neutral ship count for one planet.
@@ -579,6 +587,28 @@ proc applyCursorMomentumAxis(
       player.cursorY = nextY
     carry -= step * MotionScale
 
+proc updateCursorBoost(player: var Player, inputX, inputY: int) =
+  ## Updates long-distance cursor acceleration state.
+  if inputX == 0 and inputY == 0:
+    player.cursorInputX = 0
+    player.cursorInputY = 0
+    player.cursorBoostTicks = 0
+    return
+  if inputX != player.cursorInputX or inputY != player.cursorInputY:
+    player.cursorInputX = inputX
+    player.cursorInputY = inputY
+    player.cursorBoostTicks = 1
+  else:
+    inc player.cursorBoostTicks
+
+proc cursorMaxSpeed(player: Player): int =
+  ## Returns the current cursor speed cap after hold acceleration.
+  let boostTicks = max(0, player.cursorBoostTicks - CursorBoostStartTicks)
+  min(
+    CursorBoostMaxSpeed,
+    CursorMaxSpeed + boostTicks * CursorBoostSpeedPerTick
+  )
+
 proc shipDuration*(startX, startY, endX, endY: int): int =
   ## Returns the travel duration for one ship.
   let
@@ -797,11 +827,13 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
     inputY = -1
   elif input.down and not input.up:
     inputY = 1
+  sim.players[playerIndex].updateCursorBoost(inputX, inputY)
+  let cursorSpeed = sim.players[playerIndex].cursorMaxSpeed()
   if inputX != 0:
     sim.players[playerIndex].cursorVelX = clamp(
       sim.players[playerIndex].cursorVelX + inputX * CursorAccel,
-      -CursorMaxSpeed,
-      CursorMaxSpeed
+      -cursorSpeed,
+      cursorSpeed
     )
   else:
     sim.players[playerIndex].cursorVelX =
@@ -812,8 +844,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
   if inputY != 0:
     sim.players[playerIndex].cursorVelY = clamp(
       sim.players[playerIndex].cursorVelY + inputY * CursorAccel,
-      -CursorMaxSpeed,
-      CursorMaxSpeed
+      -cursorSpeed,
+      cursorSpeed
     )
   else:
     sim.players[playerIndex].cursorVelY =

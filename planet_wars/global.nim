@@ -15,15 +15,18 @@ const
   HudSpriteId = 18000
   WaitingSpriteId = 18002
   ChatSpriteBase = 18010
+  PlayerNameSpriteBase = 18100
   PlanetObjectBase = 2000
   PlanetSelectedObjectBase = 2100
   PlanetOriginObjectBase = 2200
   PlanetTextObjectBase = 2300
   ShipObjectBase = 3000
   CursorObjectBase = 12000
+  PlayerNameObjectBase = 13000
   CursorZBase = WorldHeightPixels * 2
   PlanetTextZBase = WorldHeightPixels * 3
-  ChatBubbleZBase = WorldHeightPixels * 4
+  PlayerNameZBase = WorldHeightPixels * 4
+  ChatBubbleZBase = WorldHeightPixels * 5
   HudObjectId = 4000
   WaitingObjectId = 4002
   ChatObjectBase = 4010
@@ -34,8 +37,10 @@ const
   ChatBubblePointerHeight = 3
   ChatBubbleGapY = 4
   ChatBubbleMaxTextWidth = 96
+  PlayerNameGapY = 4
+  PlayerNameMaxTextWidth = 96
   TextOutlinePad = 1
-  HudY = 24
+  HudY = 0
   PlayerUiHeight = 48
 
 type
@@ -395,6 +400,10 @@ proc playerCursorSpriteId(playerId: int): int =
   ## Returns the sprite id for one player's cursor.
   PlayerCursorSpriteBase + playerId
 
+proc playerNameSpriteId(playerId: int): int =
+  ## Returns the sprite id for one player's name label.
+  PlayerNameSpriteBase + playerId
+
 proc shipDirection(ship: Ship): int =
   ## Returns the dominant direction index for one moving ship.
   let
@@ -603,6 +612,21 @@ proc buildChatBubbleSprite(
     )
     baseX += sim.textFont.glyphAdvance(ch)
 
+proc playerNameText(sim: SimServer, player: Player): string =
+  ## Returns one bounded player name label.
+  let text =
+    if player.name.len > 0:
+      player.name
+    else:
+      "player " & $player.id
+  result = sim.textFont.textSliceForWidth(text, PlayerNameMaxTextWidth)
+  if result.len == 0:
+    result = $player.id
+
+proc buildPlayerNameSprite(sim: SimServer, player: Player): RgbaSprite =
+  ## Builds one outlined Tiny5 player name label.
+  sim.buildTextSprite([sim.playerNameText(player)], player.color, true)
+
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
   let value = uint16(blob[offset].uint8) or
@@ -802,9 +826,9 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   result = @[]
   result.addClearObjects()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
-  result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+  result.addViewport(MapLayerId, PlayerViewportWidth, PlayerViewportHeight)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, ScreenWidth, PlayerUiHeight)
+  result.addViewport(TopLeftLayerId, PlayerViewportWidth, PlayerUiHeight)
   result.addCommonSpriteDefinitions(sim)
 
 proc addTextObject(
@@ -961,10 +985,21 @@ proc addShipObjects(
     )
   discard viewerId
 
+proc playerMarkerVisibleTo(
+  sim: SimServer,
+  player: Player,
+  viewerId: int
+): bool =
+  ## Returns true when one player's cursor stack is visible to a viewer.
+  if viewerId <= 0 or player.id == viewerId:
+    return true
+  sim.countOwnedPlanets(player.id) > 0
+
 proc addCursorObjects(
   sim: SimServer,
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
+  viewerId,
   cameraX,
   cameraY,
   viewportWidth,
@@ -972,6 +1007,8 @@ proc addCursorObjects(
 ) =
   ## Adds all visible player cursors.
   for player in sim.players:
+    if not sim.playerMarkerVisibleTo(player, viewerId):
+      continue
     let
       sx = player.cursorX - CursorSpriteSize div 2 - cameraX
       sy = player.cursorY - CursorSpriteSize div 2 - cameraY
@@ -993,11 +1030,62 @@ proc chatMessageAlpha(sim: SimServer, message: ChatMessage): uint8 =
   let age = clamp(sim.tickCount - message.tick, 0, ChatBubbleTicks)
   uint8(((ChatBubbleTicks - age) * 255) div ChatBubbleTicks)
 
+proc addPlayerNameObjects(
+  sim: SimServer,
+  packet: var seq[uint8],
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  viewerId,
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds name labels above all visible player cursors.
+  for player in sim.players:
+    if not sim.playerMarkerVisibleTo(player, viewerId):
+      continue
+    let
+      label = sim.buildPlayerNameSprite(player)
+      spriteId = playerNameSpriteId(player.id)
+      sx = player.cursorX - label.width div 2 - cameraX
+      sy = player.cursorY - CursorSpriteSize div 2 -
+        PlayerNameGapY - label.height - cameraY
+    if not objectVisible(
+      sx,
+      sy,
+      label.width,
+      label.height,
+      viewportWidth,
+      viewportHeight
+    ):
+      continue
+    packet.addSprite(
+      spriteId,
+      label.width,
+      label.height,
+      label.pixels,
+      "player name " & player.name
+    )
+    objects.addWorldObject(
+      currentIds,
+      PlayerNameObjectBase + player.id,
+      sx,
+      sy,
+      PlayerNameZBase + player.cursorY,
+      spriteId,
+      label.width,
+      label.height,
+      viewportWidth,
+      viewportHeight
+    )
+
 proc addChatBubbleObjects(
   sim: SimServer,
   packet: var seq[uint8],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
+  viewerId,
   cameraX,
   cameraY,
   viewportWidth,
@@ -1011,13 +1099,18 @@ proc addChatBubbleObjects(
     for player in sim.players:
       if player.id != message.playerId:
         continue
+      if not sim.playerMarkerVisibleTo(player, viewerId):
+        break
       let
         bubble = sim.buildChatBubbleSprite(
           message.text,
           alpha
         )
+        nameLabel = sim.buildPlayerNameSprite(player)
+        nameTopY = player.cursorY - CursorSpriteSize div 2 -
+          PlayerNameGapY - nameLabel.height
         sx = player.cursorX - bubble.width div 2 - cameraX
-        sy = player.cursorY - bubble.height - ChatBubbleGapY - cameraY
+        sy = nameTopY - bubble.height - ChatBubbleGapY - cameraY
         spriteId = ChatSpriteBase + player.id
       packet.addSprite(
         spriteId,
@@ -1089,6 +1182,17 @@ proc addWorldObjects(
   sim.addCursorObjects(
     objects,
     currentIds,
+    viewerId,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  sim.addPlayerNameObjects(
+    packet,
+    objects,
+    currentIds,
+    viewerId,
     cameraX,
     cameraY,
     viewportWidth,
@@ -1098,6 +1202,7 @@ proc addWorldObjects(
     packet,
     objects,
     currentIds,
+    viewerId,
     cameraX,
     cameraY,
     viewportWidth,
@@ -1122,7 +1227,7 @@ proc addPlayerHud(
     currentIds,
     HudObjectId,
     HudSpriteId,
-    2,
+    0,
     HudY,
     high(int16),
     TopLeftLayerId,
@@ -1147,8 +1252,8 @@ proc addWaitingText(
   )
   packet.addObject(
     WaitingObjectId,
-    max(0, (ScreenWidth - text.width) div 2),
-    max(0, (ScreenHeight - text.height) div 2),
+    max(0, (PlayerViewportWidth - text.width) div 2),
+    max(0, (PlayerViewportHeight - text.height) div 2),
     high(int16),
     MapLayerId,
     WaitingSpriteId
@@ -1177,12 +1282,12 @@ proc buildSpriteProtocolPlayerUpdates*(
     let
       player = ownedSim.players[playerIndex]
       cameraX = worldClampPixel(
-        player.cursorX - ScreenWidth div 2,
-        WorldWidthPixels - ScreenWidth
+        player.cursorX - PlayerViewportWidth div 2,
+        WorldWidthPixels - PlayerViewportWidth
       )
       cameraY = worldClampPixel(
-        player.cursorY - ScreenHeight div 2,
-        WorldHeightPixels - ScreenHeight
+        player.cursorY - PlayerViewportHeight div 2,
+        WorldHeightPixels - PlayerViewportHeight
       )
     ownedSim.addWorldObjects(
       result,
@@ -1193,8 +1298,8 @@ proc buildSpriteProtocolPlayerUpdates*(
       -1,
       cameraX,
       cameraY,
-      ScreenWidth,
-      ScreenHeight
+      PlayerViewportWidth,
+      PlayerViewportHeight
     )
     ownedSim.addPlayerHud(result, currentIds, playerIndex)
   for objectId in state.objectIds:
