@@ -134,6 +134,16 @@ th {
 .nowrap {
   white-space: nowrap;
 }
+.dockerCell {
+  max-width: 260px;
+}
+.dockerLink {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .selectCell {
   width: 24px;
   text-align: center;
@@ -2827,10 +2837,11 @@ proc renderManifestTable(): string =
               href manifestUrl(manifest)
               target "_blank"
               say esc(manifest.key)
-          td rowClass & " nowrap":
-            a:
+          td rowClass & " nowrap dockerCell":
+            a ".dockerLink":
               href dockerPackageUrl(image)
               target "_blank"
+              title image
               say esc(image)
           td rowClass & " nowrap":
             a ".button":
