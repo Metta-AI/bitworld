@@ -1,5 +1,5 @@
 import mummy
-import protocol, server, soul, choose, data, output, world, magical_facts
+import protocol, server, soul, data, output, render_utils, world, magical_facts, situation
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -12,13 +12,6 @@ const
   MaxPlayers = 8
   DefaultMinPlayers = 4
   LobbyCountdownTicks = 24 * 5
-  SituationTitleTicks = 24 * 3
-  SituationDescTicks = 24 * 10
-  SceneReadTicks = 24 * 10
-  SceneAcceptTicks = 24 * 1
-  CharWidth = 6
-  CharHeight = 6
-  TextMargin = 4
   ClientScreenOnlyWidth = 384
   ClientScreenOnlyHeight = 384
   ClientWindowMargin = 50
@@ -114,37 +107,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
-proc chatLogStrings(sim: SimServer): seq[string] =
-  for entry in sim.chatLog:
-    result.add(entry.name & ": " & entry.text)
-
 proc startFactTurn(sim: var SimServer) =
   magical_facts.startFactTurn(sim.factChoice, sim.factTimer)
-
-proc generateSceneOpts(sim: var SimServer) =
-  let player = sim.players[sim.currentTurn]
-  let opts = player.soul.generateSceneOptions(sim.world, sim.situation, sim.chatLogStrings())
-  sim.sceneState.choice = initChoice(@[opts[0], opts[1], opts[2], opts[3]], "do nothing")
-  sim.sceneState.step = SceneReading
-  sim.sceneTimer = SceneReadTicks
-
-proc startSceneTurn(sim: var SimServer) =
-  sim.sceneState = SceneState(step: SceneGazing)
-  sim.sceneTimer = 1
-
-proc startSceneChoices(sim: var SimServer) =
-  sim.sceneTurnOrder = @[]
-  for i in 0 ..< sim.players.len:
-    sim.sceneTurnOrder.add(i)
-  sim.rng.shuffle(sim.sceneTurnOrder)
-  sim.sceneTurnIndex = 0
-  sim.currentTurn = sim.sceneTurnOrder[0]
-  sim.startSceneTurn()
-
-proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
-  for py in y ..< y + h:
-    for px in x ..< x + w:
-      fb.putPixel(px, py, color)
 
 proc renderLobby(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
@@ -165,65 +129,12 @@ proc renderLobby(sim: var SimServer) =
     let startText = "start in " & $seconds
     sim.fb.blitText(sim.letterSprites, sim.digitSprites, startText, 28, 118)
 
-proc charsFromX(x: int): int =
-  (ScreenWidth - x) div CharWidth
-
-proc blitTextWrappedTinted(sim: var SimServer, text: string, x, y: int, lineHeight: int, tint: uint8): int =
-  let maxChars = charsFromX(x)
-  var row = 0
-  var pos = 0
-  while pos < text.len:
-    let remaining = text.len - pos
-    let lineLen = min(remaining, maxChars)
-    let line = text[pos ..< pos + lineLen]
-    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line, x, y + row * lineHeight, tint)
-    pos += lineLen
-    inc row
-    if y + row * lineHeight + CharHeight > ScreenHeight:
-      break
-  row
-
 proc renderWorld(sim: var SimServer) =
   world.renderWorld(sim.fb, sim.letterSprites, sim.digitSprites, sim.world, sim.worldStep)
 
-proc renderSceneChoices(sim: var SimServer) =
-  sim.fb.clearFrame(BackgroundColor)
-  let player = sim.players[sim.currentTurn]
-  let color = uint8(player.colorIndex)
-  let nameX = TextMargin
-  sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, player.name, nameX, 4, color)
-  let suffixX = nameX + player.name.len * CharWidth
-  sim.fb.blitText(sim.letterSprites, sim.digitSprites, " act", suffixX, 4)
-
-  let showCursor = player.kind == PlayerHuman and sim.sceneState.step == SceneReading
-  discard renderChoices(sim.fb, sim.letterSprites, sim.digitSprites,
-    sim.sceneState.choice, color, showCursor)
-
 proc renderSituation(sim: var SimServer) =
-  sim.fb.clearFrame(0)
-  case sim.situationStep
-  of SituationGazing:
-    let line1 = "situation"
-    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-    let y1 = (ScreenHeight - CharHeight) div 2
-    sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 5)
-  of SituationTitle:
-    let line1 = "situation"
-    let line2 = sim.situation.title
-    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-    let x2 = (ScreenWidth - line2.len * CharWidth) div 2
-    let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
-    let y2 = y1 + CharHeight + 2
-    sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 5)
-    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line2, x2, y2, 5)
-  of SituationDescription:
-    let maxChars = charsFromX(TextMargin)
-    let lineCount = max(1, (sim.situation.description.len + maxChars - 1) div maxChars)
-    let totalH = lineCount * 8
-    let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
-    discard sim.blitTextWrappedTinted(sim.situation.description, TextMargin, startY, 8, 5)
-  of SituationChoices:
-    sim.renderSceneChoices()
+  situation.renderSituation(sim.fb, sim.letterSprites, sim.digitSprites,
+    sim.players, sim.currentTurn, sim.situationStep, sim.situation, sim.sceneState)
 
 proc renderFact(sim: var SimServer) =
   magical_facts.renderFact(sim.fb, sim.letterSprites, sim.digitSprites,
@@ -253,15 +164,6 @@ proc render(sim: var SimServer) =
     sim.renderSituation()
   else:
     sim.renderGame()
-
-proc released(current, prev: InputState): InputState =
-  result.up = not current.up and prev.up
-  result.down = not current.down and prev.down
-  result.left = not current.left and prev.left
-  result.right = not current.right and prev.right
-  result.attack = not current.attack and prev.attack
-  result.b = not current.b and prev.b
-  result.select = not current.select and prev.select
 
 proc step(sim: var SimServer, inputs: seq[InputState]) =
   inc sim.tick
@@ -301,76 +203,17 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       sim.situationTimer = 1
       return
   of PhaseSituation:
-    dec sim.situationTimer
-    if sim.situationStep == SituationGazing and sim.situationTimer <= 0:
-      sim.situation = sim.players[0].soul.generateSituation(
-        sim.world, sim.chatLogStrings(), sim.situations)
-      sim.situationStep = SituationTitle
-      sim.situationTimer = SituationTitleTicks
-    elif sim.situationStep == SituationTitle and sim.situationTimer <= 0:
-      sim.situationStep = SituationDescription
-      sim.situationTimer = SituationDescTicks
-      logSituation(sim.situation.title, sim.situation.description)
-    elif sim.situationStep == SituationDescription and sim.situationTimer <= 0:
-      sim.situationStep = SituationChoices
-      sim.startSceneChoices()
-
-    elif sim.situationStep == SituationChoices:
-      dec sim.sceneTimer
-      let turnPlayer = sim.players[sim.currentTurn]
-      let turnIsHuman = turnPlayer.kind == PlayerHuman
-      let turnPrev = if sim.currentTurn < sim.prevInputs.len: sim.prevInputs[sim.currentTurn]
-                     else: InputState()
-      let turnCur = if sim.currentTurn < inputs.len: inputs[sim.currentTurn]
-                    else: InputState()
-      let turnInput = released(turnCur, turnPrev)
-
-      if sim.sceneState.step == SceneGazing and sim.sceneTimer <= 0:
-        sim.generateSceneOpts()
-
-      elif sim.sceneState.step == SceneReading and sim.sceneState.choice.state == ChoiceReading:
-        if turnIsHuman:
-          sim.sceneState.choice.handleChoiceInput(turnInput)
-          sim.players[sim.currentTurn].cursor = sim.sceneState.choice.cursor
-          if sim.sceneState.choice.state == ChoiceSelected:
-            sim.sceneTimer = SceneAcceptTicks
-        elif sim.sceneTimer <= 0:
-          let pick = sim.rng.rand(sim.sceneState.choice.optionCount() - 1)
-          sim.sceneState.choice.selected = pick
-          sim.sceneState.choice.state = ChoiceSelected
-          sim.sceneTimer = SceneAcceptTicks
-
-      elif sim.sceneState.choice.state == ChoiceSelected and sim.sceneTimer <= 0:
-        let player = sim.players[sim.currentTurn]
-        let sel = sim.sceneState.choice.selected
-        let actionText = if sel < sim.sceneState.choice.options.len:
-            sim.sceneState.choice.options[sel]
-          else:
-            "do nothing"
-        logSituationAction(player, actionText)
-        sim.chatLog.add(ChatEntry(
-          name: player.name,
-          colorIndex: uint8(player.colorIndex),
-          text: actionText
-        ))
-        sim.sceneTurnIndex += 1
-        if sim.sceneTurnIndex >= sim.sceneTurnOrder.len:
-          sim.situations.add(sim.situation)
-          var allSpent = true
-          for p in sim.players:
-            if p.magicTokens > 0:
-              allSpent = false
-              break
-          if allSpent:
-            sim.phase = PhaseEnd
-          else:
-            sim.phase = PhaseMagicalFacts
-            sim.currentTurn = 0
-            sim.startFactTurn()
-            logMagicalFactsPhase()
-        else:
-          sim.currentTurn = sim.sceneTurnOrder[sim.sceneTurnIndex]
-          sim.startSceneTurn()
+    let sitResult = stepSituation(sim.players, sim.currentTurn,
+      sim.situationStep, sim.situationTimer, sim.situation, sim.situations,
+      sim.sceneState, sim.sceneTimer, sim.sceneTurnOrder, sim.sceneTurnIndex,
+      sim.world, sim.chatLog, sim.rng, inputs, sim.prevInputs)
+    if sitResult == SituationToEnd:
+      sim.phase = PhaseEnd
+    elif sitResult == SituationToFacts:
+      sim.phase = PhaseMagicalFacts
+      sim.currentTurn = 0
+      sim.startFactTurn()
+      logMagicalFactsPhase()
   else:
     discard
   sim.prevInputs = inputs

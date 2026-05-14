@@ -1,30 +1,8 @@
-import protocol, server, soul, data, output
+import protocol, server, soul, data, output, render_utils
 
 const
   WorldTitleTicks* = 24 * 3
   WorldDescTicks* = 24 * 10
-  CharWidth = 6
-  CharHeight = 6
-  TextMargin = 4
-
-proc charsFromX(x: int): int =
-  (ScreenWidth - x) div CharWidth
-
-proc blitTextWrappedTinted(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], text: string, x, y: int, lineHeight: int, tint: uint8): int =
-  let maxChars = charsFromX(x)
-  var row = 0
-  var pos = 0
-  while pos < text.len:
-    let remaining = text.len - pos
-    let lineLen = min(remaining, maxChars)
-    let line = text[pos ..< pos + lineLen]
-    fb.blitTextTinted(letterSprites, digitSprites, line, x, y + row * lineHeight, tint)
-    pos += lineLen
-    inc row
-    if y + row * lineHeight + CharHeight > ScreenHeight:
-      break
-  row
 
 proc renderWorld*(fb: var Framebuffer, letterSprites: seq[Sprite],
     digitSprites: array[10, Sprite], world: World, worldStep: WorldStep) =

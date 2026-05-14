@@ -1,34 +1,15 @@
 import std/random
-import protocol, server, soul, choose, data, output
+import protocol, server, soul, choose, data, output, render_utils
 
 const
   FactReadTicks* = 24 * 3
   FactAcceptTicks* = 24 * 1
   BackgroundColor = 1'u8
-  CharWidth = 6
-  CharHeight = 6
-  TextMargin = 4
-
-proc charsFromX(x: int): int =
-  (ScreenWidth - x) div CharWidth
-
-proc released(current, prev: InputState): InputState =
-  result.up = not current.up and prev.up
-  result.down = not current.down and prev.down
-  result.left = not current.left and prev.left
-  result.right = not current.right and prev.right
-  result.attack = not current.attack and prev.attack
-  result.b = not current.b and prev.b
-  result.select = not current.select and prev.select
 
 proc generateFactOptions*(players: seq[Player], currentTurn: int,
     world: World, chatLog: seq[ChatEntry], factChoice: var FactChoice, factTimer: var int) =
   let player = players[currentTurn]
-  let chatStrings = block:
-    var s: seq[string]
-    for entry in chatLog:
-      s.add(entry.name & ": " & entry.text)
-    s
+  let chatStrings = chatLogStrings(chatLog)
   let facts = player.soul.generateFacts(world, chatStrings)
   factChoice.choice = initChoice(@[facts[0], facts[1], facts[2]], "skip")
   factChoice.step = FactReading
@@ -48,11 +29,6 @@ proc renderGazing*(fb: var Framebuffer, letterSprites: seq[Sprite]) =
   let y2 = y1 + CharHeight + 2
   fb.blitTextTinted(letterSprites, line1, x1, y1, 9)
   fb.blitTextTinted(letterSprites, line2, x2, y2, 9)
-
-proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
-  for py in y ..< y + h:
-    for px in x ..< x + w:
-      fb.putPixel(px, py, color)
 
 proc renderVoteBox(fb: var Framebuffer, letterSprites: seq[Sprite],
     x, y, w, h: int, vote: Vote, color: uint8) =
