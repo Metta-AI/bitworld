@@ -180,6 +180,39 @@ suite "player slots":
     let playerIndex = sim.addPlayer("open")
     check sim.players[playerIndex].joinOrder == 1
 
+  test "automatic slots stay open for configured rosters by default":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"]}""")
+    var sim = initAmongThemForTest(config)
+
+    discard sim.addPlayer("crew", -1, "crew-token")
+    discard sim.addPlayer("imp", -1, "imp-token")
+    let extraIndex = sim.addPlayer("extra")
+    check sim.players[extraIndex].joinOrder == 2
+
+  test "automatic slots stop at an explicitly closed configured roster":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
+    var sim = initAmongThemForTest(config)
+
+    discard sim.addPlayer("crew", -1, "crew-token")
+    discard sim.addPlayer("imp", -1, "imp-token")
+    check not sim.canAddPlayer()
+    expect AmongThemError:
+      discard sim.addPlayer("extra")
+
+  test "closed configured roster rejects explicit slots outside roster":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
+    var sim = initAmongThemForTest(config)
+
+    check not config.playerJoinAllowed("extra", 2, "")
+    expect AmongThemError:
+      discard sim.addPlayer("extra", 2)
+
   test "manual slot preserves auto slot zero":
     let config = defaultGameConfig()
     var sim = initAmongThemForTest(config)

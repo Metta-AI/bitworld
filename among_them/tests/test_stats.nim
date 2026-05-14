@@ -457,6 +457,28 @@ suite "stats":
     check not results["win"][6].getBool()
     check not results["win"][7].getBool()
 
+  test "player result json ignores accounts outside a closed configured roster":
+    var config = defaultGameConfig()
+    config.minPlayers = 8
+    config.imposterCount = 2
+    config.autoImposterCount = false
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.closedRoster = true
+    config.slots = configuredSlots(8)
+
+    var sim = initAmongThemForTest(config)
+    for i in 0 ..< 8:
+      discard sim.addPlayer("player" & $(i + 1), i)
+    sim.rewardAccounts.add RewardAccount(address: "unknown", slotIndex: 8, reward: 0)
+    sim.finishGame(Crewmate, timeLimitReached = true)
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["names"].len == 8
+    check results["scores"].len == 8
+    for name in results["names"]:
+      check name.getStr() != "unknown"
+
   test "player result json emits never connected configured slots":
     var config = defaultGameConfig()
     config.minPlayers = 6

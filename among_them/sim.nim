@@ -279,6 +279,7 @@ type
     showPlayerLabels*: bool
     buttonCalls*: int
     mapPath*: string
+    closedRoster*: bool
     slots*: seq[PlayerSlotConfig]
 
   Player* = object
@@ -894,6 +895,7 @@ proc defaultGameConfig*(): GameConfig =
     showPlayerLabels: true,
     buttonCalls: ButtonCalls,
     mapPath: DefaultMapPath,
+    closedRoster: false,
     slots: @[]
   )
 
@@ -1088,6 +1090,11 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Timer config fields must not be negative.")
   if config.slots.len > MaxPlayers:
     raise newException(AmongThemError, "Config field slots cannot have more than 16 entries.")
+  if config.closedRoster and config.slots.len < config.minPlayers:
+    raise newException(
+      AmongThemError,
+      "Config field closedRoster requires at least minPlayers configured slots."
+    )
   for i in 0 ..< config.slots.len:
     for j in i + 1 ..< config.slots.len:
       if config.slots[i].name.len > 0 and
@@ -1156,6 +1163,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigString("mapPath", config.mapPath)
   node.readConfigSlots(config.slots)
   node.readConfigTokens(config.slots)
+  node.readConfigBool("closedRoster", config.closedRoster)
   config.validate()
 
 proc slotRoleText(slot: PlayerSlotConfig): string =
@@ -1217,6 +1225,7 @@ proc configJson*(config: GameConfig): string =
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
     "mapPath": config.mapPath,
+    "closedRoster": config.closedRoster,
     "showTaskArrows": config.showTaskArrows,
     "showTaskBubbles": config.showTaskBubbles,
     "showPlayerLabels": config.showPlayerLabels,
@@ -1443,9 +1452,13 @@ proc findSpawn*(sim: SimServer): tuple[x, y: int] =
   ## Returns the next lobby spawn position.
   sim.homePosition(sim.players.len, sim.players.len + 1)
 
+proc playerSlotLimit(config: GameConfig): int =
+  ## Returns the number of slots players may occupy.
+  if config.closedRoster: config.slots.len else: MaxPlayers
+
 proc canAddPlayer*(sim: SimServer): bool =
   ## Returns whether the game has room for another player.
-  sim.players.len < MaxPlayers
+  sim.players.len < sim.config.playerSlotLimit()
 
 proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
   ## Returns one slot config or an empty config for missing entries.
@@ -1496,7 +1509,7 @@ proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int,
   ## Returns whether a player websocket request can pass configured slot auth.
   if requestedSlot < 0:
     return true
-  if requestedSlot >= MaxPlayers:
+  if requestedSlot >= config.playerSlotLimit():
     return false
   config.slotAuthMatches(requestedSlot, address, token)
 
@@ -1554,13 +1567,16 @@ proc namedConfiguredSlot(sim: SimServer, address: string): int =
 
 proc nextAutoSlot(sim: SimServer, address, token: string): int =
   ## Returns the next open unrestricted or matching slot.
-  for i in sim.nextJoinOrder ..< MaxPlayers:
+  let slotLimit = sim.config.playerSlotLimit()
+  for i in sim.nextJoinOrder ..< slotLimit:
     if sim.slotOccupied(i):
       continue
     if not sim.config.slotRestricted(i) or
         sim.config.slotAuthMatches(i, address, token):
       return i
   for i in 0 ..< sim.nextJoinOrder:
+    if i >= slotLimit:
+      break
     if sim.slotOccupied(i):
       continue
     if not sim.config.slotRestricted(i) or
@@ -1587,6 +1603,8 @@ proc resolvePlayerSlot(
       "Player slot must be between 0 and 15."
     )
   if requestedSlot >= 0:
+    if requestedSlot >= sim.config.playerSlotLimit():
+      raise newException(AmongThemError, "Player slot is outside configured roster.")
     if sim.slotOccupied(requestedSlot):
       raise newException(
         AmongThemError,
@@ -1619,6 +1637,8 @@ proc resolveTrustedPlayerSlot(
       "Player slot must be between 0 and 15."
     )
   if requestedSlot >= 0:
+    if requestedSlot >= sim.config.playerSlotLimit():
+      raise newException(AmongThemError, "Player slot is outside configured roster.")
     if sim.slotOccupied(requestedSlot):
       raise newException(
         AmongThemError,
@@ -1682,6 +1702,8 @@ proc playerIndexForSlot(sim: SimServer, slotIndex: int): int =
 proc playerResultSlotCount(sim: SimServer): int =
   ## Returns the number of player slots represented in final results.
   result = sim.config.slots.len
+  if sim.config.closedRoster:
+    return
   for player in sim.players:
     result = max(result, player.joinOrder + 1)
   for account in sim.rewardAccounts:
