@@ -166,12 +166,12 @@ the certifier:
 docker build \
   --platform=linux/amd64 \
   -f among_them/Dockerfile \
-  -t ghcr.io/treeform/bitworld-among-them-runner:latest \
+  -t ghcr.io/metta-ai/bitworld-among-them-runner:latest \
   .
 docker build \
   --platform=linux/amd64 \
   -f among_them/players/nottoodumb/Dockerfile \
-  -t ghcr.io/treeform/bitworld-nottoodumb:latest \
+  -t ghcr.io/metta-ai/bitworld-nottoodumb:latest \
   .
 coworld certify among_them/coworld_manifest.json
 ```
