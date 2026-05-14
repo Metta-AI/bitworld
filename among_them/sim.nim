@@ -1472,10 +1472,6 @@ proc slotRestricted(config: GameConfig, slotIndex: int): bool =
   let slot = config.slotConfig(slotIndex)
   slot.name.len > 0 or slot.token.len > 0
 
-proc configuredRosterClosed(config: GameConfig): bool =
-  ## Returns true when configured slots define the full playable roster.
-  config.closedRoster
-
 proc slotAuthMatches(
   config: GameConfig,
   slotIndex: int,
@@ -1706,7 +1702,7 @@ proc playerIndexForSlot(sim: SimServer, slotIndex: int): int =
 proc playerResultSlotCount(sim: SimServer): int =
   ## Returns the number of player slots represented in final results.
   result = sim.config.slots.len
-  if sim.config.configuredRosterClosed():
+  if sim.config.closedRoster:
     return
   for player in sim.players:
     result = max(result, player.joinOrder + 1)
