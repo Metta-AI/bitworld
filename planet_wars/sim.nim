@@ -12,12 +12,14 @@ type
 const
   GameName* = "planet_wars"
   GameVersion* = "1"
-  WorldWidthPixels* = 192
-  WorldHeightPixels* = 192
-  DefaultPlanetCount* = 18
+  WorldWidthPixels* = 512
+  WorldHeightPixels* = 512
+  PlayerViewportWidth* = 320
+  PlayerViewportHeight* = 200
+  DefaultPlanetCount* = 47
   MinPlanetCount* = 1
   MaxPlanetCount* = 48
-  DensePlanetCount* = 36
+  DensePlanetCount* = 47
   PlanetSpawnMargin* = 12
   PlanetSpacing* = 10
   BaseFps* = 24
@@ -38,6 +40,9 @@ const
   CursorFrictionNum* = 232
   CursorFrictionDen* = 256
   CursorMaxSpeed* = 282
+  CursorBoostStartTicks* = TargetFps div 6
+  CursorBoostSpeedPerTick* = 8
+  CursorBoostMaxSpeed* = 640
   CursorStopThreshold* = 5
   BackgroundColor* = RgbaColor(r: 5'u8, g: 7'u8, b: 18'u8, a: 255'u8)
   NeutralPlanetColor* = RgbaColor(
@@ -55,6 +60,7 @@ const
   OriginColor* = RgbaColor(r: 84'u8, g: 244'u8, b: 232'u8, a: 255'u8)
   ScoreColor* = RgbaColor(r: 248'u8, g: 250'u8, b: 255'u8, a: 255'u8)
   BlackColor* = RgbaColor(r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8)
+  ChatBubbleTicks* = TargetFps * 5
   StarColors* = [
     RgbaColor(r: 168'u8, g: 211'u8, b: 255'u8, a: 255'u8),
     RgbaColor(r: 255'u8, g: 246'u8, b: 194'u8, a: 255'u8),
@@ -68,7 +74,6 @@ const
   TopLeftLayerType* = 1
   ZoomableLayerFlag* = 1
   UiLayerFlag* = 2
-  ChatVisibleLines* = 3
   ChatMaxChars* = 40
 
 type
@@ -127,11 +132,14 @@ type
     cursorVelY*: int
     cursorCarryX*: int
     cursorCarryY*: int
+    cursorInputX*: int
+    cursorInputY*: int
+    cursorBoostTicks*: int
 
   ChatMessage* = object
     playerId*: int
     text*: string
-    color*: RgbaColor
+    tick*: int
 
   PlayerInput* = object
     up*: bool
@@ -221,11 +229,11 @@ proc planetRadius*(size: PlanetSize): int =
   ## Returns the gameplay radius for one planet size.
   case size
   of PlanetSmall:
-    5
+    9
   of PlanetMedium:
-    6
+    11
   of PlanetLarge:
-    8
+    14
 
 proc initialShips(size: PlanetSize, rng: var Rand): int =
   ## Returns a randomized neutral ship count for one planet.
@@ -517,19 +525,26 @@ proc cleanChatMessage*(message: string): string =
       result.add(ch)
 
 proc addChatMessage*(sim: var SimServer, playerIndex: int, message: string) =
-  ## Adds one visible chat line from a connected player.
+  ## Adds one cursor chat bubble from a connected player.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let text = cleanChatMessage(message)
   if text.len == 0:
     return
-  while sim.chatMessages.len >= ChatVisibleLines:
-    sim.chatMessages.delete(0)
+  for i in countdown(sim.chatMessages.high, 0):
+    if sim.chatMessages[i].playerId == sim.players[playerIndex].id:
+      sim.chatMessages.delete(i)
   sim.chatMessages.add ChatMessage(
     playerId: sim.players[playerIndex].id,
     text: text,
-    color: sim.players[playerIndex].color
+    tick: sim.tickCount
   )
+
+proc pruneChatMessages*(sim: var SimServer) =
+  ## Removes expired cursor chat bubbles.
+  for i in countdown(sim.chatMessages.high, 0):
+    if sim.tickCount - sim.chatMessages[i].tick >= ChatBubbleTicks:
+      sim.chatMessages.delete(i)
 
 proc nearestPlanetIndex*(sim: SimServer, worldX, worldY: int): int =
   ## Returns the planet nearest to a world position.
@@ -571,6 +586,28 @@ proc applyCursorMomentumAxis(
         break
       player.cursorY = nextY
     carry -= step * MotionScale
+
+proc updateCursorBoost(player: var Player, inputX, inputY: int) =
+  ## Updates long-distance cursor acceleration state.
+  if inputX == 0 and inputY == 0:
+    player.cursorInputX = 0
+    player.cursorInputY = 0
+    player.cursorBoostTicks = 0
+    return
+  if inputX != player.cursorInputX or inputY != player.cursorInputY:
+    player.cursorInputX = inputX
+    player.cursorInputY = inputY
+    player.cursorBoostTicks = 1
+  else:
+    inc player.cursorBoostTicks
+
+proc cursorMaxSpeed(player: Player): int =
+  ## Returns the current cursor speed cap after hold acceleration.
+  let boostTicks = max(0, player.cursorBoostTicks - CursorBoostStartTicks)
+  min(
+    CursorBoostMaxSpeed,
+    CursorMaxSpeed + boostTicks * CursorBoostSpeedPerTick
+  )
 
 proc shipDuration*(startX, startY, endX, endY: int): int =
   ## Returns the travel duration for one ship.
@@ -790,11 +827,13 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
     inputY = -1
   elif input.down and not input.up:
     inputY = 1
+  sim.players[playerIndex].updateCursorBoost(inputX, inputY)
+  let cursorSpeed = sim.players[playerIndex].cursorMaxSpeed()
   if inputX != 0:
     sim.players[playerIndex].cursorVelX = clamp(
       sim.players[playerIndex].cursorVelX + inputX * CursorAccel,
-      -CursorMaxSpeed,
-      CursorMaxSpeed
+      -cursorSpeed,
+      cursorSpeed
     )
   else:
     sim.players[playerIndex].cursorVelX =
@@ -805,8 +844,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
   if inputY != 0:
     sim.players[playerIndex].cursorVelY = clamp(
       sim.players[playerIndex].cursorVelY + inputY * CursorAccel,
-      -CursorMaxSpeed,
-      CursorMaxSpeed
+      -cursorSpeed,
+      cursorSpeed
     )
   else:
     sim.players[playerIndex].cursorVelY =
@@ -859,6 +898,7 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.stepShips()
   sim.stepScore()
   inc sim.tickCount
+  sim.pruneChatMessages()
   sim.checkRemainingWin()
   sim.checkMaxTicks()
 
