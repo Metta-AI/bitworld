@@ -4,6 +4,9 @@ import
 
 setCurrentDir(currentSourcePath().parentDir().parentDir())
 
+const
+  ScorePanelObjectIdForTest = 4004
+
 proc readU16(packet: openArray[uint8], offset: int): int =
   ## Reads one little endian unsigned 16 bit value from a packet.
   int(uint16(packet[offset]) or (uint16(packet[offset + 1]) shl 8))
@@ -125,6 +128,17 @@ let initPacket = initGame.buildSpriteProtocolUpdates(
 )
 doAssert initPacket.len > 0
 doAssert initPacket[0] == 0x04'u8
+
+echo "Testing global score panel renders"
+var scorePanelGame = initSimServer(793, defaultSimConfig())
+discard scorePanelGame.addPlayer("red")
+discard scorePanelGame.addPlayer("blue")
+var nextScorePanelState: GlobalViewerState
+let scorePanelPacket = scorePanelGame.buildSpriteProtocolUpdates(
+  initGlobalViewerState(),
+  nextScorePanelState
+)
+doAssert ScorePanelObjectIdForTest in scorePanelPacket.spritePacketObjectIds()
 
 echo "Testing cursor chat bubbles render and expire"
 var chatGame = initSimServer(790, defaultSimConfig())
