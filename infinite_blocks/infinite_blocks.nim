@@ -1,5 +1,6 @@
 import
-  std/[json, locks, monotimes, os, parseopt, random, strutils, tables, times],
+  std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils,
+    tables, times],
   mummy, pixie, supersnappy,
   bitworld/aseprite, bitworld/clients, pixelfonts, protocol, server
 
@@ -35,6 +36,10 @@ const
   ReplayWebSocketPath = "/replay"
   RewardWebSocketPath = "/reward"
   GlobalLayerId = 0
+  GlobalScorePanelLayerId = 1
+  GlobalTopLeftLayerType = 1
+  GlobalUiFlag = 2
+  GlobalScorePanelObjectId = 5
   GlobalFrameObjectBase = 10
   GlobalBackgroundSpriteId = 2
   GlobalTerrainSpriteBase = 20
@@ -43,6 +48,7 @@ const
   GlobalChatSpriteBase = 50000
   GlobalBlockObjectBase = 10
   MaxGlobalObjectId = 65535
+  GlobalScorePanelSpriteId = 52000
   GlobalMapWidth = WorldWidthPixels
   GlobalMapHeight = (BaseTerrainY + 1) * CellPixels
   GlobalMapLayerType = 0
@@ -74,6 +80,10 @@ const
   ChatLifetimeTicks = TargetFps * 5
   GlobalNameSpriteBase = 51000
   BackgroundRgba = (r: 51'u8, g: 49'u8, b: 54'u8, a: 255'u8)
+  ScorePanelPipSize = 3
+  ScorePanelPipGapX = 2
+  ScorePanelNameGapX = 3
+  ScorePanelColor = (r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8)
   PlayerColors = [4'u8, 5'u8, 6'u8, 7'u8, 8'u8, 9'u8, 10'u8, 11'u8, 12'u8, 13'u8, 14'u8, 15'u8]
 
 type
@@ -437,6 +447,76 @@ proc textLineSprite(
   result = newRgbaSprite(width, height)
   sim.blitChatText(result, text, 1, 1, shadow)
   sim.blitChatText(result, text, 0, 0, color)
+
+proc fillRect(
+  sprite: var RgbaSprite,
+  x,
+  y,
+  width,
+  height: int,
+  color: RgbaColor
+) =
+  ## Fills one rectangle in a true-color sprite.
+  for py in 0 ..< height:
+    for px in 0 ..< width:
+      sprite.putRgbaSpritePixel(x + px, y + py, color)
+
+proc compareScorePanelPlayers(a, b: Player): int =
+  ## Sorts score panel players by descending score.
+  result = cmp(b.score, a.score)
+  if result == 0:
+    result = cmp(a.id, b.id)
+
+proc scorePanelScoreWidth(sim: SimServer, players: openArray[Player]): int =
+  ## Returns the widest score text width.
+  for player in players:
+    result = max(result, sim.textFont.textWidth($player.score))
+
+proc scorePanelNameWidth(sim: SimServer, players: openArray[Player]): int =
+  ## Returns the widest player name text width.
+  for player in players:
+    let name = player.name.cleanNameLabel()
+    if name.len > 0:
+      result = max(result, sim.textFont.textWidth(name))
+
+proc buildScorePanelSprite(sim: SimServer): RgbaSprite =
+  ## Builds the compact global player score panel.
+  var players = sim.players
+  players.sort(compareScorePanelPlayers)
+  let
+    lineHeight = sim.textFont.lineHeight()
+    rowHeight = max(lineHeight, ScorePanelPipSize)
+    scoreColumnWidth = sim.scorePanelScoreWidth(players)
+    nameColumnWidth = sim.scorePanelNameWidth(players)
+    scoreX = ScorePanelPipSize + ScorePanelPipGapX
+    nameX = scoreX + scoreColumnWidth + ScorePanelNameGapX
+    width = max(1, nameX + nameColumnWidth)
+    height = max(1, players.len * rowHeight)
+  result = newRgbaSprite(width, height)
+  for i, player in players:
+    let
+      rowY = i * rowHeight
+      pipY = rowY + (rowHeight - ScorePanelPipSize) div 2
+      scoreText = $player.score
+      scoreWidth = sim.textFont.textWidth(scoreText)
+      alignedScoreX = scoreX + max(0, scoreColumnWidth - scoreWidth)
+      name = player.name.cleanNameLabel()
+    result.fillRect(
+      0,
+      pipY,
+      ScorePanelPipSize,
+      ScorePanelPipSize,
+      player.rgbaColor
+    )
+    sim.blitChatText(
+      result,
+      scoreText,
+      alignedScoreX,
+      rowY,
+      ScorePanelColor
+    )
+    if name.len > 0:
+      sim.blitChatText(result, name, nameX, rowY, player.rgbaColor)
 
 proc speechBubbleSprite(
   sim: SimServer,
@@ -1942,6 +2022,34 @@ proc addNameLabel(
   packet.addRgbaSprite(spriteId, sprite, "name " & text)
   packet.addObjectIfRoom(objectId, x, y, z, spriteId)
 
+proc addGlobalScorePanel(
+  packet: var seq[uint8],
+  sim: SimServer
+) =
+  ## Appends the global score panel object.
+  if sim.players.len == 0:
+    return
+  let panel = sim.buildScorePanelSprite()
+  packet.addLayer(
+    GlobalScorePanelLayerId,
+    GlobalTopLeftLayerType,
+    GlobalUiFlag
+  )
+  packet.addViewport(
+    GlobalScorePanelLayerId,
+    panel.width,
+    panel.height
+  )
+  packet.addRgbaSprite(GlobalScorePanelSpriteId, panel, "score panel")
+  packet.addObject(
+    GlobalScorePanelObjectId,
+    0,
+    0,
+    high(int16),
+    GlobalScorePanelLayerId,
+    GlobalScorePanelSpriteId
+  )
+
 proc putRgbaColorPixel(
   pixels: var seq[uint8],
   pixelIndex: int,
@@ -2257,6 +2365,7 @@ proc buildGlobalMapPacket(
     result.addClearBlockSprites(nextState, sim.blockParts)
 
   var objectId = GlobalBlockObjectBase
+  result.addGlobalScorePanel(sim)
   if sim.settledCellsDirty:
     sim.rebuildSettledCellIndices()
   for x in 0 ..< BoardWidthCells:
