@@ -1,4 +1,6 @@
 import mummy
+import pixie
+import supersnappy
 import protocol, server
 import std/[locks, monotimes, os, parseopt, random, sets, strutils, tables, times]
 
@@ -7,9 +9,6 @@ const
   WorldHeightTiles = 32
   WorldWidthPixels = WorldWidthTiles * TileSize
   WorldHeightPixels = WorldHeightTiles * TileSize
-
-  VisibleTilesX = (ScreenWidth + TileSize - 1) div TileSize
-  VisibleTilesY = (ScreenHeight + TileSize - 1) div TileSize
 
   PlayerMoveCooldownTicks = 5
   PreyThinkIntervalTicks = 10
@@ -57,8 +56,29 @@ const
   WebSocketPath = "/player"
   GlobalWebSocketPath = "/global"
   HealthzPath = "/healthz"
-  BackgroundColor = 10'u8
   UnassignedPlayerIndex = 0x7fffffff
+
+  # Sprite v1 layer/sprite/object layout
+  MapLayerId = 0
+  MapLayerKind = 0
+  MapLayerFlags = 1
+
+  PlayerViewportWidth = ScreenWidth   # 128
+  PlayerViewportHeight = ScreenHeight # 128
+
+  TreeSpriteId = 1
+  RockSpriteId = 2
+  PreySpriteBase = 10        # + PreyKind.ord (0..4)
+  PlayerSpriteBase = 100     # + colorSlot * 4 + facing.ord  (0..31)
+
+  TileObjectBase = 1000      # + tileIndex
+  PlayerObjectBase = 5000    # + array index
+  PreyObjectBase = 10000     # + array index
+
+  TerrainZ = 0
+  GrassSpriteColor = 11'u8   # palette green for empty-tile background sprite
+  BackgroundSpriteId = 3
+  BackgroundObjectBase = 8000
 
 type
   PreyKind = enum
@@ -93,25 +113,37 @@ type
     thinkCooldown: int
     alertFlash: int
 
+  RgbaSprite = object
+    width: int
+    height: int
+    pixels: seq[uint8]
+
+  ViewerState = object
+    initialized: bool
+
   SimServer = object
     players: seq[Player]
     prey: seq[Prey]
     tiles: seq[TileKind]
-    digitSprites: array[10, Sprite]
-    letterSprites: seq[Sprite]
-    fb: Framebuffer
     rng: Rand
     nextPlayerId: int
     nextPreyId: int
     tickCount: int
     respawnCooldown: int
+    treeSprite: RgbaSprite
+    rockSprite: RgbaSprite
+    backgroundSprite: RgbaSprite
+    preySprites: array[5, RgbaSprite]      # by PreyKind.ord
+    playerSprites: array[8 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
 
   WebSocketAppState = object
     lock: Lock
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    playerStates: Table[WebSocket, ViewerState]
     globalViewers: HashSet[WebSocket]
+    globalStates: Table[WebSocket, ViewerState]
     closedSockets: seq[WebSocket]
 
   ServerThreadArgs = object
@@ -124,8 +156,6 @@ var appState: WebSocketAppState
 proc repoDir(): string = getCurrentDir() / ".."
 proc clientDataDir(): string = repoDir() / "clients" / "data"
 proc palettePath(): string = clientDataDir() / "pallete.png"
-proc numbersPath(): string = clientDataDir() / "numbers.png"
-proc lettersPath(): string = clientDataDir() / "letters.png"
 
 proc tileIndex(tx, ty: int): int = ty * WorldWidthTiles + tx
 
@@ -190,18 +220,40 @@ proc parsePatternChar(c: char, playerBody, playerAccent: uint8): uint8 =
   else:
     TransparentColorIndex
 
-proc drawPattern(
-  fb: var Framebuffer,
+proc newRgbaSprite(width, height: int): RgbaSprite =
+  RgbaSprite(
+    width: width,
+    height: height,
+    pixels: newSeq[uint8](width * height * 4)
+  )
+
+proc putRgbaPixel(sprite: var RgbaSprite, x, y: int, color: ColorRGBA) =
+  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
+    return
+  let base = (y * sprite.width + x) * 4
+  sprite.pixels[base + 0] = color.r
+  sprite.pixels[base + 1] = color.g
+  sprite.pixels[base + 2] = color.b
+  sprite.pixels[base + 3] = color.a
+
+proc paletteRgba(index: uint8): ColorRGBA =
+  if index == TransparentColorIndex:
+    return ColorRGBA(r: 0, g: 0, b: 0, a: 0)
+  if int(index) >= Palette.len:
+    return ColorRGBA(r: 0, g: 0, b: 0, a: 0)
+  Palette[int(index)]
+
+proc patternToRgbaSprite(
   pattern: openArray[string],
-  baseX, baseY: int,
   playerBody: uint8 = 0,
   playerAccent: uint8 = 0,
   facing: Facing = FaceDown
-) =
+): RgbaSprite =
   let h = pattern.len
   if h == 0:
-    return
+    return newRgbaSprite(0, 0)
   let w = pattern[0].len
+  result = newRgbaSprite(w, h)
   for y in 0 ..< h:
     for x in 0 ..< w:
       let color = parsePatternChar(pattern[y][x], playerBody, playerAccent)
@@ -221,7 +273,13 @@ proc drawPattern(
       of FaceRight:
         dx = h - 1 - y
         dy = x
-      fb.putPixel(baseX + dx, baseY + dy, color)
+      result.putRgbaPixel(dx, dy, paletteRgba(color))
+
+proc solidRgbaSprite(width, height: int, color: ColorRGBA): RgbaSprite =
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, color)
 
 # ---------------------------------------------------------------------------
 # Sprite patterns.
@@ -304,17 +362,13 @@ const
     "..00..",
   ]
 
-proc drawPreyPattern(
-  fb: var Framebuffer,
-  kind: PreyKind,
-  baseX, baseY: int
-) =
+proc preyPattern(kind: PreyKind): array[6, string] =
   case kind
-  of Rabbit: fb.drawPattern(RabbitPattern, baseX, baseY)
-  of Boar: fb.drawPattern(BoarPattern, baseX, baseY)
-  of Stag: fb.drawPattern(StagPattern, baseX, baseY)
-  of Moose: fb.drawPattern(MoosePattern, baseX, baseY)
-  of Mammoth: fb.drawPattern(MammothPattern, baseX, baseY)
+  of Rabbit: RabbitPattern
+  of Boar: BoarPattern
+  of Stag: StagPattern
+  of Moose: MoosePattern
+  of Mammoth: MammothPattern
 
 # ---------------------------------------------------------------------------
 # World generation
@@ -467,14 +521,14 @@ proc maintainPrey(sim: var SimServer) =
   else:
     sim.respawnCooldown = RespawnIntervalTicks
 
+proc buildSpriteCache(sim: var SimServer)
+
 proc initSim(): SimServer =
   result.rng = initRand(0x57A617)
-  result.fb = initFramebuffer()
   loadPalette(palettePath())
-  result.digitSprites = loadDigitSprites(numbersPath())
-  result.letterSprites = loadLetterSprites(lettersPath())
   result.generateWorld()
   result.respawnCooldown = RespawnIntervalTicks
+  result.buildSpriteCache()
 
   # No initial spawn; maintainPrey populates once players connect so we
   # never spawn prey no one can catch.
@@ -665,7 +719,7 @@ proc applyCaptures(sim: var SimServer) =
     sim.prey.delete(removed[i])
 
 # ---------------------------------------------------------------------------
-# Rendering
+# Sprite v1 protocol bytes
 # ---------------------------------------------------------------------------
 
 proc playerBodyColor(colorIndex: int): uint8 =
@@ -690,182 +744,249 @@ proc playerAccentColor(colorIndex: int): uint8 =
   of 6: 13'u8
   else: 1'u8
 
-proc renderTerrain(sim: var SimServer, cameraX, cameraY: int) =
-  sim.fb.clearFrame(BackgroundColor)
+proc addU8(packet: var seq[uint8], value: uint8) =
+  packet.add(value)
 
-  let
-    startTx = max(0, cameraX div TileSize)
-    startTy = max(0, cameraY div TileSize)
-    endTx = min(WorldWidthTiles - 1, (cameraX + ScreenWidth - 1) div TileSize)
-    endTy = min(WorldHeightTiles - 1, (cameraY + ScreenHeight - 1) div TileSize)
+proc addU16(packet: var seq[uint8], value: int) =
+  let v = uint16(value)
+  packet.add(uint8(v and 0xff'u16))
+  packet.add(uint8(v shr 8))
 
-  for ty in startTy .. endTy:
-    for tx in startTx .. endTx:
-      let kind = sim.tiles[tileIndex(tx, ty)]
-      if kind == TileEmpty:
-        # Add subtle grass specks via hash of tile coords
-        let h = uint32(tx * 73856093) xor uint32(ty * 19349663)
-        if (h and 0xF'u32) == 0'u32:
-          let px = tx * TileSize - cameraX + int((h shr 4) and 3'u32) + 1
-          let py = ty * TileSize - cameraY + int((h shr 6) and 3'u32) + 1
-          sim.fb.putPixel(px, py, 11'u8)
-        continue
-      let
-        baseX = tx * TileSize - cameraX
-        baseY = ty * TileSize - cameraY
-      case kind
-      of TileTree:
-        sim.fb.drawPattern(TreePattern, baseX, baseY)
-      of TileRock:
-        sim.fb.drawPattern(RockPattern, baseX, baseY)
-      else:
-        discard
+proc addU32(packet: var seq[uint8], value: int) =
+  let v = uint32(value)
+  for shift in countup(0, 24, 8):
+    packet.add(uint8((v shr shift) and 0xff'u32))
 
-proc renderPrey(sim: var SimServer, prey: Prey, cameraX, cameraY: int) =
-  let
-    baseX = prey.tileX * TileSize - cameraX
-    baseY = prey.tileY * TileSize - cameraY
+proc addI16(packet: var seq[uint8], value: int) =
+  let v = cast[uint16](int16(value))
+  packet.add(uint8(v and 0xff'u16))
+  packet.add(uint8(v shr 8))
 
-  # alert wiggle
-  var offsetX = 0
-  if prey.alertFlash > 0:
-    if (prey.alertFlash and 1) == 1:
-      offsetX = 1
-    else:
-      offsetX = -1
+proc addLayer(packet: var seq[uint8], layer, kind, flags: int) =
+  packet.addU8(0x06'u8)
+  packet.addU8(uint8(layer))
+  packet.addU8(uint8(kind))
+  packet.addU8(uint8(flags))
 
-  sim.fb.drawPreyPattern(prey.kind, baseX + offsetX, baseY)
+proc addViewport(packet: var seq[uint8], layer, width, height: int) =
+  packet.addU8(0x05'u8)
+  packet.addU8(uint8(layer))
+  packet.addU16(width)
+  packet.addU16(height)
 
-proc renderPlayer(sim: var SimServer, player: Player, cameraX, cameraY: int) =
-  let
-    baseX = player.tileX * TileSize - cameraX
-    baseY = player.tileY * TileSize - cameraY
-    body = playerBodyColor(player.colorIndex)
-    accent = playerAccentColor(player.colorIndex)
-
-  if player.catchFlash > 0 and (player.catchFlash and 1) == 1:
-    sim.fb.drawPattern(PlayerPattern, baseX, baseY, 2'u8, 0'u8, player.facing)
-  else:
-    sim.fb.drawPattern(PlayerPattern, baseX, baseY, body, accent, player.facing)
-
-proc renderNumber(
-  fb: var Framebuffer,
-  digitSprites: array[10, Sprite],
-  value, screenX, screenY: int
+proc addSprite(
+  packet: var seq[uint8],
+  spriteId: int,
+  sprite: RgbaSprite,
+  label: string
 ) =
-  let text = $max(0, value)
-  var x = screenX
-  for ch in text:
-    let digit = ord(ch) - ord('0')
-    fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
-    x += digitSprites[digit].width
+  packet.addU8(0x01'u8)
+  packet.addU16(spriteId)
+  packet.addU16(sprite.width)
+  packet.addU16(sprite.height)
+  let compressed = supersnappy.compress(sprite.pixels)
+  packet.addU32(compressed.len)
+  for byte in compressed:
+    packet.addU8(byte)
+  packet.addU16(label.len)
+  for ch in label:
+    packet.addU8(uint8(ord(ch)))
 
-proc renderHud(sim: var SimServer, playerIndex: int) =
-  let player = sim.players[playerIndex]
+proc addObject(
+  packet: var seq[uint8],
+  objectId, x, y, z, layer, spriteId: int
+) =
+  packet.addU8(0x02'u8)
+  packet.addU16(objectId)
+  packet.addI16(x)
+  packet.addI16(y)
+  packet.addI16(z)
+  packet.addU8(uint8(layer))
+  packet.addU16(spriteId)
 
-  sim.fb.renderNumber(sim.digitSprites, min(9999, player.score), 0, 0)
+proc addClearObjects(packet: var seq[uint8]) =
+  packet.addU8(0x04'u8)
 
-  # Energy bar (bottom left-ish). 40px wide, 3 tall.
-  let barX = 12
-  let barY = ScreenHeight - 4
-  let barW = 40
-  let fillW = (player.energy * barW) div MaxEnergy
-  for x in 0 ..< barW:
-    sim.fb.putPixel(barX + x, barY, 0'u8)
-    sim.fb.putPixel(barX + x, barY + 1, 0'u8)
-    sim.fb.putPixel(barX + x, barY + 2, 0'u8)
-  for x in 0 ..< fillW:
-    let color: uint8 =
-      if player.energy < MaxEnergy div 4: 3'u8
-      elif player.energy < MaxEnergy div 2: 7'u8
-      else: 11'u8
-    sim.fb.putPixel(barX + x, barY, color)
-    sim.fb.putPixel(barX + x, barY + 1, color)
-    sim.fb.putPixel(barX + x, barY + 2, color)
+# ---------------------------------------------------------------------------
+# Sprite cache
+# ---------------------------------------------------------------------------
 
-  # small "E" icon next to bar
-  let iconX = 2
-  let iconY = barY - 1
-  for dy in 0 ..< 5:
-    sim.fb.putPixel(iconX, iconY + dy, 2'u8)
-  sim.fb.putPixel(iconX + 1, iconY, 2'u8)
-  sim.fb.putPixel(iconX + 2, iconY, 2'u8)
-  sim.fb.putPixel(iconX + 1, iconY + 2, 2'u8)
-  sim.fb.putPixel(iconX + 1, iconY + 4, 2'u8)
-  sim.fb.putPixel(iconX + 2, iconY + 4, 2'u8)
+proc playerSpriteId(colorSlot: int, facing: Facing): int =
+  PlayerSpriteBase + (colorSlot and 7) * 4 + facing.ord
+
+proc preySpriteId(kind: PreyKind): int =
+  PreySpriteBase + kind.ord
+
+proc buildSpriteCache(sim: var SimServer) =
+  sim.treeSprite = patternToRgbaSprite(TreePattern)
+  sim.rockSprite = patternToRgbaSprite(RockPattern)
+  sim.backgroundSprite = solidRgbaSprite(TileSize, TileSize, paletteRgba(GrassSpriteColor))
+
+  for kind in PreyKind:
+    sim.preySprites[kind.ord] = patternToRgbaSprite(preyPattern(kind))
+
+  for colorSlot in 0 ..< 8:
+    let body = playerBodyColor(colorSlot)
+    let accent = playerAccentColor(colorSlot)
+    for facing in Facing:
+      sim.playerSprites[colorSlot * 4 + facing.ord] =
+        patternToRgbaSprite(PlayerPattern, body, accent, facing)
+
+proc addSpriteProtocolInit(
+  packet: var seq[uint8],
+  sim: SimServer,
+  viewportWidth, viewportHeight: int
+) =
+  packet.addLayer(MapLayerId, MapLayerKind, MapLayerFlags)
+  packet.addViewport(MapLayerId, viewportWidth, viewportHeight)
+  packet.addSprite(BackgroundSpriteId, sim.backgroundSprite, "grass")
+  packet.addSprite(TreeSpriteId, sim.treeSprite, "tree")
+  packet.addSprite(RockSpriteId, sim.rockSprite, "rock")
+  for kind in PreyKind:
+    packet.addSprite(preySpriteId(kind), sim.preySprites[kind.ord], $kind)
+  for colorSlot in 0 ..< 8:
+    for facing in Facing:
+      packet.addSprite(
+        playerSpriteId(colorSlot, facing),
+        sim.playerSprites[colorSlot * 4 + facing.ord],
+        "player " & $colorSlot & " " & $facing
+      )
+
+# ---------------------------------------------------------------------------
+# Frame builders
+# ---------------------------------------------------------------------------
 
 proc clampCamera(value, worldMax, viewMax: int): int =
   if worldMax <= viewMax:
     return (worldMax - viewMax) div 2
   value.clamp(0, worldMax - viewMax)
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(BackgroundColor)
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.fb.packFramebuffer()
-    return sim.fb.packed
-
-  let player = sim.players[playerIndex]
+proc playerCamera(player: Player): tuple[x, y: int] =
   let
     centerX = player.tileX * TileSize + TileSize div 2
     centerY = player.tileY * TileSize + TileSize div 2
-    cameraX = clampCamera(centerX - ScreenWidth div 2, WorldWidthPixels, ScreenWidth)
-    cameraY = clampCamera(centerY - ScreenHeight div 2, WorldHeightPixels, ScreenHeight)
+  (
+    clampCamera(centerX - PlayerViewportWidth div 2, WorldWidthPixels, PlayerViewportWidth),
+    clampCamera(centerY - PlayerViewportHeight div 2, WorldHeightPixels, PlayerViewportHeight)
+  )
 
-  sim.renderTerrain(cameraX, cameraY)
-
-  for prey in sim.prey:
-    let
-      visX = prey.tileX * TileSize >= cameraX - TileSize and
-        prey.tileX * TileSize <= cameraX + ScreenWidth
-      visY = prey.tileY * TileSize >= cameraY - TileSize and
-        prey.tileY * TileSize <= cameraY + ScreenHeight
-    if visX and visY:
-      sim.renderPrey(prey, cameraX, cameraY)
-
-  for other in sim.players:
-    let
-      visX = other.tileX * TileSize >= cameraX - TileSize and
-        other.tileX * TileSize <= cameraX + ScreenWidth
-      visY = other.tileY * TileSize >= cameraY - TileSize and
-        other.tileY * TileSize <= cameraY + ScreenHeight
-    if visX and visY:
-      sim.renderPlayer(other, cameraX, cameraY)
-
-  sim.renderHud(playerIndex)
-  sim.fb.packFramebuffer()
-  sim.fb.packed
-
-proc buildGlobalFramePacket(sim: var SimServer): seq[uint8] =
-  sim.fb.clearFrame(BackgroundColor)
+proc addTerrainObjects(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cameraX, cameraY, viewportWidth, viewportHeight: int
+) =
   let
-    centerX = WorldWidthPixels div 2
-    centerY = WorldHeightPixels div 2
-    cameraX = clampCamera(centerX - ScreenWidth div 2, WorldWidthPixels, ScreenWidth)
-    cameraY = clampCamera(centerY - ScreenHeight div 2, WorldHeightPixels, ScreenHeight)
+    startTx = max(0, cameraX div TileSize)
+    startTy = max(0, cameraY div TileSize)
+    endTx = min(WorldWidthTiles - 1, (cameraX + viewportWidth - 1) div TileSize)
+    endTy = min(WorldHeightTiles - 1, (cameraY + viewportHeight - 1) div TileSize)
+  for ty in startTy .. endTy:
+    for tx in startTx .. endTx:
+      let
+        index = tileIndex(tx, ty)
+        kind = sim.tiles[index]
+        screenX = tx * TileSize - cameraX
+        screenY = ty * TileSize - cameraY
+      packet.addObject(
+        BackgroundObjectBase + index,
+        screenX, screenY, TerrainZ,
+        MapLayerId, BackgroundSpriteId
+      )
+      let spriteId =
+        case kind
+        of TileTree: TreeSpriteId
+        of TileRock: RockSpriteId
+        of TileEmpty: 0
+      if spriteId == 0:
+        continue
+      packet.addObject(
+        TileObjectBase + index,
+        screenX, screenY, screenY + 1,
+        MapLayerId, spriteId
+      )
 
-  sim.renderTerrain(cameraX, cameraY)
+proc addPreyObjects(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cameraX, cameraY, viewportWidth, viewportHeight: int
+) =
+  for i in 0 ..< sim.prey.len:
+    let prey = sim.prey[i]
+    var screenX = prey.tileX * TileSize - cameraX
+    let screenY = prey.tileY * TileSize - cameraY
+    if prey.alertFlash > 0:
+      if (prey.alertFlash and 1) == 1:
+        screenX += 1
+      else:
+        screenX -= 1
+    if screenX + TileSize <= 0 or screenY + TileSize <= 0:
+      continue
+    if screenX >= viewportWidth or screenY >= viewportHeight:
+      continue
+    packet.addObject(
+      PreyObjectBase + i,
+      screenX, screenY, screenY + 2,
+      MapLayerId, preySpriteId(prey.kind)
+    )
 
-  for prey in sim.prey:
+proc addPlayerObjects(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cameraX, cameraY, viewportWidth, viewportHeight: int
+) =
+  for i in 0 ..< sim.players.len:
+    let player = sim.players[i]
     let
-      visX = prey.tileX * TileSize >= cameraX - TileSize and
-        prey.tileX * TileSize <= cameraX + ScreenWidth
-      visY = prey.tileY * TileSize >= cameraY - TileSize and
-        prey.tileY * TileSize <= cameraY + ScreenHeight
-    if visX and visY:
-      sim.renderPrey(prey, cameraX, cameraY)
+      screenX = player.tileX * TileSize - cameraX
+      screenY = player.tileY * TileSize - cameraY
+    if screenX + TileSize <= 0 or screenY + TileSize <= 0:
+      continue
+    if screenX >= viewportWidth or screenY >= viewportHeight:
+      continue
+    let flashed = player.catchFlash > 0 and (player.catchFlash and 1) == 1
+    let spriteId =
+      if flashed:
+        # Cycle through white-tinted player by reusing slot 7 (white body)
+        playerSpriteId(7, player.facing)
+      else:
+        playerSpriteId(player.colorIndex, player.facing)
+    packet.addObject(
+      PlayerObjectBase + i,
+      screenX, screenY, screenY + 3,
+      MapLayerId, spriteId
+    )
 
-  for player in sim.players:
-    let
-      visX = player.tileX * TileSize >= cameraX - TileSize and
-        player.tileX * TileSize <= cameraX + ScreenWidth
-      visY = player.tileY * TileSize >= cameraY - TileSize and
-        player.tileY * TileSize <= cameraY + ScreenHeight
-    if visX and visY:
-      sim.renderPlayer(player, cameraX, cameraY)
+proc buildPlayerFrame(
+  sim: SimServer,
+  playerIndex: int,
+  state: ViewerState,
+  nextState: var ViewerState
+): seq[uint8] =
+  nextState = state
+  if not nextState.initialized:
+    result.addSpriteProtocolInit(sim, PlayerViewportWidth, PlayerViewportHeight)
+    nextState.initialized = true
+  result.addClearObjects()
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let (cameraX, cameraY) = playerCamera(sim.players[playerIndex])
+  result.addTerrainObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
+  result.addPreyObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
+  result.addPlayerObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
 
-  sim.fb.packFramebuffer()
-  sim.fb.packed
+proc buildGlobalFrame(
+  sim: SimServer,
+  state: ViewerState,
+  nextState: var ViewerState
+): seq[uint8] =
+  nextState = state
+  if not nextState.initialized:
+    result.addSpriteProtocolInit(sim, WorldWidthPixels, WorldHeightPixels)
+    nextState.initialized = true
+  result.addClearObjects()
+  result.addTerrainObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
+  result.addPreyObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
+  result.addPlayerObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
 
 # ---------------------------------------------------------------------------
 # Game step
@@ -893,7 +1014,9 @@ proc initAppState() =
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.playerStates = initTable[WebSocket, ViewerState]()
   appState.globalViewers = initHashSet[WebSocket]()
+  appState.globalStates = initTable[WebSocket, ViewerState]()
   appState.closedSockets = @[]
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
@@ -902,6 +1025,7 @@ proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.globalViewers:
     appState.globalViewers.excl(websocket)
+    appState.globalStates.del(websocket)
     return
 
   if websocket notin appState.playerIndices:
@@ -911,6 +1035,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
+  appState.playerStates.del(websocket)
 
   if removedIndex >= 0 and removedIndex != UnassignedPlayerIndex and
       removedIndex < sim.players.len:
@@ -938,11 +1063,13 @@ proc httpHandler(request: Request) =
         appState.playerIndices[websocket] = UnassignedPlayerIndex
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
+        appState.playerStates[websocket] = ViewerState()
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers.incl(websocket)
+        appState.globalStates[websocket] = ViewerState()
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -957,11 +1084,16 @@ proc websocketHandler(
   of OpenEvent:
     discard
   of MessageEvent:
-    if message.kind == BinaryMessage and isInputPacket(message.data):
+    # Accept bitscreen_v1 (0x00) and sprite_v1 (0x84) 2-byte input packets.
+    if message.kind == BinaryMessage and message.data.len == 2 and
+        (
+          message.data[0].uint8 == PacketInput or
+          message.data[0].uint8 == 0x84'u8
+        ):
       {.gcsafe.}:
         withLock appState.lock:
           if websocket in appState.playerIndices:
-            appState.inputMasks[websocket] = blobToMask(message.data)
+            appState.inputMasks[websocket] = message.data[1].uint8 and 0x7f'u8
   of ErrorEvent:
     discard
   of CloseEvent:
@@ -1004,9 +1136,11 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
 
   while true:
     var
-      sockets: seq[WebSocket] = @[]
+      playerSockets: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
+      playerStates: seq[ViewerState] = @[]
       globalSockets: seq[WebSocket] = @[]
+      globalStates: seq[ViewerState] = @[]
       inputs: seq[InputState]
 
     {.gcsafe.}:
@@ -1028,32 +1162,43 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
             previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
           inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
           appState.lastAppliedMasks[websocket] = currentMask
-          sockets.add(websocket)
+          playerSockets.add(websocket)
           playerIndices.add(playerIndex)
+          playerStates.add(appState.playerStates.getOrDefault(websocket, ViewerState()))
 
         for websocket in appState.globalViewers:
           globalSockets.add(websocket)
+          globalStates.add(appState.globalStates.getOrDefault(websocket, ViewerState()))
 
     sim.step(inputs)
 
-    for i in 0 ..< sockets.len:
-      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
+    for i in 0 ..< playerSockets.len:
+      var nextState: ViewerState
+      let bytes = sim.buildPlayerFrame(playerIndices[i], playerStates[i], nextState)
       try:
-        sockets[i].send(frameBlob, BinaryMessage)
+        playerSockets[i].send(blobFromBytes(bytes), BinaryMessage)
+        {.gcsafe.}:
+          withLock appState.lock:
+            if playerSockets[i] in appState.playerStates:
+              appState.playerStates[playerSockets[i]] = nextState
       except:
         {.gcsafe.}:
           withLock appState.lock:
-            sim.removePlayer(sockets[i])
+            sim.removePlayer(playerSockets[i])
 
-    if globalSockets.len > 0:
-      let globalBlob = blobFromBytes(sim.buildGlobalFramePacket())
-      for websocket in globalSockets:
-        try:
-          websocket.send(globalBlob, BinaryMessage)
-        except:
-          {.gcsafe.}:
-            withLock appState.lock:
-              sim.removePlayer(websocket)
+    for i in 0 ..< globalSockets.len:
+      var nextState: ViewerState
+      let bytes = sim.buildGlobalFrame(globalStates[i], nextState)
+      try:
+        globalSockets[i].send(blobFromBytes(bytes), BinaryMessage)
+        {.gcsafe.}:
+          withLock appState.lock:
+            if globalSockets[i] in appState.globalStates:
+              appState.globalStates[globalSockets[i]] = nextState
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            sim.removePlayer(globalSockets[i])
 
     runFrameLimiter(lastTick)
 

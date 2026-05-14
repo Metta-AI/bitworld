@@ -72,8 +72,8 @@
       }
     },
     "protocols": {
-      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md",
-      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md"
+      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
     }
   },
   "player": [
