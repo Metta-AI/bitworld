@@ -55,10 +55,10 @@ proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
 
 proc renderChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
     digitSprites: array[10, Sprite], ctx: ChoiceCtx, color: uint8,
-    showCursor: bool, showFrame: bool = true): int =
-  ## Renders the choice list starting at y=14. Returns the y after the last item.
+    showCursor: bool, showFrame: bool = true, startY: int = 14): int =
+  ## Renders the choice list starting at startY. Returns the y after the last item.
   let textX = TextMargin + 8
-  var y = 14
+  var y = startY
 
   for i in 0 ..< ctx.options.len:
     let selected = ctx.state >= ChoiceSelected and ctx.selected == i

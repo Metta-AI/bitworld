@@ -17,22 +17,22 @@ proc logFactSkipped*(playerName: string) =
 proc logFactOutcome*(players: seq[Player], currentTurn: int,
     factText: string, votes: seq[Vote]) =
   echo "  ", players[currentTurn].name, " chose a fact."
-  var parts: seq[string]
-  for i in 0 ..< players.len:
-    if i == currentTurn:
-      continue
-    parts.add(players[i].name & ": " & (if votes[i] == VoteVeto: "veto" else: "pass"))
-  echo "  ", parts.join("  ")
   var vetoCount = 0
   for i in 0 ..< votes.len:
     if i == currentTurn:
       continue
     if votes[i] == VoteVeto: inc vetoCount
   let voterCount = players.len - 1
-  if vetoCount * 2 < voterCount:
-    echo "  pass: ", factText
-  else:
-    echo "  veto: ", factText
+  let passed = vetoCount * 2 < voterCount
+  let resultWord = if passed: "pass" else: "veto"
+  var parts: seq[string]
+  for i in 0 ..< players.len:
+    if i == currentTurn:
+      continue
+    parts.add(players[i].name & ": " & (if votes[i] == VoteVeto: "veto" else: "pass"))
+  echo "  Result: ", resultWord, ". ", parts.join(", "), "."
+  if passed:
+    echo "  ", factText
 
 proc logSituation*(title, description: string) =
   echo ""

@@ -9,6 +9,8 @@ const WorldPadding* = 20
 const SituationTitleMaxLen* = 20
 const SituationMaxLen* = 120
 const SituationPadding* = 20
+const SceneHeaderMaxLen* = 38
+const SceneHeaderPadding* = 8
 const SceneOptionMaxLen* = 38
 const SceneOptionPadding* = 8
 
@@ -167,41 +169,59 @@ proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, st
   for i in idx ..< 3:
     result[i] = "the void whispers back"
 
-proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatLog: seq[string]): array[4, string] =
+type
+  ScenePrompt* = object
+    header*: string
+    options*: array[4, string]
+
+proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatLog: seq[string]): ScenePrompt =
   var prompt = ""
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "The current situation is '" & situation.title & "': " & situation.description & ".\n"
-  prompt &= "Generate exactly 4 short actions a player could take in this situation.\n"
-  prompt &= "Each action MUST be " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters or fewer.\n"
-  prompt &= "Each action should be a single lowercase statement.\n"
+  prompt &= "Generate a short header summarizing what this player perceives, followed by 4 actions.\n"
+  prompt &= "The header is this player's subjective take on the situation.\n"
+  prompt &= "Respond with exactly 5 lines:\n"
+  prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, lowercase)\n"
+  prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, lowercase)\n"
 
   if soul.passions.len > 0:
     prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
-    prompt.add("Actions should relate to these passions. ")
+    prompt.add("The header and actions should reflect these passions. ")
 
   if chatLog.len > 0:
     prompt.add("The story so far:\n")
     for entry in chatLog:
       prompt.add("- " & entry & "\n")
 
-  prompt.add("Respond with exactly 4 lines, one action per line, nothing else.")
+  prompt.add("Respond with exactly 5 lines, nothing else.")
 
   let response = claude.ask(prompt)
   let lines = response.strip().splitLines()
 
-  var idx = 0
+  var nonEmpty: seq[string]
   for line in lines:
+    let trimmed = line.strip()
+    if trimmed.len > 0:
+      nonEmpty.add(trimmed)
+
+  if nonEmpty.len >= 1:
+    result.header = nonEmpty[0]
+    if result.header.len > SceneHeaderMaxLen:
+      result.header = result.header[0 ..< SceneHeaderMaxLen]
+  else:
+    result.header = "the world awaits"
+
+  var idx = 0
+  for i in 1 ..< nonEmpty.len:
     if idx >= 4:
       break
-    let trimmed = line.strip()
-    if trimmed.len == 0:
-      continue
+    let trimmed = nonEmpty[i]
     if trimmed.len <= SceneOptionMaxLen:
-      result[idx] = trimmed
+      result.options[idx] = trimmed
     else:
-      result[idx] = trimmed[0 ..< SceneOptionMaxLen]
+      result.options[idx] = trimmed[0 ..< SceneOptionMaxLen]
     inc idx
 
   for i in idx ..< 4:
-    result[i] = "stare into the void"
+    result.options[i] = "stare into the void"

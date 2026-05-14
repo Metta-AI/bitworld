@@ -65,5 +65,6 @@ type
     voteResultTimer*: int
 
   SceneState* = object
+    header*: string
     choice*: ChoiceCtx
     step*: SceneStep

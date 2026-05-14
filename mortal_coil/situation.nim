@@ -12,8 +12,9 @@ proc generateSceneOpts(players: seq[Player], currentTurn: int,
     world: World, situation: Situation, chatLog: seq[ChatEntry],
     sceneState: var SceneState, sceneTimer: var int) =
   let player = players[currentTurn]
-  let opts = player.soul.generateSceneOptions(world, situation, chatLogStrings(chatLog))
-  sceneState.choice = initChoice(@[opts[0], opts[1], opts[2], opts[3]], "do nothing")
+  let scene = player.soul.generateSceneOptions(world, situation, chatLogStrings(chatLog))
+  sceneState.header = scene.header
+  sceneState.choice = initChoice(@[scene.options[0], scene.options[1], scene.options[2], scene.options[3]], "do nothing")
   sceneState.step = SceneReading
   sceneTimer = SceneReadTicks
 
@@ -38,14 +39,23 @@ proc renderSceneChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
   fb.clearFrame(BackgroundColor)
   let player = players[currentTurn]
   let color = uint8(player.colorIndex)
-  let nameX = TextMargin
-  fb.blitTextTinted(letterSprites, digitSprites, player.name, nameX, 4, color)
-  let suffixX = nameX + player.name.len * CharWidth
-  fb.blitText(letterSprites, digitSprites, " act", suffixX, 4)
+  let prefix = player.name & "'s turn:"
+  fb.blitTextTinted(letterSprites, digitSprites, prefix, TextMargin, 4, color)
+
+  var choicesY = 4 + CharHeight + 4
+  if sceneState.header.len > 0:
+    let headerY = 4 + CharHeight + 2
+    let maxChars = charsFromX(TextMargin)
+    let header = if sceneState.header.len > maxChars * 2:
+        sceneState.header[0 ..< maxChars * 2]
+      else:
+        sceneState.header
+    let rows = fb.blitTextWrapped(letterSprites, digitSprites, header, TextMargin, headerY, 8)
+    choicesY = headerY + rows * 8 + 2
 
   let showCursor = player.kind == PlayerHuman and sceneState.step == SceneReading
   discard renderChoices(fb, letterSprites, digitSprites,
-    sceneState.choice, color, showCursor)
+    sceneState.choice, color, showCursor, startY = choicesY)
 
 proc renderSituation*(fb: var Framebuffer, letterSprites: seq[Sprite],
     digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,

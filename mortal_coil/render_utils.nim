@@ -29,6 +29,22 @@ proc blitTextWrappedTinted*(fb: var Framebuffer, letterSprites: seq[Sprite],
       break
   row
 
+proc blitTextWrapped*(fb: var Framebuffer, letterSprites: seq[Sprite],
+    digitSprites: array[10, Sprite], text: string, x, y: int, lineHeight: int): int =
+  let maxChars = charsFromX(x)
+  var row = 0
+  var pos = 0
+  while pos < text.len:
+    let remaining = text.len - pos
+    let lineLen = min(remaining, maxChars)
+    let line = text[pos ..< pos + lineLen]
+    fb.blitText(letterSprites, digitSprites, line, x, y + row * lineHeight)
+    pos += lineLen
+    inc row
+    if y + row * lineHeight + CharHeight > ScreenHeight:
+      break
+  row
+
 proc released*(current, prev: InputState): InputState =
   result.up = not current.up and prev.up
   result.down = not current.down and prev.down
