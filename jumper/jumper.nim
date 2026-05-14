@@ -1,5 +1,6 @@
 import
-  std/[json, locks, monotimes, os, parseopt, random, strutils, tables, times],
+  std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils,
+    tables, times],
   mummy, pixie, supersnappy,
   bitworld/aseprite, bitworld/clients, bitworld/tiled, pixelfonts,
   protocol, server
@@ -51,6 +52,11 @@ const
   MapLayerId = 0
   MapLayerKind = 0
   MapLayerFlags = 1
+  TopLeftLayerId = 1
+  TopLeftLayerKind = 1
+  TopLeftLayerFlags = 2
+  TopLeftViewportWidth = 128
+  TopLeftViewportHeight = 128
   SkySpriteId = 1
   PlayerSpriteBase = 100
   RadarSpriteBase = 200
@@ -63,6 +69,9 @@ const
   HudSpriteBase = 7000
   TextObjectBase = 7100
   TextSpriteBase = 7100
+  ScorePanelDigitSpriteBase = 7200
+  ScorePanelChipSpriteBase = 7300
+  ScorePanelNameSpriteBase = 7600
   ChatSpriteBase = 9000
   ChatObjectBase = 9000
   NameSpriteBase = 10000
@@ -82,6 +91,13 @@ const
   TextBackR = 0x33'u8
   TextBackG = 0x31'u8
   TextBackB = 0x36'u8
+  ScorePanelChipObjectBase = 11000
+  ScorePanelDigitObjectBase = 12000
+  ScorePanelNameObjectBase = 20000
+  ScorePanelChipSize = 3
+  ScorePanelChipGapX = 2
+  ScorePanelNameGapX = 2
+  ScorePanelMaxScoreChars = 16
   ChatLifetimeTicks = 5 * 24
 
 type
@@ -109,6 +125,18 @@ type
     message: string
     messageTicks: int
 
+  ScorePanelPlayer = object
+    index: int
+    score: int
+    color: uint8
+    name: string
+
+  SpriteCacheEntry = object
+    spriteId: int
+    width: int
+    height: int
+    pixels: seq[uint8]
+
   TileKind = enum
     TileAir
     TileDecoration
@@ -135,6 +163,7 @@ type
 
   PlayerViewerState = object
     initialized: bool
+    spriteCache: seq[SpriteCacheEntry]
 
   WebSocketAppState = object
     lock: Lock
@@ -217,6 +246,19 @@ proc putRgbaPixel(sprite: var RgbaSprite, x, y: int, color: ColorRGBA) =
   sprite.pixels[offset + 1] = color.g
   sprite.pixels[offset + 2] = color.b
   sprite.pixels[offset + 3] = color.a
+
+proc fillRgbaRect(
+  sprite: var RgbaSprite,
+  x,
+  y,
+  width,
+  height: int,
+  color: ColorRGBA
+) =
+  ## Fills one clipped RGBA rectangle.
+  for py in y ..< y + height:
+    for px in x ..< x + width:
+      sprite.putRgbaPixel(px, py, color)
 
 proc rgbaPixel(sprite: RgbaSprite, x, y: int): ColorRGBA =
   ## Reads one pixel from an RGBA sprite.
@@ -421,6 +463,20 @@ proc blitChatGlyph(
       if glyph.glyphPixel(gx, gy):
         target.putRgbaPixel(x + gx, y + gy, color)
 
+proc blitTinyText(
+  sim: SimServer,
+  target: var RgbaSprite,
+  text: string,
+  x, y: int,
+  color: ColorRGBA
+) =
+  ## Blits one Tiny5 text line into a sprite.
+  var dx = x
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    target.blitChatGlyph(glyph, dx, y, color)
+    dx += sim.textFont.glyphAdvance(ch)
+
 proc blitChatText(
   sim: SimServer,
   target: var RgbaSprite,
@@ -429,17 +485,11 @@ proc blitChatText(
   alpha: uint8
 ) =
   ## Blits one chat line into a chat bubble.
-  var dx = x
-  let color = rgba(255, 255, 255, alpha)
-  for ch in text:
-    let glyph = sim.textFont.glyphAt(ch)
-    target.blitChatGlyph(glyph, dx, y, color)
-    dx += sim.textFont.glyphAdvance(ch)
+  sim.blitTinyText(target, text, x, y, rgba(255, 255, 255, alpha))
 
 proc speechBubbleSprite(
   sim: SimServer,
-  text: string,
-  alpha: uint8
+  text: string
 ): RgbaSprite =
   ## Builds one speech bubble sprite for a player message.
   let
@@ -447,8 +497,8 @@ proc speechBubbleSprite(
     lineHeight = sim.textFont.height
     bodyWidth = textWidth + ChatPad * 2
     bodyHeight = lineHeight + ChatPad * 2
-    fill = rgba(TextBackR, TextBackG, TextBackB, alpha)
-    border = rgba(TextBackR, TextBackG, TextBackB, alpha)
+    fill = rgba(TextBackR, TextBackG, TextBackB, 255)
+    border = rgba(TextBackR, TextBackG, TextBackB, 255)
   result = newRgbaSprite(bodyWidth, bodyHeight + ChatPointerHeight)
   for y in 0 ..< bodyHeight:
     for x in 0 ..< bodyWidth:
@@ -464,7 +514,7 @@ proc speechBubbleSprite(
     let span = ChatPointerHeight - y - 1
     for x in pointerX - span .. pointerX + span:
       result.putRgbaPixel(x, bodyHeight + y, border)
-  sim.blitChatText(result, text, ChatPad, ChatPad, alpha)
+  sim.blitChatText(result, text, ChatPad, ChatPad, 255)
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   ## Appends one unsigned byte.
@@ -532,6 +582,36 @@ proc addRgbaSprite(
 ) =
   ## Appends one RGBA sprite definition.
   packet.addSprite(spriteId, sprite.width, sprite.height, sprite.pixels, label)
+
+proc addRgbaSpriteCached(
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
+  spriteId: int,
+  sprite: RgbaSprite,
+  label: string
+) =
+  ## Appends one RGBA sprite only when its pixels changed.
+  for item in cache.mitems:
+    if item.spriteId != spriteId:
+      continue
+    let unchanged =
+      item.width == sprite.width and
+      item.height == sprite.height and
+      item.pixels == sprite.pixels
+    if unchanged:
+      return
+    packet.addRgbaSprite(spriteId, sprite, label)
+    item.width = sprite.width
+    item.height = sprite.height
+    item.pixels = sprite.pixels
+    return
+  packet.addRgbaSprite(spriteId, sprite, label)
+  cache.add(SpriteCacheEntry(
+    spriteId: spriteId,
+    width: sprite.width,
+    height: sprite.height,
+    pixels: sprite.pixels
+  ))
 
 proc addObject(
   packet: var seq[uint8],
@@ -824,6 +904,12 @@ proc addSpriteProtocolInit(
   ## Appends the static sprite protocol setup for one sprite viewer.
   packet.addLayer(MapLayerId, MapLayerKind, MapLayerFlags)
   packet.addViewport(MapLayerId, viewportWidth, viewportHeight)
+  packet.addLayer(TopLeftLayerId, TopLeftLayerKind, TopLeftLayerFlags)
+  packet.addViewport(
+    TopLeftLayerId,
+    TopLeftViewportWidth,
+    TopLeftViewportHeight
+  )
   packet.addRgbaSprite(
     SkySpriteId,
     solidRgbaSprite(viewportWidth, viewportHeight, SkyColor),
@@ -896,6 +982,121 @@ proc nameTagSprite(sim: SimServer, text: string): RgbaSprite =
       result.putRgbaPixel(x, y, rgba(TextBackR, TextBackG, TextBackB, 255))
   sim.blitChatText(result, text, NamePadX, NamePadY, 255)
 
+proc scorePanelPlayers(sim: SimServer): seq[ScorePanelPlayer] =
+  ## Returns the players to display in the global score panel.
+  for i, player in sim.players:
+    result.add(ScorePanelPlayer(
+      index: i,
+      score: player.score,
+      color: player.color,
+      name: player.name
+    ))
+
+proc compareScorePanelPlayers(a, b: ScorePanelPlayer): int =
+  ## Sorts score panel players by descending score.
+  result = cmp(b.score, a.score)
+  if result == 0:
+    result = cmp(a.index, b.index)
+
+proc scorePanelScoreText(score: int): string =
+  ## Returns one non-negative score panel text value.
+  result = $max(0, score)
+  if result.len > ScorePanelMaxScoreChars:
+    result = result[0 ..< ScorePanelMaxScoreChars]
+
+proc scorePanelScoreWidth(
+  sim: SimServer,
+  players: openArray[ScorePanelPlayer]
+): int =
+  ## Returns the widest score label for one score panel.
+  for player in players:
+    let scoreText = scorePanelScoreText(player.score)
+    result = max(result, sim.textFont.textWidth(scoreText))
+
+proc scorePanelDigitSpriteId(ch: char): int =
+  ## Returns the sprite id for one score panel digit.
+  ScorePanelDigitSpriteBase + ord(ch) - ord('0')
+
+proc scorePanelChipSpriteId(playerIndex: int): int =
+  ## Returns the score panel chip sprite id for one player.
+  ScorePanelChipSpriteBase + playerIndex
+
+proc scorePanelNameSpriteId(playerIndex: int): int =
+  ## Returns the score panel name sprite id for one player.
+  ScorePanelNameSpriteBase + playerIndex
+
+proc scorePanelChipObjectId(playerIndex: int): int =
+  ## Returns the score panel chip object id for one player.
+  ScorePanelChipObjectBase + playerIndex
+
+proc scorePanelDigitObjectId(playerIndex, digitIndex: int): int =
+  ## Returns the score panel digit object id for one player digit.
+  ScorePanelDigitObjectBase +
+    playerIndex * ScorePanelMaxScoreChars + digitIndex
+
+proc scorePanelNameObjectId(playerIndex: int): int =
+  ## Returns the score panel name object id for one player.
+  ScorePanelNameObjectBase + playerIndex
+
+proc scorePanelDigitSprite(sim: SimServer, ch: char): RgbaSprite =
+  ## Builds one white score panel digit sprite.
+  sim.tiny5Sprite($ch, rgba(255, 255, 255, 255))
+
+proc scorePanelChipSprite(color: uint8): RgbaSprite =
+  ## Builds one solid score panel color chip.
+  result = newRgbaSprite(ScorePanelChipSize, ScorePanelChipSize)
+  result.fillRgbaRect(
+    0,
+    0,
+    ScorePanelChipSize,
+    ScorePanelChipSize,
+    rgbaColor(color)
+  )
+
+proc scorePanelNameSprite(
+  sim: SimServer,
+  player: ScorePanelPlayer
+): RgbaSprite =
+  ## Builds one score panel player name sprite.
+  sim.tiny5Sprite(player.name, rgbaColor(player.color))
+
+proc addScorePanelDigitSprites(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cache: var seq[SpriteCacheEntry]
+) =
+  ## Adds stable score panel digit sprites when pixels changed.
+  for ch in '0' .. '9':
+    packet.addRgbaSpriteCached(
+      cache,
+      scorePanelDigitSpriteId(ch),
+      sim.scorePanelDigitSprite(ch),
+      "score digit " & $ch
+    )
+
+proc addScorePanelPlayerSprites(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cache: var seq[SpriteCacheEntry],
+  player: ScorePanelPlayer
+) =
+  ## Adds one player's score panel sprites when pixels changed.
+  let
+    chip = scorePanelChipSprite(player.color)
+    name = sim.scorePanelNameSprite(player)
+  packet.addRgbaSpriteCached(
+    cache,
+    scorePanelChipSpriteId(player.index),
+    chip,
+    "score chip " & $player.index
+  )
+  packet.addRgbaSpriteCached(
+    cache,
+    scorePanelNameSpriteId(player.index),
+    name,
+    "score name " & player.name
+  )
+
 proc addTiny5Object(
   packet: var seq[uint8],
   sim: SimServer,
@@ -914,6 +1115,7 @@ proc addTiny5Object(
 proc addNameTag(
   packet: var seq[uint8],
   sim: SimServer,
+  cache: var seq[SpriteCacheEntry],
   player: Actor,
   playerIndex,
   screenX,
@@ -926,7 +1128,7 @@ proc addNameTag(
     x = screenX + PlayerBoxWidth div 2 - tag.width div 2
     y = screenY - PlayerSpriteOffsetY - tag.height - NameGapY
     spriteId = NameSpriteBase + playerIndex
-  packet.addRgbaSprite(spriteId, tag, "name " & player.name)
+  packet.addRgbaSpriteCached(cache, spriteId, tag, "name " & player.name)
   packet.addObject(
     NameObjectBase + playerIndex,
     x,
@@ -940,6 +1142,7 @@ proc addNameTag(
 proc addSpeechBubble(
   packet: var seq[uint8],
   sim: SimServer,
+  cache: var seq[SpriteCacheEntry],
   player: Actor,
   playerIndex,
   screenX,
@@ -950,16 +1153,11 @@ proc addSpeechBubble(
   if player.message.len == 0 or player.messageTicks <= 0:
     return
   let
-    alpha = uint8(clamp(
-      player.messageTicks * 255 div ChatLifetimeTicks,
-      1,
-      255
-    ))
-    bubble = sim.speechBubbleSprite(player.message, alpha)
+    bubble = sim.speechBubbleSprite(player.message)
     x = screenX + PlayerBoxWidth div 2 - bubble.width div 2
     y = anchorY - bubble.height - ChatGapY
     spriteId = ChatSpriteBase + playerIndex
-  packet.addRgbaSprite(spriteId, bubble, "chat " & player.message)
+  packet.addRgbaSpriteCached(cache, spriteId, bubble, "chat " & player.message)
   packet.addObject(
     ChatObjectBase + playerIndex,
     x,
@@ -968,6 +1166,58 @@ proc addSpeechBubble(
     MapLayerId,
     spriteId
   )
+
+proc addGlobalScorePanel(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cache: var seq[SpriteCacheEntry]
+) =
+  ## Appends the global score panel.
+  if sim.players.len == 0:
+    return
+  var players = sim.scorePanelPlayers()
+  players.sort(compareScorePanelPlayers)
+  packet.addScorePanelDigitSprites(sim, cache)
+  let
+    rowHeight = max(sim.textFont.lineHeight(), ScorePanelChipSize)
+    scoreColumnWidth = sim.scorePanelScoreWidth(players)
+    scoreXBase = ScorePanelChipSize + ScorePanelChipGapX
+    nameX = scoreXBase + scoreColumnWidth + ScorePanelNameGapX
+  for i, player in players:
+    packet.addScorePanelPlayerSprites(sim, cache, player)
+    let
+      rowY = i * rowHeight
+      chipY = rowY + (rowHeight - ScorePanelChipSize) div 2
+      scoreText = scorePanelScoreText(player.score)
+      scoreWidth = sim.textFont.textWidth(scoreText)
+      scoreX = scoreXBase + max(0, scoreColumnWidth - scoreWidth)
+    packet.addObject(
+      scorePanelChipObjectId(player.index),
+      0,
+      chipY,
+      int(high(int16)),
+      TopLeftLayerId,
+      scorePanelChipSpriteId(player.index)
+    )
+    packet.addObject(
+      scorePanelNameObjectId(player.index),
+      nameX,
+      rowY,
+      int(high(int16)),
+      TopLeftLayerId,
+      scorePanelNameSpriteId(player.index)
+    )
+    var digitX = scoreX
+    for digitIndex, ch in scoreText:
+      packet.addObject(
+        scorePanelDigitObjectId(player.index, digitIndex),
+        digitX,
+        rowY,
+        int(high(int16)),
+        TopLeftLayerId,
+        scorePanelDigitSpriteId(ch)
+      )
+      digitX += sim.textFont.glyphAdvance(ch)
 
 proc cameraXFor(sim: SimServer, player: Actor): int =
   ## Returns the player camera x coordinate.
@@ -1214,6 +1464,7 @@ proc buildSpriteProtocolPlayerUpdates(
       )
     let nameY = result.addNameTag(
       sim,
+      nextState.spriteCache,
       other,
       i,
       boxX,
@@ -1222,6 +1473,7 @@ proc buildSpriteProtocolPlayerUpdates(
     )
     result.addSpeechBubble(
       sim,
+      nextState.spriteCache,
       other,
       i,
       boxX,
@@ -1351,6 +1603,7 @@ proc buildSpriteProtocolGlobalUpdates(
       )
     let nameY = result.addNameTag(
       sim,
+      nextState.spriteCache,
       player,
       i,
       player.x,
@@ -1359,12 +1612,15 @@ proc buildSpriteProtocolGlobalUpdates(
     )
     result.addSpeechBubble(
       sim,
+      nextState.spriteCache,
       player,
       i,
       player.x,
       nameY,
       player.y + 201
     )
+
+  result.addGlobalScorePanel(sim, nextState.spriteCache)
 
 proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1600,7 +1856,7 @@ proc updateRespawns(sim: var SimServer) =
       sim.respawnPlayer(i)
 
 proc updateMessages(sim: var SimServer) =
-  ## Fades and clears player speech bubbles.
+  ## Clears player speech bubbles when their lifetime expires.
   for i in 0 ..< sim.players.len:
     if sim.players[i].messageTicks <= 0:
       if sim.players[i].message.len > 0:
