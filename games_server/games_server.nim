@@ -1509,13 +1509,34 @@ proc botContainerName(
   game.gamePrefix() & "_bot_" & cleanContainerName(bot.name) & "_" &
     $game.port & "_" & stamp
 
-proc botPlayerName(
-  game: GameContainer,
-  bot: CoplayerManifest,
-  stamp: string
-): string =
+proc displayWord(value: string): string =
+  ## Converts one manifest name word into a friendly display word.
+  if value.len == 0:
+    return ""
+  result.add(value[0].toUpperAscii())
+  if value.len > 1:
+    result.add(value[1 .. ^1].toLowerAscii())
+
+proc botDisplayName(name: string): string =
+  ## Builds a compact display name from one bot name.
+  var words: seq[string]
+  for part in name.split({'-', '_', '.', ' '}):
+    if part.len > 0:
+      words.add(displayWord(part))
+  if words.len == 0:
+    return "Bot"
+  words.join("")
+
+proc botPlayerName(botName: string, slot: int): string =
   ## Builds a visible in-game name for one bot.
-  bot.name & "-" & $game.port & "-" & stamp
+  let baseName = botDisplayName(botName)
+  if slot >= 0:
+    return baseName & $(slot + 1)
+  baseName
+
+proc botPlayerName(bot: CoplayerManifest, slot: int): string =
+  ## Builds a visible in-game name for one bot manifest.
+  botPlayerName(bot.name, slot)
 
 proc playerWsUrl(
   host: string,
@@ -2199,13 +2220,12 @@ proc botRunArgs(
   game: GameContainer,
   bot: CoplayerManifest,
   created: int64,
-  stamp: string,
   slot = -1,
   token = ""
 ): seq[string] =
   ## Builds Docker arguments for one bot container.
   let
-    playerName = botPlayerName(game, bot, stamp)
+    playerName = botPlayerName(bot, slot)
     endpoint = playerWsUrl(BotHost, game.port, playerName, slot, token)
   result = @[
     "run",
@@ -2273,7 +2293,6 @@ proc startWaitingBots(
         game,
         item.bot,
         created,
-        stamp,
         slot,
         token
       ))
@@ -2324,8 +2343,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     for item in botCounts:
       for i in 0 ..< item.count:
         let
-          stamp = launchStamp(i + 1)
-          playerName = item.bot.name & "-" & $GameContainerPort & "-" & stamp
+          playerName = botPlayerName(item.bot, slot)
           playerToken =
             if slot < playerTokens.len:
               playerTokens[slot]
@@ -2640,10 +2658,14 @@ proc createBots(
     let
       bot = findCoplayerManifest(gameInfo.cogameName, botKey)
       cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+    var existingCount = 0
+    for existingBot in ecsListBots():
+      if existingBot.gameTaskArn == gameName:
+        inc existingCount
     for i in 1 .. cleanCount:
       let
-        stamp = launchStamp(i)
-        playerName = bot.name & "-" & $GameContainerPort & "-" & stamp
+        slot = existingCount + i - 1
+        playerName = botPlayerName(bot, slot)
         botArn = ecsCreateBot(
           coplayerImage(bot),
           gameName,
@@ -2651,7 +2673,7 @@ proc createBots(
           bot.name,
           playerName,
           bot.binary,
-          i - 1,
+          slot,
           "",
           bot.arch,
         )
@@ -2671,10 +2693,12 @@ proc createBots(
   let
     bot = findCoplayerManifest(game.cogameName, botKey)
     cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+    existingCount = botsForGame(safeListBots(), game.name).len
   pullDockerImage(coplayerImage(bot))
   for i in 1 .. cleanCount:
     let
       created = getTime().toUnix()
+      slot = existingCount + i - 1
       stamp = launchStamp(i)
       name = botContainerName(game, bot, stamp)
     discard requireDocker(botRunArgs(
@@ -2682,8 +2706,7 @@ proc createBots(
       game,
       bot,
       created,
-      stamp,
-      i - 1,
+      slot,
       ""
     ))
     result.add(inspectBot(name))
@@ -3068,7 +3091,7 @@ proc renderGamesTable(
               href logUrl(game.name)
               target "_blank"
               say "logs"
-        for bot in gameBots:
+        for j, bot in gameBots:
           tr:
             td rowClass & " selectCell":
               say renderContainerCheckbox(bot.name)
@@ -3079,7 +3102,7 @@ proc renderGamesTable(
             td rowClass:
               say ""
             td rowClass:
-              say ""
+              say esc(botPlayerName(bot.bot, j))
             td rowClass & " nowrap":
               say esc(bot.name)
             td rowClass & " nowrap":
