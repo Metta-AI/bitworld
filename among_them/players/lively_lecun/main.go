@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -145,6 +147,11 @@ func runWebsocketURL(rawURL string) {
 				log.Printf("connection closed: %v", err)
 				closeStatus = websocket.StatusNormalClosure
 				closeReason = "server closed"
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				log.Printf("websocket closed: %v", err)
+				conn.Close(websocket.StatusNormalClosure, "bye")
 				return
 			}
 			log.Fatalf("read: %v", err)

@@ -29,30 +29,30 @@ type Agent struct {
 	// per-frame working buffer for pixels; callers write into Step's
 	// argument instead, so Agent doesn't own it.
 
-	sentMask     uint8 // last mask Step returned (for change logging)
-	currentPhase Phase
-	havePhase    bool
-	lastRole     StatusIconKind // most recent latched role, logged on change
-	voter        VoteController
-	suspect      SuspectTracker
-	bumper       Bumper
-	holder       TaskHolder
-	wanderer     Wanderer
-	frames       uint64
-	lastPosLog   uint64
-	lastBranch   string // most recent PhaseActive branch; logged on change
+	sentMask        uint8 // last mask Step returned (for change logging)
+	currentPhase    Phase
+	havePhase       bool
+	lastRole        StatusIconKind // most recent latched role, logged on change
+	voter           VoteController
+	suspect         SuspectTracker
+	bumper          Bumper
+	holder          TaskHolder
+	wanderer        Wanderer
+	frames          uint64
+	lastPosLog      uint64
+	lastBranch      string // most recent PhaseActive branch; logged on change
 	arrivedAt       uint64 // frame at which navigator first reported "arrived"; 0 means not currently arrived
 	arrivedLoggedAt Point  // last goal we emitted an "arrived at" log for; used to debounce against holder flicker
 
 	// After A* reports Unreachable we back off from station-nav for a few
 	// frames so we don't churn through every station's state. The suspend
 	// lifts when the player moves meaningfully or the counter expires.
-	navSuspendLeft  int
-	navSuspendPos   Point
-	lastPlayer   Point  // player world pos last seen while nav-stuck tracking
-	lastPlayerF  uint64 // frame when lastPlayer was last updated
-	stuckPerturb uint8  // non-zero while we're force-nudging through a pinned corner
-	stuckLeft    int    // frames remaining of the current stuck perturb
+	navSuspendLeft int
+	navSuspendPos  Point
+	lastPlayer     Point  // player world pos last seen while nav-stuck tracking
+	lastPlayerF    uint64 // frame when lastPlayer was last updated
+	stuckPerturb   uint8  // non-zero while we're force-nudging through a pinned corner
+	stuckLeft      int    // frames remaining of the current stuck perturb
 
 	// prevPlayer/prevPlayerF measure per-frame player displacement for the
 	// coast-to-stop logic. Unlike lastPlayer (which gates stuck detection
@@ -68,6 +68,7 @@ type Agent struct {
 
 	pendingChat string // drained by TakePendingChat(); emitted on websocket only
 	bodyGoal    bool   // true when nav's current goal is a body (highest priority)
+	bodyTarget  Point  // raw body world coord; nav.Goal may be snapped to a walkable cell
 
 	imposter *ImposterBrain // lazy-initialized when we observe an imposter role
 
@@ -81,8 +82,8 @@ type Agent struct {
 	// game-over, or role-reveal screen) and reset latched role state,
 	// which would otherwise stick across games and run stepImposter
 	// when the server has reassigned us as a crewmate in a new round.
-	idleStreak    uint32
-	didIdleReset  bool
+	idleStreak   uint32
+	didIdleReset bool
 }
 
 // NewAgent returns an Agent using the embedded skeld map + walk mask. It
@@ -186,6 +187,7 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 		a.aliveOthers = -1
 		a.nav.Clear()
 		a.bodyGoal = false
+		a.bodyTarget = Point{}
 		a.goalStation = -1
 		a.memory.Reset()
 	}
@@ -444,12 +446,14 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 				}
 				a.nav.Clear()
 				a.bodyGoal = false
+				a.bodyTarget = Point{}
 				return ButtonA
 			}
 			// Out of range: drop any existing goal and head to the body.
-			if !a.bodyGoal || a.nav.Goal() != bodyW {
+			if !a.bodyGoal || a.bodyTarget != bodyW {
 				if a.nav.SetGoal(bodyW) {
 					a.bodyGoal = true
+					a.bodyTarget = bodyW
 					a.goalStation = -1
 					a.arrivedAt = 0
 					log.Printf("body: nav to color=%d at %v (player %v, dist²=%d)",
@@ -460,6 +464,7 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 			// Body left view; clear the goal so normal task/nav resumes.
 			a.nav.Clear()
 			a.bodyGoal = false
+			a.bodyTarget = Point{}
 			a.arrivedAt = 0
 		}
 	}
