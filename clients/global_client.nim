@@ -232,8 +232,14 @@ proc sendBytes(app: GlobalApp, bytes: openArray[uint8]) =
   let packet = blobFromBytes(bytes)
   if app.packetSink != nil:
     app.packetSink(packet)
-  elif app.network.connected:
-    app.network.ws.send(packet, BinaryMessage)
+  when not defined(emscripten):
+    if app.packetSink == nil and app.network.connected:
+      app.network.ws.send(packet, BinaryMessage)
+
+proc closeNetwork(app: GlobalApp) =
+  ## Closes the native websocket connection.
+  when not defined(emscripten):
+    app.network.ws.close()
 
 proc sendPlayerButtons(app: GlobalApp) =
   ## Sends the current player button mask for sprite player mode.
@@ -593,7 +599,7 @@ proc parseMessage*(app: GlobalApp, data: string) =
   proc require(bytes: int) =
     ## Raises when a packet does not have enough bytes left.
     if offset + bytes > data.len:
-      app.network.ws.close()
+      app.closeNetwork()
       raise newException(ValueError, "Truncated global protocol packet")
 
   while offset < data.len:
@@ -610,7 +616,7 @@ proc parseMessage*(app: GlobalApp, data: string) =
         size = width * height * 4
       offset += 10
       if width <= 0 or height <= 0 or size < 0:
-        app.network.ws.close()
+        app.closeNetwork()
         return
       require(compressedSize)
       var compressed = newSeq[uint8](compressedSize)
@@ -621,10 +627,10 @@ proc parseMessage*(app: GlobalApp, data: string) =
       try:
         sprite.pixels = supersnappy.uncompress(compressed)
       except SnappyError:
-        app.network.ws.close()
+        app.closeNetwork()
         return
       if sprite.pixels.len != size:
-        app.network.ws.close()
+        app.closeNetwork()
         return
       require(2)
       let labelLength = data.readU16(offset)
@@ -662,7 +668,7 @@ proc parseMessage*(app: GlobalApp, data: string) =
         height = data.readU16(offset + 3)
       offset += 5
       if width <= 0 or height <= 0:
-        app.network.ws.close()
+        app.closeNetwork()
         return
       var layer = app.layerIndex(layerId)
       layer.width = width
@@ -679,7 +685,7 @@ proc parseMessage*(app: GlobalApp, data: string) =
         flags = ord(data[offset + 2])
       offset += 3
       if kind < 0 or kind > 8:
-        app.network.ws.close()
+        app.closeNetwork()
         return
       var layer = app.layerIndex(layerId)
       layer.kind = kind
@@ -687,56 +693,57 @@ proc parseMessage*(app: GlobalApp, data: string) =
       app.layers[layerId] = layer
       app.maybeFit()
     else:
-      app.network.ws.close()
+      app.closeNetwork()
       return
 
 proc connectNetwork(app: GlobalApp) =
   ## Opens the global websocket connection.
-  app.network.connected = false
-  app.network.connecting = true
-  app.network.errorMessage = ""
-  app.network.lastConnectAttemptAt = getMonoTime()
-
-  let ws = openWebSocket(app.network.url, noDelay = true)
-  app.network.ws = ws
-
-  ws.onOpen = proc() =
-    if app.network.ws != ws:
-      return
-    app.network.connected = true
-    app.network.connecting = false
+  when not defined(emscripten):
+    app.network.connected = false
+    app.network.connecting = true
     app.network.errorMessage = ""
-    app.sendPlayerButtons()
-
-  ws.onMessage = proc(msg: string, kind: WebSocketMessageKind) =
-    if app.network.ws != ws:
-      return
-    if kind == BinaryMessage:
-      try:
-        app.parseMessage(msg)
-      except ValueError as e:
-        app.network.errorMessage = e.msg
-
-  ws.onError = proc(msg: string) =
-    if app.network.ws != ws:
-      return
-    app.network.connected = false
-    app.network.connecting = false
     app.network.lastConnectAttemptAt = getMonoTime()
-    app.network.errorMessage = msg
 
-  ws.onClose = proc() =
-    if app.network.ws != ws:
-      return
-    app.network.connected = false
-    app.network.connecting = false
-    app.network.lastConnectAttemptAt = getMonoTime()
+    let ws = openWebSocket(app.network.url, noDelay = true)
+    app.network.ws = ws
+
+    ws.onOpen = proc() =
+      if app.network.ws != ws:
+        return
+      app.network.connected = true
+      app.network.connecting = false
+      app.network.errorMessage = ""
+      app.sendPlayerButtons()
+
+    ws.onMessage = proc(msg: string, kind: WebSocketMessageKind) =
+      if app.network.ws != ws:
+        return
+      if kind == BinaryMessage:
+        try:
+          app.parseMessage(msg)
+        except ValueError as e:
+          app.network.errorMessage = e.msg
+
+    ws.onError = proc(msg: string) =
+      if app.network.ws != ws:
+        return
+      app.network.connected = false
+      app.network.connecting = false
+      app.network.lastConnectAttemptAt = getMonoTime()
+      app.network.errorMessage = msg
+
+    ws.onClose = proc() =
+      if app.network.ws != ws:
+        return
+      app.network.connected = false
+      app.network.connecting = false
+      app.network.lastConnectAttemptAt = getMonoTime()
 
 proc reconnectNetwork(app: GlobalApp) =
   ## Closes the current socket and starts a new connection.
   if app.packetSink != nil:
     return
-  app.network.ws.close()
+  app.closeNetwork()
   app.connectNetwork()
 
 proc tickNetwork(app: GlobalApp) =
@@ -1151,7 +1158,7 @@ proc resetProtocolState*(app: GlobalApp) =
 proc shutdown*(app: GlobalApp) =
   ## Closes the global websocket.
   if app.packetSink == nil:
-    app.network.ws.close()
+    app.closeNetwork()
 
 proc runGlobalClient*(
   address = DefaultGlobalAddress,
