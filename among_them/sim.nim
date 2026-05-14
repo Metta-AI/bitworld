@@ -1545,6 +1545,26 @@ proc configuredPlayerName*(config: GameConfig, requestedSlot: int, token: string
       return slot.name
   ""
 
+proc playerJoinAllowed*(
+  config: GameConfig,
+  address: string,
+  requestedSlot: int,
+  token: string
+): bool =
+  ## Returns whether a player request can satisfy configured slot auth.
+  if requestedSlot >= MaxPlayers:
+    return false
+  if requestedSlot >= 0:
+    if config.closedRoster and requestedSlot >= config.slots.len:
+      return false
+    return config.slotAuthMatches(requestedSlot, address, token)
+  if not config.closedRoster:
+    return true
+  for i in 0 ..< config.slots.len:
+    if config.slotAuthMatches(i, address, token):
+      return true
+  false
+
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.
   for player in sim.players:
@@ -1748,6 +1768,31 @@ proc playerAddressOccupied*(sim: SimServer, address: string): bool =
     if player.address == address:
       return true
   false
+
+proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
+  ## Removes one live player and keeps index-keyed state aligned.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.players.delete(playerIndex)
+  for task in sim.tasks.mitems:
+    if playerIndex < task.completed.len:
+      task.completed.delete(playerIndex)
+  if sim.phase in {Voting, VoteResult}:
+    if playerIndex < sim.voteState.votes.len:
+      sim.voteState.votes.delete(playerIndex)
+    if playerIndex < sim.voteState.cursor.len:
+      sim.voteState.cursor.delete(playerIndex)
+    let skipIndex = sim.players.len
+    for vote in sim.voteState.votes.mitems:
+      if vote > playerIndex:
+        dec vote
+      if vote > skipIndex:
+        vote = -2
+    for cursor in sim.voteState.cursor.mitems:
+      if cursor > playerIndex:
+        dec cursor
+      if cursor > skipIndex:
+        cursor = skipIndex
 
 proc addPlayer*(
   sim: var SimServer,
