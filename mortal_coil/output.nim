@@ -33,3 +33,12 @@ proc logFactOutcome*(players: seq[Player], currentTurn: int,
     echo "  pass: ", factText
   else:
     echo "  veto: ", factText
+
+proc logSituation*(title, description: string) =
+  echo ""
+  echo "--- Situation ---"
+  echo "  ", title
+  echo "  ", description
+
+proc logSituationAction*(player: Player, actionText: string) =
+  echo "  ", player.name, ": ", actionText

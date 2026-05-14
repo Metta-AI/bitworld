@@ -16,7 +16,7 @@ const
   WorldDescTicks = 24 * 10
   SituationTitleTicks = 24 * 3
   SituationDescTicks = 24 * 10
-  SceneReadTicks = 24 * 3
+  SceneReadTicks = 24 * 10
   SceneAcceptTicks = 24 * 1
   FactReadTicks = 24 * 3
   FactAcceptTicks = 24 * 1
@@ -188,6 +188,10 @@ proc generateSceneOpts(sim: var SimServer) =
   sim.sceneState.step = SceneReading
   sim.sceneTimer = SceneReadTicks
 
+proc startSceneTurn(sim: var SimServer) =
+  sim.sceneState = SceneState(step: SceneGazing)
+  sim.sceneTimer = 1
+
 proc startSceneChoices(sim: var SimServer) =
   sim.sceneTurnOrder = @[]
   for i in 0 ..< sim.players.len:
@@ -195,8 +199,7 @@ proc startSceneChoices(sim: var SimServer) =
   sim.rng.shuffle(sim.sceneTurnOrder)
   sim.sceneTurnIndex = 0
   sim.currentTurn = sim.sceneTurnOrder[0]
-  sim.sceneState = SceneState(step: SceneGazing)
-  sim.sceneTimer = 1
+  sim.startSceneTurn()
 
 proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
   for py in y ..< y + h:
@@ -707,11 +710,13 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     elif sim.situationStep == SituationTitle and sim.situationTimer <= 0:
       sim.situationStep = SituationDescription
       sim.situationTimer = SituationDescTicks
+      logSituation(sim.situation.title, sim.situation.description)
     elif sim.situationStep == SituationDescription and sim.situationTimer <= 0:
       sim.situationStep = SituationChoices
       sim.startSceneChoices()
 
     elif sim.situationStep == SituationChoices:
+      dec sim.sceneTimer
       let turnPlayer = sim.players[sim.currentTurn]
       let turnIsHuman = turnPlayer.kind == PlayerHuman
       let turnPrev = if sim.currentTurn < sim.prevInputs.len: sim.prevInputs[sim.currentTurn]
@@ -723,7 +728,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       if sim.sceneState.step == SceneGazing and sim.sceneTimer <= 0:
         sim.generateSceneOpts()
 
-      elif sim.sceneState.step == SceneReading:
+      elif sim.sceneState.step == SceneReading and sim.sceneState.choice.state == ChoiceReading:
         if turnIsHuman:
           sim.sceneState.choice.handleChoiceInput(turnInput)
           sim.players[sim.currentTurn].cursor = sim.sceneState.choice.cursor
@@ -742,6 +747,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             sim.sceneState.choice.options[sel]
           else:
             "do nothing"
+        logSituationAction(player, actionText)
         sim.chatLog.add(ChatEntry(
           name: player.name,
           colorIndex: uint8(player.colorIndex),
@@ -761,10 +767,10 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
             sim.phase = PhaseMagicalFacts
             sim.currentTurn = 0
             sim.startFactTurn()
+            logMagicalFactsPhase()
         else:
           sim.currentTurn = sim.sceneTurnOrder[sim.sceneTurnIndex]
-          sim.sceneState = SceneState(step: SceneGazing)
-          sim.sceneTimer = 1
+          sim.startSceneTurn()
   else:
     discard
   sim.prevInputs = inputs
