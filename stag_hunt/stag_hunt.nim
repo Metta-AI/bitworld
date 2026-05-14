@@ -1,6 +1,7 @@
 import mummy
 import pixie
 import supersnappy
+import bitworld/clients
 import protocol, server
 import std/[locks, monotimes, os, parseopt, random, sets, strutils, tables, times]
 
@@ -1053,9 +1054,45 @@ proc serveHealthz(request: Request): bool =
   request.respond(200, headers, "healthy")
   true
 
+proc isWebSocketUpgrade(request: Request): bool =
+  request.headers["Sec-WebSocket-Key"].len > 0
+
+proc isStaticRoute(route: string): bool =
+  case route
+  of PlayerClientRoute, PlayerClientHtmlRoute, CoworldPlayerClientRoute,
+      GlobalClientRoute, GlobalClientHtmlRoute, CoworldGlobalClientRoute,
+      SnappyClientRoute, SnappyClientPath, CoworldSnappyClientRoute:
+    true
+  else:
+    false
+
+proc serveClientFile(request: Request, route: string): bool =
+  if request.httpMethod != "GET":
+    return false
+  let filePath = clientStaticPath(route, GlobalClientRoute)
+  if filePath.len == 0:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
+  headers["Cache-Control"] = "no-cache"
+  if not fileExists(filePath):
+    request.respond(404, headers, "Missing static client: " & route)
+    return true
+  try:
+    request.respond(200, headers, readFile(filePath))
+  except IOError as e:
+    request.respond(500, headers, "Could not read static client: " & e.msg)
+  true
+
 proc httpHandler(request: Request) =
   if request.serveHealthz():
     discard
+  elif request.path == WebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientFile(GlobalClientRoute)
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientFile(GlobalClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -1070,6 +1107,8 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.globalViewers.incl(websocket)
         appState.globalStates[websocket] = ViewerState()
+  elif request.path.isStaticRoute():
+    discard request.serveClientFile(request.path)
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
