@@ -92,7 +92,7 @@ proc addPlayer(sim: var SimServer, name: string, kind: PlayerKind = PlayerHuman)
     kind: kind,
     soul: newSoul(),
     cursor: 0,
-    magicTokens: 4
+    power: 4
   ))
   idx
 
@@ -227,7 +227,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     if conflictResult == ConflictDone:
       var allSpent = true
       for p in sim.players:
-        if p.magicTokens > 0:
+        if p.power > 0:
           allSpent = false
           break
       if allSpent:

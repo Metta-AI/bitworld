@@ -18,7 +18,7 @@ type
     kind*: PlayerKind
     soul*: Soul
     cursor*: int
-    magicTokens*: int
+    power*: int
 
   GamePhase* = enum
     PhaseLobby

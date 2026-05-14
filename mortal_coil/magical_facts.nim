@@ -110,7 +110,7 @@ proc renderFactChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
   if voting:
     fb.renderVotePanel(letterSprites, players, currentTurn, factChoice)
   else:
-    let tokenText = "magic " & $player.magicTokens
+    let tokenText = "power " & $player.power
     let tokenX = (ScreenWidth - tokenText.len * CharWidth) div 2
     let tokenY = y + (ScreenHeight - y - CharHeight) div 2
     fb.blitTextTinted(letterSprites, digitSprites, tokenText, tokenX, tokenY, color)
@@ -256,7 +256,7 @@ proc stepMagicalFacts*(players: var seq[Player], currentTurn: var int,
           text: "vetoed"
         ))
       else:
-        players[currentTurn].magicTokens -= 1
+        players[currentTurn].power -= 1
         chatLog.add(ChatEntry(
           name: player.name,
           colorIndex: uint8(player.colorIndex),
