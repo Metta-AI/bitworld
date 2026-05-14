@@ -20,6 +20,15 @@ const SceneOptionMaxLen* = 38
 const SceneOptionPadding* = 8
 
 type
+  Attitude* = enum
+    Adversarial
+    Neutral
+    Cooperative
+
+  ChoiceScheme* = object
+    attitude*: Attitude
+    effect*: int
+
   World* = object
     title*: string
     description*: string
@@ -202,7 +211,7 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
     for entry in chatLog:
       prompt.add("- " & entry & "\n")
 
-  prompt.add("Respond with exactly 5 lines, nothing else.")
+  prompt.add("Respond with exactly 5 lines, no prefixes, no numbering, no bullets, just raw text.")
 
   let response = claude.ask(prompt)
   let lines = response.strip().splitLines()
@@ -224,11 +233,82 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
   for i in 1 ..< nonEmpty.len:
     if idx >= 4:
       break
-    let trimmed = nonEmpty[i]
-    if trimmed.len <= SceneOptionMaxLen:
-      result.options[idx] = trimmed
+    let cleaned = nonEmpty[i]
+    if cleaned.len <= SceneOptionMaxLen:
+      result.options[idx] = cleaned
     else:
-      result.options[idx] = trimmed[0 ..< SceneOptionMaxLen]
+      result.options[idx] = cleaned[0 ..< SceneOptionMaxLen]
+    inc idx
+
+  for i in idx ..< 4:
+    result.options[i] = "stare into the void"
+
+proc attitudeDescription(attitude: Attitude): string =
+  case attitude
+  of Adversarial: "adversarial (harms or exploits another party member)"
+  of Neutral: "neutral (affects only self or enemies, not allies)"
+  of Cooperative: "cooperative (helps or protects another party member)"
+
+proc effectDescription(effect: int): string =
+  if effect > 0: "gains " & $effect & " power"
+  elif effect < 0: "costs " & $(-effect) & " power"
+  else: "no power change"
+
+proc generateConflictOptions*(soul: Soul, world: World, conflict: Conflict,
+    schemes: array[4, ChoiceScheme], chatLog: seq[string]): ScenePrompt =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
+  prompt &= "Generate a short header summarizing what this player perceives, followed by 4 actions.\n"
+  prompt &= "The header is this player's subjective take on the conflict.\n"
+  prompt &= "Each action MUST match its assigned attitude and power effect:\n"
+  for i in 0 ..< 4:
+    prompt &= "  - " & attitudeDescription(schemes[i].attitude) &
+      ", " & effectDescription(schemes[i].effect) & "\n"
+  prompt &= "Adversarial = action taken against party members (using them as cover, attacking them).\n"
+  prompt &= "Neutral = action affecting only self or enemies (attacking a monster, dodging, thinking).\n"
+  prompt &= "Cooperative = action benefiting party members (shielding them, healing them).\n"
+  prompt &= "Respond with exactly 5 lines:\n"
+  prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, lowercase)\n"
+  prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, lowercase)\n"
+
+  if soul.passions.len > 0:
+    prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
+    prompt.add("The header and actions should reflect these passions. ")
+
+  if chatLog.len > 0:
+    prompt.add("The story so far:\n")
+    for entry in chatLog:
+      prompt.add("- " & entry & "\n")
+
+  prompt.add("Respond with exactly 5 lines, no prefixes, no numbering, no bullets, just raw text.")
+
+  let response = claude.ask(prompt)
+  let lines = response.strip().splitLines()
+
+  var nonEmpty: seq[string]
+  for line in lines:
+    let trimmed = line.strip()
+    if trimmed.len > 0:
+      nonEmpty.add(trimmed)
+
+  if nonEmpty.len >= 1:
+    result.header = nonEmpty[0]
+    if result.header.len > SceneHeaderMaxLen:
+      result.header = result.header[0 ..< SceneHeaderMaxLen]
+  else:
+    result.header = "the conflict deepens"
+
+  var idx = 0
+  for i in 1 ..< nonEmpty.len:
+    if idx >= 4:
+      break
+    let cleaned = nonEmpty[i]
+    if cleaned.len <= SceneOptionMaxLen:
+      result.options[idx] = cleaned
+    else:
+      result.options[idx] = cleaned[0 ..< SceneOptionMaxLen]
     inc idx
 
   for i in idx ..< 4:

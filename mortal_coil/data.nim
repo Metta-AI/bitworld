@@ -79,6 +79,7 @@ type
   ConflictState* = object
     step*: ConflictStep
     round*: int
+    schemes*: array[4, ChoiceScheme]
     sceneState*: SceneState
     sceneTimer*: int
     sceneTurnOrder*: seq[int]

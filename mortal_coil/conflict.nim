@@ -1,4 +1,4 @@
-import std/random
+import std/[random, strutils]
 import protocol, server, soul, choose, data, output, render_utils
 
 const
@@ -9,6 +9,12 @@ const
   ConflictResolutionTicks* = 24 * 10
   ConflictMaxRounds* = 3
   BackgroundColor = 1'u8
+  EffectColor = 3'u8
+
+proc randomizeSchemes(conflictState: var ConflictState, rng: var Rand) =
+  for i in 0 ..< 4:
+    conflictState.schemes[i].attitude = Attitude(rng.rand(2))
+    conflictState.schemes[i].effect = rng.rand(4) - 2
 
 proc startConflictSceneTurn(conflictState: var ConflictState) =
   conflictState.sceneState = SceneState(step: SceneGazing)
@@ -16,6 +22,7 @@ proc startConflictSceneTurn(conflictState: var ConflictState) =
 
 proc startConflictChoices*(players: seq[Player], rng: var Rand,
     conflictState: var ConflictState, currentTurn: var int) =
+  randomizeSchemes(conflictState, rng)
   conflictState.sceneTurnOrder = @[]
   for i in 0 ..< players.len:
     conflictState.sceneTurnOrder.add(i)
@@ -28,13 +35,18 @@ proc generateConflictSceneOpts(players: seq[Player], currentTurn: int,
     world: World, conflict: Conflict, chatLog: seq[ChatEntry],
     conflictState: var ConflictState) =
   let player = players[currentTurn]
-  let situation = Situation(title: conflict.title, description: conflict.description)
-  let scene = player.soul.generateSceneOptions(world, situation, chatLogStrings(chatLog))
+  let scene = player.soul.generateConflictOptions(
+    world, conflict, conflictState.schemes, chatLogStrings(chatLog))
   conflictState.sceneState.header = scene.header
   conflictState.sceneState.choice = initChoice(
     @[scene.options[0], scene.options[1], scene.options[2], scene.options[3]], "do nothing")
   conflictState.sceneState.step = SceneReading
   conflictState.sceneTimer = ConflictSceneReadTicks
+
+proc effectPrefix(scheme: ChoiceScheme): string =
+  if scheme.effect > 0: "+" & $scheme.effect & "p"
+  elif scheme.effect < 0: $scheme.effect & "p"
+  else: "+0p"
 
 proc renderConflictChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
     digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,
@@ -57,8 +69,44 @@ proc renderConflictChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
     choicesY = headerY + rows * 8 + 2
 
   let showCursor = player.kind == PlayerHuman and conflictState.sceneState.step == SceneReading
-  discard renderChoices(fb, letterSprites, digitSprites,
-    conflictState.sceneState.choice, color, showCursor, startY = choicesY)
+  let ctx = conflictState.sceneState.choice
+  let textX = TextMargin + 8
+  var y = choicesY
+
+  for i in 0 ..< ctx.options.len:
+    let selected = ctx.state >= ChoiceSelected and ctx.selected == i
+    let cursored = showCursor and ctx.cursor == i
+    if selected or cursored:
+      fb.fillRect(TextMargin, y, 6, 6, color)
+    else:
+      fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
+
+    let ep = effectPrefix(conflictState.schemes[i])
+    fb.blitTextTinted(letterSprites, digitSprites, ep, textX, y, EffectColor)
+    let padding = ' '.repeat(ep.len + 1)
+    let fullText = padding & ctx.options[i]
+    let rows = fb.blitTextWrapped(letterSprites, digitSprites, fullText, textX, y, 8)
+
+    if selected:
+      let frameX = TextMargin - 2
+      let frameY = y - 2
+      let frameW = ScreenWidth - TextMargin * 2 + 4
+      let frameH = rows * 8 + 3
+      fb.fillRect(frameX, frameY, frameW, 1, color)
+      fb.fillRect(frameX, frameY + frameH - 1, frameW, 1, color)
+      fb.fillRect(frameX, frameY, 1, frameH, color)
+      fb.fillRect(frameX + frameW - 1, frameY, 1, frameH, color)
+    y += rows * 8 + 2
+
+  if ctx.extraOption.len > 0 and y + CharHeight <= ScreenHeight:
+    let extraIdx = ctx.options.len
+    let selectedExtra = ctx.state >= ChoiceSelected and ctx.selected >= extraIdx
+    let cursoredExtra = showCursor and ctx.cursor >= extraIdx
+    if selectedExtra or cursoredExtra:
+      fb.fillRect(TextMargin, y, 6, 6, color)
+    else:
+      fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
+    fb.blitText(letterSprites, ctx.extraOption, textX, y)
 
 proc renderConflict*(fb: var Framebuffer, letterSprites: seq[Sprite],
     digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,
@@ -147,16 +195,17 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
         conflictState.sceneTimer = ConflictSceneAcceptTicks
 
     elif conflictState.sceneState.choice.state == ChoiceSelected and conflictState.sceneTimer <= 0:
-      let player = players[currentTurn]
       let sel = conflictState.sceneState.choice.selected
       let actionText = if sel < conflictState.sceneState.choice.options.len:
           conflictState.sceneState.choice.options[sel]
         else:
           "do nothing"
-      logConflictAction(player, actionText)
+      if sel < 4:
+        players[currentTurn].power += conflictState.schemes[sel].effect
+      logConflictAction(players[currentTurn], actionText)
       chatLog.add(ChatEntry(
-        name: player.name,
-        colorIndex: uint8(player.colorIndex),
+        name: players[currentTurn].name,
+        colorIndex: uint8(players[currentTurn].colorIndex),
         text: actionText
       ))
       conflictState.sceneTurnIndex += 1
