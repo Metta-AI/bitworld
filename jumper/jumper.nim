@@ -65,14 +65,23 @@ const
   TextSpriteBase = 7100
   ChatSpriteBase = 9000
   ChatObjectBase = 9000
+  NameSpriteBase = 10000
+  NameObjectBase = 10000
   DebugPlayerBoxSpriteId = 900
   DebugPlayerBoxObjectBase = 8000
   DebugPlayerBounds = false
   OverlapResolvePasses = 4
   ChatMaxChars = 24
+  NameMaxChars = 14
   ChatPad = 3
   ChatPointerHeight = 3
   ChatGapY = 4
+  NamePadX = 2
+  NamePadY = 1
+  NameGapY = 2
+  TextBackR = 0x33'u8
+  TextBackG = 0x31'u8
+  TextBackB = 0x36'u8
   ChatLifetimeTicks = 5 * 24
 
 type
@@ -96,6 +105,7 @@ type
     respawnTimer: int
     facingRight: bool
     color: uint8
+    name: string
     message: string
     messageTicks: int
 
@@ -133,6 +143,7 @@ type
     playerIndices: Table[WebSocket, int]
     playerViewers: Table[WebSocket, PlayerViewerState]
     globalViewers: Table[WebSocket, PlayerViewerState]
+    playerNames: Table[WebSocket, string]
     chatMessages: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
     tokens: seq[string]
@@ -378,13 +389,21 @@ proc chatCharSupported(ch: char): bool =
   ## Returns true when Jumper can draw one chat character.
   ch >= ' ' and ch <= '~'
 
-proc cleanChatMessage(message: string): string =
-  ## Normalizes one submitted player chat message.
-  for ch in message.strip():
-    if result.len >= ChatMaxChars:
+proc cleanDisplayText(text: string, maxChars: int): string =
+  ## Normalizes one printable Tiny5 text field.
+  for ch in text.strip():
+    if result.len >= maxChars:
       return
     if ch.chatCharSupported():
       result.add(ch)
+
+proc cleanChatMessage(message: string): string =
+  ## Normalizes one submitted player chat message.
+  cleanDisplayText(message, ChatMaxChars)
+
+proc cleanPlayerName(name: string): string =
+  ## Normalizes one submitted player display name.
+  cleanDisplayText(name, NameMaxChars)
 
 proc chatTextWidth(sim: SimServer, text: string): int =
   ## Returns the rendered width of one chat line.
@@ -428,8 +447,8 @@ proc speechBubbleSprite(
     lineHeight = sim.textFont.height
     bodyWidth = textWidth + ChatPad * 2
     bodyHeight = lineHeight + ChatPad * 2
-    fill = rgba(0, 0, 0, alpha)
-    border = rgba(0, 0, 0, alpha)
+    fill = rgba(TextBackR, TextBackG, TextBackB, alpha)
+    border = rgba(TextBackR, TextBackG, TextBackB, alpha)
   result = newRgbaSprite(bodyWidth, bodyHeight + ChatPointerHeight)
   for y in 0 ..< bodyHeight:
     for x in 0 ..< bodyWidth:
@@ -746,15 +765,24 @@ proc resolveOverlaps(sim: var SimServer) =
     if not moved:
       break
 
-proc addPlayer(sim: var SimServer): int =
-  let spawn = sim.randomSpawn()
-  let color = PlayerColors[sim.nextColorIndex mod PlayerColors.len]
+proc addPlayer(sim: var SimServer, name: string): int =
+  ## Adds one player at a random spawn point.
+  let
+    spawn = sim.randomSpawn()
+    color = PlayerColors[sim.nextColorIndex mod PlayerColors.len]
+    requestedName = name.cleanPlayerName()
+    cleanName =
+      if requestedName.len > 0:
+        requestedName
+      else:
+        "player " & $(sim.players.len + 1)
   inc sim.nextColorIndex
   sim.players.add Actor(
     x: spawn.x,
     y: spawn.y,
     facingRight: true,
     color: color,
+    name: cleanName,
   )
   result = sim.players.high
   sim.resolveOverlaps()
@@ -857,6 +885,17 @@ proc tiny5Sprite(
     result.blitChatGlyph(glyph, x, 0, color)
     x += sim.textFont.glyphAdvance(ch)
 
+proc nameTagSprite(sim: SimServer, text: string): RgbaSprite =
+  ## Builds one compact player name tag sprite.
+  let
+    width = max(1, sim.textFont.textWidth(text) + NamePadX * 2)
+    height = sim.textFont.height + NamePadY * 2
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, rgba(TextBackR, TextBackG, TextBackB, 255))
+  sim.blitChatText(result, text, NamePadX, NamePadY, 255)
+
 proc addTiny5Object(
   packet: var seq[uint8],
   sim: SimServer,
@@ -872,7 +911,7 @@ proc addTiny5Object(
   packet.addRgbaSprite(spriteId, sprite, text)
   packet.addObject(objectId, x, y, z, MapLayerId, spriteId)
 
-proc addSpeechBubble(
+proc addNameTag(
   packet: var seq[uint8],
   sim: SimServer,
   player: Actor,
@@ -880,8 +919,34 @@ proc addSpeechBubble(
   screenX,
   screenY,
   z: int
+): int =
+  ## Appends a player name tag and returns its top y coordinate.
+  let
+    tag = sim.nameTagSprite(player.name)
+    x = screenX + PlayerBoxWidth div 2 - tag.width div 2
+    y = screenY - PlayerSpriteOffsetY - tag.height - NameGapY
+    spriteId = NameSpriteBase + playerIndex
+  packet.addRgbaSprite(spriteId, tag, "name " & player.name)
+  packet.addObject(
+    NameObjectBase + playerIndex,
+    x,
+    y,
+    z,
+    MapLayerId,
+    spriteId
+  )
+  y
+
+proc addSpeechBubble(
+  packet: var seq[uint8],
+  sim: SimServer,
+  player: Actor,
+  playerIndex,
+  screenX,
+  anchorY,
+  z: int
 ) =
-  ## Appends a speech bubble object above one player.
+  ## Appends a speech bubble object above one player name.
   if player.message.len == 0 or player.messageTicks <= 0:
     return
   let
@@ -892,7 +957,7 @@ proc addSpeechBubble(
     ))
     bubble = sim.speechBubbleSprite(player.message, alpha)
     x = screenX + PlayerBoxWidth div 2 - bubble.width div 2
-    y = screenY - bubble.height - ChatGapY
+    y = anchorY - bubble.height - ChatGapY
     spriteId = ChatSpriteBase + playerIndex
   packet.addRgbaSprite(spriteId, bubble, "chat " & player.message)
   packet.addObject(
@@ -1147,13 +1212,21 @@ proc buildSpriteProtocolPlayerUpdates(
         MapLayerId,
         DebugPlayerBoxSpriteId
       )
-    result.addSpeechBubble(
+    let nameY = result.addNameTag(
       sim,
       other,
       i,
       boxX,
       boxY,
       boxY + 200
+    )
+    result.addSpeechBubble(
+      sim,
+      other,
+      i,
+      boxX,
+      nameY,
+      boxY + 201
     )
 
   let pcx = sim.playerCenterX(player)
@@ -1276,13 +1349,21 @@ proc buildSpriteProtocolGlobalUpdates(
         MapLayerId,
         DebugPlayerBoxSpriteId
       )
-    result.addSpeechBubble(
+    let nameY = result.addNameTag(
       sim,
       player,
       i,
       player.x,
       player.y,
       player.y + 200
+    )
+    result.addSpeechBubble(
+      sim,
+      player,
+      i,
+      player.x,
+      nameY,
+      player.y + 201
     )
 
 proc applyInput(sim: var SimServer, playerIndex: int, input: InputState) =
@@ -1555,6 +1636,7 @@ proc initAppState() =
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.globalViewers = initTable[WebSocket, PlayerViewerState]()
+  appState.playerNames = initTable[WebSocket, string]()
   appState.chatMessages = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.tokens = @[]
@@ -1620,6 +1702,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     appState.globalViewers.del(websocket)
   if websocket in appState.playerViewers:
     appState.playerViewers.del(websocket)
+  if websocket in appState.playerNames:
+    appState.playerNames.del(websocket)
   if websocket in appState.chatMessages:
     appState.chatMessages.del(websocket)
   if websocket notin appState.playerIndices:
@@ -1717,6 +1801,10 @@ proc playerToken(request: Request): string =
   ## Returns the player join token.
   request.queryParams.getOrDefault("token", "").strip()
 
+proc playerName(request: Request): string =
+  ## Returns the player display name.
+  request.queryParams.getOrDefault("name", "").cleanPlayerName()
+
 proc playerJoinAllowed(slot: int, token: string): bool =
   ## Returns true when the configured token list accepts the join request.
   if appState.tokens.len == 0:
@@ -1741,6 +1829,7 @@ proc httpHandler(request: Request) =
     let
       slot = request.playerSlot()
       token = request.playerToken()
+      name = request.playerName()
     var allowed = false
     {.gcsafe.}:
       withLock appState.lock:
@@ -1753,6 +1842,7 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers[websocket] = PlayerViewerState()
         appState.playerIndices[websocket] = UnassignedPlayerIndex
+        appState.playerNames[websocket] = name
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
@@ -1855,7 +1945,9 @@ proc runServerLoop*(
 
         for websocket in appState.playerIndices.keys:
           if appState.playerIndices[websocket] == UnassignedPlayerIndex:
-            appState.playerIndices[websocket] = sim.addPlayer()
+            appState.playerIndices[websocket] = sim.addPlayer(
+              appState.playerNames.getOrDefault(websocket, "")
+            )
 
         inputs = newSeq[InputState](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:

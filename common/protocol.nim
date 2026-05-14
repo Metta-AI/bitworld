@@ -1,5 +1,4 @@
 import pixie
-import std/os
 
 const
   ScreenWidth* = 128
@@ -23,7 +22,6 @@ const
   ButtonSelect* = 1'u8 shl 4
   ButtonA* = 1'u8 shl 5
   ButtonB* = 1'u8 shl 6
-  DefaultPalettePath = "data/pallete.png"
   EmbeddedPalettePng = staticRead("../clients/data/pallete.png")
 
 type
@@ -43,16 +41,9 @@ proc applyPalette(image: Image, source: string) =
   for x in 0 ..< Palette.len:
     Palette[x] = image[x, 0]
 
-proc loadPalette*(path = DefaultPalettePath) =
-  ## Loads the palette from an explicit path or the embedded default.
-  if path == DefaultPalettePath:
-    decodeImage(EmbeddedPalettePng).applyPalette("embedded " & path)
-    return
-
-  if not fileExists(path):
-    raise newException(IOError, "Missing palette asset: " & path)
-
-  readImage(path).applyPalette(path)
+proc loadPalette*(path = "") =
+  ## Loads the embedded palette and ignores runtime palette paths.
+  decodeImage(EmbeddedPalettePng).applyPalette("embedded " & path)
 
 proc encodeInputMask*(input: InputState): uint8 =
   if input.up:

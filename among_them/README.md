@@ -103,7 +103,7 @@ From the game folder:
 
 ```sh
 cd /path/to/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"imposterCooldownTicks":1200,"voteTimerTicks":6000}'
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"killCooldownTicks":900,"voteTimerTicks":6000}'
 ```
 
 Useful config fields:
@@ -111,7 +111,7 @@ Useful config fields:
 - `minPlayers`: number of players required before the game starts.
 - `imposterCount`: number of imposters.
 - `tasksPerPlayer`: number of tasks assigned to each crewmate.
-- `imposterCooldownTicks`: kill cooldown. This is the same as `killCooldownTicks`.
+- `killCooldownTicks`: kill cooldown.
 - `voteTimerTicks`: voting duration in ticks. At 24 FPS, 6000 ticks is 250 seconds.
 - `buttonCalls`: emergency button calls allowed per player.
 - `mapPath`: map JSON file to load. The default is `map.json`.
@@ -166,12 +166,12 @@ the certifier:
 docker build \
   --platform=linux/amd64 \
   -f among_them/Dockerfile \
-  -t ghcr.io/treeform/bitworld-among-them-runner:latest \
+  -t ghcr.io/metta-ai/bitworld-among-them-runner:latest \
   .
 docker build \
   --platform=linux/amd64 \
   -f among_them/players/nottoodumb/Dockerfile \
-  -t ghcr.io/treeform/bitworld-nottoodumb:latest \
+  -t ghcr.io/metta-ai/bitworld-nottoodumb:latest \
   .
 coworld certify among_them/coworld_manifest.json
 ```
@@ -264,7 +264,7 @@ The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
 ```json
 {
   "maxGames": 1,
-  "imposterCooldownTicks": 100,
+  "killCooldownTicks": 100,
   "tokens": [
     "0xBADA55_0",
     "0xBADA55_1",

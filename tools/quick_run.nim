@@ -377,7 +377,7 @@ proc parseBotGroup(value: string): BotGroup =
   result.count = 1
 
 proc botCandidates(gameFolder, source: string): seq[string] =
-  ## Returns repository-relative candidate source paths for one bot.
+  ## Returns candidate source paths for one bot.
   let sourcePath = trimTrailingSeparators(source)
   if sourcePath.hasPathSeparator():
     result.add(sourcePath.withNimExt())
@@ -386,6 +386,13 @@ proc botCandidates(gameFolder, source: string): seq[string] =
   else:
     result.add(gameFolder / "players" / sourcePath / (sourcePath & ".nim"))
     result.add(gameFolder / "players" / (sourcePath & ".nim"))
+
+proc absoluteSourcePath(rootDir, source: string): string =
+  ## Returns an absolute source path for a repository or external path.
+  if source.isAbsolute():
+    source
+  else:
+    absolutePath(rootDir / source)
 
 proc readCoplayerManifest(rootDir, path: string): CoplayerManifest =
   ## Reads one CoPlayer manifest summary from disk.
@@ -493,10 +500,15 @@ proc ensureBotFile(
     )
 
   for sourceRelative in botCandidates(gameFolder, source):
-    let sourcePath = absolutePath(rootDir / sourceRelative)
+    let sourcePath = absoluteSourcePath(rootDir, sourceRelative)
     if fileExists(sourcePath):
       return (
-        sourceRelative: sourceRelative,
+        sourceRelative: (
+          if sourceRelative.isAbsolute():
+            sourcePath
+          else:
+            sourceRelative
+        ),
         workDir: sourcePath.parentDir(),
         label: sourcePath.splitFile().name
       )

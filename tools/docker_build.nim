@@ -46,6 +46,8 @@ type
     name: string
     imageName: string
     dockerFile: string
+    contextDir: string
+    bitworldContext: string
     games: seq[string]
     isGame: bool
 
@@ -56,6 +58,7 @@ proc usage() =
 Build multi-arch Docker images for bitworld.
 
 Targets are discovered from Dockerfile locations.
+Targets may also be paths to a Dockerfile or a directory containing one.
 
 Options:
   --push            Push images to GHCR after building
@@ -66,6 +69,10 @@ Options:
   --list            List available targets and exit
   --help            Show this help"""
   quit(0)
+
+proc hasPathSeparator(value: string): bool =
+  ## Returns true when a value looks like a filesystem path.
+  value.contains('/') or value.contains('\\')
 
 proc repoRoot(): string =
   ## Returns the repository root directory.
@@ -213,6 +220,8 @@ proc shouldScanDir(path: string): bool =
 
 proc addDockerFile(
   root,
+  contextDir,
+  bitworldContext,
   dockerFile: string,
   targets: var seq[DockerTarget]
 ) =
@@ -250,7 +259,9 @@ proc addDockerFile(
   targets.add DockerTarget(
     name: targetName,
     imageName: imageNameForTarget(targetName, manifestImageUri),
-    dockerFile: dockerFile.relativePath(root),
+    dockerFile: dockerFile.relativePath(contextDir),
+    contextDir: contextDir,
+    bitworldContext: bitworldContext,
     games: games,
     isGame: isGame
   )
@@ -258,6 +269,8 @@ proc addDockerFile(
 proc scanDockerFiles(
   root,
   dir: string,
+  contextDir: string,
+  bitworldContext: string,
   targets: var seq[DockerTarget]
 ) =
   ## Recursively scans for Dockerfiles under non-generated directories.
@@ -265,16 +278,16 @@ proc scanDockerFiles(
     case kind
     of pcDir:
       if shouldScanDir(path):
-        scanDockerFiles(root, path, targets)
+        scanDockerFiles(root, path, contextDir, bitworldContext, targets)
     of pcFile, pcLinkToFile:
       if path.extractFilename() == "Dockerfile":
-        addDockerFile(root, path, targets)
+        addDockerFile(root, contextDir, bitworldContext, path, targets)
     else:
       discard
 
 proc discoverTargets(root: string): seq[DockerTarget] =
   ## Discovers all Docker build targets in the repository.
-  scanDockerFiles(root, root, result)
+  scanDockerFiles(root, root, root, "", result)
   result.sort(proc(a, b: DockerTarget): int =
     cmp(a.name, b.name)
   )
@@ -292,7 +305,45 @@ proc targetFiles(
   ## Returns Dockerfiles for targets with one normalized name.
   for target in targets:
     if target.name == name:
-      result.add(target.dockerFile)
+      result.add(target.contextDir / target.dockerFile)
+
+proc dockerTargetFromPath(
+  root,
+  path: string
+): tuple[found: bool, target: DockerTarget, message: string] =
+  ## Reads one Docker target from an explicit path argument.
+  if not path.hasPathSeparator() and not fileExists(root / path) and
+      not dirExists(root / path):
+    return
+
+  let rawPath =
+    if path.isAbsolute():
+      path
+    else:
+      absolutePath(root / path)
+  let dockerFile =
+    if dirExists(rawPath):
+      rawPath / "Dockerfile"
+    else:
+      rawPath
+  if not fileExists(dockerFile):
+    return (
+      found: false,
+      target: DockerTarget(),
+      message: "Dockerfile not found: " & dockerFile
+    )
+
+  let contextDir = dockerFile.parentDir()
+  var targets: seq[DockerTarget]
+  addDockerFile(root, contextDir, root, dockerFile, targets)
+  if targets.len == 0:
+    return (
+      found: false,
+      target: DockerTarget(),
+      message: "No manifest found for Dockerfile: " & dockerFile
+    )
+
+  result = (found: true, target: targets[0], message: "")
 
 proc supportsGame(target: DockerTarget, gameName: string): bool =
   ## Returns true when a target is a bot for one normalized game name.
@@ -307,7 +358,8 @@ proc addUniqueTarget(
 ) =
   ## Adds one target if its Dockerfile is not already selected.
   for existing in targets:
-    if existing.dockerFile == target.dockerFile:
+    if existing.contextDir == target.contextDir and
+        existing.dockerFile == target.dockerFile:
       return
   targets.add(target)
 
@@ -364,7 +416,7 @@ proc buildCommand(
   push: bool
 ): string =
   ## Builds the docker buildx command for one target.
-  let dockerFile = root / target.dockerFile
+  let dockerFile = target.contextDir / target.dockerFile
   var args = @["docker", "buildx", "build"]
 
   if push or "," notin platforms:
@@ -373,13 +425,18 @@ proc buildCommand(
 
   args.add("-f")
   args.add(dockerFile)
+  if target.bitworldContext.len > 0:
+    args.add("--build-context")
+    args.add("bitworld=" & target.bitworldContext)
   args.add("-t")
   args.add(fullTag)
+  args.add("--provenance=false")
+  args.add("--sbom=false")
   if push:
     args.add("--push")
   else:
     args.add("--load")
-  args.add(root)
+  args.add(target.contextDir)
 
   quoteShellCommand(args)
 
@@ -393,7 +450,7 @@ proc buildImage(
 ) =
   ## Builds one Docker image with buildx.
   let
-    dockerFile = root / target.dockerFile
+    dockerFile = target.contextDir / target.dockerFile
     imageTag = target.fullImageTag(registry, tag)
 
   if not fileExists(dockerFile):
@@ -403,7 +460,10 @@ proc buildImage(
   echo ""
   echo "Building ", imageTag
   echo "  target:     ", target.name
-  echo "  dockerfile: ", target.dockerFile
+  echo "  dockerfile: ", dockerFile.relativePath(root)
+  echo "  context:    ", target.contextDir.relativePath(root)
+  if target.bitworldContext.len > 0:
+    echo "  bitworld:   ", target.bitworldContext.relativePath(root)
   echo "  platforms:  ", platforms
   echo "  push:       ", push
 
@@ -421,6 +481,7 @@ proc buildImage(
   echo "  Done: ", imageTag
 
 proc selectedTargets(
+  root: string,
   targets: openArray[DockerTarget],
   names: openArray[string],
   includeBots: bool
@@ -439,6 +500,15 @@ proc selectedTargets(
         echo "  ", file
       quit(1)
     if normalized notin targetsByName:
+      let pathTarget = dockerTargetFromPath(root, name)
+      if pathTarget.found:
+        result.addUniqueTarget(pathTarget.target)
+        if includeBots:
+          result.addBotTargets(targets, pathTarget.target)
+        continue
+      if pathTarget.message.len > 0:
+        echo "Error: ", pathTarget.message
+        quit(1)
       echo "Error: unknown Docker target: ", name
       echo "Run with --list to see available targets."
       quit(1)
@@ -447,12 +517,14 @@ proc selectedTargets(
     if includeBots:
       result.addBotTargets(targets, target)
 
-proc printTargets(targets: openArray[DockerTarget]) =
+proc printTargets(root: string, targets: openArray[DockerTarget]) =
   ## Prints all discovered Docker targets.
   echo "Available targets:"
   for target in targets:
     echo "  ", target.name, " -> ", target.imageName
-    echo "    ", target.dockerFile
+    echo "    ", (target.contextDir / target.dockerFile).relativePath(root)
+    if target.bitworldContext.len > 0:
+      echo "    context: ", target.contextDir.relativePath(root)
     if target.games.len > 0:
       echo "    games: ", target.games.join(", ")
 
@@ -491,7 +563,7 @@ proc main() =
       of "registry":
         registry = val
       of "list":
-        printTargets(targets)
+        printTargets(root, targets)
         quit(0)
       of "help":
         usage()
@@ -510,7 +582,7 @@ proc main() =
     of cmdEnd:
       discard
 
-  let chosen = selectedTargets(targets, names, includeBots)
+  let chosen = selectedTargets(root, targets, names, includeBots)
 
   echo "docker_build"
   echo "  registry:  ", registry

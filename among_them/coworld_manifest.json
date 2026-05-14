@@ -2,12 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "among_them",
-    "version": "0.1.12",
+    "version": "0.1.15",
     "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-among-them-runner:latest"
+      "image": "ghcr.io/metta-ai/bitworld-among-them-runner:latest"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -133,17 +133,11 @@
           "minimum": 0,
           "default": 72
         },
-        "imposterCooldownTicks": {
+        "killCooldownTicks": {
           "description": "Kill cooldown duration in ticks.",
           "type": "integer",
           "minimum": 0,
-          "default": 1200
-        },
-        "killCooldownTicks": {
-          "description": "Alias for imposterCooldownTicks.",
-          "type": "integer",
-          "minimum": 0,
-          "default": 1200
+          "default": 900
         },
         "roleRevealTicks": {
           "description": "Role reveal duration in ticks.",
@@ -385,7 +379,7 @@
       "name": "nottoodumb",
       "type": "player",
       "description": "Deterministic baseline Among Them player used for local smoke episodes.",
-      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest"
+      "image": "ghcr.io/metta-ai/bitworld-nottoodumb:latest"
     }
   ],
   "variants": [
@@ -405,6 +399,7 @@
         "maxTicks": 10000,
         "maxGames": 1,
         "voteTimerTicks": 6000,
+        "killCooldownTicks": 900,
         "showTaskArrows": true,
         "showTaskBubbles": true,
         "showPlayerLabels": true
@@ -450,6 +445,7 @@
       "maxTicks": 300,
       "maxGames": 1,
       "voteTimerTicks": 120,
+      "killCooldownTicks": 900,
       "showTaskArrows": false,
       "showTaskBubbles": false,
       "showPlayerLabels": true
