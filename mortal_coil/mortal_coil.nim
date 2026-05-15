@@ -1,5 +1,6 @@
 import mummy
 import protocol, server, soul, data, render_utils, world, magical_facts, situation, conflict
+import sprite_viewer
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -7,7 +8,6 @@ import bitworld/clients
 const
   TargetFps = 24.0
   WebSocketPath = "/player"
-  GlobalWebSocketPath = "/global"
   BackgroundColor = 0'u8
   MaxPlayers = 8
   DefaultMinPlayers = 4
@@ -15,7 +15,8 @@ const
   ClientScreenOnlyWidth = 384
   ClientScreenOnlyHeight = 384
   ClientWindowMargin = 50
-  PlayerClientSourceRelative = "clients" / "player_client.nim"
+  PlayerClientSourceRelative = "clients" / "global_client.nim"
+  HealthzPath = "/healthz"
 
 type
   SimServer = object
@@ -58,7 +59,8 @@ type
     playerNames: Table[WebSocket, string]
     chatMessages: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
-    globalViewers: Table[WebSocket, bool]
+    playerViewers: Table[WebSocket, SpriteViewerState]
+    globalViewers: Table[WebSocket, SpriteViewerState]
     rewardViewers: Table[WebSocket, bool]
 
   ServerThreadArgs = object
@@ -76,7 +78,8 @@ proc initAppState() =
   appState.playerNames = initTable[WebSocket, string]()
   appState.chatMessages = initTable[WebSocket, string]()
   appState.closedSockets = @[]
-  appState.globalViewers = initTable[WebSocket, bool]()
+  appState.playerViewers = initTable[WebSocket, SpriteViewerState]()
+  appState.globalViewers = initTable[WebSocket, SpriteViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
@@ -107,6 +110,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   appState.playerNames.del(websocket)
+  appState.playerViewers.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
@@ -248,19 +252,142 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     discard
   sim.prevInputs = inputs
 
-proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.render()
-  sim.fb.packFramebuffer()
-  result = newSeq[uint8](ProtocolBytes)
-  for i in 0 ..< ProtocolBytes:
-    result[i] = sim.fb.packed[i]
+proc buildTextSprites(sim: SimServer): seq[TextSprite] =
+  var nextId = 1
+  let white = WhiteColor
+  let grey = 5'u8
 
-proc buildGlobalPacket(sim: var SimServer): seq[uint8] =
-  sim.render()
-  sim.fb.packFramebuffer()
-  result = newSeq[uint8](ProtocolBytes)
-  for i in 0 ..< ProtocolBytes:
-    result[i] = sim.fb.packed[i]
+  template sprite(sx, sy: int, stext, slabel: string, scolor: uint8 = white) =
+    result.add(TextSprite(id: nextId, x: sx, y: sy, text: stext, label: slabel, color: scolor))
+    inc nextId
+
+  # Always show phase + players as labels on a hidden sprite
+  var meta = "phase:" & $sim.phase
+  var playerList = ""
+  for i, p in sim.players:
+    if i > 0: playerList.add(" ")
+    playerList.add(p.name & "(" & $p.power & ")")
+  meta.add("\nplayers:" & playerList)
+
+  case sim.phase
+  of PhaseLobby:
+    meta.add("\ncount:" & $sim.players.len & "/" & $sim.minPlayers)
+    sprite(20, 10, "Mortal Coil", meta, grey)
+    sprite(34, 30, $sim.players.len & " of " & $sim.minPlayers, "count:" & $sim.players.len & "/" & $sim.minPlayers)
+    for i, player in sim.players:
+      let y = 44 + i * 8
+      sprite(18, y, player.name, "player:" & player.name, uint8(player.colorIndex))
+    if sim.lobbyCountdown > 0:
+      let s = (sim.lobbyCountdown + 23) div 24
+      sprite(28, 118, "Start in " & $s, "countdown:" & $s)
+
+  of PhaseWorld:
+    meta.add("\nstep:" & $sim.worldStep)
+    if sim.world.title.len > 0:
+      meta.add("\ntitle:" & sim.world.title)
+      sprite(4, 4, sim.world.title, meta, grey)
+    else:
+      sprite(4, 4, "The World", meta, grey)
+    if sim.world.description.len > 0:
+      sprite(4, 20, sim.world.description, "text:" & sim.world.description)
+
+  of PhaseMagicalFacts:
+    meta.add("\nstep:" & $sim.factChoice.step)
+    if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+      meta.add("\nturn:" & sim.players[sim.currentTurn].name)
+    sprite(4, 4, "Magical Facts", meta, grey)
+
+  of PhaseSituation:
+    meta.add("\nstep:" & $sim.situationStep)
+    if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+      meta.add("\nturn:" & sim.players[sim.currentTurn].name)
+    if sim.situationStep == SituationChoices:
+      let turnName = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+          sim.players[sim.currentTurn].name else: "?"
+      let turnColor = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+          uint8(sim.players[sim.currentTurn].colorIndex) else: white
+      sprite(4, 4, turnName & "'s turn:", meta, turnColor)
+      let maxW = ScreenWidth - 4
+      var optY = 12
+      if sim.sceneState.header.len > 0:
+        sprite(4, optY, sim.sceneState.header, "header:" & sim.sceneState.header)
+        optY += textHeight(sim.sceneState.header, maxW) + 2
+      for i, opt in sim.sceneState.choice.options:
+        let sel = sim.sceneState.choice.selected == i
+        let cur = sim.sceneState.choice.cursor == i
+        let prefix = if sel: "> " elif cur: "* " else: "  "
+        let text = prefix & opt
+        optY += 5
+        sprite(4, optY, text, "option" & $(i+1) & ":" & opt)
+        optY += textHeight(text, maxW) + 1
+      if sim.sceneState.choice.extraOption.len > 0:
+        optY += 5
+        let ei = sim.sceneState.choice.options.len
+        let sel = sim.sceneState.choice.selected == ei
+        let cur = sim.sceneState.choice.cursor == ei
+        let prefix = if sel: "> " elif cur: "* " else: "  "
+        sprite(4, optY, prefix & sim.sceneState.choice.extraOption,
+          "option" & $(ei+1) & ":" & sim.sceneState.choice.extraOption)
+      sprite(0, 0, "", "cursor:" & $sim.sceneState.choice.cursor & "\nselected:" & $sim.sceneState.choice.selected)
+    else:
+      if sim.situation.title.len > 0:
+        sprite(4, 4, "Situation: " & sim.situation.title, meta, grey)
+      else:
+        sprite(4, 4, "Situation", meta, grey)
+      if sim.situation.description.len > 0:
+        sprite(4, 20, sim.situation.description, "text:" & sim.situation.description)
+
+  of PhaseConflict:
+    meta.add("\nchapter:" & $sim.chapter)
+    meta.add("\nstep:" & $sim.conflictState.step)
+    if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+      meta.add("\nturn:" & sim.players[sim.currentTurn].name)
+    if sim.conflictState.step == ConflictChoices:
+      let turnName = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+          sim.players[sim.currentTurn].name else: "?"
+      let turnColor = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+          uint8(sim.players[sim.currentTurn].colorIndex) else: white
+      sprite(4, 4, turnName & "'s turn:", meta, turnColor)
+      let maxW = ScreenWidth - 4
+      var optY = 12
+      if sim.conflictState.sceneState.header.len > 0:
+        sprite(4, optY, sim.conflictState.sceneState.header, "header:" & sim.conflictState.sceneState.header)
+        optY += textHeight(sim.conflictState.sceneState.header, maxW) + 2
+      for i, opt in sim.conflictState.sceneState.choice.options:
+        let sel = sim.conflictState.sceneState.choice.selected == i
+        let cur = sim.conflictState.sceneState.choice.cursor == i
+        let prefix = if sel: "> " elif cur: "* " else: "  "
+        let text = prefix & opt
+        optY += 5
+        sprite(4, optY, text, "option" & $(i+1) & ":" & opt)
+        optY += textHeight(text, maxW) + 1
+      if sim.conflictState.sceneState.choice.extraOption.len > 0:
+        optY += 5
+        let ei = sim.conflictState.sceneState.choice.options.len
+        let sel = sim.conflictState.sceneState.choice.selected == ei
+        let cur = sim.conflictState.sceneState.choice.cursor == ei
+        let prefix = if sel: "> " elif cur: "* " else: "  "
+        sprite(4, optY, prefix & sim.conflictState.sceneState.choice.extraOption,
+          "option" & $(ei+1) & ":" & sim.conflictState.sceneState.choice.extraOption)
+      sprite(0, 0, "", "cursor:" & $sim.conflictState.sceneState.choice.cursor &
+        "\nselected:" & $sim.conflictState.sceneState.choice.selected)
+    elif sim.conflictState.step == ConflictOutcome:
+      sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
+      sprite(4, 20, sim.conflictState.outcome, "outcome:" & sim.conflictState.outcome)
+    elif sim.conflictState.step == ConflictResolution:
+      sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
+      sprite(4, 20, sim.conflictState.resolution, "resolution:" & sim.conflictState.resolution)
+    else:
+      let title = if sim.conflict.title.len > 0: sim.conflict.title
+                  else: "Chapter " & $sim.chapter
+      sprite(4, 4, title, meta, grey)
+      if sim.conflict.description.len > 0:
+        sprite(4, 20, sim.conflict.description, "text:" & sim.conflict.description)
+
+  of PhaseEnd:
+    sprite(4, 4, "End", meta, grey)
+  of PhasePower:
+    sprite(4, 4, "Power", meta, grey)
 
 proc buildRewardPacket(sim: SimServer): string =
   for player in sim.players:
@@ -295,14 +422,25 @@ proc playerIdentity(request: Request): string =
       return kv[1]
   "player"
 
-proc serveClientHtml(request: Request, route: string): bool =
+proc isClientRoute(route: string): bool =
+  case route
+  of PlayerClientRoute, PlayerClientHtmlRoute, CoworldPlayerClientRoute,
+      GlobalClientRoute, GlobalClientHtmlRoute, CoworldGlobalClientRoute,
+      SnappyClientRoute, SnappyClientPath, CoworldSnappyClientRoute:
+    true
+  else:
+    false
+
+proc serveClientFile(request: Request, route: string): bool =
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
+  if not isClientRoute(route):
+    return false
+  let filePath = clientStaticPath(route, GlobalClientRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Not found: " & route)
@@ -313,51 +451,47 @@ proc serveClientHtml(request: Request, route: string): bool =
     request.respond(500, headers, "Error: " & e.msg)
   true
 
-proc serveGlobalViewer(request: Request): bool =
-  if request.httpMethod != "GET":
-    return false
-  let route = request.path
-  if route != GlobalClientRoute and route != GlobalClientHtmlRoute and
-     route != CoworldGlobalClientRoute:
-    return false
-  let filePath = clientStaticPath(PlayerClientRoute)
-  if filePath.len == 0 or not fileExists(filePath):
-    return false
-  var html = readFile(filePath)
-  html = html.replace("/player", "/global")
-  var headers: HttpHeaders
-  headers["Content-Type"] = "text/html; charset=utf-8"
-  headers["Cache-Control"] = "no-cache"
-  request.respond(200, headers, html)
-  true
-
-proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset if the route matches.
-  if request.serveGlobalViewer():
-    return true
-  request.serveClientHtml(request.path)
-
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET" and
       request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.playerViewers[websocket] = SpriteViewerState()
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+        appState.playerIndices[websocket] = 0x7fffffff
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
+  elif request.path == SpritePlayerWebSocketPath and request.httpMethod == "GET" and
       request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.globalViewers[websocket] = true
+        appState.playerViewers[websocket] = SpriteViewerState()
+        appState.playerNames[websocket] = request.playerIdentity()
+        appState.playerIndices[websocket] = 0x7fffffff
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
+  elif request.path == "/global" and request.httpMethod == "GET" and
+      request.headers["Sec-WebSocket-Key"].len > 0:
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = SpriteViewerState()
   elif request.path == "/reward" and request.httpMethod == "GET" and
       request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.rewardViewers[websocket] = true
-  elif request.serveStaticClientHtml():
+  elif request.path == HealthzPath and request.httpMethod in ["GET", "HEAD"]:
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain"
+    request.respond(200, headers, "healthy")
+  elif request.serveClientFile(request.path):
     discard
+  elif request.path == "/" and request.httpMethod == "GET":
+    discard request.serveClientFile(GlobalClientRoute)
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -370,18 +504,17 @@ proc websocketHandler(
 ) =
   case event
   of OpenEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        if websocket notin appState.globalViewers and
-            websocket notin appState.rewardViewers:
-          appState.playerIndices[websocket] = 0x7fffffff
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+    discard
   of MessageEvent:
     if message.kind == BinaryMessage:
       {.gcsafe.}:
         withLock appState.lock:
-          if isInputPacket(message.data):
+          if isSpritePlayerInput(message.data):
+            let mask = spritePlayerInputMask(message.data)
+            if mask != 0:
+              echo "  input: mask=", mask, " from=", websocket in appState.playerIndices
+            appState.inputMasks[websocket] = mask
+          elif isInputPacket(message.data):
             appState.inputMasks[websocket] = blobToMask(message.data)
           elif isChatPacket(message.data):
             appState.chatMessages[websocket] = blobToChat(message.data)
@@ -401,130 +534,6 @@ proc runFrameLimiter(previousTick: var MonoTime) =
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
-
-var
-  clientProcesses: seq[Process]
-  guiCleanupStarted = false
-
-proc primaryScreen(): Screen =
-  when declared(getScreens):
-    let screens = getScreens()
-    if screens.len > 0:
-      for screen in screens:
-        if screen.primary:
-          return screen
-      return screens[0]
-  Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
-
-proc clientLaunches(players: int): seq[tuple[title: string, x, y: int]] =
-  let screen = primaryScreen()
-  let rowCounts =
-    case players
-    of 1: @[1]
-    of 2: @[2]
-    of 3: @[3]
-    of 4: @[2, 2]
-    of 5: @[3, 2]
-    of 6: @[3, 3]
-    of 7: @[4, 3]
-    of 8: @[4, 4]
-    else: @[4, 4]
-
-  let
-    totalHeight =
-      rowCounts.len * ClientScreenOnlyHeight +
-      max(0, rowCounts.len - 1) * ClientWindowMargin
-    startY = screen.top + (screen.bottom - screen.top - totalHeight) div 2
-
-  for rowIndex, rowCount in rowCounts:
-    let
-      rowWidth =
-        rowCount * ClientScreenOnlyWidth +
-        max(0, rowCount - 1) * ClientWindowMargin
-      startX = screen.left + (screen.right - screen.left - rowWidth) div 2
-      y = startY + rowIndex * (ClientScreenOnlyHeight + ClientWindowMargin)
-
-    for col in 0 ..< rowCount:
-      let playerNumber = result.len + 1
-      result.add((
-        title: "Mortal Coil Player " & $playerNumber,
-        x: startX + col * (ClientScreenOnlyWidth + ClientWindowMargin),
-        y: y
-      ))
-
-proc stopClientProcesses() =
-  if guiCleanupStarted:
-    return
-  guiCleanupStarted = true
-  for i in countdown(clientProcesses.high, 0):
-    if clientProcesses[i].isNil:
-      continue
-    try:
-      if clientProcesses[i].peekExitCode() == -1:
-        clientProcesses[i].terminate()
-        for _ in 0 ..< 20:
-          if clientProcesses[i].peekExitCode() != -1:
-            break
-          sleep(100)
-        if clientProcesses[i].peekExitCode() == -1:
-          clientProcesses[i].kill()
-    except CatchableError:
-      discard
-    try:
-      clientProcesses[i].close()
-    except CatchableError:
-      discard
-  clientProcesses.setLen(0)
-
-proc guiCleanupAtExit() {.noconv.} =
-  stopClientProcesses()
-
-proc guiControlCHook() {.noconv.} =
-  stopClientProcesses()
-  quit(130)
-
-proc exePathFor(sourceRelative: string): string =
-  let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
-  repoDir() / "out" / exeName
-
-proc launchGuiClients(address: string, port: int, players: int) =
-  let
-    clientExe = exePathFor(PlayerClientSourceRelative)
-    clientWorkDir = repoDir() / "clients"
-    connectAddress =
-      if address == "0.0.0.0" or address == "::": "127.0.0.1"
-      else: address
-    launches = clientLaunches(players)
-
-  if not fileExists(clientExe):
-    echo "GUI: player_client not compiled. Run: nim c ", PlayerClientSourceRelative
-    return
-
-  addExitProc(guiCleanupAtExit)
-  setControlCHook(guiControlCHook)
-
-  for i, launch in launches:
-    let wsUrl = "ws://" & connectAddress & ":" & $port &
-      "/player?name=Player" & $(i + 1)
-    let args = @[
-      "--address:" & wsUrl,
-      "--screen-only",
-      "--title:" & launch.title,
-      "--joystick:" & $(i + 1),
-      "--x:" & $launch.x,
-      "--y:" & $launch.y,
-      "--reconnect:1"
-    ]
-    try:
-      clientProcesses.add(startProcess(
-        clientExe,
-        workingDir = clientWorkDir,
-        args = args,
-        options = {poParentStreams}
-      ))
-      echo "  GUI: launched ", launch.title
-    except CatchableError as e:
-      echo "  GUI: failed to start player ", i + 1, ": ", e.msg
 
 proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
                    gui = false, players = DefaultMinPlayers, bots = 0) =
@@ -547,11 +556,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
   httpServer.waitUntilReady()
 
   echo "Mortal Coil running on ", host, ":", port
-  echo "  Player: http://", host, ":", port, PlayerClientRoute
-  echo "  Global: http://", host, ":", port, GlobalClientRoute
-
-  if gui:
-    launchGuiClients(host, port, players)
+  echo "  Player: http://", host, ":", port, GlobalClientRoute
 
   var
     sim = initSim(seed, players)
@@ -563,10 +568,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
 
   while true:
     var
-      sockets: seq[WebSocket] = @[]
-      playerIndices: seq[int] = @[]
       inputs: seq[InputState]
-      globalViewers: seq[WebSocket] = @[]
       rewardViewers: seq[WebSocket] = @[]
 
     {.gcsafe.}:
@@ -594,8 +596,6 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
             previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
           inputs[playerIndex] = inputStateFromMasks(currentMask, previousMask)
           appState.lastAppliedMasks[websocket] = currentMask
-          sockets.add(websocket)
-          playerIndices.add(playerIndex)
 
         for websocket, msg in appState.chatMessages.pairs:
           let playerIndex = appState.playerIndices.getOrDefault(websocket, -1)
@@ -608,31 +608,32 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
                   sim.players[playerIndex].soul.passions[i].strip()
         appState.chatMessages.clear()
 
-        for websocket in appState.globalViewers.keys:
-          globalViewers.add(websocket)
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
 
     sim.step(inputs)
 
-    for i in 0 ..< sockets.len:
-      let frameBlob = blobFromBytes(sim.buildFramePacket(playerIndices[i]))
-      try:
-        sockets[i].send(frameBlob, BinaryMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(sockets[i])
-
-    if globalViewers.len > 0:
-      let globalBlob = blobFromBytes(sim.buildGlobalPacket())
-      for viewer in globalViewers:
-        try:
-          viewer.send(globalBlob, BinaryMessage)
-        except:
-          {.gcsafe.}:
-            withLock appState.lock:
-              appState.globalViewers.del(viewer)
+    let sprites = sim.buildTextSprites()
+    {.gcsafe.}:
+      withLock appState.lock:
+        for ws in appState.playerViewers.keys:
+          var state = appState.playerViewers[ws]
+          let packet = buildSpritePacket(sprites, state)
+          appState.playerViewers[ws] = state
+          if packet.len > 0:
+            try:
+              ws.send(blobFromBytes(packet), BinaryMessage)
+            except:
+              appState.closedSockets.add(ws)
+        for ws in appState.globalViewers.keys:
+          var state = appState.globalViewers[ws]
+          let packet = buildSpritePacket(sprites, state)
+          appState.globalViewers[ws] = state
+          if packet.len > 0:
+            try:
+              ws.send(blobFromBytes(packet), BinaryMessage)
+            except:
+              appState.closedSockets.add(ws)
 
     if rewardViewers.len > 0:
       let rewardPacket = sim.buildRewardPacket()
