@@ -1021,9 +1021,11 @@ proc addAiEnvArgs(args: var seq[string]) =
       args.add("-e")
       args.add(name)
 
+var skipPull* = false
+
 proc pullImageFresh(image: string) =
   ## Pulls one Docker image every time it is needed.
-  if image.len == 0:
+  if skipPull or image.len == 0:
     return
   discard requireDocker(@["pull", image])
 
@@ -2299,6 +2301,8 @@ proc parseArgs(): TournamentConfig =
         result.manifestPath = val
       of "players":
         result.playerList = val
+      of "no-pull":
+        skipPull = true
       else:
         discard
     else:
