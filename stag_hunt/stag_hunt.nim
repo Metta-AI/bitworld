@@ -181,7 +181,7 @@ type
     corpseSprite: RgbaSprite
     killGlowSprite: RgbaSprite
     preySprites: array[5, RgbaSprite]      # by PreyKind.ord
-    playerSprites: array[8 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
+    playerSprites: array[14 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
     indicatorSprites: array[3, RgbaSprite]  # 1-dot, 2-dot, 3-dot
     digitSprites: array[10, RgbaSprite]
     scoreIconSprite: RgbaSprite
@@ -672,7 +672,7 @@ proc addPlayer(sim: var SimServer): int =
     tileY: ty,
     facing: FaceDown,
     energy: StartEnergy,
-    colorIndex: sim.nextPlayerId mod 8
+    colorIndex: sim.nextPlayerId mod 14
   )
   inc sim.nextPlayerId
   sim.players.high
@@ -999,26 +999,38 @@ proc ageCorpses(sim: var SimServer) =
 # ---------------------------------------------------------------------------
 
 proc playerBodyColor(colorIndex: int): uint8 =
-  case colorIndex mod 8
-  of 0: 3'u8   # red
-  of 1: 14'u8  # blue
-  of 2: 7'u8   # orange
-  of 3: 4'u8   # pink
-  of 4: 8'u8   # yellow
-  of 5: 11'u8  # bright green
-  of 6: 15'u8  # light blue
-  else: 2'u8   # white
+  case colorIndex mod 14
+  of 0: 3'u8    # red
+  of 1: 14'u8   # blue
+  of 2: 7'u8    # orange
+  of 3: 4'u8    # pink
+  of 4: 8'u8    # yellow
+  of 5: 11'u8   # green
+  of 6: 15'u8   # lt-blue
+  of 7: 2'u8    # white
+  of 8: 9'u8    # dk-teal
+  of 9: 6'u8    # tan
+  of 10: 12'u8  # navy
+  of 11: 10'u8  # dk-green
+  of 12: 13'u8  # dk-blue
+  else: 1'u8    # gray
 
 proc playerAccentColor(colorIndex: int): uint8 =
-  case colorIndex mod 8
-  of 0: 5'u8
-  of 1: 13'u8
-  of 2: 5'u8
-  of 3: 3'u8
-  of 4: 7'u8
-  of 5: 10'u8
-  of 6: 13'u8
-  else: 1'u8
+  case colorIndex mod 14
+  of 0: 5'u8    # dk-brown
+  of 1: 12'u8   # navy
+  of 2: 5'u8    # dk-brown
+  of 3: 3'u8    # red
+  of 4: 7'u8    # orange
+  of 5: 9'u8    # dk-teal
+  of 6: 14'u8   # blue
+  of 7: 1'u8    # gray
+  of 8: 0'u8    # black
+  of 9: 5'u8    # dk-brown
+  of 10: 0'u8   # black
+  of 11: 0'u8   # black
+  of 12: 12'u8  # navy
+  else: 0'u8    # black
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   packet.add(value)
@@ -1095,7 +1107,7 @@ proc addIdentity(packet: var seq[uint8], objectId: int) =
 # ---------------------------------------------------------------------------
 
 proc playerSpriteId(colorSlot: int, facing: Facing): int =
-  PlayerSpriteBase + (colorSlot and 7) * 4 + facing.ord
+  PlayerSpriteBase + (colorSlot mod 14) * 4 + facing.ord
 
 proc preySpriteId(kind: PreyKind): int =
   PreySpriteBase + kind.ord
@@ -1159,7 +1171,7 @@ proc buildSpriteCache(sim: var SimServer) =
       else: patternToRgbaSprite(preyPattern(kind))
 
   let hunterFile = tryLoadPngSprite(dir / "hunter.png")
-  for colorSlot in 0 ..< 8:
+  for colorSlot in 0 ..< 14:
     let body = playerBodyColor(colorSlot)
     let accent = playerAccentColor(colorSlot)
     for facing in Facing:
@@ -1206,7 +1218,7 @@ proc addSpriteProtocolInit(
   packet.addSprite(KillGlowSpriteId, sim.killGlowSprite, "kill glow")
   for kind in PreyKind:
     packet.addSprite(preySpriteId(kind), sim.preySprites[kind.ord], $kind)
-  for colorSlot in 0 ..< 8:
+  for colorSlot in 0 ..< 14:
     for facing in Facing:
       packet.addSprite(
         playerSpriteId(colorSlot, facing),
