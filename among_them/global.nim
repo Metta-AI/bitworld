@@ -1,8 +1,9 @@
-import std/os
-import supersnappy
-import protocol, sim
-import ../common/pixelfonts
-import ../common/server
+import
+  std/os,
+  supersnappy,
+  protocol, profile, sim,
+  ../common/pixelfonts,
+  ../common/server
 
 const
   ReplayScrubberSpriteId = 4004
@@ -231,7 +232,7 @@ proc addSprite(
   spriteId, width, height: int,
   pixels: openArray[uint8],
   label: string = ""
-) =
+) {.measure.} =
   ## Appends a global protocol sprite definition message.
   packet.addU8(0x01)
   packet.addU16(spriteId)
@@ -279,7 +280,7 @@ proc addSpriteChanged(
   spriteId, width, height: int,
   pixels: openArray[uint8],
   label: string = ""
-) =
+) {.measure.} =
   ## Appends a sprite definition only when it changed.
   let index = defs.spriteDefinitionIndex(spriteId)
   if index >= 0:
@@ -305,7 +306,7 @@ proc addSpriteChanged(
 proc addObject(
   packet: var seq[uint8],
   objectId, x, y, z, layer, spriteId: int
-) =
+) {.measure.} =
   ## Appends a global protocol object definition message.
   packet.addU8(0x02)
   packet.addU16(objectId)
@@ -315,7 +316,7 @@ proc addObject(
   packet.addU8(uint8(layer))
   packet.addU16(spriteId)
 
-proc addDeleteObject(packet: var seq[uint8], objectId: int) =
+proc addDeleteObject(packet: var seq[uint8], objectId: int) {.measure.} =
   ## Appends a global protocol object delete message.
   packet.addU8(0x03)
   packet.addU16(objectId)
@@ -434,7 +435,7 @@ proc buildSpriteProtocolActorSprite(
   tint: uint8,
   flipH: bool,
   selected: bool = false
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds a tinted actor sprite for the global viewer.
   let
     outWidth = sprite.width + 2
@@ -472,7 +473,7 @@ proc buildSpriteProtocolActorSprite(
 proc buildSpriteProtocolBodySprite(
   bodySprite: Sprite,
   tint: uint8
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds a tinted dead body sprite for the global viewer.
   let
     outWidth = bodySprite.width + 2
@@ -491,7 +492,7 @@ proc buildSpriteProtocolBodySprite(
           actorColor(colorIndex, tint)
         )
 
-proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
+proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] {.measure.} =
   ## Builds a raw global protocol sprite from a game sprite.
   result = newRgbaPixels(sprite.width, sprite.height)
   for y in 0 ..< sprite.height:
@@ -500,7 +501,7 @@ proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] =
       if colorIndex != TransparentColorIndex:
         result.putRgbaPixel(sprite.spriteIndex(x, y), colorIndex)
 
-proc buildSpriteProtocolShadowSprite(sprite: Sprite): seq[uint8] =
+proc buildSpriteProtocolShadowSprite(sprite: Sprite): seq[uint8] {.measure.} =
   ## Builds a shadowed global protocol sprite from a game sprite.
   result = newRgbaPixels(sprite.width, sprite.height)
   for y in 0 ..< sprite.height:
@@ -512,7 +513,10 @@ proc buildSpriteProtocolShadowSprite(sprite: Sprite): seq[uint8] =
           ShadowMap[colorIndex and 0x0f]
         )
 
-proc buildSolidSprite(width, height: int, color: uint8): seq[uint8] =
+proc buildSolidSprite(
+  width, height: int,
+  color: uint8
+): seq[uint8] {.measure.} =
   ## Builds a solid protocol sprite.
   result = newRgbaPixels(width, height)
   for i in 0 ..< width * height:
@@ -520,7 +524,7 @@ proc buildSolidSprite(width, height: int, color: uint8): seq[uint8] =
 
 proc buildImposterBarSprite(
   cooldown, maxCooldown: int
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds the global-only impostor cooldown indicator sprite.
   result = newRgbaPixels(ImposterBarWidth, ImposterBarHeight)
   for i in 0 ..< ImposterBarWidth * ImposterBarHeight:
@@ -536,13 +540,13 @@ proc buildImposterBarSprite(
     for x in 0 ..< filled:
       result.putRgbaPixel(y * ImposterBarWidth + x, ImposterBarReadyColor)
 
-proc buildTrailDotSprite(color: uint8): seq[uint8] =
+proc buildTrailDotSprite(color: uint8): seq[uint8] {.measure.} =
   ## Builds one global-only player trail dot sprite.
   result = newRgbaPixels(TrailDotSize, TrailDotSize)
   for i in 0 ..< TrailDotSize * TrailDotSize:
     result.putRgbaPixel(i, color)
 
-proc buildMapSpritePixels(sim: SimServer): seq[uint8] =
+proc buildMapSpritePixels(sim: SimServer): seq[uint8] {.measure.} =
   ## Returns the true-color map pixels for a global protocol sprite.
   if sim.mapRgba.len == sim.gameMap.width * sim.gameMap.height * 4:
     return sim.mapRgba
@@ -553,7 +557,7 @@ proc buildMapSpritePixels(sim: SimServer): seq[uint8] =
 proc buildPlayerShadowSprite(
   sim: SimServer,
   cameraX, cameraY: int
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds one screen-sized transparent shadow overlay.
   result = newRgbaPixels(ScreenWidth, ScreenHeight)
   for sy in 0 ..< ScreenHeight:
@@ -631,7 +635,7 @@ proc buildSpriteProtocolTextSprite(
   lines: openArray[string],
   color: uint8,
   struck = false
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a transparent multi-line text sprite.
   result.width = 1
   for line in lines:
@@ -706,7 +710,7 @@ proc addVisibleVoteChatText(
   sim: SimServer,
   items: var seq[ProtocolTextItem],
   chatY: int
-) =
+) {.measure.} =
   ## Adds separate text sprites for visible voting chat messages.
   let
     chatH = ScreenHeight - chatY - 3
@@ -740,7 +744,7 @@ proc addVisibleVoteChatIcons(
   packet: var seq[uint8],
   layer: int,
   chatY: int
-) =
+) {.measure.} =
   ## Adds separate player sprites for visible voting chat speakers.
   let
     chatH = ScreenHeight - chatY - 3
@@ -872,7 +876,7 @@ proc addProtocolTextSprites(
   packet: var seq[uint8],
   layer: int,
   playerIndex: int
-) =
+) {.measure.} =
   ## Adds separate text sprites for current interstitial text.
   let items = sim.interstitialTextItems(playerIndex)
   for item in items:
@@ -904,7 +908,7 @@ proc addProtocolChatSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer: int
-) =
+) {.measure.} =
   ## Adds separate player sprites for protocol-rendered voting chat.
   if sim.phase != Voting:
     return
@@ -936,7 +940,7 @@ proc putProtocolSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
     fb.putPixel(x, y, color)
     fb.putPixel(x + 1, y, color)
 
-proc buildSpriteProtocolBlankFrame(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolBlankFrame(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds a packed blank frame for sprite protocol interstitials.
   var fb = initFramebuffer()
   sim.fillDarkBg(fb)
@@ -946,7 +950,7 @@ proc buildSpriteProtocolBlankFrame(sim: SimServer): seq[uint8] =
 proc buildSpriteProtocolVoteFrame(
   sim: SimServer,
   playerIndex: int
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds a voting background without baked text or player icons.
   var fb = initFramebuffer()
   sim.fillDarkBg(fb)
@@ -1040,7 +1044,7 @@ proc addProtocolVoteActorSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer: int
-) =
+) {.measure.} =
   ## Adds separate player and body sprites for the voting candidate grid.
   if sim.phase != Voting:
     return
@@ -1089,7 +1093,7 @@ proc addProtocolLobbyActorSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer: int
-) =
+) {.measure.} =
   ## Adds separate player sprites for the lobby interstitial.
   if sim.phase != Lobby:
     return
@@ -1116,7 +1120,7 @@ proc addProtocolRoleRevealActorSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer, playerIndex: int
-) =
+) {.measure.} =
   ## Adds separate player sprites for the role reveal interstitial.
   if sim.phase != RoleReveal:
     return
@@ -1163,7 +1167,7 @@ proc addProtocolVoteResultActorSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer: int
-) =
+) {.measure.} =
   ## Adds separate player sprites for vote result interstitials.
   if sim.phase != VoteResult:
     return
@@ -1188,7 +1192,7 @@ proc addProtocolGameOverActorSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer: int
-) =
+) {.measure.} =
   ## Adds separate player sprites for the game over interstitial.
   if sim.phase != GameOver:
     return
@@ -1223,7 +1227,7 @@ proc addProtocolInterstitialActorSprites(
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer, playerIndex: int
-) =
+) {.measure.} =
   ## Adds separate actor sprites for sprite protocol interstitials.
   case sim.phase
   of Lobby:
@@ -1245,7 +1249,9 @@ proc addProtocolInterstitialActorSprites(
   else:
     discard
 
-proc spritePixelsFromPackedFrame(packed: openArray[uint8]): seq[uint8] =
+proc spritePixelsFromPackedFrame(
+  packed: openArray[uint8]
+): seq[uint8] {.measure.} =
   ## Converts a packed Bitworld frame into protocol sprite pixels.
   result = newRgbaPixels(ScreenWidth, ScreenHeight)
   var j = 0
@@ -1291,7 +1297,7 @@ proc buildInterstitialFrame(
 proc buildSpriteProtocolInit(
   sim: SimServer,
   spriteDefs: var seq[SpriteDefinition]
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds the initial global viewer snapshot.
   result = @[]
   let mapPixels = sim.buildMapSpritePixels()
@@ -1456,7 +1462,7 @@ proc buildSpriteProtocolInit(
 proc buildSpriteProtocolPlayerInit(
   sim: SimServer,
   spriteDefs: var seq[SpriteDefinition]
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds the initial sprite player snapshot.
   result = @[]
   result.addU8(0x04)
@@ -1666,7 +1672,7 @@ proc spriteTaskObjectId(index: int): int =
   ## Returns the global protocol object id for a task bubble.
   TaskObjectBase + index
 
-proc taskStillNeeded(sim: SimServer, taskIndex: int): bool =
+proc taskStillNeeded(sim: SimServer, taskIndex: int): bool {.measure.} =
   ## Returns true when any player still needs a task station.
   for i in 0 ..< sim.players.len:
     let player = sim.players[i]
@@ -1694,7 +1700,7 @@ proc playerExists(sim: SimServer, joinOrder: int): bool =
       return true
   false
 
-proc updateTrails(state: var GlobalViewerState, sim: SimServer) =
+proc updateTrails(state: var GlobalViewerState, sim: SimServer) {.measure.} =
   ## Updates global-only player trails from current player positions.
   for i in countdown(state.trails.high, 0):
     if not sim.playerExists(state.trails[i].joinOrder):
@@ -1748,7 +1754,11 @@ proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
   else:
     GhostSpriteBase + colorIndex * 2 + side
 
-proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
+proc selectSpritePlayer(
+  sim: SimServer,
+  mouseX,
+  mouseY: int
+): int {.measure.} =
   ## Returns the join order of the topmost player under the mouse.
   result = -1
   var bestY = low(int)
@@ -1764,7 +1774,10 @@ proc selectSpritePlayer(sim: SimServer, mouseX, mouseY: int): int =
       bestY = player.y
       result = player.joinOrder
 
-proc selectedPlayerIndex(sim: SimServer, joinOrder: int): int =
+proc selectedPlayerIndex(
+  sim: SimServer,
+  joinOrder: int
+): int {.measure.} =
   ## Returns the player index for a join order.
   for i in 0 ..< sim.players.len:
     if sim.players[i].joinOrder == joinOrder:
@@ -1779,7 +1792,7 @@ proc roleName(role: PlayerRole): string =
   of Imposter:
     return "IMPOSTER"
 
-proc buildTaskProgressSprite(progress, total: int): seq[uint8] =
+proc buildTaskProgressSprite(progress, total: int): seq[uint8] {.measure.} =
   ## Builds the one-pixel high task progress bar sprite.
   result = newRgbaPixels(TaskBarWidth, 1)
   let filled =
@@ -1798,7 +1811,7 @@ proc addSpritePlayerTaskArrows(
   cameraY: int,
   currentIds: var seq[int],
   packet: var seq[uint8]
-) =
+) {.measure.} =
   ## Adds off-screen task arrow objects to a sprite player packet.
   if not sim.config.showTaskArrows:
     return
@@ -1870,7 +1883,7 @@ proc buildSpriteProtocolPlayerUpdates*(
   playerIndex: int,
   state: PlayerViewerState,
   nextState: var PlayerViewerState
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds sprite protocol updates for one playable player view.
   result = @[]
   nextState = state
@@ -1932,7 +1945,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       cameraY = view.cameraY
       viewerIsGhost = view.viewerIsGhost
     if not viewerIsGhost:
-      sim.castShadows(view.originMx, view.originMy, cameraX, cameraY)
+      sim.usePlayerShadowMask(playerIndex, view)
     currentIds.add(MapObjectId)
     result.addObject(
       MapObjectId,
@@ -2190,7 +2203,7 @@ proc replayScrubTickAt(
 proc buildReplayScrubberSprite(
   tick, maxTick: int,
   enabled: bool
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a compact replay scrubber sprite.
   result.width = ReplayScrubberWidth
   result.height = ReplayScrubberHeight
@@ -2256,7 +2269,7 @@ proc buildReplayControlsSprite(
   replaySpeed: int,
   replayLooping: bool,
   replayEnabled: bool
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds the replay transport controls sprite.
   result.width = TransportWidth
   result.height = TransportHeight
@@ -2318,7 +2331,7 @@ proc buildSpriteProtocolUpdates*(
   replayMaxTick = -1,
   replayLooping = false,
   replayEnabled = false
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds global viewer object updates for the current tick.
   result = @[]
   nextState = state

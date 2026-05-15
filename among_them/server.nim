@@ -1,7 +1,7 @@
 import
   std/[locks, monotimes, nativesockets, os, strutils, tables, times],
   curly, mummy,
-  bitworld/clients, protocol, sim, global
+  bitworld/clients, protocol, sim, global, profile
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -460,7 +460,7 @@ proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
     )
   inc replay.hashIndex
 
-proc stepReplay(replay: var ReplayPlayer, sim: var SimServer) =
+proc stepReplay(replay: var ReplayPlayer, sim: var SimServer) {.measure.} =
   ## Advances replay by one simulation tick.
   replay.applyReplayEvents(sim)
   let prevInputs = replay.replayPrevInputs(sim.players.len)
@@ -567,7 +567,7 @@ proc shouldSendPlayerFrame(
   sim: SimServer,
   address: string,
   isPlayerViewer: bool
-): bool =
+): bool {.measure.} =
   ## Returns true when a player socket should receive this frame.
   if isPlayerViewer:
     return true
@@ -981,7 +981,7 @@ proc addStatLine(
   packet.add($value)
   packet.add('\n')
 
-proc buildRewardPacket(sim: SimServer): string =
+proc buildRewardPacket(sim: SimServer): string {.measure.} =
   ## Builds one reward protocol packet for the current tick.
   for player in sim.players:
     let
@@ -1061,7 +1061,9 @@ proc runServerLoop*(
         initReplayPlayer(replayData)
       else:
         ReplayPlayer()
+  startProfileTrace()
   defer:
+    finishProfileTrace()
     replayWriter.closeReplayWriter()
   appState.replayLoaded = replayLoaded
   appState.config = config
@@ -1467,6 +1469,9 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
+
+    if profileShouldDump(sim.gameTicksElapsed()):
+      finishProfileTrace()
 
     if quitAfterFrame:
       replayWriter.closeReplayWriter()
