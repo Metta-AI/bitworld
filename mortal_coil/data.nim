@@ -19,6 +19,10 @@ type
     soul*: Soul
     cursor*: int
     power*: int
+    individuality*: int
+    cooperativity*: int
+    exploitativity*: int
+    vicariousness*: int
 
   GamePhase* = enum
     PhaseLobby
@@ -57,9 +61,14 @@ type
   PlayerRoundResult* = object
     playerIndex*: int
     powerBefore*: int
-    choiceEffect*: int
-    choiceResult*: int  # -1, 0, +1 from LLM
-    outcomeEffect*: int # (abs(choiceEffect) + 1) * choiceResult
+    risk*: int
+    bearer*: RiskTarget
+    rewarded*: RiskTarget
+    burdenTaken*: int      # player.burden from own choice
+    partyBurden*: int      # burden distributed to party
+    choiceResult*: int     # -1, 0, +1 from LLM
+    rewardEarned*: int     # player's own reward
+    partyReward*: int      # reward distributed to party
 
   SceneStep* = enum
     SceneGazing

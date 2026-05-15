@@ -42,6 +42,7 @@ type
     conflict: Conflict
     conflictState: ConflictState
     conflictTimer: int
+    chapter: int
     fb: Framebuffer
     rng: Rand
     prevInputs: seq[InputState]
@@ -58,6 +59,7 @@ type
     chatMessages: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
     globalViewers: Table[WebSocket, bool]
+    rewardViewers: Table[WebSocket, bool]
 
   ServerThreadArgs = object
     server: ptr Server
@@ -75,6 +77,7 @@ proc initAppState() =
   appState.chatMessages = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.globalViewers = initTable[WebSocket, bool]()
+  appState.rewardViewers = initTable[WebSocket, bool]()
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
@@ -141,7 +144,7 @@ proc renderSituation(sim: var SimServer) =
 
 proc renderConflictPhase(sim: var SimServer) =
   conflict.renderConflict(sim.fb, sim.players, sim.currentTurn,
-    sim.conflictState, sim.conflict)
+    sim.conflictState, sim.conflict, sim.chapter)
 
 proc renderFact(sim: var SimServer) =
   magical_facts.renderFact(sim.fb, sim.players, sim.currentTurn,
@@ -154,7 +157,7 @@ proc renderGame(sim: var SimServer) =
     of PhaseWorld: "The World"
     of PhaseMagicalFacts: "Magical Facts"
     of PhaseSituation: "Situation"
-    of PhaseConflict: "Conflict"
+    of PhaseConflict: "Chapter " & $sim.chapter
     of PhasePower: "Power"
     of PhaseEnd: "End"
   sim.fb.drawText(phaseText, 4, 4)
@@ -194,9 +197,10 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     if result == WorldDone:
       sim.currentTurn = 0
       sim.chatLog = @[]
-      sim.phase = PhaseSituation
-      sim.situationStep = SituationGazing
-      sim.situationTimer = 1
+      sim.chapter = 1
+      sim.phase = PhaseConflict
+      sim.conflictState = ConflictState(step: ConflictGazing, round: 0)
+      sim.conflictTimer = 1
   of PhaseMagicalFacts:
     if sim.players.len == 0:
       sim.phase = PhaseLobby
@@ -207,9 +211,10 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       inputs, sim.prevInputs)
     if factsResult == FactsDone:
       sim.currentTurn = 0
-      sim.phase = PhaseSituation
-      sim.situationStep = SituationGazing
-      sim.situationTimer = 1
+      sim.chapter = 1
+      sim.phase = PhaseConflict
+      sim.conflictState = ConflictState(step: ConflictGazing, round: 0)
+      sim.conflictTimer = 1
       return
   of PhaseSituation:
     let sitResult = stepSituation(sim.players, sim.currentTurn,
@@ -223,7 +228,8 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
   of PhaseConflict:
     let conflictResult = stepConflict(sim.players, sim.currentTurn,
       sim.conflictState, sim.conflictTimer, sim.conflict,
-      sim.world, sim.situation, sim.chatLog, sim.rng, inputs, sim.prevInputs)
+      sim.world, sim.situation, sim.chatLog, sim.rng, inputs, sim.prevInputs,
+      sim.chapter)
     if conflictResult == ConflictDone:
       var allSpent = true
       for p in sim.players:
@@ -234,9 +240,10 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
         sim.phase = PhaseEnd
       else:
         sim.currentTurn = 0
-        sim.phase = PhaseSituation
-        sim.situationStep = SituationGazing
-        sim.situationTimer = 1
+        sim.chapter += 1
+        sim.phase = PhaseConflict
+        sim.conflictState = ConflictState(step: ConflictGazing, round: 0)
+        sim.conflictTimer = 1
   else:
     discard
   sim.prevInputs = inputs
@@ -254,6 +261,13 @@ proc buildGlobalPacket(sim: var SimServer): seq[uint8] =
   result = newSeq[uint8](ProtocolBytes)
   for i in 0 ..< ProtocolBytes:
     result[i] = sim.fb.packed[i]
+
+proc buildRewardPacket(sim: SimServer): string =
+  for player in sim.players:
+    result.add("individuality " & player.name & " " & $player.individuality & "\n")
+    result.add("cooperativity " & player.name & " " & $player.cooperativity & "\n")
+    result.add("exploitativity " & player.name & " " & $player.exploitativity & "\n")
+    result.add("vicariousness " & player.name & " " & $player.vicariousness & "\n")
 
 proc initSim(seed: int, minPlayers: int): SimServer =
   result.phase = PhaseLobby
@@ -336,6 +350,12 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = true
+  elif request.path == "/reward" and request.httpMethod == "GET" and
+      request.headers["Sec-WebSocket-Key"].len > 0:
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.rewardViewers[websocket] = true
   elif request.serveStaticClientHtml():
     discard
   else:
@@ -352,7 +372,8 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.globalViewers:
+        if websocket notin appState.globalViewers and
+            websocket notin appState.rewardViewers:
           appState.playerIndices[websocket] = 0x7fffffff
           appState.inputMasks[websocket] = 0
           appState.lastAppliedMasks[websocket] = 0
@@ -546,12 +567,14 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
       globalViewers: seq[WebSocket] = @[]
+      rewardViewers: seq[WebSocket] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
         for websocket in appState.closedSockets:
           sim.removePlayer(websocket)
           appState.globalViewers.del(websocket)
+          appState.rewardViewers.del(websocket)
         appState.closedSockets.setLen(0)
 
         for websocket in appState.playerIndices.keys:
@@ -587,6 +610,8 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
 
         for websocket in appState.globalViewers.keys:
           globalViewers.add(websocket)
+        for websocket in appState.rewardViewers.keys:
+          rewardViewers.add(websocket)
 
     sim.step(inputs)
 
@@ -608,6 +633,16 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
           {.gcsafe.}:
             withLock appState.lock:
               appState.globalViewers.del(viewer)
+
+    if rewardViewers.len > 0:
+      let rewardPacket = sim.buildRewardPacket()
+      for viewer in rewardViewers:
+        try:
+          viewer.send(rewardPacket, TextMessage)
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              appState.rewardViewers.del(viewer)
 
     runFrameLimiter(lastTick)
 

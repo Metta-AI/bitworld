@@ -43,9 +43,9 @@ proc logSituation*(title, description: string) =
 proc logSituationAction*(player: Player, actionText: string) =
   echo "  ", player.name, ": ", actionText
 
-proc logConflict*(title, description: string) =
+proc logConflict*(chapter: int, title, description: string) =
   echo ""
-  echo "--- Conflict ---"
+  echo "--- Chapter ", chapter, " ---"
   echo "  ", title
   echo "  ", description
 
@@ -59,10 +59,10 @@ proc logConflictOutcome*(round: int, outcome: string,
     results: seq[PlayerRoundResult], players: seq[Player]) =
   echo "  [outcome ", round + 1, "] ", outcome
   for r in results:
-    let total = r.powerBefore + r.choiceEffect + r.outcomeEffect
-    echo "    ", players[r.playerIndex].name, ": ", r.powerBefore, " power, ",
-      (if r.choiceEffect >= 0: "+" else: ""), r.choiceEffect, " choice, ",
-      (if r.outcomeEffect >= 0: "+" else: ""), r.outcomeEffect, " outcome = ", total
+    let total = r.powerBefore - r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
+    echo "    ", players[r.playerIndex].name, " (", r.powerBefore, " power): ",
+      "-", r.burdenTaken, " burden, -", r.partyBurden, " party burden, ",
+      "+", r.rewardEarned, " reward, +", r.partyReward, " party reward = ", total
 
 proc logConflictResolution*(resolution: string) =
   echo "  Resolution: ", resolution

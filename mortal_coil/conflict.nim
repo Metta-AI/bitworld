@@ -9,7 +9,7 @@ const
   ConflictOutcomeTicks* = 24 * 10
   ConflictRecountLineTicks* = 12  # half second per line at 24fps
   ConflictRecountHoldTicks* = 24  # 1 second after last line
-  ConflictRecountLines* = 6  # name, power, choice, outcome, separator, result
+  ConflictRecountLines* = 7  # name, burden, party burden, reward, party reward, separator, power
   ConflictResolutionTicks* = 24 * 10
   ConflictMaxRounds* = 3
   BackgroundColor = 0'u8
@@ -17,8 +17,9 @@ const
 
 proc randomizeSchemes(conflictState: var ConflictState, rng: var Rand) =
   for i in 0 ..< 4:
-    conflictState.schemes[i].attitude = Attitude(rng.rand(2))
-    conflictState.schemes[i].effect = rng.rand(4) - 2
+    conflictState.schemes[i].risk = rng.rand(2)
+    conflictState.schemes[i].bearer = RiskTarget(rng.rand(1))
+    conflictState.schemes[i].rewarded = RiskTarget(rng.rand(1))
 
 proc startConflictSceneTurn(conflictState: var ConflictState) =
   conflictState.sceneState = SceneState(step: SceneGazing)
@@ -49,9 +50,7 @@ proc generateConflictSceneOpts(players: seq[Player], currentTurn: int,
   conflictState.sceneTimer = ConflictSceneReadTicks
 
 proc effectPrefix(scheme: ChoiceScheme): string =
-  if scheme.effect > 0: "+" & $scheme.effect & " power"
-  elif scheme.effect < 0: $scheme.effect & " power"
-  else: "+0 power"
+  "Risk " & $scheme.risk
 
 proc renderConflictChoices*(fb: var Framebuffer, players: seq[Player],
     currentTurn: int, conflictState: ConflictState) =
@@ -114,22 +113,22 @@ proc renderConflictChoices*(fb: var Framebuffer, players: seq[Player],
     fb.drawText(ctx.extraOption, textX, y)
 
 proc renderConflict*(fb: var Framebuffer, players: seq[Player],
-    currentTurn: int, conflictState: ConflictState, conflict: Conflict) =
+    currentTurn: int, conflictState: ConflictState, conflict: Conflict,
+    chapter: int) =
   fb.clearFrame(0)
+  let chapterLabel = "Chapter " & $chapter
   case conflictState.step
   of ConflictGazing:
-    let line1 = "Conflict"
-    let x1 = (ScreenWidth - textW(line1)) div 2
+    let x1 = (ScreenWidth - textW(chapterLabel)) div 2
     let y1 = (ScreenHeight - font.height) div 2
-    fb.drawText(line1, x1, y1, 5)
+    fb.drawText(chapterLabel, x1, y1, 5)
   of ConflictTitle:
-    let line1 = "Conflict"
     let line2 = conflict.title
-    let x1 = (ScreenWidth - textW(line1)) div 2
+    let x1 = (ScreenWidth - textW(chapterLabel)) div 2
     let x2 = (ScreenWidth - textW(line2)) div 2
     let y1 = (ScreenHeight - font.height * 2 - 2) div 2
     let y2 = y1 + font.height + 2
-    fb.drawText(line1, x1, y1, 5)
+    fb.drawText(chapterLabel, x1, y1, 5)
     fb.drawText(line2, x2, y2, 5)
   of ConflictDescription:
     let maxWidth = ScreenWidth - TextMargin * 2
@@ -159,18 +158,18 @@ proc renderConflict*(fb: var Framebuffer, players: seq[Player],
       if visibleLines >= 1:
         fb.drawText(player.name & ":", x, startY, color)
       if visibleLines >= 2:
-        fb.drawText("  " & $r.powerBefore & " power", x, startY + lineH, WhiteColor)
+        fb.drawText("  -" & $r.burdenTaken & " burden taken", x, startY + lineH, EffectColor)
       if visibleLines >= 3:
-        let sign = if r.choiceEffect >= 0: "+" else: ""
-        fb.drawText("  " & sign & $r.choiceEffect & " choice", x, startY + lineH * 2, EffectColor)
+        fb.drawText("  -" & $r.partyBurden & " party burden", x, startY + lineH * 2, EffectColor)
       if visibleLines >= 4:
-        let sign = if r.outcomeEffect >= 0: "+" else: ""
-        fb.drawText("  " & sign & $r.outcomeEffect & " outcome", x, startY + lineH * 3, EffectColor)
+        fb.drawText("  +" & $r.rewardEarned & " reward earned", x, startY + lineH * 3, EffectColor)
       if visibleLines >= 5:
-        fb.drawText("  ----------", x, startY + lineH * 4, WhiteColor)
+        fb.drawText("  +" & $r.partyReward & " party reward", x, startY + lineH * 4, EffectColor)
       if visibleLines >= 6:
-        let total = r.powerBefore + r.choiceEffect + r.outcomeEffect
-        fb.drawText("  " & $total & " power", x, startY + lineH * 5, color)
+        fb.drawText("  ----------", x, startY + lineH * 5, WhiteColor)
+      if visibleLines >= 7:
+        let total = r.powerBefore - r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
+        fb.drawText("  " & $total & " power", x, startY + lineH * 6, color)
   of ConflictResolution:
     let maxWidth = ScreenWidth - TextMargin * 2
     let lineCount = wrapLineCount(conflictState.resolution, maxWidth)
@@ -187,7 +186,7 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
     conflictState: var ConflictState, conflictTimer: var int,
     conflict: var Conflict, world: World, situation: Situation,
     chatLog: var seq[ChatEntry], rng: var Rand,
-    inputs, prevInputs: seq[InputState]): ConflictStepResult =
+    inputs, prevInputs: seq[InputState], chapter: int): ConflictStepResult =
   dec conflictTimer
 
   if conflictState.step == ConflictGazing and conflictTimer <= 0:
@@ -198,7 +197,7 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
   elif conflictState.step == ConflictTitle and conflictTimer <= 0:
     conflictState.step = ConflictDescription
     conflictTimer = ConflictDescTicks
-    logConflict(conflict.title, conflict.description)
+    logConflict(chapter, conflict.title, conflict.description)
 
   elif conflictState.step == ConflictDescription and conflictTimer <= 0:
     conflictState.step = ConflictChoices
@@ -236,11 +235,24 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
           conflictState.sceneState.choice.options[sel]
         else:
           "Do nothing."
-      let choiceEffect = if sel < 4: conflictState.schemes[sel].effect else: 0
+      let scheme = if sel < 4: conflictState.schemes[sel]
+                   else: ChoiceScheme(risk: 0, bearer: TargetSelf, rewarded: TargetSelf)
+      let riskValue = max(1, scheme.risk)
+      case scheme.bearer
+      of TargetSelf:
+        case scheme.rewarded
+        of TargetSelf: players[currentTurn].individuality += riskValue
+        of TargetOthers: players[currentTurn].cooperativity += riskValue
+      of TargetOthers:
+        case scheme.rewarded
+        of TargetSelf: players[currentTurn].exploitativity += riskValue
+        of TargetOthers: players[currentTurn].vicariousness += riskValue
       conflictState.roundResults.add(PlayerRoundResult(
         playerIndex: currentTurn,
         powerBefore: players[currentTurn].power,
-        choiceEffect: choiceEffect,
+        risk: scheme.risk,
+        bearer: scheme.bearer,
+        rewarded: scheme.rewarded,
       ))
       logConflictAction(players[currentTurn], actionText)
       chatLog.add(ChatEntry(
@@ -257,11 +269,19 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
         let outcomeResult = players[0].soul.generateConflictOutcome(
           world, conflict, conflictState.round - 1, playerNames, chatLogStrings(chatLog))
         conflictState.outcome = outcomeResult.narration
+        let partySize = players.len
         for i in 0 ..< conflictState.roundResults.len:
           let score = if i < outcomeResult.scores.len: outcomeResult.scores[i].score else: 0
           conflictState.roundResults[i].choiceResult = score
-          conflictState.roundResults[i].outcomeEffect =
-            (abs(conflictState.roundResults[i].choiceEffect) + 1) * score
+          let risk = conflictState.roundResults[i].risk
+          if conflictState.roundResults[i].bearer == TargetSelf:
+            conflictState.roundResults[i].burdenTaken = max(1, risk)
+          else:
+            conflictState.roundResults[i].partyBurden = max(1, risk div partySize)
+          if conflictState.roundResults[i].rewarded == TargetSelf:
+            conflictState.roundResults[i].rewardEarned = max(1, risk) * (score + 1)
+          else:
+            conflictState.roundResults[i].partyReward = max(1, risk div partySize) * (score + 1)
         conflictState.step = ConflictOutcome
         conflictTimer = ConflictOutcomeTicks
         logConflictOutcome(conflictState.round - 1, outcomeResult.narration,
@@ -281,7 +301,7 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
     if conflictState.recountLine >= ConflictRecountLines:
       echo "RECOUNT: player=", conflictState.recountPlayer, " results.len=", conflictState.roundResults.len
       let r = conflictState.roundResults[conflictState.recountPlayer]
-      players[r.playerIndex].power += r.choiceEffect + r.outcomeEffect
+      players[r.playerIndex].power += -r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
       conflictState.recountPlayer += 1
       if conflictState.recountPlayer >= conflictState.roundResults.len:
         conflictState.roundResults = @[]

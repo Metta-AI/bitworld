@@ -20,18 +20,18 @@ const ConflictResolutionMaxLen* = 120
 const ConflictResolutionPadding* = 20
 const SceneHeaderMaxLen* = 38
 const SceneHeaderPadding* = 8
-const SceneOptionMaxLen* = 38
-const SceneOptionPadding* = 8
+const SceneOptionMaxLen* = 60
+const SceneOptionPadding* = 12
 
 type
-  Attitude* = enum
-    Adversarial
-    Neutral
-    Cooperative
+  RiskTarget* = enum
+    TargetSelf
+    TargetOthers
 
   ChoiceScheme* = object
-    attitude*: Attitude
-    effect*: int
+    risk*: int             # 0 to 2
+    bearer*: RiskTarget    # who bears the risk
+    rewarded*: RiskTarget  # who gets the reward
 
   World* = object
     title*: string
@@ -255,16 +255,15 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
   for i in idx ..< 4:
     result.options[i] = "Stare into the void."
 
-proc attitudeDescription(attitude: Attitude): string =
-  case attitude
-  of Adversarial: "adversarial (harms or exploits another party member)"
-  of Neutral: "neutral (affects only self or enemies, not allies)"
-  of Cooperative: "cooperative (helps or protects another party member)"
+proc riskTargetDescription(target: RiskTarget): string =
+  case target
+  of TargetSelf: "self"
+  of TargetOthers: "the other party members"
 
-proc effectDescription(effect: int): string =
-  if effect > 0: "gains " & $effect & " power"
-  elif effect < 0: "costs " & $(-effect) & " power"
-  else: "no power change"
+proc schemeDescription(scheme: ChoiceScheme): string =
+  "risk " & $scheme.risk & ", " &
+    riskTargetDescription(scheme.bearer) & " bears the risk, " &
+    riskTargetDescription(scheme.rewarded) & " gets the reward"
 
 proc generateConflictOptions*(soul: Soul, world: World, conflict: Conflict,
     schemes: array[4, ChoiceScheme], chatLog: seq[string]): ScenePrompt =
@@ -274,14 +273,13 @@ proc generateConflictOptions*(soul: Soul, world: World, conflict: Conflict,
   prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
   prompt &= "Generate a short header summarizing what this player perceives, followed by 4 actions.\n"
   prompt &= "The header is this player's subjective take on the conflict.\n"
-  prompt &= "Each action MUST match its assigned attitude and power effect:\n"
+  prompt &= "Each action MUST match its assigned risk profile:\n"
   for i in 0 ..< 4:
-    prompt &= "  - " & attitudeDescription(schemes[i].attitude) &
-      ", " & effectDescription(schemes[i].effect) & "\n"
-  prompt &= "Adversarial = action taken against party members (using them as cover, attacking them).\n"
-  prompt &= "Neutral = action affecting only self or enemies (attacking a monster, dodging, thinking).\n"
-  prompt &= "Cooperative = action benefiting party members (shielding them, healing them).\n"
-  prompt &= "Higher power at stake means higher risk — the action should feel more dangerous or ambitious.\n"
+    prompt &= "  - " & schemeDescription(schemes[i]) & "\n"
+  prompt &= "Risk 0 = safe/cautious action. Risk 1 = moderate danger. Risk 2 = reckless/desperate.\n"
+  prompt &= "Bearer = who bears the danger of this choice (self or others in the party).\n"
+  prompt &= "Rewarded = who benefits if it pays off (self or others in the party).\n"
+  prompt &= "Higher risk means the action should feel more dangerous or ambitious.\n"
   prompt &= "Respond with exactly 5 lines:\n"
   prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, sentence case, ends with a period)\n"
   prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, sentence case, ends with a period)\n"
