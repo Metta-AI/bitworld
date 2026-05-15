@@ -6,10 +6,16 @@ import protocol, server
 import std/[locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
 
 const
+  # Stag Hunt picks its own world tile size rather than inherit the
+  # protocol's 6 px default. Bigger pixels per tile = recognizable art
+  # at the cost of fewer visible tiles per viewport (~10 across instead
+  # of ~21).
+  StagTileSize = 12
+
   WorldWidthTiles = 32
   WorldHeightTiles = 32
-  WorldWidthPixels = WorldWidthTiles * TileSize
-  WorldHeightPixels = WorldHeightTiles * TileSize
+  WorldWidthPixels = WorldWidthTiles * StagTileSize
+  WorldHeightPixels = WorldHeightTiles * StagTileSize
 
   PlayerMoveCooldownTicks = 5
   PreyThinkIntervalTicks = 10
@@ -25,7 +31,8 @@ const
   MoveEnergyCost = 2
   PassiveRechargeInterval = 18
 
-  CatchFlashTicks = 8
+  KillGlowTicks = 20         # yellow halo on the killers
+  CorpseLifetimeTicks = 48   # how long a corpse blob lingers on the tile
   AlertFlashTicks = 6
 
   RabbitEnergyReward = 25
@@ -36,8 +43,8 @@ const
   StagScoreReward = 5
   MooseEnergyReward = 140
   MooseScoreReward = 10
-  MammothEnergyReward = 220
-  MammothScoreReward = 18
+  ElephantEnergyReward = 220
+  ElephantScoreReward = 18
 
   # Prey only appear once enough players are connected to catch them.
   # Per-kind target populations; values for kinds that need more players
@@ -46,7 +53,7 @@ const
   TargetBoars = 6
   TargetStags = 6
   TargetMooses = 3
-  TargetMammoths = 2
+  TargetElephants = 2
 
   RespawnIntervalTicks = 60
   CatchupSpawnCooldown = 3
@@ -69,22 +76,30 @@ const
 
   TreeSpriteId = 1
   RockSpriteId = 2
+  CorpseSpriteId = 4         # one shared "dead prey" blob
+  KillGlowSpriteId = 5       # one shared yellow halo
   PreySpriteBase = 10        # + PreyKind.ord (0..4)
   PlayerSpriteBase = 100     # + colorSlot * 4 + facing.ord  (0..31)
 
   TileObjectBase = 1000      # + tileIndex
   PlayerObjectBase = 5000    # + array index
+  CorpseObjectBase = 6000    # + array index
+  KillGlowObjectBase = 7000  # + player array index
   PreyObjectBase = 10000     # + array index
 
   TerrainZ = 0
   BackgroundSpriteId = 3
   BackgroundObjectBase = 8000
 
-  # Character sprites (player + prey) are larger than the world tile so they
-  # have room for shading + outline. They are drawn centered on the tile,
-  # offset by -(CharSpriteSize - TileSize) div 2 in both axes.
-  CharSpriteSize = 12
-  CharSpriteOffset = -((CharSpriteSize - TileSize) div 2)
+  PlayerSpriteSize = 12
+  RabbitSpriteSize = 10
+  BoarSpriteSize = 12
+  StagSpriteSize = 12
+  MooseSpriteSize = 14       # antlers overlap upward (bottom-left anchored)
+  ElephantSpriteSize = 14    # overlaps neighboring tiles
+
+  CorpseSpriteSize = 12
+  KillGlowSpriteSize = 16
 
 type
   PreyKind = enum
@@ -92,7 +107,7 @@ type
     Boar
     Stag
     Moose
-    Mammoth
+    Elephant
 
   TileKind = enum
     TileEmpty
@@ -107,7 +122,7 @@ type
     energy: int
     score: int
     moveCooldown: int
-    catchFlash: int
+    killGlow: int
     rechargeCounter: int
     colorIndex: int
 
@@ -118,6 +133,11 @@ type
     tileY: int
     thinkCooldown: int
     alertFlash: int
+
+  Corpse = object
+    tileX: int
+    tileY: int
+    ticksRemaining: int
 
   RgbaSprite = object
     width: int
@@ -130,6 +150,7 @@ type
   SimServer = object
     players: seq[Player]
     prey: seq[Prey]
+    corpses: seq[Corpse]
     tiles: seq[TileKind]
     rng: Rand
     nextPlayerId: int
@@ -139,6 +160,8 @@ type
     treeSprite: RgbaSprite
     rockSprite: RgbaSprite
     backgroundSprite: RgbaSprite
+    corpseSprite: RgbaSprite
+    killGlowSprite: RgbaSprite
     preySprites: array[5, RgbaSprite]      # by PreyKind.ord
     playerSprites: array[8 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
 
@@ -162,6 +185,7 @@ var appState: WebSocketAppState
 proc repoDir(): string = getCurrentDir() / ".."
 proc clientDataDir(): string = repoDir() / "clients" / "data"
 proc palettePath(): string = clientDataDir() / "pallete.png"
+proc spriteDir(): string = getCurrentDir() / "stag_hunt" / "sprites" / "12px"
 
 proc tileIndex(tx, ty: int): int = ty * WorldWidthTiles + tx
 
@@ -290,15 +314,14 @@ proc patternToRgbaSprite(
 # ---------------------------------------------------------------------------
 
 const
-  # Character sprites are 12x12 so they have room for an outline (0) + body
-  # tone + shading. They are drawn centered on the 6x6 tile origin.
-  # Terrain sprites stay at 6x6 so they tile cleanly.
+  # Character sprite sizes form a hierarchy: rabbit smaller than the tile
+  # (and jiggles inside it), boar/stag tile-sized, moose and elephant
+  # overlap neighboring tiles. Mechanically every prey still occupies
+  # exactly one tile.
 
-  # Player faces down by default; sprite is rotated for other facings.
-  # The head + hair are at low y (top); after FaceUp's 180 rotation the hair
-  # ends up at the bottom of the sprite (back-of-head view from above).
-  # Symmetric across the vertical axis so FaceLeft/FaceRight read cleanly.
-  PlayerPattern = [
+  # Player: 12x12 (tile-sized), outlined. Faces down by default; sprite is
+  # rotated for other facings. Symmetric left/right.
+  PlayerPattern = @[
     "............",
     "....0000....",
     "...0QQQQ0...",
@@ -313,123 +336,206 @@ const
     "...00..00...",
   ]
 
-  # Rabbit: white body, pink inner ears, black outline, black eye.
-  RabbitPattern = [
-    "............",
-    "....00..00..",
-    "...0440.40..",
-    "...0440.40..",
-    "...02200200.",
-    "..022222220.",
-    ".02222222220",
-    ".0220222220.",
-    ".02222222220",
-    "..02222220..",
-    "...020.020..",
-    "...000.000..",
+  # Rabbit: 10x10, white body with long pink-inner ears and a dark eye.
+  RabbitPattern = @[
+    ".00....00.",
+    "0220.0220.",
+    "0240.0240.",
+    "0220.0220.",
+    "0220022200",
+    "022222220.",
+    "02002222.0",
+    ".0222220..",
+    "..0220.0..",
+    "..00...0..",
   ]
 
-  # Boar: chunky dark-brown body with tan snout to the right, side view.
-  BoarPattern = [
+  # Boar: 12x12 chunky dark-brown side-on, tan snout to the right, tusks.
+  BoarPattern = @[
     "............",
     "............",
-    "..0000000...",
+    "...0000000..",
+    "..05555560..",
     ".055555560..",
+    "0555055560..",
+    "0555505560.0",
+    "055555560.2.",
     "0555555560..",
-    "055505555600",
-    "05555055560.",
-    "0555555560..",
-    ".05555550...",
-    "..05005050..",
-    "...0.0.0....",
+    ".05055505...",
+    "..0.0.0.0...",
     "............",
   ]
 
-  # Stag: tan body with branching dark-brown antlers above the head.
-  StagPattern = [
-    "..5...5...5.",
-    "..5.5.5.55..",
+  # Stag: 12x12 tan body, branching dark-brown antlers above head.
+  StagPattern = @[
+    "5...5..5..5.",
+    ".5.5.55.55..",
     "..555.5.5...",
-    "...50500....",
-    "...050050...",
-    "..06666660..",
-    ".0666066660.",
-    ".0666666660.",
-    ".06666666660",
-    ".06006066060",
-    "..0..0.0..0.",
-    "............",
-  ]
-
-  # Moose: dark-green body with broad dark-brown antlers above the head.
-  MoosePattern = [
-    "5...5...5..5",
-    ".5.5.5.5.55.",
-    "..555.5.55..",
-    "...050050...",
-    "...050050...",
-    "..0aaaaaa0..",
-    ".0aaa00aaa0.",
-    ".0aaaaaaaa00",
-    ".0aaaaaaaaa0",
-    ".0aa00aa00a0",
+    "..050050....",
+    "..050050....",
+    ".06666660...",
+    "06606066060.",
+    "06666666660.",
+    "06666666660.",
+    ".06606606600",
     "..0..0..0.0.",
     "............",
   ]
 
-  # Mammoth: huge gray body with curved white tusks below.
-  MammothPattern = [
-    "............",
-    "...000000...",
-    "..01111110..",
-    ".0111111110.",
-    ".0110111110.",
-    "01111111111.",
-    "01111111111.",
-    "01111111110.",
-    ".01100110.0.",
-    ".02200220...",
-    "..2....2....",
-    "............",
+  MoosePattern = @[
+    "5..5..5..5..5.",
+    ".5.55.5.55.5..",
+    "..555.5..555..",
+    "...5555555....",
+    "...050050.....",
+    "..0aaaaaaa0...",
+    "..0aa000aa0...",
+    ".0aaaaaaaaaa0.",
+    ".0aaaaaaaaa0..",
+    ".0aaa00aaaa0..",
+    ".0aaaaaaaaaa0.",
+    "..0a.0..0.a0..",
+    "..0a.0..0.a0..",
+    "...0.0..0..0..",
   ]
 
-  # Tree: bushy canopy with a thicker trunk and small shadow base. 6x6.
+  ElephantPattern = @[
+    ".....000000...",
+    "...011111110..",
+    "..0111111111..",
+    ".01111001111..",
+    "011111001111..",
+    "01111111111110",
+    "01111111111110",
+    "01111111111110",
+    ".0111100011110",
+    ".0111000011110",
+    ".01100..011110",
+    ".010....01110.",
+    "..2......020..",
+    "..........2...",
+  ]
+
+  # Tree: 12x12 bushy green canopy with a thick brown trunk.
   TreePattern = [
-    "..ba..",
-    ".babb.",
-    "bbabba",
-    "abbabb",
-    "..55..",
-    "..50..",
+    "....00......",
+    "...0bb0.....",
+    "..0babbb0...",
+    ".0bbabbab0..",
+    "0babbabbab0.",
+    "0bbabbbabb0.",
+    "0bababbabb0.",
+    ".0babbabb0..",
+    "..0abbab0...",
+    "....55......",
+    "....55......",
+    "....50......",
   ]
 
-  # Rock: rounded boulder with a highlight and base shadow. 6x6.
+  # Rock: 12x12 rounded boulder, gray, with highlight + base shadow.
   RockPattern = [
-    "..11..",
-    ".1221.",
-    "112211",
-    "111111",
-    ".1001.",
-    "..00..",
+    "............",
+    "....0000....",
+    "...011110...",
+    "..01122110..",
+    ".0112211110.",
+    "011112211110",
+    "011111111110",
+    ".01111011110",
+    "..0111110...",
+    "...01010....",
+    "....000.....",
+    "............",
   ]
 
-  # Grass: dark-green field with sparse blade highlights. 6x6 (tiles cleanly).
+  # Grass: 12x12 dark-green field with sparse highlights. Tiles cleanly
+  # because the highlight pattern has no edge artifacts.
   GrassPattern = [
-    "aaaaaa",
-    "aabaaa",
-    "aaaaaa",
-    "aaaaba",
-    "aabaaa",
-    "aaaaaa",
+    "aaaaabaaaaaa",
+    "aaaaaaaaabaa",
+    "abaaaaaaaaaa",
+    "aaaaaabaaaba",
+    "aaaaaaaaaaaa",
+    "aaabaaaaaaaa",
+    "aaaaaaababaa",
+    "abaaaaaaaaaa",
+    "aaaaaaabaaaa",
+    "aaaabaaaaaaa",
+    "abaaaaaaabaa",
+    "aaaaabaaaaaa",
   ]
 
-proc preyPattern(kind: PreyKind): array[CharSpriteSize, string] =
+  CorpsePattern = [
+    "..00000000..",
+    ".0555555550.",
+    "055555555550",
+    "055555555550",
+    "055555555550",
+    "055555555550",
+    "055555555550",
+    "055555555550",
+    "055555555550",
+    "055555555550",
+    ".0555555550.",
+    "..00000000..",
+  ]
+
+  # Kill glow: 16x16 yellow ring centered on a 12 px player. Center is
+  # transparent so the player sprite shows through.
+  KillGlowPattern = [
+    "....88888888....",
+    "...8........8...",
+    "..8..........8..",
+    ".8............8.",
+    "8..............8",
+    "8..............8",
+    "8..............8",
+    "8..............8",
+    "8..............8",
+    "8..............8",
+    "8..............8",
+    "8..............8",
+    ".8............8.",
+    "..8..........8..",
+    "...8........8...",
+    "....88888888....",
+  ]
+
+proc loadPngSprite(path: string): RgbaSprite =
+  let img = readImage(path)
+  result = newRgbaSprite(img.width, img.height)
+  for y in 0 ..< img.height:
+    for x in 0 ..< img.width:
+      let c = img[x, y]
+      let base = (y * img.width + x) * 4
+      result.pixels[base + 0] = c.r
+      result.pixels[base + 1] = c.g
+      result.pixels[base + 2] = c.b
+      result.pixels[base + 3] = c.a
+
+proc tryLoadPngSprite(path: string): RgbaSprite =
+  if fileExists(path):
+    try:
+      return loadPngSprite(path)
+    except:
+      discard
+  RgbaSprite()
+
+proc preyPattern(kind: PreyKind): seq[string] =
   case kind
   of Rabbit: RabbitPattern
   of Boar: BoarPattern
   of Stag: StagPattern
   of Moose: MoosePattern
-  of Mammoth: MammothPattern
+  of Elephant: ElephantPattern
+
+proc preySpriteSize(kind: PreyKind): int =
+  case kind
+  of Rabbit: RabbitSpriteSize
+  of Boar: BoarSpriteSize
+  of Stag: StagSpriteSize
+  of Moose: MooseSpriteSize
+  of Elephant: ElephantSpriteSize
 
 # ---------------------------------------------------------------------------
 # World generation
@@ -523,7 +629,7 @@ proc preyMinPlayers(kind: PreyKind): int =
   of Boar: 2
   of Stag: 2
   of Moose: 3
-  of Mammoth: 4
+  of Elephant: 4
 
 proc preyCatchable(kind: PreyKind, playerCount: int): bool =
   preyMinPlayers(kind) <= playerCount
@@ -534,7 +640,7 @@ proc targetFor(kind: PreyKind): int =
   of Boar: TargetBoars
   of Stag: TargetStags
   of Moose: TargetMooses
-  of Mammoth: TargetMammoths
+  of Elephant: TargetElephants
 
 proc catchableTargetTotal(playerCount: int): int =
   for kind in PreyKind:
@@ -607,8 +713,8 @@ proc applyPlayerInput(sim: var SimServer, playerIndex: int, input: InputState) =
     if p.energy < MaxEnergy:
       inc p.energy
 
-  if p.catchFlash > 0:
-    dec p.catchFlash
+  if p.killGlow > 0:
+    dec p.killGlow
 
   if p.moveCooldown > 0:
     dec p.moveCooldown
@@ -753,7 +859,7 @@ proc isCaptured(sides: PlayerSides, kind: PreyKind): bool =
     (n and s) or (e and w)
   of Moose:
     sides.sideCount >= 3
-  of Mammoth:
+  of Elephant:
     n and s and e and w
 
 proc rewardsFor(kind: PreyKind): tuple[energy, score: int] =
@@ -762,7 +868,7 @@ proc rewardsFor(kind: PreyKind): tuple[energy, score: int] =
   of Boar: (BoarEnergyReward, BoarScoreReward)
   of Stag: (StagEnergyReward, StagScoreReward)
   of Moose: (MooseEnergyReward, MooseScoreReward)
-  of Mammoth: (MammothEnergyReward, MammothScoreReward)
+  of Elephant: (ElephantEnergyReward, ElephantScoreReward)
 
 proc applyCaptures(sim: var SimServer) =
   var removed: seq[int] = @[]
@@ -775,14 +881,28 @@ proc applyCaptures(sim: var SimServer) =
         if idx >= 0 and idx < sim.players.len:
           sim.players[idx].energy = min(MaxEnergy, sim.players[idx].energy + reward.energy)
           sim.players[idx].score += reward.score
-          sim.players[idx].catchFlash = CatchFlashTicks
+          sim.players[idx].killGlow = KillGlowTicks
           participants.add(sim.players[idx].id)
+      sim.corpses.add Corpse(
+        tileX: sim.prey[i].tileX,
+        tileY: sim.prey[i].tileY,
+        ticksRemaining: CorpseLifetimeTicks
+      )
       echo "tick=", sim.tickCount, " caught ", sim.prey[i].kind,
         " +", reward.score, " for players=", participants,
         " scores=", sim.players.mapIt(it.score)
       removed.add(i)
   for i in countdown(removed.high, 0):
     sim.prey.delete(removed[i])
+
+proc ageCorpses(sim: var SimServer) =
+  var kept: seq[Corpse] = @[]
+  for c in sim.corpses:
+    if c.ticksRemaining > 1:
+      var alive = c
+      dec alive.ticksRemaining
+      kept.add(alive)
+  sim.corpses = kept
 
 # ---------------------------------------------------------------------------
 # Sprite v1 protocol bytes
@@ -873,6 +993,13 @@ proc addObject(
 proc addClearObjects(packet: var seq[uint8]) =
   packet.addU8(0x04'u8)
 
+proc addIdentity(packet: var seq[uint8], objectId: int) =
+  # 0x07 = "you are object N". Sent in every per-player frame so bots
+  # know which player object is their own (the global frame has no
+  # identity packet — viewers don't need one).
+  packet.addU8(0x07'u8)
+  packet.addU16(objectId)
+
 # ---------------------------------------------------------------------------
 # Sprite cache
 # ---------------------------------------------------------------------------
@@ -884,19 +1011,39 @@ proc preySpriteId(kind: PreyKind): int =
   PreySpriteBase + kind.ord
 
 proc buildSpriteCache(sim: var SimServer) =
-  sim.treeSprite = patternToRgbaSprite(TreePattern)
-  sim.rockSprite = patternToRgbaSprite(RockPattern)
-  sim.backgroundSprite = patternToRgbaSprite(GrassPattern)
+  let dir = spriteDir()
 
+  let treeFile = tryLoadPngSprite(dir / "tree.png")
+  sim.treeSprite = if treeFile.width > 0: treeFile else: patternToRgbaSprite(TreePattern)
+
+  let rockFile = tryLoadPngSprite(dir / "rock.png")
+  sim.rockSprite = if rockFile.width > 0: rockFile else: patternToRgbaSprite(RockPattern)
+
+  let grassFile = tryLoadPngSprite(dir / "grass.png")
+  sim.backgroundSprite = if grassFile.width > 0: grassFile else: patternToRgbaSprite(GrassPattern)
+
+  let corpseFile = tryLoadPngSprite(dir / "ded.png")
+  sim.corpseSprite = if corpseFile.width > 0: corpseFile else: patternToRgbaSprite(CorpsePattern)
+
+  sim.killGlowSprite = patternToRgbaSprite(KillGlowPattern)
+
+  const preyFileNames: array[5, string] = ["rabbit", "boar", "stag", "moose", "elephant"]
   for kind in PreyKind:
-    sim.preySprites[kind.ord] = patternToRgbaSprite(preyPattern(kind))
+    let pngSprite = tryLoadPngSprite(dir / preyFileNames[kind.ord] & ".png")
+    sim.preySprites[kind.ord] =
+      if pngSprite.width > 0: pngSprite
+      else: patternToRgbaSprite(preyPattern(kind))
 
+  let hunterFile = tryLoadPngSprite(dir / "hunter.png")
   for colorSlot in 0 ..< 8:
     let body = playerBodyColor(colorSlot)
     let accent = playerAccentColor(colorSlot)
     for facing in Facing:
-      sim.playerSprites[colorSlot * 4 + facing.ord] =
-        patternToRgbaSprite(PlayerPattern, body, accent, facing)
+      if hunterFile.width > 0:
+        sim.playerSprites[colorSlot * 4 + facing.ord] = hunterFile
+      else:
+        sim.playerSprites[colorSlot * 4 + facing.ord] =
+          patternToRgbaSprite(PlayerPattern, body, accent, facing)
 
 proc addSpriteProtocolInit(
   packet: var seq[uint8],
@@ -908,6 +1055,8 @@ proc addSpriteProtocolInit(
   packet.addSprite(BackgroundSpriteId, sim.backgroundSprite, "grass")
   packet.addSprite(TreeSpriteId, sim.treeSprite, "tree")
   packet.addSprite(RockSpriteId, sim.rockSprite, "rock")
+  packet.addSprite(CorpseSpriteId, sim.corpseSprite, "corpse")
+  packet.addSprite(KillGlowSpriteId, sim.killGlowSprite, "kill glow")
   for kind in PreyKind:
     packet.addSprite(preySpriteId(kind), sim.preySprites[kind.ord], $kind)
   for colorSlot in 0 ..< 8:
@@ -929,8 +1078,8 @@ proc clampCamera(value, worldMax, viewMax: int): int =
 
 proc playerCamera(player: Player): tuple[x, y: int] =
   let
-    centerX = player.tileX * TileSize + TileSize div 2
-    centerY = player.tileY * TileSize + TileSize div 2
+    centerX = player.tileX * StagTileSize + StagTileSize div 2
+    centerY = player.tileY * StagTileSize + StagTileSize div 2
   (
     clampCamera(centerX - PlayerViewportWidth div 2, WorldWidthPixels, PlayerViewportWidth),
     clampCamera(centerY - PlayerViewportHeight div 2, WorldHeightPixels, PlayerViewportHeight)
@@ -942,17 +1091,17 @@ proc addTerrainObjects(
   cameraX, cameraY, viewportWidth, viewportHeight: int
 ) =
   let
-    startTx = max(0, cameraX div TileSize)
-    startTy = max(0, cameraY div TileSize)
-    endTx = min(WorldWidthTiles - 1, (cameraX + viewportWidth - 1) div TileSize)
-    endTy = min(WorldHeightTiles - 1, (cameraY + viewportHeight - 1) div TileSize)
+    startTx = max(0, cameraX div StagTileSize)
+    startTy = max(0, cameraY div StagTileSize)
+    endTx = min(WorldWidthTiles - 1, (cameraX + viewportWidth - 1) div StagTileSize)
+    endTy = min(WorldHeightTiles - 1, (cameraY + viewportHeight - 1) div StagTileSize)
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
       let
         index = tileIndex(tx, ty)
         kind = sim.tiles[index]
-        screenX = tx * TileSize - cameraX
-        screenY = ty * TileSize - cameraY
+        screenX = tx * StagTileSize - cameraX
+        screenY = ty * StagTileSize - cameraY
       packet.addObject(
         BackgroundObjectBase + index,
         screenX, screenY, TerrainZ,
@@ -977,15 +1126,33 @@ proc addPreyObjects(
   cameraX, cameraY, viewportWidth, viewportHeight: int
 ) =
   for i in 0 ..< sim.prey.len:
-    let prey = sim.prey[i]
-    var screenX = prey.tileX * TileSize - cameraX + CharSpriteOffset
-    let screenY = prey.tileY * TileSize - cameraY + CharSpriteOffset
+    let
+      prey = sim.prey[i]
+      size = preySpriteSize(prey.kind)
+    var screenX: int
+    var screenY: int
+    if prey.kind == Moose:
+      # Bottom-left anchored: sprite aligns at bottom of tile, antlers extend up
+      screenX = prey.tileX * StagTileSize - cameraX
+      screenY = prey.tileY * StagTileSize - cameraY - (size - StagTileSize)
+    else:
+      let centerOffset = -((size - StagTileSize) div 2)
+      screenX = prey.tileX * StagTileSize - cameraX + centerOffset
+      screenY = prey.tileY * StagTileSize - cameraY + centerOffset
+    if prey.kind == Rabbit:
+      # Idle bob: a single pixel rise every ~16 ticks, dephased per rabbit
+      # so they don't all bounce in lockstep. Stops while alertFlash plays
+      # its own wiggle.
+      if prey.alertFlash == 0:
+        let phase = ((sim.tickCount + i * 7) shr 4) and 1
+        if phase == 1:
+          screenY -= 1
     if prey.alertFlash > 0:
       if (prey.alertFlash and 1) == 1:
         screenX += 1
       else:
         screenX -= 1
-    if screenX + CharSpriteSize <= 0 or screenY + CharSpriteSize <= 0:
+    if screenX + size <= 0 or screenY + size <= 0:
       continue
     if screenX >= viewportWidth or screenY >= viewportHeight:
       continue
@@ -995,32 +1162,55 @@ proc addPreyObjects(
       MapLayerId, preySpriteId(prey.kind)
     )
 
+proc addCorpseObjects(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cameraX, cameraY, viewportWidth, viewportHeight: int
+) =
+  for i, c in sim.corpses:
+    let
+      screenX = c.tileX * StagTileSize - cameraX
+      screenY = c.tileY * StagTileSize - cameraY
+    if screenX + CorpseSpriteSize <= 0 or screenY + CorpseSpriteSize <= 0:
+      continue
+    if screenX >= viewportWidth or screenY >= viewportHeight:
+      continue
+    packet.addObject(
+      CorpseObjectBase + i,
+      screenX, screenY, screenY + 1,
+      MapLayerId, CorpseSpriteId
+    )
+
 proc addPlayerObjects(
   packet: var seq[uint8],
   sim: SimServer,
   cameraX, cameraY, viewportWidth, viewportHeight: int
 ) =
+  const glowOffset = -((KillGlowSpriteSize - PlayerSpriteSize) div 2)
   for i in 0 ..< sim.players.len:
-    let player = sim.players[i]
     let
-      screenX = player.tileX * TileSize - cameraX + CharSpriteOffset
-      screenY = player.tileY * TileSize - cameraY + CharSpriteOffset
-    if screenX + CharSpriteSize <= 0 or screenY + CharSpriteSize <= 0:
+      player = sim.players[i]
+      # Player sprite matches the tile size, so no centering offset.
+      screenX = player.tileX * StagTileSize - cameraX
+      screenY = player.tileY * StagTileSize - cameraY
+    if screenX + PlayerSpriteSize <= 0 or screenY + PlayerSpriteSize <= 0:
       continue
     if screenX >= viewportWidth or screenY >= viewportHeight:
       continue
-    let flashed = player.catchFlash > 0 and (player.catchFlash and 1) == 1
-    let spriteId =
-      if flashed:
-        # Cycle through white-tinted player by reusing slot 7 (white body)
-        playerSpriteId(7, player.facing)
-      else:
-        playerSpriteId(player.colorIndex, player.facing)
     packet.addObject(
       PlayerObjectBase + i,
       screenX, screenY, screenY + 3,
-      MapLayerId, spriteId
+      MapLayerId, playerSpriteId(player.colorIndex, player.facing)
     )
+    # Glowing yellow halo around recent killers. The ring's center is
+    # transparent so the player sprite still shows through; pulse by
+    # toggling between visible and hidden every 3 ticks for a soft blink.
+    if player.killGlow > 0 and (player.killGlow div 3) mod 2 == 0:
+      packet.addObject(
+        KillGlowObjectBase + i,
+        screenX + glowOffset, screenY + glowOffset, screenY + 4,
+        MapLayerId, KillGlowSpriteId
+      )
 
 proc buildPlayerFrame(
   sim: SimServer,
@@ -1035,8 +1225,10 @@ proc buildPlayerFrame(
   result.addClearObjects()
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
+  result.addIdentity(PlayerObjectBase + playerIndex)
   let (cameraX, cameraY) = playerCamera(sim.players[playerIndex])
   result.addTerrainObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
+  result.addCorpseObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addPreyObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addPlayerObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
 
@@ -1051,6 +1243,7 @@ proc buildGlobalFrame(
     nextState.initialized = true
   result.addClearObjects()
   result.addTerrainObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
+  result.addCorpseObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
   result.addPreyObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
   result.addPlayerObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
 
@@ -1069,6 +1262,7 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
     sim.thinkPrey(preyIndex)
 
   sim.applyCaptures()
+  sim.ageCorpses()
   sim.maintainPrey()
 
 # ---------------------------------------------------------------------------

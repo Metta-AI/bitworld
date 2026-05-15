@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { background: #222; color: #eee; font-family: monospace; padding: 20px; }
+h2 { margin-top: 2em; border-bottom: 1px solid #555; padding-bottom: 4px; }
+.grid { display: flex; flex-wrap: wrap; gap: 24px; }
+.sprite { text-align: center; }
+.sprite canvas { border: 1px solid #555; background: #111; }
+.sprite p { margin: 4px 0; font-size: 11px; color: #aaa; }
+</style>
+</head>
+<body>
+<h1>Sprite Preview</h1>
+
+<h2>Original 30x30 (zoomed 8x via canvas nearest-neighbor)</h2>
+<div class="grid" id="thirty"></div>
+
+<h2>Downsampled 12x12 (zoomed 20x via canvas nearest-neighbor)</h2>
+<div class="grid" id="twelve"></div>
+
+<script>
+const sprites = [
+  {name: 'hunter', size: 12},
+  {name: 'rabbit', size: 10},
+  {name: 'boar', size: 12},
+  {name: 'stag', size: 12},
+  {name: 'moose', size: 14},
+  {name: 'elephant', size: 14},
+  {name: 'tree', size: 12},
+  {name: 'rock', size: 12},
+  {name: 'grass', size: 12},
+];
+
+function loadAndDraw(src, canvasId, displaySize) {
+  const img = new Image();
+  img.src = src;
+  img.onload = () => {
+    const canvas = document.getElementById(canvasId);
+    canvas.width = displaySize;
+    canvas.height = displaySize;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.mozImageSmoothingEnabled = false;
+    ctx.webkitImageSmoothingEnabled = false;
+    ctx.msImageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, displaySize, displaySize);
+  };
+}
+
+const thirty = document.getElementById('thirty');
+const twelve = document.getElementById('twelve');
+
+for (const s of sprites) {
+  const id30 = 'c30_' + s.name;
+  thirty.innerHTML += `<div class="sprite"><canvas id="${id30}"></canvas><p>${s.name} 30x30</p></div>`;
+
+  const id12 = 'c12_' + s.name;
+  twelve.innerHTML += `<div class="sprite"><canvas id="${id12}"></canvas><p>${s.name} ${s.size}x${s.size}</p></div>`;
+}
+
+for (const s of sprites) {
+  loadAndDraw(s.name + '_30.png', 'c30_' + s.name, 240);
+  loadAndDraw(s.name + '.png', 'c12_' + s.name, 240);
+}
+</script>
+</body>
+</html>

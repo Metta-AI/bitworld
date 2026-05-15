@@ -871,6 +871,10 @@ function parse(bytes){
     }else if(type===0x06){
       defineLayer(bytes[offset],bytes[offset+1],bytes[offset+2]);
       offset+=3;
+    }else if(type===0x07){
+      // Identity packet (stag_hunt): u16 selfObjectId. Browser viewers
+      // don't act on it; skip its 2 payload bytes and keep parsing.
+      offset+=2;
     }else{
       socket.close();
       break;

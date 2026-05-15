@@ -16,9 +16,9 @@ const
   TargetFps = 24
   WorldWidthTiles = 32
   WorldHeightTiles = 32
-  TileSize = 6
-  WorldWidthPixels = WorldWidthTiles * TileSize
-  WorldHeightPixels = WorldHeightTiles * TileSize
+  StagTileSize = 12   # stag_hunt overrides the protocol's 6 px tile
+  WorldWidthPixels = WorldWidthTiles * StagTileSize
+  WorldHeightPixels = WorldHeightTiles * StagTileSize
   PlayerViewportWidth = ScreenWidth
   PlayerViewportHeight = ScreenHeight
 
@@ -26,7 +26,7 @@ const
   TreeSpriteId = 1
   RockSpriteId = 2
   BackgroundSpriteId = 3
-  PreySpriteBase = 10            # + kind ord (Rabbit..Mammoth = 0..4)
+  PreySpriteBase = 10            # + kind ord (Rabbit..Elephant = 0..4)
   PreySpriteCount = 5
   PlayerSpriteBase = 100         # + colorSlot * 4 + facing.ord (0..31)
   PlayerSpriteCount = 32
@@ -51,7 +51,7 @@ type
     Boar
     Stag
     Moose
-    Mammoth
+    Elephant
 
   SpriteKind = enum
     SpriteUnknown
@@ -101,6 +101,7 @@ type
     cameraY: int
     cameraKnown: bool
     frameTick: int
+    selfObjectId: int
     selfTileX: int
     selfTileY: int
     selfFound: bool
@@ -233,6 +234,7 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
         item.present = false
       bot.cameraKnown = false
       bot.selfFound = false
+      bot.selfObjectId = -1
     of 0x05:
       if offset + 5 > packet.len:
         return false
@@ -241,6 +243,12 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
       if offset + 3 > packet.len:
         return false
       offset += 3
+    of 0x07:
+      # Server-assigned identity: u16 selfObjectId.
+      if offset + 2 > packet.len:
+        return false
+      bot.selfObjectId = packet.readU16(offset)
+      offset += 2
     else:
       return false
   true
@@ -271,8 +279,8 @@ proc deriveCamera(bot: var Bot) =
       tx = tileIndex mod WorldWidthTiles
       ty = tileIndex div WorldWidthTiles
       obj = bot.objects[objectId]
-    bot.cameraX = tx * TileSize - obj.x
-    bot.cameraY = ty * TileSize - obj.y
+    bot.cameraX = tx * StagTileSize - obj.x
+    bot.cameraY = ty * StagTileSize - obj.y
     bot.cameraKnown = true
     return
 
@@ -296,8 +304,8 @@ proc visiblePlayers(bot: Bot): seq[PlayerSight] =
     result.add PlayerSight(
       found: true,
       objectId: objectId,
-      tileX: worldX div TileSize,
-      tileY: worldY div TileSize,
+      tileX: worldX div StagTileSize,
+      tileY: worldY div StagTileSize,
       pixelX: worldX,
       pixelY: worldY
     )
@@ -319,34 +327,23 @@ proc visiblePrey(bot: Bot): seq[PreySight] =
       found: true,
       objectId: objectId,
       kind: info.preyKind,
-      tileX: worldX div TileSize,
-      tileY: worldY div TileSize
+      tileX: worldX div StagTileSize,
+      tileY: worldY div StagTileSize
     )
 
 proc findSelf(bot: var Bot, players: openArray[PlayerSight]) =
-  ## Identifies the bot's own player as the one whose tile is closest to
-  ## the viewport center. The server camera-centers each player.
+  ## Looks up the bot's own player via the server-supplied identity packet
+  ## (0x07). The server tells us our own object id each frame; we just match
+  ## it against the visible PlayerSights.
   bot.selfFound = false
-  if players.len == 0 or not bot.cameraKnown:
+  if bot.selfObjectId < 0:
     return
-  let
-    centerX = bot.cameraX + PlayerViewportWidth div 2
-    centerY = bot.cameraY + PlayerViewportHeight div 2
-    centerTx = centerX div TileSize
-    centerTy = centerY div TileSize
-  var
-    bestDist = high(int)
-    bestX = 0
-    bestY = 0
   for player in players:
-    let d = chebyshev(player.tileX, player.tileY, centerTx, centerTy)
-    if d < bestDist:
-      bestDist = d
-      bestX = player.tileX
-      bestY = player.tileY
-  bot.selfTileX = bestX
-  bot.selfTileY = bestY
-  bot.selfFound = true
+    if player.objectId == bot.selfObjectId:
+      bot.selfTileX = player.tileX
+      bot.selfTileY = player.tileY
+      bot.selfFound = true
+      return
 
 # ---------------------------------------------------------------------------
 # Strategy: pick prey our local coalition can plausibly catch.
@@ -359,7 +356,7 @@ proc preyMinPlayers(kind: PreyKind): int =
   of Boar: 2
   of Stag: 2
   of Moose: 3
-  of Mammoth: 4
+  of Elephant: 4
 
 proc preyReward(kind: PreyKind): int =
   ## Mirrors the score rewards in stag_hunt.nim; bigger is better.
@@ -368,7 +365,7 @@ proc preyReward(kind: PreyKind): int =
   of Boar: 3
   of Stag: 5
   of Moose: 10
-  of Mammoth: 18
+  of Elephant: 18
 
 proc nearbyAllyCount(
   bot: Bot,
@@ -604,6 +601,7 @@ proc connectUrl(address, url, name: string, port: int): string =
 proc initBot(): Bot =
   result.selfFound = false
   result.cameraKnown = false
+  result.selfObjectId = -1
 
 proc acceptServerMessage(
   ws: WebSocket,

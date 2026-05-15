@@ -5,6 +5,7 @@ import
 
 const
   # Stag Hunt world geometry (mirrors stag_hunt/stag_hunt.nim).
+  StagTileSize = 12   # stag_hunt overrides the protocol's 6 px tile
   TargetFps = 24
   WorldWidthTiles = 32
   WorldHeightTiles = 32
@@ -201,6 +202,12 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
       if offset + 3 > packet.len:
         return false
       offset += 3
+    of 0x07:
+      # Server-assigned identity: u16 selfObjectId.
+      if offset + 2 > packet.len:
+        return false
+      bot.selfObjectId = packet.readU16(offset)
+      offset += 2
     else:
       return false
   true
@@ -228,8 +235,8 @@ proc updateCamera(bot: var Bot) =
       state = bot.objects[objectId]
       tx = i mod WorldWidthTiles
       ty = i div WorldWidthTiles
-    bot.cameraX = tx * TileSize - state.x
-    bot.cameraY = ty * TileSize - state.y
+    bot.cameraX = tx * StagTileSize - state.x
+    bot.cameraY = ty * StagTileSize - state.y
     bot.cameraKnown = true
     return
 
@@ -249,8 +256,8 @@ proc visiblePrey(bot: Bot): seq[PreySight] =
       worldY = bot.cameraY + state.y
     # Prey sprites jitter +/-1 pixel during alertFlash. Round to nearest tile.
     let
-      tileX = (worldX + TileSize div 2) div TileSize
-      tileY = (worldY + TileSize div 2) div TileSize
+      tileX = (worldX + StagTileSize div 2) div StagTileSize
+      tileY = (worldY + StagTileSize div 2) div StagTileSize
     result.add(PreySight(
       found: true,
       objectId: objectId,
@@ -272,8 +279,8 @@ proc visiblePlayers(bot: Bot): seq[PlayerSight] =
     let
       worldX = bot.cameraX + state.x
       worldY = bot.cameraY + state.y
-      tileX = worldX div TileSize
-      tileY = worldY div TileSize
+      tileX = worldX div StagTileSize
+      tileY = worldY div StagTileSize
     result.add(PlayerSight(
       found: true,
       objectId: objectId,
@@ -288,32 +295,18 @@ proc chebyshevDistance(ax, ay, bx, by: int): int =
   max(abs(ax - bx), abs(ay - by))
 
 proc identifySelf(bot: var Bot, players: openArray[PlayerSight]) =
-  ## Picks our own player object — the one closest to viewport center.
-  ## The server centers the camera on us; near map edges clampCamera shifts
-  ## the camera, but we still occupy the tile nearest the viewport middle.
+  ## Looks up our own player by the server-supplied identity packet (0x07).
+  ## The server tells us our own object id each frame; we just find the
+  ## matching PlayerSight.
   bot.haveSelf = false
-  if players.len == 0:
+  if bot.selfObjectId < 0:
     return
-  let
-    centerWorldX = bot.cameraX + PlayerViewportWidth div 2
-    centerWorldY = bot.cameraY + PlayerViewportHeight div 2
-    centerTileX = centerWorldX div TileSize
-    centerTileY = centerWorldY div TileSize
-  var
-    bestDistance = high(int)
-    bestIndex = -1
-  for i, p in players:
-    let d = chebyshevDistance(p.tileX, p.tileY, centerTileX, centerTileY)
-    if d < bestDistance:
-      bestDistance = d
-      bestIndex = i
-  if bestIndex < 0:
-    return
-  let self = players[bestIndex]
-  bot.haveSelf = true
-  bot.selfObjectId = self.objectId
-  bot.selfTileX = self.tileX
-  bot.selfTileY = self.tileY
+  for p in players:
+    if p.objectId == bot.selfObjectId:
+      bot.haveSelf = true
+      bot.selfTileX = p.tileX
+      bot.selfTileY = p.tileY
+      return
 
 proc stepMask(selfX, selfY, targetX, targetY: int): uint8 =
   ## Returns a single-button d-pad mask toward (targetX, targetY).

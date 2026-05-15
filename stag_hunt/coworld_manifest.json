@@ -3,7 +3,7 @@
   "game": {
     "name": "stag_hunt",
     "version": "0.1.0",
-    "description": "A cooperative BitWorld hunting game where players surround prey together: rabbits go down alone, but stags, moose, and mammoths require coordinated multi-player encirclement.",
+    "description": "A cooperative BitWorld hunting game where players surround prey together: rabbits go down alone, but stags, moose, and elephants require coordinated multi-player encirclement.",
     "owner": "treeform@softmax.com",
     "image_uri": "ghcr.io/treeform/bitworld-stag-hunt:latest",
     "config_schema": {

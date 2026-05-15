@@ -5,6 +5,7 @@ import
 
 const
   # Stag Hunt world constants (mirrored from stag_hunt/stag_hunt.nim).
+  StagTileSize = 12   # stag_hunt overrides the protocol's 6 px tile
   WorldWidthTiles = 32
   WorldHeightTiles = 32
 
@@ -171,6 +172,12 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
       if offset + 3 > packet.len:
         return false
       offset += 3
+    of 0x07:
+      # Server-assigned identity: u16 selfObjectId.
+      if offset + 2 > packet.len:
+        return false
+      bot.selfObjectId = packet.readU16(offset)
+      offset += 2
     else:
       return false
   true
@@ -182,7 +189,7 @@ proc objectPresent(bot: Bot, objectId: int): bool =
 proc updateCamera(bot: var Bot): bool =
   ## Derives camera world-pixel offset from any visible background tile.
   ## Each grass tile has objectId = BackgroundObjectBase + ty*32 + tx, and
-  ## was drawn at screenX = tx*TileSize - cameraX.
+  ## was drawn at screenX = tx*StagTileSize - cameraX.
   for objectId in BackgroundObjectBase ..<
       (BackgroundObjectBase + WorldWidthTiles * WorldHeightTiles):
     if not bot.objectPresent(objectId):
@@ -192,8 +199,8 @@ proc updateCamera(bot: var Bot): bool =
       tx = tileIndex mod WorldWidthTiles
       ty = tileIndex div WorldWidthTiles
       obj = bot.objects[objectId]
-    bot.cameraX = tx * TileSize - obj.x
-    bot.cameraY = ty * TileSize - obj.y
+    bot.cameraX = tx * StagTileSize - obj.x
+    bot.cameraY = ty * StagTileSize - obj.y
     bot.cameraKnown = true
     return true
   bot.cameraKnown = false
@@ -213,8 +220,8 @@ proc objectScreenCenter(
   obj: ObjectState
 ): tuple[x, y: int] =
   ## Returns the screen-space center pixel of one object.
-  var width = TileSize
-  var height = TileSize
+  var width = StagTileSize
+  var height = StagTileSize
   if obj.spriteId >= 0 and obj.spriteId < bot.sprites.len:
     let sprite = bot.sprites[obj.spriteId]
     if sprite.defined:
@@ -230,43 +237,24 @@ proc screenToTile(
   let
     worldX = bot.cameraX + screenX
     worldY = bot.cameraY + screenY
-  (worldX div TileSize, worldY div TileSize)
+  (worldX div StagTileSize, worldY div StagTileSize)
 
 proc findSelf(bot: var Bot): bool =
-  ## Picks the player whose tile is closest to the viewport center as self.
-  if not bot.cameraKnown:
-    return false
-  let
-    viewCenterX = PlayerViewportWidth div 2
-    viewCenterY = PlayerViewportHeight div 2
-  var
-    bestObjectId = -1
-    bestDistanceSq = high(int)
-    bestTileX = 0
-    bestTileY = 0
-  for objectId in PlayerObjectBase ..< PlayerObjectBase + MaxPlayers:
-    if not bot.objectPresent(objectId):
-      continue
-    let obj = bot.objects[objectId]
-    if not bot.spriteIsPlayer(obj.spriteId):
-      continue
-    let
-      center = bot.objectScreenCenter(obj)
-      dx = center.x - viewCenterX
-      dy = center.y - viewCenterY
-      distSq = dx * dx + dy * dy
-    if distSq < bestDistanceSq:
-      bestDistanceSq = distSq
-      bestObjectId = objectId
-      let tile = bot.screenToTile(center.x, center.y)
-      bestTileX = tile.tx
-      bestTileY = tile.ty
-  if bestObjectId < 0:
+  ## Locates self in the current frame using the server-supplied identity
+  ## packet (0x07). The server tells us our own object id, we just look it
+  ## up and read its screen position.
+  if not bot.cameraKnown or bot.selfObjectId < 0:
     bot.selfKnown = false
     return false
-  bot.selfObjectId = bestObjectId
-  bot.selfTileX = bestTileX
-  bot.selfTileY = bestTileY
+  if not bot.objectPresent(bot.selfObjectId):
+    bot.selfKnown = false
+    return false
+  let
+    obj = bot.objects[bot.selfObjectId]
+    center = bot.objectScreenCenter(obj)
+    tile = bot.screenToTile(center.x, center.y)
+  bot.selfTileX = tile.tx
+  bot.selfTileY = tile.ty
   bot.selfKnown = true
   true
 
