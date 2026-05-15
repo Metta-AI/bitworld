@@ -115,6 +115,8 @@ const (
 // contract.
 type VoteController struct {
 	Target    uint8 // palette color to vote for; 255 = skip
+	Voted     bool  // set true once we press A (cast vote or skip)
+	VotedSkip bool  // distinguishes skip from target vote
 	primed    bool
 	pressed   bool
 	giveUp    bool // true once we've exhausted navigation budget; revert to SKIP
@@ -168,6 +170,7 @@ func (vc *VoteController) Next(pixels []uint8) uint8 {
 		return vc.advance(ButtonRight)
 	}
 	if cursorSlot == targetSlot {
+		vc.Voted = true
 		return vc.advance(ButtonA)
 	}
 	return vc.advance(ButtonRight)
@@ -175,6 +178,8 @@ func (vc *VoteController) Next(pixels []uint8) uint8 {
 
 func (vc *VoteController) stepTowardSkip(pixels []uint8) uint8 {
 	if cursorOnSkip(pixels) {
+		vc.Voted = true
+		vc.VotedSkip = true
 		return vc.advance(ButtonA)
 	}
 	return vc.advance(ButtonRight)

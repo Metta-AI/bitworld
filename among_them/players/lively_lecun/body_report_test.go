@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -108,45 +105,6 @@ func TestAgent_BodyNavGoal(t *testing.T) {
 	}
 	if _, ok := a.TakePendingChat(); ok {
 		t.Fatalf("pending chat should not be queued for out-of-range body")
-	}
-}
-
-// TestAgent_BodyNavGoalKeepsSnappedTarget covers bodies whose collision
-// center has to be snapped to nearby walkable terrain. The body target is
-// still the raw body coordinate; comparing against nav.Goal would reset the
-// same body goal every frame.
-func TestAgent_BodyNavGoalKeepsSnappedTarget(t *testing.T) {
-	var pixels []uint8
-	var a *Agent
-	for y := 0; y <= ScreenHeight-bodySpriteH; y += 8 {
-		for x := 0; x <= ScreenWidth-bodySpriteW; x += 8 {
-			candidate := loadFrame(t, "phase_playing.bin")
-			overlayBody(candidate, x, y, 11)
-			candidateAgent := NewAgent()
-			candidateAgent.currentPhase = PhaseActive
-			candidateAgent.havePhase = true
-			_ = candidateAgent.Step(candidate)
-			if candidateAgent.bodyGoal && candidateAgent.bodyTarget != candidateAgent.nav.Goal() {
-				pixels = candidate
-				a = candidateAgent
-				break
-			}
-		}
-		if a != nil {
-			break
-		}
-	}
-	if a == nil {
-		t.Fatalf("expected to find an out-of-range body whose nav goal snaps")
-	}
-
-	var logs bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(prev) })
-	_ = a.Step(pixels)
-	if strings.Contains(logs.String(), "body: nav") {
-		t.Fatalf("same snapped body reset nav goal:\n%s", logs.String())
 	}
 }
 

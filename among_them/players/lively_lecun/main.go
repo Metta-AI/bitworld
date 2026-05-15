@@ -2,16 +2,15 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -101,6 +100,13 @@ func playerURLWithQuery(
 	return u.String()
 }
 
+type receivedFrame struct {
+	data     []byte
+	received time.Time
+}
+
+const frameQueueSize = 64
+
 func runWebsocketURL(rawURL string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -113,15 +119,50 @@ func runWebsocketURL(rawURL string) {
 		log.Fatalf("initial write: %v", err)
 	}
 
+	frames := make(chan receivedFrame, frameQueueSize)
+	var framesReceived atomic.Int64
+
+	// Reader goroutine: pulls from websocket as fast as possible.
+	go func() {
+		defer close(frames)
+		for {
+			kind, data, err := conn.Read(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("reader: %v", err)
+				return
+			}
+			if kind != websocket.MessageBinary {
+				continue
+			}
+			if len(data) != ProtocolBytes {
+				continue
+			}
+			framesReceived.Add(1)
+			frames <- receivedFrame{data: data, received: time.Now()}
+		}
+	}()
+
 	agent := NewAgent()
 	pixels := make([]uint8, ScreenWidth*ScreenHeight)
-	var sentMask uint8 // server already has 0 from the initial packet above
+	var sentMask uint8
 	framesSeen := 0
 	closeStatus := websocket.StatusInternalError
 	closeReason := "client error"
 	defer func() {
 		_ = conn.Close(closeStatus, closeReason)
 	}()
+
+	// Stats for periodic summary.
+	var maxQueue int
+	var maxStepDur time.Duration
+	var maxLag time.Duration
+	lastSummary := time.Now()
+	lastRecv := framesReceived.Load()
+	lastProcessed := 0
+	const summaryInterval = 5 * time.Second
 
 	sendMask := func(m uint8) error {
 		if m == sentMask {
@@ -134,49 +175,24 @@ func runWebsocketURL(rawURL string) {
 		return nil
 	}
 
-	for {
-		kind, data, err := conn.Read(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				log.Printf("shutdown: %v", ctx.Err())
-				closeStatus = websocket.StatusNormalClosure
-				closeReason = "bye"
-				return
-			}
-			if framesSeen > 0 {
-				log.Printf("connection closed: %v", err)
-				closeStatus = websocket.StatusNormalClosure
-				closeReason = "server closed"
-				return
-			}
-			if errors.Is(err, io.EOF) {
-				log.Printf("websocket closed: %v", err)
-				conn.Close(websocket.StatusNormalClosure, "bye")
-				return
-			}
-			log.Fatalf("read: %v", err)
-		}
-		if kind != websocket.MessageBinary {
-			log.Printf("ignoring non-binary message of type %v", kind)
-			continue
-		}
-		if len(data) != ProtocolBytes {
-			log.Printf("unexpected payload of %d bytes", len(data))
-			continue
-		}
-		if err := UnpackFrame(data, pixels); err != nil {
+	for f := range frames {
+		queued := len(frames)
+		lag := time.Since(f.received)
+
+		if err := UnpackFrame(f.data, pixels); err != nil {
 			log.Printf("unpack: %v", err)
 			continue
 		}
 		framesSeen++
+
+		stepStart := time.Now()
 		mask := agent.Step(pixels)
+		stepDur := time.Since(stepStart)
+
 		if err := sendMask(mask); err != nil {
 			log.Printf("send mask=%#x: %v", mask, err)
 			return
 		}
-		// Drain any pending chat (body reports, etc). Websocket-only:
-		// the stdio protocol sends exactly one mask byte per input
-		// frame, so chat goes out-of-band here.
 		if msg, ok := agent.TakePendingChat(); ok {
 			if err := conn.Write(ctx, websocket.MessageBinary, BuildChatPacket(msg)); err != nil {
 				log.Printf("send chat %q: %v", msg, err)
@@ -184,6 +200,44 @@ func runWebsocketURL(rawURL string) {
 			}
 			log.Printf("chat: %q", msg)
 		}
+
+		// Track peaks.
+		if queued > maxQueue {
+			maxQueue = queued
+		}
+		if stepDur > maxStepDur {
+			maxStepDur = stepDur
+		}
+		if lag > maxLag {
+			maxLag = lag
+		}
+
+		// Periodic summary.
+		if time.Since(lastSummary) >= summaryInterval {
+			now := time.Now()
+			elapsed := now.Sub(lastSummary).Seconds()
+			curRecv := framesReceived.Load()
+			recvRate := float64(curRecv-lastRecv) / elapsed
+			procRate := float64(framesSeen-lastProcessed) / elapsed
+			log.Printf("perf: recv=%.1f/s proc=%.1f/s queue_max=%d step_max=%v lag_max=%v",
+				recvRate, procRate, maxQueue, maxStepDur, maxLag)
+			maxQueue = 0
+			maxStepDur = 0
+			maxLag = 0
+			lastRecv = curRecv
+			lastProcessed = framesSeen
+			lastSummary = now
+		}
+	}
+
+	if ctx.Err() != nil {
+		log.Printf("shutdown: %v", ctx.Err())
+		closeStatus = websocket.StatusNormalClosure
+		closeReason = "bye"
+	} else {
+		log.Printf("connection closed (frames=%d)", framesSeen)
+		closeStatus = websocket.StatusNormalClosure
+		closeReason = "server closed"
 	}
 }
 

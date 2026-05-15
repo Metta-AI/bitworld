@@ -29,30 +29,30 @@ type Agent struct {
 	// per-frame working buffer for pixels; callers write into Step's
 	// argument instead, so Agent doesn't own it.
 
-	sentMask        uint8 // last mask Step returned (for change logging)
-	currentPhase    Phase
-	havePhase       bool
-	lastRole        StatusIconKind // most recent latched role, logged on change
-	voter           VoteController
-	suspect         SuspectTracker
-	bumper          Bumper
-	holder          TaskHolder
-	wanderer        Wanderer
-	frames          uint64
-	lastPosLog      uint64
-	lastBranch      string // most recent PhaseActive branch; logged on change
+	sentMask     uint8 // last mask Step returned (for change logging)
+	currentPhase Phase
+	havePhase    bool
+	lastRole     StatusIconKind // most recent latched role, logged on change
+	voter        VoteController
+	suspect      SuspectTracker
+	bumper       Bumper
+	holder       TaskHolder
+	wanderer     Wanderer
+	frames       uint64
+	lastPosLog   uint64
+	lastBranch   string // most recent PhaseActive branch; logged on change
 	arrivedAt       uint64 // frame at which navigator first reported "arrived"; 0 means not currently arrived
 	arrivedLoggedAt Point  // last goal we emitted an "arrived at" log for; used to debounce against holder flicker
 
 	// After A* reports Unreachable we back off from station-nav for a few
 	// frames so we don't churn through every station's state. The suspend
 	// lifts when the player moves meaningfully or the counter expires.
-	navSuspendLeft int
-	navSuspendPos  Point
-	lastPlayer     Point  // player world pos last seen while nav-stuck tracking
-	lastPlayerF    uint64 // frame when lastPlayer was last updated
-	stuckPerturb   uint8  // non-zero while we're force-nudging through a pinned corner
-	stuckLeft      int    // frames remaining of the current stuck perturb
+	navSuspendLeft  int
+	navSuspendPos   Point
+	lastPlayer   Point  // player world pos last seen while nav-stuck tracking
+	lastPlayerF  uint64 // frame when lastPlayer was last updated
+	stuckPerturb uint8  // non-zero while we're force-nudging through a pinned corner
+	stuckLeft    int    // frames remaining of the current stuck perturb
 
 	// prevPlayer/prevPlayerF measure per-frame player displacement for the
 	// coast-to-stop logic. Unlike lastPlayer (which gates stuck detection
@@ -68,9 +68,12 @@ type Agent struct {
 
 	pendingChat string // drained by TakePendingChat(); emitted on websocket only
 	bodyGoal    bool   // true when nav's current goal is a body (highest priority)
-	bodyTarget  Point  // raw body world coord; nav.Goal may be snapped to a walkable cell
 
 	imposter *ImposterBrain // lazy-initialized when we observe an imposter role
+
+	gameTicks       uint64 // approximate server game clock (increments during Active + Voting)
+	prevAliveOthers int    // aliveOthers from the previous voting phase
+	ejectionsSeen   int    // number of ejections observed (aliveOthers drops beyond our kills)
 
 	// aliveOthers is the number of alive non-self players as of the
 	// last readable voting panel. -1 = unknown (pre-first-vote).
@@ -82,8 +85,8 @@ type Agent struct {
 	// game-over, or role-reveal screen) and reset latched role state,
 	// which would otherwise stick across games and run stepImposter
 	// when the server has reassigned us as a crewmate in a new round.
-	idleStreak   uint32
-	didIdleReset bool
+	idleStreak    uint32
+	didIdleReset  bool
 }
 
 // NewAgent returns an Agent using the embedded skeld map + walk mask. It
@@ -185,9 +188,11 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 		a.lastRole = StatusUnknown
 		a.imposter = nil
 		a.aliveOthers = -1
+		a.gameTicks = 0
+		a.prevAliveOthers = 0
+		a.ejectionsSeen = 0
 		a.nav.Clear()
 		a.bodyGoal = false
-		a.bodyTarget = Point{}
 		a.goalStation = -1
 		a.memory.Reset()
 	}
@@ -223,13 +228,27 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 					a.aliveOthers = n - 1
 				}
 			}
-			// Reset the imposter's kill counter: it's tracked per round
-			// (between votes) for aliveOthers bookkeeping.
+			// Detect ejections: if aliveOthers dropped by more than our
+			// kills account for, someone was voted off. Could be the
+			// other imposter.
+			if a.prevAliveOthers > 0 && a.imposter != nil && a.aliveOthers >= 0 {
+				expectedDrop := a.imposter.killsThisRound
+				actualDrop := a.prevAliveOthers - a.aliveOthers
+				if actualDrop > expectedDrop {
+					a.ejectionsSeen += actualDrop - expectedDrop
+				}
+			}
+			a.prevAliveOthers = a.aliveOthers
+			// Reset the imposter's kill counter and cooldown tracking:
+			// the server resets killCooldown to full after voting
+			// (sim.nim:2464), so we simulate by setting lastKillF = now.
 			if a.imposter != nil {
 				a.imposter.killsThisRound = 0
+				a.imposter.lastKillF = a.frames
+				a.imposter.huntingLogged = false
 			}
-			log.Printf("vote: entering voting, suspect=%d self=%d alive_others=%d (frame %d)",
-				target, a.suspect.Self(), a.aliveOthers, a.frames)
+			log.Printf("vote: entering voting, suspect=%d self=%d alive_others=%d ejections=%d gameTicks=%d (frame %d)",
+				target, a.suspect.Self(), a.aliveOthers, a.ejectionsSeen, a.gameTicks, a.frames)
 		}
 	}
 
@@ -245,12 +264,27 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 		}
 	}
 
+	// Approximate the server's game clock.
+	if phase == PhaseActive || phase == PhaseVoting {
+		a.gameTicks++
+	}
+
 	var mask uint8
 	switch phase {
 	case PhaseActive:
 		mask = a.stepActive(pixels)
 	case PhaseVoting:
 		mask = a.voter.Next(pixels)
+		if a.voter.Voted {
+			if a.voter.VotedSkip {
+				log.Printf("vote: cast SKIP (target=%d not found or gave up, moves=%d, frame %d)",
+					a.voter.Target, a.voter.moves, a.frames)
+			} else {
+				log.Printf("vote: cast vote for color=%d (moves=%d, frame %d)",
+					a.voter.Target, a.voter.moves, a.frames)
+			}
+			a.voter.Voted = false
+		}
 	default:
 		// Emit a rotating cardinal so startup/lobby/game-over/role-reveal
 		// frames don't look like a frozen policy to outside observers
@@ -266,6 +300,7 @@ func (a *Agent) Step(pixels []uint8) uint8 {
 	a.sentMask = mask
 	return mask
 }
+
 
 // TakePendingChat drains any pending chat message. Returns ("", false) when
 // nothing is queued. Used by the websocket loop; stdio callers ignore it
@@ -446,14 +481,12 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 				}
 				a.nav.Clear()
 				a.bodyGoal = false
-				a.bodyTarget = Point{}
 				return ButtonA
 			}
 			// Out of range: drop any existing goal and head to the body.
-			if !a.bodyGoal || a.bodyTarget != bodyW {
+			if !a.bodyGoal || a.nav.Goal() != bodyW {
 				if a.nav.SetGoal(bodyW) {
 					a.bodyGoal = true
-					a.bodyTarget = bodyW
 					a.goalStation = -1
 					a.arrivedAt = 0
 					log.Printf("body: nav to color=%d at %v (player %v, dist²=%d)",
@@ -464,7 +497,6 @@ func (a *Agent) stepActive(pixels []uint8) uint8 {
 			// Body left view; clear the goal so normal task/nav resumes.
 			a.nav.Clear()
 			a.bodyGoal = false
-			a.bodyTarget = Point{}
 			a.arrivedAt = 0
 		}
 	}

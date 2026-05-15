@@ -40,7 +40,18 @@ const (
 	// server's own ventCooldown (30 ticks, sim.nim:1261) ensures only the
 	// first successful B in this window teleports.
 	imposterPostKillVentFrames = 6
+
+	imposterKillCooldownTicks = 1200
+	huntingWindowFrames       = 240 // 10s @ 24fps
+	huntingSightingMaxAge     = 240
+	huntingOrbitRadius        = 80
 )
+
+// CrewSighting records where and when a crewmate color was last seen.
+type CrewSighting struct {
+	Pos   Point
+	Frame uint64
+}
 
 // ImposterBrain holds mutable imposter state: which fake task is the
 // current cover goal, and a dedicated RNG so two imposter agents in the
@@ -78,6 +89,11 @@ type ImposterBrain struct {
 	// as agent.radarBlack (agent.go:90, 442-457).
 	fakeBlack     []int
 	fakeBlackFrom Point // player pos when fakeBlack was last populated
+
+	// Hunting mode state.
+	roleDetectedF uint64
+	sightings     [16]CrewSighting
+	huntingLogged bool
 }
 
 // imposterFakeBlackExpirePx mirrors agentRadarBlackExpirePx — once we
@@ -107,8 +123,20 @@ func NewImposterBrain(seed int64) *ImposterBrain {
 func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, bool) {
 	if a.imposter == nil {
 		a.imposter = NewImposterBrain(int64(a.frames) ^ int64(uintptrOfAgent(a)))
+		a.imposter.roleDetectedF = a.frames
 	}
 	brain := a.imposter
+
+	for _, m := range FindCrewmates(pixels) {
+		brain.recordSighting(m.Color, CrewmateWorld(m, cam), a.frames)
+	}
+	if brain.isHunting(a.frames) && !brain.huntingLogged {
+		brain.huntingLogged = true
+		log.Printf("imposter: hunting mode (cooldown remaining %d frames, frame %d)",
+			brain.cooldownRemaining(a.frames), a.frames)
+	} else if !brain.isHunting(a.frames) && brain.huntingLogged {
+		brain.huntingLogged = false
+	}
 
 	// 0. Post-kill vent. If we fired a kill in the last few frames and
 	// we're still standing within VentRange of a vent, press ButtonB to
@@ -216,7 +244,7 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 						target.Color, tgt, player, distSq)
 					brain.lastKillF = a.frames
 					brain.killsThisRound++
-				}
+					}
 				// Drop the victim from suspect memory so vote-phase
 				// Pick() returns an *alive* crewmate color we've seen
 				// recently. Dead slots are excluded by findColor, so
@@ -268,8 +296,46 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		brain.chaseSeenF = 0
 	}
 
-	// 3. Fake task camouflage. Pick a station if we don't have one or if
-	// enough time has passed without progress.
+	// 2b. Orbit ambush: kill is ready, crewmates are visible, but all
+	// are witnessed. Pick a nearby task station and "do a task" there,
+	// re-checking each frame for the witness to leave.
+	if a.status.KillReady() {
+		mates := FindCrewmates(pixels)
+		if len(mates) > 0 {
+			var cx, cy int
+			for _, m := range mates {
+				w := CrewmateWorld(m, cam)
+				cx += w.X
+				cy += w.Y
+			}
+			cx /= len(mates)
+			cy /= len(mates)
+			centroid := Point{cx, cy}
+			if idx, ok := pickOrbitStation(centroid); ok {
+				goal := TaskStations[idx].Center
+				if a.nav.Goal() != goal {
+					a.nav.SetGoal(goal)
+					a.goalStation = -1
+					a.bodyGoal = false
+					brain.fakeIdx = idx
+					brain.fakeChosen = a.frames
+					log.Printf("imposter: orbit station %s near crewmates at %v (frame %d)",
+						TaskStations[idx].Name, centroid, a.frames)
+				}
+				a.logBranch("imp-orbit")
+				navMask, _ := a.nav.Next(player)
+				if navMask == Unreachable {
+					a.nav.Clear()
+				} else {
+					return navMask, true
+				}
+			}
+		}
+	}
+
+	// 3. Fake task camouflage / hunting patrol. Pick a station if we
+	// don't have one or if enough time has passed without progress.
+	// In hunting mode, prefer recent sightings or isolated stations.
 	//
 	// Expire the Unreachable blacklist if we've moved far enough that the
 	// reachable-set is probably different.
@@ -282,11 +348,15 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 	}
 	if brain.fakeIdx < 0 || brain.fakeIdx >= len(TaskStations) ||
 		a.frames-brain.fakeChosen > imposterFakeRotateFrames {
-		idx, ok := brain.pickFakeStation()
+		idx := -1
+		ok := false
+		if brain.isHunting(a.frames) {
+			idx, ok = brain.pickHuntingTarget(a.frames, a.suspect.Self(), player)
+		}
 		if !ok {
-			// Everything reachable is blacklisted. Fall through to caller,
-			// which will wander via Steer/wanderer. Nav is cleared so we
-			// don't re-enter this branch on stale goal state.
+			idx, ok = brain.pickFakeStation()
+		}
+		if !ok {
 			a.nav.Clear()
 			brain.fakeIdx = -1
 			a.logBranch("imp-fake-nowhere")
@@ -298,8 +368,13 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		a.nav.SetGoal(goal)
 		a.goalStation = -1
 		a.bodyGoal = false
-		log.Printf("imposter: fake target %s @ %v (frame %d)",
-			TaskStations[brain.fakeIdx].Name, goal, a.frames)
+		if brain.isHunting(a.frames) {
+			log.Printf("imposter: hunt target %s @ %v (frame %d)",
+				TaskStations[brain.fakeIdx].Name, goal, a.frames)
+		} else {
+			log.Printf("imposter: fake target %s @ %v (frame %d)",
+				TaskStations[brain.fakeIdx].Name, goal, a.frames)
+		}
 	}
 	if !a.nav.HasGoal() {
 		goal := TaskStations[brain.fakeIdx].Center
@@ -321,16 +396,27 @@ func (a *Agent) stepImposter(pixels []uint8, cam Camera, player Point) (uint8, b
 		return 0, true
 	}
 	if arrived {
-		idx, ok := brain.pickFakeStation()
-		if ok {
-			brain.fakeIdx = idx
+		var nextIdx int
+		var nextOk bool
+		if brain.isHunting(a.frames) {
+			nextIdx, nextOk = brain.pickHuntingTarget(a.frames, a.suspect.Self(), player)
+		}
+		if !nextOk {
+			nextIdx, nextOk = brain.pickFakeStation()
+		}
+		if nextOk {
+			brain.fakeIdx = nextIdx
 			brain.fakeChosen = a.frames
 			a.nav.SetGoal(TaskStations[brain.fakeIdx].Center)
-			log.Printf("imposter: reached fake target; next=%s (frame %d)",
+			log.Printf("imposter: reached target; next=%s (frame %d)",
 				TaskStations[brain.fakeIdx].Name, a.frames)
 		}
 	}
-	a.logBranch("imp-fake")
+	if brain.isHunting(a.frames) {
+		a.logBranch("imp-hunt")
+	} else {
+		a.logBranch("imp-fake")
+	}
 	return navMask, true
 }
 
@@ -485,4 +571,125 @@ func pickKillCandidate(mates []CrewmateMatch, cam Camera, player Point, brain *I
 // Agent pointer (nil-guarded by the caller, which always has a receiver).
 func uintptrOfAgent(a *Agent) uintptr {
 	return uintptrFrom(a)
+}
+
+// --- Hunting mode helpers ---
+
+var cafeteriaButton = Point{565, 120}
+
+var stationIsolation []int
+
+func init() {
+	stationIsolation = make([]int, len(TaskStations))
+	for i, ts := range TaskStations {
+		stationIsolation[i] = manhattan(ts.Center, cafeteriaButton)
+	}
+}
+
+func (b *ImposterBrain) cooldownRemaining(frames uint64) int {
+	var elapsed uint64
+	if b.lastKillF > 0 {
+		elapsed = frames - b.lastKillF
+	} else if b.roleDetectedF > 0 {
+		elapsed = frames - b.roleDetectedF
+	} else {
+		return 0
+	}
+	if elapsed >= imposterKillCooldownTicks {
+		return 0
+	}
+	return int(imposterKillCooldownTicks - elapsed)
+}
+
+func (b *ImposterBrain) isHunting(frames uint64) bool {
+	rem := b.cooldownRemaining(frames)
+	return rem > 0 && rem <= huntingWindowFrames
+}
+
+func (b *ImposterBrain) recordSighting(color uint8, pos Point, frame uint64) {
+	if int(color) >= len(b.sightings) {
+		return
+	}
+	b.sightings[color] = CrewSighting{Pos: pos, Frame: frame}
+}
+
+func (b *ImposterBrain) recentSighting(frames uint64, selfColor uint8) (Point, bool) {
+	var best CrewSighting
+	for i, s := range b.sightings {
+		if s.Frame == 0 || uint8(i) == selfColor {
+			continue
+		}
+		if frames-s.Frame > huntingSightingMaxAge {
+			continue
+		}
+		if best.Frame == 0 || s.Frame > best.Frame {
+			best = s
+		}
+	}
+	if best.Frame == 0 {
+		return Point{}, false
+	}
+	return best.Pos, true
+}
+
+func (b *ImposterBrain) pickIsolatedStation() (int, bool) {
+	bestIdx := -1
+	bestDist := -1
+	for i := range TaskStations {
+		blocked := false
+		for _, bi := range b.fakeBlack {
+			if bi == i {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		if stationIsolation[i] > bestDist {
+			bestDist = stationIsolation[i]
+			bestIdx = i
+		}
+	}
+	return bestIdx, bestIdx >= 0
+}
+
+func (b *ImposterBrain) pickHuntingTarget(frames uint64, selfColor uint8, player Point) (int, bool) {
+	if pos, ok := b.recentSighting(frames, selfColor); ok {
+		bestIdx := -1
+		bestDist := -1
+		for i, ts := range TaskStations {
+			blocked := false
+			for _, bi := range b.fakeBlack {
+				if bi == i {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				continue
+			}
+			d := manhattan(ts.Center, pos)
+			if bestIdx < 0 || d < bestDist {
+				bestIdx, bestDist = i, d
+			}
+		}
+		if bestIdx >= 0 {
+			return bestIdx, true
+		}
+	}
+	return b.pickIsolatedStation()
+}
+
+func pickOrbitStation(near Point) (int, bool) {
+	bestIdx := -1
+	bestDist := huntingOrbitRadius + 1
+	for i, ts := range TaskStations {
+		d := manhattan(ts.Center, near)
+		if d <= huntingOrbitRadius && d < bestDist {
+			bestDist = d
+			bestIdx = i
+		}
+	}
+	return bestIdx, bestIdx >= 0
 }

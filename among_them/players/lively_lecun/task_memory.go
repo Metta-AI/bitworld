@@ -25,9 +25,6 @@ type TaskMemory struct {
 	state                []TaskState
 	radarHits            []int
 	onScreenNoIconStreak []uint8
-	// suppressed marks stations we already attempted and explicitly
-	// demoted; stale icon detections must not resurrect them.
-	suppressed []bool
 }
 
 type TaskState uint8
@@ -68,7 +65,6 @@ func NewTaskMemory() *TaskMemory {
 		state:                make([]TaskState, len(TaskStations)),
 		radarHits:            make([]int, len(TaskStations)),
 		onScreenNoIconStreak: make([]uint8, len(TaskStations)),
-		suppressed:           make([]bool, len(TaskStations)),
 	}
 }
 
@@ -84,7 +80,6 @@ func (m *TaskMemory) RadarHits(i int) int { return m.radarHits[i] }
 func (m *TaskMemory) Mark(i int, s TaskState) {
 	m.state[i] = s
 	m.onScreenNoIconStreak[i] = 0
-	m.suppressed[i] = s == TaskSeenNo
 }
 
 // Reset clears every station back to maybe with 0 hits. Called on game
@@ -94,7 +89,6 @@ func (m *TaskMemory) Reset() {
 		m.state[i] = TaskMaybe
 		m.radarHits[i] = 0
 		m.onScreenNoIconStreak[i] = 0
-		m.suppressed[i] = false
 	}
 }
 
@@ -114,9 +108,6 @@ func (m *TaskMemory) Update(player Point, cam Camera, icons []IconMatch, arrows 
 	for _, ic := range icons {
 		w := IconToTaskWorld(ic, cam)
 		if idx := SnapToStation(w, taskMemoryMergeRadius); idx >= 0 {
-			if m.suppressed[idx] {
-				continue
-			}
 			m.state[idx] = TaskKnown
 			m.onScreenNoIconStreak[idx] = 0
 		}
