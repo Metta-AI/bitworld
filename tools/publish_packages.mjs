@@ -1,15 +1,18 @@
-#!/usr/bin/env npx playwright test --config /dev/null
 /**
- * Makes all ghcr.io/malcolmocean/bitworld-* packages public.
- * Usage: npx playwright test tools/publish_packages.mjs
- *    or: node tools/publish_packages.mjs (with GITHUB_USER env var optional)
+ * Makes all ghcr.io container packages public for a GitHub user.
  *
- * The script opens a browser, lets you log into GitHub, then iterates
- * through each package's settings page and changes visibility to public.
+ * Uses dev-browser (must be installed: npm install -g dev-browser && dev-browser install).
+ * The user must log in interactively in the browser window that opens.
+ *
+ * Usage:
+ *   node tools/publish_packages.mjs
+ *   GITHUB_USER=someone node tools/publish_packages.mjs
  */
-import { chromium } from 'playwright';
+
+import { execSync } from 'child_process';
 
 const GITHUB_USER = process.env.GITHUB_USER || 'malcolmocean';
+const PAGE_NAME = 'github-publish';
 
 const PACKAGES = [
   'bitworld-stag-hunt',
@@ -20,57 +23,68 @@ const PACKAGES = [
   'bitworld-stag-hunt-stag-hunter',
 ];
 
-async function main() {
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-
-  // Let user log in
-  await page.goto('https://github.com/login');
-  console.log('Please log into GitHub in the browser window...');
-  await page.waitForURL('https://github.com/**', { timeout: 120_000 });
-  console.log('Logged in.');
-
-  for (const pkg of PACKAGES) {
-    const settingsUrl = `https://github.com/users/${GITHUB_USER}/packages/container/${pkg}/settings`;
-    console.log(`\nProcessing: ${pkg}`);
-    await page.goto(settingsUrl);
-
-    // Click "Change visibility" button in the danger zone
-    const changeBtn = page.getByRole('button', { name: /Change visibility/i });
-    await changeBtn.waitFor({ timeout: 10_000 });
-    await changeBtn.click();
-
-    // Select "Public" radio in the modal/dialog
-    const publicRadio = page.getByLabel(/Public/i).first();
-    await publicRadio.waitFor({ timeout: 5_000 });
-    await publicRadio.click();
-
-    // Type the package name to confirm
-    const confirmInput = page.getByPlaceholder(/package name/i).or(
-      page.locator('input[name="verify"]')
-    ).or(
-      page.locator('input[aria-label*="verify"]')
-    );
-    await confirmInput.waitFor({ timeout: 5_000 });
-    await confirmInput.fill(pkg);
-
-    // Click the final confirm button
-    const confirmBtn = page.getByRole('button', { name: /I understand/i }).or(
-      page.getByRole('button', { name: /make this package public/i })
-    );
-    await confirmBtn.click();
-
-    // Wait for navigation back to settings
-    await page.waitForTimeout(2_000);
-    console.log(`  ✓ ${pkg} is now public`);
-  }
-
-  console.log('\nAll packages are public!');
-  await browser.close();
+function run(script) {
+  return execSync(`dev-browser <<'DEVEOF'\n${script}\nDEVEOF`, {
+    encoding: 'utf-8',
+    shell: '/bin/zsh',
+    timeout: 30000,
+  }).trim();
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
+// Step 1: open login page
+console.log('Opening GitHub login page...');
+run(`
+  const page = await browser.getPage("${PAGE_NAME}");
+  await page.goto("https://github.com/login", { waitUntil: "domcontentloaded" });
+  console.log(JSON.stringify({ url: page.url() }));
+`);
+
+// Step 2: wait for login
+console.log('Please log into GitHub in the browser window.');
+console.log('Press Enter here once you are logged in...');
+await new Promise(resolve => {
+  process.stdin.once('data', resolve);
 });
+
+// Step 3: iterate packages
+for (const pkg of PACKAGES) {
+  const settingsUrl = `https://github.com/users/${GITHUB_USER}/packages/container/${pkg}/settings`;
+  console.log(`\nProcessing: ${pkg}`);
+
+  const status = run(`
+    const page = await browser.getPage("${PAGE_NAME}");
+    await page.goto("${settingsUrl}", { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("button");
+    const snap = await page.snapshotForAI();
+    const isPublic = snap.full.includes("currently public");
+    console.log(JSON.stringify({ isPublic }));
+  `);
+
+  const { isPublic } = JSON.parse(status);
+  if (isPublic) {
+    console.log(`  Already public, skipping.`);
+    continue;
+  }
+
+  run(`
+    const page = await browser.getPage("${PAGE_NAME}");
+    const btn = page.getByRole("button", { name: "Change visibility" });
+    await btn.click();
+    await page.waitForTimeout(1000);
+    const publicRadio = page.getByRole("radio", { name: /Public/i });
+    await publicRadio.click();
+    const input = page.getByRole("textbox", { name: /Please type/i });
+    await input.fill("${pkg}");
+    const confirm = page.getByRole("button", { name: /I understand the consequences/i });
+    await confirm.click();
+    await page.waitForTimeout(3000);
+  `);
+
+  console.log(`  Made public.`);
+}
+
+console.log('\nDone!');
+run(`
+  const page = await browser.getPage("${PAGE_NAME}");
+  await page.close();
+`);
