@@ -134,6 +134,16 @@ th {
 .nowrap {
   white-space: nowrap;
 }
+.clipCell {
+  max-width: 260px;
+}
+.clipText {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .selectCell {
   width: 24px;
   text-align: center;
@@ -1244,6 +1254,33 @@ proc safeListBots(): seq[BotContainer] =
   except GamesServerError:
     result = @[]
 
+proc dockerCpuPercents(): Table[string, string] =
+  ## Reads Docker CPU percentage for currently running containers.
+  if useEcs:
+    return
+  let res = dockerResult(@[
+    "stats",
+    "--no-stream",
+    "--format",
+    "{{.Name}}\t{{.CPUPerc}}"
+  ])
+  if res.code != 0:
+    return
+  for line in res.output.splitLines():
+    let parts = line.split('\t')
+    if parts.len >= 2:
+      let
+        name = parts[0].strip()
+        cpu = parts[1].strip()
+      if name.len > 0 and cpu.len > 0:
+        result[name] = cpu
+
+proc cpuPercent(cpuByName: Table[string, string], name: string): string =
+  ## Returns a display CPU percentage for one container name.
+  if name in cpuByName:
+    return cpuByName[name]
+  "-"
+
 proc botsForGame(
   bots: seq[BotContainer],
   gameName: string
@@ -1527,6 +1564,11 @@ proc botPlayerName(botName: string, slot: int): string =
 proc botPlayerName(bot: CoplayerManifest, slot: int): string =
   ## Builds a visible in-game name for one bot manifest.
   botPlayerName(bot.name, slot)
+
+proc clipTextHtml(text: string): string =
+  ## Renders text with an ellipsis and full title.
+  let safeText = esc(text)
+  "<span class=\"clipText\" title=\"" & safeText & "\">" & safeText & "</span>"
 
 proc playerWsUrl(
   host: string,
@@ -2850,10 +2892,11 @@ proc renderManifestTable(): string =
               href manifestUrl(manifest)
               target "_blank"
               say esc(manifest.key)
-          td rowClass & " nowrap":
-            a:
+          td rowClass & " nowrap clipCell":
+            a ".clipText":
               href dockerPackageUrl(image)
               target "_blank"
+              title image
               say esc(image)
           td rowClass & " nowrap":
             a ".button":
@@ -2944,7 +2987,8 @@ proc renderBulkControls(): string =
 proc renderGamesTable(
   request: Request,
   games: seq[GameContainer],
-  bots: seq[BotContainer]
+  bots: seq[BotContainer],
+  cpuByName: Table[string, string]
 ): string =
   ## Renders the active and stopped game list.
   renderFragment:
@@ -2956,6 +3000,8 @@ proc renderGamesTable(
           say "Game"
         th ".head":
           say "Status"
+        th ".head":
+          say "CPU"
         th ".head":
           say "Port"
         th ".head":
@@ -2973,7 +3019,7 @@ proc renderGamesTable(
       if games.len == 0:
         tr:
           td ".row1 center":
-            colspan "10"
+            colspan "11"
             say "No games created yet."
       for i, game in games:
         let
@@ -2983,10 +3029,12 @@ proc renderGamesTable(
         tr:
           td rowClass & " selectCell":
             say renderContainerCheckbox(game.name)
-          td rowClass:
-            say esc(game.name)
+          td rowClass & " clipCell":
+            say clipTextHtml(game.name)
           td rowClass & " nowrap":
             say esc(game.status)
+          td rowClass & " right nowrap":
+            say esc(cpuPercent(cpuByName, game.name))
           td rowClass & " center":
             if game.port > 0:
               say $game.port
@@ -3088,12 +3136,14 @@ proc renderGamesTable(
               say ""
             td rowClass & " nowrap":
               say esc(bot.status)
+            td rowClass & " right nowrap":
+              say esc(cpuPercent(cpuByName, bot.name))
             td rowClass:
               say ""
             td rowClass:
               say esc(botPlayerName(bot.bot, j))
-            td rowClass & " nowrap":
-              say esc(bot.name)
+            td rowClass & " nowrap clipCell":
+              say clipTextHtml(bot.name)
             td rowClass & " nowrap":
               say fmtCreated(bot.created)
             td rowClass:
@@ -3108,7 +3158,8 @@ proc renderGamesTable(
 
 proc renderReplayServersTable(
   request: Request,
-  servers: seq[GameContainer]
+  servers: seq[GameContainer],
+  cpuByName: Table[string, string]
 ): string =
   ## Renders replay playback containers.
   renderFragment:
@@ -3120,6 +3171,8 @@ proc renderReplayServersTable(
           say "Replay server"
         th ".head":
           say "Status"
+        th ".head":
+          say "CPU"
         th ".head":
           say "Port"
         th ".head":
@@ -3135,7 +3188,7 @@ proc renderReplayServersTable(
       if servers.len == 0:
         tr:
           td ".row1 center":
-            colspan "9"
+            colspan "10"
             say "No replay servers started yet."
       for i, server in servers:
         let
@@ -3144,10 +3197,12 @@ proc renderReplayServersTable(
         tr:
           td rowClass & " selectCell":
             say renderContainerCheckbox(server.name)
-          td rowClass:
-            say esc(server.name)
+          td rowClass & " clipCell":
+            say clipTextHtml(server.name)
           td rowClass & " nowrap":
             say esc(server.status)
+          td rowClass & " right nowrap":
+            say esc(cpuPercent(cpuByName, server.name))
           td rowClass & " center":
             if server.port > 0:
               say $server.port
@@ -3247,8 +3302,13 @@ proc renderPage(
     manifestTable = renderManifestTable()
     uploadButtons = renderUploadButtons()
     bulkControls = renderBulkControls()
-    gamesTable = renderGamesTable(request, games, bots)
-    replayServersTable = renderReplayServersTable(request, replayServers)
+    cpuByName = dockerCpuPercents()
+    gamesTable = renderGamesTable(request, games, bots, cpuByName)
+    replayServersTable = renderReplayServersTable(
+      request,
+      replayServers,
+      cpuByName
+    )
     replaysTable = renderReplaysTable(replays)
   render:
     html:
