@@ -810,9 +810,14 @@ proc respondForbiddenPlayer(request: Request, reason: string) =
   headers["Connection"] = "close"
   request.respond(403, headers, reason & "\n")
 
-proc configuredSlotTokenError(config: GameConfig, slot: int, token: string): string =
-  ## Returns a rejection reason for bad explicit slot credentials.
-  if slot < 0:
+proc configuredPlayerJoinError(
+  config: GameConfig,
+  address: string,
+  slot: int,
+  token: string
+): string =
+  ## Returns a rejection reason for bad configured roster credentials.
+  if config.playerJoinAllowed(address, slot, token):
     return ""
   if slot >= MaxPlayers:
     return "Player slot must be between 0 and 15."
@@ -820,10 +825,10 @@ proc configuredSlotTokenError(config: GameConfig, slot: int, token: string): str
     if config.closedRoster:
       return "Player slot is outside configured roster."
     return ""
-  let slotConfig = config.slots[slot]
-  if slotConfig.token.len > 0 and token != slotConfig.token:
+  if slot >= 0 and config.slots[slot].token.len > 0 and
+      token != config.slots[slot].token:
     return "Player token does not match configured slot " & $slot & "."
-  ""
+  "Player credentials do not match configured roster."
 
 proc replayRequestUri(request: Request): string =
   ## Returns the replay artifact URI requested by a Coworld replay client.
@@ -843,9 +848,13 @@ proc httpHandler(request: Request) =
       identity = request.playerIdentity(slot, token)
     {.gcsafe.}:
       withLock appState.lock:
-        let tokenError = appState.config.configuredSlotTokenError(slot, token)
-        if tokenError.len > 0:
-          request.respondForbiddenPlayer(tokenError)
+        let joinError = appState.config.configuredPlayerJoinError(
+          identity,
+          slot,
+          token
+        )
+        if joinError.len > 0:
+          request.respondForbiddenPlayer(joinError)
           return
     if identity.identityIsKicked():
       request.respondKicked()

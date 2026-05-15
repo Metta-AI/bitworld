@@ -1574,19 +1574,19 @@ proc playerJoinAllowed*(
   requestedSlot: int,
   token: string
 ): bool =
-  ## Returns whether a player request can satisfy configured slot auth.
-  if requestedSlot >= MaxPlayers:
+  ## Returns whether a player websocket request can pass configured slot auth.
+  if requestedSlot >= config.playerSlotLimit():
     return false
   if requestedSlot >= 0:
-    if config.closedRoster and requestedSlot >= config.slots.len:
-      return false
     return config.slotAuthMatches(requestedSlot, address, token)
-  if not config.closedRoster:
-    return true
   for i in 0 ..< config.slots.len:
-    if config.slotAuthMatches(i, address, token):
-      return true
-  false
+    let slot = config.slots[i]
+    let matchedName = slot.name.len > 0 and slot.name == address
+    let matchedToken =
+      slot.token.len > 0 and token.len > 0 and slot.token == token
+    if matchedName or matchedToken:
+      return config.slotAuthMatches(i, address, token)
+  not config.closedRoster
 
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.
