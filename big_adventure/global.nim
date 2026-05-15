@@ -113,9 +113,13 @@ type
     height: int
     pixels: seq[uint8]
 
+  ObjectCacheEntry = object
+    id, x, y, z, layer, spriteId: int
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    objectCache: seq[ObjectCacheEntry]
     spriteCache: seq[SpriteCacheEntry]
     mouseX*: int
     mouseY*: int
@@ -131,6 +135,7 @@ type
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    objectCache: seq[ObjectCacheEntry]
     hudCoins*: int
     hudLives*: int
 
@@ -363,6 +368,65 @@ proc addDeleteObject(packet: var seq[uint8], objectId: int) {.measure.} =
   packet.addU8(0x03)
   packet.addU16(objectId)
 
+proc findObjectCache(
+  cache: openArray[ObjectCacheEntry],
+  id: int
+): int {.measure.} =
+  ## Returns the index for one cached object id.
+  for i in 0 ..< cache.len:
+    if cache[i].id == id:
+      return i
+  -1
+
+proc sameObject(
+  cached: ObjectCacheEntry,
+  id, x, y, z, layer, spriteId: int
+): bool {.measure.} =
+  ## Returns true when an object message matches the cached version.
+  cached.id == id and
+    cached.x == x and
+    cached.y == y and
+    cached.z == z and
+    cached.layer == layer and
+    cached.spriteId == spriteId
+
+proc addObjectCached(
+  packet: var seq[uint8],
+  cache: var seq[ObjectCacheEntry],
+  objectId, x, y, z, layer, spriteId: int
+) {.measure.} =
+  ## Appends an object message only when the object changed.
+  let index = cache.findObjectCache(objectId)
+  if index >= 0:
+    if cache[index].sameObject(objectId, x, y, z, layer, spriteId):
+      return
+    cache[index] = ObjectCacheEntry(
+      id: objectId,
+      x: x,
+      y: y,
+      z: z,
+      layer: layer,
+      spriteId: spriteId
+    )
+    packet.addObject(objectId, x, y, z, layer, spriteId)
+    return
+  cache.add(ObjectCacheEntry(
+    id: objectId,
+    x: x,
+    y: y,
+    z: z,
+    layer: layer,
+    spriteId: spriteId
+  ))
+  packet.addObject(objectId, x, y, z, layer, spriteId)
+
+proc deleteObjectCache(cache: var seq[ObjectCacheEntry], id: int) {.measure.} =
+  ## Removes one object from the object update cache.
+  let index = cache.findObjectCache(id)
+  if index < 0:
+    return
+  cache.del(index)
+
 proc objectVisible(
   x,
   y,
@@ -418,7 +482,8 @@ proc addWorldSpriteObject(
 
 proc flushWorldSpriteObjects(
   packet: var seq[uint8],
-  objects: var seq[WorldSpriteObject]
+  objects: var seq[WorldSpriteObject],
+  cache: var seq[ObjectCacheEntry]
 ) {.measure.} =
   ## Sends queued world objects with z ranks in draw order.
   objects.sort(
@@ -430,7 +495,8 @@ proc flushWorldSpriteObjects(
         result = cmp(a.id, b.id)
   )
   for i, item in objects:
-    packet.addObject(
+    packet.addObjectCached(
+      cache,
       item.id,
       item.x,
       item.y,
@@ -442,12 +508,14 @@ proc flushWorldSpriteObjects(
 proc deleteMissingObjects(
   packet: var seq[uint8],
   previousIds: openArray[int],
-  currentIds: openArray[int]
+  currentIds: openArray[int],
+  cache: var seq[ObjectCacheEntry]
 ) {.measure.} =
   ## Deletes objects that are no longer visible in this viewer.
   for objectId in previousIds:
     if objectId notin currentIds:
       packet.addDeleteObject(objectId)
+      cache.deleteObjectCache(objectId)
 
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
@@ -1800,6 +1868,7 @@ proc addWorldObjects(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   cameraX, cameraY: int,
   viewportWidth,
   viewportHeight: int,
@@ -1937,12 +2006,13 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
-  packet.flushWorldSpriteObjects(objects)
+  packet.flushWorldSpriteObjects(objects, objectCache)
 
 proc addPlayerHud(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   playerIndex: int,
   state: PlayerViewerState,
   nextState: var PlayerViewerState
@@ -1967,7 +2037,8 @@ proc addPlayerHud(
       coinText.pixels,
       "coins " & $coins
     )
-  packet.addObject(
+  packet.addObjectCached(
+    objectCache,
     CoinsHudObjectId,
     2,
     2,
@@ -1988,7 +2059,8 @@ proc addPlayerHud(
       livesText.pixels,
       "lives " & $lives
     )
-  packet.addObject(
+  packet.addObjectCached(
+    objectCache,
     LivesHudObjectId,
     2,
     2 + sim.textFont.height + HudGap,
@@ -2003,6 +2075,7 @@ proc addPlayerStatus(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   lines: openArray[string]
 ) =
   ## Adds centered status text to a sprite-player view.
@@ -2018,7 +2091,8 @@ proc addPlayerStatus(
     text.pixels,
     "status"
   )
-  packet.addObject(
+  packet.addObjectCached(
+    objectCache,
     StatusHudObjectId,
     x,
     y,
@@ -2031,6 +2105,7 @@ proc addGlobalScorePanel(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   state: GlobalViewerState,
   nextState: var GlobalViewerState
 ): int {.measure.} =
@@ -2066,7 +2141,8 @@ proc addGlobalScorePanel(
       playerIndex,
       name
     )
-    packet.addObject(
+    packet.addObjectCached(
+      objectCache,
       pipObjectId,
       0,
       pipY,
@@ -2082,7 +2158,8 @@ proc addGlobalScorePanel(
       if ch < '0' or ch > '9':
         continue
       let digitObjectId = scorePanelDigitObjectId(player.id, j)
-      packet.addObject(
+      packet.addObjectCached(
+        objectCache,
         digitObjectId,
         digitX,
         rowY,
@@ -2092,7 +2169,8 @@ proc addGlobalScorePanel(
       )
       currentIds.add(digitObjectId)
       digitX += sim.textFont.glyphAdvance(ch)
-    packet.addObject(
+    packet.addObjectCached(
+      objectCache,
       nameObjectId,
       nameX,
       rowY,
@@ -2118,7 +2196,7 @@ proc buildSpriteProtocolPlayerUpdates*(
 
   var currentIds: seq[int] = @[]
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.addPlayerStatus(result, currentIds, ["WAITING"])
+    sim.addPlayerStatus(result, currentIds, nextState.objectCache, ["WAITING"])
   else:
     let player = sim.players[playerIndex]
     let
@@ -2131,7 +2209,8 @@ proc buildSpriteProtocolPlayerUpdates*(
         WorldHeightPixels - ScreenHeight
       )
     currentIds.add(MapObjectId)
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       MapObjectId,
       -cameraX,
       -cameraY,
@@ -2142,16 +2221,33 @@ proc buildSpriteProtocolPlayerUpdates*(
     sim.addWorldObjects(
       result,
       currentIds,
+      nextState.objectCache,
       cameraX,
       cameraY,
       ScreenWidth,
       ScreenHeight
     )
-    sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
+    sim.addPlayerHud(
+      result,
+      currentIds,
+      nextState.objectCache,
+      playerIndex,
+      state,
+      nextState
+    )
     if player.lives <= 0:
-      sim.addPlayerStatus(result, currentIds, ["GAME", "OVER"])
+      sim.addPlayerStatus(
+        result,
+        currentIds,
+        nextState.objectCache,
+        ["GAME", "OVER"]
+      )
 
-  result.deleteMissingObjects(state.objectIds, currentIds)
+  result.deleteMissingObjects(
+    state.objectIds,
+    currentIds,
+    nextState.objectCache
+  )
   nextState.objectIds = currentIds
 
 proc buildSpriteProtocolUpdates*(
@@ -2211,6 +2307,7 @@ proc buildSpriteProtocolUpdates*(
   sim.addWorldObjects(
     result,
     currentIds,
+    nextState.objectCache,
     0,
     0,
     WorldWidthPixels,
@@ -2221,6 +2318,7 @@ proc buildSpriteProtocolUpdates*(
   let scorePanelHeight = sim.addGlobalScorePanel(
     result,
     currentIds,
+    nextState.objectCache,
     state,
     nextState
   )
@@ -2245,7 +2343,8 @@ proc buildSpriteProtocolUpdates*(
       text.height,
       text.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       SelectedTextObjectId,
       2,
       selectedY,
@@ -2275,7 +2374,8 @@ proc buildSpriteProtocolUpdates*(
       tickText.height,
       tickText.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       ReplayTickObjectId,
       max(0, (ScreenWidth - tickText.width) div 2),
       0,
@@ -2289,7 +2389,8 @@ proc buildSpriteProtocolUpdates*(
       scrubber.height,
       scrubber.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       ReplayScrubberObjectId,
       max(0, (ScreenWidth - ReplayScrubberWidth) div 2),
       ReplayScrubberY,
@@ -2303,7 +2404,8 @@ proc buildSpriteProtocolUpdates*(
       controls.height,
       controls.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       ReplayControlsObjectId,
       TransportX,
       TransportY,
@@ -2312,5 +2414,9 @@ proc buildSpriteProtocolUpdates*(
       ReplayControlsSpriteId
     )
 
-  result.deleteMissingObjects(state.objectIds, currentIds)
+  result.deleteMissingObjects(
+    state.objectIds,
+    currentIds,
+    nextState.objectCache
+  )
   nextState.objectIds = currentIds
