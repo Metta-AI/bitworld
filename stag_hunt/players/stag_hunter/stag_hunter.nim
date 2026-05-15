@@ -1,7 +1,8 @@
 import
-  std/[options, os, parseopt, strutils],
+  std/[options, os, parseopt, random, strutils],
   whisky,
-  protocol
+  protocol,
+  pathfinding
 
 const
   StagTileSize = 12
@@ -19,16 +20,17 @@ const
   PlayerObjectBase = 5000
   BackgroundObjectBase = 8000
   PreyObjectBase = 10000
+  IndicatorObjectBase = 9000
+  IndicatorSpriteBase = 20
 
   MaxPlayerSlots = 64
   MaxPreySlots = 256
+  MaxPreyCount = 64
   MaxBackgroundIndex = WorldWidthTiles * WorldHeightTiles
   MaxDrainMessages = 256
   ConnectRetryDelayMs = 250
   WebSocketPath = "/player"
 
-  ExploreChangeInterval = 36
-  StagSpriteId = PreySpriteBase + 2
 
 type
   PreyKind = enum
@@ -45,6 +47,7 @@ type
     SpriteRock
     SpritePrey
     SpritePlayer
+    SpriteIndicator
 
   SpriteInfo = object
     defined: bool
@@ -88,8 +91,10 @@ type
     haveSelf: bool
     lastMask: uint8
     mode: BotMode
-    exploreDir: uint8
-    exploreTicks: int
+    exploreTargetX: int
+    exploreTargetY: int
+    exploreTargetAge: int
+    obstacleMap: ObstacleMap
     posHistory: array[4, tuple[x, y: int]]
     posHistoryIdx: int
     posHistoryCount: int
@@ -125,6 +130,7 @@ proc classifySprite(spriteId: int): SpriteKind =
   if spriteId == RockSpriteId: return SpriteRock
   if spriteId >= PreySpriteBase and spriteId < PreySpriteBase + 5: return SpritePrey
   if spriteId >= PlayerSpriteBase and spriteId < PlayerSpriteEnd: return SpritePlayer
+  if spriteId >= IndicatorSpriteBase and spriteId < IndicatorSpriteBase + 3: return SpriteIndicator
   SpriteUnknown
 
 proc applySpritePacket(bot: var Bot, packet: string): bool =
@@ -261,38 +267,6 @@ proc identifySelf(bot: var Bot, players: openArray[PlayerSight]) =
       bot.selfTileY = p.tileY
       return
 
-proc chebyshevDistance(ax, ay, bx, by: int): int =
-  max(abs(ax - bx), abs(ay - by))
-
-proc isCardinallyAdjacent(ax, ay, bx, by: int): bool =
-  let dx = abs(ax - bx)
-  let dy = abs(ay - by)
-  (dx == 1 and dy == 0) or (dx == 0 and dy == 1)
-
-proc stepMask(selfX, selfY, targetX, targetY: int): uint8 =
-  let dx = targetX - selfX
-  let dy = targetY - selfY
-  if dx == 0 and dy == 0: return 0
-  if abs(dx) >= abs(dy):
-    if dx > 0: return ButtonRight
-    if dx < 0: return ButtonLeft
-  if dy > 0: return ButtonDown
-  if dy < 0: return ButtonUp
-  0
-
-proc perpendicularMask(mask: uint8, tick: int): uint8 =
-  if mask == ButtonUp or mask == ButtonDown:
-    if (tick div 3) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  if mask == ButtonLeft or mask == ButtonRight:
-    if (tick div 3) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  mask
-
-proc cycleMask(tick: int): uint8 =
-  const dirs = [ButtonUp, ButtonRight, ButtonDown, ButtonLeft]
-  dirs[tick mod 4]
-
 proc updateStuckState(bot: var Bot, mask: uint8) =
   if not bot.haveSelf: return
   let lastIdx = (bot.posHistoryIdx + bot.posHistoryCount - 1 + 4) mod 4
@@ -309,17 +283,44 @@ proc updateStuckState(bot: var Bot, mask: uint8) =
     inc bot.stuckCount
   bot.lastSentNonZero = mask != 0
 
-proc isCycling(bot: Bot): bool =
-  if bot.posHistoryCount < 4: return false
-  let
-    i0 = (bot.posHistoryIdx + 0) mod 4
-    i1 = (bot.posHistoryIdx + 1) mod 4
-    i2 = (bot.posHistoryIdx + 2) mod 4
-    i3 = (bot.posHistoryIdx + 3) mod 4
-  bot.posHistory[i0].x == bot.posHistory[i2].x and
-    bot.posHistory[i0].y == bot.posHistory[i2].y and
-    bot.posHistory[i1].x == bot.posHistory[i3].x and
-    bot.posHistory[i1].y == bot.posHistory[i3].y
+proc updateObstacleMap(bot: var Bot) =
+  if not bot.cameraKnown: return
+  for i in 0 ..< MaxBackgroundIndex:
+    let objectId = BackgroundObjectBase + i
+    if not bot.objectPresent(objectId): continue
+    let
+      state = bot.objects[objectId]
+      sprite = bot.spriteInfo(state.spriteId)
+      tx = i mod WorldWidthTiles
+      ty = i div WorldWidthTiles
+    if not sprite.defined: continue
+    case sprite.kind
+    of SpriteTree, SpriteRock:
+      bot.obstacleMap.markTile(tx, ty, TileBlocked)
+    of SpriteBackground:
+      bot.obstacleMap.markTile(tx, ty, TileClear)
+    else:
+      discard
+
+proc navigate(bot: var Bot, targetX, targetY: int): uint8 =
+  if bot.stuckCount >= 15:
+    let mask = unstickStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, bot.frameTick)
+    bot.updateStuckState(mask)
+    return mask
+  let mask = pathStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, targetX, targetY)
+  bot.updateStuckState(mask)
+  mask
+
+proc pickExploreTarget(bot: var Bot) =
+  const margin = 4
+  let quadrant = (bot.frameTick div 120) mod 4
+  case quadrant
+  of 0: bot.exploreTargetX = margin + 4; bot.exploreTargetY = margin + 4
+  of 1: bot.exploreTargetX = WorldWidthTiles - margin - 4; bot.exploreTargetY = margin + 4
+  of 2: bot.exploreTargetX = WorldWidthTiles - margin - 4; bot.exploreTargetY = WorldHeightTiles - margin - 4
+  of 3: bot.exploreTargetX = margin + 4; bot.exploreTargetY = WorldHeightTiles - margin - 4
+  else: discard
+  bot.exploreTargetAge = 0
 
 proc findStag(prey: openArray[PreySight]): PreySight =
   for p in prey:
@@ -327,48 +328,46 @@ proc findStag(prey: openArray[PreySight]): PreySight =
       return p
   PreySight()
 
-proc findNearestOtherPlayer(
-  bot: Bot, players: openArray[PlayerSight]
-): PlayerSight =
-  var bestDist = high(int)
-  for p in players:
-    if p.objectId == bot.selfObjectId: continue
-    let d = chebyshevDistance(bot.selfTileX, bot.selfTileY, p.tileX, p.tileY)
-    if d < bestDist:
-      bestDist = d
-      result = p
-
-proc canSeeTarget(player: PlayerSight, target: PreySight): bool =
-  chebyshevDistance(player.tileX, player.tileY, target.tileX, target.tileY) <= 5
-
-proc opposingSide(
-  selfX, selfY, preyX, preyY, allyX, allyY: int
+proc pickClearCardinalNeighbor(
+  map: ObstacleMap, preyX, preyY: int
 ): tuple[x, y: int, found: bool] =
-  let
-    allyDx = allyX - preyX
-    allyDy = allyY - preyY
-  # Ally is on a cardinal side — go to opposing
-  if allyDx == 0 and allyDy == -1: return (preyX, preyY + 1, true)  # ally N -> go S
-  if allyDx == 0 and allyDy == 1: return (preyX, preyY - 1, true)   # ally S -> go N
-  if allyDx == 1 and allyDy == 0: return (preyX - 1, preyY, true)   # ally E -> go W
-  if allyDx == -1 and allyDy == 0: return (preyX + 1, preyY, true)  # ally W -> go E
-  # Ally not adjacent yet — pick the side closest to us that opposes ally's approach
-  let allyApproachX = if allyX < preyX: -1 elif allyX > preyX: 1 else: 0
-  let allyApproachY = if allyY < preyY: -1 elif allyY > preyY: 1 else: 0
-  # Ally approaching from west -> go east side, etc
-  if abs(allyApproachX) >= abs(allyApproachY):
-    if allyApproachX < 0: return (preyX + 1, preyY, true)
-    else: return (preyX - 1, preyY, true)
-  else:
-    if allyApproachY < 0: return (preyX, preyY + 1, true)
-    else: return (preyX, preyY - 1, true)
+  const offsets = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+  var candidates: array[4, tuple[x, y: int]]
+  var count = 0
+  for off in offsets:
+    let nx = preyX + off[0]
+    let ny = preyY + off[1]
+    if inBounds(nx, ny) and map.getTile(nx, ny) != TileBlocked:
+      candidates[count] = (nx, ny)
+      inc count
+  if count == 0:
+    return (0, 0, false)
+  let pick = candidates[rand(count - 1)]
+  (pick.x, pick.y, true)
 
-proc nextExploreDir(bot: var Bot): uint8 =
-  inc bot.exploreTicks
-  if bot.exploreTicks >= ExploreChangeInterval or bot.stuckCount >= 18:
-    bot.exploreTicks = 0
-    bot.exploreDir = cycleMask(bot.frameTick div ExploreChangeInterval)
-  bot.exploreDir
+proc findKillSpot(bot: Bot): tuple[x, y: int, found: bool] =
+  ## Scan for 1-dot indicator adjacent to self — stepping there completes a capture.
+  const IndicatorTileOffset = (StagTileSize - 4) div 2  # 4px indicator centered in 12px tile
+  for preyIdx in 0 ..< MaxPreyCount:
+    for sideOrd in 0 ..< 4:
+      let objectId = IndicatorObjectBase + preyIdx * 4 + sideOrd
+      if not bot.objectPresent(objectId): continue
+      let state = bot.objects[objectId]
+      let sprite = bot.spriteInfo(state.spriteId)
+      if not sprite.defined or sprite.kind != SpriteIndicator: continue
+      # Only care about 1-dot (immediate kill)
+      if state.spriteId != IndicatorSpriteBase: continue
+      let
+        worldX = bot.cameraX + state.x - IndicatorTileOffset
+        worldY = bot.cameraY + state.y - IndicatorTileOffset
+        tileX = worldX div StagTileSize
+        tileY = worldY div StagTileSize
+        dx = abs(bot.selfTileX - tileX)
+        dy = abs(bot.selfTileY - tileY)
+      # Adjacent (1 step away) or already there
+      if (dx + dy) <= 2:
+        return (tileX, tileY, true)
+  (0, 0, false)
 
 proc decideMask(bot: var Bot): uint8 =
   bot.updateCamera()
@@ -376,74 +375,44 @@ proc decideMask(bot: var Bot): uint8 =
   let players = bot.visiblePlayers()
   bot.identifySelf(players)
   if not bot.haveSelf: return 0
+  bot.updateObstacleMap()
+
+  # Priority 1: step into a kill spot (1-dot indicator nearby)
+  let killSpot = bot.findKillSpot()
+  if killSpot.found:
+    if bot.selfTileX == killSpot.x and bot.selfTileY == killSpot.y:
+      bot.updateStuckState(0)
+      return 0
+    return bot.navigate(killSpot.x, killSpot.y)
 
   let prey = bot.visiblePrey()
   let stag = findStag(prey)
-  let ally = bot.findNearestOtherPlayer(players)
 
-  # Hunt mode: stag visible AND another player visible who can plausibly see it
-  if stag.found and ally.found and canSeeTarget(ally, stag):
+  # Hunt mode: stag visible — go to a random clear side of it
+  if stag.found:
     bot.mode = ModeHunt
 
-    # Determine target tile: opposing side from ally
-    let opp = opposingSide(
-      bot.selfTileX, bot.selfTileY,
-      stag.tileX, stag.tileY,
-      ally.tileX, ally.tileY
-    )
-
-    let targetX = if opp.found: opp.x else: stag.tileX
-    let targetY = if opp.found: opp.y else: stag.tileY
-
-    # Already at target position — hold
-    if bot.selfTileX == targetX and bot.selfTileY == targetY:
+    # Already on a cardinal neighbor of the stag — hold position
+    let dx = abs(bot.selfTileX - stag.tileX)
+    let dy = abs(bot.selfTileY - stag.tileY)
+    if (dx == 1 and dy == 0) or (dx == 0 and dy == 1):
       bot.updateStuckState(0)
       return 0
 
-    # Adjacent to stag on our target side — hold
-    if isCardinallyAdjacent(bot.selfTileX, bot.selfTileY, stag.tileX, stag.tileY):
-      if bot.selfTileX == targetX and bot.selfTileY == targetY:
-        bot.updateStuckState(0)
-        return 0
-      # On wrong side — reposition
-      var mask = stepMask(bot.selfTileX, bot.selfTileY, targetX, targetY)
-      if bot.isCycling():
-        mask = perpendicularMask(mask, bot.frameTick)
-      elif bot.stuckCount >= 24:
-        mask = cycleMask(bot.frameTick)
-      elif bot.stuckCount >= 12:
-        mask = perpendicularMask(mask, bot.frameTick)
-      bot.updateStuckState(mask)
-      return mask
+    let spot = pickClearCardinalNeighbor(bot.obstacleMap, stag.tileX, stag.tileY)
+    if spot.found:
+      return bot.navigate(spot.x, spot.y)
+    return bot.navigate(stag.tileX, stag.tileY)
 
-    # Approach the target side
-    var mask = stepMask(bot.selfTileX, bot.selfTileY, targetX, targetY)
-    if bot.isCycling():
-      mask = perpendicularMask(mask, bot.frameTick)
-    elif bot.stuckCount >= 24:
-      mask = cycleMask(bot.frameTick)
-    elif bot.stuckCount >= 12:
-      mask = perpendicularMask(mask, bot.frameTick)
-    bot.updateStuckState(mask)
-    return mask
-
-  # Explore mode: wander to find a stag + ally combo
+  # Explore mode: patrol quadrants to find a stag
   bot.mode = ModeExplore
-  var mask: uint8
-  if bot.selfTileX <= 5 or bot.selfTileX >= WorldWidthTiles - 6 or
-      bot.selfTileY <= 5 or bot.selfTileY >= WorldHeightTiles - 6:
-    let cx = WorldWidthTiles div 2
-    let cy = WorldHeightTiles div 2
-    mask = stepMask(bot.selfTileX, bot.selfTileY, cx, cy)
-  else:
-    mask = bot.nextExploreDir()
-  if bot.isCycling():
-    mask = perpendicularMask(mask, bot.frameTick)
-  elif bot.stuckCount >= 18:
-    mask = perpendicularMask(mask, bot.frameTick)
-    bot.exploreTicks = ExploreChangeInterval
-  bot.updateStuckState(mask)
-  mask
+  inc bot.exploreTargetAge
+  let atTarget = (bot.selfTileX == bot.exploreTargetX and
+                  bot.selfTileY == bot.exploreTargetY)
+  if atTarget or bot.exploreTargetAge > 200 or bot.stuckCount > 30:
+    bot.pickExploreTarget()
+
+  bot.navigate(bot.exploreTargetX, bot.exploreTargetY)
 
 proc playerInputBlob(mask: uint8): string =
   blobFromBytes([0x84'u8, mask and 0x7f'u8])
@@ -486,8 +455,9 @@ proc initBot(): Bot =
   result.selfObjectId = -1
   result.lastMask = 0xff'u8
   result.mode = ModeExplore
-  result.exploreDir = ButtonRight
-  result.exploreTicks = 0
+  result.exploreTargetX = MapWidth div 2
+  result.exploreTargetY = MapHeight div 2
+  result.exploreTargetAge = 0
   result.posHistoryIdx = 0
   result.posHistoryCount = 0
   result.stuckCount = 0
@@ -541,6 +511,7 @@ proc runBot(
       sleep(ConnectRetryDelayMs)
 
 when isMainModule:
+  randomize()
   var
     address = DefaultHost
     port = DefaultPort

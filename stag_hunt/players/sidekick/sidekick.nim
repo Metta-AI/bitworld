@@ -1,7 +1,8 @@
 import
   std/[options, os, parseopt, strutils],
   whisky,
-  protocol
+  protocol,
+  pathfinding
 
 const
   StagTileSize = 12
@@ -25,13 +26,23 @@ const
   MaxPlayerSlots = 64
   MaxPreySlots = 256
   MaxBackgroundIndex = WorldWidthTiles * WorldHeightTiles
+
+  IndicatorObjectBase = 9000
+  IndicatorSpriteBase = 20
+  MaxPreyCount = 64
   MaxDrainMessages = 256
   ConnectRetryDelayMs = 250
   WebSocketPath = "/player"
 
   FollowDistance = 1
+  StillFramesThreshold = 25  # 5 steps * 5 frames/step = 25 frames
 
 type
+  TrackedPlayer = object
+    objectId: int
+    lastTileX: int
+    lastTileY: int
+    stillFrames: int
   PreyKind = enum
     Rabbit
     Boar
@@ -46,6 +57,7 @@ type
     SpriteRock
     SpritePrey
     SpritePlayer
+    SpriteIndicator
 
   SpriteInfo = object
     defined: bool
@@ -90,6 +102,9 @@ type
     posHistoryCount: int
     stuckCount: int
     lastSentNonZero: bool
+    obstacleMap: ObstacleMap
+    priorityList: seq[TrackedPlayer]
+    followTarget: int  # objectId of currently-followed player, -1 if none
 
 proc readU16(blob: string, offset: int): int =
   int(uint16(blob[offset].uint8) or
@@ -125,6 +140,8 @@ proc classifySprite(spriteId: int): SpriteKind =
     return SpritePrey
   if spriteId >= PlayerSpriteBase and spriteId < PlayerSpriteEnd:
     return SpritePlayer
+  if spriteId >= IndicatorSpriteBase and spriteId < IndicatorSpriteBase + 3:
+    return SpriteIndicator
   SpriteUnknown
 
 proc applySpritePacket(bot: var Bot, packet: string): bool =
@@ -290,39 +307,10 @@ proc identifySelf(bot: var Bot, players: openArray[PlayerSight]) =
       bot.selfTileY = p.tileY
       return
 
-proc chebyshevDistance(ax, ay, bx, by: int): int =
-  max(abs(ax - bx), abs(ay - by))
-
 proc isCardinallyAdjacent(ax, ay, bx, by: int): bool =
   let dx = abs(ax - bx)
   let dy = abs(ay - by)
   (dx == 1 and dy == 0) or (dx == 0 and dy == 1)
-
-proc stepMask(selfX, selfY, targetX, targetY: int): uint8 =
-  let
-    dx = targetX - selfX
-    dy = targetY - selfY
-  if dx == 0 and dy == 0:
-    return 0
-  if abs(dx) >= abs(dy):
-    if dx > 0: return ButtonRight
-    if dx < 0: return ButtonLeft
-  if dy > 0: return ButtonDown
-  if dy < 0: return ButtonUp
-  0
-
-proc perpendicularMask(mask: uint8, tick: int): uint8 =
-  if mask == ButtonUp or mask == ButtonDown:
-    if (tick div 3) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  if mask == ButtonLeft or mask == ButtonRight:
-    if (tick div 3) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  mask
-
-proc cycleMask(tick: int): uint8 =
-  const dirs = [ButtonUp, ButtonRight, ButtonDown, ButtonLeft]
-  dirs[tick mod 4]
 
 proc updateStuckState(bot: var Bot, mask: uint8) =
   if not bot.haveSelf:
@@ -341,28 +329,118 @@ proc updateStuckState(bot: var Bot, mask: uint8) =
     inc bot.stuckCount
   bot.lastSentNonZero = mask != 0
 
-proc isCycling(bot: Bot): bool =
-  if bot.posHistoryCount < 4:
-    return false
-  let
-    i0 = (bot.posHistoryIdx + 0) mod 4
-    i1 = (bot.posHistoryIdx + 1) mod 4
-    i2 = (bot.posHistoryIdx + 2) mod 4
-    i3 = (bot.posHistoryIdx + 3) mod 4
-  bot.posHistory[i0].x == bot.posHistory[i2].x and
-    bot.posHistory[i0].y == bot.posHistory[i2].y and
-    bot.posHistory[i1].x == bot.posHistory[i3].x and
-    bot.posHistory[i1].y == bot.posHistory[i3].y
+proc updateObstacleMap(bot: var Bot) =
+  if not bot.cameraKnown: return
+  for i in 0 ..< MaxBackgroundIndex:
+    let objectId = BackgroundObjectBase + i
+    if not bot.objectPresent(objectId): continue
+    let
+      state = bot.objects[objectId]
+      sprite = bot.spriteInfo(state.spriteId)
+      tx = i mod WorldWidthTiles
+      ty = i div WorldWidthTiles
+    if not sprite.defined: continue
+    case sprite.kind
+    of SpriteTree, SpriteRock:
+      bot.obstacleMap.markTile(tx, ty, TileBlocked)
+    of SpriteBackground:
+      bot.obstacleMap.markTile(tx, ty, TileClear)
+    else:
+      discard
 
-proc nearestOtherPlayer(bot: Bot, players: openArray[PlayerSight]): PlayerSight =
-  var bestDist = high(int)
+proc navigate(bot: var Bot, targetX, targetY: int): uint8 =
+  if bot.stuckCount >= 15:
+    let mask = unstickStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, bot.frameTick)
+    bot.updateStuckState(mask)
+    return mask
+  let mask = pathStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, targetX, targetY)
+  bot.updateStuckState(mask)
+  mask
+
+proc findKillSpot(bot: Bot): tuple[x, y: int, found: bool] =
+  const IndicatorTileOffset = (12 - 4) div 2
+  for preyIdx in 0 ..< MaxPreyCount:
+    for sideOrd in 0 ..< 4:
+      let objectId = IndicatorObjectBase + preyIdx * 4 + sideOrd
+      if not bot.objectPresent(objectId): continue
+      let state = bot.objects[objectId]
+      let sprite = bot.spriteInfo(state.spriteId)
+      if not sprite.defined or sprite.kind != SpriteIndicator: continue
+      if state.spriteId != IndicatorSpriteBase: continue
+      let
+        worldX = bot.cameraX + state.x - IndicatorTileOffset
+        worldY = bot.cameraY + state.y - IndicatorTileOffset
+        tileX = worldX div 12
+        tileY = worldY div 12
+        dx = abs(bot.selfTileX - tileX)
+        dy = abs(bot.selfTileY - tileY)
+      if (dx + dy) <= 2:
+        return (tileX, tileY, true)
+  (0, 0, false)
+
+proc findTrackedIndex(bot: Bot, objectId: int): int =
+  for i in 0 ..< bot.priorityList.len:
+    if bot.priorityList[i].objectId == objectId:
+      return i
+  -1
+
+proc updatePriorityList(bot: var Bot, players: openArray[PlayerSight]) =
+  ## Update tracked players with current positions, add new ones at bottom,
+  ## and demote players who have been still too long.
+
+  # Update existing tracked players and add new ones
   for p in players:
     if p.objectId == bot.selfObjectId:
       continue
-    let d = chebyshevDistance(bot.selfTileX, bot.selfTileY, p.tileX, p.tileY)
-    if d < bestDist:
-      bestDist = d
-      result = p
+    let idx = bot.findTrackedIndex(p.objectId)
+    if idx < 0:
+      # New player — add at bottom of priority list
+      bot.priorityList.add(TrackedPlayer(
+        objectId: p.objectId,
+        lastTileX: p.tileX,
+        lastTileY: p.tileY,
+        stillFrames: 0
+      ))
+    else:
+      # Existing player — check if they moved
+      if bot.priorityList[idx].lastTileX != p.tileX or
+         bot.priorityList[idx].lastTileY != p.tileY:
+        bot.priorityList[idx].lastTileX = p.tileX
+        bot.priorityList[idx].lastTileY = p.tileY
+        bot.priorityList[idx].stillFrames = 0
+      else:
+        inc bot.priorityList[idx].stillFrames
+
+  # Demote players who have been still for too long
+  var i = 0
+  while i < bot.priorityList.len:
+    if bot.priorityList[i].stillFrames >= StillFramesThreshold:
+      # Demote to bottom: remove and re-add at end with reset counter
+      var demoted = bot.priorityList[i]
+      demoted.stillFrames = 0
+      bot.priorityList.delete(i)
+      bot.priorityList.add(demoted)
+      # If we were following this player, clear followTarget so we pick next
+      if bot.followTarget == demoted.objectId:
+        bot.followTarget = -1
+      # Don't increment i since we deleted at i
+    else:
+      inc i
+
+proc bestFollowTarget(bot: var Bot, players: openArray[PlayerSight]): PlayerSight =
+  ## Pick the highest-priority visible player to follow.
+  # Build set of currently visible objectIds (excluding self)
+  for tracked in bot.priorityList:
+    if tracked.objectId == bot.selfObjectId:
+      continue
+    # Check if this tracked player is currently visible
+    for p in players:
+      if p.objectId == tracked.objectId:
+        bot.followTarget = p.objectId
+        return p
+  # No tracked player visible — fall back to nothing
+  bot.followTarget = -1
+  PlayerSight()
 
 proc preyAdjacentTo(player: PlayerSight, prey: openArray[PreySight]): PreySight =
   for p in prey:
@@ -408,12 +486,21 @@ proc decideMask(bot: var Bot): uint8 =
   bot.identifySelf(players)
   if not bot.haveSelf:
     return 0
+  bot.updateObstacleMap()
 
-  let ally = bot.nearestOtherPlayer(players)
+  # Priority 1: kill spot
+  let killSpot = bot.findKillSpot()
+  if killSpot.found:
+    if bot.selfTileX == killSpot.x and bot.selfTileY == killSpot.y:
+      bot.updateStuckState(0)
+      return 0
+    return bot.navigate(killSpot.x, killSpot.y)
+
+  bot.updatePriorityList(players)
+  let ally = bot.bestFollowTarget(players)
   if not ally.found:
-    let mask = cycleMask(bot.frameTick div 6)
-    bot.updateStuckState(mask)
-    return mask
+    # No one to follow -- wander toward center
+    return bot.navigate(MapWidth div 2, MapHeight div 2)
 
   let prey = bot.visiblePrey()
   let allyPrey = preyAdjacentTo(ally, prey)
@@ -429,30 +516,14 @@ proc decideMask(bot: var Bot): uint8 =
       if bot.selfTileX == flank.x and bot.selfTileY == flank.y:
         bot.updateStuckState(0)
         return 0
-      var mask = stepMask(bot.selfTileX, bot.selfTileY, flank.x, flank.y)
-      if bot.isCycling():
-        mask = perpendicularMask(mask, bot.frameTick)
-      elif bot.stuckCount >= 24:
-        mask = cycleMask(bot.frameTick)
-      elif bot.stuckCount >= 12:
-        mask = perpendicularMask(mask, bot.frameTick)
-      bot.updateStuckState(mask)
-      return mask
+      return bot.navigate(flank.x, flank.y)
 
-  let dist = chebyshevDistance(bot.selfTileX, bot.selfTileY, ally.tileX, ally.tileY)
+  let dist = abs(bot.selfTileX - ally.tileX) + abs(bot.selfTileY - ally.tileY)
   if dist <= FollowDistance:
     bot.updateStuckState(0)
     return 0
 
-  var mask = stepMask(bot.selfTileX, bot.selfTileY, ally.tileX, ally.tileY)
-  if bot.isCycling():
-    mask = perpendicularMask(mask, bot.frameTick)
-  elif bot.stuckCount >= 24:
-    mask = cycleMask(bot.frameTick)
-  elif bot.stuckCount >= 12:
-    mask = perpendicularMask(mask, bot.frameTick)
-  bot.updateStuckState(mask)
-  mask
+  bot.navigate(ally.tileX, ally.tileY)
 
 proc playerInputBlob(mask: uint8): string =
   blobFromBytes([0x84'u8, mask and 0x7f'u8])
@@ -503,6 +574,8 @@ proc initBot(): Bot =
   result.posHistoryCount = 0
   result.stuckCount = 0
   result.lastSentNonZero = false
+  result.priorityList = @[]
+  result.followTarget = -1
 
 proc acceptServerMessage(
   ws: WebSocket,

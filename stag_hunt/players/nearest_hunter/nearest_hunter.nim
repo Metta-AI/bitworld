@@ -1,7 +1,8 @@
 import
   std/[options, os, parseopt, strutils],
   whisky,
-  protocol
+  protocol,
+  pathfinding
 
 const
   # Stag Hunt world geometry (mirrors stag_hunt/stag_hunt.nim).
@@ -27,6 +28,10 @@ const
   BackgroundObjectBase = 8000 # + tileIndex (always present per cell)
   PreyObjectBase = 10000     # + array index
 
+  IndicatorObjectBase = 9000
+  IndicatorSpriteBase = 20
+  MaxPreyCount = 64
+
   MaxPlayerSlots = 64        # generous upper bound for player array indices
   MaxPreySlots = 256         # generous upper bound for prey array indices
   MaxBackgroundIndex = WorldWidthTiles * WorldHeightTiles
@@ -49,6 +54,7 @@ type
     SpriteRock
     SpritePrey
     SpritePlayer
+    SpriteIndicator
 
   SpriteInfo = object
     defined: bool
@@ -81,6 +87,7 @@ type
   Bot = object
     sprites: seq[SpriteInfo]
     objects: seq[ObjectState]
+    obstacleMap: ObstacleMap
     cameraX: int
     cameraY: int
     cameraKnown: bool
@@ -142,6 +149,8 @@ proc classifySprite(spriteId: int): SpriteKind =
     return SpritePrey
   if spriteId >= PlayerSpriteBase and spriteId < PlayerSpriteEnd:
     return SpritePlayer
+  if spriteId >= IndicatorSpriteBase and spriteId < IndicatorSpriteBase + 3:
+    return SpriteIndicator
   SpriteUnknown
 
 proc applySpritePacket(bot: var Bot, packet: string): bool =
@@ -328,29 +337,6 @@ proc identifySelf(bot: var Bot, players: openArray[PlayerSight]) =
       bot.selfTileY = p.tileY
       return
 
-proc stepMask(selfX, selfY, targetX, targetY: int): uint8 =
-  ## Returns a single-button d-pad mask toward (targetX, targetY).
-  ## The server only accepts one direction at a time, so we pick the axis
-  ## with greater remaining distance.
-  let
-    dx = targetX - selfX
-    dy = targetY - selfY
-  if dx == 0 and dy == 0:
-    return 0
-  let
-    ax = abs(dx)
-    ay = abs(dy)
-  if ax >= ay:
-    if dx > 0:
-      return ButtonRight
-    if dx < 0:
-      return ButtonLeft
-  if dy > 0:
-    return ButtonDown
-  if dy < 0:
-    return ButtonUp
-  0
-
 proc isCardinallyAdjacent(selfX, selfY, targetX, targetY: int): bool =
   ## Returns true when self is one tile from target along a single axis.
   let
@@ -392,47 +378,6 @@ proc chooseTarget(
       result = p
     elif d == bestDistance and result.found and p.objectId < result.objectId:
       result = p
-
-proc perpendicularMask(mask: uint8, tick: int): uint8 =
-  ## Given a cardinal mask, returns a perpendicular direction.
-  ## Uses tick to alternate between the two perpendicular options.
-  if mask == ButtonUp or mask == ButtonDown:
-    if (tick div 3) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  if mask == ButtonLeft or mask == ButtonRight:
-    if (tick div 3) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  mask
-
-proc cycleMask(tick: int): uint8 =
-  ## Returns a cycling cardinal direction based on tick, for random escape.
-  const dirs = [ButtonUp, ButtonRight, ButtonDown, ButtonLeft]
-  dirs[tick mod 4]
-
-proc alternateSideMask(selfX, selfY, targetX, targetY, tick: int): uint8 =
-  ## When adjacent to prey, returns a mask to reposition to a different
-  ## cardinal side. Picks a side we are NOT currently on.
-  let
-    dx = selfX - targetX  # +1 means we're east of prey
-    dy = selfY - targetY  # +1 means we're south of prey
-  # We're on one cardinal side; pick a perpendicular one to move toward.
-  if dx == 1 and dy == 0:
-    # East of prey: try to get north or south
-    if (tick div 5) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  if dx == -1 and dy == 0:
-    # West of prey: try to get north or south
-    if (tick div 5) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  if dy == 1 and dx == 0:
-    # South of prey: try to get east or west
-    if (tick div 5) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  if dy == -1 and dx == 0:
-    # North of prey: try to get east or west
-    if (tick div 5) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  0
 
 type
   OccupiedSides = object
@@ -529,22 +474,57 @@ proc updateStuckState(bot: var Bot, mask: uint8) =
     inc bot.stuckCount
   bot.lastSentNonZero = mask != 0
 
-proc isCycling(bot: Bot): bool =
-  ## Detects a 2-step oscillation (A-B-A-B) in recent position history.
-  if bot.posHistoryCount < 4:
-    return false
-  let
-    i0 = (bot.posHistoryIdx + 0) mod 4
-    i1 = (bot.posHistoryIdx + 1) mod 4
-    i2 = (bot.posHistoryIdx + 2) mod 4
-    i3 = (bot.posHistoryIdx + 3) mod 4
-  bot.posHistory[i0].x == bot.posHistory[i2].x and
-    bot.posHistory[i0].y == bot.posHistory[i2].y and
-    bot.posHistory[i1].x == bot.posHistory[i3].x and
-    bot.posHistory[i1].y == bot.posHistory[i3].y
+proc updateObstacleMap(bot: var Bot) =
+  if not bot.cameraKnown: return
+  for i in 0 ..< MaxBackgroundIndex:
+    let objectId = BackgroundObjectBase + i
+    if not bot.objectPresent(objectId): continue
+    let
+      state = bot.objects[objectId]
+      sprite = bot.spriteInfo(state.spriteId)
+      tx = i mod WorldWidthTiles
+      ty = i div WorldWidthTiles
+    if not sprite.defined: continue
+    case sprite.kind
+    of SpriteTree, SpriteRock:
+      bot.obstacleMap.markTile(tx, ty, TileBlocked)
+    of SpriteBackground:
+      bot.obstacleMap.markTile(tx, ty, TileClear)
+    else:
+      discard
+
+proc navigate(bot: var Bot, targetX, targetY: int): uint8 =
+  if bot.stuckCount >= 15:
+    let mask = unstickStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, bot.frameTick)
+    bot.updateStuckState(mask)
+    return mask
+  let mask = pathStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, targetX, targetY)
+  bot.updateStuckState(mask)
+  mask
+
+proc findKillSpot(bot: Bot): tuple[x, y: int, found: bool] =
+  const IndicatorTileOffset = (12 - 4) div 2
+  for preyIdx in 0 ..< MaxPreyCount:
+    for sideOrd in 0 ..< 4:
+      let objectId = IndicatorObjectBase + preyIdx * 4 + sideOrd
+      if not bot.objectPresent(objectId): continue
+      let state = bot.objects[objectId]
+      let sprite = bot.spriteInfo(state.spriteId)
+      if not sprite.defined or sprite.kind != SpriteIndicator: continue
+      if state.spriteId != IndicatorSpriteBase: continue
+      let
+        worldX = bot.cameraX + state.x - IndicatorTileOffset
+        worldY = bot.cameraY + state.y - IndicatorTileOffset
+        tileX = worldX div 12
+        tileY = worldY div 12
+        dx = abs(bot.selfTileX - tileX)
+        dy = abs(bot.selfTileY - tileY)
+      if (dx + dy) <= 2:
+        return (tileX, tileY, true)
+  (0, 0, false)
 
 proc decideMask(bot: var Bot): tuple[mask: uint8, target: PreySight, distance: int] =
-  ## Builds the next input mask using current sprite scene state.
+  ## Builds the next input mask using BFS pathfinding.
   bot.updateCamera()
   if not bot.cameraKnown:
     return (0'u8, PreySight(), -1)
@@ -552,60 +532,47 @@ proc decideMask(bot: var Bot): tuple[mask: uint8, target: PreySight, distance: i
   bot.identifySelf(players)
   if not bot.haveSelf:
     return (0'u8, PreySight(), -1)
+  bot.updateObstacleMap()
+
+  # Priority 1: kill spot
+  let killSpot = bot.findKillSpot()
+  if killSpot.found:
+    if bot.selfTileX == killSpot.x and bot.selfTileY == killSpot.y:
+      bot.updateStuckState(0)
+      return (0'u8, PreySight(), 0)
+    return (bot.navigate(killSpot.x, killSpot.y), PreySight(), 1)
+
   let prey = bot.visiblePrey()
   let nearby = bot.nearbyAllyCount(players)
   let target = chooseTarget(bot.selfTileX, bot.selfTileY, prey, nearby)
   if not target.found:
-    let cx = WorldWidthTiles div 2
-    let cy = WorldHeightTiles div 2
-    var mask: uint8
-    if bot.selfTileX <= 5 or bot.selfTileX >= WorldWidthTiles - 6 or
-        bot.selfTileY <= 5 or bot.selfTileY >= WorldHeightTiles - 6:
-      mask = stepMask(bot.selfTileX, bot.selfTileY, cx, cy)
-    else:
-      mask = cycleMask(bot.frameTick div 8)
-    if bot.stuckCount >= 18:
-      mask = perpendicularMask(mask, bot.frameTick)
-    bot.updateStuckState(mask)
+    let mask = bot.navigate(MapWidth div 2, MapHeight div 2)
     return (mask, PreySight(), -1)
-  let distance = chebyshevDistance(
-    bot.selfTileX, bot.selfTileY, target.tileX, target.tileY
-  )
-  # On a cardinal side already — stand still, wait for kill or for prey to bolt.
-  if isCardinallyAdjacent(
-    bot.selfTileX, bot.selfTileY, target.tileX, target.tileY
-  ):
-    # Track how long we've been adjacent to this prey
+
+  let distance = abs(bot.selfTileX - target.tileX) + abs(bot.selfTileY - target.tileY)
+
+  # Adjacent — hold
+  if isCardinallyAdjacent(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY):
     if bot.lastAdjacentPreyId == target.objectId:
       inc bot.adjacentWaitTicks
     else:
       bot.lastAdjacentPreyId = target.objectId
       bot.adjacentWaitTicks = 1
-    # If we've waited too long, try repositioning to the strategic capture side
-    if bot.adjacentWaitTicks >= 12:
-      if target.kind != Rabbit:
-        let side = bestCaptureSide(
-          bot.selfTileX, bot.selfTileY,
-          target.tileX, target.tileY,
-          target.kind, players
-        )
-        if side.found:
-          let repositionMask = stepMask(bot.selfTileX, bot.selfTileY, side.x, side.y)
-          bot.updateStuckState(repositionMask)
-          return (repositionMask, target, distance)
-      let repositionMask = alternateSideMask(
-        bot.selfTileX, bot.selfTileY, target.tileX, target.tileY, bot.frameTick
+    if bot.adjacentWaitTicks >= 12 and target.kind != Rabbit:
+      let side = bestCaptureSide(
+        bot.selfTileX, bot.selfTileY,
+        target.tileX, target.tileY,
+        target.kind, players
       )
-      bot.updateStuckState(repositionMask)
-      return (repositionMask, target, distance)
+      if side.found:
+        return (bot.navigate(side.x, side.y), target, distance)
     bot.updateStuckState(0)
     return (0'u8, target, distance)
   else:
     bot.adjacentWaitTicks = 0
     bot.lastAdjacentPreyId = -1
 
-  # For multi-player prey within close range, navigate to the strategic
-  # capture side rather than greedily approaching the prey tile.
+  # Strategic positioning for multi-player prey
   if target.kind != Rabbit and distance <= 3:
     let side = bestCaptureSide(
       bot.selfTileX, bot.selfTileY,
@@ -613,30 +580,9 @@ proc decideMask(bot: var Bot): tuple[mask: uint8, target: PreySight, distance: i
       target.kind, players
     )
     if side.found:
-      var sideMask = stepMask(bot.selfTileX, bot.selfTileY, side.x, side.y)
-      if bot.isCycling():
-        sideMask = perpendicularMask(sideMask, bot.frameTick)
-      elif bot.stuckCount >= 24:
-        sideMask = cycleMask(bot.frameTick)
-      elif bot.stuckCount >= 12:
-        sideMask = perpendicularMask(sideMask, bot.frameTick)
-      bot.updateStuckState(sideMask)
-      return (sideMask, target, distance)
+      return (bot.navigate(side.x, side.y), target, distance)
 
-  var mask = stepMask(
-    bot.selfTileX, bot.selfTileY, target.tileX, target.tileY
-  )
-
-  # Anti-stuck: cycle detection and stuck fallback
-  if bot.isCycling():
-    mask = perpendicularMask(mask, bot.frameTick)
-  elif bot.stuckCount >= 24:
-    mask = cycleMask(bot.frameTick)
-  elif bot.stuckCount >= 12:
-    mask = perpendicularMask(mask, bot.frameTick)
-
-  bot.updateStuckState(mask)
-  (mask, target, distance)
+  (bot.navigate(target.tileX, target.tileY), target, distance)
 
 proc maskSummary(mask: uint8): string =
   ## Returns a compact human-readable input mask.

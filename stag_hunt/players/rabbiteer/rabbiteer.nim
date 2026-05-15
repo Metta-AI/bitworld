@@ -1,7 +1,8 @@
 import
   std/[os, parseopt, strutils],
   whisky,
-  protocol
+  protocol,
+  pathfinding
 
 const
   # Stag Hunt world constants (mirrored from stag_hunt/stag_hunt.nim).
@@ -25,6 +26,11 @@ const
   BackgroundObjectBase = 8000
   PlayerObjectBase = 5000
   PreyObjectBase = 10000
+
+  # Indicator objects for capture readiness.
+  IndicatorObjectBase = 9000
+  IndicatorSpriteBase = 20
+  MaxPreyCount = 64
 
   MaxPlayers = 64
   MaxPrey = 128
@@ -64,6 +70,7 @@ type
     selfTileY: int
     selfKnown: bool
     lastMask: uint8
+    obstacleMap: ObstacleMap
     # Anti-stuck / cycle detection state
     posHistory: array[4, tuple[x, y: int]]
     posHistoryIdx: int
@@ -286,86 +293,21 @@ proc visibleRabbits(bot: Bot): seq[PreySight] =
       tileY: tile.ty
     ))
 
-proc chebyshev(ax, ay, bx, by: int): int =
-  ## Returns Chebyshev (king-move) distance between two tiles.
-  max(abs(ax - bx), abs(ay - by))
-
 proc manhattan(ax, ay, bx, by: int): int =
   ## Returns Manhattan distance between two tiles.
   abs(ax - bx) + abs(ay - by)
 
 proc nearestRabbit(bot: Bot, rabbits: openArray[PreySight]): PreySight =
-  ## Returns the closest rabbit to self by Chebyshev distance.
+  ## Returns the closest rabbit to self by Manhattan distance.
   if not bot.selfKnown:
     return PreySight()
   var bestDist = high(int)
   for rabbit in rabbits:
-    let d = chebyshev(bot.selfTileX, bot.selfTileY, rabbit.tileX, rabbit.tileY)
+    let d = manhattan(bot.selfTileX, bot.selfTileY, rabbit.tileX, rabbit.tileY)
     if d < bestDist:
       bestDist = d
       result = rabbit
 
-proc stepMaskToward(
-  selfX, selfY, targetX, targetY: int
-): uint8 =
-  ## Greedy one-axis step mask toward a target tile. Picks the axis with
-  ## the greater remaining delta so the server (single-axis movement)
-  ## still converges.
-  let
-    dx = targetX - selfX
-    dy = targetY - selfY
-  if dx == 0 and dy == 0:
-    return 0
-  if abs(dx) >= abs(dy):
-    if dx < 0:
-      return ButtonLeft
-    if dx > 0:
-      return ButtonRight
-  if dy < 0:
-    return ButtonUp
-  if dy > 0:
-    return ButtonDown
-  if dx < 0:
-    return ButtonLeft
-  if dx > 0:
-    return ButtonRight
-  0
-
-proc perpendicularMask(mask: uint8, tick: int): uint8 =
-  ## Given a cardinal mask, returns a perpendicular direction.
-  ## Uses tick to alternate between the two perpendicular options.
-  if mask == ButtonUp or mask == ButtonDown:
-    if (tick div 3) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  if mask == ButtonLeft or mask == ButtonRight:
-    if (tick div 3) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  mask
-
-proc cycleMask(tick: int): uint8 =
-  ## Returns a cycling cardinal direction based on tick, for random escape.
-  const dirs = [ButtonUp, ButtonRight, ButtonDown, ButtonLeft]
-  dirs[tick mod 4]
-
-proc alternateSideMask(selfX, selfY, targetX, targetY, tick: int): uint8 =
-  ## When adjacent to prey, returns a mask to reposition to a different
-  ## cardinal side.
-  let
-    dx = selfX - targetX
-    dy = selfY - targetY
-  if dx == 1 and dy == 0:
-    if (tick div 5) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  if dx == -1 and dy == 0:
-    if (tick div 5) mod 2 == 0: return ButtonUp
-    else: return ButtonDown
-  if dy == 1 and dx == 0:
-    if (tick div 5) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  if dy == -1 and dx == 0:
-    if (tick div 5) mod 2 == 0: return ButtonLeft
-    else: return ButtonRight
-  0
 
 proc updateStuckState(bot: var Bot, mask: uint8) =
   ## Updates stuck/cycle detection state based on current position.
@@ -386,80 +328,83 @@ proc updateStuckState(bot: var Bot, mask: uint8) =
     inc bot.stuckCount
   bot.lastSentNonZero = mask != 0
 
-proc isCycling(bot: Bot): bool =
-  ## Detects a 2-step oscillation (A-B-A-B) in recent position history.
-  if bot.posHistoryCount < 4:
-    return false
-  let
-    i0 = (bot.posHistoryIdx + 0) mod 4
-    i1 = (bot.posHistoryIdx + 1) mod 4
-    i2 = (bot.posHistoryIdx + 2) mod 4
-    i3 = (bot.posHistoryIdx + 3) mod 4
-  bot.posHistory[i0].x == bot.posHistory[i2].x and
-    bot.posHistory[i0].y == bot.posHistory[i2].y and
-    bot.posHistory[i1].x == bot.posHistory[i3].x and
-    bot.posHistory[i1].y == bot.posHistory[i3].y
+
+proc updateObstacleMap(bot: var Bot) =
+  ## Scans visible background tile objects and marks tree/rock as blocked,
+  ## grass as clear.
+  if not bot.cameraKnown: return
+  for objectId in BackgroundObjectBase ..< (BackgroundObjectBase + WorldWidthTiles * WorldHeightTiles):
+    if not bot.objectPresent(objectId): continue
+    let
+      tileIndex = objectId - BackgroundObjectBase
+      tx = tileIndex mod WorldWidthTiles
+      ty = tileIndex div WorldWidthTiles
+      obj = bot.objects[objectId]
+    if obj.spriteId == 1 or obj.spriteId == 2:  # TreeSpriteId or RockSpriteId
+      bot.obstacleMap.markTile(tx, ty, TileBlocked)
+    elif obj.spriteId == 3:  # BackgroundSpriteId (grass)
+      bot.obstacleMap.markTile(tx, ty, TileClear)
+
+proc findKillSpot(bot: Bot): tuple[x, y: int, found: bool] =
+  ## Scans indicator objects for 1-dot indicators (instant kill spots)
+  ## within manhattan distance 2 of self.
+  const IndicatorTileOffset = (12 - 4) div 2  # 4px indicator centered in 12px tile
+  for preyIdx in 0 ..< MaxPreyCount:
+    for sideOrd in 0 ..< 4:
+      let objectId = IndicatorObjectBase + preyIdx * 4 + sideOrd
+      if not bot.objectPresent(objectId): continue
+      let obj = bot.objects[objectId]
+      if obj.spriteId != IndicatorSpriteBase: continue  # only 1-dot (instant kill)
+      let
+        worldX = bot.cameraX + obj.x - IndicatorTileOffset
+        worldY = bot.cameraY + obj.y - IndicatorTileOffset
+        tileX = worldX div 12
+        tileY = worldY div 12
+        dx = abs(bot.selfTileX - tileX)
+        dy = abs(bot.selfTileY - tileY)
+      if (dx + dy) <= 2:
+        return (tileX, tileY, true)
+  (0, 0, false)
+
+proc navigate(bot: var Bot, targetX, targetY: int): uint8 =
+  if bot.stuckCount >= 15:
+    let mask = unstickStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, bot.frameTick)
+    bot.updateStuckState(mask)
+    return mask
+  let mask = pathStep(bot.obstacleMap, bot.selfTileX, bot.selfTileY, targetX, targetY)
+  bot.updateStuckState(mask)
+  mask
 
 proc decideNextMask(bot: var Bot): tuple[mask: uint8, target: PreySight] =
-  ## Chooses the next controller mask: chase the nearest visible rabbit.
+  ## Chooses the next controller mask using BFS pathfinding.
   discard bot.updateCamera()
   discard bot.findSelf()
   if not bot.cameraKnown or not bot.selfKnown:
     return (0'u8, PreySight())
+  bot.updateObstacleMap()
+
+  # Priority 1: step into kill spot
+  let killSpot = bot.findKillSpot()
+  if killSpot.found:
+    if bot.selfTileX == killSpot.x and bot.selfTileY == killSpot.y:
+      bot.updateStuckState(0)
+      return (0'u8, PreySight())
+    return (bot.navigate(killSpot.x, killSpot.y), PreySight())
+
   let
     rabbits = bot.visibleRabbits()
     target = bot.nearestRabbit(rabbits)
   if not target.found:
-    let cx = WorldWidthTiles div 2
-    let cy = WorldHeightTiles div 2
-    var mask: uint8
-    if bot.selfTileX <= 5 or bot.selfTileX >= WorldWidthTiles - 6 or
-        bot.selfTileY <= 5 or bot.selfTileY >= WorldHeightTiles - 6:
-      mask = stepMaskToward(bot.selfTileX, bot.selfTileY, cx, cy)
-    else:
-      mask = cycleMask(bot.frameTick div 8)
-    if bot.stuckCount >= 18:
-      mask = perpendicularMask(mask, bot.frameTick)
-    bot.updateStuckState(mask)
+    let mask = bot.navigate(WorldWidthTiles div 2, WorldHeightTiles div 2)
     return (mask, target)
-  # Adjacent on a cardinal side -> stop; server captures within ~1 tick.
-  let
-    cheb = chebyshev(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
-    manh = manhattan(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
-  if cheb == 1 and manh == 1:
-    # Track how long we've been adjacent to this prey
-    if bot.lastAdjacentPreyId == target.objectId:
-      inc bot.adjacentWaitTicks
-    else:
-      bot.lastAdjacentPreyId = target.objectId
-      bot.adjacentWaitTicks = 1
-    # If we've waited too long, try repositioning to a different side
-    if bot.adjacentWaitTicks >= 12:
-      let repositionMask = alternateSideMask(
-        bot.selfTileX, bot.selfTileY, target.tileX, target.tileY, bot.frameTick
-      )
-      bot.updateStuckState(repositionMask)
-      return (repositionMask, target)
+
+  # Adjacent — hold
+  let manh = manhattan(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
+  if manh == 1:
     bot.updateStuckState(0)
     return (0'u8, target)
-  else:
-    bot.adjacentWaitTicks = 0
-    bot.lastAdjacentPreyId = -1
 
-  var mask = stepMaskToward(
-    bot.selfTileX, bot.selfTileY, target.tileX, target.tileY
-  )
-
-  # Anti-stuck: cycle detection and stuck fallback
-  if bot.isCycling():
-    mask = perpendicularMask(mask, bot.frameTick)
-  elif bot.stuckCount >= 24:
-    mask = cycleMask(bot.frameTick)
-  elif bot.stuckCount >= 12:
-    mask = perpendicularMask(mask, bot.frameTick)
-
-  bot.updateStuckState(mask)
-  (mask, target)
+  (bot.navigate(target.tileX, target.tileY), target)
 
 proc playerInputBlob(mask: uint8): string =
   ## Builds a sprite_v1 player input packet.
@@ -504,7 +449,7 @@ proc echoDebug(
         "-"
     distance =
       if bot.selfKnown and target.found:
-        $chebyshev(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
+        $manhattan(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
       else:
         "-"
   echo "step=", bot.frameTick,

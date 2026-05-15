@@ -38,9 +38,9 @@ const
 
   RabbitEnergyReward = 25
   RabbitScoreReward = 1
-  BoarEnergyReward = 60
+  BoarEnergyReward = 90
   BoarScoreReward = 3
-  StagEnergyReward = 90
+  StagEnergyReward = 60
   StagScoreReward = 5
   MooseEnergyReward = 140
   MooseScoreReward = 10
@@ -108,10 +108,14 @@ const
   DigitSpriteBase = 30       # ids 30-39 for digits 0-9
   ScoreIconSpriteId = 40
   EnergyIconSpriteId = 41
+  OverlayBgSpriteId = 42
+  DividerSpriteId = 43
   DigitSpriteWidth = 3
   DigitSpriteHeight = 5
   HudObjectBase = 11000
+  OverlayObjectBase = 12000
   HudZ = 9999
+  OverlayZ = 10000
 
 type
   PreyKind = enum
@@ -137,6 +141,8 @@ type
     killGlow: int
     rechargeCounter: int
     colorIndex: int
+    overlayActive: bool
+    selectWasDown: bool
 
   Prey = object
     id: int
@@ -180,6 +186,8 @@ type
     digitSprites: array[10, RgbaSprite]
     scoreIconSprite: RgbaSprite
     energyIconSprite: RgbaSprite
+    overlayBgSprite: RgbaSprite
+    dividerSprite: RgbaSprite
 
   WebSocketAppState = object
     lock: Lock
@@ -774,6 +782,10 @@ proc initSim(): SimServer =
 proc applyPlayerInput(sim: var SimServer, playerIndex: int, input: InputState) =
   template p: untyped = sim.players[playerIndex]
 
+  if input.select and not p.selectWasDown:
+    p.overlayActive = not p.overlayActive
+  p.selectWasDown = input.select
+
   inc p.rechargeCounter
   if p.rechargeCounter >= PassiveRechargeInterval:
     p.rechargeCounter = 0
@@ -1167,6 +1179,19 @@ proc buildSpriteCache(sim: var SimServer) =
   sim.scoreIconSprite = patternToRgbaSprite(ScoreIconPattern)
   sim.energyIconSprite = patternToRgbaSprite(EnergyIconPattern)
 
+  # Overlay background: solid dark navy fill
+  sim.overlayBgSprite = newRgbaSprite(PlayerViewportWidth, PlayerViewportHeight)
+  let bgColor = ColorRGBA(r: 26, g: 28, b: 44, a: 255)
+  for y in 0 ..< PlayerViewportHeight:
+    for x in 0 ..< PlayerViewportWidth:
+      sim.overlayBgSprite.putRgbaPixel(x, y, bgColor)
+
+  # Vertical divider: 1px wide, viewport height
+  sim.dividerSprite = newRgbaSprite(1, PlayerViewportHeight)
+  let divColor = ColorRGBA(r: 86, g: 108, b: 134, a: 255)
+  for y in 0 ..< PlayerViewportHeight:
+    sim.dividerSprite.putRgbaPixel(0, y, divColor)
+
 proc addSpriteProtocolInit(
   packet: var seq[uint8],
   sim: SimServer,
@@ -1198,6 +1223,8 @@ proc addSpriteProtocolInit(
     packet.addSprite(DigitSpriteBase + d, sim.digitSprites[d], "digit " & $d)
   packet.addSprite(ScoreIconSpriteId, sim.scoreIconSprite, "score icon")
   packet.addSprite(EnergyIconSpriteId, sim.energyIconSprite, "energy icon")
+  packet.addSprite(OverlayBgSpriteId, sim.overlayBgSprite, "overlay bg")
+  packet.addSprite(DividerSpriteId, sim.dividerSprite, "divider")
 
 # ---------------------------------------------------------------------------
 # Frame builders
@@ -1452,6 +1479,66 @@ proc addHudObjects(packet: var seq[uint8], score, energy: int) =
     inc objIdx
     ex += DigitSpriteWidth + 1
 
+proc addOverlayDigits(packet: var seq[uint8], x, y, num: int, objIdx: var int) =
+  let s = $max(0, num)
+  var dx = x
+  for ch in s:
+    let digit = ord(ch) - ord('0')
+    packet.addObject(OverlayObjectBase + objIdx, dx, y, OverlayZ, MapLayerId, DigitSpriteBase + digit)
+    inc objIdx
+    dx += DigitSpriteWidth + 1
+
+proc addOverlayObjects(packet: var seq[uint8], sim: SimServer, playerIndex: int) =
+  var objIdx = 0
+
+  # Background
+  packet.addObject(OverlayObjectBase + objIdx, 0, 0, OverlayZ, MapLayerId, OverlayBgSpriteId)
+  inc objIdx
+
+  # Left column: animals (5 entries, each ~24px tall)
+  const animalStartY = 4
+  const animalRowH = 24
+  const animalX = 4
+  for kind in PreyKind:
+    let row = kind.ord
+    let by = animalStartY + row * animalRowH
+    # Animal sprite
+    packet.addObject(OverlayObjectBase + objIdx, animalX, by, OverlayZ, MapLayerId, preySpriteId(kind))
+    inc objIdx
+    # Score icon + digits
+    let infoX = animalX + 16
+    packet.addObject(OverlayObjectBase + objIdx, infoX, by + 2, OverlayZ, MapLayerId, ScoreIconSpriteId)
+    inc objIdx
+    let (energy, score) = rewardsFor(kind)
+    packet.addOverlayDigits(infoX + 5, by + 2, score, objIdx)
+    # Energy icon + digits
+    packet.addObject(OverlayObjectBase + objIdx, infoX, by + 9, OverlayZ, MapLayerId, EnergyIconSpriteId)
+    inc objIdx
+    packet.addOverlayDigits(infoX + 5, by + 9, energy, objIdx)
+
+  # Vertical divider
+  const dividerX = 52
+  packet.addObject(OverlayObjectBase + objIdx, dividerX, 0, OverlayZ, MapLayerId, DividerSpriteId)
+  inc objIdx
+
+  # Right column: player scores
+  const playerStartX = 56
+  const playerStartY = 4
+  const playerRowH = 12
+  for i in 0 ..< sim.players.len:
+    let by = playerStartY + i * playerRowH
+    if by + playerRowH > PlayerViewportHeight:
+      break
+    let p = sim.players[i]
+    # Player sprite
+    packet.addObject(OverlayObjectBase + objIdx, playerStartX, by, OverlayZ, MapLayerId,
+      playerSpriteId(p.colorIndex, FaceDown))
+    inc objIdx
+    # Score
+    packet.addObject(OverlayObjectBase + objIdx, playerStartX + 14, by + 2, OverlayZ, MapLayerId, ScoreIconSpriteId)
+    inc objIdx
+    packet.addOverlayDigits(playerStartX + 20, by + 2, p.score, objIdx)
+
 proc buildPlayerFrame(
   sim: SimServer,
   playerIndex: int,
@@ -1466,6 +1553,9 @@ proc buildPlayerFrame(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   result.addIdentity(PlayerObjectBase + playerIndex)
+  if sim.players[playerIndex].overlayActive:
+    result.addOverlayObjects(sim, playerIndex)
+    return
   let (cameraX, cameraY) = playerCamera(sim.players[playerIndex])
   result.addTerrainObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addCorpseObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
