@@ -4,8 +4,8 @@
     "name": "stag_hunt",
     "version": "0.1.0",
     "description": "A cooperative BitWorld hunting game where players surround prey together: rabbits go down alone, but stags, moose, and elephants require coordinated multi-player encirclement.",
-    "owner": "treeform@softmax.com",
-    "image_uri": "ghcr.io/treeform/bitworld-stag-hunt:latest",
+    "owner": "malcolm@softmax.com",
+    "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -78,10 +78,34 @@
   },
   "player": [
     {
-      "id": "idle-hunter",
-      "name": "Idle Hunter",
-      "image_uri": "ghcr.io/treeform/bitworld-stag-hunt-player:latest",
-      "description": "Baseline Coworld player that connects to the assigned slot and emits no-op inputs until the episode ends."
+      "id": "coordinator",
+      "name": "Coordinator",
+      "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-coordinator:latest",
+      "description": "Strategic bot that picks high-value prey based on nearby ally count and coordinates encirclement using A* pathfinding."
+    },
+    {
+      "id": "nearest-hunter",
+      "name": "Nearest Hunter",
+      "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-nearest-hunter:latest",
+      "description": "Greedy bot that always chases the closest reachable prey using A* pathfinding."
+    },
+    {
+      "id": "rabbiteer",
+      "name": "Rabbiteer",
+      "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-rabbiteer:latest",
+      "description": "Specialist bot that prioritizes rabbits for guaranteed solo kills and consistent energy income."
+    },
+    {
+      "id": "sidekick",
+      "name": "Sidekick",
+      "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-sidekick:latest",
+      "description": "Cooperative bot that follows nearby allies and assists with encirclement of larger prey."
+    },
+    {
+      "id": "stag-hunter",
+      "name": "Stag Hunter",
+      "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-stag-hunter:latest",
+      "description": "Mid-tier specialist that targets stags and boars, balancing reward size against required coordination."
     }
   ],
   "variants": [
@@ -100,15 +124,15 @@
     "variant_id": "smoke",
     "players": [
       {
-        "player_id": "idle-hunter",
+        "player_id": "coordinator",
         "initial_params": {
-          "name": "slot_0"
+          "name": "coordinator_0"
         }
       },
       {
-        "player_id": "idle-hunter",
+        "player_id": "nearest-hunter",
         "initial_params": {
-          "name": "slot_1"
+          "name": "nearest_hunter_0"
         }
       }
     ]

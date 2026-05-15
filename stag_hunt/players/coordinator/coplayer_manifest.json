@@ -1,7 +1,7 @@
 {
   "author": "malcolm@stem.ai",
   "name": "coordinator",
-  "image_uri": "ghcr.io/treeform/bitworld-stag-hunt-coordinator:latest",
+  "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-coordinator:latest",
   "binary": "/bin/coordinator",
   "games": ["stag_hunt"]
 }
