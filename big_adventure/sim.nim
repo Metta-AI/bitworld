@@ -419,11 +419,14 @@ proc playerFormForId(playerId: int): PlayerForm =
   else:
     MalePlayer
 
-proc terrainPropSprite*(sim: SimServer, kind: TerrainKind): Sprite =
+proc terrainPropSprite*(sim: SimServer, kind: TerrainKind): Sprite {.measure.} =
   ## Returns the sprite for one terrain prop kind.
   sim.terrainSprites[kind]
 
-proc terrainPropRgbaSprite*(sim: SimServer, kind: TerrainKind): RgbaSprite =
+proc terrainPropRgbaSprite*(
+  sim: SimServer,
+  kind: TerrainKind
+): RgbaSprite {.measure.} =
   ## Returns the true-color sprite for one terrain prop kind.
   sim.rgbaTerrainSprites[kind]
 
@@ -431,7 +434,7 @@ proc terrainPropBounds*(sim: SimServer, kind: TerrainKind): SpriteBounds =
   ## Returns the collision bounds for one terrain prop kind.
   sim.terrainBounds[kind]
 
-proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
+proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite {.measure.} =
   ## Returns the sprite for one pickup kind.
   case kind
   of PickupCoin:
@@ -439,7 +442,10 @@ proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
   of PickupHeart:
     sim.heartSprite
 
-proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
+proc pickupRgbaSprite*(
+  sim: SimServer,
+  kind: PickupKind
+): RgbaSprite {.measure.} =
   ## Returns the true-color sprite for one pickup kind.
   case kind
   of PickupCoin:
@@ -455,11 +461,14 @@ proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
   of PickupHeart:
     sim.heartBounds
 
-proc playerSpriteFor*(sim: SimServer, player: Actor): Sprite =
+proc playerSpriteFor*(sim: SimServer, player: Actor): Sprite {.measure.} =
   ## Returns the current drawn sprite for one player.
   sim.playerArts[player.form].sprites[player.facing.playerPoseForFacing()]
 
-proc playerRgbaSpriteFor*(sim: SimServer, player: Actor): RgbaSprite =
+proc playerRgbaSpriteFor*(
+  sim: SimServer,
+  player: Actor
+): RgbaSprite {.measure.} =
   ## Returns the current true-color sprite for one player.
   sim.playerArts[player.form].rgbaSprites[player.facing.playerPoseForFacing()]
 
