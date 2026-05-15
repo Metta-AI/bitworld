@@ -106,6 +106,15 @@ type
     selfTileY: int
     selfFound: bool
     intent: string
+    # Anti-stuck / cycle detection state
+    posHistory: array[4, tuple[x, y: int]]
+    posHistoryIdx: int
+    posHistoryCount: int
+    stuckCount: int
+    lastSentNonZero: bool
+    # Adjacent-wait state
+    adjacentWaitTicks: int
+    lastAdjacentPreyId: int
 
 # ---------------------------------------------------------------------------
 # Sprite_v1 protocol parsing (mirrors skurge.nim closely).
@@ -460,6 +469,75 @@ proc cardinallyAdjacent(ax, ay, bx, by: int): bool =
   let dy = abs(ay - by)
   (dx == 1 and dy == 0) or (dx == 0 and dy == 1)
 
+proc perpendicularMask(mask: uint8, tick: int): uint8 =
+  ## Given a cardinal mask, returns a perpendicular direction.
+  ## Uses tick to alternate between the two perpendicular options.
+  if mask == ButtonUp or mask == ButtonDown:
+    if (tick div 3) mod 2 == 0: return ButtonLeft
+    else: return ButtonRight
+  if mask == ButtonLeft or mask == ButtonRight:
+    if (tick div 3) mod 2 == 0: return ButtonUp
+    else: return ButtonDown
+  mask
+
+proc cycleMask(tick: int): uint8 =
+  ## Returns a cycling cardinal direction based on tick, for random escape.
+  const dirs = [ButtonUp, ButtonRight, ButtonDown, ButtonLeft]
+  dirs[tick mod 4]
+
+proc alternateSideMask(selfX, selfY, targetX, targetY, tick: int): uint8 =
+  ## When adjacent to prey, returns a mask to reposition to a different
+  ## cardinal side.
+  let
+    dx = selfX - targetX
+    dy = selfY - targetY
+  if dx == 1 and dy == 0:
+    if (tick div 5) mod 2 == 0: return ButtonUp
+    else: return ButtonDown
+  if dx == -1 and dy == 0:
+    if (tick div 5) mod 2 == 0: return ButtonUp
+    else: return ButtonDown
+  if dy == 1 and dx == 0:
+    if (tick div 5) mod 2 == 0: return ButtonLeft
+    else: return ButtonRight
+  if dy == -1 and dx == 0:
+    if (tick div 5) mod 2 == 0: return ButtonLeft
+    else: return ButtonRight
+  0
+
+proc updateStuckState(bot: var Bot, mask: uint8) =
+  ## Updates stuck/cycle detection state based on current position.
+  if not bot.selfFound:
+    return
+  # Record position changes into ring buffer
+  let lastIdx = (bot.posHistoryIdx + bot.posHistoryCount - 1 + 4) mod 4
+  let posChanged = bot.posHistoryCount == 0 or
+    bot.selfTileX != bot.posHistory[lastIdx].x or
+    bot.selfTileY != bot.posHistory[lastIdx].y
+  if posChanged:
+    bot.posHistory[bot.posHistoryIdx] = (bot.selfTileX, bot.selfTileY)
+    bot.posHistoryIdx = (bot.posHistoryIdx + 1) mod 4
+    if bot.posHistoryCount < 4:
+      inc bot.posHistoryCount
+    bot.stuckCount = 0
+  elif mask != 0:
+    inc bot.stuckCount
+  bot.lastSentNonZero = mask != 0
+
+proc isCycling(bot: Bot): bool =
+  ## Detects a 2-step oscillation (A-B-A-B) in recent position history.
+  if bot.posHistoryCount < 4:
+    return false
+  let
+    i0 = (bot.posHistoryIdx + 0) mod 4
+    i1 = (bot.posHistoryIdx + 1) mod 4
+    i2 = (bot.posHistoryIdx + 2) mod 4
+    i3 = (bot.posHistoryIdx + 3) mod 4
+  bot.posHistory[i0].x == bot.posHistory[i2].x and
+    bot.posHistory[i0].y == bot.posHistory[i2].y and
+    bot.posHistory[i1].x == bot.posHistory[i3].x and
+    bot.posHistory[i1].y == bot.posHistory[i3].y
+
 proc decideNextMask(bot: var Bot): uint8 =
   ## Chooses the next controller mask from the current sprite scene.
   bot.deriveCamera()
@@ -481,26 +559,65 @@ proc decideNextMask(bot: var Bot): uint8 =
 
   if not target.found:
     bot.intent = "no catchable prey (allies=" & $nearby & ")"
+    bot.updateStuckState(0)
     return 0
 
   let dx = target.tileX - bot.selfTileX
   let dy = target.tileY - bot.selfTileY
 
   if cardinallyAdjacent(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY):
+    # Track how long we've been adjacent to this prey
+    if bot.lastAdjacentPreyId == target.objectId:
+      inc bot.adjacentWaitTicks
+    else:
+      bot.lastAdjacentPreyId = target.objectId
+      bot.adjacentWaitTicks = 1
+    # If we've waited too long, try repositioning to a different side
+    if bot.adjacentWaitTicks >= 12:
+      let repositionMask = alternateSideMask(
+        bot.selfTileX, bot.selfTileY, target.tileX, target.tileY, bot.frameTick
+      )
+      bot.intent = "reposition around " & $target.kind &
+        " allies=" & $nearby & " wait=" & $bot.adjacentWaitTicks
+      bot.updateStuckState(repositionMask)
+      return repositionMask
     bot.intent = "hold beside " & $target.kind &
       " allies=" & $nearby
+    bot.updateStuckState(0)
     return 0
+  else:
+    bot.adjacentWaitTicks = 0
+    bot.lastAdjacentPreyId = -1
 
   if dx == 0 and dy == 0:
     # Standing on top of the prey shouldn't really happen, but if it does
     # nudge off in any direction so a neighbor can flank.
     bot.intent = "nudge off " & $target.kind
+    bot.updateStuckState(ButtonRight)
     return ButtonRight
 
-  bot.intent = "approach " & $target.kind &
-    " at (" & $target.tileX & "," & $target.tileY & ")" &
-    " allies=" & $nearby
-  moveMaskTowards(dx, dy)
+  var mask = moveMaskTowards(dx, dy)
+
+  # Anti-stuck: cycle detection and stuck fallback
+  if bot.isCycling():
+    mask = perpendicularMask(mask, bot.frameTick)
+    bot.intent = "break cycle toward " & $target.kind &
+      " allies=" & $nearby
+  elif bot.stuckCount >= 5:
+    mask = cycleMask(bot.frameTick)
+    bot.intent = "escape stuck toward " & $target.kind &
+      " allies=" & $nearby & " stuck=" & $bot.stuckCount
+  elif bot.stuckCount >= 2:
+    mask = perpendicularMask(mask, bot.frameTick)
+    bot.intent = "sidestep toward " & $target.kind &
+      " allies=" & $nearby & " stuck=" & $bot.stuckCount
+  else:
+    bot.intent = "approach " & $target.kind &
+      " at (" & $target.tileX & "," & $target.tileY & ")" &
+      " allies=" & $nearby
+
+  bot.updateStuckState(mask)
+  mask
 
 # ---------------------------------------------------------------------------
 # Debug logging and IO helpers.
@@ -602,6 +719,12 @@ proc initBot(): Bot =
   result.selfFound = false
   result.cameraKnown = false
   result.selfObjectId = -1
+  result.posHistoryIdx = 0
+  result.posHistoryCount = 0
+  result.stuckCount = 0
+  result.lastSentNonZero = false
+  result.adjacentWaitTicks = 0
+  result.lastAdjacentPreyId = -1
 
 proc acceptServerMessage(
   ws: WebSocket,

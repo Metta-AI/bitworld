@@ -85,6 +85,7 @@ const
   PlayerObjectBase = 5000    # + array index
   CorpseObjectBase = 6000    # + array index
   KillGlowObjectBase = 7000  # + player array index
+  IndicatorObjectBase = 9000 # + preyIndex * 4 + sideOrd
   PreyObjectBase = 10000     # + array index
 
   TerrainZ = 0
@@ -100,6 +101,8 @@ const
 
   CorpseSpriteSize = 12
   KillGlowSpriteSize = 16
+  IndicatorSpriteSize = 4
+  IndicatorSpriteBase = 20   # 20, 21, 22 for 1-dot, 2-dot, 3-dot
 
 type
   PreyKind = enum
@@ -164,6 +167,7 @@ type
     killGlowSprite: RgbaSprite
     preySprites: array[5, RgbaSprite]      # by PreyKind.ord
     playerSprites: array[8 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
+    indicatorSprites: array[3, RgbaSprite]  # 1-dot, 2-dot, 3-dot
 
   WebSocketAppState = object
     lock: Lock
@@ -499,6 +503,28 @@ const
     "..8..........8..",
     "...8........8...",
     "....88888888....",
+  ]
+
+  # Indicator dots: 4x4 yellow dots showing how many more players needed.
+  Indicator1Pattern = [
+    "....",
+    ".88.",
+    ".88.",
+    "....",
+  ]
+
+  Indicator2Pattern = [
+    ".8..",
+    "....",
+    "....",
+    "..8.",
+  ]
+
+  Indicator3Pattern = [
+    ".8.8",
+    "....",
+    "....",
+    "8...",
   ]
 
 proc loadPngSprite(path: string): RgbaSprite =
@@ -1010,6 +1036,40 @@ proc playerSpriteId(colorSlot: int, facing: Facing): int =
 proc preySpriteId(kind: PreyKind): int =
   PreySpriteBase + kind.ord
 
+proc recolorPng(
+  source: RgbaSprite,
+  bodyColor, accentColor: ColorRGBA,
+): RgbaSprite =
+  ## Recolors a PNG sprite by replacing placeholder colors with player colors.
+  ## Placeholder colors: #0044ff -> bodyColor, #00227f -> accentColor.
+  let w = source.width
+  let h = source.height
+  result = newRgbaSprite(w, h)
+  for y in 0 ..< h:
+    for x in 0 ..< w:
+      let srcBase = (y * w + x) * 4
+      let r = source.pixels[srcBase + 0]
+      let g = source.pixels[srcBase + 1]
+      let b = source.pixels[srcBase + 2]
+      let a = source.pixels[srcBase + 3]
+      if r == 0 and g == 68 and b == 255:
+        # #0044ff -> body color
+        result.pixels[srcBase + 0] = bodyColor.r
+        result.pixels[srcBase + 1] = bodyColor.g
+        result.pixels[srcBase + 2] = bodyColor.b
+        result.pixels[srcBase + 3] = a
+      elif r == 0 and g == 34 and b == 127:
+        # #00227f -> accent color
+        result.pixels[srcBase + 0] = accentColor.r
+        result.pixels[srcBase + 1] = accentColor.g
+        result.pixels[srcBase + 2] = accentColor.b
+        result.pixels[srcBase + 3] = a
+      else:
+        result.pixels[srcBase + 0] = r
+        result.pixels[srcBase + 1] = g
+        result.pixels[srcBase + 2] = b
+        result.pixels[srcBase + 3] = a
+
 proc buildSpriteCache(sim: var SimServer) =
   let dir = spriteDir()
 
@@ -1040,10 +1100,15 @@ proc buildSpriteCache(sim: var SimServer) =
     let accent = playerAccentColor(colorSlot)
     for facing in Facing:
       if hunterFile.width > 0:
-        sim.playerSprites[colorSlot * 4 + facing.ord] = hunterFile
+        sim.playerSprites[colorSlot * 4 + facing.ord] =
+          recolorPng(hunterFile, paletteRgba(body), paletteRgba(accent))
       else:
         sim.playerSprites[colorSlot * 4 + facing.ord] =
           patternToRgbaSprite(PlayerPattern, body, accent, facing)
+
+  sim.indicatorSprites[0] = patternToRgbaSprite(Indicator1Pattern)
+  sim.indicatorSprites[1] = patternToRgbaSprite(Indicator2Pattern)
+  sim.indicatorSprites[2] = patternToRgbaSprite(Indicator3Pattern)
 
 proc addSpriteProtocolInit(
   packet: var seq[uint8],
@@ -1066,6 +1131,12 @@ proc addSpriteProtocolInit(
         sim.playerSprites[colorSlot * 4 + facing.ord],
         "player " & $colorSlot & " " & $facing
       )
+  for i in 0 ..< 3:
+    packet.addSprite(
+      IndicatorSpriteBase + i,
+      sim.indicatorSprites[i],
+      "indicator " & $(i + 1)
+    )
 
 # ---------------------------------------------------------------------------
 # Frame builders
@@ -1181,6 +1252,93 @@ proc addCorpseObjects(
       MapLayerId, CorpseSpriteId
     )
 
+proc validIndicatorSides(kind: PreyKind, sides: PlayerSides): array[4, bool] =
+  ## Returns which unoccupied sides (N,S,E,W) are valid positions to complete a capture.
+  ## Index: 0=N, 1=S, 2=E, 3=W
+  let n = sides.n >= 0
+  let s = sides.s >= 0
+  let e = sides.e >= 0
+  let w = sides.w >= 0
+  case kind
+  of Rabbit:
+    # Single player captures — if anyone is adjacent it's already dead
+    result = [false, false, false, false]
+  of Boar:
+    # Need perpendicular: (N and E), (N and W), (S and E), (S and W)
+    if n or s:
+      result[2] = not e  # E is valid
+      result[3] = not w  # W is valid
+    if e or w:
+      result[0] = not n  # N is valid
+      result[1] = not s  # S is valid
+  of Stag:
+    # Need opposing: (N and S) or (E and W)
+    if n: result[1] = not s
+    if s: result[0] = not n
+    if e: result[3] = not w
+    if w: result[2] = not e
+  of Moose:
+    # Need 3+; any unoccupied side is valid
+    result[0] = not n
+    result[1] = not s
+    result[2] = not e
+    result[3] = not w
+  of Elephant:
+    # Need all 4; any unoccupied side is valid
+    result[0] = not n
+    result[1] = not s
+    result[2] = not e
+    result[3] = not w
+
+proc addIndicatorObjects(
+  packet: var seq[uint8],
+  sim: SimServer,
+  cameraX, cameraY, viewportWidth, viewportHeight: int
+) =
+  for i in 0 ..< sim.prey.len:
+    let prey = sim.prey[i]
+    let sides = sim.sidesAround(prey)
+    let occupied = sideCount(sides)
+    if occupied == 0:
+      continue
+    let needed = preyMinPlayers(prey.kind) - occupied
+    if needed <= 0:
+      continue
+    let valid = validIndicatorSides(prey.kind, sides)
+    # Clamp to 1..3 (max indicator sprite)
+    let dots = max(min(needed, 3), 1)
+    let spriteId = IndicatorSpriteBase + dots - 1
+    # Center the 4x4 indicator in the 12x12 tile
+    let indicatorOffset = (StagTileSize - IndicatorSpriteSize) div 2
+    # Cardinal directions: N=0, S=1, E=2, W=3
+    type SideInfo = tuple[sideOrd: int, dx, dy: int]
+    let sideInfos: array[4, SideInfo] = [
+      (0, 0, -1),
+      (1, 0, 1),
+      (2, 1, 0),
+      (3, -1, 0),
+    ]
+    for info in sideInfos:
+      if not valid[info.sideOrd]:
+        continue
+      let tx = prey.tileX + info.dx
+      let ty = prey.tileY + info.dy
+      if not inTileBounds(tx, ty):
+        continue
+      if sim.tiles[tileIndex(tx, ty)] != TileEmpty:
+        continue
+      let screenX = tx * StagTileSize - cameraX + indicatorOffset
+      let screenY = ty * StagTileSize - cameraY + indicatorOffset
+      if screenX + IndicatorSpriteSize <= 0 or screenY + IndicatorSpriteSize <= 0:
+        continue
+      if screenX >= viewportWidth or screenY >= viewportHeight:
+        continue
+      packet.addObject(
+        IndicatorObjectBase + i * 4 + info.sideOrd,
+        screenX, screenY, screenY + 2,
+        MapLayerId, spriteId
+      )
+
 proc addPlayerObjects(
   packet: var seq[uint8],
   sim: SimServer,
@@ -1230,6 +1388,7 @@ proc buildPlayerFrame(
   result.addTerrainObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addCorpseObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addPreyObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
+  result.addIndicatorObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addPlayerObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
 
 proc buildGlobalFrame(
@@ -1245,6 +1404,7 @@ proc buildGlobalFrame(
   result.addTerrainObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
   result.addCorpseObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
   result.addPreyObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
+  result.addIndicatorObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
   result.addPlayerObjects(sim, 0, 0, WorldWidthPixels, WorldHeightPixels)
 
 # ---------------------------------------------------------------------------

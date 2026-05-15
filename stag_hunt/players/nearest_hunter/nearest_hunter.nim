@@ -84,6 +84,15 @@ type
     lastMask: uint8
     lastDebugTargetId: int
     lastDebugDistance: int
+    # Anti-stuck / cycle detection state
+    posHistory: array[4, tuple[x, y: int]]
+    posHistoryIdx: int
+    posHistoryCount: int
+    stuckCount: int
+    lastSentNonZero: bool
+    # Adjacent-wait state
+    adjacentWaitTicks: int
+    lastAdjacentPreyId: int
 
 proc readU16(blob: string, offset: int): int =
   ## Reads one little endian unsigned 16 bit value.
@@ -353,6 +362,80 @@ proc chooseTarget(
     elif d == bestDistance and result.found and p.objectId < result.objectId:
       result = p
 
+proc perpendicularMask(mask: uint8, tick: int): uint8 =
+  ## Given a cardinal mask, returns a perpendicular direction.
+  ## Uses tick to alternate between the two perpendicular options.
+  if mask == ButtonUp or mask == ButtonDown:
+    if (tick div 3) mod 2 == 0: return ButtonLeft
+    else: return ButtonRight
+  if mask == ButtonLeft or mask == ButtonRight:
+    if (tick div 3) mod 2 == 0: return ButtonUp
+    else: return ButtonDown
+  mask
+
+proc cycleMask(tick: int): uint8 =
+  ## Returns a cycling cardinal direction based on tick, for random escape.
+  const dirs = [ButtonUp, ButtonRight, ButtonDown, ButtonLeft]
+  dirs[tick mod 4]
+
+proc alternateSideMask(selfX, selfY, targetX, targetY, tick: int): uint8 =
+  ## When adjacent to prey, returns a mask to reposition to a different
+  ## cardinal side. Picks a side we are NOT currently on.
+  let
+    dx = selfX - targetX  # +1 means we're east of prey
+    dy = selfY - targetY  # +1 means we're south of prey
+  # We're on one cardinal side; pick a perpendicular one to move toward.
+  if dx == 1 and dy == 0:
+    # East of prey: try to get north or south
+    if (tick div 5) mod 2 == 0: return ButtonUp
+    else: return ButtonDown
+  if dx == -1 and dy == 0:
+    # West of prey: try to get north or south
+    if (tick div 5) mod 2 == 0: return ButtonUp
+    else: return ButtonDown
+  if dy == 1 and dx == 0:
+    # South of prey: try to get east or west
+    if (tick div 5) mod 2 == 0: return ButtonLeft
+    else: return ButtonRight
+  if dy == -1 and dx == 0:
+    # North of prey: try to get east or west
+    if (tick div 5) mod 2 == 0: return ButtonLeft
+    else: return ButtonRight
+  0
+
+proc updateStuckState(bot: var Bot, mask: uint8) =
+  ## Updates stuck/cycle detection state based on current position.
+  if not bot.haveSelf:
+    return
+  # Record position changes into ring buffer
+  let lastIdx = (bot.posHistoryIdx + bot.posHistoryCount - 1 + 4) mod 4
+  let posChanged = bot.posHistoryCount == 0 or
+    bot.selfTileX != bot.posHistory[lastIdx].x or
+    bot.selfTileY != bot.posHistory[lastIdx].y
+  if posChanged:
+    bot.posHistory[bot.posHistoryIdx] = (bot.selfTileX, bot.selfTileY)
+    bot.posHistoryIdx = (bot.posHistoryIdx + 1) mod 4
+    if bot.posHistoryCount < 4:
+      inc bot.posHistoryCount
+    bot.stuckCount = 0
+  elif mask != 0:
+    inc bot.stuckCount
+  bot.lastSentNonZero = mask != 0
+
+proc isCycling(bot: Bot): bool =
+  ## Detects a 2-step oscillation (A-B-A-B) in recent position history.
+  if bot.posHistoryCount < 4:
+    return false
+  let
+    i0 = (bot.posHistoryIdx + 0) mod 4
+    i1 = (bot.posHistoryIdx + 1) mod 4
+    i2 = (bot.posHistoryIdx + 2) mod 4
+    i3 = (bot.posHistoryIdx + 3) mod 4
+  bot.posHistory[i0].x == bot.posHistory[i2].x and
+    bot.posHistory[i0].y == bot.posHistory[i2].y and
+    bot.posHistory[i1].x == bot.posHistory[i3].x and
+    bot.posHistory[i1].y == bot.posHistory[i3].y
+
 proc decideMask(bot: var Bot): tuple[mask: uint8, target: PreySight, distance: int] =
   ## Builds the next input mask using current sprite scene state.
   bot.updateCamera()
@@ -375,10 +458,38 @@ proc decideMask(bot: var Bot): tuple[mask: uint8, target: PreySight, distance: i
   if isCardinallyAdjacent(
     bot.selfTileX, bot.selfTileY, target.tileX, target.tileY
   ):
+    # Track how long we've been adjacent to this prey
+    if bot.lastAdjacentPreyId == target.objectId:
+      inc bot.adjacentWaitTicks
+    else:
+      bot.lastAdjacentPreyId = target.objectId
+      bot.adjacentWaitTicks = 1
+    # If we've waited too long, try repositioning to a different side
+    if bot.adjacentWaitTicks >= 12:
+      let repositionMask = alternateSideMask(
+        bot.selfTileX, bot.selfTileY, target.tileX, target.tileY, bot.frameTick
+      )
+      bot.updateStuckState(repositionMask)
+      return (repositionMask, target, distance)
+    bot.updateStuckState(0)
     return (0'u8, target, distance)
-  let mask = stepMask(
+  else:
+    bot.adjacentWaitTicks = 0
+    bot.lastAdjacentPreyId = -1
+
+  var mask = stepMask(
     bot.selfTileX, bot.selfTileY, target.tileX, target.tileY
   )
+
+  # Anti-stuck: cycle detection and stuck fallback
+  if bot.isCycling():
+    mask = perpendicularMask(mask, bot.frameTick)
+  elif bot.stuckCount >= 5:
+    mask = cycleMask(bot.frameTick)
+  elif bot.stuckCount >= 2:
+    mask = perpendicularMask(mask, bot.frameTick)
+
+  bot.updateStuckState(mask)
   (mask, target, distance)
 
 proc maskSummary(mask: uint8): string =
@@ -477,6 +588,12 @@ proc initBot(): Bot =
   result.lastMask = 0xff'u8
   result.lastDebugTargetId = -1
   result.lastDebugDistance = -1
+  result.posHistoryIdx = 0
+  result.posHistoryCount = 0
+  result.stuckCount = 0
+  result.lastSentNonZero = false
+  result.adjacentWaitTicks = 0
+  result.lastAdjacentPreyId = -1
 
 proc acceptServerMessage(
   ws: WebSocket,
