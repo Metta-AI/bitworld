@@ -1,4 +1,5 @@
 import std/[algorithm, os, strutils]
+import fluffy/measure
 import supersnappy
 import protocol, sim
 import ../common/pixelfonts
@@ -112,9 +113,13 @@ type
     height: int
     pixels: seq[uint8]
 
+  ObjectCacheEntry = object
+    id, x, y, z, layer, spriteId: int
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    objectCache: seq[ObjectCacheEntry]
     spriteCache: seq[SpriteCacheEntry]
     mouseX*: int
     mouseY*: int
@@ -130,6 +135,7 @@ type
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    objectCache: seq[ObjectCacheEntry]
     hudCoins*: int
     hudLives*: int
 
@@ -268,21 +274,30 @@ proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
   packet.addU8(uint8(layerType))
   packet.addU8(uint8(flags))
 
+proc copySpritePixels(pixels: openArray[uint8]): seq[uint8] {.measure.} =
+  ## Copies sprite pixels before compression.
+  result = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    result[i] = pixels[i]
+
+proc compressSpritePixels(raw: seq[uint8]): seq[uint8] {.measure.} =
+  ## Compresses sprite pixels for the global protocol.
+  supersnappy.compress(raw)
+
 proc addSprite(
   packet: var seq[uint8],
   spriteId, width, height: int,
   pixels: openArray[uint8],
   label: string = ""
-) =
+) {.measure.} =
   ## Appends a global protocol sprite definition message.
   packet.addU8(0x01)
   packet.addU16(spriteId)
   packet.addU16(width)
   packet.addU16(height)
-  var raw = newSeq[uint8](pixels.len)
-  for i in 0 ..< pixels.len:
-    raw[i] = pixels[i]
-  let compressed = supersnappy.compress(raw)
+  let
+    raw = copySpritePixels(pixels)
+    compressed = compressSpritePixels(raw)
   packet.addU32(compressed.len)
   for byte in compressed:
     packet.addU8(byte)
@@ -290,13 +305,13 @@ proc addSprite(
   for ch in label:
     packet.addU8(uint8(ord(ch)))
 
-proc copyPixels(pixels: openArray[uint8]): seq[uint8] =
+proc copyPixels(pixels: openArray[uint8]): seq[uint8] {.measure.} =
   ## Copies sprite pixels into a cache-owned sequence.
   result = newSeq[uint8](pixels.len)
   for i in 0 ..< pixels.len:
     result[i] = pixels[i]
 
-proc samePixels(cached, pixels: openArray[uint8]): bool =
+proc samePixels(cached, pixels: openArray[uint8]): bool {.measure.} =
   ## Returns true when two sprite pixel buffers are identical.
   if cached.len != pixels.len:
     return false
@@ -313,7 +328,7 @@ proc addSpriteCached(
   height: int,
   pixels: openArray[uint8],
   label = ""
-) =
+) {.measure.} =
   ## Adds a sprite definition only when dimensions or pixels changed.
   for i in 0 ..< cache.len:
     if cache[i].spriteId != spriteId:
@@ -338,7 +353,7 @@ proc addSpriteCached(
 proc addObject(
   packet: var seq[uint8],
   objectId, x, y, z, layer, spriteId: int
-) =
+) {.measure.} =
   ## Appends a global protocol object definition message.
   packet.addU8(0x02)
   packet.addU16(objectId)
@@ -348,10 +363,69 @@ proc addObject(
   packet.addU8(uint8(layer))
   packet.addU16(spriteId)
 
-proc addDeleteObject(packet: var seq[uint8], objectId: int) =
+proc addDeleteObject(packet: var seq[uint8], objectId: int) {.measure.} =
   ## Appends a global protocol object delete message.
   packet.addU8(0x03)
   packet.addU16(objectId)
+
+proc findObjectCache(
+  cache: openArray[ObjectCacheEntry],
+  id: int
+): int {.measure.} =
+  ## Returns the index for one cached object id.
+  for i in 0 ..< cache.len:
+    if cache[i].id == id:
+      return i
+  -1
+
+proc sameObject(
+  cached: ObjectCacheEntry,
+  id, x, y, z, layer, spriteId: int
+): bool {.measure.} =
+  ## Returns true when an object message matches the cached version.
+  cached.id == id and
+    cached.x == x and
+    cached.y == y and
+    cached.z == z and
+    cached.layer == layer and
+    cached.spriteId == spriteId
+
+proc addObjectCached(
+  packet: var seq[uint8],
+  cache: var seq[ObjectCacheEntry],
+  objectId, x, y, z, layer, spriteId: int
+) {.measure.} =
+  ## Appends an object message only when the object changed.
+  let index = cache.findObjectCache(objectId)
+  if index >= 0:
+    if cache[index].sameObject(objectId, x, y, z, layer, spriteId):
+      return
+    cache[index] = ObjectCacheEntry(
+      id: objectId,
+      x: x,
+      y: y,
+      z: z,
+      layer: layer,
+      spriteId: spriteId
+    )
+    packet.addObject(objectId, x, y, z, layer, spriteId)
+    return
+  cache.add(ObjectCacheEntry(
+    id: objectId,
+    x: x,
+    y: y,
+    z: z,
+    layer: layer,
+    spriteId: spriteId
+  ))
+  packet.addObject(objectId, x, y, z, layer, spriteId)
+
+proc deleteObjectCache(cache: var seq[ObjectCacheEntry], id: int) {.measure.} =
+  ## Removes one object from the object update cache.
+  let index = cache.findObjectCache(id)
+  if index < 0:
+    return
+  cache.del(index)
 
 proc objectVisible(
   x,
@@ -360,7 +434,7 @@ proc objectVisible(
   height,
   viewportWidth,
   viewportHeight: int
-): bool =
+): bool {.measure.} =
   ## Returns true when an object intersects the current viewport.
   if width <= 0 or height <= 0:
     return false
@@ -381,7 +455,7 @@ proc addWorldSpriteObject(
   viewportWidth,
   viewportHeight: int,
   sortYOverride = high(int)
-) =
+) {.measure.} =
   ## Queues one world sprite object for game-side depth sorting.
   if not objectVisible(
     x,
@@ -408,8 +482,9 @@ proc addWorldSpriteObject(
 
 proc flushWorldSpriteObjects(
   packet: var seq[uint8],
-  objects: var seq[WorldSpriteObject]
-) =
+  objects: var seq[WorldSpriteObject],
+  cache: var seq[ObjectCacheEntry]
+) {.measure.} =
   ## Sends queued world objects with z ranks in draw order.
   objects.sort(
     proc(a, b: WorldSpriteObject): int =
@@ -420,7 +495,8 @@ proc flushWorldSpriteObjects(
         result = cmp(a.id, b.id)
   )
   for i, item in objects:
-    packet.addObject(
+    packet.addObjectCached(
+      cache,
       item.id,
       item.x,
       item.y,
@@ -428,6 +504,18 @@ proc flushWorldSpriteObjects(
       MapLayerId,
       item.spriteId
     )
+
+proc deleteMissingObjects(
+  packet: var seq[uint8],
+  previousIds: openArray[int],
+  currentIds: openArray[int],
+  cache: var seq[ObjectCacheEntry]
+) {.measure.} =
+  ## Deletes objects that are no longer visible in this viewer.
+  for objectId in previousIds:
+    if objectId notin currentIds:
+      packet.addDeleteObject(objectId)
+      cache.deleteObjectCache(objectId)
 
 proc readProtocolI16(blob: string, offset: int): int =
   ## Reads one little endian signed 16 bit value from a string.
@@ -545,7 +633,7 @@ proc buildSpriteProtocolActorSprite(
   tint: tuple[r, g, b, a: uint8],
   selected = false,
   flipX = false
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds an outlined actor sprite with masked recoloring.
   let outline =
     if selected:
@@ -609,7 +697,7 @@ proc buildSpriteProtocolActorSprite(
 proc buildSpriteProtocolRawSprite(
   sprite: RgbaSprite,
   flipX = false
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a raw global protocol sprite from a true-color sprite.
   result.width = sprite.width
   result.height = sprite.height
@@ -656,7 +744,7 @@ proc sourceForFacing(
 proc buildSpriteProtocolFacedRawSprite(
   sprite: RgbaSprite,
   facing: Facing
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a true-color sprite rotated for one facing.
   let size = sprite.facedSize(facing)
   result.width = size.width
@@ -696,7 +784,7 @@ proc blitMapSprite(
           sourceIndex
         )
 
-proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds a full world map sprite from the described terrain cells.
   result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
   for ty in 0 ..< WorldHeightTiles:
@@ -808,7 +896,7 @@ proc buildSpriteProtocolTextSprite(
   sim: SimServer,
   lines: openArray[string],
   color: uint8
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a transparent multi-line text sprite.
   let lineHeight = sim.textFont.lineHeight()
   result.width = 1
@@ -835,7 +923,7 @@ proc buildSpriteProtocolTextSprite(
   sim: SimServer,
   lines: openArray[string],
   color: tuple[r, g, b, a: uint8]
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a transparent true-color multi-line text sprite.
   let lineHeight = sim.textFont.lineHeight()
   result.width = 1
@@ -951,7 +1039,7 @@ proc healthFillColor(
 
 proc buildSpriteProtocolHealthSprite(
   current, maximum: int
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds one small true-color health bar sprite.
   let
     value = clamp(current, 0, maximum)
@@ -1013,7 +1101,7 @@ proc blitAsciiText(
 proc buildSpriteProtocolBubbleSprite(
   sim: SimServer,
   text: string
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds one speech bubble sprite.
   let lineCount = text.lineCountForText()
   var longestLineWidth = sim.textFont.glyphAdvance('?')
@@ -1075,7 +1163,7 @@ proc compareScorePanelPlayerIds(sim: SimServer, a, b: int): int =
   if result == 0:
     result = cmp(sim.players[a].id, sim.players[b].id)
 
-proc scorePanelPlayerIds(sim: SimServer): seq[int] =
+proc scorePanelPlayerIds(sim: SimServer): seq[int] {.measure.} =
   ## Returns the score panel player indexes in display order.
   for i in 0 ..< sim.players.len:
     result.add(i)
@@ -1084,7 +1172,7 @@ proc scorePanelPlayerIds(sim: SimServer): seq[int] =
       sim.compareScorePanelPlayerIds(a, b)
   )
 
-proc scorePanelScoreText(score: int): string =
+proc scorePanelScoreText(score: int): string {.measure.} =
   ## Returns the bounded coin score text used by score panel objects.
   result = $score
   if result.len > ScorePanelMaxScoreChars:
@@ -1093,7 +1181,7 @@ proc scorePanelScoreText(score: int): string =
 proc scorePanelScoreWidth(
   sim: SimServer,
   playerIds: openArray[int]
-): int =
+): int {.measure.} =
   ## Returns the widest current score label.
   for playerIndex in playerIds:
     result = max(
@@ -1107,7 +1195,7 @@ proc scorePanelNameText(
   sim: SimServer,
   playerIndex: int,
   maxWidth: int
-): string =
+): string {.measure.} =
   ## Returns the bounded score panel player name.
   result = sim.textFont.textSliceForWidth(
     sim.players[playerIndex].playerIdentity(),
@@ -1143,7 +1231,7 @@ proc scorePanelNameObjectId(playerId: int): int =
 
 proc buildScorePanelPipSprite(
   color: tuple[r, g, b, a: uint8]
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds one solid score panel color pip sprite.
   result.width = ScorePanelPipSize
   result.height = ScorePanelPipSize
@@ -1161,7 +1249,7 @@ proc addScorePanelDigitSprites(
   sim: SimServer,
   packet: var seq[uint8],
   cache: var seq[SpriteCacheEntry]
-) =
+) {.measure.} =
   ## Adds stable score panel digit sprite definitions.
   for ch in '0' .. '9':
     let digit = sim.buildSpriteProtocolTextSprite([$ch], UiColors[2])
@@ -1180,7 +1268,7 @@ proc addScorePanelPlayerSprites(
   cache: var seq[SpriteCacheEntry],
   playerIndex: int,
   name: string
-) =
+) {.measure.} =
   ## Adds score panel player sprites only when their pixels change.
   let
     player = sim.players[playerIndex]
@@ -1344,7 +1432,7 @@ proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
   ## Returns the sprite id for one adventurer attack swish facing.
   SwooshSpriteBase + ord(form) * 4 + ord(facing)
 
-proc terrainSpriteId(kind: TerrainKind): int =
+proc terrainSpriteId(kind: TerrainKind): int {.measure.} =
   ## Returns the sprite id for one terrain prop kind.
   TerrainSpriteBase + ord(kind)
 
@@ -1352,7 +1440,7 @@ proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
 
-proc mobSpriteId(mob: Mob): int =
+proc mobSpriteId(mob: Mob): int {.measure.} =
   ## Returns the sprite id for one mob, including attack flips.
   let flipLeft = mob.attackPhase != MobIdle and mob.attackFacing == FaceLeft
   case mob.kind
@@ -1441,7 +1529,10 @@ proc replayScrubTickAt(
   let clampedX = clamp(localX, 0, ReplayScrubberWidth - 1)
   clamp((clampedX * maxTick) div (ReplayScrubberWidth - 1), 0, maxTick)
 
-proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
+proc addCommonSpriteDefinitions(
+  packet: var seq[uint8],
+  sim: SimServer
+) {.measure.} =
   ## Adds sprite definitions shared by global and player views.
   for i in 0 ..< PlayerTintColors.len:
     for form in PlayerForm:
@@ -1573,7 +1664,7 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       $kind
     )
 
-proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds the initial global viewer snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
@@ -1601,7 +1692,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
   result.addCommonSpriteDefinitions(sim)
 
-proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds the initial sprite player snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
@@ -1649,7 +1740,7 @@ proc addHealthObject(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds one damaged actor health bar object.
   if maximum <= 0 or current >= maximum:
     return
@@ -1679,7 +1770,7 @@ proc addSpeechBubbles(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds speech bubble sprites above players.
   for player in sim.players:
     if player.lives <= 0 or player.message.len == 0:
@@ -1725,7 +1816,7 @@ proc addAttackObjects(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds active attack swoosh objects.
   for player in sim.players:
     if player.lives <= 0 or player.attackTicks <= 0:
@@ -1753,21 +1844,22 @@ proc addTerrainObjects(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds terrain prop objects so they share world sprite sorting.
   for i in 0 ..< sim.terrainProps.len:
     let
       prop = sim.terrainProps[i]
       objectId = terrainObjectId(i)
-      sprite = sim.terrainPropRgbaSprite(prop.kind)
+      spriteWidth = sim.rgbaTerrainSprites[prop.kind].width
+      spriteHeight = sim.rgbaTerrainSprites[prop.kind].height
     objects.addWorldSpriteObject(
       currentIds,
       objectId,
       prop.tx * WorldTileSize - cameraX,
       prop.ty * WorldTileSize - cameraY,
       terrainSpriteId(prop.kind),
-      sprite.width,
-      sprite.height,
+      spriteWidth,
+      spriteHeight,
       viewportWidth,
       viewportHeight
     )
@@ -1776,11 +1868,12 @@ proc addWorldObjects(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   cameraX, cameraY: int,
   viewportWidth,
   viewportHeight: int,
   selectedPlayerId = -1
-) =
+) {.measure.} =
   ## Adds pickups, mobs, players, attacks, and speech bubbles.
   var objects: seq[WorldSpriteObject] = @[]
   sim.addTerrainObjects(
@@ -1798,15 +1891,24 @@ proc addWorldObjects(
       objectId = PickupObjectBase + i
       spriteId =
         if pickup.kind == PickupCoin: CoinSpriteId else: HeartSpriteId
-      sprite = sim.pickupRgbaSprite(pickup.kind)
+      spriteWidth =
+        if pickup.kind == PickupCoin:
+          sim.rgbaCoinSprite.width
+        else:
+          sim.rgbaHeartSprite.width
+      spriteHeight =
+        if pickup.kind == PickupCoin:
+          sim.rgbaCoinSprite.height
+        else:
+          sim.rgbaHeartSprite.height
     objects.addWorldSpriteObject(
       currentIds,
       objectId,
       pickup.x - cameraX,
       pickup.y - cameraY,
       spriteId,
-      sprite.width,
-      sprite.height,
+      spriteWidth,
+      spriteHeight,
       viewportWidth,
       viewportHeight
     )
@@ -1848,7 +1950,11 @@ proc addWorldObjects(
       player = sim.players[i]
       selected = player.id == selectedPlayerId
       objectId = player.playerObjectId()
-      playerSprite = sim.playerRgbaSpriteFor(player)
+      playerPose = player.facing.playerPoseForFacing()
+      playerSpriteWidth =
+        sim.playerArts[player.form].rgbaSprites[playerPose].width
+      playerSpriteHeight =
+        sim.playerArts[player.form].rgbaSprites[playerPose].height
     if player.lives <= 0:
       continue
     objects.addWorldSpriteObject(
@@ -1862,8 +1968,8 @@ proc addWorldObjects(
         selected,
         player.facing
       ),
-      playerSprite.width + 2,
-      playerSprite.height + 2,
+      playerSpriteWidth + 2,
+      playerSpriteHeight + 2,
       viewportWidth,
       viewportHeight
     )
@@ -1872,8 +1978,8 @@ proc addWorldObjects(
       player.playerHealthObjectId(),
       player.x - 1,
       player.y - 1,
-      playerSprite.width + 2,
-      playerSprite.height + 2,
+      playerSpriteWidth + 2,
+      playerSpriteHeight + 2,
       player.lives,
       MaxPlayerLives,
       cameraX,
@@ -1900,16 +2006,17 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
-  packet.flushWorldSpriteObjects(objects)
+  packet.flushWorldSpriteObjects(objects, objectCache)
 
 proc addPlayerHud(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   playerIndex: int,
   state: PlayerViewerState,
   nextState: var PlayerViewerState
-) =
+) {.measure.} =
   ## Adds the local player HUD to a sprite-player view.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -1930,7 +2037,8 @@ proc addPlayerHud(
       coinText.pixels,
       "coins " & $coins
     )
-  packet.addObject(
+  packet.addObjectCached(
+    objectCache,
     CoinsHudObjectId,
     2,
     2,
@@ -1951,7 +2059,8 @@ proc addPlayerHud(
       livesText.pixels,
       "lives " & $lives
     )
-  packet.addObject(
+  packet.addObjectCached(
+    objectCache,
     LivesHudObjectId,
     2,
     2 + sim.textFont.height + HudGap,
@@ -1966,6 +2075,7 @@ proc addPlayerStatus(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   lines: openArray[string]
 ) =
   ## Adds centered status text to a sprite-player view.
@@ -1981,7 +2091,8 @@ proc addPlayerStatus(
     text.pixels,
     "status"
   )
-  packet.addObject(
+  packet.addObjectCached(
+    objectCache,
     StatusHudObjectId,
     x,
     y,
@@ -1994,9 +2105,10 @@ proc addGlobalScorePanel(
   sim: SimServer,
   packet: var seq[uint8],
   currentIds: var seq[int],
+  objectCache: var seq[ObjectCacheEntry],
   state: GlobalViewerState,
   nextState: var GlobalViewerState
-): int =
+): int {.measure.} =
   ## Adds global player score panel objects and returns its height.
   if sim.players.len == 0:
     return 0
@@ -2029,7 +2141,8 @@ proc addGlobalScorePanel(
       playerIndex,
       name
     )
-    packet.addObject(
+    packet.addObjectCached(
+      objectCache,
       pipObjectId,
       0,
       pipY,
@@ -2045,7 +2158,8 @@ proc addGlobalScorePanel(
       if ch < '0' or ch > '9':
         continue
       let digitObjectId = scorePanelDigitObjectId(player.id, j)
-      packet.addObject(
+      packet.addObjectCached(
+        objectCache,
         digitObjectId,
         digitX,
         rowY,
@@ -2055,7 +2169,8 @@ proc addGlobalScorePanel(
       )
       currentIds.add(digitObjectId)
       digitX += sim.textFont.glyphAdvance(ch)
-    packet.addObject(
+    packet.addObjectCached(
+      objectCache,
       nameObjectId,
       nameX,
       rowY,
@@ -2071,7 +2186,7 @@ proc buildSpriteProtocolPlayerUpdates*(
   playerIndex: int,
   state: PlayerViewerState,
   nextState: var PlayerViewerState
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds sprite protocol updates for one playable player view.
   result = @[]
   nextState = state
@@ -2081,7 +2196,7 @@ proc buildSpriteProtocolPlayerUpdates*(
 
   var currentIds: seq[int] = @[]
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.addPlayerStatus(result, currentIds, ["WAITING"])
+    sim.addPlayerStatus(result, currentIds, nextState.objectCache, ["WAITING"])
   else:
     let player = sim.players[playerIndex]
     let
@@ -2094,7 +2209,8 @@ proc buildSpriteProtocolPlayerUpdates*(
         WorldHeightPixels - ScreenHeight
       )
     currentIds.add(MapObjectId)
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       MapObjectId,
       -cameraX,
       -cameraY,
@@ -2105,18 +2221,33 @@ proc buildSpriteProtocolPlayerUpdates*(
     sim.addWorldObjects(
       result,
       currentIds,
+      nextState.objectCache,
       cameraX,
       cameraY,
       ScreenWidth,
       ScreenHeight
     )
-    sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
+    sim.addPlayerHud(
+      result,
+      currentIds,
+      nextState.objectCache,
+      playerIndex,
+      state,
+      nextState
+    )
     if player.lives <= 0:
-      sim.addPlayerStatus(result, currentIds, ["GAME", "OVER"])
+      sim.addPlayerStatus(
+        result,
+        currentIds,
+        nextState.objectCache,
+        ["GAME", "OVER"]
+      )
 
-  for objectId in state.objectIds:
-    if objectId notin currentIds:
-      result.addDeleteObject(objectId)
+  result.deleteMissingObjects(
+    state.objectIds,
+    currentIds,
+    nextState.objectCache
+  )
   nextState.objectIds = currentIds
 
 proc buildSpriteProtocolUpdates*(
@@ -2128,7 +2259,7 @@ proc buildSpriteProtocolUpdates*(
   replaySpeed = 1,
   replayMaxTick = -1,
   replayLooping = false
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds global viewer object updates for the current tick.
   result = @[]
   nextState = state
@@ -2176,6 +2307,7 @@ proc buildSpriteProtocolUpdates*(
   sim.addWorldObjects(
     result,
     currentIds,
+    nextState.objectCache,
     0,
     0,
     WorldWidthPixels,
@@ -2186,6 +2318,7 @@ proc buildSpriteProtocolUpdates*(
   let scorePanelHeight = sim.addGlobalScorePanel(
     result,
     currentIds,
+    nextState.objectCache,
     state,
     nextState
   )
@@ -2210,7 +2343,8 @@ proc buildSpriteProtocolUpdates*(
       text.height,
       text.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       SelectedTextObjectId,
       2,
       selectedY,
@@ -2240,7 +2374,8 @@ proc buildSpriteProtocolUpdates*(
       tickText.height,
       tickText.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       ReplayTickObjectId,
       max(0, (ScreenWidth - tickText.width) div 2),
       0,
@@ -2254,7 +2389,8 @@ proc buildSpriteProtocolUpdates*(
       scrubber.height,
       scrubber.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       ReplayScrubberObjectId,
       max(0, (ScreenWidth - ReplayScrubberWidth) div 2),
       ReplayScrubberY,
@@ -2268,7 +2404,8 @@ proc buildSpriteProtocolUpdates*(
       controls.height,
       controls.pixels
     )
-    result.addObject(
+    result.addObjectCached(
+      nextState.objectCache,
       ReplayControlsObjectId,
       TransportX,
       TransportY,
@@ -2277,7 +2414,9 @@ proc buildSpriteProtocolUpdates*(
       ReplayControlsSpriteId
     )
 
-  for objectId in state.objectIds:
-    if objectId notin currentIds:
-      result.addDeleteObject(objectId)
+  result.deleteMissingObjects(
+    state.objectIds,
+    currentIds,
+    nextState.objectCache
+  )
   nextState.objectIds = currentIds

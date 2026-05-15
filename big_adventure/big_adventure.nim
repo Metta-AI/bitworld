@@ -15,6 +15,8 @@ type
     saveReplayPath: string
     loadReplayPath: string
     saveScoresPath: string
+    profileTracePath: string
+    profileTicks: int
 
 proc readConfigStrings(node: JsonNode, name: string, values: var seq[string]) =
   ## Reads one optional string-array config field.
@@ -96,7 +98,11 @@ proc isKnownConfigField(name: string): bool =
       "save-scores",
       "save-replay-path",
       "load-replay-path",
-      "save-scores-path":
+      "save-scores-path",
+      "profileTracePath",
+      "profile-trace-path",
+      "profileTicks",
+      "profile-ticks":
     true
   else:
     false
@@ -139,11 +145,15 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("save-replay-path", config.saveReplayPath)
   node.readConfigString("load-replay-path", config.loadReplayPath)
   node.readConfigString("save-scores-path", config.saveScoresPath)
+  node.readConfigString("profileTracePath", config.profileTracePath)
+  node.readConfigString("profile-trace-path", config.profileTracePath)
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("maxTicks", config.maxTicks)
   node.readConfigInt("max-ticks", config.maxTicks)
   node.readConfigInt("maxGames", config.maxGames)
   node.readConfigInt("max-games", config.maxGames)
+  node.readConfigInt("profileTicks", config.profileTicks)
+  node.readConfigInt("profile-ticks", config.profileTicks)
   node.readConfigStrings("tokens", config.tokens)
 
 proc requireOptionValue(name, value: string) =
@@ -177,6 +187,11 @@ proc validate(config: RunConfig) =
       BigAdventureError,
       "Config field maxGames must be non-negative."
     )
+  if config.profileTicks < 0:
+    raise newException(
+      BigAdventureError,
+      "Config field profileTicks must be non-negative."
+    )
 
 proc echoStartupPaths(config: RunConfig) =
   ## Prints configured replay and score output paths.
@@ -202,6 +217,12 @@ proc echoStartupPaths(config: RunConfig) =
     echo "Max games: " & $config.maxGames
   else:
     echo "Max games: infinite"
+  if config.profileTracePath.len > 0:
+    echo "Writing profile trace: " & config.profileTracePath
+    if config.profileTicks > 0:
+      echo "Profile ticks: " & $config.profileTicks
+    else:
+      echo "Profile ticks: until shutdown"
 
 when isMainModule:
   var
@@ -214,7 +235,9 @@ when isMainModule:
       tokens: @[],
       saveReplayPath: defaultReplayPath(),
       loadReplayPath: defaultLoadReplayPath(),
-      saveScoresPath: defaultScoresPath()
+      saveScoresPath: defaultScoresPath(),
+      profileTracePath: "",
+      profileTicks: 0
     )
     configPath = getEnv("COGAME_CONFIG_PATH")
     configJson = ""
@@ -242,6 +265,11 @@ when isMainModule:
       of "save-scores", "save-scores-path", "saveScoresPath":
         key.requireOptionValue(val)
         config.saveScoresPath = val
+      of "profile-trace-path", "profileTracePath":
+        key.requireOptionValue(val)
+        config.profileTracePath = val
+      of "profile-ticks", "profileTicks":
+        config.profileTicks = key.parseOptionInt(val)
       of "config":
         key.requireOptionValue(val)
         configJson = val
@@ -271,5 +299,7 @@ when isMainModule:
     config.saveScoresPath,
     config.tokens,
     config.maxTicks,
-    config.maxGames
+    config.maxGames,
+    config.profileTracePath,
+    config.profileTicks
   )

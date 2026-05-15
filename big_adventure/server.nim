@@ -1,7 +1,9 @@
-import mummy
-import bitworld/clients
-import protocol, sim, global
-import std/[json, locks, monotimes, os, strutils, tables, times]
+import
+  std/[json, locks, monotimes, os, strutils, tables, times],
+  mummy,
+  bitworld/clients,
+  fluffy/measure,
+  protocol, sim, global
 
 const
   HealthzPath = "/healthz"
@@ -794,6 +796,16 @@ proc writeScoresIfNeeded(
   sim.writeScoreFile(path)
   lastRevision = sim.scoreRevision
 
+proc dumpProfileTrace(path: string) =
+  ## Ends and writes the active Fluffy profile trace.
+  if path.len == 0:
+    return
+  let dir = path.parentDir()
+  if dir.len > 0:
+    createDir(dir)
+  endTrace()
+  dumpMeasures(path)
+
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
@@ -803,8 +815,12 @@ proc runServerLoop*(
   saveScoresPath = "",
   tokens: seq[string] = @[],
   maxTicks = DefaultMaxTicks,
-  maxGames = DefaultMaxGames
-) =
+  maxGames = DefaultMaxGames,
+  profileTracePath = "",
+  profileTicks = 0
+) {.measure.} =
+  if profileTracePath.len > 0:
+    startTrace()
   initAppState()
   appState.tokens = tokens
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
@@ -860,7 +876,12 @@ proc runServerLoop*(
     lastScoreRevision = -1
     runTicks = 0
     gamesStarted = 1
+    profileActive = profileTracePath.len > 0
   sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+  defer:
+    if profileActive:
+      profileActive = false
+      dumpProfileTrace(profileTracePath)
 
   while true:
     var
@@ -1045,6 +1066,9 @@ proc runServerLoop*(
       sim.step(inputs)
       inc runTicks
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+      if profileActive and profileTicks > 0 and runTicks >= profileTicks:
+        profileActive = false
+        dumpProfileTrace(profileTracePath)
 
     sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
     let rewardPacket = sim.buildRewardPacket()
