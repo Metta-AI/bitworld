@@ -235,7 +235,8 @@ proc runServerLoop*(
   saveReplayPath = "",
   loadReplayPath = "",
   coopSpawnPercent = DefaultCoopSpawnPercent,
-  coopScoreMultiplier = DefaultCoopScoreMultiplier
+  coopScoreMultiplier = DefaultCoopScoreMultiplier,
+  planetCount = DefaultPlanetCount
 ) =
   initAppState()
   appState.tokens = tokens
@@ -269,7 +270,7 @@ proc runServerLoop*(
       actualSeed = replayConfig["seed"].getInt()
 
   var
-    sim = initSimServer(actualSeed, coopSpawnPercent, coopScoreMultiplier)
+    sim = initSimServer(actualSeed, coopSpawnPercent, coopScoreMultiplier, planetCount)
     lastTick = getMonoTime()
     tickCount = 0
 
