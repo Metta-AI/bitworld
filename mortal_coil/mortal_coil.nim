@@ -1,5 +1,5 @@
 import mummy
-import protocol, server, soul, data, output, render_utils, world, magical_facts, situation, conflict
+import protocol, server, soul, data, render_utils, world, magical_facts, situation, conflict
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -192,11 +192,11 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
   of PhaseWorld:
     let result = stepWorld(sim.worldStep, sim.worldTimer, sim.world, sim.players)
     if result == WorldDone:
-      sim.phase = PhaseMagicalFacts
       sim.currentTurn = 0
       sim.chatLog = @[]
-      sim.startFactTurn()
-      logMagicalFactsPhase()
+      sim.phase = PhaseSituation
+      sim.situationStep = SituationGazing
+      sim.situationTimer = 1
   of PhaseMagicalFacts:
     if sim.players.len == 0:
       sim.phase = PhaseLobby
@@ -233,10 +233,10 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       if allSpent:
         sim.phase = PhaseEnd
       else:
-        sim.phase = PhaseMagicalFacts
         sim.currentTurn = 0
-        sim.startFactTurn()
-        logMagicalFactsPhase()
+        sim.phase = PhaseSituation
+        sim.situationStep = SituationGazing
+        sim.situationTimer = 1
   else:
     discard
   sim.prevInputs = inputs
