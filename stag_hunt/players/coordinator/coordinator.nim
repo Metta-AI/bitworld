@@ -505,6 +505,82 @@ proc alternateSideMask(selfX, selfY, targetX, targetY, tick: int): uint8 =
     else: return ButtonRight
   0
 
+type
+  OccupiedSides = object
+    n, s, e, w: bool
+
+proc occupiedSidesOf(
+  preyX, preyY: int,
+  players: openArray[PlayerSight]
+): OccupiedSides =
+  for player in players:
+    if player.tileX == preyX and player.tileY == preyY - 1:
+      result.n = true
+    elif player.tileX == preyX and player.tileY == preyY + 1:
+      result.s = true
+    elif player.tileX == preyX + 1 and player.tileY == preyY:
+      result.e = true
+    elif player.tileX == preyX - 1 and player.tileY == preyY:
+      result.w = true
+
+proc bestCaptureSide(
+  selfX, selfY, preyX, preyY: int,
+  kind: PreyKind,
+  players: openArray[PlayerSight]
+): tuple[x, y: int, found: bool] =
+  let sides = occupiedSidesOf(preyX, preyY, players)
+  let selfIsN = (selfX == preyX and selfY == preyY - 1)
+  let selfIsS = (selfX == preyX and selfY == preyY + 1)
+  let selfIsE = (selfX == preyX + 1 and selfY == preyY)
+  let selfIsW = (selfX == preyX - 1 and selfY == preyY)
+  case kind
+  of Stag:
+    if sides.n and not sides.s and not selfIsN:
+      return (preyX, preyY + 1, true)
+    if sides.s and not sides.n and not selfIsS:
+      return (preyX, preyY - 1, true)
+    if sides.e and not sides.w and not selfIsE:
+      return (preyX - 1, preyY, true)
+    if sides.w and not sides.e and not selfIsW:
+      return (preyX + 1, preyY, true)
+    if selfIsN and not sides.s:
+      return (preyX, preyY + 1, true)
+    if selfIsS and not sides.n:
+      return (preyX, preyY - 1, true)
+    if selfIsE and not sides.w:
+      return (preyX - 1, preyY, true)
+    if selfIsW and not sides.e:
+      return (preyX + 1, preyY, true)
+  of Boar:
+    if (sides.n or selfIsN) and not sides.e and not selfIsE:
+      return (preyX + 1, preyY, true)
+    if (sides.n or selfIsN) and not sides.w and not selfIsW:
+      return (preyX - 1, preyY, true)
+    if (sides.s or selfIsS) and not sides.e and not selfIsE:
+      return (preyX + 1, preyY, true)
+    if (sides.s or selfIsS) and not sides.w and not selfIsW:
+      return (preyX - 1, preyY, true)
+    if (sides.e or selfIsE) and not sides.n and not selfIsN:
+      return (preyX, preyY - 1, true)
+    if (sides.e or selfIsE) and not sides.s and not selfIsS:
+      return (preyX, preyY + 1, true)
+    if (sides.w or selfIsW) and not sides.n and not selfIsN:
+      return (preyX, preyY - 1, true)
+    if (sides.w or selfIsW) and not sides.s and not selfIsS:
+      return (preyX, preyY + 1, true)
+  of Moose, Elephant:
+    if not sides.n and not selfIsN:
+      return (preyX, preyY - 1, true)
+    if not sides.s and not selfIsS:
+      return (preyX, preyY + 1, true)
+    if not sides.e and not selfIsE:
+      return (preyX + 1, preyY, true)
+    if not sides.w and not selfIsW:
+      return (preyX - 1, preyY, true)
+  of Rabbit:
+    discard
+  (0, 0, false)
+
 proc updateStuckState(bot: var Bot, mask: uint8) =
   ## Updates stuck/cycle detection state based on current position.
   if not bot.selfFound:
@@ -558,9 +634,19 @@ proc decideNextMask(bot: var Bot): uint8 =
     target = bot.chooseTarget(prey, kinds)
 
   if not target.found:
-    bot.intent = "no catchable prey (allies=" & $nearby & ")"
-    bot.updateStuckState(0)
-    return 0
+    bot.intent = "no catchable prey (allies=" & $nearby & ") exploring"
+    let cx = WorldWidthTiles div 2
+    let cy = WorldHeightTiles div 2
+    var mask: uint8
+    if bot.selfTileX <= 5 or bot.selfTileX >= WorldWidthTiles - 6 or
+        bot.selfTileY <= 5 or bot.selfTileY >= WorldHeightTiles - 6:
+      mask = moveMaskTowards(cx - bot.selfTileX, cy - bot.selfTileY)
+    else:
+      mask = cycleMask(bot.frameTick div 8)
+    if bot.stuckCount >= 18:
+      mask = perpendicularMask(mask, bot.frameTick)
+    bot.updateStuckState(mask)
+    return mask
 
   let dx = target.tileX - bot.selfTileX
   let dy = target.tileY - bot.selfTileY
@@ -572,8 +658,23 @@ proc decideNextMask(bot: var Bot): uint8 =
     else:
       bot.lastAdjacentPreyId = target.objectId
       bot.adjacentWaitTicks = 1
-    # If we've waited too long, try repositioning to a different side
+    # If we've waited too long, try repositioning to the strategic capture side
     if bot.adjacentWaitTicks >= 12:
+      if target.kind != Rabbit:
+        let side = bestCaptureSide(
+          bot.selfTileX, bot.selfTileY,
+          target.tileX, target.tileY,
+          target.kind, players
+        )
+        if side.found:
+          let sdx = side.x - bot.selfTileX
+          let sdy = side.y - bot.selfTileY
+          let repositionMask = moveMaskTowards(sdx, sdy)
+          bot.intent = "reposition->capture " & $target.kind &
+            " side=(" & $side.x & "," & $side.y & ")" &
+            " allies=" & $nearby & " wait=" & $bot.adjacentWaitTicks
+          bot.updateStuckState(repositionMask)
+          return repositionMask
       let repositionMask = alternateSideMask(
         bot.selfTileX, bot.selfTileY, target.tileX, target.tileY, bot.frameTick
       )
@@ -590,11 +691,33 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.lastAdjacentPreyId = -1
 
   if dx == 0 and dy == 0:
-    # Standing on top of the prey shouldn't really happen, but if it does
-    # nudge off in any direction so a neighbor can flank.
     bot.intent = "nudge off " & $target.kind
     bot.updateStuckState(ButtonRight)
     return ButtonRight
+
+  # For multi-player prey within close range, navigate to the strategic
+  # capture side rather than greedily approaching the prey tile.
+  let dist = chebyshev(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
+  if target.kind != Rabbit and dist <= 3:
+    let side = bestCaptureSide(
+      bot.selfTileX, bot.selfTileY,
+      target.tileX, target.tileY,
+      target.kind, players
+    )
+    if side.found:
+      let sdx = side.x - bot.selfTileX
+      let sdy = side.y - bot.selfTileY
+      var sideMask = moveMaskTowards(sdx, sdy)
+      if bot.isCycling():
+        sideMask = perpendicularMask(sideMask, bot.frameTick)
+      elif bot.stuckCount >= 24:
+        sideMask = cycleMask(bot.frameTick)
+      elif bot.stuckCount >= 12:
+        sideMask = perpendicularMask(sideMask, bot.frameTick)
+      bot.intent = "approach->capture " & $target.kind &
+        " side=(" & $side.x & "," & $side.y & ") allies=" & $nearby
+      bot.updateStuckState(sideMask)
+      return sideMask
 
   var mask = moveMaskTowards(dx, dy)
 
@@ -603,11 +726,11 @@ proc decideNextMask(bot: var Bot): uint8 =
     mask = perpendicularMask(mask, bot.frameTick)
     bot.intent = "break cycle toward " & $target.kind &
       " allies=" & $nearby
-  elif bot.stuckCount >= 5:
+  elif bot.stuckCount >= 24:
     mask = cycleMask(bot.frameTick)
     bot.intent = "escape stuck toward " & $target.kind &
       " allies=" & $nearby & " stuck=" & $bot.stuckCount
-  elif bot.stuckCount >= 2:
+  elif bot.stuckCount >= 12:
     mask = perpendicularMask(mask, bot.frameTick)
     bot.intent = "sidestep toward " & $target.kind &
       " allies=" & $nearby & " stuck=" & $bot.stuckCount

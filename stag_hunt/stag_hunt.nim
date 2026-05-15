@@ -27,6 +27,7 @@ const
   PreyWanderProb = 30
 
   MaxEnergy = 200
+  PassiveRechargeMax = 100
   StartEnergy = 120
   MoveEnergyCost = 2
   PassiveRechargeInterval = 18
@@ -104,6 +105,14 @@ const
   IndicatorSpriteSize = 4
   IndicatorSpriteBase = 20   # 20, 21, 22 for 1-dot, 2-dot, 3-dot
 
+  DigitSpriteBase = 30       # ids 30-39 for digits 0-9
+  ScoreIconSpriteId = 40
+  EnergyIconSpriteId = 41
+  DigitSpriteWidth = 3
+  DigitSpriteHeight = 5
+  HudObjectBase = 11000
+  HudZ = 9999
+
 type
   PreyKind = enum
     Rabbit
@@ -168,6 +177,9 @@ type
     preySprites: array[5, RgbaSprite]      # by PreyKind.ord
     playerSprites: array[8 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
     indicatorSprites: array[3, RgbaSprite]  # 1-dot, 2-dot, 3-dot
+    digitSprites: array[10, RgbaSprite]
+    scoreIconSprite: RgbaSprite
+    energyIconSprite: RgbaSprite
 
   WebSocketAppState = object
     lock: Lock
@@ -527,6 +539,35 @@ const
     "8...",
   ]
 
+  DigitPatterns: array[10, array[5, string]] = [
+    ["222", "2.2", "2.2", "2.2", "222"],
+    [".2.", "22.", ".2.", ".2.", "222"],
+    ["222", "..2", "222", "2..", "222"],
+    ["222", "..2", "222", "..2", "222"],
+    ["2.2", "2.2", "222", "..2", "..2"],
+    ["222", "2..", "222", "..2", "222"],
+    ["222", "2..", "222", "2.2", "222"],
+    ["222", "..2", "..2", "..2", "..2"],
+    ["222", "2.2", "222", "2.2", "222"],
+    ["222", "2.2", "222", "..2", "222"],
+  ]
+
+  ScoreIconPattern = [
+    ".8.",
+    "888",
+    ".8.",
+    "8.8",
+    "...",
+  ]
+
+  EnergyIconPattern = [
+    ".bb",
+    ".b.",
+    "bb.",
+    ".b.",
+    "b..",
+  ]
+
 proc loadPngSprite(path: string): RgbaSprite =
   let img = readImage(path)
   result = newRgbaSprite(img.width, img.height)
@@ -736,7 +777,7 @@ proc applyPlayerInput(sim: var SimServer, playerIndex: int, input: InputState) =
   inc p.rechargeCounter
   if p.rechargeCounter >= PassiveRechargeInterval:
     p.rechargeCounter = 0
-    if p.energy < MaxEnergy:
+    if p.energy < PassiveRechargeMax:
       inc p.energy
 
   if p.killGlow > 0:
@@ -826,6 +867,17 @@ proc thinkPrey(sim: var SimServer, preyIndex: int) =
           return
         if dy != 0 and sim.tryPreyMove(preyIndex, 0, dy):
           return
+        # diagonal escape: combine flee axis with perpendicular
+        if dy != 0:
+          if sim.tryPreyMove(preyIndex, 1, dy):
+            return
+          if sim.tryPreyMove(preyIndex, -1, dy):
+            return
+        if dx != 0:
+          if sim.tryPreyMove(preyIndex, dx, 1):
+            return
+          if sim.tryPreyMove(preyIndex, dx, -1):
+            return
         # perpendicular fallback
         if dx != 0 and sim.tryPreyMove(preyIndex, 0, 1):
           return
@@ -1110,6 +1162,11 @@ proc buildSpriteCache(sim: var SimServer) =
   sim.indicatorSprites[1] = patternToRgbaSprite(Indicator2Pattern)
   sim.indicatorSprites[2] = patternToRgbaSprite(Indicator3Pattern)
 
+  for d in 0 ..< 10:
+    sim.digitSprites[d] = patternToRgbaSprite(DigitPatterns[d])
+  sim.scoreIconSprite = patternToRgbaSprite(ScoreIconPattern)
+  sim.energyIconSprite = patternToRgbaSprite(EnergyIconPattern)
+
 proc addSpriteProtocolInit(
   packet: var seq[uint8],
   sim: SimServer,
@@ -1137,6 +1194,10 @@ proc addSpriteProtocolInit(
       sim.indicatorSprites[i],
       "indicator " & $(i + 1)
     )
+  for d in 0 ..< 10:
+    packet.addSprite(DigitSpriteBase + d, sim.digitSprites[d], "digit " & $d)
+  packet.addSprite(ScoreIconSpriteId, sim.scoreIconSprite, "score icon")
+  packet.addSprite(EnergyIconSpriteId, sim.energyIconSprite, "energy icon")
 
 # ---------------------------------------------------------------------------
 # Frame builders
@@ -1370,6 +1431,27 @@ proc addPlayerObjects(
         MapLayerId, KillGlowSpriteId
       )
 
+proc addHudObjects(packet: var seq[uint8], score, energy: int) =
+  var objIdx = 0
+  packet.addObject(HudObjectBase + objIdx, 1, 1, HudZ, MapLayerId, ScoreIconSpriteId)
+  inc objIdx
+  let scoreStr = $max(0, score)
+  var sx = 5
+  for ch in scoreStr:
+    let digit = ord(ch) - ord('0')
+    packet.addObject(HudObjectBase + objIdx, sx, 1, HudZ, MapLayerId, DigitSpriteBase + digit)
+    inc objIdx
+    sx += DigitSpriteWidth + 1
+  packet.addObject(HudObjectBase + objIdx, 1, 7, HudZ, MapLayerId, EnergyIconSpriteId)
+  inc objIdx
+  let energyStr = $max(0, energy)
+  var ex = 5
+  for ch in energyStr:
+    let digit = ord(ch) - ord('0')
+    packet.addObject(HudObjectBase + objIdx, ex, 7, HudZ, MapLayerId, DigitSpriteBase + digit)
+    inc objIdx
+    ex += DigitSpriteWidth + 1
+
 proc buildPlayerFrame(
   sim: SimServer,
   playerIndex: int,
@@ -1390,6 +1472,7 @@ proc buildPlayerFrame(
   result.addPreyObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addIndicatorObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
   result.addPlayerObjects(sim, cameraX, cameraY, PlayerViewportWidth, PlayerViewportHeight)
+  result.addHudObjects(sim.players[playerIndex].score, sim.players[playerIndex].energy)
 
 proc buildGlobalFrame(
   sim: SimServer,

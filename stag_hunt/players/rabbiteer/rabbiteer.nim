@@ -410,8 +410,18 @@ proc decideNextMask(bot: var Bot): tuple[mask: uint8, target: PreySight] =
     rabbits = bot.visibleRabbits()
     target = bot.nearestRabbit(rabbits)
   if not target.found:
-    bot.updateStuckState(0)
-    return (0'u8, target)
+    let cx = WorldWidthTiles div 2
+    let cy = WorldHeightTiles div 2
+    var mask: uint8
+    if bot.selfTileX <= 5 or bot.selfTileX >= WorldWidthTiles - 6 or
+        bot.selfTileY <= 5 or bot.selfTileY >= WorldHeightTiles - 6:
+      mask = stepMaskToward(bot.selfTileX, bot.selfTileY, cx, cy)
+    else:
+      mask = cycleMask(bot.frameTick div 8)
+    if bot.stuckCount >= 18:
+      mask = perpendicularMask(mask, bot.frameTick)
+    bot.updateStuckState(mask)
+    return (mask, target)
   # Adjacent on a cardinal side -> stop; server captures within ~1 tick.
   let
     cheb = chebyshev(bot.selfTileX, bot.selfTileY, target.tileX, target.tileY)
@@ -443,9 +453,9 @@ proc decideNextMask(bot: var Bot): tuple[mask: uint8, target: PreySight] =
   # Anti-stuck: cycle detection and stuck fallback
   if bot.isCycling():
     mask = perpendicularMask(mask, bot.frameTick)
-  elif bot.stuckCount >= 5:
+  elif bot.stuckCount >= 24:
     mask = cycleMask(bot.frameTick)
-  elif bot.stuckCount >= 2:
+  elif bot.stuckCount >= 12:
     mask = perpendicularMask(mask, bot.frameTick)
 
   bot.updateStuckState(mask)
