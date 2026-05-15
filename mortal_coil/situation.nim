@@ -6,7 +6,7 @@ const
   SituationDescTicks* = 24 * 10
   SceneReadTicks* = 24 * 10
   SceneAcceptTicks* = 24 * 1
-  BackgroundColor = 1'u8
+  BackgroundColor = 0'u8
 
 proc generateSceneOpts(players: seq[Player], currentTurn: int,
     world: World, situation: Situation, chatLog: seq[ChatEntry],
@@ -14,7 +14,7 @@ proc generateSceneOpts(players: seq[Player], currentTurn: int,
   let player = players[currentTurn]
   let scene = player.soul.generateSceneOptions(world, situation, chatLogStrings(chatLog))
   sceneState.header = scene.header
-  sceneState.choice = initChoice(@[scene.options[0], scene.options[1], scene.options[2], scene.options[3]], "do nothing")
+  sceneState.choice = initChoice(@[scene.options[0], scene.options[1], scene.options[2], scene.options[3]], "Do nothing.")
   sceneState.step = SceneReading
   sceneTimer = SceneReadTicks
 
@@ -33,57 +33,56 @@ proc startSceneChoices*(players: seq[Player], rng: var Rand,
   currentTurn = sceneTurnOrder[0]
   startSceneTurn(sceneState, sceneTimer)
 
-proc renderSceneChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,
-    sceneState: SceneState) =
+proc renderSceneChoices*(fb: var Framebuffer, players: seq[Player],
+    currentTurn: int, sceneState: SceneState) =
   fb.clearFrame(BackgroundColor)
   let player = players[currentTurn]
   let color = uint8(player.colorIndex)
   let prefix = player.name & "'s turn:"
-  fb.blitTextTinted(letterSprites, digitSprites, prefix, TextMargin, 4, color)
+  fb.drawText(prefix, TextMargin, 4, color)
 
-  var choicesY = 4 + CharHeight + 4
+  var choicesY = 4 + font.height + 4
   if sceneState.header.len > 0:
-    let headerY = 4 + CharHeight + 2
-    let maxChars = charsFromX(TextMargin)
-    let header = if sceneState.header.len > maxChars * 2:
-        sceneState.header[0 ..< maxChars * 2]
+    let headerY = 4 + font.height + 2
+    let maxWidth = ScreenWidth - TextMargin * 2
+    let maxHeaderChars = fitChars(sceneState.header, maxWidth * 2)
+    let header = if sceneState.header.len > maxHeaderChars:
+        sceneState.header[0 ..< maxHeaderChars]
       else:
         sceneState.header
-    let rows = fb.blitTextWrapped(letterSprites, digitSprites, header, TextMargin, headerY, 8)
+    let rows = fb.drawTextWrapped(header, TextMargin, headerY, 8)
     choicesY = headerY + rows * 8 + 2
 
   let showCursor = player.kind == PlayerHuman and sceneState.step == SceneReading
-  discard renderChoices(fb, letterSprites, digitSprites,
-    sceneState.choice, color, showCursor, startY = choicesY)
+  discard renderChoices(fb, sceneState.choice, color, showCursor, startY = choicesY)
 
-proc renderSituation*(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,
-    situationStep: SituationStep, situation: Situation, sceneState: SceneState) =
+proc renderSituation*(fb: var Framebuffer, players: seq[Player],
+    currentTurn: int, situationStep: SituationStep, situation: Situation,
+    sceneState: SceneState) =
   fb.clearFrame(0)
   case situationStep
   of SituationGazing:
-    let line1 = "situation"
-    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-    let y1 = (ScreenHeight - CharHeight) div 2
-    fb.blitTextTinted(letterSprites, line1, x1, y1, 5)
+    let line1 = "Situation"
+    let x1 = (ScreenWidth - textW(line1)) div 2
+    let y1 = (ScreenHeight - font.height) div 2
+    fb.drawText(line1, x1, y1, 5)
   of SituationTitle:
-    let line1 = "situation"
+    let line1 = "Situation"
     let line2 = situation.title
-    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-    let x2 = (ScreenWidth - line2.len * CharWidth) div 2
-    let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
-    let y2 = y1 + CharHeight + 2
-    fb.blitTextTinted(letterSprites, line1, x1, y1, 5)
-    fb.blitTextTinted(letterSprites, digitSprites, line2, x2, y2, 5)
+    let x1 = (ScreenWidth - textW(line1)) div 2
+    let x2 = (ScreenWidth - textW(line2)) div 2
+    let y1 = (ScreenHeight - font.height * 2 - 2) div 2
+    let y2 = y1 + font.height + 2
+    fb.drawText(line1, x1, y1, 5)
+    fb.drawText(line2, x2, y2, 5)
   of SituationDescription:
-    let maxChars = charsFromX(TextMargin)
-    let lineCount = max(1, (situation.description.len + maxChars - 1) div maxChars)
+    let maxWidth = ScreenWidth - TextMargin * 2
+    let lineCount = wrapLineCount(situation.description, maxWidth)
     let totalH = lineCount * 8
     let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
-    discard fb.blitTextWrappedTinted(letterSprites, digitSprites, situation.description, TextMargin, startY, 8, 5)
+    discard fb.drawTextWrapped(situation.description, TextMargin, startY, 8, 5)
   of SituationChoices:
-    fb.renderSceneChoices(letterSprites, digitSprites, players, currentTurn, sceneState)
+    fb.renderSceneChoices(players, currentTurn, sceneState)
 
 type
   SituationStepResult* = enum
@@ -144,7 +143,7 @@ proc stepSituation*(players: var seq[Player], currentTurn: var int,
       let actionText = if sel < sceneState.choice.options.len:
           sceneState.choice.options[sel]
         else:
-          "do nothing"
+          "Do nothing."
       logSituationAction(player, actionText)
       chatLog.add(ChatEntry(
         name: player.name,

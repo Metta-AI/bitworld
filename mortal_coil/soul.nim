@@ -12,6 +12,10 @@ const SituationPadding* = 20
 const ConflictTitleMaxLen* = 20
 const ConflictMaxLen* = 120
 const ConflictPadding* = 20
+const ConflictOutcomeMaxLen* = 120
+const ConflictOutcomePadding* = 20
+const ConflictOutcomeNarrationMaxLen* = 80
+const ConflictOutcomeNarrationPadding* = 10
 const ConflictResolutionMaxLen* = 120
 const ConflictResolutionPadding* = 20
 const SceneHeaderMaxLen* = 38
@@ -48,6 +52,14 @@ type
     header*: string
     options*: array[4, string]
 
+  OutcomeScore* = object
+    playerName*: string
+    score*: int  # -1, 0, +1
+
+  ConflictOutcomeResult* = object
+    narration*: string
+    scores*: seq[OutcomeScore]
+
 proc newSoul*(): Soul =
   Soul(passions: @[])
 
@@ -76,8 +88,8 @@ proc generateWorld*(soul: Soul): World =
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
   prompt &= "Create a game setting inspired by the concept of '" & seed & "'.\n"
   prompt &= "Respond with exactly 2 lines:\n"
-  prompt &= "Line 1: A short evocative title (max " & $WorldTitleMaxLen & " characters, lowercase)\n"
-  prompt &= "Line 2: A " & $(WorldMaxLen - WorldPadding) & " character description of the world (lowercase)\n"
+  prompt &= "Line 1: A short evocative title (max " & $WorldTitleMaxLen & " characters, title case)\n"
+  prompt &= "Line 2: A " & $(WorldMaxLen - WorldPadding) & " character description of the world (sentence case, ends with a period)\n"
 
   if soul.passions.len > 0:
     prompt.add("Draw inspiration from: " & soul.passions.join(", ") & ". ")
@@ -102,10 +114,10 @@ proc generateWorld*(soul: Soul): World =
     result.title = nonEmpty[0]
     if result.title.len > WorldTitleMaxLen:
       result.title = result.title[0 ..< WorldTitleMaxLen]
-    result.description = "a world where shadows speak and the forgotten remember"
+    result.description = "A world where shadows speak and the forgotten remember."
   else:
-    result.title = "the nameless land"
-    result.description = "a world where shadows speak and the forgotten remember"
+    result.title = "The Nameless Land"
+    result.description = "A world where shadows speak and the forgotten remember."
 
 proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, string] =
   var prompt = ""
@@ -113,7 +125,7 @@ proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, st
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "Generate exactly 3 short mystical facts about how this world works.\n"
   prompt &= "Each fact MUST be " & $(FactMaxLen - FactPadding) & " characters or fewer.\n"
-  prompt &= "Each fact should be a single lowercase statement about a rule of the world.\n"
+  prompt &= "Each fact should be a single sentence about a rule of the world (sentence case, ends with a period).\n"
 
   if soul.passions.len > 0:
     prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
@@ -144,7 +156,7 @@ proc generateFacts*(soul: Soul, world: World, chatLog: seq[string]): array[3, st
     inc idx
 
   for i in idx ..< 3:
-    result[i] = "the void whispers back"
+    result[i] = "The void whispers back."
 
 proc generateSituation*(soul: Soul, world: World, chatLog: seq[string], previousSituations: seq[Situation]): Situation =
   var prompt = ""
@@ -163,8 +175,8 @@ proc generateSituation*(soul: Soul, world: World, chatLog: seq[string], previous
 
   prompt &= "Generate a new situation for the players.\n"
   prompt &= "Respond with exactly 2 lines:\n"
-  prompt &= "Line 1: A short evocative title (max " & $SituationTitleMaxLen & " characters, lowercase)\n"
-  prompt &= "Line 2: A " & $(SituationMaxLen - SituationPadding) & " character description of the situation (lowercase)\n"
+  prompt &= "Line 1: A short evocative title (max " & $SituationTitleMaxLen & " characters, title case)\n"
+  prompt &= "Line 2: A " & $(SituationMaxLen - SituationPadding) & " character description of the situation (sentence case, ends with a period)\n"
   prompt &= "The situation must not imply direct conflict, its for the players to explore the world.\n"
   prompt &= "Respond with exactly 2 lines, nothing else."
 
@@ -186,10 +198,10 @@ proc generateSituation*(soul: Soul, world: World, chatLog: seq[string], previous
     result.title = nonEmpty[0]
     if result.title.len > SituationTitleMaxLen:
       result.title = result.title[0 ..< SituationTitleMaxLen]
-    result.description = "something stirs in the darkness"
+    result.description = "Something stirs in the darkness."
   else:
-    result.title = "the unknown"
-    result.description = "something stirs in the darkness"
+    result.title = "The Unknown"
+    result.description = "Something stirs in the darkness."
 
 proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatLog: seq[string]): ScenePrompt =
   var prompt = ""
@@ -199,8 +211,8 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
   prompt &= "Generate a short header summarizing what this player perceives, followed by 4 actions.\n"
   prompt &= "The header is this player's subjective take on the situation.\n"
   prompt &= "Respond with exactly 5 lines:\n"
-  prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, lowercase)\n"
-  prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, lowercase)\n"
+  prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, sentence case, ends with a period)\n"
+  prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, sentence case, ends with a period)\n"
 
   if soul.passions.len > 0:
     prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
@@ -227,7 +239,7 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
     if result.header.len > SceneHeaderMaxLen:
       result.header = result.header[0 ..< SceneHeaderMaxLen]
   else:
-    result.header = "the world awaits"
+    result.header = "The world awaits."
 
   var idx = 0
   for i in 1 ..< nonEmpty.len:
@@ -241,7 +253,7 @@ proc generateSceneOptions*(soul: Soul, world: World, situation: Situation, chatL
     inc idx
 
   for i in idx ..< 4:
-    result.options[i] = "stare into the void"
+    result.options[i] = "Stare into the void."
 
 proc attitudeDescription(attitude: Attitude): string =
   case attitude
@@ -269,9 +281,10 @@ proc generateConflictOptions*(soul: Soul, world: World, conflict: Conflict,
   prompt &= "Adversarial = action taken against party members (using them as cover, attacking them).\n"
   prompt &= "Neutral = action affecting only self or enemies (attacking a monster, dodging, thinking).\n"
   prompt &= "Cooperative = action benefiting party members (shielding them, healing them).\n"
+  prompt &= "Higher power at stake means higher risk — the action should feel more dangerous or ambitious.\n"
   prompt &= "Respond with exactly 5 lines:\n"
-  prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, lowercase)\n"
-  prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, lowercase)\n"
+  prompt &= "Line 1: A header (max " & $(SceneHeaderMaxLen - SceneHeaderPadding) & " characters, sentence case, ends with a period)\n"
+  prompt &= "Lines 2-5: Actions (each max " & $(SceneOptionMaxLen - SceneOptionPadding) & " characters, sentence case, ends with a period)\n"
 
   if soul.passions.len > 0:
     prompt.add("The player's passions are: " & soul.passions.join(", ") & ". ")
@@ -298,7 +311,7 @@ proc generateConflictOptions*(soul: Soul, world: World, conflict: Conflict,
     if result.header.len > SceneHeaderMaxLen:
       result.header = result.header[0 ..< SceneHeaderMaxLen]
   else:
-    result.header = "the conflict deepens"
+    result.header = "The conflict deepens."
 
   var idx = 0
   for i in 1 ..< nonEmpty.len:
@@ -312,7 +325,7 @@ proc generateConflictOptions*(soul: Soul, world: World, conflict: Conflict,
     inc idx
 
   for i in idx ..< 4:
-    result.options[i] = "stare into the void"
+    result.options[i] = "Stare into the void."
 
 proc generateConflict*(soul: Soul, world: World, situation: Situation, chatLog: seq[string]): Conflict =
   var prompt = ""
@@ -322,8 +335,8 @@ proc generateConflict*(soul: Soul, world: World, situation: Situation, chatLog: 
   prompt &= "Based on the players' actions, a conflict has emerged.\n"
   prompt &= "Generate a conflict that arises from the situation.\n"
   prompt &= "Respond with exactly 2 lines:\n"
-  prompt &= "Line 1: A short evocative title (max " & $ConflictTitleMaxLen & " characters, lowercase)\n"
-  prompt &= "Line 2: A " & $(ConflictMaxLen - ConflictPadding) & " character description of the conflict (lowercase)\n"
+  prompt &= "Line 1: A short evocative title (max " & $ConflictTitleMaxLen & " characters, title case)\n"
+  prompt &= "Line 2: A " & $(ConflictMaxLen - ConflictPadding) & " character description of the conflict (sentence case, ends with a period)\n"
 
   if chatLog.len > 0:
     prompt.add("The story so far:\n")
@@ -350,10 +363,10 @@ proc generateConflict*(soul: Soul, world: World, situation: Situation, chatLog: 
     result.title = nonEmpty[0]
     if result.title.len > ConflictTitleMaxLen:
       result.title = result.title[0 ..< ConflictTitleMaxLen]
-    result.description = "tensions rise beyond breaking"
+    result.description = "Tensions rise beyond breaking."
   else:
-    result.title = "the clash"
-    result.description = "tensions rise beyond breaking"
+    result.title = "The Clash"
+    result.description = "Tensions rise beyond breaking."
 
 proc generateConflictEscalation*(soul: Soul, world: World, conflict: Conflict, round: int, chatLog: seq[string]): string =
   var prompt = ""
@@ -361,7 +374,7 @@ proc generateConflictEscalation*(soul: Soul, world: World, conflict: Conflict, r
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
   prompt &= "This is escalation round " & $(round + 1) & " of 3. The tension is rising.\n"
-  prompt &= "Generate a single sentence describing the escalation (max " & $(ConflictMaxLen - ConflictPadding) & " characters, lowercase).\n"
+  prompt &= "Generate a single sentence describing the escalation (max " & $(ConflictMaxLen - ConflictPadding) & " characters, sentence case, ends with a period).\n"
 
   if chatLog.len > 0:
     prompt.add("The story so far:\n")
@@ -376,7 +389,51 @@ proc generateConflictEscalation*(soul: Soul, world: World, conflict: Conflict, r
       return response
     else:
       return response[0 ..< ConflictMaxLen]
-  "the conflict deepens"
+  "The conflict deepens."
+
+proc generateConflictOutcome*(soul: Soul, world: World, conflict: Conflict,
+    round: int, playerNames: seq[string], chatLog: seq[string]): ConflictOutcomeResult =
+  var prompt = ""
+  prompt &= "You are a world-building oracle for a dark fantasy game.\n"
+  prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
+  prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
+  prompt &= "Round " & $(round + 1) & " of 3 just ended. The players made their choices.\n"
+  prompt &= "Briefly narrate what happens, then score each player's choice.\n"
+  prompt &= "Score meaning: -1 = failed (choice backfired), 0 = neutral, +1 = achieved (choice succeeded).\n"
+  prompt &= "Higher-risk choices (higher power at stake) are harder to pull off.\n"
+  prompt &= "Respond with exactly " & $(1 + playerNames.len) & " lines:\n"
+  prompt &= "Line 1: A short narrative of what happens (max " & $(ConflictOutcomeMaxLen - ConflictOutcomePadding) & " characters, sentence case, ends with a period)\n"
+  for i in 0 ..< playerNames.len:
+    prompt &= "Line " & $(i + 2) & ": " & playerNames[i] & " score (just -1, 0, or 1)\n"
+
+  if chatLog.len > 0:
+    prompt.add("The story so far:\n")
+    for entry in chatLog:
+      prompt.add("- " & entry & "\n")
+
+  prompt.add("Respond with exactly " & $(1 + playerNames.len) & " lines, nothing else.")
+
+  let response = claude.ask(prompt)
+  var nonEmpty: seq[string]
+  for line in response.strip().splitLines():
+    let trimmed = line.strip()
+    if trimmed.len > 0:
+      nonEmpty.add(trimmed)
+
+  if nonEmpty.len >= 1:
+    result.narration = nonEmpty[0]
+    if result.narration.len > ConflictOutcomeMaxLen:
+      result.narration = result.narration[0 ..< ConflictOutcomeMaxLen]
+  else:
+    result.narration = "The consequences unfold."
+
+  for i in 0 ..< playerNames.len:
+    var score = 0
+    if i + 1 < nonEmpty.len:
+      let scoreLine = nonEmpty[i + 1]
+      if scoreLine.contains("-1"): score = -1
+      elif scoreLine.contains("1"): score = 1
+    result.scores.add(OutcomeScore(playerName: playerNames[i], score: score))
 
 proc generateConflictResolution*(soul: Soul, world: World, conflict: Conflict, chatLog: seq[string]): string =
   var prompt = ""
@@ -384,7 +441,7 @@ proc generateConflictResolution*(soul: Soul, world: World, conflict: Conflict, c
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "The conflict was '" & conflict.title & "': " & conflict.description & ".\n"
   prompt &= "Based on the players' actions, the conflict has resolved.\n"
-  prompt &= "Generate a single sentence describing the resolution (max " & $(ConflictResolutionMaxLen - ConflictResolutionPadding) & " characters, lowercase).\n"
+  prompt &= "Generate a single sentence describing the resolution (max " & $(ConflictResolutionMaxLen - ConflictResolutionPadding) & " characters, sentence case, ends with a period).\n"
 
   if chatLog.len > 0:
     prompt.add("The story so far:\n")
@@ -399,4 +456,4 @@ proc generateConflictResolution*(soul: Soul, world: World, conflict: Conflict, c
       return response
     else:
       return response[0 ..< ConflictResolutionMaxLen]
-  "the dust settles"
+  "The dust settles."

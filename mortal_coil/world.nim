@@ -4,30 +4,29 @@ const
   WorldTitleTicks* = 24 * 3
   WorldDescTicks* = 24 * 10
 
-proc renderWorld*(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], world: World, worldStep: WorldStep) =
+proc renderWorld*(fb: var Framebuffer, world: World, worldStep: WorldStep) =
   fb.clearFrame(0)
   case worldStep
   of WorldGazing:
-    let line1 = "the world"
-    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-    let y1 = (ScreenHeight - CharHeight) div 2
-    fb.blitTextTinted(letterSprites, line1, x1, y1, 2)
+    let line1 = "The World"
+    let x1 = (ScreenWidth - textW(line1)) div 2
+    let y1 = (ScreenHeight - font.height) div 2
+    fb.drawText(line1, x1, y1, 2)
   of WorldTitle:
-    let line1 = "the world"
+    let line1 = "The World"
     let line2 = world.title
-    let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-    let x2 = (ScreenWidth - line2.len * CharWidth) div 2
-    let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
-    let y2 = y1 + CharHeight + 2
-    fb.blitTextTinted(letterSprites, line1, x1, y1, 2)
-    fb.blitTextTinted(letterSprites, digitSprites, line2, x2, y2, 2)
+    let x1 = (ScreenWidth - textW(line1)) div 2
+    let x2 = (ScreenWidth - textW(line2)) div 2
+    let y1 = (ScreenHeight - font.height * 2 - 2) div 2
+    let y2 = y1 + font.height + 2
+    fb.drawText(line1, x1, y1, 2)
+    fb.drawText(line2, x2, y2, 2)
   of WorldDescription:
-    let maxChars = charsFromX(TextMargin)
-    let lineCount = max(1, (world.description.len + maxChars - 1) div maxChars)
+    let maxWidth = ScreenWidth - TextMargin * 2
+    let lineCount = wrapLineCount(world.description, maxWidth)
     let totalH = lineCount * 8
     let startY = max(TextMargin, (ScreenHeight - totalH) div 2)
-    discard fb.blitTextWrappedTinted(letterSprites, digitSprites, world.description, TextMargin, startY, 8, 2)
+    discard fb.drawTextWrapped(world.description, TextMargin, startY, 8, 2)
 
 type
   WorldStepResult* = enum

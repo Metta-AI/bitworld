@@ -4,14 +4,14 @@ import protocol, server, soul, choose, data, output, render_utils
 const
   FactReadTicks* = 24 * 3
   FactAcceptTicks* = 24 * 1
-  BackgroundColor = 1'u8
+  BackgroundColor = 0'u8
 
 proc generateFactOptions*(players: seq[Player], currentTurn: int,
     world: World, chatLog: seq[ChatEntry], factChoice: var FactChoice, factTimer: var int) =
   let player = players[currentTurn]
   let chatStrings = chatLogStrings(chatLog)
   let facts = player.soul.generateFacts(world, chatStrings)
-  factChoice.choice = initChoice(@[facts[0], facts[1], facts[2]], "skip")
+  factChoice.choice = initChoice(@[facts[0], facts[1], facts[2]], "Skip.")
   factChoice.step = FactReading
   factTimer = FactReadTicks
 
@@ -19,18 +19,14 @@ proc startFactTurn*(factChoice: var FactChoice, factTimer: var int) =
   factChoice = FactChoice(step: FactGazing)
   factTimer = 1
 
-proc renderGazing*(fb: var Framebuffer, letterSprites: seq[Sprite]) =
+proc renderGazing*(fb: var Framebuffer) =
   fb.clearFrame(0)
-  let line1 = "gazing into"
-  let line2 = "the void"
-  let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-  let x2 = (ScreenWidth - line2.len * CharWidth) div 2
-  let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
-  let y2 = y1 + CharHeight + 2
-  fb.blitTextTinted(letterSprites, line1, x1, y1, 9)
-  fb.blitTextTinted(letterSprites, line2, x2, y2, 9)
+  let line = "Gazing into The Void"
+  let x = (ScreenWidth - textW(line)) div 2
+  let y = (ScreenHeight - font.height) div 2
+  fb.drawText(line, x, y, 9)
 
-proc renderVoteBox(fb: var Framebuffer, letterSprites: seq[Sprite],
+proc renderVoteBox(fb: var Framebuffer,
     x, y, w, h: int, vote: Vote, color: uint8) =
   fb.fillRect(x, y, w, 1, color)
   fb.fillRect(x, y + h - 1, w, 1, color)
@@ -38,18 +34,18 @@ proc renderVoteBox(fb: var Framebuffer, letterSprites: seq[Sprite],
   fb.fillRect(x + w - 1, y, 1, h, color)
   case vote
   of VotePending:
-    let passX = x + (w - 4 * CharWidth) div 2
-    fb.blitText(letterSprites, "pass", passX, y + 2)
-    let vetoX = x + (w - 4 * CharWidth) div 2
-    fb.blitText(letterSprites, "veto", vetoX, y + 9)
+    let passX = x + (w - textW("Pass")) div 2
+    fb.drawText("Pass", passX, y + 2)
+    let vetoX = x + (w - textW("Veto")) div 2
+    fb.drawText("Veto", vetoX, y + 9)
   of VotePass:
-    let passX = x + (w - 4 * CharWidth) div 2
-    fb.blitTextTinted(letterSprites, "pass", passX, y + 5, color)
+    let passX = x + (w - textW("Pass")) div 2
+    fb.drawText("Pass", passX, y + 5, color)
   of VoteVeto:
-    let vetoX = x + (w - 4 * CharWidth) div 2
-    fb.blitTextTinted(letterSprites, "veto", vetoX, y + 5, color)
+    let vetoX = x + (w - textW("Veto")) div 2
+    fb.drawText("Veto", vetoX, y + 5, color)
 
-proc renderVotePanel(fb: var Framebuffer, letterSprites: seq[Sprite],
+proc renderVotePanel(fb: var Framebuffer,
     players: seq[Player], currentTurn: int, factChoice: FactChoice) =
   let voterCount = players.len - 1
   if voterCount <= 0:
@@ -72,7 +68,7 @@ proc renderVotePanel(fb: var Framebuffer, letterSprites: seq[Sprite],
       if y + boxH > ScreenHeight:
         break
       let color = uint8(players[i].colorIndex)
-      fb.renderVoteBox(letterSprites, x, y, colW, boxH, factChoice.votes[i], color)
+      fb.renderVoteBox(x, y, colW, boxH, factChoice.votes[i], color)
       col += 1
       if col >= 2:
         col = 0
@@ -87,51 +83,52 @@ proc renderVotePanel(fb: var Framebuffer, letterSprites: seq[Sprite],
       if voteY + boxH > ScreenHeight:
         break
       let color = uint8(players[i].colorIndex)
-      fb.renderVoteBox(letterSprites, TextMargin, voteY, boxW, boxH, factChoice.votes[i], color)
+      fb.renderVoteBox(TextMargin, voteY, boxW, boxH, factChoice.votes[i], color)
       voteY += boxH + 2
 
-proc renderFactChoices*(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,
-    factChoice: FactChoice) =
+proc renderFactChoices*(fb: var Framebuffer, players: seq[Player],
+    currentTurn: int, factChoice: FactChoice) =
   fb.clearFrame(BackgroundColor)
   let player = players[currentTurn]
   let color = uint8(player.colorIndex)
   let voting = factChoice.step in {FactVoting, FactVoteResult}
-  let suffix = if voting: " proposal" else: " choose"
-  let nameX = TextMargin
-  fb.blitTextTinted(letterSprites, digitSprites, player.name, nameX, 4, color)
-  let suffixX = nameX + player.name.len * CharWidth
-  fb.blitText(letterSprites, digitSprites, suffix, suffixX, 4)
+  let suffix = if voting: " Proposal" else: " Choose"
+  fb.drawText(player.name, TextMargin, 4, color)
+  let suffixX = TextMargin + textW(player.name)
+  fb.drawText(suffix, suffixX, 4)
 
   let showCursor = player.kind == PlayerHuman and factChoice.step == FactReading
-  let y = renderChoices(fb, letterSprites, digitSprites,
-    factChoice.choice, color, showCursor, voting)
+  let y = renderChoices(fb, factChoice.choice, color, showCursor, voting)
 
   if voting:
-    fb.renderVotePanel(letterSprites, players, currentTurn, factChoice)
+    fb.renderVotePanel(players, currentTurn, factChoice)
   else:
     let tokenText = "power " & $player.power
-    let tokenX = (ScreenWidth - tokenText.len * CharWidth) div 2
-    let tokenY = y + (ScreenHeight - y - CharHeight) div 2
-    fb.blitTextTinted(letterSprites, digitSprites, tokenText, tokenX, tokenY, color)
+    let tokenX = (ScreenWidth - textW(tokenText)) div 2
+    let tokenY = y + (ScreenHeight - y - font.height) div 2
+    fb.drawText(tokenText, tokenX, tokenY, color)
 
 proc entryLineCount*(entry: ChatEntry): int =
-  let maxNameChars = min(entry.name.len, charsFromX(TextMargin) - 1)
-  let textX = TextMargin + (maxNameChars + 1) * CharWidth
-  let maxTextChars = charsFromX(textX)
-  if maxTextChars <= 0 or entry.text.len == 0:
+  let sepWidth = textW(": ")
+  let nameWidth = textW(entry.name)
+  let firstLineMax = ScreenWidth - TextMargin - nameWidth - sepWidth
+  let wrapMax = ScreenWidth - TextMargin * 2
+  if firstLineMax <= 0 or entry.text.len == 0:
+    return 1
+  let firstChars = fitChars(entry.text, firstLineMax)
+  if firstChars >= entry.text.len:
     return 1
   result = 1
-  var pos = maxTextChars
-  let wrapChars = charsFromX(TextMargin)
+  var pos = firstChars
   while pos < entry.text.len:
     inc result
-    pos += wrapChars
+    let chars = fitChars(entry.text[pos .. ^1], wrapMax)
+    pos += max(chars, 1)
 
-proc renderFactChat*(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], chatLog: seq[ChatEntry], chatScroll: int) =
+proc renderFactChat*(fb: var Framebuffer, chatLog: seq[ChatEntry],
+    chatScroll: int) =
   fb.clearFrame(BackgroundColor)
-  fb.blitText(letterSprites, "magical facts", TextMargin, 4)
+  fb.drawText("Magical Facts", TextMargin, 4)
 
   var scroll = chatScroll
   if scroll >= chatLog.len:
@@ -150,43 +147,45 @@ proc renderFactChat*(fb: var Framebuffer, letterSprites: seq[Sprite],
     totalLines += lines
     dec startIdx
 
+  let sepWidth = textW(" : ")
+  let wrapMax = ScreenWidth - TextMargin * 2
   var y = startY
   for i in startIdx ..< endIdx:
-    if y + CharHeight > ScreenHeight:
+    if y + font.height > ScreenHeight:
       break
     let entry = chatLog[i]
-    let maxNameChars = min(entry.name.len, charsFromX(TextMargin) - 1)
-    let displayName = entry.name[0 ..< maxNameChars]
-    fb.blitTextTinted(letterSprites, digitSprites, displayName, TextMargin, y, entry.colorIndex)
-    let textX = TextMargin + (maxNameChars + 1) * CharWidth
-    let maxTextChars = charsFromX(textX)
-    if maxTextChars > 0 and entry.text.len > 0:
-      let firstLine = if entry.text.len > maxTextChars: entry.text[0 ..< maxTextChars] else: entry.text
-      fb.blitText(letterSprites, digitSprites, firstLine, textX, y)
+    let nameWidth = textW(entry.name)
+    fb.drawText(entry.name, TextMargin, y, entry.colorIndex)
+    fb.drawText(" : ", TextMargin + nameWidth, y, entry.colorIndex)
+    let textX = TextMargin + nameWidth + sepWidth
+    let firstLineMax = ScreenWidth - textX
+    if firstLineMax > 0 and entry.text.len > 0:
+      let firstChars = fitChars(entry.text, firstLineMax)
+      let firstLine = entry.text[0 ..< firstChars]
+      fb.drawText(firstLine, textX, y)
       y += 8
-      var pos = maxTextChars
-      let wrapChars = charsFromX(TextMargin)
+      var pos = firstChars
       while pos < entry.text.len:
-        if y + CharHeight > ScreenHeight:
+        if y + font.height > ScreenHeight:
           break
-        let lineLen = min(entry.text.len - pos, wrapChars)
-        let line = entry.text[pos ..< pos + lineLen]
-        fb.blitText(letterSprites, digitSprites, line, TextMargin, y)
-        pos += lineLen
+        let chars = fitChars(entry.text[pos .. ^1], wrapMax)
+        let lineEnd = pos + max(chars, 1)
+        let line = entry.text[pos ..< lineEnd]
+        fb.drawText(line, TextMargin, y)
+        pos = lineEnd
         y += 8
     else:
       y += 8
 
-proc renderFact*(fb: var Framebuffer, letterSprites: seq[Sprite],
-    digitSprites: array[10, Sprite], players: seq[Player], currentTurn: int,
+proc renderFact*(fb: var Framebuffer, players: seq[Player], currentTurn: int,
     factChoice: FactChoice, chatLog: seq[ChatEntry], chatScroll: int) =
   case factChoice.step
   of FactGazing:
-    fb.renderGazing(letterSprites)
+    fb.renderGazing()
   of FactReading, FactSelected, FactVoting, FactVoteResult:
-    fb.renderFactChoices(letterSprites, digitSprites, players, currentTurn, factChoice)
+    fb.renderFactChoices(players, currentTurn, factChoice)
   of FactShowChat:
-    fb.renderFactChat(letterSprites, digitSprites, chatLog, chatScroll)
+    fb.renderFactChat(chatLog, chatScroll)
 
 type
   FactsStepResult* = enum
@@ -302,7 +301,7 @@ proc stepMagicalFacts*(players: var seq[Player], currentTurn: var int,
       chatLog.add(ChatEntry(
         name: player.name,
         colorIndex: uint8(player.colorIndex),
-        text: "skip"
+        text: "Skip."
       ))
       factChoice.step = FactShowChat
       chatScroll = chatLog.len - 1
