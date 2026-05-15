@@ -45,7 +45,7 @@ RUN nim $NimCommand \
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-  apt-get install -y --no-install-recommends libcurl4 && \
+  apt-get install -y --no-install-recommends ca-certificates libcurl4 && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/bitworld
