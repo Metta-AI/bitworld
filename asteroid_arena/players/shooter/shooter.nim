@@ -4,13 +4,22 @@ import
   protocol
 
 const
-  PlayerPath = "/player"
+  SpritePlayerPath = "/sprite_player"
+  ShipSpriteBase = 100
   AsteroidObjectBase = 1000
   ShipObjectBase = 2000
   BulletObjectBase = 3000
   MaxObjects = 10000
-  ScanRange = 60
-  AimDeadband = 6
+  DirectionCount = 16
+  # atan2(DirY[i], DirX[i]) for each of the 16 directions
+  DirectionX: array[DirectionCount, float] = [
+    0, 98, 181, 236, 256, 236, 181, 98,
+    0, -98, -181, -236, -256, -236, -181, -98
+  ]
+  DirectionY: array[DirectionCount, float] = [
+    -256, -236, -181, -98, 0, 98, 181, 236,
+    256, 236, 181, 98, 0, -98, -181, -236
+  ]
 
 type
   ObjectState = object
@@ -33,6 +42,10 @@ type
     lastMask: uint8
     viewportWidth: int
     viewportHeight: int
+    facingAngle: float
+    facingKnown: bool
+    targetId: int
+    targetLockTicks: int
 
 proc ensureObject(bot: var Bot, id: int) =
   if id >= bot.objects.len:
@@ -58,13 +71,15 @@ proc readU32(data: string, offset: int): int =
     (uint32(data[offset + 3].uint8) shl 24))
 
 proc parseMessages(bot: var Bot, data: string): bool =
+  if data.len == 0:
+    return false
   var offset = 0
   var gotObject = false
   while offset < data.len:
     let msgType = data[offset].uint8
     inc offset
     case msgType
-    of 0x01: # Define Sprite
+    of 0x01:
       if offset + 10 > data.len: return gotObject
       let
         spriteId = data.readU16(offset)
@@ -87,14 +102,14 @@ proc parseMessages(bot: var Bot, data: string): bool =
       bot.sprites[spriteId] = SpriteInfo(
         defined: true, width: width, height: height, label: label
       )
-    of 0x02: # Define Object
+    of 0x02:
       if offset + 11 > data.len: return gotObject
       let
         objectId = data.readU16(offset)
         x = data.readI16(offset + 2)
         y = data.readI16(offset + 4)
-      discard data.readI16(offset + 6) # z
-      discard data[offset + 8].uint8 # layer
+      discard data.readI16(offset + 6)
+      discard data[offset + 8].uint8
       let spriteId = data.readU16(offset + 9)
       offset += 11
       if objectId < MaxObjects:
@@ -103,77 +118,119 @@ proc parseMessages(bot: var Bot, data: string): bool =
           present: true, x: x, y: y, spriteId: spriteId
         )
         gotObject = true
-    of 0x03: # Delete Object
+    of 0x03:
       if offset + 2 > data.len: return gotObject
       let objectId = data.readU16(offset)
       offset += 2
       if objectId < bot.objects.len:
         bot.objects[objectId].present = false
-    of 0x04: # Clear Objects
+    of 0x04:
       for obj in bot.objects.mitems:
         obj.present = false
       gotObject = true
-    of 0x05: # Set Viewport
+    of 0x05:
       if offset + 5 > data.len: return gotObject
-      discard data[offset].uint8 # layer
-      bot.viewportWidth = data.readU16(offset + 1)
-      bot.viewportHeight = data.readU16(offset + 3)
+      let layer = data[offset].uint8
+      if layer == 0:
+        bot.viewportWidth = data.readU16(offset + 1)
+        bot.viewportHeight = data.readU16(offset + 3)
       offset += 5
-    of 0x06: # Define Layer
+    of 0x06:
       if offset + 3 > data.len: return gotObject
       offset += 3
     else:
-      return gotObject
-  gotObject
+      return offset > 1
+  offset > 1
 
-proc findNearestAsteroid(bot: Bot): tuple[x, y: int, found: bool] =
+proc updateFacing(bot: var Bot) =
+  # Our ship is always at (60, 60) in the player view (center - sprite half)
+  # Find the ship object at exactly that position
+  for i in ShipObjectBase ..< min(ShipObjectBase + 100, bot.objects.len):
+    if not bot.objects[i].present:
+      continue
+    let obj = bot.objects[i]
+    if abs(obj.x - 60) <= 1 and abs(obj.y - 60) <= 1:
+      let dirIndex = (obj.spriteId - ShipSpriteBase) mod 32 div 2
+      if dirIndex >= 0 and dirIndex < DirectionCount:
+        bot.facingAngle = arctan2(DirectionY[dirIndex], DirectionX[dirIndex])
+        bot.facingKnown = true
+      return
+
+proc normalizeAngle(a: float): float =
+  var r = a
+  while r > PI: r -= 2.0 * PI
+  while r < -PI: r += 2.0 * PI
+  r
+
+proc acquireTarget(bot: var Bot) =
   let
     cx = bot.viewportWidth div 2
     cy = bot.viewportHeight div 2
-  var
-    bestDist = high(int)
-    foundX = 0
-    foundY = 0
-    found = false
-  for i in AsteroidObjectBase ..< min(AsteroidObjectBase + 500, bot.objects.len):
+  # Keep current target if still visible and on-screen
+  if bot.targetId >= AsteroidObjectBase and bot.targetId < bot.objects.len and
+      bot.objects[bot.targetId].present:
+    let obj = bot.objects[bot.targetId]
+    if obj.x >= 0 and obj.x < bot.viewportWidth and
+        obj.y >= 0 and obj.y < bot.viewportHeight:
+      inc bot.targetLockTicks
+      return
+  var bestDist = high(int)
+  bot.targetId = -1
+  bot.targetLockTicks = 0
+  for i in AsteroidObjectBase ..< min(AsteroidObjectBase + 1000, bot.objects.len):
     if not bot.objects[i].present:
       continue
     let
       obj = bot.objects[i]
+    if obj.x < 0 or obj.x >= bot.viewportWidth or
+        obj.y < 0 or obj.y >= bot.viewportHeight:
+      continue
+    let
       dx = obj.x - cx
       dy = obj.y - cy
       dist = dx * dx + dy * dy
-    if dist < bestDist and dist > 4:
+    if dist < bestDist and dist > 16:
       bestDist = dist
-      foundX = obj.x
-      foundY = obj.y
-      found = true
-  (foundX, foundY, found)
+      bot.targetId = i
 
 proc decideMask(bot: var Bot): uint8 =
+  bot.updateFacing()
+  bot.acquireTarget()
+
   let
     cx = bot.viewportWidth div 2
     cy = bot.viewportHeight div 2
-    target = bot.findNearestAsteroid()
 
-  if target.found:
-    let
-      dx = target.x - cx
-      dy = target.y - cy
+  if not bot.facingKnown:
+    result = ButtonUp
+    return
 
-    if dx > AimDeadband:
+  if bot.targetId < 0 or bot.targetId >= bot.objects.len or
+      not bot.objects[bot.targetId].present:
+    result = ButtonUp
+    if bot.frameTick mod 120 < 60:
       result = result or ButtonRight
-    elif dx < -AimDeadband:
-      result = result or ButtonLeft
-    if dy < -AimDeadband:
-      result = result or ButtonUp
-    elif dy > AimDeadband:
-      result = result or ButtonDown
-    result = result or ButtonA
+    return
+
+  let
+    obj = bot.objects[bot.targetId]
+    dx = obj.x - cx
+    dy = obj.y - cy
+    dist = sqrt(float(dx * dx + dy * dy))
+    targetAngle = arctan2(float(dy), float(dx))
+    angleDiff = normalizeAngle(targetAngle - bot.facingAngle)
+
+  if abs(angleDiff) > 0.4:
+    if angleDiff > 0:
+      result = ButtonRight
+    else:
+      result = ButtonLeft
   else:
     result = ButtonUp or ButtonA
-    if bot.frameTick mod 48 < 24:
-      result = result or ButtonRight
+  if bot.frameTick < 100 and bot.frameTick mod 6 == 0:
+    echo "f", bot.frameTick, " facing=", bot.facingKnown, " dir=", int(bot.facingAngle*180/PI),
+      " tgt(", obj.x, ",", obj.y, ") ang=", int(targetAngle*180/PI),
+      " diff=", int(angleDiff*180/PI), " mask=", result
 
 proc playerInputBlob(mask: uint8): string =
   result = newString(2)
@@ -191,75 +248,9 @@ proc queryEscape(value: string): string =
       result.add(Hex[(byte shr 4) and 0x0f])
       result.add(Hex[byte and 0x0f])
 
-proc setQueryParam(query, key, value: string): string =
-  ## Sets one query parameter, replacing an existing value if present.
-  let encodedKey = key.queryEscape()
-  let item = encodedKey & "=" & value.queryEscape()
-  if query.len == 0:
-    return item
-  var replaced = false
-  for part in query.split('&'):
-    if part.len == 0:
-      continue
-    let eq = part.find('=')
-    let partKey =
-      if eq >= 0:
-        part[0 ..< eq]
-      else:
-        part
-    if partKey == encodedKey:
-      if result.len > 0:
-        result.add('&')
-      result.add(item)
-      replaced = true
-    else:
-      if result.len > 0:
-        result.add('&')
-      result.add(part)
-  if not replaced:
-    if result.len > 0:
-      result.add('&')
-    result.add(item)
-
-proc normalizePlayerUrl(url, name, slot, token: string): string =
-  ## Normalizes an injected engine URL and merges player auth parameters.
-  var
-    base = url
-    query = ""
-    fragment = ""
-  let hash = base.find('#')
-  if hash >= 0:
-    fragment = base[hash .. ^1]
-    base = base[0 ..< hash]
-  let question = base.find('?')
-  if question >= 0:
-    query = base[question + 1 .. ^1]
-    base = base[0 ..< question]
-  if base.endsWith("/sprite_player"):
-    base = base[0 ..< base.len - "/sprite_player".len] & PlayerPath
-  if name.len > 0:
-    query = query.setQueryParam("name", name)
-  if slot.len > 0:
-    query = query.setQueryParam("slot", slot)
-  if token.len > 0:
-    query = query.setQueryParam("token", token)
-  result = base
-  if query.len > 0:
-    result.add('?')
-    result.add(query)
-  result.add(fragment)
-
-proc connectUrl(address: string, port: int, name, slot, token: string): string =
-  ## Builds the default player WebSocket URL.
-  let playerName =
-    if name.len > 0:
-      name
-    else:
-      "shooter"
-  result = "ws://" & address & ":" & $port & PlayerPath
-  result.add("?name=" & playerName.queryEscape())
-  if slot.len > 0:
-    result.add("&slot=" & slot.queryEscape())
+proc connectUrl(address: string, port: int, name, token: string): string =
+  result = "ws://" & address & ":" & $port & SpritePlayerPath
+  result.add("?name=" & name.queryEscape())
   if token.len > 0:
     result.add("&token=" & token.queryEscape())
 
@@ -267,16 +258,13 @@ proc runBot(
   address = "localhost",
   port = 8080,
   url = "",
-  name = "",
-  slot = "",
+  name = "shooter",
   token = "",
   maxSteps = 0
 ) =
   let endpoint =
-    if url.len > 0:
-      normalizePlayerUrl(url, name, slot, token)
-    else:
-      connectUrl(address, port, name, slot, token)
+    if url.len > 0: url
+    else: connectUrl(address, port, name, token)
   var connected = false
   while true:
     try:
@@ -299,9 +287,8 @@ proc runBot(
           continue
         inc bot.frameTick
         let mask = bot.decideMask()
-        if mask != bot.lastMask:
-          ws.send(playerInputBlob(mask), BinaryMessage)
-          bot.lastMask = mask
+        ws.send(playerInputBlob(mask), BinaryMessage)
+        bot.lastMask = mask
         if maxSteps > 0 and bot.frameTick >= maxSteps:
           ws.close()
           return
@@ -320,8 +307,7 @@ when isMainModule:
     address = "localhost"
     port = 8080
     url = getEnv("COGAMES_ENGINE_WS_URL")
-    name = ""
-    slot = ""
+    name = "shooter"
     token = ""
     maxSteps = 0
 
@@ -333,10 +319,9 @@ when isMainModule:
       of "port": port = parseInt(value)
       of "url": url = value
       of "name": name = value
-      of "slot": slot = value
       of "token": token = value
       of "max-steps": maxSteps = parseInt(value)
       else: discard
     else: discard
 
-  runBot(address, port, url, name, slot, token, maxSteps)
+  runBot(address, port, url, name, token, maxSteps)

@@ -583,7 +583,8 @@ proc buildSpriteProtocolPlayerUpdates*(
   for pi, p in sim.players:
     if not p.alive:
       continue
-    if p.invulnTicks > 0 and ((p.invulnTicks div 2) mod 2 == 0):
+    # Blink other ships during invuln, but always show the viewer's own ship
+    if pi != playerIndex and p.invulnTicks > 0 and ((p.invulnTicks div 2) mod 2 == 0):
       continue
     let
       thrust = p.thrustTicks > 0
