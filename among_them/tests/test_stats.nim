@@ -132,6 +132,10 @@ suite "stats":
     check sim.shouldKeepDisconnectedPlayer()
 
     sim.phase = Lobby
+    sim.startWaitTimer = 1
+    check sim.shouldKeepDisconnectedPlayer()
+
+    sim.startWaitTimer = 0
     check not sim.shouldKeepDisconnectedPlayer()
 
     sim.phase = GameOver
