@@ -120,6 +120,14 @@ proc httpHandler(request: Request) =
         appState.playerIndices[websocket] = UnassignedPlayerIndex
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
+  elif (request.path == SpritePlayerWebSocketPath or
+      request.path == WebSocketPath or
+      request.path == GlobalWebSocketPath or
+      request.path == ReplayWebSocketPath or
+      request.path == "/admin") and
+      request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
   elif (request.path == GlobalWebSocketPath or request.path == "/admin") and
       request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
@@ -225,7 +233,8 @@ proc runServerLoop*(
   resultsPath = "",
   tokens: seq[string] = @[],
   saveReplayPath = "",
-  loadReplayPath = ""
+  loadReplayPath = "",
+  coopSpawnPercent = DefaultCoopSpawnPercent
 ) =
   initAppState()
   appState.tokens = tokens
@@ -259,7 +268,7 @@ proc runServerLoop*(
       actualSeed = replayConfig["seed"].getInt()
 
   var
-    sim = initSimServer(actualSeed)
+    sim = initSimServer(actualSeed, coopSpawnPercent)
     lastTick = getMonoTime()
     tickCount = 0
 

@@ -268,8 +268,10 @@ proc buildAsteroidSprite(asteroid: Asteroid): RgbaSprite =
     dim = asteroidSpriteSize(asteroid.size)
     center = dim div 2
     radius = asteroidRadius(asteroid.size)
+    fillColor = if asteroid.cooperative: CoopAsteroidFillColor else: AsteroidFillColor
+    outlineColor = if asteroid.cooperative: CoopAsteroidOutlineColor else: AsteroidOutlineColor
   result = newRgbaSprite(dim, dim)
-  result.drawCircleFill(center, center, max(1, radius - 2), AsteroidFillColor)
+  result.drawCircleFill(center, center, max(1, radius - 2), fillColor)
   var
     firstX, firstY: int
     previousX, previousY: int
@@ -283,10 +285,10 @@ proc buildAsteroidSprite(asteroid: Asteroid): RgbaSprite =
       firstX = vertexX
       firstY = vertexY
     else:
-      result.drawLine(previousX, previousY, vertexX, vertexY, AsteroidOutlineColor)
+      result.drawLine(previousX, previousY, vertexX, vertexY, outlineColor)
     previousX = vertexX
     previousY = vertexY
-  result.drawLine(previousX, previousY, firstX, firstY, AsteroidOutlineColor)
+  result.drawLine(previousX, previousY, firstX, firstY, outlineColor)
 
 proc buildBulletSprite(color: RgbaColor): RgbaSprite =
   result = newRgbaSprite(3, 3)
