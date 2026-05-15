@@ -114,7 +114,7 @@ proc readableReplayUri(uri: string): bool =
   if uri.len == 0:
     return false
   if uri.startsWith("http://") or uri.startsWith("https://"):
-    return true
+    return replayDownloadPool.head(uri).code == 200
   let path = replayFilePath(uri)
   path.len > 0 and fileExists(path)
 
