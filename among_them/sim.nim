@@ -1,9 +1,10 @@
-import jsony, pixie
-import protocol
-import bitworld/aseprite
-import ../common/pixelfonts
-import ../common/server
-import std/[json, math, os, random, strutils]
+import
+  std/[json, math, os, random, strutils],
+  jsony, pixie,
+  bitworld/aseprite,
+  protocol, profile,
+  ../common/pixelfonts,
+  ../common/server
 
 const
   GameName* = "among_them"
@@ -68,6 +69,11 @@ const
   VoteChatCharsPerLine* = 32
   VoteChatLineCount* = 10
   VoteChatMaxChars* = VoteChatCharsPerLine * VoteChatLineCount
+  ScreenPixelCount = ScreenWidth * ScreenHeight
+  ShadowOriginSx =
+    ScreenWidth div 2 + SpriteDrawOffX + CollisionW div 2 - SpriteSize div 2
+  ShadowOriginSy =
+    ScreenHeight div 2 + SpriteDrawOffY + CollisionH div 2 - SpriteSize div 2
   TextColor* = 2'u8
   TextLineHeight* = 7
   TaskReward* = 1
@@ -302,6 +308,19 @@ type
     assignedTasks*: seq[int]
     reward*: int
 
+  ShadowPathCache = object
+    ready: bool
+    originSx, originSy: int
+    starts: seq[int]
+    offsets: seq[int32]
+    xs, ys: seq[int16]
+
+  PlayerShadowMask = object
+    valid: bool
+    cameraX, cameraY: int
+    originMx, originMy: int
+    mask: seq[bool]
+
   SimServer* = object
     config*: GameConfig
     players*: seq[Player]
@@ -326,6 +345,7 @@ type
     wallMask*: seq[bool]
     fb*: Framebuffer
     shadowBuf*: seq[bool]
+    shadowCaches: seq[PlayerShadowMask]
     rng*: Rand
     nextJoinOrder*: int
     tickCount*: int
@@ -382,6 +402,9 @@ const
 
   RenderTaskIconVisible = 1'u8
   RenderTaskArrowVisible = 2'u8
+
+var
+  ShadowPaths: ShadowPathCache
 
 proc gameDir*(): string =
   ## Returns the Among Them game directory.
@@ -1774,6 +1797,8 @@ proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   sim.players.delete(playerIndex)
+  if playerIndex < sim.shadowCaches.len:
+    sim.shadowCaches.delete(playerIndex)
   for task in sim.tasks.mitems:
     if playerIndex < task.completed.len:
       task.completed.delete(playerIndex)
@@ -1840,6 +1865,10 @@ proc addPlayer*(
     lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
     activeTask: -1,
     reward: sim.rewardAccounts[accountIndex].reward
+  )
+  sim.shadowCaches.add PlayerShadowMask(
+    valid: false,
+    mask: newSeq[bool](ScreenPixelCount)
   )
   sim.advanceJoinOrder()
   sim.arrangeHomePositions()
@@ -2433,7 +2462,13 @@ proc applyGhostMovement*(sim: var SimServer, playerIndex: int, input: InputState
     player.activeTask = -1
     player.taskProgress = 0
 
-proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState, prevInput: InputState, bodiesBeforeTick: int) =
+proc applyInput*(
+  sim: var SimServer,
+  playerIndex: int,
+  input: InputState,
+  prevInput: InputState,
+  bodiesBeforeTick: int
+) {.measure.} =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if not sim.players[playerIndex].alive:
@@ -2598,12 +2633,79 @@ proc isWall*(sim: SimServer, mx, my: int): bool =
     return true
   sim.wallMask[mapIndex(mx, my)]
 
+proc ensureShadowPaths(originSx, originSy: int) {.measure.} =
+  ## Builds reusable screen-space shadow rays for one origin.
+  if ShadowPaths.ready and
+      ShadowPaths.originSx == originSx and
+      ShadowPaths.originSy == originSy:
+    return
+
+  ShadowPaths = ShadowPathCache(
+    ready: true,
+    originSx: originSx,
+    originSy: originSy,
+    starts: newSeq[int](ScreenPixelCount + 1),
+    offsets: newSeqOfCap[int32](ScreenPixelCount * 64),
+    xs: newSeqOfCap[int16](ScreenPixelCount * 64),
+    ys: newSeqOfCap[int16](ScreenPixelCount * 64)
+  )
+
+  for sy in 0 ..< ScreenHeight:
+    for sx in 0 ..< ScreenWidth:
+      let
+        pixelIndex = sy * ScreenWidth + sx
+        dx = sx - originSx
+        dy = sy - originSy
+        steps = max(abs(dx), abs(dy))
+      ShadowPaths.starts[pixelIndex] = ShadowPaths.offsets.len
+      if steps == 0:
+        continue
+      for step in 1 .. steps:
+        let
+          rx = originSx + dx * step div steps
+          ry = originSy + dy * step div steps
+        ShadowPaths.offsets.add(int32(ry * MapWidth + rx))
+        ShadowPaths.xs.add(int16(rx))
+        ShadowPaths.ys.add(int16(ry))
+  ShadowPaths.starts[ScreenPixelCount] = ShadowPaths.offsets.len
+
+proc clearShadowBuffer(sim: var SimServer) =
+  ## Clears the active screen shadow buffer.
+  if sim.shadowBuf.len != ScreenPixelCount:
+    sim.shadowBuf = newSeq[bool](ScreenPixelCount)
+    return
+  if sim.shadowBuf.len > 0:
+    zeroMem(addr sim.shadowBuf[0], sim.shadowBuf.len * sizeof(bool))
+
+proc copyShadowMask(dst: var seq[bool], src: seq[bool]) =
+  ## Copies a screen-sized shadow mask.
+  if dst.len != ScreenPixelCount:
+    dst = newSeq[bool](ScreenPixelCount)
+  if src.len != ScreenPixelCount:
+    zeroMem(addr dst[0], dst.len * sizeof(bool))
+    return
+  copyMem(addr dst[0], unsafeAddr src[0], dst.len * sizeof(bool))
+
+proc ensureShadowCacheSlots(sim: var SimServer) =
+  ## Keeps player-indexed shadow cache storage aligned with players.
+  while sim.shadowCaches.len < sim.players.len:
+    sim.shadowCaches.add PlayerShadowMask(
+      valid: false,
+      mask: newSeq[bool](ScreenPixelCount)
+    )
+  if sim.shadowCaches.len > sim.players.len:
+    sim.shadowCaches.setLen(sim.players.len)
+  for cache in sim.shadowCaches.mitems:
+    if cache.mask.len != ScreenPixelCount:
+      cache.valid = false
+      cache.mask = newSeq[bool](ScreenPixelCount)
+
 {.push checks: off.}
 proc copyMapViewport(
   sim: var SimServer,
   cameraX,
   cameraY: int
-) =
+) {.measure.} =
   ## Copies the clipped map viewport into the framebuffer.
   if cameraX >= 0 and cameraY >= 0 and
       cameraX + ScreenWidth <= MapWidth and
@@ -2642,7 +2744,7 @@ proc applyViewportShadows(
   sim: var SimServer,
   cameraX,
   cameraY: int
-) =
+) {.measure.} =
   ## Applies shadow tint to visible non-wall viewport pixels.
   let
     sx0 = max(0, -cameraX)
@@ -2668,31 +2770,78 @@ proc castShadows*(
   originMy,
   cameraX,
   cameraY: int
-) =
-  for i in 0 ..< sim.shadowBuf.len:
-    sim.shadowBuf[i] = false
-  for sy in 0 ..< ScreenHeight:
-    let rowBase = sy * ScreenWidth
-    for sx in 0 ..< ScreenWidth:
-      let
-        mx = cameraX + sx
-        my = cameraY + sy
-        dx = mx - originMx
-        dy = my - originMy
-        steps = max(abs(dx), abs(dy))
-      if steps == 0:
-        continue
-      var shadowed = false
-      for s in 1 .. steps:
-        let
-          rx = originMx + dx * s div steps
-          ry = originMy + dy * s div steps
-        if rx < 0 or ry < 0 or rx >= MapWidth or ry >= MapHeight or
-            sim.wallMask[ry * MapWidth + rx]:
-          shadowed = true
+) {.measure.} =
+  let
+    originSx = originMx - cameraX
+    originSy = originMy - cameraY
+  ensureShadowPaths(originSx, originSy)
+  sim.clearShadowBuffer()
+
+  let
+    viewportInside =
+      cameraX >= 0 and cameraY >= 0 and
+      cameraX + ScreenWidth <= MapWidth and
+      cameraY + ScreenHeight <= MapHeight
+    baseIndex = cameraY * MapWidth + cameraX
+    starts = cast[ptr UncheckedArray[int]](addr ShadowPaths.starts[0])
+    offsets = cast[ptr UncheckedArray[int32]](addr ShadowPaths.offsets[0])
+    wallMask = cast[ptr UncheckedArray[bool]](addr sim.wallMask[0])
+    shadowBuf = cast[ptr UncheckedArray[bool]](addr sim.shadowBuf[0])
+
+  if viewportInside:
+    for pixelIndex in 0 ..< ScreenPixelCount:
+      let finish = starts[pixelIndex + 1]
+      var stepIndex = starts[pixelIndex]
+      while stepIndex < finish:
+        if wallMask[baseIndex + int(offsets[stepIndex])]:
+          shadowBuf[pixelIndex] = true
           break
-      if shadowed:
-        sim.shadowBuf[rowBase + sx] = true
+        inc stepIndex
+    return
+
+  let
+    xs = cast[ptr UncheckedArray[int16]](addr ShadowPaths.xs[0])
+    ys = cast[ptr UncheckedArray[int16]](addr ShadowPaths.ys[0])
+  for pixelIndex in 0 ..< ScreenPixelCount:
+    let finish = starts[pixelIndex + 1]
+    var stepIndex = starts[pixelIndex]
+    while stepIndex < finish:
+      let
+        mx = cameraX + int(xs[stepIndex])
+        my = cameraY + int(ys[stepIndex])
+      if mx < 0 or my < 0 or mx >= MapWidth or my >= MapHeight or
+          wallMask[my * MapWidth + mx]:
+        shadowBuf[pixelIndex] = true
+        break
+      inc stepIndex
+
+proc usePlayerShadowMask*(
+  sim: var SimServer,
+  playerIndex: int,
+  view: PlayerView
+) {.measure.} =
+  ## Loads or refreshes the cached shadow mask for one player view.
+  if playerIndex < 0 or playerIndex >= sim.players.len or view.viewerIsGhost:
+    sim.clearShadowBuffer()
+    return
+
+  sim.ensureShadowCacheSlots()
+  template cache: untyped = sim.shadowCaches[playerIndex]
+  if cache.valid and
+      cache.cameraX == view.cameraX and
+      cache.cameraY == view.cameraY and
+      cache.originMx == view.originMx and
+      cache.originMy == view.originMy:
+    sim.shadowBuf.copyShadowMask(cache.mask)
+    return
+
+  sim.castShadows(view.originMx, view.originMy, view.cameraX, view.cameraY)
+  cache.valid = true
+  cache.cameraX = view.cameraX
+  cache.cameraY = view.cameraY
+  cache.originMx = view.originMx
+  cache.originMy = view.originMy
+  cache.mask.copyShadowMask(sim.shadowBuf)
 {.pop.}
 
 proc allVotesCast*(sim: SimServer): bool =
@@ -2762,7 +2911,10 @@ proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
       break
   sim.voteState.cursor[playerIndex] = cur
 
-proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc buildLobbyFrame*(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] {.measure.} =
   sim.clearInterstitialFrame()
   let n = sim.players.len
   let needed = max(0, sim.config.minPlayers - n)
@@ -2786,7 +2938,7 @@ proc buildLobbyFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
+proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] {.measure.} =
   sim.clearInterstitialFrame()
   let
     gap = 10
@@ -2801,7 +2953,7 @@ proc buildSpectatorFrame*(sim: var SimServer): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
+proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] {.measure.} =
   ## Builds a simple player screen for replay mode.
   sim.clearInterstitialFrame()
   sim.fb.blitAsciiText(sim.asciiSprites, "REPLAY", 20, 30)
@@ -2810,7 +2962,10 @@ proc buildReplayFramePacket*(sim: var SimServer): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildRoleRevealFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc buildRoleRevealFrame*(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] {.measure.} =
   ## Builds the role reveal interstitial frame.
   sim.clearInterstitialFrame()
   let viewerIsImp =
@@ -2918,7 +3073,10 @@ proc drawVoteChat*(sim: var SimServer, chatY: int) =
       )
     rowY += messageH
 
-proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc buildVoteFrame*(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] {.measure.} =
   sim.clearInterstitialFrame()
   let n = sim.players.len
   if n == 0:
@@ -3017,7 +3175,10 @@ proc buildVoteFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
-proc buildResultFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc buildResultFrame*(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] {.measure.} =
   sim.clearInterstitialFrame()
   let ej = sim.voteState.ejectedPlayer
   if ej >= 0 and ej < sim.players.len:
@@ -3094,7 +3255,7 @@ proc checkMaxTicks(sim: var SimServer) =
   if sim.maxTicksReached():
     sim.finishGame(Crewmate, timeLimitReached = true)
 
-proc checkWinCondition*(sim: var SimServer) =
+proc checkWinCondition*(sim: var SimServer) {.measure.} =
   var
     hasImposters = false
     aliveCrewmates = 0
@@ -3115,7 +3276,10 @@ proc checkWinCondition*(sim: var SimServer) =
   elif sim.allTasksDone() and sim.players.len > 0:
     sim.finishGame(Crewmate)
 
-proc buildGameOverFrame*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc buildGameOverFrame*(
+  sim: var SimServer,
+  playerIndex: int
+): seq[uint8] {.measure.} =
   sim.clearInterstitialFrame()
   let title =
     if sim.timeLimitReached:
@@ -3557,7 +3721,7 @@ proc writeSpritePlayerObservationTasks(
 proc renderPlayingFrame(
   sim: var SimServer,
   playerIndex: int
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Renders the normal player viewport after the player index is validated.
   let
     player = sim.players[playerIndex]
@@ -3569,9 +3733,9 @@ proc renderPlayingFrame(
 
   let
     viewerIsGhost = view.viewerIsGhost
-  sim.castShadows(view.originMx, view.originMy, cameraX, cameraY)
 
   if not viewerIsGhost:
+    sim.usePlayerShadowMask(playerIndex, view)
     sim.applyViewportShadows(cameraX, cameraY)
 
   for body in sim.bodies:
@@ -3712,7 +3876,7 @@ proc renderPlayingFrame(
   sim.fb.packed
 {.pop.}
 
-proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
+proc render*(sim: var SimServer, playerIndex: int): seq[uint8] {.measure.} =
   if sim.phase == Lobby:
     return sim.buildLobbyFrame(playerIndex)
   if sim.phase == RoleReveal:
@@ -3733,7 +3897,7 @@ proc writeSpritePlayerObservation*(
   sim: var SimServer,
   playerIndex: int,
   output: var openArray[uint8]
-) =
+) {.measure.} =
   ## Writes a compact sprite-player observation with only visible sprite-route fields.
   if output.len != SpritePlayerObservationFeatures:
     raise newException(
@@ -3815,6 +3979,8 @@ proc initSimServer*(config: GameConfig): SimServer =
       result.wallMask[mapIndex(x, y)] = pixel.a > 0
 
   result.shadowBuf = newSeq[bool](ScreenWidth * ScreenHeight)
+  result.shadowCaches = @[]
+  ensureShadowPaths(ShadowOriginSx, ShadowOriginSy)
   result.bodies = @[]
   result.chatMessages = @[]
   result.players = @[]
@@ -3830,6 +3996,7 @@ proc resetToLobby*(sim: var SimServer) =
   sim.bodies = @[]
   sim.chatMessages = @[]
   sim.players = @[]
+  sim.shadowCaches = @[]
   sim.nextJoinOrder = 0
   sim.tickCount = 0
   sim.gameStartTick = -1
@@ -3846,7 +4013,7 @@ proc resetToLobby*(sim: var SimServer) =
     account.hasRole = false
     account.won = false
 
-proc stepLobby(sim: var SimServer) =
+proc stepLobby(sim: var SimServer) {.measure.} =
   ## Advances the lobby start countdown.
   if sim.players.len < sim.config.minPlayers:
     sim.startWaitTimer = 0
@@ -3863,7 +4030,11 @@ proc stepLobby(sim: var SimServer) =
   else:
     sim.logLobbyCountdown()
 
-proc step*(sim: var SimServer, inputs: openArray[InputState], prevInputs: openArray[InputState]) =
+proc step*(
+  sim: var SimServer,
+  inputs: openArray[InputState],
+  prevInputs: openArray[InputState]
+) {.measure.} =
   inc sim.tickCount
 
   if sim.phase == Lobby:
