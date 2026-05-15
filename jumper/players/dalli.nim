@@ -26,8 +26,8 @@ const
   SeesawGid = 54
   SignGid = 60
   ProgressStepPixels = 64
-  HoleLookAheadPixels = 88
-  HoleMinPixels = 32
+  HoleLookAheadPixels = 112
+  HoleMinPixels = 16
   GroundDropPixels = 18
   StuckWaitTicks = 36
   JumpCooldownTicks = 12
@@ -516,6 +516,19 @@ proc holeAhead(bot: Bot, player: PlayerSight): bool =
       if gapPixels >= HoleMinPixels:
         return true
 
+proc holeBehind(bot: Bot, player: PlayerSight): bool =
+  ## Returns true when a sustained gap is visible behind Dalli.
+  let footY = player.worldY + PlayerBoxHeight + 2
+  var gapPixels = 0
+  for dx in countup(PlayerBoxWidth + 6, HoleLookAheadPixels, 8):
+    let x = player.worldX + PlayerBoxWidth - dx
+    if bot.groundNear(x, footY, GroundDropPixels):
+      gapPixels = 0
+    else:
+      gapPixels += 8
+      if gapPixels >= HoleMinPixels:
+        return true
+
 proc scanObstacleColumn(bot: Bot, x, footY: int): ObstacleScan =
   ## Measures one solid column in front of Dalli from feet upward.
   let
@@ -685,10 +698,10 @@ proc applyForwardJumping(
 ): uint8 =
   ## Adds any forward jump needed for the current rightward route.
   result = mask
-  let bigJump =
-    hole or
-    (canJumpObstacle and obstacle.height >= BigObstacleHeight)
-  if bigJump:
+  if hole:
+    bot.resetBigJump()
+    result = result or bot.jumpButton(grounded)
+  elif canJumpObstacle and obstacle.height >= BigObstacleHeight:
     result = result or bot.bigJumpButton(grounded)
   elif canJumpObstacle or stuckJump:
     bot.resetBigJump()
@@ -715,6 +728,15 @@ proc seekFlagMask(
       obstacle
     )
   bot.resetBigJump()
+  if result == ButtonLeft and bot.holeBehind(own):
+    return bot.applyForwardJumping(
+      ButtonRight,
+      grounded,
+      hole,
+      canJumpObstacle,
+      stuckJump,
+      obstacle
+    )
   if result == 0 and flag.centerY < own.centerY - PlayerBoxHeight div 2:
     result = result or bot.jumpButton(grounded)
 
@@ -752,7 +774,7 @@ proc decideMask(bot: var Bot): uint8 =
 
   if flag.found:
     let flagDirection = moveToward(flag.centerX, own.centerX)
-    if flagDirection != ButtonRight or not needsHelp:
+    if flagDirection != ButtonRight:
       bot.intent = "flag"
       return bot.seekFlagMask(
         own,
