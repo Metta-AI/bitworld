@@ -7,7 +7,9 @@ setCurrentDir(currentSourcePath().parentDir().parentDir())
 const
   PlayerPlanetSpriteBaseForTest = 1000
   PlayerCursorSpriteBaseForTest = 5000
-  PlanetTextSpriteBaseForTest = 10000
+  PlanetTextDigitSpriteBaseForTest = 10000
+  PlanetTextObjectBaseForTest = 2300
+  PlanetTextMaxCharsForTest = 8
   PlayerNameSpriteBaseForTest = 18100
   ScorePanelDigitSpriteBaseForTest = 18300
   ScorePanelNameSpriteBaseForTest = 18500
@@ -206,6 +208,7 @@ let
   blueScoreId = scorePanelGame.players[blueScoreIndex].id
 scorePanelGame.players[redScoreIndex].score = 5
 scorePanelGame.players[blueScoreIndex].score = 12
+scorePanelGame.planets[0].ships = 7
 var nextScorePanelState: GlobalViewerState
 let scorePanelPacket = scorePanelGame.buildSpriteProtocolUpdates(
   initGlobalViewerState(),
@@ -215,8 +218,10 @@ let
   scorePanelObjects = scorePanelPacket.spritePacketObjects()
   scorePanelObjectIds = scorePanelPacket.spritePacketObjectIds()
   scorePanelSpriteIds = scorePanelPacket.spritePacketSpriteIds()
-  firstPlanetTextSprite = PlanetTextSpriteBaseForTest +
-    scorePanelGame.planets[0].id
+  firstPlanetDigitObject = PlanetTextObjectBaseForTest +
+    scorePanelGame.planets[0].id * PlanetTextMaxCharsForTest
+  firstPlanetSevenSprite = PlanetTextDigitSpriteBaseForTest + 7
+  firstPlanetEightSprite = PlanetTextDigitSpriteBaseForTest + 8
   redScoreNameObject = ScorePanelNameObjectBaseForTest + redScoreId
   blueScoreNameObject = ScorePanelNameObjectBaseForTest + blueScoreId
   blueScoreFirstDigit = ScorePanelDigitObjectBaseForTest +
@@ -232,7 +237,10 @@ doAssert PlayerPlanetSpriteBaseForTest + redScoreId * 8 in
   scorePanelSpriteIds
 doAssert PlayerCursorSpriteBaseForTest + redScoreId in scorePanelSpriteIds
 doAssert PlayerNameSpriteBaseForTest + redScoreId in scorePanelSpriteIds
-doAssert firstPlanetTextSprite in scorePanelSpriteIds
+doAssert firstPlanetSevenSprite in scorePanelSpriteIds
+doAssert firstPlanetDigitObject in scorePanelObjectIds
+doAssert scorePanelObjects.findObject(firstPlanetDigitObject).spriteId ==
+  firstPlanetSevenSprite
 doAssert ScorePanelDigitSpriteBaseForTest + 1 in scorePanelSpriteIds
 doAssert ScorePanelNameSpriteBaseForTest + redScoreId in scorePanelSpriteIds
 var cachedScorePanelState: GlobalViewerState
@@ -251,7 +259,7 @@ doAssert PlayerCursorSpriteBaseForTest + redScoreId notin
   cachedScorePanelSpriteIds
 doAssert PlayerNameSpriteBaseForTest + redScoreId notin
   cachedScorePanelSpriteIds
-doAssert firstPlanetTextSprite notin cachedScorePanelSpriteIds
+doAssert firstPlanetSevenSprite notin cachedScorePanelSpriteIds
 scorePanelGame.planets[0].ships += 1
 scorePanelGame.players[redScoreIndex].name = "redder"
 var changedScorePanelState: GlobalViewerState
@@ -261,7 +269,11 @@ let changedScorePanelPacket = scorePanelGame.buildSpriteProtocolUpdates(
 )
 let changedScorePanelSpriteIds =
   changedScorePanelPacket.spritePacketSpriteIds()
-doAssert firstPlanetTextSprite in changedScorePanelSpriteIds
+doAssert firstPlanetSevenSprite notin changedScorePanelSpriteIds
+doAssert firstPlanetEightSprite notin changedScorePanelSpriteIds
+doAssert changedScorePanelPacket.spritePacketObjects().findObject(
+  firstPlanetDigitObject
+).spriteId == firstPlanetEightSprite
 doAssert PlayerNameSpriteBaseForTest + redScoreId in
   changedScorePanelSpriteIds
 
