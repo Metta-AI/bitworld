@@ -199,3 +199,40 @@ docker build \
   .
 coworld certify among_them/coworld_manifest.json
 ```
+
+## Deploying to ghcr.io
+
+Games and bots are deployed as Docker images to GitHub Container Registry.
+
+**1. Build images** (from repo root):
+
+```sh
+# Game server
+docker build -f stag_hunt/Dockerfile -t ghcr.io/USERNAME/bitworld-stag-hunt:latest .
+
+# Bot players
+docker build -f stag_hunt/players/coordinator/Dockerfile -t ghcr.io/USERNAME/bitworld-stag-hunt-coordinator:latest .
+docker build -f stag_hunt/players/nearest_hunter/Dockerfile -t ghcr.io/USERNAME/bitworld-stag-hunt-nearest-hunter:latest .
+# ... etc for each bot
+```
+
+**2. Push images:**
+
+```sh
+# Log in (needs a GitHub PAT with write:packages scope)
+echo YOUR_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+
+docker push ghcr.io/USERNAME/bitworld-stag-hunt:latest
+docker push ghcr.io/USERNAME/bitworld-stag-hunt-coordinator:latest
+# ... etc
+```
+
+**3. Make packages public:**
+
+New ghcr.io packages default to private. Run the publish script to flip them all to public in one shot:
+
+```sh
+node tools/publish_packages.mjs
+```
+
+This opens a browser for GitHub login, then automatically changes visibility to public for each package. Edit the `PACKAGES` array in the script to add new images.
