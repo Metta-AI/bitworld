@@ -1,5 +1,6 @@
 import
   std/[heapqueue, options, os, parseopt, random, strutils, times],
+  fluffy/measure,
   supersnappy, whisky,
   protocol, ../../sim
 
@@ -55,6 +56,8 @@ type
     height: int
     label: string
     kind: SpriteKind
+    bounds: SpriteBounds
+    terrain: SpriteBounds
     pixels: seq[uint8]
 
   ObjectState = object
@@ -85,6 +88,7 @@ type
   Bot = object
     sprites: seq[SpriteInfo]
     objects: seq[ObjectState]
+    activeObjectIds: seq[int]
     rng: Rand
     cameraX: int
     cameraY: int
@@ -232,11 +236,38 @@ proc ensureObject(bot: var Bot, objectId: int) =
   if objectId >= bot.objects.len:
     bot.objects.setLen(objectId + 1)
 
-proc spriteInfo(bot: Bot, spriteId: int): SpriteInfo =
-  ## Returns sprite metadata or an empty sprite info.
-  if spriteId >= 0 and spriteId < bot.sprites.len:
-    return bot.sprites[spriteId]
-  SpriteInfo()
+proc addActiveObject(bot: var Bot, objectId: int) {.measure.} =
+  ## Tracks one object id for dense active-object scans.
+  if objectId < 0:
+    return
+  if objectId < bot.objects.len and bot.objects[objectId].present:
+    return
+  for id in bot.activeObjectIds:
+    if id == objectId:
+      return
+  bot.activeObjectIds.add(objectId)
+
+proc removeActiveObject(bot: var Bot, objectId: int) {.measure.} =
+  ## Removes one object id from dense active-object scans.
+  for i in 0 ..< bot.activeObjectIds.len:
+    if bot.activeObjectIds[i] == objectId:
+      bot.activeObjectIds.del(i)
+      return
+
+proc hasSprite(bot: Bot, spriteId: int): bool =
+  ## Returns true when a sprite id has defined metadata.
+  spriteId >= 0 and spriteId < bot.sprites.len and
+    bot.sprites[spriteId].defined
+
+proc uncompressSpritePixels(compressed: string): string {.measure.} =
+  ## Decompresses one global protocol sprite payload.
+  supersnappy.uncompress(compressed)
+
+proc copySpritePixels(rawPixels: string): seq[uint8] {.measure.} =
+  ## Copies decompressed sprite pixels into a byte sequence.
+  result = newSeq[uint8](rawPixels.len)
+  for i, ch in rawPixels:
+    result[i] = ch.uint8
 
 proc readU16(blob: string, offset: int): int =
   ## Reads one little endian unsigned 16 bit value.
@@ -256,7 +287,13 @@ proc readU32(blob: string, offset: int): int =
     (uint32(blob[offset + 2].uint8) shl 16) or
     (uint32(blob[offset + 3].uint8) shl 24))
 
-proc applySpritePacket(bot: var Bot, packet: string): bool =
+proc visibleBounds(sprite: SpriteInfo): SpriteBounds
+  ## Measures the visible bounds of one decoded RGBA sprite.
+
+proc terrainBounds(sprite: SpriteInfo): SpriteBounds
+  ## Returns a collision-like terrain bound from true sprite pixels.
+
+proc applySpritePacket(bot: var Bot, packet: string): bool {.measure.} =
   ## Applies one or more server sprite protocol messages.
   var offset = 0
   while offset < packet.len:
@@ -290,14 +327,12 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
         else:
           ""
       offset += labelLen
-      let rawPixels = supersnappy.uncompress(compressed)
-      var pixels = newSeq[uint8](rawPixels.len)
-      for i, ch in rawPixels:
-        pixels[i] = ch.uint8
+      let rawPixels = uncompressSpritePixels(compressed)
+      var pixels = copySpritePixels(rawPixels)
       if pixels.len != width * height * 4:
         pixels.setLen(0)
       bot.ensureSprite(spriteId)
-      bot.sprites[spriteId] = SpriteInfo(
+      var sprite = SpriteInfo(
         defined: true,
         width: width,
         height: height,
@@ -305,6 +340,9 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
         kind: classifySprite(spriteId, label),
         pixels: pixels
       )
+      sprite.bounds = sprite.visibleBounds()
+      sprite.terrain = sprite.terrainBounds()
+      bot.sprites[spriteId] = sprite
     of 0x02:
       if offset + 11 > packet.len:
         return false
@@ -317,6 +355,7 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
         spriteId = packet.readU16(offset + 9)
       offset += 11
       bot.ensureObject(objectId)
+      bot.addActiveObject(objectId)
       bot.objects[objectId] = ObjectState(
         present: true,
         x: x,
@@ -331,10 +370,13 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
       let objectId = packet.readU16(offset)
       offset += 2
       if objectId >= 0 and objectId < bot.objects.len:
-        bot.objects[objectId].present = false
+        if bot.objects[objectId].present:
+          bot.objects[objectId].present = false
+          bot.removeActiveObject(objectId)
     of 0x04:
       for item in bot.objects.mitems:
         item.present = false
+      bot.activeObjectIds.setLen(0)
     of 0x05:
       if offset + 5 > packet.len:
         return false
@@ -347,13 +389,13 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
       return false
   true
 
-proc updateCamera(bot: var Bot) =
+proc updateCamera(bot: var Bot) {.measure.} =
   ## Updates the world camera from the map object.
   if MapObjectId < bot.objects.len and bot.objects[MapObjectId].present:
     bot.cameraX = -bot.objects[MapObjectId].x
     bot.cameraY = -bot.objects[MapObjectId].y
 
-proc visibleBounds(sprite: SpriteInfo): SpriteBounds =
+proc visibleBounds(sprite: SpriteInfo): SpriteBounds {.measure.} =
   ## Measures the visible bounds of one decoded RGBA sprite.
   if sprite.width <= 0 or sprite.height <= 0 or
       sprite.pixels.len != sprite.width * sprite.height * 4:
@@ -391,9 +433,9 @@ proc lowerCenterBounds(bounds: SpriteBounds): SpriteBounds =
     h: height
   )
 
-proc terrainBounds(sprite: SpriteInfo): SpriteBounds =
+proc terrainBounds(sprite: SpriteInfo): SpriteBounds {.measure.} =
   ## Returns a collision-like terrain bound from true sprite pixels.
-  let bounds = sprite.visibleBounds()
+  let bounds = sprite.bounds
   let lower = sprite.label.toLowerAscii()
   if lower == "terraintree" or lower == "terrainevergreen":
     return bounds.lowerCenterBounds()
@@ -401,10 +443,9 @@ proc terrainBounds(sprite: SpriteInfo): SpriteBounds =
 
 proc objectVisibleCenter(
   objectState: ObjectState,
-  sprite: SpriteInfo
-): tuple[x: int, y: int] =
+  bounds: SpriteBounds
+): tuple[x: int, y: int] {.measure.} =
   ## Returns the visible center of one object in screen coordinates.
-  let bounds = sprite.visibleBounds()
   (
     x: objectState.x + bounds.x + bounds.w div 2,
     y: objectState.y + bounds.y + bounds.h div 2
@@ -412,16 +453,15 @@ proc objectVisibleCenter(
 
 proc objectFootCenter(
   objectState: ObjectState,
-  sprite: SpriteInfo
-): tuple[x: int, y: int] =
+  bounds: SpriteBounds
+): tuple[x: int, y: int] {.measure.} =
   ## Returns the foot box center of one player in screen coordinates.
-  let bounds = sprite.visibleBounds()
   (
     x: objectState.x + bounds.x + bounds.w div 2,
     y: objectState.y + bounds.y + bounds.h - PlayerFootSize div 2
   )
 
-proc updatePlayerPosition(bot: var Bot) =
+proc updatePlayerPosition(bot: var Bot) {.measure.} =
   ## Tracks the local player feet as the object nearest screen center.
   var
     bestDistance = high(int)
@@ -430,18 +470,23 @@ proc updatePlayerPosition(bot: var Bot) =
     bestCenterX = bestX
     bestCenterY = bestY
     bestId = -1
-  for objectId in 0 ..< bot.objects.len:
+  for objectId in bot.activeObjectIds:
+    if objectId < 0 or objectId >= bot.objects.len:
+      continue
     let objectState = bot.objects[objectId]
     if not objectState.present:
       continue
     if objectId < PlayerObjectBase or objectId >= MobObjectBase:
       continue
-    let sprite = bot.spriteInfo(objectState.spriteId)
-    if sprite.kind != SpritePlayer:
+    if not bot.hasSprite(objectState.spriteId):
+      continue
+    let spriteIndex = objectState.spriteId
+    if bot.sprites[spriteIndex].kind != SpritePlayer:
       continue
     let
-      screenCenter = objectState.objectVisibleCenter(sprite)
-      screenFeet = objectState.objectFootCenter(sprite)
+      bounds = bot.sprites[spriteIndex].bounds
+      screenCenter = objectState.objectVisibleCenter(bounds)
+      screenFeet = objectState.objectFootCenter(bounds)
       distance = distanceSquared(
         screenCenter.x,
         screenCenter.y,
@@ -467,14 +512,14 @@ proc isBlocked(blocked: openArray[bool], tx, ty: int): bool =
     return true
   blocked[gridIndex(tx, ty)]
 
-proc resetBlocked(blocked: var seq[bool]) =
+proc resetBlocked(blocked: var seq[bool]) {.measure.} =
   ## Clears the blocked tile grid.
   if blocked.len != PathGridWidth * PathGridHeight:
     blocked.setLen(PathGridWidth * PathGridHeight)
   for i in 0 ..< blocked.len:
     blocked[i] = false
 
-proc markBlocked(blocked: var seq[bool], x, y, w, h: int) =
+proc markBlocked(blocked: var seq[bool], x, y, w, h: int) {.measure.} =
   ## Marks all path cells overlapped by a world rectangle.
   if w <= 0 or h <= 0:
     return
@@ -490,10 +535,9 @@ proc markBlocked(blocked: var seq[bool], x, y, w, h: int) =
 proc targetCenter(
   bot: Bot,
   objectState: ObjectState,
-  sprite: SpriteInfo
-): tuple[x: int, y: int] =
+  bounds: SpriteBounds
+): tuple[x: int, y: int] {.measure.} =
   ## Converts an object visible center into world coordinates.
-  let bounds = sprite.visibleBounds()
   (
     x: bot.cameraX + objectState.x + bounds.x + bounds.w div 2,
     y: bot.cameraY + objectState.y + bounds.y + bounds.h div 2
@@ -504,21 +548,23 @@ proc scanWorld(
   blocked: var seq[bool],
   pickups: var seq[Target],
   mobs: var seq[Target]
-) =
+) {.measure.} =
   ## Extracts terrain, pickups, and monsters from protocol objects.
   blocked.resetBlocked()
   pickups.setLen(0)
   mobs.setLen(0)
-  for objectId in 0 ..< bot.objects.len:
+  for objectId in bot.activeObjectIds:
+    if objectId < 0 or objectId >= bot.objects.len:
+      continue
     let objectState = bot.objects[objectId]
     if not objectState.present:
       continue
-    let sprite = bot.spriteInfo(objectState.spriteId)
-    if not sprite.defined:
+    if not bot.hasSprite(objectState.spriteId):
       continue
-    case sprite.kind
+    let spriteIndex = objectState.spriteId
+    case bot.sprites[spriteIndex].kind
     of SpriteTerrain:
-      let bounds = sprite.terrainBounds()
+      let bounds = bot.sprites[spriteIndex].terrain
       blocked.markBlocked(
         bot.cameraX + objectState.x + bounds.x,
         bot.cameraY + objectState.y + bounds.y,
@@ -526,7 +572,10 @@ proc scanWorld(
         bounds.h
       )
     of SpriteCoin:
-      let center = bot.targetCenter(objectState, sprite)
+      let center = bot.targetCenter(
+        objectState,
+        bot.sprites[spriteIndex].bounds
+      )
       pickups.add(Target(
         found: true,
         kind: TargetCoin,
@@ -536,7 +585,10 @@ proc scanWorld(
         label: TargetCoin.targetLabel()
       ))
     of SpriteHeart:
-      let center = bot.targetCenter(objectState, sprite)
+      let center = bot.targetCenter(
+        objectState,
+        bot.sprites[spriteIndex].bounds
+      )
       pickups.add(Target(
         found: true,
         kind: TargetHeart,
@@ -547,8 +599,11 @@ proc scanWorld(
       ))
     of SpriteMob, SpriteTroll, SpriteBoss:
       let
-        kind = targetKindForSprite(sprite.kind)
-        center = bot.targetCenter(objectState, sprite)
+        kind = targetKindForSprite(bot.sprites[spriteIndex].kind)
+        center = bot.targetCenter(
+          objectState,
+          bot.sprites[spriteIndex].bounds
+        )
       mobs.add(Target(
         found: true,
         kind: kind,
@@ -564,7 +619,7 @@ proc nearestOpenTile(
   blocked: openArray[bool],
   tx,
   ty: int
-): tuple[found: bool, tx: int, ty: int] =
+): tuple[found: bool, tx: int, ty: int] {.measure.} =
   ## Finds the nearest pathable tile around a requested tile.
   if inGrid(tx, ty) and not blocked.isBlocked(tx, ty):
     return (true, tx, ty)
@@ -588,7 +643,7 @@ proc reconstructStep(
   parents: openArray[int],
   startIndex,
   goalIndex: int
-): PathStep =
+): PathStep {.measure.} =
   ## Reconstructs a short lookahead step from a parent grid.
   var path: seq[int] = @[goalIndex]
   while path[^1] != startIndex:
@@ -609,7 +664,7 @@ proc findPathStep(
   startY,
   goalX,
   goalY: int
-): PathStep =
+): PathStep {.measure.} =
   ## Finds the first pathing tile toward a world goal.
   let
     startTx = clampTileX(startX)
@@ -687,7 +742,7 @@ proc randomMoveMask(rng: var Rand): uint8 =
   else:
     ButtonRight
 
-proc updateStuck(bot: var Bot) =
+proc updateStuck(bot: var Bot) {.measure.} =
   ## Updates stuck detection using the previous movement mask.
   if not bot.havePlayerSample:
     bot.previousPlayerX = bot.playerWorldX
@@ -739,7 +794,7 @@ proc targetScore(bot: Bot, target: Target): int =
   of TargetExplore:
     distance + 400
 
-proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
+proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) {.measure.} =
   ## Picks a new open tile to sweep the map.
   if bot.hasExploreGoal and
       distanceSquared(
@@ -773,7 +828,7 @@ proc chooseTarget(
   blocked: openArray[bool],
   pickups,
   mobs: openArray[Target]
-): Target =
+): Target {.measure.} =
   ## Chooses the next pickup, monster, or exploration target.
   var bestScore = high(int)
   for pickup in pickups:
@@ -803,7 +858,7 @@ proc chooseTarget(
     label: TargetExplore.targetLabel()
   )
 
-proc nearestMob(bot: Bot, mobs: openArray[Target]): Target =
+proc nearestMob(bot: Bot, mobs: openArray[Target]): Target {.measure.} =
   ## Finds the nearest monster target.
   var bestDistance = high(int)
   for mob in mobs:
@@ -841,7 +896,7 @@ proc updateTargetResult(
   bot: var Bot,
   pickups,
   mobs: openArray[Target]
-) =
+) {.measure.} =
   ## Infers successful pickups and kills from target disappearance.
   if bot.currentTargetId < 0:
     return
@@ -922,7 +977,7 @@ proc attackMask(bot: var Bot, target: Target): uint8 =
     result = result or ButtonA
     bot.attackCooldown = AttackCooldownTicks
 
-proc decideNextMask(bot: var Bot): uint8 =
+proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   ## Chooses the next controller mask from sprite protocol state.
   bot.updateCamera()
   bot.updatePlayerPosition()
@@ -1124,7 +1179,7 @@ proc acceptServerMessage(
   ws: WebSocket,
   message: Message,
   bot: var Bot
-): bool =
+): bool {.measure.} =
   ## Handles one websocket message and updates sprite state.
   case message.kind
   of BinaryMessage:
@@ -1136,7 +1191,7 @@ proc acceptServerMessage(
   of TextMessage, Pong:
     discard
 
-proc receiveUpdates(ws: WebSocket, bot: var Bot): bool =
+proc receiveUpdates(ws: WebSocket, bot: var Bot): bool {.measure.} =
   ## Receives and applies all queued sprite protocol updates.
   let firstMessage = ws.receiveMessage(-1)
   if firstMessage.isNone:
@@ -1162,6 +1217,16 @@ proc nextChat(bot: var Bot): string =
     return ""
   bot.lastChat = result
 
+proc dumpProfileTrace(path: string) =
+  ## Ends and writes the active Fluffy profile trace.
+  if path.len == 0:
+    return
+  let dir = path.parentDir()
+  if dir.len > 0:
+    createDir(dir)
+  endTrace()
+  dumpMeasures(path)
+
 proc runBot(
   host = DefaultHost,
   port = PlayerDefaultPort,
@@ -1170,10 +1235,24 @@ proc runBot(
   token = "",
   slot = -1,
   chat = false,
-  maxSteps = 0
-) =
+  maxSteps = 0,
+  profileTracePath = "",
+  profileTicks = 0
+) {.measure.} =
   ## Connects to the Big Adventure player endpoint.
   let endpoint = connectUrl(host, url, name, token, port, slot)
+  var profileActive = profileTracePath.len > 0
+  if profileActive:
+    echo "Writing konrad profile trace: ", profileTracePath
+    if profileTicks > 0:
+      echo "Konrad profile ticks: ", profileTicks
+    else:
+      echo "Konrad profile ticks: until shutdown"
+    startTrace()
+  defer:
+    if profileActive:
+      profileActive = false
+      dumpProfileTrace(profileTracePath)
 
   while true:
     try:
@@ -1197,6 +1276,10 @@ proc runBot(
           let text = bot.nextChat()
           if text.len > 0:
             ws.send(chatBlob(text), BinaryMessage)
+        if profileActive and profileTicks > 0 and
+            bot.frameTick >= profileTicks:
+          profileActive = false
+          dumpProfileTrace(profileTracePath)
         if maxSteps > 0 and bot.frameTick >= maxSteps:
           bot.echoDebug(nextMask, true)
           echo "done steps=", bot.frameTick,
@@ -1204,6 +1287,9 @@ proc runBot(
             " hearts=", bot.heartCount,
             " kills=", bot.killCount
           flushFile(stdout)
+          if profileActive:
+            profileActive = false
+            dumpProfileTrace(profileTracePath)
           ws.close()
           return
     except CatchableError as e:
@@ -1225,6 +1311,8 @@ when isMainModule:
     slot = -1
     chat = false
     maxSteps = 0
+    profileTracePath = ""
+    profileTicks = 0
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -1245,6 +1333,10 @@ when isMainModule:
         chat = true
       of "max-steps":
         maxSteps = parseInt(val)
+      of "profile-trace-path", "profileTracePath":
+        profileTracePath = val
+      of "profile-ticks", "profileTicks":
+        profileTicks = parseInt(val)
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdShortOption:
@@ -1253,4 +1345,17 @@ when isMainModule:
       raise newException(ValueError, "Unexpected argument: " & key)
     of cmdEnd:
       discard
-  runBot(address, port, url, name, token, slot, chat, maxSteps)
+  if profileTicks < 0:
+    raise newException(ValueError, "profileTicks must be non-negative.")
+  runBot(
+    address,
+    port,
+    url,
+    name,
+    token,
+    slot,
+    chat,
+    maxSteps,
+    profileTracePath,
+    profileTicks
+  )
