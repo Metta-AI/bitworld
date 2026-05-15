@@ -1,6 +1,6 @@
 {
   "author": "treeform@softmax.com",
   "name": "nottoodumb",
-  "image_uri": "ghcr.io/metta-ai/bitworld-nottoodumb:latest",
+  "image_uri": "ghcr.io/treeform/bitworld-nottoodumb:latest",
   "games": ["among_them"]
 }
