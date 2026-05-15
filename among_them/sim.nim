@@ -3255,6 +3255,10 @@ proc checkMaxTicks(sim: var SimServer) =
   if sim.maxTicksReached():
     sim.finishGame(Crewmate, timeLimitReached = true)
 
+proc shouldKeepDisconnectedPlayer*(sim: SimServer): bool =
+  ## Returns true when a network disconnect should not shrink the live roster.
+  sim.config.maxGames > 0 and sim.phase in {RoleReveal, Playing, Voting, VoteResult}
+
 proc checkWinCondition*(sim: var SimServer) {.measure.} =
   var
     hasImposters = false

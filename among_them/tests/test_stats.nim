@@ -112,6 +112,35 @@ suite "stats":
         check account.winsCrewmate == 1
         check account.winsImposter == 0
 
+  test "finite active match disconnects keep players in the sim":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.maxGames = 1
+
+    var sim = initAmongThemForTest(config)
+    discard sim.addPlayer("p1")
+    discard sim.addPlayer("p2")
+    discard sim.addPlayer("p3")
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+    check sim.phase == Playing
+    check sim.shouldKeepDisconnectedPlayer()
+
+    sim.phase = Lobby
+    check not sim.shouldKeepDisconnectedPlayer()
+
+    sim.phase = GameOver
+    check not sim.shouldKeepDisconnectedPlayer()
+
+    sim.phase = Playing
+    sim.config.maxGames = 0
+    check not sim.shouldKeepDisconnectedPlayer()
+
   test "crew win persists across reset":
     var config = defaultGameConfig()
     config.minPlayers = 3
