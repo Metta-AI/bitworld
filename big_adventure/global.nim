@@ -1,4 +1,5 @@
 import std/[algorithm, os, strutils]
+import fluffy/measure
 import supersnappy
 import protocol, sim
 import ../common/pixelfonts
@@ -273,7 +274,7 @@ proc addSprite(
   spriteId, width, height: int,
   pixels: openArray[uint8],
   label: string = ""
-) =
+) {.measure.} =
   ## Appends a global protocol sprite definition message.
   packet.addU8(0x01)
   packet.addU16(spriteId)
@@ -313,7 +314,7 @@ proc addSpriteCached(
   height: int,
   pixels: openArray[uint8],
   label = ""
-) =
+) {.measure.} =
   ## Adds a sprite definition only when dimensions or pixels changed.
   for i in 0 ..< cache.len:
     if cache[i].spriteId != spriteId:
@@ -409,7 +410,7 @@ proc addWorldSpriteObject(
 proc flushWorldSpriteObjects(
   packet: var seq[uint8],
   objects: var seq[WorldSpriteObject]
-) =
+) {.measure.} =
   ## Sends queued world objects with z ranks in draw order.
   objects.sort(
     proc(a, b: WorldSpriteObject): int =
@@ -545,7 +546,7 @@ proc buildSpriteProtocolActorSprite(
   tint: tuple[r, g, b, a: uint8],
   selected = false,
   flipX = false
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds an outlined actor sprite with masked recoloring.
   let outline =
     if selected:
@@ -609,7 +610,7 @@ proc buildSpriteProtocolActorSprite(
 proc buildSpriteProtocolRawSprite(
   sprite: RgbaSprite,
   flipX = false
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a raw global protocol sprite from a true-color sprite.
   result.width = sprite.width
   result.height = sprite.height
@@ -656,7 +657,7 @@ proc sourceForFacing(
 proc buildSpriteProtocolFacedRawSprite(
   sprite: RgbaSprite,
   facing: Facing
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a true-color sprite rotated for one facing.
   let size = sprite.facedSize(facing)
   result.width = size.width
@@ -696,7 +697,7 @@ proc blitMapSprite(
           sourceIndex
         )
 
-proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds a full world map sprite from the described terrain cells.
   result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
   for ty in 0 ..< WorldHeightTiles:
@@ -808,7 +809,7 @@ proc buildSpriteProtocolTextSprite(
   sim: SimServer,
   lines: openArray[string],
   color: uint8
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a transparent multi-line text sprite.
   let lineHeight = sim.textFont.lineHeight()
   result.width = 1
@@ -835,7 +836,7 @@ proc buildSpriteProtocolTextSprite(
   sim: SimServer,
   lines: openArray[string],
   color: tuple[r, g, b, a: uint8]
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds a transparent true-color multi-line text sprite.
   let lineHeight = sim.textFont.lineHeight()
   result.width = 1
@@ -951,7 +952,7 @@ proc healthFillColor(
 
 proc buildSpriteProtocolHealthSprite(
   current, maximum: int
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds one small true-color health bar sprite.
   let
     value = clamp(current, 0, maximum)
@@ -1013,7 +1014,7 @@ proc blitAsciiText(
 proc buildSpriteProtocolBubbleSprite(
   sim: SimServer,
   text: string
-): tuple[width, height: int, pixels: seq[uint8]] =
+): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds one speech bubble sprite.
   let lineCount = text.lineCountForText()
   var longestLineWidth = sim.textFont.glyphAdvance('?')
@@ -1441,7 +1442,10 @@ proc replayScrubTickAt(
   let clampedX = clamp(localX, 0, ReplayScrubberWidth - 1)
   clamp((clampedX * maxTick) div (ReplayScrubberWidth - 1), 0, maxTick)
 
-proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
+proc addCommonSpriteDefinitions(
+  packet: var seq[uint8],
+  sim: SimServer
+) {.measure.} =
   ## Adds sprite definitions shared by global and player views.
   for i in 0 ..< PlayerTintColors.len:
     for form in PlayerForm:
@@ -1573,7 +1577,7 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       $kind
     )
 
-proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds the initial global viewer snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
@@ -1601,7 +1605,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
   result.addCommonSpriteDefinitions(sim)
 
-proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
+proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds the initial sprite player snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
@@ -1679,7 +1683,7 @@ proc addSpeechBubbles(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds speech bubble sprites above players.
   for player in sim.players:
     if player.lives <= 0 or player.message.len == 0:
@@ -1725,7 +1729,7 @@ proc addAttackObjects(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds active attack swoosh objects.
   for player in sim.players:
     if player.lives <= 0 or player.attackTicks <= 0:
@@ -1753,7 +1757,7 @@ proc addTerrainObjects(
   cameraY,
   viewportWidth,
   viewportHeight: int
-) =
+) {.measure.} =
   ## Adds terrain prop objects so they share world sprite sorting.
   for i in 0 ..< sim.terrainProps.len:
     let
@@ -1780,7 +1784,7 @@ proc addWorldObjects(
   viewportWidth,
   viewportHeight: int,
   selectedPlayerId = -1
-) =
+) {.measure.} =
   ## Adds pickups, mobs, players, attacks, and speech bubbles.
   var objects: seq[WorldSpriteObject] = @[]
   sim.addTerrainObjects(
@@ -1909,7 +1913,7 @@ proc addPlayerHud(
   playerIndex: int,
   state: PlayerViewerState,
   nextState: var PlayerViewerState
-) =
+) {.measure.} =
   ## Adds the local player HUD to a sprite-player view.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -1996,7 +2000,7 @@ proc addGlobalScorePanel(
   currentIds: var seq[int],
   state: GlobalViewerState,
   nextState: var GlobalViewerState
-): int =
+): int {.measure.} =
   ## Adds global player score panel objects and returns its height.
   if sim.players.len == 0:
     return 0
@@ -2071,7 +2075,7 @@ proc buildSpriteProtocolPlayerUpdates*(
   playerIndex: int,
   state: PlayerViewerState,
   nextState: var PlayerViewerState
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds sprite protocol updates for one playable player view.
   result = @[]
   nextState = state
@@ -2128,7 +2132,7 @@ proc buildSpriteProtocolUpdates*(
   replaySpeed = 1,
   replayMaxTick = -1,
   replayLooping = false
-): seq[uint8] =
+): seq[uint8] {.measure.} =
   ## Builds global viewer object updates for the current tick.
   result = @[]
   nextState = state

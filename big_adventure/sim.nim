@@ -1,6 +1,7 @@
 import std/[json, os, random]
 import bitworld/aseprite
-import pixie, protocol
+import fluffy/measure, pixie
+import protocol
 import ../common/[pixelfonts, server]
 
 const
@@ -956,7 +957,7 @@ proc addPlayer*(sim: var SimServer, address: string): int =
   inc sim.scoreRevision
   sim.players.high
 
-proc initSimServer*(seed = 0xB1770): SimServer =
+proc initSimServer*(seed = 0xB1770): SimServer {.measure.} =
   result.seed = seed
   result.rng = initRand(seed)
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
@@ -1050,7 +1051,7 @@ proc mixHashInt(hash: var uint64, value: int) =
   ## Mixes one signed integer into a deterministic hash.
   hash.mixHash(cast[uint64](int64(value)))
 
-proc gameHash*(sim: SimServer): uint64 =
+proc gameHash*(sim: SimServer): uint64 {.measure.} =
   ## Returns a deterministic hash of gameplay state.
   result = 14695981039346656037'u64
   result.mixHashInt(sim.tickCount)
@@ -1282,7 +1283,7 @@ proc separatePlayerPair(sim: var SimServer, a, b: int): bool =
     return true
   sim.pushPlayerPair(a, b, dirX, 0, overlapX)
 
-proc resolvePlayerOverlaps*(sim: var SimServer) =
+proc resolvePlayerOverlaps*(sim: var SimServer) {.measure.} =
   ## Pushes live players apart by their 8 by 8 foot boxes.
   for _ in 0 ..< PlayerSeparationPasses:
     var moved = false
@@ -1297,7 +1298,11 @@ proc resolvePlayerOverlaps*(sim: var SimServer) =
     if not moved:
       break
 
-proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
+proc applyInput*(
+  sim: var SimServer,
+  playerIndex: int,
+  input: InputState
+) {.measure.} =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
 
@@ -1504,7 +1509,7 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
   if sim.players[playerIndex].lives <= 0:
     sim.handlePlayerDeath(playerIndex)
 
-proc applyAttack(sim: var SimServer) =
+proc applyAttack(sim: var SimServer) {.measure.} =
   if sim.players.len == 0:
     return
 
@@ -1626,7 +1631,7 @@ proc applyAttack(sim: var SimServer) =
           sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
   sim.mobs = survivors
 
-proc collectPickups(sim: var SimServer) =
+proc collectPickups(sim: var SimServer) {.measure.} =
   if sim.players.len == 0:
     return
 
@@ -1662,7 +1667,7 @@ proc collectPickups(sim: var SimServer) =
     remaining.add(pickup)
   sim.pickups = remaining
 
-proc updateMobs*(sim: var SimServer) =
+proc updateMobs*(sim: var SimServer) {.measure.} =
   ## Updates mob chasing, telegraphed attacks, and wandering.
   if sim.players.len == 0:
     return
@@ -1763,7 +1768,7 @@ proc updateMobs*(sim: var SimServer) =
         mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
       continue
 
-proc respawnMobs(sim: var SimServer) =
+proc respawnMobs(sim: var SimServer) {.measure.} =
   if not sim.hasBoss():
     discard sim.spawnOneMob(BossMob, sim.bossSprite, BossHp)
 
@@ -2011,7 +2016,7 @@ proc addPlayerWalkDistances(
     sim.players[i].distanceWalked += distance
     inc sim.scoreRevision
 
-proc step*(sim: var SimServer, inputs: openArray[InputState]) =
+proc step*(sim: var SimServer, inputs: openArray[InputState]) {.measure.} =
   inc sim.tickCount
   var
     startXs = newSeq[int](sim.players.len)
