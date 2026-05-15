@@ -38,4 +38,7 @@ proc ask*(prompt: string): string =
 
   let response = parseJson(readFile(outPath))
   removeFile(outPath)
-  result = response["content"][0]["text"].getStr()
+  let content = response{"content"}
+  if content == nil or content.kind != JArray or content.len == 0:
+    raise newException(IOError, "Claude API returned empty content")
+  result = content[0]{"text"}.getStr()

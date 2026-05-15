@@ -279,7 +279,7 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
   elif conflictState.step == ConflictRecount and conflictTimer <= 0:
     conflictState.recountLine += 1
     if conflictState.recountLine >= ConflictRecountLines:
-      # Apply power changes for this player
+      echo "RECOUNT: player=", conflictState.recountPlayer, " results.len=", conflictState.roundResults.len
       let r = conflictState.roundResults[conflictState.recountPlayer]
       players[r.playerIndex].power += r.choiceEffect + r.outcomeEffect
       conflictState.recountPlayer += 1
