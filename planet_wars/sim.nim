@@ -1,6 +1,6 @@
 import
   std/[json, os, random, strutils],
-  ../common/pixelfonts
+  ../common/pixelfonts, profiling
 
 type
   RgbaColor* = object
@@ -330,7 +330,7 @@ proc markScoresChanged(sim: var SimServer) =
   ## Marks score-visible game state as changed.
   inc sim.scoreRevision
 
-proc generatePlanets(sim: var SimServer) =
+proc generatePlanets(sim: var SimServer) {.measure.} =
   ## Generates non-overlapping planets in the world.
   let planetCount = sim.config.planetCount.checkedPlanetCount()
   var attempts = 0
@@ -354,7 +354,7 @@ proc generatePlanets(sim: var SimServer) =
         " requested planets."
     )
 
-proc generateStars(sim: var SimServer) =
+proc generateStars(sim: var SimServer) {.measure.} =
   ## Generates decorative star positions for the protocol background.
   for _ in 0 ..< 120:
     sim.stars.add Star(
@@ -546,7 +546,11 @@ proc pruneChatMessages*(sim: var SimServer) =
     if sim.tickCount - sim.chatMessages[i].tick >= ChatBubbleTicks:
       sim.chatMessages.delete(i)
 
-proc nearestPlanetIndex*(sim: SimServer, worldX, worldY: int): int =
+proc nearestPlanetIndex*(
+  sim: SimServer,
+  worldX,
+  worldY: int
+): int {.measure.} =
   ## Returns the planet nearest to a world position.
   if sim.planets.len == 0:
     return -1
@@ -659,7 +663,7 @@ proc currentShipPosition*(ship: Ship): tuple[x: int, y: int] =
       ship.duration
   )
 
-proc sendShip*(sim: var SimServer, playerIndex: int): bool =
+proc sendShip*(sim: var SimServer, playerIndex: int): bool {.measure.} =
   ## Sends one ship from the selected origin to the selected target.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
@@ -712,7 +716,7 @@ proc resolveShipArrival(sim: var SimServer, ship: Ship) =
       sim.planets[targetIndex].growthTicks = 0
   sim.markScoresChanged()
 
-proc stepShips(sim: var SimServer) =
+proc stepShips(sim: var SimServer) {.measure.} =
   ## Advances all ships and resolves arrivals.
   var activeShips: seq[Ship] = @[]
   for ship in sim.ships:
@@ -724,7 +728,7 @@ proc stepShips(sim: var SimServer) =
       activeShips.add updated
   sim.ships = move(activeShips)
 
-proc stepGrowth(sim: var SimServer) =
+proc stepGrowth(sim: var SimServer) {.measure.} =
   ## Grows ships on owned planets.
   var changed = false
   for planet in sim.planets.mitems:
@@ -739,7 +743,7 @@ proc stepGrowth(sim: var SimServer) =
   if changed:
     sim.markScoresChanged()
 
-proc stepScore(sim: var SimServer) =
+proc stepScore(sim: var SimServer) {.measure.} =
   ## Awards score from owned planet count.
   inc sim.scoreTicks
   if sim.scoreTicks < ScoreIntervalTicks:
@@ -759,7 +763,7 @@ proc addActiveOwner(owners: var seq[int], ownerId: int) =
       return
   owners.add(ownerId)
 
-proc activeOwnerIds(sim: SimServer): seq[int] =
+proc activeOwnerIds(sim: SimServer): seq[int] {.measure.} =
   ## Returns players that still have planets or ships in flight.
   for planet in sim.planets:
     result.addActiveOwner(planet.ownerId)
@@ -786,7 +790,7 @@ proc checkMaxTicks*(sim: var SimServer) =
   if sim.config.maxTicks > 0 and sim.tickCount >= sim.config.maxTicks:
     sim.finishGame(0)
 
-proc ensureSelection*(sim: var SimServer, playerIndex: int) =
+proc ensureSelection*(sim: var SimServer, playerIndex: int) {.measure.} =
   ## Repairs one player's cursor and selected planet.
   if playerIndex < 0 or playerIndex >= sim.players.len or sim.planets.len == 0:
     return
@@ -809,7 +813,11 @@ proc ensureSelection*(sim: var SimServer, playerIndex: int) =
     sim.players[playerIndex].originPlanet =
       sim.players[playerIndex].selectedPlanet
 
-proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
+proc applyInput*(
+  sim: var SimServer,
+  playerIndex: int,
+  input: PlayerInput
+) {.measure.} =
   ## Applies one player's input to cursor and ship commands.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -883,7 +891,7 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: PlayerInput) =
   else:
     sim.players[playerIndex].sendHoldTicks = 0
 
-proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
+proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) {.measure.} =
   ## Advances one deterministic game tick.
   if sim.gameOver:
     return
@@ -905,7 +913,7 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
 proc initSimServer*(
   seed: int,
   config = defaultSimConfig()
-): SimServer =
+): SimServer {.measure.} =
   ## Creates a fresh simulation server.
   config.checkSimConfig()
   result.config = config
@@ -917,7 +925,7 @@ proc initSimServer*(
   result.generateStars()
   result.markScoresChanged()
 
-proc playerScoresJson*(sim: SimServer): string =
+proc playerScoresJson*(sim: SimServer): string {.measure.} =
   ## Builds the current per-player score JSON.
   var
     names = newJArray()

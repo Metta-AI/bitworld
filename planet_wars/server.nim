@@ -1,7 +1,7 @@
 import
   std/[locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/clients, protocol, sim, global
+  bitworld/clients, protocol, sim, global, profiling
 
 const
   HealthzPath = "/healthz"
@@ -248,7 +248,7 @@ proc rewardAddress(address: string): string =
     return parts[0] & ":" & parts[1]
   address
 
-proc buildRewardPacket(sim: SimServer): string =
+proc buildRewardPacket(sim: SimServer): string {.measure.} =
   ## Builds one reward protocol packet for the current tick.
   for player in sim.players:
     result.add("reward ")
@@ -270,7 +270,7 @@ proc writeScoresIfNeeded(
   sim: SimServer,
   path: string,
   lastRevision: var int
-) =
+) {.measure.} =
   ## Writes scores when score-visible state changed.
   if path.len == 0:
     return
@@ -282,6 +282,17 @@ proc writeScoresIfNeeded(
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
   ## Runs the mummy server on its own thread.
   args.server[].serve(Port(args.port), args.address)
+
+proc sendBinaryPacket(
+  websocket: WebSocket,
+  packet: openArray[uint8]
+) {.measure.} =
+  ## Sends one sprite protocol binary packet.
+  websocket.send(blobFromBytes(packet), BinaryMessage)
+
+proc sendTextPacket(websocket: WebSocket, packet: string) {.measure.} =
+  ## Sends one text protocol packet.
+  websocket.send(packet, TextMessage)
 
 proc runFrameLimiter(previousTick: var MonoTime) =
   ## Sleeps to keep the server near the target frame rate.
@@ -299,6 +310,9 @@ proc runServerLoop*(
   saveScoresPath = ""
 ) =
   ## Runs the Planet Wars server loop.
+  startProfileTrace()
+  defer:
+    dumpProfileTrace()
   initAppState()
   let httpServer = newServer(
     httpHandler,
@@ -385,7 +399,7 @@ proc runServerLoop*(
         nextState
       )
       try:
-        sockets[i].send(blobFromBytes(packet), BinaryMessage)
+        sockets[i].sendBinaryPacket(packet)
         {.gcsafe.}:
           withLock appState.lock:
             if sockets[i] in appState.playerViewers:
@@ -396,7 +410,7 @@ proc runServerLoop*(
             sim.removePlayer(sockets[i])
     for websocket in rewardViewers:
       try:
-        websocket.send(rewardPacket, TextMessage)
+        websocket.sendTextPacket(rewardPacket)
       except:
         {.gcsafe.}:
           withLock appState.lock:
@@ -407,7 +421,7 @@ proc runServerLoop*(
       if packet.len == 0:
         continue
       try:
-        globalViewers[i].send(blobFromBytes(packet), BinaryMessage)
+        globalViewers[i].sendBinaryPacket(packet)
         {.gcsafe.}:
           withLock appState.lock:
             if globalViewers[i] in appState.globalViewers:
@@ -416,6 +430,8 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
+    if profileTraceTickReached(sim.tickCount):
+      dumpProfileTrace()
     if gameFinished:
       inc gamesFinished
       echo "Planet Wars game finished: ", gamesFinished

@@ -7,6 +7,8 @@ switch("path", RootDir & "/src")
 switch("path", RootDir & "/../mummy/src")
 switch("path", RootDir & "/../paddy/src")
 switch("path", RootDir & "/../whisky/src")
+when defined(profileTracePath):
+  switch("path", RootDir & "/../fluffy/src")
 switch("outdir", thisDir() & "/out")
 
 when defined(emscripten):
