@@ -14,9 +14,9 @@ games listen on the player websocket path:
 /player
 ```
 
-The player protocol sends a 128x128 indexed color screen from the server and
+The bitscreen protocol sends a 128x128 indexed color screen from the server and
 receives one byte of controller input from the client. See
-[`player_protocol_spec.md`](player_protocol_spec.md) for the packet layout.
+[`bitscreen_v1.md`](bitscreen_v1.md) for the packet layout.
 
 Many newer games also expose a global view:
 
@@ -24,8 +24,8 @@ Many newer games also expose a global view:
 /global
 ```
 
-The global protocol is used by map viewers, replay controls, and other full
-game views. See [`global_protocol_spec.md`](global_protocol_spec.md) for the
+The sprite protocol is used by map viewers, replay controls, and other full
+game views. See [`sprite_v1.md`](sprite_v1.md) for the
 binary message format.
 
 Replay mode exposes:
@@ -40,8 +40,8 @@ Games that expose training rewards also listen on:
 /reward
 ```
 
-The reward protocol streams text reward packets, one packet per simulation
-tick. See [`reward_protocol_spec.md`](reward_protocol_spec.md) for the text format.
+Reward v1 streams text reward packets, one packet per simulation
+tick. See [`reward_v1.md`](reward_v1.md) for the text format.
 
 ## JSON Config
 
@@ -121,12 +121,14 @@ controls there for play, pause, seek, loop, and speed changes. See
 ## Quick Run
 
 `quick_run` is the main local development launcher. It can compile and start a
-game server, open native human clients, and launch Nim bot players.
+game server, open local human clients, open a global viewer, and launch Nim bot
+players.
 
 ```powershell
 .\tools\quick_run.exe fancy_cookout
 .\tools\quick_run.exe free_chat --players:2
 .\tools\quick_run.exe among_them --players:2 --bots:nottoodumb:6
+.\tools\quick_run.exe planet_wars --bots:skurge:4 --global --html
 .\tools\quick_run.exe among_them --connect --port:2000 --bots:nottoodumb:8
 ```
 
@@ -136,6 +138,8 @@ Useful options:
 | --- | --- |
 | `--players:N` | Launch `N` local human clients |
 | `--bots:BOT:N` | Launch `N` bots from the selected game's players folder |
+| `--global` | Open the global viewer and default humans to zero |
+| `--html` | Use the browser global viewer with `--global` |
 | `--connect` | Connect to an existing server instead of starting one |
 | `--address:ADDR` | Bind address in start mode, host in connect mode |
 | `--port:N` | Server port |
@@ -159,8 +163,8 @@ The native client lives at:
 clients/player_client.nim
 ```
 
-It connects to the player protocol and is what `quick_run` launches. It is best
-for normal local development and gamepad testing.
+It connects to the bitscreen protocol and is what `quick_run` launches. It is
+best for normal local development and gamepad testing.
 
 Pass `--reconnect:5` to make it reconnect every five seconds after a disconnect.
 Reconnect is off by default.

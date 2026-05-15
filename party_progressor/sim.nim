@@ -56,7 +56,7 @@ const
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
   TargetFps* = 60
-  SpritePlayerWebSocketPath* = "/sprite_player"
+  WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
   BackgroundColor* = 12'u8

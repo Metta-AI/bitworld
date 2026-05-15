@@ -33,6 +33,7 @@ type
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     spectators: seq[WebSocket]
+    nextAnonymousPlayer: int
     config: GameConfig
 
   ServerThreadArgs = object
@@ -126,20 +127,8 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset if the route matches. The page-serving
-  ## client routes (/client/{player,global,admin,rewards}.html) are
-  ## intentionally not exposed: each page lives at its websocket URL
-  ## (/player, /global, /admin, /reward), which dual-serves HTML on a plain
-  ## GET and upgrades to a websocket on a Sec-WebSocket-Key request. This
-  ## keeps a page and its websocket at the same URL so reverse-proxy prefix
-  ## routing works without the page knowing the prefix. snappyjs.min.js and
-  ## qrcode.min.js sit at top-level paths so they resolve as siblings of
-  ## those pages from a relative <script src="...">.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  ## Serves one static client asset if the route matches.
+  request.serveClientHtml(request.path)
 
 proc tickTime(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
@@ -415,7 +404,7 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let leave = replay.data.leaves[replay.leaveIndex]
     if int(leave.player) < 0 or int(leave.player) >= sim.players.len:
       raise newException(ReplayError, "Replay player leave is invalid")
-    sim.players.delete(int(leave.player))
+    sim.removePlayerAt(int(leave.player))
     if int(leave.player) < replay.masks.len:
       replay.masks.delete(int(leave.player))
     if int(leave.player) < replay.lastAppliedMasks.len:
@@ -427,7 +416,7 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let join = replay.data.joins[replay.joinIndex]
     if int(join.player) != sim.players.len:
       raise newException(ReplayError, "Replay player join order is invalid")
-    discard sim.addPlayer(join.name, join.slot, join.token)
+    discard sim.addPlayer(join.name, join.slot, join.token, trusted = true)
     replay.ensureReplayPlayer(int(join.player))
     inc replay.joinIndex
 
@@ -606,6 +595,7 @@ proc initAppState() =
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.spectators = @[]
+  appState.nextAnonymousPlayer = 1
   appState.config = defaultGameConfig()
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
@@ -636,23 +626,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.playerSlots.del(websocket)
   appState.playerTokens.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
-    sim.players.delete(removedIndex)
-    if sim.phase in {Voting, VoteResult}:
-      if removedIndex < sim.voteState.votes.len:
-        sim.voteState.votes.delete(removedIndex)
-      if removedIndex < sim.voteState.cursor.len:
-        sim.voteState.cursor.delete(removedIndex)
-      let skipIndex = sim.players.len
-      for vote in sim.voteState.votes.mitems:
-        if vote > removedIndex:
-          dec vote
-        if vote > skipIndex:
-          vote = -2
-      for cursor in sim.voteState.cursor.mitems:
-        if cursor > removedIndex:
-          dec cursor
-        if cursor > skipIndex:
-          cursor = skipIndex
+    sim.removePlayerAt(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
@@ -664,18 +638,53 @@ proc cleanPlayerName(name: string): string =
     if ch.isSpaceAscii:
       ch = '_'
 
-proc playerIdentity(request: Request): string =
+proc generatedPlayerName*(index: int): string =
+  ## Returns the generated display name for an anonymous player index.
+  "Player" & $index
+
+proc anonymousPlayerIdentity*(
+  nextIndex: var int,
+  existingNames: openArray[string]
+): string =
+  ## Returns a unique generated identity for one nameless player.
+  if nextIndex <= 0:
+    nextIndex = 1
+  while true:
+    result = generatedPlayerName(nextIndex)
+    inc nextIndex
+    var taken = false
+    for name in existingNames:
+      if name == result:
+        taken = true
+        break
+    if not taken:
+      return
+
+proc nextAnonymousPlayerIdentity(): string =
+  ## Returns a unique generated identity from current server state.
+  {.gcsafe.}:
+    withLock appState.lock:
+      var existingNames: seq[string] = @[]
+      for _, address in appState.playerAddresses.pairs:
+        existingNames.add(address)
+      for identity in appState.kickedIdentities.keys:
+        existingNames.add(identity)
+      result = anonymousPlayerIdentity(
+        appState.nextAnonymousPlayer,
+        existingNames
+      )
+
+proc playerIdentity(request: Request, slot: int, token: string): string =
   ## Returns the websocket player identity for rewards and displays.
   let name = request.queryParams.getOrDefault("name", "").cleanPlayerName()
   if name.len > 0:
     return name
-  let slot = request.queryParams.getOrDefault("slot", "").strip()
-  if slot.len > 0:
-    try:
-      return "player-" & $parseInt(slot)
-    except ValueError:
-      discard
-  request.remoteAddress
+  {.gcsafe.}:
+    withLock appState.lock:
+      result = appState.config.configuredPlayerName(slot, token)
+      if result.len > 0:
+        return
+  result = nextAnonymousPlayerIdentity()
 
 proc playerSlot(request: Request): int =
   ## Returns the requested player slot or -1 for automatic assignment.
@@ -736,19 +745,28 @@ proc respondKicked(request: Request) =
   headers["Connection"] = "close"
   request.respond(409, headers, "player was kicked\n")
 
-proc respondForbidden(request: Request, body: string) =
-  ## Rejects an unauthorized player request before WebSocket upgrade.
+proc respondForbiddenPlayer(request: Request, reason: string) =
+  ## Rejects an invalid player join before upgrading to a WebSocket.
   var headers: HttpHeaders
   headers["Content-Type"] = "text/plain; charset=utf-8"
   headers["Cache-Control"] = "no-cache"
   headers["Connection"] = "close"
-  request.respond(403, headers, body)
+  request.respond(403, headers, reason & "\n")
 
-proc playerJoinAllowed(request: Request, identity: string, slot: int, token: string): bool =
-  ## Checks configured slot auth before upgrading the player WebSocket.
-  {.gcsafe.}:
-    withLock appState.lock:
-      result = appState.config.playerJoinAllowed(identity, slot, token)
+proc configuredSlotTokenError(config: GameConfig, slot: int, token: string): string =
+  ## Returns a rejection reason for bad explicit slot credentials.
+  if slot < 0:
+    return ""
+  if slot >= MaxPlayers:
+    return "Player slot must be between 0 and 15."
+  if slot >= config.slots.len:
+    if config.closedRoster:
+      return "Player slot is outside configured roster."
+    return ""
+  let slotConfig = config.slots[slot]
+  if slotConfig.token.len > 0 and token != slotConfig.token:
+    return "Player token does not match configured slot " & $slot & "."
+  ""
 
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
@@ -757,30 +775,19 @@ proc httpHandler(request: Request) =
     headers["Cache-Control"] = "no-cache"
     request.respond(200, headers, "healthy")
   elif request.path == WebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(PlayerClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(AdminClientRoute)
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(RewardClientRoute)
-  elif request.path == WebSocketPath and request.httpMethod == "GET":
+      request.isWebSocketUpgrade():
     let
-      identity = request.playerIdentity()
       slot = request.playerSlot()
       token = request.playerToken()
+      identity = request.playerIdentity(slot, token)
+    {.gcsafe.}:
+      withLock appState.lock:
+        let tokenError = appState.config.configuredSlotTokenError(slot, token)
+        if tokenError.len > 0:
+          request.respondForbiddenPlayer(tokenError)
+          return
     if identity.identityIsKicked():
       request.respondKicked()
-      return
-    if not request.playerJoinAllowed(identity, slot, token):
-      request.respondForbidden("player token rejected\n")
       return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -789,16 +796,14 @@ proc httpHandler(request: Request) =
         appState.playerSlots[websocket] = slot
         appState.playerTokens[websocket] = token
     echo "player connected: ", identity
-  elif request.path == SpritePlayerWebSocketPath and request.httpMethod == "GET":
+  elif request.path == SpritePlayerWebSocketPath and
+      request.httpMethod == "GET" and request.isWebSocketUpgrade():
     let
-      identity = request.playerIdentity()
       slot = request.playerSlot()
       token = request.playerToken()
+      identity = request.playerIdentity(slot, token)
     if identity.identityIsKicked():
       request.respondKicked()
-      return
-    if not request.playerJoinAllowed(identity, slot, token):
-      request.respondForbidden("player token rejected\n")
       return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -808,22 +813,26 @@ proc httpHandler(request: Request) =
         appState.playerSlots[websocket] = slot
         appState.playerTokens[websocket] = token
     echo "player connected: ", identity
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET":
+  elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == AdminWebSocketPath and request.httpMethod == "GET":
+  elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -1160,10 +1169,8 @@ proc runServerLoop*(
                 identity in appState.kickedIdentities:
               sim.removePlayer(websocket)
               socketsToClose.add(websocket)
-            elif sim.playerAddressOccupied(address):
-              sim.removePlayer(websocket)
-              socketsToClose.add(websocket)
-            elif sim.phase == Lobby and sim.canAddPlayer():
+            elif sim.phase == Lobby and
+                (sim.canAddPlayer() or slot >= 0 or token.len > 0):
               try:
                 appState.playerIndices[websocket] = sim.addPlayer(
                   address,
@@ -1269,13 +1276,6 @@ proc runServerLoop*(
             reconnectSockets.add(websocket)
           appState.spectators = @[]
           for websocket in reconnectSockets:
-            if not sim.canAddPlayer():
-              if websocket in appState.playerViewers:
-                appState.playerIndices[websocket] = -1
-              else:
-                appState.spectators.add(websocket)
-                appState.playerIndices.del(websocket)
-              continue
             let address = appState.playerAddresses.getOrDefault(
               websocket,
               "unknown"
@@ -1283,6 +1283,13 @@ proc runServerLoop*(
             let
               slot = appState.playerSlots.getOrDefault(websocket, -1)
               token = appState.playerTokens.getOrDefault(websocket, "")
+            if not sim.canAddPlayer() and slot < 0 and token.len == 0:
+              if websocket in appState.playerViewers:
+                appState.playerIndices[websocket] = -1
+              else:
+                appState.spectators.add(websocket)
+                appState.playerIndices.del(websocket)
+              continue
             try:
               appState.playerIndices[websocket] = sim.addPlayer(
                 address,

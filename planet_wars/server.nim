@@ -48,11 +48,11 @@ proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
+  let filePath = clientStaticPath(route, GlobalClientRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -65,11 +65,7 @@ proc serveClientHtml(request: Request, route: string): bool =
 
 proc serveStaticClientHtml(request: Request): bool =
   ## Serves one static client asset if the route matches.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  request.serveClientHtml(request.path)
 
 proc serveHealthz(request: Request): bool =
   ## Serves the container health check endpoint.
@@ -79,29 +75,6 @@ proc serveHealthz(request: Request): bool =
   headers["Content-Type"] = "text/plain; charset=utf-8"
   headers["Cache-Control"] = "no-cache"
   request.respond(200, headers, "healthy")
-  true
-
-proc servePlayerRedirect(request: Request): bool =
-  ## Redirects the legacy player page route to the sprite player route.
-  if request.path != WebSocketPath or request.httpMethod != "GET" or
-      request.isWebSocketUpgrade():
-    return false
-  var headers: HttpHeaders
-  headers["Content-Type"] = "text/html; charset=utf-8"
-  headers["Cache-Control"] = "no-cache"
-  request.respond(
-    200,
-    headers,
-    """
-<!doctype html>
-<meta charset="utf-8">
-<title>Planet Wars</title>
-<script>
-location.replace(location.pathname.replace(/\/player$/, "/sprite_player") +
-  location.search + location.hash);
-</script>
-"""
-  )
   true
 
 proc cleanPlayerName(name: string): string =
@@ -125,41 +98,49 @@ proc httpHandler(request: Request) =
   ## Handles HTTP routes and websocket upgrades.
   if request.serveHealthz():
     discard
-  elif request.servePlayerRedirect():
-    discard
-  elif request.path == SpritePlayerWebSocketPath and
+  elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(RewardClientRoute)
-  elif (request.path == SpritePlayerWebSocketPath or
-      request.path == WebSocketPath) and request.httpMethod == "GET":
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.globalViewers.del(websocket)
+        appState.rewardViewers.del(websocket)
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+        appState.playerIndices[websocket] = UnassignedPlayerIndex
+        appState.inputMasks[websocket] = 0
+        appState.lastAppliedMasks[websocket] = 0
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.playerViewers.del(websocket)
+        appState.playerIndices.del(websocket)
+        appState.playerNames.del(websocket)
+        appState.inputMasks.del(websocket)
+        appState.lastAppliedMasks.del(websocket)
+        appState.rewardViewers.del(websocket)
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
+        appState.playerViewers.del(websocket)
+        appState.playerIndices.del(websocket)
+        appState.playerNames.del(websocket)
+        appState.inputMasks.del(websocket)
+        appState.lastAppliedMasks.del(websocket)
+        appState.globalViewers.del(websocket)
         appState.rewardViewers[websocket] = true
   elif request.serveStaticClientHtml():
     discard
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain; charset=utf-8"
-    request.respond(200, headers, "Bit World sprite protocol server")
+    request.respond(200, headers, "Bit World global protocol server")
 
 proc websocketHandler(
   websocket: WebSocket,
@@ -169,13 +150,7 @@ proc websocketHandler(
   ## Handles websocket lifecycle and input messages.
   case event
   of OpenEvent:
-    {.gcsafe.}:
-      withLock appState.lock:
-        if websocket notin appState.globalViewers and
-            websocket notin appState.rewardViewers:
-          appState.playerIndices[websocket] = UnassignedPlayerIndex
-          appState.inputMasks[websocket] = 0
-          appState.lastAppliedMasks[websocket] = 0
+    discard
   of MessageEvent:
     if message.kind != BinaryMessage:
       return
@@ -236,6 +211,24 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     for _, value in appState.playerIndices.mpairs:
       if value > removedIndex and value != UnassignedPlayerIndex:
         dec value
+
+proc resetConnectedClients() =
+  ## Clears per-game websocket state while keeping sockets connected.
+  var
+    playerSockets: seq[WebSocket] = @[]
+    globalSockets: seq[WebSocket] = @[]
+  for websocket in appState.playerIndices.keys:
+    playerSockets.add(websocket)
+  for websocket in appState.globalViewers.keys:
+    globalSockets.add(websocket)
+  for websocket in playerSockets:
+    appState.playerIndices[websocket] = UnassignedPlayerIndex
+    appState.playerViewers[websocket] = initPlayerViewerState()
+    appState.inputMasks[websocket] = 0
+    appState.lastAppliedMasks[websocket] = 0
+  for websocket in globalSockets:
+    appState.globalViewers[websocket] = initGlobalViewerState()
+  appState.chatMessages.clear()
 
 proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
   ## Builds a player input state from current and previous button masks.
@@ -305,7 +298,7 @@ proc runServerLoop*(
   simConfig = defaultSimConfig(),
   saveScoresPath = ""
 ) =
-  ## Runs the sprite-protocol Planet Wars server loop.
+  ## Runs the Planet Wars server loop.
   initAppState()
   let httpServer = newServer(
     httpHandler,
@@ -325,6 +318,7 @@ proc runServerLoop*(
     sim = initSimServer(seed, simConfig)
     lastTick = getMonoTime()
     lastScoreRevision = -1
+    gamesFinished = 0
   sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
   while true:
     var
@@ -378,8 +372,10 @@ proc runServerLoop*(
           globalStates.add(state)
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+    let wasGameOver = sim.gameOver
     sim.step(inputs)
     sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+    let gameFinished = sim.gameOver and not wasGameOver
     let rewardPacket = sim.buildRewardPacket()
     for i in 0 ..< sockets.len:
       var nextState: PlayerViewerState
@@ -420,4 +416,15 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
+    if gameFinished:
+      inc gamesFinished
+      echo "Planet Wars game finished: ", gamesFinished
+      if simConfig.maxGames > 0 and gamesFinished >= simConfig.maxGames:
+        break
+      sim = initSimServer(seed + gamesFinished, simConfig)
+      lastScoreRevision = -1
+      {.gcsafe.}:
+        withLock appState.lock:
+          resetConnectedClients()
+      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
     runFrameLimiter(lastTick)

@@ -2,8 +2,7 @@
 ##
 ## games_server/games_server.nim pulls images from GHCR at runtime to launch
 ## game and bot containers (e.g. ghcr.io/treeform/bitworld-among-them-runner).
-## Dockerfiles live beside their game or player manifests, or in the owning
-## game directory for older games that do not have manifests yet.
+## Dockerfiles live beside their game or player manifests.
 ##
 ## This tool wraps `docker buildx` to produce a multi-arch OCI manifest so
 ## the same image tag works on both x86_64 (AWS/Linux) and arm64 (macOS).
@@ -13,6 +12,8 @@
 ## Usage:
 ##   nim r tools/docker_build.nim --push              # build + push all
 ##   nim r tools/docker_build.nim --push among_them   # just the game server
+##   nim r tools/docker_build.nim --push infinite_blocks --bots
+##                                                   # game plus its bots
 ##   nim r tools/docker_build.nim --list              # show targets
 ##
 ## Prerequisites:
@@ -26,7 +27,9 @@ import
 const
   Registry = "ghcr.io/treeform"
   DefaultPlatforms = "linux/amd64,linux/arm64"
-  ManifestNames = ["cogame_manifest.json", "coplayer_manifest.json"]
+  CoworldManifestName = "coworld_manifest.json"
+  CoplayerManifestName = "coplayer_manifest.json"
+  ManifestNames = [CoworldManifestName, CoplayerManifestName]
   IgnoredDirs = [
     ".git",
     ".github",
@@ -37,26 +40,16 @@ const
     "replays",
     "tmp"
   ]
-  KnownImageNames = {
-    "among_them": "bitworld-among-them-runner",
-    "nottoodumb": "bitworld-nottoodumb",
-    "ivotewell": "bitworld-ivotewell",
-    "italkalot": "bitworld-italkalot",
-    "evidencebot_v2": "bitworld-evidencebot-v2",
-    "lively_lecun": "bitworld-lively-lecun",
-    "evidencebot_v2": "bitworld-evidencebot-v2",
-    "big_adventure": "bitworld-big-adventure",
-    "party_progressor": "bitworld-party-progressor",
-    "fancy_cookout": "bitworld-fancy-cookout",
-    "infinite_factory": "bitworld-infinite-factory",
-    "planet_wars": "bitworld-planet-wars",
-  }.toTable
 
 type
   DockerTarget = object
     name: string
     imageName: string
     dockerFile: string
+    contextDir: string
+    bitworldContext: string
+    games: seq[string]
+    isGame: bool
 
 proc usage() =
   ## Prints usage and exits.
@@ -65,15 +58,21 @@ proc usage() =
 Build multi-arch Docker images for bitworld.
 
 Targets are discovered from Dockerfile locations.
+Targets may also be paths to a Dockerfile or a directory containing one.
 
 Options:
   --push            Push images to GHCR after building
+  --bots            Also build bots for selected game targets
   --platform:STR    Platforms to build (default: linux/amd64,linux/arm64)
   --tag:STR         Image tag (default: latest)
   --registry:STR    Registry prefix (default: ghcr.io/treeform)
   --list            List available targets and exit
   --help            Show this help"""
   quit(0)
+
+proc hasPathSeparator(value: string): bool =
+  ## Returns true when a value looks like a filesystem path.
+  value.contains('/') or value.contains('\\')
 
 proc repoRoot(): string =
   ## Returns the repository root directory.
@@ -113,6 +112,15 @@ proc manifestPath(dir: string): string =
     let path = dir / fileName
     if fileExists(path):
       return path
+  var parent = dir.parentDir()
+  while parent.len > 0 and parent != dir:
+    let path = parent / CoworldManifestName
+    if fileExists(path):
+      return path
+    let nextParent = parent.parentDir()
+    if nextParent == parent:
+      break
+    parent = nextParent
 
 proc manifestString(path, key: string): string =
   ## Reads one string field from a JSON manifest.
@@ -120,25 +128,85 @@ proc manifestString(path, key: string): string =
     return ""
   let node = parseFile(path)
   if node.kind == JObject and node.hasKey(key) and node[key].kind == JString:
+    return node[key].getStr()
+  if node.kind == JObject and node.hasKey("game") and
+      node["game"].kind == JObject:
+    let game = node["game"]
+    if game.hasKey(key) and game[key].kind == JString:
+      return game[key].getStr()
+    if key == "image_uri" and game.hasKey("runnable") and
+        game["runnable"].kind == JObject:
+      let runnable = game["runnable"]
+      if runnable.hasKey("image") and runnable["image"].kind == JString:
+        return runnable["image"].getStr()
+  ""
+
+proc nodeString(node: JsonNode, key: string): string =
+  ## Reads one string field from a JSON node.
+  if node.kind == JObject and node.hasKey(key) and node[key].kind == JString:
     node[key].getStr()
   else:
     ""
 
-proc fallbackTargetName(dir: string): string =
-  ## Returns the target name for older Dockerfiles without manifests.
-  let name = dir.extractFilename()
-  if name == "boundless_factory":
-    "infinite_factory"
-  else:
-    normalizeTargetName(name)
+proc manifestStringArray(path, key: string): seq[string] =
+  ## Reads one string array field from a JSON manifest.
+  if path.len == 0:
+    return
+  let node = parseFile(path)
+  if node.kind != JObject or not node.hasKey(key) or
+      node[key].kind != JArray:
+    return
+  for item in node[key]:
+    if item.kind == JString:
+      result.add(item.getStr())
+
+proc coworldPlayerImage(
+  manifestPath,
+  dirName: string
+): tuple[name, imageUri: string] =
+  ## Reads a Coworld player image that matches one Dockerfile directory.
+  if manifestPath.len == 0 or
+      manifestPath.extractFilename() != CoworldManifestName:
+    return
+  let node = parseFile(manifestPath)
+  if node.kind != JObject or not node.hasKey("player") or
+      node["player"].kind != JArray:
+    return
+  let
+    cleanDir = normalizeTargetName(dirName)
+    genericPlayerDirs = ["ai", "bot", "bots", "coplayer", "player", "players"]
+  var
+    first: JsonNode
+    matched: JsonNode
+  for player in node["player"]:
+    if player.kind != JObject:
+      continue
+    if first.isNil:
+      first = player
+    let
+      id = player.nodeString("id")
+      name = player.nodeString("name")
+    if normalizeTargetName(id) == cleanDir or
+        normalizeTargetName(name) == cleanDir:
+      matched = player
+      break
+  if matched.isNil and node["player"].len == 1 and
+      cleanDir in genericPlayerDirs:
+    matched = first
+  if not matched.isNil:
+    let
+      id = matched.nodeString("id")
+      rawName = matched.nodeString("name")
+      name = if rawName.len > 0: rawName else: id
+      imageUri = matched.nodeString("image_uri")
+    if imageUri.len > 0:
+      result = (name: name, imageUri: imageUri)
 
 proc imageNameForTarget(
   targetName: string,
   manifestImageUri: string
 ): string =
   ## Returns the GHCR package name for one Docker target.
-  if targetName in KnownImageNames:
-    return KnownImageNames[targetName]
   result = imageNameFromUri(manifestImageUri)
   if result.len == 0:
     result = "bitworld-" & targetName.replace('_', '-')
@@ -152,6 +220,8 @@ proc shouldScanDir(path: string): bool =
 
 proc addDockerFile(
   root,
+  contextDir,
+  bitworldContext,
   dockerFile: string,
   targets: var seq[DockerTarget]
 ) =
@@ -159,28 +229,48 @@ proc addDockerFile(
   let
     dir = dockerFile.parentDir()
     manifest = manifestPath(dir)
-    manifestName = manifestString(manifest, "name")
+    playerImage = coworldPlayerImage(manifest, dir.extractFilename())
+    gameName = manifestString(manifest, "name")
+  var
+    manifestName = gameName
     manifestImageUri = manifestString(manifest, "image_uri")
+    games: seq[string]
+    isGame =
+      manifest.len > 0 and
+      manifest.extractFilename() == CoworldManifestName and
+      manifest.parentDir() == dir
+  if manifest.len > 0 and manifest.parentDir() != dir and
+      playerImage.imageUri.len > 0:
+    manifestName = playerImage.name
+    manifestImageUri = playerImage.imageUri
+    if gameName.len > 0:
+      games.add(gameName)
+  elif manifest.len > 0 and
+      manifest.extractFilename() == CoplayerManifestName:
+    games = manifestStringArray(manifest, "games")
+  if manifestName.len == 0 or manifestImageUri.len == 0:
+    return
   var targetName =
-    if manifestName.len > 0:
-      normalizeTargetName(manifestName)
-    else:
-      fallbackTargetName(dir)
+    normalizeTargetName(manifestName)
 
   if targetName.len == 0:
-    return
-  if manifest.len == 0 and targetName notin KnownImageNames:
     return
 
   targets.add DockerTarget(
     name: targetName,
     imageName: imageNameForTarget(targetName, manifestImageUri),
-    dockerFile: dockerFile.relativePath(root)
+    dockerFile: dockerFile.relativePath(contextDir),
+    contextDir: contextDir,
+    bitworldContext: bitworldContext,
+    games: games,
+    isGame: isGame
   )
 
 proc scanDockerFiles(
   root,
   dir: string,
+  contextDir: string,
+  bitworldContext: string,
   targets: var seq[DockerTarget]
 ) =
   ## Recursively scans for Dockerfiles under non-generated directories.
@@ -188,16 +278,16 @@ proc scanDockerFiles(
     case kind
     of pcDir:
       if shouldScanDir(path):
-        scanDockerFiles(root, path, targets)
+        scanDockerFiles(root, path, contextDir, bitworldContext, targets)
     of pcFile, pcLinkToFile:
       if path.extractFilename() == "Dockerfile":
-        addDockerFile(root, path, targets)
+        addDockerFile(root, contextDir, bitworldContext, path, targets)
     else:
       discard
 
 proc discoverTargets(root: string): seq[DockerTarget] =
   ## Discovers all Docker build targets in the repository.
-  scanDockerFiles(root, root, result)
+  scanDockerFiles(root, root, root, "", result)
   result.sort(proc(a, b: DockerTarget): int =
     cmp(a.name, b.name)
   )
@@ -215,7 +305,77 @@ proc targetFiles(
   ## Returns Dockerfiles for targets with one normalized name.
   for target in targets:
     if target.name == name:
-      result.add(target.dockerFile)
+      result.add(target.contextDir / target.dockerFile)
+
+proc dockerTargetFromPath(
+  root,
+  path: string
+): tuple[found: bool, target: DockerTarget, message: string] =
+  ## Reads one Docker target from an explicit path argument.
+  if not path.hasPathSeparator() and not fileExists(root / path) and
+      not dirExists(root / path):
+    return
+
+  let rawPath =
+    if path.isAbsolute():
+      path
+    else:
+      absolutePath(root / path)
+  let dockerFile =
+    if dirExists(rawPath):
+      rawPath / "Dockerfile"
+    else:
+      rawPath
+  if not fileExists(dockerFile):
+    return (
+      found: false,
+      target: DockerTarget(),
+      message: "Dockerfile not found: " & dockerFile
+    )
+
+  let contextDir = dockerFile.parentDir()
+  var targets: seq[DockerTarget]
+  addDockerFile(root, contextDir, root, dockerFile, targets)
+  if targets.len == 0:
+    return (
+      found: false,
+      target: DockerTarget(),
+      message: "No manifest found for Dockerfile: " & dockerFile
+    )
+
+  result = (found: true, target: targets[0], message: "")
+
+proc supportsGame(target: DockerTarget, gameName: string): bool =
+  ## Returns true when a target is a bot for one normalized game name.
+  let normalizedGame = normalizeTargetName(gameName)
+  for game in target.games:
+    if normalizeTargetName(game) == normalizedGame:
+      return true
+
+proc addUniqueTarget(
+  targets: var seq[DockerTarget],
+  target: DockerTarget
+) =
+  ## Adds one target if its Dockerfile is not already selected.
+  for existing in targets:
+    if existing.contextDir == target.contextDir and
+        existing.dockerFile == target.dockerFile:
+      return
+  targets.add(target)
+
+proc addBotTargets(
+  result: var seq[DockerTarget],
+  targets: openArray[DockerTarget],
+  game: DockerTarget
+) =
+  ## Adds all discovered bot targets that support one game target.
+  if not game.isGame:
+    return
+  for target in targets:
+    if target.isGame:
+      continue
+    if target.supportsGame(game.name):
+      result.addUniqueTarget(target)
 
 proc ensureBuildx() =
   ## Verifies that docker buildx is available.
@@ -256,7 +416,7 @@ proc buildCommand(
   push: bool
 ): string =
   ## Builds the docker buildx command for one target.
-  let dockerFile = root / target.dockerFile
+  let dockerFile = target.contextDir / target.dockerFile
   var args = @["docker", "buildx", "build"]
 
   if push or "," notin platforms:
@@ -265,13 +425,18 @@ proc buildCommand(
 
   args.add("-f")
   args.add(dockerFile)
+  if target.bitworldContext.len > 0:
+    args.add("--build-context")
+    args.add("bitworld=" & target.bitworldContext)
   args.add("-t")
   args.add(fullTag)
+  args.add("--provenance=false")
+  args.add("--sbom=false")
   if push:
     args.add("--push")
   else:
     args.add("--load")
-  args.add(root)
+  args.add(target.contextDir)
 
   quoteShellCommand(args)
 
@@ -285,7 +450,7 @@ proc buildImage(
 ) =
   ## Builds one Docker image with buildx.
   let
-    dockerFile = root / target.dockerFile
+    dockerFile = target.contextDir / target.dockerFile
     imageTag = target.fullImageTag(registry, tag)
 
   if not fileExists(dockerFile):
@@ -295,7 +460,10 @@ proc buildImage(
   echo ""
   echo "Building ", imageTag
   echo "  target:     ", target.name
-  echo "  dockerfile: ", target.dockerFile
+  echo "  dockerfile: ", dockerFile.relativePath(root)
+  echo "  context:    ", target.contextDir.relativePath(root)
+  if target.bitworldContext.len > 0:
+    echo "  bitworld:   ", target.bitworldContext.relativePath(root)
   echo "  platforms:  ", platforms
   echo "  push:       ", push
 
@@ -313,8 +481,10 @@ proc buildImage(
   echo "  Done: ", imageTag
 
 proc selectedTargets(
+  root: string,
   targets: openArray[DockerTarget],
-  names: openArray[string]
+  names: openArray[string],
+  includeBots: bool
 ): seq[DockerTarget] =
   ## Selects requested targets or returns every discovered target.
   if names.len == 0:
@@ -330,17 +500,33 @@ proc selectedTargets(
         echo "  ", file
       quit(1)
     if normalized notin targetsByName:
+      let pathTarget = dockerTargetFromPath(root, name)
+      if pathTarget.found:
+        result.addUniqueTarget(pathTarget.target)
+        if includeBots:
+          result.addBotTargets(targets, pathTarget.target)
+        continue
+      if pathTarget.message.len > 0:
+        echo "Error: ", pathTarget.message
+        quit(1)
       echo "Error: unknown Docker target: ", name
       echo "Run with --list to see available targets."
       quit(1)
-    result.add(targetsByName[normalized])
+    let target = targetsByName[normalized]
+    result.addUniqueTarget(target)
+    if includeBots:
+      result.addBotTargets(targets, target)
 
-proc printTargets(targets: openArray[DockerTarget]) =
+proc printTargets(root: string, targets: openArray[DockerTarget]) =
   ## Prints all discovered Docker targets.
   echo "Available targets:"
   for target in targets:
     echo "  ", target.name, " -> ", target.imageName
-    echo "    ", target.dockerFile
+    echo "    ", (target.contextDir / target.dockerFile).relativePath(root)
+    if target.bitworldContext.len > 0:
+      echo "    context: ", target.contextDir.relativePath(root)
+    if target.games.len > 0:
+      echo "    games: ", target.games.join(", ")
 
 proc targetNames(targets: openArray[DockerTarget]): string =
   ## Formats target names for status output.
@@ -357,6 +543,7 @@ proc main() =
     platforms = DefaultPlatforms
     tag = "latest"
     registry = Registry
+    includeBots = false
     names: seq[string]
 
   let targets = discoverTargets(root)
@@ -367,6 +554,8 @@ proc main() =
       case key
       of "push":
         push = true
+      of "bots":
+        includeBots = true
       of "platform":
         platforms = val
       of "tag":
@@ -374,7 +563,7 @@ proc main() =
       of "registry":
         registry = val
       of "list":
-        printTargets(targets)
+        printTargets(root, targets)
         quit(0)
       of "help":
         usage()
@@ -393,13 +582,14 @@ proc main() =
     of cmdEnd:
       discard
 
-  let chosen = selectedTargets(targets, names)
+  let chosen = selectedTargets(root, targets, names, includeBots)
 
   echo "docker_build"
   echo "  registry:  ", registry
   echo "  tag:       ", tag
   echo "  platforms: ", platforms
   echo "  push:      ", push
+  echo "  bots:      ", includeBots
   echo "  targets:   ", targetNames(chosen)
 
   ensureBuildx()

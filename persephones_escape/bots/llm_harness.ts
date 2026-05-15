@@ -8,12 +8,12 @@ import {
   ActionQueue,
 } from "./bot_utils.js";
 import {
-  createBeliefState, updatePhase, updatePosition, updateMinimap, updateHud,
-  updateFromInfoScreen,
+  createGameKnowledge, updatePhase, updatePosition, updateMinimap, updateHud,
+  updateFromInfoScreen, updateFromRosterScreen,
   checkTriggers, formatContextDump,
   type TriggerEvent,
-} from "./belief_state.js";
-import { parseInfoScreen } from "./frame_parser.js";
+} from "./game_knowledge.js";
+import { matchRoster, parseInfoScreen, parseRosterScreen } from "./frame_parser.js";
 import {
   parseArgs, parseCommand, executeBaseCommand,
   tickMovement, tickWander,
@@ -35,12 +35,14 @@ const llmTimeout = parseInt(args["llm-timeout"] ?? "3000");
 // ---------------------------------------------------------------------------
 
 const ws = new WebSocket(`${botUrl}?name=${name}`, { perMessageDeflate: false });
-const belief = createBeliefState(name);
+const player = createGameKnowledge(name);
 
 const bot: BotController = {
-  ws, actions: new ActionQueue(), belief, name,
+  ws, actions: new ActionQueue(), player, name,
   movementTarget: null, wandering: false,
   wanderTarget: null, wanderTicks: 0, lastFrame: null,
+  psychopompPrecommit: null, lastSentChat: null, hasNewIncomingChat: false,
+  nonInterruptingTasks: [],
 };
 
 let llmBusy = false;
@@ -53,9 +55,9 @@ let lastPromptTick = -999;
 async function promptLLM(event: TriggerEvent): Promise<void> {
   if (llmBusy) return;
   llmBusy = true;
-  lastPromptTick = belief.tick;
+  lastPromptTick = player.tick;
 
-  const context = formatContextDump(belief, event);
+  const context = formatContextDump(player, event);
   console.log(`[${name}] Prompting LLM: ${event}`);
 
   try {
@@ -104,13 +106,13 @@ function executeCommand(cmd: ReturnType<typeof parseCommand>): void {
 
   switch (cmd.type) {
     case "approach_nearest": {
-      const withPos = [...belief.players.values()].filter(b => b.lastPos !== null);
-      if (withPos.length > 0 && belief.myPos) {
+      const withPos = [...player.players.values()].filter(b => b.lastPos !== null);
+      if (withPos.length > 0 && player.myPos) {
         let best = withPos[0];
         let bestDist = Infinity;
         for (const b of withPos) {
-          const dx = b.lastPos!.x - belief.myPos.x;
-          const dy = b.lastPos!.y - belief.myPos.y;
+          const dx = b.lastPos!.x - player.myPos.x;
+          const dy = b.lastPos!.y - player.myPos.y;
           const dist = dx * dx + dy * dy;
           if (dist < bestDist) { bestDist = dist; best = b; }
         }
@@ -146,7 +148,11 @@ function onFrame(data: Buffer): void {
   if (data.length !== PACKED_FRAME_BYTES) return;
   const frame = unpackFrame(data);
 
-  updatePhase(belief, frame);
+  updatePhase(player, frame);
+  if (player.phase === "roster_reveal") {
+    const roster = parseRosterScreen(frame);
+    if (roster) updateFromRosterScreen(player, roster);
+  }
 
   if (!bot.actions.empty) {
     sendInput(ws, bot.actions.shift()!);
@@ -166,9 +172,9 @@ function onFrame(data: Buffer): void {
   }
 
   if (infoPollState === "reading") {
-    const entries = parseInfoScreen(frame);
+    const entries = parseInfoScreen(frame, matchRoster(player.players.values()));
     if (entries) {
-      const newInfo = updateFromInfoScreen(belief, entries);
+      const newInfo = updateFromInfoScreen(player, entries);
       if (newInfo && !llmBusy) promptLLM("info_updated");
     }
     bot.actions.push(BUTTON_B, 0);
@@ -187,7 +193,7 @@ function onFrame(data: Buffer): void {
 
   const canPoll = infoPollState === "closed"
     && !inWhisper && bot.actions.empty
-    && (belief.phase === "playing" || belief.phase === "hostage_select");
+    && (player.phase === "playing" || player.phase === "psychopomp_select");
   if (canPoll) {
     infoPollCooldown--;
     if (infoPollCooldown <= 0) {
@@ -198,17 +204,17 @@ function onFrame(data: Buffer): void {
     }
   }
 
-  updateMinimap(belief, frame);
+  updateMinimap(player, frame);
 
   if (bot.movementTarget || bot.wandering) {
-    updatePosition(belief, frame);
+    updatePosition(player, frame);
   }
 
   if (tickMovement(bot)) return;
 
-  const event = checkTriggers(belief, lastPromptTick, bot.movementTarget !== null);
+  const event = checkTriggers(player, lastPromptTick, bot.movementTarget !== null);
   if (event) {
-    updateHud(belief, frame);
+    updateHud(player, frame);
     if (!llmBusy) promptLLM(event);
   }
 

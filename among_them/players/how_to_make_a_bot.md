@@ -1,16 +1,85 @@
-# How To Make An Among Them Bot
+# How To Make An Among Them Coworld Player
 
-This guide explains how to write a screen-reading bot for Among Them. The best
-reference implementation right now is `nottoodumb.nim` in this directory. It is
-not small anymore, but it contains the hard-won answers to most of the problems
-that make this game tricky.
+This guide explains how to write a screen-reading player for the uploaded Among
+Them Coworld. The hosted contract is simple: your Docker image starts a player
+process, the Coworld runner sets `COGAMES_ENGINE_WS_URL`, and your process
+connects to that websocket to play one assigned slot.
 
-The important lesson is this: do not think of the bot as just A* plus task
-locations. The bot is a visual client. It must keep itself localized on the map,
-ignore things that are not the map, understand interstitial screens, handle
+You do not need a BitWorld source checkout to compete. The source implementation
+is still valuable because the reference players contain hard-won answers to the
+visual problems that make this game tricky: localization, task detection,
+movement, voting screens, momentum, and state tracking.
+
+The important lesson is this: do not think of the player as just A* plus task
+locations. The player is a visual client. It must keep itself localized on the
+map, ignore things that are not the map, understand interstitial screens, handle
 momentum, and keep a careful task state model.
 
-## Useful Files
+## Coworld Runtime
+
+In Coworld episodes, Softmax starts the game container and your player container
+separately. Your player receives the game websocket URL in:
+
+```text
+COGAMES_ENGINE_WS_URL
+```
+
+Connect to that URL exactly as supplied. It already includes the `/player`
+endpoint, slot, and token for your player pod. The token is runner-managed; do
+not hardcode player slots or reconnect to another slot.
+
+Your player image can be written in any language. It only needs to:
+
+1. open the `COGAMES_ENGINE_WS_URL` websocket;
+2. read Bitscreen v1 frames from the server;
+3. keep enough local state to understand the screen;
+4. send Bitscreen v1 button and chat packets back to the same websocket.
+
+Use `coworld upload-policy` to publish a player image, then submit that policy
+to an Among Them league. Secrets for hosted policies should be passed with
+`--secret-env`; do not bake API keys into the image.
+
+The protocol references for Coworld consumers are:
+
+- Player protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md>
+- Global viewer protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
+- Browser play guide: <https://softmax.com/play_amongthem.md>
+- Coworld spec: <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
+
+The sections below describe the source implementation and the existing
+`nottoodumb` bot. Treat them as design references when you are building a
+Coworld policy outside the BitWorld repository.
+
+## Container Shape
+
+A hosted player should fail loudly if `COGAMES_ENGINE_WS_URL` is missing. That
+usually means it is being run outside the Coworld runner.
+
+Minimal Dockerfile shape:
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY player.py .
+
+CMD ["python", "/app/player.py"]
+```
+
+Build for the platform used by Coworld jobs:
+
+```sh
+docker buildx build --platform linux/amd64 -t my-among-them-policy:latest --load .
+coworld upload-policy my-among-them-policy:latest --name my-policy
+```
+
+The process inside the image should not assume local files from this repository
+unless the image explicitly copies them. If you want to use map geometry,
+sprites, or a reference implementation, vendor the exact files into the image.
+
+## Source Reference Files
 
 - `among_them/players/nottoodumb.nim`: Current main bot.
 - `among_them/sim.nim`: Simulation, map constants, task list, sprites, roles,
@@ -19,19 +88,19 @@ momentum, and keep a careful task state model.
 - `among_them/README.md`: Server and quick run commands.
 - `tools/quick_run`: Starts games, human clients, and bot players.
 
-## Run Commands
+## Source Run Commands
 
 Start a server:
 
 ```sh
-cd /Users/me/p/bitworld/among_them
-nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":6,"voteTimerTicks":360}'
+cd /path/to/bitworld/among_them
+nim r among_them.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"voteTimerTicks":6000}'
 ```
 
 Start one bot with the debug viewer:
 
 ```sh
-cd /Users/me/p/bitworld/among_them/players
+cd /path/to/bitworld/among_them/players
 nim r nottoodumb.nim --address:0.0.0.0 --port:2000 --gui --name:player1
 ```
 
@@ -39,7 +108,7 @@ nim r nottoodumb.nim --address:0.0.0.0 --port:2000 --gui --name:player1
 Start many bots:
 
 ```sh
-cd /Users/me/p/bitworld
+cd /path/to/bitworld
 nim r tools/quick_run among_them --connect --bots:nottoodumb:8 --address:localhost --port:2000
 ```
 
@@ -54,10 +123,11 @@ Open `bitworld/clients/global_client.html?address=ws://localhost:2000/player` in
 
 ## Protocol Basics
 
-Players connect to:
+Hosted Coworld players connect to the exact websocket in
+`COGAMES_ENGINE_WS_URL`. For local source runs, that URL has the same shape as:
 
 ```text
-ws://HOST:PORT/player?name=player1
+ws://HOST:PORT/player?slot=0&token=...
 ```
 
 The server sends a 128 by 128 packed 4-bit framebuffer. `ProtocolBytes` is
@@ -100,9 +170,11 @@ The current bot follows this loop:
 
 Keep this as a pipeline. It is much easier to debug than a tangle of callbacks.
 
-## Import The Sim, But Still Read The Screen
+## Use Source Geometry Carefully
 
-The bot imports `../sim`. This is intentional. The bot can use:
+The reference bot imports `../sim`. That is a source-level convenience, not a
+Coworld runtime guarantee. A hosted policy image can use the same idea only if
+it vendors the required files into the image. The bot can use:
 
 - Map size and screen size constants.
 - The task station list.
@@ -514,34 +586,37 @@ mostly black and do not attempt map parsing while the screen is an interstitial.
 
 ## Suggested Build Order For A New Bot
 
-1. Connect to `/player` and show received frames.
+1. Read `COGAMES_ENGINE_WS_URL` and show received frames.
 2. Unpack 4-bit frames correctly.
 3. Send input masks and verify held buttons.
-4. Import `sim.nim` and load map, sprites, tasks, and walk mask.
-5. Add a debug viewer before adding complex behavior.
-6. Implement interstitial detection and do nothing on interstitials.
-7. Implement map localization with dynamic pixel masking.
-8. Add local temporal search, then full spiral fallback.
-9. Add task icon detection at expected task locations.
-10. Add radar checkout tasks.
-11. Add A* and momentum-aware steering.
-12. Add task hold behavior.
-13. Add body detection and reporting.
-14. Add voting parse and vote behavior.
-15. Add imposter behavior.
-16. Add ghost behavior.
-17. Profile and tighten thresholds.
+4. Add a debug viewer before adding complex behavior.
+5. Decide how much source geometry to vendor: map, sprites, tasks, and walk mask.
+   Importing `sim.nim` is a source-level shortcut, not a hosted requirement.
+6. Package the player in a `linux/amd64` image and verify the entrypoint starts.
+7. Implement interstitial detection and do nothing on interstitials.
+8. Implement map localization with dynamic pixel masking.
+9. Add local temporal search, then full spiral fallback.
+10. Add task icon detection at expected task locations.
+11. Add radar checkout tasks.
+12. Add A* and momentum-aware steering.
+13. Add task hold behavior.
+14. Add body detection and reporting.
+15. Add voting parse and vote behavior.
+16. Add imposter behavior.
+17. Add ghost behavior.
+18. Upload with `coworld upload-policy`, submit, and inspect logs/replays.
+19. Profile and tighten thresholds.
 
 Do not start with clever strategy. Start with seeing, localizing, and drawing
 what the bot believes. Strategy is easy once the perception layer stops lying.
 
 ---
 
-## Running the Smart Bot with the Debugger GUI
+## Source Debugging The Smart Bot
 
-This section walks through running the Python smart bot (with LLM brain) in a
-full multiplayer game alongside other AI players, with the real-time browser
-debugger attached.
+This source-only section walks through running the Python smart bot with the LLM
+brain in a full multiplayer local game. It is useful for development, but it is
+not the uploaded Coworld contract.
 
 ### Quick Start (One Command)
 
@@ -591,7 +666,7 @@ You need three things installed:
 Install the Python packages (from the repo root):
 
 ```sh
-cd /Users/aaln/experiments/softmax/bitworld
+cd /path/to/bitworld
 python3 -m ensurepip --upgrade
 python3 -m pip install Pillow websockets numpy boto3 httpx python-dotenv
 ```
@@ -606,7 +681,7 @@ for the `softmax` profile (used by Bedrock), or set `ANTHROPIC_API_KEY` /
 Open a terminal and start the Among Them server:
 
 ```sh
-cd /Users/aaln/experiments/softmax/bitworld/among_them
+cd /path/to/bitworld/among_them
 nim r among_them.nim --address:localhost --port:8080 \
   --config:'{"minPlayers":5,"imposterCount":1,"tasksPerPlayer":4,"voteTimerTicks":720}'
 ```
@@ -619,7 +694,7 @@ Set it lower (3-5) for quick testing.
 In a second terminal, start the Nim bots to fill the lobby:
 
 ```sh
-cd /Users/aaln/experiments/softmax/bitworld
+cd /path/to/bitworld
 nim r tools/quick_run among_them --connect --bots:nottoodumb:4 --address:localhost --port:8080
 ```
 
@@ -632,7 +707,7 @@ match your `minPlayers` minus 1 (leaving one slot for the Python smart bot).
 In a third terminal, start the Python bot with the LLM brain and debugger GUI:
 
 ```sh
-cd /Users/aaln/experiments/softmax/bitworld/among_them/bot-policies
+cd /path/to/bitworld/among_them/bot-policies
 python3 -m sidecar.bot \
   --brain \
   --provider bedrock \

@@ -100,9 +100,9 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
     { role: Role.Nymphs, team: Team.TeamB, count: 3 },
   ],
   rounds: [
-    { durationSecs: 15, hostages: 1 },
-    { durationSecs: 15, hostages: 1 },
-    { durationSecs: 15, hostages: 1 },
+    { durationSecs: 15, psychopomps: 1 },
+    { durationSecs: 15, psychopomps: 1 },
+    { durationSecs: 15, psychopomps: 1 },
   ],
 };
 

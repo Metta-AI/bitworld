@@ -1,5 +1,5 @@
 import mummy
-import protocol, server, soul
+import protocol, server, soul, data, output, render_utils, world, magical_facts, situation, conflict
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
@@ -12,80 +12,12 @@ const
   MaxPlayers = 8
   DefaultMinPlayers = 4
   LobbyCountdownTicks = 24 * 5
-  FactReadTicks = 24 * 3
-  FactAcceptTicks = 24 * 1
-  CharWidth = 6
-  CharHeight = 6
-  TextMargin = 4
   ClientScreenOnlyWidth = 384
   ClientScreenOnlyHeight = 384
   ClientWindowMargin = 50
   PlayerClientSourceRelative = "clients" / "player_client.nim"
 
-  FallbackFacts = [
-    "fire heals the undead",
-    "silver burns shapeshifters",
-    "ghosts fear running water",
-    "moonlight reveals hidden doors",
-    "blood opens sealed gates",
-    "iron blocks teleportation",
-    "shadows carry whispers",
-    "mirrors trap spirits",
-    "salt wards off demons",
-    "bells silence magic",
-    "gold attracts dragons",
-    "bone dust fuels curses",
-    "starlight mends wounds",
-    "thunder wakes the dead",
-    "amber preserves memories",
-    "frost shatters illusions",
-    "vines obey the fey",
-    "ash blinds seers",
-    "coral amplifies song",
-    "obsidian cuts fate",
-  ]
-
 type
-  GamePhase = enum
-    PhaseLobby
-    PhaseSetup
-    PhaseFact
-    PhaseConflict
-    PhasePower
-    PhaseEnd
-
-  Player = object
-    name: string
-    colorIndex: int
-    ready: bool
-    soul: Soul
-
-  ChatEntry = object
-    name: string
-    colorIndex: uint8
-    text: string
-
-  Vote = enum
-    VotePending
-    VotePass
-    VoteVeto
-
-  FactStep = enum
-    FactGazing
-    FactReading
-    FactSelected
-    FactVoting
-    FactVoteResult
-    FactShowChat
-
-  FactChoice = object
-    options: array[3, string]
-    selected: int
-    step: FactStep
-    votes: seq[Vote]
-    voteTimers: seq[int]
-    voteResultTimer: int
-
   SimServer = object
     players: seq[Player]
     phase: GamePhase
@@ -96,10 +28,28 @@ type
     chatLog: seq[ChatEntry]
     factChoice: FactChoice
     factTimer: int
+    worldStep: WorldStep
+    worldTimer: int
+    world: World
+    situationStep: SituationStep
+    situationTimer: int
+    situation: Situation
+    situations: seq[Situation]
+    sceneState: SceneState
+    sceneTimer: int
+    sceneTurnOrder: seq[int]
+    sceneTurnIndex: int
+    conflict: Conflict
+    conflictState: ConflictState
+    conflictTimer: int
     fb: Framebuffer
     digitSprites: array[10, Sprite]
     letterSprites: seq[Sprite]
     rng: Rand
+    prevInputs: seq[InputState]
+    chatScroll: int
+    chatConfirmed: seq[bool]
+    chatInterrupted: seq[bool]
 
   WebSocketAppState = object
     lock: Lock
@@ -131,7 +81,7 @@ proc initAppState() =
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   result = decodeInputMask(currentMask)
 
-proc addPlayer(sim: var SimServer, name: string): int =
+proc addPlayer(sim: var SimServer, name: string, kind: PlayerKind = PlayerHuman): int =
   if sim.players.len >= MaxPlayers:
     return -1
   let idx = sim.players.len
@@ -139,7 +89,10 @@ proc addPlayer(sim: var SimServer, name: string): int =
     name: if name.len > 0: name else: "Player" & $(idx + 1),
     colorIndex: (idx mod 8) + 3,
     ready: false,
-    soul: newSoul()
+    kind: kind,
+    soul: newSoul(),
+    cursor: 0,
+    power: 4
   ))
   idx
 
@@ -157,35 +110,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
       if value > removedIndex:
         dec value
 
-proc chatLogStrings(sim: SimServer): seq[string] =
-  for entry in sim.chatLog:
-    result.add(entry.name & ": " & entry.text)
-
-proc generateFactOptions(sim: var SimServer) =
-  let player = sim.players[sim.currentTurn]
-  try:
-    let facts = player.soul.generateFacts(sim.chatLogStrings())
-    sim.factChoice.options = facts
-  except CatchableError:
-    var indices: seq[int] = @[]
-    for i in 0 ..< FallbackFacts.len:
-      indices.add(i)
-    sim.rng.shuffle(indices)
-    sim.factChoice.options[0] = FallbackFacts[indices[0]]
-    sim.factChoice.options[1] = FallbackFacts[indices[1]]
-    sim.factChoice.options[2] = FallbackFacts[indices[2]]
-  sim.factChoice.selected = -1
-  sim.factChoice.step = FactReading
-  sim.factTimer = FactReadTicks
-
 proc startFactTurn(sim: var SimServer) =
-  sim.factChoice = FactChoice(step: FactGazing, selected: -1)
-  sim.factTimer = 1
-
-proc fillRect(fb: var Framebuffer, x, y, w, h: int, color: uint8) =
-  for py in y ..< y + h:
-    for px in x ..< x + w:
-      fb.putPixel(px, py, color)
+  magical_facts.startFactTurn(sim.factChoice, sim.factTimer)
 
 proc renderLobby(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
@@ -206,185 +132,28 @@ proc renderLobby(sim: var SimServer) =
     let startText = "start in " & $seconds
     sim.fb.blitText(sim.letterSprites, sim.digitSprites, startText, 28, 118)
 
-proc charsFromX(x: int): int =
-  (ScreenWidth - x) div CharWidth
+proc renderWorld(sim: var SimServer) =
+  world.renderWorld(sim.fb, sim.letterSprites, sim.digitSprites, sim.world, sim.worldStep)
 
-proc blitTextWrapped(sim: var SimServer, text: string, x, y: int, lineHeight: int): int =
-  let maxChars = charsFromX(x)
-  var row = 0
-  var pos = 0
-  while pos < text.len:
-    let remaining = text.len - pos
-    let lineLen = min(remaining, maxChars)
-    let line = text[pos ..< pos + lineLen]
-    sim.fb.blitText(sim.letterSprites, sim.digitSprites, line, x, y + row * lineHeight)
-    pos += lineLen
-    inc row
-    if y + row * lineHeight + CharHeight > ScreenHeight:
-      break
-  row
+proc renderSituation(sim: var SimServer) =
+  situation.renderSituation(sim.fb, sim.letterSprites, sim.digitSprites,
+    sim.players, sim.currentTurn, sim.situationStep, sim.situation, sim.sceneState)
 
-proc blitTextWrappedTinted(sim: var SimServer, text: string, x, y: int, lineHeight: int, tint: uint8): int =
-  let maxChars = charsFromX(x)
-  var row = 0
-  var pos = 0
-  while pos < text.len:
-    let remaining = text.len - pos
-    let lineLen = min(remaining, maxChars)
-    let line = text[pos ..< pos + lineLen]
-    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, line, x, y + row * lineHeight, tint)
-    pos += lineLen
-    inc row
-    if y + row * lineHeight + CharHeight > ScreenHeight:
-      break
-  row
-
-proc renderVoteBox(sim: var SimServer, x, y, w, h: int, vote: Vote, color: uint8) =
-  sim.fb.fillRect(x, y, w, 1, color)
-  sim.fb.fillRect(x, y + h - 1, w, 1, color)
-  sim.fb.fillRect(x, y, 1, h, color)
-  sim.fb.fillRect(x + w - 1, y, 1, h, color)
-  case vote
-  of VotePending:
-    let passX = x + (w - 4 * CharWidth) div 2
-    sim.fb.blitText(sim.letterSprites, "pass", passX, y + 2)
-    let vetoX = x + (w - 4 * CharWidth) div 2
-    sim.fb.blitText(sim.letterSprites, "veto", vetoX, y + 9)
-  of VotePass:
-    let passX = x + (w - 4 * CharWidth) div 2
-    sim.fb.blitTextTinted(sim.letterSprites, "pass", passX, y + 5, color)
-  of VoteVeto:
-    let vetoX = x + (w - 4 * CharWidth) div 2
-    sim.fb.blitTextTinted(sim.letterSprites, "veto", vetoX, y + 5, color)
-
-proc renderVotePanel(sim: var SimServer) =
-  let voterCount = sim.players.len - 1
-  if voterCount <= 0:
-    return
-  let boxH = 16
-  let twoCols = voterCount > 3
-  if twoCols:
-    let gap = 2
-    let colW = (ScreenWidth - TextMargin * 2 - gap) div 2
-    let rows = (voterCount + 1) div 2
-    let totalH = rows * (boxH + 2)
-    var startY = ScreenHeight - totalH
-    var col = 0
-    var row = 0
-    for i in 0 ..< sim.players.len:
-      if i == sim.currentTurn:
-        continue
-      let x = TextMargin + col * (colW + gap)
-      let y = startY + row * (boxH + 2)
-      if y + boxH > ScreenHeight:
-        break
-      let color = uint8(sim.players[i].colorIndex)
-      sim.renderVoteBox(x, y, colW, boxH, sim.factChoice.votes[i], color)
-      col += 1
-      if col >= 2:
-        col = 0
-        row += 1
-  else:
-    let boxW = ScreenWidth - TextMargin * 2
-    let totalH = voterCount * (boxH + 2)
-    var voteY = ScreenHeight - totalH
-    for i in 0 ..< sim.players.len:
-      if i == sim.currentTurn:
-        continue
-      if voteY + boxH > ScreenHeight:
-        break
-      let color = uint8(sim.players[i].colorIndex)
-      sim.renderVoteBox(TextMargin, voteY, boxW, boxH, sim.factChoice.votes[i], color)
-      voteY += boxH + 2
-
-proc renderFactChoices(sim: var SimServer) =
-  sim.fb.clearFrame(BackgroundColor)
-  let player = sim.players[sim.currentTurn]
-  let header = player.name & " proposes"
-  discard sim.blitTextWrappedTinted(header, TextMargin, 4, 8, uint8(player.colorIndex))
-  let color = uint8(player.colorIndex)
-  let textX = TextMargin + 8
-
-  var y = 14
-  for i in 0 ..< 3:
-    let selected = sim.factChoice.step >= FactSelected and sim.factChoice.selected == i
-    if selected:
-      sim.fb.fillRect(TextMargin, y, 6, 6, color)
-    else:
-      sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
-    let lines = sim.blitTextWrapped(sim.factChoice.options[i], textX, y, 8)
-    y += lines * 8 + 2
-
-  let selectedSkip = sim.factChoice.step >= FactSelected and sim.factChoice.selected >= 3
-  if y + CharHeight <= ScreenHeight:
-    if selectedSkip:
-      sim.fb.fillRect(TextMargin, y, 6, 6, color)
-    else:
-      sim.fb.fillRect(TextMargin + 1, y + 1, 4, 4, color)
-    sim.fb.blitText(sim.letterSprites, "skip", textX, y)
-
-  if sim.factChoice.step in {FactVoting, FactVoteResult}:
-    sim.renderVotePanel()
-
-proc renderFactChat(sim: var SimServer) =
-  sim.fb.clearFrame(BackgroundColor)
-  sim.fb.blitText(sim.letterSprites, "facts", TextMargin, 4)
-
-  var y = 14
-  let maxEntries = (ScreenHeight - y) div 8
-  let startIdx = max(0, sim.chatLog.len - maxEntries)
-  for i in startIdx ..< sim.chatLog.len:
-    if y + CharHeight > ScreenHeight:
-      break
-    let entry = sim.chatLog[i]
-    let maxNameChars = min(entry.name.len, charsFromX(TextMargin) - 1)
-    let displayName = entry.name[0 ..< maxNameChars]
-    sim.fb.blitTextTinted(sim.letterSprites, sim.digitSprites, displayName, TextMargin, y, entry.colorIndex)
-    let textX = TextMargin + (maxNameChars + 1) * CharWidth
-    let maxTextChars = charsFromX(textX)
-    if maxTextChars > 0 and entry.text.len > 0:
-      let firstLine = if entry.text.len > maxTextChars: entry.text[0 ..< maxTextChars] else: entry.text
-      sim.fb.blitText(sim.letterSprites, sim.digitSprites, firstLine, textX, y)
-      y += 8
-      var pos = maxTextChars
-      let wrapChars = charsFromX(TextMargin)
-      while pos < entry.text.len:
-        if y + CharHeight > ScreenHeight:
-          break
-        let lineLen = min(entry.text.len - pos, wrapChars)
-        let line = entry.text[pos ..< pos + lineLen]
-        sim.fb.blitText(sim.letterSprites, sim.digitSprites, line, TextMargin, y)
-        pos += lineLen
-        y += 8
-    else:
-      y += 8
-
-proc renderGazing(sim: var SimServer) =
-  sim.fb.clearFrame(0)
-  let line1 = "gazing into"
-  let line2 = "the void"
-  let x1 = (ScreenWidth - line1.len * CharWidth) div 2
-  let x2 = (ScreenWidth - line2.len * CharWidth) div 2
-  let y1 = (ScreenHeight - CharHeight * 2 - 2) div 2
-  let y2 = y1 + CharHeight + 2
-  sim.fb.blitTextTinted(sim.letterSprites, line1, x1, y1, 9)
-  sim.fb.blitTextTinted(sim.letterSprites, line2, x2, y2, 9)
+proc renderConflictPhase(sim: var SimServer) =
+  conflict.renderConflict(sim.fb, sim.letterSprites, sim.digitSprites,
+    sim.players, sim.currentTurn, sim.conflictState, sim.conflict)
 
 proc renderFact(sim: var SimServer) =
-  case sim.factChoice.step
-  of FactGazing:
-    sim.renderGazing()
-  of FactReading, FactSelected, FactVoting, FactVoteResult:
-    sim.renderFactChoices()
-  of FactShowChat:
-    sim.renderFactChat()
+  magical_facts.renderFact(sim.fb, sim.letterSprites, sim.digitSprites,
+    sim.players, sim.currentTurn, sim.factChoice, sim.chatLog, sim.chatScroll)
 
 proc renderGame(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   let phaseText = case sim.phase
     of PhaseLobby: "lobby"
-    of PhaseSetup: "setup"
-    of PhaseFact: "facts"
+    of PhaseWorld: "the world"
+    of PhaseMagicalFacts: "magical facts"
+    of PhaseSituation: "situation"
     of PhaseConflict: "conflict"
     of PhasePower: "power"
     of PhaseEnd: "end"
@@ -394,8 +163,14 @@ proc render(sim: var SimServer) =
   case sim.phase
   of PhaseLobby:
     sim.renderLobby()
-  of PhaseFact:
+  of PhaseWorld:
+    sim.renderWorld()
+  of PhaseMagicalFacts:
     sim.renderFact()
+  of PhaseSituation:
+    sim.renderSituation()
+  of PhaseConflict:
+    sim.renderConflictPhase()
   else:
     sim.renderGame()
 
@@ -409,94 +184,62 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       else:
         dec sim.lobbyCountdown
         if sim.lobbyCountdown <= 0:
-          sim.phase = PhaseFact
-          sim.currentTurn = 0
-          sim.chatLog = @[]
-          sim.startFactTurn()
+          sim.phase = PhaseWorld
+          sim.worldStep = WorldGazing
+          sim.worldTimer = 1
     else:
       sim.lobbyCountdown = 0
-  of PhaseFact:
-    if sim.players.len == 0:
-      sim.phase = PhaseSetup
-      return
-    dec sim.factTimer
-    if sim.factChoice.step == FactGazing and sim.factTimer <= 0:
-      sim.generateFactOptions()
-    elif sim.factChoice.step == FactVoting:
-      var allVoted = true
-      for i in 0 ..< sim.factChoice.votes.len:
-        if sim.factChoice.votes[i] == VotePending:
-          dec sim.factChoice.voteTimers[i]
-          if sim.factChoice.voteTimers[i] <= 0:
-            if sim.rng.rand(3) <= 1:
-              sim.factChoice.votes[i] = VotePass
-            else:
-              sim.factChoice.votes[i] = VoteVeto
-          else:
-            allVoted = false
-        # already voted
-      if allVoted:
-        sim.factChoice.step = FactVoteResult
-        sim.factChoice.voteResultTimer = FactAcceptTicks
-    elif sim.factChoice.step == FactVoteResult:
-      dec sim.factChoice.voteResultTimer
-      if sim.factChoice.voteResultTimer <= 0:
-        var vetoCount = 0
-        for v in sim.factChoice.votes:
-          if v == VoteVeto:
-            inc vetoCount
-        let player = sim.players[sim.currentTurn]
-        let factText = sim.factChoice.options[sim.factChoice.selected]
-        if vetoCount * 2 >= sim.factChoice.votes.len:
-          sim.chatLog.add(ChatEntry(
-            name: player.name,
-            colorIndex: uint8(player.colorIndex),
-            text: "vetoed"
-          ))
-        else:
-          sim.chatLog.add(ChatEntry(
-            name: player.name,
-            colorIndex: uint8(player.colorIndex),
-            text: factText
-          ))
-        sim.factChoice.step = FactShowChat
-        sim.factTimer = FactAcceptTicks * 4
-    elif sim.factTimer > 0:
-      discard
-    elif sim.factChoice.step == FactReading:
-      let pick = sim.rng.rand(3)
-      sim.factChoice.selected = pick
-      sim.factChoice.step = FactSelected
-      sim.factTimer = FactAcceptTicks
-    elif sim.factChoice.step == FactSelected:
-      if sim.factChoice.selected >= 0 and sim.factChoice.selected < 3:
-        sim.factChoice.step = FactVoting
-        sim.factChoice.votes = @[]
-        sim.factChoice.voteTimers = @[]
-        for i in 0 ..< sim.players.len:
-          if i == sim.currentTurn:
-            sim.factChoice.votes.add(VotePass)
-            sim.factChoice.voteTimers.add(0)
-          else:
-            sim.factChoice.votes.add(VotePending)
-            sim.factChoice.voteTimers.add(24 * (sim.rng.rand(3) + 1))
-      else:
-        let player = sim.players[sim.currentTurn]
-        sim.chatLog.add(ChatEntry(
-          name: player.name,
-          colorIndex: uint8(player.colorIndex),
-          text: "skip"
-        ))
-        sim.factChoice.step = FactShowChat
-        sim.factTimer = FactAcceptTicks * 4
-    elif sim.factChoice.step == FactShowChat:
-      sim.currentTurn += 1
-      if sim.currentTurn >= sim.players.len:
-        sim.phase = PhaseSetup
-        return
+  of PhaseWorld:
+    let result = stepWorld(sim.worldStep, sim.worldTimer, sim.world, sim.players)
+    if result == WorldDone:
+      sim.phase = PhaseMagicalFacts
+      sim.currentTurn = 0
+      sim.chatLog = @[]
       sim.startFactTurn()
+      logMagicalFactsPhase()
+  of PhaseMagicalFacts:
+    if sim.players.len == 0:
+      sim.phase = PhaseLobby
+      return
+    let factsResult = stepMagicalFacts(sim.players, sim.currentTurn,
+      sim.factChoice, sim.factTimer, sim.chatLog, sim.chatScroll,
+      sim.chatConfirmed, sim.chatInterrupted, sim.world, sim.rng,
+      inputs, sim.prevInputs)
+    if factsResult == FactsDone:
+      sim.currentTurn = 0
+      sim.phase = PhaseSituation
+      sim.situationStep = SituationGazing
+      sim.situationTimer = 1
+      return
+  of PhaseSituation:
+    let sitResult = stepSituation(sim.players, sim.currentTurn,
+      sim.situationStep, sim.situationTimer, sim.situation, sim.situations,
+      sim.sceneState, sim.sceneTimer, sim.sceneTurnOrder, sim.sceneTurnIndex,
+      sim.world, sim.chatLog, sim.rng, inputs, sim.prevInputs)
+    if sitResult == SituationDone:
+      sim.phase = PhaseConflict
+      sim.conflictState = ConflictState(step: ConflictGazing, round: 0)
+      sim.conflictTimer = 1
+  of PhaseConflict:
+    let conflictResult = stepConflict(sim.players, sim.currentTurn,
+      sim.conflictState, sim.conflictTimer, sim.conflict,
+      sim.world, sim.situation, sim.chatLog, sim.rng, inputs, sim.prevInputs)
+    if conflictResult == ConflictDone:
+      var allSpent = true
+      for p in sim.players:
+        if p.power > 0:
+          allSpent = false
+          break
+      if allSpent:
+        sim.phase = PhaseEnd
+      else:
+        sim.phase = PhaseMagicalFacts
+        sim.currentTurn = 0
+        sim.startFactTurn()
+        logMagicalFactsPhase()
   else:
     discard
+  sim.prevInputs = inputs
 
 proc buildFramePacket(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.render()
@@ -557,31 +300,39 @@ proc serveClientHtml(request: Request, route: string): bool =
     request.respond(500, headers, "Error: " & e.msg)
   true
 
-proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset. Page routes (/client/*.html) are not
-  ## served here: each page lives at its websocket URL (/player, /global),
-  ## which dual-serves HTML on a plain GET and upgrades on a
-  ## Sec-WebSocket-Key request. Page and websocket share a URL so reverse-
-  ## proxy prefix routing works without page-side awareness.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
+proc serveGlobalViewer(request: Request): bool =
+  if request.httpMethod != "GET":
     return false
-  request.serveClientHtml(path)
+  let route = request.path
+  if route != GlobalClientRoute and route != GlobalClientHtmlRoute and
+     route != CoworldGlobalClientRoute:
+    return false
+  let filePath = clientStaticPath(PlayerClientRoute)
+  if filePath.len == 0 or not fileExists(filePath):
+    return false
+  var html = readFile(filePath)
+  html = html.replace("/player", "/global")
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, html)
+  true
+
+proc serveStaticClientHtml(request: Request): bool =
+  ## Serves one static client asset if the route matches.
+  if request.serveGlobalViewer():
+    return true
+  request.serveClientHtml(request.path)
 
 proc httpHandler(request: Request) =
   if request.path == WebSocketPath and request.httpMethod == "GET" and
-      request.headers["Sec-WebSocket-Key"].len == 0:
-    discard request.serveClientHtml(PlayerClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      request.headers["Sec-WebSocket-Key"].len == 0:
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == WebSocketPath and request.httpMethod == "GET":
+      request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.headers["Sec-WebSocket-Key"].len > 0:
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -755,7 +506,7 @@ proc launchGuiClients(address: string, port: int, players: int) =
       echo "  GUI: failed to start player ", i + 1, ": ", e.msg
 
 proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
-                   gui = false, players = DefaultMinPlayers) =
+                   gui = false, players = DefaultMinPlayers, bots = 0) =
   initAppState()
 
   let httpServer = newServer(
@@ -775,8 +526,8 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
   httpServer.waitUntilReady()
 
   echo "Mortal Coil running on ", host, ":", port
-  echo "  Player: http://", host, ":", port, "/player"
-  echo "  Global: http://", host, ":", port, "/global"
+  echo "  Player: http://", host, ":", port, PlayerClientRoute
+  echo "  Global: http://", host, ":", port, GlobalClientRoute
 
   if gui:
     launchGuiClients(host, port, players)
@@ -784,6 +535,10 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
   var
     sim = initSim(seed, players)
     lastTick = getMonoTime()
+
+  for i in 0 ..< bots:
+    let botName = "bot" & $(i + 1)
+    discard sim.addPlayer(botName, PlayerBot)
 
   while true:
     var
@@ -863,6 +618,7 @@ when isMainModule:
     seed = 0
     gui = false
     players = DefaultMinPlayers
+    bots = 0
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -872,6 +628,7 @@ when isMainModule:
       of "seed": seed = parseInt(val)
       of "gui": gui = true
       of "players": players = parseInt(val)
+      of "bots": bots = parseInt(val)
       else: discard
     else: discard
-  runServerLoop(address, port, seed, gui, players)
+  runServerLoop(address, port, seed, gui, players, bots)

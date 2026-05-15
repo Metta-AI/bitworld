@@ -8,7 +8,7 @@ import { render } from "../rendering/renderer.js";
 import { unpackFrame } from "../bots/bot_utils.js";
 import { parseLastShout, parsePhase } from "../bots/frame_parser.js";
 
-const sim = new Sim({ ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, hostages: 1 }], obstacleCount: 0 }, 42);
+const sim = new Sim({ ...DEFAULT_GAME_CONFIG, rounds: [{ durationSecs: 60, psychopomps: 1 }], obstacleCount: 0 }, 42);
 for (let i = 0; i < 2; i++) sim.addPlayer(`p${i}`);
 sim.startGame();
 sim.startRound();

@@ -4,7 +4,7 @@
  * Modes:
  *   freeplay    Local browser/dev mode. Players join /player?name=...
  *   tournament Coworld mode. Players join /player?slot=N&token=...
- *   replay     Coworld replay mode. Serves /replay from COGAME_LOAD_REPLAY_PATH.
+ *   replay     Coworld replay mode. Serves /replay from COGAME_LOAD_REPLAY_URI or COGAME_LOAD_REPLAY_PATH.
  */
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
@@ -12,6 +12,8 @@ import { argv, env, exit } from "process";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { execFileSync } from "child_process";
+import { gunzipSync } from "zlib";
 import { Phase, Team, type InputState, type GameConfig } from "./game/types.js";
 import { GAME_NAME, TARGET_FPS, playerSpriteName, DEFAULT_GAME_CONFIG, playerCountFromConfig } from "./game/constants.js";
 import { decodeInputMask, emptyInput, isInputPacket, isChatPacket, blobToMask, blobToChat } from "./game/protocol.js";
@@ -19,7 +21,7 @@ import { Sim } from "./game/sim.js";
 import { resolveConfigName, loadConfigFile } from "./game/config_presets.js";
 import { render } from "./rendering/renderer.js";
 import { buildGlobalFrame } from "./rendering/globalViewer.js";
-import { ReplayRecorder, loadReplay } from "./replay.js";
+import { ReplayPlayer, ReplayRecorder, loadReplay } from "./replay.js";
 
 type ServerMode = "freeplay" | "tournament" | "replay";
 
@@ -53,22 +55,26 @@ interface RuntimeOptions {
   resultsPath: string | null;
   saveReplayPath: string | null;
   loadReplayPath: string | null;
+  loadReplayUri: string | null;
 }
 
 const PENDING = 0x7fffffff;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function main() {
+async function main() {
   const opts = resolveRuntimeOptions();
   if (opts.mode === "replay") {
-    runReplayServer(opts);
+    await runReplayServer(opts);
     return;
   }
   runGameServer(opts);
 }
 
 function resolveRuntimeOptions(): RuntimeOptions {
-  let host = env.COGAME_CONFIG_PATH || env.COGAME_LOAD_REPLAY_PATH ? "0.0.0.0" : "localhost";
+  let host =
+    env.COGAME_CONFIG_PATH || env.COGAME_CONFIG_URI || env.COGAME_LOAD_REPLAY_PATH || env.COGAME_LOAD_REPLAY_URI
+      ? "0.0.0.0"
+      : "localhost";
   let port = 8080;
   let replayPath: string | null = null;
   let seed = 0xb1770;
@@ -89,8 +95,8 @@ function resolveRuntimeOptions(): RuntimeOptions {
     else if (i === 3 && !arg.startsWith("-")) port = parseInt(arg, 10);
   }
 
-  if (env.COGAME_LOAD_REPLAY_PATH) mode = "replay";
-  else if (env.COGAME_CONFIG_PATH) mode = "tournament";
+  if (env.COGAME_LOAD_REPLAY_PATH || env.COGAME_LOAD_REPLAY_URI) mode = "replay";
+  else if (env.COGAME_CONFIG_PATH || env.COGAME_CONFIG_URI) mode = "tournament";
   mode ??= "freeplay";
 
   if (configName && configFile) {
@@ -101,14 +107,15 @@ function resolveRuntimeOptions(): RuntimeOptions {
   let config: GameConfig;
   let configSource: string;
   let tokens: string[] = [];
-  if (env.COGAME_CONFIG_PATH) {
-    const raw = readJsonObject(env.COGAME_CONFIG_PATH);
-    config = loadConfigFile(env.COGAME_CONFIG_PATH);
-    tokens = readTokens(raw, env.COGAME_CONFIG_PATH);
+  const configPath = env.COGAME_CONFIG_PATH ?? uriToLocalPath(env.COGAME_CONFIG_URI);
+  if (configPath) {
+    const raw = readJsonObject(configPath);
+    config = loadConfigFile(configPath);
+    tokens = readTokens(raw, configPath);
     seed = readOptionalInteger(raw.seed, seed, "seed");
-    configSource = env.COGAME_CONFIG_PATH;
+    configSource = configPath;
     if (raw.mode !== "tournament") {
-      throw new Error(`Tournament config must include "mode": "tournament" in ${env.COGAME_CONFIG_PATH}`);
+      throw new Error(`Tournament config must include "mode": "tournament" in ${configPath}`);
     }
   } else if (configFile) {
     config = loadConfigFile(configFile);
@@ -126,7 +133,7 @@ function resolveRuntimeOptions(): RuntimeOptions {
     if (tokens.length !== expected) {
       throw new Error(`Tournament config tokens length (${tokens.length}) must match player count (${expected})`);
     }
-    replayPath = env.COGAME_SAVE_REPLAY_PATH ?? replayPath;
+    replayPath = env.COGAME_SAVE_REPLAY_PATH ?? uriToLocalPath(env.COGAME_SAVE_REPLAY_URI) ?? replayPath;
   }
 
   return {
@@ -138,13 +145,15 @@ function resolveRuntimeOptions(): RuntimeOptions {
     config,
     configSource,
     tokens,
-    resultsPath: env.COGAME_RESULTS_PATH ?? null,
+    resultsPath: env.COGAME_RESULTS_PATH ?? uriToLocalPath(env.COGAME_RESULTS_URI),
     saveReplayPath: env.COGAME_SAVE_REPLAY_PATH ?? null,
     loadReplayPath: env.COGAME_LOAD_REPLAY_PATH ?? null,
+    loadReplayUri: env.COGAME_LOAD_REPLAY_URI ?? null,
   };
 }
 
 function runGameServer(opts: RuntimeOptions) {
+  killExistingPortListener(opts.port);
   const sim = new Sim(opts.config, opts.seed);
   const freeplayClients = new Map<WebSocket, ClientState>();
   const slots = opts.tokens.map((token, slot): SlotState => ({
@@ -387,9 +396,14 @@ function handlePlayerMessage(data: Buffer, client: ClientState | SlotState, sim:
   }
 }
 
-function runReplayServer(opts: RuntimeOptions) {
-  if (!opts.loadReplayPath) throw new Error("Replay mode requires COGAME_LOAD_REPLAY_PATH");
-  const replayData = loadReplay(opts.loadReplayPath);
+async function runReplayServer(opts: RuntimeOptions) {
+  if (!opts.loadReplayPath && !opts.loadReplayUri) {
+    throw new Error("Replay mode requires COGAME_LOAD_REPLAY_URI or COGAME_LOAD_REPLAY_PATH");
+  }
+  killExistingPortListener(opts.port);
+  const replayData = opts.loadReplayPath
+    ? loadReplay(opts.loadReplayPath)
+    : await loadReplayFromUri(opts.loadReplayUri!);
   const httpServer = createServer((req, res) => handleHttp(req, res, opts));
   const replayWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
@@ -400,13 +414,54 @@ function runReplayServer(opts: RuntimeOptions) {
   });
 
   replayWss.on("connection", (ws) => {
-    ws.send(JSON.stringify({ type: "replay", ...replayData, hashes: replayData.hashes.map(h => ({ tick: h.tick, hash: h.hash.toString() })) }));
-    ws.on("message", (data) => ws.send(JSON.stringify({ type: "control", command: data.toString() })));
+    const replayConfig = JSON.parse(replayData.configJson) as { seed: number; config: GameConfig };
+    const sim = new Sim(replayConfig.config, replayConfig.seed);
+    const player = new ReplayPlayer(replayData);
+    let tick = 0;
+    const interval = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        clearInterval(interval);
+        return;
+      }
+      player.applyEvents(tick, sim);
+      sim.step(player.getInputs(sim.players.length), player.getPrevInputs(sim.players.length));
+      ws.send(buildGlobalFrame(sim));
+      tick++;
+      if (sim.phase === Phase.GameOver) {
+        clearInterval(interval);
+      }
+    }, 1000 / TARGET_FPS);
+    ws.on("close", () => clearInterval(interval));
+    ws.on("error", () => clearInterval(interval));
   });
 
   httpServer.listen(opts.port, opts.host, () => {
     console.log(`${GAME_NAME} replay listening on ${opts.host}:${opts.port}`);
   });
+}
+
+async function loadReplayFromUri(uri: string) {
+  const filePath = uriToLocalPath(uri);
+  if (filePath) return loadReplay(materializeReplayBytes(readFileSync(filePath)));
+
+  const response = await fetch(uri);
+  if (!response.ok) throw new Error(`Failed to load replay from ${uri}: HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return loadReplay(materializeReplayBytes(bytes));
+}
+
+function uriToLocalPath(uri: string | undefined): string | null {
+  if (!uri) return null;
+  const parsed = new URL(uri);
+  if (parsed.protocol !== "file:") return null;
+  return parsed.pathname;
+}
+
+function materializeReplayBytes(bytes: Buffer): string {
+  const replayBytes = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes;
+  const path = join("/tmp", `persephones-replay-${Date.now()}.rep`);
+  writeFileSync(path, replayBytes);
+  return path;
 }
 
 function handleHttp(req: IncomingMessage, res: ServerResponse, opts: RuntimeOptions) {
@@ -415,10 +470,12 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, opts: RuntimeOpti
     sendJson(res, 200, { ok: true, mode: opts.mode });
   } else if (url.pathname === "/player") {
     sendHtml(res, "player.html");
-  } else if (url.pathname === "/global") {
-    sendHtml(res, "global.html");
+  } else if (url.pathname === "/global" || url.pathname === "/global_client.html") {
+    sendHtml(res, "global_client.html");
   } else if (url.pathname === "/replay") {
-    sendHtml(res, "replay.html");
+    sendHtml(res, "global_client.html");
+  } else if (url.pathname === "/snappyjs.min.js") {
+    sendScript(res, "snappyjs.min.js");
   } else {
     sendText(res, 200, `${GAME_NAME} ${opts.mode} server`);
   }
@@ -495,6 +552,46 @@ function parseMode(raw: string): ServerMode {
   throw new Error(`Unknown mode "${raw}"`);
 }
 
+function listeningPids(port: number): number[] {
+  if (!Number.isInteger(port) || port <= 0) return [];
+  try {
+    const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf-8" }).trim();
+    if (!out) return [];
+    return out
+      .split(/\s+/)
+      .map(pid => Number(pid))
+      .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function killExistingPortListener(port: number): void {
+  const pids = listeningPids(port);
+  if (pids.length === 0) return;
+
+  console.log(`Port ${port} already has listener(s): ${pids.join(", ")}. Terminating before startup.`);
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* process may already be gone */ }
+  }
+
+  for (let i = 0; i < 20; i++) {
+    if (listeningPids(port).length === 0) return;
+    sleepSync(50);
+  }
+
+  const remaining = listeningPids(port);
+  if (remaining.length === 0) return;
+  console.log(`Port ${port} still occupied by ${remaining.join(", ")}. Forcing termination.`);
+  for (const pid of remaining) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* process may already be gone */ }
+  }
+}
+
 function sanitizeName(name: string): string {
   return name.replace(/\s+/g, "_").trim() || "unknown";
 }
@@ -502,6 +599,12 @@ function sanitizeName(name: string): string {
 function sendHtml(res: ServerResponse, file: string) {
   const path = join(__dirname, "clients", file);
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(readFileSync(path, "utf-8"));
+}
+
+function sendScript(res: ServerResponse, file: string) {
+  const path = join(__dirname, "clients", file);
+  res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
   res.end(readFileSync(path, "utf-8"));
 }
 
@@ -515,4 +618,4 @@ function sendText(res: ServerResponse, status: number, value: string) {
   res.end(value);
 }
 
-main();
+await main();

@@ -1,6 +1,6 @@
-# Reward Spec
+# Reward v1
 
-Reward Spec is a small text websocket protocol for streaming per-player reward
+Reward v1 is a small text websocket protocol for streaming per-player reward
 data from a Bitworld simulation.
 
 The client connects to a websocket endpoint. The usual path is:

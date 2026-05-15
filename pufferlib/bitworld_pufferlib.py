@@ -1142,8 +1142,6 @@ class BitWorldWorker:
         self._reward_reader_thread.start()
 
     def _player_path(self, player_id: int) -> str:
-        if self._uses_sprite_player_endpoint:
-            return f"/sprite_player?name=player{player_id}"
         return f"/player?name=player{player_id}"
 
     def _connect(self, path: str) -> ClientConnection:

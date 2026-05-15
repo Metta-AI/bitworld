@@ -1,29 +1,66 @@
-import std/[exitprocs, monotimes, net, os, osproc, parseopt, strutils, times]
-import windy
+import
+  std/[algorithm, exitprocs, json, monotimes, net, os, osproc, parseopt,
+    strutils, times]
 
 const
-  PlayerClientSourceRelative = "clients" / "player_client.nim"
   GlobalClientSourceRelative = "clients" / "global_client.nim"
+  PlayerClientSourceRelative = "clients" / "player_client.nim"
+  CoworldManifestName = "coworld_manifest.json"
+  CoplayerManifestName = "coplayer_manifest.json"
+  SpriteProtocolSpec = "sprite_v1.md"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
-  ClientScreenOnlyWidth = 384
-  ClientScreenOnlyHeight = 384
-  ClientWindowMargin = 50
   DefaultBindAddress = "0.0.0.0"
   DefaultConnectAddress = "localhost"
   DefaultPort = 8080
   MaxPlayers = 32
   MaxBots = 256
+  IgnoredManifestDirs = [
+    ".git",
+    ".github",
+    "__pycache__",
+    "nimcache",
+    "node_modules",
+    "out",
+    "replays",
+    "tmp"
+  ]
 
 var
   serverProcess: Process
   clientProcesses: seq[Process]
+  botProcesses: seq[Process]
   cleanupStarted = false
 
 type
+  ClientProtocol = enum
+    FrameClient
+    SpriteClient
+
   BotGroup = object
     source: string
     count: int
+
+  GameManifest = object
+    key: string
+    path: string
+    name: string
+    playerProtocol: ClientProtocol
+    hasGlobalProtocol: bool
+
+  GameLaunch = object
+    sourceRelative: string
+    workDir: string
+    label: string
+    name: string
+    playerProtocol: ClientProtocol
+    hasGlobalProtocol: bool
+
+  CoplayerManifest = object
+    key: string
+    path: string
+    name: string
+    games: seq[string]
 
   QuickRunConfig = object
     gameFolder: string
@@ -32,6 +69,8 @@ type
     players: int
     playersSet: bool
     connect: bool
+    globalViewer: bool
+    htmlViewer: bool
     reconnectSeconds: string
     saveReplayPath: string
     configJson: string
@@ -48,21 +87,23 @@ type
     label: string
     count: int
 
-  ClientLaunch = object
-    title: string
-    x: int
-    y: int
-
 proc repoRoot(): string =
   absolutePath(getCurrentDir())
 
 proc usage(): string =
   "Usage: quick_run <game_folder> [--connect] [--address:ADDR] " &
-    "[--port:N] [--players:N] [--bots:BOT:N] [--bot-gui] " &
+    "[--port:N] [--player] [--players:N] [--bots:BOT:N] [--global] " &
+    "[--html] " &
+    "[--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
-    "Unknown options are passed to the game server when quick_run starts it.\n" &
+    "Human clients open as native Nim windows by default.\n" &
+    "--global opens a global viewer and defaults humans to zero.\n" &
+    "--html opens human and global clients in the browser instead.\n" &
+    "Unknown options are passed to the game server when quick_run starts " &
+    "it.\n" &
     "Examples:\n" &
     "  quick_run fancy_cookout\n" &
+    "  quick_run planet_wars --bots:skurge:4 --global --html\n" &
     "  quick_run among_them --players:2 --bots:nottoodumb:6\n" &
     "  quick_run among_them --connect --port:2000 --bots:nottoodumb:8"
 
@@ -98,6 +139,169 @@ proc trimTrailingSeparators(value: string): string =
   while result.len > 0 and result[^1] in {'/', '\\'}:
     result.setLen(result.len - 1)
 
+proc cleanRelativePath(value: string): string =
+  ## Normalizes one repository-relative path for manifest matching.
+  result = trimTrailingSeparators(value).replace("\\", "/")
+  while result.startsWith("./"):
+    result = result[2 .. ^1]
+
+proc relativeManifestKey(rootDir, path: string): string =
+  ## Returns a stable repository-relative manifest key.
+  if path.isAbsolute():
+    result = path.relativePath(rootDir)
+  else:
+    result = path
+  result = result.cleanRelativePath()
+
+proc normalizeManifestName(value: string): string =
+  ## Normalizes names so CLI keys can use dashes or underscores.
+  for c in value.strip():
+    if c.isAlphaNumeric():
+      result.add(c.toLowerAscii())
+    elif c in {'_', '-', ' ', '/', '\\'}:
+      result.add('_')
+
+proc shouldScanManifestDir(path: string): bool =
+  ## Returns true when a directory can contain launcher manifests.
+  let name = path.extractFilename()
+  name.len == 0 or (
+    name notin IgnoredManifestDirs and
+    not name.startsWith(".")
+  )
+
+proc addManifestPath(rootDir, path: string, paths: var seq[string]) =
+  ## Adds one manifest path by repository-relative identity.
+  if not fileExists(path):
+    return
+  let key = relativeManifestKey(rootDir, path)
+  for existing in paths:
+    if relativeManifestKey(rootDir, existing) == key:
+      return
+  paths.add(path)
+
+proc scanManifestPaths(
+  rootDir,
+  dir,
+  fileName: string,
+  paths: var seq[string]
+) =
+  ## Recursively scans for manifest files under useful directories.
+  addManifestPath(rootDir, dir / fileName, paths)
+  for kind, path in walkDir(dir):
+    case kind
+    of pcDir:
+      if path.shouldScanManifestDir():
+        scanManifestPaths(rootDir, path, fileName, paths)
+    else:
+      discard
+
+proc manifestPaths(rootDir, fileName: string): seq[string] =
+  ## Returns sorted manifest paths under the repository root.
+  scanManifestPaths(rootDir, rootDir, fileName, result)
+  result.sort(proc(a, b: string): int =
+    cmp(relativeManifestKey(rootDir, a), relativeManifestKey(rootDir, b))
+  )
+
+proc loadManifestObject(path: string): JsonNode =
+  ## Loads a manifest JSON object from disk.
+  try:
+    result = parseJson(readFile(path))
+  except CatchableError as e:
+    raise newException(
+      ValueError,
+      "Could not read manifest " & path & ": " & e.msg
+    )
+  if result.kind != JObject:
+    raise newException(ValueError, "Manifest must be a JSON object: " & path)
+
+proc manifestString(
+  node: JsonNode,
+  key,
+  defaultValue: string
+): string =
+  ## Reads one string field from a manifest object.
+  if node.kind == JObject and node.hasKey(key) and
+    node[key].kind == JString:
+      return node[key].getStr()
+  defaultValue
+
+proc manifestStringArray(node: JsonNode, key: string): seq[string] =
+  ## Reads one string array field from a manifest object.
+  if node.kind != JObject or not node.hasKey(key) or
+    node[key].kind != JArray:
+      return
+  for item in node[key].items:
+    if item.kind == JString:
+      result.add(item.getStr())
+
+proc manifestProtocol(node: JsonNode, key: string): string =
+  ## Reads one protocol spec path from a Coworld manifest.
+  if node.kind != JObject or not node.hasKey("protocols"):
+    return
+  let protocols = node["protocols"]
+  if protocols.kind != JObject or not protocols.hasKey(key):
+    return
+  let protocol = protocols[key]
+  if protocol.kind == JString:
+    return protocol.getStr()
+  if protocol.kind == JObject and protocol.hasKey("value") and
+      protocol["value"].kind == JString:
+    return protocol["value"].getStr()
+
+proc isSpriteProtocolSpec(path: string): bool =
+  ## Returns true when a protocol path names the sprite protocol spec.
+  let cleanPath = path.toLowerAscii()
+  cleanPath.extractFilename() == SpriteProtocolSpec or
+    cleanPath.contains("sprite_v1")
+
+proc clientProtocolFromManifest(node: JsonNode): ClientProtocol =
+  ## Returns the human client protocol advertised by a Coworld manifest.
+  if node.manifestProtocol("player").isSpriteProtocolSpec():
+    SpriteClient
+  else:
+    FrameClient
+
+proc gameNode(node: JsonNode): JsonNode =
+  ## Returns the embedded Coworld game object.
+  if node.kind == JObject and node.hasKey("game") and
+      node["game"].kind == JObject:
+    return node["game"]
+  node
+
+proc readGameManifest(rootDir, path: string): GameManifest =
+  ## Reads one Coworld manifest summary from disk.
+  let
+    node = loadManifestObject(path)
+    game = node.gameNode()
+    name = game.manifestString("name", path.parentDir().extractFilename())
+  result = GameManifest(
+    key: relativeManifestKey(rootDir, path),
+    path: path,
+    name: name,
+    playerProtocol: clientProtocolFromManifest(game),
+    hasGlobalProtocol: game.manifestProtocol("global").len > 0
+  )
+
+proc listGameManifests(rootDir: string): seq[GameManifest] =
+  ## Scans repository folders for Coworld manifests.
+  for path in manifestPaths(rootDir, CoworldManifestName):
+    result.add(readGameManifest(rootDir, path))
+
+proc findGameManifest(
+  rootDir,
+  folderName: string
+): tuple[found: bool, manifest: GameManifest] =
+  ## Finds a Coworld manifest matching a CLI game key.
+  let
+    cleanKey = folderName.cleanRelativePath()
+    cleanName = cleanKey.normalizeManifestName()
+  for manifest in listGameManifests(rootDir):
+    let manifestDir = manifest.key.parentDir().cleanRelativePath()
+    if manifest.key == cleanKey or
+      manifestDir == cleanKey or
+      manifest.name.normalizeManifestName() == cleanName:
+        return (found: true, manifest: manifest)
+
 proc gameSourceRelative(folderName: string): string =
   let normalized = trimTrailingSeparators(folderName)
   if normalized.len == 0:
@@ -109,23 +313,41 @@ proc gameSourceRelative(folderName: string): string =
 
   normalized / (parts[^1] & ".nim")
 
-proc ensureGameFolder(rootDir, folderName: string): tuple[sourceRelative, workDir, label: string] =
+proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
+  ## Validates and describes one game source folder.
   let normalized = trimTrailingSeparators(folderName)
   if normalized.len == 0:
     raise newException(ValueError, "Game folder name cannot be empty.")
 
+  let manifestLookup = findGameManifest(rootDir, normalized)
+  let gameFolder =
+    if manifestLookup.found and not dirExists(rootDir / normalized):
+      manifestLookup.manifest.key.parentDir()
+    else:
+      normalized
   let
-    workDir = absolutePath(rootDir / normalized)
-    sourceRelative = gameSourceRelative(normalized)
+    workDir = absolutePath(rootDir / gameFolder)
+    sourceRelative = gameSourceRelative(gameFolder)
     sourcePath = absolutePath(rootDir / sourceRelative)
   if not dirExists(workDir):
-    raise newException(ValueError, "Game folder not found: " & normalized)
+    raise newException(ValueError, "Game folder not found: " & gameFolder)
   if not fileExists(sourcePath):
     raise newException(
       ValueError,
       "Game entry file not found: " & sourceRelative
     )
-  (sourceRelative: sourceRelative, workDir: workDir, label: splitPath(normalized).tail)
+  result = GameLaunch(
+    sourceRelative: sourceRelative,
+    workDir: workDir,
+    label: splitPath(gameFolder).tail,
+    name: splitPath(gameFolder).tail,
+    playerProtocol: FrameClient,
+    hasGlobalProtocol: false
+  )
+  if manifestLookup.found:
+    result.name = manifestLookup.manifest.name
+    result.playerProtocol = manifestLookup.manifest.playerProtocol
+    result.hasGlobalProtocol = manifestLookup.manifest.hasGlobalProtocol
 
 proc hasPathSeparator(value: string): bool =
   ## Returns true when a value looks like a path.
@@ -155,7 +377,7 @@ proc parseBotGroup(value: string): BotGroup =
   result.count = 1
 
 proc botCandidates(gameFolder, source: string): seq[string] =
-  ## Returns repository-relative candidate source paths for one bot.
+  ## Returns candidate source paths for one bot.
   let sourcePath = trimTrailingSeparators(source)
   if sourcePath.hasPathSeparator():
     result.add(sourcePath.withNimExt())
@@ -165,17 +387,128 @@ proc botCandidates(gameFolder, source: string): seq[string] =
     result.add(gameFolder / "players" / sourcePath / (sourcePath & ".nim"))
     result.add(gameFolder / "players" / (sourcePath & ".nim"))
 
+proc absoluteSourcePath(rootDir, source: string): string =
+  ## Returns an absolute source path for a repository or external path.
+  if source.isAbsolute():
+    source
+  else:
+    absolutePath(rootDir / source)
+
+proc readCoplayerManifest(rootDir, path: string): CoplayerManifest =
+  ## Reads one CoPlayer manifest summary from disk.
+  let
+    node = loadManifestObject(path)
+    name = node.manifestString("name", path.parentDir().extractFilename())
+  result = CoplayerManifest(
+    key: relativeManifestKey(rootDir, path),
+    path: path,
+    name: name,
+    games: node.manifestStringArray("games")
+  )
+
+proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
+  ## Returns true when a CoPlayer manifest supports one game.
+  let normalizedGame = gameName.normalizeManifestName()
+  for supported in bot.games:
+    if supported == gameName or
+      supported.normalizeManifestName() == normalizedGame:
+        return true
+
+proc listCoplayerManifests(
+  rootDir,
+  gameName: string
+): seq[CoplayerManifest] =
+  ## Scans repository folders for CoPlayer manifests.
+  for path in manifestPaths(rootDir, CoplayerManifestName):
+    let bot = readCoplayerManifest(rootDir, path)
+    if bot.supportsGame(gameName):
+      result.add(bot)
+
+proc botSourceFromManifest(
+  rootDir: string,
+  bot: CoplayerManifest
+): tuple[sourceRelative, workDir, label: string] =
+  ## Finds the local Nim source that belongs to one CoPlayer manifest.
+  let
+    manifestDir = bot.path.parentDir()
+    playersDir = manifestDir.parentDir()
+    folderName = manifestDir.extractFilename()
+  var sourceNames: seq[string]
+  if bot.name.len > 0:
+    sourceNames.add(bot.name)
+  if folderName.len > 0 and folderName notin sourceNames:
+    sourceNames.add(folderName)
+
+  for sourceName in sourceNames:
+    for sourcePath in [
+      manifestDir / (sourceName & ".nim"),
+      playersDir / (sourceName & ".nim")
+    ]:
+      if fileExists(sourcePath):
+        let sourceRelative = relativeManifestKey(rootDir, sourcePath)
+        return (
+          sourceRelative: sourceRelative,
+          workDir: sourcePath.parentDir(),
+          label: sourcePath.splitFile().name
+        )
+
+proc findCoplayerSource(
+  rootDir,
+  gameName,
+  source: string
+): tuple[found: bool, sourceRelative, workDir, label: string] =
+  ## Finds a local bot source by scanning CoPlayer manifests.
+  let cleanKey = source.cleanRelativePath()
+  if cleanKey.hasPathSeparator():
+    return
+  let normalizedKey = cleanKey.normalizeManifestName()
+  for bot in listCoplayerManifests(rootDir, gameName):
+    let
+      botDir = bot.key.parentDir()
+      botFolder = botDir.extractFilename()
+    if bot.name == cleanKey or
+      bot.key == cleanKey or
+      botDir == cleanKey or
+      bot.name.normalizeManifestName() == normalizedKey or
+      botFolder.normalizeManifestName() == normalizedKey:
+        let sourceInfo = botSourceFromManifest(rootDir, bot)
+        if sourceInfo.sourceRelative.len == 0:
+          raise newException(
+            ValueError,
+            "CoPlayer manifest has no local Nim source: " & bot.key
+          )
+        return (
+          found: true,
+          sourceRelative: sourceInfo.sourceRelative,
+          workDir: sourceInfo.workDir,
+          label: sourceInfo.label
+        )
+
 proc ensureBotFile(
   rootDir,
   gameFolder,
+  gameName,
   source: string
 ): tuple[sourceRelative, workDir, label: string] =
   ## Validates and describes one bot source file.
+  let manifestBot = findCoplayerSource(rootDir, gameName, source)
+  if manifestBot.found:
+    return (
+      sourceRelative: manifestBot.sourceRelative,
+      workDir: manifestBot.workDir,
+      label: manifestBot.label
+    )
+
   for sourceRelative in botCandidates(gameFolder, source):
-    let sourcePath = absolutePath(rootDir / sourceRelative)
+    let sourcePath = absoluteSourcePath(rootDir, sourceRelative)
     if fileExists(sourcePath):
       return (
-        sourceRelative: sourceRelative,
+        sourceRelative: (
+          if sourceRelative.isAbsolute():
+            sourcePath
+          else:
+            sourceRelative
+        ),
         workDir: sourcePath.parentDir(),
         label: sourcePath.splitFile().name
       )
@@ -186,78 +519,51 @@ proc exePathFor(rootDir, sourceRelative: string): string =
   let exeName = sourceRelative.splitFile().name.addFileExt(ExeExts[0])
   absolutePath(rootDir / "out" / exeName)
 
-proc humanizeLabel(label: string): string =
-  for part in label.split({'_', '-', ' '}):
-    if part.len == 0:
-      continue
-    if result.len > 0:
-      result.add(' ')
-    result.add(part[0].toUpperAscii())
-    if part.len > 1:
-      result.add(part[1 .. ^1].toLowerAscii())
-
-proc primaryScreen(): Screen =
-  when declared(getScreens):
-    let screens = getScreens()
-    if screens.len > 0:
-      for screen in screens:
-        if screen.primary:
-          return screen
-      return screens[0]
-  Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
-
-proc usesSpritePlayerClient(label: string): bool =
-  ## Returns true when a game uses the global sprite player protocol.
-  label in [
-    "big_adventure",
-    "party_progressor",
-    "infinite_blocks",
-    "planet_wars"
-  ]
-
 proc clientConnectAddress(address: string): string =
   ## Returns a local address suitable for launched clients.
   if address == "0.0.0.0" or address == "::":
     return "127.0.0.1"
   address
 
-proc websocketUrl(address: string, port: int, path: string): string =
-  ## Builds a local websocket URL for one game endpoint.
-  "ws://" & clientConnectAddress(address) & ":" & $port & path
+proc encodeUrlComponent(value: string): string =
+  ## Encodes a string for use as one URL query value.
+  for c in value:
+    case c
+    of 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '-', '_', '.', '~':
+      result.add(c)
+    else:
+      result.add('%')
+      result.add(ord(c).toHex(2))
 
-proc clientLaunches(gameTitle: string, players: int): seq[ClientLaunch] =
-  ## Returns human client window positions in a centered grid.
-  if players <= 0:
-    return
-  let screen = primaryScreen()
-  var columns = 1
-  while columns * columns < players:
-    inc columns
-  let rows = (players + columns - 1) div columns
+proc browserHost(address: string): string =
+  ## Returns a host string suitable for browser URLs.
+  result = clientConnectAddress(address)
+  if result.contains(':') and not result.startsWith("["):
+    result = "[" & result & "]"
 
-  let
-    totalHeight =
-      rows * ClientScreenOnlyHeight +
-      max(0, rows - 1) * ClientWindowMargin
-    startY = screen.top + (screen.bottom - screen.top - totalHeight) div 2
-
-  for rowIndex in 0 ..< rows:
-    let rowStart = rowIndex * columns
-    let rowCount = min(columns, players - rowStart)
+proc browserUrl(
+  address: string,
+  port: int,
+  path: string,
+  params: openArray[(string, string)]
+): string =
+  ## Builds a local browser URL for one game client route.
+  result = "http://" & browserHost(address) & ":" & $port & path
+  var first = true
+  for param in params:
     let
-      rowWidth =
-        rowCount * ClientScreenOnlyWidth +
-        max(0, rowCount - 1) * ClientWindowMargin
-      startX = screen.left + (screen.right - screen.left - rowWidth) div 2
-      y = startY + rowIndex * (ClientScreenOnlyHeight + ClientWindowMargin)
-
-    for col in 0 ..< rowCount:
-      let playerNumber = result.len + 1
-      result.add(ClientLaunch(
-        title: gameTitle & " Player " & $playerNumber,
-        x: startX + col * (ClientScreenOnlyWidth + ClientWindowMargin),
-        y: y
-      ))
+      key = param[0]
+      value = param[1]
+    if value.len == 0:
+      continue
+    if first:
+      result.add('?')
+      first = false
+    else:
+      result.add('&')
+    result.add(key.encodeUrlComponent())
+    result.add('=')
+    result.add(value.encodeUrlComponent())
 
 proc stopManagedProcess(processRef: var Process, label: string) =
   if processRef.isNil:
@@ -289,6 +595,9 @@ proc cleanupChildren() =
   for i in countdown(clientProcesses.high, 0):
     stopManagedProcess(clientProcesses[i], "client " & $(i + 1))
   clientProcesses.setLen(0)
+  for i in countdown(botProcesses.high, 0):
+    stopManagedProcess(botProcesses[i], "bot " & $(i + 1))
+  botProcesses.setLen(0)
   stopManagedProcess(serverProcess, "server")
 
 proc cleanupAtExit() {.noconv.} =
@@ -320,6 +629,32 @@ proc runProcessAndWait(
         process.close()
       except CatchableError:
         discard
+
+proc openBrowser(url: string): bool =
+  ## Opens one URL in the user's default browser.
+  when defined(macosx):
+    let opener = findExe("open")
+    if opener.len == 0:
+      return false
+    result = runProcessAndWait(opener, getCurrentDir(), [url]) == 0
+  elif defined(windows):
+    let opener = getEnv("ComSpec", "cmd")
+    result = runProcessAndWait(
+      opener,
+      getCurrentDir(),
+      ["/c", "start", "", url]
+    ) == 0
+  else:
+    let opener = findExe("xdg-open")
+    if opener.len == 0:
+      return false
+    result = runProcessAndWait(opener, getCurrentDir(), [url]) == 0
+
+proc openHtmlClient(label, url: string) =
+  ## Opens one HTML client and prints a fallback URL.
+  echo "Opening ", label, ": ", url
+  if not openBrowser(url):
+    echo "Open this URL in your browser: ", url
 
 proc compileTarget(
   nimExe: string,
@@ -387,8 +722,8 @@ proc waitForServerReady(address: string, port: int, managedServer: bool): bool =
 
 proc waitForChildren(managedServer: bool): int =
   ## Waits until a managed child exits, then stops the rest.
-  if not managedServer and clientProcesses.len == 0:
-    echo "No server or client processes are managed by this run."
+  if not managedServer and clientProcesses.len == 0 and botProcesses.len == 0:
+    echo "No server, client, or bot processes are managed by this run."
     return 0
 
   while true:
@@ -399,24 +734,40 @@ proc waitForChildren(managedServer: bool): int =
       serverExitCode = childExitCode(serverProcess)
       serverRunning = serverExitCode == -1
 
-    var exitedClientIndex = -1
-    var clientExitCode = -1
+    var
+      exitedClientIndex = -1
+      clientExitCode = -1
+      exitedBotIndex = -1
+      botExitCode = -1
     for i, processRef in clientProcesses:
       let exitCode = childExitCode(processRef)
       if exitCode != -1:
         exitedClientIndex = i
         clientExitCode = exitCode
         break
+    for i, processRef in botProcesses:
+      let exitCode = childExitCode(processRef)
+      if exitCode != -1:
+        exitedBotIndex = i
+        botExitCode = exitCode
+        break
 
-    if (managedServer and not serverRunning) or exitedClientIndex != -1:
+    if (managedServer and not serverRunning) or
+        exitedClientIndex != -1 or
+        exitedBotIndex != -1:
       if managedServer and not serverRunning:
         echo "Server exited with code ", serverExitCode, "."
       if exitedClientIndex != -1:
         echo "Client ", exitedClientIndex + 1,
           " exited with code ", clientExitCode, "."
+      if exitedBotIndex != -1:
+        echo "Bot ", exitedBotIndex + 1,
+          " exited with code ", botExitCode, "."
       cleanupChildren()
       if exitedClientIndex != -1:
         return clientExitCode
+      if exitedBotIndex != -1:
+        return botExitCode
       return serverExitCode
 
     sleep(PollIntervalMs)
@@ -447,6 +798,13 @@ proc parseArgs(): QuickRunConfig =
       positional.add(key)
     of cmdLongOption:
       case key
+      of "player":
+        result.players =
+          if val.len == 0:
+            1
+          else:
+            parsePlayers(val)
+        result.playersSet = true
       of "players":
         if val.len == 0:
           raise newException(ValueError, "--players requires a value.")
@@ -458,6 +816,10 @@ proc parseArgs(): QuickRunConfig =
         result.botGroups.add(parseBotGroup(val))
       of "connect":
         result.connect = true
+      of "global":
+        result.globalViewer = true
+      of "html":
+        result.htmlViewer = true
       of "bot-gui":
         result.botGui = true
       of "bot-name-prefix", "name-prefix":
@@ -513,7 +875,9 @@ proc parseArgs(): QuickRunConfig =
         DefaultConnectAddress
       else:
         DefaultBindAddress
-  if not result.playersSet:
+  if result.globalViewer and not result.playersSet:
+    result.players = 0
+  elif not result.playersSet:
     result.players =
       if result.botGroups.len > 0:
         0
@@ -531,6 +895,124 @@ proc botMapArg(rootDir, path: string): string =
   else:
     "--map:" & absolutePath(rootDir / path)
 
+proc htmlParams(config: QuickRunConfig): seq[(string, string)] =
+  ## Returns query parameters for browser clients.
+  if config.reconnectSeconds.len > 0:
+    result.add(("reconnect", config.reconnectSeconds))
+
+proc globalWsAddress(config: QuickRunConfig): string =
+  ## Returns the websocket address for the global viewer.
+  "ws://" & browserHost(config.address) & ":" & $config.port & "/global"
+
+proc playerWsAddress(config: QuickRunConfig): string =
+  ## Returns the websocket address for a player client.
+  "ws://" & browserHost(config.address) & ":" & $config.port & "/player"
+
+proc playerClientSource(game: GameLaunch): string =
+  ## Returns the native player client source for one game.
+  case game.playerProtocol
+  of SpriteClient:
+    GlobalClientSourceRelative
+  of FrameClient:
+    PlayerClientSourceRelative
+
+proc globalPalettePath(rootDir: string, game: GameLaunch): string =
+  ## Returns the palette path for the native global viewer.
+  let gamePalettePath = game.workDir / "data" / "pallete.png"
+  if fileExists(gamePalettePath):
+    return gamePalettePath
+  rootDir / "clients" / "data" / "pallete.png"
+
+proc openHtmlGlobalViewer(config: QuickRunConfig, game: GameLaunch) =
+  ## Opens the browser global viewer for one quick-run game.
+  openHtmlClient(
+    game.name & " global",
+    browserUrl(
+      config.address,
+      config.port,
+      "/client/global",
+      htmlParams(config)
+    )
+  )
+
+proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
+  ## Opens browser clients for one quick-run game.
+  if config.players <= 0:
+    return
+
+  for i in 1 .. config.players:
+    var params = htmlParams(config)
+    params.add(("name", "player" & $i))
+    params.add(("joystick", $i))
+    openHtmlClient(
+      game.name & " player " & $i,
+      browserUrl(config.address, config.port, "/client/player", params)
+    )
+
+proc launchNativePlayerClients(
+  config: QuickRunConfig,
+  game: GameLaunch,
+  rootDir: string
+): bool =
+  ## Starts native player client processes for one quick-run game.
+  if config.players <= 0:
+    return true
+
+  let
+    sourceRelative = game.playerClientSource()
+    playerExe = exePathFor(rootDir, sourceRelative)
+  for i in 1 .. config.players:
+    var args = @[
+      "--address:" & playerWsAddress(config),
+      "--title:" & game.name & " player " & $i,
+      "--joystick:" & $i
+    ]
+    if game.playerProtocol == SpriteClient:
+      args.add("--player")
+      args.add("--palette:" & globalPalettePath(rootDir, game))
+    if config.reconnectSeconds.len > 0:
+      args.add("--reconnect:" & config.reconnectSeconds)
+    try:
+      clientProcesses.add(
+        launchManagedProcess(
+          game.name & " player " & $i & " client",
+          playerExe,
+          rootDir,
+          args
+        )
+      )
+    except CatchableError as e:
+      echo "Failed to start player ", i, ": ", e.msg
+      return false
+  true
+
+proc launchNativeGlobalViewer(
+  config: QuickRunConfig,
+  game: GameLaunch,
+  rootDir: string
+): bool =
+  ## Starts the native global viewer process.
+  let globalExe = exePathFor(rootDir, GlobalClientSourceRelative)
+  var args = @[
+    "--address:" & globalWsAddress(config),
+    "--title:" & game.name & " global",
+    "--palette:" & globalPalettePath(rootDir, game)
+  ]
+  if config.reconnectSeconds.len > 0:
+    args.add("--reconnect:" & config.reconnectSeconds)
+  try:
+    clientProcesses.add(
+      launchManagedProcess(
+        game.name & " global client",
+        globalExe,
+        rootDir,
+        args
+      )
+    )
+    result = true
+  except CatchableError as e:
+    echo "Failed to start global viewer: ", e.msg
+
 proc runQuickRun(config: QuickRunConfig): int =
   let
     rootDir = repoRoot()
@@ -542,29 +1024,23 @@ proc runQuickRun(config: QuickRunConfig): int =
   let
     game = ensureGameFolder(rootDir, config.gameFolder)
     gameFolderRelative = game.sourceRelative.splitFile().dir
-    spritePlayerClient = usesSpritePlayerClient(game.label)
-    playerPath =
-      if spritePlayerClient:
-        "/sprite_player"
-      else:
-        "/player"
-    gameTitle = humanizeLabel(game.label)
     gameExe = exePathFor(rootDir, game.sourceRelative)
-    clientSourceRelative =
-      if spritePlayerClient:
-        GlobalClientSourceRelative
-      else:
-        PlayerClientSourceRelative
-    clientExe = exePathFor(rootDir, clientSourceRelative)
-    clientWorkDir = absolutePath(rootDir / "clients")
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
+  if config.globalViewer and not game.hasGlobalProtocol:
+    echo "Game does not advertise a global protocol: ", game.name
+    return 1
 
   var botLaunches: seq[BotLaunch]
   for group in config.botGroups:
     if group.count == 0:
       continue
-    let bot = ensureBotFile(rootDir, gameFolderRelative, group.source)
+    let bot = ensureBotFile(
+      rootDir,
+      gameFolderRelative,
+      game.name,
+      group.source
+    )
     botLaunches.add(BotLaunch(
       sourceRelative: bot.sourceRelative,
       workDir: bot.workDir,
@@ -594,10 +1070,30 @@ proc runQuickRun(config: QuickRunConfig): int =
     if result != 0:
       return result
 
-  if config.players > 0 or spritePlayerClient:
-    result = compileTarget(nimExe, rootDir, "client", clientSourceRelative)
+  var compiledClientSources: seq[string]
+  if config.globalViewer and not config.htmlViewer:
+    result = compileTarget(
+      nimExe,
+      rootDir,
+      game.name & " global client",
+      GlobalClientSourceRelative
+    )
     if result != 0:
       return result
+    compiledClientSources.add(GlobalClientSourceRelative)
+
+  if config.players > 0 and not config.htmlViewer:
+    let sourceRelative = game.playerClientSource()
+    if sourceRelative notin compiledClientSources:
+      result = compileTarget(
+        nimExe,
+        rootDir,
+        game.name & " player client",
+        sourceRelative
+      )
+      if result != 0:
+        return result
+      compiledClientSources.add(sourceRelative)
 
   var compiledBots: seq[string]
   for bot in botLaunches:
@@ -632,108 +1128,18 @@ proc runQuickRun(config: QuickRunConfig): int =
     cleanupChildren()
     return 1
 
-  if spritePlayerClient:
-    try:
-      var globalArgs = @[
-        "--address:" & websocketUrl(config.address, config.port, "/global"),
-        "--title:" & gameTitle & " Global"
-      ]
-      if config.reconnectSeconds.len > 0:
-        globalArgs.add("--reconnect:" & config.reconnectSeconds)
-      clientProcesses.add(
-        launchManagedProcess(
-          "global client",
-          clientExe,
-          clientWorkDir,
-          globalArgs
-        )
-      )
-    except CatchableError as e:
-      echo "Failed to start global client: ", e.msg
+  if config.globalViewer:
+    if config.htmlViewer:
+      openHtmlGlobalViewer(config, game)
+    elif not launchNativeGlobalViewer(config, game, rootDir):
       cleanupChildren()
       return 1
 
-  if config.players == 1:
-    try:
-      var clientArgs =
-        if spritePlayerClient:
-          @[
-            "--address:" & websocketUrl(
-              config.address,
-              config.port,
-              playerPath & "?name=player1"
-            ),
-            "--player",
-            "--title:" & gameTitle
-          ]
-        else:
-          @[
-            "--address:" & websocketUrl(
-              config.address,
-              config.port,
-              playerPath & "?name=player1"
-            ),
-            "--title:" & gameTitle
-          ]
-      if config.reconnectSeconds.len > 0:
-        clientArgs.add("--reconnect:" & config.reconnectSeconds)
-      clientProcesses.add(
-        launchManagedProcess(
-          "client",
-          clientExe,
-          clientWorkDir,
-          clientArgs
-        )
-      )
-    except CatchableError as e:
-      echo "Failed to start client: ", e.msg
-      cleanupChildren()
-      return 1
-  elif config.players > 1:
-    let launches = clientLaunches(gameTitle, config.players)
-    for i, launch in launches:
-      try:
-        var clientArgs =
-          if spritePlayerClient:
-            @[
-              "--address:" & websocketUrl(
-                config.address,
-                config.port,
-                playerPath & "?name=player" & $(i + 1)
-              ),
-              "--player",
-              "--title:" & launch.title,
-              "--joystick:" & $(i + 1),
-              "--x:" & $launch.x,
-              "--y:" & $launch.y
-            ]
-          else:
-            @[
-              "--address:" & websocketUrl(
-                config.address,
-                config.port,
-                playerPath & "?name=player" & $(i + 1)
-              ),
-              "--screen-only",
-              "--title:" & launch.title,
-              "--joystick:" & $(i + 1),
-              "--x:" & $launch.x,
-              "--y:" & $launch.y
-            ]
-        if config.reconnectSeconds.len > 0:
-          clientArgs.add("--reconnect:" & config.reconnectSeconds)
-        clientProcesses.add(
-          launchManagedProcess(
-            "client " & $(i + 1),
-            clientExe,
-            clientWorkDir,
-            clientArgs
-          )
-        )
-      except CatchableError as e:
-        echo "Failed to start client ", i + 1, ": ", e.msg
-        cleanupChildren()
-        return 1
+  if config.htmlViewer:
+    openHtmlClients(config, game)
+  elif not launchNativePlayerClients(config, game, rootDir):
+    cleanupChildren()
+    return 1
 
   let mapArg = botMapArg(rootDir, config.botMapPath)
   var globalBotIndex = 0
@@ -762,7 +1168,7 @@ proc runQuickRun(config: QuickRunConfig): int =
       if mapArg.len > 0:
         botArgs.add(mapArg)
       try:
-        clientProcesses.add(
+        botProcesses.add(
           launchManagedProcess(
             bot.label & " bot " & $(i + 1),
             botExe,

@@ -1,5 +1,4 @@
 import pixie
-import std/os
 
 const
   ScreenWidth* = 128
@@ -23,6 +22,7 @@ const
   ButtonSelect* = 1'u8 shl 4
   ButtonA* = 1'u8 shl 5
   ButtonB* = 1'u8 shl 6
+  EmbeddedPalettePng = staticRead("../clients/data/pallete.png")
 
 type
   InputState* = object
@@ -30,16 +30,20 @@ type
 
 var Palette*: array[16, ColorRGBA]
 
-proc loadPalette*(path = "data/pallete.png") =
-  if not fileExists(path):
-    raise newException(IOError, "Missing palette asset: " & path)
-
-  let image = readImage(path)
+proc applyPalette(image: Image, source: string) =
+  ## Copies the first 16 pixels from a palette image.
   if image.width < Palette.len or image.height < 1:
-    raise newException(IOError, "Palette asset must be at least 16x1: " & path)
+    raise newException(
+      IOError,
+      "Palette asset must be at least 16x1: " & source
+    )
 
   for x in 0 ..< Palette.len:
     Palette[x] = image[x, 0]
+
+proc loadPalette*(path = "") =
+  ## Loads the embedded palette and ignores runtime palette paths.
+  decodeImage(EmbeddedPalettePng).applyPalette("embedded " & path)
 
 proc encodeInputMask*(input: InputState): uint8 =
   if input.up:

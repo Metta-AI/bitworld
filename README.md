@@ -90,6 +90,96 @@ At a high level:
 - the server manages the shared multiplayer world
 - the game world is large and designed to support many simultaneous players or agents
 
+## Quick Run Examples
+
+`quick_run` starts a game server, opens local human clients, and can
+launch Nim bot players. Run these commands from the repo root:
+
+```sh
+cd /path/to/bitworld
+```
+
+Start one human client:
+
+```sh
+nim r tools/quick_run fancy_cookout
+```
+
+Start two local human clients:
+
+```sh
+nim r tools/quick_run free_chat --players:2
+```
+
+Start an 8-player Among Them game with one human and seven AI players:
+
+```sh
+nim r tools/quick_run among_them \
+  --players:1 \
+  --bots:evidencebot_v2:7 \
+  --port:2000 \
+  --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":6,"voteTimerTicks":360}'
+```
+
+Start a bot-only Among Them game:
+
+```sh
+nim r tools/quick_run among_them \
+  --players:0 \
+  --bots:evidencebot_v2:8 \
+  --port:2000 \
+  --config:'{"minPlayers":8,"imposterCount":2}'
+```
+
+Mix Among Them bot families:
+
+```sh
+nim r tools/quick_run among_them \
+  --players:1 \
+  --bots:evidencebot_v2:4 \
+  --bots:nottoodumb:3 \
+  --port:2000 \
+  --config:'{"minPlayers":8,"imposterCount":2}'
+```
+
+Connect humans and bots to an already-running Among Them server:
+
+```sh
+nim r tools/quick_run among_them \
+  --connect \
+  --address:localhost \
+  --port:2000 \
+  --players:1 \
+  --bots:nottoodumb:7
+```
+
+Try other games with bundled bots:
+
+```sh
+nim r tools/quick_run planet_wars --players:1 --bots:skurge:3 --port:2001
+nim r tools/quick_run infinite_blocks --players:1 --bots:stacker:3 --port:2002
+nim r tools/quick_run big_adventure --players:1 --bots:konrad:1 --port:2003
+```
+
+Open bot viewer windows:
+
+```sh
+nim r tools/quick_run among_them --players:1 --bots:nottoodumb:2 --bot-gui
+```
+
+Save a replay:
+
+```sh
+nim r tools/quick_run among_them \
+  --players:1 \
+  --bots:evidencebot_v2:7 \
+  --save-replay:among_them.bitreplay
+```
+
+Use `--players:N` for human clients and `--bots:BOT:N` for AI
+players. Unknown flags are passed to the game server when `quick_run`
+starts it. See `docs/quick_run.md` for the full option list.
+
 ## Coworld Package
 
 The Among Them game includes a coworld package at
@@ -107,5 +197,5 @@ docker build \
   -f among_them/players/nottoodumb/Dockerfile \
   -t bitworld-nottoodumb:latest \
   .
-cogames coworld certify among_them/coworld_manifest.json
+coworld certify among_them/coworld_manifest.json
 ```

@@ -22,17 +22,17 @@ export const CONFIGS: Record<string, GameConfig> = {
 
   tiny: {
     ...DEFAULT_GAME_CONFIG,
-    rounds: [{ durationSecs: 1, hostages: 1 }],
+    rounds: [{ durationSecs: 1, psychopomps: 1 }],
   },
 
   short: {
     ...DEFAULT_GAME_CONFIG,
-    rounds: [{ durationSecs: 30, hostages: 1 }],
+    rounds: [{ durationSecs: 30, psychopomps: 1 }],
   },
 
   empty: {
     ...DEFAULT_GAME_CONFIG,
-    rounds: [{ durationSecs: 30, hostages: 1 }],
+    rounds: [{ durationSecs: 30, psychopomps: 1 }],
     obstacleCount: 0,
   },
 
@@ -47,7 +47,7 @@ export const CONFIGS: Record<string, GameConfig> = {
       { role: Role.Shades, team: Team.TeamA, count: 1 },
       { role: Role.Nymphs, team: Team.TeamB, count: 1 },
     ],
-    rounds: [{ durationSecs: 60, hostages: 1 }],
+    rounds: [{ durationSecs: 60, psychopomps: 1 }],
     obstacleCount: 0,
     groupNamePrefixInRoomA: "llm_",
   },
@@ -55,9 +55,9 @@ export const CONFIGS: Record<string, GameConfig> = {
   empty3: {
     ...DEFAULT_GAME_CONFIG,
     rounds: [
-      { durationSecs: 45, hostages: 2 },
-      { durationSecs: 45, hostages: 2 },
-      { durationSecs: 45, hostages: 2 },
+      { durationSecs: 45, psychopomps: 2 },
+      { durationSecs: 45, psychopomps: 2 },
+      { durationSecs: 45, psychopomps: 2 },
     ],
     obstacleCount: 0,
   },
@@ -72,8 +72,8 @@ export const CONFIGS: Record<string, GameConfig> = {
       { role: Role.Nymphs, team: Team.TeamB, count: 4 },
     ],
     rounds: [
-      { durationSecs: 60, hostages: 1 },
-      { durationSecs: 60, hostages: 1 },
+      { durationSecs: 60, psychopomps: 1 },
+      { durationSecs: 60, psychopomps: 1 },
     ],
     obstacleCount: 0,
   },
@@ -81,9 +81,9 @@ export const CONFIGS: Record<string, GameConfig> = {
   medium: {
     ...DEFAULT_GAME_CONFIG,
     rounds: [
-      { durationSecs: 180, hostages: 1 },
-      { durationSecs: 120, hostages: 1 },
-      { durationSecs: 60, hostages: 1 },
+      { durationSecs: 180, psychopomps: 1 },
+      { durationSecs: 120, psychopomps: 1 },
+      { durationSecs: 60, psychopomps: 1 },
     ],
   },
 
@@ -97,9 +97,9 @@ export const CONFIGS: Record<string, GameConfig> = {
       { role: Role.Nymphs, team: Team.TeamB, count: 1 },
     ],
     rounds: [
-      { durationSecs: 180, hostages: 1 },
-      { durationSecs: 120, hostages: 1 },
-      { durationSecs: 60, hostages: 1 },
+      { durationSecs: 180, psychopomps: 1 },
+      { durationSecs: 120, psychopomps: 1 },
+      { durationSecs: 60, psychopomps: 1 },
     ],
   },
 
@@ -113,11 +113,11 @@ export const CONFIGS: Record<string, GameConfig> = {
       { role: Role.Nymphs, team: Team.TeamB, count: 4 },
     ],
     rounds: [
-      { durationSecs: 300, hostages: 2 },
-      { durationSecs: 240, hostages: 2 },
-      { durationSecs: 180, hostages: 2 },
-      { durationSecs: 120, hostages: 1 },
-      { durationSecs: 60, hostages: 1 },
+      { durationSecs: 300, psychopomps: 2 },
+      { durationSecs: 240, psychopomps: 2 },
+      { durationSecs: 180, psychopomps: 2 },
+      { durationSecs: 120, psychopomps: 1 },
+      { durationSecs: 60, psychopomps: 1 },
     ],
   },
 
@@ -131,11 +131,25 @@ export const CONFIGS: Record<string, GameConfig> = {
       { role: Role.Nymphs, team: Team.TeamB, count: 4 },
     ],
     rounds: [
-      { durationSecs: 150, hostages: 2 },
-      { durationSecs: 120, hostages: 2 },
-      { durationSecs: 90, hostages: 2 },
-      { durationSecs: 60, hostages: 1 },
-      { durationSecs: 30, hostages: 1 },
+      { durationSecs: 150, psychopomps: 2 },
+      { durationSecs: 120, psychopomps: 2 },
+      { durationSecs: 90, psychopomps: 2 },
+      { durationSecs: 60, psychopomps: 1 },
+      { durationSecs: 30, psychopomps: 1 },
+    ],
+  },
+
+  medium12_3min: {
+    roles: [
+      { role: Role.Hades, team: Team.TeamA, count: 1 },
+      { role: Role.Persephone, team: Team.TeamB, count: 1 },
+      { role: Role.Cerberus, team: Team.TeamA, count: 1 },
+      { role: Role.Demeter, team: Team.TeamB, count: 1 },
+      { role: Role.Shades, team: Team.TeamA, count: 4 },
+      { role: Role.Nymphs, team: Team.TeamB, count: 4 },
+    ],
+    rounds: [
+      { durationSecs: 180, psychopomps: 0 },
     ],
   },
 };
@@ -300,11 +314,11 @@ export function loadConfigFile(path: string): GameConfig {
     if (typeof e.durationSecs !== "number" || e.durationSecs <= 0) {
       throw new Error(`${ctx}: "durationSecs" must be a positive number`);
     }
-    if (typeof e.hostages !== "number" || e.hostages < 0 || !Number.isInteger(e.hostages)) {
-      throw new Error(`${ctx}: "hostages" must be a non-negative integer`);
+    if (typeof e.psychopomps !== "number" || e.psychopomps < 0 || !Number.isInteger(e.psychopomps)) {
+      throw new Error(`${ctx}: "psychopomps" must be a non-negative integer`);
     }
 
-    return { durationSecs: e.durationSecs, hostages: e.hostages };
+    return { durationSecs: e.durationSecs, psychopomps: e.psychopomps };
   });
 
   // -- optional fields ------------------------------------------------------

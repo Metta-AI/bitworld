@@ -44,6 +44,12 @@ RUN nim $NimCommand \
 # Run Docker.
 FROM debian:bookworm-slim
 
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl && \
+  rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace/bitworld
 COPY --from=build \
   /workspace/bitworld/planet_wars/planet_wars \
@@ -55,4 +61,7 @@ COPY --from=build /workspace/bitworld/clients/*.js ./clients/
 COPY --from=build /workspace/bitworld/clients/data ./clients/data
 
 WORKDIR /workspace/bitworld/planet_wars
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 CMD ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]

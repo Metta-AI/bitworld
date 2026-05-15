@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -105,7 +107,6 @@ func runWebsocketURL(rawURL string) {
 
 	log.Printf("connecting to %s", rawURL)
 	conn := dialWebsocket(ctx, rawURL)
-	defer conn.Close(websocket.StatusInternalError, "client error")
 	conn.SetReadLimit(1 << 20)
 
 	if err := conn.Write(ctx, websocket.MessageBinary, BuildInputPacket(0)); err != nil {
@@ -115,6 +116,12 @@ func runWebsocketURL(rawURL string) {
 	agent := NewAgent()
 	pixels := make([]uint8, ScreenWidth*ScreenHeight)
 	var sentMask uint8 // server already has 0 from the initial packet above
+	framesSeen := 0
+	closeStatus := websocket.StatusInternalError
+	closeReason := "client error"
+	defer func() {
+		_ = conn.Close(closeStatus, closeReason)
+	}()
 
 	sendMask := func(m uint8) error {
 		if m == sentMask {
@@ -132,6 +139,18 @@ func runWebsocketURL(rawURL string) {
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("shutdown: %v", ctx.Err())
+				closeStatus = websocket.StatusNormalClosure
+				closeReason = "bye"
+				return
+			}
+			if framesSeen > 0 {
+				log.Printf("connection closed: %v", err)
+				closeStatus = websocket.StatusNormalClosure
+				closeReason = "server closed"
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				log.Printf("websocket closed: %v", err)
 				conn.Close(websocket.StatusNormalClosure, "bye")
 				return
 			}
@@ -149,6 +168,7 @@ func runWebsocketURL(rawURL string) {
 			log.Printf("unpack: %v", err)
 			continue
 		}
+		framesSeen++
 		mask := agent.Step(pixels)
 		if err := sendMask(mask); err != nil {
 			log.Printf("send mask=%#x: %v", mask, err)

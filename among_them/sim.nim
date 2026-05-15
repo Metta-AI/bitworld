@@ -37,7 +37,7 @@ const
   ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
   KillRange* = 20
-  KillCooldownTicks* = 1200
+  KillCooldownTicks* = 900
   RoleRevealTicks* = 120
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
@@ -226,6 +226,10 @@ type
 
   RewardAccount* = object
     address*: string
+    slotIndex*: int
+    role*: PlayerRole
+    hasRole*: bool
+    won*: bool
     reward*: int
     winsImposter*: int
     winsCrewmate*: int
@@ -275,6 +279,7 @@ type
     showPlayerLabels*: bool
     buttonCalls*: int
     mapPath*: string
+    closedRoster*: bool
     slots*: seq[PlayerSlotConfig]
 
   Player* = object
@@ -890,6 +895,7 @@ proc defaultGameConfig*(): GameConfig =
     showPlayerLabels: true,
     buttonCalls: ButtonCalls,
     mapPath: DefaultMapPath,
+    closedRoster: false,
     slots: @[]
   )
 
@@ -1025,6 +1031,10 @@ proc readConfigSlots(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
       slot.hasColor = true
     slots.add(slot)
 
+proc defaultSlotName(slotIndex: int): string =
+  ## Returns the canonical name for one generated tournament slot.
+  "Player" & $(slotIndex + 1)
+
 proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
   ## Reads optional fixed player slot tokens.
   if not node.hasKey("tokens"):
@@ -1053,6 +1063,8 @@ proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
           "].token."
       )
     slots[i].token = token
+    if slots[i].name.len == 0:
+      slots[i].name = defaultSlotName(i)
 
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
@@ -1084,6 +1096,23 @@ proc validate(config: GameConfig) =
     raise newException(AmongThemError, "Timer config fields must not be negative.")
   if config.slots.len > MaxPlayers:
     raise newException(AmongThemError, "Config field slots cannot have more than 16 entries.")
+  if config.closedRoster and config.slots.len < config.minPlayers:
+    raise newException(
+      AmongThemError,
+      "Config field closedRoster requires at least minPlayers configured slots."
+    )
+  if config.closedRoster:
+    for i, slot in config.slots:
+      if slot.name.len == 0:
+        raise newException(
+          AmongThemError,
+          "Config field closedRoster requires slots[" & $i & "].name."
+        )
+      if slot.token.len == 0:
+        raise newException(
+          AmongThemError,
+          "Config field closedRoster requires slots[" & $i & "].token."
+        )
   for i in 0 ..< config.slots.len:
     for j in i + 1 ..< config.slots.len:
       if config.slots[i].name.len > 0 and
@@ -1119,7 +1148,6 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
-  node.readConfigInt("imposterCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("roleRevealTicks", config.roleRevealTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
   node.readConfigInt("ventRange", config.ventRange)
@@ -1153,6 +1181,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigString("mapPath", config.mapPath)
   node.readConfigSlots(config.slots)
   node.readConfigTokens(config.slots)
+  node.readConfigBool("closedRoster", config.closedRoster)
   config.validate()
 
 proc slotRoleText(slot: PlayerSlotConfig): string =
@@ -1196,7 +1225,6 @@ proc configJson*(config: GameConfig): string =
     "seed": config.seed,
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
-    "imposterCooldownTicks": config.killCooldownTicks,
     "roleRevealTicks": config.roleRevealTicks,
     "taskCompleteTicks": config.taskCompleteTicks,
     "ventRange": config.ventRange,
@@ -1215,6 +1243,7 @@ proc configJson*(config: GameConfig): string =
     "tasksPerPlayer": config.tasksPerPlayer,
     "buttonCalls": config.buttonCalls,
     "mapPath": config.mapPath,
+    "closedRoster": config.closedRoster,
     "showTaskArrows": config.showTaskArrows,
     "showTaskBubbles": config.showTaskBubbles,
     "showPlayerLabels": config.showPlayerLabels,
@@ -1441,9 +1470,21 @@ proc findSpawn*(sim: SimServer): tuple[x, y: int] =
   ## Returns the next lobby spawn position.
   sim.homePosition(sim.players.len, sim.players.len + 1)
 
+proc playerSlotLimit(config: GameConfig): int =
+  ## Returns the number of slots players may occupy.
+  if config.closedRoster: config.slots.len else: MaxPlayers
+
 proc canAddPlayer*(sim: SimServer): bool =
   ## Returns whether the game has room for another player.
-  sim.players.len < MaxPlayers
+  sim.players.len < sim.config.playerSlotLimit()
+
+proc playerLimitError(config: GameConfig): string =
+  ## Returns a user-facing message for the current player cap.
+  if config.closedRoster:
+    let limit = config.playerSlotLimit()
+    return "Configured roster is full (" & $limit &
+      (if limit == 1: " player)." else: " players).")
+  "can't do more than " & $MaxPlayers & " players."
 
 proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
   ## Returns one slot config or an empty config for missing entries.
@@ -1490,13 +1531,39 @@ proc validatePlayerSlot(
       "Player token does not match configured slot " & $slotIndex & "."
     )
 
-proc playerJoinAllowed*(config: GameConfig, address: string, requestedSlot: int, token: string): bool =
-  ## Returns whether a player websocket request can pass configured slot auth.
-  if requestedSlot < 0:
-    return true
+proc configuredPlayerName*(config: GameConfig, requestedSlot: int, token: string): string =
+  ## Returns the configured identity for a tokenized slot request.
+  if token.len == 0:
+    return ""
+  if requestedSlot >= 0 and requestedSlot < config.slots.len:
+    let slot = config.slots[requestedSlot]
+    if slot.name.len > 0 and slot.token.len > 0 and slot.token == token:
+      return slot.name
+    return ""
+  for slot in config.slots:
+    if slot.name.len > 0 and slot.token.len > 0 and slot.token == token:
+      return slot.name
+  ""
+
+proc playerJoinAllowed*(
+  config: GameConfig,
+  address: string,
+  requestedSlot: int,
+  token: string
+): bool =
+  ## Returns whether a player request can satisfy configured slot auth.
   if requestedSlot >= MaxPlayers:
     return false
-  config.slotAuthMatches(requestedSlot, address, token)
+  if requestedSlot >= 0:
+    if config.closedRoster and requestedSlot >= config.slots.len:
+      return false
+    return config.slotAuthMatches(requestedSlot, address, token)
+  if not config.closedRoster:
+    return true
+  for i in 0 ..< config.slots.len:
+    if config.slotAuthMatches(i, address, token):
+      return true
+  false
 
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.
@@ -1552,13 +1619,16 @@ proc namedConfiguredSlot(sim: SimServer, address: string): int =
 
 proc nextAutoSlot(sim: SimServer, address, token: string): int =
   ## Returns the next open unrestricted or matching slot.
-  for i in sim.nextJoinOrder ..< MaxPlayers:
+  let slotLimit = sim.config.playerSlotLimit()
+  for i in sim.nextJoinOrder ..< slotLimit:
     if sim.slotOccupied(i):
       continue
     if not sim.config.slotRestricted(i) or
         sim.config.slotAuthMatches(i, address, token):
       return i
   for i in 0 ..< sim.nextJoinOrder:
+    if i >= slotLimit:
+      break
     if sim.slotOccupied(i):
       continue
     if not sim.config.slotRestricted(i) or
@@ -1585,6 +1655,8 @@ proc resolvePlayerSlot(
       "Player slot must be between 0 and 15."
     )
   if requestedSlot >= 0:
+    if requestedSlot >= sim.config.playerSlotLimit():
+      raise newException(AmongThemError, "Player slot is outside configured roster.")
     if sim.slotOccupied(requestedSlot):
       raise newException(
         AmongThemError,
@@ -1617,6 +1689,8 @@ proc resolveTrustedPlayerSlot(
       "Player slot must be between 0 and 15."
     )
   if requestedSlot >= 0:
+    if requestedSlot >= sim.config.playerSlotLimit():
+      raise newException(AmongThemError, "Player slot is outside configured roster.")
     if sim.slotOccupied(requestedSlot):
       raise newException(
         AmongThemError,
@@ -1637,12 +1711,88 @@ proc rewardAccountIndex(sim: SimServer, address: string): int =
       return i
   -1
 
+proc ensureRewardAccount(sim: var SimServer, address: string): int =
+  ## Returns the reward account index, creating the account if needed.
+  result = sim.rewardAccountIndex(address)
+  if result < 0:
+    sim.rewardAccounts.add RewardAccount(
+      address: address,
+      slotIndex: -1,
+      reward: 0
+    )
+    result = sim.rewardAccounts.high
+
+proc bindRewardAccountSlot(
+  sim: var SimServer,
+  accountIndex,
+  slotIndex: int
+) =
+  ## Binds a reward account to the stable player slot for this match.
+  if accountIndex < 0 or accountIndex >= sim.rewardAccounts.len:
+    return
+  for i in 0 ..< sim.rewardAccounts.len:
+    if i != accountIndex and sim.rewardAccounts[i].slotIndex == slotIndex:
+      sim.rewardAccounts[i].slotIndex = -1
+  sim.rewardAccounts[accountIndex].slotIndex = slotIndex
+
+proc rewardAccountIndexForSlot(sim: SimServer, slotIndex: int): int =
+  ## Returns the newest reward account index for a player slot.
+  if slotIndex < 0 or sim.rewardAccounts.len == 0:
+    return -1
+  for i in countdown(sim.rewardAccounts.high, 0):
+    if sim.rewardAccounts[i].slotIndex == slotIndex:
+      return i
+  -1
+
+proc playerIndexForSlot(sim: SimServer, slotIndex: int): int =
+  ## Returns the live player index for a player slot.
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].joinOrder == slotIndex:
+      return i
+  -1
+
+proc playerResultSlotCount(sim: SimServer): int =
+  ## Returns the number of player slots represented in final results.
+  result = sim.config.slots.len
+  if sim.config.closedRoster:
+    return
+  for player in sim.players:
+    result = max(result, player.joinOrder + 1)
+  for account in sim.rewardAccounts:
+    if account.slotIndex >= 0:
+      result = max(result, account.slotIndex + 1)
+
 proc playerAddressOccupied*(sim: SimServer, address: string): bool =
   ## Returns true when a player identity is already connected.
   for player in sim.players:
     if player.address == address:
       return true
   false
+
+proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
+  ## Removes one live player and keeps index-keyed state aligned.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.players.delete(playerIndex)
+  for task in sim.tasks.mitems:
+    if playerIndex < task.completed.len:
+      task.completed.delete(playerIndex)
+  if sim.phase in {Voting, VoteResult}:
+    if playerIndex < sim.voteState.votes.len:
+      sim.voteState.votes.delete(playerIndex)
+    if playerIndex < sim.voteState.cursor.len:
+      sim.voteState.cursor.delete(playerIndex)
+    let skipIndex = sim.players.len
+    for vote in sim.voteState.votes.mitems:
+      if vote > playerIndex:
+        dec vote
+      if vote > skipIndex:
+        vote = -2
+    for cursor in sim.voteState.cursor.mitems:
+      if cursor > playerIndex:
+        dec cursor
+      if cursor > skipIndex:
+        cursor = skipIndex
 
 proc addPlayer*(
   sim: var SimServer,
@@ -1653,7 +1803,7 @@ proc addPlayer*(
 ): int =
   ## Adds one player, optionally validating and using a requested slot.
   if not sim.canAddPlayer():
-    raise newException(AmongThemError, "can't do more than 16 players.")
+    raise newException(AmongThemError, sim.config.playerLimitError())
   if sim.playerAddressOccupied(address):
     raise newException(
       AmongThemError,
@@ -1667,12 +1817,15 @@ proc addPlayer*(
         sim.resolvePlayerSlot(address, token, requestedSlot)
     slot = sim.config.slotConfig(order)
     spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
-    rewardAccount = sim.rewardAccountIndex(address)
     color =
       if slot.hasColor:
         slot.color
       else:
         PlayerColors[order mod PlayerColors.len]
+    accountIndex = sim.ensureRewardAccount(address)
+  sim.bindRewardAccountSlot(accountIndex, order)
+  sim.rewardAccounts[accountIndex].hasRole = false
+  sim.rewardAccounts[accountIndex].won = false
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
@@ -1686,9 +1839,7 @@ proc addPlayer*(
     color: color,
     lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
     activeTask: -1,
-    reward:
-      if rewardAccount >= 0: sim.rewardAccounts[rewardAccount].reward
-      else: 0
+    reward: sim.rewardAccounts[accountIndex].reward
   )
   sim.advanceJoinOrder()
   sim.arrangeHomePositions()
@@ -1707,10 +1858,8 @@ proc addReward*(sim: var SimServer, playerIndex, amount: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let address = sim.players[playerIndex].address
-  var index = sim.rewardAccountIndex(address)
-  if index < 0:
-    sim.rewardAccounts.add RewardAccount(address: address, reward: 0)
-    index = sim.rewardAccounts.high
+  let index = sim.ensureRewardAccount(address)
+  sim.bindRewardAccountSlot(index, sim.players[playerIndex].joinOrder)
   sim.rewardAccounts[index].reward += amount
   sim.players[playerIndex].reward = sim.rewardAccounts[index].reward
 
@@ -1722,10 +1871,8 @@ proc rewardAccountForPlayer(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return -1
   let address = sim.players[playerIndex].address
-  result = sim.rewardAccountIndex(address)
-  if result < 0:
-    sim.rewardAccounts.add RewardAccount(address: address, reward: 0)
-    result = sim.rewardAccounts.high
+  result = sim.ensureRewardAccount(address)
+  sim.bindRewardAccountSlot(result, sim.players[playerIndex].joinOrder)
 
 proc recordGameRoleAssigned*(
   sim: var SimServer,
@@ -1735,6 +1882,9 @@ proc recordGameRoleAssigned*(
   let index = sim.rewardAccountForPlayer(playerIndex)
   if index < 0:
     return
+  sim.rewardAccounts[index].role = sim.players[playerIndex].role
+  sim.rewardAccounts[index].hasRole = true
+  sim.rewardAccounts[index].won = false
   if sim.players[playerIndex].role == Imposter:
     inc sim.rewardAccounts[index].gamesImposter
   else:
@@ -1745,6 +1895,7 @@ proc recordGameWin*(sim: var SimServer, playerIndex: int) =
   let index = sim.rewardAccountForPlayer(playerIndex)
   if index < 0:
     return
+  sim.rewardAccounts[index].won = true
   if sim.players[playerIndex].role == Imposter:
     inc sim.rewardAccounts[index].winsImposter
   else:
@@ -1788,7 +1939,7 @@ proc recordVoteTimeout*(sim: var SimServer, playerIndex: int) =
 proc playerResultsJson*(sim: SimServer): string =
   ## Returns final player rewards and win states as JSON.
   var
-    order: seq[int] = @[]
+    resultSlots: seq[int] = @[]
     names = newJArray()
     scores = newJArray()
     win = newJArray()
@@ -1800,42 +1951,63 @@ proc playerResultsJson*(sim: SimServer): string =
     voteSkipList = newJArray()
     voteTimeoutList = newJArray()
     results = newJObject()
-  for i in 0 ..< sim.players.len:
-    order.add(i)
-  for i in 1 ..< order.len:
-    let value = order[i]
-    var j = i - 1
-    while j >= 0 and
-        sim.players[order[j]].joinOrder > sim.players[value].joinOrder:
-      order[j + 1] = order[j]
-      dec j
-    order[j + 1] = value
-  for playerIndex in order:
-    let player = sim.players[playerIndex]
-    let accountIndex = sim.rewardAccountIndex(player.address)
+  for slotIndex in 0 ..< sim.playerResultSlotCount():
+    resultSlots.add(slotIndex)
+  for slotIndex in resultSlots:
     let
-      tasks =
-        if accountIndex >= 0: sim.rewardAccounts[accountIndex].tasks
-        else: 0
-      kills =
-        if accountIndex >= 0: sim.rewardAccounts[accountIndex].kills
-        else: 0
-      votePlayers =
-        if accountIndex >= 0: sim.rewardAccounts[accountIndex].votePlayers
-        else: 0
-      voteSkip =
-        if accountIndex >= 0: sim.rewardAccounts[accountIndex].voteSkip
-        else: 0
-      voteTimeout =
-        if accountIndex >= 0: sim.rewardAccounts[accountIndex].voteTimeout
-        else: 0
-    names.add(%player.address)
-    scores.add(%player.reward)
-    win.add(%(not sim.timeLimitReached and player.role == sim.winner))
+      playerIndex = sim.playerIndexForSlot(slotIndex)
+      accountIndex =
+        if playerIndex >= 0:
+          sim.rewardAccountIndex(sim.players[playerIndex].address)
+        else:
+          sim.rewardAccountIndexForSlot(slotIndex)
+      slotConfig = sim.config.slotConfig(slotIndex)
+    var
+      name =
+        if slotConfig.name.len > 0:
+          slotConfig.name
+        else:
+          "player-" & $slotIndex
+      reward = 0
+      playerRole = Crewmate
+      hasRole = false
+      playerWon = false
+      tasks = 0
+      kills = 0
+      votePlayers = 0
+      voteSkip = 0
+      voteTimeout = 0
+    if accountIndex >= 0:
+      let account = sim.rewardAccounts[accountIndex]
+      name = account.address
+      reward = account.reward
+      playerRole = account.role
+      hasRole = account.hasRole
+      playerWon = account.won
+      tasks = account.tasks
+      kills = account.kills
+      votePlayers = account.votePlayers
+      voteSkip = account.voteSkip
+      voteTimeout = account.voteTimeout
+    if playerIndex >= 0:
+      let player = sim.players[playerIndex]
+      name = player.address
+      if accountIndex < 0:
+        reward = player.reward
+      playerRole = player.role
+      hasRole = true
+      playerWon = not sim.timeLimitReached and player.role == sim.winner
+    elif accountIndex < 0:
+      if slotConfig.hasRole:
+        playerRole = slotConfig.role
+        hasRole = true
+    names.add(%name)
+    scores.add(%reward)
+    win.add(%playerWon)
     tasksList.add(%tasks)
     killsList.add(%kills)
-    imposterList.add(%(if player.role == Imposter: 1 else: 0))
-    crewList.add(%(if player.role == Crewmate: 1 else: 0))
+    imposterList.add(%(if hasRole and playerRole == Imposter: 1 else: 0))
+    crewList.add(%(if hasRole and playerRole == Crewmate: 1 else: 0))
     votePlayersList.add(%votePlayers)
     voteSkipList.add(%voteSkip)
     voteTimeoutList.add(%voteTimeout)
@@ -2886,10 +3058,27 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   sim.timeLimitReached = timeLimitReached
   if timeLimitReached:
     return
+  var awardedAccounts = newSeq[bool](sim.rewardAccounts.len)
   for i in 0 ..< sim.players.len:
     if sim.players[i].role == winner:
+      let accountIndex = sim.rewardAccountForPlayer(i)
+      if awardedAccounts.len < sim.rewardAccounts.len:
+        awardedAccounts.setLen(sim.rewardAccounts.len)
+      if accountIndex >= 0 and accountIndex < awardedAccounts.len:
+        awardedAccounts[accountIndex] = true
       sim.addReward(i, WinReward)
       sim.recordGameWin(i)
+  for i in 0 ..< sim.rewardAccounts.len:
+    if i < awardedAccounts.len and awardedAccounts[i]:
+      continue
+    if not sim.rewardAccounts[i].hasRole or sim.rewardAccounts[i].role != winner:
+      continue
+    sim.rewardAccounts[i].reward += WinReward
+    sim.rewardAccounts[i].won = true
+    if winner == Imposter:
+      inc sim.rewardAccounts[i].winsImposter
+    else:
+      inc sim.rewardAccounts[i].winsCrewmate
 
 proc gameTicksElapsed*(sim: SimServer): int =
   ## Returns ticks elapsed since the current game left the lobby.
@@ -3653,6 +3842,9 @@ proc resetToLobby*(sim: var SimServer) =
   sim.lastLobbySecondsLogged = -1
   for task in sim.tasks.mitems:
     task.completed = @[]
+  for account in sim.rewardAccounts.mitems:
+    account.hasRole = false
+    account.won = false
 
 proc stepLobby(sim: var SimServer) =
   ## Advances the lobby start countdown.

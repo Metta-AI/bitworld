@@ -1,10 +1,10 @@
-# Global Protocol
+# Sprite v1
 
-Global Protocol is a small binary protocol for sprite based displays. The
+Sprite v1 is a small binary protocol for sprite based displays. The
 server sends sprite definitions and object placements. The client sends keyboard
 and mouse input.
 
-Global Protocol connects over WebSocket. The endpoint is a full websocket URL,
+Sprite v1 connects over WebSocket. The endpoint is a full websocket URL,
 such as `ws://localhost:8080/global`.
 
 The protocol is designed to be simple to parse. Every message starts with a
@@ -215,9 +215,8 @@ Suggested mouse button control codes:
 ### Player Input
 
 Sends the current held player button state. This packet is intended for
-sprite-based player endpoints such as `/sprite_player`, where the server renders the
-game through this protocol but still accepts the same controls as the original
-`/player` endpoint.
+sprite-based player endpoints such as `/player`, where the server renders the
+game through this protocol and accepts the standard player controls.
 
 Player endpoints may accept the same join query parameters as `/player`:
 `name`, `slot`, and `token`. `slot` is zero-based and lets the server assign a
@@ -228,7 +227,7 @@ stable player position. `token` may be used for simple slot auth.
 | Message type | `u8` | `0x84` |
 | Buttons | `u8` | Current held player button bitmask |
 
-Button bit values match the original player protocol:
+Button bit values match Bitscreen v1:
 
 | Bit | Value | Meaning |
 | ---: | ---: | --- |

@@ -1,0 +1,38 @@
+{
+    "Map/SizeTest": {
+        "height": 4300,
+        "width": 2
+    },
+    "activeFile": "forest.tmx",
+    "expandedProjectPaths": [
+    ],
+    "fileStates": {
+        "forest.tmx": {
+            "scale": 0.75,
+            "selectedLayer": 0,
+            "viewCenter": {
+                "x": 772.6666666666665,
+                "y": 277.33333333333337
+            }
+        },
+        "spritesheet.tsx": {
+            "dynamicWrapping": false,
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        }
+    },
+    "last.imagePath": "/Users/me/p/bitworld/jumper/data",
+    "map.height": 16,
+    "map.lastUsedFormat": "tmx",
+    "map.width": 64,
+    "openFiles": [
+        "forest.tmx",
+        "spritesheet.tsx"
+    ],
+    "project": "forest.tiled-project",
+    "recentFiles": [
+        "spritesheet.tsx",
+        "forest.tmx"
+    ],
+    "tileset.lastUsedFormat": "tsx"
+}

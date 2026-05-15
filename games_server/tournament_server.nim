@@ -17,7 +17,7 @@ const
   CleanupDeadSeconds = 10 * 60
   InspectBatchSize = 100
   DefaultMmr = 1000.0
-  MmrK = 64.0
+  MmrK = 128.0
   MinMmr = 100.0
   PriorityGameCount = 30
   PriorityBaseWeight = 9.0
@@ -29,7 +29,7 @@ const
   ReplayDirEnv = "TOURNAMENT_REPLAY_DIR"
   SharedReplayDirEnv = "GAMES_SERVER_REPLAY_DIR"
   GamesServerPortEnv = "TOURNAMENT_GAMES_SERVER_PORT"
-  CogameManifestName = "cogame_manifest.json"
+  CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
   GameContainerPort = 8080
   ContainerReplayDir = "/replays"
@@ -38,7 +38,6 @@ const
   HealthPath = "/healthz"
   LogsPath = "/logs"
   ScoresPath = "/scores"
-  ClientPath = "/client/"
   PlayersTablePath = "/players/table"
   BulkStopPath = "/containers/stop"
   BulkRemovePath = "/containers/remove"
@@ -490,7 +489,7 @@ proc gamesRoot(): string =
 
 proc defaultManifestPath(): string =
   ## Returns the default tournament game manifest.
-  gamesRoot() / "among_them" / CogameManifestName
+  gamesRoot() / "among_them" / CoworldManifestName
 
 proc manifestPath(): string =
   ## Returns the configured tournament game manifest.
@@ -539,6 +538,24 @@ proc manifestString(
     return node[key].getStr()
   defaultValue
 
+proc requireManifestString(node: JsonNode, key, path: string): string =
+  ## Reads one required manifest string.
+  result = node.manifestString(key, "")
+  if result.len == 0:
+    raise newException(TournamentError, path & " missing " & key)
+
+proc manifestObject(node: JsonNode, key: string): JsonNode =
+  ## Reads one optional object field from a manifest.
+  if node.kind == JObject and node.hasKey(key) and
+      node[key].kind == JObject:
+    return node[key]
+
+proc manifestImage(node: JsonNode): string =
+  ## Reads a Docker image from a Coworld manifest node.
+  result = node.manifestString("image_uri", "")
+  if result.len == 0:
+    result = node.manifestString("image", "")
+
 proc manifestStringArray(node: JsonNode, key: string): seq[string] =
   ## Reads one top-level string array from a manifest.
   if node.kind != JObject or not node.hasKey(key) or
@@ -553,29 +570,33 @@ proc defaultManifestName(path: string): string =
   splitPath(parentDir(path)).tail
 
 proc readGameManifest(path: string): GameManifest =
-  ## Reads one CoGame manifest summary from disk.
+  ## Reads one Coworld manifest summary from disk.
   try:
     let
       manifest = parseJson(readFile(path))
-      name = manifest.manifestString(
-        "name",
-        defaultManifestName(path)
-      )
+      game = manifest.manifestObject("game")
+    if game.isNil:
+      raise newException(TournamentError, "coworld missing game")
+    let
+      name = game.requireManifestString("name", "coworld.game")
+      image = game.manifestImage()
+    if image.len == 0:
+      raise newException(TournamentError, "coworld.game missing image")
     result = GameManifest(
       key: manifestKey(path),
       path: path,
       name: name,
-      author: manifest.manifestString(
+      author: game.manifestString(
         "author",
-        manifest.manifestString("owner", "-")
+        game.manifestString("owner", "-")
       ),
-      imageUri: manifest.manifestString("image_uri", ""),
-      binary: manifest.manifestString("binary", "/bin/" & name)
+      imageUri: image,
+      binary: game.manifestString("binary", "/bin/" & name)
     )
   except CatchableError as e:
     raise newException(
       TournamentError,
-      "could not read game manifest " & path & ": " & e.msg
+      "could not read Coworld manifest " & path & ": " & e.msg
     )
 
 proc readPlayerManifest(path: string): PlayerManifest =
@@ -602,6 +623,42 @@ proc readPlayerManifest(path: string): PlayerManifest =
       "could not read player manifest " & path & ": " & e.msg
     )
 
+proc readCoworldPlayers(path: string): seq[PlayerManifest] =
+  ## Reads player entries embedded in one Coworld manifest.
+  try:
+    let
+      manifest = parseJson(readFile(path))
+      game = readGameManifest(path)
+    if manifest.kind != JObject or not manifest.hasKey("player") or
+        manifest["player"].kind != JArray:
+      return
+    for player in manifest["player"]:
+      if player.kind != JObject:
+        continue
+      let name = player.manifestString(
+        "id",
+        player.manifestString("name", "")
+      )
+      if name.len == 0:
+        continue
+      result.add(PlayerManifest(
+        key: manifestKey(path) & "#player/" & name,
+        path: path,
+        name: name,
+        author: player.manifestString(
+          "author",
+          player.manifestString("owner", "-")
+        ),
+        imageUri: player.manifestImage(),
+        binary: player.manifestString("binary", "/bin/" & name),
+        games: @[game.name]
+      ))
+  except CatchableError as e:
+    raise newException(
+      TournamentError,
+      "could not read Coworld players " & path & ": " & e.msg
+    )
+
 proc addManifestPath(paths: var seq[string], path: string) =
   ## Adds one manifest path if it exists and is not already present.
   if path.len == 0 or not fileExists(path):
@@ -616,6 +673,13 @@ proc listPlayerManifests(): seq[PlayerManifest] =
   ## Scans game folders for CoPlayer manifests.
   var paths: seq[string]
   for dir in walkDirs(gamesRoot() / "*"):
+    let coworldPath = dir / CoworldManifestName
+    if fileExists(coworldPath):
+      try:
+        for player in readCoworldPlayers(coworldPath):
+          result.add(player)
+      except TournamentError as e:
+        stderr.writeLine("Skipping Coworld players ", coworldPath, ": ", e.msg)
     for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
       paths.addManifestPath(path)
   paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
@@ -667,49 +731,9 @@ proc selectedPlayers(
   if result.len == 0:
     raise newException(TournamentError, "no tournament players selected")
 
-proc stripImageTag(image: string): string =
-  ## Removes a Docker image tag or digest.
-  let
-    slashAt = image.rfind('/')
-    colonAt = image.rfind(':')
-    digestAt = image.find('@')
-  var stop = image.len
-  if digestAt >= 0:
-    stop = digestAt
-  elif colonAt > slashAt:
-    stop = colonAt
-  image[0 ..< stop]
-
-proc imageTag(image: string): string =
-  ## Returns a Docker image tag suffix when present.
-  let
-    slashAt = image.rfind('/')
-    colonAt = image.rfind(':')
-  if colonAt > slashAt:
-    image[colonAt .. ^1]
-  else:
-    ""
-
-proc runnerImageUri(imageUri: string): string =
-  ## Converts a manifest image name to the registry runner image.
-  let
-    cleanImage = imageUri.strip()
-    tag = imageTag(cleanImage)
-  var
-    owner = "treeform"
-    packageName = stripImageTag(cleanImage)
-  if packageName.startsWith("ghcr.io/"):
-    let parts = packageName.split('/')
-    if parts.len >= 3:
-      owner = parts[1]
-      packageName = parts[2 .. ^1].join("/")
-  elif packageName.contains('/'):
-    packageName = packageName.split('/')[^1]
-  if packageName.len == 0:
-    packageName = "bitworld-among-them"
-  if not packageName.endsWith("-runner"):
-    packageName.add("-runner")
-  "ghcr.io/" & owner & "/" & packageName & tag
+proc gameImageUri(game: GameManifest): string =
+  ## Returns the Docker image used to launch one tournament game.
+  game.imageUri
 
 proc dockerResult(args: openArray[string]): CommandResult =
   ## Runs Docker and captures merged stdout and stderr.
@@ -966,6 +990,18 @@ proc fmtFloat(value: float): string =
   ## Formats one score or MMR value.
   value.formatFloat(ffDecimal, 2)
 
+proc fmtRate(total: float, count: int): string =
+  ## Formats one per-count rate or a dash when the count is zero.
+  if count <= 0:
+    return "-"
+  fmtFloat(total / float(count))
+
+proc fmtPercent(part, total: int): string =
+  ## Formats one percentage or a dash when the denominator is zero.
+  if total <= 0:
+    return "-"
+  fmtFloat(float(part) * 100.0 / float(total)) & "%"
+
 proc replayName(gameName: string): string =
   ## Builds the replay file name for one tournament game.
   cleanFileName(gameName) & ".bitreplay"
@@ -1033,10 +1069,12 @@ proc defaultConfigJson(
   slots: openArray[PlayerSlot]
 ): string =
   ## Builds a practical tournament config JSON object.
-  let manifestNode = parseJson(readFile(manifest.path))
+  let
+    manifestNode = parseJson(readFile(manifest.path))
+    game = manifestNode.manifestObject("game")
   var node = newJObject()
-  if manifestNode.hasKey("config_schema"):
-    let schema = manifestNode["config_schema"]
+  if not game.isNil and game.hasKey("config_schema"):
+    let schema = game["config_schema"]
     if schema.kind == JObject and schema.hasKey("properties") and
         schema["properties"].kind == JObject:
       for key, property in schema["properties"].pairs:
@@ -1144,7 +1182,7 @@ proc gameDockerArgs(
     CogameResultsEnv & "=" & ContainerReplayDir / run.results
   ]
   result.addAiEnvArgs()
-  result.add(runnerImageUri(game.imageUri))
+  result.add(gameImageUri(game))
   result.add(game.binary)
   result.add("--address:0.0.0.0")
   result.add("--port:" & $GameContainerPort)
@@ -1343,7 +1381,7 @@ proc startTournamentGame(
   let gameConfig = defaultConfigJson(game, config.playersPerGame, run.slots)
   var launched: seq[string]
 
-  var images = @[runnerImageUri(game.imageUri)]
+  var images = @[gameImageUri(game)]
   for player in chosen.manifests:
     images.add(player.imageUri)
   pullImagesFresh(images)
@@ -1759,8 +1797,8 @@ proc hostName(request: Request): string =
   raw
 
 proc gameUrl(request: Request, game: TournamentContainer): string =
-  ## Builds a browser URL for the tournament game's global page.
-  "http://" & request.hostName() & ":" & $game.port & "/global"
+  ## Builds a per-game browser URL for the tournament game's global page.
+  "http://" & request.hostName() & ":" & $game.port & "/client/global"
 
 proc scoreUrl(request: Request, resultName: string): string =
   ## Builds a CoGame server score page URL for one score file.
@@ -1908,63 +1946,72 @@ proc renderStatsTable(stats: seq[PlayerStats]): string =
         th ".head":
           say "Rank"
         th ".head":
+          say "MMR"
+        th ".head":
           say "Games"
         th ".head":
-          say "Wins"
+          say "Win%"
         th ".head":
-          say "Score sum"
+          say "Score/g"
         th ".head":
-          say "Tasks"
+          say "Tasks/g"
         th ".head":
-          say "Kills"
+          say "Tasks/c"
+        th ".head":
+          say "Kills/i"
         th ".head":
           say "Imposters"
         th ".head":
           say "Crew"
         th ".head":
-          say "Vote player"
+          say "Vote player %"
         th ".head":
-          say "Vote skip"
+          say "Vote skip %"
         th ".head":
-          say "Vote timeout"
-        th ".head":
-          say "MMR"
+          say "Vote timeout %"
         th ".head":
           say "Image"
       if stats.len == 0:
         tr:
           td ".row1 center":
-            colspan "14"
+            colspan "15"
             say "No player stats yet."
       for i, player in stats:
-        let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
+        let
+          rowClass = if i mod 2 == 0: ".row1" else: ".row2"
+          voteTotal =
+            player.votePlayersSum +
+            player.voteSkipSum +
+            player.voteTimeoutSum
         tr:
           td rowClass:
             say esc(player.name)
           td rowClass & " center":
             say $(i + 1)
+          td rowClass & " right nowrap":
+            say fmtFloat(player.mmr)
           td rowClass & " center":
             say $player.games
           td rowClass & " center":
-            say $player.wins
+            say fmtPercent(player.wins, player.games)
           td rowClass & " right nowrap":
-            say fmtFloat(player.scoreSum)
-          td rowClass & " center":
-            say $player.tasksSum
-          td rowClass & " center":
-            say $player.killsSum
+            say fmtRate(player.scoreSum, player.games)
+          td rowClass & " right nowrap":
+            say fmtRate(float(player.tasksSum), player.games)
+          td rowClass & " right nowrap":
+            say fmtRate(float(player.tasksSum), player.crewSum)
+          td rowClass & " right nowrap":
+            say fmtRate(float(player.killsSum), player.imposterSum)
           td rowClass & " center":
             say $player.imposterSum
           td rowClass & " center":
             say $player.crewSum
           td rowClass & " center":
-            say $player.votePlayersSum
+            say fmtPercent(player.votePlayersSum, voteTotal)
           td rowClass & " center":
-            say $player.voteSkipSum
+            say fmtPercent(player.voteSkipSum, voteTotal)
           td rowClass & " center":
-            say $player.voteTimeoutSum
-          td rowClass & " right nowrap":
-            say fmtFloat(player.mmr)
+            say fmtPercent(player.voteTimeoutSum, voteTotal)
           td rowClass:
             say esc(player.imageUri)
 
@@ -2083,11 +2130,6 @@ proc htmlHeaders(): HttpHeaders =
   result["Content-Type"] = "text/html; charset=utf-8"
   result["Cache-Control"] = "no-cache"
 
-proc contentHeaders(contentType: string): HttpHeaders =
-  ## Builds standard static content response headers.
-  result["Content-Type"] = contentType
-  result["Cache-Control"] = "no-cache"
-
 proc redirectHeaders(location: string): HttpHeaders =
   ## Builds redirect headers.
   result = htmlHeaders()
@@ -2096,15 +2138,6 @@ proc redirectHeaders(location: string): HttpHeaders =
 proc respondHtml(request: Request, status: int, body: string) =
   ## Sends an HTML response.
   request.respond(status, htmlHeaders(), body)
-
-proc respondContent(
-  request: Request,
-  status: int,
-  contentType,
-  body: string
-) =
-  ## Sends a static content response.
-  request.respond(status, contentHeaders(contentType), body)
 
 proc respondRedirect(request: Request, location: string) =
   ## Sends a POST/redirect/get response.
@@ -2122,29 +2155,6 @@ proc queryValue(request: Request, key: string): string =
   for (queryKey, value) in parseUrlPairs(request.uri[queryStart + 1 .. ^1]):
     if queryKey == key:
       return value
-
-proc clientRoot(): string =
-  ## Returns the shared client asset directory.
-  parentDir(parentDir(currentSourcePath())) / "clients"
-
-proc clientAsset(path: string): string =
-  ## Maps one public client route to a local asset path.
-  case path
-  of "/client/global.html", "/client/global_client.html":
-    clientRoot() / "global_client.html"
-  of "/client/snappyjs.min.js":
-    clientRoot() / "snappyjs.min.js"
-  of "/client/qrcode.min.js":
-    clientRoot() / "qrcode.min.js"
-  else:
-    ""
-
-proc clientContentType(path: string): string =
-  ## Returns a content type for one shared client asset.
-  if path.endsWith(".js"):
-    "text/javascript; charset=utf-8"
-  else:
-    "text/html; charset=utf-8"
 
 proc indexHandler(request: Request, config: TournamentConfig) =
   ## Handles the index route.
@@ -2197,18 +2207,6 @@ proc bulkRemoveHandler(request: Request) =
         removed.add(removedName)
   request.respondRedirect("/")
 
-proc clientHandler(request: Request) =
-  ## Handles shared global client asset requests.
-  let path = clientAsset(request.path)
-  if path.len == 0 or not fileExists(path):
-    request.respondHtml(404, "client asset not found")
-    return
-  request.respondContent(
-    200,
-    clientContentType(path),
-    readFile(path)
-  )
-
 proc errorHandler(request: Request, config: TournamentConfig, e: ref Exception) =
   ## Handles expected and unexpected server errors.
   discard config
@@ -2245,8 +2243,6 @@ proc httpHandlerUnsafe(request: Request, config: TournamentConfig) =
       request.playersTableHandler(config)
     elif request.path == LogsPath and request.httpMethod == "GET":
       request.logsHandler()
-    elif request.path.startsWith(ClientPath) and request.httpMethod == "GET":
-      request.clientHandler()
     elif request.path == BulkStopPath and request.httpMethod == "POST":
       request.bulkStopHandler()
     elif request.path == BulkRemovePath and request.httpMethod == "POST":

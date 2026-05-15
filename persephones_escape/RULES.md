@@ -26,6 +26,7 @@ assign roles:
 shuffle players randomly into Underworld and Mortal Realm (roughly equal)
 randomly select one leader per room
 show each player their role card (intro screen with role, team, room, controls)
+intro also lists roles in play, missing core roles, and active Echo substitutions
 ```
 
 ## Round Loop (3 rounds)
@@ -48,7 +49,7 @@ Round durations: currently 15s each (testing values).
 
 - One-way reveals (ROLE) and color exchanges let others see information but do NOT count for the win condition
 - Only mutual role exchange (R.OFFER/R.ACCPT) satisfies the Cerberus/Demeter requirement
-- Players may lie verbally but revealed cards/colors are always truthful
+- Players may lie verbally. Revealed information is mechanically truthful unless an optional mechanic says otherwise.
 - Offers can be withdrawn before acceptance
 
 ### Leadership
@@ -103,6 +104,39 @@ Hades and Persephone in SAME room?
 3. **Chatroom-based communication** — players create private chatrooms to talk and share information, rather than physical card showing.
 4. **Global room chat** — a room-wide text channel for public communication and usurp voting.
 5. **Mandatory role exchange for victory** — Cerberus and Demeter create a requirement that the key roles (Hades/Persephone) must perform a consensual mutual role exchange for their team to win. Without this, nobody wins.
+
+## Optional Mechanics
+
+Optional mechanics are off by default and only appear when included in a config
+preset or JSON config file.
+
+### Spy
+
+| Role | Team | Effect |
+|---|---|---|
+| Spy | Shades or Nymphs | Color exchanges show the opposite team color. Only mutual role exchanges reveal the Spy's real team. |
+
+A Spy still sees their own real team. Other players who only color-exchange with
+a Spy see the wrong team color. A mutual role exchange reveals the role as Spy
+and reveals the Spy's real team.
+
+### Echo Roles
+
+Echo roles are backup roles for the four core roles. An Echo player always sees
+and reveals their actual Echo role name; they do not appear as the core role on
+their role card.
+
+| Role | Team | Mechanical effect |
+|---|---|---|
+| Echo of Hades | Shades | Counts as Hades only if Hades is missing from the match. |
+| Echo of Persephone | Nymphs | Counts as Persephone only if Persephone is missing from the match. |
+| Echo of Cerberus | Shades | Counts as Cerberus only if Cerberus is missing from the match. |
+| Echo of Demeter | Nymphs | Counts as Demeter only if Demeter is missing from the match. |
+
+If the paired core role is present, the matching Echo has no special mechanical
+identity for win-condition checks. If the paired core role is missing, the Echo
+stands in for that core role when checking same-room position and required
+mutual role exchanges.
 
 ## See Also
 

@@ -11,7 +11,7 @@ const WorldHeightTiles = 32;
 const WorldTileSize = 32;
 const WorldWidthPixels = WorldWidthTiles * WorldTileSize;
 const WorldHeightPixels = WorldHeightTiles * WorldTileSize;
-const SpritePlayerWebSocketPath = "/sprite_player";
+const PlayerWebSocketPath = "/player";
 const DefaultHost = "localhost";
 
 const MapSpriteId = 1;
@@ -1140,7 +1140,7 @@ async function runBot(
   chat = false,
   maxSteps = 0,
 ) {
-  let url = `ws://${host}:${port}${SpritePlayerWebSocketPath}`;
+  let url = `ws://${host}:${port}${PlayerWebSocketPath}`;
   if (name.length > 0) url += `?name=${encodeURIComponent(name)}`;
   while (true) {
     let ws = null;

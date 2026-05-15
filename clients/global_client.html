@@ -171,14 +171,35 @@ const debugUp=document.getElementById("debugUp");
 const debugSprites=document.getElementById("debugSprites");
 const textDecoder=new TextDecoder("utf-8");
 const url=new URL(location.href);
+function websocketPathForClientPage(path){
+  const mappings=[
+    ["/client/global","/global"],
+    ["/clients/global","/global"],
+    ["/client/replay","/replay"],
+    ["/clients/replay","/replay"],
+    ["/client/player","/player"],
+    ["/clients/player","/player"],
+    ["/client/rewards","/reward"],
+    ["/clients/rewards","/reward"],
+    ["/client/admin","/admin"],
+    ["/clients/admin","/admin"],
+  ];
+  for(const [clientPath,websocketPath] of mappings){
+    if(path===clientPath){
+      return websocketPath;
+    }
+    if(path.endsWith(clientPath)){
+      return path.slice(0,path.length-clientPath.length)+websocketPath;
+    }
+  }
+  return path;
+}
 function defaultAddress(){
-  // The page is served from the same URL as its websocket (e.g. /global
-  // dual-serves HTML and ws), so default the socket to location.pathname.
-  // This keeps the connection working under any reverse-proxy prefix
-  // without us having to know what the prefix is.
+  // Direct websocket pages connect to their own path. Canonical Coworld
+  // /client/* pages connect back to the matching websocket endpoint.
   const protocol=location.protocol==="https:"?"wss:":"ws:";
   const host=location.host||"localhost:8080";
-  return protocol+"//"+host+location.pathname;
+  return protocol+"//"+host+websocketPathForClientPage(location.pathname);
 }
 const address=url.searchParams.get("address")||defaultAddress();
 const reconnectSeconds=Math.max(0,Number(url.searchParams.get("reconnect"))||0);
@@ -204,7 +225,7 @@ function addressPath(){
   try{return new URL(address,location.href).pathname}catch(e){return""}
 }
 const playerMode=url.searchParams.get("player")==="1"||
-  addressPath()==="/sprite_player";
+  addressPath()==="/player";
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,UiZoom=3;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
@@ -624,6 +645,30 @@ function decodeSpritePixelsSnappy(compressed,width,height){
   return rgba;
 }
 
+function tryDecodeSpritePixelsSnappy(bytes,offset,remaining,width,height){
+  const expected=width*height*4;
+  if(remaining<6)return null;
+  const compressedLength=readU32(bytes,offset);
+  if(compressedLength>remaining-6)return null;
+  const labelOffset=offset+4+compressedLength;
+  const labelLength=readU16(bytes,labelOffset);
+  if(labelLength>remaining-4-compressedLength-2)return null;
+  const compressed=bytes.slice(offset+4,labelOffset);
+  let pixels;
+  try{
+    pixels=decodeSpritePixelsSnappy(compressed,width,height);
+  }catch(e){
+    return null;
+  }
+  const labelStart=labelOffset+2;
+  const labelEnd=labelStart+labelLength;
+  return {
+    pixels,
+    label:textDecoder.decode(bytes.slice(labelStart,labelEnd)),
+    offset:labelEnd
+  };
+}
+
 function decodeSpritePixelsRaw(bytes,offset,width,height){
   const count=width*height;
   const pixels=new Uint8Array(count*4);
@@ -639,31 +684,6 @@ function decodeSpritePixelsRaw(bytes,offset,width,height){
     }
   }
   return pixels;
-}
-
-// Detect whether an addSprite payload uses the Snappy-compressed RGBA
-// format (u32 compressedLen + data + u16 labelLen + label) or the raw
-// palette-index format (w*h bytes, no header/label).
-//
-// The raw format uses 1-byte palette indices in 0..16.  We sample the
-// first few pixel bytes: if they are all <= 16, the data is almost
-// certainly raw palette (Snappy streams start with a varint-encoded
-// uncompressed length which for w*h*4 RGBA will be much larger than
-// 16 for any non-trivial sprite).
-function isSpriteSnappy(bytes,headerEnd,remaining,width,height){
-  const pixelCount=width*height;
-  if(pixelCount===0)return false;
-  // Raw format needs exactly w*h bytes; if there aren't enough bytes
-  // in the message for that, it can't be raw.
-  if(remaining<pixelCount)return true;
-  // Sample the first few bytes of payload.  Raw palette indices are in
-  // [0, 16].  Snappy's leading varint encodes w*h*4 which exceeds 16
-  // for any sprite wider/taller than 2px.
-  const samplesToCheck=Math.min(pixelCount,8);
-  for(let i=0;i<samplesToCheck;i++){
-    if(bytes[headerEnd+i]>16)return true;
-  }
-  return false;
 }
 
 function ensureLayer(id){
@@ -781,12 +801,6 @@ function draw(){
     layer.ctx.putImageData(layer.image,0,0);
     const pos=layerScreenPos(layer);
     ctx.drawImage(layer.canvas,pos.x,pos.y,pos.w,pos.h);
-    if((layer.flags&UiFlag)!==0){
-      const x=Math.round(pos.x)+.5,y=Math.round(pos.y)+.5;
-      ctx.strokeStyle="rgba(255,255,255,.8)";
-      ctx.lineWidth=1;
-      ctx.strokeRect(x,y,Math.round(pos.w)-1,Math.round(pos.h)-1);
-    }
     if(debugOpen){
       for(const object of ordered){
         const sprite=sprites.get(object.spriteId);
@@ -808,22 +822,18 @@ function parse(bytes){
       const height=readU16(bytes,offset+4);
       offset+=6;
       const remaining=bytes.length-offset;
+      const snappySprite=tryDecodeSpritePixelsSnappy(
+        bytes,
+        offset,
+        remaining,
+        width,
+        height
+      );
       let pixels,label="";
-      if(isSpriteSnappy(bytes,offset,remaining,width,height)){
-        const compressedLength=readU32(bytes,offset);
-        offset+=4;
-        const compressed=bytes.slice(offset,offset+compressedLength);
-        offset+=compressedLength;
-        try{
-          pixels=decodeSpritePixelsSnappy(compressed,width,height);
-        }catch(e){
-          socket.close();
-          break;
-        }
-        const labelLength=readU16(bytes,offset);
-        offset+=2;
-        label=textDecoder.decode(bytes.slice(offset,offset+labelLength));
-        offset+=labelLength;
+      if(snappySprite){
+        pixels=snappySprite.pixels;
+        label=snappySprite.label;
+        offset=snappySprite.offset;
       }else{
         pixels=decodeSpritePixelsRaw(bytes,offset,width,height);
         offset+=width*height;

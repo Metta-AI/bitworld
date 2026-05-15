@@ -85,11 +85,11 @@ export { menuSequence, COMMAND_ACTIONS, MENU_DEFS } from "../game/menu_defs.js";
 export type { MenuDef } from "../game/menu_defs.js";
 
 // ---------------------------------------------------------------------------
-// Hostage selection — builds action sequences for leaders during HostageSelect
-// Hostage picker is inside shout: A toggles, B commits, SELECT closes
+// Psychopomp selection — builds action sequences for leaders during PsychopompSelect
+// Psychopomp picker is inside shout: A toggles, B commits, SELECT closes
 // ---------------------------------------------------------------------------
 
-export function hostageSelectSequence(targetIndices: number[], eligible: number[]): number[] {
+export function psychopompSelectSequence(targetIndices: number[], eligible: number[]): number[] {
   const seq: number[] = [];
   let cursor = 0;
   for (const target of targetIndices) {
@@ -200,12 +200,12 @@ export function findPath(
 // Movement — converts a target position into directional button masks
 // ---------------------------------------------------------------------------
 
-export function moveToward(px: number, py: number, tx: number, ty: number): number {
+export function moveToward(px: number, py: number, tx: number, ty: number, deadzone = 2): number {
   const dx = tx - px;
   const dy = ty - py;
   let mask = 0;
-  if (Math.abs(dx) > 2) mask |= dx < 0 ? BUTTON_LEFT : BUTTON_RIGHT;
-  if (Math.abs(dy) > 2) mask |= dy < 0 ? BUTTON_UP : BUTTON_DOWN;
+  if (Math.abs(dx) > deadzone) mask |= dx < 0 ? BUTTON_LEFT : BUTTON_RIGHT;
+  if (Math.abs(dy) > deadzone) mask |= dy < 0 ? BUTTON_UP : BUTTON_DOWN;
   return mask;
 }
 

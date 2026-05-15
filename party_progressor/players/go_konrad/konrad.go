@@ -26,7 +26,7 @@ const (
 	WorldTileSize             = 32
 	WorldWidthPixels          = WorldWidthTiles * WorldTileSize
 	WorldHeightPixels         = WorldHeightTiles * WorldTileSize
-	SpritePlayerWebSocketPath = "/sprite_player"
+	PlayerWebSocketPath       = "/player"
 	DefaultHost               = "localhost"
 
 	MapSpriteId              = 1
@@ -1329,7 +1329,7 @@ func botURL(host string, port int, name string) string {
 	u := url.URL{
 		Scheme: "ws",
 		Host:   address,
-		Path:   SpritePlayerWebSocketPath,
+		Path:   PlayerWebSocketPath,
 	}
 	if name != "" {
 		query := u.Query()

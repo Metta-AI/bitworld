@@ -112,6 +112,23 @@ func TestTaskMemory_MarkIsImmediate(t *testing.T) {
 	}
 }
 
+func TestTaskMemory_MarkedSeenNoResistsStaleIcon(t *testing.T) {
+	m := NewTaskMemory()
+	cam := camFor(3)
+	player := Point{cam.X + playerWorldOffX, cam.Y + playerWorldOffY}
+	m.Mark(3, TaskSeenNo)
+	m.Update(player, cam, []IconMatch{iconAtStation(3, cam)}, nil)
+	if got := m.State(3); got != TaskSeenNo {
+		t.Fatalf("suppressed station was re-promoted by stale icon: state(3) = %v", got)
+	}
+
+	m.Mark(3, TaskMaybe)
+	m.Update(player, cam, []IconMatch{iconAtStation(3, cam)}, nil)
+	if got := m.State(3); got != TaskKnown {
+		t.Fatalf("revived station should accept icon evidence: state(3) = %v", got)
+	}
+}
+
 func TestTaskMemory_Reset(t *testing.T) {
 	m := NewTaskMemory()
 	m.Mark(0, TaskKnown)

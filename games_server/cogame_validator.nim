@@ -50,12 +50,11 @@ type
   CogameProtocolDocs* = object
     player*: string
     global*: string
+    reward*: string
 
   CoworldPackage* = object
     manifestPath*: string
     manifest*: JsonNode
-    cogameManifestPath*: string
-    cogameManifest*: JsonNode
     certification*: JsonNode
     cogameImage*: string
     configSchema*: JsonNode
@@ -215,6 +214,51 @@ proc requireArray(node: JsonNode, key, path: string): JsonNode =
   child.requireKind(JArray, path & "." & key)
   child
 
+proc docValue(node: JsonNode, path: string): string =
+  ## Returns a protocol doc string from either legacy strings or doc objects.
+  if node.kind == JString and node.getStr().len > 0:
+    return node.getStr()
+  node.requireKind(JObject, path)
+  discard node.requireString("type", path)
+  let value = node.requireString("value", path)
+  if value.len == 0:
+    fail(path & ".value must be a non-empty string")
+  value
+
+proc requireDoc(node: JsonNode, key, path: string): string =
+  ## Returns one required protocol document value.
+  node.requireKey(key, path).docValue(path & "." & key)
+
+proc optionalDoc(node: JsonNode, key, path: string): string =
+  ## Returns one optional protocol document value.
+  let child = node.optionalKey(key)
+  if child.isNil:
+    return ""
+  child.docValue(path & "." & key)
+
+proc protocolDocs(protocols: JsonNode): CogameProtocolDocs =
+  ## Parses Coworld protocol docs.
+  CogameProtocolDocs(
+    player: protocols.requireDoc("player", "coworld.game.protocols"),
+    global: protocols.requireDoc("global", "coworld.game.protocols"),
+    reward: protocols.optionalDoc("reward", "coworld.game.protocols")
+  )
+
+proc requireImage(node: JsonNode, path: string): string =
+  ## Returns one required Docker image field.
+  node.requireKind(JObject, path)
+  let runnable = node.optionalKey("runnable")
+  if not runnable.isNil:
+    runnable.requireKind(JObject, path & ".runnable")
+    let image = runnable.optionalKey("image")
+    if not image.isNil and image.kind == JString and image.getStr().len > 0:
+      return image.getStr()
+  for key in ["image", "image_uri"]:
+    let image = node.optionalKey(key)
+    if not image.isNil and image.kind == JString and image.getStr().len > 0:
+      return image.getStr()
+  fail(path & " missing image")
+
 proc hexBytes(bytes: openArray[byte]): string =
   ## Encodes bytes as lowercase hexadecimal.
   const HexChars = "0123456789abcdef"
@@ -244,14 +288,14 @@ proc resolveManifestUri*(baseDir, manifestUri: string): string =
     fail("only local manifest URIs are supported: " & manifestUri)
   cleanPath(baseDir / manifestUri)
 
+proc isLocalManifestUri(manifestUri: string): bool =
+  ## Returns true when a manifest URI points to a local file.
+  let parsed = parseUri(manifestUri)
+  parsed.scheme.len == 0 or parsed.scheme == "file"
+
 proc isCoworldManifest(node: JsonNode): bool =
   ## Returns true when a JSON object looks like a Coworld manifest.
   node.kind == JObject and node.hasKey("game") and node.hasKey("certification")
-
-proc isCogameManifest(node: JsonNode): bool =
-  ## Returns true when a JSON object looks like a CoGame manifest.
-  node.kind == JObject and node.hasKey("image_uri") and
-    node.hasKey("config_schema") and node.hasKey("results_schema")
 
 proc valueToQueryString(node: JsonNode): string =
   ## Converts a simple JSON scalar to a query parameter value.
@@ -429,7 +473,7 @@ proc validateAllOfSchema(instance, schema: JsonNode, path: string) =
       validateJsonSchema(instance, branch, path)
 
 proc validateJsonSchema*(instance, schema: JsonNode, path = "$") =
-  ## Validates a practical subset of JSON Schema used by CoGame manifests.
+  ## Validates a practical subset of JSON Schema used by Coworld manifests.
   if schema.isNil or schema.kind != JObject:
     return
   validateAllOfSchema(instance, schema, path)
@@ -459,7 +503,7 @@ proc validateNamedImages(section: JsonNode, path: string) =
     item.requireKind(JObject, itemPath)
     discard item.requireString("id", itemPath)
     discard item.requireString("name", itemPath)
-    discard item.requireString("image_uri", itemPath)
+    discard item.requireImage(itemPath)
     discard item.requireString("description", itemPath)
 
 proc validateVariants(section: JsonNode, path: string) =
@@ -476,11 +520,23 @@ proc validateVariants(section: JsonNode, path: string) =
     discard item.requireString("description", itemPath)
     discard item.requireObject("game_config", itemPath)
 
+proc validateCoworldGame(game: JsonNode) =
+  ## Validates embedded Coworld game fields needed by certification.
+  game.requireKind(JObject, "coworld.game")
+  discard game.requireString("name", "coworld.game")
+  discard game.requireString("version", "coworld.game")
+  discard game.requireString("description", "coworld.game")
+  discard game.requireString("owner", "coworld.game")
+  discard game.requireImage("coworld.game")
+  discard game.requireObject("config_schema", "coworld.game")
+  discard game.requireObject("results_schema", "coworld.game")
+  let protocols = game.requireObject("protocols", "coworld.game")
+  discard protocols.protocolDocs()
+
 proc validateCoworldManifest*(manifest: JsonNode) =
   ## Validates the Coworld fields needed by certification.
   manifest.requireKind(JObject, "coworld")
-  discard manifest.requireObject("game", "coworld")
-  discard manifest["game"].requireString("manifest_uri", "coworld.game")
+  validateCoworldGame(manifest.requireObject("game", "coworld"))
   validateNamedImages(manifest.requireArray("player", "coworld"), "coworld.player")
   validateVariants(manifest.requireArray("variants", "coworld"), "coworld.variants")
 
@@ -490,7 +546,14 @@ proc validateCoworldManifest*(manifest: JsonNode) =
       validateNamedImages(node, "coworld." & section)
 
   let certification = manifest.requireObject("certification", "coworld")
-  discard certification.requireString("variant_id", "coworld.certification")
+  let hasVariant = certification.optionalKey("variant_id") != nil
+  let hasConfig = certification.optionalKey("game_config") != nil
+  if not hasVariant and not hasConfig:
+    fail("coworld.certification missing variant_id or game_config")
+  if hasVariant:
+    discard certification.requireString("variant_id", "coworld.certification")
+  if hasConfig:
+    discard certification.requireObject("game_config", "coworld.certification")
   let players = certification.requireArray("players", "coworld.certification")
   if players.len == 0:
     fail("coworld.certification.players must not be empty")
@@ -506,20 +569,6 @@ proc validateCoworldManifest*(manifest: JsonNode) =
         discard key
         discard value.valueToQueryString()
 
-proc validateCogameManifest*(manifest: JsonNode) =
-  ## Validates the CoGame fields needed by certification.
-  manifest.requireKind(JObject, "cogame")
-  discard manifest.requireString("name", "cogame")
-  discard manifest.requireString("version", "cogame")
-  discard manifest.requireString("description", "cogame")
-  discard manifest.requireString("owner", "cogame")
-  discard manifest.requireString("image_uri", "cogame")
-  discard manifest.requireObject("config_schema", "cogame")
-  discard manifest.requireObject("results_schema", "cogame")
-  let protocols = manifest.requireObject("protocols", "cogame")
-  discard protocols.requireString("player", "cogame.protocols")
-  discard protocols.requireString("global", "cogame.protocols")
-
 proc itemMapById(manifest: JsonNode, section: string): Table[string, JsonNode] =
   ## Indexes a Coworld array section by id.
   let items = manifest.requireArray(section, "coworld")
@@ -531,6 +580,8 @@ proc itemMapById(manifest: JsonNode, section: string): Table[string, JsonNode] =
 
 proc certificationVariant*(coworld: CoworldPackage): JsonNode =
   ## Returns the Coworld variant used for certification.
+  if not coworld.certification.optionalKey("game_config").isNil:
+    return coworld.certification
   let variants = itemMapById(coworld.manifest, "variants")
   let variantId =
     coworld.certification.requireString("variant_id", "coworld.certification")
@@ -559,7 +610,7 @@ proc certificationPlayerLaunchSpecs*(
       fail("unknown certification player_id for slot " & $slot & ": " & playerId)
     let declaredPlayer = declaredPlayers[playerId]
     var spec = PlayerLaunchSpec(
-      image: declaredPlayer.requireString("image_uri", "coworld.player")
+      image: declaredPlayer.requireImage("coworld.player")
     )
     let params = rawPlayer.optionalKey("initial_params")
     if not params.isNil:
@@ -577,19 +628,25 @@ proc validateCertificationReferences*(coworld: CoworldPackage) =
 
 proc referencedFilePaths*(coworld: CoworldPackage): seq[(string, string)] =
   ## Returns local files referenced by the manifests.
-  let cogameDir = parentDir(coworld.cogameManifestPath)
-  result.add((
-    "Cogame protocols.player",
-    resolveManifestUri(cogameDir, coworld.protocols.player)
-  ))
-  result.add((
-    "Cogame protocols.global",
-    resolveManifestUri(cogameDir, coworld.protocols.global)
-  ))
+  let coworldDir = parentDir(coworld.manifestPath)
+  if coworld.protocols.player.isLocalManifestUri():
+    result.add((
+      "Coworld game protocols.player",
+      resolveManifestUri(coworldDir, coworld.protocols.player)
+    ))
+  if coworld.protocols.global.isLocalManifestUri():
+    result.add((
+      "Coworld game protocols.global",
+      resolveManifestUri(coworldDir, coworld.protocols.global)
+    ))
+  if coworld.protocols.reward.len > 0 and coworld.protocols.reward.isLocalManifestUri():
+    result.add((
+      "Coworld game protocols.reward",
+      resolveManifestUri(coworldDir, coworld.protocols.reward)
+    ))
 
   let clients = coworld.manifest.optionalKey("clients")
   if not clients.isNil and clients.kind == JObject:
-    let coworldDir = parentDir(coworld.manifestPath)
     for key in ["player", "global", "replay"]:
       let client = clients.optionalKey(key)
       if not client.isNil and client.kind == JString:
@@ -620,7 +677,7 @@ proc addImageReference(
 proc imageReferences*(coworld: CoworldPackage): seq[(string, string)] =
   ## Returns Docker images referenced by the Coworld package.
   var seen: Table[string, bool]
-  result.addImageReference(seen, "Cogame image_uri", coworld.cogameImage)
+  result.addImageReference(seen, "Coworld game image", coworld.cogameImage)
   for slot, player in coworld.certificationPlayerLaunchSpecs():
     result.addImageReference(
       seen,
@@ -635,11 +692,11 @@ proc imageReferences*(coworld: CoworldPackage): seq[(string, string)] =
       continue
     for i in 0 ..< items.len:
       let item = items[i]
-      if item.kind == JObject and item.hasKey("image_uri"):
+      if item.kind == JObject:
         result.addImageReference(
           seen,
-          "Coworld " & section & "[" & $i & "].image_uri",
-          item["image_uri"].getStr()
+          "Coworld " & section & "[" & $i & "].image",
+          item.requireImage("coworld." & section & "[" & $i & "]")
         )
 
 proc runCommandCapture(
@@ -740,7 +797,7 @@ proc dockerImageContainerPort*(dockerBin, image: string): int =
     result = GamePort
 
 proc loadCoworldPackage*(manifestPath: string): CoworldPackage =
-  ## Loads and validates a Coworld package manifest and its CoGame manifest.
+  ## Loads and validates a Coworld package manifest.
   let
     resolvedManifestPath = cleanPath(manifestPath)
     manifest = loadJsonObject(resolvedManifestPath)
@@ -748,51 +805,27 @@ proc loadCoworldPackage*(manifestPath: string): CoworldPackage =
 
   let
     game = manifest.requireObject("game", "coworld")
-    cogameManifestPath = resolveManifestUri(
-      parentDir(resolvedManifestPath),
-      game.requireString("manifest_uri", "coworld.game")
-    )
-    cogameManifest = loadJsonObject(cogameManifestPath)
-  validateCogameManifest(cogameManifest)
-
-  let protocols = cogameManifest.requireObject("protocols", "cogame")
+    protocols = game.requireObject("protocols", "coworld.game")
   result = CoworldPackage(
     manifestPath: resolvedManifestPath,
     manifest: manifest,
-    cogameManifestPath: cogameManifestPath,
-    cogameManifest: cogameManifest,
     certification: manifest.requireObject("certification", "coworld"),
-    cogameImage: cogameManifest.requireString("image_uri", "cogame"),
-    configSchema: cogameManifest.requireObject("config_schema", "cogame"),
-    resultsSchema: cogameManifest.requireObject("results_schema", "cogame"),
-    protocols: CogameProtocolDocs(
-      player: protocols.requireString("player", "cogame.protocols"),
-      global: protocols.requireString("global", "cogame.protocols")
-    )
+    cogameImage: game.requireImage("coworld.game"),
+    configSchema: game.requireObject("config_schema", "coworld.game"),
+    resultsSchema: game.requireObject("results_schema", "coworld.game"),
+    protocols: protocols.protocolDocs()
   )
   result.validateCertificationReferences()
   result.validateReferencedFiles()
 
-proc coworldPathForCogame*(cogameManifestPath: string): string =
-  ## Returns the sibling Coworld manifest for one CoGame manifest.
-  let candidate = parentDir(cleanPath(cogameManifestPath)) / "coworld_manifest.json"
-  if fileExists(candidate):
-    return cleanPath(candidate)
-  fail(
-    "CoGame manifest certification needs a sibling coworld_manifest.json: " &
-      candidate
-  )
-
 proc loadPackageFromManifest*(manifestPath: string): CoworldPackage =
-  ## Loads a Coworld package from a Coworld or CoGame manifest path.
+  ## Loads a Coworld package from a manifest path.
   let
     resolved = cleanPath(manifestPath)
     manifest = loadJsonObject(resolved)
   if manifest.isCoworldManifest():
     return loadCoworldPackage(resolved)
-  if manifest.isCogameManifest():
-    return loadCoworldPackage(coworldPathForCogame(resolved))
-  fail("manifest is neither a Coworld package nor a CoGame manifest: " & resolved)
+  fail("manifest is not a Coworld package: " & resolved)
 
 proc loadPackageFromManifest(
   manifestPath: string,
@@ -808,34 +841,21 @@ proc loadPackageFromManifest(
     criteria.failCriterion("manifest.read", "Manifest file", e.msg)
     raise
 
-  var coworldPath: string
   if entryManifest.isCoworldManifest():
-    coworldPath = resolved
     criteria.passCriterion("manifest.kind", "Manifest type", "Coworld")
-  elif entryManifest.isCogameManifest():
-    try:
-      coworldPath = coworldPathForCogame(resolved)
-      criteria.passCriterion(
-        "manifest.kind",
-        "Manifest type",
-        "CoGame with sibling Coworld manifest"
-      )
-    except CatchableError as e:
-      criteria.failCriterion("manifest.kind", "Manifest type", e.msg)
-      raise
   else:
-    let message = "manifest is neither a Coworld package nor a CoGame manifest"
+    let message = "manifest is not a Coworld package"
     criteria.failCriterion("manifest.kind", "Manifest type", message)
     fail(message & ": " & resolved)
 
   let coworldManifest =
     try:
-      let loaded = loadJsonObject(coworldPath)
+      let loaded = loadJsonObject(resolved)
       validateCoworldManifest(loaded)
       criteria.passCriterion(
         "coworld.schema",
         "Coworld manifest schema",
-        coworldPath
+        resolved
       )
       loaded
     except CatchableError as e:
@@ -846,54 +866,17 @@ proc loadPackageFromManifest(
       )
       raise
 
-  var cogameManifestPath: string
-  try:
-    let game = coworldManifest.requireObject("game", "coworld")
-    cogameManifestPath = resolveManifestUri(
-      parentDir(coworldPath),
-      game.requireString("manifest_uri", "coworld.game")
-    )
-    criteria.passCriterion(
-      "cogame.resolve",
-      "CoGame manifest reference",
-      cogameManifestPath
-    )
-  except CatchableError as e:
-    criteria.failCriterion("cogame.resolve", "CoGame manifest reference", e.msg)
-    raise
-
-  let cogameManifest =
-    try:
-      let loaded = loadJsonObject(cogameManifestPath)
-      validateCogameManifest(loaded)
-      criteria.passCriterion(
-        "cogame.schema",
-        "CoGame manifest schema",
-        cogameManifestPath
-      )
-      loaded
-    except CatchableError as e:
-      criteria.failCriterion(
-        "cogame.schema",
-        "CoGame manifest schema",
-        e.msg
-      )
-      raise
-
-  let protocols = cogameManifest.requireObject("protocols", "cogame")
+  let
+    game = coworldManifest.requireObject("game", "coworld")
+    protocols = game.requireObject("protocols", "coworld.game")
   result = CoworldPackage(
-    manifestPath: coworldPath,
+    manifestPath: resolved,
     manifest: coworldManifest,
-    cogameManifestPath: cogameManifestPath,
-    cogameManifest: cogameManifest,
     certification: coworldManifest.requireObject("certification", "coworld"),
-    cogameImage: cogameManifest.requireString("image_uri", "cogame"),
-    configSchema: cogameManifest.requireObject("config_schema", "cogame"),
-    resultsSchema: cogameManifest.requireObject("results_schema", "cogame"),
-    protocols: CogameProtocolDocs(
-      player: protocols.requireString("player", "cogame.protocols"),
-      global: protocols.requireString("global", "cogame.protocols")
-    )
+    cogameImage: game.requireImage("coworld.game"),
+    configSchema: game.requireObject("config_schema", "coworld.game"),
+    resultsSchema: game.requireObject("results_schema", "coworld.game"),
+    protocols: protocols.protocolDocs()
   )
 
   try:
@@ -1297,7 +1280,7 @@ proc gameContainerArgs(
   ## Builds Docker arguments for the live game container.
   result = @[
     "--name", name,
-    "-p", "127.0.0.1:" & $port & ":" & $spec.containerPort,
+    "-p", $port & ":" & $spec.containerPort,
     "-e", ConfigEnv & "=" & ContainerWorkDir & "/config.json",
     "-e", ResultsEnv & "=" & ContainerWorkDir & "/results.json",
     "-e", ReplaySaveEnv & "=" & ContainerWorkDir & "/replay.json",
@@ -1315,7 +1298,7 @@ proc replayContainerArgs(
   ## Builds Docker arguments for the replay container.
   result = @[
     "--name", name,
-    "-p", "127.0.0.1:" & $port & ":" & $spec.containerPort,
+    "-p", $port & ":" & $spec.containerPort,
     "-e", ReplayLoadEnv & "=" & ContainerWorkDir & "/replay.json",
     "-v",
     cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
@@ -1629,7 +1612,7 @@ proc certifyManifest*(
   manifestPath: string,
   config = defaultValidatorConfig()
 ): CertificationResult =
-  ## Certifies a Coworld or CoGame manifest and returns produced criteria.
+  ## Certifies a Coworld manifest and returns produced criteria.
   var criteria: seq[ValidationCriterion]
   try:
     let coworld = loadPackageFromManifest(manifestPath, criteria)
@@ -1651,9 +1634,7 @@ Options:
   --no-run                Validate manifests and write config only.
   --help                  Show this help.
 
-The manifest may be coworld_manifest.json or cogame_manifest.json.
-When a CoGame manifest is used, a sibling coworld_manifest.json supplies
-the certification variant and player images.
+The manifest must be coworld_manifest.json.
 """
 
 proc parseFloatOption(value, option: string): float =
@@ -1732,8 +1713,6 @@ proc runCli*() =
     printCriteria(result.criteria)
     if result.coworld.manifestPath.len > 0:
       echo "Coworld: ", result.coworld.manifestPath
-    if result.coworld.cogameManifestPath.len > 0:
-      echo "CoGame: ", result.coworld.cogameManifestPath
     if result.artifacts.workspace.len > 0:
       echo "Artifacts: ", result.artifacts.workspace
       echo "Results: ", result.artifacts.resultsPath

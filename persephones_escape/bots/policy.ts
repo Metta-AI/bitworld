@@ -13,7 +13,7 @@ import {
   type Point,
 } from "./bot_utils.js";
 import type { BotController } from "./bot_common.js";
-import type { BeliefState } from "./belief_state.js";
+import type { GameKnowledge } from "./game_knowledge.js";
 import { whisperMenuSequence, COMMAND_ACTIONS } from "../game/menu_defs.js";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ export interface Policy {
   autoOfferRole: boolean;
 
   /**
-   * Ordered list of players to pursue by character name (e.g. "R CRCL").
+   * Ordered list of players to pursue by character name (e.g. "R.CRCL").
    * Bot walks toward the first one it can see on the minimap.
    */
   pursueOrder: string[];
@@ -169,7 +169,7 @@ function pushChatCommand(bot: BotController, action: string) {
 
 /** Returns true if the executor produced an input this frame. */
 export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean {
-  const belief = bot.belief;
+  const player = bot.player;
 
   // Priority 0: drain pending action queue first
   if (!bot.actions.empty) {
@@ -178,27 +178,27 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
   }
 
   // Priority 1: if we're in waiting_entry, just sit still
-  if (belief.phase === "waiting_entry") {
+  if (player.phase === "waiting_entry") {
     sendInput(ws, 0);
     return true;
   }
 
   // Priority 2: inside a whisper — apply auto-actions
-  if (belief.phase === "whisper") {
+  if (player.phase === "whisper") {
     // Highest priority: grant pending entry if configured
-    if (policy.autoGrantEntry && belief.pendingEntry) {
+    if (policy.autoGrantEntry && player.pendingEntry) {
       pushChatCommand(bot, "GRANT");
       sendInput(ws, bot.actions.shift()!);
       return true;
     }
     // Accept role offer if configured (this is the win path when it's safe)
-    if (policy.autoAcceptRoleOffer && belief.pendingRoleOffer) {
+    if (policy.autoAcceptRoleOffer && player.pendingRoleOffer) {
       pushChatCommand(bot, "R.ACCPT");
       sendInput(ws, bot.actions.shift()!);
       return true;
     }
     // Accept color offer if configured
-    if (policy.autoAcceptColorOffer && belief.pendingColorOffer) {
+    if (policy.autoAcceptColorOffer && player.pendingColorOffer) {
       pushChatCommand(bot, "C.ACCPT");
       sendInput(ws, bot.actions.shift()!);
       return true;
@@ -244,9 +244,9 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
 
   // Priority 3.5: walk toward targetPoint (highest spatial priority — used for
   // coordinated meetups).
-  if (belief.myPos && policy.targetPoint) {
-    const dx = policy.targetPoint.x - belief.myPos.x;
-    const dy = policy.targetPoint.y - belief.myPos.y;
+  if (player.myPos && policy.targetPoint) {
+    const dx = policy.targetPoint.x - player.myPos.x;
+    const dy = policy.targetPoint.y - player.myPos.y;
     const distSq = dx * dx + dy * dy;
     if (distSq <= (10 * 10)) {
       // Arrived at meetup point. Try to open/join a whisper.
@@ -260,22 +260,22 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
       return true;
     }
     // Walk toward it.
-    const mask = moveToward(belief.myPos.x, belief.myPos.y, policy.targetPoint.x, policy.targetPoint.y);
+    const mask = moveToward(player.myPos.x, player.myPos.y, policy.targetPoint.x, policy.targetPoint.y);
     sendInput(ws, mask || randomDir());
     return true;
   }
 
   // Priority 4: pursue a player in pursueOrder
-  if (belief.myPos && policy.pursueOrder.length > 0) {
+  if (player.myPos && policy.pursueOrder.length > 0) {
     for (const target of policy.pursueOrder) {
-      const targetColor = paletteColorFromLetter(target.split(" ")[0]);
+      const targetColor = paletteColorFromLetter(target.split(".")[0]);
       if (targetColor === null) continue;
-      const dot = belief.minimapDots.find(d => d.color === targetColor && !d.isSelf);
+      const dot = player.minimapDots.find(d => d.color === targetColor && !d.isSelf);
       if (!dot) continue;
 
       // If within whisper bubble range, open_whisper
-      const dx = dot.worldX - belief.myPos.x;
-      const dy = dot.worldY - belief.myPos.y;
+      const dx = dot.worldX - player.myPos.x;
+      const dy = dot.worldY - player.myPos.y;
       const distSq = dx * dx + dy * dy;
 
       if (distSq <= (10 * 10) && policy.openWhisperOnReach) {
@@ -286,7 +286,7 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
       }
 
       // Otherwise, walk toward them
-      const mask = moveToward(belief.myPos.x, belief.myPos.y, dot.worldX, dot.worldY);
+      const mask = moveToward(player.myPos.x, player.myPos.y, dot.worldX, dot.worldY);
       sendInput(ws, mask || randomDir());
       return true;
     }
@@ -295,12 +295,12 @@ export function runPolicy(bot: BotController, policy: Policy, ws: any): boolean 
   // Priority 5: wander
   if (policy.wanderIfIdle) {
     if (!bot.wanderTarget || bot.wanderTicks <= 0) {
-      bot.wanderTarget = randomPoint(belief.myRoom ?? Room.RoomA, belief.roomW, belief.roomH);
+      bot.wanderTarget = randomPoint(player.myRoom ?? Room.RoomA, player.matchFacts.roomW, player.matchFacts.roomH);
       bot.wanderTicks = 15 + Math.floor(Math.random() * 40);
     }
     bot.wanderTicks--;
-    if (belief.myPos) {
-      const mask = moveToward(belief.myPos.x, belief.myPos.y, bot.wanderTarget.x, bot.wanderTarget.y);
+    if (player.myPos) {
+      const mask = moveToward(player.myPos.x, player.myPos.y, bot.wanderTarget.x, bot.wanderTarget.y);
       sendInput(ws, mask || randomDir());
     } else {
       sendInput(ws, randomDir());

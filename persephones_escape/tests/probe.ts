@@ -33,10 +33,10 @@ ws.on("message", (data: Buffer) => {
       } else {
         console.log(`  REVEAL: (could not parse)`);
       }
-    } else if (phase === "hostage_select") {
+    } else if (phase === "psychopomp_select") {
       for (const color of [1, 8]) {
         const t = readTextAt(frame, 2, 2, color, 20);
-        if (t.length > 0) console.log(`  HOSTAGE HUD (color=${color}): "${t}"`);
+        if (t.length > 0) console.log(`  PSYCHOPOMP HUD (color=${color}): "${t}"`);
       }
     } else if (phase === "lobby") {
       const t = readTextAt(frame, 2, 2, 2, 15);

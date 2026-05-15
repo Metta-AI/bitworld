@@ -1,6 +1,7 @@
 import
   std/[json, os, unittest],
   ../replays,
+  ../server,
   ../sim
 
 const
@@ -107,9 +108,35 @@ suite "player slots":
     var config = defaultGameConfig()
     config.update("""{"tokens":["secret"]}""")
 
-    check config.playerJoinAllowed("player1", 0, "secret")
-    check not config.playerJoinAllowed("player1", 0, "bad")
-    check not config.playerJoinAllowed("player1", MaxPlayers, "secret")
+    check config.slots[0].name == "Player1"
+    check config.playerJoinAllowed("Player1", 0, "secret")
+    check not config.playerJoinAllowed("player1", 0, "secret")
+    check not config.playerJoinAllowed("Player1", 0, "bad")
+    check not config.playerJoinAllowed("Player1", MaxPlayers, "secret")
+    check config.configuredPlayerName(0, "secret") == "Player1"
+    check config.configuredPlayerName(-1, "secret") == "Player1"
+
+  test "closed rosters require named tokenized slots":
+    var config = defaultGameConfig()
+    config.minPlayers = 1
+    config.update("""{"tokens":["secret"],"closedRoster":true}""")
+
+    check config.slots[0].name == "Player1"
+    check config.slots[0].token == "secret"
+    check config.playerJoinAllowed("Player1", -1, "secret")
+    check not config.playerJoinAllowed("Player1", -1, "bad")
+    check not config.playerJoinAllowed("intruder", -1, "secret")
+    check not config.playerJoinAllowed("extra", -1, "")
+
+    var missingName = defaultGameConfig()
+    missingName.minPlayers = 1
+    expect AmongThemError:
+      missingName.update("""{"slots":[{"token":"secret"}],"closedRoster":true}""")
+
+    var missingToken = defaultGameConfig()
+    missingToken.minPlayers = 1
+    expect AmongThemError:
+      missingToken.update("""{"slots":[{"name":"Player1"}],"closedRoster":true}""")
 
   test "duplicate configured names and tokens are rejected":
     var config = defaultGameConfig()
@@ -143,6 +170,13 @@ suite "player slots":
     expect AmongThemError:
       discard sim.addPlayer("same-name")
 
+  test "anonymous player names are unique":
+    var nextIndex = 1
+
+    check anonymousPlayerIdentity(nextIndex, []) == "Player1"
+    check anonymousPlayerIdentity(nextIndex, ["Player2"]) == "Player3"
+    check nextIndex == 4
+
   test "replay join stores name slot and token":
     let path = getTempDir() / "among_them_slots_replay.bitreplay"
     if fileExists(path):
@@ -171,6 +205,39 @@ suite "player slots":
 
     let playerIndex = sim.addPlayer("open")
     check sim.players[playerIndex].joinOrder == 1
+
+  test "automatic slots stay open for configured rosters by default":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"]}""")
+    var sim = initAmongThemForTest(config)
+
+    discard sim.addPlayer("Player1", -1, "crew-token")
+    discard sim.addPlayer("Player2", -1, "imp-token")
+    let extraIndex = sim.addPlayer("extra")
+    check sim.players[extraIndex].joinOrder == 2
+
+  test "automatic slots stop at an explicitly closed configured roster":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
+    var sim = initAmongThemForTest(config)
+
+    discard sim.addPlayer("Player1", -1, "crew-token")
+    discard sim.addPlayer("Player2", -1, "imp-token")
+    check not sim.canAddPlayer()
+    expect AmongThemError:
+      discard sim.addPlayer("extra")
+
+  test "closed configured roster rejects explicit slots outside roster":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
+    var sim = initAmongThemForTest(config)
+
+    check not config.playerJoinAllowed("extra", 2, "")
+    expect AmongThemError:
+      discard sim.addPlayer("extra", 2)
 
   test "manual slot preserves auto slot zero":
     let config = defaultGameConfig()

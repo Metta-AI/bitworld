@@ -1,0 +1,647 @@
+import
+  supersnappy,
+  sim
+
+const
+  ScreenWidth = 128
+  ScreenHeight = 128
+
+  MapSpriteId = 1
+  MapObjectId = 1
+  ShipSpriteBase = 100
+  AsteroidSpriteBase = 600
+  BulletSpriteBase = 900
+  ExplosionSpriteBase = 950
+  ShieldSpriteBase = 980
+  HudSpriteId = 990
+  RespawnSpriteId = 991
+
+  AsteroidObjectBase = 1000
+  ShipObjectBase = 2000
+  BulletObjectBase = 3000
+  ExplosionObjectBase = 4000
+  HudObjectId = 8000
+  RespawnObjectId = 8001
+
+type
+  RgbaSprite = object
+    width, height: int
+    pixels: seq[uint8]
+
+  GlobalViewerState* = object
+    initialized*: bool
+    objectIds*: seq[int]
+
+  PlayerViewerState* = object
+    initialized*: bool
+    objectIds*: seq[int]
+
+proc initGlobalViewerState*(): GlobalViewerState =
+  discard
+
+proc initPlayerViewerState*(): PlayerViewerState =
+  discard
+
+proc newRgbaSprite(width, height: int): RgbaSprite =
+  result.width = width
+  result.height = height
+  result.pixels = newSeq[uint8](width * height * 4)
+
+proc putRgbaPixel(sprite: var RgbaSprite, x, y: int, color: RgbaColor) =
+  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
+    return
+  let offset = (y * sprite.width + x) * 4
+  sprite.pixels[offset] = color.r
+  sprite.pixels[offset + 1] = color.g
+  sprite.pixels[offset + 2] = color.b
+  sprite.pixels[offset + 3] = color.a
+
+proc drawHSpan(sprite: var RgbaSprite, x0, x1, y: int, color: RgbaColor) =
+  let
+    startX = min(x0, x1)
+    endX = max(x0, x1)
+  for x in startX .. endX:
+    sprite.putRgbaPixel(x, y, color)
+
+proc drawLine(sprite: var RgbaSprite, x0, y0, x1, y1: int, color: RgbaColor) =
+  var
+    currentX = x0
+    currentY = y0
+    dx = abs(x1 - x0)
+    dy = -abs(y1 - y0)
+    stepX = if x0 < x1: 1 else: -1
+    stepY = if y0 < y1: 1 else: -1
+    error = dx + dy
+  while true:
+    sprite.putRgbaPixel(currentX, currentY, color)
+    if currentX == x1 and currentY == y1:
+      break
+    let twiceError = error * 2
+    if twiceError >= dy:
+      error += dy
+      currentX += stepX
+    if twiceError <= dx:
+      error += dx
+      currentY += stepY
+
+proc drawCircleFill(
+  sprite: var RgbaSprite,
+  cx, cy, radius: int,
+  color: RgbaColor
+) =
+  if radius <= 0:
+    sprite.putRgbaPixel(cx, cy, color)
+    return
+  var
+    x = radius
+    y = 0
+    decision = 1 - radius
+  while x >= y:
+    sprite.drawHSpan(cx - x, cx + x, cy + y, color)
+    sprite.drawHSpan(cx - x, cx + x, cy - y, color)
+    sprite.drawHSpan(cx - y, cx + y, cy + x, color)
+    sprite.drawHSpan(cx - y, cx + y, cy - x, color)
+    inc y
+    if decision < 0:
+      decision += 2 * y + 1
+    else:
+      dec x
+      decision += 2 * (y - x) + 1
+
+proc drawCircleRing(
+  sprite: var RgbaSprite,
+  cx, cy, radius, thickness: int,
+  color: RgbaColor
+) =
+  for ringRadius in countdown(radius, max(0, radius - thickness + 1)):
+    var
+      x = ringRadius
+      y = 0
+      decision = 1 - ringRadius
+    while x >= y:
+      sprite.putRgbaPixel(cx + x, cy + y, color)
+      sprite.putRgbaPixel(cx - x, cy + y, color)
+      sprite.putRgbaPixel(cx + x, cy - y, color)
+      sprite.putRgbaPixel(cx - x, cy - y, color)
+      sprite.putRgbaPixel(cx + y, cy + x, color)
+      sprite.putRgbaPixel(cx - y, cy + x, color)
+      sprite.putRgbaPixel(cx + y, cy - x, color)
+      sprite.putRgbaPixel(cx - y, cy - x, color)
+      inc y
+      if decision < 0:
+        decision += 2 * y + 1
+      else:
+        dec x
+        decision += 2 * (y - x) + 1
+
+proc addU8(packet: var seq[uint8], value: uint8) =
+  packet.add(value)
+
+proc addU16(packet: var seq[uint8], value: int) =
+  let v = uint16(value)
+  packet.add(uint8(v and 0xff'u16))
+  packet.add(uint8(v shr 8))
+
+proc addU32(packet: var seq[uint8], value: int) =
+  let v = uint32(value)
+  for shift in countup(0, 24, 8):
+    packet.add(uint8((v shr shift) and 0xff'u32))
+
+proc addI16(packet: var seq[uint8], value: int) =
+  let v = cast[uint16](int16(value))
+  packet.add(uint8(v and 0xff'u16))
+  packet.add(uint8(v shr 8))
+
+proc addViewport(packet: var seq[uint8], layer, width, height: int) =
+  packet.addU8(0x05)
+  packet.addU8(uint8(layer))
+  packet.addU16(width)
+  packet.addU16(height)
+
+proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
+  packet.addU8(0x06)
+  packet.addU8(uint8(layer))
+  packet.addU8(uint8(layerType))
+  packet.addU8(uint8(flags))
+
+proc addSprite(
+  packet: var seq[uint8],
+  spriteId, width, height: int,
+  pixels: openArray[uint8],
+  label = ""
+) =
+  packet.addU8(0x01)
+  packet.addU16(spriteId)
+  packet.addU16(width)
+  packet.addU16(height)
+  var raw = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    raw[i] = pixels[i]
+  let compressed = supersnappy.compress(raw)
+  packet.addU32(compressed.len)
+  for b in compressed:
+    packet.addU8(b)
+  packet.addU16(label.len)
+  for ch in label:
+    packet.addU8(uint8(ord(ch)))
+
+proc addObject(
+  packet: var seq[uint8],
+  objectId, x, y, z, layer, spriteId: int
+) =
+  packet.addU8(0x02)
+  packet.addU16(objectId)
+  packet.addI16(x)
+  packet.addI16(y)
+  packet.addI16(z)
+  packet.addU8(uint8(layer))
+  packet.addU16(spriteId)
+
+proc addDeleteObject(packet: var seq[uint8], objectId: int) =
+  packet.addU8(0x03)
+  packet.addU16(objectId)
+
+proc buildBackgroundSprite(sim: SimServer, width, height: int): RgbaSprite =
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, BackgroundColor)
+  for star in sim.stars:
+    if star.x < width and star.y < height:
+      result.putRgbaPixel(star.x, star.y, star.color)
+
+proc buildPlayerBackgroundSprite(
+  sim: SimServer,
+  cameraPixelX, cameraPixelY: int
+): RgbaSprite =
+  result = newRgbaSprite(ScreenWidth, ScreenHeight)
+  for y in 0 ..< ScreenHeight:
+    for x in 0 ..< ScreenWidth:
+      result.putRgbaPixel(x, y, BackgroundColor)
+  for star in sim.stars:
+    var
+      sx = star.x - cameraPixelX
+      sy = star.y - cameraPixelY
+    while sx < 0: sx += WorldWidthPixels
+    while sx >= WorldWidthPixels: sx -= WorldWidthPixels
+    while sy < 0: sy += WorldHeightPixels
+    while sy >= WorldHeightPixels: sy -= WorldHeightPixels
+    if sx < ScreenWidth and sy < ScreenHeight:
+      result.putRgbaPixel(sx, sy, star.color)
+
+proc buildShipSprite(color: RgbaColor, direction: int, thrust: bool): RgbaSprite =
+  let
+    size = 9
+    center = size div 2
+    fx = forwardX(direction)
+    fy = forwardY(direction)
+    sx = sideX(direction)
+    sy = sideY(direction)
+    noseX = center + fx * ShipNoseOffsetPixels div DirectionScale
+    noseY = center + fy * ShipNoseOffsetPixels div DirectionScale
+    tailX = center - fx * ShipTailOffsetPixels div DirectionScale
+    tailY = center - fy * ShipTailOffsetPixels div DirectionScale
+    leftX = tailX + sx * ShipWingOffsetPixels div DirectionScale
+    leftY = tailY + sy * ShipWingOffsetPixels div DirectionScale
+    rightX = tailX - sx * ShipWingOffsetPixels div DirectionScale
+    rightY = tailY - sy * ShipWingOffsetPixels div DirectionScale
+  result = newRgbaSprite(size, size)
+  if thrust:
+    let
+      flameX = center - fx * (ShipTailOffsetPixels + 2) div DirectionScale
+      flameY = center - fy * (ShipTailOffsetPixels + 2) div DirectionScale
+    result.drawLine(leftX, leftY, flameX, flameY, ThrusterColor)
+    result.drawLine(rightX, rightY, flameX, flameY, ThrusterColor)
+  result.drawLine(noseX, noseY, leftX, leftY, color)
+  result.drawLine(leftX, leftY, rightX, rightY, color)
+  result.drawLine(rightX, rightY, noseX, noseY, color)
+  result.putRgbaPixel(center, center, BulletFlashColor)
+
+proc asteroidSpriteSize(size: AsteroidSize): int =
+  case size
+  of AsteroidSmall: 8
+  of AsteroidMedium: 12
+  of AsteroidLarge: 16
+
+proc buildAsteroidSprite(asteroid: Asteroid): RgbaSprite =
+  let
+    dim = asteroidSpriteSize(asteroid.size)
+    center = dim div 2
+    radius = asteroidRadius(asteroid.size)
+  result = newRgbaSprite(dim, dim)
+  result.drawCircleFill(center, center, max(1, radius - 2), AsteroidFillColor)
+  var
+    firstX, firstY: int
+    previousX, previousY: int
+  for vertexIndex in 0 ..< 8:
+    let
+      direction = normalizedDirection((vertexIndex + asteroid.rotation) * 2)
+      vertexRadius = asteroid.rockVertexRadius(vertexIndex)
+      vertexX = center + forwardX(direction) * vertexRadius div DirectionScale
+      vertexY = center + forwardY(direction) * vertexRadius div DirectionScale
+    if vertexIndex == 0:
+      firstX = vertexX
+      firstY = vertexY
+    else:
+      result.drawLine(previousX, previousY, vertexX, vertexY, AsteroidOutlineColor)
+    previousX = vertexX
+    previousY = vertexY
+  result.drawLine(previousX, previousY, firstX, firstY, AsteroidOutlineColor)
+
+proc buildBulletSprite(color: RgbaColor): RgbaSprite =
+  result = newRgbaSprite(3, 3)
+  result.putRgbaPixel(1, 1, color)
+  result.putRgbaPixel(1, 0, BulletFlashColor)
+
+proc buildExplosionSprite(explosion: Explosion): RgbaSprite =
+  let
+    elapsed = explosion.maxTtl - explosion.ttl
+    ringRadius = max(1, 1 + (elapsed * explosion.radius) div max(1, explosion.maxTtl))
+    dim = (ringRadius + 2) * 2 + 1
+    center = dim div 2
+  result = newRgbaSprite(dim, dim)
+  result.drawCircleRing(center, center, ringRadius, 1, explosion.color)
+  if elapsed * 2 < explosion.maxTtl:
+    result.putRgbaPixel(center, center, ExplosionCoreColor)
+
+proc buildShieldSprite(): RgbaSprite =
+  let
+    radius = ShipCollisionRadius + 2
+    dim = radius * 2 + 3
+    center = dim div 2
+  result = newRgbaSprite(dim, dim)
+  result.drawCircleRing(center, center, radius, 1, ShieldColor)
+
+proc shipSpriteId(playerIndex, direction: int, thrust: bool): int =
+  ShipSpriteBase + playerIndex * 32 + direction * 2 + (if thrust: 1 else: 0)
+
+proc asteroidSpriteId(asteroid: Asteroid): int =
+  AsteroidSpriteBase + asteroid.id mod 256
+
+proc bulletSpriteId(playerIndex: int): int =
+  BulletSpriteBase + playerIndex
+
+proc explosionSpriteId(index: int): int =
+  ExplosionSpriteBase + index
+
+# Simple 3x5 digit font for HUD
+const DigitPatterns: array[10, array[5, uint8]] = [
+  [0b111'u8, 0b101, 0b101, 0b101, 0b111],  # 0
+  [0b010'u8, 0b110, 0b010, 0b010, 0b111],  # 1
+  [0b111'u8, 0b001, 0b111, 0b100, 0b111],  # 2
+  [0b111'u8, 0b001, 0b111, 0b001, 0b111],  # 3
+  [0b101'u8, 0b101, 0b111, 0b001, 0b001],  # 4
+  [0b111'u8, 0b100, 0b111, 0b001, 0b111],  # 5
+  [0b111'u8, 0b100, 0b111, 0b101, 0b111],  # 6
+  [0b111'u8, 0b001, 0b010, 0b010, 0b010],  # 7
+  [0b111'u8, 0b101, 0b111, 0b101, 0b111],  # 8
+  [0b111'u8, 0b101, 0b111, 0b001, 0b111],  # 9
+]
+
+proc drawDigit(sprite: var RgbaSprite, digit, x, y: int, color: RgbaColor) =
+  if digit < 0 or digit > 9:
+    return
+  for row in 0 ..< 5:
+    for col in 0 ..< 3:
+      if (DigitPatterns[digit][row] and (0b100'u8 shr col)) != 0:
+        sprite.putRgbaPixel(x + col, y + row, color)
+
+proc drawNumber(sprite: var RgbaSprite, value, x, y: int, color: RgbaColor) =
+  let text = $max(0, value)
+  var cx = x
+  for ch in text:
+    sprite.drawDigit(ord(ch) - ord('0'), cx, y, color)
+    cx += 4
+
+proc numberWidth(value: int): int =
+  let text = $max(0, value)
+  text.len * 4 - 1
+
+proc buildHudSprite(score: int, color: RgbaColor): RgbaSprite =
+  let
+    width = max(12, numberWidth(score) + 4)
+    height = 9
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, HudBackdropColor)
+  for x in 0 ..< width:
+    result.putRgbaPixel(x, 0, HudBorderColor)
+    result.putRgbaPixel(x, height - 1, HudBorderColor)
+  for y in 0 ..< height:
+    result.putRgbaPixel(0, y, HudBorderColor)
+    result.putRgbaPixel(width - 1, y, HudBorderColor)
+  result.drawNumber(score, 2, 2, color)
+
+proc buildRespawnSprite(respawnTicks: int): RgbaSprite =
+  let
+    seconds = if respawnTicks > 0: 1 + (respawnTicks - 1) div TargetFps else: 0
+    width = 24
+    height = 9
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, HudBackdropColor)
+  for x in 0 ..< width:
+    result.putRgbaPixel(x, 0, HudBorderColor)
+    result.putRgbaPixel(x, height - 1, HudBorderColor)
+  for y in 0 ..< height:
+    result.putRgbaPixel(0, y, HudBorderColor)
+    result.putRgbaPixel(width - 1, y, HudBorderColor)
+  if seconds > 0:
+    result.drawNumber(seconds, 2, 2, HudBorderColor)
+
+proc buildSpriteProtocolUpdates*(
+  sim: SimServer,
+  state: GlobalViewerState,
+  nextState: var GlobalViewerState
+): seq[uint8] =
+  result = @[]
+  nextState = state
+
+  if not nextState.initialized:
+    result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
+    result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
+    let background = sim.buildBackgroundSprite(WorldWidthPixels, WorldHeightPixels)
+    result.addSprite(
+      MapSpriteId,
+      background.width,
+      background.height,
+      background.pixels,
+      "starfield"
+    )
+    nextState.initialized = true
+
+  var currentIds: seq[int] = @[]
+
+  # Background object
+  currentIds.add(MapObjectId)
+  result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
+
+  # Ship sprites and objects
+  for playerIndex, player in sim.players:
+    if not player.alive:
+      continue
+    if player.invulnTicks > 0 and ((player.invulnTicks div 2) mod 2 == 0):
+      continue
+    let
+      thrust = player.thrustTicks > 0
+      sprId = shipSpriteId(playerIndex, player.facing, thrust)
+      ship = buildShipSprite(player.color, player.facing, thrust)
+      sx = player.x div MotionScale - ship.width div 2
+      sy = player.y div MotionScale - ship.height div 2
+      objId = ShipObjectBase + playerIndex
+    result.addSprite(sprId, ship.width, ship.height, ship.pixels, "ship")
+    result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
+    currentIds.add(objId)
+
+    if player.invulnTicks > 0:
+      let
+        shield = buildShieldSprite()
+        shieldSprId = ShieldSpriteBase + playerIndex
+        shieldObjId = ShipObjectBase + 100 + playerIndex
+        shieldX = player.x div MotionScale - shield.width div 2
+        shieldY = player.y div MotionScale - shield.height div 2
+      result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
+      result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
+      currentIds.add(shieldObjId)
+
+  # Asteroid sprites and objects
+  for i, asteroid in sim.asteroids:
+    let
+      sprId = asteroidSpriteId(asteroid)
+      spr = buildAsteroidSprite(asteroid)
+      sx = asteroid.x div MotionScale - spr.width div 2
+      sy = asteroid.y div MotionScale - spr.height div 2
+      objId = AsteroidObjectBase + (asteroid.id mod 1000)
+    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "asteroid")
+    result.addObject(objId, sx, sy, sy, MapLayerId, sprId)
+    currentIds.add(objId)
+
+  # Bullet sprites and objects
+  for i, bullet in sim.bullets:
+    let
+      playerIndex = sim.playerIndexById(bullet.ownerId)
+      sprId = bulletSpriteId(max(0, playerIndex))
+      spr = buildBulletSprite(bullet.color)
+      sx = bullet.x div MotionScale - 1
+      sy = bullet.y div MotionScale - 1
+      objId = BulletObjectBase + i
+    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "bullet")
+    result.addObject(objId, sx, sy, sy + 50, MapLayerId, sprId)
+    currentIds.add(objId)
+
+  # Explosion sprites and objects
+  for i, explosion in sim.explosions:
+    let
+      sprId = explosionSpriteId(i)
+      spr = buildExplosionSprite(explosion)
+      sx = explosion.x div MotionScale - spr.width div 2
+      sy = explosion.y div MotionScale - spr.height div 2
+      objId = ExplosionObjectBase + i
+    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
+    result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
+    currentIds.add(objId)
+
+  # Delete objects that disappeared
+  for objectId in state.objectIds:
+    if objectId notin currentIds:
+      result.addDeleteObject(objectId)
+  nextState.objectIds = currentIds
+
+proc buildSpriteProtocolPlayerUpdates*(
+  sim: SimServer,
+  playerIndex: int,
+  state: PlayerViewerState,
+  nextState: var PlayerViewerState
+): seq[uint8] =
+  result = @[]
+  nextState = state
+
+  if not nextState.initialized:
+    result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
+    result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+    result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+    result.addViewport(TopLeftLayerId, ScreenWidth, 12)
+    nextState.initialized = true
+
+  var currentIds: seq[int] = @[]
+
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    # No player assigned yet
+    for objectId in state.objectIds:
+      if objectId notin currentIds:
+        result.addDeleteObject(objectId)
+    nextState.objectIds = currentIds
+    return
+
+  let
+    player = sim.players[playerIndex]
+    cameraX = player.x
+    cameraY = player.y
+    cameraPixelX = cameraX div MotionScale - ScreenWidth div 2
+    cameraPixelY = cameraY div MotionScale - ScreenHeight div 2
+
+  # Background sprite with wrapped stars
+  let background = sim.buildPlayerBackgroundSprite(cameraPixelX, cameraPixelY)
+  result.addSprite(
+    MapSpriteId,
+    background.width,
+    background.height,
+    background.pixels,
+    "starfield"
+  )
+  currentIds.add(MapObjectId)
+  result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
+
+  # Ships
+  for pi, p in sim.players:
+    if not p.alive:
+      continue
+    if p.invulnTicks > 0 and ((p.invulnTicks div 2) mod 2 == 0):
+      continue
+    let
+      thrust = p.thrustTicks > 0
+      sprId = shipSpriteId(pi, p.facing, thrust)
+      ship = buildShipSprite(p.color, p.facing, thrust)
+      screenX = ScreenWidth div 2 + wrappedDelta(p.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(p.y, cameraY, WorldHeightUnits) div MotionScale
+      sx = screenX - ship.width div 2
+      sy = screenY - ship.height div 2
+    if sx > -ship.width and sx < ScreenWidth and sy > -ship.height and sy < ScreenHeight:
+      let objId = ShipObjectBase + pi
+      result.addSprite(sprId, ship.width, ship.height, ship.pixels, "ship")
+      result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
+      currentIds.add(objId)
+
+      if p.invulnTicks > 0:
+        let
+          shield = buildShieldSprite()
+          shieldSprId = ShieldSpriteBase + pi
+          shieldObjId = ShipObjectBase + 100 + pi
+          shieldX = screenX - shield.width div 2
+          shieldY = screenY - shield.height div 2
+        result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
+        result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
+        currentIds.add(shieldObjId)
+
+  # Asteroids
+  for i, asteroid in sim.asteroids:
+    let
+      screenX = ScreenWidth div 2 + wrappedDelta(asteroid.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(asteroid.y, cameraY, WorldHeightUnits) div MotionScale
+      spr = buildAsteroidSprite(asteroid)
+      sx = screenX - spr.width div 2
+      sy = screenY - spr.height div 2
+    if sx > -spr.width and sx < ScreenWidth and sy > -spr.height and sy < ScreenHeight:
+      let
+        sprId = asteroidSpriteId(asteroid)
+        objId = AsteroidObjectBase + (asteroid.id mod 1000)
+      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "asteroid")
+      result.addObject(objId, sx, sy, sy, MapLayerId, sprId)
+      currentIds.add(objId)
+
+  # Bullets
+  for i, bullet in sim.bullets:
+    let
+      screenX = ScreenWidth div 2 + wrappedDelta(bullet.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(bullet.y, cameraY, WorldHeightUnits) div MotionScale
+    if screenX >= -1 and screenX < ScreenWidth + 1 and screenY >= -1 and screenY < ScreenHeight + 1:
+      let
+        pIdx = sim.playerIndexById(bullet.ownerId)
+        sprId = bulletSpriteId(max(0, pIdx))
+        spr = buildBulletSprite(bullet.color)
+        sx = screenX - 1
+        sy = screenY - 1
+        objId = BulletObjectBase + i
+      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "bullet")
+      result.addObject(objId, sx, sy, sy + 50, MapLayerId, sprId)
+      currentIds.add(objId)
+
+  # Explosions
+  for i, explosion in sim.explosions:
+    let
+      screenX = ScreenWidth div 2 + wrappedDelta(explosion.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(explosion.y, cameraY, WorldHeightUnits) div MotionScale
+      spr = buildExplosionSprite(explosion)
+      sx = screenX - spr.width div 2
+      sy = screenY - spr.height div 2
+    if sx > -spr.width and sx < ScreenWidth and sy > -spr.height and sy < ScreenHeight:
+      let
+        sprId = explosionSpriteId(i)
+        objId = ExplosionObjectBase + i
+      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
+      result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
+      currentIds.add(objId)
+
+  # HUD
+  let hud = buildHudSprite(player.score, player.color)
+  result.addSprite(HudSpriteId, hud.width, hud.height, hud.pixels, "hud")
+  result.addObject(HudObjectId, 1, 1, high(int16), TopLeftLayerId, HudSpriteId)
+  currentIds.add(HudObjectId)
+
+  # Respawn overlay
+  if not player.alive:
+    let respawn = buildRespawnSprite(player.respawnTicks)
+    result.addSprite(
+      RespawnSpriteId,
+      respawn.width,
+      respawn.height,
+      respawn.pixels,
+      "respawn"
+    )
+    result.addObject(
+      RespawnObjectId,
+      (ScreenWidth - respawn.width) div 2,
+      (ScreenHeight - respawn.height) div 2,
+      high(int16),
+      MapLayerId,
+      RespawnSpriteId
+    )
+    currentIds.add(RespawnObjectId)
+
+  # Delete objects that disappeared
+  for objectId in state.objectIds:
+    if objectId notin currentIds:
+      result.addDeleteObject(objectId)
+  nextState.objectIds = currentIds

@@ -47,14 +47,11 @@ proc isKnownConfigField(name: string): bool =
   of "address",
       "port",
       "seed",
-      "planets",
       "planetCount",
-      "planet_count",
+      "maxTicks",
+      "maxGames",
       "tokens",
-      "saveScores",
-      "saveScoresPath",
-      "save-scores",
-      "save-scores-path":
+      "saveScoresPath":
     true
   else:
     false
@@ -86,13 +83,10 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("address", config.address)
   node.readConfigInt("port", config.port)
   node.readConfigInt("seed", config.seed)
-  node.readConfigInt("planets", config.simConfig.planetCount)
   node.readConfigInt("planetCount", config.simConfig.planetCount)
-  node.readConfigInt("planet_count", config.simConfig.planetCount)
-  node.readConfigString("saveScores", config.saveScoresPath)
+  node.readConfigInt("maxTicks", config.simConfig.maxTicks)
+  node.readConfigInt("maxGames", config.simConfig.maxGames)
   node.readConfigString("saveScoresPath", config.saveScoresPath)
-  node.readConfigString("save-scores", config.saveScoresPath)
-  node.readConfigString("save-scores-path", config.saveScoresPath)
 
 proc requireOptionValue(name, value: string) =
   ## Raises when a CLI option is missing its value.
@@ -116,6 +110,8 @@ proc parseOptionInt(name, value: string): int =
 proc echoStartupPaths(config: RunConfig) =
   ## Prints configured score output paths.
   echo "Using planet count: " & $config.simConfig.planetCount
+  echo "Using max ticks: " & $config.simConfig.maxTicks
+  echo "Using max games: " & $config.simConfig.maxGames
   if config.saveScoresPath.len > 0:
     echo "Writing scores file: " & config.saveScoresPath
   else:
@@ -143,9 +139,13 @@ when isMainModule:
         config.port = key.parseOptionInt(val)
       of "seed":
         config.seed = key.parseOptionInt(val)
-      of "planets", "planet-count", "planetCount":
+      of "planetCount":
         config.simConfig.planetCount = key.parseOptionInt(val)
-      of "save-scores", "save-scores-path", "saveScoresPath":
+      of "maxTicks":
+        config.simConfig.maxTicks = key.parseOptionInt(val)
+      of "maxGames":
+        config.simConfig.maxGames = key.parseOptionInt(val)
+      of "saveScoresPath":
         key.requireOptionValue(val)
         config.saveScoresPath = val
       of "config":
@@ -166,8 +166,7 @@ when isMainModule:
     config.update(readFile(configPath))
   if configJson.len > 0:
     config.update(configJson)
-  config.simConfig.planetCount =
-    config.simConfig.planetCount.checkedPlanetCount()
+  config.simConfig.checkSimConfig()
   config.echoStartupPaths()
   runServerLoop(
     config.address,

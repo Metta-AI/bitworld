@@ -44,6 +44,12 @@ RUN nim $NimCommand \
 # Run Docker.
 FROM debian:bookworm-slim
 
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 && \
+  rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace/bitworld
 COPY --from=build \
   /workspace/bitworld/planet_wars/players/skurge/skurge \

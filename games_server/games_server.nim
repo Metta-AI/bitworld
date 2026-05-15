@@ -14,18 +14,10 @@ const
   DefaultPort = 2080
   MaxBotLaunchCount = 16
   DockerBinEnv = "GAMES_SERVER_DOCKER"
-  DockerImageEnv = "GAMES_SERVER_IMAGE"
   DockerModeEnv = "GAMES_SERVER_MODE"
   ReplayDirEnv = "GAMES_SERVER_REPLAY_DIR"
   WorkspaceRootEnv = "GAMES_SERVER_WORKSPACE_ROOT"
-  NotTooDumbImageEnv = "GAMES_SERVER_NOTTOODUMB_IMAGE"
-  IVoteALotImageEnv = "GAMES_SERVER_IVOTEALOT_IMAGE"
-  ITalkALotImageEnv = "GAMES_SERVER_ITALKALOT_IMAGE"
-  DefaultDockerImage = "ghcr.io/treeform/bitworld-among-them-runner:latest"
   DefaultDockerMode = "release"
-  DefaultNotTooDumbImage = "ghcr.io/treeform/bitworld-nottoodumb:latest"
-  DefaultIVoteALotImage = "ghcr.io/treeform/bitworld-ivotewell:latest"
-  DefaultITalkALotImage = "ghcr.io/treeform/bitworld-italkalot:latest"
   GameContainerPort = 8080
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
@@ -33,15 +25,19 @@ const
   LogsPath = "/logs"
   BulkStopPath = "/containers/stop"
   BulkRemovePath = "/containers/remove"
+  BulkGridPath = "/containers/grid"
   HealthPath = "/healthz"
   ClientPath = "/client/"
   CreatePath = "/games/create"
+  UploadGamePath = "/uploads/game"
+  UploadBotPath = "/uploads/bot"
   ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
   CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
+  CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
-  CogameManifestName = "cogame_manifest.json"
+  CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayUploadPath = "/api/replay/upload"
@@ -65,10 +61,8 @@ const
   BotKindLabel = "bitworld.games_server.bot"
   LiveKind = "game"
   ReplayKind = "replay"
-  NotTooDumbBot = "nottoodumb"
-  IVoteALotBot = "ivotealot"
-  ITalkALotBot = "italkalot"
   BotHost = "host.docker.internal"
+  PlayerWebSocketPath = "/player"
   PageCss = """
 body {
   margin: 0;
@@ -186,6 +180,12 @@ th {
   border: 1px solid #707096;
   font: 11px Monaco, Consolas, monospace;
 }
+.manifestTextarea {
+  width: min(800px, calc(100vw - 96px));
+  height: 600px;
+  border: 1px solid #707096;
+  font: 11px Monaco, Consolas, monospace;
+}
 .fieldName {
   width: 180px;
 }
@@ -219,6 +219,45 @@ th {
   font: 11px Monaco, Consolas, monospace;
   overflow: auto;
   white-space: pre-wrap;
+}
+.gridPage {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #000;
+  overflow: hidden;
+}
+.viewerGrid {
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  gap: 0;
+  padding: 0;
+  background: #000;
+}
+.viewerCell {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+}
+.viewerFrame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: #fff;
+}
+.gridEmpty {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  color: #eeeeff;
 }
 """
   BulkScript = """
@@ -313,6 +352,7 @@ type
     author: string
     imageUri: string
     binary: string
+    playerProtocol: string
 
   CoplayerManifest = object
     key: string
@@ -473,10 +513,6 @@ proc dockerBin(): string =
   ## Returns the Docker-compatible CLI path.
   envValue(DockerBinEnv, "docker")
 
-proc dockerImage(): string =
-  ## Returns the image used for new Among Them containers.
-  envValue(DockerImageEnv, DefaultDockerImage)
-
 proc dockerMode(): string =
   ## Returns the container launch mode.
   envValue(DockerModeEnv, DefaultDockerMode).toLowerAscii()
@@ -506,16 +542,28 @@ proc replayDir(): string =
   ## Returns the configured host replay directory.
   envValue(ReplayDirEnv, defaultReplayDir())
 
+proc uploadRootDir(): string =
+  ## Returns the root directory for uploaded game server files.
+  parentDir(replayDir())
+
+proc uploadGamesDir(): string =
+  ## Returns the uploaded Coworld manifest directory.
+  uploadRootDir() / "games"
+
+proc uploadPlayersDir(): string =
+  ## Returns the uploaded CoPlayer manifest directory.
+  uploadRootDir() / "players"
+
 proc gamesRoot(): string =
   ## Returns the local Bitworld games root.
   parentDir(parentDir(currentSourcePath()))
 
 proc defaultManifestPath(): string =
-  ## Returns the default CoGame manifest path.
-  gamesRoot() / "among_them" / CogameManifestName
+  ## Returns the default Coworld manifest path.
+  gamesRoot() / "among_them" / CoworldManifestName
 
 proc manifestPath(): string =
-  ## Returns the configured CoGame manifest path.
+  ## Returns the configured Coworld manifest path.
   envValue(ManifestPathEnv, defaultManifestPath())
 
 proc manifestKey(path: string): string =
@@ -540,35 +588,71 @@ proc manifestString(
     return node[key].getStr()
   defaultValue
 
+proc requireManifestString(node: JsonNode, key, path: string): string =
+  ## Reads one required manifest string.
+  result = node.manifestString(key, "")
+  if result.len == 0:
+    raise newException(GamesServerError, path & " missing " & key)
+
+proc manifestObject(node: JsonNode, key: string): JsonNode =
+  ## Reads one optional object field from a manifest.
+  if node.kind == JObject and node.hasKey(key) and
+      node[key].kind == JObject:
+    return node[key]
+
+proc manifestImage(node: JsonNode): string =
+  ## Reads a game or player image from a Coworld manifest node.
+  let runnable = node.manifestObject("runnable")
+  if not runnable.isNil:
+    result = runnable.manifestString("image", "")
+  if result.len == 0:
+    result = node.manifestString("image", "")
+  if result.len == 0:
+    result = node.manifestString("image_uri", "")
+
+proc manifestProtocol(node: JsonNode, key: string): string =
+  ## Reads one protocol spec path from a Coworld manifest.
+  if node.kind != JObject or not node.hasKey("protocols"):
+    return
+  let protocols = node["protocols"]
+  if protocols.kind == JObject and protocols.hasKey(key) and
+      protocols[key].kind == JString:
+    return protocols[key].getStr()
+
 proc defaultManifestName(path: string): string =
   ## Returns a display name for a manifest path.
   splitPath(parentDir(path)).tail
 
 proc readGameManifest(path: string): GameManifest =
-  ## Reads one CoGame manifest summary from disk.
+  ## Reads one Coworld manifest summary from disk.
   try:
     let
       manifest = parseJson(readFile(path))
-      name = manifest.manifestString(
-        "name",
-        defaultManifestName(path)
-      )
-      author = manifest.manifestString(
+      game = manifest.manifestObject("game")
+    if game.isNil:
+      raise newException(GamesServerError, "coworld missing game")
+    let
+      name = game.requireManifestString("name", "coworld.game")
+      author = game.manifestString(
         "author",
-        manifest.manifestString("owner", "-")
+        game.manifestString("owner", "-")
       )
+      image = game.manifestImage()
+    if image.len == 0:
+      raise newException(GamesServerError, "coworld.game missing image")
     result = GameManifest(
       key: manifestKey(path),
       path: path,
       name: name,
       author: author,
-      imageUri: manifest.manifestString("image_uri", dockerImage()),
-      binary: manifest.manifestString("binary", "/bin/" & name)
+      imageUri: image,
+      binary: game.manifestString("binary", "/bin/" & name),
+      playerProtocol: game.manifestProtocol("player")
     )
   except CatchableError as e:
     raise newException(
       GamesServerError,
-      "could not read CoGame manifest " & path & ": " & e.msg
+      "could not read Coworld manifest " & path & ": " & e.msg
     )
 
 proc manifestStringArray(node: JsonNode, key: string): seq[string] =
@@ -605,6 +689,43 @@ proc readCoplayerManifest(path: string): CoplayerManifest =
       "could not read CoPlayer manifest " & path & ": " & e.msg
     )
 
+proc readCoworldPlayers(path: string): seq[CoplayerManifest] =
+  ## Reads CoPlayer entries embedded in one Coworld manifest.
+  try:
+    let
+      manifest = parseJson(readFile(path))
+      game = readGameManifest(path)
+    if manifest.kind != JObject or not manifest.hasKey("player") or
+        manifest["player"].kind != JArray:
+      return
+    for player in manifest["player"]:
+      if player.kind != JObject:
+        continue
+      let id = player.manifestString(
+        "id",
+        player.manifestString("name", "")
+      )
+      if id.len == 0:
+        continue
+      result.add(CoplayerManifest(
+        key: manifestKey(path) & "#player/" & id,
+        path: path,
+        name: id,
+        author: player.manifestString(
+          "author",
+          player.manifestString("owner", "-")
+        ),
+        imageUri: player.manifestImage(),
+        binary: player.manifestString("binary", "/bin/" & id),
+        arch: player.manifestString("arch", "X86_64"),
+        games: @[game.name]
+      ))
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not read Coworld players " & path & ": " & e.msg
+    )
+
 proc addManifestPath(paths: var seq[string], path: string) =
   ## Adds one manifest path if it exists and is not already present.
   if path.len == 0 or not fileExists(path):
@@ -615,30 +736,70 @@ proc addManifestPath(paths: var seq[string], path: string) =
       return
   paths.add(path)
 
+proc uploadedGameManifestPaths(): seq[string] =
+  ## Lists uploaded Coworld manifests.
+  let root = uploadGamesDir()
+  if not dirExists(root):
+    return
+  for path in walkFiles(root / "*.json"):
+    result.add(path)
+  for path in walkFiles(root / "*" / CoworldManifestName):
+    result.add(path)
+
+proc uploadedPlayerManifestPaths(): seq[string] =
+  ## Lists uploaded CoPlayer manifests.
+  let root = uploadPlayersDir()
+  if not dirExists(root):
+    return
+  for path in walkFiles(root / "*.json"):
+    result.add(path)
+  for path in walkFiles(root / "*" / CoplayerManifestName):
+    result.add(path)
+
 proc listGameManifests(): seq[GameManifest] =
-  ## Scans game folders for CoGame manifests.
+  ## Scans game folders for Coworld manifests.
   var paths: seq[string]
   for dir in walkDirs(gamesRoot() / "*"):
-    paths.addManifestPath(dir / CogameManifestName)
+    paths.addManifestPath(dir / CoworldManifestName)
+  for path in uploadedGameManifestPaths():
+    paths.addManifestPath(path)
   paths.addManifestPath(manifestPath())
   paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
   for path in paths:
-    result.add(readGameManifest(path))
+    try:
+      result.add(readGameManifest(path))
+    except GamesServerError as e:
+      echo "Skipping Coworld manifest ", path, ": ", e.msg
   if result.len == 0:
-    raise newException(GamesServerError, "no CoGame manifests found")
+    raise newException(GamesServerError, "no Coworld manifests found")
 
 proc listCoplayerManifests(): seq[CoplayerManifest] =
   ## Scans game folders for CoPlayer manifests.
   var paths: seq[string]
   for dir in walkDirs(gamesRoot() / "*"):
+    let coworldPath = dir / CoworldManifestName
+    if fileExists(coworldPath):
+      try:
+        for player in readCoworldPlayers(coworldPath):
+          result.add(player)
+      except GamesServerError as e:
+        echo "Skipping Coworld players ", coworldPath, ": ", e.msg
     for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
       paths.addManifestPath(path)
+  for coworldPath in uploadedGameManifestPaths():
+    try:
+      for player in readCoworldPlayers(coworldPath):
+        result.add(player)
+    except GamesServerError as e:
+      echo "Skipping uploaded Coworld players ", coworldPath, ": ", e.msg
+  for path in uploadedPlayerManifestPaths():
+    paths.addManifestPath(path)
   paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
   for path in paths:
     result.add(readCoplayerManifest(path))
 
 proc findGameManifest(key: string): GameManifest =
-  ## Finds a scanned CoGame manifest by key.
+  ## Finds a scanned Coworld manifest by key.
   let
     manifests = listGameManifests()
     cleanKey = key.strip()
@@ -649,7 +810,7 @@ proc findGameManifest(key: string): GameManifest =
       return manifest
   raise newException(
     GamesServerError,
-    "unknown CoGame manifest: " & cleanKey
+    "unknown Coworld manifest: " & cleanKey
   )
 
 proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
@@ -662,7 +823,13 @@ proc supportedCoplayerManifests(gameName: string): seq[CoplayerManifest] =
   ## Lists CoPlayer manifests that support one game.
   for bot in listCoplayerManifests():
     if bot.supportsGame(gameName):
-      result.add(bot)
+      var exists = false
+      for existing in result:
+        if existing.name == bot.name:
+          exists = true
+          break
+      if not exists:
+        result.add(bot)
   result.sort(proc(a, b: CoplayerManifest): int = cmp(a.name, b.name))
 
 proc findCoplayerManifest(
@@ -710,19 +877,10 @@ proc validationStatusClass(status: CriterionStatus): string =
     result = "skip"
 
 proc runValidation(manifest: GameManifest): CertificationResult =
-  ## Runs the CoGame validator library for one manifest.
+  ## Runs the Coworld validator library for one manifest.
   var config = defaultValidatorConfig()
   config.dockerBin = dockerBin()
-  certifyManifest(manifest.path, config)
-
-proc dockerOwner(): string =
-  ## Returns the default GitHub container package owner.
-  let image = dockerImage()
-  if image.startsWith("ghcr.io/"):
-    let parts = image.split('/')
-    if parts.len >= 3:
-      return parts[1]
-  "treeform"
+  certifyCoworld(manifest.path, config)
 
 proc stripImageTag(image: string): string =
   ## Removes a Docker image tag or digest.
@@ -737,62 +895,15 @@ proc stripImageTag(image: string): string =
     stop = colonAt
   image[0 ..< stop]
 
-proc imageTag(image: string): string =
-  ## Returns a Docker image tag suffix when present.
-  let
-    slashAt = image.rfind('/')
-    colonAt = image.rfind(':')
-  if colonAt > slashAt:
-    image[colonAt .. ^1]
-  else:
-    ""
-
-proc registryImageUri(imageUri: string): string =
-  ## Adds the default GHCR owner to one bare image name.
-  let cleanImage = imageUri.strip()
-  if cleanImage.len == 0:
-    return ""
-  if cleanImage.startsWith("ghcr.io/") or cleanImage.contains('/'):
-    return cleanImage
-  "ghcr.io/" & dockerOwner() & "/" & cleanImage
-
-proc runnerImageUri(imageUri: string): string =
-  ## Converts a manifest image name to the registry runner image.
-  let
-    cleanImage = imageUri.strip()
-    tag = imageTag(cleanImage)
-  var
-    owner = dockerOwner()
-    packageName = stripImageTag(cleanImage)
-  if packageName.startsWith("ghcr.io/"):
-    let parts = packageName.split('/')
-    if parts.len >= 3:
-      owner = parts[1]
-      packageName = parts[2 .. ^1].join("/")
-  elif packageName.contains('/'):
-    packageName = packageName.split('/')[^1]
-  if not packageName.endsWith("-runner"):
-    packageName.add("-runner")
-  "ghcr.io/" & owner & "/" & packageName & tag
-
 proc gameDockerImage(manifest: GameManifest): string =
-  ## Returns the Docker image for one CoGame manifest.
-  if manifest.name == "among_them":
-    return envValue(
-      DockerImageEnv,
-      runnerImageUri(manifest.imageUri)
-    )
-  let image = registryImageUri(manifest.imageUri)
-  if image.len > 0:
-    image
-  else:
-    dockerImage()
+  ## Returns the Docker image for one Coworld manifest.
+  manifest.imageUri
 
 proc dockerPackageUrl(imageUri: string): string =
   ## Builds a GitHub Packages URL from a resolved Docker image name.
-  let image = registryImageUri(imageUri)
+  let image = imageUri.strip()
   var
-    owner = dockerOwner()
+    owner = "treeform"
     packageName = stripImageTag(image)
   if packageName.startsWith("ghcr.io/"):
     let parts = packageName.split('/')
@@ -804,33 +915,9 @@ proc dockerPackageUrl(imageUri: string): string =
   "https://github.com/users/" & owner &
     "/packages/container/package/" & encodeUrlComponent(packageName)
 
-proc imageFallback(image, defaultImage: string): string =
-  ## Returns a manifest image or a known default.
-  if image.len > 0:
-    image
-  else:
-    defaultImage
-
 proc coplayerImage(bot: CoplayerManifest): string =
   ## Returns the Docker image for one CoPlayer.
-  case bot.name.toLowerAscii()
-  of NotTooDumbBot:
-    envValue(
-      NotTooDumbImageEnv,
-      imageFallback(bot.imageUri, DefaultNotTooDumbImage)
-    )
-  of "ivotewell", IVoteALotBot:
-    envValue(
-      IVoteALotImageEnv,
-      imageFallback(bot.imageUri, DefaultIVoteALotImage)
-    )
-  of ITalkALotBot:
-    envValue(
-      ITalkALotImageEnv,
-      imageFallback(bot.imageUri, DefaultITalkALotImage)
-    )
-  else:
-    bot.imageUri
+  bot.imageUri
 
 proc ensureReplayDir() =
   ## Creates the replay directory when it is missing.
@@ -840,6 +927,18 @@ proc ensureReplayDir() =
     raise newException(
       GamesServerError,
       "could not create replay directory: " & e.msg
+    )
+
+proc ensureUploadDirs() =
+  ## Creates the upload manifest directories when they are missing.
+  try:
+    createDir(uploadRootDir())
+    createDir(uploadGamesDir())
+    createDir(uploadPlayersDir())
+  except OSError as e:
+    raise newException(
+      GamesServerError,
+      "could not create upload directories: " & e.msg
     )
 
 proc dockerResult(args: openArray[string]): CommandResult =
@@ -1236,6 +1335,101 @@ proc formValue(form: seq[(string, string)], key: string): string =
     if formKey == key:
       return value
 
+proc uploadManifestText(form: seq[(string, string)]): string =
+  ## Reads a manifest upload body from a form.
+  result = formValue(form, "manifest").strip()
+  if result.len == 0:
+    raise newException(GamesServerError, "manifest is empty")
+
+proc parseUploadManifest(text: string): JsonNode =
+  ## Parses an uploaded manifest JSON document.
+  try:
+    result = parseJson(text)
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not parse manifest JSON: " & e.msg
+    )
+  if result.kind != JObject:
+    raise newException(GamesServerError, "manifest must be a JSON object")
+
+proc uploadSafeName(name, label: string): string =
+  ## Returns a safe uploaded manifest directory name.
+  result = cleanContainerName(name)
+  if result.len == 0:
+    raise newException(GamesServerError, label & " name is not file-safe")
+
+proc uploadGameName(node: JsonNode): string =
+  ## Reads and validates the name from an uploaded Coworld manifest.
+  let game = node.manifestObject("game")
+  if game.isNil:
+    raise newException(GamesServerError, "Coworld manifest missing game")
+  result = game.requireManifestString("name", "coworld.game")
+  if game.manifestImage().len == 0:
+    raise newException(GamesServerError, "coworld.game missing image")
+
+proc uploadBotName(node: JsonNode): string =
+  ## Reads and validates the name from an uploaded CoPlayer manifest.
+  if not node.manifestObject("game").isNil:
+    raise newException(
+      GamesServerError,
+      "use Upload game for Coworld manifests"
+    )
+  result = node.requireManifestString("name", "coplayer")
+  if node.manifestString("image_uri", "").len == 0:
+    raise newException(GamesServerError, "coplayer missing image_uri")
+  if node.manifestStringArray("games").len == 0:
+    raise newException(GamesServerError, "coplayer missing games")
+
+proc writeUploadedManifest(
+  dir,
+  safeName,
+  fileName,
+  text: string
+): string =
+  ## Writes one uploaded manifest under a stable directory.
+  let targetDir = dir / safeName
+  try:
+    createDir(targetDir)
+    result = targetDir / fileName
+    if text.endsWith("\n"):
+      writeFile(result, text)
+    else:
+      writeFile(result, text & "\n")
+  except CatchableError as e:
+    raise newException(
+      GamesServerError,
+      "could not write uploaded manifest: " & e.msg
+    )
+
+proc saveUploadedGame(text: string): GameManifest =
+  ## Saves and reads one uploaded Coworld manifest.
+  let
+    node = parseUploadManifest(text)
+    name = uploadGameName(node)
+    safeName = uploadSafeName(name, "game")
+    path = writeUploadedManifest(
+      uploadGamesDir(),
+      safeName,
+      CoworldManifestName,
+      text
+    )
+  readGameManifest(path)
+
+proc saveUploadedBot(text: string): CoplayerManifest =
+  ## Saves and reads one uploaded CoPlayer manifest.
+  let
+    node = parseUploadManifest(text)
+    name = uploadBotName(node)
+    safeName = uploadSafeName(name, "bot")
+    path = writeUploadedManifest(
+      uploadPlayersDir(),
+      safeName,
+      CoplayerManifestName,
+      text
+    )
+  readCoplayerManifest(path)
+
 proc botCountField(bot: CoplayerManifest): string =
   ## Returns the create-form count field for one CoPlayer.
   cleanContainerName(bot.name) & "Bots"
@@ -1274,6 +1468,24 @@ proc replayGameName(cogameName: string, port: int): string =
   else:
     "cogame_replay_" & $port & "_" & $getTime().toUnix()
 
+proc gamePrefix(game: GameContainer): string =
+  ## Returns the clean game prefix used for child container names.
+  result = cleanContainerName(game.cogameName)
+  if result.len > 0:
+    return
+  let
+    gameMarker = game.name.find("_game_")
+    replayMarker = game.name.find("_replay_")
+    marker =
+      if gameMarker >= 0:
+        gameMarker
+      else:
+        replayMarker
+  if marker > 0:
+    result = cleanContainerName(game.name[0 ..< marker])
+  if result.len == 0:
+    result = "cogame"
+
 proc launchStamp(index: int): string =
   ## Builds a compact unique suffix for batch launches.
   $(int64(epochTime() * 1000)) & "_" & $index
@@ -1284,23 +1496,59 @@ proc botContainerName(
   stamp: string
 ): string =
   ## Builds a unique bot Docker container name.
-  "among_them_bot_" & cleanContainerName(bot.name) & "_" &
+  game.gamePrefix() & "_bot_" & cleanContainerName(bot.name) & "_" &
     $game.port & "_" & stamp
 
-proc botPlayerName(
-  game: GameContainer,
-  bot: CoplayerManifest,
-  stamp: string
-): string =
+proc displayWord(value: string): string =
+  ## Converts one manifest name word into a friendly display word.
+  if value.len == 0:
+    return ""
+  result.add(value[0].toUpperAscii())
+  if value.len > 1:
+    result.add(value[1 .. ^1].toLowerAscii())
+
+proc botDisplayName(name: string): string =
+  ## Builds a compact display name from one bot name.
+  var words: seq[string]
+  for part in name.split({'-', '_', '.', ' '}):
+    if part.len > 0:
+      words.add(displayWord(part))
+  if words.len == 0:
+    return "Bot"
+  words.join("")
+
+proc botPlayerName(botName: string, slot: int): string =
   ## Builds a visible in-game name for one bot.
-  bot.name & "-" & $game.port & "-" & stamp
+  let baseName = botDisplayName(botName)
+  if slot >= 0:
+    return baseName & $(slot + 1)
+  baseName
+
+proc botPlayerName(bot: CoplayerManifest, slot: int): string =
+  ## Builds a visible in-game name for one bot manifest.
+  botPlayerName(bot.name, slot)
+
+proc playerWsUrl(
+  host: string,
+  port: int,
+  playerName: string,
+  slot: int,
+  token: string
+): string =
+  ## Builds the sprite player WebSocket URL for one launched bot.
+  var query = "name=" & encodeUrlComponent(playerName)
+  if slot >= 0:
+    query.add("&slot=" & encodeUrlComponent($slot))
+  if token.len > 0:
+    query.add("&token=" & encodeUrlComponent(token))
+  "ws://" & host & ":" & $port & PlayerWebSocketPath & "?" & query
 
 proc replayName(name: string): string =
   ## Builds the replay file name for one game.
   cleanContainerName(name) & ".bitreplay"
 
 proc replayManifest(replay: string): GameManifest =
-  ## Infers the CoGame manifest that wrote one replay file.
+  ## Infers the Coworld manifest that wrote one replay file.
   let cleanReplay = cleanReplayName(replay)
   for manifest in listGameManifests():
     let prefix = cleanContainerName(manifest.name) & "_game_"
@@ -1471,12 +1719,13 @@ proc createBotCounts(
     )
 
 proc configSchema(manifestInfo: GameManifest): JsonNode =
-  ## Reads the config schema from one CoGame manifest.
+  ## Reads the config schema from one Coworld manifest.
   try:
     let manifest = parseJson(readFile(manifestInfo.path))
-    if manifest.kind != JObject or not manifest.hasKey("config_schema"):
-      raise newException(GamesServerError, "manifest missing config_schema")
-    result = manifest["config_schema"]
+    let game = manifest.manifestObject("game")
+    if game.isNil or not game.hasKey("config_schema"):
+      raise newException(GamesServerError, "manifest missing game.config_schema")
+    result = game["config_schema"]
     if result.kind != JObject or not result.hasKey("properties") or
         result["properties"].kind != JObject:
       raise newException(
@@ -1812,7 +2061,7 @@ proc configJson(
   form: seq[(string, string)],
   manifestInfo: GameManifest
 ): string =
-  ## Builds the CoGame JSON config from form values.
+  ## Builds the Coworld game config from form values.
   let schema = configSchema(manifestInfo)
   var node = newJObject()
   for name, property in schema["properties"].pairs:
@@ -1840,6 +2089,18 @@ proc configJson(
     else:
       node[name] = %stringConfigValue(form, name, property)
   $node
+
+proc configTokens(config: string): seq[string] =
+  ## Reads configured player tokens from one game config JSON object.
+  if config.len == 0:
+    return
+  let node = parseJson(config)
+  if node.kind != JObject or not node.hasKey("tokens") or
+      node["tokens"].kind != JArray:
+    return
+  for item in node["tokens"]:
+    if item.kind == JString:
+      result.add(item.getStr())
 
 proc baseDockerArgs(
   name: string,
@@ -1949,9 +2210,13 @@ proc botRunArgs(
   game: GameContainer,
   bot: CoplayerManifest,
   created: int64,
-  stamp: string
+  slot = -1,
+  token = ""
 ): seq[string] =
   ## Builds Docker arguments for one bot container.
+  let
+    playerName = botPlayerName(bot, slot)
+    endpoint = playerWsUrl(BotHost, game.port, playerName, slot, token)
   result = @[
     "run",
     "-d",
@@ -1969,11 +2234,18 @@ proc botRunArgs(
     CreatedLabel & "=" & $created
   ]
   addAiEnvArgs(result)
+  result.add("-e")
+  result.add(CogamesEngineWsEnv & "=" & endpoint)
   result.add(coplayerImage(bot))
   result.add(bot.binary)
   result.add("--address:" & BotHost)
   result.add("--port:" & $game.port)
-  result.add("--name:" & botPlayerName(game, bot, stamp))
+  result.add("--name:" & playerName)
+  result.add("--url:" & endpoint)
+  if slot >= 0:
+    result.add("--slot:" & $slot)
+  if token.len > 0:
+    result.add("--token:" & token)
 
 proc pullNeededBotImages(counts: seq[BotLaunchCount]) =
   ## Pulls the CoPlayer images requested by a create form.
@@ -1990,6 +2262,7 @@ proc removeContainers(names: seq[string]) =
 proc startWaitingBots(
   game: GameContainer,
   counts: seq[BotLaunchCount],
+  tokens: seq[string],
   launchedNames: var seq[string]
 ): seq[BotContainer] =
   ## Starts bot containers before their game container exists.
@@ -1997,6 +2270,12 @@ proc startWaitingBots(
     for _ in 0 ..< item.count:
       let
         created = getTime().toUnix()
+        slot = launchedNames.len
+        token =
+          if slot < tokens.len:
+            tokens[slot]
+          else:
+            ""
         stamp = launchStamp(launchedNames.len + 1)
         name = botContainerName(game, item.bot, stamp)
       discard requireDocker(botRunArgs(
@@ -2004,28 +2283,31 @@ proc startWaitingBots(
         game,
         item.bot,
         created,
-        stamp
+        slot,
+        token
       ))
       launchedNames.add(name)
       result.add(inspectBot(name))
 
 proc createGame(form: seq[(string, string)]): GameContainer =
-  ## Starts a new CoGame Docker container (or ECS task).
+  ## Starts a new Coworld game container (or ECS task).
   let manifestInfo = findGameManifest(formValue(form, "manifest"))
   if useEcs:
     echo "  Creating ECS game: ", manifestInfo.name
     let
       config = configJson(form, manifestInfo)
+      image = gameDockerImage(manifestInfo)
       created = getTime().toUnix()
       replay = "ecs_game_" & $created & ".bitreplay"
       serverUrl = gamesServerUrl()
       saveReplay = serverUrl.len > 0
       token = if saveReplay: generateUploadToken(replay) else: ""
       uploadUrl = if saveReplay: serverUrl & ReplayUploadPath else: ""
+      playerTokens = configTokens(config)
     echo "  Replay upload: ", if saveReplay: "enabled" else: "disabled (no EC2 IP)"
     echo "  Launching game task..."
     let (taskArn, publicIp, privateIp) = ecsCreateGame(
-      ecsConf.gameImage,
+      image,
       config,
       manifestInfo.name,
       manifestInfo.key,
@@ -2047,10 +2329,16 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       ip: publicIp,
     )
     let botCounts = createBotCounts(form, manifestInfo.name)
+    var slot = 0
     for item in botCounts:
       for i in 0 ..< item.count:
-        let stamp = launchStamp(i + 1)
-        let playerName = item.bot.name & "-" & $GameContainerPort & "-" & stamp
+        let
+          playerName = botPlayerName(item.bot, slot)
+          playerToken =
+            if slot < playerTokens.len:
+              playerTokens[slot]
+            else:
+              ""
         echo "  Launching bot: ", item.bot.name, " #", i + 1
         discard ecsCreateBot(
           coplayerImage(item.bot),
@@ -2059,7 +2347,10 @@ proc createGame(form: seq[(string, string)]): GameContainer =
           item.bot.name,
           playerName,
           item.bot.binary,
+          slot,
+          playerToken,
         )
+        inc slot
     echo "  ECS game created with ", botCounts.len, " bot types"
     return
   ensureReplayDir()
@@ -2069,6 +2360,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     name = gameName(manifestInfo.name, port)
     replay = replayName(name)
     config = configJson(form, manifestInfo)
+    playerTokens = configTokens(config)
     botCounts = createBotCounts(form, manifestInfo.name)
     image = gameDockerImage(manifestInfo)
     pendingGame = GameContainer(
@@ -2085,7 +2377,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
   pullDockerImage(image)
   pullNeededBotImages(botCounts)
   try:
-    discard startWaitingBots(pendingGame, botCounts, launchedBots)
+    discard startWaitingBots(pendingGame, botCounts, playerTokens, launchedBots)
     discard requireDocker(dockerRunArgs(
       name,
       port,
@@ -2113,7 +2405,10 @@ proc createReplayGame(replay: string): GameContainer =
     raise newException(GamesServerError, "invalid replay file name")
   if not fileExists(replayPath(cleanReplay)):
     raise newException(GamesServerError, "replay file does not exist")
-  let serverUrl = gamesServerUrl()
+  let
+    manifestInfo = replayManifest(cleanReplay)
+    image = gameDockerImage(manifestInfo)
+    serverUrl = gamesServerUrl()
   if useEcs:
     if serverUrl.len == 0:
       raise newException(GamesServerError,
@@ -2122,7 +2417,7 @@ proc createReplayGame(replay: string): GameContainer =
     var env: seq[tuple[name, value: string]]
     env.add((name: "REPLAY_DOWNLOAD_URL", value: downloadUrl))
     let (taskArn, publicIp, _) = ecsCreateReplayGame(
-      ecsConf.gameImage,
+      image,
       cleanReplay,
       env,
     )
@@ -2137,8 +2432,6 @@ proc createReplayGame(replay: string): GameContainer =
     )
     return
   let
-    manifestInfo = replayManifest(cleanReplay)
-    image = gameDockerImage(manifestInfo)
     port = findOpenPort()
     created = getTime().toUnix()
     name = replayGameName(manifestInfo.name, port)
@@ -2293,34 +2586,31 @@ proc hostName(request: Request): string =
     return raw[0 ..< colon]
   raw
 
-proc gamePagePath(game: GameContainer, page: string): string =
-  ## Returns the canonical game route for one client page label.
-  case page
-  of "player.html":
-    if game.cogameName in ["big_adventure", "party_progressor"]:
-      "/sprite_player"
-    else:
-      "/player"
-  of "rewards.html", "reward.html":
-    "/reward"
-  of "admin.html":
-    "/admin"
-  else:
-    "/global"
-
 proc gameHttpUrl(
   request: Request,
   game: GameContainer,
   path: string
 ): string =
-  ## Builds a browser HTTP URL for a game endpoint page.
+  ## Builds a browser HTTP URL for a game container client route.
   if useEcs and game.ip.len > 0:
     return "http://" & game.ip & ":" & $GameContainerPort & path
   "http://" & request.hostName() & ":" & $game.port & path
 
+proc clientPagePath(page: string): string =
+  ## Returns the per-game browser client path for one endpoint page.
+  case page
+  of "player.html":
+    "/client/player"
+  of "rewards.html", "reward.html":
+    "/client/reward"
+  of "admin.html":
+    "/client/admin"
+  else:
+    "/client/global"
+
 proc gameUrl(request: Request, game: GameContainer, page: string): string =
-  ## Builds a browser URL for a game client page.
-  request.gameHttpUrl(game, game.gamePagePath(page))
+  ## Builds a per-game browser client URL for one game container.
+  request.gameHttpUrl(game, clientPagePath(page))
 
 proc healthUrl(game: GameContainer): string =
   ## Builds the local health URL for one game container.
@@ -2358,10 +2648,14 @@ proc createBots(
     let
       bot = findCoplayerManifest(gameInfo.cogameName, botKey)
       cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+    var existingCount = 0
+    for existingBot in ecsListBots():
+      if existingBot.gameTaskArn == gameName:
+        inc existingCount
     for i in 1 .. cleanCount:
       let
-        stamp = launchStamp(i)
-        playerName = bot.name & "-" & $GameContainerPort & "-" & stamp
+        slot = existingCount + i - 1
+        playerName = botPlayerName(bot, slot)
         botArn = ecsCreateBot(
           coplayerImage(bot),
           gameName,
@@ -2369,6 +2663,8 @@ proc createBots(
           bot.name,
           playerName,
           bot.binary,
+          slot,
+          "",
           bot.arch,
         )
       result.add(BotContainer(
@@ -2387,13 +2683,22 @@ proc createBots(
   let
     bot = findCoplayerManifest(game.cogameName, botKey)
     cleanCount = clampInt(count, 1, MaxBotLaunchCount)
+    existingCount = botsForGame(safeListBots(), game.name).len
   pullDockerImage(coplayerImage(bot))
   for i in 1 .. cleanCount:
     let
       created = getTime().toUnix()
+      slot = existingCount + i - 1
       stamp = launchStamp(i)
       name = botContainerName(game, bot, stamp)
-    discard requireDocker(botRunArgs(name, game, bot, created, stamp))
+    discard requireDocker(botRunArgs(
+      name,
+      game,
+      bot,
+      created,
+      slot,
+      ""
+    ))
     result.add(inspectBot(name))
 
 proc fmtCreated(created: int64): string =
@@ -2510,7 +2815,7 @@ proc renderCreateBotRows(manifestInfo: GameManifest): string =
     inc index
 
 proc renderManifestTable(): string =
-  ## Renders the index-page CoGame manifest launcher table.
+  ## Renders the index-page Coworld manifest launcher table.
   let manifests = listGameManifests()
   renderFragment:
     table:
@@ -2566,6 +2871,18 @@ proc renderManifestTable(): string =
                 ttype "submit"
                 say "Validate"
 
+proc renderUploadButtons(): string =
+  ## Renders manifest upload navigation buttons.
+  renderFragment:
+    p ".small right":
+      a ".button":
+        href UploadGamePath
+        say "Upload game"
+      say " "
+      a ".button":
+        href UploadBotPath
+        say "Upload bot"
+
 proc renderCreateForm(manifestInfo: GameManifest): string =
   ## Renders the manifest-backed create-game form.
   let
@@ -2610,6 +2927,9 @@ proc renderBulkControls(): string =
       id "bulkForm"
       action BulkStopPath
       tmethod "post"
+      say "<button class=\"button\" type=\"submit\" formaction=\"" &
+        BulkGridPath & "\" formtarget=\"_blank\">Grid View</button>"
+      say " "
       button ".button":
         ttype "submit"
         formaction BulkStopPath
@@ -2760,7 +3080,7 @@ proc renderGamesTable(
               href logUrl(game.name)
               target "_blank"
               say "logs"
-        for bot in gameBots:
+        for j, bot in gameBots:
           tr:
             td rowClass & " selectCell":
               say renderContainerCheckbox(bot.name)
@@ -2771,7 +3091,7 @@ proc renderGamesTable(
             td rowClass:
               say ""
             td rowClass:
-              say ""
+              say esc(botPlayerName(bot.bot, j))
             td rowClass & " nowrap":
               say esc(bot.name)
             td rowClass & " nowrap":
@@ -2925,6 +3245,7 @@ proc renderPage(
   ## Renders the full games server page.
   let
     manifestTable = renderManifestTable()
+    uploadButtons = renderUploadButtons()
     bulkControls = renderBulkControls()
     gamesTable = renderGamesTable(request, games, bots)
     replayServersTable = renderReplayServersTable(request, replayServers)
@@ -2957,6 +3278,7 @@ proc renderPage(
                 say esc(notice)
           say bulkControls
           say manifestTable
+          say uploadButtons
           p ".small":
             say " "
           table:
@@ -3021,6 +3343,57 @@ proc renderCreatePage(notice = "", manifestKey = ""): string =
               target "_blank"
               say esc(manifestInfo.key)
             say "."
+
+proc renderUploadPage(
+  path,
+  titleText,
+  label,
+  notice: string
+): string =
+  ## Renders a manifest upload page.
+  render:
+    html:
+      head:
+        title:
+          say titleText
+        say "<style>"
+        say PageCss
+        say "</style>"
+      body:
+        tdiv ".page":
+          table:
+            tr:
+              td ".row2":
+                h1 ".title":
+                  say titleText
+                p ".small":
+                  say label
+              td ".row2 right small":
+                a:
+                  href "/"
+                  say "Back"
+          if notice.len > 0:
+            p ".notice small":
+              b:
+                say esc(notice)
+          form:
+            action path
+            tmethod "post"
+            table:
+              tr:
+                td ".cat":
+                  say label
+              tr:
+                td ".row1":
+                  textarea ".manifestTextarea":
+                    name "manifest"
+                    rows "30"
+                    cols "100"
+              tr:
+                td ".row2 right":
+                  button ".button":
+                    ttype "submit"
+                    say "Upload"
 
 proc renderValidationTable(
   criteria: seq[ValidationCriterion]
@@ -3093,7 +3466,7 @@ proc renderValidationPage(
   manifestInfo: GameManifest,
   cert: CertificationResult
 ): string =
-  ## Renders one CoGame validation result page.
+  ## Renders one Coworld validation result page.
   let
     tableHtml = renderValidationTable(cert.criteria)
     artifactHtml = renderValidationArtifacts(cert)
@@ -3298,6 +3671,51 @@ proc renderScoresPage(name: string, rows: seq[ScoreRow]): string =
             say " "
           say scoresTable
 
+proc gridColumnCount(count: int): int =
+  ## Returns a practical column count for a viewer grid.
+  if count <= 0:
+    return 1
+  if count <= 3:
+    return count
+  result = 1
+  while result * result < count:
+    inc result
+
+proc renderGridPage(
+  request: Request,
+  games: seq[GameContainer]
+): string =
+  ## Renders selected game global viewers in a responsive grid.
+  let
+    columns = gridColumnCount(games.len)
+    rows = max(1, (games.len + columns - 1) div columns)
+  render:
+    html:
+      head:
+        title:
+          say "Grid View"
+        say "<style>"
+        say PageCss
+        say "html, body { width: 100%; height: 100%; overflow: hidden; }"
+        say "</style>"
+      body:
+        tdiv ".gridPage":
+          if games.len == 0:
+            tdiv ".gridEmpty":
+              say "No games selected."
+          else:
+            tdiv ".viewerGrid":
+              style "grid-template-columns: repeat(" &
+                $columns & ", minmax(0, 1fr)); " &
+                "grid-template-rows: repeat(" &
+                $rows & ", minmax(0, 1fr));"
+              for game in games:
+                let url = gameUrl(request, game, "global.html")
+                tdiv ".viewerCell":
+                  iframe ".viewerFrame":
+                    src url
+                    title game.name
+
 proc clientRoot(): string =
   ## Returns the shared client asset directory.
   parentDir(parentDir(currentSourcePath())) / "clients"
@@ -3305,14 +3723,15 @@ proc clientRoot(): string =
 proc clientAsset(path: string): string =
   ## Maps one public client route to a local asset path.
   case path
-  of "/client/global.html", "/client/global_client.html":
+  of "/client/global", "/client/global.html", "/client/global_client.html":
     clientRoot() / "global_client.html"
-  of "/client/player.html", "/client/player_client.html":
+  of "/client/player", "/client/player.html", "/client/player_client.html":
     clientRoot() / "player_client.html"
-  of "/client/reward.html", "/client/rewards.html",
+  of "/client/reward", "/client/rewards", "/client/reward.html",
+      "/client/rewards.html",
       "/client/reward_client.html":
     clientRoot() / "reward_client.html"
-  of "/client/admin.html":
+  of "/client/admin", "/client/admin.html":
     clientRoot() / "admin_client.html"
   of "/client/snappyjs.min.js":
     clientRoot() / "snappyjs.min.js"
@@ -3436,8 +3855,46 @@ proc createHandler(request: Request) =
   let game = createGame(parseFormBody(request))
   request.respondRedirect("/?notice=created+" & game.name)
 
+proc uploadGameFormHandler(request: Request, notice = "") =
+  ## Handles the upload-game form route.
+  request.respondHtml(200, renderUploadPage(
+    UploadGamePath,
+    "Upload Game",
+    "Paste a Coworld manifest.",
+    notice
+  ))
+
+proc uploadBotFormHandler(request: Request, notice = "") =
+  ## Handles the upload-bot form route.
+  request.respondHtml(200, renderUploadPage(
+    UploadBotPath,
+    "Upload Bot",
+    "Paste a CoPlayer manifest.",
+    notice
+  ))
+
+proc uploadGameHandler(request: Request) =
+  ## Handles uploaded Coworld manifests.
+  ensureUploadDirs()
+  let manifest = saveUploadedGame(
+    uploadManifestText(parseFormBody(request))
+  )
+  request.respondRedirect(
+    "/?notice=uploaded+game+" & encodeUrlComponent(manifest.name)
+  )
+
+proc uploadBotHandler(request: Request) =
+  ## Handles uploaded CoPlayer manifests.
+  ensureUploadDirs()
+  let bot = saveUploadedBot(
+    uploadManifestText(parseFormBody(request))
+  )
+  request.respondRedirect(
+    "/?notice=uploaded+bot+" & encodeUrlComponent(bot.name)
+  )
+
 proc validationHandler(request: Request) =
-  ## Handles CoGame validation requests.
+  ## Handles Coworld validation requests.
   let
     manifestInfo = findGameManifest(
       formValue(parseFormBody(request), "manifest")
@@ -3486,6 +3943,15 @@ proc bulkContainerNames(form: seq[(string, string)]): seq[string] =
     if name notin result:
       result.add(name)
 
+proc bulkGridGames(form: seq[(string, string)]): seq[GameContainer] =
+  ## Reads selected game containers from a bulk action form.
+  for name in bulkContainerNames(form):
+    try:
+      let game = inspectGame(name)
+      result.add(game)
+    except GamesServerError:
+      discard
+
 proc bulkStopHandler(request: Request) =
   ## Handles selected container stop requests.
   let names = bulkContainerNames(parseFormBody(request))
@@ -3510,6 +3976,13 @@ proc bulkRemoveHandler(request: Request) =
       if removedName notin removed:
         removed.add(removedName)
   request.respondRedirect("/?notice=removed+" & $removed.len & "+containers")
+
+proc bulkGridHandler(request: Request) =
+  ## Handles selected game grid viewer requests.
+  request.respondHtml(200, renderGridPage(
+    request,
+    bulkGridGames(parseFormBody(request))
+  ))
 
 proc logsHandler(request: Request) =
   ## Handles Docker log viewer requests.
@@ -3547,7 +4020,7 @@ proc scoresHandler(request: Request) =
   )
 
 proc manifestHandler(request: Request) =
-  ## Handles raw CoGame manifest requests.
+  ## Handles raw Coworld manifest requests.
   let manifestInfo = findGameManifest(queryValue(request, "path"))
   request.respondContent(
     200,
@@ -3591,6 +4064,12 @@ proc errorHandler(request: Request, e: ref Exception) =
       request.requestManifestKey()
     ))
     return
+  if request.path == UploadGamePath:
+    request.uploadGameFormHandler(e.msg)
+    return
+  if request.path == UploadBotPath:
+    request.uploadBotFormHandler(e.msg)
+    return
   let containers = safeListGames()
   request.respondHtml(
     500,
@@ -3617,6 +4096,10 @@ proc httpHandlerUnsafe(request: Request) =
       request.indexHandler()
     elif request.path == CreatePath and request.httpMethod == "GET":
       request.createFormHandler()
+    elif request.path == UploadGamePath and request.httpMethod == "GET":
+      request.uploadGameFormHandler()
+    elif request.path == UploadBotPath and request.httpMethod == "GET":
+      request.uploadBotFormHandler()
     elif request.path == LogsPath and request.httpMethod == "GET":
       request.logsHandler()
     elif request.path == ScoresPath and request.httpMethod == "GET":
@@ -3627,6 +4110,10 @@ proc httpHandlerUnsafe(request: Request) =
       request.clientHandler()
     elif request.path == CreatePath and request.httpMethod == "POST":
       request.createHandler()
+    elif request.path == UploadGamePath and request.httpMethod == "POST":
+      request.uploadGameHandler()
+    elif request.path == UploadBotPath and request.httpMethod == "POST":
+      request.uploadBotHandler()
     elif request.path == ValidationPath and request.httpMethod == "POST":
       request.validationHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
@@ -3639,6 +4126,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.bulkStopHandler()
     elif request.path == BulkRemovePath and request.httpMethod == "POST":
       request.bulkRemoveHandler()
+    elif request.path == BulkGridPath and request.httpMethod == "POST":
+      request.bulkGridHandler()
     elif request.path == ReplayPlayPath and request.httpMethod == "POST":
       request.replayPlayHandler()
     elif request.path.startsWith(ReplayPathPrefix) and
@@ -3665,6 +4154,7 @@ proc httpHandler(request: Request) {.gcsafe.} =
 proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
+  ensureUploadDirs()
   let server = newServer(httpHandler, workerThreads = 4)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)

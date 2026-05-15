@@ -26,7 +26,7 @@ WorldHeightTiles = 32
 WorldTileSize = 32
 WorldWidthPixels = WorldWidthTiles * WorldTileSize
 WorldHeightPixels = WorldHeightTiles * WorldTileSize
-SpritePlayerWebSocketPath = "/sprite_player"
+PlayerWebSocketPath = "/player"
 DefaultHost = "localhost"
 
 MapSpriteId = 1
@@ -1073,7 +1073,7 @@ def run_bot(
     max_steps: int = 0,
 ) -> None:
     escaped = urllib.parse.quote(name, safe="-_.~")
-    url = f"ws://{host}:{port}{SpritePlayerWebSocketPath}"
+    url = f"ws://{host}:{port}{PlayerWebSocketPath}"
     if name:
         url += f"?name={escaped}"
     while True:

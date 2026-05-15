@@ -310,11 +310,11 @@ proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
+  let filePath = clientStaticPath(route, GlobalClientRoute)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -326,16 +326,8 @@ proc serveClientHtml(request: Request, route: string): bool =
   true
 
 proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset. Page routes (/client/*.html) are not
-  ## served here: each page lives at its websocket URL (/sprite_player,
-  ## /global, /reward), which dual-serves HTML on a plain GET and upgrades
-  ## on a Sec-WebSocket-Key request, so the page and its websocket share a
-  ## URL and reverse-proxy prefix routing works without page-side awareness.
-  let path = request.path
-  if path == PlayerClientRoute or path == GlobalClientRoute or
-      path == AdminClientRoute or path == RewardClientRoute:
-    return false
-  request.serveClientHtml(path)
+  ## Serves one static client asset if the route matches.
+  request.serveClientHtml(request.path)
 
 proc inputStateFromMasks(currentMask, previousMask: uint8): InputState =
   ## Builds an input state from the current and previous button masks.
@@ -557,29 +549,22 @@ proc playerIdentity(request: Request): string =
   request.remoteAddress
 
 proc httpHandler(request: Request) =
-  if request.path == SpritePlayerWebSocketPath and
+  if request.path == WebSocketPath and
       request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
-      not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(RewardClientRoute)
-  elif request.path == SpritePlayerWebSocketPath and
-      request.httpMethod == "GET":
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerAddresses[websocket] = request.playerIdentity()
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-  elif request.path == RewardWebSocketPath and request.httpMethod == "GET":
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

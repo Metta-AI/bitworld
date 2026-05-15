@@ -48,6 +48,8 @@ when defined(emscripten):
     --preload-file {RootDir / "among_them" / "skeld2.aseprite"}@among_them/skeld2.aseprite
     --preload-file {RootDir / "among_them" / "spritesheet.aseprite"}@among_them/spritesheet.aseprite
     --preload-file {RootDir / "among_them" / "ascii.png"}@among_them/ascii.png
+    --preload-file {RootDir / "among_them" / "darkbg.aseprite"}@among_them/darkbg.aseprite
+    --preload-file {RootDir / "among_them" / "tiny5.aseprite"}@among_them/tiny5.aseprite
     --shell-file {OutputDir / "shell.html"}
     -s ASYNCIFY
     -s FETCH

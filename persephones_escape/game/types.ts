@@ -5,9 +5,9 @@ export enum Phase {
   RosterReveal,
   RoleReveal,
   Playing,
-  HostageSelect,
+  PsychopompSelect,
   LeaderSummit,
-  HostageExchange,
+  PsychopompExchange,
   Reveal,
   GameOver,
 }
@@ -61,8 +61,8 @@ export interface Player {
   role: Role;
   shape: PlayerShape;
   isLeader: boolean;
-  isHostage: boolean;
-  selectedAsHostage: boolean;
+  isPsychopomp: boolean;
+  selectedAsPsychopomp: boolean;
   revealedTo: Set<number>;
   sharedWith: Set<number>;
   colorRevealedTo: Set<number>;
@@ -128,7 +128,7 @@ export interface RoleEntry {
 
 export interface RoundConfig {
   durationSecs: number;
-  hostages: number;
+  psychopomps: number;
 }
 
 export interface GameConfig {
