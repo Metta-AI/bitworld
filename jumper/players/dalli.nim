@@ -67,6 +67,10 @@ type
     worldX, worldY: int
     centerX, centerY: int
 
+  FlagSight = object
+    found: bool
+    centerX, centerY: int
+
   ObstacleScan = object
     found: bool
     height: int
@@ -451,6 +455,20 @@ proc otherPlayers(bot: Bot, own: PlayerSight): seq[PlayerSight] =
     if not own.found or player.id != own.id:
       result.add(player)
 
+proc visibleFlag(bot: Bot): FlagSight =
+  ## Returns the visible goal flag, if it is currently in the sprite view.
+  for id, item in bot.objects.pairs:
+    if not id.isTileObjectId():
+      continue
+    if item.spriteId.gidFromSprite() != FlagGid:
+      continue
+    let tile = id.tileFromObjectId()
+    return FlagSight(
+      found: true,
+      centerX: tile.tx * WorldTileSize + WorldTileSize div 2,
+      centerY: tile.ty * WorldTileSize + WorldTileSize div 2
+    )
+
 proc groundNear(bot: Bot, x, y, maxDrop: int): bool =
   ## Returns true when ground appears close under one world pixel.
   for dy in 0 .. maxDrop:
@@ -659,6 +677,47 @@ proc moveToward(targetX, currentX: int): uint8 =
   else:
     0
 
+proc applyForwardJumping(
+  bot: var Bot,
+  mask: uint8,
+  grounded, hole, canJumpObstacle, stuckJump: bool,
+  obstacle: ObstacleScan
+): uint8 =
+  ## Adds any forward jump needed for the current rightward route.
+  result = mask
+  let bigJump =
+    hole or
+    (canJumpObstacle and obstacle.height >= BigObstacleHeight)
+  if bigJump:
+    result = result or bot.bigJumpButton(grounded)
+  elif canJumpObstacle or stuckJump:
+    bot.resetBigJump()
+    result = result or bot.jumpButton(grounded)
+  else:
+    bot.resetBigJump()
+
+proc seekFlagMask(
+  bot: var Bot,
+  own: PlayerSight,
+  flag: FlagSight,
+  grounded, hole, canJumpObstacle, stuckJump: bool,
+  obstacle: ObstacleScan
+): uint8 =
+  ## Steers toward the visible goal flag instead of blindly running right.
+  result = moveToward(flag.centerX, own.centerX)
+  if result == ButtonRight:
+    return bot.applyForwardJumping(
+      result,
+      grounded,
+      hole,
+      canJumpObstacle,
+      stuckJump,
+      obstacle
+    )
+  bot.resetBigJump()
+  if result == 0 and flag.centerY < own.centerY - PlayerBoxHeight div 2:
+    result = result or bot.jumpButton(grounded)
+
 proc decideMask(bot: var Bot): uint8 =
   ## Decides Dalli's next input mask from sprite protocol state.
   let own = bot.ownPlayer()
@@ -683,11 +742,27 @@ proc decideMask(bot: var Bot): uint8 =
     canJumpObstacle =
       blocked and obstacle.height <= MaxSoloObstacleHeight
     helper = bot.visibleHelper(own, others)
+    flag = bot.visibleFlag()
     needsHelp = grounded and blocked and not canJumpObstacle
+    stuckJump = grounded and bot.stuckTicks >= StuckWaitTicks
 
   bot.maybeGreet(others)
   if bot.fallingDanger(own, grounded):
     bot.queueChat(PanicChats)
+
+  if flag.found:
+    let flagDirection = moveToward(flag.centerX, own.centerX)
+    if flagDirection != ButtonRight or not needsHelp:
+      bot.intent = "flag"
+      return bot.seekFlagMask(
+        own,
+        flag,
+        grounded,
+        hole,
+        canJumpObstacle,
+        stuckJump,
+        obstacle
+      )
 
   if needsHelp and not helper.found:
     bot.intent = "waiting"
@@ -718,18 +793,14 @@ proc decideMask(bot: var Bot): uint8 =
     else:
       "run"
   result = ButtonRight
-  let
-    stuckJump = grounded and bot.stuckTicks >= StuckWaitTicks
-    bigJump =
-      hole or
-      (canJumpObstacle and obstacle.height >= BigObstacleHeight)
-  if bigJump:
-    result = result or bot.bigJumpButton(grounded)
-  elif canJumpObstacle or stuckJump:
-    bot.resetBigJump()
-    result = result or bot.jumpButton(grounded)
-  else:
-    bot.resetBigJump()
+  result = bot.applyForwardJumping(
+    result,
+    grounded,
+    hole,
+    canJumpObstacle,
+    stuckJump,
+    obstacle
+  )
 
 proc runBot(
   address: string,
