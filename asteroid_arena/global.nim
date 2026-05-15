@@ -13,6 +13,7 @@ const
   BulletSpriteBase = 900
   ExplosionSpriteBase = 950
   ShieldSpriteBase = 980
+  CaptureSpriteBase = 985
   HudSpriteId = 990
   RespawnSpriteId = 991
 
@@ -20,8 +21,11 @@ const
   ShipObjectBase = 2000
   BulletObjectBase = 3000
   ExplosionObjectBase = 4000
+  CaptureObjectBase = 5000
   HudObjectId = 8000
   RespawnObjectId = 8001
+
+  CaptureProgressColor = RgbaColor(r: 0xFF, g: 0xFF, b: 0x40, a: 255)
 
 type
   RgbaSprite = object
@@ -268,8 +272,10 @@ proc buildAsteroidSprite(asteroid: Asteroid): RgbaSprite =
     dim = asteroidSpriteSize(asteroid.size)
     center = dim div 2
     radius = asteroidRadius(asteroid.size)
+    fillColor = if asteroid.cooperative: CoopAsteroidFillColor else: AsteroidFillColor
+    outlineColor = if asteroid.cooperative: CoopAsteroidOutlineColor else: AsteroidOutlineColor
   result = newRgbaSprite(dim, dim)
-  result.drawCircleFill(center, center, max(1, radius - 2), AsteroidFillColor)
+  result.drawCircleFill(center, center, max(1, radius - 2), fillColor)
   var
     firstX, firstY: int
     previousX, previousY: int
@@ -283,10 +289,10 @@ proc buildAsteroidSprite(asteroid: Asteroid): RgbaSprite =
       firstX = vertexX
       firstY = vertexY
     else:
-      result.drawLine(previousX, previousY, vertexX, vertexY, AsteroidOutlineColor)
+      result.drawLine(previousX, previousY, vertexX, vertexY, outlineColor)
     previousX = vertexX
     previousY = vertexY
-  result.drawLine(previousX, previousY, firstX, firstY, AsteroidOutlineColor)
+  result.drawLine(previousX, previousY, firstX, firstY, outlineColor)
 
 proc buildBulletSprite(color: RgbaColor): RgbaSprite =
   result = newRgbaSprite(3, 3)
@@ -311,6 +317,33 @@ proc buildShieldSprite(): RgbaSprite =
     center = dim div 2
   result = newRgbaSprite(dim, dim)
   result.drawCircleRing(center, center, radius, 1, ShieldColor)
+
+proc dimColor(color: RgbaColor): RgbaColor =
+  RgbaColor(
+    r: uint8(int(color.r) div 3),
+    g: uint8(int(color.g) div 3),
+    b: uint8(int(color.b) div 3),
+    a: color.a
+  )
+
+proc buildCaptureSprite(sim: SimServer, cp: CapturePoint): RgbaSprite =
+  let
+    capRadius = cp.captureRadius()
+    dim = capRadius * 2 + 1
+    center = capRadius
+  var color = RgbaColor(r: 255, g: 255, b: 255, a: 255)
+  if cp.owners.len > 0:
+    for player in sim.players:
+      if player.id == cp.owners[0]:
+        color = player.color
+        break
+  result = newRgbaSprite(dim, dim)
+  result.drawCircleFill(center, center, cp.radius, dimColor(color))
+  result.drawCircleRing(center, center, cp.radius, 1, color)
+  result.drawCircleRing(center, center, capRadius, 1, color)
+  if cp.progress > 0 and cp.owners.len == 0:
+    let progressRadius = max(cp.radius + 2, cp.progress * (capRadius - cp.radius - 2) div CaptureTicksRequired + cp.radius + 2)
+    result.drawCircleRing(center, center, progressRadius, 1, CaptureProgressColor)
 
 proc shipSpriteId(playerIndex, direction: int, thrust: bool): int =
   ShipSpriteBase + playerIndex * 32 + direction * 2 + (if thrust: 1 else: 0)
@@ -483,6 +516,18 @@ proc buildSpriteProtocolUpdates*(
     result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
     currentIds.add(objId)
 
+  for i, cp in sim.capturePoints:
+    let
+      sprId = CaptureSpriteBase + i
+      spr = buildCaptureSprite(sim, cp)
+      sx = cp.x div MotionScale - spr.width div 2
+      sy = cp.y div MotionScale - spr.height div 2
+      objId = CaptureObjectBase + i
+      label = if cp.owners.len > 0: "capture owned" else: "capture"
+    result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
+    result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
+    currentIds.add(objId)
+
   # Delete objects that disappeared
   for objectId in state.objectIds:
     if objectId notin currentIds:
@@ -538,7 +583,8 @@ proc buildSpriteProtocolPlayerUpdates*(
   for pi, p in sim.players:
     if not p.alive:
       continue
-    if p.invulnTicks > 0 and ((p.invulnTicks div 2) mod 2 == 0):
+    # Blink other ships during invuln, but always show the viewer's own ship
+    if pi != playerIndex and p.invulnTicks > 0 and ((p.invulnTicks div 2) mod 2 == 0):
       continue
     let
       thrust = p.thrustTicks > 0
@@ -612,6 +658,22 @@ proc buildSpriteProtocolPlayerUpdates*(
         objId = ExplosionObjectBase + i
       result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
       result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
+      currentIds.add(objId)
+
+  for i, cp in sim.capturePoints:
+    let
+      screenX = ScreenWidth div 2 + wrappedDelta(cp.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(cp.y, cameraY, WorldHeightUnits) div MotionScale
+      spr = buildCaptureSprite(sim, cp)
+      sx = screenX - spr.width div 2
+      sy = screenY - spr.height div 2
+    if sx > -spr.width and sx < ScreenWidth and sy > -spr.height and sy < ScreenHeight:
+      let
+        sprId = CaptureSpriteBase + i
+        objId = CaptureObjectBase + i
+        label = if cp.owners.len > 0: "capture owned" else: "capture"
+      result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
+      result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
       currentIds.add(objId)
 
   # HUD

@@ -54,6 +54,17 @@ const
   SpawnSafeDistancePixels* = 40
   AsteroidSafeDistancePixels* = 32
   ShipKillScore* = 5
+  CoopAsteroidHitsRequired* = 2
+  DefaultCoopScoreMultiplier* = 150  # percent, 150 = 1.5x
+  DefaultCoopSpawnPercent* = 50
+
+  DefaultPlanetCount* = 3
+  PlanetMinRadius* = 8
+  PlanetMaxRadius* = 14
+  PlanetCaptureRadiusMultiplier* = 250  # percent of body radius
+  CaptureTicksRequired* = 72  # 3 seconds at 24fps
+  CaptureScore* = 6
+  CaptureHoldInterval* = 120  # score every 5 seconds while held
 
   TargetFps* = 24
 
@@ -75,6 +86,8 @@ const
   BackgroundColor* = RgbaColor(r: 0x29, g: 0xAD, b: 0xFF, a: 255)
   AsteroidFillColor* = RgbaColor(r: 0x83, g: 0x76, b: 0x9C, a: 255)
   AsteroidOutlineColor* = RgbaColor(r: 0xFF, g: 0xCC, b: 0xAA, a: 255)
+  CoopAsteroidFillColor* = RgbaColor(r: 0xAA, g: 0x20, b: 0x20, a: 255)
+  CoopAsteroidOutlineColor* = RgbaColor(r: 0xFF, g: 0x40, b: 0x40, a: 255)
   ThrusterColor* = RgbaColor(r: 0xFF, g: 0x00, b: 0x4D, a: 255)
   BulletFlashColor* = RgbaColor(r: 0x7E, g: 0x25, b: 0x53, a: 255)
   ShieldColor* = RgbaColor(r: 0x00, g: 0xE4, b: 0x36, a: 255)
@@ -124,6 +137,8 @@ type
     rotation*: int
     spin*: int
     seed*: uint32
+    cooperative*: bool
+    hitBy*: seq[int]
 
   Bullet* = object
     ownerId*: int
@@ -146,6 +161,14 @@ type
     x*: int
     y*: int
     color*: RgbaColor
+
+  CapturePoint* = object
+    x*: int
+    y*: int
+    radius*: int       # body radius in pixels
+    progress*: int
+    owners*: seq[int]  # player IDs that captured it
+    holdTimer*: int    # ticks until next hold score
 
   Player* = object
     id*: int
@@ -182,6 +205,10 @@ type
     nextAsteroidId*: int
     asteroidSpawnCooldown*: int
     tickCount*: int
+    coopSpawnPercent*: int
+    coopScoreMultiplier*: int
+    planetCount*: int
+    capturePoints*: seq[CapturePoint]
 
 proc roundDiv(numerator, denominator: int): int =
   if denominator <= 0:
@@ -429,7 +456,10 @@ proc spawnRandomLargeAsteroid*(sim: var SimServer): bool =
       speed = sim.asteroidSpeed(AsteroidLarge)
       velX = forwardX(direction) * speed div DirectionScale
       velY = forwardY(direction) * speed div DirectionScale
-    sim.asteroids.add(sim.makeAsteroid(AsteroidLarge, x, y, velX, velY))
+    var asteroid = sim.makeAsteroid(AsteroidLarge, x, y, velX, velY)
+    if sim.players.len >= 2 and sim.rng.rand(99) < sim.coopSpawnPercent:
+      asteroid.cooperative = true
+    sim.asteroids.add(asteroid)
     return true
   false
 
@@ -520,6 +550,14 @@ proc destroyShip*(sim: var SimServer, playerIndex: int, killerId = 0) =
   if killerId != 0 and killerId != player.id:
     sim.addScore(killerId, ShipKillScore)
 
+  for cp in sim.capturePoints.mitems:
+    let idx = cp.owners.find(player.id)
+    if idx >= 0:
+      cp.owners.delete(idx)
+      if cp.owners.len == 0:
+        cp.progress = 0
+        cp.holdTimer = 0
+
 proc bulletsForPlayer*(sim: SimServer, playerId: int): int =
   for bullet in sim.bullets:
     if bullet.ownerId == playerId:
@@ -575,13 +613,15 @@ proc buildAsteroidFragments*(sim: var SimServer, asteroid: Asteroid): seq[Astero
       kick = kickBase + sim.rng.rand(max(1, kickBase div 2))
       fragmentVelX = asteroid.velX + forwardX(direction) * kick div DirectionScale
       fragmentVelY = asteroid.velY + forwardY(direction) * kick div DirectionScale
-    result.add(sim.makeAsteroid(
+    var fragment = sim.makeAsteroid(
       childSize,
       asteroid.x + offsetX,
       asteroid.y + offsetY,
       fragmentVelX,
       fragmentVelY
-    ))
+    )
+    fragment.cooperative = asteroid.cooperative
+    result.add(fragment)
 
 proc buildRewardPacket*(sim: SimServer): string =
   for player in sim.players:
@@ -694,16 +734,28 @@ proc resolveBulletCollisions*(sim: var SimServer) =
     if not bulletAlive[bulletIndex]:
       continue
 
-    for asteroidIndex, asteroid in sim.asteroids:
+    for asteroidIndex in 0 ..< sim.asteroids.len:
       if not asteroidAlive[asteroidIndex]:
         continue
+      let asteroid = sim.asteroids[asteroidIndex]
       let radius = (asteroidRadius(asteroid.size) + BulletRadiusPixels) * MotionScale
       if wrappedDistanceSquared(bullet.x, bullet.y, asteroid.x, asteroid.y) <= radius * radius:
         bulletAlive[bulletIndex] = false
-        asteroidAlive[asteroidIndex] = false
-        fragments.add(sim.buildAsteroidFragments(asteroid))
-        sim.addExplosion(asteroid.x, asteroid.y, asteroidRadius(asteroid.size) + 5, AsteroidOutlineColor)
-        sim.addScore(bullet.ownerId, asteroidScore(asteroid.size))
+        if asteroid.cooperative:
+          if bullet.ownerId notin sim.asteroids[asteroidIndex].hitBy:
+            sim.asteroids[asteroidIndex].hitBy.add(bullet.ownerId)
+          if sim.asteroids[asteroidIndex].hitBy.len >= CoopAsteroidHitsRequired:
+            asteroidAlive[asteroidIndex] = false
+            fragments.add(sim.buildAsteroidFragments(sim.asteroids[asteroidIndex]))
+            sim.addExplosion(asteroid.x, asteroid.y, asteroidRadius(asteroid.size) + 5, CoopAsteroidOutlineColor)
+            let coopScore = asteroidScore(asteroid.size) * sim.coopScoreMultiplier div 100
+            for playerId in sim.asteroids[asteroidIndex].hitBy:
+              sim.addScore(playerId, coopScore)
+        else:
+          asteroidAlive[asteroidIndex] = false
+          fragments.add(sim.buildAsteroidFragments(asteroid))
+          sim.addExplosion(asteroid.x, asteroid.y, asteroidRadius(asteroid.size) + 5, AsteroidOutlineColor)
+          sim.addScore(bullet.ownerId, asteroidScore(asteroid.size))
         break
 
     if not bulletAlive[bulletIndex]:
@@ -716,6 +768,14 @@ proc resolveBulletCollisions*(sim: var SimServer) =
       if wrappedDistanceSquared(bullet.x, bullet.y, player.x, player.y) <= radius * radius:
         bulletAlive[bulletIndex] = false
         sim.destroyShip(playerIndex, bullet.ownerId)
+        break
+
+    if not bulletAlive[bulletIndex]:
+      continue
+    for cp in sim.capturePoints:
+      let bodyUnits = cp.radius * MotionScale
+      if wrappedDistanceSquared(bullet.x, bullet.y, cp.x, cp.y) <= bodyUnits * bodyUnits:
+        bulletAlive[bulletIndex] = false
         break
 
   var nextBullets: seq[Bullet] = @[]
@@ -762,6 +822,22 @@ proc resolveShipShipCollisions*(sim: var SimServer) =
     if crashFlags[i]:
       sim.destroyShip(i)
 
+proc resolveAsteroidPlanetCollisions*(sim: var SimServer) =
+  var alive = newSeq[bool](sim.asteroids.len)
+  for i in 0 ..< alive.len:
+    alive[i] = true
+  for i, asteroid in sim.asteroids:
+    for cp in sim.capturePoints:
+      let radius = (asteroidRadius(asteroid.size) + cp.radius) * MotionScale
+      if wrappedDistanceSquared(asteroid.x, asteroid.y, cp.x, cp.y) <= radius * radius:
+        alive[i] = false
+        break
+  var next: seq[Asteroid] = @[]
+  for i, asteroid in sim.asteroids:
+    if alive[i]:
+      next.add(asteroid)
+  sim.asteroids = move(next)
+
 proc stepExplosions*(sim: var SimServer) =
   var activeExplosions: seq[Explosion] = @[]
   for explosion in sim.explosions:
@@ -784,6 +860,66 @@ proc ensureAsteroids*(sim: var SimServer) =
   if sim.spawnRandomLargeAsteroid():
     sim.asteroidSpawnCooldown = AsteroidSpawnCooldownTicks
 
+proc captureRadius*(cp: CapturePoint): int =
+  cp.radius * PlanetCaptureRadiusMultiplier div 100
+
+proc stepCapturePoints*(sim: var SimServer) =
+  for cp in sim.capturePoints.mitems:
+    var inRange: seq[int] = @[]
+    let capRadius = cp.captureRadius() * MotionScale
+    for player in sim.players:
+      if not player.alive:
+        continue
+      if wrappedDistanceSquared(player.x, player.y, cp.x, cp.y) <=
+          capRadius * capRadius:
+        inRange.add(player.id)
+
+    if cp.owners.len > 0:
+      # Owned — contesters must outnumber defenders in range
+      var defenders = 0
+      var contesters = 0
+      for pid in inRange:
+        if pid in cp.owners:
+          inc defenders
+        else:
+          inc contesters
+      if contesters > defenders and contesters >= 2:
+        dec cp.progress
+        if cp.progress <= 0:
+          cp.owners = @[]
+          cp.progress = 0
+          cp.holdTimer = 0
+      else:
+        # Held: score periodically
+        dec cp.holdTimer
+        if cp.holdTimer <= 0:
+          cp.holdTimer = CaptureHoldInterval
+          let score = CaptureScore * cp.radius div PlanetMinRadius * sim.coopScoreMultiplier div 100
+          for pid in cp.owners:
+            sim.addScore(pid, score)
+    else:
+      # Neutral — 2+ players in range builds capture progress
+      if inRange.len >= 2:
+        inc cp.progress
+        if cp.progress >= CaptureTicksRequired:
+          cp.owners = inRange
+          cp.progress = CaptureTicksRequired
+          cp.holdTimer = CaptureHoldInterval
+          let score = CaptureScore * cp.radius div PlanetMinRadius * sim.coopScoreMultiplier div 100
+          for pid in cp.owners:
+            sim.addScore(pid, score)
+      elif inRange.len == 0:
+        if cp.progress > 0:
+          dec cp.progress
+
+proc generateCapturePoints*(sim: var SimServer) =
+  for _ in 0 ..< sim.planetCount:
+    let
+      x = sim.rng.rand(WorldWidthPixels - 1) * MotionScale
+      y = sim.rng.rand(WorldHeightPixels - 1) * MotionScale
+      radius = PlanetMinRadius + sim.rng.rand(PlanetMaxRadius - PlanetMinRadius)
+    sim.capturePoints.add(CapturePoint(x: x, y: y, radius: radius))
+
 proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.stepPlayers(inputs)
   sim.stepAsteroids()
@@ -791,9 +927,11 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) =
   sim.resolveBulletCollisions()
   sim.resolveShipAsteroidCollisions()
   sim.resolveShipShipCollisions()
+  sim.resolveAsteroidPlanetCollisions()
   sim.stepExplosions()
   sim.stepRespawns()
   sim.ensureAsteroids()
+  sim.stepCapturePoints()
   inc sim.tickCount
 
 proc gameHash*(sim: SimServer): uint64 =
@@ -810,8 +948,12 @@ proc gameHash*(sim: SimServer): uint64 =
     h = h * 0x100000001b3'u64
   h
 
-proc initSimServer*(seed: int): SimServer =
+proc initSimServer*(seed: int, coopSpawnPercent = DefaultCoopSpawnPercent, coopScoreMultiplier = DefaultCoopScoreMultiplier, planetCount = DefaultPlanetCount): SimServer =
   result.rng = initRand(seed)
+  result.coopSpawnPercent = coopSpawnPercent
+  result.coopScoreMultiplier = coopScoreMultiplier
+  result.planetCount = planetCount
   result.generateStars()
+  result.generateCapturePoints()
   for _ in 0 ..< InitialLargeAsteroids:
     discard result.spawnRandomLargeAsteroid()

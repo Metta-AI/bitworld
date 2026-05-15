@@ -10,6 +10,9 @@ type
     durationTicks: int
     resultsPath: string
     tokens: seq[string]
+    coopSpawnPercent: int
+    coopScoreMultiplier: int
+    planetCount: int
 
 proc readConfigString(node: JsonNode, name: string, value: var string) =
   if not node.hasKey(name):
@@ -45,6 +48,9 @@ proc update(config: var RunConfig, jsonText: string) =
         "Config field duration must be at least 0."
       )
     config.durationTicks = durationSeconds * TargetFps
+  node.readConfigInt("coopSpawnPercent", config.coopSpawnPercent)
+  node.readConfigInt("coopScoreMultiplier", config.coopScoreMultiplier)
+  node.readConfigInt("planetCount", config.planetCount)
   node.readConfigString("resultsPath", config.resultsPath)
   if node.hasKey("tokens") and node["tokens"].kind == JArray:
     for item in node["tokens"]:
@@ -57,7 +63,10 @@ when isMainModule:
       address: DefaultHost,
       port: DefaultPort,
       seed: 0xA57E2,
-      durationTicks: 0
+      durationTicks: 0,
+      coopSpawnPercent: DefaultCoopSpawnPercent,
+      coopScoreMultiplier: DefaultCoopScoreMultiplier,
+      planetCount: DefaultPlanetCount
     )
     configJson = ""
     configPath = getEnv("COGAME_CONFIG_PATH")
@@ -93,4 +102,7 @@ when isMainModule:
     durationTicks = config.durationTicks, resultsPath = config.resultsPath,
     tokens = config.tokens,
     saveReplayPath = saveReplayPath,
-    loadReplayPath = loadReplayPath)
+    loadReplayPath = loadReplayPath,
+    coopSpawnPercent = config.coopSpawnPercent,
+    coopScoreMultiplier = config.coopScoreMultiplier,
+    planetCount = config.planetCount)
