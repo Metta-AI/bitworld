@@ -55,7 +55,7 @@ const
   AsteroidSafeDistancePixels* = 32
   ShipKillScore* = 5
   CoopAsteroidHitsRequired* = 2
-  CoopAsteroidScoreBonus* = 8
+  DefaultCoopScoreMultiplier* = 150  # percent, 150 = 1.5x
   DefaultCoopSpawnPercent* = 50
 
   TargetFps* = 24
@@ -190,6 +190,7 @@ type
     asteroidSpawnCooldown*: int
     tickCount*: int
     coopSpawnPercent*: int
+    coopScoreMultiplier*: int
 
 proc roundDiv(numerator, denominator: int): int =
   if denominator <= 0:
@@ -721,8 +722,9 @@ proc resolveBulletCollisions*(sim: var SimServer) =
             asteroidAlive[asteroidIndex] = false
             fragments.add(sim.buildAsteroidFragments(sim.asteroids[asteroidIndex]))
             sim.addExplosion(asteroid.x, asteroid.y, asteroidRadius(asteroid.size) + 5, CoopAsteroidOutlineColor)
+            let coopScore = asteroidScore(asteroid.size) * sim.coopScoreMultiplier div 100
             for playerId in sim.asteroids[asteroidIndex].hitBy:
-              sim.addScore(playerId, asteroidScore(asteroid.size) + CoopAsteroidScoreBonus)
+              sim.addScore(playerId, coopScore)
         else:
           asteroidAlive[asteroidIndex] = false
           fragments.add(sim.buildAsteroidFragments(asteroid))
@@ -834,9 +836,10 @@ proc gameHash*(sim: SimServer): uint64 =
     h = h * 0x100000001b3'u64
   h
 
-proc initSimServer*(seed: int, coopSpawnPercent = DefaultCoopSpawnPercent): SimServer =
+proc initSimServer*(seed: int, coopSpawnPercent = DefaultCoopSpawnPercent, coopScoreMultiplier = DefaultCoopScoreMultiplier): SimServer =
   result.rng = initRand(seed)
   result.coopSpawnPercent = coopSpawnPercent
+  result.coopScoreMultiplier = coopScoreMultiplier
   result.generateStars()
   for _ in 0 ..< InitialLargeAsteroids:
     discard result.spawnRandomLargeAsteroid()

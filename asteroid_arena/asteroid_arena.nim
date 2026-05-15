@@ -11,6 +11,7 @@ type
     resultsPath: string
     tokens: seq[string]
     coopSpawnPercent: int
+    coopScoreMultiplier: int
 
 proc readConfigString(node: JsonNode, name: string, value: var string) =
   if not node.hasKey(name):
@@ -47,6 +48,7 @@ proc update(config: var RunConfig, jsonText: string) =
       )
     config.durationTicks = durationSeconds * TargetFps
   node.readConfigInt("coopSpawnPercent", config.coopSpawnPercent)
+  node.readConfigInt("coopScoreMultiplier", config.coopScoreMultiplier)
   node.readConfigString("resultsPath", config.resultsPath)
   if node.hasKey("tokens") and node["tokens"].kind == JArray:
     for item in node["tokens"]:
@@ -60,7 +62,8 @@ when isMainModule:
       port: DefaultPort,
       seed: 0xA57E2,
       durationTicks: 0,
-      coopSpawnPercent: DefaultCoopSpawnPercent
+      coopSpawnPercent: DefaultCoopSpawnPercent,
+      coopScoreMultiplier: DefaultCoopScoreMultiplier
     )
     configJson = ""
     configPath = getEnv("COGAME_CONFIG_PATH")
@@ -97,4 +100,5 @@ when isMainModule:
     tokens = config.tokens,
     saveReplayPath = saveReplayPath,
     loadReplayPath = loadReplayPath,
-    coopSpawnPercent = config.coopSpawnPercent)
+    coopSpawnPercent = config.coopSpawnPercent,
+    coopScoreMultiplier = config.coopScoreMultiplier)
