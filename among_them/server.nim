@@ -359,6 +359,18 @@ proc replayRequestUri(request: Request): string =
   ## Returns the replay artifact URI requested by a Coworld replay client.
   request.queryParams.getOrDefault("uri", "").strip()
 
+proc replayRequestUriOrPending(request: Request): tuple[uri: string, loaded: bool] =
+  ## Returns the websocket URI, falling back to the URI captured when serving
+  ## /clients/replay. Kubernetes service-proxy websocket upgrades do not
+  ## preserve query params, so the preceding client HTML request is the durable
+  ## place to capture the artifact URI.
+  result.uri = request.replayRequestUri()
+  {.gcsafe.}:
+    withLock appState.lock:
+      result.loaded = appState.replayLoaded
+      if result.uri.len == 0:
+        result.uri = appState.pendingReplayUri
+
 proc httpHandler(request: Request) =
   if request.path == HealthPath and request.httpMethod == "GET":
     var headers: HttpHeaders
@@ -417,20 +429,24 @@ proc httpHandler(request: Request) =
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let replayServerMode = replayServerModeEnabled()
+    let replayRequest =
+      if replayServerMode:
+        request.replayRequestUriOrPending()
+      else:
+        (uri: "", loaded: false)
     if replayServerMode:
-      let uri = request.replayRequestUri()
-      if uri.len == 0:
+      if replayRequest.uri.len == 0 and not replayRequest.loaded:
         request.respondReplayRequestError(400, "missing replay uri\n")
         return
-      if not uri.readableReplayUri():
+      if replayRequest.uri.len > 0 and not replayRequest.uri.readableReplayUri():
         request.respondReplayRequestError(404, "replay uri is not readable\n")
         return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
-        if replayServerMode:
-          appState.pendingReplayUri = request.replayRequestUri()
+        if replayServerMode and replayRequest.uri.len > 0:
+          appState.pendingReplayUri = replayRequest.uri
   elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
@@ -469,6 +485,19 @@ proc httpHandler(request: Request) =
           withLock appState.lock:
             appState.kickRequests.add(identity)
         request.respondControl(202, "kick queued\n")
+  elif request.path == CoworldReplayClientRoute and request.httpMethod == "GET":
+    if replayServerModeEnabled():
+      let uri = request.replayRequestUri()
+      if uri.len == 0:
+        request.respondReplayRequestError(400, "missing replay uri\n")
+        return
+      if not uri.readableReplayUri():
+        request.respondReplayRequestError(404, "replay uri is not readable\n")
+        return
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.pendingReplayUri = uri
+    discard request.serveStaticClientHtml()
   elif request.serveStaticClientHtml():
     discard
   else:
