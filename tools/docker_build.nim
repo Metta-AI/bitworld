@@ -1,8 +1,8 @@
-## Builds multi-arch Docker images for bitworld and pushes them to GHCR.
+## Builds multi-arch Docker images for bitworld.
 ##
-## games_server/games_server.nim pulls images from GHCR at runtime to launch
-## game and bot containers (e.g. ghcr.io/treeform/bitworld-among-them-runner).
-## Dockerfiles live beside their game or player manifests.
+## games_server/games_server.nim pulls images from manifest image paths at
+## runtime to launch game and bot containers. Dockerfiles live beside their
+## game or player manifests.
 ##
 ## This tool wraps `docker buildx` to produce a multi-arch OCI manifest so
 ## the same image tag works on both x86_64 (AWS/Linux) and arm64 (macOS).
@@ -19,13 +19,13 @@
 ## Prerequisites:
 ##   - docker buildx.
 ##   - On Linux, docker-buildx-plugin may need to be installed.
-##   - GHCR auth: echo $PAT | docker login ghcr.io -u USERNAME --password-stdin
+##   - Registry auth for any manifest image path you push.
 
 import
   std/[algorithm, json, os, osproc, parseopt, strutils, tables]
 
 const
-  Registry = "ghcr.io/treeform"
+  DefaultRegistry = ""
   DefaultPlatforms = "linux/amd64,linux/arm64"
   CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
@@ -45,6 +45,7 @@ type
   DockerTarget = object
     name: string
     imageName: string
+    imageRepo: string
     dockerFile: string
     contextDir: string
     bitworldContext: string
@@ -61,11 +62,11 @@ Targets are discovered from Dockerfile locations.
 Targets may also be paths to a Dockerfile or a directory containing one.
 
 Options:
-  --push            Push images to GHCR after building
+  --push            Push images after building
   --bots            Also build bots for selected game targets
   --platform:STR    Platforms to build (default: linux/amd64,linux/arm64)
   --tag:STR         Image tag (default: latest)
-  --registry:STR    Registry prefix (default: ghcr.io/treeform)
+  --registry:STR    Override manifest registry prefix
   --list            List available targets and exit
   --help            Show this help"""
   quit(0)
@@ -106,6 +107,24 @@ proc imageNameFromUri(imageUri: string): string =
     return ""
   cleanImage.split('/')[^1]
 
+proc imageRepoFromUri(imageUri: string): string =
+  ## Returns the repository path from a Docker image URI.
+  stripImageTag(imageUri.strip())
+
+proc nodeImageUri(node: JsonNode): string =
+  ## Reads one Docker image URI from a manifest object.
+  if node.kind != JObject:
+    return ""
+  if node.hasKey("runnable") and node["runnable"].kind == JObject:
+    let runnable = node["runnable"]
+    if runnable.hasKey("image") and runnable["image"].kind == JString:
+      return runnable["image"].getStr()
+  if node.hasKey("image") and node["image"].kind == JString:
+    return node["image"].getStr()
+  if node.hasKey("image_uri") and node["image_uri"].kind == JString:
+    return node["image_uri"].getStr()
+  ""
+
 proc manifestPath(dir: string): string =
   ## Returns the first game or player manifest beside a Dockerfile.
   for fileName in ManifestNames:
@@ -127,18 +146,21 @@ proc manifestString(path, key: string): string =
   if path.len == 0:
     return ""
   let node = parseFile(path)
+  if key == "image_uri":
+    let imageUri = nodeImageUri(node)
+    if imageUri.len > 0:
+      return imageUri
   if node.kind == JObject and node.hasKey(key) and node[key].kind == JString:
     return node[key].getStr()
   if node.kind == JObject and node.hasKey("game") and
       node["game"].kind == JObject:
     let game = node["game"]
+    if key == "image_uri":
+      let imageUri = nodeImageUri(game)
+      if imageUri.len > 0:
+        return imageUri
     if game.hasKey(key) and game[key].kind == JString:
       return game[key].getStr()
-    if key == "image_uri" and game.hasKey("runnable") and
-        game["runnable"].kind == JObject:
-      let runnable = game["runnable"]
-      if runnable.hasKey("image") and runnable["image"].kind == JString:
-        return runnable["image"].getStr()
   ""
 
 proc nodeString(node: JsonNode, key: string): string =
@@ -198,7 +220,7 @@ proc coworldPlayerImage(
       id = matched.nodeString("id")
       rawName = matched.nodeString("name")
       name = if rawName.len > 0: rawName else: id
-      imageUri = matched.nodeString("image_uri")
+      imageUri = matched.nodeImageUri()
     if imageUri.len > 0:
       result = (name: name, imageUri: imageUri)
 
@@ -206,8 +228,17 @@ proc imageNameForTarget(
   targetName: string,
   manifestImageUri: string
 ): string =
-  ## Returns the GHCR package name for one Docker target.
+  ## Returns the package name for one Docker target.
   result = imageNameFromUri(manifestImageUri)
+  if result.len == 0:
+    result = "bitworld-" & targetName.replace('_', '-')
+
+proc imageRepoForTarget(
+  targetName: string,
+  manifestImageUri: string
+): string =
+  ## Returns the image repository path for one Docker target.
+  result = imageRepoFromUri(manifestImageUri)
   if result.len == 0:
     result = "bitworld-" & targetName.replace('_', '-')
 
@@ -259,6 +290,7 @@ proc addDockerFile(
   targets.add DockerTarget(
     name: targetName,
     imageName: imageNameForTarget(targetName, manifestImageUri),
+    imageRepo: imageRepoForTarget(targetName, manifestImageUri),
     dockerFile: dockerFile.relativePath(contextDir),
     contextDir: contextDir,
     bitworldContext: bitworldContext,
@@ -406,7 +438,13 @@ proc fullImageTag(
   tag: string
 ): string =
   ## Returns the full Docker image tag for one target.
-  registry & "/" & target.imageName & ":" & tag
+  let cleanRegistry = registry.strip().strip(chars = {'/'})
+  let imageRepo =
+    if cleanRegistry.len > 0:
+      cleanRegistry & "/" & target.imageName
+    else:
+      target.imageRepo
+  imageRepo & ":" & tag
 
 proc buildCommand(
   root: string,
@@ -521,7 +559,7 @@ proc printTargets(root: string, targets: openArray[DockerTarget]) =
   ## Prints all discovered Docker targets.
   echo "Available targets:"
   for target in targets:
-    echo "  ", target.name, " -> ", target.imageName
+    echo "  ", target.name, " -> ", target.imageRepo
     echo "    ", (target.contextDir / target.dockerFile).relativePath(root)
     if target.bitworldContext.len > 0:
       echo "    context: ", target.contextDir.relativePath(root)
@@ -542,7 +580,7 @@ proc main() =
     push = false
     platforms = DefaultPlatforms
     tag = "latest"
-    registry = Registry
+    registry = DefaultRegistry
     includeBots = false
     names: seq[string]
 
@@ -583,9 +621,14 @@ proc main() =
       discard
 
   let chosen = selectedTargets(root, targets, names, includeBots)
+  let registryLabel =
+    if registry.len > 0:
+      registry
+    else:
+      "from manifests"
 
   echo "docker_build"
-  echo "  registry:  ", registry
+  echo "  registry:  ", registryLabel
   echo "  tag:       ", tag
   echo "  platforms: ", platforms
   echo "  push:      ", push
