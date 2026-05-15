@@ -8,7 +8,7 @@ const
   TargetFps = 24.0
   WebSocketPath = "/player"
   GlobalWebSocketPath = "/global"
-  BackgroundColor = 1'u8
+  BackgroundColor = 0'u8
   MaxPlayers = 8
   DefaultMinPlayers = 4
   LobbyCountdownTicks = 24 * 5
@@ -43,8 +43,6 @@ type
     conflictState: ConflictState
     conflictTimer: int
     fb: Framebuffer
-    digitSprites: array[10, Sprite]
-    letterSprites: seq[Sprite]
     rng: Rand
     prevInputs: seq[InputState]
     chatScroll: int
@@ -86,7 +84,9 @@ proc addPlayer(sim: var SimServer, name: string, kind: PlayerKind = PlayerHuman)
     return -1
   let idx = sim.players.len
   sim.players.add(Player(
-    name: if name.len > 0: name else: "Player" & $(idx + 1),
+    name: if name.len > 1: name[0..0].toUpperAscii & name[1..^1]
+          elif name.len == 1: name.toUpperAscii
+          else: "Player" & $(idx + 1),
     colorIndex: (idx mod 8) + 3,
     ready: false,
     kind: kind,
@@ -115,49 +115,49 @@ proc startFactTurn(sim: var SimServer) =
 
 proc renderLobby(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
-  let title = "mortal coil"
-  sim.fb.blitText(sim.letterSprites, title, 20, 10)
+  let title = "Mortal Coil"
+  sim.fb.drawText(title, 20, 10)
 
   let countText = $sim.players.len & " of " & $sim.minPlayers
-  sim.fb.blitText(sim.letterSprites, sim.digitSprites, countText, 34, 30)
+  sim.fb.drawText(countText, 34, 30)
 
   for i, player in sim.players:
     let y = 44 + i * 8
     sim.fb.fillRect(10, y, 4, 4, uint8(player.colorIndex))
     let displayName = if player.name.len > 16: player.name[0..15] else: player.name
-    sim.fb.blitText(sim.letterSprites, displayName, 18, y)
+    sim.fb.drawText(displayName, 18, y)
 
   if sim.players.len >= sim.minPlayers and sim.lobbyCountdown > 0:
     let seconds = (sim.lobbyCountdown + 23) div 24
-    let startText = "start in " & $seconds
-    sim.fb.blitText(sim.letterSprites, sim.digitSprites, startText, 28, 118)
+    let startText = "Start in " & $seconds
+    sim.fb.drawText(startText, 28, 118)
 
 proc renderWorld(sim: var SimServer) =
-  world.renderWorld(sim.fb, sim.letterSprites, sim.digitSprites, sim.world, sim.worldStep)
+  world.renderWorld(sim.fb, sim.world, sim.worldStep)
 
 proc renderSituation(sim: var SimServer) =
-  situation.renderSituation(sim.fb, sim.letterSprites, sim.digitSprites,
-    sim.players, sim.currentTurn, sim.situationStep, sim.situation, sim.sceneState)
+  situation.renderSituation(sim.fb, sim.players, sim.currentTurn,
+    sim.situationStep, sim.situation, sim.sceneState)
 
 proc renderConflictPhase(sim: var SimServer) =
-  conflict.renderConflict(sim.fb, sim.letterSprites, sim.digitSprites,
-    sim.players, sim.currentTurn, sim.conflictState, sim.conflict)
+  conflict.renderConflict(sim.fb, sim.players, sim.currentTurn,
+    sim.conflictState, sim.conflict)
 
 proc renderFact(sim: var SimServer) =
-  magical_facts.renderFact(sim.fb, sim.letterSprites, sim.digitSprites,
-    sim.players, sim.currentTurn, sim.factChoice, sim.chatLog, sim.chatScroll)
+  magical_facts.renderFact(sim.fb, sim.players, sim.currentTurn,
+    sim.factChoice, sim.chatLog, sim.chatScroll)
 
 proc renderGame(sim: var SimServer) =
   sim.fb.clearFrame(BackgroundColor)
   let phaseText = case sim.phase
-    of PhaseLobby: "lobby"
-    of PhaseWorld: "the world"
-    of PhaseMagicalFacts: "magical facts"
-    of PhaseSituation: "situation"
-    of PhaseConflict: "conflict"
-    of PhasePower: "power"
-    of PhaseEnd: "end"
-  sim.fb.blitText(sim.letterSprites, phaseText, 4, 4)
+    of PhaseLobby: "Lobby"
+    of PhaseWorld: "The World"
+    of PhaseMagicalFacts: "Magical Facts"
+    of PhaseSituation: "Situation"
+    of PhaseConflict: "Conflict"
+    of PhasePower: "Power"
+    of PhaseEnd: "End"
+  sim.fb.drawText(phaseText, 4, 4)
 
 proc render(sim: var SimServer) =
   case sim.phase
@@ -266,9 +266,8 @@ proc initSim(seed: int, minPlayers: int): SimServer =
   result.fb = initFramebuffer()
 
   let dataDir = clientsDir() / "data"
-  result.digitSprites = loadDigitSprites(dataDir / "numbers.png")
-  result.letterSprites = loadLetterSprites(dataDir / "letters.png")
   loadPalette(dataDir / "pallete.png")
+  loadFont()
 
 proc playerIdentity(request: Request): string =
   let uri = request.uri
@@ -484,7 +483,7 @@ proc launchGuiClients(address: string, port: int, players: int) =
 
   for i, launch in launches:
     let wsUrl = "ws://" & connectAddress & ":" & $port &
-      "/player?name=player" & $(i + 1)
+      "/player?name=Player" & $(i + 1)
     let args = @[
       "--address:" & wsUrl,
       "--screen-only",
@@ -537,7 +536,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
     lastTick = getMonoTime()
 
   for i in 0 ..< bots:
-    let botName = "bot" & $(i + 1)
+    let botName = "Bot" & $(i + 1)
     discard sim.addPlayer(botName, PlayerBot)
 
   while true:

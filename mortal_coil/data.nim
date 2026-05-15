@@ -50,7 +50,16 @@ type
     ConflictTitle
     ConflictDescription
     ConflictChoices
+    ConflictOutcome
+    ConflictRecount
     ConflictResolution
+
+  PlayerRoundResult* = object
+    playerIndex*: int
+    powerBefore*: int
+    choiceEffect*: int
+    choiceResult*: int  # -1, 0, +1 from LLM
+    outcomeEffect*: int # (abs(choiceEffect) + 1) * choiceResult
 
   SceneStep* = enum
     SceneGazing
@@ -84,4 +93,12 @@ type
     sceneTimer*: int
     sceneTurnOrder*: seq[int]
     sceneTurnIndex*: int
+    outcome*: string
+    roundResults*: seq[PlayerRoundResult]
+    recountPlayer*: int
+    recountLine*: int
     resolution*: string
+
+proc chatLogStrings*(chatLog: seq[ChatEntry]): seq[string] =
+  for entry in chatLog:
+    result.add(entry.name & ": " & entry.text)

@@ -55,5 +55,14 @@ proc logConflictEscalation*(round: int, description: string) =
 proc logConflictAction*(player: Player, actionText: string) =
   echo "  ", player.name, ": ", actionText
 
+proc logConflictOutcome*(round: int, outcome: string,
+    results: seq[PlayerRoundResult], players: seq[Player]) =
+  echo "  [outcome ", round + 1, "] ", outcome
+  for r in results:
+    let total = r.powerBefore + r.choiceEffect + r.outcomeEffect
+    echo "    ", players[r.playerIndex].name, ": ", r.powerBefore, " power, ",
+      (if r.choiceEffect >= 0: "+" else: ""), r.choiceEffect, " choice, ",
+      (if r.outcomeEffect >= 0: "+" else: ""), r.outcomeEffect, " outcome = ", total
+
 proc logConflictResolution*(resolution: string) =
   echo "  Resolution: ", resolution
