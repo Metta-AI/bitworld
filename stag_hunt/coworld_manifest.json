@@ -32,10 +32,10 @@
           "default": 5743127
         },
         "maxTicks": {
-          "description": "Maximum simulation ticks before starting a fresh game, where 0 means no tick limit.",
+          "description": "Maximum simulation ticks per round (24 ticks/sec), where 0 means no tick limit.",
           "type": "integer",
           "minimum": 0,
-          "default": 18000
+          "default": 7200
         },
         "maxGames": {
           "description": "Maximum fresh games before shutdown, where 0 means no game limit.",
@@ -62,11 +62,41 @@
           }
         },
         "scores": {
-          "description": "One hunting score per player slot.",
+          "description": "Cumulative hunting score per player slot across all rounds.",
           "type": "array",
           "items": {
             "type": "integer",
             "minimum": 0
+          }
+        },
+        "stats": {
+          "description": "Extended per-player statistics.",
+          "type": "object",
+          "properties": {
+            "catches": {
+              "description": "Per-player array of [rabbit, boar, stag, moose, elephant] capture counts.",
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": { "type": "integer" }
+              }
+            },
+            "co_captures": {
+              "description": "NxN matrix of shared kills between player slots.",
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": { "type": "integer" }
+              }
+            },
+            "rounds": {
+              "description": "Per-round score arrays.",
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": { "type": "integer" }
+              }
+            }
           }
         }
       }
@@ -114,7 +144,7 @@
       "name": "Smoke",
       "game_config": {
         "seed": 5743127,
-        "maxTicks": 1800,
+        "maxTicks": 7200,
         "maxGames": 1
       },
       "description": "Short deterministic Stag Hunt configuration used for manifest checks."

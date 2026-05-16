@@ -3,7 +3,7 @@ import pixie
 import supersnappy
 import bitworld/clients
 import protocol, server
-import std/[locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
+import std/[json, locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
 
 const
   # Stag Hunt picks its own world tile size rather than inherit the
@@ -66,6 +66,7 @@ const
   GlobalWebSocketPath = "/global"
   HealthzPath = "/healthz"
   UnassignedPlayerIndex = 0x7fffffff
+  MaxPlayerSlots = 64
 
   # Sprite v1 layer/sprite/object layout
   MapLayerId = 0
@@ -131,8 +132,21 @@ type
     TileTree
     TileRock
 
+  GameConfig = object
+    tokens: seq[string]
+    seed: int
+    maxTicks: int
+    maxGames: int
+    closedRoster: bool
+
+  PlayerStats = object
+    catches: array[PreyKind, int]
+    coCatches: seq[int]
+
   Player = object
     id: int
+    name: string
+    slot: int
     tileX: int
     tileY: int
     facing: Facing
@@ -176,6 +190,7 @@ type
     nextPreyId: int
     tickCount: int
     respawnCooldown: int
+    stats: seq[PlayerStats]
     treeSprite: RgbaSprite
     rockSprite: RgbaSprite
     backgroundSprite: RgbaSprite
@@ -190,11 +205,19 @@ type
     overlayBgSprite: RgbaSprite
     dividerSprite: RgbaSprite
 
+  RoundPhase = enum
+    RoundPlaying
+    RoundEnding
+
   WebSocketAppState = object
     lock: Lock
+    config: GameConfig
     inputMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
+    playerNames: Table[WebSocket, string]
+    playerSlots: Table[WebSocket, int]
+    playerTokens: Table[WebSocket, string]
     playerStates: Table[WebSocket, ViewerState]
     globalViewers: HashSet[WebSocket]
     globalStates: Table[WebSocket, ViewerState]
@@ -205,7 +228,55 @@ type
     address: string
     port: int
 
+const
+  DefaultSeed = 0x57A617
+  RoundEndDisplayTicks = 240  # 10 seconds at 24fps
+
 var appState: WebSocketAppState
+
+proc defaultGameConfig(): GameConfig =
+  GameConfig(
+    tokens: @[],
+    seed: DefaultSeed,
+    maxTicks: 0,
+    maxGames: 0,
+    closedRoster: false
+  )
+
+proc cogamePath(value, source: string): string =
+  if value.len == 0:
+    return ""
+  const FilePrefix = "file://"
+  if value.startsWith(FilePrefix):
+    result = value[FilePrefix.len .. ^1]
+    if result.len == 0:
+      echo "ERROR: empty file URI from " & source
+      quit(1)
+    return
+  if "://" in value:
+    echo "ERROR: unsupported URI from " & source & ": " & value
+    quit(1)
+  result = value
+
+proc parseGameConfig(jsonStr: string): GameConfig =
+  result = defaultGameConfig()
+  if jsonStr.len == 0:
+    return
+  let node = parseJson(jsonStr)
+  if node.hasKey("seed"):
+    result.seed = node["seed"].getInt(DefaultSeed)
+  if node.hasKey("maxTicks"):
+    result.maxTicks = node["maxTicks"].getInt(0)
+  if node.hasKey("maxGames"):
+    result.maxGames = node["maxGames"].getInt(0)
+  if node.hasKey("tokens"):
+    let items = node["tokens"]
+    for item in items:
+      result.tokens.add(item.getStr(""))
+    for t in result.tokens:
+      if t.len > 0:
+        result.closedRoster = true
+        break
 
 proc repoDir(): string = getCurrentDir() / ".."
 proc clientDataDir(): string = repoDir() / "clients" / "data"
@@ -660,15 +731,18 @@ proc findOpenTileNear(
       return (tx, ty, true)
   (0, 0, false)
 
-proc addPlayer(sim: var SimServer): int =
+proc addPlayer(sim: var SimServer, name = "", slot = -1): int =
   let
     cx = WorldWidthTiles div 2
     cy = WorldHeightTiles div 2
     spawn = sim.findOpenTileNear(cx, cy, 4)
     (tx, ty) = if spawn.ok: (spawn.tx, spawn.ty) else: (cx, cy)
+    assignedSlot = if slot >= 0: slot else: sim.players.len
 
   sim.players.add Player(
     id: sim.nextPlayerId,
+    name: name,
+    slot: assignedSlot,
     tileX: tx,
     tileY: ty,
     facing: FaceDown,
@@ -766,15 +840,12 @@ proc maintainPrey(sim: var SimServer) =
 
 proc buildSpriteCache(sim: var SimServer)
 
-proc initSim(): SimServer =
-  result.rng = initRand(0x57A617)
+proc initSim(seed: int = DefaultSeed): SimServer =
+  result.rng = initRand(seed)
   loadPalette(palettePath())
   result.generateWorld()
   result.respawnCooldown = RespawnIntervalTicks
   result.buildSpriteCache()
-
-  # No initial spawn; maintainPrey populates once players connect so we
-  # never spawn prey no one can catch.
 
 # ---------------------------------------------------------------------------
 # Player input / movement
@@ -961,26 +1032,47 @@ proc rewardsFor(kind: PreyKind): tuple[energy, score: int] =
   of Moose: (MooseEnergyReward, MooseScoreReward)
   of Elephant: (ElephantEnergyReward, ElephantScoreReward)
 
+proc ensureStats(sim: var SimServer, slotNeeded: int) =
+  while sim.stats.len <= slotNeeded:
+    var s = PlayerStats()
+    s.coCatches = newSeq[int](MaxPlayerSlots)
+    sim.stats.add(s)
+
 proc applyCaptures(sim: var SimServer) =
   var removed: seq[int] = @[]
   for i in 0 ..< sim.prey.len:
     let sides = sim.sidesAround(sim.prey[i])
     if isCaptured(sides, sim.prey[i].kind):
       let reward = rewardsFor(sim.prey[i].kind)
-      var participants: seq[int] = @[]
+      var participantIndices: seq[int] = @[]
+      var participantIds: seq[int] = @[]
       for idx in [sides.n, sides.s, sides.e, sides.w]:
         if idx >= 0 and idx < sim.players.len:
           sim.players[idx].energy = min(MaxEnergy, sim.players[idx].energy + reward.energy)
           sim.players[idx].score += reward.score
           sim.players[idx].killGlow = KillGlowTicks
-          participants.add(sim.players[idx].id)
+          participantIndices.add(idx)
+          participantIds.add(sim.players[idx].id)
+      var maxSlot = 0
+      for idx in participantIndices:
+        maxSlot = max(maxSlot, sim.players[idx].slot)
+      sim.ensureStats(maxSlot)
+      for idx in participantIndices:
+        let slot = sim.players[idx].slot
+        if slot >= 0 and slot < sim.stats.len:
+          inc sim.stats[slot].catches[sim.prey[i].kind]
+          for other in participantIndices:
+            if other != idx:
+              let otherSlot = sim.players[other].slot
+              if otherSlot >= 0 and otherSlot < sim.stats[slot].coCatches.len:
+                inc sim.stats[slot].coCatches[otherSlot]
       sim.corpses.add Corpse(
         tileX: sim.prey[i].tileX,
         tileY: sim.prey[i].tileY,
         ticksRemaining: CorpseLifetimeTicks
       )
       echo "tick=", sim.tickCount, " caught ", sim.prey[i].kind,
-        " +", reward.score, " for players=", participants,
+        " +", reward.score, " for players=", participantIds,
         " scores=", sim.players.mapIt(it.score)
       removed.add(i)
   for i in countdown(removed.high, 0):
@@ -1612,11 +1704,15 @@ proc step(sim: var SimServer, inputs: openArray[InputState]) =
 # WebSocket plumbing (modelled on big_adventure)
 # ---------------------------------------------------------------------------
 
-proc initAppState() =
+proc initAppState(config: GameConfig) =
   initLock(appState.lock)
+  appState.config = config
   appState.inputMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.playerNames = initTable[WebSocket, string]()
+  appState.playerSlots = initTable[WebSocket, int]()
+  appState.playerTokens = initTable[WebSocket, string]()
   appState.playerStates = initTable[WebSocket, ViewerState]()
   appState.globalViewers = initHashSet[WebSocket]()
   appState.globalStates = initTable[WebSocket, ViewerState]()
@@ -1639,6 +1735,9 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   appState.playerStates.del(websocket)
+  appState.playerNames.del(websocket)
+  appState.playerSlots.del(websocket)
+  appState.playerTokens.del(websocket)
 
   if removedIndex >= 0 and removedIndex != UnassignedPlayerIndex and
       removedIndex < sim.players.len:
@@ -1686,6 +1785,32 @@ proc serveClientFile(request: Request, route: string): bool =
     request.respond(500, headers, "Could not read static client: " & e.msg)
   true
 
+proc parsePlayerSlot(request: Request): int =
+  let text = request.queryParams.getOrDefault("slot", "").strip()
+  if text.len == 0:
+    return -1
+  try:
+    result = parseInt(text)
+  except ValueError:
+    return -1
+  if result < 0 or result >= MaxPlayerSlots:
+    return -1
+
+proc parsePlayerToken(request: Request): string =
+  request.queryParams.getOrDefault("token", "").strip()
+
+proc parsePlayerName(request: Request): string =
+  request.queryParams.getOrDefault("name", "").strip()
+
+proc tokenValid(config: GameConfig, slot: int, token: string): bool =
+  if not config.closedRoster:
+    return true
+  if slot < 0 or slot >= config.tokens.len:
+    return false
+  if config.tokens[slot].len == 0:
+    return true
+  config.tokens[slot] == token
+
 proc httpHandler(request: Request) =
   if request.serveHealthz():
     discard
@@ -1696,6 +1821,19 @@ proc httpHandler(request: Request) =
       not request.isWebSocketUpgrade():
     discard request.serveClientFile(GlobalClientRoute)
   elif request.path == WebSocketPath and request.httpMethod == "GET":
+    let
+      slot = request.parsePlayerSlot()
+      token = request.parsePlayerToken()
+      name = request.parsePlayerName()
+    var config: GameConfig
+    {.gcsafe.}:
+      withLock appState.lock:
+        config = appState.config
+    if not config.tokenValid(slot, token):
+      var headers: HttpHeaders
+      headers["Content-Type"] = "text/plain"
+      request.respond(403, headers, "Invalid token for slot " & $slot)
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -1703,6 +1841,11 @@ proc httpHandler(request: Request) =
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
         appState.playerStates[websocket] = ViewerState()
+        appState.playerNames[websocket] = name
+        appState.playerSlots[websocket] = slot
+        appState.playerTokens[websocket] = token
+    echo "player connected: ", (if name.len > 0: name else: "anonymous"),
+      " slot=", slot
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET":
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
@@ -1752,8 +1895,86 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
-proc runServerLoop(host = DefaultHost, port = DefaultPort) =
-  initAppState()
+proc resetRound(sim: var SimServer, config: GameConfig, gamesPlayed: int) =
+  sim.prey = @[]
+  sim.corpses = @[]
+  sim.tickCount = 0
+  sim.respawnCooldown = RespawnIntervalTicks
+  sim.rng = initRand(config.seed + gamesPlayed)
+  let cx = WorldWidthTiles div 2
+  let cy = WorldHeightTiles div 2
+  for i in 0 ..< sim.players.len:
+    let spawn = sim.findOpenTileNear(cx, cy, 4)
+    let (tx, ty) = if spawn.ok: (spawn.tx, spawn.ty) else: (cx, cy)
+    sim.players[i].tileX = tx
+    sim.players[i].tileY = ty
+    sim.players[i].facing = FaceDown
+    sim.players[i].energy = StartEnergy
+    sim.players[i].score = 0
+    sim.players[i].moveCooldown = 0
+    sim.players[i].killGlow = 0
+    sim.players[i].rechargeCounter = 0
+    sim.players[i].overlayActive = false
+
+proc playerResultsJson(sim: SimServer, roundScores: seq[seq[int]]): string =
+  var
+    names = newJArray()
+    scores = newJArray()
+    catchesArr = newJArray()
+    coCapturesArr = newJArray()
+    roundsArr = newJArray()
+
+  let slotCount = sim.players.len
+  for i in 0 ..< slotCount:
+    let p = sim.players[i]
+    names.add(%*(if p.name.len > 0: p.name else: "player_" & $p.slot))
+    var total = 0
+    for round in roundScores:
+      if i < round.len:
+        total += round[i]
+    scores.add(%*total)
+
+    let slot = p.slot
+    if slot >= 0 and slot < sim.stats.len:
+      var catches = newJArray()
+      for kind in PreyKind:
+        catches.add(%*sim.stats[slot].catches[kind])
+      catchesArr.add(catches)
+
+      var coCatches = newJArray()
+      for j in 0 ..< slotCount:
+        let otherSlot = sim.players[j].slot
+        coCatches.add(%*sim.stats[slot].coCatches[otherSlot])
+      coCapturesArr.add(coCatches)
+    else:
+      catchesArr.add(newJArray())
+      coCapturesArr.add(newJArray())
+
+  for round in roundScores:
+    var roundArr = newJArray()
+    for i in 0 ..< slotCount:
+      roundArr.add(%*(if i < round.len: round[i] else: 0))
+    roundsArr.add(roundArr)
+
+  let stats = %*{
+    "catches": catchesArr,
+    "co_captures": coCapturesArr,
+    "rounds": roundsArr
+  }
+  let results = %*{
+    "names": names,
+    "scores": scores,
+    "stats": stats
+  }
+  $results
+
+proc runServerLoop(
+  host = DefaultHost,
+  port = DefaultPort,
+  config = defaultGameConfig(),
+  saveScoresPath = ""
+) =
+  initAppState(config)
 
   let httpServer = newServer(
     httpHandler,
@@ -1772,8 +1993,12 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
   httpServer.waitUntilReady()
 
   var
-    sim = initSim()
+    sim = initSim(config.seed)
     lastTick = getMonoTime()
+    roundPhase = RoundPlaying
+    roundEndTick = 0
+    gamesPlayed = 0
+    roundScores: seq[seq[int]] = @[]
 
   while true:
     var
@@ -1792,7 +2017,10 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
 
         for websocket in appState.playerIndices.keys:
           if appState.playerIndices[websocket] == UnassignedPlayerIndex:
-            appState.playerIndices[websocket] = sim.addPlayer()
+            let
+              name = appState.playerNames.getOrDefault(websocket, "")
+              slot = appState.playerSlots.getOrDefault(websocket, -1)
+            appState.playerIndices[websocket] = sim.addPlayer(name, slot)
 
         inputs = newSeq[InputState](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
@@ -1811,7 +2039,35 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort) =
           globalSockets.add(websocket)
           globalStates.add(appState.globalStates.getOrDefault(websocket, ViewerState()))
 
-    sim.step(inputs)
+    case roundPhase
+    of RoundPlaying:
+      sim.step(inputs)
+      if config.maxTicks > 0 and sim.tickCount >= config.maxTicks:
+        roundPhase = RoundEnding
+        roundEndTick = 0
+        var scores: seq[int] = @[]
+        for p in sim.players:
+          scores.add(p.score)
+        roundScores.add(scores)
+        inc gamesPlayed
+        for i in 0 ..< sim.players.len:
+          sim.players[i].overlayActive = true
+        echo "round ", gamesPlayed, " ended, scores=", scores
+    of RoundEnding:
+      inc roundEndTick
+      if roundEndTick >= RoundEndDisplayTicks:
+        if config.maxGames > 0 and gamesPlayed >= config.maxGames:
+          echo "tournament complete after ", gamesPlayed, " rounds"
+          if saveScoresPath.len > 0:
+            writeFile(saveScoresPath, sim.playerResultsJson(roundScores) & "\n")
+            echo "results written to: ", saveScoresPath
+          httpServer.close()
+          joinThread(serverThread)
+          break
+        else:
+          sim.resetRound(config, gamesPlayed)
+          roundPhase = RoundPlaying
+          echo "starting round ", gamesPlayed + 1
 
     for i in 0 ..< playerSockets.len:
       var nextState: ViewerState
@@ -1847,12 +2103,29 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
+    configPath = cogamePath(getEnv("COGAME_CONFIG_URI"), "COGAME_CONFIG_URI")
+    saveScoresPath = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       case key
       of "address": address = val
       of "port": port = parseInt(val)
+      of "config-file": configPath = val
+      of "save-scores": saveScoresPath = val
       else: discard
     else: discard
-  runServerLoop(address, port)
+  var config = defaultGameConfig()
+  if configPath.len > 0:
+    echo "loading config from: ", configPath
+    config = parseGameConfig(readFile(configPath))
+  if saveScoresPath.len > 0:
+    echo "results will be written to: ", saveScoresPath
+  echo "starting stag_hunt on ", address, ":", port
+  if config.maxTicks > 0:
+    echo "  maxTicks=", config.maxTicks, " (", config.maxTicks div int(TargetFps), "s per round)"
+  if config.maxGames > 0:
+    echo "  maxGames=", config.maxGames
+  if config.closedRoster:
+    echo "  closedRoster with ", config.tokens.len, " slots"
+  runServerLoop(address, port, config, saveScoresPath)
