@@ -182,6 +182,14 @@ Upload the certified Coworld with:
 coworld upload-coworld among_them/coworld_manifest.json
 ```
 
+For the full production release flow from BitWorld `master`, including GHCR
+image pushes, Coworld certification/upload, and hosted replay viewer upload,
+run:
+
+```sh
+among_them/upload.sh 0.1.24
+```
+
 ### Browser Clients
 
 The game container serves these routes:
