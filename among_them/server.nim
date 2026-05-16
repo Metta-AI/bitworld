@@ -545,7 +545,9 @@ proc websocketHandler(
     if closeKickedSocket:
       websocket.disconnectWebSocket()
   of MessageEvent:
-    if message.kind == BinaryMessage:
+    if message.kind == Ping:
+      websocket.send(message.data, Pong)
+    elif message.kind == BinaryMessage:
       {.gcsafe.}:
         withLock appState.lock:
           if websocket in appState.globalViewers:
