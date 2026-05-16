@@ -493,16 +493,17 @@ proc addQueryParam(url, key, value: string): string =
   result.add('=')
   result.add(value.queryEscape())
 
-proc connectUrl(
-  address, url, name: string,
-  port: int
-): string =
+proc connectUrl(address, url, name, token: string, port, slot: int): string =
   ## Builds the player websocket URL for Stag Hunt.
   if url.len > 0:
     result = url.withPath(WebSocketPath)
   else:
     result = "ws://" & address & ":" & $port & WebSocketPath
   result = result.addQueryParam("name", name)
+  if slot >= 0:
+    result = result.addQueryParam("slot", $slot)
+  if token.len > 0:
+    result = result.addQueryParam("token", token)
 
 proc initBot(): Bot =
   ## Creates a fresh rabbiteer bot state.
@@ -553,10 +554,12 @@ proc runBot(
   address = DefaultHost,
   port = DefaultPort,
   url = "",
-  name = "rabbiteer"
+  name = "rabbiteer",
+  token = "",
+  slot = -1
 ) =
   ## Connects rabbiteer to Stag Hunt and chases visible rabbits forever.
-  let endpoint = connectUrl(address, url, name, port)
+  let endpoint = connectUrl(address, url, name, token, port, slot)
   while true:
     try:
       echo "rabbiteer connecting to ", endpoint
@@ -582,19 +585,19 @@ when isMainModule:
     port = DefaultPort
     url = ""
     name = "rabbiteer"
+    token = ""
+    slot = -1
 
   for kind, key, value in getopt():
     case kind
     of cmdLongOption:
       case key
-      of "address":
-        address = value
-      of "port":
-        port = parseInt(value)
-      of "url":
-        url = value
-      of "name":
-        name = value
+      of "address": address = value
+      of "port": port = parseInt(value)
+      of "url": url = value
+      of "name": name = value
+      of "token": token = value
+      of "slot": slot = parseInt(value)
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdArgument, cmdShortOption:
@@ -602,4 +605,4 @@ when isMainModule:
     of cmdEnd:
       discard
 
-  runBot(address, port, url, name)
+  runBot(address, port, url, name, token, slot)
