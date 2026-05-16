@@ -80,7 +80,8 @@ const
   CorpseSpriteId = 4         # one shared "dead prey" blob
   KillGlowSpriteId = 5       # one shared yellow halo
   PreySpriteBase = 10        # + PreyKind.ord (0..4)
-  PlayerSpriteBase = 100     # + colorSlot * 4 + facing.ord  (0..31)
+  NumPlayerColors = 20
+  PlayerSpriteBase = 100     # + colorSlot * 4 + facing.ord  (0..79)
 
   TileObjectBase = 1000      # + tileIndex
   PlayerObjectBase = 5000    # + array index
@@ -181,7 +182,7 @@ type
     corpseSprite: RgbaSprite
     killGlowSprite: RgbaSprite
     preySprites: array[5, RgbaSprite]      # by PreyKind.ord
-    playerSprites: array[14 * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
+    playerSprites: array[NumPlayerColors * 4, RgbaSprite] # by colorSlot * 4 + facing.ord
     indicatorSprites: array[3, RgbaSprite]  # 1-dot, 2-dot, 3-dot
     digitSprites: array[10, RgbaSprite]
     scoreIconSprite: RgbaSprite
@@ -672,7 +673,7 @@ proc addPlayer(sim: var SimServer): int =
     tileY: ty,
     facing: FaceDown,
     energy: StartEnergy,
-    colorIndex: sim.nextPlayerId mod 14
+    colorIndex: sim.nextPlayerId mod NumPlayerColors
   )
   inc sim.nextPlayerId
   sim.players.high
@@ -998,39 +999,34 @@ proc ageCorpses(sim: var SimServer) =
 # Sprite v1 protocol bytes
 # ---------------------------------------------------------------------------
 
-proc playerBodyColor(colorIndex: int): uint8 =
-  case colorIndex mod 14
-  of 0: 3'u8    # red
-  of 1: 14'u8   # blue
-  of 2: 7'u8    # orange
-  of 3: 4'u8    # pink
-  of 4: 8'u8    # yellow
-  of 5: 11'u8   # green
-  of 6: 15'u8   # lt-blue
-  of 7: 2'u8    # white
-  of 8: 9'u8    # dk-teal
-  of 9: 6'u8    # tan
-  of 10: 12'u8  # navy
-  of 11: 10'u8  # dk-green
-  of 12: 13'u8  # dk-blue
-  else: 1'u8    # gray
+const PlayerColors: array[NumPlayerColors, tuple[body, accent: ColorRGBA]] = [
+  (ColorRGBA(r: 255, g: 0, b: 77, a: 255), ColorRGBA(r: 128, g: 0, b: 38, a: 255)),       # red / dark red
+  (ColorRGBA(r: 41, g: 173, b: 255, a: 255), ColorRGBA(r: 20, g: 86, b: 128, a: 255)),     # sky blue / navy
+  (ColorRGBA(r: 255, g: 163, b: 0, a: 255), ColorRGBA(r: 128, g: 60, b: 0, a: 255)),       # orange / brown
+  (ColorRGBA(r: 255, g: 119, b: 168, a: 255), ColorRGBA(r: 180, g: 40, b: 80, a: 255)),    # pink / dark pink
+  (ColorRGBA(r: 255, g: 236, b: 39, a: 255), ColorRGBA(r: 180, g: 140, b: 0, a: 255)),     # yellow / gold
+  (ColorRGBA(r: 0, g: 228, b: 54, a: 255), ColorRGBA(r: 0, g: 100, b: 30, a: 255)),        # green / dark green
+  (ColorRGBA(r: 131, g: 118, b: 200, a: 255), ColorRGBA(r: 60, g: 50, b: 120, a: 255)),    # lavender / purple
+  (ColorRGBA(r: 255, g: 241, b: 232, a: 255), ColorRGBA(r: 160, g: 160, b: 160, a: 255)),  # white / gray
+  (ColorRGBA(r: 0, g: 135, b: 81, a: 255), ColorRGBA(r: 0, g: 60, b: 40, a: 255)),         # teal / dark teal
+  (ColorRGBA(r: 171, g: 82, b: 54, a: 255), ColorRGBA(r: 90, g: 40, b: 25, a: 255)),       # tan / dark brown
+  (ColorRGBA(r: 29, g: 43, b: 83, a: 255), ColorRGBA(r: 10, g: 15, b: 40, a: 255)),        # navy / black-blue
+  (ColorRGBA(r: 126, g: 37, b: 83, a: 255), ColorRGBA(r: 60, g: 15, b: 40, a: 255)),       # dark purple / deeper purple
+  (ColorRGBA(r: 0, g: 200, b: 200, a: 255), ColorRGBA(r: 0, g: 100, b: 100, a: 255)),      # cyan / dark cyan
+  (ColorRGBA(r: 194, g: 195, b: 199, a: 255), ColorRGBA(r: 80, g: 80, b: 85, a: 255)),     # silver / charcoal
+  (ColorRGBA(r: 255, g: 100, b: 100, a: 255), ColorRGBA(r: 200, g: 50, b: 0, a: 255)),     # coral / rust
+  (ColorRGBA(r: 180, g: 230, b: 80, a: 255), ColorRGBA(r: 80, g: 120, b: 30, a: 255)),     # lime / olive
+  (ColorRGBA(r: 220, g: 150, b: 255, a: 255), ColorRGBA(r: 120, g: 60, b: 160, a: 255)),   # violet / deep violet
+  (ColorRGBA(r: 255, g: 200, b: 120, a: 255), ColorRGBA(r: 180, g: 100, b: 40, a: 255)),   # peach / sienna
+  (ColorRGBA(r: 100, g: 220, b: 170, a: 255), ColorRGBA(r: 40, g: 110, b: 80, a: 255)),    # mint / forest
+  (ColorRGBA(r: 255, g: 80, b: 180, a: 255), ColorRGBA(r: 150, g: 30, b: 100, a: 255)),    # magenta / dark magenta
+]
 
-proc playerAccentColor(colorIndex: int): uint8 =
-  case colorIndex mod 14
-  of 0: 5'u8    # dk-brown
-  of 1: 12'u8   # navy
-  of 2: 5'u8    # dk-brown
-  of 3: 3'u8    # red
-  of 4: 7'u8    # orange
-  of 5: 9'u8    # dk-teal
-  of 6: 14'u8   # blue
-  of 7: 1'u8    # gray
-  of 8: 0'u8    # black
-  of 9: 5'u8    # dk-brown
-  of 10: 0'u8   # black
-  of 11: 0'u8   # black
-  of 12: 12'u8  # navy
-  else: 0'u8    # black
+proc playerBodyRgba(colorIndex: int): ColorRGBA =
+  PlayerColors[colorIndex mod NumPlayerColors].body
+
+proc playerAccentRgba(colorIndex: int): ColorRGBA =
+  PlayerColors[colorIndex mod NumPlayerColors].accent
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   packet.add(value)
@@ -1107,7 +1103,7 @@ proc addIdentity(packet: var seq[uint8], objectId: int) =
 # ---------------------------------------------------------------------------
 
 proc playerSpriteId(colorSlot: int, facing: Facing): int =
-  PlayerSpriteBase + (colorSlot mod 14) * 4 + facing.ord
+  PlayerSpriteBase + (colorSlot mod NumPlayerColors) * 4 + facing.ord
 
 proc preySpriteId(kind: PreyKind): int =
   PreySpriteBase + kind.ord
@@ -1171,16 +1167,18 @@ proc buildSpriteCache(sim: var SimServer) =
       else: patternToRgbaSprite(preyPattern(kind))
 
   let hunterFile = tryLoadPngSprite(dir / "hunter.png")
-  for colorSlot in 0 ..< 14:
-    let body = playerBodyColor(colorSlot)
-    let accent = playerAccentColor(colorSlot)
+  for colorSlot in 0 ..< NumPlayerColors:
+    let body = playerBodyRgba(colorSlot)
+    let accent = playerAccentRgba(colorSlot)
     for facing in Facing:
       if hunterFile.width > 0:
         sim.playerSprites[colorSlot * 4 + facing.ord] =
-          recolorPng(hunterFile, paletteRgba(body), paletteRgba(accent))
+          recolorPng(hunterFile, body, accent)
       else:
+        # Fallback pattern uses palette indices; map first 16 slots to old palette colors
+        let bodyPal = if colorSlot < 16: uint8(colorSlot) else: 3'u8
         sim.playerSprites[colorSlot * 4 + facing.ord] =
-          patternToRgbaSprite(PlayerPattern, body, accent, facing)
+          patternToRgbaSprite(PlayerPattern, bodyPal, bodyPal, facing)
 
   sim.indicatorSprites[0] = patternToRgbaSprite(Indicator1Pattern)
   sim.indicatorSprites[1] = patternToRgbaSprite(Indicator2Pattern)
@@ -1218,7 +1216,7 @@ proc addSpriteProtocolInit(
   packet.addSprite(KillGlowSpriteId, sim.killGlowSprite, "kill glow")
   for kind in PreyKind:
     packet.addSprite(preySpriteId(kind), sim.preySprites[kind.ord], $kind)
-  for colorSlot in 0 ..< 14:
+  for colorSlot in 0 ..< NumPlayerColors:
     for facing in Facing:
       packet.addSprite(
         playerSpriteId(colorSlot, facing),
