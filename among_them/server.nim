@@ -1121,17 +1121,7 @@ proc runServerLoop*(
           if not replayLoaded and websocket in appState.playerIndices:
             let playerIndex = appState.playerIndices[websocket]
             if playerIndex >= 0 and playerIndex < sim.players.len:
-              if sim.shouldKeepDisconnectedPlayer():
-                if playerIndex < replayWriter.lastMasks.len and
-                    replayWriter.lastMasks[playerIndex] != 0:
-                  replayWriter.writeInput(ReplayInput(
-                    time: tickTime(sim.tickCount),
-                    player: uint8(playerIndex),
-                    keys: 0
-                  ))
-                  replayWriter.lastMasks[playerIndex] = 0
-                discard removeWebSocketState(websocket)
-                continue
+              sim.recordGameAbandon(playerIndex)
               replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
               if playerIndex < replayWriter.lastMasks.len:
                 replayWriter.lastMasks.delete(playerIndex)
@@ -1155,6 +1145,7 @@ proc runServerLoop*(
             if websocket in appState.playerIndices:
               let playerIndex = appState.playerIndices[websocket]
               if playerIndex >= 0 and playerIndex < sim.players.len:
+                sim.recordGameAbandon(playerIndex)
                 replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
                   replayWriter.lastMasks.delete(playerIndex)
@@ -1162,7 +1153,10 @@ proc runServerLoop*(
                   prevInputs.delete(playerIndex)
             sim.removePlayer(websocket)
             socketsToClose.add(websocket)
-        if not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
+        if not replayLoaded and sim.shouldAbortFiniteMatch():
+          sim.finishGame(Crewmate, timeLimitReached = true)
+          quitAfterFrame = true
+        elif not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
           sim.resetToLobby()
           prevInputs = @[]
           replayWriter.lastMasks = @[]

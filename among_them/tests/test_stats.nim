@@ -67,6 +67,10 @@ proc configuredSlots(count: int): seq[PlayerSlotConfig] =
   for i in 0 ..< count:
     result.add PlayerSlotConfig(name: "player" & $(i + 1))
 
+proc roleSlot(name: string, role: PlayerRole): PlayerSlotConfig =
+  ## Returns one named slot with a fixed role.
+  PlayerSlotConfig(name: name, role: role, hasRole: true)
+
 suite "stats":
   test "crew win increments crewmate stats":
     var config = defaultGameConfig()
@@ -112,38 +116,79 @@ suite "stats":
         check account.winsCrewmate == 1
         check account.winsImposter == 0
 
-  test "finite active match disconnects keep players in the sim":
+  test "active disconnect removes task burden and forfeits win":
     var config = defaultGameConfig()
-    config.minPlayers = 3
+    config.minPlayers = 4
     config.imposterCount = 1
     config.autoImposterCount = false
     config.roleRevealTicks = 0
     config.startWaitTicks = 0
     config.maxGames = 1
+    config.tasksPerPlayer = 0
+    config.slots = @[
+      roleSlot("imp", Imposter),
+      roleSlot("crew1", Crewmate),
+      roleSlot("crew2", Crewmate),
+      roleSlot("crew3", Crewmate)
+    ]
 
     var sim = initAmongThemForTest(config)
-    discard sim.addPlayer("p1")
-    discard sim.addPlayer("p2")
-    discard sim.addPlayer("p3")
+    discard sim.addPlayer("imp", 0)
+    let abandonedCrew = sim.addPlayer("crew1", 1)
+    discard sim.addPlayer("crew2", 2)
+    discard sim.addPlayer("crew3", 3)
 
-    var inputs = newSeq[InputState](sim.players.len)
-    sim.step(inputs, inputs)
-    check sim.phase == Playing
-    check sim.shouldKeepDisconnectedPlayer()
+    sim.startGame()
+    check sim.players[abandonedCrew].role == Crewmate
 
-    sim.phase = Lobby
-    sim.startWaitTimer = 1
-    check sim.shouldKeepDisconnectedPlayer()
+    sim.players[abandonedCrew].assignedTasks = @[0]
+    check sim.totalTasksRemaining() == 1
 
-    sim.startWaitTimer = 0
-    check not sim.shouldKeepDisconnectedPlayer()
+    sim.recordGameAbandon(abandonedCrew)
+    sim.removePlayerAt(abandonedCrew)
+    check sim.totalTasksRemaining() == 0
 
-    sim.phase = GameOver
-    check not sim.shouldKeepDisconnectedPlayer()
+    sim.checkWinCondition()
+    check sim.phase == GameOver
+    check sim.winner == Crewmate
 
-    sim.phase = Playing
-    sim.config.maxGames = 0
-    check not sim.shouldKeepDisconnectedPlayer()
+    let results = parseJson(sim.playerResultsJson())
+    check not results["win"][1].getBool()
+    check results["win"][2].getBool()
+    check results["win"][3].getBool()
+
+  test "finite roster loss aborts instead of waiting forever":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 3
+    config.maxGames = 1
+
+    var lobbySim = initAmongThemForTest(config)
+    discard lobbySim.addPlayer("p1")
+    discard lobbySim.addPlayer("p2")
+    discard lobbySim.addPlayer("p3")
+    var inputs = newSeq[InputState](lobbySim.players.len)
+    lobbySim.step(inputs, inputs)
+    check lobbySim.phase == Lobby
+    check lobbySim.startWaitTimer > 0
+    lobbySim.removePlayerAt(2)
+    check lobbySim.shouldAbortFiniteMatch()
+
+    var activeSim = initAmongThemForTest(config)
+    activeSim.config.startWaitTicks = 0
+    discard activeSim.addPlayer("p1")
+    discard activeSim.addPlayer("p2")
+    discard activeSim.addPlayer("p3")
+    activeSim.startGame()
+    while activeSim.players.len > 0:
+      activeSim.removePlayerAt(activeSim.players.high)
+    check activeSim.shouldAbortFiniteMatch()
+
+    activeSim.config.maxGames = 0
+    check not activeSim.shouldAbortFiniteMatch()
 
   test "crew win persists across reset":
     var config = defaultGameConfig()

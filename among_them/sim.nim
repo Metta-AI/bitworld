@@ -236,6 +236,7 @@ type
     role*: PlayerRole
     hasRole*: bool
     won*: bool
+    abandoned*: bool
     reward*: int
     winsImposter*: int
     winsCrewmate*: int
@@ -1851,6 +1852,7 @@ proc addPlayer*(
   sim.bindRewardAccountSlot(accountIndex, order)
   sim.rewardAccounts[accountIndex].hasRole = false
   sim.rewardAccounts[accountIndex].won = false
+  sim.rewardAccounts[accountIndex].abandoned = false
   sim.players.add Player(
     x: spawn.x,
     y: spawn.y,
@@ -1914,10 +1916,18 @@ proc recordGameRoleAssigned*(
   sim.rewardAccounts[index].role = sim.players[playerIndex].role
   sim.rewardAccounts[index].hasRole = true
   sim.rewardAccounts[index].won = false
+  sim.rewardAccounts[index].abandoned = false
   if sim.players[playerIndex].role == Imposter:
     inc sim.rewardAccounts[index].gamesImposter
   else:
     inc sim.rewardAccounts[index].gamesCrewmate
+
+proc recordGameAbandon*(sim: var SimServer, playerIndex: int) =
+  ## Marks a player as abandoned for the current game.
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  sim.rewardAccounts[index].abandoned = true
 
 proc recordGameWin*(sim: var SimServer, playerIndex: int) =
   ## Increments the lifetime per-role win counter for one player.
@@ -2026,10 +2036,9 @@ proc playerResultsJson*(sim: SimServer): string =
       playerRole = player.role
       hasRole = true
       playerWon = not sim.timeLimitReached and player.role == sim.winner
-    elif accountIndex < 0:
-      if slotConfig.hasRole:
-        playerRole = slotConfig.role
-        hasRole = true
+    if not hasRole and slotConfig.hasRole:
+      playerRole = slotConfig.role
+      hasRole = true
     names.add(%name)
     scores.add(%reward)
     win.add(%playerWon)
@@ -3232,6 +3241,8 @@ proc finishGame*(sim: var SimServer, winner: PlayerRole, timeLimitReached = fals
   for i in 0 ..< sim.rewardAccounts.len:
     if i < awardedAccounts.len and awardedAccounts[i]:
       continue
+    if sim.rewardAccounts[i].abandoned:
+      continue
     if not sim.rewardAccounts[i].hasRole or sim.rewardAccounts[i].role != winner:
       continue
     sim.rewardAccounts[i].reward += WinReward
@@ -3255,12 +3266,13 @@ proc checkMaxTicks(sim: var SimServer) =
   if sim.maxTicksReached():
     sim.finishGame(Crewmate, timeLimitReached = true)
 
-proc shouldKeepDisconnectedPlayer*(sim: SimServer): bool =
-  ## Returns true when a network disconnect should not shrink the live roster.
-  sim.config.maxGames > 0 and (
-    sim.phase in {RoleReveal, Playing, Voting, VoteResult} or
-    (sim.phase == Lobby and sim.startWaitTimer > 0)
-  )
+proc shouldAbortFiniteMatch*(sim: SimServer): bool =
+  ## Returns true when a finite match cannot continue after roster loss.
+  if sim.config.maxGames <= 0:
+    return false
+  if sim.phase == Lobby:
+    return sim.startWaitTimer > 0 and sim.players.len < sim.config.minPlayers
+  sim.phase in {RoleReveal, Playing, Voting, VoteResult} and sim.players.len == 0
 
 proc checkWinCondition*(sim: var SimServer) {.measure.} =
   var
@@ -4019,6 +4031,7 @@ proc resetToLobby*(sim: var SimServer) =
   for account in sim.rewardAccounts.mitems:
     account.hasRole = false
     account.won = false
+    account.abandoned = false
 
 proc stepLobby(sim: var SimServer) {.measure.} =
   ## Advances the lobby start countdown.
