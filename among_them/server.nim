@@ -143,6 +143,12 @@ proc shouldSendPlayerFrame(
 
 var appState: WebSocketAppState
 
+proc markSocketClosed(websocket: WebSocket): bool =
+  ## Queues a websocket for closed-socket cleanup and returns true once.
+  result = websocket notin appState.closedSockets
+  if result:
+    appState.closedSockets.add(websocket)
+
 proc initAppState() =
   initLock(appState.lock)
   appState.replayServerMode = false
@@ -166,8 +172,9 @@ proc initAppState() =
   appState.nextAnonymousPlayer = 1
   appState.config = defaultGameConfig()
 
-proc removePlayer(sim: var SimServer, websocket: WebSocket) =
-  ## Removes a websocket and keeps live player indices consistent.
+proc removeWebSocketState(websocket: WebSocket): int =
+  ## Removes websocket-owned state and returns its former player index.
+  result = -1
   for i in countdown(appState.spectators.high, 0):
     if appState.spectators[i] == websocket:
       appState.spectators.delete(i)
@@ -177,22 +184,19 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     appState.playerViewers.del(websocket)
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
-  if websocket notin appState.playerIndices:
-    appState.inputMasks.del(websocket)
-    appState.lastAppliedMasks.del(websocket)
-    appState.chatMessages.del(websocket)
-    appState.playerAddresses.del(websocket)
-    appState.playerSlots.del(websocket)
-    appState.playerTokens.del(websocket)
-    return
-  let removedIndex = appState.playerIndices[websocket]
-  appState.playerIndices.del(websocket)
+  if websocket in appState.playerIndices:
+    result = appState.playerIndices[websocket]
+    appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   appState.chatMessages.del(websocket)
   appState.playerAddresses.del(websocket)
   appState.playerSlots.del(websocket)
   appState.playerTokens.del(websocket)
+
+proc removePlayer(sim: var SimServer, websocket: WebSocket) =
+  ## Removes a websocket and keeps live player indices consistent.
+  let removedIndex = removeWebSocketState(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.removePlayerAt(removedIndex)
     for ws, value in appState.playerIndices.mpairs:
@@ -579,9 +583,8 @@ proc websocketHandler(
     var who = ""
     {.gcsafe.}:
       withLock appState.lock:
-        let alreadyClosed = websocket in appState.closedSockets
-        appState.closedSockets.add(websocket)
-        if not alreadyClosed and websocket in appState.playerAddresses:
+        let newlyClosed = markSocketClosed(websocket)
+        if newlyClosed and websocket in appState.playerAddresses:
           who = appState.playerAddresses[websocket]
     if who.len > 0:
       echo "player disconnected: ", who
@@ -773,6 +776,7 @@ proc runServerLoop*(
           if not replayLoaded and websocket in appState.playerIndices:
             let playerIndex = appState.playerIndices[websocket]
             if playerIndex >= 0 and playerIndex < sim.players.len:
+              sim.recordGameAbandon(playerIndex)
               replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
               if playerIndex < replayWriter.lastMasks.len:
                 replayWriter.lastMasks.delete(playerIndex)
@@ -796,6 +800,7 @@ proc runServerLoop*(
             if websocket in appState.playerIndices:
               let playerIndex = appState.playerIndices[websocket]
               if playerIndex >= 0 and playerIndex < sim.players.len:
+                sim.recordGameAbandon(playerIndex)
                 replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
                   replayWriter.lastMasks.delete(playerIndex)
@@ -803,7 +808,10 @@ proc runServerLoop*(
                   prevInputs.delete(playerIndex)
             sim.removePlayer(websocket)
             socketsToClose.add(websocket)
-        if not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
+        if not replayLoaded and sim.shouldAbortFiniteMatch():
+          sim.finishGame(Crewmate, timeLimitReached = true)
+          quitAfterFrame = true
+        elif not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
           sim.resetToLobby()
           prevInputs = @[]
           replayWriter.lastMasks = @[]
@@ -1078,7 +1086,7 @@ proc runServerLoop*(
       except:
         {.gcsafe.}:
           withLock appState.lock:
-            sim.removePlayer(sockets[i])
+            discard markSocketClosed(sockets[i])
 
     if spectatorList.len > 0:
       let specBlob = blobFromBytes(sim.buildSpectatorFrame())
@@ -1088,7 +1096,7 @@ proc runServerLoop*(
         except:
           {.gcsafe.}:
             withLock appState.lock:
-              sim.removePlayer(ws)
+              discard markSocketClosed(ws)
 
     for websocket in rewardViewers:
       try:
@@ -1096,7 +1104,7 @@ proc runServerLoop*(
       except:
         {.gcsafe.}:
           withLock appState.lock:
-            sim.removePlayer(websocket)
+            discard markSocketClosed(websocket)
 
     for i in 0 ..< globalViewers.len:
       var nextState: GlobalViewerState
@@ -1123,7 +1131,7 @@ proc runServerLoop*(
       except:
         {.gcsafe.}:
           withLock appState.lock:
-            sim.removePlayer(globalViewers[i])
+            discard markSocketClosed(globalViewers[i])
 
     if profileShouldDump(sim.gameTicksElapsed()):
       finishProfileTrace()

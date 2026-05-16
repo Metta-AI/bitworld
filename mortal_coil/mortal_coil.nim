@@ -386,12 +386,13 @@ var
   guiCleanupStarted = false
 
 proc primaryScreen(): Screen =
-  let screens = getScreens()
-  if screens.len > 0:
-    for screen in screens:
-      if screen.primary:
-        return screen
-    return screens[0]
+  when declared(getScreens):
+    let screens = getScreens()
+    if screens.len > 0:
+      for screen in screens:
+        if screen.primary:
+          return screen
+      return screens[0]
   Screen(left: 0, right: 1920, top: 0, bottom: 1080, primary: true)
 
 proc clientLaunches(players: int): seq[tuple[title: string, x, y: int]] =
