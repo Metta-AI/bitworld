@@ -809,6 +809,11 @@ proc runServerLoop*(
             sim.removePlayer(websocket)
             socketsToClose.add(websocket)
         if not replayLoaded and sim.shouldAbortFiniteMatch():
+          if sim.phase == Lobby:
+            raise newException(
+              AmongThemError,
+              "finite match roster dropped below minPlayers before roles were assigned"
+            )
           sim.finishGame(Crewmate, timeLimitReached = true)
           quitAfterFrame = true
         elif not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
