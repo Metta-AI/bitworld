@@ -409,6 +409,32 @@ proc addBotTargets(
     if target.supportsGame(game.name):
       result.addUniqueTarget(target)
 
+const
+  TournamentArgs = ["name", "token", "slot"]
+
+proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
+  ## Verifies bot source files accept --name, --token, and --slot.
+  var failed = false
+  for target in targets:
+    if target.isGame:
+      continue
+    let nimFile = target.contextDir / target.name & ".nim"
+    if not fileExists(nimFile):
+      continue
+    let source = readFile(nimFile)
+    if "getopt" notin source:
+      continue
+    for arg in TournamentArgs:
+      if ("of \"" & arg & "\"") notin source:
+        echo "Error: ", nimFile.relativePath(root),
+          " does not handle --", arg,
+          " (required for tournaments)"
+        failed = true
+  if failed:
+    echo ""
+    echo "Bot players must accept --name, --token, and --slot to work in tournaments."
+    quit(1)
+
 proc ensureBuildx() =
   ## Verifies that docker buildx is available.
   let (output, code) = execCmdEx("docker buildx version")
@@ -634,6 +660,8 @@ proc main() =
   echo "  push:      ", push
   echo "  bots:      ", includeBots
   echo "  targets:   ", targetNames(chosen)
+
+  checkTournamentArgs(root, chosen)
 
   ensureBuildx()
   if push or "," in platforms:

@@ -771,13 +771,17 @@ proc addQueryParam(url, key, value: string): string =
   result.add('=')
   result.add(value.queryEscape())
 
-proc connectUrl(address, url, name: string, port: int): string =
+proc connectUrl(address, url, name, token: string, port, slot: int): string =
   ## Builds the player websocket URL.
   if url.len > 0:
     result = url.withPath(CoordinatorWebSocketPath)
   else:
     result = "ws://" & address & ":" & $port & CoordinatorWebSocketPath
   result = result.addQueryParam("name", name)
+  if slot >= 0:
+    result = result.addQueryParam("slot", $slot)
+  if token.len > 0:
+    result = result.addQueryParam("token", token)
 
 proc initBot(): Bot =
   result.selfFound = false
@@ -826,10 +830,12 @@ proc runBot(
   address = DefaultHost,
   port = CoordinatorDefaultPort,
   url = "",
-  name = "coordinator"
+  name = "coordinator",
+  token = "",
+  slot = -1
 ) =
   ## Connects coordinator to Stag Hunt and runs the coalition policy.
-  let endpoint = connectUrl(address, url, name, port)
+  let endpoint = connectUrl(address, url, name, token, port, slot)
   while true:
     try:
       echo "coordinator connecting to ", endpoint
@@ -854,6 +860,8 @@ when isMainModule:
     port = CoordinatorDefaultPort
     url = ""
     name = "coordinator"
+    token = ""
+    slot = -1
 
   for kind, key, value in getopt():
     case kind
@@ -863,6 +871,8 @@ when isMainModule:
       of "port": port = parseInt(value)
       of "url": url = value
       of "name": name = value
+      of "token": token = value
+      of "slot": slot = parseInt(value)
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdArgument, cmdShortOption:
@@ -870,4 +880,4 @@ when isMainModule:
     of cmdEnd:
       discard
 
-  runBot(address, port, url, name)
+  runBot(address, port, url, name, token, slot)
