@@ -641,7 +641,7 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
-    url = ""
+    url = getEnv("COGAMES_ENGINE_WS_URL")
     name = "sidekick"
     token = ""
     slot = -1

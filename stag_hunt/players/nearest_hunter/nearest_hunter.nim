@@ -755,7 +755,7 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
-    url = ""
+    url = getEnv("COGAMES_ENGINE_WS_URL")
     name = "nearest_hunter"
     token = ""
     slot = -1

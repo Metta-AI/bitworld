@@ -411,9 +411,10 @@ proc addBotTargets(
 
 const
   TournamentArgs = ["name", "token", "slot"]
+  TournamentEnv = "COGAMES_ENGINE_WS_URL"
 
 proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
-  ## Verifies bot source files accept --name, --token, and --slot.
+  ## Verifies bot source files accept --name, --token, --slot, and the env var.
   var failed = false
   for target in targets:
     if target.isGame:
@@ -430,9 +431,16 @@ proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
           " does not handle --", arg,
           " (required for tournaments)"
         failed = true
+    if TournamentEnv notin source:
+      echo "Error: ", nimFile.relativePath(root),
+        " does not read ", TournamentEnv,
+        " (required for tournaments)"
+      failed = true
   if failed:
     echo ""
-    echo "Bot players must accept --name, --token, and --slot to work in tournaments."
+    echo "Bot players must accept --name, --token, --slot and read"
+    echo TournamentEnv, " to work in tournaments."
+    echo "See metta/packages/coworld/src/coworld/GAME_RUNTIME_README.md"
     quit(1)
 
 proc ensureBuildx() =
