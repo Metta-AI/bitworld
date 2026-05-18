@@ -238,12 +238,12 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
       sim.world, sim.situation, sim.chatLog, sim.rng, inputs, sim.prevInputs,
       sim.chapter)
     if conflictResult == ConflictDone:
-      var allSpent = true
+      var allDead = true
       for p in sim.players:
-        if p.power > 0:
-          allSpent = false
+        if not p.dead:
+          allDead = false
           break
-      if sim.chapter >= 3 or allSpent:
+      if sim.chapter >= 3 or allDead:
         sim.phase = PhaseEnd
       else:
         sim.currentTurn = 0
@@ -275,17 +275,17 @@ proc updateNarration(sim: var SimServer) =
 
   case sim.phase
   of PhaseWorld:
-    if sim.worldStep == WorldTitle and sim.world.title.len > 0:
-      sim.narration.add(("--- " & sim.world.title & " ---", grey))
-    elif sim.worldStep == WorldDescription and sim.world.description.len > 0:
-      sim.narration.add((sim.world.description, white))
+    if sim.worldStep == WorldDescription:
+      if sim.world.title.len > 0:
+        sim.narration.add(("--- " & sim.world.title & " ---", grey))
+      if sim.world.description.len > 0:
+        sim.narration.add((sim.world.description, white))
   of PhaseConflict:
     case sim.conflictState.step
-    of ConflictTitle:
+    of ConflictDescription:
       if sim.conflict.title.len > 0:
         sim.narration.add(("", white))
         sim.narration.add(("=== Chapter " & $sim.chapter & ": " & sim.conflict.title & " ===", grey))
-    of ConflictDescription:
       if sim.conflict.description.len > 0:
         sim.narration.add((sim.conflict.description, white))
     of ConflictOutcome:

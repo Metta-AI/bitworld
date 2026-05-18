@@ -390,11 +390,14 @@ proc generateConflictEscalation*(soul: Soul, world: World, conflict: Conflict, r
   "The conflict deepens."
 
 proc generateConflictOutcome*(soul: Soul, world: World, conflict: Conflict,
-    round, maxRounds: int, playerNames: seq[string], chatLog: seq[string]): ConflictOutcomeResult =
+    round, maxRounds: int, playerNames: seq[string], deadNames: seq[string],
+    chatLog: seq[string]): ConflictOutcomeResult =
   var prompt = ""
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
+  if deadNames.len > 0:
+    prompt &= "These players have already perished: " & deadNames.join(", ") & ". They no longer act.\n"
   prompt &= "Round " & $(round + 1) & " of " & $maxRounds & " just ended. The players made their choices.\n"
   prompt &= "Narrate what happens as a result of the players' actions."
   if round + 1 < maxRounds:

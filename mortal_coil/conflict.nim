@@ -3,8 +3,8 @@ import protocol, server, soul, choose, data, output, render_utils
 
 const
   ConflictTitleTicks* = 24 * 3
-  ConflictDescTicks* = 24 * 10
-  ConflictSceneReadTicks* = 24 * 10
+  ConflictDescTicks* = 24 * 7
+  ConflictSceneReadTicks* = 24 * 7
   ConflictSceneAcceptTicks* = 24 * 2
   ConflictOutcomeTicks* = 24 * 10
   ConflictRecountLineTicks* = 12  # half second per line at 24fps
@@ -31,11 +31,13 @@ proc startConflictChoices*(players: seq[Player], rng: var Rand,
   conflictState.roundResults = @[]
   conflictState.sceneTurnOrder = @[]
   for i in 0 ..< players.len:
-    conflictState.sceneTurnOrder.add(i)
+    if not players[i].dead:
+      conflictState.sceneTurnOrder.add(i)
   rng.shuffle(conflictState.sceneTurnOrder)
   conflictState.sceneTurnIndex = 0
-  currentTurn = conflictState.sceneTurnOrder[0]
-  startConflictSceneTurn(conflictState)
+  if conflictState.sceneTurnOrder.len > 0:
+    currentTurn = conflictState.sceneTurnOrder[0]
+    startConflictSceneTurn(conflictState)
 
 proc generateConflictSceneOpts(players: seq[Player], currentTurn: int,
     world: World, conflict: Conflict, chatLog: seq[ChatEntry],
@@ -191,10 +193,6 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
 
   if conflictState.step == ConflictGazing and conflictTimer <= 0:
     conflict = players[0].soul.generateConflict(world, situation, chatLogStrings(chatLog))
-    conflictState.step = ConflictTitle
-    conflictTimer = ConflictTitleTicks
-
-  elif conflictState.step == ConflictTitle and conflictTimer <= 0:
     conflictState.step = ConflictDescription
     conflictTimer = ConflictDescTicks
     logConflict(chapter, conflict.title, conflict.description)
@@ -266,8 +264,12 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
         var playerNames: seq[string]
         for r in conflictState.roundResults:
           playerNames.add(players[r.playerIndex].name)
+        var deadNames: seq[string]
+        for p in players:
+          if p.dead:
+            deadNames.add(p.name)
         let outcomeResult = players[0].soul.generateConflictOutcome(
-          world, conflict, conflictState.round - 1, ConflictMaxRounds, playerNames, chatLogStrings(chatLog))
+          world, conflict, conflictState.round - 1, ConflictMaxRounds, playerNames, deadNames, chatLogStrings(chatLog))
         conflictState.outcome = outcomeResult.narration
         let partySize = players.len
         for i in 0 ..< conflictState.roundResults.len:
@@ -303,6 +305,16 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
       players[r.playerIndex].power += -r.burdenTaken + r.rewardEarned
       for i in 0 ..< players.len:
         players[i].power += -r.partyBurden + r.partyReward
+      # Kill players who reached 0 or below
+      for i in 0 ..< players.len:
+        if not players[i].dead and players[i].power <= 0:
+          players[i].dead = true
+          players[i].power = 0
+          chatLog.add(ChatEntry(
+            name: players[i].name,
+            colorIndex: uint8(players[i].colorIndex),
+            text: "has perished."
+          ))
       conflictState.recountPlayer += 1
       if conflictState.recountPlayer >= conflictState.roundResults.len:
         conflictState.roundResults = @[]

@@ -19,6 +19,7 @@ type
     soul*: Soul
     cursor*: int
     power*: int
+    dead*: bool
     individuality*: int
     cooperativity*: int
     exploitativity*: int

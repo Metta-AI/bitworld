@@ -2,7 +2,7 @@ import protocol, server, soul, data, output, render_utils
 
 const
   WorldTitleTicks* = 24 * 3
-  WorldDescTicks* = 24 * 8
+  WorldDescTicks* = 24 * 5
 
 proc renderWorld*(fb: var Framebuffer, world: World, worldStep: WorldStep) =
   fb.clearFrame(0)
@@ -38,9 +38,6 @@ proc stepWorld*(worldStep: var WorldStep, worldTimer: var int, world: var World,
   dec worldTimer
   if worldStep == WorldGazing and worldTimer <= 0:
     world = players[0].soul.generateWorld()
-    worldStep = WorldTitle
-    worldTimer = WorldTitleTicks
-  elif worldStep == WorldTitle and worldTimer <= 0:
     worldStep = WorldDescription
     worldTimer = WorldDescTicks
     logWorld(world.title, world.description)
