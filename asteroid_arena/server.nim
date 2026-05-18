@@ -19,6 +19,7 @@ type
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     tokens: seq[string]
+    chatMessages: Table[WebSocket, string]
 
   ServerThreadArgs = object
     server: ptr Server
@@ -38,6 +39,7 @@ proc initAppState() =
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.tokens = @[]
+  appState.chatMessages = initTable[WebSocket, string]()
 
 proc isWebSocketUpgrade(request: Request): bool =
   request.headers["Sec-WebSocket-Key"].len > 0
@@ -158,6 +160,28 @@ proc websocketHandler(
     discard
   of MessageEvent:
     if message.kind != BinaryMessage:
+      return
+    if message.data.len >= 1 and message.data[0].uint8 == PacketChat:
+      let text = blobToChat(message.data)
+      if text.len > 0:
+        {.gcsafe.}:
+          withLock appState.lock:
+            if websocket in appState.playerViewers:
+              appState.chatMessages[websocket] = text
+      return
+    if message.data.len >= 4 and message.data[0].uint8 == 0x81:
+      let textLen = message.data[1].uint8.int or (message.data[2].uint8.int shl 8)
+      if textLen > 0 and message.data.len >= 3 + textLen:
+        var text = ""
+        for i in 0 ..< min(textLen, ChatMaxChars):
+          let value = message.data[3 + i].uint8
+          if value >= 32'u8 and value < 127'u8:
+            text.add(char(value))
+        if text.len > 0:
+          {.gcsafe.}:
+            withLock appState.lock:
+              if websocket in appState.playerViewers:
+                appState.chatMessages[websocket] = text
       return
     if message.data.len == 2:
       let header = message.data[0].uint8
@@ -414,6 +438,13 @@ proc runServerLoop*(
           globalStates.add(state)
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+
+        for websocket, chatText in appState.chatMessages.pairs:
+          let pIdx = appState.playerIndices.getOrDefault(websocket, UnassignedPlayerIndex)
+          if pIdx != UnassignedPlayerIndex and pIdx >= 0 and pIdx < sim.players.len:
+            sim.players[pIdx].message = chatText
+            sim.players[pIdx].messageTicks = ChatLifetimeTicks
+        appState.chatMessages.clear()
 
     sim.step(inputs)
     inc tickCount

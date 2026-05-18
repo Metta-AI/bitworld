@@ -68,6 +68,9 @@ const
 
   TargetFps* = 24
 
+  ChatMaxChars* = 24
+  ChatLifetimeTicks* = 5 * TargetFps
+
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
@@ -185,6 +188,8 @@ type
     invulnTicks*: int
     thrustTicks*: int
     alive*: bool
+    message*: string
+    messageTicks*: int
 
   PlayerInput* = object
     turnLeft*: bool
@@ -656,6 +661,10 @@ proc stepPlayers*(sim: var SimServer, inputs: openArray[PlayerInput]) =
       dec player.invulnTicks
     if player.thrustTicks > 0:
       dec player.thrustTicks
+    if player.messageTicks > 0:
+      dec player.messageTicks
+      if player.messageTicks <= 0:
+        player.message = ""
 
     let input =
       if playerIndex < inputs.len:

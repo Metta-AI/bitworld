@@ -14,6 +14,7 @@ const
   ExplosionSpriteBase = 950
   ShieldSpriteBase = 980
   CaptureSpriteBase = 985
+  ChatSpriteBase = 700
   HudSpriteId = 990
   RespawnSpriteId = 991
 
@@ -22,8 +23,15 @@ const
   BulletObjectBase = 3000
   ExplosionObjectBase = 4000
   CaptureObjectBase = 5000
+  ChatObjectBase = 6000
   HudObjectId = 8000
   RespawnObjectId = 8001
+
+  ChatPad = 2
+  ChatPointerHeight = 2
+  ChatGapY = 3
+  ChatGlyphWidth = 4
+  ChatGlyphHeight = 5
 
   CaptureProgressColor = RgbaColor(r: 0xFF, g: 0xFF, b: 0x40, a: 255)
 
@@ -424,6 +432,146 @@ proc buildRespawnSprite(respawnTicks: int): RgbaSprite =
   if seconds > 0:
     result.drawNumber(seconds, 2, 2, HudBorderColor)
 
+const ChatFont: array[95, array[5, uint8]] = [
+  [0b000'u8, 0b000, 0b000, 0b000, 0b000],  # space
+  [0b010'u8, 0b010, 0b010, 0b000, 0b010],  # !
+  [0b101'u8, 0b101, 0b000, 0b000, 0b000],  # "
+  [0b101'u8, 0b111, 0b101, 0b111, 0b101],  # #
+  [0b011'u8, 0b110, 0b010, 0b011, 0b110],  # $
+  [0b101'u8, 0b001, 0b010, 0b100, 0b101],  # %
+  [0b010'u8, 0b101, 0b010, 0b101, 0b011],  # &
+  [0b010'u8, 0b010, 0b000, 0b000, 0b000],  # '
+  [0b001'u8, 0b010, 0b010, 0b010, 0b001],  # (
+  [0b100'u8, 0b010, 0b010, 0b010, 0b100],  # )
+  [0b101'u8, 0b010, 0b101, 0b000, 0b000],  # *
+  [0b000'u8, 0b010, 0b111, 0b010, 0b000],  # +
+  [0b000'u8, 0b000, 0b000, 0b010, 0b100],  # ,
+  [0b000'u8, 0b000, 0b111, 0b000, 0b000],  # -
+  [0b000'u8, 0b000, 0b000, 0b000, 0b010],  # .
+  [0b001'u8, 0b001, 0b010, 0b100, 0b100],  # /
+  [0b111'u8, 0b101, 0b101, 0b101, 0b111],  # 0
+  [0b010'u8, 0b110, 0b010, 0b010, 0b111],  # 1
+  [0b111'u8, 0b001, 0b111, 0b100, 0b111],  # 2
+  [0b111'u8, 0b001, 0b111, 0b001, 0b111],  # 3
+  [0b101'u8, 0b101, 0b111, 0b001, 0b001],  # 4
+  [0b111'u8, 0b100, 0b111, 0b001, 0b111],  # 5
+  [0b111'u8, 0b100, 0b111, 0b101, 0b111],  # 6
+  [0b111'u8, 0b001, 0b010, 0b010, 0b010],  # 7
+  [0b111'u8, 0b101, 0b111, 0b101, 0b111],  # 8
+  [0b111'u8, 0b101, 0b111, 0b001, 0b111],  # 9
+  [0b000'u8, 0b010, 0b000, 0b010, 0b000],  # :
+  [0b000'u8, 0b010, 0b000, 0b010, 0b100],  # ;
+  [0b001'u8, 0b010, 0b100, 0b010, 0b001],  # <
+  [0b000'u8, 0b111, 0b000, 0b111, 0b000],  # =
+  [0b100'u8, 0b010, 0b001, 0b010, 0b100],  # >
+  [0b111'u8, 0b001, 0b011, 0b000, 0b010],  # ?
+  [0b111'u8, 0b101, 0b111, 0b100, 0b111],  # @
+  [0b010'u8, 0b101, 0b111, 0b101, 0b101],  # A
+  [0b110'u8, 0b101, 0b110, 0b101, 0b110],  # B
+  [0b011'u8, 0b100, 0b100, 0b100, 0b011],  # C
+  [0b110'u8, 0b101, 0b101, 0b101, 0b110],  # D
+  [0b111'u8, 0b100, 0b110, 0b100, 0b111],  # E
+  [0b111'u8, 0b100, 0b110, 0b100, 0b100],  # F
+  [0b011'u8, 0b100, 0b101, 0b101, 0b011],  # G
+  [0b101'u8, 0b101, 0b111, 0b101, 0b101],  # H
+  [0b111'u8, 0b010, 0b010, 0b010, 0b111],  # I
+  [0b001'u8, 0b001, 0b001, 0b101, 0b010],  # J
+  [0b101'u8, 0b101, 0b110, 0b101, 0b101],  # K
+  [0b100'u8, 0b100, 0b100, 0b100, 0b111],  # L
+  [0b101'u8, 0b111, 0b111, 0b101, 0b101],  # M
+  [0b101'u8, 0b111, 0b111, 0b111, 0b101],  # N
+  [0b010'u8, 0b101, 0b101, 0b101, 0b010],  # O
+  [0b110'u8, 0b101, 0b110, 0b100, 0b100],  # P
+  [0b010'u8, 0b101, 0b101, 0b111, 0b011],  # Q
+  [0b110'u8, 0b101, 0b110, 0b101, 0b101],  # R
+  [0b011'u8, 0b100, 0b010, 0b001, 0b110],  # S
+  [0b111'u8, 0b010, 0b010, 0b010, 0b010],  # T
+  [0b101'u8, 0b101, 0b101, 0b101, 0b111],  # U
+  [0b101'u8, 0b101, 0b101, 0b101, 0b010],  # V
+  [0b101'u8, 0b101, 0b111, 0b111, 0b101],  # W
+  [0b101'u8, 0b101, 0b010, 0b101, 0b101],  # X
+  [0b101'u8, 0b101, 0b010, 0b010, 0b010],  # Y
+  [0b111'u8, 0b001, 0b010, 0b100, 0b111],  # Z
+  [0b011'u8, 0b010, 0b010, 0b010, 0b011],  # [
+  [0b100'u8, 0b100, 0b010, 0b001, 0b001],  # \
+  [0b110'u8, 0b010, 0b010, 0b010, 0b110],  # ]
+  [0b010'u8, 0b101, 0b000, 0b000, 0b000],  # ^
+  [0b000'u8, 0b000, 0b000, 0b000, 0b111],  # _
+  [0b100'u8, 0b010, 0b000, 0b000, 0b000],  # `
+  [0b000'u8, 0b011, 0b101, 0b101, 0b011],  # a
+  [0b100'u8, 0b110, 0b101, 0b101, 0b110],  # b
+  [0b000'u8, 0b011, 0b100, 0b100, 0b011],  # c
+  [0b001'u8, 0b011, 0b101, 0b101, 0b011],  # d
+  [0b000'u8, 0b010, 0b111, 0b100, 0b011],  # e
+  [0b001'u8, 0b010, 0b111, 0b010, 0b010],  # f
+  [0b000'u8, 0b011, 0b101, 0b011, 0b110],  # g
+  [0b100'u8, 0b110, 0b101, 0b101, 0b101],  # h
+  [0b010'u8, 0b000, 0b010, 0b010, 0b010],  # i
+  [0b010'u8, 0b000, 0b010, 0b010, 0b100],  # j
+  [0b100'u8, 0b101, 0b110, 0b101, 0b101],  # k
+  [0b110'u8, 0b010, 0b010, 0b010, 0b010],  # l
+  [0b000'u8, 0b101, 0b111, 0b101, 0b101],  # m
+  [0b000'u8, 0b110, 0b101, 0b101, 0b101],  # n
+  [0b000'u8, 0b010, 0b101, 0b101, 0b010],  # o
+  [0b000'u8, 0b110, 0b101, 0b110, 0b100],  # p
+  [0b000'u8, 0b011, 0b101, 0b011, 0b001],  # q
+  [0b000'u8, 0b011, 0b100, 0b100, 0b100],  # r
+  [0b000'u8, 0b011, 0b010, 0b110, 0b000],  # s (simplified)
+  [0b010'u8, 0b111, 0b010, 0b010, 0b001],  # t
+  [0b000'u8, 0b101, 0b101, 0b101, 0b011],  # u
+  [0b000'u8, 0b101, 0b101, 0b101, 0b010],  # v
+  [0b000'u8, 0b101, 0b111, 0b111, 0b101],  # w (simplified)
+  [0b000'u8, 0b101, 0b010, 0b010, 0b101],  # x
+  [0b000'u8, 0b101, 0b011, 0b001, 0b110],  # y
+  [0b000'u8, 0b111, 0b010, 0b100, 0b111],  # z
+  [0b001'u8, 0b010, 0b100, 0b010, 0b001],  # {
+  [0b010'u8, 0b010, 0b010, 0b010, 0b010],  # |
+  [0b100'u8, 0b010, 0b001, 0b010, 0b100],  # }
+  [0b000'u8, 0b011, 0b110, 0b000, 0b000],  # ~
+]
+
+proc chatTextWidth(text: string): int =
+  if text.len == 0: return 0
+  text.len * ChatGlyphWidth - 1
+
+proc drawChatChar(sprite: var RgbaSprite, ch: char, x, y: int, color: RgbaColor) =
+  let idx = ord(ch) - 32
+  if idx < 0 or idx >= ChatFont.len:
+    return
+  for row in 0 ..< ChatGlyphHeight:
+    for col in 0 ..< 3:
+      if (ChatFont[idx][row] and (0b100'u8 shr col)) != 0:
+        sprite.putRgbaPixel(x + col, y + row, color)
+
+proc drawChatText(sprite: var RgbaSprite, text: string, x, y: int, color: RgbaColor) =
+  var dx = x
+  for ch in text:
+    sprite.drawChatChar(ch, dx, y, color)
+    dx += ChatGlyphWidth
+
+proc buildChatBubbleSprite(text: string, color: RgbaColor): RgbaSprite =
+  let
+    textWidth = max(ChatGlyphWidth, chatTextWidth(text))
+    bodyWidth = textWidth + ChatPad * 2
+    bodyHeight = ChatGlyphHeight + ChatPad * 2
+    totalHeight = bodyHeight + ChatPointerHeight
+  result = newRgbaSprite(bodyWidth, totalHeight)
+  let
+    borderColor = color
+    fillColor = HudBackdropColor
+    textColor = RgbaColor(r: 255, g: 255, b: 255, a: 255)
+  for y in 0 ..< bodyHeight:
+    for x in 0 ..< bodyWidth:
+      if x == 0 or x == bodyWidth - 1 or y == 0 or y == bodyHeight - 1:
+        result.putRgbaPixel(x, y, borderColor)
+      else:
+        result.putRgbaPixel(x, y, fillColor)
+  let pointerX = bodyWidth div 2
+  for py in 0 ..< ChatPointerHeight:
+    result.putRgbaPixel(pointerX - py, bodyHeight + py, borderColor)
+    result.putRgbaPixel(pointerX + py, bodyHeight + py, borderColor)
+  result.drawChatText(text, ChatPad, ChatPad, textColor)
+
 proc buildSpriteProtocolUpdates*(
   sim: SimServer,
   state: GlobalViewerState,
@@ -478,6 +626,22 @@ proc buildSpriteProtocolUpdates*(
       result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
       result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
       currentIds.add(shieldObjId)
+
+  # Chat bubbles above ships
+  for playerIndex, player in sim.players:
+    if player.message.len == 0 or player.messageTicks <= 0:
+      continue
+    if not player.alive:
+      continue
+    let
+      bubble = buildChatBubbleSprite(player.message, player.color)
+      sx = player.x div MotionScale - bubble.width div 2
+      sy = player.y div MotionScale - 9 div 2 - bubble.height - ChatGapY
+      sprId = ChatSpriteBase + playerIndex
+      objId = ChatObjectBase + playerIndex
+    result.addSprite(sprId, bubble.width, bubble.height, bubble.pixels, "chat")
+    result.addObject(objId, sx, sy, sy + 300, MapLayerId, sprId)
+    currentIds.add(objId)
 
   # Asteroid sprites and objects
   for i, asteroid in sim.asteroids:
@@ -610,6 +774,26 @@ proc buildSpriteProtocolPlayerUpdates*(
         result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
         result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
         currentIds.add(shieldObjId)
+
+  # Chat bubbles above ships
+  for pi, p in sim.players:
+    if p.message.len == 0 or p.messageTicks <= 0:
+      continue
+    if not p.alive:
+      continue
+    let
+      bubble = buildChatBubbleSprite(p.message, p.color)
+      screenX = ScreenWidth div 2 + wrappedDelta(p.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(p.y, cameraY, WorldHeightUnits) div MotionScale
+      bx = screenX - bubble.width div 2
+      by = screenY - 9 div 2 - bubble.height - ChatGapY
+    if bx > -bubble.width and bx < ScreenWidth and by > -bubble.height and by < ScreenHeight:
+      let
+        sprId = ChatSpriteBase + pi
+        objId = ChatObjectBase + pi
+      result.addSprite(sprId, bubble.width, bubble.height, bubble.pixels, "chat")
+      result.addObject(objId, bx, by, by + 300, MapLayerId, sprId)
+      currentIds.add(objId)
 
   # Asteroids
   for i, asteroid in sim.asteroids:
