@@ -42,6 +42,15 @@ proc roleFor(sim: SimServer, address: string): PlayerRole =
       return player.role
   raise newException(AmongThemError, "Missing test player " & address & ".")
 
+proc addExamplePlayers(sim: var SimServer, count: int) =
+  ## Adds configured example players from the first slot.
+  for i in 0 ..< count:
+    discard sim.addPlayer(
+      "player" & $(i + 1),
+      -1,
+      "0xBADA55_" & $i
+    )
+
 suite "player slots":
   test "config parses example slots and tokens":
     var config = defaultGameConfig()
@@ -79,6 +88,7 @@ suite "player slots":
     config.update(ExampleSlotsJson)
     var sim = initAmongThemForTest(config)
 
+    sim.addExamplePlayers(6)
     let playerIndex = sim.addPlayer("player7", -1, "0xBADA55_6")
     check sim.players[playerIndex].joinOrder == 6
     check sim.players[playerIndex].color == PlayerColors[4]
@@ -88,6 +98,7 @@ suite "player slots":
     config.update(ExampleSlotsJson)
     var sim = initAmongThemForTest(config)
 
+    sim.addExamplePlayers(7)
     let playerIndex = sim.addPlayer("player8", trusted = true)
     check sim.players[playerIndex].joinOrder == 7
     check sim.players[playerIndex].color == PlayerColors[1]
@@ -198,12 +209,16 @@ suite "player slots":
 
     removeFile(path)
 
-  test "automatic slots skip restricted slots":
+  test "automatic slots wait behind restricted slots":
     var config = defaultGameConfig()
     config.update("""{"slots":[{"name":"reserved","token":"secret"}]}""")
     var sim = initAmongThemForTest(config)
 
+    expect AmongThemError:
+      discard sim.addPlayer("open")
+    let reservedIndex = sim.addPlayer("reserved", -1, "secret")
     let playerIndex = sim.addPlayer("open")
+    check sim.players[reservedIndex].joinOrder == 0
     check sim.players[playerIndex].joinOrder == 1
 
   test "automatic slots stay open for configured rosters by default":
@@ -239,14 +254,16 @@ suite "player slots":
     expect AmongThemError:
       discard sim.addPlayer("extra", 2)
 
-  test "manual slot preserves auto slot zero":
+  test "manual slot must match next player index":
     let config = defaultGameConfig()
     var sim = initAmongThemForTest(config)
 
-    let manualIndex = sim.addPlayer("manual", 5)
+    expect AmongThemError:
+      discard sim.addPlayer("manual", 5)
+    let manualIndex = sim.addPlayer("manual", 0)
     let autoIndex = sim.addPlayer("auto")
-    check sim.players[manualIndex].joinOrder == 5
-    check sim.players[autoIndex].joinOrder == 0
+    check sim.players[manualIndex].joinOrder == 0
+    check sim.players[autoIndex].joinOrder == 1
 
   test "configured roles override random roles":
     var config = defaultGameConfig()
@@ -259,8 +276,8 @@ suite "player slots":
     ]}""")
     var sim = initAmongThemForTest(config)
 
-    discard sim.addPlayer("imp", -1, "imp-token")
     discard sim.addPlayer("crew", -1, "crew-token")
+    discard sim.addPlayer("imp", -1, "imp-token")
     sim.startGame()
 
     check sim.roleFor("imp") == Imposter

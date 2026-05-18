@@ -608,10 +608,16 @@ proc parseVoteCandidate(
     layout.skipY
   ):
     return
+  var seenColors: array[VoteReaderColorCount, bool]
   for i in 0 ..< count:
     let slot = frame.parseSlot(playerSprite, bodySprite, count, i)
-    if slot.colorIndex == VoteReaderUnknown or slot.colorIndex != i:
+    if slot.colorIndex == VoteReaderUnknown:
       return
+    if slot.colorIndex < 0 or slot.colorIndex >= VoteReaderColorCount:
+      return
+    if seenColors[slot.colorIndex]:
+      return
+    seenColors[slot.colorIndex] = true
     result.slots[i] = slot
 
   result.found = true

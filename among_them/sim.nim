@@ -1666,7 +1666,7 @@ proc advanceJoinOrder(sim: var SimServer) =
       sim.slotOccupied(sim.nextJoinOrder):
     inc sim.nextJoinOrder
 
-proc resolvePlayerSlot(
+proc resolvePlayerSlot*(
   sim: SimServer,
   address,
   token: string,
@@ -1700,6 +1700,10 @@ proc resolvePlayerSlot(
   result = sim.nextAutoSlot(address, token)
   if result < 0:
     raise newException(AmongThemError, "No available player slot.")
+
+proc nextPlayerSlot*(sim: SimServer): int =
+  ## Returns the slot required for the next live player index.
+  sim.players.len
 
 proc resolveTrustedPlayerSlot(
   sim: SimServer,
@@ -1841,6 +1845,14 @@ proc addPlayer*(
         sim.resolveTrustedPlayerSlot(address, requestedSlot)
       else:
         sim.resolvePlayerSlot(address, token, requestedSlot)
+    nextSlot = sim.nextPlayerSlot()
+  if not trusted and order != nextSlot:
+    raise newException(
+      AmongThemError,
+      "Player slot " & $order & " cannot join before slot " &
+        $nextSlot & "."
+    )
+  let
     slot = sim.config.slotConfig(order)
     spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
     color =

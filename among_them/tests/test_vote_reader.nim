@@ -72,3 +72,31 @@ suite "vote reader":
     check read.chat[3].colorIndex == 6
     check read.chat[3].text == "vote red"
     check read.chatSusColor == 0
+
+  test "parses rendered vote screen with shuffled colors":
+    var config = defaultGameConfig()
+    config.minPlayers = 4
+    config.tasksPerPlayer = 1
+    var sim = initAmongThemForTest(config)
+    sim.addPlayers(4)
+    sim.players[0].color = PlayerColors[1]
+    sim.players[1].color = PlayerColors[0]
+    sim.players[2].color = PlayerColors[3]
+    sim.players[3].color = PlayerColors[2]
+    sim.startVote()
+
+    discard sim.buildVoteFrame(2)
+    let read = parseVoteFrame(
+      sim.fb.indices,
+      sim.asciiSprites,
+      sim.playerSprite,
+      sim.bodySprite
+    )
+
+    check read.found
+    check read.playerCount == 4
+    check read.selfSlot == 2
+    check read.slots[0].colorIndex == 1
+    check read.slots[1].colorIndex == 0
+    check read.slots[2].colorIndex == 3
+    check read.slots[3].colorIndex == 2
