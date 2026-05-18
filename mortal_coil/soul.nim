@@ -12,8 +12,8 @@ const SituationPadding* = 20
 const ConflictTitleMaxLen* = 20
 const ConflictMaxLen* = 120
 const ConflictPadding* = 20
-const ConflictOutcomeMaxLen* = 120
-const ConflictOutcomePadding* = 20
+const ConflictOutcomeMaxLen* = 240
+const ConflictOutcomePadding* = 40
 const ConflictOutcomeNarrationMaxLen* = 80
 const ConflictOutcomeNarrationPadding* = 10
 const ConflictResolutionMaxLen* = 120
@@ -390,17 +390,22 @@ proc generateConflictEscalation*(soul: Soul, world: World, conflict: Conflict, r
   "The conflict deepens."
 
 proc generateConflictOutcome*(soul: Soul, world: World, conflict: Conflict,
-    round: int, playerNames: seq[string], chatLog: seq[string]): ConflictOutcomeResult =
+    round, maxRounds: int, playerNames: seq[string], chatLog: seq[string]): ConflictOutcomeResult =
   var prompt = ""
   prompt &= "You are a world-building oracle for a dark fantasy game.\n"
   prompt &= "The world is called '" & world.title & "': " & world.description & ".\n"
   prompt &= "The conflict is '" & conflict.title & "': " & conflict.description & ".\n"
-  prompt &= "Round " & $(round + 1) & " of 3 just ended. The players made their choices.\n"
-  prompt &= "Briefly narrate what happens, then score each player's choice.\n"
+  prompt &= "Round " & $(round + 1) & " of " & $maxRounds & " just ended. The players made their choices.\n"
+  prompt &= "Narrate what happens as a result of the players' actions."
+  if round + 1 < maxRounds:
+    prompt &= " Then ESCALATE the situation — raise the stakes, introduce a new threat or complication that makes the next round more dangerous."
+  else:
+    prompt &= " This is the final round — bring the conflict to a dramatic climax."
+  prompt &= "\nThen score each player's choice.\n"
   prompt &= "Score meaning: -1 = failed (choice backfired), 0 = neutral, +1 = achieved (choice succeeded).\n"
   prompt &= "Higher-risk choices (higher power at stake) are harder to pull off.\n"
   prompt &= "Respond with exactly " & $(1 + playerNames.len) & " lines:\n"
-  prompt &= "Line 1: A short narrative of what happens (max " & $(ConflictOutcomeMaxLen - ConflictOutcomePadding) & " characters, sentence case, ends with a period)\n"
+  prompt &= "Line 1: Narrative of what happens and how things escalate (max " & $(ConflictOutcomeMaxLen - ConflictOutcomePadding) & " characters, sentence case, ends with a period)\n"
   for i in 0 ..< playerNames.len:
     prompt &= "Line " & $(i + 2) & ": " & playerNames[i] & " score (just -1, 0, or 1)\n"
 

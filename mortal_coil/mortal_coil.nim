@@ -377,6 +377,18 @@ proc buildTextSprites(sim: SimServer): seq[TextSprite] =
     elif sim.conflictState.step == ConflictResolution:
       sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
       sprite(4, 20, sim.conflictState.resolution, "resolution:" & sim.conflictState.resolution)
+    elif sim.conflictState.step == ConflictRecount:
+      sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
+      if sim.conflictState.recountPlayer < sim.conflictState.roundResults.len:
+        let r = sim.conflictState.roundResults[sim.conflictState.recountPlayer]
+        let player = sim.players[r.playerIndex]
+        let total = r.powerBefore - r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
+        var recountText = player.name & ": " & $total & " power"
+        recountText.add(" (-" & $r.burdenTaken & " burden")
+        recountText.add(" -" & $r.partyBurden & " party burden")
+        recountText.add(" +" & $r.rewardEarned & " reward")
+        recountText.add(" +" & $r.partyReward & " party reward)")
+        sprite(4, 20, recountText, "recount:" & player.name & ":" & $total)
     else:
       let title = if sim.conflict.title.len > 0: sim.conflict.title
                   else: "Chapter " & $sim.chapter

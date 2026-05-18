@@ -267,7 +267,7 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
         for r in conflictState.roundResults:
           playerNames.add(players[r.playerIndex].name)
         let outcomeResult = players[0].soul.generateConflictOutcome(
-          world, conflict, conflictState.round - 1, playerNames, chatLogStrings(chatLog))
+          world, conflict, conflictState.round - 1, ConflictMaxRounds, playerNames, chatLogStrings(chatLog))
         conflictState.outcome = outcomeResult.narration
         let partySize = players.len
         for i in 0 ..< conflictState.roundResults.len:
@@ -313,12 +313,8 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
           conflictTimer = ConflictResolutionTicks
           logConflictResolution(resolution)
         else:
-          let escalation = players[0].soul.generateConflictEscalation(
-            world, conflict, conflictState.round - 1, chatLogStrings(chatLog))
-          conflict.description = escalation
-          logConflictEscalation(conflictState.round - 1, escalation)
-          conflictState.step = ConflictDescription
-          conflictTimer = ConflictDescTicks
+          conflictState.step = ConflictChoices
+          startConflictChoices(players, rng, conflictState, currentTurn)
       else:
         conflictState.recountLine = 0
         conflictTimer = ConflictRecountLineTicks
