@@ -1,5 +1,5 @@
 import
-  std/[locks, monotimes, nativesockets, os, strutils, tables, times],
+  std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
   curly, mummy,
   bitworld/clients, protocol, sim, global, profile, replays
 
@@ -42,6 +42,13 @@ type
     server: ptr Server
     address: string
     port: int
+
+  PendingPlayerJoin = object
+    websocket: WebSocket
+    address: string
+    token: string
+    requestedSlot: int
+    slotIndex: int
 
 const
   HealthPath = "/healthz"
@@ -171,6 +178,31 @@ proc initAppState() =
   appState.spectators = @[]
   appState.nextAnonymousPlayer = 1
   appState.config = defaultGameConfig()
+
+proc comparePendingPlayerJoins(
+  a,
+  b: PendingPlayerJoin
+): int =
+  ## Orders pending players by resolved slot and identity.
+  result = cmp(a.slotIndex, b.slotIndex)
+  if result != 0:
+    return
+  result = cmp(a.address, b.address)
+
+proc pendingPlayerJoin(
+  sim: SimServer,
+  websocket: WebSocket
+): PendingPlayerJoin =
+  ## Resolves one pending websocket into a join candidate.
+  result.websocket = websocket
+  result.address = appState.playerAddresses.getOrDefault(websocket, "unknown")
+  result.requestedSlot = appState.playerSlots.getOrDefault(websocket, -1)
+  result.token = appState.playerTokens.getOrDefault(websocket, "")
+  result.slotIndex = sim.resolvePlayerSlot(
+    result.address,
+    result.token,
+    result.requestedSlot
+  )
 
 proc removeWebSocketState(websocket: WebSocket): int =
   ## Removes websocket-owned state and returns its former player index.
@@ -828,48 +860,66 @@ proc runServerLoop*(
           for websocket in appState.playerIndices.keys:
             if appState.playerIndices[websocket] == 0x7fffffff:
               newSockets.add(websocket)
-          for websocket in newSockets:
-            let address = appState.playerAddresses.getOrDefault(
-              websocket,
-              "unknown"
-            )
-            let
-              slot = appState.playerSlots.getOrDefault(websocket, -1)
-              token = appState.playerTokens.getOrDefault(websocket, "")
-            let identity = address.rewardAddress()
-            if address in appState.kickedIdentities or
-                identity in appState.kickedIdentities:
-              sim.removePlayer(websocket)
-              socketsToClose.add(websocket)
-            elif sim.phase == Lobby and
-                (sim.canAddPlayer() or slot >= 0 or token.len > 0):
-              try:
-                appState.playerIndices[websocket] = sim.addPlayer(
-                  address,
-                  slot,
-                  token
-                )
-              except AmongThemError:
+          var progressed = true
+          while progressed:
+            progressed = false
+            var pendingPlayers: seq[PendingPlayerJoin] = @[]
+            for websocket in newSockets:
+              if websocket notin appState.playerIndices or
+                  appState.playerIndices[websocket] != 0x7fffffff:
+                continue
+              let address = appState.playerAddresses.getOrDefault(
+                websocket,
+                "unknown"
+              )
+              let identity = address.rewardAddress()
+              if address in appState.kickedIdentities or
+                  identity in appState.kickedIdentities:
                 sim.removePlayer(websocket)
                 socketsToClose.add(websocket)
                 continue
-              appState.playerSlots[websocket] =
-                sim.players[appState.playerIndices[websocket]].joinOrder
+              let
+                slot = appState.playerSlots.getOrDefault(websocket, -1)
+                token = appState.playerTokens.getOrDefault(websocket, "")
+              if sim.phase == Lobby and
+                  (sim.canAddPlayer() or slot >= 0 or token.len > 0):
+                try:
+                  pendingPlayers.add(sim.pendingPlayerJoin(websocket))
+                except AmongThemError:
+                  sim.removePlayer(websocket)
+                  socketsToClose.add(websocket)
+              else:
+                if websocket in appState.playerViewers:
+                  appState.playerIndices[websocket] = -1
+                else:
+                  appState.spectators.add(websocket)
+                  appState.playerIndices.del(websocket)
+            pendingPlayers.sort(comparePendingPlayerJoins)
+            for join in pendingPlayers:
+              if join.slotIndex != sim.nextPlayerSlot():
+                continue
+              try:
+                appState.playerIndices[join.websocket] = sim.addPlayer(
+                  join.address,
+                  join.requestedSlot,
+                  join.token
+                )
+              except AmongThemError:
+                sim.removePlayer(join.websocket)
+                socketsToClose.add(join.websocket)
+                continue
+              appState.playerSlots[join.websocket] =
+                sim.players[appState.playerIndices[join.websocket]].joinOrder
               replayWriter.writeJoin(
                 tickTime(sim.tickCount),
-                appState.playerIndices[websocket],
-                address,
-                slot,
-                token
+                appState.playerIndices[join.websocket],
+                join.address,
+                join.requestedSlot,
+                join.token
               )
               while replayWriter.lastMasks.len < sim.players.len:
                 replayWriter.lastMasks.add(0)
-            else:
-              if websocket in appState.playerViewers:
-                appState.playerIndices[websocket] = -1
-              else:
-                appState.spectators.add(websocket)
-                appState.playerIndices.del(websocket)
+              progressed = true
 
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
@@ -948,44 +998,60 @@ proc runServerLoop*(
             reconnectSockets.add(websocket)
           appState.spectators = @[]
           for websocket in reconnectSockets:
-            let address = appState.playerAddresses.getOrDefault(
-              websocket,
-              "unknown"
-            )
-            let
-              slot = appState.playerSlots.getOrDefault(websocket, -1)
-              token = appState.playerTokens.getOrDefault(websocket, "")
-            if not sim.canAddPlayer() and slot < 0 and token.len == 0:
-              if websocket in appState.playerViewers:
-                appState.playerIndices[websocket] = -1
+            appState.playerIndices[websocket] = 0x7fffffff
+          var progressed = true
+          while progressed:
+            progressed = false
+            var pendingPlayers: seq[PendingPlayerJoin] = @[]
+            for websocket in reconnectSockets:
+              if websocket notin appState.playerIndices or
+                  appState.playerIndices[websocket] != 0x7fffffff:
+                continue
+              let
+                slot = appState.playerSlots.getOrDefault(websocket, -1)
+                token = appState.playerTokens.getOrDefault(websocket, "")
+              if not sim.canAddPlayer() and slot < 0 and token.len == 0:
+                if websocket in appState.playerViewers:
+                  appState.playerIndices[websocket] = -1
+                else:
+                  appState.spectators.add(websocket)
+                  appState.playerIndices.del(websocket)
+                continue
+              try:
+                pendingPlayers.add(sim.pendingPlayerJoin(websocket))
+              except AmongThemError:
+                sim.removePlayer(websocket)
+                socketsToClose.add(websocket)
+            pendingPlayers.sort(comparePendingPlayerJoins)
+            for join in pendingPlayers:
+              if join.slotIndex != sim.nextPlayerSlot():
+                continue
+              try:
+                appState.playerIndices[join.websocket] = sim.addPlayer(
+                  join.address,
+                  join.requestedSlot,
+                  join.token
+                )
+              except AmongThemError:
+                sim.removePlayer(join.websocket)
+                socketsToClose.add(join.websocket)
+                continue
+              appState.playerSlots[join.websocket] =
+                sim.players[appState.playerIndices[join.websocket]].joinOrder
+              appState.inputMasks[join.websocket] = 0
+              appState.lastAppliedMasks[join.websocket] = 0
+              let isPlayerViewer = join.websocket in appState.playerViewers
+              sockets.add(join.websocket)
+              playerIndices.add(appState.playerIndices[join.websocket])
+              playerAddresses.add(join.address)
+              playerViewerFlags.add(isPlayerViewer)
+              if isPlayerViewer:
+                appState.playerViewers[join.websocket] =
+                  initPlayerViewerState()
+                playerViewerStates.add(appState.playerViewers[join.websocket])
               else:
-                appState.spectators.add(websocket)
-                appState.playerIndices.del(websocket)
-              continue
-            try:
-              appState.playerIndices[websocket] = sim.addPlayer(
-                address,
-                slot,
-                token
-              )
-            except AmongThemError:
-              sim.removePlayer(websocket)
-              socketsToClose.add(websocket)
-              continue
-            appState.playerSlots[websocket] =
-              sim.players[appState.playerIndices[websocket]].joinOrder
-            appState.inputMasks[websocket] = 0
-            appState.lastAppliedMasks[websocket] = 0
-            let isPlayerViewer = websocket in appState.playerViewers
-            sockets.add(websocket)
-            playerIndices.add(appState.playerIndices[websocket])
-            playerAddresses.add(address)
-            playerViewerFlags.add(isPlayerViewer)
-            if isPlayerViewer:
-              appState.playerViewers[websocket] = initPlayerViewerState()
-              playerViewerStates.add(appState.playerViewers[websocket])
-            else:
-              playerViewerStates.add(initPlayerViewerState())
+                playerViewerStates.add(initPlayerViewerState())
+              progressed = true
           replayWriter.lastMasks.setLen(sim.players.len)
           for websocket in appState.rewardViewers.keys:
             rewardViewers.add(websocket)

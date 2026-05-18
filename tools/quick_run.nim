@@ -1,6 +1,6 @@
 import
   std/[algorithm, exitprocs, json, monotimes, net, os, osproc, parseopt,
-    strutils, times]
+    strutils, sysrand, times]
 
 const
   GlobalClientSourceRelative = "clients" / "global_client.nim"
@@ -15,6 +15,8 @@ const
   DefaultPort = 8080
   MaxPlayers = 32
   MaxBots = 256
+  SlotTokenBytes = 16
+  HexChars = "0123456789abcdef"
   IgnoredManifestDirs = [
     ".git",
     ".github",
@@ -80,6 +82,7 @@ type
     botGui: bool
     botNamePrefix: string
     botMapPath: string
+    slots: bool
 
   BotLaunch = object
     sourceRelative: string
@@ -87,18 +90,23 @@ type
     label: string
     count: int
 
+  SlotAssignment = object
+    name: string
+    token: string
+
 proc repoRoot(): string =
   absolutePath(getCurrentDir())
 
 proc usage(): string =
   "Usage: quick_run <game_folder> [--connect] [--address:ADDR] " &
     "[--port:N] [--player] [--players:N] [--bots:BOT:N] [--global] " &
-    "[--html] " &
+    "[--html] [--slots] " &
     "[--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
     "Human clients open as native Nim windows by default.\n" &
     "--global opens a global viewer and defaults humans to zero.\n" &
     "--html opens human and global clients in the browser instead.\n" &
+    "--slots creates slot tokens and passes them to launched players.\n" &
     "Unknown options are passed to the game server when quick_run starts " &
     "it.\n" &
     "Examples:\n" &
@@ -541,15 +549,13 @@ proc browserHost(address: string): string =
   if result.contains(':') and not result.startsWith("["):
     result = "[" & result & "]"
 
-proc browserUrl(
-  address: string,
-  port: int,
-  path: string,
+proc urlWithParams(
+  base: string,
   params: openArray[(string, string)]
 ): string =
-  ## Builds a local browser URL for one game client route.
-  result = "http://" & browserHost(address) & ":" & $port & path
-  var first = true
+  ## Builds a URL with encoded query parameters.
+  result = base
+  var first = '?' notin result
   for param in params:
     let
       key = param[0]
@@ -564,6 +570,15 @@ proc browserUrl(
     result.add(key.encodeUrlComponent())
     result.add('=')
     result.add(value.encodeUrlComponent())
+
+proc browserUrl(
+  address: string,
+  port: int,
+  path: string,
+  params: openArray[(string, string)]
+): string =
+  ## Builds a local browser URL for one game client route.
+  urlWithParams("http://" & browserHost(address) & ":" & $port & path, params)
 
 proc stopManagedProcess(processRef: var Process, label: string) =
   if processRef.isNil:
@@ -820,6 +835,10 @@ proc parseArgs(): QuickRunConfig =
         result.globalViewer = true
       of "html":
         result.htmlViewer = true
+      of "slots":
+        if val.len > 0:
+          raise newException(ValueError, "--slots does not take a value.")
+        result.slots = true
       of "bot-gui":
         result.botGui = true
       of "bot-name-prefix", "name-prefix":
@@ -895,6 +914,81 @@ proc botMapArg(rootDir, path: string): string =
   else:
     "--map:" & absolutePath(rootDir / path)
 
+proc botSlotName(
+  config: QuickRunConfig,
+  bot: BotLaunch,
+  localIndex,
+  globalIndex: int
+): string =
+  ## Returns the configured quick-run name for one bot.
+  let prefix =
+    if config.botNamePrefix.len > 0:
+      config.botNamePrefix
+    else:
+      bot.label
+  let nameIndex =
+    if config.botNamePrefix.len > 0:
+      globalIndex
+    else:
+      localIndex + 1
+  prefix & $nameIndex
+
+proc randomHexToken(): string =
+  ## Returns a secure random hex token for a quick-run slot.
+  var bytes = newSeq[byte](SlotTokenBytes)
+  if not sysrand.urandom(bytes):
+    raise newException(ValueError, "Could not generate random slot token.")
+  for value in bytes:
+    let n = int(value)
+    result.add(HexChars[n shr 4])
+    result.add(HexChars[n and 0x0f])
+
+proc initSlotAssignment(name: string): SlotAssignment =
+  ## Creates one quick-run slot assignment with a random token.
+  SlotAssignment(
+    name: name,
+    token: randomHexToken()
+  )
+
+proc buildSlotAssignments(
+  config: QuickRunConfig,
+  botLaunches: openArray[BotLaunch]
+): seq[SlotAssignment] =
+  ## Creates slot names and tokens for launched quick-run players.
+  for i in 0 ..< config.players:
+    result.add(initSlotAssignment("player" & $(i + 1)))
+  var globalBotIndex = 0
+  for bot in botLaunches:
+    for i in 0 ..< bot.count:
+      inc globalBotIndex
+      result.add(initSlotAssignment(
+        config.botSlotName(bot, i, globalBotIndex)
+      ))
+
+proc slotAssignmentAt(
+  assignments: openArray[SlotAssignment],
+  index: int
+): SlotAssignment =
+  ## Returns one slot assignment or an empty assignment.
+  if index >= 0 and index < assignments.len:
+    return assignments[index]
+  SlotAssignment()
+
+proc slotsConfigJson(assignments: openArray[SlotAssignment]): string =
+  ## Builds the server config JSON for quick-run slots.
+  var
+    root = newJObject()
+    tokens = newJArray()
+    slots = newJArray()
+  for assignment in assignments:
+    var slot = newJObject()
+    slot["name"] = %assignment.name
+    tokens.add(%assignment.token)
+    slots.add(slot)
+  root["tokens"] = tokens
+  root["slots"] = slots
+  $root
+
 proc htmlParams(config: QuickRunConfig): seq[(string, string)] =
   ## Returns query parameters for browser clients.
   if config.reconnectSeconds.len > 0:
@@ -904,9 +998,23 @@ proc globalWsAddress(config: QuickRunConfig): string =
   ## Returns the websocket address for the global viewer.
   "ws://" & browserHost(config.address) & ":" & $config.port & "/global"
 
-proc playerWsAddress(config: QuickRunConfig): string =
+proc playerWsAddress(
+  config: QuickRunConfig,
+  slotIndex = -1,
+  assignment = SlotAssignment()
+): string =
   ## Returns the websocket address for a player client.
-  "ws://" & browserHost(config.address) & ":" & $config.port & "/player"
+  var params: seq[(string, string)] = @[]
+  if assignment.name.len > 0:
+    params.add(("name", assignment.name))
+  if slotIndex >= 0:
+    params.add(("slot", $slotIndex))
+  if assignment.token.len > 0:
+    params.add(("token", assignment.token))
+  urlWithParams(
+    "ws://" & browserHost(config.address) & ":" & $config.port & "/player",
+    params
+  )
 
 proc playerClientSource(game: GameLaunch): string =
   ## Returns the native player client source for one game.
@@ -935,14 +1043,24 @@ proc openHtmlGlobalViewer(config: QuickRunConfig, game: GameLaunch) =
     )
   )
 
-proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
+proc openHtmlClients(
+  config: QuickRunConfig,
+  game: GameLaunch,
+  assignments: openArray[SlotAssignment]
+) =
   ## Opens browser clients for one quick-run game.
   if config.players <= 0:
     return
 
   for i in 1 .. config.players:
     var params = htmlParams(config)
-    params.add(("name", "player" & $i))
+    let assignment = assignments.slotAssignmentAt(i - 1)
+    if assignment.name.len > 0:
+      params.add(("name", assignment.name))
+      params.add(("slot", $(i - 1)))
+      params.add(("token", assignment.token))
+    else:
+      params.add(("name", "player" & $i))
     params.add(("joystick", $i))
     openHtmlClient(
       game.name & " player " & $i,
@@ -952,7 +1070,8 @@ proc openHtmlClients(config: QuickRunConfig, game: GameLaunch) =
 proc launchNativePlayerClients(
   config: QuickRunConfig,
   game: GameLaunch,
-  rootDir: string
+  rootDir: string,
+  assignments: openArray[SlotAssignment]
 ): bool =
   ## Starts native player client processes for one quick-run game.
   if config.players <= 0:
@@ -962,8 +1081,14 @@ proc launchNativePlayerClients(
     sourceRelative = game.playerClientSource()
     playerExe = exePathFor(rootDir, sourceRelative)
   for i in 1 .. config.players:
+    let assignment = assignments.slotAssignmentAt(i - 1)
+    let slotIndex =
+      if assignment.name.len > 0:
+        i - 1
+      else:
+        -1
     var args = @[
-      "--address:" & playerWsAddress(config),
+      "--address:" & playerWsAddress(config, slotIndex, assignment),
       "--title:" & game.name & " player " & $i,
       "--joystick:" & $i
     ]
@@ -1048,7 +1173,13 @@ proc runQuickRun(config: QuickRunConfig): int =
       count: group.count
     ))
 
+  var slotAssignments: seq[SlotAssignment]
+  if config.slots:
+    slotAssignments = config.buildSlotAssignments(botLaunches)
+
   var serverArgs = @[portArg, addressArg]
+  if config.slots and slotAssignments.len > 0:
+    serverArgs.add("--config:" & slotsConfigJson(slotAssignments))
   if config.saveReplayPath.len > 0:
     serverArgs.add("--save-replay:" & config.saveReplayPath)
   if config.configJson.len > 0:
@@ -1136,33 +1267,32 @@ proc runQuickRun(config: QuickRunConfig): int =
       return 1
 
   if config.htmlViewer:
-    openHtmlClients(config, game)
-  elif not launchNativePlayerClients(config, game, rootDir):
+    openHtmlClients(config, game, slotAssignments)
+  elif not launchNativePlayerClients(config, game, rootDir, slotAssignments):
     cleanupChildren()
     return 1
 
   let mapArg = botMapArg(rootDir, config.botMapPath)
   var globalBotIndex = 0
   for bot in botLaunches:
-    let
-      botExe = exePathFor(rootDir, bot.sourceRelative)
-      prefix =
-        if config.botNamePrefix.len > 0:
-          config.botNamePrefix
-        else:
-          bot.label
+    let botExe = exePathFor(rootDir, bot.sourceRelative)
     for i in 0 ..< bot.count:
       inc globalBotIndex
-      let nameIndex =
-        if config.botNamePrefix.len > 0:
-          globalBotIndex
-        else:
-          i + 1
+      let
+        name = config.botSlotName(bot, i, globalBotIndex)
+        assignmentIndex = config.players + globalBotIndex - 1
+        assignment = slotAssignments.slotAssignmentAt(assignmentIndex)
       var botArgs = @[
         "--address:" & clientConnectAddress(config.address),
         "--port:" & $config.port,
-        "--name:" & prefix & $nameIndex
+        "--name:" & name
       ]
+      if assignment.name.len > 0:
+        botArgs.add("--slot:" & $assignmentIndex)
+        botArgs.add("--token:" & assignment.token)
+        botArgs.add(
+          "--url:" & playerWsAddress(config, assignmentIndex, assignment)
+        )
       if config.botGui:
         botArgs.add("--gui")
       if mapArg.len > 0:

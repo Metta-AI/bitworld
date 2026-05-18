@@ -407,8 +407,8 @@ suite "stats":
     let config = defaultGameConfig()
     var sim = initAmongThemForTest(config)
 
-    let imposterIndex = sim.addPlayer("imposter", 1)
     let crewIndex = sim.addPlayer("crew", 0)
+    let imposterIndex = sim.addPlayer("imposter", 1)
     sim.players[imposterIndex].role = Imposter
     sim.players[crewIndex].role = Crewmate
     sim.addReward(imposterIndex, 5)
@@ -511,8 +511,8 @@ suite "stats":
     var sim = initAmongThemForTest(config)
 
     let
-      imposterIndex = sim.addPlayer("imposter", 1)
       crewIndex = sim.addPlayer("crew", 0)
+      imposterIndex = sim.addPlayer("imposter", 1)
     sim.players[imposterIndex].role = Imposter
     sim.players[crewIndex].role = Crewmate
     sim.addReward(imposterIndex, 5)
