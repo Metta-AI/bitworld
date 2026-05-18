@@ -1,6 +1,6 @@
 import mummy, pixie
 import protocol except TileSize
-import server
+import server except ScreenWidth, ScreenHeight
 import sprite_render
 import replays
 import std/[json, locks, monotimes, os, parseopt, strutils, tables, times]
@@ -24,12 +24,7 @@ const
   SaladScoreValue = 3
   TargetFps = 24
   WebSocketPath = "/player"
-  FloorBackdropColor = 3'u8
-  DishOffsetY = 2
   CarryOffsetY = 0
-  WashBarOffsetX = 2
-  WashBarOffsetY = 1
-  WashBarWidth = 8
 
 type
   RunConfig = object
@@ -123,8 +118,6 @@ type
     floorItems: seq[FloorItem]
     sheetSprites: array[SheetSpriteKind, Sprite]
     playerSprites: seq[Sprite]
-    digitSprites: array[10, Sprite]
-    fb: Framebuffer
     rgbaSheetSprites: array[SheetSpriteKind, RgbaSprite]
     rgbaPlayerSprites: seq[RgbaSprite]
 
@@ -163,8 +156,6 @@ proc palettePath(): string =
 proc sheetPath(): string =
   dataDir() / "spritesheet.png"
 
-proc numbersPath(): string =
-  clientDataDir() / "numbers.png"
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
@@ -209,24 +200,6 @@ proc choppedVersion(item: ItemKind): ItemKind =
   of LettuceItem: ChoppedLettuceItem
   else: item
 
-proc drawItem(
-  sim: var SimServer,
-  kind: ItemKind,
-  worldX, worldY, cameraX, cameraY: int
-) =
-  case kind
-  of TomatoPlateItem:
-    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
-  of LettucePlateItem:
-    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedLettuceItem), worldX, worldY, cameraX, cameraY)
-  of SaladItem:
-    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedLettuceItem), worldX, worldY, cameraX, cameraY)
-  else:
-    sim.fb.blitSprite(sim.singleItemSprite(kind), worldX, worldY, cameraX, cameraY)
 
 proc stationBaseSprite(sim: SimServer, kind: StationKind): Sprite =
   case kind
@@ -237,17 +210,6 @@ proc stationBaseSprite(sim: SimServer, kind: StationKind): Sprite =
   of TomatoFridgeStation, LettuceFridgeStation: sim.sheetSprites[SheetFridge]
   of CuttingStation: sim.sheetSprites[SheetCuttingStation]
 
-proc renderNumber(
-  fb: var Framebuffer,
-  digitSprites: array[10, Sprite],
-  value, screenX, screenY: int
-) =
-  let text = $max(0, value)
-  var x = screenX
-  for ch in text:
-    let digit = ord(ch) - ord('0')
-    fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
-    x += digitSprites[digit].width
 
 proc stationIndexAt(sim: SimServer, tx, ty: int): int =
   for i, station in sim.stations:
@@ -373,7 +335,6 @@ proc addPlayer(sim: var SimServer, name: string): int =
 proc initSimServer(seed: int): SimServer =
   discard seed
   let sheetImage = readImage(sheetPath())
-  result.fb = initFramebuffer()
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   loadPalette(palettePath())
   result.sheetSprites[SheetFloor] = sheetImage.sheetCellSprite(0, 0)
@@ -396,7 +357,6 @@ proc initSimServer(seed: int): SimServer =
     sheetImage.sheetCellSprite(2, 1),
     sheetImage.sheetCellSprite(3, 1)
   ]
-  result.digitSprites = loadDigitSprites(numbersPath())
   for kind in SheetSpriteKind:
     result.rgbaSheetSprites[kind] = paletteToRgba(
       Palette, result.sheetSprites[kind].pixels,
@@ -685,154 +645,6 @@ proc updateStations(sim: var SimServer, inputs: openArray[PlayerInput]) =
     else:
       discard
 
-proc drawActionProgress(
-  sim: var SimServer,
-  progress, totalWork, worldX, worldY, cameraX, cameraY: int
-) =
-  let
-    filledWidth = max(
-      1,
-      min(WashBarWidth, (progress * WashBarWidth + totalWork - 1) div totalWork)
-    )
-    screenX = worldX - cameraX + WashBarOffsetX
-    screenY = worldY - cameraY + WashBarOffsetY
-  for barX in 0 ..< WashBarWidth:
-    sim.fb.putPixel(screenX + barX, screenY, 1)
-    sim.fb.putPixel(screenX + barX, screenY + 1, 1)
-  for barX in 0 ..< filledWidth:
-    sim.fb.putPixel(screenX + barX, screenY, 10)
-    sim.fb.putPixel(screenX + barX, screenY + 1, 14)
-
-proc renderSelection(sim: var SimServer, playerIndex, cameraX, cameraY: int) =
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
-
-  let target = sim.players[playerIndex].interactionTile()
-  if not inTileBounds(target.tx, target.ty):
-    return
-
-  sim.fb.blitSprite(
-    sim.sheetSprites[SheetSelection],
-    target.tx * FancyTileSize,
-    target.ty * FancyTileSize,
-    cameraX,
-    cameraY
-  )
-
-proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
-  let
-    startTx = max(0, cameraX div FancyTileSize)
-    startTy = max(0, cameraY div FancyTileSize)
-    endTx = min(WorldWidthTiles - 1, (cameraX + ScreenWidth - 1) div FancyTileSize)
-    endTy = min(WorldHeightTiles - 1, (cameraY + ScreenHeight - 1) div FancyTileSize)
-
-  for ty in startTy .. endTy:
-    for tx in startTx .. endTx:
-      let
-        worldX = tx * FancyTileSize
-        worldY = ty * FancyTileSize
-      sim.fb.blitSprite(sim.sheetSprites[SheetFloor], worldX, worldY, cameraX, cameraY)
-
-      let stationIndex = sim.stationIndexAt(tx, ty)
-      if stationIndex < 0:
-        continue
-
-      let station = sim.stations[stationIndex]
-      sim.fb.blitSprite(sim.stationBaseSprite(station.kind), worldX, worldY, cameraX, cameraY)
-      case station.kind
-      of CounterStation:
-        if station.slotOccupied:
-          sim.drawItem(station.slotItem, worldX, worldY + DishOffsetY, cameraX, cameraY)
-      of DirtyReturnStation:
-        if station.storedCount > 0:
-          sim.drawItem(DirtyDishItem, worldX, worldY + DishOffsetY, cameraX, cameraY)
-      of DeliveryStation:
-        discard
-      of TomatoFridgeStation:
-        sim.drawItem(TomatoItem, worldX, worldY, cameraX, cameraY)
-      of LettuceFridgeStation:
-        sim.drawItem(LettuceItem, worldX, worldY, cameraX, cameraY)
-      of WashStation:
-        if station.slotOccupied:
-          sim.drawItem(station.slotItem, worldX, worldY, cameraX, cameraY)
-        if station.slotOccupied and station.slotItem == DirtyDishItem and station.workProgress > 0:
-          sim.drawActionProgress(station.workProgress, WashWorkNeeded, worldX, worldY, cameraX, cameraY)
-      of CuttingStation:
-        if station.slotOccupied:
-          sim.drawItem(station.slotItem, worldX, worldY, cameraX, cameraY)
-        if station.slotOccupied and station.slotItem.isChoppable() and station.workProgress > 0:
-          sim.drawActionProgress(station.workProgress, ChopWorkNeeded, worldX, worldY, cameraX, cameraY)
-
-proc renderFloorItems(sim: var SimServer, cameraX, cameraY: int) =
-  for item in sim.floorItems:
-    sim.drawItem(
-      item.kind,
-      item.tx * FancyTileSize,
-      item.ty * FancyTileSize,
-      cameraX,
-      cameraY
-    )
-
-proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
-  for player in sim.players:
-    sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY)
-    if player.carrying:
-      sim.drawItem(
-        player.carriedItem,
-        player.x,
-        player.y + CarryOffsetY,
-        cameraX,
-        cameraY
-      )
-
-proc renderHud(sim: var SimServer, playerIndex: int) =
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
-
-  sim.fb.renderNumber(sim.digitSprites, sim.players[playerIndex].score, 0, 0)
-
-proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(FloorBackdropColor)
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return sim.fb.packed
-
-  let player = sim.players[playerIndex]
-  let
-    cameraX = worldClampPixel(
-      player.x + player.sprite.width div 2 - ScreenWidth div 2,
-      WorldWidthPixels - ScreenWidth
-    )
-    cameraY = worldClampPixel(
-      player.y + player.sprite.height div 2 - ScreenHeight div 2,
-      WorldHeightPixels - ScreenHeight
-    )
-
-  sim.renderKitchen(cameraX, cameraY)
-  sim.renderFloorItems(cameraX, cameraY)
-  sim.renderSelection(playerIndex, cameraX, cameraY)
-  sim.renderPlayers(cameraX, cameraY)
-  sim.renderHud(playerIndex)
-  sim.fb.packFramebuffer()
-  sim.fb.packed
-
-proc renderGlobal(sim: var SimServer): seq[uint8] =
-  sim.fb.clearFrame(FloorBackdropColor)
-  var cameraX, cameraY: int
-  if sim.players.len > 0:
-    let p = sim.players[0]
-    cameraX = worldClampPixel(
-      p.x + p.sprite.width div 2 - ScreenWidth div 2,
-      WorldWidthPixels - ScreenWidth
-    )
-    cameraY = worldClampPixel(
-      p.y + p.sprite.height div 2 - ScreenHeight div 2,
-      WorldHeightPixels - ScreenHeight
-    )
-  sim.renderKitchen(cameraX, cameraY)
-  sim.renderFloorItems(cameraX, cameraY)
-  sim.renderPlayers(cameraX, cameraY)
-  sim.fb.packFramebuffer()
-  sim.fb.packed
 
 const
   MapLayerId = 0
@@ -942,6 +754,55 @@ proc buildSpriteFrame(
           sim.rgbaSheetSprites[sprKind].pixels, "station")
         result.addObject(objId, sx, sy, 0, MapLayerId, sprId)
 
+        # Items on stations
+        var itemToShow = ItemKind.low
+        var showItem = false
+        case station.kind
+        of CounterStation:
+          if station.slotOccupied:
+            itemToShow = station.slotItem
+            showItem = true
+        of DirtyReturnStation:
+          if station.storedCount > 0:
+            itemToShow = DirtyDishItem
+            showItem = true
+        of TomatoFridgeStation:
+          itemToShow = TomatoItem
+          showItem = true
+        of LettuceFridgeStation:
+          itemToShow = LettuceItem
+          showItem = true
+        of WashStation:
+          if station.slotOccupied:
+            itemToShow = station.slotItem
+            showItem = true
+        of CuttingStation:
+          if station.slotOccupied:
+            itemToShow = station.slotItem
+            showItem = true
+        of DeliveryStation:
+          discard
+
+        if showItem:
+          let itemSprId = ItemSpriteBase + itemToShow.ord
+          let itemObjId = ItemObjectBase + stationIndex
+          let itemSprKind = case itemToShow
+            of DirtyDishItem: SheetDirtyDish
+            of CleanDishItem: SheetCleanDish
+            of TomatoItem: SheetTomato
+            of LettuceItem: SheetLettuce
+            of ChoppedTomatoItem: SheetChoppedTomato
+            of ChoppedLettuceItem: SheetChoppedLettuce
+            of TomatoPlateItem: SheetCleanDish
+            of LettucePlateItem: SheetCleanDish
+            of SaladItem: SheetCleanDish
+          result.addSpriteCached(nextState.spriteCache,
+            itemSprId, sim.rgbaSheetSprites[itemSprKind].width,
+            sim.rgbaSheetSprites[itemSprKind].height,
+            sim.rgbaSheetSprites[itemSprKind].pixels, "item")
+          result.addObject(itemObjId, sx, sy, 1, MapLayerId, itemSprId)
+          currentIds.add(itemObjId)
+
   # Players
   for pi, player in sim.players:
     let
@@ -958,6 +819,27 @@ proc buildSpriteFrame(
         sim.rgbaPlayerSprites[sprIdx].pixels, "player")
       result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
       currentIds.add(objId)
+
+      if player.carrying:
+        let
+          carrySprKind = case player.carriedItem
+            of DirtyDishItem: SheetDirtyDish
+            of CleanDishItem: SheetCleanDish
+            of TomatoItem: SheetTomato
+            of LettuceItem: SheetLettuce
+            of ChoppedTomatoItem: SheetChoppedTomato
+            of ChoppedLettuceItem: SheetChoppedLettuce
+            of TomatoPlateItem: SheetCleanDish
+            of LettucePlateItem: SheetCleanDish
+            of SaladItem: SheetCleanDish
+          carrySprId = ItemSpriteBase + player.carriedItem.ord
+          carryObjId = PlayerObjectBase + 100 + pi
+        result.addSpriteCached(nextState.spriteCache,
+          carrySprId, sim.rgbaSheetSprites[carrySprKind].width,
+          sim.rgbaSheetSprites[carrySprKind].height,
+          sim.rgbaSheetSprites[carrySprKind].pixels, "carry")
+        result.addObject(carryObjId, sx, sy + CarryOffsetY, sy + 101, MapLayerId, carrySprId)
+        currentIds.add(carryObjId)
 
   # Selection indicator (player view only)
   if not isGlobal and playerIndex >= 0 and playerIndex < sim.players.len:
