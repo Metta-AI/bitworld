@@ -375,11 +375,11 @@
   },
   "player": [
     {
-      "id": "nottoodumb",
-      "name": "nottoodumb",
+      "id": "ivotewell",
+      "name": "ivotewell",
       "type": "player",
       "description": "Deterministic baseline Among Them player used for local smoke episodes.",
-      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest"
+      "image": "ghcr.io/treeform/bitworld-ivotewell:latest"
     }
   ],
   "variants": [
@@ -409,28 +409,28 @@
   "certification": {
     "players": [
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       }
     ],
     "game_config": {
