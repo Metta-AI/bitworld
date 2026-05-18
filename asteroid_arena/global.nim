@@ -348,7 +348,7 @@ proc buildCaptureSprite(sim: SimServer, cp: CapturePoint): RgbaSprite =
   result = newRgbaSprite(dim, dim)
   result.drawCircleFill(center, center, cp.radius, dimColor(color))
   result.drawCircleRing(center, center, cp.radius, 1, color)
-  result.drawCircleRing(center, center, capRadius, 1, color)
+  result.drawCircleRing(center, center, capRadius, 1, dimColor(color))
   if cp.progress > 0 and cp.owners.len == 0:
     let progressRadius = max(cp.radius + 2, cp.progress * (capRadius - cp.radius - 2) div CaptureTicksRequired + cp.radius + 2)
     result.drawCircleRing(center, center, progressRadius, 1, CaptureProgressColor)
