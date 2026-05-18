@@ -2,7 +2,7 @@ import protocol, server, soul, data, output, render_utils
 
 const
   WorldTitleTicks* = 24 * 3
-  WorldDescTicks* = 24 * 10
+  WorldDescTicks* = 24 * 8
 
 proc renderWorld*(fb: var Framebuffer, world: World, worldStep: WorldStep) =
   fb.clearFrame(0)

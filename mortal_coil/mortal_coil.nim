@@ -298,18 +298,14 @@ proc updateNarration(sim: var SimServer) =
         if r.playerIndex < sim.players.len:
           let player = sim.players[r.playerIndex]
           let color = uint8(player.colorIndex)
-          let newPower = r.powerBefore - r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
-          var parts: seq[string]
-          if r.burdenTaken > 0:
-            parts.add("-" & $r.burdenTaken & " self risk")
-          if r.partyBurden > 0:
-            parts.add("-" & $r.partyBurden & " party risk")
-          if r.rewardEarned > 0:
-            parts.add("+" & $r.rewardEarned & " self reward")
-          if r.partyReward > 0:
-            parts.add("+" & $r.partyReward & " party reward")
-          let detail = if parts.len > 0: parts.join(", ") else: "no change"
-          sim.narration.add(("  " & player.name & ": " & detail & " = " & $newPower, color))
+          let newPower = r.powerBefore - r.burdenTaken + r.rewardEarned - r.partyBurden + r.partyReward
+          var line = " " & player.name & ": " & $r.powerBefore & " power"
+          if r.burdenTaken > 0: line.add(" -" & $r.burdenTaken & " burden taken")
+          if r.rewardEarned > 0: line.add(" +" & $r.rewardEarned & " outcome")
+          if r.partyBurden > 0: line.add(" -" & $r.partyBurden & " party burden")
+          if r.partyReward > 0: line.add(" +" & $r.partyReward & " outcome")
+          line.add(" = " & $newPower & " power")
+          sim.narration.add((line, color))
     of ConflictResolution:
       if sim.conflictState.resolution.len > 0:
         sim.narration.add(("", white))

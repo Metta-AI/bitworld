@@ -299,9 +299,10 @@ proc stepConflict*(players: var seq[Player], currentTurn: var int,
   elif conflictState.step == ConflictRecount and conflictTimer <= 0:
     conflictState.recountLine += 1
     if conflictState.recountLine >= ConflictRecountLines:
-      echo "RECOUNT: player=", conflictState.recountPlayer, " results.len=", conflictState.roundResults.len
       let r = conflictState.roundResults[conflictState.recountPlayer]
-      players[r.playerIndex].power += -r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
+      players[r.playerIndex].power += -r.burdenTaken + r.rewardEarned
+      for i in 0 ..< players.len:
+        players[i].power += -r.partyBurden + r.partyReward
       conflictState.recountPlayer += 1
       if conflictState.recountPlayer >= conflictState.roundResults.len:
         conflictState.roundResults = @[]
