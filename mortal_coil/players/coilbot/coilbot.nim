@@ -141,7 +141,7 @@ proc tick(bot: var CoilBot, ws: WebSocket) =
   let selected = bot.label.getField("selected")
 
   if (step == "ConflictChoices" or step == "SituationChoices") and
-      turn == bot.name and selected == "-1":
+      turn.toLowerAscii == bot.name.toLowerAscii and selected == "-1":
     let options = bot.label.getOptions()
     if options.len > 0:
       let header = bot.label.getField("header")
@@ -213,7 +213,8 @@ when isMainModule:
     host = DefaultHost
     port = DefaultPort
     name = "Coilbot"
-    personality = "Strategic and adaptable. Prefer cooperation when risk is high, but willing to exploit when the reward justifies it."
+    #personality = "Strategic and adaptable. Prefer cooperation when risk is high, but willing to exploit when the reward justifies it."
+    personality = "Strategic and adaptable. Makes his choices based on what it internally thinks."
     seed = getMonoTime().ticks
   for kind, key, val in getopt():
     case kind

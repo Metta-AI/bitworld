@@ -648,6 +648,8 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
     runFrameLimiter(lastTick)
 
 when isMainModule:
+  import std/json
+
   var
     address = DefaultHost
     port = DefaultPort
@@ -655,6 +657,7 @@ when isMainModule:
     gui = false
     players = DefaultMinPlayers
     bots = 0
+    configJson = ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
@@ -663,8 +666,15 @@ when isMainModule:
       of "port": port = parseInt(val)
       of "seed": seed = parseInt(val)
       of "gui": gui = true
-      of "players": players = parseInt(val)
+      of "players", "min-players": players = parseInt(val)
       of "bots": bots = parseInt(val)
+      of "config": configJson = val
+      of "config-file":
+        configJson = readFile(val)
       else: discard
     else: discard
+  if configJson.len > 0:
+    let cfg = parseJson(configJson)
+    if cfg.hasKey("seed"): seed = cfg["seed"].getInt()
+    if cfg.hasKey("minPlayers"): players = cfg["minPlayers"].getInt()
   runServerLoop(address, port, seed, gui, players, bots)

@@ -1,0 +1,5 @@
+{
+  "name": "coilbot",
+  "description": "LLM-powered Mortal Coil bot that uses Claude to choose options based on a configurable personality.",
+  "games": ["mortal_coil"]
+}
