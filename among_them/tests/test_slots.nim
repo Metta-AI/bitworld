@@ -209,6 +209,23 @@ suite "player slots":
 
     removeFile(path)
 
+  test "replay records chat packets":
+    let path = getTempDir() / "among_them_chat_replay.bitreplay"
+    if fileExists(path):
+      removeFile(path)
+
+    var writer = openReplayWriter(path, "{}")
+    writer.writeChat(36'u32, 2, "body in Nav sus yellow")
+    writer.closeReplayWriter()
+
+    let data = parseReplayBytes(readFile(path))
+    check data.chats.len == 1
+    check data.chats[0].time == 36'u32
+    check data.chats[0].player == 2'u8
+    check data.chats[0].message == "body in Nav sus yellow"
+
+    removeFile(path)
+
   test "automatic slots wait behind restricted slots":
     var config = defaultGameConfig()
     config.update("""{"slots":[{"name":"reserved","token":"secret"}]}""")
