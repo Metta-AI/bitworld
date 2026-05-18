@@ -34,7 +34,12 @@ const
   ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
+  CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
+  CogameLoadReplayEnv = "COGAME_LOAD_REPLAY_PATH"
+  CogameLoadReplayUriEnv = "COGAME_LOAD_REPLAY_URI"
+  CogameReplayServerEnv = "COGAME_REPLAY_SERVER"
   CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
+  CogameResultsUriEnv = "COGAME_RESULTS_URI"
   CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CoworldManifestName = "coworld_manifest.json"
@@ -62,6 +67,7 @@ const
   LiveKind = "game"
   ReplayKind = "replay"
   BotHost = "host.docker.internal"
+  ReplayMountDir = "/replays"
   PlayerWebSocketPath = "/player"
   PageCss = """
 body {
@@ -1343,6 +1349,10 @@ proc replayPath(name: string): string =
   ## Returns the host path for one replay file.
   replayDir() / cleanReplayName(name)
 
+proc replayContainerPath(name: string): string =
+  ## Returns the replay path inside a Docker container.
+  ReplayMountDir / cleanReplayName(name)
+
 proc replayFileFromPath(path: string): ReplayFile =
   ## Reads replay file metadata from disk.
   result.name = extractFilename(path)
@@ -2180,11 +2190,19 @@ proc baseDockerArgs(
     GameManifestLabel & "=" & manifestKey,
   ]
   if saveReplay:
-    let scores = "/tmp/" & scoresName(replay)
+    let
+      replayFile = replayContainerPath(replay)
+      scores = replayContainerPath(scoresName(replay))
+    result.add("-v")
+    result.add(replayDir() & ":" & ReplayMountDir)
     result.add("-e")
-    result.add(CogameReplayEnv & "=" & "/tmp/" & replay)
+    result.add(CogameReplayEnv & "=" & replayFile)
+    result.add("-e")
+    result.add(CogameReplayUriEnv & "=file://" & replayFile)
     result.add("-e")
     result.add(CogameResultsEnv & "=" & scores)
+    result.add("-e")
+    result.add(CogameResultsUriEnv & "=file://" & scores)
     let token = generateUploadToken(replay)
     let uploadUrl = gamesServerUrl() & ReplayUploadPath
     result.add("-e")
@@ -2477,14 +2495,20 @@ proc createReplayGame(replay: string): GameContainer =
     port = findOpenPort()
     created = getTime().toUnix()
     name = replayGameName(manifestInfo.name, port)
+    loadReplayPath = replayContainerPath(cleanReplay)
   pullDockerImage(image)
   var args = baseDockerArgs(
     name, port, created, cleanReplay, ReplayServer, false,
     manifestInfo.name, manifestInfo.key
   )
-  let downloadUrl = serverUrl & ReplayDownloadPath & cleanReplay
+  args.add("-v")
+  args.add(replayDir() & ":" & ReplayMountDir & ":ro")
   args.add("-e")
-  args.add("REPLAY_DOWNLOAD_URL=" & downloadUrl)
+  args.add(CogameLoadReplayEnv & "=" & loadReplayPath)
+  args.add("-e")
+  args.add(CogameLoadReplayUriEnv & "=file://" & loadReplayPath)
+  args.add("-e")
+  args.add(CogameReplayServerEnv & "=1")
   case dockerMode()
   of "release":
     args.add(image)

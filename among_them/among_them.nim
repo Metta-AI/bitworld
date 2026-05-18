@@ -4,6 +4,7 @@ import
   protocol, sim, server
 
 proc cogamePath(value, source: string): string =
+  ## Converts one COGAME file URI or path into a local path.
   if value.len == 0:
     return ""
   const FilePrefix = "file://"
@@ -18,6 +19,20 @@ proc cogamePath(value, source: string): string =
     quit(1)
   result = value
 
+proc replayPathFromEnv(pathEnv, uriEnv: string): string =
+  ## Reads one replay path from the path env var, then the URI env var.
+  result = getEnv(pathEnv)
+  if result.len == 0:
+    result = cogamePath(getEnv(uriEnv), uriEnv)
+
+proc resultsPathFromEnv(): string =
+  ## Reads one scores path from the current and legacy env vars.
+  result = getEnv("COGAME_SAVE_RESULTS_PATH")
+  if result.len == 0:
+    result = getEnv("COGAME_RESULTS_PATH")
+  if result.len == 0:
+    result = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
+
 when isMainModule:
   var
     address = DefaultHost
@@ -25,9 +40,15 @@ when isMainModule:
     configJson = ""
     configPath = cogamePath(getEnv("COGAME_CONFIG_URI"), "COGAME_CONFIG_URI")
     mapPath = ""
-    saveReplayPath = cogamePath(getEnv("COGAME_SAVE_REPLAY_URI"), "COGAME_SAVE_REPLAY_URI")
-    loadReplayPath = cogamePath(getEnv("COGAME_LOAD_REPLAY_URI"), "COGAME_LOAD_REPLAY_URI")
-    saveScoresPath = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
+    saveReplayPath = replayPathFromEnv(
+      "COGAME_SAVE_REPLAY_PATH",
+      "COGAME_SAVE_REPLAY_URI"
+    )
+    loadReplayPath = replayPathFromEnv(
+      "COGAME_LOAD_REPLAY_PATH",
+      "COGAME_LOAD_REPLAY_URI"
+    )
+    saveScoresPath = resultsPathFromEnv()
     replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
     messageCooldown = -1
   for kind, key, val in getopt():
