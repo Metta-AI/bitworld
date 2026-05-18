@@ -243,7 +243,7 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
         if p.power > 0:
           allSpent = false
           break
-      if allSpent:
+      if sim.chapter >= 3 or allSpent:
         sim.phase = PhaseEnd
       else:
         sim.currentTurn = 0
