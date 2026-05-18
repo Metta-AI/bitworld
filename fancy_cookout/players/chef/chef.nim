@@ -1,5 +1,5 @@
 import
-  std/[os, strutils, options],
+  std/[os, parseopt, strutils, options],
   whisky,
   protocol
 
@@ -200,46 +200,68 @@ proc decide(bot: var Bot): uint8 =
 
   0  # completely stuck
 
+proc connectUrl(address: string, port: int, name, token: string): string =
+  result = "ws://" & address & ":" & $port & "/player?name=" & name
+  if token.len > 0:
+    result.add("&token=" & token)
+
 proc run() =
-  var address = DefaultAddress
-  let envUrl = getEnv("COGAMES_ENGINE_WS_URL", "")
-  if envUrl.len > 0:
-    address = envUrl
-  for i in 1 .. paramCount():
-    let arg = paramStr(i)
-    if arg.startsWith("--address="):
-      address = arg[10..^1]
-    elif arg.startsWith("--name="):
-      let name = arg[7..^1]
-      if not address.contains("name="):
-        address = address & (if '?' in address: "&" else: "?") & "name=" & name
+  var
+    address = "localhost"
+    port = 8080
+    url = getEnv("COGAMES_ENGINE_WS_URL")
+    name = "chef"
+    token = ""
 
-  echo "chef connecting to ", address
-  var ws = newWebSocket(address)
+  for kind, key, value in getopt():
+    case kind
+    of cmdLongOption:
+      case key
+      of "address": address = value
+      of "port": port = parseInt(value)
+      of "url": url = value
+      of "name": name = value
+      of "token": token = value
+      else: discard
+    else: discard
+
+  let endpoint =
+    if url.len > 0: url
+    else: connectUrl(address, port, name, token)
+
+  echo "chef connecting to ", endpoint
+  var ws: WebSocket
+  for attempt in 0 ..< 30:
+    try:
+      ws = newWebSocket(endpoint)
+      break
+    except:
+      if attempt == 29:
+        echo "failed to connect after 30 attempts"
+        return
+      sleep(1000)
   echo "chef connected"
-
-  let firstMsg = ws.receiveMessage()
-  if firstMsg.isNone:
-    echo "no first frame"
-    return
 
   var bot = Bot(
     ws: ws,
-    frame: unpack(firstMsg.get.data),
+    frame: newSeq[uint8](SW * SH),
     wanderDir: 0
   )
 
-  while true:
-    let mask = bot.decide()
-    bot.ws.send(blobFromMask(mask), BinaryMessage)
+  try:
+    while true:
+      let mask = bot.decide()
+      bot.ws.send(blobFromMask(mask), BinaryMessage)
 
-    let msg = ws.receiveMessage()
-    if msg.isNone:
-      echo "disconnected"
-      break
-    if msg.get.kind != BinaryMessage or msg.get.data.len != 8192:
-      continue
-    bot.frame = unpack(msg.get.data)
+      let msg = ws.receiveMessage()
+      if msg.isNone:
+        break
+      if msg.get.kind != BinaryMessage:
+        continue
+      if msg.get.data.len == 8192:
+        bot.frame = unpack(msg.get.data)
+  except CatchableError:
+    discard
 
 when isMainModule:
   run()

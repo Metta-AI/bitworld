@@ -31,27 +31,25 @@ RUN nimby --global sync nimby.lock && \
   cat nim.cfg >> /root/.nimby/nim/config/nim.cfg
 
 COPY . .
-WORKDIR /workspace/bitworld/fancy_cookout
+WORKDIR /workspace/bitworld/fancy_cookout/players/chef
 ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on"
 ARG NimCommand="c"
-ARG NimMain="fancy_cookout.nim"
+ARG NimMain="chef.nim"
 RUN nim $NimCommand \
   $NimFlags \
   --nimcache:/tmp/bitworld-nimcache \
-  --out:fancy_cookout \
+  --out:chef \
   $NimMain
 
 # Run Docker.
 FROM debian:bookworm-slim
 
-WORKDIR /workspace/bitworld
-COPY --from=build \
-  /workspace/bitworld/fancy_cookout/fancy_cookout \
-  /bin/fancy_cookout
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
-COPY --from=build /workspace/bitworld/clients/global_client.html ./clients/
-COPY --from=build /workspace/bitworld/clients/snappyjs.min.js ./clients/
-COPY --from=build /workspace/bitworld/fancy_cookout/data ./fancy_cookout/data
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+  rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace/bitworld/fancy_cookout
-CMD ["/bin/fancy_cookout", "--address:0.0.0.0", "--port:8080"]
+COPY --from=build \
+  /workspace/bitworld/fancy_cookout/players/chef/chef \
+  /bin/chef
+
+CMD ["/bin/chef"]
