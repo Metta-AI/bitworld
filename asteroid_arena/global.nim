@@ -572,6 +572,38 @@ proc buildChatBubbleSprite(text: string, color: RgbaColor): RgbaSprite =
     result.putRgbaPixel(pointerX + py, bodyHeight + py, borderColor)
   result.drawChatText(text, ChatPad, ChatPad, textColor)
 
+proc buildScoreboardSprite(sim: SimServer): RgbaSprite =
+  if sim.players.len == 0:
+    return newRgbaSprite(1, 1)
+  let
+    lineHeight = 7
+    padding = 2
+    swatchSize = 5
+    gap = 2
+    height = sim.players.len * lineHeight + padding * 2
+  var maxScoreWidth = 0
+  for player in sim.players:
+    let w = chatTextWidth($player.score)
+    if w > maxScoreWidth:
+      maxScoreWidth = w
+  let width = padding + swatchSize + gap + maxScoreWidth + padding + 2
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, HudBackdropColor)
+  for x in 0 ..< width:
+    result.putRgbaPixel(x, 0, HudBorderColor)
+    result.putRgbaPixel(x, height - 1, HudBorderColor)
+  for y in 0 ..< height:
+    result.putRgbaPixel(0, y, HudBorderColor)
+    result.putRgbaPixel(width - 1, y, HudBorderColor)
+  for i, player in sim.players:
+    let ty = padding + i * lineHeight + 1
+    for sy in 0 ..< swatchSize:
+      for sx in 0 ..< swatchSize:
+        result.putRgbaPixel(padding + sx, ty + sy, player.color)
+    result.drawChatText($player.score, padding + swatchSize + gap, ty, RgbaColor(r: 255, g: 255, b: 255, a: 255))
+
 proc buildSpriteProtocolUpdates*(
   sim: SimServer,
   state: GlobalViewerState,
@@ -583,6 +615,8 @@ proc buildSpriteProtocolUpdates*(
   if not nextState.initialized:
     result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
     result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
+    result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+    result.addViewport(TopLeftLayerId, 128, 128)
     let background = sim.buildBackgroundSprite(WorldWidthPixels, WorldHeightPixels)
     result.addSprite(
       MapSpriteId,
@@ -691,6 +725,13 @@ proc buildSpriteProtocolUpdates*(
     result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
     result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
     currentIds.add(objId)
+
+  # Scoreboard
+  if sim.players.len > 0:
+    let scoreboard = buildScoreboardSprite(sim)
+    result.addSprite(HudSpriteId, scoreboard.width, scoreboard.height, scoreboard.pixels, "scores")
+    result.addObject(HudObjectId, 1, 1, high(int16), TopLeftLayerId, HudSpriteId)
+    currentIds.add(HudObjectId)
 
   # Delete objects that disappeared
   for objectId in state.objectIds:
