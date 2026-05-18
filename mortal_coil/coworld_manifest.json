@@ -51,7 +51,7 @@
           "type": "array",
           "items": {"type": "integer"}
         },
-        "exploitativity": {
+        "exploitativty": {
           "type": "array",
           "items": {"type": "integer"}
         },

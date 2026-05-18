@@ -433,7 +433,7 @@ proc buildRewardPacket(sim: SimServer): string =
     result.add("power " & player.name & pad & " " & $player.power & "\n")
     result.add("individuality " & player.name & pad & " " & $player.individuality & "\n")
     result.add("cooperativity " & player.name & pad & " " & $player.cooperativity & "\n")
-    result.add("exploitativity " & player.name & pad & " " & $player.exploitativity & "\n")
+    result.add("exploitativty " & player.name & pad & " " & $player.exploitativity & "\n")
     result.add("vicariousness " & player.name & pad & " " & $player.vicariousness & "\n")
 
 proc initSim(seed: int, minPlayers: int): SimServer =
