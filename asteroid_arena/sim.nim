@@ -68,6 +68,9 @@ const
 
   TargetFps* = 24
 
+  ChatMaxChars* = 24
+  ChatLifetimeTicks* = 5 * TargetFps
+
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
@@ -83,9 +86,9 @@ const
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
 
-  BackgroundColor* = RgbaColor(r: 0x29, g: 0xAD, b: 0xFF, a: 255)
-  AsteroidFillColor* = RgbaColor(r: 0x83, g: 0x76, b: 0x9C, a: 255)
-  AsteroidOutlineColor* = RgbaColor(r: 0xFF, g: 0xCC, b: 0xAA, a: 255)
+  BackgroundColor* = RgbaColor(r: 0x0A, g: 0x0A, b: 0x0A, a: 255)
+  AsteroidFillColor* = RgbaColor(r: 0x44, g: 0x44, b: 0x44, a: 255)
+  AsteroidOutlineColor* = RgbaColor(r: 0xAA, g: 0xAA, b: 0xAA, a: 255)
   CoopAsteroidFillColor* = RgbaColor(r: 0xAA, g: 0x20, b: 0x20, a: 255)
   CoopAsteroidOutlineColor* = RgbaColor(r: 0xFF, g: 0x40, b: 0x40, a: 255)
   ThrusterColor* = RgbaColor(r: 0xFF, g: 0x00, b: 0x4D, a: 255)
@@ -95,9 +98,9 @@ const
   HudBackdropColor* = RgbaColor(r: 0x1D, g: 0x2B, b: 0x53, a: 255)
   HudBorderColor* = RgbaColor(r: 0xFF, g: 0xCC, b: 0xAA, a: 255)
   StarColors* = [
-    RgbaColor(r: 0x83, g: 0x76, b: 0x9C, a: 255),
-    RgbaColor(r: 0xFF, g: 0xCC, b: 0xAA, a: 255),
-    RgbaColor(r: 0x7E, g: 0x25, b: 0x53, a: 255)
+    RgbaColor(r: 0x55, g: 0x55, b: 0x55, a: 255),
+    RgbaColor(r: 0x88, g: 0x88, b: 0x88, a: 255),
+    RgbaColor(r: 0xBB, g: 0xBB, b: 0xBB, a: 255)
   ]
   PlayerColors* = [
     RgbaColor(r: 0x00, g: 0x87, b: 0x51, a: 255),  # 3
@@ -185,6 +188,8 @@ type
     invulnTicks*: int
     thrustTicks*: int
     alive*: bool
+    message*: string
+    messageTicks*: int
 
   PlayerInput* = object
     turnLeft*: bool
@@ -656,6 +661,10 @@ proc stepPlayers*(sim: var SimServer, inputs: openArray[PlayerInput]) =
       dec player.invulnTicks
     if player.thrustTicks > 0:
       dec player.thrustTicks
+    if player.messageTicks > 0:
+      dec player.messageTicks
+      if player.messageTicks <= 0:
+        player.message = ""
 
     let input =
       if playerIndex < inputs.len:

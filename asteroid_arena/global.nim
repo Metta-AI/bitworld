@@ -14,6 +14,7 @@ const
   ExplosionSpriteBase = 950
   ShieldSpriteBase = 980
   CaptureSpriteBase = 985
+  ChatSpriteBase = 700
   HudSpriteId = 990
   RespawnSpriteId = 991
 
@@ -22,8 +23,15 @@ const
   BulletObjectBase = 3000
   ExplosionObjectBase = 4000
   CaptureObjectBase = 5000
+  ChatObjectBase = 6000
   HudObjectId = 8000
   RespawnObjectId = 8001
+
+  ChatPad = 2
+  ChatPointerHeight = 2
+  ChatGapY = 3
+  ChatGlyphWidth = 4
+  ChatGlyphHeight = 5
 
   CaptureProgressColor = RgbaColor(r: 0xFF, g: 0xFF, b: 0x40, a: 255)
 
@@ -32,13 +40,21 @@ type
     width, height: int
     pixels: seq[uint8]
 
+  SpriteCacheEntry = object
+    spriteId: int
+    width: int
+    height: int
+    pixels: seq[uint8]
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    spriteCache*: seq[SpriteCacheEntry]
 
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    spriteCache*: seq[SpriteCacheEntry]
 
 proc initGlobalViewerState*(): GlobalViewerState =
   discard
@@ -188,6 +204,39 @@ proc addSprite(
   packet.addU16(label.len)
   for ch in label:
     packet.addU8(uint8(ord(ch)))
+
+proc addSpriteCached(
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
+  spriteId, width, height: int,
+  pixels: openArray[uint8],
+  label = ""
+) =
+  for item in cache.mitems:
+    if item.spriteId != spriteId:
+      continue
+    if item.width == width and item.height == height and
+        item.pixels.len == pixels.len:
+      var unchanged = true
+      for i in 0 ..< pixels.len:
+        if item.pixels[i] != pixels[i]:
+          unchanged = false
+          break
+      if unchanged:
+        return
+    packet.addSprite(spriteId, width, height, pixels, label)
+    item.width = width
+    item.height = height
+    item.pixels.setLen(pixels.len)
+    for i in 0 ..< pixels.len:
+      item.pixels[i] = pixels[i]
+    return
+  packet.addSprite(spriteId, width, height, pixels, label)
+  var entry = SpriteCacheEntry(spriteId: spriteId, width: width, height: height)
+  entry.pixels = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    entry.pixels[i] = pixels[i]
+  cache.add(entry)
 
 proc addObject(
   packet: var seq[uint8],
@@ -340,7 +389,7 @@ proc buildCaptureSprite(sim: SimServer, cp: CapturePoint): RgbaSprite =
   result = newRgbaSprite(dim, dim)
   result.drawCircleFill(center, center, cp.radius, dimColor(color))
   result.drawCircleRing(center, center, cp.radius, 1, color)
-  result.drawCircleRing(center, center, capRadius, 1, color)
+  result.drawCircleRing(center, center, capRadius, 1, dimColor(color))
   if cp.progress > 0 and cp.owners.len == 0:
     let progressRadius = max(cp.radius + 2, cp.progress * (capRadius - cp.radius - 2) div CaptureTicksRequired + cp.radius + 2)
     result.drawCircleRing(center, center, progressRadius, 1, CaptureProgressColor)
@@ -424,6 +473,178 @@ proc buildRespawnSprite(respawnTicks: int): RgbaSprite =
   if seconds > 0:
     result.drawNumber(seconds, 2, 2, HudBorderColor)
 
+const ChatFont: array[95, array[5, uint8]] = [
+  [0b000'u8, 0b000, 0b000, 0b000, 0b000],  # space
+  [0b010'u8, 0b010, 0b010, 0b000, 0b010],  # !
+  [0b101'u8, 0b101, 0b000, 0b000, 0b000],  # "
+  [0b101'u8, 0b111, 0b101, 0b111, 0b101],  # #
+  [0b011'u8, 0b110, 0b010, 0b011, 0b110],  # $
+  [0b101'u8, 0b001, 0b010, 0b100, 0b101],  # %
+  [0b010'u8, 0b101, 0b010, 0b101, 0b011],  # &
+  [0b010'u8, 0b010, 0b000, 0b000, 0b000],  # '
+  [0b001'u8, 0b010, 0b010, 0b010, 0b001],  # (
+  [0b100'u8, 0b010, 0b010, 0b010, 0b100],  # )
+  [0b101'u8, 0b010, 0b101, 0b000, 0b000],  # *
+  [0b000'u8, 0b010, 0b111, 0b010, 0b000],  # +
+  [0b000'u8, 0b000, 0b000, 0b010, 0b100],  # ,
+  [0b000'u8, 0b000, 0b111, 0b000, 0b000],  # -
+  [0b000'u8, 0b000, 0b000, 0b000, 0b010],  # .
+  [0b001'u8, 0b001, 0b010, 0b100, 0b100],  # /
+  [0b111'u8, 0b101, 0b101, 0b101, 0b111],  # 0
+  [0b010'u8, 0b110, 0b010, 0b010, 0b111],  # 1
+  [0b111'u8, 0b001, 0b111, 0b100, 0b111],  # 2
+  [0b111'u8, 0b001, 0b111, 0b001, 0b111],  # 3
+  [0b101'u8, 0b101, 0b111, 0b001, 0b001],  # 4
+  [0b111'u8, 0b100, 0b111, 0b001, 0b111],  # 5
+  [0b111'u8, 0b100, 0b111, 0b101, 0b111],  # 6
+  [0b111'u8, 0b001, 0b010, 0b010, 0b010],  # 7
+  [0b111'u8, 0b101, 0b111, 0b101, 0b111],  # 8
+  [0b111'u8, 0b101, 0b111, 0b001, 0b111],  # 9
+  [0b000'u8, 0b010, 0b000, 0b010, 0b000],  # :
+  [0b000'u8, 0b010, 0b000, 0b010, 0b100],  # ;
+  [0b001'u8, 0b010, 0b100, 0b010, 0b001],  # <
+  [0b000'u8, 0b111, 0b000, 0b111, 0b000],  # =
+  [0b100'u8, 0b010, 0b001, 0b010, 0b100],  # >
+  [0b111'u8, 0b001, 0b011, 0b000, 0b010],  # ?
+  [0b111'u8, 0b101, 0b111, 0b100, 0b111],  # @
+  [0b010'u8, 0b101, 0b111, 0b101, 0b101],  # A
+  [0b110'u8, 0b101, 0b110, 0b101, 0b110],  # B
+  [0b011'u8, 0b100, 0b100, 0b100, 0b011],  # C
+  [0b110'u8, 0b101, 0b101, 0b101, 0b110],  # D
+  [0b111'u8, 0b100, 0b110, 0b100, 0b111],  # E
+  [0b111'u8, 0b100, 0b110, 0b100, 0b100],  # F
+  [0b011'u8, 0b100, 0b101, 0b101, 0b011],  # G
+  [0b101'u8, 0b101, 0b111, 0b101, 0b101],  # H
+  [0b111'u8, 0b010, 0b010, 0b010, 0b111],  # I
+  [0b001'u8, 0b001, 0b001, 0b101, 0b010],  # J
+  [0b101'u8, 0b101, 0b110, 0b101, 0b101],  # K
+  [0b100'u8, 0b100, 0b100, 0b100, 0b111],  # L
+  [0b101'u8, 0b111, 0b111, 0b101, 0b101],  # M
+  [0b101'u8, 0b111, 0b111, 0b111, 0b101],  # N
+  [0b010'u8, 0b101, 0b101, 0b101, 0b010],  # O
+  [0b110'u8, 0b101, 0b110, 0b100, 0b100],  # P
+  [0b010'u8, 0b101, 0b101, 0b111, 0b011],  # Q
+  [0b110'u8, 0b101, 0b110, 0b101, 0b101],  # R
+  [0b011'u8, 0b100, 0b010, 0b001, 0b110],  # S
+  [0b111'u8, 0b010, 0b010, 0b010, 0b010],  # T
+  [0b101'u8, 0b101, 0b101, 0b101, 0b111],  # U
+  [0b101'u8, 0b101, 0b101, 0b101, 0b010],  # V
+  [0b101'u8, 0b101, 0b111, 0b111, 0b101],  # W
+  [0b101'u8, 0b101, 0b010, 0b101, 0b101],  # X
+  [0b101'u8, 0b101, 0b010, 0b010, 0b010],  # Y
+  [0b111'u8, 0b001, 0b010, 0b100, 0b111],  # Z
+  [0b011'u8, 0b010, 0b010, 0b010, 0b011],  # [
+  [0b100'u8, 0b100, 0b010, 0b001, 0b001],  # \
+  [0b110'u8, 0b010, 0b010, 0b010, 0b110],  # ]
+  [0b010'u8, 0b101, 0b000, 0b000, 0b000],  # ^
+  [0b000'u8, 0b000, 0b000, 0b000, 0b111],  # _
+  [0b100'u8, 0b010, 0b000, 0b000, 0b000],  # `
+  [0b000'u8, 0b011, 0b101, 0b101, 0b011],  # a
+  [0b100'u8, 0b110, 0b101, 0b101, 0b110],  # b
+  [0b000'u8, 0b011, 0b100, 0b100, 0b011],  # c
+  [0b001'u8, 0b011, 0b101, 0b101, 0b011],  # d
+  [0b000'u8, 0b010, 0b111, 0b100, 0b011],  # e
+  [0b001'u8, 0b010, 0b111, 0b010, 0b010],  # f
+  [0b000'u8, 0b011, 0b101, 0b011, 0b110],  # g
+  [0b100'u8, 0b110, 0b101, 0b101, 0b101],  # h
+  [0b010'u8, 0b000, 0b010, 0b010, 0b010],  # i
+  [0b010'u8, 0b000, 0b010, 0b010, 0b100],  # j
+  [0b100'u8, 0b101, 0b110, 0b101, 0b101],  # k
+  [0b110'u8, 0b010, 0b010, 0b010, 0b010],  # l
+  [0b000'u8, 0b101, 0b111, 0b101, 0b101],  # m
+  [0b000'u8, 0b110, 0b101, 0b101, 0b101],  # n
+  [0b000'u8, 0b010, 0b101, 0b101, 0b010],  # o
+  [0b000'u8, 0b110, 0b101, 0b110, 0b100],  # p
+  [0b000'u8, 0b011, 0b101, 0b011, 0b001],  # q
+  [0b000'u8, 0b011, 0b100, 0b100, 0b100],  # r
+  [0b000'u8, 0b011, 0b010, 0b110, 0b000],  # s (simplified)
+  [0b010'u8, 0b111, 0b010, 0b010, 0b001],  # t
+  [0b000'u8, 0b101, 0b101, 0b101, 0b011],  # u
+  [0b000'u8, 0b101, 0b101, 0b101, 0b010],  # v
+  [0b000'u8, 0b101, 0b111, 0b111, 0b101],  # w (simplified)
+  [0b000'u8, 0b101, 0b010, 0b010, 0b101],  # x
+  [0b000'u8, 0b101, 0b011, 0b001, 0b110],  # y
+  [0b000'u8, 0b111, 0b010, 0b100, 0b111],  # z
+  [0b001'u8, 0b010, 0b100, 0b010, 0b001],  # {
+  [0b010'u8, 0b010, 0b010, 0b010, 0b010],  # |
+  [0b100'u8, 0b010, 0b001, 0b010, 0b100],  # }
+  [0b000'u8, 0b011, 0b110, 0b000, 0b000],  # ~
+]
+
+proc chatTextWidth(text: string): int =
+  if text.len == 0: return 0
+  text.len * ChatGlyphWidth - 1
+
+proc drawChatChar(sprite: var RgbaSprite, ch: char, x, y: int, color: RgbaColor) =
+  let idx = ord(ch) - 32
+  if idx < 0 or idx >= ChatFont.len:
+    return
+  for row in 0 ..< ChatGlyphHeight:
+    for col in 0 ..< 3:
+      if (ChatFont[idx][row] and (0b100'u8 shr col)) != 0:
+        sprite.putRgbaPixel(x + col, y + row, color)
+
+proc drawChatText(sprite: var RgbaSprite, text: string, x, y: int, color: RgbaColor) =
+  var dx = x
+  for ch in text:
+    sprite.drawChatChar(ch, dx, y, color)
+    dx += ChatGlyphWidth
+
+proc buildChatBubbleSprite(text: string, color: RgbaColor): RgbaSprite =
+  let
+    textWidth = max(ChatGlyphWidth, chatTextWidth(text))
+    bodyWidth = textWidth + ChatPad * 2
+    bodyHeight = ChatGlyphHeight + ChatPad * 2
+    totalHeight = bodyHeight + ChatPointerHeight
+  result = newRgbaSprite(bodyWidth, totalHeight)
+  let
+    borderColor = color
+    fillColor = HudBackdropColor
+    textColor = RgbaColor(r: 255, g: 255, b: 255, a: 255)
+  for y in 0 ..< bodyHeight:
+    for x in 0 ..< bodyWidth:
+      if x == 0 or x == bodyWidth - 1 or y == 0 or y == bodyHeight - 1:
+        result.putRgbaPixel(x, y, borderColor)
+      else:
+        result.putRgbaPixel(x, y, fillColor)
+  let pointerX = bodyWidth div 2
+  for py in 0 ..< ChatPointerHeight:
+    result.putRgbaPixel(pointerX - py, bodyHeight + py, borderColor)
+    result.putRgbaPixel(pointerX + py, bodyHeight + py, borderColor)
+  result.drawChatText(text, ChatPad, ChatPad, textColor)
+
+proc buildScoreboardSprite(sim: SimServer): RgbaSprite =
+  if sim.players.len == 0:
+    return newRgbaSprite(1, 1)
+  let
+    lineHeight = 7
+    padding = 2
+    swatchSize = 5
+    gap = 2
+    height = sim.players.len * lineHeight + padding * 2
+  var maxScoreWidth = 0
+  for player in sim.players:
+    let w = chatTextWidth($player.score)
+    if w > maxScoreWidth:
+      maxScoreWidth = w
+  let width = padding + swatchSize + gap + maxScoreWidth + padding + 2
+  result = newRgbaSprite(width, height)
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      result.putRgbaPixel(x, y, HudBackdropColor)
+  for x in 0 ..< width:
+    result.putRgbaPixel(x, 0, HudBorderColor)
+    result.putRgbaPixel(x, height - 1, HudBorderColor)
+  for y in 0 ..< height:
+    result.putRgbaPixel(0, y, HudBorderColor)
+    result.putRgbaPixel(width - 1, y, HudBorderColor)
+  for i, player in sim.players:
+    let ty = padding + i * lineHeight + 1
+    for sy in 0 ..< swatchSize:
+      for sx in 0 ..< swatchSize:
+        result.putRgbaPixel(padding + sx, ty + sy, player.color)
+    result.drawChatText($player.score, padding + swatchSize + gap, ty, RgbaColor(r: 255, g: 255, b: 255, a: 255))
+
 proc buildSpriteProtocolUpdates*(
   sim: SimServer,
   state: GlobalViewerState,
@@ -435,8 +656,11 @@ proc buildSpriteProtocolUpdates*(
   if not nextState.initialized:
     result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
     result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
+    result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+    result.addViewport(TopLeftLayerId, 128, 128)
     let background = sim.buildBackgroundSprite(WorldWidthPixels, WorldHeightPixels)
-    result.addSprite(
+    result.addSpriteCached(
+      nextState.spriteCache,
       MapSpriteId,
       background.width,
       background.height,
@@ -464,7 +688,7 @@ proc buildSpriteProtocolUpdates*(
       sx = player.x div MotionScale - ship.width div 2
       sy = player.y div MotionScale - ship.height div 2
       objId = ShipObjectBase + playerIndex
-    result.addSprite(sprId, ship.width, ship.height, ship.pixels, "ship")
+    result.addSpriteCached(nextState.spriteCache, sprId, ship.width, ship.height, ship.pixels, "ship")
     result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -475,9 +699,25 @@ proc buildSpriteProtocolUpdates*(
         shieldObjId = ShipObjectBase + 100 + playerIndex
         shieldX = player.x div MotionScale - shield.width div 2
         shieldY = player.y div MotionScale - shield.height div 2
-      result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
+      result.addSpriteCached(nextState.spriteCache, shieldSprId, shield.width, shield.height, shield.pixels, "shield")
       result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
       currentIds.add(shieldObjId)
+
+  # Chat bubbles above ships
+  for playerIndex, player in sim.players:
+    if player.message.len == 0 or player.messageTicks <= 0:
+      continue
+    if not player.alive:
+      continue
+    let
+      bubble = buildChatBubbleSprite(player.message, player.color)
+      sx = player.x div MotionScale - bubble.width div 2
+      sy = player.y div MotionScale - 9 div 2 - bubble.height - ChatGapY
+      sprId = ChatSpriteBase + playerIndex
+      objId = ChatObjectBase + playerIndex
+    result.addSpriteCached(nextState.spriteCache, sprId, bubble.width, bubble.height, bubble.pixels, "chat")
+    result.addObject(objId, sx, sy, sy + 300, MapLayerId, sprId)
+    currentIds.add(objId)
 
   # Asteroid sprites and objects
   for i, asteroid in sim.asteroids:
@@ -487,7 +727,7 @@ proc buildSpriteProtocolUpdates*(
       sx = asteroid.x div MotionScale - spr.width div 2
       sy = asteroid.y div MotionScale - spr.height div 2
       objId = AsteroidObjectBase + (asteroid.id mod 1000)
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "asteroid")
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "asteroid")
     result.addObject(objId, sx, sy, sy, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -500,7 +740,7 @@ proc buildSpriteProtocolUpdates*(
       sx = bullet.x div MotionScale - 1
       sy = bullet.y div MotionScale - 1
       objId = BulletObjectBase + i
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "bullet")
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "bullet")
     result.addObject(objId, sx, sy, sy + 50, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -512,7 +752,7 @@ proc buildSpriteProtocolUpdates*(
       sx = explosion.x div MotionScale - spr.width div 2
       sy = explosion.y div MotionScale - spr.height div 2
       objId = ExplosionObjectBase + i
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "explosion")
     result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -524,9 +764,16 @@ proc buildSpriteProtocolUpdates*(
       sy = cp.y div MotionScale - spr.height div 2
       objId = CaptureObjectBase + i
       label = if cp.owners.len > 0: "capture owned" else: "capture"
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, label)
     result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
     currentIds.add(objId)
+
+  # Scoreboard
+  if sim.players.len > 0:
+    let scoreboard = buildScoreboardSprite(sim)
+    result.addSpriteCached(nextState.spriteCache, HudSpriteId, scoreboard.width, scoreboard.height, scoreboard.pixels, "scores")
+    result.addObject(HudObjectId, 1, 1, high(int16), TopLeftLayerId, HudSpriteId)
+    currentIds.add(HudObjectId)
 
   # Delete objects that disappeared
   for objectId in state.objectIds:
@@ -569,7 +816,8 @@ proc buildSpriteProtocolPlayerUpdates*(
 
   # Background sprite with wrapped stars
   let background = sim.buildPlayerBackgroundSprite(cameraPixelX, cameraPixelY)
-  result.addSprite(
+  result.addSpriteCached(
+    nextState.spriteCache,
     MapSpriteId,
     background.width,
     background.height,
@@ -596,7 +844,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       sy = screenY - ship.height div 2
     if sx > -ship.width and sx < ScreenWidth and sy > -ship.height and sy < ScreenHeight:
       let objId = ShipObjectBase + pi
-      result.addSprite(sprId, ship.width, ship.height, ship.pixels, "ship")
+      result.addSpriteCached(nextState.spriteCache, sprId, ship.width, ship.height, ship.pixels, "ship")
       result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -607,9 +855,29 @@ proc buildSpriteProtocolPlayerUpdates*(
           shieldObjId = ShipObjectBase + 100 + pi
           shieldX = screenX - shield.width div 2
           shieldY = screenY - shield.height div 2
-        result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
+        result.addSpriteCached(nextState.spriteCache, shieldSprId, shield.width, shield.height, shield.pixels, "shield")
         result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
         currentIds.add(shieldObjId)
+
+  # Chat bubbles above ships
+  for pi, p in sim.players:
+    if p.message.len == 0 or p.messageTicks <= 0:
+      continue
+    if not p.alive:
+      continue
+    let
+      bubble = buildChatBubbleSprite(p.message, p.color)
+      screenX = ScreenWidth div 2 + wrappedDelta(p.x, cameraX, WorldWidthUnits) div MotionScale
+      screenY = ScreenHeight div 2 + wrappedDelta(p.y, cameraY, WorldHeightUnits) div MotionScale
+      bx = screenX - bubble.width div 2
+      by = screenY - 9 div 2 - bubble.height - ChatGapY
+    if bx > -bubble.width and bx < ScreenWidth and by > -bubble.height and by < ScreenHeight:
+      let
+        sprId = ChatSpriteBase + pi
+        objId = ChatObjectBase + pi
+      result.addSpriteCached(nextState.spriteCache, sprId, bubble.width, bubble.height, bubble.pixels, "chat")
+      result.addObject(objId, bx, by, by + 300, MapLayerId, sprId)
+      currentIds.add(objId)
 
   # Asteroids
   for i, asteroid in sim.asteroids:
@@ -623,7 +891,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       let
         sprId = asteroidSpriteId(asteroid)
         objId = AsteroidObjectBase + (asteroid.id mod 1000)
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "asteroid")
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "asteroid")
       result.addObject(objId, sx, sy, sy, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -640,7 +908,7 @@ proc buildSpriteProtocolPlayerUpdates*(
         sx = screenX - 1
         sy = screenY - 1
         objId = BulletObjectBase + i
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "bullet")
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "bullet")
       result.addObject(objId, sx, sy, sy + 50, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -656,7 +924,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       let
         sprId = explosionSpriteId(i)
         objId = ExplosionObjectBase + i
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "explosion")
       result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -672,20 +940,21 @@ proc buildSpriteProtocolPlayerUpdates*(
         sprId = CaptureSpriteBase + i
         objId = CaptureObjectBase + i
         label = if cp.owners.len > 0: "capture owned" else: "capture"
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, label)
       result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
       currentIds.add(objId)
 
   # HUD
   let hud = buildHudSprite(player.score, player.color)
-  result.addSprite(HudSpriteId, hud.width, hud.height, hud.pixels, "hud")
+  result.addSpriteCached(nextState.spriteCache, HudSpriteId, hud.width, hud.height, hud.pixels, "hud")
   result.addObject(HudObjectId, 1, 1, high(int16), TopLeftLayerId, HudSpriteId)
   currentIds.add(HudObjectId)
 
   # Respawn overlay
   if not player.alive:
     let respawn = buildRespawnSprite(player.respawnTicks)
-    result.addSprite(
+    result.addSpriteCached(
+      nextState.spriteCache,
       RespawnSpriteId,
       respawn.width,
       respawn.height,
