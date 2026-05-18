@@ -126,6 +126,7 @@ type
     playerNames: Table[WebSocket, string]
     closedSockets: seq[WebSocket]
     rewardViewers: Table[WebSocket, bool]
+    globalViewers: Table[WebSocket, bool]
     resetRequested: bool
 
   ServerThreadArgs = object
@@ -796,6 +797,25 @@ proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.packFramebuffer()
   sim.fb.packed
 
+proc renderGlobal(sim: var SimServer): seq[uint8] =
+  sim.fb.clearFrame(FloorBackdropColor)
+  var cameraX, cameraY: int
+  if sim.players.len > 0:
+    let p = sim.players[0]
+    cameraX = worldClampPixel(
+      p.x + p.sprite.width div 2 - ScreenWidth div 2,
+      WorldWidthPixels - ScreenWidth
+    )
+    cameraY = worldClampPixel(
+      p.y + p.sprite.height div 2 - ScreenHeight div 2,
+      WorldHeightPixels - ScreenHeight
+    )
+  sim.renderKitchen(cameraX, cameraY)
+  sim.renderFloorItems(cameraX, cameraY)
+  sim.renderPlayers(cameraX, cameraY)
+  sim.fb.packFramebuffer()
+  sim.fb.packed
+
 proc rewardScore(sim: SimServer, playerIndex: int): int =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return 0
@@ -863,6 +883,7 @@ proc initAppState() =
   appState.playerNames = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.globalViewers = initTable[WebSocket, bool]()
   appState.resetRequested = false
 
 proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
@@ -878,6 +899,8 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
   if websocket notin appState.playerIndices:
     return
 
@@ -908,17 +931,48 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
+proc isWebSocketUpgrade(request: Request): bool =
+  request.headers["Sec-WebSocket-Key"].len > 0
+
+proc servePlayerClient(request: Request) =
+  let path = repoDir() / "clients" / "player_client.html"
+  if not fileExists(path):
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain"
+    request.respond(404, headers, "Client not found")
+    return
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, readFile(path))
+
 proc httpHandler(request: Request) =
-  if request.path == WebSocketPath and request.httpMethod == "GET":
+  if request.path == WebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == "/reward" and request.httpMethod == "GET":
+  elif request.path == WebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    request.servePlayerClient()
+  elif request.path == "/global" and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = true
+  elif request.path == "/global" and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    request.servePlayerClient()
+  elif request.path == "/reward" and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.rewardViewers[websocket] = true
+  elif request.path == "/" and request.httpMethod == "GET":
+    request.servePlayerClient()
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -933,7 +987,7 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.rewardViewers:
+        if websocket in appState.playerNames:
           appState.playerIndices[websocket] = 0x7fffffff
           appState.inputMasks[websocket] = 0
           appState.lastAppliedMasks[websocket] = 0
@@ -996,6 +1050,7 @@ proc runServerLoop(
       inputs: seq[PlayerInput]
       shouldReset = false
       rewardViewers: seq[WebSocket] = @[]
+      globalViewers: seq[WebSocket] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -1031,6 +1086,8 @@ proc runServerLoop(
 
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+        for websocket in appState.globalViewers.keys:
+          globalViewers.add(websocket)
 
     if shouldReset:
       inc currentSeed
@@ -1062,6 +1119,16 @@ proc runServerLoop(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(sockets[i])
+
+    if globalViewers.len > 0:
+      let globalBlob = blobFromBytes(sim.renderGlobal())
+      for websocket in globalViewers:
+        try:
+          websocket.send(globalBlob, BinaryMessage)
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              appState.globalViewers.del(websocket)
 
     let rewardPacket = sim.buildRewardPacket()
     for websocket in rewardViewers:
