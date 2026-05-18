@@ -424,11 +424,17 @@ proc buildTextSprites(sim: SimServer): seq[TextSprite] =
   sprite(0, 0, "", meta)
 
 proc buildRewardPacket(sim: SimServer): string =
+  var maxNameLen = 0
   for player in sim.players:
-    result.add("individuality " & player.name & " " & $player.individuality & "\n")
-    result.add("cooperativity " & player.name & " " & $player.cooperativity & "\n")
-    result.add("exploitativity " & player.name & " " & $player.exploitativity & "\n")
-    result.add("vicariousness " & player.name & " " & $player.vicariousness & "\n")
+    if player.name.len > maxNameLen:
+      maxNameLen = player.name.len
+  for player in sim.players:
+    let pad = " ".repeat(maxNameLen - player.name.len)
+    result.add("power " & player.name & pad & " " & $player.power & "\n")
+    result.add("individuality " & player.name & pad & " " & $player.individuality & "\n")
+    result.add("cooperativity " & player.name & pad & " " & $player.cooperativity & "\n")
+    result.add("exploitativity " & player.name & pad & " " & $player.exploitativity & "\n")
+    result.add("vicariousness " & player.name & pad & " " & $player.vicariousness & "\n")
 
 proc initSim(seed: int, minPlayers: int): SimServer =
   result.phase = PhaseLobby

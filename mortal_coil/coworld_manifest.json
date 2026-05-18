@@ -39,6 +39,10 @@
           "type": "array",
           "items": {"type": "number"}
         },
+        "power": {
+          "type": "array",
+          "items": {"type": "integer"}
+        },
         "individuality": {
           "type": "array",
           "items": {"type": "integer"}
