@@ -1,6 +1,8 @@
 import mummy, pixie
 import protocol except TileSize
-import server
+import server except ScreenWidth, ScreenHeight
+import sprite_render
+import replays
 import std/[json, locks, monotimes, os, parseopt, strutils, tables, times]
 
 const
@@ -22,18 +24,19 @@ const
   SaladScoreValue = 3
   TargetFps = 24
   WebSocketPath = "/player"
-  FloorBackdropColor = 3'u8
-  DishOffsetY = 2
   CarryOffsetY = 0
-  WashBarOffsetX = 2
-  WashBarOffsetY = 1
-  WashBarWidth = 8
 
 type
   RunConfig = object
     address: string
     port: int
     seed: int
+    maxTicks: int
+    maxGames: int
+    tokens: seq[string]
+    resultsPath: string
+    saveReplayPath: string
+    configJson: string
 
   ItemKind = enum
     DirtyDishItem
@@ -115,8 +118,8 @@ type
     floorItems: seq[FloorItem]
     sheetSprites: array[SheetSpriteKind, Sprite]
     playerSprites: seq[Sprite]
-    digitSprites: array[10, Sprite]
-    fb: Framebuffer
+    rgbaSheetSprites: array[SheetSpriteKind, RgbaSprite]
+    rgbaPlayerSprites: seq[RgbaSprite]
 
   WebSocketAppState = object
     lock: Lock
@@ -124,8 +127,10 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     playerNames: Table[WebSocket, string]
+    playerViewerStates: Table[WebSocket, SpriteViewerState]
     closedSockets: seq[WebSocket]
     rewardViewers: Table[WebSocket, bool]
+    globalViewers: Table[WebSocket, SpriteViewerState]
     resetRequested: bool
 
   ServerThreadArgs = object
@@ -151,8 +156,6 @@ proc palettePath(): string =
 proc sheetPath(): string =
   dataDir() / "spritesheet.png"
 
-proc numbersPath(): string =
-  clientDataDir() / "numbers.png"
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
@@ -197,24 +200,6 @@ proc choppedVersion(item: ItemKind): ItemKind =
   of LettuceItem: ChoppedLettuceItem
   else: item
 
-proc drawItem(
-  sim: var SimServer,
-  kind: ItemKind,
-  worldX, worldY, cameraX, cameraY: int
-) =
-  case kind
-  of TomatoPlateItem:
-    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
-  of LettucePlateItem:
-    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedLettuceItem), worldX, worldY, cameraX, cameraY)
-  of SaladItem:
-    sim.fb.blitSprite(sim.singleItemSprite(CleanDishItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedTomatoItem), worldX, worldY, cameraX, cameraY)
-    sim.fb.blitSprite(sim.singleItemSprite(ChoppedLettuceItem), worldX, worldY, cameraX, cameraY)
-  else:
-    sim.fb.blitSprite(sim.singleItemSprite(kind), worldX, worldY, cameraX, cameraY)
 
 proc stationBaseSprite(sim: SimServer, kind: StationKind): Sprite =
   case kind
@@ -225,17 +210,6 @@ proc stationBaseSprite(sim: SimServer, kind: StationKind): Sprite =
   of TomatoFridgeStation, LettuceFridgeStation: sim.sheetSprites[SheetFridge]
   of CuttingStation: sim.sheetSprites[SheetCuttingStation]
 
-proc renderNumber(
-  fb: var Framebuffer,
-  digitSprites: array[10, Sprite],
-  value, screenX, screenY: int
-) =
-  let text = $max(0, value)
-  var x = screenX
-  for ch in text:
-    let digit = ord(ch) - ord('0')
-    fb.blitSprite(digitSprites[digit], x, screenY, 0, 0)
-    x += digitSprites[digit].width
 
 proc stationIndexAt(sim: SimServer, tx, ty: int): int =
   for i, station in sim.stations:
@@ -361,7 +335,6 @@ proc addPlayer(sim: var SimServer, name: string): int =
 proc initSimServer(seed: int): SimServer =
   discard seed
   let sheetImage = readImage(sheetPath())
-  result.fb = initFramebuffer()
   result.tiles = newSeq[bool](WorldWidthTiles * WorldHeightTiles)
   loadPalette(palettePath())
   result.sheetSprites[SheetFloor] = sheetImage.sheetCellSprite(0, 0)
@@ -384,7 +357,13 @@ proc initSimServer(seed: int): SimServer =
     sheetImage.sheetCellSprite(2, 1),
     sheetImage.sheetCellSprite(3, 1)
   ]
-  result.digitSprites = loadDigitSprites(numbersPath())
+  for kind in SheetSpriteKind:
+    result.rgbaSheetSprites[kind] = paletteToRgba(
+      Palette, result.sheetSprites[kind].pixels,
+      result.sheetSprites[kind].width, result.sheetSprites[kind].height
+    )
+  for sprite in result.playerSprites:
+    result.rgbaPlayerSprites.add(paletteToRgba(Palette, sprite.pixels, sprite.width, sprite.height))
   result.initKitchen()
 
 proc applyMomentumAxis(
@@ -666,135 +645,221 @@ proc updateStations(sim: var SimServer, inputs: openArray[PlayerInput]) =
     else:
       discard
 
-proc drawActionProgress(
-  sim: var SimServer,
-  progress, totalWork, worldX, worldY, cameraX, cameraY: int
-) =
-  let
-    filledWidth = max(
-      1,
-      min(WashBarWidth, (progress * WashBarWidth + totalWork - 1) div totalWork)
+
+const
+  MapLayerId = 0
+  MapLayerType = 0
+  ZoomableLayerFlag = 1
+  TopLeftLayerId = 1
+  TopLeftLayerType = 1
+  UiLayerFlag = 2
+
+  FloorSpriteId = 1
+  StationSpriteBase = 10    # +SheetSpriteKind.ord
+  ItemSpriteBase = 30       # +ItemKind.ord
+  PlayerSpriteBase = 50     # +playerIndex
+  SelectionSpriteId = 5
+
+  TileObjectBase = 100      # +tileIndex (up to 324 tiles)
+  ItemObjectBase = 500      # +stationIndex or floorItemIndex
+  PlayerObjectBase = 900    # +playerIndex
+  SelectionObjectId = 950
+  HudObjectId = 960
+
+proc buildSpriteFrame(
+  sim: SimServer,
+  playerIndex: int,
+  state: SpriteViewerState,
+  nextState: var SpriteViewerState,
+  isGlobal: bool
+): seq[uint8] =
+  result = @[]
+  nextState = state
+
+  if not nextState.initialized:
+    result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
+    if isGlobal:
+      result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
+    else:
+      result.addViewport(MapLayerId, SpriteScreenWidth, SpriteScreenHeight)
+      result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+      result.addViewport(TopLeftLayerId, SpriteScreenWidth, 12)
+    nextState.initialized = true
+
+  var currentIds: seq[int] = @[]
+
+  # Determine visible area
+  var cameraX, cameraY, viewW, viewH: int
+  if isGlobal:
+    cameraX = 0
+    cameraY = 0
+    viewW = WorldWidthPixels
+    viewH = WorldHeightPixels
+  else:
+    if playerIndex < 0 or playerIndex >= sim.players.len:
+      for objectId in state.objectIds:
+        if objectId notin currentIds:
+          result.addDeleteObject(objectId)
+      nextState.objectIds = currentIds
+      return
+    let player = sim.players[playerIndex]
+    cameraX = worldClampPixel(
+      player.x + player.sprite.width div 2 - SpriteScreenWidth div 2,
+      WorldWidthPixels - SpriteScreenWidth
     )
-    screenX = worldX - cameraX + WashBarOffsetX
-    screenY = worldY - cameraY + WashBarOffsetY
-  for barX in 0 ..< WashBarWidth:
-    sim.fb.putPixel(screenX + barX, screenY, 1)
-    sim.fb.putPixel(screenX + barX, screenY + 1, 1)
-  for barX in 0 ..< filledWidth:
-    sim.fb.putPixel(screenX + barX, screenY, 10)
-    sim.fb.putPixel(screenX + barX, screenY + 1, 14)
+    cameraY = worldClampPixel(
+      player.y + player.sprite.height div 2 - SpriteScreenHeight div 2,
+      WorldHeightPixels - SpriteScreenHeight
+    )
+    viewW = SpriteScreenWidth
+    viewH = SpriteScreenHeight
 
-proc renderSelection(sim: var SimServer, playerIndex, cameraX, cameraY: int) =
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
-
-  let target = sim.players[playerIndex].interactionTile()
-  if not inTileBounds(target.tx, target.ty):
-    return
-
-  sim.fb.blitSprite(
-    sim.sheetSprites[SheetSelection],
-    target.tx * FancyTileSize,
-    target.ty * FancyTileSize,
-    cameraX,
-    cameraY
-  )
-
-proc renderKitchen(sim: var SimServer, cameraX, cameraY: int) =
+  # Render kitchen tiles
   let
     startTx = max(0, cameraX div FancyTileSize)
     startTy = max(0, cameraY div FancyTileSize)
-    endTx = min(WorldWidthTiles - 1, (cameraX + ScreenWidth - 1) div FancyTileSize)
-    endTy = min(WorldHeightTiles - 1, (cameraY + ScreenHeight - 1) div FancyTileSize)
+    endTx = min(WorldWidthTiles - 1, (cameraX + viewW - 1) div FancyTileSize)
+    endTy = min(WorldHeightTiles - 1, (cameraY + viewH - 1) div FancyTileSize)
+
+  # Floor sprite (send once via cache)
+  result.addSpriteCached(nextState.spriteCache,
+    FloorSpriteId, sim.rgbaSheetSprites[SheetFloor].width,
+    sim.rgbaSheetSprites[SheetFloor].height,
+    sim.rgbaSheetSprites[SheetFloor].pixels, "floor")
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
       let
-        worldX = tx * FancyTileSize
-        worldY = ty * FancyTileSize
-      sim.fb.blitSprite(sim.sheetSprites[SheetFloor], worldX, worldY, cameraX, cameraY)
+        objId = TileObjectBase + ty * WorldWidthTiles + tx
+        sx = tx * FancyTileSize - cameraX
+        sy = ty * FancyTileSize - cameraY
+      currentIds.add(objId)
 
       let stationIndex = sim.stationIndexAt(tx, ty)
       if stationIndex < 0:
-        continue
+        result.addObject(objId, sx, sy, 0, MapLayerId, FloorSpriteId)
+      else:
+        let station = sim.stations[stationIndex]
+        let sprKind = case station.kind
+          of CounterStation: SheetCounter
+          of DirtyReturnStation: SheetDirtyReturn
+          of WashStation: SheetWashStation
+          of DeliveryStation: SheetCleanRack
+          of TomatoFridgeStation, LettuceFridgeStation: SheetFridge
+          of CuttingStation: SheetCuttingStation
+        let sprId = StationSpriteBase + sprKind.ord
+        result.addSpriteCached(nextState.spriteCache,
+          sprId, sim.rgbaSheetSprites[sprKind].width,
+          sim.rgbaSheetSprites[sprKind].height,
+          sim.rgbaSheetSprites[sprKind].pixels, "station")
+        result.addObject(objId, sx, sy, 0, MapLayerId, sprId)
 
-      let station = sim.stations[stationIndex]
-      sim.fb.blitSprite(sim.stationBaseSprite(station.kind), worldX, worldY, cameraX, cameraY)
-      case station.kind
-      of CounterStation:
-        if station.slotOccupied:
-          sim.drawItem(station.slotItem, worldX, worldY + DishOffsetY, cameraX, cameraY)
-      of DirtyReturnStation:
-        if station.storedCount > 0:
-          sim.drawItem(DirtyDishItem, worldX, worldY + DishOffsetY, cameraX, cameraY)
-      of DeliveryStation:
-        discard
-      of TomatoFridgeStation:
-        sim.drawItem(TomatoItem, worldX, worldY, cameraX, cameraY)
-      of LettuceFridgeStation:
-        sim.drawItem(LettuceItem, worldX, worldY, cameraX, cameraY)
-      of WashStation:
-        if station.slotOccupied:
-          sim.drawItem(station.slotItem, worldX, worldY, cameraX, cameraY)
-        if station.slotOccupied and station.slotItem == DirtyDishItem and station.workProgress > 0:
-          sim.drawActionProgress(station.workProgress, WashWorkNeeded, worldX, worldY, cameraX, cameraY)
-      of CuttingStation:
-        if station.slotOccupied:
-          sim.drawItem(station.slotItem, worldX, worldY, cameraX, cameraY)
-        if station.slotOccupied and station.slotItem.isChoppable() and station.workProgress > 0:
-          sim.drawActionProgress(station.workProgress, ChopWorkNeeded, worldX, worldY, cameraX, cameraY)
+        # Items on stations
+        var itemToShow = ItemKind.low
+        var showItem = false
+        case station.kind
+        of CounterStation:
+          if station.slotOccupied:
+            itemToShow = station.slotItem
+            showItem = true
+        of DirtyReturnStation:
+          if station.storedCount > 0:
+            itemToShow = DirtyDishItem
+            showItem = true
+        of TomatoFridgeStation:
+          itemToShow = TomatoItem
+          showItem = true
+        of LettuceFridgeStation:
+          itemToShow = LettuceItem
+          showItem = true
+        of WashStation:
+          if station.slotOccupied:
+            itemToShow = station.slotItem
+            showItem = true
+        of CuttingStation:
+          if station.slotOccupied:
+            itemToShow = station.slotItem
+            showItem = true
+        of DeliveryStation:
+          discard
 
-proc renderFloorItems(sim: var SimServer, cameraX, cameraY: int) =
-  for item in sim.floorItems:
-    sim.drawItem(
-      item.kind,
-      item.tx * FancyTileSize,
-      item.ty * FancyTileSize,
-      cameraX,
-      cameraY
-    )
+        if showItem:
+          let itemSprId = ItemSpriteBase + itemToShow.ord
+          let itemObjId = ItemObjectBase + stationIndex
+          let itemSprKind = case itemToShow
+            of DirtyDishItem: SheetDirtyDish
+            of CleanDishItem: SheetCleanDish
+            of TomatoItem: SheetTomato
+            of LettuceItem: SheetLettuce
+            of ChoppedTomatoItem: SheetChoppedTomato
+            of ChoppedLettuceItem: SheetChoppedLettuce
+            of TomatoPlateItem: SheetCleanDish
+            of LettucePlateItem: SheetCleanDish
+            of SaladItem: SheetCleanDish
+          result.addSpriteCached(nextState.spriteCache,
+            itemSprId, sim.rgbaSheetSprites[itemSprKind].width,
+            sim.rgbaSheetSprites[itemSprKind].height,
+            sim.rgbaSheetSprites[itemSprKind].pixels, "item")
+          result.addObject(itemObjId, sx, sy, 1, MapLayerId, itemSprId)
+          currentIds.add(itemObjId)
 
-proc renderPlayers(sim: var SimServer, cameraX, cameraY: int) =
-  for player in sim.players:
-    sim.fb.blitSprite(player.sprite, player.x, player.y, cameraX, cameraY)
-    if player.carrying:
-      sim.drawItem(
-        player.carriedItem,
-        player.x,
-        player.y + CarryOffsetY,
-        cameraX,
-        cameraY
-      )
+  # Players
+  for pi, player in sim.players:
+    let
+      sx = player.x - cameraX
+      sy = player.y - cameraY
+    if sx > -FancyTileSize and sx < viewW and sy > -FancyTileSize and sy < viewH:
+      let
+        sprIdx = pi mod sim.rgbaPlayerSprites.len
+        sprId = PlayerSpriteBase + sprIdx
+        objId = PlayerObjectBase + pi
+      result.addSpriteCached(nextState.spriteCache,
+        sprId, sim.rgbaPlayerSprites[sprIdx].width,
+        sim.rgbaPlayerSprites[sprIdx].height,
+        sim.rgbaPlayerSprites[sprIdx].pixels, "player")
+      result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
+      currentIds.add(objId)
 
-proc renderHud(sim: var SimServer, playerIndex: int) =
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return
+      if player.carrying:
+        let
+          carrySprKind = case player.carriedItem
+            of DirtyDishItem: SheetDirtyDish
+            of CleanDishItem: SheetCleanDish
+            of TomatoItem: SheetTomato
+            of LettuceItem: SheetLettuce
+            of ChoppedTomatoItem: SheetChoppedTomato
+            of ChoppedLettuceItem: SheetChoppedLettuce
+            of TomatoPlateItem: SheetCleanDish
+            of LettucePlateItem: SheetCleanDish
+            of SaladItem: SheetCleanDish
+          carrySprId = ItemSpriteBase + player.carriedItem.ord
+          carryObjId = PlayerObjectBase + 100 + pi
+        result.addSpriteCached(nextState.spriteCache,
+          carrySprId, sim.rgbaSheetSprites[carrySprKind].width,
+          sim.rgbaSheetSprites[carrySprKind].height,
+          sim.rgbaSheetSprites[carrySprKind].pixels, "carry")
+        result.addObject(carryObjId, sx, sy + CarryOffsetY, sy + 101, MapLayerId, carrySprId)
+        currentIds.add(carryObjId)
 
-  sim.fb.renderNumber(sim.digitSprites, sim.players[playerIndex].score, 0, 0)
+  # Selection indicator (player view only)
+  if not isGlobal and playerIndex >= 0 and playerIndex < sim.players.len:
+    let target = sim.players[playerIndex].interactionTile()
+    if inTileBounds(target.tx, target.ty):
+      let
+        sx = target.tx * FancyTileSize - cameraX
+        sy = target.ty * FancyTileSize - cameraY
+      result.addSpriteCached(nextState.spriteCache,
+        SelectionSpriteId, sim.rgbaSheetSprites[SheetSelection].width,
+        sim.rgbaSheetSprites[SheetSelection].height,
+        sim.rgbaSheetSprites[SheetSelection].pixels, "selection")
+      result.addObject(SelectionObjectId, sx, sy, -1, MapLayerId, SelectionSpriteId)
+      currentIds.add(SelectionObjectId)
 
-proc render(sim: var SimServer, playerIndex: int): seq[uint8] =
-  sim.fb.clearFrame(FloorBackdropColor)
-  if playerIndex < 0 or playerIndex >= sim.players.len:
-    return sim.fb.packed
-
-  let player = sim.players[playerIndex]
-  let
-    cameraX = worldClampPixel(
-      player.x + player.sprite.width div 2 - ScreenWidth div 2,
-      WorldWidthPixels - ScreenWidth
-    )
-    cameraY = worldClampPixel(
-      player.y + player.sprite.height div 2 - ScreenHeight div 2,
-      WorldHeightPixels - ScreenHeight
-    )
-
-  sim.renderKitchen(cameraX, cameraY)
-  sim.renderFloorItems(cameraX, cameraY)
-  sim.renderSelection(playerIndex, cameraX, cameraY)
-  sim.renderPlayers(cameraX, cameraY)
-  sim.renderHud(playerIndex)
-  sim.fb.packFramebuffer()
-  sim.fb.packed
+  # Delete objects that disappeared
+  for objectId in state.objectIds:
+    if objectId notin currentIds:
+      result.addDeleteObject(objectId)
+  nextState.objectIds = currentIds
 
 proc rewardScore(sim: SimServer, playerIndex: int): int =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -853,6 +918,17 @@ proc step(sim: var SimServer, inputs: openArray[PlayerInput]) =
 
   sim.updateStations(inputs)
 
+proc gameHash*(sim: SimServer): uint64 =
+  var h = 0xcbf29ce484222325'u64
+  for player in sim.players:
+    h = h xor uint64(player.x)
+    h = h * 0x100000001b3'u64
+    h = h xor uint64(player.y)
+    h = h * 0x100000001b3'u64
+    h = h xor uint64(player.score)
+    h = h * 0x100000001b3'u64
+  h
+
 var appState: WebSocketAppState
 
 proc initAppState() =
@@ -863,6 +939,8 @@ proc initAppState() =
   appState.playerNames = initTable[WebSocket, string]()
   appState.closedSockets = @[]
   appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.globalViewers = initTable[WebSocket, SpriteViewerState]()
+  appState.playerViewerStates = initTable[WebSocket, SpriteViewerState]()
   appState.resetRequested = false
 
 proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
@@ -878,6 +956,10 @@ proc playerInputFromMasks(currentMask, previousMask: uint8): PlayerInput =
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   if websocket in appState.rewardViewers:
     appState.rewardViewers.del(websocket)
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
+  if websocket in appState.playerViewerStates:
+    appState.playerViewerStates.del(websocket)
   if websocket notin appState.playerIndices:
     return
 
@@ -908,17 +990,80 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
+proc isWebSocketUpgrade(request: Request): bool =
+  request.headers["Sec-WebSocket-Key"].len > 0
+
+proc serveClientHtml(request: Request, filename: string) =
+  let path = repoDir() / "clients" / filename
+  if not fileExists(path):
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain"
+    request.respond(404, headers, "Client not found: " & filename)
+    return
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, readFile(path))
+
+proc serveSnappyJs(request: Request) =
+  let path = repoDir() / "clients" / "snappyjs.min.js"
+  if not fileExists(path):
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain"
+    request.respond(404, headers, "snappyjs not found")
+    return
+  var headers: HttpHeaders
+  headers["Content-Type"] = "application/javascript; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, readFile(path))
+
+var serverTokens: seq[string]
+
 proc httpHandler(request: Request) =
-  if request.path == WebSocketPath and request.httpMethod == "GET":
+  if request.path == "/healthz" and request.httpMethod in ["GET", "HEAD"]:
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/plain; charset=utf-8"
+    headers["Cache-Control"] = "no-cache"
+    request.respond(200, headers, "healthy")
+  elif request.path == WebSocketPath and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
+    {.gcsafe.}:
+      let token = request.queryParams.getOrDefault("token", "")
+      var allowed = true
+      if serverTokens.len > 0:
+        allowed = token in serverTokens
+      if not allowed:
+        var headers: HttpHeaders
+        headers["Content-Type"] = "text/plain"
+        request.respond(403, headers, "invalid token")
+        return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.playerNames[websocket] = request.playerIdentity()
-  elif request.path == "/reward" and request.httpMethod == "GET":
+  elif (request.path == "/global" or request.path == "/admin" or
+      request.path == "/replay") and
+      request.httpMethod == "GET" and request.isWebSocketUpgrade():
+    let websocket = request.upgradeToWebSocket()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.globalViewers[websocket] = initSpriteViewerState()
+  elif request.path == "/reward" and request.httpMethod == "GET" and
+      request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.rewardViewers[websocket] = true
+  elif request.path.endsWith("snappyjs.min.js"):
+    request.serveSnappyJs()
+  elif request.path == "/" or request.path == WebSocketPath or
+      request.path == "/global" or request.path == "/admin" or
+      request.path == "/replay" or
+      request.path == "/client/global" or request.path == "/clients/global" or
+      request.path == "/client/player" or request.path == "/clients/player" or
+      request.path == "/client/admin" or request.path == "/clients/admin" or
+      request.path == "/client/replay" or request.path == "/clients/replay":
+    request.serveClientHtml("global_client.html")
   else:
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -933,16 +1078,20 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.rewardViewers:
+        if websocket in appState.playerNames:
           appState.playerIndices[websocket] = 0x7fffffff
           appState.inputMasks[websocket] = 0
           appState.lastAppliedMasks[websocket] = 0
+          appState.playerViewerStates[websocket] = initSpriteViewerState()
   of MessageEvent:
-    if message.kind == BinaryMessage and isInputPacket(message.data):
+    if message.kind != BinaryMessage or message.data.len < 2:
+      return
+    let header = message.data[0].uint8
+    if header == 0x00 or header == 0x84:
       {.gcsafe.}:
         withLock appState.lock:
-          let mask = blobToMask(message.data)
-          if mask == 255'u8:
+          let mask = message.data[1].uint8 and 0x7F
+          if mask == 127'u8:
             appState.resetRequested = true
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
@@ -965,10 +1114,37 @@ proc runFrameLimiter(previousTick: var MonoTime) =
     sleep(int((frameDuration - elapsed).inMilliseconds))
   previousTick = getMonoTime()
 
+proc writeResults(sim: SimServer, path: string) =
+  if path.len == 0:
+    return
+  var names = newJArray()
+  var scores = newJArray()
+  for player in sim.players:
+    names.add(%player.name)
+    scores.add(%player.score)
+  let results = %*{"names": names, "scores": scores}
+  let dir = path.parentDir()
+  if dir.len > 0:
+    createDir(dir)
+  writeFile(path, $results & "\n")
+
+proc writeReplay(path: string) =
+  if path.len == 0:
+    return
+  let dir = path.parentDir()
+  if dir.len > 0:
+    createDir(dir)
+  writeFile(path, "{}\n")
+
 proc runServerLoop(
   host = DefaultHost,
   port = DefaultPort,
-  seed = 0
+  seed = 0,
+  maxTicks = 0,
+  maxGames = 0,
+  resultsPath = "",
+  saveReplayPath = "",
+  configJson = ""
 ) =
   initAppState()
 
@@ -988,6 +1164,9 @@ proc runServerLoop(
     currentSeed = seed
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
+    tickCount = 0
+    gameCount = 0
+    replayWriter = openReplayWriter(saveReplayPath, configJson)
 
   while true:
     var
@@ -996,6 +1175,7 @@ proc runServerLoop(
       inputs: seq[PlayerInput]
       shouldReset = false
       rewardViewers: seq[WebSocket] = @[]
+      globalViewers: seq[WebSocket] = @[]
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -1016,7 +1196,10 @@ proc runServerLoop(
           for websocket in appState.playerIndices.keys:
             if appState.playerIndices[websocket] == 0x7fffffff:
               let name = appState.playerNames.getOrDefault(websocket, "unknown")
-              appState.playerIndices[websocket] = sim.addPlayer(name)
+              let playerIndex = sim.addPlayer(name)
+              appState.playerIndices[websocket] = playerIndex
+              if replayWriter.enabled:
+                replayWriter.writeJoin(tickTime(tickCount), playerIndex, name, 0, "")
 
           inputs = newSeq[PlayerInput](sim.players.len)
           for websocket, playerIndex in appState.playerIndices.pairs:
@@ -1025,12 +1208,24 @@ proc runServerLoop(
             let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
             let previousMask = appState.lastAppliedMasks.getOrDefault(websocket, 0)
             inputs[playerIndex] = playerInputFromMasks(currentMask, previousMask)
+            if replayWriter.enabled and currentMask != previousMask:
+              while replayWriter.lastMasks.len <= playerIndex:
+                replayWriter.lastMasks.add(0)
+              if currentMask != replayWriter.lastMasks[playerIndex]:
+                replayWriter.writeInput(ReplayInput(
+                  time: tickTime(tickCount),
+                  player: uint8(playerIndex),
+                  keys: currentMask
+                ))
+                replayWriter.lastMasks[playerIndex] = currentMask
             appState.lastAppliedMasks[websocket] = currentMask
             sockets.add(websocket)
             playerIndices.add(playerIndex)
 
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
+        for websocket in appState.globalViewers.keys:
+          globalViewers.add(websocket)
 
     if shouldReset:
       inc currentSeed
@@ -1043,25 +1238,72 @@ proc runServerLoop(
               appState.playerIndices[websocket] = sim.addPlayer(name)
             sockets.add(websocket)
             playerIndices.add(appState.playerIndices[websocket])
-      for i in 0 ..< sockets.len:
-        let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
-        sockets[i].send(frameBlob, BinaryMessage)
-      let rewardPacket = sim.buildRewardPacket()
-      for websocket in rewardViewers:
-        websocket.send(rewardPacket, TextMessage)
+          for ws in appState.playerViewerStates.keys:
+            appState.playerViewerStates[ws] = initSpriteViewerState()
+          for ws in appState.globalViewers.keys:
+            appState.globalViewers[ws] = initSpriteViewerState()
       runFrameLimiter(lastTick)
       continue
 
     sim.step(inputs)
+    inc tickCount
+
+    if replayWriter.enabled:
+      replayWriter.writeHash(uint32(tickCount), sim.gameHash())
+
+    if maxTicks > 0 and tickCount >= maxTicks:
+      inc gameCount
+      if maxGames > 0 and gameCount >= maxGames:
+        sim.writeResults(resultsPath)
+        closeReplayWriter(replayWriter)
+        quit(0)
+      tickCount = 0
+      inc currentSeed
+      sim = initSimServer(currentSeed)
+      {.gcsafe.}:
+        withLock appState.lock:
+          for ws in appState.playerViewerStates.keys:
+            appState.playerViewerStates[ws] = initSpriteViewerState()
+          for ws in appState.globalViewers.keys:
+            appState.globalViewers[ws] = initSpriteViewerState()
 
     for i in 0 ..< sockets.len:
-      let frameBlob = blobFromBytes(sim.render(playerIndices[i]))
-      try:
-        sockets[i].send(frameBlob, BinaryMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            sim.removePlayer(sockets[i])
+      var viewState: SpriteViewerState
+      {.gcsafe.}:
+        withLock appState.lock:
+          viewState = appState.playerViewerStates.getOrDefault(
+            sockets[i], initSpriteViewerState())
+      var nextState: SpriteViewerState
+      let packet = sim.buildSpriteFrame(playerIndices[i], viewState, nextState, false)
+      if packet.len > 0:
+        try:
+          sockets[i].send(blobFromBytes(packet), BinaryMessage)
+          {.gcsafe.}:
+            withLock appState.lock:
+              appState.playerViewerStates[sockets[i]] = nextState
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              sim.removePlayer(sockets[i])
+
+    for i in 0 ..< globalViewers.len:
+      var viewState: SpriteViewerState
+      {.gcsafe.}:
+        withLock appState.lock:
+          viewState = appState.globalViewers.getOrDefault(
+            globalViewers[i], initSpriteViewerState())
+      var nextState: SpriteViewerState
+      let packet = sim.buildSpriteFrame(-1, viewState, nextState, true)
+      if packet.len > 0:
+        try:
+          globalViewers[i].send(blobFromBytes(packet), BinaryMessage)
+          {.gcsafe.}:
+            withLock appState.lock:
+              appState.globalViewers[globalViewers[i]] = nextState
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              appState.globalViewers.del(globalViewers[i])
 
     let rewardPacket = sim.buildRewardPacket()
     for websocket in rewardViewers:
@@ -1094,6 +1336,12 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("address", config.address)
   node.readConfigInt("port", config.port)
   node.readConfigInt("seed", config.seed)
+  node.readConfigInt("maxTicks", config.maxTicks)
+  node.readConfigInt("maxGames", config.maxGames)
+  if node.hasKey("tokens") and node["tokens"].kind == JArray:
+    config.tokens = @[]
+    for item in node["tokens"]:
+      config.tokens.add(item.getStr())
 
 when isMainModule:
   var
@@ -1101,37 +1349,50 @@ when isMainModule:
     configJson = ""
     configPath = ""
     pendingOption = ""
+
+  let envConfigPath = getEnv("COGAME_CONFIG_PATH", "")
+  if envConfigPath.len > 0:
+    configPath = envConfigPath
+  let envResultsPath = getEnv("COGAME_SAVE_RESULTS_PATH", getEnv("COGAME_RESULTS_PATH", ""))
+  if envResultsPath.len > 0:
+    config.resultsPath = envResultsPath
+  config.saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH", "")
+
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:
       pendingOption = ""
       case key
       of "address":
-        if val.len > 0:
-          config.address = val
-        else:
-          pendingOption = "address"
+        if val.len > 0: config.address = val
+        else: pendingOption = "address"
       of "port":
-        if val.len > 0:
-          config.port = parseInt(val)
-        else:
-          pendingOption = "port"
+        if val.len > 0: config.port = parseInt(val)
+        else: pendingOption = "port"
       of "config":
         configJson = val
       of "config-file":
         configPath = val
+      of "save-scores", "results":
+        config.resultsPath = val
       else: discard
     of cmdArgument:
       case pendingOption
-      of "address":
-        config.address = key
-      of "port":
-        config.port = parseInt(key)
+      of "address": config.address = key
+      of "port": config.port = parseInt(key)
       else: discard
       pendingOption = ""
     else: discard
   if configPath.len > 0:
-    config.update(readFile(configPath))
+    let configText = readFile(configPath)
+    config.update(configText)
+    config.configJson = configText
   if configJson.len > 0:
     config.update(configJson)
-  runServerLoop(config.address, config.port, seed = config.seed)
+    config.configJson = configJson
+  serverTokens = config.tokens
+  runServerLoop(config.address, config.port, seed = config.seed,
+    maxTicks = config.maxTicks, maxGames = config.maxGames,
+    resultsPath = config.resultsPath,
+    saveReplayPath = config.saveReplayPath,
+    configJson = config.configJson)
