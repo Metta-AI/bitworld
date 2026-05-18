@@ -34,10 +34,12 @@ const
   ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
   CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
+  CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
   CogameLoadReplayEnv = "COGAME_LOAD_REPLAY_PATH"
   CogameLoadReplayUriEnv = "COGAME_LOAD_REPLAY_URI"
   CogameReplayServerEnv = "COGAME_REPLAY_SERVER"
   CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
+  CogameResultsUriEnv = "COGAME_RESULTS_URI"
   CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CoworldManifestName = "coworld_manifest.json"
@@ -1348,7 +1350,7 @@ proc replayPath(name: string): string =
   replayDir() / cleanReplayName(name)
 
 proc replayContainerPath(name: string): string =
-  ## Returns the replay path inside a Docker replay container.
+  ## Returns the replay path inside a Docker container.
   ReplayMountDir / cleanReplayName(name)
 
 proc replayFileFromPath(path: string): ReplayFile =
@@ -2188,11 +2190,19 @@ proc baseDockerArgs(
     GameManifestLabel & "=" & manifestKey,
   ]
   if saveReplay:
-    let scores = "/tmp/" & scoresName(replay)
+    let
+      replayFile = replayContainerPath(replay)
+      scores = replayContainerPath(scoresName(replay))
+    result.add("-v")
+    result.add(replayDir() & ":" & ReplayMountDir)
     result.add("-e")
-    result.add(CogameReplayEnv & "=" & "/tmp/" & replay)
+    result.add(CogameReplayEnv & "=" & replayFile)
+    result.add("-e")
+    result.add(CogameReplayUriEnv & "=file://" & replayFile)
     result.add("-e")
     result.add(CogameResultsEnv & "=" & scores)
+    result.add("-e")
+    result.add(CogameResultsUriEnv & "=file://" & scores)
     let token = generateUploadToken(replay)
     let uploadUrl = gamesServerUrl() & ReplayUploadPath
     result.add("-e")

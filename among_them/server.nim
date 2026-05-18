@@ -1210,9 +1210,16 @@ proc runServerLoop*(
       finishProfileTrace()
 
     if quitAfterFrame:
+      if saveReplayPath.len > 0:
+        echo "Writing replay file: ", saveReplayPath
       replayWriter.closeReplayWriter()
+      if saveReplayPath.len > 0 and fileExists(saveReplayPath):
+        echo "Replay written: ", saveReplayPath,
+          " (", getFileSize(saveReplayPath), " bytes)"
       if saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
+        echo "Scores written: ", saveScoresPath,
+          " (", getFileSize(saveScoresPath), " bytes)"
       uploadReplayFiles(saveReplayPath, saveScoresPath)
       httpServer.close()
       joinThread(serverThread)
