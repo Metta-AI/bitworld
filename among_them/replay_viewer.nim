@@ -47,6 +47,7 @@ proc resetLoadedState(viewer: ReplayViewer, data: ReplayData) =
   config.update(data.configJson)
   viewer.sim = initSimServer(config)
   viewer.replay = initReplayPlayer(data)
+  viewer.replay.verifyHashes = false
   viewer.state = initGlobalViewerState()
   viewer.inputPackets.setLen(0)
   viewer.loaded = true

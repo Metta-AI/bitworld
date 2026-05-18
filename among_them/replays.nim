@@ -44,6 +44,7 @@ type
     leaveIndex*: int
     inputIndex*: int
     hashIndex*: int
+    verifyHashes*: bool
     masks*: seq[uint8]
     lastAppliedMasks*: seq[uint8]
     playing*: bool
@@ -298,6 +299,7 @@ proc initReplayPlayer*(data: ReplayData): ReplayPlayer =
   result.playing = true
   result.looping = false
   result.speedIndex = 0
+  result.verifyHashes = true
 
 proc replaySpeed*(replay: ReplayPlayer): int =
   ## Returns the current integer replay speed.
@@ -394,13 +396,25 @@ proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
     )
   inc replay.hashIndex
 
+proc advanceReplayHashCursor(replay: var ReplayPlayer, sim: SimServer) =
+  ## Advances the replay cursor without enforcing hash equality.
+  if replay.hashIndex >= replay.data.hashes.len:
+    replay.playing = false
+    return
+  while replay.hashIndex < replay.data.hashes.len and
+      int(replay.data.hashes[replay.hashIndex].tick) <= sim.tickCount:
+    inc replay.hashIndex
+
 proc stepReplay*(replay: var ReplayPlayer, sim: var SimServer) =
   ## Advances replay by one simulation tick.
   replay.applyReplayEvents(sim)
   let prevInputs = replay.replayPrevInputs(sim.players.len)
   let inputs = replay.replayInputs(sim.players.len)
   sim.step(inputs, prevInputs)
-  replay.checkReplayHash(sim)
+  if replay.verifyHashes:
+    replay.checkReplayHash(sim)
+  else:
+    replay.advanceReplayHashCursor(sim)
 
 proc seekReplay*(replay: var ReplayPlayer, sim: var SimServer, tick: int) =
   ## Seeks replay playback to a target tick.
