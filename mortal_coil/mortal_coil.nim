@@ -50,6 +50,9 @@ type
     chatScroll: int
     chatConfirmed: seq[bool]
     chatInterrupted: seq[bool]
+    narration: seq[tuple[text: string, color: uint8]]
+    lastNarrationStep: string
+    lastChatLogLen: int
 
   WebSocketAppState = object
     lock: Lock
@@ -252,16 +255,92 @@ proc step(sim: var SimServer, inputs: seq[InputState]) =
     discard
   sim.prevInputs = inputs
 
+proc updateNarration(sim: var SimServer) =
+  let white = WhiteColor
+  let grey = 5'u8
+
+  # Flush new chat log entries (player actions)
+  while sim.lastChatLogLen < sim.chatLog.len:
+    let entry = sim.chatLog[sim.lastChatLogLen]
+    sim.narration.add((entry.name & ": " & entry.text, entry.colorIndex))
+    inc sim.lastChatLogLen
+
+  let key = $sim.phase & ":" & (case sim.phase
+    of PhaseWorld: $sim.worldStep
+    of PhaseConflict: $sim.conflictState.step & ":" & $sim.conflictState.round & ":" & $sim.conflictState.recountPlayer
+    else: "")
+  if key == sim.lastNarrationStep:
+    return
+  sim.lastNarrationStep = key
+
+  case sim.phase
+  of PhaseWorld:
+    if sim.worldStep == WorldTitle and sim.world.title.len > 0:
+      sim.narration.add(("--- " & sim.world.title & " ---", grey))
+    elif sim.worldStep == WorldDescription and sim.world.description.len > 0:
+      sim.narration.add((sim.world.description, white))
+  of PhaseConflict:
+    case sim.conflictState.step
+    of ConflictTitle:
+      if sim.conflict.title.len > 0:
+        sim.narration.add(("", white))
+        sim.narration.add(("=== Chapter " & $sim.chapter & ": " & sim.conflict.title & " ===", grey))
+    of ConflictDescription:
+      if sim.conflict.description.len > 0:
+        sim.narration.add((sim.conflict.description, white))
+    of ConflictOutcome:
+      if sim.conflictState.outcome.len > 0:
+        sim.narration.add(("", white))
+        sim.narration.add((sim.conflictState.outcome, white))
+    of ConflictRecount:
+      if sim.conflictState.recountPlayer < sim.conflictState.roundResults.len:
+        let r = sim.conflictState.roundResults[sim.conflictState.recountPlayer]
+        if r.playerIndex < sim.players.len:
+          let player = sim.players[r.playerIndex]
+          let color = uint8(player.colorIndex)
+          let newPower = r.powerBefore - r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
+          var parts: seq[string]
+          if r.burdenTaken > 0:
+            parts.add("-" & $r.burdenTaken & " self risk")
+          if r.partyBurden > 0:
+            parts.add("-" & $r.partyBurden & " party risk")
+          if r.rewardEarned > 0:
+            parts.add("+" & $r.rewardEarned & " self reward")
+          if r.partyReward > 0:
+            parts.add("+" & $r.partyReward & " party reward")
+          let detail = if parts.len > 0: parts.join(", ") else: "no change"
+          sim.narration.add(("  " & player.name & ": " & detail & " = " & $newPower, color))
+    of ConflictResolution:
+      if sim.conflictState.resolution.len > 0:
+        sim.narration.add(("", white))
+        sim.narration.add((sim.conflictState.resolution, white))
+    else:
+      discard
+  of PhaseEnd:
+    if sim.narration.len == 0 or sim.narration[^1].text != "--- THE END ---":
+      sim.narration.add(("", white))
+      sim.narration.add(("--- THE END ---", grey))
+  else:
+    discard
+
+proc isChoiceScreen(sim: SimServer): bool =
+  if sim.phase == PhaseConflict and sim.conflictState.step == ConflictChoices:
+    return true
+  if sim.phase == PhaseSituation and sim.situationStep == SituationChoices:
+    return true
+  false
+
 proc buildTextSprites(sim: SimServer): seq[TextSprite] =
   var nextId = 1
   let white = WhiteColor
   let grey = 5'u8
+  let maxW = ScreenWidth - 4
+  let lineH = 7
 
   template sprite(sx, sy: int, stext, slabel: string, scolor: uint8 = white) =
     result.add(TextSprite(id: nextId, x: sx, y: sy, text: stext, label: slabel, color: scolor))
     inc nextId
 
-  # Always show phase + players as labels on a hidden sprite
   var meta = "phase:" & $sim.phase
   var playerList = ""
   for i, p in sim.players:
@@ -269,8 +348,7 @@ proc buildTextSprites(sim: SimServer): seq[TextSprite] =
     playerList.add(p.name & "(" & $p.power & ")")
   meta.add("\nplayers:" & playerList)
 
-  case sim.phase
-  of PhaseLobby:
+  if sim.phase == PhaseLobby:
     meta.add("\ncount:" & $sim.players.len & "/" & $sim.minPlayers)
     sprite(20, 10, "Mortal Coil", meta, grey)
     sprite(34, 30, $sim.players.len & " of " & $sim.minPlayers, "count:" & $sim.players.len & "/" & $sim.minPlayers)
@@ -280,126 +358,74 @@ proc buildTextSprites(sim: SimServer): seq[TextSprite] =
     if sim.lobbyCountdown > 0:
       let s = (sim.lobbyCountdown + 23) div 24
       sprite(28, 118, "Start in " & $s, "countdown:" & $s)
+    return
 
-  of PhaseWorld:
-    meta.add("\nstep:" & $sim.worldStep)
-    if sim.world.title.len > 0:
-      meta.add("\ntitle:" & sim.world.title)
-      sprite(4, 4, sim.world.title, meta, grey)
-    else:
-      sprite(4, 4, "The World", meta, grey)
-    if sim.world.description.len > 0:
-      sprite(4, 20, sim.world.description, "text:" & sim.world.description)
-
-  of PhaseMagicalFacts:
-    meta.add("\nstep:" & $sim.factChoice.step)
-    if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-      meta.add("\nturn:" & sim.players[sim.currentTurn].name)
-    sprite(4, 4, "Magical Facts", meta, grey)
-
-  of PhaseSituation:
-    meta.add("\nstep:" & $sim.situationStep)
-    if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-      meta.add("\nturn:" & sim.players[sim.currentTurn].name)
-    if sim.situationStep == SituationChoices:
-      let turnName = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-          sim.players[sim.currentTurn].name else: "?"
-      let turnColor = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-          uint8(sim.players[sim.currentTurn].colorIndex) else: white
-      sprite(4, 4, turnName & "'s turn:", meta, turnColor)
-      let maxW = ScreenWidth - 4
-      var optY = 12
-      if sim.sceneState.header.len > 0:
-        sprite(4, optY, sim.sceneState.header, "header:" & sim.sceneState.header)
-        optY += textHeight(sim.sceneState.header, maxW) + 2
-      for i, opt in sim.sceneState.choice.options:
-        let sel = sim.sceneState.choice.selected == i
-        let cur = sim.sceneState.choice.cursor == i
-        let prefix = if sel: "> " elif cur: "* " else: "  "
-        let text = prefix & opt
-        optY += 5
-        sprite(4, optY, text, "option" & $(i+1) & ":" & opt)
-        optY += textHeight(text, maxW) + 1
-      if sim.sceneState.choice.extraOption.len > 0:
-        optY += 5
-        let ei = sim.sceneState.choice.options.len
-        let sel = sim.sceneState.choice.selected == ei
-        let cur = sim.sceneState.choice.cursor == ei
-        let prefix = if sel: "> " elif cur: "* " else: "  "
-        sprite(4, optY, prefix & sim.sceneState.choice.extraOption,
-          "option" & $(ei+1) & ":" & sim.sceneState.choice.extraOption)
-      sprite(0, 0, "", "cursor:" & $sim.sceneState.choice.cursor & "\nselected:" & $sim.sceneState.choice.selected)
-    else:
-      if sim.situation.title.len > 0:
-        sprite(4, 4, "Situation: " & sim.situation.title, meta, grey)
+  if sim.isChoiceScreen():
+    let (turnName, turnColor) = block:
+      if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
+        (sim.players[sim.currentTurn].name, uint8(sim.players[sim.currentTurn].colorIndex))
       else:
-        sprite(4, 4, "Situation", meta, grey)
-      if sim.situation.description.len > 0:
-        sprite(4, 20, sim.situation.description, "text:" & sim.situation.description)
+        ("?", white)
+    let choiceState = if sim.phase == PhaseConflict:
+        sim.conflictState.sceneState
+      else:
+        sim.sceneState
+    meta.add("\nstep:" & (if sim.phase == PhaseConflict: "ConflictChoices" else: "SituationChoices"))
+    meta.add("\nturn:" & turnName)
+    sprite(4, 4, turnName & "'s turn:", meta, turnColor)
+    var optY = 12
+    if choiceState.header.len > 0:
+      sprite(4, optY, choiceState.header, "header:" & choiceState.header)
+      optY += textHeight(choiceState.header, maxW) + 2
+    for i, opt in choiceState.choice.options:
+      let sel = choiceState.choice.selected == i
+      let cur = choiceState.choice.cursor == i
+      let prefix = if sel: "> " elif cur: "* " else: "  "
+      let text = prefix & opt
+      optY += 5
+      sprite(4, optY, text, "option" & $(i+1) & ":" & opt)
+      optY += textHeight(text, maxW) + 1
+    if choiceState.choice.extraOption.len > 0:
+      optY += 5
+      let ei = choiceState.choice.options.len
+      let sel = choiceState.choice.selected == ei
+      let cur = choiceState.choice.cursor == ei
+      let prefix = if sel: "> " elif cur: "* " else: "  "
+      sprite(4, optY, prefix & choiceState.choice.extraOption,
+        "option" & $(ei+1) & ":" & choiceState.choice.extraOption)
+    sprite(0, 0, "", "cursor:" & $choiceState.choice.cursor &
+      "\nselected:" & $choiceState.choice.selected)
+    return
 
-  of PhaseConflict:
-    meta.add("\nchapter:" & $sim.chapter)
-    meta.add("\nstep:" & $sim.conflictState.step)
-    if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-      meta.add("\nturn:" & sim.players[sim.currentTurn].name)
-    if sim.conflictState.step == ConflictChoices:
-      let turnName = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-          sim.players[sim.currentTurn].name else: "?"
-      let turnColor = if sim.currentTurn >= 0 and sim.currentTurn < sim.players.len:
-          uint8(sim.players[sim.currentTurn].colorIndex) else: white
-      sprite(4, 4, turnName & "'s turn:", meta, turnColor)
-      let maxW = ScreenWidth - 4
-      var optY = 12
-      if sim.conflictState.sceneState.header.len > 0:
-        sprite(4, optY, sim.conflictState.sceneState.header, "header:" & sim.conflictState.sceneState.header)
-        optY += textHeight(sim.conflictState.sceneState.header, maxW) + 2
-      for i, opt in sim.conflictState.sceneState.choice.options:
-        let sel = sim.conflictState.sceneState.choice.selected == i
-        let cur = sim.conflictState.sceneState.choice.cursor == i
-        let prefix = if sel: "> " elif cur: "* " else: "  "
-        let text = prefix & opt
-        optY += 5
-        sprite(4, optY, text, "option" & $(i+1) & ":" & opt)
-        optY += textHeight(text, maxW) + 1
-      if sim.conflictState.sceneState.choice.extraOption.len > 0:
-        optY += 5
-        let ei = sim.conflictState.sceneState.choice.options.len
-        let sel = sim.conflictState.sceneState.choice.selected == ei
-        let cur = sim.conflictState.sceneState.choice.cursor == ei
-        let prefix = if sel: "> " elif cur: "* " else: "  "
-        sprite(4, optY, prefix & sim.conflictState.sceneState.choice.extraOption,
-          "option" & $(ei+1) & ":" & sim.conflictState.sceneState.choice.extraOption)
-      sprite(0, 0, "", "cursor:" & $sim.conflictState.sceneState.choice.cursor &
-        "\nselected:" & $sim.conflictState.sceneState.choice.selected)
-    elif sim.conflictState.step == ConflictOutcome:
-      sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
-      sprite(4, 20, sim.conflictState.outcome, "outcome:" & sim.conflictState.outcome)
-    elif sim.conflictState.step == ConflictResolution:
-      sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
-      sprite(4, 20, sim.conflictState.resolution, "resolution:" & sim.conflictState.resolution)
-    elif sim.conflictState.step == ConflictRecount:
-      sprite(4, 4, "Chapter " & $sim.chapter, meta, grey)
-      if sim.conflictState.recountPlayer < sim.conflictState.roundResults.len:
-        let r = sim.conflictState.roundResults[sim.conflictState.recountPlayer]
-        let player = sim.players[r.playerIndex]
-        let total = r.powerBefore - r.burdenTaken - r.partyBurden + r.rewardEarned + r.partyReward
-        var recountText = player.name & ": " & $total & " power"
-        recountText.add(" (-" & $r.burdenTaken & " burden")
-        recountText.add(" -" & $r.partyBurden & " party burden")
-        recountText.add(" +" & $r.rewardEarned & " reward")
-        recountText.add(" +" & $r.partyReward & " party reward)")
-        sprite(4, 20, recountText, "recount:" & player.name & ":" & $total)
+  # Narration mode: show chat log scrolled to bottom.
+  # Calculate total height from the end backwards to find what fits.
+  var heights: seq[int]
+  for entry in sim.narration:
+    if entry.text.len == 0:
+      heights.add(lineH div 2)
     else:
-      let title = if sim.conflict.title.len > 0: sim.conflict.title
-                  else: "Chapter " & $sim.chapter
-      sprite(4, 4, title, meta, grey)
-      if sim.conflict.description.len > 0:
-        sprite(4, 20, sim.conflict.description, "text:" & sim.conflict.description)
+      heights.add(textHeight(entry.text, maxW) + 2)
 
-  of PhaseEnd:
-    sprite(4, 4, "End", meta, grey)
-  of PhasePower:
-    sprite(4, 4, "Power", meta, grey)
+  let availableH = ScreenHeight - 4
+  var totalH = 0
+  var startIdx = sim.narration.len
+  for i in countdown(sim.narration.len - 1, 0):
+    if totalH + heights[i] > availableH:
+      break
+    totalH += heights[i]
+    startIdx = i
+
+  var y = 4
+  for i in startIdx ..< sim.narration.len:
+    let entry = sim.narration[i]
+    if entry.text.len == 0:
+      y += lineH div 2
+    else:
+      sprite(4, y, entry.text, "narration:" & entry.text, entry.color)
+      y += heights[i]
+    if y >= ScreenHeight:
+      break
+  sprite(0, 0, "", meta)
 
 proc buildRewardPacket(sim: SimServer): string =
   for player in sim.players:
@@ -624,6 +650,7 @@ proc runServerLoop(host = DefaultHost, port = DefaultPort, seed = 0,
           rewardViewers.add(websocket)
 
     sim.step(inputs)
+    sim.updateNarration()
 
     let sprites = sim.buildTextSprites()
     {.gcsafe.}:

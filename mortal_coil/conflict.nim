@@ -5,7 +5,7 @@ const
   ConflictTitleTicks* = 24 * 3
   ConflictDescTicks* = 24 * 10
   ConflictSceneReadTicks* = 24 * 10
-  ConflictSceneAcceptTicks* = 24 * 1
+  ConflictSceneAcceptTicks* = 24 * 2
   ConflictOutcomeTicks* = 24 * 10
   ConflictRecountLineTicks* = 12  # half second per line at 24fps
   ConflictRecountHoldTicks* = 24  # 1 second after last line

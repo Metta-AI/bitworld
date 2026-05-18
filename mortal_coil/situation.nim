@@ -5,7 +5,7 @@ const
   SituationTitleTicks* = 24 * 3
   SituationDescTicks* = 24 * 10
   SceneReadTicks* = 24 * 10
-  SceneAcceptTicks* = 24 * 1
+  SceneAcceptTicks* = 24 * 2
   BackgroundColor = 0'u8
 
 proc generateSceneOpts(players: seq[Player], currentTurn: int,
