@@ -225,12 +225,12 @@ upload_coworld() {
 
   log "Building, certifying, and uploading Coworld with coworld upload-coworld --build"
   set +e
-  (cd "${METTA_REPO}" && uv run coworld upload-coworld \
+  coworld upload-coworld \
     --build \
     --version "${VERSION}" \
     "${SOURCE_MANIFEST}" \
     --server "${COWORLD_SERVER}" \
-    --timeout-seconds "${CERTIFY_TIMEOUT}") 2>&1 | tee "${upload_log}"
+    --timeout-seconds "${CERTIFY_TIMEOUT}" 2>&1 | tee "${upload_log}"
   local upload_status="${PIPESTATUS[0]}"
   set -e
 
