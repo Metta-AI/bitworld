@@ -40,13 +40,21 @@ type
     width, height: int
     pixels: seq[uint8]
 
+  SpriteCacheEntry = object
+    spriteId: int
+    width: int
+    height: int
+    pixels: seq[uint8]
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    spriteCache*: seq[SpriteCacheEntry]
 
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    spriteCache*: seq[SpriteCacheEntry]
 
 proc initGlobalViewerState*(): GlobalViewerState =
   discard
@@ -196,6 +204,39 @@ proc addSprite(
   packet.addU16(label.len)
   for ch in label:
     packet.addU8(uint8(ord(ch)))
+
+proc addSpriteCached(
+  packet: var seq[uint8],
+  cache: var seq[SpriteCacheEntry],
+  spriteId, width, height: int,
+  pixels: openArray[uint8],
+  label = ""
+) =
+  for item in cache.mitems:
+    if item.spriteId != spriteId:
+      continue
+    if item.width == width and item.height == height and
+        item.pixels.len == pixels.len:
+      var unchanged = true
+      for i in 0 ..< pixels.len:
+        if item.pixels[i] != pixels[i]:
+          unchanged = false
+          break
+      if unchanged:
+        return
+    packet.addSprite(spriteId, width, height, pixels, label)
+    item.width = width
+    item.height = height
+    item.pixels.setLen(pixels.len)
+    for i in 0 ..< pixels.len:
+      item.pixels[i] = pixels[i]
+    return
+  packet.addSprite(spriteId, width, height, pixels, label)
+  var entry = SpriteCacheEntry(spriteId: spriteId, width: width, height: height)
+  entry.pixels = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    entry.pixels[i] = pixels[i]
+  cache.add(entry)
 
 proc addObject(
   packet: var seq[uint8],
@@ -618,7 +659,8 @@ proc buildSpriteProtocolUpdates*(
     result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
     result.addViewport(TopLeftLayerId, 128, 128)
     let background = sim.buildBackgroundSprite(WorldWidthPixels, WorldHeightPixels)
-    result.addSprite(
+    result.addSpriteCached(
+      nextState.spriteCache,
       MapSpriteId,
       background.width,
       background.height,
@@ -646,7 +688,7 @@ proc buildSpriteProtocolUpdates*(
       sx = player.x div MotionScale - ship.width div 2
       sy = player.y div MotionScale - ship.height div 2
       objId = ShipObjectBase + playerIndex
-    result.addSprite(sprId, ship.width, ship.height, ship.pixels, "ship")
+    result.addSpriteCached(nextState.spriteCache, sprId, ship.width, ship.height, ship.pixels, "ship")
     result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -657,7 +699,7 @@ proc buildSpriteProtocolUpdates*(
         shieldObjId = ShipObjectBase + 100 + playerIndex
         shieldX = player.x div MotionScale - shield.width div 2
         shieldY = player.y div MotionScale - shield.height div 2
-      result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
+      result.addSpriteCached(nextState.spriteCache, shieldSprId, shield.width, shield.height, shield.pixels, "shield")
       result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
       currentIds.add(shieldObjId)
 
@@ -673,7 +715,7 @@ proc buildSpriteProtocolUpdates*(
       sy = player.y div MotionScale - 9 div 2 - bubble.height - ChatGapY
       sprId = ChatSpriteBase + playerIndex
       objId = ChatObjectBase + playerIndex
-    result.addSprite(sprId, bubble.width, bubble.height, bubble.pixels, "chat")
+    result.addSpriteCached(nextState.spriteCache, sprId, bubble.width, bubble.height, bubble.pixels, "chat")
     result.addObject(objId, sx, sy, sy + 300, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -685,7 +727,7 @@ proc buildSpriteProtocolUpdates*(
       sx = asteroid.x div MotionScale - spr.width div 2
       sy = asteroid.y div MotionScale - spr.height div 2
       objId = AsteroidObjectBase + (asteroid.id mod 1000)
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "asteroid")
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "asteroid")
     result.addObject(objId, sx, sy, sy, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -698,7 +740,7 @@ proc buildSpriteProtocolUpdates*(
       sx = bullet.x div MotionScale - 1
       sy = bullet.y div MotionScale - 1
       objId = BulletObjectBase + i
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "bullet")
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "bullet")
     result.addObject(objId, sx, sy, sy + 50, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -710,7 +752,7 @@ proc buildSpriteProtocolUpdates*(
       sx = explosion.x div MotionScale - spr.width div 2
       sy = explosion.y div MotionScale - spr.height div 2
       objId = ExplosionObjectBase + i
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "explosion")
     result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
     currentIds.add(objId)
 
@@ -722,14 +764,14 @@ proc buildSpriteProtocolUpdates*(
       sy = cp.y div MotionScale - spr.height div 2
       objId = CaptureObjectBase + i
       label = if cp.owners.len > 0: "capture owned" else: "capture"
-    result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
+    result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, label)
     result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
     currentIds.add(objId)
 
   # Scoreboard
   if sim.players.len > 0:
     let scoreboard = buildScoreboardSprite(sim)
-    result.addSprite(HudSpriteId, scoreboard.width, scoreboard.height, scoreboard.pixels, "scores")
+    result.addSpriteCached(nextState.spriteCache, HudSpriteId, scoreboard.width, scoreboard.height, scoreboard.pixels, "scores")
     result.addObject(HudObjectId, 1, 1, high(int16), TopLeftLayerId, HudSpriteId)
     currentIds.add(HudObjectId)
 
@@ -774,7 +816,8 @@ proc buildSpriteProtocolPlayerUpdates*(
 
   # Background sprite with wrapped stars
   let background = sim.buildPlayerBackgroundSprite(cameraPixelX, cameraPixelY)
-  result.addSprite(
+  result.addSpriteCached(
+    nextState.spriteCache,
     MapSpriteId,
     background.width,
     background.height,
@@ -801,7 +844,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       sy = screenY - ship.height div 2
     if sx > -ship.width and sx < ScreenWidth and sy > -ship.height and sy < ScreenHeight:
       let objId = ShipObjectBase + pi
-      result.addSprite(sprId, ship.width, ship.height, ship.pixels, "ship")
+      result.addSpriteCached(nextState.spriteCache, sprId, ship.width, ship.height, ship.pixels, "ship")
       result.addObject(objId, sx, sy, sy + 100, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -812,7 +855,7 @@ proc buildSpriteProtocolPlayerUpdates*(
           shieldObjId = ShipObjectBase + 100 + pi
           shieldX = screenX - shield.width div 2
           shieldY = screenY - shield.height div 2
-        result.addSprite(shieldSprId, shield.width, shield.height, shield.pixels, "shield")
+        result.addSpriteCached(nextState.spriteCache, shieldSprId, shield.width, shield.height, shield.pixels, "shield")
         result.addObject(shieldObjId, shieldX, shieldY, sy + 101, MapLayerId, shieldSprId)
         currentIds.add(shieldObjId)
 
@@ -832,7 +875,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       let
         sprId = ChatSpriteBase + pi
         objId = ChatObjectBase + pi
-      result.addSprite(sprId, bubble.width, bubble.height, bubble.pixels, "chat")
+      result.addSpriteCached(nextState.spriteCache, sprId, bubble.width, bubble.height, bubble.pixels, "chat")
       result.addObject(objId, bx, by, by + 300, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -848,7 +891,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       let
         sprId = asteroidSpriteId(asteroid)
         objId = AsteroidObjectBase + (asteroid.id mod 1000)
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "asteroid")
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "asteroid")
       result.addObject(objId, sx, sy, sy, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -865,7 +908,7 @@ proc buildSpriteProtocolPlayerUpdates*(
         sx = screenX - 1
         sy = screenY - 1
         objId = BulletObjectBase + i
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "bullet")
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "bullet")
       result.addObject(objId, sx, sy, sy + 50, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -881,7 +924,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       let
         sprId = explosionSpriteId(i)
         objId = ExplosionObjectBase + i
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, "explosion")
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, "explosion")
       result.addObject(objId, sx, sy, sy + 200, MapLayerId, sprId)
       currentIds.add(objId)
 
@@ -897,20 +940,21 @@ proc buildSpriteProtocolPlayerUpdates*(
         sprId = CaptureSpriteBase + i
         objId = CaptureObjectBase + i
         label = if cp.owners.len > 0: "capture owned" else: "capture"
-      result.addSprite(sprId, spr.width, spr.height, spr.pixels, label)
+      result.addSpriteCached(nextState.spriteCache, sprId, spr.width, spr.height, spr.pixels, label)
       result.addObject(objId, sx, sy, -100, MapLayerId, sprId)
       currentIds.add(objId)
 
   # HUD
   let hud = buildHudSprite(player.score, player.color)
-  result.addSprite(HudSpriteId, hud.width, hud.height, hud.pixels, "hud")
+  result.addSpriteCached(nextState.spriteCache, HudSpriteId, hud.width, hud.height, hud.pixels, "hud")
   result.addObject(HudObjectId, 1, 1, high(int16), TopLeftLayerId, HudSpriteId)
   currentIds.add(HudObjectId)
 
   # Respawn overlay
   if not player.alive:
     let respawn = buildRespawnSprite(player.respawnTicks)
-    result.addSprite(
+    result.addSpriteCached(
+      nextState.spriteCache,
       RespawnSpriteId,
       respawn.width,
       respawn.height,
