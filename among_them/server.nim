@@ -956,6 +956,8 @@ proc runServerLoop*(
               websocket,
               -1
             )
+            if playerIndex >= 0:
+              replayWriter.writeChat(tickTime(sim.tickCount), playerIndex, message)
             sim.addVotingChat(playerIndex, message)
           appState.chatMessages.clear()
         spectatorList = appState.spectators

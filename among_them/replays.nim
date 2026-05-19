@@ -24,12 +24,18 @@ type
     time*: uint32
     player*: uint8
 
+  ReplayChat* = object
+    time*: uint32
+    player*: uint8
+    message*: string
+
   ReplayData* = object
     gameName*: string
     gameVersion*: string
     configJson*: string
     joins*: seq[ReplayJoin]
     leaves*: seq[ReplayLeave]
+    chats*: seq[ReplayChat]
     inputs*: seq[ReplayInput]
     hashes*: seq[ReplayHash]
 
@@ -42,6 +48,7 @@ type
     data*: ReplayData
     joinIndex*: int
     leaveIndex*: int
+    chatIndex*: int
     inputIndex*: int
     hashIndex*: int
     masks*: seq[uint8]
@@ -207,6 +214,15 @@ proc writeInput*(writer: var ReplayWriter, input: ReplayInput) =
   writer.file.writeU8(input.player)
   writer.file.writeU8(input.keys)
 
+proc writeChat*(writer: var ReplayWriter, time: uint32, player: int, message: string) =
+  ## Writes one player chat replay record.
+  if not writer.enabled:
+    return
+  writer.file.writeU8(ReplayChatRecord)
+  writer.file.writeU32(time)
+  writer.file.writeU8(uint8(player))
+  writer.file.writeReplayString(message)
+
 proc writeHash*(writer: var ReplayWriter, tick: uint32, hash: uint64) =
   ## Writes one tick hash replay record.
   if not writer.enabled:
@@ -241,6 +257,7 @@ proc parseReplayBytes*(bytes: string): ReplayData =
     lastInputTime = 0'u32
     lastJoinTime = 0'u32
     lastLeaveTime = 0'u32
+    lastChatTime = 0'u32
   while offset < bytes.len:
     let recordType = bytes.readU8(offset)
     case recordType
@@ -283,6 +300,16 @@ proc parseReplayBytes*(bytes: string): ReplayData =
         raise newException(ReplayError, "Replay leave timestamps move backward")
       lastLeaveTime = leave.time
       result.leaves.add(leave)
+    of ReplayChatRecord:
+      let chat = ReplayChat(
+        time: bytes.readU32(offset),
+        player: bytes.readU8(offset),
+        message: bytes.readReplayString(offset)
+      )
+      if chat.time < lastChatTime:
+        raise newException(ReplayError, "Replay chat timestamps move backward")
+      lastChatTime = chat.time
+      result.chats.add(chat)
     else:
       raise newException(ReplayError, "Unknown replay record type")
 
@@ -313,6 +340,7 @@ proc resetReplay*(replay: var ReplayPlayer) =
   ## Resets replay playback cursors.
   replay.joinIndex = 0
   replay.leaveIndex = 0
+  replay.chatIndex = 0
   replay.inputIndex = 0
   replay.hashIndex = 0
   replay.masks = @[]
@@ -354,6 +382,12 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     replay.ensureReplayPlayer(int(input.player))
     replay.masks[int(input.player)] = input.keys
     inc replay.inputIndex
+
+  while replay.chatIndex < replay.data.chats.len and
+      replay.data.chats[replay.chatIndex].time <= time:
+    let chat = replay.data.chats[replay.chatIndex]
+    sim.addVotingChat(int(chat.player), chat.message)
+    inc replay.chatIndex
 
 proc replayPrevInputs(
   replay: var ReplayPlayer,
