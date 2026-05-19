@@ -31,11 +31,9 @@ Build and upload the Among Them Coworld release from BitWorld master.
 
 Steps:
   1. git pull --ff-only and require a clean master checkout.
-  2. Build and push GHCR images for the game runner and nottoodumb baseline.
-  3. Build local linux/amd64 images for Coworld certification/upload.
-  4. Write a temporary versioned Coworld manifest.
-  5. Run coworld certify, then coworld upload-coworld.
-  6. Rebuild and upload the hosted replay viewer bundle to S3.
+  2. Build and push GHCR images for the game runner and ivotewell baseline.
+  3. Run coworld upload-coworld --build with a temporary version override.
+  4. Rebuild and upload the hosted replay viewer bundle to S3.
 
 Options:
   --allow-dirty          Build from a dirty checkout.
@@ -132,8 +130,6 @@ for cmd in git docker nim uv python3 aws; do
   command -v "${cmd}" >/dev/null || die "Missing required command: ${cmd}"
 done
 
-RUNNER_LOCAL_IMAGE="bw-at:${VERSION}"
-PLAYER_LOCAL_IMAGE="bw-ntd:${VERSION}"
 SOURCE_MANIFEST="${REPO_ROOT}/among_them/coworld_manifest.json"
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bitworld-among-them-upload.${VERSION}.XXXXXX")"
@@ -216,39 +212,7 @@ build_and_push_ghcr_images() {
     --registry:"${REGISTRY}" \
     --tag:"${VERSION}" \
     among_them \
-    nottoodumb
-}
-
-build_local_coworld_images() {
-  log "Building local linux/amd64 images for certification and upload"
-  run docker build \
-    --platform=linux/amd64 \
-    -f "${REPO_ROOT}/among_them/Dockerfile" \
-    -t "${RUNNER_LOCAL_IMAGE}" \
-    "${REPO_ROOT}"
-  run docker build \
-    --platform=linux/amd64 \
-    -f "${REPO_ROOT}/among_them/players/nottoodumb/Dockerfile" \
-    -t "${PLAYER_LOCAL_IMAGE}" \
-    "${REPO_ROOT}"
-}
-
-write_temp_manifest() {
-  local output_path="$1"
-  python3 - "${SOURCE_MANIFEST}" "${output_path}" "${VERSION}" "${RUNNER_LOCAL_IMAGE}" "${PLAYER_LOCAL_IMAGE}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-source, output, version, runner_image, player_image = sys.argv[1:]
-manifest = json.loads(Path(source).read_text())
-manifest["game"]["version"] = version
-manifest["game"]["runnable"]["image"] = runner_image
-for player in manifest.get("player", []):
-    if player.get("id") == "nottoodumb":
-        player["image"] = player_image
-Path(output).write_text(json.dumps(manifest, indent=2) + "\n")
-PY
+    ivotewell
 }
 
 upload_coworld() {
@@ -257,18 +221,16 @@ upload_coworld() {
     return
   fi
 
-  local manifest="${WORK_DIR}/coworld_manifest.json"
   local upload_log="${WORK_DIR}/upload-coworld.log"
-  write_temp_manifest "${manifest}"
 
-  log "Certifying temporary Coworld manifest"
-  coworld certify "${manifest}" --server "${COWORLD_SERVER}" --timeout-seconds "${CERTIFY_TIMEOUT}"
-
-  log "Uploading Coworld with coworld upload-coworld"
+  log "Building, certifying, and uploading Coworld with coworld upload-coworld --build"
   set +e
-  (cd "${METTA_REPO}" && uv run coworld upload-coworld "${manifest}" \
+  coworld upload-coworld \
+    --build \
+    --version "${VERSION}" \
+    "${SOURCE_MANIFEST}" \
     --server "${COWORLD_SERVER}" \
-    --timeout-seconds "${CERTIFY_TIMEOUT}") 2>&1 | tee "${upload_log}"
+    --timeout-seconds "${CERTIFY_TIMEOUT}" 2>&1 | tee "${upload_log}"
   local upload_status="${PIPESTATUS[0]}"
   set -e
 
@@ -332,9 +294,6 @@ upload_replay_viewer() {
 
 require_master_checkout
 build_and_push_ghcr_images
-if [[ "${SKIP_COWORLD}" -eq 0 ]]; then
-  build_local_coworld_images
-fi
 upload_coworld
 upload_replay_viewer
 
