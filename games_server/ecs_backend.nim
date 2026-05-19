@@ -371,11 +371,13 @@ proc ecsCreateBot*(
   gamePrivateIp: string,
   botName: string,
   playerName: string,
-  botBinary: string,
+  botCommand: seq[string],
   slot = -1,
   token = "",
   arch = "X86_64",
 ): string =
+  ## Launches one bot ECS task using the manifest's `run` command followed
+  ## by the bitworld player CLI arguments.
   let taskDefArn = ensureBotTaskDef(botImage, arch)
   let
     created = $getTime().toUnix()
@@ -392,13 +394,11 @@ proc ecsCreateBot*(
       (key: "bitworld.games_server.bot", value: botName),
       (key: "bitworld.games_server.created", value: created),
     ]
-  var cmd = @[
-    botBinary,
-    "--address:" & gamePrivateIp,
-    "--port:" & $GameContainerPort,
-    "--name:" & playerName,
-    "--url:" & endpoint
-  ]
+  var cmd = botCommand
+  cmd.add("--address:" & gamePrivateIp)
+  cmd.add("--port:" & $GameContainerPort)
+  cmd.add("--name:" & playerName)
+  cmd.add("--url:" & endpoint)
   if slot >= 0:
     cmd.add("--slot:" & $slot)
   if token.len > 0:

@@ -367,7 +367,7 @@ type
     name: string
     author: string
     imageUri: string
-    binary: string
+    command: seq[string]
     playerProtocol: string
 
   CoplayerManifest = object
@@ -376,7 +376,7 @@ type
     name: string
     author: string
     imageUri: string
-    binary: string
+    command: seq[string]
     arch: string  # "X86_64" or "ARM64"
     games: seq[string]
 
@@ -639,6 +639,32 @@ proc defaultManifestName(path: string): string =
   ## Returns a display name for a manifest path.
   splitPath(parentDir(path)).tail
 
+proc manifestStringArray(node: JsonNode, key: string): seq[string] =
+  ## Reads one top-level string array from a manifest.
+  if node.kind != JObject or not node.hasKey(key) or
+      node[key].kind != JArray:
+    return
+  for item in node[key].items:
+    if item.kind == JString:
+      result.add(item.getStr())
+
+proc manifestRunCommand(node: JsonNode, defaultBinary: string): seq[string] =
+  ## Reads the container entrypoint command from a Coworld manifest node.
+  ## Prefers the Coworld `run` array (on the `runnable` child or the node
+  ## itself), falling back to the legacy single `binary` string field, and
+  ## finally to the provided default binary path.
+  let runnable = node.manifestObject("runnable")
+  if not runnable.isNil:
+    result = runnable.manifestStringArray("run")
+  if result.len == 0:
+    result = node.manifestStringArray("run")
+  if result.len == 0:
+    let binary = node.manifestString("binary", "")
+    if binary.len > 0:
+      result = @[binary]
+  if result.len == 0:
+    result = @[defaultBinary]
+
 proc readGameManifest(path: string): GameManifest =
   ## Reads one Coworld manifest summary from disk.
   try:
@@ -662,7 +688,7 @@ proc readGameManifest(path: string): GameManifest =
       name: name,
       author: author,
       imageUri: image,
-      binary: game.manifestString("binary", "/bin/" & name),
+      command: game.manifestRunCommand("/bin/" & name),
       playerProtocol: game.manifestProtocol("player")
     )
   except CatchableError as e:
@@ -670,15 +696,6 @@ proc readGameManifest(path: string): GameManifest =
       GamesServerError,
       "could not read Coworld manifest " & path & ": " & e.msg
     )
-
-proc manifestStringArray(node: JsonNode, key: string): seq[string] =
-  ## Reads one top-level string array from a manifest.
-  if node.kind != JObject or not node.hasKey(key) or
-      node[key].kind != JArray:
-    return
-  for item in node[key].items:
-    if item.kind == JString:
-      result.add(item.getStr())
 
 proc readCoplayerManifest(path: string): CoplayerManifest =
   ## Reads one CoPlayer manifest summary from disk.
@@ -695,7 +712,7 @@ proc readCoplayerManifest(path: string): CoplayerManifest =
       name: name,
       author: manifest.manifestString("author", "-"),
       imageUri: manifest.manifestString("image_uri", ""),
-      binary: manifest.manifestString("binary", "/bin/" & name),
+      command: manifest.manifestRunCommand("/bin/" & name),
       arch: manifest.manifestString("arch", "X86_64"),
       games: manifest.manifestStringArray("games")
     )
@@ -732,7 +749,7 @@ proc readCoworldPlayers(path: string): seq[CoplayerManifest] =
           player.manifestString("owner", "-")
         ),
         imageUri: player.manifestImage(),
-        binary: player.manifestString("binary", "/bin/" & id),
+        command: player.manifestRunCommand("/bin/" & id),
         arch: player.manifestString("arch", "X86_64"),
         games: @[game.name]
       ))
@@ -2230,7 +2247,7 @@ proc dockerRunArgs(
   saveReplay: bool,
   config: string,
   image: string,
-  binary: string,
+  command: seq[string],
   cogameName = "",
   manifestKey = ""
 ): seq[string] =
@@ -2248,7 +2265,8 @@ proc dockerRunArgs(
   case dockerMode()
   of "release":
     result.add(image)
-    result.add(binary)
+    for token in command:
+      result.add(token)
     result.add("--address:0.0.0.0")
     result.add("--port:" & $GameContainerPort)
     if config.len > 0:
@@ -2297,7 +2315,8 @@ proc botRunArgs(
   result.add("-e")
   result.add(CogamesEngineWsEnv & "=" & endpoint)
   result.add(coplayerImage(bot))
-  result.add(bot.binary)
+  for token in bot.command:
+    result.add(token)
   result.add("--address:" & BotHost)
   result.add("--port:" & $game.port)
   result.add("--name:" & playerName)
@@ -2406,7 +2425,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
           privateIp,
           item.bot.name,
           playerName,
-          item.bot.binary,
+          item.bot.command,
           slot,
           playerToken,
         )
@@ -2447,7 +2466,7 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       true,
       config,
       image,
-      manifestInfo.binary,
+      manifestInfo.command,
       manifestInfo.name,
       manifestInfo.key
     ))
@@ -2512,7 +2531,8 @@ proc createReplayGame(replay: string): GameContainer =
   case dockerMode()
   of "release":
     args.add(image)
-    args.add(manifestInfo.binary)
+    for token in manifestInfo.command:
+      args.add(token)
     args.add("--address:0.0.0.0")
     args.add("--port:" & $GameContainerPort)
   else:
@@ -2728,7 +2748,7 @@ proc createBots(
           gameInfo.privateIp,
           bot.name,
           playerName,
-          bot.binary,
+          bot.command,
           slot,
           "",
           bot.arch,
