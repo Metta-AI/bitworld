@@ -52,7 +52,9 @@ type
 
   GameLaunch = object
     sourceRelative: string
+    buildDir: string
     workDir: string
+    botSearchDir: string
     label: string
     name: string
     playerProtocol: ClientProtocol
@@ -86,6 +88,7 @@ type
 
   BotLaunch = object
     sourceRelative: string
+    buildDir: string
     workDir: string
     label: string
     count: int
@@ -94,11 +97,16 @@ type
     name: string
     token: string
 
-proc repoRoot(): string =
+proc currentRoot(): string =
+  ## Returns the directory quick_run was invoked from.
   absolutePath(getCurrentDir())
 
+proc toolRoot(): string =
+  ## Returns the BitWorld repository directory containing quick_run.
+  absolutePath(currentSourcePath().parentDir().parentDir())
+
 proc usage(): string =
-  "Usage: quick_run <game_folder> [--connect] [--address:ADDR] " &
+  "Usage: quick_run <game_folder_or_file> [--connect] [--address:ADDR] " &
     "[--port:N] [--player] [--players:N] [--bots:BOT:N] [--global] " &
     "[--html] [--slots] " &
     "[--bot-gui] " &
@@ -111,6 +119,7 @@ proc usage(): string =
     "it.\n" &
     "Examples:\n" &
     "  quick_run fancy_cookout\n" &
+    "  quick_run src/heartleaf.nim --player\n" &
     "  quick_run planet_wars --bots:skurge:4 --global --html\n" &
     "  quick_run among_them --players:2 --bots:nottoodumb:6\n" &
     "  quick_run among_them --connect --port:2000 --bots:nottoodumb:8"
@@ -321,6 +330,74 @@ proc gameSourceRelative(folderName: string): string =
 
   normalized / (parts[^1] & ".nim")
 
+proc hasPathSeparator(value: string): bool =
+  ## Returns true when a value looks like a path.
+  value.contains('/') or value.contains('\\')
+
+proc withNimExt(path: string): string =
+  ## Adds the Nim source extension when no extension is present.
+  result = path
+  if result.splitFile().ext.len == 0:
+    result.add(".nim")
+
+proc sourceArg(buildDir, sourcePath: string): string =
+  ## Returns a Nim source argument relative to the build directory.
+  if sourcePath.startsWith(buildDir / ""):
+    sourcePath.relativePath(buildDir)
+  else:
+    sourcePath
+
+proc sourceCandidate(rootDir, source: string): string =
+  ## Returns the absolute path for one possible game source.
+  let sourcePath = source.withNimExt()
+  if sourcePath.isAbsolute():
+    sourcePath
+  else:
+    absolutePath(rootDir / sourcePath)
+
+proc projectRootForSource(sourcePath: string): string =
+  ## Finds the closest build root for one external source path.
+  result = sourcePath.parentDir()
+  var dir = result
+  while true:
+    if fileExists(dir / "config.nims"):
+      return dir
+    for kind, path in walkDir(dir):
+      if kind == pcFile and path.splitFile().ext == ".nimble":
+        return dir
+    let parent = dir.parentDir()
+    if parent == dir or parent.len == 0:
+      break
+    dir = parent
+
+proc ensureGameSource(rootDir, source: string): GameLaunch =
+  ## Validates and describes one game source file.
+  let sourcePath = sourceCandidate(rootDir, source)
+  if not fileExists(sourcePath):
+    raise newException(ValueError, "Game entry file not found: " & source)
+
+  let
+    buildDir = rootDir
+    sourceRelative = sourceArg(buildDir, sourcePath)
+    manifestPath = rootDir / CoworldManifestName
+    label = sourcePath.splitFile().name
+
+  result = GameLaunch(
+    sourceRelative: sourceRelative,
+    buildDir: buildDir,
+    workDir: buildDir,
+    botSearchDir: ".",
+    label: label,
+    name: label,
+    playerProtocol: FrameClient,
+    hasGlobalProtocol: false
+  )
+  if fileExists(manifestPath):
+    let manifest = readGameManifest(buildDir, manifestPath)
+    result.name = manifest.name
+    result.playerProtocol = manifest.playerProtocol
+    result.hasGlobalProtocol = manifest.hasGlobalProtocol
+
 proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
   ## Validates and describes one game source folder.
   let normalized = trimTrailingSeparators(folderName)
@@ -346,7 +423,9 @@ proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
     )
   result = GameLaunch(
     sourceRelative: sourceRelative,
+    buildDir: rootDir,
     workDir: workDir,
+    botSearchDir: gameFolder,
     label: splitPath(gameFolder).tail,
     name: splitPath(gameFolder).tail,
     playerProtocol: FrameClient,
@@ -357,15 +436,18 @@ proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
     result.playerProtocol = manifestLookup.manifest.playerProtocol
     result.hasGlobalProtocol = manifestLookup.manifest.hasGlobalProtocol
 
-proc hasPathSeparator(value: string): bool =
-  ## Returns true when a value looks like a path.
-  value.contains('/') or value.contains('\\')
+proc findGame(
+  currentDir,
+  source: string
+): tuple[found: bool, game: GameLaunch] =
+  ## Finds a game by source path, folder, or Coworld manifest name.
+  let candidate = sourceCandidate(currentDir, source)
+  if fileExists(candidate):
+    return (found: true, game: ensureGameSource(currentDir, source))
 
-proc withNimExt(path: string): string =
-  ## Adds the Nim source extension when no extension is present.
-  result = path
-  if result.splitFile().ext.len == 0:
-    result.add(".nim")
+  let manifestLookup = findGameManifest(currentDir, source)
+  if manifestLookup.found or dirExists(currentDir / source):
+    return (found: true, game: ensureGameFolder(currentDir, source))
 
 proc parseBotGroup(value: string): BotGroup =
   ## Parses BOT or BOT:N into one bot launch group.
@@ -497,12 +579,13 @@ proc ensureBotFile(
   gameFolder,
   gameName,
   source: string
-): tuple[sourceRelative, workDir, label: string] =
+): tuple[sourceRelative, buildDir, workDir, label: string] =
   ## Validates and describes one bot source file.
   let manifestBot = findCoplayerSource(rootDir, gameName, source)
   if manifestBot.found:
     return (
       sourceRelative: manifestBot.sourceRelative,
+      buildDir: rootDir,
       workDir: manifestBot.workDir,
       label: manifestBot.label
     )
@@ -510,13 +593,16 @@ proc ensureBotFile(
   for sourceRelative in botCandidates(gameFolder, source):
     let sourcePath = absoluteSourcePath(rootDir, sourceRelative)
     if fileExists(sourcePath):
-      return (
-        sourceRelative: (
-          if sourceRelative.isAbsolute():
-            sourcePath
+      let
+        buildDir =
+          if source.hasPathSeparator():
+            projectRootForSource(sourcePath)
           else:
-            sourceRelative
-        ),
+            rootDir
+        buildSource = sourceArg(buildDir, sourcePath)
+      return (
+        sourceRelative: buildSource,
+        buildDir: buildDir,
         workDir: sourcePath.parentDir(),
         label: sourcePath.splitFile().name
       )
@@ -675,10 +761,16 @@ proc compileTarget(
   nimExe: string,
   rootDir: string,
   label: string,
-  sourceRelative: string
+  sourceRelative,
+  outputPath: string
 ): int =
   echo "Compiling ", label, "..."
-  result = runProcessAndWait(nimExe, rootDir, ["c", sourceRelative])
+  createDir(outputPath.parentDir())
+  result = runProcessAndWait(
+    nimExe,
+    rootDir,
+    ["c", "--out:" & outputPath, sourceRelative]
+  )
   if result != 0:
     echo label, " compile failed with exit code ", result, "."
 
@@ -887,7 +979,7 @@ proc parseArgs(): QuickRunConfig =
     result.port = parsePort(positional[1])
     positional.setLen(1)
   if positional.len != 1:
-    raise newException(ValueError, "Expected <game_folder>.")
+    raise newException(ValueError, "Expected <game_folder_or_file>.")
   if result.address.len == 0:
     result.address =
       if result.connect:
@@ -1140,16 +1232,23 @@ proc launchNativeGlobalViewer(
 
 proc runQuickRun(config: QuickRunConfig): int =
   let
-    rootDir = repoRoot()
+    runDir = currentRoot()
+    launcherDir = toolRoot()
     nimExe = findExe("nim")
   if nimExe.len == 0:
     echo "Unable to find 'nim' on PATH."
     return 1
 
+  let gameLookup = findGame(runDir, config.gameFolder)
+  if not gameLookup.found:
+    echo "Game folder or file not found from current directory: ",
+      config.gameFolder
+    echo usage()
+    return 1
+
   let
-    game = ensureGameFolder(rootDir, config.gameFolder)
-    gameFolderRelative = game.sourceRelative.splitFile().dir
-    gameExe = exePathFor(rootDir, game.sourceRelative)
+    game = gameLookup.game
+    gameExe = exePathFor(game.buildDir, game.sourceRelative)
     portArg = "--port:" & $config.port
     addressArg = "--address:" & config.address
   if config.globalViewer and not game.hasGlobalProtocol:
@@ -1161,13 +1260,14 @@ proc runQuickRun(config: QuickRunConfig): int =
     if group.count == 0:
       continue
     let bot = ensureBotFile(
-      rootDir,
-      gameFolderRelative,
+      game.buildDir,
+      game.botSearchDir,
       game.name,
       group.source
     )
     botLaunches.add(BotLaunch(
       sourceRelative: bot.sourceRelative,
+      buildDir: bot.buildDir,
       workDir: bot.workDir,
       label: bot.label,
       count: group.count
@@ -1194,9 +1294,10 @@ proc runQuickRun(config: QuickRunConfig): int =
   if not config.connect:
     result = compileTarget(
       nimExe,
-      rootDir,
+      game.buildDir,
       game.label & " server",
-      game.sourceRelative
+      game.sourceRelative,
+      gameExe
     )
     if result != 0:
       return result
@@ -1205,9 +1306,10 @@ proc runQuickRun(config: QuickRunConfig): int =
   if config.globalViewer and not config.htmlViewer:
     result = compileTarget(
       nimExe,
-      rootDir,
+      launcherDir,
       game.name & " global client",
-      GlobalClientSourceRelative
+      GlobalClientSourceRelative,
+      exePathFor(launcherDir, GlobalClientSourceRelative)
     )
     if result != 0:
       return result
@@ -1218,9 +1320,10 @@ proc runQuickRun(config: QuickRunConfig): int =
     if sourceRelative notin compiledClientSources:
       result = compileTarget(
         nimExe,
-        rootDir,
+        launcherDir,
         game.name & " player client",
-        sourceRelative
+        sourceRelative,
+        exePathFor(launcherDir, sourceRelative)
       )
       if result != 0:
         return result
@@ -1228,17 +1331,21 @@ proc runQuickRun(config: QuickRunConfig): int =
 
   var compiledBots: seq[string]
   for bot in botLaunches:
-    if bot.sourceRelative in compiledBots:
+    let
+      botKey = bot.buildDir & "\0" & bot.sourceRelative
+      botExe = exePathFor(bot.buildDir, bot.sourceRelative)
+    if botKey in compiledBots:
       continue
     result = compileTarget(
       nimExe,
-      rootDir,
+      bot.buildDir,
       bot.label & " bot",
-      bot.sourceRelative
+      bot.sourceRelative,
+      botExe
     )
     if result != 0:
       return result
-    compiledBots.add(bot.sourceRelative)
+    compiledBots.add(botKey)
 
   if config.connect:
     echo "Connecting to existing server."
@@ -1262,20 +1369,20 @@ proc runQuickRun(config: QuickRunConfig): int =
   if config.globalViewer:
     if config.htmlViewer:
       openHtmlGlobalViewer(config, game)
-    elif not launchNativeGlobalViewer(config, game, rootDir):
+    elif not launchNativeGlobalViewer(config, game, launcherDir):
       cleanupChildren()
       return 1
 
   if config.htmlViewer:
     openHtmlClients(config, game, slotAssignments)
-  elif not launchNativePlayerClients(config, game, rootDir, slotAssignments):
+  elif not launchNativePlayerClients(config, game, launcherDir, slotAssignments):
     cleanupChildren()
     return 1
 
-  let mapArg = botMapArg(rootDir, config.botMapPath)
+  let mapArg = botMapArg(runDir, config.botMapPath)
   var globalBotIndex = 0
   for bot in botLaunches:
-    let botExe = exePathFor(rootDir, bot.sourceRelative)
+    let botExe = exePathFor(bot.buildDir, bot.sourceRelative)
     for i in 0 ..< bot.count:
       inc globalBotIndex
       let
