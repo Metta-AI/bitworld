@@ -40,6 +40,7 @@ const
   CogameReplayServerEnv = "COGAME_REPLAY_SERVER"
   CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
   CogameResultsUriEnv = "COGAME_RESULTS_URI"
+  CogameConfigUriEnv = "COGAME_CONFIG_URI"
   CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CoworldManifestName = "coworld_manifest.json"
@@ -379,6 +380,7 @@ type
     command: seq[string]
     arch: string  # "X86_64" or "ARM64"
     games: seq[string]
+    env: seq[(string, string)]
 
   BotLaunchCount = object
     bot: CoplayerManifest
@@ -639,6 +641,15 @@ proc defaultManifestName(path: string): string =
   ## Returns a display name for a manifest path.
   splitPath(parentDir(path)).tail
 
+proc manifestEnv(node: JsonNode): seq[(string, string)] =
+  ## Reads an `env` object on a manifest node as name/value pairs.
+  if node.kind != JObject or not node.hasKey("env") or
+      node["env"].kind != JObject:
+    return
+  for key, value in node["env"].pairs:
+    if value.kind == JString:
+      result.add((key, value.getStr()))
+
 proc manifestStringArray(node: JsonNode, key: string): seq[string] =
   ## Reads one top-level string array from a manifest.
   if node.kind != JObject or not node.hasKey(key) or
@@ -714,7 +725,8 @@ proc readCoplayerManifest(path: string): CoplayerManifest =
       imageUri: manifest.manifestString("image_uri", ""),
       command: manifest.manifestRunCommand("/bin/" & name),
       arch: manifest.manifestString("arch", "X86_64"),
-      games: manifest.manifestStringArray("games")
+      games: manifest.manifestStringArray("games"),
+      env: manifest.manifestEnv()
     )
   except CatchableError as e:
     raise newException(
@@ -751,7 +763,8 @@ proc readCoworldPlayers(path: string): seq[CoplayerManifest] =
         imageUri: player.manifestImage(),
         command: player.manifestRunCommand("/bin/" & id),
         arch: player.manifestString("arch", "X86_64"),
-        games: @[game.name]
+        games: @[game.name],
+        env: player.manifestEnv()
       ))
   except CatchableError as e:
     raise newException(
@@ -1632,6 +1645,13 @@ proc scoresName(replay: string): string =
   else:
     replay & ".scores.json"
 
+proc configName(replay: string): string =
+  ## Builds the per-launch Coworld config file name for one replay file.
+  if replay.endsWith(".bitreplay"):
+    replay[0 ..< replay.len - ".bitreplay".len] & ".config.json"
+  else:
+    replay & ".config.json"
+
 proc scoreFileName(replay: string): string =
   ## Builds the clean scores file name for one replay file.
   cleanReplayName(scoresName(replay))
@@ -2126,16 +2146,58 @@ proc parseScoreRows(text: string): seq[ScoreRow] =
       voteTimeout: voteTimeouts.scoreString(i)
     ))
 
+proc generatePlayerToken(): string =
+  ## Generates one opaque hex token for a Coworld player slot.
+  var bytes: array[16, byte]
+  if not urandom(bytes):
+    raise newException(GamesServerError, "could not generate player token")
+  for b in bytes:
+    result.add(b.toHex(2).toLowerAscii())
+
+proc variantDefaults(manifestInfo: GameManifest): JsonNode =
+  ## Reads the first variant's game_config as default values.
+  result = newJObject()
+  try:
+    let manifest = parseJson(readFile(manifestInfo.path))
+    if not manifest.hasKey("variants") or manifest["variants"].kind != JArray:
+      return
+    if manifest["variants"].len == 0:
+      return
+    let variant = manifest["variants"][0]
+    if variant.kind != JObject or not variant.hasKey("game_config") or
+        variant["game_config"].kind != JObject:
+      return
+    result = variant["game_config"]
+  except CatchableError:
+    discard
+
 proc configJson(
   form: seq[(string, string)],
   manifestInfo: GameManifest
 ): string =
   ## Builds the Coworld game config from form values.
-  let schema = configSchema(manifestInfo)
+  let
+    schema = configSchema(manifestInfo)
+    defaults = variantDefaults(manifestInfo)
   var node = newJObject()
   for name, property in schema["properties"].pairs:
     let value = formValue(form, name).strip()
+    if value.len == 0 and name != "tokens" and defaults.hasKey(name):
+      node[name] = defaults[name]
+      continue
     if name == "tokens" and (value.len == 0 or value == "[]"):
+      # v2 contract: runner generates one fresh token per player slot.
+      let minItems =
+        if property.kind == JObject and property.hasKey("minItems") and
+            property["minItems"].kind == JInt:
+          property["minItems"].getInt()
+        else:
+          0
+      if minItems > 0:
+        let tokens = newJArray()
+        for _ in 0 ..< minItems:
+          tokens.add(%generatePlayerToken())
+        node["tokens"] = tokens
       continue
     case property.propertyType()
     of "integer":
@@ -2210,6 +2272,7 @@ proc baseDockerArgs(
     let
       replayFile = replayContainerPath(replay)
       scores = replayContainerPath(scoresName(replay))
+      configFile = replayContainerPath(configName(replay))
     result.add("-v")
     result.add(replayDir() & ":" & ReplayMountDir)
     result.add("-e")
@@ -2220,6 +2283,8 @@ proc baseDockerArgs(
     result.add(CogameResultsEnv & "=" & scores)
     result.add("-e")
     result.add(CogameResultsUriEnv & "=file://" & scores)
+    result.add("-e")
+    result.add(CogameConfigUriEnv & "=file://" & configFile)
     let token = generateUploadToken(replay)
     let uploadUrl = gamesServerUrl() & ReplayUploadPath
     result.add("-e")
@@ -2314,6 +2379,9 @@ proc botRunArgs(
   addAiEnvArgs(result)
   result.add("-e")
   result.add(CogamesEngineWsEnv & "=" & endpoint)
+  for (key, value) in bot.env:
+    result.add("-e")
+    result.add(key & "=" & value)
   result.add(coplayerImage(bot))
   for token in bot.command:
     result.add(token)
@@ -2337,6 +2405,39 @@ proc removeContainers(names: seq[string]) =
   for name in names:
     if name.len > 0:
       discard dockerResult(@["rm", "-f", name])
+
+proc healthUrl(game: GameContainer): string =
+  ## Builds the local health URL for one game container.
+  if useEcs and game.ip.len > 0:
+    return "http://" & game.ip & ":" & $GameContainerPort & HealthPath
+  "http://127.0.0.1:" & $game.port & HealthPath
+
+proc gameHealthy(game: GameContainer): bool =
+  ## Returns true when the game's health endpoint answers with HTTP 200.
+  ## v1 games return body "healthy"; v2 games return {"ok":true}. Either is fine.
+  if useEcs:
+    return ecsGameHealthy(game.ip)
+  if game.status != "running" or game.port <= 0:
+    return false
+  var client = newHttpClient(timeout = 500)
+  try:
+    discard client.getContent(healthUrl(game))
+    result = true
+  except CatchableError:
+    result = false
+  finally:
+    client.close()
+
+proc waitForHealthy(game: GameContainer, timeoutSec = 30): bool =
+  ## Polls the game's /healthz until it answers OK or timeout elapses.
+  var probe = game
+  probe.status = "running"
+  let deadline = epochTime() + timeoutSec.float
+  while epochTime() < deadline:
+    if gameHealthy(probe):
+      return true
+    sleep(250)
+  false
 
 proc startWaitingBots(
   game: GameContainer,
@@ -2455,8 +2556,8 @@ proc createGame(form: seq[(string, string)]): GameContainer =
   var launchedBots: seq[string]
   pullDockerImage(image)
   pullNeededBotImages(botCounts)
+  writeFile(replayDir() / configName(replay), config)
   try:
-    discard startWaitingBots(pendingGame, botCounts, playerTokens, launchedBots)
     discard requireDocker(dockerRunArgs(
       name,
       port,
@@ -2470,9 +2571,16 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       manifestInfo.name,
       manifestInfo.key
     ))
+    if not waitForHealthy(pendingGame):
+      raise newException(
+        GamesServerError,
+        "game container " & name & " did not become healthy in time"
+      )
+    discard startWaitingBots(pendingGame, botCounts, playerTokens, launchedBots)
     result = inspectGame(name)
   except CatchableError:
     removeContainers(launchedBots)
+    discard dockerResult(@["rm", "-f", name])
     raise
 
 proc createReplayGame(replay: string): GameContainer =
@@ -2684,39 +2792,24 @@ proc gameHttpUrl(
 
 proc clientPagePath(page: string): string =
   ## Returns the per-game browser client path for one endpoint page.
+  ## Uses the Coworld plural prefix (`/clients/...`). v1 game images
+  ## already alias both `/client/...` and `/clients/...` via
+  ## `bitworld/src/bitworld/clients.nim:clientRoute`, so this path
+  ## works for both v1 and v2 game containers.
   case page
   of "player.html":
-    "/client/player"
+    "/clients/player"
   of "rewards.html", "reward.html":
-    "/client/reward"
+    "/clients/reward"
   of "admin.html":
-    "/client/admin"
+    "/clients/admin"
   else:
-    "/client/global"
+    "/clients/global"
 
 proc gameUrl(request: Request, game: GameContainer, page: string): string =
   ## Builds a per-game browser client URL for one game container.
   request.gameHttpUrl(game, clientPagePath(page))
 
-proc healthUrl(game: GameContainer): string =
-  ## Builds the local health URL for one game container.
-  if useEcs and game.ip.len > 0:
-    return "http://" & game.ip & ":" & $GameContainerPort & HealthPath
-  "http://127.0.0.1:" & $game.port & HealthPath
-
-proc gameHealthy(game: GameContainer): bool =
-  ## Returns true when the game's health endpoint answers healthy.
-  if useEcs:
-    return ecsGameHealthy(game.ip)
-  if game.status != "running" or game.port <= 0:
-    return false
-  var client = newHttpClient(timeout = 500)
-  try:
-    result = client.getContent(healthUrl(game)).strip() == "healthy"
-  except CatchableError:
-    result = false
-  finally:
-    client.close()
 
 
 proc createBots(

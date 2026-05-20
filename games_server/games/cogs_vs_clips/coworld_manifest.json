@@ -1,0 +1,183 @@
+{
+  "game": {
+    "docs": {
+      "pages": [
+        {
+          "id": "play_cogsvsclips.md",
+          "title": "play_cogsvsclips.md",
+          "content": {
+            "type": "uri",
+            "value": "https://softmax.com/play_cogsvsclips.md"
+          }
+        }
+      ]
+    },
+    "name": "cogs_vs_clips",
+    "owner": "cogames@softmax.com",
+    "version": "0.2.10",
+    "runnable": {
+      "env": {},
+      "run": [
+        "python",
+        "/app/server.py"
+      ],
+      "type": "game",
+      "image": "coworld/cow_078d1605-92c0-432d-a43c-6786b4f14211/cogs_vs_clips-0.2.10-1:downloaded"
+    },
+    "protocols": {
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/coworld/blob/main/src/coworld/examples/cogs_vs_clips/game/docs/global_protocol_spec.md"
+      },
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/coworld/blob/main/src/coworld/examples/cogs_vs_clips/game/docs/player_protocol_spec.md"
+      }
+    },
+    "description": "Cogs vs Clips packaged as a Coworld Cogame backed by Cogsguard and MettaGrid.",
+    "config_schema": {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "tokens",
+        "mission",
+        "max_steps",
+        "seed",
+        "step_seconds"
+      ],
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 8,
+          "minItems": 8
+        },
+        "mission": {
+          "enum": [
+            "machina_1",
+            "cogsguard"
+          ],
+          "type": "string"
+        },
+        "max_steps": {
+          "type": "integer",
+          "maximum": 10000,
+          "minimum": 1
+        },
+        "step_seconds": {
+          "type": "number",
+          "maximum": 1,
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "results_schema": {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "scores",
+        "steps",
+        "mission"
+      ],
+      "properties": {
+        "steps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scores": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 32,
+          "minItems": 1
+        },
+        "mission": {
+          "enum": [
+            "machina_1",
+            "cogsguard"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "grader": [],
+  "player": [
+    {
+      "id": "starter-policy-player",
+      "env": {
+        "COGAMES_POLICY_URI": "metta://policy/cogames.policy.starter_agent.StarterPolicy"
+      },
+      "run": [
+        "python",
+        "/app/coworld_policy_player.py"
+      ],
+      "name": "Starter Policy Player",
+      "type": "player",
+      "image": "coworld/cow_078d1605-92c0-432d-a43c-6786b4f14211/cogs_vs_clips-0.2.10-0:downloaded",
+      "description": "Cogs vs Clips MettaGrid policy player running the starter policy over coworld.player.v1."
+    }
+  ],
+  "$schema": "../../coworld_manifest_schema.json",
+  "reporter": [],
+  "variants": [
+    {
+      "id": "machina-1-daily",
+      "name": "Machina 1 Daily",
+      "description": "8-agent Cogs vs Clips daily tournament variant backed by the Cogsguard Machina 1 mission.",
+      "game_config": {
+        "seed": 0,
+        "mission": "machina_1",
+        "max_steps": 10000,
+        "step_seconds": 0.02
+      }
+    }
+  ],
+  "diagnoser": [],
+  "optimizer": [],
+  "commissioner": [],
+  "certification": {
+    "players": [
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      },
+      {
+        "player_id": "starter-policy-player"
+      }
+    ],
+    "game_config": {
+      "seed": 0,
+      "mission": "cogsguard",
+      "max_steps": 3,
+      "step_seconds": 0.02
+    }
+  }
+}
