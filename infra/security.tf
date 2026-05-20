@@ -50,15 +50,6 @@ resource "aws_security_group" "dashboard" {
   tags = { Name = "${var.project_name}-dashboard-sg" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "dashboard_http" {
-  security_group_id = aws_security_group.dashboard.id
-  description       = "Dashboard web UI"
-  from_port         = var.dashboard_port
-  to_port           = var.dashboard_port
-  ip_protocol       = "tcp"
-  cidr_ipv4         = "0.0.0.0/0"
-}
-
 resource "aws_vpc_security_group_ingress_rule" "dashboard_replay_upload" {
   security_group_id            = aws_security_group.dashboard.id
   description                  = "Game containers POST replays to games_server"

@@ -19,7 +19,7 @@ import std/[os, osproc, parseopt, strutils]
 const
   InfraDir = "infra"
   Region = "us-east-1"
-  StateBucket = "bitworld-terraform-state"
+  StateBucket = "bitworld-terraform-state-sandbox-andre"
   LockTable = "bitworld-terraform-lock"
 
 proc repoRoot(): string =
@@ -194,7 +194,7 @@ proc output() =
   execInDir("terraform output", dir)
 
 proc main() =
-  putEnv("AWS_PROFILE", "softmax")
+  putEnv("AWS_PROFILE", "sandbox-andre")
   var command = ""
 
   for kind, key, val in getopt():
