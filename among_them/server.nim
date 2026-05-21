@@ -1,7 +1,7 @@
 import
   std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
   curly, mummy,
-  bitworld/clients, protocol, sim, global, profile, replays
+  bitworld/clients, protocol, sim, global, profile, replays, game_log
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -709,7 +709,8 @@ proc runServerLoop*(
   saveReplayPath = "",
   loadReplayPath = "",
   saveScoresPath = "",
-  replayServerMode = false
+  replayServerMode = false,
+  logUri = ""
 ) =
   initAppState()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
@@ -734,10 +735,16 @@ proc runServerLoop*(
         initReplayPlayer(replayData)
       else:
         ReplayPlayer()
+    gameLog =
+      if replayLoaded or replayServerMode:
+        openGameLogSink("")
+      else:
+        openGameLogSink(logUri)
   startProfileTrace()
   defer:
     finishProfileTrace()
     replayWriter.closeReplayWriter()
+    gameLog.closeGameLogSink()
   appState.replayLoaded = replayLoaded
   appState.replayServerMode = replayServerMode
   appState.config = config
@@ -1108,6 +1115,8 @@ proc runServerLoop*(
         sim.step(inputs, stepPrevInputs)
         stepPrevInputs = inputs
         replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+        if gameLog.enabled:
+          gameLog.writeGameLogLine(buildTickLogLine(sim))
         if config.maxGames > 0 and phaseBeforeStep != GameOver and
             sim.phase == GameOver:
           inc gamesPlayed
@@ -1218,6 +1227,7 @@ proc runServerLoop*(
       if saveReplayPath.len > 0 and fileExists(saveReplayPath):
         echo "Replay written: ", saveReplayPath,
           " (", getFileSize(saveReplayPath), " bytes)"
+      gameLog.flushGameLogSink()
       if saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
         echo "Scores written: ", saveScoresPath,

@@ -49,6 +49,7 @@ when isMainModule:
       "COGAME_LOAD_REPLAY_URI"
     )
     saveScoresPath = resultsPathFromEnv()
+    logUri = getEnv("COGAME_LOG_URI")
     replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
     messageCooldown = -1
   for kind, key, val in getopt():
@@ -71,6 +72,8 @@ when isMainModule:
         loadReplayPath = val
       of "save-scores":
         saveScoresPath = val
+      of "log-uri":
+        logUri = val
       of "message-cooldown":
         messageCooldown = max(0, parseInt(val))
       else: discard
@@ -93,6 +96,8 @@ when isMainModule:
     echo "Using replay save file: " & saveReplayPath
   if saveScoresPath.len > 0:
     echo "Using results save file: " & saveScoresPath
+  if logUri.len > 0:
+    echo "Using game log URI: " & logUri
   let replayDownloadUrl = getEnv("REPLAY_DOWNLOAD_URL")
   if replayDownloadUrl.len > 0 and loadReplayPath.len == 0 and
       not replayServerMode:
@@ -114,5 +119,6 @@ when isMainModule:
     saveReplayPath,
     loadReplayPath,
     saveScoresPath,
-    replayServerMode
+    replayServerMode,
+    logUri
   )

@@ -1,6 +1,7 @@
 {.warning[UnusedImport]: off.}
 import
   test_ascii_text,
+  test_game_log,
   test_imposter_ratio,
   test_max_ticks,
   test_replay_controls,
