@@ -1056,10 +1056,6 @@ proc readConfigSlots(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
       slot.hasColor = true
     slots.add(slot)
 
-proc defaultSlotName(slotIndex: int): string =
-  ## Returns the canonical name for one generated tournament slot.
-  "Player" & $(slotIndex + 1)
-
 proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
   ## Reads optional fixed player slot tokens.
   if not node.hasKey("tokens"):
@@ -1088,8 +1084,6 @@ proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
           "].token."
       )
     slots[i].token = token
-    if slots[i].name.len == 0:
-      slots[i].name = defaultSlotName(i)
 
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
