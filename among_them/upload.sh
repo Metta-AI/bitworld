@@ -14,6 +14,8 @@ COWORLD_SERVER="${COWORLD_SERVER:-https://api.observatory.softmax-research.net}"
 REGISTRY="${REGISTRY:-ghcr.io/metta-ai}"
 CERTIFY_TIMEOUT="${CERTIFY_TIMEOUT:-180}"
 S3_VIEWER_URI="${S3_VIEWER_URI:-s3://softmax-public/bitworld/among_them/1}"
+COWORLD_COMPOSE="${COWORLD_COMPOSE:-${METTA_REPO}/worlds/among_them/compose.yaml}"
+COWORLD_TEMPLATE="${COWORLD_TEMPLATE:-${METTA_REPO}/worlds/among_them/coworld_manifest_template.json}"
 
 VERSION=""
 RUN_GIT_PULL=1
@@ -32,7 +34,7 @@ Build and upload the Among Them Coworld release from BitWorld master.
 Steps:
   1. git pull --ff-only and require a clean master checkout.
   2. Build and push GHCR images for the game runner and ivotewell baseline.
-  3. Run coworld upload-coworld --build with a temporary version override.
+  3. Build and upload the Coworld through Metta's canonical coworld build.
   4. Rebuild and upload the hosted replay viewer bundle to S3.
 
 Options:
@@ -49,6 +51,8 @@ Environment:
   REGISTRY               GHCR registry prefix, default ghcr.io/metta-ai.
   CERTIFY_TIMEOUT        Coworld certifier timeout seconds.
   S3_VIEWER_URI          S3 prefix for replay_viewer.{html,js,wasm,data}.
+  COWORLD_COMPOSE        Metta Coworld compose.yaml path.
+  COWORLD_TEMPLATE       Metta Coworld manifest template path.
   GHCR_USERNAME          Optional GHCR username.
   GHCR_TOKEN             Optional GHCR token. If omitted, gh auth token is used.
 
@@ -130,9 +134,8 @@ for cmd in git docker nim uv python3 aws; do
   command -v "${cmd}" >/dev/null || die "Missing required command: ${cmd}"
 done
 
-SOURCE_MANIFEST="${REPO_ROOT}/among_them/coworld_manifest.json"
-
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bitworld-among-them-upload.${VERSION}.XXXXXX")"
+UPLOAD_MANIFEST="${WORK_DIR}/coworld_manifest.json"
 DOCKER_CONFIG_DIR=""
 
 cleanup() {
@@ -221,14 +224,26 @@ upload_coworld() {
     return
   fi
 
-  local upload_log="${WORK_DIR}/upload-coworld.log"
+  [[ -f "${COWORLD_COMPOSE}" ]] || die "Coworld compose file not found: ${COWORLD_COMPOSE}"
+  [[ -f "${COWORLD_TEMPLATE}" ]] || die "Coworld manifest template not found: ${COWORLD_TEMPLATE}"
 
-  log "Building, certifying, and uploading Coworld with coworld upload-coworld --build"
+  local build_log="${WORK_DIR}/coworld-build.log"
+  log "Building Coworld manifest and images with Metta coworld build"
+  set +e
+  coworld build \
+    "${COWORLD_COMPOSE}" \
+    "${COWORLD_TEMPLATE}" \
+    "${VERSION}" \
+    "${UPLOAD_MANIFEST}" 2>&1 | tee "${build_log}"
+  local build_status="${PIPESTATUS[0]}"
+  set -e
+  [[ "${build_status}" -eq 0 ]] || die "coworld build failed. See ${build_log}"
+
+  local upload_log="${WORK_DIR}/upload-coworld.log"
+  log "Certifying and uploading Coworld"
   set +e
   coworld upload-coworld \
-    --build \
-    --version "${VERSION}" \
-    "${SOURCE_MANIFEST}" \
+    "${UPLOAD_MANIFEST}" \
     --server "${COWORLD_SERVER}" \
     --timeout-seconds "${CERTIFY_TIMEOUT}" 2>&1 | tee "${upload_log}"
   local upload_status="${PIPESTATUS[0]}"
