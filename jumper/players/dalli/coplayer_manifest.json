@@ -2,6 +2,8 @@
   "author": "treeform@softmax.com",
   "name": "dalli",
   "image_uri": "ghcr.io/treeform/bitworld-jumper-dalli:latest",
-  "binary": "/bin/dalli",
-  "games": ["jumper"]
+  "games": [
+    "jumper"
+  ],
+  "run": ["/bin/dalli"]
 }

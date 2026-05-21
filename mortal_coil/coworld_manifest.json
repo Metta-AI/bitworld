@@ -4,7 +4,9 @@
     "version": "0.1.0",
     "description": "A multiplayer social negotiation game of magic, risk, and betrayal.",
     "runnable": {
-      "type": "game"
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-mortal-coil:latest",
+      "run": ["/bin/mortal_coil", "--address:0.0.0.0", "--port:8080"]
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -29,35 +31,51 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
-      "required": ["scores"],
+      "required": [
+        "scores"
+      ],
       "properties": {
         "names": {
           "type": "array",
-          "items": {"type": "string"}
+          "items": {
+            "type": "string"
+          }
         },
         "scores": {
           "type": "array",
-          "items": {"type": "number"}
+          "items": {
+            "type": "number"
+          }
         },
         "power": {
           "type": "array",
-          "items": {"type": "integer"}
+          "items": {
+            "type": "integer"
+          }
         },
         "individuality": {
           "type": "array",
-          "items": {"type": "integer"}
+          "items": {
+            "type": "integer"
+          }
         },
         "cooperativity": {
           "type": "array",
-          "items": {"type": "integer"}
+          "items": {
+            "type": "integer"
+          }
         },
         "exploitativty": {
           "type": "array",
-          "items": {"type": "integer"}
+          "items": {
+            "type": "integer"
+          }
         },
         "vicariousness": {
           "type": "array",
-          "items": {"type": "integer"}
+          "items": {
+            "type": "integer"
+          }
         }
       }
     },

@@ -28,18 +28,15 @@ const
   BulkRemovePath = "/containers/remove"
   BulkGridPath = "/containers/grid"
   HealthPath = "/healthz"
-  ClientPath = "/client/"
+  ClientPath = "/clients/"
   CreatePath = "/games/create"
   UploadGamePath = "/uploads/game"
   UploadBotPath = "/uploads/bot"
   ValidationPath = "/games/validate"
   ManifestViewPath = "/manifests"
-  CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
   CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
-  CogameLoadReplayEnv = "COGAME_LOAD_REPLAY_PATH"
   CogameLoadReplayUriEnv = "COGAME_LOAD_REPLAY_URI"
   CogameReplayServerEnv = "COGAME_REPLAY_SERVER"
-  CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
   CogameResultsUriEnv = "COGAME_RESULTS_URI"
   CogameConfigUriEnv = "COGAME_CONFIG_URI"
   CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
@@ -370,6 +367,7 @@ type
     author: string
     imageUri: string
     command: seq[string]
+    env: seq[(string, string)]
     playerProtocol: string
 
   CoplayerManifest = object
@@ -660,22 +658,17 @@ proc manifestStringArray(node: JsonNode, key: string): seq[string] =
     if item.kind == JString:
       result.add(item.getStr())
 
-proc manifestRunCommand(node: JsonNode, defaultBinary: string): seq[string] =
+proc manifestRunCommand(node: JsonNode, path: string): seq[string] =
   ## Reads the container entrypoint command from a Coworld manifest node.
-  ## Prefers the Coworld `run` array (on the `runnable` child or the node
-  ## itself), falling back to the legacy single `binary` string field, and
-  ## finally to the provided default binary path.
+  ## Prefers the Coworld `run` array on the `runnable` child, falling back
+  ## to a top-level `run` array for standalone player manifests.
   let runnable = node.manifestObject("runnable")
   if not runnable.isNil:
     result = runnable.manifestStringArray("run")
   if result.len == 0:
     result = node.manifestStringArray("run")
   if result.len == 0:
-    let binary = node.manifestString("binary", "")
-    if binary.len > 0:
-      result = @[binary]
-  if result.len == 0:
-    result = @[defaultBinary]
+    raise newException(GamesServerError, path & " missing run")
 
 proc readGameManifest(path: string): GameManifest =
   ## Reads one Coworld manifest summary from disk.
@@ -700,7 +693,8 @@ proc readGameManifest(path: string): GameManifest =
       name: name,
       author: author,
       imageUri: image,
-      command: game.manifestRunCommand("/bin/" & name),
+      command: game.manifestRunCommand("coworld.game.runnable"),
+      env: game.manifestEnv(),
       playerProtocol: game.manifestProtocol("player")
     )
   except CatchableError as e:
@@ -724,7 +718,7 @@ proc readCoplayerManifest(path: string): CoplayerManifest =
       name: name,
       author: manifest.manifestString("author", "-"),
       imageUri: manifest.manifestString("image_uri", ""),
-      command: manifest.manifestRunCommand("/bin/" & name),
+      command: manifest.manifestRunCommand("coplayer.runnable"),
       arch: manifest.manifestString("arch", "X86_64"),
       games: manifest.manifestStringArray("games"),
       env: manifest.manifestEnv()
@@ -753,6 +747,9 @@ proc readCoworldPlayers(path: string): seq[CoplayerManifest] =
       )
       if id.len == 0:
         continue
+      let image = player.manifestImage()
+      if image.len == 0:
+        continue
       result.add(CoplayerManifest(
         key: manifestKey(path) & "#player/" & id,
         path: path,
@@ -761,8 +758,8 @@ proc readCoworldPlayers(path: string): seq[CoplayerManifest] =
           "author",
           player.manifestString("owner", "-")
         ),
-        imageUri: player.manifestImage(),
-        command: player.manifestRunCommand("/bin/" & id),
+        imageUri: image,
+        command: player.manifestRunCommand("coworld.player[" & id & "].runnable"),
         arch: player.manifestString("arch", "X86_64"),
         games: @[game.name],
         env: player.manifestEnv()
@@ -2280,11 +2277,7 @@ proc baseDockerArgs(
     result.add("-v")
     result.add(replayDir() & ":" & ReplayMountDir)
     result.add("-e")
-    result.add(CogameReplayEnv & "=" & replayFile)
-    result.add("-e")
     result.add(CogameReplayUriEnv & "=file://" & replayFile)
-    result.add("-e")
-    result.add(CogameResultsEnv & "=" & scores)
     result.add("-e")
     result.add(CogameResultsUriEnv & "=file://" & scores)
     result.add("-e")
@@ -2297,15 +2290,13 @@ proc baseDockerArgs(
     result.add("REPLAY_UPLOAD_TOKEN=" & token)
   addAiEnvArgs(result)
 
-proc runnerScript(config: string): string =
+proc runnerScript(): string =
   ## Builds the shell command for the local Nim runner image.
   result =
     "mkdir -p /tmp/bitworld-out /tmp/bitworld-nimcache && " &
     "nim r --nimcache:/tmp/bitworld-nimcache " &
     "--outdir:/tmp/bitworld-out among_them.nim " &
     "--address:0.0.0.0 --port:" & $GameContainerPort
-  if config.len > 0:
-    result.add(" --config:'" & config & "'")
 
 proc dockerRunArgs(
   name: string,
@@ -2314,9 +2305,9 @@ proc dockerRunArgs(
   replay: string,
   kind: ContainerKind,
   saveReplay: bool,
-  config: string,
   image: string,
   command: seq[string],
+  env: seq[(string, string)],
   cogameName = "",
   manifestKey = ""
 ): seq[string] =
@@ -2333,13 +2324,12 @@ proc dockerRunArgs(
   )
   case dockerMode()
   of "release":
+    for (key, value) in env:
+      result.add("-e")
+      result.add(key & "=" & value)
     result.add(image)
     for token in command:
       result.add(token)
-    result.add("--address:0.0.0.0")
-    result.add("--port:" & $GameContainerPort)
-    if config.len > 0:
-      result.add("--config:" & config)
   else:
     result.add("-v")
     result.add(workspaceRoot() & ":/workspace:ro")
@@ -2350,7 +2340,7 @@ proc dockerRunArgs(
     result.add(image)
     result.add("sh")
     result.add("-lc")
-    result.add(runnerScript(config))
+    result.add(runnerScript())
 
 proc botRunArgs(
   name: string,
@@ -2389,14 +2379,6 @@ proc botRunArgs(
   result.add(coplayerImage(bot))
   for token in bot.command:
     result.add(token)
-  result.add("--address:" & BotHost)
-  result.add("--port:" & $game.port)
-  result.add("--name:" & playerName)
-  result.add("--url:" & endpoint)
-  if slot >= 0:
-    result.add("--slot:" & $slot)
-  if token.len > 0:
-    result.add("--token:" & token)
 
 proc pullNeededBotImages(counts: seq[BotLaunchCount]) =
   ## Pulls the CoPlayer images requested by a create form.
@@ -2449,7 +2431,7 @@ proc startWaitingBots(
   tokens: seq[string],
   launchedNames: var seq[string]
 ): seq[BotContainer] =
-  ## Starts bot containers before their game container exists.
+  ## Starts bot containers after their game container is healthy.
   for item in counts:
     for _ in 0 ..< item.count:
       let
@@ -2488,14 +2470,25 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       token = if saveReplay: generateUploadToken(replay) else: ""
       uploadUrl = if saveReplay: serverUrl & ReplayUploadPath else: ""
       playerTokens = configTokens(config)
+      configFile = configName(replay)
+      configUri = serverUrl & ReplayDownloadPath & configFile
+    if serverUrl.len == 0:
+      raise newException(
+        GamesServerError,
+        "ECS game launch requires GAMES_SERVER_URL or EC2 metadata"
+      )
+    ensureReplayDir()
+    writeFile(replayDir() / configFile, config)
     echo "  Replay upload: ", if saveReplay: "enabled" else: "disabled (no EC2 IP)"
     echo "  Launching game task..."
     let (taskArn, publicIp, privateIp) = ecsCreateGame(
       image,
-      config,
       manifestInfo.name,
       manifestInfo.key,
       replay,
+      manifestInfo.command,
+      manifestInfo.env,
+      configUri,
       saveReplay = saveReplay,
       uploadUrl = uploadUrl,
       uploadToken = token,
@@ -2512,6 +2505,12 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       cogameName: manifestInfo.name,
       ip: publicIp,
     )
+    if not waitForHealthy(result, 90):
+      ecsStopGame(taskArn)
+      raise newException(
+        GamesServerError,
+        "ECS game task " & taskArn & " did not become healthy in time"
+      )
     let botCounts = createBotCounts(form, manifestInfo.name)
     var slot = 0
     for item in botCounts:
@@ -2531,8 +2530,10 @@ proc createGame(form: seq[(string, string)]): GameContainer =
           item.bot.name,
           playerName,
           item.bot.command,
+          item.bot.env,
           slot,
           playerToken,
+          item.bot.arch,
         )
         inc slot
     echo "  ECS game created with ", botCounts.len, " bot types"
@@ -2569,9 +2570,9 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       replay,
       LiveGame,
       true,
-      config,
       image,
       manifestInfo.command,
+      manifestInfo.env,
       manifestInfo.name,
       manifestInfo.key
     ))
@@ -2606,10 +2607,12 @@ proc createReplayGame(replay: string): GameContainer =
         "replay playback requires GAMES_SERVER_URL or EC2 metadata")
     let downloadUrl = serverUrl & ReplayDownloadPath & cleanReplay
     var env: seq[tuple[name, value: string]]
-    env.add((name: "REPLAY_DOWNLOAD_URL", value: downloadUrl))
+    env.add((name: CogameLoadReplayUriEnv, value: downloadUrl))
     let (taskArn, publicIp, _) = ecsCreateReplayGame(
       image,
       cleanReplay,
+      manifestInfo.command,
+      manifestInfo.env,
       env,
     )
     result = GameContainer(
@@ -2635,18 +2638,17 @@ proc createReplayGame(replay: string): GameContainer =
   args.add("-v")
   args.add(replayDir() & ":" & ReplayMountDir & ":ro")
   args.add("-e")
-  args.add(CogameLoadReplayEnv & "=" & loadReplayPath)
-  args.add("-e")
   args.add(CogameLoadReplayUriEnv & "=file://" & loadReplayPath)
   args.add("-e")
   args.add(CogameReplayServerEnv & "=1")
   case dockerMode()
   of "release":
+    for (key, value) in manifestInfo.env:
+      args.add("-e")
+      args.add(key & "=" & value)
     args.add(image)
     for token in manifestInfo.command:
       args.add(token)
-    args.add("--address:0.0.0.0")
-    args.add("--port:" & $GameContainerPort)
   else:
     args.add("-v")
     args.add(workspaceRoot() & ":/workspace:ro")
@@ -2657,7 +2659,7 @@ proc createReplayGame(replay: string): GameContainer =
     args.add(image)
     args.add("sh")
     args.add("-lc")
-    args.add(runnerScript(""))
+    args.add(runnerScript())
   discard requireDocker(args)
   result = inspectGame(name)
 
@@ -2796,10 +2798,7 @@ proc gameHttpUrl(
 
 proc clientPagePath(page: string): string =
   ## Returns the per-game browser client path for one endpoint page.
-  ## Uses the Coworld plural prefix (`/clients/...`). v1 game images
-  ## already alias both `/client/...` and `/clients/...` via
-  ## `bitworld/src/bitworld/clients.nim:clientRoute`, so this path
-  ## works for both v1 and v2 game containers.
+  ## Uses the Coworld plural prefix (`/clients/...`).
   case page
   of "player.html":
     "/clients/player"
@@ -2846,6 +2845,7 @@ proc createBots(
           bot.name,
           playerName,
           bot.command,
+          bot.env,
           slot,
           "",
           bot.arch,
@@ -3924,19 +3924,19 @@ proc clientRoot(): string =
 proc clientAsset(path: string): string =
   ## Maps one public client route to a local asset path.
   case path
-  of "/client/global", "/client/global.html", "/client/global_client.html":
+  of "/clients/global", "/clients/global.html", "/clients/global_client.html":
     clientRoot() / "global_client.html"
-  of "/client/player", "/client/player.html", "/client/player_client.html":
+  of "/clients/player", "/clients/player.html", "/clients/player_client.html":
     clientRoot() / "player_client.html"
-  of "/client/reward", "/client/rewards", "/client/reward.html",
-      "/client/rewards.html",
-      "/client/reward_client.html":
+  of "/clients/reward", "/clients/rewards", "/clients/reward.html",
+      "/clients/rewards.html",
+      "/clients/reward_client.html":
     clientRoot() / "reward_client.html"
-  of "/client/admin", "/client/admin.html":
+  of "/clients/admin", "/clients/admin.html":
     clientRoot() / "admin_client.html"
-  of "/client/snappyjs.min.js":
+  of "/clients/snappyjs.min.js":
     clientRoot() / "snappyjs.min.js"
-  of "/client/qrcode.min.js":
+  of "/clients/qrcode.min.js":
     clientRoot() / "qrcode.min.js"
   else:
     ""

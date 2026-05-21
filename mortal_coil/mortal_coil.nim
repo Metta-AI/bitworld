@@ -4,6 +4,7 @@ import sprite_viewer
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/clients
+import bitworld/cogame_runtime
 
 const
   TargetFps = 24.0
@@ -698,7 +699,8 @@ when isMainModule:
     gui = false
     players = DefaultMinPlayers
     bots = 0
-    configJson = ""
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
+    configJson = if configPath.len > 0: readFile(configPath) else: ""
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:

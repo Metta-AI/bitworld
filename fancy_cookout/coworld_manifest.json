@@ -5,19 +5,23 @@
     "version": "0.1.0",
     "description": "A cooperative kitchen game where players wash dishes, chop ingredients, and deliver salads for points.",
     "owner": "malcolm@softmax.com",
-    "image_uri": "ghcr.io/metta-ai/bitworld-fancy-cookout:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
-      "required": ["tokens"],
+      "required": [
+        "tokens"
+      ],
       "properties": {
         "tokens": {
           "description": "One connection token per player slot.",
           "type": "array",
           "minItems": 0,
           "maxItems": 64,
-          "items": { "type": "string", "minLength": 0 },
+          "items": {
+            "type": "string",
+            "minLength": 0
+          },
           "default": []
         },
         "seed": {
@@ -44,29 +48,46 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
-      "required": ["names", "scores"],
+      "required": [
+        "names",
+        "scores"
+      ],
       "properties": {
         "names": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "scores": {
           "type": "array",
-          "items": { "type": "integer", "minimum": 0 }
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
     },
     "protocols": {
       "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/metta-ai/bitworld-fancy-cookout:latest",
+      "run": ["/bin/fancy_cookout", "--address:0.0.0.0", "--port:8080"]
     }
   },
   "player": [
     {
       "id": "chef",
       "name": "Chef",
-      "image_uri": "ghcr.io/metta-ai/bitworld-fancy-cookout-chef:latest",
-      "description": "Vision-based bot that navigates the kitchen, interacts with stations, and attempts to prepare salads."
+      "description": "Vision-based bot that navigates the kitchen, interacts with stations, and attempts to prepare salads.",
+      "runnable": {
+        "type": "player",
+        "image": "ghcr.io/metta-ai/bitworld-fancy-cookout-chef:latest",
+        "run": ["/bin/chef"]
+      }
     }
   ],
   "variants": [
@@ -86,7 +107,9 @@
     "players": [
       {
         "player_id": "chef",
-        "initial_params": { "name": "chef_0" }
+        "initial_params": {
+          "name": "chef_0"
+        }
       }
     ]
   }

@@ -60,10 +60,10 @@ Game runners may also set:
 
 | Environment variable | Meaning |
 | --- | --- |
-| `COGAME_CONFIG_PATH` | Path to the config JSON file |
-| `COGAME_SAVE_RESULTS_PATH` | Path where the game writes final results |
-| `COGAME_SAVE_REPLAY_PATH` | Optional path where the game writes a replay |
-| `COGAME_LOAD_REPLAY_PATH` | Optional path to a replay artifact to load |
+| `COGAME_CONFIG_URI` | URI for the config JSON file |
+| `COGAME_RESULTS_URI` | URI where the game writes final results |
+| `COGAME_SAVE_REPLAY_URI` | Optional URI where the game writes a replay |
+| `COGAME_LOAD_REPLAY_URI` | Optional URI for a replay artifact to load |
 
 The common top-level server fields are:
 

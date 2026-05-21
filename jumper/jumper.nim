@@ -2,7 +2,7 @@ import
   std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils,
     tables, times],
   mummy, pixie, supersnappy,
-  bitworld/aseprite, bitworld/clients, bitworld/tiled, pixelfonts,
+  bitworld/aseprite, bitworld/clients, bitworld/cogame_runtime, bitworld/tiled, pixelfonts,
   protocol, server
 
 const
@@ -2354,7 +2354,7 @@ when isMainModule:
       tokens: @[]
     )
     configJson = ""
-    configPath = getEnv("COGAME_CONFIG_PATH")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
     positional = 0
   for kind, key, val in getopt():
     case kind

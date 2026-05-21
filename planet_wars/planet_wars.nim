@@ -1,5 +1,6 @@
 import
-  std/[json, os, parseopt, strutils],
+  std/[json, parseopt, strutils],
+  bitworld/cogame_runtime,
   jsony,
   protocol, server, sim
 
@@ -37,9 +38,7 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
 
 proc defaultScoresPath(): string =
   ## Returns the configured score save path from the environment.
-  result = getEnv("COGAME_SAVE_RESULTS_PATH")
-  if result.len == 0:
-    result = getEnv("COGAME_RESULTS_PATH")
+  pathFromCogameEnv(CogameResultsUriEnv)
 
 proc isKnownConfigField(name: string): bool =
   ## Returns true when a JSON config field is supported.
@@ -126,7 +125,7 @@ when isMainModule:
       simConfig: defaultSimConfig(),
       saveScoresPath: defaultScoresPath()
     )
-    configPath = getEnv("COGAME_CONFIG_PATH")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
     configJson = ""
   for kind, key, val in getopt():
     case kind

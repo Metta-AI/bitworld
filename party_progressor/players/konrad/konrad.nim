@@ -1105,7 +1105,9 @@ proc runBot(
 ) =
   ## Connects to the Party Progressor player endpoint.
   let url =
-    if name.len > 0:
+    if host.startsWith("ws://") or host.startsWith("wss://"):
+      host
+    elif name.len > 0:
       "ws://" & host & ":" & $port & WebSocketPath &
         "?name=" & name.queryEscape()
     else:
@@ -1142,9 +1144,9 @@ proc runBot(
 
 when isMainModule:
   var
-    address = DefaultHost
+    address = getEnv("COGAMES_ENGINE_WS_URL")
     port = PlayerDefaultPort
-    name = "konrad"
+    name = if address.len > 0: "" else: "konrad"
     chat = false
     maxSteps = 0
   for kind, key, val in getopt():

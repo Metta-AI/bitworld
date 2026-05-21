@@ -16,11 +16,13 @@ const
   PlayerPath = "/player"
   GlobalPath = "/global"
   AdminPath = "/admin"
-  ReplayPath = "/replay"
-  ConfigEnv = "COGAME_CONFIG_PATH"
-  ResultsEnv = "COGAME_SAVE_RESULTS_PATH"
-  ReplaySaveEnv = "COGAME_SAVE_REPLAY_PATH"
-  ReplayLoadEnv = "COGAME_LOAD_REPLAY_PATH"
+  ReplayClientPath = "/clients/replay"
+  ReplaySocketPath = "/replay"
+  ConfigEnv = "COGAME_CONFIG_URI"
+  ResultsEnv = "COGAME_RESULTS_URI"
+  ReplaySaveEnv = "COGAME_SAVE_REPLAY_URI"
+  ReplayLoadEnv = "COGAME_LOAD_REPLAY_URI"
+  ReplayServerEnv = "COGAME_REPLAY_SERVER"
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   CertPrefix = "coworld-cert-"
@@ -45,6 +47,8 @@ type
 
   PlayerLaunchSpec* = object
     image*: string
+    command*: seq[string]
+    env*: seq[(string, string)]
     initialParams*: seq[QueryParam]
 
   CogameProtocolDocs* = object
@@ -57,6 +61,8 @@ type
     manifest*: JsonNode
     certification*: JsonNode
     cogameImage*: string
+    cogameCommand*: seq[string]
+    cogameEnv*: seq[(string, string)]
     configSchema*: JsonNode
     resultsSchema*: JsonNode
     protocols*: CogameProtocolDocs
@@ -71,6 +77,8 @@ type
 
   EpisodeRunSpec* = object
     cogameImage*: string
+    cogameCommand*: seq[string]
+    cogameEnv*: seq[(string, string)]
     containerPort*: int
     players*: seq[PlayerLaunchSpec]
     tokens*: seq[string]
@@ -258,6 +266,42 @@ proc requireImage(node: JsonNode, path: string): string =
     if not image.isNil and image.kind == JString and image.getStr().len > 0:
       return image.getStr()
   fail(path & " missing image")
+
+proc requireRunCommand(node: JsonNode, path: string): seq[string] =
+  ## Returns one required Coworld runnable command array.
+  node.requireKind(JObject, path)
+  let runnable = node.optionalKey("runnable")
+  if not runnable.isNil:
+    runnable.requireKind(JObject, path & ".runnable")
+    let run = runnable.optionalKey("run")
+    if not run.isNil:
+      run.requireKind(JArray, path & ".runnable.run")
+      for i in 0 ..< run.len:
+        if run[i].kind != JString or run[i].getStr().len == 0:
+          fail(path & ".runnable.run[" & $i & "] must be a non-empty string")
+        result.add(run[i].getStr())
+  if result.len == 0:
+    let run = node.optionalKey("run")
+    if not run.isNil:
+      run.requireKind(JArray, path & ".run")
+      for i in 0 ..< run.len:
+        if run[i].kind != JString or run[i].getStr().len == 0:
+          fail(path & ".run[" & $i & "] must be a non-empty string")
+        result.add(run[i].getStr())
+  if result.len == 0:
+    fail(path & " missing run")
+
+proc manifestEnv(node: JsonNode): seq[(string, string)] =
+  ## Reads one manifest env object.
+  node.requireKind(JObject, "manifest node")
+  let env = node.optionalKey("env")
+  if env.isNil:
+    return
+  env.requireKind(JObject, "manifest env")
+  for key, value in env.pairs:
+    if value.kind != JString:
+      fail("manifest env " & key & " must be a string")
+    result.add((key, value.getStr()))
 
 proc hexBytes(bytes: openArray[byte]): string =
   ## Encodes bytes as lowercase hexadecimal.
@@ -492,7 +536,7 @@ proc validateJsonSchema*(instance, schema: JsonNode, path = "$") =
   validateNumberSchema(instance, schema, path)
   validateEnumSchema(instance, schema, path)
 
-proc validateNamedImages(section: JsonNode, path: string) =
+proc validateNamedImages(section: JsonNode, path: string, requireRun = false) =
   ## Validates a Coworld named-image array.
   section.requireKind(JArray, path)
   if section.len == 0:
@@ -504,6 +548,8 @@ proc validateNamedImages(section: JsonNode, path: string) =
     discard item.requireString("id", itemPath)
     discard item.requireString("name", itemPath)
     discard item.requireImage(itemPath)
+    if requireRun:
+      discard item.requireRunCommand(itemPath)
     discard item.requireString("description", itemPath)
 
 proc validateVariants(section: JsonNode, path: string) =
@@ -528,6 +574,7 @@ proc validateCoworldGame(game: JsonNode) =
   discard game.requireString("description", "coworld.game")
   discard game.requireString("owner", "coworld.game")
   discard game.requireImage("coworld.game")
+  discard game.requireRunCommand("coworld.game")
   discard game.requireObject("config_schema", "coworld.game")
   discard game.requireObject("results_schema", "coworld.game")
   let protocols = game.requireObject("protocols", "coworld.game")
@@ -537,7 +584,11 @@ proc validateCoworldManifest*(manifest: JsonNode) =
   ## Validates the Coworld fields needed by certification.
   manifest.requireKind(JObject, "coworld")
   validateCoworldGame(manifest.requireObject("game", "coworld"))
-  validateNamedImages(manifest.requireArray("player", "coworld"), "coworld.player")
+  validateNamedImages(
+    manifest.requireArray("player", "coworld"),
+    "coworld.player",
+    requireRun = true
+  )
   validateVariants(manifest.requireArray("variants", "coworld"), "coworld.variants")
 
   for section in ["grader", "reporter", "commissioner", "diagnoser", "optimizer"]:
@@ -610,7 +661,9 @@ proc certificationPlayerLaunchSpecs*(
       fail("unknown certification player_id for slot " & $slot & ": " & playerId)
     let declaredPlayer = declaredPlayers[playerId]
     var spec = PlayerLaunchSpec(
-      image: declaredPlayer.requireImage("coworld.player")
+      image: declaredPlayer.requireImage("coworld.player"),
+      command: declaredPlayer.requireRunCommand("coworld.player"),
+      env: declaredPlayer.manifestEnv()
     )
     let params = rawPlayer.optionalKey("initial_params")
     if not params.isNil:
@@ -811,6 +864,8 @@ proc loadCoworldPackage*(manifestPath: string): CoworldPackage =
     manifest: manifest,
     certification: manifest.requireObject("certification", "coworld"),
     cogameImage: game.requireImage("coworld.game"),
+    cogameCommand: game.requireRunCommand("coworld.game"),
+    cogameEnv: game.manifestEnv(),
     configSchema: game.requireObject("config_schema", "coworld.game"),
     resultsSchema: game.requireObject("results_schema", "coworld.game"),
     protocols: protocols.protocolDocs()
@@ -874,6 +929,8 @@ proc loadPackageFromManifest(
     manifest: coworldManifest,
     certification: coworldManifest.requireObject("certification", "coworld"),
     cogameImage: game.requireImage("coworld.game"),
+    cogameCommand: game.requireRunCommand("coworld.game"),
+    cogameEnv: game.manifestEnv(),
     configSchema: game.requireObject("config_schema", "coworld.game"),
     resultsSchema: game.requireObject("results_schema", "coworld.game"),
     protocols: protocols.protocolDocs()
@@ -1057,8 +1114,10 @@ proc buildEpisodeRunSpec*(
   ## Builds the Docker episode run spec.
   EpisodeRunSpec(
     cogameImage: coworld.cogameImage,
+    cogameCommand: coworld.cogameCommand,
+    cogameEnv: coworld.cogameEnv,
     containerPort: containerPort,
-    players: buildPlayerLaunchSpecs(episodeRequest),
+    players: coworld.certificationPlayerLaunchSpecs(),
     tokens: @tokens,
     artifacts: artifacts,
     timeoutSeconds: config.timeoutSeconds,
@@ -1281,14 +1340,19 @@ proc gameContainerArgs(
   result = @[
     "--name", name,
     "-p", $port & ":" & $spec.containerPort,
-    "-e", ConfigEnv & "=" & ContainerWorkDir & "/config.json",
-    "-e", ResultsEnv & "=" & ContainerWorkDir & "/results.json",
-    "-e", ReplaySaveEnv & "=" & ContainerWorkDir & "/replay.json",
+    "-e", ConfigEnv & "=file://" & ContainerWorkDir & "/config.json",
+    "-e", ResultsEnv & "=file://" & ContainerWorkDir & "/results.json",
+    "-e", ReplaySaveEnv & "=file://" & ContainerWorkDir & "/replay.json",
     "-v",
     cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
   ]
   result.addAiEnvArgs()
+  for (key, value) in spec.cogameEnv:
+    result.add("-e")
+    result.add(key & "=" & value)
   result.add(spec.cogameImage)
+  for token in spec.cogameCommand:
+    result.add(token)
 
 proc replayContainerArgs(
   name: string,
@@ -1299,12 +1363,18 @@ proc replayContainerArgs(
   result = @[
     "--name", name,
     "-p", $port & ":" & $spec.containerPort,
-    "-e", ReplayLoadEnv & "=" & ContainerWorkDir & "/replay.json",
+    "-e", ReplayLoadEnv & "=file://" & ContainerWorkDir & "/replay.json",
+    "-e", ReplayServerEnv & "=1",
     "-v",
     cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
   ]
   result.addAiEnvArgs()
+  for (key, value) in spec.cogameEnv:
+    result.add("-e")
+    result.add(key & "=" & value)
   result.add(spec.cogameImage)
+  for token in spec.cogameCommand:
+    result.add(token)
 
 proc playerContainerArgs(
   name: string,
@@ -1325,7 +1395,12 @@ proc playerContainerArgs(
     )
   ]
   result.addAiEnvArgs()
+  for (key, value) in player.env:
+    result.add("-e")
+    result.add(key & "=" & value)
   result.add(player.image)
+  for token in player.command:
+    result.add(token)
 
 proc runCogameEpisode*(spec: EpisodeRunSpec) =
   ## Runs one certified CoGame episode through Docker.
@@ -1415,9 +1490,12 @@ proc runCogameEpisode*(spec: EpisodeRunSpec) =
       replayPort,
       spec.timeoutSeconds
     )
-    requireHttpOk(httpUrl(replayPort, ReplayPath))
+    let replayQuery = queryString(@[
+      QueryParam(key: "uri", value: fileUri(spec.artifacts.replayPath))
+    ])
+    requireHttpOk(httpUrl(replayPort, ReplayClientPath) & "?" & replayQuery)
     requireWebSocketMessage(
-      wsUrl(replayPort, ReplayPath),
+      wsUrl(replayPort, ReplaySocketPath) & "?" & replayQuery,
       "replay viewer",
       spec.timeoutSeconds
     )

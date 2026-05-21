@@ -1,5 +1,6 @@
 import
-  std/[json, os, parseopt, strutils],
+  std/[json, parseopt, strutils],
+  bitworld/cogame_runtime,
   protocol, server, sim
 
 type
@@ -69,13 +70,11 @@ when isMainModule:
       planetCount: DefaultPlanetCount
     )
     configJson = ""
-    configPath = getEnv("COGAME_CONFIG_PATH")
-  config.resultsPath = getEnv("COGAME_SAVE_RESULTS_PATH")
-  if config.resultsPath.len == 0:
-    config.resultsPath = getEnv("COGAME_RESULTS_PATH")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
+  config.resultsPath = pathFromCogameEnv(CogameResultsUriEnv)
   let
-    saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH")
-    loadReplayPath = getEnv("COGAME_LOAD_REPLAY_PATH")
+    saveReplayPath = pathFromCogameEnv(CogameSaveReplayUriEnv)
+    loadReplayPath = pathFromCogameEnv(CogameLoadReplayUriEnv)
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:

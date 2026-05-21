@@ -2,6 +2,8 @@
   "author": "malcolm@stem.ai",
   "name": "nearest-hunter",
   "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-nearest-hunter:latest",
-  "binary": "/bin/nearest_hunter",
-  "games": ["stag_hunt"]
+  "games": [
+    "stag_hunt"
+  ],
+  "run": ["/bin/nearest_hunter"]
 }

@@ -2,6 +2,8 @@
   "author": "treeform@softmax.com",
   "name": "konrad",
   "image_uri": "ghcr.io/treeform/bitworld-konrad:latest",
-  "binary": "/bin/konrad",
-  "games": ["big_adventure"]
+  "games": [
+    "big_adventure"
+  ],
+  "run": ["/bin/konrad"]
 }

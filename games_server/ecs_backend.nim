@@ -21,6 +21,10 @@ const
   HealthPollTimeoutSec = 90.0
   HealthPollIntervalMs = 500
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  ConfigUriEnv = "COGAME_CONFIG_URI"
+  ResultsUriEnv = "COGAME_RESULTS_URI"
+  SaveReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
+  ReplayServerEnv = "COGAME_REPLAY_SERVER"
   PlayerWebSocketPath = "/player"
 
 type
@@ -286,10 +290,12 @@ proc stopTask*(taskArn: string) =
 
 proc ecsCreateGame*(
   image: string,
-  config: string,
   cogameName: string,
   manifestKey: string,
   replay: string,
+  command: seq[string],
+  gameEnv: seq[tuple[name, value: string]],
+  configUri: string,
   saveReplay: bool,
   uploadUrl = "",
   uploadToken = "",
@@ -306,18 +312,19 @@ proc ecsCreateGame*(
       (key: "bitworld.games_server.game_name", value: cogameName),
       (key: "bitworld.games_server.manifest", value: manifestKey),
     ]
-  var cmd = @["/bin/among_them", "--address:0.0.0.0", "--port:" & $GameContainerPort]
-  if config.len > 0:
-    cmd.add("--config:" & config)
+  var cmd = command
   var env: seq[tuple[name, value: string]]
+  for item in gameEnv:
+    env.add(item)
+  env.add((name: ConfigUriEnv, value: configUri))
   for envName in ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]:
     let val = getEnv(envName)
     if val.len > 0:
       env.add((name: envName, value: val))
   if saveReplay and replay.len > 0:
-    env.add((name: "COGAME_SAVE_REPLAY_PATH", value: "/tmp/" & replay))
+    env.add((name: SaveReplayUriEnv, value: "file:///tmp/" & replay))
     let scores = replay.replace(".bitreplay", ".scores.json")
-    env.add((name: "COGAME_SAVE_RESULTS_PATH", value: "/tmp/" & scores))
+    env.add((name: ResultsUriEnv, value: "file:///tmp/" & scores))
   if uploadUrl.len > 0:
     env.add((name: "REPLAY_UPLOAD_URL", value: uploadUrl))
     env.add((name: "REPLAY_UPLOAD_TOKEN", value: uploadToken))
@@ -372,6 +379,7 @@ proc ecsCreateBot*(
   botName: string,
   playerName: string,
   botCommand: seq[string],
+  botEnv: seq[tuple[name, value: string]],
   slot = -1,
   token = "",
   arch = "X86_64",
@@ -394,17 +402,11 @@ proc ecsCreateBot*(
       (key: "bitworld.games_server.bot", value: botName),
       (key: "bitworld.games_server.created", value: created),
     ]
-  var cmd = botCommand
-  cmd.add("--address:" & gamePrivateIp)
-  cmd.add("--port:" & $GameContainerPort)
-  cmd.add("--name:" & playerName)
-  cmd.add("--url:" & endpoint)
-  if slot >= 0:
-    cmd.add("--slot:" & $slot)
-  if token.len > 0:
-    cmd.add("--token:" & token)
+  let cmd = botCommand
   var env: seq[tuple[name, value: string]]
   env.add((name: EngineWsEnv, value: endpoint))
+  for item in botEnv:
+    env.add(item)
   for envName in ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]:
     let val = getEnv(envName)
     if val.len > 0:
@@ -428,6 +430,8 @@ proc ecsCreateBot*(
 proc ecsCreateReplayGame*(
   image: string,
   replay: string,
+  command: seq[string],
+  gameEnv: seq[tuple[name, value: string]],
   extraEnv: seq[tuple[name, value: string]],
 ): tuple[taskArn, publicIp, privateIp: string] =
   ## Launches an ECS task for replay playback (no save, no bots).
@@ -441,8 +445,11 @@ proc ecsCreateReplayGame*(
       (key: "bitworld.games_server.replay", value: replay),
       (key: "bitworld.games_server.kind", value: "replay"),
     ]
-  let cmd = @["/bin/among_them", "--address:0.0.0.0", "--port:" & $GameContainerPort]
-  var env = extraEnv
+  let cmd = command
+  var env = gameEnv
+  for item in extraEnv:
+    env.add(item)
+  env.add((name: ReplayServerEnv, value: "1"))
 
   echo "ECS: launching replay task..."
   let taskResp = runTask(
@@ -612,8 +619,8 @@ proc ecsGameHealthy*(publicIp: string): bool =
   var client = newHttpClient(timeout = 2000)
   try:
     let url = "http://" & publicIp & ":" & $GameContainerPort & "/healthz"
-    let content = client.getContent(url).strip()
-    result = content == "healthy" or content.contains("Among Them")
+    let response = client.get(url)
+    result = response.status.startsWith("200")
   except CatchableError:
     result = false
   finally:

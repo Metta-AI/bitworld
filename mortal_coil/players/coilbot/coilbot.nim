@@ -175,7 +175,11 @@ proc runBot(host: string, port: int, name, personality: string, seed: int64) =
         escaped.add("0123456789ABCDEF"[ord(ch) and 0x0f])
     escaped
 
-  let url = "ws://" & host & ":" & $port & "/sprite_player?name=" & queryName
+  let url =
+    if host.startsWith("ws://") or host.startsWith("wss://"):
+      host
+    else:
+      "ws://" & host & ":" & $port & "/sprite_player?name=" & queryName
 
   while true:
     try:
@@ -210,9 +214,9 @@ proc runBot(host: string, port: int, name, personality: string, seed: int64) =
 
 when isMainModule:
   var
-    host = DefaultHost
+    host = getEnv("COGAMES_ENGINE_WS_URL")
     port = DefaultPort
-    name = "Coilbot"
+    name = if host.len > 0: "" else: "Coilbot"
     #personality = "Strategic and adaptable. Prefer cooperation when risk is high, but willing to exploit when the reward justifies it."
     personality = "Strategic and adaptable. Makes his choices based on what it internally thinks."
     seed = getMonoTime().ticks
