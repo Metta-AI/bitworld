@@ -351,7 +351,7 @@
           "title": "player.md",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/how_to_make_a_bot.md"
+            "value": "https://github.com/Metta-AI/players/tree/main/players/among_them/starter"
           }
         },
         {
@@ -367,7 +367,39 @@
           "title": "optimizer.md",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/SMART_BOT_GUIDE.md"
+            "value": "https://github.com/Metta-AI/optimizers"
+          }
+        },
+        {
+          "id": "commissioner",
+          "title": "commissioner.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/commissioners/tree/main/commissioners/among_them/among_them_commissioner"
+          }
+        },
+        {
+          "id": "reporter",
+          "title": "reporter.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/reporters/tree/main/reporters/among_them/among_them_summarizer"
+          }
+        },
+        {
+          "id": "grader",
+          "title": "grader.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/graders/tree/main/graders/among_them/among_them_grader"
+          }
+        },
+        {
+          "id": "diagnoser",
+          "title": "diagnoser.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/diagnosers/tree/main/diagnosers/among_them/among_them_diagnoser"
           }
         }
       ]
@@ -380,6 +412,51 @@
       "type": "player",
       "description": "Deterministic baseline Among Them player used for local smoke episodes.",
       "image": "ghcr.io/treeform/bitworld-ivotewell:latest"
+    }
+  ],
+  "commissioner": [
+    {
+      "id": "among-them-commissioner",
+      "name": "Among Them Commissioner",
+      "type": "commissioner",
+      "description": "Among Them tournament commissioner implemented in Observatory and mirrored in Metta-AI/commissioners. It schedules episodes, computes rankings, moves players between divisions, and handles initial placement.",
+      "image": "ghcr.io/metta-ai/among-them-commissioner:latest"
+    }
+  ],
+  "reporter": [
+    {
+      "id": "among-them-summarizer",
+      "name": "Among Them Summarizer",
+      "type": "reporter",
+      "description": "Reference Among Them reporter owned by James Boggs. It consumes replay/results artifacts and writes a zip with Markdown, HTML, and JSON for surfaces such as The Column.",
+      "image": "ghcr.io/metta-ai/among-them-summarizer:latest"
+    }
+  ],
+  "grader": [
+    {
+      "id": "among-them-grader",
+      "name": "Among Them Grader",
+      "type": "grader",
+      "description": "Reference Among Them grader owned by Kyle. It consumes replay/results artifacts and emits a scalar creator-interest score for ranking useful episodes.",
+      "image": "ghcr.io/metta-ai/among-them-grader:latest"
+    }
+  ],
+  "diagnoser": [
+    {
+      "id": "among-them-diagnoser",
+      "name": "Among Them Diagnoser",
+      "type": "diagnoser",
+      "description": "Reference Among Them diagnoser owned by Aaron Landy. It consumes a target policy plus episode artifacts and emits policy-assay advice for the coding agent improving that policy.",
+      "image": "ghcr.io/metta-ai/among-them-diagnoser:latest"
+    }
+  ],
+  "optimizer": [
+    {
+      "id": "coworld-optimizer",
+      "name": "Coworld Optimizer",
+      "type": "optimizer",
+      "description": "Game-agnostic optimizer owned by Aaron Landy. It consumes the Coworld manifest, many replay/results artifacts, reporter outputs, grader scores, and diagnoser outputs to drive local policy improvement.",
+      "image": "ghcr.io/metta-ai/coworld-optimizer:latest"
     }
   ],
   "variants": [
