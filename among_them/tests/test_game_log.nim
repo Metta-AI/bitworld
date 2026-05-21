@@ -133,7 +133,7 @@ suite "game log":
       removeFile(tmpPath)
     let sink = openGameLogSink(tmpPath)
     check sink.enabled
-    check not sink.isHttp
+    check sink.kind == glsFile
     sink.writeGameLogLine("""{"t":1}""")
     sink.writeGameLogLine("""{"t":2}""")
     sink.flushGameLogSink()
@@ -145,12 +145,22 @@ suite "game log":
     check parseJson(lines[1])["t"].getInt() == 2
     removeFile(tmpPath)
 
-  test "empty uri returns a disabled sink":
+  test "empty uri falls back to stdout":
     let sink = openGameLogSink("")
+    check sink.enabled
+    check sink.kind == glsStdout
+    sink.flushGameLogSink()
+    sink.closeGameLogSink()
+    check sink.kind == glsDisabled
+
+  test "disabled sink ignores all writes":
+    let sink = disabledGameLogSink()
     check not sink.enabled
+    check sink.kind == glsDisabled
     sink.writeGameLogLine("ignored")
     sink.flushGameLogSink()
     sink.closeGameLogSink()
+    check sink.kind == glsDisabled
 
   test "file:// uri is honored":
     let tmpPath = getTempDir() / "among_them_test_log_uri_" & $getCurrentProcessId() & ".jsonl"
@@ -158,7 +168,7 @@ suite "game log":
       removeFile(tmpPath)
     let sink = openGameLogSink("file://" & tmpPath)
     check sink.enabled
-    check not sink.isHttp
+    check sink.kind == glsFile
     check sink.filePath == tmpPath
     sink.writeGameLogLine("""{"hello":"world"}""")
     sink.closeGameLogSink()

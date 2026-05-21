@@ -737,7 +737,7 @@ proc runServerLoop*(
         ReplayPlayer()
     gameLog =
       if replayLoaded or replayServerMode:
-        openGameLogSink("")
+        disabledGameLogSink()
       else:
         openGameLogSink(logUri)
   startProfileTrace()

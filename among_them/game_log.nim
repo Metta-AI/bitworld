@@ -4,7 +4,10 @@
 ## tick that captures the game phase plus per-agent state (location, alive
 ## flag, imposter kill cooldown, and assigned tasks). The sink supports
 ## either an `http(s)://` URL (POST batches of newline-separated lines) or a
-## plain or `file://` path (append).
+## plain or `file://` path (append). When `COGAME_LOG_URI` is unset, lines
+## are written to stdout (one line per write, flushed immediately) — this is
+## the local-dev fallback so the operator sees logs without having to wire
+## up a URI.
 
 import std/[json, os, strutils]
 import curly
@@ -17,9 +20,14 @@ const
 let logHttpPool = newCurlPool(1)
 
 type
+  GameLogSinkKind* = enum
+    glsDisabled
+    glsStdout
+    glsFile
+    glsHttp
+
   GameLogSink* = ref object
-    enabled*: bool
-    isHttp*: bool
+    kind*: GameLogSinkKind
     httpUrl*: string
     filePath*: string
     file*: File
@@ -29,6 +37,9 @@ type
     flushBytes*: int
     flushLines*: int
 
+proc enabled*(sink: GameLogSink): bool {.inline.} =
+  sink != nil and sink.kind != glsDisabled
+
 proc isHttpUri(uri: string): bool =
   uri.startsWith("http://") or uri.startsWith("https://")
 
@@ -36,17 +47,23 @@ proc stripFileScheme(uri: string): string =
   const Prefix = "file://"
   if uri.startsWith(Prefix): uri[Prefix.len .. ^1] else: uri
 
+proc disabledGameLogSink*(): GameLogSink =
+  ## Returns a sink that drops all writes. Used in replay and replay-server
+  ## modes, where re-emitting per-tick state would just be noise.
+  GameLogSink(kind: glsDisabled)
+
 proc openGameLogSink*(rawUri: string): GameLogSink =
-  ## Opens a log sink. An empty URI returns a disabled sink.
+  ## Opens a log sink. An empty URI falls back to stdout so local dev runs
+  ## without `COGAME_LOG_URI` still get visible per-tick output.
   result = GameLogSink(
+    kind: glsStdout,
     flushBytes: DefaultFlushBytes,
     flushLines: DefaultFlushLines
   )
   if rawUri.len == 0:
     return
   if isHttpUri(rawUri):
-    result.enabled = true
-    result.isHttp = true
+    result.kind = glsHttp
     result.httpUrl = rawUri
     return
   let path = stripFileScheme(rawUri)
@@ -58,13 +75,18 @@ proc openGameLogSink*(rawUri: string): GameLogSink =
   result.file = open(path, fmAppend)
   result.fileOpen = true
   result.filePath = path
-  result.enabled = true
+  result.kind = glsFile
 
 proc flushGameLogSink*(sink: GameLogSink) =
   ## Flushes any buffered log content to the destination.
-  if sink == nil or not sink.enabled or sink.buffer.len == 0:
+  if sink == nil:
     return
-  if sink.isHttp:
+  case sink.kind
+  of glsDisabled, glsStdout:
+    return
+  of glsHttp:
+    if sink.buffer.len == 0:
+      return
     let headers = @[
       ("Content-Type", "text/plain"),
       ("User-Agent", "among_them/1.0"),
@@ -76,36 +98,50 @@ proc flushGameLogSink*(sink: GameLogSink) =
           $resp.code & " " & resp.body
     except CatchableError as e:
       stderr.writeLine "COGAME_LOG_URI POST error: " & e.msg
-  else:
+    sink.buffer.setLen(0)
+    sink.bufferedLines = 0
+  of glsFile:
+    if sink.buffer.len == 0:
+      return
     try:
       sink.file.write(sink.buffer)
       sink.file.flushFile()
     except IOError as e:
       stderr.writeLine "COGAME_LOG_URI write error: " & e.msg
-  sink.buffer.setLen(0)
-  sink.bufferedLines = 0
+    sink.buffer.setLen(0)
+    sink.bufferedLines = 0
 
 proc closeGameLogSink*(sink: GameLogSink) =
-  if sink == nil or not sink.enabled:
+  if sink == nil or sink.kind == glsDisabled:
     return
   sink.flushGameLogSink()
   if sink.fileOpen:
     try: sink.file.close()
     except CatchableError: discard
     sink.fileOpen = false
-  sink.enabled = false
+  sink.kind = glsDisabled
 
 proc writeGameLogLine*(sink: GameLogSink, line: string) =
-  ## Appends one log line. Flushes when buffer thresholds are exceeded.
-  if sink == nil or not sink.enabled:
+  ## Appends one log line. Buffered modes flush when thresholds are exceeded.
+  if sink == nil:
     return
-  sink.buffer.add line
-  if line.len == 0 or line[^1] != '\n':
-    sink.buffer.add '\n'
-  inc sink.bufferedLines
-  if sink.buffer.len >= sink.flushBytes or
-      sink.bufferedLines >= sink.flushLines:
-    sink.flushGameLogSink()
+  case sink.kind
+  of glsDisabled:
+    return
+  of glsStdout:
+    if line.len > 0 and line[^1] == '\n':
+      stdout.write(line)
+    else:
+      stdout.writeLine(line)
+    stdout.flushFile()
+  of glsFile, glsHttp:
+    sink.buffer.add line
+    if line.len == 0 or line[^1] != '\n':
+      sink.buffer.add '\n'
+    inc sink.bufferedLines
+    if sink.buffer.len >= sink.flushBytes or
+        sink.bufferedLines >= sink.flushLines:
+      sink.flushGameLogSink()
 
 proc phaseLogName*(phase: GamePhase): string =
   case phase
