@@ -10,7 +10,7 @@ if [[ ! -d "${DEFAULT_METTA_REPO}/packages/coworld" && -d "/Users/relh/Code/mett
 fi
 
 METTA_REPO="${METTA_REPO:-${DEFAULT_METTA_REPO}}"
-COWORLD_SERVER="${COWORLD_SERVER:-https://api.observatory.softmax-research.net}"
+COWORLD_SERVER="${COWORLD_SERVER:-https://softmax.com/api}"
 REGISTRY="${REGISTRY:-ghcr.io/metta-ai}"
 CERTIFY_TIMEOUT="${CERTIFY_TIMEOUT:-180}"
 S3_VIEWER_URI="${S3_VIEWER_URI:-s3://softmax-public/bitworld/among_them/1}"
@@ -169,9 +169,11 @@ setup_ghcr_docker_config() {
 
   DOCKER_CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bitworld-docker-config.XXXXXX")"
   mkdir -p "${DOCKER_CONFIG_DIR}/cli-plugins"
-  if [[ -x "${HOME}/.docker/cli-plugins/docker-buildx" ]]; then
-    ln -s "${HOME}/.docker/cli-plugins/docker-buildx" "${DOCKER_CONFIG_DIR}/cli-plugins/docker-buildx"
-  fi
+  for plugin in docker-buildx docker-compose; do
+    if [[ -x "${HOME}/.docker/cli-plugins/${plugin}" ]]; then
+      ln -s "${HOME}/.docker/cli-plugins/${plugin}" "${DOCKER_CONFIG_DIR}/cli-plugins/${plugin}"
+    fi
+  done
 
   GHCR_USERNAME="${ghcr_user}" GHCR_TOKEN="${ghcr_token}" python3 - >"${DOCKER_CONFIG_DIR}/config.json" <<'PY'
 import base64
