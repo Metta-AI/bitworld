@@ -90,11 +90,10 @@ variable "infra_domains" {
   description = "Domains needed for container infrastructure (image pulls, etc)"
   type        = list(string)
   default = [
-    # GitHub Container Registry
+    # GitHub Container Registry + general GitHub (releases, raw, archives, API)
     "ghcr.io",
     "*.ghcr.io",
-    "pkg-containers.githubusercontent.com",
-    "*.pkg-containers.githubusercontent.com",
+    "*.githubusercontent.com",
     # Docker Hub
     "registry-1.docker.io",
     "*.docker.io",
@@ -103,9 +102,24 @@ variable "infra_domains" {
     # AWS ECR (our own researcher images)
     "*.dkr.ecr.us-east-1.amazonaws.com",
     "api.ecr.us-east-1.amazonaws.com",
+    # AWS APIs (dashboard host calls these to orchestrate ECS tasks)
+    "sts.us-east-1.amazonaws.com",
+    "ecs.us-east-1.amazonaws.com",
+    "ec2.us-east-1.amazonaws.com",
+    "logs.us-east-1.amazonaws.com",
     # Google Artifact Registry
     "*.gcr.io",
     "*.pkg.dev",
     "*.googleapis.com",
+    # Ubuntu apt mirrors (dashboard host bootstrap). Both CNAME to Cloudflare CDN.
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "*.cdn.cloudflare.net",
+    # AWS CLI v2 installer (dashboard host bootstrap; awscli is no longer in noble apt)
+    "awscli.amazonaws.com",
+    # GitHub (dashboard host bootstrap: nimby release binary + nimby sync clones)
+    "github.com",
+    "codeload.github.com",
+    "api.github.com",
   ]
 }

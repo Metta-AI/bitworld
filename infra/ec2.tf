@@ -40,6 +40,7 @@ data "aws_iam_policy_document" "dashboard_ec2" {
       "ecs:StopTask",
       "ecs:DescribeTasks",
       "ecs:ListTasks",
+      "ecs:TagResource",
     ]
     resources = ["*"]
   }
@@ -114,19 +115,27 @@ resource "aws_instance" "dashboard" {
 
   user_data = <<-EOF
     #!/bin/bash
-    set -e
+    # Add treeform's SSH key first so manual recovery is always possible.
+    echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHU4HFzwSyzHzO0MIyTnKScxs8WBO3sLGlndKC2Gq800 andre@vonhouck.com" >> /home/ubuntu/.ssh/authorized_keys
+    chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
+    chmod 600 /home/ubuntu/.ssh/authorized_keys
+
     apt-get update
-    apt-get install -y docker.io awscli unzip
+    apt-get install -y docker.io unzip curl
     systemctl enable docker
     systemctl start docker
     usermod -aG docker ubuntu
-    # Add treeform's SSH key (key_pair only supports one key)
-    echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHU4HFzwSyzHzO0MIyTnKScxs8WBO3sLGlndKC2Gq800 andre@vonhouck.com" >> /home/ubuntu/.ssh/authorized_keys
+
+    # awscli v2 (Ubuntu 24.04 dropped the apt awscli package).
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+    unzip -q /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install
+    rm -rf /tmp/aws /tmp/awscliv2.zip
   EOF
 
   tags = { Name = "${var.project_name}-dashboard" }
 
-  lifecycle { ignore_changes = [ami, user_data] }
+  lifecycle { ignore_changes = [ami] }
 }
 
 # =============================================================================

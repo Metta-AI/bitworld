@@ -45,13 +45,13 @@ type
 var ecsConf*: EcsConfig
 
 proc loadEcsConfig*() =
-  putEnv("AWS_PROFILE", getEnv("AWS_PROFILE", "softmax"))
+  putEnv("AWS_PROFILE", "softmax-admin")
   ecsConf = EcsConfig(
     cluster: getEnv("ECS_CLUSTER", "bitworld-cluster"),
-    publicSubnet: getEnv("ECS_PUBLIC_SUBNET", "subnet-0c399deb4683cf45d"),
-    privateSubnet: getEnv("ECS_PRIVATE_SUBNET", "subnet-097196880eae3da12"),
-    gameSg: getEnv("ECS_GAME_SG", "sg-029ca4fb70f032e91"),
-    botSg: getEnv("ECS_BOT_SG", "sg-064e9d37030ea2b74"),
+    publicSubnet: getEnv("ECS_PUBLIC_SUBNET", "subnet-0bfdcc939a2a25148"),
+    privateSubnet: getEnv("ECS_PRIVATE_SUBNET", "subnet-065e93457a83febbb"),
+    gameSg: getEnv("ECS_GAME_SG", "sg-02c003356746211fa"),
+    botSg: getEnv("ECS_BOT_SG", "sg-084e721230bec8d99"),
     executionRoleArn: getEnv("ECS_EXECUTION_ROLE_ARN"),
     taskRoleArn: getEnv("ECS_TASK_ROLE_ARN"),
     logGroup: getEnv("ECS_LOG_GROUP", "/ecs/bitworld"),

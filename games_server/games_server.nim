@@ -7,7 +7,8 @@ import
   cogame_validator,
   ecs_backend
 
-from std/httpclient import close, getContent, newHttpClient
+from std/httpclient import close, getContent, newHttpClient, put, body
+from std/httpcore import newHttpHeaders
 
 const
   DefaultHost = "0.0.0.0"
@@ -1019,7 +1020,7 @@ var uploadTokens: Table[string, UploadToken]
 var ec2PrivateIp = ""
 
 proc fetchEc2PrivateIp(): string =
-  ## Fetches this instance's private IP from EC2 instance metadata (IMDSv1).
+  ## Fetches this instance's private IP from EC2 instance metadata (IMDSv2).
   ## Returns "" if not running on EC2. Uses a raw socket with short timeout
   ## to avoid hanging on non-EC2 machines where 169.254.169.254 is unroutable.
   var sock = newSocket()
@@ -1032,6 +1033,9 @@ proc fetchEc2PrivateIp(): string =
   let client = newHttpClient(timeout = 2000)
   defer: client.close()
   try:
+    client.headers = newHttpHeaders({"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+    let token = client.put("http://169.254.169.254/latest/api/token", "").body.strip()
+    client.headers = newHttpHeaders({"X-aws-ec2-metadata-token": token})
     result = client.getContent("http://169.254.169.254/latest/meta-data/local-ipv4").strip()
   except CatchableError:
     result = ""
