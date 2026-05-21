@@ -13,6 +13,7 @@ const
   DefaultBindAddress = "0.0.0.0"
   DefaultConnectAddress = "localhost"
   DefaultPort = 8080
+  HighestPort = 65535
   MaxPlayers = 32
   MaxBots = 256
   SlotTokenBytes = 16
@@ -60,6 +61,11 @@ type
     playerProtocol: ClientProtocol
     hasGlobalProtocol: bool
 
+  ClientLaunch = object
+    sourceRelative: string
+    buildDir: string
+    workDir: string
+
   CoplayerManifest = object
     key: string
     path: string
@@ -70,6 +76,7 @@ type
     gameFolder: string
     address: string
     port: int
+    portSet: bool
     players: int
     playersSet: bool
     connect: bool
@@ -827,6 +834,34 @@ proc waitForServerReady(address: string, port: int, managedServer: bool): bool =
   echo "Timed out waiting for ", connectAddress, ":", port, "."
   false
 
+proc tcpPortInUse(address: string, port: int): bool =
+  ## Returns true when a local TCP listener accepts a connection.
+  let connectAddress = clientConnectAddress(address)
+  var socket: Socket
+  try:
+    socket = newSocket()
+    socket.connect(connectAddress, Port(port))
+    result = true
+  except CatchableError:
+    result = false
+  if not socket.isNil:
+    try:
+      socket.close()
+    except CatchableError:
+      discard
+
+proc firstOpenPort(address: string, startPort: int): int =
+  ## Finds the first port without a local TCP listener.
+  result = startPort
+  while result <= HighestPort:
+    if not tcpPortInUse(address, result):
+      return result
+    inc result
+  raise newException(
+    ValueError,
+    "No available TCP port found at or above " & $startPort & "."
+  )
+
 proc waitForChildren(managedServer: bool): int =
   ## Waits until a managed child exits, then stops the rest.
   if not managedServer and clientProcesses.len == 0 and botProcesses.len == 0:
@@ -895,8 +930,6 @@ proc shortOptionArg(key, val: string): string =
 
 proc parseArgs(): QuickRunConfig =
   var positional: seq[string]
-  var
-    portSet = false
   result.port = DefaultPort
 
   for kind, key, val in getopt():
@@ -949,7 +982,7 @@ proc parseArgs(): QuickRunConfig =
         if val.len == 0:
           raise newException(ValueError, "--port requires a value.")
         result.port = parsePort(val)
-        portSet = true
+        result.portSet = true
       of "save-replay":
         if val.len == 0:
           raise newException(ValueError, "--save-replay requires a value.")
@@ -974,9 +1007,10 @@ proc parseArgs(): QuickRunConfig =
       discard
 
   if positional.len == 2:
-    if portSet:
+    if result.portSet:
       raise newException(ValueError, "Port was provided twice.")
     result.port = parsePort(positional[1])
+    result.portSet = true
     positional.setLen(1)
   if positional.len != 1:
     raise newException(ValueError, "Expected <game_folder_or_file>.")
@@ -1116,6 +1150,54 @@ proc playerClientSource(game: GameLaunch): string =
   of FrameClient:
     PlayerClientSourceRelative
 
+proc localClientSource(game: GameLaunch, sourceRelative: string): string =
+  ## Returns a game-local native client source when one exists.
+  let direct = game.buildDir / sourceRelative
+  if fileExists(direct):
+    return direct
+
+  let packaged = game.buildDir / "src" / game.name / sourceRelative
+  if fileExists(packaged):
+    return packaged
+
+  let
+    sourceName = sourceRelative.extractFilename()
+    srcDir = game.buildDir / "src"
+  if dirExists(srcDir):
+    for path in walkDirRec(srcDir):
+      if path.extractFilename() == sourceName and
+          path.parentDir().extractFilename() == "clients":
+        return path
+
+proc clientWorkDir(buildDir, sourcePath: string): string =
+  ## Returns the working directory with native client data assets.
+  let clientDir = buildDir / "clients"
+  if dirExists(clientDir / "data"):
+    clientDir
+  else:
+    sourcePath.parentDir()
+
+proc clientLaunch(
+  game: GameLaunch,
+  launcherDir,
+  sourceRelative: string
+): ClientLaunch =
+  ## Resolves the source, build root, and working directory for a client.
+  let localSource = game.localClientSource(sourceRelative)
+  if localSource.len > 0:
+    return ClientLaunch(
+      sourceRelative: sourceArg(game.buildDir, localSource),
+      buildDir: game.buildDir,
+      workDir: clientWorkDir(game.buildDir, localSource)
+    )
+
+  let launcherSource = launcherDir / sourceRelative
+  ClientLaunch(
+    sourceRelative: sourceRelative,
+    buildDir: launcherDir,
+    workDir: clientWorkDir(launcherDir, launcherSource)
+  )
+
 proc globalPalettePath(rootDir: string, game: GameLaunch): string =
   ## Returns the palette path for the native global viewer.
   let gamePalettePath = game.workDir / "data" / "pallete.png"
@@ -1162,7 +1244,7 @@ proc openHtmlClients(
 proc launchNativePlayerClients(
   config: QuickRunConfig,
   game: GameLaunch,
-  rootDir: string,
+  launcherDir: string,
   assignments: openArray[SlotAssignment]
 ): bool =
   ## Starts native player client processes for one quick-run game.
@@ -1170,8 +1252,8 @@ proc launchNativePlayerClients(
     return true
 
   let
-    sourceRelative = game.playerClientSource()
-    playerExe = exePathFor(rootDir, sourceRelative)
+    client = clientLaunch(game, launcherDir, game.playerClientSource())
+    playerExe = exePathFor(client.buildDir, client.sourceRelative)
   for i in 1 .. config.players:
     let assignment = assignments.slotAssignmentAt(i - 1)
     let slotIndex =
@@ -1186,7 +1268,7 @@ proc launchNativePlayerClients(
     ]
     if game.playerProtocol == SpriteClient:
       args.add("--player")
-      args.add("--palette:" & globalPalettePath(rootDir, game))
+      args.add("--palette:" & globalPalettePath(launcherDir, game))
     if config.reconnectSeconds.len > 0:
       args.add("--reconnect:" & config.reconnectSeconds)
     try:
@@ -1194,7 +1276,7 @@ proc launchNativePlayerClients(
         launchManagedProcess(
           game.name & " player " & $i & " client",
           playerExe,
-          rootDir,
+          client.workDir,
           args
         )
       )
@@ -1206,14 +1288,16 @@ proc launchNativePlayerClients(
 proc launchNativeGlobalViewer(
   config: QuickRunConfig,
   game: GameLaunch,
-  rootDir: string
+  launcherDir: string
 ): bool =
   ## Starts the native global viewer process.
-  let globalExe = exePathFor(rootDir, GlobalClientSourceRelative)
+  let
+    client = clientLaunch(game, launcherDir, GlobalClientSourceRelative)
+    globalExe = exePathFor(client.buildDir, client.sourceRelative)
   var args = @[
     "--address:" & globalWsAddress(config),
     "--title:" & game.name & " global",
-    "--palette:" & globalPalettePath(rootDir, game)
+    "--palette:" & globalPalettePath(launcherDir, game)
   ]
   if config.reconnectSeconds.len > 0:
     args.add("--reconnect:" & config.reconnectSeconds)
@@ -1222,7 +1306,7 @@ proc launchNativeGlobalViewer(
       launchManagedProcess(
         game.name & " global client",
         globalExe,
-        rootDir,
+        client.workDir,
         args
       )
     )
@@ -1230,7 +1314,8 @@ proc launchNativeGlobalViewer(
   except CatchableError as e:
     echo "Failed to start global viewer: ", e.msg
 
-proc runQuickRun(config: QuickRunConfig): int =
+proc runQuickRun(input: QuickRunConfig): int =
+  var config = input
   let
     runDir = currentRoot()
     launcherDir = toolRoot()
@@ -1245,6 +1330,12 @@ proc runQuickRun(config: QuickRunConfig): int =
       config.gameFolder
     echo usage()
     return 1
+
+  if not config.connect and not config.portSet:
+    let openPort = firstOpenPort(config.address, config.port)
+    if openPort != config.port:
+      echo "Port ", config.port, " is busy; using ", openPort, " instead."
+      config.port = openPort
 
   let
     game = gameLookup.game
@@ -1278,6 +1369,8 @@ proc runQuickRun(config: QuickRunConfig): int =
     slotAssignments = config.buildSlotAssignments(botLaunches)
 
   var serverArgs = @[portArg, addressArg]
+  if config.playersSet and config.players > 0:
+    serverArgs.add("--players:" & $config.players)
   if config.slots and slotAssignments.len > 0:
     serverArgs.add("--config:" & slotsConfigJson(slotAssignments))
   if config.saveReplayPath.len > 0:
@@ -1304,30 +1397,32 @@ proc runQuickRun(config: QuickRunConfig): int =
 
   var compiledClientSources: seq[string]
   if config.globalViewer and not config.htmlViewer:
+    let client = clientLaunch(game, launcherDir, GlobalClientSourceRelative)
     result = compileTarget(
       nimExe,
-      launcherDir,
+      client.buildDir,
       game.name & " global client",
-      GlobalClientSourceRelative,
-      exePathFor(launcherDir, GlobalClientSourceRelative)
+      client.sourceRelative,
+      exePathFor(client.buildDir, client.sourceRelative)
     )
     if result != 0:
       return result
-    compiledClientSources.add(GlobalClientSourceRelative)
+    compiledClientSources.add(client.buildDir & "\0" & client.sourceRelative)
 
   if config.players > 0 and not config.htmlViewer:
-    let sourceRelative = game.playerClientSource()
-    if sourceRelative notin compiledClientSources:
+    let client = clientLaunch(game, launcherDir, game.playerClientSource())
+    let clientKey = client.buildDir & "\0" & client.sourceRelative
+    if clientKey notin compiledClientSources:
       result = compileTarget(
         nimExe,
-        launcherDir,
+        client.buildDir,
         game.name & " player client",
-        sourceRelative,
-        exePathFor(launcherDir, sourceRelative)
+        client.sourceRelative,
+        exePathFor(client.buildDir, client.sourceRelative)
       )
       if result != 0:
         return result
-      compiledClientSources.add(sourceRelative)
+      compiledClientSources.add(clientKey)
 
   var compiledBots: seq[string]
   for bot in botLaunches:

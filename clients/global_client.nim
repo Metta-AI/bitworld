@@ -972,8 +972,7 @@ proc handleInput*(app: GlobalApp) =
       int32(round(mouse.y.float32 / app.silky.uiScale))
     )
 
-  if pressed[KeyR]:
-    app.reconnectNetwork()
+  let reconnectPressed = pressed[KeyEscape] and not down[KeyLeftSuper]
 
   if app.playerMode:
     if app.typing:
@@ -984,10 +983,14 @@ proc handleInput*(app: GlobalApp) =
       elif pressed[KeyBackspace]:
         app.deleteTextChar()
     else:
-      if pressed[KeyEnter]:
+      if reconnectPressed:
+        app.reconnectNetwork()
+      elif pressed[KeyEnter]:
         app.startTyping()
       else:
         app.updatePlayerButtons()
+  elif reconnectPressed:
+    app.reconnectNetwork()
 
   if pressed[MouseLeft]:
     let point = app.mousePoint()

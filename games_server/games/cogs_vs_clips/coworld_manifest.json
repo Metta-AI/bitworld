@@ -22,7 +22,7 @@
         "/app/server.py"
       ],
       "type": "game",
-      "image": "coworld/cow_078d1605-92c0-432d-a43c-6786b4f14211/cogs_vs_clips-0.2.10-1:downloaded"
+      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:ea414040abf74e1034d97d9e038674412dd4076872c43c2a52f2e30a14103b89"
     },
     "protocols": {
       "global": {
@@ -124,7 +124,7 @@
       ],
       "name": "Starter Policy Player",
       "type": "player",
-      "image": "coworld/cow_078d1605-92c0-432d-a43c-6786b4f14211/cogs_vs_clips-0.2.10-0:downloaded",
+      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:1e73e90de5f2e6bcd0198e7cbc7abc1599b37b8d8ff8f1facab5a6dffe909ef1",
       "description": "Cogs vs Clips MettaGrid policy player running the starter policy over coworld.player.v1."
     }
   ],
