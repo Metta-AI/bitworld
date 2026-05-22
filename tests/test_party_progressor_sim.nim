@@ -2870,6 +2870,8 @@ proc testMonsterLairAttackRewardsAndPacifiesThreats() =
   doAssert sim.sideObjectivesCompleted == 1
   doAssert sim.food == LairFoodBonus
   doAssert sim.stone == LairStoneBonus
+  doAssert sim.players[playerIndex].huntTicks == LairHunterTicks
+  doAssert sim.players[playerIndex].statusLabel().contains("hunt")
   doAssert sim.hasPickup(PickupWood)
   doAssert sim.hasPickup(PickupFood)
   doAssert sim.mobs.len == 2,
@@ -2879,6 +2881,40 @@ proc testMonsterLairAttackRewardsAndPacifiesThreats() =
   doAssert sim.mobs.anyIt(it.kind == BossMob)
   doAssert sim.completedLairCountInBiome(BiomeOrigin) == 1
   doAssert lairRespawnCooldownBonus(1) == LairRespawnCooldownBonus
+  let huntDamage = sim.playerAttackDamage(
+    sim.players[playerIndex],
+    sim.mobs.filterIt(it.kind != BossMob)[0]
+  )
+  sim.players[playerIndex].huntTicks = 0
+  doAssert huntDamage == sim.playerAttackDamage(
+    sim.players[playerIndex],
+    sim.mobs.filterIt(it.kind != BossMob)[0]
+  ) + LairHunterDamageBonus,
+    "lair hunter window should make the next non-boss fights easier"
+  sim.players[playerIndex].huntTicks = 0
+  let bossDamageWithoutHunt = sim.playerAttackDamage(
+    sim.players[playerIndex],
+    sim.mobs.filterIt(it.kind == BossMob)[0]
+  )
+  sim.players[playerIndex].huntTicks = LairHunterTicks
+  doAssert sim.playerAttackDamage(
+    sim.players[playerIndex],
+    sim.mobs.filterIt(it.kind == BossMob)[0]
+  ) == bossDamageWithoutHunt,
+    "lair hunter window should not bypass the final-boss party check"
+  var lairNextState: PlayerViewerState
+  let labels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    lairNextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status hunt" in labels,
+    "sprite observations should show the lair-hunter payoff"
+  sim.players[playerIndex].huntTicks = 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].huntTicks == 0,
+    "lair hunter window should expire after the next fight window"
+
   sim.teamFrontier = lairX
   sim.mobSpawnCooldown = 0
   sim.players[playerIndex].attackTicks = 0

@@ -83,6 +83,7 @@ const
   LairFoodBonus* = 1
   LairStoneBonus* = 1
   LairPacifyRadius* = WorldTileSize * 3
+  LairHunterDamageBonus* = 1
   BiomeWaystationFastStep* = 2
   BiomeWaystationFoodBonus* = 1
   BiomeWaystationHealAmount* = 1
@@ -115,6 +116,7 @@ const
   DpsCleaveRadius* = 42
   DpsCleaveDamage* = 2
   TargetFps* = 60
+  LairHunterTicks* = TargetFps * 10
   LairRespawnCooldownBonus* = TargetFps * 2
   BiomeWaystationTicks* = TargetFps
   FinalGateRitualTicks* = TargetFps * 2
@@ -363,6 +365,7 @@ type
     poisonTicks*: int
     exhaustionTicks*: int
     guideTicks*: int
+    huntTicks*: int
     downedTicks*: int
     rescueTicks*: int
 
@@ -912,6 +915,8 @@ proc statusLabel*(player: Actor): string =
     labels.add("exhaust")
   if player.guideTicks > 0:
     labels.add("guide")
+  if player.huntTicks > 0:
+    labels.add("hunt")
   if labels.len == 0:
     return "ok"
   labels.join("/")
@@ -1814,7 +1819,11 @@ proc playerAttackDamage*(sim: SimServer, player: Actor, mob: Mob): int =
   max(
     1,
     player.role.roleAttackDamage() +
-      elevationDamageModifier(sim.actorTileElevation(player), sim.mobTileElevation(mob))
+      elevationDamageModifier(sim.actorTileElevation(player), sim.mobTileElevation(mob)) +
+      (if player.huntTicks > 0 and mob.kind != BossMob:
+        LairHunterDamageBonus
+      else:
+        0)
   )
 
 proc biomeAtPixel*(sim: SimServer, x: int): BiomeKind =
@@ -2834,6 +2843,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
   sim.players[playerIndex].guideTicks = 0
+  sim.players[playerIndex].huntTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
 
@@ -3212,6 +3222,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.poisonTicks)
     result.mixHashInt(player.exhaustionTicks)
     result.mixHashInt(player.guideTicks)
+    result.mixHashInt(player.huntTicks)
     result.mixHashInt(player.downedTicks)
     result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
@@ -4138,6 +4149,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
   sim.players[playerIndex].guideTicks = 0
+  sim.players[playerIndex].huntTicks = 0
   inc sim.scoreRevision
 
 proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
@@ -4167,6 +4179,7 @@ proc reviveDownedPlayer(sim: var SimServer, playerIndex, rescuerIndex: int) =
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
   sim.players[playerIndex].guideTicks = 0
+  sim.players[playerIndex].huntTicks = 0
   if rescuerIndex >= 0 and rescuerIndex < sim.players.len and
       sim.players[rescuerIndex].role == RoleHealer:
     sim.players[rescuerIndex].healingDone += sim.players[playerIndex].lives
@@ -4941,6 +4954,9 @@ proc destroyLair(sim: var SimServer, landmarkIndex: int) =
   sim.addCarryPickupAt(cache.first, center.x - WorldTileSize div 2, center.y)
   sim.addCarryPickupAt(cache.second, center.x + WorldTileSize div 2, center.y)
   discard sim.pacifyLairMobs(landmark)
+  for player in sim.players.mitems:
+    if player.lives > 0:
+      player.huntTicks = max(player.huntTicks, LairHunterTicks)
   inc sim.scoreRevision
 
 proc fortifyCamp(sim: var SimServer, landmarkIndex: int) =
@@ -6357,6 +6373,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
     if sim.players[i].guideTicks > 0:
       dec sim.players[i].guideTicks
       if sim.players[i].guideTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].huntTicks > 0:
+      dec sim.players[i].huntTicks
+      if sim.players[i].huntTicks == 0:
         inc sim.scoreRevision
     if sim.players[i].pingTicks > 0:
       dec sim.players[i].pingTicks

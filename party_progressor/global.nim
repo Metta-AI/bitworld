@@ -67,7 +67,7 @@ const
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
-  StatusBadgeSlots = 14
+  StatusBadgeSlots = 16
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
   HealthBarWidth = 18
@@ -139,6 +139,7 @@ type
     StatusGuard
     StatusBlessing
     StatusGuide
+    StatusHunt
     StatusPoison
     StatusSlow
     StatusChill
@@ -1429,6 +1430,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusGuard: "GRD"
   of StatusBlessing: "BLS"
   of StatusGuide: "GUIDE"
+  of StatusHunt: "HUNT"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1465,6 +1467,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusGuard: 4'u8
   of StatusBlessing: 14'u8
   of StatusGuide: 2'u8
+  of StatusHunt: 9'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1501,6 +1504,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusGuard: "status guard"
   of StatusBlessing: "status blessing"
   of StatusGuide: "status guide"
+  of StatusHunt: "status hunt"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -2690,6 +2694,8 @@ proc addWorldObjects(
         badges.add(tacticBadge.badge)
       if player.guideTicks > 0:
         badges.add(StatusGuide)
+      if player.huntTicks > 0:
+        badges.add(StatusHunt)
       let survivalBadge = sim.survivalPressureKind(i).survivalStatusBadge()
       if survivalBadge.found:
         badges.add(survivalBadge.badge)

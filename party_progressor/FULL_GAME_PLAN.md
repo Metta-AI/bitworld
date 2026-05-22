@@ -341,6 +341,10 @@ The first full-game implementation pass includes:
   a short pacification of nearby threats, a biome-flavored cache of carried
   expedition supplies, and reduced future monster respawn pressure in that
   biome.
+- Destroyed monster lairs now also give the party a short visible `HUNT`
+  window: normal attacks hit non-boss monsters harder, so clearing a den
+  creates an immediate next-fight advantage instead of only changing hidden
+  respawn timing.
 - Biome waystation side objectives seeded through biome bands: forage, rally,
   bridge, oasis, hearth, lantern, and ward detours complete faster for a hinted
   role, reshape nearby rough terrain into a readable route, and grant
