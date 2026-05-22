@@ -3358,8 +3358,17 @@ proc applyHealerPulse(sim: var SimServer, healerIndex: int) =
       sim.players[targetIndex].lives + HealerPulseAmount
     )
     let healed = sim.players[targetIndex].lives - before
+    let cleansed =
+      sim.players[targetIndex].poisonTicks > 0 or
+      sim.players[targetIndex].slowTicks > 0 or
+      sim.players[targetIndex].chillTicks > 0
+    if cleansed:
+      sim.players[targetIndex].poisonTicks = 0
+      sim.players[targetIndex].slowTicks = 0
+      sim.players[targetIndex].chillTicks = 0
     if healed > 0:
       sim.players[healerIndex].healingDone += healed
+    if healed > 0 or cleansed:
       inc sim.scoreRevision
 
 proc finishDefeatedMobs(sim: var SimServer) =

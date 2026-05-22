@@ -2942,6 +2942,23 @@ proc testHealerTriageAndHelpAffordance() =
   doAssert sim.players[woundedIndex].lives == before,
     "triage should require the healer to stay near the wounded teammate"
 
+  sim.players[healerIndex].x = sim.players[woundedIndex].x + WorldTileSize
+  sim.players[healerIndex].y = sim.players[woundedIndex].y
+  sim.players[healerIndex].abilityCooldown = 0
+  sim.players[healerIndex].bounds =
+    sim.playerBoundsFor(sim.players[healerIndex])
+  sim.players[woundedIndex].lives = sim.players[woundedIndex].maxHp
+  sim.players[woundedIndex].poisonTicks = StatusPoisonTicks
+  sim.players[woundedIndex].slowTicks = StatusSlowTicks
+  sim.players[woundedIndex].chillTicks = StatusChillTicks
+  sim.step([InputState(), InputState(b: true)])
+  doAssert sim.players[woundedIndex].lives == sim.players[woundedIndex].maxHp
+  doAssert sim.players[woundedIndex].poisonTicks == 0
+  doAssert sim.players[woundedIndex].slowTicks == 0
+  doAssert sim.players[woundedIndex].chillTicks == 0
+  doAssert sim.players[healerIndex].abilityCooldown > 0,
+    "healer pulse should spend cooldown when cleansing party statuses"
+
 proc testFoodAndColdSurvivalPressure() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()

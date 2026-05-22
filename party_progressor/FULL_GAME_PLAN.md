@@ -338,6 +338,9 @@ The first full-game implementation pass includes:
 - Origin and camp role gear now labels both the role and its `B` power: tank
   guard, DPS cleave, and healer pulse.
 - DPS cleave on the `B` button, plus tank guard and healer pulse.
+- Healer pulse now cleanses poison, slow, and chill from nearby party members,
+  making the support power a direct answer to biome and monster status pressure
+  rather than only an HP refill.
 - Healer triage support: nearby healers now slowly stabilize low-health
   teammates between pulse casts, making the support role useful during
   sustained pushes.
@@ -485,7 +488,8 @@ The first full-game implementation pass includes:
   and one-pixel movement no longer counts as fully stuck.
 - Konrad bot combat now reads the B-power HUD line and fires role powers at
   sensible moments: tanks guard and DPS cleave once threats are in reach, while
-  healers spend their pulse when the HUD reports low health.
+  healers spend their pulse when the HUD reports low health or cleansable
+  poison/slow/chill pressure.
 - Konrad bot scanning now treats visible carried-item sprites as teammate state
   instead of world pickups, preventing longer expedition runs from derailing
   into loops around another player's held wood, food, stone, or gold.
