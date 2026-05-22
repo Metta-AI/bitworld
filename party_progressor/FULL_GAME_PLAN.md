@@ -103,6 +103,11 @@ Role gear should remain reusable. Origin role gear is always available, and
 activated forward camps should provide local role swapping so deeper runs are
 recoverable.
 
+Mixed-role focus fire should reward party composition without adding extra
+buttons. When two or three distinct combat roles have recently attacked the
+same enemy, normal attacks should hit harder and the focused target should show
+a compact in-world affordance so players understand the opening.
+
 Enemy families should be simple and readable:
 
 - Wolves: fast early pack pressure.
@@ -379,6 +384,9 @@ The first full-game implementation pass includes:
 - Monster attack phases now have explicit sprite-protocol animation overlays:
   a pulsing warning mark during wind-up and a strike slash during lunge, so all
   32 monster species read as actively attacking rather than only sliding.
+- Mixed-role party focus now turns recent tank/DPS/healer attacks on the same
+  mob into a visible `FOC` damage window, giving parties a reason to coordinate
+  targets beyond each role's individual `B` power.
 - Final-gate completion now requires boss defeat, relic progress, and forward
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.

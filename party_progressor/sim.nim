@@ -217,6 +217,8 @@ const
   MobTelegraphLift* = 4
   MobLungeTicks* = 10
   MobLungeStep* = 2
+  PartyFocusTwoRoleDamageBonus* = 1
+  PartyFocusThreeRoleDamageBonus* = 2
   TribalAssetManifestName* = "tribalcog_assets.json"
 
 type
@@ -2483,6 +2485,50 @@ proc rememberMobAttacker(mob: var Mob, playerId, tickCount: int) =
   mob.attackerIds.add(playerId)
   mob.attackerTicks.add(tickCount)
 
+proc partyFocusRoleCount*(
+  mob: Mob,
+  players: openArray[Actor],
+  tickCount: int
+): int =
+  ## Counts distinct live combat roles focusing this mob in the co-op window.
+  var
+    tank = false
+    dps = false
+    healer = false
+  let count = min(mob.attackerIds.len, mob.attackerTicks.len)
+  for attackerIndex in 0 ..< count:
+    if tickCount - mob.attackerTicks[attackerIndex] > CoopAttackWindow:
+      continue
+    for player in players:
+      if player.id != mob.attackerIds[attackerIndex] or player.lives <= 0:
+        continue
+      case player.role
+      of RoleTank:
+        tank = true
+      of RoleDps:
+        dps = true
+      of RoleHealer:
+        healer = true
+      of RoleUnarmed:
+        discard
+      break
+  result = (if tank: 1 else: 0) + (if dps: 1 else: 0) +
+    (if healer: 1 else: 0)
+
+proc partyFocusDamageBonus*(
+  mob: Mob,
+  players: openArray[Actor],
+  tickCount: int
+): int =
+  ## Returns the normal-attack bonus for mixed-role focus fire.
+  let roleCount = mob.partyFocusRoleCount(players, tickCount)
+  if roleCount >= 3:
+    PartyFocusThreeRoleDamageBonus
+  elif roleCount >= 2:
+    PartyFocusTwoRoleDamageBonus
+  else:
+    0
+
 proc refreshCoopState(
   mob: var Mob,
   players: openArray[Actor],
@@ -4539,7 +4585,8 @@ proc applyAttack(sim: var SimServer) =
         of FaceRight: dx = 4
         sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
         sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
-        let damage = player.role.roleAttackDamage()
+        let damage = player.role.roleAttackDamage() +
+          sim.mobs[mobIndex].partyFocusDamageBonus(sim.players, sim.tickCount)
         mobHitCounts[mobIndex] += damage
         sim.players[playerIndex].damageDone += damage
         inc sim.scoreRevision

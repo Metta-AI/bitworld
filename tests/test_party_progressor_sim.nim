@@ -2155,6 +2155,97 @@ proc testDpsCleaveSpecialDamagesNearbyMobs() =
   doAssert sim.mobs[0].hp == 5 - DpsCleaveDamage
   doAssert sim.mobs[1].hp == 5 - DpsCleaveDamage
 
+proc testPartyFocusRewardsMixedRoleAttacksAndShowsBadge() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.bossDefeated = true
+  sim.fillGround(GroundGrass)
+
+  let
+    tankIndex = sim.addPlayer("tank")
+    dpsIndex = sim.addPlayer("dps")
+    healerIndex = sim.addPlayer("healer")
+    baseX = SafeZoneRightPixels + WorldTileSize
+    baseY = (WorldHeightTiles div 2) * WorldTileSize
+  for item in [
+    (index: tankIndex, role: RoleTank, y: baseY - 12),
+    (index: dpsIndex, role: RoleDps, y: baseY),
+    (index: healerIndex, role: RoleHealer, y: baseY + 12)
+  ]:
+    sim.players[item.index].x = baseX
+    sim.players[item.index].y = item.y
+    sim.players[item.index].facing = FaceRight
+    sim.players[item.index].applyRole(item.role)
+    sim.players[item.index].bounds =
+      sim.playerBoundsFor(sim.players[item.index])
+
+  let
+    dpsHit = sim.attackRect(sim.players[dpsIndex])
+    mobSprite = sim.mobSpriteFor(BearMob)
+    mobBounds = sim.mobBoundsFor(BearMob)
+  sim.mobs.add(Mob(
+    kind: BearMob,
+    species: SpeciesBrownBear,
+    x: dpsHit.x,
+    y: dpsHit.y,
+    sprite: mobSprite,
+    bounds: mobBounds,
+    hp: 24,
+    attackCooldown: 99
+  ))
+  sim.mobs[0].attackerIds = @[
+    sim.players[tankIndex].id,
+    sim.players[dpsIndex].id
+  ]
+  sim.mobs[0].attackerTicks = @[sim.tickCount, sim.tickCount]
+
+  doAssert sim.mobs[0].partyFocusRoleCount(sim.players, sim.tickCount) == 2
+  doAssert sim.mobs[0].partyFocusDamageBonus(sim.players, sim.tickCount) ==
+    PartyFocusTwoRoleDamageBonus
+  var focusNextState: PlayerViewerState
+  let labels = sim.buildSpriteProtocolPlayerUpdates(
+    dpsIndex,
+    initPlayerViewerState(),
+    focusNextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status party focus" in labels,
+    "focused mobs should advertise the mixed-role damage window"
+
+  let twoRoleHp = sim.mobs[0].hp
+  sim.step([InputState(), InputState(attack: true), InputState()])
+  doAssert sim.mobs.len == 1
+  doAssert sim.mobs[0].hp ==
+    twoRoleHp - (3 + PartyFocusTwoRoleDamageBonus),
+    "two mixed roles should add a small normal-attack focus bonus"
+
+  sim.players[dpsIndex].attackTicks = 0
+  sim.players[dpsIndex].attackResolved = false
+  sim.mobs[0].x = dpsHit.x
+  sim.mobs[0].y = dpsHit.y
+  sim.mobs[0].attackerIds = @[
+    sim.players[tankIndex].id,
+    sim.players[dpsIndex].id,
+    sim.players[healerIndex].id
+  ]
+  sim.mobs[0].attackerTicks = @[
+    sim.tickCount,
+    sim.tickCount,
+    sim.tickCount
+  ]
+
+  doAssert sim.mobs[0].partyFocusRoleCount(sim.players, sim.tickCount) == 3
+  doAssert sim.mobs[0].partyFocusDamageBonus(sim.players, sim.tickCount) ==
+    PartyFocusThreeRoleDamageBonus
+  let threeRoleHp = sim.mobs[0].hp
+  sim.step([InputState(), InputState(attack: true), InputState()])
+  doAssert sim.mobs.len == 1
+  doAssert sim.mobs[0].hp ==
+    threeRoleHp - (3 + PartyFocusThreeRoleDamageBonus),
+    "all three roles should create the strongest focus-fire damage bonus"
+
 proc testHealerTriageAndHelpAffordance() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -2450,6 +2541,7 @@ testHealerCompletesRescueEventsFaster()
 testMonsterLairAttackRewardsAndPacifiesThreats()
 testBiomeWaystationsCreateRoleDetoursAndShelters()
 testDpsCleaveSpecialDamagesNearbyMobs()
+testPartyFocusRewardsMixedRoleAttacksAndShowsBadge()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()

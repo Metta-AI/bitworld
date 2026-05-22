@@ -126,6 +126,7 @@ type
     StatusRoleTank
     StatusRoleDps
     StatusRoleHealer
+    StatusPartyFocus
     StatusPoison
     StatusSlow
     StatusChill
@@ -1399,6 +1400,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusRoleTank: "TNK"
   of StatusRoleDps: "DPS"
   of StatusRoleHealer: "HEAL"
+  of StatusPartyFocus: "FOC"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1418,6 +1420,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusRoleTank: 4'u8
   of StatusRoleDps: 3'u8
   of StatusRoleHealer: 10'u8
+  of StatusPartyFocus: 14'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1437,6 +1440,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusRoleTank: "status role tank"
   of StatusRoleDps: "status role dps"
   of StatusRoleHealer: "status role healer"
+  of StatusPartyFocus: "status party focus"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -2439,7 +2443,11 @@ proc addWorldObjects(
         viewportHeight,
         drawY - cameraY + mob.sprite.height + 1
       )
-    let badges = mob.species.threatBadges()
+    var badges: seq[StatusBadgeKind] = @[]
+    if mob.partyFocusDamageBonus(sim.players, sim.tickCount) > 0:
+      badges.add(StatusPartyFocus)
+    for badge in mob.species.threatBadges():
+      badges.add(badge)
     for badgeIndex in 0 ..< badges.len:
       let
         badge = badges[badgeIndex]
