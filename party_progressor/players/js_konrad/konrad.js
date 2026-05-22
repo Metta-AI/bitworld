@@ -31,6 +31,10 @@ const PlayerHudSpriteId = 600;
 const MobSpeciesSpriteBase = 760;
 const PlayerObjectBase = 1000;
 const MobObjectBase = 2000;
+const PlayerHealthObjectBase = 10000;
+const StatusBadgeObjectBase = 13000;
+const StatusBadgeSlots = 7;
+const LowHealthPercent = 50;
 
 const ButtonUp = 1 << 0;
 const ButtonDown = 1 << 1;
@@ -227,6 +231,8 @@ class Bot {
     this.coinCount = 0;
     this.heartCount = 0;
     this.killCount = 0;
+    this.lowHealth = false;
+    this.needsRegroup = false;
     this.intent = "";
     this.lastMask = 0;
     this.nextChatTick = 72;
@@ -367,6 +373,33 @@ class Bot {
     this.selfObjectId = bestId;
   }
 
+  updateSelfAffordances() {
+    this.lowHealth = false;
+    this.needsRegroup = false;
+    if (this.selfObjectId < PlayerObjectBase) return;
+    const playerId = this.selfObjectId - PlayerObjectBase;
+    const healthObjectId = PlayerHealthObjectBase + playerId;
+    const healthState = this.objects[healthObjectId];
+    if (healthState && healthState.present) {
+      const health = parseHealthLabel(this.spriteInfo(healthState.spriteId).label);
+      if (
+        health &&
+        health.current * 100 <= health.maximum * LowHealthPercent
+      ) {
+        this.lowHealth = true;
+      }
+    }
+
+    for (let badgeIndex = 0; badgeIndex < StatusBadgeSlots; badgeIndex++) {
+      const objectId = StatusBadgeObjectBase + playerId * StatusBadgeSlots + badgeIndex;
+      const state = this.objects[objectId];
+      if (!state || !state.present) continue;
+      const label = this.spriteInfo(state.spriteId).label.toLowerCase();
+      if (label === "status help") this.lowHealth = true;
+      if (label === "status alone") this.needsRegroup = true;
+    }
+  }
+
   targetCenter(state, sprite) {
     const bounds = visibleBounds(sprite);
     return {
@@ -456,34 +489,34 @@ class Bot {
       case TargetKind.Coin:
         return distance + 90;
       case TargetKind.Heart:
-        return distance + 15;
+        return distance + (this.lowHealth ? -210 : this.needsRegroup ? -40 : 15);
       case TargetKind.Wood:
       case TargetKind.Stone:
         return distance - 120;
       case TargetKind.Food:
-        return distance - 95;
+        return distance + (this.lowHealth ? -150 : this.needsRegroup ? -115 : -95);
       case TargetKind.Gold:
         return distance - 55;
       case TargetKind.Camp:
-        return distance - 100;
+        return distance + (this.lowHealth || this.needsRegroup ? -180 : -100);
       case TargetKind.Relic:
         return distance - 85;
       case TargetKind.Waystation:
-        return distance - 65;
+        return distance + (this.lowHealth || this.needsRegroup ? -165 : -65);
       case TargetKind.Rescue:
-        return distance - 50;
+        return distance + (this.needsRegroup ? -120 : -50);
       case TargetKind.Shrine:
         return distance - 20;
       case TargetKind.Gate:
         return distance + 10;
       case TargetKind.Lair:
-        return distance + (distance < 100 ? -45 : 180);
+        return distance + (this.lowHealth || this.needsRegroup ? 420 : distance < 100 ? -45 : 180);
       case TargetKind.Mob:
-        return distance + (distance < 90 ? -70 : 190);
+        return distance + (this.lowHealth ? 340 : this.needsRegroup ? 240 : distance < 90 ? -70 : 190);
       case TargetKind.Troll:
-        return distance + (distance < 105 ? -60 : 230);
+        return distance + (this.lowHealth ? 400 : this.needsRegroup ? 280 : distance < 105 ? -60 : 230);
       case TargetKind.Boss:
-        return distance + (distance < 120 ? -45 : 420);
+        return distance + (this.lowHealth ? 560 : this.needsRegroup ? 440 : distance < 120 ? -45 : 420);
       default:
         return distance + 400;
     }
@@ -680,6 +713,7 @@ class Bot {
   decideNextMask() {
     this.updateCamera();
     this.updatePlayerPosition();
+    this.updateSelfAffordances();
     if (this.attackCooldown > 0) this.attackCooldown -= 1;
     if (this.skipTicks > 0) {
       this.skipTicks -= 1;
@@ -785,6 +819,20 @@ function makeTarget(
   label = "",
 ) {
   return { found, kind, objectId, x, y, label };
+}
+
+function parseHealthLabel(label) {
+  const prefix = "health ";
+  const lower = (label || "").toLowerCase();
+  if (!lower.startsWith(prefix)) return null;
+  const parts = lower.slice(prefix.length).split("/");
+  if (parts.length !== 2) return null;
+  const current = Number.parseInt(parts[0].trim(), 10);
+  const maximum = Number.parseInt(parts[1].trim(), 10);
+  if (!Number.isFinite(current) || !Number.isFinite(maximum) || maximum <= 0) {
+    return null;
+  }
+  return { current, maximum };
 }
 
 function readU16(data, offset) {

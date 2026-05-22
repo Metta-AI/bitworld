@@ -46,6 +46,10 @@ const (
 	MobSpeciesSpriteBase     = 760
 	PlayerObjectBase         = 1000
 	MobObjectBase            = 2000
+	PlayerHealthObjectBase   = 10000
+	StatusBadgeObjectBase    = 13000
+	StatusBadgeSlots         = 7
+	LowHealthPercent         = 50
 
 	ButtonUp    uint8 = 1 << 0
 	ButtonDown  uint8 = 1 << 1
@@ -198,6 +202,8 @@ type Bot struct {
 	coinCount             int
 	heartCount            int
 	killCount             int
+	lowHealth             bool
+	needsRegroup          bool
 	intent                string
 	lastMask              uint8
 	nextChatTick          int
@@ -259,6 +265,27 @@ func distanceSquared(ax, ay, bx, by int) int {
 	dx := ax - bx
 	dy := ay - by
 	return dx*dx + dy*dy
+}
+
+func parseHealthLabel(label string) (bool, int, int) {
+	const prefix = "health "
+	lower := strings.ToLower(label)
+	if !strings.HasPrefix(lower, prefix) {
+		return false, 0, 0
+	}
+	parts := strings.Split(strings.TrimPrefix(lower, prefix), "/")
+	if len(parts) != 2 {
+		return false, 0, 0
+	}
+	current, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return false, 0, 0
+	}
+	maximum, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || maximum <= 0 {
+		return false, 0, 0
+	}
+	return true, current, maximum
 }
 
 func manhattan(ax, ay, bx, by int) int {
@@ -763,6 +790,37 @@ func (bot *Bot) updatePlayerPosition() {
 	bot.selfObjectId = bestId
 }
 
+func (bot *Bot) updateSelfAffordances() {
+	bot.lowHealth = false
+	bot.needsRegroup = false
+	if bot.selfObjectId < PlayerObjectBase {
+		return
+	}
+	playerId := bot.selfObjectId - PlayerObjectBase
+	healthObjectId := PlayerHealthObjectBase + playerId
+	if healthObjectId < len(bot.objects) && bot.objects[healthObjectId].present {
+		healthSprite := bot.spriteInfo(bot.objects[healthObjectId].spriteId)
+		found, current, maximum := parseHealthLabel(healthSprite.label)
+		if found && current*100 <= maximum*LowHealthPercent {
+			bot.lowHealth = true
+		}
+	}
+
+	for badgeIndex := 0; badgeIndex < StatusBadgeSlots; badgeIndex++ {
+		objectId := StatusBadgeObjectBase + playerId*StatusBadgeSlots + badgeIndex
+		if objectId >= len(bot.objects) || !bot.objects[objectId].present {
+			continue
+		}
+		label := strings.ToLower(bot.spriteInfo(bot.objects[objectId].spriteId).label)
+		switch label {
+		case "status help":
+			bot.lowHealth = true
+		case "status alone":
+			bot.needsRegroup = true
+		}
+	}
+}
+
 func isBlocked(blocked []bool, tx, ty int) bool {
 	if !inGrid(tx, ty) {
 		return true
@@ -1021,41 +1079,83 @@ func (bot *Bot) targetScore(target Target) int {
 	case TargetCoin:
 		return distance + 90
 	case TargetHeart:
+		if bot.lowHealth {
+			return distance - 210
+		}
+		if bot.needsRegroup {
+			return distance - 40
+		}
 		return distance + 15
 	case TargetWood, TargetStone:
 		return distance - 120
 	case TargetFood:
+		if bot.lowHealth {
+			return distance - 150
+		}
+		if bot.needsRegroup {
+			return distance - 115
+		}
 		return distance - 95
 	case TargetGold:
 		return distance - 55
 	case TargetCamp:
+		if bot.lowHealth || bot.needsRegroup {
+			return distance - 180
+		}
 		return distance - 100
 	case TargetRelic:
 		return distance - 85
 	case TargetWaystation:
+		if bot.lowHealth || bot.needsRegroup {
+			return distance - 165
+		}
 		return distance - 65
 	case TargetRescue:
+		if bot.needsRegroup {
+			return distance - 120
+		}
 		return distance - 50
 	case TargetShrine:
 		return distance - 20
 	case TargetGate:
 		return distance + 10
 	case TargetLair:
+		if bot.lowHealth || bot.needsRegroup {
+			return distance + 420
+		}
 		if distance < 100 {
 			return distance - 45
 		}
 		return distance + 180
 	case TargetMob:
+		if bot.lowHealth {
+			return distance + 340
+		}
+		if bot.needsRegroup {
+			return distance + 240
+		}
 		if distance < 90 {
 			return distance - 70
 		}
 		return distance + 190
 	case TargetTroll:
+		if bot.lowHealth {
+			return distance + 400
+		}
+		if bot.needsRegroup {
+			return distance + 280
+		}
 		if distance < 105 {
 			return distance - 60
 		}
 		return distance + 230
 	case TargetBoss:
+		if bot.lowHealth {
+			return distance + 560
+		}
+		if bot.needsRegroup {
+			return distance + 440
+		}
 		if distance < 120 {
 			return distance - 45
 		}
@@ -1282,6 +1382,7 @@ func (bot *Bot) attackMask(target Target) uint8 {
 func (bot *Bot) decideNextMask() uint8 {
 	bot.updateCamera()
 	bot.updatePlayerPosition()
+	bot.updateSelfAffordances()
 	if bot.attackCooldown > 0 {
 		bot.attackCooldown--
 	}

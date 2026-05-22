@@ -45,6 +45,10 @@ LandmarkSpriteBase = 360
 PlayerHudSpriteId = 600
 PlayerObjectBase = 1000
 MobObjectBase = 2000
+PlayerHealthObjectBase = 10000
+StatusBadgeObjectBase = 13000
+StatusBadgeSlots = 7
+LowHealthPercent = 50
 
 ButtonUp = 1 << 0
 ButtonDown = 1 << 1
@@ -156,6 +160,24 @@ class PathStep:
     next_ty: int = 0
 
 
+def parse_health_label(label: str) -> tuple[bool, int, int]:
+    prefix = "health "
+    lower = label.lower()
+    if not lower.startswith(prefix):
+        return False, 0, 0
+    parts = lower[len(prefix) :].split("/")
+    if len(parts) != 2:
+        return False, 0, 0
+    try:
+        current = int(parts[0].strip())
+        maximum = int(parts[1].strip())
+    except ValueError:
+        return False, 0, 0
+    if maximum <= 0:
+        return False, 0, 0
+    return True, current, maximum
+
+
 @dataclass
 class Bot:
     sprites: list[SpriteInfo] = field(default_factory=list)
@@ -191,6 +213,8 @@ class Bot:
     coin_count: int = 0
     heart_count: int = 0
     kill_count: int = 0
+    low_health: bool = False
+    needs_regroup: bool = False
     intent: str = ""
     last_mask: int = 0
     next_chat_tick: int = 72
@@ -338,6 +362,32 @@ class Bot:
         self.player_world_y = best_y
         self.self_object_id = best_id
 
+    def update_self_affordances(self) -> None:
+        self.low_health = False
+        self.needs_regroup = False
+        if self.self_object_id < PlayerObjectBase:
+            return
+        player_id = self.self_object_id - PlayerObjectBase
+        health_object_id = PlayerHealthObjectBase + player_id
+        if (
+            health_object_id < len(self.objects)
+            and self.objects[health_object_id].present
+        ):
+            health_sprite = self.sprite_info(self.objects[health_object_id].sprite_id)
+            found, current, maximum = parse_health_label(health_sprite.label)
+            if found and current * 100 <= maximum * LowHealthPercent:
+                self.low_health = True
+
+        for badge_index in range(StatusBadgeSlots):
+            object_id = StatusBadgeObjectBase + player_id * StatusBadgeSlots + badge_index
+            if object_id >= len(self.objects) or not self.objects[object_id].present:
+                continue
+            label = self.sprite_info(self.objects[object_id].sprite_id).label.lower()
+            if label == "status help":
+                self.low_health = True
+            elif label == "status alone":
+                self.needs_regroup = True
+
     def target_center(
         self,
         state: ObjectState,
@@ -418,33 +468,41 @@ class Bot:
         if target.kind == TargetKind.Coin:
             return distance + 90
         if target.kind == TargetKind.Heart:
-            return distance + 15
+            return distance + (-210 if self.low_health else -40 if self.needs_regroup else 15)
         if target.kind in {TargetKind.Wood, TargetKind.Stone}:
             return distance - 120
         if target.kind == TargetKind.Food:
-            return distance - 95
+            return distance + (-150 if self.low_health else -115 if self.needs_regroup else -95)
         if target.kind == TargetKind.Gold:
             return distance - 55
         if target.kind == TargetKind.Camp:
-            return distance - 100
+            return distance + (-180 if self.low_health or self.needs_regroup else -100)
         if target.kind == TargetKind.Relic:
             return distance - 85
         if target.kind == TargetKind.Waystation:
-            return distance - 65
+            return distance + (-165 if self.low_health or self.needs_regroup else -65)
         if target.kind == TargetKind.Rescue:
-            return distance - 50
+            return distance + (-120 if self.needs_regroup else -50)
         if target.kind == TargetKind.Shrine:
             return distance - 20
         if target.kind == TargetKind.Gate:
             return distance + 10
         if target.kind == TargetKind.Lair:
-            return distance + (-45 if distance < 100 else 180)
+            return distance + (
+                420 if self.low_health or self.needs_regroup else -45 if distance < 100 else 180
+            )
         if target.kind == TargetKind.Mob:
-            return distance + (-70 if distance < 90 else 190)
+            return distance + (
+                340 if self.low_health else 240 if self.needs_regroup else -70 if distance < 90 else 190
+            )
         if target.kind == TargetKind.Troll:
-            return distance + (-60 if distance < 105 else 230)
+            return distance + (
+                400 if self.low_health else 280 if self.needs_regroup else -60 if distance < 105 else 230
+            )
         if target.kind == TargetKind.Boss:
-            return distance + (-45 if distance < 120 else 420)
+            return distance + (
+                560 if self.low_health else 440 if self.needs_regroup else -45 if distance < 120 else 420
+            )
         return distance + 400
 
     def refresh_explore_goal(self, blocked: list[bool]) -> None:
@@ -655,6 +713,7 @@ class Bot:
     def decide_next_mask(self) -> int:
         self.update_camera()
         self.update_player_position()
+        self.update_self_affordances()
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
         if self.skip_ticks > 0:

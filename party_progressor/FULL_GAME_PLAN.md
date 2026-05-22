@@ -377,6 +377,9 @@ The first full-game implementation pass includes:
   semantically: resources and lairs are attack targets, camps/relics/rescues/
   waystations are activation targets, and distant boss-class threats are
   deprioritized behind expedition progress.
+- Konrad bot adapters now read visible self health bars and status badges, then
+  pivot toward hearts, food, camps, waystations, and regroup/rescue affordances
+  while avoiding discretionary combat when wounded or isolated.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
@@ -399,9 +402,9 @@ The first full-game implementation pass includes:
   black-background regressions are obvious during manual review too.
 - Tune attack-overlay density and placement once longer human/bot observation
   checks reveal where lunge effects clutter tight fights.
-- Continue bot targeting polish: infer low-health state from sprite health bars,
-  regroup near teammates, and tune when resource gathering should override
-  visible camps or relic objectives.
+- Continue bot targeting polish: tune teammate-following after status-aware
+  survival targeting, and tune when resource gathering should override visible
+  camps or relic objectives.
 
 ### Expedition Depth
 
