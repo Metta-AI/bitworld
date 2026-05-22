@@ -1,0 +1,198 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
+  "game": {
+    "name": "heartleaf",
+    "version": "0.1.0",
+    "description": "A cozy BitWorld garden dinner game where players grow food, collect vegetables, and gather in the evening.",
+    "owner": "treeform@softmax.com",
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/cogame-heartleaf:latest"
+    },
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "type": "string",
+            "minLength": 0
+          },
+          "default": [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ]
+        },
+        "seed": {
+          "description": "Random seed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 4731713
+        },
+        "maxTicks": {
+          "description": "Maximum simulation ticks before starting a fresh game, where 0 means no tick limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "maxGames": {
+          "description": "Maximum fresh games before shutdown, where 0 means no game limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day",
+        "names",
+        "usernames",
+        "playerNames",
+        "scores"
+      ],
+      "properties": {
+        "day": {
+          "description": "One-based Heartleaf day number for this score row.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "names": {
+          "description": "Player names in score order.",
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "type": "string"
+          }
+        },
+        "usernames": {
+          "description": "Connection usernames in score order.",
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "type": "string"
+          }
+        },
+        "playerNames": {
+          "description": "Fixed Heartleaf gnome names in score order.",
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "Cumulative player scores at the end of this day.",
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "protocols": {
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      },
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      }
+    }
+  },
+  "player": [
+    {
+      "id": "viliger",
+      "name": "Viliger",
+      "type": "player",
+      "description": "Sprite-protocol Heartleaf bot that gathers food, greets nearby gnomes, hosts dinner, and searches for active parties.",
+      "image": "ghcr.io/treeform/cogame-heartleaf-viliger:latest",
+      "run": [
+        "/bin/viliger"
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "freeplay",
+      "name": "Freeplay",
+      "game_config": {
+        "seed": 4731713,
+        "maxTicks": 0,
+        "maxGames": 0
+      },
+      "description": "Open-ended Heartleaf configuration for local player testing."
+    },
+    {
+      "id": "smoke",
+      "name": "Smoke",
+      "game_config": {
+        "seed": 4731713,
+        "maxTicks": 12,
+        "maxGames": 1
+      },
+      "description": "Short deterministic Heartleaf configuration used for smoke checks."
+    }
+  ],
+  "certification": {
+    "game_config": {
+      "seed": 4731713,
+      "maxTicks": 4600,
+      "maxGames": 1
+    },
+    "players": [
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      },
+      {
+        "player_id": "viliger"
+      }
+    ]
+  }
+}

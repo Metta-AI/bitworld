@@ -78,6 +78,14 @@ proc repoRoot(): string =
   ## Returns the repository root directory.
   currentSourcePath().parentDir.parentDir
 
+proc samePath(a, b: string): bool =
+  ## Returns true when two paths refer to the same directory.
+  cmpPaths(absolutePath(a), absolutePath(b)) == 0
+
+proc pathExists(path: string): bool =
+  ## Returns true when a filesystem path exists.
+  fileExists(path) or dirExists(path)
+
 proc normalizeTargetName(name: string): string =
   ## Normalizes a manifest name into a command-line target name.
   for c in name:
@@ -301,9 +309,10 @@ proc scanDockerFiles(
     else:
       discard
 
-proc discoverTargets(root: string): seq[DockerTarget] =
+proc discoverTargets(root: string, bitworldContext = ""): seq[DockerTarget] =
   ## Discovers all Docker build targets in the repository.
-  scanDockerFiles(root, root, root, "", result)
+  let scanRoot = absolutePath(root)
+  scanDockerFiles(scanRoot, scanRoot, scanRoot, bitworldContext, result)
   result.sort(proc(a, b: DockerTarget): int =
     cmp(a.name, b.name)
   )
@@ -328,15 +337,32 @@ proc dockerTargetFromPath(
   path: string
 ): tuple[found: bool, target: DockerTarget, message: string] =
   ## Reads one Docker target from an explicit path argument.
-  if not path.hasPathSeparator() and not fileExists(root / path) and
-      not dirExists(root / path):
+  let
+    currentPath =
+      if path.isAbsolute():
+        path
+      else:
+        absolutePath(path)
+    rootPath =
+      if path.isAbsolute():
+        path
+      else:
+        absolutePath(root / path)
+  if path notin [".", ".."] and
+      not path.hasPathSeparator() and
+      not currentPath.pathExists() and
+      not rootPath.pathExists():
     return
 
   let rawPath =
     if path.isAbsolute():
       path
+    elif path in [".", ".."] or
+        path.hasPathSeparator() or
+        currentPath.pathExists():
+      currentPath
     else:
-      absolutePath(root / path)
+      rootPath
   let dockerFile =
     if dirExists(rawPath):
       rawPath / "Dockerfile"
@@ -593,7 +619,9 @@ proc targetNames(targets: openArray[DockerTarget]): string =
 
 proc main() =
   ## Parses command line options and builds requested Docker targets.
-  let root = repoRoot()
+  let
+    root = repoRoot()
+    currentRoot = absolutePath(getCurrentDir())
   var
     push = false
     platforms = DefaultPlatforms
@@ -602,7 +630,13 @@ proc main() =
     includeBots = false
     names: seq[string]
 
-  let targets = discoverTargets(root)
+    targets = discoverTargets(root)
+  if not currentRoot.samePath(root):
+    for target in discoverTargets(currentRoot, root):
+      targets.addUniqueTarget(target)
+    targets.sort(proc(a, b: DockerTarget): int =
+      cmp(a.name, b.name)
+    )
 
   for kind, key, val in getopt():
     case kind
