@@ -9,9 +9,32 @@ type
     address: string
     port: int
     seed: int
+    maxTicks: int
+    maxGames: int
+    tokens: seq[string]
     saveReplayPath: string
     loadReplayPath: string
     saveScoresPath: string
+
+proc readConfigStrings(node: JsonNode, name: string, values: var seq[string]) =
+  ## Reads one optional string-array config field.
+  if not node.hasKey(name):
+    return
+  let items = node[name]
+  if items.kind != JArray:
+    raise newException(
+      PartyProgressorError,
+      "Config field " & name & " must be an array."
+    )
+  values.setLen(0)
+  for i in 0 ..< items.len:
+    let item = items[i]
+    if item.kind != JString:
+      raise newException(
+        PartyProgressorError,
+        "Config field " & name & "[" & $i & "] must be a string."
+      )
+    values.add(item.getStr())
 
 proc readConfigString(node: JsonNode, name: string, value: var string) =
   ## Reads one optional string config field.
@@ -57,6 +80,10 @@ proc isKnownConfigField(name: string): bool =
   of "address",
       "port",
       "seed",
+      "maxTicks",
+      "max-ticks",
+      "maxGames",
+      "max-games",
       "tokens",
       "saveReplay",
       "loadReplay",
@@ -113,6 +140,11 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigString("load-replay-path", config.loadReplayPath)
   node.readConfigString("save-scores-path", config.saveScoresPath)
   node.readConfigInt("seed", config.seed)
+  node.readConfigInt("maxTicks", config.maxTicks)
+  node.readConfigInt("max-ticks", config.maxTicks)
+  node.readConfigInt("maxGames", config.maxGames)
+  node.readConfigInt("max-games", config.maxGames)
+  node.readConfigStrings("tokens", config.tokens)
 
 proc requireOptionValue(name, value: string) =
   ## Raises when a CLI option is missing its value.
@@ -133,6 +165,19 @@ proc parseOptionInt(name, value: string): int =
       "Option --" & name & " must be an integer."
     )
 
+proc validate(config: RunConfig) =
+  ## Raises when a run config value is outside the supported range.
+  if config.maxTicks < 0:
+    raise newException(
+      PartyProgressorError,
+      "Config field maxTicks must be non-negative."
+    )
+  if config.maxGames < 0:
+    raise newException(
+      PartyProgressorError,
+      "Config field maxGames must be non-negative."
+    )
+
 proc echoStartupPaths(config: RunConfig) =
   ## Prints configured replay and score output paths.
   if config.loadReplayPath.len > 0:
@@ -145,6 +190,18 @@ proc echoStartupPaths(config: RunConfig) =
     echo "Writing scores file: " & config.saveScoresPath
   else:
     echo "Not writing scores file."
+  if config.tokens.len > 0:
+    echo "Using " & $config.tokens.len & " player connection tokens."
+  else:
+    echo "No player connection tokens configured."
+  if config.maxTicks > 0:
+    echo "Max ticks: " & $config.maxTicks
+  else:
+    echo "Max ticks: infinite"
+  if config.maxGames > 0:
+    echo "Max games: " & $config.maxGames
+  else:
+    echo "Max games: infinite"
 
 when isMainModule:
   var
@@ -152,6 +209,9 @@ when isMainModule:
       address: DefaultHost,
       port: DefaultPort,
       seed: 0xB1770,
+      maxTicks: DefaultMaxTicks,
+      maxGames: DefaultMaxGames,
+      tokens: @[],
       saveReplayPath: defaultReplayPath(),
       loadReplayPath: defaultLoadReplayPath(),
       saveScoresPath: defaultScoresPath()
@@ -169,6 +229,10 @@ when isMainModule:
         config.port = key.parseOptionInt(val)
       of "seed":
         config.seed = key.parseOptionInt(val)
+      of "max-ticks", "maxTicks":
+        config.maxTicks = key.parseOptionInt(val)
+      of "max-games", "maxGames":
+        config.maxGames = key.parseOptionInt(val)
       of "save-replay", "save-replay-path", "saveReplayPath":
         key.requireOptionValue(val)
         config.saveReplayPath = val
@@ -196,6 +260,7 @@ when isMainModule:
     config.update(readFile(configPath))
   if configJson.len > 0:
     config.update(configJson)
+  config.validate()
   config.echoStartupPaths()
   runServerLoop(
     config.address,
@@ -203,5 +268,8 @@ when isMainModule:
     config.seed,
     config.saveReplayPath,
     config.loadReplayPath,
-    config.saveScoresPath
+    config.saveScoresPath,
+    config.tokens,
+    config.maxTicks,
+    config.maxGames
   )
