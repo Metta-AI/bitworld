@@ -2568,7 +2568,7 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   sim.mobs.setLen(0)
   sim.pickups.setLen(0)
   sim.landmarks.setLen(0)
-  sim.fillGround(GroundGrass)
+  sim.fillGround(GroundMud, BiomeSwamp)
   sim.food = 0
 
   let playerIndex = sim.addPlayer("player1")
@@ -2583,6 +2583,12 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
     hp: 1,
     done: false
   ))
+  let trailIndex = tileIndex(
+    sim.landmarks[0].tx + RescueTrailForwardTiles,
+    sim.landmarks[0].ty
+  )
+  sim.tiles[trailIndex] = true
+  sim.elevations[trailIndex] = 4
 
   sim.step([InputState()])
 
@@ -2590,6 +2596,8 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
     "rescue events should require a short hold instead of instant pickup"
   doAssert sim.landmarks[0].progress == 1
   doAssert sim.sideObjectivesCompleted == 0
+  doAssert sim.tiles[trailIndex]
+  doAssert sim.elevations[trailIndex] == 4
 
   for _ in 1 ..< RescueEventTicks:
     sim.step([InputState()])
@@ -2600,6 +2608,12 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   doAssert sim.players[playerIndex].lives ==
     sim.players[playerIndex].maxHp - 1
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
+  doAssert sim.groundKinds[trailIndex] == GroundBridge,
+    "rescued travelers should reveal a local route through rough biome ground"
+  doAssert not sim.tiles[trailIndex],
+    "rescue trails should clear local blockers"
+  doAssert sim.elevations[trailIndex] <= 1,
+    "rescue trails should soften nearby steep terrain"
   var rescueNextState: PlayerViewerState
   let labels = sim.buildSpriteProtocolPlayerUpdates(
     playerIndex,

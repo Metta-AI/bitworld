@@ -173,6 +173,11 @@ relic progress, camp progress, boss defeat, and a short visible party ritual
 before completion. The ritual should complete fastest when tank, DPS, and
 healer all hold the gate together.
 
+Rescue objectives should feel like finding people who know the land, not only
+like picking up food. Completing a rescue should still heal and resupply the
+party, but it should also reveal a short local trail through rough terrain so
+detouring to help a stranded traveler can change the next push route.
+
 Food is currently mostly a score/resource signal. The next mechanical pass
 should make it matter without turning the game into inventory management:
 
@@ -312,6 +317,10 @@ The first full-game implementation pass includes:
 - Optional rescue side objectives seeded through biome bands: stranded travelers
   require a short nearby hold, heal the party slightly, and add emergency food,
   with healers completing rescues faster.
+- Completed rescue side objectives now also reveal a short local trail or
+  bridge through nearby rough ground, clear blockers, and soften steep terrain,
+  making rescues an expedition-routing payoff instead of only a food/heal
+  reward.
 - Optional monster lair side objectives seeded through biome bands: parties can
   spend attack time to destroy local dens for supplies, side-objective score,
   and a short pacification of nearby threats.

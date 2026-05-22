@@ -122,6 +122,9 @@ const
   HealerDownedRescueStep* = 2
   RescueEventTicks* = TargetFps * 2
   HealerRescueEventStep* = 2
+  RescueTrailBackTiles* = 1
+  RescueTrailForwardTiles* = 4
+  RescueTrailHalfHeightTiles* = 1
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
@@ -4565,6 +4568,25 @@ proc revealWaystationRoute(sim: var SimServer, landmark: Landmark) =
       sim.tiles[index] = false
   inc sim.scoreRevision
 
+proc revealRescueTrail(sim: var SimServer, landmark: Landmark) =
+  ## Lets a rescued traveler guide the party through the next local obstacle.
+  for ty in landmark.ty - RescueTrailHalfHeightTiles ..
+      landmark.ty + RescueTrailHalfHeightTiles:
+    for tx in landmark.tx - RescueTrailBackTiles ..
+        landmark.tx + RescueTrailForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
 proc healLivePlayers(sim: var SimServer, amount: int) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
@@ -4598,10 +4620,11 @@ proc activateShrine(sim: var SimServer) =
     sim.players[playerIndex].poisonTicks = 0
   inc sim.scoreRevision
 
-proc activateRescueEvent(sim: var SimServer) =
-  ## Completes one stranded-traveler rescue detour for sustain and score.
+proc activateRescueEvent(sim: var SimServer, landmark: Landmark) =
+  ## Completes one stranded-traveler rescue detour for sustain, score, and route help.
   inc sim.sideObjectivesCompleted
   sim.food += RescueFoodBonus
+  sim.revealRescueTrail(landmark)
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
@@ -5065,7 +5088,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       if sim.landmarks[landmarkIndex].progress < RescueEventTicks:
         continue
       sim.landmarks[landmarkIndex].done = true
-      sim.activateRescueEvent()
+      sim.activateRescueEvent(sim.landmarks[landmarkIndex])
     of LandmarkWaystation:
       sim.landmarks[landmarkIndex].progress += max(1, activationStep)
       inc sim.scoreRevision
