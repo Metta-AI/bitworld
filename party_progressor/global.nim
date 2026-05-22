@@ -31,7 +31,6 @@ const
   MobLeftSpriteId = 313
   TrollLeftSpriteId = 314
   BossLeftSpriteId = 315
-  MobVariantSpriteBase = 760
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
@@ -1173,6 +1172,10 @@ proc landmarkSpriteId(kind: LandmarkKind): int =
   ## Returns the sprite id for one landmark kind.
   LandmarkSpriteBase + ord(kind)
 
+proc mobSpeciesSpriteId(species: MobSpecies, flipLeft: bool): int =
+  ## Returns the generated sprite id for one biome monster species.
+  MobSpeciesSpriteBase + (ord(species) - 1) * 2 + (if flipLeft: 1 else: 0)
+
 proc pickupSpriteId(kind: PickupKind): int =
   ## Returns the protocol sprite id for one pickup kind.
   case kind
@@ -1197,6 +1200,8 @@ proc landmarkObjectId(index: int): int =
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
   let flipLeft = mob.attackPhase != MobIdle and mob.attackFacing == FaceLeft
+  if mob.species != SpeciesNone:
+    return mob.species.mobSpeciesSpriteId(flipLeft)
   case mob.kind
   of SnakeMob, WolfMob:
     if flipLeft: MobLeftSpriteId else: MobSpriteId
@@ -1204,16 +1209,12 @@ proc mobSpriteId(mob: Mob): int =
     if flipLeft: TrollLeftSpriteId else: TrollSpriteId
   of BossMob, BearMob:
     if flipLeft: BossLeftSpriteId else: BossSpriteId
-  of ScorpionMob:
-    MobVariantSpriteBase + (if flipLeft: 1 else: 0)
-  of SlimeMob:
-    MobVariantSpriteBase + 2 + (if flipLeft: 1 else: 0)
+  of ScorpionMob, BatMob:
+    if flipLeft: MobLeftSpriteId else: MobSpriteId
+  of SlimeMob, WraithMob:
+    if flipLeft: TrollLeftSpriteId else: TrollSpriteId
   of YetiMob:
-    MobVariantSpriteBase + 4 + (if flipLeft: 1 else: 0)
-  of BatMob:
-    MobVariantSpriteBase + 6 + (if flipLeft: 1 else: 0)
-  of WraithMob:
-    MobVariantSpriteBase + 8 + (if flipLeft: 1 else: 0)
+    if flipLeft: BossLeftSpriteId else: BossSpriteId
 
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
   ## Returns the player index for a selected player id.
@@ -1401,62 +1402,44 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     bossLeft.pixels,
     "bear boss left"
   )
-  let variants = [
-    (
-      kind: ScorpionMob,
-      label: "scorpion",
-      base: mob,
-      left: mobLeft,
-      tint: (r: 225'u8, g: 176'u8, b: 66'u8, a: 255'u8)
-    ),
-    (
-      kind: SlimeMob,
-      label: "swamp slime",
-      base: troll,
-      left: trollLeft,
-      tint: (r: 78'u8, g: 196'u8, b: 126'u8, a: 255'u8)
-    ),
-    (
-      kind: YetiMob,
-      label: "yeti",
-      base: boss,
-      left: bossLeft,
-      tint: (r: 212'u8, g: 236'u8, b: 248'u8, a: 255'u8)
-    ),
-    (
-      kind: BatMob,
-      label: "cave bat",
-      base: mob,
-      left: mobLeft,
-      tint: (r: 112'u8, g: 90'u8, b: 158'u8, a: 255'u8)
-    ),
-    (
-      kind: WraithMob,
-      label: "ruin wraith",
-      base: troll,
-      left: trollLeft,
-      tint: (r: 122'u8, g: 126'u8, b: 144'u8, a: 255'u8)
-    )
-  ]
-  for variant in variants:
+  for species in AllMobSpecies:
     let
-      rightPixels = variant.base.pixels.tintSpritePixels(variant.tint)
-      leftPixels = variant.left.pixels.tintSpritePixels(variant.tint)
-      rightId = MobVariantSpriteBase + (ord(variant.kind) - ord(ScorpionMob)) * 2
-      leftId = rightId + 1
+      kind = species.speciesKind()
+      label = species.speciesLabel()
+      tint = species.speciesTint()
+      base =
+        case kind
+        of SnakeMob, WolfMob, ScorpionMob, BatMob:
+          mob
+        of TrollMob, GoblinMob, SlimeMob, WraithMob:
+          troll
+        of BossMob, BearMob, YetiMob:
+          boss
+      left =
+        case kind
+        of SnakeMob, WolfMob, ScorpionMob, BatMob:
+          mobLeft
+        of TrollMob, GoblinMob, SlimeMob, WraithMob:
+          trollLeft
+        of BossMob, BearMob, YetiMob:
+          bossLeft
+      rightId = species.mobSpeciesSpriteId(false)
+      leftId = species.mobSpeciesSpriteId(true)
+      rightPixels = base.pixels.tintSpritePixels(tint)
+      leftPixels = left.pixels.tintSpritePixels(tint)
     packet.addSprite(
       rightId,
-      variant.base.width,
-      variant.base.height,
+      base.width,
+      base.height,
       rightPixels,
-      variant.label
+      label
     )
     packet.addSprite(
       leftId,
-      variant.left.width,
-      variant.left.height,
+      left.width,
+      left.height,
       leftPixels,
-      variant.label & " left"
+      label & " left"
     )
   packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
   packet.addSprite(

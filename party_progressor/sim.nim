@@ -58,6 +58,8 @@ const
   YetiHp* = 12
   BatHp* = 3
   WraithHp* = 8
+  MobSpeciesSpriteBase* = 760
+  MobSpeciesSpriteSlots* = 64
   TrollCoinValue* = 10
   BossCoinValue* = 100
   ObjectiveScoreValue* = 25
@@ -264,6 +266,41 @@ type
     BatMob
     WraithMob
 
+  MobSpecies* = enum
+    SpeciesNone
+    SpeciesGrassSnake
+    SpeciesForestWolf
+    SpeciesDireWolf
+    SpeciesThornBoar
+    SpeciesBrownBear
+    SpeciesPlainsWolf
+    SpeciesPrairieGoblin
+    SpeciesPlainsBear
+    SpeciesHornedBuck
+    SpeciesMudSlime
+    SpeciesReedSlime
+    SpeciesBogGoblin
+    SpeciesMarshWraith
+    SpeciesDuneScorpion
+    SpeciesGlassScorpion
+    SpeciesSandViper
+    SpeciesDustHyena
+    SpeciesTombScarab
+    SpeciesSnowWolf
+    SpeciesFrostYeti
+    SpeciesIceTroll
+    SpeciesWhiteBear
+    SpeciesSnowBat
+    SpeciesCaveBat
+    SpeciesCrystalBat
+    SpeciesCaveSlime
+    SpeciesStoneGoblin
+    SpeciesDeepMaw
+    SpeciesRuinWraith
+    SpeciesAshWraith
+    SpeciesBoneGoblin
+    SpeciesGateTitan
+
   MobAttackPhase* = enum
     MobIdle
     MobTelegraph
@@ -316,6 +353,7 @@ type
 
   Mob* = object
     kind*: MobKind
+    species*: MobSpecies
     x*, y*: int
     sprite*: Sprite
     bounds*: SpriteBounds
@@ -395,6 +433,42 @@ type
     relicShards*: int
     bossDefeated*: bool
 
+const
+  AllMobSpecies*: array[32, MobSpecies] = [
+    SpeciesGrassSnake,
+    SpeciesForestWolf,
+    SpeciesDireWolf,
+    SpeciesThornBoar,
+    SpeciesBrownBear,
+    SpeciesPlainsWolf,
+    SpeciesPrairieGoblin,
+    SpeciesPlainsBear,
+    SpeciesHornedBuck,
+    SpeciesMudSlime,
+    SpeciesReedSlime,
+    SpeciesBogGoblin,
+    SpeciesMarshWraith,
+    SpeciesDuneScorpion,
+    SpeciesGlassScorpion,
+    SpeciesSandViper,
+    SpeciesDustHyena,
+    SpeciesTombScarab,
+    SpeciesSnowWolf,
+    SpeciesFrostYeti,
+    SpeciesIceTroll,
+    SpeciesWhiteBear,
+    SpeciesSnowBat,
+    SpeciesCaveBat,
+    SpeciesCrystalBat,
+    SpeciesCaveSlime,
+    SpeciesStoneGoblin,
+    SpeciesDeepMaw,
+    SpeciesRuinWraith,
+    SpeciesAshWraith,
+    SpeciesBoneGoblin,
+    SpeciesGateTitan
+  ]
+
 proc roleLabel*(role: PlayerRole): string =
   case role
   of RoleUnarmed:
@@ -424,6 +498,155 @@ proc weatherLabel*(weather: WeatherKind): string =
   of WeatherDust: "dust"
   of WeatherSnow: "snow"
   of WeatherFog: "fog"
+
+proc speciesLabel*(species: MobSpecies): string =
+  case species
+  of SpeciesNone: "monster"
+  of SpeciesGrassSnake: "grass snake"
+  of SpeciesForestWolf: "forest wolf"
+  of SpeciesDireWolf: "dire wolf"
+  of SpeciesThornBoar: "thorn boar"
+  of SpeciesBrownBear: "brown bear"
+  of SpeciesPlainsWolf: "plains wolf"
+  of SpeciesPrairieGoblin: "prairie goblin"
+  of SpeciesPlainsBear: "plains bear"
+  of SpeciesHornedBuck: "horned buck"
+  of SpeciesMudSlime: "mud slime"
+  of SpeciesReedSlime: "reed slime"
+  of SpeciesBogGoblin: "bog goblin"
+  of SpeciesMarshWraith: "marsh wraith"
+  of SpeciesDuneScorpion: "dune scorpion"
+  of SpeciesGlassScorpion: "glass scorpion"
+  of SpeciesSandViper: "sand viper"
+  of SpeciesDustHyena: "dust hyena"
+  of SpeciesTombScarab: "tomb scarab"
+  of SpeciesSnowWolf: "snow wolf"
+  of SpeciesFrostYeti: "frost yeti"
+  of SpeciesIceTroll: "ice troll"
+  of SpeciesWhiteBear: "white bear"
+  of SpeciesSnowBat: "snow bat"
+  of SpeciesCaveBat: "cave bat"
+  of SpeciesCrystalBat: "crystal bat"
+  of SpeciesCaveSlime: "cave slime"
+  of SpeciesStoneGoblin: "stone goblin"
+  of SpeciesDeepMaw: "deep maw"
+  of SpeciesRuinWraith: "ruin wraith"
+  of SpeciesAshWraith: "ash wraith"
+  of SpeciesBoneGoblin: "bone goblin"
+  of SpeciesGateTitan: "gate titan"
+
+proc speciesKind*(species: MobSpecies): MobKind =
+  case species
+  of SpeciesNone:
+    SnakeMob
+  of SpeciesGrassSnake, SpeciesSandViper:
+    SnakeMob
+  of SpeciesForestWolf, SpeciesDireWolf, SpeciesPlainsWolf,
+      SpeciesDustHyena, SpeciesSnowWolf:
+    WolfMob
+  of SpeciesThornBoar, SpeciesBrownBear, SpeciesPlainsBear,
+      SpeciesHornedBuck, SpeciesWhiteBear, SpeciesDeepMaw:
+    BearMob
+  of SpeciesPrairieGoblin, SpeciesBogGoblin, SpeciesStoneGoblin,
+      SpeciesBoneGoblin:
+    GoblinMob
+  of SpeciesMudSlime, SpeciesReedSlime, SpeciesCaveSlime:
+    SlimeMob
+  of SpeciesMarshWraith, SpeciesRuinWraith, SpeciesAshWraith:
+    WraithMob
+  of SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesTombScarab:
+    ScorpionMob
+  of SpeciesFrostYeti:
+    YetiMob
+  of SpeciesIceTroll:
+    TrollMob
+  of SpeciesSnowBat, SpeciesCaveBat, SpeciesCrystalBat:
+    BatMob
+  of SpeciesGateTitan:
+    BossMob
+
+proc defaultSpeciesForKind*(kind: MobKind): MobSpecies =
+  case kind
+  of SnakeMob: SpeciesGrassSnake
+  of TrollMob: SpeciesIceTroll
+  of BossMob: SpeciesGateTitan
+  of WolfMob: SpeciesForestWolf
+  of BearMob: SpeciesBrownBear
+  of GoblinMob: SpeciesPrairieGoblin
+  of ScorpionMob: SpeciesDuneScorpion
+  of SlimeMob: SpeciesMudSlime
+  of YetiMob: SpeciesFrostYeti
+  of BatMob: SpeciesCaveBat
+  of WraithMob: SpeciesRuinWraith
+
+proc speciesTint*(species: MobSpecies): tuple[r, g, b, a: uint8] =
+  case species
+  of SpeciesGrassSnake: (r: 84'u8, g: 172'u8, b: 82'u8, a: 255'u8)
+  of SpeciesForestWolf: (r: 92'u8, g: 126'u8, b: 96'u8, a: 255'u8)
+  of SpeciesDireWolf: (r: 88'u8, g: 92'u8, b: 104'u8, a: 255'u8)
+  of SpeciesThornBoar: (r: 127'u8, g: 103'u8, b: 68'u8, a: 255'u8)
+  of SpeciesBrownBear: (r: 134'u8, g: 91'u8, b: 58'u8, a: 255'u8)
+  of SpeciesPlainsWolf: (r: 169'u8, g: 148'u8, b: 88'u8, a: 255'u8)
+  of SpeciesPrairieGoblin: (r: 174'u8, g: 191'u8, b: 78'u8, a: 255'u8)
+  of SpeciesPlainsBear: (r: 170'u8, g: 135'u8, b: 78'u8, a: 255'u8)
+  of SpeciesHornedBuck: (r: 192'u8, g: 151'u8, b: 96'u8, a: 255'u8)
+  of SpeciesMudSlime: (r: 82'u8, g: 145'u8, b: 96'u8, a: 255'u8)
+  of SpeciesReedSlime: (r: 70'u8, g: 177'u8, b: 126'u8, a: 255'u8)
+  of SpeciesBogGoblin: (r: 97'u8, g: 151'u8, b: 84'u8, a: 255'u8)
+  of SpeciesMarshWraith: (r: 94'u8, g: 132'u8, b: 126'u8, a: 255'u8)
+  of SpeciesDuneScorpion: (r: 225'u8, g: 176'u8, b: 66'u8, a: 255'u8)
+  of SpeciesGlassScorpion: (r: 229'u8, g: 205'u8, b: 116'u8, a: 255'u8)
+  of SpeciesSandViper: (r: 204'u8, g: 161'u8, b: 76'u8, a: 255'u8)
+  of SpeciesDustHyena: (r: 164'u8, g: 132'u8, b: 92'u8, a: 255'u8)
+  of SpeciesTombScarab: (r: 141'u8, g: 103'u8, b: 58'u8, a: 255'u8)
+  of SpeciesSnowWolf: (r: 194'u8, g: 222'u8, b: 234'u8, a: 255'u8)
+  of SpeciesFrostYeti: (r: 212'u8, g: 236'u8, b: 248'u8, a: 255'u8)
+  of SpeciesIceTroll: (r: 142'u8, g: 201'u8, b: 219'u8, a: 255'u8)
+  of SpeciesWhiteBear: (r: 235'u8, g: 236'u8, b: 228'u8, a: 255'u8)
+  of SpeciesSnowBat: (r: 164'u8, g: 188'u8, b: 224'u8, a: 255'u8)
+  of SpeciesCaveBat: (r: 112'u8, g: 90'u8, b: 158'u8, a: 255'u8)
+  of SpeciesCrystalBat: (r: 120'u8, g: 182'u8, b: 217'u8, a: 255'u8)
+  of SpeciesCaveSlime: (r: 96'u8, g: 174'u8, b: 154'u8, a: 255'u8)
+  of SpeciesStoneGoblin: (r: 128'u8, g: 132'u8, b: 136'u8, a: 255'u8)
+  of SpeciesDeepMaw: (r: 93'u8, g: 78'u8, b: 118'u8, a: 255'u8)
+  of SpeciesRuinWraith: (r: 122'u8, g: 126'u8, b: 144'u8, a: 255'u8)
+  of SpeciesAshWraith: (r: 92'u8, g: 96'u8, b: 104'u8, a: 255'u8)
+  of SpeciesBoneGoblin: (r: 205'u8, g: 198'u8, b: 168'u8, a: 255'u8)
+  of SpeciesGateTitan: (r: 188'u8, g: 80'u8, b: 112'u8, a: 255'u8)
+  of SpeciesNone: (r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8)
+
+proc monsterSpeciesForBiome*(biome: BiomeKind): seq[MobSpecies] =
+  case biome
+  of BiomeForest:
+    @[SpeciesGrassSnake, SpeciesForestWolf, SpeciesDireWolf,
+      SpeciesThornBoar, SpeciesBrownBear]
+  of BiomePlains:
+    @[SpeciesPlainsWolf, SpeciesPrairieGoblin, SpeciesPlainsBear,
+      SpeciesHornedBuck]
+  of BiomeSwamp:
+    @[SpeciesMudSlime, SpeciesReedSlime, SpeciesBogGoblin,
+      SpeciesMarshWraith]
+  of BiomeDesert:
+    @[SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesSandViper,
+      SpeciesDustHyena, SpeciesTombScarab]
+  of BiomeSnow:
+    @[SpeciesSnowWolf, SpeciesFrostYeti, SpeciesIceTroll,
+      SpeciesWhiteBear, SpeciesSnowBat]
+  of BiomeCave:
+    @[SpeciesCaveBat, SpeciesCrystalBat, SpeciesCaveSlime,
+      SpeciesStoneGoblin, SpeciesDeepMaw]
+  of BiomeRuins:
+    @[SpeciesRuinWraith, SpeciesAshWraith, SpeciesBoneGoblin,
+      SpeciesGateTitan]
+  else:
+    @[SpeciesGrassSnake]
+
+proc randomMonsterSpeciesForBiome(
+  rng: var Rand,
+  biome: BiomeKind
+): MobSpecies =
+  let species = biome.monsterSpeciesForBiome()
+  species[rng.rand(species.high)]
 
 proc landmarkLabel*(kind: LandmarkKind): string =
   case kind
@@ -1702,6 +1925,7 @@ proc spawnOneMob*(
   discard sprite
   discard hp
   let bounds = sim.mobBoundsFor(kind)
+  let species = kind.defaultSpeciesForKind()
   for _ in 0 ..< 128:
     let
       tx = SafeZoneRightTiles + sim.rng.rand(WorldWidthTiles - SafeZoneRightTiles - 1)
@@ -1712,6 +1936,7 @@ proc spawnOneMob*(
     if sim.canSpawnMobAt(px, py, bounds):
       sim.mobs.add Mob(
         kind: kind,
+        species: species,
         x: px,
         y: py,
         sprite: sim.mobSpriteFor(kind),
@@ -1726,11 +1951,14 @@ proc spawnOneMob*(
 
 proc spawnOneMobInRange*(
   sim: var SimServer,
-  kind: MobKind,
+  species: MobSpecies,
   firstTx,
   lastTx: int
 ): bool =
   ## Spawns one mob inside a biome range while preserving the main lane.
+  if species == SpeciesNone:
+    return false
+  let kind = species.speciesKind()
   let
     bounds = sim.mobBoundsFor(kind)
     lo = clamp(firstTx, SafeZoneRightTiles, WorldWidthTiles - 1)
@@ -1750,6 +1978,7 @@ proc spawnOneMobInRange*(
     if sim.canSpawnMobAt(px, py, bounds):
       sim.mobs.add Mob(
         kind: kind,
+        species: species,
         x: px,
         y: py,
         sprite: sim.mobSpriteFor(kind),
@@ -1761,6 +1990,14 @@ proc spawnOneMobInRange*(
       )
       return true
   false
+
+proc spawnOneMobInRange*(
+  sim: var SimServer,
+  kind: MobKind,
+  firstTx,
+  lastTx: int
+): bool =
+  sim.spawnOneMobInRange(kind.defaultSpeciesForKind(), firstTx, lastTx)
 
 proc spawnMobs*(
   sim: var SimServer,
@@ -1797,47 +2034,25 @@ proc seedBiomeMobs*(sim: var SimServer) =
     BiomeRuins
   ]:
     let range = biome.biomeTileRange()
-    case biome
-    of BiomeForest:
-      for _ in 0 ..< 7:
-        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
-    of BiomePlains:
-      for _ in 0 ..< 5:
-        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
-      for _ in 0 ..< 2:
-        discard sim.spawnOneMobInRange(BearMob, range.firstTx, range.lastTx)
-    of BiomeSwamp:
-      for _ in 0 ..< 5:
-        discard sim.spawnOneMobInRange(SlimeMob, range.firstTx, range.lastTx)
-      for _ in 0 ..< 3:
-        discard sim.spawnOneMobInRange(GoblinMob, range.firstTx, range.lastTx)
-    of BiomeDesert:
-      for _ in 0 ..< 5:
-        discard sim.spawnOneMobInRange(ScorpionMob, range.firstTx, range.lastTx)
-      for _ in 0 ..< 3:
-        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
-    of BiomeSnow:
-      for _ in 0 ..< 5:
-        discard sim.spawnOneMobInRange(YetiMob, range.firstTx, range.lastTx)
-      for _ in 0 ..< 3:
-        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
-    of BiomeCave:
-      for _ in 0 ..< 6:
-        discard sim.spawnOneMobInRange(BatMob, range.firstTx, range.lastTx)
-      for _ in 0 ..< 3:
-        discard sim.spawnOneMobInRange(SlimeMob, range.firstTx, range.lastTx)
-    of BiomeRuins:
-      for _ in 0 ..< 8:
-        discard sim.spawnOneMobInRange(WraithMob, range.firstTx, range.lastTx)
-      for _ in 0 ..< 2:
-        discard sim.spawnOneMobInRange(GoblinMob, range.firstTx, range.lastTx)
-    else:
-      discard
-  discard sim.spawnOneMobInRange(
-    BossMob,
-    WorldWidthTiles - ZoneWidthTiles,
-    WorldWidthTiles - 2
-  )
+    let species = biome.monsterSpeciesForBiome()
+    for item in species:
+      discard sim.spawnOneMobInRange(item, range.firstTx, range.lastTx)
+    let extras =
+      case biome
+      of BiomeForest: 3
+      of BiomePlains: 3
+      of BiomeSwamp: 4
+      of BiomeDesert: 4
+      of BiomeSnow: 4
+      of BiomeCave: 5
+      of BiomeRuins: 5
+      else: 0
+    for _ in 0 ..< extras:
+      discard sim.spawnOneMobInRange(
+        sim.rng.randomMonsterSpeciesForBiome(biome),
+        range.firstTx,
+        range.lastTx
+      )
 
 proc mobAttackRange*(mob: Mob): int =
   ## Returns the distance where one mob can start an attack.
@@ -2354,6 +2569,7 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.mobs.len)
   for mob in sim.mobs:
     result.mixHashInt(ord(mob.kind))
+    result.mixHashInt(ord(mob.species))
     result.mixHashInt(mob.x)
     result.mixHashInt(mob.y)
     result.mixHashInt(mob.wanderCooldown)
@@ -3482,39 +3698,12 @@ proc respawnMobs(sim: var SimServer) =
     return
 
   let biome = sim.currentBiome()
-  case biome
-  of BiomeForest, BiomePlains:
-    if sim.rng.rand(99) < 18:
-      discard sim.spawnOneMob(BearMob, sim.bossSprite, BearHp)
-    else:
-      discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
-  of BiomeSwamp:
-    if sim.rng.rand(99) < 30:
-      discard sim.spawnOneMob(SlimeMob, sim.trollSprite, SlimeHp)
-    else:
-      discard sim.spawnOneMob(GoblinMob, sim.trollSprite, GoblinHp)
-  of BiomeDesert:
-    if sim.rng.rand(99) < 55:
-      discard sim.spawnOneMob(ScorpionMob, sim.mobSprite, ScorpionHp)
-    else:
-      discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
-  of BiomeSnow:
-    if sim.rng.rand(99) < 60:
-      discard sim.spawnOneMob(YetiMob, sim.bossSprite, YetiHp)
-    else:
-      discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
-  of BiomeCave:
-    if sim.rng.rand(99) < 55:
-      discard sim.spawnOneMob(BatMob, sim.mobSprite, BatHp)
-    else:
-      discard sim.spawnOneMob(SlimeMob, sim.trollSprite, SlimeHp)
-  of BiomeRuins:
-    if sim.rng.rand(99) < 70:
-      discard sim.spawnOneMob(WraithMob, sim.trollSprite, WraithHp)
-    else:
-      discard sim.spawnOneMob(GoblinMob, sim.trollSprite, GoblinHp)
-  else:
-    discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
+  let range = biome.biomeTileRange()
+  discard sim.spawnOneMobInRange(
+    sim.rng.randomMonsterSpeciesForBiome(biome),
+    range.firstTx,
+    range.lastTx
+  )
   sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
 
 proc fillTileBackground(

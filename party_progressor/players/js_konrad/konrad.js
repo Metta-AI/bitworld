@@ -28,6 +28,7 @@ const TrollSpriteId = 312;
 const TerrainSpriteBase = 320;
 const LandmarkSpriteBase = 360;
 const PlayerHudSpriteId = 600;
+const MobSpeciesSpriteBase = 760;
 const PlayerObjectBase = 1000;
 const MobObjectBase = 2000;
 
@@ -43,6 +44,7 @@ const SelectedPlayerSpriteSlots = 64;
 const SwooshSpriteSlots = 8;
 const TerrainSpriteSlots = 16;
 const LandmarkSpriteSlots = 7;
+const MobSpeciesSpriteSlots = 64;
 const MaxDrainMessages = 256;
 const PathCellSize = 8;
 const PathGridWidth = Math.floor(WorldWidthPixels / PathCellSize);
@@ -819,6 +821,9 @@ function classifySprite(spriteId, label) {
     spriteId < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots
   ) {
     return SpriteKind.Player;
+  }
+  if (spriteId >= MobSpeciesSpriteBase && spriteId < MobSpeciesSpriteBase + MobSpeciesSpriteSlots) {
+    return SpriteKind.Mob;
   }
   if (
     spriteId === MobSpriteId ||

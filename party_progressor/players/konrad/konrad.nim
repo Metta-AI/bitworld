@@ -176,6 +176,9 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
   elif spriteId >= SelectedPlayerSpriteBase and
       spriteId < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots:
     SpritePlayer
+  elif spriteId >= MobSpeciesSpriteBase and
+      spriteId < MobSpeciesSpriteBase + MobSpeciesSpriteSlots:
+    SpriteMob
   elif spriteId == MobSpriteId or lower.startsWith("ghost") or
       lower.startsWith("wolf") or lower.startsWith("scorpion") or
       lower.startsWith("cave bat") or

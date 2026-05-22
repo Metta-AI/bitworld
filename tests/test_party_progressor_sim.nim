@@ -445,11 +445,9 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
   doAssert "role tank" in visibleLabels
   doAssert "role dps" in visibleLabels
   doAssert "role heal" in visibleLabels
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "scorpion")
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "swamp slime")
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "yeti")
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "cave bat")
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "ruin wraith")
+  for species in AllMobSpecies:
+    doAssert parsed.sprites.values.toSeq.anyIt(it.label == species.speciesLabel()),
+      "missing generated monster sprite " & species.speciesLabel()
 
   let tankGear = sim.firstPickup(PickupTankGear)
   sim.players[playerIndex].x = tankGear.x
@@ -468,6 +466,30 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
     tankParsed.objects[PlayerObjectBase + sim.players[playerIndex].id]
   doAssert "blue" in tankParsed.sprites[playerObject.spriteId].label,
     "tank role should visibly retint the player sprite"
+
+proc testBiomeMonsterSpeciesBreadth() =
+  var sim = initPartyProgressorForTest()
+  var seen: seq[MobSpecies] = @[]
+  for mob in sim.mobs:
+    if mob.species != SpeciesNone and mob.species notin seen:
+      seen.add(mob.species)
+
+  doAssert seen.len == AllMobSpecies.len,
+    "initial expedition should seed all 32 named monster species"
+  for species in AllMobSpecies:
+    doAssert species in seen,
+      "missing seeded monster species " & species.speciesLabel()
+  for biome in [
+    BiomeForest,
+    BiomePlains,
+    BiomeSwamp,
+    BiomeDesert,
+    BiomeSnow,
+    BiomeCave,
+    BiomeRuins
+  ]:
+    doAssert biome.monsterSpeciesForBiome().len >= 4,
+      biome.biomeLabel() & " should have multiple distinct monster species"
 
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()
@@ -724,6 +746,7 @@ testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolPacketMatchesReferenceParsers()
+testBiomeMonsterSpeciesBreadth()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()

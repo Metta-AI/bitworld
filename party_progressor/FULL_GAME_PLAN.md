@@ -292,6 +292,10 @@ The first full-game implementation pass includes:
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
 - Biome-specific monster families: scorpions, slimes, yetis, bats, and wraiths
   join wolves, goblins, bears, and the boss.
+- A 32-species monster roster generated from the core creature silhouettes:
+  each biome now seeds multiple named local species so forest, swamp, desert,
+  snow, cave, and ruins read like distinct dungeon ecology instead of palette
+  swaps of the same few enemies.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, boss scoring, player viewport size, and biome-backed transparent
@@ -309,6 +313,10 @@ The first full-game implementation pass includes:
 - Tune food and snow-exposure pacing with multi-player runs.
 - Add player-observation screenshots to smoke tests so black-background
   regressions are visually obvious.
+- Give selected monster species small tactical hooks after the roster settles:
+  bats should harass, slimes should slow, wraiths should punish isolation,
+  scorpions should threaten exposed desert routes, and the gate titan should
+  feel like a true party check.
 - Expand bot targeting: gather resources when camps are unaffordable, prefer
   beacons after camps, avoid strong enemies when low on HP, and regroup near
   teammates.

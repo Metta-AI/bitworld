@@ -43,6 +43,7 @@ const (
 	TerrainSpriteBase        = 320
 	LandmarkSpriteBase       = 360
 	PlayerHudSpriteId        = 600
+	MobSpeciesSpriteBase     = 760
 	PlayerObjectBase         = 1000
 	MobObjectBase            = 2000
 
@@ -58,6 +59,7 @@ const (
 	SwooshSpriteSlots         = 8
 	TerrainSpriteSlots        = 16
 	LandmarkSpriteSlots       = 7
+	MobSpeciesSpriteSlots     = 64
 	MaxDrainMessages          = 256
 	PathCellSize              = 8
 	PathGridWidth             = WorldWidthPixels / PathCellSize
@@ -296,6 +298,9 @@ func classifySprite(spriteId int, label string) SpriteKind {
 	if spriteId >= SelectedPlayerSpriteBase &&
 		spriteId < SelectedPlayerSpriteBase+SelectedPlayerSpriteSlots {
 		return SpritePlayer
+	}
+	if spriteId >= MobSpeciesSpriteBase && spriteId < MobSpeciesSpriteBase+MobSpeciesSpriteSlots {
+		return SpriteMob
 	}
 	if spriteId == MobSpriteId || lower == "ghost" || strings.HasPrefix(lower, "wolf") ||
 		lower == "wood" || lower == "food" || lower == "stone" || lower == "gold" {
