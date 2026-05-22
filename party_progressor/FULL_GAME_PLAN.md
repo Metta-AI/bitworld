@@ -312,6 +312,10 @@ The first full-game implementation pass includes:
   explicit role-swap surface.
 - Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
   green, while unarmed players keep their player-slot identity color.
+- Sprite-player role badges now appear above roled players (`TNK`, `DPS`,
+  `HEAL`) using non-gear labels, so humans and bots can distinguish party
+  composition in crowded fights without confusing badges for role-pickup
+  targets.
 - Origin and camp role gear now labels both the role and its `B` power: tank
   guard, DPS cleave, and healer pulse.
 - DPS cleave on the `B` button, plus tank guard and healer pulse.

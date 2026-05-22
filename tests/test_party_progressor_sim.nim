@@ -915,6 +915,27 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
     tankParsed.objects[PlayerObjectBase + sim.players[playerIndex].id]
   doAssert "blue" in tankParsed.sprites[playerObject.spriteId].label,
     "tank role should visibly retint the player sprite"
+  let tankLabels = tankParsed.objectSpriteLabels()
+  doAssert "status role tank" in tankLabels,
+    "tank role should show an explicit non-gear role badge"
+  doAssert not tankLabels.anyIt(it == "role tank"),
+    "player role badges must not masquerade as role-pickup targets"
+
+  sim.players[playerIndex].applyRole(RoleDps)
+  let dpsLabels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    tankState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status role dps" in dpsLabels
+
+  sim.players[playerIndex].applyRole(RoleHealer)
+  let healerLabels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    tankState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status role healer" in healerLabels
 
 proc testExpeditionObjectiveHudGuidesNextStep() =
   var sim = initPartyProgressorForTest()

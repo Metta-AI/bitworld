@@ -123,6 +123,9 @@ var TransportSheet: Sprite
 
 type
   StatusBadgeKind = enum
+    StatusRoleTank
+    StatusRoleDps
+    StatusRoleHealer
     StatusPoison
     StatusSlow
     StatusChill
@@ -1393,6 +1396,9 @@ proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
 
 proc statusBadgeLabel(kind: StatusBadgeKind): string =
   case kind
+  of StatusRoleTank: "TNK"
+  of StatusRoleDps: "DPS"
+  of StatusRoleHealer: "HEAL"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1409,6 +1415,9 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
 
 proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   case kind
+  of StatusRoleTank: 4'u8
+  of StatusRoleDps: 3'u8
+  of StatusRoleHealer: 10'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1425,6 +1434,9 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
 
 proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   case kind
+  of StatusRoleTank: "status role tank"
+  of StatusRoleDps: "status role dps"
+  of StatusRoleHealer: "status role healer"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -1449,6 +1461,17 @@ proc pingStatusBadge(kind: PlayerPingKind): StatusBadgeKind =
   of PingRescue: StatusPingRescue
   of PingLair: StatusPingLair
   of PingNone: StatusPingRegroup
+
+proc roleStatusBadge(role: PlayerRole): tuple[found: bool, badge: StatusBadgeKind] =
+  case role
+  of RoleTank:
+    (true, StatusRoleTank)
+  of RoleDps:
+    (true, StatusRoleDps)
+  of RoleHealer:
+    (true, StatusRoleHealer)
+  of RoleUnarmed:
+    (false, StatusRoleTank)
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -2484,6 +2507,9 @@ proc addWorldObjects(
     if downed:
       badges.add(StatusDown)
     else:
+      let roleBadge = player.role.roleStatusBadge()
+      if roleBadge.found:
+        badges.add(roleBadge.badge)
       if player.poisonTicks > 0:
         badges.add(StatusPoison)
       if player.slowTicks > 0:
