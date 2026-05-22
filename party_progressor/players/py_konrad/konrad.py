@@ -57,7 +57,7 @@ PlayerSpriteSlots = 64
 SelectedPlayerSpriteSlots = 64
 SwooshSpriteSlots = 8
 TerrainSpriteSlots = 16
-LandmarkSpriteSlots = 7
+LandmarkSpriteSlots = 9
 MaxDrainMessages = 256
 PathCellSize = 8
 PathGridWidth = WorldWidthPixels // PathCellSize
@@ -772,7 +772,7 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
     if (
         sprite_id == CoinSpriteId
         or lower == "coin"
-        or lower in {"camp", "beacon", "final gate"}
+        or lower in {"camp", "beacon", "final gate", "shrine", "rescue"}
     ):
         return SpriteKind.Coin
     if sprite_id == HeartSpriteId or lower == "heart":

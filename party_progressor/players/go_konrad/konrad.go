@@ -58,7 +58,7 @@ const (
 	SelectedPlayerSpriteSlots = 64
 	SwooshSpriteSlots         = 8
 	TerrainSpriteSlots        = 16
-	LandmarkSpriteSlots       = 8
+	LandmarkSpriteSlots       = 9
 	MobSpeciesSpriteSlots     = 64
 	MaxDrainMessages          = 256
 	PathCellSize              = 8
@@ -313,7 +313,8 @@ func classifySprite(spriteId int, label string) SpriteKind {
 		return SpriteBoss
 	}
 	if spriteId == CoinSpriteId || lower == "coin" ||
-		lower == "camp" || lower == "beacon" || lower == "final gate" || lower == "shrine" {
+		lower == "camp" || lower == "beacon" || lower == "final gate" || lower == "shrine" ||
+			lower == "rescue" {
 		return SpriteCoin
 	}
 	if spriteId == HeartSpriteId || lower == "heart" {

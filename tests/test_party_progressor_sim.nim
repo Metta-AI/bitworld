@@ -367,6 +367,41 @@ proc testDownedPlayerCanBeRescuedByNearbyAlly() =
   doAssert not sim.hasPickup(PickupCoin, 7),
     "rescue should prevent the bleed-out coin drop"
 
+proc testCampActivationDoesNotHalfReviveDownedPlayers() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.wood = CampWoodCost
+  sim.stone = CampStoneCost
+
+  let
+    downedIndex = sim.addPlayer("downed")
+    allyIndex = sim.addPlayer("ally")
+  sim.players[allyIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[allyIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[allyIndex].bounds = sim.playerBoundsFor(sim.players[allyIndex])
+  sim.players[downedIndex].x = sim.players[allyIndex].x + WorldTileSize
+  sim.players[downedIndex].y = sim.players[allyIndex].y
+  sim.players[downedIndex].bounds = sim.playerBoundsFor(sim.players[downedIndex])
+  sim.players[downedIndex].lives = 0
+  sim.players[downedIndex].downedTicks = DownedRespawnTicks
+  sim.landmarks.add(Landmark(
+    tx: sim.players[allyIndex].x div WorldTileSize,
+    ty: sim.players[allyIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: false
+  ))
+
+  sim.step([InputState(), InputState()])
+
+  doAssert sim.landmarks[0].done
+  doAssert sim.playerDowned(downedIndex),
+    "camp healing should not create a live player with a stale downed timer"
+  doAssert sim.players[downedIndex].lives == 0
+
 proc testMobTelegraphsBeforeLunging() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -697,6 +732,13 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   ))
   sim.landmarks.add(Landmark(
     tx: sim.players[playerIndex].x div WorldTileSize + 2,
+    ty: sim.players[playerIndex].y div WorldTileSize + 1,
+    kind: LandmarkRescue,
+    hp: 1,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 2,
     ty: sim.players[playerIndex].y div WorldTileSize,
     kind: LandmarkCamp,
     hp: 1,
@@ -719,6 +761,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
   doAssert "prompt shrine f2" in labels
+  doAssert "prompt rescue f2" in labels
   doAssert "prompt gate boss r3" in labels
 
 proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
@@ -1027,6 +1070,72 @@ proc testShrineSideObjectiveScoringAndSustain() =
   let scores = parseJson(sim.playerScoresJson())
   doAssert scores["side_objectives_completed"][0].getInt() == 1
 
+proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.food = 0
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp - 2
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkRescue,
+    hp: 1,
+    done: false
+  ))
+
+  sim.step([InputState()])
+
+  doAssert not sim.landmarks[0].done,
+    "rescue events should require a short hold instead of instant pickup"
+  doAssert sim.landmarks[0].progress == 1
+  doAssert sim.sideObjectivesCompleted == 0
+
+  for _ in 1 ..< RescueEventTicks:
+    sim.step([InputState()])
+
+  doAssert sim.landmarks[0].done
+  doAssert sim.sideObjectivesCompleted == 1
+  doAssert sim.food == RescueFoodBonus
+  doAssert sim.players[playerIndex].lives ==
+    sim.players[playerIndex].maxHp - 1
+  doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
+
+proc testHealerCompletesRescueEventsFaster() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].applyRole(RoleHealer)
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkRescue,
+    hp: 1,
+    done: false
+  ))
+
+  for _ in 0 ..< RescueEventTicks div HealerRescueEventStep:
+    sim.step([InputState()])
+
+  doAssert sim.landmarks[0].done,
+    "healer should complete rescue detours twice as quickly"
+
 proc testDpsCleaveSpecialDamagesNearbyMobs() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1213,6 +1322,7 @@ testFrontierScoreIsShared()
 testMobHpScalesByProgressZone()
 testPlayerDropsCarriedCoinsOnDeath()
 testDownedPlayerCanBeRescuedByNearbyAlly()
+testCampActivationDoesNotHalfReviveDownedPlayers()
 testMobTelegraphsBeforeLunging()
 testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
@@ -1228,6 +1338,8 @@ testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()
 testShrineSideObjectiveScoringAndSustain()
+testRescueSideObjectiveRequiresHoldAndRewardsParty()
+testHealerCompletesRescueEventsFaster()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()

@@ -70,6 +70,8 @@ const
   FinalGateRelicCost* = 3
   ShrineFoodBonus* = 2
   ShrineHealAmount* = 1
+  RescueFoodBonus* = 2
+  RescueHealAmount* = 1
   CampWoodCost* = 2
   CampStoneCost* = 1
   ResourceNodeHp* = 2
@@ -87,6 +89,8 @@ const
   DownedRescueRadius* = WorldTileSize * 2
   DownedReviveHp* = 2
   HealerDownedRescueStep* = 2
+  RescueEventTicks* = TargetFps * 2
+  HealerRescueEventStep* = 2
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
@@ -378,6 +382,7 @@ type
     LandmarkBeacon
     LandmarkFinalGate
     LandmarkShrine
+    LandmarkRescue
 
   Pickup* = object
     x*, y*: int
@@ -408,6 +413,7 @@ type
     kind*: LandmarkKind
     hp*: int
     done*: bool
+    progress*: int
 
   SimServer* = object
     players*: seq[Actor]
@@ -731,6 +737,7 @@ proc landmarkLabel*(kind: LandmarkKind): string =
   of LandmarkBeacon: "beacon"
   of LandmarkFinalGate: "final gate"
   of LandmarkShrine: "shrine"
+  of LandmarkRescue: "rescue"
 
 proc carryLabel*(kind: CarryKind): string =
   case kind
@@ -1850,7 +1857,8 @@ proc addLandmark(
     ty: ty,
     kind: kind,
     hp: hp,
-    done: false
+    done: false,
+    progress: 0
   ))
   sim.clearSpawnArea(tx, ty, 1)
 
@@ -1904,6 +1912,11 @@ proc seedLandmarks*(sim: var SimServer) =
           lowerTy
         else:
           upperTy
+      rescueTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          clamp(centerTy + 5, 1, WorldHeightTiles - 2)
+        else:
+          clamp(centerTy - 5, 1, WorldHeightTiles - 2)
     sim.addLandmark(
       resources.first,
       range.firstTx + max(1, span div 4),
@@ -1927,6 +1940,12 @@ proc seedLandmarks*(sim: var SimServer) =
       LandmarkShrine,
       range.firstTx + max(3, (span * 2) div 3),
       shrineTy,
+      1
+    )
+    sim.addLandmark(
+      LandmarkRescue,
+      range.firstTx + max(2, (span * 3) div 4),
+      rescueTy,
       1
     )
     sim.addLandmark(
@@ -2500,7 +2519,8 @@ proc initSimServer*(seed = 0xB1770): SimServer =
       LandmarkCamp: ("landmark_camp", "lumber_camp.png"),
       LandmarkBeacon: ("landmark_beacon", "control_point.png"),
       LandmarkFinalGate: ("landmark_final_gate", "altar.png"),
-      LandmarkShrine: ("landmark_shrine", "altar.png")
+      LandmarkShrine: ("landmark_shrine", "altar.png"),
+      LandmarkRescue: ("landmark_rescue", "oriented/gatherer.e.png")
     ]
   for kind in LandmarkKind:
     let asset = loadAssetPair(
@@ -2729,6 +2749,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(landmark.kind))
     result.mixHashInt(landmark.hp)
     result.mixHashInt(ord(landmark.done))
+    result.mixHashInt(landmark.progress)
   for tile in sim.tiles:
     result.mixHashInt(ord(tile))
   for ground in sim.groundKinds:
@@ -3712,6 +3733,19 @@ proc activateShrine(sim: var SimServer) =
     sim.players[playerIndex].poisonTicks = 0
   inc sim.scoreRevision
 
+proc activateRescueEvent(sim: var SimServer) =
+  ## Completes one stranded-traveler rescue detour for sustain and score.
+  inc sim.sideObjectivesCompleted
+  sim.food += RescueFoodBonus
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + RescueHealAmount
+    )
+  inc sim.scoreRevision
+
 proc harvestLandmark(
   sim: var SimServer,
   landmarkIndex,
@@ -3775,6 +3809,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     if kind.landmarkIsResource():
       continue
     var nearPlayer = false
+    var activationStep = 0
     for player in sim.players:
       if player.lives <= 0:
         continue
@@ -3785,7 +3820,13 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           LandmarkActivationRadius
       if sim.playerNearLandmark(player, sim.landmarks[landmarkIndex], radius):
         nearPlayer = true
-        break
+        activationStep = max(
+          activationStep,
+          if kind == LandmarkRescue and player.role == RoleHealer:
+            HealerRescueEventStep
+          else:
+            1
+        )
     if not nearPlayer:
       continue
 
@@ -3801,6 +3842,8 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       sim.addCampRoleGear(camp)
       sim.revealCampShortcut(camp)
       for playerIndex in 0 ..< sim.players.len:
+        if sim.players[playerIndex].lives <= 0:
+          continue
         sim.players[playerIndex].lives = min(
           sim.players[playerIndex].maxHp,
           sim.players[playerIndex].lives + 2
@@ -3814,6 +3857,13 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     of LandmarkShrine:
       sim.landmarks[landmarkIndex].done = true
       sim.activateShrine()
+    of LandmarkRescue:
+      sim.landmarks[landmarkIndex].progress += max(1, activationStep)
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < RescueEventTicks:
+        continue
+      sim.landmarks[landmarkIndex].done = true
+      sim.activateRescueEvent()
     of LandmarkFinalGate:
       if not sim.bossDefeated:
         continue
