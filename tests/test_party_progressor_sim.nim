@@ -1245,6 +1245,12 @@ proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
       hp: mobMaxHp(kind, sim.players[playerIndex].x),
       attackCooldown: 99
     ))
+  sim.mobs[0].attackPhase = MobTelegraph
+  sim.mobs[0].attackTicks = MobTelegraphTicks div 2
+  sim.mobs[0].attackFacing = FaceRight
+  sim.mobs[1].attackPhase = MobLunge
+  sim.mobs[1].attackTicks = MobLungeTicks div 2
+  sim.mobs[1].attackFacing = FaceRight
 
   var nextState: PlayerViewerState
   let labels = sim.buildSpriteProtocolPlayerUpdates(
@@ -1256,6 +1262,8 @@ proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
   doAssert "status slow" in labels
   doAssert "status chill" in labels
   doAssert "status alone" in labels
+  doAssert "mob telegraph warning" in labels
+  doAssert "mob lunge strike" in labels
 
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()

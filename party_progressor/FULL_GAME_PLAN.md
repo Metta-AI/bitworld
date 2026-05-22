@@ -361,6 +361,9 @@ The first full-game implementation pass includes:
 - Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
   appear as compact badges beside threatening enemies before hits land, so the
   player can read biome combat pressure without first taking the status.
+- Monster attack phases now have explicit sprite-protocol animation overlays:
+  a pulsing warning mark during wind-up and a strike slash during lunge, so all
+  32 monster species read as actively attacking rather than only sliding.
 - Final-gate completion now requires boss defeat, relic progress, and forward
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.
@@ -389,8 +392,8 @@ The first full-game implementation pass includes:
   multi-player runs.
 - Expand player-observation smoke output into saved visual fixtures so
   black-background regressions are obvious during manual review too.
-- Improve telegraph polish by distinguishing pre-hit danger badges from
-  post-hit player status badges once the observation density is tuned.
+- Tune attack-overlay density and placement once longer human/bot observation
+  checks reveal where lunge effects clutter tight fights.
 - Continue bot targeting polish: infer low-health state from sprite health bars,
   regroup near teammates, and tune when resource gathering should override
   visible camps or relic objectives.

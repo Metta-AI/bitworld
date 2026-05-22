@@ -31,6 +31,8 @@ const
   MobLeftSpriteId = 313
   TrollLeftSpriteId = 314
   BossLeftSpriteId = 315
+  MobTelegraphEffectSpriteId = 316
+  MobLungeEffectSpriteId = 317
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
@@ -61,8 +63,10 @@ const
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
+  MobAttackEffectObjectBase = 17000
   StatusBadgeSlots = 7
   WeatherOverlaySlots = 56
+  MobAttackEffectSize = 28
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -1208,6 +1212,27 @@ proc weatherOverlaySpriteId(weather: WeatherKind): int =
 proc weatherOverlayObjectId(index: int): int =
   WeatherOverlayObjectBase + index
 
+proc mobAttackEffectObjectId(mobIndex: int): int =
+  MobAttackEffectObjectBase + mobIndex
+
+proc mobAttackEffectSpriteId(phase: MobAttackPhase): int =
+  case phase
+  of MobTelegraph:
+    MobTelegraphEffectSpriteId
+  of MobLunge:
+    MobLungeEffectSpriteId
+  of MobIdle:
+    MobTelegraphEffectSpriteId
+
+proc mobAttackEffectLabel(phase: MobAttackPhase): string =
+  case phase
+  of MobTelegraph:
+    "mob telegraph warning"
+  of MobLunge:
+    "mob lunge strike"
+  of MobIdle:
+    "mob idle"
+
 proc weatherOverlayLabel(weather: WeatherKind): string =
   "weather " & weather.weatherLabel()
 
@@ -1266,6 +1291,76 @@ proc buildWeatherOverlaySprite(
     result.width = 1
     result.height = 1
     result.pixels = newRgbaPixels(result.width, result.height)
+
+proc putEffectPixel(
+  pixels: var seq[uint8],
+  width,
+  height,
+  x,
+  y: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  if x < 0 or y < 0 or x >= width or y >= height:
+    return
+  pixels.putRgbaPixel(y * width + x, color)
+
+proc buildMobAttackEffectSprite(
+  phase: MobAttackPhase
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a translucent attack-phase overlay for monster animations.
+  result.width = MobAttackEffectSize
+  result.height = MobAttackEffectSize
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let
+    center = MobAttackEffectSize div 2
+    warning = (r: 255'u8, g: 222'u8, b: 74'u8, a: 190'u8)
+    warningCore = (r: 255'u8, g: 248'u8, b: 180'u8, a: 225'u8)
+    strike = (r: 255'u8, g: 64'u8, b: 79'u8, a: 210'u8)
+    strikeCore = (r: 255'u8, g: 200'u8, b: 120'u8, a: 240'u8)
+  case phase
+  of MobTelegraph:
+    for y in 0 ..< result.height:
+      for x in 0 ..< result.width:
+        let distance = abs(x - center) + abs(y - center)
+        if distance in 10 .. 11:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, warning)
+    for y in 7 .. 16:
+      result.pixels.putEffectPixel(result.width, result.height, center, y, warningCore)
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        center + 1,
+        y,
+        warningCore
+      )
+    for y in 20 .. 21:
+      for x in center .. center + 1:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
+  of MobLunge:
+    for i in 0 .. 18:
+      let
+        x = 5 + i
+        y = 21 - i
+      result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
+      result.pixels.putEffectPixel(result.width, result.height, x + 1, y, strike)
+      result.pixels.putEffectPixel(result.width, result.height, x, y + 1, strike)
+    for i in 0 .. 10:
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        10 + i,
+        18 - i div 2,
+        strike
+      )
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        7 + i,
+        10 + i div 3,
+        strike
+      )
+  of MobIdle:
+    discard
 
 proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
   case weather
@@ -1630,6 +1725,16 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       text.height,
       text.pixels,
       kind.statusBadgeSpriteLabel()
+    )
+
+  for phase in [MobTelegraph, MobLunge]:
+    let effect = phase.buildMobAttackEffectSprite()
+    packet.addSprite(
+      phase.mobAttackEffectSpriteId(),
+      effect.width,
+      effect.height,
+      effect.pixels,
+      phase.mobAttackEffectLabel()
     )
 
   let
@@ -2238,6 +2343,40 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if mob.attackPhase in {MobTelegraph, MobLunge}:
+      let
+        effectForward =
+          case mob.attackFacing
+          of FaceLeft: -MobAttackEffectSize div 3
+          of FaceRight: MobAttackEffectSize div 3
+          of FaceUp, FaceDown: 0
+        effectLift =
+          case mob.attackPhase
+          of MobTelegraph:
+            if (mob.attackTicks div 8) mod 2 == 0: -2 else: 1
+          of MobLunge:
+            case mob.attackFacing
+            of FaceUp: -MobAttackEffectSize div 3
+            of FaceDown: MobAttackEffectSize div 3
+            else: 0
+          of MobIdle:
+            0
+        effectX = mob.x + mob.sprite.width div 2 -
+          MobAttackEffectSize div 2 + effectForward
+        effectY = drawY + mob.sprite.height div 2 -
+          MobAttackEffectSize div 2 + effectLift
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.mobAttackEffectObjectId(),
+        effectX - cameraX,
+        effectY - cameraY,
+        mob.attackPhase.mobAttackEffectSpriteId(),
+        MobAttackEffectSize,
+        MobAttackEffectSize,
+        viewportWidth,
+        viewportHeight,
+        drawY - cameraY + mob.sprite.height + 1
+      )
     let badges = mob.species.threatBadges()
     for badgeIndex in 0 ..< badges.len:
       let
