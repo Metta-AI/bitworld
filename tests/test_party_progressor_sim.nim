@@ -641,6 +641,51 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt gate boss r3" in labels
 
+proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  doAssert sim.players[playerIndex].statusLabel() == "ok"
+
+  let threats = [
+    SpeciesDuneScorpion,
+    SpeciesMudSlime,
+    SpeciesSnowWolf,
+    SpeciesRuinWraith
+  ]
+  for i, species in threats:
+    let kind = species.speciesKind()
+    sim.mobs.add(Mob(
+      kind: kind,
+      species: species,
+      x: sim.players[playerIndex].x + WorldTileSize + i * 18,
+      y: sim.players[playerIndex].y - WorldTileSize + i * 20,
+      sprite: sim.mobSpriteFor(kind),
+      bounds: sim.mobBoundsFor(kind),
+      hp: mobMaxHp(kind, sim.players[playerIndex].x),
+      attackCooldown: 99
+    ))
+
+  var nextState: PlayerViewerState
+  let labels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status poison" in labels
+  doAssert "status slow" in labels
+  doAssert "status chill" in labels
+  doAssert "status alone" in labels
+
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()
   roadSim.clearTerrain()
@@ -918,6 +963,7 @@ testSpriteProtocolPacketMatchesReferenceParsers()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()
+testSpriteProtocolShowsMonsterThreatTelegraphs()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()

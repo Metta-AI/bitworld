@@ -303,6 +303,9 @@ The first full-game implementation pass includes:
   chill, and isolation danger now appear as compact badges next to players, and
   landmarks show readable labels for resources, camp costs, relic beacons, and
   final-gate requirements.
+- Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
+  appear as compact badges beside threatening enemies before hits land, so the
+  player can read biome combat pressure without first taking the status.
 - Final-gate completion now requires both boss defeat and relic progress,
   turning the end of the run into a visible expedition chain instead of a single
   late fight.
@@ -323,8 +326,8 @@ The first full-game implementation pass includes:
 - Tune food and snow-exposure pacing with multi-player runs.
 - Add player-observation screenshots to smoke tests so black-background
   regressions are visually obvious.
-- Add stronger monster-side telegraphs for poison, slow, chill, and isolation
-  danger before hits land, not only after statuses are applied.
+- Improve telegraph polish by distinguishing pre-hit danger badges from
+  post-hit player status badges once the observation density is tuned.
 - Expand bot targeting: gather resources when camps are unaffordable, prefer
   beacons after camps, avoid strong enemies when low on HP, and regroup near
   teammates.

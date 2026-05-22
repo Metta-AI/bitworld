@@ -49,6 +49,7 @@ const
   CarryObjectBase = 12000
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
+  MobThreatBadgeObjectBase = 15000
   StatusBadgeSlots = 4
   HealthBarWidth = 18
   HealthBarHeight = 5
@@ -1177,6 +1178,9 @@ proc statusBadgeSpriteId(kind: StatusBadgeKind): int =
 proc statusBadgeObjectId(player: Actor, index: int): int =
   StatusBadgeObjectBase + player.id * StatusBadgeSlots + index
 
+proc mobThreatBadgeObjectId(mobIndex, badgeIndex: int): int =
+  MobThreatBadgeObjectBase + mobIndex * StatusBadgeSlots + badgeIndex
+
 proc statusBadgeLabel(kind: StatusBadgeKind): string =
   case kind
   of StatusPoison: "POI"
@@ -1197,6 +1201,16 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
   of StatusAlone: "status alone"
+
+proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
+  if species.speciesAppliesPoison():
+    result.add(StatusPoison)
+  if species.speciesAppliesSlow():
+    result.add(StatusSlow)
+  if species.speciesAppliesChill():
+    result.add(StatusChill)
+  if species.speciesPunishesIsolation():
+    result.add(StatusAlone)
 
 proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
   ## Returns the sprite id for one adventurer attack swish facing.
@@ -1916,6 +1930,25 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    let badges = mob.species.threatBadges()
+    for badgeIndex in 0 ..< badges.len:
+      let
+        badge = badges[badgeIndex]
+        label = badge.statusBadgeLabel()
+        badgeWidth = sim.textFont.textWidth(label)
+        badgeHeight = sim.textFont.height
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.mobThreatBadgeObjectId(badgeIndex),
+        mob.x + mob.sprite.width + 2 - cameraX,
+        drawY - (badgeHeight + 2) * (badgeIndex + 1) - cameraY,
+        badge.statusBadgeSpriteId(),
+        badgeWidth,
+        badgeHeight,
+        viewportWidth,
+        viewportHeight,
+        drawY - cameraY + badgeIndex
+      )
 
   for i in 0 ..< sim.players.len:
     let
