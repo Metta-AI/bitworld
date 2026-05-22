@@ -331,6 +331,9 @@ The first full-game implementation pass includes:
 - Biome monster tactical hooks: slimes slow players, desert creatures poison,
   snow threats chill, bats harass from farther away, and wraith/gate enemies
   punish isolated players so grouping has real value.
+- Dynamic sprite-protocol weather overlays: rain, dust, snow, and fog now show
+  as translucent deterministic particles in both player and global map views,
+  not only in the legacy framebuffer path.
 - In-world player affordances for the larger observation window: poison, slow,
   chill, isolation danger, low-health help state, and downed rescue state now
   appear as compact badges next to players, and landmarks show readable labels
@@ -383,8 +386,7 @@ The first full-game implementation pass includes:
 
 ### Polish And Packaging
 
-- Improve visual polish for weather overlays in global protocol views, not only
-  the local framebuffer path.
+- Tune sprite-protocol weather density and color after real play checks.
 - Consider a generated Party Progressor atlas once the curated TribalCog asset
   set stabilizes.
 - Add long-run smoke tests with multiple players and bots.

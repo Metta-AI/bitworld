@@ -41,6 +41,7 @@ const
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
   LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
   LandmarkWaystationPromptSpriteBase = LandmarkFortPromptSpriteId + 1
+  WeatherOverlaySpriteBase = 900
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -54,7 +55,9 @@ const
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
+  WeatherOverlayObjectBase = 16000
   StatusBadgeSlots = 7
+  WeatherOverlaySlots = 56
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -1194,6 +1197,84 @@ proc statusBadgeObjectId(player: Actor, index: int): int =
 proc mobThreatBadgeObjectId(mobIndex, badgeIndex: int): int =
   MobThreatBadgeObjectBase + mobIndex * StatusBadgeSlots + badgeIndex
 
+proc weatherOverlaySpriteId(weather: WeatherKind): int =
+  WeatherOverlaySpriteBase + ord(weather)
+
+proc weatherOverlayObjectId(index: int): int =
+  WeatherOverlayObjectBase + index
+
+proc weatherOverlayLabel(weather: WeatherKind): string =
+  "weather " & weather.weatherLabel()
+
+proc weatherOverlayColor(
+  weather: WeatherKind
+): tuple[r, g, b, a: uint8] =
+  case weather
+  of WeatherRain:
+    (r: 130'u8, g: 183'u8, b: 235'u8, a: 190'u8)
+  of WeatherSnow:
+    (r: 245'u8, g: 250'u8, b: 255'u8, a: 220'u8)
+  of WeatherDust:
+    (r: 222'u8, g: 172'u8, b: 92'u8, a: 165'u8)
+  of WeatherFog:
+    (r: 186'u8, g: 196'u8, b: 205'u8, a: 112'u8)
+  of WeatherClear:
+    (r: 0'u8, g: 0'u8, b: 0'u8, a: 0'u8)
+
+proc buildWeatherOverlaySprite(
+  weather: WeatherKind
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a tiny translucent weather particle for sprite-protocol views.
+  case weather
+  of WeatherRain:
+    result.width = 4
+    result.height = 9
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for y in 0 ..< result.height:
+      let x = min(result.width - 1, y div 3)
+      result.pixels.putRgbaPixel(y * result.width + x, color)
+  of WeatherSnow:
+    result.width = 5
+    result.height = 5
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for pos in [(2, 1), (1, 2), (2, 2), (3, 2), (2, 3)]:
+      result.pixels.putRgbaPixel(pos[1] * result.width + pos[0], color)
+  of WeatherDust:
+    result.width = 7
+    result.height = 4
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for pos in [(1, 1), (2, 1), (4, 2), (5, 2), (3, 1)]:
+      result.pixels.putRgbaPixel(pos[1] * result.width + pos[0], color)
+  of WeatherFog:
+    result.width = 32
+    result.height = 8
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for y in 2 .. 5:
+      for x in 0 ..< result.width:
+        if (x + y) mod 3 != 0:
+          result.pixels.putRgbaPixel(y * result.width + x, color)
+  of WeatherClear:
+    result.width = 1
+    result.height = 1
+    result.pixels = newRgbaPixels(result.width, result.height)
+
+proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
+  case weather
+  of WeatherRain:
+    (width: 4, height: 9)
+  of WeatherSnow:
+    (width: 5, height: 5)
+  of WeatherDust:
+    (width: 7, height: 4)
+  of WeatherFog:
+    (width: 32, height: 8)
+  of WeatherClear:
+    (width: 1, height: 1)
+
 proc statusBadgeLabel(kind: StatusBadgeKind): string =
   case kind
   of StatusPoison: "POI"
@@ -1701,6 +1782,17 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       promptSprite.pixels,
       "prompt " & prompt.toLowerAscii()
     )
+  for weather in WeatherKind:
+    if weather == WeatherClear:
+      continue
+    let overlay = weather.buildWeatherOverlaySprite()
+    packet.addSprite(
+      weather.weatherOverlaySpriteId(),
+      overlay.width,
+      overlay.height,
+      overlay.pixels,
+      weather.weatherOverlayLabel()
+    )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -1952,6 +2044,38 @@ proc addLandmarkObjects(
       landmark.landmarkWorldY() - cameraY - 1
     )
 
+proc addWeatherOverlayObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds light deterministic weather particles to sprite-protocol map views.
+  for i in 0 ..< WeatherOverlaySlots:
+    let
+      screenX = (i * 47 + sim.tickCount * 3) mod (viewportWidth + 48) - 24
+      screenY = (i * 31 + sim.tickCount * 2) mod (viewportHeight + 32) - 16
+      worldX = clamp(cameraX + screenX, 0, WorldWidthPixels - 1)
+      weather = sim.weatherAtPixel(worldX)
+    if weather == WeatherClear:
+      continue
+    let size = weather.weatherOverlaySize()
+    objects.addWorldSpriteObject(
+      currentIds,
+      i.weatherOverlayObjectId(),
+      screenX,
+      screenY,
+      weather.weatherOverlaySpriteId(),
+      size.width,
+      size.height,
+      viewportWidth,
+      viewportHeight,
+      viewportHeight + i
+    )
+
 proc addWorldObjects(
   sim: SimServer,
   packet: var seq[uint8],
@@ -2170,6 +2294,14 @@ proc addWorldObjects(
   )
   sim.addSpeechBubbles(
     packet,
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  sim.addWeatherOverlayObjects(
     objects,
     currentIds,
     cameraX,

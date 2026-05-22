@@ -511,6 +511,44 @@ proc testSpritePlayerViewportAndBiomeBackground() =
   doAssert mapSprite.pixels[pixelOffset + 2].uint8 == color.b
   doAssert mapSprite.pixels[pixelOffset + 3].uint8 == color.a
 
+proc testSpriteProtocolWeatherOverlays() =
+  var playerSim = initPartyProgressorForTest()
+  playerSim.clearTerrain()
+  playerSim.mobs.setLen(0)
+  playerSim.pickups.setLen(0)
+  playerSim.landmarks.setLen(0)
+  playerSim.fillGround(GroundSnow, BiomeSnow)
+  let playerIndex = playerSim.addPlayer("player1")
+  playerSim.players[playerIndex].x = firstTileForBiome(BiomeSnow) * WorldTileSize
+  playerSim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  playerSim.players[playerIndex].bounds =
+    playerSim.playerBoundsFor(playerSim.players[playerIndex])
+
+  var nextPlayerState: PlayerViewerState
+  let playerPacket = playerSim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextPlayerState
+  )
+  let playerLabels = playerPacket.parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "weather snow" in playerLabels,
+    "sprite player observations should show snow weather overlays"
+
+  var globalSim = initPartyProgressorForTest()
+  globalSim.clearTerrain()
+  globalSim.mobs.setLen(0)
+  globalSim.pickups.setLen(0)
+  globalSim.landmarks.setLen(0)
+  globalSim.fillGround(GroundSand, BiomeDesert)
+  var nextGlobalState: GlobalViewerState
+  let globalPacket = globalSim.buildSpriteProtocolUpdates(
+    initGlobalViewerState(),
+    nextGlobalState
+  )
+  let globalLabels = globalPacket.parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "weather dust" in globalLabels,
+    "global sprite observations should show biome weather overlays"
+
 proc testSpriteProtocolPacketMatchesReferenceParsers() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")
@@ -1729,6 +1767,7 @@ testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
+testSpriteProtocolWeatherOverlays()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
