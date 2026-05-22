@@ -31,7 +31,10 @@ const PlayerHudSpriteId = 600;
 const MobSpeciesSpriteBase = 760;
 const PlayerObjectBase = 1000;
 const MobObjectBase = 2000;
+const PlayerHudObjectId = 7000;
+const StatusHudObjectId = PlayerHudObjectId + 2;
 const PlayerHealthObjectBase = 10000;
+const CarryObjectBase = 12000;
 const StatusBadgeObjectBase = 13000;
 const StatusBadgeSlots = 7;
 const LowHealthPercent = 50;
@@ -100,6 +103,14 @@ const TargetKind = Object.freeze({
   Mob: 15,
   Troll: 16,
   Boss: 17,
+});
+
+const CarryKind = Object.freeze({
+  None: 0,
+  Wood: 1,
+  Food: 2,
+  Stone: 3,
+  Gold: 4,
 });
 
 class MinHeap {
@@ -234,6 +245,10 @@ class Bot {
     this.killCount = 0;
     this.lowHealth = false;
     this.needsRegroup = false;
+    this.carriedItem = CarryKind.None;
+    this.objectiveHint = "";
+    this.needWood = 0;
+    this.needStone = 0;
     this.intent = "";
     this.lastMask = 0;
     this.nextChatTick = 72;
@@ -377,8 +392,22 @@ class Bot {
   updateSelfAffordances() {
     this.lowHealth = false;
     this.needsRegroup = false;
+    this.carriedItem = CarryKind.None;
+    this.objectiveHint = "";
+    this.needWood = 0;
+    this.needStone = 0;
+    const statusState = this.objects[StatusHudObjectId];
+    if (statusState && statusState.present) {
+      this.readStatusHud(this.spriteInfo(statusState.spriteId).label);
+    }
     if (this.selfObjectId < PlayerObjectBase) return;
     const playerId = this.selfObjectId - PlayerObjectBase;
+    const carryObjectId = CarryObjectBase + playerId;
+    const carryState = this.objects[carryObjectId];
+    if (carryState && carryState.present) {
+      const carried = carryKindFromLabel(this.spriteInfo(carryState.spriteId).label);
+      if (carried !== CarryKind.None) this.carriedItem = carried;
+    }
     const healthObjectId = PlayerHealthObjectBase + playerId;
     const healthState = this.objects[healthObjectId];
     if (healthState && healthState.present) {
@@ -398,6 +427,22 @@ class Bot {
       const label = this.spriteInfo(state.spriteId).label.toLowerCase();
       if (label === "status help") this.lowHealth = true;
       if (label === "status alone") this.needsRegroup = true;
+    }
+  }
+
+  readStatusHud(label) {
+    for (const part of (label || "").toLowerCase().split("|")) {
+      const section = part.trim();
+      if (section.startsWith("carry ")) {
+        this.carriedItem = carryKindFromLabel(section);
+      } else if (section.startsWith("next ")) {
+        this.objectiveHint = section;
+        if (section.startsWith("next gather")) {
+          const tokens = section.split(/\s+/);
+          this.needWood = tokenNumber(tokens, "w");
+          this.needStone = tokenNumber(tokens, "s");
+        }
+      }
     }
   }
 
@@ -505,15 +550,39 @@ class Bot {
       case TargetKind.Heart:
         return distance + (this.lowHealth ? -210 : this.needsRegroup ? -40 : 15);
       case TargetKind.Wood:
+        if (this.needWood > 0) return distance - 260;
+        if (this.carriedItem === CarryKind.Wood) return distance + 170;
+        return distance - 120;
       case TargetKind.Stone:
+        if (this.needStone > 0) return distance - 260;
+        if (this.carriedItem === CarryKind.Stone) return distance + 170;
         return distance - 120;
       case TargetKind.Food:
-        return distance + (this.lowHealth ? -150 : this.needsRegroup ? -115 : -95);
+        if (this.carriedItem === CarryKind.Food) return distance + (this.lowHealth ? -20 : 90);
+        return distance + (
+          this.lowHealth || this.objectiveHint.includes("heal food")
+            ? -150
+            : this.needsRegroup
+              ? -115
+              : -95
+        );
       case TargetKind.Gold:
+        if (this.needStone > 0) return distance - 170;
+        if (this.carriedItem === CarryKind.Gold) return distance + 160;
         return distance - 55;
       case TargetKind.Camp:
+        if (this.needWood > 0 || this.needStone > 0) return distance + 120;
+        if (
+          this.objectiveHint.startsWith("next build camp") ||
+          this.objectiveHint.startsWith("next camp")
+        ) {
+          return distance - 230;
+        }
+        if (this.carriedItem !== CarryKind.None) return distance - 170;
         return distance + (this.lowHealth || this.needsRegroup ? -180 : -100);
       case TargetKind.Relic:
+        if (this.objectiveHint.startsWith("next relic")) return distance - 170;
+        if (this.needWood > 0 || this.needStone > 0) return distance + 120;
         return distance - 85;
       case TargetKind.Waystation:
         return distance + (this.lowHealth || this.needsRegroup ? -165 : -65);
@@ -522,7 +591,7 @@ class Bot {
       case TargetKind.Shrine:
         return distance - 20;
       case TargetKind.Gate:
-        return distance + 10;
+        return distance + (this.objectiveHint.startsWith("next open gate") ? -210 : 10);
       case TargetKind.Lair:
         return distance + (this.lowHealth || this.needsRegroup ? 420 : distance < 100 ? -45 : 180);
       case TargetKind.Mob:
@@ -859,6 +928,24 @@ function parseHealthLabel(label) {
     return null;
   }
   return { current, maximum };
+}
+
+function carryKindFromLabel(label) {
+  const lower = (label || "").toLowerCase();
+  if (lower.includes("wood")) return CarryKind.Wood;
+  if (lower.includes("food")) return CarryKind.Food;
+  if (lower.includes("stone")) return CarryKind.Stone;
+  if (lower.includes("gold")) return CarryKind.Gold;
+  return CarryKind.None;
+}
+
+function tokenNumber(tokens, key) {
+  for (const token of tokens) {
+    if (!token.startsWith(key) || token.length <= key.length) continue;
+    const value = Number.parseInt(token.slice(key.length), 10);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
 }
 
 function readU16(data, offset) {

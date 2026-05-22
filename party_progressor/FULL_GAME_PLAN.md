@@ -383,6 +383,9 @@ The first full-game implementation pass includes:
 - Konrad bot adapters now also treat visible teammate player sprites as regroup
   targets, so isolation pressure drives bots back toward the party instead of
   only toward generic safe landmarks.
+- Konrad bot adapters now read carried-item and expedition-objective HUD labels,
+  so missing wood/stone gathering overrides premature camp/relic pushes and
+  carried resources bias bots toward useful camps instead of redundant harvests.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
@@ -405,9 +408,8 @@ The first full-game implementation pass includes:
   black-background regressions are obvious during manual review too.
 - Tune attack-overlay density and placement once longer human/bot observation
   checks reveal where lunge effects clutter tight fights.
-- Continue bot targeting polish: tune when resource gathering should override
-  visible camps or relic objectives after health-aware and teammate-aware
-  targeting.
+- Continue bot targeting polish: tune longer-run expedition pacing now that
+  bots understand health, regroup, carried resources, and current objectives.
 
 ### Expedition Depth
 

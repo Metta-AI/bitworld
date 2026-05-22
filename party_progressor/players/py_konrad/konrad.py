@@ -45,7 +45,10 @@ LandmarkSpriteBase = 360
 PlayerHudSpriteId = 600
 PlayerObjectBase = 1000
 MobObjectBase = 2000
+PlayerHudObjectId = 7000
+StatusHudObjectId = PlayerHudObjectId + 2
 PlayerHealthObjectBase = 10000
+CarryObjectBase = 12000
 StatusBadgeObjectBase = 13000
 StatusBadgeSlots = 7
 LowHealthPercent = 50
@@ -116,6 +119,14 @@ class TargetKind(IntEnum):
     Boss = 17
 
 
+class CarryKind(IntEnum):
+    None_ = 0
+    Wood = 1
+    Food = 2
+    Stone = 3
+    Gold = 4
+
+
 @dataclass
 class SpriteInfo:
     defined: bool = False
@@ -179,6 +190,30 @@ def parse_health_label(label: str) -> tuple[bool, int, int]:
     return True, current, maximum
 
 
+def carry_kind_from_label(label: str) -> CarryKind:
+    lower = label.lower()
+    if "wood" in lower:
+        return CarryKind.Wood
+    if "food" in lower:
+        return CarryKind.Food
+    if "stone" in lower:
+        return CarryKind.Stone
+    if "gold" in lower:
+        return CarryKind.Gold
+    return CarryKind.None_
+
+
+def token_number(tokens: list[str], key: str) -> int:
+    for token in tokens:
+        if not token.startswith(key) or len(token) <= len(key):
+            continue
+        try:
+            return int(token[len(key) :])
+        except ValueError:
+            continue
+    return 0
+
+
 @dataclass
 class Bot:
     sprites: list[SpriteInfo] = field(default_factory=list)
@@ -216,6 +251,10 @@ class Bot:
     kill_count: int = 0
     low_health: bool = False
     needs_regroup: bool = False
+    carried_item: CarryKind = CarryKind.None_
+    objective_hint: str = ""
+    need_wood: int = 0
+    need_stone: int = 0
     intent: str = ""
     last_mask: int = 0
     next_chat_tick: int = 72
@@ -366,9 +405,20 @@ class Bot:
     def update_self_affordances(self) -> None:
         self.low_health = False
         self.needs_regroup = False
+        self.carried_item = CarryKind.None_
+        self.objective_hint = ""
+        self.need_wood = 0
+        self.need_stone = 0
+        if StatusHudObjectId < len(self.objects) and self.objects[StatusHudObjectId].present:
+            self.read_status_hud(self.sprite_info(self.objects[StatusHudObjectId].sprite_id).label)
         if self.self_object_id < PlayerObjectBase:
             return
         player_id = self.self_object_id - PlayerObjectBase
+        carry_object_id = CarryObjectBase + player_id
+        if carry_object_id < len(self.objects) and self.objects[carry_object_id].present:
+            carried = carry_kind_from_label(self.sprite_info(self.objects[carry_object_id].sprite_id).label)
+            if carried != CarryKind.None_:
+                self.carried_item = carried
         health_object_id = PlayerHealthObjectBase + player_id
         if (
             health_object_id < len(self.objects)
@@ -388,6 +438,18 @@ class Bot:
                 self.low_health = True
             elif label == "status alone":
                 self.needs_regroup = True
+
+    def read_status_hud(self, label: str) -> None:
+        for part in label.lower().split("|"):
+            section = part.strip()
+            if section.startswith("carry "):
+                self.carried_item = carry_kind_from_label(section)
+            elif section.startswith("next "):
+                self.objective_hint = section
+                if section.startswith("next gather"):
+                    tokens = section.split()
+                    self.need_wood = token_number(tokens, "w")
+                    self.need_stone = token_number(tokens, "s")
 
     def target_center(
         self,
@@ -490,15 +552,47 @@ class Bot:
             return distance + 90
         if target.kind == TargetKind.Heart:
             return distance + (-210 if self.low_health else -40 if self.needs_regroup else 15)
-        if target.kind in {TargetKind.Wood, TargetKind.Stone}:
+        if target.kind == TargetKind.Wood:
+            if self.need_wood > 0:
+                return distance - 260
+            if self.carried_item == CarryKind.Wood:
+                return distance + 170
             return distance - 120
         if target.kind == TargetKind.Food:
-            return distance + (-150 if self.low_health else -115 if self.needs_regroup else -95)
+            if self.carried_item == CarryKind.Food:
+                return distance + (-20 if self.low_health else 90)
+            return distance + (
+                -150
+                if self.low_health or "heal food" in self.objective_hint
+                else -115
+                if self.needs_regroup
+                else -95
+            )
+        if target.kind == TargetKind.Stone:
+            if self.need_stone > 0:
+                return distance - 260
+            if self.carried_item == CarryKind.Stone:
+                return distance + 170
+            return distance - 120
         if target.kind == TargetKind.Gold:
+            if self.need_stone > 0:
+                return distance - 170
+            if self.carried_item == CarryKind.Gold:
+                return distance + 160
             return distance - 55
         if target.kind == TargetKind.Camp:
+            if self.need_wood > 0 or self.need_stone > 0:
+                return distance + 120
+            if self.objective_hint.startswith("next build camp") or self.objective_hint.startswith("next camp"):
+                return distance - 230
+            if self.carried_item != CarryKind.None_:
+                return distance - 170
             return distance + (-180 if self.low_health or self.needs_regroup else -100)
         if target.kind == TargetKind.Relic:
+            if self.objective_hint.startswith("next relic"):
+                return distance - 170
+            if self.need_wood > 0 or self.need_stone > 0:
+                return distance + 120
             return distance - 85
         if target.kind == TargetKind.Waystation:
             return distance + (-165 if self.low_health or self.needs_regroup else -65)
@@ -507,7 +601,7 @@ class Bot:
         if target.kind == TargetKind.Shrine:
             return distance - 20
         if target.kind == TargetKind.Gate:
-            return distance + 10
+            return distance + (-210 if self.objective_hint.startswith("next open gate") else 10)
         if target.kind == TargetKind.Lair:
             return distance + (
                 420 if self.low_health or self.needs_regroup else -45 if distance < 100 else 180

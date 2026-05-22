@@ -46,7 +46,10 @@ const (
 	MobSpeciesSpriteBase     = 760
 	PlayerObjectBase         = 1000
 	MobObjectBase            = 2000
+	PlayerHudObjectId        = 7000
+	StatusHudObjectId        = PlayerHudObjectId + 2
 	PlayerHealthObjectBase   = 10000
+	CarryObjectBase          = 12000
 	StatusBadgeObjectBase    = 13000
 	StatusBadgeSlots         = 7
 	LowHealthPercent         = 50
@@ -122,6 +125,16 @@ const (
 	TargetMob
 	TargetTroll
 	TargetBoss
+)
+
+type CarryKind int
+
+const (
+	CarryNone CarryKind = iota
+	CarryWood
+	CarryFood
+	CarryStone
+	CarryGold
 )
 
 type SpriteInfo struct {
@@ -205,6 +218,10 @@ type Bot struct {
 	killCount             int
 	lowHealth             bool
 	needsRegroup          bool
+	carriedItem           CarryKind
+	objectiveHint         string
+	needWood              int
+	needStone             int
 	intent                string
 	lastMask              uint8
 	nextChatTick          int
@@ -287,6 +304,36 @@ func parseHealthLabel(label string) (bool, int, int) {
 		return false, 0, 0
 	}
 	return true, current, maximum
+}
+
+func carryKindFromLabel(label string) CarryKind {
+	lower := strings.ToLower(label)
+	if strings.Contains(lower, "wood") {
+		return CarryWood
+	}
+	if strings.Contains(lower, "food") {
+		return CarryFood
+	}
+	if strings.Contains(lower, "stone") {
+		return CarryStone
+	}
+	if strings.Contains(lower, "gold") {
+		return CarryGold
+	}
+	return CarryNone
+}
+
+func tokenNumber(tokens []string, key string) int {
+	for _, token := range tokens {
+		if !strings.HasPrefix(token, key) || len(token) <= len(key) {
+			continue
+		}
+		value, err := strconv.Atoi(token[len(key):])
+		if err == nil {
+			return value
+		}
+	}
+	return 0
 }
 
 func manhattan(ax, ay, bx, by int) int {
@@ -796,10 +843,25 @@ func (bot *Bot) updatePlayerPosition() {
 func (bot *Bot) updateSelfAffordances() {
 	bot.lowHealth = false
 	bot.needsRegroup = false
+	bot.carriedItem = CarryNone
+	bot.objectiveHint = ""
+	bot.needWood = 0
+	bot.needStone = 0
+	if StatusHudObjectId < len(bot.objects) && bot.objects[StatusHudObjectId].present {
+		statusSprite := bot.spriteInfo(bot.objects[StatusHudObjectId].spriteId)
+		bot.readStatusHud(statusSprite.label)
+	}
 	if bot.selfObjectId < PlayerObjectBase {
 		return
 	}
 	playerId := bot.selfObjectId - PlayerObjectBase
+	carryObjectId := CarryObjectBase + playerId
+	if carryObjectId < len(bot.objects) && bot.objects[carryObjectId].present {
+		carried := carryKindFromLabel(bot.spriteInfo(bot.objects[carryObjectId].spriteId).label)
+		if carried != CarryNone {
+			bot.carriedItem = carried
+		}
+	}
 	healthObjectId := PlayerHealthObjectBase + playerId
 	if healthObjectId < len(bot.objects) && bot.objects[healthObjectId].present {
 		healthSprite := bot.spriteInfo(bot.objects[healthObjectId].spriteId)
@@ -820,6 +882,25 @@ func (bot *Bot) updateSelfAffordances() {
 			bot.lowHealth = true
 		case "status alone":
 			bot.needsRegroup = true
+		}
+	}
+}
+
+func (bot *Bot) readStatusHud(label string) {
+	lower := strings.ToLower(label)
+	for _, part := range strings.Split(lower, "|") {
+		section := strings.TrimSpace(part)
+		if strings.HasPrefix(section, "carry ") {
+			bot.carriedItem = carryKindFromLabel(section)
+			continue
+		}
+		if strings.HasPrefix(section, "next ") {
+			bot.objectiveHint = section
+			if strings.HasPrefix(section, "next gather") {
+				tokens := strings.Fields(section)
+				bot.needWood = tokenNumber(tokens, "w")
+				bot.needStone = tokenNumber(tokens, "s")
+			}
 		}
 	}
 }
@@ -1116,24 +1197,69 @@ func (bot *Bot) targetScore(target Target) int {
 			return distance - 40
 		}
 		return distance + 15
-	case TargetWood, TargetStone:
+	case TargetWood:
+		if bot.needWood > 0 {
+			return distance - 260
+		}
+		if bot.carriedItem == CarryWood {
+			return distance + 170
+		}
 		return distance - 120
 	case TargetFood:
+		if bot.carriedItem == CarryFood {
+			if bot.lowHealth {
+				return distance - 20
+			}
+			return distance + 90
+		}
 		if bot.lowHealth {
+			return distance - 150
+		}
+		if strings.Contains(bot.objectiveHint, "heal food") {
 			return distance - 150
 		}
 		if bot.needsRegroup {
 			return distance - 115
 		}
 		return distance - 95
+	case TargetStone:
+		if bot.needStone > 0 {
+			return distance - 260
+		}
+		if bot.carriedItem == CarryStone {
+			return distance + 170
+		}
+		return distance - 120
 	case TargetGold:
+		if bot.needStone > 0 {
+			return distance - 170
+		}
+		if bot.carriedItem == CarryGold {
+			return distance + 160
+		}
 		return distance - 55
 	case TargetCamp:
+		if bot.needWood > 0 || bot.needStone > 0 {
+			return distance + 120
+		}
+		if strings.HasPrefix(bot.objectiveHint, "next build camp") ||
+			strings.HasPrefix(bot.objectiveHint, "next camp") {
+			return distance - 230
+		}
+		if bot.carriedItem != CarryNone {
+			return distance - 170
+		}
 		if bot.lowHealth || bot.needsRegroup {
 			return distance - 180
 		}
 		return distance - 100
 	case TargetRelic:
+		if strings.HasPrefix(bot.objectiveHint, "next relic") {
+			return distance - 170
+		}
+		if bot.needWood > 0 || bot.needStone > 0 {
+			return distance + 120
+		}
 		return distance - 85
 	case TargetWaystation:
 		if bot.lowHealth || bot.needsRegroup {
@@ -1148,6 +1274,9 @@ func (bot *Bot) targetScore(target Target) int {
 	case TargetShrine:
 		return distance - 20
 	case TargetGate:
+		if strings.HasPrefix(bot.objectiveHint, "next open gate") {
+			return distance - 210
+		}
 		return distance + 10
 	case TargetLair:
 		if bot.lowHealth || bot.needsRegroup {
