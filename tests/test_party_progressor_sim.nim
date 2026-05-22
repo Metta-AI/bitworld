@@ -2146,6 +2146,68 @@ proc testDesertHeatSurvivalPressureAndOasisShelter() =
   doAssert sim.players[playerIndex].lives == 3,
     "desert oasis shelter should block heat exposure damage"
 
+proc testFogBiomeDisorientationRequiresGroupOrLantern() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundCave, BiomeCave)
+
+  let playerIndex = sim.addPlayer("solo")
+  sim.players[playerIndex].x = firstTileForBiome(BiomeCave) * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.tickCount = FogDisorientationIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks >= FogDisorientationTicks - 1,
+    "cave fog should slow isolated unsheltered players"
+
+  sim.players[playerIndex].slowTicks = 0
+  let allyIndex = sim.addPlayer("ally")
+  sim.players[allyIndex].x = sim.players[playerIndex].x + WorldTileSize
+  sim.players[allyIndex].y = sim.players[playerIndex].y
+  sim.players[allyIndex].bounds = sim.playerBoundsFor(sim.players[allyIndex])
+  sim.tickCount = FogDisorientationIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "nearby allies should keep cave fog pressure from disorienting players"
+
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[allyIndex].x += IsolationThreatRadius + WorldTileSize
+  sim.players[allyIndex].bounds = sim.playerBoundsFor(sim.players[allyIndex])
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: true
+  ))
+  doAssert sim.playerNearExpeditionShelter(playerIndex),
+    "completed cave lantern waystations should count as fog shelters"
+  sim.tickCount = FogDisorientationIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "cave lantern shelters should block fog disorientation"
+
+  var ruinsSim = initPartyProgressorForTest()
+  ruinsSim.clearTerrain()
+  ruinsSim.mobs.setLen(0)
+  ruinsSim.pickups.setLen(0)
+  ruinsSim.landmarks.setLen(0)
+  ruinsSim.fillGround(GroundRuins, BiomeRuins)
+  let ruinsPlayer = ruinsSim.addPlayer("ruins")
+  ruinsSim.players[ruinsPlayer].x = firstTileForBiome(BiomeRuins) * WorldTileSize
+  ruinsSim.players[ruinsPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  ruinsSim.players[ruinsPlayer].bounds =
+    ruinsSim.playerBoundsFor(ruinsSim.players[ruinsPlayer])
+  ruinsSim.tickCount = FogDisorientationIntervalTicks - 1
+  ruinsSim.step([InputState()])
+  doAssert ruinsSim.players[ruinsPlayer].slowTicks >=
+    FogDisorientationTicks - 1,
+    "ruin fog should also disorient isolated unsheltered players"
+
 proc testCampShelterAndRecoveryInfrastructure() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -2248,5 +2310,6 @@ testDpsCleaveSpecialDamagesNearbyMobs()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()
+testFogBiomeDisorientationRequiresGroupOrLantern()
 testCampShelterAndRecoveryInfrastructure()
 echo "All tests passed"

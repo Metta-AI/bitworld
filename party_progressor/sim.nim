@@ -129,6 +129,8 @@ const
   FoodHealAmount* = 2
   ColdExposureIntervalTicks* = TargetFps * 3
   HeatExposureIntervalTicks* = TargetFps * 4
+  FogDisorientationIntervalTicks* = TargetFps * 5
+  FogDisorientationTicks* = TargetFps
   CampShelterRadius* = WorldTileSize * 2
   CampRecoveryIntervalTicks* = TargetFps * 2
   CampRecoveryHealAmount* = 1
@@ -3937,7 +3939,7 @@ proc playerNearExpeditionShelter*(
       return true
     if landmark.kind == LandmarkWaystation and landmark.done:
       let biome = sim.tileBiomeKind(landmark.tx, landmark.ty)
-      if biome in {BiomeDesert, BiomeSnow} and
+      if biome in {BiomeDesert, BiomeSnow, BiomeCave, BiomeRuins} and
           sim.playerNearLandmark(
             sim.players[playerIndex],
             landmark,
@@ -4611,6 +4613,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
   let
     coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
     heatPulse = sim.tickCount mod HeatExposureIntervalTicks == 0
+    fogPulse = sim.tickCount mod FogDisorientationIntervalTicks == 0
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
@@ -4638,6 +4641,15 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
     if heatPulse and biome == BiomeDesert and not sheltered:
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
+    if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and
+        not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+      let before = sim.players[playerIndex].slowTicks
+      sim.players[playerIndex].slowTicks = max(
+        sim.players[playerIndex].slowTicks,
+        FogDisorientationTicks
+      )
+      if sim.players[playerIndex].slowTicks != before:
+        inc sim.scoreRevision
 
 proc reduceStatusTicks(value: var int, amount: int): bool =
   if value <= 0:

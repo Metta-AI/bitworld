@@ -56,8 +56,10 @@ The expedition world is organized into horizontal biome bands:
 - Desert: dust, sand, dunes, cactus props, heat pressure, and oasis staging.
 - Snow: snow weather, slower travel, durable threats, and cold survival
   pressure.
-- Cave: fog, cave floor, stone/gold resources, and denser hostile encounters.
-- Ruins: final hostile zone, structures, gold/stone, boss, and final gate.
+- Cave: fog disorientation, cave floor, stone/gold resources, lantern staging,
+  and denser hostile encounters.
+- Ruins: final fog pressure, structures, gold/stone, ward staging, boss, and
+  final gate.
 
 Terrain should remain tile-based and deterministic. Ground tiles and blocking
 props are separate concepts:
@@ -318,9 +320,12 @@ The first full-game implementation pass includes:
 - Desert heat exposure now mirrors the snow survival loop: food or carried food
   absorbs a heat pulse before HP damage, while completed oasis waystations and
   camps shelter nearby players.
+- Cave and ruin fog now disorients isolated unsheltered players with slow
+  pressure, while nearby allies, completed lantern/ward waystations, and camps
+  keep the party oriented.
 - Activated camps now act as expedition shelters: nearby players are protected
-  from snow and desert exposure, recover poison/slow/chill statuses faster, and
-  slowly heal while regrouping.
+  from snow, desert, and fog exposure, recover poison/slow/chill statuses
+  faster, and slowly heal while regrouping.
 - Activated camps also reveal short road or bridge shortcuts through nearby
   rough ground, clearing blockers and reducing elevation so camp investment
   permanently improves the expedition route.
