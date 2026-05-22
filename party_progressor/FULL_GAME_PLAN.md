@@ -440,6 +440,9 @@ The first full-game implementation pass includes:
 - Carried food is now a direct sustain item: the HUD advertises `SEL EAT`
   when eating will heal or cleanse poison/slow/chill, and eating held food no
   longer drains shared party food stores.
+- Carried food can also be fed to a nearby wounded or status-afflicted
+  teammate with `SEL FEED`, letting any role turn one held ration into a local
+  rescue/sustain choice without adding inventory management.
 - Carried camp delivery: selecting at activated camps now turns wood into
   rally staging, food into meal shelters, stone into warded shelters, and gold
   into fortification, so carried supplies create explicit staging choices.

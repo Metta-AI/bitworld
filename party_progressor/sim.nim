@@ -140,6 +140,7 @@ const
   HealerTriageHealAmount* = 1
   LowHealthHelpThresholdPercent* = 50
   FoodHealAmount* = 2
+  CarriedFoodShareRadius* = WorldTileSize * 2
   ColdExposureIntervalTicks* = TargetFps * 3
   HeatExposureIntervalTicks* = TargetFps * 4
   FogDisorientationIntervalTicks* = TargetFps * 5
@@ -3578,6 +3579,11 @@ proc clearCarry(sim: var SimServer, playerIndex: int)
 proc dropCarry(sim: var SimServer, playerIndex: int): bool
 proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool
 proc useCarryInField(sim: var SimServer, playerIndex: int): bool
+proc applyCarriedFood(
+  sim: var SimServer,
+  carrierIndex,
+  targetIndex: int
+): bool
 
 proc carriedFoodWouldHelp*(player: Actor): bool =
   player.lives > 0 and (
@@ -3594,21 +3600,91 @@ proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
   if not sim.players[playerIndex].carrying or
       sim.players[playerIndex].carriedItem != CarryFood:
     return false
-  if not sim.players[playerIndex].carriedFoodWouldHelp():
+  sim.applyCarriedFood(playerIndex, playerIndex)
+
+proc carriedFoodNeedScore(player: Actor): int =
+  if not player.carriedFoodWouldHelp():
+    return -1
+  result = max(0, player.maxHp - player.lives) * 10
+  if player.poisonTicks > 0:
+    result += 12
+  if player.slowTicks > 0:
+    result += 8
+  if player.chillTicks > 0:
+    result += 8
+  if player.exhaustionTicks > 0:
+    result += 6
+
+proc nearbyCarriedFoodRecipient(
+  sim: SimServer,
+  playerIndex: int
+): int =
+  result = -1
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.carrying or
+      player.carriedItem != CarryFood:
+    return
+  let radiusSq = CarriedFoodShareRadius * CarriedFoodShareRadius
+  var
+    bestScore = -1
+    bestDistance = high(int)
+  for otherIndex in 0 ..< sim.players.len:
+    if otherIndex == playerIndex:
+      continue
+    let other = sim.players[otherIndex]
+    if other.lives <= 0:
+      continue
+    let distance = distanceSquaredActor(player, other)
+    if distance > radiusSq:
+      continue
+    let score = other.carriedFoodNeedScore()
+    if score < 0:
+      continue
+    if score > bestScore or (score == bestScore and distance < bestDistance):
+      result = otherIndex
+      bestScore = score
+      bestDistance = distance
+
+proc playerCanFeedCarriedFood*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  sim.nearbyCarriedFoodRecipient(playerIndex) >= 0
+
+proc feedCarriedFood(sim: var SimServer, playerIndex: int): bool =
+  let recipient = sim.nearbyCarriedFoodRecipient(playerIndex)
+  if recipient < 0:
     return false
-  let before = sim.players[playerIndex].lives
-  if sim.players[playerIndex].lives < sim.players[playerIndex].maxHp:
-    sim.players[playerIndex].lives = min(
-      sim.players[playerIndex].maxHp,
-      sim.players[playerIndex].lives + FoodHealAmount
+  sim.applyCarriedFood(playerIndex, recipient)
+
+proc applyCarriedFood(
+  sim: var SimServer,
+  carrierIndex,
+  targetIndex: int
+): bool =
+  if carrierIndex < 0 or carrierIndex >= sim.players.len or
+      targetIndex < 0 or targetIndex >= sim.players.len:
+    return false
+  if not sim.players[carrierIndex].carrying or
+      sim.players[carrierIndex].carriedItem != CarryFood:
+    return false
+  if not sim.players[targetIndex].carriedFoodWouldHelp():
+    return false
+  let before = sim.players[targetIndex].lives
+  if sim.players[targetIndex].lives < sim.players[targetIndex].maxHp:
+    sim.players[targetIndex].lives = min(
+      sim.players[targetIndex].maxHp,
+      sim.players[targetIndex].lives + FoodHealAmount
     )
-  sim.players[playerIndex].poisonTicks = 0
-  sim.players[playerIndex].slowTicks = 0
-  sim.players[playerIndex].chillTicks = 0
-  sim.players[playerIndex].exhaustionTicks = 0
-  sim.players[playerIndex].healingDone +=
-    sim.players[playerIndex].lives - before
-  sim.clearCarry(playerIndex)
+  sim.players[targetIndex].poisonTicks = 0
+  sim.players[targetIndex].slowTicks = 0
+  sim.players[targetIndex].chillTicks = 0
+  sim.players[targetIndex].exhaustionTicks = 0
+  sim.players[carrierIndex].healingDone +=
+    sim.players[targetIndex].lives - before
+  sim.clearCarry(carrierIndex)
   true
 
 proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
@@ -3692,6 +3768,7 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     sim.applyRoleAbility(playerIndex)
   if input.select:
     if not sim.consumeCarriedFood(playerIndex) and
+        not sim.feedCarriedFood(playerIndex) and
         not sim.deliverCarryToCamp(playerIndex) and
         not sim.useCarryInField(playerIndex):
       discard sim.dropCarry(playerIndex)
@@ -4957,6 +5034,8 @@ proc carryHudLabel*(sim: SimServer, playerIndex: int): string =
   let action =
     if player.carriedItem == CarryFood and player.carriedFoodWouldHelp():
       "sel eat"
+    elif player.carriedItem == CarryFood and sim.playerCanFeedCarriedFood(playerIndex):
+      "sel feed"
     elif sim.playerCanDeliverCarryToCamp(playerIndex):
       "sel camp"
     elif sim.playerCanLaySwampPlank(playerIndex):

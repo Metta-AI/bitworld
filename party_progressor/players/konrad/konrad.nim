@@ -810,7 +810,8 @@ proc readStatusHud(bot: var Bot, label: string) =
     if section.startsWith("carry "):
       bot.carriedItem = section.carryKindFromLabel()
       bot.canEatCarriedFood =
-        bot.carriedItem == CarryFood and section.contains("sel eat")
+        bot.carriedItem == CarryFood and
+          (section.contains("sel eat") or section.contains("sel feed"))
       bot.canLaySwampPlank =
         bot.carriedItem == CarryWood and section.contains("sel plank")
       bot.canLayStoneSteps =
@@ -2925,6 +2926,10 @@ when defined(konradTargetSelfTest):
   doAssert bot.abilityLabel == "cleave cd12"
   bot.canEatCarriedFood = false
   bot.readStatusHud("healer swamp|rain w0 f1 s0 r0|b pulse|carry food sel eat|next heal food")
+  doAssert bot.carriedItem == CarryFood
+  doAssert bot.canEatCarriedFood
+  bot.canEatCarriedFood = false
+  bot.readStatusHud("tank snow|snow w0 f0 s0 r0|b guard|carry food sel feed")
   doAssert bot.carriedItem == CarryFood
   doAssert bot.canEatCarriedFood
   bot.canEatCarriedFood = false

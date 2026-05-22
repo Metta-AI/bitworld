@@ -2010,6 +2010,60 @@ proc testCarriedFoodCanBeEatenForRecovery() =
   doAssert sim.carryHudLabel(playerIndex) == "food sel drop",
     "carried food should only advertise eating when it will help"
 
+proc testCarriedFoodCanBeFedToNearbyTeammate() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let
+    feederIndex = sim.addPlayer("feeder")
+    allyIndex = sim.addPlayer("ally")
+    baseX = 5 * WorldTileSize
+    baseY = 5 * WorldTileSize
+  sim.players[feederIndex].x = baseX
+  sim.players[feederIndex].y = baseY
+  sim.players[feederIndex].bounds =
+    sim.playerBoundsFor(sim.players[feederIndex])
+  sim.players[allyIndex].x = baseX + WorldTileSize
+  sim.players[allyIndex].y = baseY
+  sim.players[allyIndex].bounds =
+    sim.playerBoundsFor(sim.players[allyIndex])
+  sim.players[feederIndex].carrying = true
+  sim.players[feederIndex].carriedItem = CarryFood
+  sim.players[allyIndex].lives =
+    sim.players[allyIndex].maxHp - FoodHealAmount
+  sim.players[allyIndex].poisonTicks = StatusPoisonTicks
+  sim.players[allyIndex].slowTicks = StatusSlowTicks
+  sim.players[allyIndex].chillTicks = StatusChillTicks
+  sim.players[allyIndex].exhaustionTicks = StatusExhaustionTicks
+  sim.food = 2
+
+  doAssert sim.playerCanFeedCarriedFood(feederIndex)
+  doAssert sim.carryHudLabel(feederIndex) == "food sel feed"
+  sim.step([InputState(select: true), InputState()])
+  doAssert sim.players[allyIndex].lives == sim.players[allyIndex].maxHp
+  doAssert sim.players[allyIndex].poisonTicks == 0
+  doAssert sim.players[allyIndex].slowTicks == 0
+  doAssert sim.players[allyIndex].chillTicks == 0
+  doAssert sim.players[allyIndex].exhaustionTicks == 0
+  doAssert sim.players[feederIndex].healingDone == FoodHealAmount
+  doAssert sim.food == 2,
+    "feeding carried food should not drain shared party food"
+  doAssert not sim.players[feederIndex].carrying
+
+  sim.players[feederIndex].carrying = true
+  sim.players[feederIndex].carriedItem = CarryFood
+  sim.players[allyIndex].lives = sim.players[allyIndex].maxHp - 1
+  sim.players[allyIndex].x = baseX + CarriedFoodShareRadius + WorldTileSize
+  sim.players[allyIndex].bounds =
+    sim.playerBoundsFor(sim.players[allyIndex])
+  doAssert not sim.playerCanFeedCarriedFood(feederIndex)
+  doAssert sim.carryHudLabel(feederIndex) == "food sel drop",
+    "carried food should only advertise feeding near a teammate it can help"
+
 proc testCarriedWoodCanPlankSwampCrossings() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3892,6 +3946,7 @@ testElevationSlowsHighGround()
 testElevationCombatAdvantageAndBadges()
 testResourceHarvestAndCampActivation()
 testCarriedFoodCanBeEatenForRecovery()
+testCarriedFoodCanBeFedToNearbyTeammate()
 testCarriedWoodCanPlankSwampCrossings()
 testCarriedStoneCanCutElevationSteps()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
