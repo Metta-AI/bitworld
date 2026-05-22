@@ -2461,8 +2461,14 @@ proc testBeaconAndBossScoring() =
     sim.landmarks[0].tx + BeaconSurveyForwardTiles,
     sim.landmarks[0].ty
   )
+  let beaconRoughIndex = tileIndex(
+    sim.landmarks[0].tx + BeaconSurveyForwardTiles + 2,
+    sim.landmarks[0].ty
+  )
   sim.tiles[beaconTrailIndex] = true
   sim.elevations[beaconTrailIndex] = 4
+  sim.groundKinds[beaconRoughIndex] = GroundMud
+  sim.elevations[beaconRoughIndex] = 4
   sim.mobs.add(Mob(
     kind: WolfMob,
     species: SpeciesForestWolf,
@@ -2477,6 +2483,8 @@ proc testBeaconAndBossScoring() =
 
   doAssert sim.objectivesCompleted == 1
   doAssert sim.relicShards == 1
+  doAssert sim.players[playerIndex].surveyTicks == BeaconSurveyTicks
+  doAssert sim.players[playerIndex].statusLabel().contains("survey")
   doAssert sim.groundKinds[beaconTrailIndex] == GroundRoad,
     "relic beacons should survey a short route forward"
   doAssert not sim.tiles[beaconTrailIndex],
@@ -2485,16 +2493,38 @@ proc testBeaconAndBossScoring() =
     "relic beacon surveys should soften steep route terrain"
   doAssert sim.mobs.allIt(it.species != SpeciesForestWolf),
     "relic beacon surveys should clear nearby non-boss threats"
+  let
+    roughX = (sim.landmarks[0].tx + BeaconSurveyForwardTiles + 2) *
+      WorldTileSize
+    roughY = sim.landmarks[0].ty * WorldTileSize
+    ordinaryTrailSpeed = sim.speedPercentAt(roughX, roughY)
+    surveyedTrailSpeed = sim.playerMovementSpeedPercent(
+      sim.players[playerIndex],
+      roughX,
+      roughY
+    )
+  doAssert ordinaryTrailSpeed < BeaconSurveyMinSpeedPercent
+  doAssert surveyedTrailSpeed >= BeaconSurveyMinSpeedPercent,
+    "survey knowledge should make rough/elevated route pushes readable"
   doAssert sim.teamScore() ==
     sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue
   var beaconNextState: PlayerViewerState
-  let beaconLabels = sim.buildSpriteProtocolPlayerUpdates(
+  let beaconParsed = sim.buildSpriteProtocolPlayerUpdates(
     playerIndex,
     initPlayerViewerState(),
     beaconNextState
-  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  ).parseSpriteProtocolPacket()
+  let beaconLabels = beaconParsed.objectSpriteLabels()
+  doAssert "status survey" in beaconLabels
+  doAssert beaconParsed.sprites.values.toSeq.anyIt(it.label.contains("SURVEY SAFE")),
+    "HUD status text should make beacon survey knowledge readable"
   doAssert "beacon" notin beaconLabels
   doAssert "prompt relic" notin beaconLabels
+
+  sim.players[playerIndex].surveyTicks = 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].surveyTicks == 0,
+    "beacon survey knowledge should expire after the next route window"
 
   sim.landmarks.setLen(0)
   sim.mobs.setLen(0)

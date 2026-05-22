@@ -120,6 +120,8 @@ const
   LairRespawnCooldownBonus* = TargetFps * 2
   BiomeWaystationTicks* = TargetFps
   FinalGateRitualTicks* = TargetFps * 2
+  BeaconSurveyTicks* = TargetFps * 10
+  BeaconSurveyMinSpeedPercent* = 90
   FinalGateTwoRoleStep* = 2
   FinalGateThreeRoleStep* = 3
   RoleAbilityCooldown* = 36
@@ -364,6 +366,7 @@ type
     chillTicks*: int
     poisonTicks*: int
     exhaustionTicks*: int
+    surveyTicks*: int
     guideTicks*: int
     huntTicks*: int
     downedTicks*: int
@@ -913,6 +916,8 @@ proc statusLabel*(player: Actor): string =
     labels.add("chill")
   if player.exhaustionTicks > 0:
     labels.add("exhaust")
+  if player.surveyTicks > 0:
+    labels.add("survey")
   if player.guideTicks > 0:
     labels.add("guide")
   if player.huntTicks > 0:
@@ -1973,6 +1978,17 @@ proc speedPercentAt*(sim: SimServer, x, y: int): int =
     weather.weatherSpeedPercent() *
     elevation.elevationSpeedPercent()) div 10_000
 
+proc playerMovementSpeedPercent*(
+  sim: SimServer,
+  player: Actor,
+  x,
+  y: int
+): int =
+  var terrainSpeed = sim.speedPercentAt(x, y)
+  if player.surveyTicks > 0:
+    terrainSpeed = max(terrainSpeed, BeaconSurveyMinSpeedPercent)
+  (terrainSpeed * player.statusSpeedPercent()) div 100
+
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
   let
     worldX = x + bounds.x
@@ -2842,6 +2858,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
   sim.players[playerIndex].downedTicks = 0
@@ -3221,6 +3238,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.chillTicks)
     result.mixHashInt(player.poisonTicks)
     result.mixHashInt(player.exhaustionTicks)
+    result.mixHashInt(player.surveyTicks)
     result.mixHashInt(player.guideTicks)
     result.mixHashInt(player.huntTicks)
     result.mixHashInt(player.downedTicks)
@@ -3768,8 +3786,7 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   let
     footX = boundsCenterX(player.x, player.bounds)
     footY = boundsCenterY(player.y, player.bounds)
-    speedPct =
-      (sim.speedPercentAt(footX, footY) * player.statusSpeedPercent()) div 100
+    speedPct = sim.playerMovementSpeedPercent(player, footX, footY)
   sim.applyMomentumAxis(
     player,
     player.carryX,
@@ -4148,6 +4165,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
   inc sim.scoreRevision
@@ -4178,6 +4196,7 @@ proc reviveDownedPlayer(sim: var SimServer, playerIndex, rescuerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
   if rescuerIndex >= 0 and rescuerIndex < sim.players.len and
@@ -5308,6 +5327,9 @@ proc activateNearbyLandmarks(sim: var SimServer) =
         sim.landmarks[landmarkIndex],
         BeaconSurveyRadius
       )
+      for player in sim.players.mitems:
+        if player.lives > 0:
+          player.surveyTicks = max(player.surveyTicks, BeaconSurveyTicks)
       inc sim.scoreRevision
     of LandmarkShrine:
       sim.landmarks[landmarkIndex].done = true
@@ -6370,6 +6392,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
+    if sim.players[i].surveyTicks > 0:
+      dec sim.players[i].surveyTicks
+      if sim.players[i].surveyTicks == 0:
+        inc sim.scoreRevision
     if sim.players[i].guideTicks > 0:
       dec sim.players[i].guideTicks
       if sim.players[i].guideTicks == 0:

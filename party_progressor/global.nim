@@ -67,7 +67,7 @@ const
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
-  StatusBadgeSlots = 16
+  StatusBadgeSlots = 18
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
   HealthBarWidth = 18
@@ -138,6 +138,7 @@ type
     StatusLight
     StatusGuard
     StatusBlessing
+    StatusSurvey
     StatusGuide
     StatusHunt
     StatusPoison
@@ -1429,6 +1430,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusLight: "LIT"
   of StatusGuard: "GRD"
   of StatusBlessing: "BLS"
+  of StatusSurvey: "SURV"
   of StatusGuide: "GUIDE"
   of StatusHunt: "HUNT"
   of StatusPoison: "POI"
@@ -1466,6 +1468,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusLight: 14'u8
   of StatusGuard: 4'u8
   of StatusBlessing: 14'u8
+  of StatusSurvey: 12'u8
   of StatusGuide: 2'u8
   of StatusHunt: 9'u8
   of StatusPoison: 13'u8
@@ -1503,6 +1506,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusLight: "status light"
   of StatusGuard: "status guard"
   of StatusBlessing: "status blessing"
+  of StatusSurvey: "status survey"
   of StatusGuide: "status guide"
   of StatusHunt: "status hunt"
   of StatusPoison: "status poison"
@@ -2692,6 +2696,8 @@ proc addWorldObjects(
       let tacticBadge = sim.playerBiomeTacticKind(i).biomeTacticStatusBadge()
       if tacticBadge.found:
         badges.add(tacticBadge.badge)
+      if player.surveyTicks > 0:
+        badges.add(StatusSurvey)
       if player.guideTicks > 0:
         badges.add(StatusGuide)
       if player.huntTicks > 0:
