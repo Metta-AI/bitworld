@@ -39,6 +39,7 @@ const
   ExploreStep = 17
   RoleLabelToGearOffset = WorldTileSize div 2
   OpportunisticLootRadius = WorldTileSize * 3
+  OpportunisticObjectiveRadius = WorldTileSize * 5
   BacktrackLootSlack = WorldTileSize
   ExploreDetourResetTicks = TargetFps * 3
   ExploreDetourOffsets = [0, 8, -8, 12, -12, 4, -4, 16, -16, 2, -2, 6, -6]
@@ -1277,17 +1278,59 @@ proc inferredRolePreference(bot: Bot): RolePreference =
 proc preferredRoleTarget(bot: Bot): TargetKind =
   bot.inferredRolePreference().targetKindForPreference()
 
+proc objectiveHintIsWaystation(bot: Bot): bool =
+  ## Waystation objective text uses biome-specific verbs instead of "waypoint".
+  for biome in BiomeKind:
+    if bot.objectiveHint == "next " & biome.waystationPromptLabel().toLowerAscii():
+      return true
+
+proc currentObjectiveTarget(bot: Bot, kind: TargetKind): bool =
+  ## Returns true when the HUD says this landmark kind is the main task.
+  case kind
+  of TargetRelic:
+    bot.objectiveHint.startsWith("next relic")
+  of TargetGate:
+    bot.objectiveHint.startsWith("next open gate")
+  of TargetBoss:
+    bot.objectiveHint.startsWith("next defeat boss")
+  of TargetCamp:
+    bot.objectiveHint.startsWith("next build camp") or
+      bot.objectiveHint.startsWith("next camp")
+  of TargetWaystation:
+    bot.objectiveHintIsWaystation()
+  else:
+    false
+
+proc optionalExpeditionTarget(kind: TargetKind): bool =
+  kind in {
+    TargetRelic,
+    TargetShrine,
+    TargetRescue,
+    TargetLair,
+    TargetWaystation
+  }
+
+proc isOpportunisticObjective(bot: Bot, target: Target): bool =
+  ## Keeps side objectives useful without letting stale clusters stop progress.
+  bot.currentObjectiveTarget(target.kind) or (
+    bot.targetDistance(target) <= OpportunisticObjectiveRadius and
+    target.x >= bot.playerWorldX - BacktrackLootSlack
+  )
+
 proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   ## During role choice, ignore generic gear and non-preferred role labels.
   if bot.carriedItem != CarryNone and target.kind.isCarryResourceTarget() and
       target.objectId.isLooseCarryPickupObject():
+    return false
+  if target.kind.optionalExpeditionTarget() and
+      not bot.isOpportunisticObjective(target):
     return false
   if target.kind == TargetCamp and bot.campResourceSearchTicks > 0:
     return false
   if target.kind == TargetCamp and (bot.needWood > 0 or bot.needStone > 0):
     return false
   if target.kind == TargetShelter:
-    if not (bot.lowHealth or bot.needsRegroup):
+    if not bot.lowHealth:
       return false
     if bot.targetDistance(target) > ShelterReturnRadius:
       return false
@@ -1377,7 +1420,7 @@ proc targetScore(bot: Bot, target: Target): int =
     else:
       distance + (if bot.lowHealth or bot.needsRegroup: -180 else: -100)
   of TargetShelter:
-    distance + (if bot.lowHealth: -210 elif bot.needsRegroup: -160 else: 520)
+    distance + (if bot.lowHealth: -210 else: 520)
   of TargetRelic:
     if bot.objectiveHint.startsWith("next relic"):
       distance - 170
@@ -2019,6 +2062,12 @@ when defined(konradTargetSelfTest):
     kind: TargetShelter,
     objectId: LandmarkObjectBase + 3
   ))
+  bot.needsRegroup = true
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 3
+  ))
+  bot.needsRegroup = false
   bot.lowHealth = true
   doAssert bot.canConsiderPickupTarget(Target(
     kind: TargetShelter,
@@ -2384,6 +2433,41 @@ when defined(konradTargetSelfTest):
     x: 48,
     y: 0
   ))
+  bot.playerWorldX = 1000
+  bot.playerWorldY = 300
+  bot.objectiveHint = ""
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetRelic,
+    objectId: LandmarkObjectBase + 20,
+    x: bot.playerWorldX + OpportunisticObjectiveRadius + 1,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetShrine,
+    objectId: LandmarkObjectBase + 21,
+    x: bot.playerWorldX + OpportunisticObjectiveRadius,
+    y: bot.playerWorldY
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetRescue,
+    objectId: LandmarkObjectBase + 22,
+    x: bot.playerWorldX - BacktrackLootSlack - 1,
+    y: bot.playerWorldY
+  ))
+  bot.objectiveHint = "next relic 0/3"
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetRelic,
+    objectId: LandmarkObjectBase + 23,
+    x: bot.playerWorldX + OpportunisticObjectiveRadius + 1,
+    y: bot.playerWorldY
+  ))
+  bot.objectiveHint = "next forage h"
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetWaystation,
+    objectId: LandmarkObjectBase + 24,
+    x: bot.playerWorldX + OpportunisticObjectiveRadius + 1,
+    y: bot.playerWorldY
+  ))
   bot.lowHealth = false
   bot.needsRegroup = false
   bot.needsRole = false
@@ -2398,6 +2482,14 @@ when defined(konradTargetSelfTest):
   blocked.resetBlocked()
   pickups.setLen(0)
   allies.setLen(0)
+  pickups = @[Target(
+    found: true,
+    kind: TargetRelic,
+    objectId: LandmarkObjectBase + 25,
+    x: bot.playerWorldX + OpportunisticObjectiveRadius + 80,
+    y: bot.playerWorldY,
+    label: "relic"
+  )]
   mobs = @[Target(
     found: true,
     kind: TargetMob,
@@ -2409,6 +2501,7 @@ when defined(konradTargetSelfTest):
   let pushChoice = bot.chooseTarget(blocked, pickups, allies, mobs)
   doAssert pushChoice.kind == TargetExplore
   doAssert pushChoice.x > bot.playerWorldX
+  pickups.setLen(0)
 
   bot.hasExploreGoal = false
   bot.playerWorldX = 420

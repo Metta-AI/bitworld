@@ -449,12 +449,15 @@ The first full-game implementation pass includes:
 - Konrad also treats a failed close-range camp dwell as a temporary resource
   search state, preferring visible wood/stone and suppressing the camp target
   long enough to break repeated camp-orbit loops.
-- Konrad shelter recovery is now local: low-health/regrouping bots can use
-  nearby shelters, but old shelters no longer pull the party hundreds of pixels
-  backward during a forward expedition push.
+- Konrad shelter recovery is now local and health-gated: wounded bots can use
+  nearby shelters, but isolation/regroup pressure sends bots back toward
+  teammates instead of letting old camps satisfy regroup on their own.
 - Konrad forward-push goals now stay inside the expedition corridor, and bots
   that drift above or below the main lane recover back into that lane before
   resuming side fights, loot, and long-range push objectives.
+- Konrad optional side-objective targeting now stays opportunistic unless the
+  HUD names that objective as the current expedition step, so relic, shrine,
+  rescue, lair, and waystation clusters do not stall the party's forward push.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
