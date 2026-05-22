@@ -53,7 +53,7 @@ const
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
-  StatusBadgeSlots = 6
+  StatusBadgeSlots = 7
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -114,6 +114,13 @@ type
     StatusAlone
     StatusHelp
     StatusDown
+    StatusPingRegroup
+    StatusPingHelp
+    StatusPingObjective
+    StatusPingCamp
+    StatusPingFood
+    StatusPingRescue
+    StatusPingLair
 
   GlobalViewerState* = object
     initialized*: bool
@@ -1194,6 +1201,13 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusAlone: "REG"
   of StatusHelp: "HELP"
   of StatusDown: "DOWN"
+  of StatusPingRegroup: "PING REG"
+  of StatusPingHelp: "PING HELP"
+  of StatusPingObjective: "PING OBJ"
+  of StatusPingCamp: "PING CAMP"
+  of StatusPingFood: "PING FOOD"
+  of StatusPingRescue: "PING RES"
+  of StatusPingLair: "PING LAIR"
 
 proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   case kind
@@ -1203,6 +1217,13 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusAlone: 8'u8
   of StatusHelp: 3'u8
   of StatusDown: 3'u8
+  of StatusPingRegroup: 8'u8
+  of StatusPingHelp: 3'u8
+  of StatusPingObjective: 14'u8
+  of StatusPingCamp: 10'u8
+  of StatusPingFood: 6'u8
+  of StatusPingRescue: 2'u8
+  of StatusPingLair: 13'u8
 
 proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   case kind
@@ -1212,6 +1233,24 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusAlone: "status alone"
   of StatusHelp: "status help"
   of StatusDown: "status down"
+  of StatusPingRegroup: "status ping regroup"
+  of StatusPingHelp: "status ping help"
+  of StatusPingObjective: "status ping objective"
+  of StatusPingCamp: "status ping camp"
+  of StatusPingFood: "status ping food"
+  of StatusPingRescue: "status ping rescue"
+  of StatusPingLair: "status ping lair"
+
+proc pingStatusBadge(kind: PlayerPingKind): StatusBadgeKind =
+  case kind
+  of PingRegroup: StatusPingRegroup
+  of PingHelp: StatusPingHelp
+  of PingObjective: StatusPingObjective
+  of PingCamp: StatusPingCamp
+  of PingFood: StatusPingFood
+  of PingRescue: StatusPingRescue
+  of PingLair: StatusPingLair
+  of PingNone: StatusPingRegroup
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -2067,6 +2106,8 @@ proc addWorldObjects(
         badges.add(StatusAlone)
       if sim.playerNeedsHelp(i):
         badges.add(StatusHelp)
+      if player.pingTicks > 0 and player.pingKind != PingNone:
+        badges.add(player.pingKind.pingStatusBadge())
     for badgeIndex in 0 ..< badges.len:
       let
         badge = badges[badgeIndex]

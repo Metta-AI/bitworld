@@ -91,6 +91,7 @@ const
   DpsCleaveDamage* = 2
   TargetFps* = 60
   RoleAbilityCooldown* = 36
+  PingDurationTicks* = TargetFps * 4
   DownedRespawnTicks* = TargetFps * 4
   DownedRescueTicks* = TargetFps * 2
   DownedRescueRadius* = WorldTileSize * 2
@@ -208,6 +209,16 @@ type
     RoleDps
     RoleHealer
 
+  PlayerPingKind* = enum
+    PingNone
+    PingRegroup
+    PingHelp
+    PingObjective
+    PingCamp
+    PingFood
+    PingRescue
+    PingLair
+
   CarryKind* = enum
     CarryNone
     CarryWood
@@ -260,6 +271,8 @@ type
     attackTicks*: int
     attackResolved*: bool
     message*: string
+    pingKind*: PlayerPingKind
+    pingTicks*: int
     velX*: int
     velY*: int
     carryX*: int
@@ -769,6 +782,42 @@ proc statusLabel*(player: Actor): string =
   if labels.len == 0:
     return "ok"
   labels.join("/")
+
+proc pingLabel*(kind: PlayerPingKind): string =
+  case kind
+  of PingNone: "none"
+  of PingRegroup: "regroup"
+  of PingHelp: "help"
+  of PingObjective: "objective"
+  of PingCamp: "camp"
+  of PingFood: "food"
+  of PingRescue: "rescue"
+  of PingLair: "lair"
+
+proc playerPingForMessage*(message: string): PlayerPingKind =
+  ## Converts short chat phrases into compact expedition pings.
+  let lower = message.strip().toLowerAscii()
+  if lower.len == 0:
+    return PingNone
+  if lower.contains("regroup") or lower.contains("group") or
+      lower.contains("together"):
+    return PingRegroup
+  if lower.contains("help") or lower.contains("down") or
+      lower.contains("heal"):
+    return PingHelp
+  if lower.contains("relic") or lower.contains("beacon") or
+      lower.contains("objective") or lower.contains("gate"):
+    return PingObjective
+  if lower.contains("camp") or lower.contains("shelter") or
+      lower.contains("fort"):
+    return PingCamp
+  if lower.contains("food") or lower.contains("eat"):
+    return PingFood
+  if lower.contains("rescue") or lower.contains("save"):
+    return PingRescue
+  if lower.contains("lair") or lower.contains("den"):
+    return PingLair
+  PingNone
 
 proc statusSpeedPercent*(player: Actor): int =
   result = 100
@@ -2373,6 +2422,8 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].attackTicks = 0
   sim.players[playerIndex].attackResolved = false
   sim.players[playerIndex].message = ""
+  sim.players[playerIndex].pingKind = PingNone
+  sim.players[playerIndex].pingTicks = 0
   sim.players[playerIndex].velX = 0
   sim.players[playerIndex].velY = 0
   sim.players[playerIndex].carryX = 0
@@ -2387,6 +2438,24 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
+
+proc setPlayerMessage*(
+  sim: var SimServer,
+  playerIndex: int,
+  message: string
+) =
+  ## Updates speech text and raises a short structured ping when recognized.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.players[playerIndex].message = message
+  let ping = message.playerPingForMessage()
+  sim.players[playerIndex].pingKind = ping
+  sim.players[playerIndex].pingTicks =
+    if ping == PingNone:
+      0
+    else:
+      PingDurationTicks
+  inc sim.scoreRevision
 
 proc addPlayer*(sim: var SimServer, address: string): int =
   ## Adds one player at a valid spawn point.
@@ -2715,6 +2784,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(player.facing))
     result.mixHashInt(player.attackTicks)
     result.mixHashInt(ord(player.attackResolved))
+    result.mixHashInt(ord(player.pingKind))
+    result.mixHashInt(player.pingTicks)
     result.mixHashInt(player.velX)
     result.mixHashInt(player.velY)
     result.mixHashInt(player.carryX)
@@ -4740,6 +4811,11 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
       dec sim.players[i].abilityCooldown
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
+    if sim.players[i].pingTicks > 0:
+      dec sim.players[i].pingTicks
+      if sim.players[i].pingTicks == 0:
+        sim.players[i].pingKind = PingNone
+      inc sim.scoreRevision
     if sim.players[i].lives <= 0:
       continue
     let centerX = boundsCenterX(sim.players[i].x, sim.players[i].bounds)

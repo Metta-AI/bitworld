@@ -929,10 +929,9 @@ proc runServerLoop*(
             )
             if playerIndex >= 0 and playerIndex < sim.players.len:
               let cleaned = cleanChatMessage(message)
-              sim.players[playerIndex].message = cleaned
+              sim.setPlayerMessage(playerIndex, cleaned)
               if cleaned.len > 0:
                 inc sim.players[playerIndex].messagesSent
-                inc sim.scoreRevision
           appState.chatMessages.clear()
 
         for websocket, playerIndex in appState.playerIndices.pairs:

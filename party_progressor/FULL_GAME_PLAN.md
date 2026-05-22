@@ -327,6 +327,9 @@ The first full-game implementation pass includes:
   appear as compact badges next to players, and landmarks show readable labels
   for resources, camp costs, relic beacons, and final-gate requirements, with
   activated camps relabeled as shelters.
+- Chat pings now turn short player messages such as regroup, help, relic, camp,
+  food, rescue, and lair into temporary compact in-world badges so coordination
+  stays readable in the 11 by 11 observation window.
 - Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
   appear as compact badges beside threatening enemies before hits land, so the
   player can read biome combat pressure without first taking the status.
@@ -365,7 +368,7 @@ The first full-game implementation pass includes:
   shortcut reveal, and fortification: add biome-safe staging choices or camp
   specializations.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
-  labels, and downed-player rescue: pings and richer rescue/objective moments.
+  labels, downed-player rescue, and chat pings: richer rescue/objective moments.
 - Make the final gate feel earned by requiring a visible chain of relic, boss,
   and camp progress.
 

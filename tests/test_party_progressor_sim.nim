@@ -781,6 +781,50 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt lair" in labels
   doAssert "prompt gate boss r3" in labels
 
+proc testChatPingsShowCompactStatusBadges() =
+  doAssert playerPingForMessage("regroup at camp") == PingRegroup
+  doAssert playerPingForMessage("need help") == PingHelp
+  doAssert playerPingForMessage("take relic") == PingObjective
+  doAssert playerPingForMessage("food here") == PingFood
+  doAssert playerPingForMessage("rescue now") == PingRescue
+  doAssert playerPingForMessage("clear lair") == PingLair
+
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+
+  sim.setPlayerMessage(playerIndex, "rescue now")
+  doAssert sim.players[playerIndex].pingKind == PingRescue
+  doAssert sim.players[playerIndex].pingTicks == PingDurationTicks
+  sim.setPlayerMessage(playerIndex, "ok")
+  doAssert sim.players[playerIndex].pingKind == PingNone
+  doAssert sim.players[playerIndex].pingTicks == 0
+  sim.setPlayerMessage(playerIndex, "rescue now")
+
+  var nextState: PlayerViewerState
+  let packet = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  )
+  let labels = packet.parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status ping rescue" in labels
+
+  for _ in 0 ..< PingDurationTicks:
+    sim.step([InputState()])
+
+  doAssert sim.players[playerIndex].pingKind == PingNone
+  doAssert sim.players[playerIndex].pingTicks == 0
+
 proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1515,6 +1559,7 @@ testSpriteProtocolPacketMatchesReferenceParsers()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()
+testChatPingsShowCompactStatusBadges()
 testSpriteProtocolShowsMonsterThreatTelegraphs()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
