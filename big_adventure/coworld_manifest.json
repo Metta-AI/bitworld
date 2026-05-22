@@ -5,7 +5,6 @@
     "version": "0.1.0",
     "description": "A cooperative BitWorld adventure game where players explore, fight monsters, collect loot, and decide whether to share or defect.",
     "owner": "treeform@softmax.com",
-    "image_uri": "ghcr.io/treeform/bitworld-big-adventure:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -93,14 +92,23 @@
       "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-big-adventure:latest",
+      "run": ["/bin/big_adventure", "--address:0.0.0.0", "--port:8080"]
     }
   },
   "player": [
     {
       "id": "konrad",
       "name": "konrad",
-      "image_uri": "ghcr.io/treeform/bitworld-konrad:latest",
-      "description": "Coworld player for big_adventure."
+      "description": "Coworld player for big_adventure.",
+      "runnable": {
+        "type": "player",
+        "image": "ghcr.io/treeform/bitworld-konrad:latest",
+        "run": ["/bin/konrad", "--address:host.docker.internal", "--port:2000"]
+      }
     }
   ],
   "variants": [

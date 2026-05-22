@@ -15,9 +15,9 @@ proc testCanonicalCoworldClientRoutes() =
   doAssert coworldClientStaticRoute(CoworldRewardClientRoute) == RewardClientRoute
   doAssert coworldClientStaticRoute(CoworldSnappyClientRoute) == SnappyClientRoute
   doAssert coworldClientStaticRoute(CoworldQrcodeClientRoute) == QrcodeClientRoute
-  doAssert coworldClientStaticRoute("/clients/replay.html") == "/clients/replay.html"
-  doAssert clientStaticPath("/clients/replay.html") == ""
-  doAssert clientStaticPath("/client/replay") == ""
+  doAssert coworldClientStaticRoute("/client/replay.html") == "/client/replay.html"
+  doAssert clientStaticPath("/client/replay.html") == ""
+  assertEndsWith(clientStaticPath("/client/replay"), "clients" / GlobalClientHtml)
 
 proc testClientStaticPaths() =
   ## Tests that public routes resolve to packaged static files.

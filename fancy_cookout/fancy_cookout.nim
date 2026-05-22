@@ -1,4 +1,5 @@
 import mummy, pixie
+import bitworld/cogame_runtime
 import protocol except TileSize
 import server except ScreenWidth, ScreenHeight
 import sprite_render
@@ -1059,10 +1060,8 @@ proc httpHandler(request: Request) =
   elif request.path == "/" or request.path == WebSocketPath or
       request.path == "/global" or request.path == "/admin" or
       request.path == "/replay" or
-      request.path == "/client/global" or request.path == "/clients/global" or
-      request.path == "/client/player" or request.path == "/clients/player" or
-      request.path == "/client/admin" or request.path == "/clients/admin" or
-      request.path == "/client/replay" or request.path == "/clients/replay":
+      request.path == "/clients/global" or request.path == "/clients/player" or
+      request.path == "/clients/admin" or request.path == "/clients/replay":
     request.serveClientHtml("global_client.html")
   else:
     var headers: HttpHeaders
@@ -1350,13 +1349,13 @@ when isMainModule:
     configPath = ""
     pendingOption = ""
 
-  let envConfigPath = getEnv("COGAME_CONFIG_PATH", "")
+  let envConfigPath = pathFromCogameEnv(CogameConfigUriEnv)
   if envConfigPath.len > 0:
     configPath = envConfigPath
-  let envResultsPath = getEnv("COGAME_SAVE_RESULTS_PATH", getEnv("COGAME_RESULTS_PATH", ""))
+  let envResultsPath = pathFromCogameEnv(CogameResultsUriEnv)
   if envResultsPath.len > 0:
     config.resultsPath = envResultsPath
-  config.saveReplayPath = getEnv("COGAME_SAVE_REPLAY_PATH", "")
+  config.saveReplayPath = pathFromCogameEnv(CogameSaveReplayUriEnv)
 
   for kind, key, val in getopt():
     case kind

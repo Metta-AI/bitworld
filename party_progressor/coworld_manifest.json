@@ -5,7 +5,6 @@
     "version": "0.1.0",
     "description": "A cooperative BitWorld party progressor where players talk, choose tank/DPS/healer gear, and push a shared frontier to the right.",
     "owner": "treeform@softmax.com",
-    "image_uri": "ghcr.io/treeform/bitworld-party-progressor:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -161,14 +160,23 @@
       "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-party-progressor:latest",
+      "run": ["/bin/party_progressor", "--address:0.0.0.0", "--port:8080"]
     }
   },
   "player": [
     {
       "id": "konrad",
       "name": "konrad",
-      "image_uri": "ghcr.io/treeform/bitworld-konrad:latest",
-      "description": "Coworld player for party_progressor."
+      "description": "Coworld player for party_progressor.",
+      "runnable": {
+        "type": "player",
+        "image": "ghcr.io/treeform/bitworld-konrad:latest",
+        "run": ["/bin/konrad", "--address:host.docker.internal", "--port:2000"]
+      }
     }
   ],
   "variants": [

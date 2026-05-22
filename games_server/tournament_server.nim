@@ -6,7 +6,7 @@ import
   mummy,
   taggy
 
-from std/httpclient import close, getContent, newHttpClient
+from std/httpclient import close, get, getContent, newHttpClient
 
 const
   DefaultHost = "0.0.0.0"
@@ -30,11 +30,14 @@ const
   SharedReplayDirEnv = "GAMES_SERVER_REPLAY_DIR"
   GamesServerPortEnv = "TOURNAMENT_GAMES_SERVER_PORT"
   CoworldManifestName = "coworld_manifest.json"
-  CoplayerManifestName = "coplayer_manifest.json"
   GameContainerPort = 8080
   ContainerReplayDir = "/replays"
-  CogameReplayEnv = "COGAME_SAVE_REPLAY_PATH"
-  CogameResultsEnv = "COGAME_SAVE_RESULTS_PATH"
+  CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
+  CogameResultsUriEnv = "COGAME_RESULTS_URI"
+  CogameConfigUriEnv = "COGAME_CONFIG_URI"
+  CogameHostEnv = "COGAME_HOST"
+  CogamePortEnv = "COGAME_PORT"
+  CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   HealthPath = "/healthz"
   LogsPath = "/logs"
   ScoresPath = "/scores"
@@ -246,7 +249,8 @@ type
     name: string
     author: string
     imageUri: string
-    binary: string
+    command: seq[string]
+    env: seq[(string, string)]
 
   PlayerManifest = object
     key: string
@@ -254,7 +258,8 @@ type
     name: string
     author: string
     imageUri: string
-    binary: string
+    command: seq[string]
+    env: seq[(string, string)]
     games: seq[string]
 
   TournamentConfig = object
@@ -299,6 +304,7 @@ type
     created: int64
     replay: string
     results: string
+    config: string
     slots: seq[PlayerSlot]
 
   ScoreRow = object
@@ -552,7 +558,11 @@ proc manifestObject(node: JsonNode, key: string): JsonNode =
 
 proc manifestImage(node: JsonNode): string =
   ## Reads a Docker image from a Coworld manifest node.
-  result = node.manifestString("image_uri", "")
+  let runnable = node.manifestObject("runnable")
+  if not runnable.isNil:
+    result = runnable.manifestString("image", "")
+  if result.len == 0:
+    result = node.manifestString("image_uri", "")
   if result.len == 0:
     result = node.manifestString("image", "")
 
@@ -565,9 +575,24 @@ proc manifestStringArray(node: JsonNode, key: string): seq[string] =
     if item.kind == JString:
       result.add(item.getStr())
 
-proc defaultManifestName(path: string): string =
-  ## Returns a display name for a manifest path.
-  splitPath(parentDir(path)).tail
+proc manifestRunCommand(node: JsonNode, path: string): seq[string] =
+  ## Reads a required Coworld run command.
+  let runnable = node.manifestObject("runnable")
+  if not runnable.isNil:
+    result = runnable.manifestStringArray("run")
+  if result.len == 0:
+    result = node.manifestStringArray("run")
+  if result.len == 0:
+    raise newException(TournamentError, path & " missing run")
+
+proc manifestEnv(node: JsonNode): seq[(string, string)] =
+  ## Reads one optional Coworld env object.
+  if node.kind != JObject or not node.hasKey("env") or
+      node["env"].kind != JObject:
+    return
+  for key, value in node["env"].pairs:
+    if value.kind == JString:
+      result.add((key, value.getStr()))
 
 proc readGameManifest(path: string): GameManifest =
   ## Reads one Coworld manifest summary from disk.
@@ -591,36 +616,13 @@ proc readGameManifest(path: string): GameManifest =
         game.manifestString("owner", "-")
       ),
       imageUri: image,
-      binary: game.manifestString("binary", "/bin/" & name)
+      command: game.manifestRunCommand("coworld.game.runnable"),
+      env: game.manifestEnv()
     )
   except CatchableError as e:
     raise newException(
       TournamentError,
       "could not read Coworld manifest " & path & ": " & e.msg
-    )
-
-proc readPlayerManifest(path: string): PlayerManifest =
-  ## Reads one CoPlayer manifest summary from disk.
-  try:
-    let
-      manifest = parseJson(readFile(path))
-      name = manifest.manifestString(
-        "name",
-        defaultManifestName(path)
-      )
-    result = PlayerManifest(
-      key: manifestKey(path),
-      path: path,
-      name: name,
-      author: manifest.manifestString("author", "-"),
-      imageUri: manifest.manifestString("image_uri", ""),
-      binary: manifest.manifestString("binary", "/bin/" & name),
-      games: manifest.manifestStringArray("games")
-    )
-  except CatchableError as e:
-    raise newException(
-      TournamentError,
-      "could not read player manifest " & path & ": " & e.msg
     )
 
 proc readCoworldPlayers(path: string): seq[PlayerManifest] =
@@ -641,6 +643,9 @@ proc readCoworldPlayers(path: string): seq[PlayerManifest] =
       )
       if name.len == 0:
         continue
+      let image = player.manifestImage()
+      if image.len == 0:
+        continue
       result.add(PlayerManifest(
         key: manifestKey(path) & "#player/" & name,
         path: path,
@@ -649,8 +654,9 @@ proc readCoworldPlayers(path: string): seq[PlayerManifest] =
           "author",
           player.manifestString("owner", "-")
         ),
-        imageUri: player.manifestImage(),
-        binary: player.manifestString("binary", "/bin/" & name),
+        imageUri: image,
+        command: player.manifestRunCommand("coworld.player[" & name & "].runnable"),
+        env: player.manifestEnv(),
         games: @[game.name]
       ))
   except CatchableError as e:
@@ -659,19 +665,8 @@ proc readCoworldPlayers(path: string): seq[PlayerManifest] =
       "could not read Coworld players " & path & ": " & e.msg
     )
 
-proc addManifestPath(paths: var seq[string], path: string) =
-  ## Adds one manifest path if it exists and is not already present.
-  if path.len == 0 or not fileExists(path):
-    return
-  let key = manifestKey(path)
-  for existing in paths:
-    if manifestKey(existing) == key:
-      return
-  paths.add(path)
-
 proc listPlayerManifests(): seq[PlayerManifest] =
-  ## Scans game folders for CoPlayer manifests.
-  var paths: seq[string]
+  ## Scans Coworld manifests for embedded player entries.
   for dir in walkDirs(gamesRoot() / "*"):
     let coworldPath = dir / CoworldManifestName
     if fileExists(coworldPath):
@@ -680,11 +675,6 @@ proc listPlayerManifests(): seq[PlayerManifest] =
           result.add(player)
       except TournamentError as e:
         stderr.writeLine("Skipping Coworld players ", coworldPath, ": ", e.msg)
-    for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
-      paths.addManifestPath(path)
-  paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
-  for path in paths:
-    result.add(readPlayerManifest(path))
 
 proc supportsGame(player: PlayerManifest, gameName: string): bool =
   ## Returns true when one player manifest supports one game.
@@ -1010,6 +1000,10 @@ proc resultsName(gameName: string): string =
   ## Builds the scores file name for one tournament game.
   cleanFileName(gameName) & ".scores.json"
 
+proc configName(gameName: string): string =
+  ## Builds the config file name for one tournament game.
+  cleanFileName(gameName) & ".config.json"
+
 proc replayPath(name: string): string =
   ## Builds an absolute path for one replay or score file.
   replayDir() / cleanFileName(name)
@@ -1020,6 +1014,13 @@ proc addAiEnvArgs(args: var seq[string]) =
     if getEnv(name).len > 0:
       args.add("-e")
       args.add(name)
+
+proc playerWsUrl(port: int, slot: PlayerSlot): string =
+  ## Builds one player WebSocket URL for a tournament player.
+  "ws://" & BotHost & ":" & $port & "/player?name=" &
+    encodeUrlComponent(slot.playerName) & "&slot=" &
+    encodeUrlComponent($slot.slotIndex) & "&token=" &
+    encodeUrlComponent(slot.token)
 
 var skipPull* = false
 
@@ -1063,6 +1064,17 @@ proc rebuildStatsTable(
   players: openArray[PlayerManifest]
 ): Table[string, PlayerStats]
 
+proc variantDefaults(manifest: JsonNode): JsonNode =
+  ## Reads the first variant's game_config defaults.
+  result = newJObject()
+  if not manifest.hasKey("variants") or manifest["variants"].kind != JArray or
+      manifest["variants"].len == 0:
+    return
+  let variant = manifest["variants"][0]
+  if variant.kind == JObject and variant.hasKey("game_config") and
+      variant["game_config"].kind == JObject:
+    result = variant["game_config"].copy()
+
 proc defaultConfigJson(
   manifest: GameManifest,
   playersPerGame: int,
@@ -1072,13 +1084,14 @@ proc defaultConfigJson(
   let
     manifestNode = parseJson(readFile(manifest.path))
     game = manifestNode.manifestObject("game")
-  var node = newJObject()
+  var node = variantDefaults(manifestNode)
   if not game.isNil and game.hasKey("config_schema"):
     let schema = game["config_schema"]
     if schema.kind == JObject and schema.hasKey("properties") and
         schema["properties"].kind == JObject:
       for key, property in schema["properties"].pairs:
-        if property.kind == JObject and property.hasKey("default"):
+        if not node.hasKey(key) and property.kind == JObject and
+            property.hasKey("default"):
           node[key] = property["default"].copy()
 
   let
@@ -1146,8 +1159,7 @@ proc gameDockerArgs(
   game: GameManifest,
   name: string,
   port: int,
-  run: GameRun,
-  config: string
+  run: GameRun
 ): seq[string] =
   ## Builds Docker args for one tournament game container.
   result = @[
@@ -1177,16 +1189,23 @@ proc gameDockerArgs(
     "-v",
     replayDir() & ":" & ContainerReplayDir,
     "-e",
-    CogameReplayEnv & "=" & ContainerReplayDir / run.replay,
+    CogameReplayUriEnv & "=file://" & ContainerReplayDir / run.replay,
     "-e",
-    CogameResultsEnv & "=" & ContainerReplayDir / run.results
+    CogameResultsUriEnv & "=file://" & ContainerReplayDir / run.results,
+    "-e",
+    CogameConfigUriEnv & "=file://" & ContainerReplayDir / run.config,
+    "-e",
+    CogameHostEnv & "=0.0.0.0",
+    "-e",
+    CogamePortEnv & "=" & $GameContainerPort
   ]
   result.addAiEnvArgs()
+  for (key, value) in game.env:
+    result.add("-e")
+    result.add(key & "=" & value)
   result.add(gameImageUri(game))
-  result.add(game.binary)
-  result.add("--address:0.0.0.0")
-  result.add("--port:" & $GameContainerPort)
-  result.add("--config:" & config)
+  for token in game.command:
+    result.add(token)
 
 proc playerDockerArgs(
   player: PlayerManifest,
@@ -1219,13 +1238,16 @@ proc playerDockerArgs(
     PlayerNameLabel & "=" & slot.playerName
   ]
   result.addAiEnvArgs()
+  result.add("-e")
+  result.add(CogamesEngineWsEnv & "=" & playerWsUrl(run.port, slot))
+  for (key, value) in player.env:
+    result.add("-e")
+    result.add(key & "=" & value)
   result.add(player.imageUri)
-  result.add(player.binary)
-  result.add("--address:" & BotHost)
-  result.add("--port:" & $run.port)
-  result.add("--name:" & slot.playerName)
-  result.add("--slot:" & $slot.slotIndex)
-  result.add("--token:" & slot.token)
+  for token in player.command:
+    result.add(token)
+
+proc waitForHealthy(container: TournamentContainer, timeoutSec = 30): bool
 
 proc mmrWeight(mmr, minMmr, maxMmr: float): float =
   ## Returns a weighted-random policy selection weight.
@@ -1369,6 +1391,7 @@ proc startTournamentGame(
     chosen = choosePlayers(players, config.playersPerGame, gameId, port)
     replay = replayName(name)
     results = resultsName(name)
+    configFile = configName(name)
   var run = GameRun(
     id: gameId,
     name: name,
@@ -1376,6 +1399,7 @@ proc startTournamentGame(
     created: created,
     replay: replay,
     results: results,
+    config: configFile,
     slots: chosen.slots
   )
   let gameConfig = defaultConfigJson(game, config.playersPerGame, run.slots)
@@ -1385,8 +1409,17 @@ proc startTournamentGame(
   for player in chosen.manifests:
     images.add(player.imageUri)
   pullImagesFresh(images)
+  writeFile(replayPath(configFile), gameConfig)
 
   try:
+    discard requireDocker(gameDockerArgs(game, name, port, run))
+    launched.add(name)
+    let pending = inspectContainer(name)
+    if not waitForHealthy(pending):
+      raise newException(
+        TournamentError,
+        "game container " & name & " did not become healthy in time"
+      )
     for i, slot in run.slots:
       discard requireDocker(playerDockerArgs(
         chosen.manifests[i],
@@ -1395,8 +1428,6 @@ proc startTournamentGame(
         slot
       ))
       launched.add(slot.containerName)
-    discard requireDocker(gameDockerArgs(game, name, port, run, gameConfig))
-    launched.add(name)
     addGameRun(run)
     clearLastError()
   except CatchableError:
@@ -1760,16 +1791,26 @@ proc healthUrl(container: TournamentContainer): string =
   "http://127.0.0.1:" & $container.port & HealthPath
 
 proc gameHealthy(container: TournamentContainer): bool =
-  ## Returns true when a game container health endpoint answers healthy.
+  ## Returns true when a game container health endpoint answers HTTP 200.
   if container.status != "running" or container.port <= 0:
     return false
   var client = newHttpClient(timeout = 300)
   try:
-    result = client.getContent(healthUrl(container)).strip() == "healthy"
+    let response = client.get(healthUrl(container))
+    result = response.status.startsWith("200")
   except CatchableError:
     result = false
   finally:
     client.close()
+
+proc waitForHealthy(container: TournamentContainer, timeoutSec = 30): bool =
+  ## Polls a game container until its /healthz endpoint is ready.
+  let deadline = epochTime() + timeoutSec.float
+  while epochTime() < deadline:
+    if gameHealthy(container):
+      return true
+    sleep(250)
+  false
 
 proc logUrl(name: string): string =
   ## Builds a log viewer URL for one container.

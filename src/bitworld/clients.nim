@@ -18,13 +18,13 @@ const
   QrcodeClientRoute* = "/qrcode.min.js"
   SnappyClientPath* = "/client/snappyjs.min.js"
   QrcodeClientPath* = "/client/qrcode.min.js"
-  CoworldPlayerClientRoute* = "/clients/player"
-  CoworldGlobalClientRoute* = "/clients/global"
-  CoworldReplayClientRoute* = "/clients/replay"
-  CoworldAdminClientRoute* = "/clients/admin"
-  CoworldRewardClientRoute* = "/clients/rewards"
-  CoworldSnappyClientRoute* = "/clients/snappyjs.min.js"
-  CoworldQrcodeClientRoute* = "/clients/qrcode.min.js"
+  CoworldPlayerClientRoute* = PlayerClientRoute
+  CoworldGlobalClientRoute* = GlobalClientRoute
+  CoworldReplayClientRoute* = "/client/replay"
+  CoworldAdminClientRoute* = AdminClientRoute
+  CoworldRewardClientRoute* = RewardsClientPath
+  CoworldSnappyClientRoute* = SnappyClientPath
+  CoworldQrcodeClientRoute* = QrcodeClientPath
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   AdminClientHtml* = "admin_client.html"
@@ -58,20 +58,20 @@ proc clientsDir*(): string =
 proc clientRoute*(route: string, playerRoute = PlayerClientRoute): string =
   ## Maps public client aliases to the underlying shared client route.
   case route
-  of CoworldPlayerClientRoute, PlayerClientRoute, PlayerClientHtmlRoute:
+  of PlayerClientRoute, PlayerClientHtmlRoute:
     playerRoute
-  of CoworldGlobalClientRoute, CoworldReplayClientRoute, GlobalClientRoute,
+  of CoworldReplayClientRoute, GlobalClientRoute,
       GlobalClientHtmlRoute, "/client/global_client.html":
     GlobalClientRoute
-  of CoworldAdminClientRoute, AdminClientRoute, AdminClientHtmlRoute:
+  of AdminClientRoute, AdminClientHtmlRoute:
     AdminClientRoute
-  of CoworldRewardClientRoute, RewardClientRoute, RewardsClientPath,
+  of RewardClientRoute, RewardsClientPath,
       RewardClientHtmlRoute, "/client/reward.html",
       "/client/reward_client.html":
     RewardClientRoute
-  of CoworldSnappyClientRoute, SnappyClientPath:
+  of SnappyClientPath:
     SnappyClientRoute
-  of CoworldQrcodeClientRoute, QrcodeClientPath:
+  of QrcodeClientPath:
     QrcodeClientRoute
   else:
     route

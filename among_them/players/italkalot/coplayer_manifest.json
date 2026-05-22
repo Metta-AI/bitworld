@@ -1,6 +1,0 @@
-{
-  "author": "treeform@softmax.com",
-  "name": "italkalot",
-  "image_uri": "ghcr.io/treeform/bitworld-italkalot:latest",
-  "games": ["among_them"]
-}

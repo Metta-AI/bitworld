@@ -2,6 +2,7 @@ import mummy
 import pixie
 import supersnappy
 import bitworld/clients
+import bitworld/cogame_runtime
 import protocol, server
 import std/[json, locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
 
@@ -242,21 +243,6 @@ proc defaultGameConfig(): GameConfig =
     maxGames: 0,
     closedRoster: false
   )
-
-proc cogamePath(value, source: string): string =
-  if value.len == 0:
-    return ""
-  const FilePrefix = "file://"
-  if value.startsWith(FilePrefix):
-    result = value[FilePrefix.len .. ^1]
-    if result.len == 0:
-      echo "ERROR: empty file URI from " & source
-      quit(1)
-    return
-  if "://" in value:
-    echo "ERROR: unsupported URI from " & source & ": " & value
-    quit(1)
-  result = value
 
 proc parseGameConfig(jsonStr: string): GameConfig =
   result = defaultGameConfig()
@@ -2103,8 +2089,8 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
-    configPath = cogamePath(getEnv("COGAME_CONFIG_URI"), "COGAME_CONFIG_URI")
-    saveScoresPath = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
+    saveScoresPath = pathFromCogameEnv(CogameResultsUriEnv)
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:

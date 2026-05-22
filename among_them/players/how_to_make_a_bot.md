@@ -118,7 +118,7 @@ Open `bitworld/clients/index.html?address=ws://localhost:2000/player` in your br
 
 View the global map from the browser:
 
-Open `bitworld/clients/global_client.html?address=ws://localhost:2000/player` in your browser.
+Open `bitworld/client/global_client.html?address=ws://localhost:2000/player` in your browser.
 
 
 ## Protocol Basics
@@ -757,13 +757,13 @@ To spectate or play alongside the bots, open the player client in another
 browser tab:
 
 ```
-http://localhost:8080/client/player.html?address=ws://localhost:8080/player&name=spectator
+http://localhost:8080/client/player?address=ws://localhost:8080/player&name=spectator
 ```
 
 Or view the god-mode global map:
 
 ```
-http://localhost:8080/client/global.html?address=ws://localhost:8080/global
+http://localhost:8080/client/global?address=ws://localhost:8080/global
 ```
 
 ### CLI Reference

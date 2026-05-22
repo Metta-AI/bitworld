@@ -2,7 +2,7 @@ import
   std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils,
     tables, times],
   mummy, pixie, supersnappy,
-  bitworld/aseprite, bitworld/clients, pixelfonts, protocol, server
+  bitworld/aseprite, bitworld/clients, bitworld/cogame_runtime, pixelfonts, protocol, server
 
 const
   BoardWidthCells = 125
@@ -3303,9 +3303,7 @@ proc update(config: var RunConfig, jsonText: string) =
 
 proc defaultScoresPath(): string =
   ## Returns the configured score save path from the environment.
-  result = getEnv("COGAME_SAVE_RESULTS_PATH")
-  if result.len == 0:
-    result = getEnv("COGAME_RESULTS_PATH")
+  pathFromCogameEnv(CogameResultsUriEnv)
 
 when isMainModule:
   var
@@ -3318,7 +3316,7 @@ when isMainModule:
       maxGames: 0
     )
     configJson = ""
-    configPath = getEnv("COGAME_CONFIG_PATH")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
   for kind, key, val in getopt():
     case kind
     of cmdLongOption:

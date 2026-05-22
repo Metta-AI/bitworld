@@ -1,54 +1,18 @@
 import
   std/[os, parseopt, strutils],
-  curly,
+  bitworld/cogame_runtime,
   protocol, sim, server
-
-proc cogamePath(value, source: string): string =
-  ## Converts one COGAME file URI or path into a local path.
-  if value.len == 0:
-    return ""
-  const FilePrefix = "file://"
-  if value.startsWith(FilePrefix):
-    result = value[FilePrefix.len .. ^1]
-    if result.len == 0:
-      echo "ERROR: empty file URI from " & source
-      quit(1)
-    return
-  if "://" in value:
-    echo "ERROR: unsupported URI from " & source & ": " & value
-    quit(1)
-  result = value
-
-proc replayPathFromEnv(pathEnv, uriEnv: string): string =
-  ## Reads one replay path from the path env var, then the URI env var.
-  result = getEnv(pathEnv)
-  if result.len == 0:
-    result = cogamePath(getEnv(uriEnv), uriEnv)
-
-proc resultsPathFromEnv(): string =
-  ## Reads one scores path from the current and legacy env vars.
-  result = getEnv("COGAME_SAVE_RESULTS_PATH")
-  if result.len == 0:
-    result = getEnv("COGAME_RESULTS_PATH")
-  if result.len == 0:
-    result = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
 
 when isMainModule:
   var
-    address = DefaultHost
-    port = DefaultPort
+    address = cogameHost(DefaultHost)
+    port = cogamePort(DefaultPort)
     configJson = ""
-    configPath = cogamePath(getEnv("COGAME_CONFIG_URI"), "COGAME_CONFIG_URI")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
     mapPath = ""
-    saveReplayPath = replayPathFromEnv(
-      "COGAME_SAVE_REPLAY_PATH",
-      "COGAME_SAVE_REPLAY_URI"
-    )
-    loadReplayPath = replayPathFromEnv(
-      "COGAME_LOAD_REPLAY_PATH",
-      "COGAME_LOAD_REPLAY_URI"
-    )
-    saveScoresPath = resultsPathFromEnv()
+    saveReplayPath = outputPathFromCogameEnv(CogameSaveReplayUriEnv, "replay.bitreplay")
+    loadReplayPath = pathFromCogameEnv(CogameLoadReplayUriEnv)
+    saveScoresPath = outputPathFromCogameEnv(CogameResultsUriEnv, "scores.json")
     logUri = getEnv("COGAME_LOG_URI")
     replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
     messageCooldown = -1
@@ -98,19 +62,6 @@ when isMainModule:
     echo "Using results save file: " & saveScoresPath
   if logUri.len > 0:
     echo "Using game log URI: " & logUri
-  let replayDownloadUrl = getEnv("REPLAY_DOWNLOAD_URL")
-  if replayDownloadUrl.len > 0 and loadReplayPath.len == 0 and
-      not replayServerMode:
-    echo "Downloading replay from: ", replayDownloadUrl
-    let pool = newCurlPool(1)
-    let resp = pool.get(replayDownloadUrl)
-    if resp.code != 200:
-      echo "ERROR: replay download failed: ", resp.code
-      quit(1)
-    loadReplayPath = "/tmp/downloaded.bitreplay"
-    writeFile(loadReplayPath, resp.body)
-    echo "Replay downloaded: ", resp.body.len, " bytes"
-
   echo "starting among_them on ", address, ":", port
   runServerLoop(
     address,

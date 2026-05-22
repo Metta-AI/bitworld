@@ -2438,9 +2438,12 @@ proc runBot(
   maxSteps = 0
 ) =
   ## Connects to the Party Progressor player endpoint.
+  let engineWsUrl = getEnv("COGAMES_ENGINE_WS_URL")
   let url =
-    if getEnv("COGAMES_ENGINE_WS_URL").len > 0:
-      getEnv("COGAMES_ENGINE_WS_URL")
+    if host.startsWith("ws://") or host.startsWith("wss://"):
+      host
+    elif engineWsUrl.len > 0:
+      engineWsUrl
     else:
       localPlayerUrl(host, port, name, token, slot)
   let preferredRole = rolePreferenceFor(name, slot)
@@ -3786,10 +3789,11 @@ when defined(konradTargetSelfTest):
   echo "Konrad target tests passed"
 
 elif isMainModule:
+  let engineWsUrl = getEnv("COGAMES_ENGINE_WS_URL")
   var
-    address = DefaultHost
+    address = if engineWsUrl.len > 0: engineWsUrl else: DefaultHost
     port = PlayerDefaultPort
-    name = "konrad"
+    name = if engineWsUrl.len > 0: "" else: "konrad"
     token = ""
     slot = ""
     chat = false

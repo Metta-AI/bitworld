@@ -5,7 +5,6 @@
     "version": "0.1.0",
     "description": "A multiplayer BitWorld falling-blocks game where players stack pieces, clear lines, and compete for score on one shared board.",
     "owner": "treeform@softmax.com",
-    "image_uri": "ghcr.io/treeform/bitworld-infinite-blocks:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -88,14 +87,26 @@
       "client/player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "client/global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "client/reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-infinite-blocks:latest",
+      "run": ["/bin/infinite_blocks", "--address:0.0.0.0", "--port:8080"]
     }
   },
   "player": [
     {
       "id": "stacker",
       "name": "stacker",
-      "image_uri": "ghcr.io/treeform/bitworld-stacker:latest",
-      "description": "Coworld player for infinite_blocks."
+      "description": "Coworld player for infinite_blocks.",
+      "runnable": {
+        "type": "player",
+        "image": "ghcr.io/treeform/bitworld-stacker:latest",
+        "run": [
+          "/bin/stacker",
+          "--address:ws://host.docker.internal:8080/player"
+        ]
+      }
     }
   ],
   "variants": [

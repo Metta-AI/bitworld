@@ -2,6 +2,8 @@
   "author": "malcolm@stem.ai",
   "name": "rabbiteer",
   "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-rabbiteer:latest",
-  "binary": "/bin/rabbiteer",
-  "games": ["stag_hunt"]
+  "games": [
+    "stag_hunt"
+  ],
+  "run": ["/bin/rabbiteer"]
 }

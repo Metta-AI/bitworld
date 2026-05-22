@@ -5,7 +5,6 @@
     "version": "0.1.0",
     "description": "A BitWorld arcade game where players pilot ships, shoot asteroids, and fight each other.",
     "owner": "treeform@softmax.com",
-    "image_uri": "ghcr.io/treeform/bitworld-asteroid-arena:latest",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -64,14 +63,23 @@
       "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
       "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-asteroid-arena:latest",
+      "run": ["/bin/asteroid_arena", "--address:0.0.0.0", "--port:8080"]
     }
   },
   "player": [
     {
       "id": "shooter",
       "name": "Shooter",
-      "image_uri": "ghcr.io/treeform/bitworld-asteroid-arena-shooter:latest",
-      "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires."
+      "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires.",
+      "runnable": {
+        "type": "player",
+        "image": "ghcr.io/treeform/bitworld-asteroid-arena-shooter:latest",
+        "run": ["/bin/shooter"]
+      }
     }
   ],
   "variants": [

@@ -146,6 +146,10 @@ flags override these values when both are set.
 | `COGAME_RESULTS_URI` | URI where final scores are written |
 | `COGAME_SAVE_REPLAY_URI` | Optional URI where a replay is written |
 | `COGAME_LOAD_REPLAY_URI` | Optional URI for a replay to load |
+| `COGAME_RESULTS_METHOD` | HTTP method for an HTTP(S) results URI, default `PUT` |
+| `COGAME_SAVE_REPLAY_METHOD` | HTTP method for an HTTP(S) replay URI, default `PUT` |
+| `COGAME_HOST` | Host address to bind, default `0.0.0.0` |
+| `COGAME_PORT` | Port to bind, default `8080` |
 
 Results are written when `maxGames` is set to 1 or higher.
 
@@ -153,7 +157,8 @@ Results are written when `maxGames` is set to 1 or higher.
 COGAME_CONFIG_URI=file://$PWD/config.json \
 COGAME_RESULTS_URI=file://$PWD/scores.json \
 COGAME_SAVE_REPLAY_URI=file://$PWD/run.bitreplay \
-nim r among_them.nim --address:0.0.0.0 --port:2000
+COGAME_PORT=2000 \
+nim r among_them.nim
 ```
 
 ### Coworld Certification
@@ -194,11 +199,11 @@ among_them/upload.sh 0.1.24
 
 The game container serves these routes:
 
-- Player: `http://localhost:2000/clients/player?slot=0&token=...`
-- Global viewer: `http://localhost:2000/clients/global`
-- Replay viewer: `http://localhost:2000/clients/replay`
-- Admin panel: `http://localhost:2000/clients/admin`
-- Rewards: `http://localhost:2000/clients/rewards`
+- Player: `http://localhost:2000/client/player?slot=0&token=...`
+- Global viewer: `http://localhost:2000/client/global`
+- Replay viewer: `http://localhost:2000/client/replay`
+- Admin panel: `http://localhost:2000/client/admin`
+- Rewards: `http://localhost:2000/client/rewards`
 
 The clients connect to the game-owned websocket routes on the same host:
 `/player`, `/global`, `/replay`, `/admin`, and `/reward`.

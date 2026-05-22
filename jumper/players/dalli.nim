@@ -862,9 +862,9 @@ proc runBot(
 
 when isMainModule:
   var
-    address = DefaultAddress
+    address = getEnv("COGAMES_ENGINE_WS_URL")
     port = DefaultPort
-    name = "dalli"
+    name = if address.len > 0: "" else: "dalli"
     token = ""
     slot = -1
     maxSteps = 0

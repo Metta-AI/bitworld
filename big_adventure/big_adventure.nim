@@ -1,4 +1,5 @@
-import std/[json, os, parseopt, strutils]
+import std/[json, parseopt, strutils]
+import bitworld/cogame_runtime
 import jsony
 import protocol, server
 
@@ -64,17 +65,15 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
 
 proc defaultReplayPath(): string =
   ## Returns the configured replay save path from the environment.
-  getEnv("COGAME_SAVE_REPLAY_PATH")
+  pathFromCogameEnv(CogameSaveReplayUriEnv)
 
 proc defaultLoadReplayPath(): string =
   ## Returns the configured replay load path from the environment.
-  getEnv("COGAME_LOAD_REPLAY_PATH")
+  pathFromCogameEnv(CogameLoadReplayUriEnv)
 
 proc defaultScoresPath(): string =
   ## Returns the configured score save path from the environment.
-  result = getEnv("COGAME_SAVE_RESULTS_PATH")
-  if result.len == 0:
-    result = getEnv("COGAME_RESULTS_PATH")
+  pathFromCogameEnv(CogameResultsUriEnv)
 
 proc isKnownConfigField(name: string): bool =
   ## Returns true when a JSON config field is supported.
@@ -239,7 +238,7 @@ when isMainModule:
       profileTracePath: "",
       profileTicks: 0
     )
-    configPath = getEnv("COGAME_CONFIG_PATH")
+    configPath = pathFromCogameEnv(CogameConfigUriEnv)
     configJson = ""
   for kind, key, val in getopt():
     case kind

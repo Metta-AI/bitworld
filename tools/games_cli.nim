@@ -237,7 +237,7 @@ proc cmdLaunch(manifest: string, bots: seq[BotSpec], asJson: bool) =
     else:
       echo "launched: " & name
       echo "port:     " & (if port > 0: $port else: "(unknown)")
-      echo "viewer:   http://127.0.0.1:" & $port & "/clients/global"
+      echo "viewer:   http://127.0.0.1:" & $port & "/client/global"
   else:
     die("create failed: HTTP " & resp.status & "\n" & resp.body)
 
