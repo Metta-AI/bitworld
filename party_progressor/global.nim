@@ -52,7 +52,7 @@ const
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
-  StatusBadgeSlots = 4
+  StatusBadgeSlots = 5
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -111,6 +111,7 @@ type
     StatusSlow
     StatusChill
     StatusAlone
+    StatusHelp
 
   GlobalViewerState* = object
     initialized*: bool
@@ -1188,7 +1189,8 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
-  of StatusAlone: "ALN"
+  of StatusAlone: "REG"
+  of StatusHelp: "HELP"
 
 proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   case kind
@@ -1196,6 +1198,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
   of StatusAlone: 8'u8
+  of StatusHelp: 3'u8
 
 proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   case kind
@@ -1203,6 +1206,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
   of StatusAlone: "status alone"
+  of StatusHelp: "status help"
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -2029,6 +2033,8 @@ proc addWorldObjects(
       badges.add(StatusChill)
     if sim.playerIsolationThreatened(i):
       badges.add(StatusAlone)
+    if sim.playerNeedsHelp(i):
+      badges.add(StatusHelp)
     for badgeIndex in 0 ..< badges.len:
       let
         badge = badges[badgeIndex]

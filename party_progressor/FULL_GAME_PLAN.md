@@ -285,6 +285,9 @@ The first full-game implementation pass includes:
 - Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
   green, while unarmed players keep their player-slot identity color.
 - DPS cleave on the `B` button, plus tank guard and healer pulse.
+- Healer triage support: nearby healers now slowly stabilize low-health
+  teammates between pulse casts, making the support role useful during
+  sustained pushes.
 - Food auto-healing and snow exposure pressure that consumes food before
   damaging players.
 - Activated camps now act as expedition shelters: nearby players are protected
@@ -303,9 +306,10 @@ The first full-game implementation pass includes:
   snow threats chill, bats harass from farther away, and wraith/gate enemies
   punish isolated players so grouping has real value.
 - In-world player affordances for the larger observation window: poison, slow,
-  chill, and isolation danger now appear as compact badges next to players, and
-  landmarks show readable labels for resources, camp costs, relic beacons, and
-  final-gate requirements, with activated camps relabeled as shelters.
+  chill, isolation danger, and low-health help state now appear as compact
+  badges next to players, and landmarks show readable labels for resources,
+  camp costs, relic beacons, and final-gate requirements, with activated camps
+  relabeled as shelters.
 - Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
   appear as compact badges beside threatening enemies before hits land, so the
   player can read biome combat pressure without first taking the status.
@@ -342,8 +346,8 @@ The first full-game implementation pass includes:
 - Extend camp infrastructure beyond healing, role swap, and weather shelter:
   add shortcut reveal, biome-safe staging bonuses, or optional fortification
   choices.
-- Add stronger teammate legibility: pings, downed-player indicators, and simple
-  "regroup" incentives.
+- Continue teammate legibility beyond low-health help badges and isolation
+  regroup labels: pings, downed-player indicators, and explicit rescue moments.
 - Make the final gate feel earned by requiring a visible chain of relic, boss,
   and camp progress.
 

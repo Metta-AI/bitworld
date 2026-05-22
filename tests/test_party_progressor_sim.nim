@@ -599,6 +599,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   sim.players[playerIndex].poisonTicks = StatusPoisonTicks
   sim.players[playerIndex].slowTicks = StatusSlowTicks
   sim.players[playerIndex].chillTicks = StatusChillTicks
+  sim.players[playerIndex].lives = max(1, sim.players[playerIndex].maxHp div 2)
 
   sim.mobs.add(Mob(
     kind: WraithMob,
@@ -645,6 +646,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status slow" in labels
   doAssert "status chill" in labels
   doAssert "status alone" in labels
+  doAssert "status help" in labels
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
   doAssert "prompt gate boss r3" in labels
@@ -923,6 +925,52 @@ proc testDpsCleaveSpecialDamagesNearbyMobs() =
   doAssert sim.mobs[0].hp == 5 - DpsCleaveDamage
   doAssert sim.mobs[1].hp == 5 - DpsCleaveDamage
 
+proc testHealerTriageAndHelpAffordance() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.food = 0
+
+  let woundedIndex = sim.addPlayer("wounded")
+  sim.players[woundedIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[woundedIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[woundedIndex].bounds =
+    sim.playerBoundsFor(sim.players[woundedIndex])
+  sim.players[woundedIndex].lives = max(
+    1,
+    sim.players[woundedIndex].maxHp div 2
+  )
+
+  let healerIndex = sim.addPlayer("healer")
+  sim.players[healerIndex].x =
+    sim.players[woundedIndex].x + WorldTileSize
+  sim.players[healerIndex].y = sim.players[woundedIndex].y
+  sim.players[healerIndex].applyRole(RoleHealer)
+  sim.players[healerIndex].bounds =
+    sim.playerBoundsFor(sim.players[healerIndex])
+
+  doAssert sim.playerNeedsHelp(woundedIndex)
+  let before = sim.players[woundedIndex].lives
+  sim.tickCount = HealerTriageIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[woundedIndex].lives ==
+    before + HealerTriageHealAmount,
+    "nearby healer should passively triage low-health teammates"
+  doAssert sim.players[healerIndex].healingDone == HealerTriageHealAmount
+
+  sim.players[woundedIndex].lives = before
+  sim.players[healerIndex].x =
+    sim.players[woundedIndex].x + HealerTriageRadius + WorldTileSize
+  sim.players[healerIndex].bounds =
+    sim.playerBoundsFor(sim.players[healerIndex])
+  sim.tickCount = HealerTriageIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[woundedIndex].lives == before,
+    "triage should require the healer to stay near the wounded teammate"
+
 proc testFoodAndColdSurvivalPressure() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1043,6 +1091,7 @@ testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()
 testDpsCleaveSpecialDamagesNearbyMobs()
+testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
 testCampShelterAndRecoveryInfrastructure()
 echo "All tests passed"

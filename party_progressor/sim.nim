@@ -82,6 +82,10 @@ const
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
+  HealerTriageRadius* = WorldTileSize * 2
+  HealerTriageIntervalTicks* = TargetFps * 2
+  HealerTriageHealAmount* = 1
+  LowHealthHelpThresholdPercent* = 50
   FoodHealAmount* = 2
   ColdExposureIntervalTicks* = TargetFps * 3
   CampShelterRadius* = WorldTileSize * 2
@@ -3392,6 +3396,32 @@ proc playerIsolationThreatened*(sim: SimServer, playerIndex: int): bool =
       return true
   false
 
+proc playerNeedsHelp*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when a live player is low enough to need teammate support.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  player.lives > 0 and player.maxHp > 0 and player.lives < player.maxHp and
+    player.lives * 100 <= player.maxHp * LowHealthHelpThresholdPercent
+
+proc nearbyHealerIndex(
+  sim: SimServer,
+  playerIndex: int,
+  radius = HealerTriageRadius
+): int =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return -1
+  let radiusSq = radius * radius
+  for healerIndex in 0 ..< sim.players.len:
+    if healerIndex == playerIndex:
+      continue
+    let healer = sim.players[healerIndex]
+    if healer.lives <= 0 or healer.role != RoleHealer:
+      continue
+    if distanceSquaredActor(healer, sim.players[playerIndex]) <= radiusSq:
+      return healerIndex
+  -1
+
 proc mobHitDamage*(sim: SimServer, mob: Mob, playerIndex: int): int =
   result = mob.mobDamage()
   if mob.species.speciesPunishesIsolation() and
@@ -3848,6 +3878,25 @@ proc applyCampRecovery(sim: var SimServer) =
       sim.players[playerIndex].lives + CampRecoveryHealAmount
     )
     inc sim.scoreRevision
+
+proc applyHealerTriage(sim: var SimServer) =
+  if sim.tickCount mod HealerTriageIntervalTicks != 0:
+    return
+  for playerIndex in 0 ..< sim.players.len:
+    if not sim.playerNeedsHelp(playerIndex):
+      continue
+    let healerIndex = sim.nearbyHealerIndex(playerIndex)
+    if healerIndex < 0:
+      continue
+    let before = sim.players[playerIndex].lives
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + HealerTriageHealAmount
+    )
+    let healed = sim.players[playerIndex].lives - before
+    if healed > 0:
+      sim.players[healerIndex].healingDone += healed
+      inc sim.scoreRevision
 
 proc updateMobs*(sim: var SimServer) =
   ## Updates mob chasing, telegraphed attacks, and wandering.
@@ -4369,6 +4418,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.applyFoodAndWeatherSurvival()
   sim.applyStatusEffects()
   sim.applyCampRecovery()
+  sim.applyHealerTriage()
   sim.applyAttack()
   sim.activateNearbyLandmarks()
   sim.updateMobs()
