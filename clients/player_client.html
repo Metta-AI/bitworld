@@ -16,69 +16,180 @@ input{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(8
 <canvas id="c" width="128" height="128"></canvas>
 <input id="i" maxlength="48" autocomplete="off" autocapitalize="off" spellcheck="false">
 <div id="s">connecting...</div>
+<script src="snappyjs.min.js"></script>
 <script>
-let c=document.getElementById("c"),i=document.getElementById("i"),s=document.getElementById("s"),x=c.getContext("2d"),d=x.createImageData(128,128),
-p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255],
-k={},l=255,w,u=new URL(location.href),m=location.host?((location.protocol=="https:"?"wss:":"ws:")+"//"+location.host):"ws://localhost:8080",a=u.searchParams.get("address")||m+"/player",
-g=(u.searchParams.get("joystick")|0)-1,z=0,r=Math.max(0,+u.searchParams.get("reconnect")||0),t=0,n,o;
+const c=document.getElementById("c"),i=document.getElementById("i"),s=document.getElementById("s"),x=c.getContext("2d");
+const p=[0,0,0,255,194,195,199,255,255,241,232,255,255,0,77,255,255,119,168,255,95,87,79,255,171,82,54,255,255,163,0,255,255,236,39,255,126,37,83,255,0,135,81,255,0,228,54,255,29,43,83,255,131,118,156,255,41,173,255,255,255,204,170,255];
+const PaletteRgb=[
+  [0,0,0],[194,195,199],[255,241,232],[255,0,77],
+  [255,119,168],[95,87,79],[171,82,54],[255,163,0],
+  [255,236,39],[126,37,83],[0,135,81],[0,228,54],
+  [29,43,83],[131,118,156],[41,173,255],[255,204,170]
+];
+const u=new URL(location.href),m=location.host?((location.protocol=="https:"?"wss:":"ws:")+"//"+location.host):"ws://localhost:8080";
+let a=u.searchParams.get("address")||m+"/player",g=(u.searchParams.get("joystick")|0)-1,r=Math.max(0,+u.searchParams.get("reconnect")||0);
+let k={},l=255,w,z=0,t=0,pixelImage=x.createImageData(128,128),spriteMode=false,layers=new Map(),sprites=new Map(),objects=new Map();
+const textDecoder=new TextDecoder("utf-8");
 a=(a=>{try{let v=new URL(a,location.href);if(v.protocol=="http:")v.protocol="ws:";if(v.protocol=="https:")v.protocol="wss:";if(v.pathname=="/")v.pathname="/player";for(let q of["name","token","slot"]){let h=u.searchParams.get(q);if(h!==null)v.searchParams.set(q,h)}return v+""}catch(e){return a}})(a);
-n=o=>{s.textContent=o;s.style.display=o?"flex":"none"};
-o=()=>{k={};if(l&&w&&w.readyState==1){w.send(new Uint8Array([0,0]));l=0}};
+function n(o){s.textContent=o;s.style.display=o?"flex":"none"}
+function fit(){const raw=Math.min(innerWidth/c.width,innerHeight/c.height),scale=raw>=1?Math.max(1,Math.floor(raw)):Math.max(.1,raw);c.style.width=(c.width*scale)+"px";c.style.height=(c.height*scale)+"px"}
+function sizeCanvas(width,height){if(c.width!==width||c.height!==height){c.width=width;c.height=height;x.imageSmoothingEnabled=false;fit()}}
+function sendMask(mask,force=false){if(!w||w.readyState!==1)return;if(!force&&mask===l)return;w.send(spriteMode?new Uint8Array([0x84,mask&127]):new Uint8Array([0,mask&127]));l=mask}
+function release(){k={};sendMask(0,true)}
+function chat(text){const clean=text.replace(/[^\x20-\x7e]/g,"");if(!clean||!w||w.readyState!==1)return;if(spriteMode){const b=new Uint8Array(clean.length+3);b[0]=0x81;b[1]=clean.length&255;b[2]=clean.length>>8;for(let j=0;j<clean.length;j++)b[j+3]=clean.charCodeAt(j);w.send(b)}else{const b=new Uint8Array(clean.length+1);b[0]=1;for(let j=0;j<clean.length;j++)b[j+1]=clean.charCodeAt(j);w.send(b)}}
 x.imageSmoothingEnabled=false;
-onresize=e=>{let s=Math.min(innerWidth,innerHeight);c.style.width=s+"px";c.style.height=s+"px"};
-onresize();
+onresize=fit;
+fit();
 onkeydown=e=>{
-  if(e.code=="Enter"){
+  if(e.code==="Enter"){
     e.preventDefault();
-    if(z){
-      let s=i.value.replace(/[^\x20-\x7e]/g,""),b=new Uint8Array(s.length+1);
-      if(s&&w.readyState==1){b[0]=1;for(let n=0;n<s.length;n++)b[n+1]=s.charCodeAt(n);w.send(b)}
-      i.value="";i.style.display="none";z=0;o();c.focus()
-    }else{o();z=1;i.style.display="block";i.focus()}
+    if(z){chat(i.value);i.value="";i.style.display="none";z=0;release();c.focus()}
+    else{release();z=1;i.style.display="block";i.focus()}
     return
   }
-  if(z&&e.code=="Escape"){e.preventDefault();i.value="";i.style.display="none";z=0;o();c.focus();return}
+  if(z&&e.code==="Escape"){e.preventDefault();i.value="";i.style.display="none";z=0;release();c.focus();return}
   if(z){if(e.code.startsWith("Arrow"))e.preventDefault();return}
   k[e.code]=1
 };
 onkeyup=e=>{k[e.code]=0};
-i.oninput=e=>{i.value=i.value.replace(/[^\x20-\x7e]/g,"")};
-onblur=o;
-onpagehide=o;
-document.addEventListener("visibilitychange",e=>{if(document.hidden)o()});
-(y=()=>{
-  n("connecting...");w=new WebSocket(a);w.binaryType="arraybuffer";l=255;
-  w.onopen=e=>n("");
-  w.onmessage=e=>{
-    let b=new Uint8Array(e.data),q=d.data,j=0,n,o;
-    if(b.length!=8192)return;
-    for(let i=0;i<8192;i++){
-      n=b[i];o=(n&15)*4;
-      q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
-      o=(n>>4)*4;
-      q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+i.oninput=()=>{i.value=i.value.replace(/[^\x20-\x7e]/g,"")};
+onblur=release;
+onpagehide=release;
+document.addEventListener("visibilitychange",()=>{if(document.hidden)release()});
+function readU16(bytes,offset){return bytes[offset]|(bytes[offset+1]<<8)}
+function readI16(bytes,offset){const value=readU16(bytes,offset);return value&0x8000?value-0x10000:value}
+function readU32(bytes,offset){return (bytes[offset]|(bytes[offset+1]<<8)|(bytes[offset+2]<<16)|(bytes[offset+3]<<24))>>>0}
+function decodeSnappy(compressed,width,height){
+  if(!window.SnappyJS)throw new Error("SnappyJS is not loaded");
+  const expected=width*height*4,raw=window.SnappyJS.uncompress(compressed,expected),rgba=raw instanceof Uint8Array?raw:new Uint8Array(raw);
+  if(rgba.length!==expected)throw new Error("Bad sprite pixel length");
+  return rgba
+}
+function trySnappySprite(bytes,offset,remaining,width,height){
+  if(remaining<6)return null;
+  const compressedLength=readU32(bytes,offset);
+  if(compressedLength>remaining-6)return null;
+  const labelOffset=offset+4+compressedLength,labelLength=readU16(bytes,labelOffset);
+  if(labelLength>remaining-4-compressedLength-2)return null;
+  let pixels;
+  try{pixels=decodeSnappy(bytes.slice(offset+4,labelOffset),width,height)}catch(e){return null}
+  const labelStart=labelOffset+2,labelEnd=labelStart+labelLength;
+  return {pixels,label:textDecoder.decode(bytes.slice(labelStart,labelEnd)),offset:labelEnd}
+}
+function rawSprite(bytes,offset,width,height){
+  const count=width*height,pixels=new Uint8Array(count*4);
+  for(let j=0;j<count;j++){
+    const idx=bytes[offset+j];
+    if(idx!==0){const rgb=PaletteRgb[(idx-1)&15],out=j*4;pixels[out]=rgb[0];pixels[out+1]=rgb[1];pixels[out+2]=rgb[2];pixels[out+3]=255}
+  }
+  return pixels
+}
+function ensureLayer(id){
+  if(!layers.has(id))layers.set(id,{id,type:0,flags:1,width:1,height:1,canvas:document.createElement("canvas"),ctx:null,image:null});
+  const layer=layers.get(id);
+  if(!layer.ctx){layer.ctx=layer.canvas.getContext("2d");layer.ctx.imageSmoothingEnabled=false}
+  return layer
+}
+function resizeMainCanvas(){
+  let width=1,height=1;
+  for(const layer of layers.values()){width=Math.max(width,layer.width);height=Math.max(height,layer.height)}
+  sizeCanvas(width,height)
+}
+function viewport(layerId,width,height){
+  const layer=ensureLayer(layerId);
+  layer.width=width;layer.height=height;layer.canvas.width=width;layer.canvas.height=height;layer.image=layer.ctx.createImageData(width,height);
+  resizeMainCanvas()
+}
+function putPixel(layer,x0,y0,sprite,srcOffset){
+  if(x0<0||y0<0||x0>=layer.width||y0>=layer.height)return;
+  const a=sprite.pixels[srcOffset+3];
+  if(a===0)return;
+  const offset=(y0*layer.width+x0)*4,d=layer.image.data;
+  if(a===255||d[offset+3]===0){d[offset]=sprite.pixels[srcOffset];d[offset+1]=sprite.pixels[srcOffset+1];d[offset+2]=sprite.pixels[srcOffset+2];d[offset+3]=a;return}
+  const sa=a/255,da=d[offset+3]/255,oa=sa+da*(1-sa),dw=da*(1-sa);
+  d[offset]=Math.round((sprite.pixels[srcOffset]*sa+d[offset]*dw)/oa);
+  d[offset+1]=Math.round((sprite.pixels[srcOffset+1]*sa+d[offset+1]*dw)/oa);
+  d[offset+2]=Math.round((sprite.pixels[srcOffset+2]*sa+d[offset+2]*dw)/oa);
+  d[offset+3]=Math.round(oa*255)
+}
+function drawSprite(){
+  x.clearRect(0,0,c.width,c.height);
+  x.fillStyle="#000";x.fillRect(0,0,c.width,c.height);
+  const orderedLayers=[...layers.values()].sort((a,b)=>a.type-b.type||a.id-b.id);
+  for(const layer of orderedLayers){
+    if(!layer.image)continue;
+    layer.image.data.fill(0);
+    const ordered=[...objects.values()].filter(o=>o.layer===layer.id).sort((a,b)=>a.z-b.z||a.y-b.y||a.id-b.id);
+    for(const object of ordered){
+      const sprite=sprites.get(object.spriteId);
+      if(!sprite)continue;
+      const sx0=Math.max(0,-object.x),sy0=Math.max(0,-object.y),sx1=Math.min(sprite.width,layer.width-object.x),sy1=Math.min(sprite.height,layer.height-object.y);
+      for(let sy=sy0;sy<sy1;sy++)for(let sx=sx0;sx<sx1;sx++)putPixel(layer,object.x+sx,object.y+sy,sprite,(sy*sprite.width+sx)*4)
     }
-    x.putImageData(d,0,0);
+    layer.ctx.putImageData(layer.image,0,0);
+    x.drawImage(layer.canvas,0,0)
+  }
+  n("")
+}
+function parseSprite(bytes){
+  if(!spriteMode){spriteMode=true;l=255}
+  let offset=0;
+  while(offset<bytes.length){
+    const type=bytes[offset++];
+    if(type===0x01){
+      const id=readU16(bytes,offset),width=readU16(bytes,offset+2),height=readU16(bytes,offset+4);
+      offset+=6;
+      const snappy=trySnappySprite(bytes,offset,bytes.length-offset,width,height);
+      if(snappy){sprites.set(id,{width,height,pixels:snappy.pixels,label:snappy.label});offset=snappy.offset}
+      else{sprites.set(id,{width,height,pixels:rawSprite(bytes,offset,width,height),label:""});offset+=width*height}
+    }else if(type===0x02){
+      const id=readU16(bytes,offset),ox=readI16(bytes,offset+2),oy=readI16(bytes,offset+4),z=readI16(bytes,offset+6),layer=bytes[offset+8],spriteId=readU16(bytes,offset+9);
+      objects.set(id,{id,x:ox,y:oy,z,layer,spriteId});offset+=11
+    }else if(type===0x03){objects.delete(readU16(bytes,offset));offset+=2}
+    else if(type===0x04){objects.clear()}
+    else if(type===0x05){viewport(bytes[offset],readU16(bytes,offset+1),readU16(bytes,offset+3));offset+=5}
+    else if(type===0x06){const layer=ensureLayer(bytes[offset]);layer.type=bytes[offset+1];layer.flags=bytes[offset+2];offset+=3}
+    else if(type===0x07){offset+=2}
+    else{throw new Error("Unknown sprite packet type "+type)}
+  }
+  drawSprite()
+}
+function drawPixels(bytes){
+  spriteMode=false;sizeCanvas(128,128);
+  const q=pixelImage.data;let j=0,o,n;
+  for(let idx=0;idx<8192;idx++){
+    n=bytes[idx];o=(n&15)*4;q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+    o=(n>>4)*4;q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255
+  }
+  x.putImageData(pixelImage,0,0);n("")
+}
+(function connect(){
+  n("connecting...");w=new WebSocket(a);w.binaryType="arraybuffer";l=255;
+  w.onopen=()=>n("");
+  w.onmessage=e=>{
+    const bytes=new Uint8Array(e.data);
+    try{if(bytes.length===8192&&!spriteMode)drawPixels(bytes);else parseSprite(bytes)}
+    catch(err){console.error(err);n("bad packet");w.close()}
   };
-  let q=w;
-  q.onclose=q.onerror=e=>{
-    if(w!=q)return;
-    if(r){n("reconnecting...");if(!t)t=setTimeout(()=>{t=0;y()},r*1000)}
+  const q=w;
+  q.onclose=q.onerror=()=>{
+    if(w!==q)return;
+    if(r){n("reconnecting...");if(!t)t=setTimeout(()=>{t=0;connect()},r*1000)}
     else n("disconnected...")
   }
 })();
-requestAnimationFrame(function f(){
-  let r=navigator.getGamepads?navigator.getGamepads():[],o=g<0?0:g,b=r[o],h=0,
-  lx=b?b.axes[0]||0:0,ly=b?b.axes[1]||0:0,t=.35;
-  h|=!z&&(k.ArrowUp||k.KeyW)||b&&(b.buttons[12]?.pressed||ly<=-t)?1:0;
-  h|=!z&&(k.ArrowDown||k.KeyS)||b&&(b.buttons[13]?.pressed||ly>=t)?2:0;
-  h|=!z&&(k.ArrowLeft||k.KeyA)||b&&(b.buttons[14]?.pressed||lx<=-t)?4:0;
-  h|=!z&&(k.ArrowRight||k.KeyD)||b&&(b.buttons[15]?.pressed||lx>=t)?8:0;
-  h|=!z&&(k.Space||k.KeyL)||b&&b.buttons[9]?.pressed?16:0;
-  h|=!z&&(k.KeyZ||k.KeyJ)||b&&b.buttons[0]?.pressed?32:0;
-  h|=!z&&(k.KeyX||k.KeyK)||b&&b.buttons[1]?.pressed?64:0;
-  if(w.readyState==1&&h!=l){w.send(new Uint8Array([0,h]));l=h}
-  requestAnimationFrame(f);
+requestAnimationFrame(function loop(){
+  const pads=navigator.getGamepads?navigator.getGamepads():[],pad=pads[g<0?0:g],lx=pad?pad.axes[0]||0:0,ly=pad?pad.axes[1]||0:0,dead=.35;
+  let h=0;
+  h|=!z&&(k.ArrowUp||k.KeyW)||pad&&(pad.buttons[12]?.pressed||ly<=-dead)?1:0;
+  h|=!z&&(k.ArrowDown||k.KeyS)||pad&&(pad.buttons[13]?.pressed||ly>=dead)?2:0;
+  h|=!z&&(k.ArrowLeft||k.KeyA)||pad&&(pad.buttons[14]?.pressed||lx<=-dead)?4:0;
+  h|=!z&&(k.ArrowRight||k.KeyD)||pad&&(pad.buttons[15]?.pressed||lx>=dead)?8:0;
+  h|=!z&&(k.Space||k.KeyL)||pad&&pad.buttons[9]?.pressed?16:0;
+  h|=!z&&(k.KeyZ||k.KeyJ)||pad&&pad.buttons[0]?.pressed?32:0;
+  h|=!z&&(k.KeyX||k.KeyK)||pad&&pad.buttons[1]?.pressed?64:0;
+  sendMask(h);
+  requestAnimationFrame(loop)
 });
 </script>
 </body>

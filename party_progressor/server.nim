@@ -321,11 +321,11 @@ proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route, GlobalClientRoute)
+  let filePath = clientStaticPath(route)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
+  headers["Content-Type"] = clientStaticContentType(route)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -655,7 +655,7 @@ proc httpHandler(request: Request) =
   elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
-    discard request.serveClientHtml(GlobalClientRoute)
+    discard request.serveClientHtml(PlayerClientRoute)
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
       not request.isWebSocketUpgrade():
     discard request.serveClientHtml(GlobalClientRoute)
