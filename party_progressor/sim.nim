@@ -121,6 +121,7 @@ const
   BiomeWaystationTicks* = TargetFps
   BiomeWaystationRouteTicks* = TargetFps * 10
   BiomeWaystationRouteMinSpeedPercent* = 88
+  CooperativeObjectiveHoldMaxStep* = 4
   FinalGateRitualTicks* = TargetFps * 2
   BeaconSurveyTicks* = TargetFps * 10
   BeaconSurveyMinSpeedPercent* = 90
@@ -4908,6 +4909,23 @@ proc waystationActivationStep*(biome: BiomeKind, role: PlayerRole): int =
   else:
     1
 
+proc objectiveHoldStep*(
+  kind: LandmarkKind,
+  biome: BiomeKind,
+  role: PlayerRole
+): int =
+  ## Returns one player's contribution to cooperative hold objectives.
+  case kind
+  of LandmarkRescue:
+    if role == RoleHealer:
+      HealerRescueEventStep
+    else:
+      1
+  of LandmarkWaystation:
+    waystationActivationStep(biome, role)
+  else:
+    1
+
 proc finalGateRitualStep*(roleCount: int): int =
   ## Speeds up the final ritual when distinct party roles hold the gate.
   if roleCount >= 3:
@@ -5301,17 +5319,14 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           sim.landmarks[landmarkIndex].tx,
           sim.landmarks[landmarkIndex].ty
         )
-        activationStep = max(
-          activationStep,
-          if kind == LandmarkRescue and player.role == RoleHealer:
-            HealerRescueEventStep
-          elif kind == LandmarkWaystation:
-            waystationActivationStep(landmarkBiome, player.role)
-          else:
-            1
-        )
+        activationStep += objectiveHoldStep(kind, landmarkBiome, player.role)
     if not nearPlayer:
       continue
+    activationStep = clamp(
+      max(1, activationStep),
+      1,
+      CooperativeObjectiveHoldMaxStep
+    )
 
     case kind
     of LandmarkCamp:

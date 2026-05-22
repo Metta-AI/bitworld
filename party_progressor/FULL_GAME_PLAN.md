@@ -337,6 +337,9 @@ The first full-game implementation pass includes:
   bridge through nearby rough ground, clear blockers, and soften steep terrain,
   making rescues an expedition-routing payoff instead of only a food/heal
   reward.
+- Rescue and waystation holds now stack nearby teammate effort up to a readable
+  co-op cap while preserving role specialist bonuses, so grouping on an
+  expedition objective completes it faster than solo channeling.
 - Rescue completions now also give the party a short visible `GUIDE` push:
   clean players move faster, status recovery accelerates slightly, and the
   next route decision reads as local knowledge from the rescued traveler.

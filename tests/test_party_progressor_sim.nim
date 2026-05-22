@@ -2824,6 +2824,109 @@ proc testHealerCompletesRescueEventsFaster() =
   doAssert sim.landmarks[0].done,
     "healer should complete rescue detours twice as quickly"
 
+proc placeTestPlayer(
+  sim: var SimServer,
+  playerIndex: int,
+  role: PlayerRole,
+  x,
+  y: int
+) =
+  sim.players[playerIndex].applyRole(role)
+  sim.players[playerIndex].x = x
+  sim.players[playerIndex].y = y
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+
+proc testCooperativeObjectiveHoldsStackPartyEffort() =
+  doAssert objectiveHoldStep(
+    LandmarkRescue,
+    BiomeForest,
+    RoleHealer
+  ) == HealerRescueEventStep
+  doAssert objectiveHoldStep(
+    LandmarkWaystation,
+    BiomeSwamp,
+    RoleTank
+  ) == BiomeWaystationFastStep
+
+  var rescueSim = initPartyProgressorForTest()
+  rescueSim.clearTerrain()
+  rescueSim.mobs.setLen(0)
+  rescueSim.pickups.setLen(0)
+  rescueSim.landmarks.setLen(0)
+  rescueSim.fillGround(GroundGrass, BiomeForest)
+  rescueSim.bossDefeated = true
+  rescueSim.mobSpawnCooldown = 999
+
+  let
+    rescueTx = SafeZoneRightTiles + 2
+    rescueTy = WorldHeightTiles div 2
+    rescueX = rescueTx * WorldTileSize
+    rescueY = rescueTy * WorldTileSize
+    tankIndex = rescueSim.addPlayer("tank")
+    dpsIndex = rescueSim.addPlayer("dps")
+    healerIndex = rescueSim.addPlayer("healer")
+    coopStep = CooperativeObjectiveHoldMaxStep
+  rescueSim.placeTestPlayer(tankIndex, RoleTank, rescueX, rescueY - 6)
+  rescueSim.placeTestPlayer(dpsIndex, RoleDps, rescueX, rescueY)
+  rescueSim.placeTestPlayer(healerIndex, RoleHealer, rescueX, rescueY + 6)
+  rescueSim.landmarks.add(Landmark(
+    tx: rescueTx,
+    ty: rescueTy,
+    kind: LandmarkRescue,
+    hp: 1,
+    done: false
+  ))
+
+  rescueSim.step([InputState(), InputState(), InputState()])
+  doAssert rescueSim.landmarks[0].progress == coopStep,
+    "nearby teammates should stack rescue hold progress up to the co-op cap"
+  doAssert not rescueSim.landmarks[0].done
+  for _ in 1 ..< ((RescueEventTicks + coopStep - 1) div coopStep):
+    rescueSim.step([InputState(), InputState(), InputState()])
+  doAssert rescueSim.landmarks[0].done,
+    "a grouped party should complete rescue holds faster than a solo player"
+
+  var waypointSim = initPartyProgressorForTest()
+  waypointSim.clearTerrain()
+  waypointSim.mobs.setLen(0)
+  waypointSim.pickups.setLen(0)
+  waypointSim.landmarks.setLen(0)
+  waypointSim.fillGround(GroundMud, BiomeSwamp)
+  waypointSim.bossDefeated = true
+  waypointSim.mobSpawnCooldown = 999
+
+  let
+    waypointTx = SafeZoneRightTiles + 3
+    waypointTy = WorldHeightTiles div 2
+    waypointX = waypointTx * WorldTileSize
+    waypointY = waypointTy * WorldTileSize
+    waypointTank = waypointSim.addPlayer("tank")
+    waypointDps = waypointSim.addPlayer("dps")
+    waypointHealer = waypointSim.addPlayer("healer")
+  waypointSim.placeTestPlayer(waypointTank, RoleTank, waypointX, waypointY - 6)
+  waypointSim.placeTestPlayer(waypointDps, RoleDps, waypointX, waypointY)
+  waypointSim.placeTestPlayer(
+    waypointHealer,
+    RoleHealer,
+    waypointX,
+    waypointY + 6
+  )
+  waypointSim.landmarks.add(Landmark(
+    tx: waypointTx,
+    ty: waypointTy,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: false
+  ))
+
+  waypointSim.step([InputState(), InputState(), InputState()])
+  doAssert waypointSim.landmarks[0].progress == coopStep,
+    "nearby teammates should stack waystation hold progress up to the co-op cap"
+  for _ in 1 ..< ((BiomeWaystationTicks + coopStep - 1) div coopStep):
+    waypointSim.step([InputState(), InputState(), InputState()])
+  doAssert waypointSim.landmarks[0].done,
+    "a grouped party should complete waystations faster than a solo player"
+
 proc testMonsterLairAttackRewardsAndPacifiesThreats() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -4092,6 +4195,7 @@ testFinalGateRitualAcceleratesWithPartyRoles()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()
 testHealerCompletesRescueEventsFaster()
+testCooperativeObjectiveHoldsStackPartyEffort()
 testMonsterLairAttackRewardsAndPacifiesThreats()
 testBiomeWaystationsCreateRoleDetoursAndShelters()
 testDpsCleaveSpecialDamagesNearbyMobs()
