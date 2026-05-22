@@ -336,7 +336,8 @@ The first full-game implementation pass includes:
   bleeding out to a camp respawn, giving nearby allies a direct recovery moment
   and preserving carried value when the rescue succeeds.
 - Food auto-healing and snow exposure pressure that consumes food before
-  damaging players.
+  damaging isolated players, while nearby allies can share warmth and avoid the
+  cold pulse.
 - Desert heat exposure now mirrors the snow survival loop: food or carried food
   absorbs a heat pulse before HP damage, while completed oasis waystations and
   camps shelter nearby players.
@@ -346,9 +347,11 @@ The first full-game implementation pass includes:
 - Cave and ruin fog now disorients isolated unsheltered players with slow
   pressure, while nearby allies, completed lantern/ward waystations, and camps
   keep the party oriented.
-- Early biome tactics now teach sustain and grouping before harsh survival
-  bands: forest travel slowly rebuilds a small shared food reserve, while
-  plains players grouped near allies recharge role powers faster.
+- Early biome tactics now teach sustain and grouping before and during harsh
+  survival bands: forest travel slowly rebuilds a small shared food reserve,
+  plains players grouped near allies recharge role powers faster, and snow
+  players grouped near allies get a visible warmth affordance that clears cold
+  pressure.
 - Activated camps now act as expedition shelters: nearby players are protected
   from snow, desert, and fog exposure, recover poison/slow/chill statuses
   faster, and slowly heal while regrouping.
@@ -430,8 +433,9 @@ The first full-game implementation pass includes:
   while avoiding discretionary combat when wounded or isolated.
 - Konrad bot adapters now also read `MIRE`, `COLD`, `HEAT`, and `FOG` survival
   badges, biasing exposed players toward the right answer for the pressure:
-  bridge waystations and shelters for mire, food or shelter for heat/cold, and
-  regrouping or lantern/ward shelter for fog.
+  bridge waystations and shelters for mire, food, shelter, or shared warmth for
+  cold, food or shelter for heat, and regrouping or lantern/ward shelter for
+  fog.
 - Konrad bot adapters now also treat visible teammate player sprites as regroup
   targets, so isolation pressure drives bots back toward the party instead of
   only toward generic safe landmarks.

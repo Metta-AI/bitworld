@@ -147,6 +147,7 @@ const
   ForestForageFoodCap* = 2
   PlainsRallyAllyRadius* = WorldTileSize * 3
   PlainsRallyCooldownStep* = 1
+  SnowWarmthAllyRadius* = WorldTileSize * 3
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
   CampShortcutHalfHeightTiles* = 1
@@ -430,6 +431,7 @@ type
     BiomeTacticNone
     BiomeTacticForage
     BiomeTacticRally
+    BiomeTacticWarmth
 
   GroundKind* = enum
     GroundGrass
@@ -850,6 +852,7 @@ proc biomeTacticLabel*(kind: BiomeTacticKind): string =
   of BiomeTacticNone: ""
   of BiomeTacticForage: "forage"
   of BiomeTacticRally: "rally"
+  of BiomeTacticWarmth: "warmth"
 
 proc pingLabel*(kind: PlayerPingKind): string =
   case kind
@@ -4936,7 +4939,10 @@ proc survivalPressureKind*(
     else:
       SurvivalSafe
   of BiomeSnow:
-    SurvivalCold
+    if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
+      SurvivalSafe
+    else:
+      SurvivalCold
   of BiomeDesert:
     SurvivalHeat
   of BiomeCave, BiomeRuins:
@@ -4965,6 +4971,11 @@ proc playerBiomeTacticKind*(
   of BiomePlains:
     if sim.playerHasNearbyAlly(playerIndex, PlainsRallyAllyRadius):
       BiomeTacticRally
+    else:
+      BiomeTacticNone
+  of BiomeSnow:
+    if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
+      BiomeTacticWarmth
     else:
       BiomeTacticNone
   else:
@@ -5022,7 +5033,8 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         sim.players[playerIndex].maxHp - FoodHealAmount:
       discard sim.consumeCarriedFood(playerIndex)
 
-    if coldPulse and biome == BiomeSnow and not sheltered:
+    if coldPulse and biome == BiomeSnow and not sheltered and
+        not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
     if heatPulse and biome == BiomeDesert and not sheltered:

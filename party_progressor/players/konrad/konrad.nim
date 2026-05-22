@@ -860,7 +860,10 @@ proc updateSelfAffordances(bot: var Bot) =
       bot.lowHealth = true
     of "status alone":
       bot.needsRegroup = true
-    of "status cold", "status heat":
+    of "status cold":
+      bot.needsShelter = true
+      bot.needsRegroup = true
+    of "status heat":
       bot.needsShelter = true
     of "status fog":
       bot.needsShelter = true
@@ -2619,6 +2622,12 @@ when defined(konradTargetSelfTest):
   doAssert bot.carriedItem == CarryWood
   doAssert bot.needWood == 1
   doAssert bot.needStone == 1
+  bot.objects[statusObjectId].present = false
+  bot.objects[mireStatusObjectId].present = false
+  bot.updateSelfAffordances()
+  doAssert bot.needsShelter
+  doAssert bot.needsRegroup
+  doAssert not bot.needsTerrainRoute
   bot.needsTerrainRoute = false
   bot.needsShelter = false
   bot.readStatusHud("dps snow|snow w0 f0 s0 r0|b cleave cd12|carry none")

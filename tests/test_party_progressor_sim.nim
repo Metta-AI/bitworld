@@ -2866,6 +2866,62 @@ proc testFoodAndColdSurvivalPressure() =
     "carried food should be usable as emergency rations"
   doAssert not sim.players[playerIndex].carrying
 
+proc testSnowSharedWarmthClearsColdPressure() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundSnow, BiomeSnow)
+
+  let
+    playerIndex = sim.addPlayer("warm")
+    allyIndex = sim.addPlayer("ally")
+    snowX = firstTileForBiome(BiomeSnow) * WorldTileSize
+    snowY = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].x = snowX
+  sim.players[playerIndex].y = snowY
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[allyIndex].x = snowX + WorldTileSize
+  sim.players[allyIndex].y = snowY
+  sim.players[allyIndex].bounds =
+    sim.playerBoundsFor(sim.players[allyIndex])
+  sim.players[playerIndex].lives = 3
+  sim.food = 0
+
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe,
+    "nearby allies should clear visible snow cold pressure"
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticWarmth,
+    "snow grouping should show a shared warmth tactic"
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[playerIndex].lives == 3,
+    "shared warmth should block cold exposure damage"
+
+  var state: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    state
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status warmth" in labels
+  doAssert "status cold" notin labels
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("OK SAFE WARMTH")),
+    "HUD status text should make snow warmth readable"
+
+  sim.players[allyIndex].x += SnowWarmthAllyRadius + WorldTileSize
+  sim.players[allyIndex].bounds =
+    sim.playerBoundsFor(sim.players[allyIndex])
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalCold
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticNone
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[playerIndex].lives == 2,
+    "snow cold should resume when the party spreads out"
+
 proc testDesertHeatSurvivalPressureAndOasisShelter() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3145,6 +3201,7 @@ testDpsCleaveSpecialDamagesNearbyMobs()
 testPartyFocusRewardsMixedRoleAttacksAndShowsBadge()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
+testSnowSharedWarmthClearsColdPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()
 testSwampMireSurvivalPressureAndBridgeShelter()
 testFogBiomeDisorientationRequiresGroupOrLantern()
