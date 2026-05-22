@@ -1,7 +1,7 @@
 import
   std/[json, locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/clients,
+  bitworld/client,
   fluffy/measure,
   protocol, sim, global
 

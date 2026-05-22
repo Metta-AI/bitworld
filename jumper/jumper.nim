@@ -2,7 +2,7 @@ import
   std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils,
     tables, times],
   mummy, pixie, supersnappy,
-  bitworld/aseprite, bitworld/clients, bitworld/cogame_runtime, bitworld/tiled, pixelfonts,
+  bitworld/aseprite, bitworld/client, bitworld/cogame_runtime, bitworld/tiled, pixelfonts,
   protocol, server
 
 const
@@ -197,7 +197,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "clients" / "data"
+  repoDir() / "client" / "data"
 
 proc sheetPath(): string =
   dataDir() / "spritesheet.aseprite"

@@ -3,8 +3,8 @@ import
     strutils, sysrand, times]
 
 const
-  GlobalClientSourceRelative = "clients" / "global_client.nim"
-  PlayerClientSourceRelative = "clients" / "player_client.nim"
+  GlobalClientSourceRelative = "client" / "global_client.nim"
+  PlayerClientSourceRelative = "client" / "player_client.nim"
   CoworldManifestName = "coworld_manifest.json"
   SpriteProtocolSpec = "sprite_v1.md"
   ServerReadyTimeoutMs = 5000
@@ -1050,12 +1050,12 @@ proc localClientSource(game: GameLaunch, sourceRelative: string): string =
   if dirExists(srcDir):
     for path in walkDirRec(srcDir):
       if path.extractFilename() == sourceName and
-          path.parentDir().extractFilename() == "clients":
+          path.parentDir().extractFilename() == "client":
         return path
 
 proc clientWorkDir(buildDir, sourcePath: string): string =
   ## Returns the working directory with native client data assets.
-  let clientDir = buildDir / "clients"
+  let clientDir = buildDir / "client"
   if dirExists(clientDir / "data"):
     clientDir
   else:
@@ -1087,7 +1087,7 @@ proc globalPalettePath(rootDir: string, game: GameLaunch): string =
   let gamePalettePath = game.workDir / "data" / "pallete.png"
   if fileExists(gamePalettePath):
     return gamePalettePath
-  rootDir / "clients" / "data" / "pallete.png"
+  rootDir / "client" / "data" / "pallete.png"
 
 proc openHtmlGlobalViewer(config: QuickRunConfig, game: GameLaunch) =
   ## Opens the browser global viewer for one quick-run game.

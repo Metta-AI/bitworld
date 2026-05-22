@@ -2,7 +2,7 @@ import std/[exitprocs, monotimes, net, os, osproc, parseopt, sequtils, strutils,
 
 const
   ServerSource = "marketboard" / "marketboard.nim"
-  ClientSource = "clients" / "player_client.nim"
+  ClientSource = "client" / "player_client.nim"
   BotSources = [
     ("StillForge", "marketboard" / "players" / "still_forge.nim"),
     ("IronWorks", "marketboard" / "players" / "iron_works.nim"),

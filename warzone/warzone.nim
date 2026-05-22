@@ -85,7 +85,7 @@ type
     port: int
 
 proc clientDataDir(): string =
-  getCurrentDir() / ".." / "clients" / "data"
+  getCurrentDir() / ".." / "client" / "data"
 
 proc loadClientPalette() =
   loadPalette(clientDataDir() / "pallete.png")

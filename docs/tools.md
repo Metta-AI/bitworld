@@ -164,7 +164,7 @@ There are two simple player clients.
 The native client lives at:
 
 ```text
-clients/player_client.nim
+client/player_client.nim
 ```
 
 It connects to the bitscreen protocol and is what `quick_run` launches. It is
@@ -176,14 +176,14 @@ Reconnect is off by default.
 The HTML player client lives at:
 
 ```text
-clients/player_client.html
+client/player_client.html
 ```
 
 It is a tiny browser client for the same `/player` protocol. It accepts an
 `address` query parameter:
 
 ```text
-clients/player_client.html?address=ws://localhost:8080/player
+client/player_client.html?address=ws://localhost:8080/player
 ```
 
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
@@ -197,7 +197,7 @@ client with another tool.
 The native global client lives at:
 
 ```text
-clients/global_client.nim
+client/global_client.nim
 ```
 
 It opens a resizable Silky window, connects to `/global`, renders the global
@@ -207,14 +207,14 @@ same shared atlas as the other native clients.
 The HTML global client lives at:
 
 ```text
-clients/global_client.html
+client/global_client.html
 ```
 
 It connects to `/global`, or to `/replay` when served from the replay route,
 and is useful when testing the protocol from a browser.
 
 ```text
-clients/global_client.html?address=ws://localhost:8080/global
+client/global_client.html?address=ws://localhost:8080/global
 ```
 
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
@@ -225,7 +225,7 @@ Reconnect is off by default.
 The native reward client lives at:
 
 ```text
-clients/reward_client.nim
+client/reward_client.nim
 ```
 
 It opens a small Silky window and connects to `/reward` to show the latest
@@ -234,14 +234,14 @@ reward packet as text.
 The HTML reward client lives at:
 
 ```text
-clients/reward_client.html
+client/reward_client.html
 ```
 
 It connects to the same `/reward` endpoint and shows the latest reward packet
 as text.
 
 ```text
-clients/reward_client.html?address=ws://localhost:8080/reward
+client/reward_client.html?address=ws://localhost:8080/reward
 ```
 
 Add `reconnect=5` to make it reconnect every five seconds after a disconnect.
@@ -255,13 +255,13 @@ emitting reward data in the format expected by training tools.
 Shared client art and UI assets live at:
 
 ```text
-clients/data
+client/data
 ```
 
 The native player client writes its generated atlas here:
 
 ```text
-clients/dist/atlas.png
+client/dist/atlas.png
 ```
 
 ## Other Tools

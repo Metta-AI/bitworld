@@ -1,7 +1,7 @@
 import
   std/[json, locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/clients, protocol, sim, global, replays
+  bitworld/client, protocol, sim, global, replays
 
 const
   UnassignedPlayerIndex = 0x7fffffff

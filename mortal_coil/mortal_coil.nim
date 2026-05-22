@@ -3,7 +3,7 @@ import protocol, server, soul, data, render_utils, world, magical_facts, situati
 import sprite_viewer
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
-import bitworld/clients
+import bitworld/client
 import bitworld/cogame_runtime
 
 const
@@ -16,7 +16,7 @@ const
   ClientScreenOnlyWidth = 384
   ClientScreenOnlyHeight = 384
   ClientWindowMargin = 50
-  PlayerClientSourceRelative = "clients" / "global_client.nim"
+  PlayerClientSourceRelative = "client" / "global_client.nim"
   HealthzPath = "/healthz"
 
 type
@@ -447,7 +447,7 @@ proc initSim(seed: int, minPlayers: int): SimServer =
   result.rng = initRand(seed)
   result.fb = initFramebuffer()
 
-  let dataDir = clientsDir() / "data"
+  let dataDir = clientDir() / "data"
   loadPalette(dataDir / "pallete.png")
   loadFont()
 

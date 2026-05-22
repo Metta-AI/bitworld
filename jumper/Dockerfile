@@ -45,9 +45,9 @@ FROM debian:bookworm-slim
 WORKDIR /workspace/bitworld
 COPY --from=build /workspace/bitworld/jumper/jumper /bin/jumper
 COPY --from=build /workspace/bitworld/jumper/data ./jumper/data
-COPY --from=build /workspace/bitworld/clients/global_client.html ./clients/
-COPY --from=build /workspace/bitworld/clients/snappyjs.min.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/global_client.html ./client/
+COPY --from=build /workspace/bitworld/client/snappyjs.min.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/jumper
 CMD ["/bin/jumper", "--address:0.0.0.0", "--port:8080"]

@@ -43,9 +43,9 @@ COPY --from=build /workspace/bitworld/big_adventure/data ./big_adventure/data
 COPY --from=build \
   /workspace/bitworld/among_them/tiny5.aseprite \
   ./big_adventure/data/tiny5.aseprite
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/big_adventure
 CMD ["/bin/big_adventure", "--address:0.0.0.0", "--port:8080"]

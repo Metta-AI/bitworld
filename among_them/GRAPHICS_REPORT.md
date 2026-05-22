@@ -9,7 +9,7 @@ symbolic view.
 
 The server (`among_them/sim.nim`) owns the authoritative world state and renders
 each agent's personal 128×128 view server-side every tick. The client
-(`clients/player_client.nim`) only decodes and displays a ready-made
+(`client/player_client.nim`) only decodes and displays a ready-made
 framebuffer — it does no game logic. The frame crosses the wire as a **4bpp
 packed byte array** (8192 bytes = 128·128/2), so every pixel parser starts by
 unpacking two 4-bit palette indices per byte.
@@ -22,7 +22,7 @@ Tick rate: **24 FPS**. Frame protocol constants are in `common/protocol.nim:4-17
 
 - **Resolution:** 128×128 pixels (`ScreenWidth=ScreenHeight=128`).
 - **Palette:** 16 fixed colors, indexed 0–15, loaded once from
-  `clients/data/pallete.png` (16×1, RGBA). Palette table lives in
+  `client/data/pallete.png` (16×1, RGBA). Palette table lives in
   `common/protocol.nim:31-42`.
 - **Packing:** The server fills `Framebuffer.indices` (128·128 bytes, one 4-bit
   index per pixel), then `packFramebuffer` packs two pixels per byte: low
@@ -196,10 +196,10 @@ All of these use the same tiny5 font on palette-2 white over black
 
 ### 5.3 Other image-font files
 
-- `among_them/ascii.png` and `clients/data/ascii.png` (126×54) are a
+- `among_them/ascii.png` and `client/data/ascii.png` (126×54) are a
   **separate** chat ASCII sprite sheet used only by the *native* desktop
   client for typing into the chat input box (7×9 cells, `ChatGlyphW=7,
-  ChatGlyphH=9, ChatRowStride=9` — `clients/player_client.nim:56-62`). It is
+  ChatGlyphH=9, ChatRowStride=9` — `client/player_client.nim:56-62`). It is
   drawn *on top of* the 128×128 framebuffer, **not inside it**, so a pixel
   parser that consumes only the server-sent 8192-byte frame never sees these
   glyphs.
@@ -446,7 +446,7 @@ symbolic view:
 
 All sprite data needed for matching is in `among_them/spritesheet.png`, all
 font data in `among_them/tiny5.aseprite`, and all palette data in
-`clients/data/pallete.png`. The map and its masks live in
+`client/data/pallete.png`. The map and its masks live in
 `among_them/skeld2.aseprite` (layers 0/1/2) and the symbolic annotations
 (task names, rooms, vents, button, home) live entirely in
 `among_them/map.json`.
@@ -461,7 +461,7 @@ font data in `among_them/tiny5.aseprite`, and all palette data in
 | Tiny font OCR helpers                        | `common/pixelfonts.nim`                              |
 | All sim rendering (authoritative)            | `among_them/sim.nim:1659-2815`                       |
 | Map JSON schema & loader                     | `among_them/sim.nim:494-688`, `among_them/map.json`  |
-| Client that displays frames                  | `clients/player_client.nim`                          |
+| Client that displays frames                  | `client/player_client.nim`                          |
 | Reference pixel parser                       | `among_them/players/nottoodumb.nim` (sprite match, camera lock via patch voting, radar parsing, vote-screen reader) |
 | Map-scan benchmark for camera localization   | `among_them/bench_scan.nim`                          |
 

@@ -5,7 +5,7 @@ import
 
 const
   RootDir = currentSourcePath.parentDir.parentDir
-  DataDir = RootDir / "clients" / "data"
+  DataDir = RootDir / "client" / "data"
 
 proc countPixelDiff(a, b: Image): int =
   ## Counts pixel differences between two same-sized images.

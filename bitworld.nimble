@@ -5,9 +5,9 @@ license     = "MIT"
 
 srcDir = "."
 bin = @[
-  "clients/global_client",
-  "clients/player_client",
-  "clients/reward_client",
+  "client/global_client",
+  "client/player_client",
+  "client/reward_client",
   "asteroid_arena/asteroid_arena",
   "asteroid_arena/players/shooter/shooter",
   "big_adventure/big_adventure",

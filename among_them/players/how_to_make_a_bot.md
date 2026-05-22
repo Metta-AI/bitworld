@@ -114,7 +114,7 @@ nim r tools/quick_run among_them --connect --bots:nottoodumb:8 --address:localho
 
 View a player's perspective from the browser:
 
-Open `bitworld/clients/index.html?address=ws://localhost:2000/player` in your browser.
+Open `bitworld/client/index.html?address=ws://localhost:2000/player` in your browser.
 
 View the global map from the browser:
 

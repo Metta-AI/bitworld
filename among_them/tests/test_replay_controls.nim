@@ -1,6 +1,6 @@
 import
   std/unittest,
-  ../../clients/global_client
+  ../../client/global_client
 
 suite "replay controls":
   test "ui hit testing ignores transparent layer space":

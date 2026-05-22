@@ -114,7 +114,7 @@ proc ensureGlobalPalette() =
   ## Loads the shared display palette when needed.
   if Palette[2].a == 0:
     loadPalette(
-      currentSourcePath().parentDir() / ".." / "clients" / "data" / "pallete.png"
+      currentSourcePath().parentDir() / ".." / "client" / "data" / "pallete.png"
     )
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
