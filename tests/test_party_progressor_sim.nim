@@ -2273,12 +2273,12 @@ proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
   sim.mobs.setLen(0)
   sim.pickups.setLen(0)
   sim.landmarks.setLen(0)
-  sim.fillGround(GroundGrass)
+  sim.fillGround(GroundSnow, BiomeSnow)
   sim.food = CampProvisionFoodCost
   sim.mobSpawnCooldown = 999
 
   let playerIndex = sim.addPlayer("player1")
-  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].x = firstTileForBiome(BiomeSnow) * WorldTileSize
   sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
   sim.players[playerIndex].bounds =
     sim.playerBoundsFor(sim.players[playerIndex])
@@ -2296,6 +2296,19 @@ proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
   doAssert not sim.landmarks[0].campIsFortified()
   doAssert sim.playerNearProvisionedCamp(playerIndex)
   doAssert sim.food == 0
+  doAssert sim.players[playerIndex].rationTicks == CampMealRationTicks
+  doAssert sim.players[playerIndex].statusLabel().contains("ration")
+  doAssert sim.playerHasWeatherRation(playerIndex)
+  var mealNextState: PlayerViewerState
+  let mealParsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    mealNextState
+  ).parseSpriteProtocolPacket()
+  let mealLabels = mealParsed.objectSpriteLabels()
+  doAssert "status ration" in mealLabels
+  doAssert mealParsed.sprites.values.toSeq.anyIt(it.label.contains("RATION SAFE")),
+    "HUD status text should make meal rations readable"
 
   sim.players[playerIndex].lives =
     sim.players[playerIndex].maxHp - CampProvisionedRecoveryHealAmount
@@ -2304,6 +2317,31 @@ proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
 
   doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
     "provisioned camps should recover resting players faster than shelters"
+
+  sim.players[playerIndex].y += CampShelterRadius * 4
+  doAssert not sim.playerNearActivatedCamp(playerIndex)
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe,
+    "meal rations should suppress visible snow pressure during the next push"
+  sim.food = 0
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "meal rations should absorb cold exposure before shared food or damage"
+  doAssert sim.food == 0
+
+  sim.players[playerIndex].rationTicks = 1
+  sim.tickCount = 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].rationTicks == 0
+  doAssert not sim.playerHasWeatherRation(playerIndex)
+  doAssert sim.biomeAtPixel(boundsCenterX(
+    sim.players[playerIndex].x,
+    sim.players[playerIndex].bounds
+  )) == BiomeSnow
+  doAssert not sim.playerNearExpeditionShelter(playerIndex)
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalCold,
+    "snow pressure should return after meal rations expire"
 
 proc testCarriedSuppliesUpgradeActivatedCamps() =
   var sim = initPartyProgressorForTest()

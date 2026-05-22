@@ -167,6 +167,7 @@ const
   CampRecoveryIntervalTicks* = TargetFps * 2
   CampRecoveryHealAmount* = 1
   CampProvisionedRecoveryHealAmount* = 2
+  CampMealRationTicks* = TargetFps * 18
   CampStatusRecoveryTicks* = TargetFps div 2
   CampAidStatusRecoveryTicks* = TargetFps div 2
   CampRallyAbilityCooldownStep* = 1
@@ -378,6 +379,7 @@ type
     guideTicks*: int
     huntTicks*: int
     triumphTicks*: int
+    rationTicks*: int
     downedTicks*: int
     rescueTicks*: int
 
@@ -919,6 +921,8 @@ proc statusLabel*(player: Actor): string =
   var labels: seq[string] = @[]
   if player.triumphTicks > 0:
     labels.add("triumph")
+  if player.rationTicks > 0:
+    labels.add("ration")
   if player.poisonTicks > 0:
     labels.add("poison")
   if player.slowTicks > 0:
@@ -2882,6 +2886,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
   sim.players[playerIndex].triumphTicks = 0
+  sim.players[playerIndex].rationTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
 
@@ -3124,6 +3129,7 @@ proc playerScoresJson*(sim: SimServer): string =
     statusEffects = newJArray()
     downedTicks = newJArray()
     triumphTicks = newJArray()
+    rationTicks = newJArray()
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
     sideObjectivesCompleted = newJArray()
@@ -3157,6 +3163,7 @@ proc playerScoresJson*(sim: SimServer): string =
     statusEffects.add(%player.statusLabel())
     downedTicks.add(%player.downedTicks)
     triumphTicks.add(%player.triumphTicks)
+    rationTicks.add(%player.rationTicks)
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
     sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
@@ -3183,6 +3190,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["status_effects"] = statusEffects
   results["downed_ticks"] = downedTicks
   results["triumph_ticks"] = triumphTicks
+  results["ration_ticks"] = rationTicks
   results["team_score"] = scores
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
@@ -3267,6 +3275,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.guideTicks)
     result.mixHashInt(player.huntTicks)
     result.mixHashInt(player.triumphTicks)
+    result.mixHashInt(player.rationTicks)
     result.mixHashInt(player.downedTicks)
     result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
@@ -4196,6 +4205,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
   sim.players[playerIndex].triumphTicks = 0
+  sim.players[playerIndex].rationTicks = 0
   inc sim.scoreRevision
 
 proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
@@ -4606,6 +4616,22 @@ proc playerNearProvisionedCamp*(
         sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
       return true
   false
+
+proc playerHasWeatherRation*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when camp meals are buffering harsh-weather ration pressure.
+  playerIndex >= 0 and playerIndex < sim.players.len and
+    sim.players[playerIndex].lives > 0 and
+    sim.players[playerIndex].rationTicks > 0
+
+proc grantCampRation(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+  if sim.players[playerIndex].rationTicks >= CampMealRationTicks:
+    return
+  sim.players[playerIndex].rationTicks = CampMealRationTicks
+  inc sim.scoreRevision
 
 proc playerNearRallyCamp*(
   sim: SimServer,
@@ -5073,6 +5099,10 @@ proc provisionCamp(sim: var SimServer, landmarkIndex: int) =
     return
   sim.landmarks[landmarkIndex].progress =
     sim.landmarks[landmarkIndex].progress or CampProvisionedFlag
+  let camp = sim.landmarks[landmarkIndex]
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.playerNearLandmark(sim.players[playerIndex], camp, CampShelterRadius):
+      sim.grantCampRation(playerIndex)
   inc sim.scoreRevision
 
 proc specializeCamp(sim: var SimServer, landmarkIndex: int, flag: int) =
@@ -5663,11 +5693,15 @@ proc survivalPressureKind*(
     else:
       SurvivalSafe
   of BiomeSnow:
+    if sim.playerHasWeatherRation(playerIndex):
+      return SurvivalSafe
     if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       SurvivalSafe
     else:
       SurvivalCold
   of BiomeDesert:
+    if sim.playerHasWeatherRation(playerIndex):
+      return SurvivalSafe
     if sim.playerNearDesertShade(playerIndex):
       SurvivalSafe
     else:
@@ -5727,6 +5761,8 @@ proc playerBiomeTacticLabel*(sim: SimServer, playerIndex: int): string =
   sim.playerBiomeTacticKind(playerIndex).biomeTacticLabel()
 
 proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
+  if sim.playerHasWeatherRation(playerIndex):
+    return true
   if sim.food > 0:
     dec sim.food
     inc sim.scoreRevision
@@ -5902,12 +5938,15 @@ proc applyCampRecovery(sim: var SimServer) =
     let
       nearCamp = sim.playerNearActivatedCamp(playerIndex)
       nearShrine = sim.playerNearBlessedShrine(playerIndex)
+      nearProvisioned = nearCamp and sim.playerNearProvisionedCamp(playerIndex)
     if not nearCamp and not nearShrine:
       continue
+    if nearProvisioned:
+      sim.grantCampRation(playerIndex)
     if sim.players[playerIndex].lives >= sim.players[playerIndex].maxHp:
       continue
     let healAmount =
-      if nearCamp and sim.playerNearProvisionedCamp(playerIndex):
+      if nearProvisioned:
         CampProvisionedRecoveryHealAmount
       else:
         CampRecoveryHealAmount
@@ -6492,6 +6531,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
     if sim.players[i].triumphTicks > 0:
       dec sim.players[i].triumphTicks
       if sim.players[i].triumphTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].rationTicks > 0:
+      dec sim.players[i].rationTicks
+      if sim.players[i].rationTicks == 0:
         inc sim.scoreRevision
     if sim.players[i].pingTicks > 0:
       dec sim.players[i].pingTicks

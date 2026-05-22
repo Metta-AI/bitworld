@@ -450,6 +450,9 @@ The first full-game implementation pass includes:
 - Activated camps can also be provisioned with food into meal shelters, giving
   parties a visible sustain-focused staging choice that heals resting players
   faster and shows a distinct meals prompt.
+- Meal shelters now hand out visible expedition rations: nearby players get a
+  timed `MEAL`/`RATION SAFE` state that buffers the next cold, heat, or
+  late-run exhaustion pulse without spending shared food or a carried ration.
 - Activated camps now support role-linked specializations: tank ward camps hold
   a safer perimeter, DPS rally camps recover role powers faster, and healer aid
   camps cleanse status pressure faster while regrouping.
@@ -658,7 +661,7 @@ The first full-game implementation pass includes:
 - Tune the 11 by 11 viewport after real bot/human observation checks.
 - Tune in-world affordance density after real observation checks so labels
   remain helpful without cluttering fights.
-- Tune food, provisioned-camp, snow-exposure, and desert-heat pacing with
+- Tune food, meal-ration duration, snow-exposure, and desert-heat pacing with
   multi-player runs.
 - Use the saved player-observation previews during real human/bot checks to
   tune viewport framing and affordance density.
