@@ -38,6 +38,8 @@ const
   RoleLabelToGearOffset = WorldTileSize div 2
   OpportunisticLootRadius = WorldTileSize * 3
   BacktrackLootSlack = WorldTileSize
+  ExploreDetourResetTicks = TargetFps * 3
+  ExploreDetourOffsets = [0, 8, -8, 12, -12, 4, -4, 16, -16, 2, -2, 6, -6]
   MoveMask = ButtonUp or ButtonDown or ButtonLeft or ButtonRight
 
 type
@@ -146,6 +148,8 @@ type
     hasExploreGoal: bool
     exploreX: int
     exploreY: int
+    exploreDetourIndex: int
+    lastExploreStuckTick: int
     stuckFrames: int
     jiggleTicks: int
     jiggleMask: uint8
@@ -1089,6 +1093,46 @@ proc randomMoveMask(rng: var Rand): uint8 =
   else:
     ButtonRight
 
+proc currentExploreDetourOffset(bot: Bot): int =
+  ## Returns the preferred vertical lane offset after a failed push.
+  ExploreDetourOffsets[
+    clamp(bot.exploreDetourIndex, 0, ExploreDetourOffsets.high)
+  ]
+
+proc advanceExploreDetour(bot: var Bot) =
+  ## Rotates the next push goal onto a different lane after a stall.
+  bot.exploreDetourIndex =
+    (bot.exploreDetourIndex + 1) mod ExploreDetourOffsets.len
+  if bot.exploreDetourIndex == 0:
+    bot.exploreDetourIndex = 1
+  bot.lastExploreStuckTick = bot.frameTick
+
+proc resetExploreDetourIfCalm(bot: var Bot) =
+  ## Lets successful movement settle back to the natural straight-ahead lane.
+  if bot.exploreDetourIndex == 0 or bot.lastExploreStuckTick <= 0:
+    return
+  if bot.frameTick - bot.lastExploreStuckTick >= ExploreDetourResetTicks:
+    bot.exploreDetourIndex = 0
+
+proc exploreDyOrder(bot: Bot): seq[int] =
+  ## Returns the vertical search order for the next rightward push target.
+  let preferred = bot.currentExploreDetourOffset()
+  if preferred != 0:
+    result.add(preferred)
+  for dy in ExploreDetourOffsets:
+    if dy != preferred:
+      result.add(dy)
+
+proc exploreDetourVerticalMask(bot: Bot): uint8 =
+  ## Turns the active push detour into an immediate unstuck nudge.
+  let offset = bot.currentExploreDetourOffset()
+  if offset > 0:
+    ButtonDown
+  elif offset < 0:
+    ButtonUp
+  else:
+    0
+
 proc isRoleTarget(kind: TargetKind): bool =
   kind in {TargetTankRole, TargetDpsRole, TargetHealerRole}
 
@@ -1098,7 +1142,10 @@ proc isCarryResourceTarget(kind: TargetKind): bool =
 proc directedUnstuckMask(bot: var Bot): uint8 =
   ## Chooses a recovery nudge that still respects the current target.
   let vertical =
-    if bot.rng.rand(1) == 0:
+    if bot.currentTargetKind == TargetExplore and
+        bot.exploreDetourVerticalMask() != 0:
+      bot.exploreDetourVerticalMask()
+    elif bot.rng.rand(1) == 0:
       ButtonUp
     else:
       ButtonDown
@@ -1142,6 +1189,8 @@ proc updateStuck(bot: var Bot) =
   bot.previousPlayerY = bot.playerWorldY
 
   if bot.stuckFrames >= StuckFrameThreshold:
+    if bot.currentTargetKind == TargetExplore:
+      bot.advanceExploreDetour()
     bot.jiggleTicks = JiggleDuration
     bot.jiggleMask = bot.directedUnstuckMask()
     if bot.currentTargetId >= 0 and not bot.currentTargetKind.isRoleTarget():
@@ -1292,6 +1341,7 @@ proc targetScore(bot: Bot, target: Target): int =
 
 proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
   ## Picks a new open tile that keeps the expedition pushing right.
+  bot.resetExploreDetourIfCalm()
   if bot.hasExploreGoal and
       bot.exploreX > bot.playerWorldX + GoalArrivalRadius and
       distanceSquared(
@@ -1307,7 +1357,7 @@ proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
     currentTy = clampTileY(bot.playerWorldY)
   for step in [36, 28, 20, 12, 6]:
     let tx = min(PathGridWidth - 1, currentTx + step)
-    for dy in [0, -2, 2, -4, 4, -6, 6, -8, 8, -12, 12]:
+    for dy in bot.exploreDyOrder():
       let ty = currentTy + dy
       if not inGrid(tx, ty) or blocked.isBlocked(tx, ty):
         continue
@@ -2270,6 +2320,34 @@ when defined(konradTargetSelfTest):
   let pushUnstuck = bot.directedUnstuckMask()
   doAssert (pushUnstuck and ButtonRight) != 0
   doAssert (pushUnstuck and ButtonLeft) == 0
+
+  bot.exploreDetourIndex = 0
+  bot.lastExploreStuckTick = 0
+  bot.hasExploreGoal = true
+  bot.currentTargetKind = TargetExplore
+  bot.currentTargetId = -1
+  bot.currentTargetX = 400
+  bot.currentTargetY = 300
+  bot.playerWorldX = 80
+  bot.playerWorldY = 300
+  bot.previousPlayerX = 80
+  bot.previousPlayerY = 300
+  bot.havePlayerSample = true
+  bot.lastMask = ButtonRight
+  bot.stuckFrames = StuckFrameThreshold - 1
+  bot.frameTick = 500
+  bot.updateStuck()
+  doAssert bot.exploreDetourIndex != 0
+  doAssert bot.lastExploreStuckTick == 500
+  doAssert not bot.hasExploreGoal
+  doAssert (bot.jiggleMask and ButtonRight) != 0
+  doAssert (bot.jiggleMask and ButtonDown) != 0
+  blocked.resetBlocked()
+  bot.refreshExploreGoal(blocked)
+  doAssert bot.exploreY > bot.playerWorldY
+  bot.frameTick = 500 + ExploreDetourResetTicks
+  bot.resetExploreDetourIfCalm()
+  doAssert bot.exploreDetourIndex == 0
 
   bot.currentTargetKind = TargetDpsRole
   bot.currentTargetId = 7

@@ -440,6 +440,9 @@ The first full-game implementation pass includes:
 - Konrad now treats loose coins and hearts as opportunistic pickups instead of
   expedition objectives: healthy bots only detour for nearby forward loot, while
   low-health bots may still backtrack for heart recovery.
+- Konrad push recovery now changes vertical lanes after repeated rightward
+  stalls, so bots do not keep retrying the same blocked snow/cave route when an
+  alternate lane can carry the expedition forward.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
