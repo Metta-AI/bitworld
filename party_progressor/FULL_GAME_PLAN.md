@@ -704,6 +704,9 @@ The first full-game implementation pass includes:
   biome-backed transparent sprites.
 - Sprite protocol fixture tests that parse Party Progressor player packets with
   the same message framing used by existing BitWorld sprite-protocol bots.
+- Strict sprite-v1 compatibility tests that reject reserved server packet types,
+  verify Snappy-compressed RGBA sprite payloads, and assert `/player` accepts
+  current `0x84` input plus `0x81` chat packets.
 - Rendered player-observation tests that composite sprite protocol packets and
   verify the 11 by 11 view stays opaque, biome-backed, and not black-filled
   across forest, plains, swamp, desert, snow, cave, and ruins.
@@ -751,6 +754,5 @@ The first full-game implementation pass includes:
 - Consider a generated Party Progressor atlas once the curated TribalCog asset
   set stabilizes.
 - Add long-run smoke tests with multiple players and bots.
-- Add a small protocol fixture test for `/player` sprite-player behavior.
 - Keep manifests, docs, and runner contract references aligned with the
   canonical `/player` route.

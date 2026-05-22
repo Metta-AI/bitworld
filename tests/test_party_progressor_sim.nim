@@ -324,6 +324,83 @@ proc parseSpriteProtocolPacket(packet: openArray[uint8]): ParsedPacket =
     else:
       raise newException(ValueError, "unknown sprite protocol message")
 
+proc assertCurrentSpriteV1Packet(packet: openArray[uint8]) =
+  ## Validates Party Progressor emits the current shared sprite_v1 wire format.
+  var
+    offset = 0
+    sawSprite = false
+    sawLayer = false
+    sawPlayerViewport = false
+  while offset < packet.len:
+    let messageType = packet[offset]
+    inc offset
+    case messageType
+    of 0x01'u8:
+      if offset + 10 > packet.len:
+        raise newException(ValueError, "truncated sprite header")
+      let
+        width = packet.readU16(offset + 2)
+        height = packet.readU16(offset + 4)
+        compressedLen = packet.readU32(offset + 6)
+      doAssert width > 0 and height > 0,
+        "sprite_v1 sprites must have non-zero dimensions"
+      doAssert compressedLen > 0,
+        "sprite_v1 sprites must send a Snappy-compressed RGBA payload"
+      offset += 10
+      if offset + compressedLen + 2 > packet.len:
+        raise newException(ValueError, "truncated sprite payload")
+      let pixels = supersnappy.uncompress(
+        packet.packetBytesToString(offset, compressedLen)
+      )
+      doAssert pixels.len == width * height * 4,
+        "sprite_v1 sprite payloads must decompress to RGBA pixels"
+      offset += compressedLen
+      let labelLen = packet.readU16(offset)
+      offset += 2
+      if offset + labelLen > packet.len:
+        raise newException(ValueError, "truncated sprite label")
+      offset += labelLen
+      sawSprite = true
+    of 0x02'u8:
+      if offset + 11 > packet.len:
+        raise newException(ValueError, "truncated object")
+      offset += 11
+    of 0x03'u8:
+      if offset + 2 > packet.len:
+        raise newException(ValueError, "truncated delete")
+      offset += 2
+    of 0x04'u8:
+      discard
+    of 0x05'u8:
+      if offset + 5 > packet.len:
+        raise newException(ValueError, "truncated viewport")
+      let
+        layerId = int(packet[offset])
+        width = packet.readU16(offset + 1)
+        height = packet.readU16(offset + 3)
+      offset += 5
+      if layerId == MapLayerId:
+        doAssert width == PlayerViewportWidth,
+          "sprite player map viewport should stay on the 11x11 tile view"
+        doAssert height == PlayerViewportHeight,
+          "sprite player map viewport should stay on the 11x11 tile view"
+        sawPlayerViewport = true
+    of 0x06'u8:
+      if offset + 3 > packet.len:
+        raise newException(ValueError, "truncated layer")
+      offset += 3
+      sawLayer = true
+    else:
+      raise newException(
+        ValueError,
+        "Party Progressor /player emitted reserved sprite_v1 server message " &
+          $messageType
+      )
+
+  doAssert sawSprite, "sprite_v1 packet should define sprites"
+  doAssert sawLayer, "sprite_v1 packet should define layers"
+  doAssert sawPlayerViewport, "sprite_v1 packet should define the player viewport"
+
 proc objectSpriteLabels(parsed: ParsedPacket): seq[string] =
   for obj in parsed.objects.values:
     if parsed.sprites.hasKey(obj.spriteId):
@@ -1303,6 +1380,51 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
     tankState
   ).parseSpriteProtocolPacket().objectSpriteLabels()
   doAssert "status role healer" in healerLabels
+
+proc testSpriteProtocolMatchesCurrentSharedClientContract() =
+  var sim = initPartyProgressorForTest()
+  let playerIndex = sim.addPlayer("protocol")
+  var nextState: PlayerViewerState
+  let packet = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  )
+
+  packet.assertCurrentSpriteV1Packet()
+  let viewport = packet.firstViewport(MapLayerId)
+  doAssert viewport.width == PlayerViewportWidth
+  doAssert viewport.height == PlayerViewportHeight
+
+  var
+    playerState = initPlayerViewerState()
+    inputMask = 0'u8
+    chatText = ""
+  playerState.applyPlayerViewerMessage(
+    blobFromBytes([0x84'u8, ButtonA or ButtonB]),
+    inputMask,
+    chatText
+  )
+  doAssert inputMask == (ButtonA or ButtonB),
+    "sprite client z/x input should arrive as 0x84 A/B bits"
+  doAssert chatText.len == 0
+
+  playerState.applyPlayerViewerMessage(
+    blobFromBytes([
+      0x81'u8,
+      5'u8,
+      0'u8,
+      uint8(ord('h')),
+      uint8(ord('e')),
+      uint8(ord('l')),
+      uint8(ord('l')),
+      uint8(ord('o'))
+    ]),
+    inputMask,
+    chatText
+  )
+  doAssert chatText == "hello",
+    "sprite client chat should arrive as 0x81 length-prefixed ASCII"
 
 proc testCarriedInventoryTilesAcrossBottomOfPlayerView() =
   var sim = initPartyProgressorForTest()
@@ -4836,6 +4958,7 @@ testSpriteProtocolWeatherOverlays()
 testSpriteProtocolShowsSurvivalPressureAffordances()
 testRenderedPlayerObservationHasBiomeBackedPixels()
 testSpriteProtocolPacketMatchesReferenceParsers()
+testSpriteProtocolMatchesCurrentSharedClientContract()
 testCarriedInventoryTilesAcrossBottomOfPlayerView()
 testCarriedFoodStacksAndShowsCount()
 testRoleSpecialAbilitiesShowColoredSpriteEffects()
