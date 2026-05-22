@@ -1574,7 +1574,7 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
   of LandmarkBeacon:
     "RELIC"
   of LandmarkFinalGate:
-    "GATE C" & $FinalGateCampCost & " BOSS R" & $FinalGateRelicCost
+    "GATE HOLD"
   of LandmarkShrine:
     "SHRINE F" & $ShrineFoodBonus
   of LandmarkRescue:

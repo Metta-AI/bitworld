@@ -110,6 +110,9 @@ const
   DpsCleaveDamage* = 2
   TargetFps* = 60
   BiomeWaystationTicks* = TargetFps
+  FinalGateRitualTicks* = TargetFps * 2
+  FinalGateTwoRoleStep* = 2
+  FinalGateThreeRoleStep* = 3
   RoleAbilityCooldown* = 36
   PingDurationTicks* = TargetFps * 4
   DownedRespawnTicks* = TargetFps * 4
@@ -1704,6 +1707,16 @@ proc campResourceHint(sim: SimServer): string =
 proc missingCampResources(sim: SimServer): bool =
   sim.wood < CampWoodCost or sim.stone < CampStoneCost
 
+proc finalGateProgressPercent*(progress: int): int =
+  ## Returns compact ritual progress for final-gate HUD text.
+  clamp((max(0, progress) * 100) div FinalGateRitualTicks, 0, 100)
+
+proc finalGateObjectiveHint(sim: SimServer): string =
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkFinalGate and not landmark.done:
+      return "NEXT HOLD GATE " & $landmark.progress.finalGateProgressPercent() & "%"
+  "EXPEDITION COMPLETE"
+
 proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   ## Returns the short next-action line shown in the local player HUD.
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1746,7 +1759,7 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
       return sim.campResourceHint()
     return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
   if sim.incompleteLandmarkExists(LandmarkFinalGate):
-    return "NEXT OPEN GATE"
+    return sim.finalGateObjectiveHint()
   "EXPEDITION COMPLETE"
 
 proc teamScore*(sim: SimServer): int =
@@ -3913,6 +3926,31 @@ proc playerNearLandmark(
     pcy = boundsCenterY(player.y, player.bounds)
   distanceSquared(pcx, pcy, lc.x, lc.y) <= radius * radius
 
+proc distinctRolesNearLandmark*(
+  sim: SimServer,
+  landmark: Landmark,
+  radius: int
+): int =
+  ## Counts distinct live party roles holding one objective.
+  var
+    tank = false
+    dps = false
+    healer = false
+  for player in sim.players:
+    if player.lives <= 0 or not sim.playerNearLandmark(player, landmark, radius):
+      continue
+    case player.role
+    of RoleTank:
+      tank = true
+    of RoleDps:
+      dps = true
+    of RoleHealer:
+      healer = true
+    of RoleUnarmed:
+      discard
+  result = (if tank: 1 else: 0) + (if dps: 1 else: 0) +
+    (if healer: 1 else: 0)
+
 proc campIsFortified*(landmark: Landmark): bool =
   landmark.kind == LandmarkCamp and landmark.done and
     (landmark.progress and CampFortifiedFlag) != 0
@@ -4206,6 +4244,15 @@ proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
 proc waystationActivationStep*(biome: BiomeKind, role: PlayerRole): int =
   if role == biome.preferredWaystationRole():
     BiomeWaystationFastStep
+  else:
+    1
+
+proc finalGateRitualStep*(roleCount: int): int =
+  ## Speeds up the final ritual when distinct party roles hold the gate.
+  if roleCount >= 3:
+    FinalGateThreeRoleStep
+  elif roleCount >= 2:
+    FinalGateTwoRoleStep
   else:
     1
 
@@ -4541,6 +4588,14 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       if sim.relicShards < FinalGateRelicCost:
         continue
       if sim.campsActivated < FinalGateCampCost:
+        continue
+      sim.landmarks[landmarkIndex].progress +=
+        sim.distinctRolesNearLandmark(
+          sim.landmarks[landmarkIndex],
+          FinalGateActivationRadius
+        ).finalGateRitualStep()
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < FinalGateRitualTicks:
         continue
       sim.landmarks[landmarkIndex].done = true
       inc sim.objectivesCompleted

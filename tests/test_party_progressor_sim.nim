@@ -982,7 +982,7 @@ proc testExpeditionObjectiveHudGuidesNextStep() =
   doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT DEFEAT BOSS"
 
   sim.bossDefeated = true
-  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT OPEN GATE"
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT HOLD GATE 0%"
 
 proc testBiomeMonsterSpeciesBreadth() =
   var sim = initPartyProgressorForTest()
@@ -1262,7 +1262,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
   doAssert "prompt forage h" in labels
-  doAssert "prompt gate c2 boss r3" in labels
+  doAssert "prompt gate hold" in labels
 
   let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
     it.label
@@ -1806,7 +1806,67 @@ proc testBeaconAndBossScoring() =
     "final gate should require camp progress as well as relics and boss defeat"
   sim.campsActivated = FinalGateCampCost
   sim.step([InputState()])
+  doAssert not sim.landmarks[0].done,
+    "final gate should require a visible ritual hold"
+  doAssert sim.landmarks[0].progress == 1
+  for _ in 1 ..< FinalGateRitualTicks:
+    sim.step([InputState()])
   doAssert sim.landmarks[0].done
+
+proc testFinalGateRitualAcceleratesWithPartyRoles() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.bossDefeated = true
+  sim.relicShards = FinalGateRelicCost
+  sim.campsActivated = FinalGateCampCost
+  sim.fillGround(GroundGrass, BiomeRuins)
+
+  let
+    gateTx = SafeZoneRightTiles + 3
+    gateTy = WorldHeightTiles div 2
+    gateX = gateTx * WorldTileSize
+    gateY = gateTy * WorldTileSize
+    tankIndex = sim.addPlayer("tank")
+    dpsIndex = sim.addPlayer("dps")
+    healerIndex = sim.addPlayer("healer")
+  sim.landmarks.add(Landmark(
+    tx: gateTx,
+    ty: gateTy,
+    kind: LandmarkFinalGate,
+    hp: 1,
+    done: false
+  ))
+  for item in [
+    (index: tankIndex, role: RoleTank, y: gateY - 8),
+    (index: dpsIndex, role: RoleDps, y: gateY),
+    (index: healerIndex, role: RoleHealer, y: gateY + 8)
+  ]:
+    sim.players[item.index].x = gateX
+    sim.players[item.index].y = item.y
+    sim.players[item.index].applyRole(item.role)
+    sim.players[item.index].bounds =
+      sim.playerBoundsFor(sim.players[item.index])
+
+  doAssert finalGateRitualStep(1) == 1
+  doAssert finalGateRitualStep(2) == FinalGateTwoRoleStep
+  doAssert finalGateRitualStep(3) == FinalGateThreeRoleStep
+  doAssert sim.distinctRolesNearLandmark(
+    sim.landmarks[0],
+    FinalGateActivationRadius
+  ) == 3
+
+  for _ in 1 ..< (FinalGateRitualTicks div FinalGateThreeRoleStep):
+    sim.step([InputState(), InputState(), InputState()])
+  doAssert not sim.landmarks[0].done
+  doAssert sim.expeditionObjectiveHint(tankIndex).startsWith("NEXT HOLD GATE "),
+    sim.expeditionObjectiveHint(tankIndex)
+
+  sim.step([InputState(), InputState(), InputState()])
+  doAssert sim.landmarks[0].done,
+    "all three roles holding the gate should complete the ritual faster"
 
 proc testShrineSideObjectiveScoringAndSustain() =
   var sim = initPartyProgressorForTest()
@@ -2535,6 +2595,7 @@ testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testCampProvisioningConsumesFoodAndImprovesRecovery()
 testRoleSpecializedCampsCreateDistinctStagingBenefits()
 testBeaconAndBossScoring()
+testFinalGateRitualAcceleratesWithPartyRoles()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()
 testHealerCompletesRescueEventsFaster()

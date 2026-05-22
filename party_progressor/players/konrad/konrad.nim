@@ -1318,13 +1318,17 @@ proc objectiveHintIsWaystation(bot: Bot): bool =
     if bot.objectiveHint == "next " & biome.waystationPromptLabel().toLowerAscii():
       return true
 
+proc objectiveHintIsGate(bot: Bot): bool =
+  bot.objectiveHint.startsWith("next open gate") or
+    bot.objectiveHint.startsWith("next hold gate")
+
 proc currentObjectiveTarget(bot: Bot, kind: TargetKind): bool =
   ## Returns true when the HUD says this landmark kind is the main task.
   case kind
   of TargetRelic:
     bot.objectiveHint.startsWith("next relic")
   of TargetGate:
-    bot.objectiveHint.startsWith("next open gate")
+    bot.objectiveHintIsGate()
   of TargetBoss:
     bot.objectiveHint.startsWith("next defeat boss")
   of TargetCamp:
@@ -1511,7 +1515,7 @@ proc targetScore(bot: Bot, target: Target): int =
   of TargetShrine:
     distance - 20
   of TargetGate:
-    distance + (if bot.objectiveHint.startsWith("next open gate"): -210 else: 10)
+    distance + (if bot.objectiveHintIsGate(): -210 else: 10)
   of TargetLair:
     distance + (if bot.lowHealth or bot.needsRegroup: 420 elif distance < 100: -45 else: 180)
   of TargetMob:

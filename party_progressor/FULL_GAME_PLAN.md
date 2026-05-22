@@ -150,7 +150,9 @@ Camps cost wood and stone. Activating a camp should:
   and healers can turn them into aid posts with different local benefits.
 
 Beacon objectives should award relic shards. The final gate should require
-relic progress, camp progress, and boss defeat before completion.
+relic progress, camp progress, boss defeat, and a short visible party ritual
+before completion. The ritual should complete fastest when tank, DPS, and
+healer all hold the gate together.
 
 Food is currently mostly a score/resource signal. The next mechanical pass
 should make it matter without turning the game into inventory management:
@@ -390,6 +392,9 @@ The first full-game implementation pass includes:
 - Final-gate completion now requires boss defeat, relic progress, and forward
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.
+- Final-gate activation now has a visible hold ritual after those requirements
+  are met, and the ritual accelerates when distinct tank/DPS/healer roles are
+  grouped on the gate.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Konrad bot objective targeting now reads visible Party Progressor landmarks
   semantically: resources and lairs are attack targets, camps/relics/rescues/
