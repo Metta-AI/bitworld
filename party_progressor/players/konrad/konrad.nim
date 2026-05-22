@@ -1293,6 +1293,25 @@ proc isRoleTarget(kind: TargetKind): bool =
 proc isCarryResourceTarget(kind: TargetKind): bool =
   kind in {TargetWood, TargetFood, TargetStone, TargetGold}
 
+proc isLooseCarryResourceTarget(target: Target): bool =
+  target.kind.isCarryResourceTarget() and
+    target.objectId.isLooseCarryPickupObject()
+
+proc satisfiesCampResourceNeed(bot: Bot, target: Target): bool =
+  ## Incomplete camps need shared resource landmarks, not loose carry drops.
+  if not target.kind.isCarryResourceTarget():
+    return false
+  if target.isLooseCarryResourceTarget():
+    return false
+  if bot.needWood > 0 and target.kind == TargetWood:
+    return true
+  if bot.needStone > 0 and target.kind in {TargetStone, TargetGold}:
+    return true
+  if bot.campResourceSearchTicks > 0 and
+      target.kind in {TargetWood, TargetStone, TargetGold}:
+    return true
+  false
+
 proc directedUnstuckMask(bot: var Bot): uint8 =
   ## Chooses a recovery nudge that still respects the current target.
   if bot.currentTargetKind == TargetExplore and
@@ -1398,6 +1417,17 @@ proc currentObjectiveTarget(bot: Bot, kind: TargetKind): bool =
   else:
     false
 
+proc campBuildObjectiveActive(bot: Bot): bool =
+  ## Camp construction is funded by shared landmark harvests, not floor drops.
+  bot.objectiveHint.startsWith("next gather") or
+    bot.objectiveHint.startsWith("next build camp") or
+    bot.objectiveHint.startsWith("next camp")
+
+proc campTargetStallActive(bot: Bot): bool =
+  ## A close empty-handed camp target is probably blocked on shared resources.
+  bot.carriedItem == CarryNone and bot.currentTargetKind == TargetCamp and
+    bot.currentTargetDistance <= ActivationStallDistance * 4
+
 proc optionalExpeditionTarget(kind: TargetKind): bool =
   kind in {
     TargetRelic,
@@ -1429,11 +1459,14 @@ proc campTooFarBehindFrontier(bot: Bot, target: Target): bool =
 
 proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   ## During role choice, ignore generic gear and non-preferred role labels.
-  if bot.carriedItem != CarryNone and target.kind.isCarryResourceTarget() and
-      target.objectId.isLooseCarryPickupObject():
-    return false
   if target.kind.isCarryResourceTarget() and
-      target.objectId.isLooseCarryPickupObject() and
+      (bot.needWood > 0 or bot.needStone > 0 or
+        bot.campResourceSearchTicks > 0 or bot.campBuildObjectiveActive() or
+        bot.campTargetStallActive()):
+    return bot.satisfiesCampResourceNeed(target)
+  if bot.carriedItem != CarryNone and target.isLooseCarryResourceTarget():
+    return false
+  if target.isLooseCarryResourceTarget() and
       not bot.isUsefulLooseCarryPickup(target):
     return false
   if target.kind == TargetCamp and bot.campTooFarBehindFrontier(target):
@@ -2369,8 +2402,99 @@ when defined(konradTargetSelfTest):
     kind: TargetCamp,
     objectId: LandmarkObjectBase + 2
   ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: PickupObjectBase + 13,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: LandmarkObjectBase + 13,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetStone,
+    objectId: LandmarkObjectBase + 14,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
   bot.needWood = 0
+  bot.needStone = 1
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetStone,
+    objectId: PickupObjectBase + 14,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetStone,
+    objectId: LandmarkObjectBase + 14,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetGold,
+    objectId: LandmarkObjectBase + 15,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
   bot.needStone = 0
+  bot.objectiveHint = "next camp 1/2"
+  bot.sharedWood = CampWoodCost
+  bot.sharedStone = CampStoneCost
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: PickupObjectBase + 16,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: LandmarkObjectBase + 16,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  bot.needWood = 1
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: PickupObjectBase + 17,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: LandmarkObjectBase + 17,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  bot.needWood = 0
+  bot.objectiveHint = ""
+  bot.currentTargetKind = TargetCamp
+  bot.currentTargetDistance = ActivationStallDistance
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: PickupObjectBase + 18,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: LandmarkObjectBase + 18,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  bot.needWood = 1
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: LandmarkObjectBase + 19,
+    x: bot.playerWorldX,
+    y: bot.playerWorldY
+  ))
+  bot.needWood = 0
+  bot.currentTargetKind = TargetExplore
+  bot.currentTargetDistance = 0
   doAssert not bot.canConsiderPickupTarget(Target(
     kind: TargetCamp,
     objectId: LandmarkObjectBase + 2,
@@ -3210,6 +3334,18 @@ when defined(konradTargetSelfTest):
   doAssert not bot.canConsiderPickupTarget(Target(
     kind: TargetCamp,
     objectId: 99
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: PickupObjectBase + 99,
+    x: 120,
+    y: 300
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetWood,
+    objectId: LandmarkObjectBase + 99,
+    x: 120,
+    y: 300
   ))
   doAssert bot.targetScore(Target(
     found: true,

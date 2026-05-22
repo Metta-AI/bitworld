@@ -554,6 +554,10 @@ The first full-game implementation pass includes:
 - Konrad bot targeting now distinguishes harvest landmarks from loose carried
   resource pickups, so players with full hands still harvest useful nodes but
   stop chasing dropped food, wood, stone, or gold they cannot collect.
+- Konrad camp-building objectives, close camp stalls, and fallback searches now
+  treat loose carried-supply drops as staging items, not shared build
+  resources, so a blocked camp pushes bots back toward actual wood/stone/gold
+  landmarks instead of orbiting floor drops near the construction site.
 - Expedition objective hints now surface missing wood and stone whenever global
   camp progress is blocked, even after the party has moved into a later biome;
   Konrad uses those deficits to leave unbuildable camps and resume gathering or
