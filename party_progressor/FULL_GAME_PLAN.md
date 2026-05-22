@@ -654,6 +654,10 @@ The first full-game implementation pass includes:
   dwell on a non-resolving stop, the bot temporarily releases that target and
   resumes the expedition push or nearby objective chain instead of ending a
   long run in a shelter or floor-drop orbit.
+- Saved score files now preserve the last non-empty expedition snapshot after
+  bots disconnect, so local multi-bot smokes and tournament-style runs leave
+  analyzable names, roles, frontier, resource, objective, boss, and final-gate
+  fields instead of being overwritten by an empty post-disconnect player list.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.

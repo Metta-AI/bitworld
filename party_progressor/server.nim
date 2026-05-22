@@ -792,6 +792,9 @@ proc writeScoresIfNeeded(
     return
   if sim.scoreRevision == lastRevision:
     return
+  if sim.players.len == 0 and lastRevision >= 0:
+    lastRevision = sim.scoreRevision
+    return
   sim.writeScoreFile(path)
   lastRevision = sim.scoreRevision
 
@@ -1104,3 +1107,37 @@ proc runServerLoop*(
             sim.removePlayer(globalViewers[i])
 
     runFrameLimiter(lastTick)
+
+when defined(partyProgressorServerSelfTest):
+  proc testScoreFilePreservesLastPlayerSnapshot() =
+    let path = getTempDir() / "party_progressor_score_selftest.json"
+    if fileExists(path):
+      removeFile(path)
+    let oldDir = getCurrentDir()
+    setCurrentDir(currentSourcePath().parentDir())
+    var
+      sim = initSimServer(0x5150)
+      lastRevision = -1
+    setCurrentDir(oldDir)
+    sim.writeScoresIfNeeded(path, lastRevision)
+    doAssert fileExists(path)
+    doAssert parseJson(readFile(path))["names"].len == 0
+
+    let playerIndex = sim.addPlayer("selftest")
+    sim.players[playerIndex].distanceWalked = 42
+    sim.writeScoresIfNeeded(path, lastRevision)
+    let activeScores = parseJson(readFile(path))
+    doAssert activeScores["names"].len == 1
+    doAssert activeScores["names"][0].getStr() == "selftest"
+
+    sim.players.setLen(0)
+    inc sim.scoreRevision
+    sim.writeScoresIfNeeded(path, lastRevision)
+    let preservedScores = parseJson(readFile(path))
+    doAssert preservedScores["names"].len == 1
+    doAssert preservedScores["distance_walked"][0].getInt() == 42
+
+    removeFile(path)
+
+  testScoreFilePreservesLastPlayerSnapshot()
+  echo "Party Progressor server score tests passed"
