@@ -592,6 +592,9 @@ proc testExpeditionObjectiveHudGuidesNextStep() =
   doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT RELIC 0/3"
 
   sim.relicShards = FinalGateRelicCost
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT CAMP 0/2"
+
+  sim.campsActivated = FinalGateCampCost
   doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT DEFEAT BOSS"
 
   sim.bossDefeated = true
@@ -828,7 +831,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
   doAssert "prompt forage h" in labels
-  doAssert "prompt gate boss r3" in labels
+  doAssert "prompt gate c2 boss r3" in labels
 
   let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
     it.label
@@ -1230,6 +1233,10 @@ proc testBeaconAndBossScoring() =
   doAssert not sim.landmarks[0].done,
     "final gate should require relic progress as well as boss defeat"
   sim.relicShards = FinalGateRelicCost
+  sim.step([InputState()])
+  doAssert not sim.landmarks[0].done,
+    "final gate should require camp progress as well as relics and boss defeat"
+  sim.campsActivated = FinalGateCampCost
   sim.step([InputState()])
   doAssert sim.landmarks[0].done
 

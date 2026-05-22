@@ -68,6 +68,7 @@ const
   RelicScoreValue* = 40
   BossScoreValue* = 150
   FinalGateRelicCost* = 3
+  FinalGateCampCost* = 2
   ShrineFoodBonus* = 2
   ShrineHealAmount* = 1
   RescueFoodBonus* = 2
@@ -1705,10 +1706,14 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   if sim.relicShards < FinalGateRelicCost and
       sim.incompleteLandmarkExists(LandmarkBeacon):
     return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
+  if sim.campsActivated < FinalGateCampCost:
+    return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
   if not sim.bossDefeated:
     return "NEXT DEFEAT BOSS"
   if sim.relicShards < FinalGateRelicCost:
     return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
+  if sim.campsActivated < FinalGateCampCost:
+    return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
   if sim.incompleteLandmarkExists(LandmarkFinalGate):
     return "NEXT OPEN GATE"
   "EXPEDITION COMPLETE"
@@ -4302,6 +4307,8 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       if not sim.bossDefeated:
         continue
       if sim.relicShards < FinalGateRelicCost:
+        continue
+      if sim.campsActivated < FinalGateCampCost:
         continue
       sim.landmarks[landmarkIndex].done = true
       inc sim.objectivesCompleted

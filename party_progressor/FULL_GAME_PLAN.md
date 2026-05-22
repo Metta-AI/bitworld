@@ -137,8 +137,8 @@ Camps cost wood and stone. Activating a camp should:
 - Give a score bonus.
 - Create a readable regroup point for bots and humans.
 
-Beacon objectives should award relic shards. The final gate should require the
-boss to be defeated before completion.
+Beacon objectives should award relic shards. The final gate should require
+relic progress, camp progress, and boss defeat before completion.
 
 Food is currently mostly a score/resource signal. The next mechanical pass
 should make it matter without turning the game into inventory management:
@@ -342,9 +342,9 @@ The first full-game implementation pass includes:
 - Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
   appear as compact badges beside threatening enemies before hits land, so the
   player can read biome combat pressure without first taking the status.
-- Final-gate completion now requires both boss defeat and relic progress,
-  turning the end of the run into a visible expedition chain instead of a single
-  late fight.
+- Final-gate completion now requires boss defeat, relic progress, and forward
+  camp progress, turning the end of the run into a visible expedition chain
+  instead of a single late fight.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
@@ -378,8 +378,8 @@ The first full-game implementation pass includes:
   specializations.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, downed-player rescue, and chat pings: richer rescue/objective moments.
-- Make the final gate feel earned by requiring a visible chain of relic, boss,
-  and camp progress.
+- Tune final-gate pacing now that relic, boss, and camp progress are all part of
+  the visible completion chain.
 
 ### Polish And Packaging
 
