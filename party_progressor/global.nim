@@ -34,9 +34,11 @@ const
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
+  RoleLabelSpriteBase = PlayerHudSpriteId + 40
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
+  RoleLabelObjectBase = PlayerHudObjectId + 100
   HudGap = 1
   HealthSprite5Base = 700
   HealthSprite10Base = 710
@@ -1095,6 +1097,35 @@ proc playerSpriteLabel(
   result.add(playerIndex.playerTintName())
   result.add($(ord(form) + 1))
 
+proc roleTintSlot(playerIndex: int, role: PlayerRole): int =
+  ## Returns an obvious role color while keeping unarmed players identity-tinted.
+  case role
+  of RoleTank:
+    4 # blue
+  of RoleDps:
+    0 # red
+  of RoleHealer:
+    3 # green
+  of RoleUnarmed:
+    playerIndex
+
+proc roleGearLabel(kind: PickupKind): string =
+  case kind
+  of PickupTankGear:
+    "TANK"
+  of PickupDpsGear:
+    "DPS"
+  of PickupHealerGear:
+    "HEAL"
+  else:
+    ""
+
+proc roleGearSpriteId(kind: PickupKind): int =
+  RoleLabelSpriteBase + ord(kind)
+
+proc roleGearObjectId(pickupIndex: int): int =
+  RoleLabelObjectBase + pickupIndex
+
 proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
   ## Returns the sprite id for one adventurer attack swish facing.
   SwooshSpriteBase + ord(form) * 4 + ord(facing)
@@ -1254,6 +1285,18 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
         swoosh.pixels,
         "swoosh"
       )
+
+  for kind in [PickupTankGear, PickupDpsGear, PickupHealerGear]:
+    let
+      label = kind.roleGearLabel()
+      text = sim.buildSpriteProtocolTextSprite([label], 2'u8)
+    packet.addSprite(
+      kind.roleGearSpriteId(),
+      text.width,
+      text.height,
+      text.pixels,
+      "role " & label.toLowerAscii()
+    )
 
   let
     mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
@@ -1627,6 +1670,23 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if pickup.kind.isRoleGear():
+      let
+        label = pickup.kind.roleGearLabel()
+        labelWidth = sim.textFont.textWidth(label)
+        labelHeight = sim.textFont.height
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.roleGearObjectId(),
+        pickup.x - cameraX - max(0, (labelWidth - sprite.width) div 2),
+        pickup.y - cameraY - labelHeight - 3,
+        pickup.kind.roleGearSpriteId(),
+        labelWidth,
+        labelHeight,
+        viewportWidth,
+        viewportHeight,
+        pickup.y - cameraY - 1
+      )
 
   for i in 0 ..< sim.mobs.len:
     let
@@ -1674,7 +1734,7 @@ proc addWorldObjects(
       player.x - 1 - cameraX,
       player.y - 1 - cameraY,
       playerSpriteId(
-        i,
+        i.roleTintSlot(player.role),
         player.form,
         selected,
         player.facing
@@ -1739,7 +1799,13 @@ proc addPlayerHud(
     statusLine2 = sim.currentWeather().weatherLabel().toUpperAscii() &
       " W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
       " R" & $sim.relicShards
-    status = statusLine1 & "|" & statusLine2
+    ability = player.role.roleAbilityLabel().toUpperAscii()
+    statusLine3 =
+      if player.abilityCooldown > 0:
+        "B " & ability & " CD" & $player.abilityCooldown
+      else:
+        "B " & ability
+    status = statusLine1 & "|" & statusLine2 & "|" & statusLine3
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -1785,7 +1851,7 @@ proc addPlayerHud(
   currentIds.add(StatusHudObjectId)
   if state.hudStatus != status:
     let statusText = sim.buildSpriteProtocolTextSprite(
-      [statusLine1, statusLine2],
+      [statusLine1, statusLine2, statusLine3],
       2'u8
     )
     packet.addSprite(

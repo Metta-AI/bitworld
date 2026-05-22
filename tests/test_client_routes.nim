@@ -37,7 +37,18 @@ proc testReplayClientPreservesUri() =
   let html = readFile(clientStaticPath(CoworldReplayClientRoute))
   doAssert """["name","slot","token","uri"]""" in html
 
+proc testPlayerClientSpeaksSpriteProtocol() =
+  ## Tests the shared player client covers the sprite protocol used by bots.
+  echo "Testing player client sprite protocol support"
+  let html = readFile(clientStaticPath(CoworldPlayerClientRoute))
+  doAssert "new Uint8Array([0x84" in html
+  doAssert "b[0]=0x81" in html
+  for messageType in ["0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07"]:
+    doAssert ("type===" & messageType) in html,
+      "missing sprite protocol parser case " & messageType
+
 testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
 testReplayClientPreservesUri()
+testPlayerClientSpeaksSpriteProtocol()
 echo "All tests passed"

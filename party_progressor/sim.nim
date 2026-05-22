@@ -67,11 +67,15 @@ const
   BiomeCount* = 7
   TankGuardRadius* = 44
   HealerPulseRadius* = 46
+  DpsCleaveRadius* = 42
+  DpsCleaveDamage* = 2
+  TargetFps* = 60
   RoleAbilityCooldown* = 36
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
-  TargetFps* = 60
+  FoodHealAmount* = 2
+  ColdExposureIntervalTicks* = TargetFps * 3
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
@@ -429,6 +433,17 @@ proc roleAttackDamage(role: PlayerRole): int =
   of RoleHealer:
     1
 
+proc roleAbilityLabel*(role: PlayerRole): string =
+  case role
+  of RoleUnarmed:
+    "choose role"
+  of RoleTank:
+    "guard"
+  of RoleDps:
+    "cleave"
+  of RoleHealer:
+    "heal"
+
 proc roleForPickup(kind: PickupKind): PlayerRole =
   case kind
   of PickupTankGear:
@@ -440,7 +455,7 @@ proc roleForPickup(kind: PickupKind): PlayerRole =
   else:
     RoleUnarmed
 
-proc isRoleGear(kind: PickupKind): bool =
+proc isRoleGear*(kind: PickupKind): bool =
   kind in {PickupTankGear, PickupDpsGear, PickupHealerGear}
 
 proc dataDir*(): string =
@@ -2436,12 +2451,78 @@ proc applyHealerPulse(sim: var SimServer, healerIndex: int) =
       sim.players[healerIndex].healingDone += healed
       inc sim.scoreRevision
 
+proc finishDefeatedMobs(sim: var SimServer) =
+  var survivors: seq[Mob] = @[]
+  for mob in sim.mobs:
+    if mob.hp > 0:
+      survivors.add(mob)
+    else:
+      case mob.kind
+      of BossMob:
+        sim.bossDefeated = true
+        inc sim.scoreRevision
+        let sprite = sim.pickupSprite(PickupCoin)
+        sim.pickups.add(Pickup(
+          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
+          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
+          kind: PickupCoin,
+          value: BossCoinValue
+        ))
+      of TrollMob, GoblinMob, BearMob:
+        let sprite = sim.pickupSprite(PickupCoin)
+        sim.pickups.add(Pickup(
+          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
+          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
+          kind: PickupCoin,
+          value:
+            if mob.kind == BearMob:
+              TrollCoinValue * 2
+            else:
+              TrollCoinValue
+        ))
+      of SnakeMob, WolfMob:
+        let roll = sim.rng.rand(99)
+        if roll < 10:
+          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
+        elif roll < 60:
+          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
+  sim.mobs = survivors
+
+proc applyDpsCleave(sim: var SimServer, playerIndex: int) =
+  let player = sim.players[playerIndex]
+  let
+    radiusSq = DpsCleaveRadius * DpsCleaveRadius
+    playerCenterX = boundsCenterX(player.x, player.bounds)
+    playerCenterY = boundsCenterY(player.y, player.bounds)
+  var hitAny = false
+  for mobIndex in 0 ..< sim.mobs.len:
+    let
+      mobCenterX = boundsCenterX(sim.mobs[mobIndex].x, sim.mobs[mobIndex].bounds)
+      mobCenterY = boundsCenterY(sim.mobs[mobIndex].y, sim.mobs[mobIndex].bounds)
+    if distanceSquared(playerCenterX, playerCenterY, mobCenterX, mobCenterY) >
+        radiusSq:
+      continue
+    sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
+    sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
+    sim.mobs[mobIndex].hp -= DpsCleaveDamage
+    sim.players[playerIndex].damageDone += DpsCleaveDamage
+    hitAny = true
+    inc sim.scoreRevision
+  if hitAny:
+    sim.players[playerIndex].attackTicks =
+      max(sim.players[playerIndex].attackTicks, 5)
+    sim.players[playerIndex].attackResolved = true
+    sim.finishDefeatedMobs()
+
 proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
   if sim.players[playerIndex].abilityCooldown > 0:
     return
   case sim.players[playerIndex].role
   of RoleTank:
     sim.players[playerIndex].guardTicks = TankGuardTicks
+    sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
+  of RoleDps:
+    sim.applyDpsCleave(playerIndex)
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleHealer:
     sim.applyHealerPulse(playerIndex)
@@ -2921,41 +3002,7 @@ proc applyAttack(sim: var SimServer) =
       sim.mobs[mobIndex].x = actor.x
       sim.mobs[mobIndex].y = actor.y
 
-  var survivors: seq[Mob] = @[]
-  for mob in sim.mobs:
-    if mob.hp > 0:
-      survivors.add(mob)
-    else:
-      case mob.kind
-      of BossMob:
-        sim.bossDefeated = true
-        inc sim.scoreRevision
-        let sprite = sim.pickupSprite(PickupCoin)
-        sim.pickups.add(Pickup(
-          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
-          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
-          kind: PickupCoin,
-          value: BossCoinValue
-        ))
-      of TrollMob, GoblinMob, BearMob:
-        let sprite = sim.pickupSprite(PickupCoin)
-        sim.pickups.add(Pickup(
-          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
-          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
-          kind: PickupCoin,
-          value:
-            if mob.kind == BearMob:
-              TrollCoinValue * 2
-            else:
-              TrollCoinValue
-        ))
-      of SnakeMob, WolfMob:
-        let roll = sim.rng.rand(99)
-        if roll < 10:
-          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
-        elif roll < 60:
-          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
-  sim.mobs = survivors
+  sim.finishDefeatedMobs()
 
 proc collectPickups(sim: var SimServer) =
   if sim.players.len == 0:
@@ -2997,6 +3044,33 @@ proc collectPickups(sim: var SimServer) =
       continue
     remaining.add(pickup)
   sim.pickups = remaining
+
+proc playerBiome(sim: SimServer, player: Actor): BiomeKind =
+  sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
+
+proc applyFoodAndWeatherSurvival(sim: var SimServer) =
+  let coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    if sim.food > 0 and
+        sim.players[playerIndex].lives <=
+          sim.players[playerIndex].maxHp - FoodHealAmount:
+      let before = sim.players[playerIndex].lives
+      sim.players[playerIndex].lives = min(
+        sim.players[playerIndex].maxHp,
+        sim.players[playerIndex].lives + FoodHealAmount
+      )
+      if sim.players[playerIndex].lives > before:
+        dec sim.food
+        inc sim.scoreRevision
+
+    if coldPulse and sim.playerBiome(sim.players[playerIndex]) == BiomeSnow:
+      if sim.food > 0:
+        dec sim.food
+        inc sim.scoreRevision
+      else:
+        sim.damagePlayer(playerIndex, 0, 0, 1)
 
 proc updateMobs*(sim: var SimServer) =
   ## Updates mob chasing, telegraphed attacks, and wandering.
@@ -3485,6 +3559,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.addPlayerWalkDistances(startXs, startYs)
   sim.updatePlayerTimersAndFrontier()
   sim.collectPickups()
+  sim.applyFoodAndWeatherSurvival()
   sim.applyAttack()
   sim.activateNearbyLandmarks()
   sim.updateMobs()

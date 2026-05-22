@@ -1,5 +1,5 @@
 import
-  std/[json, os],
+  std/[json, os, strutils, tables],
   supersnappy,
   ../common/protocol,
   ../common/server,
@@ -174,6 +174,105 @@ proc firstViewport(
       raise newException(ValueError, "unknown sprite protocol message")
   raise newException(ValueError, "missing viewport for layer: " & $wantedLayerId)
 
+type
+  ParsedSprite = object
+    width, height: int
+    label: string
+
+  ParsedObject = object
+    x, y, z, layer, spriteId: int
+
+  ParsedPacket = object
+    sprites: Table[int, ParsedSprite]
+    objects: Table[int, ParsedObject]
+    layers: Table[int, tuple[layerType, flags: int]]
+    viewports: Table[int, tuple[width, height: int]]
+
+proc parseSpriteProtocolPacket(packet: openArray[uint8]): ParsedPacket =
+  ## Mirrors the packet framing used by existing sprite-protocol bot parsers.
+  var offset = 0
+  while offset < packet.len:
+    let messageType = packet[offset]
+    inc offset
+    case messageType
+    of 0x01'u8:
+      if offset + 10 > packet.len:
+        raise newException(ValueError, "truncated sprite header")
+      let
+        spriteId = packet.readU16(offset)
+        width = packet.readU16(offset + 2)
+        height = packet.readU16(offset + 4)
+        compressedLen = packet.readU32(offset + 6)
+      offset += 10
+      if offset + compressedLen + 2 > packet.len:
+        raise newException(ValueError, "truncated sprite pixels")
+      offset += compressedLen
+      let labelLen = packet.readU16(offset)
+      offset += 2
+      if offset + labelLen > packet.len:
+        raise newException(ValueError, "truncated sprite label")
+      let label = packet.packetBytesToString(offset, labelLen)
+      offset += labelLen
+      result.sprites[spriteId] = ParsedSprite(
+        width: width,
+        height: height,
+        label: label
+      )
+    of 0x02'u8:
+      if offset + 11 > packet.len:
+        raise newException(ValueError, "truncated object")
+      let
+        objectId = packet.readU16(offset)
+        x = int(cast[int16](uint16(packet.readU16(offset + 2))))
+        y = int(cast[int16](uint16(packet.readU16(offset + 4))))
+        z = int(cast[int16](uint16(packet.readU16(offset + 6))))
+        layer = int(packet[offset + 8])
+        spriteId = packet.readU16(offset + 9)
+      offset += 11
+      result.objects[objectId] = ParsedObject(
+        x: x,
+        y: y,
+        z: z,
+        layer: layer,
+        spriteId: spriteId
+      )
+    of 0x03'u8:
+      if offset + 2 > packet.len:
+        raise newException(ValueError, "truncated delete")
+      result.objects.del(packet.readU16(offset))
+      offset += 2
+    of 0x04'u8:
+      result.objects.clear()
+    of 0x05'u8:
+      if offset + 5 > packet.len:
+        raise newException(ValueError, "truncated viewport")
+      let
+        layerId = int(packet[offset])
+        width = packet.readU16(offset + 1)
+        height = packet.readU16(offset + 3)
+      offset += 5
+      result.viewports[layerId] = (width: width, height: height)
+    of 0x06'u8:
+      if offset + 3 > packet.len:
+        raise newException(ValueError, "truncated layer")
+      let
+        layerId = int(packet[offset])
+        layerType = int(packet[offset + 1])
+        flags = int(packet[offset + 2])
+      offset += 3
+      result.layers[layerId] = (layerType: layerType, flags: flags)
+    of 0x07'u8:
+      if offset + 2 > packet.len:
+        raise newException(ValueError, "truncated identity")
+      offset += 2
+    else:
+      raise newException(ValueError, "unknown sprite protocol message")
+
+proc objectSpriteLabels(parsed: ParsedPacket): seq[string] =
+  for obj in parsed.objects.values:
+    if parsed.sprites.hasKey(obj.spriteId):
+      result.add(parsed.sprites[obj.spriteId].label)
+
 proc testPlayerDropsCarriedCoinsOnDeath() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -319,6 +418,48 @@ proc testSpritePlayerViewportAndBiomeBackground() =
   doAssert mapSprite.pixels[pixelOffset + 2].uint8 == color.b
   doAssert mapSprite.pixels[pixelOffset + 3].uint8 == color.a
 
+proc testSpriteProtocolPacketMatchesReferenceParsers() =
+  var sim = initPartyProgressorForTest()
+  let playerIndex = sim.addPlayer("player1")
+
+  var nextState: PlayerViewerState
+  let packet = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  )
+  let parsed = packet.parseSpriteProtocolPacket()
+  doAssert parsed.layers.hasKey(MapLayerId)
+  doAssert parsed.viewports[MapLayerId].width == PlayerViewportWidth
+  doAssert parsed.viewports[MapLayerId].height == PlayerViewportHeight
+  doAssert parsed.sprites[MapSpriteId].label == "map"
+  for obj in parsed.objects.values:
+    doAssert parsed.sprites.hasKey(obj.spriteId),
+      "object references undefined sprite " & $obj.spriteId
+
+  let visibleLabels = parsed.objectSpriteLabels()
+  doAssert "role tank" in visibleLabels
+  doAssert "role dps" in visibleLabels
+  doAssert "role heal" in visibleLabels
+
+  let tankGear = sim.firstPickup(PickupTankGear)
+  sim.players[playerIndex].x = tankGear.x
+  sim.players[playerIndex].y = tankGear.y
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.step([InputState()])
+
+  var tankState: PlayerViewerState
+  let tankPacket = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    tankState
+  )
+  let tankParsed = tankPacket.parseSpriteProtocolPacket()
+  let playerObject =
+    tankParsed.objects[PlayerObjectBase + sim.players[playerIndex].id]
+  doAssert "blue" in tankParsed.sprites[playerObject.spriteId].label,
+    "tank role should visibly retint the player sprite"
+
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()
   roadSim.clearTerrain()
@@ -444,6 +585,64 @@ proc testBeaconAndBossScoring() =
     sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue +
       BossScoreValue
 
+proc testDpsCleaveSpecialDamagesNearbyMobs() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.bossDefeated = true
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].applyRole(RoleDps)
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+
+  for dx in [8, 24]:
+    sim.mobs.add(Mob(
+      kind: SnakeMob,
+      x: sim.players[playerIndex].x + dx,
+      y: sim.players[playerIndex].y,
+      sprite: sim.mobSpriteFor(SnakeMob),
+      bounds: sim.mobBoundsFor(SnakeMob),
+      hp: 5,
+      attackCooldown: 99
+    ))
+
+  sim.step([InputState(b: true)])
+
+  doAssert sim.players[playerIndex].abilityCooldown > 0
+  doAssert sim.players[playerIndex].attackTicks > 0
+  doAssert sim.mobs.len == 2
+  doAssert sim.mobs[0].hp == 5 - DpsCleaveDamage
+  doAssert sim.mobs[1].hp == 5 - DpsCleaveDamage
+
+proc testFoodAndColdSurvivalPressure() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.fillGround(GroundSnow, BiomeSnow)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].lives =
+    sim.players[playerIndex].maxHp - FoodHealAmount
+  sim.food = 1
+  sim.step([InputState()])
+
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp
+  doAssert sim.food == 0
+
+  sim.players[playerIndex].lives = 3
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState()])
+
+  doAssert sim.players[playerIndex].lives == 2,
+    "snow exposure should damage players when no food is available"
+
 testSafeOriginAndReusableRoles()
 testFrontierScoreIsShared()
 testMobHpScalesByProgressZone()
@@ -453,7 +652,10 @@ testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
+testSpriteProtocolPacketMatchesReferenceParsers()
 testTerrainMovementModifiersAffectPlayers()
 testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()
+testDpsCleaveSpecialDamagesNearbyMobs()
+testFoodAndColdSurvivalPressure()
 echo "All tests passed"

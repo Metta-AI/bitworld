@@ -132,8 +132,9 @@ boss to be defeated before completion.
 Food is currently mostly a score/resource signal. The next mechanical pass
 should make it matter without turning the game into inventory management:
 
+- Auto-consume as shared emergency rations when players are badly injured.
+- Buffer cold exposure in the snow biome before HP damage starts landing.
 - Fuel stronger camp healing.
-- Reduce weather penalties for a short window.
 - Prevent late-run exhaustion.
 - Give healer/tank teams more strategic sustain choices.
 
@@ -269,10 +270,18 @@ The first full-game implementation pass includes:
 - An 11 by 11 native-tile player viewport.
 - Biome-backed transparent terrain rendering for sprite observations and the
   legacy framebuffer path.
+- In-world role labels for the origin and camp gear picks.
+- Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
+  green, while unarmed players keep their player-slot identity color.
+- DPS cleave on the `B` button, plus tank guard and healer pulse.
+- Food auto-healing and snow exposure pressure that consumes food before
+  damaging players.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, boss scoring, player viewport size, and biome-backed transparent
   sprites.
+- Sprite protocol fixture tests that parse Party Progressor player packets with
+  the same message framing used by existing BitWorld sprite-protocol bots.
 
 ## Broader Roadmap
 
@@ -281,7 +290,7 @@ The first full-game implementation pass includes:
 - Tune the 11 by 11 viewport after real bot/human observation checks.
 - Add stronger in-world affordances for resource nodes, beacon completion, camp
   costs, and final-gate requirements.
-- Make food mechanically useful without adding inventory complexity.
+- Tune food and snow-exposure pacing with multi-player runs.
 - Add player-observation screenshots to smoke tests so black-background
   regressions are visually obvious.
 - Expand bot targeting: gather resources when camps are unaffordable, prefer
