@@ -198,6 +198,7 @@ type
     needsLight: bool
     needsTerrainRoute: bool
     canEatCarriedFood: bool
+    canDeliverCampCarry: bool
     canLaySwampPlank: bool
     canLayStoneSteps: bool
     carriedItem: CarryKind
@@ -827,6 +828,8 @@ proc readStatusHud(bot: var Bot, label: string) =
       bot.canEatCarriedFood =
         bot.carriedItem == CarryFood and
           (section.contains("sel eat") or section.contains("sel feed"))
+      bot.canDeliverCampCarry =
+        bot.carriedItem != CarryNone and section.contains("sel camp")
       bot.canLaySwampPlank =
         bot.carriedItem == CarryWood and section.contains("sel plank")
       bot.canLayStoneSteps =
@@ -869,6 +872,7 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.needsLight = false
   bot.needsTerrainRoute = false
   bot.canEatCarriedFood = false
+  bot.canDeliverCampCarry = false
   bot.canLaySwampPlank = false
   bot.canLayStoneSteps = false
   bot.carriedItem = CarryNone
@@ -1549,7 +1553,8 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
     if bot.carriedItem != CarryNone:
       if bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute:
         return true
-      return not bot.shelterTooFarBehindFrontier(target)
+      return bot.canDeliverCampCarry and
+        not bot.shelterTooFarBehindFrontier(target)
     if not (bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute):
       return false
   if target.kind == TargetShade:
@@ -1683,6 +1688,8 @@ proc targetScore(bot: Bot, target: Target): int =
       distance + (
         if bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute:
           -210
+        elif not bot.canDeliverCampCarry:
+          620
         elif bot.shelterTooFarBehindFrontier(target):
           720
         else:
@@ -2622,6 +2629,13 @@ when defined(konradTargetSelfTest):
     objectId: LandmarkObjectBase + 3
   ))
   bot.carriedItem = CarryWood
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 3,
+    x: ShelterReturnRadius,
+    y: 0
+  ))
+  bot.canDeliverCampCarry = true
   doAssert bot.canConsiderPickupTarget(Target(
     kind: TargetShelter,
     objectId: LandmarkObjectBase + 3,
@@ -2649,6 +2663,7 @@ when defined(konradTargetSelfTest):
   bot.playerWorldX = 815
   bot.playerWorldY = 0
   bot.carriedItem = CarryFood
+  bot.canDeliverCampCarry = true
   bot.lowHealth = false
   bot.needsShelter = false
   bot.needsTerrainRoute = false
@@ -2675,6 +2690,7 @@ when defined(konradTargetSelfTest):
   ))
   bot.teamFrontierX = 0
   bot.playerWorldX = 0
+  bot.canDeliverCampCarry = false
   bot.carriedItem = CarryNone
   bot.needsRegroup = true
   doAssert not bot.canConsiderPickupTarget(Target(
@@ -3113,6 +3129,11 @@ when defined(konradTargetSelfTest):
   bot.readStatusHud("tank snow|snow w0 f0 s0 r0|b guard|carry food sel feed")
   doAssert bot.carriedItem == CarryFood
   doAssert bot.canEatCarriedFood
+  bot.canEatCarriedFood = false
+  bot.readStatusHud("tank plains|clear w0 f0 s0 r0|b guard|carry wood sel camp")
+  doAssert bot.carriedItem == CarryWood
+  doAssert bot.canDeliverCampCarry
+  bot.canDeliverCampCarry = false
   bot.canEatCarriedFood = false
   bot.readStatusHud("tank swamp|rain w0 f0 s0 r0|b guard|carry wood sel plank")
   doAssert bot.carriedItem == CarryWood

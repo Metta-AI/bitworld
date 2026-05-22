@@ -1962,6 +1962,19 @@ proc testResourceHarvestAndCampActivation() =
   sim.step([InputState(select: true)])
   doAssert sim.players[playerIndex].role == RoleHealer,
     "forward camp role gear should support explicit select-to-swap"
+  sim.players[playerIndex].applyRole(RoleDps)
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  sim.players[playerIndex].lives = max(1, sim.players[playerIndex].maxHp - 2)
+  sim.players[playerIndex].x = forwardHealerGear.x
+  sim.players[playerIndex].y = forwardHealerGear.y
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.step([InputState(select: true)])
+  doAssert sim.players[playerIndex].role == RoleDps,
+    "carried-item select actions near camp gear should not also swap roles"
+  doAssert not sim.players[playerIndex].carrying,
+    "carried-item select should still resolve the intended held-food action"
   for ty in campTy - CampShortcutHalfHeightTiles ..
       campTy + CampShortcutHalfHeightTiles:
     for tx in campTx - CampShortcutBackTiles ..

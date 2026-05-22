@@ -375,6 +375,7 @@ type
     distanceWalked*: int
     carrying*: bool
     carriedItem*: CarryKind
+    carrySelectLockTicks*: int
     slowTicks*: int
     chillTicks*: int
     poisonTicks*: int
@@ -2892,6 +2893,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].coins = 0
   sim.players[playerIndex].carrying = false
   sim.players[playerIndex].carriedItem = CarryNone
+  sim.players[playerIndex].carrySelectLockTicks = 0
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
@@ -3285,6 +3287,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.coins)
     result.mixHashInt(ord(player.carrying))
     result.mixHashInt(ord(player.carriedItem))
+    result.mixHashInt(player.carrySelectLockTicks)
     result.mixHashInt(player.slowTicks)
     result.mixHashInt(player.chillTicks)
     result.mixHashInt(player.poisonTicks)
@@ -3861,11 +3864,14 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if input.b:
     sim.applyRoleAbility(playerIndex)
   if input.select:
-    if not sim.consumeCarriedFood(playerIndex) and
-        not sim.feedCarriedFood(playerIndex) and
-        not sim.deliverCarryToCamp(playerIndex) and
-        not sim.useCarryInField(playerIndex):
-      discard sim.dropCarry(playerIndex)
+    let usedCarryAction =
+      sim.consumeCarriedFood(playerIndex) or
+        sim.feedCarriedFood(playerIndex) or
+        sim.deliverCarryToCamp(playerIndex) or
+        sim.useCarryInField(playerIndex) or
+        sim.dropCarry(playerIndex)
+    if usedCarryAction:
+      player.carrySelectLockTicks = 1
 
 proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
   let sprite = sim.playerSwooshFor(player)
@@ -5654,7 +5660,10 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
             else: InputState()
           let canSwapRole =
             sim.players[playerIndex].role == RoleUnarmed or
-              (pickup.x >= SafeZoneRightPixels and input.select)
+              (
+                pickup.x >= SafeZoneRightPixels and input.select and
+                  player.carrySelectLockTicks == 0
+              )
           if not canSwapRole or sim.players[playerIndex].role == nextRole:
             continue
           sim.players[playerIndex].applyRole(nextRole)
@@ -6654,6 +6663,8 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].invulnTicks > 0:
       dec sim.players[playerIndex].invulnTicks
+    if sim.players[playerIndex].carrySelectLockTicks > 0:
+      dec sim.players[playerIndex].carrySelectLockTicks
     let input =
       if playerIndex < inputs.len: inputs[playerIndex]
       else: InputState()

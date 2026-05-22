@@ -611,6 +611,9 @@ The first full-game implementation pass includes:
   must press select to swap at camp gear. Origin role choice remains walk-in
   simple for unarmed players, while late expedition paths no longer accidentally
   collapse tank/DPS/healer composition when bots cross camp gear.
+- Forward camp role swaps now require empty hands for already-roled players, so
+  selecting to eat food, feed a teammate, lay planks/steps, or deliver supplies
+  near camp gear cannot also convert a DPS or tank into the wrong role.
 - Completed camps now become semantically distinct `shelter` objects in the
   sprite protocol. Konrad treats shelters as recovery/regroup targets instead
   of generic camp objectives, so healthy bots push onward while incomplete camps
@@ -651,6 +654,9 @@ The first full-game implementation pass includes:
 - Konrad now anchors camp-delivery `Select` presses on the bot's preferred role
   gear when a forward camp has several role-swap pickups nearby, so a named DPS
   or tank bot can deliver supplies without accidentally walking out as healer.
+- Konrad now reads the carried-item `SEL CAMP` HUD affordance before treating a
+  completed shelter as a supply-delivery target, so loose food near an already
+  served camp does not trap healthy bots in a pickup/drop loop.
 - Konrad now reads downed-player status badges from the sprite protocol and
   treats a downed teammate as a rescue target, with healers prioritizing the
   revive route most aggressively.
@@ -662,10 +668,10 @@ The first full-game implementation pass includes:
   dwell on a non-resolving stop, the bot temporarily releases that target and
   resumes the expedition push or nearby objective chain instead of ending a
   long run in a shelter or floor-drop orbit.
-- Saved score files now preserve the last non-empty expedition snapshot after
-  bots disconnect, so local multi-bot smokes and tournament-style runs leave
+- Saved score files now preserve the richest expedition snapshot after bots
+  disconnect, so local multi-bot smokes and tournament-style runs leave
   analyzable names, roles, frontier, resource, objective, boss, and final-gate
-  fields instead of being overwritten by an empty post-disconnect player list.
+  fields instead of being overwritten by a smaller post-disconnect player list.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
