@@ -343,6 +343,9 @@ The first full-game implementation pass includes:
 - Cave and ruin fog now disorients isolated unsheltered players with slow
   pressure, while nearby allies, completed lantern/ward waystations, and camps
   keep the party oriented.
+- Early biome tactics now teach sustain and grouping before harsh survival
+  bands: forest travel slowly rebuilds a small shared food reserve, while
+  plains players grouped near allies recharge role powers faster.
 - Activated camps now act as expedition shelters: nearby players are protected
   from snow, desert, and fog exposure, recover poison/slow/chill statuses
   faster, and slowly heal while regrouping.

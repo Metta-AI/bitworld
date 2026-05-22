@@ -141,6 +141,10 @@ const
   CampStatusRecoveryTicks* = TargetFps div 2
   CampAidStatusRecoveryTicks* = TargetFps div 2
   CampRallyAbilityCooldownStep* = 1
+  ForestForageIntervalTicks* = TargetFps * 5
+  ForestForageFoodCap* = 2
+  PlainsRallyAllyRadius* = WorldTileSize * 3
+  PlainsRallyCooldownStep* = 1
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
   CampShortcutHalfHeightTiles* = 1
@@ -418,6 +422,11 @@ type
     SurvivalCold
     SurvivalHeat
     SurvivalFog
+
+  BiomeTacticKind* = enum
+    BiomeTacticNone
+    BiomeTacticForage
+    BiomeTacticRally
 
   GroundKind* = enum
     GroundGrass
@@ -831,6 +840,12 @@ proc survivalPressureLabel*(kind: SurvivalPressureKind): string =
   of SurvivalCold: "cold"
   of SurvivalHeat: "heat"
   of SurvivalFog: "fog"
+
+proc biomeTacticLabel*(kind: BiomeTacticKind): string =
+  case kind
+  of BiomeTacticNone: ""
+  of BiomeTacticForage: "forage"
+  of BiomeTacticRally: "rally"
 
 proc pingLabel*(kind: PlayerPingKind): string =
   case kind
@@ -4912,6 +4927,29 @@ proc survivalPressureKind*(
 proc survivalPressureLabel*(sim: SimServer, playerIndex: int): string =
   sim.survivalPressureKind(playerIndex).survivalPressureLabel()
 
+proc playerBiomeTacticKind*(
+  sim: SimServer,
+  playerIndex: int
+): BiomeTacticKind =
+  ## Returns an active positive biome rule visible to the player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return BiomeTacticNone
+  if sim.players[playerIndex].lives <= 0:
+    return BiomeTacticNone
+  case sim.playerBiome(sim.players[playerIndex])
+  of BiomeForest:
+    BiomeTacticForage
+  of BiomePlains:
+    if sim.playerHasNearbyAlly(playerIndex, PlainsRallyAllyRadius):
+      BiomeTacticRally
+    else:
+      BiomeTacticNone
+  else:
+    BiomeTacticNone
+
+proc playerBiomeTacticLabel*(sim: SimServer, playerIndex: int): string =
+  sim.playerBiomeTacticKind(playerIndex).biomeTacticLabel()
+
 proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
   if sim.food > 0:
     dec sim.food
@@ -4922,6 +4960,17 @@ proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
     sim.clearCarry(playerIndex)
     return true
   false
+
+proc applyEarlyBiomeTactics(sim: var SimServer) =
+  if sim.tickCount mod ForestForageIntervalTicks == 0 and
+      sim.food < ForestForageFoodCap:
+    for player in sim.players:
+      if player.lives <= 0:
+        continue
+      if sim.playerBiome(player) == BiomeForest:
+        inc sim.food
+        inc sim.scoreRevision
+        break
 
 proc applyFoodAndWeatherSurvival(sim: var SimServer) =
   let
@@ -5325,7 +5374,11 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   sim.fb.drawText(
     sim.textFont,
     "STATUS " & player.statusLabel().toUpperAscii() & " " &
-      sim.survivalPressureLabel(playerIndex).toUpperAscii(),
+      sim.survivalPressureLabel(playerIndex).toUpperAscii() &
+      (if sim.playerBiomeTacticLabel(playerIndex).len > 0:
+        " " & sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
+      else:
+        ""),
     0,
     lineY * 6,
     2'u8
@@ -5564,6 +5617,12 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
           0,
           sim.players[i].abilityCooldown - CampRallyAbilityCooldownStep
         )
+      if sim.players[i].abilityCooldown > 0 and
+          sim.playerBiomeTacticKind(i) == BiomeTacticRally:
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - PlainsRallyCooldownStep
+        )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
     if sim.players[i].pingTicks > 0:
@@ -5604,6 +5663,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.addPlayerWalkDistances(startXs, startYs)
   sim.updatePlayerTimersAndFrontier()
   sim.collectPickups(inputs)
+  sim.applyEarlyBiomeTactics()
   sim.applyFoodAndWeatherSurvival()
   sim.applyStatusEffects()
   sim.applyCampRecovery()

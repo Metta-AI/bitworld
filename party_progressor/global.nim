@@ -130,6 +130,8 @@ type
     StatusPartyFocus
     StatusHighGround
     StatusLowGround
+    StatusForage
+    StatusRally
     StatusPoison
     StatusSlow
     StatusChill
@@ -1409,6 +1411,8 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusPartyFocus: "FOC"
   of StatusHighGround: "HIGH"
   of StatusLowGround: "LOW"
+  of StatusForage: "FOR"
+  of StatusRally: "RAL"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1434,6 +1438,8 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusPartyFocus: 14'u8
   of StatusHighGround: 8'u8
   of StatusLowGround: 10'u8
+  of StatusForage: 10'u8
+  of StatusRally: 14'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1459,6 +1465,8 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusPartyFocus: "status party focus"
   of StatusHighGround: "status high ground"
   of StatusLowGround: "status low ground"
+  of StatusForage: "status forage"
+  of StatusRally: "status rally"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -1518,6 +1526,17 @@ proc elevationStatusBadge(delta: int): tuple[found: bool, badge: StatusBadgeKind
     (true, StatusLowGround)
   else:
     (false, StatusHighGround)
+
+proc biomeTacticStatusBadge(
+  kind: BiomeTacticKind
+): tuple[found: bool, badge: StatusBadgeKind] =
+  case kind
+  of BiomeTacticForage:
+    (true, StatusForage)
+  of BiomeTacticRally:
+    (true, StatusRally)
+  of BiomeTacticNone:
+    (false, StatusForage)
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -2616,6 +2635,9 @@ proc addWorldObjects(
       let roleBadge = player.role.roleStatusBadge()
       if roleBadge.found:
         badges.add(roleBadge.badge)
+      let tacticBadge = sim.playerBiomeTacticKind(i).biomeTacticStatusBadge()
+      if tacticBadge.found:
+        badges.add(tacticBadge.badge)
       let survivalBadge = sim.survivalPressureKind(i).survivalStatusBadge()
       if survivalBadge.found:
         badges.add(survivalBadge.badge)
@@ -2722,11 +2744,13 @@ proc addPlayerHud(
       clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
       clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
     )
+    tacticLabel = sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
     statusLine4 =
       "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
         " E" & $playerElevation & " " &
         player.statusLabel().toUpperAscii() & " " &
-        sim.survivalPressureLabel(playerIndex).toUpperAscii()
+        sim.survivalPressureLabel(playerIndex).toUpperAscii() &
+        (if tacticLabel.len > 0: " " & tacticLabel else: "")
     statusLine5 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
       statusLine4 & "|" & statusLine5

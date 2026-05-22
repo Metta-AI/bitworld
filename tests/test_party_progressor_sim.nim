@@ -703,6 +703,87 @@ proc testBiomeGroundsAndWeather() =
     WeatherDust
   doAssert groundSpeedPercent(GroundMud) < groundSpeedPercent(GroundRoad)
 
+proc testEarlyBiomeForageAndRallyTactics() =
+  var forestSim = initPartyProgressorForTest()
+  forestSim.clearTerrain()
+  forestSim.mobs.setLen(0)
+  forestSim.pickups.setLen(0)
+  forestSim.landmarks.setLen(0)
+  forestSim.fillGround(GroundGrass, BiomeForest)
+  forestSim.food = 0
+  let forestPlayer = forestSim.addPlayer("forager")
+  forestSim.players[forestPlayer].x =
+    firstTileForBiome(BiomeForest) * WorldTileSize
+  forestSim.players[forestPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  forestSim.players[forestPlayer].bounds =
+    forestSim.playerBoundsFor(forestSim.players[forestPlayer])
+  doAssert forestSim.playerBiomeTacticKind(forestPlayer) == BiomeTacticForage
+  forestSim.tickCount = ForestForageIntervalTicks - 1
+  forestSim.step([InputState()])
+  doAssert forestSim.food == 1,
+    "forest foraging should trickle a small shared food reserve"
+  forestSim.food = ForestForageFoodCap
+  forestSim.tickCount = ForestForageIntervalTicks - 1
+  forestSim.step([InputState()])
+  doAssert forestSim.food == ForestForageFoodCap,
+    "forest foraging should stop at its small reserve cap"
+
+  var forageState: PlayerViewerState
+  let forageParsed = forestSim.buildSpriteProtocolPlayerUpdates(
+    forestPlayer,
+    initPlayerViewerState(),
+    forageState
+  ).parseSpriteProtocolPacket()
+  let forageLabels = forageParsed.objectSpriteLabels()
+  doAssert "status forage" in forageLabels
+  let forageSpriteLabels = forageParsed.sprites.values.toSeq.mapIt(it.label)
+  doAssert forageSpriteLabels.anyIt(it.contains("FORAGE")),
+    "forest tactic should be visible in the HUD status text"
+
+  var plainsSim = initPartyProgressorForTest()
+  plainsSim.clearTerrain()
+  plainsSim.mobs.setLen(0)
+  plainsSim.pickups.setLen(0)
+  plainsSim.landmarks.setLen(0)
+  plainsSim.fillGround(GroundRoad, BiomePlains)
+  let
+    rallyPlayer = plainsSim.addPlayer("rally")
+    allyPlayer = plainsSim.addPlayer("ally")
+    plainsX = firstTileForBiome(BiomePlains) * WorldTileSize
+    plainsY = (WorldHeightTiles div 2) * WorldTileSize
+  plainsSim.players[rallyPlayer].x = plainsX
+  plainsSim.players[rallyPlayer].y = plainsY
+  plainsSim.players[rallyPlayer].applyRole(RoleDps)
+  plainsSim.players[rallyPlayer].abilityCooldown = 6
+  plainsSim.players[rallyPlayer].bounds =
+    plainsSim.playerBoundsFor(plainsSim.players[rallyPlayer])
+  plainsSim.players[allyPlayer].x = plainsX + WorldTileSize
+  plainsSim.players[allyPlayer].y = plainsY
+  plainsSim.players[allyPlayer].bounds =
+    plainsSim.playerBoundsFor(plainsSim.players[allyPlayer])
+  doAssert plainsSim.playerBiomeTacticKind(rallyPlayer) == BiomeTacticRally
+  plainsSim.step([InputState(), InputState()])
+  doAssert plainsSim.players[rallyPlayer].abilityCooldown ==
+    6 - 1 - PlainsRallyCooldownStep,
+    "plains rally should recharge role powers faster when allies group up"
+
+  var rallyState: PlayerViewerState
+  let rallyLabels = plainsSim.buildSpriteProtocolPlayerUpdates(
+    rallyPlayer,
+    initPlayerViewerState(),
+    rallyState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status rally" in rallyLabels
+
+  plainsSim.players[rallyPlayer].abilityCooldown = 6
+  plainsSim.players[allyPlayer].x += PlainsRallyAllyRadius + WorldTileSize
+  plainsSim.players[allyPlayer].bounds =
+    plainsSim.playerBoundsFor(plainsSim.players[allyPlayer])
+  doAssert plainsSim.playerBiomeTacticKind(rallyPlayer) == BiomeTacticNone
+  plainsSim.step([InputState(), InputState()])
+  doAssert plainsSim.players[rallyPlayer].abilityCooldown == 5,
+    "plains rally cooldown gain should require a nearby ally"
+
 proc testSpritePlayerViewportAndBiomeBackground() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")
@@ -2970,6 +3051,7 @@ testMobTelegraphsBeforeLunging()
 testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
+testEarlyBiomeForageAndRallyTactics()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolWeatherOverlays()
 testSpriteProtocolShowsSurvivalPressureAffordances()
