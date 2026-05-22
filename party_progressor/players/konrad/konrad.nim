@@ -15,7 +15,7 @@ const
   PlayerHealthObjectBase = 10000
   CarryObjectBase = 12000
   StatusBadgeObjectBase = 13000
-  StatusBadgeSlots = 10
+  StatusBadgeSlots = 12
   LowHealthPercent = 50
   MaxDrainMessages = 256
   PathCellSize = 8
@@ -880,7 +880,7 @@ proc updateSelfAffordances(bot: var Bot) =
     case label
     of "status help":
       bot.lowHealth = true
-    of "status poison", "status slow", "status chill":
+    of "status poison", "status slow", "status chill", "status exhaust":
       bot.needsCleanse = true
     of "status alone":
       bot.needsRegroup = true
@@ -2903,6 +2903,9 @@ when defined(konradTargetSelfTest):
   doAssert not bot.needsLight
   doAssert not bot.needsTerrainRoute
   bot.sprites[coldStatusSpriteId].label = "status poison"
+  bot.updateSelfAffordances()
+  doAssert bot.needsCleanse
+  bot.sprites[coldStatusSpriteId].label = "status exhaust"
   bot.updateSelfAffordances()
   doAssert bot.needsCleanse
   bot.sprites[coldStatusSpriteId].label = "status fog"

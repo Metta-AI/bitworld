@@ -67,7 +67,7 @@ const
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
-  StatusBadgeSlots = 10
+  StatusBadgeSlots = 12
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
   HealthBarWidth = 18
@@ -141,6 +141,7 @@ type
     StatusPoison
     StatusSlow
     StatusChill
+    StatusExhaustion
     StatusMire
     StatusCold
     StatusHeat
@@ -1429,6 +1430,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
+  of StatusExhaustion: "EXH"
   of StatusMire: "MIRE"
   of StatusCold: "COLD"
   of StatusHeat: "HEAT"
@@ -1463,6 +1465,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
+  of StatusExhaustion: 7'u8
   of StatusMire: 10'u8
   of StatusCold: 11'u8
   of StatusHeat: 9'u8
@@ -1497,6 +1500,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
+  of StatusExhaustion: "status exhaust"
   of StatusMire: "status mire"
   of StatusCold: "status cold"
   of StatusHeat: "status heat"
@@ -2689,6 +2693,8 @@ proc addWorldObjects(
         badges.add(StatusSlow)
       if player.chillTicks > 0:
         badges.add(StatusChill)
+      if player.exhaustionTicks > 0:
+        badges.add(StatusExhaustion)
       if sim.playerIsolationThreatened(i):
         badges.add(StatusAlone)
       if sim.playerNeedsHelp(i):

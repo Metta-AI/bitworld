@@ -384,6 +384,10 @@ The first full-game implementation pass includes:
 - Food auto-healing and snow exposure pressure that consumes food before
   damaging isolated players, while nearby allies can share warmth and avoid the
   cold pulse.
+- Late-run exhaustion now turns food into a broader expedition pacing resource:
+  snow, cave, and ruin travel consume shared or carried rations before applying
+  a visible `EXH` slowdown, and carried food or healer pulse can clear the
+  exhaustion status.
 - Desert heat exposure now mirrors the snow survival loop: food or carried food
   absorbs a heat pulse before HP damage, while completed oasis waystations and
   camps shelter nearby players.

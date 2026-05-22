@@ -3288,6 +3288,71 @@ proc testFoodAndColdSurvivalPressure() =
     "carried food should be usable as emergency rations"
   doAssert not sim.players[playerIndex].carrying
 
+proc testLateRunExhaustionUsesRationsAndShowsStatus() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundSnow, BiomeSnow)
+
+  let
+    playerIndex = sim.addPlayer("hungry")
+    allyIndex = sim.addPlayer("warm")
+    snowX = firstTileForBiome(BiomeSnow) * WorldTileSize
+    snowY = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].x = snowX
+  sim.players[playerIndex].y = snowY
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[allyIndex].x = snowX + WorldTileSize
+  sim.players[allyIndex].y = snowY
+  sim.players[allyIndex].bounds =
+    sim.playerBoundsFor(sim.players[allyIndex])
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe,
+    "nearby allies should let the exhaustion test avoid cold damage"
+
+  sim.food = 1
+  sim.tickCount = ExhaustionIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.food == 0,
+    "late-run exhaustion should consume a shared ration before slowing players"
+  doAssert sim.players[playerIndex].exhaustionTicks == 0
+
+  sim.tickCount = ExhaustionIntervalTicks - 1
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[playerIndex].exhaustionTicks > 0,
+    "late-run travel without food should create exhaustion pressure"
+  doAssert sim.players[playerIndex].statusLabel().contains("exhaust")
+  doAssert sim.players[playerIndex].statusSpeedPercent() <=
+    StatusExhaustionSpeedPercent
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status exhaust" in labels
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("EXHAUST SAFE WARMTH")),
+    "HUD status text should make ration exhaustion readable"
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  doAssert sim.carryHudLabel(playerIndex) == "food sel eat"
+  sim.step([InputState(select: true), InputState()])
+  doAssert sim.players[playerIndex].exhaustionTicks == 0,
+    "carried food should clear exhaustion as an explicit ration choice"
+  doAssert not sim.players[playerIndex].carrying
+
+  sim.players[playerIndex].exhaustionTicks = StatusExhaustionTicks
+  sim.players[allyIndex].applyRole(RoleHealer)
+  sim.players[allyIndex].abilityCooldown = 0
+  sim.step([InputState(), InputState(b: true)])
+  doAssert sim.players[playerIndex].exhaustionTicks == 0,
+    "healer pulse should cleanse exhaustion like other expedition statuses"
+
 proc testSnowSharedWarmthClearsColdPressure() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3846,6 +3911,7 @@ testGateTitanRaidWindowRewardsFormationAndFocus()
 testMixedRoleFormationRechargesPowersAndShowsBadge()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
+testLateRunExhaustionUsesRationsAndShowsStatus()
 testSnowSharedWarmthClearsColdPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()
 testDesertCactusShadeClearsHeatPressure()

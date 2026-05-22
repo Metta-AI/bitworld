@@ -144,6 +144,8 @@ const
   HeatExposureIntervalTicks* = TargetFps * 4
   FogDisorientationIntervalTicks* = TargetFps * 5
   FogDisorientationTicks* = TargetFps
+  ExhaustionIntervalTicks* = TargetFps * 7
+  StatusExhaustionTicks* = TargetFps * 4
   SwampMireIntervalTicks* = TargetFps * 4
   SwampMireTicks* = TargetFps
   CampShelterRadius* = WorldTileSize * 2
@@ -173,6 +175,7 @@ const
   StatusPoisonIntervalTicks* = TargetFps
   StatusSlowSpeedPercent* = 62
   StatusChillSpeedPercent* = 78
+  StatusExhaustionSpeedPercent* = 72
   IsolationThreatRadius* = WorldTileSize * 3
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
@@ -354,6 +357,7 @@ type
     slowTicks*: int
     chillTicks*: int
     poisonTicks*: int
+    exhaustionTicks*: int
     downedTicks*: int
     rescueTicks*: int
 
@@ -899,6 +903,8 @@ proc statusLabel*(player: Actor): string =
     labels.add("slow")
   if player.chillTicks > 0:
     labels.add("chill")
+  if player.exhaustionTicks > 0:
+    labels.add("exhaust")
   if labels.len == 0:
     return "ok"
   labels.join("/")
@@ -997,6 +1003,8 @@ proc statusSpeedPercent*(player: Actor): int =
     result = min(result, StatusSlowSpeedPercent)
   if player.chillTicks > 0:
     result = min(result, StatusChillSpeedPercent)
+  if player.exhaustionTicks > 0:
+    result = min(result, StatusExhaustionSpeedPercent)
 
 proc roleMaxHp(role: PlayerRole): int =
   case role
@@ -2815,6 +2823,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
 
@@ -3191,6 +3200,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.slowTicks)
     result.mixHashInt(player.chillTicks)
     result.mixHashInt(player.poisonTicks)
+    result.mixHashInt(player.exhaustionTicks)
     result.mixHashInt(player.downedTicks)
     result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
@@ -3449,11 +3459,13 @@ proc applyHealerPulse(sim: var SimServer, healerIndex: int) =
     let cleansed =
       sim.players[targetIndex].poisonTicks > 0 or
       sim.players[targetIndex].slowTicks > 0 or
-      sim.players[targetIndex].chillTicks > 0
+      sim.players[targetIndex].chillTicks > 0 or
+      sim.players[targetIndex].exhaustionTicks > 0
     if cleansed:
       sim.players[targetIndex].poisonTicks = 0
       sim.players[targetIndex].slowTicks = 0
       sim.players[targetIndex].chillTicks = 0
+      sim.players[targetIndex].exhaustionTicks = 0
     if healed > 0:
       sim.players[healerIndex].healingDone += healed
     if healed > 0 or cleansed:
@@ -3572,7 +3584,8 @@ proc carriedFoodWouldHelp*(player: Actor): bool =
     player.lives < player.maxHp or
     player.poisonTicks > 0 or
     player.slowTicks > 0 or
-    player.chillTicks > 0
+    player.chillTicks > 0 or
+    player.exhaustionTicks > 0
   )
 
 proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
@@ -3592,6 +3605,7 @@ proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
   sim.players[playerIndex].healingDone +=
     sim.players[playerIndex].lives - before
   sim.clearCarry(playerIndex)
@@ -4035,6 +4049,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
   inc sim.scoreRevision
 
 proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
@@ -4689,6 +4704,7 @@ proc clearLivePlayerStatuses(sim: var SimServer) =
     sim.players[playerIndex].slowTicks = 0
     sim.players[playerIndex].chillTicks = 0
     sim.players[playerIndex].poisonTicks = 0
+    sim.players[playerIndex].exhaustionTicks = 0
 
 proc activateShrine(sim: var SimServer) =
   ## Completes one optional side objective and gives the party a sustain bump.
@@ -4704,6 +4720,7 @@ proc activateShrine(sim: var SimServer) =
     sim.players[playerIndex].slowTicks = 0
     sim.players[playerIndex].chillTicks = 0
     sim.players[playerIndex].poisonTicks = 0
+    sim.players[playerIndex].exhaustionTicks = 0
   inc sim.scoreRevision
 
 proc activateRescueEvent(sim: var SimServer, landmark: Landmark) =
@@ -4799,9 +4816,13 @@ proc activateWaystation(sim: var SimServer, landmarkIndex: int) =
     for player in sim.players.mitems:
       if player.lives > 0:
         player.chillTicks = 0
+        player.exhaustionTicks = 0
     sim.healLivePlayers(BiomeWaystationHealAmount)
   of BiomeCave:
     inc sim.stone
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.exhaustionTicks = 0
     discard sim.pacifyMobsNearLandmark(landmark, BiomeWaystationPacifyRadius)
   of BiomeRuins:
     sim.clearLivePlayerStatuses()
@@ -5508,6 +5529,15 @@ proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
     return true
   false
 
+proc playerInLateExhaustionBand(sim: SimServer, playerIndex: int): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  case sim.playerBiome(sim.players[playerIndex])
+  of BiomeSnow, BiomeCave, BiomeRuins:
+    true
+  else:
+    false
+
 proc applyEarlyBiomeTactics(sim: var SimServer) =
   if sim.tickCount mod ForestForageIntervalTicks == 0 and
       sim.food < ForestForageFoodCap:
@@ -5525,6 +5555,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
     coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
     heatPulse = sim.tickCount mod HeatExposureIntervalTicks == 0
     fogPulse = sim.tickCount mod FogDisorientationIntervalTicks == 0
+    exhaustionPulse = sim.tickCount mod ExhaustionIntervalTicks == 0
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
@@ -5580,6 +5611,18 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       if sim.players[playerIndex].slowTicks != before:
         inc sim.scoreRevision
 
+    if exhaustionPulse and sim.playerInLateExhaustionBand(playerIndex) and
+        not sheltered and not guarded and
+        sim.survivalPressureKind(playerIndex) == SurvivalSafe:
+      if not sim.consumeWeatherRation(playerIndex):
+        let before = sim.players[playerIndex].exhaustionTicks
+        sim.players[playerIndex].exhaustionTicks = max(
+          sim.players[playerIndex].exhaustionTicks,
+          StatusExhaustionTicks
+        )
+        if sim.players[playerIndex].exhaustionTicks != before:
+          inc sim.scoreRevision
+
 proc reduceStatusTicks(value: var int, amount: int): bool =
   if value <= 0:
     return false
@@ -5625,6 +5668,12 @@ proc applyStatusEffects(sim: var SimServer) =
         inc sim.scoreRevision
     if sim.players[playerIndex].poisonTicks > 0:
       if reduceStatusTicks(sim.players[playerIndex].poisonTicks, recoveryStep):
+        inc sim.scoreRevision
+    if sim.players[playerIndex].exhaustionTicks > 0:
+      if reduceStatusTicks(
+        sim.players[playerIndex].exhaustionTicks,
+        recoveryStep
+      ):
         inc sim.scoreRevision
 
 proc applyCampRecovery(sim: var SimServer) =
