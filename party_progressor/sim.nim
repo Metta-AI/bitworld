@@ -3385,24 +3385,33 @@ proc clearCarry(sim: var SimServer, playerIndex: int)
 proc dropCarry(sim: var SimServer, playerIndex: int): bool
 proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool
 
+proc carriedFoodWouldHelp*(player: Actor): bool =
+  player.lives > 0 and (
+    player.lives < player.maxHp or
+    player.poisonTicks > 0 or
+    player.slowTicks > 0 or
+    player.chillTicks > 0
+  )
+
 proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
   if not sim.players[playerIndex].carrying or
       sim.players[playerIndex].carriedItem != CarryFood:
     return false
-  if sim.players[playerIndex].lives >= sim.players[playerIndex].maxHp:
+  if not sim.players[playerIndex].carriedFoodWouldHelp():
     return false
   let before = sim.players[playerIndex].lives
-  sim.players[playerIndex].lives = min(
-    sim.players[playerIndex].maxHp,
-    sim.players[playerIndex].lives + FoodHealAmount
-  )
-  if sim.players[playerIndex].lives <= before:
-    return false
-  if sim.food > 0:
-    dec sim.food
-  sim.players[playerIndex].healingDone += sim.players[playerIndex].lives - before
+  if sim.players[playerIndex].lives < sim.players[playerIndex].maxHp:
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + FoodHealAmount
+    )
+  sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].healingDone +=
+    sim.players[playerIndex].lives - before
   sim.clearCarry(playerIndex)
   true
 
@@ -4392,6 +4401,58 @@ proc trySpecializeCampForRole(
   else:
     discard
 
+proc campCanAcceptCarry(landmark: Landmark, item: CarryKind): bool =
+  if landmark.kind != LandmarkCamp or not landmark.done:
+    return false
+  case item
+  of CarryWood:
+    not landmark.campIsRally()
+  of CarryFood:
+    not landmark.campIsProvisioned()
+  of CarryStone:
+    not landmark.campIsWarded()
+  of CarryGold:
+    not landmark.campIsFortified()
+  of CarryNone:
+    false
+
+proc playerCanDeliverCarryToCamp*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if not sim.players[playerIndex].carrying:
+    return false
+  let item = sim.players[playerIndex].carriedItem
+  if item == CarryNone:
+    return false
+  for landmark in sim.landmarks:
+    if not landmark.campCanAcceptCarry(item):
+      continue
+    if sim.playerNearLandmark(
+      sim.players[playerIndex],
+      landmark,
+      LandmarkActivationRadius
+    ):
+      return true
+  false
+
+proc carryHudLabel*(sim: SimServer, playerIndex: int): string =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return "none"
+  let player = sim.players[playerIndex]
+  if not player.carrying or player.carriedItem == CarryNone:
+    return "none"
+  let action =
+    if player.carriedItem == CarryFood and player.carriedFoodWouldHelp():
+      "sel eat"
+    elif sim.playerCanDeliverCarryToCamp(playerIndex):
+      "sel camp"
+    else:
+      "sel drop"
+  player.carriedItem.carryLabel() & " " & action
+
 proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
   ## Converts one held supply into an explicit activated-camp upgrade.
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -4411,22 +4472,16 @@ proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
       LandmarkActivationRadius
     ):
       continue
+    if not sim.landmarks[landmarkIndex].campCanAcceptCarry(item):
+      continue
     case item
     of CarryWood:
-      if sim.landmarks[landmarkIndex].campIsRally():
-        continue
       sim.specializeCamp(landmarkIndex, CampRallyFlag)
     of CarryFood:
-      if sim.landmarks[landmarkIndex].campIsProvisioned():
-        continue
       sim.provisionCamp(landmarkIndex)
     of CarryStone:
-      if sim.landmarks[landmarkIndex].campIsWarded():
-        continue
       sim.specializeCamp(landmarkIndex, CampWardedFlag)
     of CarryGold:
-      if sim.landmarks[landmarkIndex].campIsFortified():
-        continue
       sim.fortifyCamp(landmarkIndex)
     of CarryNone:
       continue
@@ -4895,9 +4950,7 @@ proc applyStatusEffects(sim: var SimServer) =
           inc sim.scoreRevision
       elif sim.players[playerIndex].carrying and
           sim.players[playerIndex].carriedItem == CarryFood:
-        sim.clearCarry(playerIndex)
-        sim.players[playerIndex].poisonTicks = 0
-        inc sim.scoreRevision
+        discard sim.consumeCarriedFood(playerIndex)
       elif sim.food > 0:
         dec sim.food
         sim.players[playerIndex].poisonTicks = 0
@@ -5224,10 +5277,8 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   )
   sim.fb.drawText(
     sim.textFont,
-    (if player.carrying:
-      "CARRY " & player.carriedItem.carryLabel().toUpperAscii()
-    else:
-      "CARRY NONE") & " E" & $elevation,
+    "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
+      " E" & $elevation,
     0,
     lineY * 5,
     2'u8

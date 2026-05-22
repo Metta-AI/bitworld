@@ -2699,10 +2699,8 @@ proc addPlayerHud(
       clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
     )
     statusLine4 =
-      (if player.carrying:
-        "CARRY " & player.carriedItem.carryLabel().toUpperAscii()
-      else:
-        "CARRY NONE") & " E" & $playerElevation & " " &
+      "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
+        " E" & $playerElevation & " " &
         player.statusLabel().toUpperAscii() & " " &
         sim.survivalPressureLabel(playerIndex).toUpperAscii()
     statusLine5 = sim.expeditionObjectiveHint(playerIndex)

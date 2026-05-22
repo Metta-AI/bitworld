@@ -1218,6 +1218,8 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   sim.players[playerIndex].slowTicks = StatusSlowTicks
   sim.players[playerIndex].chillTicks = StatusChillTicks
   sim.players[playerIndex].lives = max(1, sim.players[playerIndex].maxHp div 2)
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
   let downedIndex = sim.addPlayer("downed")
   sim.players[downedIndex].x = sim.players[playerIndex].x + WorldTileSize
   sim.players[downedIndex].y = sim.players[playerIndex].y + WorldTileSize
@@ -1367,6 +1369,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
     it.label
   )
+  doAssert spriteLabels.anyIt(it.contains("CARRY FOOD SEL EAT"))
   doAssert "prompt bridge t" in spriteLabels
   doAssert "prompt oasis h" in spriteLabels
   doAssert "prompt hearth h" in spriteLabels
@@ -1703,6 +1706,50 @@ proc testResourceHarvestAndCampActivation() =
         doAssert not sim.tiles[index],
           "camp shortcut should clear blocking props from the corridor"
 
+proc testCarriedFoodCanBeEatenForRecovery() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp - 1
+  sim.players[playerIndex].poisonTicks = StatusPoisonTicks
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.players[playerIndex].chillTicks = StatusChillTicks
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  sim.food = 3
+
+  doAssert sim.carryHudLabel(playerIndex) == "food sel eat"
+  sim.step([InputState(select: true)])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp
+  doAssert sim.players[playerIndex].poisonTicks == 0
+  doAssert sim.players[playerIndex].slowTicks == 0
+  doAssert sim.players[playerIndex].chillTicks == 0
+  doAssert sim.players[playerIndex].healingDone == 1
+  doAssert sim.food == 3,
+    "eating a carried food item should not drain shared party food"
+  doAssert not sim.players[playerIndex].carrying
+
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  doAssert sim.carryHudLabel(playerIndex) == "food sel eat"
+  sim.step([InputState(select: true)])
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "eaten carried food should cleanse statuses even at full health"
+  doAssert sim.food == 3
+  doAssert not sim.players[playerIndex].carrying
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  doAssert sim.carryHudLabel(playerIndex) == "food sel drop",
+    "carried food should only advertise eating when it will help"
+
 proc testCampFortificationConsumesResourcesAndDefendsStagingArea() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1870,6 +1917,7 @@ proc testCarriedSuppliesUpgradeActivatedCamps() =
 
   sim.players[playerIndex].carrying = true
   sim.players[playerIndex].carriedItem = CarryFood
+  doAssert sim.carryHudLabel(playerIndex) == "food sel camp"
   sim.step([InputState(select: true)])
   doAssert sim.landmarks[0].campIsProvisioned(),
     "delivered food should create a meal shelter"
@@ -2827,6 +2875,7 @@ testSpriteProtocolShowsMonsterThreatTelegraphs()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
+testCarriedFoodCanBeEatenForRecovery()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testCampProvisioningConsumesFoodAndImprovesRecovery()
 testCarriedSuppliesUpgradeActivatedCamps()

@@ -362,6 +362,9 @@ The first full-game implementation pass includes:
   snow expeditions a second kind of safe staging choice beyond full camps.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
   including visible held-item sprites and select-to-use/drop behavior.
+- Carried food is now a direct sustain item: the HUD advertises `SEL EAT`
+  when eating will heal or cleanse poison/slow/chill, and eating held food no
+  longer drains shared party food stores.
 - Carried camp delivery: selecting at activated camps now turns wood into
   rally staging, food into meal shelters, stone into warded shelters, and gold
   into fortification, so carried supplies create explicit staging choices.

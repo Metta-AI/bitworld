@@ -186,6 +186,7 @@ type
     lowHealth: bool
     needsRegroup: bool
     needsShelter: bool
+    canEatCarriedFood: bool
     carriedItem: CarryKind
     objectiveHint: string
     sharedWood: int
@@ -795,6 +796,8 @@ proc readStatusHud(bot: var Bot, label: string) =
     let section = part.strip()
     if section.startsWith("carry "):
       bot.carriedItem = section.carryKindFromLabel()
+      bot.canEatCarriedFood =
+        bot.carriedItem == CarryFood and section.contains("sel eat")
     elif section.startsWith("next "):
       bot.objectiveHint = section
       let tokens = section.splitWhitespace()
@@ -815,6 +818,7 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.lowHealth = false
   bot.needsRegroup = false
   bot.needsShelter = false
+  bot.canEatCarriedFood = false
   bot.carriedItem = CarryNone
   bot.objectiveHint = ""
   bot.sharedWood = -1
@@ -1909,6 +1913,9 @@ proc decideNextMask(bot: var Bot): uint8 =
   if recoveryMask != 0:
     bot.intent = "heal"
     return recoveryMask
+  if bot.canEatCarriedFood:
+    bot.intent = "eat"
+    return ButtonSelect
 
   if bot.jiggleTicks > 0:
     dec bot.jiggleTicks
@@ -2509,6 +2516,10 @@ when defined(konradTargetSelfTest):
   doAssert bot.roleLabel == "dps"
   doAssert not bot.abilityReady
   doAssert bot.abilityLabel == "cleave cd12"
+  bot.canEatCarriedFood = false
+  bot.readStatusHud("healer swamp|rain w0 f1 s0 r0|b pulse|carry food sel eat|next heal food")
+  doAssert bot.carriedItem == CarryFood
+  doAssert bot.canEatCarriedFood
   bot.roleLabel = "tank"
   bot.abilityReady = true
   bot.attackCooldown = 0
