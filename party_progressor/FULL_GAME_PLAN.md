@@ -529,6 +529,10 @@ The first full-game implementation pass includes:
 - Completing the final gate now adds an explicit run-completion score bonus and
   appears as `final_gate_completed` in result JSON, making the expedition finish
   visible to scoring, analysis, and tournament result inspection.
+- Completing the final gate now also grants a visible party triumph: nearby
+  remaining non-boss threats are cleared, players are healed and cleansed, the
+  HUD shows `TRIUMPH SAFE`, and a compact `WIN` badge marks the expedition
+  finish instead of leaving completion as only a score bit.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Konrad bot objective targeting now reads visible Party Progressor landmarks
   semantically: resources and lairs are attack targets, camps/relics/rescues/
@@ -677,8 +681,8 @@ The first full-game implementation pass includes:
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, downed-player rescue, and chat pings: richer rescue/objective moments.
 - Tune final-boss and final-gate pacing now that relic, camp, trio formation,
-  three-role focus, boss defeat, and the gate ritual are all part of the visible
-  completion chain.
+  three-role focus, boss defeat, the gate ritual, and the triumph payoff are all
+  part of the visible completion chain.
 
 ### Polish And Packaging
 

@@ -110,6 +110,7 @@ const
   ResourceNodeHp* = 2
   LandmarkActivationRadius* = 20
   FinalGateActivationRadius* = 28
+  FinalGateTriumphRadius* = WorldTileSize * 6
   BiomeCount* = 7
   TankGuardRadius* = 44
   HealerPulseRadius* = 46
@@ -125,6 +126,7 @@ const
   DpsBeaconAttunementStep* = 2
   CooperativeObjectiveHoldMaxStep* = 4
   FinalGateRitualTicks* = TargetFps * 2
+  FinalGateTriumphTicks* = TargetFps * 12
   BeaconSurveyTicks* = TargetFps * 10
   BeaconSurveyMinSpeedPercent* = 90
   FinalGateTwoRoleStep* = 2
@@ -375,6 +377,7 @@ type
     surveyTicks*: int
     guideTicks*: int
     huntTicks*: int
+    triumphTicks*: int
     downedTicks*: int
     rescueTicks*: int
 
@@ -914,6 +917,8 @@ proc statusLabel*(player: Actor): string =
   if player.downedTicks > 0:
     return "down"
   var labels: seq[string] = @[]
+  if player.triumphTicks > 0:
+    labels.add("triumph")
   if player.poisonTicks > 0:
     labels.add("poison")
   if player.slowTicks > 0:
@@ -1023,6 +1028,8 @@ proc preferredWaystationRole*(biome: BiomeKind): PlayerRole =
     RoleUnarmed
 
 proc statusSpeedPercent*(player: Actor): int =
+  if player.triumphTicks > 0:
+    return 100
   result = 100
   if player.slowTicks > 0:
     result = min(result, StatusSlowSpeedPercent)
@@ -1911,6 +1918,8 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   ## Returns the short next-action line shown in the local player HUD.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return "NEXT WAIT"
+  if sim.finalGateCompleted():
+    return "EXPEDITION COMPLETE"
   let player = sim.players[playerIndex]
   if player.lives <= 0:
     if player.downedTicks > 0:
@@ -2872,6 +2881,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
+  sim.players[playerIndex].triumphTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
 
@@ -3113,6 +3123,7 @@ proc playerScoresJson*(sim: SimServer): string =
     carriedItems = newJArray()
     statusEffects = newJArray()
     downedTicks = newJArray()
+    triumphTicks = newJArray()
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
     sideObjectivesCompleted = newJArray()
@@ -3145,6 +3156,7 @@ proc playerScoresJson*(sim: SimServer): string =
     )
     statusEffects.add(%player.statusLabel())
     downedTicks.add(%player.downedTicks)
+    triumphTicks.add(%player.triumphTicks)
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
     sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
@@ -3170,6 +3182,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["carried_items"] = carriedItems
   results["status_effects"] = statusEffects
   results["downed_ticks"] = downedTicks
+  results["triumph_ticks"] = triumphTicks
   results["team_score"] = scores
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
@@ -3253,6 +3266,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.surveyTicks)
     result.mixHashInt(player.guideTicks)
     result.mixHashInt(player.huntTicks)
+    result.mixHashInt(player.triumphTicks)
     result.mixHashInt(player.downedTicks)
     result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
@@ -4181,6 +4195,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
+  sim.players[playerIndex].triumphTicks = 0
   inc sim.scoreRevision
 
 proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
@@ -4901,6 +4916,23 @@ proc pacifyMobsNearLandmark(
   if result > 0:
     sim.mobs = survivors
 
+proc grantFinalGateTriumph(sim: var SimServer, landmark: Landmark) =
+  ## Turns the completed final gate into a visible party-wide finish state.
+  discard sim.pacifyMobsNearLandmark(landmark, FinalGateTriumphRadius)
+  for player in sim.players.mitems:
+    if player.maxHp <= 0:
+      continue
+    player.lives = player.maxHp
+    player.downedTicks = 0
+    player.rescueTicks = 0
+    player.slowTicks = 0
+    player.chillTicks = 0
+    player.poisonTicks = 0
+    player.exhaustionTicks = 0
+    player.triumphTicks = max(player.triumphTicks, FinalGateTriumphTicks)
+    player.invulnTicks = max(player.invulnTicks, FinalGateTriumphTicks)
+  inc sim.scoreRevision
+
 proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
   ## Clears nearby local threats when a monster lair is destroyed.
   sim.pacifyMobsNearLandmark(landmark, LairPacifyRadius)
@@ -5404,6 +5436,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
         continue
       sim.landmarks[landmarkIndex].done = true
       inc sim.objectivesCompleted
+      sim.grantFinalGateTriumph(sim.landmarks[landmarkIndex])
       inc sim.scoreRevision
     else:
       discard
@@ -5619,7 +5652,7 @@ proc survivalPressureKind*(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return SurvivalSafe
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or player.routeTicks > 0 or
+  if player.lives <= 0 or player.routeTicks > 0 or player.triumphTicks > 0 or
       sim.playerNearExpeditionShelter(playerIndex) or
       sim.playerProtectedByTankGuard(playerIndex):
     return SurvivalSafe
@@ -5734,6 +5767,8 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
+    if sim.players[playerIndex].triumphTicks > 0:
+      continue
     let
       biome = sim.playerBiome(sim.players[playerIndex])
       sheltered = sim.playerNearExpeditionShelter(playerIndex)
@@ -5810,6 +5845,8 @@ proc reduceStatusTicks(value: var int, amount: int): bool =
 proc applyStatusEffects(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
+      continue
+    if sim.players[playerIndex].triumphTicks > 0:
       continue
     let sheltered = sim.playerNearExpeditionShelter(playerIndex)
     let aidSheltered = sim.playerNearAidCamp(playerIndex)
@@ -6451,6 +6488,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
     if sim.players[i].huntTicks > 0:
       dec sim.players[i].huntTicks
       if sim.players[i].huntTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].triumphTicks > 0:
+      dec sim.players[i].triumphTicks
+      if sim.players[i].triumphTicks == 0:
         inc sim.scoreRevision
     if sim.players[i].pingTicks > 0:
       dec sim.players[i].pingTicks

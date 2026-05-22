@@ -2602,10 +2602,50 @@ proc testBeaconAndBossScoring() =
   doAssert not sim.landmarks[0].done,
     "final gate should require a visible ritual hold"
   doAssert sim.landmarks[0].progress == 1
-  for _ in 1 ..< FinalGateRitualTicks:
+  for _ in 1 ..< (FinalGateRitualTicks - 1):
     sim.step([InputState()])
+  doAssert sim.landmarks[0].progress == FinalGateRitualTicks - 1
+  sim.players[playerIndex].lives = 1
+  sim.players[playerIndex].poisonTicks = StatusPoisonTicks
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.players[playerIndex].chillTicks = StatusChillTicks
+  sim.players[playerIndex].exhaustionTicks = StatusExhaustionTicks
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: sim.landmarks[0].tx * WorldTileSize + WorldTileSize,
+    y: sim.landmarks[0].ty * WorldTileSize,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: WolfHp,
+    attackCooldown: 999
+  ))
+  sim.step([InputState()])
   doAssert sim.landmarks[0].done
   doAssert sim.finalGateCompleted()
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "final gate triumph should restore the completing player"
+  doAssert sim.players[playerIndex].poisonTicks == 0
+  doAssert sim.players[playerIndex].slowTicks == 0
+  doAssert sim.players[playerIndex].chillTicks == 0
+  doAssert sim.players[playerIndex].exhaustionTicks == 0
+  doAssert sim.players[playerIndex].triumphTicks == FinalGateTriumphTicks
+  doAssert sim.players[playerIndex].invulnTicks >= FinalGateTriumphTicks
+  doAssert sim.players[playerIndex].statusLabel().contains("triumph")
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe
+  doAssert sim.mobs.allIt(it.species != SpeciesForestWolf),
+    "final gate triumph should clear local non-boss pressure"
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "EXPEDITION COMPLETE"
+  var finalNextState: PlayerViewerState
+  let finalParsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    finalNextState
+  ).parseSpriteProtocolPacket()
+  let finalLabels = finalParsed.objectSpriteLabels()
+  doAssert "status triumph" in finalLabels
+  doAssert finalParsed.sprites.values.toSeq.anyIt(it.label.contains("TRIUMPH SAFE")),
+    "HUD status text should make final-gate triumph readable"
   doAssert sim.teamScore() ==
     sim.frontierTiles() +
       ObjectiveScoreValue +
@@ -2615,6 +2655,8 @@ proc testBeaconAndBossScoring() =
       FinalGateScoreValue
   let finalScores = parseJson(sim.playerScoresJson())
   doAssert finalScores["final_gate_completed"][0].getBool()
+  doAssert finalScores["status_effects"][0].getStr().contains("triumph")
+  doAssert finalScores["triumph_ticks"][0].getInt() == FinalGateTriumphTicks
 
 proc testFinalGateRitualAcceleratesWithPartyRoles() =
   var sim = initPartyProgressorForTest()

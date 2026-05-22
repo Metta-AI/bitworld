@@ -160,6 +160,7 @@ type
     StatusPingFood
     StatusPingRescue
     StatusPingLair
+    StatusTriumph
 
   GlobalViewerState* = object
     initialized*: bool
@@ -1435,6 +1436,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusSurvey: "SURV"
   of StatusGuide: "GUIDE"
   of StatusHunt: "HUNT"
+  of StatusTriumph: "WIN"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1474,6 +1476,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusSurvey: 12'u8
   of StatusGuide: 2'u8
   of StatusHunt: 9'u8
+  of StatusTriumph: 14'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1513,6 +1516,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusSurvey: "status survey"
   of StatusGuide: "status guide"
   of StatusHunt: "status hunt"
+  of StatusTriumph: "status triumph"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -2713,6 +2717,8 @@ proc addWorldObjects(
         badges.add(StatusGuide)
       if player.huntTicks > 0:
         badges.add(StatusHunt)
+      if player.triumphTicks > 0:
+        badges.add(StatusTriumph)
       let survivalBadge = sim.survivalPressureKind(i).survivalStatusBadge()
       if survivalBadge.found:
         badges.add(survivalBadge.badge)
