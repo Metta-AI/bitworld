@@ -437,6 +437,9 @@ The first full-game implementation pass includes:
   sprite protocol. Konrad treats shelters as recovery/regroup targets instead
   of generic camp objectives, so healthy bots push onward while incomplete camps
   remain visible build targets.
+- Konrad now treats loose coins and hearts as opportunistic pickups instead of
+  expedition objectives: healthy bots only detour for nearby forward loot, while
+  low-health bots may still backtrack for heart recovery.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.

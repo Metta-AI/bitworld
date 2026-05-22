@@ -36,6 +36,8 @@ const
   SkipTargetTicks = 72
   ExploreStep = 17
   RoleLabelToGearOffset = WorldTileSize div 2
+  OpportunisticLootRadius = WorldTileSize * 3
+  BacktrackLootSlack = WorldTileSize
   MoveMask = ButtonUp or ButtonDown or ButtonLeft or ButtonRight
 
 type
@@ -838,6 +840,20 @@ proc isLooseCarryPickupObject(objectId: int): bool =
   ## Ground carry pickups use pickup object ids; landmarks use landmark ids.
   objectId >= PickupObjectBase and objectId < ChatObjectBase
 
+proc targetDistance(bot: Bot, target: Target): int =
+  ## Returns the current Manhattan distance to one target.
+  manhattan(
+    bot.playerWorldX,
+    bot.playerWorldY,
+    target.x,
+    target.y
+  )
+
+proc isOpportunisticLoosePickup(bot: Bot, target: Target): bool =
+  ## Keeps loose loot useful without letting old drops break expedition pacing.
+  bot.targetDistance(target) <= OpportunisticLootRadius and
+    target.x >= bot.playerWorldX - BacktrackLootSlack
+
 proc targetCenter(
   bot: Bot,
   objectState: ObjectState,
@@ -1161,6 +1177,12 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
     return false
   if target.kind == TargetShelter and not (bot.lowHealth or bot.needsRegroup):
     return false
+  if target.kind == TargetCoin and not bot.isOpportunisticLoosePickup(target):
+    return false
+  if target.kind == TargetHeart and
+      not (bot.lowHealth or bot.needsRegroup) and
+      not bot.isOpportunisticLoosePickup(target):
+    return false
   if target.kind.isRoleTarget() and not bot.choosingRole():
     return false
   if target.kind in {TargetCoin, TargetHeart} and
@@ -1177,12 +1199,7 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
 
 proc targetScore(bot: Bot, target: Target): int =
   ## Scores a target where lower is better.
-  let distance = manhattan(
-    bot.playerWorldX,
-    bot.playerWorldY,
-    target.x,
-    target.y
-  )
+  let distance = bot.targetDistance(target)
   case target.kind
   of TargetRegroup:
     distance + (if bot.needsRegroup: (if bot.lowHealth: -120 else: -260) elif bot.lowHealth: 20 else: 340)
@@ -1912,6 +1929,31 @@ when defined(konradTargetSelfTest):
     kind: TargetCoin,
     x: SafeZoneRightPixels
   ))
+  bot.playerWorldX = 520
+  bot.playerWorldY = 0
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetCoin,
+    x: 580,
+    y: 0
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetCoin,
+    x: 340,
+    y: 0
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetHeart,
+    x: 340,
+    y: 0
+  ))
+  bot.lowHealth = true
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetHeart,
+    x: 340,
+    y: 0
+  ))
+  bot.lowHealth = false
+  bot.playerWorldX = 0
   bot.needsRole = true
   bot.hasRole = false
   doAssert bot.targetScore(Target(
