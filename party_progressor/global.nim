@@ -39,6 +39,7 @@ const
   LandmarkPromptSpriteBase = 860
   LandmarkShelterPromptSpriteId =
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
+  LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -1263,7 +1264,9 @@ proc landmarkPromptSpriteId(kind: LandmarkKind): int =
   LandmarkPromptSpriteBase + ord(kind)
 
 proc landmarkPromptSpriteId(landmark: Landmark): int =
-  if landmark.kind == LandmarkCamp and landmark.done:
+  if landmark.campIsFortified():
+    LandmarkFortPromptSpriteId
+  elif landmark.kind == LandmarkCamp and landmark.done:
     LandmarkShelterPromptSpriteId
   else:
     landmark.kind.landmarkPromptSpriteId()
@@ -1295,7 +1298,9 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "LAIR"
 
 proc landmarkPromptLabel(landmark: Landmark): string =
-  if landmark.kind == LandmarkCamp and landmark.done:
+  if landmark.campIsFortified():
+    "FORT"
+  elif landmark.kind == LandmarkCamp and landmark.done:
     "SHELTER"
   else:
     landmark.kind.landmarkPromptLabel()
@@ -1625,6 +1630,19 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     shelterPromptSprite.height,
     shelterPromptSprite.pixels,
     "prompt " & shelterPrompt.toLowerAscii()
+  )
+  let
+    fortPrompt = "FORT"
+    fortPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [fortPrompt],
+      2'u8
+    )
+  packet.addSprite(
+    LandmarkFortPromptSpriteId,
+    fortPromptSprite.width,
+    fortPromptSprite.height,
+    fortPromptSprite.pixels,
+    "prompt " & fortPrompt.toLowerAscii()
   )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =

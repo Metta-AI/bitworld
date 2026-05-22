@@ -307,6 +307,9 @@ The first full-game implementation pass includes:
 - Activated camps also reveal short road or bridge shortcuts through nearby
   rough ground, clearing blockers and reducing elevation so camp investment
   permanently improves the expedition route.
+- Activated camps can be fortified with extra wood and stone, converting them
+  into safer staging points that repeatedly clear nearby non-boss threats and
+  show a distinct fort prompt.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
   including visible held-item sprites and select-to-use/drop behavior.
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
@@ -358,9 +361,9 @@ The first full-game implementation pass includes:
 - Give each biome one tactical rule that changes party behavior.
 - Expand optional side objectives beyond shrines, rescues, and monster lairs:
   add biome-specific detours that trade time for score or survivability.
-- Extend camp infrastructure beyond healing, role swap, weather shelter, and
-  shortcut reveal: add biome-safe staging bonuses or optional fortification
-  choices.
+- Extend camp infrastructure beyond healing, role swap, weather shelter,
+  shortcut reveal, and fortification: add biome-safe staging choices or camp
+  specializations.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, and downed-player rescue: pings and richer rescue/objective moments.
 - Make the final gate feel earned by requiring a visible chain of relic, boss,

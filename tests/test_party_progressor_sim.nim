@@ -751,6 +751,14 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     hp: 1,
     done: true
   ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 3,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true,
+    progress: 1
+  ))
 
   var nextState: PlayerViewerState
   let packet = sim.buildSpriteProtocolPlayerUpdates(
@@ -767,6 +775,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status down" in labels
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
+  doAssert "prompt fort" in labels
   doAssert "prompt shrine f2" in labels
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
@@ -973,6 +982,89 @@ proc testResourceHarvestAndCampActivation() =
           "camp shortcut should cut high elevation into an easier route"
         doAssert not sim.tiles[index],
           "camp shortcut should clear blocking props from the corridor"
+
+proc testCampFortificationConsumesResourcesAndDefendsStagingArea() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.wood = CampFortificationWoodCost
+  sim.stone = CampFortificationStoneCost
+  sim.mobSpawnCooldown = 999
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  let
+    campTx = sim.players[playerIndex].x div WorldTileSize
+    campTy = sim.players[playerIndex].y div WorldTileSize
+    campX = campTx * WorldTileSize
+    campY = campTy * WorldTileSize
+  sim.landmarks.add(Landmark(
+    tx: campTx,
+    ty: campTy,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true
+  ))
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: campX,
+    y: campY + WorldTileSize,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesDireWolf,
+    x: campX + CampFortificationRadius + WorldTileSize * 4,
+    y: campY,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+  sim.mobs.add(Mob(
+    kind: BossMob,
+    species: SpeciesNone,
+    x: campX,
+    y: campY + WorldTileSize,
+    sprite: sim.bossSprite,
+    bounds: sim.bossBounds,
+    hp: BossHp,
+    attackCooldown: 99
+  ))
+
+  sim.step([InputState()])
+
+  doAssert sim.landmarks[0].campIsFortified()
+  doAssert sim.wood == 0 and sim.stone == 0
+  doAssert sim.mobs.len == 2,
+    "fortified camps should clear nearby non-boss threats only"
+  doAssert sim.mobs.anyIt(it.species == SpeciesDireWolf)
+  doAssert sim.mobs.anyIt(it.kind == BossMob)
+
+  sim.mobs.add(Mob(
+    kind: SlimeMob,
+    species: SpeciesMudSlime,
+    x: campX,
+    y: campY - WorldTileSize,
+    sprite: sim.mobSpriteFor(SlimeMob),
+    bounds: sim.mobBoundsFor(SlimeMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+  sim.step([InputState()])
+
+  doAssert sim.mobs.len == 2,
+    "fortified camps should continue defending the staging area"
+  doAssert sim.mobs.allIt(it.kind == BossMob or it.species == SpeciesDireWolf)
 
 proc testBeaconAndBossScoring() =
   var sim = initPartyProgressorForTest()
@@ -1427,6 +1519,7 @@ testSpriteProtocolShowsMonsterThreatTelegraphs()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
+testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testBeaconAndBossScoring()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()

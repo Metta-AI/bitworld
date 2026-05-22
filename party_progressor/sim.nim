@@ -78,6 +78,9 @@ const
   LairPacifyRadius* = WorldTileSize * 3
   CampWoodCost* = 2
   CampStoneCost* = 1
+  CampFortificationWoodCost* = 1
+  CampFortificationStoneCost* = 1
+  CampFortificationRadius* = WorldTileSize * 3
   ResourceNodeHp* = 2
   LandmarkActivationRadius* = 20
   FinalGateActivationRadius* = 28
@@ -3647,6 +3650,9 @@ proc playerNearActivatedCamp*(
       return true
   false
 
+proc campIsFortified*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and landmark.progress > 0
+
 proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
   case kind
   of LandmarkWood:
@@ -3764,11 +3770,15 @@ proc activateRescueEvent(sim: var SimServer) =
     )
   inc sim.scoreRevision
 
-proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
-  ## Clears nearby local threats when a monster lair is destroyed.
+proc pacifyMobsNearLandmark(
+  sim: var SimServer,
+  landmark: Landmark,
+  radius: int
+): int =
+  ## Clears local non-boss threats around a defensive expedition point.
   let
     center = sim.landmarkCenter(landmark)
-    radiusSq = LairPacifyRadius * LairPacifyRadius
+    radiusSq = radius * radius
   var survivors: seq[Mob] = @[]
   for mob in sim.mobs:
     if mob.kind == BossMob:
@@ -3784,6 +3794,10 @@ proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
   if result > 0:
     sim.mobs = survivors
 
+proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
+  ## Clears nearby local threats when a monster lair is destroyed.
+  sim.pacifyMobsNearLandmark(landmark, LairPacifyRadius)
+
 proc destroyLair(sim: var SimServer, landmarkIndex: int) =
   if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
     return
@@ -3795,6 +3809,29 @@ proc destroyLair(sim: var SimServer, landmarkIndex: int) =
   sim.stone += LairStoneBonus
   discard sim.pacifyLairMobs(sim.landmarks[landmarkIndex])
   inc sim.scoreRevision
+
+proc fortifyCamp(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].kind != LandmarkCamp or
+      not sim.landmarks[landmarkIndex].done or
+      sim.landmarks[landmarkIndex].campIsFortified():
+    return
+  sim.landmarks[landmarkIndex].progress = 1
+  discard sim.pacifyMobsNearLandmark(
+    sim.landmarks[landmarkIndex],
+    CampFortificationRadius
+  )
+  inc sim.scoreRevision
+
+proc applyFortifiedCampDefenses(sim: var SimServer) =
+  ## Keeps fortified camps useful as safe staging points between pushes.
+  for landmark in sim.landmarks:
+    if not landmark.campIsFortified():
+      continue
+    let cleared = sim.pacifyMobsNearLandmark(landmark, CampFortificationRadius)
+    if cleared > 0:
+      inc sim.scoreRevision
 
 proc harvestLandmark(
   sim: var SimServer,
@@ -3876,6 +3913,22 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     return
   for landmarkIndex in 0 ..< sim.landmarks.len:
     if sim.landmarks[landmarkIndex].done:
+      if sim.landmarks[landmarkIndex].kind == LandmarkCamp and
+          not sim.landmarks[landmarkIndex].campIsFortified() and
+          sim.wood >= CampFortificationWoodCost and
+          sim.stone >= CampFortificationStoneCost:
+        for player in sim.players:
+          if player.lives <= 0:
+            continue
+          if sim.playerNearLandmark(
+            player,
+            sim.landmarks[landmarkIndex],
+            LandmarkActivationRadius
+          ):
+            sim.wood -= CampFortificationWoodCost
+            sim.stone -= CampFortificationStoneCost
+            sim.fortifyCamp(landmarkIndex)
+            break
       continue
     let kind = sim.landmarks[landmarkIndex].kind
     if kind.landmarkIsResource():
@@ -4727,6 +4780,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.applyDownedRecovery()
   sim.applyAttack()
   sim.activateNearbyLandmarks()
+  sim.applyFortifiedCampDefenses()
   sim.updateMobs()
   sim.resolvePlayerOverlaps()
   sim.respawnMobs()
