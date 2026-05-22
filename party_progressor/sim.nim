@@ -269,6 +269,8 @@ const
   PartyFocusThreeRoleDamageBonus* = 2
   BossTrioDamageBonus* = 1
   BossFocusDamageBonus* = 2
+  BossStaggerTicks* = TargetFps * 2
+  BossStaggerAttackCooldown* = TargetFps
   ElevationCombatThreshold* = 2
   HighGroundDamageBonus* = 1
   LowGroundDamagePenalty* = 1
@@ -528,6 +530,7 @@ type
     attackCooldown*: int
     attackPhase*: MobAttackPhase
     attackTicks*: int
+    staggerTicks*: int
     attackFacing*: Facing
     attackerIds*: seq[int]
     attackerTicks*: seq[int]
@@ -2774,6 +2777,10 @@ proc partyFocusDamageBonus*(
   else:
     0
 
+proc bossStaggered*(mob: Mob): bool =
+  ## Returns true while coordinated role focus is suppressing boss pressure.
+  mob.kind == BossMob and mob.staggerTicks > 0
+
 proc refreshCoopState(
   mob: var Mob,
   players: openArray[Actor],
@@ -3302,6 +3309,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(mob.attackCooldown)
     result.mixHashInt(ord(mob.attackPhase))
     result.mixHashInt(mob.attackTicks)
+    result.mixHashInt(mob.staggerTicks)
     result.mixHashInt(ord(mob.attackFacing))
     result.mixHashInt(mob.attackerIds.len)
     for attackerId in mob.attackerIds:
@@ -4400,6 +4408,36 @@ proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int =
     result += BossTrioDamageBonus
   if mob.partyFocusRoleCount(sim.players, sim.tickCount) >= 3:
     result += BossFocusDamageBonus
+
+proc staggerBossFromFocus(sim: var SimServer, mobIndex: int) =
+  if mobIndex < 0 or mobIndex >= sim.mobs.len:
+    return
+  if sim.mobs[mobIndex].kind != BossMob:
+    return
+  if sim.mobs[mobIndex].partyFocusRoleCount(sim.players, sim.tickCount) < 3:
+    return
+  let before =
+    (
+      stagger: sim.mobs[mobIndex].staggerTicks,
+      cooldown: sim.mobs[mobIndex].attackCooldown,
+      phase: sim.mobs[mobIndex].attackPhase,
+      ticks: sim.mobs[mobIndex].attackTicks
+    )
+  sim.mobs[mobIndex].staggerTicks = max(
+    sim.mobs[mobIndex].staggerTicks,
+    BossStaggerTicks
+  )
+  sim.mobs[mobIndex].attackCooldown = max(
+    sim.mobs[mobIndex].attackCooldown,
+    BossStaggerAttackCooldown
+  )
+  sim.mobs[mobIndex].attackPhase = MobIdle
+  sim.mobs[mobIndex].attackTicks = 0
+  if before.stagger != sim.mobs[mobIndex].staggerTicks or
+      before.cooldown != sim.mobs[mobIndex].attackCooldown or
+      before.phase != sim.mobs[mobIndex].attackPhase or
+      before.ticks != sim.mobs[mobIndex].attackTicks:
+    inc sim.scoreRevision
 
 proc nearbyDownedRescuer(
   sim: SimServer,
@@ -5541,6 +5579,7 @@ proc applyAttack(sim: var SimServer) =
         of FaceRight: dx = 4
         sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
         sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
+        sim.staggerBossFromFocus(mobIndex)
         let damage = sim.playerAttackDamage(player, sim.mobs[mobIndex]) +
           sim.mobs[mobIndex].partyFocusDamageBonus(sim.players, sim.tickCount) +
           sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex])
@@ -6036,6 +6075,13 @@ proc updateMobs*(sim: var SimServer) =
 
   for mob in sim.mobs.mitems:
     mob.refreshCoopState(sim.players, sim.tickCount)
+    if mob.staggerTicks > 0:
+      dec mob.staggerTicks
+      mob.attackPhase = MobIdle
+      mob.attackTicks = 0
+      if mob.staggerTicks == 0:
+        inc sim.scoreRevision
+      continue
     dec mob.attackCooldown
     if mob.attackCooldown < 0:
       mob.attackCooldown = 0

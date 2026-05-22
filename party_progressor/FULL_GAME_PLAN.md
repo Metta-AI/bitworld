@@ -527,6 +527,9 @@ The first full-game implementation pass includes:
   tank/DPS/healer trio, and harder again when all three roles have recently
   focused the boss, turning the late fight into a composition check without new
   controls.
+- Full tank/DPS/healer focus now also staggers the Gate Titan: coordinated hits
+  interrupt its current attack phase, add a visible `STAG` badge, and buy the
+  party a short survival window before the next boss swing.
 - Final-gate completion now requires boss defeat, relic progress, and forward
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.
@@ -689,8 +692,8 @@ The first full-game implementation pass includes:
   labels, downed-player rescue, chat pings, and grouped objective morale:
   richer rescue/objective moments.
 - Tune final-boss and final-gate pacing now that relic, camp, trio formation,
-  three-role focus, boss defeat, the gate ritual, and the triumph payoff are all
-  part of the visible completion chain.
+  three-role focus, boss stagger, boss defeat, the gate ritual, and the triumph
+  payoff are all part of the visible completion chain.
 
 ### Polish And Packaging
 

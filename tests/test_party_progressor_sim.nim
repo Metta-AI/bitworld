@@ -3558,7 +3558,9 @@ proc testGateTitanRaidWindowRewardsFormationAndFocus() =
     sprite: sim.bossSprite,
     bounds: sim.bossBounds,
     hp: BossHp,
-    attackCooldown: 99
+    attackCooldown: 0,
+    attackPhase: MobTelegraph,
+    attackTicks: MobTelegraphTicks - 1
   ))
 
   doAssert sim.playerInTrioFormation(dpsIndex)
@@ -3587,6 +3589,27 @@ proc testGateTitanRaidWindowRewardsFormationAndFocus() =
         BossFocusDamageBonus
     ),
     "the gate titan should take extra damage from trio formation and focus"
+  doAssert sim.mobs[0].bossStaggered(),
+    "three-role focus should stagger the gate titan"
+  doAssert sim.mobs[0].attackPhase == MobIdle
+  doAssert sim.mobs[0].attackTicks == 0
+  doAssert sim.mobs[0].attackCooldown >= BossStaggerAttackCooldown
+  doAssert sim.mobs[0].staggerTicks == BossStaggerTicks - 1
+  var staggerNextState: PlayerViewerState
+  let staggerLabels = sim.buildSpriteProtocolPlayerUpdates(
+    dpsIndex,
+    initPlayerViewerState(),
+    staggerNextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status stagger" in staggerLabels,
+    "staggered gate titans should advertise the raid payoff"
+
+  sim.mobs[0].staggerTicks = 1
+  sim.mobs[0].attackCooldown = 0
+  sim.step([InputState(), InputState(), InputState()])
+  doAssert sim.mobs[0].staggerTicks == 0
+  doAssert sim.mobs[0].attackPhase == MobIdle,
+    "boss stagger should hold the titan idle through its last tick"
 
   sim.players[dpsIndex].attackTicks = 0
   sim.players[dpsIndex].attackResolved = false
@@ -3596,6 +3619,10 @@ proc testGateTitanRaidWindowRewardsFormationAndFocus() =
   sim.mobs[0].x = dpsHit.x
   sim.mobs[0].y = dpsHit.y
   sim.mobs[0].hp = BossHp
+  sim.mobs[0].staggerTicks = 0
+  sim.mobs[0].attackCooldown = 99
+  sim.mobs[0].attackPhase = MobIdle
+  sim.mobs[0].attackTicks = 0
   sim.mobs[0].attackerIds.setLen(0)
   sim.mobs[0].attackerTicks.setLen(0)
 
@@ -3605,6 +3632,8 @@ proc testGateTitanRaidWindowRewardsFormationAndFocus() =
   doAssert sim.mobs.len == 1
   doAssert sim.mobs[0].hp == BossHp - 3,
     "uncoordinated boss hits should keep the ordinary DPS damage budget"
+  doAssert sim.mobs[0].staggerTicks == 0,
+    "uncoordinated boss hits should not stagger the gate titan"
 
 proc testMixedRoleFormationRechargesPowersAndShowsBadge() =
   var sim = initPartyProgressorForTest()

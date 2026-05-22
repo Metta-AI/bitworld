@@ -163,6 +163,7 @@ type
     StatusTriumph
     StatusRation
     StatusMorale
+    StatusStagger
 
   GlobalViewerState* = object
     initialized*: bool
@@ -1441,6 +1442,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusTriumph: "WIN"
   of StatusRation: "MEAL"
   of StatusMorale: "MOR"
+  of StatusStagger: "STAG"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1483,6 +1485,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusTriumph: 14'u8
   of StatusRation: 6'u8
   of StatusMorale: 14'u8
+  of StatusStagger: 11'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1525,6 +1528,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusTriumph: "status triumph"
   of StatusRation: "status ration"
   of StatusMorale: "status morale"
+  of StatusStagger: "status stagger"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -2633,6 +2637,8 @@ proc addWorldObjects(
     var badges: seq[StatusBadgeKind] = @[]
     if mob.partyFocusDamageBonus(sim.players, sim.tickCount) > 0:
       badges.add(StatusPartyFocus)
+    if mob.bossStaggered():
+      badges.add(StatusStagger)
     if selectedPlayerIndex >= 0:
       let elevationBadge = elevationStatusBadge(
         sim.mobTileElevation(mob) -
