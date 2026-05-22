@@ -4575,7 +4575,7 @@ proc applyAttack(sim: var SimServer) =
 
   sim.finishDefeatedMobs()
 
-proc collectPickups(sim: var SimServer) =
+proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
   if sim.players.len == 0:
     return
 
@@ -4606,9 +4606,12 @@ proc collectPickups(sim: var SimServer) =
           inc sim.scoreRevision
         of PickupTankGear, PickupDpsGear, PickupHealerGear:
           let nextRole = pickup.kind.roleForPickup()
+          let input =
+            if playerIndex < inputs.len: inputs[playerIndex]
+            else: InputState()
           let canSwapRole =
             sim.players[playerIndex].role == RoleUnarmed or
-              pickup.x >= SafeZoneRightPixels
+              (pickup.x >= SafeZoneRightPixels and input.select)
           if not canSwapRole or sim.players[playerIndex].role == nextRole:
             continue
           sim.players[playerIndex].applyRole(nextRole)
@@ -5324,7 +5327,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.resolvePlayerOverlaps()
   sim.addPlayerWalkDistances(startXs, startYs)
   sim.updatePlayerTimersAndFrontier()
-  sim.collectPickups()
+  sim.collectPickups(inputs)
   sim.applyFoodAndWeatherSurvival()
   sim.applyStatusEffects()
   sim.applyCampRecovery()

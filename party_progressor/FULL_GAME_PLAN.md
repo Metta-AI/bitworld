@@ -428,6 +428,11 @@ The first full-game implementation pass includes:
 - Konrad now treats a camp that fails to activate after a short close-range
   dwell as temporarily spent, which prevents neutral-input camp orbiting and
   gets the party back to resource search or frontier movement.
+- Forward camp role gear now uses explicit role-labeled sprite protocol icons
+  instead of masquerading as coin or heart pickups, and already-roled players
+  must press select to swap at camp gear. Origin role choice remains walk-in
+  simple for unarmed players, while late expedition paths no longer accidentally
+  collapse tank/DPS/healer composition when bots cross camp gear.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.

@@ -35,6 +35,12 @@ proc firstPickup(sim: SimServer, kind: PickupKind): Pickup =
       return pickup
   raise newException(ValueError, "missing pickup: " & $kind)
 
+proc firstForwardPickup(sim: SimServer, kind: PickupKind): Pickup =
+  for pickup in sim.pickups:
+    if pickup.kind == kind and pickup.x >= SafeZoneRightPixels:
+      return pickup
+  raise newException(ValueError, "missing forward pickup: " & $kind)
+
 proc testSafeOriginAndReusableRoles() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")
@@ -867,6 +873,16 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
       "object references undefined sprite " & $obj.spriteId
 
   let visibleLabels = parsed.objectSpriteLabels()
+  for i, pickup in sim.pickups.pairs:
+    if pickup.kind.isRoleGear():
+      let objectId = PickupObjectBase + i
+      doAssert parsed.objects.hasKey(objectId)
+      let spriteLabel = parsed.sprites[parsed.objects[objectId].spriteId].label
+      doAssert spriteLabel.startsWith("role "),
+        "role gear icons must not masquerade as coin or heart pickups"
+  doAssert visibleLabels.anyIt(it == "role tank gear")
+  doAssert visibleLabels.anyIt(it == "role dps gear")
+  doAssert visibleLabels.anyIt(it == "role heal gear")
   doAssert visibleLabels.anyIt(it.contains("role tank guard"))
   doAssert visibleLabels.anyIt(it.contains("role dps cleave"))
   doAssert visibleLabels.anyIt(it.contains("role heal pulse"))
@@ -1475,6 +1491,20 @@ proc testResourceHarvestAndCampActivation() =
   doAssert sim.hasPickup(PickupTankGear)
   doAssert sim.hasPickup(PickupDpsGear)
   doAssert sim.hasPickup(PickupHealerGear)
+  sim.players[playerIndex].applyRole(RoleTank)
+  sim.players[playerIndex].carrying = false
+  sim.players[playerIndex].carriedItem = CarryNone
+  let forwardHealerGear = sim.firstForwardPickup(PickupHealerGear)
+  sim.players[playerIndex].x = forwardHealerGear.x
+  sim.players[playerIndex].y = forwardHealerGear.y
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].role == RoleTank,
+    "forward camp role gear should not swap roles from incidental overlap"
+  sim.step([InputState(select: true)])
+  doAssert sim.players[playerIndex].role == RoleHealer,
+    "forward camp role gear should support explicit select-to-swap"
   for ty in campTy - CampShortcutHalfHeightTiles ..
       campTy + CampShortcutHalfHeightTiles:
     for tx in campTx - CampShortcutBackTiles ..

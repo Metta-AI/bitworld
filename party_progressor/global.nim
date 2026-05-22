@@ -37,6 +37,7 @@ const
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
+  RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
   StatusBadgeSpriteBase = 840
   LandmarkPromptSpriteBase = 860
   LandmarkShelterPromptSpriteId =
@@ -1194,6 +1195,20 @@ proc roleGearLabel(kind: PickupKind): string =
 proc roleGearSpriteId(kind: PickupKind): int =
   RoleLabelSpriteBase + ord(kind)
 
+proc roleGearIconSpriteId(kind: PickupKind): int =
+  RoleGearIconSpriteBase + ord(kind)
+
+proc roleGearIconLabel(kind: PickupKind): string =
+  case kind
+  of PickupTankGear:
+    "role tank gear"
+  of PickupDpsGear:
+    "role dps gear"
+  of PickupHealerGear:
+    "role heal gear"
+  else:
+    ""
+
 proc roleGearObjectId(pickupIndex: int): int =
   RoleLabelObjectBase + pickupIndex
 
@@ -1463,10 +1478,12 @@ proc mobSpeciesSpriteId(species: MobSpecies, flipLeft: bool): int =
 proc pickupSpriteId(kind: PickupKind): int =
   ## Returns the protocol sprite id for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     CoinSpriteId
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     HeartSpriteId
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    kind.roleGearIconSpriteId()
   of PickupWood, PickupFood, PickupStone, PickupGold:
     kind.carryForPickup().landmarkForCarry().landmarkSpriteId()
 
@@ -1701,6 +1718,15 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       )
 
   for kind in [PickupTankGear, PickupDpsGear, PickupHealerGear]:
+    let
+      icon = sim.pickupRgbaSprite(kind)
+    packet.addSprite(
+      kind.roleGearIconSpriteId(),
+      icon.width,
+      icon.height,
+      icon.pixels,
+      kind.roleGearIconLabel()
+    )
     let
       label = kind.roleGearLabel()
       text = sim.buildSpriteProtocolTextSprite([label], 2'u8)
