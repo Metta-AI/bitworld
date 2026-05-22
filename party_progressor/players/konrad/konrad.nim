@@ -50,6 +50,8 @@ const
   BacktrackLootSlack = WorldTileSize
   FrontierLootBacktrackSlack = WorldTileSize * 6
   FrontierCampBacktrackSlack = WorldTileSize * 6
+  FinalGateThreatRadius = AttackReach
+  FinalGateRallyPathOffsets = [0, -2, 2, -4, 4, -6, 6]
   ExploreDetourResetTicks = TargetFps * 3
   ExploreDetourOffsets = [0, 8, -8, 12, -12, 4, -4, 16, -16, 2, -2, 6, -6]
   ExpeditionLaneMinPathTy =
@@ -1296,6 +1298,39 @@ proc clampExpeditionLanePathTy(ty: int): int =
   ## Keeps long push goals inside the main playable expedition corridor.
   clamp(ty, ExpeditionLaneMinPathTy, ExpeditionLaneMaxPathTy)
 
+proc finalGateRallyTarget(
+  bot: Bot,
+  blocked: openArray[bool]
+): Target =
+  ## A hidden final gate is still the active rally point once the HUD names it.
+  let
+    gateCenterX = (WorldWidthTiles - 3) * WorldTileSize + WorldTileSize div 2
+    gateCenterY = (WorldHeightTiles div 2) * WorldTileSize + WorldTileSize div 2
+    gateTx = clampTileX(gateCenterX)
+    gateTy = clampExpeditionLanePathTy(clampTileY(gateCenterY))
+  for backtrack in 0 .. 16:
+    let tx = max(0, gateTx - backtrack)
+    for dy in FinalGateRallyPathOffsets:
+      let ty = clampExpeditionLanePathTy(gateTy + dy)
+      if not inGrid(tx, ty) or blocked.isBlocked(tx, ty):
+        continue
+      return Target(
+        found: true,
+        kind: TargetExplore,
+        objectId: -1,
+        x: tileCenterX(tx),
+        y: tileCenterY(ty),
+        label: TargetGate.targetLabel()
+      )
+  Target(
+    found: true,
+    kind: TargetExplore,
+    objectId: -1,
+    x: min(WorldWidthPixels - 1, gateCenterX),
+    y: clamp(gateCenterY, ExpeditionLaneMinY, ExpeditionLaneMaxY),
+    label: TargetGate.targetLabel()
+  )
+
 proc outsideExpeditionLane(bot: Bot): bool =
   bot.playerWorldY < ExpeditionLaneMinY - ExpeditionLaneRecoverySlack or
     bot.playerWorldY > ExpeditionLaneMaxY + ExpeditionLaneRecoverySlack
@@ -1339,7 +1374,7 @@ proc satisfiesCampResourceNeed(bot: Bot, target: Target): bool =
     return false
   if target.isLooseCarryResourceTarget():
     return false
-  if bot.needWood > 0 and target.kind == TargetWood:
+  if bot.needWood > 0 and target.kind in {TargetWood, TargetGold}:
     return true
   if bot.needStone > 0 and target.kind in {TargetStone, TargetGold}:
     return true
@@ -1463,6 +1498,10 @@ proc objectiveHintIsGate(bot: Bot): bool =
   bot.objectiveHint.startsWith("next open gate") or
     bot.objectiveHint.startsWith("next hold gate")
 
+proc gateRallyObjectiveActive(bot: Bot): bool =
+  ## The final objective is a party rally, so discretionary detours should stop.
+  bot.objectiveHintIsGate()
+
 proc currentObjectiveTarget(bot: Bot, kind: TargetKind): bool =
   ## Returns true when the HUD says this landmark kind is the main task.
   case kind
@@ -1528,6 +1567,20 @@ proc shelterTooFarBehindFrontier(bot: Bot, target: Target): bool =
 
 proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   ## During role choice, ignore generic gear and non-preferred role labels.
+  if bot.gateRallyObjectiveActive():
+    case target.kind
+    of TargetGate:
+      return true
+    of TargetHeart:
+      return bot.lowHealth and bot.isOpportunisticLoosePickup(target)
+    of TargetFood:
+      return (bot.lowHealth or bot.needsShelter) and
+        bot.isUsefulLooseCarryPickup(target)
+    of TargetShelter, TargetShade:
+      return (bot.lowHealth or bot.needsShelter) and
+        bot.targetDistance(target) <= ShelterReturnRadius
+    else:
+      return false
   if target.kind.isCarryResourceTarget() and
       (bot.needWood > 0 or bot.needStone > 0 or
         bot.campResourceSearchTicks > 0 or bot.campBuildObjectiveActive() or
@@ -1589,6 +1642,8 @@ proc canConsiderThreatTarget(bot: Bot, target: Target): bool =
   ## Keeps fights forward unless the monster is already on top of the bot.
   if target.kind notin {TargetMob, TargetTroll, TargetBoss}:
     return true
+  if bot.gateRallyObjectiveActive() and target.kind != TargetBoss:
+    return bot.targetDistance(target) <= FinalGateThreatRadius
   if bot.isImmediateThreat(target):
     return true
   target.x >= bot.playerWorldX - BacktrackLootSlack and
@@ -1659,7 +1714,7 @@ proc targetScore(bot: Bot, target: Target): int =
     else:
       distance - 120
   of TargetGold:
-    if bot.needStone > 0:
+    if bot.needWood > 0 or bot.needStone > 0:
       distance - 170
     elif bot.carriedItem == CarryGold:
       distance + 160
@@ -1737,7 +1792,7 @@ proc targetScore(bot: Bot, target: Target): int =
   of TargetShrine:
     distance - 20
   of TargetGate:
-    distance + (if bot.objectiveHintIsGate(): -210 else: 10)
+    distance + (if bot.objectiveHintIsGate(): -620 else: 10)
   of TargetLair:
     distance + (
       if bot.lowHealth or bot.needsRegroup or bot.needsShelter or
@@ -1782,7 +1837,7 @@ proc targetScore(bot: Bot, target: Target): int =
         900
     )
   of TargetExplore:
-    distance + 120
+    distance + (if bot.gateRallyObjectiveActive(): -360 else: 120)
 
 proc hasPlayerRescueTarget(targets: openArray[Target]): bool =
   for target in targets:
@@ -1792,6 +1847,16 @@ proc hasPlayerRescueTarget(targets: openArray[Target]): bool =
 proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
   ## Picks a new open tile that keeps the expedition pushing right.
   bot.resetExploreDetourIfCalm()
+  if bot.gateRallyObjectiveActive():
+    let gateTarget = bot.finalGateRallyTarget(blocked)
+    bot.exploreIndex = gridIndex(
+      clampTileX(gateTarget.x),
+      clampTileY(gateTarget.y)
+    )
+    bot.exploreX = gateTarget.x
+    bot.exploreY = gateTarget.y
+    bot.hasExploreGoal = true
+    return
   if bot.hasExploreGoal and
       bot.exploreX > bot.playerWorldX + GoalArrivalRadius and
       distanceSquared(
@@ -1873,7 +1938,10 @@ proc chooseTarget(
     if score < bestScore:
       bestScore = score
       result = pickup
-  if bot.needsRegroup or bot.lowHealth or rescueVisible:
+  let useAllyRally =
+    rescueVisible or bot.lowHealth or
+      (bot.needsRegroup and not bot.gateRallyObjectiveActive())
+  if useAllyRally:
     for ally in allies:
       if bot.skipTicks > 0 and ally.objectId == bot.skipTargetId:
         continue
@@ -2836,6 +2904,23 @@ when defined(konradTargetSelfTest):
     x: 80,
     y: 0
   ))
+  doAssert bot.satisfiesCampResourceNeed(Target(
+    kind: TargetGold,
+    objectId: LandmarkObjectBase + 44,
+    x: 80,
+    y: 0
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetGold,
+    x: 80,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetCamp,
+    x: 80,
+    y: 0
+  ))
   bot.readStatusHud("tank plains|clear w2 f0 s1 r0|b guard|next camp 0/2")
   doAssert bot.needWood == 0
   doAssert bot.needStone == 0
@@ -2856,6 +2941,62 @@ when defined(konradTargetSelfTest):
     x: 96,
     y: 0
   ))
+  bot.objectiveHint = "next hold gate 0%"
+  bot.playerWorldX = WorldWidthPixels - WorldTileSize * 8
+  bot.playerWorldY = (WorldHeightTiles div 2) * WorldTileSize
+  bot.frontierX = bot.playerWorldX
+  bot.teamFrontierX = bot.playerWorldX
+  bot.lowHealth = false
+  bot.needsShelter = false
+  doAssert bot.gateRallyObjectiveActive()
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetGate,
+    objectId: LandmarkObjectBase + 40,
+    x: WorldWidthPixels - WorldTileSize * 3,
+    y: bot.playerWorldY
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetGold,
+    objectId: LandmarkObjectBase + 41,
+    x: bot.playerWorldX + WorldTileSize,
+    y: bot.playerWorldY
+  ))
+  doAssert not bot.canConsiderThreatTarget(Target(
+    kind: TargetMob,
+    objectId: MobObjectBase + 42,
+    x: bot.playerWorldX + FinalGateThreatRadius + 1,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.canConsiderThreatTarget(Target(
+    kind: TargetMob,
+    objectId: MobObjectBase + 43,
+    x: bot.playerWorldX + FinalGateThreatRadius,
+    y: bot.playerWorldY
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetGate,
+    x: bot.playerWorldX + WorldTileSize * 3,
+    y: bot.playerWorldY
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetMob,
+    x: bot.playerWorldX + WorldTileSize,
+    y: bot.playerWorldY
+  ))
+  var gateBlocked: seq[bool]
+  gateBlocked.resetBlocked()
+  bot.hasExploreGoal = false
+  bot.refreshExploreGoal(gateBlocked)
+  doAssert bot.hasExploreGoal
+  doAssert bot.exploreX >= WorldWidthPixels - WorldTileSize * 5
+  doAssert abs(bot.exploreY -
+    ((WorldHeightTiles div 2) * WorldTileSize + WorldTileSize div 2)) <
+      FinalGateActivationRadius
+  bot.objectiveHint = ""
+  bot.frontierX = 0
+  bot.teamFrontierX = 0
+  bot.hasExploreGoal = false
   bot.objectiveHint = "next walk into tank dps heal"
   bot.preferredRole = PreferTankRole
   bot.needsRole = true

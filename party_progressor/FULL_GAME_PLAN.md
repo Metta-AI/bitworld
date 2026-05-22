@@ -668,6 +668,22 @@ The first full-game implementation pass includes:
   dwell on a non-resolving stop, the bot temporarily releases that target and
   resumes the expedition push or nearby objective chain instead of ending a
   long run in a shelter or floor-drop orbit.
+- Final-gate hold pacing is now scaled to the larger adventure viewport: the
+  ritual accepts a wider party ring, clears nearby non-boss pressure when the
+  party starts the hold, and still pays off fastest when tank, DPS, and healer
+  all rally at the gate.
+- Once boss, relic, and camp prerequisites are complete, the HUD now points at
+  the final gate before optional ruins cleanup, so the endgame reads as a real
+  expedition finish instead of another local side-objective sweep.
+- Konrad now treats `NEXT HOLD GATE` as an explicit endgame rally: if the gate
+  is not visible yet, the bot pushes toward the known ruins-edge gate lane; once
+  the gate objective is active, it suppresses old loot, side objectives,
+  shelters, and non-immediate monster fights unless survival or rescue demands
+  a local detour.
+- Gold now also acts as shared camp-funding salvage: it still gives the carried
+  light/fortification item, but harvesting it adds wood-equivalent and stone
+  resources so late cave/ruins expeditions can finish the required forward camp
+  instead of backtracking to early-biome wood nodes.
 - Saved score files now preserve the richest expedition snapshot after bots
   disconnect, so local multi-bot smokes and tournament-style runs leave
   analyzable names, roles, frontier, resource, objective, boss, and final-gate
@@ -697,11 +713,10 @@ The first full-game implementation pass includes:
   tune viewport framing and affordance density.
 - Tune attack-overlay density and placement once longer human/bot observation
   checks reveal where lunge effects clutter tight fights.
-- Continue bot targeting polish: tune longer-run expedition pacing now that
-  bots understand roles, health, regroup, carried resources, and current
-  objectives, team frontier, stale camp/shelter targets, and recovery stops;
-  prefer frontier pushes over distant discretionary fights, and recover from
-  blocked push paths without backing out of the expedition.
+- Continue bot targeting polish from real multi-bot runs: the endgame now has a
+  dedicated gate rally mode, so remaining work should focus on making long
+  expeditions finish with fewer deaths and fewer path detours, not on adding
+  more objective types.
 
 ### Expedition Depth
 
@@ -715,9 +730,9 @@ The first full-game implementation pass includes:
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, downed-player rescue, chat pings, and grouped objective morale:
   richer rescue/objective moments.
-- Tune final-boss and final-gate pacing now that relic, camp, trio formation,
-  three-role focus, boss stagger, boss defeat, the gate ritual, and the triumph
-  payoff are all part of the visible completion chain.
+- Tune final-boss and final-gate difficulty after repeated bot and human runs:
+  relic, camp, trio formation, three-role focus, boss stagger, boss defeat, gate
+  rally, gate hold, and triumph are all part of the visible completion chain.
 
 ### Polish And Packaging
 

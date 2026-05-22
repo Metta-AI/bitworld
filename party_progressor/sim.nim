@@ -109,7 +109,8 @@ const
   CampWardedDefenseRadius* = WorldTileSize * 4
   ResourceNodeHp* = 2
   LandmarkActivationRadius* = 20
-  FinalGateActivationRadius* = 28
+  FinalGateActivationRadius* = WorldTileSize * 2
+  FinalGateRallyPacifyRadius* = WorldTileSize * 3
   FinalGateTriumphRadius* = WorldTileSize * 6
   BiomeCount* = 7
   TankGuardRadius* = 44
@@ -1950,6 +1951,10 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   let biome = sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
   if biome == BiomeOrigin:
     return "NEXT PUSH RIGHT"
+  if sim.bossDefeated and sim.relicShards >= FinalGateRelicCost and
+      sim.campsActivated >= FinalGateCampCost and
+      sim.incompleteLandmarkExists(LandmarkFinalGate):
+    return sim.finalGateObjectiveHint()
   if sim.incompleteLandmarkInBiome(LandmarkWaystation, biome):
     return "NEXT " & biome.waystationPromptLabel()
   if sim.incompleteLandmarkInBiome(LandmarkCamp, biome):
@@ -4775,6 +4780,7 @@ proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
   of LandmarkStone:
     inc sim.stone
   of LandmarkGold:
+    inc sim.wood
     sim.stone += 2
   else:
     discard
@@ -5533,11 +5539,17 @@ proc activateNearbyLandmarks(sim: var SimServer) =
         continue
       if sim.campsActivated < FinalGateCampCost:
         continue
+      let startingGateHold = sim.landmarks[landmarkIndex].progress == 0
       sim.landmarks[landmarkIndex].progress +=
         sim.distinctRolesNearLandmark(
           sim.landmarks[landmarkIndex],
           FinalGateActivationRadius
         ).finalGateRitualStep()
+      if startingGateHold:
+        discard sim.pacifyMobsNearLandmark(
+          sim.landmarks[landmarkIndex],
+          FinalGateRallyPacifyRadius
+        )
       inc sim.scoreRevision
       if sim.landmarks[landmarkIndex].progress < FinalGateRitualTicks:
         continue

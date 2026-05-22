@@ -1916,6 +1916,40 @@ proc testResourceHarvestAndCampActivation() =
   doAssert sim.players[playerIndex].carrying
   doAssert sim.players[playerIndex].carriedItem == CarryWood
 
+  var goldSim = initPartyProgressorForTest()
+  goldSim.clearTerrain()
+  goldSim.mobs.setLen(0)
+  goldSim.pickups.setLen(0)
+  goldSim.landmarks.setLen(0)
+  goldSim.fillGround(GroundGrass)
+  let goldPlayer = goldSim.addPlayer("gold")
+  goldSim.players[goldPlayer].x = SafeZoneRightPixels + WorldTileSize
+  goldSim.players[goldPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  goldSim.players[goldPlayer].facing = FaceRight
+  goldSim.players[goldPlayer].bounds =
+    goldSim.playerBoundsFor(goldSim.players[goldPlayer])
+  let goldHit = goldSim.attackRect(goldSim.players[goldPlayer])
+  goldSim.landmarks.add(Landmark(
+    tx: clamp(
+      (goldHit.x + goldHit.w div 2) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    ),
+    ty: clamp(
+      (goldHit.y + goldHit.h div 2) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    ),
+    kind: LandmarkGold,
+    hp: 1,
+    done: false
+  ))
+  goldSim.step([InputState(attack: true)])
+  doAssert goldSim.wood == 1
+  doAssert goldSim.stone == 2
+  doAssert goldSim.players[goldPlayer].carriedItem == CarryGold,
+    "gold should be both a held camp upgrade and shared camp-funding salvage"
+
   sim.landmarks.setLen(0)
   sim.pickups.setLen(0)
   sim.wood = CampWoodCost
@@ -2649,10 +2683,22 @@ proc testBeaconAndBossScoring() =
   doAssert not sim.landmarks[0].done,
     "final gate should require camp progress as well as relics and boss defeat"
   sim.campsActivated = FinalGateCampCost
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: sim.landmarks[0].tx * WorldTileSize + WorldTileSize,
+    y: sim.landmarks[0].ty * WorldTileSize,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: WolfHp,
+    attackCooldown: 999
+  ))
   sim.step([InputState()])
   doAssert not sim.landmarks[0].done,
     "final gate should require a visible ritual hold"
   doAssert sim.landmarks[0].progress == 1
+  doAssert sim.mobs.allIt(it.species != SpeciesForestWolf),
+    "starting the final-gate hold should clear local non-boss pressure"
   for _ in 1 ..< (FinalGateRitualTicks - 1):
     sim.step([InputState()])
   doAssert sim.landmarks[0].progress == FinalGateRitualTicks - 1
@@ -2763,6 +2809,51 @@ proc testFinalGateRitualAcceleratesWithPartyRoles() =
   sim.step([InputState(), InputState(), InputState()])
   doAssert sim.landmarks[0].done,
     "all three roles holding the gate should complete the ritual faster"
+
+proc testFinalGateObjectiveOverridesRuinsCleanup() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass, BiomeRuins)
+  sim.bossDefeated = true
+  sim.relicShards = FinalGateRelicCost
+  sim.campsActivated = FinalGateCampCost
+
+  let playerIndex = sim.addPlayer("player")
+  sim.players[playerIndex].applyRole(RoleTank)
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  let
+    playerTx = sim.players[playerIndex].x div WorldTileSize
+    playerTy = sim.players[playerIndex].y div WorldTileSize
+  sim.landmarks.add(Landmark(
+    tx: playerTx,
+    ty: playerTy,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
+    tx: playerTx + 1,
+    ty: playerTy,
+    kind: LandmarkLair,
+    hp: LairHp,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
+    tx: playerTx + 2,
+    ty: playerTy,
+    kind: LandmarkFinalGate,
+    hp: 1,
+    done: false
+  ))
+
+  doAssert sim.expeditionObjectiveHint(playerIndex).startsWith("NEXT HOLD GATE "),
+    "final gate should override optional ruins cleanup once prerequisites are met"
 
 proc testShrineSideObjectiveScoringAndSustain() =
   var sim = initPartyProgressorForTest()
@@ -4417,6 +4508,7 @@ testCarriedSuppliesUpgradeActivatedCamps()
 testRoleSpecializedCampsCreateDistinctStagingBenefits()
 testBeaconAndBossScoring()
 testFinalGateRitualAcceleratesWithPartyRoles()
+testFinalGateObjectiveOverridesRuinsCleanup()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()
 testHealerCompletesRescueEventsFaster()
