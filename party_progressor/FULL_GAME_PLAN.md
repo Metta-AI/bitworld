@@ -323,6 +323,9 @@ The first full-game implementation pass includes:
   steep elevation, and pacify local non-boss threats around the beacon.
 - Optional shrine side objectives that trade route time for score, emergency
   food, healing, and status cleansing.
+- Completed shrine side objectives now remain useful as small blessing
+  sanctuaries: nearby players get local recovery, faster status cleanup, biome
+  pressure sheltering, and a visible `BLESS` status in sprite observations.
 - Optional rescue side objectives seeded through biome bands: stranded travelers
   require a short nearby hold, heal the party slightly, and add emergency food,
   with healers completing rescues faster.

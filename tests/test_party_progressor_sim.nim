@@ -2590,15 +2590,44 @@ proc testShrineSideObjectiveScoringAndSustain() =
   doAssert sim.players[playerIndex].poisonTicks == 0
   doAssert sim.players[playerIndex].slowTicks == 0
   doAssert sim.players[playerIndex].chillTicks == 0
+  doAssert sim.playerNearBlessedShrine(playerIndex)
+  doAssert sim.playerNearExpeditionShelter(playerIndex),
+    "completed shrines should become local expedition sanctuaries"
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticBlessing
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
   let scores = parseJson(sim.playerScoresJson())
   doAssert scores["side_objectives_completed"][0].getInt() == 1
-  var shrineNextState: PlayerViewerState
-  let labels = sim.buildSpriteProtocolPlayerUpdates(
+
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp - 1
+  sim.players[playerIndex].poisonTicks = 1
+  sim.players[playerIndex].slowTicks = 1
+  sim.players[playerIndex].chillTicks = 1
+  sim.tickCount = CampRecoveryIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "completed shrine blessings should provide local recovery"
+  doAssert sim.players[playerIndex].poisonTicks == 0
+  doAssert sim.players[playerIndex].slowTicks == 0
+  doAssert sim.players[playerIndex].chillTicks == 0
+
+  sim.fillGround(GroundSnow, BiomeSnow)
+  sim.food = 0
+  sim.players[playerIndex].lives = 3
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 3,
+    "completed shrine blessings should shelter local biome pressure"
+
+  var state: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
     playerIndex,
     initPlayerViewerState(),
-    shrineNextState
-  ).parseSpriteProtocolPacket().objectSpriteLabels()
+    state
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status blessing" in labels,
+    "sprite observations should show when a shrine blessing is active"
   doAssert "shrine" notin labels
   doAssert "prompt shrine f2" notin labels
 

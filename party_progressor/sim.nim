@@ -76,6 +76,7 @@ const
   BeaconSurveyHalfHeightTiles* = 1
   ShrineFoodBonus* = 2
   ShrineHealAmount* = 1
+  ShrineBlessingRadius* = WorldTileSize * 2
   RescueFoodBonus* = 2
   RescueHealAmount* = 1
   LairHp* = 6
@@ -452,6 +453,7 @@ type
     BiomeTacticWarmth
     BiomeTacticLight
     BiomeTacticGuard
+    BiomeTacticBlessing
 
   GroundKind* = enum
     GroundGrass
@@ -918,6 +920,7 @@ proc biomeTacticLabel*(kind: BiomeTacticKind): string =
   of BiomeTacticWarmth: "warmth"
   of BiomeTacticLight: "light"
   of BiomeTacticGuard: "guard"
+  of BiomeTacticBlessing: "bless"
 
 proc pingLabel*(kind: PlayerPingKind): string =
   case kind
@@ -4470,6 +4473,22 @@ proc playerNearAidCamp*(
       return true
   false
 
+proc playerNearBlessedShrine*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = ShrineBlessingRadius
+): bool =
+  ## Returns true when a completed shrine is acting as a local sanctuary.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkShrine and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
 proc playerNearExpeditionShelter*(
   sim: SimServer,
   playerIndex: int,
@@ -4480,6 +4499,8 @@ proc playerNearExpeditionShelter*(
     return false
   if sim.players[playerIndex].lives <= 0:
     return false
+  if sim.playerNearBlessedShrine(playerIndex):
+    return true
   for landmark in sim.landmarks:
     if landmark.kind == LandmarkCamp and landmark.done and
         sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
@@ -5445,6 +5466,8 @@ proc playerBiomeTacticKind*(
     return BiomeTacticNone
   if sim.playerGuardMitigatesBiomePressure(playerIndex):
     return BiomeTacticGuard
+  if sim.playerNearBlessedShrine(playerIndex):
+    return BiomeTacticBlessing
   case sim.playerBiome(sim.players[playerIndex])
   of BiomeForest:
     BiomeTacticForage
@@ -5608,12 +5631,15 @@ proc applyCampRecovery(sim: var SimServer) =
   if sim.tickCount mod CampRecoveryIntervalTicks != 0:
     return
   for playerIndex in 0 ..< sim.players.len:
-    if not sim.playerNearActivatedCamp(playerIndex):
+    let
+      nearCamp = sim.playerNearActivatedCamp(playerIndex)
+      nearShrine = sim.playerNearBlessedShrine(playerIndex)
+    if not nearCamp and not nearShrine:
       continue
     if sim.players[playerIndex].lives >= sim.players[playerIndex].maxHp:
       continue
     let healAmount =
-      if sim.playerNearProvisionedCamp(playerIndex):
+      if nearCamp and sim.playerNearProvisionedCamp(playerIndex):
         CampProvisionedRecoveryHealAmount
       else:
         CampRecoveryHealAmount
