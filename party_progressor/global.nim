@@ -135,6 +135,7 @@ type
     StatusPoison
     StatusSlow
     StatusChill
+    StatusMire
     StatusCold
     StatusHeat
     StatusFog
@@ -1416,6 +1417,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
+  of StatusMire: "MIRE"
   of StatusCold: "COLD"
   of StatusHeat: "HEAT"
   of StatusFog: "FOG"
@@ -1443,6 +1445,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
+  of StatusMire: 10'u8
   of StatusCold: 11'u8
   of StatusHeat: 9'u8
   of StatusFog: 12'u8
@@ -1470,6 +1473,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
+  of StatusMire: "status mire"
   of StatusCold: "status cold"
   of StatusHeat: "status heat"
   of StatusFog: "status fog"
@@ -1510,6 +1514,8 @@ proc survivalStatusBadge(
   kind: SurvivalPressureKind
 ): tuple[found: bool, badge: StatusBadgeKind] =
   case kind
+  of SurvivalMire:
+    (true, StatusMire)
   of SurvivalCold:
     (true, StatusCold)
   of SurvivalHeat:

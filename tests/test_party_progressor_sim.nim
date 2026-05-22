@@ -892,6 +892,12 @@ proc assertSurvivalPressureObservation(
 
 proc testSpriteProtocolShowsSurvivalPressureAffordances() =
   assertSurvivalPressureObservation(
+    BiomeSwamp,
+    GroundMud,
+    SurvivalMire,
+    "status mire"
+  )
+  assertSurvivalPressureObservation(
     BiomeSnow,
     GroundSnow,
     SurvivalCold,
@@ -2913,6 +2919,61 @@ proc testDesertHeatSurvivalPressureAndOasisShelter() =
   doAssert sim.players[playerIndex].lives == 3,
     "desert oasis shelter should block heat exposure damage"
 
+proc testSwampMireSurvivalPressureAndBridgeShelter() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundMud, BiomeSwamp)
+
+  let playerIndex = sim.addPlayer("mired")
+  sim.players[playerIndex].x = firstTileForBiome(BiomeSwamp) * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalMire,
+    "swamp mud should warn exposed players about mire pressure"
+  sim.tickCount = SwampMireIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks >= SwampMireTicks - 1,
+    "swamp mire should slow exposed players crossing mud"
+
+  sim.players[playerIndex].slowTicks = 0
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: true
+  ))
+  doAssert sim.playerNearExpeditionShelter(playerIndex),
+    "completed swamp bridge waystations should count as mire shelters"
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe
+  sim.tickCount = SwampMireIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "swamp bridge shelters should block mire slow pulses"
+
+  var roadSim = initPartyProgressorForTest()
+  roadSim.clearTerrain()
+  roadSim.mobs.setLen(0)
+  roadSim.pickups.setLen(0)
+  roadSim.landmarks.setLen(0)
+  roadSim.fillGround(GroundRoad, BiomeSwamp)
+  let roadPlayer = roadSim.addPlayer("road")
+  roadSim.players[roadPlayer].x = firstTileForBiome(BiomeSwamp) * WorldTileSize
+  roadSim.players[roadPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  roadSim.players[roadPlayer].bounds =
+    roadSim.playerBoundsFor(roadSim.players[roadPlayer])
+  doAssert roadSim.survivalPressureKind(roadPlayer) == SurvivalSafe,
+    "dry swamp roads should clear mire pressure"
+  roadSim.tickCount = SwampMireIntervalTicks - 1
+  roadSim.step([InputState()])
+  doAssert roadSim.players[roadPlayer].slowTicks == 0,
+    "dry swamp roads should not apply mire slow pulses"
+
 proc testFogBiomeDisorientationRequiresGroupOrLantern() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3085,6 +3146,7 @@ testPartyFocusRewardsMixedRoleAttacksAndShowsBadge()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()
+testSwampMireSurvivalPressureAndBridgeShelter()
 testFogBiomeDisorientationRequiresGroupOrLantern()
 testCampShelterAndRecoveryInfrastructure()
 echo "All tests passed"

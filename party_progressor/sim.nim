@@ -134,6 +134,8 @@ const
   HeatExposureIntervalTicks* = TargetFps * 4
   FogDisorientationIntervalTicks* = TargetFps * 5
   FogDisorientationTicks* = TargetFps
+  SwampMireIntervalTicks* = TargetFps * 4
+  SwampMireTicks* = TargetFps
   CampShelterRadius* = WorldTileSize * 2
   CampRecoveryIntervalTicks* = TargetFps * 2
   CampRecoveryHealAmount* = 1
@@ -419,6 +421,7 @@ type
 
   SurvivalPressureKind* = enum
     SurvivalSafe
+    SurvivalMire
     SurvivalCold
     SurvivalHeat
     SurvivalFog
@@ -837,6 +840,7 @@ proc statusLabel*(player: Actor): string =
 proc survivalPressureLabel*(kind: SurvivalPressureKind): string =
   case kind
   of SurvivalSafe: "safe"
+  of SurvivalMire: "mire"
   of SurvivalCold: "cold"
   of SurvivalHeat: "heat"
   of SurvivalFog: "fog"
@@ -4129,7 +4133,7 @@ proc playerNearExpeditionShelter*(
       return true
     if landmark.kind == LandmarkWaystation and landmark.done:
       let biome = sim.tileBiomeKind(landmark.tx, landmark.ty)
-      if biome in {BiomeDesert, BiomeSnow, BiomeCave, BiomeRuins} and
+      if biome in {BiomeSwamp, BiomeDesert, BiomeSnow, BiomeCave, BiomeRuins} and
           sim.playerNearLandmark(
             sim.players[playerIndex],
             landmark,
@@ -4901,6 +4905,20 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
 proc playerBiome(sim: SimServer, player: Actor): BiomeKind =
   sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
 
+proc playerGroundKind(sim: SimServer, player: Actor): GroundKind =
+  sim.tileGroundKind(
+    clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    ),
+    clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+  )
+
 proc survivalPressureKind*(
   sim: SimServer,
   playerIndex: int
@@ -4912,6 +4930,11 @@ proc survivalPressureKind*(
   if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex):
     return SurvivalSafe
   case sim.playerBiome(player)
+  of BiomeSwamp:
+    if sim.playerGroundKind(player) in {GroundMud, GroundShallowWater, GroundWater}:
+      SurvivalMire
+    else:
+      SurvivalSafe
   of BiomeSnow:
     SurvivalCold
   of BiomeDesert:
@@ -4974,6 +4997,7 @@ proc applyEarlyBiomeTactics(sim: var SimServer) =
 
 proc applyFoodAndWeatherSurvival(sim: var SimServer) =
   let
+    mirePulse = sim.tickCount mod SwampMireIntervalTicks == 0
     coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
     heatPulse = sim.tickCount mod HeatExposureIntervalTicks == 0
     fogPulse = sim.tickCount mod FogDisorientationIntervalTicks == 0
@@ -5010,6 +5034,19 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       sim.players[playerIndex].slowTicks = max(
         sim.players[playerIndex].slowTicks,
         FogDisorientationTicks
+      )
+      if sim.players[playerIndex].slowTicks != before:
+        inc sim.scoreRevision
+    if mirePulse and biome == BiomeSwamp and not sheltered and
+        sim.playerGroundKind(sim.players[playerIndex]) in {
+          GroundMud,
+          GroundShallowWater,
+          GroundWater
+        }:
+      let before = sim.players[playerIndex].slowTicks
+      sim.players[playerIndex].slowTicks = max(
+        sim.players[playerIndex].slowTicks,
+        SwampMireTicks
       )
       if sim.players[playerIndex].slowTicks != before:
         inc sim.scoreRevision

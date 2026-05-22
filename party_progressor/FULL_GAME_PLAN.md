@@ -340,6 +340,9 @@ The first full-game implementation pass includes:
 - Desert heat exposure now mirrors the snow survival loop: food or carried food
   absorbs a heat pulse before HP damage, while completed oasis waystations and
   camps shelter nearby players.
+- Swamp mire pressure now slows exposed players crossing mud, shallow water, or
+  water, while completed bridge waystations and camps turn swamp crossings into
+  safer routes.
 - Cave and ruin fog now disorients isolated unsheltered players with slow
   pressure, while nearby allies, completed lantern/ward waystations, and camps
   keep the party oriented.
