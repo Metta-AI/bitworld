@@ -1947,6 +1947,60 @@ proc testCarriedFoodCanBeEatenForRecovery() =
   doAssert sim.carryHudLabel(playerIndex) == "food sel drop",
     "carried food should only advertise eating when it will help"
 
+proc testCarriedWoodCanPlankSwampCrossings() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundMud, BiomeSwamp)
+
+  let
+    playerIndex = sim.addPlayer("planker")
+    startTx = firstTileForBiome(BiomeSwamp) + 2
+    startTy = WorldHeightTiles div 2
+  sim.players[playerIndex].x = startTx * WorldTileSize
+  sim.players[playerIndex].y = startTy * WorldTileSize
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryWood
+  for tx in startTx ..< startTx + SwampPlankForwardTiles:
+    let index = tileIndex(tx, startTy)
+    sim.biomeKinds[index] = BiomeSwamp
+    sim.groundKinds[index] =
+      if tx == startTx + 1: GroundWater else: GroundMud
+    sim.elevations[index] = 5
+    sim.tiles[index] = true
+
+  doAssert sim.playerCanLaySwampPlank(playerIndex),
+    "carried wood should advertise a field plank on rough swamp tiles"
+  doAssert sim.carryHudLabel(playerIndex) == "wood sel plank"
+  sim.step([InputState(select: true)])
+  doAssert not sim.players[playerIndex].carrying,
+    "laying a swamp plank should consume the carried wood"
+  for tx in startTx ..< startTx + SwampPlankForwardTiles:
+    let index = tileIndex(tx, startTy)
+    doAssert sim.tileGroundKind(tx, startTy) == GroundBridge,
+      "swamp planks should turn mud and water into bridge ground"
+    doAssert sim.elevations[index] <= 1,
+      "swamp planks should flatten a local crossing"
+    doAssert not sim.tiles[index],
+      "swamp planks should clear blocking props from the crossing"
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe,
+    "standing on the new plank should clear mire pressure"
+  sim.tickCount = SwampMireIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "swamp planks should block mire slow pulses on the bridged tile"
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryWood
+  doAssert not sim.playerCanLaySwampPlank(playerIndex),
+    "already-bridged swamp ground should not consume wood as another plank"
+  doAssert sim.carryHudLabel(playerIndex) == "wood sel drop"
+
 proc testCampFortificationConsumesResourcesAndDefendsStagingArea() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3313,6 +3367,7 @@ testElevationSlowsHighGround()
 testElevationCombatAdvantageAndBadges()
 testResourceHarvestAndCampActivation()
 testCarriedFoodCanBeEatenForRecovery()
+testCarriedWoodCanPlankSwampCrossings()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testCampProvisioningConsumesFoodAndImprovesRecovery()
 testCarriedSuppliesUpgradeActivatedCamps()

@@ -190,6 +190,7 @@ type
     needsLight: bool
     needsTerrainRoute: bool
     canEatCarriedFood: bool
+    canLaySwampPlank: bool
     carriedItem: CarryKind
     objectiveHint: string
     sharedWood: int
@@ -807,6 +808,8 @@ proc readStatusHud(bot: var Bot, label: string) =
       bot.carriedItem = section.carryKindFromLabel()
       bot.canEatCarriedFood =
         bot.carriedItem == CarryFood and section.contains("sel eat")
+      bot.canLaySwampPlank =
+        bot.carriedItem == CarryWood and section.contains("sel plank")
     elif section.startsWith("next "):
       bot.objectiveHint = section
       let tokens = section.splitWhitespace()
@@ -830,6 +833,7 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.needsLight = false
   bot.needsTerrainRoute = false
   bot.canEatCarriedFood = false
+  bot.canLaySwampPlank = false
   bot.carriedItem = CarryNone
   bot.objectiveHint = ""
   bot.sharedWood = -1
@@ -1506,6 +1510,8 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 260
     elif bot.carriedItem == CarryWood:
       distance + 170
+    elif bot.needsTerrainRoute:
+      distance - 220
     else:
       distance - 120
   of TargetFood:
@@ -2002,6 +2008,9 @@ proc decideNextMask(bot: var Bot): uint8 =
   if bot.canEatCarriedFood:
     bot.intent = "eat"
     return ButtonSelect
+  if bot.canLaySwampPlank and bot.needsTerrainRoute:
+    bot.intent = "plank"
+    return ButtonSelect
 
   if bot.jiggleTicks > 0:
     dec bot.jiggleTicks
@@ -2440,6 +2449,17 @@ when defined(konradTargetSelfTest):
   ))
   bot.needsShelter = false
   bot.needsTerrainRoute = true
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetWood,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetMob,
+    x: 40,
+    y: 0
+  ))
   doAssert bot.canConsiderPickupTarget(Target(
     kind: TargetShelter,
     objectId: LandmarkObjectBase + 4,
@@ -2740,6 +2760,12 @@ when defined(konradTargetSelfTest):
   bot.readStatusHud("healer swamp|rain w0 f1 s0 r0|b pulse|carry food sel eat|next heal food")
   doAssert bot.carriedItem == CarryFood
   doAssert bot.canEatCarriedFood
+  bot.canEatCarriedFood = false
+  bot.readStatusHud("tank swamp|rain w0 f0 s0 r0|b guard|carry wood sel plank")
+  doAssert bot.carriedItem == CarryWood
+  doAssert bot.canLaySwampPlank
+  bot.carriedItem = CarryNone
+  bot.canLaySwampPlank = false
   bot.roleLabel = "tank"
   bot.abilityReady = true
   bot.attackCooldown = 0

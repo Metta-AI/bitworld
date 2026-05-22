@@ -149,6 +149,7 @@ const
   PlainsRallyCooldownStep* = 1
   SnowWarmthAllyRadius* = WorldTileSize * 3
   DesertShadeRadius* = WorldTileSize * 2
+  SwampPlankForwardTiles* = 3
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
   CampShortcutHalfHeightTiles* = 1
@@ -3442,6 +3443,7 @@ proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
 proc clearCarry(sim: var SimServer, playerIndex: int)
 proc dropCarry(sim: var SimServer, playerIndex: int): bool
 proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool
+proc useCarryInField(sim: var SimServer, playerIndex: int): bool
 
 proc carriedFoodWouldHelp*(player: Actor): bool =
   player.lives > 0 and (
@@ -3554,7 +3556,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     sim.applyRoleAbility(playerIndex)
   if input.select:
     if not sim.consumeCarriedFood(playerIndex) and
-        not sim.deliverCarryToCamp(playerIndex):
+        not sim.deliverCarryToCamp(playerIndex) and
+        not sim.useCarryInField(playerIndex):
       discard sim.dropCarry(playerIndex)
 
 proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
@@ -3729,6 +3732,96 @@ proc dropCarry(sim: var SimServer, playerIndex: int): bool =
   ))
   sim.clearCarry(playerIndex)
   true
+
+proc swampPlankDirection(facing: Facing): tuple[dx, dy: int] =
+  case facing
+  of FaceLeft:
+    (-1, 0)
+  of FaceRight:
+    (1, 0)
+  of FaceUp:
+    (0, -1)
+  of FaceDown:
+    (0, 1)
+
+proc tileAcceptsSwampPlank(sim: SimServer, tx, ty: int): bool =
+  if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+    return false
+  let index = tileIndex(tx, ty)
+  sim.biomeKinds[index] == BiomeSwamp and
+    sim.groundKinds[index] in {GroundMud, GroundShallowWater, GroundWater}
+
+proc playerCanLaySwampPlank*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.carrying or
+      player.carriedItem != CarryWood:
+    return false
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.swampPlankDirection()
+  for step in 0 ..< SwampPlankForwardTiles:
+    if sim.tileAcceptsSwampPlank(
+      centerTx + dir.dx * step,
+      centerTy + dir.dy * step
+    ):
+      return true
+  false
+
+proc laySwampPlank(sim: var SimServer, playerIndex: int): bool =
+  if not sim.playerCanLaySwampPlank(playerIndex):
+    return false
+  let player = sim.players[playerIndex]
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.swampPlankDirection()
+  var changed = false
+  for step in 0 ..< SwampPlankForwardTiles:
+    let
+      tx = centerTx + dir.dx * step
+      ty = centerTy + dir.dy * step
+    if not sim.tileAcceptsSwampPlank(tx, ty):
+      continue
+    let index = tileIndex(tx, ty)
+    sim.groundKinds[index] = GroundBridge
+    sim.elevations[index] = min(sim.elevations[index], 1)
+    sim.tiles[index] = false
+    changed = true
+  if not changed:
+    return false
+  sim.clearCarry(playerIndex)
+  true
+
+proc useCarryInField(sim: var SimServer, playerIndex: int): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  case sim.players[playerIndex].carriedItem
+  of CarryWood:
+    sim.laySwampPlank(playerIndex)
+  else:
+    false
 
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   ## Puts a defeated player into a short rescue window before respawn.
@@ -4515,6 +4608,8 @@ proc carryHudLabel*(sim: SimServer, playerIndex: int): string =
       "sel eat"
     elif sim.playerCanDeliverCarryToCamp(playerIndex):
       "sel camp"
+    elif sim.playerCanLaySwampPlank(playerIndex):
+      "sel plank"
     else:
       "sel drop"
   player.carriedItem.carryLabel() & " " & action

@@ -143,6 +143,9 @@ specific camp upgrade instead of only dropping the item.
 Gold should also have a field use in the deepest bands: carrying it through
 caves and ruins acts as a portable light focus, trading an occupied hand for
 temporary fog safety when the party cannot stay grouped.
+Wood should have a field use in the swamp: carrying it through mud or shallow
+water lets a player lay a short plank bridge, trading the item for a local route
+repair instead of waiting for a full bridge waystation or camp shortcut.
 Camps cost wood and stone. Activating a camp should:
 
 - Mark expedition progress.
@@ -350,6 +353,10 @@ The first full-game implementation pass includes:
 - Swamp mire pressure now slows exposed players crossing mud, shallow water, or
   water, while completed bridge waystations and camps turn swamp crossings into
   safer routes.
+- Carried wood now doubles as a swamp field tool: selecting while facing rough
+  swamp ground lays a short plank bridge, clears blockers/elevation on that
+  crossing, consumes the carried wood, and gives bots a `SEL PLANK` response to
+  visible mire pressure.
 - Cave and ruin fog now disorients isolated unsheltered players with slow
   pressure, while nearby allies, completed lantern/ward waystations, and camps
   keep the party oriented.
