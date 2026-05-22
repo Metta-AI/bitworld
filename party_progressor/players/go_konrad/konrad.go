@@ -18,17 +18,18 @@ import (
 )
 
 const (
-	PlayerDefaultPort         = 2000
-	ScreenWidth               = 128
-	ScreenHeight              = 128
-	WorldWidthTiles           = 32
-	WorldHeightTiles          = 32
-	WorldTileSize             = 32
-	WorldWidthPixels          = WorldWidthTiles * WorldTileSize
-	WorldHeightPixels         = WorldHeightTiles * WorldTileSize
-	PlayerWebSocketPath       = "/player"
-	DefaultHost               = "localhost"
+	PlayerDefaultPort   = 2000
+	ScreenWidth         = 128
+	ScreenHeight        = 128
+	WorldWidthTiles     = 96
+	WorldHeightTiles    = 18
+	WorldTileSize       = 32
+	WorldWidthPixels    = WorldWidthTiles * WorldTileSize
+	WorldHeightPixels   = WorldHeightTiles * WorldTileSize
+	PlayerWebSocketPath = "/player"
+	DefaultHost         = "localhost"
 
+	MapLayerId               = 0
 	MapSpriteId              = 1
 	MapObjectId              = 1
 	PlayerSpriteBase         = 100
@@ -40,9 +41,18 @@ const (
 	SwooshSpriteBase         = 304
 	TrollSpriteId            = 312
 	TerrainSpriteBase        = 320
+	LandmarkSpriteBase       = 360
 	PlayerHudSpriteId        = 600
+	MobSpeciesSpriteBase     = 760
 	PlayerObjectBase         = 1000
 	MobObjectBase            = 2000
+	PlayerHudObjectId        = 7000
+	StatusHudObjectId        = PlayerHudObjectId + 2
+	PlayerHealthObjectBase   = 10000
+	CarryObjectBase          = 12000
+	StatusBadgeObjectBase    = 13000
+	StatusBadgeSlots         = 7
+	LowHealthPercent         = 50
 
 	ButtonUp    uint8 = 1 << 0
 	ButtonDown  uint8 = 1 << 1
@@ -54,7 +64,9 @@ const (
 	PlayerSpriteSlots         = 64
 	SelectedPlayerSpriteSlots = 64
 	SwooshSpriteSlots         = 8
-	TerrainSpriteSlots        = 5
+	TerrainSpriteSlots        = 16
+	LandmarkSpriteSlots       = 11
+	MobSpeciesSpriteSlots     = 64
 	MaxDrainMessages          = 256
 	PathCellSize              = 8
 	PathGridWidth             = WorldWidthPixels / PathCellSize
@@ -96,11 +108,33 @@ type TargetKind int
 
 const (
 	TargetExplore TargetKind = iota
+	TargetRegroup
 	TargetCoin
 	TargetHeart
+	TargetWood
+	TargetFood
+	TargetStone
+	TargetGold
+	TargetCamp
+	TargetRelic
+	TargetGate
+	TargetShrine
+	TargetRescue
+	TargetLair
+	TargetWaystation
 	TargetMob
 	TargetTroll
 	TargetBoss
+)
+
+type CarryKind int
+
+const (
+	CarryNone CarryKind = iota
+	CarryWood
+	CarryFood
+	CarryStone
+	CarryGold
 )
 
 type SpriteInfo struct {
@@ -154,6 +188,8 @@ type Bot struct {
 	rng                   *rand.Rand
 	cameraX               int
 	cameraY               int
+	viewportWidth         int
+	viewportHeight        int
 	playerWorldX          int
 	playerWorldY          int
 	previousPlayerX       int
@@ -180,6 +216,12 @@ type Bot struct {
 	coinCount             int
 	heartCount            int
 	killCount             int
+	lowHealth             bool
+	needsRegroup          bool
+	carriedItem           CarryKind
+	objectiveHint         string
+	needWood              int
+	needStone             int
 	intent                string
 	lastMask              uint8
 	nextChatTick          int
@@ -219,6 +261,8 @@ func newBot() *Bot {
 	rng := rand.New(rand.NewSource(seed))
 	return &Bot{
 		rng:             rng,
+		viewportWidth:   ScreenWidth,
+		viewportHeight:  ScreenHeight,
 		selfObjectId:    -1,
 		currentTargetId: -1,
 		skipTargetId:    -1,
@@ -239,6 +283,57 @@ func distanceSquared(ax, ay, bx, by int) int {
 	dx := ax - bx
 	dy := ay - by
 	return dx*dx + dy*dy
+}
+
+func parseHealthLabel(label string) (bool, int, int) {
+	const prefix = "health "
+	lower := strings.ToLower(label)
+	if !strings.HasPrefix(lower, prefix) {
+		return false, 0, 0
+	}
+	parts := strings.Split(strings.TrimPrefix(lower, prefix), "/")
+	if len(parts) != 2 {
+		return false, 0, 0
+	}
+	current, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return false, 0, 0
+	}
+	maximum, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || maximum <= 0 {
+		return false, 0, 0
+	}
+	return true, current, maximum
+}
+
+func carryKindFromLabel(label string) CarryKind {
+	lower := strings.ToLower(label)
+	if strings.Contains(lower, "wood") {
+		return CarryWood
+	}
+	if strings.Contains(lower, "food") {
+		return CarryFood
+	}
+	if strings.Contains(lower, "stone") {
+		return CarryStone
+	}
+	if strings.Contains(lower, "gold") {
+		return CarryGold
+	}
+	return CarryNone
+}
+
+func tokenNumber(tokens []string, key string) int {
+	for _, token := range tokens {
+		if !strings.HasPrefix(token, key) || len(token) <= len(key) {
+			continue
+		}
+		value, err := strconv.Atoi(token[len(key):])
+		if err == nil {
+			return value
+		}
+	}
+	return 0
 }
 
 func manhattan(ax, ay, bx, by int) int {
@@ -290,16 +385,22 @@ func classifySprite(spriteId int, label string) SpriteKind {
 		spriteId < SelectedPlayerSpriteBase+SelectedPlayerSpriteSlots {
 		return SpritePlayer
 	}
-	if spriteId == MobSpriteId || lower == "ghost" {
+	if spriteId >= MobSpeciesSpriteBase && spriteId < MobSpeciesSpriteBase+MobSpeciesSpriteSlots {
 		return SpriteMob
 	}
-	if spriteId == TrollSpriteId || lower == "troll" {
+	if spriteId == MobSpriteId || lower == "ghost" || strings.HasPrefix(lower, "wolf") {
+		return SpriteMob
+	}
+	if spriteId == TrollSpriteId || lower == "troll" || strings.HasPrefix(lower, "goblin") {
 		return SpriteTroll
 	}
-	if spriteId == BossSpriteId || lower == "pigman" {
+	if spriteId == BossSpriteId || lower == "pigman" || strings.HasPrefix(lower, "bear") {
 		return SpriteBoss
 	}
-	if spriteId == CoinSpriteId || lower == "coin" {
+	if spriteId == CoinSpriteId || lower == "coin" ||
+		lower == "camp" || lower == "beacon" || lower == "final gate" || lower == "shrine" ||
+		lower == "rescue" || lower == "lair" || lower == "waystation" ||
+		lower == "wood" || lower == "food" || lower == "stone" || lower == "gold" {
 		return SpriteCoin
 	}
 	if spriteId == HeartSpriteId || lower == "heart" {
@@ -310,6 +411,9 @@ func classifySprite(spriteId int, label string) SpriteKind {
 	}
 	if spriteId >= TerrainSpriteBase && spriteId < TerrainSpriteBase+TerrainSpriteSlots {
 		return SpriteTerrain
+	}
+	if spriteId >= LandmarkSpriteBase && spriteId < LandmarkSpriteBase+LandmarkSpriteSlots {
+		return SpriteCoin
 	}
 	if spriteId == PlayerHudSpriteId {
 		return SpriteHud
@@ -331,14 +435,72 @@ func targetKindForSprite(kind SpriteKind) TargetKind {
 	}
 }
 
+func targetKindForSpriteInfo(sprite SpriteInfo) TargetKind {
+	switch strings.ToLower(sprite.label) {
+	case "wood":
+		return TargetWood
+	case "food":
+		return TargetFood
+	case "stone":
+		return TargetStone
+	case "gold":
+		return TargetGold
+	case "camp":
+		return TargetCamp
+	case "beacon":
+		return TargetRelic
+	case "final gate":
+		return TargetGate
+	case "shrine":
+		return TargetShrine
+	case "rescue":
+		return TargetRescue
+	case "lair":
+		return TargetLair
+	case "waystation":
+		return TargetWaystation
+	}
+	if sprite.kind == SpriteHeart {
+		return TargetHeart
+	}
+	if sprite.kind == SpriteCoin {
+		return TargetCoin
+	}
+	return targetKindForSprite(sprite.kind)
+}
+
 func targetLabel(kind TargetKind) string {
 	switch kind {
 	case TargetExplore:
 		return "explore"
+	case TargetRegroup:
+		return "regroup"
 	case TargetCoin:
 		return "coin"
 	case TargetHeart:
 		return "heart"
+	case TargetWood:
+		return "wood"
+	case TargetFood:
+		return "food"
+	case TargetStone:
+		return "stone"
+	case TargetGold:
+		return "gold"
+	case TargetCamp:
+		return "camp"
+	case TargetRelic:
+		return "relic"
+	case TargetGate:
+		return "gate"
+	case TargetShrine:
+		return "shrine"
+	case TargetRescue:
+		return "rescue"
+	case TargetLair:
+		return "lair"
+	case TargetWaystation:
+		return "waypoint"
 	case TargetMob:
 		return "hunt"
 	case TargetTroll:
@@ -347,6 +509,16 @@ func targetLabel(kind TargetKind) string {
 		return "boss"
 	default:
 		return ""
+	}
+}
+
+func isAttackTarget(kind TargetKind) bool {
+	switch kind {
+	case TargetWood, TargetFood, TargetStone, TargetGold, TargetLair,
+		TargetMob, TargetTroll, TargetBoss:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -552,6 +724,13 @@ func (bot *Bot) applySpritePacket(packet []byte) bool {
 			if offset+5 > len(packet) {
 				return false
 			}
+			layer := int(packet[offset])
+			width := readU16(packet, offset+1)
+			height := readU16(packet, offset+3)
+			if layer == MapLayerId {
+				bot.viewportWidth = width
+				bot.viewportHeight = height
+			}
 			offset += 5
 		case 0x06:
 			if offset+3 > len(packet) {
@@ -625,8 +804,10 @@ func terrainBounds(sprite SpriteInfo) SpriteBounds {
 
 func (bot *Bot) updatePlayerPosition() {
 	bestDistance := MaxIntValue
-	bestX := bot.cameraX + ScreenWidth/2
-	bestY := bot.cameraY + ScreenHeight/2
+	viewportCenterX := bot.viewportWidth / 2
+	viewportCenterY := bot.viewportHeight / 2
+	bestX := bot.cameraX + viewportCenterX
+	bestY := bot.cameraY + viewportCenterY
 	bestId := -1
 	for objectId, state := range bot.objects {
 		if !state.present {
@@ -644,8 +825,8 @@ func (bot *Bot) updatePlayerPosition() {
 		distance := distanceSquared(
 			screenX,
 			screenY,
-			ScreenWidth/2,
-			ScreenHeight/2,
+			viewportCenterX,
+			viewportCenterY,
 		)
 		if distance < bestDistance {
 			bestDistance = distance
@@ -657,6 +838,71 @@ func (bot *Bot) updatePlayerPosition() {
 	bot.playerWorldX = bestX
 	bot.playerWorldY = bestY
 	bot.selfObjectId = bestId
+}
+
+func (bot *Bot) updateSelfAffordances() {
+	bot.lowHealth = false
+	bot.needsRegroup = false
+	bot.carriedItem = CarryNone
+	bot.objectiveHint = ""
+	bot.needWood = 0
+	bot.needStone = 0
+	if StatusHudObjectId < len(bot.objects) && bot.objects[StatusHudObjectId].present {
+		statusSprite := bot.spriteInfo(bot.objects[StatusHudObjectId].spriteId)
+		bot.readStatusHud(statusSprite.label)
+	}
+	if bot.selfObjectId < PlayerObjectBase {
+		return
+	}
+	playerId := bot.selfObjectId - PlayerObjectBase
+	carryObjectId := CarryObjectBase + playerId
+	if carryObjectId < len(bot.objects) && bot.objects[carryObjectId].present {
+		carried := carryKindFromLabel(bot.spriteInfo(bot.objects[carryObjectId].spriteId).label)
+		if carried != CarryNone {
+			bot.carriedItem = carried
+		}
+	}
+	healthObjectId := PlayerHealthObjectBase + playerId
+	if healthObjectId < len(bot.objects) && bot.objects[healthObjectId].present {
+		healthSprite := bot.spriteInfo(bot.objects[healthObjectId].spriteId)
+		found, current, maximum := parseHealthLabel(healthSprite.label)
+		if found && current*100 <= maximum*LowHealthPercent {
+			bot.lowHealth = true
+		}
+	}
+
+	for badgeIndex := 0; badgeIndex < StatusBadgeSlots; badgeIndex++ {
+		objectId := StatusBadgeObjectBase + playerId*StatusBadgeSlots + badgeIndex
+		if objectId >= len(bot.objects) || !bot.objects[objectId].present {
+			continue
+		}
+		label := strings.ToLower(bot.spriteInfo(bot.objects[objectId].spriteId).label)
+		switch label {
+		case "status help":
+			bot.lowHealth = true
+		case "status alone":
+			bot.needsRegroup = true
+		}
+	}
+}
+
+func (bot *Bot) readStatusHud(label string) {
+	lower := strings.ToLower(label)
+	for _, part := range strings.Split(lower, "|") {
+		section := strings.TrimSpace(part)
+		if strings.HasPrefix(section, "carry ") {
+			bot.carriedItem = carryKindFromLabel(section)
+			continue
+		}
+		if strings.HasPrefix(section, "next ") {
+			bot.objectiveHint = section
+			if strings.HasPrefix(section, "next gather") {
+				tokens := strings.Fields(section)
+				bot.needWood = tokenNumber(tokens, "w")
+				bot.needStone = tokenNumber(tokens, "s")
+			}
+		}
+	}
 }
 
 func isBlocked(blocked []bool, tx, ty int) bool {
@@ -687,9 +933,10 @@ func (bot *Bot) targetCenter(state ObjectState, sprite SpriteInfo) (int, int) {
 		bot.cameraY + state.y + bounds.y + bounds.h/2
 }
 
-func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
+func (bot *Bot) scanWorld() ([]bool, []Target, []Target, []Target) {
 	blocked := make([]bool, PathGridWidth*PathGridHeight)
 	pickups := []Target{}
+	allies := []Target{}
 	mobs := []Target{}
 	for objectId, state := range bot.objects {
 		if !state.present {
@@ -700,6 +947,21 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 			continue
 		}
 		switch sprite.kind {
+		case SpritePlayer:
+			if objectId == bot.selfObjectId ||
+				objectId < PlayerObjectBase ||
+				objectId >= MobObjectBase {
+				continue
+			}
+			x, y := bot.targetCenter(state, sprite)
+			allies = append(allies, Target{
+				found:    true,
+				kind:     TargetRegroup,
+				objectId: objectId,
+				x:        x,
+				y:        y,
+				label:    targetLabel(TargetRegroup),
+			})
 		case SpriteTerrain:
 			bounds := terrainBounds(sprite)
 			markBlocked(
@@ -710,14 +972,15 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 				bounds.h,
 			)
 		case SpriteCoin:
+			kind := targetKindForSpriteInfo(sprite)
 			x, y := bot.targetCenter(state, sprite)
 			pickups = append(pickups, Target{
 				found:    true,
-				kind:     TargetCoin,
+				kind:     kind,
 				objectId: objectId,
 				x:        x,
 				y:        y,
-				label:    targetLabel(TargetCoin),
+				label:    targetLabel(kind),
 			})
 		case SpriteHeart:
 			x, y := bot.targetCenter(state, sprite)
@@ -730,7 +993,7 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 				label:    targetLabel(TargetHeart),
 			})
 		case SpriteMob, SpriteTroll, SpriteBoss:
-			kind := targetKindForSprite(sprite.kind)
+			kind := targetKindForSpriteInfo(sprite)
 			x, y := bot.targetCenter(state, sprite)
 			mobs = append(mobs, Target{
 				found:    true,
@@ -742,7 +1005,7 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 			})
 		}
 	}
-	return blocked, pickups, mobs
+	return blocked, pickups, allies, mobs
 }
 
 func nearestOpenTile(blocked []bool, tx, ty int) (bool, int, int) {
@@ -913,25 +1176,149 @@ func (bot *Bot) targetScore(target Target) int {
 		target.y,
 	)
 	switch target.kind {
+	case TargetRegroup:
+		if bot.needsRegroup {
+			if bot.lowHealth {
+				return distance - 120
+			}
+			return distance - 260
+		}
+		if bot.lowHealth {
+			return distance + 20
+		}
+		return distance + 340
 	case TargetCoin:
-		return distance
+		return distance + 90
 	case TargetHeart:
-		return distance + 35
+		if bot.lowHealth {
+			return distance - 210
+		}
+		if bot.needsRegroup {
+			return distance - 40
+		}
+		return distance + 15
+	case TargetWood:
+		if bot.needWood > 0 {
+			return distance - 260
+		}
+		if bot.carriedItem == CarryWood {
+			return distance + 170
+		}
+		return distance - 120
+	case TargetFood:
+		if bot.carriedItem == CarryFood {
+			if bot.lowHealth {
+				return distance - 20
+			}
+			return distance + 90
+		}
+		if bot.lowHealth {
+			return distance - 150
+		}
+		if strings.Contains(bot.objectiveHint, "heal food") {
+			return distance - 150
+		}
+		if bot.needsRegroup {
+			return distance - 115
+		}
+		return distance - 95
+	case TargetStone:
+		if bot.needStone > 0 {
+			return distance - 260
+		}
+		if bot.carriedItem == CarryStone {
+			return distance + 170
+		}
+		return distance - 120
+	case TargetGold:
+		if bot.needStone > 0 {
+			return distance - 170
+		}
+		if bot.carriedItem == CarryGold {
+			return distance + 160
+		}
+		return distance - 55
+	case TargetCamp:
+		if bot.needWood > 0 || bot.needStone > 0 {
+			return distance + 120
+		}
+		if strings.HasPrefix(bot.objectiveHint, "next build camp") ||
+			strings.HasPrefix(bot.objectiveHint, "next camp") {
+			return distance - 230
+		}
+		if bot.carriedItem != CarryNone {
+			return distance - 170
+		}
+		if bot.lowHealth || bot.needsRegroup {
+			return distance - 180
+		}
+		return distance - 100
+	case TargetRelic:
+		if strings.HasPrefix(bot.objectiveHint, "next relic") {
+			return distance - 170
+		}
+		if bot.needWood > 0 || bot.needStone > 0 {
+			return distance + 120
+		}
+		return distance - 85
+	case TargetWaystation:
+		if bot.lowHealth || bot.needsRegroup {
+			return distance - 165
+		}
+		return distance - 65
+	case TargetRescue:
+		if bot.needsRegroup {
+			return distance - 120
+		}
+		return distance - 50
+	case TargetShrine:
+		return distance - 20
+	case TargetGate:
+		if strings.HasPrefix(bot.objectiveHint, "next open gate") {
+			return distance - 210
+		}
+		return distance + 10
+	case TargetLair:
+		if bot.lowHealth || bot.needsRegroup {
+			return distance + 420
+		}
+		if distance < 100 {
+			return distance - 45
+		}
+		return distance + 180
 	case TargetMob:
+		if bot.lowHealth {
+			return distance + 340
+		}
+		if bot.needsRegroup {
+			return distance + 240
+		}
 		if distance < 90 {
-			return distance - 95
-		}
-		return distance + 130
-	case TargetTroll:
-		if distance < 105 {
-			return distance - 85
-		}
-		return distance + 155
-	case TargetBoss:
-		if distance < 120 {
 			return distance - 70
 		}
-		return distance + 220
+		return distance + 190
+	case TargetTroll:
+		if bot.lowHealth {
+			return distance + 400
+		}
+		if bot.needsRegroup {
+			return distance + 280
+		}
+		if distance < 105 {
+			return distance - 60
+		}
+		return distance + 230
+	case TargetBoss:
+		if bot.lowHealth {
+			return distance + 560
+		}
+		if bot.needsRegroup {
+			return distance + 440
+		}
+		if distance < 120 {
+			return distance - 45
+		}
+		return distance + 420
 	default:
 		return distance + 400
 	}
@@ -966,7 +1353,7 @@ func (bot *Bot) refreshExploreGoal(blocked []bool) {
 	bot.hasExploreGoal = true
 }
 
-func (bot *Bot) chooseTarget(blocked []bool, pickups, mobs []Target) Target {
+func (bot *Bot) chooseTarget(blocked []bool, pickups, allies, mobs []Target) Target {
 	result := Target{}
 	bestScore := MaxIntValue
 	for _, pickup := range pickups {
@@ -977,6 +1364,18 @@ func (bot *Bot) chooseTarget(blocked []bool, pickups, mobs []Target) Target {
 		if score < bestScore {
 			bestScore = score
 			result = pickup
+		}
+	}
+	if bot.needsRegroup || bot.lowHealth {
+		for _, ally := range allies {
+			if bot.skipTicks > 0 && ally.objectId == bot.skipTargetId {
+				continue
+			}
+			score := bot.targetScore(ally)
+			if score < bestScore {
+				bestScore = score
+				result = ally
+			}
 		}
 	}
 	for _, mob := range mobs {
@@ -1044,16 +1443,20 @@ func (bot *Bot) rememberTarget(target Target) {
 	)
 }
 
-func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
+func (bot *Bot) updateTargetResult(pickups, allies, mobs []Target) {
 	if bot.currentTargetId < 0 {
 		return
 	}
 	stillPresent := true
 	switch bot.currentTargetKind {
-	case TargetCoin, TargetHeart:
+	case TargetCoin, TargetHeart, TargetWood, TargetFood, TargetStone, TargetGold,
+		TargetCamp, TargetRelic, TargetGate, TargetShrine, TargetRescue,
+		TargetLair, TargetWaystation:
 		stillPresent = containsTarget(pickups, bot.currentTargetId)
 	case TargetMob, TargetTroll, TargetBoss:
 		stillPresent = containsTarget(mobs, bot.currentTargetId)
+	case TargetRegroup:
+		stillPresent = containsTarget(allies, bot.currentTargetId)
 	}
 	if stillPresent {
 		return
@@ -1077,6 +1480,15 @@ func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
 				bot.heartCount,
 			)
 		}
+	case TargetWood, TargetFood, TargetStone, TargetGold, TargetCamp, TargetRelic,
+		TargetGate, TargetShrine, TargetRescue, TargetLair, TargetWaystation:
+		if bot.currentTargetDistance < 96 {
+			fmt.Printf(
+				"objective done kind=%d id=%d\n",
+				bot.currentTargetKind,
+				bot.currentTargetId,
+			)
+		}
 	case TargetMob, TargetTroll, TargetBoss:
 		if bot.currentTargetDistance < 96 {
 			bot.killCount++
@@ -1086,6 +1498,8 @@ func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
 				bot.killCount,
 			)
 		}
+	case TargetRegroup:
+		// Regroup targets are transient player positions, not objectives.
 	}
 	bot.currentTargetId = -1
 }
@@ -1140,13 +1554,10 @@ func (bot *Bot) attackMask(target Target) uint8 {
 	return result
 }
 
-func isMonsterTarget(kind TargetKind) bool {
-	return kind == TargetMob || kind == TargetTroll || kind == TargetBoss
-}
-
 func (bot *Bot) decideNextMask() uint8 {
 	bot.updateCamera()
 	bot.updatePlayerPosition()
+	bot.updateSelfAffordances()
 	if bot.attackCooldown > 0 {
 		bot.attackCooldown--
 	}
@@ -1156,8 +1567,8 @@ func (bot *Bot) decideNextMask() uint8 {
 			bot.skipTargetId = -1
 		}
 	}
-	blocked, pickups, mobs := bot.scanWorld()
-	bot.updateTargetResult(pickups, mobs)
+	blocked, pickups, allies, mobs := bot.scanWorld()
+	bot.updateTargetResult(pickups, allies, mobs)
 	bot.updateStuck()
 	if bot.jiggleTicks > 0 {
 		bot.jiggleTicks--
@@ -1170,10 +1581,10 @@ func (bot *Bot) decideNextMask() uint8 {
 		bot.intent = closeMob.label
 		return bot.attackMask(closeMob)
 	}
-	target := bot.chooseTarget(blocked, pickups, mobs)
+	target := bot.chooseTarget(blocked, pickups, allies, mobs)
 	bot.rememberTarget(target)
 	bot.intent = target.label
-	if isMonsterTarget(target.kind) && bot.canAttack(target) {
+	if isAttackTarget(target.kind) && bot.canAttack(target) {
 		return bot.attackMask(target)
 	}
 	step := findPathStep(

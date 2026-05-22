@@ -3,6 +3,11 @@ import bitworld/clients
 import protocol, sim, global
 import std/[json, locks, monotimes, os, strutils, tables, times]
 
+const
+  HealthzPath = "/healthz"
+  DefaultMaxTicks* = TargetFps * 60 * 5
+  DefaultMaxGames* = 0
+
 type
   WebSocketAppState = object
     lock: Lock
@@ -12,11 +17,14 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
+    playerSlots: Table[WebSocket, int]
+    playerTokens: Table[WebSocket, string]
     playerViewers: Table[WebSocket, PlayerViewerState]
     chatMessages: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
+    tokens: seq[string]
 
   ServerThreadArgs = object
     server: ptr Server
@@ -296,11 +304,14 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
+  appState.playerSlots = initTable[WebSocket, int]()
+  appState.playerTokens = initTable[WebSocket, string]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.chatMessages = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
+  appState.tokens = @[]
 
 proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when a GET request is a websocket upgrade.
@@ -310,11 +321,11 @@ proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route, GlobalClientRoute)
+  let filePath = clientStaticPath(route)
   if filePath.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
+  headers["Content-Type"] = clientStaticContentType(route)
   headers["Cache-Control"] = "no-cache"
   if not fileExists(filePath):
     request.respond(404, headers, "Missing static client: " & route)
@@ -514,6 +525,8 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   appState.playerAddresses.del(websocket)
+  appState.playerSlots.del(websocket)
+  appState.playerTokens.del(websocket)
 
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.players.delete(removedIndex)
@@ -521,6 +534,84 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
     for ws, value in appState.playerIndices.mpairs:
       if value > removedIndex:
         dec value
+
+proc forgetWebSocketRole(websocket: WebSocket) =
+  ## Clears all route-specific state for one websocket.
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
+  if websocket in appState.playerViewers:
+    appState.playerViewers.del(websocket)
+  appState.playerIndices.del(websocket)
+  appState.inputMasks.del(websocket)
+  appState.lastAppliedMasks.del(websocket)
+  appState.chatMessages.del(websocket)
+  appState.playerAddresses.del(websocket)
+  appState.playerSlots.del(websocket)
+  appState.playerTokens.del(websocket)
+
+proc playerSlot(request: Request): int =
+  ## Returns the requested player slot or -1 for automatic assignment.
+  let text = request.queryParams.getOrDefault("slot", "").strip()
+  if text.len == 0:
+    return -1
+  try:
+    result = parseInt(text)
+  except ValueError:
+    return int.high
+  if result < 0:
+    return int.high
+
+proc playerToken(request: Request): string =
+  ## Returns the player join token.
+  request.queryParams.getOrDefault("token", "").strip()
+
+proc playerJoinAllowed(slot: int, token: string): bool =
+  ## Returns true when the requested slot token is accepted.
+  if appState.tokens.len == 0:
+    return true
+  if slot < 0 or slot >= appState.tokens.len:
+    return false
+  token == appState.tokens[slot]
+
+proc respondForbidden(request: Request, body: string) =
+  ## Rejects an unauthorized request before WebSocket upgrade.
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  headers["Connection"] = "close"
+  request.respond(403, headers, body)
+
+proc registerPlayerSocket(
+  websocket: WebSocket,
+  address: string,
+  slot: int,
+  token: string
+) =
+  ## Registers a websocket as a player-only sprite endpoint.
+  websocket.forgetWebSocketRole()
+  appState.playerViewers[websocket] = initPlayerViewerState()
+  appState.playerAddresses[websocket] = address
+  appState.playerSlots[websocket] = slot
+  appState.playerTokens[websocket] = token
+  appState.playerIndices[websocket] =
+    if appState.replayLoaded:
+      -1
+    else:
+      0x7fffffff
+  appState.inputMasks[websocket] = 0
+  appState.lastAppliedMasks[websocket] = 0
+
+proc registerGlobalSocket(websocket: WebSocket) =
+  ## Registers a websocket as a global-only sprite endpoint.
+  websocket.forgetWebSocketRole()
+  appState.globalViewers[websocket] = initGlobalViewerState()
+
+proc registerRewardSocket(websocket: WebSocket) =
+  ## Registers a websocket as a reward-only endpoint.
+  websocket.forgetWebSocketRole()
+  appState.rewardViewers[websocket] = true
 
 proc cleanPlayerName(name: string): string =
   ## Normalizes one player name for display and rewards.
@@ -548,27 +639,59 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
+proc serveHealthz(request: Request): bool =
+  ## Serves the container health check endpoint.
+  if request.path != HealthzPath or request.httpMethod notin ["GET", "HEAD"]:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, "healthy")
+  true
+
 proc httpHandler(request: Request) =
-  if request.path == WebSocketPath and
+  if request.serveHealthz():
+    discard
+  elif request.path == WebSocketPath and
+      request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(PlayerClientRoute)
+  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(GlobalClientRoute)
+  elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
+      not request.isWebSocketUpgrade():
+    discard request.serveClientHtml(RewardClientRoute)
+  elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
+    let
+      address = request.playerIdentity()
+      slot = request.playerSlot()
+      token = request.playerToken()
+    var allowed = false
+    {.gcsafe.}:
+      withLock appState.lock:
+        allowed = playerJoinAllowed(slot, token)
+    if not allowed:
+      request.respondForbidden("player token rejected\n")
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerViewers[websocket] = initPlayerViewerState()
-        appState.playerAddresses[websocket] = request.playerIdentity()
+        websocket.registerPlayerSocket(address, slot, token)
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.globalViewers[websocket] = initGlobalViewerState()
+        websocket.registerGlobalSocket()
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.rewardViewers[websocket] = true
+        websocket.registerRewardSocket()
   elif request.serveStaticClientHtml():
     discard
   else:
@@ -585,8 +708,8 @@ proc websocketHandler(
   of OpenEvent:
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.globalViewers and
-            websocket notin appState.rewardViewers:
+        if websocket in appState.playerViewers and
+            websocket notin appState.playerIndices:
           if appState.replayLoaded:
             appState.playerIndices[websocket] = -1
           else:
@@ -642,12 +765,12 @@ proc runFrameLimiter(previousTick: var MonoTime) =
 
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
-  let frontier = sim.frontierTiles()
+  let score = sim.teamScore()
   for player in sim.players:
     result.add("reward ")
     result.add(player.address.rewardAddress())
     result.add(" ")
-    result.add($frontier)
+    result.add($score)
     result.add("\n")
 
 proc writeScoreFile(sim: SimServer, path: string) =
@@ -662,14 +785,22 @@ proc writeScoreFile(sim: SimServer, path: string) =
 proc writeScoresIfNeeded(
   sim: SimServer,
   path: string,
-  lastRevision: var int
+  lastRevision: var int,
+  savedPlayerCount: var int
 ) =
   ## Writes scores when score-visible state changed.
   if path.len == 0:
     return
   if sim.scoreRevision == lastRevision:
     return
+  if sim.players.len == 0 and lastRevision >= 0:
+    lastRevision = sim.scoreRevision
+    return
+  if sim.players.len < savedPlayerCount:
+    lastRevision = sim.scoreRevision
+    return
   sim.writeScoreFile(path)
+  savedPlayerCount = sim.players.len
   lastRevision = sim.scoreRevision
 
 proc runServerLoop*(
@@ -678,9 +809,13 @@ proc runServerLoop*(
   seed = 0xB1770,
   saveReplayPath = "",
   loadReplayPath = "",
-  saveScoresPath = ""
+  saveScoresPath = "",
+  tokens: seq[string] = @[],
+  maxTicks = DefaultMaxTicks,
+  maxGames = DefaultMaxGames
 ) =
   initAppState()
+  appState.tokens = tokens
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
   let replayLoaded = loadReplayPath.len > 0
@@ -699,7 +834,14 @@ proc runServerLoop*(
         raise newException(ReplayError, "Replay config field seed must be an integer")
       currentSeed = node["seed"].getInt()
   var
-    replayWriter = openReplayWriter(saveReplayPath, $(%*{"seed": currentSeed}))
+    replayWriter = openReplayWriter(
+      saveReplayPath,
+      $(%*{
+        "seed": currentSeed,
+        "maxTicks": maxTicks,
+        "maxGames": maxGames
+      })
+    )
     replayPlayer =
       if replayLoaded:
         initReplayPlayer(replayData)
@@ -725,7 +867,10 @@ proc runServerLoop*(
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
     lastScoreRevision = -1
-  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+    savedScorePlayerCount = 0
+    runTicks = 0
+    gamesStarted = 1
+  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
 
   while true:
     var
@@ -738,7 +883,8 @@ proc runServerLoop*(
       rewardViewers: seq[WebSocket] = @[]
       replayCommands: seq[char] = @[]
       replaySeekTicks: seq[int] = @[]
-      shouldReset = false
+      shouldReset =
+        not replayLoaded and maxTicks > 0 and runTicks >= maxTicks
 
     {.gcsafe.}:
       withLock appState.lock:
@@ -754,6 +900,8 @@ proc runServerLoop*(
 
         if not replayLoaded and appState.resetRequested:
           shouldReset = true
+
+        if not replayLoaded and shouldReset:
           appState.resetRequested = false
           for _, value in appState.playerIndices.mpairs:
             value = 0x7fffffff
@@ -790,10 +938,9 @@ proc runServerLoop*(
             )
             if playerIndex >= 0 and playerIndex < sim.players.len:
               let cleaned = cleanChatMessage(message)
-              sim.players[playerIndex].message = cleaned
+              sim.setPlayerMessage(playerIndex, cleaned)
               if cleaned.len > 0:
                 inc sim.players[playerIndex].messagesSent
-                inc sim.scoreRevision
           appState.chatMessages.clear()
 
         for websocket, playerIndex in appState.playerIndices.pairs:
@@ -836,9 +983,18 @@ proc runServerLoop*(
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
 
+    if shouldReset and maxGames > 0 and gamesStarted >= maxGames:
+      httpServer.close()
+      joinThread(serverThread)
+      break
+
     if shouldReset:
+      inc gamesStarted
       inc currentSeed
       sim = initSimServer(currentSeed)
+      runTicks = 0
+      lastScoreRevision = -1
+      savedScorePlayerCount = 0
       replayWriter.lastMasks.setLen(0)
       sockets.setLen(0)
       playerIndices.setLen(0)
@@ -868,7 +1024,7 @@ proc runServerLoop*(
           for websocket in appState.rewardViewers.keys:
             rewardViewers.add(websocket)
 
-      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
         var nextState: PlayerViewerState
@@ -901,9 +1057,10 @@ proc runServerLoop*(
             replayPlayer.playing = true
     else:
       sim.step(inputs)
+      inc runTicks
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
-    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
     let rewardPacket = sim.buildRewardPacket()
 
     for i in 0 ..< sockets.len:
@@ -957,3 +1114,49 @@ proc runServerLoop*(
             sim.removePlayer(globalViewers[i])
 
     runFrameLimiter(lastTick)
+
+when defined(partyProgressorServerSelfTest):
+  proc testScoreFilePreservesLastPlayerSnapshot() =
+    let path = getTempDir() / "party_progressor_score_selftest.json"
+    if fileExists(path):
+      removeFile(path)
+    let oldDir = getCurrentDir()
+    setCurrentDir(currentSourcePath().parentDir())
+    var
+      sim = initSimServer(0x5150)
+      lastRevision = -1
+      savedPlayerCount = 0
+    setCurrentDir(oldDir)
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
+    doAssert fileExists(path)
+    doAssert parseJson(readFile(path))["names"].len == 0
+
+    let
+      playerIndex = sim.addPlayer("selftest-a")
+      secondPlayerIndex = sim.addPlayer("selftest-b")
+    sim.players[playerIndex].distanceWalked = 42
+    sim.players[secondPlayerIndex].distanceWalked = 84
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
+    let activeScores = parseJson(readFile(path))
+    doAssert activeScores["names"].len == 2
+    doAssert activeScores["names"][0].getStr() == "selftest-a"
+    doAssert activeScores["names"][1].getStr() == "selftest-b"
+
+    sim.players.setLen(1)
+    inc sim.scoreRevision
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
+    var preservedScores = parseJson(readFile(path))
+    doAssert preservedScores["names"].len == 2
+    doAssert preservedScores["distance_walked"][1].getInt() == 84
+
+    sim.players.setLen(0)
+    inc sim.scoreRevision
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
+    preservedScores = parseJson(readFile(path))
+    doAssert preservedScores["names"].len == 2
+    doAssert preservedScores["distance_walked"][0].getInt() == 42
+
+    removeFile(path)
+
+  testScoreFilePreservesLastPlayerSnapshot()
+  echo "Party Progressor server score tests passed"

@@ -29,6 +29,18 @@
           "type": "integer",
           "minimum": 0,
           "default": 726896
+        },
+        "maxTicks": {
+          "description": "Maximum simulation ticks before starting a fresh game, where 0 means no tick limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 18000
+        },
+        "maxGames": {
+          "description": "Maximum fresh games before shutdown, where 0 means no game limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         }
       }
     },
@@ -172,7 +184,9 @@
       "id": "smoke",
       "name": "Smoke",
       "game_config": {
-        "seed": 726896
+        "seed": 726896,
+        "maxTicks": 300,
+        "maxGames": 1
       },
       "description": "Short deterministic party_progressor configuration used for manifest checks."
     }

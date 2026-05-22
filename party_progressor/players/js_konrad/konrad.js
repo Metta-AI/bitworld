@@ -6,14 +6,15 @@ const WebSocket = require("ws");
 const PlayerDefaultPort = 2000;
 const ScreenWidth = 128;
 const ScreenHeight = 128;
-const WorldWidthTiles = 32;
-const WorldHeightTiles = 32;
+const WorldWidthTiles = 96;
+const WorldHeightTiles = 18;
 const WorldTileSize = 32;
 const WorldWidthPixels = WorldWidthTiles * WorldTileSize;
 const WorldHeightPixels = WorldHeightTiles * WorldTileSize;
 const PlayerWebSocketPath = "/player";
 const DefaultHost = "localhost";
 
+const MapLayerId = 0;
 const MapSpriteId = 1;
 const MapObjectId = 1;
 const PlayerSpriteBase = 100;
@@ -25,9 +26,18 @@ const HeartSpriteId = 303;
 const SwooshSpriteBase = 304;
 const TrollSpriteId = 312;
 const TerrainSpriteBase = 320;
+const LandmarkSpriteBase = 360;
 const PlayerHudSpriteId = 600;
+const MobSpeciesSpriteBase = 760;
 const PlayerObjectBase = 1000;
 const MobObjectBase = 2000;
+const PlayerHudObjectId = 7000;
+const StatusHudObjectId = PlayerHudObjectId + 2;
+const PlayerHealthObjectBase = 10000;
+const CarryObjectBase = 12000;
+const StatusBadgeObjectBase = 13000;
+const StatusBadgeSlots = 7;
+const LowHealthPercent = 50;
 
 const ButtonUp = 1 << 0;
 const ButtonDown = 1 << 1;
@@ -39,7 +49,9 @@ const ButtonB = 1 << 6;
 const PlayerSpriteSlots = 64;
 const SelectedPlayerSpriteSlots = 64;
 const SwooshSpriteSlots = 8;
-const TerrainSpriteSlots = 5;
+const TerrainSpriteSlots = 16;
+const LandmarkSpriteSlots = 11;
+const MobSpeciesSpriteSlots = 64;
 const MaxDrainMessages = 256;
 const PathCellSize = 8;
 const PathGridWidth = Math.floor(WorldWidthPixels / PathCellSize);
@@ -74,11 +86,31 @@ const SpriteKind = Object.freeze({
 
 const TargetKind = Object.freeze({
   Explore: 0,
-  Coin: 1,
-  Heart: 2,
-  Mob: 3,
-  Troll: 4,
-  Boss: 5,
+  Regroup: 1,
+  Coin: 2,
+  Heart: 3,
+  Wood: 4,
+  Food: 5,
+  Stone: 6,
+  Gold: 7,
+  Camp: 8,
+  Relic: 9,
+  Gate: 10,
+  Shrine: 11,
+  Rescue: 12,
+  Lair: 13,
+  Waystation: 14,
+  Mob: 15,
+  Troll: 16,
+  Boss: 17,
+});
+
+const CarryKind = Object.freeze({
+  None: 0,
+  Wood: 1,
+  Food: 2,
+  Stone: 3,
+  Gold: 4,
 });
 
 class MinHeap {
@@ -183,6 +215,8 @@ class Bot {
     this.objects = [];
     this.cameraX = 0;
     this.cameraY = 0;
+    this.viewportWidth = ScreenWidth;
+    this.viewportHeight = ScreenHeight;
     this.playerWorldX = 0;
     this.playerWorldY = 0;
     this.previousPlayerX = 0;
@@ -209,6 +243,12 @@ class Bot {
     this.coinCount = 0;
     this.heartCount = 0;
     this.killCount = 0;
+    this.lowHealth = false;
+    this.needsRegroup = false;
+    this.carriedItem = CarryKind.None;
+    this.objectiveHint = "";
+    this.needWood = 0;
+    this.needStone = 0;
     this.intent = "";
     this.lastMask = 0;
     this.nextChatTick = 72;
@@ -293,6 +333,13 @@ class Bot {
         for (const item of this.objects) item.present = false;
       } else if (messageType === 0x05) {
         if (offset + 5 > packet.length) return false;
+        const layer = packet[offset];
+        const width = readU16(packet, offset + 1);
+        const height = readU16(packet, offset + 3);
+        if (layer === MapLayerId) {
+          this.viewportWidth = width;
+          this.viewportHeight = height;
+        }
         offset += 5;
       } else if (messageType === 0x06) {
         if (offset + 3 > packet.length) return false;
@@ -313,8 +360,8 @@ class Bot {
 
   updatePlayerPosition() {
     let bestDistance = Number.MAX_SAFE_INTEGER;
-    let bestX = this.cameraX + Math.floor(ScreenWidth / 2);
-    let bestY = this.cameraY + Math.floor(ScreenHeight / 2);
+    let bestX = this.cameraX + Math.floor(this.viewportWidth / 2);
+    let bestY = this.cameraY + Math.floor(this.viewportHeight / 2);
     let bestId = -1;
     for (let objectId = 0; objectId < this.objects.length; objectId++) {
       const state = this.objects[objectId];
@@ -327,8 +374,8 @@ class Bot {
       const distance = distanceSquared(
         screenX,
         screenY,
-        Math.floor(ScreenWidth / 2),
-        Math.floor(ScreenHeight / 2),
+        Math.floor(this.viewportWidth / 2),
+        Math.floor(this.viewportHeight / 2),
       );
       if (distance < bestDistance) {
         bestDistance = distance;
@@ -342,6 +389,63 @@ class Bot {
     this.selfObjectId = bestId;
   }
 
+  updateSelfAffordances() {
+    this.lowHealth = false;
+    this.needsRegroup = false;
+    this.carriedItem = CarryKind.None;
+    this.objectiveHint = "";
+    this.needWood = 0;
+    this.needStone = 0;
+    const statusState = this.objects[StatusHudObjectId];
+    if (statusState && statusState.present) {
+      this.readStatusHud(this.spriteInfo(statusState.spriteId).label);
+    }
+    if (this.selfObjectId < PlayerObjectBase) return;
+    const playerId = this.selfObjectId - PlayerObjectBase;
+    const carryObjectId = CarryObjectBase + playerId;
+    const carryState = this.objects[carryObjectId];
+    if (carryState && carryState.present) {
+      const carried = carryKindFromLabel(this.spriteInfo(carryState.spriteId).label);
+      if (carried !== CarryKind.None) this.carriedItem = carried;
+    }
+    const healthObjectId = PlayerHealthObjectBase + playerId;
+    const healthState = this.objects[healthObjectId];
+    if (healthState && healthState.present) {
+      const health = parseHealthLabel(this.spriteInfo(healthState.spriteId).label);
+      if (
+        health &&
+        health.current * 100 <= health.maximum * LowHealthPercent
+      ) {
+        this.lowHealth = true;
+      }
+    }
+
+    for (let badgeIndex = 0; badgeIndex < StatusBadgeSlots; badgeIndex++) {
+      const objectId = StatusBadgeObjectBase + playerId * StatusBadgeSlots + badgeIndex;
+      const state = this.objects[objectId];
+      if (!state || !state.present) continue;
+      const label = this.spriteInfo(state.spriteId).label.toLowerCase();
+      if (label === "status help") this.lowHealth = true;
+      if (label === "status alone") this.needsRegroup = true;
+    }
+  }
+
+  readStatusHud(label) {
+    for (const part of (label || "").toLowerCase().split("|")) {
+      const section = part.trim();
+      if (section.startsWith("carry ")) {
+        this.carriedItem = carryKindFromLabel(section);
+      } else if (section.startsWith("next ")) {
+        this.objectiveHint = section;
+        if (section.startsWith("next gather")) {
+          const tokens = section.split(/\s+/);
+          this.needWood = tokenNumber(tokens, "w");
+          this.needStone = tokenNumber(tokens, "s");
+        }
+      }
+    }
+  }
+
   targetCenter(state, sprite) {
     const bounds = visibleBounds(sprite);
     return {
@@ -353,13 +457,22 @@ class Bot {
   scanWorld() {
     const blocked = new Array(PathGridWidth * PathGridHeight).fill(false);
     const pickups = [];
+    const allies = [];
     const mobs = [];
     for (let objectId = 0; objectId < this.objects.length; objectId++) {
       const state = this.objects[objectId];
       if (!state.present) continue;
       const sprite = this.spriteInfo(state.spriteId);
       if (!sprite.defined) continue;
-      if (sprite.kind === SpriteKind.Terrain) {
+      if (
+        sprite.kind === SpriteKind.Player &&
+        objectId !== this.selfObjectId &&
+        objectId >= PlayerObjectBase &&
+        objectId < MobObjectBase
+      ) {
+        const center = this.targetCenter(state, sprite);
+        allies.push(makeTarget(true, TargetKind.Regroup, objectId, center.x, center.y, "regroup"));
+      } else if (sprite.kind === SpriteKind.Terrain) {
         const bounds = terrainBounds(sprite);
         markBlocked(
           blocked,
@@ -370,7 +483,8 @@ class Bot {
         );
       } else if (sprite.kind === SpriteKind.Coin) {
         const center = this.targetCenter(state, sprite);
-        pickups.push(makeTarget(true, TargetKind.Coin, objectId, center.x, center.y, "coin"));
+        const kind = targetKindForSpriteInfo(sprite);
+        pickups.push(makeTarget(true, kind, objectId, center.x, center.y, targetLabel(kind)));
       } else if (sprite.kind === SpriteKind.Heart) {
         const center = this.targetCenter(state, sprite);
         pickups.push(makeTarget(true, TargetKind.Heart, objectId, center.x, center.y, "heart"));
@@ -379,12 +493,12 @@ class Bot {
         sprite.kind === SpriteKind.Troll ||
         sprite.kind === SpriteKind.Boss
       ) {
-        const kind = targetKindForSprite(sprite.kind);
+        const kind = targetKindForSpriteInfo(sprite);
         const center = this.targetCenter(state, sprite);
         mobs.push(makeTarget(true, kind, objectId, center.x, center.y, targetLabel(kind)));
       }
     }
-    return { blocked, pickups, mobs };
+    return { blocked, pickups, allies, mobs };
   }
 
   updateStuck() {
@@ -427,16 +541,65 @@ class Bot {
       target.y,
     );
     switch (target.kind) {
+      case TargetKind.Regroup:
+        return distance + (
+          this.needsRegroup ? (this.lowHealth ? -120 : -260) : this.lowHealth ? 20 : 340
+        );
       case TargetKind.Coin:
-        return distance;
+        return distance + 90;
       case TargetKind.Heart:
-        return distance + 35;
+        return distance + (this.lowHealth ? -210 : this.needsRegroup ? -40 : 15);
+      case TargetKind.Wood:
+        if (this.needWood > 0) return distance - 260;
+        if (this.carriedItem === CarryKind.Wood) return distance + 170;
+        return distance - 120;
+      case TargetKind.Stone:
+        if (this.needStone > 0) return distance - 260;
+        if (this.carriedItem === CarryKind.Stone) return distance + 170;
+        return distance - 120;
+      case TargetKind.Food:
+        if (this.carriedItem === CarryKind.Food) return distance + (this.lowHealth ? -20 : 90);
+        return distance + (
+          this.lowHealth || this.objectiveHint.includes("heal food")
+            ? -150
+            : this.needsRegroup
+              ? -115
+              : -95
+        );
+      case TargetKind.Gold:
+        if (this.needStone > 0) return distance - 170;
+        if (this.carriedItem === CarryKind.Gold) return distance + 160;
+        return distance - 55;
+      case TargetKind.Camp:
+        if (this.needWood > 0 || this.needStone > 0) return distance + 120;
+        if (
+          this.objectiveHint.startsWith("next build camp") ||
+          this.objectiveHint.startsWith("next camp")
+        ) {
+          return distance - 230;
+        }
+        if (this.carriedItem !== CarryKind.None) return distance - 170;
+        return distance + (this.lowHealth || this.needsRegroup ? -180 : -100);
+      case TargetKind.Relic:
+        if (this.objectiveHint.startsWith("next relic")) return distance - 170;
+        if (this.needWood > 0 || this.needStone > 0) return distance + 120;
+        return distance - 85;
+      case TargetKind.Waystation:
+        return distance + (this.lowHealth || this.needsRegroup ? -165 : -65);
+      case TargetKind.Rescue:
+        return distance + (this.needsRegroup ? -120 : -50);
+      case TargetKind.Shrine:
+        return distance - 20;
+      case TargetKind.Gate:
+        return distance + (this.objectiveHint.startsWith("next open gate") ? -210 : 10);
+      case TargetKind.Lair:
+        return distance + (this.lowHealth || this.needsRegroup ? 420 : distance < 100 ? -45 : 180);
       case TargetKind.Mob:
-        return distance + (distance < 90 ? -95 : 130);
+        return distance + (this.lowHealth ? 340 : this.needsRegroup ? 240 : distance < 90 ? -70 : 190);
       case TargetKind.Troll:
-        return distance + (distance < 105 ? -85 : 155);
+        return distance + (this.lowHealth ? 400 : this.needsRegroup ? 280 : distance < 105 ? -60 : 230);
       case TargetKind.Boss:
-        return distance + (distance < 120 ? -70 : 220);
+        return distance + (this.lowHealth ? 560 : this.needsRegroup ? 440 : distance < 120 ? -45 : 420);
       default:
         return distance + 400;
     }
@@ -471,7 +634,7 @@ class Bot {
     this.hasExploreGoal = true;
   }
 
-  chooseTarget(blocked, pickups, mobs) {
+  chooseTarget(blocked, pickups, allies, mobs) {
     let result = makeTarget();
     let bestScore = Number.MAX_SAFE_INTEGER;
     for (const pickup of pickups) {
@@ -480,6 +643,16 @@ class Bot {
       if (score < bestScore) {
         bestScore = score;
         result = pickup;
+      }
+    }
+    if (this.needsRegroup || this.lowHealth) {
+      for (const ally of allies) {
+        if (this.skipTicks > 0 && ally.objectId === this.skipTargetId) continue;
+        const score = this.targetScore(ally);
+        if (score < bestScore) {
+          bestScore = score;
+          result = ally;
+        }
       }
     }
     for (const mob of mobs) {
@@ -534,11 +707,29 @@ class Bot {
     );
   }
 
-  updateTargetResult(pickups, mobs) {
+  updateTargetResult(pickups, allies, mobs) {
     if (this.currentTargetId < 0) return;
     let stillPresent = true;
-    if (this.currentTargetKind === TargetKind.Coin || this.currentTargetKind === TargetKind.Heart) {
+    if (
+      [
+        TargetKind.Coin,
+        TargetKind.Heart,
+        TargetKind.Wood,
+        TargetKind.Food,
+        TargetKind.Stone,
+        TargetKind.Gold,
+        TargetKind.Camp,
+        TargetKind.Relic,
+        TargetKind.Gate,
+        TargetKind.Shrine,
+        TargetKind.Rescue,
+        TargetKind.Lair,
+        TargetKind.Waystation,
+      ].includes(this.currentTargetKind)
+    ) {
       stillPresent = containsTarget(pickups, this.currentTargetId);
+    } else if (this.currentTargetKind === TargetKind.Regroup) {
+      stillPresent = containsTarget(allies, this.currentTargetId);
     } else if (
       this.currentTargetKind === TargetKind.Mob ||
       this.currentTargetKind === TargetKind.Troll ||
@@ -553,6 +744,23 @@ class Bot {
     } else if (this.currentTargetKind === TargetKind.Heart && this.currentTargetDistance < 64) {
       this.heartCount += 1;
       console.log(`heart collected id=${this.currentTargetId} total=${this.heartCount}`);
+    } else if (
+      [
+        TargetKind.Wood,
+        TargetKind.Food,
+        TargetKind.Stone,
+        TargetKind.Gold,
+        TargetKind.Camp,
+        TargetKind.Relic,
+        TargetKind.Gate,
+        TargetKind.Shrine,
+        TargetKind.Rescue,
+        TargetKind.Lair,
+        TargetKind.Waystation,
+      ].includes(this.currentTargetKind) &&
+      this.currentTargetDistance < 96
+    ) {
+      console.log(`objective done kind=${this.currentTargetKind} id=${this.currentTargetId}`);
     } else if (
       (
         this.currentTargetKind === TargetKind.Mob ||
@@ -600,13 +808,14 @@ class Bot {
   decideNextMask() {
     this.updateCamera();
     this.updatePlayerPosition();
+    this.updateSelfAffordances();
     if (this.attackCooldown > 0) this.attackCooldown -= 1;
     if (this.skipTicks > 0) {
       this.skipTicks -= 1;
       if (this.skipTicks === 0) this.skipTargetId = -1;
     }
-    const { blocked, pickups, mobs } = this.scanWorld();
-    this.updateTargetResult(pickups, mobs);
+    const { blocked, pickups, allies, mobs } = this.scanWorld();
+    this.updateTargetResult(pickups, allies, mobs);
     this.updateStuck();
     if (this.jiggleTicks > 0) {
       this.jiggleTicks -= 1;
@@ -619,17 +828,10 @@ class Bot {
       this.intent = closeMob.label;
       return this.attackMask(closeMob);
     }
-    const target = this.chooseTarget(blocked, pickups, mobs);
+    const target = this.chooseTarget(blocked, pickups, allies, mobs);
     this.rememberTarget(target);
     this.intent = target.label;
-    if (
-      (
-        target.kind === TargetKind.Mob ||
-        target.kind === TargetKind.Troll ||
-        target.kind === TargetKind.Boss
-      ) &&
-      this.canAttack(target)
-    ) {
+    if (isAttackTarget(target.kind) && this.canAttack(target)) {
       return this.attackMask(target);
     }
     const step = findPathStep(
@@ -712,6 +914,38 @@ function makeTarget(
   label = "",
 ) {
   return { found, kind, objectId, x, y, label };
+}
+
+function parseHealthLabel(label) {
+  const prefix = "health ";
+  const lower = (label || "").toLowerCase();
+  if (!lower.startsWith(prefix)) return null;
+  const parts = lower.slice(prefix.length).split("/");
+  if (parts.length !== 2) return null;
+  const current = Number.parseInt(parts[0].trim(), 10);
+  const maximum = Number.parseInt(parts[1].trim(), 10);
+  if (!Number.isFinite(current) || !Number.isFinite(maximum) || maximum <= 0) {
+    return null;
+  }
+  return { current, maximum };
+}
+
+function carryKindFromLabel(label) {
+  const lower = (label || "").toLowerCase();
+  if (lower.includes("wood")) return CarryKind.Wood;
+  if (lower.includes("food")) return CarryKind.Food;
+  if (lower.includes("stone")) return CarryKind.Stone;
+  if (lower.includes("gold")) return CarryKind.Gold;
+  return CarryKind.None;
+}
+
+function tokenNumber(tokens, key) {
+  for (const token of tokens) {
+    if (!token.startsWith(key) || token.length <= key.length) continue;
+    const value = Number.parseInt(token.slice(key.length), 10);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
 }
 
 function readU16(data, offset) {
@@ -808,16 +1042,46 @@ function classifySprite(spriteId, label) {
   ) {
     return SpriteKind.Player;
   }
-  if (spriteId === MobSpriteId || lower === "ghost") return SpriteKind.Mob;
-  if (spriteId === TrollSpriteId || lower === "troll") return SpriteKind.Troll;
-  if (spriteId === BossSpriteId || lower === "pigman") return SpriteKind.Boss;
-  if (spriteId === CoinSpriteId || lower === "coin") return SpriteKind.Coin;
+  if (spriteId >= MobSpeciesSpriteBase && spriteId < MobSpeciesSpriteBase + MobSpeciesSpriteSlots) {
+    return SpriteKind.Mob;
+  }
+  if (
+    spriteId === MobSpriteId ||
+    lower === "ghost" ||
+    lower.startsWith("wolf")
+  ) return SpriteKind.Mob;
+  if (spriteId === TrollSpriteId || lower === "troll" || lower.startsWith("goblin")) {
+    return SpriteKind.Troll;
+  }
+  if (spriteId === BossSpriteId || lower === "pigman" || lower.startsWith("bear")) {
+    return SpriteKind.Boss;
+  }
+  if (
+    spriteId === CoinSpriteId ||
+    lower === "coin" ||
+    [
+      "camp",
+      "beacon",
+      "final gate",
+      "shrine",
+      "rescue",
+      "lair",
+      "waystation",
+      "wood",
+      "food",
+      "stone",
+      "gold",
+    ].includes(lower)
+  ) return SpriteKind.Coin;
   if (spriteId === HeartSpriteId || lower === "heart") return SpriteKind.Heart;
   if (spriteId >= SwooshSpriteBase && spriteId < SwooshSpriteBase + SwooshSpriteSlots) {
     return SpriteKind.Swoosh;
   }
   if (spriteId >= TerrainSpriteBase && spriteId < TerrainSpriteBase + TerrainSpriteSlots) {
     return SpriteKind.Terrain;
+  }
+  if (spriteId >= LandmarkSpriteBase && spriteId < LandmarkSpriteBase + LandmarkSpriteSlots) {
+    return SpriteKind.Coin;
   }
   if (spriteId === PlayerHudSpriteId) return SpriteKind.Hud;
   if (label.length > 0) return SpriteKind.Text;
@@ -830,14 +1094,69 @@ function targetKindForSprite(kind) {
   return TargetKind.Mob;
 }
 
+function targetKindForSpriteInfo(sprite) {
+  switch (sprite.label.toLowerCase()) {
+    case "wood":
+      return TargetKind.Wood;
+    case "food":
+      return TargetKind.Food;
+    case "stone":
+      return TargetKind.Stone;
+    case "gold":
+      return TargetKind.Gold;
+    case "camp":
+      return TargetKind.Camp;
+    case "beacon":
+      return TargetKind.Relic;
+    case "final gate":
+      return TargetKind.Gate;
+    case "shrine":
+      return TargetKind.Shrine;
+    case "rescue":
+      return TargetKind.Rescue;
+    case "lair":
+      return TargetKind.Lair;
+    case "waystation":
+      return TargetKind.Waystation;
+    default:
+      if (sprite.kind === SpriteKind.Heart) return TargetKind.Heart;
+      if (sprite.kind === SpriteKind.Coin) return TargetKind.Coin;
+      return targetKindForSprite(sprite.kind);
+  }
+}
+
 function targetLabel(kind) {
   switch (kind) {
     case TargetKind.Explore:
       return "explore";
+    case TargetKind.Regroup:
+      return "regroup";
     case TargetKind.Coin:
       return "coin";
     case TargetKind.Heart:
       return "heart";
+    case TargetKind.Wood:
+      return "wood";
+    case TargetKind.Food:
+      return "food";
+    case TargetKind.Stone:
+      return "stone";
+    case TargetKind.Gold:
+      return "gold";
+    case TargetKind.Camp:
+      return "camp";
+    case TargetKind.Relic:
+      return "relic";
+    case TargetKind.Gate:
+      return "gate";
+    case TargetKind.Shrine:
+      return "shrine";
+    case TargetKind.Rescue:
+      return "rescue";
+    case TargetKind.Lair:
+      return "lair";
+    case TargetKind.Waystation:
+      return "waypoint";
     case TargetKind.Mob:
       return "hunt";
     case TargetKind.Troll:
@@ -847,6 +1166,19 @@ function targetLabel(kind) {
     default:
       return "";
   }
+}
+
+function isAttackTarget(kind) {
+  return [
+    TargetKind.Wood,
+    TargetKind.Food,
+    TargetKind.Stone,
+    TargetKind.Gold,
+    TargetKind.Lair,
+    TargetKind.Mob,
+    TargetKind.Troll,
+    TargetKind.Boss,
+  ].includes(kind);
 }
 
 function distanceSquared(ax, ay, bx, by) {

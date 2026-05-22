@@ -31,17 +31,53 @@ const
   MobLeftSpriteId = 313
   TrollLeftSpriteId = 314
   BossLeftSpriteId = 315
+  MobTelegraphEffectSpriteId = 316
+  MobLungeEffectSpriteId = 317
+  RoleAbilityEffectSpriteBase = 680
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
+  RoleLabelSpriteBase = PlayerHudSpriteId + 40
+  RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
+  LandmarkShelterSpriteId = LandmarkSpriteBase + ord(high(LandmarkKind)) + 1
+  StatusBadgeSpriteBase = 840
+  LandmarkPromptSpriteBase = 880
+  LandmarkShelterPromptSpriteId =
+    LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
+  LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
+  LandmarkMealPromptSpriteId = LandmarkFortPromptSpriteId + 1
+  LandmarkFortMealPromptSpriteId = LandmarkMealPromptSpriteId + 1
+  LandmarkWardPromptSpriteId = LandmarkFortMealPromptSpriteId + 1
+  LandmarkRallyPromptSpriteId = LandmarkWardPromptSpriteId + 1
+  LandmarkAidPromptSpriteId = LandmarkRallyPromptSpriteId + 1
+  LandmarkWaystationPromptSpriteBase = LandmarkAidPromptSpriteId + 1
+  WeatherOverlaySpriteBase = 920
+  LandmarkDynamicPromptSpriteBase = 940
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
+  RoleLabelObjectBase = PlayerHudObjectId + 100
   HudGap = 1
   HealthSprite5Base = 700
   HealthSprite10Base = 710
   PlayerHealthObjectBase = 10000
   MobHealthObjectBase = 11000
+  CarryObjectBase* = 12000
+  CarryExtraObjectBase = CarryObjectBase + 100
+  CarryCountObjectBase = CarryObjectBase + 500
+  StatusBadgeObjectBase = 13000
+  LandmarkPromptObjectBase = 14000
+  MobThreatBadgeObjectBase = 15000
+  WeatherOverlayObjectBase = 16000
+  MobAttackEffectObjectBase = 17000
+  RoleAbilityEffectObjectBase = 18000
+  CarryCountSpriteBase = 1400
+  CarryObjectStride = 8
+  StatusBadgeSlots = 18
+  WeatherOverlaySlots = 56
+  MobAttackEffectSize = 28
+  RoleAbilityEffectSize = 48
+  CarryHudSlotGap = 4
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -95,6 +131,48 @@ const
 var TransportSheet: Sprite
 
 type
+  StatusBadgeKind = enum
+    StatusRoleTank
+    StatusRoleDps
+    StatusRoleHealer
+    StatusTrio
+    StatusPartyFocus
+    StatusHighGround
+    StatusLowGround
+    StatusForage
+    StatusRally
+    StatusShade
+    StatusWarmth
+    StatusLight
+    StatusGuard
+    StatusBlessing
+    StatusRoute
+    StatusSurvey
+    StatusGuide
+    StatusHunt
+    StatusPoison
+    StatusSlow
+    StatusChill
+    StatusExhaustion
+    StatusMire
+    StatusCold
+    StatusHeat
+    StatusFog
+    StatusAlone
+    StatusHelp
+    StatusDown
+    StatusPingRegroup
+    StatusPingHelp
+    StatusPingObjective
+    StatusPingCamp
+    StatusPingFood
+    StatusPingRescue
+    StatusPingLair
+    StatusTriumph
+    StatusRation
+    StatusMorale
+    StatusStagger
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
@@ -113,6 +191,7 @@ type
     objectIds*: seq[int]
     hudCoins*: int
     hudLives*: int
+    hudStatus*: string
 
   WorldSpriteObject = object
     id, x, y, spriteId, sortY: int
@@ -128,6 +207,7 @@ proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
   result.hudCoins = -1
   result.hudLives = -1
+  result.hudStatus = ""
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   ## Writes one generated UI color as a global protocol RGBA pixel.
@@ -565,6 +645,62 @@ proc buildSpriteProtocolRawSprite(
         sourceIndex
       )
 
+proc tintSpritePixels(
+  pixels: openArray[uint8],
+  width,
+  height: int,
+  tint: tuple[r, g, b, a: uint8],
+  species: MobSpecies,
+  strength = 48
+): seq[uint8] =
+  result = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    result[i] = pixels[i]
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      let i = (y * width + x) * 4
+      if i + 3 >= result.len or result[i + 3] == 0'u8:
+        continue
+      let
+        originalR = int(result[i])
+        originalG = int(result[i + 1])
+        originalB = int(result[i + 2])
+        luminance = (originalR * 3 + originalG * 5 + originalB * 2) div 10
+      if luminance < 36:
+        result[i] = max(0, originalR - 6).uint8
+        result[i + 1] = max(0, originalG - 6).uint8
+        result[i + 2] = max(0, originalB - 6).uint8
+        continue
+      var
+        targetR = int(tint.r)
+        targetG = int(tint.g)
+        targetB = int(tint.b)
+        localStrength = strength
+      if luminance > 172:
+        targetR = min(255, targetR + 42)
+        targetG = min(255, targetG + 42)
+        targetB = min(255, targetB + 42)
+        localStrength = max(34, strength - 10)
+      elif luminance < 86:
+        targetR = max(0, targetR - 56)
+        targetG = max(0, targetG - 56)
+        targetB = max(0, targetB - 56)
+        localStrength = min(62, strength + 8)
+      if (x + y + ord(species)) mod 9 == 0 and luminance > 72:
+        targetR = min(255, targetR + 34)
+        targetG = min(255, targetG + 34)
+        targetB = min(255, targetB + 34)
+      elif (x * 2 + y + ord(species)) mod 11 == 0 and luminance > 64:
+        targetR = max(0, targetR - 38)
+        targetG = max(0, targetG - 38)
+        targetB = max(0, targetB - 38)
+      result[i] =
+        ((originalR * (100 - localStrength) + targetR * localStrength) div 100).uint8
+      result[i + 1] =
+        ((originalG * (100 - localStrength) + targetG * localStrength) div 100).uint8
+      result[i + 2] =
+        ((originalB * (100 - localStrength) + targetB * localStrength) div 100).uint8
+
 proc facedSize(sprite: RgbaSprite, facing: Facing): tuple[width, height: int] =
   ## Returns the rendered size for a facing rotation.
   case facing
@@ -632,15 +768,55 @@ proc blitMapSprite(
           sourceIndex
         )
 
+proc fillMapTile(
+  pixels: var seq[uint8],
+  baseX,
+  baseY: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Fills the opaque biome backing under borrowed transparent ground art.
+  for y in 0 ..< WorldTileSize:
+    for x in 0 ..< WorldTileSize:
+      let
+        px = baseX + x
+        py = baseY + y
+      if px < 0 or py < 0 or
+          px >= WorldWidthPixels or py >= WorldHeightPixels:
+        continue
+      pixels.putRgbaPixel(py * WorldWidthPixels + px, color)
+
+proc shadeForElevation(
+  color: tuple[r, g, b, a: uint8],
+  elevation: int
+): tuple[r, g, b, a: uint8] =
+  ## Makes deterministic elevation visible under transparent terrain art.
+  let shade = clamp(elevation, 0, 5) * 12
+  (
+    r: clamp(int(color.r) + shade, 0, 255).uint8,
+    g: clamp(int(color.g) + shade, 0, 255).uint8,
+    b: clamp(int(color.b) + shade, 0, 255).uint8,
+    a: color.a
+  )
+
 proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
   ## Builds a full world map sprite from the described terrain cells.
   result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
   for ty in 0 ..< WorldHeightTiles:
     for tx in 0 ..< WorldWidthTiles:
+      let
+        baseX = tx * WorldTileSize
+        baseY = ty * WorldTileSize
+      result.fillMapTile(
+        baseX,
+        baseY,
+        sim.tileBiomeKind(tx, ty).biomeBackgroundRgbaColor().shadeForElevation(
+          sim.tileElevation(tx, ty)
+        )
+      )
       result.blitMapSprite(
-        sim.rgbaTerrainSprite,
-        tx * WorldTileSize,
-        ty * WorldTileSize
+        sim.groundRgbaSprite(sim.tileGroundKind(tx, ty)),
+        baseX,
+        baseY
       )
 proc putTextSpritePixel(
   pixels: var seq[uint8],
@@ -1068,6 +1244,515 @@ proc playerSpriteLabel(
   result.add(playerIndex.playerTintName())
   result.add($(ord(form) + 1))
 
+proc roleTintSlot(playerIndex: int, role: PlayerRole): int =
+  ## Returns an obvious role color while keeping unarmed players identity-tinted.
+  case role
+  of RoleTank:
+    4 # blue
+  of RoleDps:
+    0 # red
+  of RoleHealer:
+    3 # green
+  of RoleUnarmed:
+    playerIndex
+
+proc roleGearLabel(kind: PickupKind): string =
+  case kind
+  of PickupTankGear:
+    "TANK GUARD"
+  of PickupDpsGear:
+    "DPS CLEAVE"
+  of PickupHealerGear:
+    "HEAL PULSE"
+  else:
+    ""
+
+proc roleGearSpriteId(kind: PickupKind): int =
+  RoleLabelSpriteBase + ord(kind)
+
+proc roleGearIconSpriteId(kind: PickupKind): int =
+  RoleGearIconSpriteBase + ord(kind)
+
+proc roleGearIconLabel(kind: PickupKind): string =
+  case kind
+  of PickupTankGear:
+    "role tank gear"
+  of PickupDpsGear:
+    "role dps gear"
+  of PickupHealerGear:
+    "role heal gear"
+  else:
+    ""
+
+proc roleGearObjectId(pickupIndex: int): int =
+  RoleLabelObjectBase + pickupIndex
+
+proc statusBadgeSpriteId(kind: StatusBadgeKind): int =
+  StatusBadgeSpriteBase + ord(kind)
+
+proc statusBadgeObjectId(player: Actor, index: int): int =
+  StatusBadgeObjectBase + player.id * StatusBadgeSlots + index
+
+proc mobThreatBadgeObjectId(mobIndex, badgeIndex: int): int =
+  MobThreatBadgeObjectBase + mobIndex * StatusBadgeSlots + badgeIndex
+
+proc weatherOverlaySpriteId(weather: WeatherKind): int =
+  WeatherOverlaySpriteBase + ord(weather)
+
+proc weatherOverlayObjectId(index: int): int =
+  WeatherOverlayObjectBase + index
+
+proc mobAttackEffectObjectId(mobIndex: int): int =
+  MobAttackEffectObjectBase + mobIndex
+
+proc roleAbilityEffectObjectId(player: Actor): int =
+  RoleAbilityEffectObjectBase + player.id
+
+proc roleAbilityEffectSpriteId(role: PlayerRole): int =
+  RoleAbilityEffectSpriteBase + ord(role)
+
+proc mobAttackEffectSpriteId(phase: MobAttackPhase): int =
+  case phase
+  of MobTelegraph:
+    MobTelegraphEffectSpriteId
+  of MobLunge:
+    MobLungeEffectSpriteId
+  of MobIdle:
+    MobTelegraphEffectSpriteId
+
+proc mobAttackEffectLabel(phase: MobAttackPhase): string =
+  case phase
+  of MobTelegraph:
+    "mob telegraph warning"
+  of MobLunge:
+    "mob lunge strike"
+  of MobIdle:
+    "mob idle"
+
+proc roleAbilityEffectLabel(role: PlayerRole): string =
+  "ability " & role.roleLabel() & " effect"
+
+proc roleAbilityEffectColor(
+  role: PlayerRole
+): tuple[r, g, b, a: uint8] =
+  case role
+  of RoleTank:
+    (r: 255'u8, g: 222'u8, b: 74'u8, a: 210'u8)
+  of RoleDps:
+    (r: 224'u8, g: 64'u8, b: 79'u8, a: 220'u8)
+  of RoleHealer:
+    (r: 86'u8, g: 210'u8, b: 122'u8, a: 220'u8)
+  of RoleUnarmed:
+    (r: 0'u8, g: 0'u8, b: 0'u8, a: 0'u8)
+
+proc weatherOverlayLabel(weather: WeatherKind): string =
+  "weather " & weather.weatherLabel()
+
+proc weatherOverlayColor(
+  weather: WeatherKind
+): tuple[r, g, b, a: uint8] =
+  case weather
+  of WeatherRain:
+    (r: 130'u8, g: 183'u8, b: 235'u8, a: 190'u8)
+  of WeatherSnow:
+    (r: 245'u8, g: 250'u8, b: 255'u8, a: 220'u8)
+  of WeatherDust:
+    (r: 222'u8, g: 172'u8, b: 92'u8, a: 165'u8)
+  of WeatherFog:
+    (r: 186'u8, g: 196'u8, b: 205'u8, a: 112'u8)
+  of WeatherClear:
+    (r: 0'u8, g: 0'u8, b: 0'u8, a: 0'u8)
+
+proc buildWeatherOverlaySprite(
+  weather: WeatherKind
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a tiny translucent weather particle for sprite-protocol views.
+  case weather
+  of WeatherRain:
+    result.width = 4
+    result.height = 9
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for y in 0 ..< result.height:
+      let x = min(result.width - 1, y div 3)
+      result.pixels.putRgbaPixel(y * result.width + x, color)
+  of WeatherSnow:
+    result.width = 5
+    result.height = 5
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for pos in [(2, 1), (1, 2), (2, 2), (3, 2), (2, 3)]:
+      result.pixels.putRgbaPixel(pos[1] * result.width + pos[0], color)
+  of WeatherDust:
+    result.width = 7
+    result.height = 4
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for pos in [(1, 1), (2, 1), (4, 2), (5, 2), (3, 1)]:
+      result.pixels.putRgbaPixel(pos[1] * result.width + pos[0], color)
+  of WeatherFog:
+    result.width = 32
+    result.height = 8
+    result.pixels = newRgbaPixels(result.width, result.height)
+    let color = weather.weatherOverlayColor()
+    for y in 2 .. 5:
+      for x in 0 ..< result.width:
+        if (x + y) mod 3 != 0:
+          result.pixels.putRgbaPixel(y * result.width + x, color)
+  of WeatherClear:
+    result.width = 1
+    result.height = 1
+    result.pixels = newRgbaPixels(result.width, result.height)
+
+proc putEffectPixel(
+  pixels: var seq[uint8],
+  width,
+  height,
+  x,
+  y: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  if x < 0 or y < 0 or x >= width or y >= height:
+    return
+  pixels.putRgbaPixel(y * width + x, color)
+
+proc buildMobAttackEffectSprite(
+  phase: MobAttackPhase
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a translucent attack-phase overlay for monster animations.
+  result.width = MobAttackEffectSize
+  result.height = MobAttackEffectSize
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let
+    center = MobAttackEffectSize div 2
+    warning = (r: 255'u8, g: 222'u8, b: 74'u8, a: 190'u8)
+    warningCore = (r: 255'u8, g: 248'u8, b: 180'u8, a: 225'u8)
+    strike = (r: 255'u8, g: 64'u8, b: 79'u8, a: 210'u8)
+    strikeCore = (r: 255'u8, g: 200'u8, b: 120'u8, a: 240'u8)
+  case phase
+  of MobTelegraph:
+    for y in 0 ..< result.height:
+      for x in 0 ..< result.width:
+        let distance = abs(x - center) + abs(y - center)
+        if distance in 10 .. 11:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, warning)
+    for y in 7 .. 16:
+      result.pixels.putEffectPixel(result.width, result.height, center, y, warningCore)
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        center + 1,
+        y,
+        warningCore
+      )
+    for y in 20 .. 21:
+      for x in center .. center + 1:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
+  of MobLunge:
+    for i in 0 .. 18:
+      let
+        x = 5 + i
+        y = 21 - i
+      result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
+      result.pixels.putEffectPixel(result.width, result.height, x + 1, y, strike)
+      result.pixels.putEffectPixel(result.width, result.height, x, y + 1, strike)
+    for i in 0 .. 10:
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        10 + i,
+        18 - i div 2,
+        strike
+      )
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        7 + i,
+        10 + i div 3,
+        strike
+      )
+  of MobIdle:
+    discard
+
+proc buildRoleAbilityEffectSprite(
+  role: PlayerRole
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds the red/yellow/green role-power pulse used by the sprite player.
+  result.width = RoleAbilityEffectSize
+  result.height = RoleAbilityEffectSize
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let
+    center = RoleAbilityEffectSize div 2
+    color = role.roleAbilityEffectColor()
+    core = (
+      r: min(255, int(color.r) + 36).uint8,
+      g: min(255, int(color.g) + 36).uint8,
+      b: min(255, int(color.b) + 36).uint8,
+      a: 238'u8
+    )
+  for y in 0 ..< result.height:
+    for x in 0 ..< result.width:
+      let
+        dx = x - center
+        dy = y - center
+        distance = dx * dx + dy * dy
+      if distance in 400 .. 470:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, color)
+      elif distance in 260 .. 286 and (x + y) mod 2 == 0:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, color)
+  case role
+  of RoleTank:
+    for x in center - 14 .. center + 14:
+      result.pixels.putEffectPixel(result.width, result.height, x, center - 15, core)
+      result.pixels.putEffectPixel(result.width, result.height, x, center + 15, core)
+    for y in center - 10 .. center + 10:
+      result.pixels.putEffectPixel(result.width, result.height, center - 15, y, core)
+      result.pixels.putEffectPixel(result.width, result.height, center + 15, y, core)
+  of RoleDps:
+    for offset in -17 .. 17:
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        center + offset,
+        center + offset,
+        core
+      )
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        center + offset,
+        center - offset,
+        core
+      )
+  of RoleHealer:
+    for offset in -18 .. 18:
+      result.pixels.putEffectPixel(result.width, result.height, center + offset, center, core)
+      result.pixels.putEffectPixel(result.width, result.height, center, center + offset, core)
+    for y in center - 6 .. center + 6:
+      for x in center - 6 .. center + 6:
+        if abs(x - center) + abs(y - center) <= 6:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, color)
+  of RoleUnarmed:
+    discard
+
+proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
+  case weather
+  of WeatherRain:
+    (width: 4, height: 9)
+  of WeatherSnow:
+    (width: 5, height: 5)
+  of WeatherDust:
+    (width: 7, height: 4)
+  of WeatherFog:
+    (width: 32, height: 8)
+  of WeatherClear:
+    (width: 1, height: 1)
+
+proc statusBadgeLabel(kind: StatusBadgeKind): string =
+  case kind
+  of StatusRoleTank: "TNK"
+  of StatusRoleDps: "DPS"
+  of StatusRoleHealer: "HEAL"
+  of StatusTrio: "TRIO"
+  of StatusPartyFocus: "FOC"
+  of StatusHighGround: "HIGH"
+  of StatusLowGround: "LOW"
+  of StatusForage: "FOR"
+  of StatusRally: "RAL"
+  of StatusShade: "SHD"
+  of StatusWarmth: "WARM"
+  of StatusLight: "LIT"
+  of StatusGuard: "GRD"
+  of StatusBlessing: "BLS"
+  of StatusRoute: "ROUTE"
+  of StatusSurvey: "SURV"
+  of StatusGuide: "GUIDE"
+  of StatusHunt: "HUNT"
+  of StatusTriumph: "WIN"
+  of StatusRation: "MEAL"
+  of StatusMorale: "MOR"
+  of StatusStagger: "STAG"
+  of StatusPoison: "POI"
+  of StatusSlow: "SLW"
+  of StatusChill: "CHL"
+  of StatusExhaustion: "EXH"
+  of StatusMire: "MIRE"
+  of StatusCold: "COLD"
+  of StatusHeat: "HEAT"
+  of StatusFog: "FOG"
+  of StatusAlone: "REG"
+  of StatusHelp: "HELP"
+  of StatusDown: "DOWN"
+  of StatusPingRegroup: "PING REG"
+  of StatusPingHelp: "PING HELP"
+  of StatusPingObjective: "PING OBJ"
+  of StatusPingCamp: "PING CAMP"
+  of StatusPingFood: "PING FOOD"
+  of StatusPingRescue: "PING RES"
+  of StatusPingLair: "PING LAIR"
+
+proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
+  case kind
+  of StatusRoleTank: 4'u8
+  of StatusRoleDps: 3'u8
+  of StatusRoleHealer: 10'u8
+  of StatusTrio: 14'u8
+  of StatusPartyFocus: 14'u8
+  of StatusHighGround: 8'u8
+  of StatusLowGround: 10'u8
+  of StatusForage: 10'u8
+  of StatusRally: 14'u8
+  of StatusShade: 6'u8
+  of StatusWarmth: 11'u8
+  of StatusLight: 14'u8
+  of StatusGuard: 4'u8
+  of StatusBlessing: 14'u8
+  of StatusRoute: 14'u8
+  of StatusSurvey: 12'u8
+  of StatusGuide: 2'u8
+  of StatusHunt: 9'u8
+  of StatusTriumph: 14'u8
+  of StatusRation: 6'u8
+  of StatusMorale: 14'u8
+  of StatusStagger: 11'u8
+  of StatusPoison: 13'u8
+  of StatusSlow: 10'u8
+  of StatusChill: 11'u8
+  of StatusExhaustion: 7'u8
+  of StatusMire: 10'u8
+  of StatusCold: 11'u8
+  of StatusHeat: 9'u8
+  of StatusFog: 12'u8
+  of StatusAlone: 8'u8
+  of StatusHelp: 3'u8
+  of StatusDown: 3'u8
+  of StatusPingRegroup: 8'u8
+  of StatusPingHelp: 3'u8
+  of StatusPingObjective: 14'u8
+  of StatusPingCamp: 10'u8
+  of StatusPingFood: 6'u8
+  of StatusPingRescue: 2'u8
+  of StatusPingLair: 13'u8
+
+proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
+  case kind
+  of StatusRoleTank: "status role tank"
+  of StatusRoleDps: "status role dps"
+  of StatusRoleHealer: "status role healer"
+  of StatusTrio: "status trio"
+  of StatusPartyFocus: "status party focus"
+  of StatusHighGround: "status high ground"
+  of StatusLowGround: "status low ground"
+  of StatusForage: "status forage"
+  of StatusRally: "status rally"
+  of StatusShade: "status shade"
+  of StatusWarmth: "status warmth"
+  of StatusLight: "status light"
+  of StatusGuard: "status guard"
+  of StatusBlessing: "status blessing"
+  of StatusRoute: "status route"
+  of StatusSurvey: "status survey"
+  of StatusGuide: "status guide"
+  of StatusHunt: "status hunt"
+  of StatusTriumph: "status triumph"
+  of StatusRation: "status ration"
+  of StatusMorale: "status morale"
+  of StatusStagger: "status stagger"
+  of StatusPoison: "status poison"
+  of StatusSlow: "status slow"
+  of StatusChill: "status chill"
+  of StatusExhaustion: "status exhaust"
+  of StatusMire: "status mire"
+  of StatusCold: "status cold"
+  of StatusHeat: "status heat"
+  of StatusFog: "status fog"
+  of StatusAlone: "status alone"
+  of StatusHelp: "status help"
+  of StatusDown: "status down"
+  of StatusPingRegroup: "status ping regroup"
+  of StatusPingHelp: "status ping help"
+  of StatusPingObjective: "status ping objective"
+  of StatusPingCamp: "status ping camp"
+  of StatusPingFood: "status ping food"
+  of StatusPingRescue: "status ping rescue"
+  of StatusPingLair: "status ping lair"
+
+proc pingStatusBadge(kind: PlayerPingKind): StatusBadgeKind =
+  case kind
+  of PingRegroup: StatusPingRegroup
+  of PingHelp: StatusPingHelp
+  of PingObjective: StatusPingObjective
+  of PingCamp: StatusPingCamp
+  of PingFood: StatusPingFood
+  of PingRescue: StatusPingRescue
+  of PingLair: StatusPingLair
+  of PingNone: StatusPingRegroup
+
+proc roleStatusBadge(role: PlayerRole): tuple[found: bool, badge: StatusBadgeKind] =
+  case role
+  of RoleTank:
+    (true, StatusRoleTank)
+  of RoleDps:
+    (true, StatusRoleDps)
+  of RoleHealer:
+    (true, StatusRoleHealer)
+  of RoleUnarmed:
+    (false, StatusRoleTank)
+
+proc survivalStatusBadge(
+  kind: SurvivalPressureKind
+): tuple[found: bool, badge: StatusBadgeKind] =
+  case kind
+  of SurvivalMire:
+    (true, StatusMire)
+  of SurvivalCold:
+    (true, StatusCold)
+  of SurvivalHeat:
+    (true, StatusHeat)
+  of SurvivalFog:
+    (true, StatusFog)
+  of SurvivalSafe:
+    (false, StatusCold)
+
+proc elevationStatusBadge(delta: int): tuple[found: bool, badge: StatusBadgeKind] =
+  if delta >= ElevationCombatThreshold:
+    (true, StatusHighGround)
+  elif delta <= -ElevationCombatThreshold:
+    (true, StatusLowGround)
+  else:
+    (false, StatusHighGround)
+
+proc biomeTacticStatusBadge(
+  kind: BiomeTacticKind
+): tuple[found: bool, badge: StatusBadgeKind] =
+  case kind
+  of BiomeTacticForage:
+    (true, StatusForage)
+  of BiomeTacticRally:
+    (true, StatusRally)
+  of BiomeTacticShade:
+    (true, StatusShade)
+  of BiomeTacticWarmth:
+    (true, StatusWarmth)
+  of BiomeTacticLight:
+    (true, StatusLight)
+  of BiomeTacticGuard:
+    (true, StatusGuard)
+  of BiomeTacticBlessing:
+    (true, StatusBlessing)
+  of BiomeTacticNone:
+    (false, StatusForage)
+
+proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
+  if species.speciesAppliesPoison():
+    result.add(StatusPoison)
+  if species.speciesAppliesSlow():
+    result.add(StatusSlow)
+  if species.speciesAppliesChill():
+    result.add(StatusChill)
+  if species.speciesPunishesIsolation():
+    result.add(StatusAlone)
+
 proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
   ## Returns the sprite id for one adventurer attack swish facing.
   SwooshSpriteBase + ord(form) * 4 + ord(facing)
@@ -1076,19 +1761,184 @@ proc terrainSpriteId(kind: TerrainKind): int =
   ## Returns the sprite id for one terrain prop kind.
   TerrainSpriteBase + ord(kind)
 
+proc landmarkSpriteId(kind: LandmarkKind): int =
+  ## Returns the sprite id for one landmark kind.
+  LandmarkSpriteBase + ord(kind)
+
+proc landmarkSpriteId(landmark: Landmark): int =
+  ## Returns the sprite id for one landmark instance.
+  if landmark.kind == LandmarkCamp and landmark.done:
+    LandmarkShelterSpriteId
+  else:
+    landmark.kind.landmarkSpriteId()
+
+proc mobSpeciesSpriteId(species: MobSpecies, flipLeft: bool): int =
+  ## Returns the generated sprite id for one biome monster species.
+  MobSpeciesSpriteBase + (ord(species) - 1) * 2 + (if flipLeft: 1 else: 0)
+
+proc pickupSpriteId(kind: PickupKind): int =
+  ## Returns the protocol sprite id for one pickup kind.
+  case kind
+  of PickupCoin:
+    CoinSpriteId
+  of PickupHeart:
+    HeartSpriteId
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    kind.roleGearIconSpriteId()
+  of PickupWood, PickupFood, PickupStone, PickupGold:
+    kind.carryForPickup().landmarkForCarry().landmarkSpriteId()
+
+proc carryObjectId(player: Actor): int =
+  CarryObjectBase + player.id
+
+proc carryObjectId(player: Actor, item: CarryKind): int =
+  let active = player.activeCarryItem()
+  if item == active:
+    player.carryObjectId()
+  else:
+    CarryExtraObjectBase + player.id * CarryObjectStride + ord(item)
+
+proc carryCountObjectId(player: Actor, item: CarryKind): int =
+  CarryCountObjectBase + player.id * CarryObjectStride + ord(item)
+
+proc carryCountSpriteId(player: Actor, item: CarryKind): int =
+  CarryCountSpriteBase + player.id * CarryObjectStride + ord(item)
+
 proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
 
+proc landmarkObjectId(index: int): int =
+  ## Returns the object id for one landmark instance.
+  LandmarkObjectBase + index
+
+proc landmarkPromptSpriteId(kind: LandmarkKind): int =
+  LandmarkPromptSpriteBase + ord(kind)
+
+proc landmarkDynamicPromptSpriteId(index: int): int =
+  LandmarkDynamicPromptSpriteBase + index
+
+proc landmarkPromptObjectId(index: int): int =
+  LandmarkPromptObjectBase + index
+
+proc landmarkPromptLabel(kind: LandmarkKind): string =
+  case kind
+  of LandmarkWood:
+    "WOOD"
+  of LandmarkFood:
+    "FOOD"
+  of LandmarkStone:
+    "STONE"
+  of LandmarkGold:
+    "GOLD"
+  of LandmarkCamp:
+    "CAMP W" & $CampWoodCost & " S" & $CampStoneCost
+  of LandmarkBeacon:
+    "RELIC"
+  of LandmarkFinalGate:
+    "GATE HOLD"
+  of LandmarkShrine:
+    "SHRINE F" & $ShrineFoodBonus
+  of LandmarkRescue:
+    "RESCUE F" & $RescueFoodBonus
+  of LandmarkLair:
+    "LAIR"
+  of LandmarkWaystation:
+    "WAYPOINT"
+
+proc landmarkPromptLabel(landmark: Landmark): string =
+  if landmark.campIsAid():
+    "AID"
+  elif landmark.campIsRally():
+    "RALLY"
+  elif landmark.campIsWarded():
+    "WARD"
+  elif landmark.campIsFortified() and landmark.campIsProvisioned():
+    "FORT MEAL"
+  elif landmark.campIsFortified():
+    "FORT"
+  elif landmark.campIsProvisioned():
+    "MEALS"
+  elif landmark.kind == LandmarkCamp and landmark.done:
+    "SHELTER"
+  elif landmark.kind == LandmarkWaystation:
+    biomeForTileX(landmark.tx).waystationPromptLabel()
+  else:
+    landmark.kind.landmarkPromptLabel()
+
+proc progressPercent(progress, total: int): int =
+  clamp((max(0, progress) * 100) div max(1, total), 0, 100)
+
+proc landmarkPromptLabel(sim: SimServer, landmark: Landmark): string =
+  case landmark.kind
+  of LandmarkFinalGate:
+    if sim.bossDefeated and sim.relicShards >= FinalGateRelicCost and
+        sim.campsActivated >= FinalGateCampCost:
+      "GATE " & $landmark.progress.finalGateProgressPercent() & "%"
+    elif sim.relicShards >= FinalGateRelicCost and
+        sim.campsActivated >= FinalGateCampCost:
+      "GATE BOSS"
+    else:
+      "GATE C" & $min(sim.campsActivated, FinalGateCampCost) & "/" &
+        $FinalGateCampCost & " R" & $min(sim.relicShards, FinalGateRelicCost) &
+        "/" & $FinalGateRelicCost
+  of LandmarkRescue:
+    if landmark.progress > 0:
+      "RESCUE " & $progressPercent(landmark.progress, RescueEventTicks) & "%"
+    else:
+      landmark.landmarkPromptLabel()
+  of LandmarkBeacon:
+    if landmark.progress > 0:
+      "RELIC " & $progressPercent(landmark.progress, BeaconAttunementTicks) & "%"
+    else:
+      landmark.landmarkPromptLabel()
+  of LandmarkLair:
+    if landmark.hp < LairHp:
+      "LAIR " & $progressPercent(LairHp - max(0, landmark.hp), LairHp) & "%"
+    else:
+      landmark.landmarkPromptLabel()
+  of LandmarkWaystation:
+    let label = sim.tileBiomeKind(landmark.tx, landmark.ty).waystationPromptLabel()
+    if landmark.progress > 0:
+      label & " " & $progressPercent(
+        landmark.progress,
+        BiomeWaystationTicks
+      ) & "%"
+    else:
+      label
+  else:
+    landmark.landmarkPromptLabel()
+
+proc landmarkPromptColor(landmark: Landmark, prompt: string): uint8 =
+  if prompt.contains("%"):
+    14'u8
+  elif landmark.campIsAid() or landmark.campIsRally() or
+      landmark.campIsWarded() or landmark.campIsProvisioned():
+    11'u8
+  elif landmark.kind == LandmarkCamp and landmark.done:
+    10'u8
+  elif landmark.kind == LandmarkWaystation:
+    14'u8
+  else:
+    2'u8
+
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
-  let flipLeft = mob.attackPhase != 0 and mob.attackFacing == FaceLeft
+  let flipLeft = mob.attackPhase != MobIdle and mob.attackFacing == FaceLeft
+  if mob.species != SpeciesNone:
+    return mob.species.mobSpeciesSpriteId(flipLeft)
   case mob.kind
-  of SnakeMob:
+  of SnakeMob, WolfMob:
     if flipLeft: MobLeftSpriteId else: MobSpriteId
-  of TrollMob:
+  of TrollMob, GoblinMob:
     if flipLeft: TrollLeftSpriteId else: TrollSpriteId
-  of BossMob:
+  of BossMob, BearMob:
+    if flipLeft: BossLeftSpriteId else: BossSpriteId
+  of ScorpionMob, BatMob:
+    if flipLeft: MobLeftSpriteId else: MobSpriteId
+  of SlimeMob, WraithMob:
+    if flipLeft: TrollLeftSpriteId else: TrollSpriteId
+  of YetiMob:
     if flipLeft: BossLeftSpriteId else: BossSpriteId
 
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
@@ -1220,6 +2070,62 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
         "swoosh"
       )
 
+  for kind in [PickupTankGear, PickupDpsGear, PickupHealerGear]:
+    let
+      icon = sim.pickupRgbaSprite(kind)
+    packet.addSprite(
+      kind.roleGearIconSpriteId(),
+      icon.width,
+      icon.height,
+      icon.pixels,
+      kind.roleGearIconLabel()
+    )
+    let
+      label = kind.roleGearLabel()
+      text = sim.buildSpriteProtocolTextSprite([label], 2'u8)
+    packet.addSprite(
+      kind.roleGearSpriteId(),
+      text.width,
+      text.height,
+      text.pixels,
+      "role " & label.toLowerAscii()
+    )
+
+  for kind in StatusBadgeKind:
+    let
+      label = kind.statusBadgeLabel()
+      text = sim.buildSpriteProtocolTextSprite(
+        [label],
+        kind.statusBadgeColor()
+      )
+    packet.addSprite(
+      kind.statusBadgeSpriteId(),
+      text.width,
+      text.height,
+      text.pixels,
+      kind.statusBadgeSpriteLabel()
+    )
+
+  for phase in [MobTelegraph, MobLunge]:
+    let effect = phase.buildMobAttackEffectSprite()
+    packet.addSprite(
+      phase.mobAttackEffectSpriteId(),
+      effect.width,
+      effect.height,
+      effect.pixels,
+      phase.mobAttackEffectLabel()
+    )
+
+  for role in [RoleTank, RoleDps, RoleHealer]:
+    let effect = role.buildRoleAbilityEffectSprite()
+    packet.addSprite(
+      role.roleAbilityEffectSpriteId(),
+      effect.width,
+      effect.height,
+      effect.pixels,
+      role.roleAbilityEffectLabel()
+    )
+
   let
     mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
     mobLeft = buildSpriteProtocolRawSprite(sim.rgbaMobSprite, true)
@@ -1229,42 +2135,91 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     bossLeft = buildSpriteProtocolRawSprite(sim.rgbaBossSprite, true)
     coin = buildSpriteProtocolRawSprite(sim.rgbaCoinSprite)
     heart = buildSpriteProtocolRawSprite(sim.rgbaHeartSprite)
-  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "ghost")
+  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "wolf")
   packet.addSprite(
     MobLeftSpriteId,
     mobLeft.width,
     mobLeft.height,
     mobLeft.pixels,
-    "ghost left"
+    "wolf left"
   )
   packet.addSprite(
     TrollSpriteId,
     troll.width,
     troll.height,
     troll.pixels,
-    "troll"
+    "goblin"
   )
   packet.addSprite(
     TrollLeftSpriteId,
     trollLeft.width,
     trollLeft.height,
     trollLeft.pixels,
-    "troll left"
+    "goblin left"
   )
   packet.addSprite(
     BossSpriteId,
     boss.width,
     boss.height,
     boss.pixels,
-    "pigman"
+    "bear boss"
   )
   packet.addSprite(
     BossLeftSpriteId,
     bossLeft.width,
     bossLeft.height,
     bossLeft.pixels,
-    "pigman left"
+    "bear boss left"
   )
+  for species in AllMobSpecies:
+    let
+      kind = species.speciesKind()
+      label = species.speciesLabel()
+      tint = species.speciesTint()
+      base =
+        case kind
+        of SnakeMob, WolfMob, ScorpionMob, BatMob:
+          mob
+        of TrollMob, GoblinMob, SlimeMob, WraithMob:
+          troll
+        of BossMob, BearMob, YetiMob:
+          boss
+      left =
+        case kind
+        of SnakeMob, WolfMob, ScorpionMob, BatMob:
+          mobLeft
+        of TrollMob, GoblinMob, SlimeMob, WraithMob:
+          trollLeft
+        of BossMob, BearMob, YetiMob:
+          bossLeft
+      rightId = species.mobSpeciesSpriteId(false)
+      leftId = species.mobSpeciesSpriteId(true)
+      rightPixels = base.pixels.tintSpritePixels(
+        base.width,
+        base.height,
+        tint,
+        species
+      )
+      leftPixels = left.pixels.tintSpritePixels(
+        left.width,
+        left.height,
+        tint,
+        species
+      )
+    packet.addSprite(
+      rightId,
+      base.width,
+      base.height,
+      rightPixels,
+      label
+    )
+    packet.addSprite(
+      leftId,
+      left.width,
+      left.height,
+      leftPixels,
+      label & " left"
+    )
   packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
   packet.addSprite(
     HeartSpriteId,
@@ -1300,6 +2255,126 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       prop.pixels,
       $kind
     )
+  for kind in LandmarkKind:
+    let landmark = buildSpriteProtocolRawSprite(sim.landmarkRgbaSprite(kind))
+    packet.addSprite(
+      landmarkSpriteId(kind),
+      landmark.width,
+      landmark.height,
+      landmark.pixels,
+      kind.landmarkLabel()
+    )
+    let
+      prompt = kind.landmarkPromptLabel()
+      promptSprite = sim.buildSpriteProtocolTextSprite([prompt], 2'u8)
+    packet.addSprite(
+      kind.landmarkPromptSpriteId(),
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
+  let shelter = buildSpriteProtocolRawSprite(
+    sim.landmarkRgbaSprite(LandmarkCamp)
+  )
+  packet.addSprite(
+    LandmarkShelterSpriteId,
+    shelter.width,
+    shelter.height,
+    shelter.pixels,
+    "shelter"
+  )
+  let
+    shelterPrompt = "SHELTER"
+    shelterPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [shelterPrompt],
+      10'u8
+    )
+  packet.addSprite(
+    LandmarkShelterPromptSpriteId,
+    shelterPromptSprite.width,
+    shelterPromptSprite.height,
+    shelterPromptSprite.pixels,
+    "prompt " & shelterPrompt.toLowerAscii()
+  )
+  let
+    fortPrompt = "FORT"
+    fortPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [fortPrompt],
+      2'u8
+    )
+  packet.addSprite(
+    LandmarkFortPromptSpriteId,
+    fortPromptSprite.width,
+    fortPromptSprite.height,
+    fortPromptSprite.pixels,
+    "prompt " & fortPrompt.toLowerAscii()
+  )
+  let
+    mealPrompt = "MEALS"
+    mealPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [mealPrompt],
+      11'u8
+    )
+  packet.addSprite(
+    LandmarkMealPromptSpriteId,
+    mealPromptSprite.width,
+    mealPromptSprite.height,
+    mealPromptSprite.pixels,
+    "prompt " & mealPrompt.toLowerAscii()
+  )
+  let
+    fortMealPrompt = "FORT MEAL"
+    fortMealPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [fortMealPrompt],
+      11'u8
+    )
+  packet.addSprite(
+    LandmarkFortMealPromptSpriteId,
+    fortMealPromptSprite.width,
+    fortMealPromptSprite.height,
+    fortMealPromptSprite.pixels,
+    "prompt " & fortMealPrompt.toLowerAscii()
+  )
+  for prompt in ["WARD", "RALLY", "AID"]:
+    let
+      promptSprite = sim.buildSpriteProtocolTextSprite([prompt], 11'u8)
+      spriteId =
+        if prompt == "WARD":
+          LandmarkWardPromptSpriteId
+        elif prompt == "RALLY":
+          LandmarkRallyPromptSpriteId
+        else:
+          LandmarkAidPromptSpriteId
+    packet.addSprite(
+      spriteId,
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
+  for biome in BiomeKind:
+    let
+      prompt = biome.waystationPromptLabel()
+      promptSprite = sim.buildSpriteProtocolTextSprite([prompt], 14'u8)
+    packet.addSprite(
+      LandmarkWaystationPromptSpriteBase + ord(biome),
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
+  for weather in WeatherKind:
+    if weather == WeatherClear:
+      continue
+    let overlay = weather.buildWeatherOverlaySprite()
+    packet.addSprite(
+      weather.weatherOverlaySpriteId(),
+      overlay.width,
+      overlay.height,
+      overlay.pixels,
+      weather.weatherOverlayLabel()
+    )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -1307,7 +2382,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, ScreenWidth, 24)
+  result.addViewport(TopLeftLayerId, ScreenWidth, 48)
   result.addLayer(
     ReplayCenterBottomLayerId,
     ReplayCenterBottomLayerType,
@@ -1333,7 +2408,7 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
-  result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+  result.addViewport(MapLayerId, PlayerViewportWidth, PlayerViewportHeight)
   result.addSprite(
     MapSpriteId,
     WorldWidthPixels,
@@ -1473,6 +2548,37 @@ proc addAttackObjects(
       viewportHeight
     )
 
+proc addRoleAbilityEffectObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds active player special-power pulses.
+  for player in sim.players:
+    if player.lives <= 0 or player.abilityTicks <= 0 or player.role == RoleUnarmed:
+      continue
+    let
+      centerX = boundsCenterX(player.x, player.bounds)
+      centerY = boundsCenterY(player.y, player.bounds)
+      effectX = centerX - RoleAbilityEffectSize div 2 - cameraX
+      effectY = centerY - RoleAbilityEffectSize div 2 - cameraY
+    objects.addWorldSpriteObject(
+      currentIds,
+      player.roleAbilityEffectObjectId(),
+      effectX,
+      effectY,
+      player.role.roleAbilityEffectSpriteId(),
+      RoleAbilityEffectSize,
+      RoleAbilityEffectSize,
+      viewportWidth,
+      viewportHeight,
+      centerY - cameraY + RoleAbilityEffectSize
+    )
+
 proc addTerrainObjects(
   sim: SimServer,
   objects: var seq[WorldSpriteObject],
@@ -1500,6 +2606,97 @@ proc addTerrainObjects(
       viewportHeight
     )
 
+proc addLandmarkObjects(
+  sim: SimServer,
+  packet: var seq[uint8],
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds expedition resources, camps, beacons, and final gate objects.
+  for i in 0 ..< sim.landmarks.len:
+    let landmark = sim.landmarks[i]
+    if landmark.done and landmark.kind != LandmarkCamp:
+      continue
+    let
+      sprite = sim.landmarkRgbaSprite(landmark.kind)
+      objectId = landmarkObjectId(i)
+    objects.addWorldSpriteObject(
+      currentIds,
+      objectId,
+      landmark.landmarkWorldX() - cameraX,
+      landmark.landmarkWorldY() - cameraY,
+      landmark.landmarkSpriteId(),
+      sprite.width,
+      sprite.height,
+      viewportWidth,
+      viewportHeight
+    )
+    let
+      prompt = sim.landmarkPromptLabel(landmark)
+      promptSprite = sim.buildSpriteProtocolTextSprite(
+        [prompt],
+        landmark.landmarkPromptColor(prompt)
+      )
+      promptSpriteId = i.landmarkDynamicPromptSpriteId()
+      promptWidth = sim.textFont.textWidth(prompt)
+      promptHeight = sim.textFont.height
+    packet.addSprite(
+      promptSpriteId,
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
+    objects.addWorldSpriteObject(
+      currentIds,
+      i.landmarkPromptObjectId(),
+      landmark.landmarkWorldX() - cameraX -
+        max(0, (promptWidth - sprite.width) div 2),
+      landmark.landmarkWorldY() - cameraY - promptHeight - 3,
+      promptSpriteId,
+      promptWidth,
+      promptHeight,
+      viewportWidth,
+      viewportHeight,
+      landmark.landmarkWorldY() - cameraY - 1
+    )
+
+proc addWeatherOverlayObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds light deterministic weather particles to sprite-protocol map views.
+  for i in 0 ..< WeatherOverlaySlots:
+    let
+      screenX = (i * 47 + sim.tickCount * 3) mod (viewportWidth + 48) - 24
+      screenY = (i * 31 + sim.tickCount * 2) mod (viewportHeight + 32) - 16
+      worldX = clamp(cameraX + screenX, 0, WorldWidthPixels - 1)
+      weather = sim.weatherAtPixel(worldX)
+    if weather == WeatherClear:
+      continue
+    let size = weather.weatherOverlaySize()
+    objects.addWorldSpriteObject(
+      currentIds,
+      i.weatherOverlayObjectId(),
+      screenX,
+      screenY,
+      weather.weatherOverlaySpriteId(),
+      size.width,
+      size.height,
+      viewportWidth,
+      viewportHeight,
+      viewportHeight + i
+    )
+
 proc addWorldObjects(
   sim: SimServer,
   packet: var seq[uint8],
@@ -1519,16 +2716,22 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
+  sim.addLandmarkObjects(
+    packet,
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  let selectedPlayerIndex = sim.selectedPlayerIndex(selectedPlayerId)
 
   for i in 0 ..< sim.pickups.len:
     let
       pickup = sim.pickups[i]
       objectId = PickupObjectBase + i
-      spriteId =
-        if pickup.kind in {PickupCoin, PickupTankGear, PickupDpsGear}:
-          CoinSpriteId
-        else:
-          HeartSpriteId
+      spriteId = pickup.kind.pickupSpriteId()
       sprite = sim.pickupRgbaSprite(pickup.kind)
     objects.addWorldSpriteObject(
       currentIds,
@@ -1541,17 +2744,35 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if pickup.kind.isRoleGear():
+      let
+        label = pickup.kind.roleGearLabel()
+        labelWidth = sim.textFont.textWidth(label)
+        labelHeight = sim.textFont.height
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.roleGearObjectId(),
+        pickup.x - cameraX - max(0, (labelWidth - sprite.width) div 2),
+        pickup.y - cameraY - labelHeight - 3,
+        pickup.kind.roleGearSpriteId(),
+        labelWidth,
+        labelHeight,
+        viewportWidth,
+        viewportHeight,
+        pickup.y - cameraY - 1
+      )
 
   for i in 0 ..< sim.mobs.len:
     let
       mob = sim.mobs[i]
       objectId = MobObjectBase + i
       spriteId = mob.mobSpriteId()
+      drawY = mob.mobDrawY()
     objects.addWorldSpriteObject(
       currentIds,
       objectId,
       mob.x - cameraX,
-      mob.y - cameraY,
+      drawY - cameraY,
       spriteId,
       mob.sprite.width,
       mob.sprite.height,
@@ -1562,7 +2783,7 @@ proc addWorldObjects(
       currentIds,
       mobHealthObjectId(i),
       mob.x,
-      mob.y,
+      drawY,
       mob.sprite.width,
       mob.sprite.height,
       mob.hp,
@@ -1572,14 +2793,84 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if mob.attackPhase in {MobTelegraph, MobLunge}:
+      let
+        effectForward =
+          case mob.attackFacing
+          of FaceLeft: -MobAttackEffectSize div 3
+          of FaceRight: MobAttackEffectSize div 3
+          of FaceUp, FaceDown: 0
+        effectLift =
+          case mob.attackPhase
+          of MobTelegraph:
+            if (mob.attackTicks div 8) mod 2 == 0: -2 else: 1
+          of MobLunge:
+            case mob.attackFacing
+            of FaceUp: -MobAttackEffectSize div 3
+            of FaceDown: MobAttackEffectSize div 3
+            else: 0
+          of MobIdle:
+            0
+        effectX = mob.x + mob.sprite.width div 2 -
+          MobAttackEffectSize div 2 + effectForward
+        effectY = drawY + mob.sprite.height div 2 -
+          MobAttackEffectSize div 2 + effectLift
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.mobAttackEffectObjectId(),
+        effectX - cameraX,
+        effectY - cameraY,
+        mob.attackPhase.mobAttackEffectSpriteId(),
+        MobAttackEffectSize,
+        MobAttackEffectSize,
+        viewportWidth,
+        viewportHeight,
+        drawY - cameraY + mob.sprite.height + 1
+      )
+    var badges: seq[StatusBadgeKind] = @[]
+    if mob.partyFocusDamageBonus(sim.players, sim.tickCount) > 0:
+      badges.add(StatusPartyFocus)
+    if mob.bossStaggered():
+      badges.add(StatusStagger)
+    if selectedPlayerIndex >= 0:
+      let elevationBadge = elevationStatusBadge(
+        sim.mobTileElevation(mob) -
+          sim.actorTileElevation(sim.players[selectedPlayerIndex])
+      )
+      if elevationBadge.found:
+        badges.add(elevationBadge.badge)
+    for badge in mob.species.threatBadges():
+      badges.add(badge)
+    for badgeIndex in 0 ..< badges.len:
+      let
+        badge = badges[badgeIndex]
+        label = badge.statusBadgeLabel()
+        badgeWidth = sim.textFont.textWidth(label)
+        badgeHeight = sim.textFont.height
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.mobThreatBadgeObjectId(badgeIndex),
+        mob.x + mob.sprite.width + 2 - cameraX,
+        drawY - (badgeHeight + 2) * (badgeIndex + 1) - cameraY,
+        badge.statusBadgeSpriteId(),
+        badgeWidth,
+        badgeHeight,
+        viewportWidth,
+        viewportHeight,
+        drawY - cameraY + badgeIndex
+      )
 
+  let useCarryHud =
+    viewportWidth == PlayerViewportWidth and viewportHeight == PlayerViewportHeight
+  var carryHudSlot = 0
   for i in 0 ..< sim.players.len:
     let
       player = sim.players[i]
       selected = player.id == selectedPlayerId
       objectId = player.playerObjectId()
       playerSprite = sim.playerRgbaSpriteFor(player)
-    if player.lives <= 0:
+      downed = sim.playerDowned(i)
+    if player.lives <= 0 and not downed:
       continue
     objects.addWorldSpriteObject(
       currentIds,
@@ -1587,7 +2878,7 @@ proc addWorldObjects(
       player.x - 1 - cameraX,
       player.y - 1 - cameraY,
       playerSpriteId(
-        i,
+        i.roleTintSlot(player.role),
         player.form,
         selected,
         player.facing
@@ -1597,6 +2888,135 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if player.activeCarryItem() != CarryNone and not downed:
+      let carryUsesHud = useCarryHud and selected
+      for item in CarryInventoryKinds:
+        let count = player.carryCount(item)
+        if count <= 0:
+          continue
+        if not carryUsesHud and item != player.activeCarryItem():
+          continue
+        let
+          carriedLandmark = item.landmarkForCarry()
+          carriedSprite = sim.landmarkRgbaSprite(carriedLandmark)
+          carryX =
+            if carryUsesHud:
+              CarryHudSlotGap + carryHudSlot * (WorldTileSize + CarryHudSlotGap)
+            else:
+              player.x + playerSprite.width div 2 -
+                carriedSprite.width div 2 - cameraX
+          carryY =
+            if carryUsesHud:
+              viewportHeight - carriedSprite.height - CarryHudSlotGap
+            else:
+              player.y - carriedSprite.height div 2 - 5 - cameraY
+          carrySortY =
+            if carryUsesHud:
+              viewportHeight + carryHudSlot
+            else:
+              player.y - cameraY
+        objects.addWorldSpriteObject(
+          currentIds,
+          player.carryObjectId(item),
+          carryX,
+          carryY,
+          carriedLandmark.landmarkSpriteId(),
+          carriedSprite.width,
+          carriedSprite.height,
+          viewportWidth,
+          viewportHeight,
+          carrySortY
+        )
+        if carryUsesHud and count > 1:
+          let
+            countText = $count
+            countSprite = sim.buildSpriteProtocolTextSprite([countText], 8'u8)
+            countSpriteId = player.carryCountSpriteId(item)
+            countObjectId = player.carryCountObjectId(item)
+            countWidth = sim.textFont.textWidth(countText)
+            countHeight = sim.textFont.height
+          packet.addSprite(
+            countSpriteId,
+            countSprite.width,
+            countSprite.height,
+            countSprite.pixels,
+            "carry " & item.carryLabel() & " x" & $count
+          )
+          objects.addWorldSpriteObject(
+            currentIds,
+            countObjectId,
+            carryX + carriedSprite.width - countWidth,
+            carryY + carriedSprite.height - countHeight,
+            countSpriteId,
+            countWidth,
+            countHeight,
+            viewportWidth,
+            viewportHeight,
+            carrySortY + 1
+          )
+        if carryUsesHud:
+          inc carryHudSlot
+    var badges: seq[StatusBadgeKind] = @[]
+    if downed:
+      badges.add(StatusDown)
+    else:
+      let roleBadge = player.role.roleStatusBadge()
+      if roleBadge.found:
+        badges.add(roleBadge.badge)
+      if sim.playerInTrioFormation(i):
+        badges.add(StatusTrio)
+      let tacticBadge = sim.playerBiomeTacticKind(i).biomeTacticStatusBadge()
+      if tacticBadge.found:
+        badges.add(tacticBadge.badge)
+      if player.routeTicks > 0:
+        badges.add(StatusRoute)
+      if player.surveyTicks > 0:
+        badges.add(StatusSurvey)
+      if player.guideTicks > 0:
+        badges.add(StatusGuide)
+      if player.huntTicks > 0:
+        badges.add(StatusHunt)
+      if player.triumphTicks > 0:
+        badges.add(StatusTriumph)
+      if player.rationTicks > 0:
+        badges.add(StatusRation)
+      if player.moraleTicks > 0:
+        badges.add(StatusMorale)
+      let survivalBadge = sim.survivalPressureKind(i).survivalStatusBadge()
+      if survivalBadge.found:
+        badges.add(survivalBadge.badge)
+      if player.poisonTicks > 0:
+        badges.add(StatusPoison)
+      if player.slowTicks > 0:
+        badges.add(StatusSlow)
+      if player.chillTicks > 0:
+        badges.add(StatusChill)
+      if player.exhaustionTicks > 0:
+        badges.add(StatusExhaustion)
+      if sim.playerIsolationThreatened(i):
+        badges.add(StatusAlone)
+      if sim.playerNeedsHelp(i):
+        badges.add(StatusHelp)
+      if player.pingTicks > 0 and player.pingKind != PingNone:
+        badges.add(player.pingKind.pingStatusBadge())
+    for badgeIndex in 0 ..< badges.len:
+      let
+        badge = badges[badgeIndex]
+        label = badge.statusBadgeLabel()
+        badgeWidth = sim.textFont.textWidth(label)
+        badgeHeight = sim.textFont.height
+      objects.addWorldSpriteObject(
+        currentIds,
+        player.statusBadgeObjectId(badgeIndex),
+        player.x + playerSprite.width + 2 - cameraX,
+        player.y - (badgeHeight + 2) * (badgeIndex + 1) - cameraY,
+        badge.statusBadgeSpriteId(),
+        badgeWidth,
+        badgeHeight,
+        viewportWidth,
+        viewportHeight,
+        player.y - cameraY + badgeIndex
+      )
     objects.addHealthObject(
       currentIds,
       player.playerHealthObjectId(),
@@ -1612,6 +3032,14 @@ proc addWorldObjects(
       viewportHeight
     )
 
+  sim.addRoleAbilityEffectObjects(
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
   sim.addAttackObjects(
     packet,
     objects,
@@ -1623,6 +3051,14 @@ proc addWorldObjects(
   )
   sim.addSpeechBubbles(
     packet,
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  sim.addWeatherOverlayObjects(
     objects,
     currentIds,
     cameraX,
@@ -1647,6 +3083,33 @@ proc addPlayerHud(
     player = sim.players[playerIndex]
     frontier = sim.frontierTiles()
     lives = max(player.lives, 0)
+    statusLine1 = player.role.roleLabel().toUpperAscii() & " " &
+      sim.currentBiome().biomeLabel().toUpperAscii()
+    statusLine2 = sim.currentWeather().weatherLabel().toUpperAscii() &
+      " W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
+      " R" & $sim.relicShards
+    ability = player.role.roleAbilityLabel().toUpperAscii()
+    statusLine3 =
+      if player.abilityCooldown > 0:
+        "B " & ability & " CD" & $player.abilityCooldown
+      else:
+        "B " & ability
+    playerElevation = sim.tileElevation(
+      clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+      clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+    )
+    tacticLabel = sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
+    partyTacticLabel = sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
+    statusLine4 =
+      "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
+        " E" & $playerElevation & " " &
+        player.statusLabel().toUpperAscii() & " " &
+        sim.survivalPressureLabel(playerIndex).toUpperAscii() &
+        (if tacticLabel.len > 0: " " & tacticLabel else: "") &
+        (if partyTacticLabel.len > 0: " " & partyTacticLabel else: "")
+    statusLine5 = sim.expeditionObjectiveHint(playerIndex)
+    status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
+      statusLine4 & "|" & statusLine5
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -1689,8 +3152,30 @@ proc addPlayerHud(
     MapLayerId,
     LivesHudSpriteId
   )
+  currentIds.add(StatusHudObjectId)
+  if state.hudStatus != status:
+    let statusText = sim.buildSpriteProtocolTextSprite(
+      [statusLine1, statusLine2, statusLine3, statusLine4, statusLine5],
+      2'u8
+    )
+    packet.addSprite(
+      StatusHudSpriteId,
+      statusText.width,
+      statusText.height,
+      statusText.pixels,
+      status
+    )
+  packet.addObject(
+    StatusHudObjectId,
+    2,
+    2 + (sim.textFont.height + HudGap) * 2,
+    high(int16),
+    MapLayerId,
+    StatusHudSpriteId
+  )
   nextState.hudCoins = frontier
   nextState.hudLives = lives
+  nextState.hudStatus = status
 
 proc addPlayerStatus(
   sim: SimServer,
@@ -1701,8 +3186,8 @@ proc addPlayerStatus(
   ## Adds centered status text to a sprite-player view.
   let
     text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
-    x = max(0, (ScreenWidth - text.width) div 2)
-    y = max(0, (ScreenHeight - text.height) div 2)
+    x = max(0, (PlayerViewportWidth - text.width) div 2)
+    y = max(0, (PlayerViewportHeight - text.height) div 2)
   currentIds.add(StatusHudObjectId)
   packet.addSprite(
     StatusHudSpriteId,
@@ -1740,12 +3225,12 @@ proc buildSpriteProtocolPlayerUpdates*(
     let player = sim.players[playerIndex]
     let
       cameraX = worldClampPixel(
-        player.x + player.sprite.width div 2 - ScreenWidth div 2,
-        WorldWidthPixels - ScreenWidth
+        player.x + player.sprite.width div 2 - PlayerViewportWidth div 2,
+        WorldWidthPixels - PlayerViewportWidth
       )
       cameraY = worldClampPixel(
-        player.y + player.sprite.height div 2 - ScreenHeight div 2,
-        WorldHeightPixels - ScreenHeight
+        player.y + player.sprite.height div 2 - PlayerViewportHeight div 2,
+        WorldHeightPixels - PlayerViewportHeight
       )
     currentIds.add(MapObjectId)
     result.addObject(
@@ -1761,11 +3246,14 @@ proc buildSpriteProtocolPlayerUpdates*(
       currentIds,
       cameraX,
       cameraY,
-      ScreenWidth,
-      ScreenHeight
+      PlayerViewportWidth,
+      PlayerViewportHeight,
+      player.id
     )
     sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
-    if player.lives <= 0:
+    if sim.playerDowned(playerIndex):
+      sim.addPlayerStatus(result, currentIds, ["DOWN", "WAIT FOR RESCUE"])
+    elif player.lives <= 0:
       sim.addPlayerStatus(result, currentIds, ["GAME", "OVER"])
 
   for objectId in state.objectIds:
@@ -1838,29 +3326,36 @@ proc buildSpriteProtocolUpdates*(
   )
 
   let playerIndex = sim.selectedPlayerIndex(nextState.selectedPlayerId)
+  var lines: seq[string] = @[
+    "SCORE " & $sim.teamScore() & " FRONT " & $sim.frontierTiles(),
+    sim.currentBiome().biomeLabel().toUpperAscii() & " " &
+      sim.currentWeather().weatherLabel().toUpperAscii(),
+    "W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
+      " R" & $sim.relicShards
+  ]
   if playerIndex >= 0:
-    var lines: seq[string] = @[]
     let player = sim.players[playerIndex]
     lines.add("PLAYER " & player.playerIdentity())
     lines.add("ROLE " & player.role.roleLabel())
     lines.add("HP " & $player.lives & "/" & $player.maxHp)
     lines.add("FRONT " & $frontierTilesForX(player.personalFrontier))
-    let text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
-    currentIds.add(SelectedTextObjectId)
-    result.addSprite(
-      SelectedTextSpriteId,
-      text.width,
-      text.height,
-      text.pixels
-    )
-    result.addObject(
-      SelectedTextObjectId,
-      2,
-      2,
-      0,
-      TopLeftLayerId,
-      SelectedTextSpriteId
-    )
+    lines.add(sim.expeditionObjectiveHint(playerIndex))
+  let text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
+  currentIds.add(SelectedTextObjectId)
+  result.addSprite(
+    SelectedTextSpriteId,
+    text.width,
+    text.height,
+    text.pixels
+  )
+  result.addObject(
+    SelectedTextObjectId,
+    2,
+    2,
+    0,
+    TopLeftLayerId,
+    SelectedTextSpriteId
+  )
 
   if replayTick >= 0:
     let

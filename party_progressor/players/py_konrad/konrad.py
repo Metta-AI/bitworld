@@ -21,14 +21,15 @@ except ImportError as exc:
 PlayerDefaultPort = 2000
 ScreenWidth = 128
 ScreenHeight = 128
-WorldWidthTiles = 32
-WorldHeightTiles = 32
+WorldWidthTiles = 96
+WorldHeightTiles = 18
 WorldTileSize = 32
 WorldWidthPixels = WorldWidthTiles * WorldTileSize
 WorldHeightPixels = WorldHeightTiles * WorldTileSize
 PlayerWebSocketPath = "/player"
 DefaultHost = "localhost"
 
+MapLayerId = 0
 MapSpriteId = 1
 MapObjectId = 1
 PlayerSpriteBase = 100
@@ -40,9 +41,17 @@ HeartSpriteId = 303
 SwooshSpriteBase = 304
 TrollSpriteId = 312
 TerrainSpriteBase = 320
+LandmarkSpriteBase = 360
 PlayerHudSpriteId = 600
 PlayerObjectBase = 1000
 MobObjectBase = 2000
+PlayerHudObjectId = 7000
+StatusHudObjectId = PlayerHudObjectId + 2
+PlayerHealthObjectBase = 10000
+CarryObjectBase = 12000
+StatusBadgeObjectBase = 13000
+StatusBadgeSlots = 7
+LowHealthPercent = 50
 
 ButtonUp = 1 << 0
 ButtonDown = 1 << 1
@@ -54,7 +63,8 @@ ButtonB = 1 << 6
 PlayerSpriteSlots = 64
 SelectedPlayerSpriteSlots = 64
 SwooshSpriteSlots = 8
-TerrainSpriteSlots = 5
+TerrainSpriteSlots = 16
+LandmarkSpriteSlots = 11
 MaxDrainMessages = 256
 PathCellSize = 8
 PathGridWidth = WorldWidthPixels // PathCellSize
@@ -90,11 +100,31 @@ class SpriteKind(IntEnum):
 
 class TargetKind(IntEnum):
     Explore = 0
-    Coin = 1
-    Heart = 2
-    Mob = 3
-    Troll = 4
-    Boss = 5
+    Regroup = 1
+    Coin = 2
+    Heart = 3
+    Wood = 4
+    Food = 5
+    Stone = 6
+    Gold = 7
+    Camp = 8
+    Relic = 9
+    Gate = 10
+    Shrine = 11
+    Rescue = 12
+    Lair = 13
+    Waystation = 14
+    Mob = 15
+    Troll = 16
+    Boss = 17
+
+
+class CarryKind(IntEnum):
+    None_ = 0
+    Wood = 1
+    Food = 2
+    Stone = 3
+    Gold = 4
 
 
 @dataclass
@@ -142,6 +172,48 @@ class PathStep:
     next_ty: int = 0
 
 
+def parse_health_label(label: str) -> tuple[bool, int, int]:
+    prefix = "health "
+    lower = label.lower()
+    if not lower.startswith(prefix):
+        return False, 0, 0
+    parts = lower[len(prefix) :].split("/")
+    if len(parts) != 2:
+        return False, 0, 0
+    try:
+        current = int(parts[0].strip())
+        maximum = int(parts[1].strip())
+    except ValueError:
+        return False, 0, 0
+    if maximum <= 0:
+        return False, 0, 0
+    return True, current, maximum
+
+
+def carry_kind_from_label(label: str) -> CarryKind:
+    lower = label.lower()
+    if "wood" in lower:
+        return CarryKind.Wood
+    if "food" in lower:
+        return CarryKind.Food
+    if "stone" in lower:
+        return CarryKind.Stone
+    if "gold" in lower:
+        return CarryKind.Gold
+    return CarryKind.None_
+
+
+def token_number(tokens: list[str], key: str) -> int:
+    for token in tokens:
+        if not token.startswith(key) or len(token) <= len(key):
+            continue
+        try:
+            return int(token[len(key) :])
+        except ValueError:
+            continue
+    return 0
+
+
 @dataclass
 class Bot:
     sprites: list[SpriteInfo] = field(default_factory=list)
@@ -149,6 +221,8 @@ class Bot:
     rng: random.Random = field(default_factory=random.Random)
     camera_x: int = 0
     camera_y: int = 0
+    viewport_width: int = ScreenWidth
+    viewport_height: int = ScreenHeight
     player_world_x: int = 0
     player_world_y: int = 0
     previous_player_x: int = 0
@@ -175,6 +249,12 @@ class Bot:
     coin_count: int = 0
     heart_count: int = 0
     kill_count: int = 0
+    low_health: bool = False
+    needs_regroup: bool = False
+    carried_item: CarryKind = CarryKind.None_
+    objective_hint: str = ""
+    need_wood: int = 0
+    need_stone: int = 0
     intent: str = ""
     last_mask: int = 0
     next_chat_tick: int = 72
@@ -270,6 +350,12 @@ class Bot:
             elif message_type == 0x05:
                 if offset + 5 > len(packet):
                     return False
+                layer = packet[offset]
+                width = read_u16(packet, offset + 1)
+                height = read_u16(packet, offset + 3)
+                if layer == MapLayerId:
+                    self.viewport_width = width
+                    self.viewport_height = height
                 offset += 5
             elif message_type == 0x06:
                 if offset + 3 > len(packet):
@@ -286,8 +372,10 @@ class Bot:
 
     def update_player_position(self) -> None:
         best_distance = 2**63 - 1
-        best_x = self.camera_x + ScreenWidth // 2
-        best_y = self.camera_y + ScreenHeight // 2
+        viewport_center_x = self.viewport_width // 2
+        viewport_center_y = self.viewport_height // 2
+        best_x = self.camera_x + viewport_center_x
+        best_y = self.camera_y + viewport_center_y
         best_id = -1
         for object_id, state in enumerate(self.objects):
             if not state.present:
@@ -302,8 +390,8 @@ class Bot:
             distance = distance_squared(
                 screen_x,
                 screen_y,
-                ScreenWidth // 2,
-                ScreenHeight // 2,
+                viewport_center_x,
+                viewport_center_y,
             )
             if distance < best_distance:
                 best_distance = distance
@@ -313,6 +401,55 @@ class Bot:
         self.player_world_x = best_x
         self.player_world_y = best_y
         self.self_object_id = best_id
+
+    def update_self_affordances(self) -> None:
+        self.low_health = False
+        self.needs_regroup = False
+        self.carried_item = CarryKind.None_
+        self.objective_hint = ""
+        self.need_wood = 0
+        self.need_stone = 0
+        if StatusHudObjectId < len(self.objects) and self.objects[StatusHudObjectId].present:
+            self.read_status_hud(self.sprite_info(self.objects[StatusHudObjectId].sprite_id).label)
+        if self.self_object_id < PlayerObjectBase:
+            return
+        player_id = self.self_object_id - PlayerObjectBase
+        carry_object_id = CarryObjectBase + player_id
+        if carry_object_id < len(self.objects) and self.objects[carry_object_id].present:
+            carried = carry_kind_from_label(self.sprite_info(self.objects[carry_object_id].sprite_id).label)
+            if carried != CarryKind.None_:
+                self.carried_item = carried
+        health_object_id = PlayerHealthObjectBase + player_id
+        if (
+            health_object_id < len(self.objects)
+            and self.objects[health_object_id].present
+        ):
+            health_sprite = self.sprite_info(self.objects[health_object_id].sprite_id)
+            found, current, maximum = parse_health_label(health_sprite.label)
+            if found and current * 100 <= maximum * LowHealthPercent:
+                self.low_health = True
+
+        for badge_index in range(StatusBadgeSlots):
+            object_id = StatusBadgeObjectBase + player_id * StatusBadgeSlots + badge_index
+            if object_id >= len(self.objects) or not self.objects[object_id].present:
+                continue
+            label = self.sprite_info(self.objects[object_id].sprite_id).label.lower()
+            if label == "status help":
+                self.low_health = True
+            elif label == "status alone":
+                self.needs_regroup = True
+
+    def read_status_hud(self, label: str) -> None:
+        for part in label.lower().split("|"):
+            section = part.strip()
+            if section.startswith("carry "):
+                self.carried_item = carry_kind_from_label(section)
+            elif section.startswith("next "):
+                self.objective_hint = section
+                if section.startswith("next gather"):
+                    tokens = section.split()
+                    self.need_wood = token_number(tokens, "w")
+                    self.need_stone = token_number(tokens, "s")
 
     def target_center(
         self,
@@ -325,9 +462,10 @@ class Bot:
             self.camera_y + state.y + bounds.y + bounds.h // 2,
         )
 
-    def scan_world(self) -> tuple[list[bool], list[Target], list[Target]]:
+    def scan_world(self) -> tuple[list[bool], list[Target], list[Target], list[Target]]:
         blocked = [False] * (PathGridWidth * PathGridHeight)
         pickups: list[Target] = []
+        allies: list[Target] = []
         mobs: list[Target] = []
         for object_id, state in enumerate(self.objects):
             if not state.present:
@@ -335,7 +473,16 @@ class Bot:
             sprite = self.sprite_info(state.sprite_id)
             if not sprite.defined:
                 continue
-            if sprite.kind == SpriteKind.Terrain:
+            if (
+                sprite.kind == SpriteKind.Player
+                and object_id != self.self_object_id
+                and PlayerObjectBase <= object_id < MobObjectBase
+            ):
+                x, y = self.target_center(state, sprite)
+                allies.append(
+                    Target(True, TargetKind.Regroup, object_id, x, y, "regroup")
+                )
+            elif sprite.kind == SpriteKind.Terrain:
                 bounds = terrain_bounds(sprite)
                 mark_blocked(
                     blocked,
@@ -346,15 +493,16 @@ class Bot:
                 )
             elif sprite.kind == SpriteKind.Coin:
                 x, y = self.target_center(state, sprite)
-                pickups.append(Target(True, TargetKind.Coin, object_id, x, y, "coin"))
+                kind = target_kind_for_sprite_info(sprite)
+                pickups.append(Target(True, kind, object_id, x, y, target_label(kind)))
             elif sprite.kind == SpriteKind.Heart:
                 x, y = self.target_center(state, sprite)
                 pickups.append(Target(True, TargetKind.Heart, object_id, x, y, "heart"))
             elif sprite.kind in {SpriteKind.Mob, SpriteKind.Troll, SpriteKind.Boss}:
-                kind = target_kind_for_sprite(sprite.kind)
+                kind = target_kind_for_sprite_info(sprite)
                 x, y = self.target_center(state, sprite)
                 mobs.append(Target(True, kind, object_id, x, y, target_label(kind)))
-        return blocked, pickups, mobs
+        return blocked, pickups, allies, mobs
 
     def update_stuck(self) -> None:
         if not self.have_player_sample:
@@ -390,16 +538,86 @@ class Bot:
             target.x,
             target.y,
         )
+        if target.kind == TargetKind.Regroup:
+            return distance + (
+                -120
+                if self.needs_regroup and self.low_health
+                else -260
+                if self.needs_regroup
+                else 20
+                if self.low_health
+                else 340
+            )
         if target.kind == TargetKind.Coin:
-            return distance
+            return distance + 90
         if target.kind == TargetKind.Heart:
-            return distance + 35
+            return distance + (-210 if self.low_health else -40 if self.needs_regroup else 15)
+        if target.kind == TargetKind.Wood:
+            if self.need_wood > 0:
+                return distance - 260
+            if self.carried_item == CarryKind.Wood:
+                return distance + 170
+            return distance - 120
+        if target.kind == TargetKind.Food:
+            if self.carried_item == CarryKind.Food:
+                return distance + (-20 if self.low_health else 90)
+            return distance + (
+                -150
+                if self.low_health or "heal food" in self.objective_hint
+                else -115
+                if self.needs_regroup
+                else -95
+            )
+        if target.kind == TargetKind.Stone:
+            if self.need_stone > 0:
+                return distance - 260
+            if self.carried_item == CarryKind.Stone:
+                return distance + 170
+            return distance - 120
+        if target.kind == TargetKind.Gold:
+            if self.need_stone > 0:
+                return distance - 170
+            if self.carried_item == CarryKind.Gold:
+                return distance + 160
+            return distance - 55
+        if target.kind == TargetKind.Camp:
+            if self.need_wood > 0 or self.need_stone > 0:
+                return distance + 120
+            if self.objective_hint.startswith("next build camp") or self.objective_hint.startswith("next camp"):
+                return distance - 230
+            if self.carried_item != CarryKind.None_:
+                return distance - 170
+            return distance + (-180 if self.low_health or self.needs_regroup else -100)
+        if target.kind == TargetKind.Relic:
+            if self.objective_hint.startswith("next relic"):
+                return distance - 170
+            if self.need_wood > 0 or self.need_stone > 0:
+                return distance + 120
+            return distance - 85
+        if target.kind == TargetKind.Waystation:
+            return distance + (-165 if self.low_health or self.needs_regroup else -65)
+        if target.kind == TargetKind.Rescue:
+            return distance + (-120 if self.needs_regroup else -50)
+        if target.kind == TargetKind.Shrine:
+            return distance - 20
+        if target.kind == TargetKind.Gate:
+            return distance + (-210 if self.objective_hint.startswith("next open gate") else 10)
+        if target.kind == TargetKind.Lair:
+            return distance + (
+                420 if self.low_health or self.needs_regroup else -45 if distance < 100 else 180
+            )
         if target.kind == TargetKind.Mob:
-            return distance + (-95 if distance < 90 else 130)
+            return distance + (
+                340 if self.low_health else 240 if self.needs_regroup else -70 if distance < 90 else 190
+            )
         if target.kind == TargetKind.Troll:
-            return distance + (-85 if distance < 105 else 155)
+            return distance + (
+                400 if self.low_health else 280 if self.needs_regroup else -60 if distance < 105 else 230
+            )
         if target.kind == TargetKind.Boss:
-            return distance + (-70 if distance < 120 else 220)
+            return distance + (
+                560 if self.low_health else 440 if self.needs_regroup else -45 if distance < 120 else 420
+            )
         return distance + 400
 
     def refresh_explore_goal(self, blocked: list[bool]) -> None:
@@ -430,6 +648,7 @@ class Bot:
         self,
         blocked: list[bool],
         pickups: list[Target],
+        allies: list[Target],
         mobs: list[Target],
     ) -> Target:
         result = Target()
@@ -441,6 +660,14 @@ class Bot:
             if score < best_score:
                 best_score = score
                 result = pickup
+        if self.needs_regroup or self.low_health:
+            for ally in allies:
+                if self.skip_ticks > 0 and ally.object_id == self.skip_target_id:
+                    continue
+                score = self.target_score(ally)
+                if score < best_score:
+                    best_score = score
+                    result = ally
         for mob in mobs:
             if self.skip_ticks > 0 and mob.object_id == self.skip_target_id:
                 continue
@@ -491,11 +718,26 @@ class Bot:
     def update_target_result(
         self,
         pickups: list[Target],
+        allies: list[Target],
         mobs: list[Target],
     ) -> None:
         if self.current_target_id < 0:
             return
-        if self.current_target_kind in {TargetKind.Coin, TargetKind.Heart}:
+        if self.current_target_kind in {
+            TargetKind.Coin,
+            TargetKind.Heart,
+            TargetKind.Wood,
+            TargetKind.Food,
+            TargetKind.Stone,
+            TargetKind.Gold,
+            TargetKind.Camp,
+            TargetKind.Relic,
+            TargetKind.Gate,
+            TargetKind.Shrine,
+            TargetKind.Rescue,
+            TargetKind.Lair,
+            TargetKind.Waystation,
+        }:
             still_present = contains_target(pickups, self.current_target_id)
         elif self.current_target_kind in {
             TargetKind.Mob,
@@ -503,6 +745,8 @@ class Bot:
             TargetKind.Boss,
         }:
             still_present = contains_target(mobs, self.current_target_id)
+        elif self.current_target_kind == TargetKind.Regroup:
+            still_present = contains_target(allies, self.current_target_id)
         else:
             still_present = True
         if still_present:
@@ -525,6 +769,28 @@ class Bot:
             print(
                 f"heart collected id={self.current_target_id}"
                 f" total={self.heart_count}",
+                flush=True,
+            )
+        elif (
+            self.current_target_kind
+            in {
+                TargetKind.Wood,
+                TargetKind.Food,
+                TargetKind.Stone,
+                TargetKind.Gold,
+                TargetKind.Camp,
+                TargetKind.Relic,
+                TargetKind.Gate,
+                TargetKind.Shrine,
+                TargetKind.Rescue,
+                TargetKind.Lair,
+                TargetKind.Waystation,
+            }
+            and self.current_target_distance < 96
+        ):
+            print(
+                f"objective done kind={self.current_target_kind}"
+                f" id={self.current_target_id}",
                 flush=True,
             )
         elif (
@@ -574,14 +840,15 @@ class Bot:
     def decide_next_mask(self) -> int:
         self.update_camera()
         self.update_player_position()
+        self.update_self_affordances()
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
         if self.skip_ticks > 0:
             self.skip_ticks -= 1
             if self.skip_ticks == 0:
                 self.skip_target_id = -1
-        blocked, pickups, mobs = self.scan_world()
-        self.update_target_result(pickups, mobs)
+        blocked, pickups, allies, mobs = self.scan_world()
+        self.update_target_result(pickups, allies, mobs)
         self.update_stuck()
         if self.jiggle_ticks > 0:
             self.jiggle_ticks -= 1
@@ -592,14 +859,10 @@ class Bot:
             self.remember_target(close_mob)
             self.intent = close_mob.label
             return self.attack_mask(close_mob)
-        target = self.choose_target(blocked, pickups, mobs)
+        target = self.choose_target(blocked, pickups, allies, mobs)
         self.remember_target(target)
         self.intent = target.label
-        if target.kind in {
-            TargetKind.Mob,
-            TargetKind.Troll,
-            TargetKind.Boss,
-        } and self.can_attack(target):
+        if is_attack_target(target.kind) and self.can_attack(target):
             return self.attack_mask(target)
         step = find_path_step(
             blocked,
@@ -745,13 +1008,34 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
         < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots
     ):
         return SpriteKind.Player
-    if sprite_id == MobSpriteId or lower == "ghost":
+    if (
+        sprite_id == MobSpriteId
+        or lower == "ghost"
+        or lower.startswith("wolf")
+    ):
         return SpriteKind.Mob
-    if sprite_id == TrollSpriteId or lower == "troll":
+    if sprite_id == TrollSpriteId or lower == "troll" or lower.startswith("goblin"):
         return SpriteKind.Troll
-    if sprite_id == BossSpriteId or lower == "pigman":
+    if sprite_id == BossSpriteId or lower == "pigman" or lower.startswith("bear"):
         return SpriteKind.Boss
-    if sprite_id == CoinSpriteId or lower == "coin":
+    if (
+        sprite_id == CoinSpriteId
+        or lower == "coin"
+        or lower
+        in {
+            "camp",
+            "beacon",
+            "final gate",
+            "shrine",
+            "rescue",
+            "lair",
+            "waystation",
+            "wood",
+            "food",
+            "stone",
+            "gold",
+        }
+    ):
         return SpriteKind.Coin
     if sprite_id == HeartSpriteId or lower == "heart":
         return SpriteKind.Heart
@@ -759,6 +1043,8 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
         return SpriteKind.Swoosh
     if TerrainSpriteBase <= sprite_id < TerrainSpriteBase + TerrainSpriteSlots:
         return SpriteKind.Terrain
+    if LandmarkSpriteBase <= sprite_id < LandmarkSpriteBase + LandmarkSpriteSlots:
+        return SpriteKind.Coin
     if sprite_id == PlayerHudSpriteId:
         return SpriteKind.Hud
     if label:
@@ -774,15 +1060,63 @@ def target_kind_for_sprite(kind: SpriteKind) -> TargetKind:
     return TargetKind.Mob
 
 
+def target_kind_for_sprite_info(sprite: SpriteInfo) -> TargetKind:
+    return {
+        "wood": TargetKind.Wood,
+        "food": TargetKind.Food,
+        "stone": TargetKind.Stone,
+        "gold": TargetKind.Gold,
+        "camp": TargetKind.Camp,
+        "beacon": TargetKind.Relic,
+        "final gate": TargetKind.Gate,
+        "shrine": TargetKind.Shrine,
+        "rescue": TargetKind.Rescue,
+        "lair": TargetKind.Lair,
+        "waystation": TargetKind.Waystation,
+    }.get(
+        sprite.label.lower(),
+        TargetKind.Heart
+        if sprite.kind == SpriteKind.Heart
+        else TargetKind.Coin
+        if sprite.kind == SpriteKind.Coin
+        else target_kind_for_sprite(sprite.kind),
+    )
+
+
 def target_label(kind: TargetKind) -> str:
     return {
         TargetKind.Explore: "explore",
+        TargetKind.Regroup: "regroup",
         TargetKind.Coin: "coin",
         TargetKind.Heart: "heart",
+        TargetKind.Wood: "wood",
+        TargetKind.Food: "food",
+        TargetKind.Stone: "stone",
+        TargetKind.Gold: "gold",
+        TargetKind.Camp: "camp",
+        TargetKind.Relic: "relic",
+        TargetKind.Gate: "gate",
+        TargetKind.Shrine: "shrine",
+        TargetKind.Rescue: "rescue",
+        TargetKind.Lair: "lair",
+        TargetKind.Waystation: "waypoint",
         TargetKind.Mob: "hunt",
         TargetKind.Troll: "fight",
         TargetKind.Boss: "boss",
     }[kind]
+
+
+def is_attack_target(kind: TargetKind) -> bool:
+    return kind in {
+        TargetKind.Wood,
+        TargetKind.Food,
+        TargetKind.Stone,
+        TargetKind.Gold,
+        TargetKind.Lair,
+        TargetKind.Mob,
+        TargetKind.Troll,
+        TargetKind.Boss,
+    }
 
 
 def distance_squared(ax: int, ay: int, bx: int, by: int) -> int:

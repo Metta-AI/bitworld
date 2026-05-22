@@ -20,6 +20,9 @@ const
   WorldHeightTiles* = 18
   WorldWidthPixels* = WorldWidthTiles * WorldTileSize
   WorldHeightPixels* = WorldHeightTiles * WorldTileSize
+  PlayerViewportTiles* = 11
+  PlayerViewportWidth* = PlayerViewportTiles * WorldTileSize
+  PlayerViewportHeight* = PlayerViewportTiles * WorldTileSize
   SafeZoneRightTiles* = 8
   SafeZoneRightPixels* = SafeZoneRightTiles * WorldTileSize
   ZoneWidthTiles* = 8
@@ -35,7 +38,7 @@ const
   Accel* = 38
   FrictionNum* = 200
   FrictionDen* = 256
-  MaxSpeed* = 352
+  MaxSpeed* = 264
   StopThreshold* = 8
   PlayerFootSize* = 8
   PlayerSeparationPasses* = 4
@@ -47,15 +50,154 @@ const
   SnakeHp* = 3
   TrollHp* = 6
   BossHp* = 18
+  WolfHp* = 4
+  BearHp* = 10
+  GoblinHp* = 5
+  ScorpionHp* = 4
+  SlimeHp* = 5
+  YetiHp* = 12
+  BatHp* = 3
+  WraithHp* = 8
+  MobSpeciesSpriteBase* = 760
+  MobSpeciesSpriteSlots* = 64
   TrollCoinValue* = 10
   BossCoinValue* = 100
+  ObjectiveScoreValue* = 25
+  SideObjectiveScoreValue* = 20
+  CampScoreValue* = 10
+  RelicScoreValue* = 40
+  BossScoreValue* = 150
+  FinalGateScoreValue* = 250
+  FinalGateRelicCost* = 3
+  FinalGateCampCost* = 2
+  BeaconSurveyRadius* = WorldTileSize * 3
+  BeaconSurveyBackTiles* = 1
+  BeaconSurveyForwardTiles* = 5
+  BeaconSurveyHalfHeightTiles* = 1
+  ShrineFoodBonus* = 2
+  ShrineHealAmount* = 1
+  ShrineBlessingRadius* = WorldTileSize * 2
+  RescueFoodBonus* = 2
+  RescueHealAmount* = 1
+  LairHp* = 6
+  LairFoodBonus* = 1
+  LairStoneBonus* = 1
+  LairPacifyRadius* = WorldTileSize * 3
+  LairHunterDamageBonus* = 1
+  BiomeWaystationFastStep* = 2
+  BiomeWaystationFoodBonus* = 1
+  BiomeWaystationHealAmount* = 1
+  BiomeWaystationPacifyRadius* = WorldTileSize * 3
+  BiomeWaystationShelterRadius* = WorldTileSize * 2
+  BiomeWaystationRouteBackTiles* = 1
+  BiomeWaystationRouteForwardTiles* = 5
+  BiomeWaystationRouteHalfHeightTiles* = 1
+  CampWoodCost* = 2
+  CampStoneCost* = 1
+  CampFortifiedFlag* = 1
+  CampProvisionedFlag* = 2
+  CampWardedFlag* = 4
+  CampRallyFlag* = 8
+  CampAidFlag* = 16
+  CampFortificationWoodCost* = 1
+  CampFortificationStoneCost* = 1
+  CampProvisionFoodCost* = 2
+  CampWardStoneCost* = 1
+  CampRallyWoodCost* = 1
+  CampAidFoodCost* = 1
+  CampFortificationRadius* = WorldTileSize * 3
+  CampWardedDefenseRadius* = WorldTileSize * 4
+  ResourceNodeHp* = 2
+  LandmarkActivationRadius* = 20
+  FinalGateActivationRadius* = WorldTileSize * 2
+  FinalGateRallyPacifyRadius* = WorldTileSize * 3
+  FinalGateTriumphRadius* = WorldTileSize * 6
+  BiomeCount* = 7
   TankGuardRadius* = 44
   HealerPulseRadius* = 46
+  DpsCleaveRadius* = 42
+  DpsCleaveDamage* = 2
+  TargetFps* = 60
+  LairHunterTicks* = TargetFps * 10
+  LairRespawnCooldownBonus* = TargetFps * 2
+  BiomeWaystationTicks* = TargetFps
+  BiomeWaystationRouteTicks* = TargetFps * 10
+  BiomeWaystationRouteMinSpeedPercent* = 88
+  BeaconAttunementTicks* = TargetFps
+  DpsBeaconAttunementStep* = 2
+  CooperativeObjectiveHoldMaxStep* = 4
+  FinalGateRitualTicks* = TargetFps * 2
+  FinalGateTriumphTicks* = TargetFps * 12
+  ObjectiveMoraleTicks* = TargetFps * 8
+  ObjectiveMoraleSpeedPercent* = 106
+  ObjectiveMoraleCooldownStep* = 1
+  BeaconSurveyTicks* = TargetFps * 10
+  BeaconSurveyMinSpeedPercent* = 90
+  FinalGateTwoRoleStep* = 2
+  FinalGateThreeRoleStep* = 3
   RoleAbilityCooldown* = 36
+  RoleAbilityEffectTicks* = 18
+  PingDurationTicks* = TargetFps * 4
+  DownedRespawnTicks* = TargetFps * 4
+  DownedRescueTicks* = TargetFps * 2
+  DownedRescueRadius* = WorldTileSize * 2
+  DownedReviveHp* = 2
+  HealerDownedRescueStep* = 2
+  RescueEventTicks* = TargetFps * 2
+  HealerRescueEventStep* = 2
+  RescueTrailBackTiles* = 1
+  RescueTrailForwardTiles* = 4
+  RescueTrailHalfHeightTiles* = 1
+  RescueGuideTicks* = TargetFps * 10
+  RescueGuideSpeedPercent* = 112
+  RescueGuideStatusRecoveryTicks* = 1
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
-  TargetFps* = 60
+  HealerTriageRadius* = WorldTileSize * 2
+  HealerTriageIntervalTicks* = TargetFps * 2
+  HealerTriageHealAmount* = 1
+  LowHealthHelpThresholdPercent* = 50
+  FoodHealAmount* = 2
+  CarriedFoodShareRadius* = WorldTileSize * 2
+  ColdExposureIntervalTicks* = TargetFps * 3
+  HeatExposureIntervalTicks* = TargetFps * 4
+  FogDisorientationIntervalTicks* = TargetFps * 5
+  FogDisorientationTicks* = TargetFps
+  ExhaustionIntervalTicks* = TargetFps * 7
+  StatusExhaustionTicks* = TargetFps * 4
+  SwampMireIntervalTicks* = TargetFps * 4
+  SwampMireTicks* = TargetFps
+  CampShelterRadius* = WorldTileSize * 2
+  CampRecoveryIntervalTicks* = TargetFps * 2
+  CampRecoveryHealAmount* = 1
+  CampProvisionedRecoveryHealAmount* = 2
+  CampMealRationTicks* = TargetFps * 18
+  CampStatusRecoveryTicks* = TargetFps div 2
+  CampAidStatusRecoveryTicks* = TargetFps div 2
+  CampRallyAbilityCooldownStep* = 1
+  ForestForageIntervalTicks* = TargetFps * 5
+  ForestForageFoodCap* = 2
+  PlainsRallyAllyRadius* = WorldTileSize * 3
+  PlainsRallyCooldownStep* = 1
+  TrioFormationRadius* = WorldTileSize * 3
+  TrioFormationCooldownStep* = 1
+  SnowWarmthAllyRadius* = WorldTileSize * 3
+  DesertShadeRadius* = WorldTileSize * 2
+  SwampPlankForwardTiles* = 3
+  StoneStepForwardTiles* = 3
+  StoneStepMaxElevation* = 1
+  CampShortcutBackTiles* = 2
+  CampShortcutForwardTiles* = 8
+  CampShortcutHalfHeightTiles* = 1
+  StatusSlowTicks* = TargetFps * 2
+  StatusChillTicks* = TargetFps * 3
+  StatusPoisonTicks* = TargetFps * 4
+  StatusPoisonIntervalTicks* = TargetFps
+  StatusSlowSpeedPercent* = 62
+  StatusChillSpeedPercent* = 78
+  StatusExhaustionSpeedPercent* = 72
+  IsolationThreatRadius* = WorldTileSize * 3
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
@@ -94,6 +236,7 @@ const
   SwooshSpriteBase* = 304
   TrollSpriteId* = 312
   TerrainSpriteBase* = 320
+  LandmarkSpriteBase* = 360
   SelectedTextSpriteId* = 400
   SelectedViewportSpriteId* = 401
   ReplayTickSpriteId* = 402
@@ -111,7 +254,29 @@ const
   AttackObjectBase* = 6000
   PlayerHudObjectId* = 7000
   TerrainObjectBase* = 8000
+  LandmarkObjectBase* = 9000
   CoopAttackWindow* = TargetFps
+  MobSightRadius* = (WorldTileSize * 3) div 2
+  MobChaseCooldown* = 4
+  MobSpawnWanderCooldown* = 16
+  MobSpawnWanderJitter* = 36
+  MobWanderCooldown* = 16
+  MobWanderJitter* = 40
+  MobTelegraphTicks* = TargetFps
+  MobTelegraphBounces* = 2
+  MobTelegraphLift* = 4
+  MobLungeTicks* = 10
+  MobLungeStep* = 2
+  PartyFocusTwoRoleDamageBonus* = 1
+  PartyFocusThreeRoleDamageBonus* = 2
+  BossTrioDamageBonus* = 1
+  BossFocusDamageBonus* = 2
+  BossStaggerTicks* = TargetFps * 2
+  BossStaggerAttackCooldown* = TargetFps
+  ElevationCombatThreshold* = 2
+  HighGroundDamageBonus* = 1
+  LowGroundDamagePenalty* = 1
+  TribalAssetManifestName* = "tribalcog_assets.json"
 
 type
   PlayerForm* = enum
@@ -129,12 +294,40 @@ type
     RoleDps
     RoleHealer
 
+  PlayerPingKind* = enum
+    PingNone
+    PingRegroup
+    PingHelp
+    PingObjective
+    PingCamp
+    PingFood
+    PingRescue
+    PingLair
+
+  CarryKind* = enum
+    CarryNone
+    CarryWood
+    CarryFood
+    CarryStone
+    CarryGold
+
   TerrainKind* = enum
     TerrainTree
     TerrainEvergreen
     TerrainRock
     TerrainLog
     TerrainStump
+    TerrainBush
+    TerrainCactus
+    TerrainWheat
+    TerrainFish
+    TerrainStone
+    TerrainGold
+    TerrainCave
+    TerrainGoblinHut
+    TerrainGoblinTotem
+    TerrainAltar
+    TerrainCamp
 
   RgbaSprite* = object
     width*, height*: int
@@ -163,6 +356,8 @@ type
     attackTicks*: int
     attackResolved*: bool
     message*: string
+    pingKind*: PlayerPingKind
+    pingTicks*: int
     velX*: int
     velY*: int
     carryX*: int
@@ -170,6 +365,7 @@ type
     role*: PlayerRole
     maxHp*: int
     abilityCooldown*: int
+    abilityTicks*: int
     guardTicks*: int
     personalFrontier*: int
     damageDone*: int
@@ -180,6 +376,23 @@ type
     invulnTicks*: int
     coins*: int
     distanceWalked*: int
+    carrying*: bool
+    carriedItem*: CarryKind
+    carryCounts*: array[CarryKind, int]
+    carrySelectLockTicks*: int
+    slowTicks*: int
+    chillTicks*: int
+    poisonTicks*: int
+    exhaustionTicks*: int
+    routeTicks*: int
+    surveyTicks*: int
+    guideTicks*: int
+    huntTicks*: int
+    triumphTicks*: int
+    rationTicks*: int
+    moraleTicks*: int
+    downedTicks*: int
+    rescueTicks*: int
 
   PickupKind* = enum
     PickupCoin
@@ -187,11 +400,124 @@ type
     PickupTankGear
     PickupDpsGear
     PickupHealerGear
+    PickupWood
+    PickupFood
+    PickupStone
+    PickupGold
 
   MobKind* = enum
     SnakeMob
     TrollMob
     BossMob
+    WolfMob
+    BearMob
+    GoblinMob
+    ScorpionMob
+    SlimeMob
+    YetiMob
+    BatMob
+    WraithMob
+
+  MobSpecies* = enum
+    SpeciesNone
+    SpeciesGrassSnake
+    SpeciesForestWolf
+    SpeciesDireWolf
+    SpeciesThornBoar
+    SpeciesBrownBear
+    SpeciesPlainsWolf
+    SpeciesPrairieGoblin
+    SpeciesPlainsBear
+    SpeciesHornedBuck
+    SpeciesMudSlime
+    SpeciesReedSlime
+    SpeciesBogGoblin
+    SpeciesMarshWraith
+    SpeciesDuneScorpion
+    SpeciesGlassScorpion
+    SpeciesSandViper
+    SpeciesDustHyena
+    SpeciesTombScarab
+    SpeciesSnowWolf
+    SpeciesFrostYeti
+    SpeciesIceTroll
+    SpeciesWhiteBear
+    SpeciesSnowBat
+    SpeciesCaveBat
+    SpeciesCrystalBat
+    SpeciesCaveSlime
+    SpeciesStoneGoblin
+    SpeciesDeepMaw
+    SpeciesRuinWraith
+    SpeciesAshWraith
+    SpeciesBoneGoblin
+    SpeciesGateTitan
+
+  MobAttackPhase* = enum
+    MobIdle
+    MobTelegraph
+    MobLunge
+
+  BiomeKind* = enum
+    BiomeOrigin
+    BiomeForest
+    BiomePlains
+    BiomeSwamp
+    BiomeDesert
+    BiomeSnow
+    BiomeCave
+    BiomeRuins
+
+  WeatherKind* = enum
+    WeatherClear
+    WeatherRain
+    WeatherDust
+    WeatherSnow
+    WeatherFog
+
+  SurvivalPressureKind* = enum
+    SurvivalSafe
+    SurvivalMire
+    SurvivalCold
+    SurvivalHeat
+    SurvivalFog
+
+  BiomeTacticKind* = enum
+    BiomeTacticNone
+    BiomeTacticForage
+    BiomeTacticRally
+    BiomeTacticShade
+    BiomeTacticWarmth
+    BiomeTacticLight
+    BiomeTacticGuard
+    BiomeTacticBlessing
+
+  GroundKind* = enum
+    GroundGrass
+    GroundRoad
+    GroundFertile
+    GroundMud
+    GroundShallowWater
+    GroundWater
+    GroundSand
+    GroundDune
+    GroundSnow
+    GroundCave
+    GroundRuins
+    GroundBridge
+
+  LandmarkKind* = enum
+    LandmarkWood
+    LandmarkFood
+    LandmarkStone
+    LandmarkGold
+    LandmarkCamp
+    LandmarkBeacon
+    LandmarkFinalGate
+    LandmarkShrine
+    LandmarkRescue
+    LandmarkLair
+    LandmarkWaystation
 
   Pickup* = object
     x*, y*: int
@@ -200,13 +526,16 @@ type
 
   Mob* = object
     kind*: MobKind
+    species*: MobSpecies
     x*, y*: int
     sprite*: Sprite
     bounds*: SpriteBounds
     wanderCooldown*: int
     hp*: int
     attackCooldown*: int
-    attackPhase*: int
+    attackPhase*: MobAttackPhase
+    attackTicks*: int
+    staggerTicks*: int
     attackFacing*: Facing
     attackerIds*: seq[int]
     attackerTicks*: seq[int]
@@ -215,20 +544,39 @@ type
     tx*, ty*: int
     kind*: TerrainKind
 
+  Landmark* = object
+    tx*, ty*: int
+    kind*: LandmarkKind
+    hp*: int
+    done*: bool
+    progress*: int
+
   SimServer* = object
     players*: seq[Actor]
     mobs*: seq[Mob]
     pickups*: seq[Pickup]
     tiles*: seq[bool]
+    groundKinds*: seq[GroundKind]
+    biomeKinds*: seq[BiomeKind]
+    elevations*: seq[int]
     terrainKinds*: seq[TerrainKind]
     terrainProps*: seq[TerrainProp]
+    landmarks*: seq[Landmark]
     playerArts*: array[PlayerForm, PlayerArt]
     playerSprite*: Sprite
     terrainSprite*: Sprite
     rgbaTerrainSprite*: RgbaSprite
+    groundSprites*: array[GroundKind, Sprite]
+    rgbaGroundSprites*: array[GroundKind, RgbaSprite]
     terrainSprites*: array[TerrainKind, Sprite]
     rgbaTerrainSprites*: array[TerrainKind, RgbaSprite]
     terrainBounds*: array[TerrainKind, SpriteBounds]
+    landmarkSprites*: array[LandmarkKind, Sprite]
+    rgbaLandmarkSprites*: array[LandmarkKind, RgbaSprite]
+    landmarkBounds*: array[LandmarkKind, SpriteBounds]
+    roleGearSprites*: array[PickupKind, Sprite]
+    roleGearRgbaSprites*: array[PickupKind, RgbaSprite]
+    roleGearBounds*: array[PickupKind, SpriteBounds]
     mobSprite*: Sprite
     rgbaMobSprite*: RgbaSprite
     mobBounds*: SpriteBounds
@@ -253,6 +601,59 @@ type
     mobSpawnCooldown*: int
     nextPlayerId*: int
     teamFrontier*: int
+    maxBiomeReached*: int
+    objectivesCompleted*: int
+    sideObjectivesCompleted*: int
+    campsActivated*: int
+    resourcesCollected*: int
+    wood*: int
+    food*: int
+    stone*: int
+    relicShards*: int
+    bossDefeated*: bool
+
+const
+  CarryInventoryKinds*: array[4, CarryKind] = [
+    CarryWood,
+    CarryFood,
+    CarryStone,
+    CarryGold
+  ]
+
+  AllMobSpecies*: array[32, MobSpecies] = [
+    SpeciesGrassSnake,
+    SpeciesForestWolf,
+    SpeciesDireWolf,
+    SpeciesThornBoar,
+    SpeciesBrownBear,
+    SpeciesPlainsWolf,
+    SpeciesPrairieGoblin,
+    SpeciesPlainsBear,
+    SpeciesHornedBuck,
+    SpeciesMudSlime,
+    SpeciesReedSlime,
+    SpeciesBogGoblin,
+    SpeciesMarshWraith,
+    SpeciesDuneScorpion,
+    SpeciesGlassScorpion,
+    SpeciesSandViper,
+    SpeciesDustHyena,
+    SpeciesTombScarab,
+    SpeciesSnowWolf,
+    SpeciesFrostYeti,
+    SpeciesIceTroll,
+    SpeciesWhiteBear,
+    SpeciesSnowBat,
+    SpeciesCaveBat,
+    SpeciesCrystalBat,
+    SpeciesCaveSlime,
+    SpeciesStoneGoblin,
+    SpeciesDeepMaw,
+    SpeciesRuinWraith,
+    SpeciesAshWraith,
+    SpeciesBoneGoblin,
+    SpeciesGateTitan
+  ]
 
 proc roleLabel*(role: PlayerRole): string =
   case role
@@ -264,6 +665,410 @@ proc roleLabel*(role: PlayerRole): string =
     "dps"
   of RoleHealer:
     "healer"
+
+proc biomeLabel*(biome: BiomeKind): string =
+  case biome
+  of BiomeOrigin: "origin"
+  of BiomeForest: "forest"
+  of BiomePlains: "plains"
+  of BiomeSwamp: "swamp"
+  of BiomeDesert: "desert"
+  of BiomeSnow: "snow"
+  of BiomeCave: "cave"
+  of BiomeRuins: "ruins"
+
+proc weatherLabel*(weather: WeatherKind): string =
+  case weather
+  of WeatherClear: "clear"
+  of WeatherRain: "rain"
+  of WeatherDust: "dust"
+  of WeatherSnow: "snow"
+  of WeatherFog: "fog"
+
+proc speciesLabel*(species: MobSpecies): string =
+  case species
+  of SpeciesNone: "monster"
+  of SpeciesGrassSnake: "grass snake"
+  of SpeciesForestWolf: "forest wolf"
+  of SpeciesDireWolf: "dire wolf"
+  of SpeciesThornBoar: "thorn boar"
+  of SpeciesBrownBear: "brown bear"
+  of SpeciesPlainsWolf: "plains wolf"
+  of SpeciesPrairieGoblin: "prairie goblin"
+  of SpeciesPlainsBear: "plains bear"
+  of SpeciesHornedBuck: "horned buck"
+  of SpeciesMudSlime: "mud slime"
+  of SpeciesReedSlime: "reed slime"
+  of SpeciesBogGoblin: "bog goblin"
+  of SpeciesMarshWraith: "marsh wraith"
+  of SpeciesDuneScorpion: "dune scorpion"
+  of SpeciesGlassScorpion: "glass scorpion"
+  of SpeciesSandViper: "sand viper"
+  of SpeciesDustHyena: "dust hyena"
+  of SpeciesTombScarab: "tomb scarab"
+  of SpeciesSnowWolf: "snow wolf"
+  of SpeciesFrostYeti: "frost yeti"
+  of SpeciesIceTroll: "ice troll"
+  of SpeciesWhiteBear: "white bear"
+  of SpeciesSnowBat: "snow bat"
+  of SpeciesCaveBat: "cave bat"
+  of SpeciesCrystalBat: "crystal bat"
+  of SpeciesCaveSlime: "cave slime"
+  of SpeciesStoneGoblin: "stone goblin"
+  of SpeciesDeepMaw: "deep maw"
+  of SpeciesRuinWraith: "ruin wraith"
+  of SpeciesAshWraith: "ash wraith"
+  of SpeciesBoneGoblin: "bone goblin"
+  of SpeciesGateTitan: "gate titan"
+
+proc speciesKind*(species: MobSpecies): MobKind =
+  case species
+  of SpeciesNone:
+    SnakeMob
+  of SpeciesGrassSnake, SpeciesSandViper:
+    SnakeMob
+  of SpeciesForestWolf, SpeciesDireWolf, SpeciesPlainsWolf,
+      SpeciesDustHyena, SpeciesSnowWolf:
+    WolfMob
+  of SpeciesThornBoar, SpeciesBrownBear, SpeciesPlainsBear,
+      SpeciesHornedBuck, SpeciesWhiteBear, SpeciesDeepMaw:
+    BearMob
+  of SpeciesPrairieGoblin, SpeciesBogGoblin, SpeciesStoneGoblin,
+      SpeciesBoneGoblin:
+    GoblinMob
+  of SpeciesMudSlime, SpeciesReedSlime, SpeciesCaveSlime:
+    SlimeMob
+  of SpeciesMarshWraith, SpeciesRuinWraith, SpeciesAshWraith:
+    WraithMob
+  of SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesTombScarab:
+    ScorpionMob
+  of SpeciesFrostYeti:
+    YetiMob
+  of SpeciesIceTroll:
+    TrollMob
+  of SpeciesSnowBat, SpeciesCaveBat, SpeciesCrystalBat:
+    BatMob
+  of SpeciesGateTitan:
+    BossMob
+
+proc defaultSpeciesForKind*(kind: MobKind): MobSpecies =
+  case kind
+  of SnakeMob: SpeciesGrassSnake
+  of TrollMob: SpeciesIceTroll
+  of BossMob: SpeciesGateTitan
+  of WolfMob: SpeciesForestWolf
+  of BearMob: SpeciesBrownBear
+  of GoblinMob: SpeciesPrairieGoblin
+  of ScorpionMob: SpeciesDuneScorpion
+  of SlimeMob: SpeciesMudSlime
+  of YetiMob: SpeciesFrostYeti
+  of BatMob: SpeciesCaveBat
+  of WraithMob: SpeciesRuinWraith
+
+proc speciesTint*(species: MobSpecies): tuple[r, g, b, a: uint8] =
+  case species
+  of SpeciesGrassSnake: (r: 84'u8, g: 172'u8, b: 82'u8, a: 255'u8)
+  of SpeciesForestWolf: (r: 92'u8, g: 126'u8, b: 96'u8, a: 255'u8)
+  of SpeciesDireWolf: (r: 88'u8, g: 92'u8, b: 104'u8, a: 255'u8)
+  of SpeciesThornBoar: (r: 127'u8, g: 103'u8, b: 68'u8, a: 255'u8)
+  of SpeciesBrownBear: (r: 134'u8, g: 91'u8, b: 58'u8, a: 255'u8)
+  of SpeciesPlainsWolf: (r: 169'u8, g: 148'u8, b: 88'u8, a: 255'u8)
+  of SpeciesPrairieGoblin: (r: 174'u8, g: 191'u8, b: 78'u8, a: 255'u8)
+  of SpeciesPlainsBear: (r: 170'u8, g: 135'u8, b: 78'u8, a: 255'u8)
+  of SpeciesHornedBuck: (r: 192'u8, g: 151'u8, b: 96'u8, a: 255'u8)
+  of SpeciesMudSlime: (r: 82'u8, g: 145'u8, b: 96'u8, a: 255'u8)
+  of SpeciesReedSlime: (r: 70'u8, g: 177'u8, b: 126'u8, a: 255'u8)
+  of SpeciesBogGoblin: (r: 97'u8, g: 151'u8, b: 84'u8, a: 255'u8)
+  of SpeciesMarshWraith: (r: 94'u8, g: 132'u8, b: 126'u8, a: 255'u8)
+  of SpeciesDuneScorpion: (r: 225'u8, g: 176'u8, b: 66'u8, a: 255'u8)
+  of SpeciesGlassScorpion: (r: 229'u8, g: 205'u8, b: 116'u8, a: 255'u8)
+  of SpeciesSandViper: (r: 204'u8, g: 161'u8, b: 76'u8, a: 255'u8)
+  of SpeciesDustHyena: (r: 164'u8, g: 132'u8, b: 92'u8, a: 255'u8)
+  of SpeciesTombScarab: (r: 141'u8, g: 103'u8, b: 58'u8, a: 255'u8)
+  of SpeciesSnowWolf: (r: 194'u8, g: 222'u8, b: 234'u8, a: 255'u8)
+  of SpeciesFrostYeti: (r: 212'u8, g: 236'u8, b: 248'u8, a: 255'u8)
+  of SpeciesIceTroll: (r: 142'u8, g: 201'u8, b: 219'u8, a: 255'u8)
+  of SpeciesWhiteBear: (r: 235'u8, g: 236'u8, b: 228'u8, a: 255'u8)
+  of SpeciesSnowBat: (r: 164'u8, g: 188'u8, b: 224'u8, a: 255'u8)
+  of SpeciesCaveBat: (r: 112'u8, g: 90'u8, b: 158'u8, a: 255'u8)
+  of SpeciesCrystalBat: (r: 120'u8, g: 182'u8, b: 217'u8, a: 255'u8)
+  of SpeciesCaveSlime: (r: 96'u8, g: 174'u8, b: 154'u8, a: 255'u8)
+  of SpeciesStoneGoblin: (r: 128'u8, g: 132'u8, b: 136'u8, a: 255'u8)
+  of SpeciesDeepMaw: (r: 93'u8, g: 78'u8, b: 118'u8, a: 255'u8)
+  of SpeciesRuinWraith: (r: 122'u8, g: 126'u8, b: 144'u8, a: 255'u8)
+  of SpeciesAshWraith: (r: 92'u8, g: 96'u8, b: 104'u8, a: 255'u8)
+  of SpeciesBoneGoblin: (r: 205'u8, g: 198'u8, b: 168'u8, a: 255'u8)
+  of SpeciesGateTitan: (r: 188'u8, g: 80'u8, b: 112'u8, a: 255'u8)
+  of SpeciesNone: (r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8)
+
+proc monsterSpeciesForBiome*(biome: BiomeKind): seq[MobSpecies] =
+  case biome
+  of BiomeForest:
+    @[SpeciesGrassSnake, SpeciesForestWolf, SpeciesDireWolf,
+      SpeciesThornBoar, SpeciesBrownBear]
+  of BiomePlains:
+    @[SpeciesPlainsWolf, SpeciesPrairieGoblin, SpeciesPlainsBear,
+      SpeciesHornedBuck]
+  of BiomeSwamp:
+    @[SpeciesMudSlime, SpeciesReedSlime, SpeciesBogGoblin,
+      SpeciesMarshWraith]
+  of BiomeDesert:
+    @[SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesSandViper,
+      SpeciesDustHyena, SpeciesTombScarab]
+  of BiomeSnow:
+    @[SpeciesSnowWolf, SpeciesFrostYeti, SpeciesIceTroll,
+      SpeciesWhiteBear, SpeciesSnowBat]
+  of BiomeCave:
+    @[SpeciesCaveBat, SpeciesCrystalBat, SpeciesCaveSlime,
+      SpeciesStoneGoblin, SpeciesDeepMaw]
+  of BiomeRuins:
+    @[SpeciesRuinWraith, SpeciesAshWraith, SpeciesBoneGoblin,
+      SpeciesGateTitan]
+  else:
+    @[SpeciesGrassSnake]
+
+proc randomMonsterSpeciesForBiome(
+  rng: var Rand,
+  biome: BiomeKind
+): MobSpecies =
+  let species = biome.monsterSpeciesForBiome()
+  species[rng.rand(species.high)]
+
+proc speciesAppliesSlow*(species: MobSpecies): bool =
+  species in {
+    SpeciesMudSlime,
+    SpeciesReedSlime,
+    SpeciesCaveSlime
+  }
+
+proc speciesAppliesPoison*(species: MobSpecies): bool =
+  species in {
+    SpeciesDuneScorpion,
+    SpeciesGlassScorpion,
+    SpeciesSandViper,
+    SpeciesTombScarab
+  }
+
+proc speciesAppliesChill*(species: MobSpecies): bool =
+  species in {
+    SpeciesSnowWolf,
+    SpeciesFrostYeti,
+    SpeciesIceTroll,
+    SpeciesWhiteBear,
+    SpeciesSnowBat
+  }
+
+proc speciesHarasses*(species: MobSpecies): bool =
+  species in {
+    SpeciesSnowBat,
+    SpeciesCaveBat,
+    SpeciesCrystalBat
+  }
+
+proc speciesPunishesIsolation*(species: MobSpecies): bool =
+  species in {
+    SpeciesMarshWraith,
+    SpeciesRuinWraith,
+    SpeciesAshWraith,
+    SpeciesGateTitan
+  }
+
+proc speciesSupplyDrop*(species: MobSpecies): CarryKind =
+  ## Returns the expedition supply a defeated biome monster can leave behind.
+  case species
+  of SpeciesGrassSnake,
+      SpeciesForestWolf,
+      SpeciesDireWolf,
+      SpeciesThornBoar,
+      SpeciesBrownBear,
+      SpeciesPlainsWolf,
+      SpeciesPlainsBear,
+      SpeciesHornedBuck,
+      SpeciesMudSlime,
+      SpeciesDuneScorpion,
+      SpeciesGlassScorpion,
+      SpeciesSandViper,
+      SpeciesDustHyena,
+      SpeciesSnowWolf,
+      SpeciesFrostYeti,
+      SpeciesIceTroll,
+      SpeciesWhiteBear,
+      SpeciesSnowBat,
+      SpeciesCaveBat,
+      SpeciesCaveSlime:
+    CarryFood
+  of SpeciesPrairieGoblin,
+      SpeciesReedSlime,
+      SpeciesBogGoblin:
+    CarryWood
+  of SpeciesStoneGoblin,
+      SpeciesDeepMaw,
+      SpeciesBoneGoblin:
+    CarryStone
+  of SpeciesMarshWraith,
+      SpeciesTombScarab,
+      SpeciesCrystalBat,
+      SpeciesRuinWraith,
+      SpeciesAshWraith:
+    CarryGold
+  of SpeciesNone,
+      SpeciesGateTitan:
+    CarryNone
+
+proc landmarkLabel*(kind: LandmarkKind): string =
+  case kind
+  of LandmarkWood: "wood"
+  of LandmarkFood: "food"
+  of LandmarkStone: "stone"
+  of LandmarkGold: "gold"
+  of LandmarkCamp: "camp"
+  of LandmarkBeacon: "beacon"
+  of LandmarkFinalGate: "final gate"
+  of LandmarkShrine: "shrine"
+  of LandmarkRescue: "rescue"
+  of LandmarkLair: "lair"
+  of LandmarkWaystation: "waystation"
+
+proc carryLabel*(kind: CarryKind): string =
+  case kind
+  of CarryNone: "none"
+  of CarryWood: "wood"
+  of CarryFood: "food"
+  of CarryStone: "stone"
+  of CarryGold: "gold"
+
+proc statusLabel*(player: Actor): string =
+  if player.downedTicks > 0:
+    return "down"
+  var labels: seq[string] = @[]
+  if player.triumphTicks > 0:
+    labels.add("triumph")
+  if player.rationTicks > 0:
+    labels.add("ration")
+  if player.moraleTicks > 0:
+    labels.add("morale")
+  if player.poisonTicks > 0:
+    labels.add("poison")
+  if player.slowTicks > 0:
+    labels.add("slow")
+  if player.chillTicks > 0:
+    labels.add("chill")
+  if player.exhaustionTicks > 0:
+    labels.add("exhaust")
+  if player.routeTicks > 0:
+    labels.add("route")
+  if player.surveyTicks > 0:
+    labels.add("survey")
+  if player.guideTicks > 0:
+    labels.add("guide")
+  if player.huntTicks > 0:
+    labels.add("hunt")
+  if labels.len == 0:
+    return "ok"
+  labels.join("/")
+
+proc survivalPressureLabel*(kind: SurvivalPressureKind): string =
+  case kind
+  of SurvivalSafe: "safe"
+  of SurvivalMire: "mire"
+  of SurvivalCold: "cold"
+  of SurvivalHeat: "heat"
+  of SurvivalFog: "fog"
+
+proc biomeTacticLabel*(kind: BiomeTacticKind): string =
+  case kind
+  of BiomeTacticNone: ""
+  of BiomeTacticForage: "forage"
+  of BiomeTacticRally: "rally"
+  of BiomeTacticShade: "shade"
+  of BiomeTacticWarmth: "warmth"
+  of BiomeTacticLight: "light"
+  of BiomeTacticGuard: "guard"
+  of BiomeTacticBlessing: "bless"
+
+proc pingLabel*(kind: PlayerPingKind): string =
+  case kind
+  of PingNone: "none"
+  of PingRegroup: "regroup"
+  of PingHelp: "help"
+  of PingObjective: "objective"
+  of PingCamp: "camp"
+  of PingFood: "food"
+  of PingRescue: "rescue"
+  of PingLair: "lair"
+
+proc playerPingForMessage*(message: string): PlayerPingKind =
+  ## Converts short chat phrases into compact expedition pings.
+  let lower = message.strip().toLowerAscii()
+  if lower.len == 0:
+    return PingNone
+  if lower.contains("regroup") or lower.contains("group") or
+      lower.contains("together"):
+    return PingRegroup
+  if lower.contains("help") or lower.contains("down") or
+      lower.contains("heal"):
+    return PingHelp
+  if lower.contains("relic") or lower.contains("beacon") or
+      lower.contains("objective") or lower.contains("gate"):
+    return PingObjective
+  if lower.contains("camp") or lower.contains("shelter") or
+      lower.contains("fort"):
+    return PingCamp
+  if lower.contains("food") or lower.contains("eat"):
+    return PingFood
+  if lower.contains("rescue") or lower.contains("save"):
+    return PingRescue
+  if lower.contains("lair") or lower.contains("den"):
+    return PingLair
+  PingNone
+
+proc waystationLabel*(biome: BiomeKind): string =
+  case biome
+  of BiomeForest: "forage"
+  of BiomePlains: "rally"
+  of BiomeSwamp: "bridge"
+  of BiomeDesert: "oasis"
+  of BiomeSnow: "hearth"
+  of BiomeCave: "lantern"
+  of BiomeRuins: "ward"
+  of BiomeOrigin: "waystation"
+
+proc waystationPromptLabel*(biome: BiomeKind): string =
+  case biome
+  of BiomeForest: "FORAGE H"
+  of BiomePlains: "RALLY T"
+  of BiomeSwamp: "BRIDGE T"
+  of BiomeDesert: "OASIS H"
+  of BiomeSnow: "HEARTH H"
+  of BiomeCave: "LANTERN D"
+  of BiomeRuins: "WARD T"
+  of BiomeOrigin: "WAYPOINT"
+
+proc preferredWaystationRole*(biome: BiomeKind): PlayerRole =
+  case biome
+  of BiomeForest, BiomeDesert, BiomeSnow:
+    RoleHealer
+  of BiomePlains, BiomeSwamp, BiomeRuins:
+    RoleTank
+  of BiomeCave:
+    RoleDps
+  of BiomeOrigin:
+    RoleUnarmed
+
+proc statusSpeedPercent*(player: Actor): int =
+  if player.triumphTicks > 0:
+    return 100
+  result = 100
+  if player.slowTicks > 0:
+    result = min(result, StatusSlowSpeedPercent)
+  if player.chillTicks > 0:
+    result = min(result, StatusChillSpeedPercent)
+  if player.exhaustionTicks > 0:
+    result = min(result, StatusExhaustionSpeedPercent)
+  if player.guideTicks > 0 and result == 100:
+    result = RescueGuideSpeedPercent
+  if player.moraleTicks > 0 and result == 100:
+    result = ObjectiveMoraleSpeedPercent
 
 proc roleMaxHp(role: PlayerRole): int =
   case role
@@ -287,6 +1092,17 @@ proc roleAttackDamage(role: PlayerRole): int =
   of RoleHealer:
     1
 
+proc roleAbilityLabel*(role: PlayerRole): string =
+  case role
+  of RoleUnarmed:
+    "choose role"
+  of RoleTank:
+    "guard"
+  of RoleDps:
+    "cleave"
+  of RoleHealer:
+    "heal"
+
 proc roleForPickup(kind: PickupKind): PlayerRole =
   case kind
   of PickupTankGear:
@@ -298,8 +1114,133 @@ proc roleForPickup(kind: PickupKind): PlayerRole =
   else:
     RoleUnarmed
 
-proc isRoleGear(kind: PickupKind): bool =
+proc isRoleGear*(kind: PickupKind): bool =
   kind in {PickupTankGear, PickupDpsGear, PickupHealerGear}
+
+proc carryForPickup*(kind: PickupKind): CarryKind =
+  case kind
+  of PickupWood:
+    CarryWood
+  of PickupFood:
+    CarryFood
+  of PickupStone:
+    CarryStone
+  of PickupGold:
+    CarryGold
+  else:
+    CarryNone
+
+proc pickupForCarry*(kind: CarryKind): PickupKind =
+  case kind
+  of CarryWood:
+    PickupWood
+  of CarryFood:
+    PickupFood
+  of CarryStone:
+    PickupStone
+  of CarryGold:
+    PickupGold
+  of CarryNone:
+    PickupCoin
+
+proc isCarryPickup*(kind: PickupKind): bool =
+  kind.carryForPickup() != CarryNone
+
+proc carryForLandmark*(kind: LandmarkKind): CarryKind =
+  case kind
+  of LandmarkWood:
+    CarryWood
+  of LandmarkFood:
+    CarryFood
+  of LandmarkStone:
+    CarryStone
+  of LandmarkGold:
+    CarryGold
+  of LandmarkCamp, LandmarkBeacon, LandmarkFinalGate, LandmarkShrine,
+      LandmarkRescue, LandmarkLair, LandmarkWaystation:
+    CarryNone
+
+proc landmarkForCarry*(kind: CarryKind): LandmarkKind =
+  case kind
+  of CarryWood:
+    LandmarkWood
+  of CarryFood:
+    LandmarkFood
+  of CarryStone:
+    LandmarkStone
+  of CarryGold:
+    LandmarkGold
+  of CarryNone:
+    LandmarkFood
+
+proc storedCarryTotal*(player: Actor): int =
+  for item in CarryInventoryKinds:
+    result += player.carryCounts[item]
+
+proc carryCount*(player: Actor, item: CarryKind): int =
+  if item == CarryNone:
+    return 0
+  if not player.carrying and player.carriedItem == CarryNone:
+    return 0
+  result = player.carryCounts[item]
+  if result == 0 and player.storedCarryTotal() == 0 and player.carrying and
+      player.carriedItem == item:
+    result = 1
+
+proc hasCarry*(player: Actor, item: CarryKind): bool =
+  player.carryCount(item) > 0
+
+proc activeCarryItem*(player: Actor): CarryKind =
+  if player.carriedItem != CarryNone and player.carryCount(player.carriedItem) > 0:
+    return player.carriedItem
+  for item in CarryInventoryKinds:
+    if player.carryCount(item) > 0:
+      return item
+  CarryNone
+
+proc syncCarrySelection*(player: var Actor) =
+  if player.carriedItem != CarryNone and player.carryCounts[player.carriedItem] > 0:
+    player.carrying = true
+    return
+  for item in CarryInventoryKinds:
+    if player.carryCounts[item] > 0:
+      player.carrying = true
+      player.carriedItem = item
+      return
+  player.carrying = false
+  player.carriedItem = CarryNone
+
+proc normalizeCarry*(player: var Actor) =
+  if not player.carrying and player.carriedItem == CarryNone:
+    for item in CarryKind:
+      player.carryCounts[item] = 0
+    return
+  if player.storedCarryTotal() == 0 and player.carrying and
+      player.carriedItem != CarryNone:
+    player.carryCounts[player.carriedItem] = 1
+  player.syncCarrySelection()
+
+proc clearCarryInventory*(player: var Actor) =
+  for item in CarryKind:
+    player.carryCounts[item] = 0
+  player.carrying = false
+  player.carriedItem = CarryNone
+
+proc carryInventoryLabel*(player: Actor): string =
+  var labels: seq[string] = @[]
+  for item in CarryInventoryKinds:
+    let count = player.carryCount(item)
+    if count <= 0:
+      continue
+    var label = item.carryLabel()
+    if count > 1:
+      label.add(" x")
+      label.add($count)
+    labels.add(label)
+  if labels.len == 0:
+    "none"
+  else:
+    labels.join(",")
 
 proc dataDir*(): string =
   getCurrentDir() / "data"
@@ -372,6 +1313,130 @@ proc sheetRgbaSprite(sheet: Image, cellX, cellY: int): RgbaSprite =
     )
   )
 
+proc transparentCell(): Image =
+  result = newImage(ArtCellSize, ArtCellSize)
+  for y in 0 ..< ArtCellSize:
+    for x in 0 ..< ArtCellSize:
+      result[x, y] = rgba(0, 0, 0, 0)
+
+proc imageAlphaBounds(image: Image): SpriteBounds =
+  var
+    minX = image.width
+    minY = image.height
+    maxX = -1
+    maxY = -1
+  for y in 0 ..< image.height:
+    for x in 0 ..< image.width:
+      if image[x, y].a < 20'u8:
+        continue
+      minX = min(minX, x)
+      minY = min(minY, y)
+      maxX = max(maxX, x)
+      maxY = max(maxY, y)
+  if maxX < minX or maxY < minY:
+    return SpriteBounds(x: 0, y: 0, w: image.width, h: image.height)
+  SpriteBounds(
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  )
+
+proc fittedArtCell(image: Image, cropAlpha = true): Image =
+  ## Fits large runtime PNGs into the game's 32 by 32 sprite budget.
+  result = transparentCell()
+  let bounds =
+    if cropAlpha:
+      image.imageAlphaBounds()
+    else:
+      SpriteBounds(x: 0, y: 0, w: image.width, h: image.height)
+  if bounds.w <= 0 or bounds.h <= 0:
+    return
+  var drawW: int
+  var drawH: int
+  if bounds.w >= bounds.h:
+    drawW = ArtCellSize
+    drawH = max(1, (bounds.h * ArtCellSize) div bounds.w)
+  else:
+    drawH = ArtCellSize
+    drawW = max(1, (bounds.w * ArtCellSize) div bounds.h)
+  let
+    offsetX = (ArtCellSize - drawW) div 2
+    offsetY = (ArtCellSize - drawH) div 2
+  for y in 0 ..< drawH:
+    for x in 0 ..< drawW:
+      let
+        sx = bounds.x + min(bounds.w - 1, (x * bounds.w) div drawW)
+        sy = bounds.y + min(bounds.h - 1, (y * bounds.h) div drawH)
+      result[offsetX + x, offsetY + y] = image[sx, sy]
+
+proc loadTribalAssetManifest*(): JsonNode =
+  ## Reads the optional runtime PNG mapping used for TribalCog borrowing.
+  let path = dataDir() / TribalAssetManifestName
+  if not fileExists(path):
+    return newJObject()
+  try:
+    result = parseJson(readFile(path))
+  except CatchableError:
+    result = newJObject()
+  if result.kind != JObject:
+    result = newJObject()
+
+proc tribalCogDataDir*(): string =
+  ## Returns the runtime asset directory for borrowed TribalCog PNGs.
+  result = getEnv("TRIBALCOG_DATA_DIR")
+  if result.len > 0:
+    return result
+  let sibling = repoDir().parentDir() / "games" / "games" / "tribalcog" / "data"
+  if dirExists(sibling):
+    return sibling
+  result = getHomeDir() / "Code" / "games" / "games" / "tribalcog" / "data"
+
+proc assetRelativePath(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string
+): string =
+  if manifest.kind == JObject and manifest.hasKey("assets"):
+    let assets = manifest["assets"]
+    if assets.kind == JObject and assets.hasKey(key) and
+        assets[key].kind == JString:
+      return assets[key].getStr()
+  fallbackRelativePath
+
+proc loadFittedAssetImage(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string,
+  fallbackImage: Image,
+  cropAlpha = true
+): Image =
+  let
+    relativePath = manifest.assetRelativePath(key, fallbackRelativePath)
+    path = tribalCogDataDir() / relativePath
+  if fileExists(path):
+    try:
+      return readImage(path).fittedArtCell(cropAlpha)
+    except CatchableError:
+      discard
+  fallbackImage.fittedArtCell(cropAlpha)
+
+proc loadAssetPair(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string,
+  fallbackImage: Image,
+  cropAlpha = true
+): tuple[sprite: Sprite, rgba: RgbaSprite] =
+  let image = loadFittedAssetImage(
+    manifest,
+    key,
+    fallbackRelativePath,
+    fallbackImage,
+    cropAlpha
+  )
+  (spriteFromImage(image), rgbaSpriteFromImage(image))
+
 proc visibleBounds*(sprite: Sprite): SpriteBounds =
   ## Measures the exact visible bounds of a palette sprite.
   var
@@ -441,9 +1506,13 @@ proc terrainCollisionBounds*(
   ## Measures collision bounds for one terrain prop sprite.
   let bounds = sprite.visibleBounds()
   case kind
-  of TerrainTree, TerrainEvergreen:
+  of TerrainTree, TerrainEvergreen, TerrainCactus, TerrainBush,
+      TerrainWheat:
     bounds.lowerCenterBounds()
-  of TerrainRock, TerrainLog, TerrainStump:
+  of TerrainFish, TerrainAltar, TerrainCamp:
+    SpriteBounds()
+  of TerrainRock, TerrainLog, TerrainStump, TerrainStone, TerrainGold,
+      TerrainCave, TerrainGoblinHut, TerrainGoblinTotem:
     bounds
 
 proc loadPlayerArt(sheet: Image, row: int): PlayerArt =
@@ -485,6 +1554,14 @@ proc terrainPropSprite*(sim: SimServer, kind: TerrainKind): Sprite =
   ## Returns the sprite for one terrain prop kind.
   sim.terrainSprites[kind]
 
+proc groundSprite*(sim: SimServer, kind: GroundKind): Sprite =
+  ## Returns the sprite for one ground tile kind.
+  sim.groundSprites[kind]
+
+proc groundRgbaSprite*(sim: SimServer, kind: GroundKind): RgbaSprite =
+  ## Returns the true-color sprite for one ground tile kind.
+  sim.rgbaGroundSprites[kind]
+
 proc terrainPropRgbaSprite*(sim: SimServer, kind: TerrainKind): RgbaSprite =
   ## Returns the true-color sprite for one terrain prop kind.
   sim.rgbaTerrainSprites[kind]
@@ -493,29 +1570,53 @@ proc terrainPropBounds*(sim: SimServer, kind: TerrainKind): SpriteBounds =
   ## Returns the collision bounds for one terrain prop kind.
   sim.terrainBounds[kind]
 
+proc landmarkSprite*(sim: SimServer, kind: LandmarkKind): Sprite =
+  ## Returns the sprite for one expedition landmark kind.
+  sim.landmarkSprites[kind]
+
+proc landmarkRgbaSprite*(sim: SimServer, kind: LandmarkKind): RgbaSprite =
+  ## Returns the true-color sprite for one expedition landmark kind.
+  sim.rgbaLandmarkSprites[kind]
+
+proc landmarkBounds*(sim: SimServer, kind: LandmarkKind): SpriteBounds =
+  ## Returns the collision/interaction bounds for a landmark kind.
+  sim.landmarkBounds[kind]
+
 proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
   ## Returns the sprite for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     sim.coinSprite
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     sim.heartSprite
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    sim.roleGearSprites[kind]
+  of PickupWood, PickupFood, PickupStone, PickupGold:
+    sim.landmarkSprite(kind.carryForPickup().landmarkForCarry())
 
 proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
   ## Returns the true-color sprite for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     sim.rgbaCoinSprite
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     sim.rgbaHeartSprite
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    sim.roleGearRgbaSprites[kind]
+  of PickupWood, PickupFood, PickupStone, PickupGold:
+    sim.landmarkRgbaSprite(kind.carryForPickup().landmarkForCarry())
 
 proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
   ## Returns the collision bounds for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     sim.coinBounds
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     sim.heartBounds
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    sim.roleGearBounds[kind]
+  of PickupWood, PickupFood, PickupStone, PickupGold:
+    sim.landmarkBounds(kind.carryForPickup().landmarkForCarry())
 
 proc playerSpriteFor*(sim: SimServer, player: Actor): Sprite =
   ## Returns the current drawn sprite for one player.
@@ -563,18 +1664,166 @@ proc playerRgbaSwooshFor*(sim: SimServer, player: Actor): RgbaSprite =
 proc mobBoundsFor*(sim: SimServer, kind: MobKind): SpriteBounds =
   ## Returns the collision bounds for one mob kind.
   case kind
-  of SnakeMob:
+  of SnakeMob, WolfMob, ScorpionMob, BatMob:
     sim.mobBounds
-  of TrollMob:
+  of TrollMob, GoblinMob, SlimeMob, WraithMob:
     sim.trollBounds
-  of BossMob:
+  of BossMob, BearMob, YetiMob:
     sim.bossBounds
+
+proc mobSpriteFor*(sim: SimServer, kind: MobKind): Sprite =
+  ## Returns the rendered sprite for one mob kind.
+  case kind
+  of SnakeMob, WolfMob, ScorpionMob, BatMob:
+    sim.mobSprite
+  of TrollMob, GoblinMob, SlimeMob, WraithMob:
+    sim.trollSprite
+  of BossMob, BearMob, YetiMob:
+    sim.bossSprite
 
 proc tileIndex*(tx, ty: int): int =
   ty * WorldWidthTiles + tx
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
+
+proc biomeForTileX*(tx: int): BiomeKind =
+  ## Maps horizontal expedition progress to a biome band.
+  if tx < SafeZoneRightTiles:
+    return BiomeOrigin
+  let
+    adventureTiles = max(1, WorldWidthTiles - SafeZoneRightTiles)
+    zone = clamp(
+      ((tx - SafeZoneRightTiles) * BiomeCount) div adventureTiles,
+      0,
+      BiomeCount - 1
+    )
+  case zone
+  of 0: BiomeForest
+  of 1: BiomePlains
+  of 2: BiomeSwamp
+  of 3: BiomeDesert
+  of 4: BiomeSnow
+  of 5: BiomeCave
+  else: BiomeRuins
+
+proc weatherForBiome*(biome: BiomeKind): WeatherKind =
+  ## Returns the deterministic weather identity for one biome.
+  case biome
+  of BiomeSwamp:
+    WeatherRain
+  of BiomeDesert:
+    WeatherDust
+  of BiomeSnow:
+    WeatherSnow
+  of BiomeCave, BiomeRuins:
+    WeatherFog
+  else:
+    WeatherClear
+
+proc biomeProgressValue*(biome: BiomeKind): int =
+  ## Returns a compact reached-biome score value.
+  case biome
+  of BiomeOrigin: 0
+  of BiomeForest: 1
+  of BiomePlains: 2
+  of BiomeSwamp: 3
+  of BiomeDesert: 4
+  of BiomeSnow: 5
+  of BiomeCave: 6
+  of BiomeRuins: 7
+
+proc biomeBackgroundRgbaColor*(
+  biome: BiomeKind
+): tuple[r, g, b, a: uint8] =
+  ## Returns the opaque tile backing color for transparent TribalCog PNG pixels.
+  case biome
+  of BiomeOrigin:
+    (r: 58'u8, g: 112'u8, b: 66'u8, a: 255'u8)
+  of BiomeForest:
+    (r: 42'u8, g: 94'u8, b: 52'u8, a: 255'u8)
+  of BiomePlains:
+    (r: 142'u8, g: 146'u8, b: 78'u8, a: 255'u8)
+  of BiomeSwamp:
+    (r: 44'u8, g: 84'u8, b: 82'u8, a: 255'u8)
+  of BiomeDesert:
+    (r: 190'u8, g: 145'u8, b: 78'u8, a: 255'u8)
+  of BiomeSnow:
+    (r: 211'u8, g: 224'u8, b: 232'u8, a: 255'u8)
+  of BiomeCave:
+    (r: 72'u8, g: 66'u8, b: 76'u8, a: 255'u8)
+  of BiomeRuins:
+    (r: 92'u8, g: 89'u8, b: 96'u8, a: 255'u8)
+
+proc biomeBackgroundPaletteColor*(biome: BiomeKind): uint8 =
+  ## Returns the nearest existing 4-bit palette color for the biome backing.
+  case biome
+  of BiomeOrigin, BiomeForest, BiomeSwamp:
+    10'u8
+  of BiomePlains:
+    8'u8
+  of BiomeDesert:
+    7'u8
+  of BiomeSnow:
+    2'u8
+  of BiomeCave:
+    5'u8
+  of BiomeRuins:
+    13'u8
+
+proc groundBlocks(kind: GroundKind): bool =
+  kind == GroundWater
+
+proc baseGroundForBiome(biome: BiomeKind): GroundKind =
+  case biome
+  of BiomeOrigin, BiomeForest:
+    GroundGrass
+  of BiomePlains:
+    GroundFertile
+  of BiomeSwamp:
+    GroundMud
+  of BiomeDesert:
+    GroundSand
+  of BiomeSnow:
+    GroundSnow
+  of BiomeCave:
+    GroundCave
+  of BiomeRuins:
+    GroundRuins
+
+proc groundSpeedPercent*(kind: GroundKind): int =
+  ## Returns movement speed as a percent for the current ground.
+  case kind
+  of GroundRoad:
+    115
+  of GroundBridge:
+    105
+  of GroundMud:
+    60
+  of GroundShallowWater:
+    55
+  of GroundSnow:
+    80
+  of GroundDune:
+    85
+  of GroundCave, GroundRuins:
+    90
+  else:
+    100
+
+proc weatherSpeedPercent*(weather: WeatherKind): int =
+  ## Keeps weather meaningful but light enough to remain readable.
+  case weather
+  of WeatherRain:
+    92
+  of WeatherDust:
+    94
+  of WeatherSnow:
+    90
+  of WeatherFog:
+    96
+  else:
+    100
 
 proc worldClampPixel*(x, maxValue: int): int =
   x.clamp(0, maxValue)
@@ -655,6 +1904,219 @@ proc frontierTilesForX*(x: int): int =
 proc frontierTiles*(sim: SimServer): int =
   frontierTilesForX(sim.teamFrontier)
 
+proc tileGroundKind*(sim: SimServer, tx, ty: int): GroundKind =
+  if not inTileBounds(tx, ty) or sim.groundKinds.len == 0:
+    return GroundGrass
+  sim.groundKinds[tileIndex(tx, ty)]
+
+proc tileBiomeKind*(sim: SimServer, tx, ty: int): BiomeKind =
+  if not inTileBounds(tx, ty) or sim.biomeKinds.len == 0:
+    return biomeForTileX(tx)
+  sim.biomeKinds[tileIndex(tx, ty)]
+
+proc tileElevation*(sim: SimServer, tx, ty: int): int =
+  if not inTileBounds(tx, ty) or sim.elevations.len == 0:
+    return 0
+  sim.elevations[tileIndex(tx, ty)]
+
+proc actorTileElevation*(sim: SimServer, actor: Actor): int =
+  sim.tileElevation(
+    clamp(boundsCenterX(actor.x, actor.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    clamp(boundsCenterY(actor.y, actor.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+
+proc mobTileElevation*(sim: SimServer, mob: Mob): int =
+  sim.tileElevation(
+    clamp(boundsCenterX(mob.x, mob.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    clamp(boundsCenterY(mob.y, mob.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+
+proc elevationDamageModifier*(attackerElevation, defenderElevation: int): int =
+  let delta = attackerElevation - defenderElevation
+  if delta >= ElevationCombatThreshold:
+    HighGroundDamageBonus
+  elif delta <= -ElevationCombatThreshold:
+    -LowGroundDamagePenalty
+  else:
+    0
+
+proc playerAttackDamage*(sim: SimServer, player: Actor, mob: Mob): int =
+  max(
+    1,
+    player.role.roleAttackDamage() +
+      elevationDamageModifier(sim.actorTileElevation(player), sim.mobTileElevation(mob)) +
+      (if player.huntTicks > 0 and mob.kind != BossMob:
+        LairHunterDamageBonus
+      else:
+        0)
+  )
+
+proc biomeAtPixel*(sim: SimServer, x: int): BiomeKind =
+  let tx = clamp(x div WorldTileSize, 0, WorldWidthTiles - 1)
+  sim.tileBiomeKind(tx, WorldHeightTiles div 2)
+
+proc weatherAtPixel*(sim: SimServer, x: int): WeatherKind =
+  sim.biomeAtPixel(x).weatherForBiome()
+
+proc currentBiome*(sim: SimServer): BiomeKind =
+  sim.biomeAtPixel(sim.teamFrontier)
+
+proc currentWeather*(sim: SimServer): WeatherKind =
+  sim.currentBiome().weatherForBiome()
+
+proc incompleteLandmarkInBiome(
+  sim: SimServer,
+  kind: LandmarkKind,
+  biome: BiomeKind
+): bool =
+  for landmark in sim.landmarks:
+    if landmark.kind == kind and not landmark.done and
+        sim.tileBiomeKind(landmark.tx, landmark.ty) == biome:
+      return true
+  false
+
+proc incompleteLandmarkExists(
+  sim: SimServer,
+  kind: LandmarkKind
+): bool =
+  for landmark in sim.landmarks:
+    if landmark.kind == kind and not landmark.done:
+      return true
+  false
+
+proc completedLairCountInBiome*(sim: SimServer, biome: BiomeKind): int =
+  ## Counts cleared dens that should lower future threat pressure in a biome.
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkLair and landmark.done and
+        sim.tileBiomeKind(landmark.tx, landmark.ty) == biome:
+      inc result
+
+proc lairRespawnCooldownBonus*(clearedLairs: int): int =
+  max(0, clearedLairs) * LairRespawnCooldownBonus
+
+proc campResourceHint(sim: SimServer): string =
+  ## Returns the shared-resource deficit for the next buildable camp.
+  "NEXT GATHER W" & $max(0, CampWoodCost - sim.wood) &
+    " S" & $max(0, CampStoneCost - sim.stone)
+
+proc missingCampResources(sim: SimServer): bool =
+  sim.wood < CampWoodCost or sim.stone < CampStoneCost
+
+proc finalGateProgressPercent*(progress: int): int =
+  ## Returns compact ritual progress for final-gate HUD text.
+  clamp((max(0, progress) * 100) div FinalGateRitualTicks, 0, 100)
+
+proc finalGateObjectiveHint(sim: SimServer): string =
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkFinalGate and not landmark.done:
+      return "NEXT HOLD GATE " & $landmark.progress.finalGateProgressPercent() & "%"
+  "EXPEDITION COMPLETE"
+
+proc finalGateCompleted*(sim: SimServer): bool =
+  ## Returns true after the expedition completes the last gate ritual.
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkFinalGate and landmark.done:
+      return true
+  false
+
+proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
+  ## Returns the short next-action line shown in the local player HUD.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return "NEXT WAIT"
+  if sim.finalGateCompleted():
+    return "EXPEDITION COMPLETE"
+  let player = sim.players[playerIndex]
+  if player.lives <= 0:
+    if player.downedTicks > 0:
+      return "NEXT WAIT FOR RESCUE"
+    return "NEXT RESPAWN"
+  if player.role == RoleUnarmed:
+    return "NEXT WALK INTO TANK DPS HEAL"
+  if player.maxHp > 0 and player.lives < player.maxHp and
+      player.lives * 100 <= player.maxHp * LowHealthHelpThresholdPercent:
+    return "NEXT HEAL FOOD SHELTER"
+
+  let biome = sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
+  if biome == BiomeOrigin:
+    return "NEXT PUSH RIGHT"
+  if sim.bossDefeated and sim.relicShards >= FinalGateRelicCost and
+      sim.campsActivated >= FinalGateCampCost and
+      sim.incompleteLandmarkExists(LandmarkFinalGate):
+    return sim.finalGateObjectiveHint()
+  if sim.incompleteLandmarkInBiome(LandmarkWaystation, biome):
+    return "NEXT " & biome.waystationPromptLabel()
+  if sim.incompleteLandmarkInBiome(LandmarkCamp, biome):
+    if sim.wood >= CampWoodCost and sim.stone >= CampStoneCost:
+      return "NEXT BUILD CAMP"
+    return sim.campResourceHint()
+  if sim.incompleteLandmarkInBiome(LandmarkLair, biome):
+    return "NEXT CLEAR LAIR"
+  if sim.relicShards < FinalGateRelicCost and
+      sim.incompleteLandmarkExists(LandmarkBeacon):
+    return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
+  if sim.campsActivated < FinalGateCampCost:
+    if sim.incompleteLandmarkExists(LandmarkCamp) and
+        sim.missingCampResources():
+      return sim.campResourceHint()
+    return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
+  if not sim.bossDefeated:
+    return "NEXT DEFEAT BOSS"
+  if sim.relicShards < FinalGateRelicCost:
+    return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
+  if sim.campsActivated < FinalGateCampCost:
+    if sim.incompleteLandmarkExists(LandmarkCamp) and
+        sim.missingCampResources():
+      return sim.campResourceHint()
+    return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
+  if sim.incompleteLandmarkExists(LandmarkFinalGate):
+    return sim.finalGateObjectiveHint()
+  "EXPEDITION COMPLETE"
+
+proc teamScore*(sim: SimServer): int =
+  ## Combines raw distance with expedition milestones.
+  sim.frontierTiles() +
+    sim.objectivesCompleted * ObjectiveScoreValue +
+    sim.sideObjectivesCompleted * SideObjectiveScoreValue +
+    sim.campsActivated * CampScoreValue +
+    sim.relicShards * RelicScoreValue +
+    sim.resourcesCollected +
+    (if sim.bossDefeated: BossScoreValue else: 0) +
+    (if sim.finalGateCompleted(): FinalGateScoreValue else: 0)
+
+proc elevationSpeedPercent*(elevation: int): int =
+  ## Higher ground is visible and tactically slower to traverse.
+  case clamp(elevation, 0, 5)
+  of 0: 100
+  of 1: 98
+  of 2: 94
+  of 3: 88
+  of 4: 82
+  else: 76
+
+proc speedPercentAt*(sim: SimServer, x, y: int): int =
+  let
+    tx = clamp(x div WorldTileSize, 0, WorldWidthTiles - 1)
+    ty = clamp(y div WorldTileSize, 0, WorldHeightTiles - 1)
+    ground = sim.tileGroundKind(tx, ty)
+    weather = sim.tileBiomeKind(tx, ty).weatherForBiome()
+    elevation = sim.tileElevation(tx, ty)
+  (ground.groundSpeedPercent() *
+    weather.weatherSpeedPercent() *
+    elevation.elevationSpeedPercent()) div 10_000
+
+proc playerMovementSpeedPercent*(
+  sim: SimServer,
+  player: Actor,
+  x,
+  y: int
+): int =
+  var terrainSpeed = sim.speedPercentAt(x, y)
+  if player.routeTicks > 0:
+    terrainSpeed = max(terrainSpeed, BiomeWaystationRouteMinSpeedPercent)
+  if player.surveyTicks > 0:
+    terrainSpeed = max(terrainSpeed, BeaconSurveyMinSpeedPercent)
+  (terrainSpeed * player.statusSpeedPercent()) div 100
+
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
   let
     worldX = x + bounds.x
@@ -680,6 +2142,8 @@ proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
+      if sim.tileGroundKind(tx, ty).groundBlocks():
+        return false
       if not sim.tiles[tileIndex(tx, ty)]:
         continue
       let
@@ -708,6 +2172,99 @@ proc clearProgressLane*(sim: var SimServer) =
       if inTileBounds(tx, ty):
         sim.tiles[tileIndex(tx, ty)] = false
 
+proc terrainNoise(seed, tx, ty, salt: int): int =
+  ## Returns stable local noise without consuming the gameplay RNG stream.
+  let value = seed * 1103515245 + tx * 734287 + ty * 912931 + salt * 42349
+  abs(value) mod 100
+
+proc seedBiomeGrounds*(sim: var SimServer) =
+  ## Creates deterministic biome bands, base terrain, roads, and blockers.
+  sim.groundKinds.setLen(WorldWidthTiles * WorldHeightTiles)
+  sim.biomeKinds.setLen(WorldWidthTiles * WorldHeightTiles)
+  sim.elevations.setLen(WorldWidthTiles * WorldHeightTiles)
+  let centerTy = WorldHeightTiles div 2
+  for ty in 0 ..< WorldHeightTiles:
+    for tx in 0 ..< WorldWidthTiles:
+      let
+        index = tileIndex(tx, ty)
+        biome = biomeForTileX(tx)
+        laneDistance = abs(ty - centerTy)
+        noise = terrainNoise(sim.seed, tx, ty, 3)
+        ridgeNoise = terrainNoise(sim.seed, tx, ty, 19)
+      var ground = biome.baseGroundForBiome()
+      var elevation =
+        case biome
+        of BiomeOrigin, BiomeSwamp:
+          0
+        of BiomeForest, BiomePlains, BiomeDesert:
+          1
+        of BiomeSnow, BiomeCave, BiomeRuins:
+          2
+      if laneDistance > 2:
+        inc elevation
+      if ridgeNoise > 72:
+        inc elevation
+      elif ridgeNoise < 18:
+        dec elevation
+      if tx < SafeZoneRightTiles:
+        ground = if laneDistance <= 1: GroundRoad else: GroundGrass
+        elevation = 0
+      elif laneDistance == 0:
+        ground =
+          if biome == BiomeSwamp:
+            GroundBridge
+          elif biome == BiomeCave or biome == BiomeRuins:
+            GroundRoad
+          else:
+            GroundRoad
+      elif laneDistance <= LaneHalfHeightTiles:
+        case biome
+        of BiomeSwamp:
+          ground =
+            if noise < 34:
+              GroundShallowWater
+            else:
+              GroundMud
+        of BiomeDesert:
+          ground =
+            if noise < 35: GroundDune else: GroundSand
+        of BiomeSnow:
+          ground = GroundSnow
+        of BiomeCave:
+          ground = GroundCave
+        of BiomeRuins:
+          ground = GroundRuins
+        of BiomePlains:
+          ground =
+            if noise < 45: GroundFertile else: GroundGrass
+        else:
+          ground = biome.baseGroundForBiome()
+      else:
+        case biome
+        of BiomeSwamp:
+          ground =
+            if noise < 35:
+              GroundWater
+            elif noise < 70:
+              GroundShallowWater
+            else:
+              GroundMud
+        of BiomeDesert:
+          ground =
+            if noise < 55: GroundDune else: GroundSand
+        of BiomeSnow:
+          ground = GroundSnow
+        of BiomeCave:
+          ground =
+            if noise < 18: GroundWater else: GroundCave
+        of BiomeRuins:
+          ground = GroundRuins
+        else:
+          ground = biome.baseGroundForBiome()
+      sim.groundKinds[index] = ground
+      sim.biomeKinds[index] = biome
+      sim.elevations[index] = clamp(elevation, 0, 5)
+
 proc seedBrush*(sim: var SimServer) =
   let patchCount = max(
     12,
@@ -728,9 +2285,24 @@ proc seedBrush*(sim: var SimServer) =
 
 proc seedRoleGear*(sim: var SimServer) =
   let centerY = WorldHeightPixels div 2
-  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY - 36, kind: PickupTankGear, value: 0))
-  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY - 4, kind: PickupDpsGear, value: 0))
-  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY + 28, kind: PickupHealerGear, value: 0))
+  sim.pickups.add(Pickup(
+    x: WorldTileSize * 2,
+    y: centerY - 60,
+    kind: PickupTankGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: WorldTileSize * 4,
+    y: centerY - 4,
+    kind: PickupDpsGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: WorldTileSize * 2,
+    y: centerY + 52,
+    kind: PickupHealerGear,
+    value: 0
+  ))
 
 proc randomTerrainKind(rng: var Rand): TerrainKind =
   ## Chooses one terrain prop with more trees than small debris.
@@ -746,13 +2318,52 @@ proc randomTerrainKind(rng: var Rand): TerrainKind =
   else:
     TerrainStump
 
+proc randomTerrainKindForBiome(rng: var Rand, biome: BiomeKind): TerrainKind =
+  ## Chooses biome-flavored blockers and props.
+  let roll = rng.rand(99)
+  case biome
+  of BiomeDesert:
+    if roll < 55: TerrainCactus
+    elif roll < 72: TerrainRock
+    elif roll < 86: TerrainStone
+    else: TerrainStump
+  of BiomeSnow:
+    if roll < 44: TerrainEvergreen
+    elif roll < 70: TerrainRock
+    elif roll < 86: TerrainLog
+    else: TerrainStone
+  of BiomeCave:
+    if roll < 52: TerrainRock
+    elif roll < 78: TerrainStone
+    elif roll < 90: TerrainGold
+    else: TerrainCave
+  of BiomeRuins:
+    if roll < 34: TerrainRock
+    elif roll < 58: TerrainGoblinTotem
+    elif roll < 78: TerrainGoblinHut
+    else: TerrainGold
+  of BiomePlains:
+    if roll < 42: TerrainWheat
+    elif roll < 62: TerrainBush
+    elif roll < 78: TerrainTree
+    else: TerrainRock
+  of BiomeSwamp:
+    if roll < 38: TerrainBush
+    elif roll < 62: TerrainLog
+    elif roll < 78: TerrainTree
+    else: TerrainRock
+  else:
+    rng.randomTerrainKind()
+
 proc seedTerrainProps*(sim: var SimServer) =
   ## Creates visual terrain props for every solid terrain tile.
   sim.terrainProps.setLen(0)
   for ty in 0 ..< WorldHeightTiles:
     for tx in 0 ..< WorldWidthTiles:
       if sim.tiles[tileIndex(tx, ty)]:
-        let kind = sim.rng.randomTerrainKind()
+        let kind = sim.rng.randomTerrainKindForBiome(
+          sim.tileBiomeKind(tx, ty)
+        )
         sim.terrainKinds[tileIndex(tx, ty)] = kind
         sim.terrainProps.add(TerrainProp(
           tx: tx,
@@ -760,13 +2371,179 @@ proc seedTerrainProps*(sim: var SimServer) =
           kind: kind
         ))
 
+proc landmarkWorldX*(landmark: Landmark): int =
+  landmark.tx * WorldTileSize
+
+proc landmarkWorldY*(landmark: Landmark): int =
+  landmark.ty * WorldTileSize
+
+proc landmarkIsResource(kind: LandmarkKind): bool =
+  kind in {LandmarkWood, LandmarkFood, LandmarkStone, LandmarkGold}
+
+proc biomeTileRange(biome: BiomeKind): tuple[firstTx, lastTx: int] =
+  result.firstTx = WorldWidthTiles
+  result.lastTx = -1
+  for tx in 0 ..< WorldWidthTiles:
+    if biomeForTileX(tx) == biome:
+      result.firstTx = min(result.firstTx, tx)
+      result.lastTx = max(result.lastTx, tx)
+  if result.lastTx < result.firstTx:
+    result = (SafeZoneRightTiles, WorldWidthTiles - 1)
+
+proc addLandmark(
+  sim: var SimServer,
+  kind: LandmarkKind,
+  tx,
+  ty: int,
+  hp = 1
+) =
+  if not inTileBounds(tx, ty):
+    return
+  sim.landmarks.add(Landmark(
+    tx: tx,
+    ty: ty,
+    kind: kind,
+    hp: hp,
+    done: false,
+    progress: 0
+  ))
+  sim.clearSpawnArea(tx, ty, 1)
+
+proc resourceKindsForBiome(
+  biome: BiomeKind
+): tuple[first, second: LandmarkKind] =
+  case biome
+  of BiomeForest:
+    (LandmarkWood, LandmarkFood)
+  of BiomePlains:
+    (LandmarkFood, LandmarkStone)
+  of BiomeSwamp:
+    (LandmarkWood, LandmarkStone)
+  of BiomeDesert:
+    (LandmarkWood, LandmarkStone)
+  of BiomeSnow:
+    (LandmarkFood, LandmarkStone)
+  of BiomeCave:
+    (LandmarkStone, LandmarkGold)
+  of BiomeRuins:
+    (LandmarkGold, LandmarkStone)
+  else:
+    (LandmarkWood, LandmarkFood)
+
+proc lairCacheCarriesForBiome*(biome: BiomeKind): tuple[first, second: CarryKind] =
+  ## Returns the practical supplies hidden in one biome's monster den.
+  let resources = biome.resourceKindsForBiome()
+  (resources.first.carryForLandmark(), resources.second.carryForLandmark())
+
+proc seedLandmarks*(sim: var SimServer) =
+  ## Places resources, camps, beacons, and the final expedition gate.
+  sim.landmarks.setLen(0)
+  let centerTy = WorldHeightTiles div 2
+  for biome in [
+    BiomeForest,
+    BiomePlains,
+    BiomeSwamp,
+    BiomeDesert,
+    BiomeSnow,
+    BiomeCave,
+    BiomeRuins
+  ]:
+    let
+      range = biome.biomeTileRange()
+      span = max(1, range.lastTx - range.firstTx)
+      resources = biome.resourceKindsForBiome()
+      upperTy = clamp(centerTy - 3, 1, WorldHeightTiles - 2)
+      lowerTy = clamp(centerTy + 3, 1, WorldHeightTiles - 2)
+      campTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          upperTy
+        else:
+          lowerTy
+      shrineTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          lowerTy
+        else:
+          upperTy
+      rescueTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          clamp(centerTy + 5, 1, WorldHeightTiles - 2)
+        else:
+          clamp(centerTy - 5, 1, WorldHeightTiles - 2)
+      lairTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          clamp(centerTy - 5, 1, WorldHeightTiles - 2)
+        else:
+          clamp(centerTy + 5, 1, WorldHeightTiles - 2)
+      waystationTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          clamp(centerTy + 2, 1, WorldHeightTiles - 2)
+        else:
+          clamp(centerTy - 2, 1, WorldHeightTiles - 2)
+    sim.addLandmark(
+      resources.first,
+      range.firstTx + max(1, span div 4),
+      upperTy,
+      ResourceNodeHp
+    )
+    sim.addLandmark(
+      resources.second,
+      range.firstTx + max(2, span div 2),
+      lowerTy,
+      ResourceNodeHp
+    )
+    if biome != BiomeForest:
+      sim.addLandmark(
+        LandmarkCamp,
+        range.firstTx + max(1, span div 3),
+        campTy,
+        1
+      )
+    sim.addLandmark(
+      LandmarkShrine,
+      range.firstTx + max(3, (span * 2) div 3),
+      shrineTy,
+      1
+    )
+    sim.addLandmark(
+      LandmarkRescue,
+      range.firstTx + max(2, (span * 3) div 4),
+      rescueTy,
+      1
+    )
+    sim.addLandmark(
+      LandmarkLair,
+      range.firstTx + max(2, span div 2),
+      lairTy,
+      LairHp
+    )
+    sim.addLandmark(
+      LandmarkWaystation,
+      range.firstTx + max(4, (span * 5) div 6),
+      waystationTy,
+      1
+    )
+    sim.addLandmark(
+      LandmarkBeacon,
+      max(range.firstTx + 2, range.lastTx - 2),
+      centerTy,
+      1
+    )
+  sim.addLandmark(
+    LandmarkFinalGate,
+    WorldWidthTiles - 3,
+    centerTy,
+    1
+  )
+
 proc nextMobAttackCooldown(rng: var Rand, kind: MobKind): int =
   ## Returns the cooldown before the next mob hit.
   case kind
-  of SnakeMob:
+  of SnakeMob, WolfMob, ScorpionMob, BatMob:
     45 + rng.rand(30)
-  of TrollMob:
+  of TrollMob, GoblinMob, SlimeMob, WraithMob:
     16 + rng.rand(14)
+  of BearMob, YetiMob:
+    28 + rng.rand(18)
   of BossMob:
     35 + rng.rand(25)
 
@@ -779,14 +2556,32 @@ proc mobMaxHp*(kind: MobKind, x: int): int =
     TrollHp + zone * 2
   of BossMob:
     BossHp + zone * 3
+  of WolfMob:
+    WolfHp + zone
+  of BearMob:
+    BearHp + zone * 2
+  of GoblinMob:
+    GoblinHp + zone * 2
+  of ScorpionMob:
+    ScorpionHp + zone
+  of SlimeMob:
+    SlimeHp + zone
+  of YetiMob:
+    YetiHp + zone * 2
+  of BatMob:
+    BatHp + zone
+  of WraithMob:
+    WraithHp + zone * 2
 
 proc mobDamage(mob: Mob): int =
   let zone = mobZoneX(mob.x)
   case mob.kind
-  of SnakeMob:
+  of SnakeMob, WolfMob, BatMob:
     1 + zone div 4
-  of TrollMob:
+  of ScorpionMob, SlimeMob, TrollMob, GoblinMob:
     2 + zone div 3
+  of BearMob, YetiMob, WraithMob:
+    2 + zone div 2
   of BossMob:
     3 + zone div 2
 
@@ -827,8 +2622,10 @@ proc spawnOneMob*(
   sprite: Sprite,
   hp: int
 ): bool =
+  discard sprite
   discard hp
   let bounds = sim.mobBoundsFor(kind)
+  let species = kind.defaultSpeciesForKind()
   for _ in 0 ..< 128:
     let
       tx = SafeZoneRightTiles + sim.rng.rand(WorldWidthTiles - SafeZoneRightTiles - 1)
@@ -839,16 +2636,68 @@ proc spawnOneMob*(
     if sim.canSpawnMobAt(px, py, bounds):
       sim.mobs.add Mob(
         kind: kind,
+        species: species,
         x: px,
         y: py,
-        sprite: sprite,
+        sprite: sim.mobSpriteFor(kind),
         bounds: bounds,
-        wanderCooldown: 8 + sim.rng.rand(18),
+        wanderCooldown: MobSpawnWanderCooldown +
+          sim.rng.rand(MobSpawnWanderJitter),
         hp: mobMaxHp(kind, px),
         attackCooldown: sim.rng.nextMobAttackCooldown(kind)
       )
       return true
   false
+
+proc spawnOneMobInRange*(
+  sim: var SimServer,
+  species: MobSpecies,
+  firstTx,
+  lastTx: int
+): bool =
+  ## Spawns one mob inside a biome range while preserving the main lane.
+  if species == SpeciesNone:
+    return false
+  let kind = species.speciesKind()
+  let
+    bounds = sim.mobBoundsFor(kind)
+    lo = clamp(firstTx, SafeZoneRightTiles, WorldWidthTiles - 1)
+    hi = clamp(max(firstTx, lastTx), lo, WorldWidthTiles - 1)
+  for _ in 0 ..< 128:
+    let
+      tx = lo + sim.rng.rand(max(0, hi - lo))
+      centerTy = WorldHeightTiles div 2
+      ty = clamp(
+        centerTy - LaneHalfHeightTiles +
+          sim.rng.rand(LaneHalfHeightTiles * 2),
+        0,
+        WorldHeightTiles - 1
+      )
+      px = tx * WorldTileSize
+      py = ty * WorldTileSize
+    if sim.canSpawnMobAt(px, py, bounds):
+      sim.mobs.add Mob(
+        kind: kind,
+        species: species,
+        x: px,
+        y: py,
+        sprite: sim.mobSpriteFor(kind),
+        bounds: bounds,
+        wanderCooldown: MobSpawnWanderCooldown +
+          sim.rng.rand(MobSpawnWanderJitter),
+        hp: mobMaxHp(kind, px),
+        attackCooldown: sim.rng.nextMobAttackCooldown(kind)
+      )
+      return true
+  false
+
+proc spawnOneMobInRange*(
+  sim: var SimServer,
+  kind: MobKind,
+  firstTx,
+  lastTx: int
+): bool =
+  sim.spawnOneMobInRange(kind.defaultSpeciesForKind(), firstTx, lastTx)
 
 proc spawnMobs*(
   sim: var SimServer,
@@ -873,8 +2722,70 @@ proc hasBoss*(sim: SimServer): bool =
     if mob.kind == BossMob:
       return true
 
+proc seedBiomeMobs*(sim: var SimServer) =
+  ## Seeds the expedition with biome-themed encounters.
+  for biome in [
+    BiomeForest,
+    BiomePlains,
+    BiomeSwamp,
+    BiomeDesert,
+    BiomeSnow,
+    BiomeCave,
+    BiomeRuins
+  ]:
+    let range = biome.biomeTileRange()
+    let species = biome.monsterSpeciesForBiome()
+    for item in species:
+      discard sim.spawnOneMobInRange(item, range.firstTx, range.lastTx)
+    let extras =
+      case biome
+      of BiomeForest: 3
+      of BiomePlains: 3
+      of BiomeSwamp: 4
+      of BiomeDesert: 4
+      of BiomeSnow: 4
+      of BiomeCave: 5
+      of BiomeRuins: 5
+      else: 0
+    for _ in 0 ..< extras:
+      discard sim.spawnOneMobInRange(
+        sim.rng.randomMonsterSpeciesForBiome(biome),
+        range.firstTx,
+        range.lastTx
+      )
+
 proc mobAttackRange*(mob: Mob): int =
-  12 + max(mob.bounds.w, mob.bounds.h)
+  ## Returns the distance where one mob can start an attack.
+  max(4, (12 + max(mob.bounds.w, mob.bounds.h)) div 2)
+
+proc mobSightRange*(mob: Mob): int =
+  ## Returns the distance where one mob starts chasing players.
+  if mob.species.speciesHarasses():
+    return MobSightRadius * 2
+  if mob.species == SpeciesGateTitan:
+    return MobSightRadius * 3
+  MobSightRadius
+
+proc mobTelegraphOffsetY*(mob: Mob): int =
+  ## Returns the visual y offset for one telegraphing mob.
+  if mob.attackPhase != MobTelegraph:
+    return 0
+  let
+    stepCount = MobTelegraphBounces * 4
+    step = (mob.attackTicks * stepCount) div max(1, MobTelegraphTicks)
+  case step mod 4
+  of 0:
+    -MobTelegraphLift
+  of 1:
+    0
+  of 2:
+    MobTelegraphLift
+  else:
+    0
+
+proc mobDrawY*(mob: Mob): int =
+  ## Returns the visual y position for one mob sprite.
+  mob.y + mob.mobTelegraphOffsetY()
 
 proc mobMaxHp*(mob: Mob): int =
   ## Returns the maximum hit points for one mob.
@@ -915,6 +2826,54 @@ proc rememberMobAttacker(mob: var Mob, playerId, tickCount: int) =
       return
   mob.attackerIds.add(playerId)
   mob.attackerTicks.add(tickCount)
+
+proc partyFocusRoleCount*(
+  mob: Mob,
+  players: openArray[Actor],
+  tickCount: int
+): int =
+  ## Counts distinct live combat roles focusing this mob in the co-op window.
+  var
+    tank = false
+    dps = false
+    healer = false
+  let count = min(mob.attackerIds.len, mob.attackerTicks.len)
+  for attackerIndex in 0 ..< count:
+    if tickCount - mob.attackerTicks[attackerIndex] > CoopAttackWindow:
+      continue
+    for player in players:
+      if player.id != mob.attackerIds[attackerIndex] or player.lives <= 0:
+        continue
+      case player.role
+      of RoleTank:
+        tank = true
+      of RoleDps:
+        dps = true
+      of RoleHealer:
+        healer = true
+      of RoleUnarmed:
+        discard
+      break
+  result = (if tank: 1 else: 0) + (if dps: 1 else: 0) +
+    (if healer: 1 else: 0)
+
+proc partyFocusDamageBonus*(
+  mob: Mob,
+  players: openArray[Actor],
+  tickCount: int
+): int =
+  ## Returns the normal-attack bonus for mixed-role focus fire.
+  let roleCount = mob.partyFocusRoleCount(players, tickCount)
+  if roleCount >= 3:
+    PartyFocusThreeRoleDamageBonus
+  elif roleCount >= 2:
+    PartyFocusTwoRoleDamageBonus
+  else:
+    0
+
+proc bossStaggered*(mob: Mob): bool =
+  ## Returns true while coordinated role focus is suppressing boss pressure.
+  mob.kind == BossMob and mob.staggerTicks > 0
 
 proc refreshCoopState(
   mob: var Mob,
@@ -972,6 +2931,7 @@ proc applyRole*(player: var Actor, role: PlayerRole) =
   player.role = role
   player.maxHp = role.roleMaxHp()
   player.lives = min(player.maxHp, max(1, (oldHp * player.maxHp + oldMax - 1) div oldMax))
+  player.abilityTicks = 0
 
 proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   ## Fully resets one player and puts them back at spawn.
@@ -980,7 +2940,34 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   let
     form = sim.players[playerIndex].form
     bounds = sim.playerCollisionBoundsFor(form, FaceDown)
-    spawn = sim.findPlayerSpawn(bounds, playerIndex)
+  var spawn = sim.findPlayerSpawn(bounds, playerIndex)
+  var bestCampTx = -1
+  for landmark in sim.landmarks:
+    if landmark.kind != LandmarkCamp or not landmark.done:
+      continue
+    if landmark.tx <= bestCampTx:
+      continue
+    for radius in 0 .. 3:
+      var found = false
+      for dy in -radius .. radius:
+        for dx in -radius .. radius:
+          let
+            tx = landmark.tx + dx
+            ty = landmark.ty + dy
+          if not inTileBounds(tx, ty):
+            continue
+          let
+            px = tx * WorldTileSize
+            py = ty * WorldTileSize
+          if sim.canOccupy(px, py, bounds):
+            spawn = (px, py)
+            bestCampTx = landmark.tx
+            found = true
+            break
+        if found:
+          break
+      if found:
+        break
   sim.players[playerIndex].x = spawn.x
   sim.players[playerIndex].y = spawn.y
   sim.players[playerIndex].sprite = sim.playerArts[form].sprites[PlayerFront]
@@ -988,13 +2975,50 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].facing = FaceDown
   sim.players[playerIndex].attackTicks = 0
   sim.players[playerIndex].attackResolved = false
+  sim.players[playerIndex].abilityTicks = 0
   sim.players[playerIndex].message = ""
+  sim.players[playerIndex].pingKind = PingNone
+  sim.players[playerIndex].pingTicks = 0
   sim.players[playerIndex].velX = 0
   sim.players[playerIndex].velY = 0
   sim.players[playerIndex].carryX = 0
   sim.players[playerIndex].carryY = 0
   sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
   sim.players[playerIndex].invulnTicks = 30
+  sim.players[playerIndex].coins = 0
+  sim.players[playerIndex].clearCarryInventory()
+  sim.players[playerIndex].carrySelectLockTicks = 0
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].routeTicks = 0
+  sim.players[playerIndex].surveyTicks = 0
+  sim.players[playerIndex].guideTicks = 0
+  sim.players[playerIndex].huntTicks = 0
+  sim.players[playerIndex].triumphTicks = 0
+  sim.players[playerIndex].rationTicks = 0
+  sim.players[playerIndex].moraleTicks = 0
+  sim.players[playerIndex].downedTicks = 0
+  sim.players[playerIndex].rescueTicks = 0
+
+proc setPlayerMessage*(
+  sim: var SimServer,
+  playerIndex: int,
+  message: string
+) =
+  ## Updates speech text and raises a short structured ping when recognized.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.players[playerIndex].message = message
+  let ping = message.playerPingForMessage()
+  sim.players[playerIndex].pingKind = ping
+  sim.players[playerIndex].pingTicks =
+    if ping == PingNone:
+      0
+    else:
+      PingDurationTicks
+  inc sim.scoreRevision
 
 proc addPlayer*(sim: var SimServer, address: string): int =
   ## Adds one player at a valid spawn point.
@@ -1027,65 +3051,196 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.fb = initFramebuffer()
   loadClientPalette()
   let sheet = readAsepriteImage(sheetPath())
+  let assetManifest = loadTribalAssetManifest()
   result.playerArts[MalePlayer] = sheet.loadPlayerArt(0)
   result.playerArts[FemalePlayer] = sheet.loadPlayerArt(1)
   result.playerSprite = result.playerArts[MalePlayer].sprites[PlayerFront]
-  result.mobSprite = sheet.sheetSprite(0, 2)
-  result.rgbaMobSprite = sheet.sheetRgbaSprite(0, 2)
+  let
+    wolfAsset = loadAssetPair(
+      assetManifest,
+      "mob_wolf",
+      "oriented/wolf.e.png",
+      sheet.subImage(0, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    )
+    goblinAsset = loadAssetPair(
+      assetManifest,
+      "mob_goblin",
+      "oriented/goblin.e.png",
+      sheet.subImage(1 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    )
+    bearAsset = loadAssetPair(
+      assetManifest,
+      "mob_bear",
+      "oriented/bear.e.png",
+      sheet.subImage(2 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    )
+  result.mobSprite = wolfAsset.sprite
+  result.rgbaMobSprite = wolfAsset.rgba
   result.mobBounds = result.rgbaMobSprite.visibleBounds()
-  result.trollSprite = sheet.sheetSprite(1, 2)
-  result.rgbaTrollSprite = sheet.sheetRgbaSprite(1, 2)
+  result.trollSprite = goblinAsset.sprite
+  result.rgbaTrollSprite = goblinAsset.rgba
   result.trollBounds = result.rgbaTrollSprite.visibleBounds()
-  result.bossSprite = sheet.sheetSprite(2, 2)
-  result.rgbaBossSprite = sheet.sheetRgbaSprite(2, 2)
+  result.bossSprite = bearAsset.sprite
+  result.rgbaBossSprite = bearAsset.rgba
   result.bossBounds = result.rgbaBossSprite.visibleBounds()
-  result.terrainSprite = sheet.sheetSprite(0, 3)
-  result.rgbaTerrainSprite = sheet.sheetRgbaSprite(0, 3)
-  result.terrainSprites[TerrainTree] = sheet.sheetSprite(1, 3)
-  result.rgbaTerrainSprites[TerrainTree] = sheet.sheetRgbaSprite(1, 3)
-  result.terrainBounds[TerrainTree] =
-    result.rgbaTerrainSprites[TerrainTree].terrainCollisionBounds(TerrainTree)
-  result.terrainSprites[TerrainEvergreen] = sheet.sheetSprite(2, 3)
-  result.rgbaTerrainSprites[TerrainEvergreen] = sheet.sheetRgbaSprite(2, 3)
-  result.terrainBounds[TerrainEvergreen] =
-    result.rgbaTerrainSprites[TerrainEvergreen].terrainCollisionBounds(
-      TerrainEvergreen
+  let
+    fallbackGround = sheet.subImage(0, 3 * ArtCellSize, ArtCellSize, ArtCellSize)
+    groundAssets: array[GroundKind, tuple[key, path: string]] = [
+      GroundGrass: ("ground_grass", "grass.png"),
+      GroundRoad: ("ground_road", "road.png"),
+      GroundFertile: ("ground_fertile", "fertile.png"),
+      GroundMud: ("ground_mud", "mud.png"),
+      GroundShallowWater: ("ground_shallow_water", "shallow_water.png"),
+      GroundWater: ("ground_water", "water.png"),
+      GroundSand: ("ground_sand", "sand.png"),
+      GroundDune: ("ground_dune", "dune.png"),
+      GroundSnow: ("ground_snow", "snow.png"),
+      GroundCave: ("ground_cave", "cave.png"),
+      GroundRuins: ("ground_ruins", "dungeon.png"),
+      GroundBridge: ("ground_bridge", "bridge.png")
+    ]
+  for kind in GroundKind:
+    let asset = loadAssetPair(
+      assetManifest,
+      groundAssets[kind].key,
+      groundAssets[kind].path,
+      fallbackGround,
+      false
     )
-  result.terrainSprites[TerrainRock] = sheet.sheetSprite(3, 3)
-  result.rgbaTerrainSprites[TerrainRock] = sheet.sheetRgbaSprite(3, 3)
-  result.terrainBounds[TerrainRock] =
-    result.rgbaTerrainSprites[TerrainRock].terrainCollisionBounds(TerrainRock)
-  result.terrainSprites[TerrainLog] = sheet.sheetSprite(4, 3)
-  result.rgbaTerrainSprites[TerrainLog] = sheet.sheetRgbaSprite(4, 3)
-  result.terrainBounds[TerrainLog] =
-    result.rgbaTerrainSprites[TerrainLog].terrainCollisionBounds(TerrainLog)
-  result.terrainSprites[TerrainStump] = sheet.sheetSprite(5, 3)
-  result.rgbaTerrainSprites[TerrainStump] = sheet.sheetRgbaSprite(5, 3)
-  result.terrainBounds[TerrainStump] =
-    result.rgbaTerrainSprites[TerrainStump].terrainCollisionBounds(
-      TerrainStump
+    result.groundSprites[kind] = asset.sprite
+    result.rgbaGroundSprites[kind] = asset.rgba
+  result.terrainSprite = result.groundSprites[GroundGrass]
+  result.rgbaTerrainSprite = result.rgbaGroundSprites[GroundGrass]
+
+  let
+    terrainFallbacks: array[TerrainKind, Image] = [
+      TerrainTree: sheet.subImage(1 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainEvergreen: sheet.subImage(2 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainRock: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainLog: sheet.subImage(4 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainStump: sheet.subImage(5 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainBush: sheet.subImage(1 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainCactus: sheet.subImage(2 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainWheat: sheet.subImage(1 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainFish: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainStone: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainGold: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainCave: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainGoblinHut: sheet.subImage(4 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainGoblinTotem: sheet.subImage(5 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainAltar: sheet.subImage(0 * ArtCellSize, 4 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainCamp: sheet.subImage(4 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize)
+    ]
+    terrainAssets: array[TerrainKind, tuple[key, path: string]] = [
+      TerrainTree: ("prop_tree", "tree.png"),
+      TerrainEvergreen: ("prop_evergreen", "tree.png"),
+      TerrainRock: ("prop_rock", "stone.png"),
+      TerrainLog: ("prop_log", "wood.png"),
+      TerrainStump: ("prop_stump", "wood.png"),
+      TerrainBush: ("prop_bush", "bush.png"),
+      TerrainCactus: ("prop_cactus", "cactus.png"),
+      TerrainWheat: ("prop_wheat", "wheat.png"),
+      TerrainFish: ("prop_fish", "fish.png"),
+      TerrainStone: ("prop_stone", "stone.png"),
+      TerrainGold: ("prop_gold", "gold.png"),
+      TerrainCave: ("prop_cave", "cave.png"),
+      TerrainGoblinHut: ("prop_goblin_hut", "goblin_hut.png"),
+      TerrainGoblinTotem: ("prop_goblin_totem", "goblin_totem.png"),
+      TerrainAltar: ("prop_altar", "altar.png"),
+      TerrainCamp: ("prop_camp", "lumber_camp.png")
+    ]
+  for kind in TerrainKind:
+    let asset = loadAssetPair(
+      assetManifest,
+      terrainAssets[kind].key,
+      terrainAssets[kind].path,
+      terrainFallbacks[kind]
     )
-  result.coinSprite = sheet.sheetSprite(0, 4)
-  result.rgbaCoinSprite = sheet.sheetRgbaSprite(0, 4)
+    result.terrainSprites[kind] = asset.sprite
+    result.rgbaTerrainSprites[kind] = asset.rgba
+    result.terrainBounds[kind] =
+      result.rgbaTerrainSprites[kind].terrainCollisionBounds(kind)
+
+  let
+    landmarkFallback = sheet.subImage(0, 4 * ArtCellSize, ArtCellSize, ArtCellSize)
+    landmarkAssets: array[LandmarkKind, tuple[key, path: string]] = [
+      LandmarkWood: ("landmark_wood", "wood.png"),
+      LandmarkFood: ("landmark_food", "bushel.png"),
+      LandmarkStone: ("landmark_stone", "stone.png"),
+      LandmarkGold: ("landmark_gold", "gold.png"),
+      LandmarkCamp: ("landmark_camp", "lumber_camp.png"),
+      LandmarkBeacon: ("landmark_beacon", "control_point.png"),
+      LandmarkFinalGate: ("landmark_final_gate", "altar.png"),
+      LandmarkShrine: ("landmark_shrine", "altar.png"),
+      LandmarkRescue: ("landmark_rescue", "oriented/gatherer.e.png"),
+      LandmarkLair: ("landmark_lair", "goblin_hive.png"),
+      LandmarkWaystation: ("landmark_waystation", "control_point.png")
+    ]
+  for kind in LandmarkKind:
+    let asset = loadAssetPair(
+      assetManifest,
+      landmarkAssets[kind].key,
+      landmarkAssets[kind].path,
+      landmarkFallback
+    )
+    result.landmarkSprites[kind] = asset.sprite
+    result.rgbaLandmarkSprites[kind] = asset.rgba
+    result.landmarkBounds[kind] = result.rgbaLandmarkSprites[kind].visibleBounds()
+
+  for gear in [
+    (kind: PickupTankGear, key: "role_tank_guild", path: "guard_tower.png", fallbackX: 3, fallbackY: 3),
+    (kind: PickupDpsGear, key: "role_dps_guild", path: "blacksmith.png", fallbackX: 4, fallbackY: 3),
+    (kind: PickupHealerGear, key: "role_healer_guild", path: "monastery.png", fallbackX: 0, fallbackY: 4)
+  ]:
+    let asset = loadAssetPair(
+      assetManifest,
+      gear.key,
+      gear.path,
+      sheet.subImage(
+        gear.fallbackX * ArtCellSize,
+        gear.fallbackY * ArtCellSize,
+        ArtCellSize,
+        ArtCellSize
+      )
+    )
+    result.roleGearSprites[gear.kind] = asset.sprite
+    result.roleGearRgbaSprites[gear.kind] = asset.rgba
+    result.roleGearBounds[gear.kind] = result.roleGearRgbaSprites[gear.kind].visibleBounds()
+
+  let coinAsset = loadAssetPair(
+    assetManifest,
+    "pickup_coin",
+    "goblet.png",
+    sheet.subImage(0, 4 * ArtCellSize, ArtCellSize, ArtCellSize)
+  )
+  result.coinSprite = coinAsset.sprite
+  result.rgbaCoinSprite = coinAsset.rgba
   result.coinBounds = result.rgbaCoinSprite.visibleBounds()
-  result.heartSprite = sheet.sheetSprite(1, 4)
-  result.rgbaHeartSprite = sheet.sheetRgbaSprite(1, 4)
+  let heartAsset = loadAssetPair(
+    assetManifest,
+    "pickup_heart",
+    "heart.png",
+    sheet.subImage(1 * ArtCellSize, 4 * ArtCellSize, ArtCellSize, ArtCellSize)
+  )
+  result.heartSprite = heartAsset.sprite
+  result.rgbaHeartSprite = heartAsset.rgba
   result.heartBounds = result.rgbaHeartSprite.visibleBounds()
   result.textFont = loadTiny5Font()
 
+  result.seedBiomeGrounds()
   result.seedBrush()
   result.clearProgressLane()
   let startTx = 2
   let startTy = WorldHeightTiles div 2
   result.clearSpawnArea(startTx, startTy, 5)
+  result.seedLandmarks()
   result.seedTerrainProps()
 
   result.players = @[]
   result.teamFrontier = SafeZoneRightPixels
+  result.maxBiomeReached = BiomeOrigin.biomeProgressValue()
   result.seedRoleGear()
-  result.spawnMobs(28, SnakeMob, result.mobSprite, SnakeHp)
-  result.spawnMobs(8, TrollMob, result.trollSprite, TrollHp)
-  discard result.spawnOneMob(BossMob, result.bossSprite, BossHp)
+  result.seedBiomeMobs()
   result.mobSpawnCooldown = 30
 
 proc playerScoresJson*(sim: SimServer): string =
@@ -1102,20 +3257,56 @@ proc playerScoresJson*(sim: SimServer): string =
     healingDone = newJArray()
     damageBlocked = newJArray()
     messagesSent = newJArray()
+    carriedItems = newJArray()
+    statusEffects = newJArray()
+    downedTicks = newJArray()
+    triumphTicks = newJArray()
+    rationTicks = newJArray()
+    moraleTicks = newJArray()
+    biomesReached = newJArray()
+    objectivesCompleted = newJArray()
+    sideObjectivesCompleted = newJArray()
+    relicShards = newJArray()
+    campsActivated = newJArray()
+    resourcesCollected = newJArray()
+    bossDefeated = newJArray()
+    finalGateCompleted = newJArray()
+    partyWood = newJArray()
+    partyFood = newJArray()
+    partyStone = newJArray()
     results = newJObject()
-  let teamScore = sim.frontierTiles()
+  let
+    frontierScore = sim.frontierTiles()
+    teamScore = sim.teamScore()
   for player in sim.players:
     names.add(%player.address)
     scores.add(%teamScore)
     hearts.add(%player.lives)
     distanceWalked.add(%player.distanceWalked)
-    frontierTiles.add(%teamScore)
+    frontierTiles.add(%frontierScore)
     personalFrontierTiles.add(%frontierTilesForX(player.personalFrontier))
     roles.add(%player.role.roleLabel())
     damageDone.add(%player.damageDone)
     healingDone.add(%player.healingDone)
     damageBlocked.add(%player.damageBlocked)
     messagesSent.add(%player.messagesSent)
+    carriedItems.add(%player.carryInventoryLabel())
+    statusEffects.add(%player.statusLabel())
+    downedTicks.add(%player.downedTicks)
+    triumphTicks.add(%player.triumphTicks)
+    rationTicks.add(%player.rationTicks)
+    moraleTicks.add(%player.moraleTicks)
+    biomesReached.add(%sim.maxBiomeReached)
+    objectivesCompleted.add(%sim.objectivesCompleted)
+    sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
+    relicShards.add(%sim.relicShards)
+    campsActivated.add(%sim.campsActivated)
+    resourcesCollected.add(%sim.resourcesCollected)
+    bossDefeated.add(%sim.bossDefeated)
+    finalGateCompleted.add(%sim.finalGateCompleted())
+    partyWood.add(%sim.wood)
+    partyFood.add(%sim.food)
+    partyStone.add(%sim.stone)
   results["names"] = names
   results["scores"] = scores
   results["hearts"] = hearts
@@ -1127,6 +3318,24 @@ proc playerScoresJson*(sim: SimServer): string =
   results["healing_done"] = healingDone
   results["damage_blocked"] = damageBlocked
   results["messages_sent"] = messagesSent
+  results["carried_items"] = carriedItems
+  results["status_effects"] = statusEffects
+  results["downed_ticks"] = downedTicks
+  results["triumph_ticks"] = triumphTicks
+  results["ration_ticks"] = rationTicks
+  results["morale_ticks"] = moraleTicks
+  results["team_score"] = scores
+  results["biomes_reached"] = biomesReached
+  results["objectives_completed"] = objectivesCompleted
+  results["side_objectives_completed"] = sideObjectivesCompleted
+  results["relic_shards"] = relicShards
+  results["camps_activated"] = campsActivated
+  results["resources_collected"] = resourcesCollected
+  results["boss_defeated"] = bossDefeated
+  results["final_gate_completed"] = finalGateCompleted
+  results["party_wood"] = partyWood
+  results["party_food"] = partyFood
+  results["party_stone"] = partyStone
   $results
 
 proc mixHash(hash: var uint64, value: uint64) =
@@ -1151,6 +3360,16 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.mobSpawnCooldown)
   result.mixHashInt(sim.nextPlayerId)
   result.mixHashInt(sim.teamFrontier)
+  result.mixHashInt(sim.maxBiomeReached)
+  result.mixHashInt(sim.objectivesCompleted)
+  result.mixHashInt(sim.sideObjectivesCompleted)
+  result.mixHashInt(sim.campsActivated)
+  result.mixHashInt(sim.resourcesCollected)
+  result.mixHashInt(sim.wood)
+  result.mixHashInt(sim.food)
+  result.mixHashInt(sim.stone)
+  result.mixHashInt(sim.relicShards)
+  result.mixHashInt(ord(sim.bossDefeated))
   result.mixHashInt(sim.players.len)
   for player in sim.players:
     result.mixHashInt(player.id)
@@ -1159,6 +3378,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(player.facing))
     result.mixHashInt(player.attackTicks)
     result.mixHashInt(ord(player.attackResolved))
+    result.mixHashInt(ord(player.pingKind))
+    result.mixHashInt(player.pingTicks)
     result.mixHashInt(player.velX)
     result.mixHashInt(player.velY)
     result.mixHashInt(player.carryX)
@@ -1166,6 +3387,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(player.role))
     result.mixHashInt(player.maxHp)
     result.mixHashInt(player.abilityCooldown)
+    result.mixHashInt(player.abilityTicks)
     result.mixHashInt(player.guardTicks)
     result.mixHashInt(player.personalFrontier)
     result.mixHashInt(player.damageDone)
@@ -1176,15 +3398,36 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.lives)
     result.mixHashInt(player.invulnTicks)
     result.mixHashInt(player.coins)
+    result.mixHashInt(ord(player.carrying))
+    result.mixHashInt(ord(player.carriedItem))
+    for item in CarryInventoryKinds:
+      result.mixHashInt(player.carryCount(item))
+    result.mixHashInt(player.carrySelectLockTicks)
+    result.mixHashInt(player.slowTicks)
+    result.mixHashInt(player.chillTicks)
+    result.mixHashInt(player.poisonTicks)
+    result.mixHashInt(player.exhaustionTicks)
+    result.mixHashInt(player.routeTicks)
+    result.mixHashInt(player.surveyTicks)
+    result.mixHashInt(player.guideTicks)
+    result.mixHashInt(player.huntTicks)
+    result.mixHashInt(player.triumphTicks)
+    result.mixHashInt(player.rationTicks)
+    result.mixHashInt(player.moraleTicks)
+    result.mixHashInt(player.downedTicks)
+    result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
   for mob in sim.mobs:
     result.mixHashInt(ord(mob.kind))
+    result.mixHashInt(ord(mob.species))
     result.mixHashInt(mob.x)
     result.mixHashInt(mob.y)
     result.mixHashInt(mob.wanderCooldown)
     result.mixHashInt(mob.hp)
     result.mixHashInt(mob.attackCooldown)
-    result.mixHashInt(mob.attackPhase)
+    result.mixHashInt(ord(mob.attackPhase))
+    result.mixHashInt(mob.attackTicks)
+    result.mixHashInt(mob.staggerTicks)
     result.mixHashInt(ord(mob.attackFacing))
     result.mixHashInt(mob.attackerIds.len)
     for attackerId in mob.attackerIds:
@@ -1198,8 +3441,20 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(pickup.y)
     result.mixHashInt(ord(pickup.kind))
     result.mixHashInt(pickup.value)
+  result.mixHashInt(sim.landmarks.len)
+  for landmark in sim.landmarks:
+    result.mixHashInt(landmark.tx)
+    result.mixHashInt(landmark.ty)
+    result.mixHashInt(ord(landmark.kind))
+    result.mixHashInt(landmark.hp)
+    result.mixHashInt(ord(landmark.done))
+    result.mixHashInt(landmark.progress)
   for tile in sim.tiles:
     result.mixHashInt(ord(tile))
+  for ground in sim.groundKinds:
+    result.mixHashInt(ord(ground))
+  for elevation in sim.elevations:
+    result.mixHashInt(elevation)
 
 proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
   if dx != 0:
@@ -1219,6 +3474,18 @@ proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
         actor.y = ny
       else:
         break
+
+proc moveMob(sim: SimServer, mob: var Mob, dx, dy: int) =
+  ## Moves one mob through terrain by a small amount.
+  var actor = Actor(
+    x: mob.x,
+    y: mob.y,
+    sprite: mob.sprite,
+    bounds: mob.bounds
+  )
+  sim.moveActor(actor, dx, dy)
+  mob.x = max(actor.x, SafeZoneRightPixels)
+  mob.y = actor.y
 
 proc applyMomentumAxis(
   sim: SimServer,
@@ -1403,9 +3670,107 @@ proc applyHealerPulse(sim: var SimServer, healerIndex: int) =
       sim.players[targetIndex].lives + HealerPulseAmount
     )
     let healed = sim.players[targetIndex].lives - before
+    let cleansed =
+      sim.players[targetIndex].poisonTicks > 0 or
+      sim.players[targetIndex].slowTicks > 0 or
+      sim.players[targetIndex].chillTicks > 0 or
+      sim.players[targetIndex].exhaustionTicks > 0
+    if cleansed:
+      sim.players[targetIndex].poisonTicks = 0
+      sim.players[targetIndex].slowTicks = 0
+      sim.players[targetIndex].chillTicks = 0
+      sim.players[targetIndex].exhaustionTicks = 0
     if healed > 0:
       sim.players[healerIndex].healingDone += healed
+    if healed > 0 or cleansed:
       inc sim.scoreRevision
+
+proc dropMonsterSupply(sim: var SimServer, mob: Mob) =
+  ## Drops a carried expedition supply from species that naturally support one.
+  let supply = mob.species.speciesSupplyDrop()
+  if supply == CarryNone:
+    return
+  let
+    pickupKind = supply.pickupForCarry()
+    sprite = sim.pickupSprite(pickupKind)
+  sim.pickups.add(Pickup(
+    x: mob.x + mob.sprite.width div 2 - sprite.width div 2 + 6,
+    y: mob.y + mob.sprite.height div 2 - sprite.height div 2 + 4,
+    kind: pickupKind,
+    value: 1
+  ))
+  inc sim.scoreRevision
+
+proc finishDefeatedMobs(sim: var SimServer) =
+  var survivors: seq[Mob] = @[]
+  for mob in sim.mobs:
+    if mob.hp > 0:
+      survivors.add(mob)
+    else:
+      case mob.kind
+      of BossMob:
+        sim.bossDefeated = true
+        inc sim.scoreRevision
+        let sprite = sim.pickupSprite(PickupCoin)
+        sim.pickups.add(Pickup(
+          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
+          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
+          kind: PickupCoin,
+          value: BossCoinValue
+        ))
+        sim.dropMonsterSupply(mob)
+      of TrollMob, GoblinMob, BearMob, ScorpionMob, SlimeMob, YetiMob,
+          WraithMob:
+        let sprite = sim.pickupSprite(PickupCoin)
+        sim.pickups.add(Pickup(
+          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
+          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
+          kind: PickupCoin,
+          value:
+            if mob.kind in {BearMob, YetiMob, WraithMob}:
+              TrollCoinValue * 2
+            else:
+              TrollCoinValue
+        ))
+        sim.dropMonsterSupply(mob)
+      of SnakeMob, WolfMob, BatMob:
+        let roll = sim.rng.rand(99)
+        if roll < 10:
+          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
+        elif roll < 60:
+          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
+        sim.dropMonsterSupply(mob)
+  sim.mobs = survivors
+
+proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int
+
+proc applyDpsCleave(sim: var SimServer, playerIndex: int) =
+  let player = sim.players[playerIndex]
+  let
+    radiusSq = DpsCleaveRadius * DpsCleaveRadius
+    playerCenterX = boundsCenterX(player.x, player.bounds)
+    playerCenterY = boundsCenterY(player.y, player.bounds)
+  var hitAny = false
+  for mobIndex in 0 ..< sim.mobs.len:
+    let
+      mobCenterX = boundsCenterX(sim.mobs[mobIndex].x, sim.mobs[mobIndex].bounds)
+      mobCenterY = boundsCenterY(sim.mobs[mobIndex].y, sim.mobs[mobIndex].bounds)
+    if distanceSquared(playerCenterX, playerCenterY, mobCenterX, mobCenterY) >
+        radiusSq:
+      continue
+    sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
+    sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
+    let damage = DpsCleaveDamage +
+      sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex])
+    sim.mobs[mobIndex].hp -= damage
+    sim.players[playerIndex].damageDone += damage
+    hitAny = true
+    inc sim.scoreRevision
+  if hitAny:
+    sim.players[playerIndex].attackTicks =
+      max(sim.players[playerIndex].attackTicks, 5)
+    sim.players[playerIndex].attackResolved = true
+    sim.finishDefeatedMobs()
 
 proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
   if sim.players[playerIndex].abilityCooldown > 0:
@@ -1413,12 +3778,131 @@ proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
   case sim.players[playerIndex].role
   of RoleTank:
     sim.players[playerIndex].guardTicks = TankGuardTicks
+    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
+    sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
+  of RoleDps:
+    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
+    sim.applyDpsCleave(playerIndex)
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleHealer:
+    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.applyHealerPulse(playerIndex)
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   else:
     discard
+
+proc consumeCarryItem(
+  sim: var SimServer,
+  playerIndex: int,
+  item: CarryKind
+): bool
+proc dropCarry(sim: var SimServer, playerIndex: int): bool
+proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool
+proc useCarryInField(sim: var SimServer, playerIndex: int): bool
+proc applyCarriedFood(
+  sim: var SimServer,
+  carrierIndex,
+  targetIndex: int
+): bool
+
+proc carriedFoodWouldHelp*(player: Actor): bool =
+  player.lives > 0 and (
+    player.lives < player.maxHp or
+    player.poisonTicks > 0 or
+    player.slowTicks > 0 or
+    player.chillTicks > 0 or
+    player.exhaustionTicks > 0
+  )
+
+proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if not sim.players[playerIndex].hasCarry(CarryFood):
+    return false
+  sim.applyCarriedFood(playerIndex, playerIndex)
+
+proc carriedFoodNeedScore(player: Actor): int =
+  if not player.carriedFoodWouldHelp():
+    return -1
+  result = max(0, player.maxHp - player.lives) * 10
+  if player.poisonTicks > 0:
+    result += 12
+  if player.slowTicks > 0:
+    result += 8
+  if player.chillTicks > 0:
+    result += 8
+  if player.exhaustionTicks > 0:
+    result += 6
+
+proc nearbyCarriedFoodRecipient(
+  sim: SimServer,
+  playerIndex: int
+): int =
+  result = -1
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.hasCarry(CarryFood):
+    return
+  let radiusSq = CarriedFoodShareRadius * CarriedFoodShareRadius
+  var
+    bestScore = -1
+    bestDistance = high(int)
+  for otherIndex in 0 ..< sim.players.len:
+    if otherIndex == playerIndex:
+      continue
+    let other = sim.players[otherIndex]
+    if other.lives <= 0:
+      continue
+    let distance = distanceSquaredActor(player, other)
+    if distance > radiusSq:
+      continue
+    let score = other.carriedFoodNeedScore()
+    if score < 0:
+      continue
+    if score > bestScore or (score == bestScore and distance < bestDistance):
+      result = otherIndex
+      bestScore = score
+      bestDistance = distance
+
+proc playerCanFeedCarriedFood*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  sim.nearbyCarriedFoodRecipient(playerIndex) >= 0
+
+proc feedCarriedFood(sim: var SimServer, playerIndex: int): bool =
+  let recipient = sim.nearbyCarriedFoodRecipient(playerIndex)
+  if recipient < 0:
+    return false
+  sim.applyCarriedFood(playerIndex, recipient)
+
+proc applyCarriedFood(
+  sim: var SimServer,
+  carrierIndex,
+  targetIndex: int
+): bool =
+  if carrierIndex < 0 or carrierIndex >= sim.players.len or
+      targetIndex < 0 or targetIndex >= sim.players.len:
+    return false
+  if not sim.players[carrierIndex].hasCarry(CarryFood):
+    return false
+  if not sim.players[targetIndex].carriedFoodWouldHelp():
+    return false
+  let before = sim.players[targetIndex].lives
+  if sim.players[targetIndex].lives < sim.players[targetIndex].maxHp:
+    sim.players[targetIndex].lives = min(
+      sim.players[targetIndex].maxHp,
+      sim.players[targetIndex].lives + FoodHealAmount
+    )
+  sim.players[targetIndex].poisonTicks = 0
+  sim.players[targetIndex].slowTicks = 0
+  sim.players[targetIndex].chillTicks = 0
+  sim.players[targetIndex].exhaustionTicks = 0
+  sim.players[carrierIndex].healingDone +=
+    sim.players[targetIndex].lives - before
+  discard sim.consumeCarryItem(carrierIndex, CarryFood)
+  true
 
 proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1477,13 +3961,36 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     player.facing = FaceDown
   player.bounds = sim.playerBoundsFor(player)
 
-  sim.applyMomentumAxis(player, player.carryX, player.velX, true)
-  sim.applyMomentumAxis(player, player.carryY, player.velY, false)
+  let
+    footX = boundsCenterX(player.x, player.bounds)
+    footY = boundsCenterY(player.y, player.bounds)
+    speedPct = sim.playerMovementSpeedPercent(player, footX, footY)
+  sim.applyMomentumAxis(
+    player,
+    player.carryX,
+    (player.velX * speedPct) div 100,
+    true
+  )
+  sim.applyMomentumAxis(
+    player,
+    player.carryY,
+    (player.velY * speedPct) div 100,
+    false
+  )
   if input.attack and player.attackTicks == 0:
     player.attackTicks = 5
     player.attackResolved = false
   if input.b:
     sim.applyRoleAbility(playerIndex)
+  if input.select:
+    let usedCarryAction =
+      sim.consumeCarriedFood(playerIndex) or
+        sim.feedCarriedFood(playerIndex) or
+        sim.deliverCarryToCamp(playerIndex) or
+        sim.useCarryInField(playerIndex) or
+        sim.dropCarry(playerIndex)
+    if usedCarryAction:
+      player.carrySelectLockTicks = 1
 
 proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
   let sprite = sim.playerSwooshFor(player)
@@ -1541,6 +4048,7 @@ proc lungeVector(facing: Facing, distance: int): tuple[dx, dy: int] =
   of FaceRight: (distance, 0)
 
 proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
+  ## Chooses the dominant cardinal facing from one point to another.
   let
     dx = toX - fromX
     dy = toY - fromY
@@ -1549,14 +4057,369 @@ proc chooseFacing(fromX, fromY, toX, toY: int): Facing =
   else:
     if dy < 0: FaceUp else: FaceDown
 
+proc chaseVector(fromX, fromY, toX, toY: int): tuple[dx, dy: int] =
+  ## Returns one small walking step from one point toward another.
+  let
+    deltaX = toX - fromX
+    deltaY = toY - fromY
+  if deltaX < 0:
+    result.dx = -1
+  elif deltaX > 0:
+    result.dx = 1
+  if deltaY < 0:
+    result.dy = -1
+  elif deltaY > 0:
+    result.dy = 1
+  if abs(deltaX) > abs(deltaY) * 2:
+    result.dy = 0
+  elif abs(deltaY) > abs(deltaX) * 2:
+    result.dx = 0
+
+proc dropPlayerCoins(sim: var SimServer, player: Actor) =
+  ## Drops one coin pickup carrying all of a dead player's coins.
+  if player.coins <= 0:
+    return
+  let
+    sprite = sim.pickupSprite(PickupCoin)
+    bounds = sim.pickupBounds(PickupCoin)
+    centerX = boundsCenterX(player.x, player.bounds)
+    centerY = boundsCenterY(player.y, player.bounds)
+    x = worldClampPixel(
+      centerX - bounds.x - bounds.w div 2,
+      WorldWidthPixels - sprite.width
+    )
+    y = worldClampPixel(
+      centerY - bounds.y - bounds.h div 2,
+      WorldHeightPixels - sprite.height
+    )
+  sim.pickups.add(Pickup(
+    x: x,
+    y: y,
+    kind: PickupCoin,
+    value: player.coins
+  ))
+
+proc pickupPositionForPlayer(
+  sim: SimServer,
+  player: Actor,
+  kind: PickupKind
+): tuple[x, y: int] =
+  let
+    sprite = sim.pickupSprite(kind)
+    bounds = sim.pickupBounds(kind)
+    centerX = boundsCenterX(player.x, player.bounds)
+    centerY = boundsCenterY(player.y, player.bounds)
+  (
+    x: worldClampPixel(
+      centerX - bounds.x - bounds.w div 2,
+      WorldWidthPixels - sprite.width
+    ),
+    y: worldClampPixel(
+      centerY - bounds.y - bounds.h div 2,
+      WorldHeightPixels - sprite.height
+    )
+  )
+
+proc consumeCarryItem(
+  sim: var SimServer,
+  playerIndex: int,
+  item: CarryKind
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if item == CarryNone:
+    return false
+  sim.players[playerIndex].normalizeCarry()
+  if sim.players[playerIndex].carryCounts[item] <= 0:
+    return false
+  dec sim.players[playerIndex].carryCounts[item]
+  sim.players[playerIndex].syncCarrySelection()
+  inc sim.scoreRevision
+  true
+
+proc giveCarry(sim: var SimServer, playerIndex: int, item: CarryKind): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if item == CarryNone:
+    return false
+  sim.players[playerIndex].normalizeCarry()
+  let wasEmpty = sim.players[playerIndex].activeCarryItem() == CarryNone
+  inc sim.players[playerIndex].carryCounts[item]
+  if wasEmpty or sim.players[playerIndex].carriedItem == CarryNone:
+    sim.players[playerIndex].carriedItem = item
+  sim.players[playerIndex].syncCarrySelection()
+  inc sim.scoreRevision
+  true
+
+proc dropCarry(sim: var SimServer, playerIndex: int): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  sim.players[playerIndex].normalizeCarry()
+  let item = sim.players[playerIndex].activeCarryItem()
+  if item == CarryNone:
+    return false
+  let
+    kind = item.pickupForCarry()
+    pos = sim.pickupPositionForPlayer(sim.players[playerIndex], kind)
+    sprite = sim.pickupSprite(kind)
+    offset = WorldTileSize
+    dropX =
+      case sim.players[playerIndex].facing
+      of FaceLeft: pos.x - offset
+      of FaceRight: pos.x + offset
+      else: pos.x
+    dropY =
+      case sim.players[playerIndex].facing
+      of FaceUp: pos.y - offset
+      of FaceDown: pos.y + offset
+      else: pos.y
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(dropX, WorldWidthPixels - sprite.width),
+    y: worldClampPixel(dropY, WorldHeightPixels - sprite.height),
+    kind: kind,
+    value: 0
+  ))
+  discard sim.consumeCarryItem(playerIndex, item)
+  true
+
+proc facingTileDirection(facing: Facing): tuple[dx, dy: int] =
+  case facing
+  of FaceLeft:
+    (-1, 0)
+  of FaceRight:
+    (1, 0)
+  of FaceUp:
+    (0, -1)
+  of FaceDown:
+    (0, 1)
+
+proc tileAcceptsSwampPlank(sim: SimServer, tx, ty: int): bool =
+  if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+    return false
+  let index = tileIndex(tx, ty)
+  sim.biomeKinds[index] == BiomeSwamp and
+    sim.groundKinds[index] in {GroundMud, GroundShallowWater, GroundWater}
+
+proc playerCanLaySwampPlank*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.hasCarry(CarryWood):
+    return false
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.facingTileDirection()
+  for step in 0 ..< SwampPlankForwardTiles:
+    if sim.tileAcceptsSwampPlank(
+      centerTx + dir.dx * step,
+      centerTy + dir.dy * step
+    ):
+      return true
+  false
+
+proc laySwampPlank(sim: var SimServer, playerIndex: int): bool =
+  if not sim.playerCanLaySwampPlank(playerIndex):
+    return false
+  let player = sim.players[playerIndex]
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.facingTileDirection()
+  var changed = false
+  for step in 0 ..< SwampPlankForwardTiles:
+    let
+      tx = centerTx + dir.dx * step
+      ty = centerTy + dir.dy * step
+    if not sim.tileAcceptsSwampPlank(tx, ty):
+      continue
+    let index = tileIndex(tx, ty)
+    sim.groundKinds[index] = GroundBridge
+    sim.elevations[index] = min(sim.elevations[index], 1)
+    sim.tiles[index] = false
+    changed = true
+  if not changed:
+    return false
+  discard sim.consumeCarryItem(playerIndex, CarryWood)
+  true
+
+proc tileAcceptsStoneSteps(sim: SimServer, tx, ty: int): bool =
+  if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+    return false
+  sim.tileElevation(tx, ty) > StoneStepMaxElevation
+
+proc playerCanLayStoneSteps*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.hasCarry(CarryStone):
+    return false
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.facingTileDirection()
+  for step in 0 ..< StoneStepForwardTiles:
+    if sim.tileAcceptsStoneSteps(
+      centerTx + dir.dx * step,
+      centerTy + dir.dy * step
+    ):
+      return true
+  false
+
+proc layStoneSteps(sim: var SimServer, playerIndex: int): bool =
+  if not sim.playerCanLayStoneSteps(playerIndex):
+    return false
+  let player = sim.players[playerIndex]
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.facingTileDirection()
+  var changed = false
+  for step in 0 ..< StoneStepForwardTiles:
+    let
+      tx = centerTx + dir.dx * step
+      ty = centerTy + dir.dy * step
+    if not sim.tileAcceptsStoneSteps(tx, ty):
+      continue
+    let index = tileIndex(tx, ty)
+    sim.elevations[index] = min(sim.elevations[index], StoneStepMaxElevation)
+    sim.tiles[index] = false
+    changed = true
+  if not changed:
+    return false
+  discard sim.consumeCarryItem(playerIndex, CarryStone)
+  true
+
+proc useCarryInField(sim: var SimServer, playerIndex: int): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  sim.players[playerIndex].normalizeCarry()
+  case sim.players[playerIndex].activeCarryItem()
+  of CarryWood:
+    if sim.laySwampPlank(playerIndex):
+      return true
+    if sim.players[playerIndex].hasCarry(CarryStone):
+      sim.layStoneSteps(playerIndex)
+    else:
+      false
+  of CarryStone:
+    if sim.layStoneSteps(playerIndex):
+      return true
+    if sim.players[playerIndex].hasCarry(CarryWood):
+      sim.laySwampPlank(playerIndex)
+    else:
+      false
+  else:
+    if sim.players[playerIndex].hasCarry(CarryWood):
+      sim.laySwampPlank(playerIndex)
+    elif sim.players[playerIndex].hasCarry(CarryStone):
+      sim.layStoneSteps(playerIndex)
+    else:
+      false
+
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
-  ## Respawns a dead player with a clean state.
+  ## Puts a defeated player into a short rescue window before respawn.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if sim.players[playerIndex].lives > 0:
     return
+  if sim.players[playerIndex].downedTicks > 0:
+    return
+  sim.players[playerIndex].lives = 0
+  sim.players[playerIndex].downedTicks = DownedRespawnTicks
+  sim.players[playerIndex].rescueTicks = 0
+  sim.players[playerIndex].velX = 0
+  sim.players[playerIndex].velY = 0
+  sim.players[playerIndex].carryX = 0
+  sim.players[playerIndex].carryY = 0
+  sim.players[playerIndex].attackTicks = 0
+  sim.players[playerIndex].attackResolved = false
+  sim.players[playerIndex].guardTicks = 0
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].routeTicks = 0
+  sim.players[playerIndex].surveyTicks = 0
+  sim.players[playerIndex].guideTicks = 0
+  sim.players[playerIndex].huntTicks = 0
+  sim.players[playerIndex].triumphTicks = 0
+  sim.players[playerIndex].rationTicks = 0
+  sim.players[playerIndex].moraleTicks = 0
+  inc sim.scoreRevision
+
+proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives > 0:
+    return
+  sim.dropPlayerCoins(sim.players[playerIndex])
+  discard sim.dropCarry(playerIndex)
   inc sim.scoreRevision
   sim.resetPlayerAtSpawn(playerIndex)
+
+proc reviveDownedPlayer(sim: var SimServer, playerIndex, rescuerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].downedTicks <= 0:
+    return
+  sim.players[playerIndex].downedTicks = 0
+  sim.players[playerIndex].rescueTicks = 0
+  sim.players[playerIndex].lives = min(
+    sim.players[playerIndex].maxHp,
+    DownedReviveHp
+  )
+  sim.players[playerIndex].invulnTicks = 60
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].routeTicks = 0
+  sim.players[playerIndex].surveyTicks = 0
+  sim.players[playerIndex].guideTicks = 0
+  sim.players[playerIndex].huntTicks = 0
+  if rescuerIndex >= 0 and rescuerIndex < sim.players.len and
+      sim.players[rescuerIndex].role == RoleHealer:
+    sim.players[rescuerIndex].healingDone += sim.players[playerIndex].lives
+  inc sim.scoreRevision
 
 proc guardedDamage(sim: var SimServer, playerIndex: int, amount: int): int =
   result = max(1, amount)
@@ -1576,6 +4439,22 @@ proc guardedDamage(sim: var SimServer, playerIndex: int, amount: int): int =
       sim.players[tankIndex].damageBlocked += blocked
       inc sim.scoreRevision
     return reduced
+
+proc playerProtectedByTankGuard*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when an active tank guard is holding formation around a player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let target = sim.players[playerIndex]
+  if target.lives <= 0:
+    return false
+  let radiusSq = TankGuardRadius * TankGuardRadius
+  for tankIndex in 0 ..< sim.players.len:
+    let tank = sim.players[tankIndex]
+    if tank.lives <= 0 or tank.role != RoleTank or tank.guardTicks <= 0:
+      continue
+    if tankIndex == playerIndex or distanceSquaredActor(tank, target) <= radiusSq:
+      return true
+  false
 
 proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy, amount: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1605,6 +4484,1238 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
   if sim.players[playerIndex].lives <= 0:
     sim.handlePlayerDeath(playerIndex)
 
+proc damagePlayerFromStatus(sim: var SimServer, playerIndex, amount: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+  sim.players[playerIndex].lives = max(
+    0,
+    sim.players[playerIndex].lives - max(1, amount)
+  )
+  inc sim.scoreRevision
+  if sim.players[playerIndex].lives <= 0:
+    sim.handlePlayerDeath(playerIndex)
+
+proc playerHasNearbyAlly(
+  sim: SimServer,
+  playerIndex: int,
+  radius: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let radiusSq = radius * radius
+  for otherIndex in 0 ..< sim.players.len:
+    if otherIndex == playerIndex:
+      continue
+    if sim.players[otherIndex].lives <= 0:
+      continue
+    if distanceSquaredActor(
+      sim.players[playerIndex],
+      sim.players[otherIndex]
+    ) <= radiusSq:
+      return true
+  false
+
+proc playerInTrioFormation*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when tank, DPS, and healer are holding a local formation.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  let radiusSq = TrioFormationRadius * TrioFormationRadius
+  var
+    tank = false
+    dps = false
+    healer = false
+  for other in sim.players:
+    if other.lives <= 0:
+      continue
+    if distanceSquaredActor(sim.players[playerIndex], other) > radiusSq:
+      continue
+    case other.role
+    of RoleTank:
+      tank = true
+    of RoleDps:
+      dps = true
+    of RoleHealer:
+      healer = true
+    of RoleUnarmed:
+      discard
+  tank and dps and healer
+
+proc playerPartyTacticLabel*(sim: SimServer, playerIndex: int): string =
+  if sim.playerInTrioFormation(playerIndex):
+    "trio"
+  else:
+    ""
+
+proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int =
+  ## Rewards the final boss fight for using the same formation and focus
+  ## language the rest of the expedition teaches.
+  if mob.kind != BossMob:
+    return 0
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return 0
+  if sim.players[playerIndex].lives <= 0 or
+      sim.players[playerIndex].role == RoleUnarmed:
+    return 0
+  if sim.playerInTrioFormation(playerIndex):
+    result += BossTrioDamageBonus
+  if mob.partyFocusRoleCount(sim.players, sim.tickCount) >= 3:
+    result += BossFocusDamageBonus
+
+proc staggerBossFromFocus(sim: var SimServer, mobIndex: int) =
+  if mobIndex < 0 or mobIndex >= sim.mobs.len:
+    return
+  if sim.mobs[mobIndex].kind != BossMob:
+    return
+  if sim.mobs[mobIndex].partyFocusRoleCount(sim.players, sim.tickCount) < 3:
+    return
+  let before =
+    (
+      stagger: sim.mobs[mobIndex].staggerTicks,
+      cooldown: sim.mobs[mobIndex].attackCooldown,
+      phase: sim.mobs[mobIndex].attackPhase,
+      ticks: sim.mobs[mobIndex].attackTicks
+    )
+  sim.mobs[mobIndex].staggerTicks = max(
+    sim.mobs[mobIndex].staggerTicks,
+    BossStaggerTicks
+  )
+  sim.mobs[mobIndex].attackCooldown = max(
+    sim.mobs[mobIndex].attackCooldown,
+    BossStaggerAttackCooldown
+  )
+  sim.mobs[mobIndex].attackPhase = MobIdle
+  sim.mobs[mobIndex].attackTicks = 0
+  if before.stagger != sim.mobs[mobIndex].staggerTicks or
+      before.cooldown != sim.mobs[mobIndex].attackCooldown or
+      before.phase != sim.mobs[mobIndex].attackPhase or
+      before.ticks != sim.mobs[mobIndex].attackTicks:
+    inc sim.scoreRevision
+
+proc nearbyDownedRescuer(
+  sim: SimServer,
+  playerIndex: int
+): tuple[index, step: int] =
+  result = (index: -1, step: 0)
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let radiusSq = DownedRescueRadius * DownedRescueRadius
+  for otherIndex in 0 ..< sim.players.len:
+    if otherIndex == playerIndex:
+      continue
+    let rescuer = sim.players[otherIndex]
+    if rescuer.lives <= 0:
+      continue
+    if distanceSquaredActor(rescuer, sim.players[playerIndex]) > radiusSq:
+      continue
+    let step =
+      if rescuer.role == RoleHealer:
+        HealerDownedRescueStep
+      else:
+        1
+    if step > result.step:
+      result = (index: otherIndex, step: step)
+
+proc playerIsolationThreatened*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when an isolation-punishing enemy is close to an alone player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+    return false
+  let
+    playerCenterX = boundsCenterX(
+      sim.players[playerIndex].x,
+      sim.players[playerIndex].bounds
+    )
+    playerCenterY = boundsCenterY(
+      sim.players[playerIndex].y,
+      sim.players[playerIndex].bounds
+    )
+    radiusSq = (IsolationThreatRadius * 2) * (IsolationThreatRadius * 2)
+  for mob in sim.mobs:
+    if not mob.species.speciesPunishesIsolation():
+      continue
+    let
+      mobCenterX = boundsCenterX(mob.x, mob.bounds)
+      mobCenterY = boundsCenterY(mob.y, mob.bounds)
+    if distanceSquared(
+      playerCenterX,
+      playerCenterY,
+      mobCenterX,
+      mobCenterY
+    ) <= radiusSq:
+      return true
+  false
+
+proc playerNeedsHelp*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when a live player is low enough to need teammate support.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  player.lives > 0 and player.maxHp > 0 and player.lives < player.maxHp and
+    player.lives * 100 <= player.maxHp * LowHealthHelpThresholdPercent
+
+proc playerDowned*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true while a defeated player is waiting for rescue or respawn.
+  playerIndex >= 0 and playerIndex < sim.players.len and
+    sim.players[playerIndex].lives <= 0 and
+    sim.players[playerIndex].downedTicks > 0
+
+proc nearbyHealerIndex(
+  sim: SimServer,
+  playerIndex: int,
+  radius = HealerTriageRadius
+): int =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return -1
+  let radiusSq = radius * radius
+  for healerIndex in 0 ..< sim.players.len:
+    if healerIndex == playerIndex:
+      continue
+    let healer = sim.players[healerIndex]
+    if healer.lives <= 0 or healer.role != RoleHealer:
+      continue
+    if distanceSquaredActor(healer, sim.players[playerIndex]) <= radiusSq:
+      return healerIndex
+  -1
+
+proc mobHitDamage*(sim: SimServer, mob: Mob, playerIndex: int): int =
+  result = mob.mobDamage()
+  if playerIndex >= 0 and playerIndex < sim.players.len:
+    result = max(
+      1,
+      result + elevationDamageModifier(
+        sim.mobTileElevation(mob),
+        sim.actorTileElevation(sim.players[playerIndex])
+      )
+    )
+  if mob.species.speciesPunishesIsolation() and
+      not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+    inc result
+
+proc applyMobHitStatus*(
+  sim: var SimServer,
+  mob: Mob,
+  playerIndex: int
+) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+  if mob.species.speciesAppliesSlow():
+    sim.players[playerIndex].slowTicks = max(
+      sim.players[playerIndex].slowTicks,
+      StatusSlowTicks
+    )
+    inc sim.scoreRevision
+  if mob.species.speciesAppliesChill():
+    sim.players[playerIndex].chillTicks = max(
+      sim.players[playerIndex].chillTicks,
+      StatusChillTicks
+    )
+    inc sim.scoreRevision
+  if mob.species.speciesAppliesPoison():
+    sim.players[playerIndex].poisonTicks = max(
+      sim.players[playerIndex].poisonTicks,
+      StatusPoisonTicks
+    )
+    inc sim.scoreRevision
+
+proc landmarkCenter(
+  sim: SimServer,
+  landmark: Landmark
+): tuple[x, y: int] =
+  let bounds = sim.landmarkBounds(landmark.kind)
+  (
+    x: landmark.landmarkWorldX() + bounds.x + max(1, bounds.w) div 2,
+    y: landmark.landmarkWorldY() + bounds.y + max(1, bounds.h) div 2
+  )
+
+proc playerNearLandmark(
+  sim: SimServer,
+  player: Actor,
+  landmark: Landmark,
+  radius: int
+): bool =
+  let
+    lc = sim.landmarkCenter(landmark)
+    pcx = boundsCenterX(player.x, player.bounds)
+    pcy = boundsCenterY(player.y, player.bounds)
+  distanceSquared(pcx, pcy, lc.x, lc.y) <= radius * radius
+
+proc distinctRolesNearLandmark*(
+  sim: SimServer,
+  landmark: Landmark,
+  radius: int
+): int =
+  ## Counts distinct live party roles holding one objective.
+  var
+    tank = false
+    dps = false
+    healer = false
+  for player in sim.players:
+    if player.lives <= 0 or not sim.playerNearLandmark(player, landmark, radius):
+      continue
+    case player.role
+    of RoleTank:
+      tank = true
+    of RoleDps:
+      dps = true
+    of RoleHealer:
+      healer = true
+    of RoleUnarmed:
+      discard
+  result = (if tank: 1 else: 0) + (if dps: 1 else: 0) +
+    (if healer: 1 else: 0)
+
+proc campIsFortified*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampFortifiedFlag) != 0
+
+proc campIsProvisioned*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampProvisionedFlag) != 0
+
+proc campIsWarded*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampWardedFlag) != 0
+
+proc campIsRally*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampRallyFlag) != 0
+
+proc campIsAid*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampAidFlag) != 0
+
+proc playerNearActivatedCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside an activated camp shelter zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkCamp and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearProvisionedCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside a provisioned camp shelter zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.campIsProvisioned() and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerHasWeatherRation*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when camp meals are buffering harsh-weather ration pressure.
+  playerIndex >= 0 and playerIndex < sim.players.len and
+    sim.players[playerIndex].lives > 0 and
+    sim.players[playerIndex].rationTicks > 0
+
+proc grantCampRation(sim: var SimServer, playerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+  if sim.players[playerIndex].rationTicks >= CampMealRationTicks:
+    return
+  sim.players[playerIndex].rationTicks = CampMealRationTicks
+  inc sim.scoreRevision
+
+proc playerNearRallyCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside a DPS rally camp zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.campIsRally() and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearAidCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside a healer aid camp zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.campIsAid() and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearBlessedShrine*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = ShrineBlessingRadius
+): bool =
+  ## Returns true when a completed shrine is acting as a local sanctuary.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkShrine and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearExpeditionShelter*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true near a camp shelter or biome survival waystation.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  if sim.playerNearBlessedShrine(playerIndex):
+    return true
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkCamp and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+    if landmark.kind == LandmarkWaystation and landmark.done:
+      let biome = sim.tileBiomeKind(landmark.tx, landmark.ty)
+      if biome in {BiomeSwamp, BiomeDesert, BiomeSnow, BiomeCave, BiomeRuins} and
+          sim.playerNearLandmark(
+            sim.players[playerIndex],
+            landmark,
+            BiomeWaystationShelterRadius
+          ):
+        return true
+  false
+
+proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
+  case kind
+  of LandmarkWood:
+    inc sim.wood
+  of LandmarkFood:
+    inc sim.food
+  of LandmarkStone:
+    inc sim.stone
+  of LandmarkGold:
+    inc sim.wood
+    sim.stone += 2
+  else:
+    discard
+  inc sim.resourcesCollected
+  inc sim.scoreRevision
+
+proc giveOrDropHarvestCarry(
+  sim: var SimServer,
+  kind: LandmarkKind,
+  playerIndex: int,
+  x,
+  y: int
+) =
+  let item = kind.carryForLandmark()
+  if item == CarryNone:
+    return
+  if sim.giveCarry(playerIndex, item):
+    return
+  let pickupKind = item.pickupForCarry()
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x, WorldWidthPixels - sim.pickupSprite(pickupKind).width),
+    y: worldClampPixel(y, WorldHeightPixels - sim.pickupSprite(pickupKind).height),
+    kind: pickupKind,
+    value: 0
+  ))
+  inc sim.scoreRevision
+
+proc addCarryPickupAt(sim: var SimServer, item: CarryKind, x, y: int) =
+  if item == CarryNone:
+    return
+  let pickupKind = item.pickupForCarry()
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x, WorldWidthPixels - sim.pickupSprite(pickupKind).width),
+    y: worldClampPixel(y, WorldHeightPixels - sim.pickupSprite(pickupKind).height),
+    kind: pickupKind,
+    value: 1
+  ))
+  inc sim.scoreRevision
+
+proc addCampRoleGear(sim: var SimServer, landmark: Landmark) =
+  ## Makes activated camps useful as forward role-swap stations.
+  let
+    x = landmark.landmarkWorldX()
+    y = landmark.landmarkWorldY()
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x - WorldTileSize, WorldWidthPixels - ArtCellSize),
+    y: worldClampPixel(y, WorldHeightPixels - ArtCellSize),
+    kind: PickupTankGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x, WorldWidthPixels - ArtCellSize),
+    y: worldClampPixel(y - WorldTileSize, WorldHeightPixels - ArtCellSize),
+    kind: PickupDpsGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x + WorldTileSize, WorldWidthPixels - ArtCellSize),
+    y: worldClampPixel(y, WorldHeightPixels - ArtCellSize),
+    kind: PickupHealerGear,
+    value: 0
+  ))
+
+proc campShortcutGround(
+  biome: BiomeKind,
+  previous: GroundKind
+): GroundKind =
+  if previous in {GroundWater, GroundShallowWater} or biome == BiomeSwamp:
+    GroundBridge
+  else:
+    GroundRoad
+
+proc revealCampShortcut(sim: var SimServer, landmark: Landmark) =
+  ## Cuts a short visible route through rough ground around an activated camp.
+  for ty in landmark.ty - CampShortcutHalfHeightTiles ..
+      landmark.ty + CampShortcutHalfHeightTiles:
+    for tx in landmark.tx - CampShortcutBackTiles ..
+        landmark.tx + CampShortcutForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
+proc revealWaystationRoute(sim: var SimServer, landmark: Landmark) =
+  ## Turns biome detours into short readable paths through local rough ground.
+  for ty in landmark.ty - BiomeWaystationRouteHalfHeightTiles ..
+      landmark.ty + BiomeWaystationRouteHalfHeightTiles:
+    for tx in landmark.tx - BiomeWaystationRouteBackTiles ..
+        landmark.tx + BiomeWaystationRouteForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
+proc revealRescueTrail(sim: var SimServer, landmark: Landmark) =
+  ## Lets a rescued traveler guide the party through the next local obstacle.
+  for ty in landmark.ty - RescueTrailHalfHeightTiles ..
+      landmark.ty + RescueTrailHalfHeightTiles:
+    for tx in landmark.tx - RescueTrailBackTiles ..
+        landmark.tx + RescueTrailForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
+proc revealBeaconSurveyRoute(sim: var SimServer, landmark: Landmark) =
+  ## Turns a completed relic beacon into a short surveyed route forward.
+  for ty in landmark.ty - BeaconSurveyHalfHeightTiles ..
+      landmark.ty + BeaconSurveyHalfHeightTiles:
+    for tx in landmark.tx - BeaconSurveyBackTiles ..
+        landmark.tx + BeaconSurveyForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
+proc healLivePlayers(sim: var SimServer, amount: int) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + amount
+    )
+
+proc clearLivePlayerStatuses(sim: var SimServer) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].slowTicks = 0
+    sim.players[playerIndex].chillTicks = 0
+    sim.players[playerIndex].poisonTicks = 0
+    sim.players[playerIndex].exhaustionTicks = 0
+
+proc activateShrine(sim: var SimServer) =
+  ## Completes one optional side objective and gives the party a sustain bump.
+  inc sim.sideObjectivesCompleted
+  sim.food += ShrineFoodBonus
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + ShrineHealAmount
+    )
+    sim.players[playerIndex].slowTicks = 0
+    sim.players[playerIndex].chillTicks = 0
+    sim.players[playerIndex].poisonTicks = 0
+    sim.players[playerIndex].exhaustionTicks = 0
+  inc sim.scoreRevision
+
+proc activateRescueEvent(sim: var SimServer, landmark: Landmark) =
+  ## Completes one stranded-traveler rescue detour for sustain, score, and route help.
+  inc sim.sideObjectivesCompleted
+  sim.food += RescueFoodBonus
+  sim.revealRescueTrail(landmark)
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + RescueHealAmount
+    )
+    sim.players[playerIndex].guideTicks = max(
+      sim.players[playerIndex].guideTicks,
+      RescueGuideTicks
+    )
+  inc sim.scoreRevision
+
+proc pacifyMobsNearLandmark(
+  sim: var SimServer,
+  landmark: Landmark,
+  radius: int
+): int =
+  ## Clears local non-boss threats around a defensive expedition point.
+  let
+    center = sim.landmarkCenter(landmark)
+    radiusSq = radius * radius
+  var survivors: seq[Mob] = @[]
+  for mob in sim.mobs:
+    if mob.kind == BossMob:
+      survivors.add(mob)
+      continue
+    let
+      mobCenterX = boundsCenterX(mob.x, mob.bounds)
+      mobCenterY = boundsCenterY(mob.y, mob.bounds)
+    if distanceSquared(center.x, center.y, mobCenterX, mobCenterY) <= radiusSq:
+      inc result
+    else:
+      survivors.add(mob)
+  if result > 0:
+    sim.mobs = survivors
+
+proc grantFinalGateTriumph(sim: var SimServer, landmark: Landmark) =
+  ## Turns the completed final gate into a visible party-wide finish state.
+  discard sim.pacifyMobsNearLandmark(landmark, FinalGateTriumphRadius)
+  for player in sim.players.mitems:
+    if player.maxHp <= 0:
+      continue
+    player.lives = player.maxHp
+    player.downedTicks = 0
+    player.rescueTicks = 0
+    player.slowTicks = 0
+    player.chillTicks = 0
+    player.poisonTicks = 0
+    player.exhaustionTicks = 0
+    player.triumphTicks = max(player.triumphTicks, FinalGateTriumphTicks)
+    player.invulnTicks = max(player.invulnTicks, FinalGateTriumphTicks)
+  inc sim.scoreRevision
+
+proc grantObjectiveMorale(sim: var SimServer, participantCount: int) =
+  ## Rewards visibly grouped objective holds with short next-push momentum.
+  if participantCount < 2:
+    return
+  var changed = false
+  for player in sim.players.mitems:
+    if player.lives <= 0:
+      continue
+    let before = player.moraleTicks
+    player.moraleTicks = max(player.moraleTicks, ObjectiveMoraleTicks)
+    changed = changed or player.moraleTicks != before
+  if changed:
+    inc sim.scoreRevision
+
+proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
+  ## Clears nearby local threats when a monster lair is destroyed.
+  sim.pacifyMobsNearLandmark(landmark, LairPacifyRadius)
+
+proc waystationActivationStep*(biome: BiomeKind, role: PlayerRole): int =
+  if role == biome.preferredWaystationRole():
+    BiomeWaystationFastStep
+  else:
+    1
+
+proc objectiveHoldStep*(
+  kind: LandmarkKind,
+  biome: BiomeKind,
+  role: PlayerRole
+): int =
+  ## Returns one player's contribution to cooperative hold objectives.
+  case kind
+  of LandmarkRescue:
+    if role == RoleHealer:
+      HealerRescueEventStep
+    else:
+      1
+  of LandmarkBeacon:
+    if role == RoleDps:
+      DpsBeaconAttunementStep
+    else:
+      1
+  of LandmarkWaystation:
+    waystationActivationStep(biome, role)
+  else:
+    1
+
+proc finalGateRitualStep*(roleCount: int): int =
+  ## Speeds up the final ritual when distinct party roles hold the gate.
+  if roleCount >= 3:
+    FinalGateThreeRoleStep
+  elif roleCount >= 2:
+    FinalGateTwoRoleStep
+  else:
+    1
+
+proc activateWaystation(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].done:
+    return
+  let
+    landmark = sim.landmarks[landmarkIndex]
+    biome = sim.tileBiomeKind(landmark.tx, landmark.ty)
+  sim.landmarks[landmarkIndex].done = true
+  inc sim.sideObjectivesCompleted
+  sim.revealWaystationRoute(landmark)
+  case biome
+  of BiomeForest:
+    sim.food += BiomeWaystationFoodBonus + 1
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  of BiomePlains:
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.abilityCooldown = 0
+  of BiomeSwamp:
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.slowTicks = 0
+    inc sim.stone
+  of BiomeDesert:
+    sim.food += BiomeWaystationFoodBonus + 1
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.poisonTicks = 0
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  of BiomeSnow:
+    sim.food += BiomeWaystationFoodBonus
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.chillTicks = 0
+        player.exhaustionTicks = 0
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  of BiomeCave:
+    inc sim.stone
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.exhaustionTicks = 0
+    discard sim.pacifyMobsNearLandmark(landmark, BiomeWaystationPacifyRadius)
+  of BiomeRuins:
+    sim.clearLivePlayerStatuses()
+    discard sim.pacifyMobsNearLandmark(landmark, BiomeWaystationPacifyRadius)
+  of BiomeOrigin:
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  for player in sim.players.mitems:
+    if player.lives > 0:
+      player.routeTicks = max(player.routeTicks, BiomeWaystationRouteTicks)
+  inc sim.scoreRevision
+
+proc destroyLair(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].done:
+    return
+  sim.landmarks[landmarkIndex].done = true
+  inc sim.sideObjectivesCompleted
+  sim.food += LairFoodBonus
+  sim.stone += LairStoneBonus
+  let
+    landmark = sim.landmarks[landmarkIndex]
+    center = sim.landmarkCenter(landmark)
+    cache = sim.tileBiomeKind(landmark.tx, landmark.ty).lairCacheCarriesForBiome()
+  sim.addCarryPickupAt(cache.first, center.x - WorldTileSize div 2, center.y)
+  sim.addCarryPickupAt(cache.second, center.x + WorldTileSize div 2, center.y)
+  discard sim.pacifyLairMobs(landmark)
+  for player in sim.players.mitems:
+    if player.lives > 0:
+      player.huntTicks = max(player.huntTicks, LairHunterTicks)
+  inc sim.scoreRevision
+
+proc fortifyCamp(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].kind != LandmarkCamp or
+      not sim.landmarks[landmarkIndex].done or
+      sim.landmarks[landmarkIndex].campIsFortified():
+    return
+  sim.landmarks[landmarkIndex].progress =
+    sim.landmarks[landmarkIndex].progress or CampFortifiedFlag
+  discard sim.pacifyMobsNearLandmark(
+    sim.landmarks[landmarkIndex],
+    CampFortificationRadius
+  )
+  inc sim.scoreRevision
+
+proc provisionCamp(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].kind != LandmarkCamp or
+      not sim.landmarks[landmarkIndex].done or
+      sim.landmarks[landmarkIndex].campIsProvisioned():
+    return
+  sim.landmarks[landmarkIndex].progress =
+    sim.landmarks[landmarkIndex].progress or CampProvisionedFlag
+  let camp = sim.landmarks[landmarkIndex]
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.playerNearLandmark(sim.players[playerIndex], camp, CampShelterRadius):
+      sim.grantCampRation(playerIndex)
+  inc sim.scoreRevision
+
+proc specializeCamp(sim: var SimServer, landmarkIndex: int, flag: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].kind != LandmarkCamp or
+      not sim.landmarks[landmarkIndex].done:
+    return
+  if (sim.landmarks[landmarkIndex].progress and flag) != 0:
+    return
+  sim.landmarks[landmarkIndex].progress =
+    sim.landmarks[landmarkIndex].progress or flag
+  inc sim.scoreRevision
+
+proc trySpecializeCampForRole(
+  sim: var SimServer,
+  landmarkIndex: int,
+  role: PlayerRole
+) =
+  case role
+  of RoleTank:
+    if not sim.landmarks[landmarkIndex].campIsWarded() and
+        sim.stone >= CampWardStoneCost:
+      sim.stone -= CampWardStoneCost
+      sim.specializeCamp(landmarkIndex, CampWardedFlag)
+  of RoleDps:
+    if not sim.landmarks[landmarkIndex].campIsRally() and
+        sim.wood >= CampRallyWoodCost:
+      sim.wood -= CampRallyWoodCost
+      sim.specializeCamp(landmarkIndex, CampRallyFlag)
+  of RoleHealer:
+    if not sim.landmarks[landmarkIndex].campIsAid() and
+        sim.food >= CampAidFoodCost:
+      sim.food -= CampAidFoodCost
+      sim.specializeCamp(landmarkIndex, CampAidFlag)
+  else:
+    discard
+
+proc campCanAcceptCarry(landmark: Landmark, item: CarryKind): bool =
+  if landmark.kind != LandmarkCamp or not landmark.done:
+    return false
+  case item
+  of CarryWood:
+    not landmark.campIsRally()
+  of CarryFood:
+    not landmark.campIsProvisioned()
+  of CarryStone:
+    not landmark.campIsWarded()
+  of CarryGold:
+    not landmark.campIsFortified()
+  of CarryNone:
+    false
+
+proc playerCanDeliverCarryToCamp*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.activeCarryItem() == CarryNone:
+    return false
+  for landmark in sim.landmarks:
+    if sim.playerNearLandmark(
+      player,
+      landmark,
+      LandmarkActivationRadius
+    ):
+      for item in CarryInventoryKinds:
+        if player.carryCount(item) > 0 and landmark.campCanAcceptCarry(item):
+          return true
+  false
+
+proc carryHudLabel*(sim: SimServer, playerIndex: int): string =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return "none"
+  let player = sim.players[playerIndex]
+  let activeItem = player.activeCarryItem()
+  if activeItem == CarryNone:
+    return "none"
+  var item = activeItem
+  let action =
+    if player.hasCarry(CarryFood) and player.carriedFoodWouldHelp():
+      item = CarryFood
+      "sel eat"
+    elif player.hasCarry(CarryFood) and sim.playerCanFeedCarriedFood(playerIndex):
+      item = CarryFood
+      "sel feed"
+    elif sim.playerCanDeliverCarryToCamp(playerIndex):
+      "sel camp"
+    elif sim.playerCanLaySwampPlank(playerIndex):
+      item = CarryWood
+      "sel plank"
+    elif sim.playerCanLayStoneSteps(playerIndex):
+      item = CarryStone
+      "sel steps"
+    else:
+      "sel drop"
+  let count = player.carryCount(item)
+  item.carryLabel() & (if count > 1: " x" & $count else: "") & " " & action
+
+proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
+  ## Converts one held supply into an explicit activated-camp upgrade.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  sim.players[playerIndex].normalizeCarry()
+  if sim.players[playerIndex].activeCarryItem() == CarryNone:
+    return false
+  for landmarkIndex in 0 ..< sim.landmarks.len:
+    let landmark = sim.landmarks[landmarkIndex]
+    if landmark.kind != LandmarkCamp or not landmark.done:
+      continue
+    if not sim.playerNearLandmark(
+      sim.players[playerIndex],
+      landmark,
+      LandmarkActivationRadius
+    ):
+      continue
+    var item = sim.players[playerIndex].activeCarryItem()
+    if not sim.landmarks[landmarkIndex].campCanAcceptCarry(item):
+      item = CarryNone
+      for candidate in CarryInventoryKinds:
+        if sim.players[playerIndex].carryCount(candidate) > 0 and
+            sim.landmarks[landmarkIndex].campCanAcceptCarry(candidate):
+          item = candidate
+          break
+    if item == CarryNone:
+      continue
+    case item
+    of CarryWood:
+      sim.specializeCamp(landmarkIndex, CampRallyFlag)
+    of CarryFood:
+      sim.provisionCamp(landmarkIndex)
+    of CarryStone:
+      sim.specializeCamp(landmarkIndex, CampWardedFlag)
+    of CarryGold:
+      sim.fortifyCamp(landmarkIndex)
+    of CarryNone:
+      continue
+    discard sim.consumeCarryItem(playerIndex, item)
+    return true
+  false
+
+proc campDefenseRadius(landmark: Landmark): int =
+  if landmark.campIsWarded():
+    CampWardedDefenseRadius
+  else:
+    CampFortificationRadius
+
+proc campDefendsThreats(landmark: Landmark): bool =
+  landmark.campIsFortified() or landmark.campIsWarded()
+
+proc applyFortifiedCampDefenses(sim: var SimServer) =
+  ## Keeps upgraded camps useful as safe staging points between pushes.
+  for landmark in sim.landmarks:
+    if not landmark.campDefendsThreats():
+      continue
+    let cleared = sim.pacifyMobsNearLandmark(
+      landmark,
+      landmark.campDefenseRadius()
+    )
+    if cleared > 0:
+      inc sim.scoreRevision
+
+proc harvestLandmark(
+  sim: var SimServer,
+  landmarkIndex,
+  playerIndex: int
+) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.landmarks[landmarkIndex].done:
+    return
+  let kind = sim.landmarks[landmarkIndex].kind
+  if not kind.landmarkIsResource():
+    return
+  let
+    center = sim.landmarkCenter(sim.landmarks[landmarkIndex])
+    pickupKind = kind.carryForLandmark().pickupForCarry()
+    pickupSprite = sim.pickupSprite(pickupKind)
+  sim.addResourceFromLandmark(kind)
+  sim.giveOrDropHarvestCarry(
+    kind,
+    playerIndex,
+    center.x - pickupSprite.width div 2,
+    center.y - pickupSprite.height div 2
+  )
+  sim.landmarks[landmarkIndex].hp -=
+    sim.players[playerIndex].role.roleAttackDamage()
+  if sim.landmarks[landmarkIndex].hp <= 0:
+    sim.landmarks[landmarkIndex].done = true
+  inc sim.scoreRevision
+
+proc attackLair(
+  sim: var SimServer,
+  landmarkIndex,
+  playerIndex: int
+) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let damage = sim.players[playerIndex].role.roleAttackDamage()
+  sim.landmarks[landmarkIndex].hp -= damage
+  sim.players[playerIndex].damageDone += damage
+  if sim.landmarks[landmarkIndex].hp <= 0:
+    sim.destroyLair(landmarkIndex)
+  else:
+    inc sim.scoreRevision
+
+proc applyLandmarkAttack(
+  sim: var SimServer,
+  playerIndex: int,
+  hit: tuple[x, y, w, h: int]
+) =
+  for landmarkIndex in 0 ..< sim.landmarks.len:
+    let landmark = sim.landmarks[landmarkIndex]
+    if landmark.done:
+      continue
+    let hitLandmark = rectOverlapsBounds(
+      hit.x,
+      hit.y,
+      hit.w,
+      hit.h,
+      landmark.landmarkWorldX(),
+      landmark.landmarkWorldY(),
+      sim.landmarkBounds(landmark.kind)
+    )
+    if not hitLandmark:
+      continue
+    if landmark.kind.landmarkIsResource():
+      sim.harvestLandmark(landmarkIndex, playerIndex)
+    elif landmark.kind == LandmarkLair:
+      sim.attackLair(landmarkIndex, playerIndex)
+    break
+
+proc activateNearbyLandmarks(sim: var SimServer) =
+  ## Completes standing objectives and activates forward camps.
+  if sim.players.len == 0:
+    return
+  for landmarkIndex in 0 ..< sim.landmarks.len:
+    if sim.landmarks[landmarkIndex].done:
+      if sim.landmarks[landmarkIndex].kind == LandmarkCamp:
+        var nearCamp = false
+        for player in sim.players:
+          if player.lives <= 0:
+            continue
+          if sim.playerNearLandmark(
+            player,
+            sim.landmarks[landmarkIndex],
+            LandmarkActivationRadius
+          ):
+            nearCamp = true
+            break
+        if nearCamp:
+          for player in sim.players:
+            if player.lives <= 0:
+              continue
+            if sim.playerNearLandmark(
+              player,
+              sim.landmarks[landmarkIndex],
+              LandmarkActivationRadius
+            ):
+              sim.trySpecializeCampForRole(landmarkIndex, player.role)
+        if nearCamp and not sim.landmarks[landmarkIndex].campIsFortified() and
+            sim.wood >= CampFortificationWoodCost and
+            sim.stone >= CampFortificationStoneCost:
+          sim.wood -= CampFortificationWoodCost
+          sim.stone -= CampFortificationStoneCost
+          sim.fortifyCamp(landmarkIndex)
+        if nearCamp and not sim.landmarks[landmarkIndex].campIsProvisioned() and
+            sim.food >= CampProvisionFoodCost:
+          sim.food -= CampProvisionFoodCost
+          sim.provisionCamp(landmarkIndex)
+      continue
+    let kind = sim.landmarks[landmarkIndex].kind
+    if kind.landmarkIsResource():
+      continue
+    var nearPlayer = false
+    var activationStep = 0
+    var participantCount = 0
+    for player in sim.players:
+      if player.lives <= 0:
+        continue
+      let radius =
+        if kind == LandmarkFinalGate:
+          FinalGateActivationRadius
+        else:
+          LandmarkActivationRadius
+      if sim.playerNearLandmark(player, sim.landmarks[landmarkIndex], radius):
+        nearPlayer = true
+        let landmarkBiome = sim.tileBiomeKind(
+          sim.landmarks[landmarkIndex].tx,
+          sim.landmarks[landmarkIndex].ty
+        )
+        inc participantCount
+        activationStep += objectiveHoldStep(kind, landmarkBiome, player.role)
+    if not nearPlayer:
+      continue
+    activationStep = clamp(
+      max(1, activationStep),
+      1,
+      CooperativeObjectiveHoldMaxStep
+    )
+
+    case kind
+    of LandmarkCamp:
+      if sim.wood < CampWoodCost or sim.stone < CampStoneCost:
+        continue
+      sim.wood -= CampWoodCost
+      sim.stone -= CampStoneCost
+      sim.landmarks[landmarkIndex].done = true
+      inc sim.campsActivated
+      let camp = sim.landmarks[landmarkIndex]
+      sim.addCampRoleGear(camp)
+      sim.revealCampShortcut(camp)
+      for playerIndex in 0 ..< sim.players.len:
+        if sim.players[playerIndex].lives <= 0:
+          continue
+        sim.players[playerIndex].lives = min(
+          sim.players[playerIndex].maxHp,
+          sim.players[playerIndex].lives + 2
+        )
+      inc sim.scoreRevision
+    of LandmarkBeacon:
+      sim.landmarks[landmarkIndex].progress += max(1, activationStep)
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < BeaconAttunementTicks:
+        continue
+      sim.landmarks[landmarkIndex].done = true
+      inc sim.objectivesCompleted
+      inc sim.relicShards
+      sim.revealBeaconSurveyRoute(sim.landmarks[landmarkIndex])
+      discard sim.pacifyMobsNearLandmark(
+        sim.landmarks[landmarkIndex],
+        BeaconSurveyRadius
+      )
+      for player in sim.players.mitems:
+        if player.lives > 0:
+          player.surveyTicks = max(player.surveyTicks, BeaconSurveyTicks)
+      sim.grantObjectiveMorale(participantCount)
+      inc sim.scoreRevision
+    of LandmarkShrine:
+      sim.landmarks[landmarkIndex].done = true
+      sim.activateShrine()
+    of LandmarkRescue:
+      sim.landmarks[landmarkIndex].progress += max(1, activationStep)
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < RescueEventTicks:
+        continue
+      sim.landmarks[landmarkIndex].done = true
+      sim.activateRescueEvent(sim.landmarks[landmarkIndex])
+      sim.grantObjectiveMorale(participantCount)
+    of LandmarkWaystation:
+      sim.landmarks[landmarkIndex].progress += max(1, activationStep)
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < BiomeWaystationTicks:
+        continue
+      sim.activateWaystation(landmarkIndex)
+      sim.grantObjectiveMorale(participantCount)
+    of LandmarkFinalGate:
+      if not sim.bossDefeated:
+        continue
+      if sim.relicShards < FinalGateRelicCost:
+        continue
+      if sim.campsActivated < FinalGateCampCost:
+        continue
+      let startingGateHold = sim.landmarks[landmarkIndex].progress == 0
+      sim.landmarks[landmarkIndex].progress +=
+        sim.distinctRolesNearLandmark(
+          sim.landmarks[landmarkIndex],
+          FinalGateActivationRadius
+        ).finalGateRitualStep()
+      if startingGateHold:
+        discard sim.pacifyMobsNearLandmark(
+          sim.landmarks[landmarkIndex],
+          FinalGateRallyPacifyRadius
+        )
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < FinalGateRitualTicks:
+        continue
+      sim.landmarks[landmarkIndex].done = true
+      inc sim.objectivesCompleted
+      sim.grantFinalGateTriumph(sim.landmarks[landmarkIndex])
+      inc sim.scoreRevision
+    else:
+      discard
+
 proc applyAttack(sim: var SimServer) =
   if sim.players.len == 0:
     return
@@ -1622,6 +5733,7 @@ proc applyAttack(sim: var SimServer) =
 
     let player = sim.players[playerIndex]
     let hit = sim.attackRect(player)
+    var hitMob = false
     for mobIndex in 0 ..< sim.mobs.len:
       if rectOverlapsBounds(
         hit.x,
@@ -1641,14 +5753,20 @@ proc applyAttack(sim: var SimServer) =
         of FaceRight: dx = 4
         sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
         sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
-        let damage = player.role.roleAttackDamage()
+        sim.staggerBossFromFocus(mobIndex)
+        let damage = sim.playerAttackDamage(player, sim.mobs[mobIndex]) +
+          sim.mobs[mobIndex].partyFocusDamageBonus(sim.players, sim.tickCount) +
+          sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex])
         mobHitCounts[mobIndex] += damage
         sim.players[playerIndex].damageDone += damage
         inc sim.scoreRevision
         mobKnockbackXs[mobIndex] += dx
         mobKnockbackYs[mobIndex] += dy
+        hitMob = true
         break
 
+    if not hitMob:
+      sim.applyLandmarkAttack(playerIndex, hit)
     sim.players[playerIndex].attackResolved = true
 
   for mobIndex in 0 ..< sim.mobs.len:
@@ -1672,37 +5790,9 @@ proc applyAttack(sim: var SimServer) =
       sim.mobs[mobIndex].x = actor.x
       sim.mobs[mobIndex].y = actor.y
 
-  var survivors: seq[Mob] = @[]
-  for mob in sim.mobs:
-    if mob.hp > 0:
-      survivors.add(mob)
-    else:
-      case mob.kind
-      of BossMob:
-        let sprite = sim.pickupSprite(PickupCoin)
-        sim.pickups.add(Pickup(
-          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
-          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
-          kind: PickupCoin,
-          value: BossCoinValue
-        ))
-      of TrollMob:
-        let sprite = sim.pickupSprite(PickupCoin)
-        sim.pickups.add(Pickup(
-          x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
-          y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
-          kind: PickupCoin,
-          value: TrollCoinValue
-        ))
-      of SnakeMob:
-        let roll = sim.rng.rand(99)
-        if roll < 10:
-          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
-        elif roll < 60:
-          sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
-  sim.mobs = survivors
+  sim.finishDefeatedMobs()
 
-proc collectPickups(sim: var SimServer) =
+proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
   if sim.players.len == 0:
     return
 
@@ -1733,22 +5823,440 @@ proc collectPickups(sim: var SimServer) =
           inc sim.scoreRevision
         of PickupTankGear, PickupDpsGear, PickupHealerGear:
           let nextRole = pickup.kind.roleForPickup()
-          if sim.players[playerIndex].role != nextRole:
-            sim.players[playerIndex].applyRole(nextRole)
-            inc sim.scoreRevision
-        collected = not pickup.kind.isRoleGear()
+          let input =
+            if playerIndex < inputs.len: inputs[playerIndex]
+            else: InputState()
+          let canSwapRole =
+            sim.players[playerIndex].role == RoleUnarmed or
+              (
+                pickup.x >= SafeZoneRightPixels and input.select and
+                  player.carrySelectLockTicks == 0
+              )
+          if not canSwapRole or sim.players[playerIndex].role == nextRole:
+            continue
+          sim.players[playerIndex].applyRole(nextRole)
+          inc sim.scoreRevision
+        of PickupWood, PickupFood, PickupStone, PickupGold:
+          let item = pickup.kind.carryForPickup()
+          if sim.giveCarry(playerIndex, item):
+            collected = true
+          else:
+            collected = false
+        if not pickup.kind.isCarryPickup():
+          collected = not pickup.kind.isRoleGear()
         break
     if collected:
       continue
     remaining.add(pickup)
   sim.pickups = remaining
 
+proc playerBiome(sim: SimServer, player: Actor): BiomeKind =
+  sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
+
+proc playerGroundKind(sim: SimServer, player: Actor): GroundKind =
+  sim.tileGroundKind(
+    clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    ),
+    clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+  )
+
+proc playerNearDesertShade*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true near cactus shade in the desert survival band.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or sim.playerBiome(player) != BiomeDesert:
+    return false
+  let
+    pcx = boundsCenterX(player.x, player.bounds)
+    pcy = boundsCenterY(player.y, player.bounds)
+  for prop in sim.terrainProps:
+    if prop.kind != TerrainCactus or
+        sim.tileBiomeKind(prop.tx, prop.ty) != BiomeDesert:
+      continue
+    let
+      shadeX = prop.tx * WorldTileSize + WorldTileSize div 2
+      shadeY = prop.ty * WorldTileSize + WorldTileSize div 2
+    if distanceSquared(pcx, pcy, shadeX, shadeY) <=
+        DesertShadeRadius * DesertShadeRadius:
+      return true
+  false
+
+proc playerHasCaveLight*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when held gold is acting as a cave/ruin light focus.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or
+      sim.playerBiome(player) notin {BiomeCave, BiomeRuins}:
+    return false
+  player.hasCarry(CarryGold)
+
+proc playerGuardMitigatesBiomePressure*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  ## Returns true when tank guard is the active answer to a biome pressure.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex) or
+      not sim.playerProtectedByTankGuard(playerIndex):
+    return false
+  case sim.playerBiome(player)
+  of BiomeSwamp:
+    sim.playerGroundKind(player) in {GroundMud, GroundShallowWater, GroundWater}
+  of BiomeSnow:
+    not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius)
+  of BiomeDesert:
+    not sim.playerNearDesertShade(playerIndex)
+  of BiomeCave, BiomeRuins:
+    not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
+      not sim.playerHasCaveLight(playerIndex)
+  else:
+    false
+
+proc survivalPressureKind*(
+  sim: SimServer,
+  playerIndex: int
+): SurvivalPressureKind =
+  ## Returns the active environmental pressure a player can currently feel.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return SurvivalSafe
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or player.routeTicks > 0 or player.triumphTicks > 0 or
+      sim.playerNearExpeditionShelter(playerIndex) or
+      sim.playerProtectedByTankGuard(playerIndex):
+    return SurvivalSafe
+  case sim.playerBiome(player)
+  of BiomeSwamp:
+    if sim.playerGroundKind(player) in {GroundMud, GroundShallowWater, GroundWater}:
+      SurvivalMire
+    else:
+      SurvivalSafe
+  of BiomeSnow:
+    if sim.playerHasWeatherRation(playerIndex):
+      return SurvivalSafe
+    if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
+      SurvivalSafe
+    else:
+      SurvivalCold
+  of BiomeDesert:
+    if sim.playerHasWeatherRation(playerIndex):
+      return SurvivalSafe
+    if sim.playerNearDesertShade(playerIndex):
+      SurvivalSafe
+    else:
+      SurvivalHeat
+  of BiomeCave, BiomeRuins:
+    if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) or
+        sim.playerHasCaveLight(playerIndex):
+      SurvivalSafe
+    else:
+      SurvivalFog
+  else:
+    SurvivalSafe
+
+proc survivalPressureLabel*(sim: SimServer, playerIndex: int): string =
+  sim.survivalPressureKind(playerIndex).survivalPressureLabel()
+
+proc playerBiomeTacticKind*(
+  sim: SimServer,
+  playerIndex: int
+): BiomeTacticKind =
+  ## Returns an active positive biome rule visible to the player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return BiomeTacticNone
+  if sim.players[playerIndex].lives <= 0:
+    return BiomeTacticNone
+  if sim.playerGuardMitigatesBiomePressure(playerIndex):
+    return BiomeTacticGuard
+  if sim.playerNearBlessedShrine(playerIndex):
+    return BiomeTacticBlessing
+  case sim.playerBiome(sim.players[playerIndex])
+  of BiomeForest:
+    BiomeTacticForage
+  of BiomePlains:
+    if sim.playerHasNearbyAlly(playerIndex, PlainsRallyAllyRadius):
+      BiomeTacticRally
+    else:
+      BiomeTacticNone
+  of BiomeDesert:
+    if sim.playerNearDesertShade(playerIndex):
+      BiomeTacticShade
+    else:
+      BiomeTacticNone
+  of BiomeSnow:
+    if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
+      BiomeTacticWarmth
+    else:
+      BiomeTacticNone
+  of BiomeCave, BiomeRuins:
+    if sim.playerHasCaveLight(playerIndex):
+      BiomeTacticLight
+    else:
+      BiomeTacticNone
+  else:
+    BiomeTacticNone
+
+proc playerBiomeTacticLabel*(sim: SimServer, playerIndex: int): string =
+  sim.playerBiomeTacticKind(playerIndex).biomeTacticLabel()
+
+proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
+  if sim.playerHasWeatherRation(playerIndex):
+    return true
+  if sim.food > 0:
+    dec sim.food
+    inc sim.scoreRevision
+    return true
+  if sim.players[playerIndex].hasCarry(CarryFood):
+    discard sim.consumeCarryItem(playerIndex, CarryFood)
+    return true
+  false
+
+proc playerInLateExhaustionBand(sim: SimServer, playerIndex: int): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  case sim.playerBiome(sim.players[playerIndex])
+  of BiomeSnow, BiomeCave, BiomeRuins:
+    true
+  else:
+    false
+
+proc applyEarlyBiomeTactics(sim: var SimServer) =
+  if sim.tickCount mod ForestForageIntervalTicks == 0 and
+      sim.food < ForestForageFoodCap:
+    for player in sim.players:
+      if player.lives <= 0:
+        continue
+      if sim.playerBiome(player) == BiomeForest:
+        inc sim.food
+        inc sim.scoreRevision
+        break
+
+proc applyFoodAndWeatherSurvival(sim: var SimServer) =
+  let
+    mirePulse = sim.tickCount mod SwampMireIntervalTicks == 0
+    coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
+    heatPulse = sim.tickCount mod HeatExposureIntervalTicks == 0
+    fogPulse = sim.tickCount mod FogDisorientationIntervalTicks == 0
+    exhaustionPulse = sim.tickCount mod ExhaustionIntervalTicks == 0
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    if sim.players[playerIndex].triumphTicks > 0:
+      continue
+    let
+      biome = sim.playerBiome(sim.players[playerIndex])
+      sheltered = sim.playerNearExpeditionShelter(playerIndex)
+      guarded = sim.playerProtectedByTankGuard(playerIndex)
+      routed = sim.players[playerIndex].routeTicks > 0
+    if sim.food > 0 and
+        sim.players[playerIndex].lives <=
+          sim.players[playerIndex].maxHp - FoodHealAmount:
+      let before = sim.players[playerIndex].lives
+      sim.players[playerIndex].lives = min(
+        sim.players[playerIndex].maxHp,
+        sim.players[playerIndex].lives + FoodHealAmount
+      )
+      if sim.players[playerIndex].lives > before:
+        dec sim.food
+        inc sim.scoreRevision
+    elif sim.players[playerIndex].lives <=
+        sim.players[playerIndex].maxHp - FoodHealAmount:
+      discard sim.consumeCarriedFood(playerIndex)
+
+    if coldPulse and biome == BiomeSnow and not sheltered and not guarded and
+        not routed and
+        not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
+      if not sim.consumeWeatherRation(playerIndex):
+        sim.damagePlayer(playerIndex, 0, 0, 1)
+    if heatPulse and biome == BiomeDesert and not sheltered and not guarded and
+        not routed and not sim.playerNearDesertShade(playerIndex):
+      if not sim.consumeWeatherRation(playerIndex):
+        sim.damagePlayer(playerIndex, 0, 0, 1)
+    if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and
+        not guarded and not routed and
+        not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
+        not sim.playerHasCaveLight(playerIndex):
+      let before = sim.players[playerIndex].slowTicks
+      sim.players[playerIndex].slowTicks = max(
+        sim.players[playerIndex].slowTicks,
+        FogDisorientationTicks
+      )
+      if sim.players[playerIndex].slowTicks != before:
+        inc sim.scoreRevision
+    if mirePulse and biome == BiomeSwamp and not sheltered and not guarded and
+        not routed and
+        sim.playerGroundKind(sim.players[playerIndex]) in {
+          GroundMud,
+          GroundShallowWater,
+          GroundWater
+        }:
+      let before = sim.players[playerIndex].slowTicks
+      sim.players[playerIndex].slowTicks = max(
+        sim.players[playerIndex].slowTicks,
+        SwampMireTicks
+      )
+      if sim.players[playerIndex].slowTicks != before:
+        inc sim.scoreRevision
+
+    if exhaustionPulse and sim.playerInLateExhaustionBand(playerIndex) and
+        not sheltered and not guarded and not routed and
+        sim.survivalPressureKind(playerIndex) == SurvivalSafe:
+      if not sim.consumeWeatherRation(playerIndex):
+        let before = sim.players[playerIndex].exhaustionTicks
+        sim.players[playerIndex].exhaustionTicks = max(
+          sim.players[playerIndex].exhaustionTicks,
+          StatusExhaustionTicks
+        )
+        if sim.players[playerIndex].exhaustionTicks != before:
+          inc sim.scoreRevision
+
+proc reduceStatusTicks(value: var int, amount: int): bool =
+  if value <= 0:
+    return false
+  value = max(0, value - max(1, amount))
+  true
+
+proc applyStatusEffects(sim: var SimServer) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    if sim.players[playerIndex].triumphTicks > 0:
+      continue
+    let sheltered = sim.playerNearExpeditionShelter(playerIndex)
+    let aidSheltered = sim.playerNearAidCamp(playerIndex)
+
+    if sim.players[playerIndex].poisonTicks > 0 and
+        sim.tickCount mod StatusPoisonIntervalTicks == 0:
+      if sheltered:
+        if reduceStatusTicks(
+          sim.players[playerIndex].poisonTicks,
+          CampStatusRecoveryTicks +
+            (if aidSheltered: CampAidStatusRecoveryTicks else: 0)
+        ):
+          inc sim.scoreRevision
+      elif sim.players[playerIndex].hasCarry(CarryFood):
+        discard sim.consumeCarriedFood(playerIndex)
+      elif sim.food > 0:
+        dec sim.food
+        sim.players[playerIndex].poisonTicks = 0
+        inc sim.scoreRevision
+      else:
+        sim.damagePlayerFromStatus(playerIndex, 1)
+
+    if playerIndex >= sim.players.len or sim.players[playerIndex].lives <= 0:
+      continue
+    let recoveryStep =
+      1 + (if sheltered: CampStatusRecoveryTicks else: 0) +
+        (if aidSheltered: CampAidStatusRecoveryTicks else: 0) +
+        (if sim.players[playerIndex].guideTicks > 0:
+          RescueGuideStatusRecoveryTicks
+        else:
+          0)
+    if sim.players[playerIndex].slowTicks > 0:
+      if reduceStatusTicks(sim.players[playerIndex].slowTicks, recoveryStep):
+        inc sim.scoreRevision
+    if sim.players[playerIndex].chillTicks > 0:
+      if reduceStatusTicks(sim.players[playerIndex].chillTicks, recoveryStep):
+        inc sim.scoreRevision
+    if sim.players[playerIndex].poisonTicks > 0:
+      if reduceStatusTicks(sim.players[playerIndex].poisonTicks, recoveryStep):
+        inc sim.scoreRevision
+    if sim.players[playerIndex].exhaustionTicks > 0:
+      if reduceStatusTicks(
+        sim.players[playerIndex].exhaustionTicks,
+        recoveryStep
+      ):
+        inc sim.scoreRevision
+
+proc applyCampRecovery(sim: var SimServer) =
+  if sim.tickCount mod CampRecoveryIntervalTicks != 0:
+    return
+  for playerIndex in 0 ..< sim.players.len:
+    let
+      nearCamp = sim.playerNearActivatedCamp(playerIndex)
+      nearShrine = sim.playerNearBlessedShrine(playerIndex)
+      nearProvisioned = nearCamp and sim.playerNearProvisionedCamp(playerIndex)
+    if not nearCamp and not nearShrine:
+      continue
+    if nearProvisioned:
+      sim.grantCampRation(playerIndex)
+    if sim.players[playerIndex].lives >= sim.players[playerIndex].maxHp:
+      continue
+    let healAmount =
+      if nearProvisioned:
+        CampProvisionedRecoveryHealAmount
+      else:
+        CampRecoveryHealAmount
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + healAmount
+    )
+    inc sim.scoreRevision
+
+proc applyHealerTriage(sim: var SimServer) =
+  if sim.tickCount mod HealerTriageIntervalTicks != 0:
+    return
+  for playerIndex in 0 ..< sim.players.len:
+    if not sim.playerNeedsHelp(playerIndex):
+      continue
+    let healerIndex = sim.nearbyHealerIndex(playerIndex)
+    if healerIndex < 0:
+      continue
+    let before = sim.players[playerIndex].lives
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + HealerTriageHealAmount
+    )
+    let healed = sim.players[playerIndex].lives - before
+    if healed > 0:
+      sim.players[healerIndex].healingDone += healed
+      inc sim.scoreRevision
+
+proc applyDownedRecovery(sim: var SimServer) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].downedTicks <= 0:
+      continue
+    let rescuer = sim.nearbyDownedRescuer(playerIndex)
+    if rescuer.index >= 0:
+      sim.players[playerIndex].rescueTicks += rescuer.step
+      inc sim.scoreRevision
+      if sim.players[playerIndex].rescueTicks >= DownedRescueTicks:
+        sim.reviveDownedPlayer(playerIndex, rescuer.index)
+        continue
+    elif sim.players[playerIndex].rescueTicks > 0:
+      dec sim.players[playerIndex].rescueTicks
+      inc sim.scoreRevision
+
+    dec sim.players[playerIndex].downedTicks
+    if sim.players[playerIndex].downedTicks <= 0:
+      sim.respawnDownedPlayer(playerIndex)
+    else:
+      inc sim.scoreRevision
+
 proc updateMobs*(sim: var SimServer) =
+  ## Updates mob chasing, telegraphed attacks, and wandering.
   if sim.players.len == 0:
     return
 
   for mob in sim.mobs.mitems:
     mob.refreshCoopState(sim.players, sim.tickCount)
+    if mob.staggerTicks > 0:
+      dec mob.staggerTicks
+      mob.attackPhase = MobIdle
+      mob.attackTicks = 0
+      if mob.staggerTicks == 0:
+        inc sim.scoreRevision
+      continue
     dec mob.attackCooldown
     if mob.attackCooldown < 0:
       mob.attackCooldown = 0
@@ -1777,38 +6285,54 @@ proc updateMobs*(sim: var SimServer) =
     if not hasTarget:
       continue
     let player = sim.players[targetPlayerIndex]
+    let
+      playerCenterX = boundsCenterX(player.x, player.bounds)
+      playerCenterY = boundsCenterY(player.y, player.bounds)
+      attackRange = mob.mobAttackRange()
+      sightRange = mob.mobSightRange()
 
-    if mob.attackPhase == 0:
-      let
-        playerCenterX = boundsCenterX(player.x, player.bounds)
-        playerCenterY = boundsCenterY(player.y, player.bounds)
-      let attackRange = mob.mobAttackRange()
-      if mob.attackCooldown == 0 and distanceSquared(centerX, centerY, playerCenterX, playerCenterY) <= attackRange * attackRange:
+    case mob.attackPhase
+    of MobIdle:
+      if mob.attackCooldown == 0 and
+          bestDistance <= attackRange * attackRange:
         mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
-        let back = lungeVector(mob.attackFacing, -1)
-        var actor = Actor(
-          x: mob.x,
-          y: mob.y,
-          sprite: mob.sprite,
-          bounds: mob.bounds
-        )
-        sim.moveActor(actor, back.dx, back.dy)
-        mob.x = max(actor.x, SafeZoneRightPixels)
-        mob.y = actor.y
-        mob.attackPhase = 1
+        mob.attackPhase = MobTelegraph
+        mob.attackTicks = 0
         continue
 
-    elif mob.attackPhase == 1:
-      let lunge = lungeVector(mob.attackFacing, 4)
-      var actor = Actor(
-        x: mob.x,
-        y: mob.y,
-        sprite: mob.sprite,
-        bounds: mob.bounds
-      )
-      sim.moveActor(actor, lunge.dx, lunge.dy)
-      mob.x = max(actor.x, SafeZoneRightPixels)
-      mob.y = actor.y
+      dec mob.wanderCooldown
+      if mob.wanderCooldown > 0:
+        continue
+
+      if bestDistance <= sightRange * sightRange:
+        mob.attackFacing = chooseFacing(centerX, centerY, playerCenterX, playerCenterY)
+        let step = chaseVector(centerX, centerY, playerCenterX, playerCenterY)
+        mob.wanderCooldown = MobChaseCooldown
+        sim.moveMob(mob, step.dx, step.dy)
+        continue
+
+      mob.wanderCooldown = MobWanderCooldown +
+        sim.rng.rand(MobWanderJitter)
+      let direction = sim.rng.rand(4)
+      var dx = 0
+      var dy = 0
+      case direction
+      of 0: dx = 1
+      of 1: dx = -1
+      of 2: dy = 1
+      else: dy = -1
+      sim.moveMob(mob, dx, dy)
+
+    of MobTelegraph:
+      inc mob.attackTicks
+      if mob.attackTicks >= MobTelegraphTicks:
+        mob.attackPhase = MobLunge
+        mob.attackTicks = 0
+      continue
+
+    of MobLunge:
+      let lunge = lungeVector(mob.attackFacing, MobLungeStep)
+      sim.moveMob(mob, lunge.dx, lunge.dy)
       for playerIndex in 0 ..< sim.players.len:
         let player = sim.players[playerIndex]
         if player.lives <= 0:
@@ -1821,37 +6345,22 @@ proc updateMobs*(sim: var SimServer) =
           player.y,
           player.bounds
         ):
-          sim.damagePlayer(playerIndex, lunge.dx, lunge.dy, mob.mobDamage())
-      mob.attackPhase = 0
-      mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
+          sim.damagePlayer(
+            playerIndex,
+            lunge.dx,
+            lunge.dy,
+            sim.mobHitDamage(mob, playerIndex)
+          )
+          sim.applyMobHitStatus(mob, playerIndex)
+      inc mob.attackTicks
+      if mob.attackTicks >= MobLungeTicks:
+        mob.attackPhase = MobIdle
+        mob.attackTicks = 0
+        mob.attackCooldown = sim.rng.nextMobAttackCooldown(mob.kind)
       continue
-
-    dec mob.wanderCooldown
-    if mob.wanderCooldown > 0:
-      continue
-
-    mob.wanderCooldown = 8 + sim.rng.rand(20)
-    let direction = sim.rng.rand(4)
-    var dx = 0
-    var dy = 0
-    case direction
-    of 0: dx = 1
-    of 1: dx = -1
-    of 2: dy = 1
-    else: dy = -1
-
-    var actor = Actor(
-      x: mob.x,
-      y: mob.y,
-      sprite: mob.sprite,
-      bounds: mob.bounds
-    )
-    sim.moveActor(actor, dx, dy)
-    mob.x = max(actor.x, SafeZoneRightPixels)
-    mob.y = actor.y
 
 proc respawnMobs(sim: var SimServer) =
-  if not sim.hasBoss():
+  if not sim.bossDefeated and not sim.hasBoss():
     discard sim.spawnOneMob(BossMob, sim.bossSprite, BossHp)
 
   if sim.snakeCount() >= TargetMobCount:
@@ -1862,11 +6371,32 @@ proc respawnMobs(sim: var SimServer) =
   if sim.mobSpawnCooldown > 0:
     return
 
-  if sim.rng.rand(99) < 20:
-    discard sim.spawnOneMob(TrollMob, sim.trollSprite, TrollHp)
-  else:
-    discard sim.spawnOneMob(SnakeMob, sim.mobSprite, SnakeHp)
-  sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
+  let biome = sim.currentBiome()
+  let range = biome.biomeTileRange()
+  discard sim.spawnOneMobInRange(
+    sim.rng.randomMonsterSpeciesForBiome(biome),
+    range.firstTx,
+    range.lastTx
+  )
+  sim.mobSpawnCooldown =
+    24 + sim.rng.rand(24) +
+      lairRespawnCooldownBonus(sim.completedLairCountInBiome(biome))
+
+proc fillTileBackground(
+  fb: var Framebuffer,
+  worldX,
+  worldY,
+  cameraX,
+  cameraY: int,
+  color: uint8
+) =
+  ## Fills a tile before drawing transparent borrowed terrain art.
+  let
+    screenX = worldX - cameraX
+    screenY = worldY - cameraY
+  for y in 0 ..< WorldTileSize:
+    for x in 0 ..< WorldTileSize:
+      fb.putPixel(screenX + x, screenY + y, color)
 
 proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
   let
@@ -1886,7 +6416,16 @@ proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
       let
         x = tx * WorldTileSize
         y = ty * WorldTileSize
-      sim.fb.blitSprite(sim.terrainSprite, x, y, cameraX, cameraY)
+        ground = sim.tileGroundKind(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.fb.fillTileBackground(
+        x,
+        y,
+        cameraX,
+        cameraY,
+        biome.biomeBackgroundPaletteColor()
+      )
+      sim.fb.blitSprite(sim.groundSprite(ground), x, y, cameraX, cameraY)
       if sim.tiles[tileIndex(tx, ty)]:
         let sprite = sim.terrainSprites[sim.terrainKinds[tileIndex(tx, ty)]]
         sim.fb.blitSprite(sprite, x, y, cameraX, cameraY)
@@ -1936,6 +6475,57 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   sim.fb.drawText(sim.textFont, "FRONT " & $frontier, 0, 0, 2'u8)
   sim.fb.drawText(sim.textFont, "HP " & $hp & "/" & $player.maxHp, 0, lineY, 2'u8)
   sim.fb.drawText(sim.textFont, player.role.roleLabel().toUpperAscii(), 0, lineY * 2, 2'u8)
+  sim.fb.drawText(
+    sim.textFont,
+    sim.currentBiome().biomeLabel().toUpperAscii() & " " &
+      sim.currentWeather().weatherLabel().toUpperAscii(),
+    0,
+    lineY * 3,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    "W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
+      " R" & $sim.relicShards,
+    0,
+    lineY * 4,
+    2'u8
+  )
+  let elevation = sim.tileElevation(
+    clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
+      " E" & $elevation,
+    0,
+    lineY * 5,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    "STATUS " & player.statusLabel().toUpperAscii() & " " &
+      sim.survivalPressureLabel(playerIndex).toUpperAscii() &
+      (if sim.playerBiomeTacticLabel(playerIndex).len > 0:
+        " " & sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
+      else:
+        "") &
+      (if sim.playerPartyTacticLabel(playerIndex).len > 0:
+        " " & sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
+      else:
+        ""),
+    0,
+    lineY * 6,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    sim.expeditionObjectiveHint(playerIndex),
+    0,
+    lineY * 7,
+    2'u8
+  )
 
 proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, maximum: int) =
   if maximum <= 0 or width <= 0:
@@ -1954,6 +6544,90 @@ proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, max
 
 proc playerColor*(playerIndex: int): uint8 =
   PlayerColors[playerIndex mod PlayerColors.len]
+
+proc roleAbilityEffectColor(role: PlayerRole): uint8 =
+  case role
+  of RoleTank:
+    HealthBarYellow
+  of RoleDps:
+    HealthBarRed
+  of RoleHealer:
+    HealthBarGreen
+  of RoleUnarmed:
+    2'u8
+
+proc renderRoleAbilityEffect(
+  fb: var Framebuffer,
+  player: Actor,
+  cameraX,
+  cameraY: int
+) =
+  ## Draws the red/yellow/green role-power pulse in legacy framebuffer views.
+  if player.lives <= 0 or player.abilityTicks <= 0:
+    return
+  let
+    centerX = boundsCenterX(player.x, player.bounds) - cameraX
+    centerY = boundsCenterY(player.y, player.bounds) - cameraY
+    color = player.role.roleAbilityEffectColor()
+    pulse = RoleAbilityEffectTicks - player.abilityTicks
+    radius = 15 + (pulse div 3)
+  for dy in -22 .. 22:
+    for dx in -22 .. 22:
+      let distance = dx * dx + dy * dy
+      if distance >= (radius - 1) * (radius - 1) and
+          distance <= (radius + 1) * (radius + 1):
+        fb.putPixel(centerX + dx, centerY + dy, color)
+  case player.role
+  of RoleTank:
+    for x in -13 .. 13:
+      fb.putPixel(centerX + x, centerY - 14, color)
+      fb.putPixel(centerX + x, centerY + 14, color)
+    for y in -10 .. 10:
+      fb.putPixel(centerX - 14, centerY + y, color)
+      fb.putPixel(centerX + 14, centerY + y, color)
+  of RoleDps:
+    for offset in -16 .. 16:
+      fb.putPixel(centerX + offset, centerY + offset, color)
+      fb.putPixel(centerX + offset, centerY - offset, color)
+  of RoleHealer:
+    for offset in -17 .. 17:
+      fb.putPixel(centerX + offset, centerY, color)
+      fb.putPixel(centerX, centerY + offset, color)
+  of RoleUnarmed:
+    discard
+
+proc renderCarryInventory(sim: var SimServer, playerIndex: int) =
+  ## Draws held supplies as bottom inventory slots instead of over the actor.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or player.activeCarryItem() == CarryNone:
+    return
+  var slot = 0
+  for item in CarryInventoryKinds:
+    let count = player.carryCount(item)
+    if count <= 0:
+      continue
+    let
+      carrySprite = sim.landmarkSprite(item.landmarkForCarry())
+      slotX = 2 + slot * (WorldTileSize + 4)
+      slotY = ScreenHeight - carrySprite.height - 2
+    for y in slotY - 1 .. slotY + carrySprite.height:
+      for x in slotX - 1 .. slotX + carrySprite.width:
+        if x == slotX - 1 or x == slotX + carrySprite.width or
+            y == slotY - 1 or y == slotY + carrySprite.height:
+          sim.fb.putPixel(x, y, 2'u8)
+    sim.fb.blitSprite(carrySprite, slotX, slotY, 0, 0)
+    if count > 1:
+      let
+        countText = $count
+        countX = min(
+          ScreenWidth - sim.textFont.textWidth(countText),
+          slotX + carrySprite.width - sim.textFont.textWidth(countText)
+        )
+        countY = max(0, slotY + carrySprite.height - sim.textFont.height)
+      sim.fb.drawText(sim.textFont, countText, countX, countY, 8'u8)
+    inc slot
 
 proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX, cameraY: int) =
   let
@@ -2011,6 +6685,35 @@ proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX
       pos = projectToEdge(dx, dy)
     fb.putPixel(pos.x, pos.y, playerColor(i))
 
+proc renderWeatherOverlay*(sim: var SimServer, weather: WeatherKind) =
+  ## Draws a light deterministic weather layer for the local framebuffer path.
+  case weather
+  of WeatherRain:
+    for i in 0 ..< 18:
+      let
+        x = (i * 17 + sim.tickCount * 2) mod ScreenWidth
+        y = (i * 31 + sim.tickCount * 5) mod ScreenHeight
+      sim.fb.putPixel(x, y, 11'u8)
+      sim.fb.putPixel(x, y + 1, 11'u8)
+  of WeatherSnow:
+    for i in 0 ..< 16:
+      let
+        x = (i * 23 + sim.tickCount div 2) mod ScreenWidth
+        y = (i * 19 + sim.tickCount) mod ScreenHeight
+      sim.fb.putPixel(x, y, 15'u8)
+  of WeatherDust:
+    for i in 0 ..< 20:
+      let
+        x = (i * 29 + sim.tickCount * 3) mod ScreenWidth
+        y = (i * 13 + sim.tickCount div 2) mod ScreenHeight
+      sim.fb.putPixel(x, y, 9'u8)
+  of WeatherFog:
+    for y in countup(8, ScreenHeight - 1, 16):
+      for x in countup((sim.tickCount + y) mod 12, ScreenWidth - 1, 24):
+        sim.fb.putPixel(x, y, 12'u8)
+  else:
+    discard
+
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -2029,14 +6732,32 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
     cameraY = worldClampPixel(player.y + player.sprite.height div 2 - ScreenHeight div 2, WorldHeightPixels - ScreenHeight)
 
   sim.renderTerrain(cameraX, cameraY)
+  for landmark in sim.landmarks:
+    if landmark.done and landmark.kind.landmarkIsResource():
+      continue
+    sim.fb.blitSprite(
+      sim.landmarkSprite(landmark.kind),
+      landmark.landmarkWorldX(),
+      landmark.landmarkWorldY(),
+      cameraX,
+      cameraY
+    )
   for pickup in sim.pickups:
     case pickup.kind
     of PickupCoin, PickupTankGear, PickupDpsGear:
       sim.fb.blitSprite(sim.coinSprite, pickup.x, pickup.y, cameraX, cameraY)
     of PickupHeart, PickupHealerGear:
       sim.fb.blitSprite(sim.heartSprite, pickup.x, pickup.y, cameraX, cameraY)
+    of PickupWood, PickupFood, PickupStone, PickupGold:
+      sim.fb.blitSprite(
+        sim.landmarkSprite(pickup.kind.carryForPickup().landmarkForCarry()),
+        pickup.x,
+        pickup.y,
+        cameraX,
+        cameraY
+      )
   for mob in sim.mobs:
-    sim.fb.blitSprite(mob.sprite, mob.x, mob.y, cameraX, cameraY)
+    sim.fb.blitSprite(mob.sprite, mob.x, mob.mobDrawY(), cameraX, cameraY)
   for i in 0 ..< sim.players.len:
     let otherPlayer = sim.players[i]
     if otherPlayer.lives > 0:
@@ -2050,6 +6771,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         playerColor(i),
         otherPlayer.facing == FaceLeft
       )
+      sim.fb.renderRoleAbilityEffect(otherPlayer, cameraX, cameraY)
   for otherPlayer in sim.players:
     if otherPlayer.lives > 0 and otherPlayer.attackTicks > 0:
       let hit = sim.attackRect(otherPlayer)
@@ -2066,7 +6788,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
       maxHp = mob.mobMaxHp()
       barW = mob.sprite.width
       barX = mob.x - cameraX
-      barY = mob.y - cameraY - 2
+      barY = mob.mobDrawY() - cameraY - 2
     sim.fb.renderHealthBar(barX, barY, barW, mob.hp, maxHp)
   for i in 0 ..< sim.players.len:
     let p = sim.players[i]
@@ -2077,7 +6799,9 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         barY = p.y - cameraY - 2
       sim.fb.renderHealthBar(barX, barY, barW, p.lives, p.maxHp)
   sim.fb.renderRadar(sim, playerIndex, cameraX, cameraY)
+  sim.renderWeatherOverlay(sim.weatherAtPixel(player.x))
   sim.renderHud(playerIndex)
+  sim.renderCarryInventory(playerIndex)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -2103,8 +6827,64 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
   for i in 0 ..< sim.players.len:
     if sim.players[i].abilityCooldown > 0:
       dec sim.players[i].abilityCooldown
+      if sim.players[i].abilityCooldown > 0 and sim.playerNearRallyCamp(i):
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - CampRallyAbilityCooldownStep
+        )
+      if sim.players[i].abilityCooldown > 0 and
+          sim.playerBiomeTacticKind(i) == BiomeTacticRally:
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - PlainsRallyCooldownStep
+        )
+      if sim.players[i].abilityCooldown > 0 and sim.playerInTrioFormation(i):
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - TrioFormationCooldownStep
+        )
+      if sim.players[i].abilityCooldown > 0 and sim.players[i].moraleTicks > 0:
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - ObjectiveMoraleCooldownStep
+        )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
+    if sim.players[i].abilityTicks > 0:
+      dec sim.players[i].abilityTicks
+    if sim.players[i].routeTicks > 0:
+      dec sim.players[i].routeTicks
+      if sim.players[i].routeTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].surveyTicks > 0:
+      dec sim.players[i].surveyTicks
+      if sim.players[i].surveyTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].guideTicks > 0:
+      dec sim.players[i].guideTicks
+      if sim.players[i].guideTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].huntTicks > 0:
+      dec sim.players[i].huntTicks
+      if sim.players[i].huntTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].triumphTicks > 0:
+      dec sim.players[i].triumphTicks
+      if sim.players[i].triumphTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].rationTicks > 0:
+      dec sim.players[i].rationTicks
+      if sim.players[i].rationTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].moraleTicks > 0:
+      dec sim.players[i].moraleTicks
+      if sim.players[i].moraleTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].pingTicks > 0:
+      dec sim.players[i].pingTicks
+      if sim.players[i].pingTicks == 0:
+        sim.players[i].pingKind = PingNone
+      inc sim.scoreRevision
     if sim.players[i].lives <= 0:
       continue
     let centerX = boundsCenterX(sim.players[i].x, sim.players[i].bounds)
@@ -2113,6 +6893,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
       inc sim.scoreRevision
     if centerX > sim.teamFrontier:
       sim.teamFrontier = centerX
+      sim.maxBiomeReached = max(
+        sim.maxBiomeReached,
+        sim.currentBiome().biomeProgressValue()
+      )
       inc sim.scoreRevision
 
 proc step*(sim: var SimServer, inputs: openArray[InputState]) =
@@ -2126,6 +6910,8 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].invulnTicks > 0:
       dec sim.players[playerIndex].invulnTicks
+    if sim.players[playerIndex].carrySelectLockTicks > 0:
+      dec sim.players[playerIndex].carrySelectLockTicks
     let input =
       if playerIndex < inputs.len: inputs[playerIndex]
       else: InputState()
@@ -2133,8 +6919,16 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.resolvePlayerOverlaps()
   sim.addPlayerWalkDistances(startXs, startYs)
   sim.updatePlayerTimersAndFrontier()
-  sim.collectPickups()
+  sim.collectPickups(inputs)
+  sim.applyEarlyBiomeTactics()
+  sim.applyFoodAndWeatherSurvival()
+  sim.applyStatusEffects()
+  sim.applyCampRecovery()
+  sim.applyHealerTriage()
+  sim.applyDownedRecovery()
   sim.applyAttack()
+  sim.activateNearbyLandmarks()
+  sim.applyFortifiedCampDefenses()
   sim.updateMobs()
   sim.resolvePlayerOverlaps()
   sim.respawnMobs()
