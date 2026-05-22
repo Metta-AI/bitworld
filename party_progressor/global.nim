@@ -127,6 +127,7 @@ type
     StatusRoleTank
     StatusRoleDps
     StatusRoleHealer
+    StatusTrio
     StatusPartyFocus
     StatusHighGround
     StatusLowGround
@@ -1413,6 +1414,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusRoleTank: "TNK"
   of StatusRoleDps: "DPS"
   of StatusRoleHealer: "HEAL"
+  of StatusTrio: "TRIO"
   of StatusPartyFocus: "FOC"
   of StatusHighGround: "HIGH"
   of StatusLowGround: "LOW"
@@ -1445,6 +1447,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusRoleTank: 4'u8
   of StatusRoleDps: 3'u8
   of StatusRoleHealer: 10'u8
+  of StatusTrio: 14'u8
   of StatusPartyFocus: 14'u8
   of StatusHighGround: 8'u8
   of StatusLowGround: 10'u8
@@ -1477,6 +1480,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusRoleTank: "status role tank"
   of StatusRoleDps: "status role dps"
   of StatusRoleHealer: "status role healer"
+  of StatusTrio: "status trio"
   of StatusPartyFocus: "status party focus"
   of StatusHighGround: "status high ground"
   of StatusLowGround: "status low ground"
@@ -2665,6 +2669,8 @@ proc addWorldObjects(
       let roleBadge = player.role.roleStatusBadge()
       if roleBadge.found:
         badges.add(roleBadge.badge)
+      if sim.playerInTrioFormation(i):
+        badges.add(StatusTrio)
       let tacticBadge = sim.playerBiomeTacticKind(i).biomeTacticStatusBadge()
       if tacticBadge.found:
         badges.add(tacticBadge.badge)
@@ -2775,12 +2781,14 @@ proc addPlayerHud(
       clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
     )
     tacticLabel = sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
+    partyTacticLabel = sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
     statusLine4 =
       "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
         " E" & $playerElevation & " " &
         player.statusLabel().toUpperAscii() & " " &
         sim.survivalPressureLabel(playerIndex).toUpperAscii() &
-        (if tacticLabel.len > 0: " " & tacticLabel else: "")
+        (if tacticLabel.len > 0: " " & tacticLabel else: "") &
+        (if partyTacticLabel.len > 0: " " & partyTacticLabel else: "")
     statusLine5 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
       statusLine4 & "|" & statusLine5

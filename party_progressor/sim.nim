@@ -147,6 +147,8 @@ const
   ForestForageFoodCap* = 2
   PlainsRallyAllyRadius* = WorldTileSize * 3
   PlainsRallyCooldownStep* = 1
+  TrioFormationRadius* = WorldTileSize * 3
+  TrioFormationCooldownStep* = 1
   SnowWarmthAllyRadius* = WorldTileSize * 3
   DesertShadeRadius* = WorldTileSize * 2
   SwampPlankForwardTiles* = 3
@@ -4115,6 +4117,39 @@ proc playerHasNearbyAlly(
       return true
   false
 
+proc playerInTrioFormation*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when tank, DPS, and healer are holding a local formation.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  let radiusSq = TrioFormationRadius * TrioFormationRadius
+  var
+    tank = false
+    dps = false
+    healer = false
+  for other in sim.players:
+    if other.lives <= 0:
+      continue
+    if distanceSquaredActor(sim.players[playerIndex], other) > radiusSq:
+      continue
+    case other.role
+    of RoleTank:
+      tank = true
+    of RoleDps:
+      dps = true
+    of RoleHealer:
+      healer = true
+    of RoleUnarmed:
+      discard
+  tank and dps and healer
+
+proc playerPartyTacticLabel*(sim: SimServer, playerIndex: int): string =
+  if sim.playerInTrioFormation(playerIndex):
+    "trio"
+  else:
+    ""
+
 proc nearbyDownedRescuer(
   sim: SimServer,
   playerIndex: int
@@ -5765,6 +5800,10 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
       (if sim.playerBiomeTacticLabel(playerIndex).len > 0:
         " " & sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
       else:
+        "") &
+      (if sim.playerPartyTacticLabel(playerIndex).len > 0:
+        " " & sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
+      else:
         ""),
     0,
     lineY * 6,
@@ -6009,6 +6048,11 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         sim.players[i].abilityCooldown = max(
           0,
           sim.players[i].abilityCooldown - PlainsRallyCooldownStep
+        )
+      if sim.players[i].abilityCooldown > 0 and sim.playerInTrioFormation(i):
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - TrioFormationCooldownStep
         )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks

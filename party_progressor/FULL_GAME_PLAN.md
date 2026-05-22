@@ -454,6 +454,10 @@ The first full-game implementation pass includes:
 - Mixed-role party focus now turns recent tank/DPS/healer attacks on the same
   mob into a visible `FOC` damage window, giving parties a reason to coordinate
   targets beyond each role's individual `B` power.
+- Mixed-role formation now matters between fights as well: when tank, DPS, and
+  healer stay grouped in a local formation, players show a visible `TRIO`
+  affordance and recover role-power cooldowns faster, making the intended party
+  composition useful during travel, staging, and weather pressure.
 - Final-gate completion now requires boss defeat, relic progress, and forward
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.

@@ -2953,6 +2953,64 @@ proc testPartyFocusRewardsMixedRoleAttacksAndShowsBadge() =
     threeRoleHp - (3 + PartyFocusThreeRoleDamageBonus),
     "all three roles should create the strongest focus-fire damage bonus"
 
+proc testMixedRoleFormationRechargesPowersAndShowsBadge() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.bossDefeated = true
+  sim.mobSpawnCooldown = 999
+  sim.fillGround(GroundGrass, BiomeForest)
+
+  let
+    tankIndex = sim.addPlayer("tank")
+    dpsIndex = sim.addPlayer("dps")
+    healerIndex = sim.addPlayer("healer")
+    baseX = SafeZoneRightPixels + WorldTileSize
+    baseY = (WorldHeightTiles div 2) * WorldTileSize
+  for item in [
+    (index: tankIndex, role: RoleTank, y: baseY - 12),
+    (index: dpsIndex, role: RoleDps, y: baseY),
+    (index: healerIndex, role: RoleHealer, y: baseY + 12)
+  ]:
+    sim.players[item.index].x = baseX
+    sim.players[item.index].y = item.y
+    sim.players[item.index].applyRole(item.role)
+    sim.players[item.index].bounds =
+      sim.playerBoundsFor(sim.players[item.index])
+
+  doAssert sim.playerInTrioFormation(tankIndex)
+  doAssert sim.playerInTrioFormation(dpsIndex)
+  doAssert sim.playerInTrioFormation(healerIndex)
+  doAssert sim.playerPartyTacticLabel(dpsIndex) == "trio"
+
+  sim.players[dpsIndex].abilityCooldown = 10
+  var state: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    dpsIndex,
+    initPlayerViewerState(),
+    state
+  ).parseSpriteProtocolPacket()
+  doAssert "status trio" in parsed.objectSpriteLabels(),
+    "grouped tank/DPS/healer parties should show the trio formation badge"
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("TRIO")),
+    "HUD status text should make the trio formation readable"
+
+  sim.step([InputState(), InputState(), InputState()])
+  doAssert sim.players[dpsIndex].abilityCooldown ==
+    10 - 1 - TrioFormationCooldownStep,
+    "trio formation should recover role powers faster between fights"
+
+  sim.players[dpsIndex].abilityCooldown = 10
+  sim.players[healerIndex].x += TrioFormationRadius + WorldTileSize
+  sim.players[healerIndex].bounds =
+    sim.playerBoundsFor(sim.players[healerIndex])
+  doAssert not sim.playerInTrioFormation(dpsIndex)
+  sim.step([InputState(), InputState(), InputState()])
+  doAssert sim.players[dpsIndex].abilityCooldown == 9,
+    "role power recovery should return to normal when the formation breaks"
+
 proc testHealerTriageAndHelpAffordance() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3605,6 +3663,7 @@ testMonsterLairAttackRewardsAndPacifiesThreats()
 testBiomeWaystationsCreateRoleDetoursAndShelters()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testPartyFocusRewardsMixedRoleAttacksAndShowsBadge()
+testMixedRoleFormationRechargesPowersAndShowsBadge()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
 testSnowSharedWarmthClearsColdPressure()
