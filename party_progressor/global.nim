@@ -1179,11 +1179,11 @@ proc roleTintSlot(playerIndex: int, role: PlayerRole): int =
 proc roleGearLabel(kind: PickupKind): string =
   case kind
   of PickupTankGear:
-    "TANK"
+    "TANK GUARD"
   of PickupDpsGear:
-    "DPS"
+    "DPS CLEAVE"
   of PickupHealerGear:
-    "HEAL"
+    "HEAL PULSE"
   else:
     ""
 

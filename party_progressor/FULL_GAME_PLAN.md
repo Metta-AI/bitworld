@@ -303,6 +303,8 @@ The first full-game implementation pass includes:
 - In-world role labels for the origin and camp gear picks.
 - Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
   green, while unarmed players keep their player-slot identity color.
+- Origin and camp role gear now labels both the role and its `B` power: tank
+  guard, DPS cleave, and healer pulse.
 - DPS cleave on the `B` button, plus tank guard and healer pulse.
 - Healer triage support: nearby healers now slowly stabilize low-health
   teammates between pulse casts, making the support role useful during
@@ -368,6 +370,9 @@ The first full-game implementation pass includes:
   biome-backed transparent sprites.
 - Sprite protocol fixture tests that parse Party Progressor player packets with
   the same message framing used by existing BitWorld sprite-protocol bots.
+- Rendered player-observation tests that composite sprite protocol packets and
+  verify the 11 by 11 view stays opaque, biome-backed, and not black-filled
+  across forest, plains, swamp, desert, snow, cave, and ruins.
 
 ## Broader Roadmap
 
@@ -377,8 +382,8 @@ The first full-game implementation pass includes:
 - Tune in-world affordance density after real observation checks so labels
   remain helpful without cluttering fights.
 - Tune food, provisioned-camp, and snow-exposure pacing with multi-player runs.
-- Add player-observation screenshots to smoke tests so black-background
-  regressions are visually obvious.
+- Expand player-observation smoke output into saved visual fixtures so
+  black-background regressions are obvious during manual review too.
 - Improve telegraph polish by distinguishing pre-hit danger badges from
   post-hit player status badges once the observation density is tuned.
 - Continue bot targeting polish: infer low-health state from sprite health bars,

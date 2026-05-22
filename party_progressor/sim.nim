@@ -1701,7 +1701,7 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
       return "NEXT WAIT FOR RESCUE"
     return "NEXT RESPAWN"
   if player.role == RoleUnarmed:
-    return "NEXT PICK ROLE TANK DPS HEAL"
+    return "NEXT WALK INTO TANK DPS HEAL"
   if player.maxHp > 0 and player.lives < player.maxHp and
       player.lives * 100 <= player.maxHp * LowHealthHelpThresholdPercent:
     return "NEXT HEAL FOOD SHELTER"

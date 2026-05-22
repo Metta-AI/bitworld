@@ -1,5 +1,5 @@
 import
-  std/[json, os, sequtils, strutils, tables],
+  std/[algorithm, json, os, sequtils, strutils, tables],
   supersnappy,
   ../common/protocol,
   ../common/server,
@@ -182,6 +182,7 @@ type
   ParsedSprite = object
     width, height: int
     label: string
+    pixels: string
 
   ParsedObject = object
     x, y, z, layer, spriteId: int
@@ -191,6 +192,10 @@ type
     objects: Table[int, ParsedObject]
     layers: Table[int, tuple[layerType, flags: int]]
     viewports: Table[int, tuple[width, height: int]]
+
+  RenderedObservation = object
+    width, height: int
+    pixels: seq[uint8]
 
 proc parseSpriteProtocolPacket(packet: openArray[uint8]): ParsedPacket =
   ## Mirrors the packet framing used by existing sprite-protocol bot parsers.
@@ -210,6 +215,9 @@ proc parseSpriteProtocolPacket(packet: openArray[uint8]): ParsedPacket =
       offset += 10
       if offset + compressedLen + 2 > packet.len:
         raise newException(ValueError, "truncated sprite pixels")
+      let pixels = supersnappy.uncompress(
+        packet.packetBytesToString(offset, compressedLen)
+      )
       offset += compressedLen
       let labelLen = packet.readU16(offset)
       offset += 2
@@ -220,7 +228,8 @@ proc parseSpriteProtocolPacket(packet: openArray[uint8]): ParsedPacket =
       result.sprites[spriteId] = ParsedSprite(
         width: width,
         height: height,
-        label: label
+        label: label,
+        pixels: pixels
       )
     of 0x02'u8:
       if offset + 11 > packet.len:
@@ -276,6 +285,167 @@ proc objectSpriteLabels(parsed: ParsedPacket): seq[string] =
   for obj in parsed.objects.values:
     if parsed.sprites.hasKey(obj.spriteId):
       result.add(parsed.sprites[obj.spriteId].label)
+
+proc rgbaByte(pixels: string, index: int): uint8 =
+  uint8(ord(pixels[index]))
+
+proc blendObservationPixel(
+  target: var seq[uint8],
+  targetIndex: int,
+  sourceR,
+  sourceG,
+  sourceB,
+  sourceA: uint8
+) =
+  let sourceAlpha = int(sourceA)
+  if sourceAlpha == 0:
+    return
+  let targetAlpha = int(target[targetIndex + 3])
+  if sourceAlpha == 255 or targetAlpha == 0:
+    target[targetIndex] = sourceR
+    target[targetIndex + 1] = sourceG
+    target[targetIndex + 2] = sourceB
+    target[targetIndex + 3] = sourceA
+    return
+  let outAlpha = sourceAlpha + targetAlpha * (255 - sourceAlpha) div 255
+  let source = [sourceR, sourceG, sourceB]
+  for channel in 0 ..< source.len:
+    let value = (
+      int(source[channel]) * sourceAlpha * 255 +
+      int(target[targetIndex + channel]) * targetAlpha * (255 - sourceAlpha)
+    ) div max(1, outAlpha * 255)
+    target[targetIndex + channel] = clamp(value, 0, 255).uint8
+  target[targetIndex + 3] = outAlpha.uint8
+
+proc blendObservationPixel(
+  target: var seq[uint8],
+  targetIndex: int,
+  source: string,
+  sourceIndex: int
+) =
+  target.blendObservationPixel(
+    targetIndex,
+    source.rgbaByte(sourceIndex),
+    source.rgbaByte(sourceIndex + 1),
+    source.rgbaByte(sourceIndex + 2),
+    source.rgbaByte(sourceIndex + 3)
+  )
+
+proc blendObservationPixel(
+  target: var seq[uint8],
+  targetIndex: int,
+  source: openArray[uint8],
+  sourceIndex: int
+) =
+  target.blendObservationPixel(
+    targetIndex,
+    source[sourceIndex],
+    source[sourceIndex + 1],
+    source[sourceIndex + 2],
+    source[sourceIndex + 3]
+  )
+
+proc renderPacketLayer(
+  parsed: ParsedPacket,
+  layerId: int,
+  viewport: tuple[width, height: int]
+): seq[uint8] =
+  result = newSeq[uint8](viewport.width * viewport.height * 4)
+  let ordered = parsed.objects.pairs.toSeq.sortedByIt((
+    it[1].z,
+    it[1].y,
+    it[0]
+  ))
+  for item in ordered:
+    let obj = item[1]
+    if obj.layer != layerId or not parsed.sprites.hasKey(obj.spriteId):
+      continue
+    let sprite = parsed.sprites[obj.spriteId]
+    if sprite.pixels.len != sprite.width * sprite.height * 4:
+      continue
+    let
+      sx0 = max(0, -obj.x)
+      sy0 = max(0, -obj.y)
+      sx1 = min(sprite.width, viewport.width - obj.x)
+      sy1 = min(sprite.height, viewport.height - obj.y)
+    if sx0 >= sx1 or sy0 >= sy1:
+      continue
+    for sy in sy0 ..< sy1:
+      for sx in sx0 ..< sx1:
+        result.blendObservationPixel(
+          ((obj.y + sy) * viewport.width + obj.x + sx) * 4,
+          sprite.pixels,
+          (sy * sprite.width + sx) * 4
+        )
+
+proc renderSpriteProtocolObservation(parsed: ParsedPacket): RenderedObservation =
+  let orderedLayers = parsed.layers.pairs.toSeq.sortedByIt((
+    it[1].layerType,
+    it[0]
+  ))
+  for item in orderedLayers:
+    let layerId = item[0]
+    if not parsed.viewports.hasKey(layerId):
+      continue
+    let viewport = parsed.viewports[layerId]
+    result.width = max(result.width, viewport.width)
+    result.height = max(result.height, viewport.height)
+  if result.width <= 0 or result.height <= 0:
+    raise newException(ValueError, "missing observation viewport")
+  result.pixels = newSeq[uint8](result.width * result.height * 4)
+  for item in orderedLayers:
+    let layerId = item[0]
+    if not parsed.viewports.hasKey(layerId):
+      continue
+    let
+      viewport = parsed.viewports[layerId]
+      layerPixels = parsed.renderPacketLayer(layerId, viewport)
+    for y in 0 ..< viewport.height:
+      for x in 0 ..< viewport.width:
+        result.pixels.blendObservationPixel(
+          (y * result.width + x) * 4,
+          layerPixels,
+          (y * viewport.width + x) * 4
+        )
+
+proc observationStats(
+  observation: RenderedObservation
+): tuple[opaque, transparent, black, colorBuckets: int] =
+  var buckets: Table[int, bool]
+  for offset in countup(0, observation.pixels.len - 4, 4):
+    let
+      r = int(observation.pixels[offset])
+      g = int(observation.pixels[offset + 1])
+      b = int(observation.pixels[offset + 2])
+      a = int(observation.pixels[offset + 3])
+    if a == 255:
+      inc result.opaque
+    elif a == 0:
+      inc result.transparent
+    if a > 0 and r == 0 and g == 0 and b == 0:
+      inc result.black
+    if a > 0:
+      buckets[
+        ((r div 24) shl 16) or ((g div 24) shl 8) or (b div 24)
+      ] = true
+  result.colorBuckets = buckets.len
+
+proc observationAverageColor(
+  observation: RenderedObservation
+): tuple[r, g, b: int] =
+  var count = 0
+  for offset in countup(0, observation.pixels.len - 4, 4):
+    let a = int(observation.pixels[offset + 3])
+    if a == 0:
+      continue
+    result.r += int(observation.pixels[offset])
+    result.g += int(observation.pixels[offset + 1])
+    result.b += int(observation.pixels[offset + 2])
+    inc count
+  if count > 0:
+    result.r = result.r div count
+    result.g = result.g div count
+    result.b = result.b div count
 
 proc testPlayerDropsCarriedCoinsOnDeath() =
   var sim = initPartyProgressorForTest()
@@ -549,6 +719,79 @@ proc testSpriteProtocolWeatherOverlays() =
   doAssert "weather dust" in globalLabels,
     "global sprite observations should show biome weather overlays"
 
+proc testRenderedPlayerObservationHasBiomeBackedPixels() =
+  var averageBuckets: Table[int, bool]
+  for biome in [
+    BiomeForest,
+    BiomePlains,
+    BiomeSwamp,
+    BiomeDesert,
+    BiomeSnow,
+    BiomeCave,
+    BiomeRuins
+  ]:
+    var sim = initPartyProgressorForTest()
+    sim.clearTerrain()
+    sim.mobs.setLen(0)
+    sim.pickups.setLen(0)
+    sim.landmarks.setLen(0)
+    sim.fillGround(
+      case biome
+      of BiomePlains:
+        GroundFertile
+      of BiomeSwamp:
+        GroundMud
+      of BiomeDesert:
+        GroundSand
+      of BiomeSnow:
+        GroundSnow
+      of BiomeCave:
+        GroundCave
+      of BiomeRuins:
+        GroundRuins
+      else:
+        GroundGrass,
+      biome
+    )
+    let playerIndex = sim.addPlayer("player-" & biome.biomeLabel())
+    sim.players[playerIndex].x =
+      min(
+        WorldWidthPixels - WorldTileSize,
+        max(WorldTileSize, firstTileForBiome(biome) * WorldTileSize)
+      )
+    sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+    sim.players[playerIndex].bounds =
+      sim.playerBoundsFor(sim.players[playerIndex])
+
+    var nextState: PlayerViewerState
+    let observation = sim.buildSpriteProtocolPlayerUpdates(
+      playerIndex,
+      initPlayerViewerState(),
+      nextState
+    ).parseSpriteProtocolPacket().renderSpriteProtocolObservation()
+    let
+      stats = observation.observationStats()
+      pixelCount = observation.width * observation.height
+      average = observation.observationAverageColor()
+    doAssert observation.width == PlayerViewportWidth
+    doAssert observation.height == PlayerViewportHeight
+    doAssert stats.opaque == pixelCount,
+      "rendered player observation should be fully opaque for " &
+        biome.biomeLabel()
+    doAssert stats.transparent == 0
+    doAssert stats.black < pixelCount div 12,
+      "rendered player observation should not regress to black-backed art for " &
+        biome.biomeLabel()
+    doAssert stats.colorBuckets >= 4,
+      "rendered player observation should contain visible terrain/sprite detail"
+    averageBuckets[
+      ((average.r div 24) shl 16) or
+      ((average.g div 24) shl 8) or
+      (average.b div 24)
+    ] = true
+  doAssert averageBuckets.len >= 5,
+    "biome-backed rendered observations should produce distinct color families"
+
 proc testSpriteProtocolPacketMatchesReferenceParsers() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")
@@ -569,11 +812,11 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
       "object references undefined sprite " & $obj.spriteId
 
   let visibleLabels = parsed.objectSpriteLabels()
-  doAssert "role tank" in visibleLabels
-  doAssert "role dps" in visibleLabels
-  doAssert "role heal" in visibleLabels
-  doAssert visibleLabels.anyIt(it.contains("NEXT PICK ROLE TANK DPS HEAL")),
-    "local HUD should tell new players to choose a role"
+  doAssert visibleLabels.anyIt(it.contains("role tank guard"))
+  doAssert visibleLabels.anyIt(it.contains("role dps cleave"))
+  doAssert visibleLabels.anyIt(it.contains("role heal pulse"))
+  doAssert visibleLabels.anyIt(it.contains("NEXT WALK INTO TANK DPS HEAL")),
+    "local HUD should tell new players to walk into role gear"
   for species in AllMobSpecies:
     doAssert parsed.sprites.values.toSeq.anyIt(it.label == species.speciesLabel()),
       "missing generated monster sprite " & species.speciesLabel()
@@ -602,7 +845,7 @@ proc testExpeditionObjectiveHudGuidesNextStep() =
   sim.pickups.setLen(0)
   let playerIndex = sim.addPlayer("player1")
   doAssert sim.expeditionObjectiveHint(playerIndex) ==
-    "NEXT PICK ROLE TANK DPS HEAL"
+    "NEXT WALK INTO TANK DPS HEAL"
 
   sim.players[playerIndex].applyRole(RoleTank)
   sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
@@ -1920,6 +2163,7 @@ testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolWeatherOverlays()
+testRenderedPlayerObservationHasBiomeBackedPixels()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
