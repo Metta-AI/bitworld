@@ -1384,6 +1384,8 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   if target.kind == TargetCamp and (bot.needWood > 0 or bot.needStone > 0):
     return false
   if target.kind == TargetShelter:
+    if bot.carriedItem != CarryNone:
+      return bot.targetDistance(target) <= ShelterReturnRadius
     if not bot.lowHealth:
       return false
     if bot.targetDistance(target) > ShelterReturnRadius:
@@ -1490,7 +1492,10 @@ proc targetScore(bot: Bot, target: Target): int =
     else:
       distance + (if bot.lowHealth or bot.needsRegroup: -180 else: -100)
   of TargetShelter:
-    distance + (if bot.lowHealth: -210 else: 520)
+    if bot.carriedItem != CarryNone:
+      distance - 190
+    else:
+      distance + (if bot.lowHealth: -210 else: 520)
   of TargetRelic:
     if bot.objectiveHint.startsWith("next relic"):
       distance - 170
@@ -1894,6 +1899,10 @@ proc decideNextMask(bot: var Bot): uint8 =
   let target = bot.chooseTarget(blocked, pickups, allies, mobs)
   bot.rememberTarget(target)
   bot.intent = target.label
+  if target.kind in {TargetCamp, TargetShelter} and
+      bot.carriedItem != CarryNone and
+      bot.currentTargetDistance <= ActivationStallDistance:
+    return ButtonSelect
   if target.kind.isAttackTarget() and bot.canAttack(target):
     return bot.attackMask(target)
 
@@ -2186,6 +2195,31 @@ when defined(konradTargetSelfTest):
     kind: TargetShelter,
     objectId: LandmarkObjectBase + 3
   ))
+  bot.carriedItem = CarryWood
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 3,
+    x: ShelterReturnRadius,
+    y: 0
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 3,
+    x: ShelterReturnRadius + 1,
+    y: 0
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetShelter,
+    x: ShelterReturnRadius,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetWood,
+    x: ShelterReturnRadius,
+    y: 0
+  ))
+  bot.carriedItem = CarryNone
   bot.needsRegroup = true
   doAssert not bot.canConsiderPickupTarget(Target(
     kind: TargetShelter,

@@ -137,6 +137,9 @@ Harvesting a resource also gives the attacker a single carried expedition item
 when their hands are empty, or drops that item on the ground if they are already
 carrying something. This borrows the readable one-item carry pattern from the
 dinner-party hosting game without turning Party Progressor into a crafting sim.
+Carried supplies should also have a direct expedition use: selecting at an
+activated camp should let players turn wood, food, stone, or gold into a
+specific camp upgrade instead of only dropping the item.
 Camps cost wood and stone. Activating a camp should:
 
 - Mark expedition progress.
@@ -359,6 +362,9 @@ The first full-game implementation pass includes:
   snow expeditions a second kind of safe staging choice beyond full camps.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
   including visible held-item sprites and select-to-use/drop behavior.
+- Carried camp delivery: selecting at activated camps now turns wood into
+  rally staging, food into meal shelters, stone into warded shelters, and gold
+  into fortification, so carried supplies create explicit staging choices.
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
 - Biome-specific monster families: scorpions, slimes, yetis, bats, and wraiths
   join wolves, goblins, bears, and the boss.

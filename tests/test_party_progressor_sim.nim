@@ -1662,6 +1662,78 @@ proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
   doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
     "provisioned camps should recover resting players faster than shelters"
 
+proc testCarriedSuppliesUpgradeActivatedCamps() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.mobSpawnCooldown = 999
+  sim.bossDefeated = true
+
+  let
+    playerIndex = sim.addPlayer("player1")
+    campTx = SafeZoneRightTiles + 2
+    campTy = WorldHeightTiles div 2
+    campX = campTx * WorldTileSize
+    campY = campTy * WorldTileSize
+  sim.players[playerIndex].x = campX
+  sim.players[playerIndex].y = campY
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.landmarks.add(Landmark(
+    tx: campTx,
+    ty: campTy,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true
+  ))
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryWood
+  sim.step([InputState(select: true)])
+  doAssert sim.landmarks[0].campIsRally(),
+    "delivered wood should create a rally camp"
+  doAssert not sim.players[playerIndex].carrying
+  doAssert not sim.hasPickup(PickupWood)
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryStone
+  sim.step([InputState(select: true)])
+  doAssert sim.landmarks[0].campIsWarded(),
+    "delivered stone should create a ward camp"
+  doAssert not sim.players[playerIndex].carrying
+  doAssert not sim.hasPickup(PickupStone)
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  sim.step([InputState(select: true)])
+  doAssert sim.landmarks[0].campIsProvisioned(),
+    "delivered food should create a meal shelter"
+  doAssert not sim.players[playerIndex].carrying
+  doAssert not sim.hasPickup(PickupFood)
+
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: campX,
+    y: campY + WorldTileSize,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryGold
+  sim.step([InputState(select: true)])
+  doAssert sim.landmarks[0].campIsFortified(),
+    "delivered gold should fortify the camp"
+  doAssert sim.mobs.len == 0,
+    "gold-fortified camps should immediately secure nearby non-boss threats"
+  doAssert not sim.players[playerIndex].carrying
+  doAssert not sim.hasPickup(PickupGold)
+
 proc testRoleSpecializedCampsCreateDistinctStagingBenefits() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -2593,6 +2665,7 @@ testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testCampProvisioningConsumesFoodAndImprovesRecovery()
+testCarriedSuppliesUpgradeActivatedCamps()
 testRoleSpecializedCampsCreateDistinctStagingBenefits()
 testBeaconAndBossScoring()
 testFinalGateRitualAcceleratesWithPartyRoles()

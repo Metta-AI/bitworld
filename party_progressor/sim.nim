@@ -3370,6 +3370,7 @@ proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
 
 proc clearCarry(sim: var SimServer, playerIndex: int)
 proc dropCarry(sim: var SimServer, playerIndex: int): bool
+proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool
 
 proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -3472,7 +3473,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if input.b:
     sim.applyRoleAbility(playerIndex)
   if input.select:
-    if not sim.consumeCarriedFood(playerIndex):
+    if not sim.consumeCarriedFood(playerIndex) and
+        not sim.deliverCarryToCamp(playerIndex):
       discard sim.dropCarry(playerIndex)
 
 proc attackRect*(sim: SimServer, player: Actor): tuple[x, y, w, h: int] =
@@ -4376,6 +4378,48 @@ proc trySpecializeCampForRole(
       sim.specializeCamp(landmarkIndex, CampAidFlag)
   else:
     discard
+
+proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
+  ## Converts one held supply into an explicit activated-camp upgrade.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if not sim.players[playerIndex].carrying:
+    return false
+  let item = sim.players[playerIndex].carriedItem
+  if item == CarryNone:
+    return false
+  for landmarkIndex in 0 ..< sim.landmarks.len:
+    let landmark = sim.landmarks[landmarkIndex]
+    if landmark.kind != LandmarkCamp or not landmark.done:
+      continue
+    if not sim.playerNearLandmark(
+      sim.players[playerIndex],
+      landmark,
+      LandmarkActivationRadius
+    ):
+      continue
+    case item
+    of CarryWood:
+      if sim.landmarks[landmarkIndex].campIsRally():
+        continue
+      sim.specializeCamp(landmarkIndex, CampRallyFlag)
+    of CarryFood:
+      if sim.landmarks[landmarkIndex].campIsProvisioned():
+        continue
+      sim.provisionCamp(landmarkIndex)
+    of CarryStone:
+      if sim.landmarks[landmarkIndex].campIsWarded():
+        continue
+      sim.specializeCamp(landmarkIndex, CampWardedFlag)
+    of CarryGold:
+      if sim.landmarks[landmarkIndex].campIsFortified():
+        continue
+      sim.fortifyCamp(landmarkIndex)
+    of CarryNone:
+      continue
+    sim.clearCarry(playerIndex)
+    return true
+  false
 
 proc campDefenseRadius(landmark: Landmark): int =
   if landmark.campIsWarded():
