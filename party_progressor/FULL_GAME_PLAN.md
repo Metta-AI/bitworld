@@ -304,6 +304,9 @@ The first full-game implementation pass includes:
 - Biome-backed transparent terrain rendering for sprite observations and the
   legacy framebuffer path.
 - In-world role labels for the origin and camp gear picks.
+- Origin role gear now uses separated starter lanes: tank is up, DPS is forward,
+  and healer is down, preventing accidental role swaps while making the opening
+  choice clearer.
 - Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
   green, while unarmed players keep their player-slot identity color.
 - Origin and camp role gear now labels both the role and its `B` power: tank
@@ -386,6 +389,15 @@ The first full-game implementation pass includes:
 - Konrad bot adapters now read carried-item and expedition-objective HUD labels,
   so missing wood/stone gathering overrides premature camp/relic pushes and
   carried resources bias bots toward useful camps instead of redundant harvests.
+- Konrad bot startup now understands visible role-choice labels and rotates
+  unnamed bots through tank, DPS, and healer preferences by slot or player id,
+  while explicit bot names such as tank, dps, or healer override the fallback.
+- Player observations now mark the controlled adventurer as the selected player,
+  so sprite-player bots can identify themselves in crowded spawn and regroup
+  scenes instead of steering a nearby teammate by mistake.
+- Konrad's local runner path now accepts `--slot` and `--token` and honors
+  `COGAMES_ENGINE_WS_URL`, keeping the sprite-player bot aligned with the
+  Coworld tournament runner contract.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
@@ -412,7 +424,8 @@ The first full-game implementation pass includes:
 - Tune attack-overlay density and placement once longer human/bot observation
   checks reveal where lunge effects clutter tight fights.
 - Continue bot targeting polish: tune longer-run expedition pacing now that
-  bots understand health, regroup, carried resources, and current objectives.
+  bots understand roles, health, regroup, carried resources, and current
+  objectives.
 
 ### Expedition Depth
 

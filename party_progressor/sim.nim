@@ -1933,9 +1933,24 @@ proc seedBrush*(sim: var SimServer) =
 
 proc seedRoleGear*(sim: var SimServer) =
   let centerY = WorldHeightPixels div 2
-  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY - 36, kind: PickupTankGear, value: 0))
-  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY - 4, kind: PickupDpsGear, value: 0))
-  sim.pickups.add(Pickup(x: WorldTileSize * 2, y: centerY + 28, kind: PickupHealerGear, value: 0))
+  sim.pickups.add(Pickup(
+    x: WorldTileSize * 2,
+    y: centerY - 60,
+    kind: PickupTankGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: WorldTileSize * 4,
+    y: centerY - 4,
+    kind: PickupDpsGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: WorldTileSize * 2,
+    y: centerY + 52,
+    kind: PickupHealerGear,
+    value: 0
+  ))
 
 proc randomTerrainKind(rng: var Rand): TerrainKind =
   ## Chooses one terrain prop with more trees than small debris.

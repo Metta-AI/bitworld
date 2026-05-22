@@ -2694,7 +2694,8 @@ proc buildSpriteProtocolPlayerUpdates*(
       cameraX,
       cameraY,
       PlayerViewportWidth,
-      PlayerViewportHeight
+      PlayerViewportHeight,
+      player.id
     )
     sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
     if sim.playerDowned(playerIndex):

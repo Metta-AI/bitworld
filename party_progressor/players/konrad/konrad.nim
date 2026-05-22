@@ -28,10 +28,12 @@ const
   AttackCooldownTicks = 7
   ObstaclePad = 8
   PathLookaheadCells = 4
+  RoleChoiceFallbackTicks = 180
   StuckFrameThreshold = 14
   JiggleDuration = 12
   SkipTargetTicks = 72
   ExploreStep = 17
+  RoleLabelToGearOffset = WorldTileSize div 2
   MoveMask = ButtonUp or ButtonDown or ButtonLeft or ButtonRight
 
 type
@@ -52,6 +54,9 @@ type
   TargetKind = enum
     TargetExplore
     TargetRegroup
+    TargetTankRole
+    TargetDpsRole
+    TargetHealerRole
     TargetCoin
     TargetHeart
     TargetWood
@@ -75,6 +80,12 @@ type
     CarryFood
     CarryStone
     CarryGold
+
+  RolePreference = enum
+    PreferAnyRole
+    PreferTankRole
+    PreferDpsRole
+    PreferHealerRole
 
   SpriteInfo = object
     defined: bool
@@ -151,6 +162,10 @@ type
     objectiveHint: string
     needWood: int
     needStone: int
+    needsRole: bool
+    hasRole: bool
+    roleLabel: string
+    preferredRole: RolePreference
     intent: string
     lastMask: uint8
     nextChatTick: int
@@ -288,6 +303,69 @@ proc targetKindForSprite(sprite: SpriteInfo): TargetKind =
     else:
       sprite.kind.targetKindForSprite()
 
+proc roleTargetKindForLabel(label: string): TargetKind =
+  ## Converts visible role-choice text into a bot target.
+  let lower = label.toLowerAscii()
+  if lower.startsWith("role tank"):
+    TargetTankRole
+  elif lower.startsWith("role dps"):
+    TargetDpsRole
+  elif lower.startsWith("role heal"):
+    TargetHealerRole
+  else:
+    TargetExplore
+
+proc targetKindForPreference(preference: RolePreference): TargetKind =
+  ## Converts one preferred party role into its target kind.
+  case preference
+  of PreferTankRole:
+    TargetTankRole
+  of PreferDpsRole:
+    TargetDpsRole
+  of PreferHealerRole:
+    TargetHealerRole
+  else:
+    TargetExplore
+
+proc rolePreferenceForIndex(index: int): RolePreference =
+  ## Rotates unnamed bots through a balanced tank, DPS, healer party.
+  case ((index mod 3) + 3) mod 3
+  of 0:
+    PreferTankRole
+  of 1:
+    PreferDpsRole
+  else:
+    PreferHealerRole
+
+proc rolePreferenceFromName(name: string): RolePreference =
+  ## Reads explicit role intent from local bot names.
+  let lower = name.toLowerAscii()
+  if lower.contains("tank") or lower.contains("guard"):
+    PreferTankRole
+  elif lower.contains("dps") or lower.contains("cleave") or
+      lower.contains("damage"):
+    PreferDpsRole
+  elif lower.contains("heal") or lower.contains("pulse") or
+      lower.contains("support"):
+    PreferHealerRole
+  else:
+    PreferAnyRole
+
+proc rolePreferenceFromSlot(slot: string): RolePreference =
+  ## Reads runner slot fallback into a stable party role.
+  if slot.len == 0:
+    return PreferAnyRole
+  try:
+    return rolePreferenceForIndex(parseInt(slot))
+  except ValueError:
+    result = PreferAnyRole
+
+proc rolePreferenceFor(name, slot: string): RolePreference =
+  ## Chooses a role preference from explicit name, then runner slot.
+  result = rolePreferenceFromName(name)
+  if result == PreferAnyRole:
+    result = rolePreferenceFromSlot(slot)
+
 proc targetLabel(kind: TargetKind): string =
   ## Returns a short readable label for one target kind.
   case kind
@@ -295,6 +373,12 @@ proc targetLabel(kind: TargetKind): string =
     "explore"
   of TargetRegroup:
     "regroup"
+  of TargetTankRole:
+    "tank role"
+  of TargetDpsRole:
+    "dps role"
+  of TargetHealerRole:
+    "healer role"
   of TargetCoin:
     "coin"
   of TargetHeart:
@@ -550,6 +634,7 @@ proc updatePlayerPosition(bot: var Bot) =
   ## Tracks the local player feet as the object nearest screen center.
   var
     bestDistance = high(int)
+    bestSelected = false
     viewportCenterX = bot.viewportWidth div 2
     viewportCenterY = bot.viewportHeight div 2
     bestX = bot.cameraX + viewportCenterX
@@ -567,6 +652,7 @@ proc updatePlayerPosition(bot: var Bot) =
     if sprite.kind != SpritePlayer:
       continue
     let
+      selected = sprite.label.toLowerAscii().startsWith("selected player")
       screenCenter = objectState.objectVisibleCenter(sprite)
       screenFeet = objectState.objectFootCenter(sprite)
       distance = distanceSquared(
@@ -575,7 +661,9 @@ proc updatePlayerPosition(bot: var Bot) =
         viewportCenterX,
         viewportCenterY
       )
-    if distance < bestDistance:
+    if (selected and not bestSelected) or
+        (selected == bestSelected and distance < bestDistance):
+      bestSelected = selected
       bestDistance = distance
       bestX = bot.cameraX + screenFeet.x
       bestY = bot.cameraY + screenFeet.y
@@ -634,6 +722,21 @@ proc tokenNumber(tokens: openArray[string], key: string): int =
 proc readStatusHud(bot: var Bot, label: string) =
   ## Reads resource objective and carried item hints from the local HUD label.
   let lower = label.toLowerAscii()
+  if lower.startsWith("unarmed "):
+    bot.roleLabel = "unarmed"
+    bot.needsRole = true
+  elif lower.startsWith("tank "):
+    bot.roleLabel = "tank"
+    bot.hasRole = true
+  elif lower.startsWith("dps "):
+    bot.roleLabel = "dps"
+    bot.hasRole = true
+  elif lower.startsWith("healer "):
+    bot.roleLabel = "healer"
+    bot.hasRole = true
+  if lower.contains("b choose role") or
+      lower.contains("next walk into tank dps heal"):
+    bot.needsRole = true
   for part in lower.split("|"):
     let section = part.strip()
     if section.startsWith("carry "):
@@ -653,6 +756,9 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.objectiveHint = ""
   bot.needWood = 0
   bot.needStone = 0
+  bot.needsRole = false
+  bot.hasRole = false
+  bot.roleLabel = ""
   if StatusHudObjectId < bot.objects.len and bot.objects[StatusHudObjectId].present:
     let statusSprite = bot.spriteInfo(bot.objects[StatusHudObjectId].spriteId)
     bot.readStatusHud(statusSprite.label)
@@ -789,6 +895,18 @@ proc scanWorld(
         y: center.y,
         label: TargetHeart.targetLabel()
       ))
+    of SpriteText:
+      let kind = sprite.label.roleTargetKindForLabel()
+      if kind != TargetExplore:
+        let center = bot.targetCenter(objectState, sprite)
+        pickups.add(Target(
+          found: true,
+          kind: kind,
+          objectId: objectId,
+          x: center.x,
+          y: center.y + RoleLabelToGearOffset,
+          label: kind.targetLabel()
+        ))
     of SpriteMob, SpriteTroll, SpriteBoss:
       let
         kind = sprite.targetKindForSprite()
@@ -931,6 +1049,9 @@ proc randomMoveMask(rng: var Rand): uint8 =
   else:
     ButtonRight
 
+proc isRoleTarget(kind: TargetKind): bool =
+  kind in {TargetTankRole, TargetDpsRole, TargetHealerRole}
+
 proc updateStuck(bot: var Bot) =
   ## Updates stuck detection using the previous movement mask.
   if not bot.havePlayerSample:
@@ -955,11 +1076,45 @@ proc updateStuck(bot: var Bot) =
   if bot.stuckFrames >= StuckFrameThreshold:
     bot.jiggleTicks = JiggleDuration
     bot.jiggleMask = bot.rng.randomMoveMask()
-    if bot.currentTargetId >= 0:
+    if bot.currentTargetId >= 0 and not bot.currentTargetKind.isRoleTarget():
       bot.skipTargetId = bot.currentTargetId
       bot.skipTicks = SkipTargetTicks
     bot.stuckFrames = 0
     bot.hasExploreGoal = false
+
+proc choosingRole(bot: Bot): bool =
+  bot.needsRole or bot.objectiveHint.startsWith("next walk into tank dps heal") or
+    (
+      not bot.hasRole and bot.frameTick <= RoleChoiceFallbackTicks and
+      (bot.preferredRole != PreferAnyRole or bot.selfObjectId >= PlayerObjectBase)
+    )
+
+proc inferredRolePreference(bot: Bot): RolePreference =
+  ## Uses configured preference, then self id, to form a balanced party.
+  if bot.preferredRole != PreferAnyRole:
+    return bot.preferredRole
+  if bot.selfObjectId >= PlayerObjectBase:
+    return rolePreferenceForIndex(bot.selfObjectId - PlayerObjectBase - 1)
+  PreferAnyRole
+
+proc preferredRoleTarget(bot: Bot): TargetKind =
+  bot.inferredRolePreference().targetKindForPreference()
+
+proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
+  ## During role choice, ignore generic gear and non-preferred role labels.
+  if target.kind.isRoleTarget() and not bot.choosingRole():
+    return false
+  if target.kind in {TargetCoin, TargetHeart} and
+      target.x <= SafeZoneRightPixels + WorldTileSize * 2:
+    return false
+  if not bot.choosingRole():
+    return true
+  if target.kind in {TargetCoin, TargetHeart}:
+    return false
+  if target.kind.isRoleTarget():
+    let preferred = bot.preferredRoleTarget()
+    return preferred == TargetExplore or target.kind == preferred
+  true
 
 proc targetScore(bot: Bot, target: Target): int =
   ## Scores a target where lower is better.
@@ -972,10 +1127,29 @@ proc targetScore(bot: Bot, target: Target): int =
   case target.kind
   of TargetRegroup:
     distance + (if bot.needsRegroup: (if bot.lowHealth: -120 else: -260) elif bot.lowHealth: 20 else: 340)
+  of TargetTankRole, TargetDpsRole, TargetHealerRole:
+    let preferred = bot.preferredRoleTarget()
+    if not bot.choosingRole():
+      distance + 260
+    elif preferred == TargetExplore:
+      distance - 180
+    elif target.kind == preferred:
+      distance - 430
+    else:
+      distance + 520
   of TargetCoin:
-    distance + 90
+    distance + (if bot.choosingRole(): 320 else: 90)
   of TargetHeart:
-    distance + (if bot.lowHealth: -210 elif bot.needsRegroup: -40 else: 15)
+    distance + (
+      if bot.choosingRole():
+        320
+      elif bot.lowHealth:
+        -210
+      elif bot.needsRegroup:
+        -40
+      else:
+        15
+    )
   of TargetWood:
     if bot.needWood > 0:
       distance - 260
@@ -1079,6 +1253,8 @@ proc chooseTarget(
   for pickup in pickups:
     if bot.skipTicks > 0 and pickup.objectId == bot.skipTargetId:
       continue
+    if not bot.canConsiderPickupTarget(pickup):
+      continue
     let score = bot.targetScore(pickup)
     if score < bestScore:
       bestScore = score
@@ -1091,13 +1267,14 @@ proc chooseTarget(
       if score < bestScore:
         bestScore = score
         result = ally
-  for mob in mobs:
-    if bot.skipTicks > 0 and mob.objectId == bot.skipTargetId:
-      continue
-    let score = bot.targetScore(mob)
-    if score < bestScore:
-      bestScore = score
-      result = mob
+  if not bot.choosingRole():
+    for mob in mobs:
+      if bot.skipTicks > 0 and mob.objectId == bot.skipTargetId:
+        continue
+      let score = bot.targetScore(mob)
+      if score < bestScore:
+        bestScore = score
+        result = mob
   if result.found:
     return
 
@@ -1156,7 +1333,10 @@ proc updateTargetResult(
     return
   let stillPresent =
     case bot.currentTargetKind
-    of TargetCoin,
+    of TargetTankRole,
+        TargetDpsRole,
+        TargetHealerRole,
+        TargetCoin,
         TargetHeart,
         TargetWood,
         TargetFood,
@@ -1179,6 +1359,10 @@ proc updateTargetResult(
   if stillPresent:
     return
   case bot.currentTargetKind
+  of TargetTankRole, TargetDpsRole, TargetHealerRole:
+    if bot.currentTargetDistance < 96:
+      echo "role chosen kind=", bot.currentTargetKind,
+        " id=", bot.currentTargetId
   of TargetCoin:
     if bot.currentTargetDistance < 64:
       inc bot.coinCount
@@ -1354,6 +1538,7 @@ proc echoDebug(bot: Bot, mask: uint8, force = false) =
   echo "step=", bot.frameTick,
     " keys=", mask.maskSummary(),
     " pos=", bot.playerWorldX, ",", bot.playerWorldY,
+    " role=", (if bot.roleLabel.len > 0: bot.roleLabel else: "?"),
     " intent=", bot.intent,
     " target=", bot.currentTargetLabel,
     "#", bot.currentTargetId,
@@ -1383,7 +1568,26 @@ proc queryEscape(value: string): string =
       result.add(Hex[(byte shr 4) and 0x0f])
       result.add(Hex[byte and 0x0f])
 
-proc initBot(): Bot =
+proc addQueryParam(url: var string, key, value: string) =
+  ## Appends one escaped query parameter when a value is available.
+  if value.len == 0:
+    return
+  if url.contains("?"):
+    url.add("&")
+  else:
+    url.add("?")
+  url.add(key)
+  url.add("=")
+  url.add(value.queryEscape())
+
+proc localPlayerUrl(host: string, port: int, name, token, slot: string): string =
+  ## Builds the local /player websocket URL with runner-compatible fallbacks.
+  result = "ws://" & host & ":" & $port & WebSocketPath
+  result.addQueryParam("name", name)
+  result.addQueryParam("token", token)
+  result.addQueryParam("slot", slot)
+
+proc initBot(preferredRole = PreferAnyRole): Bot =
   ## Builds the initial bot state.
   result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.viewportWidth = ScreenWidth
@@ -1391,6 +1595,7 @@ proc initBot(): Bot =
   result.selfObjectId = -1
   result.currentTargetId = -1
   result.skipTargetId = -1
+  result.preferredRole = preferredRole
   result.exploreIndex = result.rng.rand(
     PathGridWidth * PathGridHeight - 1
   )
@@ -1442,20 +1647,22 @@ proc runBot(
   host = DefaultHost,
   port = PlayerDefaultPort,
   name = "konrad",
+  token = "",
+  slot = "",
   chat = false,
   maxSteps = 0
 ) =
   ## Connects to the Party Progressor player endpoint.
   let url =
-    if name.len > 0:
-      "ws://" & host & ":" & $port & WebSocketPath &
-        "?name=" & name.queryEscape()
+    if getEnv("COGAMES_ENGINE_WS_URL").len > 0:
+      getEnv("COGAMES_ENGINE_WS_URL")
     else:
-      "ws://" & host & ":" & $port & WebSocketPath
+      localPlayerUrl(host, port, name, token, slot)
+  let preferredRole = rolePreferenceFor(name, slot)
 
   while true:
     try:
-      var bot = initBot()
+      var bot = initBot(preferredRole)
       let ws = newWebSocket(url)
       var lastMask = 0xff'u8
       while true:
@@ -1499,6 +1706,10 @@ when defined(konradTargetSelfTest):
   doAssert TargetWood.isAttackTarget()
   doAssert TargetLair.isAttackTarget()
   doAssert not TargetCamp.isAttackTarget()
+  doAssert rolePreferenceFor("tank-bot", "") == PreferTankRole
+  doAssert rolePreferenceFor("konrad", "1") == PreferDpsRole
+  doAssert rolePreferenceFor("healer", "1") == PreferHealerRole
+  doAssert "role heal pulse".roleTargetKindForLabel() == TargetHealerRole
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetWood,
@@ -1521,6 +1732,88 @@ when defined(konradTargetSelfTest):
     x: 96,
     y: 0
   ))
+  bot.objectiveHint = "next walk into tank dps heal"
+  bot.preferredRole = PreferTankRole
+  bot.needsRole = true
+  doAssert bot.canConsiderPickupTarget(Target(kind: TargetTankRole))
+  doAssert not bot.canConsiderPickupTarget(Target(kind: TargetDpsRole))
+  doAssert not bot.canConsiderPickupTarget(Target(kind: TargetHeart))
+  bot.needsRole = false
+  bot.hasRole = true
+  bot.objectiveHint = ""
+  doAssert not bot.canConsiderPickupTarget(Target(kind: TargetTankRole))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetCoin,
+    x: SafeZoneRightPixels
+  ))
+  bot.needsRole = true
+  bot.hasRole = false
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetTankRole,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetDpsRole,
+    x: 16,
+    y: 0
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetTankRole,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetCoin,
+    x: 16,
+    y: 0
+  ))
+  bot.preferredRole = PreferAnyRole
+  bot.selfObjectId = PlayerObjectBase + 3
+  doAssert bot.preferredRoleTarget() == TargetHealerRole
+  bot.objectiveHint = ""
+  bot.needsRole = false
+  let
+    selectedSpriteId = 9010
+    unselectedSpriteId = 9011
+    selectedObjectId = PlayerObjectBase + 10
+    unselectedObjectId = PlayerObjectBase + 11
+  bot.ensureSprite(selectedSpriteId)
+  bot.sprites[selectedSpriteId] = SpriteInfo(
+    defined: true,
+    width: 16,
+    height: 24,
+    label: "selected player blue1",
+    kind: SpritePlayer
+  )
+  bot.ensureSprite(unselectedSpriteId)
+  bot.sprites[unselectedSpriteId] = SpriteInfo(
+    defined: true,
+    width: 16,
+    height: 24,
+    label: "player red1",
+    kind: SpritePlayer
+  )
+  bot.ensureObject(selectedObjectId)
+  bot.objects[selectedObjectId] = ObjectState(
+    present: true,
+    x: 80,
+    y: 80,
+    spriteId: selectedSpriteId
+  )
+  bot.ensureObject(unselectedObjectId)
+  bot.objects[unselectedObjectId] = ObjectState(
+    present: true,
+    x: bot.viewportWidth div 2,
+    y: bot.viewportHeight div 2,
+    spriteId: unselectedSpriteId
+  )
+  bot.updatePlayerPosition()
+  doAssert bot.selfObjectId == selectedObjectId
+  bot.objects[selectedObjectId].present = false
+  bot.objects[unselectedObjectId].present = false
   let parsedHealth = parseHealthLabel("health 2/9")
   doAssert parsedHealth.found
   doAssert parsedHealth.current == 2
@@ -1569,6 +1862,9 @@ when defined(konradTargetSelfTest):
   bot.updateSelfAffordances()
   doAssert bot.lowHealth
   doAssert bot.needsRegroup
+  doAssert bot.hasRole
+  doAssert not bot.needsRole
+  doAssert bot.roleLabel == "tank"
   doAssert bot.carriedItem == CarryWood
   doAssert bot.needWood == 1
   doAssert bot.needStone == 1
@@ -1600,6 +1896,24 @@ when defined(konradTargetSelfTest):
     y: 0,
     spriteId: allySpriteId
   )
+  let
+    roleSpriteId = 9004
+    roleObjectId = 9005
+  bot.ensureSprite(roleSpriteId)
+  bot.sprites[roleSpriteId] = SpriteInfo(
+    defined: true,
+    width: 48,
+    height: 8,
+    label: "role dps cleave",
+    kind: SpriteText
+  )
+  bot.ensureObject(roleObjectId)
+  bot.objects[roleObjectId] = ObjectState(
+    present: true,
+    x: 80,
+    y: 8,
+    spriteId: roleSpriteId
+  )
   var
     blocked: seq[bool]
     pickups: seq[Target]
@@ -1608,6 +1922,11 @@ when defined(konradTargetSelfTest):
   bot.scanWorld(blocked, pickups, allies, mobs)
   doAssert allies.len == 1
   doAssert allies[0].kind == TargetRegroup
+  var sawDpsRole = false
+  for pickup in pickups:
+    if pickup.kind == TargetDpsRole:
+      sawDpsRole = true
+  doAssert sawDpsRole
   bot.lowHealth = true
   doAssert bot.targetScore(Target(
     found: true,
@@ -1651,6 +1970,8 @@ elif isMainModule:
     address = DefaultHost
     port = PlayerDefaultPort
     name = "konrad"
+    token = ""
+    slot = ""
     chat = false
     maxSteps = 0
   for kind, key, val in getopt():
@@ -1663,6 +1984,10 @@ elif isMainModule:
         port = parseInt(val)
       of "name":
         name = val
+      of "token":
+        token = val
+      of "slot":
+        slot = val
       of "chat":
         chat = true
       of "max-steps":
@@ -1671,4 +1996,4 @@ elif isMainModule:
         discard
     else:
       discard
-  runBot(address, port, name, chat, maxSteps)
+  runBot(address, port, name, token, slot, chat, maxSteps)

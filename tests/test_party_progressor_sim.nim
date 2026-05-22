@@ -44,7 +44,14 @@ proc testSafeOriginAndReusableRoles() =
   doAssert sim.hasPickup(PickupDpsGear)
   doAssert sim.hasPickup(PickupHealerGear)
 
-  let tankGear = sim.firstPickup(PickupTankGear)
+  let
+    tankGear = sim.firstPickup(PickupTankGear)
+    dpsGear = sim.firstPickup(PickupDpsGear)
+    healerGear = sim.firstPickup(PickupHealerGear)
+  doAssert tankGear.y < dpsGear.y and healerGear.y > dpsGear.y,
+    "starter role gear should read as up/tank, center/dps, down/healer"
+  doAssert dpsGear.x >= tankGear.x + WorldTileSize,
+    "DPS starter gear should sit in a separate lane to prevent accidental swaps"
   sim.players[playerIndex].x = tankGear.x
   sim.players[playerIndex].y = tankGear.y
   sim.step([InputState()])
@@ -848,6 +855,12 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
   doAssert visibleLabels.anyIt(it.contains("role heal pulse"))
   doAssert visibleLabels.anyIt(it.contains("NEXT WALK INTO TANK DPS HEAL")),
     "local HUD should tell new players to walk into role gear"
+  let localPlayerObject =
+    parsed.objects[PlayerObjectBase + sim.players[playerIndex].id]
+  doAssert parsed.sprites[localPlayerObject.spriteId].label.startsWith(
+      "selected player"
+    ),
+    "player observations should mark the controlled player for bots"
   for species in AllMobSpecies:
     doAssert parsed.sprites.values.toSeq.anyIt(it.label == species.speciesLabel()),
       "missing generated monster sprite " & species.speciesLabel()
