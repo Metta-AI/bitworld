@@ -72,3 +72,8 @@ output "dashboard_instance_id" {
   description = "Instance ID of the dashboard EC2"
   value       = aws_instance.dashboard.id
 }
+
+output "crewrift_repository_url" {
+  description = "ECR repository URL for cogame-crewrift"
+  value       = aws_ecr_repository.crewrift.repository_url
+}
