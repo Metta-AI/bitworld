@@ -46,6 +46,17 @@ type
     TargetExplore
     TargetCoin
     TargetHeart
+    TargetWood
+    TargetFood
+    TargetStone
+    TargetGold
+    TargetCamp
+    TargetRelic
+    TargetGate
+    TargetShrine
+    TargetRescue
+    TargetLair
+    TargetWaystation
     TargetMob
     TargetTroll
     TargetBoss
@@ -181,8 +192,7 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
     SpriteMob
   elif spriteId == MobSpriteId or lower.startsWith("ghost") or
       lower.startsWith("wolf") or lower.startsWith("scorpion") or
-      lower.startsWith("cave bat") or
-      lower in ["wood", "food", "stone", "gold"]:
+      lower.startsWith("cave bat"):
     SpriteMob
   elif spriteId == TrollSpriteId or lower.startsWith("troll") or
       lower.startsWith("goblin") or lower.startsWith("swamp slime") or
@@ -193,7 +203,7 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
     SpriteBoss
   elif spriteId == CoinSpriteId or lower == "coin" or
       lower in ["camp", "beacon", "final gate", "shrine", "rescue", "lair",
-        "waystation"]:
+        "waystation", "wood", "food", "stone", "gold"]:
     SpriteCoin
   elif spriteId == HeartSpriteId or lower == "heart":
     SpriteHeart
@@ -223,6 +233,40 @@ proc targetKindForSprite(kind: SpriteKind): TargetKind =
   else:
     TargetMob
 
+proc targetKindForSprite(sprite: SpriteInfo): TargetKind =
+  ## Converts one visible sprite into a semantic bot target.
+  case sprite.label.toLowerAscii()
+  of "wood":
+    TargetWood
+  of "food":
+    TargetFood
+  of "stone":
+    TargetStone
+  of "gold":
+    TargetGold
+  of "camp":
+    TargetCamp
+  of "beacon":
+    TargetRelic
+  of "final gate":
+    TargetGate
+  of "shrine":
+    TargetShrine
+  of "rescue":
+    TargetRescue
+  of "lair":
+    TargetLair
+  of "waystation":
+    TargetWaystation
+  else:
+    case sprite.kind
+    of SpriteHeart:
+      TargetHeart
+    of SpriteCoin:
+      TargetCoin
+    else:
+      sprite.kind.targetKindForSprite()
+
 proc targetLabel(kind: TargetKind): string =
   ## Returns a short readable label for one target kind.
   case kind
@@ -232,12 +276,46 @@ proc targetLabel(kind: TargetKind): string =
     "coin"
   of TargetHeart:
     "heart"
+  of TargetWood:
+    "wood"
+  of TargetFood:
+    "food"
+  of TargetStone:
+    "stone"
+  of TargetGold:
+    "gold"
+  of TargetCamp:
+    "camp"
+  of TargetRelic:
+    "relic"
+  of TargetGate:
+    "gate"
+  of TargetShrine:
+    "shrine"
+  of TargetRescue:
+    "rescue"
+  of TargetLair:
+    "lair"
+  of TargetWaystation:
+    "waypoint"
   of TargetMob:
     "hunt"
   of TargetTroll:
     "fight"
   of TargetBoss:
     "boss"
+
+proc isAttackTarget(kind: TargetKind): bool =
+  kind in {
+    TargetWood,
+    TargetFood,
+    TargetStone,
+    TargetGold,
+    TargetLair,
+    TargetMob,
+    TargetTroll,
+    TargetBoss
+  }
 
 proc ensureSprite(bot: var Bot, spriteId: int) =
   ## Ensures the sprite table can hold a sprite id.
@@ -552,14 +630,16 @@ proc scanWorld(
         bounds.h
       )
     of SpriteCoin:
-      let center = bot.targetCenter(objectState, sprite)
+      let
+        kind = sprite.targetKindForSprite()
+        center = bot.targetCenter(objectState, sprite)
       pickups.add(Target(
         found: true,
-        kind: TargetCoin,
+        kind: kind,
         objectId: objectId,
         x: center.x,
         y: center.y,
-        label: TargetCoin.targetLabel()
+        label: kind.targetLabel()
       ))
     of SpriteHeart:
       let center = bot.targetCenter(objectState, sprite)
@@ -573,7 +653,7 @@ proc scanWorld(
       ))
     of SpriteMob, SpriteTroll, SpriteBoss:
       let
-        kind = targetKindForSprite(sprite.kind)
+        kind = sprite.targetKindForSprite()
         center = bot.targetCenter(objectState, sprite)
       mobs.add(Target(
         found: true,
@@ -753,15 +833,35 @@ proc targetScore(bot: Bot, target: Target): int =
   )
   case target.kind
   of TargetCoin:
-    distance
+    distance + 90
   of TargetHeart:
-    distance + 35
+    distance + 15
+  of TargetWood, TargetStone:
+    distance - 120
+  of TargetFood:
+    distance - 95
+  of TargetGold:
+    distance - 55
+  of TargetCamp:
+    distance - 100
+  of TargetRelic:
+    distance - 85
+  of TargetWaystation:
+    distance - 65
+  of TargetRescue:
+    distance - 50
+  of TargetShrine:
+    distance - 20
+  of TargetGate:
+    distance + 10
+  of TargetLair:
+    distance + (if distance < 100: -45 else: 180)
   of TargetMob:
-    distance + (if distance < 90: -95 else: 130)
+    distance + (if distance < 90: -70 else: 190)
   of TargetTroll:
-    distance + (if distance < 105: -85 else: 155)
+    distance + (if distance < 105: -60 else: 230)
   of TargetBoss:
-    distance + (if distance < 120: -70 else: 220)
+    distance + (if distance < 120: -45 else: 420)
   of TargetExplore:
     distance + 400
 
@@ -873,7 +973,19 @@ proc updateTargetResult(
     return
   let stillPresent =
     case bot.currentTargetKind
-    of TargetCoin, TargetHeart:
+    of TargetCoin,
+        TargetHeart,
+        TargetWood,
+        TargetFood,
+        TargetStone,
+        TargetGold,
+        TargetCamp,
+        TargetRelic,
+        TargetGate,
+        TargetShrine,
+        TargetRescue,
+        TargetLair,
+        TargetWaystation:
       pickups.containsTarget(bot.currentTargetId)
     of TargetMob, TargetTroll, TargetBoss:
       mobs.containsTarget(bot.currentTargetId)
@@ -892,6 +1004,20 @@ proc updateTargetResult(
       inc bot.heartCount
       echo "heart collected id=", bot.currentTargetId,
         " total=", bot.heartCount
+  of TargetWood,
+      TargetFood,
+      TargetStone,
+      TargetGold,
+      TargetCamp,
+      TargetRelic,
+      TargetGate,
+      TargetShrine,
+      TargetRescue,
+      TargetLair,
+      TargetWaystation:
+    if bot.currentTargetDistance < 96:
+      echo "objective done kind=", bot.currentTargetKind,
+        " id=", bot.currentTargetId
   of TargetMob, TargetTroll, TargetBoss:
     if bot.currentTargetDistance < 96:
       inc bot.killCount
@@ -981,8 +1107,7 @@ proc decideNextMask(bot: var Bot): uint8 =
   let target = bot.chooseTarget(blocked, pickups, mobs)
   bot.rememberTarget(target)
   bot.intent = target.label
-  if target.kind in {TargetMob, TargetTroll, TargetBoss} and
-      bot.canAttack(target):
+  if target.kind.isAttackTarget() and bot.canAttack(target):
     return bot.attackMask(target)
 
   let step = findPathStep(
@@ -1168,7 +1293,48 @@ proc runBot(
     except CatchableError:
       sleep(250)
 
-when isMainModule:
+when defined(konradTargetSelfTest):
+  var bot = initBot()
+  bot.playerWorldX = 0
+  bot.playerWorldY = 0
+  doAssert SpriteInfo(
+    defined: true,
+    label: "wood",
+    kind: SpriteCoin
+  ).targetKindForSprite() == TargetWood
+  doAssert SpriteInfo(
+    defined: true,
+    label: "lair",
+    kind: SpriteCoin
+  ).targetKindForSprite() == TargetLair
+  doAssert TargetWood.isAttackTarget()
+  doAssert TargetLair.isAttackTarget()
+  doAssert not TargetCamp.isAttackTarget()
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetWood,
+    x: 80,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetCamp,
+    x: 80,
+    y: 0
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetRelic,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetBoss,
+    x: 96,
+    y: 0
+  ))
+  echo "Konrad target tests passed"
+
+elif isMainModule:
   var
     address = DefaultHost
     port = PlayerDefaultPort

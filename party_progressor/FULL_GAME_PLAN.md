@@ -359,6 +359,10 @@ The first full-game implementation pass includes:
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
+- Konrad bot objective targeting now reads visible Party Progressor landmarks
+  semantically: resources and lairs are attack targets, camps/relics/rescues/
+  waystations are activation targets, and distant boss-class threats are
+  deprioritized behind expedition progress.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
@@ -377,9 +381,9 @@ The first full-game implementation pass includes:
   regressions are visually obvious.
 - Improve telegraph polish by distinguishing pre-hit danger badges from
   post-hit player status badges once the observation density is tuned.
-- Expand bot targeting: gather resources when camps are unaffordable, prefer
-  beacons after camps, avoid strong enemies when low on HP, and regroup near
-  teammates.
+- Continue bot targeting polish: infer low-health state from sprite health bars,
+  regroup near teammates, and tune when resource gathering should override
+  visible camps or relic objectives.
 
 ### Expedition Depth
 

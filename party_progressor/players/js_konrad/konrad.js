@@ -81,9 +81,20 @@ const TargetKind = Object.freeze({
   Explore: 0,
   Coin: 1,
   Heart: 2,
-  Mob: 3,
-  Troll: 4,
-  Boss: 5,
+  Wood: 3,
+  Food: 4,
+  Stone: 5,
+  Gold: 6,
+  Camp: 7,
+  Relic: 8,
+  Gate: 9,
+  Shrine: 10,
+  Rescue: 11,
+  Lair: 12,
+  Waystation: 13,
+  Mob: 14,
+  Troll: 15,
+  Boss: 16,
 });
 
 class MinHeap {
@@ -384,7 +395,8 @@ class Bot {
         );
       } else if (sprite.kind === SpriteKind.Coin) {
         const center = this.targetCenter(state, sprite);
-        pickups.push(makeTarget(true, TargetKind.Coin, objectId, center.x, center.y, "coin"));
+        const kind = targetKindForSpriteInfo(sprite);
+        pickups.push(makeTarget(true, kind, objectId, center.x, center.y, targetLabel(kind)));
       } else if (sprite.kind === SpriteKind.Heart) {
         const center = this.targetCenter(state, sprite);
         pickups.push(makeTarget(true, TargetKind.Heart, objectId, center.x, center.y, "heart"));
@@ -393,7 +405,7 @@ class Bot {
         sprite.kind === SpriteKind.Troll ||
         sprite.kind === SpriteKind.Boss
       ) {
-        const kind = targetKindForSprite(sprite.kind);
+        const kind = targetKindForSpriteInfo(sprite);
         const center = this.targetCenter(state, sprite);
         mobs.push(makeTarget(true, kind, objectId, center.x, center.y, targetLabel(kind)));
       }
@@ -442,15 +454,36 @@ class Bot {
     );
     switch (target.kind) {
       case TargetKind.Coin:
-        return distance;
+        return distance + 90;
       case TargetKind.Heart:
-        return distance + 35;
+        return distance + 15;
+      case TargetKind.Wood:
+      case TargetKind.Stone:
+        return distance - 120;
+      case TargetKind.Food:
+        return distance - 95;
+      case TargetKind.Gold:
+        return distance - 55;
+      case TargetKind.Camp:
+        return distance - 100;
+      case TargetKind.Relic:
+        return distance - 85;
+      case TargetKind.Waystation:
+        return distance - 65;
+      case TargetKind.Rescue:
+        return distance - 50;
+      case TargetKind.Shrine:
+        return distance - 20;
+      case TargetKind.Gate:
+        return distance + 10;
+      case TargetKind.Lair:
+        return distance + (distance < 100 ? -45 : 180);
       case TargetKind.Mob:
-        return distance + (distance < 90 ? -95 : 130);
+        return distance + (distance < 90 ? -70 : 190);
       case TargetKind.Troll:
-        return distance + (distance < 105 ? -85 : 155);
+        return distance + (distance < 105 ? -60 : 230);
       case TargetKind.Boss:
-        return distance + (distance < 120 ? -70 : 220);
+        return distance + (distance < 120 ? -45 : 420);
       default:
         return distance + 400;
     }
@@ -551,7 +584,23 @@ class Bot {
   updateTargetResult(pickups, mobs) {
     if (this.currentTargetId < 0) return;
     let stillPresent = true;
-    if (this.currentTargetKind === TargetKind.Coin || this.currentTargetKind === TargetKind.Heart) {
+    if (
+      [
+        TargetKind.Coin,
+        TargetKind.Heart,
+        TargetKind.Wood,
+        TargetKind.Food,
+        TargetKind.Stone,
+        TargetKind.Gold,
+        TargetKind.Camp,
+        TargetKind.Relic,
+        TargetKind.Gate,
+        TargetKind.Shrine,
+        TargetKind.Rescue,
+        TargetKind.Lair,
+        TargetKind.Waystation,
+      ].includes(this.currentTargetKind)
+    ) {
       stillPresent = containsTarget(pickups, this.currentTargetId);
     } else if (
       this.currentTargetKind === TargetKind.Mob ||
@@ -567,6 +616,23 @@ class Bot {
     } else if (this.currentTargetKind === TargetKind.Heart && this.currentTargetDistance < 64) {
       this.heartCount += 1;
       console.log(`heart collected id=${this.currentTargetId} total=${this.heartCount}`);
+    } else if (
+      [
+        TargetKind.Wood,
+        TargetKind.Food,
+        TargetKind.Stone,
+        TargetKind.Gold,
+        TargetKind.Camp,
+        TargetKind.Relic,
+        TargetKind.Gate,
+        TargetKind.Shrine,
+        TargetKind.Rescue,
+        TargetKind.Lair,
+        TargetKind.Waystation,
+      ].includes(this.currentTargetKind) &&
+      this.currentTargetDistance < 96
+    ) {
+      console.log(`objective done kind=${this.currentTargetKind} id=${this.currentTargetId}`);
     } else if (
       (
         this.currentTargetKind === TargetKind.Mob ||
@@ -636,14 +702,7 @@ class Bot {
     const target = this.chooseTarget(blocked, pickups, mobs);
     this.rememberTarget(target);
     this.intent = target.label;
-    if (
-      (
-        target.kind === TargetKind.Mob ||
-        target.kind === TargetKind.Troll ||
-        target.kind === TargetKind.Boss
-      ) &&
-      this.canAttack(target)
-    ) {
+    if (isAttackTarget(target.kind) && this.canAttack(target)) {
       return this.attackMask(target);
     }
     const step = findPathStep(
@@ -828,8 +887,7 @@ function classifySprite(spriteId, label) {
   if (
     spriteId === MobSpriteId ||
     lower === "ghost" ||
-    lower.startsWith("wolf") ||
-    ["wood", "food", "stone", "gold"].includes(lower)
+    lower.startsWith("wolf")
   ) return SpriteKind.Mob;
   if (spriteId === TrollSpriteId || lower === "troll" || lower.startsWith("goblin")) {
     return SpriteKind.Troll;
@@ -840,7 +898,19 @@ function classifySprite(spriteId, label) {
   if (
     spriteId === CoinSpriteId ||
     lower === "coin" ||
-    ["camp", "beacon", "final gate", "shrine", "rescue", "lair", "waystation"].includes(lower)
+    [
+      "camp",
+      "beacon",
+      "final gate",
+      "shrine",
+      "rescue",
+      "lair",
+      "waystation",
+      "wood",
+      "food",
+      "stone",
+      "gold",
+    ].includes(lower)
   ) return SpriteKind.Coin;
   if (spriteId === HeartSpriteId || lower === "heart") return SpriteKind.Heart;
   if (spriteId >= SwooshSpriteBase && spriteId < SwooshSpriteBase + SwooshSpriteSlots) {
@@ -863,6 +933,37 @@ function targetKindForSprite(kind) {
   return TargetKind.Mob;
 }
 
+function targetKindForSpriteInfo(sprite) {
+  switch (sprite.label.toLowerCase()) {
+    case "wood":
+      return TargetKind.Wood;
+    case "food":
+      return TargetKind.Food;
+    case "stone":
+      return TargetKind.Stone;
+    case "gold":
+      return TargetKind.Gold;
+    case "camp":
+      return TargetKind.Camp;
+    case "beacon":
+      return TargetKind.Relic;
+    case "final gate":
+      return TargetKind.Gate;
+    case "shrine":
+      return TargetKind.Shrine;
+    case "rescue":
+      return TargetKind.Rescue;
+    case "lair":
+      return TargetKind.Lair;
+    case "waystation":
+      return TargetKind.Waystation;
+    default:
+      if (sprite.kind === SpriteKind.Heart) return TargetKind.Heart;
+      if (sprite.kind === SpriteKind.Coin) return TargetKind.Coin;
+      return targetKindForSprite(sprite.kind);
+  }
+}
+
 function targetLabel(kind) {
   switch (kind) {
     case TargetKind.Explore:
@@ -871,6 +972,28 @@ function targetLabel(kind) {
       return "coin";
     case TargetKind.Heart:
       return "heart";
+    case TargetKind.Wood:
+      return "wood";
+    case TargetKind.Food:
+      return "food";
+    case TargetKind.Stone:
+      return "stone";
+    case TargetKind.Gold:
+      return "gold";
+    case TargetKind.Camp:
+      return "camp";
+    case TargetKind.Relic:
+      return "relic";
+    case TargetKind.Gate:
+      return "gate";
+    case TargetKind.Shrine:
+      return "shrine";
+    case TargetKind.Rescue:
+      return "rescue";
+    case TargetKind.Lair:
+      return "lair";
+    case TargetKind.Waystation:
+      return "waypoint";
     case TargetKind.Mob:
       return "hunt";
     case TargetKind.Troll:
@@ -880,6 +1003,19 @@ function targetLabel(kind) {
     default:
       return "";
   }
+}
+
+function isAttackTarget(kind) {
+  return [
+    TargetKind.Wood,
+    TargetKind.Food,
+    TargetKind.Stone,
+    TargetKind.Gold,
+    TargetKind.Lair,
+    TargetKind.Mob,
+    TargetKind.Troll,
+    TargetKind.Boss,
+  ].includes(kind);
 }
 
 function distanceSquared(ax, ay, bx, by) {

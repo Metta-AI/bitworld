@@ -95,9 +95,20 @@ class TargetKind(IntEnum):
     Explore = 0
     Coin = 1
     Heart = 2
-    Mob = 3
-    Troll = 4
-    Boss = 5
+    Wood = 3
+    Food = 4
+    Stone = 5
+    Gold = 6
+    Camp = 7
+    Relic = 8
+    Gate = 9
+    Shrine = 10
+    Rescue = 11
+    Lair = 12
+    Waystation = 13
+    Mob = 14
+    Troll = 15
+    Boss = 16
 
 
 @dataclass
@@ -359,12 +370,13 @@ class Bot:
                 )
             elif sprite.kind == SpriteKind.Coin:
                 x, y = self.target_center(state, sprite)
-                pickups.append(Target(True, TargetKind.Coin, object_id, x, y, "coin"))
+                kind = target_kind_for_sprite_info(sprite)
+                pickups.append(Target(True, kind, object_id, x, y, target_label(kind)))
             elif sprite.kind == SpriteKind.Heart:
                 x, y = self.target_center(state, sprite)
                 pickups.append(Target(True, TargetKind.Heart, object_id, x, y, "heart"))
             elif sprite.kind in {SpriteKind.Mob, SpriteKind.Troll, SpriteKind.Boss}:
-                kind = target_kind_for_sprite(sprite.kind)
+                kind = target_kind_for_sprite_info(sprite)
                 x, y = self.target_center(state, sprite)
                 mobs.append(Target(True, kind, object_id, x, y, target_label(kind)))
         return blocked, pickups, mobs
@@ -404,15 +416,35 @@ class Bot:
             target.y,
         )
         if target.kind == TargetKind.Coin:
-            return distance
+            return distance + 90
         if target.kind == TargetKind.Heart:
-            return distance + 35
+            return distance + 15
+        if target.kind in {TargetKind.Wood, TargetKind.Stone}:
+            return distance - 120
+        if target.kind == TargetKind.Food:
+            return distance - 95
+        if target.kind == TargetKind.Gold:
+            return distance - 55
+        if target.kind == TargetKind.Camp:
+            return distance - 100
+        if target.kind == TargetKind.Relic:
+            return distance - 85
+        if target.kind == TargetKind.Waystation:
+            return distance - 65
+        if target.kind == TargetKind.Rescue:
+            return distance - 50
+        if target.kind == TargetKind.Shrine:
+            return distance - 20
+        if target.kind == TargetKind.Gate:
+            return distance + 10
+        if target.kind == TargetKind.Lair:
+            return distance + (-45 if distance < 100 else 180)
         if target.kind == TargetKind.Mob:
-            return distance + (-95 if distance < 90 else 130)
+            return distance + (-70 if distance < 90 else 190)
         if target.kind == TargetKind.Troll:
-            return distance + (-85 if distance < 105 else 155)
+            return distance + (-60 if distance < 105 else 230)
         if target.kind == TargetKind.Boss:
-            return distance + (-70 if distance < 120 else 220)
+            return distance + (-45 if distance < 120 else 420)
         return distance + 400
 
     def refresh_explore_goal(self, blocked: list[bool]) -> None:
@@ -508,7 +540,21 @@ class Bot:
     ) -> None:
         if self.current_target_id < 0:
             return
-        if self.current_target_kind in {TargetKind.Coin, TargetKind.Heart}:
+        if self.current_target_kind in {
+            TargetKind.Coin,
+            TargetKind.Heart,
+            TargetKind.Wood,
+            TargetKind.Food,
+            TargetKind.Stone,
+            TargetKind.Gold,
+            TargetKind.Camp,
+            TargetKind.Relic,
+            TargetKind.Gate,
+            TargetKind.Shrine,
+            TargetKind.Rescue,
+            TargetKind.Lair,
+            TargetKind.Waystation,
+        }:
             still_present = contains_target(pickups, self.current_target_id)
         elif self.current_target_kind in {
             TargetKind.Mob,
@@ -538,6 +584,28 @@ class Bot:
             print(
                 f"heart collected id={self.current_target_id}"
                 f" total={self.heart_count}",
+                flush=True,
+            )
+        elif (
+            self.current_target_kind
+            in {
+                TargetKind.Wood,
+                TargetKind.Food,
+                TargetKind.Stone,
+                TargetKind.Gold,
+                TargetKind.Camp,
+                TargetKind.Relic,
+                TargetKind.Gate,
+                TargetKind.Shrine,
+                TargetKind.Rescue,
+                TargetKind.Lair,
+                TargetKind.Waystation,
+            }
+            and self.current_target_distance < 96
+        ):
+            print(
+                f"objective done kind={self.current_target_kind}"
+                f" id={self.current_target_id}",
                 flush=True,
             )
         elif (
@@ -608,11 +676,7 @@ class Bot:
         target = self.choose_target(blocked, pickups, mobs)
         self.remember_target(target)
         self.intent = target.label
-        if target.kind in {
-            TargetKind.Mob,
-            TargetKind.Troll,
-            TargetKind.Boss,
-        } and self.can_attack(target):
+        if is_attack_target(target.kind) and self.can_attack(target):
             return self.attack_mask(target)
         step = find_path_step(
             blocked,
@@ -762,7 +826,6 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
         sprite_id == MobSpriteId
         or lower == "ghost"
         or lower.startswith("wolf")
-        or lower in {"wood", "food", "stone", "gold"}
     ):
         return SpriteKind.Mob
     if sprite_id == TrollSpriteId or lower == "troll" or lower.startswith("goblin"):
@@ -772,7 +835,20 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
     if (
         sprite_id == CoinSpriteId
         or lower == "coin"
-        or lower in {"camp", "beacon", "final gate", "shrine", "rescue", "lair", "waystation"}
+        or lower
+        in {
+            "camp",
+            "beacon",
+            "final gate",
+            "shrine",
+            "rescue",
+            "lair",
+            "waystation",
+            "wood",
+            "food",
+            "stone",
+            "gold",
+        }
     ):
         return SpriteKind.Coin
     if sprite_id == HeartSpriteId or lower == "heart":
@@ -798,15 +874,62 @@ def target_kind_for_sprite(kind: SpriteKind) -> TargetKind:
     return TargetKind.Mob
 
 
+def target_kind_for_sprite_info(sprite: SpriteInfo) -> TargetKind:
+    return {
+        "wood": TargetKind.Wood,
+        "food": TargetKind.Food,
+        "stone": TargetKind.Stone,
+        "gold": TargetKind.Gold,
+        "camp": TargetKind.Camp,
+        "beacon": TargetKind.Relic,
+        "final gate": TargetKind.Gate,
+        "shrine": TargetKind.Shrine,
+        "rescue": TargetKind.Rescue,
+        "lair": TargetKind.Lair,
+        "waystation": TargetKind.Waystation,
+    }.get(
+        sprite.label.lower(),
+        TargetKind.Heart
+        if sprite.kind == SpriteKind.Heart
+        else TargetKind.Coin
+        if sprite.kind == SpriteKind.Coin
+        else target_kind_for_sprite(sprite.kind),
+    )
+
+
 def target_label(kind: TargetKind) -> str:
     return {
         TargetKind.Explore: "explore",
         TargetKind.Coin: "coin",
         TargetKind.Heart: "heart",
+        TargetKind.Wood: "wood",
+        TargetKind.Food: "food",
+        TargetKind.Stone: "stone",
+        TargetKind.Gold: "gold",
+        TargetKind.Camp: "camp",
+        TargetKind.Relic: "relic",
+        TargetKind.Gate: "gate",
+        TargetKind.Shrine: "shrine",
+        TargetKind.Rescue: "rescue",
+        TargetKind.Lair: "lair",
+        TargetKind.Waystation: "waypoint",
         TargetKind.Mob: "hunt",
         TargetKind.Troll: "fight",
         TargetKind.Boss: "boss",
     }[kind]
+
+
+def is_attack_target(kind: TargetKind) -> bool:
+    return kind in {
+        TargetKind.Wood,
+        TargetKind.Food,
+        TargetKind.Stone,
+        TargetKind.Gold,
+        TargetKind.Lair,
+        TargetKind.Mob,
+        TargetKind.Troll,
+        TargetKind.Boss,
+    }
 
 
 def distance_squared(ax: int, ay: int, bx: int, by: int) -> int:

@@ -103,6 +103,17 @@ const (
 	TargetExplore TargetKind = iota
 	TargetCoin
 	TargetHeart
+	TargetWood
+	TargetFood
+	TargetStone
+	TargetGold
+	TargetCamp
+	TargetRelic
+	TargetGate
+	TargetShrine
+	TargetRescue
+	TargetLair
+	TargetWaystation
 	TargetMob
 	TargetTroll
 	TargetBoss
@@ -302,8 +313,7 @@ func classifySprite(spriteId int, label string) SpriteKind {
 	if spriteId >= MobSpeciesSpriteBase && spriteId < MobSpeciesSpriteBase+MobSpeciesSpriteSlots {
 		return SpriteMob
 	}
-	if spriteId == MobSpriteId || lower == "ghost" || strings.HasPrefix(lower, "wolf") ||
-		lower == "wood" || lower == "food" || lower == "stone" || lower == "gold" {
+	if spriteId == MobSpriteId || lower == "ghost" || strings.HasPrefix(lower, "wolf") {
 		return SpriteMob
 	}
 	if spriteId == TrollSpriteId || lower == "troll" || strings.HasPrefix(lower, "goblin") {
@@ -314,7 +324,8 @@ func classifySprite(spriteId int, label string) SpriteKind {
 	}
 	if spriteId == CoinSpriteId || lower == "coin" ||
 		lower == "camp" || lower == "beacon" || lower == "final gate" || lower == "shrine" ||
-		lower == "rescue" || lower == "lair" || lower == "waystation" {
+		lower == "rescue" || lower == "lair" || lower == "waystation" ||
+		lower == "wood" || lower == "food" || lower == "stone" || lower == "gold" {
 		return SpriteCoin
 	}
 	if spriteId == HeartSpriteId || lower == "heart" {
@@ -349,6 +360,40 @@ func targetKindForSprite(kind SpriteKind) TargetKind {
 	}
 }
 
+func targetKindForSpriteInfo(sprite SpriteInfo) TargetKind {
+	switch strings.ToLower(sprite.label) {
+	case "wood":
+		return TargetWood
+	case "food":
+		return TargetFood
+	case "stone":
+		return TargetStone
+	case "gold":
+		return TargetGold
+	case "camp":
+		return TargetCamp
+	case "beacon":
+		return TargetRelic
+	case "final gate":
+		return TargetGate
+	case "shrine":
+		return TargetShrine
+	case "rescue":
+		return TargetRescue
+	case "lair":
+		return TargetLair
+	case "waystation":
+		return TargetWaystation
+	}
+	if sprite.kind == SpriteHeart {
+		return TargetHeart
+	}
+	if sprite.kind == SpriteCoin {
+		return TargetCoin
+	}
+	return targetKindForSprite(sprite.kind)
+}
+
 func targetLabel(kind TargetKind) string {
 	switch kind {
 	case TargetExplore:
@@ -357,6 +402,28 @@ func targetLabel(kind TargetKind) string {
 		return "coin"
 	case TargetHeart:
 		return "heart"
+	case TargetWood:
+		return "wood"
+	case TargetFood:
+		return "food"
+	case TargetStone:
+		return "stone"
+	case TargetGold:
+		return "gold"
+	case TargetCamp:
+		return "camp"
+	case TargetRelic:
+		return "relic"
+	case TargetGate:
+		return "gate"
+	case TargetShrine:
+		return "shrine"
+	case TargetRescue:
+		return "rescue"
+	case TargetLair:
+		return "lair"
+	case TargetWaystation:
+		return "waypoint"
 	case TargetMob:
 		return "hunt"
 	case TargetTroll:
@@ -365,6 +432,16 @@ func targetLabel(kind TargetKind) string {
 		return "boss"
 	default:
 		return ""
+	}
+}
+
+func isAttackTarget(kind TargetKind) bool {
+	switch kind {
+	case TargetWood, TargetFood, TargetStone, TargetGold, TargetLair,
+		TargetMob, TargetTroll, TargetBoss:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -737,14 +814,15 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 				bounds.h,
 			)
 		case SpriteCoin:
+			kind := targetKindForSpriteInfo(sprite)
 			x, y := bot.targetCenter(state, sprite)
 			pickups = append(pickups, Target{
 				found:    true,
-				kind:     TargetCoin,
+				kind:     kind,
 				objectId: objectId,
 				x:        x,
 				y:        y,
-				label:    targetLabel(TargetCoin),
+				label:    targetLabel(kind),
 			})
 		case SpriteHeart:
 			x, y := bot.targetCenter(state, sprite)
@@ -757,7 +835,7 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 				label:    targetLabel(TargetHeart),
 			})
 		case SpriteMob, SpriteTroll, SpriteBoss:
-			kind := targetKindForSprite(sprite.kind)
+			kind := targetKindForSpriteInfo(sprite)
 			x, y := bot.targetCenter(state, sprite)
 			mobs = append(mobs, Target{
 				found:    true,
@@ -941,24 +1019,47 @@ func (bot *Bot) targetScore(target Target) int {
 	)
 	switch target.kind {
 	case TargetCoin:
-		return distance
+		return distance + 90
 	case TargetHeart:
-		return distance + 35
+		return distance + 15
+	case TargetWood, TargetStone:
+		return distance - 120
+	case TargetFood:
+		return distance - 95
+	case TargetGold:
+		return distance - 55
+	case TargetCamp:
+		return distance - 100
+	case TargetRelic:
+		return distance - 85
+	case TargetWaystation:
+		return distance - 65
+	case TargetRescue:
+		return distance - 50
+	case TargetShrine:
+		return distance - 20
+	case TargetGate:
+		return distance + 10
+	case TargetLair:
+		if distance < 100 {
+			return distance - 45
+		}
+		return distance + 180
 	case TargetMob:
 		if distance < 90 {
-			return distance - 95
-		}
-		return distance + 130
-	case TargetTroll:
-		if distance < 105 {
-			return distance - 85
-		}
-		return distance + 155
-	case TargetBoss:
-		if distance < 120 {
 			return distance - 70
 		}
-		return distance + 220
+		return distance + 190
+	case TargetTroll:
+		if distance < 105 {
+			return distance - 60
+		}
+		return distance + 230
+	case TargetBoss:
+		if distance < 120 {
+			return distance - 45
+		}
+		return distance + 420
 	default:
 		return distance + 400
 	}
@@ -1077,7 +1178,9 @@ func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
 	}
 	stillPresent := true
 	switch bot.currentTargetKind {
-	case TargetCoin, TargetHeart:
+	case TargetCoin, TargetHeart, TargetWood, TargetFood, TargetStone, TargetGold,
+		TargetCamp, TargetRelic, TargetGate, TargetShrine, TargetRescue,
+		TargetLair, TargetWaystation:
 		stillPresent = containsTarget(pickups, bot.currentTargetId)
 	case TargetMob, TargetTroll, TargetBoss:
 		stillPresent = containsTarget(mobs, bot.currentTargetId)
@@ -1102,6 +1205,15 @@ func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
 				"heart collected id=%d total=%d\n",
 				bot.currentTargetId,
 				bot.heartCount,
+			)
+		}
+	case TargetWood, TargetFood, TargetStone, TargetGold, TargetCamp, TargetRelic,
+		TargetGate, TargetShrine, TargetRescue, TargetLair, TargetWaystation:
+		if bot.currentTargetDistance < 96 {
+			fmt.Printf(
+				"objective done kind=%d id=%d\n",
+				bot.currentTargetKind,
+				bot.currentTargetId,
 			)
 		}
 	case TargetMob, TargetTroll, TargetBoss:
@@ -1167,10 +1279,6 @@ func (bot *Bot) attackMask(target Target) uint8 {
 	return result
 }
 
-func isMonsterTarget(kind TargetKind) bool {
-	return kind == TargetMob || kind == TargetTroll || kind == TargetBoss
-}
-
 func (bot *Bot) decideNextMask() uint8 {
 	bot.updateCamera()
 	bot.updatePlayerPosition()
@@ -1200,7 +1308,7 @@ func (bot *Bot) decideNextMask() uint8 {
 	target := bot.chooseTarget(blocked, pickups, mobs)
 	bot.rememberTarget(target)
 	bot.intent = target.label
-	if isMonsterTarget(target.kind) && bot.canAttack(target) {
+	if isAttackTarget(target.kind) && bot.canAttack(target) {
 		return bot.attackMask(target)
 	}
 	step := findPathStep(
