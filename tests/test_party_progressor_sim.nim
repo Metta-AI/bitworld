@@ -864,6 +864,30 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     done: true,
     progress: CampFortifiedFlag + CampProvisionedFlag
   ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 1,
+    ty: sim.players[playerIndex].y div WorldTileSize + 2,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true,
+    progress: CampWardedFlag
+  ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 2,
+    ty: sim.players[playerIndex].y div WorldTileSize + 2,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true,
+    progress: CampRallyFlag
+  ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 3,
+    ty: sim.players[playerIndex].y div WorldTileSize + 2,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true,
+    progress: CampAidFlag
+  ))
 
   var nextState: PlayerViewerState
   let packet = sim.buildSpriteProtocolPlayerUpdates(
@@ -883,6 +907,9 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt fort" in labels
   doAssert "prompt meals" in labels
   doAssert "prompt fort meal" in labels
+  doAssert "prompt ward" in labels
+  doAssert "prompt rally" in labels
+  doAssert "prompt aid" in labels
   doAssert "prompt shrine f2" in labels
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
@@ -1264,6 +1291,75 @@ proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
 
   doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
     "provisioned camps should recover resting players faster than shelters"
+
+proc testRoleSpecializedCampsCreateDistinctStagingBenefits() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.stone = CampWardStoneCost
+  sim.wood = CampRallyWoodCost
+  sim.food = CampAidFoodCost
+  sim.bossDefeated = true
+  sim.mobSpawnCooldown = 999
+
+  let
+    tankIndex = sim.addPlayer("tank")
+    dpsIndex = sim.addPlayer("dps")
+    healerIndex = sim.addPlayer("healer")
+    baseX = SafeZoneRightPixels + WorldTileSize
+    baseY = (WorldHeightTiles div 2) * WorldTileSize
+
+  sim.players[tankIndex].applyRole(RoleTank)
+  sim.players[dpsIndex].applyRole(RoleDps)
+  sim.players[healerIndex].applyRole(RoleHealer)
+  sim.players[tankIndex].x = baseX
+  sim.players[dpsIndex].x = baseX + WorldTileSize * 8
+  sim.players[healerIndex].x = baseX + WorldTileSize * 15
+  for playerIndex in [tankIndex, dpsIndex, healerIndex]:
+    sim.players[playerIndex].y = baseY
+    sim.players[playerIndex].bounds =
+      sim.playerBoundsFor(sim.players[playerIndex])
+    sim.landmarks.add(Landmark(
+      tx: sim.players[playerIndex].x div WorldTileSize,
+      ty: sim.players[playerIndex].y div WorldTileSize,
+      kind: LandmarkCamp,
+      hp: 1,
+      done: true
+    ))
+
+  sim.step([InputState(), InputState(), InputState()])
+
+  doAssert sim.landmarks[0].campIsWarded()
+  doAssert not sim.landmarks[0].campIsFortified()
+  doAssert sim.landmarks[1].campIsRally()
+  doAssert sim.landmarks[2].campIsAid()
+  doAssert sim.stone == 0 and sim.wood == 0 and sim.food == 0
+
+  sim.players[dpsIndex].abilityCooldown = 4
+  sim.players[healerIndex].slowTicks = StatusSlowTicks
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: sim.landmarks[0].tx * WorldTileSize,
+    y: sim.landmarks[0].ty * WorldTileSize + WorldTileSize,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+
+  sim.step([InputState(), InputState(), InputState()])
+
+  doAssert sim.mobs.len == 0,
+    "tank-warded camps should defend a staging area without generic fortifying"
+  doAssert sim.players[dpsIndex].abilityCooldown == 2,
+    "DPS rally camps should recover role ability cooldown faster"
+  doAssert sim.players[healerIndex].slowTicks <=
+    StatusSlowTicks - CampStatusRecoveryTicks - CampAidStatusRecoveryTicks,
+    "healer aid camps should cleanse statuses faster than ordinary shelters"
 
 proc testBeaconAndBossScoring() =
   var sim = initPartyProgressorForTest()
@@ -1836,6 +1932,7 @@ testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testCampProvisioningConsumesFoodAndImprovesRecovery()
+testRoleSpecializedCampsCreateDistinctStagingBenefits()
 testBeaconAndBossScoring()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()

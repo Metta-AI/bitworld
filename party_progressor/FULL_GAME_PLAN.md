@@ -138,6 +138,8 @@ Camps cost wood and stone. Activating a camp should:
 - Create a readable regroup point for bots and humans.
 - Support later camp specializations, starting with fortification and
   provisioned meal shelters.
+- Let role composition shape staging: tanks can ward camps, DPS can rally them,
+  and healers can turn them into aid posts with different local benefits.
 
 Beacon objectives should award relic shards. The final gate should require
 relic progress, camp progress, and boss defeat before completion.
@@ -322,6 +324,9 @@ The first full-game implementation pass includes:
 - Activated camps can also be provisioned with food into meal shelters, giving
   parties a visible sustain-focused staging choice that heals resting players
   faster and shows a distinct meals prompt.
+- Activated camps now support role-linked specializations: tank ward camps hold
+  a safer perimeter, DPS rally camps recover role powers faster, and healer aid
+  camps cleanse status pressure faster while regrouping.
 - Snow hearth waystations become local cold shelters after completion, giving
   snow expeditions a second kind of safe staging choice beyond full camps.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
@@ -382,8 +387,9 @@ The first full-game implementation pass includes:
 - Tune the new biome waystation detours so their role hints, route changes, and
   biome-specific payoffs are visible but not mandatory.
 - Extend camp infrastructure beyond healing, role swap, weather shelter,
-  shortcut reveal, fortification, and meal shelters: add biome-safe staging
-  choices or role-linked camp specializations.
+  shortcut reveal, fortification, meal shelters, and role specializations: add
+  biome-safe staging choices and tune which camp upgrades should be automatic
+  versus explicit player choices.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, downed-player rescue, and chat pings: richer rescue/objective moments.
 - Tune final-gate pacing now that relic, boss, and camp progress are all part of

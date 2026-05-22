@@ -42,7 +42,10 @@ const
   LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
   LandmarkMealPromptSpriteId = LandmarkFortPromptSpriteId + 1
   LandmarkFortMealPromptSpriteId = LandmarkMealPromptSpriteId + 1
-  LandmarkWaystationPromptSpriteBase = LandmarkFortMealPromptSpriteId + 1
+  LandmarkWardPromptSpriteId = LandmarkFortMealPromptSpriteId + 1
+  LandmarkRallyPromptSpriteId = LandmarkWardPromptSpriteId + 1
+  LandmarkAidPromptSpriteId = LandmarkRallyPromptSpriteId + 1
+  LandmarkWaystationPromptSpriteBase = LandmarkAidPromptSpriteId + 1
   WeatherOverlaySpriteBase = 900
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
@@ -1387,7 +1390,13 @@ proc landmarkPromptSpriteId(kind: LandmarkKind): int =
   LandmarkPromptSpriteBase + ord(kind)
 
 proc landmarkPromptSpriteId(landmark: Landmark): int =
-  if landmark.campIsFortified() and landmark.campIsProvisioned():
+  if landmark.campIsAid():
+    LandmarkAidPromptSpriteId
+  elif landmark.campIsRally():
+    LandmarkRallyPromptSpriteId
+  elif landmark.campIsWarded():
+    LandmarkWardPromptSpriteId
+  elif landmark.campIsFortified() and landmark.campIsProvisioned():
     LandmarkFortMealPromptSpriteId
   elif landmark.campIsFortified():
     LandmarkFortPromptSpriteId
@@ -1429,7 +1438,13 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "WAYPOINT"
 
 proc landmarkPromptLabel(landmark: Landmark): string =
-  if landmark.campIsFortified() and landmark.campIsProvisioned():
+  if landmark.campIsAid():
+    "AID"
+  elif landmark.campIsRally():
+    "RALLY"
+  elif landmark.campIsWarded():
+    "WARD"
+  elif landmark.campIsFortified() and landmark.campIsProvisioned():
     "FORT MEAL"
   elif landmark.campIsFortified():
     "FORT"
@@ -1807,6 +1822,23 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     fortMealPromptSprite.pixels,
     "prompt " & fortMealPrompt.toLowerAscii()
   )
+  for prompt in ["WARD", "RALLY", "AID"]:
+    let
+      promptSprite = sim.buildSpriteProtocolTextSprite([prompt], 11'u8)
+      spriteId =
+        if prompt == "WARD":
+          LandmarkWardPromptSpriteId
+        elif prompt == "RALLY":
+          LandmarkRallyPromptSpriteId
+        else:
+          LandmarkAidPromptSpriteId
+    packet.addSprite(
+      spriteId,
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
   for biome in BiomeKind:
     let
       prompt = biome.waystationPromptLabel()

@@ -89,10 +89,17 @@ const
   CampStoneCost* = 1
   CampFortifiedFlag* = 1
   CampProvisionedFlag* = 2
+  CampWardedFlag* = 4
+  CampRallyFlag* = 8
+  CampAidFlag* = 16
   CampFortificationWoodCost* = 1
   CampFortificationStoneCost* = 1
   CampProvisionFoodCost* = 2
+  CampWardStoneCost* = 1
+  CampRallyWoodCost* = 1
+  CampAidFoodCost* = 1
   CampFortificationRadius* = WorldTileSize * 3
+  CampWardedDefenseRadius* = WorldTileSize * 4
   ResourceNodeHp* = 2
   LandmarkActivationRadius* = 20
   FinalGateActivationRadius* = 28
@@ -126,6 +133,8 @@ const
   CampRecoveryHealAmount* = 1
   CampProvisionedRecoveryHealAmount* = 2
   CampStatusRecoveryTicks* = TargetFps div 2
+  CampAidStatusRecoveryTicks* = TargetFps div 2
+  CampRallyAbilityCooldownStep* = 1
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
   CampShortcutHalfHeightTiles* = 1
@@ -3835,6 +3844,18 @@ proc campIsProvisioned*(landmark: Landmark): bool =
   landmark.kind == LandmarkCamp and landmark.done and
     (landmark.progress and CampProvisionedFlag) != 0
 
+proc campIsWarded*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampWardedFlag) != 0
+
+proc campIsRally*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampRallyFlag) != 0
+
+proc campIsAid*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampAidFlag) != 0
+
 proc playerNearActivatedCamp*(
   sim: SimServer,
   playerIndex: int,
@@ -3863,6 +3884,38 @@ proc playerNearProvisionedCamp*(
     return false
   for landmark in sim.landmarks:
     if landmark.campIsProvisioned() and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearRallyCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside a DPS rally camp zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.campIsRally() and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearAidCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside a healer aid camp zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.campIsAid() and
         sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
       return true
   false
@@ -4163,12 +4216,60 @@ proc provisionCamp(sim: var SimServer, landmarkIndex: int) =
     sim.landmarks[landmarkIndex].progress or CampProvisionedFlag
   inc sim.scoreRevision
 
+proc specializeCamp(sim: var SimServer, landmarkIndex: int, flag: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].kind != LandmarkCamp or
+      not sim.landmarks[landmarkIndex].done:
+    return
+  if (sim.landmarks[landmarkIndex].progress and flag) != 0:
+    return
+  sim.landmarks[landmarkIndex].progress =
+    sim.landmarks[landmarkIndex].progress or flag
+  inc sim.scoreRevision
+
+proc trySpecializeCampForRole(
+  sim: var SimServer,
+  landmarkIndex: int,
+  role: PlayerRole
+) =
+  case role
+  of RoleTank:
+    if not sim.landmarks[landmarkIndex].campIsWarded() and
+        sim.stone >= CampWardStoneCost:
+      sim.stone -= CampWardStoneCost
+      sim.specializeCamp(landmarkIndex, CampWardedFlag)
+  of RoleDps:
+    if not sim.landmarks[landmarkIndex].campIsRally() and
+        sim.wood >= CampRallyWoodCost:
+      sim.wood -= CampRallyWoodCost
+      sim.specializeCamp(landmarkIndex, CampRallyFlag)
+  of RoleHealer:
+    if not sim.landmarks[landmarkIndex].campIsAid() and
+        sim.food >= CampAidFoodCost:
+      sim.food -= CampAidFoodCost
+      sim.specializeCamp(landmarkIndex, CampAidFlag)
+  else:
+    discard
+
+proc campDefenseRadius(landmark: Landmark): int =
+  if landmark.campIsWarded():
+    CampWardedDefenseRadius
+  else:
+    CampFortificationRadius
+
+proc campDefendsThreats(landmark: Landmark): bool =
+  landmark.campIsFortified() or landmark.campIsWarded()
+
 proc applyFortifiedCampDefenses(sim: var SimServer) =
-  ## Keeps fortified camps useful as safe staging points between pushes.
+  ## Keeps upgraded camps useful as safe staging points between pushes.
   for landmark in sim.landmarks:
-    if not landmark.campIsFortified():
+    if not landmark.campDefendsThreats():
       continue
-    let cleared = sim.pacifyMobsNearLandmark(landmark, CampFortificationRadius)
+    let cleared = sim.pacifyMobsNearLandmark(
+      landmark,
+      landmark.campDefenseRadius()
+    )
     if cleared > 0:
       inc sim.scoreRevision
 
@@ -4264,6 +4365,16 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           ):
             nearCamp = true
             break
+        if nearCamp:
+          for player in sim.players:
+            if player.lives <= 0:
+              continue
+            if sim.playerNearLandmark(
+              player,
+              sim.landmarks[landmarkIndex],
+              LandmarkActivationRadius
+            ):
+              sim.trySpecializeCampForRole(landmarkIndex, player.role)
         if nearCamp and not sim.landmarks[landmarkIndex].campIsFortified() and
             sim.wood >= CampFortificationWoodCost and
             sim.stone >= CampFortificationStoneCost:
@@ -4526,13 +4637,15 @@ proc applyStatusEffects(sim: var SimServer) =
     if sim.players[playerIndex].lives <= 0:
       continue
     let sheltered = sim.playerNearExpeditionShelter(playerIndex)
+    let aidSheltered = sim.playerNearAidCamp(playerIndex)
 
     if sim.players[playerIndex].poisonTicks > 0 and
         sim.tickCount mod StatusPoisonIntervalTicks == 0:
       if sheltered:
         if reduceStatusTicks(
           sim.players[playerIndex].poisonTicks,
-          CampStatusRecoveryTicks
+          CampStatusRecoveryTicks +
+            (if aidSheltered: CampAidStatusRecoveryTicks else: 0)
         ):
           inc sim.scoreRevision
       elif sim.players[playerIndex].carrying and
@@ -4550,7 +4663,8 @@ proc applyStatusEffects(sim: var SimServer) =
     if playerIndex >= sim.players.len or sim.players[playerIndex].lives <= 0:
       continue
     let recoveryStep =
-      1 + (if sheltered: CampStatusRecoveryTicks else: 0)
+      1 + (if sheltered: CampStatusRecoveryTicks else: 0) +
+        (if aidSheltered: CampAidStatusRecoveryTicks else: 0)
     if sim.players[playerIndex].slowTicks > 0:
       if reduceStatusTicks(sim.players[playerIndex].slowTicks, recoveryStep):
         inc sim.scoreRevision
@@ -5109,6 +5223,11 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
   for i in 0 ..< sim.players.len:
     if sim.players[i].abilityCooldown > 0:
       dec sim.players[i].abilityCooldown
+      if sim.players[i].abilityCooldown > 0 and sim.playerNearRallyCamp(i):
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - CampRallyAbilityCooldownStep
+        )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
     if sim.players[i].pingTicks > 0:
