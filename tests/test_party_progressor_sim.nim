@@ -534,6 +534,8 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
   doAssert "role tank" in visibleLabels
   doAssert "role dps" in visibleLabels
   doAssert "role heal" in visibleLabels
+  doAssert visibleLabels.anyIt(it.contains("NEXT PICK ROLE TANK DPS HEAL")),
+    "local HUD should tell new players to choose a role"
   for species in AllMobSpecies:
     doAssert parsed.sprites.values.toSeq.anyIt(it.label == species.speciesLabel()),
       "missing generated monster sprite " & species.speciesLabel()
@@ -555,6 +557,45 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
     tankParsed.objects[PlayerObjectBase + sim.players[playerIndex].id]
   doAssert "blue" in tankParsed.sprites[playerObject.spriteId].label,
     "tank role should visibly retint the player sprite"
+
+proc testExpeditionObjectiveHudGuidesNextStep() =
+  var sim = initPartyProgressorForTest()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  let playerIndex = sim.addPlayer("player1")
+  doAssert sim.expeditionObjectiveHint(playerIndex) ==
+    "NEXT PICK ROLE TANK DPS HEAL"
+
+  sim.players[playerIndex].applyRole(RoleTank)
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT PUSH RIGHT"
+
+  sim.players[playerIndex].x = firstTileForBiome(BiomePlains) * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT RALLY T"
+
+  for landmark in sim.landmarks.mitems:
+    if sim.tileBiomeKind(landmark.tx, landmark.ty) == BiomePlains and
+        landmark.kind == LandmarkWaystation:
+      landmark.done = true
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT GATHER W2 S1"
+
+  sim.wood = CampWoodCost
+  sim.stone = CampStoneCost
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT BUILD CAMP"
+
+  for landmark in sim.landmarks.mitems:
+    if sim.tileBiomeKind(landmark.tx, landmark.ty) == BiomePlains and
+        landmark.kind == LandmarkCamp:
+      landmark.done = true
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT RELIC 0/3"
+
+  sim.relicShards = FinalGateRelicCost
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT DEFEAT BOSS"
+
+  sim.bossDefeated = true
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT OPEN GATE"
 
 proc testBiomeMonsterSpeciesBreadth() =
   var sim = initPartyProgressorForTest()
@@ -1682,6 +1723,7 @@ testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolPacketMatchesReferenceParsers()
+testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()

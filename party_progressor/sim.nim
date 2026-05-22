@@ -1657,6 +1657,62 @@ proc currentBiome*(sim: SimServer): BiomeKind =
 proc currentWeather*(sim: SimServer): WeatherKind =
   sim.currentBiome().weatherForBiome()
 
+proc incompleteLandmarkInBiome(
+  sim: SimServer,
+  kind: LandmarkKind,
+  biome: BiomeKind
+): bool =
+  for landmark in sim.landmarks:
+    if landmark.kind == kind and not landmark.done and
+        sim.tileBiomeKind(landmark.tx, landmark.ty) == biome:
+      return true
+  false
+
+proc incompleteLandmarkExists(
+  sim: SimServer,
+  kind: LandmarkKind
+): bool =
+  for landmark in sim.landmarks:
+    if landmark.kind == kind and not landmark.done:
+      return true
+  false
+
+proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
+  ## Returns the short next-action line shown in the local player HUD.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return "NEXT WAIT"
+  let player = sim.players[playerIndex]
+  if player.lives <= 0:
+    if player.downedTicks > 0:
+      return "NEXT WAIT FOR RESCUE"
+    return "NEXT RESPAWN"
+  if player.role == RoleUnarmed:
+    return "NEXT PICK ROLE TANK DPS HEAL"
+  if player.maxHp > 0 and player.lives < player.maxHp and
+      player.lives * 100 <= player.maxHp * LowHealthHelpThresholdPercent:
+    return "NEXT HEAL FOOD SHELTER"
+
+  let biome = sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
+  if biome == BiomeOrigin:
+    return "NEXT PUSH RIGHT"
+  if sim.incompleteLandmarkInBiome(LandmarkWaystation, biome):
+    return "NEXT " & biome.waystationPromptLabel()
+  if sim.incompleteLandmarkInBiome(LandmarkCamp, biome):
+    if sim.wood >= CampWoodCost and sim.stone >= CampStoneCost:
+      return "NEXT BUILD CAMP"
+    return "NEXT GATHER W" & $max(0, CampWoodCost - sim.wood) &
+      " S" & $max(0, CampStoneCost - sim.stone)
+  if sim.relicShards < FinalGateRelicCost and
+      sim.incompleteLandmarkExists(LandmarkBeacon):
+    return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
+  if not sim.bossDefeated:
+    return "NEXT DEFEAT BOSS"
+  if sim.relicShards < FinalGateRelicCost:
+    return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
+  if sim.incompleteLandmarkExists(LandmarkFinalGate):
+    return "NEXT OPEN GATE"
+  "EXPEDITION COMPLETE"
+
 proc teamScore*(sim: SimServer): int =
   ## Combines raw distance with expedition milestones.
   sim.frontierTiles() +
@@ -4767,6 +4823,13 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
     "STATUS " & player.statusLabel().toUpperAscii(),
     0,
     lineY * 6,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    sim.expeditionObjectiveHint(playerIndex),
+    0,
+    lineY * 7,
     2'u8
   )
 

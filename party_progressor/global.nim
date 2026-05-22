@@ -2215,8 +2215,9 @@ proc addPlayerHud(
       else:
         "CARRY NONE") & " E" & $playerElevation & " " &
         player.statusLabel().toUpperAscii()
+    statusLine5 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
-      statusLine4
+      statusLine4 & "|" & statusLine5
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -2262,7 +2263,7 @@ proc addPlayerHud(
   currentIds.add(StatusHudObjectId)
   if state.hudStatus != status:
     let statusText = sim.buildSpriteProtocolTextSprite(
-      [statusLine1, statusLine2, statusLine3, statusLine4],
+      [statusLine1, statusLine2, statusLine3, statusLine4, statusLine5],
       2'u8
     )
     packet.addSprite(
@@ -2445,6 +2446,7 @@ proc buildSpriteProtocolUpdates*(
     lines.add("ROLE " & player.role.roleLabel())
     lines.add("HP " & $player.lives & "/" & $player.maxHp)
     lines.add("FRONT " & $frontierTilesForX(player.personalFrontier))
+    lines.add(sim.expeditionObjectiveHint(playerIndex))
   let text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
   currentIds.add(SelectedTextObjectId)
   result.addSprite(

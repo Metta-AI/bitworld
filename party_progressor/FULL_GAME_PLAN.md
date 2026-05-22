@@ -289,6 +289,9 @@ The first full-game implementation pass includes:
 - Wolves, camp defenders, bears, and boss scoring.
 - Combined team score and expanded result JSON.
 - Player/global HUD updates.
+- Player and global HUD objective hints that call out the next expedition step:
+  role choice, push direction, biome waystations, camp resource needs, relics,
+  boss, and final gate.
 - Sprite-player protocol support for the player surface.
 - An 11 by 11 native-tile player viewport.
 - Biome-backed transparent terrain rendering for sprite observations and the
@@ -344,8 +347,8 @@ The first full-game implementation pass includes:
   late fight.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
-  objectives, boss scoring, player viewport size, and biome-backed transparent
-  sprites.
+  objectives, objective HUD hints, boss scoring, player viewport size, and
+  biome-backed transparent sprites.
 - Sprite protocol fixture tests that parse Party Progressor player packets with
   the same message framing used by existing BitWorld sprite-protocol bots.
 
