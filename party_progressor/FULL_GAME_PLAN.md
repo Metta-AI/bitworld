@@ -443,6 +443,18 @@ The first full-game implementation pass includes:
 - Konrad push recovery now changes vertical lanes after repeated rightward
   stalls, so bots do not keep retrying the same blocked snow/cave route when an
   alternate lane can carry the expedition forward.
+- Konrad now cross-checks `NEXT CAMP` hints against the HUD's shared wood and
+  stone counters, so incomplete camps cannot trap bots when the party still
+  needs another resource harvest.
+- Konrad also treats a failed close-range camp dwell as a temporary resource
+  search state, preferring visible wood/stone and suppressing the camp target
+  long enough to break repeated camp-orbit loops.
+- Konrad shelter recovery is now local: low-health/regrouping bots can use
+  nearby shelters, but old shelters no longer pull the party hundreds of pixels
+  backward during a forward expedition push.
+- Konrad forward-push goals now stay inside the expedition corridor, and bots
+  that drift above or below the main lane recover back into that lane before
+  resuming side fights, loot, and long-range push objectives.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
