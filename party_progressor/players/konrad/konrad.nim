@@ -1052,6 +1052,31 @@ proc randomMoveMask(rng: var Rand): uint8 =
 proc isRoleTarget(kind: TargetKind): bool =
   kind in {TargetTankRole, TargetDpsRole, TargetHealerRole}
 
+proc directedUnstuckMask(bot: var Bot): uint8 =
+  ## Chooses a recovery nudge that still respects the current target.
+  let vertical =
+    if bot.rng.rand(1) == 0:
+      ButtonUp
+    else:
+      ButtonDown
+  if bot.currentTargetKind == TargetExplore:
+    return ButtonRight or vertical
+  if bot.currentTargetKind.isRoleTarget():
+    return vertical or (
+      if bot.currentTargetX >= bot.playerWorldX:
+        ButtonRight
+      else:
+        ButtonLeft
+    )
+  if bot.currentTargetId >= 0:
+    let horizontal =
+      if bot.currentTargetX >= bot.playerWorldX:
+        ButtonRight
+      else:
+        ButtonLeft
+    return horizontal or vertical
+  bot.rng.randomMoveMask()
+
 proc updateStuck(bot: var Bot) =
   ## Updates stuck detection using the previous movement mask.
   if not bot.havePlayerSample:
@@ -1066,7 +1091,7 @@ proc updateStuck(bot: var Bot) =
     bot.previousPlayerX,
     bot.previousPlayerY
   )
-  if (bot.lastMask and MoveMask) != 0 and moved <= 1:
+  if (bot.lastMask and MoveMask) != 0 and moved == 0:
     inc bot.stuckFrames
   else:
     bot.stuckFrames = 0
@@ -1075,7 +1100,7 @@ proc updateStuck(bot: var Bot) =
 
   if bot.stuckFrames >= StuckFrameThreshold:
     bot.jiggleTicks = JiggleDuration
-    bot.jiggleMask = bot.rng.randomMoveMask()
+    bot.jiggleMask = bot.directedUnstuckMask()
     if bot.currentTargetId >= 0 and not bot.currentTargetKind.isRoleTarget():
       bot.skipTargetId = bot.currentTargetId
       bot.skipTicks = SkipTargetTicks
@@ -2021,6 +2046,33 @@ when defined(konradTargetSelfTest):
   )]
   let closeThreatChoice = bot.chooseTarget(blocked, pickups, allies, mobs)
   doAssert closeThreatChoice.kind == TargetMob
+
+  bot.currentTargetKind = TargetExplore
+  bot.currentTargetId = -1
+  bot.currentTargetX = 400
+  bot.currentTargetY = 300
+  bot.playerWorldX = 80
+  bot.playerWorldY = 300
+  let pushUnstuck = bot.directedUnstuckMask()
+  doAssert (pushUnstuck and ButtonRight) != 0
+  doAssert (pushUnstuck and ButtonLeft) == 0
+
+  bot.currentTargetKind = TargetDpsRole
+  bot.currentTargetId = 7
+  bot.currentTargetX = 40
+  let roleUnstuck = bot.directedUnstuckMask()
+  doAssert (roleUnstuck and ButtonLeft) != 0
+  doAssert (roleUnstuck and ButtonRight) == 0
+
+  bot.havePlayerSample = true
+  bot.previousPlayerX = 10
+  bot.previousPlayerY = 10
+  bot.playerWorldX = 11
+  bot.playerWorldY = 10
+  bot.lastMask = ButtonRight
+  bot.stuckFrames = StuckFrameThreshold - 1
+  bot.updateStuck()
+  doAssert bot.stuckFrames == 0
   echo "Konrad target tests passed"
 
 elif isMainModule:

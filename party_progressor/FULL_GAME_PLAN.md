@@ -405,6 +405,9 @@ The first full-game implementation pass includes:
   expedition push, so distant visible monsters no longer pull bots into opening
   hunt loops before they gather resources, build camps, or advance the frontier;
   close threats still interrupt the push.
+- Konrad stuck recovery is now target-aware: frontier push recovery keeps a
+  rightward bias, role-choice recovery keeps moving toward the intended gear,
+  and one-pixel movement no longer counts as fully stuck.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
@@ -432,7 +435,8 @@ The first full-game implementation pass includes:
   checks reveal where lunge effects clutter tight fights.
 - Continue bot targeting polish: tune longer-run expedition pacing now that
   bots understand roles, health, regroup, carried resources, and current
-  objectives, and now prefer frontier pushes over distant discretionary fights.
+  objectives, prefer frontier pushes over distant discretionary fights, and
+  recover from blocked push paths without backing out of the expedition.
 
 ### Expedition Depth
 
