@@ -134,6 +134,7 @@ type
     StatusRally
     StatusShade
     StatusWarmth
+    StatusLight
     StatusPoison
     StatusSlow
     StatusChill
@@ -1418,6 +1419,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusRally: "RAL"
   of StatusShade: "SHD"
   of StatusWarmth: "WARM"
+  of StatusLight: "LIT"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1448,6 +1450,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusRally: 14'u8
   of StatusShade: 6'u8
   of StatusWarmth: 11'u8
+  of StatusLight: 14'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1478,6 +1481,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusRally: "status rally"
   of StatusShade: "status shade"
   of StatusWarmth: "status warmth"
+  of StatusLight: "status light"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -1553,6 +1557,8 @@ proc biomeTacticStatusBadge(
     (true, StatusShade)
   of BiomeTacticWarmth:
     (true, StatusWarmth)
+  of BiomeTacticLight:
+    (true, StatusLight)
   of BiomeTacticNone:
     (false, StatusForage)
 

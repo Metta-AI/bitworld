@@ -434,6 +434,7 @@ type
     BiomeTacticRally
     BiomeTacticShade
     BiomeTacticWarmth
+    BiomeTacticLight
 
   GroundKind* = enum
     GroundGrass
@@ -856,6 +857,7 @@ proc biomeTacticLabel*(kind: BiomeTacticKind): string =
   of BiomeTacticRally: "rally"
   of BiomeTacticShade: "shade"
   of BiomeTacticWarmth: "warmth"
+  of BiomeTacticLight: "light"
 
 proc pingLabel*(kind: PlayerPingKind): string =
   case kind
@@ -4947,6 +4949,16 @@ proc playerNearDesertShade*(sim: SimServer, playerIndex: int): bool =
       return true
   false
 
+proc playerHasCaveLight*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when held gold is acting as a cave/ruin light focus.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or
+      sim.playerBiome(player) notin {BiomeCave, BiomeRuins}:
+    return false
+  player.carrying and player.carriedItem == CarryGold
+
 proc survivalPressureKind*(
   sim: SimServer,
   playerIndex: int
@@ -4974,7 +4986,8 @@ proc survivalPressureKind*(
     else:
       SurvivalHeat
   of BiomeCave, BiomeRuins:
-    if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+    if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) or
+        sim.playerHasCaveLight(playerIndex):
       SurvivalSafe
     else:
       SurvivalFog
@@ -5009,6 +5022,11 @@ proc playerBiomeTacticKind*(
   of BiomeSnow:
     if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       BiomeTacticWarmth
+    else:
+      BiomeTacticNone
+  of BiomeCave, BiomeRuins:
+    if sim.playerHasCaveLight(playerIndex):
+      BiomeTacticLight
     else:
       BiomeTacticNone
   else:
@@ -5075,7 +5093,8 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
     if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and
-        not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+        not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
+        not sim.playerHasCaveLight(playerIndex):
       let before = sim.players[playerIndex].slowTicks
       sim.players[playerIndex].slowTicks = max(
         sim.players[playerIndex].slowTicks,

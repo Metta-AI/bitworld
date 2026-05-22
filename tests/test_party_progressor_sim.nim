@@ -3151,6 +3151,74 @@ proc testFogBiomeDisorientationRequiresGroupOrLantern() =
     FogDisorientationTicks - 1,
     "ruin fog should also disorient isolated unsheltered players"
 
+proc testCarriedGoldLightsCaveAndRuins() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundCave, BiomeCave)
+
+  let playerIndex = sim.addPlayer("light")
+  sim.players[playerIndex].x = firstTileForBiome(BiomeCave) * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryGold
+
+  doAssert sim.playerHasCaveLight(playerIndex),
+    "carried gold should act as a light focus in cave biomes"
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe,
+    "carried gold light should clear visible cave fog pressure"
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticLight
+  sim.tickCount = FogDisorientationIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "carried gold light should block cave fog disorientation"
+
+  var state: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    state
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status light" in labels
+  doAssert "status fog" notin labels
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("OK SAFE LIGHT")),
+    "HUD status text should make carried light readable"
+
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].carrying = false
+  sim.players[playerIndex].carriedItem = CarryNone
+  doAssert not sim.playerHasCaveLight(playerIndex)
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalFog
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticNone
+  sim.tickCount = FogDisorientationIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks >= FogDisorientationTicks - 1,
+    "cave fog should resume when the player is no longer carrying light"
+
+  var ruinsSim = initPartyProgressorForTest()
+  ruinsSim.clearTerrain()
+  ruinsSim.mobs.setLen(0)
+  ruinsSim.pickups.setLen(0)
+  ruinsSim.landmarks.setLen(0)
+  ruinsSim.fillGround(GroundRuins, BiomeRuins)
+  let ruinsPlayer = ruinsSim.addPlayer("ruin-light")
+  ruinsSim.players[ruinsPlayer].x =
+    firstTileForBiome(BiomeRuins) * WorldTileSize
+  ruinsSim.players[ruinsPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  ruinsSim.players[ruinsPlayer].bounds =
+    ruinsSim.playerBoundsFor(ruinsSim.players[ruinsPlayer])
+  ruinsSim.players[ruinsPlayer].carrying = true
+  ruinsSim.players[ruinsPlayer].carriedItem = CarryGold
+  doAssert ruinsSim.playerHasCaveLight(ruinsPlayer),
+    "carried gold light should also work in ruins"
+  doAssert ruinsSim.survivalPressureKind(ruinsPlayer) == SurvivalSafe
+  doAssert ruinsSim.playerBiomeTacticKind(ruinsPlayer) == BiomeTacticLight
+
 proc testCampShelterAndRecoveryInfrastructure() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3265,5 +3333,6 @@ testDesertHeatSurvivalPressureAndOasisShelter()
 testDesertCactusShadeClearsHeatPressure()
 testSwampMireSurvivalPressureAndBridgeShelter()
 testFogBiomeDisorientationRequiresGroupOrLantern()
+testCarriedGoldLightsCaveAndRuins()
 testCampShelterAndRecoveryInfrastructure()
 echo "All tests passed"

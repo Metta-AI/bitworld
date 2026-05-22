@@ -140,6 +140,9 @@ dinner-party hosting game without turning Party Progressor into a crafting sim.
 Carried supplies should also have a direct expedition use: selecting at an
 activated camp should let players turn wood, food, stone, or gold into a
 specific camp upgrade instead of only dropping the item.
+Gold should also have a field use in the deepest bands: carrying it through
+caves and ruins acts as a portable light focus, trading an occupied hand for
+temporary fog safety when the party cannot stay grouped.
 Camps cost wood and stone. Activating a camp should:
 
 - Mark expedition progress.
@@ -350,11 +353,17 @@ The first full-game implementation pass includes:
 - Cave and ruin fog now disorients isolated unsheltered players with slow
   pressure, while nearby allies, completed lantern/ward waystations, and camps
   keep the party oriented.
+- Cave and ruin expeditions now have a portable light choice: a player carrying
+  gold clears their own fog pressure and shows a visible `LIT`/`LIGHT`
+  affordance, creating a hand-occupying alternative to grouping or static
+  shelters.
 - Early biome tactics now teach sustain and grouping before and during harsh
   survival bands: forest travel slowly rebuilds a small shared food reserve,
   plains players grouped near allies recharge role powers faster, desert
-  players near cactus shade can pause heat attrition, and snow players grouped
-  near allies get a visible warmth affordance that clears cold pressure.
+  players near cactus shade can pause heat attrition, snow players grouped near
+  allies get a visible warmth affordance that clears cold pressure, and
+  cave/ruin players carrying gold get a visible light affordance that clears
+  local fog pressure.
 - Activated camps now act as expedition shelters: nearby players are protected
   from snow, desert, and fog exposure, recover poison/slow/chill statuses
   faster, and slowly heal while regrouping.
@@ -437,8 +446,8 @@ The first full-game implementation pass includes:
 - Konrad bot adapters now also read `MIRE`, `COLD`, `HEAT`, and `FOG` survival
   badges, biasing exposed players toward the right answer for the pressure:
   bridge waystations and shelters for mire, food, shelter, or shared warmth for
-  cold, food or shelter for heat, and regrouping or lantern/ward shelter for
-  fog.
+  cold, food or shelter for heat, and regrouping, lantern/ward shelter, or
+  carried-gold light for fog.
 - Konrad bot adapters now also treat visible teammate player sprites as regroup
   targets, so isolation pressure drives bots back toward the party instead of
   only toward generic safe landmarks.

@@ -187,6 +187,7 @@ type
     lowHealth: bool
     needsRegroup: bool
     needsShelter: bool
+    needsLight: bool
     needsTerrainRoute: bool
     canEatCarriedFood: bool
     carriedItem: CarryKind
@@ -826,6 +827,7 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.lowHealth = false
   bot.needsRegroup = false
   bot.needsShelter = false
+  bot.needsLight = false
   bot.needsTerrainRoute = false
   bot.canEatCarriedFood = false
   bot.carriedItem = CarryNone
@@ -875,6 +877,7 @@ proc updateSelfAffordances(bot: var Bot) =
     of "status fog":
       bot.needsShelter = true
       bot.needsRegroup = true
+      bot.needsLight = true
     of "status mire":
       bot.needsTerrainRoute = true
     else:
@@ -1530,6 +1533,8 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 170
     elif bot.carriedItem == CarryGold:
       distance + 160
+    elif bot.needsLight:
+      distance - 190
     else:
       distance - 55
   of TargetCamp:
@@ -2409,6 +2414,19 @@ when defined(konradTargetSelfTest):
   ))
   bot.carriedItem = CarryNone
   bot.needsShelter = true
+  bot.needsLight = true
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetGold,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetMob,
+    x: 40,
+    y: 0
+  ))
+  bot.needsLight = false
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetFood,
@@ -2702,7 +2720,16 @@ when defined(konradTargetSelfTest):
   bot.updateSelfAffordances()
   doAssert bot.needsShelter
   doAssert bot.needsRegroup
+  doAssert not bot.needsLight
   doAssert not bot.needsTerrainRoute
+  bot.sprites[coldStatusSpriteId].label = "status fog"
+  bot.updateSelfAffordances()
+  doAssert bot.needsShelter
+  doAssert bot.needsRegroup
+  doAssert bot.needsLight
+  bot.objects[coldStatusObjectId].present = false
+  bot.updateSelfAffordances()
+  doAssert not bot.needsLight
   bot.needsTerrainRoute = false
   bot.needsShelter = false
   bot.readStatusHud("dps snow|snow w0 f0 s0 r0|b cleave cd12|carry none")
