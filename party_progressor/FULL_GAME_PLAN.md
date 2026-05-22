@@ -279,6 +279,9 @@ The first full-game implementation pass includes:
 - Optional rescue side objectives seeded through biome bands: stranded travelers
   require a short nearby hold, heal the party slightly, and add emergency food,
   with healers completing rescues faster.
+- Optional monster lair side objectives seeded through biome bands: parties can
+  spend attack time to destroy local dens for supplies, side-objective score,
+  and a short pacification of nearby threats.
 - Wolves, camp defenders, bears, and boss scoring.
 - Combined team score and expanded result JSON.
 - Player/global HUD updates.
@@ -353,8 +356,8 @@ The first full-game implementation pass includes:
 ### Expedition Depth
 
 - Give each biome one tactical rule that changes party behavior.
-- Expand optional side objectives beyond shrines and rescue events: add monster
-  lairs or biome-specific detours that trade time for score or survivability.
+- Expand optional side objectives beyond shrines, rescues, and monster lairs:
+  add biome-specific detours that trade time for score or survivability.
 - Extend camp infrastructure beyond healing, role swap, weather shelter, and
   shortcut reveal: add biome-safe staging bonuses or optional fortification
   choices.

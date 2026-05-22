@@ -72,6 +72,10 @@ const
   ShrineHealAmount* = 1
   RescueFoodBonus* = 2
   RescueHealAmount* = 1
+  LairHp* = 6
+  LairFoodBonus* = 1
+  LairStoneBonus* = 1
+  LairPacifyRadius* = WorldTileSize * 3
   CampWoodCost* = 2
   CampStoneCost* = 1
   ResourceNodeHp* = 2
@@ -383,6 +387,7 @@ type
     LandmarkFinalGate
     LandmarkShrine
     LandmarkRescue
+    LandmarkLair
 
   Pickup* = object
     x*, y*: int
@@ -738,6 +743,7 @@ proc landmarkLabel*(kind: LandmarkKind): string =
   of LandmarkFinalGate: "final gate"
   of LandmarkShrine: "shrine"
   of LandmarkRescue: "rescue"
+  of LandmarkLair: "lair"
 
 proc carryLabel*(kind: CarryKind): string =
   case kind
@@ -1917,6 +1923,11 @@ proc seedLandmarks*(sim: var SimServer) =
           clamp(centerTy + 5, 1, WorldHeightTiles - 2)
         else:
           clamp(centerTy - 5, 1, WorldHeightTiles - 2)
+      lairTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          clamp(centerTy - 5, 1, WorldHeightTiles - 2)
+        else:
+          clamp(centerTy + 5, 1, WorldHeightTiles - 2)
     sim.addLandmark(
       resources.first,
       range.firstTx + max(1, span div 4),
@@ -1947,6 +1958,12 @@ proc seedLandmarks*(sim: var SimServer) =
       range.firstTx + max(2, (span * 3) div 4),
       rescueTy,
       1
+    )
+    sim.addLandmark(
+      LandmarkLair,
+      range.firstTx + max(2, span div 2),
+      lairTy,
+      LairHp
     )
     sim.addLandmark(
       LandmarkBeacon,
@@ -2520,7 +2537,8 @@ proc initSimServer*(seed = 0xB1770): SimServer =
       LandmarkBeacon: ("landmark_beacon", "control_point.png"),
       LandmarkFinalGate: ("landmark_final_gate", "altar.png"),
       LandmarkShrine: ("landmark_shrine", "altar.png"),
-      LandmarkRescue: ("landmark_rescue", "oriented/gatherer.e.png")
+      LandmarkRescue: ("landmark_rescue", "oriented/gatherer.e.png"),
+      LandmarkLair: ("landmark_lair", "goblin_hive.png")
     ]
   for kind in LandmarkKind:
     let asset = loadAssetPair(
@@ -3746,6 +3764,38 @@ proc activateRescueEvent(sim: var SimServer) =
     )
   inc sim.scoreRevision
 
+proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
+  ## Clears nearby local threats when a monster lair is destroyed.
+  let
+    center = sim.landmarkCenter(landmark)
+    radiusSq = LairPacifyRadius * LairPacifyRadius
+  var survivors: seq[Mob] = @[]
+  for mob in sim.mobs:
+    if mob.kind == BossMob:
+      survivors.add(mob)
+      continue
+    let
+      mobCenterX = boundsCenterX(mob.x, mob.bounds)
+      mobCenterY = boundsCenterY(mob.y, mob.bounds)
+    if distanceSquared(center.x, center.y, mobCenterX, mobCenterY) <= radiusSq:
+      inc result
+    else:
+      survivors.add(mob)
+  if result > 0:
+    sim.mobs = survivors
+
+proc destroyLair(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].done:
+    return
+  sim.landmarks[landmarkIndex].done = true
+  inc sim.sideObjectivesCompleted
+  sim.food += LairFoodBonus
+  sim.stone += LairStoneBonus
+  discard sim.pacifyLairMobs(sim.landmarks[landmarkIndex])
+  inc sim.scoreRevision
+
 proc harvestLandmark(
   sim: var SimServer,
   landmarkIndex,
@@ -3777,6 +3827,23 @@ proc harvestLandmark(
     sim.landmarks[landmarkIndex].done = true
   inc sim.scoreRevision
 
+proc attackLair(
+  sim: var SimServer,
+  landmarkIndex,
+  playerIndex: int
+) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let damage = sim.players[playerIndex].role.roleAttackDamage()
+  sim.landmarks[landmarkIndex].hp -= damage
+  sim.players[playerIndex].damageDone += damage
+  if sim.landmarks[landmarkIndex].hp <= 0:
+    sim.destroyLair(landmarkIndex)
+  else:
+    inc sim.scoreRevision
+
 proc applyLandmarkAttack(
   sim: var SimServer,
   playerIndex: int,
@@ -3784,9 +3851,9 @@ proc applyLandmarkAttack(
 ) =
   for landmarkIndex in 0 ..< sim.landmarks.len:
     let landmark = sim.landmarks[landmarkIndex]
-    if landmark.done or not landmark.kind.landmarkIsResource():
+    if landmark.done:
       continue
-    if rectOverlapsBounds(
+    let hitLandmark = rectOverlapsBounds(
       hit.x,
       hit.y,
       hit.w,
@@ -3794,9 +3861,14 @@ proc applyLandmarkAttack(
       landmark.landmarkWorldX(),
       landmark.landmarkWorldY(),
       sim.landmarkBounds(landmark.kind)
-    ):
+    )
+    if not hitLandmark:
+      continue
+    if landmark.kind.landmarkIsResource():
       sim.harvestLandmark(landmarkIndex, playerIndex)
-      break
+    elif landmark.kind == LandmarkLair:
+      sim.attackLair(landmarkIndex, playerIndex)
+    break
 
 proc activateNearbyLandmarks(sim: var SimServer) =
   ## Completes standing objectives and activates forward camps.

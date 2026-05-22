@@ -738,6 +738,13 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     done: false
   ))
   sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 3,
+    ty: sim.players[playerIndex].y div WorldTileSize + 1,
+    kind: LandmarkLair,
+    hp: LairHp,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
     tx: sim.players[playerIndex].x div WorldTileSize + 2,
     ty: sim.players[playerIndex].y div WorldTileSize,
     kind: LandmarkCamp,
@@ -762,6 +769,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt shelter" in labels
   doAssert "prompt shrine f2" in labels
   doAssert "prompt rescue f2" in labels
+  doAssert "prompt lair" in labels
   doAssert "prompt gate boss r3" in labels
 
 proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
@@ -1136,6 +1144,89 @@ proc testHealerCompletesRescueEventsFaster() =
   doAssert sim.landmarks[0].done,
     "healer should complete rescue detours twice as quickly"
 
+proc testMonsterLairAttackRewardsAndPacifiesThreats() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.food = 0
+  sim.stone = 0
+  sim.mobSpawnCooldown = 999
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].applyRole(RoleDps)
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  let hit = sim.attackRect(sim.players[playerIndex])
+  let
+    lairTx = clamp((hit.x + hit.w div 2) div WorldTileSize, 0, WorldWidthTiles - 1)
+    lairTy = clamp((hit.y + hit.h div 2) div WorldTileSize, 0, WorldHeightTiles - 1)
+    lairX = lairTx * WorldTileSize
+    lairY = lairTy * WorldTileSize
+  sim.landmarks.add(Landmark(
+    tx: lairTx,
+    ty: lairTy,
+    kind: LandmarkLair,
+    hp: LairHp,
+    done: false
+  ))
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: lairX,
+    y: lairY + WorldTileSize * 2,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesDireWolf,
+    x: lairX + LairPacifyRadius + WorldTileSize * 4,
+    y: lairY,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: 4,
+    attackCooldown: 99
+  ))
+  sim.mobs.add(Mob(
+    kind: BossMob,
+    species: SpeciesNone,
+    x: lairX,
+    y: lairY + WorldTileSize * 2,
+    sprite: sim.bossSprite,
+    bounds: sim.bossBounds,
+    hp: BossHp,
+    attackCooldown: 99
+  ))
+
+  sim.step([InputState(attack: true)])
+
+  doAssert not sim.landmarks[0].done
+  doAssert sim.landmarks[0].hp == LairHp - 3,
+    "DPS attacks should visibly damage lairs without instantly clearing them"
+  doAssert sim.sideObjectivesCompleted == 0
+
+  sim.players[playerIndex].attackTicks = 0
+  sim.players[playerIndex].attackResolved = false
+  sim.step([InputState(attack: true)])
+
+  doAssert sim.landmarks[0].done
+  doAssert sim.sideObjectivesCompleted == 1
+  doAssert sim.food == LairFoodBonus
+  doAssert sim.stone == LairStoneBonus
+  doAssert sim.mobs.len == 2,
+    "destroyed lairs should pacify nearby threats without deleting bosses; remaining=" &
+      $sim.mobs.len
+  doAssert sim.mobs.anyIt(it.species == SpeciesDireWolf)
+  doAssert sim.mobs.anyIt(it.kind == BossMob)
+  doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
+
 proc testDpsCleaveSpecialDamagesNearbyMobs() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1340,6 +1431,7 @@ testBeaconAndBossScoring()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()
 testHealerCompletesRescueEventsFaster()
+testMonsterLairAttackRewardsAndPacifiesThreats()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()

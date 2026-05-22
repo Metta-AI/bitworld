@@ -1291,6 +1291,8 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "SHRINE F" & $ShrineFoodBonus
   of LandmarkRescue:
     "RESCUE F" & $RescueFoodBonus
+  of LandmarkLair:
+    "LAIR"
 
 proc landmarkPromptLabel(landmark: Landmark): string =
   if landmark.kind == LandmarkCamp and landmark.done:
