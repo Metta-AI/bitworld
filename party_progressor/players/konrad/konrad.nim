@@ -39,8 +39,11 @@ const
   ExploreStep = 17
   RoleLabelToGearOffset = WorldTileSize div 2
   OpportunisticLootRadius = WorldTileSize * 3
+  OpportunisticResourceRadius = WorldTileSize * 4
   OpportunisticObjectiveRadius = WorldTileSize * 5
   BacktrackLootSlack = WorldTileSize
+  FrontierLootBacktrackSlack = WorldTileSize * 6
+  FrontierCampBacktrackSlack = WorldTileSize * 6
   ExploreDetourResetTicks = TargetFps * 3
   ExploreDetourOffsets = [0, 8, -8, 12, -12, 4, -4, 16, -16, 2, -2, 6, -6]
   ExpeditionLaneMinPathTy =
@@ -152,6 +155,7 @@ type
     playerWorldY: int
     playerCenterWorldX: int
     playerCenterWorldY: int
+    frontierX: int
     previousPlayerX: int
     previousPlayerY: int
     havePlayerSample: bool
@@ -707,6 +711,7 @@ proc updatePlayerPosition(bot: var Bot) =
   bot.playerCenterWorldX = bestCenterX
   bot.playerCenterWorldY = bestCenterY
   bot.selfObjectId = bestId
+  bot.frontierX = max(bot.frontierX, bestX)
 
 proc parseHealthLabel(label: string): tuple[found: bool, current: int, maximum: int] =
   ## Parses compact health sprite labels such as "health 2/9".
@@ -896,7 +901,8 @@ proc targetDistance(bot: Bot, target: Target): int =
 proc isOpportunisticLoosePickup(bot: Bot, target: Target): bool =
   ## Keeps loose loot useful without letting old drops break expedition pacing.
   bot.targetDistance(target) <= OpportunisticLootRadius and
-    target.x >= bot.playerWorldX - BacktrackLootSlack
+    target.x >= bot.playerWorldX - BacktrackLootSlack and
+    target.x >= bot.frontierX - FrontierLootBacktrackSlack
 
 proc targetCenter(
   bot: Bot,
@@ -922,6 +928,23 @@ proc scanWorld(
   pickups.setLen(0)
   allies.setLen(0)
   mobs.setLen(0)
+
+  var downedPlayerIds: seq[bool]
+  for objectId in 0 ..< bot.objects.len:
+    let objectState = bot.objects[objectId]
+    if not objectState.present:
+      continue
+    if objectId < StatusBadgeObjectBase:
+      continue
+    let sprite = bot.spriteInfo(objectState.spriteId)
+    if sprite.kind != SpriteText or
+        sprite.label.toLowerAscii() != "status down":
+      continue
+    let playerId = (objectId - StatusBadgeObjectBase) div StatusBadgeSlots
+    while downedPlayerIds.len <= playerId:
+      downedPlayerIds.add(false)
+    downedPlayerIds[playerId] = true
+
   for objectId in 0 ..< bot.objects.len:
     let objectState = bot.objects[objectId]
     if not objectState.present:
@@ -938,16 +961,27 @@ proc scanWorld(
       if objectId < PlayerObjectBase or objectId >= MobObjectBase:
         continue
       let
+        playerId = objectId - PlayerObjectBase
         screenFeet = objectState.objectFootCenter(sprite)
         x = bot.cameraX + screenFeet.x
         y = bot.cameraY + screenFeet.y
       allies.add(Target(
         found: true,
-        kind: TargetRegroup,
+        kind:
+          if playerId >= 0 and playerId < downedPlayerIds.len and
+              downedPlayerIds[playerId]:
+            TargetRescue
+          else:
+            TargetRegroup,
         objectId: objectId,
         x: x,
         y: y,
-        label: TargetRegroup.targetLabel()
+        label:
+          if playerId >= 0 and playerId < downedPlayerIds.len and
+              downedPlayerIds[playerId]:
+            TargetRescue.targetLabel()
+          else:
+            TargetRegroup.targetLabel()
       ))
     of SpriteTerrain:
       let bounds = sprite.terrainBounds()
@@ -1202,11 +1236,11 @@ proc isCarryResourceTarget(kind: TargetKind): bool =
 
 proc directedUnstuckMask(bot: var Bot): uint8 =
   ## Chooses a recovery nudge that still respects the current target.
+  if bot.currentTargetKind == TargetExplore and
+      bot.exploreDetourVerticalMask() != 0:
+    return bot.exploreDetourVerticalMask()
   let vertical =
-    if bot.currentTargetKind == TargetExplore and
-        bot.exploreDetourVerticalMask() != 0:
-      bot.exploreDetourVerticalMask()
-    elif bot.rng.rand(1) == 0:
+    if bot.rng.rand(1) == 0:
       ButtonUp
     else:
       ButtonDown
@@ -1317,10 +1351,26 @@ proc isOpportunisticObjective(bot: Bot, target: Target): bool =
     target.x >= bot.playerWorldX - BacktrackLootSlack
   )
 
+proc isUsefulLooseCarryPickup(bot: Bot, target: Target): bool =
+  ## Treats dropped expedition resources as local pickups, not old objectives.
+  bot.targetDistance(target) <= OpportunisticResourceRadius and
+    target.x >= bot.playerWorldX - BacktrackLootSlack and
+    target.x >= bot.frontierX - FrontierLootBacktrackSlack
+
+proc campTooFarBehindFrontier(bot: Bot, target: Target): bool =
+  ## Keeps old incomplete camps from pulling bots out of the forward push.
+  bot.frontierX > 0 and target.x < bot.frontierX - FrontierCampBacktrackSlack
+
 proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   ## During role choice, ignore generic gear and non-preferred role labels.
   if bot.carriedItem != CarryNone and target.kind.isCarryResourceTarget() and
       target.objectId.isLooseCarryPickupObject():
+    return false
+  if target.kind.isCarryResourceTarget() and
+      target.objectId.isLooseCarryPickupObject() and
+      not bot.isUsefulLooseCarryPickup(target):
+    return false
+  if target.kind == TargetCamp and bot.campTooFarBehindFrontier(target):
     return false
   if target.kind.optionalExpeditionTarget() and
       not bot.isOpportunisticObjective(target):
@@ -1353,6 +1403,22 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
     let preferred = bot.preferredRoleTarget()
     return preferred == TargetExplore or target.kind == preferred
   true
+
+proc isImmediateThreat(bot: Bot, target: Target): bool =
+  bot.targetDistance(target) <= WorldTileSize
+
+proc canConsiderThreatTarget(bot: Bot, target: Target): bool =
+  ## Keeps fights forward unless the monster is already on top of the bot.
+  if target.kind notin {TargetMob, TargetTroll, TargetBoss}:
+    return true
+  if bot.isImmediateThreat(target):
+    return true
+  target.x >= bot.playerWorldX - BacktrackLootSlack and
+    target.x >= bot.frontierX - FrontierLootBacktrackSlack
+
+proc isPlayerRescueTarget(target: Target): bool =
+  target.kind == TargetRescue and
+    target.objectId >= PlayerObjectBase and target.objectId < MobObjectBase
 
 proc targetScore(bot: Bot, target: Target): int =
   ## Scores a target where lower is better.
@@ -1431,7 +1497,17 @@ proc targetScore(bot: Bot, target: Target): int =
   of TargetWaystation:
     distance + (if bot.lowHealth or bot.needsRegroup: -165 else: -65)
   of TargetRescue:
-    distance + (if bot.needsRegroup: -120 else: -50)
+    if target.isPlayerRescueTarget():
+      distance + (
+        if bot.lowHealth:
+          -260
+        elif bot.roleLabel == "healer":
+          -720
+        else:
+          -620
+      )
+    else:
+      distance + (if bot.needsRegroup: -120 else: -50)
   of TargetShrine:
     distance - 20
   of TargetGate:
@@ -1446,6 +1522,11 @@ proc targetScore(bot: Bot, target: Target): int =
     distance + (if bot.lowHealth: 560 elif bot.needsRegroup: 440 elif distance < 120: -45 else: 900)
   of TargetExplore:
     distance + 120
+
+proc hasPlayerRescueTarget(targets: openArray[Target]): bool =
+  for target in targets:
+    if target.isPlayerRescueTarget():
+      return true
 
 proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
   ## Picks a new open tile that keeps the expedition pushing right.
@@ -1521,6 +1602,7 @@ proc chooseTarget(
     return laneRecovery
 
   var bestScore = high(int)
+  let rescueVisible = allies.hasPlayerRescueTarget()
   for pickup in pickups:
     if bot.skipTicks > 0 and pickup.objectId == bot.skipTargetId:
       continue
@@ -1530,7 +1612,7 @@ proc chooseTarget(
     if score < bestScore:
       bestScore = score
       result = pickup
-  if bot.needsRegroup or bot.lowHealth:
+  if bot.needsRegroup or bot.lowHealth or rescueVisible:
     for ally in allies:
       if bot.skipTicks > 0 and ally.objectId == bot.skipTargetId:
         continue
@@ -1554,6 +1636,8 @@ proc chooseTarget(
   if not bot.choosingRole():
     for mob in mobs:
       if bot.skipTicks > 0 and mob.objectId == bot.skipTargetId:
+        continue
+      if not bot.canConsiderThreatTarget(mob):
         continue
       let score = bot.targetScore(mob)
       if score < bestScore:
@@ -2051,6 +2135,27 @@ when defined(konradTargetSelfTest):
     objectId: LandmarkObjectBase + 1
   ))
   bot.carriedItem = CarryNone
+  bot.playerWorldX = 1280
+  bot.playerWorldY = 300
+  bot.frontierX = 1536
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetStone,
+    objectId: PickupObjectBase + 10,
+    x: 1280,
+    y: 430
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetStone,
+    objectId: PickupObjectBase + 11,
+    x: bot.frontierX - FrontierLootBacktrackSlack - 1,
+    y: 300
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetStone,
+    objectId: PickupObjectBase + 12,
+    x: bot.frontierX - FrontierLootBacktrackSlack,
+    y: 300
+  ))
   bot.needWood = 1
   doAssert not bot.canConsiderPickupTarget(Target(
     kind: TargetCamp,
@@ -2058,6 +2163,21 @@ when defined(konradTargetSelfTest):
   ))
   bot.needWood = 0
   bot.needStone = 0
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetCamp,
+    objectId: LandmarkObjectBase + 2,
+    x: bot.frontierX - FrontierCampBacktrackSlack - 1,
+    y: 300
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetCamp,
+    objectId: LandmarkObjectBase + 2,
+    x: bot.frontierX - FrontierCampBacktrackSlack,
+    y: 300
+  ))
+  bot.playerWorldX = 0
+  bot.playerWorldY = 0
+  bot.frontierX = 0
   doAssert not bot.canConsiderPickupTarget(Target(
     kind: TargetShelter,
     objectId: LandmarkObjectBase + 3
@@ -2397,6 +2517,37 @@ when defined(konradTargetSelfTest):
       sawDpsRole = true
     doAssert pickup.objectId != carryOverlayObjectId
   doAssert sawDpsRole
+  let
+    downSpriteId = 9008
+    downObjectId =
+      StatusBadgeObjectBase + (allyObjectId - PlayerObjectBase) * StatusBadgeSlots
+  bot.ensureSprite(downSpriteId)
+  bot.sprites[downSpriteId] = SpriteInfo(
+    defined: true,
+    width: 32,
+    height: 8,
+    label: "status down",
+    kind: SpriteText
+  )
+  bot.ensureObject(downObjectId)
+  bot.objects[downObjectId] = ObjectState(
+    present: true,
+    x: 112,
+    y: 0,
+    spriteId: downSpriteId
+  )
+  bot.scanWorld(blocked, pickups, allies, mobs)
+  doAssert allies.len == 1
+  doAssert allies[0].kind == TargetRescue
+  bot.needsRegroup = false
+  bot.lowHealth = false
+  doAssert bot.targetScore(allies[0]) < bot.targetScore(Target(
+    found: true,
+    kind: TargetMob,
+    x: 40,
+    y: 0
+  ))
+  bot.objects[downObjectId].present = false
   bot.lowHealth = true
   doAssert bot.targetScore(Target(
     found: true,
@@ -2433,6 +2584,23 @@ when defined(konradTargetSelfTest):
     x: 48,
     y: 0
   ))
+  bot.needsRegroup = false
+  bot.playerWorldX = 1200
+  bot.playerWorldY = 190
+  bot.frontierX = 1458
+  doAssert not bot.canConsiderThreatTarget(Target(
+    found: true,
+    kind: TargetMob,
+    x: 1154,
+    y: 190
+  ))
+  doAssert bot.canConsiderThreatTarget(Target(
+    found: true,
+    kind: TargetMob,
+    x: 1180,
+    y: 190
+  ))
+  bot.frontierX = 0
   bot.playerWorldX = 1000
   bot.playerWorldY = 300
   bot.objectiveHint = ""
@@ -2562,7 +2730,7 @@ when defined(konradTargetSelfTest):
   doAssert bot.exploreDetourIndex != 0
   doAssert bot.lastExploreStuckTick == 500
   doAssert not bot.hasExploreGoal
-  doAssert (bot.jiggleMask and ButtonRight) != 0
+  doAssert (bot.jiggleMask and ButtonRight) == 0
   doAssert (bot.jiggleMask and ButtonDown) != 0
   blocked.resetBlocked()
   bot.refreshExploreGoal(blocked)

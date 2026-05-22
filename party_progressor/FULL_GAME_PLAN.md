@@ -458,6 +458,16 @@ The first full-game implementation pass includes:
 - Konrad optional side-objective targeting now stays opportunistic unless the
   HUD names that objective as the current expedition step, so relic, shrine,
   rescue, lair, and waystation clusters do not stall the party's forward push.
+- Konrad now tracks each bot's personal expedition frontier and filters stale
+  loose resource drops, old incomplete camps, and non-immediate monster fights
+  behind that frontier, reducing late-run collapses back into already-cleared
+  biome bands after a forward push or camp respawn.
+- Konrad now reads downed-player status badges from the sprite protocol and
+  treats a downed teammate as a rescue target, with healers prioritizing the
+  revive route most aggressively.
+- Konrad's push-path unstuck now makes a pure vertical sidestep when a detour is
+  active, so bots can slide around blocked right edges instead of pressing into
+  them forever.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
