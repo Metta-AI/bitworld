@@ -149,7 +149,7 @@ proc repoDir(): string =
   getCurrentDir() / ".."
 
 proc clientDataDir(): string =
-  repoDir() / "clients" / "data"
+  repoDir() / "client" / "data"
 
 proc palettePath(): string =
   clientDataDir() / "pallete.png"
@@ -995,7 +995,7 @@ proc isWebSocketUpgrade(request: Request): bool =
   request.headers["Sec-WebSocket-Key"].len > 0
 
 proc serveClientHtml(request: Request, filename: string) =
-  let path = repoDir() / "clients" / filename
+  let path = repoDir() / "client" / filename
   if not fileExists(path):
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -1007,7 +1007,7 @@ proc serveClientHtml(request: Request, filename: string) =
   request.respond(200, headers, readFile(path))
 
 proc serveSnappyJs(request: Request) =
-  let path = repoDir() / "clients" / "snappyjs.min.js"
+  let path = repoDir() / "client" / "snappyjs.min.js"
   if not fileExists(path):
     var headers: HttpHeaders
     headers["Content-Type"] = "text/plain"
@@ -1060,8 +1060,8 @@ proc httpHandler(request: Request) =
   elif request.path == "/" or request.path == WebSocketPath or
       request.path == "/global" or request.path == "/admin" or
       request.path == "/replay" or
-      request.path == "/clients/global" or request.path == "/clients/player" or
-      request.path == "/clients/admin" or request.path == "/clients/replay":
+      request.path == "/client/global" or request.path == "/client/player" or
+      request.path == "/client/admin" or request.path == "/client/replay":
     request.serveClientHtml("global_client.html")
   else:
     var headers: HttpHeaders

@@ -36,24 +36,24 @@ proc repoDir*(): string =
   ## Returns the Bit World repository directory.
   currentSourcePath().parentDir().parentDir().parentDir()
 
-proc clientsDir*(): string =
-  ## Returns the shared clients directory. Resolved at runtime relative
-  ## to CWD so it works both from the repo root (./clients) and from a
-  ## packaged install (../clients next to the chdir'd binary), mirroring
+proc clientDir*(): string =
+  ## Returns the shared client directory. Resolved at runtime relative
+  ## to CWD so it works both from the repo root (./client) and from a
+  ## packaged install (../client next to the chdir'd binary), mirroring
   ## clientDataDir()'s strategy. OSError is trapped so callers can keep
   ## a tight {.raises: [IOError].} contract.
   when defined(emscripten):
-    "clients"
+    "client"
   else:
     try:
       let cwd = getCurrentDir()
-      let sibling = cwd / ".." / "clients"
+      let sibling = cwd / ".." / "client"
       if dirExists(sibling):
         sibling
       else:
-        cwd / "clients"
+        cwd / "client"
     except OSError:
-      "clients"
+      "client"
 
 proc clientRoute*(route: string, playerRoute = PlayerClientRoute): string =
   ## Maps public client aliases to the underlying shared client route.
@@ -84,13 +84,13 @@ proc clientHtmlPath*(route: string, playerRoute = PlayerClientRoute): string =
   ## Returns the local HTML file for a served client route.
   case clientRoute(route, playerRoute)
   of PlayerClientRoute:
-    clientsDir() / PlayerClientHtml
+    clientDir() / PlayerClientHtml
   of GlobalClientRoute:
-    clientsDir() / GlobalClientHtml
+    clientDir() / GlobalClientHtml
   of RewardClientRoute:
-    clientsDir() / RewardClientHtml
+    clientDir() / RewardClientHtml
   of AdminClientRoute:
-    clientsDir() / AdminClientHtml
+    clientDir() / AdminClientHtml
   else:
     ""
 
@@ -98,9 +98,9 @@ proc clientStaticPath*(route: string, playerRoute = PlayerClientRoute): string =
   ## Returns the local static client file for a served client route.
   case clientRoute(route, playerRoute)
   of SnappyClientRoute:
-    clientsDir() / SnappyClientJs
+    clientDir() / SnappyClientJs
   of QrcodeClientRoute:
-    clientsDir() / QrcodeClientJs
+    clientDir() / QrcodeClientJs
   else:
     clientHtmlPath(route, playerRoute)
 

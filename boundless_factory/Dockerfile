@@ -42,9 +42,9 @@ COPY --from=build \
 COPY --from=build \
   /workspace/bitworld/boundless_factory/data \
   ./boundless_factory/data
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/boundless_factory
 CMD ["/bin/infinite_factory", "--address:0.0.0.0", "--port:8080"]

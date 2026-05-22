@@ -174,15 +174,10 @@ const url=new URL(location.href);
 function websocketPathForClientPage(path){
   const mappings=[
     ["/client/global","/global"],
-    ["/clients/global","/global"],
     ["/client/replay","/replay"],
-    ["/clients/replay","/replay"],
     ["/client/player","/player"],
-    ["/clients/player","/player"],
     ["/client/rewards","/reward"],
-    ["/clients/rewards","/reward"],
     ["/client/admin","/admin"],
-    ["/clients/admin","/admin"],
   ];
   for(const [clientPath,websocketPath] of mappings){
     if(path===clientPath){

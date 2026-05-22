@@ -1,7 +1,7 @@
 import
   std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
   curly, mummy,
-  bitworld/clients, bitworld/cogame_runtime, protocol, sim, global, profile, replays, game_log
+  bitworld/client, bitworld/cogame_runtime, protocol, sim, global, profile, replays, game_log
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown

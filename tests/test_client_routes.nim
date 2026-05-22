@@ -1,6 +1,6 @@
 import
   std/[os, strutils],
-  bitworld/clients
+  bitworld/client
 
 proc assertEndsWith(value, suffix: string) =
   doAssert value.endsWith(suffix), value & " should end with " & suffix
@@ -17,17 +17,17 @@ proc testCanonicalCoworldClientRoutes() =
   doAssert coworldClientStaticRoute(CoworldQrcodeClientRoute) == QrcodeClientRoute
   doAssert coworldClientStaticRoute("/client/replay.html") == "/client/replay.html"
   doAssert clientStaticPath("/client/replay.html") == ""
-  assertEndsWith(clientStaticPath("/client/replay"), "clients" / GlobalClientHtml)
+  assertEndsWith(clientStaticPath("/client/replay"), "client" / GlobalClientHtml)
 
 proc testClientStaticPaths() =
   ## Tests that public routes resolve to packaged static files.
   echo "Testing client static paths"
-  assertEndsWith(clientStaticPath(CoworldPlayerClientRoute), "clients" / PlayerClientHtml)
-  assertEndsWith(clientStaticPath(CoworldGlobalClientRoute), "clients" / GlobalClientHtml)
-  assertEndsWith(clientStaticPath(CoworldReplayClientRoute), "clients" / GlobalClientHtml)
-  assertEndsWith(clientStaticPath(CoworldAdminClientRoute), "clients" / AdminClientHtml)
-  assertEndsWith(clientStaticPath(CoworldRewardClientRoute), "clients" / RewardClientHtml)
-  assertEndsWith(clientStaticPath(CoworldSnappyClientRoute), "clients" / SnappyClientJs)
+  assertEndsWith(clientStaticPath(CoworldPlayerClientRoute), "client" / PlayerClientHtml)
+  assertEndsWith(clientStaticPath(CoworldGlobalClientRoute), "client" / GlobalClientHtml)
+  assertEndsWith(clientStaticPath(CoworldReplayClientRoute), "client" / GlobalClientHtml)
+  assertEndsWith(clientStaticPath(CoworldAdminClientRoute), "client" / AdminClientHtml)
+  assertEndsWith(clientStaticPath(CoworldRewardClientRoute), "client" / RewardClientHtml)
+  assertEndsWith(clientStaticPath(CoworldSnappyClientRoute), "client" / SnappyClientJs)
   doAssert clientStaticContentType(CoworldReplayClientRoute) == "text/html; charset=utf-8"
   doAssert clientStaticContentType(CoworldSnappyClientRoute) == "application/javascript; charset=utf-8"
 

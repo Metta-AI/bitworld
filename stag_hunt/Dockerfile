@@ -54,9 +54,9 @@ WORKDIR /workspace/bitworld
 COPY --from=build \
   /workspace/bitworld/stag_hunt/stag_hunt \
   /bin/stag_hunt
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/stag_hunt
 EXPOSE 8080

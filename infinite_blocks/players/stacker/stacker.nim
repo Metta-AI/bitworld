@@ -1418,7 +1418,7 @@ when defined(gui):
 
   proc atlasPath(): string =
     ## Returns the shared Silky atlas path.
-    gameDir() / ".." / "clients" / "dist" / "atlas.png"
+    gameDir() / ".." / "client" / "dist" / "atlas.png"
 
   proc viewerOpen(viewer: ViewerApp): bool =
     ## Returns true while the diagnostic viewer should stay open.

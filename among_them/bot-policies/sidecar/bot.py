@@ -414,7 +414,7 @@ def _game_dir() -> Path:
 def _find_palette_path() -> Optional[Path]:
   gd = _game_dir()
   candidates = [
-    gd.parent / 'clients' / 'data' / 'pallete.png',
+    gd.parent / 'client' / 'data' / 'pallete.png',
     gd / 'pallete.png',
   ]
   for c in candidates:
@@ -426,7 +426,7 @@ def _find_spritesheet_path() -> Optional[Path]:
   gd = _game_dir()
   candidates = [
     gd / 'spritesheet.png',
-    gd.parent / 'clients' / 'dist' / 'atlas.png',
+    gd.parent / 'client' / 'dist' / 'atlas.png',
   ]
   for c in candidates:
     if c.exists():

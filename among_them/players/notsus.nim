@@ -216,7 +216,7 @@ proc taskCenter(task: TaskStation): tuple[x: int, y: int] =
 
 proc atlasPath(): string =
   ## Returns the shared Silky atlas path.
-  gameDir() / ".." / "clients" / "dist" / "atlas.png"
+  gameDir() / ".." / "client" / "dist" / "atlas.png"
 
 proc sampleColor(index: uint8): ColorRGBX =
   ## Converts one palette index to a viewer color.

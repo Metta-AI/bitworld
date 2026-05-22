@@ -1,7 +1,7 @@
 import mummy
 import pixie
 import supersnappy
-import bitworld/clients
+import bitworld/client
 import bitworld/cogame_runtime
 import protocol, server
 import std/[json, locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
@@ -265,7 +265,7 @@ proc parseGameConfig(jsonStr: string): GameConfig =
         break
 
 proc repoDir(): string = getCurrentDir() / ".."
-proc clientDataDir(): string = repoDir() / "clients" / "data"
+proc clientDataDir(): string = repoDir() / "client" / "data"
 proc palettePath(): string = clientDataDir() / "pallete.png"
 proc spriteDir(): string = getCurrentDir() / "stag_hunt" / "sprites" / "12px"
 

@@ -54,9 +54,9 @@ COPY --from=build /workspace/bitworld/among_them/*.json ./among_them/
 COPY --from=build /workspace/bitworld/among_them/*.aseprite ./among_them/
 COPY --from=build /workspace/bitworld/among_them/*.png ./among_them/
 COPY --from=build /workspace/bitworld/among_them/data ./among_them/data
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/among_them
 CMD ["/bin/among_them"]

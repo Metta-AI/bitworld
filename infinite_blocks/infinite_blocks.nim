@@ -2,7 +2,7 @@ import
   std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils,
     tables, times],
   mummy, pixie, supersnappy,
-  bitworld/aseprite, bitworld/clients, bitworld/cogame_runtime, pixelfonts, protocol, server
+  bitworld/aseprite, bitworld/client, bitworld/cogame_runtime, pixelfonts, protocol, server
 
 const
   BoardWidthCells = 125
@@ -241,7 +241,7 @@ proc gameDataDir(): string =
 
 proc clientDataDir(): string =
   ## Returns the shared client data directory.
-  repoDir() / "clients" / "data"
+  repoDir() / "client" / "data"
 
 proc blockSpritesPath(): string =
   ## Returns the block sprite atlas path.

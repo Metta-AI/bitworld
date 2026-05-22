@@ -624,7 +624,7 @@ type
     ## old `setCurrentDir(gameDir())` global side effect. All fields are
     ## absolute paths populated once at construction.
     gameRoot*: string                     ## .../bitworld/among_them
-    atlasPath*: string                    ## .../bitworld/clients/dist/atlas.png
+    atlasPath*: string                    ## .../bitworld/client/dist/atlas.png
     mapPath*: string                      ## empty = let sim use DefaultMapPath
 
   TraceLevel* = enum

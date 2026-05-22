@@ -700,14 +700,14 @@ proc referencedFilePaths*(coworld: CoworldPackage): seq[(string, string)] =
       resolveManifestUri(coworldDir, coworld.protocols.reward)
     ))
 
-  let clients = coworld.manifest.optionalKey("clients")
-  if not clients.isNil and clients.kind == JObject:
+  let client = coworld.manifest.optionalKey("client")
+  if not client.isNil and client.kind == JObject:
     for key in ["player", "global", "replay"]:
-      let client = clients.optionalKey(key)
-      if not client.isNil and client.kind == JString:
+      let clientUri = client.optionalKey(key)
+      if not clientUri.isNil and clientUri.kind == JString:
         result.add((
-          "Coworld clients." & key,
-          resolveManifestUri(coworldDir, client.getStr())
+          "Coworld client." & key,
+          resolveManifestUri(coworldDir, clientUri.getStr())
         ))
 
 proc validateReferencedFiles*(coworld: CoworldPackage) =

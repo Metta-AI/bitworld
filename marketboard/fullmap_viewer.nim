@@ -1,7 +1,7 @@
 import std/[monotimes, os, parseopt, strutils]
 import pixie, supersnappy, windy
 import protocol, sim, replays
-import ../clients/global_client
+import ../client/global_client
 
 const
   MapLayerId = 0
@@ -33,10 +33,10 @@ proc repoDir(): string =
   getCurrentDir()
 
 proc clientDataDir(): string =
-  repoDir() / "clients" / "data"
+  repoDir() / "client" / "data"
 
 proc clientDistDir(): string =
-  repoDir() / "clients" / "dist"
+  repoDir() / "client" / "dist"
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   packet.add(value)

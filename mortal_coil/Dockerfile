@@ -52,9 +52,9 @@ WORKDIR /workspace/bitworld
 COPY --from=build /workspace/bitworld/mortal_coil/mortal_coil /bin/mortal_coil
 COPY --from=build /workspace/bitworld/mortal_coil/*.json ./mortal_coil/
 COPY --from=build /workspace/bitworld/mortal_coil/*.aseprite ./mortal_coil/
-COPY --from=build /workspace/bitworld/clients/*.html ./clients/
-COPY --from=build /workspace/bitworld/clients/*.js ./clients/
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
+COPY --from=build /workspace/bitworld/client/*.html ./client/
+COPY --from=build /workspace/bitworld/client/*.js ./client/
+COPY --from=build /workspace/bitworld/client/data ./client/data
 
 WORKDIR /workspace/bitworld/mortal_coil
 CMD ["/bin/mortal_coil", "--address:0.0.0.0", "--port:8080"]

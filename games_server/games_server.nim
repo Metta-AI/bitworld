@@ -3964,7 +3964,7 @@ proc renderGridPage(
 
 proc clientRoot(): string =
   ## Returns the shared client asset directory.
-  parentDir(parentDir(currentSourcePath())) / "clients"
+  parentDir(parentDir(currentSourcePath())) / "client"
 
 proc clientAsset(path: string): string =
   ## Maps one public client route to a local asset path.

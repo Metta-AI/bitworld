@@ -172,7 +172,7 @@ proc repoDir*(): string =
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
-  repoDir() / "clients" / "data"
+  repoDir() / "client" / "data"
 
 proc tiny5Path*(): string =
   ## Returns the shared Tiny5 pixel font path.

@@ -48,9 +48,9 @@ WORKDIR /workspace/bitworld
 COPY --from=build \
   /workspace/bitworld/asteroid_arena/asteroid_arena \
   /bin/asteroid_arena
-COPY --from=build /workspace/bitworld/clients/data ./clients/data
-COPY --from=build /workspace/bitworld/clients/global_client.html ./clients/
-COPY --from=build /workspace/bitworld/clients/snappyjs.min.js ./clients/
+COPY --from=build /workspace/bitworld/client/data ./client/data
+COPY --from=build /workspace/bitworld/client/global_client.html ./client/
+COPY --from=build /workspace/bitworld/client/snappyjs.min.js ./client/
 
 WORKDIR /workspace/bitworld/asteroid_arena
 CMD ["/bin/asteroid_arena", "--address:0.0.0.0", "--port:8080"]

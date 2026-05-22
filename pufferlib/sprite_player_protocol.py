@@ -266,7 +266,7 @@ def png_rgba_pixels(path: Path) -> tuple[int, int, bytes]:
 
 
 def load_palette_lookup() -> dict[tuple[int, int, int, int], int]:
-    width, _height, pixels = png_rgba_pixels(REPO_ROOT / "clients" / "data" / "pallete.png")
+    width, _height, pixels = png_rgba_pixels(REPO_ROOT / "client" / "data" / "pallete.png")
     count = min(16, width)
     return {tuple(pixels[index * 4 : index * 4 + 4]): index for index in range(count)}
 
