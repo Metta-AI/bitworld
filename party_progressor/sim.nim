@@ -127,6 +127,9 @@ const
   CooperativeObjectiveHoldMaxStep* = 4
   FinalGateRitualTicks* = TargetFps * 2
   FinalGateTriumphTicks* = TargetFps * 12
+  ObjectiveMoraleTicks* = TargetFps * 8
+  ObjectiveMoraleSpeedPercent* = 106
+  ObjectiveMoraleCooldownStep* = 1
   BeaconSurveyTicks* = TargetFps * 10
   BeaconSurveyMinSpeedPercent* = 90
   FinalGateTwoRoleStep* = 2
@@ -380,6 +383,7 @@ type
     huntTicks*: int
     triumphTicks*: int
     rationTicks*: int
+    moraleTicks*: int
     downedTicks*: int
     rescueTicks*: int
 
@@ -923,6 +927,8 @@ proc statusLabel*(player: Actor): string =
     labels.add("triumph")
   if player.rationTicks > 0:
     labels.add("ration")
+  if player.moraleTicks > 0:
+    labels.add("morale")
   if player.poisonTicks > 0:
     labels.add("poison")
   if player.slowTicks > 0:
@@ -1043,6 +1049,8 @@ proc statusSpeedPercent*(player: Actor): int =
     result = min(result, StatusExhaustionSpeedPercent)
   if player.guideTicks > 0 and result == 100:
     result = RescueGuideSpeedPercent
+  if player.moraleTicks > 0 and result == 100:
+    result = ObjectiveMoraleSpeedPercent
 
 proc roleMaxHp(role: PlayerRole): int =
   case role
@@ -2887,6 +2895,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].huntTicks = 0
   sim.players[playerIndex].triumphTicks = 0
   sim.players[playerIndex].rationTicks = 0
+  sim.players[playerIndex].moraleTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
 
@@ -3130,6 +3139,7 @@ proc playerScoresJson*(sim: SimServer): string =
     downedTicks = newJArray()
     triumphTicks = newJArray()
     rationTicks = newJArray()
+    moraleTicks = newJArray()
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
     sideObjectivesCompleted = newJArray()
@@ -3164,6 +3174,7 @@ proc playerScoresJson*(sim: SimServer): string =
     downedTicks.add(%player.downedTicks)
     triumphTicks.add(%player.triumphTicks)
     rationTicks.add(%player.rationTicks)
+    moraleTicks.add(%player.moraleTicks)
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
     sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
@@ -3191,6 +3202,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["downed_ticks"] = downedTicks
   results["triumph_ticks"] = triumphTicks
   results["ration_ticks"] = rationTicks
+  results["morale_ticks"] = moraleTicks
   results["team_score"] = scores
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
@@ -3276,6 +3288,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.huntTicks)
     result.mixHashInt(player.triumphTicks)
     result.mixHashInt(player.rationTicks)
+    result.mixHashInt(player.moraleTicks)
     result.mixHashInt(player.downedTicks)
     result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
@@ -4206,6 +4219,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].huntTicks = 0
   sim.players[playerIndex].triumphTicks = 0
   sim.players[playerIndex].rationTicks = 0
+  sim.players[playerIndex].moraleTicks = 0
   inc sim.scoreRevision
 
 proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
@@ -4959,6 +4973,20 @@ proc grantFinalGateTriumph(sim: var SimServer, landmark: Landmark) =
     player.invulnTicks = max(player.invulnTicks, FinalGateTriumphTicks)
   inc sim.scoreRevision
 
+proc grantObjectiveMorale(sim: var SimServer, participantCount: int) =
+  ## Rewards visibly grouped objective holds with short next-push momentum.
+  if participantCount < 2:
+    return
+  var changed = false
+  for player in sim.players.mitems:
+    if player.lives <= 0:
+      continue
+    let before = player.moraleTicks
+    player.moraleTicks = max(player.moraleTicks, ObjectiveMoraleTicks)
+    changed = changed or player.moraleTicks != before
+  if changed:
+    inc sim.scoreRevision
+
 proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
   ## Clears nearby local threats when a monster lair is destroyed.
   sim.pacifyMobsNearLandmark(landmark, LairPacifyRadius)
@@ -5374,6 +5402,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       continue
     var nearPlayer = false
     var activationStep = 0
+    var participantCount = 0
     for player in sim.players:
       if player.lives <= 0:
         continue
@@ -5388,6 +5417,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           sim.landmarks[landmarkIndex].tx,
           sim.landmarks[landmarkIndex].ty
         )
+        inc participantCount
         activationStep += objectiveHoldStep(kind, landmarkBiome, player.role)
     if not nearPlayer:
       continue
@@ -5432,6 +5462,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       for player in sim.players.mitems:
         if player.lives > 0:
           player.surveyTicks = max(player.surveyTicks, BeaconSurveyTicks)
+      sim.grantObjectiveMorale(participantCount)
       inc sim.scoreRevision
     of LandmarkShrine:
       sim.landmarks[landmarkIndex].done = true
@@ -5443,12 +5474,14 @@ proc activateNearbyLandmarks(sim: var SimServer) =
         continue
       sim.landmarks[landmarkIndex].done = true
       sim.activateRescueEvent(sim.landmarks[landmarkIndex])
+      sim.grantObjectiveMorale(participantCount)
     of LandmarkWaystation:
       sim.landmarks[landmarkIndex].progress += max(1, activationStep)
       inc sim.scoreRevision
       if sim.landmarks[landmarkIndex].progress < BiomeWaystationTicks:
         continue
       sim.activateWaystation(landmarkIndex)
+      sim.grantObjectiveMorale(participantCount)
     of LandmarkFinalGate:
       if not sim.bossDefeated:
         continue
@@ -6510,6 +6543,11 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
           0,
           sim.players[i].abilityCooldown - TrioFormationCooldownStep
         )
+      if sim.players[i].abilityCooldown > 0 and sim.players[i].moraleTicks > 0:
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - ObjectiveMoraleCooldownStep
+        )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
     if sim.players[i].routeTicks > 0:
@@ -6535,6 +6573,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
     if sim.players[i].rationTicks > 0:
       dec sim.players[i].rationTicks
       if sim.players[i].rationTicks == 0:
+        inc sim.scoreRevision
+    if sim.players[i].moraleTicks > 0:
+      dec sim.players[i].moraleTicks
+      if sim.players[i].moraleTicks == 0:
         inc sim.scoreRevision
     if sim.players[i].pingTicks > 0:
       dec sim.players[i].pingTicks

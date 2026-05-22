@@ -3003,6 +3003,30 @@ proc testCooperativeObjectiveHoldsStackPartyEffort() =
   doAssert beaconSim.landmarks[0].done
   doAssert beaconSim.relicShards == 1
   doAssert beaconSim.players[beaconDps].surveyTicks == BeaconSurveyTicks
+  doAssert beaconSim.players[beaconTank].moraleTicks == ObjectiveMoraleTicks
+  doAssert beaconSim.players[beaconTank].statusLabel().contains("morale")
+  doAssert beaconSim.players[beaconTank].statusSpeedPercent() ==
+    ObjectiveMoraleSpeedPercent
+  var moraleNextState: PlayerViewerState
+  let moraleParsed = beaconSim.buildSpriteProtocolPlayerUpdates(
+    beaconTank,
+    initPlayerViewerState(),
+    moraleNextState
+  ).parseSpriteProtocolPacket()
+  let moraleLabels = moraleParsed.objectSpriteLabels()
+  doAssert "status morale" in moraleLabels
+  doAssert moraleParsed.sprites.values.toSeq.anyIt(it.label.contains("MORALE")),
+    "HUD status text should make grouped objective morale readable"
+  let moraleScores = parseJson(beaconSim.playerScoresJson())
+  doAssert moraleScores["morale_ticks"][0].getInt() == ObjectiveMoraleTicks
+  beaconSim.players[beaconTank].abilityCooldown = 3
+  beaconSim.step([InputState(), InputState(), InputState()])
+  doAssert beaconSim.players[beaconTank].abilityCooldown < 2,
+    "objective morale should help recover role powers on the next push"
+  beaconSim.players[beaconTank].moraleTicks = 1
+  beaconSim.step([InputState(), InputState(), InputState()])
+  doAssert beaconSim.players[beaconTank].moraleTicks == 0,
+    "objective morale should expire after its next-push window"
 
   var rescueSim = initPartyProgressorForTest()
   rescueSim.clearTerrain()
@@ -3040,6 +3064,8 @@ proc testCooperativeObjectiveHoldsStackPartyEffort() =
     rescueSim.step([InputState(), InputState(), InputState()])
   doAssert rescueSim.landmarks[0].done,
     "a grouped party should complete rescue holds faster than a solo player"
+  doAssert rescueSim.players[tankIndex].moraleTicks == ObjectiveMoraleTicks,
+    "grouped rescue completions should grant visible party morale"
 
   var waypointSim = initPartyProgressorForTest()
   waypointSim.clearTerrain()
@@ -3081,6 +3107,8 @@ proc testCooperativeObjectiveHoldsStackPartyEffort() =
     waypointSim.step([InputState(), InputState(), InputState()])
   doAssert waypointSim.landmarks[0].done,
     "a grouped party should complete waystations faster than a solo player"
+  doAssert waypointSim.players[waypointTank].moraleTicks == ObjectiveMoraleTicks,
+    "grouped waystation completions should grant visible party morale"
 
 proc testMonsterLairAttackRewardsAndPacifiesThreats() =
   var sim = initPartyProgressorForTest()

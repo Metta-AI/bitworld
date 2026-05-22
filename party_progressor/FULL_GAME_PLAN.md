@@ -343,6 +343,10 @@ The first full-game implementation pass includes:
 - Rescue and waystation holds now stack nearby teammate effort up to a readable
   co-op cap while preserving role specialist bonuses, so grouping on an
   expedition objective completes it faster than solo channeling.
+- Grouped objective completions now create a visible morale payoff: when at
+  least two players finish a relic beacon, rescue, or waystation together, the
+  party gets a short `MOR`/`MORALE` next-push window with faster role-power
+  recovery and clean-terrain movement momentum.
 - Rescue completions now also give the party a short visible `GUIDE` push:
   clean players move faster, status recovery accelerates slightly, and the
   next route decision reads as local knowledge from the rescued traveler.
@@ -682,7 +686,8 @@ The first full-game implementation pass includes:
   biome-safe staging choices and tune which camp upgrades should be automatic
   versus explicit player choices.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
-  labels, downed-player rescue, and chat pings: richer rescue/objective moments.
+  labels, downed-player rescue, chat pings, and grouped objective morale:
+  richer rescue/objective moments.
 - Tune final-boss and final-gate pacing now that relic, camp, trio formation,
   three-role focus, boss defeat, the gate ritual, and the triumph payoff are all
   part of the visible completion chain.
