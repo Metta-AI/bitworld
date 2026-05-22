@@ -33,10 +33,12 @@ const
   BossLeftSpriteId = 315
   MobTelegraphEffectSpriteId = 316
   MobLungeEffectSpriteId = 317
+  MobAttackStyleEffectSpriteBase = 1320
   RoleAbilityEffectSpriteBase = 680
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
+  VisibilityShadowSpriteId = 1500
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
   RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
   LandmarkShelterSpriteId = LandmarkSpriteBase + ord(high(LandmarkKind)) + 1
@@ -71,6 +73,7 @@ const
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
   RoleAbilityEffectObjectBase = 18000
+  VisibilityShadowObjectId = 19000
   CarryCountSpriteBase = 1400
   CarryObjectStride = 8
   StatusBadgeSlots = 18
@@ -818,6 +821,70 @@ proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
         baseX,
         baseY
       )
+
+proc buildVisibilityShadowSprite(
+  sim: SimServer,
+  playerIndex,
+  cameraX,
+  cameraY: int
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a player-view shadow mask from terrain blockers and high elevation.
+  result.width = PlayerViewportWidth
+  result.height = PlayerViewportHeight
+  result.pixels = newRgbaPixels(result.width, result.height)
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let
+    player = sim.players[playerIndex]
+    fromTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    fromTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    startTx = max(0, cameraX div WorldTileSize)
+    startTy = max(0, cameraY div WorldTileSize)
+    endTx = min(
+      WorldWidthTiles - 1,
+      (cameraX + PlayerViewportWidth - 1) div WorldTileSize
+    )
+    endTy = min(
+      WorldHeightTiles - 1,
+      (cameraY + PlayerViewportHeight - 1) div WorldTileSize
+    )
+    hudTop = PlayerViewportHeight - WorldTileSize - CarryHudSlotGap
+  for ty in startTy .. endTy:
+    for tx in startTx .. endTx:
+      let
+        visible = sim.tileVisibleFrom(fromTx, fromTy, tx, ty)
+        blocker = sim.tileBlocksSight(tx, ty)
+        alpha =
+          if not visible:
+            155'u8
+          elif blocker and (tx != fromTx or ty != fromTy):
+            58'u8
+          else:
+            0'u8
+      if alpha == 0'u8:
+        continue
+      let
+        tileScreenX = tx * WorldTileSize - cameraX
+        tileScreenY = ty * WorldTileSize - cameraY
+        sx0 = max(0, tileScreenX)
+        sy0 = max(0, tileScreenY)
+        sx1 = min(PlayerViewportWidth - 1, tileScreenX + WorldTileSize - 1)
+        sy1 = min(PlayerViewportHeight - 1, tileScreenY + WorldTileSize - 1)
+        color = (r: 0'u8, g: 0'u8, b: 0'u8, a: alpha)
+      for sy in sy0 .. sy1:
+        if sy >= hudTop:
+          continue
+        for sx in sx0 .. sx1:
+          result.pixels.putRgbaPixel(sy * result.width + sx, color)
+
 proc putTextSpritePixel(
   pixels: var seq[uint8],
   width, height, x, y: int,
@@ -1311,23 +1378,39 @@ proc roleAbilityEffectObjectId(player: Actor): int =
 proc roleAbilityEffectSpriteId(role: PlayerRole): int =
   RoleAbilityEffectSpriteBase + ord(role)
 
-proc mobAttackEffectSpriteId(phase: MobAttackPhase): int =
-  case phase
-  of MobTelegraph:
+proc mobAttackEffectSpriteId(
+  phase: MobAttackPhase,
+  style = AttackLunge
+): int =
+  if style == AttackLunge and phase == MobTelegraph:
     MobTelegraphEffectSpriteId
-  of MobLunge:
+  elif style == AttackLunge and phase == MobLunge:
     MobLungeEffectSpriteId
-  of MobIdle:
+  elif phase == MobIdle:
     MobTelegraphEffectSpriteId
+  else:
+    MobAttackStyleEffectSpriteBase + ord(style) * 2 +
+      (if phase == MobLunge: 1 else: 0)
 
-proc mobAttackEffectLabel(phase: MobAttackPhase): string =
-  case phase
-  of MobTelegraph:
-    "mob telegraph warning"
-  of MobLunge:
-    "mob lunge strike"
-  of MobIdle:
-    "mob idle"
+proc mobAttackEffectLabel(
+  phase: MobAttackPhase,
+  style = AttackLunge
+): string =
+  if phase == MobIdle:
+    return "mob idle"
+  let styleLabel =
+    case style
+    of AttackLunge: "lunge"
+    of AttackRanged: "dart"
+    of AttackSlam: "slam"
+    of AttackAura: "aura"
+  if phase == MobTelegraph:
+    if style == AttackLunge:
+      "mob telegraph warning"
+    else:
+      "mob " & styleLabel & " warning"
+  else:
+    "mob " & styleLabel & (if style == AttackAura: " pulse" else: " strike")
 
 proc roleAbilityEffectLabel(role: PlayerRole): string =
   "ability " & role.roleLabel() & " effect"
@@ -1417,7 +1500,8 @@ proc putEffectPixel(
   pixels.putRgbaPixel(y * width + x, color)
 
 proc buildMobAttackEffectSprite(
-  phase: MobAttackPhase
+  phase: MobAttackPhase,
+  style = AttackLunge
 ): tuple[width, height: int, pixels: seq[uint8]] =
   ## Builds a translucent attack-phase overlay for monster animations.
   result.width = MobAttackEffectSize
@@ -1429,50 +1513,90 @@ proc buildMobAttackEffectSprite(
     warningCore = (r: 255'u8, g: 248'u8, b: 180'u8, a: 225'u8)
     strike = (r: 255'u8, g: 64'u8, b: 79'u8, a: 210'u8)
     strikeCore = (r: 255'u8, g: 200'u8, b: 120'u8, a: 240'u8)
-  case phase
-  of MobTelegraph:
+  if phase == MobTelegraph:
     for y in 0 ..< result.height:
       for x in 0 ..< result.width:
         let distance = abs(x - center) + abs(y - center)
         if distance in 10 .. 11:
           result.pixels.putEffectPixel(result.width, result.height, x, y, warning)
-    for y in 7 .. 16:
-      result.pixels.putEffectPixel(result.width, result.height, center, y, warningCore)
-      result.pixels.putEffectPixel(
-        result.width,
-        result.height,
-        center + 1,
-        y,
-        warningCore
-      )
-    for y in 20 .. 21:
-      for x in center .. center + 1:
-        result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
-  of MobLunge:
-    for i in 0 .. 18:
-      let
-        x = 5 + i
-        y = 21 - i
-      result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
-      result.pixels.putEffectPixel(result.width, result.height, x + 1, y, strike)
-      result.pixels.putEffectPixel(result.width, result.height, x, y + 1, strike)
-    for i in 0 .. 10:
-      result.pixels.putEffectPixel(
-        result.width,
-        result.height,
-        10 + i,
-        18 - i div 2,
-        strike
-      )
-      result.pixels.putEffectPixel(
-        result.width,
-        result.height,
-        7 + i,
-        10 + i div 3,
-        strike
-      )
-  of MobIdle:
-    discard
+    case style
+    of AttackRanged:
+      for x in 5 .. 23:
+        result.pixels.putEffectPixel(result.width, result.height, x, center, warningCore)
+        if x mod 3 == 0:
+          result.pixels.putEffectPixel(result.width, result.height, x, center - 2, warning)
+          result.pixels.putEffectPixel(result.width, result.height, x, center + 2, warning)
+    of AttackSlam:
+      for i in 0 .. 13:
+        for sx in [center - i, center + i]:
+          result.pixels.putEffectPixel(result.width, result.height, sx, center + i div 2, warningCore)
+    of AttackAura:
+      for y in 0 ..< result.height:
+        for x in 0 ..< result.width:
+          let d = abs(x - center) + abs(y - center)
+          if d in 5 .. 7 and (x + y) mod 2 == 0:
+            result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
+    of AttackLunge:
+      for y in 7 .. 16:
+        result.pixels.putEffectPixel(result.width, result.height, center, y, warningCore)
+        result.pixels.putEffectPixel(
+          result.width,
+          result.height,
+          center + 1,
+          y,
+          warningCore
+        )
+      for y in 20 .. 21:
+        for x in center .. center + 1:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
+  elif phase == MobLunge:
+    case style
+    of AttackRanged:
+      for x in 3 .. 25:
+        result.pixels.putEffectPixel(result.width, result.height, x, center, strikeCore)
+        result.pixels.putEffectPixel(result.width, result.height, x, center - 1, strike)
+        result.pixels.putEffectPixel(result.width, result.height, x, center + 1, strike)
+      for i in 0 .. 4:
+        result.pixels.putEffectPixel(result.width, result.height, 25 - i, center - i, strike)
+        result.pixels.putEffectPixel(result.width, result.height, 25 - i, center + i, strike)
+    of AttackSlam:
+      for y in 0 ..< result.height:
+        for x in 0 ..< result.width:
+          let d = abs(x - center) + abs(y - center)
+          if d in 9 .. 12:
+            result.pixels.putEffectPixel(result.width, result.height, x, y, strike)
+      for x in center - 2 .. center + 2:
+        for y in center - 2 .. center + 2:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
+    of AttackAura:
+      for y in 0 ..< result.height:
+        for x in 0 ..< result.width:
+          let d = abs(x - center) + abs(y - center)
+          if d in 4 .. 13 and (x + y) mod 3 != 0:
+            result.pixels.putEffectPixel(result.width, result.height, x, y, strike)
+    of AttackLunge:
+      for i in 0 .. 18:
+        let
+          x = 5 + i
+          y = 21 - i
+        result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
+        result.pixels.putEffectPixel(result.width, result.height, x + 1, y, strike)
+        result.pixels.putEffectPixel(result.width, result.height, x, y + 1, strike)
+      for i in 0 .. 10:
+        result.pixels.putEffectPixel(
+          result.width,
+          result.height,
+          10 + i,
+          18 - i div 2,
+          strike
+        )
+        result.pixels.putEffectPixel(
+          result.width,
+          result.height,
+          7 + i,
+          10 + i div 3,
+          strike
+        )
 
 proc buildRoleAbilityEffectSprite(
   role: PlayerRole
@@ -2106,15 +2230,16 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       kind.statusBadgeSpriteLabel()
     )
 
-  for phase in [MobTelegraph, MobLunge]:
-    let effect = phase.buildMobAttackEffectSprite()
-    packet.addSprite(
-      phase.mobAttackEffectSpriteId(),
-      effect.width,
-      effect.height,
-      effect.pixels,
-      phase.mobAttackEffectLabel()
-    )
+  for style in MobAttackStyle:
+    for phase in [MobTelegraph, MobLunge]:
+      let effect = phase.buildMobAttackEffectSprite(style)
+      packet.addSprite(
+        phase.mobAttackEffectSpriteId(style),
+        effect.width,
+        effect.height,
+        effect.pixels,
+        phase.mobAttackEffectLabel(style)
+      )
 
   for role in [RoleTank, RoleDps, RoleHealer]:
     let effect = role.buildRoleAbilityEffectSprite()
@@ -2820,7 +2945,7 @@ proc addWorldObjects(
         i.mobAttackEffectObjectId(),
         effectX - cameraX,
         effectY - cameraY,
-        mob.attackPhase.mobAttackEffectSpriteId(),
+        mob.attackPhase.mobAttackEffectSpriteId(mob.species.attackStyle()),
         MobAttackEffectSize,
         MobAttackEffectSize,
         viewportWidth,
@@ -3249,6 +3374,23 @@ proc buildSpriteProtocolPlayerUpdates*(
       PlayerViewportWidth,
       PlayerViewportHeight,
       player.id
+    )
+    let shadow = sim.buildVisibilityShadowSprite(playerIndex, cameraX, cameraY)
+    currentIds.add(VisibilityShadowObjectId)
+    result.addSprite(
+      VisibilityShadowSpriteId,
+      shadow.width,
+      shadow.height,
+      shadow.pixels,
+      "visibility shadow"
+    )
+    result.addObject(
+      VisibilityShadowObjectId,
+      0,
+      0,
+      high(int16) - 200,
+      MapLayerId,
+      VisibilityShadowSpriteId
     )
     sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
     if sim.playerDowned(playerIndex):

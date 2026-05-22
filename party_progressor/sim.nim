@@ -16,14 +16,18 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 60
-  WorldWidthTiles* = 96
+  SafeZoneRightTiles* = 8
+  BiomeCount* = 7
+  ExpeditionBiomeSpanTiles* = 14
+  ExpeditionCycleCount* = 4
+  WorldWidthTiles* =
+    SafeZoneRightTiles + ExpeditionBiomeSpanTiles * BiomeCount * ExpeditionCycleCount
   WorldHeightTiles* = 18
   WorldWidthPixels* = WorldWidthTiles * WorldTileSize
   WorldHeightPixels* = WorldHeightTiles * WorldTileSize
   PlayerViewportTiles* = 11
   PlayerViewportWidth* = PlayerViewportTiles * WorldTileSize
   PlayerViewportHeight* = PlayerViewportTiles * WorldTileSize
-  SafeZoneRightTiles* = 8
   SafeZoneRightPixels* = SafeZoneRightTiles * WorldTileSize
   ZoneWidthTiles* = 8
   ZoneWidthPixels* = ZoneWidthTiles * WorldTileSize
@@ -112,7 +116,6 @@ const
   FinalGateActivationRadius* = WorldTileSize * 2
   FinalGateRallyPacifyRadius* = WorldTileSize * 3
   FinalGateTriumphRadius* = WorldTileSize * 6
-  BiomeCount* = 7
   TankGuardRadius* = 44
   HealerPulseRadius* = 46
   DpsCleaveRadius* = 42
@@ -457,6 +460,12 @@ type
     MobIdle
     MobTelegraph
     MobLunge
+
+  MobAttackStyle* = enum
+    AttackLunge
+    AttackRanged
+    AttackSlam
+    AttackAura
 
   BiomeKind* = enum
     BiomeOrigin
@@ -872,6 +881,40 @@ proc speciesPunishesIsolation*(species: MobSpecies): bool =
     SpeciesAshWraith,
     SpeciesGateTitan
   }
+
+proc attackStyle*(species: MobSpecies): MobAttackStyle =
+  ## Keeps monster families tactically distinct while sharing one attack phase FSM.
+  case species
+  of SpeciesDuneScorpion,
+      SpeciesGlassScorpion,
+      SpeciesSandViper,
+      SpeciesTombScarab,
+      SpeciesPrairieGoblin,
+      SpeciesStoneGoblin,
+      SpeciesBoneGoblin,
+      SpeciesCaveBat,
+      SpeciesCrystalBat,
+      SpeciesSnowBat:
+    AttackRanged
+  of SpeciesThornBoar,
+      SpeciesBrownBear,
+      SpeciesPlainsBear,
+      SpeciesHornedBuck,
+      SpeciesFrostYeti,
+      SpeciesIceTroll,
+      SpeciesWhiteBear,
+      SpeciesDeepMaw,
+      SpeciesGateTitan:
+    AttackSlam
+  of SpeciesMudSlime,
+      SpeciesReedSlime,
+      SpeciesCaveSlime,
+      SpeciesMarshWraith,
+      SpeciesRuinWraith,
+      SpeciesAshWraith:
+    AttackAura
+  else:
+    AttackLunge
 
 proc speciesSupplyDrop*(species: MobSpecies): CarryKind =
   ## Returns the expedition supply a defeated biome monster can leave behind.
@@ -1687,17 +1730,8 @@ proc tileIndex*(tx, ty: int): int =
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
 
-proc biomeForTileX*(tx: int): BiomeKind =
-  ## Maps horizontal expedition progress to a biome band.
-  if tx < SafeZoneRightTiles:
-    return BiomeOrigin
-  let
-    adventureTiles = max(1, WorldWidthTiles - SafeZoneRightTiles)
-    zone = clamp(
-      ((tx - SafeZoneRightTiles) * BiomeCount) div adventureTiles,
-      0,
-      BiomeCount - 1
-    )
+proc biomeForSegmentIndex*(segmentIndex: int): BiomeKind =
+  let zone = ((max(0, segmentIndex) mod BiomeCount) + BiomeCount) mod BiomeCount
   case zone
   of 0: BiomeForest
   of 1: BiomePlains
@@ -1706,6 +1740,25 @@ proc biomeForTileX*(tx: int): BiomeKind =
   of 4: BiomeSnow
   of 5: BiomeCave
   else: BiomeRuins
+
+proc adventureSegmentIndexForTileX*(tx: int): int =
+  ## Returns the rightward procedural segment index after the safe origin.
+  if tx < SafeZoneRightTiles:
+    return -1
+  (tx - SafeZoneRightTiles) div ExpeditionBiomeSpanTiles
+
+proc adventureCycleForTileX*(tx: int): int =
+  let segment = adventureSegmentIndexForTileX(tx)
+  if segment < 0:
+    0
+  else:
+    segment div BiomeCount
+
+proc biomeForTileX*(tx: int): BiomeKind =
+  ## Maps rightward expedition progress to repeated procedural biome bands.
+  if tx < SafeZoneRightTiles:
+    return BiomeOrigin
+  biomeForSegmentIndex(tx.adventureSegmentIndexForTileX())
 
 proc weatherForBiome*(biome: BiomeKind): WeatherKind =
   ## Returns the deterministic weather identity for one biome.
@@ -1919,6 +1972,43 @@ proc tileElevation*(sim: SimServer, tx, ty: int): int =
     return 0
   sim.elevations[tileIndex(tx, ty)]
 
+proc tileBlocksSight*(sim: SimServer, tx, ty: int): bool =
+  if not inTileBounds(tx, ty):
+    return false
+  sim.tileElevation(tx, ty) >= 4 or
+    (sim.tiles.len > 0 and sim.tiles[tileIndex(tx, ty)])
+
+proc tileVisibleFrom*(sim: SimServer, fromTx, fromTy, toTx, toTy: int): bool =
+  ## Uses a small Bresenham trace so high ridges and blockers hide farther tiles.
+  if not inTileBounds(toTx, toTy):
+    return false
+  if fromTx == toTx and fromTy == toTy:
+    return true
+  var
+    x0 = fromTx
+    y0 = fromTy
+    x1 = toTx
+    y1 = toTy
+    dx = abs(x1 - x0)
+    sx = if x0 < x1: 1 else: -1
+    dy = -abs(y1 - y0)
+    sy = if y0 < y1: 1 else: -1
+    err = dx + dy
+  while true:
+    if x0 == x1 and y0 == y1:
+      return true
+    let e2 = 2 * err
+    if e2 >= dy:
+      err += dy
+      x0 += sx
+    if e2 <= dx:
+      err += dx
+      y0 += sy
+    if x0 == x1 and y0 == y1:
+      return true
+    if sim.tileBlocksSight(x0, y0):
+      return false
+
 proc actorTileElevation*(sim: SimServer, actor: Actor): int =
   sim.tileElevation(
     clamp(boundsCenterX(actor.x, actor.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
@@ -1964,14 +2054,14 @@ proc currentBiome*(sim: SimServer): BiomeKind =
 proc currentWeather*(sim: SimServer): WeatherKind =
   sim.currentBiome().weatherForBiome()
 
-proc incompleteLandmarkInBiome(
+proc incompleteLandmarkInSegment(
   sim: SimServer,
   kind: LandmarkKind,
-  biome: BiomeKind
+  segmentIndex: int
 ): bool =
   for landmark in sim.landmarks:
     if landmark.kind == kind and not landmark.done and
-        sim.tileBiomeKind(landmark.tx, landmark.ty) == biome:
+        landmark.tx.adventureSegmentIndexForTileX() == segmentIndex:
       return true
   false
 
@@ -2037,19 +2127,22 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
     return "NEXT HEAL FOOD SHELTER"
 
   let biome = sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
+  let segment = adventureSegmentIndexForTileX(
+    clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1)
+  )
   if biome == BiomeOrigin:
     return "NEXT PUSH RIGHT"
   if sim.bossDefeated and sim.relicShards >= FinalGateRelicCost and
       sim.campsActivated >= FinalGateCampCost and
       sim.incompleteLandmarkExists(LandmarkFinalGate):
     return sim.finalGateObjectiveHint()
-  if sim.incompleteLandmarkInBiome(LandmarkWaystation, biome):
+  if sim.incompleteLandmarkInSegment(LandmarkWaystation, segment):
     return "NEXT " & biome.waystationPromptLabel()
-  if sim.incompleteLandmarkInBiome(LandmarkCamp, biome):
+  if sim.incompleteLandmarkInSegment(LandmarkCamp, segment):
     if sim.wood >= CampWoodCost and sim.stone >= CampStoneCost:
       return "NEXT BUILD CAMP"
     return sim.campResourceHint()
-  if sim.incompleteLandmarkInBiome(LandmarkLair, biome):
+  if sim.incompleteLandmarkInSegment(LandmarkLair, segment):
     return "NEXT CLEAR LAIR"
   if sim.relicShards < FinalGateRelicCost and
       sim.incompleteLandmarkExists(LandmarkBeacon):
@@ -2177,6 +2270,134 @@ proc terrainNoise(seed, tx, ty, salt: int): int =
   let value = seed * 1103515245 + tx * 734287 + ty * 912931 + salt * 42349
   abs(value) mod 100
 
+proc setGroundFeature(
+  sim: var SimServer,
+  tx,
+  ty: int,
+  ground: GroundKind,
+  elevation: int
+) =
+  if not inTileBounds(tx, ty):
+    return
+  let index = tileIndex(tx, ty)
+  sim.groundKinds[index] = ground
+  sim.elevations[index] = clamp(elevation, 0, 5)
+  if ground in {GroundWater, GroundShallowWater, GroundBridge}:
+    sim.tiles[index] = false
+
+proc seedSegmentRiver(
+  sim: var SimServer,
+  segmentIndex,
+  firstTx,
+  lastTx: int
+) =
+  ## Carves readable north-south rivers with bridge crossings at the main route.
+  let
+    centerTy = WorldHeightTiles div 2
+    span = max(1, lastTx - firstTx + 1)
+    riverBase = firstTx + span div 2 + ((sim.seed + segmentIndex * 17) mod 3) - 1
+  for ty in 1 ..< WorldHeightTiles - 1:
+    let riverTx = clamp(
+      riverBase + ((ty * 3 + segmentIndex * 5 + sim.seed) mod 5) - 2,
+      firstTx + 1,
+      lastTx - 1
+    )
+    for dx in -1 .. 1:
+      let tx = riverTx + dx
+      if tx < firstTx or tx > lastTx:
+        continue
+      let ground =
+        if abs(ty - centerTy) <= 1:
+          GroundBridge
+        elif dx == 0:
+          GroundWater
+        else:
+          GroundShallowWater
+      sim.setGroundFeature(tx, ty, ground, 0)
+
+proc seedSegmentLake(
+  sim: var SimServer,
+  segmentIndex,
+  firstTx,
+  lastTx: int,
+  biome: BiomeKind
+) =
+  ## Adds off-lane lakes, oases, tarns, cave pools, and ruined cisterns.
+  let
+    centerTy = WorldHeightTiles div 2
+    cx = clamp(
+      firstTx + (max(1, lastTx - firstTx) * 3) div 4,
+      firstTx + 2,
+      lastTx - 2
+    )
+    cy =
+      if segmentIndex mod 2 == 0:
+        clamp(centerTy + 5, 2, WorldHeightTiles - 3)
+      else:
+        clamp(centerTy - 5, 2, WorldHeightTiles - 3)
+    rx =
+      case biome
+      of BiomeDesert, BiomeCave: 2
+      of BiomeSwamp: 4
+      else: 3
+    ry =
+      case biome
+      of BiomeSwamp: 2
+      else: 1
+  for dy in -ry - 1 .. ry + 1:
+    for dx in -rx - 1 .. rx + 1:
+      let
+        tx = cx + dx
+        ty = cy + dy
+      if tx < firstTx or tx > lastTx:
+        continue
+      let score = dx * dx * ry * ry + dy * dy * rx * rx
+      if score <= rx * rx * ry * ry:
+        sim.setGroundFeature(tx, ty, GroundWater, 0)
+      elif score <= (rx + 1) * (rx + 1) * (ry + 1) * (ry + 1):
+        sim.setGroundFeature(tx, ty, GroundShallowWater, 0)
+
+proc seedSegmentRidges(
+  sim: var SimServer,
+  segmentIndex,
+  firstTx,
+  lastTx: int,
+  biome: BiomeKind
+) =
+  ## Raises high, sight-blocking side ridges without closing the central lane.
+  let centerTy = WorldHeightTiles div 2
+  for tx in firstTx .. lastTx:
+    let bend = ((tx + segmentIndex * 3 + sim.seed) mod 5) - 2
+    for ridgeBase in [centerTy - 5, centerTy + 5]:
+      let ty = clamp(ridgeBase + bend div 2, 1, WorldHeightTiles - 2)
+      if abs(ty - centerTy) <= LaneHalfHeightTiles:
+        continue
+      let index = tileIndex(tx, ty)
+      sim.elevations[index] = max(sim.elevations[index], 4)
+      if biome in {BiomeCave, BiomeRuins, BiomeSnow} or
+          terrainNoise(sim.seed, tx, ty, 41) > 44:
+        sim.tiles[index] = true
+
+proc seedProceduralLandforms(sim: var SimServer) =
+  ## Adds repeated adventure landmarks in the terrain itself: rivers, lakes, ridges.
+  for segmentIndex in 0 ..< ExpeditionCycleCount * BiomeCount:
+    let
+      firstTx = SafeZoneRightTiles + segmentIndex * ExpeditionBiomeSpanTiles
+      lastTx = min(
+        WorldWidthTiles - 1,
+        firstTx + ExpeditionBiomeSpanTiles - 1
+      )
+      biome = segmentIndex.biomeForSegmentIndex()
+    if firstTx >= WorldWidthTiles:
+      break
+    if biome in {BiomeForest, BiomePlains, BiomeSwamp, BiomeSnow,
+        BiomeCave, BiomeRuins}:
+      sim.seedSegmentRiver(segmentIndex, firstTx, lastTx)
+    elif segmentIndex mod 2 == 1:
+      sim.seedSegmentRiver(segmentIndex, firstTx, lastTx)
+    sim.seedSegmentLake(segmentIndex, firstTx, lastTx, biome)
+    sim.seedSegmentRidges(segmentIndex, firstTx, lastTx, biome)
+
 proc seedBiomeGrounds*(sim: var SimServer) =
   ## Creates deterministic biome bands, base terrain, roads, and blockers.
   sim.groundKinds.setLen(WorldWidthTiles * WorldHeightTiles)
@@ -2264,6 +2485,7 @@ proc seedBiomeGrounds*(sim: var SimServer) =
       sim.groundKinds[index] = ground
       sim.biomeKinds[index] = biome
       sim.elevations[index] = clamp(elevation, 0, 5)
+  sim.seedProceduralLandforms()
 
 proc seedBrush*(sim: var SimServer) =
   let patchCount = max(
@@ -2380,15 +2602,22 @@ proc landmarkWorldY*(landmark: Landmark): int =
 proc landmarkIsResource(kind: LandmarkKind): bool =
   kind in {LandmarkWood, LandmarkFood, LandmarkStone, LandmarkGold}
 
-proc biomeTileRange(biome: BiomeKind): tuple[firstTx, lastTx: int] =
-  result.firstTx = WorldWidthTiles
-  result.lastTx = -1
-  for tx in 0 ..< WorldWidthTiles:
-    if biomeForTileX(tx) == biome:
-      result.firstTx = min(result.firstTx, tx)
-      result.lastTx = max(result.lastTx, tx)
-  if result.lastTx < result.firstTx:
-    result = (SafeZoneRightTiles, WorldWidthTiles - 1)
+proc biomeSegmentRange*(
+  segmentIndex: int
+): tuple[biome: BiomeKind, firstTx, lastTx, cycle: int] =
+  result.biome = segmentIndex.biomeForSegmentIndex()
+  result.firstTx = SafeZoneRightTiles + segmentIndex * ExpeditionBiomeSpanTiles
+  result.lastTx = min(
+    WorldWidthTiles - 1,
+    result.firstTx + ExpeditionBiomeSpanTiles - 1
+  )
+  result.cycle = max(0, segmentIndex) div BiomeCount
+
+proc adventureSegmentRangeForTileX*(
+  tx: int
+): tuple[biome: BiomeKind, firstTx, lastTx, cycle: int] =
+  let segment = max(0, tx.adventureSegmentIndexForTileX())
+  segment.biomeSegmentRange()
 
 proc addLandmark(
   sim: var SimServer,
@@ -2408,6 +2637,18 @@ proc addLandmark(
     progress: 0
   ))
   sim.clearSpawnArea(tx, ty, 1)
+  for py in ty - 1 .. ty + 1:
+    for px in tx - 1 .. tx + 1:
+      if inTileBounds(px, py):
+        let
+          index = tileIndex(px, py)
+          current = sim.groundKinds[index]
+          passable =
+            if current in {GroundWater, GroundShallowWater}:
+              GroundBridge
+            else:
+              current
+        sim.setGroundFeature(px, py, passable, min(sim.elevations[index], 1))
 
 proc resourceKindsForBiome(
   biome: BiomeKind
@@ -2436,20 +2677,13 @@ proc lairCacheCarriesForBiome*(biome: BiomeKind): tuple[first, second: CarryKind
   (resources.first.carryForLandmark(), resources.second.carryForLandmark())
 
 proc seedLandmarks*(sim: var SimServer) =
-  ## Places resources, camps, beacons, and the final expedition gate.
+  ## Places resources, camps, beacons, and the far expedition gate.
   sim.landmarks.setLen(0)
   let centerTy = WorldHeightTiles div 2
-  for biome in [
-    BiomeForest,
-    BiomePlains,
-    BiomeSwamp,
-    BiomeDesert,
-    BiomeSnow,
-    BiomeCave,
-    BiomeRuins
-  ]:
+  for segmentIndex in 0 ..< ExpeditionCycleCount * BiomeCount:
     let
-      range = biome.biomeTileRange()
+      range = segmentIndex.biomeSegmentRange()
+      biome = range.biome
       span = max(1, range.lastTx - range.firstTx)
       resources = biome.resourceKindsForBiome()
       upperTy = clamp(centerTy - 3, 1, WorldHeightTiles - 2)
@@ -2491,7 +2725,7 @@ proc seedLandmarks*(sim: var SimServer) =
       lowerTy,
       ResourceNodeHp
     )
-    if biome != BiomeForest:
+    if biome != BiomeForest or range.cycle > 0:
       sim.addLandmark(
         LandmarkCamp,
         range.firstTx + max(1, span div 3),
@@ -2724,16 +2958,10 @@ proc hasBoss*(sim: SimServer): bool =
 
 proc seedBiomeMobs*(sim: var SimServer) =
   ## Seeds the expedition with biome-themed encounters.
-  for biome in [
-    BiomeForest,
-    BiomePlains,
-    BiomeSwamp,
-    BiomeDesert,
-    BiomeSnow,
-    BiomeCave,
-    BiomeRuins
-  ]:
-    let range = biome.biomeTileRange()
+  for segmentIndex in 0 ..< ExpeditionCycleCount * BiomeCount:
+    let
+      range = segmentIndex.biomeSegmentRange()
+      biome = range.biome
     let species = biome.monsterSpeciesForBiome()
     for item in species:
       discard sim.spawnOneMobInRange(item, range.firstTx, range.lastTx)
@@ -2756,7 +2984,16 @@ proc seedBiomeMobs*(sim: var SimServer) =
 
 proc mobAttackRange*(mob: Mob): int =
   ## Returns the distance where one mob can start an attack.
-  max(4, (12 + max(mob.bounds.w, mob.bounds.h)) div 2)
+  let base = max(4, (12 + max(mob.bounds.w, mob.bounds.h)) div 2)
+  case mob.species.attackStyle()
+  of AttackRanged:
+    max(base, WorldTileSize * 2)
+  of AttackSlam:
+    max(base, WorldTileSize + 8)
+  of AttackAura:
+    max(base, WorldTileSize * 2)
+  of AttackLunge:
+    base
 
 proc mobSightRange*(mob: Mob): int =
   ## Returns the distance where one mob starts chasing players.
@@ -4074,6 +4311,28 @@ proc chaseVector(fromX, fromY, toX, toY: int): tuple[dx, dy: int] =
     result.dy = 0
   elif abs(deltaY) > abs(deltaX) * 2:
     result.dx = 0
+
+proc facingLaneHit(
+  fromX,
+  fromY,
+  toX,
+  toY: int,
+  facing: Facing,
+  maxDistance,
+  halfWidth: int
+): bool =
+  let
+    dx = toX - fromX
+    dy = toY - fromY
+  case facing
+  of FaceLeft:
+    dx <= 0 and -dx <= maxDistance and abs(dy) <= halfWidth
+  of FaceRight:
+    dx >= 0 and dx <= maxDistance and abs(dy) <= halfWidth
+  of FaceUp:
+    dy <= 0 and -dy <= maxDistance and abs(dx) <= halfWidth
+  of FaceDown:
+    dy >= 0 and dy <= maxDistance and abs(dx) <= halfWidth
 
 proc dropPlayerCoins(sim: var SimServer, player: Actor) =
   ## Drops one coin pickup carrying all of a dead player's coins.
@@ -6331,27 +6590,84 @@ proc updateMobs*(sim: var SimServer) =
       continue
 
     of MobLunge:
-      let lunge = lungeVector(mob.attackFacing, MobLungeStep)
-      sim.moveMob(mob, lunge.dx, lunge.dy)
-      for playerIndex in 0 ..< sim.players.len:
-        let player = sim.players[playerIndex]
-        if player.lives <= 0:
-          continue
-        if player.invulnTicks == 0 and boundsOverlap(
-          mob.x,
-          mob.y,
-          mob.bounds,
-          player.x,
-          player.y,
-          player.bounds
-        ):
-          sim.damagePlayer(
-            playerIndex,
-            lunge.dx,
-            lunge.dy,
-            sim.mobHitDamage(mob, playerIndex)
-          )
-          sim.applyMobHitStatus(mob, playerIndex)
+      let
+        style = mob.species.attackStyle()
+        lunge =
+          if style == AttackLunge:
+            lungeVector(mob.attackFacing, MobLungeStep)
+          else:
+            (dx: 0, dy: 0)
+      if style == AttackLunge:
+        sim.moveMob(mob, lunge.dx, lunge.dy)
+      if style == AttackLunge or mob.attackTicks == 0:
+        let
+          strikeCenterX = boundsCenterX(mob.x, mob.bounds)
+          strikeCenterY = boundsCenterY(mob.y, mob.bounds)
+          range = mob.mobAttackRange()
+          radius =
+            case style
+            of AttackSlam:
+              WorldTileSize + 10
+            of AttackAura:
+              WorldTileSize * 2
+            else:
+              range
+        for playerIndex in 0 ..< sim.players.len:
+          let player = sim.players[playerIndex]
+          if player.lives <= 0 or player.invulnTicks != 0:
+            continue
+          let
+            playerCenterX = boundsCenterX(player.x, player.bounds)
+            playerCenterY = boundsCenterY(player.y, player.bounds)
+            hit =
+              case style
+              of AttackLunge:
+                boundsOverlap(
+                  mob.x,
+                  mob.y,
+                  mob.bounds,
+                  player.x,
+                  player.y,
+                  player.bounds
+                )
+              of AttackRanged:
+                boundsOverlap(
+                  mob.x,
+                  mob.y,
+                  mob.bounds,
+                  player.x,
+                  player.y,
+                  player.bounds
+                ) or
+                  facingLaneHit(
+                    strikeCenterX,
+                    strikeCenterY,
+                    playerCenterX,
+                    playerCenterY,
+                    mob.attackFacing,
+                    range,
+                    WorldTileSize div 2
+                  )
+              of AttackSlam, AttackAura:
+                distanceSquared(
+                  strikeCenterX,
+                  strikeCenterY,
+                  playerCenterX,
+                  playerCenterY
+                ) <= radius * radius
+          if hit:
+            let knockback =
+              if style == AttackAura:
+                chaseVector(strikeCenterX, strikeCenterY, playerCenterX, playerCenterY)
+              else:
+                lungeVector(mob.attackFacing, max(1, MobLungeStep))
+            sim.damagePlayer(
+              playerIndex,
+              knockback.dx,
+              knockback.dy,
+              sim.mobHitDamage(mob, playerIndex)
+            )
+            sim.applyMobHitStatus(mob, playerIndex)
       inc mob.attackTicks
       if mob.attackTicks >= MobLungeTicks:
         mob.attackPhase = MobIdle
@@ -6372,7 +6688,7 @@ proc respawnMobs(sim: var SimServer) =
     return
 
   let biome = sim.currentBiome()
-  let range = biome.biomeTileRange()
+  let range = adventureSegmentRangeForTileX(sim.teamFrontier div WorldTileSize)
   discard sim.spawnOneMobInRange(
     sim.rng.randomMonsterSpeciesForBiome(biome),
     range.firstTx,

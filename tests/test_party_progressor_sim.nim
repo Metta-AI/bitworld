@@ -728,6 +728,67 @@ proc testBiomeGroundsAndWeather() =
     WeatherDust
   doAssert groundSpeedPercent(GroundMud) < groundSpeedPercent(GroundRoad)
 
+proc testProceduralExpeditionRepeatsBiomeSegments() =
+  doAssert ExpeditionCycleCount >= 4
+  doAssert WorldWidthTiles ==
+    SafeZoneRightTiles + ExpeditionBiomeSpanTiles * BiomeCount * ExpeditionCycleCount
+  for cycle in 0 ..< ExpeditionCycleCount:
+    for zone in 0 ..< BiomeCount:
+      let
+        segment = cycle * BiomeCount + zone
+        tx = SafeZoneRightTiles + segment * ExpeditionBiomeSpanTiles
+      doAssert biomeForTileX(tx) == biomeForSegmentIndex(zone),
+        "rightward expedition should repeat all biome bands in each cycle"
+  let sim = initPartyProgressorForTest()
+  doAssert sim.landmarks.countIt(it.kind == LandmarkWaystation) ==
+    BiomeCount * ExpeditionCycleCount
+  doAssert sim.landmarks.anyIt(
+    it.kind == LandmarkFinalGate and it.tx > SafeZoneRightTiles +
+      ExpeditionBiomeSpanTiles * BiomeCount * 3
+  ), "final gate should sit far beyond the first biome pass"
+
+proc testProceduralLandformsAndVisibilityShadow() =
+  let seeded = initPartyProgressorForTest()
+  doAssert seeded.groundKinds.countIt(it == GroundWater) > WorldHeightTiles,
+    "procedural expedition should contain lakes and rivers"
+  doAssert seeded.groundKinds.countIt(it == GroundBridge) > BiomeCount,
+    "rivers should have bridge crossings on the travel route"
+  doAssert seeded.elevations.countIt(it >= 4) > BiomeCount,
+    "procedural ridges should create meaningful high elevation"
+
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  let playerIndex = sim.addPlayer("shadow")
+  let
+    fromTx = SafeZoneRightTiles + 2
+    fromTy = WorldHeightTiles div 2
+    ridgeTx = fromTx + 2
+    toTx = fromTx + 4
+  sim.players[playerIndex].x = fromTx * WorldTileSize
+  sim.players[playerIndex].y = fromTy * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.elevations[tileIndex(ridgeTx, fromTy)] = 5
+  doAssert sim.tileBlocksSight(ridgeTx, fromTy)
+  doAssert not sim.tileVisibleFrom(fromTx, fromTy, toTx, fromTy),
+    "high elevation should occlude tiles behind it"
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  doAssert "visibility shadow" in parsed.sprites.values.toSeq.mapIt(it.label),
+    "sprite player should receive a visibility shadow overlay"
+  let shadow = parsed.firstSpriteByLabel("visibility shadow")
+  doAssert shadow.pixels.anyIt(it.ord != 0),
+    "visibility shadow sprite should contain non-transparent pixels"
+
 proc testEarlyBiomeForageAndRallyTactics() =
   var forestSim = initPartyProgressorForTest()
   forestSim.clearTerrain()
@@ -1378,6 +1439,11 @@ proc addLungingSpecies(
   ))
 
 proc testMonsterTacticalHooksAndStatuses() =
+  doAssert SpeciesDuneScorpion.attackStyle() == AttackRanged
+  doAssert SpeciesFrostYeti.attackStyle() == AttackSlam
+  doAssert SpeciesMudSlime.attackStyle() == AttackAura
+  doAssert SpeciesSnowWolf.attackStyle() == AttackLunge
+
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
   sim.mobs.setLen(0)
@@ -1836,6 +1902,9 @@ proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
   sim.mobs[1].attackPhase = MobLunge
   sim.mobs[1].attackTicks = MobLungeTicks div 2
   sim.mobs[1].attackFacing = FaceRight
+  sim.mobs[2].attackPhase = MobLunge
+  sim.mobs[2].attackTicks = MobLungeTicks div 2
+  sim.mobs[2].attackFacing = FaceRight
 
   var nextState: PlayerViewerState
   let labels = sim.buildSpriteProtocolPlayerUpdates(
@@ -1847,7 +1916,8 @@ proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
   doAssert "status slow" in labels
   doAssert "status chill" in labels
   doAssert "status alone" in labels
-  doAssert "mob telegraph warning" in labels
+  doAssert "mob dart warning" in labels
+  doAssert "mob aura pulse" in labels
   doAssert "mob lunge strike" in labels
 
 proc testTerrainMovementModifiersAffectPlayers() =
@@ -3508,8 +3578,9 @@ proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
   doAssert BiomeSnow.waystationPromptLabel() == "HEARTH H"
 
   let seededSim = initPartyProgressorForTest()
-  doAssert seededSim.landmarks.countIt(it.kind == LandmarkWaystation) == BiomeCount,
-    "one waystation should be seeded into each adventure biome"
+  doAssert seededSim.landmarks.countIt(it.kind == LandmarkWaystation) ==
+      BiomeCount * ExpeditionCycleCount,
+    "one waystation should be seeded into each procedural adventure segment"
 
   var swampSim = initPartyProgressorForTest()
   swampSim.clearTerrain()
@@ -4636,6 +4707,8 @@ testMobTelegraphsBeforeLunging()
 testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
+testProceduralExpeditionRepeatsBiomeSegments()
+testProceduralLandformsAndVisibilityShadow()
 testEarlyBiomeForageAndRallyTactics()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolWeatherOverlays()
