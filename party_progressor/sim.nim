@@ -84,6 +84,10 @@ const
   HealerPulseAmount* = 2
   FoodHealAmount* = 2
   ColdExposureIntervalTicks* = TargetFps * 3
+  CampShelterRadius* = WorldTileSize * 2
+  CampRecoveryIntervalTicks* = TargetFps * 2
+  CampRecoveryHealAmount* = 1
+  CampStatusRecoveryTicks* = TargetFps div 2
   StatusSlowTicks* = TargetFps * 2
   StatusChillTicks* = TargetFps * 3
   StatusPoisonTicks* = TargetFps * 4
@@ -3444,6 +3448,22 @@ proc playerNearLandmark(
     pcy = boundsCenterY(player.y, player.bounds)
   distanceSquared(pcx, pcy, lc.x, lc.y) <= radius * radius
 
+proc playerNearActivatedCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside an activated camp shelter zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkCamp and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
 proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
   case kind
   of LandmarkWood:
@@ -3742,6 +3762,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
+    let sheltered = sim.playerNearActivatedCamp(playerIndex)
     if sim.food > 0 and
         sim.players[playerIndex].lives <=
           sim.players[playerIndex].maxHp - FoodHealAmount:
@@ -3757,7 +3778,8 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         sim.players[playerIndex].maxHp - FoodHealAmount:
       discard sim.consumeCarriedFood(playerIndex)
 
-    if coldPulse and sim.playerBiome(sim.players[playerIndex]) == BiomeSnow:
+    if coldPulse and sim.playerBiome(sim.players[playerIndex]) == BiomeSnow and
+        not sheltered:
       if sim.food > 0:
         dec sim.food
         inc sim.scoreRevision
@@ -3767,14 +3789,27 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       else:
         sim.damagePlayer(playerIndex, 0, 0, 1)
 
+proc reduceStatusTicks(value: var int, amount: int): bool =
+  if value <= 0:
+    return false
+  value = max(0, value - max(1, amount))
+  true
+
 proc applyStatusEffects(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
+    let sheltered = sim.playerNearActivatedCamp(playerIndex)
 
     if sim.players[playerIndex].poisonTicks > 0 and
         sim.tickCount mod StatusPoisonIntervalTicks == 0:
-      if sim.players[playerIndex].carrying and
+      if sheltered:
+        if reduceStatusTicks(
+          sim.players[playerIndex].poisonTicks,
+          CampStatusRecoveryTicks
+        ):
+          inc sim.scoreRevision
+      elif sim.players[playerIndex].carrying and
           sim.players[playerIndex].carriedItem == CarryFood:
         sim.clearCarry(playerIndex)
         sim.players[playerIndex].poisonTicks = 0
@@ -3788,15 +3823,31 @@ proc applyStatusEffects(sim: var SimServer) =
 
     if playerIndex >= sim.players.len or sim.players[playerIndex].lives <= 0:
       continue
+    let recoveryStep =
+      1 + (if sheltered: CampStatusRecoveryTicks else: 0)
     if sim.players[playerIndex].slowTicks > 0:
-      dec sim.players[playerIndex].slowTicks
-      inc sim.scoreRevision
+      if reduceStatusTicks(sim.players[playerIndex].slowTicks, recoveryStep):
+        inc sim.scoreRevision
     if sim.players[playerIndex].chillTicks > 0:
-      dec sim.players[playerIndex].chillTicks
-      inc sim.scoreRevision
+      if reduceStatusTicks(sim.players[playerIndex].chillTicks, recoveryStep):
+        inc sim.scoreRevision
     if sim.players[playerIndex].poisonTicks > 0:
-      dec sim.players[playerIndex].poisonTicks
-      inc sim.scoreRevision
+      if reduceStatusTicks(sim.players[playerIndex].poisonTicks, recoveryStep):
+        inc sim.scoreRevision
+
+proc applyCampRecovery(sim: var SimServer) =
+  if sim.tickCount mod CampRecoveryIntervalTicks != 0:
+    return
+  for playerIndex in 0 ..< sim.players.len:
+    if not sim.playerNearActivatedCamp(playerIndex):
+      continue
+    if sim.players[playerIndex].lives >= sim.players[playerIndex].maxHp:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + CampRecoveryHealAmount
+    )
+    inc sim.scoreRevision
 
 proc updateMobs*(sim: var SimServer) =
   ## Updates mob chasing, telegraphed attacks, and wandering.
@@ -4317,6 +4368,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.collectPickups()
   sim.applyFoodAndWeatherSurvival()
   sim.applyStatusEffects()
+  sim.applyCampRecovery()
   sim.applyAttack()
   sim.activateNearbyLandmarks()
   sim.updateMobs()

@@ -37,6 +37,8 @@ const
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
   StatusBadgeSpriteBase = 840
   LandmarkPromptSpriteBase = 860
+  LandmarkShelterPromptSpriteId =
+    LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -1252,6 +1254,12 @@ proc landmarkObjectId(index: int): int =
 proc landmarkPromptSpriteId(kind: LandmarkKind): int =
   LandmarkPromptSpriteBase + ord(kind)
 
+proc landmarkPromptSpriteId(landmark: Landmark): int =
+  if landmark.kind == LandmarkCamp and landmark.done:
+    LandmarkShelterPromptSpriteId
+  else:
+    landmark.kind.landmarkPromptSpriteId()
+
 proc landmarkPromptObjectId(index: int): int =
   LandmarkPromptObjectBase + index
 
@@ -1271,6 +1279,12 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "RELIC"
   of LandmarkFinalGate:
     "GATE BOSS R" & $FinalGateRelicCost
+
+proc landmarkPromptLabel(landmark: Landmark): string =
+  if landmark.kind == LandmarkCamp and landmark.done:
+    "SHELTER"
+  else:
+    landmark.kind.landmarkPromptLabel()
 
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
@@ -1585,6 +1599,19 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       promptSprite.pixels,
       "prompt " & prompt.toLowerAscii()
     )
+  let
+    shelterPrompt = "SHELTER"
+    shelterPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [shelterPrompt],
+      10'u8
+    )
+  packet.addSprite(
+    LandmarkShelterPromptSpriteId,
+    shelterPromptSprite.width,
+    shelterPromptSprite.height,
+    shelterPromptSprite.pixels,
+    "prompt " & shelterPrompt.toLowerAscii()
+  )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -1819,7 +1846,7 @@ proc addLandmarkObjects(
       viewportHeight
     )
     let
-      prompt = landmark.kind.landmarkPromptLabel()
+      prompt = landmark.landmarkPromptLabel()
       promptWidth = sim.textFont.textWidth(prompt)
       promptHeight = sim.textFont.height
     objects.addWorldSpriteObject(
@@ -1828,7 +1855,7 @@ proc addLandmarkObjects(
       landmark.landmarkWorldX() - cameraX -
         max(0, (promptWidth - sprite.width) div 2),
       landmark.landmarkWorldY() - cameraY - promptHeight - 3,
-      landmark.kind.landmarkPromptSpriteId(),
+      landmark.landmarkPromptSpriteId(),
       promptWidth,
       promptHeight,
       viewportWidth,

@@ -626,6 +626,13 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     hp: 1,
     done: false
   ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 2,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true
+  ))
 
   var nextState: PlayerViewerState
   let packet = sim.buildSpriteProtocolPlayerUpdates(
@@ -639,6 +646,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status chill" in labels
   doAssert "status alone" in labels
   doAssert "prompt camp w2 s1" in labels
+  doAssert "prompt shelter" in labels
   doAssert "prompt gate boss r3" in labels
 
 proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
@@ -950,6 +958,72 @@ proc testFoodAndColdSurvivalPressure() =
     "carried food should be usable as emergency rations"
   doAssert not sim.players[playerIndex].carrying
 
+proc testCampShelterAndRecoveryInfrastructure() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundSnow, BiomeSnow)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].invulnTicks = 0
+  sim.food = 0
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true
+  ))
+
+  doAssert sim.playerNearActivatedCamp(playerIndex)
+
+  sim.players[playerIndex].lives = 3
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 3,
+    "activated camp shelters should block snow exposure damage"
+
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.players[playerIndex].poisonTicks = StatusPoisonTicks
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.players[playerIndex].chillTicks = StatusChillTicks
+  sim.tickCount = StatusPoisonIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "camp shelter should prevent poison pulse damage while recovering"
+  doAssert sim.players[playerIndex].poisonTicks <
+    StatusPoisonTicks - CampStatusRecoveryTicks,
+    "camp shelter should cleanse poison faster than ordinary ticking"
+  doAssert sim.players[playerIndex].slowTicks <
+    StatusSlowTicks - 1,
+    "camp shelter should speed slow recovery"
+  doAssert sim.players[playerIndex].chillTicks <
+    StatusChillTicks - 1,
+    "camp shelter should speed chill recovery"
+
+  sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp - 1
+  sim.tickCount = CampRecoveryIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "camp shelter should slowly heal resting players"
+
+  sim.players[playerIndex].x += CampShelterRadius + WorldTileSize
+  sim.players[playerIndex].lives = 3
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = ColdExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 2,
+    "snow exposure should still damage players away from camp shelter"
+
 testSafeOriginAndReusableRoles()
 testFrontierScoreIsShared()
 testMobHpScalesByProgressZone()
@@ -970,4 +1044,5 @@ testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testFoodAndColdSurvivalPressure()
+testCampShelterAndRecoveryInfrastructure()
 echo "All tests passed"

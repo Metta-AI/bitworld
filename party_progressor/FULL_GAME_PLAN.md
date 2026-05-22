@@ -287,6 +287,9 @@ The first full-game implementation pass includes:
 - DPS cleave on the `B` button, plus tank guard and healer pulse.
 - Food auto-healing and snow exposure pressure that consumes food before
   damaging players.
+- Activated camps now act as expedition shelters: nearby players are protected
+  from snow exposure, recover poison/slow/chill statuses faster, and slowly
+  heal while regrouping.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
   including visible held-item sprites and select-to-use/drop behavior.
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
@@ -302,7 +305,7 @@ The first full-game implementation pass includes:
 - In-world player affordances for the larger observation window: poison, slow,
   chill, and isolation danger now appear as compact badges next to players, and
   landmarks show readable labels for resources, camp costs, relic beacons, and
-  final-gate requirements.
+  final-gate requirements, with activated camps relabeled as shelters.
 - Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
   appear as compact badges beside threatening enemies before hits land, so the
   player can read biome combat pressure without first taking the status.
@@ -336,8 +339,9 @@ The first full-game implementation pass includes:
 
 - Give each biome one tactical rule that changes party behavior.
 - Add optional side objectives that trade time for score or survivability.
-- Let camps upgrade from simple checkpoints into expedition infrastructure:
-  healing, role swap, weather shelter, or shortcut reveal.
+- Extend camp infrastructure beyond healing, role swap, and weather shelter:
+  add shortcut reveal, biome-safe staging bonuses, or optional fortification
+  choices.
 - Add stronger teammate legibility: pings, downed-player indicators, and simple
   "regroup" incentives.
 - Make the final gate feel earned by requiring a visible chain of relic, boss,
