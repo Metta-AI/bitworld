@@ -63,12 +63,16 @@ const
   PlayerHealthObjectBase = 10000
   MobHealthObjectBase = 11000
   CarryObjectBase* = 12000
+  CarryExtraObjectBase = CarryObjectBase + 100
+  CarryCountObjectBase = CarryObjectBase + 500
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
   RoleAbilityEffectObjectBase = 18000
+  CarryCountSpriteBase = 1400
+  CarryObjectStride = 8
   StatusBadgeSlots = 18
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
@@ -1787,6 +1791,19 @@ proc pickupSpriteId(kind: PickupKind): int =
 proc carryObjectId(player: Actor): int =
   CarryObjectBase + player.id
 
+proc carryObjectId(player: Actor, item: CarryKind): int =
+  let active = player.activeCarryItem()
+  if item == active:
+    player.carryObjectId()
+  else:
+    CarryExtraObjectBase + player.id * CarryObjectStride + ord(item)
+
+proc carryCountObjectId(player: Actor, item: CarryKind): int =
+  CarryCountObjectBase + player.id * CarryObjectStride + ord(item)
+
+proc carryCountSpriteId(player: Actor, item: CarryKind): int =
+  CarryCountSpriteBase + player.id * CarryObjectStride + ord(item)
+
 proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
@@ -2871,40 +2888,74 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
-    if player.carrying and not downed:
-      let
-        carriedLandmark = player.carriedItem.landmarkForCarry()
-        carriedSprite = sim.landmarkRgbaSprite(carriedLandmark)
-        carryX =
-          if useCarryHud:
-            CarryHudSlotGap + carryHudSlot * (WorldTileSize + CarryHudSlotGap)
-          else:
-            player.x + playerSprite.width div 2 -
-              carriedSprite.width div 2 - cameraX
-        carryY =
-          if useCarryHud:
-            viewportHeight - carriedSprite.height - CarryHudSlotGap
-          else:
-            player.y - carriedSprite.height div 2 - 5 - cameraY
-        carrySortY =
-          if useCarryHud:
-            viewportHeight + carryHudSlot
-          else:
-            player.y - cameraY
-      objects.addWorldSpriteObject(
-        currentIds,
-        player.carryObjectId(),
-        carryX,
-        carryY,
-        carriedLandmark.landmarkSpriteId(),
-        carriedSprite.width,
-        carriedSprite.height,
-        viewportWidth,
-        viewportHeight,
-        carrySortY
-      )
-      if useCarryHud:
-        inc carryHudSlot
+    if player.activeCarryItem() != CarryNone and not downed:
+      let carryUsesHud = useCarryHud and selected
+      for item in CarryInventoryKinds:
+        let count = player.carryCount(item)
+        if count <= 0:
+          continue
+        if not carryUsesHud and item != player.activeCarryItem():
+          continue
+        let
+          carriedLandmark = item.landmarkForCarry()
+          carriedSprite = sim.landmarkRgbaSprite(carriedLandmark)
+          carryX =
+            if carryUsesHud:
+              CarryHudSlotGap + carryHudSlot * (WorldTileSize + CarryHudSlotGap)
+            else:
+              player.x + playerSprite.width div 2 -
+                carriedSprite.width div 2 - cameraX
+          carryY =
+            if carryUsesHud:
+              viewportHeight - carriedSprite.height - CarryHudSlotGap
+            else:
+              player.y - carriedSprite.height div 2 - 5 - cameraY
+          carrySortY =
+            if carryUsesHud:
+              viewportHeight + carryHudSlot
+            else:
+              player.y - cameraY
+        objects.addWorldSpriteObject(
+          currentIds,
+          player.carryObjectId(item),
+          carryX,
+          carryY,
+          carriedLandmark.landmarkSpriteId(),
+          carriedSprite.width,
+          carriedSprite.height,
+          viewportWidth,
+          viewportHeight,
+          carrySortY
+        )
+        if carryUsesHud and count > 1:
+          let
+            countText = $count
+            countSprite = sim.buildSpriteProtocolTextSprite([countText], 8'u8)
+            countSpriteId = player.carryCountSpriteId(item)
+            countObjectId = player.carryCountObjectId(item)
+            countWidth = sim.textFont.textWidth(countText)
+            countHeight = sim.textFont.height
+          packet.addSprite(
+            countSpriteId,
+            countSprite.width,
+            countSprite.height,
+            countSprite.pixels,
+            "carry " & item.carryLabel() & " x" & $count
+          )
+          objects.addWorldSpriteObject(
+            currentIds,
+            countObjectId,
+            carryX + carriedSprite.width - countWidth,
+            carryY + carriedSprite.height - countHeight,
+            countSpriteId,
+            countWidth,
+            countHeight,
+            viewportWidth,
+            viewportHeight,
+            carrySortY + 1
+          )
+        if carryUsesHud:
+          inc carryHudSlot
     var badges: seq[StatusBadgeKind] = @[]
     if downed:
       badges.add(StatusDown)

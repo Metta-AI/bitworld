@@ -1179,6 +1179,57 @@ proc testCarriedInventoryTilesAcrossBottomOfPlayerView() =
     "carried inventory should tile from the lower-left inventory strip"
   doAssert parsed.sprites[carryObject.spriteId].label == "food"
 
+proc testCarriedFoodStacksAndShowsCount() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  let playerIndex = sim.addPlayer("forager")
+  let player = sim.players[playerIndex]
+  sim.pickups.add(Pickup(
+    x: player.x,
+    y: player.y,
+    kind: PickupFood,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: player.x,
+    y: player.y,
+    kind: PickupFood,
+    value: 0
+  ))
+
+  sim.step([InputState()])
+
+  doAssert sim.players[playerIndex].carryCount(CarryFood) == 2,
+    "repeated wheat/food pickups should stack instead of blocking collection"
+  doAssert sim.pickups.len == 0,
+    "stacked food pickups should be removed from the ground"
+  doAssert sim.carryHudLabel(playerIndex) == "food x2 sel drop"
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  let carryObject = parsed.objects[CarryObjectBase + sim.players[playerIndex].id]
+  doAssert carryObject.y >= PlayerViewportHeight - WorldTileSize - 4,
+    "stacked inventory should stay in the bottom HUD row"
+  doAssert parsed.sprites[carryObject.spriteId].label == "food"
+  doAssert "carry food x2" in parsed.sprites.values.toSeq.mapIt(it.label),
+    "stacked inventory should expose a visible count badge"
+
+  sim.players[playerIndex].lives =
+    sim.players[playerIndex].maxHp - FoodHealAmount
+  sim.step([InputState(select: true)])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp
+  doAssert sim.players[playerIndex].carryCount(CarryFood) == 1,
+    "using food should consume one stacked item, not the whole stack"
+  doAssert sim.players[playerIndex].carrying
+
 proc testRoleSpecialAbilitiesShowColoredSpriteEffects() =
   for item in [
     (role: RoleTank, label: "ability tank effect"),
@@ -4592,6 +4643,7 @@ testSpriteProtocolShowsSurvivalPressureAffordances()
 testRenderedPlayerObservationHasBiomeBackedPixels()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testCarriedInventoryTilesAcrossBottomOfPlayerView()
+testCarriedFoodStacksAndShowsCount()
 testRoleSpecialAbilitiesShowColoredSpriteEffects()
 testGeneratedMonsterSpritesStayRichlyColored()
 testExpeditionObjectiveHudGuidesNextStep()

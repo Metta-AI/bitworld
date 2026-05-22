@@ -378,6 +378,7 @@ type
     distanceWalked*: int
     carrying*: bool
     carriedItem*: CarryKind
+    carryCounts*: array[CarryKind, int]
     carrySelectLockTicks*: int
     slowTicks*: int
     chillTicks*: int
@@ -612,6 +613,13 @@ type
     bossDefeated*: bool
 
 const
+  CarryInventoryKinds*: array[4, CarryKind] = [
+    CarryWood,
+    CarryFood,
+    CarryStone,
+    CarryGold
+  ]
+
   AllMobSpecies*: array[32, MobSpecies] = [
     SpeciesGrassSnake,
     SpeciesForestWolf,
@@ -1164,6 +1172,75 @@ proc landmarkForCarry*(kind: CarryKind): LandmarkKind =
     LandmarkGold
   of CarryNone:
     LandmarkFood
+
+proc storedCarryTotal*(player: Actor): int =
+  for item in CarryInventoryKinds:
+    result += player.carryCounts[item]
+
+proc carryCount*(player: Actor, item: CarryKind): int =
+  if item == CarryNone:
+    return 0
+  if not player.carrying and player.carriedItem == CarryNone:
+    return 0
+  result = player.carryCounts[item]
+  if result == 0 and player.storedCarryTotal() == 0 and player.carrying and
+      player.carriedItem == item:
+    result = 1
+
+proc hasCarry*(player: Actor, item: CarryKind): bool =
+  player.carryCount(item) > 0
+
+proc activeCarryItem*(player: Actor): CarryKind =
+  if player.carriedItem != CarryNone and player.carryCount(player.carriedItem) > 0:
+    return player.carriedItem
+  for item in CarryInventoryKinds:
+    if player.carryCount(item) > 0:
+      return item
+  CarryNone
+
+proc syncCarrySelection*(player: var Actor) =
+  if player.carriedItem != CarryNone and player.carryCounts[player.carriedItem] > 0:
+    player.carrying = true
+    return
+  for item in CarryInventoryKinds:
+    if player.carryCounts[item] > 0:
+      player.carrying = true
+      player.carriedItem = item
+      return
+  player.carrying = false
+  player.carriedItem = CarryNone
+
+proc normalizeCarry*(player: var Actor) =
+  if not player.carrying and player.carriedItem == CarryNone:
+    for item in CarryKind:
+      player.carryCounts[item] = 0
+    return
+  if player.storedCarryTotal() == 0 and player.carrying and
+      player.carriedItem != CarryNone:
+    player.carryCounts[player.carriedItem] = 1
+  player.syncCarrySelection()
+
+proc clearCarryInventory*(player: var Actor) =
+  for item in CarryKind:
+    player.carryCounts[item] = 0
+  player.carrying = false
+  player.carriedItem = CarryNone
+
+proc carryInventoryLabel*(player: Actor): string =
+  var labels: seq[string] = @[]
+  for item in CarryInventoryKinds:
+    let count = player.carryCount(item)
+    if count <= 0:
+      continue
+    var label = item.carryLabel()
+    if count > 1:
+      label.add(" x")
+      label.add($count)
+    labels.add(label)
+  if labels.len == 0:
+    "none"
+  else:
+    labels.join(",")
 
 proc dataDir*(): string =
   getCurrentDir() / "data"
@@ -2909,8 +2986,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
   sim.players[playerIndex].invulnTicks = 30
   sim.players[playerIndex].coins = 0
-  sim.players[playerIndex].carrying = false
-  sim.players[playerIndex].carriedItem = CarryNone
+  sim.players[playerIndex].clearCarryInventory()
   sim.players[playerIndex].carrySelectLockTicks = 0
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
@@ -3214,9 +3290,7 @@ proc playerScoresJson*(sim: SimServer): string =
     healingDone.add(%player.healingDone)
     damageBlocked.add(%player.damageBlocked)
     messagesSent.add(%player.messagesSent)
-    carriedItems.add(%
-      (if player.carrying: player.carriedItem.carryLabel() else: "none")
-    )
+    carriedItems.add(%player.carryInventoryLabel())
     statusEffects.add(%player.statusLabel())
     downedTicks.add(%player.downedTicks)
     triumphTicks.add(%player.triumphTicks)
@@ -3326,6 +3400,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.coins)
     result.mixHashInt(ord(player.carrying))
     result.mixHashInt(ord(player.carriedItem))
+    for item in CarryInventoryKinds:
+      result.mixHashInt(player.carryCount(item))
     result.mixHashInt(player.carrySelectLockTicks)
     result.mixHashInt(player.slowTicks)
     result.mixHashInt(player.chillTicks)
@@ -3715,7 +3791,11 @@ proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
   else:
     discard
 
-proc clearCarry(sim: var SimServer, playerIndex: int)
+proc consumeCarryItem(
+  sim: var SimServer,
+  playerIndex: int,
+  item: CarryKind
+): bool
 proc dropCarry(sim: var SimServer, playerIndex: int): bool
 proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool
 proc useCarryInField(sim: var SimServer, playerIndex: int): bool
@@ -3737,8 +3817,7 @@ proc carriedFoodWouldHelp*(player: Actor): bool =
 proc consumeCarriedFood(sim: var SimServer, playerIndex: int): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
-  if not sim.players[playerIndex].carrying or
-      sim.players[playerIndex].carriedItem != CarryFood:
+  if not sim.players[playerIndex].hasCarry(CarryFood):
     return false
   sim.applyCarriedFood(playerIndex, playerIndex)
 
@@ -3763,8 +3842,7 @@ proc nearbyCarriedFoodRecipient(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or not player.carrying or
-      player.carriedItem != CarryFood:
+  if player.lives <= 0 or not player.hasCarry(CarryFood):
     return
   let radiusSq = CarriedFoodShareRadius * CarriedFoodShareRadius
   var
@@ -3807,8 +3885,7 @@ proc applyCarriedFood(
   if carrierIndex < 0 or carrierIndex >= sim.players.len or
       targetIndex < 0 or targetIndex >= sim.players.len:
     return false
-  if not sim.players[carrierIndex].carrying or
-      sim.players[carrierIndex].carriedItem != CarryFood:
+  if not sim.players[carrierIndex].hasCarry(CarryFood):
     return false
   if not sim.players[targetIndex].carriedFoodWouldHelp():
     return false
@@ -3824,7 +3901,7 @@ proc applyCarriedFood(
   sim.players[targetIndex].exhaustionTicks = 0
   sim.players[carrierIndex].healingDone +=
     sim.players[targetIndex].lives - before
-  sim.clearCarry(carrierIndex)
+  discard sim.consumeCarryItem(carrierIndex, CarryFood)
   true
 
 proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
@@ -4043,28 +4120,45 @@ proc pickupPositionForPlayer(
     )
   )
 
-proc clearCarry(sim: var SimServer, playerIndex: int) =
-  sim.players[playerIndex].carrying = false
-  sim.players[playerIndex].carriedItem = CarryNone
+proc consumeCarryItem(
+  sim: var SimServer,
+  playerIndex: int,
+  item: CarryKind
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if item == CarryNone:
+    return false
+  sim.players[playerIndex].normalizeCarry()
+  if sim.players[playerIndex].carryCounts[item] <= 0:
+    return false
+  dec sim.players[playerIndex].carryCounts[item]
+  sim.players[playerIndex].syncCarrySelection()
   inc sim.scoreRevision
+  true
 
 proc giveCarry(sim: var SimServer, playerIndex: int, item: CarryKind): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
-  if item == CarryNone or sim.players[playerIndex].carrying:
+  if item == CarryNone:
     return false
-  sim.players[playerIndex].carrying = true
-  sim.players[playerIndex].carriedItem = item
+  sim.players[playerIndex].normalizeCarry()
+  let wasEmpty = sim.players[playerIndex].activeCarryItem() == CarryNone
+  inc sim.players[playerIndex].carryCounts[item]
+  if wasEmpty or sim.players[playerIndex].carriedItem == CarryNone:
+    sim.players[playerIndex].carriedItem = item
+  sim.players[playerIndex].syncCarrySelection()
   inc sim.scoreRevision
   true
 
 proc dropCarry(sim: var SimServer, playerIndex: int): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
-  if not sim.players[playerIndex].carrying:
+  sim.players[playerIndex].normalizeCarry()
+  let item = sim.players[playerIndex].activeCarryItem()
+  if item == CarryNone:
     return false
   let
-    item = sim.players[playerIndex].carriedItem
     kind = item.pickupForCarry()
     pos = sim.pickupPositionForPlayer(sim.players[playerIndex], kind)
     sprite = sim.pickupSprite(kind)
@@ -4085,7 +4179,7 @@ proc dropCarry(sim: var SimServer, playerIndex: int): bool =
     kind: kind,
     value: 0
   ))
-  sim.clearCarry(playerIndex)
+  discard sim.consumeCarryItem(playerIndex, item)
   true
 
 proc facingTileDirection(facing: Facing): tuple[dx, dy: int] =
@@ -4113,8 +4207,7 @@ proc playerCanLaySwampPlank*(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or not player.carrying or
-      player.carriedItem != CarryWood:
+  if player.lives <= 0 or not player.hasCarry(CarryWood):
     return false
   let
     centerTx = clamp(
@@ -4166,7 +4259,7 @@ proc laySwampPlank(sim: var SimServer, playerIndex: int): bool =
     changed = true
   if not changed:
     return false
-  sim.clearCarry(playerIndex)
+  discard sim.consumeCarryItem(playerIndex, CarryWood)
   true
 
 proc tileAcceptsStoneSteps(sim: SimServer, tx, ty: int): bool =
@@ -4181,8 +4274,7 @@ proc playerCanLayStoneSteps*(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or not player.carrying or
-      player.carriedItem != CarryStone:
+  if player.lives <= 0 or not player.hasCarry(CarryStone):
     return false
   let
     centerTx = clamp(
@@ -4233,19 +4325,35 @@ proc layStoneSteps(sim: var SimServer, playerIndex: int): bool =
     changed = true
   if not changed:
     return false
-  sim.clearCarry(playerIndex)
+  discard sim.consumeCarryItem(playerIndex, CarryStone)
   true
 
 proc useCarryInField(sim: var SimServer, playerIndex: int): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
-  case sim.players[playerIndex].carriedItem
+  sim.players[playerIndex].normalizeCarry()
+  case sim.players[playerIndex].activeCarryItem()
   of CarryWood:
-    sim.laySwampPlank(playerIndex)
+    if sim.laySwampPlank(playerIndex):
+      return true
+    if sim.players[playerIndex].hasCarry(CarryStone):
+      sim.layStoneSteps(playerIndex)
+    else:
+      false
   of CarryStone:
-    sim.layStoneSteps(playerIndex)
+    if sim.layStoneSteps(playerIndex):
+      return true
+    if sim.players[playerIndex].hasCarry(CarryWood):
+      sim.laySwampPlank(playerIndex)
+    else:
+      false
   else:
-    false
+    if sim.players[playerIndex].hasCarry(CarryWood):
+      sim.laySwampPlank(playerIndex)
+    elif sim.players[playerIndex].hasCarry(CarryStone):
+      sim.layStoneSteps(playerIndex)
+    else:
+      false
 
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   ## Puts a defeated player into a short rescue window before respawn.
@@ -5277,51 +5385,54 @@ proc playerCanDeliverCarryToCamp*(
 ): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
-  if not sim.players[playerIndex].carrying:
-    return false
-  let item = sim.players[playerIndex].carriedItem
-  if item == CarryNone:
+  let player = sim.players[playerIndex]
+  if player.activeCarryItem() == CarryNone:
     return false
   for landmark in sim.landmarks:
-    if not landmark.campCanAcceptCarry(item):
-      continue
     if sim.playerNearLandmark(
-      sim.players[playerIndex],
+      player,
       landmark,
       LandmarkActivationRadius
     ):
-      return true
+      for item in CarryInventoryKinds:
+        if player.carryCount(item) > 0 and landmark.campCanAcceptCarry(item):
+          return true
   false
 
 proc carryHudLabel*(sim: SimServer, playerIndex: int): string =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return "none"
   let player = sim.players[playerIndex]
-  if not player.carrying or player.carriedItem == CarryNone:
+  let activeItem = player.activeCarryItem()
+  if activeItem == CarryNone:
     return "none"
+  var item = activeItem
   let action =
-    if player.carriedItem == CarryFood and player.carriedFoodWouldHelp():
+    if player.hasCarry(CarryFood) and player.carriedFoodWouldHelp():
+      item = CarryFood
       "sel eat"
-    elif player.carriedItem == CarryFood and sim.playerCanFeedCarriedFood(playerIndex):
+    elif player.hasCarry(CarryFood) and sim.playerCanFeedCarriedFood(playerIndex):
+      item = CarryFood
       "sel feed"
     elif sim.playerCanDeliverCarryToCamp(playerIndex):
       "sel camp"
     elif sim.playerCanLaySwampPlank(playerIndex):
+      item = CarryWood
       "sel plank"
     elif sim.playerCanLayStoneSteps(playerIndex):
+      item = CarryStone
       "sel steps"
     else:
       "sel drop"
-  player.carriedItem.carryLabel() & " " & action
+  let count = player.carryCount(item)
+  item.carryLabel() & (if count > 1: " x" & $count else: "") & " " & action
 
 proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
   ## Converts one held supply into an explicit activated-camp upgrade.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
-  if not sim.players[playerIndex].carrying:
-    return false
-  let item = sim.players[playerIndex].carriedItem
-  if item == CarryNone:
+  sim.players[playerIndex].normalizeCarry()
+  if sim.players[playerIndex].activeCarryItem() == CarryNone:
     return false
   for landmarkIndex in 0 ..< sim.landmarks.len:
     let landmark = sim.landmarks[landmarkIndex]
@@ -5333,7 +5444,15 @@ proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
       LandmarkActivationRadius
     ):
       continue
+    var item = sim.players[playerIndex].activeCarryItem()
     if not sim.landmarks[landmarkIndex].campCanAcceptCarry(item):
+      item = CarryNone
+      for candidate in CarryInventoryKinds:
+        if sim.players[playerIndex].carryCount(candidate) > 0 and
+            sim.landmarks[landmarkIndex].campCanAcceptCarry(candidate):
+          item = candidate
+          break
+    if item == CarryNone:
       continue
     case item
     of CarryWood:
@@ -5346,7 +5465,7 @@ proc deliverCarryToCamp(sim: var SimServer, playerIndex: int): bool =
       sim.fortifyCamp(landmarkIndex)
     of CarryNone:
       continue
-    sim.clearCarry(playerIndex)
+    discard sim.consumeCarryItem(playerIndex, item)
     return true
   false
 
@@ -5778,7 +5897,7 @@ proc playerHasCaveLight*(sim: SimServer, playerIndex: int): bool =
   if player.lives <= 0 or
       sim.playerBiome(player) notin {BiomeCave, BiomeRuins}:
     return false
-  player.carrying and player.carriedItem == CarryGold
+  player.hasCarry(CarryGold)
 
 proc playerGuardMitigatesBiomePressure*(
   sim: SimServer,
@@ -5897,9 +6016,8 @@ proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
     dec sim.food
     inc sim.scoreRevision
     return true
-  if sim.players[playerIndex].carrying and
-      sim.players[playerIndex].carriedItem == CarryFood:
-    sim.clearCarry(playerIndex)
+  if sim.players[playerIndex].hasCarry(CarryFood):
+    discard sim.consumeCarryItem(playerIndex, CarryFood)
     return true
   false
 
@@ -6026,8 +6144,7 @@ proc applyStatusEffects(sim: var SimServer) =
             (if aidSheltered: CampAidStatusRecoveryTicks else: 0)
         ):
           inc sim.scoreRevision
-      elif sim.players[playerIndex].carrying and
-          sim.players[playerIndex].carriedItem == CarryFood:
+      elif sim.players[playerIndex].hasCarry(CarryFood):
         discard sim.consumeCarriedFood(playerIndex)
       elif sim.food > 0:
         dec sim.food
@@ -6480,22 +6597,37 @@ proc renderRoleAbilityEffect(
     discard
 
 proc renderCarryInventory(sim: var SimServer, playerIndex: int) =
-  ## Draws held supplies as a bottom inventory slot instead of over the actor.
+  ## Draws held supplies as bottom inventory slots instead of over the actor.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or not player.carrying:
+  if player.lives <= 0 or player.activeCarryItem() == CarryNone:
     return
-  let
-    carrySprite = sim.landmarkSprite(player.carriedItem.landmarkForCarry())
-    slotX = ScreenWidth - carrySprite.width - 2
-    slotY = ScreenHeight - carrySprite.height - 2
-  for y in slotY - 1 .. slotY + carrySprite.height:
-    for x in slotX - 1 .. slotX + carrySprite.width:
-      if x == slotX - 1 or x == slotX + carrySprite.width or
-          y == slotY - 1 or y == slotY + carrySprite.height:
-        sim.fb.putPixel(x, y, 2'u8)
-  sim.fb.blitSprite(carrySprite, slotX, slotY, 0, 0)
+  var slot = 0
+  for item in CarryInventoryKinds:
+    let count = player.carryCount(item)
+    if count <= 0:
+      continue
+    let
+      carrySprite = sim.landmarkSprite(item.landmarkForCarry())
+      slotX = 2 + slot * (WorldTileSize + 4)
+      slotY = ScreenHeight - carrySprite.height - 2
+    for y in slotY - 1 .. slotY + carrySprite.height:
+      for x in slotX - 1 .. slotX + carrySprite.width:
+        if x == slotX - 1 or x == slotX + carrySprite.width or
+            y == slotY - 1 or y == slotY + carrySprite.height:
+          sim.fb.putPixel(x, y, 2'u8)
+    sim.fb.blitSprite(carrySprite, slotX, slotY, 0, 0)
+    if count > 1:
+      let
+        countText = $count
+        countX = min(
+          ScreenWidth - sim.textFont.textWidth(countText),
+          slotX + carrySprite.width - sim.textFont.textWidth(countText)
+        )
+        countY = max(0, slotY + carrySprite.height - sim.textFont.height)
+      sim.fb.drawText(sim.textFont, countText, countX, countY, 8'u8)
+    inc slot
 
 proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX, cameraY: int) =
   let
