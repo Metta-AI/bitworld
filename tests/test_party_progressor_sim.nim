@@ -2459,6 +2459,16 @@ proc testBeaconAndBossScoring() =
   for _ in 1 ..< FinalGateRitualTicks:
     sim.step([InputState()])
   doAssert sim.landmarks[0].done
+  doAssert sim.finalGateCompleted()
+  doAssert sim.teamScore() ==
+    sim.frontierTiles() +
+      ObjectiveScoreValue +
+      FinalGateRelicCost * RelicScoreValue +
+      FinalGateCampCost * CampScoreValue +
+      BossScoreValue +
+      FinalGateScoreValue
+  let finalScores = parseJson(sim.playerScoresJson())
+  doAssert finalScores["final_gate_completed"][0].getBool()
 
 proc testFinalGateRitualAcceleratesWithPartyRoles() =
   var sim = initPartyProgressorForTest()

@@ -67,6 +67,7 @@ const
   CampScoreValue* = 10
   RelicScoreValue* = 40
   BossScoreValue* = 150
+  FinalGateScoreValue* = 250
   FinalGateRelicCost* = 3
   FinalGateCampCost* = 2
   ShrineFoodBonus* = 2
@@ -1842,6 +1843,13 @@ proc finalGateObjectiveHint(sim: SimServer): string =
       return "NEXT HOLD GATE " & $landmark.progress.finalGateProgressPercent() & "%"
   "EXPEDITION COMPLETE"
 
+proc finalGateCompleted*(sim: SimServer): bool =
+  ## Returns true after the expedition completes the last gate ritual.
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkFinalGate and landmark.done:
+      return true
+  false
+
 proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   ## Returns the short next-action line shown in the local player HUD.
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1895,7 +1903,8 @@ proc teamScore*(sim: SimServer): int =
     sim.campsActivated * CampScoreValue +
     sim.relicShards * RelicScoreValue +
     sim.resourcesCollected +
-    (if sim.bossDefeated: BossScoreValue else: 0)
+    (if sim.bossDefeated: BossScoreValue else: 0) +
+    (if sim.finalGateCompleted(): FinalGateScoreValue else: 0)
 
 proc elevationSpeedPercent*(elevation: int): int =
   ## Higher ground is visible and tactically slower to traverse.
@@ -3029,6 +3038,7 @@ proc playerScoresJson*(sim: SimServer): string =
     campsActivated = newJArray()
     resourcesCollected = newJArray()
     bossDefeated = newJArray()
+    finalGateCompleted = newJArray()
     partyWood = newJArray()
     partyFood = newJArray()
     partyStone = newJArray()
@@ -3060,6 +3070,7 @@ proc playerScoresJson*(sim: SimServer): string =
     campsActivated.add(%sim.campsActivated)
     resourcesCollected.add(%sim.resourcesCollected)
     bossDefeated.add(%sim.bossDefeated)
+    finalGateCompleted.add(%sim.finalGateCompleted())
     partyWood.add(%sim.wood)
     partyFood.add(%sim.food)
     partyStone.add(%sim.stone)
@@ -3085,6 +3096,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["camps_activated"] = campsActivated
   results["resources_collected"] = resourcesCollected
   results["boss_defeated"] = bossDefeated
+  results["final_gate_completed"] = finalGateCompleted
   results["party_wood"] = partyWood
   results["party_food"] = partyFood
   results["party_stone"] = partyStone

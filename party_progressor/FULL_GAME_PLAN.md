@@ -213,6 +213,9 @@ Keep existing diagnostics:
 
 The reward endpoint should use the combined team score, while result JSON should
 preserve the raw frontier fields for analysis.
+Final-gate completion should be separately visible in result JSON and should
+pay a distinct run-completion bonus, so finishing the expedition is more
+valuable than only farming earlier milestones.
 
 ## Player Observation And Sprite Protocol
 
@@ -485,6 +488,9 @@ The first full-game implementation pass includes:
 - Final-gate activation now has a visible hold ritual after those requirements
   are met, and the ritual accelerates when distinct tank/DPS/healer roles are
   grouped on the gate.
+- Completing the final gate now adds an explicit run-completion score bonus and
+  appears as `final_gate_completed` in result JSON, making the expedition finish
+  visible to scoring, analysis, and tournament result inspection.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Konrad bot objective targeting now reads visible Party Progressor landmarks
   semantically: resources and lairs are attack targets, camps/relics/rescues/
