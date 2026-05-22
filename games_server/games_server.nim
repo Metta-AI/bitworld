@@ -680,8 +680,12 @@ proc manifestStringArray(node: JsonNode, key: string): seq[string] =
     if item.kind == JString:
       result.add(item.getStr())
 
-proc manifestRunCommand(node: JsonNode, path: string): seq[string] =
-  ## Reads the container entrypoint command from a Coworld manifest node.
+proc manifestRunCommand(
+  node: JsonNode,
+  path: string,
+  required = true
+): seq[string] =
+  ## Reads the container command from a Coworld manifest node.
   ## Prefers the Coworld `run` array on the `runnable` child, falling back
   ## to a top-level `run` array for standalone player manifests.
   let runnable = node.manifestObject("runnable")
@@ -689,7 +693,7 @@ proc manifestRunCommand(node: JsonNode, path: string): seq[string] =
     result = runnable.manifestStringArray("run")
   if result.len == 0:
     result = node.manifestStringArray("run")
-  if result.len == 0:
+  if result.len == 0 and required:
     raise newException(GamesServerError, path & " missing run")
 
 proc readGameManifest(path: string): GameManifest =
@@ -715,7 +719,10 @@ proc readGameManifest(path: string): GameManifest =
       name: name,
       author: author,
       imageUri: image,
-      command: game.manifestRunCommand("coworld.game.runnable"),
+      command: game.manifestRunCommand(
+        "coworld.game.runnable",
+        required = false
+      ),
       env: game.manifestEnv(),
       playerProtocol: game.manifestProtocol("player")
     )
@@ -2277,6 +2284,17 @@ proc configTokens(config: string): seq[string] =
     if item.kind == JString:
       result.add(item.getStr())
 
+proc gameConfigTokens(
+  game: GameContainer,
+  tokens: seq[string]
+): seq[string] =
+  ## Returns player tokens from memory or the written game config file.
+  if tokens.len > 0:
+    return tokens
+  let path = replayDir() / configName(game.replay)
+  if fileExists(path):
+    return configTokens(readFile(path))
+
 proc baseDockerArgs(
   name: string,
   port: int,
@@ -2476,14 +2494,15 @@ proc startWaitingBots(
   launchedNames: var seq[string]
 ): seq[BotContainer] =
   ## Starts bot containers after their game container is healthy.
+  let launchTokens = gameConfigTokens(game, tokens)
   for item in counts:
     for _ in 0 ..< item.count:
       let
         created = getTime().toUnix()
         slot = launchedNames.len
         token =
-          if slot < tokens.len:
-            tokens[slot]
+          if slot < launchTokens.len:
+            launchTokens[slot]
           else:
             ""
         stamp = launchStamp(launchedNames.len + 1)

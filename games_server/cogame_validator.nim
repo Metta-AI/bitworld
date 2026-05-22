@@ -269,8 +269,12 @@ proc requireImage(node: JsonNode, path: string): string =
       return image.getStr()
   fail(path & " missing image")
 
-proc requireRunCommand(node: JsonNode, path: string): seq[string] =
-  ## Returns one required Coworld runnable command array.
+proc requireRunCommand(
+  node: JsonNode,
+  path: string,
+  required = true
+): seq[string] =
+  ## Returns one Coworld runnable command array.
   node.requireKind(JObject, path)
   let runnable = node.optionalKey("runnable")
   if not runnable.isNil:
@@ -290,7 +294,7 @@ proc requireRunCommand(node: JsonNode, path: string): seq[string] =
         if run[i].kind != JString or run[i].getStr().len == 0:
           fail(path & ".run[" & $i & "] must be a non-empty string")
         result.add(run[i].getStr())
-  if result.len == 0:
+  if result.len == 0 and required:
     fail(path & " missing run")
 
 proc manifestEnv(node: JsonNode): seq[(string, string)] =
@@ -576,7 +580,7 @@ proc validateCoworldGame(game: JsonNode) =
   discard game.requireString("description", "coworld.game")
   discard game.requireString("owner", "coworld.game")
   discard game.requireImage("coworld.game")
-  discard game.requireRunCommand("coworld.game")
+  discard game.requireRunCommand("coworld.game", required = false)
   discard game.requireObject("config_schema", "coworld.game")
   discard game.requireObject("results_schema", "coworld.game")
   let protocols = game.requireObject("protocols", "coworld.game")
@@ -866,7 +870,10 @@ proc loadCoworldPackage*(manifestPath: string): CoworldPackage =
     manifest: manifest,
     certification: manifest.requireObject("certification", "coworld"),
     cogameImage: game.requireImage("coworld.game"),
-    cogameCommand: game.requireRunCommand("coworld.game"),
+    cogameCommand: game.requireRunCommand(
+      "coworld.game",
+      required = false
+    ),
     cogameEnv: game.manifestEnv(),
     configSchema: game.requireObject("config_schema", "coworld.game"),
     resultsSchema: game.requireObject("results_schema", "coworld.game"),
@@ -931,7 +938,10 @@ proc loadPackageFromManifest(
     manifest: coworldManifest,
     certification: coworldManifest.requireObject("certification", "coworld"),
     cogameImage: game.requireImage("coworld.game"),
-    cogameCommand: game.requireRunCommand("coworld.game"),
+    cogameCommand: game.requireRunCommand(
+      "coworld.game",
+      required = false
+    ),
     cogameEnv: game.manifestEnv(),
     configSchema: game.requireObject("config_schema", "coworld.game"),
     resultsSchema: game.requireObject("results_schema", "coworld.game"),

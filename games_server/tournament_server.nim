@@ -575,14 +575,18 @@ proc manifestStringArray(node: JsonNode, key: string): seq[string] =
     if item.kind == JString:
       result.add(item.getStr())
 
-proc manifestRunCommand(node: JsonNode, path: string): seq[string] =
-  ## Reads a required Coworld run command.
+proc manifestRunCommand(
+  node: JsonNode,
+  path: string,
+  required = true
+): seq[string] =
+  ## Reads a Coworld run command.
   let runnable = node.manifestObject("runnable")
   if not runnable.isNil:
     result = runnable.manifestStringArray("run")
   if result.len == 0:
     result = node.manifestStringArray("run")
-  if result.len == 0:
+  if result.len == 0 and required:
     raise newException(TournamentError, path & " missing run")
 
 proc manifestEnv(node: JsonNode): seq[(string, string)] =
@@ -616,7 +620,10 @@ proc readGameManifest(path: string): GameManifest =
         game.manifestString("owner", "-")
       ),
       imageUri: image,
-      command: game.manifestRunCommand("coworld.game.runnable"),
+      command: game.manifestRunCommand(
+        "coworld.game.runnable",
+        required = false
+      ),
       env: game.manifestEnv()
     )
   except CatchableError as e:
