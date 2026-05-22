@@ -161,6 +161,15 @@ th {
 }
 .clipCell {
   max-width: 260px;
+  overflow: hidden;
+}
+.gameNameCell {
+  width: 150px;
+  max-width: 150px;
+}
+.botNameCell {
+  width: 120px;
+  max-width: 120px;
 }
 .clipText {
   display: block;
@@ -1358,24 +1367,6 @@ proc dockerContainerStats(): Table[string, ContainerStats] =
           memoryPercent: memoryPercent
         )
 
-proc cpuPercent(
-  statsByName: Table[string, ContainerStats],
-  name: string
-): string =
-  ## Returns a display CPU percentage for one container name.
-  if name in statsByName:
-    return statsByName[name].cpu
-  "-"
-
-proc memoryUsage(
-  statsByName: Table[string, ContainerStats],
-  name: string
-): string =
-  ## Returns a display memory usage for one container name.
-  if name in statsByName:
-    return statsByName[name].memory
-  "-"
-
 proc percentValue(value: string): float =
   ## Parses a Docker percent value such as "12.34%".
   let clean = value.strip().strip(chars = {'%'})
@@ -1385,6 +1376,57 @@ proc percentValue(value: string): float =
     result = parseFloat(clean)
   except ValueError:
     result = 0.0
+
+proc cpuPercent(
+  statsByName: Table[string, ContainerStats],
+  name: string
+): string =
+  ## Returns a display CPU percentage for one container name.
+  if name in statsByName:
+    return $int(percentValue(statsByName[name].cpu)) & "%"
+  "-"
+
+proc compactMemory(value: string): string =
+  ## Returns a short memory value from Docker memory usage text.
+  let parts = value.splitWhitespace()
+  if parts.len == 0:
+    return "-"
+  let used = parts[0]
+  var
+    number = ""
+    suffix = ""
+  for c in used:
+    if c.isDigit() or c == '.':
+      number.add(c)
+    else:
+      suffix.add(c)
+  if number.len == 0:
+    return "-"
+  let amount =
+    try:
+      int(parseFloat(number))
+    except ValueError:
+      return "-"
+  case suffix
+  of "KiB":
+    $amount & "K"
+  of "MiB":
+    $amount & "M"
+  of "GiB":
+    $amount & "G"
+  of "TiB":
+    $amount & "T"
+  else:
+    $amount & suffix
+
+proc memoryUsage(
+  statsByName: Table[string, ContainerStats],
+  name: string
+): string =
+  ## Returns a display memory usage for one container name.
+  if name in statsByName:
+    return compactMemory(statsByName[name].memory)
+  "-"
 
 proc addRunningContainersByLabel(
   names: var seq[string],
@@ -3179,9 +3221,7 @@ proc renderGamesTable(
         th ".head":
           say "CPU"
         th ".head":
-          say "Memory"
-        th ".head":
-          say "Port"
+          say "Mem"
         th ".head":
           say "Join"
         th ".head":
@@ -3197,7 +3237,7 @@ proc renderGamesTable(
       if games.len == 0:
         tr:
           td ".row1 center":
-            colspan "12"
+            colspan "11"
             say "No games created yet."
       for i, game in games:
         let
@@ -3207,7 +3247,7 @@ proc renderGamesTable(
         tr:
           td rowClass & " selectCell":
             say renderContainerCheckbox(game.name)
-          td rowClass & " clipCell":
+          td rowClass & " clipCell gameNameCell":
             say clipTextHtml(game.name)
           td rowClass & " nowrap":
             say esc(game.status)
@@ -3215,11 +3255,6 @@ proc renderGamesTable(
             say esc(cpuPercent(statsByName, game.name))
           td rowClass & " right nowrap":
             say esc(memoryUsage(statsByName, game.name))
-          td rowClass & " center":
-            if game.port > 0:
-              say $game.port
-            else:
-              say "-"
           td rowClass & " nowrap":
             if healthy:
               a:
@@ -3321,10 +3356,8 @@ proc renderGamesTable(
             td rowClass & " right nowrap":
               say esc(memoryUsage(statsByName, bot.name))
             td rowClass:
-              say ""
-            td rowClass:
               say esc(botPlayerName(bot.bot, j))
-            td rowClass & " nowrap clipCell":
+            td rowClass & " nowrap clipCell botNameCell":
               say clipTextHtml(bot.name)
             td rowClass & " nowrap":
               say fmtCreated(bot.created)
@@ -3356,9 +3389,7 @@ proc renderReplayServersTable(
         th ".head":
           say "CPU"
         th ".head":
-          say "Memory"
-        th ".head":
-          say "Port"
+          say "Mem"
         th ".head":
           say "Viewer"
         th ".head":
@@ -3372,7 +3403,7 @@ proc renderReplayServersTable(
       if servers.len == 0:
         tr:
           td ".row1 center":
-            colspan "11"
+            colspan "10"
             say "No replay servers started yet."
       for i, server in servers:
         let
@@ -3389,11 +3420,6 @@ proc renderReplayServersTable(
             say esc(cpuPercent(statsByName, server.name))
           td rowClass & " right nowrap":
             say esc(memoryUsage(statsByName, server.name))
-          td rowClass & " center":
-            if server.port > 0:
-              say $server.port
-            else:
-              say "-"
           td rowClass & " nowrap":
             if healthy:
               a:
