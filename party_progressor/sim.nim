@@ -410,6 +410,12 @@ type
     WeatherSnow
     WeatherFog
 
+  SurvivalPressureKind* = enum
+    SurvivalSafe
+    SurvivalCold
+    SurvivalHeat
+    SurvivalFog
+
   GroundKind* = enum
     GroundGrass
     GroundRoad
@@ -815,6 +821,13 @@ proc statusLabel*(player: Actor): string =
   if labels.len == 0:
     return "ok"
   labels.join("/")
+
+proc survivalPressureLabel*(kind: SurvivalPressureKind): string =
+  case kind
+  of SurvivalSafe: "safe"
+  of SurvivalCold: "cold"
+  of SurvivalHeat: "heat"
+  of SurvivalFog: "fog"
 
 proc pingLabel*(kind: PlayerPingKind): string =
   case kind
@@ -4779,6 +4792,32 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
 proc playerBiome(sim: SimServer, player: Actor): BiomeKind =
   sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
 
+proc survivalPressureKind*(
+  sim: SimServer,
+  playerIndex: int
+): SurvivalPressureKind =
+  ## Returns the active environmental pressure a player can currently feel.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return SurvivalSafe
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex):
+    return SurvivalSafe
+  case sim.playerBiome(player)
+  of BiomeSnow:
+    SurvivalCold
+  of BiomeDesert:
+    SurvivalHeat
+  of BiomeCave, BiomeRuins:
+    if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+      SurvivalSafe
+    else:
+      SurvivalFog
+  else:
+    SurvivalSafe
+
+proc survivalPressureLabel*(sim: SimServer, playerIndex: int): string =
+  sim.survivalPressureKind(playerIndex).survivalPressureLabel()
+
 proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
   if sim.food > 0:
     dec sim.food
@@ -5195,7 +5234,8 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   )
   sim.fb.drawText(
     sim.textFont,
-    "STATUS " & player.statusLabel().toUpperAscii(),
+    "STATUS " & player.statusLabel().toUpperAscii() & " " &
+      sim.survivalPressureLabel(playerIndex).toUpperAscii(),
     0,
     lineY * 6,
     2'u8

@@ -773,6 +773,106 @@ proc testSpriteProtocolWeatherOverlays() =
   doAssert "weather dust" in globalLabels,
     "global sprite observations should show biome weather overlays"
 
+proc assertSurvivalPressureObservation(
+  biome: BiomeKind,
+  ground: GroundKind,
+  expectedPressure: SurvivalPressureKind,
+  expectedSpriteLabel: string
+) =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(ground, biome)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = firstTileForBiome(biome) * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+
+  doAssert sim.survivalPressureKind(playerIndex) == expectedPressure
+  doAssert sim.survivalPressureLabel(playerIndex) ==
+    expectedPressure.survivalPressureLabel()
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert expectedSpriteLabel in labels,
+    "sprite observations should show " & expectedSpriteLabel & " pressure"
+  let statusText = expectedPressure.survivalPressureLabel().toUpperAscii()
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("OK " & statusText)),
+    "HUD status line should include the active survival pressure"
+
+proc testSpriteProtocolShowsSurvivalPressureAffordances() =
+  assertSurvivalPressureObservation(
+    BiomeSnow,
+    GroundSnow,
+    SurvivalCold,
+    "status cold"
+  )
+  assertSurvivalPressureObservation(
+    BiomeDesert,
+    GroundSand,
+    SurvivalHeat,
+    "status heat"
+  )
+  assertSurvivalPressureObservation(
+    BiomeCave,
+    GroundCave,
+    SurvivalFog,
+    "status fog"
+  )
+
+  var groupedSim = initPartyProgressorForTest()
+  groupedSim.clearTerrain()
+  groupedSim.mobs.setLen(0)
+  groupedSim.pickups.setLen(0)
+  groupedSim.landmarks.setLen(0)
+  groupedSim.fillGround(GroundCave, BiomeCave)
+  let
+    soloIndex = groupedSim.addPlayer("solo")
+    allyIndex = groupedSim.addPlayer("ally")
+  groupedSim.players[soloIndex].x = firstTileForBiome(BiomeCave) * WorldTileSize
+  groupedSim.players[soloIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  groupedSim.players[soloIndex].bounds =
+    groupedSim.playerBoundsFor(groupedSim.players[soloIndex])
+  groupedSim.players[allyIndex].x =
+    groupedSim.players[soloIndex].x + WorldTileSize
+  groupedSim.players[allyIndex].y = groupedSim.players[soloIndex].y
+  groupedSim.players[allyIndex].bounds =
+    groupedSim.playerBoundsFor(groupedSim.players[allyIndex])
+  doAssert groupedSim.survivalPressureKind(soloIndex) == SurvivalSafe,
+    "nearby allies should clear fog survival pressure before slow lands"
+
+  var shelteredSim = initPartyProgressorForTest()
+  shelteredSim.clearTerrain()
+  shelteredSim.mobs.setLen(0)
+  shelteredSim.pickups.setLen(0)
+  shelteredSim.landmarks.setLen(0)
+  shelteredSim.fillGround(GroundSnow, BiomeSnow)
+  let shelteredIndex = shelteredSim.addPlayer("sheltered")
+  shelteredSim.players[shelteredIndex].x =
+    firstTileForBiome(BiomeSnow) * WorldTileSize
+  shelteredSim.players[shelteredIndex].y =
+    (WorldHeightTiles div 2) * WorldTileSize
+  shelteredSim.players[shelteredIndex].bounds =
+    shelteredSim.playerBoundsFor(shelteredSim.players[shelteredIndex])
+  shelteredSim.landmarks.add(Landmark(
+    tx: shelteredSim.players[shelteredIndex].x div WorldTileSize,
+    ty: shelteredSim.players[shelteredIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true
+  ))
+  doAssert shelteredSim.survivalPressureKind(shelteredIndex) == SurvivalSafe,
+    "activated camps should clear visible cold survival pressure"
+
 proc testRenderedPlayerObservationHasBiomeBackedPixels() =
   var averageBuckets: Table[int, bool]
   for biome in [
@@ -2714,6 +2814,7 @@ testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolWeatherOverlays()
+testSpriteProtocolShowsSurvivalPressureAffordances()
 testRenderedPlayerObservationHasBiomeBackedPixels()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testExpeditionObjectiveHudGuidesNextStep()

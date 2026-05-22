@@ -67,7 +67,7 @@ const
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
-  StatusBadgeSlots = 7
+  StatusBadgeSlots = 10
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
   HealthBarWidth = 18
@@ -131,6 +131,9 @@ type
     StatusPoison
     StatusSlow
     StatusChill
+    StatusCold
+    StatusHeat
+    StatusFog
     StatusAlone
     StatusHelp
     StatusDown
@@ -1405,6 +1408,9 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
+  of StatusCold: "COLD"
+  of StatusHeat: "HEAT"
+  of StatusFog: "FOG"
   of StatusAlone: "REG"
   of StatusHelp: "HELP"
   of StatusDown: "DOWN"
@@ -1425,6 +1431,9 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
+  of StatusCold: 11'u8
+  of StatusHeat: 9'u8
+  of StatusFog: 12'u8
   of StatusAlone: 8'u8
   of StatusHelp: 3'u8
   of StatusDown: 3'u8
@@ -1445,6 +1454,9 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
+  of StatusCold: "status cold"
+  of StatusHeat: "status heat"
+  of StatusFog: "status fog"
   of StatusAlone: "status alone"
   of StatusHelp: "status help"
   of StatusDown: "status down"
@@ -1477,6 +1489,19 @@ proc roleStatusBadge(role: PlayerRole): tuple[found: bool, badge: StatusBadgeKin
     (true, StatusRoleHealer)
   of RoleUnarmed:
     (false, StatusRoleTank)
+
+proc survivalStatusBadge(
+  kind: SurvivalPressureKind
+): tuple[found: bool, badge: StatusBadgeKind] =
+  case kind
+  of SurvivalCold:
+    (true, StatusCold)
+  of SurvivalHeat:
+    (true, StatusHeat)
+  of SurvivalFog:
+    (true, StatusFog)
+  of SurvivalSafe:
+    (false, StatusCold)
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -2567,6 +2592,9 @@ proc addWorldObjects(
       let roleBadge = player.role.roleStatusBadge()
       if roleBadge.found:
         badges.add(roleBadge.badge)
+      let survivalBadge = sim.survivalPressureKind(i).survivalStatusBadge()
+      if survivalBadge.found:
+        badges.add(survivalBadge.badge)
       if player.poisonTicks > 0:
         badges.add(StatusPoison)
       if player.slowTicks > 0:
@@ -2675,7 +2703,8 @@ proc addPlayerHud(
         "CARRY " & player.carriedItem.carryLabel().toUpperAscii()
       else:
         "CARRY NONE") & " E" & $playerElevation & " " &
-        player.statusLabel().toUpperAscii()
+        player.statusLabel().toUpperAscii() & " " &
+        sim.survivalPressureLabel(playerIndex).toUpperAscii()
     statusLine5 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
       statusLine4 & "|" & statusLine5
