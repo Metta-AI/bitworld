@@ -52,7 +52,7 @@ const
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
-  StatusBadgeSlots = 5
+  StatusBadgeSlots = 6
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -112,6 +112,7 @@ type
     StatusChill
     StatusAlone
     StatusHelp
+    StatusDown
 
   GlobalViewerState* = object
     initialized*: bool
@@ -1191,6 +1192,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusChill: "CHL"
   of StatusAlone: "REG"
   of StatusHelp: "HELP"
+  of StatusDown: "DOWN"
 
 proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   case kind
@@ -1199,6 +1201,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusChill: 11'u8
   of StatusAlone: 8'u8
   of StatusHelp: 3'u8
+  of StatusDown: 3'u8
 
 proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   case kind
@@ -1207,6 +1210,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusChill: "status chill"
   of StatusAlone: "status alone"
   of StatusHelp: "status help"
+  of StatusDown: "status down"
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -1989,7 +1993,8 @@ proc addWorldObjects(
       selected = player.id == selectedPlayerId
       objectId = player.playerObjectId()
       playerSprite = sim.playerRgbaSpriteFor(player)
-    if player.lives <= 0:
+      downed = sim.playerDowned(i)
+    if player.lives <= 0 and not downed:
       continue
     objects.addWorldSpriteObject(
       currentIds,
@@ -2007,7 +2012,7 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
-    if player.carrying:
+    if player.carrying and not downed:
       let
         carriedLandmark = player.carriedItem.landmarkForCarry()
         carriedSprite = sim.landmarkRgbaSprite(carriedLandmark)
@@ -2027,16 +2032,19 @@ proc addWorldObjects(
         player.y - cameraY
       )
     var badges: seq[StatusBadgeKind] = @[]
-    if player.poisonTicks > 0:
-      badges.add(StatusPoison)
-    if player.slowTicks > 0:
-      badges.add(StatusSlow)
-    if player.chillTicks > 0:
-      badges.add(StatusChill)
-    if sim.playerIsolationThreatened(i):
-      badges.add(StatusAlone)
-    if sim.playerNeedsHelp(i):
-      badges.add(StatusHelp)
+    if downed:
+      badges.add(StatusDown)
+    else:
+      if player.poisonTicks > 0:
+        badges.add(StatusPoison)
+      if player.slowTicks > 0:
+        badges.add(StatusSlow)
+      if player.chillTicks > 0:
+        badges.add(StatusChill)
+      if sim.playerIsolationThreatened(i):
+        badges.add(StatusAlone)
+      if sim.playerNeedsHelp(i):
+        badges.add(StatusHelp)
     for badgeIndex in 0 ..< badges.len:
       let
         badge = badges[badgeIndex]
@@ -2268,7 +2276,9 @@ proc buildSpriteProtocolPlayerUpdates*(
       PlayerViewportHeight
     )
     sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
-    if player.lives <= 0:
+    if sim.playerDowned(playerIndex):
+      sim.addPlayerStatus(result, currentIds, ["DOWN", "WAIT FOR RESCUE"])
+    elif player.lives <= 0:
       sim.addPlayerStatus(result, currentIds, ["GAME", "OVER"])
 
   for objectId in state.objectIds:

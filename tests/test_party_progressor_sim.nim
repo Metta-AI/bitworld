@@ -306,12 +306,66 @@ proc testPlayerDropsCarriedCoinsOnDeath() =
 
   sim.step([InputState()])
 
+  doAssert sim.players[playerIndex].lives == 0
+  doAssert sim.playerDowned(playerIndex),
+    "defeated player should enter a rescue window before respawn"
+  doAssert sim.players[playerIndex].coins == dropValue,
+    "downed player should keep coins unless the rescue window expires"
+  doAssert not sim.hasPickup(PickupCoin, dropValue),
+    "downed player should not drop coins before bleeding out"
+
+  for _ in 0 ..< DownedRespawnTicks:
+    sim.step([InputState()])
+
   doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
-    "dead player should respawn with full hp"
+    "bled-out player should respawn with full hp"
   doAssert sim.players[playerIndex].coins == 0,
-    "dead player should lose carried coins"
+    "bled-out player should lose carried coins"
   doAssert sim.hasPickup(PickupCoin, dropValue),
-    "death should drop one coin pickup worth all carried coins"
+    "bleed-out should drop one coin pickup worth all carried coins"
+
+proc testDownedPlayerCanBeRescuedByNearbyAlly() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+
+  let
+    playerIndex = sim.addPlayer("player1")
+    allyIndex = sim.addPlayer("ally")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].lives = 1
+  sim.players[playerIndex].coins = 7
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[allyIndex].x = sim.players[playerIndex].x + WorldTileSize
+  sim.players[allyIndex].y = sim.players[playerIndex].y
+  sim.players[allyIndex].bounds = sim.playerBoundsFor(sim.players[allyIndex])
+
+  sim.mobs.add(Mob(
+    kind: SnakeMob,
+    x: sim.players[playerIndex].x,
+    y: sim.players[playerIndex].y,
+    sprite: sim.mobSprite,
+    bounds: sim.mobBounds,
+    hp: 1,
+    attackPhase: MobLunge,
+    attackTicks: MobLungeTicks - 1,
+    attackFacing: FaceRight
+  ))
+
+  sim.step([InputState(), InputState()])
+  doAssert sim.playerDowned(playerIndex)
+
+  for _ in 0 ..< DownedRescueTicks:
+    sim.step([InputState(), InputState()])
+
+  doAssert not sim.playerDowned(playerIndex)
+  doAssert sim.players[playerIndex].lives == DownedReviveHp
+  doAssert sim.players[playerIndex].coins == 7,
+    "rescued player should keep carried coin value"
+  doAssert not sim.hasPickup(PickupCoin, 7),
+    "rescue should prevent the bleed-out coin drop"
 
 proc testMobTelegraphsBeforeLunging() =
   var sim = initPartyProgressorForTest()
@@ -533,6 +587,7 @@ proc testMonsterTacticalHooksAndStatuses() =
   doAssert sim.players[playerIndex].statusSpeedPercent() < 100
 
   sim.mobs.setLen(0)
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].invulnTicks = 0
   sim.addLungingSpecies(SpeciesDuneScorpion, playerIndex)
@@ -600,6 +655,12 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   sim.players[playerIndex].slowTicks = StatusSlowTicks
   sim.players[playerIndex].chillTicks = StatusChillTicks
   sim.players[playerIndex].lives = max(1, sim.players[playerIndex].maxHp div 2)
+  let downedIndex = sim.addPlayer("downed")
+  sim.players[downedIndex].x = sim.players[playerIndex].x + WorldTileSize
+  sim.players[downedIndex].y = sim.players[playerIndex].y + WorldTileSize
+  sim.players[downedIndex].bounds = sim.playerBoundsFor(sim.players[downedIndex])
+  sim.players[downedIndex].lives = 0
+  sim.players[downedIndex].downedTicks = DownedRespawnTicks
 
   sim.mobs.add(Mob(
     kind: WraithMob,
@@ -654,6 +715,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status chill" in labels
   doAssert "status alone" in labels
   doAssert "status help" in labels
+  doAssert "status down" in labels
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
   doAssert "prompt shrine f2" in labels
@@ -1150,6 +1212,7 @@ testSafeOriginAndReusableRoles()
 testFrontierScoreIsShared()
 testMobHpScalesByProgressZone()
 testPlayerDropsCarriedCoinsOnDeath()
+testDownedPlayerCanBeRescuedByNearbyAlly()
 testMobTelegraphsBeforeLunging()
 testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()

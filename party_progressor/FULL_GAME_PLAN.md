@@ -290,6 +290,9 @@ The first full-game implementation pass includes:
 - Healer triage support: nearby healers now slowly stabilize low-health
   teammates between pulse casts, making the support role useful during
   sustained pushes.
+- Downed rescue windows: defeated players now visibly wait for rescue before
+  bleeding out to a camp respawn, giving nearby allies a direct recovery moment
+  and preserving carried value when the rescue succeeds.
 - Food auto-healing and snow exposure pressure that consumes food before
   damaging players.
 - Activated camps now act as expedition shelters: nearby players are protected
@@ -311,10 +314,10 @@ The first full-game implementation pass includes:
   snow threats chill, bats harass from farther away, and wraith/gate enemies
   punish isolated players so grouping has real value.
 - In-world player affordances for the larger observation window: poison, slow,
-  chill, isolation danger, and low-health help state now appear as compact
-  badges next to players, and landmarks show readable labels for resources,
-  camp costs, relic beacons, and final-gate requirements, with activated camps
-  relabeled as shelters.
+  chill, isolation danger, low-health help state, and downed rescue state now
+  appear as compact badges next to players, and landmarks show readable labels
+  for resources, camp costs, relic beacons, and final-gate requirements, with
+  activated camps relabeled as shelters.
 - Monster-side threat telegraphs: poison, slow, chill, and isolation danger now
   appear as compact badges beside threatening enemies before hits land, so the
   player can read biome combat pressure without first taking the status.
@@ -352,8 +355,8 @@ The first full-game implementation pass includes:
 - Extend camp infrastructure beyond healing, role swap, weather shelter, and
   shortcut reveal: add biome-safe staging bonuses or optional fortification
   choices.
-- Continue teammate legibility beyond low-health help badges and isolation
-  regroup labels: pings, downed-player indicators, and explicit rescue moments.
+- Continue teammate legibility beyond low-health help badges, isolation regroup
+  labels, and downed-player rescue: pings and richer rescue/objective moments.
 - Make the final gate feel earned by requiring a visible chain of relic, boss,
   and camp progress.
 

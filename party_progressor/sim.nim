@@ -82,6 +82,11 @@ const
   DpsCleaveDamage* = 2
   TargetFps* = 60
   RoleAbilityCooldown* = 36
+  DownedRespawnTicks* = TargetFps * 4
+  DownedRescueTicks* = TargetFps * 2
+  DownedRescueRadius* = WorldTileSize * 2
+  DownedReviveHp* = 2
+  HealerDownedRescueStep* = 2
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
@@ -266,6 +271,8 @@ type
     slowTicks*: int
     chillTicks*: int
     poisonTicks*: int
+    downedTicks*: int
+    rescueTicks*: int
 
   PickupKind* = enum
     PickupCoin
@@ -734,6 +741,8 @@ proc carryLabel*(kind: CarryKind): string =
   of CarryGold: "gold"
 
 proc statusLabel*(player: Actor): string =
+  if player.downedTicks > 0:
+    return "down"
   var labels: seq[string] = @[]
   if player.poisonTicks > 0:
     labels.add("poison")
@@ -2337,6 +2346,8 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].downedTicks = 0
+  sim.players[playerIndex].rescueTicks = 0
 
 proc addPlayer*(sim: var SimServer, address: string): int =
   ## Adds one player at a valid spawn point.
@@ -2554,6 +2565,7 @@ proc playerScoresJson*(sim: SimServer): string =
     messagesSent = newJArray()
     carriedItems = newJArray()
     statusEffects = newJArray()
+    downedTicks = newJArray()
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
     sideObjectivesCompleted = newJArray()
@@ -2584,6 +2596,7 @@ proc playerScoresJson*(sim: SimServer): string =
       (if player.carrying: player.carriedItem.carryLabel() else: "none")
     )
     statusEffects.add(%player.statusLabel())
+    downedTicks.add(%player.downedTicks)
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
     sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
@@ -2607,6 +2620,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["messages_sent"] = messagesSent
   results["carried_items"] = carriedItems
   results["status_effects"] = statusEffects
+  results["downed_ticks"] = downedTicks
   results["team_score"] = scores
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
@@ -2682,6 +2696,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.slowTicks)
     result.mixHashInt(player.chillTicks)
     result.mixHashInt(player.poisonTicks)
+    result.mixHashInt(player.downedTicks)
+    result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
   for mob in sim.mobs:
     result.mixHashInt(ord(mob.kind))
@@ -3299,7 +3315,29 @@ proc dropCarry(sim: var SimServer, playerIndex: int): bool =
   true
 
 proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
-  ## Respawns a dead player with a clean state.
+  ## Puts a defeated player into a short rescue window before respawn.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives > 0:
+    return
+  if sim.players[playerIndex].downedTicks > 0:
+    return
+  sim.players[playerIndex].lives = 0
+  sim.players[playerIndex].downedTicks = DownedRespawnTicks
+  sim.players[playerIndex].rescueTicks = 0
+  sim.players[playerIndex].velX = 0
+  sim.players[playerIndex].velY = 0
+  sim.players[playerIndex].carryX = 0
+  sim.players[playerIndex].carryY = 0
+  sim.players[playerIndex].attackTicks = 0
+  sim.players[playerIndex].attackResolved = false
+  sim.players[playerIndex].guardTicks = 0
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].poisonTicks = 0
+  inc sim.scoreRevision
+
+proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   if sim.players[playerIndex].lives > 0:
@@ -3308,6 +3346,26 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   discard sim.dropCarry(playerIndex)
   inc sim.scoreRevision
   sim.resetPlayerAtSpawn(playerIndex)
+
+proc reviveDownedPlayer(sim: var SimServer, playerIndex, rescuerIndex: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].downedTicks <= 0:
+    return
+  sim.players[playerIndex].downedTicks = 0
+  sim.players[playerIndex].rescueTicks = 0
+  sim.players[playerIndex].lives = min(
+    sim.players[playerIndex].maxHp,
+    DownedReviveHp
+  )
+  sim.players[playerIndex].invulnTicks = 60
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].poisonTicks = 0
+  if rescuerIndex >= 0 and rescuerIndex < sim.players.len and
+      sim.players[rescuerIndex].role == RoleHealer:
+    sim.players[rescuerIndex].healingDone += sim.players[playerIndex].lives
+  inc sim.scoreRevision
 
 proc guardedDamage(sim: var SimServer, playerIndex: int, amount: int): int =
   result = max(1, amount)
@@ -3389,6 +3447,30 @@ proc playerHasNearbyAlly(
       return true
   false
 
+proc nearbyDownedRescuer(
+  sim: SimServer,
+  playerIndex: int
+): tuple[index, step: int] =
+  result = (index: -1, step: 0)
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let radiusSq = DownedRescueRadius * DownedRescueRadius
+  for otherIndex in 0 ..< sim.players.len:
+    if otherIndex == playerIndex:
+      continue
+    let rescuer = sim.players[otherIndex]
+    if rescuer.lives <= 0:
+      continue
+    if distanceSquaredActor(rescuer, sim.players[playerIndex]) > radiusSq:
+      continue
+    let step =
+      if rescuer.role == RoleHealer:
+        HealerDownedRescueStep
+      else:
+        1
+    if step > result.step:
+      result = (index: otherIndex, step: step)
+
 proc playerIsolationThreatened*(sim: SimServer, playerIndex: int): bool =
   ## Returns true when an isolation-punishing enemy is close to an alone player.
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -3429,6 +3511,12 @@ proc playerNeedsHelp*(sim: SimServer, playerIndex: int): bool =
   let player = sim.players[playerIndex]
   player.lives > 0 and player.maxHp > 0 and player.lives < player.maxHp and
     player.lives * 100 <= player.maxHp * LowHealthHelpThresholdPercent
+
+proc playerDowned*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true while a defeated player is waiting for rescue or respawn.
+  playerIndex >= 0 and playerIndex < sim.players.len and
+    sim.players[playerIndex].lives <= 0 and
+    sim.players[playerIndex].downedTicks > 0
 
 proc nearbyHealerIndex(
   sim: SimServer,
@@ -3972,6 +4060,27 @@ proc applyHealerTriage(sim: var SimServer) =
       sim.players[healerIndex].healingDone += healed
       inc sim.scoreRevision
 
+proc applyDownedRecovery(sim: var SimServer) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].downedTicks <= 0:
+      continue
+    let rescuer = sim.nearbyDownedRescuer(playerIndex)
+    if rescuer.index >= 0:
+      sim.players[playerIndex].rescueTicks += rescuer.step
+      inc sim.scoreRevision
+      if sim.players[playerIndex].rescueTicks >= DownedRescueTicks:
+        sim.reviveDownedPlayer(playerIndex, rescuer.index)
+        continue
+    elif sim.players[playerIndex].rescueTicks > 0:
+      dec sim.players[playerIndex].rescueTicks
+      inc sim.scoreRevision
+
+    dec sim.players[playerIndex].downedTicks
+    if sim.players[playerIndex].downedTicks <= 0:
+      sim.respawnDownedPlayer(playerIndex)
+    else:
+      inc sim.scoreRevision
+
 proc updateMobs*(sim: var SimServer) =
   ## Updates mob chasing, telegraphed attacks, and wandering.
   if sim.players.len == 0:
@@ -4493,6 +4602,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.applyStatusEffects()
   sim.applyCampRecovery()
   sim.applyHealerTriage()
+  sim.applyDownedRecovery()
   sim.applyAttack()
   sim.activateNearbyLandmarks()
   sim.updateMobs()
