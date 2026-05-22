@@ -810,6 +810,48 @@ proc speciesPunishesIsolation*(species: MobSpecies): bool =
     SpeciesGateTitan
   }
 
+proc speciesSupplyDrop*(species: MobSpecies): CarryKind =
+  ## Returns the expedition supply a defeated biome monster can leave behind.
+  case species
+  of SpeciesGrassSnake,
+      SpeciesForestWolf,
+      SpeciesDireWolf,
+      SpeciesThornBoar,
+      SpeciesBrownBear,
+      SpeciesPlainsWolf,
+      SpeciesPlainsBear,
+      SpeciesHornedBuck,
+      SpeciesMudSlime,
+      SpeciesDuneScorpion,
+      SpeciesGlassScorpion,
+      SpeciesSandViper,
+      SpeciesDustHyena,
+      SpeciesSnowWolf,
+      SpeciesFrostYeti,
+      SpeciesIceTroll,
+      SpeciesWhiteBear,
+      SpeciesSnowBat,
+      SpeciesCaveBat,
+      SpeciesCaveSlime:
+    CarryFood
+  of SpeciesPrairieGoblin,
+      SpeciesReedSlime,
+      SpeciesBogGoblin:
+    CarryWood
+  of SpeciesStoneGoblin,
+      SpeciesDeepMaw,
+      SpeciesBoneGoblin:
+    CarryStone
+  of SpeciesMarshWraith,
+      SpeciesTombScarab,
+      SpeciesCrystalBat,
+      SpeciesRuinWraith,
+      SpeciesAshWraith:
+    CarryGold
+  of SpeciesNone,
+      SpeciesGateTitan:
+    CarryNone
+
 proc landmarkLabel*(kind: LandmarkKind): string =
   case kind
   of LandmarkWood: "wood"
@@ -3373,6 +3415,22 @@ proc applyHealerPulse(sim: var SimServer, healerIndex: int) =
     if healed > 0 or cleansed:
       inc sim.scoreRevision
 
+proc dropMonsterSupply(sim: var SimServer, mob: Mob) =
+  ## Drops a carried expedition supply from species that naturally support one.
+  let supply = mob.species.speciesSupplyDrop()
+  if supply == CarryNone:
+    return
+  let
+    pickupKind = supply.pickupForCarry()
+    sprite = sim.pickupSprite(pickupKind)
+  sim.pickups.add(Pickup(
+    x: mob.x + mob.sprite.width div 2 - sprite.width div 2 + 6,
+    y: mob.y + mob.sprite.height div 2 - sprite.height div 2 + 4,
+    kind: pickupKind,
+    value: 1
+  ))
+  inc sim.scoreRevision
+
 proc finishDefeatedMobs(sim: var SimServer) =
   var survivors: seq[Mob] = @[]
   for mob in sim.mobs:
@@ -3390,6 +3448,7 @@ proc finishDefeatedMobs(sim: var SimServer) =
           kind: PickupCoin,
           value: BossCoinValue
         ))
+        sim.dropMonsterSupply(mob)
       of TrollMob, GoblinMob, BearMob, ScorpionMob, SlimeMob, YetiMob,
           WraithMob:
         let sprite = sim.pickupSprite(PickupCoin)
@@ -3403,12 +3462,14 @@ proc finishDefeatedMobs(sim: var SimServer) =
             else:
               TrollCoinValue
         ))
+        sim.dropMonsterSupply(mob)
       of SnakeMob, WolfMob, BatMob:
         let roll = sim.rng.rand(99)
         if roll < 10:
           sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
         elif roll < 60:
           sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
+        sim.dropMonsterSupply(mob)
   sim.mobs = survivors
 
 proc applyDpsCleave(sim: var SimServer, playerIndex: int) =

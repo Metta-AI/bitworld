@@ -1288,6 +1288,63 @@ proc testMonsterTacticalHooksAndStatuses() =
   let bat = Mob(kind: BatMob, species: SpeciesCaveBat)
   doAssert bat.mobSightRange() == MobSightRadius * 2
 
+proc testDefeatedBiomeMonstersDropExpeditionSupplies() =
+  doAssert SpeciesFrostYeti.speciesSupplyDrop() == CarryFood
+  doAssert SpeciesBogGoblin.speciesSupplyDrop() == CarryWood
+  doAssert SpeciesStoneGoblin.speciesSupplyDrop() == CarryStone
+  doAssert SpeciesRuinWraith.speciesSupplyDrop() == CarryGold
+  doAssert SpeciesGateTitan.speciesSupplyDrop() == CarryNone
+
+  proc defeatSpecies(species: MobSpecies): SimServer =
+    result = initPartyProgressorForTest()
+    result.clearTerrain()
+    result.mobs.setLen(0)
+    result.pickups.setLen(0)
+    result.landmarks.setLen(0)
+    result.bossDefeated = true
+    result.mobSpawnCooldown = 999
+    result.fillGround(GroundGrass)
+
+    let playerIndex = result.addPlayer("hunter")
+    result.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+    result.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+    result.players[playerIndex].facing = FaceRight
+    result.players[playerIndex].applyRole(RoleDps)
+    result.players[playerIndex].bounds =
+      result.playerBoundsFor(result.players[playerIndex])
+
+    let
+      kind = species.speciesKind()
+      hit = result.attackRect(result.players[playerIndex])
+    result.mobs.add(Mob(
+      kind: kind,
+      species: species,
+      x: hit.x,
+      y: hit.y,
+      sprite: result.mobSpriteFor(kind),
+      bounds: result.mobBoundsFor(kind),
+      hp: 1,
+      attackCooldown: 99
+    ))
+    result.step([InputState(attack: true)])
+
+  var foodSim = defeatSpecies(SpeciesFrostYeti)
+  doAssert foodSim.mobs.len == 0
+  doAssert foodSim.hasPickup(PickupFood),
+    "defeated snow wildlife should leave emergency food"
+
+  var woodSim = defeatSpecies(SpeciesBogGoblin)
+  doAssert woodSim.hasPickup(PickupWood),
+    "defeated swamp goblins should leave camp/plank wood"
+
+  var stoneSim = defeatSpecies(SpeciesStoneGoblin)
+  doAssert stoneSim.hasPickup(PickupStone),
+    "defeated cave goblins should leave step/camp stone"
+
+  var goldSim = defeatSpecies(SpeciesRuinWraith)
+  doAssert goldSim.hasPickup(PickupGold),
+    "defeated ruin wraiths should leave portable light gold"
+
 proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3523,6 +3580,7 @@ testSpriteProtocolPacketMatchesReferenceParsers()
 testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
+testDefeatedBiomeMonstersDropExpeditionSupplies()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()
 testSpriteProtocolShowsObjectiveProgressPrompts()
 testChatPingsShowCompactStatusBadges()

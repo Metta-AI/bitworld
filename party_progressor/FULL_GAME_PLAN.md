@@ -422,6 +422,11 @@ The first full-game implementation pass includes:
 - Biome monster tactical hooks: slimes slow players, desert creatures poison,
   snow threats chill, bats harass from farther away, and wraith/gate enemies
   punish isolated players so grouping has real value.
+- Defeated biome monsters now leave expedition supplies that match their
+  ecology: wildlife and cold/desert threats can become emergency food, swamp
+  goblins and reed threats can leave wood, cave/ruin brutes can leave stone,
+  and crystal/wraith threats can leave gold for deep-band lighting. Combat now
+  feeds the one-item carry economy instead of only producing coins.
 - Dynamic sprite-protocol weather overlays: rain, dust, snow, and fog now show
   as translucent deterministic particles in both player and global map views,
   not only in the legacy framebuffer path.
