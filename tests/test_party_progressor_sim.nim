@@ -846,7 +846,23 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     kind: LandmarkCamp,
     hp: 1,
     done: true,
-    progress: 1
+    progress: CampFortifiedFlag
+  ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 4,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true,
+    progress: CampProvisionedFlag
+  ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 5,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true,
+    progress: CampFortifiedFlag + CampProvisionedFlag
   ))
 
   var nextState: PlayerViewerState
@@ -865,6 +881,8 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
   doAssert "prompt fort" in labels
+  doAssert "prompt meals" in labels
+  doAssert "prompt fort meal" in labels
   doAssert "prompt shrine f2" in labels
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
@@ -1208,6 +1226,44 @@ proc testCampFortificationConsumesResourcesAndDefendsStagingArea() =
   doAssert sim.mobs.len == 2,
     "fortified camps should continue defending the staging area"
   doAssert sim.mobs.allIt(it.kind == BossMob or it.species == SpeciesDireWolf)
+
+proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.food = CampProvisionFoodCost
+  sim.mobSpawnCooldown = 999
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: true
+  ))
+
+  sim.step([InputState()])
+
+  doAssert sim.landmarks[0].campIsProvisioned()
+  doAssert not sim.landmarks[0].campIsFortified()
+  doAssert sim.playerNearProvisionedCamp(playerIndex)
+  doAssert sim.food == 0
+
+  sim.players[playerIndex].lives =
+    sim.players[playerIndex].maxHp - CampProvisionedRecoveryHealAmount
+  sim.tickCount = CampRecoveryIntervalTicks - 1
+  sim.step([InputState()])
+
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "provisioned camps should recover resting players faster than shelters"
 
 proc testBeaconAndBossScoring() =
   var sim = initPartyProgressorForTest()
@@ -1779,6 +1835,7 @@ testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
+testCampProvisioningConsumesFoodAndImprovesRecovery()
 testBeaconAndBossScoring()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()

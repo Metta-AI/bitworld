@@ -87,8 +87,11 @@ const
   BiomeWaystationRouteHalfHeightTiles* = 1
   CampWoodCost* = 2
   CampStoneCost* = 1
+  CampFortifiedFlag* = 1
+  CampProvisionedFlag* = 2
   CampFortificationWoodCost* = 1
   CampFortificationStoneCost* = 1
+  CampProvisionFoodCost* = 2
   CampFortificationRadius* = WorldTileSize * 3
   ResourceNodeHp* = 2
   LandmarkActivationRadius* = 20
@@ -121,6 +124,7 @@ const
   CampShelterRadius* = WorldTileSize * 2
   CampRecoveryIntervalTicks* = TargetFps * 2
   CampRecoveryHealAmount* = 1
+  CampProvisionedRecoveryHealAmount* = 2
   CampStatusRecoveryTicks* = TargetFps div 2
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
@@ -3823,6 +3827,14 @@ proc playerNearLandmark(
     pcy = boundsCenterY(player.y, player.bounds)
   distanceSquared(pcx, pcy, lc.x, lc.y) <= radius * radius
 
+proc campIsFortified*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampFortifiedFlag) != 0
+
+proc campIsProvisioned*(landmark: Landmark): bool =
+  landmark.kind == LandmarkCamp and landmark.done and
+    (landmark.progress and CampProvisionedFlag) != 0
+
 proc playerNearActivatedCamp*(
   sim: SimServer,
   playerIndex: int,
@@ -3835,6 +3847,22 @@ proc playerNearActivatedCamp*(
     return false
   for landmark in sim.landmarks:
     if landmark.kind == LandmarkCamp and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+  false
+
+proc playerNearProvisionedCamp*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true when a live player is inside a provisioned camp shelter zone.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.campIsProvisioned() and
         sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
       return true
   false
@@ -3862,9 +3890,6 @@ proc playerNearExpeditionShelter*(
         ):
       return true
   false
-
-proc campIsFortified*(landmark: Landmark): bool =
-  landmark.kind == LandmarkCamp and landmark.done and landmark.progress > 0
 
 proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
   case kind
@@ -4119,11 +4144,23 @@ proc fortifyCamp(sim: var SimServer, landmarkIndex: int) =
       not sim.landmarks[landmarkIndex].done or
       sim.landmarks[landmarkIndex].campIsFortified():
     return
-  sim.landmarks[landmarkIndex].progress = 1
+  sim.landmarks[landmarkIndex].progress =
+    sim.landmarks[landmarkIndex].progress or CampFortifiedFlag
   discard sim.pacifyMobsNearLandmark(
     sim.landmarks[landmarkIndex],
     CampFortificationRadius
   )
+  inc sim.scoreRevision
+
+proc provisionCamp(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].kind != LandmarkCamp or
+      not sim.landmarks[landmarkIndex].done or
+      sim.landmarks[landmarkIndex].campIsProvisioned():
+    return
+  sim.landmarks[landmarkIndex].progress =
+    sim.landmarks[landmarkIndex].progress or CampProvisionedFlag
   inc sim.scoreRevision
 
 proc applyFortifiedCampDefenses(sim: var SimServer) =
@@ -4215,10 +4252,8 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     return
   for landmarkIndex in 0 ..< sim.landmarks.len:
     if sim.landmarks[landmarkIndex].done:
-      if sim.landmarks[landmarkIndex].kind == LandmarkCamp and
-          not sim.landmarks[landmarkIndex].campIsFortified() and
-          sim.wood >= CampFortificationWoodCost and
-          sim.stone >= CampFortificationStoneCost:
+      if sim.landmarks[landmarkIndex].kind == LandmarkCamp:
+        var nearCamp = false
         for player in sim.players:
           if player.lives <= 0:
             continue
@@ -4227,10 +4262,18 @@ proc activateNearbyLandmarks(sim: var SimServer) =
             sim.landmarks[landmarkIndex],
             LandmarkActivationRadius
           ):
-            sim.wood -= CampFortificationWoodCost
-            sim.stone -= CampFortificationStoneCost
-            sim.fortifyCamp(landmarkIndex)
+            nearCamp = true
             break
+        if nearCamp and not sim.landmarks[landmarkIndex].campIsFortified() and
+            sim.wood >= CampFortificationWoodCost and
+            sim.stone >= CampFortificationStoneCost:
+          sim.wood -= CampFortificationWoodCost
+          sim.stone -= CampFortificationStoneCost
+          sim.fortifyCamp(landmarkIndex)
+        if nearCamp and not sim.landmarks[landmarkIndex].campIsProvisioned() and
+            sim.food >= CampProvisionFoodCost:
+          sim.food -= CampProvisionFoodCost
+          sim.provisionCamp(landmarkIndex)
       continue
     let kind = sim.landmarks[landmarkIndex].kind
     if kind.landmarkIsResource():
@@ -4526,9 +4569,14 @@ proc applyCampRecovery(sim: var SimServer) =
       continue
     if sim.players[playerIndex].lives >= sim.players[playerIndex].maxHp:
       continue
+    let healAmount =
+      if sim.playerNearProvisionedCamp(playerIndex):
+        CampProvisionedRecoveryHealAmount
+      else:
+        CampRecoveryHealAmount
     sim.players[playerIndex].lives = min(
       sim.players[playerIndex].maxHp,
-      sim.players[playerIndex].lives + CampRecoveryHealAmount
+      sim.players[playerIndex].lives + healAmount
     )
     inc sim.scoreRevision
 

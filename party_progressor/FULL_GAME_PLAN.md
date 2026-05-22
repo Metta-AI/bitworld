@@ -136,6 +136,8 @@ Camps cost wood and stone. Activating a camp should:
 - Heal the party slightly.
 - Give a score bonus.
 - Create a readable regroup point for bots and humans.
+- Support later camp specializations, starting with fortification and
+  provisioned meal shelters.
 
 Beacon objectives should award relic shards. The final gate should require
 relic progress, camp progress, and boss defeat before completion.
@@ -145,7 +147,7 @@ should make it matter without turning the game into inventory management:
 
 - Auto-consume as shared emergency rations when players are badly injured.
 - Buffer cold exposure in the snow biome before HP damage starts landing.
-- Fuel stronger camp healing.
+- Provision meal shelters that fuel stronger camp healing.
 - Prevent late-run exhaustion.
 - Give healer/tank teams more strategic sustain choices.
 
@@ -317,6 +319,9 @@ The first full-game implementation pass includes:
 - Activated camps can be fortified with extra wood and stone, converting them
   into safer staging points that repeatedly clear nearby non-boss threats and
   show a distinct fort prompt.
+- Activated camps can also be provisioned with food into meal shelters, giving
+  parties a visible sustain-focused staging choice that heals resting players
+  faster and shows a distinct meals prompt.
 - Snow hearth waystations become local cold shelters after completion, giving
   snow expeditions a second kind of safe staging choice beyond full camps.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
@@ -362,7 +367,7 @@ The first full-game implementation pass includes:
 - Tune the 11 by 11 viewport after real bot/human observation checks.
 - Tune in-world affordance density after real observation checks so labels
   remain helpful without cluttering fights.
-- Tune food and snow-exposure pacing with multi-player runs.
+- Tune food, provisioned-camp, and snow-exposure pacing with multi-player runs.
 - Add player-observation screenshots to smoke tests so black-background
   regressions are visually obvious.
 - Improve telegraph polish by distinguishing pre-hit danger badges from
@@ -377,8 +382,8 @@ The first full-game implementation pass includes:
 - Tune the new biome waystation detours so their role hints, route changes, and
   biome-specific payoffs are visible but not mandatory.
 - Extend camp infrastructure beyond healing, role swap, weather shelter,
-  shortcut reveal, and fortification: add biome-safe staging choices or camp
-  specializations.
+  shortcut reveal, fortification, and meal shelters: add biome-safe staging
+  choices or role-linked camp specializations.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, downed-player rescue, and chat pings: richer rescue/objective moments.
 - Tune final-gate pacing now that relic, boss, and camp progress are all part of

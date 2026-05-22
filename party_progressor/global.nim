@@ -40,7 +40,9 @@ const
   LandmarkShelterPromptSpriteId =
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
   LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
-  LandmarkWaystationPromptSpriteBase = LandmarkFortPromptSpriteId + 1
+  LandmarkMealPromptSpriteId = LandmarkFortPromptSpriteId + 1
+  LandmarkFortMealPromptSpriteId = LandmarkMealPromptSpriteId + 1
+  LandmarkWaystationPromptSpriteBase = LandmarkFortMealPromptSpriteId + 1
   WeatherOverlaySpriteBase = 900
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
@@ -1385,8 +1387,12 @@ proc landmarkPromptSpriteId(kind: LandmarkKind): int =
   LandmarkPromptSpriteBase + ord(kind)
 
 proc landmarkPromptSpriteId(landmark: Landmark): int =
-  if landmark.campIsFortified():
+  if landmark.campIsFortified() and landmark.campIsProvisioned():
+    LandmarkFortMealPromptSpriteId
+  elif landmark.campIsFortified():
     LandmarkFortPromptSpriteId
+  elif landmark.campIsProvisioned():
+    LandmarkMealPromptSpriteId
   elif landmark.kind == LandmarkCamp and landmark.done:
     LandmarkShelterPromptSpriteId
   elif landmark.kind == LandmarkWaystation:
@@ -1423,8 +1429,12 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "WAYPOINT"
 
 proc landmarkPromptLabel(landmark: Landmark): string =
-  if landmark.campIsFortified():
+  if landmark.campIsFortified() and landmark.campIsProvisioned():
+    "FORT MEAL"
+  elif landmark.campIsFortified():
     "FORT"
+  elif landmark.campIsProvisioned():
+    "MEALS"
   elif landmark.kind == LandmarkCamp and landmark.done:
     "SHELTER"
   elif landmark.kind == LandmarkWaystation:
@@ -1770,6 +1780,32 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     fortPromptSprite.height,
     fortPromptSprite.pixels,
     "prompt " & fortPrompt.toLowerAscii()
+  )
+  let
+    mealPrompt = "MEALS"
+    mealPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [mealPrompt],
+      11'u8
+    )
+  packet.addSprite(
+    LandmarkMealPromptSpriteId,
+    mealPromptSprite.width,
+    mealPromptSprite.height,
+    mealPromptSprite.pixels,
+    "prompt " & mealPrompt.toLowerAscii()
+  )
+  let
+    fortMealPrompt = "FORT MEAL"
+    fortMealPromptSprite = sim.buildSpriteProtocolTextSprite(
+      [fortMealPrompt],
+      11'u8
+    )
+  packet.addSprite(
+    LandmarkFortMealPromptSpriteId,
+    fortMealPromptSprite.width,
+    fortMealPromptSprite.height,
+    fortMealPromptSprite.pixels,
+    "prompt " & fortMealPrompt.toLowerAscii()
   )
   for biome in BiomeKind:
     let
