@@ -1283,6 +1283,8 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "RELIC"
   of LandmarkFinalGate:
     "GATE BOSS R" & $FinalGateRelicCost
+  of LandmarkShrine:
+    "SHRINE F" & $ShrineFoodBonus
 
 proc landmarkPromptLabel(landmark: Landmark): string =
   if landmark.kind == LandmarkCamp and landmark.done:

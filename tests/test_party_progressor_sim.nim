@@ -628,6 +628,13 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     done: false
   ))
   sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 1,
+    ty: sim.players[playerIndex].y div WorldTileSize + 1,
+    kind: LandmarkShrine,
+    hp: 1,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
     tx: sim.players[playerIndex].x div WorldTileSize + 2,
     ty: sim.players[playerIndex].y div WorldTileSize,
     kind: LandmarkCamp,
@@ -649,6 +656,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status help" in labels
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
+  doAssert "prompt shrine f2" in labels
   doAssert "prompt gate boss r3" in labels
 
 proc testSpriteProtocolShowsMonsterThreatTelegraphs() =
@@ -918,6 +926,45 @@ proc testBeaconAndBossScoring() =
   sim.step([InputState()])
   doAssert sim.landmarks[0].done
 
+proc testShrineSideObjectiveScoringAndSustain() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  sim.food = 0
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp - 2
+  sim.players[playerIndex].poisonTicks = StatusPoisonTicks
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.players[playerIndex].chillTicks = StatusChillTicks
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkShrine,
+    hp: 1,
+    done: false
+  ))
+
+  sim.step([InputState()])
+
+  doAssert sim.landmarks[0].done
+  doAssert sim.sideObjectivesCompleted == 1
+  doAssert sim.food == ShrineFoodBonus
+  doAssert sim.players[playerIndex].lives ==
+    sim.players[playerIndex].maxHp - 1
+  doAssert sim.players[playerIndex].poisonTicks == 0
+  doAssert sim.players[playerIndex].slowTicks == 0
+  doAssert sim.players[playerIndex].chillTicks == 0
+  doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
+  let scores = parseJson(sim.playerScoresJson())
+  doAssert scores["side_objectives_completed"][0].getInt() == 1
+
 proc testDpsCleaveSpecialDamagesNearbyMobs() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1117,6 +1164,7 @@ testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()
+testShrineSideObjectiveScoringAndSustain()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()

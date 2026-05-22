@@ -63,10 +63,13 @@ const
   TrollCoinValue* = 10
   BossCoinValue* = 100
   ObjectiveScoreValue* = 25
+  SideObjectiveScoreValue* = 20
   CampScoreValue* = 10
   RelicScoreValue* = 40
   BossScoreValue* = 150
   FinalGateRelicCost* = 3
+  ShrineFoodBonus* = 2
+  ShrineHealAmount* = 1
   CampWoodCost* = 2
   CampStoneCost* = 1
   ResourceNodeHp* = 2
@@ -367,6 +370,7 @@ type
     LandmarkCamp
     LandmarkBeacon
     LandmarkFinalGate
+    LandmarkShrine
 
   Pickup* = object
     x*, y*: int
@@ -447,6 +451,7 @@ type
     teamFrontier*: int
     maxBiomeReached*: int
     objectivesCompleted*: int
+    sideObjectivesCompleted*: int
     campsActivated*: int
     resourcesCollected*: int
     wood*: int
@@ -718,6 +723,7 @@ proc landmarkLabel*(kind: LandmarkKind): string =
   of LandmarkCamp: "camp"
   of LandmarkBeacon: "beacon"
   of LandmarkFinalGate: "final gate"
+  of LandmarkShrine: "shrine"
 
 proc carryLabel*(kind: CarryKind): string =
   case kind
@@ -1536,6 +1542,7 @@ proc teamScore*(sim: SimServer): int =
   ## Combines raw distance with expedition milestones.
   sim.frontierTiles() +
     sim.objectivesCompleted * ObjectiveScoreValue +
+    sim.sideObjectivesCompleted * SideObjectiveScoreValue +
     sim.campsActivated * CampScoreValue +
     sim.relicShards * RelicScoreValue +
     sim.resourcesCollected +
@@ -1883,6 +1890,11 @@ proc seedLandmarks*(sim: var SimServer) =
           upperTy
         else:
           lowerTy
+      shrineTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          lowerTy
+        else:
+          upperTy
     sim.addLandmark(
       resources.first,
       range.firstTx + max(1, span div 4),
@@ -1902,6 +1914,12 @@ proc seedLandmarks*(sim: var SimServer) =
         campTy,
         1
       )
+    sim.addLandmark(
+      LandmarkShrine,
+      range.firstTx + max(3, (span * 2) div 3),
+      shrineTy,
+      1
+    )
     sim.addLandmark(
       LandmarkBeacon,
       max(range.firstTx + 2, range.lastTx - 2),
@@ -2470,7 +2488,8 @@ proc initSimServer*(seed = 0xB1770): SimServer =
       LandmarkGold: ("landmark_gold", "gold.png"),
       LandmarkCamp: ("landmark_camp", "lumber_camp.png"),
       LandmarkBeacon: ("landmark_beacon", "control_point.png"),
-      LandmarkFinalGate: ("landmark_final_gate", "altar.png")
+      LandmarkFinalGate: ("landmark_final_gate", "altar.png"),
+      LandmarkShrine: ("landmark_shrine", "altar.png")
     ]
   for kind in LandmarkKind:
     let asset = loadAssetPair(
@@ -2537,6 +2556,7 @@ proc playerScoresJson*(sim: SimServer): string =
     statusEffects = newJArray()
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
+    sideObjectivesCompleted = newJArray()
     relicShards = newJArray()
     campsActivated = newJArray()
     resourcesCollected = newJArray()
@@ -2566,6 +2586,7 @@ proc playerScoresJson*(sim: SimServer): string =
     statusEffects.add(%player.statusLabel())
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
+    sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
     relicShards.add(%sim.relicShards)
     campsActivated.add(%sim.campsActivated)
     resourcesCollected.add(%sim.resourcesCollected)
@@ -2589,6 +2610,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["team_score"] = scores
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
+  results["side_objectives_completed"] = sideObjectivesCompleted
   results["relic_shards"] = relicShards
   results["camps_activated"] = campsActivated
   results["resources_collected"] = resourcesCollected
@@ -2622,6 +2644,7 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.teamFrontier)
   result.mixHashInt(sim.maxBiomeReached)
   result.mixHashInt(sim.objectivesCompleted)
+  result.mixHashInt(sim.sideObjectivesCompleted)
   result.mixHashInt(sim.campsActivated)
   result.mixHashInt(sim.resourcesCollected)
   result.mixHashInt(sim.wood)
@@ -3585,6 +3608,22 @@ proc revealCampShortcut(sim: var SimServer, landmark: Landmark) =
       sim.tiles[index] = false
   inc sim.scoreRevision
 
+proc activateShrine(sim: var SimServer) =
+  ## Completes one optional side objective and gives the party a sustain bump.
+  inc sim.sideObjectivesCompleted
+  sim.food += ShrineFoodBonus
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + ShrineHealAmount
+    )
+    sim.players[playerIndex].slowTicks = 0
+    sim.players[playerIndex].chillTicks = 0
+    sim.players[playerIndex].poisonTicks = 0
+  inc sim.scoreRevision
+
 proc harvestLandmark(
   sim: var SimServer,
   landmarkIndex,
@@ -3684,6 +3723,9 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       inc sim.objectivesCompleted
       inc sim.relicShards
       inc sim.scoreRevision
+    of LandmarkShrine:
+      sim.landmarks[landmarkIndex].done = true
+      sim.activateShrine()
     of LandmarkFinalGate:
       if not sim.bossDefeated:
         continue
