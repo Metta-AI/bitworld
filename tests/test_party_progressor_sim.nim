@@ -1564,12 +1564,20 @@ proc testSpriteProtocolShowsObjectiveProgressPrompts() =
   sim.landmarks.add(Landmark(
     tx: baseTx + 2,
     ty: baseTy,
+    kind: LandmarkBeacon,
+    hp: 1,
+    done: false,
+    progress: BeaconAttunementTicks div 2
+  ))
+  sim.landmarks.add(Landmark(
+    tx: baseTx + 3,
+    ty: baseTy,
     kind: LandmarkLair,
     hp: LairHp div 2,
     done: false
   ))
   sim.landmarks.add(Landmark(
-    tx: baseTx + 3,
+    tx: baseTx + 4,
     ty: baseTy,
     kind: LandmarkFinalGate,
     hp: 1,
@@ -1585,6 +1593,7 @@ proc testSpriteProtocolShowsObjectiveProgressPrompts() =
   ).parseSpriteProtocolPacket().objectSpriteLabels()
   doAssert "prompt rescue 50%" in labels
   doAssert "prompt bridge t 50%" in labels
+  doAssert "prompt relic 50%" in labels
   doAssert "prompt lair 50%" in labels
   doAssert "prompt gate 50%" in labels
 
@@ -2447,6 +2456,7 @@ proc testBeaconAndBossScoring() =
   sim.fillGround(GroundGrass)
 
   let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].applyRole(RoleDps)
   sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
   sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
   sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
@@ -2480,6 +2490,28 @@ proc testBeaconAndBossScoring() =
     attackCooldown: 99
   ))
   sim.step([InputState()])
+
+  doAssert not sim.landmarks[0].done,
+    "relic beacons should require a short attunement hold"
+  doAssert sim.landmarks[0].progress == DpsBeaconAttunementStep,
+    "DPS beacon attunement should advance by " & $DpsBeaconAttunementStep &
+      " on the first tick, got " & $sim.landmarks[0].progress
+  doAssert sim.objectivesCompleted == 0
+  doAssert sim.relicShards == 0
+  var attuneState: PlayerViewerState
+  let attuneLabels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    attuneState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert attuneLabels.anyIt(it.startsWith("prompt relic ")),
+    "sprite observations should show relic attunement progress"
+
+  let beaconDpsHoldTicks =
+    (BeaconAttunementTicks + DpsBeaconAttunementStep - 1) div
+      DpsBeaconAttunementStep
+  for _ in 1 ..< beaconDpsHoldTicks:
+    sim.step([InputState()])
 
   doAssert sim.objectivesCompleted == 1
   doAssert sim.relicShards == 1
@@ -2847,6 +2879,50 @@ proc testCooperativeObjectiveHoldsStackPartyEffort() =
     BiomeSwamp,
     RoleTank
   ) == BiomeWaystationFastStep
+  doAssert objectiveHoldStep(
+    LandmarkBeacon,
+    BiomeRuins,
+    RoleDps
+  ) == DpsBeaconAttunementStep
+
+  var beaconSim = initPartyProgressorForTest()
+  beaconSim.clearTerrain()
+  beaconSim.mobs.setLen(0)
+  beaconSim.pickups.setLen(0)
+  beaconSim.landmarks.setLen(0)
+  beaconSim.fillGround(GroundGrass, BiomeRuins)
+  beaconSim.bossDefeated = true
+  beaconSim.mobSpawnCooldown = 999
+
+  let
+    beaconTx = SafeZoneRightTiles + 2
+    beaconTy = WorldHeightTiles div 2
+    beaconX = beaconTx * WorldTileSize
+    beaconY = beaconTy * WorldTileSize
+    beaconTank = beaconSim.addPlayer("tank")
+    beaconDps = beaconSim.addPlayer("dps")
+    beaconHealer = beaconSim.addPlayer("healer")
+    coopStep = CooperativeObjectiveHoldMaxStep
+  beaconSim.placeTestPlayer(beaconTank, RoleTank, beaconX, beaconY - 6)
+  beaconSim.placeTestPlayer(beaconDps, RoleDps, beaconX, beaconY)
+  beaconSim.placeTestPlayer(beaconHealer, RoleHealer, beaconX, beaconY + 6)
+  beaconSim.landmarks.add(Landmark(
+    tx: beaconTx,
+    ty: beaconTy,
+    kind: LandmarkBeacon,
+    hp: 1,
+    done: false
+  ))
+
+  beaconSim.step([InputState(), InputState(), InputState()])
+  doAssert beaconSim.landmarks[0].progress == coopStep,
+    "nearby teammates should stack relic attunement up to the co-op cap"
+  doAssert not beaconSim.landmarks[0].done
+  for _ in 1 ..< ((BeaconAttunementTicks + coopStep - 1) div coopStep):
+    beaconSim.step([InputState(), InputState(), InputState()])
+  doAssert beaconSim.landmarks[0].done
+  doAssert beaconSim.relicShards == 1
+  doAssert beaconSim.players[beaconDps].surveyTicks == BeaconSurveyTicks
 
   var rescueSim = initPartyProgressorForTest()
   rescueSim.clearTerrain()
@@ -2865,7 +2941,6 @@ proc testCooperativeObjectiveHoldsStackPartyEffort() =
     tankIndex = rescueSim.addPlayer("tank")
     dpsIndex = rescueSim.addPlayer("dps")
     healerIndex = rescueSim.addPlayer("healer")
-    coopStep = CooperativeObjectiveHoldMaxStep
   rescueSim.placeTestPlayer(tankIndex, RoleTank, rescueX, rescueY - 6)
   rescueSim.placeTestPlayer(dpsIndex, RoleDps, rescueX, rescueY)
   rescueSim.placeTestPlayer(healerIndex, RoleHealer, rescueX, rescueY + 6)

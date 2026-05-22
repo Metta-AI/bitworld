@@ -321,6 +321,9 @@ The first full-game implementation pass includes:
 - Completed relic beacons now act as survey points: they still award relic
   shards, but also reveal a short forward route, clear nearby blockers and
   steep elevation, and pacify local non-boss threats around the beacon.
+- Relic beacons now require a short visible attunement hold before completion:
+  nearby teammates stack progress, DPS contributes extra, and the prompt shows
+  live `RELIC` progress instead of treating core relics as instant pickups.
 - Relic beacons now also grant a short visible `SURV` survey window: route
   knowledge floors rough/elevated terrain movement to a readable minimum, so
   beacon progress accelerates the next push instead of only improving one tile

@@ -1729,6 +1729,11 @@ proc landmarkPromptLabel(sim: SimServer, landmark: Landmark): string =
       "RESCUE " & $progressPercent(landmark.progress, RescueEventTicks) & "%"
     else:
       landmark.landmarkPromptLabel()
+  of LandmarkBeacon:
+    if landmark.progress > 0:
+      "RELIC " & $progressPercent(landmark.progress, BeaconAttunementTicks) & "%"
+    else:
+      landmark.landmarkPromptLabel()
   of LandmarkLair:
     if landmark.hp < LairHp:
       "LAIR " & $progressPercent(LairHp - max(0, landmark.hp), LairHp) & "%"

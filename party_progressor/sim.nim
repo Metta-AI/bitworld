@@ -121,6 +121,8 @@ const
   BiomeWaystationTicks* = TargetFps
   BiomeWaystationRouteTicks* = TargetFps * 10
   BiomeWaystationRouteMinSpeedPercent* = 88
+  BeaconAttunementTicks* = TargetFps
+  DpsBeaconAttunementStep* = 2
   CooperativeObjectiveHoldMaxStep* = 4
   FinalGateRitualTicks* = TargetFps * 2
   BeaconSurveyTicks* = TargetFps * 10
@@ -4921,6 +4923,11 @@ proc objectiveHoldStep*(
       HealerRescueEventStep
     else:
       1
+  of LandmarkBeacon:
+    if role == RoleDps:
+      DpsBeaconAttunementStep
+    else:
+      1
   of LandmarkWaystation:
     waystationActivationStep(biome, role)
   else:
@@ -5348,6 +5355,10 @@ proc activateNearbyLandmarks(sim: var SimServer) =
         )
       inc sim.scoreRevision
     of LandmarkBeacon:
+      sim.landmarks[landmarkIndex].progress += max(1, activationStep)
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < BeaconAttunementTicks:
+        continue
       sim.landmarks[landmarkIndex].done = true
       inc sim.objectivesCompleted
       inc sim.relicShards
