@@ -785,7 +785,8 @@ proc writeScoreFile(sim: SimServer, path: string) =
 proc writeScoresIfNeeded(
   sim: SimServer,
   path: string,
-  lastRevision: var int
+  lastRevision: var int,
+  savedPlayerCount: var int
 ) =
   ## Writes scores when score-visible state changed.
   if path.len == 0:
@@ -795,7 +796,11 @@ proc writeScoresIfNeeded(
   if sim.players.len == 0 and lastRevision >= 0:
     lastRevision = sim.scoreRevision
     return
+  if sim.players.len < savedPlayerCount:
+    lastRevision = sim.scoreRevision
+    return
   sim.writeScoreFile(path)
+  savedPlayerCount = sim.players.len
   lastRevision = sim.scoreRevision
 
 proc runServerLoop*(
@@ -862,9 +867,10 @@ proc runServerLoop*(
     sim = initSimServer(currentSeed)
     lastTick = getMonoTime()
     lastScoreRevision = -1
+    savedScorePlayerCount = 0
     runTicks = 0
     gamesStarted = 1
-  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
 
   while true:
     var
@@ -988,6 +994,7 @@ proc runServerLoop*(
       sim = initSimServer(currentSeed)
       runTicks = 0
       lastScoreRevision = -1
+      savedScorePlayerCount = 0
       replayWriter.lastMasks.setLen(0)
       sockets.setLen(0)
       playerIndices.setLen(0)
@@ -1017,7 +1024,7 @@ proc runServerLoop*(
           for websocket in appState.rewardViewers.keys:
             rewardViewers.add(websocket)
 
-      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
         var nextState: PlayerViewerState
@@ -1053,7 +1060,7 @@ proc runServerLoop*(
       inc runTicks
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
-    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
     let rewardPacket = sim.buildRewardPacket()
 
     for i in 0 ..< sockets.len:
@@ -1118,23 +1125,35 @@ when defined(partyProgressorServerSelfTest):
     var
       sim = initSimServer(0x5150)
       lastRevision = -1
+      savedPlayerCount = 0
     setCurrentDir(oldDir)
-    sim.writeScoresIfNeeded(path, lastRevision)
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
     doAssert fileExists(path)
     doAssert parseJson(readFile(path))["names"].len == 0
 
-    let playerIndex = sim.addPlayer("selftest")
+    let
+      playerIndex = sim.addPlayer("selftest-a")
+      secondPlayerIndex = sim.addPlayer("selftest-b")
     sim.players[playerIndex].distanceWalked = 42
-    sim.writeScoresIfNeeded(path, lastRevision)
+    sim.players[secondPlayerIndex].distanceWalked = 84
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
     let activeScores = parseJson(readFile(path))
-    doAssert activeScores["names"].len == 1
-    doAssert activeScores["names"][0].getStr() == "selftest"
+    doAssert activeScores["names"].len == 2
+    doAssert activeScores["names"][0].getStr() == "selftest-a"
+    doAssert activeScores["names"][1].getStr() == "selftest-b"
+
+    sim.players.setLen(1)
+    inc sim.scoreRevision
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
+    var preservedScores = parseJson(readFile(path))
+    doAssert preservedScores["names"].len == 2
+    doAssert preservedScores["distance_walked"][1].getInt() == 84
 
     sim.players.setLen(0)
     inc sim.scoreRevision
-    sim.writeScoresIfNeeded(path, lastRevision)
-    let preservedScores = parseJson(readFile(path))
-    doAssert preservedScores["names"].len == 1
+    sim.writeScoresIfNeeded(path, lastRevision, savedPlayerCount)
+    preservedScores = parseJson(readFile(path))
+    doAssert preservedScores["names"].len == 2
     doAssert preservedScores["distance_walked"][0].getInt() == 42
 
     removeFile(path)

@@ -643,6 +643,14 @@ The first full-game implementation pass includes:
   loose resource drops, old incomplete camps, and non-immediate monster fights
   behind that frontier, reducing late-run collapses back into already-cleared
   biome bands after a forward push or camp respawn.
+- Konrad now also reads the shared `front N` sprite HUD and uses the team
+  frontier when rejecting stale completed shelters and old camp targets. A
+  healthy bot carrying food or other supplies should rejoin the expedition
+  instead of looping around an already-served shelter, while cold, hurt, or
+  terrain-stalled bots can still recover at nearby shelter.
+- Konrad now anchors camp-delivery `Select` presses on the bot's preferred role
+  gear when a forward camp has several role-swap pickups nearby, so a named DPS
+  or tank bot can deliver supplies without accidentally walking out as healer.
 - Konrad now reads downed-player status badges from the sprite protocol and
   treats a downed teammate as a rescue target, with healers prioritizing the
   revive route most aggressively.
@@ -685,8 +693,9 @@ The first full-game implementation pass includes:
   checks reveal where lunge effects clutter tight fights.
 - Continue bot targeting polish: tune longer-run expedition pacing now that
   bots understand roles, health, regroup, carried resources, and current
-  objectives, prefer frontier pushes over distant discretionary fights, and
-  recover from blocked push paths without backing out of the expedition.
+  objectives, team frontier, stale camp/shelter targets, and recovery stops;
+  prefer frontier pushes over distant discretionary fights, and recover from
+  blocked push paths without backing out of the expedition.
 
 ### Expedition Depth
 
