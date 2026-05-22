@@ -15,7 +15,7 @@ const
   PlayerHealthObjectBase = 10000
   CarryObjectBase = 12000
   StatusBadgeObjectBase = 13000
-  StatusBadgeSlots = 12
+  StatusBadgeSlots = 14
   LowHealthPercent = 50
   MaxDrainMessages = 256
   PathCellSize = 8

@@ -333,6 +333,9 @@ The first full-game implementation pass includes:
   bridge through nearby rough ground, clear blockers, and soften steep terrain,
   making rescues an expedition-routing payoff instead of only a food/heal
   reward.
+- Rescue completions now also give the party a short visible `GUIDE` push:
+  clean players move faster, status recovery accelerates slightly, and the
+  next route decision reads as local knowledge from the rescued traveler.
 - Optional monster lair side objectives seeded through biome bands: parties can
   spend attack time to destroy local dens for supplies, side-objective score,
   a short pacification of nearby threats, a biome-flavored cache of carried

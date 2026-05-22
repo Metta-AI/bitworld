@@ -132,6 +132,9 @@ const
   RescueTrailBackTiles* = 1
   RescueTrailForwardTiles* = 4
   RescueTrailHalfHeightTiles* = 1
+  RescueGuideTicks* = TargetFps * 10
+  RescueGuideSpeedPercent* = 112
+  RescueGuideStatusRecoveryTicks* = 1
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
@@ -359,6 +362,7 @@ type
     chillTicks*: int
     poisonTicks*: int
     exhaustionTicks*: int
+    guideTicks*: int
     downedTicks*: int
     rescueTicks*: int
 
@@ -906,6 +910,8 @@ proc statusLabel*(player: Actor): string =
     labels.add("chill")
   if player.exhaustionTicks > 0:
     labels.add("exhaust")
+  if player.guideTicks > 0:
+    labels.add("guide")
   if labels.len == 0:
     return "ok"
   labels.join("/")
@@ -1006,6 +1012,8 @@ proc statusSpeedPercent*(player: Actor): int =
     result = min(result, StatusChillSpeedPercent)
   if player.exhaustionTicks > 0:
     result = min(result, StatusExhaustionSpeedPercent)
+  if player.guideTicks > 0 and result == 100:
+    result = RescueGuideSpeedPercent
 
 proc roleMaxHp(role: PlayerRole): int =
   case role
@@ -2825,6 +2833,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].downedTicks = 0
   sim.players[playerIndex].rescueTicks = 0
 
@@ -3202,6 +3211,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.chillTicks)
     result.mixHashInt(player.poisonTicks)
     result.mixHashInt(player.exhaustionTicks)
+    result.mixHashInt(player.guideTicks)
     result.mixHashInt(player.downedTicks)
     result.mixHashInt(player.rescueTicks)
   result.mixHashInt(sim.mobs.len)
@@ -4127,6 +4137,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].guideTicks = 0
   inc sim.scoreRevision
 
 proc respawnDownedPlayer(sim: var SimServer, playerIndex: int) =
@@ -4154,6 +4165,8 @@ proc reviveDownedPlayer(sim: var SimServer, playerIndex, rescuerIndex: int) =
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
+  sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].guideTicks = 0
   if rescuerIndex >= 0 and rescuerIndex < sim.players.len and
       sim.players[rescuerIndex].role == RoleHealer:
     sim.players[rescuerIndex].healingDone += sim.players[playerIndex].lives
@@ -4811,6 +4824,10 @@ proc activateRescueEvent(sim: var SimServer, landmark: Landmark) =
     sim.players[playerIndex].lives = min(
       sim.players[playerIndex].maxHp,
       sim.players[playerIndex].lives + RescueHealAmount
+    )
+    sim.players[playerIndex].guideTicks = max(
+      sim.players[playerIndex].guideTicks,
+      RescueGuideTicks
     )
   inc sim.scoreRevision
 
@@ -5738,7 +5755,11 @@ proc applyStatusEffects(sim: var SimServer) =
       continue
     let recoveryStep =
       1 + (if sheltered: CampStatusRecoveryTicks else: 0) +
-        (if aidSheltered: CampAidStatusRecoveryTicks else: 0)
+        (if aidSheltered: CampAidStatusRecoveryTicks else: 0) +
+        (if sim.players[playerIndex].guideTicks > 0:
+          RescueGuideStatusRecoveryTicks
+        else:
+          0)
     if sim.players[playerIndex].slowTicks > 0:
       if reduceStatusTicks(sim.players[playerIndex].slowTicks, recoveryStep):
         inc sim.scoreRevision
@@ -6333,6 +6354,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
+    if sim.players[i].guideTicks > 0:
+      dec sim.players[i].guideTicks
+      if sim.players[i].guideTicks == 0:
+        inc sim.scoreRevision
     if sim.players[i].pingTicks > 0:
       dec sim.players[i].pingTicks
       if sim.players[i].pingTicks == 0:

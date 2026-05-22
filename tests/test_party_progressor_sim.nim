@@ -2730,6 +2730,10 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   doAssert sim.food == RescueFoodBonus
   doAssert sim.players[playerIndex].lives ==
     sim.players[playerIndex].maxHp - 1
+  doAssert sim.players[playerIndex].guideTicks == RescueGuideTicks
+  doAssert sim.players[playerIndex].statusLabel().contains("guide")
+  doAssert sim.players[playerIndex].statusSpeedPercent() ==
+    RescueGuideSpeedPercent
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
   doAssert sim.groundKinds[trailIndex] == GroundBridge,
     "rescued travelers should reveal a local route through rough biome ground"
@@ -2738,13 +2742,30 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   doAssert sim.elevations[trailIndex] <= 1,
     "rescue trails should soften nearby steep terrain"
   var rescueNextState: PlayerViewerState
-  let labels = sim.buildSpriteProtocolPlayerUpdates(
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
     playerIndex,
     initPlayerViewerState(),
     rescueNextState
-  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status guide" in labels,
+    "sprite observations should show when rescue guide knowledge is active"
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("GUIDE SAFE")),
+    "HUD status text should make rescue guide knowledge readable"
   doAssert "rescue" notin labels
   doAssert "prompt rescue f2" notin labels
+
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].slowTicks <=
+    StatusSlowTicks - 1 - RescueGuideStatusRecoveryTicks,
+    "guide knowledge should help the party recover from route pressure"
+
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].guideTicks = 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].guideTicks == 0,
+    "rescue guide knowledge should expire after the next push window"
 
 proc testHealerCompletesRescueEventsFaster() =
   var sim = initPartyProgressorForTest()
