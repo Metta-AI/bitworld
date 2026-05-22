@@ -421,6 +421,13 @@ The first full-game implementation pass includes:
 - Konrad bot targeting now distinguishes harvest landmarks from loose carried
   resource pickups, so players with full hands still harvest useful nodes but
   stop chasing dropped food, wood, stone, or gold they cannot collect.
+- Expedition objective hints now surface missing wood and stone whenever global
+  camp progress is blocked, even after the party has moved into a later biome;
+  Konrad uses those deficits to leave unbuildable camps and resume gathering or
+  pushing for resources.
+- Konrad now treats a camp that fails to activate after a short close-range
+  dwell as temporarily spent, which prevents neutral-input camp orbiting and
+  gets the party back to resource search or frontier movement.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.

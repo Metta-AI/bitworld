@@ -1694,6 +1694,14 @@ proc incompleteLandmarkExists(
       return true
   false
 
+proc campResourceHint(sim: SimServer): string =
+  ## Returns the shared-resource deficit for the next buildable camp.
+  "NEXT GATHER W" & $max(0, CampWoodCost - sim.wood) &
+    " S" & $max(0, CampStoneCost - sim.stone)
+
+proc missingCampResources(sim: SimServer): bool =
+  sim.wood < CampWoodCost or sim.stone < CampStoneCost
+
 proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   ## Returns the short next-action line shown in the local player HUD.
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -1717,18 +1725,23 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
   if sim.incompleteLandmarkInBiome(LandmarkCamp, biome):
     if sim.wood >= CampWoodCost and sim.stone >= CampStoneCost:
       return "NEXT BUILD CAMP"
-    return "NEXT GATHER W" & $max(0, CampWoodCost - sim.wood) &
-      " S" & $max(0, CampStoneCost - sim.stone)
+    return sim.campResourceHint()
   if sim.relicShards < FinalGateRelicCost and
       sim.incompleteLandmarkExists(LandmarkBeacon):
     return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
   if sim.campsActivated < FinalGateCampCost:
+    if sim.incompleteLandmarkExists(LandmarkCamp) and
+        sim.missingCampResources():
+      return sim.campResourceHint()
     return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
   if not sim.bossDefeated:
     return "NEXT DEFEAT BOSS"
   if sim.relicShards < FinalGateRelicCost:
     return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
   if sim.campsActivated < FinalGateCampCost:
+    if sim.incompleteLandmarkExists(LandmarkCamp) and
+        sim.missingCampResources():
+      return sim.campResourceHint()
     return "NEXT CAMP " & $sim.campsActivated & "/" & $FinalGateCampCost
   if sim.incompleteLandmarkExists(LandmarkFinalGate):
     return "NEXT OPEN GATE"

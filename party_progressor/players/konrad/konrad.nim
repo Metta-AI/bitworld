@@ -26,6 +26,8 @@ const
   AttackReach = 46
   AttackAlignSlack = 22
   AttackCooldownTicks = 7
+  ActivationStallDistance = 18
+  CampActivationStallTicks = 48
   ObstaclePad = 8
   PathLookaheadCells = 4
   RoleChoiceFallbackTicks = 180
@@ -151,6 +153,7 @@ type
     currentTargetY: int
     currentTargetDistance: int
     currentTargetLabel: string
+    targetCloseTicks: int
     skipTargetId: int
     skipTicks: int
     coinCount: int
@@ -746,9 +749,8 @@ proc readStatusHud(bot: var Bot, label: string) =
     elif section.startsWith("next "):
       bot.objectiveHint = section
       let tokens = section.splitWhitespace()
-      if section.startsWith("next gather"):
-        bot.needWood = tokens.tokenNumber("w")
-        bot.needStone = tokens.tokenNumber("s")
+      bot.needWood = tokens.tokenNumber("w")
+      bot.needStone = tokens.tokenNumber("s")
     elif section.startsWith("b "):
       bot.abilityLabel = section.substr(2).strip()
       bot.abilityReady = not section.contains(" cd")
@@ -1150,6 +1152,8 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   if bot.carriedItem != CarryNone and target.kind.isCarryResourceTarget() and
       target.objectId.isLooseCarryPickupObject():
     return false
+  if target.kind == TargetCamp and (bot.needWood > 0 or bot.needStone > 0):
+    return false
   if target.kind.isRoleTarget() and not bot.choosingRole():
     return false
   if target.kind in {TargetCoin, TargetHeart} and
@@ -1226,7 +1230,7 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 55
   of TargetCamp:
     if bot.needWood > 0 or bot.needStone > 0:
-      distance + 120
+      distance + 900
     elif bot.objectiveHint.startsWith("next build camp") or
         bot.objectiveHint.startsWith("next camp"):
       distance - 230
@@ -1379,17 +1383,30 @@ proc containsTarget(targets: openArray[Target], objectId: int): bool =
 
 proc rememberTarget(bot: var Bot, target: Target) =
   ## Stores the active target for debug and stuck recovery.
-  bot.currentTargetId = target.objectId
-  bot.currentTargetKind = target.kind
-  bot.currentTargetX = target.x
-  bot.currentTargetY = target.y
-  bot.currentTargetLabel = target.label
-  bot.currentTargetDistance = manhattan(
+  let targetDistance = manhattan(
     bot.playerWorldX,
     bot.playerWorldY,
     target.x,
     target.y
   )
+  if target.objectId == bot.currentTargetId and
+      target.kind == bot.currentTargetKind and
+      targetDistance <= ActivationStallDistance:
+    inc bot.targetCloseTicks
+  else:
+    bot.targetCloseTicks = 0
+  bot.currentTargetId = target.objectId
+  bot.currentTargetKind = target.kind
+  bot.currentTargetX = target.x
+  bot.currentTargetY = target.y
+  bot.currentTargetLabel = target.label
+  bot.currentTargetDistance = targetDistance
+  if target.kind == TargetCamp and
+      bot.targetCloseTicks >= CampActivationStallTicks:
+    bot.skipTargetId = target.objectId
+    bot.skipTicks = SkipTargetTicks
+    bot.targetCloseTicks = 0
+    bot.hasExploreGoal = false
 
 proc updateTargetResult(
   bot: var Bot,
@@ -1821,6 +1838,14 @@ when defined(konradTargetSelfTest):
     objectId: LandmarkObjectBase + 1
   ))
   bot.carriedItem = CarryNone
+  bot.needWood = 1
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetCamp,
+    objectId: LandmarkObjectBase + 2
+  ))
+  bot.readStatusHud("tank plains|clear w1 f0 s0 r0|b guard|next camp 0/2 w1 s1")
+  doAssert bot.needWood == 1
+  doAssert bot.needStone == 1
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetWood,
@@ -1832,6 +1857,8 @@ when defined(konradTargetSelfTest):
     x: 80,
     y: 0
   ))
+  bot.needWood = 0
+  bot.needStone = 0
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetRelic,
@@ -2180,6 +2207,24 @@ when defined(konradTargetSelfTest):
   let roleUnstuck = bot.directedUnstuckMask()
   doAssert (roleUnstuck and ButtonLeft) != 0
   doAssert (roleUnstuck and ButtonRight) == 0
+
+  bot.skipTargetId = -1
+  bot.skipTicks = 0
+  bot.currentTargetId = 99
+  bot.currentTargetKind = TargetCamp
+  bot.playerWorldX = 80
+  bot.playerWorldY = 300
+  for _ in 0 .. CampActivationStallTicks:
+    bot.rememberTarget(Target(
+      found: true,
+      kind: TargetCamp,
+      objectId: 99,
+      x: 84,
+      y: 304,
+      label: "camp"
+    ))
+  doAssert bot.skipTargetId == 99
+  doAssert bot.skipTicks == SkipTargetTicks
 
   bot.havePlayerSample = true
   bot.previousPlayerX = 10

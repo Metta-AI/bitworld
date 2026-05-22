@@ -934,6 +934,11 @@ proc testExpeditionObjectiveHudGuidesNextStep() =
   doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT RELIC 0/3"
 
   sim.relicShards = FinalGateRelicCost
+  sim.wood = 0
+  sim.stone = 0
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT GATHER W2 S1"
+  sim.wood = CampWoodCost
+  sim.stone = CampStoneCost
   doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT CAMP 0/2"
 
   sim.campsActivated = FinalGateCampCost
