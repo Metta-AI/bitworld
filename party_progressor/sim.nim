@@ -119,6 +119,8 @@ const
   LairHunterTicks* = TargetFps * 10
   LairRespawnCooldownBonus* = TargetFps * 2
   BiomeWaystationTicks* = TargetFps
+  BiomeWaystationRouteTicks* = TargetFps * 10
+  BiomeWaystationRouteMinSpeedPercent* = 88
   FinalGateRitualTicks* = TargetFps * 2
   BeaconSurveyTicks* = TargetFps * 10
   BeaconSurveyMinSpeedPercent* = 90
@@ -366,6 +368,7 @@ type
     chillTicks*: int
     poisonTicks*: int
     exhaustionTicks*: int
+    routeTicks*: int
     surveyTicks*: int
     guideTicks*: int
     huntTicks*: int
@@ -916,6 +919,8 @@ proc statusLabel*(player: Actor): string =
     labels.add("chill")
   if player.exhaustionTicks > 0:
     labels.add("exhaust")
+  if player.routeTicks > 0:
+    labels.add("route")
   if player.surveyTicks > 0:
     labels.add("survey")
   if player.guideTicks > 0:
@@ -1985,6 +1990,8 @@ proc playerMovementSpeedPercent*(
   y: int
 ): int =
   var terrainSpeed = sim.speedPercentAt(x, y)
+  if player.routeTicks > 0:
+    terrainSpeed = max(terrainSpeed, BiomeWaystationRouteMinSpeedPercent)
   if player.surveyTicks > 0:
     terrainSpeed = max(terrainSpeed, BeaconSurveyMinSpeedPercent)
   (terrainSpeed * player.statusSpeedPercent()) div 100
@@ -2858,6 +2865,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].routeTicks = 0
   sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
@@ -3238,6 +3246,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.chillTicks)
     result.mixHashInt(player.poisonTicks)
     result.mixHashInt(player.exhaustionTicks)
+    result.mixHashInt(player.routeTicks)
     result.mixHashInt(player.surveyTicks)
     result.mixHashInt(player.guideTicks)
     result.mixHashInt(player.huntTicks)
@@ -4165,6 +4174,7 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].routeTicks = 0
   sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
@@ -4196,6 +4206,7 @@ proc reviveDownedPlayer(sim: var SimServer, playerIndex, rescuerIndex: int) =
   sim.players[playerIndex].chillTicks = 0
   sim.players[playerIndex].poisonTicks = 0
   sim.players[playerIndex].exhaustionTicks = 0
+  sim.players[playerIndex].routeTicks = 0
   sim.players[playerIndex].surveyTicks = 0
   sim.players[playerIndex].guideTicks = 0
   sim.players[playerIndex].huntTicks = 0
@@ -4955,6 +4966,9 @@ proc activateWaystation(sim: var SimServer, landmarkIndex: int) =
     discard sim.pacifyMobsNearLandmark(landmark, BiomeWaystationPacifyRadius)
   of BiomeOrigin:
     sim.healLivePlayers(BiomeWaystationHealAmount)
+  for player in sim.players.mitems:
+    if player.lives > 0:
+      player.routeTicks = max(player.routeTicks, BiomeWaystationRouteTicks)
   inc sim.scoreRevision
 
 proc destroyLair(sim: var SimServer, landmarkIndex: int) =
@@ -5579,7 +5593,8 @@ proc survivalPressureKind*(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return SurvivalSafe
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex) or
+  if player.lives <= 0 or player.routeTicks > 0 or
+      sim.playerNearExpeditionShelter(playerIndex) or
       sim.playerProtectedByTankGuard(playerIndex):
     return SurvivalSafe
   case sim.playerBiome(player)
@@ -5697,6 +5712,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       biome = sim.playerBiome(sim.players[playerIndex])
       sheltered = sim.playerNearExpeditionShelter(playerIndex)
       guarded = sim.playerProtectedByTankGuard(playerIndex)
+      routed = sim.players[playerIndex].routeTicks > 0
     if sim.food > 0 and
         sim.players[playerIndex].lives <=
           sim.players[playerIndex].maxHp - FoodHealAmount:
@@ -5713,15 +5729,16 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       discard sim.consumeCarriedFood(playerIndex)
 
     if coldPulse and biome == BiomeSnow and not sheltered and not guarded and
+        not routed and
         not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
     if heatPulse and biome == BiomeDesert and not sheltered and not guarded and
-        not sim.playerNearDesertShade(playerIndex):
+        not routed and not sim.playerNearDesertShade(playerIndex):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
     if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and
-        not guarded and
+        not guarded and not routed and
         not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
         not sim.playerHasCaveLight(playerIndex):
       let before = sim.players[playerIndex].slowTicks
@@ -5732,6 +5749,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       if sim.players[playerIndex].slowTicks != before:
         inc sim.scoreRevision
     if mirePulse and biome == BiomeSwamp and not sheltered and not guarded and
+        not routed and
         sim.playerGroundKind(sim.players[playerIndex]) in {
           GroundMud,
           GroundShallowWater,
@@ -5746,7 +5764,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         inc sim.scoreRevision
 
     if exhaustionPulse and sim.playerInLateExhaustionBand(playerIndex) and
-        not sheltered and not guarded and
+        not sheltered and not guarded and not routed and
         sim.survivalPressureKind(playerIndex) == SurvivalSafe:
       if not sim.consumeWeatherRation(playerIndex):
         let before = sim.players[playerIndex].exhaustionTicks
@@ -6392,6 +6410,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
+    if sim.players[i].routeTicks > 0:
+      dec sim.players[i].routeTicks
+      if sim.players[i].routeTicks == 0:
+        inc sim.scoreRevision
     if sim.players[i].surveyTicks > 0:
       dec sim.players[i].surveyTicks
       if sim.players[i].surveyTicks == 0:

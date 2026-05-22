@@ -138,6 +138,7 @@ type
     StatusLight
     StatusGuard
     StatusBlessing
+    StatusRoute
     StatusSurvey
     StatusGuide
     StatusHunt
@@ -1430,6 +1431,7 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusLight: "LIT"
   of StatusGuard: "GRD"
   of StatusBlessing: "BLS"
+  of StatusRoute: "ROUTE"
   of StatusSurvey: "SURV"
   of StatusGuide: "GUIDE"
   of StatusHunt: "HUNT"
@@ -1468,6 +1470,7 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusLight: 14'u8
   of StatusGuard: 4'u8
   of StatusBlessing: 14'u8
+  of StatusRoute: 14'u8
   of StatusSurvey: 12'u8
   of StatusGuide: 2'u8
   of StatusHunt: 9'u8
@@ -1506,6 +1509,7 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusLight: "status light"
   of StatusGuard: "status guard"
   of StatusBlessing: "status blessing"
+  of StatusRoute: "status route"
   of StatusSurvey: "status survey"
   of StatusGuide: "status guide"
   of StatusHunt: "status hunt"
@@ -2696,6 +2700,8 @@ proc addWorldObjects(
       let tacticBadge = sim.playerBiomeTacticKind(i).biomeTacticStatusBadge()
       if tacticBadge.found:
         badges.add(tacticBadge.badge)
+      if player.routeTicks > 0:
+        badges.add(StatusRoute)
       if player.surveyTicks > 0:
         badges.add(StatusSurvey)
       if player.guideTicks > 0:

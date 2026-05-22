@@ -353,6 +353,9 @@ The first full-game implementation pass includes:
   bridge, oasis, hearth, lantern, and ward detours complete faster for a hinted
   role, reshape nearby rough terrain into a readable route, and grant
   biome-specific survival payoffs.
+- Completed waystations now also grant a short visible `ROUTE` momentum window:
+  players can capitalize on the opened path with a rough-terrain movement floor
+  and temporary protection from local biome pressure beyond the static shelter.
 - Wolves, camp defenders, bears, and boss scoring.
 - Combined team score and expanded result JSON.
 - Player/global HUD updates.

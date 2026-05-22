@@ -3006,6 +3006,8 @@ proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
   doAssert swampSim.landmarks[0].done
   doAssert swampSim.sideObjectivesCompleted == 1
   doAssert swampSim.stone == 1
+  doAssert swampSim.players[swampPlayer].routeTicks == BiomeWaystationRouteTicks
+  doAssert swampSim.players[swampPlayer].statusLabel().contains("route")
   for ty in bridgeTy - BiomeWaystationRouteHalfHeightTiles ..
       bridgeTy + BiomeWaystationRouteHalfHeightTiles:
     for tx in bridgeTx - BiomeWaystationRouteBackTiles ..
@@ -3018,6 +3020,51 @@ proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
           "waystations should make nearby elevation easier to cross"
         doAssert not swampSim.tiles[index],
           "waystations should clear blockers from their local route"
+
+  let
+    roughTx = bridgeTx + BiomeWaystationRouteForwardTiles + 2
+    roughX = roughTx * WorldTileSize
+    roughY = bridgeTy * WorldTileSize
+    roughIndex = tileIndex(roughTx, bridgeTy)
+  swampSim.groundKinds[roughIndex] = GroundMud
+  swampSim.biomeKinds[roughIndex] = BiomeSwamp
+  swampSim.elevations[roughIndex] = 4
+  swampSim.players[swampPlayer].x = roughX
+  swampSim.players[swampPlayer].y = roughY
+  swampSim.players[swampPlayer].bounds =
+    swampSim.playerBoundsFor(swampSim.players[swampPlayer])
+  doAssert not swampSim.playerNearExpeditionShelter(swampPlayer),
+    "route momentum should be checked beyond the static waystation shelter"
+  doAssert swampSim.survivalPressureKind(swampPlayer) == SurvivalSafe,
+    "waystation route knowledge should protect the immediate next push"
+  doAssert swampSim.speedPercentAt(roughX, roughY) <
+    BiomeWaystationRouteMinSpeedPercent
+  doAssert swampSim.playerMovementSpeedPercent(
+    swampSim.players[swampPlayer],
+    roughX,
+    roughY
+  ) >= BiomeWaystationRouteMinSpeedPercent,
+    "waystation route knowledge should keep rough pushes readable"
+  swampSim.players[swampPlayer].slowTicks = 0
+  swampSim.tickCount = SwampMireIntervalTicks - 1
+  swampSim.step([InputState()])
+  doAssert swampSim.players[swampPlayer].slowTicks == 0,
+    "waystation route knowledge should block immediate mire pulses"
+  var routeState: PlayerViewerState
+  let routeParsed = swampSim.buildSpriteProtocolPlayerUpdates(
+    swampPlayer,
+    initPlayerViewerState(),
+    routeState
+  ).parseSpriteProtocolPacket()
+  let routeLabels = routeParsed.objectSpriteLabels()
+  doAssert "status route" in routeLabels
+  doAssert routeParsed.sprites.values.toSeq.anyIt(it.label.contains("ROUTE SAFE")),
+    "HUD status text should make waystation route knowledge readable"
+  swampSim.players[swampPlayer].routeTicks = 1
+  swampSim.step([InputState()])
+  doAssert swampSim.players[swampPlayer].routeTicks == 0
+  doAssert swampSim.survivalPressureKind(swampPlayer) == SurvivalMire,
+    "waystation route knowledge should expire back to local biome pressure"
 
   var snowSim = initPartyProgressorForTest()
   snowSim.clearTerrain()
