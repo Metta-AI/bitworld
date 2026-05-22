@@ -438,6 +438,7 @@ type
     BiomeTacticShade
     BiomeTacticWarmth
     BiomeTacticLight
+    BiomeTacticGuard
 
   GroundKind* = enum
     GroundGrass
@@ -861,6 +862,7 @@ proc biomeTacticLabel*(kind: BiomeTacticKind): string =
   of BiomeTacticShade: "shade"
   of BiomeTacticWarmth: "warmth"
   of BiomeTacticLight: "light"
+  of BiomeTacticGuard: "guard"
 
 proc pingLabel*(kind: PlayerPingKind): string =
   case kind
@@ -3975,6 +3977,22 @@ proc guardedDamage(sim: var SimServer, playerIndex: int, amount: int): int =
       inc sim.scoreRevision
     return reduced
 
+proc playerProtectedByTankGuard*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when an active tank guard is holding formation around a player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let target = sim.players[playerIndex]
+  if target.lives <= 0:
+    return false
+  let radiusSq = TankGuardRadius * TankGuardRadius
+  for tankIndex in 0 ..< sim.players.len:
+    let tank = sim.players[tankIndex]
+    if tank.lives <= 0 or tank.role != RoleTank or tank.guardTicks <= 0:
+      continue
+    if tankIndex == playerIndex or distanceSquaredActor(tank, target) <= radiusSq:
+      return true
+  false
+
 proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy, amount: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
@@ -5136,6 +5154,30 @@ proc playerHasCaveLight*(sim: SimServer, playerIndex: int): bool =
     return false
   player.carrying and player.carriedItem == CarryGold
 
+proc playerGuardMitigatesBiomePressure*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  ## Returns true when tank guard is the active answer to a biome pressure.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex) or
+      not sim.playerProtectedByTankGuard(playerIndex):
+    return false
+  case sim.playerBiome(player)
+  of BiomeSwamp:
+    sim.playerGroundKind(player) in {GroundMud, GroundShallowWater, GroundWater}
+  of BiomeSnow:
+    not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius)
+  of BiomeDesert:
+    not sim.playerNearDesertShade(playerIndex)
+  of BiomeCave, BiomeRuins:
+    not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
+      not sim.playerHasCaveLight(playerIndex)
+  else:
+    false
+
 proc survivalPressureKind*(
   sim: SimServer,
   playerIndex: int
@@ -5144,7 +5186,8 @@ proc survivalPressureKind*(
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return SurvivalSafe
   let player = sim.players[playerIndex]
-  if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex):
+  if player.lives <= 0 or sim.playerNearExpeditionShelter(playerIndex) or
+      sim.playerProtectedByTankGuard(playerIndex):
     return SurvivalSafe
   case sim.playerBiome(player)
   of BiomeSwamp:
@@ -5183,6 +5226,8 @@ proc playerBiomeTacticKind*(
     return BiomeTacticNone
   if sim.players[playerIndex].lives <= 0:
     return BiomeTacticNone
+  if sim.playerGuardMitigatesBiomePressure(playerIndex):
+    return BiomeTacticGuard
   case sim.playerBiome(sim.players[playerIndex])
   of BiomeForest:
     BiomeTacticForage
@@ -5246,6 +5291,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
     let
       biome = sim.playerBiome(sim.players[playerIndex])
       sheltered = sim.playerNearExpeditionShelter(playerIndex)
+      guarded = sim.playerProtectedByTankGuard(playerIndex)
     if sim.food > 0 and
         sim.players[playerIndex].lives <=
           sim.players[playerIndex].maxHp - FoodHealAmount:
@@ -5261,15 +5307,16 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         sim.players[playerIndex].maxHp - FoodHealAmount:
       discard sim.consumeCarriedFood(playerIndex)
 
-    if coldPulse and biome == BiomeSnow and not sheltered and
+    if coldPulse and biome == BiomeSnow and not sheltered and not guarded and
         not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
-    if heatPulse and biome == BiomeDesert and not sheltered and
+    if heatPulse and biome == BiomeDesert and not sheltered and not guarded and
         not sim.playerNearDesertShade(playerIndex):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
     if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and
+        not guarded and
         not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
         not sim.playerHasCaveLight(playerIndex):
       let before = sim.players[playerIndex].slowTicks
@@ -5279,7 +5326,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       )
       if sim.players[playerIndex].slowTicks != before:
         inc sim.scoreRevision
-    if mirePulse and biome == BiomeSwamp and not sheltered and
+    if mirePulse and biome == BiomeSwamp and not sheltered and not guarded and
         sim.playerGroundKind(sim.players[playerIndex]) in {
           GroundMud,
           GroundShallowWater,

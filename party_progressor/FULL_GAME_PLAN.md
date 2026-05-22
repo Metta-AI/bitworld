@@ -338,6 +338,10 @@ The first full-game implementation pass includes:
 - Origin and camp role gear now labels both the role and its `B` power: tank
   guard, DPS cleave, and healer pulse.
 - DPS cleave on the `B` button, plus tank guard and healer pulse.
+- Tank guard now doubles as a short formation shelter: while active it clears
+  visible biome pressure and blocks snow cold, desert heat, cave/ruin fog, and
+  swamp mire pulses for the tank and nearby party members, giving tanks a
+  direct answer to harsh-weather pushes.
 - Healer pulse now cleanses poison, slow, and chill from nearby party members,
   making the support power a direct answer to biome and monster status pressure
   rather than only an HP refill.
@@ -490,6 +494,9 @@ The first full-game implementation pass includes:
   sensible moments: tanks guard and DPS cleave once threats are in reach, while
   healers spend their pulse when the HUD reports low health or cleansable
   poison/slow/chill pressure.
+- Konrad tanks now also fire guard under environmental pressure, so cold, heat,
+  mire, fog, and regroup warnings can turn into a visible party-protection
+  window instead of only a movement detour.
 - Konrad bot scanning now treats visible carried-item sprites as teammate state
   instead of world pickups, preventing longer expedition runs from derailing
   into loops around another player's held wood, food, stone, or gold.

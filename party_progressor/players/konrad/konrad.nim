@@ -1981,6 +1981,14 @@ proc recoveryAbilityMask(bot: Bot): uint8 =
   else:
     0
 
+proc formationAbilityMask(bot: Bot): uint8 =
+  ## Lets tanks spend guard when survival pressure asks the party to hold shape.
+  if bot.abilityReady and bot.roleLabel == "tank" and
+      (bot.needsShelter or bot.needsTerrainRoute or bot.needsRegroup):
+    ButtonB
+  else:
+    0
+
 proc attackMask(bot: var Bot, target: Target): uint8 =
   ## Builds a facing and attack pulse toward a monster.
   result = faceMask(
@@ -2019,6 +2027,10 @@ proc decideNextMask(bot: var Bot): uint8 =
   if recoveryMask != 0:
     bot.intent = "heal"
     return recoveryMask
+  let formationMask = bot.formationAbilityMask()
+  if formationMask != 0:
+    bot.intent = "guard"
+    return formationMask
   if bot.canEatCarriedFood:
     bot.intent = "eat"
     return ButtonSelect
@@ -2839,6 +2851,21 @@ when defined(konradTargetSelfTest):
   bot.needsCleanse = true
   doAssert bot.recoveryAbilityMask() == ButtonB
   bot.needsCleanse = false
+  bot.roleLabel = "tank"
+  bot.abilityReady = true
+  bot.needsShelter = true
+  bot.needsTerrainRoute = false
+  bot.needsRegroup = false
+  doAssert bot.formationAbilityMask() == ButtonB
+  bot.needsShelter = false
+  bot.needsTerrainRoute = true
+  doAssert bot.formationAbilityMask() == ButtonB
+  bot.needsTerrainRoute = false
+  bot.needsRegroup = true
+  doAssert bot.formationAbilityMask() == ButtonB
+  bot.needsRegroup = false
+  bot.abilityReady = false
+  doAssert bot.formationAbilityMask() == 0
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetWood,

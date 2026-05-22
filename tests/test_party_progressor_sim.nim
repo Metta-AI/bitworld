@@ -3217,6 +3217,97 @@ proc testSwampMireSurvivalPressureAndBridgeShelter() =
   doAssert roadSim.players[roadPlayer].slowTicks == 0,
     "dry swamp roads should not apply mire slow pulses"
 
+proc testTankGuardBlocksBiomePressure() =
+  var desertSim = initPartyProgressorForTest()
+  desertSim.clearTerrain()
+  desertSim.mobs.setLen(0)
+  desertSim.pickups.setLen(0)
+  desertSim.landmarks.setLen(0)
+  desertSim.fillGround(GroundSand, BiomeDesert)
+
+  let
+    tankIndex = desertSim.addPlayer("tank")
+    allyIndex = desertSim.addPlayer("ally")
+    desertX = firstTileForBiome(BiomeDesert) * WorldTileSize
+    desertY = (WorldHeightTiles div 2) * WorldTileSize
+  desertSim.players[tankIndex].applyRole(RoleTank)
+  desertSim.players[tankIndex].x = desertX
+  desertSim.players[tankIndex].y = desertY
+  desertSim.players[tankIndex].bounds =
+    desertSim.playerBoundsFor(desertSim.players[tankIndex])
+  desertSim.players[tankIndex].guardTicks = TankGuardTicks
+  desertSim.players[allyIndex].x = desertX + WorldTileSize
+  desertSim.players[allyIndex].y = desertY
+  desertSim.players[allyIndex].bounds =
+    desertSim.playerBoundsFor(desertSim.players[allyIndex])
+  desertSim.players[allyIndex].lives = 3
+  desertSim.food = 0
+
+  doAssert desertSim.playerProtectedByTankGuard(allyIndex),
+    "active tank guard should cover nearby teammates"
+  doAssert desertSim.survivalPressureKind(allyIndex) == SurvivalSafe,
+    "tank guard should clear visible desert heat pressure"
+  doAssert desertSim.playerBiomeTacticKind(allyIndex) == BiomeTacticGuard,
+    "tank guard should show as the active survival tactic"
+  desertSim.tickCount = HeatExposureIntervalTicks - 1
+  desertSim.step([InputState(), InputState()])
+  doAssert desertSim.players[allyIndex].lives == 3,
+    "tank guard should block heat exposure damage for nearby teammates"
+
+  var state: PlayerViewerState
+  let parsed = desertSim.buildSpriteProtocolPlayerUpdates(
+    allyIndex,
+    initPlayerViewerState(),
+    state
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status guard" in labels
+  doAssert "status heat" notin labels
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("OK SAFE GUARD")),
+    "HUD status text should make tank-guard survival readable"
+
+  desertSim.players[tankIndex].guardTicks = 0
+  doAssert desertSim.survivalPressureKind(allyIndex) == SurvivalHeat
+  desertSim.players[allyIndex].invulnTicks = 0
+  desertSim.tickCount = HeatExposureIntervalTicks - 1
+  desertSim.step([InputState(), InputState()])
+  doAssert desertSim.players[allyIndex].lives == 2,
+    "desert heat should resume once tank guard drops"
+
+  var swampSim = initPartyProgressorForTest()
+  swampSim.clearTerrain()
+  swampSim.mobs.setLen(0)
+  swampSim.pickups.setLen(0)
+  swampSim.landmarks.setLen(0)
+  swampSim.fillGround(GroundMud, BiomeSwamp)
+
+  let
+    swampTank = swampSim.addPlayer("tank")
+    swampX = firstTileForBiome(BiomeSwamp) * WorldTileSize
+    swampY = (WorldHeightTiles div 2) * WorldTileSize
+  swampSim.players[swampTank].applyRole(RoleTank)
+  swampSim.players[swampTank].x = swampX
+  swampSim.players[swampTank].y = swampY
+  swampSim.players[swampTank].bounds =
+    swampSim.playerBoundsFor(swampSim.players[swampTank])
+  swampSim.players[swampTank].guardTicks = TankGuardTicks
+
+  doAssert swampSim.playerProtectedByTankGuard(swampTank),
+    "tank guard should also protect the tank holding formation"
+  doAssert swampSim.survivalPressureKind(swampTank) == SurvivalSafe
+  doAssert swampSim.playerBiomeTacticKind(swampTank) == BiomeTacticGuard
+  swampSim.tickCount = SwampMireIntervalTicks - 1
+  swampSim.step([InputState()])
+  doAssert swampSim.players[swampTank].slowTicks == 0,
+    "tank guard should block swamp mire slow pressure while active"
+
+  swampSim.players[swampTank].guardTicks = 0
+  doAssert swampSim.survivalPressureKind(swampTank) == SurvivalMire
+  swampSim.tickCount = SwampMireIntervalTicks - 1
+  swampSim.step([InputState()])
+  doAssert swampSim.players[swampTank].slowTicks >= SwampMireTicks - 1,
+    "swamp mire should resume once tank guard drops"
+
 proc testFogBiomeDisorientationRequiresGroupOrLantern() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3462,6 +3553,7 @@ testSnowSharedWarmthClearsColdPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()
 testDesertCactusShadeClearsHeatPressure()
 testSwampMireSurvivalPressureAndBridgeShelter()
+testTankGuardBlocksBiomePressure()
 testFogBiomeDisorientationRequiresGroupOrLantern()
 testCarriedGoldLightsCaveAndRuins()
 testCampShelterAndRecoveryInfrastructure()
