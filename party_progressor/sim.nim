@@ -92,6 +92,9 @@ const
   CampRecoveryIntervalTicks* = TargetFps * 2
   CampRecoveryHealAmount* = 1
   CampStatusRecoveryTicks* = TargetFps div 2
+  CampShortcutBackTiles* = 2
+  CampShortcutForwardTiles* = 8
+  CampShortcutHalfHeightTiles* = 1
   StatusSlowTicks* = TargetFps * 2
   StatusChillTicks* = TargetFps * 3
   StatusPoisonTicks* = TargetFps * 4
@@ -3554,6 +3557,34 @@ proc addCampRoleGear(sim: var SimServer, landmark: Landmark) =
     value: 0
   ))
 
+proc campShortcutGround(
+  biome: BiomeKind,
+  previous: GroundKind
+): GroundKind =
+  if previous in {GroundWater, GroundShallowWater} or biome == BiomeSwamp:
+    GroundBridge
+  else:
+    GroundRoad
+
+proc revealCampShortcut(sim: var SimServer, landmark: Landmark) =
+  ## Cuts a short visible route through rough ground around an activated camp.
+  for ty in landmark.ty - CampShortcutHalfHeightTiles ..
+      landmark.ty + CampShortcutHalfHeightTiles:
+    for tx in landmark.tx - CampShortcutBackTiles ..
+        landmark.tx + CampShortcutForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
 proc harvestLandmark(
   sim: var SimServer,
   landmarkIndex,
@@ -3641,6 +3672,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       inc sim.campsActivated
       let camp = sim.landmarks[landmarkIndex]
       sim.addCampRoleGear(camp)
+      sim.revealCampShortcut(camp)
       for playerIndex in 0 ..< sim.players.len:
         sim.players[playerIndex].lives = min(
           sim.players[playerIndex].maxHp,

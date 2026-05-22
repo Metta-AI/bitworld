@@ -293,6 +293,9 @@ The first full-game implementation pass includes:
 - Activated camps now act as expedition shelters: nearby players are protected
   from snow exposure, recover poison/slow/chill statuses faster, and slowly
   heal while regrouping.
+- Activated camps also reveal short road or bridge shortcuts through nearby
+  rough ground, clearing blockers and reducing elevation so camp investment
+  permanently improves the expedition route.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
   including visible held-item sprites and select-to-use/drop behavior.
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
@@ -343,8 +346,8 @@ The first full-game implementation pass includes:
 
 - Give each biome one tactical rule that changes party behavior.
 - Add optional side objectives that trade time for score or survivability.
-- Extend camp infrastructure beyond healing, role swap, and weather shelter:
-  add shortcut reveal, biome-safe staging bonuses, or optional fortification
+- Extend camp infrastructure beyond healing, role swap, weather shelter, and
+  shortcut reveal: add biome-safe staging bonuses or optional fortification
   choices.
 - Continue teammate legibility beyond low-health help badges and isolation
   regroup labels: pings, downed-player indicators, and explicit rescue moments.

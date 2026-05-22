@@ -812,9 +812,24 @@ proc testResourceHarvestAndCampActivation() =
   sim.pickups.setLen(0)
   sim.wood = CampWoodCost
   sim.stone = CampStoneCost
+  let
+    campTx = sim.players[playerIndex].x div WorldTileSize
+    campTy = sim.players[playerIndex].y div WorldTileSize
+  for ty in campTy - CampShortcutHalfHeightTiles ..
+      campTy + CampShortcutHalfHeightTiles:
+    for tx in campTx - CampShortcutBackTiles ..
+        campTx + CampShortcutForwardTiles:
+      if tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles:
+        let index = tileIndex(tx, ty)
+        sim.groundKinds[index] = GroundMud
+        sim.biomeKinds[index] = BiomeSwamp
+        sim.elevations[index] = 5
+        sim.tiles[index] = true
+  sim.groundKinds[tileIndex(campTx + CampShortcutForwardTiles, campTy)] =
+    GroundWater
   sim.landmarks.add(Landmark(
-    tx: sim.players[playerIndex].x div WorldTileSize,
-    ty: sim.players[playerIndex].y div WorldTileSize,
+    tx: campTx,
+    ty: campTy,
     kind: LandmarkCamp,
     hp: 1,
     done: false
@@ -825,6 +840,18 @@ proc testResourceHarvestAndCampActivation() =
   doAssert sim.hasPickup(PickupTankGear)
   doAssert sim.hasPickup(PickupDpsGear)
   doAssert sim.hasPickup(PickupHealerGear)
+  for ty in campTy - CampShortcutHalfHeightTiles ..
+      campTy + CampShortcutHalfHeightTiles:
+    for tx in campTx - CampShortcutBackTiles ..
+        campTx + CampShortcutForwardTiles:
+      if tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles:
+        let index = tileIndex(tx, ty)
+        doAssert sim.tileGroundKind(tx, ty) == GroundBridge,
+          "swamp camp shortcut should reveal a bridge corridor"
+        doAssert sim.elevations[index] <= 1,
+          "camp shortcut should cut high elevation into an easier route"
+        doAssert not sim.tiles[index],
+          "camp shortcut should clear blocking props from the corridor"
 
 proc testBeaconAndBossScoring() =
   var sim = initPartyProgressorForTest()
