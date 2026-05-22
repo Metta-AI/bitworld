@@ -66,6 +66,7 @@ const
   CampScoreValue* = 10
   RelicScoreValue* = 40
   BossScoreValue* = 150
+  FinalGateRelicCost* = 3
   CampWoodCost* = 2
   CampStoneCost* = 1
   ResourceNodeHp* = 2
@@ -83,6 +84,13 @@ const
   HealerPulseAmount* = 2
   FoodHealAmount* = 2
   ColdExposureIntervalTicks* = TargetFps * 3
+  StatusSlowTicks* = TargetFps * 2
+  StatusChillTicks* = TargetFps * 3
+  StatusPoisonTicks* = TargetFps * 4
+  StatusPoisonIntervalTicks* = TargetFps
+  StatusSlowSpeedPercent* = 62
+  StatusChillSpeedPercent* = 78
+  IsolationThreatRadius* = WorldTileSize * 3
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
   RewardWebSocketPath* = "/reward"
@@ -241,6 +249,9 @@ type
     distanceWalked*: int
     carrying*: bool
     carriedItem*: CarryKind
+    slowTicks*: int
+    chillTicks*: int
+    poisonTicks*: int
 
   PickupKind* = enum
     PickupCoin
@@ -648,6 +659,45 @@ proc randomMonsterSpeciesForBiome(
   let species = biome.monsterSpeciesForBiome()
   species[rng.rand(species.high)]
 
+proc speciesAppliesSlow*(species: MobSpecies): bool =
+  species in {
+    SpeciesMudSlime,
+    SpeciesReedSlime,
+    SpeciesCaveSlime
+  }
+
+proc speciesAppliesPoison*(species: MobSpecies): bool =
+  species in {
+    SpeciesDuneScorpion,
+    SpeciesGlassScorpion,
+    SpeciesSandViper,
+    SpeciesTombScarab
+  }
+
+proc speciesAppliesChill*(species: MobSpecies): bool =
+  species in {
+    SpeciesSnowWolf,
+    SpeciesFrostYeti,
+    SpeciesIceTroll,
+    SpeciesWhiteBear,
+    SpeciesSnowBat
+  }
+
+proc speciesHarasses*(species: MobSpecies): bool =
+  species in {
+    SpeciesSnowBat,
+    SpeciesCaveBat,
+    SpeciesCrystalBat
+  }
+
+proc speciesPunishesIsolation*(species: MobSpecies): bool =
+  species in {
+    SpeciesMarshWraith,
+    SpeciesRuinWraith,
+    SpeciesAshWraith,
+    SpeciesGateTitan
+  }
+
 proc landmarkLabel*(kind: LandmarkKind): string =
   case kind
   of LandmarkWood: "wood"
@@ -665,6 +715,25 @@ proc carryLabel*(kind: CarryKind): string =
   of CarryFood: "food"
   of CarryStone: "stone"
   of CarryGold: "gold"
+
+proc statusLabel*(player: Actor): string =
+  var labels: seq[string] = @[]
+  if player.poisonTicks > 0:
+    labels.add("poison")
+  if player.slowTicks > 0:
+    labels.add("slow")
+  if player.chillTicks > 0:
+    labels.add("chill")
+  if labels.len == 0:
+    return "ok"
+  labels.join("/")
+
+proc statusSpeedPercent*(player: Actor): int =
+  result = 100
+  if player.slowTicks > 0:
+    result = min(result, StatusSlowSpeedPercent)
+  if player.chillTicks > 0:
+    result = min(result, StatusChillSpeedPercent)
 
 proc roleMaxHp(role: PlayerRole): int =
   case role
@@ -2060,6 +2129,10 @@ proc mobAttackRange*(mob: Mob): int =
 
 proc mobSightRange*(mob: Mob): int =
   ## Returns the distance where one mob starts chasing players.
+  if mob.species.speciesHarasses():
+    return MobSightRadius * 2
+  if mob.species == SpeciesGateTitan:
+    return MobSightRadius * 3
   MobSightRadius
 
 proc mobTelegraphOffsetY*(mob: Mob): int =
@@ -2232,6 +2305,9 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].coins = 0
   sim.players[playerIndex].carrying = false
   sim.players[playerIndex].carriedItem = CarryNone
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].chillTicks = 0
+  sim.players[playerIndex].poisonTicks = 0
 
 proc addPlayer*(sim: var SimServer, address: string): int =
   ## Adds one player at a valid spawn point.
@@ -2447,6 +2523,7 @@ proc playerScoresJson*(sim: SimServer): string =
     damageBlocked = newJArray()
     messagesSent = newJArray()
     carriedItems = newJArray()
+    statusEffects = newJArray()
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
     relicShards = newJArray()
@@ -2475,6 +2552,7 @@ proc playerScoresJson*(sim: SimServer): string =
     carriedItems.add(%
       (if player.carrying: player.carriedItem.carryLabel() else: "none")
     )
+    statusEffects.add(%player.statusLabel())
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
     relicShards.add(%sim.relicShards)
@@ -2496,6 +2574,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["damage_blocked"] = damageBlocked
   results["messages_sent"] = messagesSent
   results["carried_items"] = carriedItems
+  results["status_effects"] = statusEffects
   results["team_score"] = scores
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
@@ -2566,6 +2645,9 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.coins)
     result.mixHashInt(ord(player.carrying))
     result.mixHashInt(ord(player.carriedItem))
+    result.mixHashInt(player.slowTicks)
+    result.mixHashInt(player.chillTicks)
+    result.mixHashInt(player.poisonTicks)
   result.mixHashInt(sim.mobs.len)
   for mob in sim.mobs:
     result.mixHashInt(ord(mob.kind))
@@ -2986,7 +3068,8 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   let
     footX = boundsCenterX(player.x, player.bounds)
     footY = boundsCenterY(player.y, player.bounds)
-    speedPct = sim.speedPercentAt(footX, footY)
+    speedPct =
+      (sim.speedPercentAt(footX, footY) * player.statusSpeedPercent()) div 100
   sim.applyMomentumAxis(
     player,
     player.carryX,
@@ -3239,6 +3322,73 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
   if sim.players[playerIndex].lives <= 0:
     sim.handlePlayerDeath(playerIndex)
 
+proc damagePlayerFromStatus(sim: var SimServer, playerIndex, amount: int) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+  sim.players[playerIndex].lives = max(
+    0,
+    sim.players[playerIndex].lives - max(1, amount)
+  )
+  inc sim.scoreRevision
+  if sim.players[playerIndex].lives <= 0:
+    sim.handlePlayerDeath(playerIndex)
+
+proc playerHasNearbyAlly(
+  sim: SimServer,
+  playerIndex: int,
+  radius: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let radiusSq = radius * radius
+  for otherIndex in 0 ..< sim.players.len:
+    if otherIndex == playerIndex:
+      continue
+    if sim.players[otherIndex].lives <= 0:
+      continue
+    if distanceSquaredActor(
+      sim.players[playerIndex],
+      sim.players[otherIndex]
+    ) <= radiusSq:
+      return true
+  false
+
+proc mobHitDamage*(sim: SimServer, mob: Mob, playerIndex: int): int =
+  result = mob.mobDamage()
+  if mob.species.speciesPunishesIsolation() and
+      not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+    inc result
+
+proc applyMobHitStatus*(
+  sim: var SimServer,
+  mob: Mob,
+  playerIndex: int
+) =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].lives <= 0:
+    return
+  if mob.species.speciesAppliesSlow():
+    sim.players[playerIndex].slowTicks = max(
+      sim.players[playerIndex].slowTicks,
+      StatusSlowTicks
+    )
+    inc sim.scoreRevision
+  if mob.species.speciesAppliesChill():
+    sim.players[playerIndex].chillTicks = max(
+      sim.players[playerIndex].chillTicks,
+      StatusChillTicks
+    )
+    inc sim.scoreRevision
+  if mob.species.speciesAppliesPoison():
+    sim.players[playerIndex].poisonTicks = max(
+      sim.players[playerIndex].poisonTicks,
+      StatusPoisonTicks
+    )
+    inc sim.scoreRevision
+
 proc landmarkCenter(
   sim: SimServer,
   landmark: Landmark
@@ -3422,6 +3572,8 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     of LandmarkFinalGate:
       if not sim.bossDefeated:
         continue
+      if sim.relicShards < FinalGateRelicCost:
+        continue
       sim.landmarks[landmarkIndex].done = true
       inc sim.objectivesCompleted
       inc sim.scoreRevision
@@ -3582,6 +3734,37 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       else:
         sim.damagePlayer(playerIndex, 0, 0, 1)
 
+proc applyStatusEffects(sim: var SimServer) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+
+    if sim.players[playerIndex].poisonTicks > 0 and
+        sim.tickCount mod StatusPoisonIntervalTicks == 0:
+      if sim.players[playerIndex].carrying and
+          sim.players[playerIndex].carriedItem == CarryFood:
+        sim.clearCarry(playerIndex)
+        sim.players[playerIndex].poisonTicks = 0
+        inc sim.scoreRevision
+      elif sim.food > 0:
+        dec sim.food
+        sim.players[playerIndex].poisonTicks = 0
+        inc sim.scoreRevision
+      else:
+        sim.damagePlayerFromStatus(playerIndex, 1)
+
+    if playerIndex >= sim.players.len or sim.players[playerIndex].lives <= 0:
+      continue
+    if sim.players[playerIndex].slowTicks > 0:
+      dec sim.players[playerIndex].slowTicks
+      inc sim.scoreRevision
+    if sim.players[playerIndex].chillTicks > 0:
+      dec sim.players[playerIndex].chillTicks
+      inc sim.scoreRevision
+    if sim.players[playerIndex].poisonTicks > 0:
+      dec sim.players[playerIndex].poisonTicks
+      inc sim.scoreRevision
+
 proc updateMobs*(sim: var SimServer) =
   ## Updates mob chasing, telegraphed attacks, and wandering.
   if sim.players.len == 0:
@@ -3677,7 +3860,13 @@ proc updateMobs*(sim: var SimServer) =
           player.y,
           player.bounds
         ):
-          sim.damagePlayer(playerIndex, lunge.dx, lunge.dy, mob.mobDamage())
+          sim.damagePlayer(
+            playerIndex,
+            lunge.dx,
+            lunge.dy,
+            sim.mobHitDamage(mob, playerIndex)
+          )
+          sim.applyMobHitStatus(mob, playerIndex)
       inc mob.attackTicks
       if mob.attackTicks >= MobLungeTicks:
         mob.attackPhase = MobIdle
@@ -3827,6 +4016,13 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
       "CARRY NONE") & " E" & $elevation,
     0,
     lineY * 5,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    "STATUS " & player.statusLabel().toUpperAscii(),
+    0,
+    lineY * 6,
     2'u8
   )
 
@@ -4087,6 +4283,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.updatePlayerTimersAndFrontier()
   sim.collectPickups()
   sim.applyFoodAndWeatherSurvival()
+  sim.applyStatusEffects()
   sim.applyAttack()
   sim.activateNearbyLandmarks()
   sim.updateMobs()

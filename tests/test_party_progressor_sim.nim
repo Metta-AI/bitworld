@@ -491,6 +491,98 @@ proc testBiomeMonsterSpeciesBreadth() =
     doAssert biome.monsterSpeciesForBiome().len >= 4,
       biome.biomeLabel() & " should have multiple distinct monster species"
 
+proc addLungingSpecies(
+  sim: var SimServer,
+  species: MobSpecies,
+  playerIndex: int
+) =
+  let kind = species.speciesKind()
+  sim.mobs.add(Mob(
+    kind: kind,
+    species: species,
+    x: sim.players[playerIndex].x,
+    y: sim.players[playerIndex].y,
+    sprite: sim.mobSpriteFor(kind),
+    bounds: sim.mobBoundsFor(kind),
+    hp: mobMaxHp(kind, sim.players[playerIndex].x),
+    attackCooldown: 0,
+    attackPhase: MobLunge,
+    attackTicks: 0,
+    attackFacing: FaceRight
+  ))
+
+proc testMonsterTacticalHooksAndStatuses() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.bossDefeated = true
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.players[playerIndex].invulnTicks = 0
+
+  sim.addLungingSpecies(SpeciesMudSlime, playerIndex)
+  sim.updateMobs()
+  doAssert sim.players[playerIndex].slowTicks > 0
+  doAssert sim.players[playerIndex].statusSpeedPercent() < 100
+
+  sim.mobs.setLen(0)
+  sim.players[playerIndex].slowTicks = 0
+  sim.players[playerIndex].invulnTicks = 0
+  sim.addLungingSpecies(SpeciesDuneScorpion, playerIndex)
+  sim.updateMobs()
+  doAssert sim.players[playerIndex].poisonTicks > 0
+
+  sim.mobs.setLen(0)
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.players[playerIndex].invulnTicks = 30
+  sim.tickCount = StatusPoisonIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp - 1,
+    "poison should damage through ordinary hit invulnerability"
+
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.players[playerIndex].poisonTicks = StatusPoisonTicks
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  sim.tickCount = StatusPoisonIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].poisonTicks == 0
+  doAssert not sim.players[playerIndex].carrying,
+    "carried food should cleanse poison before poison damage lands"
+
+  sim.mobs.setLen(0)
+  sim.players[playerIndex].invulnTicks = 0
+  sim.applyMobHitStatus(Mob(species: SpeciesSnowWolf), playerIndex)
+  doAssert sim.players[playerIndex].chillTicks > 0
+  doAssert sim.players[playerIndex].statusSpeedPercent() < 100
+
+  let wraith = Mob(
+    kind: WraithMob,
+    species: SpeciesRuinWraith,
+    x: sim.players[playerIndex].x
+  )
+  doAssert sim.mobHitDamage(wraith, playerIndex) == 3,
+    "wraiths should punish isolated players with extra damage"
+
+  let allyIndex = sim.addPlayer("ally")
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.players[playerIndex].invulnTicks = 0
+  sim.players[allyIndex].x = sim.players[playerIndex].x + WorldTileSize
+  sim.players[allyIndex].y = sim.players[playerIndex].y
+  sim.players[allyIndex].bounds = sim.playerBoundsFor(sim.players[allyIndex])
+  doAssert sim.mobHitDamage(wraith, playerIndex) == 2,
+    "nearby allies should prevent the wraith isolation penalty"
+
+  let bat = Mob(kind: BatMob, species: SpeciesCaveBat)
+  doAssert bat.mobSightRange() == MobSightRadius * 2
+
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()
   roadSim.clearTerrain()
@@ -667,6 +759,25 @@ proc testBeaconAndBossScoring() =
     sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue +
       BossScoreValue
 
+  sim.landmarks.setLen(0)
+  sim.mobs.setLen(0)
+  sim.bossDefeated = true
+  sim.relicShards = FinalGateRelicCost - 1
+  sim.objectivesCompleted = 0
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkFinalGate,
+    hp: 1,
+    done: false
+  ))
+  sim.step([InputState()])
+  doAssert not sim.landmarks[0].done,
+    "final gate should require relic progress as well as boss defeat"
+  sim.relicShards = FinalGateRelicCost
+  sim.step([InputState()])
+  doAssert sim.landmarks[0].done
+
 proc testDpsCleaveSpecialDamagesNearbyMobs() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -747,6 +858,7 @@ testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testBiomeMonsterSpeciesBreadth()
+testMonsterTacticalHooksAndStatuses()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()

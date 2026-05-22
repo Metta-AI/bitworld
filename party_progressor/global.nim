@@ -1926,7 +1926,8 @@ proc addPlayerHud(
       (if player.carrying:
         "CARRY " & player.carriedItem.carryLabel().toUpperAscii()
       else:
-        "CARRY NONE") & " E" & $playerElevation
+        "CARRY NONE") & " E" & $playerElevation & " " &
+        player.statusLabel().toUpperAscii()
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
       statusLine4
   currentIds.add(CoinsHudObjectId)

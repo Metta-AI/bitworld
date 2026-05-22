@@ -296,6 +296,12 @@ The first full-game implementation pass includes:
   each biome now seeds multiple named local species so forest, swamp, desert,
   snow, cave, and ruins read like distinct dungeon ecology instead of palette
   swaps of the same few enemies.
+- Biome monster tactical hooks: slimes slow players, desert creatures poison,
+  snow threats chill, bats harass from farther away, and wraith/gate enemies
+  punish isolated players so grouping has real value.
+- Final-gate completion now requires both boss defeat and relic progress,
+  turning the end of the run into a visible expedition chain instead of a single
+  late fight.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, boss scoring, player viewport size, and biome-backed transparent
@@ -313,10 +319,8 @@ The first full-game implementation pass includes:
 - Tune food and snow-exposure pacing with multi-player runs.
 - Add player-observation screenshots to smoke tests so black-background
   regressions are visually obvious.
-- Give selected monster species small tactical hooks after the roster settles:
-  bats should harass, slimes should slow, wraiths should punish isolation,
-  scorpions should threaten exposed desert routes, and the gate titan should
-  feel like a true party check.
+- Add distinct visual/status telegraphs for poison, slow, chill, and isolation
+  danger so human players can read why a biome feels dangerous at a glance.
 - Expand bot targeting: gather resources when camps are unaffordable, prefer
   beacons after camps, avoid strong enemies when low on HP, and regroup near
   teammates.
