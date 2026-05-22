@@ -146,6 +146,9 @@ temporary fog safety when the party cannot stay grouped.
 Wood should have a field use in the swamp: carrying it through mud or shallow
 water lets a player lay a short plank bridge, trading the item for a local route
 repair instead of waiting for a full bridge waystation or camp shortcut.
+Stone should have a field use on ridges: carrying it across steep elevation
+lets a player cut a short set of steps, trading the item for a flatter local
+route through snow, cave, ruin, or other high ground.
 Camps cost wood and stone. Activating a camp should:
 
 - Mark expedition progress.
@@ -357,6 +360,9 @@ The first full-game implementation pass includes:
   swamp ground lays a short plank bridge, clears blockers/elevation on that
   crossing, consumes the carried wood, and gives bots a `SEL PLANK` response to
   visible mire pressure.
+- Carried stone now doubles as an elevation field tool: selecting while facing
+  steep ground cuts short steps through the ridge, clears blockers, lowers local
+  elevation, and gives bots a `SEL STEPS` response to visible route affordances.
 - Cave and ruin fog now disorients isolated unsheltered players with slow
   pressure, while nearby allies, completed lantern/ward waystations, and camps
   keep the party oriented.

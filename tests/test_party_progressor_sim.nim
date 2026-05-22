@@ -2001,6 +2001,63 @@ proc testCarriedWoodCanPlankSwampCrossings() =
     "already-bridged swamp ground should not consume wood as another plank"
   doAssert sim.carryHudLabel(playerIndex) == "wood sel drop"
 
+proc testCarriedStoneCanCutElevationSteps() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundSnow, BiomeSnow)
+
+  let
+    playerIndex = sim.addPlayer("stepper")
+    startTx = firstTileForBiome(BiomeSnow) + 2
+    startTy = WorldHeightTiles div 2
+  sim.players[playerIndex].x = startTx * WorldTileSize
+  sim.players[playerIndex].y = startTy * WorldTileSize
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryStone
+  for tx in startTx ..< startTx + StoneStepForwardTiles:
+    let index = tileIndex(tx, startTy)
+    sim.biomeKinds[index] = BiomeSnow
+    sim.groundKinds[index] = GroundSnow
+    sim.elevations[index] = 5
+    sim.tiles[index] = true
+
+  let beforeSpeed = sim.speedPercentAt(
+    startTx * WorldTileSize + WorldTileSize div 2,
+    startTy * WorldTileSize + WorldTileSize div 2
+  )
+  doAssert sim.playerCanLayStoneSteps(playerIndex),
+    "carried stone should advertise steps on steep elevation"
+  doAssert sim.carryHudLabel(playerIndex) == "stone sel steps"
+  sim.step([InputState(select: true)])
+  doAssert not sim.players[playerIndex].carrying,
+    "laying steps should consume the carried stone"
+  for tx in startTx ..< startTx + StoneStepForwardTiles:
+    let index = tileIndex(tx, startTy)
+    doAssert sim.tileGroundKind(tx, startTy) == GroundSnow,
+      "stone steps should preserve biome ground identity"
+    doAssert sim.elevations[index] <= StoneStepMaxElevation,
+      "stone steps should cut steep elevation into a traversable route"
+    doAssert not sim.tiles[index],
+      "stone steps should clear blocking props from the route"
+  let afterSpeed = sim.speedPercentAt(
+    startTx * WorldTileSize + WorldTileSize div 2,
+    startTy * WorldTileSize + WorldTileSize div 2
+  )
+  doAssert afterSpeed > beforeSpeed,
+    "stone steps should make steep elevation faster to cross"
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryStone
+  doAssert not sim.playerCanLayStoneSteps(playerIndex),
+    "already-cut elevation should not consume another carried stone"
+  doAssert sim.carryHudLabel(playerIndex) == "stone sel drop"
+
 proc testCampFortificationConsumesResourcesAndDefendsStagingArea() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3368,6 +3425,7 @@ testElevationCombatAdvantageAndBadges()
 testResourceHarvestAndCampActivation()
 testCarriedFoodCanBeEatenForRecovery()
 testCarriedWoodCanPlankSwampCrossings()
+testCarriedStoneCanCutElevationSteps()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
 testCampProvisioningConsumesFoodAndImprovesRecovery()
 testCarriedSuppliesUpgradeActivatedCamps()

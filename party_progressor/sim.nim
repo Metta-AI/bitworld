@@ -150,6 +150,8 @@ const
   SnowWarmthAllyRadius* = WorldTileSize * 3
   DesertShadeRadius* = WorldTileSize * 2
   SwampPlankForwardTiles* = 3
+  StoneStepForwardTiles* = 3
+  StoneStepMaxElevation* = 1
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
   CampShortcutHalfHeightTiles* = 1
@@ -3733,7 +3735,7 @@ proc dropCarry(sim: var SimServer, playerIndex: int): bool =
   sim.clearCarry(playerIndex)
   true
 
-proc swampPlankDirection(facing: Facing): tuple[dx, dy: int] =
+proc facingTileDirection(facing: Facing): tuple[dx, dy: int] =
   case facing
   of FaceLeft:
     (-1, 0)
@@ -3772,7 +3774,7 @@ proc playerCanLaySwampPlank*(
       0,
       WorldHeightTiles - 1
     )
-    dir = player.facing.swampPlankDirection()
+    dir = player.facing.facingTileDirection()
   for step in 0 ..< SwampPlankForwardTiles:
     if sim.tileAcceptsSwampPlank(
       centerTx + dir.dx * step,
@@ -3796,7 +3798,7 @@ proc laySwampPlank(sim: var SimServer, playerIndex: int): bool =
       0,
       WorldHeightTiles - 1
     )
-    dir = player.facing.swampPlankDirection()
+    dir = player.facing.facingTileDirection()
   var changed = false
   for step in 0 ..< SwampPlankForwardTiles:
     let
@@ -3814,12 +3816,81 @@ proc laySwampPlank(sim: var SimServer, playerIndex: int): bool =
   sim.clearCarry(playerIndex)
   true
 
+proc tileAcceptsStoneSteps(sim: SimServer, tx, ty: int): bool =
+  if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+    return false
+  sim.tileElevation(tx, ty) > StoneStepMaxElevation
+
+proc playerCanLayStoneSteps*(
+  sim: SimServer,
+  playerIndex: int
+): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.carrying or
+      player.carriedItem != CarryStone:
+    return false
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.facingTileDirection()
+  for step in 0 ..< StoneStepForwardTiles:
+    if sim.tileAcceptsStoneSteps(
+      centerTx + dir.dx * step,
+      centerTy + dir.dy * step
+    ):
+      return true
+  false
+
+proc layStoneSteps(sim: var SimServer, playerIndex: int): bool =
+  if not sim.playerCanLayStoneSteps(playerIndex):
+    return false
+  let player = sim.players[playerIndex]
+  let
+    centerTx = clamp(
+      boundsCenterX(player.x, player.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    centerTy = clamp(
+      boundsCenterY(player.y, player.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    dir = player.facing.facingTileDirection()
+  var changed = false
+  for step in 0 ..< StoneStepForwardTiles:
+    let
+      tx = centerTx + dir.dx * step
+      ty = centerTy + dir.dy * step
+    if not sim.tileAcceptsStoneSteps(tx, ty):
+      continue
+    let index = tileIndex(tx, ty)
+    sim.elevations[index] = min(sim.elevations[index], StoneStepMaxElevation)
+    sim.tiles[index] = false
+    changed = true
+  if not changed:
+    return false
+  sim.clearCarry(playerIndex)
+  true
+
 proc useCarryInField(sim: var SimServer, playerIndex: int): bool =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
   case sim.players[playerIndex].carriedItem
   of CarryWood:
     sim.laySwampPlank(playerIndex)
+  of CarryStone:
+    sim.layStoneSteps(playerIndex)
   else:
     false
 
@@ -4610,6 +4681,8 @@ proc carryHudLabel*(sim: SimServer, playerIndex: int): string =
       "sel camp"
     elif sim.playerCanLaySwampPlank(playerIndex):
       "sel plank"
+    elif sim.playerCanLayStoneSteps(playerIndex):
+      "sel steps"
     else:
       "sel drop"
   player.carriedItem.carryLabel() & " " & action

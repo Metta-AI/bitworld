@@ -191,12 +191,14 @@ type
     needsTerrainRoute: bool
     canEatCarriedFood: bool
     canLaySwampPlank: bool
+    canLayStoneSteps: bool
     carriedItem: CarryKind
     objectiveHint: string
     sharedWood: int
     sharedStone: int
     needWood: int
     needStone: int
+    currentElevation: int
     campResourceSearchTicks: int
     needsRole: bool
     hasRole: bool
@@ -810,6 +812,9 @@ proc readStatusHud(bot: var Bot, label: string) =
         bot.carriedItem == CarryFood and section.contains("sel eat")
       bot.canLaySwampPlank =
         bot.carriedItem == CarryWood and section.contains("sel plank")
+      bot.canLayStoneSteps =
+        bot.carriedItem == CarryStone and section.contains("sel steps")
+      bot.currentElevation = section.splitWhitespace().tokenNumber("e")
     elif section.startsWith("next "):
       bot.objectiveHint = section
       let tokens = section.splitWhitespace()
@@ -834,12 +839,14 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.needsTerrainRoute = false
   bot.canEatCarriedFood = false
   bot.canLaySwampPlank = false
+  bot.canLayStoneSteps = false
   bot.carriedItem = CarryNone
   bot.objectiveHint = ""
   bot.sharedWood = -1
   bot.sharedStone = -1
   bot.needWood = 0
   bot.needStone = 0
+  bot.currentElevation = 0
   bot.needsRole = false
   bot.hasRole = false
   bot.roleLabel = ""
@@ -1532,6 +1539,8 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 260
     elif bot.carriedItem == CarryStone:
       distance + 170
+    elif bot.currentElevation >= 3:
+      distance - 210
     else:
       distance - 120
   of TargetGold:
@@ -2010,6 +2019,9 @@ proc decideNextMask(bot: var Bot): uint8 =
     return ButtonSelect
   if bot.canLaySwampPlank and bot.needsTerrainRoute:
     bot.intent = "plank"
+    return ButtonSelect
+  if bot.canLayStoneSteps:
+    bot.intent = "steps"
     return ButtonSelect
 
   if bot.jiggleTicks > 0:
@@ -2766,6 +2778,26 @@ when defined(konradTargetSelfTest):
   doAssert bot.canLaySwampPlank
   bot.carriedItem = CarryNone
   bot.canLaySwampPlank = false
+  bot.readStatusHud("tank snow|snow w0 f0 s0 r0|b guard|carry stone sel steps")
+  doAssert bot.carriedItem == CarryStone
+  doAssert bot.canLayStoneSteps
+  doAssert bot.currentElevation == 0
+  bot.readStatusHud("tank snow|snow w0 f0 s0 r0|b guard|carry none e5")
+  doAssert bot.currentElevation == 5
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetStone,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetMob,
+    x: 40,
+    y: 0
+  ))
+  bot.carriedItem = CarryNone
+  bot.canLayStoneSteps = false
+  bot.currentElevation = 0
   bot.roleLabel = "tank"
   bot.abilityReady = true
   bot.attackCooldown = 0
