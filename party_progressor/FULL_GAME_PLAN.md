@@ -394,6 +394,9 @@ The first full-game implementation pass includes:
 - Rendered player-observation tests that composite sprite protocol packets and
   verify the 11 by 11 view stays opaque, biome-backed, and not black-filled
   across forest, plains, swamp, desert, snow, cave, and ruins.
+- Those rendered observation checks now save biome-specific PNG previews under
+  `out/party_progressor_observations/`, so viewport framing and black-background
+  regressions are visible during manual review.
 
 ## Broader Roadmap
 
@@ -404,8 +407,8 @@ The first full-game implementation pass includes:
   remain helpful without cluttering fights.
 - Tune food, provisioned-camp, snow-exposure, and desert-heat pacing with
   multi-player runs.
-- Expand player-observation smoke output into saved visual fixtures so
-  black-background regressions are obvious during manual review too.
+- Use the saved player-observation previews during real human/bot checks to
+  tune viewport framing and affordance density.
 - Tune attack-overlay density and placement once longer human/bot observation
   checks reveal where lunge effects clutter tight fights.
 - Continue bot targeting polish: tune longer-run expedition pacing now that

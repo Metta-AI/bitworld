@@ -1,12 +1,15 @@
 import
   std/[algorithm, json, os, sequtils, strutils, tables],
+  pixie,
   supersnappy,
   ../common/protocol,
   ../common/server,
   ../party_progressor/global,
   ../party_progressor/sim
 
-const RootDir = currentSourcePath.parentDir.parentDir
+const
+  RootDir = currentSourcePath.parentDir.parentDir
+  ObservationPreviewDir = RootDir / "out" / "party_progressor_observations"
 
 proc initPartyProgressorForTest(seed = 1234): SimServer =
   let previousDir = getCurrentDir()
@@ -447,6 +450,27 @@ proc observationAverageColor(
     result.g = result.g div count
     result.b = result.b div count
 
+proc observationImage(observation: RenderedObservation): Image =
+  result = newImage(observation.width, observation.height)
+  for y in 0 ..< observation.height:
+    for x in 0 ..< observation.width:
+      let offset = (y * observation.width + x) * 4
+      result[x, y] = rgba(
+        observation.pixels[offset],
+        observation.pixels[offset + 1],
+        observation.pixels[offset + 2],
+        observation.pixels[offset + 3]
+      )
+
+proc writeObservationPreview(
+  biome: BiomeKind,
+  observation: RenderedObservation
+): string =
+  result = ObservationPreviewDir /
+    ("player_observation_" & biome.biomeLabel() & ".png")
+  createDir(result.splitFile.dir)
+  observation.observationImage().writeFile(result)
+
 proc testPlayerDropsCarriedCoinsOnDeath() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -784,6 +808,13 @@ proc testRenderedPlayerObservationHasBiomeBackedPixels() =
         biome.biomeLabel()
     doAssert stats.colorBuckets >= 4,
       "rendered player observation should contain visible terrain/sprite detail"
+    let previewPath = writeObservationPreview(biome, observation)
+    doAssert fileExists(previewPath),
+      "rendered observation preview should be written for " &
+        biome.biomeLabel()
+    doAssert getFileSize(previewPath) > 0,
+      "rendered observation preview should not be empty for " &
+        biome.biomeLabel()
     averageBuckets[
       ((average.r div 24) shl 16) or
       ((average.g div 24) shl 8) or
