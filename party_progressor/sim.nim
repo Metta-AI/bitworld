@@ -222,6 +222,9 @@ const
   MobLungeStep* = 2
   PartyFocusTwoRoleDamageBonus* = 1
   PartyFocusThreeRoleDamageBonus* = 2
+  ElevationCombatThreshold* = 2
+  HighGroundDamageBonus* = 1
+  LowGroundDamagePenalty* = 1
   TribalAssetManifestName* = "tribalcog_assets.json"
 
 type
@@ -1678,6 +1681,34 @@ proc tileElevation*(sim: SimServer, tx, ty: int): int =
   if not inTileBounds(tx, ty) or sim.elevations.len == 0:
     return 0
   sim.elevations[tileIndex(tx, ty)]
+
+proc actorTileElevation*(sim: SimServer, actor: Actor): int =
+  sim.tileElevation(
+    clamp(boundsCenterX(actor.x, actor.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    clamp(boundsCenterY(actor.y, actor.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+
+proc mobTileElevation*(sim: SimServer, mob: Mob): int =
+  sim.tileElevation(
+    clamp(boundsCenterX(mob.x, mob.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    clamp(boundsCenterY(mob.y, mob.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+
+proc elevationDamageModifier*(attackerElevation, defenderElevation: int): int =
+  let delta = attackerElevation - defenderElevation
+  if delta >= ElevationCombatThreshold:
+    HighGroundDamageBonus
+  elif delta <= -ElevationCombatThreshold:
+    -LowGroundDamagePenalty
+  else:
+    0
+
+proc playerAttackDamage*(sim: SimServer, player: Actor, mob: Mob): int =
+  max(
+    1,
+    player.role.roleAttackDamage() +
+      elevationDamageModifier(sim.actorTileElevation(player), sim.mobTileElevation(mob))
+  )
 
 proc biomeAtPixel*(sim: SimServer, x: int): BiomeKind =
   let tx = clamp(x div WorldTileSize, 0, WorldWidthTiles - 1)
@@ -3896,6 +3927,14 @@ proc nearbyHealerIndex(
 
 proc mobHitDamage*(sim: SimServer, mob: Mob, playerIndex: int): int =
   result = mob.mobDamage()
+  if playerIndex >= 0 and playerIndex < sim.players.len:
+    result = max(
+      1,
+      result + elevationDamageModifier(
+        sim.mobTileElevation(mob),
+        sim.actorTileElevation(sim.players[playerIndex])
+      )
+    )
   if mob.species.speciesPunishesIsolation() and
       not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
     inc result
@@ -4752,7 +4791,7 @@ proc applyAttack(sim: var SimServer) =
         of FaceRight: dx = 4
         sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
         sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
-        let damage = player.role.roleAttackDamage() +
+        let damage = sim.playerAttackDamage(player, sim.mobs[mobIndex]) +
           sim.mobs[mobIndex].partyFocusDamageBonus(sim.players, sim.tickCount)
         mobHitCounts[mobIndex] += damage
         sim.players[playerIndex].damageDone += damage

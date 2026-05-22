@@ -369,6 +369,9 @@ The first full-game implementation pass includes:
   rally staging, food into meal shelters, stone into warded shelters, and gold
   into fortification, so carried supplies create explicit staging choices.
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
+- Elevation now affects combat as well as travel: attacks from meaningfully
+  higher ground hit harder, uphill attacks hit softer, and mobs show `HIGH` or
+  `LOW` badges relative to the selected player.
 - Biome-specific monster families: scorpions, slimes, yetis, bats, and wraiths
   join wolves, goblins, bears, and the boss.
 - A 32-species monster roster generated from the core creature silhouettes:

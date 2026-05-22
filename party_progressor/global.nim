@@ -40,7 +40,7 @@ const
   RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
   LandmarkShelterSpriteId = LandmarkSpriteBase + ord(high(LandmarkKind)) + 1
   StatusBadgeSpriteBase = 840
-  LandmarkPromptSpriteBase = 860
+  LandmarkPromptSpriteBase = 880
   LandmarkShelterPromptSpriteId =
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
   LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
@@ -50,8 +50,8 @@ const
   LandmarkRallyPromptSpriteId = LandmarkWardPromptSpriteId + 1
   LandmarkAidPromptSpriteId = LandmarkRallyPromptSpriteId + 1
   LandmarkWaystationPromptSpriteBase = LandmarkAidPromptSpriteId + 1
-  WeatherOverlaySpriteBase = 900
-  LandmarkDynamicPromptSpriteBase = 920
+  WeatherOverlaySpriteBase = 920
+  LandmarkDynamicPromptSpriteBase = 940
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -128,6 +128,8 @@ type
     StatusRoleDps
     StatusRoleHealer
     StatusPartyFocus
+    StatusHighGround
+    StatusLowGround
     StatusPoison
     StatusSlow
     StatusChill
@@ -1405,6 +1407,8 @@ proc statusBadgeLabel(kind: StatusBadgeKind): string =
   of StatusRoleDps: "DPS"
   of StatusRoleHealer: "HEAL"
   of StatusPartyFocus: "FOC"
+  of StatusHighGround: "HIGH"
+  of StatusLowGround: "LOW"
   of StatusPoison: "POI"
   of StatusSlow: "SLW"
   of StatusChill: "CHL"
@@ -1428,6 +1432,8 @@ proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
   of StatusRoleDps: 3'u8
   of StatusRoleHealer: 10'u8
   of StatusPartyFocus: 14'u8
+  of StatusHighGround: 8'u8
+  of StatusLowGround: 10'u8
   of StatusPoison: 13'u8
   of StatusSlow: 10'u8
   of StatusChill: 11'u8
@@ -1451,6 +1457,8 @@ proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
   of StatusRoleDps: "status role dps"
   of StatusRoleHealer: "status role healer"
   of StatusPartyFocus: "status party focus"
+  of StatusHighGround: "status high ground"
+  of StatusLowGround: "status low ground"
   of StatusPoison: "status poison"
   of StatusSlow: "status slow"
   of StatusChill: "status chill"
@@ -1502,6 +1510,14 @@ proc survivalStatusBadge(
     (true, StatusFog)
   of SurvivalSafe:
     (false, StatusCold)
+
+proc elevationStatusBadge(delta: int): tuple[found: bool, badge: StatusBadgeKind] =
+  if delta >= ElevationCombatThreshold:
+    (true, StatusHighGround)
+  elif delta <= -ElevationCombatThreshold:
+    (true, StatusLowGround)
+  else:
+    (false, StatusHighGround)
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
   if species.speciesAppliesPoison():
@@ -2416,6 +2432,7 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
+  let selectedPlayerIndex = sim.selectedPlayerIndex(selectedPlayerId)
 
   for i in 0 ..< sim.pickups.len:
     let
@@ -2520,6 +2537,13 @@ proc addWorldObjects(
     var badges: seq[StatusBadgeKind] = @[]
     if mob.partyFocusDamageBonus(sim.players, sim.tickCount) > 0:
       badges.add(StatusPartyFocus)
+    if selectedPlayerIndex >= 0:
+      let elevationBadge = elevationStatusBadge(
+        sim.mobTileElevation(mob) -
+          sim.actorTileElevation(sim.players[selectedPlayerIndex])
+      )
+      if elevationBadge.found:
+        badges.add(elevationBadge.badge)
     for badge in mob.species.threatBadges():
       badges.add(badge)
     for badgeIndex in 0 ..< badges.len:

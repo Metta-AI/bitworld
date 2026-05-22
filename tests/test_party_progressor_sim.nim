@@ -1606,6 +1606,116 @@ proc testElevationSlowsHighGround() =
   doAssert lowDistance > highDistance,
     "high elevation should slow travel even on the same ground"
 
+proc setupElevationCombatScenario(
+  playerElevation,
+  mobElevation: int
+): SimServer =
+  result = initPartyProgressorForTest()
+  result.clearTerrain()
+  result.mobs.setLen(0)
+  result.pickups.setLen(0)
+  result.landmarks.setLen(0)
+  result.fillGround(GroundGrass)
+  result.mobSpawnCooldown = 999
+
+  let playerIndex = result.addPlayer("player1")
+  result.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  result.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  result.players[playerIndex].facing = FaceRight
+  result.players[playerIndex].applyRole(RoleDps)
+  result.players[playerIndex].bounds =
+    result.playerBoundsFor(result.players[playerIndex])
+
+  let
+    hit = result.attackRect(result.players[playerIndex])
+    mobSprite = result.mobSpriteFor(BearMob)
+    mobBounds = result.mobBoundsFor(BearMob)
+  result.mobs.add(Mob(
+    kind: BearMob,
+    species: SpeciesBrownBear,
+    x: hit.x,
+    y: hit.y,
+    sprite: mobSprite,
+    bounds: mobBounds,
+    hp: 20,
+    attackCooldown: 99
+  ))
+
+  let
+    playerTx = clamp(
+      boundsCenterX(result.players[playerIndex].x, result.players[playerIndex].bounds) div
+        WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    playerTy = clamp(
+      boundsCenterY(result.players[playerIndex].y, result.players[playerIndex].bounds) div
+        WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+    mobTx = clamp(
+      boundsCenterX(result.mobs[0].x, result.mobs[0].bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    )
+    mobTy = clamp(
+      boundsCenterY(result.mobs[0].y, result.mobs[0].bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+  result.elevations[tileIndex(playerTx, playerTy)] = playerElevation
+  result.elevations[tileIndex(mobTx, mobTy)] = mobElevation
+
+proc testElevationCombatAdvantageAndBadges() =
+  var highPlayerSim = setupElevationCombatScenario(4, 1)
+  let playerIndex = 0
+  doAssert highPlayerSim.playerAttackDamage(
+    highPlayerSim.players[playerIndex],
+    highPlayerSim.mobs[0]
+  ) == 3 + HighGroundDamageBonus
+  let highPlayerHp = highPlayerSim.mobs[0].hp
+  highPlayerSim.step([InputState(attack: true)])
+  doAssert highPlayerSim.mobs[0].hp ==
+    highPlayerHp - (3 + HighGroundDamageBonus),
+    "attacking from high ground should increase player damage"
+
+  var lowPlayerSim = setupElevationCombatScenario(1, 4)
+  doAssert lowPlayerSim.playerAttackDamage(
+    lowPlayerSim.players[playerIndex],
+    lowPlayerSim.mobs[0]
+  ) == 3 - LowGroundDamagePenalty
+  let lowPlayerHp = lowPlayerSim.mobs[0].hp
+  lowPlayerSim.step([InputState(attack: true)])
+  doAssert lowPlayerSim.mobs[0].hp ==
+    lowPlayerHp - (3 - LowGroundDamagePenalty),
+    "attacking uphill should reduce player damage"
+
+  doAssert lowPlayerSim.mobHitDamage(lowPlayerSim.mobs[0], playerIndex) ==
+    2 + HighGroundDamageBonus,
+    "mobs should also hit harder from high ground"
+  doAssert highPlayerSim.mobHitDamage(highPlayerSim.mobs[0], playerIndex) ==
+    max(1, 2 - LowGroundDamagePenalty),
+    "mobs attacking uphill should hit softer"
+
+  var highMobState: PlayerViewerState
+  let highMobLabels = lowPlayerSim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    highMobState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status high ground" in highMobLabels,
+    "player observations should badge mobs with high-ground threat"
+
+  var lowMobState: PlayerViewerState
+  let lowMobLabels = highPlayerSim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    lowMobState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status low ground" in lowMobLabels,
+    "player observations should badge mobs with low-ground vulnerability"
+
 proc testResourceHarvestAndCampActivation() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -2874,6 +2984,7 @@ testChatPingsShowCompactStatusBadges()
 testSpriteProtocolShowsMonsterThreatTelegraphs()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
+testElevationCombatAdvantageAndBadges()
 testResourceHarvestAndCampActivation()
 testCarriedFoodCanBeEatenForRecovery()
 testCampFortificationConsumesResourcesAndDefendsStagingArea()
