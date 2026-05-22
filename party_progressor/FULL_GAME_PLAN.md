@@ -62,6 +62,9 @@ Terrain should remain tile-based and deterministic. Ground tiles and blocking
 props are separate concepts:
 
 - Ground tiles carry movement and visual identity.
+- Elevation is a separate deterministic tile layer: high ground is visibly
+  brighter in sprite observations and slows travel, making ridges and snow/cave
+  approaches tactically distinct without changing the control scheme.
 - Blocking props create obstacles and biome texture.
 - The center lane must remain traversable.
 - Deep water and equivalent blockers should never make the generated run
@@ -100,7 +103,11 @@ recoverable.
 Enemy families should be simple and readable:
 
 - Wolves: fast early pack pressure.
-- Camp defenders: objective and ruin pressure.
+- Scorpions: desert pressure around dunes and exposed routes.
+- Slimes: swamp/cave pressure where footing is already poor.
+- Yetis: snow-biome durable threats that compound cold pressure.
+- Bats: cave harassment.
+- Wraiths and camp defenders: objective and ruin pressure.
 - Bears: durable solitary threats.
 - Boss: final late-zone objective.
 
@@ -118,6 +125,10 @@ Resources are team-shared and deliberately small:
 - Relic shards.
 
 Resource nodes are interacted with through the existing attack/action language.
+Harvesting a resource also gives the attacker a single carried expedition item
+when their hands are empty, or drops that item on the ground if they are already
+carrying something. This borrows the readable one-item carry pattern from the
+dinner-party hosting game without turning Party Progressor into a crafting sim.
 Camps cost wood and stone. Activating a camp should:
 
 - Mark expedition progress.
@@ -276,6 +287,11 @@ The first full-game implementation pass includes:
 - DPS cleave on the `B` button, plus tank guard and healer pulse.
 - Food auto-healing and snow exposure pressure that consumes food before
   damaging players.
+- One-item expedition carrying for harvested wood, food, stone, and gold,
+  including visible held-item sprites and select-to-use/drop behavior.
+- Deterministic tile elevation with movement slowdown and sprite-map shading.
+- Biome-specific monster families: scorpions, slimes, yetis, bats, and wraiths
+  join wolves, goblins, bears, and the boss.
 - Konrad bot updates for world size, viewport parsing, and new sprite labels.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, boss scoring, player viewport size, and biome-backed transparent

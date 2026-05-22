@@ -31,6 +31,7 @@ const
   MobLeftSpriteId = 313
   TrollLeftSpriteId = 314
   BossLeftSpriteId = 315
+  MobVariantSpriteBase = 760
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
@@ -44,6 +45,7 @@ const
   HealthSprite10Base = 710
   PlayerHealthObjectBase = 10000
   MobHealthObjectBase = 11000
+  CarryObjectBase = 12000
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -569,6 +571,24 @@ proc buildSpriteProtocolRawSprite(
         sourceIndex
       )
 
+proc tintSpritePixels(
+  pixels: openArray[uint8],
+  tint: tuple[r, g, b, a: uint8],
+  strength = 88
+): seq[uint8] =
+  result = newSeq[uint8](pixels.len)
+  for i in 0 ..< pixels.len:
+    result[i] = pixels[i]
+  for i in countup(0, result.len - 1, 4):
+    if result[i + 3] == 0'u8:
+      continue
+    result[i] =
+      ((int(result[i]) * (100 - strength) + int(tint.r) * strength) div 100).uint8
+    result[i + 1] =
+      ((int(result[i + 1]) * (100 - strength) + int(tint.g) * strength) div 100).uint8
+    result[i + 2] =
+      ((int(result[i + 2]) * (100 - strength) + int(tint.b) * strength) div 100).uint8
+
 proc facedSize(sprite: RgbaSprite, facing: Facing): tuple[width, height: int] =
   ## Returns the rendered size for a facing rotation.
   case facing
@@ -653,6 +673,19 @@ proc fillMapTile(
         continue
       pixels.putRgbaPixel(py * WorldWidthPixels + px, color)
 
+proc shadeForElevation(
+  color: tuple[r, g, b, a: uint8],
+  elevation: int
+): tuple[r, g, b, a: uint8] =
+  ## Makes deterministic elevation visible under transparent terrain art.
+  let shade = clamp(elevation, 0, 5) * 12
+  (
+    r: clamp(int(color.r) + shade, 0, 255).uint8,
+    g: clamp(int(color.g) + shade, 0, 255).uint8,
+    b: clamp(int(color.b) + shade, 0, 255).uint8,
+    a: color.a
+  )
+
 proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
   ## Builds a full world map sprite from the described terrain cells.
   result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
@@ -664,7 +697,9 @@ proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
       result.fillMapTile(
         baseX,
         baseY,
-        sim.tileBiomeKind(tx, ty).biomeBackgroundRgbaColor()
+        sim.tileBiomeKind(tx, ty).biomeBackgroundRgbaColor().shadeForElevation(
+          sim.tileElevation(tx, ty)
+        )
       )
       result.blitMapSprite(
         sim.groundRgbaSprite(sim.tileGroundKind(tx, ty)),
@@ -1138,6 +1173,19 @@ proc landmarkSpriteId(kind: LandmarkKind): int =
   ## Returns the sprite id for one landmark kind.
   LandmarkSpriteBase + ord(kind)
 
+proc pickupSpriteId(kind: PickupKind): int =
+  ## Returns the protocol sprite id for one pickup kind.
+  case kind
+  of PickupCoin, PickupTankGear, PickupDpsGear:
+    CoinSpriteId
+  of PickupHeart, PickupHealerGear:
+    HeartSpriteId
+  of PickupWood, PickupFood, PickupStone, PickupGold:
+    kind.carryForPickup().landmarkForCarry().landmarkSpriteId()
+
+proc carryObjectId(player: Actor): int =
+  CarryObjectBase + player.id
+
 proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
@@ -1156,6 +1204,16 @@ proc mobSpriteId(mob: Mob): int =
     if flipLeft: TrollLeftSpriteId else: TrollSpriteId
   of BossMob, BearMob:
     if flipLeft: BossLeftSpriteId else: BossSpriteId
+  of ScorpionMob:
+    MobVariantSpriteBase + (if flipLeft: 1 else: 0)
+  of SlimeMob:
+    MobVariantSpriteBase + 2 + (if flipLeft: 1 else: 0)
+  of YetiMob:
+    MobVariantSpriteBase + 4 + (if flipLeft: 1 else: 0)
+  of BatMob:
+    MobVariantSpriteBase + 6 + (if flipLeft: 1 else: 0)
+  of WraithMob:
+    MobVariantSpriteBase + 8 + (if flipLeft: 1 else: 0)
 
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
   ## Returns the player index for a selected player id.
@@ -1343,6 +1401,63 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     bossLeft.pixels,
     "bear boss left"
   )
+  let variants = [
+    (
+      kind: ScorpionMob,
+      label: "scorpion",
+      base: mob,
+      left: mobLeft,
+      tint: (r: 225'u8, g: 176'u8, b: 66'u8, a: 255'u8)
+    ),
+    (
+      kind: SlimeMob,
+      label: "swamp slime",
+      base: troll,
+      left: trollLeft,
+      tint: (r: 78'u8, g: 196'u8, b: 126'u8, a: 255'u8)
+    ),
+    (
+      kind: YetiMob,
+      label: "yeti",
+      base: boss,
+      left: bossLeft,
+      tint: (r: 212'u8, g: 236'u8, b: 248'u8, a: 255'u8)
+    ),
+    (
+      kind: BatMob,
+      label: "cave bat",
+      base: mob,
+      left: mobLeft,
+      tint: (r: 112'u8, g: 90'u8, b: 158'u8, a: 255'u8)
+    ),
+    (
+      kind: WraithMob,
+      label: "ruin wraith",
+      base: troll,
+      left: trollLeft,
+      tint: (r: 122'u8, g: 126'u8, b: 144'u8, a: 255'u8)
+    )
+  ]
+  for variant in variants:
+    let
+      rightPixels = variant.base.pixels.tintSpritePixels(variant.tint)
+      leftPixels = variant.left.pixels.tintSpritePixels(variant.tint)
+      rightId = MobVariantSpriteBase + (ord(variant.kind) - ord(ScorpionMob)) * 2
+      leftId = rightId + 1
+    packet.addSprite(
+      rightId,
+      variant.base.width,
+      variant.base.height,
+      rightPixels,
+      variant.label
+    )
+    packet.addSprite(
+      leftId,
+      variant.left.width,
+      variant.left.height,
+      leftPixels,
+      variant.label & " left"
+    )
   packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
   packet.addSprite(
     HeartSpriteId,
@@ -1653,11 +1768,7 @@ proc addWorldObjects(
     let
       pickup = sim.pickups[i]
       objectId = PickupObjectBase + i
-      spriteId =
-        if pickup.kind in {PickupCoin, PickupTankGear, PickupDpsGear}:
-          CoinSpriteId
-        else:
-          HeartSpriteId
+      spriteId = pickup.kind.pickupSpriteId()
       sprite = sim.pickupRgbaSprite(pickup.kind)
     objects.addWorldSpriteObject(
       currentIds,
@@ -1744,6 +1855,25 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if player.carrying:
+      let
+        carriedLandmark = player.carriedItem.landmarkForCarry()
+        carriedSprite = sim.landmarkRgbaSprite(carriedLandmark)
+        carryX = player.x + playerSprite.width div 2 -
+          carriedSprite.width div 2 - cameraX
+        carryY = player.y - carriedSprite.height div 2 - 5 - cameraY
+      objects.addWorldSpriteObject(
+        currentIds,
+        player.carryObjectId(),
+        carryX,
+        carryY,
+        carriedLandmark.landmarkSpriteId(),
+        carriedSprite.width,
+        carriedSprite.height,
+        viewportWidth,
+        viewportHeight,
+        player.y - cameraY
+      )
     objects.addHealthObject(
       currentIds,
       player.playerHealthObjectId(),
@@ -1805,7 +1935,17 @@ proc addPlayerHud(
         "B " & ability & " CD" & $player.abilityCooldown
       else:
         "B " & ability
-    status = statusLine1 & "|" & statusLine2 & "|" & statusLine3
+    playerElevation = sim.tileElevation(
+      clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+      clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+    )
+    statusLine4 =
+      (if player.carrying:
+        "CARRY " & player.carriedItem.carryLabel().toUpperAscii()
+      else:
+        "CARRY NONE") & " E" & $playerElevation
+    status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
+      statusLine4
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -1851,7 +1991,7 @@ proc addPlayerHud(
   currentIds.add(StatusHudObjectId)
   if state.hudStatus != status:
     let statusText = sim.buildSpriteProtocolTextSprite(
-      [statusLine1, statusLine2, statusLine3],
+      [statusLine1, statusLine2, statusLine3, statusLine4],
       2'u8
     )
     packet.addSprite(

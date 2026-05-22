@@ -1,5 +1,5 @@
 import
-  std/[json, os, strutils, tables],
+  std/[json, os, sequtils, strutils, tables],
   supersnappy,
   ../common/protocol,
   ../common/server,
@@ -83,6 +83,10 @@ proc fillGround(sim: var SimServer, ground: GroundKind, biome = BiomeOrigin) =
     item = ground
   for item in sim.biomeKinds.mitems:
     item = biome
+  if sim.elevations.len != sim.groundKinds.len:
+    sim.elevations.setLen(sim.groundKinds.len)
+  for item in sim.elevations.mitems:
+    item = 0
 
 proc firstTileForBiome(biome: BiomeKind): int =
   for tx in 0 ..< WorldWidthTiles:
@@ -441,6 +445,11 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
   doAssert "role tank" in visibleLabels
   doAssert "role dps" in visibleLabels
   doAssert "role heal" in visibleLabels
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "scorpion")
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "swamp slime")
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "yeti")
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "cave bat")
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label == "ruin wraith")
 
   let tankGear = sim.firstPickup(PickupTankGear)
   sim.players[playerIndex].x = tankGear.x
@@ -494,6 +503,43 @@ proc testTerrainMovementModifiersAffectPlayers() =
   doAssert roadDistance > mudDistance,
     "road movement should outpace mud movement"
 
+proc testElevationSlowsHighGround() =
+  var lowSim = initPartyProgressorForTest()
+  lowSim.clearTerrain()
+  lowSim.mobs.setLen(0)
+  lowSim.pickups.setLen(0)
+  lowSim.fillGround(GroundGrass)
+  let lowPlayer = lowSim.addPlayer("low")
+  lowSim.players[lowPlayer].x = SafeZoneRightPixels + WorldTileSize
+  lowSim.players[lowPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  lowSim.players[lowPlayer].bounds =
+    lowSim.playerBoundsFor(lowSim.players[lowPlayer])
+  let startLowX = lowSim.players[lowPlayer].x
+  for _ in 0 ..< 30:
+    lowSim.step([InputState(right: true)])
+  let lowDistance = lowSim.players[lowPlayer].x - startLowX
+
+  var highSim = initPartyProgressorForTest()
+  highSim.clearTerrain()
+  highSim.mobs.setLen(0)
+  highSim.pickups.setLen(0)
+  highSim.fillGround(GroundGrass)
+  for item in highSim.elevations.mitems:
+    item = 5
+  let highPlayer = highSim.addPlayer("high")
+  highSim.players[highPlayer].x = SafeZoneRightPixels + WorldTileSize
+  highSim.players[highPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  highSim.players[highPlayer].bounds =
+    highSim.playerBoundsFor(highSim.players[highPlayer])
+  let startHighX = highSim.players[highPlayer].x
+  for _ in 0 ..< 30:
+    highSim.step([InputState(right: true)])
+  let highDistance = highSim.players[highPlayer].x - startHighX
+
+  doAssert elevationSpeedPercent(5) < elevationSpeedPercent(0)
+  doAssert lowDistance > highDistance,
+    "high elevation should slow travel even on the same ground"
+
 proc testResourceHarvestAndCampActivation() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -520,6 +566,20 @@ proc testResourceHarvestAndCampActivation() =
   doAssert sim.wood == 1
   doAssert sim.resourcesCollected == 1
   doAssert sim.landmarks[0].done
+  doAssert sim.players[playerIndex].carrying
+  doAssert sim.players[playerIndex].carriedItem == CarryWood
+
+  sim.step([InputState(select: true)])
+  doAssert not sim.players[playerIndex].carrying
+  doAssert sim.hasPickup(PickupWood),
+    "select should drop the carried expedition item as a floor pickup"
+  let woodPickup = sim.firstPickup(PickupWood)
+  sim.players[playerIndex].x = woodPickup.x
+  sim.players[playerIndex].y = woodPickup.y
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].carrying
+  doAssert sim.players[playerIndex].carriedItem == CarryWood
 
   sim.landmarks.setLen(0)
   sim.pickups.setLen(0)
@@ -643,6 +703,17 @@ proc testFoodAndColdSurvivalPressure() =
   doAssert sim.players[playerIndex].lives == 2,
     "snow exposure should damage players when no food is available"
 
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp - FoodHealAmount
+  sim.players[playerIndex].invulnTicks = 0
+  sim.food = 0
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  sim.step([InputState()])
+
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp,
+    "carried food should be usable as emergency rations"
+  doAssert not sim.players[playerIndex].carrying
+
 testSafeOriginAndReusableRoles()
 testFrontierScoreIsShared()
 testMobHpScalesByProgressZone()
@@ -654,6 +725,7 @@ testBiomeGroundsAndWeather()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testTerrainMovementModifiersAffectPlayers()
+testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()
 testDpsCleaveSpecialDamagesNearbyMobs()

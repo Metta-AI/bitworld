@@ -177,13 +177,16 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
       spriteId < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots:
     SpritePlayer
   elif spriteId == MobSpriteId or lower.startsWith("ghost") or
-      lower.startsWith("wolf") or lower in ["wood", "food", "stone", "gold"]:
+      lower.startsWith("wolf") or lower.startsWith("scorpion") or
+      lower.startsWith("cave bat") or
+      lower in ["wood", "food", "stone", "gold"]:
     SpriteMob
   elif spriteId == TrollSpriteId or lower.startsWith("troll") or
-      lower.startsWith("goblin"):
+      lower.startsWith("goblin") or lower.startsWith("swamp slime") or
+      lower.startsWith("ruin wraith"):
     SpriteTroll
   elif spriteId == BossSpriteId or lower.startsWith("pigman") or
-      lower.startsWith("bear"):
+      lower.startsWith("bear") or lower.startsWith("yeti"):
     SpriteBoss
   elif spriteId == CoinSpriteId or lower == "coin" or
       lower in ["camp", "beacon", "final gate"]:
