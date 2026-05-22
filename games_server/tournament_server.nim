@@ -30,12 +30,13 @@ const
   SharedReplayDirEnv = "GAMES_SERVER_REPLAY_DIR"
   GamesServerPortEnv = "TOURNAMENT_GAMES_SERVER_PORT"
   CoworldManifestName = "coworld_manifest.json"
-  CoplayerManifestName = "coplayer_manifest.json"
   GameContainerPort = 8080
   ContainerReplayDir = "/replays"
   CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
   CogameResultsUriEnv = "COGAME_RESULTS_URI"
   CogameConfigUriEnv = "COGAME_CONFIG_URI"
+  CogameHostEnv = "COGAME_HOST"
+  CogamePortEnv = "COGAME_PORT"
   CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   HealthPath = "/healthz"
   LogsPath = "/logs"
@@ -593,10 +594,6 @@ proc manifestEnv(node: JsonNode): seq[(string, string)] =
     if value.kind == JString:
       result.add((key, value.getStr()))
 
-proc defaultManifestName(path: string): string =
-  ## Returns a display name for a manifest path.
-  splitPath(parentDir(path)).tail
-
 proc readGameManifest(path: string): GameManifest =
   ## Reads one Coworld manifest summary from disk.
   try:
@@ -626,31 +623,6 @@ proc readGameManifest(path: string): GameManifest =
     raise newException(
       TournamentError,
       "could not read Coworld manifest " & path & ": " & e.msg
-    )
-
-proc readPlayerManifest(path: string): PlayerManifest =
-  ## Reads one CoPlayer manifest summary from disk.
-  try:
-    let
-      manifest = parseJson(readFile(path))
-      name = manifest.manifestString(
-        "name",
-        defaultManifestName(path)
-      )
-    result = PlayerManifest(
-      key: manifestKey(path),
-      path: path,
-      name: name,
-      author: manifest.manifestString("author", "-"),
-      imageUri: manifest.manifestString("image_uri", ""),
-      command: manifest.manifestRunCommand("coplayer.runnable"),
-      env: manifest.manifestEnv(),
-      games: manifest.manifestStringArray("games")
-    )
-  except CatchableError as e:
-    raise newException(
-      TournamentError,
-      "could not read player manifest " & path & ": " & e.msg
     )
 
 proc readCoworldPlayers(path: string): seq[PlayerManifest] =
@@ -693,19 +665,8 @@ proc readCoworldPlayers(path: string): seq[PlayerManifest] =
       "could not read Coworld players " & path & ": " & e.msg
     )
 
-proc addManifestPath(paths: var seq[string], path: string) =
-  ## Adds one manifest path if it exists and is not already present.
-  if path.len == 0 or not fileExists(path):
-    return
-  let key = manifestKey(path)
-  for existing in paths:
-    if manifestKey(existing) == key:
-      return
-  paths.add(path)
-
 proc listPlayerManifests(): seq[PlayerManifest] =
-  ## Scans game folders for CoPlayer manifests.
-  var paths: seq[string]
+  ## Scans Coworld manifests for embedded player entries.
   for dir in walkDirs(gamesRoot() / "*"):
     let coworldPath = dir / CoworldManifestName
     if fileExists(coworldPath):
@@ -714,11 +675,6 @@ proc listPlayerManifests(): seq[PlayerManifest] =
           result.add(player)
       except TournamentError as e:
         stderr.writeLine("Skipping Coworld players ", coworldPath, ": ", e.msg)
-    for path in walkFiles(dir / "players" / "*" / CoplayerManifestName):
-      paths.addManifestPath(path)
-  paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
-  for path in paths:
-    result.add(readPlayerManifest(path))
 
 proc supportsGame(player: PlayerManifest, gameName: string): bool =
   ## Returns true when one player manifest supports one game.
@@ -1237,7 +1193,11 @@ proc gameDockerArgs(
     "-e",
     CogameResultsUriEnv & "=file://" & ContainerReplayDir / run.results,
     "-e",
-    CogameConfigUriEnv & "=file://" & ContainerReplayDir / run.config
+    CogameConfigUriEnv & "=file://" & ContainerReplayDir / run.config,
+    "-e",
+    CogameHostEnv & "=0.0.0.0",
+    "-e",
+    CogamePortEnv & "=" & $GameContainerPort
   ]
   result.addAiEnvArgs()
   for (key, value) in game.env:
@@ -1879,7 +1839,7 @@ proc hostName(request: Request): string =
 
 proc gameUrl(request: Request, game: TournamentContainer): string =
   ## Builds a per-game browser URL for the tournament game's global page.
-  "http://" & request.hostName() & ":" & $game.port & "/clients/global"
+  "http://" & request.hostName() & ":" & $game.port & "/client/global"
 
 proc scoreUrl(request: Request, resultName: string): string =
   ## Builds a CoGame server score page URL for one score file.

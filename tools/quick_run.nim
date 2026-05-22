@@ -6,7 +6,6 @@ const
   GlobalClientSourceRelative = "clients" / "global_client.nim"
   PlayerClientSourceRelative = "clients" / "player_client.nim"
   CoworldManifestName = "coworld_manifest.json"
-  CoplayerManifestName = "coplayer_manifest.json"
   SpriteProtocolSpec = "sprite_v1.md"
   ServerReadyTimeoutMs = 5000
   PollIntervalMs = 100
@@ -65,12 +64,6 @@ type
     sourceRelative: string
     buildDir: string
     workDir: string
-
-  CoplayerManifest = object
-    key: string
-    path: string
-    name: string
-    games: seq[string]
 
   QuickRunConfig = object
     gameFolder: string
@@ -248,15 +241,6 @@ proc manifestString(
     node[key].kind == JString:
       return node[key].getStr()
   defaultValue
-
-proc manifestStringArray(node: JsonNode, key: string): seq[string] =
-  ## Reads one string array field from a manifest object.
-  if node.kind != JObject or not node.hasKey(key) or
-    node[key].kind != JArray:
-      return
-  for item in node[key].items:
-    if item.kind == JString:
-      result.add(item.getStr())
 
 proc manifestProtocol(node: JsonNode, key: string): string =
   ## Reads one protocol spec path from a Coworld manifest.
@@ -491,112 +475,12 @@ proc absoluteSourcePath(rootDir, source: string): string =
   else:
     absolutePath(rootDir / source)
 
-proc readCoplayerManifest(rootDir, path: string): CoplayerManifest =
-  ## Reads one CoPlayer manifest summary from disk.
-  let
-    node = loadManifestObject(path)
-    name = node.manifestString("name", path.parentDir().extractFilename())
-  result = CoplayerManifest(
-    key: relativeManifestKey(rootDir, path),
-    path: path,
-    name: name,
-    games: node.manifestStringArray("games")
-  )
-
-proc supportsGame(bot: CoplayerManifest, gameName: string): bool =
-  ## Returns true when a CoPlayer manifest supports one game.
-  let normalizedGame = gameName.normalizeManifestName()
-  for supported in bot.games:
-    if supported == gameName or
-      supported.normalizeManifestName() == normalizedGame:
-        return true
-
-proc listCoplayerManifests(
-  rootDir,
-  gameName: string
-): seq[CoplayerManifest] =
-  ## Scans repository folders for CoPlayer manifests.
-  for path in manifestPaths(rootDir, CoplayerManifestName):
-    let bot = readCoplayerManifest(rootDir, path)
-    if bot.supportsGame(gameName):
-      result.add(bot)
-
-proc botSourceFromManifest(
-  rootDir: string,
-  bot: CoplayerManifest
-): tuple[sourceRelative, workDir, label: string] =
-  ## Finds the local Nim source that belongs to one CoPlayer manifest.
-  let
-    manifestDir = bot.path.parentDir()
-    playersDir = manifestDir.parentDir()
-    folderName = manifestDir.extractFilename()
-  var sourceNames: seq[string]
-  if bot.name.len > 0:
-    sourceNames.add(bot.name)
-  if folderName.len > 0 and folderName notin sourceNames:
-    sourceNames.add(folderName)
-
-  for sourceName in sourceNames:
-    for sourcePath in [
-      manifestDir / (sourceName & ".nim"),
-      playersDir / (sourceName & ".nim")
-    ]:
-      if fileExists(sourcePath):
-        let sourceRelative = relativeManifestKey(rootDir, sourcePath)
-        return (
-          sourceRelative: sourceRelative,
-          workDir: sourcePath.parentDir(),
-          label: sourcePath.splitFile().name
-        )
-
-proc findCoplayerSource(
-  rootDir,
-  gameName,
-  source: string
-): tuple[found: bool, sourceRelative, workDir, label: string] =
-  ## Finds a local bot source by scanning CoPlayer manifests.
-  let cleanKey = source.cleanRelativePath()
-  if cleanKey.hasPathSeparator():
-    return
-  let normalizedKey = cleanKey.normalizeManifestName()
-  for bot in listCoplayerManifests(rootDir, gameName):
-    let
-      botDir = bot.key.parentDir()
-      botFolder = botDir.extractFilename()
-    if bot.name == cleanKey or
-      bot.key == cleanKey or
-      botDir == cleanKey or
-      bot.name.normalizeManifestName() == normalizedKey or
-      botFolder.normalizeManifestName() == normalizedKey:
-        let sourceInfo = botSourceFromManifest(rootDir, bot)
-        if sourceInfo.sourceRelative.len == 0:
-          raise newException(
-            ValueError,
-            "CoPlayer manifest has no local Nim source: " & bot.key
-          )
-        return (
-          found: true,
-          sourceRelative: sourceInfo.sourceRelative,
-          workDir: sourceInfo.workDir,
-          label: sourceInfo.label
-        )
-
 proc ensureBotFile(
   rootDir,
   gameFolder,
-  gameName,
   source: string
 ): tuple[sourceRelative, buildDir, workDir, label: string] =
   ## Validates and describes one bot source file.
-  let manifestBot = findCoplayerSource(rootDir, gameName, source)
-  if manifestBot.found:
-    return (
-      sourceRelative: manifestBot.sourceRelative,
-      buildDir: rootDir,
-      workDir: manifestBot.workDir,
-      label: manifestBot.label
-    )
-
   for sourceRelative in botCandidates(gameFolder, source):
     let sourcePath = absoluteSourcePath(rootDir, sourceRelative)
     if fileExists(sourcePath):
@@ -1353,7 +1237,6 @@ proc runQuickRun(input: QuickRunConfig): int =
     let bot = ensureBotFile(
       game.buildDir,
       game.botSearchDir,
-      game.name,
       group.source
     )
     botLaunches.add(BotLaunch(

@@ -28,8 +28,7 @@ const
   DefaultRegistry = ""
   DefaultPlatforms = "linux/amd64,linux/arm64"
   CoworldManifestName = "coworld_manifest.json"
-  CoplayerManifestName = "coplayer_manifest.json"
-  ManifestNames = [CoworldManifestName, CoplayerManifestName]
+  ManifestNames = [CoworldManifestName]
   IgnoredDirs = [
     ".git",
     ".github",
@@ -170,18 +169,6 @@ proc nodeString(node: JsonNode, key: string): string =
   else:
     ""
 
-proc manifestStringArray(path, key: string): seq[string] =
-  ## Reads one string array field from a JSON manifest.
-  if path.len == 0:
-    return
-  let node = parseFile(path)
-  if node.kind != JObject or not node.hasKey(key) or
-      node[key].kind != JArray:
-    return
-  for item in node[key]:
-    if item.kind == JString:
-      result.add(item.getStr())
-
 proc coworldPlayerImage(
   manifestPath,
   dirName: string
@@ -196,7 +183,7 @@ proc coworldPlayerImage(
     return
   let
     cleanDir = normalizeTargetName(dirName)
-    genericPlayerDirs = ["ai", "bot", "bots", "coplayer", "player", "players"]
+    genericPlayerDirs = ["ai", "bot", "bots", "player", "players"]
   var
     first: JsonNode
     matched: JsonNode
@@ -276,9 +263,6 @@ proc addDockerFile(
     manifestImageUri = playerImage.imageUri
     if gameName.len > 0:
       games.add(gameName)
-  elif manifest.len > 0 and
-      manifest.extractFilename() == CoplayerManifestName:
-    games = manifestStringArray(manifest, "games")
   if manifestName.len == 0 or manifestImageUri.len == 0:
     return
   var targetName =

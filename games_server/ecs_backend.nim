@@ -24,6 +24,8 @@ const
   ConfigUriEnv = "COGAME_CONFIG_URI"
   ResultsUriEnv = "COGAME_RESULTS_URI"
   SaveReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
+  HostEnv = "COGAME_HOST"
+  PortEnv = "COGAME_PORT"
   ReplayServerEnv = "COGAME_REPLAY_SERVER"
   PlayerWebSocketPath = "/player"
 
@@ -297,8 +299,6 @@ proc ecsCreateGame*(
   gameEnv: seq[tuple[name, value: string]],
   configUri: string,
   saveReplay: bool,
-  uploadUrl = "",
-  uploadToken = "",
 ): tuple[taskArn, publicIp, privateIp: string] =
   let taskDefArn = ensureGameTaskDef(image)
   let
@@ -316,6 +316,8 @@ proc ecsCreateGame*(
   var env: seq[tuple[name, value: string]]
   for item in gameEnv:
     env.add(item)
+  env.add((name: HostEnv, value: "0.0.0.0"))
+  env.add((name: PortEnv, value: $GameContainerPort))
   env.add((name: ConfigUriEnv, value: configUri))
   for envName in ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]:
     let val = getEnv(envName)
@@ -325,9 +327,6 @@ proc ecsCreateGame*(
     env.add((name: SaveReplayUriEnv, value: "file:///tmp/" & replay))
     let scores = replay.replace(".bitreplay", ".scores.json")
     env.add((name: ResultsUriEnv, value: "file:///tmp/" & scores))
-  if uploadUrl.len > 0:
-    env.add((name: "REPLAY_UPLOAD_URL", value: uploadUrl))
-    env.add((name: "REPLAY_UPLOAD_TOKEN", value: uploadToken))
 
   echo "ECS: launching game task..."
   let taskResp = runTask(
@@ -449,6 +448,8 @@ proc ecsCreateReplayGame*(
   var env = gameEnv
   for item in extraEnv:
     env.add(item)
+  env.add((name: HostEnv, value: "0.0.0.0"))
+  env.add((name: PortEnv, value: $GameContainerPort))
   env.add((name: ReplayServerEnv, value: "1"))
 
   echo "ECS: launching replay task..."

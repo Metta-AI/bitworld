@@ -16,13 +16,15 @@ const
   PlayerPath = "/player"
   GlobalPath = "/global"
   AdminPath = "/admin"
-  ReplayClientPath = "/clients/replay"
+  ReplayClientPath = "/client/replay"
   ReplaySocketPath = "/replay"
   ConfigEnv = "COGAME_CONFIG_URI"
   ResultsEnv = "COGAME_RESULTS_URI"
   ReplaySaveEnv = "COGAME_SAVE_REPLAY_URI"
   ReplayLoadEnv = "COGAME_LOAD_REPLAY_URI"
   ReplayServerEnv = "COGAME_REPLAY_SERVER"
+  HostEnv = "COGAME_HOST"
+  PortEnv = "COGAME_PORT"
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   CertPrefix = "coworld-cert-"
@@ -1340,6 +1342,8 @@ proc gameContainerArgs(
   result = @[
     "--name", name,
     "-p", $port & ":" & $spec.containerPort,
+    "-e", HostEnv & "=0.0.0.0",
+    "-e", PortEnv & "=" & $spec.containerPort,
     "-e", ConfigEnv & "=file://" & ContainerWorkDir & "/config.json",
     "-e", ResultsEnv & "=file://" & ContainerWorkDir & "/results.json",
     "-e", ReplaySaveEnv & "=file://" & ContainerWorkDir & "/replay.json",
@@ -1363,6 +1367,8 @@ proc replayContainerArgs(
   result = @[
     "--name", name,
     "-p", $port & ":" & $spec.containerPort,
+    "-e", HostEnv & "=0.0.0.0",
+    "-e", PortEnv & "=" & $spec.containerPort,
     "-e", ReplayLoadEnv & "=file://" & ContainerWorkDir & "/replay.json",
     "-e", ReplayServerEnv & "=1",
     "-v",

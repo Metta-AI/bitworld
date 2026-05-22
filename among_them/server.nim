@@ -1,7 +1,7 @@
 import
   std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
   curly, mummy,
-  bitworld/clients, protocol, sim, global, profile, replays, game_log
+  bitworld/clients, bitworld/cogame_runtime, protocol, sim, global, profile, replays, game_log
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -397,7 +397,7 @@ proc replayRequestUri(request: Request): string =
 
 proc replayRequestUriOrPending(request: Request): tuple[uri: string, loaded: bool] =
   ## Returns the websocket URI, falling back to the URI captured when serving
-  ## /clients/replay. Kubernetes service-proxy websocket upgrades do not
+  ## /client/replay. Kubernetes service-proxy websocket upgrades do not
   ## preserve query params, so the preceding client HTML request is the durable
   ## place to capture the artifact URI.
   result.uri = request.replayRequestUri()
@@ -672,35 +672,24 @@ proc buildRewardPacket(sim: SimServer): string {.measure.} =
       result.addStatLine("vote_skip", identity, account.voteSkip)
       result.addStatLine("vote_timeout", identity, account.voteTimeout)
 
-let uploadPool = newCurlPool(1)
-
 proc uploadReplayFiles(replayPath, scoresPath: string) =
-  ## Uploads replay and scores files to games_server if configured.
-  let
-    uploadUrl = getEnv("REPLAY_UPLOAD_URL")
-    uploadToken = getEnv("REPLAY_UPLOAD_TOKEN")
-  if uploadUrl.len == 0 or uploadToken.len == 0:
-    return
-  let headers = @[
-    ("Authorization", "Bearer " & uploadToken),
-    ("Content-Type", "application/octet-stream"),
-  ]
+  ## Writes replay and scores files to configured Coworld artifact URIs.
   if replayPath.len > 0 and fileExists(replayPath):
-    let resp = uploadPool.post(uploadUrl, headers, readFile(replayPath))
-    if resp.code != 200:
-      echo "ERROR: replay upload failed: ", resp.code, " ", resp.body
-      return
-    echo "Replay uploaded: ", replayPath
+    writeCogameFileToUri(
+      getEnv(CogameSaveReplayUriEnv),
+      replayPath,
+      "application/octet-stream",
+      CogameSaveReplayUriEnv,
+      cogameHttpMethod(CogameSaveReplayMethodEnv)
+    )
   if scoresPath.len > 0 and fileExists(scoresPath):
-    let scoreHeaders = @[
-      ("Authorization", "Bearer " & uploadToken),
-      ("Content-Type", "application/json"),
-    ]
-    let resp = uploadPool.post(uploadUrl & "/scores", scoreHeaders, readFile(scoresPath))
-    if resp.code != 200:
-      echo "ERROR: scores upload failed: ", resp.code, " ", resp.body
-      return
-    echo "Scores uploaded: ", scoresPath
+    writeCogameFileToUri(
+      getEnv(CogameResultsUriEnv),
+      scoresPath,
+      "application/json",
+      CogameResultsUriEnv,
+      cogameHttpMethod(CogameResultsMethodEnv)
+    )
 
 proc runServerLoop*(
   host = DefaultHost,

@@ -5,14 +5,14 @@ import
 
 when isMainModule:
   var
-    address = DefaultHost
-    port = DefaultPort
+    address = cogameHost(DefaultHost)
+    port = cogamePort(DefaultPort)
     configJson = ""
     configPath = pathFromCogameEnv(CogameConfigUriEnv)
     mapPath = ""
-    saveReplayPath = pathFromCogameEnv(CogameSaveReplayUriEnv)
+    saveReplayPath = outputPathFromCogameEnv(CogameSaveReplayUriEnv, "replay.bitreplay")
     loadReplayPath = pathFromCogameEnv(CogameLoadReplayUriEnv)
-    saveScoresPath = pathFromCogameEnv(CogameResultsUriEnv)
+    saveScoresPath = outputPathFromCogameEnv(CogameResultsUriEnv, "scores.json")
     logUri = getEnv("COGAME_LOG_URI")
     replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
     messageCooldown = -1

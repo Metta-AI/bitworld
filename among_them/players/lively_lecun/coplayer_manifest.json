@@ -1,9 +1,0 @@
-{
-  "author": "treeform@softmax.com",
-  "name": "lively_lecun",
-  "image_uri": "ghcr.io/treeform/bitworld-lively-lecun:latest",
-  "games": [
-    "among_them"
-  ],
-  "run": ["/bin/lively_lecun"]
-}

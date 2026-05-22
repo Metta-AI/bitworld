@@ -24,8 +24,8 @@ Here is an example of what a Game Validator will check:
 * Read the `coworld_manifest.json` file from the Docker container
 * Read the config from `COGAME_CONFIG_URI`
 * Serve `GET /healthz`
-* Serve player clients at `GET /clients/player?...` and player websockets at `WEBSOCKET /player?...`
-* Serve a live viewer at `GET /clients/global` and `WEBSOCKET /global`
+* Serve player clients at `GET /client/player?...` and player websockets at `WEBSOCKET /player?...`
+* Serve a live viewer at `GET /client/global` and `WEBSOCKET /global`
 * Write final results to `COGAME_RESULTS_URI`
 * Write a replay artifact to `COGAME_SAVE_REPLAY_URI`
 * Serve replay viewers when started with `COGAME_REPLAY_SERVER=1`
