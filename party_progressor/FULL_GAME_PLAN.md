@@ -649,6 +649,11 @@ The first full-game implementation pass includes:
 - Konrad's push-path unstuck now makes a pure vertical sidestep when a detour is
   active, so bots can slide around blocked right edges instead of pressing into
   them forever.
+- Konrad recovery pacing now treats completed shelters, shade stops, and loose
+  carried-supply drops as bounded local affordances: after a short close-range
+  dwell on a non-resolving stop, the bot temporarily releases that target and
+  resumes the expedition push or nearby objective chain instead of ending a
+  long run in a shelter or floor-drop orbit.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.

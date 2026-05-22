@@ -29,6 +29,9 @@ const
   ActivationStallDistance = 18
   CampActivationStallTicks = 48
   CampResourceSearchTicks = TargetFps * 6
+  ShelterRecoveryStallTicks = TargetFps * 2
+  ShelterRecoverySkipTicks = TargetFps * 5
+  LoosePickupStallTicks = 48
   ShelterReturnRadius = WorldTileSize * 4
   ObstaclePad = 8
   PathLookaheadCells = 4
@@ -36,6 +39,7 @@ const
   StuckFrameThreshold = 14
   JiggleDuration = 12
   SkipTargetTicks = 72
+  LoosePickupSkipTicks = SkipTargetTicks
   ExploreStep = 17
   RoleLabelToGearOffset = WorldTileSize div 2
   OpportunisticLootRadius = WorldTileSize * 3
@@ -1876,6 +1880,18 @@ proc rememberTarget(bot: var Bot, target: Target) =
     bot.campResourceSearchTicks = CampResourceSearchTicks
     bot.targetCloseTicks = 0
     bot.hasExploreGoal = false
+  elif target.kind in {TargetShelter, TargetShade} and
+      bot.targetCloseTicks >= ShelterRecoveryStallTicks:
+    bot.skipTargetId = target.objectId
+    bot.skipTicks = ShelterRecoverySkipTicks
+    bot.targetCloseTicks = 0
+    bot.hasExploreGoal = false
+  elif target.isLooseCarryResourceTarget() and
+      bot.targetCloseTicks >= LoosePickupStallTicks:
+    bot.skipTargetId = target.objectId
+    bot.skipTicks = LoosePickupSkipTicks
+    bot.targetCloseTicks = 0
+    bot.hasExploreGoal = false
 
 proc updateTargetResult(
   bot: var Bot,
@@ -3366,6 +3382,69 @@ when defined(konradTargetSelfTest):
     x: 84,
     y: 304
   ))
+
+  bot.skipTargetId = -1
+  bot.skipTicks = 0
+  bot.currentTargetId = 100
+  bot.currentTargetKind = TargetShelter
+  bot.targetCloseTicks = 0
+  bot.hasExploreGoal = false
+  bot.lowHealth = true
+  for _ in 0 .. ShelterRecoveryStallTicks:
+    bot.rememberTarget(Target(
+      found: true,
+      kind: TargetShelter,
+      objectId: 100,
+      x: 84,
+      y: 304,
+      label: "shelter"
+    ))
+  doAssert bot.skipTargetId == 100
+  doAssert bot.skipTicks == ShelterRecoverySkipTicks
+  blocked.resetBlocked()
+  pickups = @[Target(
+    found: true,
+    kind: TargetShelter,
+    objectId: 100,
+    x: 84,
+    y: 304,
+    label: "shelter"
+  )]
+  allies.setLen(0)
+  mobs.setLen(0)
+  let shelterReleasedChoice = bot.chooseTarget(blocked, pickups, allies, mobs)
+  doAssert shelterReleasedChoice.kind == TargetExplore
+  bot.lowHealth = false
+  bot.skipTargetId = -1
+  bot.skipTicks = 0
+
+  bot.currentTargetId = PickupObjectBase + 101
+  bot.currentTargetKind = TargetFood
+  bot.targetCloseTicks = 0
+  bot.hasExploreGoal = false
+  for _ in 0 .. LoosePickupStallTicks:
+    bot.rememberTarget(Target(
+      found: true,
+      kind: TargetFood,
+      objectId: PickupObjectBase + 101,
+      x: 84,
+      y: 304,
+      label: "food"
+    ))
+  doAssert bot.skipTargetId == PickupObjectBase + 101
+  doAssert bot.skipTicks == LoosePickupSkipTicks
+  pickups = @[Target(
+    found: true,
+    kind: TargetFood,
+    objectId: PickupObjectBase + 101,
+    x: 84,
+    y: 304,
+    label: "food"
+  )]
+  let looseFoodReleasedChoice = bot.chooseTarget(blocked, pickups, allies, mobs)
+  doAssert looseFoodReleasedChoice.kind == TargetExplore
+  bot.skipTargetId = -1
+  bot.skipTicks = 0
 
   bot.havePlayerSample = true
   bot.previousPlayerX = 10
