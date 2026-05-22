@@ -583,6 +583,64 @@ proc testMonsterTacticalHooksAndStatuses() =
   let bat = Mob(kind: BatMob, species: SpeciesCaveBat)
   doAssert bat.mobSightRange() == MobSightRadius * 2
 
+proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].poisonTicks = StatusPoisonTicks
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.players[playerIndex].chillTicks = StatusChillTicks
+
+  sim.mobs.add(Mob(
+    kind: WraithMob,
+    species: SpeciesRuinWraith,
+    x: sim.players[playerIndex].x + WorldTileSize,
+    y: sim.players[playerIndex].y,
+    sprite: sim.mobSpriteFor(WraithMob),
+    bounds: sim.mobBoundsFor(WraithMob),
+    hp: mobMaxHp(WraithMob, sim.players[playerIndex].x),
+    attackCooldown: 99
+  ))
+  doAssert sim.playerIsolationThreatened(playerIndex)
+
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 1,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkFinalGate,
+    hp: 1,
+    done: false
+  ))
+
+  var nextState: PlayerViewerState
+  let packet = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  )
+  let labels = packet.parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "status poison" in labels
+  doAssert "status slow" in labels
+  doAssert "status chill" in labels
+  doAssert "status alone" in labels
+  doAssert "prompt camp w2 s1" in labels
+  doAssert "prompt gate boss r3" in labels
+
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()
   roadSim.clearTerrain()
@@ -859,6 +917,7 @@ testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
+testSpriteProtocolShowsStatusAndObjectiveAffordances()
 testTerrainMovementModifiersAffectPlayers()
 testElevationSlowsHighGround()
 testResourceHarvestAndCampActivation()

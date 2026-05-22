@@ -35,6 +35,8 @@ const
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
+  StatusBadgeSpriteBase = 840
+  LandmarkPromptSpriteBase = 860
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -45,6 +47,9 @@ const
   PlayerHealthObjectBase = 10000
   MobHealthObjectBase = 11000
   CarryObjectBase = 12000
+  StatusBadgeObjectBase = 13000
+  LandmarkPromptObjectBase = 14000
+  StatusBadgeSlots = 4
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -98,6 +103,12 @@ const
 var TransportSheet: Sprite
 
 type
+  StatusBadgeKind = enum
+    StatusPoison
+    StatusSlow
+    StatusChill
+    StatusAlone
+
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
@@ -1160,6 +1171,33 @@ proc roleGearSpriteId(kind: PickupKind): int =
 proc roleGearObjectId(pickupIndex: int): int =
   RoleLabelObjectBase + pickupIndex
 
+proc statusBadgeSpriteId(kind: StatusBadgeKind): int =
+  StatusBadgeSpriteBase + ord(kind)
+
+proc statusBadgeObjectId(player: Actor, index: int): int =
+  StatusBadgeObjectBase + player.id * StatusBadgeSlots + index
+
+proc statusBadgeLabel(kind: StatusBadgeKind): string =
+  case kind
+  of StatusPoison: "POI"
+  of StatusSlow: "SLW"
+  of StatusChill: "CHL"
+  of StatusAlone: "ALN"
+
+proc statusBadgeColor(kind: StatusBadgeKind): uint8 =
+  case kind
+  of StatusPoison: 13'u8
+  of StatusSlow: 10'u8
+  of StatusChill: 11'u8
+  of StatusAlone: 8'u8
+
+proc statusBadgeSpriteLabel(kind: StatusBadgeKind): string =
+  case kind
+  of StatusPoison: "status poison"
+  of StatusSlow: "status slow"
+  of StatusChill: "status chill"
+  of StatusAlone: "status alone"
+
 proc swooshSpriteId(form: PlayerForm, facing: Facing): int =
   ## Returns the sprite id for one adventurer attack swish facing.
   SwooshSpriteBase + ord(form) * 4 + ord(facing)
@@ -1196,6 +1234,29 @@ proc terrainObjectId(index: int): int =
 proc landmarkObjectId(index: int): int =
   ## Returns the object id for one landmark instance.
   LandmarkObjectBase + index
+
+proc landmarkPromptSpriteId(kind: LandmarkKind): int =
+  LandmarkPromptSpriteBase + ord(kind)
+
+proc landmarkPromptObjectId(index: int): int =
+  LandmarkPromptObjectBase + index
+
+proc landmarkPromptLabel(kind: LandmarkKind): string =
+  case kind
+  of LandmarkWood:
+    "WOOD"
+  of LandmarkFood:
+    "FOOD"
+  of LandmarkStone:
+    "STONE"
+  of LandmarkGold:
+    "GOLD"
+  of LandmarkCamp:
+    "CAMP W" & $CampWoodCost & " S" & $CampStoneCost
+  of LandmarkBeacon:
+    "RELIC"
+  of LandmarkFinalGate:
+    "GATE BOSS R" & $FinalGateRelicCost
 
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
@@ -1357,6 +1418,21 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       "role " & label.toLowerAscii()
     )
 
+  for kind in StatusBadgeKind:
+    let
+      label = kind.statusBadgeLabel()
+      text = sim.buildSpriteProtocolTextSprite(
+        [label],
+        kind.statusBadgeColor()
+      )
+    packet.addSprite(
+      kind.statusBadgeSpriteId(),
+      text.width,
+      text.height,
+      text.pixels,
+      kind.statusBadgeSpriteLabel()
+    )
+
   let
     mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
     mobLeft = buildSpriteProtocolRawSprite(sim.rgbaMobSprite, true)
@@ -1484,6 +1560,16 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       landmark.height,
       landmark.pixels,
       kind.landmarkLabel()
+    )
+    let
+      prompt = kind.landmarkPromptLabel()
+      promptSprite = sim.buildSpriteProtocolTextSprite([prompt], 2'u8)
+    packet.addSprite(
+      kind.landmarkPromptSpriteId(),
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
     )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
@@ -1718,6 +1804,23 @@ proc addLandmarkObjects(
       viewportWidth,
       viewportHeight
     )
+    let
+      prompt = landmark.kind.landmarkPromptLabel()
+      promptWidth = sim.textFont.textWidth(prompt)
+      promptHeight = sim.textFont.height
+    objects.addWorldSpriteObject(
+      currentIds,
+      i.landmarkPromptObjectId(),
+      landmark.landmarkWorldX() - cameraX -
+        max(0, (promptWidth - sprite.width) div 2),
+      landmark.landmarkWorldY() - cameraY - promptHeight - 3,
+      landmark.kind.landmarkPromptSpriteId(),
+      promptWidth,
+      promptHeight,
+      viewportWidth,
+      viewportHeight,
+      landmark.landmarkWorldY() - cameraY - 1
+    )
 
 proc addWorldObjects(
   sim: SimServer,
@@ -1856,6 +1959,33 @@ proc addWorldObjects(
         viewportWidth,
         viewportHeight,
         player.y - cameraY
+      )
+    var badges: seq[StatusBadgeKind] = @[]
+    if player.poisonTicks > 0:
+      badges.add(StatusPoison)
+    if player.slowTicks > 0:
+      badges.add(StatusSlow)
+    if player.chillTicks > 0:
+      badges.add(StatusChill)
+    if sim.playerIsolationThreatened(i):
+      badges.add(StatusAlone)
+    for badgeIndex in 0 ..< badges.len:
+      let
+        badge = badges[badgeIndex]
+        label = badge.statusBadgeLabel()
+        badgeWidth = sim.textFont.textWidth(label)
+        badgeHeight = sim.textFont.height
+      objects.addWorldSpriteObject(
+        currentIds,
+        player.statusBadgeObjectId(badgeIndex),
+        player.x + playerSprite.width + 2 - cameraX,
+        player.y - (badgeHeight + 2) * (badgeIndex + 1) - cameraY,
+        badge.statusBadgeSpriteId(),
+        badgeWidth,
+        badgeHeight,
+        viewportWidth,
+        viewportHeight,
+        player.y - cameraY + badgeIndex
       )
     objects.addHealthObject(
       currentIds,

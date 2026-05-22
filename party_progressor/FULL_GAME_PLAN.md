@@ -299,6 +299,10 @@ The first full-game implementation pass includes:
 - Biome monster tactical hooks: slimes slow players, desert creatures poison,
   snow threats chill, bats harass from farther away, and wraith/gate enemies
   punish isolated players so grouping has real value.
+- In-world player affordances for the larger observation window: poison, slow,
+  chill, and isolation danger now appear as compact badges next to players, and
+  landmarks show readable labels for resources, camp costs, relic beacons, and
+  final-gate requirements.
 - Final-gate completion now requires both boss defeat and relic progress,
   turning the end of the run into a visible expedition chain instead of a single
   late fight.
@@ -314,13 +318,13 @@ The first full-game implementation pass includes:
 ### Near-Term Implementation
 
 - Tune the 11 by 11 viewport after real bot/human observation checks.
-- Add stronger in-world affordances for resource nodes, beacon completion, camp
-  costs, and final-gate requirements.
+- Tune in-world affordance density after real observation checks so labels
+  remain helpful without cluttering fights.
 - Tune food and snow-exposure pacing with multi-player runs.
 - Add player-observation screenshots to smoke tests so black-background
   regressions are visually obvious.
-- Add distinct visual/status telegraphs for poison, slow, chill, and isolation
-  danger so human players can read why a biome feels dangerous at a glance.
+- Add stronger monster-side telegraphs for poison, slow, chill, and isolation
+  danger before hits land, not only after statuses are applied.
 - Expand bot targeting: gather resources when camps are unaffordable, prefer
   beacons after camps, avoid strong enemies when low on HP, and regroup near
   teammates.

@@ -3355,6 +3355,39 @@ proc playerHasNearbyAlly(
       return true
   false
 
+proc playerIsolationThreatened*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when an isolation-punishing enemy is close to an alone player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
+    return false
+  let
+    playerCenterX = boundsCenterX(
+      sim.players[playerIndex].x,
+      sim.players[playerIndex].bounds
+    )
+    playerCenterY = boundsCenterY(
+      sim.players[playerIndex].y,
+      sim.players[playerIndex].bounds
+    )
+    radiusSq = (IsolationThreatRadius * 2) * (IsolationThreatRadius * 2)
+  for mob in sim.mobs:
+    if not mob.species.speciesPunishesIsolation():
+      continue
+    let
+      mobCenterX = boundsCenterX(mob.x, mob.bounds)
+      mobCenterY = boundsCenterY(mob.y, mob.bounds)
+    if distanceSquared(
+      playerCenterX,
+      playerCenterY,
+      mobCenterX,
+      mobCenterY
+    ) <= radiusSq:
+      return true
+  false
+
 proc mobHitDamage*(sim: SimServer, mob: Mob, playerIndex: int): int =
   result = mob.mobDamage()
   if mob.species.speciesPunishesIsolation() and
