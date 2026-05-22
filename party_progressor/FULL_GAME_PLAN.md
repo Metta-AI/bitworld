@@ -108,6 +108,13 @@ buttons. When two or three distinct combat roles have recently attacked the
 same enemy, normal attacks should hit harder and the focused target should show
 a compact in-world affordance so players understand the opening.
 
+The final boss should reuse that learned party language instead of introducing
+a separate raid UI. The Gate Titan should take extra damage when the attacker
+is holding a nearby tank/DPS/healer trio formation and additional extra damage
+when all three combat roles are focus-firing it. That makes the late fight read
+as a party-check boss while still using the same attack, role power, `TRIO`, and
+`FOC` signals players have already learned.
+
 Enemy families should be simple and readable:
 
 - Wolves: fast early pack pressure.
@@ -458,6 +465,11 @@ The first full-game implementation pass includes:
   healer stay grouped in a local formation, players show a visible `TRIO`
   affordance and recover role-power cooldowns faster, making the intended party
   composition useful during travel, staging, and weather pressure.
+- The Gate Titan now uses that same party language as a final-boss raid window:
+  normal attacks and DPS cleave hit the boss harder when the attacker is in a
+  tank/DPS/healer trio, and harder again when all three roles have recently
+  focused the boss, turning the late fight into a composition check without new
+  controls.
 - Final-gate completion now requires boss defeat, relic progress, and forward
   camp progress, turning the end of the run into a visible expedition chain
   instead of a single late fight.
@@ -604,8 +616,9 @@ The first full-game implementation pass includes:
   versus explicit player choices.
 - Continue teammate legibility beyond low-health help badges, isolation regroup
   labels, downed-player rescue, and chat pings: richer rescue/objective moments.
-- Tune final-gate pacing now that relic, boss, and camp progress are all part of
-  the visible completion chain.
+- Tune final-boss and final-gate pacing now that relic, camp, trio formation,
+  three-role focus, boss defeat, and the gate ritual are all part of the visible
+  completion chain.
 
 ### Polish And Packaging
 

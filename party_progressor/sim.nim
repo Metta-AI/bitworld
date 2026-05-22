@@ -235,6 +235,8 @@ const
   MobLungeStep* = 2
   PartyFocusTwoRoleDamageBonus* = 1
   PartyFocusThreeRoleDamageBonus* = 2
+  BossTrioDamageBonus* = 1
+  BossFocusDamageBonus* = 2
   ElevationCombatThreshold* = 2
   HighGroundDamageBonus* = 1
   LowGroundDamagePenalty* = 1
@@ -3474,6 +3476,8 @@ proc finishDefeatedMobs(sim: var SimServer) =
         sim.dropMonsterSupply(mob)
   sim.mobs = survivors
 
+proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int
+
 proc applyDpsCleave(sim: var SimServer, playerIndex: int) =
   let player = sim.players[playerIndex]
   let
@@ -3490,8 +3494,10 @@ proc applyDpsCleave(sim: var SimServer, playerIndex: int) =
       continue
     sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
     sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
-    sim.mobs[mobIndex].hp -= DpsCleaveDamage
-    sim.players[playerIndex].damageDone += DpsCleaveDamage
+    let damage = DpsCleaveDamage +
+      sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex])
+    sim.mobs[mobIndex].hp -= damage
+    sim.players[playerIndex].damageDone += damage
     hitAny = true
     inc sim.scoreRevision
   if hitAny:
@@ -4149,6 +4155,21 @@ proc playerPartyTacticLabel*(sim: SimServer, playerIndex: int): string =
     "trio"
   else:
     ""
+
+proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int =
+  ## Rewards the final boss fight for using the same formation and focus
+  ## language the rest of the expedition teaches.
+  if mob.kind != BossMob:
+    return 0
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return 0
+  if sim.players[playerIndex].lives <= 0 or
+      sim.players[playerIndex].role == RoleUnarmed:
+    return 0
+  if sim.playerInTrioFormation(playerIndex):
+    result += BossTrioDamageBonus
+  if mob.partyFocusRoleCount(sim.players, sim.tickCount) >= 3:
+    result += BossFocusDamageBonus
 
 proc nearbyDownedRescuer(
   sim: SimServer,
@@ -5110,7 +5131,8 @@ proc applyAttack(sim: var SimServer) =
         sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
         sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
         let damage = sim.playerAttackDamage(player, sim.mobs[mobIndex]) +
-          sim.mobs[mobIndex].partyFocusDamageBonus(sim.players, sim.tickCount)
+          sim.mobs[mobIndex].partyFocusDamageBonus(sim.players, sim.tickCount) +
+          sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex])
         mobHitCounts[mobIndex] += damage
         sim.players[playerIndex].damageDone += damage
         inc sim.scoreRevision

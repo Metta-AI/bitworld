@@ -2953,6 +2953,91 @@ proc testPartyFocusRewardsMixedRoleAttacksAndShowsBadge() =
     threeRoleHp - (3 + PartyFocusThreeRoleDamageBonus),
     "all three roles should create the strongest focus-fire damage bonus"
 
+proc testGateTitanRaidWindowRewardsFormationAndFocus() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.bossDefeated = false
+  sim.mobSpawnCooldown = 999
+  sim.fillGround(GroundRuins, BiomeRuins)
+
+  let
+    tankIndex = sim.addPlayer("tank")
+    dpsIndex = sim.addPlayer("dps")
+    healerIndex = sim.addPlayer("healer")
+    baseX = SafeZoneRightPixels + WorldTileSize
+    baseY = (WorldHeightTiles div 2) * WorldTileSize
+  for item in [
+    (index: tankIndex, role: RoleTank, y: baseY - 12),
+    (index: dpsIndex, role: RoleDps, y: baseY),
+    (index: healerIndex, role: RoleHealer, y: baseY + 12)
+  ]:
+    sim.players[item.index].x = baseX
+    sim.players[item.index].y = item.y
+    sim.players[item.index].facing = FaceRight
+    sim.players[item.index].applyRole(item.role)
+    sim.players[item.index].bounds =
+      sim.playerBoundsFor(sim.players[item.index])
+
+  let dpsHit = sim.attackRect(sim.players[dpsIndex])
+  sim.mobs.add(Mob(
+    kind: BossMob,
+    species: SpeciesGateTitan,
+    x: dpsHit.x,
+    y: dpsHit.y,
+    sprite: sim.bossSprite,
+    bounds: sim.bossBounds,
+    hp: BossHp,
+    attackCooldown: 99
+  ))
+
+  doAssert sim.playerInTrioFormation(dpsIndex)
+  doAssert sim.bossRaidDamageBonus(dpsIndex, sim.mobs[0]) ==
+    BossTrioDamageBonus
+
+  sim.mobs[0].attackerIds = @[
+    sim.players[tankIndex].id,
+    sim.players[dpsIndex].id,
+    sim.players[healerIndex].id
+  ]
+  sim.mobs[0].attackerTicks = @[
+    sim.tickCount,
+    sim.tickCount,
+    sim.tickCount
+  ]
+  doAssert sim.bossRaidDamageBonus(dpsIndex, sim.mobs[0]) ==
+    BossTrioDamageBonus + BossFocusDamageBonus
+
+  let raidHp = sim.mobs[0].hp
+  sim.step([InputState(), InputState(attack: true), InputState()])
+  doAssert sim.mobs.len == 1
+  doAssert sim.mobs[0].hp ==
+    raidHp - (
+      3 + PartyFocusThreeRoleDamageBonus + BossTrioDamageBonus +
+        BossFocusDamageBonus
+    ),
+    "the gate titan should take extra damage from trio formation and focus"
+
+  sim.players[dpsIndex].attackTicks = 0
+  sim.players[dpsIndex].attackResolved = false
+  sim.players[healerIndex].x += TrioFormationRadius + WorldTileSize
+  sim.players[healerIndex].bounds =
+    sim.playerBoundsFor(sim.players[healerIndex])
+  sim.mobs[0].x = dpsHit.x
+  sim.mobs[0].y = dpsHit.y
+  sim.mobs[0].hp = BossHp
+  sim.mobs[0].attackerIds.setLen(0)
+  sim.mobs[0].attackerTicks.setLen(0)
+
+  doAssert not sim.playerInTrioFormation(dpsIndex)
+  doAssert sim.bossRaidDamageBonus(dpsIndex, sim.mobs[0]) == 0
+  sim.step([InputState(), InputState(attack: true), InputState()])
+  doAssert sim.mobs.len == 1
+  doAssert sim.mobs[0].hp == BossHp - 3,
+    "uncoordinated boss hits should keep the ordinary DPS damage budget"
+
 proc testMixedRoleFormationRechargesPowersAndShowsBadge() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3663,6 +3748,7 @@ testMonsterLairAttackRewardsAndPacifiesThreats()
 testBiomeWaystationsCreateRoleDetoursAndShelters()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testPartyFocusRewardsMixedRoleAttacksAndShowsBadge()
+testGateTitanRaidWindowRewardsFormationAndFocus()
 testMixedRoleFormationRechargesPowersAndShowsBadge()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
