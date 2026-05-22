@@ -1227,6 +1227,8 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status alone" in labels
   doAssert "status help" in labels
   doAssert "status down" in labels
+  doAssert "camp" in labels
+  doAssert "shelter" in labels
   doAssert "prompt camp w2 s1" in labels
   doAssert "prompt shelter" in labels
   doAssert "prompt fort" in labels

@@ -433,6 +433,10 @@ The first full-game implementation pass includes:
   must press select to swap at camp gear. Origin role choice remains walk-in
   simple for unarmed players, while late expedition paths no longer accidentally
   collapse tank/DPS/healer composition when bots cross camp gear.
+- Completed camps now become semantically distinct `shelter` objects in the
+  sprite protocol. Konrad treats shelters as recovery/regroup targets instead
+  of generic camp objectives, so healthy bots push onward while incomplete camps
+  remain visible build targets.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.

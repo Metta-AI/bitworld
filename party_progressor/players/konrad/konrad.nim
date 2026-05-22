@@ -66,6 +66,7 @@ type
     TargetStone
     TargetGold
     TargetCamp
+    TargetShelter
     TargetRelic
     TargetGate
     TargetShrine
@@ -244,7 +245,7 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
     SpriteBoss
   elif spriteId == CoinSpriteId or lower == "coin" or
       lower in ["camp", "beacon", "final gate", "shrine", "rescue", "lair",
-        "waystation", "wood", "food", "stone", "gold"]:
+        "waystation", "shelter", "wood", "food", "stone", "gold"]:
     SpriteCoin
   elif spriteId == HeartSpriteId or lower == "heart":
     SpriteHeart
@@ -287,6 +288,8 @@ proc targetKindForSprite(sprite: SpriteInfo): TargetKind =
     TargetGold
   of "camp":
     TargetCamp
+  of "shelter":
+    TargetShelter
   of "beacon":
     TargetRelic
   of "final gate":
@@ -398,6 +401,8 @@ proc targetLabel(kind: TargetKind): string =
     "gold"
   of TargetCamp:
     "camp"
+  of TargetShelter:
+    "shelter"
   of TargetRelic:
     "relic"
   of TargetGate:
@@ -1154,6 +1159,8 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
     return false
   if target.kind == TargetCamp and (bot.needWood > 0 or bot.needStone > 0):
     return false
+  if target.kind == TargetShelter and not (bot.lowHealth or bot.needsRegroup):
+    return false
   if target.kind.isRoleTarget() and not bot.choosingRole():
     return false
   if target.kind in {TargetCoin, TargetHeart} and
@@ -1238,6 +1245,8 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 170
     else:
       distance + (if bot.lowHealth or bot.needsRegroup: -180 else: -100)
+  of TargetShelter:
+    distance + (if bot.lowHealth: -210 elif bot.needsRegroup: -160 else: 520)
   of TargetRelic:
     if bot.objectiveHint.startsWith("next relic"):
       distance - 170
@@ -1429,6 +1438,7 @@ proc updateTargetResult(
         TargetStone,
         TargetGold,
         TargetCamp,
+        TargetShelter,
         TargetRelic,
         TargetGate,
         TargetShrine,
@@ -1464,6 +1474,7 @@ proc updateTargetResult(
       TargetStone,
       TargetGold,
       TargetCamp,
+      TargetShelter,
       TargetRelic,
       TargetGate,
       TargetShrine,
@@ -1821,6 +1832,11 @@ when defined(konradTargetSelfTest):
     label: "lair",
     kind: SpriteCoin
   ).targetKindForSprite() == TargetLair
+  doAssert SpriteInfo(
+    defined: true,
+    label: "shelter",
+    kind: SpriteCoin
+  ).targetKindForSprite() == TargetShelter
   doAssert TargetWood.isAttackTarget()
   doAssert TargetLair.isAttackTarget()
   doAssert not TargetCamp.isAttackTarget()
@@ -1843,6 +1859,18 @@ when defined(konradTargetSelfTest):
     kind: TargetCamp,
     objectId: LandmarkObjectBase + 2
   ))
+  bot.needWood = 0
+  bot.needStone = 0
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 3
+  ))
+  bot.lowHealth = true
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 3
+  ))
+  bot.lowHealth = false
   bot.readStatusHud("tank plains|clear w1 f0 s0 r0|b guard|next camp 0/2 w1 s1")
   doAssert bot.needWood == 1
   doAssert bot.needStone == 1

@@ -38,6 +38,7 @@ const
   StatusHudSpriteId = PlayerHudSpriteId + 2
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
   RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
+  LandmarkShelterSpriteId = LandmarkSpriteBase + ord(high(LandmarkKind)) + 1
   StatusBadgeSpriteBase = 840
   LandmarkPromptSpriteBase = 860
   LandmarkShelterPromptSpriteId =
@@ -1471,6 +1472,13 @@ proc landmarkSpriteId(kind: LandmarkKind): int =
   ## Returns the sprite id for one landmark kind.
   LandmarkSpriteBase + ord(kind)
 
+proc landmarkSpriteId(landmark: Landmark): int =
+  ## Returns the sprite id for one landmark instance.
+  if landmark.kind == LandmarkCamp and landmark.done:
+    LandmarkShelterSpriteId
+  else:
+    landmark.kind.landmarkSpriteId()
+
 proc mobSpeciesSpriteId(species: MobSpecies, flipLeft: bool): int =
   ## Returns the generated sprite id for one biome monster species.
   MobSpeciesSpriteBase + (ord(species) - 1) * 2 + (if flipLeft: 1 else: 0)
@@ -1901,6 +1909,16 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       promptSprite.pixels,
       "prompt " & prompt.toLowerAscii()
     )
+  let shelter = buildSpriteProtocolRawSprite(
+    sim.landmarkRgbaSprite(LandmarkCamp)
+  )
+  packet.addSprite(
+    LandmarkShelterSpriteId,
+    shelter.width,
+    shelter.height,
+    shelter.pixels,
+    "shelter"
+  )
   let
     shelterPrompt = "SHELTER"
     shelterPromptSprite = sim.buildSpriteProtocolTextSprite(
@@ -2214,7 +2232,7 @@ proc addLandmarkObjects(
       objectId,
       landmark.landmarkWorldX() - cameraX,
       landmark.landmarkWorldY() - cameraY,
-      landmarkSpriteId(landmark.kind),
+      landmark.landmarkSpriteId(),
       sprite.width,
       sprite.height,
       viewportWidth,
