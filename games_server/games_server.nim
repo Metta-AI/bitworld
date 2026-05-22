@@ -16,7 +16,33 @@ const
   DockerModeEnv = "GAMES_SERVER_MODE"
   ReplayDirEnv = "GAMES_SERVER_REPLAY_DIR"
   WorkspaceRootEnv = "GAMES_SERVER_WORKSPACE_ROOT"
+  GameMemoryEnv = "GAMES_SERVER_GAME_MEMORY"
+  GameCpusEnv = "GAMES_SERVER_GAME_CPUS"
+  GamePidsEnv = "GAMES_SERVER_GAME_PIDS"
+  BotMemoryEnv = "GAMES_SERVER_BOT_MEMORY"
+  BotCpusEnv = "GAMES_SERVER_BOT_CPUS"
+  BotPidsEnv = "GAMES_SERVER_BOT_PIDS"
+  ReplayMemoryEnv = "GAMES_SERVER_REPLAY_MEMORY"
+  ReplayCpusEnv = "GAMES_SERVER_REPLAY_CPUS"
+  ReplayPidsEnv = "GAMES_SERVER_REPLAY_PIDS"
+  WatchdogEnv = "GAMES_SERVER_WATCHDOG"
+  CpuKillPercentEnv = "GAMES_SERVER_CPU_KILL_PERCENT"
+  CpuKillSecondsEnv = "GAMES_SERVER_CPU_KILL_SECONDS"
+  MemoryKillPercentEnv = "GAMES_SERVER_MEMORY_KILL_PERCENT"
   DefaultDockerMode = "release"
+  DefaultGameMemory = "6g"
+  DefaultGameCpus = "4"
+  DefaultGamePids = "512"
+  DefaultBotMemory = "1g"
+  DefaultBotCpus = "1"
+  DefaultBotPids = "128"
+  DefaultReplayMemory = "4g"
+  DefaultReplayCpus = "2"
+  DefaultReplayPids = "256"
+  DefaultCpuKillPercent = 100.0
+  DefaultCpuKillSeconds = 600.0
+  DefaultMemoryKillPercent = 99.0
+  WatchdogIntervalMs = 30_000
   GameContainerPort = 8080
   ReplayPathPrefix = "/replays/"
   ReplayPlayPath = "/replays/play"
@@ -321,6 +347,11 @@ type
     output: string
     code: int
 
+  ContainerStats = object
+    cpu: string
+    memory: string
+    memoryPercent: string
+
   ContainerKind = enum
     LiveGame
     ReplayServer
@@ -387,6 +418,7 @@ type
 
 var
   aiKeyEnvMask = 0
+  resourceWatchdogThread: Thread[void]
 
 proc loadAiKeyEnvs() =
   ## Loads AI key environment names once at server startup.
@@ -512,6 +544,16 @@ proc envValue(name, defaultValue: string): string =
   ## Reads an environment setting with a fallback.
   result = getEnv(name, defaultValue).strip()
   if result.len == 0:
+    result = defaultValue
+
+proc envFloat(name: string, defaultValue: float): float =
+  ## Reads a float environment setting with a fallback.
+  let value = getEnv(name, "").strip()
+  if value.len == 0:
+    return defaultValue
+  try:
+    result = parseFloat(value)
+  except ValueError:
     result = defaultValue
 
 proc dockerBin(): string =
@@ -998,6 +1040,49 @@ proc pullDockerImage(image: string) =
   if pulled.len > 0:
     echo pulled
 
+proc addDockerResourceArgs(
+  args: var seq[string],
+  memory,
+  cpus,
+  pids: string
+) =
+  ## Adds Docker resource limits with swap disabled.
+  if memory.len > 0:
+    args.add("--memory")
+    args.add(memory)
+    args.add("--memory-swap")
+    args.add(memory)
+  if cpus.len > 0:
+    args.add("--cpus")
+    args.add(cpus)
+  if pids.len > 0:
+    args.add("--pids-limit")
+    args.add(pids)
+
+proc addGameResourceArgs(args: var seq[string], kind: ContainerKind) =
+  ## Adds Docker resource limits for a game or replay container.
+  case kind
+  of LiveGame:
+    args.addDockerResourceArgs(
+      envValue(GameMemoryEnv, DefaultGameMemory),
+      envValue(GameCpusEnv, DefaultGameCpus),
+      envValue(GamePidsEnv, DefaultGamePids)
+    )
+  of ReplayServer:
+    args.addDockerResourceArgs(
+      envValue(ReplayMemoryEnv, DefaultReplayMemory),
+      envValue(ReplayCpusEnv, DefaultReplayCpus),
+      envValue(ReplayPidsEnv, DefaultReplayPids)
+    )
+
+proc addBotResourceArgs(args: var seq[string]) =
+  ## Adds Docker resource limits for a bot container.
+  args.addDockerResourceArgs(
+    envValue(BotMemoryEnv, DefaultBotMemory),
+    envValue(BotCpusEnv, DefaultBotCpus),
+    envValue(BotPidsEnv, DefaultBotPids)
+  )
+
 proc cleanContainerName(value: string): string =
   ## Keeps only Docker-safe container name characters.
   for c in value:
@@ -1009,6 +1094,27 @@ proc cleanContainerName(value: string): string =
 proc logUrl(name: string): string =
   ## Builds the log viewer URL for one container.
   LogsPath & "?name=" & cleanContainerName(name)
+
+proc containerEventsPath(name: string): string =
+  ## Returns the games_server event log path for one container.
+  replayDir() / (cleanContainerName(name) & ".events.log")
+
+proc appendContainerEvent(name, message: string) =
+  ## Appends one games_server event for a managed container.
+  try:
+    ensureReplayDir()
+    var file: File
+    if open(file, containerEventsPath(name), fmAppend):
+      defer: file.close()
+      file.writeLine($now() & " " & message)
+  except CatchableError as e:
+    echo "[games_server] could not write container event: ", e.msg
+
+proc containerEvents(name: string): string =
+  ## Reads games_server events for one managed container.
+  let path = containerEventsPath(name)
+  if fileExists(path):
+    return readFile(path)
 
 proc renderContainerCheckbox(name: string): string =
   ## Renders one bulk action checkbox for a managed container.
@@ -1225,32 +1331,137 @@ proc safeListBots(): seq[BotContainer] =
   except GamesServerError:
     result = @[]
 
-proc dockerCpuPercents(): Table[string, string] =
-  ## Reads Docker CPU percentage for currently running containers.
+proc dockerContainerStats(): Table[string, ContainerStats] =
+  ## Reads Docker CPU and memory stats for currently running containers.
   if useEcs:
     return
   let res = dockerResult(@[
     "stats",
     "--no-stream",
     "--format",
-    "{{.Name}}\t{{.CPUPerc}}"
+    "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
   ])
   if res.code != 0:
     return
   for line in res.output.splitLines():
     let parts = line.split('\t')
-    if parts.len >= 2:
+    if parts.len >= 4:
       let
         name = parts[0].strip()
         cpu = parts[1].strip()
+        memory = parts[2].strip()
+        memoryPercent = parts[3].strip()
       if name.len > 0 and cpu.len > 0:
-        result[name] = cpu
+        result[name] = ContainerStats(
+          cpu: cpu,
+          memory: memory,
+          memoryPercent: memoryPercent
+        )
 
-proc cpuPercent(cpuByName: Table[string, string], name: string): string =
+proc cpuPercent(
+  statsByName: Table[string, ContainerStats],
+  name: string
+): string =
   ## Returns a display CPU percentage for one container name.
-  if name in cpuByName:
-    return cpuByName[name]
+  if name in statsByName:
+    return statsByName[name].cpu
   "-"
+
+proc memoryUsage(
+  statsByName: Table[string, ContainerStats],
+  name: string
+): string =
+  ## Returns a display memory usage for one container name.
+  if name in statsByName:
+    return statsByName[name].memory
+  "-"
+
+proc percentValue(value: string): float =
+  ## Parses a Docker percent value such as "12.34%".
+  let clean = value.strip().strip(chars = {'%'})
+  if clean.len == 0:
+    return 0.0
+  try:
+    result = parseFloat(clean)
+  except ValueError:
+    result = 0.0
+
+proc addRunningContainersByLabel(
+  names: var seq[string],
+  label: string
+) =
+  ## Adds running Docker container names matching one label.
+  let res = dockerResult(@[
+    "ps",
+    "--filter",
+    "label=" & label,
+    "--format",
+    "{{.Names}}"
+  ])
+  if res.code != 0:
+    return
+  for line in res.output.splitLines():
+    let name = line.strip()
+    if name.len > 0 and name notin names:
+      names.add(name)
+
+proc runningManagedContainerNames(): seq[string] =
+  ## Lists running Docker containers managed by games_server.
+  if useEcs:
+    return
+  result.addRunningContainersByLabel(ServerLabel)
+  result.addRunningContainersByLabel(BotLabel)
+
+proc killManagedContainer(name, reason: string) =
+  ## Kills one managed Docker container and records the reason.
+  let safeName = cleanContainerName(name)
+  appendContainerEvent(safeName, "Killed by games_server: " & reason)
+  echo "[games_server] killing ", safeName, ": ", reason
+  discard dockerResult(@["kill", safeName])
+
+proc resourceWatchdogProc() {.thread.} =
+  ## Stops containers that exceed memory or sustained CPU limits.
+  var highCpuSince: Table[string, float]
+  while true:
+    try:
+      if not useEcs and envValue(WatchdogEnv, "1") != "0":
+        let
+          statsByName = dockerContainerStats()
+          cpuLimit = envFloat(CpuKillPercentEnv, DefaultCpuKillPercent)
+          cpuSeconds = envFloat(CpuKillSecondsEnv, DefaultCpuKillSeconds)
+          memoryLimit = envFloat(
+            MemoryKillPercentEnv,
+            DefaultMemoryKillPercent
+          )
+          nowSec = epochTime()
+        for name in runningManagedContainerNames():
+          if name notin statsByName:
+            continue
+          let
+            stats = statsByName[name]
+            cpu = percentValue(stats.cpu)
+            memory = percentValue(stats.memoryPercent)
+          if memory >= memoryLimit:
+            killManagedContainer(
+              name,
+              "memory " & stats.memoryPercent & " >= " & $memoryLimit & "%"
+            )
+            highCpuSince.del(name)
+            continue
+          if cpu >= cpuLimit:
+            if name notin highCpuSince:
+              highCpuSince[name] = nowSec
+            elif nowSec - highCpuSince[name] >= cpuSeconds:
+              killManagedContainer(
+                name,
+                "CPU " & stats.cpu & " for " & $cpuSeconds & " seconds"
+              )
+              highCpuSince.del(name)
+          else:
+            highCpuSince.del(name)
+    except CatchableError as e:
+      echo "[games_server] resource watchdog error: ", e.msg
+    sleep(WatchdogIntervalMs)
 
 proc botsForGame(
   bots: seq[BotContainer],
@@ -1298,9 +1509,14 @@ proc containerLogs(name: string): string =
   if useEcs:
     return ecsContainerLogs(name)
   let safeName = managedContainerName(name)
-  containerLogState(safeName) &
-    "\n\n--- docker logs stdout and stderr ---\n" &
-    requireDocker(@["logs", "--timestamps", safeName])
+  var text = containerLogState(safeName)
+  let events = containerEvents(safeName)
+  if events.len > 0:
+    text.add("\n\n--- games_server events ---\n")
+    text.add(events)
+  text.add("\n\n--- docker logs stdout and stderr ---\n")
+  text.add(requireDocker(@["logs", "--timestamps", safeName]))
+  text
 
 proc cleanReplayName(value: string): string =
   ## Keeps only replay file name characters.
@@ -2096,6 +2312,7 @@ proc baseDockerArgs(
     "--label",
     GameManifestLabel & "=" & manifestKey,
   ]
+  result.addGameResourceArgs(kind)
   result.add("-e")
   result.add(CogameHostEnv & "=0.0.0.0")
   result.add("-e")
@@ -2196,6 +2413,7 @@ proc botRunArgs(
     "--label",
     CreatedLabel & "=" & $created
   ]
+  result.addBotResourceArgs()
   addAiEnvArgs(result)
   result.add("-e")
   result.add(CogamesEngineWsEnv & "=" & endpoint)
@@ -2946,7 +3164,7 @@ proc renderGamesTable(
   request: Request,
   games: seq[GameContainer],
   bots: seq[BotContainer],
-  cpuByName: Table[string, string]
+  statsByName: Table[string, ContainerStats]
 ): string =
   ## Renders the active and stopped game list.
   renderFragment:
@@ -2960,6 +3178,8 @@ proc renderGamesTable(
           say "Status"
         th ".head":
           say "CPU"
+        th ".head":
+          say "Memory"
         th ".head":
           say "Port"
         th ".head":
@@ -2977,7 +3197,7 @@ proc renderGamesTable(
       if games.len == 0:
         tr:
           td ".row1 center":
-            colspan "11"
+            colspan "12"
             say "No games created yet."
       for i, game in games:
         let
@@ -2992,7 +3212,9 @@ proc renderGamesTable(
           td rowClass & " nowrap":
             say esc(game.status)
           td rowClass & " right nowrap":
-            say esc(cpuPercent(cpuByName, game.name))
+            say esc(cpuPercent(statsByName, game.name))
+          td rowClass & " right nowrap":
+            say esc(memoryUsage(statsByName, game.name))
           td rowClass & " center":
             if game.port > 0:
               say $game.port
@@ -3095,7 +3317,9 @@ proc renderGamesTable(
             td rowClass & " nowrap":
               say esc(bot.status)
             td rowClass & " right nowrap":
-              say esc(cpuPercent(cpuByName, bot.name))
+              say esc(cpuPercent(statsByName, bot.name))
+            td rowClass & " right nowrap":
+              say esc(memoryUsage(statsByName, bot.name))
             td rowClass:
               say ""
             td rowClass:
@@ -3117,7 +3341,7 @@ proc renderGamesTable(
 proc renderReplayServersTable(
   request: Request,
   servers: seq[GameContainer],
-  cpuByName: Table[string, string]
+  statsByName: Table[string, ContainerStats]
 ): string =
   ## Renders replay playback containers.
   renderFragment:
@@ -3131,6 +3355,8 @@ proc renderReplayServersTable(
           say "Status"
         th ".head":
           say "CPU"
+        th ".head":
+          say "Memory"
         th ".head":
           say "Port"
         th ".head":
@@ -3146,7 +3372,7 @@ proc renderReplayServersTable(
       if servers.len == 0:
         tr:
           td ".row1 center":
-            colspan "10"
+            colspan "11"
             say "No replay servers started yet."
       for i, server in servers:
         let
@@ -3160,7 +3386,9 @@ proc renderReplayServersTable(
           td rowClass & " nowrap":
             say esc(server.status)
           td rowClass & " right nowrap":
-            say esc(cpuPercent(cpuByName, server.name))
+            say esc(cpuPercent(statsByName, server.name))
+          td rowClass & " right nowrap":
+            say esc(memoryUsage(statsByName, server.name))
           td rowClass & " center":
             if server.port > 0:
               say $server.port
@@ -3260,12 +3488,12 @@ proc renderPage(
     manifestTable = renderManifestTable()
     uploadButtons = renderUploadButtons()
     bulkControls = renderBulkControls()
-    cpuByName = dockerCpuPercents()
-    gamesTable = renderGamesTable(request, games, bots, cpuByName)
+    statsByName = dockerContainerStats()
+    gamesTable = renderGamesTable(request, games, bots, statsByName)
     replayServersTable = renderReplayServersTable(
       request,
       replayServers,
-      cpuByName
+      statsByName
     )
     replaysTable = renderReplaysTable(replays)
   render:
@@ -4143,6 +4371,9 @@ proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
   ensureUploadDirs()
+  if not useEcs and envValue(WatchdogEnv, "1") != "0":
+    createThread(resourceWatchdogThread, resourceWatchdogProc)
+    echo "Docker resource watchdog enabled"
   let server = newServer(httpHandler, workerThreads = 4)
   echo "Games server listening on http://", address, ":", port
   server.serve(Port(port), address)
