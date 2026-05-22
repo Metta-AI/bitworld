@@ -4593,9 +4593,13 @@ proc collectPickups(sim: var SimServer) =
           inc sim.scoreRevision
         of PickupTankGear, PickupDpsGear, PickupHealerGear:
           let nextRole = pickup.kind.roleForPickup()
-          if sim.players[playerIndex].role != nextRole:
-            sim.players[playerIndex].applyRole(nextRole)
-            inc sim.scoreRevision
+          let canSwapRole =
+            sim.players[playerIndex].role == RoleUnarmed or
+              pickup.x >= SafeZoneRightPixels
+          if not canSwapRole or sim.players[playerIndex].role == nextRole:
+            continue
+          sim.players[playerIndex].applyRole(nextRole)
+          inc sim.scoreRevision
         of PickupWood, PickupFood, PickupStone, PickupGold:
           let item = pickup.kind.carryForPickup()
           if sim.giveCarry(playerIndex, item):

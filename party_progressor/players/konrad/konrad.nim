@@ -370,7 +370,7 @@ proc targetLabel(kind: TargetKind): string =
   ## Returns a short readable label for one target kind.
   case kind
   of TargetExplore:
-    "explore"
+    "push"
   of TargetRegroup:
     "regroup"
   of TargetTankRole:
@@ -1204,17 +1204,18 @@ proc targetScore(bot: Bot, target: Target): int =
   of TargetLair:
     distance + (if bot.lowHealth or bot.needsRegroup: 420 elif distance < 100: -45 else: 180)
   of TargetMob:
-    distance + (if bot.lowHealth: 340 elif bot.needsRegroup: 240 elif distance < 90: -70 else: 190)
+    distance + (if bot.lowHealth: 340 elif bot.needsRegroup: 240 elif distance < 90: -70 else: 620)
   of TargetTroll:
-    distance + (if bot.lowHealth: 400 elif bot.needsRegroup: 280 elif distance < 105: -60 else: 230)
+    distance + (if bot.lowHealth: 400 elif bot.needsRegroup: 280 elif distance < 105: -60 else: 700)
   of TargetBoss:
-    distance + (if bot.lowHealth: 560 elif bot.needsRegroup: 440 elif distance < 120: -45 else: 420)
+    distance + (if bot.lowHealth: 560 elif bot.needsRegroup: 440 elif distance < 120: -45 else: 900)
   of TargetExplore:
-    distance + 400
+    distance + 120
 
 proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
-  ## Picks a new open tile to sweep the map.
+  ## Picks a new open tile that keeps the expedition pushing right.
   if bot.hasExploreGoal and
+      bot.exploreX > bot.playerWorldX + GoalArrivalRadius and
       distanceSquared(
         bot.playerWorldX,
         bot.playerWorldY,
@@ -1222,6 +1223,21 @@ proc refreshExploreGoal(bot: var Bot, blocked: openArray[bool]) =
         bot.exploreY
       ) > GoalArrivalRadius * GoalArrivalRadius:
     return
+
+  let
+    currentTx = clampTileX(bot.playerWorldX)
+    currentTy = clampTileY(bot.playerWorldY)
+  for step in [36, 28, 20, 12, 6]:
+    let tx = min(PathGridWidth - 1, currentTx + step)
+    for dy in [0, -2, 2, -4, 4, -6, 6, -8, 8, -12, 12]:
+      let ty = currentTy + dy
+      if not inGrid(tx, ty) or blocked.isBlocked(tx, ty):
+        continue
+      bot.exploreIndex = gridIndex(tx, ty)
+      bot.exploreX = tileCenterX(tx)
+      bot.exploreY = tileCenterY(ty)
+      bot.hasExploreGoal = true
+      return
 
   let area = PathGridWidth * PathGridHeight
   for attempt in 0 ..< area:
@@ -1267,6 +1283,19 @@ proc chooseTarget(
       if score < bestScore:
         bestScore = score
         result = ally
+  bot.refreshExploreGoal(blocked)
+  let pushTarget = Target(
+    found: true,
+    kind: TargetExplore,
+    objectId: -1,
+    x: bot.exploreX,
+    y: bot.exploreY,
+    label: TargetExplore.targetLabel()
+  )
+  let pushScore = bot.targetScore(pushTarget)
+  if pushScore < bestScore:
+    bestScore = pushScore
+    result = pushTarget
   if not bot.choosingRole():
     for mob in mobs:
       if bot.skipTicks > 0 and mob.objectId == bot.skipTargetId:
@@ -1278,15 +1307,7 @@ proc chooseTarget(
   if result.found:
     return
 
-  bot.refreshExploreGoal(blocked)
-  result = Target(
-    found: true,
-    kind: TargetExplore,
-    objectId: -1,
-    x: bot.exploreX,
-    y: bot.exploreY,
-    label: TargetExplore.targetLabel()
-  )
+  result = pushTarget
 
 proc nearestMob(bot: Bot, mobs: openArray[Target]): Target =
   ## Finds the nearest monster target.
@@ -1963,6 +1984,43 @@ when defined(konradTargetSelfTest):
     x: 48,
     y: 0
   ))
+  bot.lowHealth = false
+  bot.needsRegroup = false
+  bot.needsRole = false
+  bot.hasRole = true
+  bot.objectiveHint = ""
+  bot.carriedItem = CarryNone
+  bot.needWood = 0
+  bot.needStone = 0
+  bot.playerWorldX = 80
+  bot.playerWorldY = 300
+  bot.hasExploreGoal = false
+  blocked.resetBlocked()
+  pickups.setLen(0)
+  allies.setLen(0)
+  mobs = @[Target(
+    found: true,
+    kind: TargetMob,
+    objectId: 42,
+    x: 320,
+    y: 332,
+    label: "hunt"
+  )]
+  let pushChoice = bot.chooseTarget(blocked, pickups, allies, mobs)
+  doAssert pushChoice.kind == TargetExplore
+  doAssert pushChoice.x > bot.playerWorldX
+
+  bot.hasExploreGoal = false
+  mobs = @[Target(
+    found: true,
+    kind: TargetMob,
+    objectId: 43,
+    x: 104,
+    y: 300,
+    label: "hunt"
+  )]
+  let closeThreatChoice = bot.chooseTarget(blocked, pickups, allies, mobs)
+  doAssert closeThreatChoice.kind == TargetMob
   echo "Konrad target tests passed"
 
 elif isMainModule:

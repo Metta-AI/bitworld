@@ -61,6 +61,23 @@ proc testSafeOriginAndReusableRoles() =
   doAssert sim.hasPickup(PickupTankGear),
     "role gear must stay available for other players"
 
+  sim.players[playerIndex].x = dpsGear.x
+  sim.players[playerIndex].y = dpsGear.y
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].role == RoleTank,
+    "origin role gear should not silently swap an already-role player"
+
+  let secondPlayerIndex = sim.addPlayer("player2")
+  sim.players[secondPlayerIndex].x = dpsGear.x
+  sim.players[secondPlayerIndex].y = dpsGear.y
+  sim.players[secondPlayerIndex].bounds =
+    sim.playerBoundsFor(sim.players[secondPlayerIndex])
+  sim.step([InputState(), InputState()])
+  doAssert sim.players[secondPlayerIndex].role == RoleDps,
+    "origin role gear must stay reusable for unarmed players"
+
 proc testFrontierScoreIsShared() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")

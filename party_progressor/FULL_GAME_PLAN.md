@@ -307,6 +307,9 @@ The first full-game implementation pass includes:
 - Origin role gear now uses separated starter lanes: tank is up, DPS is forward,
   and healer is down, preventing accidental role swaps while making the opening
   choice clearer.
+- Origin role gear now stays reusable for unarmed players but no longer
+  silently swaps a player who already chose a role; deeper camp gear remains the
+  explicit role-swap surface.
 - Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
   green, while unarmed players keep their player-slot identity color.
 - Origin and camp role gear now labels both the role and its `B` power: tank
@@ -398,6 +401,10 @@ The first full-game implementation pass includes:
 - Konrad's local runner path now accepts `--slot` and `--token` and honors
   `COGAMES_ENGINE_WS_URL`, keeping the sprite-player bot aligned with the
   Coworld tournament runner contract.
+- Konrad bot pacing now treats the default unexplored path as a rightward
+  expedition push, so distant visible monsters no longer pull bots into opening
+  hunt loops before they gather resources, build camps, or advance the frontier;
+  close threats still interrupt the push.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
@@ -425,7 +432,7 @@ The first full-game implementation pass includes:
   checks reveal where lunge effects clutter tight fights.
 - Continue bot targeting polish: tune longer-run expedition pacing now that
   bots understand roles, health, regroup, carried resources, and current
-  objectives.
+  objectives, and now prefer frontier pushes over distant discretionary fights.
 
 ### Expedition Depth
 
