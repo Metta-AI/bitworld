@@ -48,6 +48,7 @@ type
 
   TargetKind = enum
     TargetExplore
+    TargetRegroup
     TargetCoin
     TargetHeart
     TargetWood
@@ -278,6 +279,8 @@ proc targetLabel(kind: TargetKind): string =
   case kind
   of TargetExplore:
     "explore"
+  of TargetRegroup:
+    "regroup"
   of TargetCoin:
     "coin"
   of TargetHeart:
@@ -658,11 +661,13 @@ proc scanWorld(
   bot: Bot,
   blocked: var seq[bool],
   pickups: var seq[Target],
+  allies: var seq[Target],
   mobs: var seq[Target]
 ) =
-  ## Extracts terrain, pickups, and monsters from protocol objects.
+  ## Extracts terrain, pickups, teammates, and monsters from protocol objects.
   blocked.resetBlocked()
   pickups.setLen(0)
+  allies.setLen(0)
   mobs.setLen(0)
   for objectId in 0 ..< bot.objects.len:
     let objectState = bot.objects[objectId]
@@ -672,6 +677,23 @@ proc scanWorld(
     if not sprite.defined:
       continue
     case sprite.kind
+    of SpritePlayer:
+      if objectId == bot.selfObjectId:
+        continue
+      if objectId < PlayerObjectBase or objectId >= MobObjectBase:
+        continue
+      let
+        screenFeet = objectState.objectFootCenter(sprite)
+        x = bot.cameraX + screenFeet.x
+        y = bot.cameraY + screenFeet.y
+      allies.add(Target(
+        found: true,
+        kind: TargetRegroup,
+        objectId: objectId,
+        x: x,
+        y: y,
+        label: TargetRegroup.targetLabel()
+      ))
     of SpriteTerrain:
       let bounds = sprite.terrainBounds()
       blocked.markBlocked(
@@ -883,6 +905,8 @@ proc targetScore(bot: Bot, target: Target): int =
     target.y
   )
   case target.kind
+  of TargetRegroup:
+    distance + (if bot.needsRegroup: (if bot.lowHealth: -120 else: -260) elif bot.lowHealth: 20 else: 340)
   of TargetCoin:
     distance + 90
   of TargetHeart:
@@ -949,9 +973,10 @@ proc chooseTarget(
   bot: var Bot,
   blocked: openArray[bool],
   pickups,
+  allies,
   mobs: openArray[Target]
 ): Target =
-  ## Chooses the next pickup, monster, or exploration target.
+  ## Chooses the next pickup, teammate, monster, or exploration target.
   var bestScore = high(int)
   for pickup in pickups:
     if bot.skipTicks > 0 and pickup.objectId == bot.skipTargetId:
@@ -960,6 +985,14 @@ proc chooseTarget(
     if score < bestScore:
       bestScore = score
       result = pickup
+  if bot.needsRegroup or bot.lowHealth:
+    for ally in allies:
+      if bot.skipTicks > 0 and ally.objectId == bot.skipTargetId:
+        continue
+      let score = bot.targetScore(ally)
+      if score < bestScore:
+        bestScore = score
+        result = ally
   for mob in mobs:
     if bot.skipTicks > 0 and mob.objectId == bot.skipTargetId:
       continue
@@ -1017,6 +1050,7 @@ proc rememberTarget(bot: var Bot, target: Target) =
 proc updateTargetResult(
   bot: var Bot,
   pickups,
+  allies,
   mobs: openArray[Target]
 ) =
   ## Infers successful pickups and kills from target disappearance.
@@ -1038,6 +1072,8 @@ proc updateTargetResult(
         TargetLair,
         TargetWaystation:
       pickups.containsTarget(bot.currentTargetId)
+    of TargetRegroup:
+      allies.containsTarget(bot.currentTargetId)
     of TargetMob, TargetTroll, TargetBoss:
       mobs.containsTarget(bot.currentTargetId)
     of TargetExplore:
@@ -1069,6 +1105,8 @@ proc updateTargetResult(
     if bot.currentTargetDistance < 96:
       echo "objective done kind=", bot.currentTargetKind,
         " id=", bot.currentTargetId
+  of TargetRegroup:
+    discard
   of TargetMob, TargetTroll, TargetBoss:
     if bot.currentTargetDistance < 96:
       inc bot.killCount
@@ -1140,9 +1178,10 @@ proc decideNextMask(bot: var Bot): uint8 =
   var
     blocked: seq[bool]
     pickups: seq[Target]
+    allies: seq[Target]
     mobs: seq[Target]
-  bot.scanWorld(blocked, pickups, mobs)
-  bot.updateTargetResult(pickups, mobs)
+  bot.scanWorld(blocked, pickups, allies, mobs)
+  bot.updateTargetResult(pickups, allies, mobs)
   bot.updateStuck()
 
   if bot.jiggleTicks > 0:
@@ -1156,7 +1195,7 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.intent = closeMob.label
     return bot.attackMask(closeMob)
 
-  let target = bot.chooseTarget(blocked, pickups, mobs)
+  let target = bot.chooseTarget(blocked, pickups, allies, mobs)
   bot.rememberTarget(target)
   bot.intent = target.label
   if target.kind.isAttackTarget() and bot.canAttack(target):
@@ -1420,6 +1459,31 @@ when defined(konradTargetSelfTest):
   bot.updateSelfAffordances()
   doAssert bot.lowHealth
   doAssert bot.needsRegroup
+  let
+    allySpriteId = 9002
+    allyObjectId = PlayerObjectBase + playerId + 1
+  bot.ensureSprite(allySpriteId)
+  bot.sprites[allySpriteId] = SpriteInfo(
+    defined: true,
+    width: 16,
+    height: 24,
+    kind: SpritePlayer
+  )
+  bot.ensureObject(allyObjectId)
+  bot.objects[allyObjectId] = ObjectState(
+    present: true,
+    x: 96,
+    y: 0,
+    spriteId: allySpriteId
+  )
+  var
+    blocked: seq[bool]
+    pickups: seq[Target]
+    allies: seq[Target]
+    mobs: seq[Target]
+  bot.scanWorld(blocked, pickups, allies, mobs)
+  doAssert allies.len == 1
+  doAssert allies[0].kind == TargetRegroup
   bot.lowHealth = true
   doAssert bot.targetScore(Target(
     found: true,
@@ -1434,6 +1498,17 @@ when defined(konradTargetSelfTest):
   ))
   bot.lowHealth = false
   bot.needsRegroup = true
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetRegroup,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetWaystation,
+    x: 96,
+    y: 0
+  ))
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetWaystation,

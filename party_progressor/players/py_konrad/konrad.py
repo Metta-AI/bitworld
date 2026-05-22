@@ -97,22 +97,23 @@ class SpriteKind(IntEnum):
 
 class TargetKind(IntEnum):
     Explore = 0
-    Coin = 1
-    Heart = 2
-    Wood = 3
-    Food = 4
-    Stone = 5
-    Gold = 6
-    Camp = 7
-    Relic = 8
-    Gate = 9
-    Shrine = 10
-    Rescue = 11
-    Lair = 12
-    Waystation = 13
-    Mob = 14
-    Troll = 15
-    Boss = 16
+    Regroup = 1
+    Coin = 2
+    Heart = 3
+    Wood = 4
+    Food = 5
+    Stone = 6
+    Gold = 7
+    Camp = 8
+    Relic = 9
+    Gate = 10
+    Shrine = 11
+    Rescue = 12
+    Lair = 13
+    Waystation = 14
+    Mob = 15
+    Troll = 16
+    Boss = 17
 
 
 @dataclass
@@ -399,9 +400,10 @@ class Bot:
             self.camera_y + state.y + bounds.y + bounds.h // 2,
         )
 
-    def scan_world(self) -> tuple[list[bool], list[Target], list[Target]]:
+    def scan_world(self) -> tuple[list[bool], list[Target], list[Target], list[Target]]:
         blocked = [False] * (PathGridWidth * PathGridHeight)
         pickups: list[Target] = []
+        allies: list[Target] = []
         mobs: list[Target] = []
         for object_id, state in enumerate(self.objects):
             if not state.present:
@@ -409,7 +411,16 @@ class Bot:
             sprite = self.sprite_info(state.sprite_id)
             if not sprite.defined:
                 continue
-            if sprite.kind == SpriteKind.Terrain:
+            if (
+                sprite.kind == SpriteKind.Player
+                and object_id != self.self_object_id
+                and PlayerObjectBase <= object_id < MobObjectBase
+            ):
+                x, y = self.target_center(state, sprite)
+                allies.append(
+                    Target(True, TargetKind.Regroup, object_id, x, y, "regroup")
+                )
+            elif sprite.kind == SpriteKind.Terrain:
                 bounds = terrain_bounds(sprite)
                 mark_blocked(
                     blocked,
@@ -429,7 +440,7 @@ class Bot:
                 kind = target_kind_for_sprite_info(sprite)
                 x, y = self.target_center(state, sprite)
                 mobs.append(Target(True, kind, object_id, x, y, target_label(kind)))
-        return blocked, pickups, mobs
+        return blocked, pickups, allies, mobs
 
     def update_stuck(self) -> None:
         if not self.have_player_sample:
@@ -465,6 +476,16 @@ class Bot:
             target.x,
             target.y,
         )
+        if target.kind == TargetKind.Regroup:
+            return distance + (
+                -120
+                if self.needs_regroup and self.low_health
+                else -260
+                if self.needs_regroup
+                else 20
+                if self.low_health
+                else 340
+            )
         if target.kind == TargetKind.Coin:
             return distance + 90
         if target.kind == TargetKind.Heart:
@@ -533,6 +554,7 @@ class Bot:
         self,
         blocked: list[bool],
         pickups: list[Target],
+        allies: list[Target],
         mobs: list[Target],
     ) -> Target:
         result = Target()
@@ -544,6 +566,14 @@ class Bot:
             if score < best_score:
                 best_score = score
                 result = pickup
+        if self.needs_regroup or self.low_health:
+            for ally in allies:
+                if self.skip_ticks > 0 and ally.object_id == self.skip_target_id:
+                    continue
+                score = self.target_score(ally)
+                if score < best_score:
+                    best_score = score
+                    result = ally
         for mob in mobs:
             if self.skip_ticks > 0 and mob.object_id == self.skip_target_id:
                 continue
@@ -594,6 +624,7 @@ class Bot:
     def update_target_result(
         self,
         pickups: list[Target],
+        allies: list[Target],
         mobs: list[Target],
     ) -> None:
         if self.current_target_id < 0:
@@ -620,6 +651,8 @@ class Bot:
             TargetKind.Boss,
         }:
             still_present = contains_target(mobs, self.current_target_id)
+        elif self.current_target_kind == TargetKind.Regroup:
+            still_present = contains_target(allies, self.current_target_id)
         else:
             still_present = True
         if still_present:
@@ -720,8 +753,8 @@ class Bot:
             self.skip_ticks -= 1
             if self.skip_ticks == 0:
                 self.skip_target_id = -1
-        blocked, pickups, mobs = self.scan_world()
-        self.update_target_result(pickups, mobs)
+        blocked, pickups, allies, mobs = self.scan_world()
+        self.update_target_result(pickups, allies, mobs)
         self.update_stuck()
         if self.jiggle_ticks > 0:
             self.jiggle_ticks -= 1
@@ -732,7 +765,7 @@ class Bot:
             self.remember_target(close_mob)
             self.intent = close_mob.label
             return self.attack_mask(close_mob)
-        target = self.choose_target(blocked, pickups, mobs)
+        target = self.choose_target(blocked, pickups, allies, mobs)
         self.remember_target(target)
         self.intent = target.label
         if is_attack_target(target.kind) and self.can_attack(target):
@@ -959,6 +992,7 @@ def target_kind_for_sprite_info(sprite: SpriteInfo) -> TargetKind:
 def target_label(kind: TargetKind) -> str:
     return {
         TargetKind.Explore: "explore",
+        TargetKind.Regroup: "regroup",
         TargetKind.Coin: "coin",
         TargetKind.Heart: "heart",
         TargetKind.Wood: "wood",

@@ -105,6 +105,7 @@ type TargetKind int
 
 const (
 	TargetExplore TargetKind = iota
+	TargetRegroup
 	TargetCoin
 	TargetHeart
 	TargetWood
@@ -425,6 +426,8 @@ func targetLabel(kind TargetKind) string {
 	switch kind {
 	case TargetExplore:
 		return "explore"
+	case TargetRegroup:
+		return "regroup"
 	case TargetCoin:
 		return "coin"
 	case TargetHeart:
@@ -849,9 +852,10 @@ func (bot *Bot) targetCenter(state ObjectState, sprite SpriteInfo) (int, int) {
 		bot.cameraY + state.y + bounds.y + bounds.h/2
 }
 
-func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
+func (bot *Bot) scanWorld() ([]bool, []Target, []Target, []Target) {
 	blocked := make([]bool, PathGridWidth*PathGridHeight)
 	pickups := []Target{}
+	allies := []Target{}
 	mobs := []Target{}
 	for objectId, state := range bot.objects {
 		if !state.present {
@@ -862,6 +866,21 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 			continue
 		}
 		switch sprite.kind {
+		case SpritePlayer:
+			if objectId == bot.selfObjectId ||
+				objectId < PlayerObjectBase ||
+				objectId >= MobObjectBase {
+				continue
+			}
+			x, y := bot.targetCenter(state, sprite)
+			allies = append(allies, Target{
+				found:    true,
+				kind:     TargetRegroup,
+				objectId: objectId,
+				x:        x,
+				y:        y,
+				label:    targetLabel(TargetRegroup),
+			})
 		case SpriteTerrain:
 			bounds := terrainBounds(sprite)
 			markBlocked(
@@ -905,7 +924,7 @@ func (bot *Bot) scanWorld() ([]bool, []Target, []Target) {
 			})
 		}
 	}
-	return blocked, pickups, mobs
+	return blocked, pickups, allies, mobs
 }
 
 func nearestOpenTile(blocked []bool, tx, ty int) (bool, int, int) {
@@ -1076,6 +1095,17 @@ func (bot *Bot) targetScore(target Target) int {
 		target.y,
 	)
 	switch target.kind {
+	case TargetRegroup:
+		if bot.needsRegroup {
+			if bot.lowHealth {
+				return distance - 120
+			}
+			return distance - 260
+		}
+		if bot.lowHealth {
+			return distance + 20
+		}
+		return distance + 340
 	case TargetCoin:
 		return distance + 90
 	case TargetHeart:
@@ -1194,7 +1224,7 @@ func (bot *Bot) refreshExploreGoal(blocked []bool) {
 	bot.hasExploreGoal = true
 }
 
-func (bot *Bot) chooseTarget(blocked []bool, pickups, mobs []Target) Target {
+func (bot *Bot) chooseTarget(blocked []bool, pickups, allies, mobs []Target) Target {
 	result := Target{}
 	bestScore := MaxIntValue
 	for _, pickup := range pickups {
@@ -1205,6 +1235,18 @@ func (bot *Bot) chooseTarget(blocked []bool, pickups, mobs []Target) Target {
 		if score < bestScore {
 			bestScore = score
 			result = pickup
+		}
+	}
+	if bot.needsRegroup || bot.lowHealth {
+		for _, ally := range allies {
+			if bot.skipTicks > 0 && ally.objectId == bot.skipTargetId {
+				continue
+			}
+			score := bot.targetScore(ally)
+			if score < bestScore {
+				bestScore = score
+				result = ally
+			}
 		}
 	}
 	for _, mob := range mobs {
@@ -1272,7 +1314,7 @@ func (bot *Bot) rememberTarget(target Target) {
 	)
 }
 
-func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
+func (bot *Bot) updateTargetResult(pickups, allies, mobs []Target) {
 	if bot.currentTargetId < 0 {
 		return
 	}
@@ -1284,6 +1326,8 @@ func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
 		stillPresent = containsTarget(pickups, bot.currentTargetId)
 	case TargetMob, TargetTroll, TargetBoss:
 		stillPresent = containsTarget(mobs, bot.currentTargetId)
+	case TargetRegroup:
+		stillPresent = containsTarget(allies, bot.currentTargetId)
 	}
 	if stillPresent {
 		return
@@ -1325,6 +1369,8 @@ func (bot *Bot) updateTargetResult(pickups, mobs []Target) {
 				bot.killCount,
 			)
 		}
+	case TargetRegroup:
+		// Regroup targets are transient player positions, not objectives.
 	}
 	bot.currentTargetId = -1
 }
@@ -1392,8 +1438,8 @@ func (bot *Bot) decideNextMask() uint8 {
 			bot.skipTargetId = -1
 		}
 	}
-	blocked, pickups, mobs := bot.scanWorld()
-	bot.updateTargetResult(pickups, mobs)
+	blocked, pickups, allies, mobs := bot.scanWorld()
+	bot.updateTargetResult(pickups, allies, mobs)
 	bot.updateStuck()
 	if bot.jiggleTicks > 0 {
 		bot.jiggleTicks--
@@ -1406,7 +1452,7 @@ func (bot *Bot) decideNextMask() uint8 {
 		bot.intent = closeMob.label
 		return bot.attackMask(closeMob)
 	}
-	target := bot.chooseTarget(blocked, pickups, mobs)
+	target := bot.chooseTarget(blocked, pickups, allies, mobs)
 	bot.rememberTarget(target)
 	bot.intent = target.label
 	if isAttackTarget(target.kind) && bot.canAttack(target) {

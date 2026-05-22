@@ -83,22 +83,23 @@ const SpriteKind = Object.freeze({
 
 const TargetKind = Object.freeze({
   Explore: 0,
-  Coin: 1,
-  Heart: 2,
-  Wood: 3,
-  Food: 4,
-  Stone: 5,
-  Gold: 6,
-  Camp: 7,
-  Relic: 8,
-  Gate: 9,
-  Shrine: 10,
-  Rescue: 11,
-  Lair: 12,
-  Waystation: 13,
-  Mob: 14,
-  Troll: 15,
-  Boss: 16,
+  Regroup: 1,
+  Coin: 2,
+  Heart: 3,
+  Wood: 4,
+  Food: 5,
+  Stone: 6,
+  Gold: 7,
+  Camp: 8,
+  Relic: 9,
+  Gate: 10,
+  Shrine: 11,
+  Rescue: 12,
+  Lair: 13,
+  Waystation: 14,
+  Mob: 15,
+  Troll: 16,
+  Boss: 17,
 });
 
 class MinHeap {
@@ -411,13 +412,22 @@ class Bot {
   scanWorld() {
     const blocked = new Array(PathGridWidth * PathGridHeight).fill(false);
     const pickups = [];
+    const allies = [];
     const mobs = [];
     for (let objectId = 0; objectId < this.objects.length; objectId++) {
       const state = this.objects[objectId];
       if (!state.present) continue;
       const sprite = this.spriteInfo(state.spriteId);
       if (!sprite.defined) continue;
-      if (sprite.kind === SpriteKind.Terrain) {
+      if (
+        sprite.kind === SpriteKind.Player &&
+        objectId !== this.selfObjectId &&
+        objectId >= PlayerObjectBase &&
+        objectId < MobObjectBase
+      ) {
+        const center = this.targetCenter(state, sprite);
+        allies.push(makeTarget(true, TargetKind.Regroup, objectId, center.x, center.y, "regroup"));
+      } else if (sprite.kind === SpriteKind.Terrain) {
         const bounds = terrainBounds(sprite);
         markBlocked(
           blocked,
@@ -443,7 +453,7 @@ class Bot {
         mobs.push(makeTarget(true, kind, objectId, center.x, center.y, targetLabel(kind)));
       }
     }
-    return { blocked, pickups, mobs };
+    return { blocked, pickups, allies, mobs };
   }
 
   updateStuck() {
@@ -486,6 +496,10 @@ class Bot {
       target.y,
     );
     switch (target.kind) {
+      case TargetKind.Regroup:
+        return distance + (
+          this.needsRegroup ? (this.lowHealth ? -120 : -260) : this.lowHealth ? 20 : 340
+        );
       case TargetKind.Coin:
         return distance + 90;
       case TargetKind.Heart:
@@ -551,7 +565,7 @@ class Bot {
     this.hasExploreGoal = true;
   }
 
-  chooseTarget(blocked, pickups, mobs) {
+  chooseTarget(blocked, pickups, allies, mobs) {
     let result = makeTarget();
     let bestScore = Number.MAX_SAFE_INTEGER;
     for (const pickup of pickups) {
@@ -560,6 +574,16 @@ class Bot {
       if (score < bestScore) {
         bestScore = score;
         result = pickup;
+      }
+    }
+    if (this.needsRegroup || this.lowHealth) {
+      for (const ally of allies) {
+        if (this.skipTicks > 0 && ally.objectId === this.skipTargetId) continue;
+        const score = this.targetScore(ally);
+        if (score < bestScore) {
+          bestScore = score;
+          result = ally;
+        }
       }
     }
     for (const mob of mobs) {
@@ -614,7 +638,7 @@ class Bot {
     );
   }
 
-  updateTargetResult(pickups, mobs) {
+  updateTargetResult(pickups, allies, mobs) {
     if (this.currentTargetId < 0) return;
     let stillPresent = true;
     if (
@@ -635,6 +659,8 @@ class Bot {
       ].includes(this.currentTargetKind)
     ) {
       stillPresent = containsTarget(pickups, this.currentTargetId);
+    } else if (this.currentTargetKind === TargetKind.Regroup) {
+      stillPresent = containsTarget(allies, this.currentTargetId);
     } else if (
       this.currentTargetKind === TargetKind.Mob ||
       this.currentTargetKind === TargetKind.Troll ||
@@ -719,8 +745,8 @@ class Bot {
       this.skipTicks -= 1;
       if (this.skipTicks === 0) this.skipTargetId = -1;
     }
-    const { blocked, pickups, mobs } = this.scanWorld();
-    this.updateTargetResult(pickups, mobs);
+    const { blocked, pickups, allies, mobs } = this.scanWorld();
+    this.updateTargetResult(pickups, allies, mobs);
     this.updateStuck();
     if (this.jiggleTicks > 0) {
       this.jiggleTicks -= 1;
@@ -733,7 +759,7 @@ class Bot {
       this.intent = closeMob.label;
       return this.attackMask(closeMob);
     }
-    const target = this.chooseTarget(blocked, pickups, mobs);
+    const target = this.chooseTarget(blocked, pickups, allies, mobs);
     this.rememberTarget(target);
     this.intent = target.label;
     if (isAttackTarget(target.kind) && this.canAttack(target)) {
@@ -1016,6 +1042,8 @@ function targetLabel(kind) {
   switch (kind) {
     case TargetKind.Explore:
       return "explore";
+    case TargetKind.Regroup:
+      return "regroup";
     case TargetKind.Coin:
       return "coin";
     case TargetKind.Heart:
