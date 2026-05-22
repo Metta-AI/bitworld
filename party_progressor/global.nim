@@ -51,6 +51,7 @@ const
   LandmarkAidPromptSpriteId = LandmarkRallyPromptSpriteId + 1
   LandmarkWaystationPromptSpriteBase = LandmarkAidPromptSpriteId + 1
   WeatherOverlaySpriteBase = 900
+  LandmarkDynamicPromptSpriteBase = 920
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -1536,25 +1537,8 @@ proc landmarkObjectId(index: int): int =
 proc landmarkPromptSpriteId(kind: LandmarkKind): int =
   LandmarkPromptSpriteBase + ord(kind)
 
-proc landmarkPromptSpriteId(landmark: Landmark): int =
-  if landmark.campIsAid():
-    LandmarkAidPromptSpriteId
-  elif landmark.campIsRally():
-    LandmarkRallyPromptSpriteId
-  elif landmark.campIsWarded():
-    LandmarkWardPromptSpriteId
-  elif landmark.campIsFortified() and landmark.campIsProvisioned():
-    LandmarkFortMealPromptSpriteId
-  elif landmark.campIsFortified():
-    LandmarkFortPromptSpriteId
-  elif landmark.campIsProvisioned():
-    LandmarkMealPromptSpriteId
-  elif landmark.kind == LandmarkCamp and landmark.done:
-    LandmarkShelterPromptSpriteId
-  elif landmark.kind == LandmarkWaystation:
-    LandmarkWaystationPromptSpriteBase + ord(biomeForTileX(landmark.tx))
-  else:
-    landmark.kind.landmarkPromptSpriteId()
+proc landmarkDynamicPromptSpriteId(index: int): int =
+  LandmarkDynamicPromptSpriteBase + index
 
 proc landmarkPromptObjectId(index: int): int =
   LandmarkPromptObjectBase + index
@@ -1603,6 +1587,57 @@ proc landmarkPromptLabel(landmark: Landmark): string =
     biomeForTileX(landmark.tx).waystationPromptLabel()
   else:
     landmark.kind.landmarkPromptLabel()
+
+proc progressPercent(progress, total: int): int =
+  clamp((max(0, progress) * 100) div max(1, total), 0, 100)
+
+proc landmarkPromptLabel(sim: SimServer, landmark: Landmark): string =
+  case landmark.kind
+  of LandmarkFinalGate:
+    if sim.bossDefeated and sim.relicShards >= FinalGateRelicCost and
+        sim.campsActivated >= FinalGateCampCost:
+      "GATE " & $landmark.progress.finalGateProgressPercent() & "%"
+    elif sim.relicShards >= FinalGateRelicCost and
+        sim.campsActivated >= FinalGateCampCost:
+      "GATE BOSS"
+    else:
+      "GATE C" & $min(sim.campsActivated, FinalGateCampCost) & "/" &
+        $FinalGateCampCost & " R" & $min(sim.relicShards, FinalGateRelicCost) &
+        "/" & $FinalGateRelicCost
+  of LandmarkRescue:
+    if landmark.progress > 0:
+      "RESCUE " & $progressPercent(landmark.progress, RescueEventTicks) & "%"
+    else:
+      landmark.landmarkPromptLabel()
+  of LandmarkLair:
+    if landmark.hp < LairHp:
+      "LAIR " & $progressPercent(LairHp - max(0, landmark.hp), LairHp) & "%"
+    else:
+      landmark.landmarkPromptLabel()
+  of LandmarkWaystation:
+    let label = sim.tileBiomeKind(landmark.tx, landmark.ty).waystationPromptLabel()
+    if landmark.progress > 0:
+      label & " " & $progressPercent(
+        landmark.progress,
+        BiomeWaystationTicks
+      ) & "%"
+    else:
+      label
+  else:
+    landmark.landmarkPromptLabel()
+
+proc landmarkPromptColor(landmark: Landmark, prompt: string): uint8 =
+  if prompt.contains("%"):
+    14'u8
+  elif landmark.campIsAid() or landmark.campIsRally() or
+      landmark.campIsWarded() or landmark.campIsProvisioned():
+    11'u8
+  elif landmark.kind == LandmarkCamp and landmark.done:
+    10'u8
+  elif landmark.kind == LandmarkWaystation:
+    14'u8
+  else:
+    2'u8
 
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
@@ -2239,6 +2274,7 @@ proc addTerrainObjects(
 
 proc addLandmarkObjects(
   sim: SimServer,
+  packet: var seq[uint8],
   objects: var seq[WorldSpriteObject],
   currentIds: var seq[int],
   cameraX,
@@ -2266,16 +2302,28 @@ proc addLandmarkObjects(
       viewportHeight
     )
     let
-      prompt = landmark.landmarkPromptLabel()
+      prompt = sim.landmarkPromptLabel(landmark)
+      promptSprite = sim.buildSpriteProtocolTextSprite(
+        [prompt],
+        landmark.landmarkPromptColor(prompt)
+      )
+      promptSpriteId = i.landmarkDynamicPromptSpriteId()
       promptWidth = sim.textFont.textWidth(prompt)
       promptHeight = sim.textFont.height
+    packet.addSprite(
+      promptSpriteId,
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
     objects.addWorldSpriteObject(
       currentIds,
       i.landmarkPromptObjectId(),
       landmark.landmarkWorldX() - cameraX -
         max(0, (promptWidth - sprite.width) div 2),
       landmark.landmarkWorldY() - cameraY - promptHeight - 3,
-      landmark.landmarkPromptSpriteId(),
+      promptSpriteId,
       promptWidth,
       promptHeight,
       viewportWidth,
@@ -2335,6 +2383,7 @@ proc addWorldObjects(
     viewportHeight
   )
   sim.addLandmarkObjects(
+    packet,
     objects,
     currentIds,
     cameraX,

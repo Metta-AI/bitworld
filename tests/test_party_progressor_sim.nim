@@ -1107,7 +1107,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   sim.mobs.setLen(0)
   sim.pickups.setLen(0)
   sim.landmarks.setLen(0)
-  sim.fillGround(GroundGrass)
+  sim.fillGround(GroundGrass, BiomeForest)
 
   let playerIndex = sim.addPlayer("player1")
   sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
@@ -1262,7 +1262,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
   doAssert "prompt forage h" in labels
-  doAssert "prompt gate hold" in labels
+  doAssert "prompt gate c0/2 r0/3" in labels
 
   let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
     it.label
@@ -1272,6 +1272,68 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt hearth h" in spriteLabels
   doAssert "prompt lantern d" in spriteLabels
   doAssert "prompt ward t" in spriteLabels
+
+proc testSpriteProtocolShowsObjectiveProgressPrompts() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass, BiomeSwamp)
+  sim.bossDefeated = true
+  sim.relicShards = FinalGateRelicCost
+  sim.campsActivated = FinalGateCampCost
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  let
+    baseTx = sim.players[playerIndex].x div WorldTileSize
+    baseTy = sim.players[playerIndex].y div WorldTileSize
+  sim.landmarks.add(Landmark(
+    tx: baseTx,
+    ty: baseTy,
+    kind: LandmarkRescue,
+    hp: 1,
+    done: false,
+    progress: RescueEventTicks div 2
+  ))
+  sim.landmarks.add(Landmark(
+    tx: baseTx + 1,
+    ty: baseTy,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: false,
+    progress: BiomeWaystationTicks div 2
+  ))
+  sim.landmarks.add(Landmark(
+    tx: baseTx + 2,
+    ty: baseTy,
+    kind: LandmarkLair,
+    hp: LairHp div 2,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
+    tx: baseTx + 3,
+    ty: baseTy,
+    kind: LandmarkFinalGate,
+    hp: 1,
+    done: false,
+    progress: FinalGateRitualTicks div 2
+  ))
+
+  var nextState: PlayerViewerState
+  let labels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "prompt rescue 50%" in labels
+  doAssert "prompt bridge t 50%" in labels
+  doAssert "prompt lair 50%" in labels
+  doAssert "prompt gate 50%" in labels
 
 proc testChatPingsShowCompactStatusBadges() =
   doAssert playerPingForMessage("regroup at camp") == PingRegroup
@@ -2658,6 +2720,7 @@ testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()
+testSpriteProtocolShowsObjectiveProgressPrompts()
 testChatPingsShowCompactStatusBadges()
 testSpriteProtocolShowsMonsterThreatTelegraphs()
 testTerrainMovementModifiersAffectPlayers()

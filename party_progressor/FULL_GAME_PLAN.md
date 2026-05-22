@@ -383,6 +383,9 @@ The first full-game implementation pass includes:
   appear as compact badges next to players, and landmarks show readable labels
   for resources, camp costs, relic beacons, and final-gate requirements, with
   activated camps relabeled as shelters.
+- Objective hold affordances now show live progress for rescue events,
+  waystations, lairs, and the final-gate ritual, so the larger observation
+  window communicates when party pressure is actually advancing a task.
 - Chat pings now turn short player messages such as regroup, help, relic, camp,
   food, rescue, and lair into temporary compact in-world badges so coordination
   stays readable in the 11 by 11 observation window.
