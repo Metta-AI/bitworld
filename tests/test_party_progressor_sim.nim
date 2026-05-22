@@ -319,6 +319,31 @@ proc objectSpriteLabels(parsed: ParsedPacket): seq[string] =
     if parsed.sprites.hasKey(obj.spriteId):
       result.add(parsed.sprites[obj.spriteId].label)
 
+proc firstSpriteByLabel(parsed: ParsedPacket, label: string): ParsedSprite =
+  for sprite in parsed.sprites.values:
+    if sprite.label == label:
+      return sprite
+  raise newException(ValueError, "missing sprite label: " & label)
+
+proc spriteColorStats(
+  sprite: ParsedSprite
+): tuple[opaque, buckets, largestBucket: int] =
+  var buckets: Table[int, int]
+  for offset in countup(0, sprite.pixels.len - 4, 4):
+    let
+      r = int(uint8(ord(sprite.pixels[offset])))
+      g = int(uint8(ord(sprite.pixels[offset + 1])))
+      b = int(uint8(ord(sprite.pixels[offset + 2])))
+      a = int(uint8(ord(sprite.pixels[offset + 3])))
+    if a == 0:
+      continue
+    inc result.opaque
+    let bucket = ((r div 18) shl 16) or ((g div 18) shl 8) or (b div 18)
+    buckets[bucket] = buckets.getOrDefault(bucket) + 1
+  result.buckets = buckets.len
+  for count in buckets.values:
+    result.largestBucket = max(result.largestBucket, count)
+
 proc rgbaByte(pixels: string, index: int): uint8 =
   uint8(ord(pixels[index]))
 
@@ -1070,6 +1095,12 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
   doAssert visibleLabels.anyIt(it == "role tank gear")
   doAssert visibleLabels.anyIt(it == "role dps gear")
   doAssert visibleLabels.anyIt(it == "role heal gear")
+  doAssert parsed.firstSpriteByLabel("role tank gear").pixels !=
+    parsed.firstSpriteByLabel("role dps gear").pixels,
+    "tank and dps role guilds should use distinct building icons"
+  doAssert parsed.firstSpriteByLabel("role heal gear").pixels !=
+    parsed.firstSpriteByLabel("role dps gear").pixels,
+    "healer and dps role guilds should use distinct building icons"
   doAssert visibleLabels.anyIt(it.contains("role tank guard"))
   doAssert visibleLabels.anyIt(it.contains("role dps cleave"))
   doAssert visibleLabels.anyIt(it.contains("role heal pulse"))
@@ -1123,6 +1154,80 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
     tankState
   ).parseSpriteProtocolPacket().objectSpriteLabels()
   doAssert "status role healer" in healerLabels
+
+proc testCarriedInventoryTilesAcrossBottomOfPlayerView() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  let playerIndex = sim.addPlayer("carrier")
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  let carryObject = parsed.objects[CarryObjectBase + sim.players[playerIndex].id]
+  doAssert carryObject.y >= PlayerViewportHeight - WorldTileSize - 4,
+    "carried inventory should render in the bottom HUD row"
+  doAssert carryObject.x < PlayerViewportWidth div 3,
+    "carried inventory should tile from the lower-left inventory strip"
+  doAssert parsed.sprites[carryObject.spriteId].label == "food"
+
+proc testRoleSpecialAbilitiesShowColoredSpriteEffects() =
+  for item in [
+    (role: RoleTank, label: "ability tank effect"),
+    (role: RoleDps, label: "ability dps effect"),
+    (role: RoleHealer, label: "ability healer effect")
+  ]:
+    var sim = initPartyProgressorForTest()
+    sim.clearTerrain()
+    sim.mobs.setLen(0)
+    sim.pickups.setLen(0)
+    sim.landmarks.setLen(0)
+    sim.fillGround(GroundGrass)
+    let playerIndex = sim.addPlayer(item.role.roleLabel())
+    sim.players[playerIndex].applyRole(item.role)
+    sim.step([InputState(b: true)])
+
+    doAssert sim.players[playerIndex].abilityTicks > 0
+    var nextState: PlayerViewerState
+    let labels = sim.buildSpriteProtocolPlayerUpdates(
+      playerIndex,
+      initPlayerViewerState(),
+      nextState
+    ).parseSpriteProtocolPacket().objectSpriteLabels()
+    doAssert item.label in labels,
+      "B/special should display the " & item.label & " pulse"
+
+proc testGeneratedMonsterSpritesStayRichlyColored() =
+  var sim = initPartyProgressorForTest()
+  let playerIndex = sim.addPlayer("player1")
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  for label in [
+    "forest wolf",
+    "brown bear",
+    "prairie goblin",
+    "frost yeti",
+    "gate titan"
+  ]:
+    let
+      sprite = parsed.firstSpriteByLabel(label)
+      stats = sprite.spriteColorStats()
+    doAssert stats.buckets >= 5,
+      label & " should retain multiple color/detail buckets"
+    doAssert stats.largestBucket * 100 < max(1, stats.opaque) * 85,
+      label & " should not collapse into a single flat tint"
 
 proc testExpeditionObjectiveHudGuidesNextStep() =
   var sim = initPartyProgressorForTest()
@@ -4486,6 +4591,9 @@ testSpriteProtocolWeatherOverlays()
 testSpriteProtocolShowsSurvivalPressureAffordances()
 testRenderedPlayerObservationHasBiomeBackedPixels()
 testSpriteProtocolPacketMatchesReferenceParsers()
+testCarriedInventoryTilesAcrossBottomOfPlayerView()
+testRoleSpecialAbilitiesShowColoredSpriteEffects()
+testGeneratedMonsterSpritesStayRichlyColored()
 testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()

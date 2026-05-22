@@ -43,6 +43,10 @@ proc testPlayerClientSpeaksSpriteProtocol() =
   let html = readFile(clientStaticPath(CoworldPlayerClientRoute))
   doAssert "new Uint8Array([0x84" in html
   doAssert "b[0]=0x81" in html
+  doAssert "k.KeyZ||k.KeyJ" in html
+  doAssert "?32:0" in html
+  doAssert "k.KeyX||k.KeyK" in html
+  doAssert "?64:0" in html
   for messageType in ["0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07"]:
     doAssert ("type===" & messageType) in html,
       "missing sprite protocol parser case " & messageType

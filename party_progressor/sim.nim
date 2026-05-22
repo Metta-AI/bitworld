@@ -136,6 +136,7 @@ const
   FinalGateTwoRoleStep* = 2
   FinalGateThreeRoleStep* = 3
   RoleAbilityCooldown* = 36
+  RoleAbilityEffectTicks* = 18
   PingDurationTicks* = TargetFps * 4
   DownedRespawnTicks* = TargetFps * 4
   DownedRescueTicks* = TargetFps * 2
@@ -364,6 +365,7 @@ type
     role*: PlayerRole
     maxHp*: int
     abilityCooldown*: int
+    abilityTicks*: int
     guardTicks*: int
     personalFrontier*: int
     damageDone*: int
@@ -571,6 +573,9 @@ type
     landmarkSprites*: array[LandmarkKind, Sprite]
     rgbaLandmarkSprites*: array[LandmarkKind, RgbaSprite]
     landmarkBounds*: array[LandmarkKind, SpriteBounds]
+    roleGearSprites*: array[PickupKind, Sprite]
+    roleGearRgbaSprites*: array[PickupKind, RgbaSprite]
+    roleGearBounds*: array[PickupKind, SpriteBounds]
     mobSprite*: Sprite
     rgbaMobSprite*: RgbaSprite
     mobBounds*: SpriteBounds
@@ -1503,30 +1508,36 @@ proc landmarkBounds*(sim: SimServer, kind: LandmarkKind): SpriteBounds =
 proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
   ## Returns the sprite for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     sim.coinSprite
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     sim.heartSprite
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    sim.roleGearSprites[kind]
   of PickupWood, PickupFood, PickupStone, PickupGold:
     sim.landmarkSprite(kind.carryForPickup().landmarkForCarry())
 
 proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
   ## Returns the true-color sprite for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     sim.rgbaCoinSprite
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     sim.rgbaHeartSprite
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    sim.roleGearRgbaSprites[kind]
   of PickupWood, PickupFood, PickupStone, PickupGold:
     sim.landmarkRgbaSprite(kind.carryForPickup().landmarkForCarry())
 
 proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
   ## Returns the collision bounds for one pickup kind.
   case kind
-  of PickupCoin, PickupTankGear, PickupDpsGear:
+  of PickupCoin:
     sim.coinBounds
-  of PickupHeart, PickupHealerGear:
+  of PickupHeart:
     sim.heartBounds
+  of PickupTankGear, PickupDpsGear, PickupHealerGear:
+    sim.roleGearBounds[kind]
   of PickupWood, PickupFood, PickupStone, PickupGold:
     sim.landmarkBounds(kind.carryForPickup().landmarkForCarry())
 
@@ -2843,6 +2854,7 @@ proc applyRole*(player: var Actor, role: PlayerRole) =
   player.role = role
   player.maxHp = role.roleMaxHp()
   player.lives = min(player.maxHp, max(1, (oldHp * player.maxHp + oldMax - 1) div oldMax))
+  player.abilityTicks = 0
 
 proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   ## Fully resets one player and puts them back at spawn.
@@ -2886,6 +2898,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].facing = FaceDown
   sim.players[playerIndex].attackTicks = 0
   sim.players[playerIndex].attackResolved = false
+  sim.players[playerIndex].abilityTicks = 0
   sim.players[playerIndex].message = ""
   sim.players[playerIndex].pingKind = PingNone
   sim.players[playerIndex].pingTicks = 0
@@ -3098,6 +3111,26 @@ proc initSimServer*(seed = 0xB1770): SimServer =
     result.rgbaLandmarkSprites[kind] = asset.rgba
     result.landmarkBounds[kind] = result.rgbaLandmarkSprites[kind].visibleBounds()
 
+  for gear in [
+    (kind: PickupTankGear, key: "role_tank_guild", path: "guard_tower.png", fallbackX: 3, fallbackY: 3),
+    (kind: PickupDpsGear, key: "role_dps_guild", path: "blacksmith.png", fallbackX: 4, fallbackY: 3),
+    (kind: PickupHealerGear, key: "role_healer_guild", path: "monastery.png", fallbackX: 0, fallbackY: 4)
+  ]:
+    let asset = loadAssetPair(
+      assetManifest,
+      gear.key,
+      gear.path,
+      sheet.subImage(
+        gear.fallbackX * ArtCellSize,
+        gear.fallbackY * ArtCellSize,
+        ArtCellSize,
+        ArtCellSize
+      )
+    )
+    result.roleGearSprites[gear.kind] = asset.sprite
+    result.roleGearRgbaSprites[gear.kind] = asset.rgba
+    result.roleGearBounds[gear.kind] = result.roleGearRgbaSprites[gear.kind].visibleBounds()
+
   let coinAsset = loadAssetPair(
     assetManifest,
     "pickup_coin",
@@ -3280,6 +3313,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(player.role))
     result.mixHashInt(player.maxHp)
     result.mixHashInt(player.abilityCooldown)
+    result.mixHashInt(player.abilityTicks)
     result.mixHashInt(player.guardTicks)
     result.mixHashInt(player.personalFrontier)
     result.mixHashInt(player.damageDone)
@@ -3668,11 +3702,14 @@ proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
   case sim.players[playerIndex].role
   of RoleTank:
     sim.players[playerIndex].guardTicks = TankGuardTicks
+    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleDps:
+    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.applyDpsCleave(playerIndex)
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleHealer:
+    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.applyHealerPulse(playerIndex)
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   else:
@@ -6391,6 +6428,75 @@ proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, max
 proc playerColor*(playerIndex: int): uint8 =
   PlayerColors[playerIndex mod PlayerColors.len]
 
+proc roleAbilityEffectColor(role: PlayerRole): uint8 =
+  case role
+  of RoleTank:
+    HealthBarYellow
+  of RoleDps:
+    HealthBarRed
+  of RoleHealer:
+    HealthBarGreen
+  of RoleUnarmed:
+    2'u8
+
+proc renderRoleAbilityEffect(
+  fb: var Framebuffer,
+  player: Actor,
+  cameraX,
+  cameraY: int
+) =
+  ## Draws the red/yellow/green role-power pulse in legacy framebuffer views.
+  if player.lives <= 0 or player.abilityTicks <= 0:
+    return
+  let
+    centerX = boundsCenterX(player.x, player.bounds) - cameraX
+    centerY = boundsCenterY(player.y, player.bounds) - cameraY
+    color = player.role.roleAbilityEffectColor()
+    pulse = RoleAbilityEffectTicks - player.abilityTicks
+    radius = 15 + (pulse div 3)
+  for dy in -22 .. 22:
+    for dx in -22 .. 22:
+      let distance = dx * dx + dy * dy
+      if distance >= (radius - 1) * (radius - 1) and
+          distance <= (radius + 1) * (radius + 1):
+        fb.putPixel(centerX + dx, centerY + dy, color)
+  case player.role
+  of RoleTank:
+    for x in -13 .. 13:
+      fb.putPixel(centerX + x, centerY - 14, color)
+      fb.putPixel(centerX + x, centerY + 14, color)
+    for y in -10 .. 10:
+      fb.putPixel(centerX - 14, centerY + y, color)
+      fb.putPixel(centerX + 14, centerY + y, color)
+  of RoleDps:
+    for offset in -16 .. 16:
+      fb.putPixel(centerX + offset, centerY + offset, color)
+      fb.putPixel(centerX + offset, centerY - offset, color)
+  of RoleHealer:
+    for offset in -17 .. 17:
+      fb.putPixel(centerX + offset, centerY, color)
+      fb.putPixel(centerX, centerY + offset, color)
+  of RoleUnarmed:
+    discard
+
+proc renderCarryInventory(sim: var SimServer, playerIndex: int) =
+  ## Draws held supplies as a bottom inventory slot instead of over the actor.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or not player.carrying:
+    return
+  let
+    carrySprite = sim.landmarkSprite(player.carriedItem.landmarkForCarry())
+    slotX = ScreenWidth - carrySprite.width - 2
+    slotY = ScreenHeight - carrySprite.height - 2
+  for y in slotY - 1 .. slotY + carrySprite.height:
+    for x in slotX - 1 .. slotX + carrySprite.width:
+      if x == slotX - 1 or x == slotX + carrySprite.width or
+          y == slotY - 1 or y == slotY + carrySprite.height:
+        sim.fb.putPixel(x, y, 2'u8)
+  sim.fb.blitSprite(carrySprite, slotX, slotY, 0, 0)
+
 proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX, cameraY: int) =
   let
     player = sim.players[playerIndex]
@@ -6533,13 +6639,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         playerColor(i),
         otherPlayer.facing == FaceLeft
       )
-      if otherPlayer.carrying:
-        let
-          carrySprite = sim.landmarkSprite(otherPlayer.carriedItem.landmarkForCarry())
-          carryX = otherPlayer.x + otherPlayer.sprite.width div 2 -
-            carrySprite.width div 2
-          carryY = otherPlayer.y - carrySprite.height div 2 - 5
-        sim.fb.blitSprite(carrySprite, carryX, carryY, cameraX, cameraY)
+      sim.fb.renderRoleAbilityEffect(otherPlayer, cameraX, cameraY)
   for otherPlayer in sim.players:
     if otherPlayer.lives > 0 and otherPlayer.attackTicks > 0:
       let hit = sim.attackRect(otherPlayer)
@@ -6569,6 +6669,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.renderRadar(sim, playerIndex, cameraX, cameraY)
   sim.renderWeatherOverlay(sim.weatherAtPixel(player.x))
   sim.renderHud(playerIndex)
+  sim.renderCarryInventory(playerIndex)
   sim.fb.packFramebuffer()
   sim.fb.packed
 
@@ -6617,6 +6718,8 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
+    if sim.players[i].abilityTicks > 0:
+      dec sim.players[i].abilityTicks
     if sim.players[i].routeTicks > 0:
       dec sim.players[i].routeTicks
       if sim.players[i].routeTicks == 0:

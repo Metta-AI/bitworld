@@ -33,6 +33,7 @@ const
   BossLeftSpriteId = 315
   MobTelegraphEffectSpriteId = 316
   MobLungeEffectSpriteId = 317
+  RoleAbilityEffectSpriteBase = 680
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
@@ -61,15 +62,18 @@ const
   HealthSprite10Base = 710
   PlayerHealthObjectBase = 10000
   MobHealthObjectBase = 11000
-  CarryObjectBase = 12000
+  CarryObjectBase* = 12000
   StatusBadgeObjectBase = 13000
   LandmarkPromptObjectBase = 14000
   MobThreatBadgeObjectBase = 15000
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
+  RoleAbilityEffectObjectBase = 18000
   StatusBadgeSlots = 18
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
+  RoleAbilityEffectSize = 48
+  CarryHudSlotGap = 4
   HealthBarWidth = 18
   HealthBarHeight = 5
   HealthBarPad = 1
@@ -639,21 +643,59 @@ proc buildSpriteProtocolRawSprite(
 
 proc tintSpritePixels(
   pixels: openArray[uint8],
+  width,
+  height: int,
   tint: tuple[r, g, b, a: uint8],
-  strength = 88
+  species: MobSpecies,
+  strength = 48
 ): seq[uint8] =
   result = newSeq[uint8](pixels.len)
   for i in 0 ..< pixels.len:
     result[i] = pixels[i]
-  for i in countup(0, result.len - 1, 4):
-    if result[i + 3] == 0'u8:
-      continue
-    result[i] =
-      ((int(result[i]) * (100 - strength) + int(tint.r) * strength) div 100).uint8
-    result[i + 1] =
-      ((int(result[i + 1]) * (100 - strength) + int(tint.g) * strength) div 100).uint8
-    result[i + 2] =
-      ((int(result[i + 2]) * (100 - strength) + int(tint.b) * strength) div 100).uint8
+  for y in 0 ..< height:
+    for x in 0 ..< width:
+      let i = (y * width + x) * 4
+      if i + 3 >= result.len or result[i + 3] == 0'u8:
+        continue
+      let
+        originalR = int(result[i])
+        originalG = int(result[i + 1])
+        originalB = int(result[i + 2])
+        luminance = (originalR * 3 + originalG * 5 + originalB * 2) div 10
+      if luminance < 36:
+        result[i] = max(0, originalR - 6).uint8
+        result[i + 1] = max(0, originalG - 6).uint8
+        result[i + 2] = max(0, originalB - 6).uint8
+        continue
+      var
+        targetR = int(tint.r)
+        targetG = int(tint.g)
+        targetB = int(tint.b)
+        localStrength = strength
+      if luminance > 172:
+        targetR = min(255, targetR + 42)
+        targetG = min(255, targetG + 42)
+        targetB = min(255, targetB + 42)
+        localStrength = max(34, strength - 10)
+      elif luminance < 86:
+        targetR = max(0, targetR - 56)
+        targetG = max(0, targetG - 56)
+        targetB = max(0, targetB - 56)
+        localStrength = min(62, strength + 8)
+      if (x + y + ord(species)) mod 9 == 0 and luminance > 72:
+        targetR = min(255, targetR + 34)
+        targetG = min(255, targetG + 34)
+        targetB = min(255, targetB + 34)
+      elif (x * 2 + y + ord(species)) mod 11 == 0 and luminance > 64:
+        targetR = max(0, targetR - 38)
+        targetG = max(0, targetG - 38)
+        targetB = max(0, targetB - 38)
+      result[i] =
+        ((originalR * (100 - localStrength) + targetR * localStrength) div 100).uint8
+      result[i + 1] =
+        ((originalG * (100 - localStrength) + targetG * localStrength) div 100).uint8
+      result[i + 2] =
+        ((originalB * (100 - localStrength) + targetB * localStrength) div 100).uint8
 
 proc facedSize(sprite: RgbaSprite, facing: Facing): tuple[width, height: int] =
   ## Returns the rendered size for a facing rotation.
@@ -1259,6 +1301,12 @@ proc weatherOverlayObjectId(index: int): int =
 proc mobAttackEffectObjectId(mobIndex: int): int =
   MobAttackEffectObjectBase + mobIndex
 
+proc roleAbilityEffectObjectId(player: Actor): int =
+  RoleAbilityEffectObjectBase + player.id
+
+proc roleAbilityEffectSpriteId(role: PlayerRole): int =
+  RoleAbilityEffectSpriteBase + ord(role)
+
 proc mobAttackEffectSpriteId(phase: MobAttackPhase): int =
   case phase
   of MobTelegraph:
@@ -1276,6 +1324,22 @@ proc mobAttackEffectLabel(phase: MobAttackPhase): string =
     "mob lunge strike"
   of MobIdle:
     "mob idle"
+
+proc roleAbilityEffectLabel(role: PlayerRole): string =
+  "ability " & role.roleLabel() & " effect"
+
+proc roleAbilityEffectColor(
+  role: PlayerRole
+): tuple[r, g, b, a: uint8] =
+  case role
+  of RoleTank:
+    (r: 255'u8, g: 222'u8, b: 74'u8, a: 210'u8)
+  of RoleDps:
+    (r: 224'u8, g: 64'u8, b: 79'u8, a: 220'u8)
+  of RoleHealer:
+    (r: 86'u8, g: 210'u8, b: 122'u8, a: 220'u8)
+  of RoleUnarmed:
+    (r: 0'u8, g: 0'u8, b: 0'u8, a: 0'u8)
 
 proc weatherOverlayLabel(weather: WeatherKind): string =
   "weather " & weather.weatherLabel()
@@ -1404,6 +1468,67 @@ proc buildMobAttackEffectSprite(
         strike
       )
   of MobIdle:
+    discard
+
+proc buildRoleAbilityEffectSprite(
+  role: PlayerRole
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds the red/yellow/green role-power pulse used by the sprite player.
+  result.width = RoleAbilityEffectSize
+  result.height = RoleAbilityEffectSize
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let
+    center = RoleAbilityEffectSize div 2
+    color = role.roleAbilityEffectColor()
+    core = (
+      r: min(255, int(color.r) + 36).uint8,
+      g: min(255, int(color.g) + 36).uint8,
+      b: min(255, int(color.b) + 36).uint8,
+      a: 238'u8
+    )
+  for y in 0 ..< result.height:
+    for x in 0 ..< result.width:
+      let
+        dx = x - center
+        dy = y - center
+        distance = dx * dx + dy * dy
+      if distance in 400 .. 470:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, color)
+      elif distance in 260 .. 286 and (x + y) mod 2 == 0:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, color)
+  case role
+  of RoleTank:
+    for x in center - 14 .. center + 14:
+      result.pixels.putEffectPixel(result.width, result.height, x, center - 15, core)
+      result.pixels.putEffectPixel(result.width, result.height, x, center + 15, core)
+    for y in center - 10 .. center + 10:
+      result.pixels.putEffectPixel(result.width, result.height, center - 15, y, core)
+      result.pixels.putEffectPixel(result.width, result.height, center + 15, y, core)
+  of RoleDps:
+    for offset in -17 .. 17:
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        center + offset,
+        center + offset,
+        core
+      )
+      result.pixels.putEffectPixel(
+        result.width,
+        result.height,
+        center + offset,
+        center - offset,
+        core
+      )
+  of RoleHealer:
+    for offset in -18 .. 18:
+      result.pixels.putEffectPixel(result.width, result.height, center + offset, center, core)
+      result.pixels.putEffectPixel(result.width, result.height, center, center + offset, core)
+    for y in center - 6 .. center + 6:
+      for x in center - 6 .. center + 6:
+        if abs(x - center) + abs(y - center) <= 6:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, color)
+  of RoleUnarmed:
     discard
 
 proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
@@ -1974,6 +2099,16 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       phase.mobAttackEffectLabel()
     )
 
+  for role in [RoleTank, RoleDps, RoleHealer]:
+    let effect = role.buildRoleAbilityEffectSprite()
+    packet.addSprite(
+      role.roleAbilityEffectSpriteId(),
+      effect.width,
+      effect.height,
+      effect.pixels,
+      role.roleAbilityEffectLabel()
+    )
+
   let
     mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
     mobLeft = buildSpriteProtocolRawSprite(sim.rgbaMobSprite, true)
@@ -2042,8 +2177,18 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
           bossLeft
       rightId = species.mobSpeciesSpriteId(false)
       leftId = species.mobSpeciesSpriteId(true)
-      rightPixels = base.pixels.tintSpritePixels(tint)
-      leftPixels = left.pixels.tintSpritePixels(tint)
+      rightPixels = base.pixels.tintSpritePixels(
+        base.width,
+        base.height,
+        tint,
+        species
+      )
+      leftPixels = left.pixels.tintSpritePixels(
+        left.width,
+        left.height,
+        tint,
+        species
+      )
     packet.addSprite(
       rightId,
       base.width,
@@ -2386,6 +2531,37 @@ proc addAttackObjects(
       viewportHeight
     )
 
+proc addRoleAbilityEffectObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds active player special-power pulses.
+  for player in sim.players:
+    if player.lives <= 0 or player.abilityTicks <= 0 or player.role == RoleUnarmed:
+      continue
+    let
+      centerX = boundsCenterX(player.x, player.bounds)
+      centerY = boundsCenterY(player.y, player.bounds)
+      effectX = centerX - RoleAbilityEffectSize div 2 - cameraX
+      effectY = centerY - RoleAbilityEffectSize div 2 - cameraY
+    objects.addWorldSpriteObject(
+      currentIds,
+      player.roleAbilityEffectObjectId(),
+      effectX,
+      effectY,
+      player.role.roleAbilityEffectSpriteId(),
+      RoleAbilityEffectSize,
+      RoleAbilityEffectSize,
+      viewportWidth,
+      viewportHeight,
+      centerY - cameraY + RoleAbilityEffectSize
+    )
+
 proc addTerrainObjects(
   sim: SimServer,
   objects: var seq[WorldSpriteObject],
@@ -2667,6 +2843,9 @@ proc addWorldObjects(
         drawY - cameraY + badgeIndex
       )
 
+  let useCarryHud =
+    viewportWidth == PlayerViewportWidth and viewportHeight == PlayerViewportHeight
+  var carryHudSlot = 0
   for i in 0 ..< sim.players.len:
     let
       player = sim.players[i]
@@ -2696,9 +2875,22 @@ proc addWorldObjects(
       let
         carriedLandmark = player.carriedItem.landmarkForCarry()
         carriedSprite = sim.landmarkRgbaSprite(carriedLandmark)
-        carryX = player.x + playerSprite.width div 2 -
-          carriedSprite.width div 2 - cameraX
-        carryY = player.y - carriedSprite.height div 2 - 5 - cameraY
+        carryX =
+          if useCarryHud:
+            CarryHudSlotGap + carryHudSlot * (WorldTileSize + CarryHudSlotGap)
+          else:
+            player.x + playerSprite.width div 2 -
+              carriedSprite.width div 2 - cameraX
+        carryY =
+          if useCarryHud:
+            viewportHeight - carriedSprite.height - CarryHudSlotGap
+          else:
+            player.y - carriedSprite.height div 2 - 5 - cameraY
+        carrySortY =
+          if useCarryHud:
+            viewportHeight + carryHudSlot
+          else:
+            player.y - cameraY
       objects.addWorldSpriteObject(
         currentIds,
         player.carryObjectId(),
@@ -2709,8 +2901,10 @@ proc addWorldObjects(
         carriedSprite.height,
         viewportWidth,
         viewportHeight,
-        player.y - cameraY
+        carrySortY
       )
+      if useCarryHud:
+        inc carryHudSlot
     var badges: seq[StatusBadgeKind] = @[]
     if downed:
       badges.add(StatusDown)
@@ -2787,6 +2981,14 @@ proc addWorldObjects(
       viewportHeight
     )
 
+  sim.addRoleAbilityEffectObjects(
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
   sim.addAttackObjects(
     packet,
     objects,
