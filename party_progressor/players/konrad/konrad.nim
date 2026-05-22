@@ -8,7 +8,8 @@ const
   PlayerSpriteSlots = 64
   SelectedPlayerSpriteSlots = 64
   SwooshSpriteSlots = 8
-  TerrainSpriteSlots = 5
+  TerrainSpriteSlots = 16
+  LandmarkSpriteSlots = 7
   MaxDrainMessages = 256
   PathCellSize = 8
   PathGridWidth = WorldWidthPixels div PathCellSize
@@ -173,13 +174,17 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
   elif spriteId >= SelectedPlayerSpriteBase and
       spriteId < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots:
     SpritePlayer
-  elif spriteId == MobSpriteId or lower.startsWith("ghost"):
+  elif spriteId == MobSpriteId or lower.startsWith("ghost") or
+      lower.startsWith("wolf") or lower in ["wood", "food", "stone", "gold"]:
     SpriteMob
-  elif spriteId == TrollSpriteId or lower.startsWith("troll"):
+  elif spriteId == TrollSpriteId or lower.startsWith("troll") or
+      lower.startsWith("goblin"):
     SpriteTroll
-  elif spriteId == BossSpriteId or lower.startsWith("pigman"):
+  elif spriteId == BossSpriteId or lower.startsWith("pigman") or
+      lower.startsWith("bear"):
     SpriteBoss
-  elif spriteId == CoinSpriteId or lower == "coin":
+  elif spriteId == CoinSpriteId or lower == "coin" or
+      lower in ["camp", "beacon", "final gate"]:
     SpriteCoin
   elif spriteId == HeartSpriteId or lower == "heart":
     SpriteHeart
@@ -189,6 +194,9 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
   elif spriteId >= TerrainSpriteBase and
       spriteId < TerrainSpriteBase + TerrainSpriteSlots:
     SpriteTerrain
+  elif spriteId >= LandmarkSpriteBase and
+      spriteId < LandmarkSpriteBase + LandmarkSpriteSlots:
+    SpriteCoin
   elif spriteId == PlayerHudSpriteId:
     SpriteHud
   elif label.len > 0:

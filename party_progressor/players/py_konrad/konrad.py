@@ -21,8 +21,8 @@ except ImportError as exc:
 PlayerDefaultPort = 2000
 ScreenWidth = 128
 ScreenHeight = 128
-WorldWidthTiles = 32
-WorldHeightTiles = 32
+WorldWidthTiles = 96
+WorldHeightTiles = 18
 WorldTileSize = 32
 WorldWidthPixels = WorldWidthTiles * WorldTileSize
 WorldHeightPixels = WorldHeightTiles * WorldTileSize
@@ -40,6 +40,7 @@ HeartSpriteId = 303
 SwooshSpriteBase = 304
 TrollSpriteId = 312
 TerrainSpriteBase = 320
+LandmarkSpriteBase = 360
 PlayerHudSpriteId = 600
 PlayerObjectBase = 1000
 MobObjectBase = 2000
@@ -54,7 +55,8 @@ ButtonB = 1 << 6
 PlayerSpriteSlots = 64
 SelectedPlayerSpriteSlots = 64
 SwooshSpriteSlots = 8
-TerrainSpriteSlots = 5
+TerrainSpriteSlots = 16
+LandmarkSpriteSlots = 7
 MaxDrainMessages = 256
 PathCellSize = 8
 PathGridWidth = WorldWidthPixels // PathCellSize
@@ -745,13 +747,22 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
         < SelectedPlayerSpriteBase + SelectedPlayerSpriteSlots
     ):
         return SpriteKind.Player
-    if sprite_id == MobSpriteId or lower == "ghost":
+    if (
+        sprite_id == MobSpriteId
+        or lower == "ghost"
+        or lower.startswith("wolf")
+        or lower in {"wood", "food", "stone", "gold"}
+    ):
         return SpriteKind.Mob
-    if sprite_id == TrollSpriteId or lower == "troll":
+    if sprite_id == TrollSpriteId or lower == "troll" or lower.startswith("goblin"):
         return SpriteKind.Troll
-    if sprite_id == BossSpriteId or lower == "pigman":
+    if sprite_id == BossSpriteId or lower == "pigman" or lower.startswith("bear"):
         return SpriteKind.Boss
-    if sprite_id == CoinSpriteId or lower == "coin":
+    if (
+        sprite_id == CoinSpriteId
+        or lower == "coin"
+        or lower in {"camp", "beacon", "final gate"}
+    ):
         return SpriteKind.Coin
     if sprite_id == HeartSpriteId or lower == "heart":
         return SpriteKind.Heart
@@ -759,6 +770,8 @@ def classify_sprite(sprite_id: int, label: str) -> SpriteKind:
         return SpriteKind.Swoosh
     if TerrainSpriteBase <= sprite_id < TerrainSpriteBase + TerrainSpriteSlots:
         return SpriteKind.Terrain
+    if LandmarkSpriteBase <= sprite_id < LandmarkSpriteBase + LandmarkSpriteSlots:
+        return SpriteKind.Coin
     if sprite_id == PlayerHudSpriteId:
         return SpriteKind.Hud
     if label:

@@ -76,6 +76,18 @@ proc clearTerrain(sim: var SimServer) =
   for tile in sim.tiles.mitems:
     tile = false
 
+proc fillGround(sim: var SimServer, ground: GroundKind, biome = BiomeOrigin) =
+  for item in sim.groundKinds.mitems:
+    item = ground
+  for item in sim.biomeKinds.mitems:
+    item = biome
+
+proc firstTileForBiome(biome: BiomeKind): int =
+  for tx in 0 ..< WorldWidthTiles:
+    if biomeForTileX(tx) == biome:
+      return tx
+  raise newException(ValueError, "missing biome: " & $biome)
+
 proc testPlayerDropsCarriedCoinsOnDeath() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -176,6 +188,144 @@ proc testPlayerSpeedIsSlower() =
   doAssert MaxSpeed == 264,
     "player max speed should match the borrowed Big Adventure tuning"
 
+proc testBiomeGroundsAndWeather() =
+  var sim = initPartyProgressorForTest()
+  let
+    swampTx = firstTileForBiome(BiomeSwamp)
+    desertTx = firstTileForBiome(BiomeDesert)
+    centerTy = WorldHeightTiles div 2
+  doAssert sim.tileBiomeKind(0, centerTy) == BiomeOrigin
+  doAssert sim.tileBiomeKind(swampTx, centerTy) == BiomeSwamp
+  doAssert sim.tileGroundKind(swampTx, centerTy) == GroundBridge
+  doAssert sim.tileBiomeKind(desertTx, centerTy).weatherForBiome() ==
+    WeatherDust
+  doAssert groundSpeedPercent(GroundMud) < groundSpeedPercent(GroundRoad)
+
+proc testTerrainMovementModifiersAffectPlayers() =
+  var roadSim = initPartyProgressorForTest()
+  roadSim.clearTerrain()
+  roadSim.mobs.setLen(0)
+  roadSim.pickups.setLen(0)
+  roadSim.fillGround(GroundRoad)
+  let roadPlayer = roadSim.addPlayer("road")
+  roadSim.players[roadPlayer].x = SafeZoneRightPixels + WorldTileSize
+  roadSim.players[roadPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  roadSim.players[roadPlayer].bounds =
+    roadSim.playerBoundsFor(roadSim.players[roadPlayer])
+  let startRoadX = roadSim.players[roadPlayer].x
+  for _ in 0 ..< 30:
+    roadSim.step([InputState(right: true)])
+  let roadDistance = roadSim.players[roadPlayer].x - startRoadX
+
+  var mudSim = initPartyProgressorForTest()
+  mudSim.clearTerrain()
+  mudSim.mobs.setLen(0)
+  mudSim.pickups.setLen(0)
+  mudSim.fillGround(GroundMud)
+  let mudPlayer = mudSim.addPlayer("mud")
+  mudSim.players[mudPlayer].x = SafeZoneRightPixels + WorldTileSize
+  mudSim.players[mudPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  mudSim.players[mudPlayer].bounds =
+    mudSim.playerBoundsFor(mudSim.players[mudPlayer])
+  let startMudX = mudSim.players[mudPlayer].x
+  for _ in 0 ..< 30:
+    mudSim.step([InputState(right: true)])
+  let mudDistance = mudSim.players[mudPlayer].x - startMudX
+
+  doAssert roadDistance > mudDistance,
+    "road movement should outpace mud movement"
+
+proc testResourceHarvestAndCampActivation() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  let hit = sim.attackRect(sim.players[playerIndex])
+  sim.landmarks.add(Landmark(
+    tx: clamp((hit.x + hit.w div 2) div WorldTileSize, 0, WorldWidthTiles - 1),
+    ty: clamp((hit.y + hit.h div 2) div WorldTileSize, 0, WorldHeightTiles - 1),
+    kind: LandmarkWood,
+    hp: 1,
+    done: false
+  ))
+
+  sim.step([InputState(attack: true)])
+  doAssert sim.wood == 1
+  doAssert sim.resourcesCollected == 1
+  doAssert sim.landmarks[0].done
+
+  sim.landmarks.setLen(0)
+  sim.pickups.setLen(0)
+  sim.wood = CampWoodCost
+  sim.stone = CampStoneCost
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: false
+  ))
+  sim.step([InputState()])
+  doAssert sim.campsActivated == 1
+  doAssert sim.wood == 0 and sim.stone == 0
+  doAssert sim.hasPickup(PickupTankGear)
+  doAssert sim.hasPickup(PickupDpsGear)
+  doAssert sim.hasPickup(PickupHealerGear)
+
+proc testBeaconAndBossScoring() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkBeacon,
+    hp: 1,
+    done: false
+  ))
+  sim.step([InputState()])
+
+  doAssert sim.objectivesCompleted == 1
+  doAssert sim.relicShards == 1
+  doAssert sim.teamScore() ==
+    sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue
+
+  sim.landmarks.setLen(0)
+  sim.mobs.setLen(0)
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
+  let hit = sim.attackRect(sim.players[playerIndex])
+  sim.mobs.add(Mob(
+    kind: BossMob,
+    x: hit.x,
+    y: hit.y,
+    sprite: sim.bossSprite,
+    bounds: sim.bossBounds,
+    hp: 1,
+    attackCooldown: 99
+  ))
+  sim.step([InputState(attack: true)])
+  doAssert sim.bossDefeated
+  doAssert sim.teamScore() >=
+    sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue +
+      BossScoreValue
+
 testSafeOriginAndReusableRoles()
 testFrontierScoreIsShared()
 testMobHpScalesByProgressZone()
@@ -183,4 +333,8 @@ testPlayerDropsCarriedCoinsOnDeath()
 testMobTelegraphsBeforeLunging()
 testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
+testBiomeGroundsAndWeather()
+testTerrainMovementModifiersAffectPlayers()
+testResourceHarvestAndCampActivation()
+testBeaconAndBossScoring()
 echo "All tests passed"

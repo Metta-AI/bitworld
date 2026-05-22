@@ -47,8 +47,21 @@ const
   SnakeHp* = 3
   TrollHp* = 6
   BossHp* = 18
+  WolfHp* = 4
+  BearHp* = 10
+  GoblinHp* = 5
   TrollCoinValue* = 10
   BossCoinValue* = 100
+  ObjectiveScoreValue* = 25
+  CampScoreValue* = 10
+  RelicScoreValue* = 40
+  BossScoreValue* = 150
+  CampWoodCost* = 2
+  CampStoneCost* = 1
+  ResourceNodeHp* = 2
+  LandmarkActivationRadius* = 20
+  FinalGateActivationRadius* = 28
+  BiomeCount* = 7
   TankGuardRadius* = 44
   HealerPulseRadius* = 46
   RoleAbilityCooldown* = 36
@@ -94,6 +107,7 @@ const
   SwooshSpriteBase* = 304
   TrollSpriteId* = 312
   TerrainSpriteBase* = 320
+  LandmarkSpriteBase* = 360
   SelectedTextSpriteId* = 400
   SelectedViewportSpriteId* = 401
   ReplayTickSpriteId* = 402
@@ -111,6 +125,7 @@ const
   AttackObjectBase* = 6000
   PlayerHudObjectId* = 7000
   TerrainObjectBase* = 8000
+  LandmarkObjectBase* = 9000
   CoopAttackWindow* = TargetFps
   MobSightRadius* = (WorldTileSize * 3) div 2
   MobChaseCooldown* = 4
@@ -123,6 +138,7 @@ const
   MobTelegraphLift* = 4
   MobLungeTicks* = 10
   MobLungeStep* = 2
+  TribalAssetManifestName* = "tribalcog_assets.json"
 
 type
   PlayerForm* = enum
@@ -146,6 +162,17 @@ type
     TerrainRock
     TerrainLog
     TerrainStump
+    TerrainBush
+    TerrainCactus
+    TerrainWheat
+    TerrainFish
+    TerrainStone
+    TerrainGold
+    TerrainCave
+    TerrainGoblinHut
+    TerrainGoblinTotem
+    TerrainAltar
+    TerrainCamp
 
   RgbaSprite* = object
     width*, height*: int
@@ -203,11 +230,54 @@ type
     SnakeMob
     TrollMob
     BossMob
+    WolfMob
+    BearMob
+    GoblinMob
 
   MobAttackPhase* = enum
     MobIdle
     MobTelegraph
     MobLunge
+
+  BiomeKind* = enum
+    BiomeOrigin
+    BiomeForest
+    BiomePlains
+    BiomeSwamp
+    BiomeDesert
+    BiomeSnow
+    BiomeCave
+    BiomeRuins
+
+  WeatherKind* = enum
+    WeatherClear
+    WeatherRain
+    WeatherDust
+    WeatherSnow
+    WeatherFog
+
+  GroundKind* = enum
+    GroundGrass
+    GroundRoad
+    GroundFertile
+    GroundMud
+    GroundShallowWater
+    GroundWater
+    GroundSand
+    GroundDune
+    GroundSnow
+    GroundCave
+    GroundRuins
+    GroundBridge
+
+  LandmarkKind* = enum
+    LandmarkWood
+    LandmarkFood
+    LandmarkStone
+    LandmarkGold
+    LandmarkCamp
+    LandmarkBeacon
+    LandmarkFinalGate
 
   Pickup* = object
     x*, y*: int
@@ -232,20 +302,34 @@ type
     tx*, ty*: int
     kind*: TerrainKind
 
+  Landmark* = object
+    tx*, ty*: int
+    kind*: LandmarkKind
+    hp*: int
+    done*: bool
+
   SimServer* = object
     players*: seq[Actor]
     mobs*: seq[Mob]
     pickups*: seq[Pickup]
     tiles*: seq[bool]
+    groundKinds*: seq[GroundKind]
+    biomeKinds*: seq[BiomeKind]
     terrainKinds*: seq[TerrainKind]
     terrainProps*: seq[TerrainProp]
+    landmarks*: seq[Landmark]
     playerArts*: array[PlayerForm, PlayerArt]
     playerSprite*: Sprite
     terrainSprite*: Sprite
     rgbaTerrainSprite*: RgbaSprite
+    groundSprites*: array[GroundKind, Sprite]
+    rgbaGroundSprites*: array[GroundKind, RgbaSprite]
     terrainSprites*: array[TerrainKind, Sprite]
     rgbaTerrainSprites*: array[TerrainKind, RgbaSprite]
     terrainBounds*: array[TerrainKind, SpriteBounds]
+    landmarkSprites*: array[LandmarkKind, Sprite]
+    rgbaLandmarkSprites*: array[LandmarkKind, RgbaSprite]
+    landmarkBounds*: array[LandmarkKind, SpriteBounds]
     mobSprite*: Sprite
     rgbaMobSprite*: RgbaSprite
     mobBounds*: SpriteBounds
@@ -270,6 +354,15 @@ type
     mobSpawnCooldown*: int
     nextPlayerId*: int
     teamFrontier*: int
+    maxBiomeReached*: int
+    objectivesCompleted*: int
+    campsActivated*: int
+    resourcesCollected*: int
+    wood*: int
+    food*: int
+    stone*: int
+    relicShards*: int
+    bossDefeated*: bool
 
 proc roleLabel*(role: PlayerRole): string =
   case role
@@ -281,6 +374,35 @@ proc roleLabel*(role: PlayerRole): string =
     "dps"
   of RoleHealer:
     "healer"
+
+proc biomeLabel*(biome: BiomeKind): string =
+  case biome
+  of BiomeOrigin: "origin"
+  of BiomeForest: "forest"
+  of BiomePlains: "plains"
+  of BiomeSwamp: "swamp"
+  of BiomeDesert: "desert"
+  of BiomeSnow: "snow"
+  of BiomeCave: "cave"
+  of BiomeRuins: "ruins"
+
+proc weatherLabel*(weather: WeatherKind): string =
+  case weather
+  of WeatherClear: "clear"
+  of WeatherRain: "rain"
+  of WeatherDust: "dust"
+  of WeatherSnow: "snow"
+  of WeatherFog: "fog"
+
+proc landmarkLabel*(kind: LandmarkKind): string =
+  case kind
+  of LandmarkWood: "wood"
+  of LandmarkFood: "food"
+  of LandmarkStone: "stone"
+  of LandmarkGold: "gold"
+  of LandmarkCamp: "camp"
+  of LandmarkBeacon: "beacon"
+  of LandmarkFinalGate: "final gate"
 
 proc roleMaxHp(role: PlayerRole): int =
   case role
@@ -389,6 +511,130 @@ proc sheetRgbaSprite(sheet: Image, cellX, cellY: int): RgbaSprite =
     )
   )
 
+proc transparentCell(): Image =
+  result = newImage(ArtCellSize, ArtCellSize)
+  for y in 0 ..< ArtCellSize:
+    for x in 0 ..< ArtCellSize:
+      result[x, y] = rgba(0, 0, 0, 0)
+
+proc imageAlphaBounds(image: Image): SpriteBounds =
+  var
+    minX = image.width
+    minY = image.height
+    maxX = -1
+    maxY = -1
+  for y in 0 ..< image.height:
+    for x in 0 ..< image.width:
+      if image[x, y].a < 20'u8:
+        continue
+      minX = min(minX, x)
+      minY = min(minY, y)
+      maxX = max(maxX, x)
+      maxY = max(maxY, y)
+  if maxX < minX or maxY < minY:
+    return SpriteBounds(x: 0, y: 0, w: image.width, h: image.height)
+  SpriteBounds(
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  )
+
+proc fittedArtCell(image: Image, cropAlpha = true): Image =
+  ## Fits large runtime PNGs into the game's 32 by 32 sprite budget.
+  result = transparentCell()
+  let bounds =
+    if cropAlpha:
+      image.imageAlphaBounds()
+    else:
+      SpriteBounds(x: 0, y: 0, w: image.width, h: image.height)
+  if bounds.w <= 0 or bounds.h <= 0:
+    return
+  var drawW: int
+  var drawH: int
+  if bounds.w >= bounds.h:
+    drawW = ArtCellSize
+    drawH = max(1, (bounds.h * ArtCellSize) div bounds.w)
+  else:
+    drawH = ArtCellSize
+    drawW = max(1, (bounds.w * ArtCellSize) div bounds.h)
+  let
+    offsetX = (ArtCellSize - drawW) div 2
+    offsetY = (ArtCellSize - drawH) div 2
+  for y in 0 ..< drawH:
+    for x in 0 ..< drawW:
+      let
+        sx = bounds.x + min(bounds.w - 1, (x * bounds.w) div drawW)
+        sy = bounds.y + min(bounds.h - 1, (y * bounds.h) div drawH)
+      result[offsetX + x, offsetY + y] = image[sx, sy]
+
+proc loadTribalAssetManifest*(): JsonNode =
+  ## Reads the optional runtime PNG mapping used for TribalCog borrowing.
+  let path = dataDir() / TribalAssetManifestName
+  if not fileExists(path):
+    return newJObject()
+  try:
+    result = parseJson(readFile(path))
+  except CatchableError:
+    result = newJObject()
+  if result.kind != JObject:
+    result = newJObject()
+
+proc tribalCogDataDir*(): string =
+  ## Returns the runtime asset directory for borrowed TribalCog PNGs.
+  result = getEnv("TRIBALCOG_DATA_DIR")
+  if result.len > 0:
+    return result
+  let sibling = repoDir().parentDir() / "games" / "games" / "tribalcog" / "data"
+  if dirExists(sibling):
+    return sibling
+  result = getHomeDir() / "Code" / "games" / "games" / "tribalcog" / "data"
+
+proc assetRelativePath(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string
+): string =
+  if manifest.kind == JObject and manifest.hasKey("assets"):
+    let assets = manifest["assets"]
+    if assets.kind == JObject and assets.hasKey(key) and
+        assets[key].kind == JString:
+      return assets[key].getStr()
+  fallbackRelativePath
+
+proc loadFittedAssetImage(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string,
+  fallbackImage: Image,
+  cropAlpha = true
+): Image =
+  let
+    relativePath = manifest.assetRelativePath(key, fallbackRelativePath)
+    path = tribalCogDataDir() / relativePath
+  if fileExists(path):
+    try:
+      return readImage(path).fittedArtCell(cropAlpha)
+    except CatchableError:
+      discard
+  fallbackImage.fittedArtCell(cropAlpha)
+
+proc loadAssetPair(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string,
+  fallbackImage: Image,
+  cropAlpha = true
+): tuple[sprite: Sprite, rgba: RgbaSprite] =
+  let image = loadFittedAssetImage(
+    manifest,
+    key,
+    fallbackRelativePath,
+    fallbackImage,
+    cropAlpha
+  )
+  (spriteFromImage(image), rgbaSpriteFromImage(image))
+
 proc visibleBounds*(sprite: Sprite): SpriteBounds =
   ## Measures the exact visible bounds of a palette sprite.
   var
@@ -458,9 +704,13 @@ proc terrainCollisionBounds*(
   ## Measures collision bounds for one terrain prop sprite.
   let bounds = sprite.visibleBounds()
   case kind
-  of TerrainTree, TerrainEvergreen:
+  of TerrainTree, TerrainEvergreen, TerrainCactus, TerrainBush,
+      TerrainWheat:
     bounds.lowerCenterBounds()
-  of TerrainRock, TerrainLog, TerrainStump:
+  of TerrainFish, TerrainAltar, TerrainCamp:
+    SpriteBounds()
+  of TerrainRock, TerrainLog, TerrainStump, TerrainStone, TerrainGold,
+      TerrainCave, TerrainGoblinHut, TerrainGoblinTotem:
     bounds
 
 proc loadPlayerArt(sheet: Image, row: int): PlayerArt =
@@ -502,6 +752,14 @@ proc terrainPropSprite*(sim: SimServer, kind: TerrainKind): Sprite =
   ## Returns the sprite for one terrain prop kind.
   sim.terrainSprites[kind]
 
+proc groundSprite*(sim: SimServer, kind: GroundKind): Sprite =
+  ## Returns the sprite for one ground tile kind.
+  sim.groundSprites[kind]
+
+proc groundRgbaSprite*(sim: SimServer, kind: GroundKind): RgbaSprite =
+  ## Returns the true-color sprite for one ground tile kind.
+  sim.rgbaGroundSprites[kind]
+
 proc terrainPropRgbaSprite*(sim: SimServer, kind: TerrainKind): RgbaSprite =
   ## Returns the true-color sprite for one terrain prop kind.
   sim.rgbaTerrainSprites[kind]
@@ -509,6 +767,18 @@ proc terrainPropRgbaSprite*(sim: SimServer, kind: TerrainKind): RgbaSprite =
 proc terrainPropBounds*(sim: SimServer, kind: TerrainKind): SpriteBounds =
   ## Returns the collision bounds for one terrain prop kind.
   sim.terrainBounds[kind]
+
+proc landmarkSprite*(sim: SimServer, kind: LandmarkKind): Sprite =
+  ## Returns the sprite for one expedition landmark kind.
+  sim.landmarkSprites[kind]
+
+proc landmarkRgbaSprite*(sim: SimServer, kind: LandmarkKind): RgbaSprite =
+  ## Returns the true-color sprite for one expedition landmark kind.
+  sim.rgbaLandmarkSprites[kind]
+
+proc landmarkBounds*(sim: SimServer, kind: LandmarkKind): SpriteBounds =
+  ## Returns the collision/interaction bounds for a landmark kind.
+  sim.landmarkBounds[kind]
 
 proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
   ## Returns the sprite for one pickup kind.
@@ -580,18 +850,128 @@ proc playerRgbaSwooshFor*(sim: SimServer, player: Actor): RgbaSprite =
 proc mobBoundsFor*(sim: SimServer, kind: MobKind): SpriteBounds =
   ## Returns the collision bounds for one mob kind.
   case kind
-  of SnakeMob:
+  of SnakeMob, WolfMob:
     sim.mobBounds
-  of TrollMob:
+  of TrollMob, GoblinMob:
     sim.trollBounds
-  of BossMob:
+  of BossMob, BearMob:
     sim.bossBounds
+
+proc mobSpriteFor*(sim: SimServer, kind: MobKind): Sprite =
+  ## Returns the rendered sprite for one mob kind.
+  case kind
+  of SnakeMob, WolfMob:
+    sim.mobSprite
+  of TrollMob, GoblinMob:
+    sim.trollSprite
+  of BossMob, BearMob:
+    sim.bossSprite
 
 proc tileIndex*(tx, ty: int): int =
   ty * WorldWidthTiles + tx
 
 proc inTileBounds(tx, ty: int): bool =
   tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles
+
+proc biomeForTileX*(tx: int): BiomeKind =
+  ## Maps horizontal expedition progress to a biome band.
+  if tx < SafeZoneRightTiles:
+    return BiomeOrigin
+  let
+    adventureTiles = max(1, WorldWidthTiles - SafeZoneRightTiles)
+    zone = clamp(
+      ((tx - SafeZoneRightTiles) * BiomeCount) div adventureTiles,
+      0,
+      BiomeCount - 1
+    )
+  case zone
+  of 0: BiomeForest
+  of 1: BiomePlains
+  of 2: BiomeSwamp
+  of 3: BiomeDesert
+  of 4: BiomeSnow
+  of 5: BiomeCave
+  else: BiomeRuins
+
+proc weatherForBiome*(biome: BiomeKind): WeatherKind =
+  ## Returns the deterministic weather identity for one biome.
+  case biome
+  of BiomeSwamp:
+    WeatherRain
+  of BiomeDesert:
+    WeatherDust
+  of BiomeSnow:
+    WeatherSnow
+  of BiomeCave, BiomeRuins:
+    WeatherFog
+  else:
+    WeatherClear
+
+proc biomeProgressValue*(biome: BiomeKind): int =
+  ## Returns a compact reached-biome score value.
+  case biome
+  of BiomeOrigin: 0
+  of BiomeForest: 1
+  of BiomePlains: 2
+  of BiomeSwamp: 3
+  of BiomeDesert: 4
+  of BiomeSnow: 5
+  of BiomeCave: 6
+  of BiomeRuins: 7
+
+proc groundBlocks(kind: GroundKind): bool =
+  kind == GroundWater
+
+proc baseGroundForBiome(biome: BiomeKind): GroundKind =
+  case biome
+  of BiomeOrigin, BiomeForest:
+    GroundGrass
+  of BiomePlains:
+    GroundFertile
+  of BiomeSwamp:
+    GroundMud
+  of BiomeDesert:
+    GroundSand
+  of BiomeSnow:
+    GroundSnow
+  of BiomeCave:
+    GroundCave
+  of BiomeRuins:
+    GroundRuins
+
+proc groundSpeedPercent*(kind: GroundKind): int =
+  ## Returns movement speed as a percent for the current ground.
+  case kind
+  of GroundRoad:
+    115
+  of GroundBridge:
+    105
+  of GroundMud:
+    60
+  of GroundShallowWater:
+    55
+  of GroundSnow:
+    80
+  of GroundDune:
+    85
+  of GroundCave, GroundRuins:
+    90
+  else:
+    100
+
+proc weatherSpeedPercent*(weather: WeatherKind): int =
+  ## Keeps weather meaningful but light enough to remain readable.
+  case weather
+  of WeatherRain:
+    92
+  of WeatherDust:
+    94
+  of WeatherSnow:
+    90
+  of WeatherFog:
+    96
+  else:
+    100
 
 proc worldClampPixel*(x, maxValue: int): int =
   x.clamp(0, maxValue)
@@ -672,6 +1052,46 @@ proc frontierTilesForX*(x: int): int =
 proc frontierTiles*(sim: SimServer): int =
   frontierTilesForX(sim.teamFrontier)
 
+proc tileGroundKind*(sim: SimServer, tx, ty: int): GroundKind =
+  if not inTileBounds(tx, ty) or sim.groundKinds.len == 0:
+    return GroundGrass
+  sim.groundKinds[tileIndex(tx, ty)]
+
+proc tileBiomeKind*(sim: SimServer, tx, ty: int): BiomeKind =
+  if not inTileBounds(tx, ty) or sim.biomeKinds.len == 0:
+    return biomeForTileX(tx)
+  sim.biomeKinds[tileIndex(tx, ty)]
+
+proc biomeAtPixel*(sim: SimServer, x: int): BiomeKind =
+  let tx = clamp(x div WorldTileSize, 0, WorldWidthTiles - 1)
+  sim.tileBiomeKind(tx, WorldHeightTiles div 2)
+
+proc weatherAtPixel*(sim: SimServer, x: int): WeatherKind =
+  sim.biomeAtPixel(x).weatherForBiome()
+
+proc currentBiome*(sim: SimServer): BiomeKind =
+  sim.biomeAtPixel(sim.teamFrontier)
+
+proc currentWeather*(sim: SimServer): WeatherKind =
+  sim.currentBiome().weatherForBiome()
+
+proc teamScore*(sim: SimServer): int =
+  ## Combines raw distance with expedition milestones.
+  sim.frontierTiles() +
+    sim.objectivesCompleted * ObjectiveScoreValue +
+    sim.campsActivated * CampScoreValue +
+    sim.relicShards * RelicScoreValue +
+    sim.resourcesCollected +
+    (if sim.bossDefeated: BossScoreValue else: 0)
+
+proc speedPercentAt*(sim: SimServer, x, y: int): int =
+  let
+    tx = clamp(x div WorldTileSize, 0, WorldWidthTiles - 1)
+    ty = clamp(y div WorldTileSize, 0, WorldHeightTiles - 1)
+    ground = sim.tileGroundKind(tx, ty)
+    weather = sim.tileBiomeKind(tx, ty).weatherForBiome()
+  (ground.groundSpeedPercent() * weather.weatherSpeedPercent()) div 100
+
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
   let
     worldX = x + bounds.x
@@ -697,6 +1117,8 @@ proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
 
   for ty in startTy .. endTy:
     for tx in startTx .. endTx:
+      if sim.tileGroundKind(tx, ty).groundBlocks():
+        return false
       if not sim.tiles[tileIndex(tx, ty)]:
         continue
       let
@@ -724,6 +1146,81 @@ proc clearProgressLane*(sim: var SimServer) =
     for tx in 0 .. SafeZoneRightTiles:
       if inTileBounds(tx, ty):
         sim.tiles[tileIndex(tx, ty)] = false
+
+proc terrainNoise(seed, tx, ty, salt: int): int =
+  ## Returns stable local noise without consuming the gameplay RNG stream.
+  let value = seed * 1103515245 + tx * 734287 + ty * 912931 + salt * 42349
+  abs(value) mod 100
+
+proc seedBiomeGrounds*(sim: var SimServer) =
+  ## Creates deterministic biome bands, base terrain, roads, and blockers.
+  sim.groundKinds.setLen(WorldWidthTiles * WorldHeightTiles)
+  sim.biomeKinds.setLen(WorldWidthTiles * WorldHeightTiles)
+  let centerTy = WorldHeightTiles div 2
+  for ty in 0 ..< WorldHeightTiles:
+    for tx in 0 ..< WorldWidthTiles:
+      let
+        index = tileIndex(tx, ty)
+        biome = biomeForTileX(tx)
+        laneDistance = abs(ty - centerTy)
+        noise = terrainNoise(sim.seed, tx, ty, 3)
+      var ground = biome.baseGroundForBiome()
+      if tx < SafeZoneRightTiles:
+        ground = if laneDistance <= 1: GroundRoad else: GroundGrass
+      elif laneDistance == 0:
+        ground =
+          if biome == BiomeSwamp:
+            GroundBridge
+          elif biome == BiomeCave or biome == BiomeRuins:
+            GroundRoad
+          else:
+            GroundRoad
+      elif laneDistance <= LaneHalfHeightTiles:
+        case biome
+        of BiomeSwamp:
+          ground =
+            if noise < 34:
+              GroundShallowWater
+            else:
+              GroundMud
+        of BiomeDesert:
+          ground =
+            if noise < 35: GroundDune else: GroundSand
+        of BiomeSnow:
+          ground = GroundSnow
+        of BiomeCave:
+          ground = GroundCave
+        of BiomeRuins:
+          ground = GroundRuins
+        of BiomePlains:
+          ground =
+            if noise < 45: GroundFertile else: GroundGrass
+        else:
+          ground = biome.baseGroundForBiome()
+      else:
+        case biome
+        of BiomeSwamp:
+          ground =
+            if noise < 35:
+              GroundWater
+            elif noise < 70:
+              GroundShallowWater
+            else:
+              GroundMud
+        of BiomeDesert:
+          ground =
+            if noise < 55: GroundDune else: GroundSand
+        of BiomeSnow:
+          ground = GroundSnow
+        of BiomeCave:
+          ground =
+            if noise < 18: GroundWater else: GroundCave
+        of BiomeRuins:
+          ground = GroundRuins
+        else:
+          ground = biome.baseGroundForBiome()
+      sim.groundKinds[index] = ground
+      sim.biomeKinds[index] = biome
 
 proc seedBrush*(sim: var SimServer) =
   let patchCount = max(
@@ -763,13 +1260,52 @@ proc randomTerrainKind(rng: var Rand): TerrainKind =
   else:
     TerrainStump
 
+proc randomTerrainKindForBiome(rng: var Rand, biome: BiomeKind): TerrainKind =
+  ## Chooses biome-flavored blockers and props.
+  let roll = rng.rand(99)
+  case biome
+  of BiomeDesert:
+    if roll < 55: TerrainCactus
+    elif roll < 72: TerrainRock
+    elif roll < 86: TerrainStone
+    else: TerrainStump
+  of BiomeSnow:
+    if roll < 44: TerrainEvergreen
+    elif roll < 70: TerrainRock
+    elif roll < 86: TerrainLog
+    else: TerrainStone
+  of BiomeCave:
+    if roll < 52: TerrainRock
+    elif roll < 78: TerrainStone
+    elif roll < 90: TerrainGold
+    else: TerrainCave
+  of BiomeRuins:
+    if roll < 34: TerrainRock
+    elif roll < 58: TerrainGoblinTotem
+    elif roll < 78: TerrainGoblinHut
+    else: TerrainGold
+  of BiomePlains:
+    if roll < 42: TerrainWheat
+    elif roll < 62: TerrainBush
+    elif roll < 78: TerrainTree
+    else: TerrainRock
+  of BiomeSwamp:
+    if roll < 38: TerrainBush
+    elif roll < 62: TerrainLog
+    elif roll < 78: TerrainTree
+    else: TerrainRock
+  else:
+    rng.randomTerrainKind()
+
 proc seedTerrainProps*(sim: var SimServer) =
   ## Creates visual terrain props for every solid terrain tile.
   sim.terrainProps.setLen(0)
   for ty in 0 ..< WorldHeightTiles:
     for tx in 0 ..< WorldWidthTiles:
       if sim.tiles[tileIndex(tx, ty)]:
-        let kind = sim.rng.randomTerrainKind()
+        let kind = sim.rng.randomTerrainKindForBiome(
+          sim.tileBiomeKind(tx, ty)
+        )
         sim.terrainKinds[tileIndex(tx, ty)] = kind
         sim.terrainProps.add(TerrainProp(
           tx: tx,
@@ -777,13 +1313,129 @@ proc seedTerrainProps*(sim: var SimServer) =
           kind: kind
         ))
 
+proc landmarkWorldX*(landmark: Landmark): int =
+  landmark.tx * WorldTileSize
+
+proc landmarkWorldY*(landmark: Landmark): int =
+  landmark.ty * WorldTileSize
+
+proc landmarkIsResource(kind: LandmarkKind): bool =
+  kind in {LandmarkWood, LandmarkFood, LandmarkStone, LandmarkGold}
+
+proc biomeTileRange(biome: BiomeKind): tuple[firstTx, lastTx: int] =
+  result.firstTx = WorldWidthTiles
+  result.lastTx = -1
+  for tx in 0 ..< WorldWidthTiles:
+    if biomeForTileX(tx) == biome:
+      result.firstTx = min(result.firstTx, tx)
+      result.lastTx = max(result.lastTx, tx)
+  if result.lastTx < result.firstTx:
+    result = (SafeZoneRightTiles, WorldWidthTiles - 1)
+
+proc addLandmark(
+  sim: var SimServer,
+  kind: LandmarkKind,
+  tx,
+  ty: int,
+  hp = 1
+) =
+  if not inTileBounds(tx, ty):
+    return
+  sim.landmarks.add(Landmark(
+    tx: tx,
+    ty: ty,
+    kind: kind,
+    hp: hp,
+    done: false
+  ))
+  sim.clearSpawnArea(tx, ty, 1)
+
+proc resourceKindsForBiome(
+  biome: BiomeKind
+): tuple[first, second: LandmarkKind] =
+  case biome
+  of BiomeForest:
+    (LandmarkWood, LandmarkFood)
+  of BiomePlains:
+    (LandmarkFood, LandmarkStone)
+  of BiomeSwamp:
+    (LandmarkWood, LandmarkStone)
+  of BiomeDesert:
+    (LandmarkWood, LandmarkStone)
+  of BiomeSnow:
+    (LandmarkFood, LandmarkStone)
+  of BiomeCave:
+    (LandmarkStone, LandmarkGold)
+  of BiomeRuins:
+    (LandmarkGold, LandmarkStone)
+  else:
+    (LandmarkWood, LandmarkFood)
+
+proc seedLandmarks*(sim: var SimServer) =
+  ## Places resources, camps, beacons, and the final expedition gate.
+  sim.landmarks.setLen(0)
+  let centerTy = WorldHeightTiles div 2
+  for biome in [
+    BiomeForest,
+    BiomePlains,
+    BiomeSwamp,
+    BiomeDesert,
+    BiomeSnow,
+    BiomeCave,
+    BiomeRuins
+  ]:
+    let
+      range = biome.biomeTileRange()
+      span = max(1, range.lastTx - range.firstTx)
+      resources = biome.resourceKindsForBiome()
+      upperTy = clamp(centerTy - 3, 1, WorldHeightTiles - 2)
+      lowerTy = clamp(centerTy + 3, 1, WorldHeightTiles - 2)
+      campTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          upperTy
+        else:
+          lowerTy
+    sim.addLandmark(
+      resources.first,
+      range.firstTx + max(1, span div 4),
+      upperTy,
+      ResourceNodeHp
+    )
+    sim.addLandmark(
+      resources.second,
+      range.firstTx + max(2, span div 2),
+      lowerTy,
+      ResourceNodeHp
+    )
+    if biome != BiomeForest:
+      sim.addLandmark(
+        LandmarkCamp,
+        range.firstTx + max(1, span div 3),
+        campTy,
+        1
+      )
+    sim.addLandmark(
+      LandmarkBeacon,
+      max(range.firstTx + 2, range.lastTx - 2),
+      centerTy,
+      1
+    )
+  sim.addLandmark(
+    LandmarkFinalGate,
+    WorldWidthTiles - 3,
+    centerTy,
+    1
+  )
+
 proc nextMobAttackCooldown(rng: var Rand, kind: MobKind): int =
   ## Returns the cooldown before the next mob hit.
   case kind
-  of SnakeMob:
+  of SnakeMob, WolfMob:
     45 + rng.rand(30)
-  of TrollMob:
+  of TrollMob, GoblinMob:
     16 + rng.rand(14)
+  of BearMob:
+    28 + rng.rand(18)
   of BossMob:
     35 + rng.rand(25)
 
@@ -796,14 +1448,22 @@ proc mobMaxHp*(kind: MobKind, x: int): int =
     TrollHp + zone * 2
   of BossMob:
     BossHp + zone * 3
+  of WolfMob:
+    WolfHp + zone
+  of BearMob:
+    BearHp + zone * 2
+  of GoblinMob:
+    GoblinHp + zone * 2
 
 proc mobDamage(mob: Mob): int =
   let zone = mobZoneX(mob.x)
   case mob.kind
-  of SnakeMob:
+  of SnakeMob, WolfMob:
     1 + zone div 4
-  of TrollMob:
+  of TrollMob, GoblinMob:
     2 + zone div 3
+  of BearMob:
+    2 + zone div 2
   of BossMob:
     3 + zone div 2
 
@@ -844,6 +1504,7 @@ proc spawnOneMob*(
   sprite: Sprite,
   hp: int
 ): bool =
+  discard sprite
   discard hp
   let bounds = sim.mobBoundsFor(kind)
   for _ in 0 ..< 128:
@@ -858,7 +1519,45 @@ proc spawnOneMob*(
         kind: kind,
         x: px,
         y: py,
-        sprite: sprite,
+        sprite: sim.mobSpriteFor(kind),
+        bounds: bounds,
+        wanderCooldown: MobSpawnWanderCooldown +
+          sim.rng.rand(MobSpawnWanderJitter),
+        hp: mobMaxHp(kind, px),
+        attackCooldown: sim.rng.nextMobAttackCooldown(kind)
+      )
+      return true
+  false
+
+proc spawnOneMobInRange*(
+  sim: var SimServer,
+  kind: MobKind,
+  firstTx,
+  lastTx: int
+): bool =
+  ## Spawns one mob inside a biome range while preserving the main lane.
+  let
+    bounds = sim.mobBoundsFor(kind)
+    lo = clamp(firstTx, SafeZoneRightTiles, WorldWidthTiles - 1)
+    hi = clamp(max(firstTx, lastTx), lo, WorldWidthTiles - 1)
+  for _ in 0 ..< 128:
+    let
+      tx = lo + sim.rng.rand(max(0, hi - lo))
+      centerTy = WorldHeightTiles div 2
+      ty = clamp(
+        centerTy - LaneHalfHeightTiles +
+          sim.rng.rand(LaneHalfHeightTiles * 2),
+        0,
+        WorldHeightTiles - 1
+      )
+      px = tx * WorldTileSize
+      py = ty * WorldTileSize
+    if sim.canSpawnMobAt(px, py, bounds):
+      sim.mobs.add Mob(
+        kind: kind,
+        x: px,
+        y: py,
+        sprite: sim.mobSpriteFor(kind),
         bounds: bounds,
         wanderCooldown: MobSpawnWanderCooldown +
           sim.rng.rand(MobSpawnWanderJitter),
@@ -890,6 +1589,55 @@ proc hasBoss*(sim: SimServer): bool =
   for mob in sim.mobs:
     if mob.kind == BossMob:
       return true
+
+proc seedBiomeMobs*(sim: var SimServer) =
+  ## Seeds the expedition with biome-themed encounters.
+  for biome in [
+    BiomeForest,
+    BiomePlains,
+    BiomeSwamp,
+    BiomeDesert,
+    BiomeSnow,
+    BiomeCave,
+    BiomeRuins
+  ]:
+    let range = biome.biomeTileRange()
+    case biome
+    of BiomeForest:
+      for _ in 0 ..< 7:
+        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
+    of BiomePlains:
+      for _ in 0 ..< 5:
+        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
+      for _ in 0 ..< 2:
+        discard sim.spawnOneMobInRange(BearMob, range.firstTx, range.lastTx)
+    of BiomeSwamp, BiomeDesert:
+      for _ in 0 ..< 5:
+        discard sim.spawnOneMobInRange(GoblinMob, range.firstTx, range.lastTx)
+      for _ in 0 ..< 3:
+        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
+    of BiomeSnow:
+      for _ in 0 ..< 5:
+        discard sim.spawnOneMobInRange(BearMob, range.firstTx, range.lastTx)
+      for _ in 0 ..< 3:
+        discard sim.spawnOneMobInRange(WolfMob, range.firstTx, range.lastTx)
+    of BiomeCave:
+      for _ in 0 ..< 6:
+        discard sim.spawnOneMobInRange(GoblinMob, range.firstTx, range.lastTx)
+      for _ in 0 ..< 3:
+        discard sim.spawnOneMobInRange(BearMob, range.firstTx, range.lastTx)
+    of BiomeRuins:
+      for _ in 0 ..< 8:
+        discard sim.spawnOneMobInRange(GoblinMob, range.firstTx, range.lastTx)
+      for _ in 0 ..< 2:
+        discard sim.spawnOneMobInRange(BearMob, range.firstTx, range.lastTx)
+    else:
+      discard
+  discard sim.spawnOneMobInRange(
+    BossMob,
+    WorldWidthTiles - ZoneWidthTiles,
+    WorldWidthTiles - 2
+  )
 
 proc mobAttackRange*(mob: Mob): int =
   ## Returns the distance where one mob can start an attack.
@@ -1024,7 +1772,34 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   let
     form = sim.players[playerIndex].form
     bounds = sim.playerCollisionBoundsFor(form, FaceDown)
-    spawn = sim.findPlayerSpawn(bounds, playerIndex)
+  var spawn = sim.findPlayerSpawn(bounds, playerIndex)
+  var bestCampTx = -1
+  for landmark in sim.landmarks:
+    if landmark.kind != LandmarkCamp or not landmark.done:
+      continue
+    if landmark.tx <= bestCampTx:
+      continue
+    for radius in 0 .. 3:
+      var found = false
+      for dy in -radius .. radius:
+        for dx in -radius .. radius:
+          let
+            tx = landmark.tx + dx
+            ty = landmark.ty + dy
+          if not inTileBounds(tx, ty):
+            continue
+          let
+            px = tx * WorldTileSize
+            py = ty * WorldTileSize
+          if sim.canOccupy(px, py, bounds):
+            spawn = (px, py)
+            bestCampTx = landmark.tx
+            found = true
+            break
+        if found:
+          break
+      if found:
+        break
   sim.players[playerIndex].x = spawn.x
   sim.players[playerIndex].y = spawn.y
   sim.players[playerIndex].sprite = sim.playerArts[form].sprites[PlayerFront]
@@ -1072,65 +1847,172 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.fb = initFramebuffer()
   loadClientPalette()
   let sheet = readAsepriteImage(sheetPath())
+  let assetManifest = loadTribalAssetManifest()
   result.playerArts[MalePlayer] = sheet.loadPlayerArt(0)
   result.playerArts[FemalePlayer] = sheet.loadPlayerArt(1)
   result.playerSprite = result.playerArts[MalePlayer].sprites[PlayerFront]
-  result.mobSprite = sheet.sheetSprite(0, 2)
-  result.rgbaMobSprite = sheet.sheetRgbaSprite(0, 2)
+  let
+    wolfAsset = loadAssetPair(
+      assetManifest,
+      "mob_wolf",
+      "oriented/wolf.e.png",
+      sheet.subImage(0, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    )
+    goblinAsset = loadAssetPair(
+      assetManifest,
+      "mob_goblin",
+      "oriented/goblin.e.png",
+      sheet.subImage(1 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    )
+    bearAsset = loadAssetPair(
+      assetManifest,
+      "mob_bear",
+      "oriented/bear.e.png",
+      sheet.subImage(2 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    )
+  result.mobSprite = wolfAsset.sprite
+  result.rgbaMobSprite = wolfAsset.rgba
   result.mobBounds = result.rgbaMobSprite.visibleBounds()
-  result.trollSprite = sheet.sheetSprite(1, 2)
-  result.rgbaTrollSprite = sheet.sheetRgbaSprite(1, 2)
+  result.trollSprite = goblinAsset.sprite
+  result.rgbaTrollSprite = goblinAsset.rgba
   result.trollBounds = result.rgbaTrollSprite.visibleBounds()
-  result.bossSprite = sheet.sheetSprite(2, 2)
-  result.rgbaBossSprite = sheet.sheetRgbaSprite(2, 2)
+  result.bossSprite = bearAsset.sprite
+  result.rgbaBossSprite = bearAsset.rgba
   result.bossBounds = result.rgbaBossSprite.visibleBounds()
-  result.terrainSprite = sheet.sheetSprite(0, 3)
-  result.rgbaTerrainSprite = sheet.sheetRgbaSprite(0, 3)
-  result.terrainSprites[TerrainTree] = sheet.sheetSprite(1, 3)
-  result.rgbaTerrainSprites[TerrainTree] = sheet.sheetRgbaSprite(1, 3)
-  result.terrainBounds[TerrainTree] =
-    result.rgbaTerrainSprites[TerrainTree].terrainCollisionBounds(TerrainTree)
-  result.terrainSprites[TerrainEvergreen] = sheet.sheetSprite(2, 3)
-  result.rgbaTerrainSprites[TerrainEvergreen] = sheet.sheetRgbaSprite(2, 3)
-  result.terrainBounds[TerrainEvergreen] =
-    result.rgbaTerrainSprites[TerrainEvergreen].terrainCollisionBounds(
-      TerrainEvergreen
+  let
+    fallbackGround = sheet.subImage(0, 3 * ArtCellSize, ArtCellSize, ArtCellSize)
+    groundAssets: array[GroundKind, tuple[key, path: string]] = [
+      GroundGrass: ("ground_grass", "grass.png"),
+      GroundRoad: ("ground_road", "road.png"),
+      GroundFertile: ("ground_fertile", "fertile.png"),
+      GroundMud: ("ground_mud", "mud.png"),
+      GroundShallowWater: ("ground_shallow_water", "shallow_water.png"),
+      GroundWater: ("ground_water", "water.png"),
+      GroundSand: ("ground_sand", "sand.png"),
+      GroundDune: ("ground_dune", "dune.png"),
+      GroundSnow: ("ground_snow", "snow.png"),
+      GroundCave: ("ground_cave", "cave.png"),
+      GroundRuins: ("ground_ruins", "dungeon.png"),
+      GroundBridge: ("ground_bridge", "bridge.png")
+    ]
+  for kind in GroundKind:
+    let asset = loadAssetPair(
+      assetManifest,
+      groundAssets[kind].key,
+      groundAssets[kind].path,
+      fallbackGround,
+      false
     )
-  result.terrainSprites[TerrainRock] = sheet.sheetSprite(3, 3)
-  result.rgbaTerrainSprites[TerrainRock] = sheet.sheetRgbaSprite(3, 3)
-  result.terrainBounds[TerrainRock] =
-    result.rgbaTerrainSprites[TerrainRock].terrainCollisionBounds(TerrainRock)
-  result.terrainSprites[TerrainLog] = sheet.sheetSprite(4, 3)
-  result.rgbaTerrainSprites[TerrainLog] = sheet.sheetRgbaSprite(4, 3)
-  result.terrainBounds[TerrainLog] =
-    result.rgbaTerrainSprites[TerrainLog].terrainCollisionBounds(TerrainLog)
-  result.terrainSprites[TerrainStump] = sheet.sheetSprite(5, 3)
-  result.rgbaTerrainSprites[TerrainStump] = sheet.sheetRgbaSprite(5, 3)
-  result.terrainBounds[TerrainStump] =
-    result.rgbaTerrainSprites[TerrainStump].terrainCollisionBounds(
-      TerrainStump
+    result.groundSprites[kind] = asset.sprite
+    result.rgbaGroundSprites[kind] = asset.rgba
+  result.terrainSprite = result.groundSprites[GroundGrass]
+  result.rgbaTerrainSprite = result.rgbaGroundSprites[GroundGrass]
+
+  let
+    terrainFallbacks: array[TerrainKind, Image] = [
+      TerrainTree: sheet.subImage(1 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainEvergreen: sheet.subImage(2 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainRock: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainLog: sheet.subImage(4 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainStump: sheet.subImage(5 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainBush: sheet.subImage(1 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainCactus: sheet.subImage(2 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainWheat: sheet.subImage(1 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainFish: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainStone: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainGold: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainCave: sheet.subImage(3 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainGoblinHut: sheet.subImage(4 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainGoblinTotem: sheet.subImage(5 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainAltar: sheet.subImage(0 * ArtCellSize, 4 * ArtCellSize, ArtCellSize, ArtCellSize),
+      TerrainCamp: sheet.subImage(4 * ArtCellSize, 3 * ArtCellSize, ArtCellSize, ArtCellSize)
+    ]
+    terrainAssets: array[TerrainKind, tuple[key, path: string]] = [
+      TerrainTree: ("prop_tree", "tree.png"),
+      TerrainEvergreen: ("prop_evergreen", "tree.png"),
+      TerrainRock: ("prop_rock", "stone.png"),
+      TerrainLog: ("prop_log", "wood.png"),
+      TerrainStump: ("prop_stump", "wood.png"),
+      TerrainBush: ("prop_bush", "bush.png"),
+      TerrainCactus: ("prop_cactus", "cactus.png"),
+      TerrainWheat: ("prop_wheat", "wheat.png"),
+      TerrainFish: ("prop_fish", "fish.png"),
+      TerrainStone: ("prop_stone", "stone.png"),
+      TerrainGold: ("prop_gold", "gold.png"),
+      TerrainCave: ("prop_cave", "cave.png"),
+      TerrainGoblinHut: ("prop_goblin_hut", "goblin_hut.png"),
+      TerrainGoblinTotem: ("prop_goblin_totem", "goblin_totem.png"),
+      TerrainAltar: ("prop_altar", "altar.png"),
+      TerrainCamp: ("prop_camp", "lumber_camp.png")
+    ]
+  for kind in TerrainKind:
+    let asset = loadAssetPair(
+      assetManifest,
+      terrainAssets[kind].key,
+      terrainAssets[kind].path,
+      terrainFallbacks[kind]
     )
-  result.coinSprite = sheet.sheetSprite(0, 4)
-  result.rgbaCoinSprite = sheet.sheetRgbaSprite(0, 4)
+    result.terrainSprites[kind] = asset.sprite
+    result.rgbaTerrainSprites[kind] = asset.rgba
+    result.terrainBounds[kind] =
+      result.rgbaTerrainSprites[kind].terrainCollisionBounds(kind)
+
+  let
+    landmarkFallback = sheet.subImage(0, 4 * ArtCellSize, ArtCellSize, ArtCellSize)
+    landmarkAssets: array[LandmarkKind, tuple[key, path: string]] = [
+      LandmarkWood: ("landmark_wood", "wood.png"),
+      LandmarkFood: ("landmark_food", "bushel.png"),
+      LandmarkStone: ("landmark_stone", "stone.png"),
+      LandmarkGold: ("landmark_gold", "gold.png"),
+      LandmarkCamp: ("landmark_camp", "lumber_camp.png"),
+      LandmarkBeacon: ("landmark_beacon", "control_point.png"),
+      LandmarkFinalGate: ("landmark_final_gate", "altar.png")
+    ]
+  for kind in LandmarkKind:
+    let asset = loadAssetPair(
+      assetManifest,
+      landmarkAssets[kind].key,
+      landmarkAssets[kind].path,
+      landmarkFallback
+    )
+    result.landmarkSprites[kind] = asset.sprite
+    result.rgbaLandmarkSprites[kind] = asset.rgba
+    result.landmarkBounds[kind] = result.rgbaLandmarkSprites[kind].visibleBounds()
+
+  let coinAsset = loadAssetPair(
+    assetManifest,
+    "pickup_coin",
+    "goblet.png",
+    sheet.subImage(0, 4 * ArtCellSize, ArtCellSize, ArtCellSize)
+  )
+  result.coinSprite = coinAsset.sprite
+  result.rgbaCoinSprite = coinAsset.rgba
   result.coinBounds = result.rgbaCoinSprite.visibleBounds()
-  result.heartSprite = sheet.sheetSprite(1, 4)
-  result.rgbaHeartSprite = sheet.sheetRgbaSprite(1, 4)
+  let heartAsset = loadAssetPair(
+    assetManifest,
+    "pickup_heart",
+    "heart.png",
+    sheet.subImage(1 * ArtCellSize, 4 * ArtCellSize, ArtCellSize, ArtCellSize)
+  )
+  result.heartSprite = heartAsset.sprite
+  result.rgbaHeartSprite = heartAsset.rgba
   result.heartBounds = result.rgbaHeartSprite.visibleBounds()
   result.textFont = loadTiny5Font()
 
+  result.seedBiomeGrounds()
   result.seedBrush()
   result.clearProgressLane()
   let startTx = 2
   let startTy = WorldHeightTiles div 2
   result.clearSpawnArea(startTx, startTy, 5)
+  result.seedLandmarks()
   result.seedTerrainProps()
 
   result.players = @[]
   result.teamFrontier = SafeZoneRightPixels
+  result.maxBiomeReached = BiomeOrigin.biomeProgressValue()
   result.seedRoleGear()
-  result.spawnMobs(28, SnakeMob, result.mobSprite, SnakeHp)
-  result.spawnMobs(8, TrollMob, result.trollSprite, TrollHp)
-  discard result.spawnOneMob(BossMob, result.bossSprite, BossHp)
+  result.seedBiomeMobs()
   result.mobSpawnCooldown = 30
 
 proc playerScoresJson*(sim: SimServer): string =
@@ -1147,20 +2029,40 @@ proc playerScoresJson*(sim: SimServer): string =
     healingDone = newJArray()
     damageBlocked = newJArray()
     messagesSent = newJArray()
+    biomesReached = newJArray()
+    objectivesCompleted = newJArray()
+    relicShards = newJArray()
+    campsActivated = newJArray()
+    resourcesCollected = newJArray()
+    bossDefeated = newJArray()
+    partyWood = newJArray()
+    partyFood = newJArray()
+    partyStone = newJArray()
     results = newJObject()
-  let teamScore = sim.frontierTiles()
+  let
+    frontierScore = sim.frontierTiles()
+    teamScore = sim.teamScore()
   for player in sim.players:
     names.add(%player.address)
     scores.add(%teamScore)
     hearts.add(%player.lives)
     distanceWalked.add(%player.distanceWalked)
-    frontierTiles.add(%teamScore)
+    frontierTiles.add(%frontierScore)
     personalFrontierTiles.add(%frontierTilesForX(player.personalFrontier))
     roles.add(%player.role.roleLabel())
     damageDone.add(%player.damageDone)
     healingDone.add(%player.healingDone)
     damageBlocked.add(%player.damageBlocked)
     messagesSent.add(%player.messagesSent)
+    biomesReached.add(%sim.maxBiomeReached)
+    objectivesCompleted.add(%sim.objectivesCompleted)
+    relicShards.add(%sim.relicShards)
+    campsActivated.add(%sim.campsActivated)
+    resourcesCollected.add(%sim.resourcesCollected)
+    bossDefeated.add(%sim.bossDefeated)
+    partyWood.add(%sim.wood)
+    partyFood.add(%sim.food)
+    partyStone.add(%sim.stone)
   results["names"] = names
   results["scores"] = scores
   results["hearts"] = hearts
@@ -1172,6 +2074,16 @@ proc playerScoresJson*(sim: SimServer): string =
   results["healing_done"] = healingDone
   results["damage_blocked"] = damageBlocked
   results["messages_sent"] = messagesSent
+  results["team_score"] = scores
+  results["biomes_reached"] = biomesReached
+  results["objectives_completed"] = objectivesCompleted
+  results["relic_shards"] = relicShards
+  results["camps_activated"] = campsActivated
+  results["resources_collected"] = resourcesCollected
+  results["boss_defeated"] = bossDefeated
+  results["party_wood"] = partyWood
+  results["party_food"] = partyFood
+  results["party_stone"] = partyStone
   $results
 
 proc mixHash(hash: var uint64, value: uint64) =
@@ -1196,6 +2108,15 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.mobSpawnCooldown)
   result.mixHashInt(sim.nextPlayerId)
   result.mixHashInt(sim.teamFrontier)
+  result.mixHashInt(sim.maxBiomeReached)
+  result.mixHashInt(sim.objectivesCompleted)
+  result.mixHashInt(sim.campsActivated)
+  result.mixHashInt(sim.resourcesCollected)
+  result.mixHashInt(sim.wood)
+  result.mixHashInt(sim.food)
+  result.mixHashInt(sim.stone)
+  result.mixHashInt(sim.relicShards)
+  result.mixHashInt(ord(sim.bossDefeated))
   result.mixHashInt(sim.players.len)
   for player in sim.players:
     result.mixHashInt(player.id)
@@ -1244,8 +2165,17 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(pickup.y)
     result.mixHashInt(ord(pickup.kind))
     result.mixHashInt(pickup.value)
+  result.mixHashInt(sim.landmarks.len)
+  for landmark in sim.landmarks:
+    result.mixHashInt(landmark.tx)
+    result.mixHashInt(landmark.ty)
+    result.mixHashInt(ord(landmark.kind))
+    result.mixHashInt(landmark.hp)
+    result.mixHashInt(ord(landmark.done))
   for tile in sim.tiles:
     result.mixHashInt(ord(tile))
+  for ground in sim.groundKinds:
+    result.mixHashInt(ord(ground))
 
 proc moveActor(sim: SimServer, actor: var Actor, dx, dy: int) =
   if dx != 0:
@@ -1535,8 +2465,22 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     player.facing = FaceDown
   player.bounds = sim.playerBoundsFor(player)
 
-  sim.applyMomentumAxis(player, player.carryX, player.velX, true)
-  sim.applyMomentumAxis(player, player.carryY, player.velY, false)
+  let
+    footX = boundsCenterX(player.x, player.bounds)
+    footY = boundsCenterY(player.y, player.bounds)
+    speedPct = sim.speedPercentAt(footX, footY)
+  sim.applyMomentumAxis(
+    player,
+    player.carryX,
+    (player.velX * speedPct) div 100,
+    true
+  )
+  sim.applyMomentumAxis(
+    player,
+    player.carryY,
+    (player.velY * speedPct) div 100,
+    false
+  )
   if input.attack and player.attackTicks == 0:
     player.attackTicks = 5
     player.attackResolved = false
@@ -1707,6 +2651,164 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
   if sim.players[playerIndex].lives <= 0:
     sim.handlePlayerDeath(playerIndex)
 
+proc landmarkCenter(
+  sim: SimServer,
+  landmark: Landmark
+): tuple[x, y: int] =
+  let bounds = sim.landmarkBounds(landmark.kind)
+  (
+    x: landmark.landmarkWorldX() + bounds.x + max(1, bounds.w) div 2,
+    y: landmark.landmarkWorldY() + bounds.y + max(1, bounds.h) div 2
+  )
+
+proc playerNearLandmark(
+  sim: SimServer,
+  player: Actor,
+  landmark: Landmark,
+  radius: int
+): bool =
+  let
+    lc = sim.landmarkCenter(landmark)
+    pcx = boundsCenterX(player.x, player.bounds)
+    pcy = boundsCenterY(player.y, player.bounds)
+  distanceSquared(pcx, pcy, lc.x, lc.y) <= radius * radius
+
+proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
+  case kind
+  of LandmarkWood:
+    inc sim.wood
+  of LandmarkFood:
+    inc sim.food
+  of LandmarkStone:
+    inc sim.stone
+  of LandmarkGold:
+    sim.stone += 2
+  else:
+    discard
+  inc sim.resourcesCollected
+  inc sim.scoreRevision
+
+proc addCampRoleGear(sim: var SimServer, landmark: Landmark) =
+  ## Makes activated camps useful as forward role-swap stations.
+  let
+    x = landmark.landmarkWorldX()
+    y = landmark.landmarkWorldY()
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x - WorldTileSize, WorldWidthPixels - ArtCellSize),
+    y: worldClampPixel(y, WorldHeightPixels - ArtCellSize),
+    kind: PickupTankGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x, WorldWidthPixels - ArtCellSize),
+    y: worldClampPixel(y - WorldTileSize, WorldHeightPixels - ArtCellSize),
+    kind: PickupDpsGear,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x + WorldTileSize, WorldWidthPixels - ArtCellSize),
+    y: worldClampPixel(y, WorldHeightPixels - ArtCellSize),
+    kind: PickupHealerGear,
+    value: 0
+  ))
+
+proc harvestLandmark(
+  sim: var SimServer,
+  landmarkIndex,
+  playerIndex: int
+) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.landmarks[landmarkIndex].done:
+    return
+  let kind = sim.landmarks[landmarkIndex].kind
+  if not kind.landmarkIsResource():
+    return
+  sim.addResourceFromLandmark(kind)
+  sim.landmarks[landmarkIndex].hp -=
+    sim.players[playerIndex].role.roleAttackDamage()
+  if sim.landmarks[landmarkIndex].hp <= 0:
+    sim.landmarks[landmarkIndex].done = true
+  inc sim.scoreRevision
+
+proc applyLandmarkAttack(
+  sim: var SimServer,
+  playerIndex: int,
+  hit: tuple[x, y, w, h: int]
+) =
+  for landmarkIndex in 0 ..< sim.landmarks.len:
+    let landmark = sim.landmarks[landmarkIndex]
+    if landmark.done or not landmark.kind.landmarkIsResource():
+      continue
+    if rectOverlapsBounds(
+      hit.x,
+      hit.y,
+      hit.w,
+      hit.h,
+      landmark.landmarkWorldX(),
+      landmark.landmarkWorldY(),
+      sim.landmarkBounds(landmark.kind)
+    ):
+      sim.harvestLandmark(landmarkIndex, playerIndex)
+      break
+
+proc activateNearbyLandmarks(sim: var SimServer) =
+  ## Completes standing objectives and activates forward camps.
+  if sim.players.len == 0:
+    return
+  for landmarkIndex in 0 ..< sim.landmarks.len:
+    if sim.landmarks[landmarkIndex].done:
+      continue
+    let kind = sim.landmarks[landmarkIndex].kind
+    if kind.landmarkIsResource():
+      continue
+    var nearPlayer = false
+    for player in sim.players:
+      if player.lives <= 0:
+        continue
+      let radius =
+        if kind == LandmarkFinalGate:
+          FinalGateActivationRadius
+        else:
+          LandmarkActivationRadius
+      if sim.playerNearLandmark(player, sim.landmarks[landmarkIndex], radius):
+        nearPlayer = true
+        break
+    if not nearPlayer:
+      continue
+
+    case kind
+    of LandmarkCamp:
+      if sim.wood < CampWoodCost or sim.stone < CampStoneCost:
+        continue
+      sim.wood -= CampWoodCost
+      sim.stone -= CampStoneCost
+      sim.landmarks[landmarkIndex].done = true
+      inc sim.campsActivated
+      let camp = sim.landmarks[landmarkIndex]
+      sim.addCampRoleGear(camp)
+      for playerIndex in 0 ..< sim.players.len:
+        sim.players[playerIndex].lives = min(
+          sim.players[playerIndex].maxHp,
+          sim.players[playerIndex].lives + 2
+        )
+      inc sim.scoreRevision
+    of LandmarkBeacon:
+      sim.landmarks[landmarkIndex].done = true
+      inc sim.objectivesCompleted
+      inc sim.relicShards
+      inc sim.scoreRevision
+    of LandmarkFinalGate:
+      if not sim.bossDefeated:
+        continue
+      sim.landmarks[landmarkIndex].done = true
+      inc sim.objectivesCompleted
+      inc sim.scoreRevision
+    else:
+      discard
+
 proc applyAttack(sim: var SimServer) =
   if sim.players.len == 0:
     return
@@ -1724,6 +2826,7 @@ proc applyAttack(sim: var SimServer) =
 
     let player = sim.players[playerIndex]
     let hit = sim.attackRect(player)
+    var hitMob = false
     for mobIndex in 0 ..< sim.mobs.len:
       if rectOverlapsBounds(
         hit.x,
@@ -1749,8 +2852,11 @@ proc applyAttack(sim: var SimServer) =
         inc sim.scoreRevision
         mobKnockbackXs[mobIndex] += dx
         mobKnockbackYs[mobIndex] += dy
+        hitMob = true
         break
 
+    if not hitMob:
+      sim.applyLandmarkAttack(playerIndex, hit)
     sim.players[playerIndex].attackResolved = true
 
   for mobIndex in 0 ..< sim.mobs.len:
@@ -1781,6 +2887,8 @@ proc applyAttack(sim: var SimServer) =
     else:
       case mob.kind
       of BossMob:
+        sim.bossDefeated = true
+        inc sim.scoreRevision
         let sprite = sim.pickupSprite(PickupCoin)
         sim.pickups.add(Pickup(
           x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
@@ -1788,15 +2896,19 @@ proc applyAttack(sim: var SimServer) =
           kind: PickupCoin,
           value: BossCoinValue
         ))
-      of TrollMob:
+      of TrollMob, GoblinMob, BearMob:
         let sprite = sim.pickupSprite(PickupCoin)
         sim.pickups.add(Pickup(
           x: mob.x + mob.sprite.width div 2 - sprite.width div 2,
           y: mob.y + mob.sprite.height div 2 - sprite.height div 2,
           kind: PickupCoin,
-          value: TrollCoinValue
+          value:
+            if mob.kind == BearMob:
+              TrollCoinValue * 2
+            else:
+              TrollCoinValue
         ))
-      of SnakeMob:
+      of SnakeMob, WolfMob:
         let roll = sim.rng.rand(99)
         if roll < 10:
           sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupHeart, value: 1))
@@ -1949,7 +3061,7 @@ proc updateMobs*(sim: var SimServer) =
       continue
 
 proc respawnMobs(sim: var SimServer) =
-  if not sim.hasBoss():
+  if not sim.bossDefeated and not sim.hasBoss():
     discard sim.spawnOneMob(BossMob, sim.bossSprite, BossHp)
 
   if sim.snakeCount() >= TargetMobCount:
@@ -1960,10 +3072,25 @@ proc respawnMobs(sim: var SimServer) =
   if sim.mobSpawnCooldown > 0:
     return
 
-  if sim.rng.rand(99) < 20:
-    discard sim.spawnOneMob(TrollMob, sim.trollSprite, TrollHp)
+  let biome = sim.currentBiome()
+  case biome
+  of BiomeForest, BiomePlains:
+    if sim.rng.rand(99) < 18:
+      discard sim.spawnOneMob(BearMob, sim.bossSprite, BearHp)
+    else:
+      discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
+  of BiomeSwamp, BiomeDesert, BiomeCave, BiomeRuins:
+    if sim.rng.rand(99) < 30:
+      discard sim.spawnOneMob(GoblinMob, sim.trollSprite, GoblinHp)
+    else:
+      discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
+  of BiomeSnow:
+    if sim.rng.rand(99) < 45:
+      discard sim.spawnOneMob(BearMob, sim.bossSprite, BearHp)
+    else:
+      discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
   else:
-    discard sim.spawnOneMob(SnakeMob, sim.mobSprite, SnakeHp)
+    discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
   sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
 
 proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
@@ -1984,7 +3111,8 @@ proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
       let
         x = tx * WorldTileSize
         y = ty * WorldTileSize
-      sim.fb.blitSprite(sim.terrainSprite, x, y, cameraX, cameraY)
+        ground = sim.tileGroundKind(tx, ty)
+      sim.fb.blitSprite(sim.groundSprite(ground), x, y, cameraX, cameraY)
       if sim.tiles[tileIndex(tx, ty)]:
         let sprite = sim.terrainSprites[sim.terrainKinds[tileIndex(tx, ty)]]
         sim.fb.blitSprite(sprite, x, y, cameraX, cameraY)
@@ -2034,6 +3162,22 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   sim.fb.drawText(sim.textFont, "FRONT " & $frontier, 0, 0, 2'u8)
   sim.fb.drawText(sim.textFont, "HP " & $hp & "/" & $player.maxHp, 0, lineY, 2'u8)
   sim.fb.drawText(sim.textFont, player.role.roleLabel().toUpperAscii(), 0, lineY * 2, 2'u8)
+  sim.fb.drawText(
+    sim.textFont,
+    sim.currentBiome().biomeLabel().toUpperAscii() & " " &
+      sim.currentWeather().weatherLabel().toUpperAscii(),
+    0,
+    lineY * 3,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    "W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
+      " R" & $sim.relicShards,
+    0,
+    lineY * 4,
+    2'u8
+  )
 
 proc renderHealthBar*(fb: var Framebuffer, screenX, screenY, width, current, maximum: int) =
   if maximum <= 0 or width <= 0:
@@ -2109,6 +3253,35 @@ proc renderRadar*(fb: var Framebuffer, sim: SimServer, playerIndex: int, cameraX
       pos = projectToEdge(dx, dy)
     fb.putPixel(pos.x, pos.y, playerColor(i))
 
+proc renderWeatherOverlay*(sim: var SimServer, weather: WeatherKind) =
+  ## Draws a light deterministic weather layer for the local framebuffer path.
+  case weather
+  of WeatherRain:
+    for i in 0 ..< 18:
+      let
+        x = (i * 17 + sim.tickCount * 2) mod ScreenWidth
+        y = (i * 31 + sim.tickCount * 5) mod ScreenHeight
+      sim.fb.putPixel(x, y, 11'u8)
+      sim.fb.putPixel(x, y + 1, 11'u8)
+  of WeatherSnow:
+    for i in 0 ..< 16:
+      let
+        x = (i * 23 + sim.tickCount div 2) mod ScreenWidth
+        y = (i * 19 + sim.tickCount) mod ScreenHeight
+      sim.fb.putPixel(x, y, 15'u8)
+  of WeatherDust:
+    for i in 0 ..< 20:
+      let
+        x = (i * 29 + sim.tickCount * 3) mod ScreenWidth
+        y = (i * 13 + sim.tickCount div 2) mod ScreenHeight
+      sim.fb.putPixel(x, y, 9'u8)
+  of WeatherFog:
+    for y in countup(8, ScreenHeight - 1, 16):
+      for x in countup((sim.tickCount + y) mod 12, ScreenWidth - 1, 24):
+        sim.fb.putPixel(x, y, 12'u8)
+  else:
+    discard
+
 proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
   sim.fb.clearFrame(BackgroundColor)
   if playerIndex < 0 or playerIndex >= sim.players.len:
@@ -2127,6 +3300,16 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
     cameraY = worldClampPixel(player.y + player.sprite.height div 2 - ScreenHeight div 2, WorldHeightPixels - ScreenHeight)
 
   sim.renderTerrain(cameraX, cameraY)
+  for landmark in sim.landmarks:
+    if landmark.done and landmark.kind.landmarkIsResource():
+      continue
+    sim.fb.blitSprite(
+      sim.landmarkSprite(landmark.kind),
+      landmark.landmarkWorldX(),
+      landmark.landmarkWorldY(),
+      cameraX,
+      cameraY
+    )
   for pickup in sim.pickups:
     case pickup.kind
     of PickupCoin, PickupTankGear, PickupDpsGear:
@@ -2175,6 +3358,7 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         barY = p.y - cameraY - 2
       sim.fb.renderHealthBar(barX, barY, barW, p.lives, p.maxHp)
   sim.fb.renderRadar(sim, playerIndex, cameraX, cameraY)
+  sim.renderWeatherOverlay(sim.weatherAtPixel(player.x))
   sim.renderHud(playerIndex)
   sim.fb.packFramebuffer()
   sim.fb.packed
@@ -2211,6 +3395,10 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
       inc sim.scoreRevision
     if centerX > sim.teamFrontier:
       sim.teamFrontier = centerX
+      sim.maxBiomeReached = max(
+        sim.maxBiomeReached,
+        sim.currentBiome().biomeProgressValue()
+      )
       inc sim.scoreRevision
 
 proc step*(sim: var SimServer, inputs: openArray[InputState]) =
@@ -2233,6 +3421,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.updatePlayerTimersAndFrontier()
   sim.collectPickups()
   sim.applyAttack()
+  sim.activateNearbyLandmarks()
   sim.updateMobs()
   sim.resolvePlayerOverlaps()
   sim.respawnMobs()

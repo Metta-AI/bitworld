@@ -6,8 +6,8 @@ const WebSocket = require("ws");
 const PlayerDefaultPort = 2000;
 const ScreenWidth = 128;
 const ScreenHeight = 128;
-const WorldWidthTiles = 32;
-const WorldHeightTiles = 32;
+const WorldWidthTiles = 96;
+const WorldHeightTiles = 18;
 const WorldTileSize = 32;
 const WorldWidthPixels = WorldWidthTiles * WorldTileSize;
 const WorldHeightPixels = WorldHeightTiles * WorldTileSize;
@@ -25,6 +25,7 @@ const HeartSpriteId = 303;
 const SwooshSpriteBase = 304;
 const TrollSpriteId = 312;
 const TerrainSpriteBase = 320;
+const LandmarkSpriteBase = 360;
 const PlayerHudSpriteId = 600;
 const PlayerObjectBase = 1000;
 const MobObjectBase = 2000;
@@ -39,7 +40,8 @@ const ButtonB = 1 << 6;
 const PlayerSpriteSlots = 64;
 const SelectedPlayerSpriteSlots = 64;
 const SwooshSpriteSlots = 8;
-const TerrainSpriteSlots = 5;
+const TerrainSpriteSlots = 16;
+const LandmarkSpriteSlots = 7;
 const MaxDrainMessages = 256;
 const PathCellSize = 8;
 const PathGridWidth = Math.floor(WorldWidthPixels / PathCellSize);
@@ -808,16 +810,32 @@ function classifySprite(spriteId, label) {
   ) {
     return SpriteKind.Player;
   }
-  if (spriteId === MobSpriteId || lower === "ghost") return SpriteKind.Mob;
-  if (spriteId === TrollSpriteId || lower === "troll") return SpriteKind.Troll;
-  if (spriteId === BossSpriteId || lower === "pigman") return SpriteKind.Boss;
-  if (spriteId === CoinSpriteId || lower === "coin") return SpriteKind.Coin;
+  if (
+    spriteId === MobSpriteId ||
+    lower === "ghost" ||
+    lower.startsWith("wolf") ||
+    ["wood", "food", "stone", "gold"].includes(lower)
+  ) return SpriteKind.Mob;
+  if (spriteId === TrollSpriteId || lower === "troll" || lower.startsWith("goblin")) {
+    return SpriteKind.Troll;
+  }
+  if (spriteId === BossSpriteId || lower === "pigman" || lower.startsWith("bear")) {
+    return SpriteKind.Boss;
+  }
+  if (
+    spriteId === CoinSpriteId ||
+    lower === "coin" ||
+    ["camp", "beacon", "final gate"].includes(lower)
+  ) return SpriteKind.Coin;
   if (spriteId === HeartSpriteId || lower === "heart") return SpriteKind.Heart;
   if (spriteId >= SwooshSpriteBase && spriteId < SwooshSpriteBase + SwooshSpriteSlots) {
     return SpriteKind.Swoosh;
   }
   if (spriteId >= TerrainSpriteBase && spriteId < TerrainSpriteBase + TerrainSpriteSlots) {
     return SpriteKind.Terrain;
+  }
+  if (spriteId >= LandmarkSpriteBase && spriteId < LandmarkSpriteBase + LandmarkSpriteSlots) {
+    return SpriteKind.Coin;
   }
   if (spriteId === PlayerHudSpriteId) return SpriteKind.Hud;
   if (label.length > 0) return SpriteKind.Text;

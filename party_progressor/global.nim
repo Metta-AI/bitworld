@@ -113,6 +113,7 @@ type
     objectIds*: seq[int]
     hudCoins*: int
     hudLives*: int
+    hudStatus*: string
 
   WorldSpriteObject = object
     id, x, y, spriteId, sortY: int
@@ -128,6 +129,7 @@ proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
   result.hudCoins = -1
   result.hudLives = -1
+  result.hudStatus = ""
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   ## Writes one generated UI color as a global protocol RGBA pixel.
@@ -638,7 +640,7 @@ proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
   for ty in 0 ..< WorldHeightTiles:
     for tx in 0 ..< WorldWidthTiles:
       result.blitMapSprite(
-        sim.rgbaTerrainSprite,
+        sim.groundRgbaSprite(sim.tileGroundKind(tx, ty)),
         tx * WorldTileSize,
         ty * WorldTileSize
       )
@@ -1076,19 +1078,27 @@ proc terrainSpriteId(kind: TerrainKind): int =
   ## Returns the sprite id for one terrain prop kind.
   TerrainSpriteBase + ord(kind)
 
+proc landmarkSpriteId(kind: LandmarkKind): int =
+  ## Returns the sprite id for one landmark kind.
+  LandmarkSpriteBase + ord(kind)
+
 proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
+
+proc landmarkObjectId(index: int): int =
+  ## Returns the object id for one landmark instance.
+  LandmarkObjectBase + index
 
 proc mobSpriteId(mob: Mob): int =
   ## Returns the sprite id for one mob, including attack flips.
   let flipLeft = mob.attackPhase != MobIdle and mob.attackFacing == FaceLeft
   case mob.kind
-  of SnakeMob:
+  of SnakeMob, WolfMob:
     if flipLeft: MobLeftSpriteId else: MobSpriteId
-  of TrollMob:
+  of TrollMob, GoblinMob:
     if flipLeft: TrollLeftSpriteId else: TrollSpriteId
-  of BossMob:
+  of BossMob, BearMob:
     if flipLeft: BossLeftSpriteId else: BossSpriteId
 
 proc selectedPlayerIndex(sim: SimServer, playerId: int): int =
@@ -1229,41 +1239,41 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     bossLeft = buildSpriteProtocolRawSprite(sim.rgbaBossSprite, true)
     coin = buildSpriteProtocolRawSprite(sim.rgbaCoinSprite)
     heart = buildSpriteProtocolRawSprite(sim.rgbaHeartSprite)
-  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "ghost")
+  packet.addSprite(MobSpriteId, mob.width, mob.height, mob.pixels, "wolf")
   packet.addSprite(
     MobLeftSpriteId,
     mobLeft.width,
     mobLeft.height,
     mobLeft.pixels,
-    "ghost left"
+    "wolf left"
   )
   packet.addSprite(
     TrollSpriteId,
     troll.width,
     troll.height,
     troll.pixels,
-    "troll"
+    "goblin"
   )
   packet.addSprite(
     TrollLeftSpriteId,
     trollLeft.width,
     trollLeft.height,
     trollLeft.pixels,
-    "troll left"
+    "goblin left"
   )
   packet.addSprite(
     BossSpriteId,
     boss.width,
     boss.height,
     boss.pixels,
-    "pigman"
+    "bear boss"
   )
   packet.addSprite(
     BossLeftSpriteId,
     bossLeft.width,
     bossLeft.height,
     bossLeft.pixels,
-    "pigman left"
+    "bear boss left"
   )
   packet.addSprite(CoinSpriteId, coin.width, coin.height, coin.pixels, "coin")
   packet.addSprite(
@@ -1300,6 +1310,15 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       prop.pixels,
       $kind
     )
+  for kind in LandmarkKind:
+    let landmark = buildSpriteProtocolRawSprite(sim.landmarkRgbaSprite(kind))
+    packet.addSprite(
+      landmarkSpriteId(kind),
+      landmark.width,
+      landmark.height,
+      landmark.pixels,
+      kind.landmarkLabel()
+    )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
@@ -1307,7 +1326,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, ScreenWidth, 24)
+  result.addViewport(TopLeftLayerId, ScreenWidth, 48)
   result.addLayer(
     ReplayCenterBottomLayerId,
     ReplayCenterBottomLayerType,
@@ -1500,6 +1519,40 @@ proc addTerrainObjects(
       viewportHeight
     )
 
+proc addLandmarkObjects(
+  sim: SimServer,
+  objects: var seq[WorldSpriteObject],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth,
+  viewportHeight: int
+) =
+  ## Adds expedition resources, camps, beacons, and final gate objects.
+  for i in 0 ..< sim.landmarks.len:
+    let landmark = sim.landmarks[i]
+    if landmark.done and landmark.kind in {
+      LandmarkWood,
+      LandmarkFood,
+      LandmarkStone,
+      LandmarkGold
+    }:
+      continue
+    let
+      sprite = sim.landmarkRgbaSprite(landmark.kind)
+      objectId = landmarkObjectId(i)
+    objects.addWorldSpriteObject(
+      currentIds,
+      objectId,
+      landmark.landmarkWorldX() - cameraX,
+      landmark.landmarkWorldY() - cameraY,
+      landmarkSpriteId(landmark.kind),
+      sprite.width,
+      sprite.height,
+      viewportWidth,
+      viewportHeight
+    )
+
 proc addWorldObjects(
   sim: SimServer,
   packet: var seq[uint8],
@@ -1512,6 +1565,14 @@ proc addWorldObjects(
   ## Adds pickups, mobs, players, attacks, and speech bubbles.
   var objects: seq[WorldSpriteObject] = @[]
   sim.addTerrainObjects(
+    objects,
+    currentIds,
+    cameraX,
+    cameraY,
+    viewportWidth,
+    viewportHeight
+  )
+  sim.addLandmarkObjects(
     objects,
     currentIds,
     cameraX,
@@ -1648,6 +1709,12 @@ proc addPlayerHud(
     player = sim.players[playerIndex]
     frontier = sim.frontierTiles()
     lives = max(player.lives, 0)
+    statusLine1 = player.role.roleLabel().toUpperAscii() & " " &
+      sim.currentBiome().biomeLabel().toUpperAscii()
+    statusLine2 = sim.currentWeather().weatherLabel().toUpperAscii() &
+      " W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
+      " R" & $sim.relicShards
+    status = statusLine1 & "|" & statusLine2
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -1690,8 +1757,30 @@ proc addPlayerHud(
     MapLayerId,
     LivesHudSpriteId
   )
+  currentIds.add(StatusHudObjectId)
+  if state.hudStatus != status:
+    let statusText = sim.buildSpriteProtocolTextSprite(
+      [statusLine1, statusLine2],
+      2'u8
+    )
+    packet.addSprite(
+      StatusHudSpriteId,
+      statusText.width,
+      statusText.height,
+      statusText.pixels,
+      status
+    )
+  packet.addObject(
+    StatusHudObjectId,
+    2,
+    2 + (sim.textFont.height + HudGap) * 2,
+    high(int16),
+    MapLayerId,
+    StatusHudSpriteId
+  )
   nextState.hudCoins = frontier
   nextState.hudLives = lives
+  nextState.hudStatus = status
 
 proc addPlayerStatus(
   sim: SimServer,
@@ -1839,29 +1928,35 @@ proc buildSpriteProtocolUpdates*(
   )
 
   let playerIndex = sim.selectedPlayerIndex(nextState.selectedPlayerId)
+  var lines: seq[string] = @[
+    "SCORE " & $sim.teamScore() & " FRONT " & $sim.frontierTiles(),
+    sim.currentBiome().biomeLabel().toUpperAscii() & " " &
+      sim.currentWeather().weatherLabel().toUpperAscii(),
+    "W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
+      " R" & $sim.relicShards
+  ]
   if playerIndex >= 0:
-    var lines: seq[string] = @[]
     let player = sim.players[playerIndex]
     lines.add("PLAYER " & player.playerIdentity())
     lines.add("ROLE " & player.role.roleLabel())
     lines.add("HP " & $player.lives & "/" & $player.maxHp)
     lines.add("FRONT " & $frontierTilesForX(player.personalFrontier))
-    let text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
-    currentIds.add(SelectedTextObjectId)
-    result.addSprite(
-      SelectedTextSpriteId,
-      text.width,
-      text.height,
-      text.pixels
-    )
-    result.addObject(
-      SelectedTextObjectId,
-      2,
-      2,
-      0,
-      TopLeftLayerId,
-      SelectedTextSpriteId
-    )
+  let text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
+  currentIds.add(SelectedTextObjectId)
+  result.addSprite(
+    SelectedTextSpriteId,
+    text.width,
+    text.height,
+    text.pixels
+  )
+  result.addObject(
+    SelectedTextObjectId,
+    2,
+    2,
+    0,
+    TopLeftLayerId,
+    SelectedTextSpriteId
+  )
 
   if replayTick >= 0:
     let

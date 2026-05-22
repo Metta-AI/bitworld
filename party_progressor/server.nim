@@ -765,12 +765,12 @@ proc runFrameLimiter(previousTick: var MonoTime) =
 
 proc buildRewardPacket(sim: SimServer): string =
   ## Builds one reward protocol packet for the current tick.
-  let frontier = sim.frontierTiles()
+  let score = sim.teamScore()
   for player in sim.players:
     result.add("reward ")
     result.add(player.address.rewardAddress())
     result.add(" ")
-    result.add($frontier)
+    result.add($score)
     result.add("\n")
 
 proc writeScoreFile(sim: SimServer, path: string) =

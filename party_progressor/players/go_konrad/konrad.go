@@ -18,16 +18,16 @@ import (
 )
 
 const (
-	PlayerDefaultPort         = 2000
-	ScreenWidth               = 128
-	ScreenHeight              = 128
-	WorldWidthTiles           = 32
-	WorldHeightTiles          = 32
-	WorldTileSize             = 32
-	WorldWidthPixels          = WorldWidthTiles * WorldTileSize
-	WorldHeightPixels         = WorldHeightTiles * WorldTileSize
-	PlayerWebSocketPath       = "/player"
-	DefaultHost               = "localhost"
+	PlayerDefaultPort   = 2000
+	ScreenWidth         = 128
+	ScreenHeight        = 128
+	WorldWidthTiles     = 96
+	WorldHeightTiles    = 18
+	WorldTileSize       = 32
+	WorldWidthPixels    = WorldWidthTiles * WorldTileSize
+	WorldHeightPixels   = WorldHeightTiles * WorldTileSize
+	PlayerWebSocketPath = "/player"
+	DefaultHost         = "localhost"
 
 	MapSpriteId              = 1
 	MapObjectId              = 1
@@ -40,6 +40,7 @@ const (
 	SwooshSpriteBase         = 304
 	TrollSpriteId            = 312
 	TerrainSpriteBase        = 320
+	LandmarkSpriteBase       = 360
 	PlayerHudSpriteId        = 600
 	PlayerObjectBase         = 1000
 	MobObjectBase            = 2000
@@ -54,7 +55,8 @@ const (
 	PlayerSpriteSlots         = 64
 	SelectedPlayerSpriteSlots = 64
 	SwooshSpriteSlots         = 8
-	TerrainSpriteSlots        = 5
+	TerrainSpriteSlots        = 16
+	LandmarkSpriteSlots       = 7
 	MaxDrainMessages          = 256
 	PathCellSize              = 8
 	PathGridWidth             = WorldWidthPixels / PathCellSize
@@ -290,16 +292,18 @@ func classifySprite(spriteId int, label string) SpriteKind {
 		spriteId < SelectedPlayerSpriteBase+SelectedPlayerSpriteSlots {
 		return SpritePlayer
 	}
-	if spriteId == MobSpriteId || lower == "ghost" {
+	if spriteId == MobSpriteId || lower == "ghost" || strings.HasPrefix(lower, "wolf") ||
+		lower == "wood" || lower == "food" || lower == "stone" || lower == "gold" {
 		return SpriteMob
 	}
-	if spriteId == TrollSpriteId || lower == "troll" {
+	if spriteId == TrollSpriteId || lower == "troll" || strings.HasPrefix(lower, "goblin") {
 		return SpriteTroll
 	}
-	if spriteId == BossSpriteId || lower == "pigman" {
+	if spriteId == BossSpriteId || lower == "pigman" || strings.HasPrefix(lower, "bear") {
 		return SpriteBoss
 	}
-	if spriteId == CoinSpriteId || lower == "coin" {
+	if spriteId == CoinSpriteId || lower == "coin" ||
+		lower == "camp" || lower == "beacon" || lower == "final gate" {
 		return SpriteCoin
 	}
 	if spriteId == HeartSpriteId || lower == "heart" {
@@ -310,6 +314,9 @@ func classifySprite(spriteId int, label string) SpriteKind {
 	}
 	if spriteId >= TerrainSpriteBase && spriteId < TerrainSpriteBase+TerrainSpriteSlots {
 		return SpriteTerrain
+	}
+	if spriteId >= LandmarkSpriteBase && spriteId < LandmarkSpriteBase+LandmarkSpriteSlots {
+		return SpriteCoin
 	}
 	if spriteId == PlayerHudSpriteId {
 		return SpriteHud
