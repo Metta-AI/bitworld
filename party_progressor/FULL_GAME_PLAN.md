@@ -75,6 +75,16 @@ props are separate concepts:
 - Biome identity should be readable even when borrowed art has transparent
   pixels.
 
+Rivers should be adventure barriers, not decorative puddles. Borrow the
+TribalCog idea of long meandering water paths with forks, but adapt it to the
+rightward party journey: north-south rivers cut across progress, deep water
+blocks ordinary travel, shallow fringes show the river edge, and a single
+bridge row creates the readable chokepoint. Forks should split off the main
+river so the terrain feels like a water system rather than a repeated stripe.
+Crossing a bridge can trigger a one-time biome ambush on the banks, turning the
+bridge into a tactical moment where tanks hold, DPS clears, and healers keep
+the party stable.
+
 ## Weather And Biome Pressure
 
 Weather is deterministic by biome and tick:

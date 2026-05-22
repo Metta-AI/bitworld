@@ -765,6 +765,42 @@ proc testProceduralLandformsAndVisibilityShadow() =
     "procedural expedition should contain lakes and rivers"
   doAssert seeded.groundKinds.countIt(it == GroundBridge) > BiomeCount,
     "rivers should have bridge crossings on the travel route"
+  let expectedRiverSystems =
+    (ExpeditionCycleCount * BiomeCount + RiverSystemStrideSegments - 1) div
+      RiverSystemStrideSegments
+  doAssert seeded.riverCrossings.len >= expectedRiverSystems,
+    "river systems should create repeated chokepoint crossings"
+  for i in 0 ..< min(6, seeded.riverCrossings.len):
+    let crossing = seeded.riverCrossings[i]
+    doAssert seeded.tileGroundKind(crossing.tx, crossing.ty) == GroundBridge,
+      "registered river crossings should sit on bridge tiles"
+    for dx in -RiverShallowHalfWidthTiles .. RiverShallowHalfWidthTiles:
+      doAssert seeded.tileGroundKind(crossing.tx + dx, crossing.ty) ==
+        GroundBridge,
+        "bridge crossings should span the whole river width"
+    var waterAbove = false
+    var waterBelow = false
+    for dx in -RiverShallowHalfWidthTiles .. RiverShallowHalfWidthTiles:
+      if seeded.tileGroundKind(crossing.tx + dx, crossing.ty - 1) ==
+          GroundWater:
+        waterAbove = true
+      if seeded.tileGroundKind(crossing.tx + dx, crossing.ty + 1) ==
+          GroundWater:
+        waterBelow = true
+    doAssert waterAbove,
+      "river crossings should be narrow, with deep water immediately above"
+    doAssert waterBelow,
+      "river crossings should be narrow, with deep water immediately below"
+    var bridgeRows = 0
+    for ty in crossing.firstTy .. crossing.lastTy:
+      var rowHasBridge = false
+      for dx in -RiverShallowHalfWidthTiles .. RiverShallowHalfWidthTiles:
+        if seeded.tileGroundKind(crossing.tx + dx, ty) == GroundBridge:
+          rowHasBridge = true
+      if rowHasBridge:
+        inc bridgeRows
+    doAssert bridgeRows == 1,
+      "river crossings should be one-tile chokepoints instead of bridge bands"
   doAssert seeded.elevations.countIt(it >= 4) > BiomeCount,
     "procedural ridges should create meaningful high elevation"
   let
@@ -808,6 +844,38 @@ proc testProceduralLandformsAndVisibilityShadow() =
   let shadow = parsed.firstSpriteByLabel("visibility shadow")
   doAssert shadow.pixels.anyIt(it.ord != 0),
     "visibility shadow sprite should contain non-transparent pixels"
+
+proc testRiverCrossingAmbushesTriggerOnce() =
+  var sim = initPartyProgressorForTest()
+  doAssert sim.riverCrossings.len > 0,
+    "procedural rivers should expose ambush crossings"
+  sim.mobs.setLen(0)
+  sim.bossDefeated = true
+  sim.mobSpawnCooldown = TargetFps * 10
+  let
+    playerIndex = sim.addPlayer("river scout")
+    crossingIndex = 0
+    crossing = sim.riverCrossings[crossingIndex]
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  let bounds = sim.players[playerIndex].bounds
+  sim.players[playerIndex].x =
+    crossing.tx * WorldTileSize + WorldTileSize div 2 -
+      bounds.x - bounds.w div 2
+  sim.players[playerIndex].y =
+    crossing.ty * WorldTileSize + WorldTileSize div 2 -
+      bounds.y - bounds.h div 2
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+
+  sim.step([InputState()])
+  doAssert sim.riverCrossings[crossingIndex].triggered,
+    "stepping onto a river bridge should trigger its ambush"
+  doAssert sim.mobs.len >= RiverAmbushMobCount,
+    "river ambushes should spawn multiple biome enemies"
+  let mobCountAfterTrigger = sim.mobs.len
+  sim.step([InputState()])
+  doAssert sim.mobs.len == mobCountAfterTrigger,
+    "river ambushes should only trigger once per crossing"
 
 proc testEarlyBiomeForageAndRallyTactics() =
   var forestSim = initPartyProgressorForTest()
@@ -4761,6 +4829,7 @@ testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
 testProceduralExpeditionRepeatsBiomeSegments()
 testProceduralLandformsAndVisibilityShadow()
+testRiverCrossingAmbushesTriggerOnce()
 testEarlyBiomeForageAndRallyTactics()
 testSpritePlayerViewportAndBiomeBackground()
 testSpriteProtocolWeatherOverlays()

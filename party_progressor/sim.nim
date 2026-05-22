@@ -32,6 +32,12 @@ const
   ZoneWidthTiles* = 8
   ZoneWidthPixels* = ZoneWidthTiles * WorldTileSize
   LaneHalfHeightTiles* = 4
+  RiverSystemStrideSegments* = 2
+  RiverSystemSpanSegments* = 2
+  RiverDeepHalfWidthTiles* = 2
+  RiverShallowHalfWidthTiles* = 3
+  RiverAmbushMobCount* = 3
+  RiverAmbushBankOffsetTiles* = 5
   TargetMobCount* = 72
   TerrainPatchDivisor* = 52
   MinMobSpacing* = 24
@@ -567,6 +573,11 @@ type
     done*: bool
     progress*: int
 
+  RiverCrossing* = object
+    tx*, ty*: int
+    firstTy*, lastTy*: int
+    triggered*: bool
+
   SimServer* = object
     players*: seq[Actor]
     mobs*: seq[Mob]
@@ -578,6 +589,7 @@ type
     terrainKinds*: seq[TerrainKind]
     terrainProps*: seq[TerrainProp]
     landmarks*: seq[Landmark]
+    riverCrossings*: seq[RiverCrossing]
     playerArts*: array[PlayerForm, PlayerArt]
     playerSprite*: Sprite
     terrainSprite*: Sprite
@@ -2306,35 +2318,217 @@ proc setGroundFeature(
   if ground in {GroundWater, GroundShallowWater, GroundBridge}:
     sim.tiles[index] = false
 
-proc seedSegmentRiver(
+proc clampRiverTx(tx, firstTx, lastTx: int): int =
+  let
+    lo = max(firstTx + RiverShallowHalfWidthTiles, 1)
+    hi = min(lastTx - RiverShallowHalfWidthTiles, WorldWidthTiles - 2)
+  if lo > hi:
+    return clamp(tx, firstTx, lastTx)
+  clamp(tx, lo, hi)
+
+proc setRiverBand(
   sim: var SimServer,
-  segmentIndex,
+  centerTx,
+  ty,
+  firstTx,
+  lastTx: int,
+  bridge: bool
+) =
+  if not inTileBounds(centerTx, ty):
+    return
+  for dx in -RiverShallowHalfWidthTiles .. RiverShallowHalfWidthTiles:
+    let tx = centerTx + dx
+    if tx < firstTx or tx > lastTx or not inTileBounds(tx, ty):
+      continue
+    let ground =
+      if bridge:
+        GroundBridge
+      elif abs(dx) <= RiverDeepHalfWidthTiles:
+        GroundWater
+      else:
+        GroundShallowWater
+    sim.setGroundFeature(tx, ty, ground, 0)
+
+proc buildMainRiverPath(
+  sim: SimServer,
+  systemIndex,
   firstTx,
   lastTx: int
+): seq[tuple[tx, ty: int]] =
+  ## Builds a stable north-south river centerline with small local meanders.
+  let
+    span = max(1, lastTx - firstTx + 1)
+    base = firstTx + span div 2 + ((sim.seed + systemIndex * 11) mod 7) - 3
+  var tx = clampRiverTx(base, firstTx, lastTx)
+  for ty in 1 ..< WorldHeightTiles - 1:
+    if ty > 1:
+      let roll = terrainNoise(sim.seed, tx, ty, 71 + systemIndex)
+      let drift =
+        if roll < 28:
+          -1
+        elif roll > 72:
+          1
+        else:
+          0
+      tx = clampRiverTx(tx + drift, firstTx, lastTx)
+    result.add((tx: tx, ty: ty))
+
+proc pathTxAtTy(path: seq[tuple[tx, ty: int]], ty: int): int =
+  for point in path:
+    if point.ty == ty:
+      return point.tx
+  if path.len == 0:
+    return 0
+  path[path.len div 2].tx
+
+proc carveRiverPath(
+  sim: var SimServer,
+  path: seq[tuple[tx, ty: int]],
+  firstTx,
+  lastTx,
+  crossingTy: int
 ) =
-  ## Carves readable north-south rivers with bridge crossings at the main route.
+  var
+    previousTx = 0
+    previousTy = 0
+    havePrevious = false
+  for point in path:
+    let bridge = point.ty == crossingTy
+    if havePrevious and point.ty == previousTy and point.tx != previousTx:
+      let step = (if point.tx > previousTx: 1 else: -1)
+      var tx = previousTx
+      while tx != point.tx:
+        tx += step
+        sim.setRiverBand(tx, point.ty, firstTx, lastTx, bridge)
+    elif havePrevious and abs(point.tx - previousTx) > 1:
+      let step = (if point.tx > previousTx: 1 else: -1)
+      var tx = previousTx
+      while tx != point.tx:
+        tx += step
+        sim.setRiverBand(tx, point.ty, firstTx, lastTx, bridge)
+    sim.setRiverBand(point.tx, point.ty, firstTx, lastTx, bridge)
+    previousTx = point.tx
+    previousTy = point.ty
+    havePrevious = true
+
+proc buildRiverBranchPath(
+  sim: SimServer,
+  mainPath: seq[tuple[tx, ty: int]],
+  systemIndex,
+  firstTx,
+  lastTx,
+  startTy,
+  dirY,
+  sideDir: int
+): seq[tuple[tx, ty: int]] =
+  ## Builds a fork that splits from the main river and keeps running to an edge.
+  if startTy <= 1 or startTy >= WorldHeightTiles - 2 or dirY == 0:
+    return
+  var
+    tx = clampRiverTx(mainPath.pathTxAtTy(startTy), firstTx, lastTx)
+    ty = startTy
+    steps = 0
+  while ty > 0 and ty < WorldHeightTiles - 1:
+    result.add((tx: tx, ty: ty))
+    ty += dirY
+    if ty <= 0 or ty >= WorldHeightTiles - 1:
+      break
+    let
+      push = if steps mod 2 == 0: sideDir else: 0
+      roll = terrainNoise(sim.seed, tx, ty, 113 + systemIndex * 5)
+      drift =
+        if roll < 18:
+          -1
+        elif roll > 82:
+          1
+        else:
+          0
+    tx = clampRiverTx(tx + push + drift, firstTx, lastTx)
+    inc steps
+
+proc addRiverCrossing(
+  sim: var SimServer,
+  path: seq[tuple[tx, ty: int]],
+  crossingTy: int
+) =
+  if path.len == 0:
+    return
+  let crossingTx = path.pathTxAtTy(crossingTy)
+  if crossingTx <= 0:
+    return
+  for crossing in sim.riverCrossings:
+    if abs(crossing.tx - crossingTx) <= RiverShallowHalfWidthTiles and
+        crossing.ty == crossingTy:
+      return
+  sim.riverCrossings.add(RiverCrossing(
+    tx: crossingTx,
+    ty: crossingTy,
+    firstTy: 1,
+    lastTy: WorldHeightTiles - 2
+  ))
+
+proc seedLongRiverSystem(
+  sim: var SimServer,
+  systemIndex,
+  firstSegment,
+  lastSegment: int
+) =
+  ## Carves one wide vertical river barrier, plus forked tributaries.
   let
     centerTy = WorldHeightTiles div 2
-    span = max(1, lastTx - firstTx + 1)
-    riverBase = firstTx + span div 2 + ((sim.seed + segmentIndex * 17) mod 3) - 1
-  for ty in 1 ..< WorldHeightTiles - 1:
-    let riverTx = clamp(
-      riverBase + ((ty * 3 + segmentIndex * 5 + sim.seed) mod 5) - 2,
-      firstTx + 1,
-      lastTx - 1
+    firstTx = SafeZoneRightTiles + firstSegment * ExpeditionBiomeSpanTiles
+    lastTx = min(
+      WorldWidthTiles - 1,
+      SafeZoneRightTiles + (lastSegment + 1) * ExpeditionBiomeSpanTiles - 1
     )
-    for dx in -1 .. 1:
-      let tx = riverTx + dx
-      if tx < firstTx or tx > lastTx:
-        continue
-      let ground =
-        if abs(ty - centerTy) <= 1:
-          GroundBridge
-        elif dx == 0:
-          GroundWater
-        else:
-          GroundShallowWater
-      sim.setGroundFeature(tx, ty, ground, 0)
+  if firstTx >= WorldWidthTiles:
+    return
+
+  let mainPath = sim.buildMainRiverPath(systemIndex, firstTx, lastTx)
+  sim.carveRiverPath(mainPath, firstTx, lastTx, centerTy)
+  sim.addRiverCrossing(mainPath, centerTy)
+
+  let sideDir = if (sim.seed + systemIndex) mod 2 == 0: 1 else: -1
+  let branchDown = sim.buildRiverBranchPath(
+    mainPath,
+    systemIndex,
+    firstTx,
+    lastTx,
+    max(2, centerTy - 5),
+    1,
+    sideDir
+  )
+  sim.carveRiverPath(branchDown, firstTx, lastTx, centerTy)
+  sim.addRiverCrossing(branchDown, centerTy)
+
+  if systemIndex mod 2 == 1:
+    let branchUp = sim.buildRiverBranchPath(
+      mainPath,
+      systemIndex + 31,
+      firstTx,
+      lastTx,
+      min(WorldHeightTiles - 3, centerTy + 5),
+      -1,
+      -sideDir
+    )
+    sim.carveRiverPath(branchUp, firstTx, lastTx, centerTy)
+    sim.addRiverCrossing(branchUp, centerTy)
+
+proc seedLongRiverSystems(sim: var SimServer) =
+  ## Spreads readable north-south river barriers across the rightward journey.
+  sim.riverCrossings.setLen(0)
+  let totalSegments = ExpeditionCycleCount * BiomeCount
+  var
+    firstSegment = 0
+    systemIndex = 0
+  while firstSegment < totalSegments:
+    let lastSegment = min(
+      totalSegments - 1,
+      firstSegment + RiverSystemSpanSegments - 1
+    )
+    sim.seedLongRiverSystem(systemIndex, firstSegment, lastSegment)
+    firstSegment += RiverSystemStrideSegments
+    inc systemIndex
 
 proc seedSegmentLake(
   sim: var SimServer,
@@ -2393,6 +2587,12 @@ proc seedSegmentRidges(
       let ty = clamp(ridgeBase + bend div 2, 1, WorldHeightTiles - 2)
       if abs(ty - centerTy) <= LaneHalfHeightTiles:
         continue
+      if sim.tileGroundKind(tx, ty) in {
+          GroundWater,
+          GroundShallowWater,
+          GroundBridge
+        }:
+        continue
       let index = tileIndex(tx, ty)
       sim.elevations[index] = max(sim.elevations[index], 4)
       if biome in {BiomeCave, BiomeRuins, BiomeSnow} or
@@ -2401,6 +2601,7 @@ proc seedSegmentRidges(
 
 proc seedProceduralLandforms(sim: var SimServer) =
   ## Adds repeated adventure landmarks in the terrain itself: rivers, lakes, ridges.
+  sim.seedLongRiverSystems()
   for segmentIndex in 0 ..< ExpeditionCycleCount * BiomeCount:
     let
       firstTx = SafeZoneRightTiles + segmentIndex * ExpeditionBiomeSpanTiles
@@ -2411,11 +2612,6 @@ proc seedProceduralLandforms(sim: var SimServer) =
       biome = segmentIndex.biomeForSegmentIndex()
     if firstTx >= WorldWidthTiles:
       break
-    if biome in {BiomeForest, BiomePlains, BiomeSwamp, BiomeSnow,
-        BiomeCave, BiomeRuins}:
-      sim.seedSegmentRiver(segmentIndex, firstTx, lastTx)
-    elif segmentIndex mod 2 == 1:
-      sim.seedSegmentRiver(segmentIndex, firstTx, lastTx)
     sim.seedSegmentLake(segmentIndex, firstTx, lastTx, biome)
     sim.seedSegmentRidges(segmentIndex, firstTx, lastTx, biome)
 
@@ -2701,27 +2897,66 @@ proc addLandmark(
 ) =
   if not inTileBounds(tx, ty):
     return
+  var
+    placeTx = tx
+    placeTy = ty
+  if sim.tileGroundKind(placeTx, placeTy) in {
+      GroundWater,
+      GroundShallowWater,
+      GroundBridge
+    }:
+    var found = false
+    for radius in 1 .. RiverShallowHalfWidthTiles + 3:
+      for direction in [-1, 1]:
+        let nx = tx + direction * radius
+        if inTileBounds(nx, ty) and
+            sim.tileGroundKind(nx, ty) notin {
+              GroundWater,
+              GroundShallowWater,
+              GroundBridge
+            }:
+          placeTx = nx
+          found = true
+          break
+      if found:
+        break
+    if not found:
+      for radius in 1 .. 3:
+        for dy in -radius .. radius:
+          for dx in -radius .. radius:
+            let
+              nx = tx + dx
+              ny = ty + dy
+            if inTileBounds(nx, ny) and
+                sim.tileGroundKind(nx, ny) notin {
+                  GroundWater,
+                  GroundShallowWater,
+                  GroundBridge
+                }:
+              placeTx = nx
+              placeTy = ny
+              found = true
+              break
+          if found:
+            break
+        if found:
+          break
   sim.landmarks.add(Landmark(
-    tx: tx,
-    ty: ty,
+    tx: placeTx,
+    ty: placeTy,
     kind: kind,
     hp: hp,
     done: false,
     progress: 0
   ))
-  sim.clearSpawnArea(tx, ty, 1)
-  for py in ty - 1 .. ty + 1:
-    for px in tx - 1 .. tx + 1:
+  sim.clearSpawnArea(placeTx, placeTy, 1)
+  for py in placeTy - 1 .. placeTy + 1:
+    for px in placeTx - 1 .. placeTx + 1:
       if inTileBounds(px, py):
         let
           index = tileIndex(px, py)
           current = sim.groundKinds[index]
-          passable =
-            if current in {GroundWater, GroundShallowWater}:
-              GroundBridge
-            else:
-              current
-        sim.setGroundFeature(px, py, passable, min(sim.elevations[index], 1))
+        sim.setGroundFeature(px, py, current, min(sim.elevations[index], 1))
 
 proc resourceKindsForBiome(
   biome: BiomeKind
@@ -3763,6 +3998,13 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(landmark.hp)
     result.mixHashInt(ord(landmark.done))
     result.mixHashInt(landmark.progress)
+  result.mixHashInt(sim.riverCrossings.len)
+  for crossing in sim.riverCrossings:
+    result.mixHashInt(crossing.tx)
+    result.mixHashInt(crossing.ty)
+    result.mixHashInt(crossing.firstTy)
+    result.mixHashInt(crossing.lastTy)
+    result.mixHashInt(ord(crossing.triggered))
   for tile in sim.tiles:
     result.mixHashInt(ord(tile))
   for ground in sim.groundKinds:
@@ -7361,6 +7603,126 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
       )
       inc sim.scoreRevision
 
+proc centerTileForActor(actor: Actor): tuple[tx, ty: int] =
+  (
+    tx: clamp(
+      boundsCenterX(actor.x, actor.bounds) div WorldTileSize,
+      0,
+      WorldWidthTiles - 1
+    ),
+    ty: clamp(
+      boundsCenterY(actor.y, actor.bounds) div WorldTileSize,
+      0,
+      WorldHeightTiles - 1
+    )
+  )
+
+proc randomRiverAmbushSpecies(
+  sim: var SimServer,
+  biome: BiomeKind
+): MobSpecies =
+  let species = biome.monsterSpeciesForBiome()
+  if species.len == 0:
+    return SpeciesGrassSnake
+  for _ in 0 ..< 8:
+    let candidate = species[sim.rng.rand(species.high)]
+    if candidate != SpeciesGateTitan:
+      return candidate
+  for candidate in species:
+    if candidate != SpeciesGateTitan:
+      return candidate
+  SpeciesBoneGoblin
+
+proc addRiverAmbushMobAt(
+  sim: var SimServer,
+  species: MobSpecies,
+  tx,
+  ty: int,
+  target: Actor
+): bool =
+  if not inTileBounds(tx, ty) or sim.tileGroundKind(tx, ty) == GroundWater:
+    return false
+  let
+    kind = species.speciesKind()
+    bounds = sim.mobBoundsFor(kind)
+    px = tx * WorldTileSize + WorldTileSize div 2 - bounds.x - bounds.w div 2
+    py = ty * WorldTileSize + WorldTileSize div 2 - bounds.y - bounds.h div 2
+  if not sim.canSpawnMobAt(px, py, bounds):
+    return false
+  let
+    targetCenterX = boundsCenterX(target.x, target.bounds)
+    mobCenterX = boundsCenterX(px, bounds)
+  sim.mobs.add Mob(
+    kind: kind,
+    species: species,
+    x: px,
+    y: py,
+    sprite: sim.mobSpriteFor(kind),
+    bounds: bounds,
+    wanderCooldown: 0,
+    hp: mobMaxHp(kind, px),
+    attackCooldown: sim.rng.nextMobAttackCooldown(kind),
+    attackFacing: if targetCenterX < mobCenterX: FaceLeft else: FaceRight,
+    attackerIds: @[target.id],
+    attackerTicks: @[sim.tickCount]
+  )
+  true
+
+proc spawnRiverCrossingAmbush(
+  sim: var SimServer,
+  crossingIndex,
+  playerIndex: int
+) =
+  if crossingIndex < 0 or crossingIndex >= sim.riverCrossings.len or
+      playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.riverCrossings[crossingIndex].triggered = true
+  let
+    crossing = sim.riverCrossings[crossingIndex]
+    biome = sim.tileBiomeKind(crossing.tx, crossing.ty)
+    target = sim.players[playerIndex]
+    candidates = [
+      (tx: crossing.tx - RiverAmbushBankOffsetTiles, ty: crossing.ty - 1),
+      (tx: crossing.tx + RiverAmbushBankOffsetTiles, ty: crossing.ty + 1),
+      (tx: crossing.tx - RiverAmbushBankOffsetTiles, ty: crossing.ty + 1),
+      (tx: crossing.tx + RiverAmbushBankOffsetTiles, ty: crossing.ty - 1),
+      (tx: crossing.tx - RiverAmbushBankOffsetTiles - 1, ty: crossing.ty),
+      (tx: crossing.tx + RiverAmbushBankOffsetTiles + 1, ty: crossing.ty)
+    ]
+  var spawned = 0
+  for candidate in candidates:
+    if spawned >= RiverAmbushMobCount:
+      break
+    let species = sim.randomRiverAmbushSpecies(biome)
+    if sim.addRiverAmbushMobAt(species, candidate.tx, candidate.ty, target):
+      inc spawned
+  if spawned == 0:
+    let range = crossing.tx.adventureSegmentRangeForTileX()
+    for _ in 0 ..< RiverAmbushMobCount:
+      if sim.spawnOneMobInRange(
+        sim.randomRiverAmbushSpecies(biome),
+        range.firstTx,
+        range.lastTx
+      ):
+        inc spawned
+  inc sim.scoreRevision
+
+proc triggerRiverCrossingAmbushes(sim: var SimServer) =
+  if sim.riverCrossings.len == 0 or sim.players.len == 0:
+    return
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    let tile = centerTileForActor(sim.players[playerIndex])
+    for crossingIndex in 0 ..< sim.riverCrossings.len:
+      let crossing = sim.riverCrossings[crossingIndex]
+      if crossing.triggered or tile.ty != crossing.ty:
+        continue
+      if abs(tile.tx - crossing.tx) <= RiverShallowHalfWidthTiles and
+          sim.tileGroundKind(tile.tx, tile.ty) == GroundBridge:
+        sim.spawnRiverCrossingAmbush(crossingIndex, playerIndex)
+        break
+
 proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   inc sim.tickCount
   var
@@ -7381,6 +7743,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.resolvePlayerOverlaps()
   sim.addPlayerWalkDistances(startXs, startYs)
   sim.updatePlayerTimersAndFrontier()
+  sim.triggerRiverCrossingAmbushes()
   sim.collectPickups(inputs)
   sim.applyEarlyBiomeTactics()
   sim.applyFoodAndWeatherSurvival()
