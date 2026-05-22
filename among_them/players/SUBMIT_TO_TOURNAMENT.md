@@ -8,7 +8,7 @@ tournament guide name. The maintained submission guide is
 `how_to_submit_coworld_policy.md`.
 
 Policy authors should package a player process in a Docker image, read
-`COGAMES_ENGINE_WS_URL` at runtime, upload the image with `coworld upload-policy`,
+`COWORLD_PLAYER_WS_URL` at runtime, upload the image with `coworld upload-policy`,
 and submit the uploaded policy version with `coworld submit`.
 
 ```sh

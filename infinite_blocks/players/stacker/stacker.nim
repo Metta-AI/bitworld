@@ -7,7 +7,7 @@ when defined(gui):
   import pixie, scales, silky, windy
 
 const
-  EngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  EngineWsEnv = "COWORLD_PLAYER_WS_URL"
   DefaultPlayerAddress = "ws://localhost:8080/player"
   PlayerWebSocketPath = "/player"
   GlobalWebSocketPath = "/global"

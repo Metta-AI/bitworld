@@ -306,7 +306,7 @@ when isMainModule:
   var
     address = "localhost"
     port = 8080
-    url = getEnv("COGAMES_ENGINE_WS_URL")
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     name = "shooter"
     token = ""
     maxSteps = 0

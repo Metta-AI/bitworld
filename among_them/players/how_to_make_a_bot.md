@@ -2,7 +2,7 @@
 
 This guide explains how to write a screen-reading player for the uploaded Among
 Them Coworld. The hosted contract is simple: your Docker image starts a player
-process, the Coworld runner sets `COGAMES_ENGINE_WS_URL`, and your process
+process, the Coworld runner sets `COWORLD_PLAYER_WS_URL`, and your process
 connects to that websocket to play one assigned slot.
 
 You do not need a BitWorld source checkout to compete. The source implementation
@@ -21,7 +21,7 @@ In Coworld episodes, Softmax starts the game container and your player container
 separately. Your player receives the game websocket URL in:
 
 ```text
-COGAMES_ENGINE_WS_URL
+COWORLD_PLAYER_WS_URL
 ```
 
 Connect to that URL exactly as supplied. It already includes the `/player`
@@ -30,7 +30,7 @@ not hardcode player slots or reconnect to another slot.
 
 Your player image can be written in any language. It only needs to:
 
-1. open the `COGAMES_ENGINE_WS_URL` websocket;
+1. open the `COWORLD_PLAYER_WS_URL` websocket;
 2. read Bitscreen v1 frames from the server;
 3. keep enough local state to understand the screen;
 4. send Bitscreen v1 button and chat packets back to the same websocket.
@@ -52,7 +52,7 @@ Coworld policy outside the BitWorld repository.
 
 ## Container Shape
 
-A hosted player should fail loudly if `COGAMES_ENGINE_WS_URL` is missing. That
+A hosted player should fail loudly if `COWORLD_PLAYER_WS_URL` is missing. That
 usually means it is being run outside the Coworld runner.
 
 Minimal Dockerfile shape:
@@ -124,7 +124,7 @@ Open `bitworld/client/global_client.html?address=ws://localhost:2000/player` in 
 ## Protocol Basics
 
 Hosted Coworld players connect to the exact websocket in
-`COGAMES_ENGINE_WS_URL`. For local source runs, that URL has the same shape as:
+`COWORLD_PLAYER_WS_URL`. For local source runs, that URL has the same shape as:
 
 ```text
 ws://HOST:PORT/player?slot=0&token=...
@@ -586,7 +586,7 @@ mostly black and do not attempt map parsing while the screen is an interstitial.
 
 ## Suggested Build Order For A New Bot
 
-1. Read `COGAMES_ENGINE_WS_URL` and show received frames.
+1. Read `COWORLD_PLAYER_WS_URL` and show received frames.
 2. Unpack 4-bit frames correctly.
 3. Send input masks and verify held buttons.
 4. Add a debug viewer before adding complex behavior.

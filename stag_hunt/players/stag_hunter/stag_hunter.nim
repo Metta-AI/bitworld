@@ -521,7 +521,7 @@ when isMainModule:
   var
     address = DefaultHost
     port = DefaultPort
-    url = getEnv("COGAMES_ENGINE_WS_URL")
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     name = "stag_hunter"
     token = ""
     slot = -1
