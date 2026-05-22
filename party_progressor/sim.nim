@@ -128,6 +128,7 @@ const
   LowHealthHelpThresholdPercent* = 50
   FoodHealAmount* = 2
   ColdExposureIntervalTicks* = TargetFps * 3
+  HeatExposureIntervalTicks* = TargetFps * 4
   CampShelterRadius* = WorldTileSize * 2
   CampRecoveryIntervalTicks* = TargetFps * 2
   CampRecoveryHealAmount* = 1
@@ -3925,7 +3926,7 @@ proc playerNearExpeditionShelter*(
   playerIndex: int,
   radius = CampShelterRadius
 ): bool =
-  ## Returns true near a camp shelter or snow hearth waystation.
+  ## Returns true near a camp shelter or biome survival waystation.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return false
   if sim.players[playerIndex].lives <= 0:
@@ -3934,14 +3935,15 @@ proc playerNearExpeditionShelter*(
     if landmark.kind == LandmarkCamp and landmark.done and
         sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
       return true
-    if landmark.kind == LandmarkWaystation and landmark.done and
-        sim.tileBiomeKind(landmark.tx, landmark.ty) == BiomeSnow and
-        sim.playerNearLandmark(
-          sim.players[playerIndex],
-          landmark,
-          BiomeWaystationShelterRadius
-        ):
-      return true
+    if landmark.kind == LandmarkWaystation and landmark.done:
+      let biome = sim.tileBiomeKind(landmark.tx, landmark.ty)
+      if biome in {BiomeDesert, BiomeSnow} and
+          sim.playerNearLandmark(
+            sim.players[playerIndex],
+            landmark,
+            BiomeWaystationShelterRadius
+          ):
+        return true
   false
 
 proc addResourceFromLandmark(sim: var SimServer, kind: LandmarkKind) =
@@ -4594,12 +4596,27 @@ proc collectPickups(sim: var SimServer) =
 proc playerBiome(sim: SimServer, player: Actor): BiomeKind =
   sim.biomeAtPixel(boundsCenterX(player.x, player.bounds))
 
+proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
+  if sim.food > 0:
+    dec sim.food
+    inc sim.scoreRevision
+    return true
+  if sim.players[playerIndex].carrying and
+      sim.players[playerIndex].carriedItem == CarryFood:
+    sim.clearCarry(playerIndex)
+    return true
+  false
+
 proc applyFoodAndWeatherSurvival(sim: var SimServer) =
-  let coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
+  let
+    coldPulse = sim.tickCount mod ColdExposureIntervalTicks == 0
+    heatPulse = sim.tickCount mod HeatExposureIntervalTicks == 0
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
-    let sheltered = sim.playerNearExpeditionShelter(playerIndex)
+    let
+      biome = sim.playerBiome(sim.players[playerIndex])
+      sheltered = sim.playerNearExpeditionShelter(playerIndex)
     if sim.food > 0 and
         sim.players[playerIndex].lives <=
           sim.players[playerIndex].maxHp - FoodHealAmount:
@@ -4615,15 +4632,11 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         sim.players[playerIndex].maxHp - FoodHealAmount:
       discard sim.consumeCarriedFood(playerIndex)
 
-    if coldPulse and sim.playerBiome(sim.players[playerIndex]) == BiomeSnow and
-        not sheltered:
-      if sim.food > 0:
-        dec sim.food
-        inc sim.scoreRevision
-      elif sim.players[playerIndex].carrying and
-          sim.players[playerIndex].carriedItem == CarryFood:
-        sim.clearCarry(playerIndex)
-      else:
+    if coldPulse and biome == BiomeSnow and not sheltered:
+      if not sim.consumeWeatherRation(playerIndex):
+        sim.damagePlayer(playerIndex, 0, 0, 1)
+    if heatPulse and biome == BiomeDesert and not sheltered:
+      if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
 
 proc reduceStatusTicks(value: var int, amount: int): bool =

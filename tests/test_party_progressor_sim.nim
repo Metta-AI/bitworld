@@ -2085,6 +2085,59 @@ proc testFoodAndColdSurvivalPressure() =
     "carried food should be usable as emergency rations"
   doAssert not sim.players[playerIndex].carrying
 
+proc testDesertHeatSurvivalPressureAndOasisShelter() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundSand, BiomeDesert)
+
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].x = firstTileForBiome(BiomeDesert) * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+  sim.food = 1
+  sim.tickCount = HeatExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp
+  doAssert sim.food == 0,
+    "desert heat should consume shared food before damaging players"
+
+  sim.players[playerIndex].carrying = true
+  sim.players[playerIndex].carriedItem = CarryFood
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = HeatExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == sim.players[playerIndex].maxHp
+  doAssert not sim.players[playerIndex].carrying,
+    "desert heat should consume carried food before damaging players"
+
+  sim.players[playerIndex].lives = 3
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = HeatExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 2,
+    "desert heat should damage exposed players when no food is available"
+
+  sim.players[playerIndex].lives = 3
+  sim.players[playerIndex].invulnTicks = 0
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: true
+  ))
+  doAssert sim.playerNearExpeditionShelter(playerIndex),
+    "completed desert oasis waystations should count as survival shelters"
+  sim.tickCount = HeatExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 3,
+    "desert oasis shelter should block heat exposure damage"
+
 proc testCampShelterAndRecoveryInfrastructure() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -2186,5 +2239,6 @@ testBiomeWaystationsCreateRoleDetoursAndShelters()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
+testDesertHeatSurvivalPressureAndOasisShelter()
 testCampShelterAndRecoveryInfrastructure()
 echo "All tests passed"

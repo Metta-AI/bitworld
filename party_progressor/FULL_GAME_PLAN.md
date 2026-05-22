@@ -53,8 +53,9 @@ The expedition world is organized into horizontal biome bands:
 - Forest: early wood/food resources and fast early wildlife pressure.
 - Plains: food/stone resources and open travel.
 - Swamp: rain, mud, shallow water, bridges, and slower movement.
-- Desert: dust, sand, dunes, cactus props, and camp pressure.
-- Snow: snow weather, slower travel, durable threats, and survival pressure.
+- Desert: dust, sand, dunes, cactus props, heat pressure, and oasis staging.
+- Snow: snow weather, slower travel, durable threats, and cold survival
+  pressure.
 - Cave: fog, cave floor, stone/gold resources, and denser hostile encounters.
 - Ruins: final hostile zone, structures, gold/stone, boss, and final gate.
 
@@ -314,9 +315,12 @@ The first full-game implementation pass includes:
   and preserving carried value when the rescue succeeds.
 - Food auto-healing and snow exposure pressure that consumes food before
   damaging players.
+- Desert heat exposure now mirrors the snow survival loop: food or carried food
+  absorbs a heat pulse before HP damage, while completed oasis waystations and
+  camps shelter nearby players.
 - Activated camps now act as expedition shelters: nearby players are protected
-  from snow exposure, recover poison/slow/chill statuses faster, and slowly
-  heal while regrouping.
+  from snow and desert exposure, recover poison/slow/chill statuses faster, and
+  slowly heal while regrouping.
 - Activated camps also reveal short road or bridge shortcuts through nearby
   rough ground, clearing blockers and reducing elevation so camp investment
   permanently improves the expedition route.
@@ -381,7 +385,8 @@ The first full-game implementation pass includes:
 - Tune the 11 by 11 viewport after real bot/human observation checks.
 - Tune in-world affordance density after real observation checks so labels
   remain helpful without cluttering fights.
-- Tune food, provisioned-camp, and snow-exposure pacing with multi-player runs.
+- Tune food, provisioned-camp, snow-exposure, and desert-heat pacing with
+  multi-player runs.
 - Expand player-observation smoke output into saved visual fixtures so
   black-background regressions are obvious during manual review too.
 - Improve telegraph polish by distinguishing pre-hit danger badges from
