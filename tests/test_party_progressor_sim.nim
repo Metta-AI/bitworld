@@ -2975,6 +2975,65 @@ proc testDesertHeatSurvivalPressureAndOasisShelter() =
   doAssert sim.players[playerIndex].lives == 3,
     "desert oasis shelter should block heat exposure damage"
 
+proc testDesertCactusShadeClearsHeatPressure() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.terrainProps.setLen(0)
+  sim.fillGround(GroundSand, BiomeDesert)
+
+  let
+    shadeTx = firstTileForBiome(BiomeDesert) + 1
+    shadeTy = WorldHeightTiles div 2
+    playerIndex = sim.addPlayer("shaded")
+  sim.terrainProps.add(TerrainProp(
+    tx: shadeTx,
+    ty: shadeTy,
+    kind: TerrainCactus
+  ))
+  sim.players[playerIndex].x = shadeTx * WorldTileSize
+  sim.players[playerIndex].y = shadeTy * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].lives = 3
+  sim.food = 0
+
+  doAssert sim.playerNearDesertShade(playerIndex),
+    "desert cactus props should create local shade"
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe,
+    "cactus shade should clear visible heat pressure"
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticShade
+  sim.tickCount = HeatExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 3,
+    "cactus shade should block desert heat pulses"
+
+  var state: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    state
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "status shade" in labels
+  doAssert "status heat" notin labels
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("OK SAFE SHADE")),
+    "HUD status text should make cactus shade readable"
+
+  sim.players[playerIndex].x += DesertShadeRadius + WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  doAssert not sim.playerNearDesertShade(playerIndex)
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalHeat
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticNone
+  sim.players[playerIndex].invulnTicks = 0
+  sim.tickCount = HeatExposureIntervalTicks - 1
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].lives == 2,
+    "desert heat should resume away from cactus shade"
+
 proc testSwampMireSurvivalPressureAndBridgeShelter() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -3203,6 +3262,7 @@ testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()
 testSnowSharedWarmthClearsColdPressure()
 testDesertHeatSurvivalPressureAndOasisShelter()
+testDesertCactusShadeClearsHeatPressure()
 testSwampMireSurvivalPressureAndBridgeShelter()
 testFogBiomeDisorientationRequiresGroupOrLantern()
 testCampShelterAndRecoveryInfrastructure()

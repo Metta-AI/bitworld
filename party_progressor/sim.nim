@@ -148,6 +148,7 @@ const
   PlainsRallyAllyRadius* = WorldTileSize * 3
   PlainsRallyCooldownStep* = 1
   SnowWarmthAllyRadius* = WorldTileSize * 3
+  DesertShadeRadius* = WorldTileSize * 2
   CampShortcutBackTiles* = 2
   CampShortcutForwardTiles* = 8
   CampShortcutHalfHeightTiles* = 1
@@ -431,6 +432,7 @@ type
     BiomeTacticNone
     BiomeTacticForage
     BiomeTacticRally
+    BiomeTacticShade
     BiomeTacticWarmth
 
   GroundKind* = enum
@@ -852,6 +854,7 @@ proc biomeTacticLabel*(kind: BiomeTacticKind): string =
   of BiomeTacticNone: ""
   of BiomeTacticForage: "forage"
   of BiomeTacticRally: "rally"
+  of BiomeTacticShade: "shade"
   of BiomeTacticWarmth: "warmth"
 
 proc pingLabel*(kind: PlayerPingKind): string =
@@ -4922,6 +4925,28 @@ proc playerGroundKind(sim: SimServer, player: Actor): GroundKind =
     )
   )
 
+proc playerNearDesertShade*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true near cactus shade in the desert survival band.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  if player.lives <= 0 or sim.playerBiome(player) != BiomeDesert:
+    return false
+  let
+    pcx = boundsCenterX(player.x, player.bounds)
+    pcy = boundsCenterY(player.y, player.bounds)
+  for prop in sim.terrainProps:
+    if prop.kind != TerrainCactus or
+        sim.tileBiomeKind(prop.tx, prop.ty) != BiomeDesert:
+      continue
+    let
+      shadeX = prop.tx * WorldTileSize + WorldTileSize div 2
+      shadeY = prop.ty * WorldTileSize + WorldTileSize div 2
+    if distanceSquared(pcx, pcy, shadeX, shadeY) <=
+        DesertShadeRadius * DesertShadeRadius:
+      return true
+  false
+
 proc survivalPressureKind*(
   sim: SimServer,
   playerIndex: int
@@ -4944,7 +4969,10 @@ proc survivalPressureKind*(
     else:
       SurvivalCold
   of BiomeDesert:
-    SurvivalHeat
+    if sim.playerNearDesertShade(playerIndex):
+      SurvivalSafe
+    else:
+      SurvivalHeat
   of BiomeCave, BiomeRuins:
     if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
       SurvivalSafe
@@ -4971,6 +4999,11 @@ proc playerBiomeTacticKind*(
   of BiomePlains:
     if sim.playerHasNearbyAlly(playerIndex, PlainsRallyAllyRadius):
       BiomeTacticRally
+    else:
+      BiomeTacticNone
+  of BiomeDesert:
+    if sim.playerNearDesertShade(playerIndex):
+      BiomeTacticShade
     else:
       BiomeTacticNone
   of BiomeSnow:
@@ -5037,7 +5070,8 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
-    if heatPulse and biome == BiomeDesert and not sheltered:
+    if heatPulse and biome == BiomeDesert and not sheltered and
+        not sim.playerNearDesertShade(playerIndex):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
     if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and

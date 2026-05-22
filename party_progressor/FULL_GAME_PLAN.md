@@ -341,6 +341,9 @@ The first full-game implementation pass includes:
 - Desert heat exposure now mirrors the snow survival loop: food or carried food
   absorbs a heat pulse before HP damage, while completed oasis waystations and
   camps shelter nearby players.
+- Desert cactus shade now gives a local heat-safe staging choice, showing a
+  compact shade affordance and giving bots a terrain target when heat pressure
+  is visible.
 - Swamp mire pressure now slows exposed players crossing mud, shallow water, or
   water, while completed bridge waystations and camps turn swamp crossings into
   safer routes.
@@ -349,9 +352,9 @@ The first full-game implementation pass includes:
   keep the party oriented.
 - Early biome tactics now teach sustain and grouping before and during harsh
   survival bands: forest travel slowly rebuilds a small shared food reserve,
-  plains players grouped near allies recharge role powers faster, and snow
-  players grouped near allies get a visible warmth affordance that clears cold
-  pressure.
+  plains players grouped near allies recharge role powers faster, desert
+  players near cactus shade can pause heat attrition, and snow players grouped
+  near allies get a visible warmth affordance that clears cold pressure.
 - Activated camps now act as expedition shelters: nearby players are protected
   from snow, desert, and fog exposure, recover poison/slow/chill statuses
   faster, and slowly heal while regrouping.

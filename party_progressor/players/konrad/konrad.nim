@@ -87,6 +87,7 @@ type
     TargetGold
     TargetCamp
     TargetShelter
+    TargetShade
     TargetRelic
     TargetGate
     TargetShrine
@@ -432,6 +433,8 @@ proc targetLabel(kind: TargetKind): string =
     "camp"
   of TargetShelter:
     "shelter"
+  of TargetShade:
+    "shade"
   of TargetRelic:
     "relic"
   of TargetGate:
@@ -646,6 +649,10 @@ proc terrainBounds(sprite: SpriteInfo): SpriteBounds =
   if lower == "terraintree" or lower == "terrainevergreen":
     return bounds.lowerCenterBounds()
   bounds
+
+proc terrainProvidesShade(sprite: SpriteInfo): bool =
+  ## Cactus props are readable desert shade targets under heat pressure.
+  sprite.label.toLowerAscii() == "terraincactus"
 
 proc objectVisibleCenter(
   objectState: ObjectState,
@@ -1009,6 +1016,16 @@ proc scanWorld(
         bounds.w,
         bounds.h
       )
+      if sprite.terrainProvidesShade():
+        let center = bot.targetCenter(objectState, sprite)
+        pickups.add(Target(
+          found: true,
+          kind: TargetShade,
+          objectId: objectId,
+          x: center.x,
+          y: center.y,
+          label: TargetShade.targetLabel()
+        ))
     of SpriteCoin:
       let
         kind = sprite.targetKindForSprite()
@@ -1411,6 +1428,11 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
       return false
     if bot.targetDistance(target) > ShelterReturnRadius:
       return false
+  if target.kind == TargetShade:
+    if not bot.needsShelter:
+      return false
+    if bot.targetDistance(target) > ShelterReturnRadius:
+      return false
   if target.kind == TargetCoin and not bot.isOpportunisticLoosePickup(target):
     return false
   if target.kind == TargetHeart and
@@ -1538,6 +1560,8 @@ proc targetScore(bot: Bot, target: Target): int =
         else:
           520
       )
+  of TargetShade:
+    distance + (if bot.needsShelter: -170 else: 620)
   of TargetRelic:
     if bot.objectiveHint.startsWith("next relic"):
       distance - 170
@@ -1811,6 +1835,7 @@ proc updateTargetResult(
         TargetGold,
         TargetCamp,
         TargetShelter,
+        TargetShade,
         TargetRelic,
         TargetGate,
         TargetShrine,
@@ -1847,6 +1872,7 @@ proc updateTargetResult(
       TargetGold,
       TargetCamp,
       TargetShelter,
+      TargetShade,
       TargetRelic,
       TargetGate,
       TargetShrine,
@@ -2221,6 +2247,39 @@ when defined(konradTargetSelfTest):
   doAssert TargetWood.isAttackTarget()
   doAssert TargetLair.isAttackTarget()
   doAssert not TargetCamp.isAttackTarget()
+  doAssert SpriteInfo(label: "TerrainCactus").terrainProvidesShade()
+  doAssert not SpriteInfo(label: "TerrainRock").terrainProvidesShade()
+  block:
+    var shadeBot = initBot()
+    let
+      cactusSpriteId = 9100
+      cactusObjectId = TerrainObjectBase + 33
+    shadeBot.ensureSprite(cactusSpriteId)
+    shadeBot.sprites[cactusSpriteId] = SpriteInfo(
+      defined: true,
+      width: 24,
+      height: 32,
+      label: "TerrainCactus",
+      kind: SpriteTerrain
+    )
+    shadeBot.ensureObject(cactusObjectId)
+    shadeBot.objects[cactusObjectId] = ObjectState(
+      present: true,
+      x: 96,
+      y: 128,
+      spriteId: cactusSpriteId
+    )
+    var
+      shadeBlocked: seq[bool]
+      shadePickups: seq[Target]
+      shadeAllies: seq[Target]
+      shadeMobs: seq[Target]
+    shadeBot.scanWorld(shadeBlocked, shadePickups, shadeAllies, shadeMobs)
+    var sawShadeTarget = false
+    for target in shadePickups:
+      if target.kind == TargetShade and target.objectId == cactusObjectId:
+        sawShadeTarget = true
+    doAssert sawShadeTarget
   doAssert rolePreferenceFor("tank-bot", "") == PreferTankRole
   doAssert rolePreferenceFor("konrad", "1") == PreferDpsRole
   doAssert rolePreferenceFor("healer", "1") == PreferHealerRole
@@ -2334,6 +2393,22 @@ when defined(konradTargetSelfTest):
     x: ShelterReturnRadius,
     y: 0
   ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetShade,
+    objectId: TerrainObjectBase + 4,
+    x: ShelterReturnRadius,
+    y: 0
+  ))
+  bot.carriedItem = CarryWood
+  bot.needsShelter = false
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetShade,
+    objectId: TerrainObjectBase + 5,
+    x: ShelterReturnRadius,
+    y: 0
+  ))
+  bot.carriedItem = CarryNone
+  bot.needsShelter = true
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetFood,
