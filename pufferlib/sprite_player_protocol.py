@@ -328,6 +328,8 @@ class SpritePlayerObservationAdapter:
         self.sprites: dict[int, SpritePlayerSpriteInfo] = {}
         self.objects: dict[int, SpritePlayerObjectInfo] = {}
         self.palette_lookup = load_palette_lookup()
+        self.viewport_width = SCREEN_WIDTH
+        self.viewport_height = SCREEN_HEIGHT
         self.frame_count = 0
 
     def _sprite_pixels(self, kind: str, width: int, height: int, compressed: bytes) -> np.ndarray | None:
@@ -400,6 +402,14 @@ class SpritePlayerObservationAdapter:
                 self.objects.clear()
                 changed = True
             elif message_type == 0x05:
+                if offset + 5 > len(packet):
+                    return changed
+                layer_id = packet[offset]
+                width = read_u16(packet, offset + 1)
+                height = read_u16(packet, offset + 3)
+                if layer_id == 0:
+                    self.viewport_width = width
+                    self.viewport_height = height
                 offset += 5
             elif message_type == 0x06:
                 offset += 3
@@ -497,12 +507,17 @@ class SpritePlayerObservationAdapter:
             map_pixels = self._map_pixels()
             if map_pixels is not None:
                 height, width = map_pixels.shape
-                step = SCREEN_WIDTH // SPRITE_PLAYER_GRID_SIZE
                 grid_start = SPRITE_PLAYER_HEADER_FEATURES
                 for gy in range(SPRITE_PLAYER_GRID_SIZE):
                     for gx in range(SPRITE_PLAYER_GRID_SIZE):
-                        mx = camera_x + gx * step + step // 2
-                        my = camera_y + gy * step + step // 2
+                        mx = camera_x + (
+                            ((gx * 2 + 1) * self.viewport_width)
+                            // (SPRITE_PLAYER_GRID_SIZE * 2)
+                        )
+                        my = camera_y + (
+                            ((gy * 2 + 1) * self.viewport_height)
+                            // (SPRITE_PLAYER_GRID_SIZE * 2)
+                        )
                         value = MAP_VOID_COLOR
                         if 0 <= mx < width and 0 <= my < height:
                             value = int(map_pixels[my, mx])

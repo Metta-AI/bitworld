@@ -89,6 +89,8 @@ type
     rng: Rand
     cameraX: int
     cameraY: int
+    viewportWidth: int
+    viewportHeight: int
     playerWorldX: int
     playerWorldY: int
     playerCenterWorldX: int
@@ -346,6 +348,13 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
     of 0x05:
       if offset + 5 > packet.len:
         return false
+      let
+        layer = int(packet[offset].uint8)
+        width = packet.readU16(offset + 1)
+        height = packet.readU16(offset + 3)
+      if layer == MapLayerId:
+        bot.viewportWidth = width
+        bot.viewportHeight = height
       offset += 5
     of 0x06:
       if offset + 3 > packet.len:
@@ -433,8 +442,10 @@ proc updatePlayerPosition(bot: var Bot) =
   ## Tracks the local player feet as the object nearest screen center.
   var
     bestDistance = high(int)
-    bestX = bot.cameraX + ScreenWidth div 2
-    bestY = bot.cameraY + ScreenHeight div 2
+    viewportCenterX = bot.viewportWidth div 2
+    viewportCenterY = bot.viewportHeight div 2
+    bestX = bot.cameraX + viewportCenterX
+    bestY = bot.cameraY + viewportCenterY
     bestCenterX = bestX
     bestCenterY = bestY
     bestId = -1
@@ -453,8 +464,8 @@ proc updatePlayerPosition(bot: var Bot) =
       distance = distanceSquared(
         screenCenter.x,
         screenCenter.y,
-        ScreenWidth div 2,
-        ScreenHeight div 2
+        viewportCenterX,
+        viewportCenterY
       )
     if distance < bestDistance:
       bestDistance = distance
@@ -1054,6 +1065,8 @@ proc queryEscape(value: string): string =
 proc initBot(): Bot =
   ## Builds the initial bot state.
   result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
+  result.viewportWidth = ScreenWidth
+  result.viewportHeight = ScreenHeight
   result.selfObjectId = -1
   result.currentTargetId = -1
   result.skipTargetId = -1

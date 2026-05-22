@@ -14,6 +14,7 @@ const WorldHeightPixels = WorldHeightTiles * WorldTileSize;
 const PlayerWebSocketPath = "/player";
 const DefaultHost = "localhost";
 
+const MapLayerId = 0;
 const MapSpriteId = 1;
 const MapObjectId = 1;
 const PlayerSpriteBase = 100;
@@ -185,6 +186,8 @@ class Bot {
     this.objects = [];
     this.cameraX = 0;
     this.cameraY = 0;
+    this.viewportWidth = ScreenWidth;
+    this.viewportHeight = ScreenHeight;
     this.playerWorldX = 0;
     this.playerWorldY = 0;
     this.previousPlayerX = 0;
@@ -295,6 +298,13 @@ class Bot {
         for (const item of this.objects) item.present = false;
       } else if (messageType === 0x05) {
         if (offset + 5 > packet.length) return false;
+        const layer = packet[offset];
+        const width = readU16(packet, offset + 1);
+        const height = readU16(packet, offset + 3);
+        if (layer === MapLayerId) {
+          this.viewportWidth = width;
+          this.viewportHeight = height;
+        }
         offset += 5;
       } else if (messageType === 0x06) {
         if (offset + 3 > packet.length) return false;
@@ -315,8 +325,8 @@ class Bot {
 
   updatePlayerPosition() {
     let bestDistance = Number.MAX_SAFE_INTEGER;
-    let bestX = this.cameraX + Math.floor(ScreenWidth / 2);
-    let bestY = this.cameraY + Math.floor(ScreenHeight / 2);
+    let bestX = this.cameraX + Math.floor(this.viewportWidth / 2);
+    let bestY = this.cameraY + Math.floor(this.viewportHeight / 2);
     let bestId = -1;
     for (let objectId = 0; objectId < this.objects.length; objectId++) {
       const state = this.objects[objectId];
@@ -329,8 +339,8 @@ class Bot {
       const distance = distanceSquared(
         screenX,
         screenY,
-        Math.floor(ScreenWidth / 2),
-        Math.floor(ScreenHeight / 2),
+        Math.floor(this.viewportWidth / 2),
+        Math.floor(this.viewportHeight / 2),
       );
       if (distance < bestDistance) {
         bestDistance = distance;

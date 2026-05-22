@@ -1,7 +1,9 @@
 import
   std/[json, os],
+  supersnappy,
   ../common/protocol,
   ../common/server,
+  ../party_progressor/global,
   ../party_progressor/sim
 
 const RootDir = currentSourcePath.parentDir.parentDir
@@ -87,6 +89,90 @@ proc firstTileForBiome(biome: BiomeKind): int =
     if biomeForTileX(tx) == biome:
       return tx
   raise newException(ValueError, "missing biome: " & $biome)
+
+proc readU16(bytes: openArray[uint8], offset: int): int =
+  int(uint16(bytes[offset]) or (uint16(bytes[offset + 1]) shl 8))
+
+proc readU32(bytes: openArray[uint8], offset: int): int =
+  int(uint32(bytes[offset]) or
+    (uint32(bytes[offset + 1]) shl 8) or
+    (uint32(bytes[offset + 2]) shl 16) or
+    (uint32(bytes[offset + 3]) shl 24))
+
+proc packetBytesToString(bytes: openArray[uint8], start, length: int): string =
+  result = newString(length)
+  for i in 0 ..< length:
+    result[i] = char(bytes[start + i])
+
+proc firstSpriteRawPixels(
+  packet: openArray[uint8],
+  wantedSpriteId: int
+): tuple[width, height: int, pixels: string] =
+  var offset = 0
+  while offset < packet.len:
+    let messageType = packet[offset]
+    inc offset
+    case messageType
+    of 0x01'u8:
+      let
+        spriteId = packet.readU16(offset)
+        width = packet.readU16(offset + 2)
+        height = packet.readU16(offset + 4)
+        compressedLen = packet.readU32(offset + 6)
+      offset += 10
+      let compressed = packet.packetBytesToString(offset, compressedLen)
+      offset += compressedLen
+      let labelLen = packet.readU16(offset)
+      offset += 2 + labelLen
+      if spriteId == wantedSpriteId:
+        return (width, height, supersnappy.uncompress(compressed))
+    of 0x02'u8:
+      offset += 11
+    of 0x03'u8:
+      offset += 2
+    of 0x04'u8:
+      discard
+    of 0x05'u8:
+      offset += 5
+    of 0x06'u8:
+      offset += 3
+    else:
+      raise newException(ValueError, "unknown sprite protocol message")
+  raise newException(ValueError, "missing sprite id: " & $wantedSpriteId)
+
+proc firstViewport(
+  packet: openArray[uint8],
+  wantedLayerId: int
+): tuple[width, height: int] =
+  var offset = 0
+  while offset < packet.len:
+    let messageType = packet[offset]
+    inc offset
+    case messageType
+    of 0x01'u8:
+      let compressedLen = packet.readU32(offset + 6)
+      offset += 10 + compressedLen
+      let labelLen = packet.readU16(offset)
+      offset += 2 + labelLen
+    of 0x02'u8:
+      offset += 11
+    of 0x03'u8:
+      offset += 2
+    of 0x04'u8:
+      discard
+    of 0x05'u8:
+      let
+        layerId = int(packet[offset])
+        width = packet.readU16(offset + 1)
+        height = packet.readU16(offset + 3)
+      offset += 5
+      if layerId == wantedLayerId:
+        return (width, height)
+    of 0x06'u8:
+      offset += 3
+    else:
+      raise newException(ValueError, "unknown sprite protocol message")
+  raise newException(ValueError, "missing viewport for layer: " & $wantedLayerId)
 
 proc testPlayerDropsCarriedCoinsOnDeath() =
   var sim = initPartyProgressorForTest()
@@ -200,6 +286,38 @@ proc testBiomeGroundsAndWeather() =
   doAssert sim.tileBiomeKind(desertTx, centerTy).weatherForBiome() ==
     WeatherDust
   doAssert groundSpeedPercent(GroundMud) < groundSpeedPercent(GroundRoad)
+
+proc testSpritePlayerViewportAndBiomeBackground() =
+  var sim = initPartyProgressorForTest()
+  let playerIndex = sim.addPlayer("player1")
+  sim.clearTerrain()
+  sim.fillGround(GroundGrass, BiomeDesert)
+  sim.rgbaGroundSprites[GroundGrass] = RgbaSprite(
+    width: WorldTileSize,
+    height: WorldTileSize,
+    pixels: newSeq[uint8](WorldTileSize * WorldTileSize * 4)
+  )
+
+  var nextState: PlayerViewerState
+  let packet = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  )
+  let viewport = packet.firstViewport(MapLayerId)
+  doAssert viewport.width == PlayerViewportWidth
+  doAssert viewport.height == PlayerViewportHeight
+
+  let mapSprite = packet.firstSpriteRawPixels(MapSpriteId)
+  doAssert mapSprite.width == WorldWidthPixels
+  doAssert mapSprite.height == WorldHeightPixels
+  let
+    pixelOffset = 0
+    color = BiomeDesert.biomeBackgroundRgbaColor()
+  doAssert mapSprite.pixels[pixelOffset].uint8 == color.r
+  doAssert mapSprite.pixels[pixelOffset + 1].uint8 == color.g
+  doAssert mapSprite.pixels[pixelOffset + 2].uint8 == color.b
+  doAssert mapSprite.pixels[pixelOffset + 3].uint8 == color.a
 
 proc testTerrainMovementModifiersAffectPlayers() =
   var roadSim = initPartyProgressorForTest()
@@ -334,6 +452,7 @@ testMobTelegraphsBeforeLunging()
 testMobChasesNearbyPlayers()
 testPlayerSpeedIsSlower()
 testBiomeGroundsAndWeather()
+testSpritePlayerViewportAndBiomeBackground()
 testTerrainMovementModifiersAffectPlayers()
 testResourceHarvestAndCampActivation()
 testBeaconAndBossScoring()

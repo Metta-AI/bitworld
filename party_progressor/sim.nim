@@ -20,6 +20,9 @@ const
   WorldHeightTiles* = 18
   WorldWidthPixels* = WorldWidthTiles * WorldTileSize
   WorldHeightPixels* = WorldHeightTiles * WorldTileSize
+  PlayerViewportTiles* = 11
+  PlayerViewportWidth* = PlayerViewportTiles * WorldTileSize
+  PlayerViewportHeight* = PlayerViewportTiles * WorldTileSize
   SafeZoneRightTiles* = 8
   SafeZoneRightPixels* = SafeZoneRightTiles * WorldTileSize
   ZoneWidthTiles* = 8
@@ -918,6 +921,44 @@ proc biomeProgressValue*(biome: BiomeKind): int =
   of BiomeSnow: 5
   of BiomeCave: 6
   of BiomeRuins: 7
+
+proc biomeBackgroundRgbaColor*(
+  biome: BiomeKind
+): tuple[r, g, b, a: uint8] =
+  ## Returns the opaque tile backing color for transparent TribalCog PNG pixels.
+  case biome
+  of BiomeOrigin:
+    (r: 58'u8, g: 112'u8, b: 66'u8, a: 255'u8)
+  of BiomeForest:
+    (r: 42'u8, g: 94'u8, b: 52'u8, a: 255'u8)
+  of BiomePlains:
+    (r: 142'u8, g: 146'u8, b: 78'u8, a: 255'u8)
+  of BiomeSwamp:
+    (r: 44'u8, g: 84'u8, b: 82'u8, a: 255'u8)
+  of BiomeDesert:
+    (r: 190'u8, g: 145'u8, b: 78'u8, a: 255'u8)
+  of BiomeSnow:
+    (r: 211'u8, g: 224'u8, b: 232'u8, a: 255'u8)
+  of BiomeCave:
+    (r: 72'u8, g: 66'u8, b: 76'u8, a: 255'u8)
+  of BiomeRuins:
+    (r: 92'u8, g: 89'u8, b: 96'u8, a: 255'u8)
+
+proc biomeBackgroundPaletteColor*(biome: BiomeKind): uint8 =
+  ## Returns the nearest existing 4-bit palette color for the biome backing.
+  case biome
+  of BiomeOrigin, BiomeForest, BiomeSwamp:
+    10'u8
+  of BiomePlains:
+    8'u8
+  of BiomeDesert:
+    7'u8
+  of BiomeSnow:
+    2'u8
+  of BiomeCave:
+    5'u8
+  of BiomeRuins:
+    13'u8
 
 proc groundBlocks(kind: GroundKind): bool =
   kind == GroundWater
@@ -3093,6 +3134,22 @@ proc respawnMobs(sim: var SimServer) =
     discard sim.spawnOneMob(WolfMob, sim.mobSprite, WolfHp)
   sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
 
+proc fillTileBackground(
+  fb: var Framebuffer,
+  worldX,
+  worldY,
+  cameraX,
+  cameraY: int,
+  color: uint8
+) =
+  ## Fills a tile before drawing transparent borrowed terrain art.
+  let
+    screenX = worldX - cameraX
+    screenY = worldY - cameraY
+  for y in 0 ..< WorldTileSize:
+    for x in 0 ..< WorldTileSize:
+      fb.putPixel(screenX + x, screenY + y, color)
+
 proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
   let
     startTx = max(0, cameraX div WorldTileSize)
@@ -3112,6 +3169,14 @@ proc renderTerrain*(sim: var SimServer, cameraX, cameraY: int) =
         x = tx * WorldTileSize
         y = ty * WorldTileSize
         ground = sim.tileGroundKind(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.fb.fillTileBackground(
+        x,
+        y,
+        cameraX,
+        cameraY,
+        biome.biomeBackgroundPaletteColor()
+      )
       sim.fb.blitSprite(sim.groundSprite(ground), x, y, cameraX, cameraY)
       if sim.tiles[tileIndex(tx, ty)]:
         let sprite = sim.terrainSprites[sim.terrainKinds[tileIndex(tx, ty)]]

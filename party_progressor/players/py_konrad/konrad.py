@@ -29,6 +29,7 @@ WorldHeightPixels = WorldHeightTiles * WorldTileSize
 PlayerWebSocketPath = "/player"
 DefaultHost = "localhost"
 
+MapLayerId = 0
 MapSpriteId = 1
 MapObjectId = 1
 PlayerSpriteBase = 100
@@ -151,6 +152,8 @@ class Bot:
     rng: random.Random = field(default_factory=random.Random)
     camera_x: int = 0
     camera_y: int = 0
+    viewport_width: int = ScreenWidth
+    viewport_height: int = ScreenHeight
     player_world_x: int = 0
     player_world_y: int = 0
     previous_player_x: int = 0
@@ -272,6 +275,12 @@ class Bot:
             elif message_type == 0x05:
                 if offset + 5 > len(packet):
                     return False
+                layer = packet[offset]
+                width = read_u16(packet, offset + 1)
+                height = read_u16(packet, offset + 3)
+                if layer == MapLayerId:
+                    self.viewport_width = width
+                    self.viewport_height = height
                 offset += 5
             elif message_type == 0x06:
                 if offset + 3 > len(packet):
@@ -288,8 +297,10 @@ class Bot:
 
     def update_player_position(self) -> None:
         best_distance = 2**63 - 1
-        best_x = self.camera_x + ScreenWidth // 2
-        best_y = self.camera_y + ScreenHeight // 2
+        viewport_center_x = self.viewport_width // 2
+        viewport_center_y = self.viewport_height // 2
+        best_x = self.camera_x + viewport_center_x
+        best_y = self.camera_y + viewport_center_y
         best_id = -1
         for object_id, state in enumerate(self.objects):
             if not state.present:
@@ -304,8 +315,8 @@ class Bot:
             distance = distance_squared(
                 screen_x,
                 screen_y,
-                ScreenWidth // 2,
-                ScreenHeight // 2,
+                viewport_center_x,
+                viewport_center_y,
             )
             if distance < best_distance:
                 best_distance = distance

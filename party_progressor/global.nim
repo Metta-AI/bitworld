@@ -634,15 +634,40 @@ proc blitMapSprite(
           sourceIndex
         )
 
+proc fillMapTile(
+  pixels: var seq[uint8],
+  baseX,
+  baseY: int,
+  color: tuple[r, g, b, a: uint8]
+) =
+  ## Fills the opaque biome backing under borrowed transparent ground art.
+  for y in 0 ..< WorldTileSize:
+    for x in 0 ..< WorldTileSize:
+      let
+        px = baseX + x
+        py = baseY + y
+      if px < 0 or py < 0 or
+          px >= WorldWidthPixels or py >= WorldHeightPixels:
+        continue
+      pixels.putRgbaPixel(py * WorldWidthPixels + px, color)
+
 proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
   ## Builds a full world map sprite from the described terrain cells.
   result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
   for ty in 0 ..< WorldHeightTiles:
     for tx in 0 ..< WorldWidthTiles:
+      let
+        baseX = tx * WorldTileSize
+        baseY = ty * WorldTileSize
+      result.fillMapTile(
+        baseX,
+        baseY,
+        sim.tileBiomeKind(tx, ty).biomeBackgroundRgbaColor()
+      )
       result.blitMapSprite(
         sim.groundRgbaSprite(sim.tileGroundKind(tx, ty)),
-        tx * WorldTileSize,
-        ty * WorldTileSize
+        baseX,
+        baseY
       )
 proc putTextSpritePixel(
   pixels: var seq[uint8],
@@ -1352,7 +1377,7 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   ## Builds the initial sprite player snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
-  result.addViewport(MapLayerId, ScreenWidth, ScreenHeight)
+  result.addViewport(MapLayerId, PlayerViewportWidth, PlayerViewportHeight)
   result.addSprite(
     MapSpriteId,
     WorldWidthPixels,
@@ -1791,8 +1816,8 @@ proc addPlayerStatus(
   ## Adds centered status text to a sprite-player view.
   let
     text = sim.buildSpriteProtocolTextSprite(lines, 2'u8)
-    x = max(0, (ScreenWidth - text.width) div 2)
-    y = max(0, (ScreenHeight - text.height) div 2)
+    x = max(0, (PlayerViewportWidth - text.width) div 2)
+    y = max(0, (PlayerViewportHeight - text.height) div 2)
   currentIds.add(StatusHudObjectId)
   packet.addSprite(
     StatusHudSpriteId,
@@ -1830,12 +1855,12 @@ proc buildSpriteProtocolPlayerUpdates*(
     let player = sim.players[playerIndex]
     let
       cameraX = worldClampPixel(
-        player.x + player.sprite.width div 2 - ScreenWidth div 2,
-        WorldWidthPixels - ScreenWidth
+        player.x + player.sprite.width div 2 - PlayerViewportWidth div 2,
+        WorldWidthPixels - PlayerViewportWidth
       )
       cameraY = worldClampPixel(
-        player.y + player.sprite.height div 2 - ScreenHeight div 2,
-        WorldHeightPixels - ScreenHeight
+        player.y + player.sprite.height div 2 - PlayerViewportHeight div 2,
+        WorldHeightPixels - PlayerViewportHeight
       )
     currentIds.add(MapObjectId)
     result.addObject(
@@ -1851,8 +1876,8 @@ proc buildSpriteProtocolPlayerUpdates*(
       currentIds,
       cameraX,
       cameraY,
-      ScreenWidth,
-      ScreenHeight
+      PlayerViewportWidth,
+      PlayerViewportHeight
     )
     sim.addPlayerHud(result, currentIds, playerIndex, state, nextState)
     if player.lives <= 0:

@@ -29,6 +29,7 @@ const (
 	PlayerWebSocketPath = "/player"
 	DefaultHost         = "localhost"
 
+	MapLayerId               = 0
 	MapSpriteId              = 1
 	MapObjectId              = 1
 	PlayerSpriteBase         = 100
@@ -156,6 +157,8 @@ type Bot struct {
 	rng                   *rand.Rand
 	cameraX               int
 	cameraY               int
+	viewportWidth         int
+	viewportHeight        int
 	playerWorldX          int
 	playerWorldY          int
 	previousPlayerX       int
@@ -221,6 +224,8 @@ func newBot() *Bot {
 	rng := rand.New(rand.NewSource(seed))
 	return &Bot{
 		rng:             rng,
+		viewportWidth:   ScreenWidth,
+		viewportHeight:  ScreenHeight,
 		selfObjectId:    -1,
 		currentTargetId: -1,
 		skipTargetId:    -1,
@@ -559,6 +564,13 @@ func (bot *Bot) applySpritePacket(packet []byte) bool {
 			if offset+5 > len(packet) {
 				return false
 			}
+			layer := int(packet[offset])
+			width := readU16(packet, offset+1)
+			height := readU16(packet, offset+3)
+			if layer == MapLayerId {
+				bot.viewportWidth = width
+				bot.viewportHeight = height
+			}
 			offset += 5
 		case 0x06:
 			if offset+3 > len(packet) {
@@ -632,8 +644,10 @@ func terrainBounds(sprite SpriteInfo) SpriteBounds {
 
 func (bot *Bot) updatePlayerPosition() {
 	bestDistance := MaxIntValue
-	bestX := bot.cameraX + ScreenWidth/2
-	bestY := bot.cameraY + ScreenHeight/2
+	viewportCenterX := bot.viewportWidth / 2
+	viewportCenterY := bot.viewportHeight / 2
+	bestX := bot.cameraX + viewportCenterX
+	bestY := bot.cameraY + viewportCenterY
 	bestId := -1
 	for objectId, state := range bot.objects {
 		if !state.present {
@@ -651,8 +665,8 @@ func (bot *Bot) updatePlayerPosition() {
 		distance := distanceSquared(
 			screenX,
 			screenY,
-			ScreenWidth/2,
-			ScreenHeight/2,
+			viewportCenterX,
+			viewportCenterY,
 		)
 		if distance < bestDistance {
 			bestDistance = distance
