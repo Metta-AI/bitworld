@@ -408,6 +408,9 @@ The first full-game implementation pass includes:
 - Konrad stuck recovery is now target-aware: frontier push recovery keeps a
   rightward bias, role-choice recovery keeps moving toward the intended gear,
   and one-pixel movement no longer counts as fully stuck.
+- Konrad bot combat now reads the B-power HUD line and fires role powers at
+  sensible moments: tanks guard and DPS cleave once threats are in reach, while
+  healers spend their pulse when the HUD reports low health.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
