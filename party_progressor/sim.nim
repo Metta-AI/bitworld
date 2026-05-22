@@ -76,6 +76,14 @@ const
   LairFoodBonus* = 1
   LairStoneBonus* = 1
   LairPacifyRadius* = WorldTileSize * 3
+  BiomeWaystationFastStep* = 2
+  BiomeWaystationFoodBonus* = 1
+  BiomeWaystationHealAmount* = 1
+  BiomeWaystationPacifyRadius* = WorldTileSize * 3
+  BiomeWaystationShelterRadius* = WorldTileSize * 2
+  BiomeWaystationRouteBackTiles* = 1
+  BiomeWaystationRouteForwardTiles* = 5
+  BiomeWaystationRouteHalfHeightTiles* = 1
   CampWoodCost* = 2
   CampStoneCost* = 1
   CampFortificationWoodCost* = 1
@@ -90,6 +98,7 @@ const
   DpsCleaveRadius* = 42
   DpsCleaveDamage* = 2
   TargetFps* = 60
+  BiomeWaystationTicks* = TargetFps
   RoleAbilityCooldown* = 36
   PingDurationTicks* = TargetFps * 4
   DownedRespawnTicks* = TargetFps * 4
@@ -404,6 +413,7 @@ type
     LandmarkShrine
     LandmarkRescue
     LandmarkLair
+    LandmarkWaystation
 
   Pickup* = object
     x*, y*: int
@@ -760,6 +770,7 @@ proc landmarkLabel*(kind: LandmarkKind): string =
   of LandmarkShrine: "shrine"
   of LandmarkRescue: "rescue"
   of LandmarkLair: "lair"
+  of LandmarkWaystation: "waystation"
 
 proc carryLabel*(kind: CarryKind): string =
   case kind
@@ -818,6 +829,39 @@ proc playerPingForMessage*(message: string): PlayerPingKind =
   if lower.contains("lair") or lower.contains("den"):
     return PingLair
   PingNone
+
+proc waystationLabel*(biome: BiomeKind): string =
+  case biome
+  of BiomeForest: "forage"
+  of BiomePlains: "rally"
+  of BiomeSwamp: "bridge"
+  of BiomeDesert: "oasis"
+  of BiomeSnow: "hearth"
+  of BiomeCave: "lantern"
+  of BiomeRuins: "ward"
+  of BiomeOrigin: "waystation"
+
+proc waystationPromptLabel*(biome: BiomeKind): string =
+  case biome
+  of BiomeForest: "FORAGE H"
+  of BiomePlains: "RALLY T"
+  of BiomeSwamp: "BRIDGE T"
+  of BiomeDesert: "OASIS H"
+  of BiomeSnow: "HEARTH H"
+  of BiomeCave: "LANTERN D"
+  of BiomeRuins: "WARD T"
+  of BiomeOrigin: "WAYPOINT"
+
+proc preferredWaystationRole*(biome: BiomeKind): PlayerRole =
+  case biome
+  of BiomeForest, BiomeDesert, BiomeSnow:
+    RoleHealer
+  of BiomePlains, BiomeSwamp, BiomeRuins:
+    RoleTank
+  of BiomeCave:
+    RoleDps
+  of BiomeOrigin:
+    RoleUnarmed
 
 proc statusSpeedPercent*(player: Actor): int =
   result = 100
@@ -912,7 +956,8 @@ proc carryForLandmark*(kind: LandmarkKind): CarryKind =
     CarryStone
   of LandmarkGold:
     CarryGold
-  else:
+  of LandmarkCamp, LandmarkBeacon, LandmarkFinalGate, LandmarkShrine,
+      LandmarkRescue, LandmarkLair, LandmarkWaystation:
     CarryNone
 
 proc landmarkForCarry*(kind: CarryKind): LandmarkKind =
@@ -1980,6 +2025,11 @@ proc seedLandmarks*(sim: var SimServer) =
           clamp(centerTy - 5, 1, WorldHeightTiles - 2)
         else:
           clamp(centerTy + 5, 1, WorldHeightTiles - 2)
+      waystationTy =
+        if biome.biomeProgressValue() mod 2 == 0:
+          clamp(centerTy + 2, 1, WorldHeightTiles - 2)
+        else:
+          clamp(centerTy - 2, 1, WorldHeightTiles - 2)
     sim.addLandmark(
       resources.first,
       range.firstTx + max(1, span div 4),
@@ -2016,6 +2066,12 @@ proc seedLandmarks*(sim: var SimServer) =
       range.firstTx + max(2, span div 2),
       lairTy,
       LairHp
+    )
+    sim.addLandmark(
+      LandmarkWaystation,
+      range.firstTx + max(4, (span * 5) div 6),
+      waystationTy,
+      1
     )
     sim.addLandmark(
       LandmarkBeacon,
@@ -2610,7 +2666,8 @@ proc initSimServer*(seed = 0xB1770): SimServer =
       LandmarkFinalGate: ("landmark_final_gate", "altar.png"),
       LandmarkShrine: ("landmark_shrine", "altar.png"),
       LandmarkRescue: ("landmark_rescue", "oriented/gatherer.e.png"),
-      LandmarkLair: ("landmark_lair", "goblin_hive.png")
+      LandmarkLair: ("landmark_lair", "goblin_hive.png"),
+      LandmarkWaystation: ("landmark_waystation", "control_point.png")
     ]
   for kind in LandmarkKind:
     let asset = loadAssetPair(
@@ -3721,6 +3778,30 @@ proc playerNearActivatedCamp*(
       return true
   false
 
+proc playerNearExpeditionShelter*(
+  sim: SimServer,
+  playerIndex: int,
+  radius = CampShelterRadius
+): bool =
+  ## Returns true near a camp shelter or snow hearth waystation.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].lives <= 0:
+    return false
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkCamp and landmark.done and
+        sim.playerNearLandmark(sim.players[playerIndex], landmark, radius):
+      return true
+    if landmark.kind == LandmarkWaystation and landmark.done and
+        sim.tileBiomeKind(landmark.tx, landmark.ty) == BiomeSnow and
+        sim.playerNearLandmark(
+          sim.players[playerIndex],
+          landmark,
+          BiomeWaystationShelterRadius
+        ):
+      return true
+  false
+
 proc campIsFortified*(landmark: Landmark): bool =
   landmark.kind == LandmarkCamp and landmark.done and landmark.progress > 0
 
@@ -3812,6 +3893,42 @@ proc revealCampShortcut(sim: var SimServer, landmark: Landmark) =
       sim.tiles[index] = false
   inc sim.scoreRevision
 
+proc revealWaystationRoute(sim: var SimServer, landmark: Landmark) =
+  ## Turns biome detours into short readable paths through local rough ground.
+  for ty in landmark.ty - BiomeWaystationRouteHalfHeightTiles ..
+      landmark.ty + BiomeWaystationRouteHalfHeightTiles:
+    for tx in landmark.tx - BiomeWaystationRouteBackTiles ..
+        landmark.tx + BiomeWaystationRouteForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
+proc healLivePlayers(sim: var SimServer, amount: int) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].lives = min(
+      sim.players[playerIndex].maxHp,
+      sim.players[playerIndex].lives + amount
+    )
+
+proc clearLivePlayerStatuses(sim: var SimServer) =
+  for playerIndex in 0 ..< sim.players.len:
+    if sim.players[playerIndex].lives <= 0:
+      continue
+    sim.players[playerIndex].slowTicks = 0
+    sim.players[playerIndex].chillTicks = 0
+    sim.players[playerIndex].poisonTicks = 0
+
 proc activateShrine(sim: var SimServer) =
   ## Completes one optional side objective and gives the party a sustain bump.
   inc sim.sideObjectivesCompleted
@@ -3868,6 +3985,59 @@ proc pacifyMobsNearLandmark(
 proc pacifyLairMobs(sim: var SimServer, landmark: Landmark): int =
   ## Clears nearby local threats when a monster lair is destroyed.
   sim.pacifyMobsNearLandmark(landmark, LairPacifyRadius)
+
+proc waystationActivationStep*(biome: BiomeKind, role: PlayerRole): int =
+  if role == biome.preferredWaystationRole():
+    BiomeWaystationFastStep
+  else:
+    1
+
+proc activateWaystation(sim: var SimServer, landmarkIndex: int) =
+  if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
+    return
+  if sim.landmarks[landmarkIndex].done:
+    return
+  let
+    landmark = sim.landmarks[landmarkIndex]
+    biome = sim.tileBiomeKind(landmark.tx, landmark.ty)
+  sim.landmarks[landmarkIndex].done = true
+  inc sim.sideObjectivesCompleted
+  sim.revealWaystationRoute(landmark)
+  case biome
+  of BiomeForest:
+    sim.food += BiomeWaystationFoodBonus + 1
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  of BiomePlains:
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.abilityCooldown = 0
+  of BiomeSwamp:
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.slowTicks = 0
+    inc sim.stone
+  of BiomeDesert:
+    sim.food += BiomeWaystationFoodBonus + 1
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.poisonTicks = 0
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  of BiomeSnow:
+    sim.food += BiomeWaystationFoodBonus
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.chillTicks = 0
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  of BiomeCave:
+    inc sim.stone
+    discard sim.pacifyMobsNearLandmark(landmark, BiomeWaystationPacifyRadius)
+  of BiomeRuins:
+    sim.clearLivePlayerStatuses()
+    discard sim.pacifyMobsNearLandmark(landmark, BiomeWaystationPacifyRadius)
+  of BiomeOrigin:
+    sim.healLivePlayers(BiomeWaystationHealAmount)
+  inc sim.scoreRevision
 
 proc destroyLair(sim: var SimServer, landmarkIndex: int) =
   if landmarkIndex < 0 or landmarkIndex >= sim.landmarks.len:
@@ -4016,10 +4186,16 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           LandmarkActivationRadius
       if sim.playerNearLandmark(player, sim.landmarks[landmarkIndex], radius):
         nearPlayer = true
+        let landmarkBiome = sim.tileBiomeKind(
+          sim.landmarks[landmarkIndex].tx,
+          sim.landmarks[landmarkIndex].ty
+        )
         activationStep = max(
           activationStep,
           if kind == LandmarkRescue and player.role == RoleHealer:
             HealerRescueEventStep
+          elif kind == LandmarkWaystation:
+            waystationActivationStep(landmarkBiome, player.role)
           else:
             1
         )
@@ -4060,6 +4236,12 @@ proc activateNearbyLandmarks(sim: var SimServer) =
         continue
       sim.landmarks[landmarkIndex].done = true
       sim.activateRescueEvent()
+    of LandmarkWaystation:
+      sim.landmarks[landmarkIndex].progress += max(1, activationStep)
+      inc sim.scoreRevision
+      if sim.landmarks[landmarkIndex].progress < BiomeWaystationTicks:
+        continue
+      sim.activateWaystation(landmarkIndex)
     of LandmarkFinalGate:
       if not sim.bossDefeated:
         continue
@@ -4200,7 +4382,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
-    let sheltered = sim.playerNearActivatedCamp(playerIndex)
+    let sheltered = sim.playerNearExpeditionShelter(playerIndex)
     if sim.food > 0 and
         sim.players[playerIndex].lives <=
           sim.players[playerIndex].maxHp - FoodHealAmount:
@@ -4237,7 +4419,7 @@ proc applyStatusEffects(sim: var SimServer) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
       continue
-    let sheltered = sim.playerNearActivatedCamp(playerIndex)
+    let sheltered = sim.playerNearExpeditionShelter(playerIndex)
 
     if sim.players[playerIndex].poisonTicks > 0 and
         sim.tickCount mod StatusPoisonIntervalTicks == 0:

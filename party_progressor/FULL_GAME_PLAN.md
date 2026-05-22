@@ -282,6 +282,10 @@ The first full-game implementation pass includes:
 - Optional monster lair side objectives seeded through biome bands: parties can
   spend attack time to destroy local dens for supplies, side-objective score,
   and a short pacification of nearby threats.
+- Biome waystation side objectives seeded through biome bands: forage, rally,
+  bridge, oasis, hearth, lantern, and ward detours complete faster for a hinted
+  role, reshape nearby rough terrain into a readable route, and grant
+  biome-specific survival payoffs.
 - Wolves, camp defenders, bears, and boss scoring.
 - Combined team score and expanded result JSON.
 - Player/global HUD updates.
@@ -310,6 +314,8 @@ The first full-game implementation pass includes:
 - Activated camps can be fortified with extra wood and stone, converting them
   into safer staging points that repeatedly clear nearby non-boss threats and
   show a distinct fort prompt.
+- Snow hearth waystations become local cold shelters after completion, giving
+  snow expeditions a second kind of safe staging choice beyond full camps.
 - One-item expedition carrying for harvested wood, food, stone, and gold,
   including visible held-item sprites and select-to-use/drop behavior.
 - Deterministic tile elevation with movement slowdown and sprite-map shading.
@@ -362,8 +368,8 @@ The first full-game implementation pass includes:
 ### Expedition Depth
 
 - Give each biome one tactical rule that changes party behavior.
-- Expand optional side objectives beyond shrines, rescues, and monster lairs:
-  add biome-specific detours that trade time for score or survivability.
+- Tune the new biome waystation detours so their role hints, route changes, and
+  biome-specific payoffs are visible but not mandatory.
 - Extend camp infrastructure beyond healing, role swap, weather shelter,
   shortcut reveal, and fortification: add biome-safe staging choices or camp
   specializations.

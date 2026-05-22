@@ -9,7 +9,7 @@ const
   SelectedPlayerSpriteSlots = 64
   SwooshSpriteSlots = 8
   TerrainSpriteSlots = 16
-  LandmarkSpriteSlots = 10
+  LandmarkSpriteSlots = 11
   MaxDrainMessages = 256
   PathCellSize = 8
   PathGridWidth = WorldWidthPixels div PathCellSize
@@ -192,7 +192,8 @@ proc classifySprite(spriteId: int, label: string): SpriteKind =
       lower.startsWith("bear") or lower.startsWith("yeti"):
     SpriteBoss
   elif spriteId == CoinSpriteId or lower == "coin" or
-      lower in ["camp", "beacon", "final gate", "shrine", "rescue", "lair"]:
+      lower in ["camp", "beacon", "final gate", "shrine", "rescue", "lair",
+        "waystation"]:
     SpriteCoin
   elif spriteId == HeartSpriteId or lower == "heart":
     SpriteHeart

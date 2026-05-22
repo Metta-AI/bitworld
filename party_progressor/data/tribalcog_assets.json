@@ -39,6 +39,7 @@
     "landmark_shrine": "temple.png",
     "landmark_rescue": "oriented/gatherer.e.png",
     "landmark_lair": "goblin_hive.png",
+    "landmark_waystation": "control_point.png",
     "mob_wolf": "oriented/wolf.e.png",
     "mob_goblin": "oriented/goblin.e.png",
     "mob_bear": "oriented/bear.e.png",

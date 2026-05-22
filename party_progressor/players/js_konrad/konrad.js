@@ -43,7 +43,7 @@ const PlayerSpriteSlots = 64;
 const SelectedPlayerSpriteSlots = 64;
 const SwooshSpriteSlots = 8;
 const TerrainSpriteSlots = 16;
-const LandmarkSpriteSlots = 10;
+const LandmarkSpriteSlots = 11;
 const MobSpeciesSpriteSlots = 64;
 const MaxDrainMessages = 256;
 const PathCellSize = 8;
@@ -840,7 +840,7 @@ function classifySprite(spriteId, label) {
   if (
     spriteId === CoinSpriteId ||
     lower === "coin" ||
-    ["camp", "beacon", "final gate", "shrine", "rescue", "lair"].includes(lower)
+    ["camp", "beacon", "final gate", "shrine", "rescue", "lair", "waystation"].includes(lower)
   ) return SpriteKind.Coin;
   if (spriteId === HeartSpriteId || lower === "heart") return SpriteKind.Heart;
   if (spriteId >= SwooshSpriteBase && spriteId < SwooshSpriteBase + SwooshSpriteSlots) {

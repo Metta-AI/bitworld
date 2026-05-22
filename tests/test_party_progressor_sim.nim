@@ -745,6 +745,13 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     done: false
   ))
   sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize + 4,
+    ty: sim.players[playerIndex].y div WorldTileSize + 1,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: false
+  ))
+  sim.landmarks.add(Landmark(
     tx: sim.players[playerIndex].x div WorldTileSize + 2,
     ty: sim.players[playerIndex].y div WorldTileSize,
     kind: LandmarkCamp,
@@ -779,7 +786,17 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt shrine f2" in labels
   doAssert "prompt rescue f2" in labels
   doAssert "prompt lair" in labels
+  doAssert "prompt forage h" in labels
   doAssert "prompt gate boss r3" in labels
+
+  let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
+    it.label
+  )
+  doAssert "prompt bridge t" in spriteLabels
+  doAssert "prompt oasis h" in spriteLabels
+  doAssert "prompt hearth h" in spriteLabels
+  doAssert "prompt lantern d" in spriteLabels
+  doAssert "prompt ward t" in spriteLabels
 
 proc testChatPingsShowCompactStatusBadges() =
   doAssert playerPingForMessage("regroup at camp") == PingRegroup
@@ -1363,6 +1380,115 @@ proc testMonsterLairAttackRewardsAndPacifiesThreats() =
   doAssert sim.mobs.anyIt(it.kind == BossMob)
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
 
+proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
+  doAssert waystationActivationStep(BiomeSwamp, RoleTank) ==
+    BiomeWaystationFastStep
+  doAssert waystationActivationStep(BiomeSwamp, RoleDps) == 1
+  doAssert BiomeSwamp.waystationPromptLabel() == "BRIDGE T"
+  doAssert BiomeSnow.waystationPromptLabel() == "HEARTH H"
+
+  let seededSim = initPartyProgressorForTest()
+  doAssert seededSim.landmarks.countIt(it.kind == LandmarkWaystation) == BiomeCount,
+    "one waystation should be seeded into each adventure biome"
+
+  var swampSim = initPartyProgressorForTest()
+  swampSim.clearTerrain()
+  swampSim.mobs.setLen(0)
+  swampSim.pickups.setLen(0)
+  swampSim.landmarks.setLen(0)
+  swampSim.fillGround(GroundMud, BiomeSwamp)
+  swampSim.mobSpawnCooldown = 999
+
+  let swampPlayer = swampSim.addPlayer("tank")
+  swampSim.players[swampPlayer].applyRole(RoleTank)
+  swampSim.players[swampPlayer].x = SafeZoneRightPixels + WorldTileSize
+  swampSim.players[swampPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  swampSim.players[swampPlayer].bounds =
+    swampSim.playerBoundsFor(swampSim.players[swampPlayer])
+  let
+    bridgeTx = swampSim.players[swampPlayer].x div WorldTileSize
+    bridgeTy = swampSim.players[swampPlayer].y div WorldTileSize
+  for ty in bridgeTy - BiomeWaystationRouteHalfHeightTiles ..
+      bridgeTy + BiomeWaystationRouteHalfHeightTiles:
+    for tx in bridgeTx - BiomeWaystationRouteBackTiles ..
+        bridgeTx + BiomeWaystationRouteForwardTiles:
+      if tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles:
+        let index = tileIndex(tx, ty)
+        swampSim.groundKinds[index] = GroundWater
+        swampSim.biomeKinds[index] = BiomeSwamp
+        swampSim.elevations[index] = 5
+        swampSim.tiles[index] = true
+  swampSim.landmarks.add(Landmark(
+    tx: bridgeTx,
+    ty: bridgeTy,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: false
+  ))
+
+  for _ in 0 ..< BiomeWaystationTicks div BiomeWaystationFastStep:
+    swampSim.step([InputState()])
+
+  doAssert swampSim.landmarks[0].done
+  doAssert swampSim.sideObjectivesCompleted == 1
+  doAssert swampSim.stone == 1
+  for ty in bridgeTy - BiomeWaystationRouteHalfHeightTiles ..
+      bridgeTy + BiomeWaystationRouteHalfHeightTiles:
+    for tx in bridgeTx - BiomeWaystationRouteBackTiles ..
+        bridgeTx + BiomeWaystationRouteForwardTiles:
+      if tx >= 0 and ty >= 0 and tx < WorldWidthTiles and ty < WorldHeightTiles:
+        let index = tileIndex(tx, ty)
+        doAssert swampSim.tileGroundKind(tx, ty) == GroundBridge,
+          "swamp waystations should turn local water into a bridge route"
+        doAssert swampSim.elevations[index] <= 1,
+          "waystations should make nearby elevation easier to cross"
+        doAssert not swampSim.tiles[index],
+          "waystations should clear blockers from their local route"
+
+  var snowSim = initPartyProgressorForTest()
+  snowSim.clearTerrain()
+  snowSim.mobs.setLen(0)
+  snowSim.pickups.setLen(0)
+  snowSim.landmarks.setLen(0)
+  snowSim.fillGround(GroundSnow, BiomeSnow)
+  snowSim.mobSpawnCooldown = 999
+  snowSim.food = 0
+
+  let snowPlayer = snowSim.addPlayer("healer")
+  snowSim.players[snowPlayer].applyRole(RoleHealer)
+  snowSim.players[snowPlayer].x = firstTileForBiome(BiomeSnow) * WorldTileSize
+  snowSim.players[snowPlayer].y = (WorldHeightTiles div 2) * WorldTileSize
+  snowSim.players[snowPlayer].bounds =
+    snowSim.playerBoundsFor(snowSim.players[snowPlayer])
+  snowSim.players[snowPlayer].lives =
+    snowSim.players[snowPlayer].maxHp - BiomeWaystationHealAmount
+  snowSim.players[snowPlayer].chillTicks = StatusChillTicks
+  snowSim.landmarks.add(Landmark(
+    tx: snowSim.players[snowPlayer].x div WorldTileSize,
+    ty: snowSim.players[snowPlayer].y div WorldTileSize,
+    kind: LandmarkWaystation,
+    hp: 1,
+    done: false
+  ))
+
+  for _ in 0 ..< BiomeWaystationTicks div BiomeWaystationFastStep:
+    snowSim.step([InputState()])
+
+  doAssert snowSim.landmarks[0].done
+  doAssert snowSim.sideObjectivesCompleted == 1
+  doAssert snowSim.food == BiomeWaystationFoodBonus
+  doAssert snowSim.players[snowPlayer].lives == snowSim.players[snowPlayer].maxHp
+  doAssert snowSim.players[snowPlayer].chillTicks == 0
+  doAssert snowSim.playerNearExpeditionShelter(snowPlayer),
+    "completed snow hearths should become local cold shelters"
+
+  snowSim.food = 0
+  let shelteredHp = snowSim.players[snowPlayer].lives
+  for _ in 0 ..< ColdExposureIntervalTicks:
+    snowSim.step([InputState()])
+  doAssert snowSim.players[snowPlayer].lives == shelteredHp,
+    "snow hearth shelter should prevent cold exposure damage"
+
 proc testDpsCleaveSpecialDamagesNearbyMobs() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -1570,6 +1696,7 @@ testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()
 testHealerCompletesRescueEventsFaster()
 testMonsterLairAttackRewardsAndPacifiesThreats()
+testBiomeWaystationsCreateRoleDetoursAndShelters()
 testDpsCleaveSpecialDamagesNearbyMobs()
 testHealerTriageAndHelpAffordance()
 testFoodAndColdSurvivalPressure()

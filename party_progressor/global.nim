@@ -40,6 +40,7 @@ const
   LandmarkShelterPromptSpriteId =
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
   LandmarkFortPromptSpriteId = LandmarkShelterPromptSpriteId + 1
+  LandmarkWaystationPromptSpriteBase = LandmarkFortPromptSpriteId + 1
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
@@ -1307,6 +1308,8 @@ proc landmarkPromptSpriteId(landmark: Landmark): int =
     LandmarkFortPromptSpriteId
   elif landmark.kind == LandmarkCamp and landmark.done:
     LandmarkShelterPromptSpriteId
+  elif landmark.kind == LandmarkWaystation:
+    LandmarkWaystationPromptSpriteBase + ord(biomeForTileX(landmark.tx))
   else:
     landmark.kind.landmarkPromptSpriteId()
 
@@ -1335,12 +1338,16 @@ proc landmarkPromptLabel(kind: LandmarkKind): string =
     "RESCUE F" & $RescueFoodBonus
   of LandmarkLair:
     "LAIR"
+  of LandmarkWaystation:
+    "WAYPOINT"
 
 proc landmarkPromptLabel(landmark: Landmark): string =
   if landmark.campIsFortified():
     "FORT"
   elif landmark.kind == LandmarkCamp and landmark.done:
     "SHELTER"
+  elif landmark.kind == LandmarkWaystation:
+    biomeForTileX(landmark.tx).waystationPromptLabel()
   else:
     landmark.kind.landmarkPromptLabel()
 
@@ -1683,6 +1690,17 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
     fortPromptSprite.pixels,
     "prompt " & fortPrompt.toLowerAscii()
   )
+  for biome in BiomeKind:
+    let
+      prompt = biome.waystationPromptLabel()
+      promptSprite = sim.buildSpriteProtocolTextSprite([prompt], 14'u8)
+    packet.addSprite(
+      LandmarkWaystationPromptSpriteBase + ord(biome),
+      promptSprite.width,
+      promptSprite.height,
+      promptSprite.pixels,
+      "prompt " & prompt.toLowerAscii()
+    )
 
 proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
