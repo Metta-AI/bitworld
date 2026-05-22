@@ -186,6 +186,7 @@ type
     lowHealth: bool
     needsRegroup: bool
     needsShelter: bool
+    needsTerrainRoute: bool
     canEatCarriedFood: bool
     carriedItem: CarryKind
     objectiveHint: string
@@ -818,6 +819,7 @@ proc updateSelfAffordances(bot: var Bot) =
   bot.lowHealth = false
   bot.needsRegroup = false
   bot.needsShelter = false
+  bot.needsTerrainRoute = false
   bot.canEatCarriedFood = false
   bot.carriedItem = CarryNone
   bot.objectiveHint = ""
@@ -863,6 +865,8 @@ proc updateSelfAffordances(bot: var Bot) =
     of "status fog":
       bot.needsShelter = true
       bot.needsRegroup = true
+    of "status mire":
+      bot.needsTerrainRoute = true
     else:
       discard
 
@@ -1361,6 +1365,9 @@ proc optionalExpeditionTarget(kind: TargetKind): bool =
 
 proc isOpportunisticObjective(bot: Bot, target: Target): bool =
   ## Keeps side objectives useful without letting stale clusters stop progress.
+  if bot.needsTerrainRoute and target.kind == TargetWaystation and
+      bot.targetDistance(target) <= OpportunisticObjectiveRadius * 2:
+    return true
   bot.currentObjectiveTarget(target.kind) or (
     bot.targetDistance(target) <= OpportunisticObjectiveRadius and
     target.x >= bot.playerWorldX - BacktrackLootSlack
@@ -1397,7 +1404,7 @@ proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   if target.kind == TargetShelter:
     if bot.carriedItem != CarryNone:
       return bot.targetDistance(target) <= ShelterReturnRadius
-    if not (bot.lowHealth or bot.needsShelter):
+    if not (bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute):
       return false
     if bot.targetDistance(target) > ShelterReturnRadius:
       return false
@@ -1510,7 +1517,8 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 170
     else:
       distance + (
-        if bot.lowHealth or bot.needsRegroup or bot.needsShelter:
+        if bot.lowHealth or bot.needsRegroup or bot.needsShelter or
+            bot.needsTerrainRoute:
           -180
         else:
           -100
@@ -1519,7 +1527,14 @@ proc targetScore(bot: Bot, target: Target): int =
     if bot.carriedItem != CarryNone:
       distance - 190
     else:
-      distance + (if bot.lowHealth or bot.needsShelter: -210 else: 520)
+      distance + (
+        if bot.lowHealth or bot.needsShelter:
+          -210
+        elif bot.needsTerrainRoute:
+          -170
+        else:
+          520
+      )
   of TargetRelic:
     if bot.objectiveHint.startsWith("next relic"):
       distance - 170
@@ -1529,7 +1544,9 @@ proc targetScore(bot: Bot, target: Target): int =
       distance - 85
   of TargetWaystation:
     distance + (
-      if bot.lowHealth or bot.needsRegroup or bot.needsShelter:
+      if bot.needsTerrainRoute:
+        -260
+      elif bot.lowHealth or bot.needsRegroup or bot.needsShelter:
         -165
       else:
         -65
@@ -1551,13 +1568,48 @@ proc targetScore(bot: Bot, target: Target): int =
   of TargetGate:
     distance + (if bot.objectiveHintIsGate(): -210 else: 10)
   of TargetLair:
-    distance + (if bot.lowHealth or bot.needsRegroup or bot.needsShelter: 420 elif distance < 100: -45 else: 180)
+    distance + (
+      if bot.lowHealth or bot.needsRegroup or bot.needsShelter or
+          bot.needsTerrainRoute:
+        420
+      elif distance < 100:
+        -45
+      else:
+        180
+    )
   of TargetMob:
-    distance + (if bot.lowHealth or bot.needsShelter: 340 elif bot.needsRegroup: 240 elif distance < 90: -70 else: 620)
+    distance + (
+      if bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute:
+        340
+      elif bot.needsRegroup:
+        240
+      elif distance < 90:
+        -70
+      else:
+        620
+    )
   of TargetTroll:
-    distance + (if bot.lowHealth or bot.needsShelter: 400 elif bot.needsRegroup: 280 elif distance < 105: -60 else: 700)
+    distance + (
+      if bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute:
+        400
+      elif bot.needsRegroup:
+        280
+      elif distance < 105:
+        -60
+      else:
+        700
+    )
   of TargetBoss:
-    distance + (if bot.lowHealth or bot.needsShelter: 560 elif bot.needsRegroup: 440 elif distance < 120: -45 else: 900)
+    distance + (
+      if bot.lowHealth or bot.needsShelter or bot.needsTerrainRoute:
+        560
+      elif bot.needsRegroup:
+        440
+      elif distance < 120:
+        -45
+      else:
+        900
+    )
   of TargetExplore:
     distance + 120
 
@@ -2291,6 +2343,48 @@ when defined(konradTargetSelfTest):
     y: 0
   ))
   bot.needsShelter = false
+  bot.needsTerrainRoute = true
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetShelter,
+    objectId: LandmarkObjectBase + 4,
+    x: ShelterReturnRadius,
+    y: 0
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetWaystation,
+    objectId: LandmarkObjectBase + 5,
+    x: OpportunisticObjectiveRadius * 2,
+    y: 0
+  ))
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetWaystation,
+    objectId: LandmarkObjectBase + 6,
+    x: OpportunisticObjectiveRadius * 2 + 1,
+    y: 0
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetWaystation,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetFood,
+    x: 16,
+    y: 0
+  ))
+  doAssert bot.targetScore(Target(
+    found: true,
+    kind: TargetShelter,
+    x: 96,
+    y: 0
+  )) < bot.targetScore(Target(
+    found: true,
+    kind: TargetMob,
+    x: 40,
+    y: 0
+  ))
+  bot.needsTerrainRoute = false
   bot.readStatusHud("tank plains|clear w1 f0 s0 r0|b guard|next camp 0/2 w1 s1")
   doAssert bot.sharedWood == 1
   doAssert bot.sharedStone == 0
@@ -2451,9 +2545,11 @@ when defined(konradTargetSelfTest):
     statusSpriteId = 9001
     coldStatusSpriteId = 9002
     hudStatusSpriteId = 9003
+    mireStatusSpriteId = 9012
     healthObjectId = PlayerHealthObjectBase + playerId
     statusObjectId = StatusBadgeObjectBase + playerId * StatusBadgeSlots
     coldStatusObjectId = statusObjectId + 1
+    mireStatusObjectId = statusObjectId + 2
   bot.selfObjectId = PlayerObjectBase + playerId
   bot.ensureSprite(healthSpriteId)
   bot.sprites[healthSpriteId] = SpriteInfo(
@@ -2488,6 +2584,17 @@ when defined(konradTargetSelfTest):
     present: true,
     spriteId: coldStatusSpriteId
   )
+  bot.ensureSprite(mireStatusSpriteId)
+  bot.sprites[mireStatusSpriteId] = SpriteInfo(
+    defined: true,
+    label: "status mire",
+    kind: SpriteText
+  )
+  bot.ensureObject(mireStatusObjectId)
+  bot.objects[mireStatusObjectId] = ObjectState(
+    present: true,
+    spriteId: mireStatusSpriteId
+  )
   bot.ensureSprite(hudStatusSpriteId)
   bot.sprites[hudStatusSpriteId] = SpriteInfo(
     defined: true,
@@ -2503,6 +2610,7 @@ when defined(konradTargetSelfTest):
   doAssert bot.lowHealth
   doAssert bot.needsRegroup
   doAssert bot.needsShelter
+  doAssert bot.needsTerrainRoute
   doAssert bot.hasRole
   doAssert not bot.needsRole
   doAssert bot.roleLabel == "tank"
@@ -2511,6 +2619,7 @@ when defined(konradTargetSelfTest):
   doAssert bot.carriedItem == CarryWood
   doAssert bot.needWood == 1
   doAssert bot.needStone == 1
+  bot.needsTerrainRoute = false
   bot.needsShelter = false
   bot.readStatusHud("dps snow|snow w0 f0 s0 r0|b cleave cd12|carry none")
   doAssert bot.roleLabel == "dps"

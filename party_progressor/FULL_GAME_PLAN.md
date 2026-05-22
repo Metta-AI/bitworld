@@ -396,8 +396,9 @@ The first full-game implementation pass includes:
   for resources, camp costs, relic beacons, and final-gate requirements, with
   activated camps relabeled as shelters.
 - Environmental survival pressure is now readable before damage lands: exposed
-  snow, desert, cave, and ruin players get `COLD`, `HEAT`, or `FOG` badges plus
-  HUD status text, while nearby allies and completed shelters clear the warning.
+  swamp, snow, desert, cave, and ruin players get `MIRE`, `COLD`, `HEAT`, or
+  `FOG` badges plus HUD status text, while nearby allies and completed shelters
+  clear the warning where appropriate.
 - Objective hold affordances now show live progress for rescue events,
   waystations, lairs, and the final-gate ritual, so the larger observation
   window communicates when party pressure is actually advancing a task.
@@ -427,9 +428,10 @@ The first full-game implementation pass includes:
 - Konrad bot adapters now read visible self health bars and status badges, then
   pivot toward hearts, food, camps, waystations, and regroup/rescue affordances
   while avoiding discretionary combat when wounded or isolated.
-- Konrad bot adapters now also read `COLD`, `HEAT`, and `FOG` survival badges,
-  biasing exposed players toward food, shelters, waystations, and regrouping
-  instead of treating weather pressure as invisible attrition.
+- Konrad bot adapters now also read `MIRE`, `COLD`, `HEAT`, and `FOG` survival
+  badges, biasing exposed players toward the right answer for the pressure:
+  bridge waystations and shelters for mire, food or shelter for heat/cold, and
+  regrouping or lantern/ward shelter for fog.
 - Konrad bot adapters now also treat visible teammate player sprites as regroup
   targets, so isolation pressure drives bots back toward the party instead of
   only toward generic safe landmarks.
