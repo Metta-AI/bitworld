@@ -1698,6 +1698,14 @@ proc testBeaconAndBossScoring() =
   doAssert sim.relicShards == 1
   doAssert sim.teamScore() ==
     sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue
+  var beaconNextState: PlayerViewerState
+  let beaconLabels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    beaconNextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "beacon" notin beaconLabels
+  doAssert "prompt relic" notin beaconLabels
 
   sim.landmarks.setLen(0)
   sim.mobs.setLen(0)
@@ -1780,6 +1788,14 @@ proc testShrineSideObjectiveScoringAndSustain() =
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
   let scores = parseJson(sim.playerScoresJson())
   doAssert scores["side_objectives_completed"][0].getInt() == 1
+  var shrineNextState: PlayerViewerState
+  let labels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    shrineNextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "shrine" notin labels
+  doAssert "prompt shrine f2" notin labels
 
 proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   var sim = initPartyProgressorForTest()
@@ -1819,6 +1835,14 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   doAssert sim.players[playerIndex].lives ==
     sim.players[playerIndex].maxHp - 1
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
+  var rescueNextState: PlayerViewerState
+  let labels = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    rescueNextState
+  ).parseSpriteProtocolPacket().objectSpriteLabels()
+  doAssert "rescue" notin labels
+  doAssert "prompt rescue f2" notin labels
 
 proc testHealerCompletesRescueEventsFaster() =
   var sim = initPartyProgressorForTest()

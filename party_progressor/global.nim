@@ -2178,12 +2178,7 @@ proc addLandmarkObjects(
   ## Adds expedition resources, camps, beacons, and final gate objects.
   for i in 0 ..< sim.landmarks.len:
     let landmark = sim.landmarks[i]
-    if landmark.done and landmark.kind in {
-      LandmarkWood,
-      LandmarkFood,
-      LandmarkStone,
-      LandmarkGold
-    }:
+    if landmark.done and landmark.kind != LandmarkCamp:
       continue
     let
       sprite = sim.landmarkRgbaSprite(landmark.kind)

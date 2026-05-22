@@ -823,6 +823,14 @@ proc markBlocked(blocked: var seq[bool], x, y, w, h: int) =
     for tx in minTx .. maxTx:
       blocked[gridIndex(tx, ty)] = true
 
+proc isCarryOverlayObject(objectId: int): bool =
+  ## Carry sprites are player affordances, not collectible world resources.
+  objectId >= CarryObjectBase and objectId < StatusBadgeObjectBase
+
+proc isLooseCarryPickupObject(objectId: int): bool =
+  ## Ground carry pickups use pickup object ids; landmarks use landmark ids.
+  objectId >= PickupObjectBase and objectId < ChatObjectBase
+
 proc targetCenter(
   bot: Bot,
   objectState: ObjectState,
@@ -853,6 +861,8 @@ proc scanWorld(
       continue
     let sprite = bot.spriteInfo(objectState.spriteId)
     if not sprite.defined:
+      continue
+    if objectId.isCarryOverlayObject():
       continue
     case sprite.kind
     of SpritePlayer:
@@ -1059,6 +1069,9 @@ proc randomMoveMask(rng: var Rand): uint8 =
 proc isRoleTarget(kind: TargetKind): bool =
   kind in {TargetTankRole, TargetDpsRole, TargetHealerRole}
 
+proc isCarryResourceTarget(kind: TargetKind): bool =
+  kind in {TargetWood, TargetFood, TargetStone, TargetGold}
+
 proc directedUnstuckMask(bot: var Bot): uint8 =
   ## Chooses a recovery nudge that still respects the current target.
   let vertical =
@@ -1134,6 +1147,9 @@ proc preferredRoleTarget(bot: Bot): TargetKind =
 
 proc canConsiderPickupTarget(bot: Bot, target: Target): bool =
   ## During role choice, ignore generic gear and non-preferred role labels.
+  if bot.carriedItem != CarryNone and target.kind.isCarryResourceTarget() and
+      target.objectId.isLooseCarryPickupObject():
+    return false
   if target.kind.isRoleTarget() and not bot.choosingRole():
     return false
   if target.kind in {TargetCoin, TargetHeart} and
@@ -1795,6 +1811,16 @@ when defined(konradTargetSelfTest):
   doAssert rolePreferenceFor("konrad", "1") == PreferDpsRole
   doAssert rolePreferenceFor("healer", "1") == PreferHealerRole
   doAssert "role heal pulse".roleTargetKindForLabel() == TargetHealerRole
+  bot.carriedItem = CarryWood
+  doAssert not bot.canConsiderPickupTarget(Target(
+    kind: TargetFood,
+    objectId: PickupObjectBase + 9
+  ))
+  doAssert bot.canConsiderPickupTarget(Target(
+    kind: TargetFood,
+    objectId: LandmarkObjectBase + 1
+  ))
+  bot.carriedItem = CarryNone
   doAssert bot.targetScore(Target(
     found: true,
     kind: TargetWood,
@@ -2015,6 +2041,24 @@ when defined(konradTargetSelfTest):
     spriteId: allySpriteId
   )
   let
+    carrySpriteId = 9006
+    carryOverlayObjectId = CarryObjectBase + playerId + 1
+  bot.ensureSprite(carrySpriteId)
+  bot.sprites[carrySpriteId] = SpriteInfo(
+    defined: true,
+    width: 16,
+    height: 16,
+    label: "wood",
+    kind: SpriteCoin
+  )
+  bot.ensureObject(carryOverlayObjectId)
+  bot.objects[carryOverlayObjectId] = ObjectState(
+    present: true,
+    x: 64,
+    y: 0,
+    spriteId: carrySpriteId
+  )
+  let
     roleSpriteId = 9004
     roleObjectId = 9005
   bot.ensureSprite(roleSpriteId)
@@ -2044,6 +2088,7 @@ when defined(konradTargetSelfTest):
   for pickup in pickups:
     if pickup.kind == TargetDpsRole:
       sawDpsRole = true
+    doAssert pickup.objectId != carryOverlayObjectId
   doAssert sawDpsRole
   bot.lowHealth = true
   doAssert bot.targetScore(Target(

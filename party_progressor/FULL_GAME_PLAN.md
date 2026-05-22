@@ -411,6 +411,16 @@ The first full-game implementation pass includes:
 - Konrad bot combat now reads the B-power HUD line and fires role powers at
   sensible moments: tanks guard and DPS cleave once threats are in reach, while
   healers spend their pulse when the HUD reports low health.
+- Konrad bot scanning now treats visible carried-item sprites as teammate state
+  instead of world pickups, preventing longer expedition runs from derailing
+  into loops around another player's held wood, food, stone, or gold.
+- Completed non-camp objectives now leave the sprite observation after their
+  payoff lands, so humans and bots do not keep trying to activate already-spent
+  relic beacons, shrines, rescues, lairs, or waystations; completed camps remain
+  visible as shelters and specialization points.
+- Konrad bot targeting now distinguishes harvest landmarks from loose carried
+  resource pickups, so players with full hands still harvest useful nodes but
+  stop chasing dropped food, wood, stone, or gold they cannot collect.
 - Focused sim tests for biome/weather, movement modifiers, resources, camps,
   objectives, objective HUD hints, boss scoring, player viewport size, and
   biome-backed transparent sprites.
