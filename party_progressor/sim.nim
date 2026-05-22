@@ -114,6 +114,7 @@ const
   DpsCleaveRadius* = 42
   DpsCleaveDamage* = 2
   TargetFps* = 60
+  LairRespawnCooldownBonus* = TargetFps * 2
   BiomeWaystationTicks* = TargetFps
   FinalGateRitualTicks* = TargetFps * 2
   FinalGateTwoRoleStep* = 2
@@ -1829,6 +1830,16 @@ proc incompleteLandmarkExists(
       return true
   false
 
+proc completedLairCountInBiome*(sim: SimServer, biome: BiomeKind): int =
+  ## Counts cleared dens that should lower future threat pressure in a biome.
+  for landmark in sim.landmarks:
+    if landmark.kind == LandmarkLair and landmark.done and
+        sim.tileBiomeKind(landmark.tx, landmark.ty) == biome:
+      inc result
+
+proc lairRespawnCooldownBonus*(clearedLairs: int): int =
+  max(0, clearedLairs) * LairRespawnCooldownBonus
+
 proc campResourceHint(sim: SimServer): string =
   ## Returns the shared-resource deficit for the next buildable camp.
   "NEXT GATHER W" & $max(0, CampWoodCost - sim.wood) &
@@ -1878,6 +1889,8 @@ proc expeditionObjectiveHint*(sim: SimServer, playerIndex: int): string =
     if sim.wood >= CampWoodCost and sim.stone >= CampStoneCost:
       return "NEXT BUILD CAMP"
     return sim.campResourceHint()
+  if sim.incompleteLandmarkInBiome(LandmarkLair, biome):
+    return "NEXT CLEAR LAIR"
   if sim.relicShards < FinalGateRelicCost and
       sim.incompleteLandmarkExists(LandmarkBeacon):
     return "NEXT RELIC " & $sim.relicShards & "/" & $FinalGateRelicCost
@@ -2243,6 +2256,11 @@ proc resourceKindsForBiome(
     (LandmarkGold, LandmarkStone)
   else:
     (LandmarkWood, LandmarkFood)
+
+proc lairCacheCarriesForBiome*(biome: BiomeKind): tuple[first, second: CarryKind] =
+  ## Returns the practical supplies hidden in one biome's monster den.
+  let resources = biome.resourceKindsForBiome()
+  (resources.first.carryForLandmark(), resources.second.carryForLandmark())
 
 proc seedLandmarks*(sim: var SimServer) =
   ## Places resources, camps, beacons, and the final expedition gate.
@@ -4513,6 +4531,18 @@ proc giveOrDropHarvestCarry(
   ))
   inc sim.scoreRevision
 
+proc addCarryPickupAt(sim: var SimServer, item: CarryKind, x, y: int) =
+  if item == CarryNone:
+    return
+  let pickupKind = item.pickupForCarry()
+  sim.pickups.add(Pickup(
+    x: worldClampPixel(x, WorldWidthPixels - sim.pickupSprite(pickupKind).width),
+    y: worldClampPixel(y, WorldHeightPixels - sim.pickupSprite(pickupKind).height),
+    kind: pickupKind,
+    value: 1
+  ))
+  inc sim.scoreRevision
+
 proc addCampRoleGear(sim: var SimServer, landmark: Landmark) =
   ## Makes activated camps useful as forward role-swap stations.
   let
@@ -4768,7 +4798,13 @@ proc destroyLair(sim: var SimServer, landmarkIndex: int) =
   inc sim.sideObjectivesCompleted
   sim.food += LairFoodBonus
   sim.stone += LairStoneBonus
-  discard sim.pacifyLairMobs(sim.landmarks[landmarkIndex])
+  let
+    landmark = sim.landmarks[landmarkIndex]
+    center = sim.landmarkCenter(landmark)
+    cache = sim.tileBiomeKind(landmark.tx, landmark.ty).lairCacheCarriesForBiome()
+  sim.addCarryPickupAt(cache.first, center.x - WorldTileSize div 2, center.y)
+  sim.addCarryPickupAt(cache.second, center.x + WorldTileSize div 2, center.y)
+  discard sim.pacifyLairMobs(landmark)
   inc sim.scoreRevision
 
 proc fortifyCamp(sim: var SimServer, landmarkIndex: int) =
@@ -5755,7 +5791,9 @@ proc respawnMobs(sim: var SimServer) =
     range.firstTx,
     range.lastTx
   )
-  sim.mobSpawnCooldown = 24 + sim.rng.rand(24)
+  sim.mobSpawnCooldown =
+    24 + sim.rng.rand(24) +
+      lairRespawnCooldownBonus(sim.completedLairCountInBiome(biome))
 
 proc fillTileBackground(
   fb: var Framebuffer,

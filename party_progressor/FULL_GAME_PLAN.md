@@ -332,7 +332,9 @@ The first full-game implementation pass includes:
   reward.
 - Optional monster lair side objectives seeded through biome bands: parties can
   spend attack time to destroy local dens for supplies, side-objective score,
-  and a short pacification of nearby threats.
+  a short pacification of nearby threats, a biome-flavored cache of carried
+  expedition supplies, and reduced future monster respawn pressure in that
+  biome.
 - Biome waystation side objectives seeded through biome bands: forage, rally,
   bridge, oasis, hearth, lantern, and ward detours complete faster for a hinted
   role, reshape nearby rough terrain into a readable route, and grant
@@ -586,6 +588,9 @@ The first full-game implementation pass includes:
 - Konrad optional side-objective targeting now stays opportunistic unless the
   HUD names that objective as the current expedition step, so relic, shrine,
   rescue, lair, and waystation clusters do not stall the party's forward push.
+- Konrad now ignores chat bubbles that happen to contain resource words, so
+  teammate target/status chatter like `wood` or `food` cannot masquerade as a
+  collectible pickup.
 - Konrad now tracks each bot's personal expedition frontier and filters stale
   loose resource drops, old incomplete camps, and non-immediate monster fights
   behind that frontier, reducing late-run collapses back into already-cleared

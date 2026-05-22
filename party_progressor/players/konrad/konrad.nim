@@ -932,6 +932,10 @@ proc isLooseCarryPickupObject(objectId: int): bool =
   ## Ground carry pickups use pickup object ids; landmarks use landmark ids.
   objectId >= PickupObjectBase and objectId < ChatObjectBase
 
+proc isChatObject(objectId: int): bool =
+  ## Chat bubbles can contain resource words but are not world pickups.
+  objectId >= ChatObjectBase and objectId < AttackObjectBase
+
 proc targetDistance(bot: Bot, target: Target): int =
   ## Returns the current Manhattan distance to one target.
   manhattan(
@@ -996,6 +1000,8 @@ proc scanWorld(
     if not sprite.defined:
       continue
     if objectId.isCarryOverlayObject():
+      continue
+    if objectId.isChatObject():
       continue
     case sprite.kind
     of SpritePlayer:
@@ -2912,6 +2918,14 @@ when defined(konradTargetSelfTest):
     y: 0,
     spriteId: carrySpriteId
   )
+  let chatObjectId = ChatObjectBase + playerId + 1
+  bot.ensureObject(chatObjectId)
+  bot.objects[chatObjectId] = ObjectState(
+    present: true,
+    x: 48,
+    y: 0,
+    spriteId: carrySpriteId
+  )
   let
     roleSpriteId = 9004
     roleObjectId = 9005
@@ -2943,6 +2957,7 @@ when defined(konradTargetSelfTest):
     if pickup.kind == TargetDpsRole:
       sawDpsRole = true
     doAssert pickup.objectId != carryOverlayObjectId
+    doAssert pickup.objectId != chatObjectId
   doAssert sawDpsRole
   let
     downSpriteId = 9008

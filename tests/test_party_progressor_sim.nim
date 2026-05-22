@@ -1155,6 +1155,12 @@ proc testExpeditionObjectiveHudGuidesNextStep() =
     if sim.tileBiomeKind(landmark.tx, landmark.ty) == BiomePlains and
         landmark.kind == LandmarkCamp:
       landmark.done = true
+  doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT CLEAR LAIR"
+
+  for landmark in sim.landmarks.mitems:
+    if sim.tileBiomeKind(landmark.tx, landmark.ty) == BiomePlains and
+        landmark.kind == LandmarkLair:
+      landmark.done = true
   doAssert sim.expeditionObjectiveHint(playerIndex) == "NEXT RELIC 0/3"
 
   sim.relicShards = FinalGateRelicCost
@@ -2760,11 +2766,22 @@ proc testMonsterLairAttackRewardsAndPacifiesThreats() =
   doAssert sim.sideObjectivesCompleted == 1
   doAssert sim.food == LairFoodBonus
   doAssert sim.stone == LairStoneBonus
+  doAssert sim.hasPickup(PickupWood)
+  doAssert sim.hasPickup(PickupFood)
   doAssert sim.mobs.len == 2,
     "destroyed lairs should pacify nearby threats without deleting bosses; remaining=" &
       $sim.mobs.len
   doAssert sim.mobs.anyIt(it.species == SpeciesDireWolf)
   doAssert sim.mobs.anyIt(it.kind == BossMob)
+  doAssert sim.completedLairCountInBiome(BiomeOrigin) == 1
+  doAssert lairRespawnCooldownBonus(1) == LairRespawnCooldownBonus
+  sim.teamFrontier = lairX
+  sim.mobSpawnCooldown = 0
+  sim.players[playerIndex].attackTicks = 0
+  sim.players[playerIndex].attackResolved = false
+  sim.step([InputState()])
+  doAssert sim.mobSpawnCooldown >= 24 + LairRespawnCooldownBonus,
+    "cleared lairs should slow future respawns in their biome"
   doAssert sim.teamScore() == sim.frontierTiles() + SideObjectiveScoreValue
 
 proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
