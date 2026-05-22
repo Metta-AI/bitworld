@@ -396,6 +396,7 @@ proc rolePreferenceFromName(name: string): RolePreference =
   if lower.contains("tank") or lower.contains("guard"):
     PreferTankRole
   elif lower.contains("dps") or lower.contains("cleave") or
+      lower.contains("beam") or
       lower.contains("damage"):
     PreferDpsRole
   elif lower.contains("heal") or lower.contains("pulse") or
@@ -842,7 +843,7 @@ proc readStatusHud(bot: var Bot, label: string) =
       let tokens = section.splitWhitespace()
       bot.needWood = tokens.tokenNumber("w")
       bot.needStone = tokens.tokenNumber("s")
-    elif section.startsWith("b "):
+    elif section.startsWith("b ") or section.startsWith("x "):
       bot.abilityLabel = section.substr(2).strip()
       bot.abilityReady = not section.contains(" cd")
     else:
@@ -2547,7 +2548,7 @@ when defined(konradTargetSelfTest):
   doAssert rolePreferenceFor("tank-bot", "") == PreferTankRole
   doAssert rolePreferenceFor("konrad", "1") == PreferDpsRole
   doAssert rolePreferenceFor("healer", "1") == PreferHealerRole
-  doAssert "role heal pulse".roleTargetKindForLabel() == TargetHealerRole
+  doAssert "role heal hold".roleTargetKindForLabel() == TargetHealerRole
   bot.carriedItem = CarryWood
   doAssert not bot.canConsiderPickupTarget(Target(
     kind: TargetFood,
@@ -3258,12 +3259,12 @@ when defined(konradTargetSelfTest):
   doAssert not bot.needsLight
   bot.needsTerrainRoute = false
   bot.needsShelter = false
-  bot.readStatusHud("dps snow|snow w0 f0 s0 r0|b cleave cd12|carry none")
+  bot.readStatusHud("dps snow|snow w0 f0 s0 r0|x beam cd12|carry none")
   doAssert bot.roleLabel == "dps"
   doAssert not bot.abilityReady
-  doAssert bot.abilityLabel == "cleave cd12"
+  doAssert bot.abilityLabel == "beam cd12"
   bot.canEatCarriedFood = false
-  bot.readStatusHud("healer swamp|rain w0 f1 s0 r0|b pulse|carry food sel eat|next heal food")
+  bot.readStatusHud("healer swamp|rain w0 f1 s0 r0|x hold heal|carry food sel eat|next heal food")
   doAssert bot.carriedItem == CarryFood
   doAssert bot.canEatCarriedFood
   bot.canEatCarriedFood = false
@@ -3409,7 +3410,7 @@ when defined(konradTargetSelfTest):
     defined: true,
     width: 48,
     height: 8,
-    label: "role dps cleave",
+    label: "role dps beam",
     kind: SpriteText
   )
   bot.ensureObject(roleObjectId)

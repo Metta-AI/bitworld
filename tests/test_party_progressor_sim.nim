@@ -121,6 +121,16 @@ proc fillGround(sim: var SimServer, ground: GroundKind, biome = BiomeOrigin) =
   for item in sim.elevations.mitems:
     item = 0
 
+proc holdSpecial(
+  sim: var SimServer,
+  playerIndex: int,
+  ticks = HealerPulseHoldTicks
+) =
+  var inputs = newSeq[InputState](sim.players.len)
+  inputs[playerIndex].b = true
+  for _ in 0 ..< ticks:
+    sim.step(inputs)
+
 proc firstTileForBiome(biome: BiomeKind): int =
   for tx in 0 ..< WorldWidthTiles:
     if biomeForTileX(tx) == biome:
@@ -712,8 +722,10 @@ proc testMobChasesNearbyPlayers() =
     "chasing mob should use the short chase cooldown"
 
 proc testPlayerSpeedIsSlower() =
-  doAssert MaxSpeed == 264,
-    "player max speed should match the borrowed Big Adventure tuning"
+  doAssert MaxSpeed == 320,
+    "players should move faster than the borrowed Big Adventure tuning"
+  doAssert DpsMovementSpeedPercent > HealerMovementSpeedPercent
+  doAssert HealerMovementSpeedPercent > TankMovementSpeedPercent
 
 proc testBiomeGroundsAndWeather() =
   var sim = initPartyProgressorForTest()
@@ -755,6 +767,14 @@ proc testProceduralLandformsAndVisibilityShadow() =
     "rivers should have bridge crossings on the travel route"
   doAssert seeded.elevations.countIt(it >= 4) > BiomeCount,
     "procedural ridges should create meaningful high elevation"
+  let
+    centerTy = WorldHeightTiles div 2
+    forestBlockers = seeded.terrainProps.countIt(
+      seeded.tileBiomeKind(it.tx, it.ty) == BiomeForest and
+        abs(it.ty - centerTy) > LaneHalfHeightTiles
+    )
+  doAssert forestBlockers > ExpeditionBiomeSpanTiles,
+    "forest segments should grow dense off-route terrain and occluders"
 
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -765,7 +785,7 @@ proc testProceduralLandformsAndVisibilityShadow() =
   let playerIndex = sim.addPlayer("shadow")
   let
     fromTx = SafeZoneRightTiles + 2
-    fromTy = WorldHeightTiles div 2
+    fromTy = centerTy
     ridgeTx = fromTx + 2
     toTx = fromTx + 4
   sim.players[playerIndex].x = fromTx * WorldTileSize
@@ -1163,8 +1183,8 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
     parsed.firstSpriteByLabel("role dps gear").pixels,
     "healer and dps role guilds should use distinct building icons"
   doAssert visibleLabels.anyIt(it.contains("role tank guard"))
-  doAssert visibleLabels.anyIt(it.contains("role dps cleave"))
-  doAssert visibleLabels.anyIt(it.contains("role heal pulse"))
+  doAssert visibleLabels.anyIt(it.contains("role dps beam"))
+  doAssert visibleLabels.anyIt(it.contains("role heal hold"))
   doAssert visibleLabels.anyIt(it.contains("NEXT WALK INTO TANK DPS HEAL")),
     "local HUD should tell new players to walk into role gear"
   let localPlayerObject =
@@ -1305,7 +1325,10 @@ proc testRoleSpecialAbilitiesShowColoredSpriteEffects() =
     sim.fillGround(GroundGrass)
     let playerIndex = sim.addPlayer(item.role.roleLabel())
     sim.players[playerIndex].applyRole(item.role)
-    sim.step([InputState(b: true)])
+    if item.role == RoleHealer:
+      sim.holdSpecial(playerIndex)
+    else:
+      sim.step([InputState(b: true)])
 
     doAssert sim.players[playerIndex].abilityTicks > 0
     var nextState: PlayerViewerState
@@ -1315,7 +1338,11 @@ proc testRoleSpecialAbilitiesShowColoredSpriteEffects() =
       nextState
     ).parseSpriteProtocolPacket().objectSpriteLabels()
     doAssert item.label in labels,
-      "B/special should display the " & item.label & " pulse"
+      "X/special should display the " & item.label & " pulse"
+    if item.role == RoleDps:
+      doAssert "ability dps beam horizontal" in labels or
+        "ability dps beam vertical" in labels,
+        "DPS special should show a straight beam effect"
 
 proc testGeneratedMonsterSpritesStayRichlyColored() =
   var sim = initPartyProgressorForTest()
@@ -3727,7 +3754,7 @@ proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
   doAssert snowSim.players[snowPlayer].lives == shelteredHp,
     "snow hearth shelter should prevent cold exposure damage"
 
-proc testDpsCleaveSpecialDamagesNearbyMobs() =
+proc testDpsBeamSpecialDamagesMobsInFacingLine() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
   sim.mobs.setLen(0)
@@ -3742,7 +3769,7 @@ proc testDpsCleaveSpecialDamagesNearbyMobs() =
   sim.players[playerIndex].applyRole(RoleDps)
   sim.players[playerIndex].bounds = sim.playerBoundsFor(sim.players[playerIndex])
 
-  for dx in [8, 24]:
+  for dx in [8, WorldTileSize * DpsBeamTiles - 8]:
     sim.mobs.add(Mob(
       kind: SnakeMob,
       x: sim.players[playerIndex].x + dx,
@@ -3752,14 +3779,36 @@ proc testDpsCleaveSpecialDamagesNearbyMobs() =
       hp: 5,
       attackCooldown: 99
     ))
+  sim.mobs.add(Mob(
+    kind: SnakeMob,
+    x: sim.players[playerIndex].x + WorldTileSize,
+    y: sim.players[playerIndex].y + WorldTileSize * 2,
+    sprite: sim.mobSpriteFor(SnakeMob),
+    bounds: sim.mobBoundsFor(SnakeMob),
+    hp: 5,
+    attackCooldown: 99
+  ))
+  sim.mobs.add(Mob(
+    kind: SnakeMob,
+    x: sim.players[playerIndex].x + WorldTileSize * (DpsBeamTiles + 1),
+    y: sim.players[playerIndex].y,
+    sprite: sim.mobSpriteFor(SnakeMob),
+    bounds: sim.mobBoundsFor(SnakeMob),
+    hp: 5,
+    attackCooldown: 99
+  ))
 
   sim.step([InputState(b: true)])
 
   doAssert sim.players[playerIndex].abilityCooldown > 0
   doAssert sim.players[playerIndex].attackTicks > 0
-  doAssert sim.mobs.len == 2
-  doAssert sim.mobs[0].hp == 5 - DpsCleaveDamage
-  doAssert sim.mobs[1].hp == 5 - DpsCleaveDamage
+  doAssert sim.mobs.len == 4
+  doAssert sim.mobs[0].hp == 5 - DpsBeamDamage
+  doAssert sim.mobs[1].hp == 5 - DpsBeamDamage
+  doAssert sim.mobs[2].hp == 5,
+    "DPS beam should not splash targets outside the line"
+  doAssert sim.mobs[3].hp == 5,
+    "DPS beam should stop after five tiles"
 
 proc testPartyFocusRewardsMixedRoleAttacksAndShowsBadge() =
   var sim = initPartyProgressorForTest()
@@ -4080,6 +4129,9 @@ proc testHealerTriageAndHelpAffordance() =
   sim.players[woundedIndex].slowTicks = StatusSlowTicks
   sim.players[woundedIndex].chillTicks = StatusChillTicks
   sim.step([InputState(), InputState(b: true)])
+  doAssert sim.players[woundedIndex].poisonTicks > 0,
+    "healer pulse should require holding special before it fires"
+  sim.holdSpecial(healerIndex, HealerPulseHoldTicks - 1)
   doAssert sim.players[woundedIndex].lives == sim.players[woundedIndex].maxHp
   doAssert sim.players[woundedIndex].poisonTicks == 0
   doAssert sim.players[woundedIndex].slowTicks == 0
@@ -4183,7 +4235,7 @@ proc testLateRunExhaustionUsesRationsAndShowsStatus() =
   sim.players[playerIndex].exhaustionTicks = StatusExhaustionTicks
   sim.players[allyIndex].applyRole(RoleHealer)
   sim.players[allyIndex].abilityCooldown = 0
-  sim.step([InputState(), InputState(b: true)])
+  sim.holdSpecial(allyIndex)
   doAssert sim.players[playerIndex].exhaustionTicks == 0,
     "healer pulse should cleanse exhaustion like other expedition statuses"
 
@@ -4748,7 +4800,7 @@ testHealerCompletesRescueEventsFaster()
 testCooperativeObjectiveHoldsStackPartyEffort()
 testMonsterLairAttackRewardsAndPacifiesThreats()
 testBiomeWaystationsCreateRoleDetoursAndShelters()
-testDpsCleaveSpecialDamagesNearbyMobs()
+testDpsBeamSpecialDamagesMobsInFacingLine()
 testPartyFocusRewardsMixedRoleAttacksAndShowsBadge()
 testGateTitanRaidWindowRewardsFormationAndFocus()
 testMixedRoleFormationRechargesPowersAndShowsBadge()

@@ -385,13 +385,14 @@ The first full-game implementation pass includes:
   explicit role-swap surface.
 - Role-tinted player sprites: tank reads blue, DPS reads red, healer reads
   green, while unarmed players keep their player-slot identity color.
-- Sprite-player role badges now appear above roled players (`TNK`, `DPS`,
+- Sprite-player role badges now appear above roled players (`TANK`, `DPS`,
   `HEAL`) using non-gear labels, so humans and bots can distinguish party
   composition in crowded fights without confusing badges for role-pickup
   targets.
-- Origin and camp role gear now labels both the role and its `B` power: tank
-  guard, DPS cleave, and healer pulse.
-- DPS cleave on the `B` button, plus tank guard and healer pulse.
+- Origin and camp role gear now labels both the role and its special power:
+  tank guard, DPS beam, and hold-to-heal support.
+- DPS beam on the special button fires five tiles in the facing direction, plus
+  tank guard and a healer pulse that must be held briefly before it completes.
 - Tank guard now doubles as a short formation shelter: while active it clears
   visible biome pressure and blocks snow cold, desert heat, cave/ruin fog, and
   swamp mire pulses for the tank and nearby party members, giving tanks a
@@ -523,7 +524,7 @@ The first full-game implementation pass includes:
   affordance and recover role-power cooldowns faster, making the intended party
   composition useful during travel, staging, and weather pressure.
 - The Gate Titan now uses that same party language as a final-boss raid window:
-  normal attacks and DPS cleave hit the boss harder when the attacker is in a
+  normal attacks and DPS beam hit the boss harder when the attacker is in a
   tank/DPS/healer trio, and harder again when all three roles have recently
   focused the boss, turning the late fight into a composition check without new
   controls.
@@ -578,9 +579,9 @@ The first full-game implementation pass includes:
 - Konrad stuck recovery is now target-aware: frontier push recovery keeps a
   rightward bias, role-choice recovery keeps moving toward the intended gear,
   and one-pixel movement no longer counts as fully stuck.
-- Konrad bot combat now reads the B-power HUD line and fires role powers at
-  sensible moments: tanks guard and DPS cleave once threats are in reach, while
-  healers spend their pulse when the HUD reports low health or cleansable
+- Konrad bot combat now reads the special-power HUD line and fires role powers at
+  sensible moments: tanks guard and DPS beam once threats are in reach, while
+  healers hold their pulse when the HUD reports low health or cleansable
   poison/slow/chill pressure.
 - Konrad tanks now also fire guard under environmental pressure, so cold, heat,
   mire, fog, and regroup warnings can turn into a visible party-protection

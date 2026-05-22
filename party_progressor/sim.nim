@@ -39,10 +39,10 @@ const
   SwooshDistanceDivisor* = 3
   SwooshPlacementOffset* = 6
   MotionScale* = 256
-  Accel* = 38
+  Accel* = 46
   FrictionNum* = 200
   FrictionDen* = 256
-  MaxSpeed* = 264
+  MaxSpeed* = 320
   StopThreshold* = 8
   PlayerFootSize* = 8
   PlayerSeparationPasses* = 4
@@ -118,8 +118,9 @@ const
   FinalGateTriumphRadius* = WorldTileSize * 6
   TankGuardRadius* = 44
   HealerPulseRadius* = 46
-  DpsCleaveRadius* = 42
-  DpsCleaveDamage* = 2
+  DpsBeamTiles* = 5
+  DpsBeamWidth* = 18
+  DpsBeamDamage* = 2
   TargetFps* = 60
   LairHunterTicks* = TargetFps * 10
   LairRespawnCooldownBonus* = TargetFps * 2
@@ -140,6 +141,11 @@ const
   FinalGateThreeRoleStep* = 3
   RoleAbilityCooldown* = 36
   RoleAbilityEffectTicks* = 18
+  HealerPulseHoldTicks* = TargetFps div 2
+  TankMovementSpeedPercent* = 96
+  DpsMovementSpeedPercent* = 116
+  HealerMovementSpeedPercent* = 106
+  UnarmedMovementSpeedPercent* = 104
   PingDurationTicks* = TargetFps * 4
   DownedRespawnTicks* = TargetFps * 4
   DownedRescueTicks* = TargetFps * 2
@@ -369,6 +375,7 @@ type
     maxHp*: int
     abilityCooldown*: int
     abilityTicks*: int
+    abilityHoldTicks*: int
     guardTicks*: int
     personalFrontier*: int
     damageDone*: int
@@ -1135,6 +1142,17 @@ proc roleAttackDamage(role: PlayerRole): int =
   of RoleHealer:
     1
 
+proc roleMovementSpeedPercent*(role: PlayerRole): int =
+  case role
+  of RoleUnarmed:
+    UnarmedMovementSpeedPercent
+  of RoleTank:
+    TankMovementSpeedPercent
+  of RoleDps:
+    DpsMovementSpeedPercent
+  of RoleHealer:
+    HealerMovementSpeedPercent
+
 proc roleAbilityLabel*(role: PlayerRole): string =
   case role
   of RoleUnarmed:
@@ -1142,7 +1160,7 @@ proc roleAbilityLabel*(role: PlayerRole): string =
   of RoleTank:
     "guard"
   of RoleDps:
-    "cleave"
+    "beam"
   of RoleHealer:
     "heal"
 
@@ -2203,12 +2221,15 @@ proc playerMovementSpeedPercent*(
   x,
   y: int
 ): int =
-  var terrainSpeed = sim.speedPercentAt(x, y)
+  var resultSpeed =
+    (sim.speedPercentAt(x, y) *
+      player.statusSpeedPercent() *
+      player.role.roleMovementSpeedPercent()) div 10_000
   if player.routeTicks > 0:
-    terrainSpeed = max(terrainSpeed, BiomeWaystationRouteMinSpeedPercent)
+    resultSpeed = max(resultSpeed, BiomeWaystationRouteMinSpeedPercent)
   if player.surveyTicks > 0:
-    terrainSpeed = max(terrainSpeed, BeaconSurveyMinSpeedPercent)
-  (terrainSpeed * player.statusSpeedPercent()) div 100
+    resultSpeed = max(resultSpeed, BeaconSurveyMinSpeedPercent)
+  resultSpeed
 
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
   let
@@ -2398,6 +2419,52 @@ proc seedProceduralLandforms(sim: var SimServer) =
     sim.seedSegmentLake(segmentIndex, firstTx, lastTx, biome)
     sim.seedSegmentRidges(segmentIndex, firstTx, lastTx, biome)
 
+proc denseTerrainThreshold(biome: BiomeKind, laneDistance: int): int =
+  if laneDistance <= LaneHalfHeightTiles:
+    return 0
+  result =
+    case biome
+    of BiomeForest:
+      58
+    of BiomeSwamp:
+      46
+    of BiomeCave, BiomeRuins:
+      42
+    of BiomeSnow:
+      36
+    of BiomePlains:
+      32
+    of BiomeDesert:
+      20
+    of BiomeOrigin:
+      8
+  if laneDistance >= LaneHalfHeightTiles + 3:
+    result += 8
+
+proc seedDenseBiomeTerrain*(sim: var SimServer) =
+  ## Adds biome-flavored off-route groves, rubble, rocks, and blockers.
+  let centerTy = WorldHeightTiles div 2
+  for ty in 0 ..< WorldHeightTiles:
+    for tx in SafeZoneRightTiles + 1 ..< WorldWidthTiles:
+      let
+        laneDistance = abs(ty - centerTy)
+        biome = sim.tileBiomeKind(tx, ty)
+        threshold = denseTerrainThreshold(biome, laneDistance)
+      if threshold <= 0:
+        continue
+      let ground = sim.tileGroundKind(tx, ty)
+      if ground in {GroundWater, GroundShallowWater, GroundBridge}:
+        continue
+      let
+        localNoise = terrainNoise(sim.seed, tx, ty, 73)
+        groveNoise = terrainNoise(sim.seed, tx div 2, ty div 2, 91)
+        index = tileIndex(tx, ty)
+      if localNoise < threshold or groveNoise < threshold div 2:
+        sim.tiles[index] = true
+      if sim.tiles[index] and biome in {BiomeForest, BiomeCave, BiomeRuins} and
+          terrainNoise(sim.seed, tx, ty, 127) > 90:
+        sim.elevations[index] = max(sim.elevations[index], 4)
+
 proc seedBiomeGrounds*(sim: var SimServer) =
   ## Creates deterministic biome bands, base terrain, roads, and blockers.
   sim.groundKinds.setLen(WorldWidthTiles * WorldHeightTiles)
@@ -2544,6 +2611,12 @@ proc randomTerrainKindForBiome(rng: var Rand, biome: BiomeKind): TerrainKind =
   ## Chooses biome-flavored blockers and props.
   let roll = rng.rand(99)
   case biome
+  of BiomeForest:
+    if roll < 42: TerrainTree
+    elif roll < 70: TerrainEvergreen
+    elif roll < 84: TerrainBush
+    elif roll < 94: TerrainLog
+    else: TerrainStump
   of BiomeDesert:
     if roll < 55: TerrainCactus
     elif roll < 72: TerrainRock
@@ -3169,6 +3242,7 @@ proc applyRole*(player: var Actor, role: PlayerRole) =
   player.maxHp = role.roleMaxHp()
   player.lives = min(player.maxHp, max(1, (oldHp * player.maxHp + oldMax - 1) div oldMax))
   player.abilityTicks = 0
+  player.abilityHoldTicks = 0
 
 proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   ## Fully resets one player and puts them back at spawn.
@@ -3213,6 +3287,7 @@ proc resetPlayerAtSpawn*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].attackTicks = 0
   sim.players[playerIndex].attackResolved = false
   sim.players[playerIndex].abilityTicks = 0
+  sim.players[playerIndex].abilityHoldTicks = 0
   sim.players[playerIndex].message = ""
   sim.players[playerIndex].pingKind = PingNone
   sim.players[playerIndex].pingTicks = 0
@@ -3466,6 +3541,7 @@ proc initSimServer*(seed = 0xB1770): SimServer =
 
   result.seedBiomeGrounds()
   result.seedBrush()
+  result.seedDenseBiomeTerrain()
   result.clearProgressLane()
   let startTx = 2
   let startTy = WorldHeightTiles div 2
@@ -3625,6 +3701,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.maxHp)
     result.mixHashInt(player.abilityCooldown)
     result.mixHashInt(player.abilityTicks)
+    result.mixHashInt(player.abilityHoldTicks)
     result.mixHashInt(player.guardTicks)
     result.mixHashInt(player.personalFrontier)
     result.mixHashInt(player.damageDone)
@@ -3981,24 +4058,48 @@ proc finishDefeatedMobs(sim: var SimServer) =
 
 proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int
 
-proc applyDpsCleave(sim: var SimServer, playerIndex: int) =
-  let player = sim.players[playerIndex]
+proc dpsBeamRect*(player: Actor): tuple[x, y, w, h: int] =
   let
-    radiusSq = DpsCleaveRadius * DpsCleaveRadius
-    playerCenterX = boundsCenterX(player.x, player.bounds)
-    playerCenterY = boundsCenterY(player.y, player.bounds)
+    centerX = boundsCenterX(player.x, player.bounds)
+    centerY = boundsCenterY(player.y, player.bounds)
+    length = DpsBeamTiles * WorldTileSize
+    halfWidth = DpsBeamWidth div 2
+  case player.facing
+  of FaceLeft:
+    (x: centerX - length, y: centerY - halfWidth, w: length, h: DpsBeamWidth)
+  of FaceRight:
+    (x: centerX, y: centerY - halfWidth, w: length, h: DpsBeamWidth)
+  of FaceUp:
+    (x: centerX - halfWidth, y: centerY - length, w: DpsBeamWidth, h: length)
+  of FaceDown:
+    (x: centerX - halfWidth, y: centerY, w: DpsBeamWidth, h: length)
+
+proc applyDpsBeam(sim: var SimServer, playerIndex: int) =
+  let player = sim.players[playerIndex]
+  let beam = player.dpsBeamRect()
   var hitAny = false
   for mobIndex in 0 ..< sim.mobs.len:
-    let
-      mobCenterX = boundsCenterX(sim.mobs[mobIndex].x, sim.mobs[mobIndex].bounds)
-      mobCenterY = boundsCenterY(sim.mobs[mobIndex].y, sim.mobs[mobIndex].bounds)
-    if distanceSquared(playerCenterX, playerCenterY, mobCenterX, mobCenterY) >
-        radiusSq:
+    if not rectOverlapsBounds(
+      beam.x,
+      beam.y,
+      beam.w,
+      beam.h,
+      sim.mobs[mobIndex].x,
+      sim.mobs[mobIndex].y,
+      sim.mobs[mobIndex].bounds
+    ):
       continue
     sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
     sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
-    let damage = DpsCleaveDamage +
-      sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex])
+    let damage = max(
+      1,
+      DpsBeamDamage +
+        sim.bossRaidDamageBonus(playerIndex, sim.mobs[mobIndex]) +
+        elevationDamageModifier(
+          sim.actorTileElevation(player),
+          sim.mobTileElevation(sim.mobs[mobIndex])
+        )
+    )
     sim.mobs[mobIndex].hp -= damage
     sim.players[playerIndex].damageDone += damage
     hitAny = true
@@ -4009,22 +4110,36 @@ proc applyDpsCleave(sim: var SimServer, playerIndex: int) =
     sim.players[playerIndex].attackResolved = true
     sim.finishDefeatedMobs()
 
+proc completeHealerPulse(sim: var SimServer, playerIndex: int) =
+  sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
+  sim.applyHealerPulse(playerIndex)
+  sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
+  sim.players[playerIndex].abilityHoldTicks = 0
+
+proc advanceHealerPulseHold(sim: var SimServer, playerIndex: int) =
+  if sim.players[playerIndex].abilityCooldown > 0:
+    sim.players[playerIndex].abilityHoldTicks = 0
+    return
+  inc sim.players[playerIndex].abilityHoldTicks
+  if sim.players[playerIndex].abilityHoldTicks >= HealerPulseHoldTicks:
+    sim.completeHealerPulse(playerIndex)
+
 proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
   if sim.players[playerIndex].abilityCooldown > 0:
     return
   case sim.players[playerIndex].role
   of RoleTank:
+    sim.players[playerIndex].abilityHoldTicks = 0
     sim.players[playerIndex].guardTicks = TankGuardTicks
     sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleDps:
+    sim.players[playerIndex].abilityHoldTicks = 0
     sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
-    sim.applyDpsCleave(playerIndex)
+    sim.applyDpsBeam(playerIndex)
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleHealer:
-    sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
-    sim.applyHealerPulse(playerIndex)
-    sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
+    sim.advanceHealerPulseHold(playerIndex)
   else:
     discard
 
@@ -4150,6 +4265,7 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
   if player.lives <= 0:
     player.velX = 0
     player.velY = 0
+    player.abilityHoldTicks = 0
     return
 
   var inputX = 0
@@ -4218,7 +4334,12 @@ proc applyInput*(sim: var SimServer, playerIndex: int, input: InputState) =
     player.attackTicks = 5
     player.attackResolved = false
   if input.b:
-    sim.applyRoleAbility(playerIndex)
+    if player.role == RoleHealer:
+      sim.advanceHealerPulseHold(playerIndex)
+    else:
+      sim.applyRoleAbility(playerIndex)
+  elif player.abilityHoldTicks > 0:
+    player.abilityHoldTicks = 0
   if input.select:
     let usedCarryAction =
       sim.consumeCarriedFood(playerIndex) or
@@ -4631,6 +4752,8 @@ proc handlePlayerDeath(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].carryY = 0
   sim.players[playerIndex].attackTicks = 0
   sim.players[playerIndex].attackResolved = false
+  sim.players[playerIndex].abilityTicks = 0
+  sim.players[playerIndex].abilityHoldTicks = 0
   sim.players[playerIndex].guardTicks = 0
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].chillTicks = 0
@@ -6790,11 +6913,22 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
 
   sim.fb.drawText(sim.textFont, "FRONT " & $frontier, 0, 0, 2'u8)
   sim.fb.drawText(sim.textFont, "HP " & $hp & "/" & $player.maxHp, 0, lineY, 2'u8)
-  sim.fb.drawText(sim.textFont, player.role.roleLabel().toUpperAscii(), 0, lineY * 2, 2'u8)
   sim.fb.drawText(
     sim.textFont,
-    sim.currentBiome().biomeLabel().toUpperAscii() & " " &
-      sim.currentWeather().weatherLabel().toUpperAscii(),
+    player.role.roleLabel().toUpperAscii() & " AREA " &
+      sim.currentBiome().biomeLabel().toUpperAscii(),
+    0,
+    lineY * 2,
+    2'u8
+  )
+  let elevation = sim.tileElevation(
+    clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    "WX " & sim.currentWeather().weatherLabel().toUpperAscii() &
+      " E" & $elevation,
     0,
     lineY * 3,
     2'u8
@@ -6807,16 +6941,28 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
     lineY * 4,
     2'u8
   )
-  let elevation = sim.tileElevation(
-    clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
-    clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  sim.fb.drawText(
+    sim.textFont,
+    (if player.role == RoleHealer and player.abilityHoldTicks > 0:
+      "X HEAL HOLD " &
+        $min(100, (player.abilityHoldTicks * 100) div HealerPulseHoldTicks) &
+        "%"
+    elif player.abilityCooldown > 0:
+      "X " & player.role.roleAbilityLabel().toUpperAscii() & " CD " &
+        $player.abilityCooldown
+    elif player.role == RoleHealer:
+      "X HOLD HEAL"
+    else:
+      "X " & player.role.roleAbilityLabel().toUpperAscii()),
+    0,
+    lineY * 5,
+    2'u8
   )
   sim.fb.drawText(
     sim.textFont,
-    "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
-      " E" & $elevation,
+    "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii(),
     0,
-    lineY * 5,
+    lineY * 6,
     2'u8
   )
   sim.fb.drawText(
@@ -6832,14 +6978,14 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
       else:
         ""),
     0,
-    lineY * 6,
+    lineY * 7,
     2'u8
   )
   sim.fb.drawText(
     sim.textFont,
     sim.expeditionObjectiveHint(playerIndex),
     0,
-    lineY * 7,
+    lineY * 8,
     2'u8
   )
 

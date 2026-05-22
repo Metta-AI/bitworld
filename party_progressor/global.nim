@@ -35,6 +35,8 @@ const
   MobLungeEffectSpriteId = 317
   MobAttackStyleEffectSpriteBase = 1320
   RoleAbilityEffectSpriteBase = 680
+  DpsBeamHorizontalSpriteId = RoleAbilityEffectSpriteBase + 8
+  DpsBeamVerticalSpriteId = RoleAbilityEffectSpriteBase + 9
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
@@ -73,6 +75,7 @@ const
   WeatherOverlayObjectBase = 16000
   MobAttackEffectObjectBase = 17000
   RoleAbilityEffectObjectBase = 18000
+  DpsBeamObjectBase = RoleAbilityEffectObjectBase + 100
   VisibilityShadowObjectId = 19000
   CarryCountSpriteBase = 1400
   CarryObjectStride = 8
@@ -1328,9 +1331,9 @@ proc roleGearLabel(kind: PickupKind): string =
   of PickupTankGear:
     "TANK GUARD"
   of PickupDpsGear:
-    "DPS CLEAVE"
+    "DPS BEAM"
   of PickupHealerGear:
-    "HEAL PULSE"
+    "HEAL HOLD"
   else:
     ""
 
@@ -1375,8 +1378,17 @@ proc mobAttackEffectObjectId(mobIndex: int): int =
 proc roleAbilityEffectObjectId(player: Actor): int =
   RoleAbilityEffectObjectBase + player.id
 
+proc dpsBeamObjectId(player: Actor): int =
+  DpsBeamObjectBase + player.id
+
 proc roleAbilityEffectSpriteId(role: PlayerRole): int =
   RoleAbilityEffectSpriteBase + ord(role)
+
+proc dpsBeamSpriteId(facing: Facing): int =
+  if facing in {FaceLeft, FaceRight}:
+    DpsBeamHorizontalSpriteId
+  else:
+    DpsBeamVerticalSpriteId
 
 proc mobAttackEffectSpriteId(
   phase: MobAttackPhase,
@@ -1659,6 +1671,38 @@ proc buildRoleAbilityEffectSprite(
   of RoleUnarmed:
     discard
 
+proc buildDpsBeamSprite(
+  horizontal: bool
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds the straight-line DPS beam used by the sprite player.
+  let length = DpsBeamTiles * WorldTileSize
+  if horizontal:
+    result.width = length
+    result.height = DpsBeamWidth
+  else:
+    result.width = DpsBeamWidth
+    result.height = length
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let
+    red = (r: 224'u8, g: 64'u8, b: 79'u8, a: 215'u8)
+    gold = (r: 255'u8, g: 222'u8, b: 74'u8, a: 235'u8)
+    core = (r: 255'u8, g: 248'u8, b: 210'u8, a: 248'u8)
+  for y in 0 ..< result.height:
+    for x in 0 ..< result.width:
+      let
+        longAxis = if horizontal: x else: y
+        crossAxis = if horizontal: y else: x
+        center = (if horizontal: result.height else: result.width) div 2
+        distance = abs(crossAxis - center)
+      if distance <= 1:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, core)
+      elif distance <= 3:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, gold)
+      elif distance <= 6 and (longAxis + crossAxis) mod 3 != 0:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, red)
+      if longAxis mod 23 in 0 .. 2 and distance <= 7:
+        result.pixels.putEffectPixel(result.width, result.height, x, y, gold)
+
 proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
   case weather
   of WeatherRain:
@@ -1674,40 +1718,40 @@ proc weatherOverlaySize(weather: WeatherKind): tuple[width, height: int] =
 
 proc statusBadgeLabel(kind: StatusBadgeKind): string =
   case kind
-  of StatusRoleTank: "TNK"
+  of StatusRoleTank: "TANK"
   of StatusRoleDps: "DPS"
   of StatusRoleHealer: "HEAL"
   of StatusTrio: "TRIO"
-  of StatusPartyFocus: "FOC"
+  of StatusPartyFocus: "FOCUS"
   of StatusHighGround: "HIGH"
   of StatusLowGround: "LOW"
-  of StatusForage: "FOR"
-  of StatusRally: "RAL"
-  of StatusShade: "SHD"
+  of StatusForage: "FORAGE"
+  of StatusRally: "RALLY"
+  of StatusShade: "SHADE"
   of StatusWarmth: "WARM"
-  of StatusLight: "LIT"
-  of StatusGuard: "GRD"
-  of StatusBlessing: "BLS"
+  of StatusLight: "LIGHT"
+  of StatusGuard: "GUARD"
+  of StatusBlessing: "BLESS"
   of StatusRoute: "ROUTE"
-  of StatusSurvey: "SURV"
+  of StatusSurvey: "SCOUT"
   of StatusGuide: "GUIDE"
   of StatusHunt: "HUNT"
   of StatusTriumph: "WIN"
   of StatusRation: "MEAL"
-  of StatusMorale: "MOR"
-  of StatusStagger: "STAG"
-  of StatusPoison: "POI"
-  of StatusSlow: "SLW"
-  of StatusChill: "CHL"
-  of StatusExhaustion: "EXH"
+  of StatusMorale: "MORALE"
+  of StatusStagger: "STAGGER"
+  of StatusPoison: "POISON"
+  of StatusSlow: "SLOW"
+  of StatusChill: "CHILL"
+  of StatusExhaustion: "TIRED"
   of StatusMire: "MIRE"
   of StatusCold: "COLD"
   of StatusHeat: "HEAT"
   of StatusFog: "FOG"
-  of StatusAlone: "REG"
+  of StatusAlone: "ALONE"
   of StatusHelp: "HELP"
   of StatusDown: "DOWN"
-  of StatusPingRegroup: "PING REG"
+  of StatusPingRegroup: "PING GO"
   of StatusPingHelp: "PING HELP"
   of StatusPingObjective: "PING OBJ"
   of StatusPingCamp: "PING CAMP"
@@ -2250,6 +2294,23 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       effect.pixels,
       role.roleAbilityEffectLabel()
     )
+  let
+    dpsBeamHorizontal = buildDpsBeamSprite(true)
+    dpsBeamVertical = buildDpsBeamSprite(false)
+  packet.addSprite(
+    DpsBeamHorizontalSpriteId,
+    dpsBeamHorizontal.width,
+    dpsBeamHorizontal.height,
+    dpsBeamHorizontal.pixels,
+    "ability dps beam horizontal"
+  )
+  packet.addSprite(
+    DpsBeamVerticalSpriteId,
+    dpsBeamVertical.width,
+    dpsBeamVertical.height,
+    dpsBeamVertical.pixels,
+    "ability dps beam vertical"
+  )
 
   let
     mob = buildSpriteProtocolRawSprite(sim.rgbaMobSprite)
@@ -2703,6 +2764,20 @@ proc addRoleAbilityEffectObjects(
       viewportHeight,
       centerY - cameraY + RoleAbilityEffectSize
     )
+    if player.role == RoleDps:
+      let beam = player.dpsBeamRect()
+      objects.addWorldSpriteObject(
+        currentIds,
+        player.dpsBeamObjectId(),
+        beam.x - cameraX,
+        beam.y - cameraY,
+        player.facing.dpsBeamSpriteId(),
+        beam.w,
+        beam.h,
+        viewportWidth,
+        viewportHeight,
+        centerY - cameraY + RoleAbilityEffectSize + 1
+      )
 
 proc addTerrainObjects(
   sim: SimServer,
@@ -3208,33 +3283,38 @@ proc addPlayerHud(
     player = sim.players[playerIndex]
     frontier = sim.frontierTiles()
     lives = max(player.lives, 0)
-    statusLine1 = player.role.roleLabel().toUpperAscii() & " " &
-      sim.currentBiome().biomeLabel().toUpperAscii()
-    statusLine2 = sim.currentWeather().weatherLabel().toUpperAscii() &
-      " W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
-      " R" & $sim.relicShards
     ability = player.role.roleAbilityLabel().toUpperAscii()
-    statusLine3 =
-      if player.abilityCooldown > 0:
-        "B " & ability & " CD" & $player.abilityCooldown
-      else:
-        "B " & ability
+    statusLine1 = player.role.roleLabel().toUpperAscii() & " AREA " &
+      sim.currentBiome().biomeLabel().toUpperAscii()
     playerElevation = sim.tileElevation(
       clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
       clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
     )
+    statusLine2 = "WX " & sim.currentWeather().weatherLabel().toUpperAscii() &
+      " E" & $playerElevation & "  W" & $sim.wood & " F" & $sim.food &
+      " S" & $sim.stone & " R" & $sim.relicShards
+    statusLine3 =
+      if player.role == RoleHealer and player.abilityHoldTicks > 0:
+        "X " & ability & " HOLD " &
+          $min(100, (player.abilityHoldTicks * 100) div HealerPulseHoldTicks) &
+          "%"
+      elif player.abilityCooldown > 0:
+        "X " & ability & " CD " & $player.abilityCooldown
+      elif player.role == RoleHealer:
+        "X HOLD " & ability
+      else:
+        "X " & ability
     tacticLabel = sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
     partyTacticLabel = sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
-    statusLine4 =
-      "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii() &
-        " E" & $playerElevation & " " &
-        player.statusLabel().toUpperAscii() & " " &
+    statusLine4 = "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii()
+    statusLine5 =
+      "STATUS " & player.statusLabel().toUpperAscii() & " " &
         sim.survivalPressureLabel(playerIndex).toUpperAscii() &
         (if tacticLabel.len > 0: " " & tacticLabel else: "") &
         (if partyTacticLabel.len > 0: " " & partyTacticLabel else: "")
-    statusLine5 = sim.expeditionObjectiveHint(playerIndex)
+    statusLine6 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
-      statusLine4 & "|" & statusLine5
+      statusLine4 & "|" & statusLine5 & "|" & statusLine6
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -3280,7 +3360,14 @@ proc addPlayerHud(
   currentIds.add(StatusHudObjectId)
   if state.hudStatus != status:
     let statusText = sim.buildSpriteProtocolTextSprite(
-      [statusLine1, statusLine2, statusLine3, statusLine4, statusLine5],
+      [
+        statusLine1,
+        statusLine2,
+        statusLine3,
+        statusLine4,
+        statusLine5,
+        statusLine6
+      ],
       2'u8
     )
     packet.addSprite(
