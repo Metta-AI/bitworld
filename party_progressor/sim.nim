@@ -70,6 +70,10 @@ const
   FinalGateScoreValue* = 250
   FinalGateRelicCost* = 3
   FinalGateCampCost* = 2
+  BeaconSurveyRadius* = WorldTileSize * 3
+  BeaconSurveyBackTiles* = 1
+  BeaconSurveyForwardTiles* = 5
+  BeaconSurveyHalfHeightTiles* = 1
   ShrineFoodBonus* = 2
   ShrineHealAmount* = 1
   RescueFoodBonus* = 2
@@ -4599,6 +4603,25 @@ proc revealRescueTrail(sim: var SimServer, landmark: Landmark) =
       sim.tiles[index] = false
   inc sim.scoreRevision
 
+proc revealBeaconSurveyRoute(sim: var SimServer, landmark: Landmark) =
+  ## Turns a completed relic beacon into a short surveyed route forward.
+  for ty in landmark.ty - BeaconSurveyHalfHeightTiles ..
+      landmark.ty + BeaconSurveyHalfHeightTiles:
+    for tx in landmark.tx - BeaconSurveyBackTiles ..
+        landmark.tx + BeaconSurveyForwardTiles:
+      if tx < 0 or ty < 0 or tx >= WorldWidthTiles or ty >= WorldHeightTiles:
+        continue
+      let
+        index = tileIndex(tx, ty)
+        biome = sim.tileBiomeKind(tx, ty)
+      sim.groundKinds[index] = campShortcutGround(
+        biome,
+        sim.groundKinds[index]
+      )
+      sim.elevations[index] = min(sim.elevations[index], 1)
+      sim.tiles[index] = false
+  inc sim.scoreRevision
+
 proc healLivePlayers(sim: var SimServer, amount: int) =
   for playerIndex in 0 ..< sim.players.len:
     if sim.players[playerIndex].lives <= 0:
@@ -5090,6 +5113,11 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       sim.landmarks[landmarkIndex].done = true
       inc sim.objectivesCompleted
       inc sim.relicShards
+      sim.revealBeaconSurveyRoute(sim.landmarks[landmarkIndex])
+      discard sim.pacifyMobsNearLandmark(
+        sim.landmarks[landmarkIndex],
+        BeaconSurveyRadius
+      )
       inc sim.scoreRevision
     of LandmarkShrine:
       sim.landmarks[landmarkIndex].done = true

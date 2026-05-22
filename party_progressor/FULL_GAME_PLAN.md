@@ -168,10 +168,13 @@ Camps cost wood and stone. Activating a camp should:
 - Let role composition shape staging: tanks can ward camps, DPS can rally them,
   and healers can turn them into aid posts with different local benefits.
 
-Beacon objectives should award relic shards. The final gate should require
-relic progress, camp progress, boss defeat, and a short visible party ritual
-before completion. The ritual should complete fastest when tank, DPS, and
-healer all hold the gate together.
+Beacon objectives should award relic shards and make the next push easier to
+read. Completing a beacon should survey a short route forward, clear local
+non-boss threats, and soften nearby rough or steep terrain so relic progress
+feels like real expedition knowledge rather than only a counter. The final gate
+should require relic progress, camp progress, boss defeat, and a short visible
+party ritual before completion. The ritual should complete fastest when tank,
+DPS, and healer all hold the gate together.
 
 Rescue objectives should feel like finding people who know the land, not only
 like picking up food. Completing a rescue should still heal and resupply the
@@ -315,6 +318,9 @@ The first full-game implementation pass includes:
 - Resource landmarks harvested by attacks.
 - Camp activation with forward role gear and healing.
 - Beacon objectives and final-gate logic.
+- Completed relic beacons now act as survey points: they still award relic
+  shards, but also reveal a short forward route, clear nearby blockers and
+  steep elevation, and pacify local non-boss threats around the beacon.
 - Optional shrine side objectives that trade route time for score, emergency
   food, healing, and status cleansing.
 - Optional rescue side objectives seeded through biome bands: stranded travelers

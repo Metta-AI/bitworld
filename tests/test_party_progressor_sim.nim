@@ -2397,10 +2397,34 @@ proc testBeaconAndBossScoring() =
     hp: 1,
     done: false
   ))
+  let beaconTrailIndex = tileIndex(
+    sim.landmarks[0].tx + BeaconSurveyForwardTiles,
+    sim.landmarks[0].ty
+  )
+  sim.tiles[beaconTrailIndex] = true
+  sim.elevations[beaconTrailIndex] = 4
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: sim.landmarks[0].tx * WorldTileSize,
+    y: sim.landmarks[0].ty * WorldTileSize,
+    sprite: sim.mobSpriteFor(WolfMob),
+    bounds: sim.mobBoundsFor(WolfMob),
+    hp: WolfHp,
+    attackCooldown: 99
+  ))
   sim.step([InputState()])
 
   doAssert sim.objectivesCompleted == 1
   doAssert sim.relicShards == 1
+  doAssert sim.groundKinds[beaconTrailIndex] == GroundRoad,
+    "relic beacons should survey a short route forward"
+  doAssert not sim.tiles[beaconTrailIndex],
+    "relic beacon surveys should clear local route blockers"
+  doAssert sim.elevations[beaconTrailIndex] <= 1,
+    "relic beacon surveys should soften steep route terrain"
+  doAssert sim.mobs.allIt(it.species != SpeciesForestWolf),
+    "relic beacon surveys should clear nearby non-boss threats"
   doAssert sim.teamScore() ==
     sim.frontierTiles() + ObjectiveScoreValue + RelicScoreValue
   var beaconNextState: PlayerViewerState
