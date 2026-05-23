@@ -858,7 +858,7 @@ when isMainModule:
   var
     address = DefaultHost
     port = CoordinatorDefaultPort
-    url = getEnv("COGAMES_ENGINE_WS_URL")
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     name = "coordinator"
     token = ""
     slot = -1

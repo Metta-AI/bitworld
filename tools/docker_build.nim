@@ -421,7 +421,7 @@ proc addBotTargets(
 
 const
   TournamentArgs = ["name", "token", "slot"]
-  TournamentEnv = "COGAMES_ENGINE_WS_URL"
+  TournamentEnv = "COWORLD_PLAYER_WS_URL"
 
 proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
   ## Verifies bot source files accept --name, --token, --slot, and the env var.

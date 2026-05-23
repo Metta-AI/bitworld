@@ -15,7 +15,7 @@ and LLM decision code, but it is not the hosted tournament interface.
 
 The public Coworld contract is:
 
-1. build a player process that reads `COGAMES_ENGINE_WS_URL`;
+1. build a player process that reads `COWORLD_PLAYER_WS_URL`;
 2. connect to the supplied Bitscreen v1 websocket exactly as provided;
 3. package the player in a `linux/amd64` Docker image;
 4. upload it with `coworld upload-policy`;

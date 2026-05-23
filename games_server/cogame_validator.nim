@@ -25,7 +25,7 @@ const
   ReplayServerEnv = "COGAME_REPLAY_SERVER"
   HostEnv = "COGAME_HOST"
   PortEnv = "COGAME_PORT"
-  EngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  EngineWsEnv = "COWORLD_PLAYER_WS_URL"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   CertPrefix = "coworld-cert-"
 

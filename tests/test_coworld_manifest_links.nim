@@ -1,5 +1,5 @@
 import
-  std/[json, os, strutils]
+  std/[json, os, sequtils, strutils]
 
 const
   RootDir = currentSourcePath.parentDir.parentDir
@@ -14,7 +14,12 @@ let
   manifest = parseJson(manifestText)
 
 doAssert manifest["$schema"].getStr() == PublicCoworldSchemaUrl
-doAssert PrivateMettaGithubUrl notin manifestText
-doAssert PrivateMettaRawUrl notin manifestText
+
+let manifestPaths = toSeq(walkFiles(RootDir / "**" / "coworld_manifest.json"))
+doAssert manifestPaths.len > 1
+for path in manifestPaths:
+  let text = readFile(path)
+  doAssert PrivateMettaGithubUrl notin text
+  doAssert PrivateMettaRawUrl notin text
 
 echo "All tests passed"

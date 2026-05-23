@@ -64,7 +64,7 @@ const
   CogameConfigUriEnv = "COGAME_CONFIG_URI"
   CogameHostEnv = "COGAME_HOST"
   CogamePortEnv = "COGAME_PORT"
-  CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
+  CoworldPlayerWsEnv = "COWORLD_PLAYER_WS_URL"
   ManifestPathEnv = "GAMES_SERVER_MANIFEST"
   CoworldManifestName = "coworld_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
@@ -2476,7 +2476,7 @@ proc botRunArgs(
   result.addBotResourceArgs()
   addAiEnvArgs(result)
   result.add("-e")
-  result.add(CogamesEngineWsEnv & "=" & endpoint)
+  result.add(CoworldPlayerWsEnv & "=" & endpoint)
   for (key, value) in bot.env:
     result.add("-e")
     result.add(key & "=" & value)

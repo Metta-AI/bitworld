@@ -2438,7 +2438,7 @@ proc runBot(
   maxSteps = 0
 ) =
   ## Connects to the Party Progressor player endpoint.
-  let engineWsUrl = getEnv("COGAMES_ENGINE_WS_URL")
+  let engineWsUrl = getEnv("COWORLD_PLAYER_WS_URL")
   let url =
     if host.startsWith("ws://") or host.startsWith("wss://"):
       host
@@ -3789,7 +3789,7 @@ when defined(konradTargetSelfTest):
   echo "Konrad target tests passed"
 
 elif isMainModule:
-  let engineWsUrl = getEnv("COGAMES_ENGINE_WS_URL")
+  let engineWsUrl = getEnv("COWORLD_PLAYER_WS_URL")
   var
     address = if engineWsUrl.len > 0: engineWsUrl else: DefaultHost
     port = PlayerDefaultPort

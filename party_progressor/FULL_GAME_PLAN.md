@@ -306,7 +306,7 @@ debug viewport.
 
 Party Progressor must stay compatible with the Coworld tournament runner:
 
-- Read `COGAMES_ENGINE_WS_URL` when it is present.
+- Read `COWORLD_PLAYER_WS_URL` when it is present.
 - Accept `--name`, `--token`, and `--slot` as local and older-runner fallbacks.
 - Connect to `/player`.
 - Include `slot`, `token`, and `name` query params when provided by the runner.
@@ -580,7 +580,7 @@ The first full-game implementation pass includes:
   so sprite-player bots can identify themselves in crowded spawn and regroup
   scenes instead of steering a nearby teammate by mistake.
 - Konrad's local runner path now accepts `--slot` and `--token` and honors
-  `COGAMES_ENGINE_WS_URL`, keeping the sprite-player bot aligned with the
+  `COWORLD_PLAYER_WS_URL`, keeping the sprite-player bot aligned with the
   Coworld tournament runner contract.
 - Konrad bot pacing now treats the default unexplored path as a rightward
   expedition push, so distant visible monsters no longer pull bots into opening

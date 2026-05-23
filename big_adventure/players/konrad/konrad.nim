@@ -1301,7 +1301,7 @@ when isMainModule:
   var
     address = DefaultHost
     port = PlayerDefaultPort
-    url = getEnv("COGAMES_ENGINE_WS_URL")
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     name =
       if url.len > 0:
         ""
