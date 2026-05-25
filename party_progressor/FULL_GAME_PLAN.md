@@ -25,6 +25,10 @@ rendering, added armor equipment and an armor HUD, expanded the named monster
 set to 44 species, added cone, line, trap, support, and swarm attack families,
 reduced excess water while preserving long river chokepoints, and turned rescue
 guides into temporary followers who thank the party when brought back to camp.
+The follow-up asset pass makes the current imagegen workflow the preferred
+source for new Party Progressor monster art, keeps TribalCog TSV prompts as a
+fallback path, and wires 12 project-local generated monster sprites into the
+runtime before falling back to borrowed TribalCog wolf/goblin/bear silhouettes.
 
 ## Design Pillars
 
@@ -159,6 +163,25 @@ silhouettes. Biomes seed local variants so the game reads as different dungeon
 ecology rather than a few recolors. Wolves, bears, goblins, scorpions, slimes,
 yetis, bats, wraiths, defenders, and boss-class enemies all feed the expedition
 pressure model.
+
+Twelve tactical monsters now have project-local imagegen sprites:
+
+- Pack Alpha, Thorn Mender, Banner Goblin, and Net Thrower establish early
+  pack-leader, support, rally, and trap silhouettes.
+- Bog Witch and Leech Swarm make swamp fights visibly about poison, support,
+  and isolation pressure.
+- Fire Scorpion and Sand Burrower distinguish desert line attacks from trap
+  ambushes.
+- Ice Shaman and Snow Stalker make snow support and ambusher roles readable.
+- Crystal Seer and Ruin Necromancer give cave/ruin support casters their own
+  silhouettes instead of relying on tinted goblin/wraith fallbacks.
+
+The preferred art workflow is documented in `docs/asset_pipeline.md`: generate
+source art with imagegen on a flat chroma-key background, remove the key with
+the shared imagegen helper, crop into 32x32 runtime sprites with
+`scripts/prepare_monster_assets.py`, then keep final sprites under
+`data/generated/monsters/`. `data/prompts/monster_assets.tsv` preserves the
+older TribalCog prompt format as a fallback and migration source.
 
 New tactical families add encounter shape:
 

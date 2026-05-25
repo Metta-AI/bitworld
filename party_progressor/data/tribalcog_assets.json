@@ -55,6 +55,18 @@
     "mob_wolf": "oriented/wolf.e.png",
     "mob_goblin": "oriented/goblin.e.png",
     "mob_bear": "oriented/bear.e.png",
+    "monster_pack_alpha": "generated/monsters/pack_alpha.png",
+    "monster_thorn_mender": "generated/monsters/thorn_mender.png",
+    "monster_banner_goblin": "generated/monsters/banner_goblin.png",
+    "monster_net_thrower": "generated/monsters/net_thrower.png",
+    "monster_bog_witch": "generated/monsters/bog_witch.png",
+    "monster_leech_swarm": "generated/monsters/leech_swarm.png",
+    "monster_fire_scorpion": "generated/monsters/fire_scorpion.png",
+    "monster_sand_burrower": "generated/monsters/sand_burrower.png",
+    "monster_ice_shaman": "generated/monsters/ice_shaman.png",
+    "monster_snow_stalker": "generated/monsters/snow_stalker.png",
+    "monster_crystal_seer": "generated/monsters/crystal_seer.png",
+    "monster_ruin_necromancer": "generated/monsters/ruin_necromancer.png",
     "pickup_coin": "goblet.png",
     "pickup_heart": "heart.png"
   }

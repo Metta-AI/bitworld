@@ -662,6 +662,10 @@ type
     armorSprites*: array[ArmorKind, Sprite]
     armorRgbaSprites*: array[ArmorKind, RgbaSprite]
     armorBounds*: array[ArmorKind, SpriteBounds]
+    mobSpeciesSprites*: array[MobSpecies, Sprite]
+    mobSpeciesRgbaSprites*: array[MobSpecies, RgbaSprite]
+    mobSpeciesBounds*: array[MobSpecies, SpriteBounds]
+    mobSpeciesGeneratedSprites*: array[MobSpecies, bool]
     mobSprite*: Sprite
     rgbaMobSprite*: RgbaSprite
     mobBounds*: SpriteBounds
@@ -829,6 +833,16 @@ proc speciesLabel*(species: MobSpecies): string =
   of SpeciesBoneGoblin: "bone goblin"
   of SpeciesRuinNecromancer: "ruin necromancer"
   of SpeciesGateTitan: "gate titan"
+
+proc speciesAssetSlug*(species: MobSpecies): string =
+  ## Returns the project-local asset slug for a monster species.
+  species.speciesLabel().replace(" ", "_")
+
+proc speciesAssetKey*(species: MobSpecies): string =
+  "monster_" & species.speciesAssetSlug()
+
+proc speciesAssetPath*(species: MobSpecies): string =
+  "generated/monsters/" & species.speciesAssetSlug() & ".png"
 
 proc speciesKind*(species: MobSpecies): MobKind =
   case species
@@ -1791,6 +1805,17 @@ proc assetRelativePath(
       return assets[key].getStr()
   fallbackRelativePath
 
+proc resolveAssetPath(
+  manifest: JsonNode,
+  key,
+  fallbackRelativePath: string
+): string =
+  let relativePath = manifest.assetRelativePath(key, fallbackRelativePath)
+  for path in [dataDir() / relativePath, tribalCogDataDir() / relativePath]:
+    if fileExists(path):
+      return path
+  ""
+
 proc loadFittedAssetImage(
   manifest: JsonNode,
   key,
@@ -1798,10 +1823,8 @@ proc loadFittedAssetImage(
   fallbackImage: Image,
   cropAlpha = true
 ): Image =
-  let
-    relativePath = manifest.assetRelativePath(key, fallbackRelativePath)
-    path = tribalCogDataDir() / relativePath
-  if fileExists(path):
+  let path = manifest.resolveAssetPath(key, fallbackRelativePath)
+  if path.len > 0:
     try:
       return readImage(path).fittedArtCell(cropAlpha)
     except CatchableError:
@@ -2064,6 +2087,12 @@ proc mobBoundsFor*(sim: SimServer, kind: MobKind): SpriteBounds =
   of BossMob, BearMob, YetiMob:
     sim.bossBounds
 
+proc mobBoundsFor*(sim: SimServer, species: MobSpecies): SpriteBounds =
+  ## Returns collision bounds for one species-specific mob sprite.
+  if species != SpeciesNone and sim.mobSpeciesBounds[species].w > 0:
+    return sim.mobSpeciesBounds[species]
+  sim.mobBoundsFor(species.speciesKind())
+
 proc mobSpriteFor*(sim: SimServer, kind: MobKind): Sprite =
   ## Returns the rendered sprite for one mob kind.
   case kind
@@ -2073,6 +2102,27 @@ proc mobSpriteFor*(sim: SimServer, kind: MobKind): Sprite =
     sim.trollSprite
   of BossMob, BearMob, YetiMob:
     sim.bossSprite
+
+proc mobSpriteFor*(sim: SimServer, species: MobSpecies): Sprite =
+  ## Returns the rendered sprite for one monster species.
+  if species != SpeciesNone and sim.mobSpeciesBounds[species].w > 0:
+    return sim.mobSpeciesSprites[species]
+  sim.mobSpriteFor(species.speciesKind())
+
+proc mobSpeciesRgbaSprite*(sim: SimServer, species: MobSpecies): RgbaSprite =
+  ## Returns the true-color sprite for one monster species.
+  if species != SpeciesNone and sim.mobSpeciesBounds[species].w > 0:
+    return sim.mobSpeciesRgbaSprites[species]
+  case species.speciesKind()
+  of SnakeMob, WolfMob, ScorpionMob, BatMob:
+    sim.rgbaMobSprite
+  of TrollMob, GoblinMob, SlimeMob, WraithMob:
+    sim.rgbaTrollSprite
+  of BossMob, BearMob, YetiMob:
+    sim.rgbaBossSprite
+
+proc mobSpeciesHasGeneratedSprite*(sim: SimServer, species: MobSpecies): bool =
+  species != SpeciesNone and sim.mobSpeciesGeneratedSprites[species]
 
 proc tileIndex*(tx, ty: int): int =
   ty * WorldWidthTiles + tx
@@ -3522,8 +3572,8 @@ proc spawnOneMob*(
 ): bool =
   discard sprite
   discard hp
-  let bounds = sim.mobBoundsFor(kind)
   let species = kind.defaultSpeciesForKind()
+  let bounds = sim.mobBoundsFor(species)
   for _ in 0 ..< 128:
     let
       tx = SafeZoneRightTiles + sim.rng.rand(WorldWidthTiles - SafeZoneRightTiles - 1)
@@ -3537,7 +3587,7 @@ proc spawnOneMob*(
         species: species,
         x: px,
         y: py,
-        sprite: sim.mobSpriteFor(kind),
+        sprite: sim.mobSpriteFor(species),
         bounds: bounds,
         wanderCooldown: MobSpawnWanderCooldown +
           sim.rng.rand(MobSpawnWanderJitter),
@@ -3558,7 +3608,7 @@ proc spawnOneMobInRange*(
     return false
   let kind = species.speciesKind()
   let
-    bounds = sim.mobBoundsFor(kind)
+    bounds = sim.mobBoundsFor(species)
     lo = clamp(firstTx, SafeZoneRightTiles, WorldWidthTiles - 1)
     hi = clamp(max(firstTx, lastTx), lo, WorldWidthTiles - 1)
   for _ in 0 ..< 128:
@@ -3579,7 +3629,7 @@ proc spawnOneMobInRange*(
         species: species,
         x: px,
         y: py,
-        sprite: sim.mobSpriteFor(kind),
+        sprite: sim.mobSpriteFor(species),
         bounds: bounds,
         wanderCooldown: MobSpawnWanderCooldown +
           sim.rng.rand(MobSpawnWanderJitter),
@@ -3971,23 +4021,26 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.playerArts[FemalePlayer] = sheet.loadPlayerArt(1)
   result.playerSprite = result.playerArts[MalePlayer].sprites[PlayerFront]
   let
+    wolfFallback = sheet.subImage(0, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    goblinFallback = sheet.subImage(1 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+    bearFallback = sheet.subImage(2 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
     wolfAsset = loadAssetPair(
       assetManifest,
       "mob_wolf",
       "oriented/wolf.e.png",
-      sheet.subImage(0, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+      wolfFallback
     )
     goblinAsset = loadAssetPair(
       assetManifest,
       "mob_goblin",
       "oriented/goblin.e.png",
-      sheet.subImage(1 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+      goblinFallback
     )
     bearAsset = loadAssetPair(
       assetManifest,
       "mob_bear",
       "oriented/bear.e.png",
-      sheet.subImage(2 * ArtCellSize, 2 * ArtCellSize, ArtCellSize, ArtCellSize)
+      bearFallback
     )
   result.mobSprite = wolfAsset.sprite
   result.rgbaMobSprite = wolfAsset.rgba
@@ -3998,6 +4051,32 @@ proc initSimServer*(seed = 0xB1770): SimServer =
   result.bossSprite = bearAsset.sprite
   result.rgbaBossSprite = bearAsset.rgba
   result.bossBounds = result.rgbaBossSprite.visibleBounds()
+
+  for species in AllMobSpecies:
+    let
+      fallbackImage =
+        case species.speciesKind()
+        of SnakeMob, WolfMob, ScorpionMob, BatMob:
+          wolfFallback
+        of TrollMob, GoblinMob, SlimeMob, WraithMob:
+          goblinFallback
+        of BossMob, BearMob, YetiMob:
+          bearFallback
+      generatedPath = assetManifest.resolveAssetPath(
+        species.speciesAssetKey(),
+        species.speciesAssetPath()
+      )
+      asset = loadAssetPair(
+        assetManifest,
+        species.speciesAssetKey(),
+        species.speciesAssetPath(),
+        fallbackImage
+      )
+    result.mobSpeciesSprites[species] = asset.sprite
+    result.mobSpeciesRgbaSprites[species] = asset.rgba
+    result.mobSpeciesBounds[species] = asset.rgba.visibleBounds()
+    result.mobSpeciesGeneratedSprites[species] =
+      generatedPath.startsWith(dataDir())
   let
     fallbackGround = sheet.subImage(0, 3 * ArtCellSize, ArtCellSize, ArtCellSize)
     groundAssets: array[GroundKind, tuple[key, path: string]] = [
@@ -8287,7 +8366,7 @@ proc addRiverAmbushMobAt(
     return false
   let
     kind = species.speciesKind()
-    bounds = sim.mobBoundsFor(kind)
+    bounds = sim.mobBoundsFor(species)
     px = tx * WorldTileSize + WorldTileSize div 2 - bounds.x - bounds.w div 2
     py = ty * WorldTileSize + WorldTileSize div 2 - bounds.y - bounds.h div 2
   if not sim.canSpawnMobAt(px, py, bounds):
@@ -8300,7 +8379,7 @@ proc addRiverAmbushMobAt(
     species: species,
     x: px,
     y: py,
-    sprite: sim.mobSpriteFor(kind),
+    sprite: sim.mobSpriteFor(species),
     bounds: bounds,
     wanderCooldown: 0,
     hp: mobMaxHp(kind, px),

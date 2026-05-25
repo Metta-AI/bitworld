@@ -1594,6 +1594,23 @@ proc testRoleSpecialAbilitiesShowColoredSpriteEffects() =
 proc testGeneratedMonsterSpritesStayRichlyColored() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")
+  for species in [
+    SpeciesPackAlpha,
+    SpeciesThornMender,
+    SpeciesBannerGoblin,
+    SpeciesNetThrower,
+    SpeciesBogWitch,
+    SpeciesLeechSwarm,
+    SpeciesFireScorpion,
+    SpeciesSandBurrower,
+    SpeciesIceShaman,
+    SpeciesSnowStalker,
+    SpeciesCrystalSeer,
+    SpeciesRuinNecromancer
+  ]:
+    doAssert sim.mobSpeciesHasGeneratedSprite(species),
+      species.speciesLabel() & " should load a project-local imagegen sprite"
+
   var nextState: PlayerViewerState
   let parsed = sim.buildSpriteProtocolPlayerUpdates(
     playerIndex,
@@ -1604,6 +1621,18 @@ proc testGeneratedMonsterSpritesStayRichlyColored() =
     "forest wolf",
     "brown bear",
     "prairie goblin",
+    "pack alpha",
+    "thorn mender",
+    "banner goblin",
+    "net thrower",
+    "bog witch",
+    "leech swarm",
+    "fire scorpion",
+    "sand burrower",
+    "ice shaman",
+    "snow stalker",
+    "crystal seer",
+    "ruin necromancer",
     "frost yeti",
     "gate titan"
   ]:
@@ -1676,7 +1705,7 @@ proc testBiomeMonsterSpeciesBreadth() =
       seen.add(mob.species)
 
   doAssert seen.len == AllMobSpecies.len,
-    "initial expedition should seed all 32 named monster species"
+    "initial expedition should seed all named monster species"
   for species in AllMobSpecies:
     doAssert species in seen,
       "missing seeded monster species " & species.speciesLabel()
@@ -1703,8 +1732,8 @@ proc addLungingSpecies(
     species: species,
     x: sim.players[playerIndex].x,
     y: sim.players[playerIndex].y,
-    sprite: sim.mobSpriteFor(kind),
-    bounds: sim.mobBoundsFor(kind),
+    sprite: sim.mobSpriteFor(species),
+    bounds: sim.mobBoundsFor(species),
     hp: mobMaxHp(kind, sim.players[playerIndex].x),
     attackCooldown: 0,
     attackPhase: MobLunge,

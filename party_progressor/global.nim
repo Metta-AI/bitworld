@@ -2540,39 +2540,35 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
   )
   for species in AllMobSpecies:
     let
-      kind = species.speciesKind()
       label = species.speciesLabel()
       tint = species.speciesTint()
-      base =
-        case kind
-        of SnakeMob, WolfMob, ScorpionMob, BatMob:
-          mob
-        of TrollMob, GoblinMob, SlimeMob, WraithMob:
-          troll
-        of BossMob, BearMob, YetiMob:
-          boss
-      left =
-        case kind
-        of SnakeMob, WolfMob, ScorpionMob, BatMob:
-          mobLeft
-        of TrollMob, GoblinMob, SlimeMob, WraithMob:
-          trollLeft
-        of BossMob, BearMob, YetiMob:
-          bossLeft
+      base = buildSpriteProtocolRawSprite(sim.mobSpeciesRgbaSprite(species))
+      left = buildSpriteProtocolRawSprite(
+        sim.mobSpeciesRgbaSprite(species),
+        true
+      )
       rightId = species.mobSpeciesSpriteId(false)
       leftId = species.mobSpeciesSpriteId(true)
-      rightPixels = base.pixels.tintSpritePixels(
-        base.width,
-        base.height,
-        tint,
-        species
-      )
-      leftPixels = left.pixels.tintSpritePixels(
-        left.width,
-        left.height,
-        tint,
-        species
-      )
+      rightPixels =
+        if sim.mobSpeciesHasGeneratedSprite(species):
+          base.pixels
+        else:
+          base.pixels.tintSpritePixels(
+            base.width,
+            base.height,
+            tint,
+            species
+          )
+      leftPixels =
+        if sim.mobSpeciesHasGeneratedSprite(species):
+          left.pixels
+        else:
+          left.pixels.tintSpritePixels(
+            left.width,
+            left.height,
+            tint,
+            species
+          )
     packet.addSprite(
       rightId,
       base.width,
