@@ -81,6 +81,12 @@ const
   RelicScoreValue* = 40
   BossScoreValue* = 150
   FinalGateScoreValue* = 250
+  BiomeMasteryScoreValue* = 40
+  BiomeMasteryRequiredMilestones* = 3
+  BiomeMasteryStatusRecoveryTicks* = 1
+  BiomeMasteryCooldownStep* = 1
+  BiomeMasteryDamageBonus* = 1
+  BiomeMasteryMinSpeedPercent* = 96
   FinalGateRelicCost* = 3
   FinalGateCampCost* = 2
   BeaconSurveyRadius* = WorldTileSize * 3
@@ -131,6 +137,7 @@ const
   DpsBeamWidth* = 18
   DpsBeamDamage* = 2
   TargetFps* = 60
+  BiomeMasteryMoraleTicks* = TargetFps * 14
   LairHunterTicks* = TargetFps * 10
   LairRespawnCooldownBonus* = TargetFps * 2
   BiomeWaystationTicks* = TargetFps
@@ -553,6 +560,7 @@ type
 
   BiomeTacticKind* = enum
     BiomeTacticNone
+    BiomeTacticMastery
     BiomeTacticForage
     BiomeTacticRally
     BiomeTacticShade
@@ -694,6 +702,7 @@ type
     objectivesCompleted*: int
     sideObjectivesCompleted*: int
     campsActivated*: int
+    biomeMastered*: array[BiomeKind, bool]
     resourcesCollected*: int
     wood*: int
     food*: int
@@ -1368,6 +1377,7 @@ proc survivalPressureLabel*(kind: SurvivalPressureKind): string =
 proc biomeTacticLabel*(kind: BiomeTacticKind): string =
   case kind
   of BiomeTacticNone: ""
+  of BiomeTacticMastery: "mastery"
   of BiomeTacticForage: "forage"
   of BiomeTacticRally: "rally"
   of BiomeTacticShade: "shade"
@@ -2431,12 +2441,20 @@ proc elevationDamageModifier*(attackerElevation, defenderElevation: int): int =
     0
 
 proc playerAttackDamage*(sim: SimServer, player: Actor, mob: Mob): int =
+  let
+    mobTx = clamp(boundsCenterX(mob.x, mob.bounds) div WorldTileSize, 0, WorldWidthTiles - 1)
+    mobTy = clamp(boundsCenterY(mob.y, mob.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+    mobBiome = sim.tileBiomeKind(mobTx, mobTy)
   max(
     1,
     player.role.roleAttackDamage() +
       elevationDamageModifier(sim.actorTileElevation(player), sim.mobTileElevation(mob)) +
       (if player.huntTicks > 0 and mob.kind != BossMob:
         LairHunterDamageBonus
+      else:
+        0) +
+      (if mobBiome != BiomeOrigin and sim.biomeMastered[mobBiome]:
+        BiomeMasteryDamageBonus
       else:
         0)
   )
@@ -2453,6 +2471,45 @@ proc currentBiome*(sim: SimServer): BiomeKind =
 
 proc currentWeather*(sim: SimServer): WeatherKind =
   sim.currentBiome().weatherForBiome()
+
+proc biomeIsMastered*(sim: SimServer, biome: BiomeKind): bool =
+  biome != BiomeOrigin and sim.biomeMastered[biome]
+
+proc masteredBiomeCount*(sim: SimServer): int =
+  for biome in BiomeKind:
+    if sim.biomeIsMastered(biome):
+      inc result
+
+proc masteredBiomeLabels*(sim: SimServer): string =
+  var labels: seq[string] = @[]
+  for biome in BiomeKind:
+    if sim.biomeIsMastered(biome):
+      labels.add(biome.biomeLabel())
+  if labels.len == 0:
+    "none"
+  else:
+    labels.join(",")
+
+proc masteryHudLabel*(sim: SimServer): string =
+  "MAST " & $sim.masteredBiomeCount() & "/" & $BiomeCount
+
+proc landmarkCountsForMastery(kind: LandmarkKind): bool =
+  kind in {
+    LandmarkCamp,
+    LandmarkBeacon,
+    LandmarkShrine,
+    LandmarkRescue,
+    LandmarkLair,
+    LandmarkWaystation
+  }
+
+proc completedSegmentMilestones*(sim: SimServer, segmentIndex: int): int =
+  ## Counts region objectives that make a biome feel solved, not just crossed.
+  for landmark in sim.landmarks:
+    if not landmark.done or not landmark.kind.landmarkCountsForMastery():
+      continue
+    if landmark.tx.adventureSegmentIndexForTileX() == segmentIndex:
+      inc result
 
 proc incompleteLandmarkInSegment(
   sim: SimServer,
@@ -2571,6 +2628,7 @@ proc teamScore*(sim: SimServer): int =
     sim.objectivesCompleted * ObjectiveScoreValue +
     sim.sideObjectivesCompleted * SideObjectiveScoreValue +
     sim.campsActivated * CampScoreValue +
+    sim.masteredBiomeCount() * BiomeMasteryScoreValue +
     sim.relicShards * RelicScoreValue +
     sim.resourcesCollected +
     (if sim.bossDefeated: BossScoreValue else: 0) +
@@ -2616,6 +2674,12 @@ proc playerMovementSpeedPercent*(
     resultSpeed = max(resultSpeed, BiomeWaystationRouteMinSpeedPercent)
   if player.surveyTicks > 0:
     resultSpeed = max(resultSpeed, BeaconSurveyMinSpeedPercent)
+  let
+    tx = clamp(x div WorldTileSize, 0, WorldWidthTiles - 1)
+    ty = clamp(y div WorldTileSize, 0, WorldHeightTiles - 1)
+    biome = sim.tileBiomeKind(tx, ty)
+  if sim.biomeIsMastered(biome):
+    resultSpeed = max(resultSpeed, BiomeMasteryMinSpeedPercent)
   resultSpeed
 
 proc canOccupy*(sim: SimServer, x, y: int, bounds: SpriteBounds): bool =
@@ -4291,6 +4355,8 @@ proc playerScoresJson*(sim: SimServer): string =
     biomesReached = newJArray()
     objectivesCompleted = newJArray()
     sideObjectivesCompleted = newJArray()
+    masteryCount = newJArray()
+    masteredBiomes = newJArray()
     relicShards = newJArray()
     campsActivated = newJArray()
     resourcesCollected = newJArray()
@@ -4324,6 +4390,8 @@ proc playerScoresJson*(sim: SimServer): string =
     biomesReached.add(%sim.maxBiomeReached)
     objectivesCompleted.add(%sim.objectivesCompleted)
     sideObjectivesCompleted.add(%sim.sideObjectivesCompleted)
+    masteryCount.add(%sim.masteredBiomeCount())
+    masteredBiomes.add(%sim.masteredBiomeLabels())
     relicShards.add(%sim.relicShards)
     campsActivated.add(%sim.campsActivated)
     resourcesCollected.add(%sim.resourcesCollected)
@@ -4353,6 +4421,8 @@ proc playerScoresJson*(sim: SimServer): string =
   results["biomes_reached"] = biomesReached
   results["objectives_completed"] = objectivesCompleted
   results["side_objectives_completed"] = sideObjectivesCompleted
+  results["mastery_count"] = masteryCount
+  results["mastered_biomes"] = masteredBiomes
   results["relic_shards"] = relicShards
   results["camps_activated"] = campsActivated
   results["resources_collected"] = resourcesCollected
@@ -4389,6 +4459,8 @@ proc gameHash*(sim: SimServer): uint64 =
   result.mixHashInt(sim.objectivesCompleted)
   result.mixHashInt(sim.sideObjectivesCompleted)
   result.mixHashInt(sim.campsActivated)
+  for biome in BiomeKind:
+    result.mixHashInt(ord(sim.biomeMastered[biome]))
   result.mixHashInt(sim.resourcesCollected)
   result.mixHashInt(sim.wood)
   result.mixHashInt(sim.food)
@@ -4836,6 +4908,18 @@ proc applyDpsBeam(sim: var SimServer, playerIndex: int) =
       continue
     sim.mobs[mobIndex].pruneMobAttackers(sim.players, sim.tickCount)
     sim.mobs[mobIndex].rememberMobAttacker(player.id, sim.tickCount)
+    let
+      mobTx = clamp(
+        boundsCenterX(sim.mobs[mobIndex].x, sim.mobs[mobIndex].bounds) div WorldTileSize,
+        0,
+        WorldWidthTiles - 1
+      )
+      mobTy = clamp(
+        boundsCenterY(sim.mobs[mobIndex].y, sim.mobs[mobIndex].bounds) div WorldTileSize,
+        0,
+        WorldHeightTiles - 1
+      )
+      mobBiome = sim.tileBiomeKind(mobTx, mobTy)
     let damage = max(
       1,
       DpsBeamDamage +
@@ -4843,7 +4927,11 @@ proc applyDpsBeam(sim: var SimServer, playerIndex: int) =
         elevationDamageModifier(
           sim.actorTileElevation(player),
           sim.mobTileElevation(sim.mobs[mobIndex])
-        )
+        ) +
+        (if mobBiome != BiomeOrigin and sim.biomeMastered[mobBiome]:
+          BiomeMasteryDamageBonus
+        else:
+          0)
     )
     sim.mobs[mobIndex].hp -= damage
     sim.players[playerIndex].damageDone += damage
@@ -6237,6 +6325,57 @@ proc clearLivePlayerStatuses(sim: var SimServer) =
     sim.players[playerIndex].poisonTicks = 0
     sim.players[playerIndex].exhaustionTicks = 0
 
+proc grantBiomeMasteryRewards(sim: var SimServer, biome: BiomeKind) =
+  ## Gives biome-specific payoff so optional clears change later route choices.
+  case biome
+  of BiomeForest:
+    sim.food += 2
+    inc sim.wood
+  of BiomePlains:
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.abilityCooldown = 0
+  of BiomeSwamp:
+    inc sim.stone
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.slowTicks = 0
+  of BiomeDesert:
+    sim.food += 2
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.poisonTicks = 0
+  of BiomeSnow:
+    sim.food += 2
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.chillTicks = 0
+        player.exhaustionTicks = 0
+  of BiomeCave:
+    inc sim.stone
+    for player in sim.players.mitems:
+      if player.lives > 0:
+        player.exhaustionTicks = 0
+  of BiomeRuins:
+    sim.clearLivePlayerStatuses()
+  of BiomeOrigin:
+    discard
+  for player in sim.players.mitems:
+    if player.lives > 0:
+      player.moraleTicks = max(player.moraleTicks, BiomeMasteryMoraleTicks)
+
+proc tryGrantBiomeMasteryForSegment*(sim: var SimServer, segmentIndex: int) =
+  if segmentIndex < 0:
+    return
+  let biome = segmentIndex.biomeForSegmentIndex()
+  if biome == BiomeOrigin or sim.biomeMastered[biome]:
+    return
+  if sim.completedSegmentMilestones(segmentIndex) < BiomeMasteryRequiredMilestones:
+    return
+  sim.biomeMastered[biome] = true
+  sim.grantBiomeMasteryRewards(biome)
+  inc sim.scoreRevision
+
 proc activateShrine(sim: var SimServer) =
   ## Completes one optional side objective and gives the party a sustain bump.
   inc sim.sideObjectivesCompleted
@@ -6282,6 +6421,7 @@ proc activateRescueEvent(
     )
   if targetPlayerIndex >= 0:
     sim.addGuideFollower(landmark, targetPlayerIndex)
+  sim.tryGrantBiomeMasteryForSegment(landmark.tx.adventureSegmentIndexForTileX())
   inc sim.scoreRevision
 
 proc activeCampDropoffNear(sim: SimServer, player: Actor): bool =
@@ -6506,6 +6646,7 @@ proc activateWaystation(sim: var SimServer, landmarkIndex: int) =
   for player in sim.players.mitems:
     if player.lives > 0:
       player.routeTicks = max(player.routeTicks, BiomeWaystationRouteTicks)
+  sim.tryGrantBiomeMasteryForSegment(landmark.tx.adventureSegmentIndexForTileX())
   inc sim.scoreRevision
 
 proc destroyLair(sim: var SimServer, landmarkIndex: int) =
@@ -6527,6 +6668,7 @@ proc destroyLair(sim: var SimServer, landmarkIndex: int) =
   for player in sim.players.mitems:
     if player.lives > 0:
       player.huntTicks = max(player.huntTicks, LairHunterTicks)
+  sim.tryGrantBiomeMasteryForSegment(landmark.tx.adventureSegmentIndexForTileX())
   inc sim.scoreRevision
 
 proc fortifyCamp(sim: var SimServer, landmarkIndex: int) =
@@ -6871,6 +7013,7 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     of LandmarkCamp:
       if sim.wood < CampWoodCost or sim.stone < CampStoneCost:
         continue
+      let segmentIndex = sim.landmarks[landmarkIndex].tx.adventureSegmentIndexForTileX()
       sim.wood -= CampWoodCost
       sim.stone -= CampStoneCost
       sim.landmarks[landmarkIndex].done = true
@@ -6886,7 +7029,9 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           sim.players[playerIndex].lives + 2
         )
       inc sim.scoreRevision
+      sim.tryGrantBiomeMasteryForSegment(segmentIndex)
     of LandmarkBeacon:
+      let segmentIndex = sim.landmarks[landmarkIndex].tx.adventureSegmentIndexForTileX()
       sim.landmarks[landmarkIndex].progress += max(1, activationStep)
       inc sim.scoreRevision
       if sim.landmarks[landmarkIndex].progress < BeaconAttunementTicks:
@@ -6904,9 +7049,12 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           player.surveyTicks = max(player.surveyTicks, BeaconSurveyTicks)
       sim.grantObjectiveMorale(participantCount)
       inc sim.scoreRevision
+      sim.tryGrantBiomeMasteryForSegment(segmentIndex)
     of LandmarkShrine:
+      let segmentIndex = sim.landmarks[landmarkIndex].tx.adventureSegmentIndexForTileX()
       sim.landmarks[landmarkIndex].done = true
       sim.activateShrine()
+      sim.tryGrantBiomeMasteryForSegment(segmentIndex)
     of LandmarkRescue:
       sim.landmarks[landmarkIndex].progress += max(1, activationStep)
       inc sim.scoreRevision
@@ -7198,6 +7346,8 @@ proc survivalPressureKind*(
       sim.playerNearExpeditionShelter(playerIndex) or
       sim.playerProtectedByTankGuard(playerIndex):
     return SurvivalSafe
+  if sim.biomeIsMastered(sim.playerBiome(player)):
+    return SurvivalSafe
   case sim.playerBiome(player)
   of BiomeSwamp:
     if sim.playerGroundKind(player) in {GroundMud, GroundShallowWater, GroundWater}:
@@ -7247,6 +7397,8 @@ proc playerBiomeTacticKind*(
     return BiomeTacticGuard
   if sim.playerNearBlessedShrine(playerIndex):
     return BiomeTacticBlessing
+  if sim.biomeIsMastered(sim.playerBiome(sim.players[playerIndex])):
+    return BiomeTacticMastery
   case sim.playerBiome(sim.players[playerIndex])
   of BiomeForest:
     BiomeTacticForage
@@ -7325,6 +7477,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       sheltered = sim.playerNearExpeditionShelter(playerIndex)
       guarded = sim.playerProtectedByTankGuard(playerIndex)
       routed = sim.players[playerIndex].routeTicks > 0
+      mastered = sim.biomeIsMastered(biome)
     if sim.food > 0 and
         sim.players[playerIndex].lives <=
           sim.players[playerIndex].maxHp - FoodHealAmount:
@@ -7340,17 +7493,19 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         sim.players[playerIndex].maxHp - FoodHealAmount:
       discard sim.consumeCarriedFood(playerIndex)
 
-    if coldPulse and biome == BiomeSnow and not sheltered and not guarded and
+    if coldPulse and biome == BiomeSnow and not mastered and
+        not sheltered and not guarded and
         not routed and
         not sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
-    if heatPulse and biome == BiomeDesert and not sheltered and not guarded and
+    if heatPulse and biome == BiomeDesert and not mastered and
+        not sheltered and not guarded and
         not routed and not sim.playerNearDesertShade(playerIndex):
       if not sim.consumeWeatherRation(playerIndex):
         sim.damagePlayer(playerIndex, 0, 0, 1)
-    if fogPulse and biome in {BiomeCave, BiomeRuins} and not sheltered and
-        not guarded and not routed and
+    if fogPulse and biome in {BiomeCave, BiomeRuins} and not mastered and
+        not sheltered and not guarded and not routed and
         not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) and
         not sim.playerHasCaveLight(playerIndex):
       let before = sim.players[playerIndex].slowTicks
@@ -7360,8 +7515,8 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
       )
       if sim.players[playerIndex].slowTicks != before:
         inc sim.scoreRevision
-    if mirePulse and biome == BiomeSwamp and not sheltered and not guarded and
-        not routed and
+    if mirePulse and biome == BiomeSwamp and not mastered and
+        not sheltered and not guarded and not routed and
         sim.playerGroundKind(sim.players[playerIndex]) in {
           GroundMud,
           GroundShallowWater,
@@ -7376,6 +7531,7 @@ proc applyFoodAndWeatherSurvival(sim: var SimServer) =
         inc sim.scoreRevision
 
     if exhaustionPulse and sim.playerInLateExhaustionBand(playerIndex) and
+        not mastered and
         not sheltered and not guarded and not routed and
         sim.survivalPressureKind(playerIndex) == SurvivalSafe:
       if not sim.consumeWeatherRation(playerIndex):
@@ -7428,6 +7584,10 @@ proc applyStatusEffects(sim: var SimServer) =
         sim.players[playerIndex].equippedStatusRecoveryStep() +
         (if sim.players[playerIndex].guideTicks > 0:
           RescueGuideStatusRecoveryTicks
+        else:
+          0) +
+        (if sim.biomeIsMastered(sim.playerBiome(sim.players[playerIndex])):
+          BiomeMasteryStatusRecoveryTicks
         else:
           0)
     if sim.players[playerIndex].slowTicks > 0:
@@ -7886,7 +8046,7 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   sim.fb.drawText(
     sim.textFont,
     "W" & $sim.wood & " F" & $sim.food & " S" & $sim.stone &
-      " R" & $sim.relicShards,
+      " R" & $sim.relicShards & " " & sim.masteryHudLabel(),
     0,
     lineY * 4,
     2'u8
@@ -8267,6 +8427,12 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         sim.players[i].abilityCooldown = max(
           0,
           sim.players[i].abilityCooldown - ObjectiveMoraleCooldownStep
+        )
+      if sim.players[i].abilityCooldown > 0 and
+          sim.biomeIsMastered(sim.playerBiome(sim.players[i])):
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown - BiomeMasteryCooldownStep
         )
       if sim.players[i].abilityCooldown > 0:
         sim.players[i].abilityCooldown = max(

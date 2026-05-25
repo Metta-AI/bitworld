@@ -2049,6 +2049,8 @@ proc biomeTacticStatusBadge(
   kind: BiomeTacticKind
 ): tuple[found: bool, badge: StatusBadgeKind] =
   case kind
+  of BiomeTacticMastery:
+    (true, StatusBlessing)
   of BiomeTacticForage:
     (true, StatusForage)
   of BiomeTacticRally:
@@ -3556,7 +3558,8 @@ proc addPlayerHud(
     )
     statusLine2 = "WX " & sim.currentWeather().weatherLabel().toUpperAscii() &
       " E" & $playerElevation & "  W" & $sim.wood & " F" & $sim.food &
-      " S" & $sim.stone & " R" & $sim.relicShards
+      " S" & $sim.stone & " R" & $sim.relicShards & " " &
+      sim.masteryHudLabel()
     statusLine3 =
       if player.role == RoleHealer and player.abilityHoldTicks > 0:
         "X " & ability & " HOLD " &

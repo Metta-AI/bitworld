@@ -1890,6 +1890,98 @@ proc testExpandedMonsterFamiliesAndArmorDrops() =
   doAssert SpeciesFireScorpion.speciesArmorDrop() == ArmorScaleMail
   doAssert SpeciesCrystalSeer.speciesArmorDrop() == ArmorLanternCharm
 
+proc testBiomeMasteryMakesRegionalDetoursMatter() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundMud, BiomeSwamp)
+  sim.mobSpawnCooldown = 999
+
+  let
+    segment = 2
+    range = segment.biomeSegmentRange()
+    tx = range.firstTx + 3
+    ty = WorldHeightTiles div 2
+    playerIndex = sim.addPlayer("mastery")
+  sim.players[playerIndex].applyRole(RoleDps)
+  sim.players[playerIndex].x = tx * WorldTileSize
+  sim.players[playerIndex].y = ty * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.players[playerIndex].lives = sim.players[playerIndex].maxHp
+
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalMire,
+    "unmastered swamp mud should still be a live route problem"
+  doAssert sim.playerBiomeTacticKind(playerIndex) != BiomeTacticMastery
+
+  let mob = Mob(
+    kind: SlimeMob,
+    species: SpeciesMudSlime,
+    x: sim.players[playerIndex].x + WorldTileSize,
+    y: sim.players[playerIndex].y,
+    sprite: sim.mobSpriteFor(SpeciesMudSlime),
+    bounds: sim.mobBoundsFor(SpeciesMudSlime),
+    hp: SlimeHp,
+    attackCooldown: 99
+  )
+  let baseDamage = sim.playerAttackDamage(sim.players[playerIndex], mob)
+
+  for item in [
+    (kind: LandmarkWaystation, offset: 0),
+    (kind: LandmarkCamp, offset: 1)
+  ]:
+    sim.landmarks.add(Landmark(
+      tx: tx + item.offset,
+      ty: ty,
+      kind: item.kind,
+      hp: 1,
+      done: true
+    ))
+  sim.tryGrantBiomeMasteryForSegment(segment)
+  doAssert not sim.biomeIsMastered(BiomeSwamp),
+    "two local milestones should not yet solve the region"
+
+  sim.landmarks.add(Landmark(
+    tx: tx + 2,
+    ty: ty,
+    kind: LandmarkLair,
+    hp: 0,
+    done: true
+  ))
+  sim.players[playerIndex].slowTicks = StatusSlowTicks
+  sim.tryGrantBiomeMasteryForSegment(segment)
+
+  doAssert sim.biomeIsMastered(BiomeSwamp)
+  doAssert sim.masteredBiomeCount() == 1
+  doAssert sim.masteredBiomeLabels() == "swamp"
+  doAssert sim.players[playerIndex].moraleTicks == BiomeMasteryMoraleTicks
+  doAssert sim.players[playerIndex].slowTicks == 0,
+    "swamp mastery should clear the local mire status"
+  doAssert sim.stone == 1,
+    "swamp mastery should pay a route-building stone reward"
+  doAssert sim.survivalPressureKind(playerIndex) == SurvivalSafe
+  doAssert sim.playerBiomeTacticKind(playerIndex) == BiomeTacticMastery
+  doAssert sim.playerMovementSpeedPercent(
+    sim.players[playerIndex],
+    sim.players[playerIndex].x,
+    sim.players[playerIndex].y
+  ) >= BiomeMasteryMinSpeedPercent
+  doAssert sim.playerAttackDamage(sim.players[playerIndex], mob) ==
+    baseDamage + BiomeMasteryDamageBonus
+
+  sim.players[playerIndex].abilityCooldown = 6
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].abilityCooldown <=
+    6 - 1 - BiomeMasteryCooldownStep,
+    "mastered regions should make role powers cycle faster"
+
+  let scores = parseJson(sim.playerScoresJson())
+  doAssert scores["mastery_count"][0].getInt() == 1
+  doAssert scores["mastered_biomes"][0].getStr() == "swamp"
+  doAssert sim.teamScore() >= BiomeMasteryScoreValue
+
 proc testArmorPickupEquipsAndShowsHud() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -5151,6 +5243,7 @@ testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
 testDefeatedBiomeMonstersDropExpeditionSupplies()
 testExpandedMonsterFamiliesAndArmorDrops()
+testBiomeMasteryMakesRegionalDetoursMatter()
 testArmorPickupEquipsAndShowsHud()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()
 testSpriteProtocolShowsObjectiveProgressPrompts()

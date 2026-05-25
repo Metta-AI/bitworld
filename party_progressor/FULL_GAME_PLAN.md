@@ -30,6 +30,12 @@ source for new Party Progressor monster art, keeps TribalCog TSV prompts as a
 fallback path, and wires 12 project-local generated monster sprites into the
 runtime before falling back to borrowed TribalCog wolf/goblin/bear silhouettes.
 
+Design iteration, 2026-05-25: regional detours now matter more. Completing
+three real milestones inside a biome segment grants biome mastery, a persistent
+party boon that shows in the HUD/score contract and changes later survival,
+movement, cooldown, and combat math for that biome. This is meant to make the
+best route a judgment call instead of a pure rightward sprint.
+
 ## Design Pillars
 
 - Cooperative progression: the party shares a frontier and wins by moving
@@ -67,6 +73,13 @@ runtime before falling back to borrowed TribalCog wolf/goblin/bear silhouettes.
 The best run should not be pure speed. It should be a route decision: when to
 push, when to harvest, when to build, when to recover, when to fight, and when
 to skip danger to preserve momentum.
+
+Biome mastery is the current answer to "why take the detour?" Clearing three
+local problems in a region, such as a camp, waystation, lair, rescue, shrine,
+or beacon, turns that biome from hostile territory into known ground. Mastery
+then becomes a visible long-term reward: faster travel through the biome,
+faster role-power recovery while in it, extra damage against local threats,
+reduced status drag, and protection from that biome's survival pressure.
 
 ## Current Runtime Contract
 
@@ -229,6 +242,17 @@ Camps are the core forward infrastructure:
   and aid staging points.
 - Shelters protect from biome pressure, accelerate status cleanup, and give
   wounded players a recovery anchor.
+
+Biome mastery now links these objectives into a more legible local story. A
+single shrine or lair is useful, but solving enough local problems earns a
+persistent mastery boon:
+
+- Forest mastery turns early foraging into a real supply advantage.
+- Plains mastery reinforces rally pacing and role-power uptime.
+- Swamp mastery makes mud and water routes less punishing after the party has
+  built local knowledge.
+- Desert and snow mastery reduce harsh-weather survival tax.
+- Cave and ruin mastery reduce fog/exhaustion pressure and help late fights.
 
 Objective types are all visible through sprite labels, prompts, and HUD hints:
 
