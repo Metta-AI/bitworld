@@ -2566,7 +2566,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   ## Builds the initial global viewer snapshot.
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
-  result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
+  result.addViewport(MapLayerId, GlobalViewportWidth, GlobalViewportHeight)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
   result.addViewport(TopLeftLayerId, ScreenWidth, 48)
   result.addLayer(
@@ -2589,6 +2589,27 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
   )
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
   result.addCommonSpriteDefinitions(sim)
+
+proc globalCameraX(sim: SimServer): int =
+  ## Centers the bird's-eye global view on the party's rightward progress.
+  if GlobalViewportWidth >= WorldWidthPixels:
+    return 0
+  var
+    count = 0
+    sumX = 0
+    maxX = 0
+  for player in sim.players:
+    let centerX = boundsCenterX(player.x, player.bounds)
+    sumX += centerX
+    maxX = max(maxX, centerX)
+    inc count
+  if count == 0:
+    return 0
+  let focusX = max((sumX div count + maxX) div 2, SafeZoneRightPixels)
+  worldClampPixel(
+    focusX - GlobalViewportWidth div 3,
+    WorldWidthPixels - GlobalViewportWidth
+  )
 
 proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   ## Builds the initial sprite player snapshot.
@@ -3505,6 +3526,9 @@ proc buildSpriteProtocolUpdates*(
   nextState = state
   nextState.replayCommands.setLen(0)
   nextState.replaySeekTick = -1
+  let
+    cameraX = sim.globalCameraX()
+    cameraY = 0
   if nextState.clickPending:
     let seekTick = replayScrubTickAt(
       nextState.mouseLayer,
@@ -3525,10 +3549,16 @@ proc buildSpriteProtocolUpdates*(
         nextState.replayCommands.add(command)
       elif nextState.mouseLayer == MapLayerId:
         nextState.selectedPlayerId =
-          sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
+          sim.selectSpritePlayer(
+            nextState.mouseX + cameraX,
+            nextState.mouseY + cameraY
+          )
     elif nextState.mouseLayer == MapLayerId:
       nextState.selectedPlayerId =
-        sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
+        sim.selectSpritePlayer(
+          nextState.mouseX + cameraX,
+          nextState.mouseY + cameraY
+        )
     nextState.clickPending = false
   if replayTick >= 0 and nextState.mouseDown and nextState.scrubbingReplay:
     let seekTick = replayScrubTickAt(
@@ -3544,13 +3574,22 @@ proc buildSpriteProtocolUpdates*(
     nextState.initialized = true
 
   var currentIds: seq[int] = @[]
+  currentIds.add(MapObjectId)
+  result.addObject(
+    MapObjectId,
+    -cameraX,
+    -cameraY,
+    low(int16),
+    MapLayerId,
+    MapSpriteId
+  )
   sim.addWorldObjects(
     result,
     currentIds,
-    0,
-    0,
-    WorldWidthPixels,
-    WorldHeightPixels,
+    cameraX,
+    cameraY,
+    GlobalViewportWidth,
+    GlobalViewportHeight,
     nextState.selectedPlayerId
   )
 

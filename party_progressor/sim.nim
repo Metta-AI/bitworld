@@ -28,14 +28,17 @@ const
   PlayerViewportTiles* = 11
   PlayerViewportWidth* = PlayerViewportTiles * WorldTileSize
   PlayerViewportHeight* = PlayerViewportTiles * WorldTileSize
+  GlobalViewportTiles* = 64
+  GlobalViewportWidth* = GlobalViewportTiles * WorldTileSize
+  GlobalViewportHeight* = WorldHeightPixels
   SafeZoneRightPixels* = SafeZoneRightTiles * WorldTileSize
   ZoneWidthTiles* = 8
   ZoneWidthPixels* = ZoneWidthTiles * WorldTileSize
   LaneHalfHeightTiles* = 4
-  RiverSystemStrideSegments* = 2
-  RiverSystemSpanSegments* = 2
-  RiverDeepHalfWidthTiles* = 2
-  RiverShallowHalfWidthTiles* = 3
+  RiverSystemStrideSegments* = 3
+  RiverSystemSpanSegments* = 1
+  RiverDeepHalfWidthTiles* = 0
+  RiverShallowHalfWidthTiles* = 1
   RiverAmbushMobCount* = 3
   RiverAmbushBankOffsetTiles* = 5
   TargetMobCount* = 72
@@ -2467,6 +2470,16 @@ proc addRiverCrossing(
     lastTy: WorldHeightTiles - 2
   ))
 
+proc riverCrossingTyForSystem(systemIndex: int): int =
+  ## Alternates bridge rows so the rightward route reads as a zig-zag.
+  const offsets = [-3, 3, -2, 2]
+  let centerTy = WorldHeightTiles div 2
+  clamp(
+    centerTy + offsets[systemIndex mod offsets.len],
+    centerTy - LaneHalfHeightTiles + 1,
+    centerTy + LaneHalfHeightTiles - 1
+  )
+
 proc seedLongRiverSystem(
   sim: var SimServer,
   systemIndex,
@@ -2475,7 +2488,7 @@ proc seedLongRiverSystem(
 ) =
   ## Carves one wide vertical river barrier, plus forked tributaries.
   let
-    centerTy = WorldHeightTiles div 2
+    crossingTy = riverCrossingTyForSystem(systemIndex)
     firstTx = SafeZoneRightTiles + firstSegment * ExpeditionBiomeSpanTiles
     lastTx = min(
       WorldWidthTiles - 1,
@@ -2485,34 +2498,35 @@ proc seedLongRiverSystem(
     return
 
   let mainPath = sim.buildMainRiverPath(systemIndex, firstTx, lastTx)
-  sim.carveRiverPath(mainPath, firstTx, lastTx, centerTy)
-  sim.addRiverCrossing(mainPath, centerTy)
+  sim.carveRiverPath(mainPath, firstTx, lastTx, crossingTy)
+  sim.addRiverCrossing(mainPath, crossingTy)
 
   let sideDir = if (sim.seed + systemIndex) mod 2 == 0: 1 else: -1
-  let branchDown = sim.buildRiverBranchPath(
-    mainPath,
-    systemIndex,
-    firstTx,
-    lastTx,
-    max(2, centerTy - 5),
-    1,
-    sideDir
-  )
-  sim.carveRiverPath(branchDown, firstTx, lastTx, centerTy)
-  sim.addRiverCrossing(branchDown, centerTy)
-
   if systemIndex mod 2 == 1:
+    let branchDown = sim.buildRiverBranchPath(
+      mainPath,
+      systemIndex,
+      firstTx,
+      lastTx,
+      max(2, crossingTy - 5),
+      1,
+      sideDir
+    )
+    sim.carveRiverPath(branchDown, firstTx, lastTx, crossingTy)
+    sim.addRiverCrossing(branchDown, crossingTy)
+
+  if systemIndex mod 4 == 3:
     let branchUp = sim.buildRiverBranchPath(
       mainPath,
       systemIndex + 31,
       firstTx,
       lastTx,
-      min(WorldHeightTiles - 3, centerTy + 5),
+      min(WorldHeightTiles - 3, crossingTy + 5),
       -1,
       -sideDir
     )
-    sim.carveRiverPath(branchUp, firstTx, lastTx, centerTy)
-    sim.addRiverCrossing(branchUp, centerTy)
+    sim.carveRiverPath(branchUp, firstTx, lastTx, crossingTy)
+    sim.addRiverCrossing(branchUp, crossingTy)
 
 proc seedLongRiverSystems(sim: var SimServer) =
   ## Spreads readable north-south river barriers across the rightward journey.
@@ -2552,12 +2566,11 @@ proc seedSegmentLake(
         clamp(centerTy - 5, 2, WorldHeightTiles - 3)
     rx =
       case biome
-      of BiomeDesert, BiomeCave: 2
-      of BiomeSwamp: 4
+      of BiomeDesert, BiomeCave, BiomeSwamp: 2
       else: 3
     ry =
       case biome
-      of BiomeSwamp: 2
+      of BiomeSwamp: 1
       else: 1
   for dy in -ry - 1 .. ry + 1:
     for dx in -rx - 1 .. rx + 1:
@@ -2617,7 +2630,23 @@ proc seedProceduralLandforms(sim: var SimServer) =
 
 proc denseTerrainThreshold(biome: BiomeKind, laneDistance: int): int =
   if laneDistance <= LaneHalfHeightTiles:
-    return 0
+    if laneDistance < 3:
+      return 0
+    return case biome
+      of BiomeForest:
+        20
+      of BiomeSwamp:
+        14
+      of BiomeCave, BiomeRuins:
+        12
+      of BiomeSnow:
+        10
+      of BiomePlains:
+        8
+      of BiomeDesert:
+        4
+      of BiomeOrigin:
+        0
   result =
     case biome
     of BiomeForest:
@@ -2696,7 +2725,7 @@ proc seedBiomeGrounds*(sim: var SimServer) =
       elif laneDistance == 0:
         ground =
           if biome == BiomeSwamp:
-            GroundBridge
+            GroundMud
           elif biome == BiomeCave or biome == BiomeRuins:
             GroundRoad
           else:
@@ -2705,7 +2734,7 @@ proc seedBiomeGrounds*(sim: var SimServer) =
         case biome
         of BiomeSwamp:
           ground =
-            if noise < 34:
+            if noise < 18:
               GroundShallowWater
             else:
               GroundMud
@@ -2727,9 +2756,9 @@ proc seedBiomeGrounds*(sim: var SimServer) =
         case biome
         of BiomeSwamp:
           ground =
-            if noise < 35:
+            if noise < 20:
               GroundWater
-            elif noise < 70:
+            elif noise < 50:
               GroundShallowWater
             else:
               GroundMud
@@ -2740,7 +2769,7 @@ proc seedBiomeGrounds*(sim: var SimServer) =
           ground = GroundSnow
         of BiomeCave:
           ground =
-            if noise < 18: GroundWater else: GroundCave
+            if noise < 8: GroundWater else: GroundCave
         of BiomeRuins:
           ground = GroundRuins
         else:

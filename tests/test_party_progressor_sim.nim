@@ -812,7 +812,8 @@ proc testBiomeGroundsAndWeather() =
     centerTy = WorldHeightTiles div 2
   doAssert sim.tileBiomeKind(0, centerTy) == BiomeOrigin
   doAssert sim.tileBiomeKind(swampTx, centerTy) == BiomeSwamp
-  doAssert sim.tileGroundKind(swampTx, centerTy) == GroundBridge
+  doAssert sim.tileGroundKind(swampTx, centerTy) != GroundBridge,
+    "swamp center lane should not be a continuous bridge"
   doAssert sim.tileBiomeKind(desertTx, centerTy).weatherForBiome() ==
     WeatherDust
   doAssert groundSpeedPercent(GroundMud) < groundSpeedPercent(GroundRoad)
@@ -838,8 +839,11 @@ proc testProceduralExpeditionRepeatsBiomeSegments() =
 
 proc testProceduralLandformsAndVisibilityShadow() =
   let seeded = initPartyProgressorForTest()
-  doAssert seeded.groundKinds.countIt(it == GroundWater) > WorldHeightTiles,
+  let waterTiles = seeded.groundKinds.countIt(it == GroundWater)
+  doAssert waterTiles > WorldHeightTiles,
     "procedural expedition should contain lakes and rivers"
+  doAssert waterTiles < WorldHeightTiles * BiomeCount * ExpeditionCycleCount,
+    "procedural expedition should leave most of the narrow route as land"
   doAssert seeded.groundKinds.countIt(it == GroundBridge) > BiomeCount,
     "rivers should have bridge crossings on the travel route"
   let expectedRiverSystems =
@@ -847,6 +851,23 @@ proc testProceduralLandformsAndVisibilityShadow() =
       RiverSystemStrideSegments
   doAssert seeded.riverCrossings.len >= expectedRiverSystems,
     "river systems should create repeated chokepoint crossings"
+  let centerTy = WorldHeightTiles div 2
+  doAssert seeded.riverCrossings.countIt(it.ty < centerTy) > 0,
+    "river chokepoints should sometimes pull the route upward"
+  doAssert seeded.riverCrossings.countIt(it.ty > centerTy) > 0,
+    "river chokepoints should sometimes pull the route downward"
+  doAssert seeded.riverCrossings.allIt(abs(it.ty - centerTy) >= 2),
+    "river chokepoints should not collapse back onto the center lane"
+  var
+    lastSide = 0
+    sideChanges = 0
+  for crossing in seeded.riverCrossings:
+    let side = if crossing.ty < centerTy: -1 else: 1
+    if lastSide != 0 and side != lastSide:
+      inc sideChanges
+    lastSide = side
+  doAssert sideChanges >= 2,
+    "repeated river crossings should force a visible up/down zig-zag"
   for i in 0 ..< min(6, seeded.riverCrossings.len):
     let crossing = seeded.riverCrossings[i]
     doAssert seeded.tileGroundKind(crossing.tx, crossing.ty) == GroundBridge,
@@ -857,7 +878,8 @@ proc testProceduralLandformsAndVisibilityShadow() =
         "bridge crossings should span the whole river width"
     var waterAbove = false
     var waterBelow = false
-    for dx in -RiverShallowHalfWidthTiles .. RiverShallowHalfWidthTiles:
+    for dx in -(RiverShallowHalfWidthTiles + 2) ..
+        RiverShallowHalfWidthTiles + 2:
       if seeded.tileGroundKind(crossing.tx + dx, crossing.ty - 1) ==
           GroundWater:
         waterAbove = true
@@ -881,7 +903,6 @@ proc testProceduralLandformsAndVisibilityShadow() =
   doAssert seeded.elevations.countIt(it >= 4) > BiomeCount,
     "procedural ridges should create meaningful high elevation"
   let
-    centerTy = WorldHeightTiles div 2
     forestBlockers = seeded.terrainProps.countIt(
       seeded.tileBiomeKind(it.tx, it.ty) == BiomeForest and
         abs(it.ty - centerTy) > LaneHalfHeightTiles
@@ -1425,6 +1446,42 @@ proc testSpriteProtocolMatchesCurrentSharedClientContract() =
   )
   doAssert chatText == "hello",
     "sprite client chat should arrive as 0x81 length-prefixed ASCII"
+
+proc testGlobalSpriteViewFollowsPartyProgress() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  let playerIndex = sim.addPlayer("global")
+
+  var nextState: GlobalViewerState
+  let initial = sim.buildSpriteProtocolUpdates(
+    initGlobalViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  doAssert initial.viewports[MapLayerId].width == GlobalViewportWidth
+  doAssert initial.viewports[MapLayerId].height == GlobalViewportHeight
+  doAssert initial.objects[MapObjectId].x == 0
+
+  sim.players[playerIndex].x = SafeZoneRightPixels + GlobalViewportWidth
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+
+  var followedState: GlobalViewerState
+  let followed = sim.buildSpriteProtocolUpdates(
+    nextState,
+    followedState
+  ).parseSpriteProtocolPacket()
+  doAssert followed.objects[MapObjectId].x < 0,
+    "global map should pan as the party moves right"
+  let playerObject = followed.objects[
+    PlayerObjectBase + sim.players[playerIndex].id
+  ]
+  doAssert playerObject.x >= 0 and playerObject.x < GlobalViewportWidth,
+    "global player object should remain visible inside the bird's-eye viewport"
 
 proc testCarriedInventoryTilesAcrossBottomOfPlayerView() =
   var sim = initPartyProgressorForTest()
@@ -4959,6 +5016,7 @@ testSpriteProtocolShowsSurvivalPressureAffordances()
 testRenderedPlayerObservationHasBiomeBackedPixels()
 testSpriteProtocolPacketMatchesReferenceParsers()
 testSpriteProtocolMatchesCurrentSharedClientContract()
+testGlobalSpriteViewFollowsPartyProgress()
 testCarriedInventoryTilesAcrossBottomOfPlayerView()
 testCarriedFoodStacksAndShowsCount()
 testRoleSpecialAbilitiesShowColoredSpriteEffects()
