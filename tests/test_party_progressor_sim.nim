@@ -1077,8 +1077,8 @@ proc testSpritePlayerViewportAndBiomeBackground() =
   doAssert viewport.width == PlayerViewportWidth
   doAssert viewport.height == PlayerViewportHeight
 
-  let mapSprite = packet.firstSpriteRawPixels(MapSpriteId)
-  doAssert mapSprite.width == WorldWidthPixels
+  let mapSprite = packet.firstSpriteRawPixels(MapChunkSpriteBase)
+  doAssert mapSprite.width == min(MapChunkTileWidth, WorldWidthTiles) * WorldTileSize
   doAssert mapSprite.height == WorldHeightPixels
   let
     pixelOffset = 0
@@ -1846,6 +1846,56 @@ proc testDefeatedBiomeMonstersDropExpeditionSupplies() =
   var goldSim = defeatSpecies(SpeciesRuinWraith)
   doAssert goldSim.hasPickup(PickupGold),
     "defeated ruin wraiths should leave portable light gold"
+
+proc testExpandedMonsterFamiliesAndArmorDrops() =
+  doAssert AllMobSpecies.len == 44,
+    "party progressor should keep the expanded biome monster roster"
+  doAssert SpeciesPackAlpha.attackStyle() == AttackCone
+  doAssert SpeciesFireScorpion.attackStyle() == AttackLine
+  doAssert SpeciesNetThrower.attackStyle() == AttackTrap
+  doAssert SpeciesBogWitch.attackStyle() == AttackSupport
+  doAssert SpeciesLeechSwarm.attackStyle() == AttackSwarm
+  doAssert SpeciesPackAlpha.speciesLeadsPack()
+  doAssert SpeciesBogWitch.speciesSupportsPack()
+  doAssert SpeciesLeechSwarm.speciesSwarms()
+  doAssert SpeciesFireScorpion.speciesArmorDrop() == ArmorScaleMail
+  doAssert SpeciesCrystalSeer.speciesArmorDrop() == ArmorLanternCharm
+
+proc testArmorPickupEquipsAndShowsHud() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.bossDefeated = true
+  sim.fillGround(GroundGrass)
+  let playerIndex = sim.addPlayer("armored")
+  sim.players[playerIndex].applyRole(RoleTank)
+  sim.players[playerIndex].x = SafeZoneRightPixels + WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  let oldMax = sim.players[playerIndex].maxHp
+  sim.pickups.add(Pickup(
+    x: sim.players[playerIndex].x,
+    y: sim.players[playerIndex].y,
+    kind: PickupArmor,
+    value: ord(ArmorScaleMail)
+  ))
+  sim.step([InputState()])
+  doAssert sim.pickups.len == 0
+  doAssert sim.players[playerIndex].armor[ArmorChest] == ArmorScaleMail
+  doAssert sim.players[playerIndex].maxHp == oldMax +
+    ArmorScaleMail.armorMaxHpBonus()
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("scale mail")),
+    "player HUD should expose equipped armor and its bonus"
 
 proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   var sim = initPartyProgressorForTest()
@@ -3513,6 +3563,52 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   doAssert sim.players[playerIndex].guideTicks == 0,
     "rescue guide knowledge should expire after the next push window"
 
+proc testRescueGuideFollowsAndThanksAtCamp() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass, BiomeForest)
+  sim.food = 0
+
+  let playerIndex = sim.addPlayer("guide")
+  sim.players[playerIndex].x = SafeZoneRightPixels + 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.landmarks.add(Landmark(
+    tx: sim.players[playerIndex].x div WorldTileSize,
+    ty: sim.players[playerIndex].y div WorldTileSize,
+    kind: LandmarkRescue,
+    hp: 1,
+    done: false
+  ))
+  for _ in 0 ..< RescueEventTicks:
+    sim.step([InputState()])
+
+  doAssert sim.guides.len == 1,
+    "completed rescues should spawn a visible guide follower"
+  sim.players[playerIndex].x = 2 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].bounds =
+    sim.playerBoundsFor(sim.players[playerIndex])
+  sim.step([InputState()])
+  doAssert sim.guides.len == 1
+  doAssert sim.guides[0].done
+  doAssert sim.guides[0].thanksTicks > 0
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  let labels = parsed.objectSpriteLabels()
+  doAssert "guide" in labels
+  doAssert "guide thank you" in labels,
+    "dropped-off rescue guides should visibly thank the party"
+
 proc testHealerCompletesRescueEventsFaster() =
   var sim = initPartyProgressorForTest()
   sim.clearTerrain()
@@ -5025,6 +5121,8 @@ testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()
 testMonsterTacticalHooksAndStatuses()
 testDefeatedBiomeMonstersDropExpeditionSupplies()
+testExpandedMonsterFamiliesAndArmorDrops()
+testArmorPickupEquipsAndShowsHud()
 testSpriteProtocolShowsStatusAndObjectiveAffordances()
 testSpriteProtocolShowsObjectiveProgressPrompts()
 testChatPingsShowCompactStatusBadges()
@@ -5046,6 +5144,7 @@ testFinalGateRitualAcceleratesWithPartyRoles()
 testFinalGateObjectiveOverridesRuinsCleanup()
 testShrineSideObjectiveScoringAndSustain()
 testRescueSideObjectiveRequiresHoldAndRewardsParty()
+testRescueGuideFollowsAndThanksAtCamp()
 testHealerCompletesRescueEventsFaster()
 testCooperativeObjectiveHoldsStackPartyEffort()
 testMonsterLairAttackRewardsAndPacifiesThreats()

@@ -21,7 +21,7 @@ except ImportError as exc:
 PlayerDefaultPort = 2000
 ScreenWidth = 128
 ScreenHeight = 128
-WorldWidthTiles = 96
+WorldWidthTiles = 596
 WorldHeightTiles = 18
 WorldTileSize = 32
 WorldWidthPixels = WorldWidthTiles * WorldTileSize
@@ -50,7 +50,7 @@ StatusHudObjectId = PlayerHudObjectId + 2
 PlayerHealthObjectBase = 10000
 CarryObjectBase = 12000
 StatusBadgeObjectBase = 13000
-StatusBadgeSlots = 7
+StatusBadgeSlots = 18
 LowHealthPercent = 50
 
 ButtonUp = 1 << 0

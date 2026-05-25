@@ -18,7 +18,7 @@ const
   ReplayFps* = 60
   SafeZoneRightTiles* = 8
   BiomeCount* = 7
-  ExpeditionBiomeSpanTiles* = 14
+  ExpeditionBiomeSpanTiles* = 21
   ExpeditionCycleCount* = 4
   WorldWidthTiles* =
     SafeZoneRightTiles + ExpeditionBiomeSpanTiles * BiomeCount * ExpeditionCycleCount
@@ -35,13 +35,13 @@ const
   ZoneWidthTiles* = 8
   ZoneWidthPixels* = ZoneWidthTiles * WorldTileSize
   LaneHalfHeightTiles* = 4
-  RiverSystemStrideSegments* = 3
+  RiverSystemStrideSegments* = 4
   RiverSystemSpanSegments* = 1
   RiverDeepHalfWidthTiles* = 0
   RiverShallowHalfWidthTiles* = 1
   RiverAmbushMobCount* = 3
   RiverAmbushBankOffsetTiles* = 5
-  TargetMobCount* = 72
+  TargetMobCount* = 108
   TerrainPatchDivisor* = 52
   MinMobSpacing* = 24
   MinPlayerSpawnSpacing* = 24
@@ -72,7 +72,7 @@ const
   BatHp* = 3
   WraithHp* = 8
   MobSpeciesSpriteBase* = 760
-  MobSpeciesSpriteSlots* = 64
+  MobSpeciesSpriteSlots* = 128
   TrollCoinValue* = 10
   BossCoinValue* = 100
   ObjectiveScoreValue* = 25
@@ -233,10 +233,18 @@ const
   MessageMaxChars* = MessageCharsPerLine * MessageLineCount
   MapSpriteId* = 1
   MapObjectId* = 1
+  MapChunkTileWidth* = 8
+  MapChunkWidthPixels* = MapChunkTileWidth * WorldTileSize
+  MapChunkCount* =
+    (WorldWidthTiles + MapChunkTileWidth - 1) div MapChunkTileWidth
+  MapChunkSpriteBase* = 20000
+  MapChunkObjectBase* = 21000
   MapLayerId* = 0
   MapLayerType* = 0
   TopLeftLayerId* = 1
   TopLeftLayerType* = 1
+  TopRightLayerId* = 2
+  TopRightLayerType* = 2
   BottomRightLayerId* = 3
   BottomRightLayerType* = 3
   ReplayCenterBottomLayerId* = 8
@@ -329,6 +337,23 @@ type
     CarryStone
     CarryGold
 
+  ArmorSlot* = enum
+    ArmorHead
+    ArmorChest
+    ArmorTrinket
+
+  ArmorKind* = enum
+    ArmorNone
+    ArmorScoutHood
+    ArmorIronHelm
+    ArmorFurHood
+    ArmorLeatherVest
+    ArmorScaleMail
+    ArmorFrostCloak
+    ArmorVenomCharm
+    ArmorLanternCharm
+    ArmorRallyHorn
+
   TerrainKind* = enum
     TerrainTree
     TerrainEvergreen
@@ -398,6 +423,7 @@ type
     carrying*: bool
     carriedItem*: CarryKind
     carryCounts*: array[CarryKind, int]
+    armor*: array[ArmorSlot, ArmorKind]
     carrySelectLockTicks*: int
     slowTicks*: int
     chillTicks*: int
@@ -423,6 +449,7 @@ type
     PickupFood
     PickupStone
     PickupGold
+    PickupArmor
 
   MobKind* = enum
     SnakeMob
@@ -442,34 +469,46 @@ type
     SpeciesGrassSnake
     SpeciesForestWolf
     SpeciesDireWolf
+    SpeciesPackAlpha
     SpeciesThornBoar
+    SpeciesThornMender
     SpeciesBrownBear
     SpeciesPlainsWolf
     SpeciesPrairieGoblin
+    SpeciesBannerGoblin
+    SpeciesNetThrower
     SpeciesPlainsBear
     SpeciesHornedBuck
     SpeciesMudSlime
     SpeciesReedSlime
     SpeciesBogGoblin
+    SpeciesBogWitch
+    SpeciesLeechSwarm
     SpeciesMarshWraith
     SpeciesDuneScorpion
     SpeciesGlassScorpion
+    SpeciesFireScorpion
     SpeciesSandViper
     SpeciesDustHyena
+    SpeciesSandBurrower
     SpeciesTombScarab
     SpeciesSnowWolf
     SpeciesFrostYeti
     SpeciesIceTroll
+    SpeciesIceShaman
     SpeciesWhiteBear
     SpeciesSnowBat
+    SpeciesSnowStalker
     SpeciesCaveBat
     SpeciesCrystalBat
+    SpeciesCrystalSeer
     SpeciesCaveSlime
     SpeciesStoneGoblin
     SpeciesDeepMaw
     SpeciesRuinWraith
     SpeciesAshWraith
     SpeciesBoneGoblin
+    SpeciesRuinNecromancer
     SpeciesGateTitan
 
   MobAttackPhase* = enum
@@ -482,6 +521,11 @@ type
     AttackRanged
     AttackSlam
     AttackAura
+    AttackCone
+    AttackLine
+    AttackTrap
+    AttackSupport
+    AttackSwarm
 
   BiomeKind* = enum
     BiomeOrigin
@@ -581,6 +625,12 @@ type
     firstTy*, lastTy*: int
     triggered*: bool
 
+  GuideFollower* = object
+    x*, y*: int
+    targetPlayerId*: int
+    thanksTicks*: int
+    done*: bool
+
   SimServer* = object
     players*: seq[Actor]
     mobs*: seq[Mob]
@@ -593,6 +643,7 @@ type
     terrainProps*: seq[TerrainProp]
     landmarks*: seq[Landmark]
     riverCrossings*: seq[RiverCrossing]
+    guides*: seq[GuideFollower]
     playerArts*: array[PlayerForm, PlayerArt]
     playerSprite*: Sprite
     terrainSprite*: Sprite
@@ -608,6 +659,9 @@ type
     roleGearSprites*: array[PickupKind, Sprite]
     roleGearRgbaSprites*: array[PickupKind, RgbaSprite]
     roleGearBounds*: array[PickupKind, SpriteBounds]
+    armorSprites*: array[ArmorKind, Sprite]
+    armorRgbaSprites*: array[ArmorKind, RgbaSprite]
+    armorBounds*: array[ArmorKind, SpriteBounds]
     mobSprite*: Sprite
     rgbaMobSprite*: RgbaSprite
     mobBounds*: SpriteBounds
@@ -651,38 +705,50 @@ const
     CarryGold
   ]
 
-  AllMobSpecies*: array[32, MobSpecies] = [
+  AllMobSpecies*: array[44, MobSpecies] = [
     SpeciesGrassSnake,
     SpeciesForestWolf,
     SpeciesDireWolf,
+    SpeciesPackAlpha,
     SpeciesThornBoar,
+    SpeciesThornMender,
     SpeciesBrownBear,
     SpeciesPlainsWolf,
     SpeciesPrairieGoblin,
+    SpeciesBannerGoblin,
+    SpeciesNetThrower,
     SpeciesPlainsBear,
     SpeciesHornedBuck,
     SpeciesMudSlime,
     SpeciesReedSlime,
     SpeciesBogGoblin,
+    SpeciesBogWitch,
+    SpeciesLeechSwarm,
     SpeciesMarshWraith,
     SpeciesDuneScorpion,
     SpeciesGlassScorpion,
+    SpeciesFireScorpion,
     SpeciesSandViper,
     SpeciesDustHyena,
+    SpeciesSandBurrower,
     SpeciesTombScarab,
     SpeciesSnowWolf,
     SpeciesFrostYeti,
     SpeciesIceTroll,
+    SpeciesIceShaman,
     SpeciesWhiteBear,
     SpeciesSnowBat,
+    SpeciesSnowStalker,
     SpeciesCaveBat,
     SpeciesCrystalBat,
+    SpeciesCrystalSeer,
     SpeciesCaveSlime,
     SpeciesStoneGoblin,
     SpeciesDeepMaw,
     SpeciesRuinWraith,
     SpeciesAshWraith,
     SpeciesBoneGoblin,
+    SpeciesRuinNecromancer,
     SpeciesGateTitan
   ]
 
@@ -722,34 +788,46 @@ proc speciesLabel*(species: MobSpecies): string =
   of SpeciesGrassSnake: "grass snake"
   of SpeciesForestWolf: "forest wolf"
   of SpeciesDireWolf: "dire wolf"
+  of SpeciesPackAlpha: "pack alpha"
   of SpeciesThornBoar: "thorn boar"
+  of SpeciesThornMender: "thorn mender"
   of SpeciesBrownBear: "brown bear"
   of SpeciesPlainsWolf: "plains wolf"
   of SpeciesPrairieGoblin: "prairie goblin"
+  of SpeciesBannerGoblin: "banner goblin"
+  of SpeciesNetThrower: "net thrower"
   of SpeciesPlainsBear: "plains bear"
   of SpeciesHornedBuck: "horned buck"
   of SpeciesMudSlime: "mud slime"
   of SpeciesReedSlime: "reed slime"
   of SpeciesBogGoblin: "bog goblin"
+  of SpeciesBogWitch: "bog witch"
+  of SpeciesLeechSwarm: "leech swarm"
   of SpeciesMarshWraith: "marsh wraith"
   of SpeciesDuneScorpion: "dune scorpion"
   of SpeciesGlassScorpion: "glass scorpion"
+  of SpeciesFireScorpion: "fire scorpion"
   of SpeciesSandViper: "sand viper"
   of SpeciesDustHyena: "dust hyena"
+  of SpeciesSandBurrower: "sand burrower"
   of SpeciesTombScarab: "tomb scarab"
   of SpeciesSnowWolf: "snow wolf"
   of SpeciesFrostYeti: "frost yeti"
   of SpeciesIceTroll: "ice troll"
+  of SpeciesIceShaman: "ice shaman"
   of SpeciesWhiteBear: "white bear"
   of SpeciesSnowBat: "snow bat"
+  of SpeciesSnowStalker: "snow stalker"
   of SpeciesCaveBat: "cave bat"
   of SpeciesCrystalBat: "crystal bat"
+  of SpeciesCrystalSeer: "crystal seer"
   of SpeciesCaveSlime: "cave slime"
   of SpeciesStoneGoblin: "stone goblin"
   of SpeciesDeepMaw: "deep maw"
   of SpeciesRuinWraith: "ruin wraith"
   of SpeciesAshWraith: "ash wraith"
   of SpeciesBoneGoblin: "bone goblin"
+  of SpeciesRuinNecromancer: "ruin necromancer"
   of SpeciesGateTitan: "gate titan"
 
 proc speciesKind*(species: MobSpecies): MobKind =
@@ -759,19 +837,22 @@ proc speciesKind*(species: MobSpecies): MobKind =
   of SpeciesGrassSnake, SpeciesSandViper:
     SnakeMob
   of SpeciesForestWolf, SpeciesDireWolf, SpeciesPlainsWolf,
-      SpeciesDustHyena, SpeciesSnowWolf:
+      SpeciesPackAlpha, SpeciesDustHyena, SpeciesSnowWolf, SpeciesSnowStalker:
     WolfMob
   of SpeciesThornBoar, SpeciesBrownBear, SpeciesPlainsBear,
       SpeciesHornedBuck, SpeciesWhiteBear, SpeciesDeepMaw:
     BearMob
   of SpeciesPrairieGoblin, SpeciesBogGoblin, SpeciesStoneGoblin,
-      SpeciesBoneGoblin:
+      SpeciesBoneGoblin, SpeciesBannerGoblin, SpeciesNetThrower:
     GoblinMob
-  of SpeciesMudSlime, SpeciesReedSlime, SpeciesCaveSlime:
+  of SpeciesMudSlime, SpeciesReedSlime, SpeciesCaveSlime, SpeciesLeechSwarm:
     SlimeMob
-  of SpeciesMarshWraith, SpeciesRuinWraith, SpeciesAshWraith:
+  of SpeciesMarshWraith, SpeciesRuinWraith, SpeciesAshWraith,
+      SpeciesBogWitch, SpeciesCrystalSeer, SpeciesRuinNecromancer,
+      SpeciesThornMender, SpeciesIceShaman:
     WraithMob
-  of SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesTombScarab:
+  of SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesFireScorpion,
+      SpeciesTombScarab, SpeciesSandBurrower:
     ScorpionMob
   of SpeciesFrostYeti:
     YetiMob
@@ -801,34 +882,46 @@ proc speciesTint*(species: MobSpecies): tuple[r, g, b, a: uint8] =
   of SpeciesGrassSnake: (r: 84'u8, g: 172'u8, b: 82'u8, a: 255'u8)
   of SpeciesForestWolf: (r: 92'u8, g: 126'u8, b: 96'u8, a: 255'u8)
   of SpeciesDireWolf: (r: 88'u8, g: 92'u8, b: 104'u8, a: 255'u8)
+  of SpeciesPackAlpha: (r: 62'u8, g: 78'u8, b: 72'u8, a: 255'u8)
   of SpeciesThornBoar: (r: 127'u8, g: 103'u8, b: 68'u8, a: 255'u8)
+  of SpeciesThornMender: (r: 95'u8, g: 150'u8, b: 87'u8, a: 255'u8)
   of SpeciesBrownBear: (r: 134'u8, g: 91'u8, b: 58'u8, a: 255'u8)
   of SpeciesPlainsWolf: (r: 169'u8, g: 148'u8, b: 88'u8, a: 255'u8)
   of SpeciesPrairieGoblin: (r: 174'u8, g: 191'u8, b: 78'u8, a: 255'u8)
+  of SpeciesBannerGoblin: (r: 206'u8, g: 96'u8, b: 62'u8, a: 255'u8)
+  of SpeciesNetThrower: (r: 154'u8, g: 171'u8, b: 112'u8, a: 255'u8)
   of SpeciesPlainsBear: (r: 170'u8, g: 135'u8, b: 78'u8, a: 255'u8)
   of SpeciesHornedBuck: (r: 192'u8, g: 151'u8, b: 96'u8, a: 255'u8)
   of SpeciesMudSlime: (r: 82'u8, g: 145'u8, b: 96'u8, a: 255'u8)
   of SpeciesReedSlime: (r: 70'u8, g: 177'u8, b: 126'u8, a: 255'u8)
   of SpeciesBogGoblin: (r: 97'u8, g: 151'u8, b: 84'u8, a: 255'u8)
+  of SpeciesBogWitch: (r: 95'u8, g: 78'u8, b: 126'u8, a: 255'u8)
+  of SpeciesLeechSwarm: (r: 54'u8, g: 112'u8, b: 98'u8, a: 255'u8)
   of SpeciesMarshWraith: (r: 94'u8, g: 132'u8, b: 126'u8, a: 255'u8)
   of SpeciesDuneScorpion: (r: 225'u8, g: 176'u8, b: 66'u8, a: 255'u8)
   of SpeciesGlassScorpion: (r: 229'u8, g: 205'u8, b: 116'u8, a: 255'u8)
+  of SpeciesFireScorpion: (r: 232'u8, g: 88'u8, b: 52'u8, a: 255'u8)
   of SpeciesSandViper: (r: 204'u8, g: 161'u8, b: 76'u8, a: 255'u8)
   of SpeciesDustHyena: (r: 164'u8, g: 132'u8, b: 92'u8, a: 255'u8)
+  of SpeciesSandBurrower: (r: 187'u8, g: 114'u8, b: 55'u8, a: 255'u8)
   of SpeciesTombScarab: (r: 141'u8, g: 103'u8, b: 58'u8, a: 255'u8)
   of SpeciesSnowWolf: (r: 194'u8, g: 222'u8, b: 234'u8, a: 255'u8)
   of SpeciesFrostYeti: (r: 212'u8, g: 236'u8, b: 248'u8, a: 255'u8)
   of SpeciesIceTroll: (r: 142'u8, g: 201'u8, b: 219'u8, a: 255'u8)
+  of SpeciesIceShaman: (r: 118'u8, g: 188'u8, b: 232'u8, a: 255'u8)
   of SpeciesWhiteBear: (r: 235'u8, g: 236'u8, b: 228'u8, a: 255'u8)
   of SpeciesSnowBat: (r: 164'u8, g: 188'u8, b: 224'u8, a: 255'u8)
+  of SpeciesSnowStalker: (r: 150'u8, g: 194'u8, b: 215'u8, a: 255'u8)
   of SpeciesCaveBat: (r: 112'u8, g: 90'u8, b: 158'u8, a: 255'u8)
   of SpeciesCrystalBat: (r: 120'u8, g: 182'u8, b: 217'u8, a: 255'u8)
+  of SpeciesCrystalSeer: (r: 108'u8, g: 218'u8, b: 212'u8, a: 255'u8)
   of SpeciesCaveSlime: (r: 96'u8, g: 174'u8, b: 154'u8, a: 255'u8)
   of SpeciesStoneGoblin: (r: 128'u8, g: 132'u8, b: 136'u8, a: 255'u8)
   of SpeciesDeepMaw: (r: 93'u8, g: 78'u8, b: 118'u8, a: 255'u8)
   of SpeciesRuinWraith: (r: 122'u8, g: 126'u8, b: 144'u8, a: 255'u8)
   of SpeciesAshWraith: (r: 92'u8, g: 96'u8, b: 104'u8, a: 255'u8)
   of SpeciesBoneGoblin: (r: 205'u8, g: 198'u8, b: 168'u8, a: 255'u8)
+  of SpeciesRuinNecromancer: (r: 143'u8, g: 83'u8, b: 153'u8, a: 255'u8)
   of SpeciesGateTitan: (r: 188'u8, g: 80'u8, b: 112'u8, a: 255'u8)
   of SpeciesNone: (r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8)
 
@@ -836,25 +929,28 @@ proc monsterSpeciesForBiome*(biome: BiomeKind): seq[MobSpecies] =
   case biome
   of BiomeForest:
     @[SpeciesGrassSnake, SpeciesForestWolf, SpeciesDireWolf,
-      SpeciesThornBoar, SpeciesBrownBear]
+      SpeciesPackAlpha, SpeciesThornBoar, SpeciesThornMender,
+      SpeciesBrownBear]
   of BiomePlains:
     @[SpeciesPlainsWolf, SpeciesPrairieGoblin, SpeciesPlainsBear,
-      SpeciesHornedBuck]
+      SpeciesBannerGoblin, SpeciesNetThrower, SpeciesHornedBuck]
   of BiomeSwamp:
     @[SpeciesMudSlime, SpeciesReedSlime, SpeciesBogGoblin,
-      SpeciesMarshWraith]
+      SpeciesBogWitch, SpeciesLeechSwarm, SpeciesMarshWraith]
   of BiomeDesert:
     @[SpeciesDuneScorpion, SpeciesGlassScorpion, SpeciesSandViper,
-      SpeciesDustHyena, SpeciesTombScarab]
+      SpeciesFireScorpion, SpeciesDustHyena, SpeciesSandBurrower,
+      SpeciesTombScarab]
   of BiomeSnow:
     @[SpeciesSnowWolf, SpeciesFrostYeti, SpeciesIceTroll,
-      SpeciesWhiteBear, SpeciesSnowBat]
+      SpeciesIceShaman, SpeciesWhiteBear, SpeciesSnowBat,
+      SpeciesSnowStalker]
   of BiomeCave:
     @[SpeciesCaveBat, SpeciesCrystalBat, SpeciesCaveSlime,
-      SpeciesStoneGoblin, SpeciesDeepMaw]
+      SpeciesCrystalSeer, SpeciesStoneGoblin, SpeciesDeepMaw]
   of BiomeRuins:
     @[SpeciesRuinWraith, SpeciesAshWraith, SpeciesBoneGoblin,
-      SpeciesGateTitan]
+      SpeciesRuinNecromancer, SpeciesGateTitan]
   else:
     @[SpeciesGrassSnake]
 
@@ -869,15 +965,20 @@ proc speciesAppliesSlow*(species: MobSpecies): bool =
   species in {
     SpeciesMudSlime,
     SpeciesReedSlime,
-    SpeciesCaveSlime
+    SpeciesCaveSlime,
+    SpeciesLeechSwarm,
+    SpeciesNetThrower,
+    SpeciesSandBurrower
   }
 
 proc speciesAppliesPoison*(species: MobSpecies): bool =
   species in {
     SpeciesDuneScorpion,
     SpeciesGlassScorpion,
+    SpeciesFireScorpion,
     SpeciesSandViper,
-    SpeciesTombScarab
+    SpeciesTombScarab,
+    SpeciesBogWitch
   }
 
 proc speciesAppliesChill*(species: MobSpecies): bool =
@@ -885,15 +986,19 @@ proc speciesAppliesChill*(species: MobSpecies): bool =
     SpeciesSnowWolf,
     SpeciesFrostYeti,
     SpeciesIceTroll,
+    SpeciesIceShaman,
     SpeciesWhiteBear,
-    SpeciesSnowBat
+    SpeciesSnowBat,
+    SpeciesSnowStalker
   }
 
 proc speciesHarasses*(species: MobSpecies): bool =
   species in {
     SpeciesSnowBat,
     SpeciesCaveBat,
-    SpeciesCrystalBat
+    SpeciesCrystalBat,
+    SpeciesLeechSwarm,
+    SpeciesSnowStalker
   }
 
 proc speciesPunishesIsolation*(species: MobSpecies): bool =
@@ -901,8 +1006,27 @@ proc speciesPunishesIsolation*(species: MobSpecies): bool =
     SpeciesMarshWraith,
     SpeciesRuinWraith,
     SpeciesAshWraith,
+    SpeciesRuinNecromancer,
+    SpeciesBogWitch,
+    SpeciesCrystalSeer,
     SpeciesGateTitan
   }
+
+proc speciesLeadsPack*(species: MobSpecies): bool =
+  species in {SpeciesPackAlpha, SpeciesBannerGoblin, SpeciesGateTitan}
+
+proc speciesSupportsPack*(species: MobSpecies): bool =
+  species in {
+    SpeciesThornMender,
+    SpeciesBannerGoblin,
+    SpeciesBogWitch,
+    SpeciesIceShaman,
+    SpeciesCrystalSeer,
+    SpeciesRuinNecromancer
+  }
+
+proc speciesSwarms*(species: MobSpecies): bool =
+  species in {SpeciesLeechSwarm, SpeciesTombScarab, SpeciesSnowBat}
 
 proc attackStyle*(species: MobSpecies): MobAttackStyle =
   ## Keeps monster families tactically distinct while sharing one attack phase FSM.
@@ -918,6 +1042,10 @@ proc attackStyle*(species: MobSpecies): MobAttackStyle =
       SpeciesCrystalBat,
       SpeciesSnowBat:
     AttackRanged
+  of SpeciesFireScorpion,
+      SpeciesIceShaman,
+      SpeciesCrystalSeer:
+    AttackLine
   of SpeciesThornBoar,
       SpeciesBrownBear,
       SpeciesPlainsBear,
@@ -928,6 +1056,19 @@ proc attackStyle*(species: MobSpecies): MobAttackStyle =
       SpeciesDeepMaw,
       SpeciesGateTitan:
     AttackSlam
+  of SpeciesPackAlpha:
+    AttackCone
+  of SpeciesNetThrower,
+      SpeciesSandBurrower,
+      SpeciesSnowStalker:
+    AttackTrap
+  of SpeciesThornMender,
+      SpeciesBannerGoblin,
+      SpeciesBogWitch,
+      SpeciesRuinNecromancer:
+    AttackSupport
+  of SpeciesLeechSwarm:
+    AttackSwarm
   of SpeciesMudSlime,
       SpeciesReedSlime,
       SpeciesCaveSlime,
@@ -944,6 +1085,7 @@ proc speciesSupplyDrop*(species: MobSpecies): CarryKind =
   of SpeciesGrassSnake,
       SpeciesForestWolf,
       SpeciesDireWolf,
+      SpeciesPackAlpha,
       SpeciesThornBoar,
       SpeciesBrownBear,
       SpeciesPlainsWolf,
@@ -952,29 +1094,40 @@ proc speciesSupplyDrop*(species: MobSpecies): CarryKind =
       SpeciesMudSlime,
       SpeciesDuneScorpion,
       SpeciesGlassScorpion,
+      SpeciesFireScorpion,
       SpeciesSandViper,
       SpeciesDustHyena,
+      SpeciesSandBurrower,
       SpeciesSnowWolf,
       SpeciesFrostYeti,
       SpeciesIceTroll,
+      SpeciesIceShaman,
       SpeciesWhiteBear,
       SpeciesSnowBat,
+      SpeciesSnowStalker,
       SpeciesCaveBat,
       SpeciesCaveSlime:
     CarryFood
   of SpeciesPrairieGoblin,
+      SpeciesBannerGoblin,
+      SpeciesNetThrower,
       SpeciesReedSlime,
-      SpeciesBogGoblin:
+      SpeciesBogGoblin,
+      SpeciesThornMender:
     CarryWood
   of SpeciesStoneGoblin,
       SpeciesDeepMaw,
-      SpeciesBoneGoblin:
+      SpeciesBoneGoblin,
+      SpeciesLeechSwarm:
     CarryStone
   of SpeciesMarshWraith,
+      SpeciesBogWitch,
       SpeciesTombScarab,
       SpeciesCrystalBat,
+      SpeciesCrystalSeer,
       SpeciesRuinWraith,
-      SpeciesAshWraith:
+      SpeciesAshWraith,
+      SpeciesRuinNecromancer:
     CarryGold
   of SpeciesNone,
       SpeciesGateTitan:
@@ -1001,6 +1154,164 @@ proc carryLabel*(kind: CarryKind): string =
   of CarryFood: "food"
   of CarryStone: "stone"
   of CarryGold: "gold"
+
+proc armorLabel*(kind: ArmorKind): string =
+  case kind
+  of ArmorNone: "none"
+  of ArmorScoutHood: "scout hood"
+  of ArmorIronHelm: "iron helm"
+  of ArmorFurHood: "fur hood"
+  of ArmorLeatherVest: "leather vest"
+  of ArmorScaleMail: "scale mail"
+  of ArmorFrostCloak: "frost cloak"
+  of ArmorVenomCharm: "venom charm"
+  of ArmorLanternCharm: "lantern charm"
+  of ArmorRallyHorn: "rally horn"
+
+proc armorSlot*(kind: ArmorKind): ArmorSlot =
+  case kind
+  of ArmorScoutHood, ArmorIronHelm, ArmorFurHood:
+    ArmorHead
+  of ArmorLeatherVest, ArmorScaleMail, ArmorFrostCloak:
+    ArmorChest
+  of ArmorVenomCharm, ArmorLanternCharm, ArmorRallyHorn:
+    ArmorTrinket
+  of ArmorNone:
+    ArmorTrinket
+
+proc armorBonusLabel*(kind: ArmorKind): string =
+  case kind
+  of ArmorNone: ""
+  of ArmorScoutHood: "+speed"
+  of ArmorIronHelm: "+hp"
+  of ArmorFurHood: "warm"
+  of ArmorLeatherVest: "+speed"
+  of ArmorScaleMail: "+guard"
+  of ArmorFrostCloak: "cold"
+  of ArmorVenomCharm: "venom"
+  of ArmorLanternCharm: "light"
+  of ArmorRallyHorn: "rally"
+
+proc armorMaxHpBonus*(kind: ArmorKind): int =
+  case kind
+  of ArmorIronHelm:
+    1
+  of ArmorScaleMail:
+    2
+  else:
+    0
+
+proc armorSpeedPercentBonus*(kind: ArmorKind): int =
+  case kind
+  of ArmorScoutHood:
+    8
+  of ArmorLeatherVest:
+    5
+  of ArmorScaleMail:
+    -6
+  else:
+    0
+
+proc armorDamageReductionPct*(kind: ArmorKind): int =
+  case kind
+  of ArmorScaleMail:
+    20
+  of ArmorIronHelm:
+    8
+  else:
+    0
+
+proc armorStatusRecoveryStep*(kind: ArmorKind): int =
+  case kind
+  of ArmorVenomCharm, ArmorFurHood, ArmorFrostCloak:
+    1
+  else:
+    0
+
+proc armorProtectsPressure*(kind: ArmorKind, pressure: SurvivalPressureKind): bool =
+  case pressure
+  of SurvivalCold:
+    kind in {ArmorFurHood, ArmorFrostCloak}
+  of SurvivalFog:
+    kind == ArmorLanternCharm
+  else:
+    false
+
+proc armorRoleCooldownStep*(kind: ArmorKind): int =
+  if kind == ArmorRallyHorn: 1 else: 0
+
+proc equippedMaxHpBonus*(player: Actor): int =
+  for kind in player.armor:
+    result += kind.armorMaxHpBonus()
+
+proc equippedSpeedPercentBonus*(player: Actor): int =
+  for kind in player.armor:
+    result += kind.armorSpeedPercentBonus()
+
+proc equippedDamageReductionPct*(player: Actor): int =
+  for kind in player.armor:
+    result += kind.armorDamageReductionPct()
+  result = clamp(result, 0, 65)
+
+proc equippedStatusRecoveryStep*(player: Actor): int =
+  for kind in player.armor:
+    result += kind.armorStatusRecoveryStep()
+
+proc equippedRoleCooldownStep*(player: Actor): int =
+  for kind in player.armor:
+    result += kind.armorRoleCooldownStep()
+
+proc hasArmorProtection*(player: Actor, pressure: SurvivalPressureKind): bool =
+  for kind in player.armor:
+    if kind.armorProtectsPressure(pressure):
+      return true
+  false
+
+proc armorHudLabel*(player: Actor): string =
+  var pieces: seq[string] = @[]
+  for slot in ArmorSlot:
+    let kind = player.armor[slot]
+    if kind != ArmorNone:
+      pieces.add(kind.armorLabel() & " " & kind.armorBonusLabel())
+  if pieces.len == 0:
+    "armor none"
+  else:
+    "armor " & pieces.join(" | ")
+
+proc armorFromPickupValue*(value: int): ArmorKind =
+  if value > ord(ArmorNone) and value <= ord(high(ArmorKind)):
+    ArmorKind(value)
+  else:
+    ArmorScoutHood
+
+proc speciesArmorDrop*(species: MobSpecies): ArmorKind =
+  case species
+  of SpeciesPackAlpha:
+    ArmorScoutHood
+  of SpeciesThornMender:
+    ArmorLeatherVest
+  of SpeciesBannerGoblin:
+    ArmorRallyHorn
+  of SpeciesNetThrower:
+    ArmorIronHelm
+  of SpeciesBogWitch:
+    ArmorVenomCharm
+  of SpeciesLeechSwarm:
+    ArmorLeatherVest
+  of SpeciesSandBurrower:
+    ArmorFurHood
+  of SpeciesFireScorpion:
+    ArmorScaleMail
+  of SpeciesIceShaman:
+    ArmorFrostCloak
+  of SpeciesSnowStalker:
+    ArmorScoutHood
+  of SpeciesCrystalSeer:
+    ArmorLanternCharm
+  of SpeciesRuinNecromancer:
+    ArmorRallyHorn
+  else:
+    ArmorNone
 
 proc statusLabel*(player: Actor): string =
   if player.downedTicks > 0:
@@ -1669,6 +1980,8 @@ proc pickupSprite*(sim: SimServer, kind: PickupKind): Sprite =
     sim.roleGearSprites[kind]
   of PickupWood, PickupFood, PickupStone, PickupGold:
     sim.landmarkSprite(kind.carryForPickup().landmarkForCarry())
+  of PickupArmor:
+    sim.armorSprites[ArmorScoutHood]
 
 proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
   ## Returns the true-color sprite for one pickup kind.
@@ -1681,6 +1994,8 @@ proc pickupRgbaSprite*(sim: SimServer, kind: PickupKind): RgbaSprite =
     sim.roleGearRgbaSprites[kind]
   of PickupWood, PickupFood, PickupStone, PickupGold:
     sim.landmarkRgbaSprite(kind.carryForPickup().landmarkForCarry())
+  of PickupArmor:
+    sim.armorRgbaSprites[ArmorScoutHood]
 
 proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
   ## Returns the collision bounds for one pickup kind.
@@ -1693,6 +2008,8 @@ proc pickupBounds*(sim: SimServer, kind: PickupKind): SpriteBounds =
     sim.roleGearBounds[kind]
   of PickupWood, PickupFood, PickupStone, PickupGold:
     sim.landmarkBounds(kind.carryForPickup().landmarkForCarry())
+  of PickupArmor:
+    sim.armorBounds[ArmorScoutHood]
 
 proc playerSpriteFor*(sim: SimServer, player: Actor): Sprite =
   ## Returns the current drawn sprite for one player.
@@ -2239,7 +2556,12 @@ proc playerMovementSpeedPercent*(
   var resultSpeed =
     (sim.speedPercentAt(x, y) *
       player.statusSpeedPercent() *
-      player.role.roleMovementSpeedPercent()) div 10_000
+      clamp(
+        player.role.roleMovementSpeedPercent() +
+          player.equippedSpeedPercentBonus(),
+        60,
+        140
+      )) div 10_000
   if player.routeTicks > 0:
     resultSpeed = max(resultSpeed, BiomeWaystationRouteMinSpeedPercent)
   if player.surveyTicks > 0:
@@ -2452,7 +2774,9 @@ proc buildRiverBranchPath(
 proc addRiverCrossing(
   sim: var SimServer,
   path: seq[tuple[tx, ty: int]],
-  crossingTy: int
+  crossingTy,
+  firstTx,
+  lastTx: int
 ) =
   if path.len == 0:
     return
@@ -2463,6 +2787,7 @@ proc addRiverCrossing(
     if abs(crossing.tx - crossingTx) <= RiverShallowHalfWidthTiles and
         crossing.ty == crossingTy:
       return
+  sim.setRiverBand(crossingTx, crossingTy, firstTx, lastTx, true)
   sim.riverCrossings.add(RiverCrossing(
     tx: crossingTx,
     ty: crossingTy,
@@ -2499,7 +2824,7 @@ proc seedLongRiverSystem(
 
   let mainPath = sim.buildMainRiverPath(systemIndex, firstTx, lastTx)
   sim.carveRiverPath(mainPath, firstTx, lastTx, crossingTy)
-  sim.addRiverCrossing(mainPath, crossingTy)
+  sim.addRiverCrossing(mainPath, crossingTy, firstTx, lastTx)
 
   let sideDir = if (sim.seed + systemIndex) mod 2 == 0: 1 else: -1
   if systemIndex mod 2 == 1:
@@ -2513,7 +2838,7 @@ proc seedLongRiverSystem(
       sideDir
     )
     sim.carveRiverPath(branchDown, firstTx, lastTx, crossingTy)
-    sim.addRiverCrossing(branchDown, crossingTy)
+    sim.addRiverCrossing(branchDown, crossingTy, firstTx, lastTx)
 
   if systemIndex mod 4 == 3:
     let branchUp = sim.buildRiverBranchPath(
@@ -2526,7 +2851,7 @@ proc seedLongRiverSystem(
       -sideDir
     )
     sim.carveRiverPath(branchUp, firstTx, lastTx, crossingTy)
-    sim.addRiverCrossing(branchUp, crossingTy)
+    sim.addRiverCrossing(branchUp, crossingTy, firstTx, lastTx)
 
 proc seedLongRiverSystems(sim: var SimServer) =
   ## Spreads readable north-south river barriers across the rightward journey.
@@ -2566,8 +2891,8 @@ proc seedSegmentLake(
         clamp(centerTy - 5, 2, WorldHeightTiles - 3)
     rx =
       case biome
-      of BiomeDesert, BiomeCave, BiomeSwamp: 2
-      else: 3
+      of BiomeSwamp: 1
+      else: 2
     ry =
       case biome
       of BiomeSwamp: 1
@@ -2578,6 +2903,8 @@ proc seedSegmentLake(
         tx = cx + dx
         ty = cy + dy
       if tx < firstTx or tx > lastTx:
+        continue
+      if sim.tileGroundKind(tx, ty) == GroundBridge:
         continue
       let score = dx * dx * ry * ry + dy * dy * rx * rx
       if score <= rx * rx * ry * ry:
@@ -3325,6 +3652,16 @@ proc mobAttackRange*(mob: Mob): int =
   case mob.species.attackStyle()
   of AttackRanged:
     max(base, WorldTileSize * 2)
+  of AttackLine:
+    max(base, WorldTileSize * 3)
+  of AttackCone:
+    max(base, WorldTileSize * 2)
+  of AttackTrap:
+    max(base, WorldTileSize * 2)
+  of AttackSupport:
+    max(base, WorldTileSize * 2)
+  of AttackSwarm:
+    max(base, WorldTileSize + 10)
   of AttackSlam:
     max(base, WorldTileSize + 8)
   of AttackAura:
@@ -3336,6 +3673,8 @@ proc mobSightRange*(mob: Mob): int =
   ## Returns the distance where one mob starts chasing players.
   if mob.species.speciesHarasses():
     return MobSightRadius * 2
+  if mob.species.speciesLeadsPack() or mob.species.speciesSupportsPack():
+    return (MobSightRadius * 5) div 2
   if mob.species == SpeciesGateTitan:
     return MobSightRadius * 3
   MobSightRadius
@@ -3503,7 +3842,7 @@ proc applyRole*(player: var Actor, role: PlayerRole) =
   let oldMax = max(1, player.maxHp)
   let oldHp = max(1, player.lives)
   player.role = role
-  player.maxHp = role.roleMaxHp()
+  player.maxHp = role.roleMaxHp() + player.equippedMaxHpBonus()
   player.lives = min(player.maxHp, max(1, (oldHp * player.maxHp + oldMax - 1) div oldMax))
   player.abilityTicks = 0
   player.abilityHoldTicks = 0
@@ -3783,6 +4122,36 @@ proc initSimServer*(seed = 0xB1770): SimServer =
     result.roleGearRgbaSprites[gear.kind] = asset.rgba
     result.roleGearBounds[gear.kind] = result.roleGearRgbaSprites[gear.kind].visibleBounds()
 
+  for armor in [
+    (kind: ArmorScoutHood, key: "armor_scout_hood", path: "oriented/scout.e.png", fallbackX: 0, fallbackY: 0),
+    (kind: ArmorIronHelm, key: "armor_iron_helm", path: "shield.png", fallbackX: 3, fallbackY: 4),
+    (kind: ArmorFurHood, key: "armor_fur_hood", path: "oriented/scout.n.png", fallbackX: 0, fallbackY: 0),
+    (kind: ArmorLeatherVest, key: "armor_leather_vest", path: "blacksmith.png", fallbackX: 4, fallbackY: 3),
+    (kind: ArmorScaleMail, key: "armor_scale_mail", path: "guard_tower.png", fallbackX: 3, fallbackY: 3),
+    (kind: ArmorFrostCloak, key: "armor_frost_cloak", path: "monastery.png", fallbackX: 0, fallbackY: 4),
+    (kind: ArmorVenomCharm, key: "armor_venom_charm", path: "goblet.png", fallbackX: 0, fallbackY: 4),
+    (kind: ArmorLanternCharm, key: "armor_lantern_charm", path: "lantern.png", fallbackX: 0, fallbackY: 4),
+    (kind: ArmorRallyHorn, key: "armor_rally_horn", path: "control_point.png", fallbackX: 0, fallbackY: 4)
+  ]:
+    let asset = loadAssetPair(
+      assetManifest,
+      armor.key,
+      armor.path,
+      sheet.subImage(
+        armor.fallbackX * ArtCellSize,
+        armor.fallbackY * ArtCellSize,
+        ArtCellSize,
+        ArtCellSize
+      )
+    )
+    result.armorSprites[armor.kind] = asset.sprite
+    result.armorRgbaSprites[armor.kind] = asset.rgba
+    result.armorBounds[armor.kind] =
+      result.armorRgbaSprites[armor.kind].visibleBounds()
+  result.armorSprites[ArmorNone] = result.armorSprites[ArmorScoutHood]
+  result.armorRgbaSprites[ArmorNone] = result.armorRgbaSprites[ArmorScoutHood]
+  result.armorBounds[ArmorNone] = result.armorBounds[ArmorScoutHood]
+
   let coinAsset = loadAssetPair(
     assetManifest,
     "pickup_coin",
@@ -3980,6 +4349,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(player.carriedItem))
     for item in CarryInventoryKinds:
       result.mixHashInt(player.carryCount(item))
+    for slot in ArmorSlot:
+      result.mixHashInt(ord(player.armor[slot]))
     result.mixHashInt(player.carrySelectLockTicks)
     result.mixHashInt(player.slowTicks)
     result.mixHashInt(player.chillTicks)
@@ -4019,6 +4390,13 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(pickup.y)
     result.mixHashInt(ord(pickup.kind))
     result.mixHashInt(pickup.value)
+  result.mixHashInt(sim.guides.len)
+  for guide in sim.guides:
+    result.mixHashInt(guide.x)
+    result.mixHashInt(guide.y)
+    result.mixHashInt(guide.targetPlayerId)
+    result.mixHashInt(guide.thanksTicks)
+    result.mixHashInt(ord(guide.done))
   result.mixHashInt(sim.landmarks.len)
   for landmark in sim.landmarks:
     result.mixHashInt(landmark.tx)
@@ -4286,6 +4664,20 @@ proc dropMonsterSupply(sim: var SimServer, mob: Mob) =
   ))
   inc sim.scoreRevision
 
+proc dropMonsterArmor(sim: var SimServer, mob: Mob) =
+  ## Drops role-neutral equipment from tactical monster families.
+  let armor = mob.species.speciesArmorDrop()
+  if armor == ArmorNone:
+    return
+  let sprite = sim.armorSprites[armor]
+  sim.pickups.add(Pickup(
+    x: mob.x + mob.sprite.width div 2 - sprite.width div 2 - 6,
+    y: mob.y + mob.sprite.height div 2 - sprite.height div 2 - 4,
+    kind: PickupArmor,
+    value: ord(armor)
+  ))
+  inc sim.scoreRevision
+
 proc finishDefeatedMobs(sim: var SimServer) =
   var survivors: seq[Mob] = @[]
   for mob in sim.mobs:
@@ -4304,6 +4696,7 @@ proc finishDefeatedMobs(sim: var SimServer) =
           value: BossCoinValue
         ))
         sim.dropMonsterSupply(mob)
+        sim.dropMonsterArmor(mob)
       of TrollMob, GoblinMob, BearMob, ScorpionMob, SlimeMob, YetiMob,
           WraithMob:
         let sprite = sim.pickupSprite(PickupCoin)
@@ -4318,6 +4711,7 @@ proc finishDefeatedMobs(sim: var SimServer) =
               TrollCoinValue
         ))
         sim.dropMonsterSupply(mob)
+        sim.dropMonsterArmor(mob)
       of SnakeMob, WolfMob, BatMob:
         let roll = sim.rng.rand(99)
         if roll < 10:
@@ -4325,6 +4719,7 @@ proc finishDefeatedMobs(sim: var SimServer) =
         elif roll < 60:
           sim.pickups.add(Pickup(x: mob.x, y: mob.y, kind: PickupCoin, value: 1))
         sim.dropMonsterSupply(mob)
+        sim.dropMonsterArmor(mob)
   sim.mobs = survivors
 
 proc bossRaidDamageBonus*(sim: SimServer, playerIndex: int, mob: Mob): int
@@ -5115,7 +5510,10 @@ proc damagePlayer(sim: var SimServer, playerIndex: int, knockbackDx, knockbackDy
   if sim.players[playerIndex].lives <= 0 or sim.players[playerIndex].invulnTicks > 0:
     return
 
-  let damage = sim.guardedDamage(playerIndex, amount)
+  let
+    guarded = sim.guardedDamage(playerIndex, amount)
+    reductionPct = sim.players[playerIndex].equippedDamageReductionPct()
+    damage = max(1, (guarded * (100 - reductionPct) + 99) div 100)
   sim.players[playerIndex].lives = max(0, sim.players[playerIndex].lives - damage)
   sim.players[playerIndex].invulnTicks = 30
   inc sim.scoreRevision
@@ -5350,6 +5748,21 @@ proc mobHitDamage*(sim: SimServer, mob: Mob, playerIndex: int): int =
   if mob.species.speciesPunishesIsolation() and
       not sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius):
     inc result
+  if mob.species.speciesSwarms() and
+      not sim.playerHasNearbyAlly(playerIndex, WorldTileSize * 2):
+    inc result
+  let leaderRadiusSq = (WorldTileSize * 3) * (WorldTileSize * 3)
+  for other in sim.mobs:
+    if not other.species.speciesLeadsPack():
+      continue
+    if distanceSquared(
+      boundsCenterX(mob.x, mob.bounds),
+      boundsCenterY(mob.y, mob.bounds),
+      boundsCenterX(other.x, other.bounds),
+      boundsCenterY(other.y, other.bounds)
+    ) <= leaderRadiusSq:
+      inc result
+      break
 
 proc applyMobHitStatus*(
   sim: var SimServer,
@@ -5762,7 +6175,17 @@ proc activateShrine(sim: var SimServer) =
     sim.players[playerIndex].exhaustionTicks = 0
   inc sim.scoreRevision
 
-proc activateRescueEvent(sim: var SimServer, landmark: Landmark) =
+proc addGuideFollower(
+  sim: var SimServer,
+  landmark: Landmark,
+  targetPlayerIndex: int
+)
+
+proc activateRescueEvent(
+  sim: var SimServer,
+  landmark: Landmark,
+  targetPlayerIndex = -1
+) =
   ## Completes one stranded-traveler rescue detour for sustain, score, and route help.
   inc sim.sideObjectivesCompleted
   sim.food += RescueFoodBonus
@@ -5778,7 +6201,83 @@ proc activateRescueEvent(sim: var SimServer, landmark: Landmark) =
       sim.players[playerIndex].guideTicks,
       RescueGuideTicks
     )
+  if targetPlayerIndex >= 0:
+    sim.addGuideFollower(landmark, targetPlayerIndex)
   inc sim.scoreRevision
+
+proc activeCampDropoffNear(sim: SimServer, player: Actor): bool =
+  if boundsCenterX(player.x, player.bounds) < SafeZoneRightPixels:
+    return true
+  for landmark in sim.landmarks:
+    if landmark.kind != LandmarkCamp or not landmark.done:
+      continue
+    if sim.playerNearLandmark(player, landmark, LandmarkActivationRadius):
+      return true
+  false
+
+proc addGuideFollower(
+  sim: var SimServer,
+  landmark: Landmark,
+  targetPlayerIndex: int
+) =
+  if targetPlayerIndex < 0 or targetPlayerIndex >= sim.players.len:
+    return
+  let center = sim.landmarkCenter(landmark)
+  sim.guides.add(GuideFollower(
+    x: center.x - ArtCellSize div 2,
+    y: center.y - ArtCellSize div 2,
+    targetPlayerId: sim.players[targetPlayerIndex].id,
+    thanksTicks: 0,
+    done: false
+  ))
+  inc sim.scoreRevision
+
+proc guideTargetIndex(sim: SimServer, guide: GuideFollower): int =
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].id == guide.targetPlayerId:
+      return i
+  -1
+
+proc updateGuides(sim: var SimServer) =
+  if sim.guides.len == 0:
+    return
+  var remaining: seq[GuideFollower] = @[]
+  for guide in sim.guides:
+    var current = guide
+    if current.done:
+      dec current.thanksTicks
+      if current.thanksTicks > 0:
+        remaining.add(current)
+      inc sim.scoreRevision
+      continue
+    let targetIndex = sim.guideTargetIndex(current)
+    if targetIndex < 0 or sim.players[targetIndex].lives <= 0:
+      continue
+    let target = sim.players[targetIndex]
+    if sim.activeCampDropoffNear(target):
+      current.x = target.x
+      current.y = max(0, target.y - ArtCellSize)
+      current.done = true
+      current.thanksTicks = TargetFps * 3
+      remaining.add(current)
+      inc sim.scoreRevision
+      continue
+    let
+      targetX = target.x - WorldTileSize
+      targetY = target.y
+      dx = targetX - current.x
+      dy = targetY - current.y
+      step = 2
+    if abs(dx) > WorldTileSize div 2:
+      current.x += clamp(dx, -step, step)
+    if abs(dy) > WorldTileSize div 3:
+      current.y += clamp(dy, -step, step)
+    current.x = worldClampPixel(current.x, WorldWidthPixels - ArtCellSize)
+    current.y = worldClampPixel(current.y, WorldHeightPixels - ArtCellSize)
+    remaining.add(current)
+  if remaining.len != sim.guides.len:
+    inc sim.scoreRevision
+  sim.guides = remaining
 
 proc pacifyMobsNearLandmark(
   sim: var SimServer,
@@ -6262,7 +6761,8 @@ proc activateNearbyLandmarks(sim: var SimServer) =
     var nearPlayer = false
     var activationStep = 0
     var participantCount = 0
-    for player in sim.players:
+    var primaryParticipantIndex = -1
+    for playerIndex, player in sim.players:
       if player.lives <= 0:
         continue
       let radius =
@@ -6272,6 +6772,8 @@ proc activateNearbyLandmarks(sim: var SimServer) =
           LandmarkActivationRadius
       if sim.playerNearLandmark(player, sim.landmarks[landmarkIndex], radius):
         nearPlayer = true
+        if primaryParticipantIndex < 0:
+          primaryParticipantIndex = playerIndex
         let landmarkBiome = sim.tileBiomeKind(
           sim.landmarks[landmarkIndex].tx,
           sim.landmarks[landmarkIndex].ty
@@ -6332,7 +6834,10 @@ proc activateNearbyLandmarks(sim: var SimServer) =
       if sim.landmarks[landmarkIndex].progress < RescueEventTicks:
         continue
       sim.landmarks[landmarkIndex].done = true
-      sim.activateRescueEvent(sim.landmarks[landmarkIndex])
+      sim.activateRescueEvent(
+        sim.landmarks[landmarkIndex],
+        primaryParticipantIndex
+      )
       sim.grantObjectiveMorale(participantCount)
     of LandmarkWaystation:
       sim.landmarks[landmarkIndex].progress += max(1, activationStep)
@@ -6445,6 +6950,26 @@ proc applyAttack(sim: var SimServer) =
 
   sim.finishDefeatedMobs()
 
+proc equipArmor(sim: var SimServer, playerIndex: int, armor: ArmorKind): bool =
+  if playerIndex < 0 or playerIndex >= sim.players.len or armor == ArmorNone:
+    return false
+  let
+    slot = armor.armorSlot()
+    oldMax = max(1, sim.players[playerIndex].maxHp)
+    oldHp = max(1, sim.players[playerIndex].lives)
+  if sim.players[playerIndex].armor[slot] == armor:
+    return false
+  sim.players[playerIndex].armor[slot] = armor
+  sim.players[playerIndex].maxHp =
+    sim.players[playerIndex].role.roleMaxHp() +
+      sim.players[playerIndex].equippedMaxHpBonus()
+  sim.players[playerIndex].lives = min(
+    sim.players[playerIndex].maxHp,
+    max(1, (oldHp * sim.players[playerIndex].maxHp + oldMax - 1) div oldMax)
+  )
+  inc sim.scoreRevision
+  true
+
 proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
   if sim.players.len == 0:
     return
@@ -6495,8 +7020,14 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
             collected = true
           else:
             collected = false
+        of PickupArmor:
+          collected = sim.equipArmor(
+            playerIndex,
+            pickup.value.armorFromPickupValue()
+          )
         if not pickup.kind.isCarryPickup():
-          collected = not pickup.kind.isRoleGear()
+          collected = collected or
+            (pickup.kind != PickupArmor and not pickup.kind.isRoleGear())
         break
     if collected:
       continue
@@ -6597,6 +7128,8 @@ proc survivalPressureKind*(
   of BiomeSnow:
     if sim.playerHasWeatherRation(playerIndex):
       return SurvivalSafe
+    if player.hasArmorProtection(SurvivalCold):
+      return SurvivalSafe
     if sim.playerHasNearbyAlly(playerIndex, SnowWarmthAllyRadius):
       SurvivalSafe
     else:
@@ -6609,6 +7142,8 @@ proc survivalPressureKind*(
     else:
       SurvivalHeat
   of BiomeCave, BiomeRuins:
+    if player.hasArmorProtection(SurvivalFog):
+      return SurvivalSafe
     if sim.playerHasNearbyAlly(playerIndex, IsolationThreatRadius) or
         sim.playerHasCaveLight(playerIndex):
       SurvivalSafe
@@ -6811,6 +7346,7 @@ proc applyStatusEffects(sim: var SimServer) =
     let recoveryStep =
       1 + (if sheltered: CampStatusRecoveryTicks else: 0) +
         (if aidSheltered: CampAidStatusRecoveryTicks else: 0) +
+        sim.players[playerIndex].equippedStatusRecoveryStep() +
         (if sim.players[playerIndex].guideTicks > 0:
           RescueGuideStatusRecoveryTicks
         else:
@@ -6894,6 +7430,28 @@ proc applyDownedRecovery(sim: var SimServer) =
     if sim.players[playerIndex].downedTicks <= 0:
       sim.respawnDownedPlayer(playerIndex)
     else:
+      inc sim.scoreRevision
+
+proc applyMobSupportPulse(sim: var SimServer, source: Mob) =
+  ## Lets support monsters visibly restore or rally nearby allies.
+  let
+    sourceX = boundsCenterX(source.x, source.bounds)
+    sourceY = boundsCenterY(source.y, source.bounds)
+    radiusSq = (WorldTileSize * 3) * (WorldTileSize * 3)
+  for ally in sim.mobs.mitems:
+    if ally.hp <= 0 or ally.kind == BossMob:
+      continue
+    if distanceSquared(
+      sourceX,
+      sourceY,
+      boundsCenterX(ally.x, ally.bounds),
+      boundsCenterY(ally.y, ally.bounds)
+    ) > radiusSq:
+      continue
+    let before = ally.hp
+    ally.hp = min(ally.mobMaxHp(), ally.hp + 2)
+    ally.attackCooldown = min(ally.attackCooldown, MobChaseCooldown)
+    if ally.hp != before:
       inc sim.scoreRevision
 
 proc updateMobs*(sim: var SimServer) =
@@ -6987,13 +7545,15 @@ proc updateMobs*(sim: var SimServer) =
       let
         style = mob.species.attackStyle()
         lunge =
-          if style == AttackLunge:
+          if style == AttackLunge or style == AttackSwarm:
             lungeVector(mob.attackFacing, MobLungeStep)
           else:
             (dx: 0, dy: 0)
-      if style == AttackLunge:
+      if style == AttackLunge or style == AttackSwarm:
         sim.moveMob(mob, lunge.dx, lunge.dy)
-      if style == AttackLunge or mob.attackTicks == 0:
+      if style == AttackSupport and mob.attackTicks == 0:
+        sim.applyMobSupportPulse(mob)
+      if style in {AttackLunge, AttackSwarm} or mob.attackTicks == 0:
         let
           strikeCenterX = boundsCenterX(mob.x, mob.bounds)
           strikeCenterY = boundsCenterY(mob.y, mob.bounds)
@@ -7004,6 +7564,10 @@ proc updateMobs*(sim: var SimServer) =
               WorldTileSize + 10
             of AttackAura:
               WorldTileSize * 2
+            of AttackSwarm:
+              WorldTileSize + 12
+            of AttackSupport:
+              WorldTileSize
             else:
               range
         for playerIndex in 0 ..< sim.players.len:
@@ -7042,7 +7606,43 @@ proc updateMobs*(sim: var SimServer) =
                     range,
                     WorldTileSize div 2
                   )
-              of AttackSlam, AttackAura:
+              of AttackLine:
+                facingLaneHit(
+                  strikeCenterX,
+                  strikeCenterY,
+                  playerCenterX,
+                  playerCenterY,
+                  mob.attackFacing,
+                  range,
+                  WorldTileSize div 3
+                )
+              of AttackCone:
+                facingLaneHit(
+                  strikeCenterX,
+                  strikeCenterY,
+                  playerCenterX,
+                  playerCenterY,
+                  mob.attackFacing,
+                  range,
+                  WorldTileSize
+                )
+              of AttackTrap:
+                facingLaneHit(
+                  strikeCenterX,
+                  strikeCenterY,
+                  playerCenterX,
+                  playerCenterY,
+                  mob.attackFacing,
+                  range,
+                  WorldTileSize div 2
+                ) or
+                  distanceSquared(
+                    strikeCenterX,
+                    strikeCenterY,
+                    playerCenterX,
+                    playerCenterY
+                  ) <= (WorldTileSize + 4) * (WorldTileSize + 4)
+              of AttackSlam, AttackAura, AttackSupport, AttackSwarm:
                 distanceSquared(
                   strikeCenterX,
                   strikeCenterY,
@@ -7051,7 +7651,7 @@ proc updateMobs*(sim: var SimServer) =
                 ) <= radius * radius
           if hit:
             let knockback =
-              if style == AttackAura:
+              if style in {AttackAura, AttackSupport, AttackSwarm}:
                 chaseVector(strikeCenterX, strikeCenterY, playerCenterX, playerCenterY)
               else:
                 lungeVector(mob.attackFacing, max(1, MobLungeStep))
@@ -7489,6 +8089,14 @@ proc render*(sim: var SimServer, playerIndex: int): seq[uint8] =
         cameraX,
         cameraY
       )
+    of PickupArmor:
+      sim.fb.blitSprite(
+        sim.armorSprites[pickup.value.armorFromPickupValue()],
+        pickup.x,
+        pickup.y,
+        cameraX,
+        cameraY
+      )
   for mob in sim.mobs:
     sim.fb.blitSprite(mob.sprite, mob.x, mob.mobDrawY(), cameraX, cameraY)
   for i in 0 ..< sim.players.len:
@@ -7580,6 +8188,12 @@ proc updatePlayerTimersAndFrontier(sim: var SimServer) =
         sim.players[i].abilityCooldown = max(
           0,
           sim.players[i].abilityCooldown - ObjectiveMoraleCooldownStep
+        )
+      if sim.players[i].abilityCooldown > 0:
+        sim.players[i].abilityCooldown = max(
+          0,
+          sim.players[i].abilityCooldown -
+            sim.players[i].equippedRoleCooldownStep()
         )
     if sim.players[i].guardTicks > 0:
       dec sim.players[i].guardTicks
@@ -7772,6 +8386,7 @@ proc step*(sim: var SimServer, inputs: openArray[InputState]) =
   sim.resolvePlayerOverlaps()
   sim.addPlayerWalkDistances(startXs, startYs)
   sim.updatePlayerTimersAndFrontier()
+  sim.updateGuides()
   sim.triggerRiverCrossingAmbushes()
   sim.collectPickups(inputs)
   sim.applyEarlyBiomeTactics()

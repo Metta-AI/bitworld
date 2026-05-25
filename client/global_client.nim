@@ -423,14 +423,17 @@ proc buildLayerImage(app: GlobalApp, layer: var GlobalLayer) =
     if item.spriteId notin app.sprites:
       continue
     let sprite = app.sprites[item.spriteId]
-    for y in 0 ..< sprite.height:
+    let
+      startX = max(0, -item.x)
+      startY = max(0, -item.y)
+      endX = min(sprite.width, layer.width - item.x)
+      endY = min(sprite.height, layer.height - item.y)
+    if startX >= endX or startY >= endY:
+      continue
+    for y in startY ..< endY:
       let layerY = item.y + y
-      if layerY < 0 or layerY >= layer.height:
-        continue
-      for x in 0 ..< sprite.width:
+      for x in startX ..< endX:
         let layerX = item.x + x
-        if layerX < 0 or layerX >= layer.width:
-          continue
         let pixelOffset = (y * sprite.width + x) * 4
         if sprite.pixels[pixelOffset + 3] == 0:
           continue

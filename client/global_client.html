@@ -447,6 +447,16 @@ function clearBlack(){
   ctx.fillRect(0,0,canvas.width,canvas.height);
 }
 
+let drawPending=false;
+function scheduleDraw(){
+  if(drawPending)return;
+  drawPending=true;
+  requestAnimationFrame(()=>{
+    drawPending=false;
+    draw();
+  });
+}
+
 function mapPoint(event){
   return {
     x:Math.floor((event.clientX-panX)/zoom),
@@ -781,8 +791,13 @@ function draw(){
     for(const object of ordered){
       const sprite=sprites.get(object.spriteId);
       if(!sprite)continue;
-      for(let y=0;y<sprite.height;y++){
-        for(let x=0;x<sprite.width;x++){
+      const startX=Math.max(0,-object.x);
+      const startY=Math.max(0,-object.y);
+      const endX=Math.min(sprite.width,layer.width-object.x);
+      const endY=Math.min(sprite.height,layer.height-object.y);
+      if(startX>=endX||startY>=endY)continue;
+      for(let y=startY;y<endY;y++){
+        for(let x=startX;x<endX;x++){
           putSpritePixel(
             layer,
             object.x+x,
@@ -875,7 +890,7 @@ function parse(bytes){
       break;
     }
   }
-  draw();
+  scheduleDraw();
 }
 
 function reconnect(ws){

@@ -40,11 +40,12 @@ const
   CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
+  ArmorHudSpriteId = PlayerHudSpriteId + 3
   VisibilityShadowSpriteId = 1500
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
   RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
   LandmarkShelterSpriteId = LandmarkSpriteBase + ord(high(LandmarkKind)) + 1
-  StatusBadgeSpriteBase = 840
+  StatusBadgeSpriteBase = 1600
   LandmarkPromptSpriteBase = 880
   LandmarkShelterPromptSpriteId =
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
@@ -60,6 +61,7 @@ const
   CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
+  ArmorHudObjectId = PlayerHudObjectId + 3
   RoleLabelObjectBase = PlayerHudObjectId + 100
   HudGap = 1
   HealthSprite5Base = 700
@@ -77,7 +79,12 @@ const
   RoleAbilityEffectObjectBase = 18000
   DpsBeamObjectBase = RoleAbilityEffectObjectBase + 100
   VisibilityShadowObjectId = 19000
+  GuideObjectBase = 19200
+  GuideBubbleObjectBase = 19300
   CarryCountSpriteBase = 1400
+  ArmorSpriteBase = 1460
+  GuideSpriteId = 1479
+  GuideBubbleSpriteBase = 1480
   CarryObjectStride = 8
   StatusBadgeSlots = 18
   WeatherOverlaySlots = 56
@@ -198,6 +205,7 @@ type
     hudCoins*: int
     hudLives*: int
     hudStatus*: string
+    hudArmor*: string
 
   WorldSpriteObject = object
     id, x, y, spriteId, sortY: int
@@ -214,6 +222,7 @@ proc initPlayerViewerState*(): PlayerViewerState =
   result.hudCoins = -1
   result.hudLives = -1
   result.hudStatus = ""
+  result.hudArmor = ""
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   ## Writes one generated UI color as a global protocol RGBA pixel.
@@ -755,21 +764,21 @@ proc buildSpriteProtocolFacedRawSprite(
 proc blitMapSprite(
   pixels: var seq[uint8],
   sprite: RgbaSprite,
-  baseX, baseY: int
+  baseX, baseY, targetWidth, targetHeight: int
 ) =
-  ## Blits one sprite into the global map sprite.
+  ## Blits one sprite into a map sprite buffer.
   for y in 0 ..< sprite.height:
     for x in 0 ..< sprite.width:
       let
         px = baseX + x
         py = baseY + y
       if px < 0 or py < 0 or
-          px >= WorldWidthPixels or py >= WorldHeightPixels:
+          px >= targetWidth or py >= targetHeight:
         continue
       let sourceIndex = sprite.rgbaSpriteIndex(x, y)
       if sprite.pixels[sourceIndex + 3] != 0'u8:
         pixels.blendRgbaPixel(
-          py * WorldWidthPixels + px,
+          py * targetWidth + px,
           sprite.pixels,
           sourceIndex
         )
@@ -778,6 +787,8 @@ proc fillMapTile(
   pixels: var seq[uint8],
   baseX,
   baseY: int,
+  targetWidth,
+  targetHeight: int,
   color: tuple[r, g, b, a: uint8]
 ) =
   ## Fills the opaque biome backing under borrowed transparent ground art.
@@ -787,9 +798,9 @@ proc fillMapTile(
         px = baseX + x
         py = baseY + y
       if px < 0 or py < 0 or
-          px >= WorldWidthPixels or py >= WorldHeightPixels:
+          px >= targetWidth or py >= targetHeight:
         continue
-      pixels.putRgbaPixel(py * WorldWidthPixels + px, color)
+      pixels.putRgbaPixel(py * targetWidth + px, color)
 
 proc shadeForElevation(
   color: tuple[r, g, b, a: uint8],
@@ -804,26 +815,109 @@ proc shadeForElevation(
     a: color.a
   )
 
-proc buildSpriteProtocolMapSprite(sim: SimServer): seq[uint8] =
-  ## Builds a full world map sprite from the described terrain cells.
-  result = newRgbaPixels(WorldWidthPixels, WorldHeightPixels)
+proc mapChunkSpriteId(chunkIndex: int): int =
+  MapChunkSpriteBase + chunkIndex
+
+proc mapChunkObjectId(chunkIndex: int): int =
+  MapChunkObjectBase + chunkIndex
+
+proc buildMapAnchorSprite(): seq[uint8] =
+  ## Keeps old MapObjectId camera semantics without drawing a full-world sprite.
+  newRgbaPixels(1, 1)
+
+proc buildSpriteProtocolMapChunkSprite(
+  sim: SimServer,
+  chunkIndex: int
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds one fixed-width world map chunk for clipped client rendering.
+  let
+    firstTx = chunkIndex * MapChunkTileWidth
+    lastTx = min(WorldWidthTiles - 1, firstTx + MapChunkTileWidth - 1)
+  if firstTx > lastTx:
+    result.width = 1
+    result.height = 1
+    result.pixels = newRgbaPixels(1, 1)
+    return
+  result.width = (lastTx - firstTx + 1) * WorldTileSize
+  result.height = WorldHeightPixels
+  result.pixels = newRgbaPixels(result.width, result.height)
   for ty in 0 ..< WorldHeightTiles:
-    for tx in 0 ..< WorldWidthTiles:
+    for tx in firstTx .. lastTx:
       let
-        baseX = tx * WorldTileSize
+        baseX = (tx - firstTx) * WorldTileSize
         baseY = ty * WorldTileSize
-      result.fillMapTile(
+      result.pixels.fillMapTile(
         baseX,
         baseY,
+        result.width,
+        result.height,
         sim.tileBiomeKind(tx, ty).biomeBackgroundRgbaColor().shadeForElevation(
           sim.tileElevation(tx, ty)
         )
       )
-      result.blitMapSprite(
+      result.pixels.blitMapSprite(
         sim.groundRgbaSprite(sim.tileGroundKind(tx, ty)),
         baseX,
-        baseY
+        baseY,
+        result.width,
+        result.height
       )
+
+proc addMapSpriteDefinitions(sim: SimServer, packet: var seq[uint8]) =
+  ## Sends the map as clipped chunks plus a tiny camera-anchor sprite.
+  packet.addSprite(MapSpriteId, 1, 1, buildMapAnchorSprite(), "map")
+  for chunkIndex in 0 ..< MapChunkCount:
+    let chunk = sim.buildSpriteProtocolMapChunkSprite(chunkIndex)
+    packet.addSprite(
+      chunkIndex.mapChunkSpriteId(),
+      chunk.width,
+      chunk.height,
+      chunk.pixels,
+      "map chunk " & $chunkIndex
+    )
+
+proc addMapAnchorObject(
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY: int
+) =
+  ## Preserves legacy bot camera tracking through MapObjectId.
+  currentIds.add(MapObjectId)
+  packet.addObject(
+    MapObjectId,
+    -cameraX,
+    -cameraY,
+    low(int16),
+    MapLayerId,
+    MapSpriteId
+  )
+
+proc addMapChunkObjects(
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  cameraX,
+  cameraY,
+  viewportWidth: int
+) =
+  ## Places only map chunks that overlap the current camera viewport.
+  let
+    firstChunk = clamp(cameraX div MapChunkWidthPixels, 0, MapChunkCount - 1)
+    lastChunk = clamp(
+      (cameraX + viewportWidth - 1) div MapChunkWidthPixels,
+      firstChunk,
+      MapChunkCount - 1
+    )
+  for chunkIndex in firstChunk .. lastChunk:
+    currentIds.add(chunkIndex.mapChunkObjectId())
+    packet.addObject(
+      chunkIndex.mapChunkObjectId(),
+      chunkIndex * MapChunkWidthPixels - cameraX,
+      -cameraY,
+      low(int16).int + 1,
+      MapLayerId,
+      chunkIndex.mapChunkSpriteId()
+    )
 
 proc buildVisibilityShadowSprite(
   sim: SimServer,
@@ -1416,13 +1510,20 @@ proc mobAttackEffectLabel(
     of AttackRanged: "dart"
     of AttackSlam: "slam"
     of AttackAura: "aura"
+    of AttackCone: "cone"
+    of AttackLine: "line"
+    of AttackTrap: "trap"
+    of AttackSupport: "support"
+    of AttackSwarm: "swarm"
   if phase == MobTelegraph:
     if style == AttackLunge:
       "mob telegraph warning"
     else:
       "mob " & styleLabel & " warning"
   else:
-    "mob " & styleLabel & (if style == AttackAura: " pulse" else: " strike")
+    "mob " & styleLabel &
+      (if style in {AttackAura, AttackSupport, AttackSwarm}: " pulse"
+       else: " strike")
 
 proc roleAbilityEffectLabel(role: PlayerRole): string =
   "ability " & role.roleLabel() & " effect"
@@ -1548,6 +1649,34 @@ proc buildMobAttackEffectSprite(
           let d = abs(x - center) + abs(y - center)
           if d in 5 .. 7 and (x + y) mod 2 == 0:
             result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
+    of AttackCone:
+      for i in 0 .. 13:
+        for spread in -i div 2 .. i div 2:
+          result.pixels.putEffectPixel(result.width, result.height, center + spread, center - i, warningCore)
+    of AttackLine:
+      for y in 3 .. 25:
+        result.pixels.putEffectPixel(result.width, result.height, center, y, warningCore)
+        if y mod 4 == 0:
+          result.pixels.putEffectPixel(result.width, result.height, center - 2, y, warning)
+          result.pixels.putEffectPixel(result.width, result.height, center + 2, y, warning)
+    of AttackTrap:
+      for x in 7 .. 21:
+        result.pixels.putEffectPixel(result.width, result.height, x, center - 7, warningCore)
+        result.pixels.putEffectPixel(result.width, result.height, x, center + 7, warningCore)
+      for y in center - 7 .. center + 7:
+        result.pixels.putEffectPixel(result.width, result.height, 7, y, warning)
+        result.pixels.putEffectPixel(result.width, result.height, 21, y, warning)
+    of AttackSupport:
+      for i in 0 .. 9:
+        result.pixels.putEffectPixel(result.width, result.height, center - i, center, warningCore)
+        result.pixels.putEffectPixel(result.width, result.height, center + i, center, warningCore)
+        result.pixels.putEffectPixel(result.width, result.height, center, center - i, warningCore)
+        result.pixels.putEffectPixel(result.width, result.height, center, center + i, warningCore)
+    of AttackSwarm:
+      for y in 5 .. 23:
+        for x in 5 .. 23:
+          if (x * 7 + y * 5) mod 17 == 0:
+            result.pixels.putEffectPixel(result.width, result.height, x, y, warningCore)
     of AttackLunge:
       for y in 7 .. 16:
         result.pixels.putEffectPixel(result.width, result.height, center, y, warningCore)
@@ -1585,6 +1714,32 @@ proc buildMobAttackEffectSprite(
         for x in 0 ..< result.width:
           let d = abs(x - center) + abs(y - center)
           if d in 4 .. 13 and (x + y) mod 3 != 0:
+            result.pixels.putEffectPixel(result.width, result.height, x, y, strike)
+    of AttackCone:
+      for i in 0 .. 16:
+        for spread in -i div 2 .. i div 2:
+          result.pixels.putEffectPixel(result.width, result.height, center + spread, center - i, strike)
+    of AttackLine:
+      for y in 2 .. 26:
+        for x in center - 1 .. center + 1:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
+    of AttackTrap:
+      for x in 6 .. 22:
+        for y in [6, 22]:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, strike)
+      for y in 6 .. 22:
+        for x in [6, 22]:
+          result.pixels.putEffectPixel(result.width, result.height, x, y, strike)
+    of AttackSupport:
+      for y in 0 ..< result.height:
+        for x in 0 ..< result.width:
+          let d = abs(x - center) + abs(y - center)
+          if d in 3 .. 11 and (x + y) mod 2 == 0:
+            result.pixels.putEffectPixel(result.width, result.height, x, y, strikeCore)
+    of AttackSwarm:
+      for y in 4 .. 24:
+        for x in 4 .. 24:
+          if (x * 3 + y * 11) mod 13 in 0 .. 2:
             result.pixels.putEffectPixel(result.width, result.height, x, y, strike)
     of AttackLunge:
       for i in 0 .. 18:
@@ -1944,6 +2099,9 @@ proc mobSpeciesSpriteId(species: MobSpecies, flipLeft: bool): int =
   ## Returns the generated sprite id for one biome monster species.
   MobSpeciesSpriteBase + (ord(species) - 1) * 2 + (if flipLeft: 1 else: 0)
 
+proc armorSpriteId(kind: ArmorKind): int =
+  ArmorSpriteBase + ord(kind)
+
 proc pickupSpriteId(kind: PickupKind): int =
   ## Returns the protocol sprite id for one pickup kind.
   case kind
@@ -1955,6 +2113,8 @@ proc pickupSpriteId(kind: PickupKind): int =
     kind.roleGearIconSpriteId()
   of PickupWood, PickupFood, PickupStone, PickupGold:
     kind.carryForPickup().landmarkForCarry().landmarkSpriteId()
+  of PickupArmor:
+    ArmorScoutHood.armorSpriteId()
 
 proc carryObjectId(player: Actor): int =
   CarryObjectBase + player.id
@@ -2258,6 +2418,27 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       text.pixels,
       "role " & label.toLowerAscii()
     )
+
+  for kind in ArmorKind:
+    if kind == ArmorNone:
+      continue
+    let armor = buildSpriteProtocolRawSprite(sim.armorRgbaSprites[kind])
+    packet.addSprite(
+      kind.armorSpriteId(),
+      armor.width,
+      armor.height,
+      armor.pixels,
+      "armor " & kind.armorLabel()
+    )
+
+  let guide = buildSpriteProtocolRawSprite(sim.rgbaLandmarkSprites[LandmarkRescue])
+  packet.addSprite(
+    GuideSpriteId,
+    guide.width,
+    guide.height,
+    guide.pixels,
+    "guide"
+  )
 
   for kind in StatusBadgeKind:
     let
@@ -2581,13 +2762,7 @@ proc buildSpriteProtocolInit(sim: SimServer): seq[uint8] =
     UiLayerFlag
   )
   result.addViewport(ReplayBottomLeftLayerId, ScreenWidth, 16)
-  result.addSprite(
-    MapSpriteId,
-    WorldWidthPixels,
-    WorldHeightPixels,
-    sim.buildSpriteProtocolMapSprite()
-  )
-  result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
+  sim.addMapSpriteDefinitions(result)
   result.addCommonSpriteDefinitions(sim)
 
 proc globalCameraX(sim: SimServer): int =
@@ -2616,13 +2791,9 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, PlayerViewportWidth, PlayerViewportHeight)
-  result.addSprite(
-    MapSpriteId,
-    WorldWidthPixels,
-    WorldHeightPixels,
-    sim.buildSpriteProtocolMapSprite(),
-    "map"
-  )
+  result.addLayer(TopRightLayerId, TopRightLayerType, UiLayerFlag)
+  result.addViewport(TopRightLayerId, 132, 52)
+  sim.addMapSpriteDefinitions(result)
   result.addCommonSpriteDefinitions(sim)
 
 proc chatSpriteId(player: Actor): int =
@@ -2946,14 +3117,63 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
+  for i in 0 ..< sim.guides.len:
+    let
+      guide = sim.guides[i]
+      sprite = sim.landmarkRgbaSprite(LandmarkRescue)
+    objects.addWorldSpriteObject(
+      currentIds,
+      GuideObjectBase + i,
+      guide.x - cameraX,
+      guide.y - cameraY,
+      GuideSpriteId,
+      sprite.width,
+      sprite.height,
+      viewportWidth,
+      viewportHeight
+    )
+    if guide.thanksTicks > 0:
+      let bubble = sim.buildSpriteProtocolBubbleSprite("thank you")
+      packet.addSprite(
+        GuideBubbleSpriteBase + i,
+        bubble.width,
+        bubble.height,
+        bubble.pixels,
+        "guide thank you"
+      )
+      objects.addWorldSpriteObject(
+        currentIds,
+        GuideBubbleObjectBase + i,
+        guide.x + sprite.width div 2 - bubble.width div 2 - cameraX,
+        guide.y - bubble.height - 4 - cameraY,
+        GuideBubbleSpriteBase + i,
+        bubble.width,
+        bubble.height,
+        viewportWidth,
+        viewportHeight,
+        guide.y - cameraY - 1
+      )
   let selectedPlayerIndex = sim.selectedPlayerIndex(selectedPlayerId)
 
   for i in 0 ..< sim.pickups.len:
     let
       pickup = sim.pickups[i]
       objectId = PickupObjectBase + i
-      spriteId = pickup.kind.pickupSpriteId()
-      sprite = sim.pickupRgbaSprite(pickup.kind)
+      armorKind =
+        if pickup.kind == PickupArmor:
+          pickup.value.armorFromPickupValue()
+        else:
+          ArmorNone
+      spriteId =
+        if pickup.kind == PickupArmor:
+          armorKind.armorSpriteId()
+        else:
+          pickup.kind.pickupSpriteId()
+      sprite =
+        if pickup.kind == PickupArmor:
+          sim.armorRgbaSprites[armorKind]
+        else:
+          sim.pickupRgbaSprite(pickup.kind)
     objects.addWorldSpriteObject(
       currentIds,
       objectId,
@@ -2976,6 +3196,33 @@ proc addWorldObjects(
         pickup.x - cameraX - max(0, (labelWidth - sprite.width) div 2),
         pickup.y - cameraY - labelHeight - 3,
         pickup.kind.roleGearSpriteId(),
+        labelWidth,
+        labelHeight,
+        viewportWidth,
+        viewportHeight,
+        pickup.y - cameraY - 1
+      )
+    elif pickup.kind == PickupArmor:
+      let
+        label = armorKind.armorLabel().toUpperAscii() & " " &
+          armorKind.armorBonusLabel().toUpperAscii()
+        labelSprite = sim.buildSpriteProtocolTextSprite([label], 8'u8)
+        labelSpriteId = i.roleGearObjectId()
+        labelWidth = sim.textFont.textWidth(label)
+        labelHeight = sim.textFont.height
+      packet.addSprite(
+        labelSpriteId,
+        labelSprite.width,
+        labelSprite.height,
+        labelSprite.pixels,
+        "armor " & label.toLowerAscii()
+      )
+      objects.addWorldSpriteObject(
+        currentIds,
+        i.roleGearObjectId(),
+        pickup.x - cameraX - max(0, (labelWidth - sprite.width) div 2),
+        pickup.y - cameraY - labelHeight - 3,
+        labelSpriteId,
         labelWidth,
         labelHeight,
         viewportWidth,
@@ -3336,6 +3583,7 @@ proc addPlayerHud(
     statusLine6 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
       statusLine4 & "|" & statusLine5 & "|" & statusLine6
+    armorStatus = player.armorHudLabel()
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -3406,9 +3654,41 @@ proc addPlayerHud(
     MapLayerId,
     StatusHudSpriteId
   )
+  currentIds.add(ArmorHudObjectId)
+  if state.hudArmor != armorStatus:
+    var armorLines: seq[string] = @["ARMOR"]
+    var hasArmor = false
+    for slot in ArmorSlot:
+      let armor = player.armor[slot]
+      if armor == ArmorNone:
+        continue
+      hasArmor = true
+      armorLines.add(
+        armor.armorLabel().toUpperAscii() & " " &
+          armor.armorBonusLabel().toUpperAscii()
+      )
+    if not hasArmor:
+      armorLines.add("NONE")
+    let armorText = sim.buildSpriteProtocolTextSprite(armorLines, 2'u8)
+    packet.addSprite(
+      ArmorHudSpriteId,
+      armorText.width,
+      armorText.height,
+      armorText.pixels,
+      armorStatus
+    )
+  packet.addObject(
+    ArmorHudObjectId,
+    2,
+    2,
+    high(int16),
+    TopRightLayerId,
+    ArmorHudSpriteId
+  )
   nextState.hudCoins = frontier
   nextState.hudLives = lives
   nextState.hudStatus = status
+  nextState.hudArmor = armorStatus
 
 proc addPlayerStatus(
   sim: SimServer,
@@ -3465,15 +3745,8 @@ proc buildSpriteProtocolPlayerUpdates*(
         player.y + player.sprite.height div 2 - PlayerViewportHeight div 2,
         WorldHeightPixels - PlayerViewportHeight
       )
-    currentIds.add(MapObjectId)
-    result.addObject(
-      MapObjectId,
-      -cameraX,
-      -cameraY,
-      low(int16),
-      MapLayerId,
-      MapSpriteId
-    )
+    result.addMapAnchorObject(currentIds, cameraX, cameraY)
+    result.addMapChunkObjects(currentIds, cameraX, cameraY, PlayerViewportWidth)
     sim.addWorldObjects(
       result,
       currentIds,
@@ -3574,15 +3847,8 @@ proc buildSpriteProtocolUpdates*(
     nextState.initialized = true
 
   var currentIds: seq[int] = @[]
-  currentIds.add(MapObjectId)
-  result.addObject(
-    MapObjectId,
-    -cameraX,
-    -cameraY,
-    low(int16),
-    MapLayerId,
-    MapSpriteId
-  )
+  result.addMapAnchorObject(currentIds, cameraX, cameraY)
+  result.addMapChunkObjects(currentIds, cameraX, cameraY, GlobalViewportWidth)
   sim.addWorldObjects(
     result,
     currentIds,

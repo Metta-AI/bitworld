@@ -19,6 +19,13 @@ on polish endurance: long-run playability, readable observations, bot finish
 rate, terrain/encounter tuning, and keeping the current systems understandable
 instead of adding another large layer of mechanics.
 
+Implementation update, 2026-05-25: the current pass widened biome regions by
+50%, split the sprite-protocol map into clipped chunks for faster global
+rendering, added armor equipment and an armor HUD, expanded the named monster
+set to 44 species, added cone, line, trap, support, and swarm attack families,
+reduced excess water while preserving long river chokepoints, and turned rescue
+guides into temporary followers who thank the party when brought back to camp.
+
 ## Design Pillars
 
 - Cooperative progression: the party shares a frontier and wins by moving
@@ -84,7 +91,9 @@ The Coworld player runner contract is:
 
 The expedition is deterministic, tile-based, and side-scrolling. The world
 starts with a safe origin and then repeats biome cycles across a long rightward
-run. The current biome set is:
+run. Each biome segment is now 21 tiles wide, which makes regions feel like
+places rather than small blips, and the generated world is 596 by 18 tiles. The
+current biome set is:
 
 - Origin: safe spawn and starter role guilds.
 - Forest: early food/wood sustain and fast early wildlife pressure.
@@ -111,6 +120,12 @@ north-south rivers and forks carve across rightward progress, deep water blocks
 ordinary movement, shallow fringes show the edge, and narrow bridge rows create
 chokepoints. Crossing a registered bridge can trigger a one-time biome ambush
 on the banks.
+
+The sprite-protocol map is sent as chunk sprites instead of one full-world
+sprite. `MapObjectId` remains a tiny camera anchor for old bot/client camera
+tracking, while visible chunks occupy the current viewport. Both HTML and
+native global clients clip sprite rasterization to the viewport before drawing,
+which keeps the bird's-eye view responsive as the world grows.
 
 ## Current Roles And Combat
 
@@ -139,17 +154,28 @@ Party combat teaches the same language throughout the run:
 - The Gate Titan uses the same trio and focus language, including stagger
   windows when all three roles coordinate.
 
-The monster ecology now covers many distinct species using generated and
-curated silhouettes. Biomes seed local variants so the game reads as different
-dungeon ecology rather than a few recolors. Wolves, bears, goblins, scorpions,
-slimes, yetis, bats, wraiths, defenders, and boss-class enemies all feed the
-expedition pressure model.
+The monster ecology now covers 44 named species using generated and curated
+silhouettes. Biomes seed local variants so the game reads as different dungeon
+ecology rather than a few recolors. Wolves, bears, goblins, scorpions, slimes,
+yetis, bats, wraiths, defenders, and boss-class enemies all feed the expedition
+pressure model.
+
+New tactical families add encounter shape:
+
+- Pack leaders increase danger around nearby allies.
+- Support casters heal and rally nearby non-boss monsters.
+- Trap users punish crossing lanes and slow players.
+- Line attackers fire narrow beams down lanes.
+- Cone attackers claim broader frontal space.
+- Swarms pressure isolated players and keep moving while pulsing.
 
 ## Current Items, Camps, And Objectives
 
-Party Progressor uses a one-item carry model. A player can hold one expedition
-item and the player observation tiles carried inventory along the lower HUD row
-with stack counts where relevant.
+Party Progressor uses a one-item carry model plus separate equipment. A player
+can hold one expedition item and the player observation tiles carried inventory
+along the lower HUD row with stack counts where relevant. Armor is equipped in
+head, chest, and trinket slots, and the top-right player HUD shows each equipped
+piece with its bonus.
 
 Current carried items and field uses:
 
@@ -160,6 +186,15 @@ Current carried items and field uses:
   elevation.
 - Gold: fortification, late-run camp funding salvage, and portable cave/ruin
   light while carried.
+
+Current armor items and field uses:
+
+- Scout Hood and Leather Vest: movement bonuses for faster route control.
+- Iron Helm and Scale Mail: HP or mitigation for frontline durability.
+- Fur Hood and Frost Cloak: cold-weather protection and faster recovery.
+- Venom Charm: faster status cleanup after poison-heavy encounters.
+- Lantern Charm: fog protection in cave and ruin travel.
+- Rally Horn: faster role-power recovery during grouped pushes.
 
 Camps are the core forward infrastructure:
 
@@ -177,8 +212,8 @@ Objective types are all visible through sprite labels, prompts, and HUD hints:
 - Relic beacons: cooperative attunement, relic shards, route survey, terrain
   softening, local threat pacification, and final-gate prerequisites.
 - Shrines: optional score, recovery, food, cleansing, and blessing sanctuaries.
-- Rescues: cooperative hold, food/heal payoff, guide route reveal, and healer
-  acceleration.
+- Rescues: cooperative hold, food/heal payoff, guide route reveal, a temporary
+  follower who can be brought back to camp, and healer acceleration.
 - Lairs: attackable side objectives, supply caches, local pacification, and a
   temporary hunt damage window.
 - Waystations: biome-specific route/shelter detours such as forage, rally,
