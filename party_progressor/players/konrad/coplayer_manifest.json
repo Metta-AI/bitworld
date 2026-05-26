@@ -1,9 +1,0 @@
-{
-  "author": "treeform@softmax.com",
-  "name": "konrad",
-  "image_uri": "ghcr.io/treeform/bitworld-konrad:latest",
-  "games": [
-    "party_progressor"
-  ],
-  "run": ["/bin/konrad"]
-}

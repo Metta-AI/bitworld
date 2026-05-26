@@ -74,7 +74,7 @@ AMONG_THEM_STEP_ACTIVE = 0
 AMONG_THEM_STEP_TERMINAL = 1
 AMONG_THEM_STEP_TRUNCATED = 2
 OBSERVATION_MODES = {"pixels", "sprite_player"}
-SPRITE_PLAYER_SERVER_ENVS = {"big_adventure", "party_progressor"}
+SPRITE_PLAYER_SERVER_ENVS = {"big_adventure"}
 
 BUTTON_UP = 1
 BUTTON_DOWN = 2
@@ -150,12 +150,6 @@ ENV_SPECS: dict[str, EnvironmentSpec] = {
     "big_adventure": EnvironmentSpec(
         name="big_adventure",
         metric_name="coins_collected",
-        default_episode_steps=512,
-    ),
-    "party_progressor": EnvironmentSpec(
-        name="party_progressor",
-        metric_name="frontier_tiles",
-        server_players=3,
         default_episode_steps=512,
     ),
     "boundless_factory": EnvironmentSpec(name="boundless_factory", metric_name="factory_progress", default_episode_steps=1024),
