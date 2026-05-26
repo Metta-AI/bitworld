@@ -73,7 +73,12 @@ output "dashboard_instance_id" {
   value       = aws_instance.dashboard.id
 }
 
-output "crewrift_repository_url" {
-  description = "ECR repository URL for cogame-crewrift"
-  value       = aws_ecr_repository.crewrift.repository_url
+output "crewrift_game_repository_url" {
+  description = "Public ECR repository URL for treeform/games/crewrift"
+  value       = aws_ecrpublic_repository.crewrift_game.repository_uri
+}
+
+output "crewrift_notsus_repository_url" {
+  description = "Public ECR repository URL for treeform/players/notsus"
+  value       = aws_ecrpublic_repository.crewrift_notsus.repository_uri
 }

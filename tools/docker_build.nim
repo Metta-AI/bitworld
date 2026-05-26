@@ -24,6 +24,7 @@ import
 const
   DefaultRegistry = ""
   DefaultPlatforms = "linux/amd64,linux/arm64"
+  EcrProfileName = "sandbox-andre"
   CoworldManifestName = "coworld_manifest.json"
   ManifestNames = [CoworldManifestName]
 
@@ -357,6 +358,51 @@ proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
     echo "See metta/packages/coworld/src/coworld/GAME_RUNTIME_README.md"
     quit(1)
 
+proc isEcrRegistry(imageUri: string): bool =
+  ## Returns true when an image URI targets any ECR registry (public or private).
+  (".dkr.ecr." in imageUri and ".amazonaws.com" in imageUri) or
+    imageUri.startsWith("public.ecr.aws/")
+
+proc ecrEndpoint(imageUri: string): string =
+  ## Extracts the ECR endpoint (host) from a full image URI.
+  let parts = imageUri.strip().split('/')
+  if parts.len > 0:
+    return parts[0]
+
+proc ecrRegion(endpoint: string): string =
+  ## Parses the AWS region from a private ECR endpoint hostname.
+  let parts = endpoint.split('.')
+  for i, part in parts:
+    if part == "ecr" and i + 1 < parts.len:
+      return parts[i + 1]
+  "us-east-1"
+
+proc ensureEcrAuth(endpoint: string) =
+  ## Authenticates Docker to an ECR endpoint using sandbox-andre.
+  ## Public ECR (public.ecr.aws) and private ECR use different auth commands.
+  let isPublic = endpoint == "public.ecr.aws"
+  let region = if isPublic: "us-east-1" else: ecrRegion(endpoint)
+  echo "Authenticating to ECR: ", endpoint, " (", region, ")"
+  let cmd =
+    if isPublic:
+      "aws ecr-public get-login-password --profile " & EcrProfileName &
+        " --region " & region
+    else:
+      "aws ecr get-login-password --profile " & EcrProfileName &
+        " --region " & region
+  let (password, code) = execCmdEx(cmd)
+  if code != 0:
+    echo "Error: ECR auth failed."
+    echo "Run: aws sso login --profile ", EcrProfileName
+    quit(1)
+  let loginCode = execCmd(
+    "echo " & quoteShell(password.strip()) &
+    " | docker login --username AWS --password-stdin " & endpoint
+  )
+  if loginCode != 0:
+    echo "Error: docker login to ECR failed."
+    quit(1)
+
 proc ensureBuildx() =
   ## Verifies that docker buildx is available.
   let (output, code) = execCmdEx("docker buildx version")
@@ -540,9 +586,31 @@ proc main() =
 
   checkTournamentArgs(root, chosen)
 
+  if push:
+    var needsAws = false
+    for target in chosen:
+      if isEcrRegistry(target.fullImageTag(registry, tag)):
+        needsAws = true
+        break
+    if needsAws:
+      let (_, awsCode) = execCmdEx("aws --version")
+      if awsCode != 0:
+        echo "Error: aws CLI is required for ECR push but not found in PATH."
+        quit(1)
+
   ensureBuildx()
   if push or "," in platforms:
     ensureBuilder()
+
+  if push:
+    var authedEcrEndpoints: seq[string]
+    for target in chosen:
+      let imageTag = target.fullImageTag(registry, tag)
+      if isEcrRegistry(imageTag):
+        let endpoint = ecrEndpoint(imageTag)
+        if endpoint notin authedEcrEndpoints:
+          ensureEcrAuth(endpoint)
+          authedEcrEndpoints.add(endpoint)
 
   for target in chosen:
     buildImage(root, target, registry, tag, platforms, push)
