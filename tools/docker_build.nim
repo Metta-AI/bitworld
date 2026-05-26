@@ -49,6 +49,7 @@ Each PATH must be a Dockerfile or a directory containing one.
 
 Options:
   --push            Push images after building
+  --bots            Also build bots for selected game paths
   --platform:STR    Platforms to build (default: linux/amd64,linux/arm64)
   --tag:STR         Image tag (default: latest)
   --registry:STR    Override manifest registry prefix
@@ -209,6 +210,52 @@ proc coworldPlayerImage(
     if imageUri.len > 0:
       result = (name: name, imageUri: imageUri)
 
+proc playerDockerFile(contextDir: string, player: JsonNode): string =
+  ## Returns the Dockerfile for one player manifest entry.
+  let playersDir = contextDir / "players"
+  if not dirExists(playersDir):
+    return
+
+  var names: seq[string]
+  for key in ["id", "name"]:
+    let value = player.nodeString(key)
+    if value.len > 0:
+      names.add(value)
+
+  for name in names:
+    let dockerFile = playersDir / name / "Dockerfile"
+    if fileExists(dockerFile):
+      return dockerFile
+
+  var normalizedNames: seq[string]
+  for name in names:
+    normalizedNames.add(normalizeTargetName(name))
+
+  for kind, path in walkDir(playersDir):
+    if kind notin {pcDir, pcLinkToDir}:
+      continue
+    if normalizeTargetName(path.extractFilename()) notin normalizedNames:
+      continue
+    let dockerFile = path / "Dockerfile"
+    if fileExists(dockerFile):
+      return dockerFile
+
+proc playerDockerFiles(contextDir: string): seq[string] =
+  ## Returns Dockerfiles for players listed in a Coworld manifest.
+  let path = contextDir / CoworldManifestName
+  if not fileExists(path):
+    return
+  let node = parseFile(path)
+  if node.kind != JObject or not node.hasKey("player") or
+      node["player"].kind != JArray:
+    return
+  for player in node["player"]:
+    if player.kind != JObject:
+      continue
+    let dockerFile = playerDockerFile(contextDir, player)
+    if dockerFile.len > 0:
+      result.add(dockerFile)
+
 proc imageNameForTarget(
   targetName: string,
   manifestImageUri: string
@@ -323,6 +370,26 @@ proc addUniqueTarget(
         existing.dockerFile == target.dockerFile:
       return
   targets.add(target)
+
+proc addBotTargets(
+  root: string,
+  targets: var seq[DockerTarget],
+  game: DockerTarget
+) =
+  ## Adds bot Docker targets listed by one selected game target.
+  if not game.isGame:
+    return
+  for dockerFile in playerDockerFiles(game.contextDir):
+    var found: seq[DockerTarget]
+    addDockerFile(
+      root,
+      game.contextDir,
+      game.bitworldContext,
+      dockerFile,
+      found
+    )
+    for target in found:
+      targets.addUniqueTarget(target)
 
 const
   TournamentArgs = ["name", "token", "slot"]
@@ -527,6 +594,7 @@ proc main() =
     platforms = DefaultPlatforms
     tag = "latest"
     registry = DefaultRegistry
+    includeBots = false
     names: seq[string]
 
   for kind, key, val in getopt():
@@ -535,6 +603,8 @@ proc main() =
       case key
       of "push":
         push = true
+      of "bots":
+        includeBots = true
       of "platform":
         platforms = val
       of "tag":
@@ -567,6 +637,8 @@ proc main() =
     let target = dockerTargetFromPath(root, name)
     if target.found:
       chosen.addUniqueTarget(target.target)
+      if includeBots:
+        addBotTargets(root, chosen, target.target)
     else:
       echo "Error: ", target.message
       quit(1)
@@ -582,6 +654,7 @@ proc main() =
   echo "  tag:       ", tag
   echo "  platforms: ", platforms
   echo "  push:      ", push
+  echo "  bots:      ", includeBots
   echo "  targets:   ", targetNames(chosen)
 
   checkTournamentArgs(root, chosen)
