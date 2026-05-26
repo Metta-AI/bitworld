@@ -89,7 +89,8 @@ For policy design and packaging details, see:
 - `players/SMART_BOT_GUIDE.md`
 
 These same pages are exposed from the Coworld manifest as `player.md`,
-`submit.md`, and `optimizer.md`.
+`submit.md`, `optimizer.md`, and the optimizer-facing game spec, tutorial,
+skills, and policy registry links.
 
 ## Source Development
 
