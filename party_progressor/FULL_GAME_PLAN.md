@@ -284,13 +284,19 @@ Current pressure loops:
 - Cave and ruin fog disorients isolated players; grouping, lantern/ward
   waystations, carried gold light, camps, and tank guard counter it.
 - Poison, slow, chill, exhaustion, biome pressure, guide, route, hunt, morale,
-  ration, triumph, mastery, forage/rally/shade/warmth/light, and guard/blessing
-  are now modeled as active player effects with short descriptions. The player
-  HUD shows a compact `FX` summary, the top-right panel lists the active effects
-  with their practical impact, and the sprite layer draws translucent in-world
-  effect auras around affected players.
-- Low health, downed state, help, regroup, focus, stagger, role, and chat pings
-  still use compact in-world status markers where labels are the clearest signal.
+  ration, triumph, mastery, rally/shade/warmth/light, and guard/blessing are
+  modeled as active player effects with short descriptions. The top-right panel
+  is the canonical list of active effects and their practical impact.
+- The sprite layer now draws only one urgent in-world effect aura per player,
+  preferring harmful effects over boons. Low health, downed state, help,
+  regroup, focus, stagger, role, and chat pings still use compact in-world
+  status markers where labels are the clearest signal.
+- Forest forage is deliberately passive. It can trickle food in the background,
+  but it no longer creates a big green plus, a `FORAGE` HUD line, or a status
+  badge until the game teaches it through an explicit choice.
+- The top-left HUD stays short: role/area, HP/frontier, weather/resources,
+  ability, carried item, a warning only when something is wrong, and the next
+  objective. The top-right HUD holds armor and effect descriptions.
 
 Chat is part of the readability layer. Short player messages such as regroup,
 help, relic, camp, food, rescue, and lair create temporary in-world ping badges
@@ -388,7 +394,33 @@ Acceptance signal:
   choose a role, attack, use special, pick up supplies, or identify the next
   objective.
 
-### 3. Terrain And Encounter Tuning
+### 3. Find The Fun Retrenchment
+
+Target behavior: Party Progressor should first be an understandable expedition:
+choose a role, push right, rescue villagers, cross chokepoints, survive one
+clear problem at a time, and bring the party home stronger. Complexity should
+earn its screen space.
+
+Implementation direction:
+
+- Remove or hide passive rules that are not taught in the moment. Forage is the
+  model: useful simulation texture, not a player-facing status.
+- Keep in-world badges sparse. A player should see role, urgent danger, party
+  need, and one meaningful active effect, while the detailed explanation lives
+  in the top-right panel.
+- Make rescued villagers behave like companions: they follow in a line behind
+  the player instead of stacking on the same tile, then thank the party at camp.
+- Reintroduce biome and loot complexity only when it creates a visible decision:
+  cross now or route around, spend food or risk pressure, hold a rescue or fight
+  the ambush, equip armor or keep a carried tool.
+
+Acceptance signal:
+
+- A first-time player can explain what is happening on screen after 60 seconds:
+  their role, their next objective, why they are hurt or slowed, what the
+  rescue follower is doing, and what button they should press next.
+
+### 4. Terrain And Encounter Tuning
 
 Target behavior: terrain should make route choices interesting without trapping
 humans or bots, and encounters should create tactical pressure without burying
@@ -413,7 +445,7 @@ Acceptance signal:
 - Manual play can identify why movement slowed or line of sight is blocked from
   the visible terrain, not only from HUD text.
 
-### 4. Bot Endurance
+### 5. Bot Endurance
 
 Target behavior: Konrad should behave like a readable party member, not an
 omniscient solver and not a stuck target chaser.
@@ -437,7 +469,7 @@ Acceptance signal:
 - DPS, tank, and healer all use their special powers during meaningful fights
   or survival windows in a long run.
 
-### 5. Packaging And Docs Hygiene
+### 6. Packaging And Docs Hygiene
 
 Target behavior: Party Progressor should remain easy to run, test, and submit
 through Coworld infrastructure.

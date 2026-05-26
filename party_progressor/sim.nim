@@ -6488,11 +6488,23 @@ proc guideTargetIndex(sim: SimServer, guide: GuideFollower): int =
       return i
   -1
 
+proc guideLineTarget(target: Actor, slot: int): tuple[x, y: int] =
+  let spacing = ArtCellSize * (slot + 1)
+  case target.facing
+  of FaceRight:
+    (x: target.x - spacing, y: target.y)
+  of FaceLeft:
+    (x: target.x + spacing, y: target.y)
+  of FaceDown:
+    (x: target.x, y: target.y - spacing)
+  of FaceUp:
+    (x: target.x, y: target.y + spacing)
+
 proc updateGuides(sim: var SimServer) =
   if sim.guides.len == 0:
     return
   var remaining: seq[GuideFollower] = @[]
-  for guide in sim.guides:
+  for guideSlot, guide in sim.guides:
     var current = guide
     if current.done:
       dec current.thanksTicks
@@ -6504,17 +6516,18 @@ proc updateGuides(sim: var SimServer) =
     if targetIndex < 0 or sim.players[targetIndex].lives <= 0:
       continue
     let target = sim.players[targetIndex]
+    let lineTarget = guideLineTarget(target, guideSlot)
     if sim.activeCampDropoffNear(target):
-      current.x = target.x
-      current.y = max(0, target.y - ArtCellSize)
+      current.x = worldClampPixel(lineTarget.x, WorldWidthPixels - ArtCellSize)
+      current.y = worldClampPixel(lineTarget.y, WorldHeightPixels - ArtCellSize)
       current.done = true
       current.thanksTicks = TargetFps * 3
       remaining.add(current)
       inc sim.scoreRevision
       continue
     let
-      targetX = target.x - WorldTileSize
-      targetY = target.y
+      targetX = lineTarget.x
+      targetY = lineTarget.y
       dx = targetX - current.x
       dy = targetY - current.y
       step = 2
@@ -7565,12 +7578,7 @@ proc activePlayerEffects*(
       EffectVisualMastery
     )
   of BiomeTacticForage:
-    result.addPlayerEffect(
-      "forage",
-      "FORAGE",
-      "food trickle",
-      EffectVisualForage
-    )
+    discard
   of BiomeTacticRally:
     result.addPlayerEffect(
       "rally",
@@ -8313,31 +8321,16 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   sim.fb.drawText(
     sim.textFont,
     "STATUS " & player.statusLabel().toUpperAscii() & " " &
-      sim.survivalPressureLabel(playerIndex).toUpperAscii() &
-      (if sim.playerBiomeTacticLabel(playerIndex).len > 0:
-        " " & sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
-      else:
-        "") &
-      (if sim.playerPartyTacticLabel(playerIndex).len > 0:
-        " " & sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
-      else:
-        ""),
+      sim.survivalPressureLabel(playerIndex).toUpperAscii(),
     0,
     lineY * 7,
     2'u8
   )
   sim.fb.drawText(
     sim.textFont,
-    sim.activePlayerEffectSummary(playerIndex).toUpperAscii(),
-    0,
-    lineY * 8,
-    2'u8
-  )
-  sim.fb.drawText(
-    sim.textFont,
     sim.expeditionObjectiveHint(playerIndex),
     0,
-    lineY * 9,
+    lineY * 8,
     2'u8
   )
 

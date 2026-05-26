@@ -2309,21 +2309,6 @@ proc roleStatusBadge(role: PlayerRole): tuple[found: bool, badge: StatusBadgeKin
   of RoleUnarmed:
     (false, StatusRoleTank)
 
-proc survivalStatusBadge(
-  kind: SurvivalPressureKind
-): tuple[found: bool, badge: StatusBadgeKind] =
-  case kind
-  of SurvivalMire:
-    (true, StatusMire)
-  of SurvivalCold:
-    (true, StatusCold)
-  of SurvivalHeat:
-    (true, StatusHeat)
-  of SurvivalFog:
-    (true, StatusFog)
-  of SurvivalSafe:
-    (false, StatusCold)
-
 proc elevationStatusBadge(delta: int): tuple[found: bool, badge: StatusBadgeKind] =
   if delta >= ElevationCombatThreshold:
     (true, StatusHighGround)
@@ -2332,27 +2317,56 @@ proc elevationStatusBadge(delta: int): tuple[found: bool, badge: StatusBadgeKind
   else:
     (false, StatusHighGround)
 
-proc biomeTacticStatusBadge(
-  kind: BiomeTacticKind
+proc compactWorldEffects(
+  effects: seq[PlayerEffectInfo]
+): seq[PlayerEffectInfo] =
+  ## Keeps in-world effect art to one readable player signal; the full list
+  ## stays in the top-right HUD.
+  for effect in effects:
+    if effect.harmful:
+      result.add(effect)
+      return
+  for effect in effects:
+    case effect.key
+    of "guard", "blessing", "route", "guide", "hunt", "triumph":
+      result.add(effect)
+      return
+    else:
+      discard
+
+proc effectStatusBadge(
+  effect: PlayerEffectInfo
 ): tuple[found: bool, badge: StatusBadgeKind] =
-  case kind
-  of BiomeTacticMastery:
-    (true, StatusBlessing)
-  of BiomeTacticForage:
-    (true, StatusForage)
-  of BiomeTacticRally:
-    (true, StatusRally)
-  of BiomeTacticShade:
-    (true, StatusShade)
-  of BiomeTacticWarmth:
-    (true, StatusWarmth)
-  of BiomeTacticLight:
-    (true, StatusLight)
-  of BiomeTacticGuard:
+  case effect.key
+  of "poison":
+    (true, StatusPoison)
+  of "slow":
+    (true, StatusSlow)
+  of "chill":
+    (true, StatusChill)
+  of "exhaustion":
+    (true, StatusExhaustion)
+  of "mire":
+    (true, StatusMire)
+  of "cold":
+    (true, StatusCold)
+  of "heat":
+    (true, StatusHeat)
+  of "fog":
+    (true, StatusFog)
+  of "guard":
     (true, StatusGuard)
-  of BiomeTacticBlessing:
+  of "blessing":
     (true, StatusBlessing)
-  of BiomeTacticNone:
+  of "route":
+    (true, StatusRoute)
+  of "guide":
+    (true, StatusGuide)
+  of "hunt":
+    (true, StatusHunt)
+  of "triumph":
+    (true, StatusTriumph)
+  else:
     (false, StatusForage)
 
 proc threatBadges(species: MobSpecies): seq[StatusBadgeKind] =
@@ -3086,8 +3100,10 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   result = @[]
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, PlayerViewportWidth, PlayerViewportHeight)
+  result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+  result.addViewport(TopLeftLayerId, PlayerViewportWidth, 72)
   result.addLayer(TopRightLayerId, TopRightLayerType, UiLayerFlag)
-  result.addViewport(TopRightLayerId, 132, 52)
+  result.addViewport(TopRightLayerId, 172, 96)
   sim.addMapSpriteDefinitions(result)
   result.addCommonSpriteDefinitions(sim)
 
@@ -3633,6 +3649,11 @@ proc addWorldObjects(
       objectId = player.playerObjectId()
       playerSprite = sim.playerRgbaSpriteFor(player)
       downed = sim.playerDowned(i)
+      worldEffects =
+        if downed:
+          newSeq[PlayerEffectInfo]()
+        else:
+          sim.activePlayerEffects(i).compactWorldEffects()
     if player.lives <= 0 and not downed:
       continue
     objects.addWorldSpriteObject(
@@ -3652,10 +3673,9 @@ proc addWorldObjects(
       viewportHeight
     )
     if not downed:
-      let effects = sim.activePlayerEffects(i)
-      for effectIndex in 0 ..< min(effects.len, PlayerEffectAuraSlots):
+      for effectIndex in 0 ..< min(worldEffects.len, PlayerEffectAuraSlots):
         let
-          effect = effects[effectIndex]
+          effect = worldEffects[effectIndex]
           centerX = boundsCenterX(player.x, player.bounds)
           centerY = boundsCenterY(player.y, player.bounds)
           offsetX =
@@ -3759,38 +3779,14 @@ proc addWorldObjects(
         badges.add(roleBadge.badge)
       if sim.playerInTrioFormation(i):
         badges.add(StatusTrio)
-      let tacticBadge = sim.playerBiomeTacticKind(i).biomeTacticStatusBadge()
-      if tacticBadge.found:
-        badges.add(tacticBadge.badge)
-      if player.routeTicks > 0:
-        badges.add(StatusRoute)
-      if player.surveyTicks > 0:
-        badges.add(StatusSurvey)
-      if player.guideTicks > 0:
-        badges.add(StatusGuide)
-      if player.huntTicks > 0:
-        badges.add(StatusHunt)
-      if player.triumphTicks > 0:
-        badges.add(StatusTriumph)
-      if player.rationTicks > 0:
-        badges.add(StatusRation)
-      if player.moraleTicks > 0:
-        badges.add(StatusMorale)
-      let survivalBadge = sim.survivalPressureKind(i).survivalStatusBadge()
-      if survivalBadge.found:
-        badges.add(survivalBadge.badge)
-      if player.poisonTicks > 0:
-        badges.add(StatusPoison)
-      if player.slowTicks > 0:
-        badges.add(StatusSlow)
-      if player.chillTicks > 0:
-        badges.add(StatusChill)
-      if player.exhaustionTicks > 0:
-        badges.add(StatusExhaustion)
-      if sim.playerIsolationThreatened(i):
-        badges.add(StatusAlone)
       if sim.playerNeedsHelp(i):
         badges.add(StatusHelp)
+      elif sim.playerIsolationThreatened(i):
+        badges.add(StatusAlone)
+      if worldEffects.len > 0:
+        let effectBadge = worldEffects[0].effectStatusBadge()
+        if effectBadge.found:
+          badges.add(effectBadge.badge)
       if player.pingTicks > 0 and player.pingKind != PingNone:
         badges.add(player.pingKind.pingStatusBadge())
     for badgeIndex in 0 ..< badges.len:
@@ -3899,19 +3895,35 @@ proc addPlayerHud(
         "X HOLD " & ability
       else:
         "X " & ability
-    tacticLabel = sim.playerBiomeTacticLabel(playerIndex).toUpperAscii()
-    partyTacticLabel = sim.playerPartyTacticLabel(playerIndex).toUpperAscii()
     statusLine4 = "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii()
-    statusLine5 =
-      "STATUS " & player.statusLabel().toUpperAscii() & " " &
-        sim.survivalPressureLabel(playerIndex).toUpperAscii() &
-        (if tacticLabel.len > 0: " " & tacticLabel else: "") &
-        (if partyTacticLabel.len > 0: " " & partyTacticLabel else: "")
-    statusLine6 = sim.activePlayerEffectSummary(playerIndex).toUpperAscii()
-    statusLine7 = sim.expeditionObjectiveHint(playerIndex)
-    status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
-      statusLine4 & "|" & statusLine5 & "|" & statusLine6 & "|" & statusLine7
     effectLines = sim.activePlayerEffectLines(playerIndex)
+    statusWarning =
+      block:
+        var pieces: seq[string] = @[]
+        let statusLabel = player.statusLabel().toUpperAscii()
+        if statusLabel != "OK":
+          pieces.add(statusLabel)
+        let survivalLabel = sim.survivalPressureLabel(playerIndex).toUpperAscii()
+        if survivalLabel != "SAFE":
+          pieces.add(survivalLabel)
+        if pieces.len > 0:
+          "WARN " & pieces.join(" ")
+        else:
+          ""
+    objectiveLine = sim.expeditionObjectiveHint(playerIndex)
+    statusLines =
+      block:
+        var lines = @[
+          statusLine1,
+          statusLine2,
+          statusLine3,
+          statusLine4
+        ]
+        if statusWarning.len > 0:
+          lines.add(statusWarning)
+        lines.add(objectiveLine)
+        lines
+    status = statusLines.join("|")
     armorStatus = player.armorHudLabel() & "|" & effectLines.join("|")
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
@@ -3931,7 +3943,7 @@ proc addPlayerHud(
     2,
     2,
     high(int16),
-    MapLayerId,
+    TopLeftLayerId,
     CoinsHudSpriteId
   )
   currentIds.add(LivesHudObjectId)
@@ -3952,21 +3964,13 @@ proc addPlayerHud(
     2,
     2 + sim.textFont.height + HudGap,
     high(int16),
-    MapLayerId,
+    TopLeftLayerId,
     LivesHudSpriteId
   )
   currentIds.add(StatusHudObjectId)
   if state.hudStatus != status:
     let statusText = sim.buildSpriteProtocolTextSprite(
-      [
-        statusLine1,
-        statusLine2,
-        statusLine3,
-        statusLine4,
-        statusLine5,
-        statusLine6,
-        statusLine7
-      ],
+      statusLines,
       2'u8
     )
     packet.addSprite(
@@ -3981,7 +3985,7 @@ proc addPlayerHud(
     2,
     2 + (sim.textFont.height + HudGap) * 2,
     high(int16),
-    MapLayerId,
+    TopLeftLayerId,
     StatusHudSpriteId
   )
   currentIds.add(ArmorHudObjectId)
