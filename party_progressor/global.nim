@@ -46,6 +46,7 @@ const
   RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
   LandmarkShelterSpriteId = LandmarkSpriteBase + ord(high(LandmarkKind)) + 1
   StatusBadgeSpriteBase = 1600
+  PlayerEffectAuraSpriteBase = 1660
   LandmarkPromptSpriteBase = 880
   LandmarkShelterPromptSpriteId =
     LandmarkPromptSpriteBase + ord(high(LandmarkKind)) + 1
@@ -81,15 +82,18 @@ const
   VisibilityShadowObjectId = 19000
   GuideObjectBase = 19200
   GuideBubbleObjectBase = 19300
+  PlayerEffectAuraObjectBase = 19400
   CarryCountSpriteBase = 1400
   ArmorSpriteBase = 1460
   GuideSpriteId = 1479
   GuideBubbleSpriteBase = 1480
   CarryObjectStride = 8
   StatusBadgeSlots = 18
+  PlayerEffectAuraSlots = 4
   WeatherOverlaySlots = 56
   MobAttackEffectSize = 28
   RoleAbilityEffectSize = 48
+  PlayerEffectAuraSize = 42
   CarryHudSlotGap = 4
   HealthBarWidth = 18
   HealthBarHeight = 5
@@ -1475,8 +1479,14 @@ proc roleAbilityEffectObjectId(player: Actor): int =
 proc dpsBeamObjectId(player: Actor): int =
   DpsBeamObjectBase + player.id
 
+proc playerEffectAuraObjectId(player: Actor, index: int): int =
+  PlayerEffectAuraObjectBase + player.id * PlayerEffectAuraSlots + index
+
 proc roleAbilityEffectSpriteId(role: PlayerRole): int =
   RoleAbilityEffectSpriteBase + ord(role)
+
+proc playerEffectAuraSpriteId(kind: PlayerEffectVisualKind): int =
+  PlayerEffectAuraSpriteBase + ord(kind)
 
 proc dpsBeamSpriteId(facing: Facing): int =
   if facing in {FaceLeft, FaceRight}:
@@ -1527,6 +1537,33 @@ proc mobAttackEffectLabel(
 
 proc roleAbilityEffectLabel(role: PlayerRole): string =
   "ability " & role.roleLabel() & " effect"
+
+proc playerEffectAuraLabel(kind: PlayerEffectVisualKind): string =
+  case kind
+  of EffectVisualPoison: "effect aura poison"
+  of EffectVisualSlow: "effect aura slow"
+  of EffectVisualChill: "effect aura chill"
+  of EffectVisualExhaustion: "effect aura exhaustion"
+  of EffectVisualMire: "effect aura mire"
+  of EffectVisualCold: "effect aura cold"
+  of EffectVisualHeat: "effect aura heat"
+  of EffectVisualFog: "effect aura fog"
+  of EffectVisualRoute: "effect aura route"
+  of EffectVisualSurvey: "effect aura survey"
+  of EffectVisualGuide: "effect aura guide"
+  of EffectVisualHunt: "effect aura hunt"
+  of EffectVisualTriumph: "effect aura triumph"
+  of EffectVisualRation: "effect aura ration"
+  of EffectVisualMorale: "effect aura morale"
+  of EffectVisualMastery: "effect aura mastery"
+  of EffectVisualGuard: "effect aura guard"
+  of EffectVisualBlessing: "effect aura blessing"
+  of EffectVisualForage: "effect aura forage"
+  of EffectVisualRally: "effect aura rally"
+  of EffectVisualShade: "effect aura shade"
+  of EffectVisualWarmth: "effect aura warmth"
+  of EffectVisualLight: "effect aura light"
+  of EffectVisualTrio: "effect aura trio"
 
 proc roleAbilityEffectColor(
   role: PlayerRole
@@ -1825,6 +1862,256 @@ proc buildRoleAbilityEffectSprite(
           result.pixels.putEffectPixel(result.width, result.height, x, y, color)
   of RoleUnarmed:
     discard
+
+proc playerEffectAuraColors(
+  kind: PlayerEffectVisualKind
+): tuple[main, core, shade: tuple[r, g, b, a: uint8]] =
+  case kind
+  of EffectVisualPoison:
+    (
+      main: (r: 190'u8, g: 68'u8, b: 210'u8, a: 205'u8),
+      core: (r: 114'u8, g: 238'u8, b: 130'u8, a: 235'u8),
+      shade: (r: 70'u8, g: 42'u8, b: 96'u8, a: 145'u8)
+    )
+  of EffectVisualSlow, EffectVisualMire:
+    (
+      main: (r: 85'u8, g: 146'u8, b: 87'u8, a: 210'u8),
+      core: (r: 188'u8, g: 231'u8, b: 132'u8, a: 235'u8),
+      shade: (r: 70'u8, g: 52'u8, b: 34'u8, a: 150'u8)
+    )
+  of EffectVisualChill, EffectVisualCold, EffectVisualWarmth:
+    (
+      main: (r: 68'u8, g: 205'u8, b: 214'u8, a: 210'u8),
+      core: (r: 230'u8, g: 252'u8, b: 255'u8, a: 238'u8),
+      shade: (r: 67'u8, g: 118'u8, b: 174'u8, a: 150'u8)
+    )
+  of EffectVisualExhaustion, EffectVisualFog:
+    (
+      main: (r: 154'u8, g: 164'u8, b: 176'u8, a: 198'u8),
+      core: (r: 246'u8, g: 248'u8, b: 252'u8, a: 226'u8),
+      shade: (r: 62'u8, g: 68'u8, b: 80'u8, a: 132'u8)
+    )
+  of EffectVisualHeat, EffectVisualShade:
+    (
+      main: (r: 255'u8, g: 167'u8, b: 62'u8, a: 215'u8),
+      core: (r: 255'u8, g: 235'u8, b: 124'u8, a: 238'u8),
+      shade: (r: 184'u8, g: 58'u8, b: 42'u8, a: 150'u8)
+    )
+  of EffectVisualHunt:
+    (
+      main: (r: 224'u8, g: 64'u8, b: 79'u8, a: 220'u8),
+      core: (r: 255'u8, g: 232'u8, b: 160'u8, a: 240'u8),
+      shade: (r: 120'u8, g: 24'u8, b: 42'u8, a: 150'u8)
+    )
+  of EffectVisualGuard, EffectVisualLight, EffectVisualRoute, EffectVisualSurvey:
+    (
+      main: (r: 84'u8, g: 141'u8, b: 255'u8, a: 215'u8),
+      core: (r: 218'u8, g: 236'u8, b: 255'u8, a: 238'u8),
+      shade: (r: 38'u8, g: 54'u8, b: 112'u8, a: 145'u8)
+    )
+  of EffectVisualGuide, EffectVisualBlessing, EffectVisualForage:
+    (
+      main: (r: 86'u8, g: 210'u8, b: 122'u8, a: 215'u8),
+      core: (r: 230'u8, g: 255'u8, b: 220'u8, a: 238'u8),
+      shade: (r: 38'u8, g: 94'u8, b: 64'u8, a: 145'u8)
+    )
+  of EffectVisualTriumph, EffectVisualRation, EffectVisualMorale,
+      EffectVisualMastery, EffectVisualRally, EffectVisualTrio:
+    (
+      main: (r: 255'u8, g: 222'u8, b: 74'u8, a: 220'u8),
+      core: (r: 255'u8, g: 250'u8, b: 198'u8, a: 242'u8),
+      shade: (r: 142'u8, g: 96'u8, b: 28'u8, a: 150'u8)
+    )
+
+proc buildPlayerEffectAuraSprite(
+  kind: PlayerEffectVisualKind
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a translucent in-world marker for material buffs and debuffs.
+  result.width = PlayerEffectAuraSize
+  result.height = PlayerEffectAuraSize
+  result.pixels = newRgbaPixels(result.width, result.height)
+  let
+    center = PlayerEffectAuraSize div 2
+    colors = kind.playerEffectAuraColors()
+  for y in 0 ..< result.height:
+    for x in 0 ..< result.width:
+      let
+        dx = x - center
+        dy = y - center
+        distanceSq = dx * dx + dy * dy
+        manhattan = abs(dx) + abs(dy)
+      case kind
+      of EffectVisualSlow, EffectVisualMire:
+        if y >= center + 7 and abs(dx) <= 15 and (x + y) mod 3 != 0:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.shade
+          )
+        elif distanceSq in 320 .. 380 and y >= center - 4:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+      of EffectVisualPoison:
+        if distanceSq in 250 .. 330 and (x * 5 + y * 7) mod 5 != 0:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+        elif manhattan in 7 .. 9 and (x + y) mod 2 == 0:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.core
+          )
+      of EffectVisualChill, EffectVisualCold, EffectVisualWarmth:
+        if distanceSq in 300 .. 360:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+        if abs(dx) <= 1 or abs(dy) <= 1 or abs(abs(dx) - abs(dy)) <= 1:
+          if manhattan in 8 .. 18 and (x + y) mod 3 != 0:
+            result.pixels.putEffectPixel(
+              result.width,
+              result.height,
+              x,
+              y,
+              colors.core
+            )
+      of EffectVisualHeat, EffectVisualShade:
+        if distanceSq in 270 .. 350 and y <= center + 10:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+        if y < center and abs(dx) <= (center - y) div 2 and (x + y) mod 2 == 0:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.core
+          )
+      of EffectVisualExhaustion, EffectVisualFog:
+        if abs(dy) <= 6 and abs(dx) <= 17 and (x + y) mod 4 != 0:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.shade
+          )
+        if distanceSq in 310 .. 390 and (x * 3 + y) mod 3 != 0:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+      of EffectVisualHunt:
+        if distanceSq in 280 .. 340 or abs(dx) <= 1 or abs(dy) <= 1:
+          if manhattan <= 19:
+            result.pixels.putEffectPixel(
+              result.width,
+              result.height,
+              x,
+              y,
+              if abs(dx) <= 1 or abs(dy) <= 1: colors.core else: colors.main
+            )
+      of EffectVisualGuard:
+        if y >= center - 15 and y <= center + 13 and
+            abs(dx) <= 15 - max(0, y - center) div 2 and
+            (abs(dx) in 13 .. 15 or y in center - 15 .. center - 13 or
+              y in center + 11 .. center + 13):
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+      of EffectVisualBlessing, EffectVisualGuide, EffectVisualForage:
+        if distanceSq in 300 .. 360:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+        if (abs(dx) <= 2 and abs(dy) <= 13) or
+            (abs(dy) <= 2 and abs(dx) <= 13):
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.core
+          )
+      of EffectVisualRoute, EffectVisualSurvey, EffectVisualLight:
+        if distanceSq in 300 .. 360:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+        if abs(dy) <= 2 and dx in -15 .. 12:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.core
+          )
+        if dx in 8 .. 15 and abs(dy) <= 15 - dx:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.core
+          )
+      of EffectVisualTriumph, EffectVisualRation, EffectVisualMorale,
+          EffectVisualMastery, EffectVisualRally, EffectVisualTrio:
+        if distanceSq in 300 .. 360:
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.main
+          )
+        if (abs(dx) <= 2 and abs(dy) <= 15) or
+            (abs(dy) <= 2 and abs(dx) <= 15) or
+            (abs(abs(dx) - abs(dy)) <= 1 and manhattan <= 18):
+          result.pixels.putEffectPixel(
+            result.width,
+            result.height,
+            x,
+            y,
+            colors.core
+          )
 
 proc buildDpsBeamSprite(
   horizontal: bool
@@ -2455,6 +2742,16 @@ proc addCommonSpriteDefinitions(packet: var seq[uint8], sim: SimServer) =
       text.height,
       text.pixels,
       kind.statusBadgeSpriteLabel()
+    )
+
+  for kind in PlayerEffectVisualKind:
+    let effect = kind.buildPlayerEffectAuraSprite()
+    packet.addSprite(
+      kind.playerEffectAuraSpriteId(),
+      effect.width,
+      effect.height,
+      effect.pixels,
+      kind.playerEffectAuraLabel()
     )
 
   for style in MobAttackStyle:
@@ -3354,6 +3651,37 @@ proc addWorldObjects(
       viewportWidth,
       viewportHeight
     )
+    if not downed:
+      let effects = sim.activePlayerEffects(i)
+      for effectIndex in 0 ..< min(effects.len, PlayerEffectAuraSlots):
+        let
+          effect = effects[effectIndex]
+          centerX = boundsCenterX(player.x, player.bounds)
+          centerY = boundsCenterY(player.y, player.bounds)
+          offsetX =
+            case effectIndex
+            of 1: -5
+            of 2: 5
+            else: 0
+          offsetY =
+            case effectIndex
+            of 0: 0
+            of 1, 2: 3
+            else: -5
+          effectX = centerX - PlayerEffectAuraSize div 2 + offsetX - cameraX
+          effectY = centerY - PlayerEffectAuraSize div 2 + offsetY - cameraY
+        objects.addWorldSpriteObject(
+          currentIds,
+          player.playerEffectAuraObjectId(effectIndex),
+          effectX,
+          effectY,
+          effect.visual.playerEffectAuraSpriteId(),
+          PlayerEffectAuraSize,
+          PlayerEffectAuraSize,
+          viewportWidth,
+          viewportHeight,
+          player.y - cameraY + playerSprite.height + 1 + effectIndex
+        )
     if player.activeCarryItem() != CarryNone and not downed:
       let carryUsesHud = useCarryHud and selected
       for item in CarryInventoryKinds:
@@ -3579,10 +3907,12 @@ proc addPlayerHud(
         sim.survivalPressureLabel(playerIndex).toUpperAscii() &
         (if tacticLabel.len > 0: " " & tacticLabel else: "") &
         (if partyTacticLabel.len > 0: " " & partyTacticLabel else: "")
-    statusLine6 = sim.expeditionObjectiveHint(playerIndex)
+    statusLine6 = sim.activePlayerEffectSummary(playerIndex).toUpperAscii()
+    statusLine7 = sim.expeditionObjectiveHint(playerIndex)
     status = statusLine1 & "|" & statusLine2 & "|" & statusLine3 & "|" &
-      statusLine4 & "|" & statusLine5 & "|" & statusLine6
-    armorStatus = player.armorHudLabel()
+      statusLine4 & "|" & statusLine5 & "|" & statusLine6 & "|" & statusLine7
+    effectLines = sim.activePlayerEffectLines(playerIndex)
+    armorStatus = player.armorHudLabel() & "|" & effectLines.join("|")
   currentIds.add(CoinsHudObjectId)
   if state.hudCoins != frontier:
     let coinText = sim.buildSpriteProtocolTextSprite(
@@ -3634,7 +3964,8 @@ proc addPlayerHud(
         statusLine3,
         statusLine4,
         statusLine5,
-        statusLine6
+        statusLine6,
+        statusLine7
       ],
       2'u8
     )
@@ -3668,6 +3999,8 @@ proc addPlayerHud(
       )
     if not hasArmor:
       armorLines.add("NONE")
+    for effectLine in effectLines:
+      armorLines.add(effectLine.toUpperAscii())
     let armorText = sim.buildSpriteProtocolTextSprite(armorLines, 2'u8)
     packet.addSprite(
       ArmorHudSpriteId,

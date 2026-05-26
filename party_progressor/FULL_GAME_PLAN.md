@@ -283,9 +283,14 @@ Current pressure loops:
   camps, and tank guard as counters.
 - Cave and ruin fog disorients isolated players; grouping, lantern/ward
   waystations, carried gold light, camps, and tank guard counter it.
-- Poison, slow, chill, exhaustion, low health, downed state, help, regroup,
-  guide, route, hunt, morale, ration, triumph, focus, stagger, and role badges
-  are visible through compact in-world status markers.
+- Poison, slow, chill, exhaustion, biome pressure, guide, route, hunt, morale,
+  ration, triumph, mastery, forage/rally/shade/warmth/light, and guard/blessing
+  are now modeled as active player effects with short descriptions. The player
+  HUD shows a compact `FX` summary, the top-right panel lists the active effects
+  with their practical impact, and the sprite layer draws translucent in-world
+  effect auras around affected players.
+- Low health, downed state, help, regroup, focus, stagger, role, and chat pings
+  still use compact in-world status markers where labels are the clearest signal.
 
 Chat is part of the readability layer. Short player messages such as regroup,
 help, relic, camp, food, rescue, and lair create temporary in-world ping badges
@@ -368,7 +373,10 @@ Implementation direction:
 - Ensure carried inventory stays tiled along the bottom and never over the
   controlled adventurer.
 - Keep the top-left HUD concise: role, HP, frontier, resources, objective,
-  ability state, and survival warning only when relevant.
+  ability state, survival warning, and a short effect summary only when relevant.
+- Keep material buffs/debuffs dual-coded: graphical auras for fast recognition
+  plus top-right descriptions such as `SLOW move 62%`, `COLD food or hp`, or
+  `HUNT +1 dmg`.
 - Make hold actions visibly fill or change text while active: healer pulse,
   relics, rescues, waystations, lairs, and final gate.
 

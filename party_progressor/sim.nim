@@ -569,6 +569,37 @@ type
     BiomeTacticGuard
     BiomeTacticBlessing
 
+  PlayerEffectVisualKind* = enum
+    EffectVisualPoison
+    EffectVisualSlow
+    EffectVisualChill
+    EffectVisualExhaustion
+    EffectVisualMire
+    EffectVisualCold
+    EffectVisualHeat
+    EffectVisualFog
+    EffectVisualRoute
+    EffectVisualSurvey
+    EffectVisualGuide
+    EffectVisualHunt
+    EffectVisualTriumph
+    EffectVisualRation
+    EffectVisualMorale
+    EffectVisualMastery
+    EffectVisualGuard
+    EffectVisualBlessing
+    EffectVisualForage
+    EffectVisualRally
+    EffectVisualShade
+    EffectVisualWarmth
+    EffectVisualLight
+    EffectVisualTrio
+
+  PlayerEffectInfo* = object
+    key*, label*, description*: string
+    harmful*: bool
+    visual*: PlayerEffectVisualKind
+
   GroundKind* = enum
     GroundGrass
     GroundRoad
@@ -7428,6 +7459,210 @@ proc playerBiomeTacticKind*(
 proc playerBiomeTacticLabel*(sim: SimServer, playerIndex: int): string =
   sim.playerBiomeTacticKind(playerIndex).biomeTacticLabel()
 
+proc addPlayerEffect(
+  effects: var seq[PlayerEffectInfo],
+  key,
+  label,
+  description: string,
+  visual: PlayerEffectVisualKind,
+  harmful = false
+) =
+  effects.add(PlayerEffectInfo(
+    key: key,
+    label: label,
+    description: description,
+    harmful: harmful,
+    visual: visual
+  ))
+
+proc activePlayerEffects*(
+  sim: SimServer,
+  playerIndex: int
+): seq[PlayerEffectInfo] =
+  ## Returns every material buff, pressure, and debuff currently affecting a
+  ## player, with player-facing text and a visual category for sprite clients.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let player = sim.players[playerIndex]
+  if player.lives <= 0:
+    return
+
+  case sim.survivalPressureKind(playerIndex)
+  of SurvivalMire:
+    result.addPlayerEffect(
+      "mire",
+      "MIRE",
+      "mud slow",
+      EffectVisualMire,
+      harmful = true
+    )
+  of SurvivalCold:
+    result.addPlayerEffect(
+      "cold",
+      "COLD",
+      "food or hp",
+      EffectVisualCold,
+      harmful = true
+    )
+  of SurvivalHeat:
+    result.addPlayerEffect(
+      "heat",
+      "HEAT",
+      "food or hp",
+      EffectVisualHeat,
+      harmful = true
+    )
+  of SurvivalFog:
+    result.addPlayerEffect(
+      "fog",
+      "FOG",
+      "alone slows",
+      EffectVisualFog,
+      harmful = true
+    )
+  of SurvivalSafe:
+    discard
+
+  if player.poisonTicks > 0:
+    result.addPlayerEffect(
+      "poison",
+      "POISON",
+      "hp drain",
+      EffectVisualPoison,
+      harmful = true
+    )
+  if player.slowTicks > 0:
+    result.addPlayerEffect(
+      "slow",
+      "SLOW",
+      "move " & $StatusSlowSpeedPercent & "%",
+      EffectVisualSlow,
+      harmful = true
+    )
+  if player.chillTicks > 0:
+    result.addPlayerEffect(
+      "chill",
+      "CHILL",
+      "move " & $StatusChillSpeedPercent & "%",
+      EffectVisualChill,
+      harmful = true
+    )
+  if player.exhaustionTicks > 0:
+    result.addPlayerEffect(
+      "exhaustion",
+      "TIRED",
+      "move " & $StatusExhaustionSpeedPercent & "%",
+      EffectVisualExhaustion,
+      harmful = true
+    )
+
+  case sim.playerBiomeTacticKind(playerIndex)
+  of BiomeTacticMastery:
+    result.addPlayerEffect(
+      "mastery",
+      "MASTERY",
+      "safe fast",
+      EffectVisualMastery
+    )
+  of BiomeTacticForage:
+    result.addPlayerEffect(
+      "forage",
+      "FORAGE",
+      "food trickle",
+      EffectVisualForage
+    )
+  of BiomeTacticRally:
+    result.addPlayerEffect(
+      "rally",
+      "RALLY",
+      "cooldowns",
+      EffectVisualRally
+    )
+  of BiomeTacticShade:
+    result.addPlayerEffect("shade", "SHADE", "heat safe", EffectVisualShade)
+  of BiomeTacticWarmth:
+    result.addPlayerEffect("warmth", "WARM", "cold safe", EffectVisualWarmth)
+  of BiomeTacticLight:
+    result.addPlayerEffect("light", "LIGHT", "fog safe", EffectVisualLight)
+  of BiomeTacticGuard:
+    result.addPlayerEffect(
+      "guard",
+      "GUARD",
+      "blocks hazard",
+      EffectVisualGuard
+    )
+  of BiomeTacticBlessing:
+    result.addPlayerEffect(
+      "blessing",
+      "BLESS",
+      "cleanses",
+      EffectVisualBlessing
+    )
+  of BiomeTacticNone:
+    discard
+
+  if sim.playerInTrioFormation(playerIndex):
+    result.addPlayerEffect("trio", "TRIO", "cooldowns", EffectVisualTrio)
+  if player.routeTicks > 0:
+    result.addPlayerEffect("route", "ROUTE", "speed floor", EffectVisualRoute)
+  if player.surveyTicks > 0:
+    result.addPlayerEffect("survey", "SCOUT", "rough speed", EffectVisualSurvey)
+  if player.guideTicks > 0:
+    result.addPlayerEffect(
+      "guide",
+      "GUIDE",
+      "speed cleanse",
+      EffectVisualGuide
+    )
+  if player.huntTicks > 0:
+    result.addPlayerEffect("hunt", "HUNT", "+1 dmg", EffectVisualHunt)
+  if player.triumphTicks > 0:
+    result.addPlayerEffect("triumph", "WIN", "invuln", EffectVisualTriumph)
+  if player.rationTicks > 0:
+    result.addPlayerEffect(
+      "ration",
+      "MEAL",
+      "weather buffer",
+      EffectVisualRation
+    )
+  if player.moraleTicks > 0:
+    result.addPlayerEffect(
+      "morale",
+      "MORALE",
+      "speed cooldown",
+      EffectVisualMorale
+    )
+
+proc activePlayerEffectSummary*(
+  sim: SimServer,
+  playerIndex: int,
+  maxEffects = 4
+): string =
+  ## Returns a compact one-line effect legend for the local HUD.
+  let effects = sim.activePlayerEffects(playerIndex)
+  if effects.len == 0:
+    return "FX none"
+  var pieces: seq[string] = @[]
+  let visibleCount = min(maxEffects, effects.len)
+  for i in 0 ..< visibleCount:
+    pieces.add(effects[i].label & " " & effects[i].description)
+  if effects.len > visibleCount:
+    pieces.add("+" & $(effects.len - visibleCount))
+  "FX " & pieces.join(" | ")
+
+proc activePlayerEffectLines*(
+  sim: SimServer,
+  playerIndex: int
+): seq[string] =
+  ## Returns a full effect list for the top-right player HUD panel.
+  result.add("EFFECTS")
+  let effects = sim.activePlayerEffects(playerIndex)
+  if effects.len == 0:
+    result.add("none")
+    return
+  for effect in effects:
+    result.add(effect.label & " " & effect.description)
+
 proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
   if sim.playerHasWeatherRation(playerIndex):
     return true
@@ -8093,9 +8328,16 @@ proc renderHud*(sim: var SimServer, playerIndex: int) =
   )
   sim.fb.drawText(
     sim.textFont,
-    sim.expeditionObjectiveHint(playerIndex),
+    sim.activePlayerEffectSummary(playerIndex).toUpperAscii(),
     0,
     lineY * 8,
+    2'u8
+  )
+  sim.fb.drawText(
+    sim.textFont,
+    sim.expeditionObjectiveHint(playerIndex),
+    0,
+    lineY * 9,
     2'u8
   )
 

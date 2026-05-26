@@ -2164,6 +2164,9 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "status poison" in labels
   doAssert "status slow" in labels
   doAssert "status chill" in labels
+  doAssert "effect aura poison" in labels
+  doAssert "effect aura slow" in labels
+  doAssert "effect aura chill" in labels
   doAssert "status alone" in labels
   doAssert "status help" in labels
   doAssert "status down" in labels
@@ -2185,6 +2188,25 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
 
   let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
     it.label
+  )
+  let effectSummary = sim.activePlayerEffectSummary(playerIndex).toUpperAscii()
+  doAssert effectSummary.contains("POISON HP DRAIN")
+  doAssert effectSummary.contains("SLOW MOVE 62%")
+  doAssert effectSummary.contains("CHILL MOVE 78%")
+  let effectLines = sim.activePlayerEffectLines(playerIndex).mapIt(
+    it.toUpperAscii()
+  )
+  doAssert "EFFECTS" in effectLines
+  doAssert "POISON HP DRAIN" in effectLines
+  doAssert "SLOW MOVE 62%" in effectLines
+  doAssert "CHILL MOVE 78%" in effectLines
+  doAssert spriteLabels.anyIt(
+    it.toUpperAscii().contains("FX POISON HP DRAIN") and
+      it.toUpperAscii().contains("SLOW MOVE 62%")
+  )
+  doAssert spriteLabels.anyIt(
+    it.toUpperAscii().contains("EFFECTS") and
+      it.toUpperAscii().contains("POISON HP DRAIN")
   )
   doAssert spriteLabels.anyIt(it.contains("CARRY FOOD SEL EAT"))
   doAssert "prompt bridge t" in spriteLabels
