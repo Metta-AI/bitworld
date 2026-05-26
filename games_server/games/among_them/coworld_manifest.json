@@ -375,11 +375,59 @@
   },
   "player": [
     {
+      "id": "evidencebot_v2",
+      "name": "evidencebot_v2",
+      "type": "player",
+      "description": "Stronger deterministic Among Them visual player with evidence tracking and task routing.",
+      "source_url": "https://github.com/Metta-AI/bitworld/tree/master/among_them/players/evidencebot_v2",
+      "image": "ghcr.io/treeform/bitworld-evidencebot-v2:latest",
+      "run": [
+        "/bin/evidencebot_v2"
+      ]
+    },
+    {
+      "id": "italkalot",
+      "name": "italkalot",
+      "type": "player",
+      "description": "LLM-guided Among Them player that talks and votes using live game observations.",
+      "source_url": "https://github.com/Metta-AI/bitworld/tree/master/among_them/players/italkalot",
+      "image": "ghcr.io/treeform/bitworld-italkalot:latest",
+      "run": [
+        "/bin/italkalot"
+      ]
+    },
+    {
+      "id": "ivotewell",
+      "name": "ivotewell",
+      "type": "player",
+      "description": "Deterministic Among Them player focused on voting and smoke-test episodes.",
+      "source_url": "https://github.com/Metta-AI/bitworld/tree/master/among_them/players/ivotewell",
+      "image": "ghcr.io/treeform/bitworld-ivotewell:latest",
+      "run": [
+        "/bin/ivotewell"
+      ]
+    },
+    {
+      "id": "lively_lecun",
+      "name": "lively_lecun",
+      "type": "player",
+      "description": "Go-based Among Them visual player inspired by the nottoodumb perception stack.",
+      "source_url": "https://github.com/Metta-AI/bitworld/tree/master/among_them/players/lively_lecun",
+      "image": "ghcr.io/treeform/bitworld-lively-lecun:latest",
+      "run": [
+        "/bin/lively_lecun"
+      ]
+    },
+    {
       "id": "nottoodumb",
       "name": "nottoodumb",
       "type": "player",
-      "description": "Deterministic baseline Among Them player used for local smoke episodes.",
-      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest"
+      "description": "Compact deterministic baseline Among Them visual player.",
+      "source_url": "https://github.com/Metta-AI/bitworld/tree/master/among_them/players/nottoodumb",
+      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest",
+      "run": [
+        "/bin/nottoodumb"
+      ]
     }
   ],
   "variants": [
@@ -409,28 +457,28 @@
   "certification": {
     "players": [
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       },
       {
-        "player_id": "nottoodumb"
+        "player_id": "ivotewell"
       }
     ],
     "game_config": {

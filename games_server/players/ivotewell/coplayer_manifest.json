@@ -1,0 +1,12 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "ivotewell",
+  "description": "Deterministic Among Them player focused on voting and smoke-test episodes.",
+  "image_uri": "ghcr.io/treeform/bitworld-ivotewell:latest",
+  "games": [
+    "among_them"
+  ],
+  "run": [
+    "/bin/ivotewell"
+  ]
+}

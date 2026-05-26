@@ -1,0 +1,12 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "italkalot",
+  "description": "LLM-guided Among Them player that talks and votes using live game observations.",
+  "image_uri": "ghcr.io/treeform/bitworld-italkalot:latest",
+  "games": [
+    "among_them"
+  ],
+  "run": [
+    "/bin/italkalot"
+  ]
+}
