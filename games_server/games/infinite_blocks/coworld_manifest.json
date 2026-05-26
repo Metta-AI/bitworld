@@ -102,10 +102,7 @@
       "runnable": {
         "type": "player",
         "image": "ghcr.io/treeform/bitworld-stacker:latest",
-        "run": [
-          "/bin/stacker",
-          "--address:ws://host.docker.internal:8080/player"
-        ]
+        "run": ["/bin/stacker"]
       }
     }
   ],
