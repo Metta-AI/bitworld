@@ -207,11 +207,10 @@ New tactical families add encounter shape:
 
 ## Current Items, Camps, And Objectives
 
-Party Progressor uses a one-item carry model plus separate equipment. A player
-can hold one expedition item and the player observation tiles carried inventory
-along the lower HUD row with stack counts where relevant. Armor is equipped in
-head, chest, and trinket slots, and the top-right player HUD shows each equipped
-piece with its bonus.
+Party Progressor uses a stacked carry inventory plus separate equipment. The
+player observation tiles carried inventory along the lower HUD row with numeric
+count badges where relevant. Armor is equipped in head, chest, and trinket
+slots, and the top-right player HUD shows equipped armor as icons.
 
 Current carried items and field uses:
 
@@ -254,7 +253,8 @@ persistent mastery boon:
 - Desert and snow mastery reduce harsh-weather survival tax.
 - Cave and ruin mastery reduce fog/exhaustion pressure and help late fights.
 
-Objective types are all visible through sprite labels, prompts, and HUD hints:
+Objective types are visible primarily through world sprites, semantic sprite
+labels, and compact prompts:
 
 - Relic beacons: cooperative attunement, relic shards, route survey, terrain
   softening, local threat pacification, and final-gate prerequisites.
@@ -285,8 +285,8 @@ Current pressure loops:
   waystations, carried gold light, camps, and tank guard counter it.
 - Poison, slow, chill, exhaustion, biome pressure, guide, route, hunt, morale,
   ration, triumph, mastery, rally/shade/warmth/light, and guard/blessing are
-  modeled as active player effects with short descriptions. The top-right panel
-  is the canonical list of active effects and their practical impact.
+  modeled as active player effects. The top-right panel is now an icon strip for
+  active effects instead of a text explanation block.
 - The sprite layer now draws only one urgent in-world effect aura per player,
   preferring harmful effects over boons. Low health, downed state, help,
   regroup, focus, stagger, role, and chat pings still use compact in-world
@@ -294,9 +294,9 @@ Current pressure loops:
 - Forest forage is deliberately passive. It can trickle food in the background,
   but it no longer creates a big green plus, a `FORAGE` HUD line, or a status
   badge until the game teaches it through an explicit choice.
-- The top-left HUD stays short: role/area, HP/frontier, weather/resources,
-  ability, carried item, a warning only when something is wrong, and the next
-  objective. The top-right HUD holds armor and effect descriptions.
+- The top-left HUD is sprite-first: a health bar plus small frontier/resource
+  icons with numeric counters. Visible prose is reserved for chat, count badges,
+  and short teaching prompts that introduce an explicit choice.
 
 Chat is part of the readability layer. Short player messages such as regroup,
 help, relic, camp, food, rescue, and lair create temporary in-world ping badges
@@ -378,12 +378,12 @@ Implementation direction:
 - Keep badge labels compact; prefer fewer stronger signals over stacked text.
 - Ensure carried inventory stays tiled along the bottom and never over the
   controlled adventurer.
-- Keep the top-left HUD concise: role, HP, frontier, resources, objective,
-  ability state, survival warning, and a short effect summary only when relevant.
-- Keep material buffs/debuffs dual-coded: graphical auras for fast recognition
-  plus top-right descriptions such as `SLOW move 62%`, `COLD food or hp`, or
-  `HUNT +1 dmg`.
-- Make hold actions visibly fill or change text while active: healer pulse,
+- Keep the top-left HUD sprite-first: health bar, frontier/resource icons, and
+  numbers only for quantities.
+- Keep material buffs/debuffs dual-coded with sparse in-world auras plus
+  top-right effect icons. Longer explanations belong in docs or explicit
+  teaching moments, not always-on HUD text.
+- Make hold actions visibly fill or animate while active: healer pulse,
   relics, rescues, waystations, lairs, and final gate.
 
 Acceptance signal:
@@ -406,8 +406,8 @@ Implementation direction:
 - Remove or hide passive rules that are not taught in the moment. Forage is the
   model: useful simulation texture, not a player-facing status.
 - Keep in-world badges sparse. A player should see role, urgent danger, party
-  need, and one meaningful active effect, while the detailed explanation lives
-  in the top-right panel.
+  need, and one meaningful active effect, while the top-right panel shows the
+  current armor/effect icon inventory.
 - Make rescued villagers behave like companions: they follow in a line behind
   the player instead of stacking on the same tile, then thank the party at camp.
 - Reintroduce biome and loot complexity only when it creates a visible decision:

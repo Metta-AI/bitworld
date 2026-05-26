@@ -406,6 +406,11 @@ proc objectSpriteLabels(parsed: ParsedPacket): seq[string] =
     if parsed.sprites.hasKey(obj.spriteId):
       result.add(parsed.sprites[obj.spriteId].label)
 
+proc objectSpriteLabelsOnLayer(parsed: ParsedPacket, layer: int): seq[string] =
+  for obj in parsed.objects.values:
+    if obj.layer == layer and parsed.sprites.hasKey(obj.spriteId):
+      result.add(parsed.sprites[obj.spriteId].label)
+
 proc firstSpriteByLabel(parsed: ParsedPacket, label: string): ParsedSprite =
   for sprite in parsed.sprites.values:
     if sprite.label == label:
@@ -1047,9 +1052,8 @@ proc testEarlyBiomeForageAndRallyTactics() =
   ).parseSpriteProtocolPacket()
   let rallyLabels = rallyParsed.objectSpriteLabels()
   doAssert "status rally" notin rallyLabels
-  doAssert rallyParsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("RALLY COOLDOWNS")
-  )
+  doAssert "effect aura rally" in
+    rallyParsed.objectSpriteLabelsOnLayer(TopRightLayerId)
 
   plainsSim.players[rallyPlayer].abilityCooldown = 6
   plainsSim.players[allyPlayer].x += PlainsRallyAllyRadius + WorldTileSize
@@ -1162,11 +1166,16 @@ proc assertSurvivalPressureObservation(
   let labels = parsed.objectSpriteLabels()
   doAssert expectedSpriteLabel in labels,
     "sprite observations should show " & expectedSpriteLabel & " pressure"
-  let statusText = expectedPressure.survivalPressureLabel().toUpperAscii()
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains(statusText)
-  ),
-    "HUD status line should include the active survival pressure"
+  let effectLabel =
+    case expectedPressure
+    of SurvivalMire: "effect aura mire"
+    of SurvivalCold: "effect aura cold"
+    of SurvivalHeat: "effect aura heat"
+    of SurvivalFog: "effect aura fog"
+    of SurvivalSafe: ""
+  if effectLabel.len > 0:
+    doAssert effectLabel in parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+      "top-right effect icons should include the active survival pressure"
 
 proc testSpriteProtocolShowsSurvivalPressureAffordances() =
   assertSurvivalPressureObservation(
@@ -1357,8 +1366,9 @@ proc testSpriteProtocolPacketMatchesReferenceParsers() =
   doAssert visibleLabels.anyIt(it.contains("role tank guard"))
   doAssert visibleLabels.anyIt(it.contains("role dps beam"))
   doAssert visibleLabels.anyIt(it.contains("role heal hold"))
-  doAssert visibleLabels.anyIt(it.contains("NEXT WALK INTO TANK DPS HEAL")),
-    "local HUD should tell new players to walk into role gear"
+  doAssert visibleLabels.anyIt(it == "hud frontier icon")
+  doAssert visibleLabels.anyIt(it.startsWith("hud frontier ")),
+    "local HUD should use sprite-first counters instead of a text instruction block"
   let localPlayerObject =
     parsed.objects[PlayerObjectBase + sim.players[playerIndex].id]
   doAssert parsed.sprites[localPlayerObject.spriteId].label.startsWith(
@@ -1555,6 +1565,25 @@ proc testCarriedFoodStacksAndShowsCount() =
   doAssert parsed.sprites[carryObject.spriteId].label == "food"
   doAssert "carry food x2" in parsed.sprites.values.toSeq.mapIt(it.label),
     "stacked inventory should expose a visible count badge"
+
+  sim.pickups.add(Pickup(
+    x: sim.players[playerIndex].x + PickupCollectionRadius - 2,
+    y: sim.players[playerIndex].y,
+    kind: PickupWood,
+    value: 0
+  ))
+  sim.pickups.add(Pickup(
+    x: sim.players[playerIndex].x,
+    y: sim.players[playerIndex].y + PickupCollectionRadius - 2,
+    kind: PickupStone,
+    value: 0
+  ))
+  sim.step([InputState()])
+  doAssert sim.players[playerIndex].carryCount(CarryFood) == 2
+  doAssert sim.players[playerIndex].carryCount(CarryWood) == 1
+  doAssert sim.players[playerIndex].carryCount(CarryStone) == 1
+  doAssert sim.pickups.len == 0,
+    "nearby carry pickups should all be collected into the bottom inventory"
 
   sim.players[playerIndex].lives =
     sim.players[playerIndex].maxHp - FoodHealAmount
@@ -2021,8 +2050,8 @@ proc testArmorPickupEquipsAndShowsHud() =
     initPlayerViewerState(),
     nextState
   ).parseSpriteProtocolPacket()
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("scale mail")),
-    "player HUD should expose equipped armor and its bonus"
+  doAssert "armor scale mail" in parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "player HUD should expose equipped armor as a top-right icon"
 
 proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   var sim = initPartyProgressorForTest()
@@ -2166,11 +2195,19 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
     initPlayerViewerState(),
     nextState
   )
-  let labels = packet.parseSpriteProtocolPacket().objectSpriteLabels()
+  let parsed = packet.parseSpriteProtocolPacket()
+  let
+    labels = parsed.objectSpriteLabels()
+    mapLabels = parsed.objectSpriteLabelsOnLayer(MapLayerId)
+    topRightLabels = parsed.objectSpriteLabelsOnLayer(TopRightLayerId)
+    topLeftLabels = parsed.objectSpriteLabelsOnLayer(TopLeftLayerId)
   doAssert "status poison" in labels
-  doAssert "effect aura poison" in labels
-  doAssert "effect aura slow" notin labels
-  doAssert "effect aura chill" notin labels
+  doAssert "effect aura poison" in mapLabels
+  doAssert "effect aura slow" notin mapLabels
+  doAssert "effect aura chill" notin mapLabels
+  doAssert "effect aura poison" in topRightLabels
+  doAssert "effect aura slow" in topRightLabels
+  doAssert "effect aura chill" in topRightLabels
   doAssert "status alone" in labels
   doAssert "status help" in labels
   doAssert "status down" in labels
@@ -2190,7 +2227,7 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "prompt forage h" in labels
   doAssert "prompt gate c0/2 r0/3" in labels
 
-  let spriteLabels = packet.parseSpriteProtocolPacket().sprites.values.toSeq.mapIt(
+  let spriteLabels = parsed.sprites.values.toSeq.mapIt(
     it.label
   )
   let effectSummary = sim.activePlayerEffectSummary(playerIndex).toUpperAscii()
@@ -2204,15 +2241,15 @@ proc testSpriteProtocolShowsStatusAndObjectiveAffordances() =
   doAssert "POISON HP DRAIN" in effectLines
   doAssert "SLOW MOVE 62%" in effectLines
   doAssert "CHILL MOVE 78%" in effectLines
-  doAssert spriteLabels.anyIt(
-    it.toUpperAscii().contains("EFFECTS") and
-      it.toUpperAscii().contains("POISON HP DRAIN")
-  )
-  let parsed = packet.parseSpriteProtocolPacket()
-  doAssert parsed.objects[PlayerHudObjectId].layer == TopLeftLayerId
+  doAssert topLeftLabels.anyIt(it.startsWith("hud frontier "))
+  doAssert topLeftLabels.anyIt(it == "hud wood 0")
+  doAssert topLeftLabels.anyIt(it == "hud food 0")
+  doAssert topLeftLabels.allIt(not it.toUpperAscii().contains("AREA"))
+  doAssert topLeftLabels.allIt(not it.toUpperAscii().contains("CARRY"))
+  doAssert not parsed.objects.hasKey(PlayerHudObjectId)
   doAssert parsed.objects[PlayerHudObjectId + 1].layer == TopLeftLayerId
-  doAssert parsed.objects[PlayerHudObjectId + 2].layer == TopLeftLayerId
-  doAssert spriteLabels.anyIt(it.contains("CARRY FOOD SEL EAT"))
+  doAssert not parsed.objects.hasKey(PlayerHudObjectId + 2)
+  doAssert "food" in labels
   doAssert "prompt bridge t" in spriteLabels
   doAssert "prompt oasis h" in spriteLabels
   doAssert "prompt hearth h" in spriteLabels
@@ -3051,10 +3088,9 @@ proc testCampProvisioningConsumesFoodAndImprovesRecovery() =
   ).parseSpriteProtocolPacket()
   let mealLabels = mealParsed.objectSpriteLabels()
   doAssert "status ration" notin mealLabels
-  doAssert mealParsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("MEAL WEATHER BUFFER")
-  ),
-    "HUD status text should make meal rations readable"
+  doAssert "effect aura ration" in
+    mealParsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make meal rations readable"
 
   sim.players[playerIndex].lives =
     sim.players[playerIndex].maxHp - CampProvisionedRecoveryHealAmount
@@ -3332,10 +3368,9 @@ proc testBeaconAndBossScoring() =
   ).parseSpriteProtocolPacket()
   let beaconLabels = beaconParsed.objectSpriteLabels()
   doAssert "status survey" notin beaconLabels
-  doAssert beaconParsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("SCOUT ROUGH SPEED")
-  ),
-    "HUD status text should make beacon survey knowledge readable"
+  doAssert "effect aura survey" in
+    beaconParsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make beacon survey knowledge readable"
   doAssert "beacon" notin beaconLabels
   doAssert "prompt relic" notin beaconLabels
 
@@ -3442,10 +3477,9 @@ proc testBeaconAndBossScoring() =
   ).parseSpriteProtocolPacket()
   let finalLabels = finalParsed.objectSpriteLabels()
   doAssert "status triumph" in finalLabels
-  doAssert finalParsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("WIN INVULN")
-  ),
-    "HUD status text should make final-gate triumph readable"
+  doAssert "effect aura triumph" in
+    finalParsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make final-gate triumph readable"
   doAssert sim.teamScore() ==
     sim.frontierTiles() +
       ObjectiveScoreValue +
@@ -3699,10 +3733,8 @@ proc testRescueSideObjectiveRequiresHoldAndRewardsParty() =
   let labels = parsed.objectSpriteLabels()
   doAssert "status guide" in labels,
     "sprite observations should show when rescue guide knowledge is active"
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("GUIDE SPEED CLEANSE")
-  ),
-    "HUD status text should make rescue guide knowledge readable"
+  doAssert "effect aura guide" in parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make rescue guide knowledge readable"
   doAssert "rescue" notin labels
   doAssert "prompt rescue f2" notin labels
 
@@ -3870,8 +3902,9 @@ proc testCooperativeObjectiveHoldsStackPartyEffort() =
   ).parseSpriteProtocolPacket()
   let moraleLabels = moraleParsed.objectSpriteLabels()
   doAssert "status morale" notin moraleLabels
-  doAssert moraleParsed.sprites.values.toSeq.anyIt(it.label.contains("MORALE")),
-    "HUD status text should make grouped objective morale readable"
+  doAssert "effect aura morale" in
+    moraleParsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make grouped objective morale readable"
   let moraleScores = parseJson(beaconSim.playerScoresJson())
   doAssert moraleScores["morale_ticks"][0].getInt() == ObjectiveMoraleTicks
   beaconSim.players[beaconTank].abilityCooldown = 3
@@ -4200,10 +4233,9 @@ proc testBiomeWaystationsCreateRoleDetoursAndShelters() =
   ).parseSpriteProtocolPacket()
   let routeLabels = routeParsed.objectSpriteLabels()
   doAssert "status route" in routeLabels
-  doAssert routeParsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("ROUTE SPEED FLOOR")
-  ),
-    "HUD status text should make waystation route knowledge readable"
+  doAssert "effect aura route" in
+    routeParsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make waystation route knowledge readable"
   swampSim.players[swampPlayer].routeTicks = 1
   swampSim.step([InputState()])
   doAssert swampSim.players[swampPlayer].routeTicks == 0
@@ -4556,8 +4588,8 @@ proc testMixedRoleFormationRechargesPowersAndShowsBadge() =
   ).parseSpriteProtocolPacket()
   doAssert "status trio" in parsed.objectSpriteLabels(),
     "grouped tank/DPS/healer parties should show the trio formation badge"
-  doAssert parsed.sprites.values.toSeq.anyIt(it.label.contains("TRIO")),
-    "HUD status text should make the trio formation readable"
+  doAssert "effect aura trio" in parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make the trio formation readable"
 
   sim.step([InputState(), InputState(), InputState()])
   doAssert sim.players[dpsIndex].abilityCooldown ==
@@ -4721,10 +4753,9 @@ proc testLateRunExhaustionUsesRationsAndShowsStatus() =
   ).parseSpriteProtocolPacket()
   let labels = parsed.objectSpriteLabels()
   doAssert "status exhaust" in labels
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("TIRED MOVE")
-  ),
-    "HUD status text should make ration exhaustion readable"
+  doAssert "effect aura exhaustion" in
+    parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make ration exhaustion readable"
 
   sim.players[playerIndex].carrying = true
   sim.players[playerIndex].carriedItem = CarryFood
@@ -4783,10 +4814,9 @@ proc testSnowSharedWarmthClearsColdPressure() =
   let labels = parsed.objectSpriteLabels()
   doAssert "status warmth" notin labels
   doAssert "status cold" notin labels
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("WARM COLD SAFE")
-  ),
-    "HUD status text should make snow warmth readable"
+  doAssert "effect aura warmth" in
+    parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make snow warmth readable"
 
   sim.players[allyIndex].x += SnowWarmthAllyRadius + WorldTileSize
   sim.players[allyIndex].bounds =
@@ -4896,10 +4926,9 @@ proc testDesertCactusShadeClearsHeatPressure() =
   let labels = parsed.objectSpriteLabels()
   doAssert "status shade" notin labels
   doAssert "status heat" notin labels
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("SHADE HEAT SAFE")
-  ),
-    "HUD status text should make cactus shade readable"
+  doAssert "effect aura shade" in
+    parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make cactus shade readable"
 
   sim.players[playerIndex].x += DesertShadeRadius + WorldTileSize
   sim.players[playerIndex].bounds =
@@ -5014,10 +5043,9 @@ proc testTankGuardBlocksBiomePressure() =
   let labels = parsed.objectSpriteLabels()
   doAssert "status guard" in labels
   doAssert "status heat" notin labels
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("GUARD BLOCKS HAZARD")
-  ),
-    "HUD status text should make tank-guard survival readable"
+  doAssert "effect aura guard" in
+    parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make tank-guard survival readable"
 
   desertSim.players[tankIndex].guardTicks = 0
   doAssert desertSim.survivalPressureKind(allyIndex) == SurvivalHeat
@@ -5158,10 +5186,9 @@ proc testCarriedGoldLightsCaveAndRuins() =
   let labels = parsed.objectSpriteLabels()
   doAssert "status light" notin labels
   doAssert "status fog" notin labels
-  doAssert parsed.sprites.values.toSeq.anyIt(
-    it.label.toUpperAscii().contains("LIGHT FOG SAFE")
-  ),
-    "HUD status text should make carried light readable"
+  doAssert "effect aura light" in
+    parsed.objectSpriteLabelsOnLayer(TopRightLayerId),
+    "top-right effect icons should make carried light readable"
 
   sim.players[playerIndex].slowTicks = 0
   sim.players[playerIndex].carrying = false

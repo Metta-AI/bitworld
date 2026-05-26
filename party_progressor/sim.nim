@@ -176,6 +176,7 @@ const
   RescueGuideTicks* = TargetFps * 10
   RescueGuideSpeedPercent* = 112
   RescueGuideStatusRecoveryTicks* = 1
+  PickupCollectionRadius* = WorldTileSize
   TankGuardTicks* = 24
   TankDamageReductionPct* = 50
   HealerPulseAmount* = 2
@@ -7253,14 +7254,30 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
       let player = sim.players[playerIndex]
       if player.lives <= 0:
         continue
-      if boundsOverlap(
-        pickup.x,
-        pickup.y,
-        bounds,
-        player.x,
-        player.y,
-        player.bounds
-      ):
+      let input =
+        if playerIndex < inputs.len: inputs[playerIndex]
+        else: InputState()
+      let
+        pickupCenterX = boundsCenterX(pickup.x, bounds)
+        pickupCenterY = boundsCenterY(pickup.y, bounds)
+        playerCenterX = boundsCenterX(player.x, player.bounds)
+        playerCenterY = boundsCenterY(player.y, player.bounds)
+        overlapsPlayer = boundsOverlap(
+          pickup.x,
+          pickup.y,
+          bounds,
+          player.x,
+          player.y,
+          player.bounds
+        )
+        nearPlayer =
+          (
+            pickup.kind.isCarryPickup() or
+              pickup.kind in {PickupCoin, PickupHeart, PickupArmor}
+          ) and
+            abs(pickupCenterX - playerCenterX) <= PickupCollectionRadius and
+            abs(pickupCenterY - playerCenterY) <= PickupCollectionRadius
+      if overlapsPlayer or nearPlayer:
         case pickup.kind
         of PickupCoin:
           let value = max(1, pickup.value)
@@ -7272,9 +7289,6 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
           inc sim.scoreRevision
         of PickupTankGear, PickupDpsGear, PickupHealerGear:
           let nextRole = pickup.kind.roleForPickup()
-          let input =
-            if playerIndex < inputs.len: inputs[playerIndex]
-            else: InputState()
           let canSwapRole =
             sim.players[playerIndex].role == RoleUnarmed or
               (
@@ -7286,6 +7300,8 @@ proc collectPickups(sim: var SimServer, inputs: openArray[InputState]) =
           sim.players[playerIndex].applyRole(nextRole)
           inc sim.scoreRevision
         of PickupWood, PickupFood, PickupStone, PickupGold:
+          if input.select:
+            continue
           let item = pickup.kind.carryForPickup()
           if sim.giveCarry(playerIndex, item):
             collected = true

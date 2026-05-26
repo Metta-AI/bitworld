@@ -1,4 +1,4 @@
-import std/[algorithm, os, strutils]
+import std/[algorithm, os, sequtils, strutils]
 import supersnappy
 import protocol, sim
 import ../common/pixelfonts
@@ -37,10 +37,14 @@ const
   RoleAbilityEffectSpriteBase = 680
   DpsBeamHorizontalSpriteId = RoleAbilityEffectSpriteBase + 8
   DpsBeamVerticalSpriteId = RoleAbilityEffectSpriteBase + 9
-  CoinsHudSpriteId = PlayerHudSpriteId
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
-  ArmorHudSpriteId = PlayerHudSpriteId + 3
+  HudFrontierIconSpriteId = PlayerHudSpriteId + 4
+  HudWoodIconSpriteId = PlayerHudSpriteId + 5
+  HudFoodIconSpriteId = PlayerHudSpriteId + 6
+  HudStoneIconSpriteId = PlayerHudSpriteId + 7
+  HudRelicIconSpriteId = PlayerHudSpriteId + 8
+  HudCounterSpriteBase = PlayerHudSpriteId + 10
   VisibilityShadowSpriteId = 1500
   RoleLabelSpriteBase = PlayerHudSpriteId + 40
   RoleGearIconSpriteBase = RoleLabelSpriteBase + 16
@@ -59,12 +63,13 @@ const
   LandmarkWaystationPromptSpriteBase = LandmarkAidPromptSpriteId + 1
   WeatherOverlaySpriteBase = 920
   LandmarkDynamicPromptSpriteBase = 940
-  CoinsHudObjectId = PlayerHudObjectId
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
-  ArmorHudObjectId = PlayerHudObjectId + 3
+  HudCounterValueObjectBase = PlayerHudObjectId + 10
+  HudCounterIconObjectBase = PlayerHudObjectId + 30
+  HudArmorObjectBase = PlayerHudObjectId + 50
+  HudEffectObjectBase = PlayerHudObjectId + 70
   RoleLabelObjectBase = PlayerHudObjectId + 100
-  HudGap = 1
   HealthSprite5Base = 700
   HealthSprite10Base = 710
   PlayerHealthObjectBase = 10000
@@ -1099,6 +1104,63 @@ proc strokeRect(
   for py in y ..< y + h:
     pixels.putRgbaPixel(py * width + x, color)
     pixels.putRgbaPixel(py * width + x + w - 1, color)
+
+proc buildHudFrontierIconSprite(): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a tiny arrow/flag icon for the sprite-first player HUD.
+  result.width = 13
+  result.height = 11
+  result.pixels = newRgbaPixels(result.width, result.height)
+  result.pixels.fillRect(result.width, 1, 5, 9, 3, 10'u8)
+  result.pixels.fillRect(result.width, 6, 2, 3, 9, 10'u8)
+  result.pixels.putRgbaPixel(9 * result.width + 9, 10'u8)
+  result.pixels.putRgbaPixel(8 * result.width + 10, 10'u8)
+  result.pixels.putRgbaPixel(7 * result.width + 11, 10'u8)
+  result.pixels.putRgbaPixel(6 * result.width + 12, 10'u8)
+  result.pixels.putRgbaPixel(5 * result.width + 11, 10'u8)
+  result.pixels.putRgbaPixel(4 * result.width + 10, 10'u8)
+  result.pixels.putRgbaPixel(3 * result.width + 9, 10'u8)
+  result.pixels.strokeRect(result.width, 0, 4, 10, 5, 2'u8)
+
+proc buildHudWoodIconSprite(): tuple[width, height: int, pixels: seq[uint8]] =
+  result.width = 13
+  result.height = 11
+  result.pixels = newRgbaPixels(result.width, result.height)
+  result.pixels.fillRect(result.width, 2, 3, 9, 2, 6'u8)
+  result.pixels.fillRect(result.width, 1, 6, 10, 2, 6'u8)
+  result.pixels.strokeRect(result.width, 1, 2, 11, 7, 2'u8)
+
+proc buildHudFoodIconSprite(): tuple[width, height: int, pixels: seq[uint8]] =
+  result.width = 13
+  result.height = 11
+  result.pixels = newRgbaPixels(result.width, result.height)
+  result.pixels.fillRect(result.width, 6, 2, 1, 8, 8'u8)
+  for point in [
+    (x: 4, y: 3),
+    (x: 8, y: 3),
+    (x: 3, y: 5),
+    (x: 9, y: 5),
+    (x: 4, y: 7),
+    (x: 8, y: 7)
+  ]:
+    result.pixels.fillRect(result.width, point.x, point.y, 2, 2, 14'u8)
+
+proc buildHudStoneIconSprite(): tuple[width, height: int, pixels: seq[uint8]] =
+  result.width = 13
+  result.height = 11
+  result.pixels = newRgbaPixels(result.width, result.height)
+  for y in 2 .. 8:
+    let inset = abs(5 - y)
+    result.pixels.fillRect(result.width, 3 + inset, y, 7 - inset * 2, 1, 12'u8)
+  result.pixels.strokeRect(result.width, 3, 2, 7, 7, 2'u8)
+
+proc buildHudRelicIconSprite(): tuple[width, height: int, pixels: seq[uint8]] =
+  result.width = 13
+  result.height = 11
+  result.pixels = newRgbaPixels(result.width, result.height)
+  for y in 1 .. 9:
+    let inset = abs(5 - y)
+    result.pixels.fillRect(result.width, 5 - inset div 2, y, 3 + inset, 1, 11'u8)
+  result.pixels.strokeRect(result.width, 4, 1, 5, 9, 2'u8)
 
 proc fillRgbaRect(
   pixels: var seq[uint8],
@@ -2435,6 +2497,21 @@ proc carryCountObjectId(player: Actor, item: CarryKind): int =
 proc carryCountSpriteId(player: Actor, item: CarryKind): int =
   CarryCountSpriteBase + player.id * CarryObjectStride + ord(item)
 
+proc hudCounterSpriteId(slot: int): int =
+  HudCounterSpriteBase + slot
+
+proc hudCounterValueObjectId(slot: int): int =
+  HudCounterValueObjectBase + slot
+
+proc hudCounterIconObjectId(slot: int): int =
+  HudCounterIconObjectBase + slot
+
+proc hudArmorObjectId(slot: ArmorSlot): int =
+  HudArmorObjectBase + ord(slot)
+
+proc hudEffectObjectId(slot: int): int =
+  HudEffectObjectBase + slot
+
 proc terrainObjectId(index: int): int =
   ## Returns the object id for one terrain prop instance.
   TerrainObjectBase + index
@@ -3106,6 +3183,46 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] =
   result.addViewport(TopRightLayerId, 172, 96)
   sim.addMapSpriteDefinitions(result)
   result.addCommonSpriteDefinitions(sim)
+  let frontierIcon = buildHudFrontierIconSprite()
+  result.addSprite(
+    HudFrontierIconSpriteId,
+    frontierIcon.width,
+    frontierIcon.height,
+    frontierIcon.pixels,
+    "hud frontier icon"
+  )
+  let woodIcon = buildHudWoodIconSprite()
+  result.addSprite(
+    HudWoodIconSpriteId,
+    woodIcon.width,
+    woodIcon.height,
+    woodIcon.pixels,
+    "hud wood icon"
+  )
+  let foodIcon = buildHudFoodIconSprite()
+  result.addSprite(
+    HudFoodIconSpriteId,
+    foodIcon.width,
+    foodIcon.height,
+    foodIcon.pixels,
+    "hud food icon"
+  )
+  let stoneIcon = buildHudStoneIconSprite()
+  result.addSprite(
+    HudStoneIconSpriteId,
+    stoneIcon.width,
+    stoneIcon.height,
+    stoneIcon.pixels,
+    "hud stone icon"
+  )
+  let relicIcon = buildHudRelicIconSprite()
+  result.addSprite(
+    HudRelicIconSpriteId,
+    relicIcon.width,
+    relicIcon.height,
+    relicIcon.pixels,
+    "hud relic icon"
+  )
 
 proc chatSpriteId(player: Actor): int =
   ## Returns the sprite id for one player's chat bubble.
@@ -3873,158 +3990,145 @@ proc addPlayerHud(
     player = sim.players[playerIndex]
     frontier = sim.frontierTiles()
     lives = max(player.lives, 0)
-    ability = player.role.roleAbilityLabel().toUpperAscii()
-    statusLine1 = player.role.roleLabel().toUpperAscii() & " AREA " &
-      sim.currentBiome().biomeLabel().toUpperAscii()
-    playerElevation = sim.tileElevation(
-      clamp(boundsCenterX(player.x, player.bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
-      clamp(boundsCenterY(player.y, player.bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
-    )
-    statusLine2 = "WX " & sim.currentWeather().weatherLabel().toUpperAscii() &
-      " E" & $playerElevation & "  W" & $sim.wood & " F" & $sim.food &
-      " S" & $sim.stone & " R" & $sim.relicShards & " " &
-      sim.masteryHudLabel()
-    statusLine3 =
-      if player.role == RoleHealer and player.abilityHoldTicks > 0:
-        "X " & ability & " HOLD " &
-          $min(100, (player.abilityHoldTicks * 100) div HealerPulseHoldTicks) &
-          "%"
-      elif player.abilityCooldown > 0:
-        "X " & ability & " CD " & $player.abilityCooldown
-      elif player.role == RoleHealer:
-        "X HOLD " & ability
-      else:
-        "X " & ability
-    statusLine4 = "CARRY " & sim.carryHudLabel(playerIndex).toUpperAscii()
-    effectLines = sim.activePlayerEffectLines(playerIndex)
-    statusWarning =
+    counters = [
+      (
+        slot: 0,
+        iconSpriteId: HudFrontierIconSpriteId,
+        value: $frontier,
+        x: 2,
+        y: 2,
+        label: "frontier"
+      ),
+      (
+        slot: 1,
+        iconSpriteId: HudWoodIconSpriteId,
+        value: $sim.wood,
+        x: 2,
+        y: 18,
+        label: "wood"
+      ),
+      (
+        slot: 2,
+        iconSpriteId: HudFoodIconSpriteId,
+        value: $sim.food,
+        x: 44,
+        y: 18,
+        label: "food"
+      ),
+      (
+        slot: 3,
+        iconSpriteId: HudStoneIconSpriteId,
+        value: $sim.stone,
+        x: 86,
+        y: 18,
+        label: "stone"
+      ),
+      (
+        slot: 4,
+        iconSpriteId: HudRelicIconSpriteId,
+        value: $sim.relicShards,
+        x: 128,
+        y: 18,
+        label: "relic"
+      )
+    ]
+    effects = sim.activePlayerEffects(playerIndex)
+    hudKey =
+      counters.mapIt(it.label & ":" & it.value).join("|") &
+        "|hp:" & $lives & "/" & $player.maxHp
+    armorKey =
       block:
         var pieces: seq[string] = @[]
-        let statusLabel = player.statusLabel().toUpperAscii()
-        if statusLabel != "OK":
-          pieces.add(statusLabel)
-        let survivalLabel = sim.survivalPressureLabel(playerIndex).toUpperAscii()
-        if survivalLabel != "SAFE":
-          pieces.add(survivalLabel)
-        if pieces.len > 0:
-          "WARN " & pieces.join(" ")
-        else:
-          ""
-    objectiveLine = sim.expeditionObjectiveHint(playerIndex)
-    statusLines =
-      block:
-        var lines = @[
-          statusLine1,
-          statusLine2,
-          statusLine3,
-          statusLine4
-        ]
-        if statusWarning.len > 0:
-          lines.add(statusWarning)
-        lines.add(objectiveLine)
-        lines
-    status = statusLines.join("|")
-    armorStatus = player.armorHudLabel() & "|" & effectLines.join("|")
-  currentIds.add(CoinsHudObjectId)
-  if state.hudCoins != frontier:
-    let coinText = sim.buildSpriteProtocolTextSprite(
-      ["FRONT " & $frontier],
-      2'u8
-    )
-    packet.addSprite(
-      CoinsHudSpriteId,
-      coinText.width,
-      coinText.height,
-      coinText.pixels,
-      "front " & $frontier
-    )
-  packet.addObject(
-    CoinsHudObjectId,
-    2,
-    2,
-    high(int16),
-    TopLeftLayerId,
-    CoinsHudSpriteId
-  )
-  currentIds.add(LivesHudObjectId)
-  if state.hudLives != lives:
-    let livesText = sim.buildSpriteProtocolTextSprite(
-      ["HP " & $lives & "/" & $player.maxHp],
-      2'u8
-    )
+        for slot in ArmorSlot:
+          pieces.add($ord(player.armor[slot]))
+        for effect in effects:
+          pieces.add(effect.key)
+        pieces.join("|")
+
+  if state.hudStatus != hudKey:
+    let health = buildSpriteProtocolHealthSprite(lives, player.maxHp)
     packet.addSprite(
       LivesHudSpriteId,
-      livesText.width,
-      livesText.height,
-      livesText.pixels,
-      "hp " & $lives & "/" & $player.maxHp
+      health.width,
+      health.height,
+      health.pixels,
+      "hud hp " & $lives & "/" & $player.maxHp
     )
+    for counter in counters:
+      let counterText = sim.buildSpriteProtocolTextSprite(
+        [counter.value],
+        2'u8
+      )
+      packet.addSprite(
+        counter.slot.hudCounterSpriteId(),
+        counterText.width,
+        counterText.height,
+        counterText.pixels,
+        "hud " & counter.label & " " & counter.value
+      )
+
+  for counter in counters:
+    currentIds.add(counter.slot.hudCounterIconObjectId())
+    packet.addObject(
+      counter.slot.hudCounterIconObjectId(),
+      counter.x,
+      counter.y,
+      high(int16),
+      TopLeftLayerId,
+      counter.iconSpriteId
+    )
+    currentIds.add(counter.slot.hudCounterValueObjectId())
+    packet.addObject(
+      counter.slot.hudCounterValueObjectId(),
+      counter.x + 15,
+      counter.y + 3,
+      high(int16),
+      TopLeftLayerId,
+      counter.slot.hudCounterSpriteId()
+    )
+
+  currentIds.add(LivesHudObjectId)
   packet.addObject(
     LivesHudObjectId,
-    2,
-    2 + sim.textFont.height + HudGap,
+    50,
+    5,
     high(int16),
     TopLeftLayerId,
     LivesHudSpriteId
   )
-  currentIds.add(StatusHudObjectId)
-  if state.hudStatus != status:
-    let statusText = sim.buildSpriteProtocolTextSprite(
-      statusLines,
-      2'u8
+
+  var armorX = 2
+  for slot in ArmorSlot:
+    let armor = player.armor[slot]
+    if armor == ArmorNone:
+      continue
+    currentIds.add(slot.hudArmorObjectId())
+    packet.addObject(
+      slot.hudArmorObjectId(),
+      armorX,
+      2,
+      high(int16),
+      TopRightLayerId,
+      armor.armorSpriteId()
     )
-    packet.addSprite(
-      StatusHudSpriteId,
-      statusText.width,
-      statusText.height,
-      statusText.pixels,
-      status
+    armorX += 20
+
+  for effectIndex in 0 ..< min(effects.len, 4):
+    let effect = effects[effectIndex]
+    currentIds.add(effectIndex.hudEffectObjectId())
+    packet.addObject(
+      effectIndex.hudEffectObjectId(),
+      2 + effectIndex * 42,
+      28,
+      high(int16),
+      TopRightLayerId,
+      effect.visual.playerEffectAuraSpriteId()
     )
-  packet.addObject(
-    StatusHudObjectId,
-    2,
-    2 + (sim.textFont.height + HudGap) * 2,
-    high(int16),
-    TopLeftLayerId,
-    StatusHudSpriteId
-  )
-  currentIds.add(ArmorHudObjectId)
-  if state.hudArmor != armorStatus:
-    var armorLines: seq[string] = @["ARMOR"]
-    var hasArmor = false
-    for slot in ArmorSlot:
-      let armor = player.armor[slot]
-      if armor == ArmorNone:
-        continue
-      hasArmor = true
-      armorLines.add(
-        armor.armorLabel().toUpperAscii() & " " &
-          armor.armorBonusLabel().toUpperAscii()
-      )
-    if not hasArmor:
-      armorLines.add("NONE")
-    for effectLine in effectLines:
-      armorLines.add(effectLine.toUpperAscii())
-    let armorText = sim.buildSpriteProtocolTextSprite(armorLines, 2'u8)
-    packet.addSprite(
-      ArmorHudSpriteId,
-      armorText.width,
-      armorText.height,
-      armorText.pixels,
-      armorStatus
-    )
-  packet.addObject(
-    ArmorHudObjectId,
-    2,
-    2,
-    high(int16),
-    TopRightLayerId,
-    ArmorHudSpriteId
-  )
+
   nextState.hudCoins = frontier
   nextState.hudLives = lives
-  nextState.hudStatus = status
-  nextState.hudArmor = armorStatus
+  nextState.hudStatus = hudKey
+  nextState.hudArmor = armorKey
 
 proc addPlayerStatus(
   sim: SimServer,
