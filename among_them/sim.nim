@@ -1060,7 +1060,11 @@ proc defaultSlotName(slotIndex: int): string =
   ## Returns the canonical name for one generated tournament slot.
   "Player" & $(slotIndex + 1)
 
-proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
+proc readConfigTokens(
+  node: JsonNode,
+  slots: var seq[PlayerSlotConfig],
+  closedRoster: bool
+) =
   ## Reads optional fixed player slot tokens.
   if not node.hasKey("tokens"):
     return
@@ -1088,7 +1092,7 @@ proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
           "].token."
       )
     slots[i].token = token
-    if slots[i].name.len == 0:
+    if closedRoster and slots[i].name.len == 0:
       slots[i].name = defaultSlotName(i)
 
 proc validate(config: GameConfig) =
@@ -1205,8 +1209,8 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigString("map", config.mapPath)
   node.readConfigString("mapPath", config.mapPath)
   node.readConfigSlots(config.slots)
-  node.readConfigTokens(config.slots)
   node.readConfigBool("closedRoster", config.closedRoster)
+  node.readConfigTokens(config.slots, config.closedRoster)
   config.validate()
 
 proc slotRoleText(slot: PlayerSlotConfig): string =

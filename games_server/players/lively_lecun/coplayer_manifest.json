@@ -1,0 +1,12 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "lively_lecun",
+  "description": "Go-based Among Them visual player inspired by the nottoodumb perception stack.",
+  "image_uri": "ghcr.io/treeform/bitworld-lively-lecun:latest",
+  "games": [
+    "among_them"
+  ],
+  "run": [
+    "/bin/lively_lecun"
+  ]
+}

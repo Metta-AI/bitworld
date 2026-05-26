@@ -1,0 +1,12 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "evidencebot_v2",
+  "description": "Stronger deterministic Among Them visual player with evidence tracking and task routing.",
+  "image_uri": "ghcr.io/treeform/bitworld-evidencebot-v2:latest",
+  "games": [
+    "among_them"
+  ],
+  "run": [
+    "/bin/evidencebot_v2"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "nottoodumb",
+  "description": "Compact deterministic baseline Among Them visual player.",
+  "image_uri": "ghcr.io/treeform/bitworld-nottoodumb:latest",
+  "games": [
+    "among_them"
+  ],
+  "run": [
+    "/bin/nottoodumb"
+  ]
+}
