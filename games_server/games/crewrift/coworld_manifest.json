@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "crewrift",
     "version": "0.1.20",
@@ -7,7 +7,7 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/crewrift-runner:latest"
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/crewrift:latest"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -379,7 +379,7 @@
       "name": "notsus",
       "type": "player",
       "description": "Sprite-protocol Crewrift bot used for local smoke episodes.",
-      "image": "ghcr.io/treeform/crewrift-notsus:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest",
       "run": [
         "/bin/notsus"
       ]
