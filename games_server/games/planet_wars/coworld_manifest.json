@@ -1,0 +1,159 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "game": {
+    "name": "planet_wars",
+    "version": "0.1.0",
+    "description": "A BitWorld strategy game where players conquer planets and launch ships across a tiny star map.",
+    "owner": "treeform@softmax.com",
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 0
+          },
+          "default": []
+        },
+        "seed": {
+          "description": "Random seed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 108519
+        },
+        "planetCount": {
+          "description": "Number of planets to place in the world.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 48,
+          "default": 47
+        },
+        "maxTicks": {
+          "description": "Maximum ticks per game, where 18000 is about five minutes at 60 Hz and 0 disables the tick limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 18000
+        },
+        "maxGames": {
+          "description": "Maximum games before shutdown, where 0 means infinite.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores",
+        "win",
+        "planets",
+        "ships"
+      ],
+      "properties": {
+        "names": {
+          "description": "One player name or address per player slot.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "One strategy score per player slot.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "win": {
+          "description": "One win flag per player slot.",
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "planets": {
+          "description": "One owned planet count per player slot.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "ships": {
+          "description": "One total owned ship count per player slot.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "protocols": {
+      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
+      "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-planet-wars:latest",
+      "run": ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]
+    }
+  },
+  "player": [
+    {
+      "id": "skurge",
+      "name": "Skurge",
+      "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets.",
+      "runnable": {
+        "type": "player",
+        "image": "ghcr.io/treeform/bitworld-planet-wars-skurge:latest",
+        "run": ["/bin/skurge", "--address:host.docker.internal", "--port:8080"]
+      }
+    }
+  ],
+  "variants": [
+    {
+      "id": "smoke",
+      "name": "Smoke",
+      "game_config": {
+        "seed": 108519,
+        "planetCount": 47,
+        "maxTicks": 18000,
+        "maxGames": 0
+      },
+      "description": "Short deterministic Planet Wars configuration used for manifest checks."
+    }
+  ],
+  "certification": {
+    "variant_id": "smoke",
+    "players": [
+      {
+        "player_id": "skurge",
+        "initial_params": {
+          "name": "slot_0"
+        }
+      },
+      {
+        "player_id": "skurge",
+        "initial_params": {
+          "name": "slot_1"
+        }
+      }
+    ]
+  }
+}

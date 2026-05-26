@@ -1,0 +1,7 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "notsus",
+  "image_uri": "ghcr.io/treeform/crewrift-notsus:latest",
+  "run": ["/bin/notsus"],
+  "games": ["crewrift"]
+}

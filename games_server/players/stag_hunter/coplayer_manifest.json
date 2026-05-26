@@ -1,0 +1,9 @@
+{
+  "author": "malcolm@stem.ai",
+  "name": "stag_hunter",
+  "image_uri": "ghcr.io/malcolmocean/bitworld-stag-hunt-stag-hunter:latest",
+  "games": [
+    "stag_hunt"
+  ],
+  "run": ["/bin/stag_hunter"]
+}

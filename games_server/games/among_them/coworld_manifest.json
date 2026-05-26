@@ -1,0 +1,454 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
+  "game": {
+    "name": "among_them",
+    "version": "0.1.20",
+    "description": "A social deduction BitWorld game with crewmates, imposters, tasks, voting, and betrayal.",
+    "owner": "treeform@softmax.com",
+    "runnable": {
+      "type": "game",
+      "image": "ghcr.io/treeform/bitworld-among-them-runner:latest"
+    },
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 0
+          },
+          "default": []
+        },
+        "slots": {
+          "description": "Optional fixed player slot settings.",
+          "type": "array",
+          "maxItems": 16,
+          "default": [],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "crew",
+                  "imposter"
+                ]
+              },
+              "color": {
+                "type": "string",
+                "enum": [
+                  "red",
+                  "orange",
+                  "yellow",
+                  "light blue",
+                  "pink",
+                  "lime",
+                  "blue",
+                  "pale blue",
+                  "gray",
+                  "white",
+                  "dark brown",
+                  "brown",
+                  "dark teal",
+                  "green",
+                  "dark navy",
+                  "black"
+                ]
+              }
+            }
+          }
+        },
+        "closedRoster": {
+          "description": "Reject players outside the configured token/slot roster.",
+          "type": "boolean",
+          "default": false
+        },
+        "seed": {
+          "description": "Random seed.",
+          "type": "integer",
+          "default": 679961
+        },
+        "minPlayers": {
+          "description": "Players needed before the game countdown starts.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 8
+        },
+        "imposterCount": {
+          "description": "Fixed imposter count when autoImposterCount is false.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15,
+          "default": 2
+        },
+        "autoImposterCount": {
+          "description": "Automatically choose imposter count from player count.",
+          "type": "boolean",
+          "default": false
+        },
+        "tasksPerPlayer": {
+          "description": "Tasks assigned to each crewmate.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 8
+        },
+        "buttonCalls": {
+          "description": "Emergency button calls allowed per player.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 1
+        },
+        "startWaitTicks": {
+          "description": "Lobby countdown ticks after enough players join.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 120
+        },
+        "voteTimerTicks": {
+          "description": "Voting phase duration in ticks.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 6000
+        },
+        "voteResultTicks": {
+          "description": "Vote result display duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 72
+        },
+        "killCooldownTicks": {
+          "description": "Kill cooldown duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 900
+        },
+        "roleRevealTicks": {
+          "description": "Role reveal duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 120
+        },
+        "taskCompleteTicks": {
+          "description": "Task completion duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 72
+        },
+        "messageCooldownTicks": {
+          "description": "Chat message cooldown in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 100
+        },
+        "gameOverTicks": {
+          "description": "Game over display duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 360
+        },
+        "maxTicks": {
+          "description": "Maximum game ticks, where 0 means no limit.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 10000
+        },
+        "maxGames": {
+          "description": "Maximum games before shutdown.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "killRange": {
+          "description": "Kill interaction range.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 20
+        },
+        "ventRange": {
+          "description": "Vent interaction range.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 16
+        },
+        "reportRange": {
+          "description": "Body report interaction range.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 20
+        },
+        "showTaskArrows": {
+          "description": "Show arrows pointing to tasks.",
+          "type": "boolean",
+          "default": true
+        },
+        "showTaskBubbles": {
+          "description": "Show task bubbles.",
+          "type": "boolean",
+          "default": true
+        },
+        "showPlayerLabels": {
+          "description": "Show player labels.",
+          "type": "boolean",
+          "default": true
+        },
+        "mapPath": {
+          "description": "Map JSON file path.",
+          "type": "string",
+          "default": "map.json"
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scores"
+      ],
+      "properties": {
+        "names": {
+          "description": "One player name or address per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "One scalar score per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "number"
+          }
+        },
+        "win": {
+          "description": "One win flag per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "tasks": {
+          "description": "One completed task count per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "kills": {
+          "description": "One kill count per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "imposter": {
+          "description": "One 1 or 0 flag for whether the player was an imposter.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "crew": {
+          "description": "One 1 or 0 flag for whether the player was crew.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "vote_players": {
+          "description": "One count of votes cast for a player per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "vote_skip": {
+          "description": "One count of explicit skip votes per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "vote_timeout": {
+          "description": "One count of vote timeouts per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "protocols": {
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitscreen_v1.md"
+      },
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      }
+    },
+    "docs": {
+      "readme": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/README.md"
+      },
+      "pages": [
+        {
+          "id": "play",
+          "title": "play.md",
+          "content": {
+            "type": "uri",
+            "value": "https://softmax.com/play_amongthem.md"
+          }
+        },
+        {
+          "id": "player",
+          "title": "player.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/how_to_make_a_bot.md"
+          }
+        },
+        {
+          "id": "submit",
+          "title": "submit.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/how_to_submit_coworld_policy.md"
+          }
+        },
+        {
+          "id": "optimizer",
+          "title": "optimizer.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/players/SMART_BOT_GUIDE.md"
+          }
+        }
+      ]
+    }
+  },
+  "player": [
+    {
+      "id": "nottoodumb",
+      "name": "nottoodumb",
+      "type": "player",
+      "description": "Deterministic baseline Among Them player used for local smoke episodes.",
+      "image": "ghcr.io/treeform/bitworld-nottoodumb:latest"
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "name": "Default",
+      "description": "Eight-player Among Them tournament episode using the default balanced game settings.",
+      "game_config": {
+        "seed": 679961,
+        "minPlayers": 8,
+        "imposterCount": 2,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 8,
+        "startWaitTicks": 120,
+        "roleRevealTicks": 120,
+        "gameOverTicks": 360,
+        "maxTicks": 10000,
+        "maxGames": 1,
+        "voteTimerTicks": 6000,
+        "killCooldownTicks": 900,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    }
+  ],
+  "certification": {
+    "players": [
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      },
+      {
+        "player_id": "nottoodumb"
+      }
+    ],
+    "game_config": {
+      "seed": 679961,
+      "minPlayers": 8,
+      "imposterCount": 2,
+      "autoImposterCount": false,
+      "tasksPerPlayer": 1,
+      "startWaitTicks": 0,
+      "roleRevealTicks": 0,
+      "gameOverTicks": 1,
+      "maxTicks": 300,
+      "maxGames": 1,
+      "voteTimerTicks": 120,
+      "killCooldownTicks": 900,
+      "showTaskArrows": false,
+      "showTaskBubbles": false,
+      "showPlayerLabels": true
+    }
+  }
+}
