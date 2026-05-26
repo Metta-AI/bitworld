@@ -1,7 +1,7 @@
 import mummy, pixie
 import bitworld/cogame_runtime
-import protocol except TileSize
-import server except ScreenWidth, ScreenHeight
+import bitworld/protocol except TileSize
+import bitworld/server except ScreenWidth, ScreenHeight
 import sprite_render
 import replays
 import std/[json, locks, monotimes, os, parseopt, strutils, tables, times]

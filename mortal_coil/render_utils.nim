@@ -1,5 +1,5 @@
 import std/os
-import protocol, server, pixelfonts
+import bitworld/protocol, bitworld/server, bitworld/pixelfonts
 
 const
   TextMargin* = 4

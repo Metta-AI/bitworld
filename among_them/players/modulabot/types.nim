@@ -18,7 +18,7 @@
 
 import std/random
 import ../../sim
-import ../../../common/server
+import bitworld/server
 
 const
   PlayerColorCount* = PlayerColors.len

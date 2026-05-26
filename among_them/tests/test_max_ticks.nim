@@ -1,6 +1,6 @@
 import
   std/[json, os, unittest],
-  ../../common/protocol,
+  bitworld/protocol,
   ../sim
 
 const GameDir = currentSourcePath.parentDir.parentDir

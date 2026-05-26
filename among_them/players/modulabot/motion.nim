@@ -9,7 +9,7 @@
 ## `Perception` and a single `lastMask` byte. The caller is the
 ## orchestrator in `bot.nim`, which has all of those in scope.
 
-import protocol
+import bitworld/protocol
 import ../../sim
 
 import types

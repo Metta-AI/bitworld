@@ -1,4 +1,4 @@
-import protocol, server, render_utils
+import bitworld/protocol, bitworld/server, render_utils
 
 type
   ChoiceState* = enum

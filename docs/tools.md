@@ -129,11 +129,11 @@ game server, open local human clients, open a global viewer, and launch Nim bot
 players.
 
 ```powershell
-.\tools\quick_run.exe fancy_cookout
-.\tools\quick_run.exe free_chat --players:2
-.\tools\quick_run.exe among_them --players:2 --bots:nottoodumb:6
-.\tools\quick_run.exe planet_wars --bots:skurge:4 --global --html
-.\tools\quick_run.exe among_them --connect --port:2000 --bots:nottoodumb:8
+.\tools\quick_run.exe .\fancy_cookout
+.\tools\quick_run.exe .\free_chat --players:2
+.\tools\quick_run.exe .\among_them --players:2 --bots:nottoodumb:6
+.\tools\quick_run.exe ..\cogame-planet-wars --bots:skurge:4 --global --html
+.\tools\quick_run.exe .\among_them --connect --port:2000 --bots:nottoodumb:8
 ```
 
 Useful options:

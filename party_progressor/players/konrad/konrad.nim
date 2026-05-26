@@ -1,7 +1,7 @@
 import
   std/[heapqueue, options, os, parseopt, random, strutils, times],
   supersnappy, whisky,
-  protocol, ../../sim
+  bitworld/protocol, ../../sim
 
 const
   PlayerDefaultPort = 2000

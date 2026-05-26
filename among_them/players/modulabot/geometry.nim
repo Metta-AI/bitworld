@@ -15,7 +15,7 @@
 ## - The `<` PatchEntry / `cmpPatchCandidate` comparators stay with the
 ##   localizer (`localize.nim`) where they are exclusively used.
 
-import protocol
+import bitworld/protocol
 import ../../sim
 import types
 

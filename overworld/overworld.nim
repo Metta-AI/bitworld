@@ -1,5 +1,5 @@
 import mummy, pixie, whisky
-import protocol, server
+import bitworld/protocol, bitworld/server
 import std/[algorithm, json, locks, monotimes, net, os, osproc, parseopt, random,
             strutils, tables, times]
 

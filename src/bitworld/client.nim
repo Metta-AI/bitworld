@@ -50,6 +50,8 @@ proc clientDir*(): string =
       let sibling = cwd / ".." / "client"
       if dirExists(sibling):
         sibling
+      elif dirExists(repoDir() / "client"):
+        repoDir() / "client"
       else:
         cwd / "client"
     except OSError:

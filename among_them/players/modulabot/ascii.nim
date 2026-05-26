@@ -14,7 +14,7 @@
 ##
 ## All procs are read-only with respect to bot state.
 
-import protocol
+import bitworld/protocol
 import ../../sim
 import ../../texts
 

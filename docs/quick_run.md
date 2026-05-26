@@ -2,15 +2,15 @@
 
 `quick_run` is the local launcher for Bitworld games. It can start a game
 server, open local human clients, open a global viewer, and launch Nim bot
-players from the same command. When manifests are present, it discovers game
-protocols from `coworld_manifest.json`.
+players from the same command. It is path-based: pass an explicit game folder
+or source file.
 
 ## Basic Usage
 
-Run from the Bitworld repo root:
+Pass a folder or source path:
 
 ```powershell
-.\tools\quick_run.exe fancy_cookout
+.\tools\quick_run.exe .\fancy_cookout
 ```
 
 By default this starts the selected game on `0.0.0.0:8080` and opens one human
@@ -20,7 +20,7 @@ Use `--connect` to attach clients and bots to an existing server instead of
 starting one:
 
 ```powershell
-.\tools\quick_run.exe among_them --connect --port:2000 --bots:nottoodumb:8
+.\tools\quick_run.exe .\among_them --connect --port:2000 --bots:nottoodumb:8
 ```
 
 In connect mode the default address is `localhost`.
@@ -30,8 +30,8 @@ In connect mode the default address is `localhost`.
 `--players:N` controls how many local human clients are launched.
 
 ```powershell
-.\tools\quick_run.exe free_chat --players:2
-.\tools\quick_run.exe among_them --players:0 --bots:evidencebot_v2:8
+.\tools\quick_run.exe .\free_chat --players:2
+.\tools\quick_run.exe .\among_them --players:0 --bots:evidencebot_v2:8
 ```
 
 If `--players` is omitted, the default is:
@@ -52,7 +52,7 @@ By default `--global` launches the native global client. Add `--html` to open
 the served browser global viewer instead.
 
 ```powershell
-nim r tools/quick_run planet_wars/ --bots:skurge:4 --global --html
+nim r tools/quick_run ../cogame-planet-wars --bots:skurge:4 --global --html
 ```
 
 ## Bots
@@ -60,9 +60,9 @@ nim r tools/quick_run planet_wars/ --bots:skurge:4 --global --html
 Use `--bots:BOT:N` to launch bot players. The option may be repeated.
 
 ```powershell
-.\tools\quick_run.exe among_them --bots:nottoodumb:6
-.\tools\quick_run.exe among_them --players:2 --bots:evidencebot_v2:6
-.\tools\quick_run.exe planet_wars --bots:skurge:3
+.\tools\quick_run.exe .\among_them --bots:nottoodumb:6
+.\tools\quick_run.exe .\among_them --players:2 --bots:evidencebot_v2:6
+.\tools\quick_run.exe ..\cogame-planet-wars --bots:skurge:3
 ```
 
 Bot names are generated from the bot file label, such as `nottoodumb1` and
@@ -78,7 +78,7 @@ Bot lookup checks the selected game folder:
 You can also pass a repository-relative bot path:
 
 ```powershell
-.\tools\quick_run.exe among_them --bots:among_them/players/modulabot/modulabot.nim:3
+.\tools\quick_run.exe .\among_them --bots:among_them/players/modulabot/modulabot.nim:3
 ```
 
 Useful bot options:
@@ -95,8 +95,8 @@ Known launcher options are handled by `quick_run`. Any unknown long or short
 option is forwarded to the game server when `quick_run` starts it.
 
 ```powershell
-.\tools\quick_run.exe among_them --players:2 --map:among_them/map.json
-.\tools\quick_run.exe among_them --config:'{"minPlayers":8}' --bots:nottoodumb:8
+.\tools\quick_run.exe .\among_them --players:2 --map:among_them/map.json
+.\tools\quick_run.exe .\among_them --config:'{"minPlayers":8}' --bots:nottoodumb:8
 ```
 
 Common options:

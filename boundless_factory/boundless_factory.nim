@@ -1,5 +1,5 @@
 import mummy, pixie
-import protocol, server
+import bitworld/protocol, bitworld/server
 import std/[algorithm, json, locks, monotimes, os, parseopt, random, strutils, tables, times]
 
 const

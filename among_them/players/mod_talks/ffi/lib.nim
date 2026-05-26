@@ -13,7 +13,7 @@
 
 when defined(modulabotLibrary):
   import std/strutils
-  import protocol      # for Button* constants, ScreenWidth/Height
+  import bitworld/protocol      # for Button* constants, ScreenWidth/Height
   import ../types
   import ../bot
   import ../trace

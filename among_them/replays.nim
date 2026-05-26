@@ -1,5 +1,5 @@
 import std/times
-import protocol, sim
+import bitworld/protocol, sim
 
 type
   ReplayError* = object of CatchableError

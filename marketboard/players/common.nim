@@ -1,6 +1,6 @@
 import std/[heapqueue, json, math, options, sets]
 import whisky
-import protocol
+import bitworld/protocol
 
 const
   ItemNames* = [

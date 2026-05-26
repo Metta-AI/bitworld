@@ -32,3 +32,13 @@ stag_hunt/players/*/coordinator
 stag_hunt/players/*/nearest_hunter
 stag_hunt/players/*/rabbiteer
 stag_hunt/players/*/nimcache
+tools/quick_run
+tools/docker_build
+tools/games_cli
+tools/ptswap
+tools/cogame_validator
+tools/games_server
+tools/tournament_server
+games_server/cogame_validator
+games_server/games_server
+games_server/tournament_server

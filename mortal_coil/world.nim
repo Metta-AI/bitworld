@@ -1,4 +1,4 @@
-import protocol, server, soul, data, output, render_utils
+import bitworld/protocol, bitworld/server, soul, data, output, render_utils
 
 const
   WorldTitleTicks* = 24 * 3

@@ -1,6 +1,6 @@
 import mummy, pixie
-import protocol except TileSize
-import server
+import bitworld/protocol except TileSize
+import bitworld/server
 import sim
 import std/[json, locks, monotimes, os, parseopt, strutils, tables, times]
 

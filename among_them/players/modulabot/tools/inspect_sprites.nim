@@ -3,9 +3,9 @@
 import std/[os, strutils, strformat]
 import pixie
 
-import ../../../../common/protocol
+import bitworld/protocol
 import ../../../sim
-import ../../../../common/server
+import bitworld/server
 import bitworld/aseprite
 
 proc dumpSprite(name: string, sprite: Sprite) =

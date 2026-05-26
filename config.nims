@@ -2,7 +2,6 @@ import os, strformat, strutils
 
 const RootDir = thisDir()
 
-switch("path", RootDir & "/common")
 switch("path", RootDir & "/src")
 switch("path", RootDir & "/../mummy/src")
 switch("path", RootDir & "/../paddy/src")

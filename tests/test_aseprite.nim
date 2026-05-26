@@ -1,7 +1,7 @@
 import
   std/os,
   pixie,
-  bitworld/aseprite, protocol
+  bitworld/aseprite, bitworld/protocol
 
 const
   RootDir = currentSourcePath.parentDir.parentDir

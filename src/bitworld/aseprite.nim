@@ -1,7 +1,7 @@
 import
   std/[algorithm, os],
   pixie, zippy,
-  server
+  bitworld/server
 
 type
   AsepriteError* = object of ValueError

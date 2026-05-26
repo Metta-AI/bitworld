@@ -2,8 +2,8 @@ import
   std/[algorithm, json, os, sequtils, strutils, tables],
   pixie,
   supersnappy,
-  ../common/protocol,
-  ../common/server,
+  bitworld/protocol,
+  bitworld/server,
   ../party_progressor/global,
   ../party_progressor/sim
 

@@ -4,7 +4,7 @@
 
 import std/[options, os, parseopt, strutils]
 import whisky
-import protocol
+import bitworld/protocol
 import common
 
 const

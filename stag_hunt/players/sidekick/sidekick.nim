@@ -1,8 +1,8 @@
 import
   std/[options, os, parseopt, strutils],
   whisky,
-  protocol,
-  pathfinding
+  bitworld/protocol,
+  bitworld/pathfinding
 
 const
   StagTileSize = 12

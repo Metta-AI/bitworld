@@ -1,7 +1,7 @@
 import
   std/[json, options, os],
-  ../../common/protocol,
-  ../../common/server,
+  bitworld/protocol,
+  bitworld/server,
   ../sim,
   ../players/common,
   ../players/still_forge as sf,

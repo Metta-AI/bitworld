@@ -1,6 +1,6 @@
 import std/[json, monotimes, os, parseopt, strformat, strutils, times]
 import pixie, silky, windy
-import protocol, server, sim, replays, legends, marketboard
+import bitworld/protocol, bitworld/server, sim, replays, legends, marketboard
 
 const
   PixelScale = 4

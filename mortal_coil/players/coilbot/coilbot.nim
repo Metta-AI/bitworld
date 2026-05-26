@@ -1,6 +1,6 @@
 import std/[monotimes, options, os, parseopt, random, strutils, times]
 import whisky, supersnappy
-import protocol
+import bitworld/protocol
 
 import ../../claude
 

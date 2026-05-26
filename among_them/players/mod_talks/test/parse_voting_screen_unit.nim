@@ -12,14 +12,14 @@
 
 import std/[strformat, strutils]
 import ../../../sim
-import ../../../../common/server
+import bitworld/server
 
 import ../bot
 import ../types
 import ../voting
 import ../evidence  # playerColorName
 
-import protocol  # ScreenWidth, ScreenHeight
+import bitworld/protocol  # ScreenWidth, ScreenHeight
 
 const
   LobbySize = 8

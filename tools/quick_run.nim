@@ -1,5 +1,5 @@
 import
-  std/[algorithm, exitprocs, json, monotimes, net, os, osproc, parseopt,
+  std/[exitprocs, json, monotimes, net, os, osproc, parseopt,
     strutils, sysrand, times]
 
 const
@@ -17,16 +17,6 @@ const
   MaxBots = 256
   SlotTokenBytes = 16
   HexChars = "0123456789abcdef"
-  IgnoredManifestDirs = [
-    ".git",
-    ".github",
-    "__pycache__",
-    "nimcache",
-    "node_modules",
-    "out",
-    "replays",
-    "tmp"
-  ]
 
 var
   serverProcess: Process
@@ -118,11 +108,11 @@ proc usage(): string =
     "Unknown options are passed to the game server when quick_run starts " &
     "it.\n" &
     "Examples:\n" &
-    "  quick_run fancy_cookout\n" &
-    "  quick_run src/heartleaf.nim --player\n" &
-    "  quick_run planet_wars --bots:skurge:4 --global --html\n" &
-    "  quick_run among_them --players:2 --bots:nottoodumb:6\n" &
-    "  quick_run among_them --connect --port:2000 --bots:nottoodumb:8"
+    "  quick_run ./fancy_cookout\n" &
+    "  quick_run ../cogame-planet-wars --bots:skurge:4 --global --html\n" &
+    "  quick_run /Users/me/p/cogame-planet-wars/src/planet_wars.nim\n" &
+    "  quick_run ./among_them --players:2 --bots:nottoodumb:6\n" &
+    "  quick_run ./among_them --connect --port:2000 --bots:nottoodumb:8"
 
 proc parsePort(value: string): int =
   result = parseInt(value)
@@ -169,55 +159,6 @@ proc relativeManifestKey(rootDir, path: string): string =
   else:
     result = path
   result = result.cleanRelativePath()
-
-proc normalizeManifestName(value: string): string =
-  ## Normalizes names so CLI keys can use dashes or underscores.
-  for c in value.strip():
-    if c.isAlphaNumeric():
-      result.add(c.toLowerAscii())
-    elif c in {'_', '-', ' ', '/', '\\'}:
-      result.add('_')
-
-proc shouldScanManifestDir(path: string): bool =
-  ## Returns true when a directory can contain launcher manifests.
-  let name = path.extractFilename()
-  name.len == 0 or (
-    name notin IgnoredManifestDirs and
-    not name.startsWith(".")
-  )
-
-proc addManifestPath(rootDir, path: string, paths: var seq[string]) =
-  ## Adds one manifest path by repository-relative identity.
-  if not fileExists(path):
-    return
-  let key = relativeManifestKey(rootDir, path)
-  for existing in paths:
-    if relativeManifestKey(rootDir, existing) == key:
-      return
-  paths.add(path)
-
-proc scanManifestPaths(
-  rootDir,
-  dir,
-  fileName: string,
-  paths: var seq[string]
-) =
-  ## Recursively scans for manifest files under useful directories.
-  addManifestPath(rootDir, dir / fileName, paths)
-  for kind, path in walkDir(dir):
-    case kind
-    of pcDir:
-      if path.shouldScanManifestDir():
-        scanManifestPaths(rootDir, path, fileName, paths)
-    else:
-      discard
-
-proc manifestPaths(rootDir, fileName: string): seq[string] =
-  ## Returns sorted manifest paths under the repository root.
-  scanManifestPaths(rootDir, rootDir, fileName, result)
-  result.sort(proc(a, b: string): int =
-    cmp(relativeManifestKey(rootDir, a), relativeManifestKey(rootDir, b))
-  )
 
 proc loadManifestObject(path: string): JsonNode =
   ## Loads a manifest JSON object from disk.
@@ -290,37 +231,6 @@ proc readGameManifest(rootDir, path: string): GameManifest =
     hasGlobalProtocol: game.manifestProtocol("global").len > 0
   )
 
-proc listGameManifests(rootDir: string): seq[GameManifest] =
-  ## Scans repository folders for Coworld manifests.
-  for path in manifestPaths(rootDir, CoworldManifestName):
-    result.add(readGameManifest(rootDir, path))
-
-proc findGameManifest(
-  rootDir,
-  folderName: string
-): tuple[found: bool, manifest: GameManifest] =
-  ## Finds a Coworld manifest matching a CLI game key.
-  let
-    cleanKey = folderName.cleanRelativePath()
-    cleanName = cleanKey.normalizeManifestName()
-  for manifest in listGameManifests(rootDir):
-    let manifestDir = manifest.key.parentDir().cleanRelativePath()
-    if manifest.key == cleanKey or
-      manifestDir == cleanKey or
-      manifest.name.normalizeManifestName() == cleanName:
-        return (found: true, manifest: manifest)
-
-proc gameSourceRelative(folderName: string): string =
-  let normalized = trimTrailingSeparators(folderName)
-  if normalized.len == 0:
-    raise newException(ValueError, "Game folder name cannot be empty.")
-
-  let parts = normalized.split({'/', '\\'})
-  if parts.len == 0 or parts[^1].len == 0:
-    raise newException(ValueError, "Game folder name cannot be empty.")
-
-  normalized / (parts[^1] & ".nim")
-
 proc hasPathSeparator(value: string): bool =
   ## Returns true when a value looks like a path.
   value.contains('/') or value.contains('\\')
@@ -346,6 +256,13 @@ proc sourceCandidate(rootDir, source: string): string =
   else:
     absolutePath(rootDir / sourcePath)
 
+proc pathFromArg(rootDir, value: string): string =
+  ## Returns one absolute filesystem path from a CLI path argument.
+  if value.isAbsolute():
+    value
+  else:
+    absolutePath(rootDir / value)
+
 proc projectRootForSource(sourcePath: string): string =
   ## Finds the closest build root for one external source path.
   result = sourcePath.parentDir()
@@ -361,6 +278,51 @@ proc projectRootForSource(sourcePath: string): string =
       break
     dir = parent
 
+proc manifestPathForRoot(rootDir: string): string =
+  ## Returns the Coworld manifest path beside one explicit game root.
+  rootDir / CoworldManifestName
+
+proc botSearchDirFor(buildDir, workDir: string): string =
+  ## Returns the bot lookup directory relative to the build root.
+  if workDir.startsWith(buildDir / ""):
+    workDir.relativePath(buildDir)
+  else:
+    "."
+
+proc workDirForSource(buildDir, sourcePath: string): string =
+  ## Returns the runtime working directory for one explicit source file.
+  if fileExists(buildDir.manifestPathForRoot()) or dirExists(buildDir / "data"):
+    buildDir
+  else:
+    sourcePath.parentDir()
+
+proc nimbleSourceNames(dir: string): seq[string] =
+  ## Returns source names declared by top-level Nimble package files.
+  for kind, path in walkDir(dir):
+    if kind == pcFile and path.splitFile().ext == ".nimble":
+      result.add(path.splitFile().name)
+
+proc sourceCandidatesForDir(dir: string): seq[string] =
+  ## Returns entry source candidates inside one explicit game directory.
+  let tail = dir.extractFilename()
+  if tail.len > 0:
+    result.add(dir / (tail & ".nim"))
+    result.add(dir / "src" / (tail & ".nim"))
+  for name in nimbleSourceNames(dir):
+    result.add(dir / "src" / (name & ".nim"))
+    result.add(dir / (name & ".nim"))
+  let srcDir = dir / "src"
+  if dirExists(srcDir):
+    for kind, path in walkDir(srcDir):
+      if kind == pcFile and path.splitFile().ext == ".nim":
+        result.add(path)
+
+proc firstExistingSource(dir: string): string =
+  ## Returns the first existing entry source inside one game directory.
+  for path in sourceCandidatesForDir(dir):
+    if fileExists(path):
+      return path
+
 proc ensureGameSource(rootDir, source: string): GameLaunch =
   ## Validates and describes one game source file.
   let sourcePath = sourceCandidate(rootDir, source)
@@ -368,16 +330,17 @@ proc ensureGameSource(rootDir, source: string): GameLaunch =
     raise newException(ValueError, "Game entry file not found: " & source)
 
   let
-    buildDir = rootDir
+    buildDir = projectRootForSource(sourcePath)
+    workDir = workDirForSource(buildDir, sourcePath)
     sourceRelative = sourceArg(buildDir, sourcePath)
-    manifestPath = rootDir / CoworldManifestName
+    manifestPath = buildDir.manifestPathForRoot()
     label = sourcePath.splitFile().name
 
   result = GameLaunch(
     sourceRelative: sourceRelative,
     buildDir: buildDir,
-    workDir: buildDir,
-    botSearchDir: ".",
+    workDir: workDir,
+    botSearchDir: botSearchDirFor(buildDir, workDir),
     label: label,
     name: label,
     playerProtocol: FrameClient,
@@ -395,49 +358,47 @@ proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
   if normalized.len == 0:
     raise newException(ValueError, "Game folder name cannot be empty.")
 
-  let manifestLookup = findGameManifest(rootDir, normalized)
-  let gameFolder =
-    if manifestLookup.found and not dirExists(rootDir / normalized):
-      manifestLookup.manifest.key.parentDir()
-    else:
-      normalized
   let
-    workDir = absolutePath(rootDir / gameFolder)
-    sourceRelative = gameSourceRelative(gameFolder)
-    sourcePath = absolutePath(rootDir / sourceRelative)
+    workDir = pathFromArg(rootDir, normalized)
+    sourcePath = firstExistingSource(workDir)
   if not dirExists(workDir):
-    raise newException(ValueError, "Game folder not found: " & gameFolder)
-  if not fileExists(sourcePath):
+    raise newException(ValueError, "Game folder not found: " & normalized)
+  if sourcePath.len == 0:
     raise newException(
       ValueError,
-      "Game entry file not found: " & sourceRelative
+      "Game entry file not found in: " & normalized
     )
+  let
+    buildDir = projectRootForSource(sourcePath)
+    sourceRelative = sourceArg(buildDir, sourcePath)
+    manifestPath = buildDir.manifestPathForRoot()
+    label = sourcePath.splitFile().name
   result = GameLaunch(
     sourceRelative: sourceRelative,
-    buildDir: rootDir,
+    buildDir: buildDir,
     workDir: workDir,
-    botSearchDir: gameFolder,
-    label: splitPath(gameFolder).tail,
-    name: splitPath(gameFolder).tail,
+    botSearchDir: botSearchDirFor(buildDir, workDir),
+    label: label,
+    name: label,
     playerProtocol: FrameClient,
     hasGlobalProtocol: false
   )
-  if manifestLookup.found:
-    result.name = manifestLookup.manifest.name
-    result.playerProtocol = manifestLookup.manifest.playerProtocol
-    result.hasGlobalProtocol = manifestLookup.manifest.hasGlobalProtocol
+  if fileExists(manifestPath):
+    let manifest = readGameManifest(buildDir, manifestPath)
+    result.name = manifest.name
+    result.playerProtocol = manifest.playerProtocol
+    result.hasGlobalProtocol = manifest.hasGlobalProtocol
 
 proc findGame(
   currentDir,
   source: string
 ): tuple[found: bool, game: GameLaunch] =
-  ## Finds a game by source path, folder, or Coworld manifest name.
+  ## Finds a game by explicit source path or folder path.
   let candidate = sourceCandidate(currentDir, source)
   if fileExists(candidate):
     return (found: true, game: ensureGameSource(currentDir, source))
 
-  let manifestLookup = findGameManifest(currentDir, source)
-  if manifestLookup.found or dirExists(currentDir / source):
+  if dirExists(pathFromArg(currentDir, source)):
     return (found: true, game: ensureGameFolder(currentDir, source))
 
 proc parseBotGroup(value: string): BotGroup =
@@ -657,10 +618,15 @@ proc compileTarget(
 ): int =
   echo "Compiling ", label, "..."
   createDir(outputPath.parentDir())
+  var args = @["c", "--out:" & outputPath]
+  let sourceDir = rootDir / "src"
+  if dirExists(sourceDir):
+    args.add("--path:" & sourceDir)
+  args.add(sourceRelative)
   result = runProcessAndWait(
     nimExe,
     rootDir,
-    ["c", "--out:" & outputPath, sourceRelative]
+    args
   )
   if result != 0:
     echo label, " compile failed with exit code ", result, "."

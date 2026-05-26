@@ -29,7 +29,7 @@
 
 import std/[strformat, strutils]
 import ../../../sim
-import ../../../../common/server  # Framebuffer.indices
+import bitworld/server  # Framebuffer.indices
 
 import ../bot
 import ../types

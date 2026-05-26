@@ -10,10 +10,10 @@
 
 import std/strutils
 
-import protocol
+import bitworld/protocol
 import ../../sim
 import ../../votereader
-import ../../../common/server
+import bitworld/server
 
 import types
 import sprite_match

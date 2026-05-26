@@ -65,7 +65,7 @@ const
   CogameHostEnv = "COGAME_HOST"
   CogamePortEnv = "COGAME_PORT"
   CoworldPlayerWsEnv = "COWORLD_PLAYER_WS_URL"
-  ManifestPathEnv = "GAMES_SERVER_MANIFEST"
+  CogamesEngineWsEnv = "COGAMES_ENGINE_WS_URL"
   CoworldManifestName = "coworld_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayDownloadPath = "/api/replay/download/"
@@ -606,25 +606,13 @@ proc uploadGamesDir(): string =
   ## Returns the uploaded Coworld manifest directory.
   uploadRootDir() / "games"
 
-proc gamesRoot(): string =
-  ## Returns the local Bitworld games root.
-  parentDir(parentDir(currentSourcePath()))
-
-proc defaultManifestPath(): string =
-  ## Returns the default Coworld manifest path.
-  gamesRoot() / "among_them" / CoworldManifestName
-
-proc manifestPath(): string =
-  ## Returns the configured Coworld manifest path.
-  envValue(ManifestPathEnv, defaultManifestPath())
-
 proc manifestKey(path: string): string =
   ## Builds a stable relative key for one manifest path.
   let
-    root = gamesRoot()
-    prefix = root & DirSep
-  if path.startsWith(prefix):
-    result = path[prefix.len .. ^1]
+    uploadRoot = uploadGamesDir()
+    uploadPrefix = uploadRoot & DirSep
+  if path.startsWith(uploadPrefix):
+    result = path[uploadPrefix.len .. ^1]
   else:
     result = path
   result = result.replace("\\", "/")
@@ -803,13 +791,10 @@ proc uploadedGameManifestPaths(): seq[string] =
     result.add(path)
 
 proc listGameManifests(): seq[GameManifest] =
-  ## Scans game folders for Coworld manifests.
+  ## Lists uploaded Coworld manifests.
   var paths: seq[string]
-  for dir in walkDirs(gamesRoot() / "*"):
-    paths.addManifestPath(dir / CoworldManifestName)
   for path in uploadedGameManifestPaths():
     paths.addManifestPath(path)
-  paths.addManifestPath(manifestPath())
   paths.sort(proc(a, b: string): int = cmp(manifestKey(a), manifestKey(b)))
   for path in paths:
     try:
@@ -817,18 +802,10 @@ proc listGameManifests(): seq[GameManifest] =
     except GamesServerError as e:
       echo "Skipping Coworld manifest ", path, ": ", e.msg
   if result.len == 0:
-    raise newException(GamesServerError, "no Coworld manifests found")
+    raise newException(GamesServerError, "no uploaded Coworld manifests found")
 
 proc listPlayerManifests(): seq[PlayerManifest] =
-  ## Scans Coworld manifests for embedded player entries.
-  for dir in walkDirs(gamesRoot() / "*"):
-    let coworldPath = dir / CoworldManifestName
-    if fileExists(coworldPath):
-      try:
-        for player in readCoworldPlayers(coworldPath):
-          result.add(player)
-      except GamesServerError as e:
-        echo "Skipping Coworld players ", coworldPath, ": ", e.msg
+  ## Lists player entries from uploaded Coworld manifests.
   for coworldPath in uploadedGameManifestPaths():
     try:
       for player in readCoworldPlayers(coworldPath):
@@ -837,7 +814,7 @@ proc listPlayerManifests(): seq[PlayerManifest] =
       echo "Skipping uploaded Coworld players ", coworldPath, ": ", e.msg
 
 proc findGameManifest(key: string): GameManifest =
-  ## Finds a scanned Coworld manifest by key.
+  ## Finds an uploaded Coworld manifest by key.
   let
     manifests = listGameManifests()
     cleanKey = key.strip()
@@ -2477,6 +2454,8 @@ proc botRunArgs(
   addAiEnvArgs(result)
   result.add("-e")
   result.add(CoworldPlayerWsEnv & "=" & endpoint)
+  result.add("-e")
+  result.add(CogamesEngineWsEnv & "=" & endpoint)
   for (key, value) in bot.env:
     result.add("-e")
     result.add(key & "=" & value)

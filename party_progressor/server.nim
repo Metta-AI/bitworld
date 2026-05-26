@@ -1,6 +1,6 @@
 import mummy
 import bitworld/client
-import protocol, sim, global
+import bitworld/protocol, sim, global
 import std/[json, locks, monotimes, os, strutils, tables, times]
 
 const

@@ -10,11 +10,8 @@
 ## binfmt emulation instead of running natively.
 ##
 ## Usage:
-##   nim r tools/docker_build.nim --push              # build + push all
-##   nim r tools/docker_build.nim --push among_them   # just the game server
-##   nim r tools/docker_build.nim --push infinite_blocks --bots
-##                                                   # game plus its bots
-##   nim r tools/docker_build.nim --list              # show targets
+##   nim r tools/docker_build.nim --push ../cogame-jumper
+##   nim r tools/docker_build.nim players/nottoodumb/Dockerfile
 ##
 ## Prerequisites:
 ##   - docker buildx.
@@ -22,23 +19,13 @@
 ##   - Registry auth for any manifest image path you push.
 
 import
-  std/[algorithm, json, os, osproc, parseopt, strutils, tables]
+  std/[json, os, osproc, parseopt, strutils]
 
 const
   DefaultRegistry = ""
   DefaultPlatforms = "linux/amd64,linux/arm64"
   CoworldManifestName = "coworld_manifest.json"
   ManifestNames = [CoworldManifestName]
-  IgnoredDirs = [
-    ".git",
-    ".github",
-    "__pycache__",
-    "nimcache",
-    "node_modules",
-    "out",
-    "replays",
-    "tmp"
-  ]
 
 type
   DockerTarget = object
@@ -53,38 +40,40 @@ type
 
 proc usage() =
   ## Prints usage and exits.
-  echo """Usage: docker_build [OPTIONS] [TARGETS...]
+  echo """Usage: docker_build [OPTIONS] PATH...
 
 Build multi-arch Docker images for bitworld.
 
-Targets are discovered from Dockerfile locations.
-Targets may also be paths to a Dockerfile or a directory containing one.
+Each PATH must be a Dockerfile or a directory containing one.
 
 Options:
   --push            Push images after building
-  --bots            Also build bots for selected game targets
   --platform:STR    Platforms to build (default: linux/amd64,linux/arm64)
   --tag:STR         Image tag (default: latest)
   --registry:STR    Override manifest registry prefix
-  --list            List available targets and exit
   --help            Show this help"""
   quit(0)
-
-proc hasPathSeparator(value: string): bool =
-  ## Returns true when a value looks like a filesystem path.
-  value.contains('/') or value.contains('\\')
-
-proc repoRoot(): string =
-  ## Returns the repository root directory.
-  currentSourcePath().parentDir.parentDir
-
-proc samePath(a, b: string): bool =
-  ## Returns true when two paths refer to the same directory.
-  cmpPaths(absolutePath(a), absolutePath(b)) == 0
 
 proc pathExists(path: string): bool =
   ## Returns true when a filesystem path exists.
   fileExists(path) or dirExists(path)
+
+proc contextRootForDockerfile(dockerFile: string): string =
+  ## Returns the repository context for one explicit Dockerfile path.
+  result = dockerFile.parentDir()
+  var dir = result
+  while true:
+    var hasNimble = false
+    for kind, path in walkDir(dir):
+      if kind == pcFile and path.splitFile().ext == ".nimble":
+        hasNimble = true
+        break
+    if hasNimble or fileExists(dir / CoworldManifestName):
+      return dir
+    let parent = dir.parentDir()
+    if parent == dir or parent.len == 0:
+      break
+    dir = parent
 
 proc normalizeTargetName(name: string): string =
   ## Normalizes a manifest name into a command-line target name.
@@ -237,13 +226,6 @@ proc imageRepoForTarget(
   if result.len == 0:
     result = "bitworld-" & targetName.replace('_', '-')
 
-proc shouldScanDir(path: string): bool =
-  ## Returns true when a directory can contain useful Dockerfiles.
-  let name = path.extractFilename()
-  if name.len == 0:
-    return true
-  name notin IgnoredDirs and not name.startsWith(".")
-
 proc addDockerFile(
   root,
   contextDir,
@@ -290,79 +272,22 @@ proc addDockerFile(
     isGame: isGame
   )
 
-proc scanDockerFiles(
-  root,
-  dir: string,
-  contextDir: string,
-  bitworldContext: string,
-  targets: var seq[DockerTarget]
-) =
-  ## Recursively scans for Dockerfiles under non-generated directories.
-  for kind, path in walkDir(dir):
-    case kind
-    of pcDir:
-      if shouldScanDir(path):
-        scanDockerFiles(root, path, contextDir, bitworldContext, targets)
-    of pcFile, pcLinkToFile:
-      if path.extractFilename() == "Dockerfile":
-        addDockerFile(root, contextDir, bitworldContext, path, targets)
-    else:
-      discard
-
-proc discoverTargets(root: string, bitworldContext = ""): seq[DockerTarget] =
-  ## Discovers all Docker build targets in the repository.
-  let scanRoot = absolutePath(root)
-  scanDockerFiles(scanRoot, scanRoot, scanRoot, bitworldContext, result)
-  result.sort(proc(a, b: DockerTarget): int =
-    cmp(a.name, b.name)
-  )
-
-proc targetMap(targets: openArray[DockerTarget]): Table[string, DockerTarget] =
-  ## Builds a lookup table using the first target for each name.
-  for target in targets:
-    if target.name notin result:
-      result[target.name] = target
-
-proc targetFiles(
-  targets: openArray[DockerTarget],
-  name: string
-): seq[string] =
-  ## Returns Dockerfiles for targets with one normalized name.
-  for target in targets:
-    if target.name == name:
-      result.add(target.contextDir / target.dockerFile)
-
 proc dockerTargetFromPath(
   root,
   path: string
 ): tuple[found: bool, target: DockerTarget, message: string] =
   ## Reads one Docker target from an explicit path argument.
-  let
-    currentPath =
-      if path.isAbsolute():
-        path
-      else:
-        absolutePath(path)
-    rootPath =
-      if path.isAbsolute():
-        path
-      else:
-        absolutePath(root / path)
-  if path notin [".", ".."] and
-      not path.hasPathSeparator() and
-      not currentPath.pathExists() and
-      not rootPath.pathExists():
-    return
-
   let rawPath =
     if path.isAbsolute():
       path
-    elif path in [".", ".."] or
-        path.hasPathSeparator() or
-        currentPath.pathExists():
-      currentPath
     else:
-      rootPath
+      absolutePath(root / path)
+  if not rawPath.pathExists():
+    return (
+      found: false,
+      target: DockerTarget(),
+      message: "Path not found: " & rawPath
+    )
   let dockerFile =
     if dirExists(rawPath):
       rawPath / "Dockerfile"
@@ -375,9 +300,9 @@ proc dockerTargetFromPath(
       message: "Dockerfile not found: " & dockerFile
     )
 
-  let contextDir = dockerFile.parentDir()
+  let contextDir = contextRootForDockerfile(dockerFile)
   var targets: seq[DockerTarget]
-  addDockerFile(root, contextDir, root, dockerFile, targets)
+  addDockerFile(root, contextDir, "", dockerFile, targets)
   if targets.len == 0:
     return (
       found: false,
@@ -386,13 +311,6 @@ proc dockerTargetFromPath(
     )
 
   result = (found: true, target: targets[0], message: "")
-
-proc supportsGame(target: DockerTarget, gameName: string): bool =
-  ## Returns true when a target is a bot for one normalized game name.
-  let normalizedGame = normalizeTargetName(gameName)
-  for game in target.games:
-    if normalizeTargetName(game) == normalizedGame:
-      return true
 
 proc addUniqueTarget(
   targets: var seq[DockerTarget],
@@ -404,20 +322,6 @@ proc addUniqueTarget(
         existing.dockerFile == target.dockerFile:
       return
   targets.add(target)
-
-proc addBotTargets(
-  result: var seq[DockerTarget],
-  targets: openArray[DockerTarget],
-  game: DockerTarget
-) =
-  ## Adds all discovered bot targets that support one game target.
-  if not game.isGame:
-    return
-  for target in targets:
-    if target.isGame:
-      continue
-    if target.supportsGame(game.name):
-      result.addUniqueTarget(target)
 
 const
   TournamentArgs = ["name", "token", "slot"]
@@ -562,54 +466,6 @@ proc buildImage(
 
   echo "  Done: ", imageTag
 
-proc selectedTargets(
-  root: string,
-  targets: openArray[DockerTarget],
-  names: openArray[string],
-  includeBots: bool
-): seq[DockerTarget] =
-  ## Selects requested targets or returns every discovered target.
-  if names.len == 0:
-    return @targets
-
-  let targetsByName = targetMap(targets)
-  for name in names:
-    let normalized = normalizeTargetName(name)
-    let files = targetFiles(targets, normalized)
-    if files.len > 1:
-      echo "Error: ambiguous Docker target: ", name
-      for file in files:
-        echo "  ", file
-      quit(1)
-    if normalized notin targetsByName:
-      let pathTarget = dockerTargetFromPath(root, name)
-      if pathTarget.found:
-        result.addUniqueTarget(pathTarget.target)
-        if includeBots:
-          result.addBotTargets(targets, pathTarget.target)
-        continue
-      if pathTarget.message.len > 0:
-        echo "Error: ", pathTarget.message
-        quit(1)
-      echo "Error: unknown Docker target: ", name
-      echo "Run with --list to see available targets."
-      quit(1)
-    let target = targetsByName[normalized]
-    result.addUniqueTarget(target)
-    if includeBots:
-      result.addBotTargets(targets, target)
-
-proc printTargets(root: string, targets: openArray[DockerTarget]) =
-  ## Prints all discovered Docker targets.
-  echo "Available targets:"
-  for target in targets:
-    echo "  ", target.name, " -> ", target.imageRepo
-    echo "    ", (target.contextDir / target.dockerFile).relativePath(root)
-    if target.bitworldContext.len > 0:
-      echo "    context: ", target.contextDir.relativePath(root)
-    if target.games.len > 0:
-      echo "    games: ", target.games.join(", ")
-
 proc targetNames(targets: openArray[DockerTarget]): string =
   ## Formats target names for status output.
   var names: seq[string]
@@ -619,24 +475,13 @@ proc targetNames(targets: openArray[DockerTarget]): string =
 
 proc main() =
   ## Parses command line options and builds requested Docker targets.
-  let
-    root = repoRoot()
-    currentRoot = absolutePath(getCurrentDir())
+  let root = absolutePath(getCurrentDir())
   var
     push = false
     platforms = DefaultPlatforms
     tag = "latest"
     registry = DefaultRegistry
-    includeBots = false
     names: seq[string]
-
-    targets = discoverTargets(root)
-  if not currentRoot.samePath(root):
-    for target in discoverTargets(currentRoot, root):
-      targets.addUniqueTarget(target)
-    targets.sort(proc(a, b: DockerTarget): int =
-      cmp(a.name, b.name)
-    )
 
   for kind, key, val in getopt():
     case kind
@@ -644,17 +489,12 @@ proc main() =
       case key
       of "push":
         push = true
-      of "bots":
-        includeBots = true
       of "platform":
         platforms = val
       of "tag":
         tag = val
       of "registry":
         registry = val
-      of "list":
-        printTargets(root, targets)
-        quit(0)
       of "help":
         usage()
       else:
@@ -672,7 +512,19 @@ proc main() =
     of cmdEnd:
       discard
 
-  let chosen = selectedTargets(root, targets, names, includeBots)
+  if names.len == 0:
+    echo "Error: docker_build requires at least one explicit path."
+    usage()
+
+  var chosen: seq[DockerTarget]
+  for name in names:
+    let target = dockerTargetFromPath(root, name)
+    if target.found:
+      chosen.addUniqueTarget(target.target)
+    else:
+      echo "Error: ", target.message
+      quit(1)
+
   let registryLabel =
     if registry.len > 0:
       registry
@@ -684,7 +536,6 @@ proc main() =
   echo "  tag:       ", tag
   echo "  platforms: ", platforms
   echo "  push:      ", push
-  echo "  bots:      ", includeBots
   echo "  targets:   ", targetNames(chosen)
 
   checkTournamentArgs(root, chosen)

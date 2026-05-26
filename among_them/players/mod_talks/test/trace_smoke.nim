@@ -13,7 +13,7 @@
 ## verification stays in `parity.nim`.
 
 import std/[json, os, random, strutils, tables]
-import protocol
+import bitworld/protocol
 
 import ../bot
 import ../types

@@ -6,9 +6,9 @@
 ## modulo the call-site refactor.
 
 import pixie
-import protocol
+import bitworld/protocol
 import ../../sim
-import ../../../common/server
+import bitworld/server
 
 import types
 import geometry

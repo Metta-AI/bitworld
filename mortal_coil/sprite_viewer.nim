@@ -1,5 +1,5 @@
 import supersnappy
-import protocol, pixelfonts, render_utils
+import bitworld/protocol, bitworld/pixelfonts, render_utils
 
 const
   SpritePlayerWebSocketPath* = "/sprite_player"

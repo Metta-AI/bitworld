@@ -4,7 +4,7 @@ import
 
 let
   rootDir = currentSourcePath().parentDir().parentDir()
-  dataDir = rootDir / "jumper" / "data"
+  dataDir = rootDir / "tests" / "data" / "jumper"
   workspace = loadTiledWorkspace(
     dataDir / "forest.tiled-project",
     dataDir / "forest.tiled-session",

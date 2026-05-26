@@ -1,7 +1,7 @@
 import
   std/[os, parseopt, strutils],
   bitworld/cogame_runtime,
-  protocol, sim, server
+  bitworld/protocol, sim, server
 
 when isMainModule:
   var

@@ -1,9 +1,9 @@
 import
   std/strutils,
-  protocol,
+  bitworld/protocol,
   sim,
-  ../common/pixelfonts,
-  ../common/server
+  bitworld/pixelfonts,
+  bitworld/server
 
 const
   VoteReaderCellW* = 16

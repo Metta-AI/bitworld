@@ -1,7 +1,7 @@
 import std/[json, os, random, strutils]
 import bitworld/aseprite
-import pixie, protocol
-import ../common/[pixelfonts, server]
+import pixie, bitworld/protocol
+import bitworld/[pixelfonts, server]
 
 const
   ArtCellSize* = 32
@@ -1722,16 +1722,9 @@ proc sheetPath*(): string =
 proc loadClientPalette*() =
   loadPalette(clientDataDir() / "pallete.png")
 
-proc tiny5Path*(): string =
-  ## Returns the Tiny5 pixel font path.
-  let path = dataDir() / "tiny5.aseprite"
-  if fileExists(path):
-    return path
-  repoDir() / "among_them" / "tiny5.aseprite"
-
 proc loadTiny5Font*(): PixelFont =
   ## Loads the shared Tiny5 variable-width pixel font.
-  readPixelFont(tiny5Path())
+  readTiny5Font()
 
 proc rgbaSpriteIndex*(sprite: RgbaSprite, x, y: int): int =
   ## Returns the byte offset for one RGBA sprite pixel.

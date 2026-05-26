@@ -1,6 +1,6 @@
 import
   std/[json, os],
-  ../../common/server,
+  bitworld/server,
   ../sim
 
 const RootDir = currentSourcePath.parentDir.parentDir

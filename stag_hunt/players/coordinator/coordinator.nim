@@ -1,8 +1,8 @@
 import
   std/[options, os, parseopt, strutils],
   whisky,
-  protocol,
-  pathfinding
+  bitworld/protocol,
+  bitworld/pathfinding
 
 # ---------------------------------------------------------------------------
 # Stag Hunt constants (mirrored from stag_hunt/stag_hunt.nim; not imported to

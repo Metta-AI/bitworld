@@ -4,38 +4,9 @@ description = "Retro 64x64 multiplayer social curriculum AI environment."
 license     = "MIT"
 
 srcDir = "."
-bin = @[
-  "client/global_client",
-  "client/player_client",
-  "client/reward_client",
-  "asteroid_arena/asteroid_arena",
-  "asteroid_arena/players/shooter/shooter",
-  "big_adventure/big_adventure",
-  "big_adventure/players/konrad/konrad",
-  "party_progressor/party_progressor",
-  "brushwalk/brushwalk",
-  "bubble_eats/bubble_eats",
-  "free_chat/free_chat",
-  "fancy_cookout/fancy_cookout",
-  "ice_brawl/ice_brawl",
-  "infinite_blocks/infinite_blocks",
-  "planet_wars/planet_wars",
-  "stag_hunt/stag_hunt",
-  "overworld/overworld",
-  "tools/quick_run",
-  "tools/ptswap",
-  "games_server/cogame_validator",
-  "games_server/tournament_server",
-  "tag/tag",
-  "jumper/jumper",
-  "warzone/warzone",
-  "among_them/among_them",
-  "among_them/replay_viewer",
-  "mortal_coil/mortal_coil",
-  "global_ui/global_ui"
-]
+paths = @["."]
+installDirs = @["src", "bitworld", "client", "docs", "games_server", "tools"]
 
-switch("path", "common")
 switch("path", "src")
 switch("threads", "on")
 switch("mm", "orc")

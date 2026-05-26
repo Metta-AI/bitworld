@@ -8,9 +8,9 @@
 
 import std/[monotimes, os, random, times]
 import pixie
-import protocol
+import bitworld/protocol
 import ../../sim
-import ../../../common/server
+import bitworld/server
 
 import types
 import tuning

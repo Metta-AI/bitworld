@@ -1,8 +1,8 @@
 import
   std/[options, os, parseopt, strutils],
   whisky,
-  protocol,
-  pathfinding
+  bitworld/protocol,
+  bitworld/pathfinding
 
 const
   # Stag Hunt world geometry (mirrors stag_hunt/stag_hunt.nim).

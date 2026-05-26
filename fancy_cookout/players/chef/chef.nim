@@ -1,7 +1,7 @@
 import
   std/[os, parseopt, strutils, options],
   whisky,
-  protocol
+  bitworld/protocol
 
 const
   DefaultAddress = "ws://localhost:8080/player?name=ChefBot"

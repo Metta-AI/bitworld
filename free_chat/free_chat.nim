@@ -2,8 +2,8 @@ import
   std/[json, locks, monotimes, os, parseopt, strutils, tables, times],
   mummy, pixie,
   bitworld/aseprite,
-  server
-import protocol except TileSize
+  bitworld/server
+import bitworld/protocol except TileSize
 
 const
   FancyTileSize = 12

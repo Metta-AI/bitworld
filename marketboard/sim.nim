@@ -1,5 +1,5 @@
 import std/[algorithm, json]
-import server
+import bitworld/server
 
 const
   MbTileSize* = 8

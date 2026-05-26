@@ -1,12 +1,11 @@
 import
   std/os,
   pixie,
-  ../common/server,
-  ../common/pixelfonts
+  bitworld/server,
+  bitworld/pixelfonts
 
 const
   RootDir = currentSourcePath.parentDir.parentDir
-  FontPath = RootDir / "among_them" / "tiny5.aseprite"
   PreviewPath = RootDir / "out" / "tiny5_preview.png"
   PreviewText =
     "the quick brown fox jumps over the lazy dog. " &
@@ -114,7 +113,7 @@ proc testTiny5FramebufferOcr(font: PixelFont) =
   doAssert colored.indices.textScore(font, text, 5, 87).glyphError() > 0,
     "frame OCR should ignore non-white glyph pixels"
 
-let font = readPixelFont(FontPath)
+let font = readTiny5Font()
 testTiny5Decode(font)
 testTiny5Preview(font)
 testTiny5ImageOcr(font)

@@ -2,10 +2,11 @@ import
   std/[os, strutils],
   pixie,
   bitworld/aseprite,
-  protocol,
-  server
+  bitworld/protocol,
+  bitworld/server
 
 const
+  EmbeddedTiny5Aseprite = staticRead("../../client/data/tiny5.aseprite")
   FirstPrintableAscii* = 32
   LastPrintableAscii* = 126
   PrintableAsciiCount* = LastPrintableAscii - FirstPrintableAscii + 1
@@ -149,6 +150,11 @@ proc readPixelFont*(
 ): PixelFont {.raises: [AsepriteError, IOError, PixieError, PixelFontError].} =
   ## Reads and decodes a pixel font from PNG or Aseprite.
   decodePixelFont(readFontImage(path), spacing)
+
+proc readTiny5Font*(spacing = DefaultGlyphSpacing): PixelFont
+    {.raises: [AsepriteError, PixelFontError].} =
+  ## Reads the embedded Tiny5 variable-width pixel font.
+  decodePixelFont(decodeAseprite(EmbeddedTiny5Aseprite).renderFrame(), spacing)
 
 proc textWidth*(font: PixelFont, text: string): int {.raises: [].} =
   ## Returns the width of the widest line in a text run.

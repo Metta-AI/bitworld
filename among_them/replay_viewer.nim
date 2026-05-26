@@ -1,6 +1,6 @@
 import
   std/[os, parseopt, uri],
-  protocol, windy,
+  bitworld/protocol, windy,
   global, replays, sim,
   ../client/global_client
 

@@ -1,7 +1,7 @@
 import std/[json, parseopt, strutils]
 import bitworld/cogame_runtime
 import jsony
-import protocol, server
+import bitworld/protocol, server
 
 type
   PartyProgressorError = object of CatchableError

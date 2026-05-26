@@ -2,7 +2,7 @@ import
   std/[locks, math, monotimes, os, parseopt, strutils, tables, times],
   mummy,
   supersnappy,
-  protocol
+  bitworld/protocol
 
 const
   TargetFps = 24.0

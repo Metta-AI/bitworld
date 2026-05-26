@@ -1,6 +1,6 @@
 import std/[monotimes, os, parseopt, strutils]
 import pixie, supersnappy, windy
-import protocol, sim, replays
+import bitworld/protocol, sim, replays
 import ../client/global_client
 
 const

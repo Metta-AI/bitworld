@@ -1,7 +1,7 @@
 import
   std/strutils,
-  ../common/pixelfonts,
-  ../common/protocol
+  bitworld/pixelfonts,
+  bitworld/protocol
 
 const
   TextBackground = 0'u8

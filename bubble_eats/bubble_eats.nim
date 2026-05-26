@@ -1,6 +1,6 @@
 import mummy
-import protocol
-import server
+import bitworld/protocol
+import bitworld/server
 import std/[algorithm, json, locks, math, monotimes, os, parseopt, random, strutils, tables, times]
 
 const

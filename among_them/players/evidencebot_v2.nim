@@ -1,6 +1,6 @@
 import
-  pixie, protocol, ../sim, ../votereader, ../../common/server,
-  ../../common/pixelfonts
+  pixie, bitworld/protocol, ../sim, ../votereader, bitworld/server,
+  bitworld/pixelfonts
 when not defined(evidencebotLibrary):
   import whisky
   when not defined(botHeadless):

@@ -18,7 +18,7 @@
 
 import std/random
 
-import protocol
+import bitworld/protocol
 import ../../sim
 
 import types

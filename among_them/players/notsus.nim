@@ -3,7 +3,7 @@ import
   std/[heapqueue, options, os, parseopt, random, strutils, times],
   pixie, silky, whisky, windy,
   supersnappy,
-  protocol, ../sim
+  bitworld/protocol, ../sim
 
 const
   PlayerScreenX = ScreenWidth div 2

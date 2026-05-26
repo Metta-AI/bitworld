@@ -4,8 +4,8 @@
 import std/[os, strformat, strutils]
 
 import ../../../sim
-import ../../../../common/server
-import ../../../../common/protocol
+import bitworld/server
+import bitworld/protocol
 
 import ../bot
 import ../types

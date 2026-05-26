@@ -1,9 +1,9 @@
 import
   std/os,
   supersnappy,
-  protocol, profile, sim,
-  ../common/pixelfonts,
-  ../common/server
+  bitworld/protocol, profile, sim,
+  bitworld/pixelfonts,
+  bitworld/server
 
 const
   ReplayScrubberSpriteId = 4004

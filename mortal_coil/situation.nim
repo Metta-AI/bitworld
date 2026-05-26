@@ -1,5 +1,5 @@
 import std/random
-import protocol, server, soul, choose, data, output, render_utils
+import bitworld/protocol, bitworld/server, soul, choose, data, output, render_utils
 
 const
   SituationTitleTicks* = 24 * 3

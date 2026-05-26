@@ -1,5 +1,5 @@
 import mummy
-import protocol, server, soul, data, render_utils, world, magical_facts, situation, conflict
+import bitworld/protocol, bitworld/server, soul, data, render_utils, world, magical_facts, situation, conflict
 import sprite_viewer
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
@@ -465,9 +465,9 @@ proc playerIdentity(request: Request): string =
 
 proc isClientRoute(route: string): bool =
   case route
-  of PlayerClientRoute, PlayerClientHtmlRoute, CoworldPlayerClientRoute,
-      GlobalClientRoute, GlobalClientHtmlRoute, CoworldGlobalClientRoute,
-      SnappyClientRoute, SnappyClientPath, CoworldSnappyClientRoute:
+  of PlayerClientRoute, PlayerClientHtmlRoute,
+      GlobalClientRoute, GlobalClientHtmlRoute,
+      SnappyClientRoute, SnappyClientPath:
     true
   else:
     false

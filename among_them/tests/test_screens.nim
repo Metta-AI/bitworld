@@ -1,7 +1,7 @@
 import
   std/[os, strutils, unittest],
   pixie,
-  ../../common/protocol,
+  bitworld/protocol,
   ../sim
 
 const

@@ -28,46 +28,49 @@ proc serverUrl(): string =
   getEnv("GAMES_SERVER_URL", DefaultServerUrl).strip(chars = {'/'})
 
 proc repoRoot(): string =
-  ## Bitworld repo root — mirrors `gamesRoot()` in games_server.nim
-  ## (`parentDir(parentDir(currentSourcePath()))`). Override with
-  ## `GAMES_SERVER_REPO_ROOT` if running outside `bitworld/tools/`.
+  ## Returns the Bitworld repo root used to find the server upload area.
   let envRoot = getEnv("GAMES_SERVER_REPO_ROOT", "")
   if envRoot.len > 0:
     return envRoot
   currentSourcePath().parentDir().parentDir()
 
-proc manifestSearchDirs(): seq[string] =
-  ## Directories whose `<name>/coworld_manifest.json` are scanned by the
-  ## server: top-level `gamesRoot()/*` and uploaded `games_server/games/*`.
-  let root = repoRoot()
-  @[root, root / "games_server" / "games"]
+proc uploadGamesDir(): string =
+  ## Returns the games_server upload directory for Coworld manifests.
+  getEnv("GAMES_SERVER_UPLOAD_GAMES_DIR", repoRoot() / "games_server" / "games")
 
-proc resolveManifestPath(manifest: string): string =
-  ## Accepts a bare name (`cogs_vs_clips`), a relative key
-  ## (`games_server/games/cogs_vs_clips/coworld_manifest.json`), or a
-  ## full path on disk, and returns the file path of the manifest.
-  let root = repoRoot()
-  var candidates: seq[string]
-  candidates.add(root / manifest)
-  candidates.add(root / manifest / "coworld_manifest.json")
-  for dir in manifestSearchDirs():
-    candidates.add(dir / manifest)
-    candidates.add(dir / manifest / "coworld_manifest.json")
-  candidates.add(manifest)
-  candidates.add(manifest / "coworld_manifest.json")
-  for path in candidates:
+proc manifestPathCandidates(manifest: string): seq[string] =
+  ## Returns upload-area candidates for one manifest key or path.
+  let uploadDir = uploadGamesDir()
+  result.add(uploadDir / manifest)
+  result.add(uploadDir / manifest / "coworld_manifest.json")
+  result.add(manifest)
+  result.add(manifest / "coworld_manifest.json")
+
+proc findManifestPath(manifest: string): string =
+  ## Finds an uploaded manifest path without exiting.
+  for path in manifestPathCandidates(manifest):
     if path.len > 0 and fileExists(path):
       return path
+
+proc resolveManifestPath(manifest: string): string =
+  ## Resolves a manifest only from the games_server upload area.
+  result = findManifestPath(manifest)
+  if result.len > 0:
+    return
   die("manifest not found: " & manifest)
 
 proc manifestKey(manifest: string): string =
-  ## Server-side key, relative to repo root (matches `manifestKey` in
-  ## games_server.nim).
-  let path = resolveManifestPath(manifest)
-  let prefix = repoRoot() & DirSep
+  ## Server-side key relative to the uploaded manifest area when possible.
+  var path = manifest.strip()
+  let found = findManifestPath(path)
+  if found.len > 0:
+    path = found
+  else:
+    return path.replace("\\", "/")
+  let prefix = uploadGamesDir() & DirSep
   if path.startsWith(prefix):
     return path[prefix.len .. ^1].replace("\\", "/")
-  path
+  path.replace("\\", "/")
 
 proc playerIds(manifestPath: string): seq[string] =
   ## Reads `player[].id` from a v2 Coworld manifest.
@@ -165,21 +168,17 @@ proc containerPort(name: string): int =
 # --- subcommands --------------------------------------------------------
 
 proc cmdManifests(asJson: bool) =
-  let prefix = repoRoot() & DirSep
+  let
+    uploadDir = uploadGamesDir()
+    prefix = uploadDir & DirSep
   var entries: seq[string]
-  for root in manifestSearchDirs():
-    if not dirExists(root):
-      continue
-    for kind, path in walkDir(root):
-      if kind != pcDir:
-        continue
-      let manifest = path / "coworld_manifest.json"
-      if not fileExists(manifest):
-        continue
-      let key = if manifest.startsWith(prefix):
-          manifest[prefix.len .. ^1].replace("\\", "/")
-        else:
-          manifest
+  if dirExists(uploadDir):
+    for path in walkFiles(uploadDir / "*.json"):
+      let key = path[prefix.len .. ^1].replace("\\", "/")
+      if key notin entries:
+        entries.add(key)
+    for path in walkFiles(uploadDir / "*" / "coworld_manifest.json"):
+      let key = path[prefix.len .. ^1].replace("\\", "/")
       if key notin entries:
         entries.add(key)
   if asJson:
@@ -208,7 +207,11 @@ proc cmdBots(manifest: string, asJson: bool) =
 
 proc cmdLaunch(manifest: string, bots: seq[BotSpec], asJson: bool) =
   let key = manifestKey(manifest)
-  let ids = playerIds(resolveManifestPath(manifest))
+  var ids: seq[string]
+  try:
+    ids = playerIds(resolveManifestPath(manifest))
+  except CatchableError:
+    discard
   var fields = @[("manifest", key)]
   var resolved: seq[BotSpec]
   if bots.len == 0 and ids.len > 0:
@@ -217,6 +220,8 @@ proc cmdLaunch(manifest: string, bots: seq[BotSpec], asJson: bool) =
       resolved.add(BotSpec(name: id, count: 0))
   for spec in bots:
     if spec.name == "all" or spec.name == "*":
+      if ids.len == 0:
+        die("--bots requires an uploaded manifest key with player entries")
       for id in ids:
         resolved.add(BotSpec(name: id, count: spec.count))
     else:
@@ -317,7 +322,8 @@ commands:
 
 env:
   GAMES_SERVER_URL      base URL (default http://127.0.0.1:2080)
-  GAMES_SERVER_REPO_ROOT  bitworld repo root (default: parent of tools/)
+  GAMES_SERVER_REPO_ROOT  bitworld repo root for upload lookup
+  GAMES_SERVER_UPLOAD_GAMES_DIR  uploaded manifest directory
 """
   quit(0)
 

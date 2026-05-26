@@ -3,7 +3,7 @@ import pixie
 import supersnappy
 import bitworld/client
 import bitworld/cogame_runtime
-import protocol, server
+import bitworld/protocol, bitworld/server
 import std/[json, locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
 
 const
@@ -1746,9 +1746,9 @@ proc isWebSocketUpgrade(request: Request): bool =
 
 proc isStaticRoute(route: string): bool =
   case route
-  of PlayerClientRoute, PlayerClientHtmlRoute, CoworldPlayerClientRoute,
-      GlobalClientRoute, GlobalClientHtmlRoute, CoworldGlobalClientRoute,
-      SnappyClientRoute, SnappyClientPath, CoworldSnappyClientRoute:
+  of PlayerClientRoute, PlayerClientHtmlRoute,
+      GlobalClientRoute, GlobalClientHtmlRoute,
+      SnappyClientRoute, SnappyClientPath:
     true
   else:
     false

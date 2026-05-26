@@ -12,9 +12,9 @@
 ## option-c contract: scans run against either prev-frame camera (first
 ## pass) or the just-locked current camera (re-scan after teleport).
 
-import protocol
+import bitworld/protocol
 import ../../sim
-import ../../../common/server
+import bitworld/server
 
 import types
 import geometry

@@ -1,4 +1,4 @@
-import protocol
+import bitworld/protocol
 
 const
   MapWidth* = 32

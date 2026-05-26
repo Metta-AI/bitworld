@@ -2,9 +2,9 @@ import
   std/[os, unittest],
   ../sim,
   ../texts,
-  ../../common/pixelfonts,
-  ../../common/protocol,
-  ../../common/server
+  bitworld/pixelfonts,
+  bitworld/protocol,
+  bitworld/server
 
 const
   GameDir = currentSourcePath.parentDir.parentDir

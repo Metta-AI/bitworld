@@ -1,6 +1,6 @@
 import pixie, vmath, silky, windy
-import protocol
-import server
+import bitworld/protocol
+import bitworld/server
 
 const
   ViewerScale = 4

@@ -25,10 +25,10 @@
 ## `parseVotingScreen` never matched and no meeting events fired.
 
 import std/strutils
-import protocol
+import bitworld/protocol
 import ../../sim
-import ../../../common/server
-import ../../../common/pixelfonts
+import bitworld/server
+import bitworld/pixelfonts
 
 import types
 

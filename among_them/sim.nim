@@ -2,9 +2,9 @@ import
   std/[json, math, os, random, strutils],
   jsony, pixie,
   bitworld/aseprite,
-  protocol, profile,
-  ../common/pixelfonts,
-  ../common/server
+  bitworld/protocol, profile,
+  bitworld/pixelfonts,
+  bitworld/server
 
 const
   GameName* = "among_them"

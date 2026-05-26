@@ -3,27 +3,30 @@
 Bitworld is:
 
 * A simple 128x128 protocol spec with two inputs dpad and text.
-* A collection of games.
+* An installable Nim library with shared clients, protocol docs, and tools.
 * Philosophy: `Cooperative/competitive social dilemma games, non-zero-sum. Make short term betrayal possible and beneficial, but hinders long term success.`
 
-Bit World is a retro-inspired multiplayer spec, list of games and a philosophy around multi-agent research. It imagines a large shared protocol where many agents interact with each other using simple protocols, many games and a defined type game.
+Bit World is a retro-inspired multiplayer protocol and tooling repo for
+multi-agent research. Completed Coworld games live in standalone
+`cogame-*` repositories and depend on this package through Nimble.
 
 The project is meant to be a playground for studying coordination, competition, trust, and emergent social behavior in game-like environments. It is especially aimed at experiments involving reinforcement learning agents and coding agents operating in the same world.
 
-## Games
+## Repository Contents
 
-The repo currently includes playable multiplayer prototypes for:
+The repo includes the shared protocol implementation, native and browser
+clients, Coworld runtime helpers, Aseprite and Tiled loaders, development
+tools, and some in-progress game prototypes. Completed games are kept in
+their own repositories so this package can be installed as a normal library.
+
+Current bundled prototypes include:
 
 - `Among Them`
-- `Asteroid Arena`
-- `Big Adventure`
 - `Brushwalk`
 - `Bubble Eats`
 - `Fancy Cookout`
 - `Free Chat`
 - `Ice Brawl`
-- `Infinite Blocks`
-- `Planet Wars`
 - `Stag Hunt`
 - `Tag`
 - `Warzone`
@@ -92,8 +95,8 @@ At a high level:
 
 ## Quick Run Examples
 
-`quick_run` starts a game server, opens local human clients, and can
-launch Nim bot players. Run these commands from the repo root:
+`quick_run` starts a game server, opens local human clients, and can launch
+Nim bot players. Pass an explicit folder or source path:
 
 ```sh
 cd /path/to/bitworld
@@ -102,19 +105,19 @@ cd /path/to/bitworld
 Start one human client:
 
 ```sh
-nim r tools/quick_run fancy_cookout
+nim r tools/quick_run ./fancy_cookout
 ```
 
 Start two local human clients:
 
 ```sh
-nim r tools/quick_run free_chat --players:2
+nim r tools/quick_run ./free_chat --players:2
 ```
 
 Start an 8-player Among Them game with one human and seven AI players:
 
 ```sh
-nim r tools/quick_run among_them \
+nim r tools/quick_run ./among_them \
   --players:1 \
   --bots:evidencebot_v2:7 \
   --port:2000 \
@@ -124,7 +127,7 @@ nim r tools/quick_run among_them \
 Start a bot-only Among Them game:
 
 ```sh
-nim r tools/quick_run among_them \
+nim r tools/quick_run ./among_them \
   --players:0 \
   --bots:evidencebot_v2:8 \
   --port:2000 \
@@ -134,7 +137,7 @@ nim r tools/quick_run among_them \
 Mix Among Them bot families:
 
 ```sh
-nim r tools/quick_run among_them \
+nim r tools/quick_run ./among_them \
   --players:1 \
   --bots:evidencebot_v2:4 \
   --bots:nottoodumb:3 \
@@ -145,7 +148,7 @@ nim r tools/quick_run among_them \
 Connect humans and bots to an already-running Among Them server:
 
 ```sh
-nim r tools/quick_run among_them \
+nim r tools/quick_run ./among_them \
   --connect \
   --address:localhost \
   --port:2000 \
@@ -156,21 +159,21 @@ nim r tools/quick_run among_them \
 Try other games with bundled bots:
 
 ```sh
-nim r tools/quick_run planet_wars --players:1 --bots:skurge:3 --port:2001
-nim r tools/quick_run infinite_blocks --players:1 --bots:stacker:3 --port:2002
-nim r tools/quick_run big_adventure --players:1 --bots:konrad:1 --port:2003
+nim r tools/quick_run ../cogame-planet-wars --players:1 --bots:skurge:3 --port:2001
+nim r tools/quick_run ../cogame-infinite-blocks --players:1 --bots:stacker:3 --port:2002
+nim r tools/quick_run ../cogame-big-adventure --players:1 --bots:konrad:1 --port:2003
 ```
 
 Open bot viewer windows:
 
 ```sh
-nim r tools/quick_run among_them --players:1 --bots:nottoodumb:2 --bot-gui
+nim r tools/quick_run ./among_them --players:1 --bots:nottoodumb:2 --bot-gui
 ```
 
 Save a replay:
 
 ```sh
-nim r tools/quick_run among_them \
+nim r tools/quick_run ./among_them \
   --players:1 \
   --bots:evidencebot_v2:7 \
   --save-replay:among_them.bitreplay

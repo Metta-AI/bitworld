@@ -1,5 +1,5 @@
 import std/options
-import protocol
+import bitworld/protocol
 import common
 
 type

@@ -1,8 +1,8 @@
 import std/[algorithm, os, sequtils, strutils]
 import supersnappy
-import protocol, sim
-import ../common/pixelfonts
-import ../common/server
+import bitworld/protocol, sim
+import bitworld/pixelfonts
+import bitworld/server
 
 const
   ReplayScrubberSpriteId = 404

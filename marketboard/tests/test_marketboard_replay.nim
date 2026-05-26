@@ -1,6 +1,6 @@
 import
   std/os,
-  ../../common/protocol,
+  bitworld/protocol,
   ../sim,
   ../replays
 
