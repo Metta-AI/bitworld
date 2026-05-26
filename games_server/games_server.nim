@@ -69,6 +69,9 @@ const
   CoworldManifestName = "coworld_manifest.json"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayDownloadPath = "/api/replay/download/"
+  ReplayUploadPath = "/api/replay/upload/"
+  UploadTokenBytes = 32
+  UploadTokenTtlSeconds = 600
   GamesServerUrlEnv = "GAMES_SERVER_URL"
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
@@ -984,6 +987,7 @@ proc requireDocker(args: openArray[string]): string =
 var skipPull* = false
 var useEcs* = false
 var ec2PrivateIp = ""
+var uploadTokens: Table[string, tuple[replay: string, created: int64]]
 
 proc fetchEc2PrivateIp(): string =
   ## Fetches this instance's private IP from EC2 instance metadata (IMDSv2).
@@ -2224,6 +2228,27 @@ proc generatePlayerToken(): string =
   for b in bytes:
     result.add(b.toHex(2).toLowerAscii())
 
+proc generateUploadToken(replay: string): string =
+  ## Generates a one-time upload token for a game launch.
+  var bytes: array[UploadTokenBytes, byte]
+  if not urandom(bytes):
+    raise newException(GamesServerError, "could not generate upload token")
+  for b in bytes:
+    result.add(b.toHex(2).toLowerAscii())
+  uploadTokens[result] = (replay: replay, created: toUnix(getTime()))
+
+proc validateUploadToken(token, replay: string): bool =
+  ## Returns true if the token is valid, not expired, and matches the replay.
+  if token.len == 0 or not uploadTokens.hasKey(token):
+    return false
+  let entry = uploadTokens[token]
+  if toUnix(getTime()) - entry.created > UploadTokenTtlSeconds:
+    uploadTokens.del(token)
+    return false
+  let replayBase = replay.split(".")[0]
+  let entryBase = entry.replay.split(".")[0]
+  replayBase == entryBase
+
 proc variantDefaults(manifestInfo: GameManifest): JsonNode =
   ## Reads the first variant's game_config as default values.
   result = newJObject()
@@ -2355,18 +2380,29 @@ proc baseDockerArgs(
   result.add("-e")
   result.add(CogamePortEnv & "=" & $GameContainerPort)
   if saveReplay:
-    let
-      replayFile = replayContainerPath(replay)
-      scores = replayContainerPath(scoresName(replay))
-      configFile = replayContainerPath(configName(replay))
-    result.add("-v")
-    result.add(replayDir() & ":" & ReplayMountDir)
-    result.add("-e")
-    result.add(CogameReplayUriEnv & "=file://" & replayFile)
-    result.add("-e")
-    result.add(CogameResultsUriEnv & "=file://" & scores)
-    result.add("-e")
-    result.add(CogameConfigUriEnv & "=file://" & configFile)
+    let serverUrl = gamesServerUrl()
+    if serverUrl.len > 0:
+      let token = generateUploadToken(replay)
+      let uploadBase = serverUrl & ReplayUploadPath
+      result.add("-e")
+      result.add(CogameReplayUriEnv & "=" & uploadBase & replay & "?token=" & token)
+      result.add("-e")
+      result.add(CogameResultsUriEnv & "=" & uploadBase & scoresName(replay) & "?token=" & token)
+      result.add("-e")
+      result.add(CogameConfigUriEnv & "=" & serverUrl & ReplayDownloadPath & configName(replay))
+    else:
+      let
+        replayFile = replayContainerPath(replay)
+        scores = replayContainerPath(scoresName(replay))
+        configFile = replayContainerPath(configName(replay))
+      result.add("-v")
+      result.add(replayDir() & ":" & ReplayMountDir)
+      result.add("-e")
+      result.add(CogameReplayUriEnv & "=file://" & replayFile)
+      result.add("-e")
+      result.add(CogameResultsUriEnv & "=file://" & scores)
+      result.add("-e")
+      result.add(CogameConfigUriEnv & "=file://" & configFile)
   addAiEnvArgs(result)
 
 proc runnerScript(): string =
@@ -2851,6 +2887,23 @@ proc queryValue(request: Request, key: string): string =
   for (queryKey, value) in parseUrlPairs(request.uri[queryStart + 1 .. ^1]):
     if queryKey == key:
       return value
+
+proc replayUploadHandler(request: Request) =
+  ## Handles PUT /api/replay/upload/<filename>?token=<tok>.
+  let pathPart = request.path[ReplayUploadPath.len .. ^1]
+  let clean = cleanReplayName(pathPart)
+  if clean.len == 0:
+    request.respond(400, @[("Content-Type", "text/plain")], "bad filename\n")
+    return
+  let token = request.queryValue("token")
+  if not validateUploadToken(token, clean):
+    request.respond(403, @[("Content-Type", "text/plain")], "invalid token\n")
+    return
+  ensureReplayDir()
+  writeFile(replayPath(clean), request.body)
+  echo "[upload] ", clean, " (", request.body.len, " bytes)"
+  request.respond(200, @[("Content-Type", "application/json")],
+    """{"status":"ok"}""" & "\n")
 
 proc hostName(request: Request): string =
   ## Extracts the browser-visible host without a port.
@@ -4379,6 +4432,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.replayPathHandler()
     elif request.path.startsWith(ReplayDownloadPath) and request.httpMethod == "GET":
       request.replayDownloadHandler()
+    elif request.path.startsWith(ReplayUploadPath) and request.httpMethod == "PUT":
+      request.replayUploadHandler()
     else:
       request.notFoundHandler()
   except GamesServerError as e:
