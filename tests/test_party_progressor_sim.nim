@@ -1626,6 +1626,111 @@ proc testRoleSpecialAbilitiesShowColoredSpriteEffects() =
         "ability dps beam vertical" in labels,
         "DPS special should show a straight beam effect"
 
+proc testRoleSpecialAbilitiesUseManaAndHudMeter() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass)
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].applyRole(RoleDps)
+  sim.players[playerIndex].x = 4 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  sim.players[playerIndex].facing = FaceRight
+  sim.players[playerIndex].mana = DpsBeamManaCost
+  sim.mobs.add(Mob(
+    kind: SnakeMob,
+    species: SpeciesGrassSnake,
+    x: sim.players[playerIndex].x + WorldTileSize * 2,
+    y: sim.players[playerIndex].y,
+    sprite: sim.mobSprite,
+    bounds: sim.mobBounds,
+    hp: SnakeHp,
+    attackCooldown: 99
+  ))
+
+  sim.step([InputState(b: true)])
+  doAssert sim.players[playerIndex].mana == 0,
+    "DPS beam should spend mana"
+  doAssert sim.players[playerIndex].damageDone > 0,
+    "DPS beam should still damage targets in a straight line"
+  doAssert sim.players[playerIndex].abilityCooldown > 0
+
+  var nextState: PlayerViewerState
+  let parsed = sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    initPlayerViewerState(),
+    nextState
+  ).parseSpriteProtocolPacket()
+  doAssert "hud mana 0/" & $MaxPlayerMana in
+    parsed.objectSpriteLabelsOnLayer(TopLeftLayerId),
+    "player HUD should expose the current mana meter as a sprite label"
+  doAssert parsed.objects[PlayerHudObjectId + 3].layer == TopLeftLayerId
+
+  let damageDone = sim.players[playerIndex].damageDone
+  sim.players[playerIndex].abilityCooldown = 0
+  sim.step([InputState(b: true)])
+  doAssert sim.players[playerIndex].damageDone == damageDone,
+    "a special with no mana should not fire"
+
+  for _ in 0 ..< ManaRegenIntervalTicks:
+    sim.step([InputState()])
+  doAssert sim.players[playerIndex].mana > 0,
+    "mana should naturally regenerate for repeated choices"
+
+proc testPlayerDebugAsciiSnapshotIsReadable() =
+  var sim = initPartyProgressorForTest()
+  sim.clearTerrain()
+  sim.mobs.setLen(0)
+  sim.pickups.setLen(0)
+  sim.landmarks.setLen(0)
+  sim.fillGround(GroundGrass, BiomeForest)
+  let playerIndex = sim.addPlayer("player1")
+  sim.players[playerIndex].applyRole(RoleDps)
+  sim.players[playerIndex].mana = 6
+  sim.players[playerIndex].abilityCooldown = 7
+  sim.players[playerIndex].x = 5 * WorldTileSize
+  sim.players[playerIndex].y = (WorldHeightTiles div 2) * WorldTileSize
+  let
+    playerTx = sim.players[playerIndex].x div WorldTileSize
+    playerTy = sim.players[playerIndex].y div WorldTileSize
+  sim.mobs.add(Mob(
+    kind: WolfMob,
+    species: SpeciesForestWolf,
+    x: (playerTx + 2) * WorldTileSize,
+    y: playerTy * WorldTileSize,
+    sprite: sim.mobSprite,
+    bounds: sim.mobBounds,
+    hp: WolfHp,
+    attackPhase: MobTelegraph,
+    attackCooldown: 30
+  ))
+  sim.pickups.add(Pickup(
+    x: (playerTx + 1) * WorldTileSize,
+    y: (playerTy + 1) * WorldTileSize,
+    kind: PickupFood,
+    value: 1
+  ))
+  sim.landmarks.add(Landmark(
+    tx: playerTx - 1,
+    ty: playerTy,
+    kind: LandmarkCamp,
+    hp: 1,
+    done: false
+  ))
+
+  let ascii = sim.playerDebugAscii(playerIndex)
+  doAssert ascii.contains("PLAYER id=")
+  doAssert ascii.contains("role=dps")
+  doAssert ascii.contains("mana=6/" & $MaxPlayerMana)
+  doAssert ascii.contains("cd=7")
+  doAssert ascii.contains("ASCII")
+  doAssert ascii.contains("@")
+  doAssert ascii.contains("mob#0 glyph=?")
+  doAssert ascii.contains("pickup#0 glyph=f")
+  doAssert ascii.contains("landmark#0 glyph=C")
+
 proc testGeneratedMonsterSpritesStayRichlyColored() =
   var sim = initPartyProgressorForTest()
   let playerIndex = sim.addPlayer("player1")
@@ -5310,6 +5415,8 @@ testGlobalSpriteViewFollowsPartyProgress()
 testCarriedInventoryTilesAcrossBottomOfPlayerView()
 testCarriedFoodStacksAndShowsCount()
 testRoleSpecialAbilitiesShowColoredSpriteEffects()
+testRoleSpecialAbilitiesUseManaAndHudMeter()
+testPlayerDebugAsciiSnapshotIsReadable()
 testGeneratedMonsterSpritesStayRichlyColored()
 testExpeditionObjectiveHudGuidesNextStep()
 testBiomeMonsterSpeciesBreadth()

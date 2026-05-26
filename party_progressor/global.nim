@@ -39,6 +39,7 @@ const
   DpsBeamVerticalSpriteId = RoleAbilityEffectSpriteBase + 9
   LivesHudSpriteId = PlayerHudSpriteId + 1
   StatusHudSpriteId = PlayerHudSpriteId + 2
+  ManaHudSpriteId = PlayerHudSpriteId + 3
   HudFrontierIconSpriteId = PlayerHudSpriteId + 4
   HudWoodIconSpriteId = PlayerHudSpriteId + 5
   HudFoodIconSpriteId = PlayerHudSpriteId + 6
@@ -65,6 +66,7 @@ const
   LandmarkDynamicPromptSpriteBase = 940
   LivesHudObjectId = PlayerHudObjectId + 1
   StatusHudObjectId = PlayerHudObjectId + 2
+  ManaHudObjectId = PlayerHudObjectId + 3
   HudCounterValueObjectBase = PlayerHudObjectId + 10
   HudCounterIconObjectBase = PlayerHudObjectId + 30
   HudArmorObjectBase = PlayerHudObjectId + 50
@@ -104,6 +106,9 @@ const
   HealthBarHeight = 5
   HealthBarPad = 1
   HealthBarGap = 3
+  HudMeterWidth = 42
+  HudMeterHeight = 6
+  HudMeterPad = 1
   UiColors = [
     (r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8),
     (r: 20'u8, g: 24'u8, b: 30'u8, a: 235'u8),
@@ -129,6 +134,7 @@ const
   HealthGreenColor = (r: 86'u8, g: 210'u8, b: 122'u8, a: 255'u8)
   HealthYellowColor = (r: 255'u8, g: 222'u8, b: 74'u8, a: 255'u8)
   HealthRedColor = (r: 224'u8, g: 64'u8, b: 79'u8, a: 255'u8)
+  ManaFillColor = (r: 84'u8, g: 141'u8, b: 255'u8, a: 255'u8)
   PlayerTintColors = [
     (r: 229'u8, g: 64'u8, b: 88'u8, a: 255'u8),
     (r: 252'u8, g: 175'u8, b: 62'u8, a: 255'u8),
@@ -1255,6 +1261,46 @@ proc buildSpriteProtocolHealthSprite(
     fillWidth,
     innerHeight,
     healthFillColor(value, maximum)
+  )
+
+proc buildSpriteProtocolHudMeterSprite(
+  current, maximum: int,
+  fillColor: tuple[r, g, b, a: uint8]
+): tuple[width, height: int, pixels: seq[uint8]] =
+  ## Builds a wider true-color resource meter for the local player HUD.
+  let
+    value = clamp(current, 0, maximum)
+    innerWidth = HudMeterWidth - HudMeterPad * 2
+    innerHeight = HudMeterHeight - HudMeterPad * 2
+  result.width = HudMeterWidth
+  result.height = HudMeterHeight
+  result.pixels = newRgbaPixels(result.width, result.height)
+  result.pixels.strokeRgbaRect(
+    result.width,
+    0,
+    0,
+    result.width,
+    result.height,
+    HealthFrameColor
+  )
+  result.pixels.fillRgbaRect(
+    result.width,
+    HudMeterPad,
+    HudMeterPad,
+    innerWidth,
+    innerHeight,
+    HealthBackColor
+  )
+  if maximum <= 0 or value <= 0:
+    return
+  let fillWidth = max(1, value * innerWidth div maximum)
+  result.pixels.fillRgbaRect(
+    result.width,
+    HudMeterPad,
+    HudMeterPad,
+    fillWidth,
+    innerHeight,
+    fillColor
   )
 
 proc blitAsciiText(
@@ -3990,6 +4036,7 @@ proc addPlayerHud(
     player = sim.players[playerIndex]
     frontier = sim.frontierTiles()
     lives = max(player.lives, 0)
+    mana = clamp(player.mana, 0, MaxPlayerMana)
     counters = [
       (
         slot: 0,
@@ -4004,7 +4051,7 @@ proc addPlayerHud(
         iconSpriteId: HudWoodIconSpriteId,
         value: $sim.wood,
         x: 2,
-        y: 18,
+        y: 26,
         label: "wood"
       ),
       (
@@ -4012,7 +4059,7 @@ proc addPlayerHud(
         iconSpriteId: HudFoodIconSpriteId,
         value: $sim.food,
         x: 44,
-        y: 18,
+        y: 26,
         label: "food"
       ),
       (
@@ -4020,7 +4067,7 @@ proc addPlayerHud(
         iconSpriteId: HudStoneIconSpriteId,
         value: $sim.stone,
         x: 86,
-        y: 18,
+        y: 26,
         label: "stone"
       ),
       (
@@ -4028,14 +4075,15 @@ proc addPlayerHud(
         iconSpriteId: HudRelicIconSpriteId,
         value: $sim.relicShards,
         x: 128,
-        y: 18,
+        y: 26,
         label: "relic"
       )
     ]
     effects = sim.activePlayerEffects(playerIndex)
     hudKey =
       counters.mapIt(it.label & ":" & it.value).join("|") &
-        "|hp:" & $lives & "/" & $player.maxHp
+        "|hp:" & $lives & "/" & $player.maxHp &
+        "|mana:" & $mana & "/" & $MaxPlayerMana
     armorKey =
       block:
         var pieces: seq[string] = @[]
@@ -4046,13 +4094,29 @@ proc addPlayerHud(
         pieces.join("|")
 
   if state.hudStatus != hudKey:
-    let health = buildSpriteProtocolHealthSprite(lives, player.maxHp)
+    let health = buildSpriteProtocolHudMeterSprite(
+      lives,
+      player.maxHp,
+      healthFillColor(lives, player.maxHp)
+    )
     packet.addSprite(
       LivesHudSpriteId,
       health.width,
       health.height,
       health.pixels,
       "hud hp " & $lives & "/" & $player.maxHp
+    )
+    let manaMeter = buildSpriteProtocolHudMeterSprite(
+      mana,
+      MaxPlayerMana,
+      ManaFillColor
+    )
+    packet.addSprite(
+      ManaHudSpriteId,
+      manaMeter.width,
+      manaMeter.height,
+      manaMeter.pixels,
+      "hud mana " & $mana & "/" & $MaxPlayerMana
     )
     for counter in counters:
       let counterText = sim.buildSpriteProtocolTextSprite(
@@ -4091,10 +4155,20 @@ proc addPlayerHud(
   packet.addObject(
     LivesHudObjectId,
     50,
-    5,
+    4,
     high(int16),
     TopLeftLayerId,
     LivesHudSpriteId
+  )
+
+  currentIds.add(ManaHudObjectId)
+  packet.addObject(
+    ManaHudObjectId,
+    50,
+    12,
+    high(int16),
+    TopLeftLayerId,
+    ManaHudSpriteId
   )
 
   var armorX = 2

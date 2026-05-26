@@ -5,6 +5,7 @@ import std/[json, locks, monotimes, os, strutils, tables, times]
 
 const
   HealthzPath = "/healthz"
+  DebugAsciiPath = "/debug/ascii"
   DefaultMaxTicks* = TargetFps * 60 * 5
   DefaultMaxGames* = 0
 
@@ -25,6 +26,7 @@ type
     rewardViewers: Table[WebSocket, bool]
     closedSockets: seq[WebSocket]
     tokens: seq[string]
+    debugAscii: string
 
   ServerThreadArgs = object
     server: ptr Server
@@ -312,6 +314,7 @@ proc initAppState() =
   appState.rewardViewers = initTable[WebSocket, bool]()
   appState.closedSockets = @[]
   appState.tokens = @[]
+  appState.debugAscii = "PLAYER none\n"
 
 proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when a GET request is a websocket upgrade.
@@ -649,8 +652,26 @@ proc serveHealthz(request: Request): bool =
   request.respond(200, headers, "healthy")
   true
 
+proc serveDebugAscii(request: Request): bool =
+  ## Serves a deterministic text render of the latest player observation.
+  if request.path != DebugAsciiPath or request.httpMethod notin ["GET", "HEAD"]:
+    return false
+  var body = ""
+  {.gcsafe.}:
+    withLock appState.lock:
+      body = appState.debugAscii
+  if body.len == 0:
+    body = "PLAYER none\n"
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/plain; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, body)
+  true
+
 proc httpHandler(request: Request) =
   if request.serveHealthz():
+    discard
+  elif request.serveDebugAscii():
     discard
   elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
@@ -871,6 +892,10 @@ proc runServerLoop*(
     runTicks = 0
     gamesStarted = 1
   sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
+  var initialDebugAscii = sim.debugAsciiSnapshot()
+  {.gcsafe.}:
+    withLock appState.lock:
+      appState.debugAscii = initialDebugAscii
 
   while true:
     var
@@ -1025,6 +1050,10 @@ proc runServerLoop*(
             rewardViewers.add(websocket)
 
       sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
+      let debugAscii = sim.debugAsciiSnapshot()
+      {.gcsafe.}:
+        withLock appState.lock:
+          appState.debugAscii = debugAscii
       let rewardPacket = sim.buildRewardPacket()
       for i in 0 ..< sockets.len:
         var nextState: PlayerViewerState
@@ -1061,6 +1090,10 @@ proc runServerLoop*(
       replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
 
     sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, savedScorePlayerCount)
+    let debugAscii = sim.debugAsciiSnapshot()
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.debugAscii = debugAscii
     let rewardPacket = sim.buildRewardPacket()
 
     for i in 0 ..< sockets.len:

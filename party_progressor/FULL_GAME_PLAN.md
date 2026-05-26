@@ -294,9 +294,18 @@ Current pressure loops:
 - Forest forage is deliberately passive. It can trickle food in the background,
   but it no longer creates a big green plus, a `FORAGE` HUD line, or a status
   badge until the game teaches it through an explicit choice.
-- The top-left HUD is sprite-first: a health bar plus small frontier/resource
-  icons with numeric counters. Visible prose is reserved for chat, count badges,
-  and short teaching prompts that introduce an explicit choice.
+- The top-left HUD is sprite-first: health and mana meters plus small
+  frontier/resource icons with numeric counters. Visible prose is reserved for
+  chat, count badges, and short teaching prompts that introduce an explicit
+  choice.
+- Role specials are now resource-limited, not only cooldown-limited. Tank guard,
+  DPS beam, and healer pulse spend mana, mana slowly regenerates, and the HUD
+  exposes the current meter as a semantic sprite label so bots and agents can
+  inspect it directly.
+- The server exposes `/debug/ascii` as the canonical agent-readable render
+  oracle. It prints the 11 by 11 player observation grid with the same terrain,
+  occlusion, actors, pickups, landmarks, HP, mana, cooldown, biome, weather, and
+  effect state that drives sprite rendering.
 
 Chat is part of the readability layer. Short player messages such as regroup,
 help, relic, camp, food, rescue, and lair create temporary in-world ping badges
@@ -378,8 +387,8 @@ Implementation direction:
 - Keep badge labels compact; prefer fewer stronger signals over stacked text.
 - Ensure carried inventory stays tiled along the bottom and never over the
   controlled adventurer.
-- Keep the top-left HUD sprite-first: health bar, frontier/resource icons, and
-  numbers only for quantities.
+- Keep the top-left HUD sprite-first: health/mana bars, frontier/resource icons,
+  and numbers only for quantities.
 - Keep material buffs/debuffs dual-coded with sparse in-world auras plus
   top-right effect icons. Longer explanations belong in docs or explicit
   teaching moments, not always-on HUD text.
@@ -513,6 +522,12 @@ Open the player client:
 
 ```text
 http://127.0.0.1:2000/client/player?address=ws://127.0.0.1:2000/player&name=human
+```
+
+Read the latest agent-debug render:
+
+```text
+http://127.0.0.1:2000/debug/ascii
 ```
 
 If port `2000` is already occupied, use another port consistently in both the

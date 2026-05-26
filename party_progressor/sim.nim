@@ -158,6 +158,11 @@ const
   RoleAbilityCooldown* = 36
   RoleAbilityEffectTicks* = 18
   HealerPulseHoldTicks* = TargetFps div 2
+  MaxPlayerMana* = 10
+  TankGuardManaCost* = 3
+  DpsBeamManaCost* = 4
+  HealerPulseManaCost* = 5
+  ManaRegenIntervalTicks* = TargetFps div 2
   TankMovementSpeedPercent* = 96
   DpsMovementSpeedPercent* = 116
   HealerMovementSpeedPercent* = 106
@@ -415,6 +420,7 @@ type
     carryY*: int
     role*: PlayerRole
     maxHp*: int
+    mana*: int
     abilityCooldown*: int
     abilityTicks*: int
     abilityHoldTicks*: int
@@ -1545,6 +1551,18 @@ proc roleAbilityLabel*(role: PlayerRole): string =
     "beam"
   of RoleHealer:
     "heal"
+
+proc roleAbilityManaCost*(role: PlayerRole): int =
+  ## Returns the mana cost for one role's special action.
+  case role
+  of RoleTank:
+    TankGuardManaCost
+  of RoleDps:
+    DpsBeamManaCost
+  of RoleHealer:
+    HealerPulseManaCost
+  else:
+    0
 
 proc roleForPickup(kind: PickupKind): PlayerRole =
   case kind
@@ -3990,6 +4008,7 @@ proc applyRole*(player: var Actor, role: PlayerRole) =
   player.role = role
   player.maxHp = role.roleMaxHp() + player.equippedMaxHpBonus()
   player.lives = min(player.maxHp, max(1, (oldHp * player.maxHp + oldMax - 1) div oldMax))
+  player.mana = MaxPlayerMana
   player.abilityTicks = 0
   player.abilityHoldTicks = 0
 
@@ -4098,6 +4117,7 @@ proc addPlayer*(sim: var SimServer, address: string): int =
     facing: FaceDown,
     role: RoleUnarmed,
     maxHp: UnarmedPlayerHp,
+    mana: MaxPlayerMana,
     lives: UnarmedPlayerHp,
     personalFrontier: SafeZoneRightPixels
   )
@@ -4370,6 +4390,7 @@ proc playerScoresJson*(sim: SimServer): string =
     names = newJArray()
     scores = newJArray()
     hearts = newJArray()
+    mana = newJArray()
     distanceWalked = newJArray()
     frontierTiles = newJArray()
     personalFrontierTiles = newJArray()
@@ -4405,6 +4426,7 @@ proc playerScoresJson*(sim: SimServer): string =
     names.add(%player.address)
     scores.add(%teamScore)
     hearts.add(%player.lives)
+    mana.add(%player.mana)
     distanceWalked.add(%player.distanceWalked)
     frontierTiles.add(%frontierScore)
     personalFrontierTiles.add(%frontierTilesForX(player.personalFrontier))
@@ -4435,6 +4457,7 @@ proc playerScoresJson*(sim: SimServer): string =
   results["names"] = names
   results["scores"] = scores
   results["hearts"] = hearts
+  results["mana"] = mana
   results["distance_walked"] = distanceWalked
   results["frontier_tiles"] = frontierTiles
   results["personal_frontier_tiles"] = personalFrontierTiles
@@ -4515,6 +4538,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.carryY)
     result.mixHashInt(ord(player.role))
     result.mixHashInt(player.maxHp)
+    result.mixHashInt(player.mana)
     result.mixHashInt(player.abilityCooldown)
     result.mixHashInt(player.abilityTicks)
     result.mixHashInt(player.abilityHoldTicks)
@@ -4975,7 +4999,21 @@ proc applyDpsBeam(sim: var SimServer, playerIndex: int) =
     sim.players[playerIndex].attackResolved = true
     sim.finishDefeatedMobs()
 
+proc spendRoleAbilityMana(player: var Actor): bool =
+  ## Spends mana for the current role's special action if enough is available.
+  let cost = player.role.roleAbilityManaCost()
+  if cost <= 0:
+    return true
+  if player.mana < cost:
+    player.abilityHoldTicks = 0
+    return false
+  player.mana -= cost
+  true
+
 proc completeHealerPulse(sim: var SimServer, playerIndex: int) =
+  if not sim.players[playerIndex].spendRoleAbilityMana():
+    return
+  inc sim.scoreRevision
   sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
   sim.applyHealerPulse(playerIndex)
   sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
@@ -4994,11 +5032,17 @@ proc applyRoleAbility(sim: var SimServer, playerIndex: int) =
     return
   case sim.players[playerIndex].role
   of RoleTank:
+    if not sim.players[playerIndex].spendRoleAbilityMana():
+      return
+    inc sim.scoreRevision
     sim.players[playerIndex].abilityHoldTicks = 0
     sim.players[playerIndex].guardTicks = TankGuardTicks
     sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.players[playerIndex].abilityCooldown = RoleAbilityCooldown
   of RoleDps:
+    if not sim.players[playerIndex].spendRoleAbilityMana():
+      return
+    inc sim.scoreRevision
     sim.players[playerIndex].abilityHoldTicks = 0
     sim.players[playerIndex].abilityTicks = RoleAbilityEffectTicks
     sim.applyDpsBeam(playerIndex)
@@ -7687,6 +7731,296 @@ proc activePlayerEffectLines*(
   for effect in effects:
     result.add(effect.label & " " & effect.description)
 
+proc groundDebugGlyph(kind: GroundKind): char =
+  case kind
+  of GroundGrass: '.'
+  of GroundRoad: '='
+  of GroundFertile: ','
+  of GroundMud: 'm'
+  of GroundShallowWater: '~'
+  of GroundWater: 'W'
+  of GroundSand: ':'
+  of GroundDune: ';'
+  of GroundSnow: '*'
+  of GroundCave: '`'
+  of GroundRuins: '\''
+  of GroundBridge: '#'
+
+proc terrainDebugGlyph(kind: TerrainKind): char =
+  case kind
+  of TerrainTree, TerrainEvergreen: 'T'
+  of TerrainRock, TerrainStone: '^'
+  of TerrainLog, TerrainStump: '='
+  of TerrainBush: '"'
+  of TerrainCactus: '!'
+  of TerrainWheat: 'w'
+  of TerrainFish: 'f'
+  of TerrainGold: '$'
+  of TerrainCave: 'O'
+  of TerrainGoblinHut: 'g'
+  of TerrainGoblinTotem: '|'
+  of TerrainAltar: 'A'
+  of TerrainCamp: 'C'
+
+proc landmarkDebugGlyph(landmark: Landmark): char =
+  case landmark.kind
+  of LandmarkWood: 'w'
+  of LandmarkFood: 'f'
+  of LandmarkStone: 's'
+  of LandmarkGold: '$'
+  of LandmarkCamp: (if landmark.done: 'c' else: 'C')
+  of LandmarkBeacon: (if landmark.done: 'b' else: 'B')
+  of LandmarkFinalGate: (if landmark.done: 'g' else: 'G')
+  of LandmarkShrine: (if landmark.done: 'h' else: 'H')
+  of LandmarkRescue: (if landmark.done: 'r' else: 'R')
+  of LandmarkLair: (if landmark.done: 'l' else: 'L')
+  of LandmarkWaystation: (if landmark.done: 'y' else: 'Y')
+
+proc pickupDebugGlyph(pickup: Pickup): char =
+  case pickup.kind
+  of PickupCoin: '$'
+  of PickupHeart: '+'
+  of PickupTankGear: 'T'
+  of PickupDpsGear: 'D'
+  of PickupHealerGear: 'H'
+  of PickupWood: 'w'
+  of PickupFood: 'f'
+  of PickupStone: 's'
+  of PickupGold: '$'
+  of PickupArmor: 'a'
+
+proc playerDebugGlyph(player: Actor, controlled: bool): char =
+  if controlled:
+    return '@'
+  if player.lives <= 0:
+    return 'x'
+  case player.role
+  of RoleTank: 'T'
+  of RoleDps: 'D'
+  of RoleHealer: 'H'
+  else: 'P'
+
+proc mobDebugGlyph(mob: Mob): char =
+  if mob.kind == BossMob:
+    return '!'
+  case mob.attackPhase
+  of MobTelegraph: '?'
+  of MobLunge: '*'
+  else: 'M'
+
+proc actorCenterTile(x, y: int, bounds: SpriteBounds): tuple[tx, ty: int] =
+  (
+    tx: clamp(boundsCenterX(x, bounds) div WorldTileSize, 0, WorldWidthTiles - 1),
+    ty: clamp(boundsCenterY(y, bounds) div WorldTileSize, 0, WorldHeightTiles - 1)
+  )
+
+proc putDebugGlyph(
+  grid: var seq[string],
+  tx, ty, startTx, startTy: int,
+  glyph: char
+) =
+  let
+    gx = tx - startTx
+    gy = ty - startTy
+  if gy >= 0 and gy < grid.len and gx >= 0 and gx < grid[gy].len:
+    grid[gy][gx] = glyph
+
+proc appendDebugEntityLine(
+  text: var string,
+  kind, label: string,
+  glyph: char,
+  tx, ty: int,
+  extra = ""
+) =
+  text.add(kind)
+  text.add(" glyph=")
+  text.add(glyph)
+  text.add(" tile=")
+  text.add($tx)
+  text.add(",")
+  text.add($ty)
+  text.add(" label=")
+  text.add(label)
+  if extra.len > 0:
+    text.add(" ")
+    text.add(extra)
+  text.add("\n")
+
+proc playerDebugAscii*(sim: SimServer, playerIndex: int): string =
+  ## Returns a deterministic text render of the player-observation world state.
+  let hasPlayer = playerIndex >= 0 and playerIndex < sim.players.len
+  var
+    centerTx = SafeZoneRightTiles div 2
+    centerTy = WorldHeightTiles div 2
+  if hasPlayer:
+    let tile = actorCenterTile(
+      sim.players[playerIndex].x,
+      sim.players[playerIndex].y,
+      sim.players[playerIndex].bounds
+    )
+    centerTx = tile.tx
+    centerTy = tile.ty
+  let
+    width = PlayerViewportTiles
+    height = PlayerViewportTiles
+    startTx = clamp(centerTx - width div 2, 0, max(0, WorldWidthTiles - width))
+    startTy = clamp(centerTy - height div 2, 0, max(0, WorldHeightTiles - height))
+
+  if hasPlayer:
+    let
+      player = sim.players[playerIndex]
+      biome = sim.tileBiomeKind(centerTx, centerTy)
+      weather = biome.weatherForBiome()
+    result.add("PLAYER id=" & $player.id & " name=" & player.address &
+      " role=" & player.role.roleLabel() &
+      " hp=" & $max(player.lives, 0) & "/" & $player.maxHp &
+      " mana=" & $player.mana & "/" & $MaxPlayerMana &
+      " ability=" & player.role.roleAbilityLabel() &
+      " cost=" & $player.role.roleAbilityManaCost() &
+      " cd=" & $player.abilityCooldown &
+      " hold=" & $player.abilityHoldTicks &
+      " biome=" & biome.biomeLabel() &
+      " weather=" & weather.weatherLabel() &
+      " effects=\"" & sim.activePlayerEffectSummary(playerIndex) & "\"\n")
+  else:
+    result.add("PLAYER none\n")
+  result.add("PARTY frontier=" & $sim.frontierTiles() &
+    " wood=" & $sim.wood &
+    " food=" & $sim.food &
+    " stone=" & $sim.stone &
+    " relic=" & $sim.relicShards &
+    " mobs=" & $sim.mobs.len &
+    " pickups=" & $sim.pickups.len & "\n")
+  result.add("VIEW tile=" & $startTx & "," & $startTy &
+    " size=" & $width & "x" & $height &
+    " legend=@self T/D/H ally M mob ! boss ? telegraph * lunge W water # bridge/block blank=occluded\n")
+
+  var grid = newSeq[string](height)
+  for gy in 0 ..< height:
+    grid[gy] = newString(width)
+    for gx in 0 ..< width:
+      let
+        tx = startTx + gx
+        ty = startTy + gy
+      if not inTileBounds(tx, ty):
+        grid[gy][gx] = ' '
+      elif hasPlayer and not sim.tileVisibleFrom(centerTx, centerTy, tx, ty):
+        grid[gy][gx] = ' '
+      else:
+        var glyph = sim.tileGroundKind(tx, ty).groundDebugGlyph()
+        if sim.tileElevation(tx, ty) >= ElevationCombatThreshold:
+          glyph = '^'
+        if sim.tiles.len > 0 and sim.tiles[tileIndex(tx, ty)]:
+          glyph =
+            if sim.terrainKinds.len > tileIndex(tx, ty):
+              sim.terrainKinds[tileIndex(tx, ty)].terrainDebugGlyph()
+            else:
+              '#'
+        grid[gy][gx] = glyph
+
+  for landmark in sim.landmarks:
+    if not inTileBounds(landmark.tx, landmark.ty):
+      continue
+    if hasPlayer and not sim.tileVisibleFrom(centerTx, centerTy, landmark.tx, landmark.ty):
+      continue
+    grid.putDebugGlyph(landmark.tx, landmark.ty, startTx, startTy, landmark.landmarkDebugGlyph())
+  for pickup in sim.pickups:
+    let
+      tx = clamp((pickup.x + WorldTileSize div 2) div WorldTileSize, 0, WorldWidthTiles - 1)
+      ty = clamp((pickup.y + WorldTileSize div 2) div WorldTileSize, 0, WorldHeightTiles - 1)
+    if hasPlayer and not sim.tileVisibleFrom(centerTx, centerTy, tx, ty):
+      continue
+    grid.putDebugGlyph(tx, ty, startTx, startTy, pickup.pickupDebugGlyph())
+  for guide in sim.guides:
+    let
+      tx = clamp((guide.x + WorldTileSize div 2) div WorldTileSize, 0, WorldWidthTiles - 1)
+      ty = clamp((guide.y + WorldTileSize div 2) div WorldTileSize, 0, WorldHeightTiles - 1)
+    if hasPlayer and not sim.tileVisibleFrom(centerTx, centerTy, tx, ty):
+      continue
+    grid.putDebugGlyph(tx, ty, startTx, startTy, 'r')
+  for mob in sim.mobs:
+    let tile = actorCenterTile(mob.x, mob.y, mob.bounds)
+    if hasPlayer and not sim.tileVisibleFrom(centerTx, centerTy, tile.tx, tile.ty):
+      continue
+    grid.putDebugGlyph(tile.tx, tile.ty, startTx, startTy, mob.mobDebugGlyph())
+  for i in 0 ..< sim.players.len:
+    let tile = actorCenterTile(
+      sim.players[i].x,
+      sim.players[i].y,
+      sim.players[i].bounds
+    )
+    if hasPlayer and not sim.tileVisibleFrom(centerTx, centerTy, tile.tx, tile.ty):
+      continue
+    grid.putDebugGlyph(
+      tile.tx,
+      tile.ty,
+      startTx,
+      startTy,
+      sim.players[i].playerDebugGlyph(i == playerIndex)
+    )
+
+  result.add("ASCII\n")
+  for row in grid:
+    result.add(row)
+    result.add("\n")
+  result.add("ENTITIES\n")
+  for i in 0 ..< sim.players.len:
+    let
+      player = sim.players[i]
+      tile = actorCenterTile(player.x, player.y, player.bounds)
+    result.appendDebugEntityLine(
+      "player#" & $player.id,
+      player.role.roleLabel(),
+      player.playerDebugGlyph(i == playerIndex),
+      tile.tx,
+      tile.ty,
+      "hp=" & $max(player.lives, 0) & "/" & $player.maxHp &
+        " mana=" & $player.mana & "/" & $MaxPlayerMana &
+        " cd=" & $player.abilityCooldown
+    )
+  for i in 0 ..< min(sim.mobs.len, 18):
+    let
+      mob = sim.mobs[i]
+      tile = actorCenterTile(mob.x, mob.y, mob.bounds)
+    result.appendDebugEntityLine(
+      "mob#" & $i,
+      mob.species.speciesLabel(),
+      mob.mobDebugGlyph(),
+      tile.tx,
+      tile.ty,
+      "hp=" & $mob.hp & " phase=" & $mob.attackPhase & " style=" & $mob.species.attackStyle()
+    )
+  for i in 0 ..< min(sim.pickups.len, 18):
+    let
+      pickup = sim.pickups[i]
+      tx = clamp((pickup.x + WorldTileSize div 2) div WorldTileSize, 0, WorldWidthTiles - 1)
+      ty = clamp((pickup.y + WorldTileSize div 2) div WorldTileSize, 0, WorldHeightTiles - 1)
+    result.appendDebugEntityLine(
+      "pickup#" & $i,
+      $pickup.kind,
+      pickup.pickupDebugGlyph(),
+      tx,
+      ty,
+      "value=" & $pickup.value
+    )
+  for i in 0 ..< min(sim.landmarks.len, 18):
+    let landmark = sim.landmarks[i]
+    result.appendDebugEntityLine(
+      "landmark#" & $i,
+      landmark.kind.landmarkLabel(),
+      landmark.landmarkDebugGlyph(),
+      landmark.tx,
+      landmark.ty,
+      "done=" & $landmark.done & " progress=" & $landmark.progress
+    )
+
+proc debugAsciiSnapshot*(sim: SimServer): string =
+  ## Returns the default readable snapshot for HTTP and agent debugging.
+  if sim.players.len == 0:
+    sim.playerDebugAscii(-1)
+  else:
+    sim.playerDebugAscii(0)
+
 proc consumeWeatherRation(sim: var SimServer, playerIndex: int): bool =
   if sim.playerHasWeatherRation(playerIndex):
     return true
@@ -8656,6 +8990,11 @@ proc addPlayerWalkDistances(
 
 proc updatePlayerTimersAndFrontier(sim: var SimServer) =
   for i in 0 ..< sim.players.len:
+    if sim.players[i].mana < MaxPlayerMana and
+        ManaRegenIntervalTicks > 0 and
+        sim.tickCount mod ManaRegenIntervalTicks == 0:
+      sim.players[i].mana = min(MaxPlayerMana, sim.players[i].mana + 1)
+      inc sim.scoreRevision
     if sim.players[i].abilityCooldown > 0:
       dec sim.players[i].abilityCooldown
       if sim.players[i].abilityCooldown > 0 and sim.playerNearRallyCamp(i):
