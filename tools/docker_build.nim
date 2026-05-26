@@ -35,6 +35,7 @@ type
     imageRepo: string
     dockerFile: string
     contextDir: string
+    manifestDir: string
     bitworldContext: string
     games: seq[string]
     isGame: bool
@@ -64,18 +65,23 @@ proc contextRootForDockerfile(dockerFile: string): string =
   ## Returns the repository context for one explicit Dockerfile path.
   result = dockerFile.parentDir()
   var dir = result
+  var manifestDir = ""
   while true:
     var hasNimble = false
     for kind, path in walkDir(dir):
       if kind == pcFile and path.splitFile().ext == ".nimble":
         hasNimble = true
         break
-    if hasNimble or fileExists(dir / CoworldManifestName):
+    if hasNimble:
       return dir
+    if manifestDir.len == 0 and fileExists(dir / CoworldManifestName):
+      manifestDir = dir
     let parent = dir.parentDir()
     if parent == dir or parent.len == 0:
       break
     dir = parent
+  if manifestDir.len > 0:
+    return manifestDir
 
 proc normalizeTargetName(name: string): string =
   ## Normalizes a manifest name into a command-line target name.
@@ -315,6 +321,7 @@ proc addDockerFile(
     imageRepo: imageRepoForTarget(targetName, manifestImageUri),
     dockerFile: dockerFile.relativePath(contextDir),
     contextDir: contextDir,
+    manifestDir: manifest.parentDir(),
     bitworldContext: bitworldContext,
     games: games,
     isGame: isGame
@@ -379,7 +386,7 @@ proc addBotTargets(
   ## Adds bot Docker targets listed by one selected game target.
   if not game.isGame:
     return
-  for dockerFile in playerDockerFiles(game.contextDir):
+  for dockerFile in playerDockerFiles(game.manifestDir):
     var found: seq[DockerTarget]
     addDockerFile(
       root,
@@ -401,7 +408,8 @@ proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
   for target in targets:
     if target.isGame:
       continue
-    let nimFile = target.contextDir / target.name & ".nim"
+    let nimFile =
+      target.contextDir / target.dockerFile.parentDir() / target.name & ".nim"
     if not fileExists(nimFile):
       continue
     let source = readFile(nimFile)
