@@ -1,0 +1,8 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "viliger",
+  "image_uri": "ghcr.io/treeform/cogame-heartleaf-viliger:latest",
+  "binary": "/bin/viliger",
+  "description": "Sprite-protocol Heartleaf bot that gathers food, hosts dinner, and joins active parties.",
+  "games": ["heartleaf"]
+}

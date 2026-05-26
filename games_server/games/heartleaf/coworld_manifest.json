@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "heartleaf",
     "version": "0.1.0",
@@ -134,6 +134,16 @@
       "image": "ghcr.io/treeform/cogame-heartleaf-viliger:latest",
       "run": [
         "/bin/viliger"
+      ]
+    },
+    {
+      "id": "talking_viliger",
+      "name": "Talking Viliger",
+      "type": "player",
+      "description": "LLM-guided Heartleaf bot that gathers food, talks to players, invites guests, and honors party commitments.",
+      "image": "ghcr.io/treeform/cogame-heartleaf-talking-viliger:latest",
+      "run": [
+        "/bin/talking_viliger"
       ]
     }
   ],
