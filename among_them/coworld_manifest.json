@@ -348,6 +348,14 @@
           }
         },
         {
+          "id": "game-source",
+          "title": "game source",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/tree/master/among_them"
+          }
+        },
+        {
           "id": "player",
           "title": "player.md",
           "content": {
@@ -369,6 +377,38 @@
           "content": {
             "type": "uri",
             "value": "https://github.com/Metta-AI/optimizers"
+          }
+        },
+        {
+          "id": "optimizer-game-spec",
+          "title": "optimizer_game_spec.json",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/among_them/coworld_manifest.json"
+          }
+        },
+        {
+          "id": "optimizer-game-tutorial",
+          "title": "optimizer_game_tutorial.md",
+          "content": {
+            "type": "uri",
+            "value": "https://softmax.com/play_amongthem.md"
+          }
+        },
+        {
+          "id": "optimizer-skills",
+          "title": "optimizer_skills.ts",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/optimizers/blob/main/lib/skills/data.ts"
+          }
+        },
+        {
+          "id": "optimizer-policy-registry",
+          "title": "optimizer_policy_registry.json",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/optimizers/blob/main/lib/policy-templates.json"
           }
         },
         {
@@ -463,7 +503,7 @@
       "name": "Coworld Optimizer",
       "type": "optimizer",
       "description": "Game-agnostic optimizer owned by Aaron Landy. It consumes the Coworld manifest, many replay/results artifacts, reporter outputs, grader scores, and diagnoser outputs to drive local policy improvement.",
-      "source_url": "https://github.com/Metta-AI/optimizers/tree/main",
+      "source_url": "https://github.com/Metta-AI/optimizers",
       "image": "ghcr.io/metta-ai/coworld-optimizer:latest"
     }
   ],
