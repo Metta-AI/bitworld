@@ -119,13 +119,13 @@ suite "player slots":
     var config = defaultGameConfig()
     config.update("""{"tokens":["secret"]}""")
 
-    check config.slots[0].name == "Player1"
+    check config.slots[0].name == ""
+    check config.playerJoinAllowed("Ivotewell1", 0, "secret")
     check config.playerJoinAllowed("Player1", 0, "secret")
-    check not config.playerJoinAllowed("player1", 0, "secret")
-    check not config.playerJoinAllowed("Player1", 0, "bad")
+    check not config.playerJoinAllowed("Ivotewell1", 0, "bad")
     check not config.playerJoinAllowed("Player1", MaxPlayers, "secret")
-    check config.configuredPlayerName(0, "secret") == "Player1"
-    check config.configuredPlayerName(-1, "secret") == "Player1"
+    check config.configuredPlayerName(0, "secret") == ""
+    check config.configuredPlayerName(-1, "secret") == ""
 
   test "closed rosters require named tokenized slots":
     var config = defaultGameConfig()
