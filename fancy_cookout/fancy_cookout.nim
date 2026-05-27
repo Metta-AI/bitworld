@@ -1,5 +1,5 @@
 import mummy, pixie
-import bitworld/cogame_runtime
+import bitworld/runtime
 import bitworld/protocol except TileSize
 import bitworld/server except ScreenWidth, ScreenHeight
 import sprite_render

@@ -1,7 +1,7 @@
 import
   std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
   curly, mummy,
-  bitworld/client, bitworld/cogame_runtime, bitworld/protocol, sim, global, profile, replays, game_log
+  bitworld/client, bitworld/runtime, bitworld/protocol, sim, global, profile, replays, game_log
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -103,18 +103,7 @@ let replayDownloadPool = newCurlPool(1)
 
 proc loadReplayUri(uri: string): ReplayData =
   ## Loads a replay from a local file URI or HTTP(S) URL.
-  if uri.startsWith("http://") or uri.startsWith("https://"):
-    let response = replayDownloadPool.get(uri)
-    if response.code != 200:
-      raise newException(
-        IOError,
-        "Replay download failed: " & $response.code
-      )
-    return parseReplayBytes(response.body)
-  let path = replayFilePath(uri)
-  if path.len == 0:
-    raise newException(IOError, "Unsupported replay URI: " & uri)
-  loadReplay(path)
+  parseReplayBytes(readCogameUri(uri, CogameLoadReplayUriEnv))
 
 proc readableReplayUri(uri: string): bool =
   ## Returns true when a replay URI can be opened by this server.
@@ -675,20 +664,18 @@ proc buildRewardPacket(sim: SimServer): string {.measure.} =
 proc uploadReplayFiles(replayPath, scoresPath: string) =
   ## Writes replay and scores files to configured Coworld artifact URIs.
   if replayPath.len > 0 and fileExists(replayPath):
-    writeCogameFileToUri(
-      getEnv(CogameSaveReplayUriEnv),
+    writeCogameFileEnv(
+      CogameSaveReplayUriEnv,
       replayPath,
       "application/octet-stream",
-      CogameSaveReplayUriEnv,
-      cogameHttpMethod(CogameSaveReplayMethodEnv)
+      CogameSaveReplayMethodEnv
     )
   if scoresPath.len > 0 and fileExists(scoresPath):
-    writeCogameFileToUri(
-      getEnv(CogameResultsUriEnv),
+    writeCogameFileEnv(
+      CogameResultsUriEnv,
       scoresPath,
       "application/json",
-      CogameResultsUriEnv,
-      cogameHttpMethod(CogameResultsMethodEnv)
+      CogameResultsMethodEnv
     )
 
 proc runServerLoop*(

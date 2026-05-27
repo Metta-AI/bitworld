@@ -2,7 +2,7 @@ import mummy
 import pixie
 import supersnappy
 import bitworld/client
-import bitworld/cogame_runtime
+import bitworld/runtime
 import bitworld/protocol, bitworld/server
 import std/[json, locks, monotimes, os, parseopt, random, sequtils, sets, strutils, tables, times]
 

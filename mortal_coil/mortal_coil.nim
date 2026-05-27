@@ -4,7 +4,7 @@ import sprite_viewer
 import std/[exitprocs, locks, monotimes, os, osproc, parseopt, random, strutils, tables, times]
 import windy
 import bitworld/client
-import bitworld/cogame_runtime
+import bitworld/runtime
 
 const
   TargetFps = 24.0

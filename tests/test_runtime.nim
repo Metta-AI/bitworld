@@ -1,6 +1,6 @@
 import
   std/[os, strutils],
-  bitworld/cogame_runtime
+  bitworld/runtime
 
 let workspace = getTempDir() / ("bitworld-cogame-runtime-" & $getCurrentProcessId())
 if dirExists(workspace):
@@ -8,6 +8,13 @@ if dirExists(workspace):
 createDir(workspace)
 
 let resultsPath = workspace / "nested" / "results.json"
+let configPath = workspace / "config.json"
+writeFile(configPath, """{"config":true}""")
+doAssert readCogameUri(
+  "file://" & configPath,
+  CogameConfigUriEnv
+) == """{"config":true}"""
+
 writeCogameUri(
   "file://" & resultsPath,
   """{"ok":true}""",
@@ -15,6 +22,16 @@ writeCogameUri(
   CogameResultsUriEnv
 )
 doAssert readFile(resultsPath) == """{"ok":true}"""
+
+let envResultsPath = workspace / "env-results.json"
+putEnv(CogameResultsUriEnv, "file://" & envResultsPath)
+writeCogameEnv(
+  CogameResultsUriEnv,
+  """{"env":true}""",
+  "application/json",
+  CogameResultsMethodEnv
+)
+doAssert readFile(envResultsPath) == """{"env":true}"""
 
 let httpOutputPath = outputPathFromCogameUri(
   "https://upload.example/results",

@@ -1,6 +1,6 @@
 import
   std/[os, parseopt, strutils],
-  bitworld/cogame_runtime,
+  bitworld/runtime,
   bitworld/protocol, sim, server
 
 when isMainModule:
@@ -13,8 +13,8 @@ when isMainModule:
     saveReplayPath = outputPathFromCogameEnv(CogameSaveReplayUriEnv, "replay.bitreplay")
     loadReplayPath = pathFromCogameEnv(CogameLoadReplayUriEnv)
     saveScoresPath = outputPathFromCogameEnv(CogameResultsUriEnv, "scores.json")
-    logUri = getEnv("COGAME_LOG_URI")
-    replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
+    logUri = getEnv(CogameLogUriEnv)
+    replayServerMode = getEnv(CogameReplayServerEnv) == "1"
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind
