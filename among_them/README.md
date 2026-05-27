@@ -147,8 +147,6 @@ flags override these values when both are set.
 | `COGAME_RESULTS_URI` | URI where final scores are written |
 | `COGAME_SAVE_REPLAY_URI` | Optional URI where a replay is written |
 | `COGAME_LOAD_REPLAY_URI` | Optional URI for a replay to load |
-| `COGAME_RESULTS_METHOD` | HTTP method for an HTTP(S) results URI, default `PUT` |
-| `COGAME_SAVE_REPLAY_METHOD` | HTTP method for an HTTP(S) replay URI, default `PUT` |
 | `COGAME_HOST` | Host address to bind, default `0.0.0.0` |
 | `COGAME_PORT` | Port to bind, default `8080` |
 

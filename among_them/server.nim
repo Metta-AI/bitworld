@@ -667,15 +667,13 @@ proc uploadReplayFiles(replayPath, scoresPath: string) =
     writeCogameFileEnv(
       CogameSaveReplayUriEnv,
       replayPath,
-      "application/octet-stream",
-      CogameSaveReplayMethodEnv
+      "application/octet-stream"
     )
   if scoresPath.len > 0 and fileExists(scoresPath):
     writeCogameFileEnv(
       CogameResultsUriEnv,
       scoresPath,
-      "application/json",
-      CogameResultsMethodEnv
+      "application/json"
     )
 
 proc runServerLoop*(

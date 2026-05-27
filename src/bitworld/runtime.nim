@@ -9,8 +9,6 @@ const
   CogameLoadReplayUriEnv* = "COGAME_LOAD_REPLAY_URI"
   CogameLogUriEnv* = "COGAME_LOG_URI"
   CogameReplayServerEnv* = "COGAME_REPLAY_SERVER"
-  CogameResultsMethodEnv* = "COGAME_RESULTS_METHOD"
-  CogameSaveReplayMethodEnv* = "COGAME_SAVE_REPLAY_METHOD"
   CogameHostEnv* = "COGAME_HOST"
   CogamePortEnv* = "COGAME_PORT"
 
@@ -127,22 +125,8 @@ proc cogamePort*(defaultPort: int): int =
     return defaultPort
   parseInt(raw)
 
-proc cogameHttpMethod*(envName: string): string =
-  ## Returns the upload method for a Coworld artifact URI.
-  result = getEnv(envName, "PUT").toUpperAscii()
-  if result notin ["POST", "PUT"]:
-    raise newException(CogameRuntimeError, envName & " must be POST or PUT")
-
-proc cogameHttpMethodForUri*(value, envName: string): string =
-  ## Returns the upload method only when a URI uses HTTP(S).
-  if value.isHttpCogameUri() and envName.len > 0:
-    cogameHttpMethod(envName)
-  else:
-    "PUT"
-
 proc writeCogameUri*(
-  value, data, contentType, source: string,
-  httpMethod = "PUT"
+  value, data, contentType, source: string
 ) =
   ## Writes one Coworld artifact to a file URI or HTTP(S) signed URI.
   if value.len == 0:
@@ -160,17 +144,7 @@ proc writeCogameUri*(
     let
       client = newCurlPool(1)
       headers = @[("Content-Type", contentType)]
-      response =
-        case httpMethod.toUpperAscii()
-        of "POST":
-          client.post(value, headers, data)
-        of "PUT":
-          client.put(value, headers, data)
-        else:
-          raise newException(
-            CogameRuntimeError,
-            source & " upload method must be POST or PUT"
-          )
+      response = client.put(value, headers, data)
     if response.code < 200 or response.code >= 300:
       raise newException(
         IOError,
@@ -187,40 +161,27 @@ proc writeCogameUri*(
   raise newException(CogameRuntimeError, source & " must be a URI")
 
 proc writeCogameFileToUri*(
-  value, path, contentType, source: string,
-  httpMethod = "PUT"
+  value, path, contentType, source: string
 ) =
   ## Writes a local artifact file to its Coworld destination URI.
   if value.len == 0 or path.len == 0:
     return
-  writeCogameUri(value, readFile(path), contentType, source, httpMethod)
+  writeCogameUri(value, readFile(path), contentType, source)
 
 proc writeCogameEnv*(
-  name, data, contentType: string,
-  methodEnv = ""
+  name, data, contentType: string
 ) =
   ## Writes data to a Coworld URI environment variable.
   let value = getEnv(name)
   if value.len == 0:
     return
-  let httpMethod =
-    if value.isHttpCogameUri() and methodEnv.len > 0:
-      cogameHttpMethod(methodEnv)
-    else:
-      "PUT"
-  writeCogameUri(value, data, contentType, name, httpMethod)
+  writeCogameUri(value, data, contentType, name)
 
 proc writeCogameFileEnv*(
-  name, path, contentType: string,
-  methodEnv = ""
+  name, path, contentType: string
 ) =
   ## Writes a local artifact file to a Coworld URI environment variable.
   let value = getEnv(name)
   if value.len == 0 or path.len == 0:
     return
-  let httpMethod =
-    if value.isHttpCogameUri() and methodEnv.len > 0:
-      cogameHttpMethod(methodEnv)
-    else:
-      "PUT"
-  writeCogameUri(value, readFile(path), contentType, name, httpMethod)
+  writeCogameUri(value, readFile(path), contentType, name)
