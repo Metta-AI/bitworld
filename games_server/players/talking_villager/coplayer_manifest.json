@@ -1,8 +1,8 @@
 {
   "author": "treeform@softmax.com",
-  "name": "talking_viliger",
-  "image_uri": "ghcr.io/treeform/cogame-heartleaf-talking-viliger:latest",
-  "binary": "/bin/talking_viliger",
+  "name": "talking_villager",
+  "image_uri": "ghcr.io/treeform/cogame-heartleaf-talking-villager:latest",
+  "binary": "/bin/talking_villager",
   "description": "LLM-guided Heartleaf bot that gathers food, talks to players, invites guests, and honors party commitments.",
   "games": ["heartleaf"]
 }

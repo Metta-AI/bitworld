@@ -127,23 +127,23 @@
   },
   "player": [
     {
-      "id": "viliger",
-      "name": "Viliger",
+      "id": "villager",
+      "name": "Villager",
       "type": "player",
       "description": "Sprite-protocol Heartleaf bot that gathers food, greets nearby gnomes, hosts dinner, and searches for active parties.",
-      "image": "ghcr.io/treeform/cogame-heartleaf-viliger:latest",
+      "image": "ghcr.io/treeform/cogame-heartleaf-villager:latest",
       "run": [
-        "/bin/viliger"
+        "/bin/villager"
       ]
     },
     {
-      "id": "talking_viliger",
-      "name": "Talking Viliger",
+      "id": "talking_villager",
+      "name": "Talking Villager",
       "type": "player",
       "description": "LLM-guided Heartleaf bot that gathers food, talks to players, invites guests, and honors party commitments.",
-      "image": "ghcr.io/treeform/cogame-heartleaf-talking-viliger:latest",
+      "image": "ghcr.io/treeform/cogame-heartleaf-talking-villager:latest",
       "run": [
-        "/bin/talking_viliger"
+        "/bin/talking_villager"
       ]
     }
   ],
@@ -177,31 +177,31 @@
     },
     "players": [
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       },
       {
-        "player_id": "viliger"
+        "player_id": "villager"
       }
     ]
   }
