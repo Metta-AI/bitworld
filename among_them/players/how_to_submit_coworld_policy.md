@@ -3,7 +3,7 @@
 This guide is for policy authors targeting the uploaded Among Them Coworld. It
 does not require a BitWorld source checkout. The player contract is the Coworld
 contract: package a process in a Docker image, connect to
-`COWORLD_PLAYER_WS_URL`, and submit the uploaded image to an Among Them league.
+`COGAMES_ENGINE_WS_URL`, and submit the uploaded image to an Among Them league.
 
 If a command here disagrees with `coworld --help`, follow the live CLI help.
 
@@ -30,12 +30,12 @@ At episode runtime, the Coworld runner starts one policy container per player
 slot. Each policy container receives:
 
 ```text
-COWORLD_PLAYER_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
+COGAMES_ENGINE_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
 ```
 
 The player process must:
 
-1. read `COWORLD_PLAYER_WS_URL`;
+1. read `COGAMES_ENGINE_WS_URL`;
 2. open that websocket exactly as supplied;
 3. consume Bitscreen v1 frames;
 4. send Bitscreen v1 button and chat packets;
@@ -168,7 +168,7 @@ coworld replay-open <episode-request-id> --hosted
 ## Local Smoke Testing
 
 The most faithful pre-submit check is to run the same container entrypoint that
-will run in production and make sure it reads `COWORLD_PLAYER_WS_URL`. For a
+will run in production and make sure it reads `COGAMES_ENGINE_WS_URL`. For a
 full local game, use the uploaded Coworld manifest or a local manifest:
 
 ```sh
@@ -189,7 +189,7 @@ not the public submission contract.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Player works locally but not in the league | It connects to localhost or a hardcoded `/player` URL | Read and use `COWORLD_PLAYER_WS_URL` exactly. |
+| Player works locally but not in the league | It connects to localhost or a hardcoded `/player` URL | Read and use `COGAMES_ENGINE_WS_URL` exactly. |
 | Upload succeeds but the policy cannot call an LLM | API key was baked into local env but not attached to the policy version | Re-upload with `--secret-env` or `--use-bedrock`. |
 | Image runs on your laptop but not in production | Built only for arm64 | Rebuild with `docker buildx build --platform linux/amd64 --load`. |
 | Submission entered the wrong game | League id was copied from an old prompt | Run `coworld leagues` and choose the current Among Them league. |

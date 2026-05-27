@@ -4305,7 +4305,7 @@ when isMainModule and not defined(nottoodumbLibrary):
     gui = false
     name = ""
     mapPath = ""
-    url = getEnv("COWORLD_PLAYER_WS_URL")
+    url = getEnv("COGAMES_ENGINE_WS_URL")
     token = ""
     slot = -1
     exitOnDisconnect = url.len > 0

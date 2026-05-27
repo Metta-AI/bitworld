@@ -38,7 +38,7 @@ func main() {
 	switch *mode {
 	case "ws":
 		if *rawURL == "" {
-			*rawURL = strings.TrimSpace(os.Getenv("COWORLD_PLAYER_WS_URL"))
+			*rawURL = strings.TrimSpace(os.Getenv("COGAMES_ENGINE_WS_URL"))
 		}
 		if *rawURL != "" {
 			runWebsocketURL(playerURLWithQuery(*rawURL, "", *slot, *token))

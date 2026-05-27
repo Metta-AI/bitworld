@@ -39,8 +39,7 @@ Injected by the runner into each player/bot container.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `COWORLD_PLAYER_WS_URL` | yes | WebSocket URL to connect to the game (includes slot and token query params) |
-| `COGAMES_ENGINE_WS_URL` | yes | Same value as above (legacy alias) |
+| `COGAMES_ENGINE_WS_URL` | yes | WebSocket URL to connect to the game (includes slot and token query params) |
 
 ## How the runner wires things up
 
@@ -48,7 +47,7 @@ Injected by the runner into each player/bot container.
    - Local Docker: `file://` paths with a bind mount
    - ECS / games_server: `http://` URLs pointing to the upload endpoint with auth token
 2. Runner waits for `/healthz` on the game container to return 200.
-3. Player containers start with `COWORLD_PLAYER_WS_URL=ws://<game-container>:8080/player?slot=N&token=TOKEN`.
+3. Player containers start with `COGAMES_ENGINE_WS_URL=ws://<game-container>:8080/player?slot=N&token=TOKEN`.
 4. Game runs until completion, writes results and replay to the URIs provided (file or HTTP PUT).
 
 ## games_server upload endpoint

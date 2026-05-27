@@ -4968,7 +4968,7 @@ when isMainModule and not defined(evidencebotLibrary):
     masterSeed = -1'i64
     token = ""
     slot = -1
-    url = getEnv("COWORLD_PLAYER_WS_URL")
+    url = getEnv("COGAMES_ENGINE_WS_URL")
     exitOnDisconnect = url.len > 0
   for kind, key, val in getopt():
     case kind

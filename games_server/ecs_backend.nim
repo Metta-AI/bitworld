@@ -20,7 +20,7 @@ const
   TaskPollTimeoutSec = 90.0
   HealthPollTimeoutSec = 90.0
   HealthPollIntervalMs = 500
-  EngineWsEnv = "COWORLD_PLAYER_WS_URL"
+  EngineWsEnv = "COGAMES_ENGINE_WS_URL"
   ConfigUriEnv = "COGAME_CONFIG_URI"
   ResultsUriEnv = "COGAME_RESULTS_URI"
   SaveReplayUriEnv = "COGAME_SAVE_REPLAY_URI"

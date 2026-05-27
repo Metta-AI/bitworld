@@ -37,7 +37,7 @@ const
   CogameConfigUriEnv = "COGAME_CONFIG_URI"
   CogameHostEnv = "COGAME_HOST"
   CogamePortEnv = "COGAME_PORT"
-  CoworldPlayerWsEnv = "COWORLD_PLAYER_WS_URL"
+  EngineWsEnv = "COGAMES_ENGINE_WS_URL"
   HealthPath = "/healthz"
   LogsPath = "/logs"
   ScoresPath = "/scores"
@@ -1246,7 +1246,7 @@ proc playerDockerArgs(
   ]
   result.addAiEnvArgs()
   result.add("-e")
-  result.add(CoworldPlayerWsEnv & "=" & playerWsUrl(run.port, slot))
+  result.add(EngineWsEnv & "=" & playerWsUrl(run.port, slot))
   for (key, value) in player.env:
     result.add("-e")
     result.add(key & "=" & value)

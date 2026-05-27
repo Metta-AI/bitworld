@@ -16,7 +16,7 @@ For the uploaded Coworld, an optimizer works on player policy containers, not
 on the game source. The hosted runner supplies each policy container with:
 
 ```text
-COWORLD_PLAYER_WS_URL
+COGAMES_ENGINE_WS_URL
 ```
 
 Your policy connects to that websocket, reads Bitscreen v1 frames, and sends
@@ -642,7 +642,7 @@ The LLM cannot run inside Nim directly. Use one of these patterns:
 ```
 policy-image/
 ├── Dockerfile              # Starts the Coworld player process
-├── player.py or player.nim # Reads COWORLD_PLAYER_WS_URL and plays one slot
+├── player.py or player.nim # Reads COGAMES_ENGINE_WS_URL and plays one slot
 ├── nottoodumb/             # Optional vendored source/reference perception stack
 ├── sidecar/
 │   ├── __init__.py
@@ -669,7 +669,7 @@ policy-image/
 ## Part 12 — Suggested Build Order
 
 1. **Build a valid Coworld player image.** The process must read
-   `COWORLD_PLAYER_WS_URL`, connect to it, and send valid Bitscreen input.
+   `COGAMES_ENGINE_WS_URL`, connect to it, and send valid Bitscreen input.
 2. **Choose the perception base.** Either port the `nottoodumb.nim` ideas into
    your language or vendor the source-level player into the image deliberately.
 3. **Add snapshot export.** Serialize the player's current perception into the

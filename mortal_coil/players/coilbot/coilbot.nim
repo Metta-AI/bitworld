@@ -214,7 +214,7 @@ proc runBot(host: string, port: int, name, personality: string, seed: int64) =
 
 when isMainModule:
   var
-    host = getEnv("COWORLD_PLAYER_WS_URL")
+    host = getEnv("COGAMES_ENGINE_WS_URL")
     port = DefaultPort
     name = if host.len > 0: "" else: "Coilbot"
     #personality = "Strategic and adaptable. Prefer cooperation when risk is high, but willing to exploit when the reward justifies it."

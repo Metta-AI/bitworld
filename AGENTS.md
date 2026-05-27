@@ -9,7 +9,7 @@ lives in the metta repo at:
 
 The key requirements for bot containers:
 
-1. Read `COWORLD_PLAYER_WS_URL` env var — the runner passes the full websocket
+1. Read `COGAMES_ENGINE_WS_URL` env var — the runner passes the full websocket
    URL (including slot and token query params) via this variable.
 
 2. Accept CLI args `--name`, `--token`, and `--slot` as fallbacks for local
