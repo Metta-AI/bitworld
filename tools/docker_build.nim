@@ -25,6 +25,7 @@ const
   DefaultRegistry = ""
   DefaultPlatforms = "linux/amd64,linux/arm64"
   EcrProfileName = "sandbox-andre"
+  OurEcrPublicAlias = "s3j4p9s7"
   CoworldManifestName = "coworld_manifest.json"
   ManifestNames = [CoworldManifestName]
 
@@ -478,6 +479,35 @@ proc ensureEcrAuth(endpoint: string) =
     echo "Error: docker login to ECR failed."
     quit(1)
 
+proc ecrPublicRepoName(imageUri: string): string =
+  ## Extracts the repo name from a public.ecr.aws URI (e.g. "treeform/games/crewrift").
+  let prefix = "public.ecr.aws/" & OurEcrPublicAlias & "/"
+  if not imageUri.startsWith(prefix):
+    return ""
+  let rest = imageUri[prefix.len .. ^1]
+  stripImageTag(rest)
+
+proc ensureEcrPublicRepo(repoName: string) =
+  ## Creates a public ECR repo if it doesn't already exist.
+  let (_, code) = execCmdEx(
+    "aws ecr-public describe-repositories" &
+    " --repository-names " & quoteShell(repoName) &
+    " --region us-east-1" &
+    " --profile " & EcrProfileName
+  )
+  if code == 0:
+    return
+  echo "Creating public ECR repo: ", repoName
+  let createCode = execCmd(
+    "aws ecr-public create-repository" &
+    " --repository-name " & quoteShell(repoName) &
+    " --region us-east-1" &
+    " --profile " & EcrProfileName
+  )
+  if createCode != 0:
+    echo "Error: failed to create ECR repo: ", repoName
+    quit(1)
+
 proc ensureBuildx() =
   ## Verifies that docker buildx is available.
   let (output, code) = execCmdEx("docker buildx version")
@@ -692,6 +722,14 @@ proc main() =
         if endpoint notin authedEcrEndpoints:
           ensureEcrAuth(endpoint)
           authedEcrEndpoints.add(endpoint)
+
+    var ensuredRepos: seq[string]
+    for target in chosen:
+      let imageTag = target.fullImageTag(registry, tag)
+      let repoName = ecrPublicRepoName(imageTag)
+      if repoName.len > 0 and repoName notin ensuredRepos:
+        ensureEcrPublicRepo(repoName)
+        ensuredRepos.add(repoName)
 
   for target in chosen:
     buildImage(root, target, registry, tag, platforms, push)
