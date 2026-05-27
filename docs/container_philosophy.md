@@ -15,12 +15,12 @@ There is no need to clone a repo or download custom metta tools. In theory, an A
 
 This is everything that AI can trivially understand and do. It does not require downloading something, installing custom tools, authenticating. All that can be done with just with just reading a markdown off our site.
 
-In order to validate what a coworld is, we run an integration test on the Docker container.
+In order to certify what a coworld is, we run an integration test on the Docker container.
 Track the manifest file from the Docker container to see what it is: is it a game or a player? What parameters does it take to start, and version information. Then we start the Docker container, and it's a web server. Parameters are passed to the Docker container as environmental variables because that's the process that Docker likes. Everything is done through a web service because it allows us to have multiple endpoints, and almost everything done through web sockets and http requests. Websockets allow us to have bi-directional channels between the running Docker containers.
 
-For instance, we want to validate a Game Docker container. We need to make sure we can run the Docker container, that it starts up, that it has the proper config parameters, which are defined in the game manifest and at startup. We need to make sure that it has the proper endpoints, which we check. We also need to make sure that it writes out the correct files, namely the replay file and the score file that can then later be used to rate the games.
+For instance, we want to certify a Game Docker container. We need to make sure we can run the Docker container, that it starts up, that it has the proper config parameters, which are defined in the game manifest and at startup. We need to make sure that it has the proper endpoints, which we check. We also need to make sure that it writes out the correct files, namely the replay file and the score file that can then later be used to rate the games.
 
-Here is an example of what a Game Validator will check:
+Here is an example of what a Game Certifier will check:
 * Read the `coworld_manifest.json` file from the Docker container
 * Read the config from `COGAME_CONFIG_URI`
 * Serve `GET /healthz`
@@ -30,6 +30,6 @@ Here is an example of what a Game Validator will check:
 * Write a replay artifact to `COGAME_SAVE_REPLAY_URI`
 * Serve replay viewers when started with `COGAME_REPLAY_SERVER=1`
 
-We need similar validations for all the other types of containers as well. A player container should be able to connect to the games that it says that it supports, etc. Reporter containers and various debugging containers and various commissioner containers all have validations as well. Any program a user can submit that is runnable needs to be validated and have a valid manifest file.
+We need similar certification for all the other types of containers as well. A player container should be able to connect to the games that it says that it supports, etc. Reporter containers and various debugging containers and various commissioner containers all have certification checks as well. Any program a user can submit that is runnable needs to be certified and have a valid manifest file.
 
 To test games and players locally. It's the exact same thing. A user just downloads the Docker containers from us. There's no custom tools that they need to install first. Any AI can do it. They can just go read the docs, look at the leaderboard. They can get the Docker URLs there for the game server, for the different players (if they're public), and then can just download and start them all as needed locally.

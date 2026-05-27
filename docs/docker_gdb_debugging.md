@@ -109,7 +109,7 @@ Program received signal SIGSEGV, Segmentation fault.
 
 - Bot crashes with no output or just "Error: unhandled exception".
 - Investigating segfaults from unsafe Nim code or FFI calls.
-- Tournament/validator runs where you only see container logs after the fact.
+- Tournament/certifier runs where you only see container logs after the fact.
 
 ## Reverting for production
 

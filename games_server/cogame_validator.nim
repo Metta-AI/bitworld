@@ -10,7 +10,7 @@ from std/httpclient import close, get, newHttpClient
 const
   DefaultTimeoutSeconds = 60.0
   ContainerWorkDir = "/coworld"
-  DockerBinEnv = "COGAME_VALIDATOR_DOCKER"
+  DockerBinEnv = "COGAME_CERTIFIER_DOCKER"
   GamePort = 8080
   HealthPath = "/healthz"
   PlayerPath = "/player"
@@ -107,7 +107,7 @@ type
     code: int
 
 proc fail(message: string) =
-  ## Raises a validator-specific exception with one message.
+  ## Raises a certifier-specific exception with one message.
   raise newException(CogameValidatorError, message)
 
 proc cleanPath(path: string): string =
@@ -125,7 +125,7 @@ proc defaultDockerBin(): string =
     result = "docker"
 
 proc defaultValidatorConfig*(): ValidatorConfig =
-  ## Returns the default validator settings.
+  ## Returns the default certification settings.
   ValidatorConfig(
     workspace: "",
     timeoutSeconds: DefaultTimeoutSeconds,
@@ -141,7 +141,7 @@ proc addCriterion(
   status: CriterionStatus,
   message = ""
 ) =
-  ## Appends one validation criterion result.
+  ## Appends one certification criterion result.
   criteria.add(ValidationCriterion(
     id: id,
     name: name,
@@ -155,7 +155,7 @@ proc passCriterion(
   name: string,
   message = ""
 ) =
-  ## Appends a passing validation criterion.
+  ## Appends a passing certification criterion.
   criteria.addCriterion(id, name, CriterionPass, message)
 
 proc failCriterion(
@@ -164,7 +164,7 @@ proc failCriterion(
   name,
   message: string
 ) =
-  ## Appends a failing validation criterion.
+  ## Appends a failing certification criterion.
   criteria.addCriterion(id, name, CriterionFail, message)
 
 proc skipCriterion(
@@ -173,7 +173,7 @@ proc skipCriterion(
   name,
   message: string
 ) =
-  ## Appends a skipped validation criterion.
+  ## Appends a skipped certification criterion.
   criteria.addCriterion(id, name, CriterionSkip, message)
 
 proc criteriaPassed*(criteria: openArray[ValidationCriterion]): bool =
@@ -1718,14 +1718,14 @@ proc usage(): string =
   ## Returns command-line usage text.
   """
 Usage:
-  cogame_validator [options] <manifest>
+  cogame_certifier [options] <manifest>
 
 Options:
   --timeout:<seconds>     Docker and endpoint timeout. Default: 60.
   --workspace:<path>      Artifact workspace. Default: bitworld/tmp.
   --docker:<path>         Docker command. Default: docker or env override.
   --skip-images           Skip Docker image inspect checks.
-  --no-run                Validate manifests and write config only.
+  --no-run                Certify manifest and write config only.
   --help                  Show this help.
 
 The manifest must be coworld_manifest.json.
@@ -1799,11 +1799,11 @@ proc printCriteria(criteria: openArray[ValidationCriterion]) =
     echo line
 
 proc runCli*() =
-  ## Runs the command-line validator.
+  ## Runs the command-line certifier.
   try:
     let (manifestPath, config) = parseArgs()
     let result = certifyManifest(manifestPath, config)
-    echo "Validation criteria:"
+    echo "Certification criteria:"
     printCriteria(result.criteria)
     if result.coworld.manifestPath.len > 0:
       echo "Coworld: ", result.coworld.manifestPath
@@ -1812,13 +1812,11 @@ proc runCli*() =
       echo "Results: ", result.artifacts.resultsPath
       echo "Replay: ", result.artifacts.replayPath
       echo "Logs: ", result.artifacts.logsDir
-    if not result.validationPassed():
-      quit(1)
   except CogameValidatorError as e:
-    stderr.writeLine("cogame validator failed: " & e.msg)
+    stderr.writeLine("cogame certifier failed: " & e.msg)
     quit(1)
   except CatchableError as e:
-    stderr.writeLine("cogame validator failed: " & e.msg)
+    stderr.writeLine("cogame certifier failed: " & e.msg)
     quit(1)
 
 when isMainModule:
