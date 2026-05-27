@@ -3,9 +3,9 @@ author      = "Andre von Houck"
 description = "Retro 64x64 multiplayer social curriculum AI environment."
 license     = "MIT"
 
-srcDir = "."
-paths = @["."]
-installDirs = @["src", "bitworld", "client", "docs", "games_server", "tools"]
+srcDir = "src"
+paths = @["src"]
+installDirs = @["src", "client", "docs", "games_server", "tools"]
 
 switch("path", "src")
 switch("threads", "on")
