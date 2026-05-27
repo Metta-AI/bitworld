@@ -133,6 +133,13 @@ proc cogameHttpMethod*(envName: string): string =
   if result notin ["POST", "PUT"]:
     raise newException(CogameRuntimeError, envName & " must be POST or PUT")
 
+proc cogameHttpMethodForUri*(value, envName: string): string =
+  ## Returns the upload method only when a URI uses HTTP(S).
+  if value.isHttpCogameUri() and envName.len > 0:
+    cogameHttpMethod(envName)
+  else:
+    "PUT"
+
 proc writeCogameUri*(
   value, data, contentType, source: string,
   httpMethod = "PUT"
@@ -197,7 +204,7 @@ proc writeCogameEnv*(
   if value.len == 0:
     return
   let httpMethod =
-    if methodEnv.len > 0:
+    if value.isHttpCogameUri() and methodEnv.len > 0:
       cogameHttpMethod(methodEnv)
     else:
       "PUT"
@@ -212,7 +219,7 @@ proc writeCogameFileEnv*(
   if value.len == 0 or path.len == 0:
     return
   let httpMethod =
-    if methodEnv.len > 0:
+    if value.isHttpCogameUri() and methodEnv.len > 0:
       cogameHttpMethod(methodEnv)
     else:
       "PUT"
