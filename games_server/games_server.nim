@@ -55,7 +55,7 @@ const
   ClientPath = "/client/"
   CreatePath = "/games/create"
   UploadGamePath = "/uploads/game"
-  ValidationPath = "/games/validate"
+  CertifyPath = "/games/certify"
   ManifestViewPath = "/manifests"
   CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
   CogameLoadReplayUriEnv = "COGAME_LOAD_REPLAY_URI"
@@ -873,8 +873,8 @@ proc createUrl(manifest: GameManifest): string =
   ## Builds a create-game URL for one manifest.
   CreatePath & "?manifest=" & encodeUrlComponent(manifest.key)
 
-proc validationStatusText(status: CriterionStatus): string =
-  ## Returns the display label for one validation status.
+proc certificationStatusText(status: CriterionStatus): string =
+  ## Returns the display label for one certification status.
   case status
   of CriterionPass:
     result = "PASS"
@@ -883,8 +883,8 @@ proc validationStatusText(status: CriterionStatus): string =
   of CriterionSkip:
     result = "SKIP"
 
-proc validationStatusClass(status: CriterionStatus): string =
-  ## Returns the CSS class for one validation status.
+proc certificationStatusClass(status: CriterionStatus): string =
+  ## Returns the CSS class for one certification status.
   case status
   of CriterionPass:
     result = "pass"
@@ -893,8 +893,8 @@ proc validationStatusClass(status: CriterionStatus): string =
   of CriterionSkip:
     result = "skip"
 
-proc runValidation(manifest: GameManifest): CertificationResult =
-  ## Runs the Coworld validator library for one manifest.
+proc runCertification(manifest: GameManifest): CertificationResult =
+  ## Runs Coworld certification for one manifest.
   var config = defaultValidatorConfig()
   config.dockerBin = dockerBin()
   certifyCoworld(manifest.path, config)
@@ -1502,7 +1502,7 @@ proc botsForGame(
       result.add(bot)
 
 proc managedContainerName(name: string): string =
-  ## Validates that a container belongs to this game server.
+  ## Checks that a container belongs to this game server.
   let safeName = cleanContainerName(name)
   if safeName.len == 0 or safeName != name:
     raise newException(GamesServerError, "invalid container name")
@@ -1617,7 +1617,7 @@ proc uploadSafeName(name, label: string): string =
     raise newException(GamesServerError, label & " name is not file-safe")
 
 proc uploadGameName(node: JsonNode): string =
-  ## Reads and validates the name from an uploaded Coworld manifest.
+  ## Reads and checks the name from an uploaded Coworld manifest.
   let game = node.manifestObject("game")
   if game.isNil:
     raise newException(GamesServerError, "Coworld manifest missing game")
@@ -3147,7 +3147,7 @@ proc renderManifestTable(): string =
         th ".head":
           say "Launch"
         th ".head":
-          say "Validate"
+          say "Certify"
       for i, manifest in manifests:
         let
           rowClass = if i mod 2 == 0: ".row1" else: ".row2"
@@ -3174,7 +3174,7 @@ proc renderManifestTable(): string =
               say "Launch"
           td rowClass & " nowrap":
             form:
-              action ValidationPath
+              action CertifyPath
               tmethod "post"
               input:
                 ttype "hidden"
@@ -3182,7 +3182,7 @@ proc renderManifestTable(): string =
                 value manifest.key
               button ".button":
                 ttype "submit"
-                say "Validate"
+                say "Certify"
 
 proc renderUploadButtons(): string =
   ## Renders manifest upload navigation buttons.
@@ -3715,10 +3715,10 @@ proc renderUploadPage(
                     ttype "submit"
                     say "Upload"
 
-proc renderValidationTable(
+proc renderCertificationTable(
   criteria: seq[ValidationCriterion]
 ): string =
-  ## Renders validator criteria as a pass/fail table.
+  ## Renders certification criteria as a pass/fail table.
   renderFragment:
     table:
       tr:
@@ -3734,13 +3734,13 @@ proc renderValidationTable(
         tr:
           td ".row1":
             colspan "4"
-            say "No validation criteria were produced."
+            say "No certification criteria were produced."
       for i, criterion in criteria:
         let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
         tr:
           td rowClass & " nowrap":
-            span "." & validationStatusClass(criterion.status):
-              say validationStatusText(criterion.status)
+            span "." & certificationStatusClass(criterion.status):
+              say certificationStatusText(criterion.status)
           td rowClass & " nowrap":
             say esc(criterion.id)
           td rowClass:
@@ -3751,8 +3751,8 @@ proc renderValidationTable(
             else:
               say "-"
 
-proc renderValidationArtifacts(cert: CertificationResult): string =
-  ## Renders artifact paths produced by validation.
+proc renderCertificationArtifacts(cert: CertificationResult): string =
+  ## Renders artifact paths produced by certification.
   if cert.artifacts.workspace.len == 0:
     return ""
   renderFragment:
@@ -3782,24 +3782,24 @@ proc renderValidationArtifacts(cert: CertificationResult): string =
         td ".row2":
           say esc(cert.artifacts.logsDir)
 
-proc renderValidationPage(
+proc renderCertificationPage(
   manifestInfo: GameManifest,
   cert: CertificationResult
 ): string =
-  ## Renders one Coworld validation result page.
+  ## Renders one Coworld certification result page.
   let
-    tableHtml = renderValidationTable(cert.criteria)
-    artifactHtml = renderValidationArtifacts(cert)
+    tableHtml = renderCertificationTable(cert.criteria)
+    artifactHtml = renderCertificationArtifacts(cert)
     status =
       if cert.validationPassed():
-        "Validation passed."
+        "Certification passed."
       else:
-        "Validation failed."
+        "Certification failed."
   render:
     html:
       head:
         title:
-          say "Validation: " & esc(manifestInfo.name)
+          say "Certification: " & esc(manifestInfo.name)
         say "<style>"
         say PageCss
         say "</style>"
@@ -3809,7 +3809,7 @@ proc renderValidationPage(
             tr:
               td ".row2":
                 h1 ".title":
-                  say "Validation"
+                  say "Certification"
                 p ".small":
                   say esc(manifestInfo.name)
               td ".row2 right small":
@@ -4194,14 +4194,14 @@ proc uploadGameHandler(request: Request) =
     "/?notice=uploaded+game+" & encodeUrlComponent(manifest.name)
   )
 
-proc validationHandler(request: Request) =
-  ## Handles Coworld validation requests.
+proc certificationHandler(request: Request) =
+  ## Handles Coworld certification requests.
   let
     manifestInfo = findGameManifest(
       formValue(parseFormBody(request), "manifest")
     )
-    cert = runValidation(manifestInfo)
-  request.respondHtml(200, renderValidationPage(manifestInfo, cert))
+    cert = runCertification(manifestInfo)
+  request.respondHtml(200, renderCertificationPage(manifestInfo, cert))
 
 proc stopHandler(request: Request) =
   ## Handles stop-game requests.
@@ -4408,8 +4408,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.createHandler()
     elif request.path == UploadGamePath and request.httpMethod == "POST":
       request.uploadGameHandler()
-    elif request.path == ValidationPath and request.httpMethod == "POST":
-      request.validationHandler()
+    elif request.path == CertifyPath and request.httpMethod == "POST":
+      request.certificationHandler()
     elif request.path == "/games/bot" and request.httpMethod == "POST":
       request.botHandler()
     elif request.path == "/games/bot/stop" and request.httpMethod == "POST":

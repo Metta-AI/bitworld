@@ -24,7 +24,7 @@ server normalization.
 stable color, start position, and configured role. If the slot is missing, the
 server assigns the first valid open slot.
 
-`token` is an optional basic join secret. Servers may validate it against their
+`token` is an optional basic join secret. Servers may check it against their
 game config before accepting the websocket. A player whose configured name or
 token does not match should be disconnected.
 
