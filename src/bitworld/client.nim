@@ -31,6 +31,8 @@ const
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
   QrcodeClientJs* = "qrcode.min.js"
+  EmbeddedGlobalClientHtml* = staticRead("../../client/global_client.html")
+  EmbeddedSnappyClientJs* = staticRead("../../client/snappyjs.min.js")
 
 proc repoDir*(): string =
   ## Returns the Bit World repository directory.
