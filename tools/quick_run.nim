@@ -1191,7 +1191,7 @@ proc runQuickRun(input: QuickRunConfig): int =
     game = gameLookup.game
     gameExe = exePathFor(game.buildDir, game.sourceRelative)
     portArg = "--port:" & $config.port
-    addressArg = "--address:" & config.address
+    hostArg = "--host:" & config.address
   if config.globalViewer and not game.hasGlobalProtocol:
     echo "Game does not advertise a global protocol: ", game.name
     return 1
@@ -1217,7 +1217,7 @@ proc runQuickRun(input: QuickRunConfig): int =
   if config.slots:
     slotAssignments = config.buildSlotAssignments(botLaunches)
 
-  var serverArgs = @[portArg, addressArg]
+  var serverArgs = @[portArg, hostArg]
   if config.playersSet and config.players > 0:
     serverArgs.add("--players:" & $config.players)
   if config.slots and slotAssignments.len > 0:
@@ -1227,7 +1227,7 @@ proc runQuickRun(input: QuickRunConfig): int =
   if config.configJson.len > 0:
     serverArgs.add("--config:" & config.configJson)
   if config.configPath.len > 0:
-    serverArgs.add("--config-file:" & config.configPath)
+    serverArgs.add("--config-path:" & config.configPath)
   for arg in config.serverArgs:
     serverArgs.add(arg)
 

@@ -26,7 +26,6 @@ const
   SaveReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
   HostEnv = "COGAME_HOST"
   PortEnv = "COGAME_PORT"
-  ReplayServerEnv = "COGAME_REPLAY_SERVER"
   PlayerWebSocketPath = "/player"
 
 type
@@ -450,7 +449,6 @@ proc ecsCreateReplayGame*(
     env.add(item)
   env.add((name: HostEnv, value: "0.0.0.0"))
   env.add((name: PortEnv, value: $GameContainerPort))
-  env.add((name: ReplayServerEnv, value: "1"))
 
   echo "ECS: launching replay task..."
   let taskResp = runTask(

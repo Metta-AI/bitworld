@@ -67,7 +67,7 @@
     "runnable": {
       "type": "game",
       "image": "ghcr.io/treeform/bitworld-asteroid-arena:latest",
-      "run": ["/bin/asteroid_arena", "--address:0.0.0.0", "--port:8080"]
+      "run": ["/bin/asteroid_arena"]
     }
   },
   "player": [

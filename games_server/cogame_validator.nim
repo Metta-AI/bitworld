@@ -18,13 +18,6 @@ const
   AdminPath = "/admin"
   ReplayClientPath = "/client/replay"
   ReplaySocketPath = "/replay"
-  ConfigEnv = "COGAME_CONFIG_URI"
-  ResultsEnv = "COGAME_RESULTS_URI"
-  ReplaySaveEnv = "COGAME_SAVE_REPLAY_URI"
-  ReplayLoadEnv = "COGAME_LOAD_REPLAY_URI"
-  ReplayServerEnv = "COGAME_REPLAY_SERVER"
-  HostEnv = "COGAME_HOST"
-  PortEnv = "COGAME_PORT"
   EngineWsEnv = "COGAMES_ENGINE_WS_URL"
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   CertPrefix = "coworld-cert-"
@@ -1349,14 +1342,11 @@ proc gameContainerArgs(
   spec: EpisodeRunSpec
 ): seq[string] =
   ## Builds Docker arguments for the live game container.
+  if spec.cogameCommand.len == 0:
+    fail("game runnable command is required for certification")
   result = @[
     "--name", name,
     "-p", $port & ":" & $spec.containerPort,
-    "-e", HostEnv & "=0.0.0.0",
-    "-e", PortEnv & "=" & $spec.containerPort,
-    "-e", ConfigEnv & "=file://" & ContainerWorkDir & "/config.json",
-    "-e", ResultsEnv & "=file://" & ContainerWorkDir & "/results.json",
-    "-e", ReplaySaveEnv & "=file://" & ContainerWorkDir & "/replay.json",
     "-v",
     cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
   ]
@@ -1367,6 +1357,12 @@ proc gameContainerArgs(
   result.add(spec.cogameImage)
   for token in spec.cogameCommand:
     result.add(token)
+  result.add("--host:0.0.0.0")
+  result.add("--port:" & $spec.containerPort)
+  result.add("--config-path:" & ContainerWorkDir & "/config.json")
+  result.add("--results-uri:file://" & ContainerWorkDir & "/results.json")
+  result.add("--save-replay-uri:file://" & ContainerWorkDir & "/replay.json")
+  result.add("--log-uri:file://" & ContainerWorkDir & "/logs/game-runtime.log")
 
 proc replayContainerArgs(
   name: string,
@@ -1374,13 +1370,11 @@ proc replayContainerArgs(
   spec: EpisodeRunSpec
 ): seq[string] =
   ## Builds Docker arguments for the replay container.
+  if spec.cogameCommand.len == 0:
+    fail("game runnable command is required for certification")
   result = @[
     "--name", name,
     "-p", $port & ":" & $spec.containerPort,
-    "-e", HostEnv & "=0.0.0.0",
-    "-e", PortEnv & "=" & $spec.containerPort,
-    "-e", ReplayLoadEnv & "=file://" & ContainerWorkDir & "/replay.json",
-    "-e", ReplayServerEnv & "=1",
     "-v",
     cleanPath(spec.artifacts.workspace) & ":" & ContainerWorkDir & ":rw"
   ]
@@ -1391,6 +1385,10 @@ proc replayContainerArgs(
   result.add(spec.cogameImage)
   for token in spec.cogameCommand:
     result.add(token)
+  result.add("--host:0.0.0.0")
+  result.add("--port:" & $spec.containerPort)
+  result.add("--load-replay-uri:file://" & ContainerWorkDir & "/replay.json")
+  result.add("--log-uri:file://" & ContainerWorkDir & "/logs/replay-runtime.log")
 
 proc playerContainerArgs(
   name: string,

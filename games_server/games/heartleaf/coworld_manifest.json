@@ -7,7 +7,8 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/cogame-heartleaf:latest"
+      "image": "ghcr.io/treeform/cogame-heartleaf:latest",
+      "run": ["/bin/heartleaf"]
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

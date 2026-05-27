@@ -8,7 +8,7 @@
     "runnable": {
       "type": "game",
       "image": "ghcr.io/treeform/bitworld-jumper:latest",
-      "run": ["/bin/jumper", "--address:0.0.0.0", "--port:8080"]
+      "run": ["/bin/jumper"]
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

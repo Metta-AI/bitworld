@@ -111,7 +111,7 @@
     "runnable": {
       "type": "game",
       "image": "ghcr.io/treeform/bitworld-planet-wars:latest",
-      "run": ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]
+      "run": ["/bin/planet_wars"]
     }
   },
   "player": [

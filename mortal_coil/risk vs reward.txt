@@ -1,9 +1,0 @@
-           |   Reward for self      |  Reward for party
------------|------------------------|-------------------------
-Take risk  |  Individuality         |  Cooperativeness
-for self   |  self:  -risk + reward |  self:  -risk
-           |  party:  nothing       |  party: +reward
------------|------------------------|-------------------------
-Put party  |  Exploitativity        |  Vicariousness
-at risk    |  self:   +reward       |  self:    nothing
-           |  others: -risk         |  others: -risk + reward

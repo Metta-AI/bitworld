@@ -14,7 +14,7 @@ when isMainModule:
     loadReplayPath = pathFromCogameEnv(CogameLoadReplayUriEnv)
     saveScoresPath = outputPathFromCogameEnv(CogameResultsUriEnv, "scores.json")
     logUri = getEnv(CogameLogUriEnv)
-    replayServerMode = getEnv(CogameReplayServerEnv) == "1"
+    replayServerMode = false
     messageCooldown = -1
   for kind, key, val in getopt():
     case kind
@@ -51,6 +51,7 @@ when isMainModule:
     config.mapPath = mapPath
   if messageCooldown >= 0:
     config.messageCooldownTicks = messageCooldown
+  replayServerMode = loadReplayPath.len > 0
   echo "Using map file: " & config.mapPath
   if configPath.len > 0:
     echo "Using config file: " & configPath

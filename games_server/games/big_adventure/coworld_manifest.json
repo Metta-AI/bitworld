@@ -96,7 +96,7 @@
     "runnable": {
       "type": "game",
       "image": "ghcr.io/treeform/bitworld-big-adventure:latest",
-      "run": ["/bin/big_adventure", "--address:0.0.0.0", "--port:8080"]
+      "run": ["/bin/big_adventure"]
     }
   },
   "player": [

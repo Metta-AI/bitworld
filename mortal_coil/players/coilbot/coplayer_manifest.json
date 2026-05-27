@@ -1,9 +1,0 @@
-{
-  "name": "coilbot",
-  "description": "LLM-powered Mortal Coil bot that uses Claude to choose options based on a configurable personality.",
-  "games": [
-    "mortal_coil"
-  ],
-  "image_uri": "ghcr.io/treeform/bitworld-mortal-coil-coilbot:latest",
-  "run": ["/bin/coilbot"]
-}

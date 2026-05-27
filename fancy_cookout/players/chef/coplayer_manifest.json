@@ -1,9 +1,0 @@
-{
-  "author": "treeform@softmax.com",
-  "name": "chef",
-  "image_uri": "ghcr.io/metta-ai/bitworld-fancy-cookout-chef:latest",
-  "games": [
-    "fancy_cookout"
-  ],
-  "run": ["/bin/chef"]
-}

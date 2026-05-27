@@ -91,7 +91,7 @@
     "runnable": {
       "type": "game",
       "image": "ghcr.io/treeform/bitworld-infinite-blocks:latest",
-      "run": ["/bin/infinite_blocks", "--address:0.0.0.0", "--port:8080"]
+      "run": ["/bin/infinite_blocks"]
     }
   },
   "player": [

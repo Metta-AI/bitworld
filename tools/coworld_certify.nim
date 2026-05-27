@@ -102,6 +102,8 @@ proc parseArgs(): CertifyArgs =
         fail("only one game or manifest may be provided")
       result.game = key
     of cmdLongOption:
+      if key.len == 0:
+        continue
       case key
       of "timeout":
         result.config.timeoutSeconds = parseFloatOption(val, "--timeout")

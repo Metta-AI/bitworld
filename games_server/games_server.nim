@@ -59,7 +59,6 @@ const
   ManifestViewPath = "/manifests"
   CogameReplayUriEnv = "COGAME_SAVE_REPLAY_URI"
   CogameLoadReplayUriEnv = "COGAME_LOAD_REPLAY_URI"
-  CogameReplayServerEnv = "COGAME_REPLAY_SERVER"
   CogameResultsUriEnv = "COGAME_RESULTS_URI"
   CogameConfigUriEnv = "COGAME_CONFIG_URI"
   CogameHostEnv = "COGAME_HOST"
@@ -2752,8 +2751,6 @@ proc createReplayGame(replay: string): GameContainer =
   args.add(replayDir() & ":" & ReplayMountDir & ":ro")
   args.add("-e")
   args.add(CogameLoadReplayUriEnv & "=file://" & loadReplayPath)
-  args.add("-e")
-  args.add(CogameReplayServerEnv & "=1")
   case dockerMode()
   of "release":
     for (key, value) in manifestInfo.env:

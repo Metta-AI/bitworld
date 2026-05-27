@@ -1,2 +1,0 @@
-"""BitWorld Python package."""
-

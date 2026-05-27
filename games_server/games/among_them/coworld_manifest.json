@@ -7,7 +7,8 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-among-them-runner:latest"
+      "image": "ghcr.io/treeform/bitworld-among-them-runner:latest",
+      "run": ["/bin/among_them"]
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
