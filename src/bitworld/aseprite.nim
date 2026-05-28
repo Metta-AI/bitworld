@@ -430,6 +430,35 @@ proc pixelAt(
     else:
       rgba(0, 0, 0, 0)
 
+proc layerImage*(aseprite: AsepriteSprite, layerIndex: int): Image
+    {.raises: [AsepriteError].} =
+  ## Renders one aseprite layer from the first frame.
+  if aseprite.frames.len == 0:
+    fail("aseprite has no frames")
+  if layerIndex < 0 or layerIndex >= aseprite.layers.len:
+    fail("aseprite layer index out of range: " & $layerIndex)
+  try:
+    result = newImage(aseprite.header.width, aseprite.header.height)
+  except PixieError:
+    fail("Invalid aseprite dimensions")
+  result.fill(rgba(0, 0, 0, 0))
+  for cel in aseprite.frames[0].cels:
+    if cel.layerIndex != layerIndex:
+      continue
+    if cel.kind notin {CelRaw, CelCompressed}:
+      continue
+    for y in 0 ..< cel.height:
+      let dstY = cel.y + y
+      if dstY < 0 or dstY >= result.height:
+        continue
+      for x in 0 ..< cel.width:
+        let dstX = cel.x + x
+        if dstX < 0 or dstX >= result.width:
+          continue
+        let pixel = aseprite.pixelAt(cel, y * cel.width + x, true)
+        if pixel.a > 0:
+          result[dstX, dstY] = pixel
+
 proc blendPixel(dst, src: ColorRGBA, opacity: int): ColorRGBA {.raises: [].} =
   ## Blends one straight RGBA source pixel over one destination pixel.
   let
