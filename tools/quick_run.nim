@@ -1218,8 +1218,6 @@ proc runQuickRun(input: QuickRunConfig): int =
     slotAssignments = config.buildSlotAssignments(botLaunches)
 
   var serverArgs = @[portArg, hostArg]
-  if config.playersSet and config.players > 0:
-    serverArgs.add("--players:" & $config.players)
   if config.slots and slotAssignments.len > 0:
     serverArgs.add("--config:" & slotsConfigJson(slotAssignments))
   if config.saveReplayPath.len > 0:
