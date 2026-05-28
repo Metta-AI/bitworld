@@ -1,5 +1,6 @@
 import
-  std/[algorithm, json, net, os, osproc, parseopt, strutils, sysrand, tables, times],
+  std/[algorithm, json, net, os, osproc, parseopt, sha1, strutils, sysrand,
+    tables, times],
   mummy,
   taggy,
   cogame_validator,
@@ -68,8 +69,9 @@ const
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayDownloadPath = "/api/replay/download/"
   ReplayUploadPath = "/api/replay/upload/"
-  UploadTokenBytes = 32
-  UploadTokenTtlSeconds = 600
+  UploadSecretEnv = "GAMES_SERVER_UPLOAD_SECRET"
+  UploadSecretFile = ".upload_secret"
+  UploadSecretBytes = 32
   GamesServerUrlEnv = "GAMES_SERVER_URL"
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
@@ -985,7 +987,7 @@ proc requireDocker(args: openArray[string]): string =
 var skipPull* = false
 var useEcs* = false
 var ec2PrivateIp = ""
-var uploadTokens: Table[string, tuple[replay: string, created: int64]]
+var uploadSecretValue = ""
 
 proc fetchEc2PrivateIp(): string =
   ## Fetches this instance's private IP from EC2 instance metadata (IMDSv2).
@@ -2226,26 +2228,75 @@ proc generatePlayerToken(): string =
   for b in bytes:
     result.add(b.toHex(2).toLowerAscii())
 
-proc generateUploadToken(replay: string): string =
-  ## Generates a one-time upload token for a game launch.
-  var bytes: array[UploadTokenBytes, byte]
+proc uploadSecretPath(): string =
+  ## Returns the local upload secret path.
+  replayDir() / UploadSecretFile
+
+proc generateUploadSecret(): string =
+  ## Generates one persistent upload secret.
+  var bytes: array[UploadSecretBytes, byte]
   if not urandom(bytes):
-    raise newException(GamesServerError, "could not generate upload token")
+    raise newException(GamesServerError, "could not generate upload secret")
   for b in bytes:
     result.add(b.toHex(2).toLowerAscii())
-  uploadTokens[result] = (replay: replay, created: toUnix(getTime()))
 
-proc validateUploadToken(token, replay: string): bool =
-  ## Returns true if the token is valid, not expired, and matches the replay.
-  if token.len == 0 or not uploadTokens.hasKey(token):
+proc loadUploadSecret(): string =
+  ## Loads or creates the upload secret used for artifact write tokens.
+  result = getEnv(UploadSecretEnv).strip()
+  if result.len > 0:
+    return
+  let path = uploadSecretPath()
+  ensureReplayDir()
+  if fileExists(path):
+    result = readFile(path).strip()
+    if result.len > 0:
+      return
+  result = generateUploadSecret()
+  try:
+    writeFile(path, result & "\n")
+  except OSError as e:
+    raise newException(
+      GamesServerError,
+      "could not write upload secret: " & e.msg
+    )
+
+proc uploadSecret(): string =
+  ## Returns the cached upload secret.
+  if uploadSecretValue.len == 0:
+    uploadSecretValue = loadUploadSecret()
+  uploadSecretValue
+
+proc sameToken(a, b: string): bool =
+  ## Compares two tokens without exiting early on content mismatch.
+  var diff = a.len xor b.len
+  let count = max(a.len, b.len)
+  for i in 0 ..< count:
+    let
+      left =
+        if i < a.len:
+          ord(a[i])
+        else:
+          0
+      right =
+        if i < b.len:
+          ord(b[i])
+        else:
+          0
+    diff = diff or (left xor right)
+  diff == 0
+
+proc generateUploadToken(fileName: string): string =
+  ## Generates a stable upload token for one cleaned artifact file name.
+  let clean = cleanReplayName(fileName)
+  if clean.len == 0:
+    raise newException(GamesServerError, "could not tokenize empty file name")
+  ($secureHash(uploadSecret() & "\n" & clean)).toLowerAscii()
+
+proc validateUploadToken(token, fileName: string): bool =
+  ## Returns true when the upload token matches the artifact file name.
+  if token.len == 0 or fileName.len == 0:
     return false
-  let entry = uploadTokens[token]
-  if toUnix(getTime()) - entry.created > UploadTokenTtlSeconds:
-    uploadTokens.del(token)
-    return false
-  let replayBase = replay.split(".")[0]
-  let entryBase = entry.replay.split(".")[0]
-  replayBase == entryBase
+  sameToken(token.toLowerAscii(), generateUploadToken(fileName))
 
 proc variantDefaults(manifestInfo: GameManifest): JsonNode =
   ## Reads the first variant's game_config as default values.
@@ -2380,14 +2431,26 @@ proc baseDockerArgs(
   if saveReplay:
     let serverUrl = gamesServerUrl()
     if serverUrl.len > 0:
-      let token = generateUploadToken(replay)
-      let uploadBase = serverUrl & ReplayUploadPath
+      let
+        scores = scoresName(replay)
+        replayToken = generateUploadToken(replay)
+        scoresToken = generateUploadToken(scores)
+        uploadBase = serverUrl & ReplayUploadPath
       result.add("-e")
-      result.add(CogameReplayUriEnv & "=" & uploadBase & replay & "?token=" & token)
+      result.add(
+        CogameReplayUriEnv & "=" &
+          uploadBase & replay & "?token=" & replayToken
+      )
       result.add("-e")
-      result.add(CogameResultsUriEnv & "=" & uploadBase & scoresName(replay) & "?token=" & token)
+      result.add(
+        CogameResultsUriEnv & "=" &
+          uploadBase & scores & "?token=" & scoresToken
+      )
       result.add("-e")
-      result.add(CogameConfigUriEnv & "=" & serverUrl & ReplayDownloadPath & configName(replay))
+      result.add(
+        CogameConfigUriEnv & "=" &
+          serverUrl & ReplayDownloadPath & configName(replay)
+      )
     else:
       let
         replayFile = replayContainerPath(replay)
