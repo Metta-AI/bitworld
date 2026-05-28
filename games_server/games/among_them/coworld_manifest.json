@@ -338,7 +338,7 @@
     "docs": {
       "readme": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/cogame-amongh-them/blob/master/README.md"
+        "value": "https://github.com/Metta-AI/cogame-among-them/blob/master/README.md"
       },
       "pages": [
         {
@@ -354,7 +354,7 @@
           "title": "game source",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/cogame-amongh-them/tree/master"
+            "value": "https://github.com/Metta-AI/cogame-among-them/tree/master"
           }
         },
         {
@@ -370,7 +370,7 @@
           "title": "submit.md",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/cogame-amongh-them/blob/master/players/how_to_submit_coworld_policy.md"
+            "value": "https://github.com/Metta-AI/cogame-among-them/blob/master/players/how_to_submit_coworld_policy.md"
           }
         },
         {
@@ -386,7 +386,7 @@
           "title": "optimizer_game_spec.json",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/cogame-amongh-them/blob/master/coworld_manifest.json"
+            "value": "https://github.com/Metta-AI/cogame-among-them/blob/master/coworld_manifest.json"
           }
         },
         {
@@ -454,7 +454,7 @@
       "name": "evidencebot_v2",
       "type": "player",
       "description": "Stronger deterministic Among Them visual player with evidence tracking and task routing.",
-      "source_url": "https://github.com/Metta-AI/cogame-amongh-them/tree/master/players/evidencebot_v2",
+      "source_url": "https://github.com/Metta-AI/cogame-among-them/tree/master/players/evidencebot_v2",
       "image": "ghcr.io/treeform/bitworld-evidencebot-v2:latest",
       "run": [
         "/bin/evidencebot_v2"
@@ -465,7 +465,7 @@
       "name": "italkalot",
       "type": "player",
       "description": "LLM-guided Among Them player that talks and votes using live game observations.",
-      "source_url": "https://github.com/Metta-AI/cogame-amongh-them/tree/master/players/italkalot",
+      "source_url": "https://github.com/Metta-AI/cogame-among-them/tree/master/players/italkalot",
       "image": "ghcr.io/treeform/bitworld-italkalot:latest",
       "run": [
         "/bin/italkalot"
@@ -476,7 +476,7 @@
       "name": "ivotewell",
       "type": "player",
       "description": "Deterministic Among Them player focused on voting and smoke-test episodes.",
-      "source_url": "https://github.com/Metta-AI/cogame-amongh-them/tree/master/players/ivotewell",
+      "source_url": "https://github.com/Metta-AI/cogame-among-them/tree/master/players/ivotewell",
       "image": "ghcr.io/treeform/bitworld-ivotewell:latest",
       "run": [
         "/bin/ivotewell"
@@ -487,7 +487,7 @@
       "name": "lively_lecun",
       "type": "player",
       "description": "Go-based Among Them visual player inspired by the nottoodumb perception stack.",
-      "source_url": "https://github.com/Metta-AI/cogame-amongh-them/tree/master/players/lively_lecun",
+      "source_url": "https://github.com/Metta-AI/cogame-among-them/tree/master/players/lively_lecun",
       "image": "ghcr.io/treeform/bitworld-lively-lecun:latest",
       "run": [
         "/bin/lively_lecun"
@@ -498,7 +498,7 @@
       "name": "nottoodumb",
       "type": "player",
       "description": "Compact deterministic baseline Among Them visual player.",
-      "source_url": "https://github.com/Metta-AI/cogame-amongh-them/tree/master/players/nottoodumb",
+      "source_url": "https://github.com/Metta-AI/cogame-among-them/tree/master/players/nottoodumb",
       "image": "ghcr.io/treeform/bitworld-nottoodumb:latest",
       "run": [
         "/bin/nottoodumb"
