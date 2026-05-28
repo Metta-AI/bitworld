@@ -41,8 +41,8 @@ doAssert httpOutputPath.endsWith("cogame-cogame_results_uri-scores.json")
 
 putEnv(CogameHostEnv, "127.0.0.1")
 putEnv(CogamePortEnv, "9001")
-doAssert cogameHost("0.0.0.0") == "127.0.0.1"
-doAssert cogamePort(8080) == 9001
+doAssert cogameHost() == "127.0.0.1"
+doAssert cogamePort() == 9001
 
 let
   replayPath = workspace / "replay.bitreplay"
@@ -53,7 +53,7 @@ putEnv(CogameLoadReplayUriEnv, "file://" & replayPath)
 putEnv(CogameLogUriEnv, "file://" & logPath)
 writeFile(replayPath, "replay-bytes")
 
-let runtimeConfig = readRuntimeConfig("0.0.0.0", 8080)
+let runtimeConfig = readRuntimeConfig()
 doAssert runtimeConfig.host == "127.0.0.1"
 doAssert runtimeConfig.port == 9001
 doAssert runtimeConfig.config == """{"config":true}"""

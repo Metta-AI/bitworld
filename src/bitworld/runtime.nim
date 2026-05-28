@@ -3,6 +3,8 @@ import
   curly
 
 const
+  RuntimeDefaultHost = "0.0.0.0"
+  RuntimeDefaultPort = 8080
   CogameConfigUriEnv* = "COGAME_CONFIG_URI"
   CogameResultsUriEnv* = "COGAME_RESULTS_URI"
   CogameSaveReplayUriEnv* = "COGAME_SAVE_REPLAY_URI"
@@ -173,18 +175,18 @@ proc outputPathFromCogameEnv*(name, fileName: string): string =
   ## Reads a Coworld output URI env var and returns the local path it addresses.
   outputPathFromCogameUri(getEnv(name), name, fileName)
 
-proc cogameHost*(defaultHost: string): string =
+proc cogameHost*(): string =
   ## Returns the Coworld game bind host.
-  result = getEnv(CogameHostEnv, defaultHost)
+  result = getEnv(CogameHostEnv, RuntimeDefaultHost)
   if result.len == 0:
-    result = defaultHost
+    result = RuntimeDefaultHost
 
-proc cogamePort*(defaultPort: int): int =
+proc cogamePort*(): int =
   ## Returns the Coworld game bind port.
   let raw = getEnv(CogamePortEnv)
   if raw.len == 0:
-    return defaultPort
-  parseInt(raw)
+    return RuntimeDefaultPort
+  parseRuntimePort(raw, CogamePortEnv)
 
 proc writeCogameUri*(
   value, data, contentType, source: string
@@ -272,12 +274,9 @@ proc writeRuntimeTarget(
     return
   value.writeLocalTarget(data)
 
-proc readRuntimeConfig*(
-  defaultHost = "0.0.0.0",
-  defaultPort = 8080
-): RuntimeConfig =
+proc readRuntimeConfig*(): RuntimeConfig =
   ## Reads the Coworld runtime config from CLI arguments and env vars.
-  result = RuntimeConfig(host: defaultHost, port: defaultPort)
+  result = RuntimeConfig(host: RuntimeDefaultHost, port: RuntimeDefaultPort)
   var
     hostSet = false
     portSet = false
@@ -367,7 +366,7 @@ proc readRuntimeConfig*(
   if not hostSet:
     result.host = getEnv(CogameHostEnv, result.host)
     if result.host.len == 0:
-      result.host = defaultHost
+      result.host = RuntimeDefaultHost
   if not portSet:
     let port = getEnv(CogamePortEnv)
     if port.len > 0:
