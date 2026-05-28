@@ -7,7 +7,7 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-jumper:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/jumper:latest",
       "run": ["/bin/jumper"]
     },
     "config_schema": {
@@ -73,7 +73,7 @@
       "description": "Coworld player for jumper.",
       "runnable": {
         "type": "player",
-        "image": "ghcr.io/treeform/bitworld-jumper-dalli:latest",
+        "image": "public.ecr.aws/s3j4p9s7/treeform/players/dalli:latest",
         "run": ["/bin/dalli"]
       }
     }

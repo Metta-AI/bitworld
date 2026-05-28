@@ -110,7 +110,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-planet-wars:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/planet-wars:latest",
       "run": ["/bin/planet_wars"]
     }
   },
@@ -121,7 +121,7 @@
       "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets.",
       "runnable": {
         "type": "player",
-        "image": "ghcr.io/treeform/bitworld-planet-wars-skurge:latest",
+        "image": "public.ecr.aws/s3j4p9s7/treeform/players/skurge:latest",
         "run": ["/bin/skurge"]
       }
     }

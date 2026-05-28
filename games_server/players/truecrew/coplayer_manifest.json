@@ -1,0 +1,6 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "truecrew",
+  "image_uri": "ghcr.io/treeform/bitworld-truecrew:latest",
+  "games": ["among_them", "crewrift"]
+}

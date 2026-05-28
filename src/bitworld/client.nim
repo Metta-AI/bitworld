@@ -1,4 +1,6 @@
-import std/os
+import
+  std/os,
+  mummy
 
 const
   PlayerClientRoute* = "/client/player"
@@ -16,23 +18,28 @@ const
   RewardClientHtmlRoute* = "/client/rewards.html"
   SnappyClientRoute* = "/snappyjs.min.js"
   QrcodeClientRoute* = "/qrcode.min.js"
+  ReplayClientRoute* = "/client/replay"
   SnappyClientPath* = "/client/snappyjs.min.js"
   QrcodeClientPath* = "/client/qrcode.min.js"
-  CoworldPlayerClientRoute* = PlayerClientRoute
-  CoworldGlobalClientRoute* = GlobalClientRoute
-  CoworldReplayClientRoute* = "/client/replay"
-  CoworldAdminClientRoute* = AdminClientRoute
-  CoworldRewardClientRoute* = RewardsClientPath
-  CoworldSnappyClientRoute* = SnappyClientPath
-  CoworldQrcodeClientRoute* = QrcodeClientPath
+  CoworldPlayerClientRoute* = "/clients/player"
+  CoworldGlobalClientRoute* = "/clients/global"
+  CoworldReplayClientRoute* = "/clients/replay"
+  CoworldAdminClientRoute* = "/clients/admin"
+  CoworldRewardClientRoute* = "/clients/rewards"
+  CoworldSnappyClientRoute* = "/clients/snappyjs.min.js"
+  CoworldQrcodeClientRoute* = "/clients/qrcode.min.js"
   PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
   AdminClientHtml* = "admin_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"
   QrcodeClientJs* = "qrcode.min.js"
+  EmbeddedPlayerClientHtml* = staticRead("../../client/player_client.html")
   EmbeddedGlobalClientHtml* = staticRead("../../client/global_client.html")
+  EmbeddedAdminClientHtml* = staticRead("../../client/admin_client.html")
+  EmbeddedRewardClientHtml* = staticRead("../../client/reward_client.html")
   EmbeddedSnappyClientJs* = staticRead("../../client/snappyjs.min.js")
+  EmbeddedQrcodeClientJs* = staticRead("../../client/qrcode.min.js")
 
 proc repoDir*(): string =
   ## Returns the Bit World repository directory.
@@ -62,20 +69,22 @@ proc clientDir*(): string =
 proc clientRoute*(route: string, playerRoute = PlayerClientRoute): string =
   ## Maps public client aliases to the underlying shared client route.
   case route
-  of PlayerClientRoute, PlayerClientHtmlRoute:
+  of PlayerClientRoute, PlayerClientHtmlRoute,
+      "/client/player_client.html", CoworldPlayerClientRoute:
     playerRoute
-  of CoworldReplayClientRoute, GlobalClientRoute,
-      GlobalClientHtmlRoute, "/client/global_client.html":
+  of ReplayClientRoute, CoworldReplayClientRoute,
+      GlobalClientRoute, GlobalClientHtmlRoute,
+      "/client/global_client.html", CoworldGlobalClientRoute:
     GlobalClientRoute
-  of AdminClientRoute, AdminClientHtmlRoute:
+  of AdminClientRoute, AdminClientHtmlRoute, CoworldAdminClientRoute:
     AdminClientRoute
   of RewardClientRoute, RewardsClientPath,
       RewardClientHtmlRoute, "/client/reward.html",
-      "/client/reward_client.html":
+      "/client/reward_client.html", CoworldRewardClientRoute:
     RewardClientRoute
-  of SnappyClientPath:
+  of SnappyClientPath, CoworldSnappyClientRoute:
     SnappyClientRoute
-  of QrcodeClientPath:
+  of QrcodeClientPath, CoworldQrcodeClientRoute:
     QrcodeClientRoute
   else:
     route
@@ -119,9 +128,57 @@ proc clientStaticContentType*(
   else:
     "text/html; charset=utf-8"
 
+proc clientStaticBody*(
+  route: string,
+  playerRoute = PlayerClientRoute
+): string =
+  ## Returns the embedded static client body for one route.
+  case clientRoute(route, playerRoute)
+  of PlayerClientRoute:
+    EmbeddedPlayerClientHtml
+  of GlobalClientRoute:
+    EmbeddedGlobalClientHtml
+  of AdminClientRoute:
+    EmbeddedAdminClientHtml
+  of RewardClientRoute:
+    EmbeddedRewardClientHtml
+  of SnappyClientRoute:
+    EmbeddedSnappyClientJs
+  of QrcodeClientRoute:
+    EmbeddedQrcodeClientJs
+  else:
+    ""
+
 proc readClientHtml*(
   route: string,
   playerRoute = PlayerClientRoute
 ): string {.raises: [IOError].} =
-  ## Reads the HTML for a served client route.
-  readFile(clientHtmlPath(route, playerRoute))
+  ## Reads the embedded HTML for a served client route.
+  let body = clientStaticBody(route, playerRoute)
+  if body.len == 0:
+    raise newException(IOError, "unknown client route: " & route)
+  body
+
+proc serveClientFile*(
+  request: Request,
+  route: string,
+  playerRoute = PlayerClientRoute
+): bool =
+  ## Serves one embedded static client file.
+  if request.httpMethod != "GET":
+    return false
+  let body = clientStaticBody(route, playerRoute)
+  if body.len == 0:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = clientStaticContentType(route, playerRoute)
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, body)
+  true
+
+proc serveClientRoute*(
+  request: Request,
+  playerRoute = PlayerClientRoute
+): bool =
+  ## Serves the embedded static client file for the request path.
+  request.serveClientFile(request.path, playerRoute)

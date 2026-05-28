@@ -90,7 +90,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-infinite-blocks:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/infinite-blocks:latest",
       "run": ["/bin/infinite_blocks"]
     }
   },
@@ -101,7 +101,7 @@
       "description": "Coworld player for infinite_blocks.",
       "runnable": {
         "type": "player",
-        "image": "ghcr.io/treeform/bitworld-stacker:latest",
+        "image": "public.ecr.aws/s3j4p9s7/treeform/players/stacker:latest",
         "run": ["/bin/stacker"]
       }
     }

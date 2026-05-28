@@ -95,7 +95,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-big-adventure:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/big-adventure:latest",
       "run": ["/bin/big_adventure"]
     }
   },
@@ -106,7 +106,7 @@
       "description": "Coworld player for big_adventure.",
       "runnable": {
         "type": "player",
-        "image": "ghcr.io/treeform/bitworld-konrad:latest",
+        "image": "public.ecr.aws/s3j4p9s7/treeform/players/konrad:latest",
         "run": ["/bin/konrad", "--address:host.docker.internal", "--port:2000"]
       }
     }

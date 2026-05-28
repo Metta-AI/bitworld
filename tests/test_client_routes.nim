@@ -15,6 +15,7 @@ proc testCanonicalCoworldClientRoutes() =
   doAssert coworldClientStaticRoute(CoworldRewardClientRoute) == RewardClientRoute
   doAssert coworldClientStaticRoute(CoworldSnappyClientRoute) == SnappyClientRoute
   doAssert coworldClientStaticRoute(CoworldQrcodeClientRoute) == QrcodeClientRoute
+  doAssert coworldClientStaticRoute(ReplayClientRoute) == GlobalClientRoute
   doAssert coworldClientStaticRoute("/client/replay.html") == "/client/replay.html"
   doAssert clientStaticPath("/client/replay.html") == ""
   assertEndsWith(clientStaticPath("/client/replay"), "client" / GlobalClientHtml)
@@ -28,19 +29,21 @@ proc testClientStaticPaths() =
   assertEndsWith(clientStaticPath(CoworldAdminClientRoute), "client" / AdminClientHtml)
   assertEndsWith(clientStaticPath(CoworldRewardClientRoute), "client" / RewardClientHtml)
   assertEndsWith(clientStaticPath(CoworldSnappyClientRoute), "client" / SnappyClientJs)
+  assertEndsWith(clientStaticPath(CoworldQrcodeClientRoute), "client" / QrcodeClientJs)
   doAssert clientStaticContentType(CoworldReplayClientRoute) == "text/html; charset=utf-8"
   doAssert clientStaticContentType(CoworldSnappyClientRoute) == "application/javascript; charset=utf-8"
+  doAssert clientStaticContentType(CoworldQrcodeClientRoute) == "application/javascript; charset=utf-8"
 
 proc testReplayClientPreservesUri() =
   ## Tests that the shared replay client forwards Coworld replay URIs.
   echo "Testing replay client URI forwarding"
-  let html = readFile(clientStaticPath(CoworldReplayClientRoute))
+  let html = readClientHtml(CoworldReplayClientRoute)
   doAssert """["name","slot","token","uri"]""" in html
 
 proc testPlayerClientSpeaksSpriteProtocol() =
   ## Tests the shared player client covers the sprite protocol used by bots.
   echo "Testing player client sprite protocol support"
-  let html = readFile(clientStaticPath(CoworldPlayerClientRoute))
+  let html = readClientHtml(CoworldPlayerClientRoute)
   doAssert "new Uint8Array([0x84" in html
   doAssert "b[0]=0x81" in html
   doAssert "k.KeyZ||k.KeyJ" in html
@@ -51,8 +54,21 @@ proc testPlayerClientSpeaksSpriteProtocol() =
     doAssert ("type===" & messageType) in html,
       "missing sprite protocol parser case " & messageType
 
+proc testEmbeddedClientBodies() =
+  ## Tests that static client bodies are embedded in the library.
+  echo "Testing embedded client bodies"
+  doAssert clientStaticBody(PlayerClientRoute).startsWith("<!doctype html>")
+  doAssert clientStaticBody(GlobalClientRoute).startsWith("<!doctype html>")
+  doAssert clientStaticBody(AdminClientRoute).startsWith("<!doctype html>")
+  doAssert clientStaticBody(RewardClientRoute).startsWith("<!doctype html>")
+  doAssert clientStaticBody(SnappyClientRoute).len > 0
+  doAssert clientStaticBody(QrcodeClientRoute).len > 0
+  doAssert clientStaticBody("/clients/player").startsWith("<!doctype html>")
+  doAssert clientStaticBody("/clients/replay").startsWith("<!doctype html>")
+
 testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
 testReplayClientPreservesUri()
 testPlayerClientSpeaksSpriteProtocol()
+testEmbeddedClientBodies()
 echo "All tests passed"

@@ -66,7 +66,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/bitworld-asteroid-arena:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/asteroid-arena:latest",
       "run": ["/bin/asteroid_arena"]
     }
   },
@@ -77,7 +77,7 @@
       "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires.",
       "runnable": {
         "type": "player",
-        "image": "ghcr.io/treeform/bitworld-asteroid-arena-shooter:latest",
+        "image": "public.ecr.aws/s3j4p9s7/treeform/players/shooter:latest",
         "run": ["/bin/shooter"]
       }
     }
