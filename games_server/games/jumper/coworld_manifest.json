@@ -74,7 +74,7 @@
       "runnable": {
         "type": "player",
         "image": "ghcr.io/treeform/bitworld-jumper-dalli:latest",
-        "run": ["/bin/dalli", "--address:host.docker.internal", "--port:8080"]
+        "run": ["/bin/dalli"]
       }
     }
   ],

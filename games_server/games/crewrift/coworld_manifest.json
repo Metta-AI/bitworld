@@ -7,7 +7,7 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/crewrift-runner:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/crewrift:latest",
       "run": ["/bin/crewrift"]
     },
     "config_schema": {
@@ -380,7 +380,7 @@
       "name": "notsus",
       "type": "player",
       "description": "Sprite-protocol Crewrift bot used for local smoke episodes.",
-      "image": "ghcr.io/treeform/crewrift-notsus:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest",
       "run": [
         "/bin/notsus"
       ]

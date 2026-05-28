@@ -122,7 +122,7 @@
       "runnable": {
         "type": "player",
         "image": "ghcr.io/treeform/bitworld-planet-wars-skurge:latest",
-        "run": ["/bin/skurge", "--address:host.docker.internal", "--port:8080"]
+        "run": ["/bin/skurge"]
       }
     }
   ],
@@ -133,8 +133,8 @@
       "game_config": {
         "seed": 108519,
         "planetCount": 47,
-        "maxTicks": 18000,
-        "maxGames": 0
+        "maxTicks": 300,
+        "maxGames": 1
       },
       "description": "Short deterministic Planet Wars configuration used for manifest checks."
     }

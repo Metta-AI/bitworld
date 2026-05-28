@@ -7,7 +7,7 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "ghcr.io/treeform/cogame-heartleaf:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/heartleaf:latest",
       "run": ["/bin/heartleaf"]
     },
     "config_schema": {
@@ -132,7 +132,7 @@
       "name": "Villager",
       "type": "player",
       "description": "Sprite-protocol Heartleaf bot that gathers food, greets nearby gnomes, hosts dinner, and searches for active parties.",
-      "image": "ghcr.io/treeform/cogame-heartleaf-villager:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/villager:latest",
       "run": [
         "/bin/villager"
       ]
@@ -142,7 +142,7 @@
       "name": "Talking Villager",
       "type": "player",
       "description": "LLM-guided Heartleaf bot that gathers food, talks to players, invites guests, and honors party commitments.",
-      "image": "ghcr.io/treeform/cogame-heartleaf-talking-villager:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/talking-villager:latest",
       "run": [
         "/bin/talking_villager"
       ]
