@@ -156,10 +156,10 @@ function parseSprite(bytes){
 }
 function drawPixels(bytes){
   spriteMode=false;sizeCanvas(128,128);
-  const q=pixelImage.data;let j=0,o,n;
+  const q=pixelImage.data;let j=0,o,value;
   for(let idx=0;idx<8192;idx++){
-    n=bytes[idx];o=(n&15)*4;q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
-    o=(n>>4)*4;q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255
+    value=bytes[idx];o=(value&15)*4;q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255;
+    o=(value>>4)*4;q[j++]=p[o++];q[j++]=p[o++];q[j++]=p[o++];q[j++]=255
   }
   x.putImageData(pixelImage,0,0);n("")
 }
