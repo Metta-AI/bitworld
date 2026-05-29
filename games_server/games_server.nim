@@ -2107,11 +2107,6 @@ proc stringConfigValue(
   if value.len > 0:
     result = value.strip()
 
-proc optionalScoreArray(node: JsonNode, key: string): JsonNode =
-  ## Reads one optional scores array.
-  if node.kind == JObject and node.hasKey(key) and node[key].kind == JArray:
-    return node[key]
-
 proc scoreString(items: JsonNode, index: int): string =
   ## Reads one score table string cell.
   if index >= items.len:
@@ -2163,12 +2158,6 @@ proc parseScoreTable(text: string): ScoreTable =
   if node.kind != JObject:
     raise newException(GamesServerError, "scores file must be a JSON object")
   var seen: seq[string]
-  for key in [
-    "names", "scores", "win", "alive", "tasks", "kills", "imposter",
-    "imposters", "crew", "vote_players", "vote_player", "vote_skip",
-    "vote_timeout"
-  ]:
-    result.addScoreColumn(seen, key, node.optionalScoreArray(key))
   for key, items in node.pairs:
     result.addScoreColumn(seen, key, items)
 
