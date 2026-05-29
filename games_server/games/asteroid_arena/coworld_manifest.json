@@ -107,7 +107,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/games/asteroid-arena@sha256:26526c39c3551f83deb9a5046b787ca999361d3cd9f37e29e6dc501dba5372fb",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/asteroid-arena:latest",
       "run": ["/bin/asteroid_arena"]
     }
   },
@@ -117,7 +117,7 @@
       "name": "Shooter",
       "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires.",
       "type": "player",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/players/shooter@sha256:a6cf59ca3fa35f74783b6349ae5b65f6c79b29700f78ba143b4f52a2e2f61f4a",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/shooter:latest",
       "run": ["/bin/shooter"]
     }
   ],
