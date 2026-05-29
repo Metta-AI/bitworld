@@ -13,12 +13,14 @@ const
   BotMemoryEnv = "GAMES_SERVER_BOT_MEMORY"
   BotCpusEnv = "GAMES_SERVER_BOT_CPUS"
   BotPidsEnv = "GAMES_SERVER_BOT_PIDS"
+  NoFileEnv = "GAMES_SERVER_NOFILE"
   DefaultGameMemory = "6g"
   DefaultGameCpus = "4"
   DefaultGamePids = "512"
   DefaultBotMemory = "1g"
   DefaultBotCpus = "1"
   DefaultBotPids = "128"
+  DefaultNoFile = "65536"
   GameContainerPort = 8080
   CoworldManifestName = "coworld_manifest.json"
   CoplayerManifestName = "coplayer_manifest.json"
@@ -498,6 +500,10 @@ proc addResourceArgs(
   if pids.len > 0:
     dockerArgs.add("--pids-limit")
     dockerArgs.add(pids)
+  let noFile = envValue(NoFileEnv, DefaultNoFile)
+  if noFile.len > 0:
+    dockerArgs.add("--ulimit")
+    dockerArgs.add("nofile=" & noFile & ":" & noFile)
 
 proc addAiEnvArgs(dockerArgs: var seq[string]) =
   ## Adds Docker environment forwarding for configured AI keys.

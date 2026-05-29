@@ -23,6 +23,7 @@ const
   BotMemoryEnv = "GAMES_SERVER_BOT_MEMORY"
   BotCpusEnv = "GAMES_SERVER_BOT_CPUS"
   BotPidsEnv = "GAMES_SERVER_BOT_PIDS"
+  NoFileEnv = "GAMES_SERVER_NOFILE"
   ReplayMemoryEnv = "GAMES_SERVER_REPLAY_MEMORY"
   ReplayCpusEnv = "GAMES_SERVER_REPLAY_CPUS"
   ReplayPidsEnv = "GAMES_SERVER_REPLAY_PIDS"
@@ -37,6 +38,7 @@ const
   DefaultBotMemory = "1g"
   DefaultBotCpus = "1"
   DefaultBotPids = "128"
+  DefaultNoFile = "65536"
   DefaultReplayMemory = "4g"
   DefaultReplayCpus = "2"
   DefaultReplayPids = "256"
@@ -1055,6 +1057,10 @@ proc addDockerResourceArgs(
   if pids.len > 0:
     args.add("--pids-limit")
     args.add(pids)
+  let noFile = envValue(NoFileEnv, DefaultNoFile)
+  if noFile.len > 0:
+    args.add("--ulimit")
+    args.add("nofile=" & noFile & ":" & noFile)
 
 proc addGameResourceArgs(args: var seq[string], kind: ContainerKind) =
   ## Adds Docker resource limits for a game or replay container.
