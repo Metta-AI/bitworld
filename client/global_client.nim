@@ -1,6 +1,6 @@
 import
   std/[algorithm, math, monotimes, os, tables, times, uri],
-  chroma, paddy, pixie, bitworld/protocol, bitworld/scales, silky, supersnappy, windy
+  chroma, paddy, pixie, bitworld/spriteprotocol, bitworld/scales, silky, supersnappy, windy
 
 type
   GlobalLayer = object

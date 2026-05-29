@@ -2,7 +2,7 @@ import
   std/[os, strutils],
   pixie,
   bitworld/aseprite,
-  bitworld/protocol,
+  bitworld/spriteprotocol,
   bitworld/server
 
 const

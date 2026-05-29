@@ -1,6 +1,6 @@
 import
   std/[math, monotimes, os, parseopt, strutils, times],
-  chroma, pixie, bitworld/protocol, bitworld/scales, silky, windy
+  chroma, pixie, bitworld/spriteprotocol, bitworld/scales, silky, windy
 
 const
   AtlasPath = "dist/atlas.png"

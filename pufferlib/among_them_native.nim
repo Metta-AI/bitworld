@@ -1,4 +1,4 @@
-import bitworld/protocol
+import bitworld/bitstreamprotocol
 import ../among_them/[global, sim]
 import std/[math, os]
 

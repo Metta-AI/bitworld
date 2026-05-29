@@ -120,8 +120,8 @@ def sprite_player_progress_reward_scale() -> float:
 
 
 SHARED_NIM_SOURCES = (
-    REPO_ROOT / "common" / "protocol.nim",
-    REPO_ROOT / "common" / "server.nim",
+    REPO_ROOT / "src" / "bitworld" / "bitstreamprotocol.nim",
+    REPO_ROOT / "src" / "bitworld" / "server.nim",
 )
 AMONG_THEM_NATIVE_SOURCE = REPO_ROOT / "pufferlib" / "among_them_native.nim"
 

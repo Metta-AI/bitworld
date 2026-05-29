@@ -1,4 +1,4 @@
-import bitworld/protocol
+import bitworld/spriteprotocol
 
 const
   MapWidth* = 32

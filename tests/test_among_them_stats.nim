@@ -1,6 +1,6 @@
 import
   std/[os, sequtils, strutils],
-  bitworld/protocol,
+  bitworld/bitstreamprotocol,
   ../among_them/sim
 
 # Mirror of among_them/server.nim:buildRewardPacket so the test can verify

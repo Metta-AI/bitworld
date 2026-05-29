@@ -1,8 +1,7 @@
 import
   std/[locks, math, monotimes, os, parseopt, strutils, tables, times],
   mummy,
-  supersnappy,
-  bitworld/protocol
+  bitworld/spriteprotocol
 
 const
   TargetFps = 24.0
@@ -38,77 +37,6 @@ type
     port: int
 
 var appState: WebSocketAppState
-
-proc addU8(packet: var seq[uint8], value: uint8) =
-  ## Appends one unsigned byte to a global protocol packet.
-  packet.add(value)
-
-proc addU16(packet: var seq[uint8], value: int) =
-  ## Appends one little endian unsigned 16 bit value.
-  let v = uint16(value)
-  packet.add(uint8(v and 0xff'u16))
-  packet.add(uint8(v shr 8))
-
-proc addU32(packet: var seq[uint8], value: int) =
-  ## Appends one little endian unsigned 32 bit value.
-  let v = uint32(value)
-  for shift in countup(0, 24, 8):
-    packet.add(uint8((v shr shift) and 0xff'u32))
-
-proc addI16(packet: var seq[uint8], value: int) =
-  ## Appends one little endian signed 16 bit value.
-  let v = cast[uint16](int16(value))
-  packet.add(uint8(v and 0xff'u16))
-  packet.add(uint8(v shr 8))
-
-proc addLayer(packet: var seq[uint8], layer, layerType, flags: int) =
-  ## Appends one global protocol layer definition.
-  packet.addU8(0x06)
-  packet.addU8(uint8(layer))
-  packet.addU8(uint8(layerType))
-  packet.addU8(uint8(flags))
-
-proc addViewport(packet: var seq[uint8], layer, width, height: int) =
-  ## Appends one global protocol layer viewport.
-  packet.addU8(0x05)
-  packet.addU8(uint8(layer))
-  packet.addU16(width)
-  packet.addU16(height)
-
-proc addSprite(
-  packet: var seq[uint8],
-  spriteId, width, height: int,
-  pixels: openArray[uint8],
-  label: string = ""
-) =
-  ## Appends one global protocol sprite definition.
-  packet.addU8(0x01)
-  packet.addU16(spriteId)
-  packet.addU16(width)
-  packet.addU16(height)
-  var raw = newSeq[uint8](pixels.len)
-  for i in 0 ..< pixels.len:
-    raw[i] = pixels[i]
-  let compressed = supersnappy.compress(raw)
-  packet.addU32(compressed.len)
-  for byte in compressed:
-    packet.addU8(byte)
-  packet.addU16(label.len)
-  for ch in label:
-    packet.addU8(uint8(ord(ch)))
-
-proc addObject(
-  packet: var seq[uint8],
-  objectId, x, y, z, layer, spriteId: int
-) =
-  ## Appends one global protocol object definition.
-  packet.addU8(0x02)
-  packet.addU16(objectId)
-  packet.addI16(x)
-  packet.addI16(y)
-  packet.addI16(z)
-  packet.addU8(uint8(layer))
-  packet.addU16(spriteId)
 
 proc ensureGlobalPalette() =
   ## Loads the shared display palette when needed.

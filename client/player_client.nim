@@ -1,4 +1,4 @@
-import paddy, pixie, bitworld/protocol, bitworld/scales, bitworld/server, silky, windy
+import paddy, pixie, bitworld/bitstreamprotocol, bitworld/scales, bitworld/server, silky, windy
 import std/[math, monotimes, options, os, parseopt, strutils, times]
 
 const

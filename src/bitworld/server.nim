@@ -1,6 +1,6 @@
 import pixie
 import std/os
-import bitworld/protocol
+import bitworld/spriteprotocol
 
 type
   Facing* = enum
