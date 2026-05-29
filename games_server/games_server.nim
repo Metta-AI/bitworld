@@ -418,17 +418,9 @@ type
     bot: PlayerManifest
     count: int
 
-  ScoreRow = object
-    name: string
-    score: string
-    win: bool
-    tasks: string
-    kills: string
-    imposter: string
-    crew: string
-    votePlayers: string
-    voteSkip: string
-    voteTimeout: string
+  ScoreTable = object
+    headers: seq[string]
+    rows: seq[seq[string]]
 
 var
   aiKeyEnvMask = 0
@@ -2115,29 +2107,10 @@ proc stringConfigValue(
   if value.len > 0:
     result = value.strip()
 
-proc scoreArray(node: JsonNode, key: string): JsonNode =
-  ## Reads one required scores array.
-  if node.kind != JObject or not node.hasKey(key) or
-      node[key].kind != JArray:
-    raise newException(
-      GamesServerError,
-      "scores file missing " & key & " array"
-    )
-  node[key]
-
 proc optionalScoreArray(node: JsonNode, key: string): JsonNode =
   ## Reads one optional scores array.
   if node.kind == JObject and node.hasKey(key) and node[key].kind == JArray:
     return node[key]
-  newJArray()
-
-proc optionalScoreArrayAny(node: JsonNode, keys: openArray[string]): JsonNode =
-  ## Reads the first present optional scores array from several keys.
-  for key in keys:
-    let items = node.optionalScoreArray(key)
-    if items.len > 0:
-      return items
-  newJArray()
 
 proc scoreString(items: JsonNode, index: int): string =
   ## Reads one score table string cell.
@@ -2160,71 +2133,44 @@ proc scoreString(items: JsonNode, index: int): string =
   else:
     result = ""
 
-proc scoreBool(items: JsonNode, index: int): bool =
-  ## Reads one score table boolean cell.
-  if index < items.len and items[index].kind == JBool:
-    return items[index].getBool()
+proc scoreHeader(key: string): string =
+  ## Converts one score JSON key into a table header.
+  result = fieldLabel(key.replace("_", " "))
+  if result.len > 0:
+    result[0] = result[0].toUpperAscii()
 
-proc maxScoreRows(
-  names,
-  scores,
-  wins,
-  tasks,
-  kills,
-  imposters,
-  crews,
-  votePlayers,
-  voteSkips,
-  voteTimeouts: JsonNode
-): int =
-  ## Returns the longest score array length.
-  max(
-    max(max(names.len, scores.len), max(wins.len, tasks.len)),
-    max(
-      max(kills.len, max(imposters.len, crews.len)),
-      max(votePlayers.len, max(voteSkips.len, voteTimeouts.len))
-    )
-  )
+proc addScoreColumn(
+  table: var ScoreTable,
+  seen: var seq[string],
+  key: string,
+  items: JsonNode
+) =
+  ## Adds one score table column when it has not already been used.
+  if key in seen or items.isNil or items.kind != JArray:
+    return
+  seen.add(key)
+  table.headers.add(scoreHeader(key))
+  for i in 0 ..< items.len:
+    while table.rows.len <= i:
+      table.rows.add(@[])
+    table.rows[i].add(items.scoreString(i))
+  for i in items.len ..< table.rows.len:
+    table.rows[i].add("")
 
-proc parseScoreRows(text: string): seq[ScoreRow] =
-  ## Parses saved score JSON into table rows.
+proc parseScoreTable(text: string): ScoreTable =
+  ## Parses saved score JSON into generic table columns.
   let node = parseJson(text)
-  let
-    names = node.scoreArray("names")
-    scores = node.scoreArray("scores")
-    wins = node.scoreArray("win")
-    tasks = node.scoreArray("tasks")
-    kills = node.scoreArray("kills")
-    imposters = node.optionalScoreArrayAny(["imposters", "imposter"])
-    crews = node.optionalScoreArray("crew")
-    votePlayers = node.optionalScoreArrayAny(["vote_player", "vote_players"])
-    voteSkips = node.optionalScoreArray("vote_skip")
-    voteTimeouts = node.optionalScoreArray("vote_timeout")
-    rowCount = maxScoreRows(
-      names,
-      scores,
-      wins,
-      tasks,
-      kills,
-      imposters,
-      crews,
-      votePlayers,
-      voteSkips,
-      voteTimeouts
-    )
-  for i in 0 ..< rowCount:
-    result.add(ScoreRow(
-      name: names.scoreString(i),
-      score: scores.scoreString(i),
-      win: wins.scoreBool(i),
-      tasks: tasks.scoreString(i),
-      kills: kills.scoreString(i),
-      imposter: imposters.scoreString(i),
-      crew: crews.scoreString(i),
-      votePlayers: votePlayers.scoreString(i),
-      voteSkip: voteSkips.scoreString(i),
-      voteTimeout: voteTimeouts.scoreString(i)
-    ))
+  if node.kind != JObject:
+    raise newException(GamesServerError, "scores file must be a JSON object")
+  var seen: seq[string]
+  for key in [
+    "names", "scores", "win", "alive", "tasks", "kills", "imposter",
+    "imposters", "crew", "vote_players", "vote_player", "vote_skip",
+    "vote_timeout"
+  ]:
+    result.addScoreColumn(seen, key, node.optionalScoreArray(key))
+  for key, items in node.pairs:
+    result.addScoreColumn(seen, key, items)
 
 proc generatePlayerToken(): string =
   ## Generates one opaque hex token for a Coworld player slot.
@@ -3939,94 +3885,40 @@ proc renderLogsPage(name, logText: string): string =
           pre ".logs":
             say esc(cleanLog)
 
-proc renderScoresTable(rows: seq[ScoreRow]): string =
-  ## Renders parsed score rows.
+proc renderScoresTable(scoreTable: ScoreTable): string =
+  ## Renders parsed score columns.
   renderFragment:
     table:
       tr:
-        th ".head":
-          say "Player"
-        th ".head":
-          say "Score"
-        th ".head":
-          say "Win"
-        th ".head":
-          say "Tasks"
-        th ".head":
-          say "Kills"
-        th ".head":
-          say "Imposters"
-        th ".head":
-          say "Crew"
-        th ".head":
-          say "Vote player"
-        th ".head":
-          say "Vote skip"
-        th ".head":
-          say "Vote timeout"
-      if rows.len == 0:
+        if scoreTable.headers.len == 0:
+          th ".head":
+            say "Scores"
+        for header in scoreTable.headers:
+          th ".head":
+            say esc(header)
+      if scoreTable.rows.len == 0:
         tr:
           td ".row1 center":
-            colspan "10"
+            colspan $max(1, scoreTable.headers.len)
             say "No score rows saved."
-      for i, row in rows:
+      for i, row in scoreTable.rows:
         let rowClass = if i mod 2 == 0: ".row1" else: ".row2"
         tr:
-          td rowClass:
-            if row.name.len > 0:
-              say esc(row.name)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.score.len > 0:
-              say esc(row.score)
-            else:
-              say "-"
-          td rowClass & " center nowrap":
-            if row.win:
-              b:
-                say "yes"
-            else:
-              say "no"
-          td rowClass & " right nowrap":
-            if row.tasks.len > 0:
-              say esc(row.tasks)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.kills.len > 0:
-              say esc(row.kills)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.imposter.len > 0:
-              say esc(row.imposter)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.crew.len > 0:
-              say esc(row.crew)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.votePlayers.len > 0:
-              say esc(row.votePlayers)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.voteSkip.len > 0:
-              say esc(row.voteSkip)
-            else:
-              say "-"
-          td rowClass & " right nowrap":
-            if row.voteTimeout.len > 0:
-              say esc(row.voteTimeout)
-            else:
-              say "-"
+          for j in 0 ..< scoreTable.headers.len:
+            let value =
+              if j < row.len:
+                row[j]
+              else:
+                ""
+            td rowClass & " nowrap":
+              if value.len > 0:
+                say esc(value)
+              else:
+                say "-"
 
-proc renderScoresPage(name: string, rows: seq[ScoreRow]): string =
+proc renderScoresPage(name: string, scoreTable: ScoreTable): string =
   ## Renders a parsed scores page.
-  let scoresTable = renderScoresTable(rows)
+  let scoresTableHtml = renderScoresTable(scoreTable)
   render:
     html:
       head:
@@ -4055,7 +3947,7 @@ proc renderScoresPage(name: string, rows: seq[ScoreRow]): string =
                   say "Back"
           p ".small":
             say " "
-          say scoresTable
+          say scoresTableHtml
 
 proc gridColumnCount(count: int): int =
   ## Returns a practical column count for a viewer grid.
@@ -4383,7 +4275,7 @@ proc scoresHandler(request: Request) =
   request.respondContent(
     200,
     "text/html; charset=utf-8",
-    renderScoresPage(name, parseScoreRows(text))
+    renderScoresPage(name, parseScoreTable(text))
   )
 
 proc manifestHandler(request: Request) =
