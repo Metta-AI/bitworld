@@ -135,7 +135,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "coworld-big-adventure:cert-amd64",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/big-adventure:latest",
       "run": ["/bin/big_adventure"]
     }
   },
@@ -145,7 +145,7 @@
       "name": "konrad",
       "description": "Coworld player for big_adventure.",
       "type": "player",
-      "image": "coworld-big-adventure-konrad:cert-amd64",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/konrad:latest",
       "run": ["/bin/konrad", "--exit-on-disconnect"]
     }
   ],
