@@ -175,7 +175,7 @@
       "game_config": {
         "seed": 4731713,
         "maxTicks": 12,
-        "maxGames": 1
+        "maxGames": 0
       },
       "description": "Short deterministic Heartleaf configuration used for smoke checks."
     }
@@ -184,7 +184,7 @@
     "game_config": {
       "seed": 4731713,
       "maxTicks": 4600,
-      "maxGames": 1
+      "maxGames": 0
     },
     "players": [
       {

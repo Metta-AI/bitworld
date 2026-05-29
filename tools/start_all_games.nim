@@ -78,7 +78,6 @@ type
     command: seq[string]
     env: seq[(string, string)]
     configSchema: JsonNode
-    variantConfig: JsonNode
 
   PlayerManifest = object
     path: string
@@ -297,17 +296,6 @@ proc manifestKey(repoRoot, path: string): string =
     result = path
   result = result.replace("\\", "/")
 
-proc firstVariantConfig(manifest: JsonNode): JsonNode =
-  ## Reads the first Coworld variant config object.
-  result = newJObject()
-  if manifest.kind != JObject or not manifest.hasKey("variants") or
-      manifest["variants"].kind != JArray:
-    return
-  for variant in manifest["variants"]:
-    if variant.kind == JObject and variant.hasKey("game_config") and
-        variant["game_config"].kind == JObject:
-      return variant["game_config"]
-
 proc readGameManifest(repoRoot, path: string): GameManifest =
   ## Reads one Coworld game manifest.
   let
@@ -327,7 +315,6 @@ proc readGameManifest(repoRoot, path: string): GameManifest =
     result.configSchema = game["config_schema"]
   else:
     result.configSchema = newJObject()
-  result.variantConfig = firstVariantConfig(manifest)
 
 proc readEmbeddedPlayers(path: string, gameName: string): seq[PlayerManifest] =
   ## Reads embedded Coworld player manifests from one game manifest.
@@ -430,37 +417,6 @@ proc propertyInt(node: JsonNode, key: string, defaultValue: int): int =
     return node[key].getInt()
   defaultValue
 
-proc propertyDefault(node: JsonNode): JsonNode =
-  ## Reads a JSON schema default value.
-  if node != nil and node.kind == JObject and node.hasKey("default"):
-    return node["default"].copy()
-  nil
-
-proc propertyType(node: JsonNode): string =
-  ## Reads one JSON schema property type.
-  if node != nil and node.kind == JObject:
-    return node.manifestString("type", "string")
-  "string"
-
-proc defaultValue(property: JsonNode): JsonNode =
-  ## Builds a neutral default value for one schema property.
-  let value = property.propertyDefault()
-  if value != nil:
-    return value
-  case property.propertyType()
-  of "integer":
-    %0
-  of "number":
-    %0.0
-  of "boolean":
-    %false
-  of "array":
-    newJArray()
-  of "object":
-    newJObject()
-  else:
-    %""
-
 proc tokenCount(game: GameManifest, botCount: int): int =
   ## Returns how many player tokens should be generated.
   let tokens = game.configSchema.schemaProperty("tokens")
@@ -472,20 +428,14 @@ proc tokenCount(game: GameManifest, botCount: int): int =
     result = min(result, maxItems)
 
 proc buildConfig(game: GameManifest, botCount: int): string =
-  ## Builds one default game config JSON string.
+  ## Builds one launch config JSON string.
   var config = newJObject()
-  if game.configSchema.kind == JObject and game.configSchema.hasKey("properties") and
-      game.configSchema["properties"].kind == JObject:
-    for name, property in game.configSchema["properties"].pairs:
-      if name == "tokens":
-        let tokens = newJArray()
-        for _ in 0 ..< game.tokenCount(botCount):
-          tokens.add(%randomToken())
-        config[name] = tokens
-      elif game.variantConfig.kind == JObject and game.variantConfig.hasKey(name):
-        config[name] = game.variantConfig[name].copy()
-      else:
-        config[name] = property.defaultValue()
+  let count = game.tokenCount(botCount)
+  if count > 0:
+    let tokens = newJArray()
+    for _ in 0 ..< count:
+      tokens.add(%randomToken())
+    config["tokens"] = tokens
   $config
 
 proc configTokens(config: string): seq[string] =

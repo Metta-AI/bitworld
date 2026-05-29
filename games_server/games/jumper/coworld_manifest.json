@@ -105,7 +105,7 @@
       "game_config": {
         "seed": 727920,
         "maxTicks": 300,
-        "maxGames": 1
+        "maxGames": 0
       },
       "description": "Short deterministic Jumper configuration used for manifest checks."
     }

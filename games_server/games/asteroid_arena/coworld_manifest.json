@@ -98,7 +98,7 @@
       "name": "Smoke",
       "game_config": {
         "seed": 677410,
-        "duration": 30
+        "duration": 0
       },
       "description": "Short deterministic Asteroid Arena configuration used for manifest checks."
     }

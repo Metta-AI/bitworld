@@ -123,7 +123,7 @@
       "game_config": {
         "seed": 32619276,
         "maxTicks": 300,
-        "maxGames": 1
+        "maxGames": 0
       },
       "description": "Short deterministic infinite_blocks configuration used for manifest checks."
     }

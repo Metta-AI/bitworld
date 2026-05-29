@@ -128,7 +128,7 @@
       "game_config": {
         "seed": 726896,
         "maxTicks": 300,
-        "maxGames": 1
+        "maxGames": 0
       },
       "description": "Short deterministic big_adventure configuration used for manifest checks."
     }
