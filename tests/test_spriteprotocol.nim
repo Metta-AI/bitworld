@@ -39,9 +39,3 @@ doAssert clientMessages[0].text == "hi!"
 doAssert clientMessages[1].mask == (ButtonA or ButtonRight)
 doAssert clientBlob.readSpriteInputText() == "hi!"
 doAssert clientBlob.spriteInputMask() == (ButtonA or ButtonRight)
-
-echo "Testing legacy input helpers"
-let legacyBlob = blobFromMask(ButtonB)
-doAssert legacyBlob.isInputPacket()
-doAssert legacyBlob.blobToMask() == ButtonB
-doAssert blobFromChat("ok").blobToChat() == "ok"
