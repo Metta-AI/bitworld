@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "big_adventure",
     "version": "0.1.0",
@@ -16,13 +16,12 @@
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
-          "minItems": 0,
-          "maxItems": 64,
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "string",
-            "minLength": 0
-          },
-          "default": []
+            "minLength": 1
+          }
         },
         "seed": {
           "description": "Random seed.",
@@ -58,6 +57,8 @@
         "names": {
           "description": "One player name or address per player slot.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "string"
           }
@@ -65,6 +66,8 @@
         "scores": {
           "description": "One coin score per player slot.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "integer",
             "minimum": 0
@@ -73,6 +76,8 @@
         "hearts": {
           "description": "One remaining life count per player slot.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "integer",
             "minimum": 0
@@ -81,6 +86,8 @@
         "distance_walked": {
           "description": "One total distance walked value per player slot.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "integer",
             "minimum": 0
@@ -89,13 +96,46 @@
       }
     },
     "protocols": {
-      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      },
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      }
+    },
+    "docs": {
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "rules.md",
+          "content": {
+            "type": "text",
+            "value": "# Big Adventure Rules\n\nPlayers explore the world, fight monsters, collect coins and hearts, and try to survive. Final results report each player's coins, hearts, and distance walked."
+          }
+        },
+        {
+          "id": "play_big_adventure.md",
+          "title": "play_big_adventure.md",
+          "content": {
+            "type": "text",
+            "value": "# Play Big Adventure\n\nConnect to the player websocket and follow the BitWorld sprite protocol. Use the global websocket to spectate the full map."
+          }
+        },
+        {
+          "id": "reward.md",
+          "title": "reward.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+          }
+        }
+      ]
     },
     "runnable": {
       "type": "game",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/games/big-adventure:latest",
+      "image": "coworld-big-adventure:cert-amd64",
       "run": ["/bin/big_adventure"]
     }
   },
@@ -104,11 +144,18 @@
       "id": "konrad",
       "name": "konrad",
       "description": "Coworld player for big_adventure.",
-      "runnable": {
-        "type": "player",
-        "image": "public.ecr.aws/s3j4p9s7/treeform/players/konrad:latest",
-        "run": ["/bin/konrad", "--address:host.docker.internal", "--port:2000"]
-      }
+      "type": "player",
+      "image": "coworld-big-adventure-konrad:cert-amd64",
+      "run": ["/bin/konrad", "--exit-on-disconnect"]
+    }
+  ],
+  "reporter": [
+    {
+      "id": "default-reporter",
+      "name": "Default Reporter",
+      "description": "Default reporter placeholder for Big Adventure episodes.",
+      "type": "reporter",
+      "image": "ghcr.io/metta-ai/reporters-default@sha256:05729bdac8cec841655dd532ec09f1706e516f7af09825310c63351307251183"
     }
   ],
   "grader": [
@@ -134,19 +181,17 @@
     }
   ],
   "certification": {
-    "variant_id": "smoke",
+    "game_config": {
+      "seed": 726896,
+      "maxTicks": 300,
+      "maxGames": 0
+    },
     "players": [
       {
-        "player_id": "konrad",
-        "initial_params": {
-          "name": "slot_0"
-        }
+        "player_id": "konrad"
       },
       {
-        "player_id": "konrad",
-        "initial_params": {
-          "name": "slot_1"
-        }
+        "player_id": "konrad"
       }
     ]
   }

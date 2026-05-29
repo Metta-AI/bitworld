@@ -124,6 +124,30 @@
         "type": "uri",
         "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
       }
+    },
+    "docs": {
+      "readme": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/coworld-heartleaf/blob/master/README.md"
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "rules.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-heartleaf/blob/master/docs/rules.md"
+          }
+        },
+        {
+          "id": "play_heartleaf.md",
+          "title": "play_heartleaf.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-heartleaf/blob/master/docs/play_heartleaf.md"
+          }
+        }
+      ]
     }
   },
   "player": [
@@ -146,6 +170,15 @@
       "run": [
         "/bin/talking_villager"
       ]
+    }
+  ],
+  "reporter": [
+    {
+      "id": "default-reporter",
+      "name": "Default Reporter",
+      "type": "reporter",
+      "description": "Default Coworld reporter for generic episode artifacts.",
+      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:396e56a9ba1576aecc5b9868a85fa309ea98fdbbf8d656c94ec021906197ea52"
     }
   ],
   "grader": [
@@ -183,7 +216,7 @@
   "certification": {
     "game_config": {
       "seed": 4731713,
-      "maxTicks": 4600,
+      "maxTicks": 1200,
       "maxGames": 0
     },
     "players": [

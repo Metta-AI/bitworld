@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "asteroid_arena",
     "version": "0.1.0",
@@ -9,11 +9,15 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
       "properties": {
         "tokens": {
           "description": "One connection token per player slot.",
           "type": "array",
-          "maxItems": 64,
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "string"
           },
@@ -60,13 +64,50 @@
       }
     },
     "protocols": {
-      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      },
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      }
+    },
+    "docs": {
+      "readme": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/coworld-asteroid-arena/blob/master/README.md"
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "Rules",
+          "content": {
+            "type": "text",
+            "value": "# Asteroid Arena Rules\n\nPlayers pilot ships in a wrapping arena. Shoot asteroids and rival ships to score points. Red cooperative asteroids require hits from two different players. Planets can be captured and held for bonus score."
+          }
+        },
+        {
+          "id": "play_asteroid_arena.md",
+          "title": "How to Play",
+          "content": {
+            "type": "text",
+            "value": "# How to Play Asteroid Arena\n\nConnect to the player websocket, read sprite protocol updates, and send input masks. Use thrust and rotation to steer, fire at asteroids, and cooperate with other players to break red asteroids or capture planets."
+          }
+        },
+        {
+          "id": "reward.md",
+          "title": "Reward Protocol",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+          }
+        }
+      ]
     },
     "runnable": {
       "type": "game",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/games/asteroid-arena:latest",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/games/asteroid-arena@sha256:26526c39c3551f83deb9a5046b787ca999361d3cd9f37e29e6dc501dba5372fb",
       "run": ["/bin/asteroid_arena"]
     }
   },
@@ -75,11 +116,18 @@
       "id": "shooter",
       "name": "Shooter",
       "description": "Simple asteroid-hunting bot that steers toward the nearest asteroid and fires.",
-      "runnable": {
-        "type": "player",
-        "image": "public.ecr.aws/s3j4p9s7/treeform/players/shooter:latest",
-        "run": ["/bin/shooter"]
-      }
+      "type": "player",
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/shooter@sha256:a6cf59ca3fa35f74783b6349ae5b65f6c79b29700f78ba143b4f52a2e2f61f4a",
+      "run": ["/bin/shooter"]
+    }
+  ],
+  "reporter": [
+    {
+      "id": "default-reporter",
+      "name": "Default Reporter",
+      "description": "Default Coworld reporter for generic episode artifacts.",
+      "type": "reporter",
+      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:396e56a9ba1576aecc5b9868a85fa309ea98fdbbf8d656c94ec021906197ea52"
     }
   ],
   "grader": [
@@ -104,19 +152,16 @@
     }
   ],
   "certification": {
-    "variant_id": "smoke",
+    "game_config": {
+      "seed": 677410,
+      "duration": 0
+    },
     "players": [
       {
-        "player_id": "shooter",
-        "initial_params": {
-          "name": "slot_0"
-        }
+        "player_id": "shooter"
       },
       {
-        "player_id": "shooter",
-        "initial_params": {
-          "name": "slot_1"
-        }
+        "player_id": "shooter"
       }
     ]
   }

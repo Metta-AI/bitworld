@@ -356,25 +356,26 @@ proc listGames(args: ToolArgs): seq[GameManifest] =
     result.add(readGameManifest(args.repoRoot, path))
   result.sort(proc(a, b: GameManifest): int = cmp(a.name, b.name))
 
+proc supports(player: PlayerManifest, game: string): bool =
+  ## Returns true when a player supports one game.
+  for supported in player.games:
+    if supported == game:
+      return true
+
 proc listPlayers(args: ToolArgs): seq[PlayerManifest] =
   ## Lists standalone and embedded player manifests.
   for path in walkFiles(args.repoRoot / PlayersDir / "*" / CoplayerManifestName):
     result.add(readPlayerManifest(path))
   for game in listGames(args):
     for player in readEmbeddedPlayers(game.path, game.name):
-      var exists = false
-      for existing in result:
-        if existing.name == player.name:
-          exists = true
+      var replaced = false
+      for i in 0 ..< result.len:
+        if result[i].name == player.name and result[i].supports(game.name):
+          result[i] = player
+          replaced = true
           break
-      if not exists:
+      if not replaced:
         result.add(player)
-
-proc supports(player: PlayerManifest, game: string): bool =
-  ## Returns true when a player supports one game.
-  for supported in player.games:
-    if supported == game:
-      return true
 
 proc findGame(games: openArray[GameManifest], name: string): GameManifest =
   ## Finds one game manifest by name.

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/cogames/src/cogames/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "infinite_blocks",
     "version": "0.1.0",
@@ -16,13 +16,16 @@
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
-          "minItems": 0,
-          "maxItems": 64,
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "string",
             "minLength": 0
           },
-          "default": []
+          "default": [
+            "",
+            ""
+          ]
         },
         "seed": {
           "description": "Random seed.",
@@ -57,6 +60,8 @@
         "names": {
           "description": "One player name or address per player slot.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "string"
           }
@@ -64,6 +69,8 @@
         "scores": {
           "description": "One line-clear score per player slot.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "integer",
             "minimum": 0
@@ -72,6 +79,8 @@
         "alive": {
           "description": "One flag per player slot indicating whether the player can still spawn pieces.",
           "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "boolean"
           }
@@ -79,14 +88,38 @@
       }
     },
     "protocols": {
-      "player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      },
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      }
     },
-    "client": {
-      "client/player": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "client/global": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md",
-      "client/reward": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+    "docs": {
+      "readme": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/coworld-infinite-blocks/blob/master/README.md"
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "rules.md",
+          "content": {
+            "type": "text",
+            "value": "# Infinite Blocks Rules\n\nInfinite Blocks is a shared falling-blocks game. Each player controls one active piece on the same board. Pieces fall over time, can move left or right, can rotate, and can be dropped faster. When a piece settles, it becomes part of the shared stack.\n\nA run of eight filled cells in a row clears after a short flash. Cleared rows can disconnect blocks above them. Unsupported blocks fall, and those falls can create additional clearing cascades. Scores are awarded to the player whose placement caused the clear chain.\n\nThe objective is to place blocks cleanly, create flat low stacks, avoid trapped gaps, and score by causing line clears."
+          }
+        },
+        {
+          "id": "play_infinite_blocks.md",
+          "title": "play_infinite_blocks.md",
+          "content": {
+            "type": "text",
+            "value": "# Playing Infinite Blocks\n\nConnect to the player websocket documented by the sprite protocol. The player view shows your active falling piece, nearby players, the next piece preview, and the score panel. Send input masks to move left, move right, rotate, soft drop, or lock the piece.\n\nGood players search for low, flat landing spots. A strong placement leaves few or no new empty cells under the piece, supports future blocks, and avoids building tall pillars. If a placement triggers a clear, your next piece waits until the clear animation and any avalanche clears caused by it finish."
+          }
+        }
+      ]
     },
     "runnable": {
       "type": "game",
@@ -98,12 +131,19 @@
     {
       "id": "stacker",
       "name": "stacker",
+      "type": "player",
       "description": "Coworld player for infinite_blocks.",
-      "runnable": {
-        "type": "player",
-        "image": "public.ecr.aws/s3j4p9s7/treeform/players/stacker:latest",
-        "run": ["/bin/stacker"]
-      }
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/stacker:latest",
+      "run": ["/bin/stacker"]
+    }
+  ],
+  "reporter": [
+    {
+      "id": "default-reporter",
+      "name": "Default Reporter",
+      "type": "reporter",
+      "description": "Default Coworld reporter for generic episode artifacts.",
+      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:396e56a9ba1576aecc5b9868a85fa309ea98fdbbf8d656c94ec021906197ea52"
     }
   ],
   "grader": [
@@ -129,19 +169,17 @@
     }
   ],
   "certification": {
-    "variant_id": "smoke",
+    "game_config": {
+      "seed": 32619276,
+      "maxTicks": 300,
+      "maxGames": 0
+    },
     "players": [
       {
-        "player_id": "stacker",
-        "initial_params": {
-          "name": "slot_0"
-        }
+        "player_id": "stacker"
       },
       {
-        "player_id": "stacker",
-        "initial_params": {
-          "name": "slot_1"
-        }
+        "player_id": "stacker"
       }
     ]
   }

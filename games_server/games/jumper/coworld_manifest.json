@@ -21,8 +21,8 @@
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
-          "minItems": 0,
-          "maxItems": 64,
+          "minItems": 2,
+          "maxItems": 2,
           "items": {
             "type": "string",
             "minLength": 0
@@ -64,18 +64,49 @@
         "type": "uri",
         "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
       }
+    },
+    "docs": {
+      "readme": {
+        "type": "text",
+        "value": "# Jumper\n\nCooperative Coworld platformer where players cross pits, stack on each other, and reach the flag."
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "rules.md",
+          "content": {
+            "type": "text",
+            "value": "# Jumper Rules\n\nPlayers move through a side-scrolling platform level, cross pits, stack on each other when needed, and try to reach the flag. Falling below the level respawns the player. The smoke certification runs a short deterministic two-player episode."
+          }
+        },
+        {
+          "id": "play_jumper.md",
+          "title": "play_jumper.md",
+          "content": {
+            "type": "text",
+            "value": "# Play Jumper\n\nConnect with the sprite protocol player websocket, move right through the level, jump over gaps and walls, and cooperate with other players to cross larger hazards. The bundled dalli player is a deterministic smoke-test bot for local certification."
+          }
+        }
+      ]
     }
   },
   "player": [
     {
       "id": "dalli",
       "name": "dalli",
+      "type": "player",
       "description": "Coworld player for jumper.",
-      "runnable": {
-        "type": "player",
-        "image": "public.ecr.aws/s3j4p9s7/treeform/players/dalli:latest",
-        "run": ["/bin/dalli"]
-      }
+      "image": "public.ecr.aws/s3j4p9s7/treeform/players/dalli:latest",
+      "run": ["/bin/dalli"]
+    }
+  ],
+  "reporter": [
+    {
+      "id": "default-reporter",
+      "name": "Default Reporter",
+      "type": "reporter",
+      "description": "Default Coworld reporter for generic episode artifacts.",
+      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:396e56a9ba1576aecc5b9868a85fa309ea98fdbbf8d656c94ec021906197ea52"
     }
   ],
   "grader": [
@@ -111,19 +142,17 @@
     }
   ],
   "certification": {
-    "variant_id": "smoke",
+    "game_config": {
+      "seed": 727920,
+      "maxTicks": 300,
+      "maxGames": 0
+    },
     "players": [
       {
-        "player_id": "dalli",
-        "initial_params": {
-          "name": "slot_0"
-        }
+        "player_id": "dalli"
       },
       {
-        "player_id": "dalli",
-        "initial_params": {
-          "name": "slot_1"
-        }
+        "player_id": "dalli"
       }
     ]
   }
