@@ -50,7 +50,7 @@ type
 var ecsConf*: EcsConfig
 
 proc loadEcsConfig*() =
-  putEnv("AWS_PROFILE", "softmax-admin")
+  putEnv("AWS_PROFILE", "sandbox-andre")
   ecsConf = EcsConfig(
     cluster: getEnv("ECS_CLUSTER", "bitworld-cluster"),
     publicSubnet: getEnv("ECS_PUBLIC_SUBNET", "subnet-0bfdcc939a2a25148"),
