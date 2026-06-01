@@ -74,6 +74,12 @@ variable "dashboard_instance_type" {
   default     = "m7i.large"
 }
 
+variable "observatory_egress_cidrs" {
+  description = "CIDR blocks for the Metta Observatory reverse proxy (used for dashboard access control in the MVP)"
+  type        = list(string)
+  default     = []
+}
+
 variable "llm_api_domains" {
   description = "Domains allowed through DNS Firewall for bot LLM access"
   type        = list(string)

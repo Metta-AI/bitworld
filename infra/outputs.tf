@@ -64,8 +64,8 @@ output "cloudwatch_log_group" {
 }
 
 output "dashboard_public_ip" {
-  description = "Public IP of the dashboard EC2 instance"
-  value       = aws_instance.dashboard.public_ip
+  description = "Stable public IP of the dashboard EC2 instance (Elastic IP)"
+  value       = aws_eip.dashboard.public_ip
 }
 
 output "dashboard_instance_id" {

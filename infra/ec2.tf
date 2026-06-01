@@ -106,8 +106,6 @@ resource "aws_instance" "dashboard" {
   iam_instance_profile   = aws_iam_instance_profile.dashboard.name
   key_name               = aws_key_pair.dashboard.key_name
 
-  associate_public_ip_address = true
-
   root_block_device {
     volume_size = 30
     volume_type = "gp3"
@@ -135,7 +133,32 @@ resource "aws_instance" "dashboard" {
 
   tags = { Name = "${var.project_name}-dashboard" }
 
-  lifecycle { ignore_changes = [ami] }
+  lifecycle {
+    ignore_changes = [
+      ami,
+      # We manage the public IP via explicit aws_eip_association.
+      # Prevent TF from trying to re-enable auto-assign on recreate.
+      associate_public_ip_address,
+    ]
+  }
+}
+
+# =============================================================================
+# Elastic IP for stable public access (Observatory proxy + SSH)
+# =============================================================================
+# We attach a static Elastic IP so the dashboard has a reliable public address
+# that does not change on stop/start or replacement. This is a prerequisite
+# for the Observatory reverse proxy MVP (IP-range access control).
+
+resource "aws_eip" "dashboard" {
+  domain = "vpc"
+
+  tags = { Name = "${var.project_name}-dashboard" }
+}
+
+resource "aws_eip_association" "dashboard" {
+  instance_id   = aws_instance.dashboard.id
+  allocation_id = aws_eip.dashboard.id
 }
 
 # =============================================================================

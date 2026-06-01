@@ -33,8 +33,10 @@
 #             port 53 to VPC resolver only
 #
 # Dashboard:
-#   INBOUND:  port 2080 (web UI), port 22 (SSH — lock down before prod)
+#   INBOUND:  port 2080 (web UI) from Observatory reverse proxy (MVP) + SSH from trusted humans
 #   OUTBOUND: unrestricted (needs ECS API, GHCR pulls, etc.)
+#
+# See bitworld-observatory-dashboard-proxy.md for the current access model and limitations.
 #
 # Everything else is blocked.
 
@@ -82,6 +84,19 @@ resource "aws_vpc_security_group_egress_rule" "dashboard_all" {
   description       = "Orchestrator needs outbound to manage ECS tasks, pull images, etc."
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+# Observatory reverse proxy access to the full dashboard (MVP).
+# This is the controlled public entry point for the authenticated dashboard UI.
+# Populated via var.observatory_egress_cidrs (see bitworld-observatory-dashboard-proxy.md).
+resource "aws_vpc_security_group_ingress_rule" "dashboard_from_observatory" {
+  count             = length(var.observatory_egress_cidrs)
+  security_group_id = aws_security_group.dashboard.id
+  description       = "Observatory reverse proxy (full dashboard UI + management)"
+  from_port         = var.dashboard_port
+  to_port           = var.dashboard_port
+  ip_protocol       = "tcp"
+  cidr_ipv4         = var.observatory_egress_cidrs[count.index]
 }
 
 # =============================================================================
