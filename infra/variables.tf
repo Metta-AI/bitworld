@@ -75,9 +75,11 @@ variable "dashboard_instance_type" {
 }
 
 variable "observatory_egress_cidrs" {
-  description = "CIDR blocks for the Metta Observatory reverse proxy (used for dashboard access control in the MVP)"
+  description = "CIDR blocks for the Metta Observatory reverse proxy (used for dashboard access control in the MVP). Sourced from the NAT gateway of the main Observatory EKS cluster."
   type        = list(string)
-  default     = []
+  default     = ["44.213.165.61/32"]
+  # Last updated: 2026-06 from live query of the main EKS NAT gateway (nat-0fbed8a92c9e65f5b).
+  # To refresh: run the query in bitworld-observatory-dashboard-proxy.md or ask the infra team.
 }
 
 variable "llm_api_domains" {
