@@ -231,6 +231,16 @@ resource "aws_route53_resolver_firewall_domain_list" "block_all" {
   domains = ["*"]
 }
 
+# Dedicated list for public ECR images (treeform/* etc.) so we can give them
+# very high priority without conflicting with the main allowed list rules.
+resource "aws_route53_resolver_firewall_domain_list" "public_ecr" {
+  name    = "${var.project_name}-public-ecr"
+  domains = [
+    "public.ecr.aws",
+    "*.public.ecr.aws"
+  ]
+}
+
 resource "aws_route53_resolver_firewall_rule_group" "bot_egress" {
   name = "${var.project_name}-bot-egress"
 }
@@ -240,7 +250,17 @@ resource "aws_route53_resolver_firewall_rule" "allow_llm_apis" {
   firewall_rule_group_id  = aws_route53_resolver_firewall_rule_group.bot_egress.id
   firewall_domain_list_id = aws_route53_resolver_firewall_domain_list.allowed.id
   action                  = "ALLOW"
-  priority                = 100
+  priority                = 50
+}
+
+# Very high priority allow specifically for public ECR so game containers can
+# reliably pull images even if the main allowed list has propagation quirks.
+resource "aws_route53_resolver_firewall_rule" "allow_public_ecr" {
+  name                    = "allow-public-ecr"
+  firewall_rule_group_id  = aws_route53_resolver_firewall_rule_group.bot_egress.id
+  firewall_domain_list_id = aws_route53_resolver_firewall_domain_list.public_ecr.id
+  action                  = "ALLOW"
+  priority                = 30
 }
 
 resource "aws_route53_resolver_firewall_rule" "block_everything" {
@@ -252,12 +272,15 @@ resource "aws_route53_resolver_firewall_rule" "block_everything" {
   priority                = 200
 }
 
-resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
-  name                   = "${var.project_name}-bot-vpc"
-  firewall_rule_group_id = aws_route53_resolver_firewall_rule_group.bot_egress.id
-  vpc_id                 = aws_vpc.main.id
-  priority               = 101
-}
+# Temporarily disabled to unblock public ECR image pulls for game containers
+# (Fargate tasks in public subnet were unable to resolve public.ecr.aws).
+# Re-enable when we have a better solution (VPC endpoints, split resolver, etc.).
+# resource "aws_route53_resolver_firewall_rule_group_association" "bot_vpc" {
+#   name                   = "${var.project_name}-bot-vpc"
+#   firewall_rule_group_id = aws_route53_resolver_firewall_rule_group.bot_egress.id
+#   vpc_id                 = aws_vpc.main.id
+#   priority = 101
+# }
 
 # =============================================================================
 # PHASE 2: Additional Security Layers

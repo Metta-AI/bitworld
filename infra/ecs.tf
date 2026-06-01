@@ -57,6 +57,30 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Public ECR pull permissions (for images published to public.ecr.aws like crewrift etc.).
+# The default AmazonECSTaskExecutionRolePolicy only covers private ECR.
+data "aws_iam_policy_document" "ecs_execution_ecr_public" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr-public:GetAuthorizationToken",
+      "sts:GetServiceBearerToken",
+      "ecr-public:BatchGetImage",
+      "ecr-public:GetDownloadUrlForLayer",
+      "ecr-public:DescribeRepositories",
+      "ecr-public:DescribeImages",
+      "ecr-public:BatchCheckLayerAvailability",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_execution_ecr_public" {
+  name   = "${var.project_name}-ecs-execution-ecr-public"
+  role   = aws_iam_role.ecs_execution.id
+  policy = data.aws_iam_policy_document.ecs_execution_ecr_public.json
+}
+
 # INTENTIONALLY has no attached policies. Containers must not access AWS
 # APIs. Replay uploads go through games_server's upload proxy, not direct
 # S3 access. Do NOT attach S3, SQS, or any other policy here — if a

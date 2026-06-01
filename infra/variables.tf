@@ -102,6 +102,9 @@ variable "infra_domains" {
     # AWS ECR (our own researcher images)
     "*.dkr.ecr.us-east-1.amazonaws.com",
     "api.ecr.us-east-1.amazonaws.com",
+    # AWS Public ECR (treeform/* crewrift etc. images published via docker_build.nim)
+    "public.ecr.aws",
+    "*.public.ecr.aws",
     # AWS APIs (dashboard host calls these to orchestrate ECS tasks)
     "sts.us-east-1.amazonaws.com",
     "ecs.us-east-1.amazonaws.com",
