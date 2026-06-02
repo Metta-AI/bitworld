@@ -68,6 +68,12 @@ variable "replay_upload_port" {
   default     = 2080
 }
 
+variable "tournament_port" {
+  description = "Port the tournament_server listens on (HTTP + management UI + artifact uploads for its launched games)"
+  type        = number
+  default     = 2081
+}
+
 variable "dashboard_instance_type" {
   description = "EC2 instance type for the dashboard/games_server"
   type        = string

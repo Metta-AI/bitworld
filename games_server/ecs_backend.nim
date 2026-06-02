@@ -40,6 +40,9 @@ type
     logGroup*: string
     region*: string
     awsBin*: string
+    ownerPrefix*: string
+    gameOwnerValue*: string
+    botOwnerValue*: string
 
   EcsError* = object of CatchableError
 
@@ -62,7 +65,18 @@ proc loadEcsConfig*() =
     logGroup: getEnv("ECS_LOG_GROUP", "/ecs/bitworld"),
     region: getEnv("ECS_REGION", "us-east-1"),
     awsBin: getEnv("ECS_AWS_BIN", "aws"),
+    ownerPrefix: "bitworld.games_server",
+    gameOwnerValue: "among_them",
+    botOwnerValue: "among_them_bot",
   )
+
+proc setEcsOwner*(prefix, gameValue, botValue: string) =
+  ## Overrides the owner label prefix and values used for task tags and
+  ## filtering (allows tournament_server to use its own namespace while
+  ## reusing the same ECS backend).
+  ecsConf.ownerPrefix = prefix
+  ecsConf.gameOwnerValue = gameValue
+  ecsConf.botOwnerValue = botValue
 
 # =============================================================================
 # AWS CLI Wrapper
@@ -303,13 +317,13 @@ proc ecsCreateGame*(
   let
     created = $getTime().toUnix()
     tags = @[
-      (key: "bitworld.games_server", value: "among_them"),
-      (key: "bitworld.games_server.port", value: $GameContainerPort),
-      (key: "bitworld.games_server.created", value: created),
-      (key: "bitworld.games_server.replay", value: replay),
-      (key: "bitworld.games_server.kind", value: "game"),
-      (key: "bitworld.games_server.game_name", value: cogameName),
-      (key: "bitworld.games_server.manifest", value: manifestKey),
+      (key: ecsConf.ownerPrefix, value: ecsConf.gameOwnerValue),
+      (key: ecsConf.ownerPrefix & ".port", value: $GameContainerPort),
+      (key: ecsConf.ownerPrefix & ".created", value: created),
+      (key: ecsConf.ownerPrefix & ".replay", value: replay),
+      (key: ecsConf.ownerPrefix & ".kind", value: "game"),
+      (key: ecsConf.ownerPrefix & ".game_name", value: cogameName),
+      (key: ecsConf.ownerPrefix & ".manifest", value: manifestKey),
     ]
   var cmd = command
   var env: seq[tuple[name, value: string]]
@@ -395,10 +409,10 @@ proc ecsCreateBot*(
       token
     )
     tags = @[
-      (key: "bitworld.games_server", value: "among_them_bot"),
-      (key: "bitworld.games_server.game", value: gameTaskArn),
-      (key: "bitworld.games_server.bot", value: botName),
-      (key: "bitworld.games_server.created", value: created),
+      (key: ecsConf.ownerPrefix, value: ecsConf.botOwnerValue),
+      (key: ecsConf.ownerPrefix & ".game", value: gameTaskArn),
+      (key: ecsConf.ownerPrefix & ".bot", value: botName),
+      (key: ecsConf.ownerPrefix & ".created", value: created),
     ]
   let cmd = botCommand
   var env: seq[tuple[name, value: string]]
@@ -437,11 +451,11 @@ proc ecsCreateReplayGame*(
   let
     created = $getTime().toUnix()
     tags = @[
-      (key: "bitworld.games_server", value: "among_them"),
-      (key: "bitworld.games_server.port", value: $GameContainerPort),
-      (key: "bitworld.games_server.created", value: created),
-      (key: "bitworld.games_server.replay", value: replay),
-      (key: "bitworld.games_server.kind", value: "replay"),
+      (key: ecsConf.ownerPrefix, value: ecsConf.gameOwnerValue),
+      (key: ecsConf.ownerPrefix & ".port", value: $GameContainerPort),
+      (key: ecsConf.ownerPrefix & ".created", value: created),
+      (key: ecsConf.ownerPrefix & ".replay", value: replay),
+      (key: ecsConf.ownerPrefix & ".kind", value: "replay"),
     ]
   let cmd = command
   var env = gameEnv
@@ -501,10 +515,10 @@ proc getTag(task: JsonNode, key: string): string =
       return tag["value"].getStr()
 
 proc isGameTask(task: JsonNode): bool =
-  getTag(task, "bitworld.games_server") == "among_them"
+  getTag(task, ecsConf.ownerPrefix) == ecsConf.gameOwnerValue
 
 proc isBotTask(task: JsonNode): bool =
-  getTag(task, "bitworld.games_server") == "among_them_bot"
+  getTag(task, ecsConf.ownerPrefix) == ecsConf.botOwnerValue
 
 type
   EcsGameInfo* = object
@@ -536,11 +550,11 @@ proc taskToGameInfo(task: JsonNode): EcsGameInfo =
   result.taskArn = task["taskArn"].getStr()
   result.status = task["lastStatus"].getStr().toLowerAscii()
   result.port = GameContainerPort
-  result.created = parseInt64Safe(getTag(task, "bitworld.games_server.created"))
-  result.replay = getTag(task, "bitworld.games_server.replay")
-  result.kind = getTag(task, "bitworld.games_server.kind")
-  result.cogameName = getTag(task, "bitworld.games_server.game_name")
-  result.manifestKey = getTag(task, "bitworld.games_server.manifest")
+  result.created = parseInt64Safe(getTag(task, ecsConf.ownerPrefix & ".created"))
+  result.replay = getTag(task, ecsConf.ownerPrefix & ".replay")
+  result.kind = getTag(task, ecsConf.ownerPrefix & ".kind")
+  result.cogameName = getTag(task, ecsConf.ownerPrefix & ".game_name")
+  result.manifestKey = getTag(task, ecsConf.ownerPrefix & ".manifest")
   let ips = resolveTaskIps(result.taskArn, task)
   result.publicIp = ips.public
   result.privateIp = ips.private
@@ -548,9 +562,9 @@ proc taskToGameInfo(task: JsonNode): EcsGameInfo =
 proc taskToBotInfo(task: JsonNode): EcsBotInfo =
   result.taskArn = task["taskArn"].getStr()
   result.status = task["lastStatus"].getStr().toLowerAscii()
-  result.gameTaskArn = getTag(task, "bitworld.games_server.game")
-  result.botName = getTag(task, "bitworld.games_server.bot")
-  result.created = parseInt64Safe(getTag(task, "bitworld.games_server.created"))
+  result.gameTaskArn = getTag(task, ecsConf.ownerPrefix & ".game")
+  result.botName = getTag(task, ecsConf.ownerPrefix & ".bot")
+  result.created = parseInt64Safe(getTag(task, ecsConf.ownerPrefix & ".created"))
 
 proc ecsListGames*(): seq[EcsGameInfo] =
   let arns = ecsListTaskArns()

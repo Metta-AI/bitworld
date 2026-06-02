@@ -99,6 +99,27 @@ resource "aws_vpc_security_group_ingress_rule" "dashboard_from_observatory" {
   cidr_ipv4         = var.observatory_egress_cidrs[count.index]
 }
 
+# Tournament server on separate port (2081). Same pattern as the games_server rules
+# but for the independent tournament orchestrator.
+resource "aws_vpc_security_group_ingress_rule" "dashboard_tournament_replay_upload" {
+  security_group_id            = aws_security_group.dashboard.id
+  description                  = "Game containers POST replays/results to tournament_server (when tournament is the orchestrator)"
+  from_port                    = var.tournament_port
+  to_port                      = var.tournament_port
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.game_container.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "dashboard_tournament_from_observatory" {
+  count             = length(var.observatory_egress_cidrs)
+  security_group_id = aws_security_group.dashboard.id
+  description       = "Observatory reverse proxy (tournament UI + management on 2081)"
+  from_port         = var.tournament_port
+  to_port           = var.tournament_port
+  ip_protocol       = "tcp"
+  cidr_ipv4         = var.observatory_egress_cidrs[count.index]
+}
+
 # =============================================================================
 # Game Containers (ECS Fargate, public subnet)
 # Each task gets its own ENI/IP. All listen on port 8080.
@@ -153,6 +174,15 @@ resource "aws_vpc_security_group_egress_rule" "game_container_to_dashboard" {
   description                  = "Replay upload to games_server (only outbound game containers need)"
   from_port                    = var.replay_upload_port
   to_port                      = var.replay_upload_port
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.dashboard.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "game_container_to_dashboard_tournament" {
+  security_group_id            = aws_security_group.game_container.id
+  description                  = "Replay/results upload to tournament_server (when tournament_server is the orchestrator on 2081)"
+  from_port                    = var.tournament_port
+  to_port                      = var.tournament_port
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.dashboard.id
 }

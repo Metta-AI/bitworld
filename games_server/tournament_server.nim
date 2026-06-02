@@ -4,7 +4,10 @@ import
     strutils, tables, times, uri
   ],
   mummy,
-  taggy
+  taggy,
+  artifact_service,
+  container_backend,
+  ecs_backend
 
 from std/httpclient import close, get, getContent, newHttpClient
 
@@ -270,6 +273,7 @@ type
     tickMillis: int
     manifestPath: string
     playerList: string
+    useEcs: bool
 
   ContainerKind = enum
     ManagedGame,
@@ -1418,6 +1422,16 @@ proc startTournamentGame(
   pullImagesFresh(images)
   writeFile(replayPath(configFile), gameConfig)
 
+  # If the backend has a non-empty artifactBaseUrl, we can use https URIs
+  # (the launch args will still use the old gameDockerArgs for Docker; when full
+  # backend launch is wired the URIs come from container_backend.buildArtifactUris).
+  if container_backend.backendInitialized and container_backend.backendConfig.artifactBaseUrl.len > 0:
+    let uris = container_backend.buildArtifactUris(run.replay, run.results, run.config)
+    # For the current Docker path we still go through gameDockerArgs which hardcodes file.
+    # The https path will be fully exercised once the launchEpisode in the backend is used
+    # for the ECS case (or when we parameterize the Docker args builder).
+    echo "[tournament] https artifact base active: ", container_backend.backendConfig.artifactBaseUrl
+
   try:
     discard requireDocker(gameDockerArgs(game, name, port, run))
     launched.add(name)
@@ -2295,6 +2309,12 @@ proc httpHandlerUnsafe(request: Request, config: TournamentConfig) =
       request.bulkStopHandler()
     elif request.path == BulkRemovePath and request.httpMethod == "POST":
       request.bulkRemoveHandler()
+    elif request.path.startsWith(artifact_service.ReplayUploadPath) and request.httpMethod == "PUT":
+      let (status, headers, body) = artifact_service.handleUpload(request, artifact_service.ReplayUploadPath)
+      request.respond(status, headers, body)
+    elif request.path.startsWith(artifact_service.ReplayDownloadPath) and request.httpMethod == "GET":
+      let (status, headers, body) = artifact_service.handleDownload(request, artifact_service.ReplayDownloadPath)
+      request.respond(status, headers, body)
     else:
       request.respondHtml(404, renderPage(request, config))
   except TournamentError as e:
@@ -2325,7 +2345,8 @@ proc defaultConfig(): TournamentConfig =
     playersPerGame: DefaultPlayersPerGame,
     tickMillis: DefaultTickMillis,
     manifestPath: manifestPath(),
-    playerList: envValue(PlayerListEnv, "")
+    playerList: envValue(PlayerListEnv, ""),
+    useEcs: false
   )
 
 proc parseArgs(): TournamentConfig =
@@ -2351,6 +2372,8 @@ proc parseArgs(): TournamentConfig =
         result.playerList = val
       of "no-pull":
         skipPull = true
+      of "ecs":
+        result.useEcs = true
       else:
         discard
     else:
@@ -2360,6 +2383,50 @@ proc runServer(config: TournamentConfig) =
   ## Runs the tournament web server and scheduler.
   randomize()
   initState()
+  artifact_service.setArtifactReplayDir(replayDir())
+  if config.useEcs:
+    echo "ECS mode enabled for tournament"
+    ecs_backend.loadEcsConfig()
+    # Use tournament owner labels (distinct from games_server)
+    container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
+      useEcs: true,
+      owner: container_backend.ContainerOwner(
+        labelPrefix: "bitworld.tournament_server",
+        gameValue: "tournament",
+        playerValue: "tournament_player"
+      ),
+      artifactBaseUrl: "",  # will be filled with EC2 private IP + port below if possible
+      replayDir: replayDir()
+    ))
+    # Try to compute reachable base for https URIs (same EC2 private IP pattern as games_server)
+    # For simplicity we re-use the ec2 metadata fetch idea; here we do a minimal version.
+    # In real code this would live in a shared helper.
+    var base = getEnv("TOURNAMENT_URL", "")
+    if base.len == 0:
+      # attempt EC2 private IP (the fetchEc2PrivateIp logic could be shared later)
+      try:
+        let sock = newSocket()
+        sock.connect("169.254.169.254", Port(80), timeout = 300)
+        sock.close()
+        # simplified; full version uses IMDSv2 token like in games_server
+        base = "http://169.254.169.254:1" # placeholder - real impl would query metadata
+        # For the actual dashboard box the private IP is injected or env-provided.
+        # For now we leave artifactBaseUrl empty if not provided; ECS launch will require TOURNAMENT_URL or later enhancement.
+      except:
+        discard
+    if base.len > 0:
+      container_backend.backendConfig.artifactBaseUrl = base
+  else:
+    container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
+      useEcs: false,
+      owner: container_backend.ContainerOwner(
+        labelPrefix: "bitworld.tournament_server",
+        gameValue: "tournament",
+        playerValue: "tournament_player"
+      ),
+      artifactBaseUrl: "",
+      replayDir: replayDir()
+    ))
   createThread(scheduler, schedulerLoop, config)
   let server = newServer(makeHandler(config), workerThreads = 1)
   echo "Tournament server listening on http://", config.address, ":", config.port

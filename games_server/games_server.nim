@@ -4,7 +4,9 @@ import
   mummy,
   taggy,
   cogame_validator,
-  ecs_backend
+  ecs_backend,
+  artifact_service,
+  container_backend
 
 from std/httpclient import close, getContent, newHttpClient, put, body
 from std/httpcore import newHttpHeaders
@@ -71,9 +73,6 @@ const
   AiKeyEnvNames = ["CLAUDE_KEY", "GEMINI_KEY", "OPENAI_KEY", "XAI_KEY"]
   ReplayDownloadPath = "/api/replay/download/"
   ReplayUploadPath = "/api/replay/upload/"
-  UploadSecretEnv = "GAMES_SERVER_UPLOAD_SECRET"
-  UploadSecretFile = ".upload_secret"
-  UploadSecretBytes = 32
   GamesServerUrlEnv = "GAMES_SERVER_URL"
   ServerLabelKey = "bitworld.games_server"
   ServerLabelValue = "among_them"
@@ -981,7 +980,6 @@ proc requireDocker(args: openArray[string]): string =
 var skipPull* = false
 var useEcs* = false
 var ec2PrivateIp = ""
-var uploadSecretValue = ""
 
 proc fetchEc2PrivateIp(): string =
   ## Fetches this instance's private IP from EC2 instance metadata (IMDSv2).
@@ -1833,13 +1831,8 @@ proc gamesServerUrl(): string =
 
 proc replayDownloadHandler(request: Request) =
   ## Handles GET /api/replay/download/<name> — serves replay file for playback containers.
-  let name = request.path[ReplayDownloadPath.len .. ^1]
-  let clean = cleanReplayName(name)
-  if clean.len == 0 or not fileExists(replayPath(clean)):
-    request.respond(404, @[("Content-Type", "text/plain")], "replay not found\n")
-    return
-  let body = readFile(replayPath(clean))
-  request.respond(200, @[("Content-Type", "application/octet-stream")], body)
+  let (status, headers, body) = artifact_service.handleDownload(request, ReplayDownloadPath)
+  request.respond(status, headers, body)
 
 proc cleanConfigValue(
   form: seq[(string, string)],
@@ -2169,75 +2162,17 @@ proc generatePlayerToken(): string =
   for b in bytes:
     result.add(b.toHex(2).toLowerAscii())
 
-proc uploadSecretPath(): string =
-  ## Returns the local upload secret path.
-  replayDir() / UploadSecretFile
-
-proc generateUploadSecret(): string =
-  ## Generates one persistent upload secret.
-  var bytes: array[UploadSecretBytes, byte]
-  if not urandom(bytes):
-    raise newException(GamesServerError, "could not generate upload secret")
-  for b in bytes:
-    result.add(b.toHex(2).toLowerAscii())
-
 proc loadUploadSecret(): string =
-  ## Loads or creates the upload secret used for artifact write tokens.
-  result = getEnv(UploadSecretEnv).strip()
-  if result.len > 0:
-    return
-  let path = uploadSecretPath()
-  ensureReplayDir()
-  if fileExists(path):
-    result = readFile(path).strip()
-    if result.len > 0:
-      return
-  result = generateUploadSecret()
-  try:
-    writeFile(path, result & "\n")
-  except OSError as e:
-    raise newException(
-      GamesServerError,
-      "could not write upload secret: " & e.msg
-    )
+  artifact_service.loadUploadSecret()
 
 proc uploadSecret(): string =
-  ## Returns the cached upload secret.
-  if uploadSecretValue.len == 0:
-    uploadSecretValue = loadUploadSecret()
-  uploadSecretValue
-
-proc sameToken(a, b: string): bool =
-  ## Compares two tokens without exiting early on content mismatch.
-  var diff = a.len xor b.len
-  let count = max(a.len, b.len)
-  for i in 0 ..< count:
-    let
-      left =
-        if i < a.len:
-          ord(a[i])
-        else:
-          0
-      right =
-        if i < b.len:
-          ord(b[i])
-        else:
-          0
-    diff = diff or (left xor right)
-  diff == 0
+  artifact_service.uploadSecret()
 
 proc generateUploadToken(fileName: string): string =
-  ## Generates a stable upload token for one cleaned artifact file name.
-  let clean = cleanReplayName(fileName)
-  if clean.len == 0:
-    raise newException(GamesServerError, "could not tokenize empty file name")
-  ($secureHash(uploadSecret() & "\n" & clean)).toLowerAscii()
+  artifact_service.generateUploadToken(fileName)
 
 proc validateUploadToken(token, fileName: string): bool =
-  ## Returns true when the upload token matches the artifact file name.
-  if token.len == 0 or fileName.len == 0:
-    return false
-  sameToken(token.toLowerAscii(), generateUploadToken(fileName))
+  artifact_service.validateUploadToken(token, fileName)
 
 proc variantDefaults(manifestInfo: GameManifest): JsonNode =
   ## Reads the first variant's game_config as default values.
@@ -2888,20 +2823,8 @@ proc queryValue(request: Request, key: string): string =
 
 proc replayUploadHandler(request: Request) =
   ## Handles PUT /api/replay/upload/<filename>?token=<tok>.
-  let pathPart = request.path[ReplayUploadPath.len .. ^1]
-  let clean = cleanReplayName(pathPart)
-  if clean.len == 0:
-    request.respond(400, @[("Content-Type", "text/plain")], "bad filename\n")
-    return
-  let token = request.queryValue("token")
-  if not validateUploadToken(token, clean):
-    request.respond(403, @[("Content-Type", "text/plain")], "invalid token\n")
-    return
-  ensureReplayDir()
-  writeFile(replayPath(clean), request.body)
-  echo "[upload] ", clean, " (", request.body.len, " bytes)"
-  request.respond(200, @[("Content-Type", "application/json")],
-    """{"status":"ok"}""" & "\n")
+  let (status, headers, body) = artifact_service.handleUpload(request, ReplayUploadPath)
+  request.respond(status, headers, body)
 
 proc hostName(request: Request): string =
   ## Extracts the browser-visible host without a port.
@@ -4394,6 +4317,7 @@ proc runServer(address = DefaultHost, port = DefaultPort) =
   ## Runs the games control web server.
   loadAiKeyEnvs()
   ensureUploadDirs()
+  artifact_service.setArtifactReplayDir(replayDir())
   if not useEcs and envValue(WatchdogEnv, "1") != "0":
     createThread(resourceWatchdogThread, resourceWatchdogProc)
     echo "Docker resource watchdog enabled"
@@ -4432,4 +4356,15 @@ when isMainModule:
       echo "EC2 private IP: ", ec2PrivateIp
     else:
       echo "Not on EC2 — replay upload/download disabled"
+  # Initialize the shared backend (uses defaults for owner when not tournament).
+  container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
+    useEcs: useEcs,
+    owner: container_backend.ContainerOwner(
+      labelPrefix: "bitworld.games_server",
+      gameValue: "among_them",
+      playerValue: "among_them_bot"
+    ),
+    artifactBaseUrl: if useEcs and ec2PrivateIp.len > 0: "http://" & ec2PrivateIp & ":" & $DefaultPort else: "",
+    replayDir: replayDir()
+  ))
   runServer(address, port)
