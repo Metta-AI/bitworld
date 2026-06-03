@@ -37,8 +37,8 @@ func TestDetectPhaseActive(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "player red", 10, 20},
-		{2, 101, "task Fix Wires", 30, 40},
+		{1, 100, "player red right", 10, 20},
+		{2, 101, "task bubble", 30, 40},
 	})
 	p := NewPerception(w)
 	if got := p.Phase(); got != PhaseActive {
@@ -53,8 +53,8 @@ func TestDetectPhaseVoting(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "player red", 10, 20},
-		{2, 101, "Vote timer", 50, 60},
+		{1, 100, "player red right", 10, 20},
+		{2, 101, "vote cursor", 50, 60},
 	})
 	p := NewPerception(w)
 	if got := p.Phase(); got != PhaseVoting {
@@ -92,9 +92,9 @@ func TestFindPlayers(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "player red", 10, 20},
-		{2, 101, "player blue", 30, 40},
-		{3, 102, "task Fix Wires", 50, 60},
+		{1, 100, "player red right", 10, 20},
+		{2, 101, "player blue left", 30, 40},
+		{3, 102, "task bubble", 50, 60},
 	})
 	p := NewPerception(w)
 	players := p.Players()
@@ -107,6 +107,30 @@ func TestFindPlayers(t *testing.T) {
 	}
 	if !colors["red"] || !colors["blue"] {
 		t.Fatalf("expected red and blue players, got %v", colors)
+	}
+}
+
+func TestFindPlayersMultiWordColor(t *testing.T) {
+	w := buildTestWorld([]struct {
+		objID    uint16
+		spriteID uint16
+		label    string
+		x, y     int16
+	}{
+		{1, 100, "player light blue right", 10, 20},
+		{2, 101, "player dark brown left", 30, 40},
+	})
+	p := NewPerception(w)
+	players := p.Players()
+	if len(players) != 2 {
+		t.Fatalf("expected 2 players, got %d", len(players))
+	}
+	colors := map[string]bool{}
+	for _, pl := range players {
+		colors[pl.Color] = true
+	}
+	if !colors["light blue"] || !colors["dark brown"] {
+		t.Fatalf("expected 'light blue' and 'dark brown', got %v", colors)
 	}
 }
 
@@ -139,15 +163,18 @@ func TestPerceptionSelfPosition(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "self", 42, 84},
+		{1, 100, "player red right", 200, 150},
+		{2, 101, "player blue left", 500, 400},
 	})
+	// Set viewport so center is near player red
+	w.Apply(&SetViewport{Layer: 0, Width: 400, Height: 300})
 	p := NewPerception(w)
 	pos, ok := p.SelfPosition()
 	if !ok {
 		t.Fatal("expected to find self position")
 	}
-	if pos.X != 42 || pos.Y != 84 {
-		t.Fatalf("expected (42,84), got (%d,%d)", pos.X, pos.Y)
+	if pos.X != 200 || pos.Y != 150 {
+		t.Fatalf("expected (200,150) nearest viewport center, got (%d,%d)", pos.X, pos.Y)
 	}
 }
 
@@ -158,7 +185,7 @@ func TestPerceptionSelfColor(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "self red", 10, 20},
+		{1, 100, "vote self marker red", 10, 20},
 	})
 	p := NewPerception(w)
 	color := p.SelfColor()
@@ -167,19 +194,21 @@ func TestPerceptionSelfColor(t *testing.T) {
 	}
 }
 
-func TestPerceptionSelfColorEmpty(t *testing.T) {
+func TestPerceptionSelfColorFromViewport(t *testing.T) {
 	w := buildTestWorld([]struct {
 		objID    uint16
 		spriteID uint16
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "self", 10, 20},
+		{1, 100, "player red right", 200, 150},
+		{2, 101, "player blue left", 500, 400},
 	})
+	w.Apply(&SetViewport{Layer: 0, Width: 400, Height: 300})
 	p := NewPerception(w)
 	color := p.SelfColor()
-	if color != "" {
-		t.Fatalf("expected empty string for 'self' without color, got '%s'", color)
+	if color != "red" {
+		t.Fatalf("expected 'red' from viewport center proximity, got '%s'", color)
 	}
 }
 
@@ -190,11 +219,26 @@ func TestPerceptionIsImposter(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "kill cooldown", 0, 0},
+		{1, 100, "imposter icon", 0, 0},
 	})
 	p := NewPerception(w)
 	if !p.IsImposter() {
 		t.Fatal("expected IsImposter() == true")
+	}
+}
+
+func TestPerceptionIsImposterCooldown(t *testing.T) {
+	w := buildTestWorld([]struct {
+		objID    uint16
+		spriteID uint16
+		label    string
+		x, y     int16
+	}{
+		{1, 100, "imposter icon cooldown", 0, 0},
+	})
+	p := NewPerception(w)
+	if !p.IsImposter() {
+		t.Fatal("expected IsImposter() == true for cooldown too")
 	}
 }
 
@@ -205,7 +249,7 @@ func TestPerceptionIsImposterFalse(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "player red", 0, 0},
+		{1, 100, "player red right", 0, 0},
 	})
 	p := NewPerception(w)
 	if p.IsImposter() {
@@ -220,7 +264,7 @@ func TestPerceptionKillReady(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "kill ready", 0, 0},
+		{1, 100, "imposter icon", 0, 0},
 	})
 	p := NewPerception(w)
 	if !p.KillReady() {
@@ -235,7 +279,7 @@ func TestPerceptionKillReadyFalseOnCooldown(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "kill cooldown", 0, 0},
+		{1, 100, "imposter icon cooldown", 0, 0},
 	})
 	p := NewPerception(w)
 	if p.KillReady() {
@@ -250,20 +294,14 @@ func TestFindTasks(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "task Fix Wires", 100, 200},
-		{2, 101, "task Upload Data", 150, 250},
+		{1, 100, "task bubble", 100, 200},
+		{2, 101, "task arrow", 150, 250},
+		{3, 102, "player red right", 50, 60},
 	})
 	p := NewPerception(w)
 	tasks := p.Tasks()
 	if len(tasks) != 2 {
 		t.Fatalf("expected 2 tasks, got %d", len(tasks))
-	}
-	names := map[string]bool{}
-	for _, tk := range tasks {
-		names[tk.Name] = true
-	}
-	if !names["Fix Wires"] || !names["Upload Data"] {
-		t.Fatalf("expected Fix Wires and Upload Data, got %v", names)
 	}
 }
 
@@ -276,7 +314,7 @@ func TestFindVents(t *testing.T) {
 	}{
 		{1, 100, "vent", 60, 70},
 		{2, 101, "Vent North", 80, 90},
-		{3, 102, "player red", 10, 20},
+		{3, 102, "player red right", 10, 20},
 	})
 	p := NewPerception(w)
 	vents := p.Vents()
@@ -292,14 +330,16 @@ func TestPerceptionCursorOnPlayer(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "cursor red", 0, 0},
+		{1, 100, "vote cursor", 50, 30},
+		{2, 101, "vote self marker red", 10, 30},
+		{3, 102, "vote dot blue", 10, 60},
 	})
 	p := NewPerception(w)
 	if !p.CursorOnPlayer("red") {
 		t.Fatal("expected CursorOnPlayer('red') == true")
 	}
 	if p.CursorOnPlayer("blue") {
-		t.Fatal("expected CursorOnPlayer('blue') == false")
+		t.Fatal("expected CursorOnPlayer('blue') == false (different Y)")
 	}
 }
 
@@ -310,7 +350,7 @@ func TestPerceptionCursorOnSkip(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "cursor skip", 0, 0},
+		{1, 100, "vote skip cursor", 0, 0},
 	})
 	p := NewPerception(w)
 	if !p.CursorOnSkip() {
@@ -325,10 +365,10 @@ func TestPerceptionCursorOnSkipFalse(t *testing.T) {
 		label    string
 		x, y     int16
 	}{
-		{1, 100, "cursor red", 0, 0},
+		{1, 100, "vote cursor", 0, 0},
 	})
 	p := NewPerception(w)
 	if p.CursorOnSkip() {
-		t.Fatal("expected CursorOnSkip() == false when cursor is on a player")
+		t.Fatal("expected CursorOnSkip() == false when only vote cursor is present")
 	}
 }

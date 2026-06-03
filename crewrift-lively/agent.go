@@ -34,6 +34,7 @@ type Agent struct {
 	bodyGoal  bool
 
 	pendingChat string
+	labelsSeen  map[string]bool
 }
 
 // NewAgent creates a new Agent with initialized sub-components.
@@ -47,6 +48,17 @@ func NewAgent() *Agent {
 // ProcessMessage applies a protocol message to the world and handles special cases.
 func (a *Agent) ProcessMessage(msg Message) {
 	a.world.Apply(msg)
+
+	// Log sprite labels for diagnostics (first 50 unique labels).
+	if ds, ok := msg.(*DefineSprite); ok && ds.Label != "" {
+		if a.labelsSeen == nil {
+			a.labelsSeen = make(map[string]bool)
+		}
+		if !a.labelsSeen[ds.Label] && len(a.labelsSeen) < 50 {
+			a.labelsSeen[ds.Label] = true
+			log.Printf("sprite-label: id=%d %dx%d %q", ds.SpriteID, ds.Width, ds.Height, ds.Label)
+		}
+	}
 
 	// If DefineSprite with label "walkability map", extract WalkMap and create Navigator.
 	if ds, ok := msg.(*DefineSprite); ok {

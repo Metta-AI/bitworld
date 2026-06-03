@@ -37,13 +37,16 @@ func TestAgentBasicStep(t *testing.T) {
 		t.Fatal("navigator should be created after walkability map")
 	}
 
-	// Define a "self" sprite and object so the agent can find itself
+	// Set viewport so the center (4,4) matches the player position
+	agent.ProcessMessage(&SetViewport{Layer: 0, Width: 8, Height: 8})
+
+	// Define a player sprite and object at viewport center
 	agent.ProcessMessage(&DefineSprite{
 		SpriteID: 2,
 		Width:    1,
 		Height:   1,
 		Pixels:   []byte{0, 0, 0, 255},
-		Label:    "self red",
+		Label:    "player red right",
 	})
 	agent.ProcessMessage(&DefineObject{
 		ObjectID: 1,

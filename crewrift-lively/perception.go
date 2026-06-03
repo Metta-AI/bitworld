@@ -67,43 +67,108 @@ func (p *Perception) Phase() Phase {
 	return PhaseIdle
 }
 
-// Players returns all visible players extracted from "player <color>" labels.
+// Players returns all visible players extracted from "player <color> <direction>" labels.
+// Direction suffixes ("right", "left") are stripped to produce the color.
 func (p *Perception) Players() []PlayerInfo {
 	var result []PlayerInfo
 	for _, obj := range p.world.AllObjects() {
 		label := p.world.SpriteLabel(obj.SpriteID)
-		if color, ok := strings.CutPrefix(label, "player "); ok {
-			result = append(result, PlayerInfo{
-				ObjectID: obj.ID,
-				Color:    color,
-				Pos:      Point{int(obj.X), int(obj.Y)},
-				IsSelf:   false,
-			})
+		rest, ok := strings.CutPrefix(label, "player ")
+		if !ok {
+			continue
 		}
+		color := stripDirection(rest)
+		if color == "" {
+			continue
+		}
+		result = append(result, PlayerInfo{
+			ObjectID: obj.ID,
+			Color:    color,
+			Pos:      Point{int(obj.X), int(obj.Y)},
+			IsSelf:   false,
+		})
 	}
 	return result
 }
 
-// SelfPosition returns the position of the "self" object if present.
-func (p *Perception) SelfPosition() (Point, bool) {
-	for _, obj := range p.world.AllObjects() {
-		label := p.world.SpriteLabel(obj.SpriteID)
-		if label == "self" || strings.HasPrefix(label, "self ") {
-			return Point{int(obj.X), int(obj.Y)}, true
-		}
+// stripDirection removes a trailing " right" or " left" from a color+direction string.
+// "red right" -> "red", "light blue left" -> "light blue", "red" -> "red"
+func stripDirection(s string) string {
+	if after, ok := strings.CutSuffix(s, " right"); ok {
+		return after
 	}
-	return Point{}, false
+	if after, ok := strings.CutSuffix(s, " left"); ok {
+		return after
+	}
+	return s
 }
 
-// SelfColor returns the color from a "self <color>" label, or "".
+// SelfPosition returns the position of the player nearest to viewport center.
+// This works because the camera follows the local player.
+func (p *Perception) SelfPosition() (Point, bool) {
+	players := p.Players()
+	if len(players) == 0 {
+		return Point{}, false
+	}
+
+	cx, cy := p.viewportCenter()
+	if cx == 0 && cy == 0 {
+		// No viewport info; return first player as fallback
+		return players[0].Pos, true
+	}
+
+	best := players[0]
+	bestDist := manhattan(best.Pos, Point{cx, cy})
+	for _, pl := range players[1:] {
+		d := manhattan(pl.Pos, Point{cx, cy})
+		if d < bestDist {
+			best = pl
+			bestDist = d
+		}
+	}
+	return best.Pos, true
+}
+
+// SelfColor returns our player's color.
+// During voting: detected from "vote self marker <color>" objects.
+// During gameplay: the color of the player nearest viewport center.
 func (p *Perception) SelfColor() string {
+	// Check for vote self marker objects (most reliable)
 	for _, obj := range p.world.AllObjects() {
 		label := p.world.SpriteLabel(obj.SpriteID)
-		if color, ok := strings.CutPrefix(label, "self "); ok {
+		if color, ok := strings.CutPrefix(label, "vote self marker "); ok {
 			return color
 		}
 	}
-	return ""
+
+	// Fallback: player nearest viewport center
+	players := p.Players()
+	if len(players) == 0 {
+		return ""
+	}
+	cx, cy := p.viewportCenter()
+	if cx == 0 && cy == 0 {
+		return ""
+	}
+	best := players[0]
+	bestDist := manhattan(best.Pos, Point{cx, cy})
+	for _, pl := range players[1:] {
+		d := manhattan(pl.Pos, Point{cx, cy})
+		if d < bestDist {
+			best = pl
+			bestDist = d
+		}
+	}
+	return best.Color
+}
+
+// viewportCenter returns the center of layer 0's viewport.
+func (p *Perception) viewportCenter() (int, int) {
+	layer, ok := p.world.layers[0]
+	if !ok || layer.Width == 0 || layer.Height == 0 {
+		return 0, 0
+	}
+	return int(layer.Width) / 2, int(layer.Height) / 2
 }
 
 // Bodies returns all visible dead bodies extracted from "body <color>" labels.
@@ -122,15 +187,15 @@ func (p *Perception) Bodies() []BodyInfo {
 	return result
 }
 
-// Tasks returns all visible task objects extracted from "task <name>" labels.
+// Tasks returns all visible task objects ("task bubble" or "task arrow" labels).
 func (p *Perception) Tasks() []TaskInfo {
 	var result []TaskInfo
 	for _, obj := range p.world.AllObjects() {
 		label := p.world.SpriteLabel(obj.SpriteID)
-		if name, ok := strings.CutPrefix(label, "task "); ok {
+		if label == "task bubble" || label == "task arrow" {
 			result = append(result, TaskInfo{
 				ObjectID: obj.ID,
-				Name:     name,
+				Name:     label,
 				Pos:      Point{int(obj.X), int(obj.Y)},
 			})
 		}
@@ -153,45 +218,64 @@ func (p *Perception) Vents() []VentInfo {
 	return result
 }
 
-// IsImposter returns true if any label suggests we have the kill ability.
+// IsImposter returns true if the "imposter icon" or "imposter icon cooldown" object is present.
 func (p *Perception) IsImposter() bool {
 	for _, obj := range p.world.AllObjects() {
-		label := strings.ToLower(p.world.SpriteLabel(obj.SpriteID))
-		if strings.Contains(label, "kill") && (strings.Contains(label, "cooldown") || strings.Contains(label, "ready")) {
+		label := p.world.SpriteLabel(obj.SpriteID)
+		if label == "imposter icon" || label == "imposter icon cooldown" {
 			return true
 		}
 	}
 	return false
 }
 
-// KillReady returns true if the kill ability is ready (not on cooldown).
+// KillReady returns true if "imposter icon" (not cooldown) is present.
 func (p *Perception) KillReady() bool {
 	for _, obj := range p.world.AllObjects() {
-		label := strings.ToLower(p.world.SpriteLabel(obj.SpriteID))
-		if strings.Contains(label, "kill") && strings.Contains(label, "ready") {
+		label := p.world.SpriteLabel(obj.SpriteID)
+		if label == "imposter icon" {
 			return true
 		}
 	}
 	return false
 }
 
-// CursorOnPlayer returns true if any label suggests the cursor is on a player of the given color.
+// CursorOnPlayer returns true if the vote cursor position overlaps with a player of the given color.
+// Currently uses Y-coordinate proximity between "vote cursor" and player vote panels.
 func (p *Perception) CursorOnPlayer(color string) bool {
-	colorLower := strings.ToLower(color)
+	var cursorObj *ObjectState
 	for _, obj := range p.world.AllObjects() {
-		label := strings.ToLower(p.world.SpriteLabel(obj.SpriteID))
-		if strings.Contains(label, "cursor") && strings.Contains(label, colorLower) {
-			return true
+		label := p.world.SpriteLabel(obj.SpriteID)
+		if label == "vote cursor" {
+			o := obj
+			cursorObj = &o
+			break
+		}
+	}
+	if cursorObj == nil {
+		return false
+	}
+
+	// Find the vote self marker or vote dot for the target color
+	targetLabel := "vote self marker " + color
+	dotLabel := "vote dot " + color
+	for _, obj := range p.world.AllObjects() {
+		label := p.world.SpriteLabel(obj.SpriteID)
+		if label == targetLabel || label == dotLabel {
+			dy := absInt(int(cursorObj.Y) - int(obj.Y))
+			if dy <= 10 {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// CursorOnSkip returns true if any label suggests the cursor is on the skip button.
+// CursorOnSkip returns true if the "vote skip cursor" object is present.
 func (p *Perception) CursorOnSkip() bool {
 	for _, obj := range p.world.AllObjects() {
-		label := strings.ToLower(p.world.SpriteLabel(obj.SpriteID))
-		if strings.Contains(label, "cursor") && strings.Contains(label, "skip") {
+		label := p.world.SpriteLabel(obj.SpriteID)
+		if label == "vote skip cursor" {
 			return true
 		}
 	}
