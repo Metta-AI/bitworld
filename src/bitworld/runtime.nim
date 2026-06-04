@@ -25,6 +25,7 @@ type
     replay*: string
     logUri*: string
     replayMode*: bool
+    mismatchQuit*: bool
 
 proc usageText(): string =
   ## Returns the runtime command-line help text.
@@ -48,6 +49,7 @@ Coworld runtime options:
   --log:<path>               Write log to a local path.
   --log-uri:<uri>            Write log to file/http/https URI.
                              Env: COGAME_LOG_URI.
+  --mismatch-quit            Raise on replay hash mismatch.
   --help, -h                 Show this help.
 """
 
@@ -346,6 +348,13 @@ proc readRuntimeConfig*(): RuntimeConfig =
         key.requireValue(val)
         result.logUri = val
         logSet = true
+      of "mismatch-quit":
+        if val.len > 0:
+          raise newException(
+            CogameRuntimeError,
+            "Option --" & key & " does not take a value."
+          )
+        result.mismatchQuit = true
       of "help":
         echo usageText()
         quit(0)

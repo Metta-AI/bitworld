@@ -2834,6 +2834,13 @@ proc queryValue(request: Request, key: string): string =
     if queryKey == key:
       return value
 
+proc queryPairs(request: Request): seq[(string, string)] =
+  ## Reads all query string pairs.
+  let queryStart = request.uri.find('?')
+  if queryStart < 0 or queryStart + 1 >= request.uri.len:
+    return
+  parseUrlPairs(request.uri[queryStart + 1 .. ^1])
+
 proc replayUploadHandler(request: Request) =
   ## Handles PUT /api/replay/upload/<filename>?token=<tok>.
   let (status, headers, body) = artifact_service.handleUpload(request, ReplayUploadPath)
@@ -4163,9 +4170,14 @@ proc bulkRemoveHandler(request: Request) =
 
 proc bulkGridHandler(request: Request) =
   ## Handles selected game grid viewer requests.
+  let form =
+    if request.httpMethod == "GET":
+      request.queryPairs()
+    else:
+      parseFormBody(request)
   request.respondHtml(200, renderGridPage(
     request,
-    bulkGridGames(parseFormBody(request))
+    bulkGridGames(form)
   ))
 
 proc logsHandler(request: Request) =
@@ -4303,7 +4315,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.bulkStopHandler()
     elif request.path == BulkRemovePath and request.httpMethod == "POST":
       request.bulkRemoveHandler()
-    elif request.path == BulkGridPath and request.httpMethod == "POST":
+    elif request.path == BulkGridPath and
+        request.httpMethod in ["GET", "POST"]:
       request.bulkGridHandler()
     elif request.path == ReplayPlayPath and request.httpMethod == "POST":
       request.replayPlayHandler()
