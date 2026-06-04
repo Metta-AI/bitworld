@@ -13,6 +13,9 @@ export ECS_TASK_ROLE_ARN=arn:aws:iam::352017690007:role/bitworld-ecs-task
 export ECS_LOG_GROUP=/ecs/bitworld
 export ECS_REGION=us-east-1
 
+# Always use the only profile that has the required ECS + S3 perms for --ecs.
+export AWS_PROFILE=sandbox-andre
+
 export TOURNAMENT_REPLAY_DIR=/home/ubuntu/tournament_replays
 mkdir -p "$TOURNAMENT_REPLAY_DIR"
 
@@ -22,6 +25,11 @@ if [ -n "$PRIVATE_IP" ]; then
   export TOURNAMENT_URL="http://${PRIVATE_IP}:2081"
   echo "Computed TOURNAMENT_URL=${TOURNAMENT_URL}"
 fi
+
+# S3 bucket for read-only game configs (presigned GETs for COGAME_CONFIG_URI).
+# The binary now defaults to "bitworld-game-configs" when --ecs is used, so this is optional
+# (for override or explicitness). The bucket is created by terraform as ${project_name}-game-configs.
+export BITWORLD_GAME_CONFIGS_BUCKET=bitworld-game-configs
 
 cd /home/ubuntu/bitworld
 

@@ -68,6 +68,11 @@ output "dashboard_public_ip" {
   value       = aws_eip.dashboard.public_ip
 }
 
+output "game_configs_bucket" {
+  description = "S3 bucket used exclusively for read-only game config JSONs delivered to ECS tasks via presigned URLs (enables --ecs from laptops)"
+  value       = aws_s3_bucket.game_configs.bucket
+}
+
 output "dashboard_instance_id" {
   description = "Instance ID of the dashboard EC2"
   value       = aws_instance.dashboard.id

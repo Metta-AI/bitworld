@@ -8,7 +8,7 @@
 ## artifact service instance (no dependency on games_server process).
 
 import
-  std/[os, strutils],
+  std/[os, osproc, strutils],
   artifact_service,
   ecs_backend
 
@@ -29,6 +29,7 @@ type
     owner*: ContainerOwner
     artifactBaseUrl*: string  # e.g. "http://10.0.1.23:2081" (the URL containers should reach for URIs)
     replayDir*: string
+    s3ConfigBucket*: string   # defaults to "bitworld-game-configs" for --ecs (read-only game configs via presigned S3 GET); enables --ecs from laptops without extra env vars. Only active when useEcs=true. Replays/results still use artifactBaseUrl http proxy.
 
   EpisodeLaunchResult* = object
     gameNameOrArn*: string
@@ -56,15 +57,80 @@ proc requireBackend() =
     raise newException(IOError, "container backend not initialized")
 
 # -----------------------
-# URI construction (https vs file)
+# AWS CLI helpers (for S3 config delivery; modeled on ecs_backend)
+# We avoid forcing --output json because s3 cp/presign are not JSON operations.
+# Region / aws bin fall back to env / ECS_* / sensible defaults so this works
+# both on the EC2 box (where loadEcsConfig ran) and on a laptop.
+# -----------------------
+
+proc getAwsBin(): string =
+  if ecs_backend.ecsConf.awsBin.len > 0:
+    return ecs_backend.ecsConf.awsBin
+  getEnv("ECS_AWS_BIN", "aws")
+
+proc getAwsRegion(): string =
+  if ecs_backend.ecsConf.region.len > 0:
+    return ecs_backend.ecsConf.region
+  getEnv("AWS_REGION", getEnv("AWS_DEFAULT_REGION", getEnv("ECS_REGION", "us-east-1")))
+
+proc runAws*(args: openArray[string]): tuple[output: string, code: int] =
+  ## Runs an aws CLI command (no forced --output json; suitable for s3 cp/presign).
+  ## Always force the only usable profile for this deployment.
+  let command = quoteShellCommand(
+    @[getAwsBin()] & @args & @["--profile", "sandbox-andre", "--region", getAwsRegion()]
+  )
+  let res = execCmdEx(command, options = {poEvalCommand, poStdErrToStdOut})
+  result.output = res.output
+  result.code = res.exitCode
+
+proc uploadConfigToS3AndPresign*(bucket, key, localPath: string, expiresSec = 7200): string =
+  ## Uploads the local config file to s3://bucket/key then returns a presigned GET URL.
+  ## Callers must have already written the JSON to localPath (replayPath).
+  ## Presigned URLs let the Fargate task fetch with plain https GET; no S3 perms on ecs_task role.
+  ## (This path is only taken for useEcs launches when s3ConfigBucket is set.)
+  if bucket.len == 0 or key.len == 0 or localPath.len == 0:
+    raise newException(IOError, "S3 config upload requires bucket, key and localPath")
+  if not fileExists(localPath):
+    raise newException(IOError, "config file not found for S3 upload: " & localPath)
+
+  # Upload (ignore output; use --only-show-errors to keep it quiet)
+  let (upOut, upCode) = runAws([
+    "s3", "cp", localPath, "s3://" & bucket & "/" & key,
+    "--only-show-errors"
+  ])
+  if upCode != 0:
+    raise newException(IOError, "aws s3 cp failed for config: " & upOut.strip())
+
+  # Presign
+  let (preOut, preCode) = runAws([
+    "s3", "presign", "s3://" & bucket & "/" & key,
+    "--expires-in", $expiresSec
+  ])
+  if preCode != 0:
+    raise newException(IOError, "aws s3 presign failed for config: " & preOut.strip())
+
+  result = preOut.strip()
+  if not result.startsWith("https://"):
+    raise newException(IOError, "unexpected presign output (expected https URL): " & result)
+
+# -----------------------
+# URI construction (https vs file; S3 for configs only)
 # -----------------------
 
 proc buildArtifactUris*(replayName, resultsName, configName: string): tuple[replay, results, config: string] =
   ## Returns the three COGAME_*_URI values.
-  ## If artifactBaseUrl is set (https mode), returns full https+token URLs.
-  ## Otherwise falls back to file:// + ContainerReplayDir (local Docker dev).
+  ## If s3ConfigBucket is set (defaults to "bitworld-game-configs") *and* useEcs, the *config* field
+  ## is a presigned S3 https GET (after uploading the locally-written config JSON). This makes --ecs
+  ## "just work" from a laptop (or EC2) without needing to set BITWORLD_GAME_CONFIGS_BUCKET.
+  ## Replay and results URIs always use the artifactBaseUrl http proxy (with tokens) when present
+  ## (preserving the "proxy all container writes" security model).
+  ## Otherwise falls back to the previous logic (orchestrator http or file://).
   requireBackend()
   let base = backendConfig.artifactBaseUrl.strip()
+  let s3b = backendConfig.s3ConfigBucket.strip()
+
+  # Always set replay + results from the orchestrator base (http proxy with tokens) when present.
+  # Only the config field is special-cased to S3 when a bucket is configured *and* we are in ECS mode.
   if base.len > 0:
     let
       replayToken = artifact_service.generateUploadToken(replayName)
@@ -72,12 +138,21 @@ proc buildArtifactUris*(replayName, resultsName, configName: string): tuple[repl
       uploadBase = base & artifact_service.ReplayUploadPath
     result.replay = uploadBase & replayName & "?token=" & replayToken
     result.results = uploadBase & resultsName & "?token=" & resultsToken
+    # config will be overridden below if S3 is active
     result.config = base & artifact_service.ReplayDownloadPath & configName
   else:
     let dir = ContainerReplayDir
     result.replay = "file://" & dir / replayName
     result.results = "file://" & dir / resultsName
     result.config = "file://" & dir / configName
+
+  # S3 override for the *config read* only (laptop --ecs enabler). Uploads still go through the base http.
+  # Only active for ECS launches (useEcs=true), so local Docker dev never touches S3 even if the env var is set.
+  if s3b.len > 0 and backendConfig.useEcs:
+    let local = artifact_service.replayPath(configName)
+    if fileExists(local):
+      result.config = uploadConfigToS3AndPresign(s3b, "configs/" & artifact_service.cleanReplayName(configName), local)
+    # else leave the base/file value we just computed (defensive)
 
 # Note: the above has a small forward-ref issue on consts; in practice the server will pass the full paths
 # or we re-export the needed paths from artifact_service. For the initial impl we keep the spirit and

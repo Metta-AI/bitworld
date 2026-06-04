@@ -2524,14 +2524,27 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       saveReplay = serverUrl.len > 0
       playerTokens = configTokens(config)
       configFile = configName(replay)
-      configUri = serverUrl & ReplayDownloadPath & configFile
-    if serverUrl.len == 0:
-      raise newException(
-        GamesServerError,
-        "ECS game launch requires GAMES_SERVER_URL or EC2 metadata"
-      )
     ensureReplayDir()
     writeFile(replayDir() / configFile, config)
+
+    # Obtain configUri via the shared backend when possible. This lets S3 presigned URLs
+    # be used for the read (enabling --ecs from a laptop that has no reachable artifactBaseUrl).
+    # We only fall back to requiring serverUrl when we actually need the orchestrator http
+    # for config delivery.
+    var configUri: string
+    if container_backend.backendInitialized and container_backend.backendConfig.s3ConfigBucket.len > 0:
+      # Only the configName matters for the S3 path inside buildArtifactUris; the replay/results
+      # names are only used to build upload URLs (which we ignore here). Pass replay as a dummy.
+      let uris = container_backend.buildArtifactUris(replay, replay, configFile)
+      configUri = uris.config
+    else:
+      if serverUrl.len == 0:
+        raise newException(
+          GamesServerError,
+          "ECS game launch requires GAMES_SERVER_URL or EC2 metadata (set BITWORLD_GAME_CONFIGS_BUCKET to override default S3 bucket for configs)"
+        )
+      configUri = serverUrl & ReplayDownloadPath & configFile
+
     echo "  Replay output: ", if saveReplay: "enabled" else: "disabled (no EC2 IP)"
     echo "  Launching game task..."
     let (taskArn, publicIp, privateIp) = ecsCreateGame(
@@ -4357,6 +4370,7 @@ when isMainModule:
     else:
       echo "Not on EC2 — replay upload/download disabled"
   # Initialize the shared backend (uses defaults for owner when not tournament).
+  let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
   container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
     useEcs: useEcs,
     owner: container_backend.ContainerOwner(
@@ -4365,6 +4379,7 @@ when isMainModule:
       playerValue: "among_them_bot"
     ),
     artifactBaseUrl: if useEcs and ec2PrivateIp.len > 0: "http://" & ec2PrivateIp & ":" & $DefaultPort else: "",
-    replayDir: replayDir()
+    replayDir: replayDir(),
+    s3ConfigBucket: s3ConfigBucket
   ))
   runServer(address, port)

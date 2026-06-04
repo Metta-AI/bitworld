@@ -23,6 +23,7 @@ For instance, we want to certify a Game Docker container. We need to make sure w
 Here is an example of what a Game Certifier will check:
 * Read the `coworld_manifest.json` file from the Docker container
 * Read the config from `COGAME_CONFIG_URI`
+  (may be `file://...` for local Docker dev with bind mounts, an https URL to the orchestrator's `/api/replay/download` handler when the launcher runs on the dashboard EC2, or a short-lived presigned `https://...s3...` URL (the S3 path is the default for `--ecs` using the standard "bitworld-game-configs" bucket name — this enables `--ecs` launches from a developer laptop without extra env vars)
 * Serve `GET /healthz`
 * Serve player clients at `GET /client/player?...` and player websockets at `WEBSOCKET /player?...`
 * Serve a live viewer at `GET /client/global` and `WEBSOCKET /global`

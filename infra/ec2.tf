@@ -71,6 +71,23 @@ data "aws_iam_policy_document" "dashboard_ec2" {
     actions   = ["ec2:DescribeNetworkInterfaces"]
     resources = ["*"]
   }
+
+  # S3 access for uploading game configs (read-only for containers via presigned URLs).
+  # Only the orchestrator (dashboard role on EC2, or laptop dev principal) writes.
+  # Containers use presigned GETs; no s3 perms are granted to ecs_task role.
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject",
+      "s3:ListBucket"
+    ]
+    resources = [
+      aws_s3_bucket.game_configs.arn,
+      "${aws_s3_bucket.game_configs.arn}/*"
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "dashboard_ec2" {

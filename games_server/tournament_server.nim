@@ -2388,6 +2388,7 @@ proc runServer(config: TournamentConfig) =
     echo "ECS mode enabled for tournament"
     ecs_backend.loadEcsConfig()
     # Use tournament owner labels (distinct from games_server)
+    let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
     container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
       useEcs: true,
       owner: container_backend.ContainerOwner(
@@ -2396,7 +2397,8 @@ proc runServer(config: TournamentConfig) =
         playerValue: "tournament_player"
       ),
       artifactBaseUrl: "",  # will be filled with EC2 private IP + port below if possible
-      replayDir: replayDir()
+      replayDir: replayDir(),
+      s3ConfigBucket: s3ConfigBucket
     ))
     # Try to compute reachable base for https URIs (same EC2 private IP pattern as games_server)
     # For simplicity we re-use the ec2 metadata fetch idea; here we do a minimal version.
@@ -2417,6 +2419,7 @@ proc runServer(config: TournamentConfig) =
     if base.len > 0:
       container_backend.backendConfig.artifactBaseUrl = base
   else:
+    let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
     container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
       useEcs: false,
       owner: container_backend.ContainerOwner(
@@ -2425,7 +2428,8 @@ proc runServer(config: TournamentConfig) =
         playerValue: "tournament_player"
       ),
       artifactBaseUrl: "",
-      replayDir: replayDir()
+      replayDir: replayDir(),
+      s3ConfigBucket: s3ConfigBucket
     ))
   createThread(scheduler, schedulerLoop, config)
   let server = newServer(makeHandler(config), workerThreads = 1)

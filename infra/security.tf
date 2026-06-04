@@ -461,6 +461,29 @@ resource "aws_route53_resolver_firewall_rule" "block_everything" {
 #   })
 # }
 
+# --- Game Configs S3 Bucket (read-only, for COGAME_CONFIG_URI delivery) ---
+# Dedicated bucket for orchestrator-generated game input configs only.
+# Containers receive presigned GET URLs (no task role S3 perms required).
+# Short lifecycle because configs are small and ephemeral per launch.
+# Orchestrator (dashboard EC2 role or laptop principal with creds) does the Put.
+# The strict DenyAllExcept policy is omitted (unlike the commented replays one)
+# so that developer IAM users on laptops can also PutObject when using --ecs.
+resource "aws_s3_bucket" "game_configs" {
+  bucket = "${var.project_name}-game-configs"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "game_configs" {
+  bucket = aws_s3_bucket.game_configs.id
+  rule {
+    id     = "expire-old-game-configs"
+    status = "Enabled"
+    filter {
+      prefix = ""
+    }
+    expiration { days = 7 }
+  }
+}
+
 # --- GuardDuty ---
 # Monitors for DNS anomalies, lateral movement attempts, and suspicious
 # network patterns at the AWS account level. Low effort to enable, catches

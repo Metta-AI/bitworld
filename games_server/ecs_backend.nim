@@ -60,8 +60,8 @@ proc loadEcsConfig*() =
     privateSubnet: getEnv("ECS_PRIVATE_SUBNET", "subnet-065e93457a83febbb"),
     gameSg: getEnv("ECS_GAME_SG", "sg-02c003356746211fa"),
     botSg: getEnv("ECS_BOT_SG", "sg-084e721230bec8d99"),
-    executionRoleArn: getEnv("ECS_EXECUTION_ROLE_ARN"),
-    taskRoleArn: getEnv("ECS_TASK_ROLE_ARN"),
+    executionRoleArn: getEnv("ECS_EXECUTION_ROLE_ARN", "arn:aws:iam::352017690007:role/bitworld-ecs-execution"),
+    taskRoleArn: getEnv("ECS_TASK_ROLE_ARN", "arn:aws:iam::352017690007:role/bitworld-ecs-task"),
     logGroup: getEnv("ECS_LOG_GROUP", "/ecs/bitworld"),
     region: getEnv("ECS_REGION", "us-east-1"),
     awsBin: getEnv("ECS_AWS_BIN", "aws"),
@@ -85,7 +85,7 @@ proc setEcsOwner*(prefix, gameValue, botValue: string) =
 proc awsResult(args: openArray[string]): CommandResult =
   let command = quoteShellCommand(
     @[ecsConf.awsBin] & @args &
-    @["--output", "json", "--region", ecsConf.region]
+    @["--profile", "sandbox-andre", "--output", "json", "--region", ecsConf.region]
   )
   let res = execCmdEx(command, options = {poEvalCommand, poStdErrToStdOut})
   result.output = res.output

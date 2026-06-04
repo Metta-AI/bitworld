@@ -138,5 +138,10 @@ variable "infra_domains" {
     "github.com",
     "codeload.github.com",
     "api.github.com",
+    # S3 for read-only game config delivery to ECS Fargate tasks (presigned GETs for COGAME_CONFIG_URI)
+    "s3.amazonaws.com",
+    "*.s3.amazonaws.com",
+    "s3.us-east-1.amazonaws.com",
+    "*.s3.us-east-1.amazonaws.com",
   ]
 }
