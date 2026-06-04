@@ -92,6 +92,22 @@ data "aws_iam_policy_document" "dashboard_ec2" {
       "${aws_s3_bucket.game_configs.arn}/*"
     ]
   }
+
+  # S3 access for replays bucket (presigned PUTs for --ecs container uploads of replays/results/logs).
+  # Same principal (role or laptop profile) does the presign + later cp pulls.
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject",
+      "s3:ListBucket"
+    ]
+    resources = [
+      aws_s3_bucket.replays.arn,
+      "${aws_s3_bucket.replays.arn}/*"
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "dashboard_ec2" {

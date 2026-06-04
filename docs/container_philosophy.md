@@ -27,8 +27,8 @@ Here is an example of what a Game Certifier will check:
 * Serve `GET /healthz`
 * Serve player clients at `GET /client/player?...` and player websockets at `WEBSOCKET /player?...`
 * Serve a live viewer at `GET /client/global` and `WEBSOCKET /global`
-* Write final results to `COGAME_RESULTS_URI`
-* Write a replay artifact to `COGAME_SAVE_REPLAY_URI`
+* Write final results to `COGAME_RESULTS_URI` (orchestrator upload proxy with token, file://, or presigned S3 PUT https when --ecs + BITWORLD_REPLAY_S3_BUCKET)
+* Write a replay artifact to `COGAME_SAVE_REPLAY_URI` (same options as results)
 * Serve replay viewers when started with `COGAME_REPLAY_SERVER=1`
 
 We need similar certification for all the other types of containers as well. A player container should be able to connect to the games that it says that it supports, etc. Reporter containers and various debugging containers and various commissioner containers all have certification checks as well. Any program a user can submit that is runnable needs to be certified and have a valid manifest file.

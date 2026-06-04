@@ -578,14 +578,12 @@ proc workspaceRoot(): string =
   ## Returns the configured host workspace root.
   envValue(WorkspaceRootEnv, defaultWorkspaceRoot())
 
-# TODO: Replace local disk storage with S3.
-# Currently replays land on the local filesystem. When games_server moves
-# to EC2, local disk works but is ephemeral (lost if instance terminates).
-# Migrate to S3 (bucket and policy are sketched in infra/security.tf):
-#   - Upload handler writes to S3 instead of replayDir()
-#   - Dashboard serves replays via presigned GET URLs
-#   - Replay playback containers download from S3 at launch
-#   - EC2 instance role gets s3:PutObject + s3:GetObject on the bucket
+# TODO: Replace local disk storage with S3 (full).
+# For --ecs we now use direct presigned PUTs to the replays bucket (bypassing
+# the upload handler for container writes) + on-demand ensureLocalFromS3 pulls
+# back to replayDir for compat (scoring, downloads, history). See container_backend
+# buildArtifactUris + ensure, ecsCreateGame uri params, and the replays bucket in TF.
+# The older "handler writes to S3 + direct serve" is still future work.
 
 proc defaultReplayDir(): string =
   ## Returns the default host replay directory.
@@ -1864,6 +1862,8 @@ proc gamesServerUrl(): string =
 
 proc replayDownloadHandler(request: Request) =
   ## Handles GET /api/replay/download/<name> — serves replay file for playback containers.
+  let name = request.path[ReplayDownloadPath.len .. ^1]
+  container_backend.ensureLocalFromS3(name, "replays/")
   let (status, headers, body) = artifact_service.handleDownload(request, ReplayDownloadPath)
   request.respond(status, headers, body)
 
@@ -2563,7 +2563,8 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       created = getTime().toUnix()
       replay = "ecs_game_" & $created & ".bitreplay"
       serverUrl = gamesServerUrl()
-      saveReplay = serverUrl.len > 0
+      s3Replay = if container_backend.backendInitialized: container_backend.backendConfig.s3ReplayBucket else: ""
+      saveReplay = (serverUrl.len > 0) or (s3Replay.len > 0 and useEcs)  # laptop s3 uploads still wanted
       playerTokens = configTokens(config)
       configFile = configName(replay)
     ensureReplayDir()
@@ -2573,19 +2574,13 @@ proc createGame(form: seq[(string, string)]): GameContainer =
     # be used for the read (enabling --ecs from a laptop that has no reachable artifactBaseUrl).
     # We only fall back to requiring serverUrl when we actually need the orchestrator http
     # for config delivery.
-    var configUri: string
-    if container_backend.backendInitialized and container_backend.backendConfig.s3ConfigBucket.len > 0:
-      # Only the configName matters for the S3 path inside buildArtifactUris; the replay/results
-      # names are only used to build upload URLs (which we ignore here). Pass replay as a dummy.
-      let uris = container_backend.buildArtifactUris(replay, replay, configFile)
-      configUri = uris.config
-    else:
-      if serverUrl.len == 0:
-        raise newException(
-          GamesServerError,
-          "ECS game launch requires GAMES_SERVER_URL or EC2 metadata (set BITWORLD_GAME_CONFIGS_BUCKET to override default S3 bucket for configs)"
-        )
-      configUri = serverUrl & ReplayDownloadPath & configFile
+    let uris = container_backend.buildArtifactUris(replay, scoreFileName(replay), configFile)
+    let configUri = uris.config
+    if serverUrl.len == 0 and container_backend.backendConfig.s3ConfigBucket.len == 0:
+      raise newException(
+        GamesServerError,
+        "ECS game launch requires GAMES_SERVER_URL or EC2 metadata (set BITWORLD_GAME_CONFIGS_BUCKET to override default S3 bucket for configs)"
+      )
 
     echo "  Replay output: ", if saveReplay: "enabled" else: "disabled (no EC2 IP)"
     echo "  Launching game task..."
@@ -2597,6 +2592,8 @@ proc createGame(form: seq[(string, string)]): GameContainer =
       manifestInfo.command,
       manifestInfo.env,
       configUri,
+      saveReplayUri = uris.replay,
+      resultsUri = uris.results,
       saveReplay = saveReplay,
     )
     echo "  Game task: ", taskArn, " ip=", publicIp
@@ -2701,6 +2698,7 @@ proc createReplayGame(replay: string): GameContainer =
   let cleanReplay = cleanReplayName(replay)
   if cleanReplay.len == 0 or cleanReplay != replay:
     raise newException(GamesServerError, "invalid replay file name")
+  container_backend.ensureLocalFromS3(cleanReplay, "replays/")
   if not fileExists(replayPath(cleanReplay)):
     raise newException(GamesServerError, "replay file does not exist")
   let
@@ -4426,6 +4424,7 @@ when isMainModule:
       echo "Not on EC2 — replay upload/download disabled"
   # Initialize the shared backend (uses defaults for owner when not tournament).
   let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
+  let s3ReplayBucket = getEnv("BITWORLD_REPLAY_S3_BUCKET", "bitworld-replays")
   container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
     useEcs: useEcs,
     owner: container_backend.ContainerOwner(
@@ -4435,6 +4434,7 @@ when isMainModule:
     ),
     artifactBaseUrl: if useEcs and ec2PrivateIp.len > 0: "http://" & ec2PrivateIp & ":" & $DefaultPort else: "",
     replayDir: replayDir(),
-    s3ConfigBucket: s3ConfigBucket
+    s3ConfigBucket: s3ConfigBucket,
+    s3ReplayBucket: s3ReplayBucket
   ))
   runServer(address, port)

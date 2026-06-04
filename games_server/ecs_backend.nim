@@ -311,7 +311,9 @@ proc ecsCreateGame*(
   command: seq[string],
   gameEnv: seq[tuple[name, value: string]],
   configUri: string,
-  saveReplay: bool,
+  saveReplayUri: string = "",
+  resultsUri: string = "",
+  saveReplay: bool = false,
 ): tuple[taskArn, publicIp, privateIp: string] =
   let taskDefArn = ensureGameTaskDef(image)
   let
@@ -336,8 +338,13 @@ proc ecsCreateGame*(
     let val = getEnv(envName)
     if val.len > 0:
       env.add((name: envName, value: val))
-  if saveReplay and replay.len > 0:
+  if saveReplayUri.len > 0:
+    env.add((name: SaveReplayUriEnv, value: saveReplayUri))
+  elif saveReplay and replay.len > 0:
     env.add((name: SaveReplayUriEnv, value: "file:///tmp/" & replay))
+  if resultsUri.len > 0:
+    env.add((name: ResultsUriEnv, value: resultsUri))
+  elif saveReplay and replay.len > 0:
     let scores = replay.replace(".bitreplay", ".scores.json")
     env.add((name: ResultsUriEnv, value: "file:///tmp/" & scores))
 

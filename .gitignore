@@ -26,6 +26,7 @@ nim.cfg
 *.tfstate
 *.tfstate.backup
 *.tfplan
+tfplan
 .terraform.lock.hcl
 stag_hunt/stag_hunt
 stag_hunt/players/*/coordinator

@@ -30,6 +30,9 @@ fi
 # The binary now defaults to "bitworld-game-configs" when --ecs is used, so this is optional
 # (for override or explicitness). The bucket is created by terraform as ${project_name}-game-configs.
 export BITWORLD_GAME_CONFIGS_BUCKET=bitworld-game-configs
+export BITWORLD_REPLAY_S3_BUCKET=bitworld-replays
+# boto3 required for generatePresignedPutUrl (S3 PUT presigns) in --ecs upload path
+python3 -c "import boto3" >/dev/null 2>&1 || pip3 install --user boto3 2>/dev/null || true
 
 cd /home/ubuntu/bitworld
 

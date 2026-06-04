@@ -73,6 +73,11 @@ output "game_configs_bucket" {
   value       = aws_s3_bucket.game_configs.bucket
 }
 
+output "replays_bucket" {
+  description = "S3 bucket for --ecs container output artifacts (replays via presigned PUT, results, logs). On-demand pulled to local replayDir."
+  value       = aws_s3_bucket.replays.bucket
+}
+
 output "dashboard_instance_id" {
   description = "Instance ID of the dashboard EC2"
   value       = aws_instance.dashboard.id

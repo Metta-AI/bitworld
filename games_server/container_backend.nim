@@ -30,6 +30,7 @@ type
     artifactBaseUrl*: string  # e.g. "http://10.0.1.23:2081" (the URL containers should reach for URIs)
     replayDir*: string
     s3ConfigBucket*: string   # defaults to "bitworld-game-configs" for --ecs (read-only game configs via presigned S3 GET); enables --ecs from laptops without extra env vars. Only active when useEcs=true. Replays/results still use artifactBaseUrl http proxy.
+    s3ReplayBucket*: string   # when non-empty and useEcs: replay/results (log) become presigned S3 PUTs (prefixes replays/, results/). Independent of s3ConfigBucket and of artifactBaseUrl (enables laptop --ecs). Default "bitworld-replays".
 
   EpisodeLaunchResult* = object
     gameNameOrArn*: string
@@ -113,6 +114,32 @@ proc uploadConfigToS3AndPresign*(bucket, key, localPath: string, expiresSec = 72
   if not result.startsWith("https://"):
     raise newException(IOError, "unexpected presign output (expected https URL): " & result)
 
+proc generatePresignedPutUrl*(bucket, key, contentType: string, expiresSec = 7200): string =
+  ## Generates a presigned PUT URL (for container to write replay/results/logs directly to S3).
+  ## Uses python + boto3 under forced sandbox-andre profile (aws cli presign is GET-only).
+  ## Caller must have s3:PutObject on the bucket (via role or profile).
+  if bucket.len == 0 or key.len == 0:
+    raise newException(IOError, "presigned put requires bucket and key")
+  let py = """
+import os
+import boto3
+from botocore.config import Config
+os.environ['AWS_PROFILE'] = 'sandbox-andre'
+s3 = boto3.client('s3', config=Config(signature_version='s3v4'))
+url = s3.generate_presigned_url(
+    ClientMethod='put_object',
+    Params={'Bucket': '""" & bucket & """', 'Key': '""" & key & """', 'ContentType': '""" & contentType & """'},
+    ExpiresIn=""" & $expiresSec & """
+)
+print(url)
+"""
+  let (presignOut, code) = execCmdEx("python3 -c '" & py & "'")
+  if code != 0:
+    raise newException(IOError, "presigned put failed: " & presignOut.strip())
+  result = presignOut.strip()
+  if not result.startsWith("https://"):
+    raise newException(IOError, "unexpected presign output: " & result)
+
 # -----------------------
 # URI construction (https vs file; S3 for configs only)
 # -----------------------
@@ -146,6 +173,17 @@ proc buildArtifactUris*(replayName, resultsName, configName: string): tuple[repl
     result.results = "file://" & dir / resultsName
     result.config = "file://" & dir / configName
 
+  # S3 presigned PUT overrides for *writes* (replays/results) when in --ecs + bucket.
+  # This is independent of artifactBaseUrl (laptop case has no base but still gets s3 writes)
+  # and of the s3ConfigBucket path (which only affects the read config URI).
+  let s3r = backendConfig.s3ReplayBucket.strip()
+  if s3r.len > 0 and backendConfig.useEcs:
+    let rkey = "replays/" & artifact_service.cleanReplayName(replayName)
+    let skey = "results/" & artifact_service.cleanReplayName(resultsName)
+    result.replay = generatePresignedPutUrl(s3r, rkey, "application/octet-stream")
+    result.results = generatePresignedPutUrl(s3r, skey, "application/json")
+    # (log support can be added symmetrically if/when callers pass a logName)
+
   # S3 override for the *config read* only (laptop --ecs enabler). Uploads still go through the base http.
   # Only active for ECS launches (useEcs=true), so local Docker dev never touches S3 even if the env var is set.
   if s3b.len > 0 and backendConfig.useEcs:
@@ -157,6 +195,19 @@ proc buildArtifactUris*(replayName, resultsName, configName: string): tuple[repl
 # Note: the above has a small forward-ref issue on consts; in practice the server will pass the full paths
 # or we re-export the needed paths from artifact_service. For the initial impl we keep the spirit and
 # callers can construct if needed. The important thing is the https decision lives here.
+
+proc ensureLocalFromS3*(name, prefix: string) =
+  ## If s3ReplayBucket configured and the local file is absent, aws s3 cp it from
+  ## s3://bucket/prefix/cleanName . Used on-demand by download handlers and scoring
+  ## so that local replayDir-based code continues to work after direct S3 uploads.
+  ## Safe no-op if not in s3 mode or file already present.
+  requireBackend()
+  let p = artifact_service.replayPath(name)
+  if fileExists(p): return
+  let s3b = backendConfig.s3ReplayBucket.strip()
+  if s3b.len > 0:
+    let key = prefix & artifact_service.cleanReplayName(name)
+    discard runAws(["s3", "cp", "s3://" & s3b & "/" & key, p, "--only-show-errors"])
 
 # -----------------------
 # Low-level launch helpers (consolidated from both servers)
@@ -193,7 +244,9 @@ proc launchGameEpisode*(gameImage: string,
       gameCommand,
       gameEnv,
       uris.config,
-      saveReplay = (backendConfig.artifactBaseUrl.len > 0)
+      saveReplayUri = uris.replay,
+      resultsUri = uris.results,
+      saveReplay = (backendConfig.artifactBaseUrl.len > 0 or backendConfig.s3ReplayBucket.len > 0)
     )
     # Then launch players (skeleton: one example)
     var playerArns: seq[string]

@@ -266,24 +266,27 @@ resource "aws_vpc_security_group_egress_rule" "bot_dns_tcp" {
 # needed domains to var.infra_domains, do NOT disable the firewall.
 # =============================================================================
 
+# Route53 DNS Firewall canonicalizes every domain to FQDN form (trailing dot).
+# We normalize here with formatlist so the config matches what AWS stores —
+# otherwise every plan shows perpetual no-op drift. Keep var lists dotless.
 resource "aws_route53_resolver_firewall_domain_list" "allowed" {
   name    = "${var.project_name}-allowed-domains"
-  domains = concat(var.llm_api_domains, var.infra_domains)
+  domains = formatlist("%s.", concat(var.llm_api_domains, var.infra_domains))
 }
 
 resource "aws_route53_resolver_firewall_domain_list" "block_all" {
   name    = "${var.project_name}-block-all"
-  domains = ["*"]
+  domains = ["*."]
 }
 
 # Dedicated list for public ECR images (treeform/* etc.) so we can give them
 # very high priority without conflicting with the main allowed list rules.
 resource "aws_route53_resolver_firewall_domain_list" "public_ecr" {
-  name    = "${var.project_name}-public-ecr"
-  domains = [
+  name = "${var.project_name}-public-ecr"
+  domains = formatlist("%s.", [
     "public.ecr.aws",
     "*.public.ecr.aws"
-  ]
+  ])
 }
 
 resource "aws_route53_resolver_firewall_rule_group" "bot_egress" {
@@ -420,46 +423,34 @@ resource "aws_route53_resolver_firewall_rule" "block_everything" {
 # duration, not total runtime. This is enforced in games_server code,
 # not terraform.
 
-# --- S3 Replay Bucket Policy ---
-# The replay bucket should deny all principals except games_server's
-# EC2/IAM role. Even if someone discovers the bucket name, they cannot
-# read or write replays without the correct role. Containers never get
-# direct S3 access — replays go through games_server's upload proxy.
-#
-# resource "aws_s3_bucket" "replays" {
-#   bucket = "${var.project_name}-replays"
-# }
-#
-# resource "aws_s3_bucket_lifecycle_configuration" "replays" {
-#   bucket = aws_s3_bucket.replays.id
-#   rule {
-#     id     = "expire-old-replays"
-#     status = "Enabled"
-#     expiration { days = 30 }
-#   }
-# }
-#
-# resource "aws_s3_bucket_policy" "replays" {
-#   bucket = aws_s3_bucket.replays.id
-#   policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{
-#       Sid       = "DenyAllExceptGamesServer"
-#       Effect    = "Deny"
-#       Principal = "*"
-#       Action    = "s3:*"
-#       Resource  = [
-#         aws_s3_bucket.replays.arn,
-#         "${aws_s3_bucket.replays.arn}/*"
-#       ]
-#       Condition = {
-#         StringNotEquals = {
-#           "aws:PrincipalArn" = aws_iam_role.dashboard_ec2.arn
-#         }
-#       }
-#     }]
-#   })
-# }
+# --- S3 Replay Bucket (for presigned PUT uploads from --ecs containers) ---
+# Orchestrator (role on EC2 or sandbox-andre profile on laptop) generates presigned PUTs.
+# Containers PUT directly (narrow URL+CT+expiry). No task role s3 perms.
+# Short presign + IAM on the role/profile keeps access narrow.
+# On-demand sync pulls back to local replayDir for scoring/serving compat.
+# (The old proxy path for non-ecs/http cases remains. We omit a strict DenyAllExcept
+# bucket policy for now — matching the game_configs bucket — so that the TF applier
+# (SSO admin) and laptop profiles can manage the bucket and do presign/cp operations.
+# The dashboard_ec2 role still gets explicit Allow via its policy for the EC2 case.)
+resource "aws_s3_bucket" "replays" {
+  bucket = "${var.project_name}-replays"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "replays" {
+  bucket = aws_s3_bucket.replays.id
+  rule {
+    id     = "expire-old-replays"
+    status = "Enabled"
+    filter {
+      prefix = ""
+    }
+    expiration { days = 30 }
+  }
+}
+
+# (Strict bucket policy omitted for bootstrap / laptop / TF applier compatibility.
+# If a full DenyExcept is added later, the applying principal must be included in the allowlist.)
+
 
 # --- Game Configs S3 Bucket (read-only, for COGAME_CONFIG_URI delivery) ---
 # Dedicated bucket for orchestrator-generated game input configs only.

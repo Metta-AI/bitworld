@@ -1426,11 +1426,13 @@ proc startTournamentGame(
   pullImagesFresh(images)
   writeFile(replayPath(configFile), gameConfig)
 
-  # If the backend has a non-empty artifactBaseUrl, we can use https URIs
-  # (the launch args will still use the old gameDockerArgs for Docker; when full
-  # backend launch is wired the URIs come from container_backend.buildArtifactUris).
+  # Compute uris via shared backend (gives s3 presigned PUTs for replay/results when
+  # s3ReplayBucket + useEcs, even if artifactBaseUrl == "" for pure laptop --ecs).
+  # Docker path currently ignores and hardcodes file:// in its args builder.
+  # When ECS launchEpisode / direct ecsCreateGame is wired for tournament, pass uris.* .
+  let uris = container_backend.buildArtifactUris(run.replay, run.results, run.config)
+  discard uris  # value used when ECS launch wired; build side-effects (e.g. s3 config upload) still happen if applicable
   if container_backend.backendInitialized and container_backend.backendConfig.artifactBaseUrl.len > 0:
-    let uris = container_backend.buildArtifactUris(run.replay, run.results, run.config)
     # For the current Docker path we still go through gameDockerArgs which hardcodes file.
     # The https path will be fully exercised once the launchEpisode in the backend is used
     # for the ECS case (or when we parameterize the Docker args builder).
@@ -1625,16 +1627,32 @@ proc listScoreFiles(): seq[ScoreFile] =
   ## Lists tournament score files in game order.
   if not dirExists(replayDir()):
     return
+  var names: seq[string]
   for path in walkFiles(replayDir() / "tournament_game_*.scores.json"):
-    let
-      name = extractFilename(path)
-      modified = scoreFileModified(path)
-    result.add(ScoreFile(
-      path: path,
-      name: name,
-      created: scoreFileCreated(name, modified),
-      modified: modified
-    ))
+    let name = extractFilename(path)
+    names.add(name)
+  # When s3 replay bucket, discover + pull persisted results so stats/history
+  # survive across restarts (on-demand ensure creates the local copy).
+  let s3b = if container_backend.backendInitialized: container_backend.backendConfig.s3ReplayBucket.strip() else: ""
+  if s3b.len > 0:
+    let (ls, _) = container_backend.runAws(["s3", "ls", "s3://" & s3b & "/results/", "--only-show-errors"])
+    for line in ls.splitLines:
+      let parts = line.split()
+      if parts.len > 0:
+        let fn = parts[^1]
+        if fn.endsWith(".scores.json") and fn.startsWith("tournament_game_"):
+          names.add(fn)
+          container_backend.ensureLocalFromS3(fn, "results/")
+  for name in names:
+    let p = replayDir() / name
+    if fileExists(p):
+      let modified = scoreFileModified(p)
+      result.add(ScoreFile(
+        path: p,
+        name: name,
+        created: scoreFileCreated(name, modified),
+        modified: modified
+      ))
   result.sort(proc(a, b: ScoreFile): int =
     result = cmp(a.created, b.created)
     if result != 0:
@@ -1882,6 +1900,7 @@ proc scoreUrl(request: Request, resultName: string): string =
 
 proc scoreFileExists(resultName: string): bool =
   ## Returns true when a shared score file exists.
+  container_backend.ensureLocalFromS3(resultName, "results/")
   fileExists(replayPath(cleanFileName(resultName)))
 
 proc renderBulkControls(): string =
@@ -2410,6 +2429,7 @@ proc runServer(config: TournamentConfig) =
     ecs_backend.loadEcsConfig()
     # Use tournament owner labels (distinct from games_server)
     let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
+    let s3ReplayBucket = getEnv("BITWORLD_REPLAY_S3_BUCKET", "bitworld-replays")
     container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
       useEcs: true,
       owner: container_backend.ContainerOwner(
@@ -2419,7 +2439,8 @@ proc runServer(config: TournamentConfig) =
       ),
       artifactBaseUrl: "",  # will be filled with EC2 private IP + port below if possible
       replayDir: replayDir(),
-      s3ConfigBucket: s3ConfigBucket
+      s3ConfigBucket: s3ConfigBucket,
+      s3ReplayBucket: s3ReplayBucket
     ))
     # Try to compute reachable base for https URIs (same EC2 private IP pattern as games_server)
     # For simplicity we re-use the ec2 metadata fetch idea; here we do a minimal version.
@@ -2441,6 +2462,7 @@ proc runServer(config: TournamentConfig) =
       container_backend.backendConfig.artifactBaseUrl = base
   else:
     let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
+    let s3ReplayBucket = getEnv("BITWORLD_REPLAY_S3_BUCKET", "bitworld-replays")
     container_backend.initContainerBackend(container_backend.ContainerBackendConfig(
       useEcs: false,
       owner: container_backend.ContainerOwner(
@@ -2450,7 +2472,8 @@ proc runServer(config: TournamentConfig) =
       ),
       artifactBaseUrl: "",
       replayDir: replayDir(),
-      s3ConfigBucket: s3ConfigBucket
+      s3ConfigBucket: s3ConfigBucket,
+      s3ReplayBucket: s3ReplayBucket
     ))
   createThread(scheduler, schedulerLoop, config)
   let server = newServer(makeHandler(config), workerThreads = 1)
