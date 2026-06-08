@@ -801,6 +801,8 @@ proc buildGameConfigJson*(
   node["seed"] = %int(epochTime() * 1000)
   node["minPlayers"] = %slots.len
   node["maxGames"] = %1
+  if game.schemaHasProperty("closedRoster"):
+    node["closedRoster"] = %true
   if imposterCount > 0 and game.schemaHasProperty("imposterCount"):
     node["imposterCount"] = %imposterCount
   if imposterCount > 0 and game.schemaHasProperty("autoImposterCount"):

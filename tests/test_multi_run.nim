@@ -19,6 +19,7 @@ proc sampleManifest(path: string, withRole: bool) =
     slotProperties = newJObject()
     role = newJObject()
     roleEnum = newJArray()
+    closedRoster = newJObject()
     minPlayers = newJObject()
     maxGames = newJObject()
     imposterCount = newJObject()
@@ -32,10 +33,12 @@ proc sampleManifest(path: string, withRole: bool) =
   maxGames["default"] = %0
   imposterCount["default"] = %2
   autoImposterCount["default"] = %true
+  closedRoster["default"] = %false
   properties["minPlayers"] = minPlayers
   properties["maxGames"] = maxGames
   properties["imposterCount"] = imposterCount
   properties["autoImposterCount"] = autoImposterCount
+  properties["closedRoster"] = closedRoster
   if withRole:
     roleEnum.add(%"crew")
     roleEnum.add(%"imposter")
@@ -68,12 +71,14 @@ proc samplePlayersManifest(path: string) =
     token = newJObject()
     role = newJObject()
     roleEnum = newJArray()
+    closedRoster = newJObject()
   runnable["image"] = %"example/game:latest"
   runnable["run"] = %["/bin/game"]
   game["name"] = %"crewrift"
   game["owner"] = %"treeform@softmax.com"
   game["runnable"] = runnable
   tokens["type"] = %"array"
+  closedRoster["default"] = %false
   playerName["type"] = %"string"
   playerProperties["name"] = playerName
   playerItems["type"] = %"object"
@@ -94,6 +99,7 @@ proc samplePlayersManifest(path: string) =
   properties["tokens"] = tokens
   properties["players"] = players
   properties["slots"] = slots
+  properties["closedRoster"] = closedRoster
   schema["properties"] = properties
   game["config_schema"] = schema
   root["game"] = game
@@ -203,6 +209,7 @@ proc testConfigAndRoles() =
   doAssert config["imposterCount"].getInt() == 1
   doAssert config["autoImposterCount"].getBool() == false
   doAssert config["tokens"].len == 2
+  doAssert config["closedRoster"].getBool() == true
   doAssert config["slots"][0]["role"].getStr() == "crew"
   let noRoleManifest = root / "no_role.json"
   sampleManifest(noRoleManifest, false)
@@ -217,6 +224,7 @@ proc testConfigAndRoles() =
   validateRoles(playersManifest, groups)
   let playerConfig = parseJson(buildGameConfigJson(playersManifest, slots))
   doAssert playerConfig["players"].len == 2
+  doAssert playerConfig["closedRoster"].getBool() == true
   doAssert playerConfig["players"][0]["name"].getStr() == "notsus-1"
   doAssert playerConfig["slots"][0].hasKey("token")
   doAssert not playerConfig["slots"][0].hasKey("name")
