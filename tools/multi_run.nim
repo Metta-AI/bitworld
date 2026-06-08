@@ -224,11 +224,6 @@ proc startJob(
   echo "Starting game ", gameIndex, " on port ", port, "..."
   try:
     discard requireDocker(gameDockerArgs(paths, game, meta))
-    if not waitForHealthy(port):
-      raise newException(
-        MultiRunError,
-        "game " & $gameIndex & " did not become healthy in time."
-      )
     for slot in meta.slots:
       let player = playerTable[slot.player]
       discard requireDocker(playerDockerArgs(player, meta, slot))
