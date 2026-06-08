@@ -243,6 +243,7 @@ type
     players: seq[string]
     roles: seq[string]
     wins: seq[string]
+    texts: seq[ScoreTextValues]
 
   RunView = object
     meta: RunMeta
@@ -254,6 +255,7 @@ type
     aggregates: seq[PlayerAggregate]
     filter: ScoreFilter
     filters: FilterOptions
+    numberFields: seq[string]
     counts: RunCounts
 
 proc esc(text: string): string =
@@ -382,51 +384,88 @@ proc addFilterText(values: var seq[string], value: string) =
   if text.len > 0:
     values.add(text)
 
+proc applyScoreFilterRange(
+  filter: var ScoreFilter,
+  name,
+  bound,
+  value: string
+) =
+  ## Applies one named numeric score filter bound.
+  let key = canonicalScoreField(name)
+  case key
+  of "score":
+    if bound == "min":
+      filter.score.setMinRange(value)
+    else:
+      filter.score.setMaxRange(value)
+  of "tasks":
+    if bound == "min":
+      filter.tasks.setMinRange(value)
+    else:
+      filter.tasks.setMaxRange(value)
+  of "kills":
+    if bound == "min":
+      filter.kills.setMinRange(value)
+    else:
+      filter.kills.setMaxRange(value)
+  of "imposter":
+    if bound == "min":
+      filter.imposter.setMinRange(value)
+    else:
+      filter.imposter.setMaxRange(value)
+  of "crew":
+    if bound == "min":
+      filter.crew.setMinRange(value)
+    else:
+      filter.crew.setMaxRange(value)
+  of "vote_players":
+    if bound == "min":
+      filter.votePlayers.setMinRange(value)
+    else:
+      filter.votePlayers.setMaxRange(value)
+  of "vote_skip":
+    if bound == "min":
+      filter.voteSkip.setMinRange(value)
+    else:
+      filter.voteSkip.setMaxRange(value)
+  of "vote_timeout":
+    if bound == "min":
+      filter.voteTimeout.setMinRange(value)
+    else:
+      filter.voteTimeout.setMaxRange(value)
+  else:
+    var scoreRange = filter.scoreFilterNumberRange(key)
+    if bound == "min":
+      scoreRange.setMinRange(value)
+    else:
+      scoreRange.setMaxRange(value)
+    filter.setScoreFilterNumberRange(key, scoreRange)
+
 proc setScoreFilterRange(
   filter: var ScoreFilter,
   key,
   value: string
 ) =
   ## Applies one numeric score filter query pair.
-  case key
-  of "score_min":
-    filter.score.setMinRange(value)
-  of "score_max":
-    filter.score.setMaxRange(value)
-  of "tasks_min":
-    filter.tasks.setMinRange(value)
-  of "tasks_max":
-    filter.tasks.setMaxRange(value)
-  of "kills_min":
-    filter.kills.setMinRange(value)
-  of "kills_max":
-    filter.kills.setMaxRange(value)
-  of "imposter_min":
-    filter.imposter.setMinRange(value)
-  of "imposter_max":
-    filter.imposter.setMaxRange(value)
-  of "crew_min":
-    filter.crew.setMinRange(value)
-  of "crew_max":
-    filter.crew.setMaxRange(value)
-  of "vote_players_min":
-    filter.votePlayers.setMinRange(value)
-  of "vote_players_max":
-    filter.votePlayers.setMaxRange(value)
-  of "vote_skip_min":
-    filter.voteSkip.setMinRange(value)
-  of "vote_skip_max":
-    filter.voteSkip.setMaxRange(value)
-  of "vote_timeout_min":
-    filter.voteTimeout.setMinRange(value)
-  of "vote_timeout_max":
-    filter.voteTimeout.setMaxRange(value)
-  else:
-    discard
+  if key.endsWith("_min"):
+    filter.applyScoreFilterRange(
+      key[0 ..< key.len - "_min".len],
+      "min",
+      value
+    )
+  elif key.endsWith("_max"):
+    filter.applyScoreFilterRange(
+      key[0 ..< key.len - "_max".len],
+      "max",
+      value
+    )
 
 proc parseScoreFilter(pairs: openArray[(string, string)]): ScoreFilter =
   ## Parses score filter query pairs.
   for (key, value) in pairs:
+    if key.startsWith("text_") and key.len > "text_".len:
+      result.addScoreFilterTextValue(key["text_".len .. ^1], value)
+      continue
     case key
     of "name":
       result.names.addFilterText(value)
@@ -504,6 +543,33 @@ proc addUnique(values: var seq[string], value: string) =
       return
   values.add(value)
 
+proc addTextOption(
+  options: var seq[ScoreTextValues],
+  name,
+  value: string
+) =
+  ## Adds one custom text filter option.
+  let key = canonicalScoreField(name)
+  if key.len == 0:
+    return
+  for i in 0 ..< options.len:
+    if options[i].name == key:
+      options[i].values.addUnique(value)
+      return
+  var item = ScoreTextValues(name: key)
+  item.values.addUnique(value)
+  options.add(item)
+
+proc scoreFilterTextValues(
+  filter: ScoreFilter,
+  name: string
+): seq[string] =
+  ## Returns checked values for one custom text filter.
+  let key = canonicalScoreField(name)
+  for item in filter.textValues:
+    if item.name == key:
+      return item.values
+
 proc runDirs(): seq[string] =
   ## Lists durable multi-run folders newest first.
   let root = multiRunsRoot()
@@ -566,10 +632,14 @@ proc filterOptions(records: openArray[ScoreRecord]): FilterOptions =
     result.players.addUnique(record.player)
     result.roles.addUnique(record.role)
     result.wins.addUnique($record.row.win)
+    for field in record.row.texts:
+      result.texts.addTextOption(field.name, field.value)
   result.names.sort()
   result.players.sort()
   result.roles.sort()
   result.wins.sort()
+  for i in 0 ..< result.texts.len:
+    result.texts[i].values.sort()
 
 proc buildRunView(
   runDir: string,
@@ -597,6 +667,11 @@ proc buildRunView(
         aggregateScoreRecords(records)
       else:
         @[]
+    numberFields =
+      if includeAggregates:
+        scoreNumberFieldNames(allRecords)
+      else:
+        @[]
   result = RunView(
     meta: meta,
     runDir: runDir,
@@ -607,6 +682,7 @@ proc buildRunView(
     aggregates: aggregates,
     filter: filter,
     filters: filterOptions(allRecords),
+    numberFields: numberFields,
     counts: runCounts(meta, runDir, games, containers)
   )
 
@@ -705,6 +781,11 @@ proc scoreFilterQuery(filter: ScoreFilter): string =
   parts.addRangeQuery("vote_players", filter.votePlayers)
   parts.addRangeQuery("vote_skip", filter.voteSkip)
   parts.addRangeQuery("vote_timeout", filter.voteTimeout)
+  for item in filter.numberRanges:
+    parts.addRangeQuery(item.name, item.scoreRange)
+  for item in filter.textValues:
+    for value in item.values:
+      parts.addQueryParam("text_" & item.name, value)
   parts.join("&")
 
 proc runUrl(runId: string, filter: ScoreFilter): string =
@@ -807,6 +888,13 @@ proc renderFilterForm(view: RunView): string =
   result.add(renderCheckRow("Role", "role", view.filters.roles, view.filter.roles))
   result.add(renderCheckRow("Win", "win", view.filters.wins, view.filter.wins))
   result.add(renderCheckRow("Name", "name", view.filters.names, view.filter.names))
+  for field in view.filters.texts:
+    result.add(renderCheckRow(
+      scoreFieldLabel(field.name),
+      "text_" & field.name,
+      field.values,
+      view.filter.scoreFilterTextValues(field.name)
+    ))
   result.add("<tr>")
   result.add(rangeInputCells("Score", "score", view.filter.score))
   result.add(rangeInputCells("Tasks", "tasks", view.filter.tasks))
@@ -824,6 +912,27 @@ proc renderFilterForm(view: RunView): string =
     view.filter.voteTimeout
   ))
   result.add("</tr>")
+  var fieldIndex = 0
+  while fieldIndex < view.numberFields.len:
+    result.add("<tr>")
+    let first = view.numberFields[fieldIndex]
+    result.add(rangeInputCells(
+      scoreFieldLabel(first),
+      first,
+      view.filter.scoreFilterNumberRange(first)
+    ))
+    inc fieldIndex
+    if fieldIndex < view.numberFields.len:
+      let second = view.numberFields[fieldIndex]
+      result.add(rangeInputCells(
+        scoreFieldLabel(second),
+        second,
+        view.filter.scoreFilterNumberRange(second)
+      ))
+      inc fieldIndex
+    else:
+      result.add("<td></td><td></td>")
+    result.add("</tr>")
   result.add("<tr><td colspan=\"4\"><div class=\"filterActions\">")
   result.add("<button class=\"button\" type=\"submit\">Apply</button>")
   result.add("<a class=\"button\" href=\"" & runUrl(view.meta.runId) &
@@ -959,16 +1068,30 @@ proc renderGamesTable(view: RunView): string =
 proc renderPlayerTable(view: RunView): string =
   ## Renders one run's aggregate player score table.
   let tableId = "players_" & view.meta.runId
+  var headings = @[
+    "Player",
+    "Wins/Game",
+    "Tasks/Game",
+    "Kills/Game",
+    "Imposter/Game",
+    "Crew/Game",
+    "Votes/Game",
+    "Skips/Game",
+    "Timeouts/Game"
+  ]
+  for field in view.numberFields:
+    headings.add(scoreFieldLabel(field) & "/Game")
+  for heading in ["Avg Score", "Score SD", "Min Score", "Max Score"]:
+    headings.add(heading)
   result.add("<table id=\"" & esc(tableId) & "\"><thead>")
-  result.add(categoryRow("Players", 13))
+  result.add(categoryRow("Players", headings.len))
   result.add("<tr>")
-  for i, heading in ["Player", "Wins/Game", "Tasks/Game", "Kills/Game",
-      "Imposter/Game", "Crew/Game", "Votes/Game", "Skips/Game",
-      "Timeouts/Game", "Avg Score", "Score SD", "Min Score", "Max Score"]:
+  for i, heading in headings:
     result.add(sortableHeader(tableId, i, heading))
   result.add("</tr></thead><tbody>")
   if view.aggregates.len == 0:
-    result.add("<tr class=\"row1\"><td colspan=\"13\">Scores pending.</td></tr>")
+    result.add("<tr class=\"row1\"><td colspan=\"" & $headings.len &
+      "\">Scores pending.</td></tr>")
   for i, player in view.aggregates:
     let row = if i mod 2 == 0: "row1" else: "row2"
     result.add("<tr class=\"" & row & "\">")
@@ -1000,6 +1123,10 @@ proc renderPlayerTable(view: RunView): string =
       fmtFloat(skipRate) & "</td>")
     result.add("<td class=\"right\" data-sort=\"" & $timeoutRate & "\">" &
       fmtFloat(timeoutRate) & "</td>")
+    for field in view.numberFields:
+      let fieldRate = player.scoreNumberAverage(field)
+      result.add("<td class=\"right\" data-sort=\"" & $fieldRate & "\">" &
+        fmtFloat(fieldRate) & "</td>")
     result.add("<td class=\"right\" data-sort=\"" & $scoreAvg & "\">" &
       fmtFloat(scoreAvg) & "</td>")
     result.add("<td class=\"right\" data-sort=\"" & $scoreDev & "\">" &
@@ -1224,6 +1351,25 @@ proc renderScoresPage(runId, name: string): string =
   ## Renders one raw scores file as a simple table.
   let path = artifactPath(runId, name)
   let scores = parseScores(path)
+  let
+    numberFields = scoreNumberFieldNames(scores)
+    textFields = scoreTextFieldNames(scores)
+  var headings = @[
+    "Name",
+    "Win",
+    "Tasks",
+    "Kills",
+    "Imposter",
+    "Crew",
+    "Votes",
+    "Skips",
+    "Timeouts"
+  ]
+  for field in textFields:
+    headings.add(scoreFieldLabel(field))
+  for field in numberFields:
+    headings.add(scoreFieldLabel(field))
+  headings.add("Score")
   result.add("<!doctype html><html><head><meta charset=\"utf-8\">")
   result.add("<title>Scores " & esc(name) & "</title>")
   result.add("<style>" & PageCss & "</style>")
@@ -1233,10 +1379,9 @@ proc renderScoresPage(runId, name: string): string =
   result.add("<p><a href=\"" & runUrl(runId) & "\">Back</a> | " &
     esc(runId) & " | " & esc(name) & "</p>")
   result.add("<table id=\"scores\"><thead>")
-  result.add(categoryRow("Scores", 10))
+  result.add(categoryRow("Scores", headings.len))
   result.add("<tr>")
-  for i, heading in ["Name", "Win", "Tasks", "Kills", "Imposter", "Crew",
-      "Votes", "Skips", "Timeouts", "Score"]:
+  for i, heading in headings:
     result.add(sortableHeader("scores", i, heading))
   result.add("</tr></thead><tbody>")
   for i, row in scores:
@@ -1251,6 +1396,12 @@ proc renderScoresPage(runId, name: string): string =
     result.add("<td class=\"right\">" & $row.votePlayers & "</td>")
     result.add("<td class=\"right\">" & $row.voteSkip & "</td>")
     result.add("<td class=\"right\">" & $row.voteTimeout & "</td>")
+    for field in textFields:
+      result.add("<td>" & esc(row.scoreTextFieldValue(field)) & "</td>")
+    for field in numberFields:
+      let value = row.scoreNumberFieldValue(field)
+      result.add("<td class=\"right\" data-sort=\"" & $value & "\">" &
+        fmtFloat(value) & "</td>")
     result.add("<td class=\"right\" data-sort=\"" & $row.score & "\">" &
       fmtFloat(row.score) & "</td>")
     result.add("</tr>")

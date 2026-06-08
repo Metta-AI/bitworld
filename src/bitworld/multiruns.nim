@@ -144,6 +144,14 @@ type
     port*: int
     created*: int64
 
+  ScoreNumberField* = object
+    name*: string
+    value*: float
+
+  ScoreTextField* = object
+    name*: string
+    value*: string
+
   ScoreRow* = object
     name*: string
     score*: float
@@ -155,12 +163,22 @@ type
     votePlayers*: int
     voteSkip*: int
     voteTimeout*: int
+    numbers*: seq[ScoreNumberField]
+    texts*: seq[ScoreTextField]
 
   ScoreRange* = object
     hasMin*: bool
     minValue*: float
     hasMax*: bool
     maxValue*: float
+
+  ScoreNumberRange* = object
+    name*: string
+    scoreRange*: ScoreRange
+
+  ScoreTextValues* = object
+    name*: string
+    values*: seq[string]
 
   ScoreFilter* = object
     names*: seq[string]
@@ -175,6 +193,8 @@ type
     votePlayers*: ScoreRange
     voteSkip*: ScoreRange
     voteTimeout*: ScoreRange
+    numberRanges*: seq[ScoreNumberRange]
+    textValues*: seq[ScoreTextValues]
 
   ScoreRecord* = object
     gameIndex*: int
@@ -198,6 +218,7 @@ type
     votePlayersSum*: int
     voteSkipSum*: int
     voteTimeoutSum*: int
+    numberSums*: seq[ScoreNumberField]
 
   ScoreHistogram* = object
     player*: string
@@ -1340,6 +1361,221 @@ proc jsonArrayAny(node: JsonNode, keys: openArray[string]): JsonNode =
       return items
   newJArray()
 
+proc canonicalScoreField*(name: string): string =
+  ## Returns the normalized score field name used by multi-run.
+  case name.strip()
+  of "names":
+    return "name"
+  of "scores":
+    return "score"
+  of "imposters":
+    return "imposter"
+  of "vote_player":
+    return "vote_players"
+  else:
+    return name.strip()
+
+proc scoreFieldLabel*(name: string): string =
+  ## Returns a readable score field label.
+  case canonicalScoreField(name)
+  of "score":
+    return "Score"
+  of "tasks":
+    return "Tasks"
+  of "kills":
+    return "Kills"
+  of "imposter":
+    return "Imposter"
+  of "crew":
+    return "Crew"
+  of "vote_players":
+    return "Votes"
+  of "vote_skip":
+    return "Skips"
+  of "vote_timeout":
+    return "Timeouts"
+  else:
+    for part in canonicalScoreField(name).split('_'):
+      let clean = part.strip()
+      if clean.len == 0:
+        continue
+      if result.len > 0:
+        result.add(" ")
+      result.add(clean[0].toUpperAscii())
+      if clean.len > 1:
+        result.add(clean[1 .. ^1])
+
+proc standardScoreNumberField(name: string): bool =
+  ## Returns true for score fields stored on fixed ScoreRow columns.
+  case canonicalScoreField(name)
+  of "tasks", "kills", "imposter", "crew", "vote_players", "vote_skip",
+      "vote_timeout":
+    true
+  else:
+    false
+
+proc hiddenScoreField(name: string): bool =
+  ## Returns true for score fields that are not rendered as custom columns.
+  case canonicalScoreField(name)
+  of "name", "score", "win":
+    true
+  else:
+    false
+
+proc scoreArrayIsNumber(items: JsonNode): bool =
+  ## Returns true when a JSON score array is numeric.
+  if items == nil or items.kind != JArray:
+    return false
+  var hasValue = false
+  for item in items:
+    case item.kind
+    of JInt, JFloat:
+      hasValue = true
+    of JNull:
+      discard
+    else:
+      return false
+  hasValue
+
+proc scoreArrayIsText(items: JsonNode): bool =
+  ## Returns true when a JSON score array is textual.
+  if items == nil or items.kind != JArray:
+    return false
+  var hasValue = false
+  for item in items:
+    case item.kind
+    of JString, JBool:
+      hasValue = true
+    of JNull:
+      discard
+    else:
+      return false
+  hasValue
+
+proc scoreText(items: JsonNode, index: int): string =
+  ## Reads one textual score array value.
+  if items == nil or index >= items.len:
+    return
+  case items[index].kind
+  of JString:
+    return items[index].getStr()
+  of JBool:
+    return $items[index].getBool()
+  else:
+    return ""
+
+proc scoreRowCount(node: JsonNode): int =
+  ## Returns the largest score array length in one scores file.
+  if node == nil or node.kind != JObject:
+    return
+  for _, value in node.pairs:
+    if value.kind == JArray:
+      result = max(result, value.len)
+
+proc addScoreNumberField(
+  fields: var seq[ScoreNumberField],
+  name: string,
+  value: float
+) =
+  ## Adds one numeric score field to a row or aggregate.
+  let key = canonicalScoreField(name)
+  for i in 0 ..< fields.len:
+    if fields[i].name == key:
+      fields[i].value += value
+      return
+  fields.add(ScoreNumberField(name: key, value: value))
+
+proc addScoreTextField(
+  fields: var seq[ScoreTextField],
+  name,
+  value: string
+) =
+  ## Adds one text score field to a row.
+  fields.add(ScoreTextField(name: canonicalScoreField(name), value: value))
+
+proc addScoreFieldName(fields: var seq[string], name: string) =
+  ## Adds one score field name once, preserving discovery order.
+  let key = canonicalScoreField(name)
+  if key.len == 0:
+    return
+  for field in fields:
+    if field == key:
+      return
+  fields.add(key)
+
+proc scoreNumberFieldExists*(row: ScoreRow, name: string): bool =
+  ## Returns true when a score row has one numeric field.
+  let key = canonicalScoreField(name)
+  case key
+  of "score", "tasks", "kills", "imposter", "crew", "vote_players",
+      "vote_skip", "vote_timeout":
+    return true
+  else:
+    for field in row.numbers:
+      if field.name == key:
+        return true
+
+proc scoreNumberFieldValue*(row: ScoreRow, name: string): float =
+  ## Returns one numeric score field value.
+  let key = canonicalScoreField(name)
+  case key
+  of "score":
+    return row.score
+  of "tasks":
+    return row.tasks.float
+  of "kills":
+    return row.kills.float
+  of "imposter":
+    return row.imposter.float
+  of "crew":
+    return row.crew.float
+  of "vote_players":
+    return row.votePlayers.float
+  of "vote_skip":
+    return row.voteSkip.float
+  of "vote_timeout":
+    return row.voteTimeout.float
+  else:
+    for field in row.numbers:
+      if field.name == key:
+        return field.value
+
+proc scoreTextFieldExists*(row: ScoreRow, name: string): bool =
+  ## Returns true when a score row has one text field.
+  let key = canonicalScoreField(name)
+  case key
+  of "name", "win":
+    return true
+  else:
+    for field in row.texts:
+      if field.name == key:
+        return true
+
+proc scoreTextFieldValue*(row: ScoreRow, name: string): string =
+  ## Returns one text score field value.
+  let key = canonicalScoreField(name)
+  case key
+  of "name":
+    return row.name
+  of "win":
+    return $row.win
+  else:
+    for field in row.texts:
+      if field.name == key:
+        return field.value
+
+proc scoreNumberFieldNames*(rows: openArray[ScoreRow]): seq[string] =
+  ## Returns custom numeric score field names in discovery order.
+  for row in rows:
+    for field in row.numbers:
+      result.addScoreFieldName(field.name)
+
+proc scoreTextFieldNames*(rows: openArray[ScoreRow]): seq[string] =
+  ## Returns custom text score field names in discovery order.
+  for row in rows:
+    for field in row.texts:
+      result.addScoreFieldName(field.name)
+
 proc parseScores*(path: string): seq[ScoreRow] =
   ## Parses one Coworld scores file.
   let node = parseJson(readFile(path))
@@ -1354,15 +1590,9 @@ proc parseScores*(path: string): seq[ScoreRow] =
     votePlayers = node.jsonArrayAny(["vote_player", "vote_players"])
     voteSkips = node.jsonArray("vote_skip")
     voteTimeouts = node.jsonArray("vote_timeout")
-    rowCount = max(
-      max(max(names.len, scores.len), max(wins.len, tasks.len)),
-      max(
-        max(kills.len, max(imposters.len, crews.len)),
-        max(votePlayers.len, max(voteSkips.len, voteTimeouts.len))
-      )
-    )
+    rowCount = node.scoreRowCount()
   for i in 0 ..< rowCount:
-    result.add(ScoreRow(
+    var row = ScoreRow(
       name: names.scoreString(i),
       score: scores.scoreNumber(i),
       win: wins.scoreBool(i),
@@ -1373,7 +1603,18 @@ proc parseScores*(path: string): seq[ScoreRow] =
       votePlayers: votePlayers.scoreInt(i),
       voteSkip: voteSkips.scoreInt(i),
       voteTimeout: voteTimeouts.scoreInt(i)
-    ))
+    )
+    if node != nil and node.kind == JObject:
+      for key, items in node.pairs:
+        let field = canonicalScoreField(key)
+        if items.kind != JArray or field.hiddenScoreField() or
+            field.standardScoreNumberField():
+          continue
+        if items.scoreArrayIsNumber():
+          row.numbers.addScoreNumberField(field, items.scoreNumber(i))
+        elif items.scoreArrayIsText():
+          row.texts.addScoreTextField(field, items.scoreText(i))
+    result.add(row)
 
 proc slotByScoreName(
   meta: GameMeta,
@@ -1389,16 +1630,23 @@ proc slotByScoreName(
 
 proc scoreFilterActive*(filter: ScoreFilter): bool =
   ## Returns true when a score filter has at least one constraint.
-  filter.names.len > 0 or filter.players.len > 0 or
-    filter.roles.len > 0 or filter.wins.len > 0 or
-    filter.score.hasMin or filter.score.hasMax or
-    filter.tasks.hasMin or filter.tasks.hasMax or
-    filter.kills.hasMin or filter.kills.hasMax or
-    filter.imposter.hasMin or filter.imposter.hasMax or
-    filter.crew.hasMin or filter.crew.hasMax or
-    filter.votePlayers.hasMin or filter.votePlayers.hasMax or
-    filter.voteSkip.hasMin or filter.voteSkip.hasMax or
-    filter.voteTimeout.hasMin or filter.voteTimeout.hasMax
+  if filter.names.len > 0 or filter.players.len > 0 or
+      filter.roles.len > 0 or filter.wins.len > 0 or
+      filter.score.hasMin or filter.score.hasMax or
+      filter.tasks.hasMin or filter.tasks.hasMax or
+      filter.kills.hasMin or filter.kills.hasMax or
+      filter.imposter.hasMin or filter.imposter.hasMax or
+      filter.crew.hasMin or filter.crew.hasMax or
+      filter.votePlayers.hasMin or filter.votePlayers.hasMax or
+      filter.voteSkip.hasMin or filter.voteSkip.hasMax or
+      filter.voteTimeout.hasMin or filter.voteTimeout.hasMax:
+    return true
+  for item in filter.numberRanges:
+    if item.scoreRange.hasMin or item.scoreRange.hasMax:
+      return true
+  for item in filter.textValues:
+    if item.values.len > 0:
+      return true
 
 proc scoreRangeMatches*(value: float, scoreRange: ScoreRange): bool =
   ## Returns true when one numeric score field passes a range filter.
@@ -1413,6 +1661,53 @@ proc scoreTextMatches(value: string, values: openArray[string]): bool =
   if values.len == 0:
     return true
   value in values
+
+proc scoreRangeActive(scoreRange: ScoreRange): bool =
+  ## Returns true when a numeric score range has at least one bound.
+  scoreRange.hasMin or scoreRange.hasMax
+
+proc scoreFilterNumberRange*(
+  filter: ScoreFilter,
+  name: string
+): ScoreRange =
+  ## Returns one custom numeric score filter range.
+  let key = canonicalScoreField(name)
+  for item in filter.numberRanges:
+    if item.name == key:
+      return item.scoreRange
+
+proc setScoreFilterNumberRange*(
+  filter: var ScoreFilter,
+  name: string,
+  scoreRange: ScoreRange
+) =
+  ## Sets one custom numeric score filter range.
+  let key = canonicalScoreField(name)
+  for i in 0 ..< filter.numberRanges.len:
+    if filter.numberRanges[i].name == key:
+      filter.numberRanges[i].scoreRange = scoreRange
+      return
+  filter.numberRanges.add(ScoreNumberRange(
+    name: key,
+    scoreRange: scoreRange
+  ))
+
+proc addScoreFilterTextValue*(
+  filter: var ScoreFilter,
+  name,
+  value: string
+) =
+  ## Adds one custom text score filter value.
+  let
+    key = canonicalScoreField(name)
+    text = value.strip()
+  if key.len == 0 or text.len == 0:
+    return
+  for i in 0 ..< filter.textValues.len:
+    if filter.textValues[i].name == key:
+      filter.textValues[i].values.add(text)
+      return
+  filter.textValues.add(ScoreTextValues(name: key, values: @[text]))
 
 proc scoreRecordMatches*(
   record: ScoreRecord,
@@ -1446,6 +1741,26 @@ proc scoreRecordMatches*(
     return false
   if not scoreRangeMatches(record.row.voteTimeout.float, filter.voteTimeout):
     return false
+  for item in filter.numberRanges:
+    if not item.scoreRange.scoreRangeActive():
+      continue
+    if not record.row.scoreNumberFieldExists(item.name):
+      return false
+    if not scoreRangeMatches(
+      record.row.scoreNumberFieldValue(item.name),
+      item.scoreRange
+    ):
+      return false
+  for item in filter.textValues:
+    if item.values.len == 0:
+      continue
+    if not record.row.scoreTextFieldExists(item.name):
+      return false
+    if not scoreTextMatches(
+      record.row.scoreTextFieldValue(item.name),
+      item.values
+    ):
+      return false
   true
 
 proc scoreRecords*(runDir: string): seq[ScoreRecord] =
@@ -1486,6 +1801,18 @@ proc scoreRecords*(runDir: string, meta: GameMeta): seq[ScoreRecord] =
       player: player,
       role: slot.role
     ))
+
+proc scoreNumberFieldNames*(records: openArray[ScoreRecord]): seq[string] =
+  ## Returns custom numeric score field names in discovery order.
+  for record in records:
+    for field in record.row.numbers:
+      result.addScoreFieldName(field.name)
+
+proc scoreTextFieldNames*(records: openArray[ScoreRecord]): seq[string] =
+  ## Returns custom text score field names in discovery order.
+  for record in records:
+    for field in record.row.texts:
+      result.addScoreFieldName(field.name)
 
 proc filterScoreRecords*(
   records: openArray[ScoreRecord],
@@ -1537,6 +1864,8 @@ proc applyScore(
   item.votePlayersSum += row.votePlayers
   item.voteSkipSum += row.voteSkip
   item.voteTimeoutSum += row.voteTimeout
+  for field in row.numbers:
+    item.numberSums.addScoreNumberField(field.name, field.value)
   aggregates[key] = item
 
 proc scoreAverage*(item: PlayerAggregate): float =
@@ -1553,6 +1882,36 @@ proc scoreStdDev*(item: PlayerAggregate): float =
     mean = item.scoreAverage()
     variance = item.scoreSquaresSum / item.games.float - mean * mean
   sqrt(max(0.0, variance))
+
+proc scoreNumberSum*(item: PlayerAggregate, name: string): float =
+  ## Returns the total value for one aggregate numeric score field.
+  case canonicalScoreField(name)
+  of "score":
+    return item.scoreSum
+  of "tasks":
+    return item.tasksSum.float
+  of "kills":
+    return item.killsSum.float
+  of "imposter":
+    return item.imposterSum.float
+  of "crew":
+    return item.crewSum.float
+  of "vote_players":
+    return item.votePlayersSum.float
+  of "vote_skip":
+    return item.voteSkipSum.float
+  of "vote_timeout":
+    return item.voteTimeoutSum.float
+  else:
+    for field in item.numberSums:
+      if field.name == canonicalScoreField(name):
+        return field.value
+
+proc scoreNumberAverage*(item: PlayerAggregate, name: string): float =
+  ## Returns the per-game average for one aggregate numeric score field.
+  if item.games <= 0:
+    return 0
+  item.scoreNumberSum(name) / item.games.float
 
 proc scoreBucketStart*(score: float): int =
   ## Returns the lower bound for one ten-point score bucket.

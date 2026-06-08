@@ -426,7 +426,9 @@ proc testScoreFilters() =
     "crew": [1, 0],
     "vote_players": [2, 1],
     "vote_skip": [0, 1],
-    "vote_timeout": [0, 0]
+    "vote_timeout": [0, 0],
+    "connect_timeout": [0, 5],
+    "disconnect_timeout": [0, 0]
   }
   let scores2 = %*{
     "names": ["notsus-1", "truecrew-2"],
@@ -438,10 +440,16 @@ proc testScoreFilters() =
     "crew": [1, 0],
     "vote_players": [1, 0],
     "vote_skip": [0, 0],
-    "vote_timeout": [1, 0]
+    "vote_timeout": [1, 0],
+    "connect_timeout": [2, 5],
+    "disconnect_timeout": [1, 0]
   }
   writeFile(root / "game_0001.scores.json", $scores1)
   writeFile(root / "game_0002.scores.json", $scores2)
+  let parsed = parseScores(root / "game_0002.scores.json")
+  doAssert parsed[0].scoreNumberFieldExists("connect_timeout")
+  doAssert closeEnough(parsed[0].scoreNumberFieldValue("connect_timeout"), 2)
+  doAssert "disconnect_timeout" in scoreNumberFieldNames(parsed)
   var filter: ScoreFilter
   filter.players = @["notsus"]
   filter.tasks.hasMin = true
@@ -460,6 +468,19 @@ proc testScoreFilters() =
   doAssert aggregate[0].player == "notsus"
   doAssert aggregate[0].games == 1
   doAssert aggregate[0].tasksSum == 5
+  doAssert closeEnough(
+    aggregate[0].scoreNumberAverage("connect_timeout"),
+    2
+  )
+  var customFilter: ScoreFilter
+  customFilter.players = @["notsus"]
+  customFilter.setScoreFilterNumberRange(
+    "connect_timeout",
+    ScoreRange(hasMin: true, minValue: 2)
+  )
+  let customRecords = filteredScoreRecords(root, customFilter)
+  doAssert customRecords.len == 1
+  doAssert customRecords[0].gameIndex == 2
   var winFilter: ScoreFilter
   winFilter.wins = @["false"]
   doAssert filteredScoreRecords(root, winFilter).len == 2
@@ -541,7 +562,9 @@ proc testScoreAggregation() =
     "crew": [1, 0],
     "vote_players": [2, 1],
     "vote_skip": [0, 1],
-    "vote_timeout": [0, 0]
+    "vote_timeout": [0, 0],
+    "connect_timeout": [1, 0],
+    "disconnect_timeout": [0, 1]
   }
   let scores2 = %*{
     "names": ["notsus-1", "truecrew-2"],
@@ -553,10 +576,15 @@ proc testScoreAggregation() =
     "crew": [1, 0],
     "vote_players": [1, 0],
     "vote_skip": [0, 0],
-    "vote_timeout": [1, 0]
+    "vote_timeout": [1, 0],
+    "connect_timeout": [3, 0],
+    "disconnect_timeout": [2, 1]
   }
   writeFile(root / "game_0001.scores.json", $scores1)
   writeFile(root / "game_0002.scores.json", $scores2)
+  let records = scoreRecords(root)
+  doAssert "connect_timeout" in scoreNumberFieldNames(records)
+  doAssert "disconnect_timeout" in scoreNumberFieldNames(records)
   let aggregate = aggregateRunScores(root)
   doAssert aggregate.len == 2
   doAssert aggregate[0].player == "notsus"
@@ -567,6 +595,14 @@ proc testScoreAggregation() =
   doAssert closeEnough(aggregate[0].scoreStdDev(), 1.5)
   doAssert closeEnough(aggregate[0].scoreMin, 10.5)
   doAssert closeEnough(aggregate[0].scoreMax, 13.5)
+  doAssert closeEnough(
+    aggregate[0].scoreNumberAverage("connect_timeout"),
+    2
+  )
+  doAssert closeEnough(
+    aggregate[0].scoreNumberAverage("disconnect_timeout"),
+    1
+  )
   removeDir(root)
 
 echo "Testing multi-run bot parsing"
