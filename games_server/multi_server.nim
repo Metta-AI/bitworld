@@ -7,6 +7,7 @@ const
   DefaultHost = "0.0.0.0"
   DefaultPort = 2082
   RunPath = "/run"
+  FolderPath = "/folder"
   ScoresPath = "/scores"
   DownloadPath = "/download"
   ReplayPlayPath = "/replays/play"
@@ -743,6 +744,15 @@ proc scoresUrl(runId, name: string): string =
   ScoresPath & "?run=" & runId.encodeUrlComponent() &
     "&name=" & name.encodeUrlComponent()
 
+proc folderUrl(runId: string): string =
+  ## Builds a local run folder URL.
+  FolderPath & "?run=" & runId.encodeUrlComponent()
+
+proc downloadUrl(runId, name: string): string =
+  ## Builds a local raw artifact URL.
+  DownloadPath & "?run=" & runId.encodeUrlComponent() &
+    "&name=" & name.encodeUrlComponent()
+
 proc runUrl(runId: string): string =
   ## Builds a local run detail URL.
   RunPath & "?run=" & runId.encodeUrlComponent()
@@ -1347,6 +1357,48 @@ proc renderRunPage(runId: string, filter: ScoreFilter): string =
     "</p>")
   result.add("</div></body></html>")
 
+proc renderFolderPage(runId: string): string =
+  ## Renders one raw run folder listing.
+  let runDir = runFolderPath(runId)
+  var files: seq[string]
+  for kind, path in walkDir(runDir):
+    if kind == pcFile:
+      files.add(path.extractFilename())
+  files.sort()
+  result.add("<!doctype html><html><head><meta charset=\"utf-8\">")
+  result.add("<title>Folder " & esc(runId) & "</title>")
+  result.add("<style>" & PageCss & "</style>")
+  result.add(SortScript)
+  result.add("</head><body><div class=\"page\">")
+  result.add("<h1 class=\"title\">Folder</h1>")
+  result.add("<p><a href=\"" & runUrl(runId) & "\">Back</a> | " &
+    esc(runId) & "</p>")
+  result.add("<p class=\"small\">" & esc(runDir) & "</p>")
+  result.add("<table id=\"folder\"><thead>")
+  result.add(categoryRow("Files", 3))
+  result.add("<tr>")
+  for i, heading in ["Name", "Size", "Modified"]:
+    result.add(sortableHeader("folder", i, heading))
+  result.add("</tr></thead><tbody>")
+  if files.len == 0:
+    result.add("<tr class=\"row1\"><td colspan=\"3\">No files found.</td></tr>")
+  for i, name in files:
+    let
+      path = runDir / name
+      row = if i mod 2 == 0: "row1" else: "row2"
+      size = getFileSize(path)
+      modified = getLastModificationTime(path).utc().format(
+        "yyyy-MM-dd HH:mm:ss"
+      ) & " UTC"
+    result.add("<tr class=\"" & row & "\">")
+    result.add("<td><a href=\"" & downloadUrl(runId, name) & "\">" &
+      esc(name) & "</a></td>")
+    result.add("<td class=\"right\" data-sort=\"" & $size & "\">" &
+      $size & "</td>")
+    result.add("<td class=\"nowrap\">" & esc(modified) & "</td>")
+    result.add("</tr>")
+  result.add("</tbody></table></div></body></html>")
+
 proc renderScoresPage(runId, name: string): string =
   ## Renders one raw scores file as a simple table.
   let path = artifactPath(runId, name)
@@ -1376,8 +1428,11 @@ proc renderScoresPage(runId, name: string): string =
   result.add(SortScript)
   result.add("</head><body><div class=\"page\">")
   result.add("<h1 class=\"title\">Scores</h1>")
-  result.add("<p><a href=\"" & runUrl(runId) & "\">Back</a> | " &
-    esc(runId) & " | " & esc(name) & "</p>")
+  result.add("<p><a href=\"" & runUrl(runId) & "\">Back</a> | ")
+  result.add("<a href=\"" & folderUrl(runId) & "\">" & esc(runId) &
+    "</a> | ")
+  result.add("<a href=\"" & downloadUrl(runId, name) & "\">" &
+    esc(name) & "</a></p>")
   result.add("<table id=\"scores\"><thead>")
   result.add(categoryRow("Scores", headings.len))
   result.add("<tr>")
@@ -1485,6 +1540,11 @@ proc runHandler(request: Request) =
     filter = parseScoreFilter(pairs)
   request.respondHtml(200, renderRunPage(runId, filter))
 
+proc folderHandler(request: Request) =
+  ## Handles one raw run folder route.
+  let runId = request.queryValue("run")
+  request.respondHtml(200, renderFolderPage(runId))
+
 proc scoresHandler(request: Request) =
   ## Handles a score table route.
   let
@@ -1531,6 +1591,8 @@ proc httpHandlerUnsafe(request: Request) =
       request.indexHandler()
     elif request.path == RunPath:
       request.runHandler()
+    elif request.path == FolderPath:
+      request.folderHandler()
     elif request.path == ScoresPath:
       request.scoresHandler()
     elif request.path == DownloadPath:
