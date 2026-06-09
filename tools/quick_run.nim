@@ -32,6 +32,7 @@ type
   BotGroup = object
     source: string
     count: int
+    role: string
 
   GameManifest = object
     key: string
@@ -39,6 +40,8 @@ type
     name: string
     playerProtocol: ClientProtocol
     hasGlobalProtocol: bool
+    slotNamesInPlayers: bool
+    hasSlotRoles: bool
 
   GameLaunch = object
     sourceRelative: string
@@ -49,6 +52,8 @@ type
     name: string
     playerProtocol: ClientProtocol
     hasGlobalProtocol: bool
+    slotNamesInPlayers: bool
+    hasSlotRoles: bool
 
   ClientLaunch = object
     sourceRelative: string
@@ -82,10 +87,12 @@ type
     workDir: string
     label: string
     count: int
+    role: string
 
   SlotAssignment = object
     name: string
     token: string
+    role: string
 
 proc currentRoot(): string =
   ## Returns the directory quick_run was invoked from.
@@ -97,7 +104,8 @@ proc toolRoot(): string =
 
 proc usage(): string =
   "Usage: quick_run <game_folder_or_file> [--connect] [--address:ADDR] " &
-    "[--port:N] [--player] [--players:N] [--bots:BOT:N] [--global] " &
+    "[--port:N] [--player] [--players:N] [--bots:BOT:N[:ROLE]] " &
+    "[--global] " &
     "[--html] [--slots] " &
     "[--bot-gui] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
@@ -112,6 +120,8 @@ proc usage(): string =
     "  quick_run ../cogame-planet-wars --bots:skurge:4 --global --html\n" &
     "  quick_run /Users/me/p/cogame-planet-wars/src/planet_wars.nim\n" &
     "  quick_run ./among_them --players:2 --bots:nottoodumb:6\n" &
+    "  quick_run ./crewrift --bots:notsus:6:crew " &
+    "--bots:truecrew:2:imposter --global\n" &
     "  quick_run ./among_them --connect --port:2000 --bots:nottoodumb:8"
 
 proc parsePort(value: string): int =
@@ -134,6 +144,18 @@ proc parseBotCount(value: string): int =
       ValueError,
       "Bot count must be between 0 and " & $MaxBots & "."
     )
+
+proc parseBotRole(value: string): string =
+  ## Parses one optional bot role.
+  case value.strip().toLowerAscii()
+  of "":
+    ""
+  of "crew":
+    "crew"
+  of "imp", "imposter", "impostor":
+    "imposter"
+  else:
+    raise newException(ValueError, "--bots role must be crew or imposter.")
 
 proc parseReconnect(value: string): string =
   let seconds = parseFloat(value)
@@ -217,6 +239,42 @@ proc gameNode(node: JsonNode): JsonNode =
     return node["game"]
   node
 
+proc configProperties(node: JsonNode): JsonNode =
+  ## Returns a Coworld config schema properties object.
+  if node.kind != JObject or not node.hasKey("config_schema"):
+    return
+  let schema = node["config_schema"]
+  if schema.kind != JObject or not schema.hasKey("properties"):
+    return
+  let properties = schema["properties"]
+  if properties.kind == JObject:
+    return properties
+
+proc slotItemProperties(node: JsonNode): JsonNode =
+  ## Returns Coworld slots item properties.
+  let properties = node.configProperties()
+  if properties.kind != JObject or not properties.hasKey("slots"):
+    return
+  let slots = properties["slots"]
+  if slots.kind != JObject or not slots.hasKey("items"):
+    return
+  let items = slots["items"]
+  if items.kind != JObject or not items.hasKey("properties"):
+    return
+  let slotProperties = items["properties"]
+  if slotProperties.kind == JObject:
+    return slotProperties
+
+proc manifestHasConfigProperty(node: JsonNode, name: string): bool =
+  ## Returns true when one config schema property is advertised.
+  let properties = node.configProperties()
+  properties.kind == JObject and properties.hasKey(name)
+
+proc manifestHasSlotProperty(node: JsonNode, name: string): bool =
+  ## Returns true when one slots item schema property is advertised.
+  let properties = node.slotItemProperties()
+  properties.kind == JObject and properties.hasKey(name)
+
 proc readGameManifest(rootDir, path: string): GameManifest =
   ## Reads one Coworld manifest summary from disk.
   let
@@ -228,7 +286,9 @@ proc readGameManifest(rootDir, path: string): GameManifest =
     path: path,
     name: name,
     playerProtocol: clientProtocolFromManifest(game),
-    hasGlobalProtocol: game.manifestProtocol("global").len > 0
+    hasGlobalProtocol: game.manifestProtocol("global").len > 0,
+    slotNamesInPlayers: game.manifestHasConfigProperty("players"),
+    hasSlotRoles: game.manifestHasSlotProperty("role")
   )
 
 proc hasPathSeparator(value: string): bool =
@@ -344,13 +404,17 @@ proc ensureGameSource(rootDir, source: string): GameLaunch =
     label: label,
     name: label,
     playerProtocol: FrameClient,
-    hasGlobalProtocol: false
+    hasGlobalProtocol: false,
+    slotNamesInPlayers: false,
+    hasSlotRoles: false
   )
   if fileExists(manifestPath):
     let manifest = readGameManifest(buildDir, manifestPath)
     result.name = manifest.name
     result.playerProtocol = manifest.playerProtocol
     result.hasGlobalProtocol = manifest.hasGlobalProtocol
+    result.slotNamesInPlayers = manifest.slotNamesInPlayers
+    result.hasSlotRoles = manifest.hasSlotRoles
 
 proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
   ## Validates and describes one game source folder.
@@ -381,13 +445,17 @@ proc ensureGameFolder(rootDir, folderName: string): GameLaunch =
     label: label,
     name: label,
     playerProtocol: FrameClient,
-    hasGlobalProtocol: false
+    hasGlobalProtocol: false,
+    slotNamesInPlayers: false,
+    hasSlotRoles: false
   )
   if fileExists(manifestPath):
     let manifest = readGameManifest(buildDir, manifestPath)
     result.name = manifest.name
     result.playerProtocol = manifest.playerProtocol
     result.hasGlobalProtocol = manifest.hasGlobalProtocol
+    result.slotNamesInPlayers = manifest.slotNamesInPlayers
+    result.hasSlotRoles = manifest.hasSlotRoles
 
 proc findGame(
   currentDir,
@@ -402,23 +470,45 @@ proc findGame(
     return (found: true, game: ensureGameFolder(currentDir, source))
 
 proc parseBotGroup(value: string): BotGroup =
-  ## Parses BOT or BOT:N into one bot launch group.
+  ## Parses BOT, BOT:N, or BOT:N:ROLE into one bot launch group.
   let spec = value.strip()
   if spec.len == 0:
     raise newException(ValueError, "--bots requires a bot name or path.")
-  let split = spec.rfind(':')
-  if split >= 0 and split + 1 < spec.len:
-    let countText = spec[split + 1 .. ^1]
+  let
+    lastSplit = spec.rfind(':')
+    lastPart =
+      if lastSplit >= 0 and lastSplit + 1 < spec.len:
+        spec[lastSplit + 1 .. ^1]
+      else:
+        ""
+    hasRole = lastPart.len > 0 and
+      not lastPart.allCharsInSet({'0' .. '9'})
+    possibleRole =
+      if hasRole:
+        lastPart.parseBotRole()
+      else:
+        ""
+    countSpec =
+      if hasRole:
+        spec[0 ..< lastSplit]
+      else:
+        spec
+    split = countSpec.rfind(':')
+  if split >= 0 and split + 1 < countSpec.len:
+    let countText = countSpec[split + 1 .. ^1]
     if countText.allCharsInSet({'0' .. '9'}):
-      result.source = spec[0 ..< split]
+      result.source = countSpec[0 ..< split]
       result.count = parseBotCount(countText)
+      result.role = possibleRole
       if result.source.len == 0:
         raise newException(ValueError, "--bots source cannot be empty.")
       return
-  result.source = spec
+  if possibleRole.len > 0:
+    raise newException(ValueError, "--bots role requires a bot count.")
+  result.source = countSpec
   result.count = 1
 
-proc botCandidates(gameFolder, source: string): seq[string] =
+proc botCandidates(rootDir, gameFolder, source: string): seq[string] =
   ## Returns candidate source paths for one bot.
   let sourcePath = trimTrailingSeparators(source)
   if sourcePath.hasPathSeparator():
@@ -428,6 +518,10 @@ proc botCandidates(gameFolder, source: string): seq[string] =
   else:
     result.add(gameFolder / "players" / sourcePath / (sourcePath & ".nim"))
     result.add(gameFolder / "players" / (sourcePath & ".nim"))
+    result.add(
+      rootDir.parentDir() / sourcePath / "src" / (sourcePath & ".nim")
+    )
+    result.add(rootDir.parentDir() / sourcePath / (sourcePath & ".nim"))
 
 proc absoluteSourcePath(rootDir, source: string): string =
   ## Returns an absolute source path for a repository or external path.
@@ -442,20 +536,27 @@ proc ensureBotFile(
   source: string
 ): tuple[sourceRelative, buildDir, workDir, label: string] =
   ## Validates and describes one bot source file.
-  for sourceRelative in botCandidates(gameFolder, source):
+  for sourceRelative in botCandidates(rootDir, gameFolder, source):
     let sourcePath = absoluteSourcePath(rootDir, sourceRelative)
     if fileExists(sourcePath):
       let
+        external = not sourcePath.startsWith(rootDir / "")
         buildDir =
-          if source.hasPathSeparator():
+          if source.hasPathSeparator() or
+              external:
             projectRootForSource(sourcePath)
           else:
             rootDir
+        workDir =
+          if external:
+            rootDir
+          else:
+            sourcePath.parentDir()
         buildSource = sourceArg(buildDir, sourcePath)
       return (
         sourceRelative: buildSource,
         buildDir: buildDir,
-        workDir: sourcePath.parentDir(),
+        workDir: workDir,
         label: sourcePath.splitFile().name
       )
   raise newException(ValueError, "Bot file not found: " & source)
@@ -919,12 +1020,19 @@ proc randomHexToken(): string =
     result.add(HexChars[n shr 4])
     result.add(HexChars[n and 0x0f])
 
-proc initSlotAssignment(name: string): SlotAssignment =
+proc initSlotAssignment(name, role: string): SlotAssignment =
   ## Creates one quick-run slot assignment with a random token.
   SlotAssignment(
     name: name,
-    token: randomHexToken()
+    token: randomHexToken(),
+    role: role
   )
+
+proc botGroupsHaveRoles(groups: openArray[BotGroup]): bool =
+  ## Returns true when at least one bot group pins a role.
+  for group in groups:
+    if group.role.len > 0:
+      return true
 
 proc buildSlotAssignments(
   config: QuickRunConfig,
@@ -932,13 +1040,14 @@ proc buildSlotAssignments(
 ): seq[SlotAssignment] =
   ## Creates slot names and tokens for launched quick-run players.
   for i in 0 ..< config.players:
-    result.add(initSlotAssignment("player" & $(i + 1)))
+    result.add(initSlotAssignment("player" & $(i + 1), ""))
   var globalBotIndex = 0
   for bot in botLaunches:
     for i in 0 ..< bot.count:
       inc globalBotIndex
       result.add(initSlotAssignment(
-        config.botSlotName(bot, i, globalBotIndex)
+        config.botSlotName(bot, i, globalBotIndex),
+        bot.role
       ))
 
 proc slotAssignmentAt(
@@ -950,18 +1059,29 @@ proc slotAssignmentAt(
     return assignments[index]
   SlotAssignment()
 
-proc slotsConfigJson(assignments: openArray[SlotAssignment]): string =
+proc slotsConfigJson(
+  assignments: openArray[SlotAssignment],
+  namesInPlayers: bool
+): string =
   ## Builds the server config JSON for quick-run slots.
   var
     root = newJObject()
+    players = newJArray()
     tokens = newJArray()
     slots = newJArray()
   for assignment in assignments:
     var slot = newJObject()
-    slot["name"] = %assignment.name
+    if namesInPlayers:
+      players.add(%*{"name": assignment.name})
+    else:
+      slot["name"] = %assignment.name
+    if assignment.role.len > 0:
+      slot["role"] = %assignment.role
     tokens.add(%assignment.token)
     slots.add(slot)
   root["tokens"] = tokens
+  if namesInPlayers:
+    root["players"] = players
   root["slots"] = slots
   $root
 
@@ -1210,16 +1330,27 @@ proc runQuickRun(input: QuickRunConfig): int =
       buildDir: bot.buildDir,
       workDir: bot.workDir,
       label: bot.label,
-      count: group.count
+      count: group.count,
+      role: group.role
     ))
 
+  let rolesRequested = config.botGroups.botGroupsHaveRoles()
+  if rolesRequested and not game.hasSlotRoles:
+    echo "Game does not advertise slot roles: ", game.name
+    return 1
+
   var slotAssignments: seq[SlotAssignment]
-  if config.slots:
+  if config.slots or rolesRequested:
     slotAssignments = config.buildSlotAssignments(botLaunches)
 
   var serverArgs = @[portArg, hostArg]
-  if config.slots and slotAssignments.len > 0:
-    serverArgs.add("--config:" & slotsConfigJson(slotAssignments))
+  if (config.slots or rolesRequested) and slotAssignments.len > 0:
+    serverArgs.add(
+      "--config:" & slotsConfigJson(
+        slotAssignments,
+        game.slotNamesInPlayers
+      )
+    )
   if config.saveReplayPath.len > 0:
     serverArgs.add("--save-replay:" & config.saveReplayPath)
   if config.configJson.len > 0:

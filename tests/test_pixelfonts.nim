@@ -36,6 +36,24 @@ proc testTiny5Decode(font: PixelFont) =
   doAssert font.glyphs[ord('?') - FirstPrintableAscii].width > 0,
     "tiny5 should contain fallback question mark"
 
+proc testDefaultFont() =
+  ## Tests that the default font is embedded in the library.
+  echo "Testing default embedded font"
+  let font = readTiny5Font()
+  doAssert font.height == 6, "embedded tiny5 should be six pixels high"
+  doAssert font.glyphs.len == PrintableAsciiCount,
+    "embedded tiny5 should contain printable ASCII glyphs"
+
+proc testMissingPath() =
+  ## Tests that explicit paths still mean caller-owned files.
+  echo "Testing explicit missing font path"
+  var failed = false
+  try:
+    discard readPixelFont(RootDir.parentDir / "data" / "tiny5.aseprite")
+  except IOError:
+    failed = true
+  doAssert failed, "explicit missing font path should raise IOError"
+
 proc testTiny5Preview(font: PixelFont) =
   ## Draws and saves a dense 128 by 128 tiny5 preview image.
   echo "Testing tiny5 preview rendering"
@@ -115,6 +133,8 @@ proc testTiny5FramebufferOcr(font: PixelFont) =
 
 let font = readTiny5Font()
 testTiny5Decode(font)
+testDefaultFont()
+testMissingPath()
 testTiny5Preview(font)
 testTiny5ImageOcr(font)
 testTiny5FramebufferOcr(font)

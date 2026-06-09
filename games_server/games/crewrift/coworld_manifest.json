@@ -150,6 +150,18 @@
           "minimum": 0,
           "default": 72
         },
+        "connectTimeoutTicks": {
+          "description": "Initial connection grace duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 720
+        },
+        "disconnectTimeoutTicks": {
+          "description": "Reconnect grace duration in ticks.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 720
+        },
         "killCooldownTicks": {
           "description": "Kill cooldown duration in ticks.",
           "type": "integer",
@@ -336,6 +348,26 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "connect_timeout": {
+          "description": "One count of initial connection timeouts per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "disconnect_timeout": {
+          "description": "One count of reconnect timeouts per player slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
     },
@@ -443,6 +475,8 @@
         "maxGames": 1,
         "mapPath": "data/croatoan.resources",
         "voteTimerTicks": 240,
+        "connectTimeoutTicks": 720,
+        "disconnectTimeoutTicks": 720,
         "killCooldownTicks": 900,
         "showTaskArrows": true,
         "showTaskBubbles": true,
@@ -500,6 +534,8 @@
       "maxGames": 1,
       "mapPath": "data/croatoan.resources",
       "voteTimerTicks": 120,
+      "connectTimeoutTicks": 720,
+      "disconnectTimeoutTicks": 720,
       "killCooldownTicks": 900,
       "showTaskArrows": false,
       "showTaskBubbles": false,
