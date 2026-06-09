@@ -4418,10 +4418,6 @@ when isMainModule:
     echo "ECS mode enabled"
     loadEcsConfig()
     ec2PrivateIp = fetchEc2PrivateIp()
-    if ec2PrivateIp.len > 0:
-      echo "EC2 private IP: ", ec2PrivateIp
-    else:
-      echo "Not on EC2 — replay upload/download disabled"
   # Initialize the shared backend (uses defaults for owner when not tournament).
   let s3ConfigBucket = getEnv("BITWORLD_GAME_CONFIGS_BUCKET", getEnv("COGAME_CONFIG_S3_BUCKET", "bitworld-game-configs"))
   let s3ReplayBucket = getEnv("BITWORLD_REPLAY_S3_BUCKET", "bitworld-replays")
@@ -4437,4 +4433,13 @@ when isMainModule:
     s3ConfigBucket: s3ConfigBucket,
     s3ReplayBucket: s3ReplayBucket
   ))
+  if useEcs:
+    if ec2PrivateIp.len > 0:
+      echo "EC2 private IP: ", ec2PrivateIp
+    else:
+      let hasS3 = s3ConfigBucket.len > 0 or s3ReplayBucket.len > 0
+      if hasS3:
+        echo "Not on EC2 — S3 presigned URIs for config/artifacts (laptop --ecs supported)"
+      else:
+        echo "Not on EC2 — replay upload/download disabled"
   runServer(address, port)
