@@ -27,7 +27,8 @@ const
   EcrProfileName = "sandbox-andre"
   OurEcrPublicAlias = "s3j4p9s7"
   CoworldManifestName = "coworld_manifest.json"
-  ManifestNames = [CoworldManifestName]
+  CoplayerManifestName = "coplayer_manifest.json"
+  ManifestNames = [CoworldManifestName, CoplayerManifestName]
 
 type
   DockerTarget = object
@@ -38,6 +39,7 @@ type
     contextDir: string
     manifestDir: string
     bitworldContext: string
+    crewriftContext: string
     games: seq[string]
     isGame: bool
 
@@ -168,6 +170,36 @@ proc manifestString(path, key: string): string =
       return game[key].getStr()
   ""
 
+proc manifestStringSeq(path, key: string): seq[string] =
+  ## Reads one string array field from a JSON manifest.
+  if path.len == 0:
+    return
+  let node = parseFile(path)
+  if node.kind == JObject and node.hasKey(key) and node[key].kind == JArray:
+    for child in node[key]:
+      if child.kind == JString:
+        result.add(child.getStr())
+
+proc crewriftContextForTarget(
+  contextDir: string,
+  games: openArray[string]
+): string =
+  ## Returns the sibling Crewrift source context when a player needs it.
+  var needsCrewrift = false
+  for game in games:
+    if game == "crewrift":
+      needsCrewrift = true
+      break
+  if not needsCrewrift:
+    return
+  for candidate in [
+    contextDir.parentDir() / "coworld-crewrift",
+    contextDir.parentDir().parentDir() / "coworld-crewrift"
+  ]:
+    if fileExists(candidate / "src" / "crewrift.nim") and
+        fileExists(candidate / "nimby.lock"):
+      return candidate
+
 proc nodeString(node: JsonNode, key: string): string =
   ## Reads one string field from a JSON node.
   if node.kind == JObject and node.hasKey(key) and node[key].kind == JString:
@@ -297,7 +329,7 @@ proc addDockerFile(
   var
     manifestName = gameName
     manifestImageUri = manifestString(manifest, "image_uri")
-    games: seq[string]
+    games = manifestStringSeq(manifest, "games")
     isGame =
       manifest.len > 0 and
       manifest.extractFilename() == CoworldManifestName and
@@ -324,6 +356,7 @@ proc addDockerFile(
     contextDir: contextDir,
     manifestDir: manifest.parentDir(),
     bitworldContext: bitworldContext,
+    crewriftContext: crewriftContextForTarget(contextDir, games),
     games: games,
     isGame: isGame
   )
@@ -409,8 +442,10 @@ proc checkTournamentArgs(root: string, targets: openArray[DockerTarget]) =
   for target in targets:
     if target.isGame:
       continue
-    let nimFile =
-      target.contextDir / target.dockerFile.parentDir() / target.name & ".nim"
+    let sourceDir = target.contextDir / target.dockerFile.parentDir()
+    var nimFile = sourceDir / (target.name & ".nim")
+    if not fileExists(nimFile):
+      nimFile = target.contextDir / "src" / (target.name & ".nim")
     if not fileExists(nimFile):
       continue
     let source = readFile(nimFile)
@@ -565,6 +600,9 @@ proc buildCommand(
   if target.bitworldContext.len > 0:
     args.add("--build-context")
     args.add("bitworld=" & target.bitworldContext)
+  if target.crewriftContext.len > 0:
+    args.add("--build-context")
+    args.add("crewrift=" & target.crewriftContext)
   args.add("-t")
   args.add(fullTag)
   args.add("--provenance=false")
@@ -601,6 +639,8 @@ proc buildImage(
   echo "  context:    ", target.contextDir.relativePath(root)
   if target.bitworldContext.len > 0:
     echo "  bitworld:   ", target.bitworldContext.relativePath(root)
+  if target.crewriftContext.len > 0:
+    echo "  crewrift:   ", target.crewriftContext.relativePath(root)
   echo "  platforms:  ", platforms
   echo "  push:       ", push
 

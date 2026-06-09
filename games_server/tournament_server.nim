@@ -322,6 +322,8 @@ type
     votePlayers: int
     voteSkip: int
     voteTimeout: int
+    connectTimeout: int
+    disconnectTimeout: int
 
   ScoreFile = object
     path: string
@@ -347,6 +349,8 @@ type
     votePlayersSum: int
     voteSkipSum: int
     voteTimeoutSum: int
+    connectTimeoutSum: int
+    disconnectTimeoutSum: int
     mmr: float
 
   TournamentState = object
@@ -1566,11 +1570,16 @@ proc parseScores(path: string): seq[ScoreRow] =
     votePlayers = node.jsonArrayAny(["vote_player", "vote_players"])
     voteSkips = node.jsonArray("vote_skip")
     voteTimeouts = node.jsonArray("vote_timeout")
+    connectTimeouts = node.jsonArray("connect_timeout")
+    disconnectTimeouts = node.jsonArray("disconnect_timeout")
     rowCount = max(
       max(max(names.len, scores.len), max(wins.len, tasks.len)),
       max(
         max(kills.len, max(imposters.len, crews.len)),
-        max(votePlayers.len, max(voteSkips.len, voteTimeouts.len))
+        max(
+          max(votePlayers.len, max(voteSkips.len, voteTimeouts.len)),
+          max(connectTimeouts.len, disconnectTimeouts.len)
+        )
       )
     )
   for i in 0 ..< rowCount:
@@ -1584,7 +1593,9 @@ proc parseScores(path: string): seq[ScoreRow] =
       crew: crews.scoreInt(i),
       votePlayers: votePlayers.scoreInt(i),
       voteSkip: voteSkips.scoreInt(i),
-      voteTimeout: voteTimeouts.scoreInt(i)
+      voteTimeout: voteTimeouts.scoreInt(i),
+      connectTimeout: connectTimeouts.scoreInt(i),
+      disconnectTimeout: disconnectTimeouts.scoreInt(i)
     ))
 
 proc scoreFileModified(path: string): int64 =
@@ -1723,6 +1734,8 @@ proc applyScoreRows(
     row.votePlayersSum += score.votePlayers
     row.voteSkipSum += score.voteSkip
     row.voteTimeoutSum += score.voteTimeout
+    row.connectTimeoutSum += score.connectTimeout
+    row.disconnectTimeoutSum += score.disconnectTimeout
     if score.win:
       inc row.wins
     stats[player] = row
@@ -2030,13 +2043,17 @@ proc renderStatsTable(stats: seq[PlayerStats]): string =
         th ".head":
           say "Vote skip %"
         th ".head":
-          say "Vote timeout %"
+          say "vote_timeouts %"
+        th ".head":
+          say "connect_timeout"
+        th ".head":
+          say "disconnect_timeout"
         th ".head":
           say "Image"
       if stats.len == 0:
         tr:
           td ".row1 center":
-            colspan "15"
+            colspan "17"
             say "No player stats yet."
       for i, player in stats:
         let
@@ -2074,6 +2091,10 @@ proc renderStatsTable(stats: seq[PlayerStats]): string =
             say fmtPercent(player.voteSkipSum, voteTotal)
           td rowClass & " center":
             say fmtPercent(player.voteTimeoutSum, voteTotal)
+          td rowClass & " center":
+            say $player.connectTimeoutSum
+          td rowClass & " center":
+            say $player.disconnectTimeoutSum
           td rowClass:
             say esc(player.imageUri)
 

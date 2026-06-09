@@ -64,6 +64,8 @@ following names are currently emitted by Among Them and are stable:
 | `vote_players` | Lifetime votes cast for a player |
 | `vote_skip` | Lifetime explicit skip votes |
 | `vote_timeout` | Lifetime vote timeouts |
+| `connect_timeout` | Lifetime initial connection timeouts |
+| `disconnect_timeout` | Lifetime reconnect timeouts |
 
 Stat values are cumulative for the lifetime of one player identity on the
 server. They reset only when the server restarts (current Among Them

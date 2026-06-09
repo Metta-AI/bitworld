@@ -61,8 +61,12 @@ data "aws_iam_policy_document" "dashboard_ec2" {
     actions = [
       "logs:GetLogEvents",
       "logs:DescribeLogStreams",
+      "logs:FilterLogEvents",
     ]
-    resources = ["${aws_cloudwatch_log_group.ecs_tasks.arn}:*"]
+    resources = [
+      "${aws_cloudwatch_log_group.ecs_tasks.arn}:*",
+      "arn:aws:logs:${var.region}:*:log-group:/aws/ecs/containerinsights/${aws_ecs_cluster.main.name}/performance:*",
+    ]
   }
 
   # EC2 network interface describe (for resolving task public IPs).

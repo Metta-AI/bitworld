@@ -6,6 +6,7 @@ import
   cogame_validator,
   ecs_backend,
   artifact_service,
+  cloudwatch_metrics,
   container_backend
 
 from std/httpclient import close, getContent, newHttpClient, put, body
@@ -1412,6 +1413,38 @@ proc memoryUsage(
     return compactMemory(statsByName[name].memory)
   "-"
 
+proc ecsContainerStats(
+  games: seq[GameContainer],
+  bots: seq[BotContainer]
+): Table[string, ContainerStats] =
+  ## Reads ECS task CPU and memory stats from Container Insights logs.
+  var taskArns: seq[string]
+  for game in games:
+    taskArns.add(game.name)
+  for bot in bots:
+    taskArns.add(bot.name)
+  let metrics = ecsTaskMetrics(
+    taskArns,
+    ecsConf.cluster,
+    ecsConf.region,
+    ecsConf.awsBin
+  )
+  for name, metric in metrics.pairs:
+    result[name] = ContainerStats(
+      cpu: metric.cpu,
+      memory: metric.memory,
+      memoryPercent: metric.memoryPercent
+    )
+
+proc containerStats(
+  games: seq[GameContainer],
+  bots: seq[BotContainer]
+): Table[string, ContainerStats] =
+  ## Reads container stats for the active backend.
+  if useEcs:
+    return ecsContainerStats(games, bots)
+  result = dockerContainerStats()
+
 proc addRunningContainersByLabel(
   names: var seq[string],
   label: string
@@ -2123,6 +2156,15 @@ proc scoreString(items: JsonNode, index: int): string =
 
 proc scoreHeader(key: string): string =
   ## Converts one score JSON key into a table header.
+  case key
+  of "vote_timeout":
+    return "vote_timeouts"
+  of "connect_timeout":
+    return "connect_timeout"
+  of "disconnect_timeout":
+    return "disconnect_timeout"
+  else:
+    discard
   result = fieldLabel(key.replace("_", " "))
   if result.len > 0:
     result[0] = result[0].toUpperAscii()
@@ -3506,7 +3548,7 @@ proc renderPage(
     manifestTable = renderManifestTable()
     uploadButtons = renderUploadButtons()
     bulkControls = renderBulkControls()
-    statsByName = dockerContainerStats()
+    statsByName = containerStats(games, bots)
     gamesTable = renderGamesTable(request, games, bots, statsByName)
     replayServersTable = renderReplayServersTable(
       request,
