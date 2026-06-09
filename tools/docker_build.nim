@@ -514,6 +514,17 @@ proc ensureEcrAuth(endpoint: string) =
     echo "Error: docker login to ECR failed."
     quit(1)
 
+proc ecrLogout(endpoint: string) =
+  ## Removes the stored ECR credential after a push.
+  ## Public ECR pulls are anonymous, so a lingering login token only breaks
+  ## later pulls once it expires. Logout failure is non-fatal: the push
+  ## already succeeded and we just want to avoid leaving stale credentials.
+  echo "Logging out of ECR: ", endpoint
+  let code = execCmd("docker logout " & endpoint)
+  if code != 0:
+    echo "Warning: docker logout failed for ", endpoint,
+      ". Remove it manually with: docker logout ", endpoint
+
 proc ecrPublicRepoName(imageUri: string): string =
   ## Extracts the repo name from a public.ecr.aws URI (e.g. "treeform/games/crewrift").
   let prefix = "public.ecr.aws/" & OurEcrPublicAlias & "/"
@@ -753,8 +764,8 @@ proc main() =
   if push or "," in platforms:
     ensureBuilder()
 
+  var authedEcrEndpoints: seq[string]
   if push:
-    var authedEcrEndpoints: seq[string]
     for target in chosen:
       let imageTag = target.fullImageTag(registry, tag)
       if isEcrRegistry(imageTag):
@@ -773,6 +784,9 @@ proc main() =
 
   for target in chosen:
     buildImage(root, target, registry, tag, platforms, push)
+
+  for endpoint in authedEcrEndpoints:
+    ecrLogout(endpoint)
 
   echo ""
   echo "All builds complete."
