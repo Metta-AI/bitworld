@@ -77,6 +77,15 @@ proc testInputMasks() =
   doAssert not none.attack
   doAssert not none.b
 
+proc testLayerConstants() =
+  ## Tests sprite layer type constants used by clients and games.
+  echo "Testing sprite layer constants"
+  doAssert SpriteLayerMap == 0x00
+  doAssert SpriteLayerCenterBottom == 0x08
+  doAssert SpriteLayerFullScreen == 0x09
+  doAssert SpriteLayerZoomableFlag == 0x01
+  doAssert SpriteLayerUiFlag == 0x02
+
 proc testByteHelpers() =
   ## Tests byte blobs and primitive little-endian readers.
   echo "Testing sprite byte helpers"
@@ -370,6 +379,7 @@ proc testSpriteClientMalformedMessages() =
   doAssert messages[0].text == "ok"
 
 testInputMasks()
+testLayerConstants()
 testByteHelpers()
 testServerPacketBuilders()
 testMultipleServerDefinitions()

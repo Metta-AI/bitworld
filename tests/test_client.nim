@@ -40,6 +40,18 @@ proc testReplayClientPreservesUri() =
   let html = readClientHtml(CoworldReplayClientRoute)
   doAssert """["name","slot","token","uri"]""" in html
 
+proc testGlobalClientFullScreenLayers() =
+  ## Tests that the shared global/replay client understands full screen layers.
+  echo "Testing global client full screen layers"
+  let html = readClientHtml(CoworldReplayClientRoute)
+  doAssert "FullScreenLayerType=9" in html
+  doAssert "function isFullScreenLayer" in html
+  doAssert "function layerHasObjects" in html
+  doAssert "if(isFullScreenLayer(layer))return 1" in html
+  doAssert "Math.max(.000001,Math.min" in html
+  doAssert "isFullScreenLayer(layer)||!layerHasObjects(layer)" in html
+  doAssert "layerDrawRank" in html
+
 proc testPlayerClientSpeaksSpriteProtocol() =
   ## Tests the shared player client covers the sprite protocol used by bots.
   echo "Testing player client sprite protocol support"
@@ -50,6 +62,12 @@ proc testPlayerClientSpeaksSpriteProtocol() =
   doAssert "?32:0" in html
   doAssert "k.KeyX||k.KeyK" in html
   doAssert "?64:0" in html
+  doAssert "FullScreenLayerType=9" in html
+  doAssert "function isFullScreenLayer" in html
+  doAssert "if(isFullScreenLayer(layer))return 1" in html
+  doAssert "Math.max(.000001,Math.min" in html
+  doAssert "function layerScreenPos" in html
+  doAssert "layerDrawRank" in html
   for messageType in ["0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07"]:
     doAssert ("type===" & messageType) in html,
       "missing sprite protocol parser case " & messageType
@@ -69,6 +87,7 @@ proc testEmbeddedClientBodies() =
 testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
 testReplayClientPreservesUri()
+testGlobalClientFullScreenLayers()
 testPlayerClientSpeaksSpriteProtocol()
 testEmbeddedClientBodies()
 echo "All tests passed"

@@ -136,6 +136,7 @@ Layer type values:
 | `0x06` | Center right UI layer |
 | `0x07` | Center left UI layer |
 | `0x08` | Center bottom UI layer |
+| `0x09` | Full screen layer |
 
 Layer flag values:
 
@@ -145,8 +146,13 @@ Layer flag values:
 | `0x02` | UI layer |
 
 The map layer should use type `0x00` and flag `0x01`. UI layers should use one
-of the UI layer types and flag `0x02`. Unknown layers are invalid. Redefining a
-layer replaces its type and flags but does not delete objects in that layer.
+of the UI layer types and flag `0x02`. A full screen layer should use type
+`0x09` and no flags. It is drawn as a screen-fitted layer that preserves the
+layer viewport aspect ratio, scaling until either the client width or height is
+filled while keeping the full layer visible. Clients should draw layer type
+`0x00` first, then type `0x09`, then UI layers. Clients must not let users drag
+or zoom full screen layers. Unknown layers are invalid. Redefining a layer
+replaces its type and flags but does not delete objects in that layer.
 
 ## Client to Server Messages
 

@@ -29,6 +29,7 @@ const PaletteRgb=[
 const u=new URL(location.href),m=location.host?((location.protocol=="https:"?"wss:":"ws:")+"//"+location.host):"ws://localhost:8080";
 let a=u.searchParams.get("address")||m+"/player",g=(u.searchParams.get("joystick")|0)-1,r=Math.max(0,+u.searchParams.get("reconnect")||0);
 let k={},l=255,w,z=0,t=0,pixelImage=x.createImageData(128,128),spriteMode=false,layers=new Map(),sprites=new Map(),objects=new Map();
+const ZoomableFlag=1,UiFlag=2,MapLayerType=0,FullScreenLayerType=9;
 const textDecoder=new TextDecoder("utf-8");
 a=(a=>{try{let v=new URL(a,location.href);if(v.protocol=="http:")v.protocol="ws:";if(v.protocol=="https:")v.protocol="wss:";if(v.pathname=="/")v.pathname="/player";for(let q of["name","token","slot"]){let h=u.searchParams.get(q);if(h!==null)v.searchParams.set(q,h)}return v+""}catch(e){return a}})(a);
 function n(o){s.textContent=o;s.style.display=o?"flex":"none"}
@@ -112,10 +113,22 @@ function putPixel(layer,x0,y0,sprite,srcOffset){
   d[offset+2]=Math.round((sprite.pixels[srcOffset+2]*sa+d[offset+2]*dw)/oa);
   d[offset+3]=Math.round(oa*255)
 }
+function isMapLayer(layer){return !!layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType)}
+function isFullScreenLayer(layer){return !!layer&&layer.type===FullScreenLayerType}
+function isUiLayer(layer){return !!layer&&((layer.flags&UiFlag)!==0)}
+function layerDrawRank(layer){if(isMapLayer(layer))return 0;if(isFullScreenLayer(layer))return 1;if(isUiLayer(layer))return 2;return 2}
+function layerScreenPos(layer){
+  if(isFullScreenLayer(layer)){
+    const scale=Math.max(.000001,Math.min(c.width/Math.max(1,layer.width),c.height/Math.max(1,layer.height)));
+    const width=layer.width*scale,height=layer.height*scale;
+    return {x:Math.floor((c.width-width)/2),y:Math.floor((c.height-height)/2),w:width,h:height}
+  }
+  return {x:0,y:0,w:layer.width,h:layer.height}
+}
 function drawSprite(){
   x.clearRect(0,0,c.width,c.height);
   x.fillStyle="#000";x.fillRect(0,0,c.width,c.height);
-  const orderedLayers=[...layers.values()].sort((a,b)=>a.type-b.type||a.id-b.id);
+  const orderedLayers=[...layers.values()].sort((a,b)=>layerDrawRank(a)-layerDrawRank(b)||a.type-b.type||a.id-b.id);
   for(const layer of orderedLayers){
     if(!layer.image)continue;
     layer.image.data.fill(0);
@@ -127,7 +140,8 @@ function drawSprite(){
       for(let sy=sy0;sy<sy1;sy++)for(let sx=sx0;sx<sx1;sx++)putPixel(layer,object.x+sx,object.y+sy,sprite,(sy*sprite.width+sx)*4)
     }
     layer.ctx.putImageData(layer.image,0,0);
-    x.drawImage(layer.canvas,0,0)
+    const pos=layerScreenPos(layer);
+    x.drawImage(layer.canvas,pos.x,pos.y,pos.w,pos.h)
   }
   n("")
 }

@@ -34,6 +34,18 @@ const
   SpriteClientMouseMove* = 0x82'u8
   SpriteClientMouseButton* = 0x83'u8
   SpriteClientInput* = 0x84'u8
+  SpriteLayerMap* = 0x00
+  SpriteLayerTopLeft* = 0x01
+  SpriteLayerTopRight* = 0x02
+  SpriteLayerBottomRight* = 0x03
+  SpriteLayerBottomLeft* = 0x04
+  SpriteLayerCenterTop* = 0x05
+  SpriteLayerCenterRight* = 0x06
+  SpriteLayerCenterLeft* = 0x07
+  SpriteLayerCenterBottom* = 0x08
+  SpriteLayerFullScreen* = 0x09
+  SpriteLayerZoomableFlag* = 0x01
+  SpriteLayerUiFlag* = 0x02
   EmbeddedPalettePng = staticRead("../../client/data/pallete.png")
 
 type
