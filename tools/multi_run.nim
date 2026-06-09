@@ -207,6 +207,23 @@ proc stopPlayerContainers(meta: GameMeta) =
     except CatchableError:
       discard
 
+proc savePlayerLogs(paths: RunPaths, meta: GameMeta) =
+  ## Saves Docker logs for each player container in one game.
+  for slot in meta.slots:
+    let logName = slot.log.extractFilename()
+    if logName.len == 0 or slot.containerName.len == 0:
+      continue
+    let
+      res = dockerResult(@["logs", slot.containerName])
+      path = paths.artifactHostPath(logName)
+      output =
+        if res.code == 0:
+          res.output
+        else:
+          "Could not read Docker logs for " & slot.containerName &
+            ":\n" & res.output
+    writeFile(path, output)
+
 proc startJob(
   paths: RunPaths,
   game: GameManifest,
@@ -236,6 +253,7 @@ proc startJob(
     meta.finished = getTime().toUnix()
     paths.runDir.writeGameMeta(meta)
     stopPlayerContainers(meta)
+    savePlayerLogs(paths, meta)
     discard dockerResult(@["stop", meta.containerName])
     raise newException(
       MultiRunError,
@@ -252,6 +270,7 @@ proc finishJob(paths: RunPaths, job: ActiveJob, container: ContainerInfo): GameM
   else:
     result.status = "failed"
   stopPlayerContainers(result)
+  savePlayerLogs(paths, result)
   paths.runDir.writeGameMeta(result)
 
 proc activeNames(jobs: openArray[ActiveJob]): string =
@@ -344,6 +363,7 @@ proc runMultiRun(config: MultiRunConfig): int =
         meta.finished = getTime().toUnix()
         paths.runDir.writeGameMeta(meta)
         stopPlayerContainers(meta)
+        savePlayerLogs(paths, meta)
         echo "lost game ", meta.gameIndex, ": ", e.msg
         inc failed
     active = stillActive

@@ -88,6 +88,7 @@ type
     slotIndex*: int
     token*: string
     containerName*: string
+    log*: string
 
   RunPaths* = object
     replayRoot*: string
@@ -371,9 +372,13 @@ proc allocateRunPaths*(): RunPaths =
   result.runDir = result.runsRoot / result.runId
   createDir(result.runDir)
 
+proc runArtifactRelativePath*(runId, name: string): string =
+  ## Returns an artifact path relative to the shared replay root.
+  (MultiRunsDirName / runId / name).replace("\\", "/")
+
 proc artifactRelativePath*(paths: RunPaths, name: string): string =
   ## Returns an artifact path relative to the shared replay root.
-  (MultiRunsDirName / paths.runId / name).replace("\\", "/")
+  runArtifactRelativePath(paths.runId, name)
 
 proc artifactHostPath*(paths: RunPaths, name: string): string =
   ## Returns an artifact path on the host filesystem.
@@ -386,6 +391,15 @@ proc artifactContainerPath*(name: string): string =
 proc gameFileName*(gameIndex: int, ext: string): string =
   ## Builds one per-game artifact file name.
   "game_" & align($gameIndex, 4, '0') & ext
+
+proc playerLogFileName*(
+  gameIndex,
+  slotIndex: int,
+  playerName: string
+): string =
+  ## Builds one per-player log artifact file name.
+  "game_" & align($gameIndex, 4, '0') & "." &
+    cleanFileName(playerName) & ".slot_" & $slotIndex & ".log"
 
 proc randomHexToken*(): string =
   ## Generates a secure random hex token.
@@ -723,9 +737,10 @@ proc buildSlots*(
   for launch in launches:
     for _ in 0 ..< launch.count:
       inc slot
+      let playerName = visiblePlayerName(launch.player.name, slot)
       result.add(PlayerSlot(
         player: launch.player.name,
-        playerName: visiblePlayerName(launch.player.name, slot),
+        playerName: playerName,
         role: launch.role,
         slotIndex: slot - 1,
         token: randomHexToken(),
@@ -734,6 +749,10 @@ proc buildSlots*(
           launch.player.name,
           gameIndex,
           slot
+        ),
+        log: runArtifactRelativePath(
+          runId,
+          playerLogFileName(gameIndex, slot - 1, playerName)
         )
       ))
 
@@ -1106,6 +1125,7 @@ proc slotJson(slot: PlayerSlot): JsonNode =
   result["slotIndex"] = %slot.slotIndex
   result["token"] = %slot.token
   result["containerName"] = %slot.containerName
+  result["log"] = %slot.log
 
 proc slotFromJson(node: JsonNode): PlayerSlot =
   ## Reads one player slot from metadata JSON.
@@ -1117,7 +1137,8 @@ proc slotFromJson(node: JsonNode): PlayerSlot =
     role: node.manifestString("role", ""),
     slotIndex: parseIntSafe($node.getOrDefault("slotIndex")),
     token: node.manifestString("token", ""),
-    containerName: node.manifestString("containerName", "")
+    containerName: node.manifestString("containerName", ""),
+    log: node.manifestString("log", "")
   )
 
 proc writeRunMeta*(runDir: string, meta: RunMeta) =
@@ -1616,7 +1637,7 @@ proc parseScores*(path: string): seq[ScoreRow] =
           row.texts.addScoreTextField(field, items.scoreText(i))
     result.add(row)
 
-proc slotByScoreName(
+proc slotByScoreName*(
   meta: GameMeta,
   name: string
 ): PlayerSlot =

@@ -1399,24 +1399,49 @@ proc renderFolderPage(runId: string): string =
     result.add("</tr>")
   result.add("</tbody></table></div></body></html>")
 
+proc gameByScores(runDir, name: string): GameMeta =
+  ## Finds durable game metadata for one scores file name.
+  for game in readGameMetas(runDir):
+    if game.results.extractFilename() == name:
+      return game
+
+proc scoreLogCell(
+  runId,
+  runDir: string,
+  meta: GameMeta,
+  row: ScoreRow
+): string =
+  ## Renders one score-row bot log link cell.
+  let
+    slot = meta.slotByScoreName(row.name)
+    logName = slot.log.extractFilename()
+  if logName.len == 0 or not fileExists(runDir / logName):
+    return "<td>-</td>"
+  "<td><a href=\"" & downloadUrl(runId, logName) & "\">log</a></td>"
+
+proc gameHasLogs(meta: GameMeta): bool =
+  ## Returns true when one game metadata file has player log paths.
+  for slot in meta.slots:
+    if slot.log.len > 0:
+      return true
+
 proc renderScoresPage(runId, name: string): string =
   ## Renders one raw scores file as a simple table.
-  let path = artifactPath(runId, name)
+  let
+    runDir = runFolderPath(runId)
+    path = artifactPath(runId, name)
+    game = gameByScores(runDir, name)
+    showLogs = game.gameHasLogs()
   let scores = parseScores(path)
   let
     numberFields = scoreNumberFieldNames(scores)
     textFields = scoreTextFieldNames(scores)
-  var headings = @[
-    "Name",
-    "Win",
-    "Tasks",
-    "Kills",
-    "Imposter",
-    "Crew",
-    "Votes",
-    "Skips",
-    "Timeouts"
-  ]
+  var headings = @["Name"]
+  if showLogs:
+    headings.add("Log")
+  for heading in ["Win", "Tasks", "Kills", "Imposter", "Crew", "Votes",
+      "Skips", "Timeouts"]:
+    headings.add(heading)
   for field in textFields:
     headings.add(scoreFieldLabel(field))
   for field in numberFields:
@@ -1443,6 +1468,8 @@ proc renderScoresPage(runId, name: string): string =
     let className = if i mod 2 == 0: "row1" else: "row2"
     result.add("<tr class=\"" & className & "\">")
     result.add("<td>" & esc(row.name) & "</td>")
+    if showLogs:
+      result.add(scoreLogCell(runId, runDir, game, row))
     result.add("<td>" & $row.win & "</td>")
     result.add("<td class=\"right\">" & $row.tasks & "</td>")
     result.add("<td class=\"right\">" & $row.kills & "</td>")

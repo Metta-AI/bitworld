@@ -153,6 +153,21 @@ proc testStablePlayerNames() =
   doAssert firstGame[3].playerName == "truecrew-4"
   doAssert hundredthGame[0].playerName == "notsus-1"
   doAssert hundredthGame[2].playerName == "notsus-3"
+  doAssert firstGame[0].log ==
+    "multi_runs/run_000001/game_0001.notsus-1.slot_0.log"
+  doAssert hundredthGame[2].log ==
+    "multi_runs/run_000001/game_0100.notsus-3.slot_2.log"
+  let root = tempRoot("multi_run_log_meta")
+  createDir(root)
+  writeGameMeta(root, GameMeta(
+    runId: "run_000001",
+    gameIndex: 1,
+    gameName: "crewrift",
+    slots: firstGame
+  ))
+  let meta = readGameMeta(gameMetaPath(root, 1))
+  doAssert meta.slots[0].log == firstGame[0].log
+  removeDir(root)
 
 proc testRunAllocation() =
   ## Checks generated run id increments.
