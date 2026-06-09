@@ -221,7 +221,7 @@ function addressPath(){
 }
 const playerMode=url.searchParams.get("player")==="1"||
   addressPath()==="/player";
-const ZoomableFlag=1,UiFlag=2,MapLayerType=0,MaxUiZoom=3;
+const ZoomableFlag=1,UiFlag=2,MapLayerType=0,FullScreenLayerType=9,MaxUiZoom=3;
 const MaxUiZoomFitPadding=1.5;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
@@ -423,9 +423,28 @@ function applyView(){
 
 function mapLayer(){
   for(const layer of layers.values()){
-    if((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType)return layer;
+    if(isMapLayer(layer))return layer;
   }
   return null;
+}
+
+function isMapLayer(layer){
+  return !!layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType);
+}
+
+function isFullScreenLayer(layer){
+  return !!layer&&layer.type===FullScreenLayerType;
+}
+
+function isUiLayer(layer){
+  return !!layer&&((layer.flags&UiFlag)!==0);
+}
+
+function layerDrawRank(layer){
+  if(isMapLayer(layer))return 0;
+  if(isFullScreenLayer(layer))return 1;
+  if(isUiLayer(layer))return 2;
+  return 2;
 }
 
 function fit(){
@@ -466,8 +485,8 @@ function mapPoint(event){
   };
 }
 
-function uiLayerPoint(event,layer){
-  if(!layer||!layer.image||((layer.flags&UiFlag)===0))return null;
+function screenLayerPoint(event,layer){
+  if(!layer||!layer.image)return null;
   const pos=layerScreenPos(layer);
   return {
     x:Math.floor((event.clientX-pos.x)*layer.width/pos.w),
@@ -476,24 +495,37 @@ function uiLayerPoint(event,layer){
   };
 }
 
+function layerHasObjects(layer){
+  for(const object of objects.values()){
+    if(object.layer===layer.id)return true;
+  }
+  return false;
+}
+
 function mousePoint(event,preferredLayer=null){
   if(preferredLayer!==null){
     const layer=layers.get(preferredLayer);
-    if(layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType)){
+    if(isMapLayer(layer)){
       return mapPoint(event);
     }
-    const point=uiLayerPoint(event,layer);
-    if(point)return point;
+    if(!isFullScreenLayer(layer)||layerHasObjects(layer)){
+      const point=screenLayerPoint(event,layer);
+      if(point)return point;
+    }
   }
   const orderedLayers=[...layers.values()].sort((a,b)=>
-    b.type-a.type||b.id-a.id
+    layerDrawRank(b)-layerDrawRank(a)||b.type-a.type||b.id-a.id
   );
   for(const layer of orderedLayers){
-    if(!layer.image||((layer.flags&UiFlag)===0))continue;
+    if(!layer.image||!isUiLayer(layer))continue;
     const pos=layerScreenPos(layer);
     if(event.clientX<pos.x||event.clientY<pos.y||
         event.clientX>=pos.x+pos.w||event.clientY>=pos.y+pos.h)continue;
-    return uiLayerPoint(event,layer);
+    return screenLayerPoint(event,layer);
+  }
+  for(const layer of orderedLayers){
+    if(!layer.image||!isFullScreenLayer(layer)||!layerHasObjects(layer))continue;
+    return screenLayerPoint(event,layer);
   }
   return mapPoint(event);
 }
@@ -832,9 +864,22 @@ function drawLayerCanvas(layer,pos){
 }
 
 function layerScreenPos(layer){
-  const scale=(layer.flags&UiFlag)!==0?uiZoom():1;
+  if(isFullScreenLayer(layer)){
+    const scale=Math.max(.000001,Math.min(
+      innerWidth/Math.max(1,layer.width),
+      innerHeight/Math.max(1,layer.height)
+    ));
+    const width=layer.width*scale,height=layer.height*scale;
+    return {
+      x:Math.floor((innerWidth-width)/2),
+      y:Math.floor((innerHeight-height)/2),
+      w:width,
+      h:height
+    };
+  }
+  const scale=isUiLayer(layer)?uiZoom():1;
   const width=layer.width*scale,height=layer.height*scale;
-  if((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType){
+  if(isMapLayer(layer)){
     return {x:panX,y:panY,w:layer.width*zoom,h:layer.height*zoom};
   }
   switch(layer.type){
@@ -854,13 +899,15 @@ function draw(){
   if(!socket||socket.readyState===WebSocket.CLOSED)return;
   ctx.imageSmoothingEnabled=false;
   clearBlack();
-  const orderedLayers=[...layers.values()].sort((a,b)=>a.type-b.type||a.id-b.id);
+  const orderedLayers=[...layers.values()].sort((a,b)=>
+    layerDrawRank(a)-layerDrawRank(b)||a.type-b.type||a.id-b.id
+  );
   for(const layer of orderedLayers){
     if(!layer.image)continue;
     const ordered=[...objects.values()].filter(object=>object.layer===layer.id).sort((a,b)=>
       a.z-b.z||a.y-b.y||a.id-b.id
     );
-    if((layer.flags&UiFlag)!==0&&ordered.length===0)continue;
+    if(isUiLayer(layer)&&ordered.length===0)continue;
     layer.image.data.fill(0);
     for(const object of ordered){
       const sprite=sprites.get(object.spriteId);
@@ -1019,6 +1066,9 @@ addEventListener("resize",()=>{
 });
 addEventListener("wheel",event=>{
   event.preventDefault();
+  const point=mousePoint(event);
+  const layer=point?layers.get(point.layer):null;
+  if(!isMapLayer(layer))return;
   autoFit=false;
   const beforeX=(event.clientX-panX)/zoom;
   const beforeY=(event.clientY-panY)/zoom;
@@ -1033,7 +1083,7 @@ addEventListener("pointerdown",event=>{
   const point=mousePoint(event);
   activeMouseLayer=point?point.layer:null;
   const layer=layers.get(activeMouseLayer);
-  draggingMap=!!layer&&((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType);
+  draggingMap=isMapLayer(layer);
   if(draggingMap){
     autoFit=false;
     dragX=event.clientX-panX;
@@ -1057,7 +1107,10 @@ addEventListener("pointerup",event=>{
   activeMouseLayer=null;
   try{canvas.releasePointerCapture(event.pointerId)}catch(e){}
 });
-addEventListener("dblclick",()=>{
+addEventListener("dblclick",event=>{
+  const point=mousePoint(event);
+  const layer=point?layers.get(point.layer):null;
+  if(!isMapLayer(layer))return;
   autoFit=true;
   fit();
 });

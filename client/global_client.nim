@@ -75,9 +75,10 @@ const
   TargetFps = 60.0
   WindowWidth = 900
   WindowHeight = 640
-  ZoomableFlag = 1
-  UiFlag = 2
-  MapLayerKind = 0
+  ZoomableFlag = SpriteLayerZoomableFlag
+  UiFlag = SpriteLayerUiFlag
+  MapLayerKind = SpriteLayerMap
+  FullScreenLayerKind = SpriteLayerFullScreen
   UiZoom = 3.0'f
 when not defined(emscripten):
   const NetworkPollPasses = 8
@@ -264,9 +265,24 @@ proc isMapLayer(layer: GlobalLayer): bool =
   ## Returns true when a layer uses map coordinates.
   (layer.flags and ZoomableFlag) != 0 or layer.kind == MapLayerKind
 
+proc isFullScreenLayer(layer: GlobalLayer): bool =
+  ## Returns true when a layer is screen-fitted without pan or zoom.
+  layer.kind == FullScreenLayerKind
+
 proc isUiLayer(layer: GlobalLayer): bool =
   ## Returns true when a layer uses screen UI coordinates.
   (layer.flags and UiFlag) != 0
+
+proc layerDrawRank(layer: GlobalLayer): int =
+  ## Returns a coarse draw rank where base layers stay behind UI overlays.
+  if layer.isMapLayer:
+    0
+  elif layer.isFullScreenLayer:
+    1
+  elif layer.isUiLayer:
+    2
+  else:
+    2
 
 proc mapLayer(app: GlobalApp): GlobalLayer =
   ## Returns the first map layer.
@@ -317,6 +333,24 @@ proc layerScreenRect(
   logicalW, logicalH: float32
 ): tuple[x, y, w, h: float32] =
   ## Returns the screen rectangle for one layer.
+  if layer.isFullScreenLayer:
+    let
+      scale = max(
+        0.000001'f,
+        min(
+          logicalW / max(1, layer.width).float32,
+          logicalH / max(1, layer.height).float32
+        )
+      )
+      w = layer.width.float32 * scale
+      h = layer.height.float32 * scale
+    return (
+      x: floor((logicalW - w) * 0.5'f),
+      y: floor((logicalH - h) * 0.5'f),
+      w: w,
+      h: h
+    )
+
   if layer.isMapLayer:
     return (
       x: app.panX,
@@ -358,7 +392,9 @@ proc orderedLayerIds(app: GlobalApp): seq[int] =
       let
         la = app.layers[a]
         lb = app.layers[b]
-      result = cmp(la.kind, lb.kind)
+      result = cmp(la.layerDrawRank(), lb.layerDrawRank())
+      if result == 0:
+        result = cmp(la.kind, lb.kind)
       if result == 0:
         result = cmp(la.id, lb.id)
   )
@@ -687,7 +723,7 @@ proc parseMessage*(app: GlobalApp, data: string) =
         kind = ord(data[offset + 1])
         flags = ord(data[offset + 2])
       offset += 3
-      if kind < 0 or kind > 8:
+      if kind < 0 or kind > FullScreenLayerKind:
         app.closeNetwork()
         return
       var layer = app.layerIndex(layerId)
@@ -777,13 +813,13 @@ proc mapPoint(app: GlobalApp, mouse: IVec2): MousePoint =
     layer: layer.id
   )
 
-proc uiLayerPoint(
+proc screenLayerPoint(
   app: GlobalApp,
   layer: GlobalLayer,
   mouse: IVec2,
   logicalW, logicalH: float32
 ): MousePoint =
-  ## Converts a window mouse position into UI layer coordinates.
+  ## Converts a window mouse position into layer-local coordinates.
   let
     rect = app.layerScreenRect(layer, logicalW, logicalH)
     mx = mouse.x.float32 / app.silky.uiScale
@@ -793,6 +829,12 @@ proc uiLayerPoint(
     y: floor((my - rect.y) * layer.height.float32 / rect.h).int,
     layer: layer.id
   )
+
+proc layerHasObjects(app: GlobalApp, layer: GlobalLayer): bool =
+  ## Returns true when one or more objects are on a layer.
+  for item in app.objects.values:
+    if item.layer == layer.id:
+      return true
 
 proc mousePoint(app: GlobalApp, preferredLayer = -1): MousePoint =
   ## Returns the topmost protocol mouse point under the cursor.
@@ -808,7 +850,9 @@ proc mousePoint(app: GlobalApp, preferredLayer = -1): MousePoint =
     if layer.isMapLayer:
       return app.mapPoint(mouse)
     if layer.isUiLayer:
-      return app.uiLayerPoint(layer, mouse, logicalW, logicalH)
+      return app.screenLayerPoint(layer, mouse, logicalW, logicalH)
+    if layer.isFullScreenLayer and app.layerHasObjects(layer):
+      return app.screenLayerPoint(layer, mouse, logicalW, logicalH)
 
   var ids = app.orderedLayerIds()
   ids.sort(
@@ -816,7 +860,9 @@ proc mousePoint(app: GlobalApp, preferredLayer = -1): MousePoint =
       let
         la = app.layers[a]
         lb = app.layers[b]
-      result = cmp(lb.kind, la.kind)
+      result = cmp(lb.layerDrawRank(), la.layerDrawRank())
+      if result == 0:
+        result = cmp(lb.kind, la.kind)
       if result == 0:
         result = cmp(lb.id, la.id)
   )
@@ -827,7 +873,7 @@ proc mousePoint(app: GlobalApp, preferredLayer = -1): MousePoint =
     let rect = app.layerScreenRect(layer, logicalW, logicalH)
     if mx >= rect.x and my >= rect.y and
       mx < rect.x + rect.w and my < rect.y + rect.h:
-        let point = app.uiLayerPoint(layer, mouse, logicalW, logicalH)
+        let point = app.screenLayerPoint(layer, mouse, logicalW, logicalH)
         for item in app.objects.values:
           if item.layer != layer.id or item.spriteId notin app.sprites:
             continue
@@ -841,6 +887,12 @@ proc mousePoint(app: GlobalApp, preferredLayer = -1): MousePoint =
             point.y
           ):
             return point
+
+  for id in ids:
+    let layer = app.layers[id]
+    if not layer.isFullScreenLayer or not app.layerHasObjects(layer):
+      continue
+    return app.screenLayerPoint(layer, mouse, logicalW, logicalH)
 
   app.mapPoint(mouse)
 
@@ -1019,22 +1071,30 @@ proc handleInput*(app: GlobalApp) =
     app.activeMouseLayer = -1
 
   if app.window.scrollDelta.y != 0:
-    app.autoFit = false
     let
-      beforeX = (mouseLogical.x.float32 - app.panX) / app.zoom
-      beforeY = (mouseLogical.y.float32 - app.panY) / app.zoom
-      factor =
-        if app.window.scrollDelta.y > 0:
-          1.015'f
-        else:
-          1.0'f / 1.015'f
-    app.zoom = min(64.0'f, max(0.1'f, app.zoom * factor))
-    app.panX = mouseLogical.x.float32 - beforeX * app.zoom
-    app.panY = mouseLogical.y.float32 - beforeY * app.zoom
+      point = app.mousePoint()
+      layer = app.layerIndex(point.layer)
+    if layer.isMapLayer:
+      app.autoFit = false
+      let
+        beforeX = (mouseLogical.x.float32 - app.panX) / app.zoom
+        beforeY = (mouseLogical.y.float32 - app.panY) / app.zoom
+        factor =
+          if app.window.scrollDelta.y > 0:
+            1.015'f
+          else:
+            1.0'f / 1.015'f
+      app.zoom = min(64.0'f, max(0.1'f, app.zoom * factor))
+      app.panX = mouseLogical.x.float32 - beforeX * app.zoom
+      app.panY = mouseLogical.y.float32 - beforeY * app.zoom
 
   if pressed[DoubleClick]:
-    app.autoFit = true
-    app.fit()
+    let
+      point = app.mousePoint()
+      layer = app.layerIndex(point.layer)
+    if layer.isMapLayer:
+      app.autoFit = true
+      app.fit()
 
 proc windowOpen*(app: GlobalApp): bool =
   ## Returns true while the global window should stay open.
