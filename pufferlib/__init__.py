@@ -1,2 +1,0 @@
-"""PufferLib helpers for BitWorld."""
-
