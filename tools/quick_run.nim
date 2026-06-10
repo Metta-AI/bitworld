@@ -1,6 +1,8 @@
 import
-  std/[exitprocs, json, monotimes, net, os, osproc, parseopt,
-    strutils, sysrand, times]
+  std/[json, monotimes, net, os, osproc, parseopt, strutils, sysrand, times]
+
+when isMainModule:
+  import std/exitprocs
 
 const
   GlobalClientSourceRelative = "client" / "global_client.nim"
@@ -74,6 +76,8 @@ type
     saveReplayPath: string
     configJson: string
     configPath: string
+    seed: int
+    seedSet: bool
     serverArgs: seq[string]
     botGroups: seq[BotGroup]
     botGui: bool
@@ -107,7 +111,7 @@ proc usage(): string =
     "[--port:N] [--player] [--players:N] [--bots:BOT:N[:ROLE]] " &
     "[--global] " &
     "[--html] [--slots] " &
-    "[--bot-gui] " &
+    "[--bot-gui] [--seed:N] " &
     "[--bot-name-prefix:NAME] [--bot-map:PATH] [--reconnect:N]\n" &
     "Human clients open as native Nim windows by default.\n" &
     "--global opens a global viewer and defaults humans to zero.\n" &
@@ -144,6 +148,15 @@ proc parseBotCount(value: string): int =
       ValueError,
       "Bot count must be between 0 and " & $MaxBots & "."
     )
+
+proc parseSeed*(value: string): int =
+  ## Parses one optional game seed.
+  try:
+    result = parseInt(value)
+  except ValueError:
+    raise newException(ValueError, "--seed must be an integer.")
+  if result < -1:
+    raise newException(ValueError, "--seed must be -1 or greater.")
 
 proc parseBotRole(value: string): string =
   ## Parses one optional bot role.
@@ -946,6 +959,11 @@ proc parseArgs(): QuickRunConfig =
         if val.len == 0:
           raise newException(ValueError, "--config-file requires a value.")
         result.configPath = val
+      of "seed":
+        if val.len == 0:
+          raise newException(ValueError, "--seed requires a value.")
+        result.seed = parseSeed(val)
+        result.seedSet = true
       of "reconnect":
         if val.len == 0:
           raise newException(ValueError, "--reconnect requires a value.")
@@ -1084,6 +1102,49 @@ proc slotsConfigJson(
     root["players"] = players
   root["slots"] = slots
   $root
+
+proc configObject(text, source: string): JsonNode =
+  ## Parses one quick-run config object.
+  try:
+    result = parseJson(text)
+  except JsonParsingError as e:
+    raise newException(
+      ValueError,
+      "Could not parse " & source & ": " & e.msg
+    )
+  if result.kind != JObject:
+    raise newException(ValueError, source & " must be a JSON object.")
+
+proc mergeConfigObject(target: JsonNode, source: JsonNode) =
+  ## Merges top-level config fields from source into target.
+  for key, value in source:
+    target[key] = value
+
+proc mergedConfigJson*(
+  slotsJson,
+  configJson,
+  configPath: string,
+  seedSet: bool,
+  seed: int
+): string =
+  ## Builds one inline config object from quick-run config sources.
+  var
+    root = newJObject()
+    hasConfig = false
+  if slotsJson.len > 0:
+    root.mergeConfigObject(slotsJson.configObject("slot config"))
+    hasConfig = true
+  if configPath.len > 0:
+    root.mergeConfigObject(readFile(configPath).configObject(configPath))
+    hasConfig = true
+  if configJson.len > 0:
+    root.mergeConfigObject(configJson.configObject("--config"))
+    hasConfig = true
+  if seedSet:
+    root["seed"] = %seed
+    hasConfig = true
+  if hasConfig:
+    result = $root
 
 proc htmlParams(config: QuickRunConfig): seq[(string, string)] =
   ## Returns query parameters for browser clients.
@@ -1343,20 +1404,35 @@ proc runQuickRun(input: QuickRunConfig): int =
   if config.slots or rolesRequested:
     slotAssignments = config.buildSlotAssignments(botLaunches)
 
-  var serverArgs = @[portArg, hostArg]
+  var
+    serverArgs = @[portArg, hostArg]
+    slotConfigJson = ""
   if (config.slots or rolesRequested) and slotAssignments.len > 0:
-    serverArgs.add(
-      "--config:" & slotsConfigJson(
-        slotAssignments,
-        game.slotNamesInPlayers
-      )
+    slotConfigJson = slotsConfigJson(
+      slotAssignments,
+      game.slotNamesInPlayers
     )
   if config.saveReplayPath.len > 0:
     serverArgs.add("--save-replay:" & config.saveReplayPath)
-  if config.configJson.len > 0:
-    serverArgs.add("--config:" & config.configJson)
-  if config.configPath.len > 0:
-    serverArgs.add("--config-path:" & config.configPath)
+  let shouldMergeConfig =
+    slotConfigJson.len > 0 or config.seedSet or (
+      config.configJson.len > 0 and config.configPath.len > 0
+    )
+  if shouldMergeConfig:
+    let inlineConfig = mergedConfigJson(
+      slotConfigJson,
+      config.configJson,
+      config.configPath,
+      config.seedSet,
+      config.seed
+    )
+    if inlineConfig.len > 0:
+      serverArgs.add("--config:" & inlineConfig)
+  else:
+    if config.configJson.len > 0:
+      serverArgs.add("--config:" & config.configJson)
+    if config.configPath.len > 0:
+      serverArgs.add("--config-path:" & config.configPath)
   for arg in config.serverArgs:
     serverArgs.add(arg)
 
