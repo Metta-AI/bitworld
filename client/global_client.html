@@ -457,6 +457,20 @@ function fit(){
   draw();
 }
 
+function zoomMapAt(clientX,clientY,deltaY){
+  const layer=mapLayer();
+  if(!layer)return;
+  autoFit=false;
+  const beforeX=(clientX-panX)/zoom;
+  const beforeY=(clientY-panY)/zoom;
+  const factor=deltaY<0?1.015:1/1.015;
+  zoom=Math.min(64,Math.max(.1,zoom*factor));
+  panX=clientX-beforeX*zoom;
+  panY=clientY-beforeY*zoom;
+  applyView();
+  draw();
+}
+
 function maybeFit(){
   if(autoFit)fit();
   else applyView();
@@ -1066,18 +1080,7 @@ addEventListener("resize",()=>{
 });
 addEventListener("wheel",event=>{
   event.preventDefault();
-  const point=mousePoint(event);
-  const layer=point?layers.get(point.layer):null;
-  if(!isMapLayer(layer))return;
-  autoFit=false;
-  const beforeX=(event.clientX-panX)/zoom;
-  const beforeY=(event.clientY-panY)/zoom;
-  const factor=event.deltaY<0?1.015:1/1.015;
-  zoom=Math.min(64,Math.max(.1,zoom*factor));
-  panX=event.clientX-beforeX*zoom;
-  panY=event.clientY-beforeY*zoom;
-  applyView();
-  draw();
+  zoomMapAt(event.clientX,event.clientY,event.deltaY);
 },{passive:false});
 addEventListener("pointerdown",event=>{
   const point=mousePoint(event);
