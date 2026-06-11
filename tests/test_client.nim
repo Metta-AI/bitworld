@@ -52,6 +52,15 @@ proc testGlobalClientFullScreenLayers() =
   doAssert "isFullScreenLayer(layer)||!layerHasObjects(layer)" in html
   doAssert "layerDrawRank" in html
 
+proc testGlobalClientWheelZoomTargetsMap() =
+  ## Tests that UI overlays do not block hosted replay map zoom.
+  echo "Testing global client wheel zoom target"
+  let html = readClientHtml(CoworldReplayClientRoute)
+  doAssert "function zoomMapAt(clientX,clientY,deltaY)" in html
+  doAssert "const layer=mapLayer();\n  if(!layer)return;" in html
+  doAssert "zoomMapAt(event.clientX,event.clientY,event.deltaY);" in html
+  doAssert "addEventListener(\"wheel\",event=>{\n  event.preventDefault();\n  const point=mousePoint(event);" notin html
+
 proc testPlayerClientSpeaksSpriteProtocol() =
   ## Tests the shared player client covers the sprite protocol used by bots.
   echo "Testing player client sprite protocol support"
@@ -88,6 +97,7 @@ testCanonicalCoworldClientRoutes()
 testClientStaticPaths()
 testReplayClientPreservesUri()
 testGlobalClientFullScreenLayers()
+testGlobalClientWheelZoomTargetsMap()
 testPlayerClientSpeaksSpriteProtocol()
 testEmbeddedClientBodies()
 echo "All tests passed"

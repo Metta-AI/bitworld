@@ -315,6 +315,24 @@ proc maybeFit*(app: GlobalApp) =
   if app.autoFit:
     app.fit()
 
+proc zoomMapAt(app: GlobalApp, mouseLogical: IVec2, scrollY: float32) =
+  ## Zooms the map at one screen coordinate, even when UI overlays are under it.
+  let layer = app.mapLayer()
+  if not layer.isMapLayer:
+    return
+  app.autoFit = false
+  let
+    beforeX = (mouseLogical.x.float32 - app.panX) / app.zoom
+    beforeY = (mouseLogical.y.float32 - app.panY) / app.zoom
+    factor =
+      if scrollY > 0:
+        1.015'f
+      else:
+        1.0'f / 1.015'f
+  app.zoom = min(64.0'f, max(0.1'f, app.zoom * factor))
+  app.panX = mouseLogical.x.float32 - beforeX * app.zoom
+  app.panY = mouseLogical.y.float32 - beforeY * app.zoom
+
 proc refreshDisplayScale(app: GlobalApp) =
   ## Updates UI scaling after the window moves between displays.
   let scale = app.window.displayScale()
@@ -1071,22 +1089,7 @@ proc handleInput*(app: GlobalApp) =
     app.activeMouseLayer = -1
 
   if app.window.scrollDelta.y != 0:
-    let
-      point = app.mousePoint()
-      layer = app.layerIndex(point.layer)
-    if layer.isMapLayer:
-      app.autoFit = false
-      let
-        beforeX = (mouseLogical.x.float32 - app.panX) / app.zoom
-        beforeY = (mouseLogical.y.float32 - app.panY) / app.zoom
-        factor =
-          if app.window.scrollDelta.y > 0:
-            1.015'f
-          else:
-            1.0'f / 1.015'f
-      app.zoom = min(64.0'f, max(0.1'f, app.zoom * factor))
-      app.panX = mouseLogical.x.float32 - beforeX * app.zoom
-      app.panY = mouseLogical.y.float32 - beforeY * app.zoom
+    app.zoomMapAt(mouseLogical, app.window.scrollDelta.y)
 
   if pressed[DoubleClick]:
     let
