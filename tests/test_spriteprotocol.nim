@@ -277,13 +277,15 @@ proc testSpriteClientParser() =
   let
     clientBlob =
       blobFromSpriteChat("hi!") &
-      blobFromSpriteMask(ButtonA or ButtonRight)
+      blobFromSpriteMask(ButtonA or ButtonRight) &
+      blobFromSpriteReady()
     clientMessages = clientBlob.parseSpriteClientMessages()
-  doAssert clientMessages.len == 2
+  doAssert clientMessages.len == 3
   doAssert clientMessages[0].kind == SpriteClientChatMessage
   doAssert clientMessages[0].text == "hi!"
   doAssert clientMessages[1].kind == SpriteClientInputMessage
   doAssert clientMessages[1].mask == (ButtonA or ButtonRight)
+  doAssert clientMessages[2].kind == SpriteClientReadyMessage
   doAssert clientBlob.readSpriteInputText() == "hi!"
   doAssert clientBlob.spriteInputMask() == (ButtonA or ButtonRight)
 
