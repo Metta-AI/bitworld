@@ -34,6 +34,7 @@ const
   SpriteClientMouseMove* = 0x82'u8
   SpriteClientMouseButton* = 0x83'u8
   SpriteClientInput* = 0x84'u8
+  SpriteClientReady* = 0x85'u8
   SpriteLayerMap* = 0x00
   SpriteLayerTopLeft* = 0x01
   SpriteLayerTopRight* = 0x02
@@ -90,6 +91,7 @@ type
     SpriteClientMouseMoveMessage
     SpriteClientMouseButtonMessage
     SpriteClientInputMessage
+    SpriteClientReadyMessage
 
   SpriteClientMessage* = object
     kind*: SpriteClientKind
@@ -460,6 +462,11 @@ proc blobFromSpriteMask*(mask: uint8): string =
   result[0] = char(SpriteClientInput)
   result[1] = char(mask and 0x7f'u8)
 
+proc blobFromSpriteReady*(): string =
+  ## Builds a sprite client-ready packet.
+  result = newString(1)
+  result[0] = char(SpriteClientReady)
+
 proc blobFromSpriteChat*(text: string): string =
   ## Builds a sprite chat packet from ASCII text.
   var packet: seq[uint8]
@@ -474,7 +481,8 @@ proc isSpriteClientType(value: uint8): bool =
   value == SpriteClientChat or
     value == SpriteClientMouseMove or
     value == SpriteClientMouseButton or
-    value == SpriteClientInput
+    value == SpriteClientInput or
+    value == SpriteClientReady
 
 proc parseSpriteClientMessages*(
   message: string
@@ -529,6 +537,8 @@ proc parseSpriteClientMessages*(
         mask: message[offset].uint8 and 0x7f'u8
       ))
       inc offset
+    of SpriteClientReady:
+      result.add(SpriteClientMessage(kind: SpriteClientReadyMessage))
     else:
       return
 

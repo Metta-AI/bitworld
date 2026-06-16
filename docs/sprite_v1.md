@@ -254,6 +254,19 @@ text input. While the client is in text entry mode, printable keys should update
 the local text buffer instead of changing the player input bitmask. When the
 text is submitted, the client should send the existing Input Text packet.
 
+### Player Ready
+
+Signals that the player client has received and processed the latest rendered
+frame and is ready for another server frame.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x85` |
+
+Servers may use this packet as an optional frame pacing hint. A server should
+still advance at its normal frame rate when not all players send ready packets
+before the frame deadline.
+
 ## Message Type Summary
 
 | Value | Direction | Message |
@@ -268,8 +281,9 @@ text is submitted, the client should send the existing Input Text packet.
 | `0x82` | Client to server | Mouse position |
 | `0x83` | Client to server | Mouse button |
 | `0x84` | Client to server | Player input |
+| `0x85` | Client to server | Player ready |
 
-Message values `0x00`, `0x07 .. 0x7f`, and `0x85 .. 0xff` are reserved.
+Message values `0x00`, `0x07 .. 0x7f`, and `0x86 .. 0xff` are reserved.
 
 ## Rendering Model
 
