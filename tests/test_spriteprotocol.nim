@@ -265,16 +265,23 @@ proc testMalformedServerPackets() =
 proc testSpriteClientParser() =
   ## Tests client parser chat and input messages.
   echo "Testing sprite client parser"
+  var debugPacket: seq[uint8]
+  debugPacket.addObject(11, 1, 2, 3, SpriteLayerMap, 7)
   let
     clientBlob =
       blobFromSpriteChat("hi!") &
-      blobFromSpriteMask(ButtonA or ButtonRight)
+      blobFromSpriteDebugSprites(debugPacket) &
+      blobFromSpriteMask(ButtonA or ButtonRight) &
+      blobFromSpriteReady()
     clientMessages = clientBlob.parseSpriteClientMessages()
-  doAssert clientMessages.len == 2
+  doAssert clientMessages.len == 4
   doAssert clientMessages[0].kind == SpriteClientChatMessage
   doAssert clientMessages[0].text == "hi!"
-  doAssert clientMessages[1].kind == SpriteClientInputMessage
-  doAssert clientMessages[1].mask == (ButtonA or ButtonRight)
+  doAssert clientMessages[1].kind == SpriteClientDebugSpriteMessage
+  doAssert clientMessages[1].debugSprites == debugPacket
+  doAssert clientMessages[2].kind == SpriteClientInputMessage
+  doAssert clientMessages[2].mask == (ButtonA or ButtonRight)
+  doAssert clientMessages[3].kind == SpriteClientReadyMessage
   doAssert clientBlob.readSpriteInputText() == "hi!"
   doAssert clientBlob.spriteInputMask() == (ButtonA or ButtonRight)
 
@@ -358,6 +365,9 @@ proc testSpriteClientMalformedMessages() =
   ).len == 0
   doAssert parseSpriteClientMessages(
     blobFromBytes(@[SpriteClientInput])
+  ).len == 0
+  doAssert parseSpriteClientMessages(
+    blobFromBytes(@[SpriteClientDebugSprite, 4'u8, 0, 0, 0, 1])
   ).len == 0
 
   let
