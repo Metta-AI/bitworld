@@ -35,6 +35,7 @@ const
   SpriteClientMouseButton* = 0x83'u8
   SpriteClientInput* = 0x84'u8
   SpriteClientReady* = 0x85'u8
+  SpriteClientDebugSprite* = 0x86'u8
   SpriteLayerMap* = 0x00
   SpriteLayerTopLeft* = 0x01
   SpriteLayerTopRight* = 0x02
@@ -92,10 +93,12 @@ type
     SpriteClientMouseButtonMessage
     SpriteClientInputMessage
     SpriteClientReadyMessage
+    SpriteClientDebugSpriteMessage
 
   SpriteClientMessage* = object
     kind*: SpriteClientKind
     text*: string
+    debugSprites*: seq[uint8]
     x*, y*, layer*: int
     hasLayer*: bool
     button*: uint8
@@ -476,13 +479,23 @@ proc blobFromSpriteChat*(text: string): string =
     packet.addU8(uint8(ord(ch)))
   blobFromBytes(packet)
 
+proc blobFromSpriteDebugSprites*(debugSprites: openArray[uint8]): string =
+  ## Builds a sprite debug packet from server-style sprite messages.
+  var packet: seq[uint8]
+  packet.addU8(SpriteClientDebugSprite)
+  packet.addU32(debugSprites.len)
+  for byte in debugSprites:
+    packet.addU8(byte)
+  blobFromBytes(packet)
+
 proc isSpriteClientType(value: uint8): bool =
   ## Returns true when one byte starts a sprite client message.
   value == SpriteClientChat or
     value == SpriteClientMouseMove or
     value == SpriteClientMouseButton or
     value == SpriteClientInput or
-    value == SpriteClientReady
+    value == SpriteClientReady or
+    value == SpriteClientDebugSprite
 
 proc parseSpriteClientMessages*(
   message: string
@@ -539,6 +552,19 @@ proc parseSpriteClientMessages*(
       inc offset
     of SpriteClientReady:
       result.add(SpriteClientMessage(kind: SpriteClientReadyMessage))
+    of SpriteClientDebugSprite:
+      if offset + 4 > message.len:
+        return
+      let length = message.readU32(offset)
+      offset += 4
+      if offset + length > message.len:
+        return
+      var item = SpriteClientMessage(kind: SpriteClientDebugSpriteMessage)
+      item.debugSprites = newSeq[uint8](length)
+      for i in 0 ..< length:
+        item.debugSprites[i] = message[offset + i].uint8
+      offset += length
+      result.add(item)
     else:
       return
 
