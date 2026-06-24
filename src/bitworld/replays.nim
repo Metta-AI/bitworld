@@ -49,6 +49,11 @@ type
     player*: uint8
     message*: string
 
+  ReplayDebugSprite* = object
+    time*: uint32
+    player*: uint8
+    packet*: seq[uint8]
+
   ReplayData* = object
     gameName*: string
     gameVersion*: string
@@ -56,6 +61,7 @@ type
     joins*: seq[ReplayJoin]
     leaves*: seq[ReplayLeave]
     chats*: seq[ReplayChat]
+    debugSprites*: seq[ReplayDebugSprite]
     inputs*: seq[ReplayInput]
     hashes*: seq[ReplayHash]
 
@@ -70,6 +76,7 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayChatRecord* = 0x05'u8
+  ReplayDebugSpriteRecord* = 0x06'u8
 
 proc tickTime*(tick, fps: int): uint32 =
   ## Converts one simulation tick to replay milliseconds.
@@ -104,6 +111,12 @@ proc writeReplayString(file: File, value: string) =
     raise newException(ReplayError, "Replay string is too long")
   file.writeU16(uint16(value.len))
   file.write(value)
+
+proc writeReplayBytes(file: File, value: openArray[uint8]) =
+  ## Writes one replay byte array.
+  file.writeU32(uint32(value.len))
+  for byte in value:
+    file.writeU8(byte)
 
 proc readU8(bytes: string, offset: var int): uint8 =
   ## Reads one unsigned byte from a replay buffer.
@@ -161,6 +174,19 @@ proc readReplayString(bytes: string, offset: var int): string =
       "Replay file is truncated at byte " & $offset
     )
   result = bytes[offset ..< offset + length]
+  offset += length
+
+proc readReplayBytes(bytes: string, offset: var int): seq[uint8] =
+  ## Reads one replay byte array.
+  let length = int(bytes.readU32(offset))
+  if offset + length > bytes.len:
+    raise newException(
+      ReplayError,
+      "Replay file is truncated at byte " & $offset
+    )
+  result = newSeq[uint8](length)
+  for i in 0 ..< length:
+    result[i] = bytes[offset + i].uint8
   offset += length
 
 proc isCompressedReplayBytes(bytes: string): bool =
@@ -287,6 +313,20 @@ proc writeChat*(
   writer.file.writeU8(uint8(player))
   writer.file.writeReplayString(message)
 
+proc writeDebugSprite*(
+  writer: var ReplayWriter,
+  time: uint32,
+  player: int,
+  packet: openArray[uint8]
+) =
+  ## Writes one player debug sprite replay record.
+  if not writer.enabled:
+    return
+  writer.file.writeU8(ReplayDebugSpriteRecord)
+  writer.file.writeU32(time)
+  writer.file.writeU8(uint8(player))
+  writer.file.writeReplayBytes(packet)
+
 proc writeHash*(writer: var ReplayWriter, tick: uint32, hash: uint64) =
   ## Writes one tick hash replay record and flushes the writer.
   if not writer.enabled:
@@ -336,6 +376,7 @@ proc parseReplayBytes*(bytes: string, spec: ReplaySpec): ReplayData =
     lastJoinTime = 0'u32
     lastLeaveTime = 0'u32
     lastChatTime = 0'u32
+    lastDebugSpriteTime = 0'u32
   while offset < replayBytes.len:
     let recordType = replayBytes.readU8(offset)
     case recordType
@@ -388,6 +429,19 @@ proc parseReplayBytes*(bytes: string, spec: ReplaySpec): ReplayData =
         raise newException(ReplayError, "Replay chat timestamps move backward")
       lastChatTime = chat.time
       result.chats.add(chat)
+    of ReplayDebugSpriteRecord:
+      let debugSprite = ReplayDebugSprite(
+        time: replayBytes.readU32(offset),
+        player: replayBytes.readU8(offset),
+        packet: replayBytes.readReplayBytes(offset)
+      )
+      if debugSprite.time < lastDebugSpriteTime:
+        raise newException(
+          ReplayError,
+          "Replay debug sprite timestamps move backward"
+        )
+      lastDebugSpriteTime = debugSprite.time
+      result.debugSprites.add(debugSprite)
     else:
       raise newException(ReplayError, "Unknown replay record type")
 

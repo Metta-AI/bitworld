@@ -267,6 +267,28 @@ Servers may use this packet as an optional frame pacing hint. A server should
 still advance at its normal frame rate when not all players send ready packets
 before the frame deadline.
 
+### Debug Sprites
+
+Sends optional player-authored debug overlay sprites. This packet is intended
+for player endpoints that render a private observation view and want to record
+agent annotations such as planned paths, local labels, or diagnostic text.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x86` |
+| Packet length | `u32` | Number of sprite packet bytes |
+| Sprite packet | `u8[]` | Server-to-client Sprite v1 messages |
+
+The sprite packet payload uses the same message shapes as Server to Client
+messages: define sprite, define object, delete object, clear objects, set
+viewport, and define layer. A game may namespace sprite and object ids before
+rendering the payload so debug objects cannot collide with game-owned objects.
+
+Debug sprites are diagnostic data. They should not affect deterministic game
+state, scoring, or player input. Games that support replay recording should
+store enough debug sprite packets to reconstruct the player-authored overlay
+for each replay tick.
+
 ## Message Type Summary
 
 | Value | Direction | Message |
@@ -282,8 +304,9 @@ before the frame deadline.
 | `0x83` | Client to server | Mouse button |
 | `0x84` | Client to server | Player input |
 | `0x85` | Client to server | Player ready |
+| `0x86` | Client to server | Debug sprites |
 
-Message values `0x00`, `0x07 .. 0x7f`, and `0x86 .. 0xff` are reserved.
+Message values `0x00`, `0x07 .. 0x7f`, and `0x87 .. 0xff` are reserved.
 
 ## Rendering Model
 

@@ -77,6 +77,8 @@ A writer should emit records in the order they happened.
 | `0x02` | Player input |
 | `0x03` | Player join |
 | `0x04` | Player leave |
+| `0x05` | Player chat |
+| `0x06` | Debug sprites |
 
 ### Tick Hash
 
@@ -166,6 +168,36 @@ Records that a player left the game.
 A loader must remove the player before applying input for the same timestamp.
 Removing a player shifts later player indices in the same way as the live game.
 
+### Player Chat
+
+Records one player-authored text message.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Record type | `u8` | `0x05` |
+| Time | `u32` | Milliseconds since the start of the game |
+| Player | `u8` | Player index |
+| Message | `string` | Chat text |
+
+Games may disable chat records in their replay spec. If chat records are
+enabled, timestamps must be nondecreasing.
+
+### Debug Sprites
+
+Records one player-authored debug sprite packet.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Record type | `u8` | `0x06` |
+| Time | `u32` | Milliseconds since the start of the game |
+| Player | `u8` | Player index |
+| Packet length | `u32` | Number of sprite packet bytes |
+| Sprite packet | `u8[]` | Server-to-client Sprite v1 messages |
+
+Debug sprite records are diagnostic overlay data. They must not affect replay
+simulation or deterministic tick hashes. A viewer may display them on the
+emitting player's observation view and should offer a way to hide them.
+
 ## Game Flags
 
 Bitworld games should implement these command line flags:
@@ -203,6 +235,7 @@ A loader must reject a replay when:
 - Player join records move backward in time.
 - Player leave records move backward in time.
 - Player input appears for a player before that player joins.
+- Debug sprite records move backward in time.
 - Input timestamps move backward.
 - The computed game hash does not match the recorded tick hash.
 
@@ -220,6 +253,7 @@ A writer should record:
 - One player leave record whenever a player leaves.
 - One tick hash record for every simulation tick.
 - One player input record whenever a player's key state changes.
+- Optional debug sprite records whenever a player emits diagnostic overlays.
 
 A writer may also record repeated player input states. Repeated input states are
 valid and should be treated the same as state changes.
