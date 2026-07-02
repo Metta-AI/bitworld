@@ -266,7 +266,8 @@ proc configProperties(node: JsonNode): JsonNode =
 proc slotItemProperties(node: JsonNode): JsonNode =
   ## Returns Coworld slots item properties.
   let properties = node.configProperties()
-  if properties.kind != JObject or not properties.hasKey("slots"):
+  if properties.isNil or properties.kind != JObject or
+      not properties.hasKey("slots"):
     return
   let slots = properties["slots"]
   if slots.kind != JObject or not slots.hasKey("items"):
@@ -281,12 +282,14 @@ proc slotItemProperties(node: JsonNode): JsonNode =
 proc manifestHasConfigProperty(node: JsonNode, name: string): bool =
   ## Returns true when one config schema property is advertised.
   let properties = node.configProperties()
-  properties.kind == JObject and properties.hasKey(name)
+  not properties.isNil and properties.kind == JObject and
+    properties.hasKey(name)
 
 proc manifestHasSlotProperty(node: JsonNode, name: string): bool =
   ## Returns true when one slots item schema property is advertised.
   let properties = node.slotItemProperties()
-  properties.kind == JObject and properties.hasKey(name)
+  not properties.isNil and properties.kind == JObject and
+    properties.hasKey(name)
 
 proc readGameManifest(rootDir, path: string): GameManifest =
   ## Reads one Coworld manifest summary from disk.
