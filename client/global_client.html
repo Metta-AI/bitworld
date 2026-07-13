@@ -221,7 +221,9 @@ function addressPath(){
 }
 const playerMode=url.searchParams.get("player")==="1"||
   addressPath()==="/player";
+// Layer flag bit 4 is reserved; smooth scaling uses bit 8.
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,FullScreenLayerType=9,MaxUiZoom=3;
+const SmoothFlag=8;
 const MaxUiZoomFitPadding=1.5;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
@@ -415,8 +417,11 @@ function setStatus(text){
 }
 
 function applyView(){
-  if(canvas.width!==innerWidth)canvas.width=innerWidth;
-  if(canvas.height!==innerHeight)canvas.height=innerHeight;
+  const dpr=devicePixelRatio||1;
+  const width=Math.round(innerWidth*dpr);
+  const height=Math.round(innerHeight*dpr);
+  if(canvas.width!==width)canvas.width=width;
+  if(canvas.height!==height)canvas.height=height;
   canvas.style.width=innerWidth+"px";
   canvas.style.height=innerHeight+"px";
 }
@@ -477,6 +482,9 @@ function maybeFit(){
 }
 
 function clearBlack(){
+  // Fill the full backing store in device pixels regardless of the
+  // current transform (draw() re-applies the dpr transform afterwards).
+  ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle="#000";
   ctx.fillRect(0,0,canvas.width,canvas.height);
 }
@@ -500,7 +508,7 @@ function mapPoint(event){
 }
 
 function screenLayerPoint(event,layer){
-  if(!layer||!layer.image)return null;
+  if(!layer||!layer.ready)return null;
   const pos=layerScreenPos(layer);
   return {
     x:Math.floor((event.clientX-pos.x)*layer.width/pos.w),
@@ -531,14 +539,14 @@ function mousePoint(event,preferredLayer=null){
     layerDrawRank(b)-layerDrawRank(a)||b.type-a.type||b.id-a.id
   );
   for(const layer of orderedLayers){
-    if(!layer.image||!isUiLayer(layer))continue;
+    if(!layer.ready||!isUiLayer(layer))continue;
     const pos=layerScreenPos(layer);
     if(event.clientX<pos.x||event.clientY<pos.y||
         event.clientX>=pos.x+pos.w||event.clientY>=pos.y+pos.h)continue;
     return screenLayerPoint(event,layer);
   }
   for(const layer of orderedLayers){
-    if(!layer.image||!isFullScreenLayer(layer)||!layerHasObjects(layer))continue;
+    if(!layer.ready||!isFullScreenLayer(layer)||!layerHasObjects(layer))continue;
     return screenLayerPoint(event,layer);
   }
   return mapPoint(event);
@@ -749,7 +757,7 @@ function ensureLayer(id){
       canvas:document.createElement("canvas"),
       ctx:null,
       mips:[],
-      image:null
+      ready:false
     });
   }
   const layer=layers.get(id);
@@ -770,40 +778,12 @@ function setViewport(layerId,width,height){
   layer.height=height;
   layer.canvas.width=width;
   layer.canvas.height=height;
+  // Resizing the canvas resets context state; sprites are blitted 1:1 so
+  // keep the layer context non-smoothed.
+  layer.ctx.imageSmoothingEnabled=false;
   layer.mips=[];
-  layer.image=layer.ctx.createImageData(width,height);
+  layer.ready=true;
   maybeFit();
-}
-
-function putSpritePixel(layer,x,y,sprite,srcOffset){
-  if(x<0||y<0||x>=layer.width||y>=layer.height)return;
-  const srcA=sprite.pixels[srcOffset+3];
-  if(srcA===0)return;
-  const offset=(y*layer.width+x)*4;
-  if(srcA===255||layer.image.data[offset+3]===0){
-    layer.image.data[offset]=sprite.pixels[srcOffset];
-    layer.image.data[offset+1]=sprite.pixels[srcOffset+1];
-    layer.image.data[offset+2]=sprite.pixels[srcOffset+2];
-    layer.image.data[offset+3]=srcA;
-    return;
-  }
-  const dstA=layer.image.data[offset+3];
-  const srcAlpha=srcA/255,dstAlpha=dstA/255;
-  const outAlpha=srcAlpha+dstAlpha*(1-srcAlpha);
-  const dstWeight=dstAlpha*(1-srcAlpha);
-  layer.image.data[offset]=Math.round(
-    (sprite.pixels[srcOffset]*srcAlpha+
-      layer.image.data[offset]*dstWeight)/outAlpha
-  );
-  layer.image.data[offset+1]=Math.round(
-    (sprite.pixels[srcOffset+1]*srcAlpha+
-      layer.image.data[offset+1]*dstWeight)/outAlpha
-  );
-  layer.image.data[offset+2]=Math.round(
-    (sprite.pixels[srcOffset+2]*srcAlpha+
-      layer.image.data[offset+2]*dstWeight)/outAlpha
-  );
-  layer.image.data[offset+3]=Math.round(outAlpha*255);
 }
 
 function uiZoom(){
@@ -870,6 +850,9 @@ function drawLayerCanvas(layer,pos){
     source=layerMipCanvas(layer,layerMipLevel(layer,pos));
     ctx.imageSmoothingEnabled=true;
     ctx.imageSmoothingQuality="high";
+  }else if((layer.flags&SmoothFlag)!==0){
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality="high";
   }else{
     ctx.imageSmoothingEnabled=false;
   }
@@ -911,39 +894,25 @@ function layerScreenPos(layer){
 
 function draw(){
   if(!socket||socket.readyState===WebSocket.CLOSED)return;
-  ctx.imageSmoothingEnabled=false;
   clearBlack();
+  const dpr=devicePixelRatio||1;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.imageSmoothingEnabled=false;
   const orderedLayers=[...layers.values()].sort((a,b)=>
     layerDrawRank(a)-layerDrawRank(b)||a.type-b.type||a.id-b.id
   );
   for(const layer of orderedLayers){
-    if(!layer.image)continue;
+    if(!layer.ready)continue;
     const ordered=[...objects.values()].filter(object=>object.layer===layer.id).sort((a,b)=>
       a.z-b.z||a.y-b.y||a.id-b.id
     );
     if(isUiLayer(layer)&&ordered.length===0)continue;
-    layer.image.data.fill(0);
+    layer.ctx.clearRect(0,0,layer.width,layer.height);
     for(const object of ordered){
       const sprite=sprites.get(object.spriteId);
       if(!sprite)continue;
-      const startX=Math.max(0,-object.x);
-      const startY=Math.max(0,-object.y);
-      const endX=Math.min(sprite.width,layer.width-object.x);
-      const endY=Math.min(sprite.height,layer.height-object.y);
-      if(startX>=endX||startY>=endY)continue;
-      for(let y=startY;y<endY;y++){
-        for(let x=startX;x<endX;x++){
-          putSpritePixel(
-            layer,
-            object.x+x,
-            object.y+y,
-            sprite,
-            (y*sprite.width+x)*4
-          );
-        }
-      }
+      layer.ctx.drawImage(sprite.canvas,object.x,object.y);
     }
-    layer.ctx.putImageData(layer.image,0,0);
     const pos=layerScreenPos(layer);
     drawLayerCanvas(layer,pos);
     if(debugOpen){
@@ -985,11 +954,21 @@ function parse(bytes){
       }
       const previous=sprites.get(id);
       const packetBytes=offset-packetStart;
+      // Build the sprite's offscreen canvas once per (re)definition so
+      // draw() can GPU-blit it instead of CPU-blending pixels per frame.
+      const spriteCanvas=document.createElement("canvas");
+      spriteCanvas.width=width;
+      spriteCanvas.height=height;
+      const spriteCtx=spriteCanvas.getContext("2d");
+      const spriteImage=spriteCtx.createImageData(width,height);
+      spriteImage.data.set(pixels);
+      spriteCtx.putImageData(spriteImage,0,0);
       sprites.set(id,{
         width,
         height,
         pixels,
         label,
+        canvas:spriteCanvas,
         updates:(previous?previous.updates:0)+1,
         bytesDown:(previous?previous.bytesDown:0)+packetBytes,
         updatedUntil:performance.now()+DebugUpdateFlashMs
