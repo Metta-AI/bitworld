@@ -24,6 +24,7 @@ const
   ButtonSelect* = 1'u8 shl 4
   ButtonA* = 1'u8 shl 5
   ButtonB* = 1'u8 shl 6
+  ButtonC* = 1'u8 shl 7
   SpriteMessageSprite* = 0x01'u8
   SpriteMessageObject* = 0x02'u8
   SpriteMessageDeleteObject* = 0x03'u8
@@ -41,7 +42,7 @@ type
     ## Raised when a sprite protocol packet cannot be decoded.
 
   InputState* = object
-    up*, down*, left*, right*, select*, attack*, b*: bool
+    up*, down*, left*, right*, select*, attack*, b*, c*: bool
 
   SpritePacketKind* = enum
     spkSprite
@@ -106,7 +107,7 @@ proc loadPalette*(path = "") =
   decodeImage(EmbeddedPalettePng).applyPalette("embedded " & path)
 
 proc encodeInputMask*(input: InputState): uint8 =
-  ## Encodes button state into the shared seven bit input mask.
+  ## Encodes button state into the shared eight bit input mask.
   if input.up:
     result = result or ButtonUp
   if input.down:
@@ -121,9 +122,11 @@ proc encodeInputMask*(input: InputState): uint8 =
     result = result or ButtonA
   if input.b:
     result = result or ButtonB
+  if input.c:
+    result = result or ButtonC
 
 proc decodeInputMask*(mask: uint8): InputState =
-  ## Decodes the shared seven bit input mask into button state.
+  ## Decodes the shared eight bit input mask into button state.
   result.up = (mask and ButtonUp) != 0
   result.down = (mask and ButtonDown) != 0
   result.left = (mask and ButtonLeft) != 0
@@ -131,6 +134,7 @@ proc decodeInputMask*(mask: uint8): InputState =
   result.select = (mask and ButtonSelect) != 0
   result.attack = (mask and ButtonA) != 0
   result.b = (mask and ButtonB) != 0
+  result.c = (mask and ButtonC) != 0
 
 proc blobFromBytes*(bytes: openArray[uint8]): string =
   ## Converts packet bytes to a websocket binary string.
@@ -446,7 +450,7 @@ proc blobFromSpriteMask*(mask: uint8): string =
   ## Builds a sprite button packet from an input mask.
   result = newString(InputPacketBytes)
   result[0] = char(SpriteClientInput)
-  result[1] = char(mask and 0x7f'u8)
+  result[1] = char(mask and 0xff'u8)
 
 proc blobFromSpriteChat*(text: string): string =
   ## Builds a sprite chat packet from ASCII text.
@@ -514,7 +518,7 @@ proc parseSpriteClientMessages*(
         return
       result.add(SpriteClientMessage(
         kind: SpriteClientInputMessage,
-        mask: message[offset].uint8 and 0x7f'u8
+        mask: message[offset].uint8 and 0xff'u8
       ))
       inc offset
     else:

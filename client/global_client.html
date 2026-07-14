@@ -229,7 +229,7 @@ const ZoomableFlag=1,UiFlag=2,MapLayerType=0,MaxUiZoom=3;
 const SmoothFlag=8,HdUiFlag=16,HdUiScale=3;
 const MaxUiZoomFitPadding=1.5;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
-const ButtonSelect=16,ButtonA=32,ButtonB=64;
+const ButtonSelect=16,ButtonA=32,ButtonB=64,ButtonC=128;
 const DebugUpdateFlashMs=900;
 let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
@@ -523,7 +523,7 @@ function writeU16(bytes,offset,value){
 
 function sendPlayerButtons(){
   if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
-  sendPacket(new Uint8Array([0x84,heldButtons&127]));
+  sendPacket(new Uint8Array([0x84,heldButtons&255]));
 }
 
 function resetPlayerButtons(){
@@ -548,6 +548,7 @@ function keyButton(key){
     case " ":return ButtonSelect;
     case "z":case "Z":return ButtonA;
     case "x":case "X":return ButtonB;
+    case "c":case "C":return ButtonC;
     default:return 0;
   }
 }
