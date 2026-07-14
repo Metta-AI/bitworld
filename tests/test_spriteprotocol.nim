@@ -303,7 +303,7 @@ proc testSpriteClientParser() =
     blobFromSpriteChat("one") &
     blobFromSpriteChat("two")
   doAssert multiChat.readSpriteInputText() == "onetwo"
-  doAssert blobFromSpriteMask(0xff).spriteInputMask() == 0x7f'u8
+  doAssert blobFromSpriteMask(0xff).spriteInputMask() == 0xff'u8
   doAssert blobFromSpriteMask(ButtonLeft).isSpriteInputPacket()
   doAssert blobFromSpriteMask(ButtonLeft).isSpritePlayerInputPacket()
   doAssert not blobFromSpriteChat("x").isSpriteInputPacket()
