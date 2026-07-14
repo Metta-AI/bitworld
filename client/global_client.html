@@ -235,6 +235,10 @@ let layers=new Map(),sprites=new Map(),objects=new Map();
 let socket=null,reconnectTimer=0;
 let zoom=1,panX=0,panY=0,autoFit=true,activeMouseLayer=null;
 let draggingMap=false,dragX=0,dragY=0;
+// Embedded viewers (Observatory iframes) must not hijack the host page's
+// scroll wheel: zooming only arms after a click inside the viewer.
+const embedded=(()=>{try{return self!==top}catch(e){return true}})();
+let wheelArmed=!embedded;
 let heldButtons=0,typing=false,textBuffer="";
 let debugOpen=false,debugSpritesDirty=true,debugSpriteTimer=0;
 let debugUpdateTimer=0;
@@ -436,10 +440,18 @@ function mapLayer(){
   return null;
 }
 
+function fitZoom(){
+  // No lower clamp: HD map layers (thousands of px) must still fit inside
+  // small embeds, which needs zooms well below the old .1 floor.
+  const layer=mapLayer();
+  const width=layer?layer.width:1,height=layer?layer.height:1;
+  return Math.max(.0001,Math.min(innerWidth/width,innerHeight/height));
+}
+
 function fit(){
   const layer=mapLayer();
   const width=layer?layer.width:1,height=layer?layer.height:1;
-  zoom=Math.max(.1,Math.min(innerWidth/width,innerHeight/height));
+  zoom=fitZoom();
   panX=Math.floor((innerWidth-width*zoom)/2);
   panY=Math.floor((innerHeight-height*zoom)/2);
   applyView();
@@ -1011,18 +1023,20 @@ addEventListener("resize",()=>{
   draw();
 });
 addEventListener("wheel",event=>{
+  if(!wheelArmed)return;
   event.preventDefault();
   autoFit=false;
   const beforeX=(event.clientX-panX)/zoom;
   const beforeY=(event.clientY-panY)/zoom;
   const factor=event.deltaY<0?1.015:1/1.015;
-  zoom=Math.min(64,Math.max(.1,zoom*factor));
+  zoom=Math.min(64,Math.max(Math.min(.1,fitZoom()),zoom*factor));
   panX=event.clientX-beforeX*zoom;
   panY=event.clientY-beforeY*zoom;
   applyView();
   draw();
 },{passive:false});
 addEventListener("pointerdown",event=>{
+  wheelArmed=true;
   const point=mousePoint(event);
   activeMouseLayer=point?point.layer:null;
   const layer=layers.get(activeMouseLayer);
