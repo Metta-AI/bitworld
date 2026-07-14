@@ -221,9 +221,12 @@ function addressPath(){
 }
 const playerMode=url.searchParams.get("player")==="1"||
   addressPath()==="/player";
-// Layer flag bit 4 is reserved; smooth scaling uses bit 8.
+// Layer flag bit 4 is reserved; smooth scaling uses bit 8. HdUiFlag (16)
+// marks a UI layer whose content is authored at HdUiScale x resolution:
+// it occupies the same screen size as a legacy layer but scales by
+// uiZoom()/HdUiScale, so at full zoom its pixels map 1:1 to the screen.
 const ZoomableFlag=1,UiFlag=2,MapLayerType=0,MaxUiZoom=3;
-const SmoothFlag=8;
+const SmoothFlag=8,HdUiFlag=16,HdUiScale=3;
 const MaxUiZoomFitPadding=1.5;
 const ButtonUp=1,ButtonDown=2,ButtonLeft=4,ButtonRight=8;
 const ButtonSelect=16,ButtonA=32,ButtonB=64;
@@ -740,13 +743,21 @@ function setViewport(layerId,width,height){
   maybeFit();
 }
 
+function uiLogicalSize(layer){
+  // HD UI layers are authored at HdUiScale x; their logical (legacy) size
+  // drives fit and zoom decisions.
+  const scale=(layer.flags&HdUiFlag)!==0?HdUiScale:1;
+  return {width:layer.width/scale,height:layer.height/scale};
+}
+
 function uiZoom(){
   let zoom=MaxUiZoom;
   for(const layer of layers.values()){
     if((layer.flags&UiFlag)===0)continue;
+    const logical=uiLogicalSize(layer);
     const fit=Math.min(
-      innerWidth/layer.width,
-      innerHeight/layer.height
+      innerWidth/logical.width,
+      innerHeight/logical.height
     );
     let layerZoom=1;
     for(let scale=MaxUiZoom;scale>=2;scale--){
@@ -815,7 +826,10 @@ function drawLayerCanvas(layer,pos){
 }
 
 function layerScreenPos(layer){
-  const scale=(layer.flags&UiFlag)!==0?uiZoom():1;
+  let scale=(layer.flags&UiFlag)!==0?uiZoom():1;
+  if((layer.flags&UiFlag)!==0&&(layer.flags&HdUiFlag)!==0){
+    scale/=HdUiScale;
+  }
   const width=layer.width*scale,height=layer.height*scale;
   if((layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType){
     return {x:panX,y:panY,w:layer.width*zoom,h:layer.height*zoom};
