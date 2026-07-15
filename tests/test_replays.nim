@@ -28,10 +28,12 @@ const
 proc testNameSlotTokenReplay() =
   ## Tests the name, slot, token replay join shape.
   let path = getTempDir() / "bitworld-test-name-replay.bitreplay"
+  let debugPacket = @[1'u8, 2, 3, 4]
   var writer = openReplayWriter(path, """{"seed":1}""", NameSpec)
   writer.writeJoin(10'u32, 0, "alice", 3, "token")
   writer.writeInput(ReplayInput(time: 20'u32, player: 0, keys: 5))
   writer.writeChat(30'u32, 0, "hello")
+  writer.writeDebugSprite(35'u32, 0, debugPacket)
   writer.writeHash(2'u32, 0x1234'u64)
   writer.closeReplayWriter()
 
@@ -46,8 +48,12 @@ proc testNameSlotTokenReplay() =
   doAssert data.joins[0].token == "token"
   doAssert data.inputs[0].keys == 5
   doAssert data.chats[0].message == "hello"
+  doAssert data.debugSprites[0].time == 35'u32
+  doAssert data.debugSprites[0].player == 0'u8
+  doAssert data.debugSprites[0].packet == debugPacket
   doAssert data.hashes[0].hash == 0x1234'u64
   doAssert compressedData.joins[0].name == "alice"
+  doAssert compressedData.debugSprites[0].packet == debugPacket
   removeFile(path)
 
 proc testAddressReplay() =
