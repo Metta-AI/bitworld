@@ -38,6 +38,12 @@ when defined(emscripten):
   --debugger:native
   --define:noAutoGLerrorCheck
   --define:release
+  # Nim's bundled allocator corrupts the heap under emscripten/wasm32: with
+  # ALLOW_MEMORY_GROWTH it hands out overlapping blocks, overwriting live data
+  # (found in coworld-ctf's replay viewer as spurious hash-mismatch banners,
+  # frozen playback, and OOB/RangeDefect crashes). Route every allocation
+  # through emscripten's malloc instead.
+  --define:useMalloc
 
   switch(
     "passL",
