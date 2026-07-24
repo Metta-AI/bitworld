@@ -924,8 +924,14 @@ proc sendMousePosition(app: GlobalApp, preferredLayer = -1) =
   bytes[5] = uint8(point.layer and 0xff)
   app.sendBytes(bytes)
 
-proc sendMouseButton(app: GlobalApp, down: bool, preferredLayer = -1) =
-  ## Sends the current mouse position and left button state.
+proc sendMouseButton(
+  app: GlobalApp,
+  down: bool,
+  preferredLayer = -1,
+  button = 0x01'u8
+) =
+  ## Sends the current mouse position and one button state.
+  ## Button codes: 1 left, 2 right, 3 middle.
   let point = app.mousePoint(preferredLayer)
   var bytes = newSeq[uint8](9)
   bytes[0] = 0x82
@@ -933,7 +939,7 @@ proc sendMouseButton(app: GlobalApp, down: bool, preferredLayer = -1) =
   bytes.writeI16(3, point.y)
   bytes[5] = uint8(point.layer and 0xff)
   bytes[6] = 0x83
-  bytes[7] = 0x01
+  bytes[7] = button
   bytes[8] = if down: 1'u8 else: 0'u8
   app.sendBytes(bytes)
 
@@ -1087,6 +1093,17 @@ proc handleInput*(app: GlobalApp) =
     app.sendMouseButton(false, app.activeMouseLayer)
     app.draggingMap = false
     app.activeMouseLayer = -1
+
+  if pressed[MouseRight]:
+    let point = app.mousePoint()
+    app.sendMouseButton(true, point.layer, 0x02)
+  if released[MouseRight]:
+    app.sendMouseButton(false, -1, 0x02)
+  if pressed[MouseMiddle]:
+    let point = app.mousePoint()
+    app.sendMouseButton(true, point.layer, 0x03)
+  if released[MouseMiddle]:
+    app.sendMouseButton(false, -1, 0x03)
 
   if app.window.scrollDelta.y != 0:
     app.zoomMapAt(mouseLogical, app.window.scrollDelta.y)
