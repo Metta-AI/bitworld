@@ -643,6 +643,13 @@ function sendMousePosition(event,preferredLayer=null){
   sendPacket(bytes);
 }
 
+function mouseButtonCode(event){
+  // DOM: 0 left, 1 middle, 2 right. Protocol: 1 left, 2 right, 3 middle.
+  if(event.button===2)return 0x02;
+  if(event.button===1)return 0x03;
+  return 0x01;
+}
+
 function sendMouseButton(event,down,preferredLayer=null){
   if(!socket||socket.readyState!==WebSocket.OPEN)return;
   const point=mousePoint(event,preferredLayer);
@@ -653,7 +660,7 @@ function sendMouseButton(event,down,preferredLayer=null){
   writeI16(bytes,3,point.y);
   bytes[5]=point.layer&255;
   bytes[6]=0x83;
-  bytes[7]=0x01;
+  bytes[7]=mouseButtonCode(event);
   bytes[8]=down?1:0;
   sendPacket(bytes);
 }
@@ -1082,11 +1089,12 @@ addEventListener("wheel",event=>{
   event.preventDefault();
   zoomMapAt(event.clientX,event.clientY,event.deltaY);
 },{passive:false});
+addEventListener("contextmenu",event=>event.preventDefault());
 addEventListener("pointerdown",event=>{
   const point=mousePoint(event);
   activeMouseLayer=point?point.layer:null;
   const layer=layers.get(activeMouseLayer);
-  draggingMap=isMapLayer(layer);
+  draggingMap=event.button===0&&isMapLayer(layer);
   if(draggingMap){
     autoFit=false;
     dragX=event.clientX-panX;
