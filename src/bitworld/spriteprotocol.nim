@@ -516,7 +516,9 @@ proc parseSpriteClientMessages*(
       var item = SpriteClientMessage(kind: SpriteClientChatMessage)
       for i in 0 ..< length:
         let value = message[offset + i].uint8
-        if value >= 32'u8 and value < 127'u8:
+        # Printable ASCII plus the Enter and Escape control codes.
+        if (value >= 32'u8 and value < 127'u8) or
+            value == 0x0a'u8 or value == 0x1b'u8:
           item.text.add(message[offset + i])
       offset += length
       result.add(item)
