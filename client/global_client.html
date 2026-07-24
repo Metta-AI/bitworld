@@ -607,6 +607,12 @@ function sendInputText(text){
   sendPacket(packet);
 }
 
+function sendKeyCode(code){
+  // One immediate key as a single-code input text packet.
+  if(!playerMode||!socket||socket.readyState!==WebSocket.OPEN)return;
+  sendPacket(new Uint8Array([0x81,1,0,code&255]));
+}
+
 function updateEntry(){
   if(!typing){
     entry.classList.add("hidden");
@@ -1168,6 +1174,19 @@ addEventListener("keydown",event=>{
   if(bit!==0){
     event.preventDefault();
     setButton(bit,true);
+  }
+  if(event.ctrlKey||event.metaKey||event.altKey)return;
+  if(event.key==="Escape"){
+    event.preventDefault();
+    sendKeyCode(0x1b);
+    return;
+  }
+  if(event.key.length===1){
+    const code=event.key.charCodeAt(0);
+    if(code>=32&&code<127){
+      event.preventDefault();
+      sendKeyCode(code);
+    }
   }
 });
 addEventListener("keyup",event=>{

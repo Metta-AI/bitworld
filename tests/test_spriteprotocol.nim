@@ -300,7 +300,8 @@ proc testSpriteClientParser() =
     )
     cleanMessages = cleanChat.parseSpriteClientMessages()
   doAssert cleanMessages.len == 1
-  doAssert cleanMessages[0].text == "ok~!"
+  # Enter (0x0a) and Escape (0x1b) pass through; other controls drop.
+  doAssert cleanMessages[0].text == "ok" & char(10) & "~!"
 
   let
     emptyChat = blobFromSpriteChat("")
