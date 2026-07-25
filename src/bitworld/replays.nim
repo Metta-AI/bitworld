@@ -28,6 +28,11 @@ type
     player*: uint8
     keys*: uint8
 
+  ReplayClientInput* = object
+    time*: uint32
+    player*: uint8
+    packet*: seq[uint8]
+
   ReplayHash* = object
     tick*: uint32
     hash*: uint64
@@ -63,6 +68,7 @@ type
     chats*: seq[ReplayChat]
     debugSprites*: seq[ReplayDebugSprite]
     inputs*: seq[ReplayInput]
+    clientInputs*: seq[ReplayClientInput]
     hashes*: seq[ReplayHash]
 
   ReplayWriter* = object
@@ -77,10 +83,15 @@ const
   ReplayLeaveRecord* = 0x04'u8
   ReplayChatRecord* = 0x05'u8
   ReplayDebugSpriteRecord* = 0x06'u8
+  ReplayClientInputRecord* = 0x07'u8
 
 proc tickTime*(tick, fps: int): uint32 =
   ## Converts one simulation tick to replay milliseconds.
   uint32((int64(tick) * 1000'i64) div int64(fps))
+
+proc timeTick*(time: uint32, fps: int): int =
+  ## Converts replay milliseconds back to the exact source tick.
+  int((int64(time) * int64(fps) + 500'i64) div 1000'i64)
 
 proc writeU8(file: File, value: uint8) =
   ## Writes one unsigned byte.
@@ -327,6 +338,20 @@ proc writeDebugSprite*(
   writer.file.writeU8(uint8(player))
   writer.file.writeReplayBytes(packet)
 
+proc writeClientInput*(
+  writer: var ReplayWriter,
+  time: uint32,
+  player: int,
+  packet: openArray[uint8]
+) =
+  ## Writes one raw sprite protocol client input replay record.
+  if not writer.enabled:
+    return
+  writer.file.writeU8(ReplayClientInputRecord)
+  writer.file.writeU32(time)
+  writer.file.writeU8(uint8(player))
+  writer.file.writeReplayBytes(packet)
+
 proc writeHash*(writer: var ReplayWriter, tick: uint32, hash: uint64) =
   ## Writes one tick hash replay record and flushes the writer.
   if not writer.enabled:
@@ -377,6 +402,7 @@ proc parseReplayBytes*(bytes: string, spec: ReplaySpec): ReplayData =
     lastLeaveTime = 0'u32
     lastChatTime = 0'u32
     lastDebugSpriteTime = 0'u32
+    lastClientInputTime = 0'u32
   while offset < replayBytes.len:
     let recordType = replayBytes.readU8(offset)
     case recordType
@@ -442,6 +468,19 @@ proc parseReplayBytes*(bytes: string, spec: ReplaySpec): ReplayData =
         )
       lastDebugSpriteTime = debugSprite.time
       result.debugSprites.add(debugSprite)
+    of ReplayClientInputRecord:
+      let clientInput = ReplayClientInput(
+        time: replayBytes.readU32(offset),
+        player: replayBytes.readU8(offset),
+        packet: replayBytes.readReplayBytes(offset)
+      )
+      if clientInput.time < lastClientInputTime:
+        raise newException(
+          ReplayError,
+          "Replay client input timestamps move backward"
+        )
+      lastClientInputTime = clientInput.time
+      result.clientInputs.add(clientInput)
     else:
       raise newException(ReplayError, "Unknown replay record type")
 
