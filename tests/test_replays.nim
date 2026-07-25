@@ -34,6 +34,7 @@ proc testNameSlotTokenReplay() =
   writer.writeInput(ReplayInput(time: 20'u32, player: 0, keys: 5))
   writer.writeChat(30'u32, 0, "hello")
   writer.writeDebugSprite(35'u32, 0, debugPacket)
+  writer.writeClientInput(40'u32, 1, @[0x82'u8, 0x40, 0x01, 0xc8, 0x00])
   writer.writeHash(2'u32, 0x1234'u64)
   writer.closeReplayWriter()
 
@@ -52,8 +53,14 @@ proc testNameSlotTokenReplay() =
   doAssert data.debugSprites[0].player == 0'u8
   doAssert data.debugSprites[0].packet == debugPacket
   doAssert data.hashes[0].hash == 0x1234'u64
+  doAssert data.clientInputs[0].time == 40'u32
+  doAssert data.clientInputs[0].player == 1'u8
+  doAssert data.clientInputs[0].packet ==
+    @[0x82'u8, 0x40, 0x01, 0xc8, 0x00]
   doAssert compressedData.joins[0].name == "alice"
   doAssert compressedData.debugSprites[0].packet == debugPacket
+  doAssert compressedData.clientInputs[0].packet ==
+    data.clientInputs[0].packet
   removeFile(path)
 
 proc testAddressReplay() =
@@ -74,6 +81,9 @@ proc testAddressReplay() =
 
 echo "Testing replay codec"
 doAssert tickTime(24, 24) == 1000'u32
+for fps in [12, 24, 60]:
+  for tick in 0 ..< 10_000:
+    doAssert timeTick(tickTime(tick, fps), fps) == tick
 testNameSlotTokenReplay()
 testAddressReplay()
 echo "All tests passed"
