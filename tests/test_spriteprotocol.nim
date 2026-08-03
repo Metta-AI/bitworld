@@ -154,6 +154,19 @@ proc testServerPacketBuilders() =
   doAssert uncompress(messages[3].sprite.compressedPixels) == pixels
   doAssert messages[5].objectId == 4
 
+  # A pixel-free definition keeps dimensions and label with no pixel bytes.
+  var pixelFree: seq[uint8]
+  pixelFree.addPixelFreeSprite(8, 3, 2, "ghost")
+  let pixelFreeMessages = pixelFree.parseSpritePacket()
+  doAssert pixelFreeMessages.len == 1
+  doAssert pixelFreeMessages[0].kind == spkSprite
+  doAssert pixelFreeMessages[0].sprite.id == 8
+  doAssert pixelFreeMessages[0].sprite.width == 3
+  doAssert pixelFreeMessages[0].sprite.height == 2
+  doAssert pixelFreeMessages[0].sprite.label == "ghost"
+  doAssert pixelFreeMessages[0].sprite.compressedPixels.len == 0
+  doAssert spriteMessageBytes(pixelFree, 0) == pixelFree.len
+
   doAssert sprites == @[7]
   doAssert objects.len == 1
   doAssert objects[0].id == 9
@@ -281,9 +294,10 @@ proc testSpriteClientParser() =
       blobFromSpriteChat("hi!") &
       blobFromSpriteDebugSprites(debugPacket) &
       blobFromSpriteMask(ButtonA or ButtonRight) &
-      blobFromSpriteReady()
+      blobFromSpriteReady() &
+      blobFromSpritesOff()
     clientMessages = clientBlob.parseSpriteClientMessages()
-  doAssert clientMessages.len == 4
+  doAssert clientMessages.len == 5
   doAssert clientMessages[0].kind == SpriteClientChatMessage
   doAssert clientMessages[0].text == "hi!"
   doAssert clientMessages[1].kind == SpriteClientDebugSpriteMessage
@@ -291,8 +305,11 @@ proc testSpriteClientParser() =
   doAssert clientMessages[2].kind == SpriteClientInputMessage
   doAssert clientMessages[2].mask == (ButtonA or ButtonRight)
   doAssert clientMessages[3].kind == SpriteClientReadyMessage
+  doAssert clientMessages[4].kind == SpriteClientSpritesOffMessage
   doAssert clientBlob.readSpriteInputText() == "hi!"
   doAssert clientBlob.spriteInputMask() == (ButtonA or ButtonRight)
+  doAssert blobFromSpritesOff().isSpritesOffPacket()
+  doAssert not blobFromSpriteReady().isSpritesOffPacket()
 
   let
     cleanChat = blobFromSpriteChat(
