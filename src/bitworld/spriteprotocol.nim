@@ -36,6 +36,7 @@ const
   SpriteClientInput* = 0x84'u8
   SpriteClientReady* = 0x85'u8
   SpriteClientDebugSprite* = 0x86'u8
+  SpriteClientSpritesOff* = 0x87'u8
   SpriteLayerMap* = 0x00
   SpriteLayerTopLeft* = 0x01
   SpriteLayerTopRight* = 0x02
@@ -94,6 +95,7 @@ type
     SpriteClientInputMessage
     SpriteClientReadyMessage
     SpriteClientDebugSpriteMessage
+    SpriteClientSpritesOffMessage
 
   SpriteClientMessage* = object
     kind*: SpriteClientKind
@@ -284,6 +286,23 @@ proc addLayer*(packet: var seq[uint8], layer, layerKind, flags: int) =
   packet.addU8(uint8(layerKind))
   packet.addU8(uint8(flags))
 
+proc addPixelFreeSprite*(
+  packet: var seq[uint8],
+  spriteId, width, height: int,
+  label = ""
+) =
+  ## Appends one pixel-free sprite definition message: full dimensions and
+  ## label with a zero-length pixel payload, for clients that sent
+  ## Sprites Off.
+  packet.addU8(SpriteMessageSprite)
+  packet.addU16(spriteId)
+  packet.addU16(width)
+  packet.addU16(height)
+  packet.addU32(0)
+  packet.addU16(label.len)
+  for ch in label:
+    packet.addU8(uint8(ord(ch)))
+
 proc addSprite*(
   packet: var seq[uint8],
   spriteId, width, height: int,
@@ -470,6 +489,16 @@ proc blobFromSpriteReady*(): string =
   result = newString(1)
   result[0] = char(SpriteClientReady)
 
+proc blobFromSpritesOff*(): string =
+  ## Builds a sprite sprites-off capability packet: the client wants
+  ## gameplay state without sprite pixel data.
+  result = newString(1)
+  result[0] = char(SpriteClientSpritesOff)
+
+proc isSpritesOffPacket*(blob: string): bool =
+  ## Returns true when a blob is a standalone sprites-off packet.
+  blob.len == 1 and blob[0].uint8 == SpriteClientSpritesOff
+
 proc blobFromSpriteChat*(text: string): string =
   ## Builds a sprite chat packet from ASCII text.
   var packet: seq[uint8]
@@ -495,7 +524,8 @@ proc isSpriteClientType(value: uint8): bool =
     value == SpriteClientMouseButton or
     value == SpriteClientInput or
     value == SpriteClientReady or
-    value == SpriteClientDebugSprite
+    value == SpriteClientDebugSprite or
+    value == SpriteClientSpritesOff
 
 proc parseSpriteClientMessages*(
   message: string
@@ -552,6 +582,8 @@ proc parseSpriteClientMessages*(
       inc offset
     of SpriteClientReady:
       result.add(SpriteClientMessage(kind: SpriteClientReadyMessage))
+    of SpriteClientSpritesOff:
+      result.add(SpriteClientMessage(kind: SpriteClientSpritesOffMessage))
     of SpriteClientDebugSprite:
       if offset + 4 > message.len:
         return

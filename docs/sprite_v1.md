@@ -56,6 +56,11 @@ the new definition. The label replaces the old label for that sprite id. A
 label length of `0` means the sprite has no label. Labels are for tooling,
 debugging, and human inspection. They do not affect rendering.
 
+A compressed length of `0` is a pixel-free definition: the message carries no
+compressed pixel bytes and continues directly with the label fields. Pixel-free
+definitions may only be sent to clients that requested Sprites Off; for every
+other client a sprite must carry its full pixel payload.
+
 A sprite with width `0` or height `0` is invalid.
 
 ### Define Object
@@ -289,6 +294,32 @@ state, scoring, or player input. Games that support replay recording should
 store enough debug sprite packets to reconstruct the player-authored overlay
 for each replay tick.
 
+### Sprites Off
+
+Declares that this client consumes gameplay state without rendering it, such as
+a bot or an agent harness, and does not need sprite pixel data. Sprite ids,
+dimensions, and labels are still wanted: the label is the semantic payload that
+tells such a client what a sprite id means.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| Message type | `u8` | `0x87` |
+
+Sprites Off is one-way and applies for the rest of the connection. After
+receiving it, the server should define sprites with pixel-free definitions:
+Define Sprite messages with a compressed length of `0` and no compressed pixel
+bytes. Everything else stays unchanged, including object, viewport, and layer
+messages.
+
+The client should send Sprites Off as its first message so the server can strip
+pixel data from the initial frame. A server may already have full sprite
+definitions in flight when the request arrives, so a client that sent Sprites
+Off must still accept ordinary Define Sprite messages at any time.
+
+Receivers close the connection on unknown message types, so a client should
+only send Sprites Off to servers that are known to support it. A server that
+supports this message must accept it at any point in the connection.
+
 ## Message Type Summary
 
 | Value | Direction | Message |
@@ -305,8 +336,9 @@ for each replay tick.
 | `0x84` | Client to server | Player input |
 | `0x85` | Client to server | Player ready |
 | `0x86` | Client to server | Debug sprites |
+| `0x87` | Client to server | Sprites off |
 
-Message values `0x00`, `0x07 .. 0x7f`, and `0x87 .. 0xff` are reserved.
+Message values `0x00`, `0x07 .. 0x7f`, and `0x88 .. 0xff` are reserved.
 
 ## Rendering Model
 
@@ -346,6 +378,10 @@ A receiver should close the connection on malformed messages, including:
 - Truncated messages.
 - Sprite compressed payloads that fail Snappy decompression.
 - Sprite decompressed pixel payloads that do not match `Width * Height * 4`.
+  A pixel-free definition with compressed length `0` carries no payload to
+  check.
+- Pixel-free sprite definitions sent to a client that did not request
+  Sprites Off.
 - Sprite labels whose byte count does not match `Label length`.
 - Sprite dimensions whose product cannot fit in local memory.
 - Objects that reference unknown layers.
